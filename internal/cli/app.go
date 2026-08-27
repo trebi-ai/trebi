@@ -44,7 +44,7 @@ func newAppState(workspaceHint string) *appState {
 		linked:    linked,
 		linkedErr: linkedErr,
 		platform:  platform.NewService(""),
-		log:       slog.Default().With("logger", "cli"),
+		log:       slog.Default().With("source", "cli"),
 	}
 	if stickyErr != nil {
 		state.clientErr = stickyErr

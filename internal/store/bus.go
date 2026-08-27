@@ -167,57 +167,6 @@ func NullStr(s string) any {
 	return s
 }
 
-// scanStreamEvent maps one event_log row to a StreamEvent.
-func scanStreamEvent(rows *sql.Rows) (StreamEvent, error) {
-	var (
-		seq                               int64
-		eventID, topic, ts                string
-		traceID, entity, entityID, action sql.NullString
-		revision                          sql.NullInt64
-		attrs                             sql.NullString
-	)
-	if err := rows.Scan(&seq, &eventID, &topic, &ts, &traceID, &entity, &entityID, &action, &revision, &attrs); err != nil {
-		return StreamEvent{}, err
-	}
-	t, _ := time.Parse("2006-01-02T15:04:05.000000Z", ts)
-	if t.IsZero() {
-		t, _ = time.Parse(time.RFC3339Nano, ts)
-	}
-	ev := StreamEvent{
-		Seq:   seq,
-		Topic: topic,
-		TS:    t,
-	}
-	if traceID.Valid {
-		ev.TraceID = traceID.String
-	}
-	if entity.Valid {
-		ev.Entity = entity.String
-	}
-	if entityID.Valid {
-		ev.ID = entityID.String
-	}
-	if action.Valid {
-		ev.Action = action.String
-	}
-	if revision.Valid {
-		ev.Revision = revision.Int64
-	}
-	if attrs.Valid && attrs.String != "" {
-		ev.Attrs = json.RawMessage(attrs.String)
-	}
-	return ev, nil
-}
-
-func nullStr(s string) any { return NullStr(s) }
-
-func nullInt64(n int64) any {
-	if n == 0 {
-		return nil
-	}
-	return n
-}
-
 // StreamEvent — bus wire frame (§4.2).
 type StreamEvent struct {
 	Seq      int64           `json:"seq"`
@@ -412,4 +361,55 @@ func EventSet() map[string]EventMeta {
 		m[e.Name] = e
 	}
 	return m
+}
+
+// scanStreamEvent maps one event_log row to a StreamEvent.
+func scanStreamEvent(rows *sql.Rows) (StreamEvent, error) {
+	var (
+		seq                               int64
+		eventID, topic, ts                string
+		traceID, entity, entityID, action sql.NullString
+		revision                          sql.NullInt64
+		attrs                             sql.NullString
+	)
+	if err := rows.Scan(&seq, &eventID, &topic, &ts, &traceID, &entity, &entityID, &action, &revision, &attrs); err != nil {
+		return StreamEvent{}, err
+	}
+	t, _ := time.Parse("2006-01-02T15:04:05.000000Z", ts)
+	if t.IsZero() {
+		t, _ = time.Parse(time.RFC3339Nano, ts)
+	}
+	ev := StreamEvent{
+		Seq:   seq,
+		Topic: topic,
+		TS:    t,
+	}
+	if traceID.Valid {
+		ev.TraceID = traceID.String
+	}
+	if entity.Valid {
+		ev.Entity = entity.String
+	}
+	if entityID.Valid {
+		ev.ID = entityID.String
+	}
+	if action.Valid {
+		ev.Action = action.String
+	}
+	if revision.Valid {
+		ev.Revision = revision.Int64
+	}
+	if attrs.Valid && attrs.String != "" {
+		ev.Attrs = json.RawMessage(attrs.String)
+	}
+	return ev, nil
+}
+
+func nullStr(s string) any { return NullStr(s) }
+
+func nullInt64(n int64) any {
+	if n == 0 {
+		return nil
+	}
+	return n
 }

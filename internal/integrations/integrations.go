@@ -138,7 +138,7 @@ func New(st *store.Store, ws *workspaces.Service, r *runs.Service, pol *dispatch
 	return &Service{
 		st: st, ws: ws, runs: r, pol: pol,
 		queue: dispatch.NewQueue(st),
-		log:   slog.Default().With("logger", "integrations"),
+		log:   slog.Default().With("source", "integrations"),
 		procs: make(map[string]*proc),
 		defs:  make(map[string]Definition),
 	}

@@ -31,7 +31,7 @@ type agentSnap struct {
 
 // New creates a runs service.
 func New(st *store.Store) *Service {
-	return &Service{st: st, log: slog.Default().With("logger", "runs"), agents: make(map[string]agentSnap)}
+	return &Service{st: st, log: slog.Default().With("source", "runs"), agents: make(map[string]agentSnap)}
 }
 
 // CreateOpts for launching a run.

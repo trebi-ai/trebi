@@ -67,7 +67,7 @@ func injectPiFlags(command string) string {
 
 func piLaunchEnv() map[string]string {
 	dir := config.HarnessDir(Pi)
-	_ = (piLifecycle{}).materialize(dir)
+	_ = newPiLifecycle().materialize(dir)
 	mode := harness.AuthModeShared
 	var cfg *config.Config
 	if c, err := config.Load(); err == nil {
@@ -176,7 +176,7 @@ func findPiSessionFile(sessionsDir, sessionID string) string {
 }
 
 func (piTool) Lifecycle() LifecycleAdapter {
-	return piLifecycle{log: slog.Default().With("logger", "pi_lifecycle")}
+	return newPiLifecycle()
 }
 
 // ClassifyScreen: busy while "Working..."; idle when model footer shows.
@@ -219,6 +219,10 @@ func piMcpHostImports() []string {
 
 type piLifecycle struct {
 	log *slog.Logger
+}
+
+func newPiLifecycle() piLifecycle {
+	return piLifecycle{log: slog.Default().With("source", "pi_lifecycle")}
 }
 
 func (p piLifecycle) Install(trebiBase, binDir string) error {

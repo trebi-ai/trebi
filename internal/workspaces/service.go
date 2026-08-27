@@ -38,7 +38,7 @@ type Service struct {
 
 // New creates a workspace service.
 func New(st *store.Store) *Service {
-	return &Service{st: st, log: slog.Default().With("logger", "workspaces")}
+	return &Service{st: st, log: slog.Default().With("source", "workspaces")}
 }
 
 // trebiYAML is the on-disk workspace config (B26).

@@ -76,7 +76,7 @@ func New(st *store.Store, opts Options) *Server {
 		shadow:    opts.Shadow,
 		drain:     opts.Drain || opts.Shadow,
 		done:      make(chan struct{}),
-		log:       slog.Default().With("logger", "http_server"),
+		log:       slog.Default().With("source", "http_server"),
 		queue:     dispatch.NewQueue(st),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },

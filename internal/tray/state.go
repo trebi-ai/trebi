@@ -24,7 +24,7 @@ type State struct {
 
 // NewState builds a tray state with its own logger.
 func NewState() *State {
-	return &State{log: slog.Default().With("logger", "tray")}
+	return &State{log: slog.Default().With("source", "tray")}
 }
 
 func (s *State) Set(snap Snapshot) {

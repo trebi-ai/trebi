@@ -51,7 +51,7 @@ type Service struct {
 
 // New creates an alerts service.
 func New(st *store.Store) *Service {
-	return &Service{st: st, log: slog.Default().With("logger", "alerts")}
+	return &Service{st: st, log: slog.Default().With("source", "alerts")}
 }
 
 // Raise creates an inbox item + alert.raised bus event.

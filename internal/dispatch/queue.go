@@ -87,7 +87,7 @@ type Queue struct {
 
 // NewQueue binds a queue to a store.
 func NewQueue(st *store.Store) *Queue {
-	return &Queue{st: st, log: slog.Default().With("logger", "queue")}
+	return &Queue{st: st, log: slog.Default().With("source", "queue")}
 }
 
 // Enqueue inserts a pending queue row + bus event.

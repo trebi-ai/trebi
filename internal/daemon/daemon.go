@@ -62,7 +62,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Policy:       pol,
 		Reaper:       runs.NewReaper(r),
 		Opts:         opts,
-		log:          slog.Default().With("logger", "daemon"),
+		log:          slog.Default().With("source", "daemon"),
 		queue:        dispatch.NewQueue(st),
 	}
 }

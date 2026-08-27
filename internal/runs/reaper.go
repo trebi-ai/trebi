@@ -28,7 +28,7 @@ func NewReaper(svc *Service) *Reaper {
 		Svc:       svc,
 		Interval:  5 * time.Second,
 		Now:       time.Now,
-		log:       slog.Default().With("logger", "reaper"),
+		log:       slog.Default().With("source", "reaper"),
 		idleSince: make(map[string]time.Time),
 		stop:      make(chan struct{}),
 	}
