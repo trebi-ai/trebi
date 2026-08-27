@@ -4,19 +4,37 @@ Instructions for humans and coding agents working in this repository.
 
 Prefer types that own behavior. Prefer fewer, denser files. Prefer explicit wiring over package-level state. Do not invent `util` packages, one-function files, or interfaces that have a single implementation.
 
-## Layout
+## Repository structure
+
+Trebi is one binary (`trebi`) that is both the daemon (`trebi service daemon`) and the CLI. The design contract is `../docs/trebi/`: read `backend-0808.md` first (objects, data model, API, event bus), then `backend.md` (runtime layer, scheduler, logging, CLI parity, cloudlink) and `backend-review-0809.md` (open action items). `backend-0808.md` supersedes `backend.md` §4.3 and §4.5.
 
 ```text
-cmd/<name>/          # binaries only: parse flags, load config, wire deps, Run
-internal/            # private application code
-internal/<domain>/   # one concept per package (user, invoice, conn)
+cmd/trebi/           # thin main: cli.NewApp().Run(os.Args)
+internal/api/        # /v1 HTTP + SSE server; one file per route area
+internal/cli/        # the trebi command surface; a thin API client
+internal/daemon/     # ControlPlane: background workers (queue, schedule, watch, prune)
+internal/store/      # SQLite open, migrations, event bus, event-name registry
+internal/<domain>/   # one service per object family (runs, workspaces, alerts, …)
+internal/tmux/       # harness drivers: one file per harness tool
+internal/tray/       # macOS menu bar (build-tagged)
+scripts/ testdata/   # build helpers, jobi fixtures
 ```
 
-- Put binaries in `cmd/<name>/`. Keep `main` thin.
-- Private code lives in `internal/`.
-- Name packages after what they provide (`user`, `invoice`), not what they contain (`models`, `types`, `interfaces`, `utils`, `common`, `helpers`).
-- One concept per package. Adapters stay at the edge (`internal/http`, `internal/postgres`); domain code points inward.
-- Do not add a directory to hold two or three files.
+Domain packages own one object family and are named after it: `runs`, `workspaces`, `alerts`, `skills`, `integrations`, `schedule`, `dispatch`, `job`, `secrets`, `harness`, `config`, `home`, `pricing`, `platform`. Each exports a `Service` (or an equivalent concrete type) built by `New(st *store.Store)`.
+
+Dependency direction is one way:
+
+```text
+cli ──▶ api ──▶ <domain services> ──▶ store
+daemon ──▶ <domain services> ──▶ store
+```
+
+- `api` and `daemon` are peers. Both wire the same services; neither imports the other.
+- Domain services never import `api`, `cli`, or `daemon`.
+- `store` imports no domain package.
+- `home` owns every `~/.trebi` path. Do not build paths with `filepath.Join(os.UserHomeDir(), ".trebi", …)` anywhere else.
+
+When you add an object, add the whole vertical in one change: store table + migration, domain service, bus topic in the registry, API routes, CLI command, and tests. A route with no CLI command is an incomplete change (see the parity rule below).
 
 ## Types, methods, functions
 
@@ -54,7 +72,7 @@ Prefer fewer, denser files. One file per type or per topic, not one file per fun
 - A new function goes in the existing file for that type or topic.
 - Do not create a new file unless you are introducing a new type, a new backend/connector, or a second named concern that does not belong in the current file.
 - Forbidden: `helpers.go`, `utils.go`, `misc.go`, and files named after a single function (`get_user.go`, `validate.go`).
-- HTTP: construction and `Listen` live in `server.go`. All handlers for one server live in `handler.go`. Split only by area (`handler_admin.go`) after that file has a clear second topic. Keep route registration next to the handlers.
+- HTTP: construction and `Listen` live in `server.go`; handlers are split by route area in `routes_<area>.go`, with each file's route table at its top (see Backend design patterns → API). Keep route registration next to the handlers.
 - Tests: `foo_test.go` next to `foo.go`. Do not make a new test file per test function.
 - Same type, same file. `T`, `NewT`, and methods on `T` stay together.
 - A second implementation (`PostgresStore`, `MemoryStore`) gets its own file, not its own package, until it has real weight.
@@ -178,6 +196,108 @@ Keys: `source` (subservice; one snake_case word), plus instance ids (`job_id`, `
 - Prefer `InfoContext` / `ErrorContext` when a `ctx` is in hand.
 - Do not store request `context.Context` on the struct.
 - Configure the handler once in `main` with `slog.SetDefault` if you  want JSON or a non-default level.
+
+## Backend design patterns
+
+These patterns are the contract, not a preference. Keep a new feature inside them; if you must break one, say why in the change.
+
+### The four invariants
+
+1. **API-first, single writer.** Every mutation goes through the `trebid` HTTP API. The CLI, tray, and UI are clients of the same routes. Do not add a second write path that reaches the store or the filesystem behind the daemon.
+2. **Everything injected, nothing global.** One `Store`, built in `main`, passed to every service. No package-level DB handle, no function-pointer seams, no mutable config global. `home` holds the only allowed override (`TREBI_HOME`, for tests).
+3. **`context.Context` flows through every operation.** Any function that does I/O, waits, or launches a run takes `ctx` first.
+4. **Typed edges.** Statuses, reasons, outcomes, alert kinds, and bus topics are closed enums declared once. Do not compare error strings and do not spell an enum value inline.
+
+### Services
+
+One service per object family. Same shape every time:
+
+```go
+// Package runs owns run CRUD, timeline, launch path, and agent state.
+package runs
+
+type Service struct {
+    st  *store.Store
+    log *slog.Logger
+}
+
+func New(st *store.Store) *Service {
+    return &Service{st: st, log: slog.Default().With("source", "runs")}
+}
+```
+
+- The wire struct (`Workspace`, `Run`) lives in the service package with its `json` tags. The API package does not redeclare it.
+- List methods take a `ListOpts` struct, not eight positional arguments.
+- The service returns typed errors (`sql.ErrNoRows`, package sentinels). The HTTP layer maps them to status codes.
+- Long-running work belongs to `daemon.ControlPlane`, not to the service constructor. A service never starts a goroutine in `New`.
+
+### API
+
+`internal/api` is a thin, dumb layer: decode, validate, call a service, write JSON. Business rules live in the service.
+
+- **One file per route area**, named `routes_<area>.go`, each exporting one `func (s *Server) route<Area>(mux *http.ServeMux)` that lists its routes at the top of the file. `routes.go` only composes them. Add a route to the existing area file; do not add a file per handler.
+- Use Go 1.22 method-and-pattern routes (`"POST /v1/runs/{id}/kill"`) and `r.PathValue("id")`. No router library.
+- Route shape: plural nouns; non-CRUD actions are `POST /{resource}/{id}/{verb}`; sub-resources nest one level only.
+- Every response goes through `writeJSON` / `writeErr`. The error envelope is `{"error":{"code","message","details"}}` with a stable machine code (`not_found`, `conflict`, `ambiguous`, `validation`, `draining`, `precondition_failed`, `unauthorized`, `internal`). Never write a bare string body.
+- Handlers stay short. Pull request parsing and option building into small helpers in the same file (`runSpec`, `launchOpts`), not into a `helpers.go`.
+- **Cross-cutting concerns are middleware**, wrapped once in `Handler()`: bearer auth, then audit. A handler never checks the token itself.
+- **File-backed documents** (`JOB.md`, `TREBI.md`, `MEMORY.md`): `PUT` replaces, `PATCH` patches, both through `ifMatchOK`. An absent `If-Match` proceeds; a stale one returns 412 `precondition_failed`.
+- **DB-backed objects** carry a monotonic `revision`, bumped on every write and carried on the bus frame.
+- **List routes** are cursor-paginated (`?limit=&cursor=`). ULIDs double as cursors; a malformed cursor is a 400, not a silent full scan.
+- **Drain** blocks automatic producers and returns 503 `draining`. Manual launches still pass.
+- The daemon owns the shared service instances; `BindControlPlane` swaps them into the server. Do not let the API build a second `runs.Service` at request time.
+- Times are RFC3339 UTC. Durations use an `_ms` suffix. Keys are snake_case. The server computes derived fields (`duration_ms`, `cost_usd`, `billed`); clients never re-derive money or duration.
+
+### Event bus
+
+One append-only log in `event_log`, one registry, one wire frame.
+
+- `store.AllEvents()` is the single source of truth for every event name. **Add the name there first.** `Bus: true` means it also rides `/v1/stream`; `Log: false` means ops-log only. `AppendInTx` rejects an unregistered topic, so an unlisted name fails at runtime.
+- The same name is used on the bus, in the ops log, and in the audit stream. Do not invent a second spelling for one event.
+- Write the entity change and the bus row **in one transaction** via `store.AppendEntity`. A crash must not advance an entity past what the bus recorded.
+- Bus appends are serialized (`LockBus`) so `seq` is gapless in commit order. Keep that rule for any future Postgres port; do not append outside `Append`/`AppendEntity`.
+- **Frames are thin.** Entity events carry `entity`, `id`, `action`, `revision` — never the payload. The client refetches. Domain events may carry a small `attrs` object.
+- **Every mutation path emits.** An API write and a file-watcher reload both emit the same `job.updated`; a client cannot tell them apart and must not need to.
+- `/v1/stream` is the bus. `/v1/events` is the trigger pipeline. Never conflate the two names.
+- Three cursors, three jobs — always name the subject: `event_log.seq` (bus cursor), `integration_cursors.last_event_id` (integration cursor), `schedules.next_due_at`. The bare word `cursor` is banned in identifiers.
+- Retention is a single 7-day prune. Anything that must survive longer reads from a durable table, not from the bus.
+
+### CLI
+
+The CLI is a thin API client. It holds no business logic and never touches the store or spawns a session.
+
+- **Parity rule: the CLI covers 100% of the control-plane API.** A new route ships with its `trebi` command and its skill entry in the same change. The assistant drives trebi through this CLI, so an endpoint with no command is unreachable.
+- Command tree: one `func <area>Command() *cli.Command` per file, named `commands_<area>.go`, registered in `root.go`. Split subcommands into named groups (`jobManageSubcommands`) when a list grows past a screen; do not split into more files.
+- Startup context is built once in `Before` and stored as `appState` in `App.Metadata`. Actions read it through `appStateFor(c)` / `clientFor(c)` / `workspaceFor(c)`. Do not reload config, sticky context, or the API client inside an action.
+- Request building is pure and separately testable: `Build*` returns an `HTTPRequest{Method, Path, Body}`, and `client.DoHTTP` executes it. Test the shape without a daemon.
+- Client resolution order is fixed: linked remote workspace → remote sticky context → `TREBI_URL`/`TREBI_TOKEN` → local `~/.trebi/api.json`. Remote is workspace context, not a `--remote` flag.
+- Local-only commands (`service install|daemon`) fail fast when the sticky context is remote.
+- Every read command takes `--json` and passes the API payload through unchanged. Human output uses the shared `newTable`; do not hand-format columns.
+- The offline subset must work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate`. Everything else fails with a clear "daemon not running" message.
+
+### Store
+
+- `internal/store` owns `Open`, migrations, the bus, and low-level scan helpers. Domain services own their own SQL.
+- SQL stays Postgres-portable: no SQLite-only syntax. Placeholders are `?`.
+- Migrations are the ordered slice in `schema.go` (index i = version i+1) with `SchemaVersion` at the head. Append only. Never edit an applied migration.
+- Wrap multi-statement writes in `WithTx`. Use `AppendEntity` whenever the write has a bus topic.
+- Map `""` to SQL NULL with `store.NullStr`. Keep one copy of that helper.
+
+### Daemon workers
+
+- `ControlPlane` owns every background goroutine. Each is started in `Start(ctx)` under the `WaitGroup` and stops on `ctx.Done()`; `Stop` cancels and waits. No goroutine without a stop condition.
+- `Options.Shadow` skips producers (integrations, schedule fire, queue drain). Keep new workers honest about shadow and drain.
+- Tick intervals are `Options` fields with defaults, so tests can drive them fast. Do not hard-code a sleep in a worker.
+
+### Harness drivers
+
+- A harness is a `tmux.Tool` implementation, one file per tool (`tool_claude.go`, `tool_codex.go`). Adding a harness means adding a file, never editing a switch in the launch path.
+- Screen behavior is proven by golden fixtures under `internal/tmux/testdata/screens/<tool>/<scenario>/`. A new tool ships with its captures.
+- Keep planning pure: `PrepareLaunch` / `PrepareResume` return a `LaunchPlan`; the caller executes it.
+
+### Logging
+
+Every service sets `log` in `New` with `slog.Default().With("source", "<service>")`. Log lines use the registered event name as the message (`s.log.Info("api.request", …)`), so bus, log, and audit share one vocabulary. Libraries return errors; the edge logs them.
 
 ## Lint and format
 
