@@ -1,0 +1,5 @@
+tool: bash
+version: GNU bash, version 3.2.57(1)-release (arm64-apple-darwin24)
+date: 2026-07-18
+geometry: 120x40
+command: bash -c echo one; sleep 1; echo two; sleep 1; echo three; sleep 5

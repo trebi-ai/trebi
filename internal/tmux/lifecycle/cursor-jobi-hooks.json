@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "trebi agent-hook session-start",
+        "timeout": 5
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "trebi agent-hook running",
+        "timeout": 5
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "trebi agent-hook running",
+        "timeout": 5
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "trebi agent-hook running",
+        "timeout": 5
+      }
+    ],
+    "stop": [
+      {
+        "command": "trebi agent-hook stop",
+        "timeout": 5
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "trebi agent-hook session-end",
+        "timeout": 1
+      }
+    ]
+  }
+}

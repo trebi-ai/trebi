@@ -1,0 +1,39 @@
+   ░░░            ░░░░░░░░░  ░░░░░░░░░░ ░░░░░░   ░░░░░░ ░░░░░ ░░░░░░   ░░░░░ ░░░░░
+     ░░░         ░░░     ░░░ ░░░        ░░░░░░   ░░░░░░  ░░░  ░░░░░░   ░░░░░  ░░░                                      █
+       ░░░      ░░░          ░░░        ░░░ ░░░ ░░░ ░░░  ░░░  ░░░ ░░░  ░░░    ░░░                                      █
+ ███     ░░░    █████████░░██████████ ██████ ░░██████░█████░██████ ░░█████ █████░                                      █
+   ███ ░░░     ███░    ███░███░░      ██████  ░██████░░███░░██████  ░█████  ███░░                                      █
+     ███      ███░░░     ░░███░░      ███░███ ███ ███░░███░░███░███  ███░░  ███░░                                      █
+   ░░░ ███    ███ ░░░█████░██████░░░░░███░░█████  ███░░███░░███░░███ ███░░░ ███░░░                                     █
+     ███      ███      ███ ███        ███   ███   ███  ███  ███   ██████    ███                                        █
+   ███         ███     ███ ███        ███         ███  ███  ███    █████    ███                                        █
+ ███            █████████  ██████████ ███         ███ █████ ███     █████  █████                                       █
+                                                                                                                       █
+Tips for getting started:                                                                                              █
+1. Ask questions, edit files, or run commands.                                                                         █
+2. Be specific for the best results.                                                                                   █
+3. Create GEMINI.md files to customize your interactions with Gemini.                                                  █
+4. /help for more information.                                                                                         █
+                                                                                                                       █
+ℹ Update successful! The new version will be used on your next run.                                                    █
+                                                                                                                       █
+> Reply with the single word OK. Do not use tools.                                                                     █
+                                                                                                                       █
+✦ OK                                                                                                                   █
+                                                                                                                       █
+> Write a 200 word story about a lighthouse keeper. Do not use tools.                                                  █
+                                                                                                                       █
+✦ Elias, a man carved from the sea's own grit and salt, had tended the Blackwood Lighthouse for forty years. His face, █
+  a roadmap of weathered lines, held the secrets of a thousand storms and countless sunrises. Each evening, as the last█
+  sliver of sun dipped below the horizon, he’d climb the winding, iron stairs, his trusty lantern swinging gently by   █
+  his side.                                                                                                            █
+                                                                                                                       █
+  The rhythmic creak of his boots on the old metal was a familiar lullaby in the isolation. He’d meticulously polish   █
+  the Fresnel lens until it gleamed, a beacon against the encroaching darkness. Outside                                █
+⠙ Crafting Keeper's Tale (esc to cancel, 4s)
+
+ Using: 2 MCP servers
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ >   Type your message or @path/to/file                                                                              │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ /pr.../.../capture-tui.kF1GI1                               no sandbox (see /docs)                               auto

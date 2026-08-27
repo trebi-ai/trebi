@@ -24,6 +24,11 @@ profile.cov
 go.work
 go.work.sum
 
+build/
+__pycache__/
+*.pyc
+
+
 # env file
 .env
 

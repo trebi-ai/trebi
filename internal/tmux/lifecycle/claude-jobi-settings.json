@@ -1,0 +1,112 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trebi agent-hook session-start",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trebi agent-hook waiting",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "elicitation_dialog",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trebi agent-hook waiting",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "agent_needs_input",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trebi agent-hook waiting",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trebi agent-hook waiting",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trebi agent-hook running",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trebi agent-hook running",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trebi agent-hook waiting",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trebi agent-hook stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trebi agent-hook session-end",
+            "timeout": 1
+          }
+        ]
+      }
+    ]
+  }
+}

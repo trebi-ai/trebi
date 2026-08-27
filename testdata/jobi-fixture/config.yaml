@@ -1,0 +1,4 @@
+defaults:
+  command: claude
+  session:
+    timeout: 30m

@@ -1,0 +1,486 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/urfave/cli/v2"
+)
+
+func jobCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "job",
+		Usage: "manage jobs",
+		Subcommands: append(jobManageSubcommands(),
+			&cli.Command{
+				Name:      "status",
+				Usage:     "show job + latest run summary",
+				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action:    runJobStatus,
+			},
+			&cli.Command{
+				Name:      "tail",
+				Usage:     "tail log of the latest run for a job",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "lines", Aliases: []string{"n"}, Value: 200, Usage: "trailing lines"},
+				},
+				Action: runJobTail,
+			},
+			&cli.Command{
+				Name:      "pause",
+				Usage:     "pause (disable) a job",
+				ArgsUsage: "<name>",
+				Action:    runJobPause,
+			},
+			&cli.Command{
+				Name:      "unpause",
+				Usage:     "unpause a job",
+				ArgsUsage: "<name>",
+				Action:    runJobUnpause,
+			},
+			&cli.Command{
+				Name:      "validate",
+				Usage:     "validate job frontmatter",
+				ArgsUsage: "<name>",
+				Action:    runJobValidate,
+			},
+			&cli.Command{
+				Name:      "memory",
+				Usage:     "get job MEMORY.md",
+				ArgsUsage: "<name>",
+				Action:    runJobMemory,
+			},
+		),
+	}
+}
+
+// jobManageSubcommands returns the job definition commands: list, show, create, delete, schedule.
+func jobManageSubcommands() []*cli.Command {
+	return []*cli.Command{
+		{
+			Name:  "list",
+			Usage: "list jobs",
+			Flags: []cli.Flag{
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				&cli.BoolFlag{Name: "detailed", Aliases: []string{"d"}, Usage: "extra columns (path, status)"},
+			},
+			Action: runJobList,
+		},
+		{
+			Name:      "show",
+			Usage:     "show job detail",
+			ArgsUsage: "<name>",
+			Action:    runJobShow,
+		},
+		{
+			Name:      "create",
+			Usage:     "create a job (content via --file or stdin)",
+			ArgsUsage: "<name>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "file", Usage: "JOB.md path"},
+				&cli.StringFlag{Name: "workspace", Usage: "workspace id"},
+			},
+			Action: runJobCreate,
+		},
+		{
+			Name:      "delete",
+			Usage:     "delete a job file (JOB.md)",
+			ArgsUsage: "<name>",
+			Flags: []cli.Flag{
+				&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "skip confirm (always true over API)"},
+			},
+			Action: runJobDelete,
+		},
+		{
+			Name:      "schedule",
+			Usage:     "set schedule: enable|disable|cron|@every (trebi triggers[], not jobi schedule:)",
+			ArgsUsage: "<name> <value>",
+			Action:    runJobSchedule,
+		},
+	}
+}
+
+func runJobList(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	path := withQuery("/v1/jobs", workspaceQ(workspaceFor(c)))
+	var body struct {
+		Jobs []map[string]any `json:"jobs"`
+	}
+	if err := client.GetJSON(path, &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(body)
+	}
+	w := outWriter(c)
+	headers := []string{"Name", "Workspace", "Harness", "Active"}
+	if c.Bool("detailed") {
+		headers = append(headers, "Status", "Path")
+	}
+	tbl := newTable(w, headers)
+	for _, j := range body.Jobs {
+		if mapStr(j, "kind") == "assistant" {
+			continue
+		}
+		row := table.Row{
+			mapStr(j, "name"),
+			mapStr(j, "workspace_id", "workspace"),
+			dash(mapStr(j, "harness")),
+			colorStatus(w, mapStr(j, "active")),
+		}
+		if c.Bool("detailed") {
+			row = append(row, dash(mapStr(j, "status")), dash(mapStr(j, "path")))
+		}
+		tbl.AppendRow(row)
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runJobShow(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	path := withQuery("/v1/jobs/"+c.Args().Get(0), workspaceQ(workspaceFor(c)))
+	var body map[string]any
+	if err := client.GetJSON(path, &body); err != nil {
+		return err
+	}
+	enc := json.NewEncoder(outWriter(c))
+	enc.SetIndent("", "  ")
+	return enc.Encode(body)
+}
+
+func runJobCreate(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	content := "---\nharness: claude\n---\n\nDo the task.\n"
+	if f := c.String("file"); f != "" {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return err
+		}
+		content = string(b)
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.PostJSON("/v1/jobs", map[string]any{
+		"name": name, "workspace": workspaceFor(c), "content": content,
+	}, nil)
+}
+
+func runJobDelete(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	req := BuildJobDelete(name, workspaceFor(c))
+	if err := client.DoHTTP(req, nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "deleted %s\n", name)
+	return nil
+}
+
+func runJobPause(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildJobPause(c.Args().Get(0), workspaceFor(c), true), nil)
+}
+
+func runJobUnpause(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildJobPause(c.Args().Get(0), workspaceFor(c), false), nil)
+}
+
+func runJobValidate(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	path := withQuery("/v1/jobs/"+c.Args().Get(0)+"/validate", workspaceQ(workspaceFor(c)))
+	var body map[string]any
+	if err := client.PostJSON(path, nil, &body); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "ok=%v error=%v\n", body["ok"], body["error"])
+	return nil
+}
+
+func runJobMemory(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	path := withQuery("/v1/jobs/"+c.Args().Get(0)+"/memory", workspaceQ(workspaceFor(c)))
+	var body map[string]any
+	if err := client.GetJSON(path, &body); err != nil {
+		return err
+	}
+	fmt.Fprint(outWriter(c), mapStr(body, "content"))
+	return nil
+}
+
+func runJobSchedule(c *cli.Context) error {
+	if c.NArg() < 2 {
+		return fmt.Errorf("usage: trebi job schedule <name> <enable|disable|cron|@every …>")
+	}
+	name := c.Args().Get(0)
+	value := strings.Join(c.Args().Tail(), " ")
+	ws := workspaceFor(c)
+	plan, err := PlanJobSchedule(name, ws, value)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if plan.Mode != "put_markdown" {
+		if err := client.DoHTTP(plan.HTTP, nil); err != nil {
+			return err
+		}
+		fmt.Fprintf(outWriter(c), "schedule %s: %s\n", name, plan.Mode)
+		return nil
+	}
+	// GET markdown → rewrite triggers → PUT
+	var got map[string]any
+	if err := client.GetJSON(withQuery("/v1/jobs/"+name, workspaceQ(ws)), &got); err != nil {
+		return err
+	}
+	md := mapStr(got, "markdown")
+	if md == "" {
+		return fmt.Errorf("job has no markdown payload")
+	}
+	newMD, err := ApplyScheduleMarkdown(md, value)
+	if err != nil {
+		return err
+	}
+	req := BuildJobPutMarkdown(name, ws, newMD)
+	if err := client.DoHTTP(req, nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "schedule set: %s → %s\n", name, value)
+	return nil
+}
+
+func runJobStatus(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	ws := workspaceFor(c)
+	var job map[string]any
+	if err := client.GetJSON(withQuery("/v1/jobs/"+name, workspaceQ(ws)), &job); err != nil {
+		return err
+	}
+	path := BuildRunsListPath("", name, ws, "job", "", "", "", 5)
+	var runsBody struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	_ = client.GetJSON(path, &runsBody) // job status remains useful when history is unavailable
+	out := map[string]any{"job": job, "recent_runs": runsBody.Runs}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+	w := outWriter(c)
+	fmt.Fprintf(w, "Name:      %s\n", mapStr(job, "name"))
+	fmt.Fprintf(w, "Workspace: %s\n", mapStr(job, "workspace", "workspace_id"))
+	fmt.Fprintf(w, "Harness:   %s\n", mapStr(job, "harness"))
+	fmt.Fprintf(w, "Active:    %v\n", job["active"])
+	fmt.Fprintf(w, "Path:      %s\n", mapStr(job, "path"))
+	if len(runsBody.Runs) > 0 {
+		r := runsBody.Runs[0]
+		fmt.Fprintf(w, "Last run:  %s  status=%s\n", mapStr(r, "id"), mapStr(r, "status"))
+	}
+	return nil
+}
+
+func runJobTail(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	ws := workspaceFor(c)
+	path := BuildRunsListPath("", name, ws, "job", "", "", "", 1)
+	var runsBody struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	if err := client.GetJSON(path, &runsBody); err != nil {
+		return err
+	}
+	if len(runsBody.Runs) == 0 {
+		return fmt.Errorf("no runs for job %q", name)
+	}
+	id := mapStr(runsBody.Runs[0], "id")
+	text, err := fetchRunLogText(client, id)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(text, "\n")
+	n := c.Int("lines")
+	if n > 0 && len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	out := strings.Join(lines, "\n")
+	fmt.Fprint(outWriter(c), out)
+	if len(out) > 0 && !strings.HasSuffix(out, "\n") {
+		fmt.Fprintln(outWriter(c))
+	}
+	return nil
+}
+
+// fetchRunLogText decodes GET /v1/runs/{id}/log JSON {"log":"…"} or falls back to transcript raw.
+func fetchRunLogText(client *APIClient, id string) (string, error) {
+	raw, err := client.GetRaw("/v1/runs/" + id + "/log")
+	if err == nil {
+		var wrap map[string]any
+		if json.Unmarshal(raw, &wrap) == nil {
+			if _, has := wrap["log"]; has {
+				return fmt.Sprint(wrap["log"]), nil
+			}
+		}
+		// Non-JSON envelope: return body as-is.
+		if len(raw) > 0 {
+			return string(raw), nil
+		}
+	}
+	raw, err = client.GetRaw("/v1/runs/" + id + "/transcript")
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func listCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "list",
+		Usage: "list jobs and assistants across workspaces",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "detailed", Aliases: []string{"d"}, Usage: "extra columns (path, status, active)"},
+			&cli.BoolFlag{Name: "assistants-only", Aliases: []string{"a", "agents-only"}, Usage: "list workspace assistants only"},
+			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+		},
+		Action: runList,
+	}
+}
+
+func runList(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if c.Bool("assistants-only") {
+		return runListAssistants(c, client)
+	}
+	w := outWriter(c)
+	path := withQuery("/v1/jobs", workspaceQ(workspaceFor(c)))
+	var jobs struct {
+		Jobs []map[string]any `json:"jobs"`
+	}
+	if err := client.GetJSON(path, &jobs); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(jobs)
+	}
+	headers := []string{"Kind", "Name", "Workspace", "Harness"}
+	if c.Bool("detailed") {
+		headers = append(headers, "Active", "Status", "Path")
+	}
+	tbl := newTable(w, headers)
+	for _, j := range jobs.Jobs {
+		r := table.Row{
+			mapStr(j, "kind"),
+			mapStr(j, "name"),
+			mapStr(j, "workspace_id", "workspace"),
+			dash(mapStr(j, "harness")),
+		}
+		if c.Bool("detailed") {
+			r = append(r, colorStatus(w, mapStr(j, "active")), dash(mapStr(j, "status")), dash(mapStr(j, "path")))
+		}
+		tbl.AppendRow(r)
+	}
+	renderTable(tbl)
+	return nil
+}
+
+// runListAssistants lists the singleton assistant of each workspace.
+func runListAssistants(c *cli.Context, client *APIClient) error {
+	w := outWriter(c)
+	var wss struct {
+		Workspaces []map[string]any `json:"workspaces"`
+	}
+	if err := client.GetJSON("/v1/workspaces", &wss); err != nil {
+		return err
+	}
+	var rows []map[string]any
+	for _, ws := range wss.Workspaces {
+		id := mapStr(ws, "id")
+		var a map[string]any
+		if err := client.GetJSON("/v1/workspaces/"+id+"/assistant", &a); err != nil {
+			continue
+		}
+		rows = append(rows, map[string]any{
+			"kind": "assistant", "name": mapStr(a, "name", "nickname", "title"),
+			"workspace_id": id, "workspace": mapStr(ws, "name"),
+			"harness": mapStr(a, "harness"), "path": mapStr(a, "path"),
+			"active": mapStr(a, "active"),
+		})
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{"items": rows})
+	}
+	headers := []string{"Kind", "Name", "Workspace", "Harness"}
+	if c.Bool("detailed") {
+		headers = append(headers, "Active", "Path")
+	}
+	tbl := newTable(w, headers)
+	for _, j := range rows {
+		r := table.Row{mapStr(j, "kind"), dash(mapStr(j, "name")), mapStr(j, "workspace", "workspace_id"), dash(mapStr(j, "harness"))}
+		if c.Bool("detailed") {
+			r = append(r, dash(mapStr(j, "active")), dash(mapStr(j, "path")))
+		}
+		tbl.AppendRow(r)
+	}
+	renderTable(tbl)
+	return nil
+}
