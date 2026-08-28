@@ -335,11 +335,14 @@ func (s *Service) Start(parent context.Context, name string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("unknown integration %q", name)
 	}
+	wasCrashed := false
 	if p, ok := s.procs[name]; ok {
-		if st := p.getStatus(); st == "listening" || st == "starting" {
+		st := p.getStatus()
+		if st == "listening" || st == "starting" {
 			s.mu.Unlock()
 			return nil
 		}
+		wasCrashed = st == "crashed"
 	}
 	ctx, cancel := context.WithCancel(parent)
 	p := &proc{cancel: cancel, status: "starting"}
@@ -392,6 +395,14 @@ func (s *Service) Start(parent context.Context, name string) error {
 		Attrs: map[string]string{"status": "listening"},
 	}); err != nil {
 		s.log.Warn("bus append", "topic", "integration.updated", "error", err)
+	}
+	if wasCrashed {
+		if _, err := s.st.Append(parent, store.BusEvent{
+			Topic: "integration.recovered", Entity: "integration", EntityID: name, Action: "updated",
+			Attrs: map[string]string{"status": "listening"},
+		}); err != nil {
+			s.log.Warn("bus append", "topic", "integration.recovered", "error", err)
+		}
 	}
 	return nil
 }
@@ -479,9 +490,20 @@ func (s *Service) readLoop(ctx context.Context, name string, d Definition, r io.
 		switch {
 		case scanErr != nil:
 			p.markCrashed(scanErr.Error())
+			s.emitUnhealthy(name, "crashed")
 		case waitErr != nil:
 			p.markCrashed(waitErr.Error())
+			s.emitUnhealthy(name, "crashed")
 		}
+	}
+}
+
+func (s *Service) emitUnhealthy(name, status string) {
+	if _, err := s.st.Append(context.Background(), store.BusEvent{
+		Topic: "integration.unhealthy", Entity: "integration", EntityID: name, Action: "updated",
+		Attrs: map[string]string{"integration": name, "status": status},
+	}); err != nil {
+		s.log.Warn("bus append", "topic", "integration.unhealthy", "error", err)
 	}
 }
 

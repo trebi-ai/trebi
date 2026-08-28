@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/dispatch"
-	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -138,31 +138,14 @@ func (s *Server) appendBus(ctx context.Context, ev store.BusEvent) {
 }
 
 func (s *Server) doctorFindings() []map[string]any {
-	var findings []map[string]any
-	if _, err := os.Stat(home.DBPath()); err != nil {
-		findings = append(findings, map[string]any{
-			"id": "db-missing", "severity": "error", "code": "db_missing",
-			"message": "trebi.db missing — run trebi service migrate-db",
+	src := alerts.CollectDoctorFindings()
+	out := make([]map[string]any, 0, len(src))
+	for _, f := range src {
+		out = append(out, map[string]any{
+			"id": f.ID, "severity": f.Severity, "code": f.Code, "message": f.Message,
 		})
 	}
-	if _, err := os.Stat(home.ConfigPath()); err != nil {
-		findings = append(findings, map[string]any{
-			"id": "config-missing", "severity": "warn", "code": "config_missing",
-			"message": "config.yaml not found; defaults apply",
-		})
-	}
-	for _, h := range harness.List() {
-		if !h.Present {
-			findings = append(findings, map[string]any{
-				"id": "harness-" + h.Name, "severity": "info", "code": "harness_home_missing",
-				"message": fmt.Sprintf("harness home for %s not created yet (will appear on first launch)", h.Name),
-			})
-		}
-	}
-	if findings == nil {
-		findings = []map[string]any{}
-	}
-	return findings
+	return out
 }
 
 func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
@@ -419,28 +402,36 @@ func (s *Server) handleRunApprove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	items, err := s.alerts.ListInbox(r.Context(),
-		r.URL.Query().Get("status"), r.URL.Query().Get("kind"), limit)
+	q := r.URL.Query()
+	cursor := q.Get("cursor")
+	if cursor != "" {
+		if _, err := ulid.Parse(cursor); err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", "malformed cursor: not an inbox id")
+			return
+		}
+	}
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	items, err := s.alerts.List(r.Context(), alerts.ListOpts{
+		Status: q.Get("status"), Kind: q.Get("kind"), Limit: limit, Cursor: cursor,
+	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	if items == nil {
-		items = []map[string]any{}
+	resp := map[string]any{"items": items}
+	eff := limit
+	if eff <= 0 {
+		eff = 50
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	if len(items) == eff {
+		resp["next_cursor"] = items[len(items)-1].ID
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleInboxGet(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var kind, status, subject, title, body, hint, runID, wsID, jobName, alertKind, created, updated string
-	err := s.st.DB().QueryRowContext(r.Context(), `SELECT kind, status, COALESCE(subject,''),
-		COALESCE(title,''), COALESCE(body,''), COALESCE(hint,''), COALESCE(run_id,''),
-		COALESCE(workspace_id,''), COALESCE(job,''), COALESCE(alert_kind,''), created_at, updated_at
-		FROM inbox_items WHERE id=?`, id).
-		Scan(&kind, &status, &subject, &title, &body, &hint, &runID, &wsID, &jobName, &alertKind, &created, &updated)
-	if err == sql.ErrNoRows {
+	item, err := s.alerts.Get(r.Context(), r.PathValue("id"))
+	if errors.Is(err, alerts.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not_found", "inbox item not found")
 		return
 	}
@@ -448,61 +439,37 @@ func (s *Server) handleInboxGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id": id, "kind": kind, "status": status, "subject": subject, "title": title,
-		"body": body, "hint": hint, "run_id": runID, "workspace": wsID, "job": jobName,
-		"alert_kind": alertKind, "created_at": created, "updated_at": updated,
-	})
-}
-
-// setInboxStatus updates one inbox item and emits inbox.updated.
-func (s *Server) setInboxStatus(w http.ResponseWriter, r *http.Request, id, status string) {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	q := `UPDATE inbox_items SET status=?, updated_at=? WHERE id=?`
-	args := []any{status, now, id}
-	if status == "resolved" {
-		q = `UPDATE inbox_items SET status=?, updated_at=?, resolved_at=? WHERE id=?`
-		args = []any{status, now, now, id}
-	}
-	res, err := s.st.DB().ExecContext(r.Context(), q, args...)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		writeErr(w, http.StatusNotFound, "not_found", "inbox item not found")
-		return
-	}
-	s.appendBus(r.Context(), store.BusEvent{
-		Topic: "inbox.updated", Entity: "inbox", EntityID: id, Action: "updated",
-		Attrs: map[string]string{"status": status},
-	})
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": status})
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) handleInboxRead(w http.ResponseWriter, r *http.Request) {
-	s.setInboxStatus(w, r, r.PathValue("id"), "read")
+	s.setInboxStatus(w, r, r.PathValue("id"), alerts.InboxRead, "manual")
 }
 
 func (s *Server) handleInboxReadAll(w http.ResponseWriter, r *http.Request) {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := s.st.DB().ExecContext(r.Context(), `UPDATE inbox_items SET status='read', updated_at=? WHERE status='unread'`, now)
+	n, err := s.alerts.ReadAll(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
-	}
-	n, _ := res.RowsAffected()
-	if n > 0 {
-		s.appendBus(r.Context(), store.BusEvent{
-			Topic: "inbox.updated", Entity: "inbox", Action: "updated",
-			Attrs: map[string]string{"status": "read", "count": fmt.Sprint(n)},
-		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"read": n})
 }
 
 func (s *Server) handleInboxResolve(w http.ResponseWriter, r *http.Request) {
-	s.setInboxStatus(w, r, r.PathValue("id"), "resolved")
+	s.setInboxStatus(w, r, r.PathValue("id"), alerts.InboxResolved, "manual")
+}
+
+func (s *Server) setInboxStatus(w http.ResponseWriter, r *http.Request, id string, status alerts.InboxStatus, how string) {
+	err := s.alerts.SetStatus(r.Context(), id, status, how)
+	if errors.Is(err, alerts.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not_found", "inbox item not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": status})
 }
 
 // handleEventGet is implemented in events.go (B15 outcome join).

@@ -342,6 +342,11 @@ func (l *pathEntryList) addCore(cfg *Config) {
 		waShow = "5m"
 	}
 	l.add("notify.waiting_after", waShow, "5m")
+	warnShow := "80"
+	if cfg.Notify.UsageWarnAt > 0 {
+		warnShow = strconv.Itoa(cfg.Notify.UsageWarnAt)
+	}
+	l.add("notify.usage_warn_at", warnShow, "80")
 }
 
 // addGlobalBridge adds the tools.bridge rows.
@@ -426,6 +431,13 @@ func (c *Config) setNotifyKey(path, value string) (handled bool, err error) {
 		c.Notify.Discord = clearOrValue(value)
 	case "notify.waiting_after":
 		return true, setNudge(&c.Notify.WaitingAfter, value, path)
+	case "notify.usage_warn_at":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 0 || n > 100 {
+			return true, fmt.Errorf("notify.usage_warn_at: want integer 0-100")
+		}
+		c.Notify.UsageWarnAt = n
+		return true, nil
 	default:
 		return false, nil
 	}
@@ -548,6 +560,7 @@ func pathKeyDescriptions() map[string]string {
 		"notify.whatsapp":               "Shell cmd for WhatsApp alerts (tried second)",
 		"notify.discord":                "Shell cmd for Discord alerts (tried third)",
 		"notify.waiting_after":          "Escalate waiting tasks via notify chain (default 5m; off/0 disables)",
+		"notify.usage_warn_at":          "Harness usage percent that pages a warning (default 80)",
 		"tools.bridge.inherit":          "Global default: inherit user harness resources",
 		"tools.bridge.only":             "If set, only these resource keys may inherit",
 		"tools.bridge.never":            "Resource keys force-disabled globally",

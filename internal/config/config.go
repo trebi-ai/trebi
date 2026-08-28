@@ -30,6 +30,7 @@ type NotifyConfig struct {
 	WhatsApp     string `yaml:"whatsapp,omitempty"`
 	Discord      string `yaml:"discord,omitempty"`
 	WaitingAfter string `yaml:"waiting_after,omitempty"` // empty → 5m; "0"/"off" disables
+	UsageWarnAt  int    `yaml:"usage_warn_at,omitempty"` // 0 → 80
 }
 
 // DefaultWaitingAfter is used when notify.waiting_after is unset.
@@ -51,14 +52,45 @@ func (n NotifyConfig) WaitingAfterDuration() (d time.Duration, ok bool) {
 	return d, true
 }
 
+// DefaultUsageWarnAt is used when notify.usage_warn_at is unset.
+const DefaultUsageWarnAt = 80
+
+// UsageWarnPercent is the harness usage percent that pages. 0 in YAML → 80.
+func (n NotifyConfig) UsageWarnPercent() int {
+	if n.UsageWarnAt <= 0 {
+		return DefaultUsageWarnAt
+	}
+	return n.UsageWarnAt
+}
+
+// NotifyChannel is one shell template in the notifier chain.
+type NotifyChannel struct {
+	Name    string
+	Command string
+}
+
+// Channels returns named non-empty notify commands in try order.
+func (n NotifyConfig) Channels() []NotifyChannel {
+	var out []NotifyChannel
+	for _, ch := range []NotifyChannel{
+		{Name: "email", Command: n.Email},
+		{Name: "whatsapp", Command: n.WhatsApp},
+		{Name: "discord", Command: n.Discord},
+	} {
+		ch.Command = strings.TrimSpace(ch.Command)
+		if ch.Command != "" {
+			out = append(out, ch)
+		}
+	}
+	return out
+}
+
 // Chain returns non-empty notify commands in try order: email, whatsapp, discord.
 func (n NotifyConfig) Chain() []string {
-	var out []string
-	for _, c := range []string{n.Email, n.WhatsApp, n.Discord} {
-		c = strings.TrimSpace(c)
-		if c != "" {
-			out = append(out, c)
-		}
+	chs := n.Channels()
+	out := make([]string, len(chs))
+	for i, ch := range chs {
+		out[i] = ch.Command
 	}
 	return out
 }

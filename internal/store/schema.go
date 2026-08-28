@@ -240,11 +240,17 @@ CREATE TABLE inbox_items (
 	workspace_id    TEXT,
 	job             TEXT,
 	alert_kind      TEXT,
+	integration     TEXT,
+	actions         TEXT,
+	trace_id        TEXT,
+	escalates_at    TEXT,
+	revision        INTEGER NOT NULL DEFAULT 0,
 	created_at      TEXT NOT NULL,
 	updated_at      TEXT NOT NULL,
 	resolved_at     TEXT
 );
 CREATE INDEX idx_inbox_status ON inbox_items(status, created_at DESC);
+CREATE INDEX idx_inbox_kind_subject ON inbox_items(alert_kind, subject, status);
 
 CREATE TABLE approvals (
 	id              TEXT PRIMARY KEY,

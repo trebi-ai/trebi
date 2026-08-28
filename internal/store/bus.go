@@ -234,6 +234,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "run.nudged", Bus: false, Log: true},
 		{Name: "run.coalesced", Bus: false, Log: true},
 		{Name: "run.parked", Bus: false, Log: true},
+		{Name: "run.resume_exhausted", Bus: true, Log: true},
 		{Name: "run.auto_resumed", Bus: false, Log: true},
 		// schedule
 		{Name: "schedule.updated", Bus: true, Log: true},

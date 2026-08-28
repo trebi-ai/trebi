@@ -19,6 +19,7 @@ type Reaper struct {
 
 	mu        sync.Mutex
 	idleSince map[string]time.Time
+	limitHits map[string]int
 	stop      chan struct{}
 }
 
@@ -30,6 +31,7 @@ func NewReaper(svc *Service) *Reaper {
 		Now:       time.Now,
 		log:       slog.Default().With("source", "reaper"),
 		idleSince: make(map[string]time.Time),
+		limitHits: make(map[string]int),
 		stop:      make(chan struct{}),
 	}
 }
@@ -114,8 +116,28 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
 	}
 
 	// auth / limit chrome (coarse markers)
-	if authFailed(screen) {
+	if tmux.IsAuthBlocker(screen) || authFailed(screen) {
+		r.Svc.emitAuthProbeFailed(ctx, run.Harness, run.ID, "mid-session")
 		r.finish(ctx, run, StatusFailed, EndAuth)
+		return
+	}
+	if tmux.IsLimitBlocker(screen) {
+		r.mu.Lock()
+		r.limitHits[run.ID]++
+		n := r.limitHits[run.ID]
+		r.mu.Unlock()
+		if n >= 2 {
+			r.Svc.emitLimitExceeded(ctx, run.Harness, run.ID)
+			r.finish(ctx, run, StatusFailed, EndLimit)
+		}
+		return
+	}
+	r.mu.Lock()
+	cleared := r.limitHits[run.ID] >= 2
+	delete(r.limitHits, run.ID)
+	r.mu.Unlock()
+	if cleared {
+		r.Svc.emitLimitCleared(ctx, run.Harness)
 	}
 }
 
@@ -180,6 +202,7 @@ func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndRea
 	r.mu.Lock()
 	delete(r.idleSince, run.ID)
 	delete(r.idleSince, "keep:"+run.ID)
+	delete(r.limitHits, run.ID)
 	r.mu.Unlock()
 	r.log.Info("reaper finished run", "id", run.ID, "status", status, "end_reason", end)
 }

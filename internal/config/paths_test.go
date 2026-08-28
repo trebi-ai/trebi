@@ -261,6 +261,8 @@ func sampleSetValue(key string) string {
 		return "echo jobi-notify-{{message}}"
 	case key == "notify.waiting_after":
 		return "5m"
+	case key == "notify.usage_warn_at":
+		return "80"
 	case key == "defaults.session.if_running":
 		return "skip"
 	case key == "defaults.session.nudge":

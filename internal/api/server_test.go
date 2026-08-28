@@ -288,7 +288,10 @@ func TestShadowAllowsManualBlocksTrigger(t *testing.T) {
 func TestInboxWiredFromAlerts(t *testing.T) {
 	s, base := startTestServer(t)
 	// Raise via service, then list via HTTP
-	id, err := s.Alerts().Raise(t.Context(), alerts.KindWaiting, "subj", "title", "body", "hint", "r1", "ws", "job")
+	id, err := s.Alerts().Raise(t.Context(), alerts.RaiseOpts{
+		Kind: alerts.KindWaiting, Subject: "subj", Title: "title", Body: "body", Hint: "hint",
+		RunID: "r1", WorkspaceID: "ws", JobName: "job",
+	})
 	if err != nil || id == "" {
 		t.Fatalf("%v %s", err, id)
 	}

@@ -288,4 +288,5 @@ func (s *Server) handleDoctorFix(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"fixed": false, "id": id, "note": "no automatic fix"})
 	}
 	s.log.Info("doctor.fix_applied", "id", id)
+	_ = s.alerts.ResolveSubject(r.Context(), "doctor/"+id, "auto")
 }

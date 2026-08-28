@@ -43,6 +43,40 @@ func BuildRunsKill(id string) HTTPRequest {
 	}
 }
 
+// BuildInboxListPath builds GET /v1/inbox query from list flags.
+func BuildInboxListPath(status, kind, cursor string, limit int) string {
+	kv := map[string]string{"status": status, "kind": kind, "cursor": cursor}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return withQuery("/v1/inbox", kv)
+}
+
+// BuildInboxGet builds GET /v1/inbox/{id}.
+func BuildInboxGet(id string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/inbox/" + url.PathEscape(id)}
+}
+
+// BuildInboxRead builds POST /v1/inbox/{id}/read.
+func BuildInboxRead(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/inbox/" + url.PathEscape(id) + "/read"}
+}
+
+// BuildInboxResolve builds POST /v1/inbox/{id}/resolve.
+func BuildInboxResolve(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/inbox/" + url.PathEscape(id) + "/resolve"}
+}
+
+// BuildInboxReadAll builds POST /v1/inbox/read-all.
+func BuildInboxReadAll() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/inbox/read-all"}
+}
+
+// BuildAlertsPath builds GET /v1/alerts?since=.
+func BuildAlertsPath(since string) string {
+	return withQuery("/v1/alerts", map[string]string{"since": since})
+}
+
 // BuildAssistantWake builds POST /v1/workspaces/{id}/assistant/wake.
 // Optional promptOverride becomes prompt_override; dryRun sets dry_run.
 func BuildAssistantWake(workspaceID, promptOverride string, dryRun bool) HTTPRequest {

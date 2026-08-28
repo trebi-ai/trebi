@@ -173,10 +173,26 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
-	events, err := s.st.ListBus(r.Context(), 0, []string{"alert"}, 100)
+	var since time.Time
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			t, err = time.Parse(time.RFC3339Nano, raw)
+		}
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", "malformed since: want RFC3339")
+			return
+		}
+		since = t
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	events, err := s.alerts.ListAlerts(r.Context(), since, limit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
+	}
+	if events == nil {
+		events = []store.StreamEvent{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"alerts": events})
 }

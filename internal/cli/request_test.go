@@ -477,6 +477,39 @@ func TestBuildRunsKill(t *testing.T) {
 	}
 }
 
+func TestBuildInboxAndAlerts(t *testing.T) {
+	t.Parallel()
+	path := BuildInboxListPath("unread", "failure", "01ABC", 20)
+	if !strings.Contains(path, "/v1/inbox?") {
+		t.Fatalf("path %s", path)
+	}
+	for _, want := range []string{"status=unread", "kind=failure", "cursor=01ABC", "limit=20"} {
+		if !strings.Contains(path, want) {
+			t.Fatalf("missing %q in %s", want, path)
+		}
+	}
+	got := BuildInboxGet("01XYZ")
+	if got.Method != "GET" || got.Path != "/v1/inbox/01XYZ" {
+		t.Fatalf("%+v", got)
+	}
+	got = BuildInboxRead("01XYZ")
+	if got.Method != "POST" || got.Path != "/v1/inbox/01XYZ/read" {
+		t.Fatalf("%+v", got)
+	}
+	got = BuildInboxResolve("01XYZ")
+	if got.Method != "POST" || got.Path != "/v1/inbox/01XYZ/resolve" {
+		t.Fatalf("%+v", got)
+	}
+	got = BuildInboxReadAll()
+	if got.Method != "POST" || got.Path != "/v1/inbox/read-all" {
+		t.Fatalf("%+v", got)
+	}
+	ap := BuildAlertsPath("2026-08-28T00:00:00Z")
+	if !strings.Contains(ap, "/v1/alerts?") || !strings.Contains(ap, "since=2026-08-28T00%3A00%3A00Z") {
+		t.Fatalf("alerts path %s", ap)
+	}
+}
+
 func TestBuildAssistantWake(t *testing.T) {
 	t.Parallel()
 	req := BuildAssistantWake("ws1", "hello", true)

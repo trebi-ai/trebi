@@ -2,6 +2,7 @@ package runs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/pricing"
+	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
@@ -263,11 +265,13 @@ func (s *Service) waitHarnessReady(ctx context.Context, runID, wsRef string, too
 	}
 	if err := tmux.WaitReadyTool(wsRef, tool, rt); err != nil {
 		end := EndLaunch
-		switch err {
-		case tmux.ErrAuthMissing:
+		switch {
+		case errors.Is(err, tmux.ErrAuthMissing):
 			end = EndAuth
-		case tmux.ErrLimitExceeded:
+			s.emitAuthProbeFailed(ctx, tool.Name(), runID, "probe")
+		case errors.Is(err, tmux.ErrLimitExceeded):
 			end = EndLimit
+			s.emitLimitExceeded(ctx, tool.Name(), runID)
 		}
 		_ = s.Terminate(ctx, runID, StatusFailed, end, nil)
 		_ = tmux.KillSession(wsRef)
@@ -358,6 +362,7 @@ func (s *Service) Resume(ctx context.Context, fromID string) (*Run, error) {
 		return nil, fmt.Errorf("run %s has no session_id to resume", fromID)
 	}
 	if prev.ResumeAttempts >= MaxResumeAttempts {
+		s.emitResumeExhausted(ctx, prev)
 		return nil, fmt.Errorf("run %s reached the resume cap (%d attempts)", fromID, MaxResumeAttempts)
 	}
 	opts := LaunchOpts{
@@ -549,4 +554,59 @@ func isDetectRune(r rune) bool {
 		return true
 	}
 	return strings.ContainsRune("_:,.!?-/", r)
+}
+
+func (s *Service) emitAuthProbeFailed(ctx context.Context, harness, runID, source string) {
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "auth.probe.failed", Entity: "harness", EntityID: harness, Action: "updated",
+		Attrs: map[string]string{"harness": harness, "run_id": runID, "source": source},
+	}); err != nil {
+		s.log.Warn("auth.probe.failed", "error", err)
+	}
+}
+
+func (s *Service) emitLimitExceeded(ctx context.Context, harness, runID string) {
+	s.stampHarnessLimit(ctx, harness, true)
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "harness.limit_exceeded", Entity: "harness", EntityID: harness, Action: "updated",
+		Attrs: map[string]string{"harness": harness, "run_id": runID},
+	}); err != nil {
+		s.log.Warn("harness.limit_exceeded", "error", err)
+	}
+}
+
+func (s *Service) emitLimitCleared(ctx context.Context, harness string) {
+	s.stampHarnessLimit(ctx, harness, false)
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "harness.limit_cleared", Entity: "harness", EntityID: harness, Action: "updated",
+		Attrs: map[string]string{"harness": harness},
+	}); err != nil {
+		s.log.Warn("harness.limit_cleared", "error", err)
+	}
+}
+
+func (s *Service) emitResumeExhausted(ctx context.Context, run *Run) {
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "run.resume_exhausted", Entity: "run", EntityID: run.ID, Action: "updated",
+		Attrs: map[string]string{
+			"run_id": run.ID, "session_id": run.SessionID,
+			"workspace": run.Workspace, "job": run.Job,
+		},
+	}); err != nil {
+		s.log.Warn("run.resume_exhausted", "error", err)
+	}
+}
+
+func (s *Service) stampHarnessLimit(ctx context.Context, name string, exceeded bool) {
+	if name == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	flag := 0
+	if exceeded {
+		flag = 1
+	}
+	_, _ = s.st.DB().ExecContext(ctx, `INSERT INTO harness_state (name, limit_exceeded, updated_at)
+		VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET limit_exceeded=excluded.limit_exceeded, updated_at=excluded.updated_at`,
+		name, flag, now)
 }

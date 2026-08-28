@@ -68,7 +68,7 @@ func New(st *store.Store, opts Options) *Server {
 		st:        st,
 		runs:      r,
 		ws:        ws,
-		alerts:    alerts.New(st),
+		alerts:    alerts.New(st, alerts.Options{}),
 		skills:    skills.New(st),
 		integ:     integrations.New(st, ws, r, pol),
 		token:     opts.Token,
@@ -92,7 +92,7 @@ func New(st *store.Store, opts Options) *Server {
 // BindControlPlane replaces core services with the daemon's shared instances.
 // The policy and schedule services stay with the daemon; the API does not
 // read them.
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, _ *dispatch.Policy, integ *integrations.Service, _ *schedule.Service) {
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, _ *dispatch.Policy, integ *integrations.Service, _ *schedule.Service, alertsSvc *alerts.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
 	}
@@ -101,6 +101,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	}
 	if integ != nil {
 		s.integ = integ
+	}
+	if alertsSvc != nil {
+		s.alerts = alertsSvc
 	}
 }
 

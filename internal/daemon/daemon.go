@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/integrations"
@@ -27,6 +29,8 @@ type Options struct {
 	ScheduleInterval time.Duration
 	// QueueInterval overrides the queue worker tick (default 2s).
 	QueueInterval time.Duration
+	// AlertsInterval overrides the AlertService poll tick (default 2s).
+	AlertsInterval time.Duration
 }
 
 // ControlPlane wires workers to services.
@@ -38,6 +42,7 @@ type ControlPlane struct {
 	Integrations *integrations.Service
 	Policy       *dispatch.Policy
 	Reaper       *runs.Reaper
+	Alerts       *alerts.Service
 	Opts         Options
 
 	log   *slog.Logger
@@ -61,10 +66,31 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Integrations: integ,
 		Policy:       pol,
 		Reaper:       runs.NewReaper(r),
+		Alerts:       newAlerts(st, opts),
 		Opts:         opts,
 		log:          slog.Default().With("source", "daemon"),
 		queue:        dispatch.NewQueue(st),
 	}
+}
+
+func newAlerts(st *store.Store, opts Options) *alerts.Service {
+	aopts := alerts.Options{
+		TickInterval: opts.AlertsInterval,
+		Doctor:       alerts.CollectDoctorFindings,
+	}
+	cfg, err := config.Load()
+	if err == nil && cfg != nil {
+		if d, ok := cfg.Notify.WaitingAfterDuration(); ok {
+			aopts.WaitingAfter = d
+		} else {
+			aopts.WaitingDisabled = true
+		}
+		aopts.UsageWarnAt = cfg.Notify.UsageWarnPercent()
+		for _, ch := range cfg.Notify.Channels() {
+			aopts.Notify = append(aopts.Notify, alerts.NotifyChannel{Name: ch.Name, Command: ch.Command})
+		}
+	}
+	return alerts.New(st, aopts)
 }
 
 // Start launches background workers.
@@ -97,6 +123,12 @@ func (c *ControlPlane) Start(parent context.Context) {
 			<-ctx.Done()
 		}()
 	}
+
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.Alerts.Run(ctx)
+	}()
 
 	c.wg.Add(1)
 	go func() {

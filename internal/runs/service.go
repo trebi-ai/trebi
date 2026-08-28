@@ -272,8 +272,9 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 	var rev int64
 	alreadyTerminal := false
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		var cur string
-		err := tx.QueryRow(`SELECT revision, status FROM runs WHERE id = ?`, id).Scan(&rev, &cur)
+		var cur, jobName, wsID, harness string
+		err := tx.QueryRow(`SELECT revision, status, job, workspace_id, COALESCE(harness,'') FROM runs WHERE id = ?`, id).
+			Scan(&rev, &cur, &jobName, &wsID, &harness)
 		if err != nil {
 			return err
 		}
@@ -315,7 +316,10 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 		}
 		_, err = store.AppendInTx(tx, store.BusEvent{
 			Topic: topic, Entity: "run", EntityID: id, Action: "updated", Revision: rev,
-			Attrs: map[string]string{"end_reason": string(end), "status": string(status)},
+			Attrs: map[string]string{
+				"end_reason": string(end), "status": string(status),
+				"job": jobName, "workspace": wsID, "harness": harness,
+			},
 		})
 		return err
 	})
@@ -434,9 +438,14 @@ func (s *Service) SetAgentState(ctx context.Context, runID string, state AgentSt
 	if err != nil {
 		s.log.Warn("agent segment write", "run", runID, "error", err)
 	}
+	var ws, job string
+	_ = s.st.DB().QueryRowContext(ctx, `SELECT workspace_id, job FROM runs WHERE id=?`, runID).Scan(&ws, &job)
 	if _, err := s.st.Append(ctx, store.BusEvent{
 		Topic: "agent.state",
-		Attrs: map[string]any{"run_id": runID, "state": string(state), "since": nowStr, "source": source},
+		Attrs: map[string]any{
+			"run_id": runID, "state": string(state), "since": nowStr, "source": source,
+			"workspace": ws, "job": job,
+		},
 	}); err != nil {
 		s.log.Warn("agent.state append", "run", runID, "error", err)
 	}
