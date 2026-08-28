@@ -276,3 +276,41 @@ func TestControlPlane_ShadowSkipsAutoWorkers(t *testing.T) {
 		}
 	}
 }
+
+func TestControlPlane_ShadowStillConsumesAlerts(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cp := daemon.New(st, daemon.Options{Shadow: true, AlertsInterval: 20 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cp.Start(ctx)
+	defer cp.Stop()
+
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "integration.unhealthy", Entity: "integration", EntityID: "mail", Action: "updated",
+		Attrs: map[string]string{"integration": "mail", "status": "down"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var n int
+		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE subject=?`, "integration/mail").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n >= 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("shadow alerts worker did not consume")
+}

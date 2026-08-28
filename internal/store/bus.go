@@ -80,18 +80,34 @@ func (s *Store) AppendEntity(ctx context.Context, write func(tx *sql.Tx) error, 
 	return seq, err
 }
 
-// ListBus returns events with seq > after, optional topic filter (prefix match on families).
+// ListBusOpts filters and orders event_log rows for ListBusWith.
+// After/Topics/Limit match ListBus. Since and Desc are extra; Desc must stay
+// off on the consumer cursor path (Consume reads oldest-first).
+type ListBusOpts struct {
+	After  int64
+	Topics []string
+	Limit  int
+	Since  time.Time // inclusive; zero = no lower bound
+	Desc   bool      // newest first; default oldest first
+}
+
+// ListBus returns events with seq > after, optional topic filter (prefix match on families), oldest first.
 func (s *Store) ListBus(ctx context.Context, after int64, topics []string, limit int) ([]StreamEvent, error) {
-	if limit <= 0 {
-		limit = 100
+	return s.ListBusWith(ctx, ListBusOpts{After: after, Topics: topics, Limit: limit})
+}
+
+// ListBusWith returns event_log rows matching opts.
+func (s *Store) ListBusWith(ctx context.Context, opts ListBusOpts) ([]StreamEvent, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 100
 	}
 	q := `SELECT seq, event_id, topic, ts, trace_id, entity, entity_id, action, revision, attrs_json
 		FROM event_log WHERE seq > ?`
-	args := []any{after}
-	if len(topics) > 0 {
+	args := []any{opts.After}
+	if len(opts.Topics) > 0 {
 		// Match exact or family prefix: "run" matches "run.created"
 		var parts []string
-		for _, t := range topics {
+		for _, t := range opts.Topics {
 			t = strings.TrimSpace(t)
 			if t == "" {
 				continue
@@ -103,8 +119,16 @@ func (s *Store) ListBus(ctx context.Context, after int64, topics []string, limit
 			q += " AND (" + strings.Join(parts, " OR ") + ")"
 		}
 	}
-	q += " ORDER BY seq ASC LIMIT ?"
-	args = append(args, limit)
+	if !opts.Since.IsZero() {
+		q += " AND ts >= ?"
+		args = append(args, opts.Since.UTC().Format("2006-01-02T15:04:05.000000Z"))
+	}
+	if opts.Desc {
+		q += " ORDER BY seq DESC LIMIT ?"
+	} else {
+		q += " ORDER BY seq ASC LIMIT ?"
+	}
+	args = append(args, opts.Limit)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

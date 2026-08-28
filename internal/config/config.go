@@ -23,8 +23,10 @@ type Config struct {
 }
 
 // NotifyConfig: shell templates per channel (email → whatsapp → discord).
-// Placeholders: {{kind}} {{tool}} {{task_id}} {{job}} {{workspace}} {{message}} {{hint}} {{resume}}.
-// Kinds: auth_missing, waiting.
+// Values are passed as TREBI_ALERT_* environment variables. Existing
+// {{kind}} {{tool}} {{task_id}} {{job}} {{workspace}} {{message}} {{hint}}
+// {{body}} {{resume}} {{integration}} placeholders are rewritten to
+// "$TREBI_ALERT_*" so untrusted text is never interpolated into the shell string.
 type NotifyConfig struct {
 	Email        string `yaml:"email,omitempty"`
 	WhatsApp     string `yaml:"whatsapp,omitempty"`
@@ -81,16 +83,6 @@ func (n NotifyConfig) Channels() []NotifyChannel {
 		if ch.Command != "" {
 			out = append(out, ch)
 		}
-	}
-	return out
-}
-
-// Chain returns non-empty notify commands in try order: email, whatsapp, discord.
-func (n NotifyConfig) Chain() []string {
-	chs := n.Channels()
-	out := make([]string, len(chs))
-	for i, ch := range chs {
-		out[i] = ch.Command
 	}
 	return out
 }

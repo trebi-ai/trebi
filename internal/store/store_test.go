@@ -187,6 +187,41 @@ func TestGaplessSeqConcurrent(t *testing.T) {
 	}
 }
 
+func TestListBusWithSinceAndDesc(t *testing.T) {
+	t.Parallel()
+	s := openTest(t)
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		if _, err := s.Append(ctx, store.BusEvent{
+			Topic: "alert.raised", Entity: "alert", EntityID: "a", Action: "created",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	asc, err := s.ListBus(ctx, 0, []string{"alert.raised"}, 20)
+	if err != nil || len(asc) != 5 {
+		t.Fatalf("asc %d %v", len(asc), err)
+	}
+	desc, err := s.ListBusWith(ctx, store.ListBusOpts{
+		Topics: []string{"alert.raised"}, Limit: 2, Desc: true,
+	})
+	if err != nil || len(desc) != 2 {
+		t.Fatalf("desc %d %v", len(desc), err)
+	}
+	if desc[0].Seq != asc[4].Seq || desc[1].Seq != asc[3].Seq {
+		t.Fatalf("desc seq %d,%d want %d,%d", desc[0].Seq, desc[1].Seq, asc[4].Seq, asc[3].Seq)
+	}
+	got, err := s.ListBusWith(ctx, store.ListBusOpts{
+		Topics: []string{"alert.raised"}, Limit: 2, Desc: true, Since: asc[2].TS,
+	})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("since %d %v", len(got), err)
+	}
+	if got[0].Seq != asc[4].Seq || got[1].Seq != asc[3].Seq {
+		t.Fatalf("since truncated: %d,%d", got[0].Seq, got[1].Seq)
+	}
+}
+
 func TestPruneBus(t *testing.T) {
 	t.Parallel()
 	s := openTest(t)

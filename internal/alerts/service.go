@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -141,6 +142,9 @@ type Options struct {
 	WaitingDisabled bool
 	UsageWarnAt     int
 	Notify          []NotifyChannel
+	NotifyTimeout   time.Duration // per-channel exec timeout; default 5s
+	Shadow          bool          // consume bus / write inbox; skip outbound notify
+	Drain           bool          // same notify suppression as Shadow
 	Now             func() time.Time
 	Doctor          func() []DoctorFinding
 }
@@ -169,6 +173,9 @@ type Service struct {
 	lastRaised map[string]time.Time
 	digest     map[string]int
 	waiting    map[string]waitingEp
+
+	deliverCh chan deliverJob
+	running   atomic.Bool
 }
 
 type waitingEp struct {
@@ -196,6 +203,9 @@ func New(st *store.Store, opts Options) *Service {
 	if opts.UsageWarnAt <= 0 {
 		opts.UsageWarnAt = 80
 	}
+	if opts.NotifyTimeout <= 0 {
+		opts.NotifyTimeout = defaultNotifyTimeout
+	}
 	return &Service{
 		st:         st,
 		log:        slog.Default().With("source", "alerts"),
@@ -203,6 +213,7 @@ func New(st *store.Store, opts Options) *Service {
 		lastRaised: map[string]time.Time{},
 		digest:     map[string]int{},
 		waiting:    map[string]waitingEp{},
+		deliverCh:  make(chan deliverJob, deliverQueueSize),
 	}
 }
 
@@ -221,6 +232,9 @@ func (s *Service) Raise(ctx context.Context, opts RaiseOpts) (string, error) {
 	if opts.Title == "" {
 		opts.Title = defaultTitle(opts)
 	}
+	opts.Title = sanitizeText(opts.Title)
+	opts.Body = sanitizeText(opts.Body)
+	opts.Hint = sanitizeText(opts.Hint)
 	active, err := s.findActive(ctx, opts.Kind, opts.Subject)
 	if err != nil {
 		return "", err
@@ -347,20 +361,12 @@ func (s *Service) ListAlerts(ctx context.Context, since time.Time, limit int) ([
 	if limit <= 0 {
 		limit = 100
 	}
-	events, err := s.st.ListBus(ctx, 0, []string{"alert"}, limit)
-	if err != nil {
-		return nil, err
-	}
-	if since.IsZero() {
-		return events, nil
-	}
-	out := events[:0]
-	for _, ev := range events {
-		if !ev.TS.Before(since) {
-			out = append(out, ev)
-		}
-	}
-	return out, nil
+	return s.st.ListBusWith(ctx, store.ListBusOpts{
+		Topics: []string{"alert"},
+		Limit:  limit,
+		Since:  since,
+		Desc:   true,
+	})
 }
 
 // ResolveSubject auto-resolves the active item for subject, if any.
@@ -449,7 +455,7 @@ func (s *Service) insertItem(ctx context.Context, spec KindSpec, opts RaiseOpts)
 		s.log.Warn("bus append", "topic", "inbox.created", "error", err)
 	}
 	s.markRaised(opts)
-	s.deliver(ctx, opts, id)
+	s.enqueueDeliver(ctx, opts, id)
 	return id, nil
 }
 

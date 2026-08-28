@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -17,9 +18,21 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
-const busCursorFlag = "alerts.bus_seq"
+const (
+	busCursorFlag        = "alerts.bus_seq"
+	defaultNotifyTimeout = 5 * time.Second
+	deliverQueueSize     = 16
+	maxAlertText         = 512
+)
+
+type deliverJob struct {
+	opts RaiseOpts
+	id   string
+}
 
 // Run polls the bus until ctx is cancelled. Tick interval comes from Options.
+// A delivery goroutine drains the notify queue and exits when ctx is done, so
+// it does not outlive Stop().
 func (s *Service) Run(ctx context.Context) {
 	iv := s.opts.TickInterval
 	if iv <= 0 {
@@ -27,6 +40,19 @@ func (s *Service) Run(ctx context.Context) {
 	}
 	t := time.NewTicker(iv)
 	defer t.Stop()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.deliverLoop(ctx)
+	}()
+	s.running.Store(true)
+	defer func() {
+		s.running.Store(false)
+		wg.Wait()
+	}()
+
 	s.Tick(ctx)
 	for {
 		select {
@@ -34,6 +60,17 @@ func (s *Service) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			s.Tick(ctx)
+		}
+	}
+}
+
+func (s *Service) deliverLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job := <-s.deliverCh:
+			s.deliver(ctx, job.opts, job.id)
 		}
 	}
 }
@@ -276,25 +313,57 @@ func (s *Service) saveCursor(seq int64) {
 	}
 }
 
-func (s *Service) deliver(ctx context.Context, opts RaiseOpts, id string) {
-	if len(s.opts.Notify) == 0 {
+func (s *Service) enqueueDeliver(ctx context.Context, opts RaiseOpts, id string) {
+	if s.skipNotify() || len(s.opts.Notify) == 0 {
 		return
 	}
-	for _, ch := range s.opts.Notify {
-		cmd := expandNotify(ch.Command, opts, id)
-		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := exec.CommandContext(cctx, "sh", "-c", cmd).Run()
+	if !s.running.Load() {
+		s.deliver(ctx, opts, id)
+		return
+	}
+	select {
+	case s.deliverCh <- deliverJob{opts: opts, id: id}:
+	default:
+		s.log.Warn("alert delivery queue full", "id", id)
+	}
+}
+
+func (s *Service) skipNotify() bool {
+	if s.opts.Shadow || s.opts.Drain {
+		return true
+	}
+	v, ok, err := s.st.GetFlag("drain")
+	return err == nil && ok && v == "1"
+}
+
+// deliver tries channels in order and stops at the first success.
+func (s *Service) deliver(ctx context.Context, opts RaiseOpts, id string) {
+	timeout := s.opts.NotifyTimeout
+	if timeout <= 0 {
+		timeout = defaultNotifyTimeout
+	}
+	for i, ch := range s.opts.Notify {
+		cctx, cancel := context.WithTimeout(ctx, timeout)
+		cmd := exec.CommandContext(cctx, "sh", "-c", expandNotify(ch.Command))
+		cmd.Env = notifyEnv(opts, id)
+		err := cmd.Run()
 		cancel()
 		status := "ok"
 		if err != nil {
 			status = err.Error()
-			s.log.Warn("alert.delivered", "channel", ch.Name, "error", err)
+			s.log.Warn("alert.delivered", "channel", ch.Name, "index", i, "error", err)
 		}
 		if _, aerr := s.st.Append(ctx, store.BusEvent{
 			Topic: "alert.delivered", Entity: "alert", EntityID: id, Action: "updated",
-			Attrs: map[string]string{"kind": string(opts.Kind), "channel": ch.Name, "status": status},
+			Attrs: map[string]string{
+				"kind": string(opts.Kind), "channel": ch.Name,
+				"index": strconv.Itoa(i), "status": status,
+			},
 		}); aerr != nil {
 			s.log.Warn("bus append", "topic", "alert.delivered", "error", aerr)
+		}
+		if err == nil {
+			return
 		}
 	}
 }
@@ -431,14 +500,77 @@ func attrMap(raw json.RawMessage) map[string]string {
 	return out
 }
 
-func expandNotify(cmd string, opts RaiseOpts, id string) string {
-	repl := map[string]string{
-		"kind": string(opts.Kind), "tool": opts.Harness, "task_id": opts.RunID,
-		"job": opts.JobName, "workspace": opts.WorkspaceID, "message": opts.Title,
-		"hint": opts.Hint, "resume": id, "integration": opts.Integration,
-	}
-	for k, v := range repl {
-		cmd = strings.ReplaceAll(cmd, "{{"+k+"}}", v)
+// expandNotify rewrites {{placeholders}} to quoted $TREBI_ALERT_* references.
+// Untrusted values never enter the command string; they travel via the env.
+func expandNotify(cmd string) string {
+	for _, p := range notifyPlaceholders() {
+		wrapped := `"$` + p.env + `"`
+		cmd = strings.ReplaceAll(cmd, "'{{"+p.ph+"}}'", wrapped)
+		cmd = strings.ReplaceAll(cmd, `"{{`+p.ph+`}}"`, wrapped)
+		cmd = strings.ReplaceAll(cmd, "{{"+p.ph+"}}", wrapped)
 	}
 	return cmd
+}
+
+func notifyEnv(opts RaiseOpts, id string) []string {
+	vals := map[string]string{
+		"TREBI_ALERT_KIND":        string(opts.Kind),
+		"TREBI_ALERT_TOOL":        opts.Harness,
+		"TREBI_ALERT_TASK_ID":     opts.RunID,
+		"TREBI_ALERT_JOB":         opts.JobName,
+		"TREBI_ALERT_WORKSPACE":   opts.WorkspaceID,
+		"TREBI_ALERT_MESSAGE":     opts.Title,
+		"TREBI_ALERT_HINT":        opts.Hint,
+		"TREBI_ALERT_BODY":        opts.Body,
+		"TREBI_ALERT_RESUME":      id,
+		"TREBI_ALERT_INTEGRATION": opts.Integration,
+	}
+	env := os.Environ()
+	for k, v := range vals {
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
+func notifyPlaceholders() []struct{ ph, env string } {
+	return []struct{ ph, env string }{
+		{"kind", "TREBI_ALERT_KIND"},
+		{"tool", "TREBI_ALERT_TOOL"},
+		{"task_id", "TREBI_ALERT_TASK_ID"},
+		{"job", "TREBI_ALERT_JOB"},
+		{"workspace", "TREBI_ALERT_WORKSPACE"},
+		{"message", "TREBI_ALERT_MESSAGE"},
+		{"hint", "TREBI_ALERT_HINT"},
+		{"body", "TREBI_ALERT_BODY"},
+		{"resume", "TREBI_ALERT_RESUME"},
+		{"integration", "TREBI_ALERT_INTEGRATION"},
+	}
+}
+
+// sanitizeText strips shell-metacharacters and control chars from alert text
+// at raise time (backend.md message hygiene).
+func sanitizeText(s string) string {
+	if s == "" {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '`' || r == '"':
+			continue
+		case r == '\n' || r == '\r' || r == '\t':
+			b.WriteByte(' ')
+		case r < 32 || r == 127:
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	s = strings.Join(strings.Fields(b.String()), " ")
+	rs := []rune(s)
+	if len(rs) > maxAlertText {
+		s = string(rs[:maxAlertText])
+	}
+	return s
 }

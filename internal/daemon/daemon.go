@@ -76,6 +76,8 @@ func New(st *store.Store, opts Options) *ControlPlane {
 func newAlerts(st *store.Store, opts Options) *alerts.Service {
 	aopts := alerts.Options{
 		TickInterval: opts.AlertsInterval,
+		Shadow:       opts.Shadow,
+		Drain:        opts.Drain,
 		Doctor:       alerts.CollectDoctorFindings,
 	}
 	cfg, err := config.Load()
@@ -124,6 +126,9 @@ func (c *ControlPlane) Start(parent context.Context) {
 		}()
 	}
 
+	// Alerts keep running in shadow: consuming the bus and writing inbox is
+	// observation. Outbound notify is suppressed inside the service when
+	// Shadow or Drain is set.
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()

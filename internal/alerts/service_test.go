@@ -3,7 +3,10 @@ package alerts_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -321,7 +324,7 @@ func TestNotifyDelivered(t *testing.T) {
 			found = true
 			var attrs map[string]string
 			_ = json.Unmarshal(ev.Attrs, &attrs)
-			if attrs["channel"] != "email" {
+			if attrs["channel"] != "email" || attrs["index"] != "0" {
 				t.Fatalf("attrs %v", attrs)
 			}
 		}
@@ -329,6 +332,215 @@ func TestNotifyDelivered(t *testing.T) {
 	if !found {
 		t.Fatal("missing alert.delivered")
 	}
+}
+
+func TestNotifyNoShellInjection(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	pwned := filepath.Join(dir, "pwned")
+	cmd := fmt.Sprintf("echo {{body}} {{message}} {{hint}} > %q", marker)
+	status := fmt.Sprintf("ok`; touch %s; echo $(touch %s); echo \"; touch %s #\nboom", pwned, pwned, pwned)
+
+	svc, st := testSvc(t, alerts.Options{
+		Notify: []alerts.NotifyChannel{{Name: "email", Command: cmd}},
+	})
+	ctx := context.Background()
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "integration.unhealthy", Entity: "integration", EntityID: "mail", Action: "updated",
+		Attrs: map[string]string{"integration": "mail", "status": status},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Consume(ctx)
+	if _, err := os.Stat(pwned); err == nil {
+		t.Fatal("payload executed")
+	}
+	items, err := svc.List(ctx, alerts.ListOpts{})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items %v %v", items, err)
+	}
+	got, err := svc.Get(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(got.Body, "`\"\n") {
+		t.Fatalf("body not sanitized: %q", got.Body)
+	}
+}
+
+func TestNotifyChainStopsAtFirstSuccess(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	second := filepath.Join(dir, "second")
+	svc, st := testSvc(t, alerts.Options{
+		Notify: []alerts.NotifyChannel{
+			{Name: "email", Command: fmt.Sprintf("echo 1 > %q", first)},
+			{Name: "whatsapp", Command: fmt.Sprintf("echo 2 > %q", second)},
+		},
+	})
+	ctx := context.Background()
+	if _, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first); err != nil {
+		t.Fatal("first channel did not run")
+	}
+	if _, err := os.Stat(second); err == nil {
+		t.Fatal("second channel ran after success")
+	}
+	events, _ := st.ListBus(ctx, 0, []string{"alert.delivered"}, 10)
+	n := 0
+	for _, ev := range events {
+		if ev.Topic == "alert.delivered" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("delivered %d want 1", n)
+	}
+}
+
+func TestNotifyChainFallsThrough(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	second := filepath.Join(dir, "second")
+	svc, st := testSvc(t, alerts.Options{
+		Notify: []alerts.NotifyChannel{
+			{Name: "email", Command: "false"},
+			{Name: "whatsapp", Command: fmt.Sprintf("echo 2 > %q", second)},
+		},
+	})
+	ctx := context.Background()
+	if _, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(second); err != nil {
+		t.Fatal("fallback did not run")
+	}
+	events, _ := st.ListBus(ctx, 0, []string{"alert.delivered"}, 10)
+	var indexes []string
+	for _, ev := range events {
+		if ev.Topic != "alert.delivered" {
+			continue
+		}
+		var attrs map[string]string
+		_ = json.Unmarshal(ev.Attrs, &attrs)
+		indexes = append(indexes, attrs["index"])
+	}
+	if len(indexes) != 2 || indexes[0] != "0" || indexes[1] != "1" {
+		t.Fatalf("indexes %v", indexes)
+	}
+}
+
+func TestNotifySuppressedInShadowAndDrain(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		opts alerts.Options
+	}{
+		{"shadow", alerts.Options{Shadow: true}},
+		{"drain", alerts.Options{Drain: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.opts.Notify = []alerts.NotifyChannel{{Name: "email", Command: "true"}}
+			svc, st := testSvc(t, tc.opts)
+			ctx := context.Background()
+			id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
+			if err != nil || id == "" {
+				t.Fatalf("%q %v", id, err)
+			}
+			events, _ := st.ListBus(ctx, 0, []string{"alert.delivered"}, 10)
+			for _, ev := range events {
+				if ev.Topic == "alert.delivered" {
+					t.Fatal("must not deliver")
+				}
+			}
+		})
+	}
+}
+
+func TestDeliverDoesNotBlockConsume(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{
+		TickInterval:  15 * time.Millisecond,
+		NotifyTimeout: 2 * time.Second,
+		Notify:        []alerts.NotifyChannel{{Name: "slow", Command: "sleep 30"}},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go svc.Run(ctx)
+
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "integration.unhealthy", Entity: "integration", EntityID: "mail", Action: "updated",
+		Attrs: map[string]string{"integration": "mail", "status": "down"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitInbox(t, svc, 1)
+
+	start := time.Now()
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "integration.unhealthy", Entity: "integration", EntityID: "chat", Action: "updated",
+		Attrs: map[string]string{"integration": "chat", "status": "down"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitInbox(t, svc, 2)
+	if time.Since(start) > time.Second {
+		t.Fatal("consume blocked by slow notify")
+	}
+	cancel()
+}
+
+func TestListAlertsNewestFirst(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		if _, err := svc.Raise(ctx, alerts.RaiseOpts{
+			Kind: alerts.KindUsageWarning, Subject: fmt.Sprintf("harness/h%d", i), Title: "warn",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := st.ListBus(ctx, 0, []string{"alert.raised"}, 20)
+	if err != nil || len(all) != 5 {
+		t.Fatalf("raised %d %v", len(all), err)
+	}
+	got, err := svc.ListAlerts(ctx, time.Time{}, 2)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("list %d %v", len(got), err)
+	}
+	if got[0].Seq < got[1].Seq {
+		t.Fatalf("not newest-first: %d then %d", got[0].Seq, got[1].Seq)
+	}
+	if got[0].Seq != all[4].Seq || got[1].Seq != all[3].Seq {
+		t.Fatalf("limit kept oldest: got %d,%d want %d,%d", got[0].Seq, got[1].Seq, all[4].Seq, all[3].Seq)
+	}
+	since := all[2].TS
+	filtered, err := svc.ListAlerts(ctx, since, 2)
+	if err != nil || len(filtered) != 2 {
+		t.Fatalf("since %d %v", len(filtered), err)
+	}
+	if filtered[0].Seq != all[4].Seq || filtered[1].Seq != all[3].Seq {
+		t.Fatalf("since truncated: got %d,%d", filtered[0].Seq, filtered[1].Seq)
+	}
+}
+
+func waitInbox(t *testing.T, svc *alerts.Service, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		items, _ := svc.List(context.Background(), alerts.ListOpts{})
+		if len(items) >= n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("inbox never reached %d", n)
 }
 
 func testSvc(t *testing.T, opts alerts.Options) (*alerts.Service, *store.Store) {

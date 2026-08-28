@@ -114,8 +114,8 @@ func TestSetPath_RoundTrip(t *testing.T) {
 	if err := SetPath(cfg, "notify.discord", "discord-cli dm …"); err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Notify.Chain()) != 2 {
-		t.Fatalf("chain: %v", cfg.Notify.Chain())
+	if len(cfg.Notify.Channels()) != 2 {
+		t.Fatalf("channels: %v", cfg.Notify.Channels())
 	}
 	if err := SetPath(cfg, "notify.email", "-"); err != nil {
 		t.Fatal(err)
