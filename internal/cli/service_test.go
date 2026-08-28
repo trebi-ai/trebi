@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -97,5 +99,32 @@ func TestServiceCommandRegistration(t *testing.T) {
 		if !found {
 			t.Fatalf("logs missing flag %s", name)
 		}
+	}
+}
+
+func TestSetLogLevel(t *testing.T) {
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	for _, name := range []string{"", "info", "debug", "DEBUG", " warn ", "error"} {
+		if err := setLogLevel(name); err != nil {
+			t.Errorf("setLogLevel(%q): %v", name, err)
+		}
+	}
+	if err := setLogLevel("bogus"); err == nil {
+		t.Fatal("want error for bogus level")
+	}
+	// debug must actually enable debug records
+	if err := setLogLevel("debug"); err != nil {
+		t.Fatal(err)
+	}
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		t.Fatal("debug not enabled")
+	}
+	if err := setLogLevel("info"); err != nil {
+		t.Fatal(err)
+	}
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		t.Fatal("debug still enabled at info")
 	}
 }

@@ -46,6 +46,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"uptime_ms":      time.Since(s.startedAt).Milliseconds(),
 		"schema_version": schema,
 		"drain_state":    map[string]any{"draining": drain, "running_count": running},
+		"waiting_count":  s.runs.WaitingCount(),
 		"shadow":         s.shadow,
 	})
 }

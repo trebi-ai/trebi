@@ -239,34 +239,11 @@ func fetchHealth() Snapshot {
 			snap.RunningCount = n
 		}
 	}
-	// Optional waiting count via agents state.
-	if waiting := fetchWaitingCount(doc.URL, doc.Token); waiting >= 0 {
-		snap.WaitingCount = waiting
+	switch n := body["waiting_count"].(type) {
+	case float64:
+		snap.WaitingCount = int(n)
+	case int:
+		snap.WaitingCount = n
 	}
 	return snap
-}
-
-func fetchWaitingCount(base, token string) int {
-	req, err := http.NewRequest(http.MethodGet, base+"/v1/agents/state", nil)
-	if err != nil {
-		return -1
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	client := &http.Client{Timeout: 1500 * time.Millisecond}
-	resp, err := client.Do(req)
-	if err != nil {
-		return -1
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return -1
-	}
-	// Shape may be map[id]state or {agents: [...]}. Count "waiting" strings.
-	var raw any
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return -1
-	}
-	return countWaiting(raw)
 }

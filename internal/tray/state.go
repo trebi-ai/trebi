@@ -88,36 +88,3 @@ func itoa(n int) string {
 	}
 	return string(b[i:])
 }
-
-// countWaiting walks common agent-state JSON shapes.
-func countWaiting(raw any) int {
-	n := 0
-	switch v := raw.(type) {
-	case map[string]any:
-		if states, ok := v["states"].(map[string]any); ok {
-			return countWaiting(states)
-		}
-		if agents, ok := v["agents"].([]any); ok {
-			return countWaiting(agents)
-		}
-		for _, val := range v {
-			switch s := val.(type) {
-			case string:
-				if s == "waiting" {
-					n++
-				}
-			case map[string]any:
-				if st, ok := s["state"].(string); ok && st == "waiting" {
-					n++
-				} else if st, ok := s["agent_state"].(string); ok && st == "waiting" {
-					n++
-				}
-			}
-		}
-	case []any:
-		for _, item := range v {
-			n += countWaiting(item)
-		}
-	}
-	return n
-}

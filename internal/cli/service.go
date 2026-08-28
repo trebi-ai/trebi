@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -160,6 +161,12 @@ func serviceDaemonSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "listen", Value: "127.0.0.1:0", Usage: "HTTP listen address"},
 				&cli.BoolFlag{Name: "shadow", Usage: "shadow mode: drain + no integrations/schedules"},
 				&cli.BoolFlag{Name: "no-tray", Usage: "disable menu-bar tray (headless)"},
+				&cli.StringFlag{
+					Name:    "log-level",
+					EnvVars: []string{"TREBI_LOG_LEVEL"},
+					Value:   "info",
+					Usage:   "debug|info|warn|error (debug shows tray health polls)",
+				},
 			},
 			Action: runDaemonProcess,
 		},
@@ -376,8 +383,31 @@ func runDaemonProcess(c *cli.Context) error {
 	return trayErr
 }
 
+// setLogLevel installs the default slog handler at the requested level.
+// Routine tray polls log at debug, so "debug" is what surfaces them.
+func setLogLevel(name string) error {
+	var level slog.Level
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "info":
+		level = slog.LevelInfo
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		return fmt.Errorf("log-level %q: want debug|info|warn|error", name)
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	return nil
+}
+
 func runDaemon(parent context.Context, c *cli.Context) error {
 	if err := home.EnsureDirs(); err != nil {
+		return err
+	}
+	if err := setLogLevel(c.String("log-level")); err != nil {
 		return err
 	}
 	// First run seeds config.yaml so there is a real file to edit. Defaults

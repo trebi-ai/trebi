@@ -40,24 +40,6 @@ func TestBuildMenuLines_DrainingAndOffline(t *testing.T) {
 	}
 }
 
-func TestCountWaiting(t *testing.T) {
-	t.Parallel()
-	n := countWaiting(map[string]any{
-		"r1": "running",
-		"r2": "waiting",
-		"r3": map[string]any{"state": "waiting"},
-	})
-	if n != 2 {
-		t.Fatalf("got %d", n)
-	}
-	n = countWaiting(map[string]any{
-		"states": map[string]any{"a": "waiting", "b": "idle"},
-	})
-	if n != 1 {
-		t.Fatalf("nested states: %d", n)
-	}
-}
-
 func TestItoa(t *testing.T) {
 	t.Parallel()
 	if itoa(0) != "0" || itoa(42) != "42" || itoa(-3) != "-3" {

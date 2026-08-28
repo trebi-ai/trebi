@@ -557,6 +557,20 @@ func (s *Service) AgentSnapshot() map[string]AgentState {
 	return out
 }
 
+// WaitingCount returns how many agents are in the waiting state. It reads the
+// in-memory snapshot, so it costs no query.
+func (s *Service) WaitingCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, a := range s.agents {
+		if a.State == AgentWaiting {
+			n++
+		}
+	}
+	return n
+}
+
 // RunningCount returns number of running rows.
 func (s *Service) RunningCount(ctx context.Context) (int, error) {
 	var n int

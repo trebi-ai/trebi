@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/subtle"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -63,13 +64,31 @@ func (s *Server) auditMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		rw := &statusWriter{ResponseWriter: w, code: 200}
 		next.ServeHTTP(rw, r)
-		s.log.Info("api.request",
+		level := slog.LevelInfo
+		if isPollRoute(r) && rw.code < 400 {
+			// The tray polls these every 2s. At INFO they bury real activity.
+			level = slog.LevelDebug
+		}
+		s.log.Log(r.Context(), level, "api.request",
 			"method", r.Method,
 			"route", r.URL.Path,
 			"status", rw.code,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+// isPollRoute reports whether r is a routine background read. Only successful
+// ones are demoted: a failing poll still says so at INFO.
+func isPollRoute(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	switch r.URL.Path {
+	case "/v1/system/health", "/v1/agents/state":
+		return true
+	}
+	return false
 }
 
 // allowQueryToken permits ?token= only where clients cannot set headers:

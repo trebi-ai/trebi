@@ -344,9 +344,12 @@ trebi service migrate-db         # apply store migrations
 trebi service token show         # the local bearer token
 trebi service uninstall
 trebi service daemon --listen 127.0.0.1:7433   # foreground; for development
+trebi service daemon --log-level debug         # show the tray health polls
 ```
 
 Drain returns 503 `draining` to automatic producers. Use it before maintenance, then `undrain`.
+
+The daemon logs each API request as `api.request`. Successful reads of `/v1/system/health` and `/v1/agents/state` log at debug, because the macOS tray polls them every 2 seconds. Everything else, and any poll that fails, logs at info. Use `--log-level debug` to see the polls.
 
 ## Environment
 
@@ -357,6 +360,7 @@ Drain returns 503 `draining` to automatic producers. Use it before maintenance, 
 | `TREBI_URL` | remote daemon base URL |
 | `TREBI_TOKEN` | bearer token for `TREBI_URL` |
 | `TREBI_BIN` | binary path used by `service install` |
+| `TREBI_LOG_LEVEL` | daemon log level: `debug`, `info` (default), `warn`, `error` |
 
 ## Errors
 
