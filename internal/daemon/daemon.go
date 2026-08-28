@@ -12,6 +12,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/integrations"
 	"github.com/trebi-ai/trebi/internal/job"
@@ -38,6 +39,7 @@ type ControlPlane struct {
 	Store        *store.Store
 	Runs         *runs.Service
 	Workspaces   *workspaces.Service
+	Files        *files.Service
 	Schedule     *schedule.Service
 	Integrations *integrations.Service
 	Policy       *dispatch.Policy
@@ -58,10 +60,15 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	r := runs.New(st)
 	pol := dispatch.NewPolicy()
 	integ := integrations.New(st, ws, r, pol)
+	maxBytes := files.DefaultMaxBytes
+	if cfg, err := config.Load(); err == nil && cfg != nil {
+		maxBytes = cfg.Files.MaxBytesOrDefault()
+	}
 	return &ControlPlane{
 		Store:        st,
 		Runs:         r,
 		Workspaces:   ws,
+		Files:        files.New(maxBytes),
 		Schedule:     schedule.New(st),
 		Integrations: integ,
 		Policy:       pol,

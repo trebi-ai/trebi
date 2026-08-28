@@ -140,7 +140,11 @@ func (s *Server) setJobDisabled(w http.ResponseWriter, r *http.Request, disabled
 	if !ok {
 		return
 	}
-	if !ifMatchOK(w, r, row.Path) {
+	ws, rel, ok := s.jobFileLoc(w, r, row)
+	if !ok {
+		return
+	}
+	if !s.requireIfMatch(w, r, ws.Path, rel) {
 		return
 	}
 	if err := job.SetDisabled(row.Path, disabled); err != nil {

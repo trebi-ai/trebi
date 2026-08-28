@@ -20,6 +20,23 @@ type Config struct {
 	Terminal string       `yaml:"terminal,omitempty"` // macOS: Terminal | iTerm | Ghostty
 	Tools    ToolsConfig  `yaml:"tools,omitempty"`
 	Notify   NotifyConfig `yaml:"notify,omitempty"`
+	Files    FilesConfig  `yaml:"files,omitempty"`
+}
+
+// FilesConfig is the workspace file-plane cap.
+type FilesConfig struct {
+	MaxBytes int64 `yaml:"max_bytes,omitempty"`
+}
+
+// DefaultFilesMaxBytes is used when files.max_bytes is unset (10 MiB).
+const DefaultFilesMaxBytes int64 = 10 << 20
+
+// MaxBytesOrDefault is the write/read cap injected at construction.
+func (f FilesConfig) MaxBytesOrDefault() int64 {
+	if f.MaxBytes <= 0 {
+		return DefaultFilesMaxBytes
+	}
+	return f.MaxBytes
 }
 
 // NotifyConfig: shell templates per channel (email → whatsapp → discord).
@@ -424,6 +441,9 @@ tools:
 #   discord: ""
 #   waiting_after: 5m      # "0" or "off" disables the waiting escalation
 #   usage_warn_at: 80      # percent
+
+# files:
+#   max_bytes: 10485760    # workspace file PUT/GET cap (10 MiB)
 `
 
 // Seed writes config.yaml with the documented defaults when it does not exist.

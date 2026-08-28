@@ -1,6 +1,6 @@
 ---
 name: trebi
-description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; inspect or attach to runs; manage workspaces, skills, secrets, integrations, and event rules; drain the inbox or alerts; tail the event bus; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi inbox", "trebi bus", "trebi integration", "trebi doctor", "wake the assistant".
+description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, skills, secrets, integrations, and event rules; drain the inbox or alerts; tail the event bus; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi inbox", "trebi bus", "trebi integration", "trebi doctor", "wake the assistant".
 ---
 
 # Trebi
@@ -13,6 +13,7 @@ Trebi is one binary that is both a daemon (`trebid`) and a CLI. The daemon owns 
 |---|---|
 | workspace | a registered folder; the unit of context. Jobs, runs, and the assistant belong to one |
 | job | a `JOB.md` file: YAML frontmatter (harness, triggers, session) plus a prompt body |
+| file | any path inside a workspace (scripts, templates, eval files). Raw bytes; no job semantics |
 | run | one launch of a job in a harness session (tmux locally) |
 | assistant | the singleton `TREBI.md` job of a workspace, kind=assistant |
 | integration | an external event producer (a `stream`, `cli`, or `mcp` command) |
@@ -142,6 +143,23 @@ trebi job memory remove <name> <entry-id>
 trebi job memory set <name> --file ./MEMORY.md   # replace whole file
 trebi job memory clear <name>                    # destructive
 ```
+
+## Files
+
+Supporting files for a job (Python scripts, HTML templates, eval fixtures) live in the workspace. A remote client cannot write them to disk; use `trebi file`. `JOB.md` / `TREBI.md` / `MEMORY.md` are allowed — the index rebuilds the same way as an editor save. `trebi.yaml` and `.git/**` are denied.
+
+```bash
+trebi file ls [prefix] --json --limit 100
+trebi file get reports/render.py                  # bytes to stdout
+trebi file get reports/render.py --out ./render.py
+trebi file get reports/render.py --stat           # JSON: path, size_bytes, mtime, hash
+trebi file put reports/render.py --from ./render.py
+cat render.py | trebi file put reports/render.py
+trebi file put reports/render.py --from ./render.py --if-match <hash>
+trebi file rm reports/render.py --if-match <hash>
+```
+
+`--workspace` / sticky context selects the workspace. `put` is a full replace. Re-read (`--stat`) after a 412 `precondition_failed`.
 
 ## Runs
 
@@ -388,6 +406,17 @@ trebi job validate daily-report
 trebi job run daily-report --test        # confirm the plan
 trebi job run daily-report
 trebi job tail daily-report -n 200
+```
+
+**Generate a job and the script it runs (remote-safe)**
+
+```bash
+trebi workspace use my-repo
+trebi job create nightly-report --file ./JOB.md
+trebi file put nightly-report/render.py --from ./render.py
+trebi file put nightly-report/email.html --from ./email.html
+trebi job validate nightly-report
+trebi job run nightly-report --test
 ```
 
 **Debug a failed run**

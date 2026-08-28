@@ -42,6 +42,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.routeSystem(mux)
 	s.routeWorkspaces(mux)
+	s.routeFiles(mux)
 	s.routeJobs(mux)
 	s.routeRuns(mux)
 	s.routeQueue(mux)

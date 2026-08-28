@@ -209,6 +209,9 @@ func SetPath(cfg *Config, path, value string) error {
 	if handled, err := cfg.setToolsKey(path, value); handled {
 		return err
 	}
+	if handled, err := cfg.setFilesKey(path, value); handled {
+		return err
+	}
 
 	// tools.<name>.…
 	parts := strings.Split(path, ".")
@@ -347,6 +350,11 @@ func (l *pathEntryList) addCore(cfg *Config) {
 		warnShow = strconv.Itoa(cfg.Notify.UsageWarnAt)
 	}
 	l.add("notify.usage_warn_at", warnShow, "80")
+	mb := cfg.Files.MaxBytes
+	if mb <= 0 {
+		mb = DefaultFilesMaxBytes
+	}
+	l.add("files.max_bytes", strconv.FormatInt(mb, 10), strconv.FormatInt(DefaultFilesMaxBytes, 10))
 }
 
 // addGlobalBridge adds the tools.bridge rows.
@@ -467,6 +475,19 @@ func (c *Config) setToolsKey(path, value string) (handled bool, err error) {
 	return false, nil
 }
 
+// setFilesKey handles files.* keys; handled=false when path is not one.
+func (c *Config) setFilesKey(path, value string) (handled bool, err error) {
+	if path != "files.max_bytes" {
+		return false, nil
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || n < 0 {
+		return true, fmt.Errorf("files.max_bytes: want non-negative integer")
+	}
+	c.Files.MaxBytes = n
+	return true, nil
+}
+
 // setToolKey handles tools.<tool>.<rest> keys on the tool pin.
 func (c *Config) setToolKey(tool, rest, value string) error {
 	pin := c.Tools.Pin(tool)
@@ -561,6 +582,7 @@ func pathKeyDescriptions() map[string]string {
 		"notify.discord":                "Shell cmd for Discord alerts (tried third)",
 		"notify.waiting_after":          "Escalate waiting tasks via notify chain (default 5m; off/0 disables)",
 		"notify.usage_warn_at":          "Harness usage percent that pages a warning (default 80)",
+		"files.max_bytes":               "Workspace file PUT/GET size cap in bytes (default 10485760)",
 		"tools.bridge.inherit":          "Global default: inherit user harness resources",
 		"tools.bridge.only":             "If set, only these resource keys may inherit",
 		"tools.bridge.never":            "Resource keys force-disabled globally",

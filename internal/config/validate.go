@@ -80,6 +80,10 @@ func Validate(cfg *Config) error {
 	// notify.waiting_after: empty → default 5m; 0/off disables escalate
 	validateNudgeField(ce, "notify.waiting_after", cfg.Notify.WaitingAfter)
 
+	if cfg.Files.MaxBytes < 0 {
+		ce.add("files.max_bytes", "must be >= 0")
+	}
+
 	// tools.fallback
 	if cfg.Tools.Fallback != "" && !validFallbackMode(cfg.Tools.Fallback) {
 		ce.add("tools.fallback", fmt.Sprintf("%q not in [require, path]", cfg.Tools.Fallback))

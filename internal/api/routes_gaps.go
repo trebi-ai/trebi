@@ -95,12 +95,12 @@ func (s *Server) attachScreenLoop(ctx context.Context, conn *websocket.Conn, ses
 
 // handleMemoryDelete removes the whole memory file (reset to empty).
 func (s *Server) handleMemoryDelete(w http.ResponseWriter, r *http.Request, assistant bool) {
-	path, err := s.memoryPath(r, assistant)
+	root, rel, path, err := s.memoryRootRel(r, assistant)
 	if err != nil {
 		writeResolveErr(w, err)
 		return
 	}
-	if !ifMatchOK(w, r, path) {
+	if !s.requireIfMatch(w, r, root, rel) {
 		return
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -126,12 +126,12 @@ func (s *Server) handleMemoryEntriesPost(w http.ResponseWriter, r *http.Request,
 		writeErr(w, http.StatusBadRequest, "validation", "text required")
 		return
 	}
-	path, err := s.memoryPath(r, assistant)
+	root, rel, path, err := s.memoryRootRel(r, assistant)
 	if err != nil {
 		writeResolveErr(w, err)
 		return
 	}
-	if !ifMatchOK(w, r, path) {
+	if !s.requireIfMatch(w, r, root, rel) {
 		return
 	}
 	ent, err := job.AppendMemoryEntry(path, body.Date, text)
@@ -139,11 +139,11 @@ func (s *Server) handleMemoryEntriesPost(w http.ResponseWriter, r *http.Request,
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	setETag(w, path)
-	data, _ := os.ReadFile(path)
+	hash := s.fileHash(r.Context(), root, rel)
+	setETagHash(w, hash)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id": ent.ID, "date": ent.Date, "text": ent.Text,
-		"path": path, "hash": job.ContentHash(data),
+		"path": path, "hash": hash,
 	})
 }
 
@@ -153,12 +153,12 @@ func (s *Server) handleMemoryEntriesDelete(w http.ResponseWriter, r *http.Reques
 	if eid == "" {
 		eid = r.PathValue("id")
 	}
-	path, err := s.memoryPath(r, assistant)
+	root, rel, path, err := s.memoryRootRel(r, assistant)
 	if err != nil {
 		writeResolveErr(w, err)
 		return
 	}
-	if !ifMatchOK(w, r, path) {
+	if !s.requireIfMatch(w, r, root, rel) {
 		return
 	}
 	if err := job.RemoveMemoryEntry(path, eid); err != nil {
@@ -169,9 +169,9 @@ func (s *Server) handleMemoryEntriesDelete(w http.ResponseWriter, r *http.Reques
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	setETag(w, path)
-	data, _ := os.ReadFile(path)
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": eid, "hash": job.ContentHash(data)})
+	hash := s.fileHash(r.Context(), root, rel)
+	setETagHash(w, hash)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": eid, "hash": hash})
 }
 
 // memoryPath maps the request to the MEMORY.md sibling of the job file.
@@ -219,16 +219,14 @@ func (s *Server) handleAssistantPut(w http.ResponseWriter, r *http.Request) {
 	if body.Content == "" {
 		body.Content = "---\nharness: claude\n---\n\nYou are the workspace assistant.\n"
 	}
-	if !ifMatchOK(w, r, path) {
-		return
-	}
-	if err := job.WriteAtomic(path, []byte(body.Content)); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	info, _, err := s.files.Write(r.Context(), ws.Path, "TREBI.md", []byte(body.Content), ifMatchHeader(r))
+	if err != nil {
+		writeFilesErr(w, err)
 		return
 	}
 	_ = s.ws.RebuildIndex(r.Context(), ws)
-	setETag(w, path)
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "hash": job.ContentHash([]byte(body.Content))})
+	setETagHash(w, info.Hash)
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "hash": info.Hash})
 }
 
 func (s *Server) handleAssistantPatch(w http.ResponseWriter, r *http.Request) {
@@ -244,13 +242,13 @@ func (s *Server) handleAssistantPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	path := filepath.Join(ws.Path, "TREBI.md")
-	if !ifMatchOK(w, r, path) {
+	if !s.requireIfMatch(w, r, ws.Path, "TREBI.md") {
 		return
 	}
 	if body.Disabled != nil {
 		_ = job.SetDisabled(path, *body.Disabled)
 	}
-	setETag(w, path)
+	setETagHash(w, s.fileHash(r.Context(), ws.Path, "TREBI.md"))
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "patched": true})
 }
 
@@ -262,7 +260,7 @@ func (s *Server) handleAssistantDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := filepath.Join(ws.Path, "TREBI.md")
-	if !ifMatchOK(w, r, path) {
+	if !s.requireIfMatch(w, r, ws.Path, "TREBI.md") {
 		return
 	}
 	_ = os.Remove(path)

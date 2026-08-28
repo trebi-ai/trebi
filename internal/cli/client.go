@@ -127,6 +127,54 @@ func (c *APIClient) GetRaw(path string) ([]byte, error) {
 	return raw, nil
 }
 
+// PutRaw PUTs a raw body (file plane). ifMatch is sent as If-Match when non-empty.
+func (c *APIClient) PutRaw(path string, body io.Reader, contentType, ifMatch string) (int, []byte, error) {
+	req, err := http.NewRequest("PUT", c.Base+path, body)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	req.Header.Set("Content-Type", contentType)
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return resp.StatusCode, raw, fmt.Errorf("PUT %s: %s: %s", path, resp.Status, raw)
+	}
+	return resp.StatusCode, raw, nil
+}
+
+// DeleteIfMatch DELETEs with optional If-Match.
+func (c *APIClient) DeleteIfMatch(path, ifMatch string) error {
+	req, err := http.NewRequest("DELETE", c.Base+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("DELETE %s: %s: %s", path, resp.Status, raw)
+	}
+	return nil
+}
+
 // StreamGET copies a GET response body to dst until EOF or ctx cancel.
 // Used for integration logs --follow (SSE). Timeout is disabled on this call.
 func (c *APIClient) StreamGET(path string, dst io.Writer) error {

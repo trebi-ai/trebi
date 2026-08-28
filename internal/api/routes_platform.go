@@ -14,6 +14,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -82,6 +83,48 @@ func (s *Server) resolveJob(w http.ResponseWriter, r *http.Request, name string)
 	return row, true
 }
 
+// jobFileLoc resolves the workspace root and relative path for a job row.
+func (s *Server) jobFileLoc(w http.ResponseWriter, r *http.Request, row workspaces.JobRow) (*workspaces.Workspace, string, bool) {
+	ws, err := s.ws.Get(r.Context(), row.WorkspaceID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return nil, "", false
+	}
+	rel, err := workspaceRel(ws.Path, row.Path)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return nil, "", false
+	}
+	return ws, rel, true
+}
+
+// memoryRootRel maps a memory request to workspace root + relative path + abs path.
+func (s *Server) memoryRootRel(r *http.Request, assistant bool) (root, rel, abs string, err error) {
+	abs, err = s.memoryPath(r, assistant)
+	if err != nil {
+		return "", "", "", err
+	}
+	var wsID string
+	if assistant {
+		wsID = r.PathValue("id")
+	} else {
+		row, err := s.findJobRow(r.Context(), r.URL.Query().Get("workspace"), r.PathValue("name"))
+		if err != nil {
+			return "", "", "", err
+		}
+		wsID = row.WorkspaceID
+	}
+	ws, err := s.ws.Get(r.Context(), wsID)
+	if err != nil {
+		return "", "", "", err
+	}
+	rel, err = workspaceRel(ws.Path, abs)
+	if err != nil {
+		return "", "", "", err
+	}
+	return ws.Path, rel, abs, nil
+}
+
 // writeResolveErr maps job resolution errors to HTTP codes.
 func writeResolveErr(w http.ResponseWriter, err error) {
 	var amb *ambiguousJobError
@@ -93,38 +136,6 @@ func writeResolveErr(w http.ResponseWriter, err error) {
 	default:
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 	}
-}
-
-// ifMatchOK enforces D1 If-Match: an absent header proceeds; a present
-// header that does not match the current content hash gives 412.
-func ifMatchOK(w http.ResponseWriter, r *http.Request, path string) bool {
-	ifMatch := strings.Trim(strings.TrimSpace(r.Header.Get("If-Match")), `"`)
-	if ifMatch == "" || ifMatch == "*" {
-		return true
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			writeErr(w, http.StatusPreconditionFailed, "precondition_failed", "If-Match set but file is missing")
-			return false
-		}
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return false
-	}
-	if hash := job.ContentHash(data); hash != ifMatch {
-		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", "If-Match mismatch; current hash: "+hash)
-		return false
-	}
-	return true
-}
-
-// setETag writes ETag response header from file content hash.
-func setETag(w http.ResponseWriter, path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	w.Header().Set("ETag", `"`+job.ContentHash(data)+`"`)
 }
 
 // appendBus emits one bus event after a non-DB write (files, secrets, config).
@@ -659,20 +670,18 @@ func (s *Server) handleMemoryFilePut(w http.ResponseWriter, r *http.Request, ass
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	path, err := s.memoryPath(r, assistant)
+	root, rel, abs, err := s.memoryRootRel(r, assistant)
 	if err != nil {
 		writeResolveErr(w, err)
 		return
 	}
-	if !ifMatchOK(w, r, path) {
+	info, _, err := s.files.Write(r.Context(), root, rel, []byte(body.Content), ifMatchHeader(r))
+	if err != nil {
+		writeFilesErr(w, err)
 		return
 	}
-	if err := job.WriteAtomic(path, []byte(body.Content)); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	setETag(w, path)
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "hash": job.ContentHash([]byte(body.Content))})
+	setETagHash(w, info.Hash)
+	writeJSON(w, http.StatusOK, map[string]any{"path": abs, "hash": info.Hash})
 }
 
 func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
@@ -703,26 +712,27 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 	if md == "" {
 		md = "---\nharness: claude\n---\n\nDo the task.\n"
 	}
-	path := filepath.Join(ws.Path, body.Name, "JOB.md")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	if _, err := os.Stat(path); err == nil {
+	rel := filepath.ToSlash(filepath.Join(body.Name, "JOB.md"))
+	if _, err := s.files.Stat(r.Context(), ws.Path, rel); err == nil {
 		writeErr(w, http.StatusConflict, "conflict", "job exists")
 		return
-	}
-	if err := job.WriteAtomic(path, []byte(md)); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	} else if err != nil && !errors.Is(err, files.ErrNotFound) {
+		writeFilesErr(w, err)
 		return
 	}
+	info, _, err := s.files.Write(r.Context(), ws.Path, rel, []byte(md), "")
+	if err != nil {
+		writeFilesErr(w, err)
+		return
+	}
+	path := filepath.Join(ws.Path, filepath.FromSlash(rel))
 	_ = s.ws.RebuildIndex(r.Context(), ws) // file is written; watcher will retry the index
 	s.appendBus(r.Context(), store.BusEvent{
 		Topic: "job.created", Entity: "job", EntityID: body.Name, Action: "created",
 		Attrs: map[string]string{"workspace": ws.ID, "path": path},
 	})
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"name": body.Name, "path": path, "hash": job.ContentHash([]byte(md)),
+		"name": body.Name, "path": path, "hash": info.Hash,
 	})
 }
 
@@ -748,20 +758,22 @@ func (s *Server) handleJobPut(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !ifMatchOK(w, r, row.Path) {
+	ws, rel, ok := s.jobFileLoc(w, r, row)
+	if !ok {
 		return
 	}
-	if err := job.WriteAtomic(row.Path, []byte(md)); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	info, _, err := s.files.Write(r.Context(), ws.Path, rel, []byte(md), ifMatchHeader(r))
+	if err != nil {
+		writeFilesErr(w, err)
 		return
 	}
-	setETag(w, row.Path)
+	setETagHash(w, info.Hash)
 	s.appendBus(r.Context(), store.BusEvent{
 		Topic: "job.updated", Entity: "job", EntityID: name, Action: "updated",
 		Attrs: map[string]string{"workspace": row.WorkspaceID, "path": row.Path},
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": name, "path": row.Path, "hash": job.ContentHash([]byte(md)),
+		"name": name, "path": row.Path, "hash": info.Hash,
 	})
 }
 
@@ -777,21 +789,29 @@ func (s *Server) handleJobPatch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !ifMatchOK(w, r, row.Path) {
+	ws, rel, ok := s.jobFileLoc(w, r, row)
+	if !ok {
+		return
+	}
+	if !s.requireIfMatch(w, r, ws.Path, rel) {
 		return
 	}
 	if err := job.MergePatchFrontmatter(row.Path, body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	data, _ := os.ReadFile(row.Path)
-	setETag(w, row.Path)
+	info, err := s.files.Stat(r.Context(), ws.Path, rel)
+	if err != nil {
+		writeFilesErr(w, err)
+		return
+	}
+	setETagHash(w, info.Hash)
 	s.appendBus(r.Context(), store.BusEvent{
 		Topic: "job.updated", Entity: "job", EntityID: name, Action: "updated",
 		Attrs: map[string]string{"workspace": row.WorkspaceID, "path": row.Path},
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": name, "patched": true, "hash": job.ContentHash(data),
+		"name": name, "patched": true, "hash": info.Hash,
 	})
 }
 
@@ -801,16 +821,15 @@ func (s *Server) handleJobDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !ifMatchOK(w, r, row.Path) {
+	ws, rel, ok := s.jobFileLoc(w, r, row)
+	if !ok {
 		return
 	}
-	if err := os.Remove(row.Path); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	if err := s.files.Delete(r.Context(), ws.Path, rel, ifMatchHeader(r)); err != nil {
+		writeFilesErr(w, err)
 		return
 	}
-	if ws, err := s.ws.Get(r.Context(), row.WorkspaceID); err == nil {
-		_ = s.ws.RebuildIndex(r.Context(), ws) // file is gone; watcher will retry the index
-	}
+	_ = s.ws.RebuildIndex(r.Context(), ws) // file is gone; watcher will retry the index
 	s.appendBus(r.Context(), store.BusEvent{
 		Topic: "job.deleted", Entity: "job", EntityID: name, Action: "deleted",
 		Attrs: map[string]string{"workspace": row.WorkspaceID, "path": row.Path},

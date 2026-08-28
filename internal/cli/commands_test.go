@@ -527,3 +527,40 @@ func TestConfigShowTruncatesValue(t *testing.T) {
 		t.Fatal("--json truncated the value")
 	}
 }
+
+func TestFileListAndPut(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/v1/workspaces":
+			_, _ = w.Write([]byte(`{"workspaces":[{"id":"ws1","name":"one"}]}`))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/files"):
+			_, _ = w.Write([]byte(`{"files":[{"path":"a.py","size_bytes":3,"mtime":"2026-08-28T14:00:00Z"}],"truncated":false}`))
+		case r.Method == "PUT":
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(`{"path":"a.py","hash":"abc","size_bytes":3,"created":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	out, err := runCLI(t, client, "file", "ls", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"a.py"`) {
+		t.Fatalf("ls: %s", out)
+	}
+	out, err = runCLI(t, client, "file", "put", "a.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != "PUT" || !strings.HasSuffix(gotPath, "/files/a.py") {
+		t.Fatalf("put %s %s body=%q out=%s", gotMethod, gotPath, gotBody, out)
+	}
+}

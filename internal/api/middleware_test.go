@@ -20,6 +20,7 @@ func TestIsPollRoute(t *testing.T) {
 		{"GET", "/v1/agents/state", true},
 		{"GET", "/v1/config", false},
 		{"GET", "/v1/runs", false},
+		{"PUT", "/v1/workspaces/x/files/a.py", false},
 		// Only reads are routine; a write to the same path is not.
 		{"POST", "/v1/system/health", false},
 		// Prefix matches must not count.

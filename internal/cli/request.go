@@ -182,6 +182,34 @@ func BuildWorkspaceRename(id, name string) HTTPRequest {
 	}
 }
 
+// BuildFileListPath builds GET /v1/workspaces/{id}/files?prefix=&cursor=&limit=.
+func BuildFileListPath(workspaceID, prefix, afterPath string, limit int) string {
+	kv := map[string]string{"prefix": prefix, "cursor": afterPath}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/files", kv)
+}
+
+// BuildFileGetPath builds GET /v1/workspaces/{id}/files/{path}. stat adds ?stat=1.
+func BuildFileGetPath(workspaceID, rel string, stat bool) string {
+	p := filePathURL(workspaceID, rel)
+	if stat {
+		return withQuery(p, map[string]string{"stat": "1"})
+	}
+	return p
+}
+
+// BuildFilePutPath builds PUT /v1/workspaces/{id}/files/{path}.
+func BuildFilePutPath(workspaceID, rel string) string {
+	return filePathURL(workspaceID, rel)
+}
+
+// BuildFileDeletePath builds DELETE /v1/workspaces/{id}/files/{path}.
+func BuildFileDeletePath(workspaceID, rel string) string {
+	return filePathURL(workspaceID, rel)
+}
+
 // BuildRulesTest builds POST /v1/rules/test.
 func BuildRulesTest(match, extract string, event any) HTTPRequest {
 	return HTTPRequest{
@@ -674,6 +702,14 @@ func withQuery(path string, kv map[string]string) string {
 		return path + "&" + enc
 	}
 	return path + "?" + enc
+}
+
+func filePathURL(workspaceID, rel string) string {
+	parts := strings.Split(rel, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/files/" + strings.Join(parts, "/")
 }
 
 func workspaceQ(ws string) map[string]string {

@@ -247,6 +247,10 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "memory.entry_added", Bus: false, Log: true},
 		{Name: "memory.entry_removed", Bus: false, Log: true},
 		{Name: "template.installed", Bus: false, Log: true},
+		// file
+		{Name: "file.created", Bus: true, Log: true},
+		{Name: "file.updated", Bus: true, Log: true},
+		{Name: "file.deleted", Bus: true, Log: true},
 		// run
 		{Name: "run.created", Bus: true, Log: true},
 		{Name: "run.updated", Bus: true, Log: true},

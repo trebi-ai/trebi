@@ -16,6 +16,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/integrations"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -33,6 +34,7 @@ type Server struct {
 	st     *store.Store
 	runs   *runs.Service
 	ws     *workspaces.Service
+	files  *files.Service
 	alerts *alerts.Service
 	skills *skills.Service
 	integ  *integrations.Service
@@ -54,9 +56,10 @@ type Server struct {
 
 // Options for New.
 type Options struct {
-	Token  string
-	Shadow bool
-	Drain  bool
+	Token         string
+	Shadow        bool
+	Drain         bool
+	FilesMaxBytes int64 // 0 = files.DefaultMaxBytes
 }
 
 // New builds an API server.
@@ -68,6 +71,7 @@ func New(st *store.Store, opts Options) *Server {
 		st:        st,
 		runs:      r,
 		ws:        ws,
+		files:     files.New(opts.FilesMaxBytes),
 		alerts:    alerts.New(st, alerts.Options{}),
 		skills:    skills.New(st),
 		integ:     integrations.New(st, ws, r, pol),
@@ -92,7 +96,7 @@ func New(st *store.Store, opts Options) *Server {
 // BindControlPlane replaces core services with the daemon's shared instances.
 // The policy and schedule services stay with the daemon; the API does not
 // read them.
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, _ *dispatch.Policy, integ *integrations.Service, _ *schedule.Service, alertsSvc *alerts.Service) {
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, _ *dispatch.Policy, integ *integrations.Service, _ *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
 	}
@@ -104,6 +108,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	}
 	if alertsSvc != nil {
 		s.alerts = alertsSvc
+	}
+	if filesSvc != nil {
+		s.files = filesSvc
 	}
 }
 

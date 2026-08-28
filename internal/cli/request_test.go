@@ -69,6 +69,29 @@ func TestMatchConversation(t *testing.T) {
 	}
 }
 
+func TestBuildFilePaths(t *testing.T) {
+	t.Parallel()
+	list := BuildFileListPath("ws1", "reports/", "reports/a.py", 20)
+	if !strings.HasPrefix(list, "/v1/workspaces/ws1/files?") {
+		t.Fatalf("list %s", list)
+	}
+	for _, want := range []string{"prefix=reports", "cursor=reports", "limit=20"} {
+		if !strings.Contains(list, want) {
+			t.Fatalf("missing %q in %s", want, list)
+		}
+	}
+	get := BuildFileGetPath("ws1", "reports/render.py", true)
+	if !strings.Contains(get, "/files/reports/render.py") || !strings.Contains(get, "stat=1") {
+		t.Fatalf("get %s", get)
+	}
+	if p := BuildFilePutPath("ws1", "a/b.py"); p != "/v1/workspaces/ws1/files/a/b.py" {
+		t.Fatalf("put %s", p)
+	}
+	if p := BuildFileDeletePath("ws1", "a/b.py"); p != "/v1/workspaces/ws1/files/a/b.py" {
+		t.Fatalf("delete %s", p)
+	}
+}
+
 func TestBuildJobDelete(t *testing.T) {
 	t.Parallel()
 	req := BuildJobDelete("demo", "ws1")
