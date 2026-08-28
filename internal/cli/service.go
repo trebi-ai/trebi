@@ -18,6 +18,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/api"
+	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/platform"
@@ -378,6 +379,13 @@ func runDaemonProcess(c *cli.Context) error {
 func runDaemon(parent context.Context, c *cli.Context) error {
 	if err := home.EnsureDirs(); err != nil {
 		return err
+	}
+	// First run seeds config.yaml so there is a real file to edit. Defaults
+	// still apply when it is absent; this only removes the "missing" state.
+	if created, err := config.Seed(); err != nil {
+		appStateFor(c).log.Warn("config seed", "error", err)
+	} else if created {
+		fmt.Fprintf(os.Stderr, "wrote default config → %s\n", config.ConfigPath())
 	}
 	st, err := store.Open()
 	if err != nil {

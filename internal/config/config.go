@@ -395,6 +395,54 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	return cfg, nil
 }
 
+// seedTemplate documents every tunable key. Active lines are the values
+// applyLoadDefaults would supply anyway; the rest are commented with the
+// default the loader uses, so the file shows what exists without pinning it.
+const seedTemplate = `# trebi config. Written once, on first daemon start.
+# Commented keys show the built-in default; uncomment to pin one.
+# Apply changes with: trebi config set <dotted.key> <value>
+
+defaults:
+  command: claude
+  # session:
+  #   timeout: ""          # idle timeout; empty means no idle reap
+  #   max_duration: ""     # hard wall-clock cap per run
+  #   keep_alive: ""
+  #   nudge: ""
+  #   if_running: ""       # skip | replace | coalesce | allow
+
+terminal: Terminal         # macOS: Terminal | iTerm | Ghostty
+
+tools:
+  fallback: path           # path (use PATH) | require (fail when unpinned)
+  # bridge:                # per-harness resource inheritance
+  #   never: []
+
+# notify:
+#   email: ""              # shell template; text arrives as $TREBI_ALERT_*
+#   whatsapp: ""
+#   discord: ""
+#   waiting_after: 5m      # "0" or "off" disables the waiting escalation
+#   usage_warn_at: 80      # percent
+`
+
+// Seed writes config.yaml with the documented defaults when it does not exist.
+// It reports whether it created the file. A present file is never rewritten.
+func Seed() (bool, error) {
+	if err := EnsureDirs(); err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(ConfigPath()); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.WriteFile(ConfigPath(), []byte(seedTemplate), 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Save validates then writes config.yaml.
 func (c *Config) Save() error {
 	if err := EnsureDirs(); err != nil {

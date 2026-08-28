@@ -447,10 +447,12 @@ func CollectDoctorFindings() []DoctorFinding {
 			Message: "trebi.db missing — run trebi service migrate-db",
 		})
 	}
+	// The daemon seeds config.yaml at startup, so an absent file means it was
+	// removed afterwards. Defaults still apply, hence info and not warn.
 	if _, err := os.Stat(home.ConfigPath()); err != nil {
 		findings = append(findings, DoctorFinding{
-			ID: "config-missing", Severity: "warn", Code: "config_missing",
-			Message: "config.yaml not found; defaults apply",
+			ID: "config-missing", Severity: "info", Code: "config_missing",
+			Message: "config.yaml missing; defaults apply (fix rewrites it)",
 		})
 	}
 	for _, h := range harness.List() {

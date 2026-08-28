@@ -236,6 +236,10 @@ func (s *Server) handleHarnesses(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHarnessEnsure(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if !harness.Known(name) {
+		writeErr(w, http.StatusBadRequest, "validation", "unknown harness")
+		return
+	}
 	dir := home.HarnessDir(name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())

@@ -36,3 +36,15 @@ func List() []Info {
 	}
 	return out
 }
+
+// Known reports whether name is a supported harness. Callers that build a path
+// from request input must check this first: HarnessDir joins the name, so an
+// unchecked "../.." escapes TREBI_HOME.
+func Known(name string) bool {
+	for _, n := range Names() {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}

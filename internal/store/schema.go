@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -253,17 +253,11 @@ CREATE TABLE inbox_items (
 	workspace_id    TEXT,
 	job             TEXT,
 	alert_kind      TEXT,
-	integration     TEXT,
-	actions         TEXT,
-	trace_id        TEXT,
-	escalates_at    TEXT,
-	revision        INTEGER NOT NULL DEFAULT 0,
 	created_at      TEXT NOT NULL,
 	updated_at      TEXT NOT NULL,
 	resolved_at     TEXT
 );
 CREATE INDEX idx_inbox_status ON inbox_items(status, created_at DESC);
-CREATE INDEX idx_inbox_kind_subject ON inbox_items(alert_kind, subject, status);
 
 CREATE TABLE approvals (
 	id              TEXT PRIMARY KEY,
@@ -325,6 +319,17 @@ CREATE TABLE system_flags (
 		`
 ALTER TABLE workspaces ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE approvals ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+`,
+		// v3: inbox_items columns the alerts service selects (inboxCols).
+		// These were briefly written into the v1 body; DBs created before that
+		// edit never got them, so they are re-applied here as their own step.
+		`
+ALTER TABLE inbox_items ADD COLUMN integration TEXT;
+ALTER TABLE inbox_items ADD COLUMN actions TEXT;
+ALTER TABLE inbox_items ADD COLUMN trace_id TEXT;
+ALTER TABLE inbox_items ADD COLUMN escalates_at TEXT;
+ALTER TABLE inbox_items ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_inbox_kind_subject ON inbox_items(alert_kind, subject, status);
 `,
 	}
 }

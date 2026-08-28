@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/tmux"
@@ -271,15 +273,19 @@ func (s *Server) handleAssistantDelete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDoctorFix(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("finding_id")
 	switch {
-	case id == "config-missing" || strings.Contains(id, "config"):
-		// write default config
-		_ = os.MkdirAll(home.Base(), 0o755)
-		if _, err := os.Stat(home.ConfigPath()); err != nil {
-			_ = os.WriteFile(home.ConfigPath(), []byte("defaults:\n  command: claude\n"), 0o644)
+	case id == "config-missing":
+		// Same documented template the daemon seeds on first start.
+		if _, err := config.Seed(); err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"fixed": id, "action": "wrote_default_config"})
 	case strings.HasPrefix(id, "harness-"):
 		name := strings.TrimPrefix(id, "harness-")
+		if !harness.Known(name) {
+			writeErr(w, http.StatusBadRequest, "validation", "unknown harness")
+			return
+		}
 		_ = os.MkdirAll(home.HarnessDir(name), 0o755)
 		writeJSON(w, http.StatusOK, map[string]any{"fixed": id, "action": "ensured_harness_home"})
 	case id == "db-missing":
