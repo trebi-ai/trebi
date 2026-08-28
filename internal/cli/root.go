@@ -46,6 +46,8 @@ func NewApp() *cli.App {
 			secretCommand(),
 			inboxCommand(),
 			eventsCommand(),
+			conversationCommand(),
+			approvalsCommand(),
 			alertsCommand(),
 			agentHookCommand(),
 			{

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/dispatch"
@@ -148,13 +147,21 @@ func (s *Server) queueInfoByID(ctx context.Context, ids []string) map[string]map
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 {
-		limit = 50
+	cursor, ok := parseULIDCursor(w, r, "event")
+	if !ok {
+		return
 	}
-	rows, err := s.st.DB().QueryContext(r.Context(), `
-		SELECT id, integration, received_at, COALESCE(summary,''), COALESCE(trace_id,''), COALESCE(raw_json,'')
-		FROM events ORDER BY received_at DESC LIMIT ?`, limit)
+	limit := parseLimit(r)
+	q := `SELECT id, integration, received_at, COALESCE(summary,''), COALESCE(trace_id,''), COALESCE(raw_json,'')
+		FROM events WHERE 1=1`
+	args := []any{}
+	if cursor != "" {
+		q += ` AND id < ?`
+		args = append(args, cursor)
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.st.DB().QueryContext(r.Context(), q, args...)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -179,7 +186,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for _, e := range evs {
 		list = append(list, e.listEntries(outcomesByEvent[e.id])...)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": list})
+	resp := map[string]any{"events": list}
+	if len(evs) == limit {
+		resp["next_cursor"] = evs[len(evs)-1].id
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // listEntries expands one event into list rows: one row per interesting

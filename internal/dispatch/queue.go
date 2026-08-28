@@ -30,6 +30,7 @@ type QueueItem struct {
 	Vars            map[string]string
 	TraceID         string
 	RunID           string
+	ResumeOf        string
 	CreatedAt       time.Time
 }
 
@@ -121,11 +122,13 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO event_queue (
 			id, integration, workspace_id, job, kind, on_index, conversation_key,
-			event_id, event_raw, vars_json, prompt, status, trace_id, created_at, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			event_id, event_raw, vars_json, prompt, status, block_reason, resume_of,
+			trace_id, created_at, updated_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			item.ID, item.Integration, item.WorkspaceID, item.Job, item.Kind, item.OnIndex,
 			item.ConversationKey, eventID, store.NullStr(item.EventRaw), varsJSON, item.Prompt,
-			string(item.Status), item.TraceID, now, now)
+			string(item.Status), store.NullStr(string(item.BlockReason)), store.NullStr(item.ResumeOf),
+			item.TraceID, now, now)
 		return err
 	}, store.BusEvent{
 		Topic:    "queue.updated",
@@ -297,8 +300,8 @@ func (q *Queue) Cancel(ctx context.Context, id string) error {
 	return nil
 }
 
-// List returns queue rows with optional status filter.
-func (q *Queue) List(ctx context.Context, status string, limit int) ([]QueueItem, error) {
+// List returns queue rows with optional status filter and ULID cursor.
+func (q *Queue) List(ctx context.Context, status, cursor string, limit int) ([]QueueItem, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -310,6 +313,10 @@ func (q *Queue) List(ctx context.Context, status string, limit int) ([]QueueItem
 	if status != "" {
 		query += ` AND status=?`
 		args = append(args, status)
+	}
+	if cursor != "" {
+		query += ` AND id < ?`
+		args = append(args, cursor)
 	}
 	query += ` ORDER BY id DESC LIMIT ?` // ULID order == chronological; created_at text is not
 	args = append(args, limit)

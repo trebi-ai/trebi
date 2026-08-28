@@ -28,6 +28,7 @@ type Workspace struct {
 	Watching   bool      `json:"watching"`
 	Orphaned   bool      `json:"orphaned,omitempty"`
 	Assistant  *string   `json:"assistant,omitempty"` // nickname if TREBI.md present
+	Revision   int64     `json:"revision"`
 }
 
 // Service owns workspace registry rows.
@@ -93,7 +94,7 @@ func (s *Service) Add(ctx context.Context, path, name string) (*Workspace, error
 	default:
 		return nil, scanErr
 	}
-	ws := &Workspace{ID: id, Name: dispName, Path: abs, GitEnabled: gitEn, CreatedAt: now, Watching: true}
+	ws := &Workspace{ID: id, Name: dispName, Path: abs, GitEnabled: gitEn, CreatedAt: now, Watching: true, Revision: 1}
 	if err := s.RebuildIndex(ctx, ws); err != nil {
 		return ws, err // still registered
 	}
@@ -102,6 +103,39 @@ func (s *Service) Add(ctx context.Context, path, name string) (*Workspace, error
 
 // ErrNotFound reports a workspace id that is not registered.
 var ErrNotFound = errors.New("workspace not found")
+
+// Rename sets the display name, bumps revision, and emits workspace.updated
+// in one transaction. An unknown id returns ErrNotFound and emits nothing.
+func (s *Service) Rename(ctx context.Context, id, name string) (*Workspace, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	var rev int64
+	s.st.LockBus()
+	defer s.st.UnlockBus()
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		err := tx.QueryRow(`SELECT revision FROM workspaces WHERE id=?`, id).Scan(&rev)
+		if err == sql.ErrNoRows {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		rev++
+		if _, err := tx.Exec(`UPDATE workspaces SET name=?, updated_at=?, revision=? WHERE id=?`,
+			name, now, rev, id); err != nil {
+			return err
+		}
+		_, err = store.AppendInTx(tx, store.BusEvent{
+			Topic: "workspace.updated", Entity: "workspace", EntityID: id, Action: "updated",
+			Revision: rev,
+			Attrs:    map[string]string{"name": name},
+		})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, id)
+}
 
 // Remove deletes a workspace row and its job index, and emits workspace.deleted.
 // An unknown id returns ErrNotFound and emits nothing.
@@ -130,7 +164,7 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 
 // List returns all workspaces.
 func (s *Service) List(ctx context.Context) ([]Workspace, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT id, name, path, git_enabled, orphaned, created_at FROM workspaces ORDER BY name`)
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT id, name, path, git_enabled, orphaned, created_at, revision FROM workspaces ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +174,7 @@ func (s *Service) List(ctx context.Context) ([]Workspace, error) {
 		var w Workspace
 		var git, orphan int
 		var created string
-		if err := rows.Scan(&w.ID, &w.Name, &w.Path, &git, &orphan, &created); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.Path, &git, &orphan, &created, &w.Revision); err != nil {
 			return nil, err
 		}
 		w.GitEnabled = git == 1

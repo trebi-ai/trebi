@@ -184,6 +184,17 @@ func serviceDaemonSubcommands() []*cli.Command {
 				return client.PostJSON("/v1/system/undrain", nil, nil)
 			},
 		},
+		{
+			Name:  "shutdown",
+			Usage: "ask the daemon to shut down",
+			Action: func(c *cli.Context) error {
+				client, err := clientFor(c)
+				if err != nil {
+					return err
+				}
+				return client.DoHTTP(BuildServiceShutdown(), nil)
+			},
+		},
 	}
 }
 

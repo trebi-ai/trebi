@@ -284,7 +284,7 @@ func (s *Service) Upsert(ctx context.Context, d Definition) error {
 
 // Delete removes an integration.
 func (s *Service) Delete(ctx context.Context, name string) error {
-	_ = s.Stop(name)
+	_ = s.Stop(name) // already-stopped is fine; delete proceeds either way
 	s.mu.Lock()
 	delete(s.defs, name)
 	defs := copyDefs(s.defs)
@@ -310,7 +310,7 @@ func copyDefs(in map[string]Definition) map[string]Definition {
 
 // StartAll launches all stream integrations.
 func (s *Service) StartAll(ctx context.Context) {
-	_ = s.Load()
+	_ = s.Load() // start whatever is already in memory if disk reload fails
 	s.mu.Lock()
 	names := make([]string, 0, len(s.defs))
 	for n, d := range s.defs {
@@ -420,7 +420,7 @@ func (s *Service) Stop(name string) error {
 	cmd := p.cmd
 	p.mu.Unlock()
 	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
+		_ = cmd.Process.Kill() // process may have already exited
 	}
 	p.setStatus("stopped")
 	return nil
@@ -428,7 +428,7 @@ func (s *Service) Stop(name string) error {
 
 // Restart stops then starts.
 func (s *Service) Restart(ctx context.Context, name string) error {
-	_ = s.Stop(name)
+	_ = s.Stop(name) // not-running is the desired start state
 	s.mu.Lock()
 	p, ok := s.procs[name]
 	s.mu.Unlock()
@@ -456,11 +456,11 @@ func (s *Service) readLoop(ctx context.Context, name string, d Definition, r io.
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	logPath := filepath.Join(home.IntegrationsLogDir(), name+".jsonl")
-	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+	_ = os.MkdirAll(filepath.Dir(logPath), 0o755) // log dir is best-effort
 	logf, _ := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	defer func() {
 		if logf != nil {
-			_ = logf.Close()
+			_ = logf.Close() // read-loop teardown; process is already exiting
 		}
 		p.markStopped()
 		final := p.getStatus()
@@ -477,7 +477,7 @@ func (s *Service) readLoop(ctx context.Context, name string, d Definition, r io.
 		line := sc.Text()
 		if logf != nil {
 			_, _ = fmt.Fprintf(logf, `{"t":%q,"stream":"stdout","line":%q}`+"\n",
-				time.Now().UTC().Format(time.RFC3339Nano), line)
+				time.Now().UTC().Format(time.RFC3339Nano), line) // disk log must not drop the event
 		}
 		p.addEvent()
 		s.handleLine(ctx, name, d, line)
@@ -610,9 +610,10 @@ func (s *Service) insertOutcome(ctx context.Context, eid, wsID, jobName string, 
 	if queueID != "" {
 		qid = queueID
 	}
-	if _, err := s.st.DB().ExecContext(ctx, `INSERT OR IGNORE INTO event_outcomes
+	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO event_outcomes
 		(event_id, workspace_id, job, on_index, outcome, queue_id, created_at)
-		VALUES (?,?,?,?,?,?,?)`, eid, wsID, jobName, onIndex, outcome, qid, now); err != nil {
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT (event_id, workspace_id, job, on_index) DO NOTHING`, eid, wsID, jobName, onIndex, outcome, qid, now); err != nil {
 		s.log.Warn("event outcome insert", "job", jobName, "outcome", outcome, "error", err)
 	}
 }

@@ -72,6 +72,12 @@ func runsCommand() *cli.Command {
 				Action:    runRunsReplay,
 			},
 			{
+				Name:      "retry",
+				Usage:     "retry a failed run (resume, park, or rerun by end_reason)",
+				ArgsUsage: "<id>",
+				Action:    runRunsRetry,
+			},
+			{
 				Name:      "approve",
 				Usage:     "decide an approval for a run",
 				ArgsUsage: "<id>",
@@ -174,6 +180,28 @@ func runRunsReplay(c *cli.Context) error {
 	return nil
 }
 
+func runRunsRetry(c *cli.Context) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi runs retry <id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	req := BuildRunsRetry(id)
+	var out map[string]any
+	if err := client.DoHTTP(req, &out); err != nil {
+		return err
+	}
+	if action := mapStr(out, "action"); action != "" {
+		fmt.Fprintf(outWriter(c), "retry %s action=%s\n", id, action)
+		return nil
+	}
+	fmt.Fprintf(outWriter(c), "run %v status=%v\n", out["id"], out["status"])
+	return nil
+}
+
 func runRunsApprove(c *cli.Context) error {
 	client, err := clientFor(c)
 	if err != nil {
@@ -243,6 +271,56 @@ func runRunsList(c *cli.Context) error {
 			dash(mapStr(r, "started_at")),
 			dash(mapStr(r, "reason")),
 			dash(mapStr(r, "conversation_key")),
+		})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func approvalsCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "approvals",
+		Usage: "list run approvals",
+		Subcommands: []*cli.Command{
+			{
+				Name:  "list",
+				Usage: "list approvals",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (approval id)"},
+					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runApprovalsList,
+			},
+		},
+	}
+}
+
+func runApprovalsList(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	path := BuildApprovalsListPath(c.String("cursor"), c.Int("limit"))
+	var body struct {
+		Approvals  []map[string]any `json:"approvals"`
+		NextCursor string           `json:"next_cursor"`
+	}
+	if err := client.GetJSON(path, &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(body)
+	}
+	w := outWriter(c)
+	tbl := newTable(w, []string{"ID", "Run", "Status", "Decision", "Created"})
+	for _, a := range body.Approvals {
+		tbl.AppendRow(table.Row{
+			mapStr(a, "id"), mapStr(a, "run_id"),
+			colorStatus(w, mapStr(a, "status")),
+			dash(mapStr(a, "decision")), dash(mapStr(a, "created_at")),
 		})
 	}
 	renderTable(tbl)

@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -116,6 +117,28 @@ func TestEntityWriteAndBusOneTx(t *testing.T) {
 	events, err := s.ListBus(ctx, 0, []string{"workspace"}, 10)
 	if err != nil || len(events) != 1 {
 		t.Fatalf("bus: %v len=%d", err, len(events))
+	}
+}
+
+func TestAppendEntityWriteFailureLeavesNoBusRow(t *testing.T) {
+	t.Parallel()
+	s := openTest(t)
+	ctx := context.Background()
+
+	_, err := s.AppendEntity(ctx, func(tx *sql.Tx) error {
+		return errors.New("write failed")
+	}, store.BusEvent{
+		Topic: "workspace.created", Entity: "workspace", EntityID: "ws_fail", Action: "created",
+	})
+	if err == nil {
+		t.Fatal("expected write failure")
+	}
+	events, err := s.ListBus(ctx, 0, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("bus row must not commit when write fails: len=%d", len(events))
 	}
 }
 

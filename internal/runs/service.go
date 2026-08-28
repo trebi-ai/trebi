@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -28,6 +29,9 @@ type agentSnap struct {
 	State AgentState
 	Since time.Time
 }
+
+// ErrInvalidDecision reports an approval decision other than allow|deny.
+var ErrInvalidDecision = errors.New("decision must be allow or deny")
 
 // New creates a runs service.
 func New(st *store.Store) *Service {
@@ -157,6 +161,24 @@ func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 	return scanRun(row, s)
 }
 
+// Approval is a decided permission prompt for a run.
+type Approval struct {
+	ID        string `json:"id"`
+	RunID     string `json:"run_id"`
+	Status    string `json:"status"`
+	Prompt    string `json:"prompt"`
+	Decision  string `json:"decision,omitempty"`
+	Revision  int64  `json:"revision"`
+	CreatedAt string `json:"created_at"`
+	DecidedAt string `json:"decided_at,omitempty"`
+}
+
+// ApprovalListOpts filters for ListApprovals.
+type ApprovalListOpts struct {
+	Limit  int
+	Cursor string
+}
+
 // ListOpts filters for List.
 type ListOpts struct {
 	Workspace string
@@ -247,6 +269,69 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]*Run, error) {
 			continue
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DecideApproval records a allow|deny decision for runID in one transaction
+// with the approval.decided bus frame. Revision starts at 1 (insert-as-decided).
+func (s *Service) DecideApproval(ctx context.Context, runID, decision string) (*Approval, error) {
+	if decision == "" {
+		decision = "allow"
+	}
+	if decision != "allow" && decision != "deny" {
+		return nil, ErrInvalidDecision
+	}
+	if _, err := s.Get(ctx, runID); err != nil {
+		return nil, err
+	}
+	id := ulid.Make().String()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	a := &Approval{
+		ID: id, RunID: runID, Status: "decided", Decision: decision,
+		Revision: 1, CreatedAt: now, DecidedAt: now,
+	}
+	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO approvals (id, run_id, question, status, decision, created_at, decided_at, revision)
+			VALUES (?,?,?,?,?,?,?,1)`, id, runID, "", "decided", decision, now, now)
+		return err
+	}, store.BusEvent{
+		Topic: "approval.decided", Entity: "approval", EntityID: id, Action: "updated",
+		Revision: 1,
+		Attrs:    map[string]string{"run_id": runID, "decision": decision},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+// ListApprovals returns approval rows newest-id first.
+func (s *Service) ListApprovals(ctx context.Context, opts ApprovalListOpts) ([]Approval, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 50
+	}
+	q := `SELECT id, run_id, status, COALESCE(question,''), COALESCE(decision,''), revision, created_at, COALESCE(decided_at,'')
+		FROM approvals WHERE 1=1`
+	var args []any
+	if opts.Cursor != "" {
+		q += ` AND id < ?`
+		args = append(args, opts.Cursor)
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, opts.Limit)
+	rows, err := s.st.DB().QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Approval{}
+	for rows.Next() {
+		var a Approval
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Status, &a.Prompt, &a.Decision, &a.Revision, &a.CreatedAt, &a.DecidedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }

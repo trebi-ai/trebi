@@ -371,7 +371,7 @@ func applyMCPClaude(inherit bool, userHome, harnessDir string, force bool) error
 	userMCP := filepath.Join(userHome, ".claude", "mcp.json")
 	harnessMCP := filepath.Join(harnessDir, "mcp.json")
 	if !inherit {
-		_ = removeJobiSymlink(harnessMCP)
+		_ = removeJobiSymlink(harnessMCP) // leftover symlink is harmless if inherit is off
 		// leave harness .claude.json mcpServers as-is (v1)
 		return nil
 	}
@@ -404,7 +404,7 @@ func mergeMCPServers(userClaudeJSON, harnessClaudeJSON string) error {
 	}
 	m := map[string]any{}
 	if b, err := os.ReadFile(harnessClaudeJSON); err == nil {
-		_ = json.Unmarshal(b, &m)
+		_ = json.Unmarshal(b, &m) // corrupt harness json: start from empty map
 		if m == nil {
 			m = map[string]any{}
 		}
@@ -436,9 +436,7 @@ func mergeMCPServers(userClaudeJSON, harnessClaudeJSON string) error {
 func applyClaudeSettingsPrefs(userHome, harnessDir string, pluginEnablement, statusLine bool) error {
 	userPath := filepath.Join(userHome, ".claude", "settings.json")
 	harnessPath := filepath.Join(harnessDir, "settings.json")
-	jobiSettings := filepath.Join(harnessDir, "jobi-settings.json")
-	// Never touch jobi-settings.json
-	_ = jobiSettings
+	// Never touch harnessDir/jobi-settings.json.
 
 	ub, err := os.ReadFile(userPath)
 	if err != nil {
@@ -453,7 +451,7 @@ func applyClaudeSettingsPrefs(userHome, harnessDir string, pluginEnablement, sta
 	}
 	h := map[string]any{}
 	if hb, err := os.ReadFile(harnessPath); err == nil {
-		_ = json.Unmarshal(hb, &h)
+		_ = json.Unmarshal(hb, &h) // corrupt settings: start from empty map
 		if h == nil {
 			h = map[string]any{}
 		}
@@ -595,7 +593,7 @@ func applyOpenCodePlugins(inherit bool, userHome, harnessDir string, force bool)
 			}
 			target, _ := os.Readlink(p)
 			if strings.HasPrefix(target, userPlugins) {
-				_ = os.Remove(p)
+				_ = os.Remove(p) // stale plugin symlink; skip and continue the sweep
 			}
 		}
 		return nil

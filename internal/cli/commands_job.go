@@ -50,10 +50,33 @@ func jobCommand() *cli.Command {
 				Action:    runJobValidate,
 			},
 			&cli.Command{
-				Name:      "memory",
-				Usage:     "get job MEMORY.md",
-				ArgsUsage: "<name>",
-				Action:    runJobMemory,
+				Name:  "memory",
+				Usage: "job MEMORY.md ledger",
+				Subcommands: []*cli.Command{
+					{
+						Name:      "show",
+						Usage:     "print MEMORY.md",
+						ArgsUsage: "<name>",
+						Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+						Action:    runJobMemory,
+					},
+					{
+						Name:      "add",
+						Usage:     "append a ledger entry",
+						ArgsUsage: "<name>",
+						Flags: []cli.Flag{
+							&cli.StringFlag{Name: "text", Usage: "entry text", Required: true},
+							&cli.StringFlag{Name: "date", Usage: "YYYY-MM-DD (default today)"},
+						},
+						Action: runJobMemoryAdd,
+					},
+					{
+						Name:      "remove",
+						Usage:     "delete a ledger entry",
+						ArgsUsage: "<name> <entry-id>",
+						Action:    runJobMemoryRemove,
+					},
+				},
 			},
 		),
 	}
@@ -232,17 +255,51 @@ func runJobValidate(c *cli.Context) error {
 }
 
 func runJobMemory(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("usage: trebi job memory show <name>")
+	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	path := withQuery("/v1/jobs/"+c.Args().Get(0)+"/memory", workspaceQ(workspaceFor(c)))
+	path := withQuery("/v1/jobs/"+name+"/memory", workspaceQ(workspaceFor(c)))
 	var body map[string]any
 	if err := client.GetJSON(path, &body); err != nil {
 		return err
 	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(body)
+	}
 	fmt.Fprint(outWriter(c), mapStr(body, "content"))
 	return nil
+}
+
+func runJobMemoryAdd(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("usage: trebi job memory add <name> --text <text>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	req := BuildJobMemoryEntryAdd(name, workspaceFor(c), c.String("date"), c.String("text"))
+	return client.DoHTTP(req, nil)
+}
+
+func runJobMemoryRemove(c *cli.Context) error {
+	name, eid := c.Args().Get(0), c.Args().Get(1)
+	if name == "" || eid == "" {
+		return fmt.Errorf("usage: trebi job memory remove <name> <entry-id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildJobMemoryEntryDelete(name, workspaceFor(c), eid), nil)
 }
 
 func runJobSchedule(c *cli.Context) error {

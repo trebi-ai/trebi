@@ -15,9 +15,12 @@ func integrationCommand() *cli.Command {
 		Usage: "manage integrations (jobi sources)",
 		Subcommands: []*cli.Command{
 			{
-				Name:   "list",
-				Usage:  "list integrations",
-				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Name:  "list",
+				Usage: "list integrations",
+				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
 				Action: runIntegrationList,
 			},
 			{
@@ -86,6 +89,8 @@ func integrationQueueCommand() *cli.Command {
 		Usage: "inspect event queue",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "status", Usage: "filter by status"},
+			&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (queue id)"},
+			&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
 			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 		},
 		Action: func(c *cli.Context) error {
@@ -93,10 +98,7 @@ func integrationQueueCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			path := "/v1/queue"
-			if s := c.String("status"); s != "" {
-				path += "?status=" + s
-			}
+			path := BuildQueueListPath(c.String("status"), c.String("cursor"), c.Int("limit"))
 			var body struct {
 				Items []map[string]any `json:"items"`
 			}
@@ -162,7 +164,7 @@ func runIntegrationList(c *cli.Context) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON("/v1/integrations", &body); err != nil {
+	if err := client.GetJSON(BuildIntegrationsListPath(c.Int("limit")), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {

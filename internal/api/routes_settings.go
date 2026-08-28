@@ -35,6 +35,11 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []skills.Skill{}
 	}
+	// Name-keyed collection: limit only, no ULID cursor.
+	limit := parseLimit(r)
+	if len(list) > limit {
+		list = list[:limit]
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"skills": list})
 }
 

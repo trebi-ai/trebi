@@ -45,6 +45,33 @@ func assistantCommand() *cli.Command {
 				Action: runAssistantWake,
 			},
 			{
+				Name:  "memory",
+				Usage: "assistant MEMORY.md ledger",
+				Subcommands: []*cli.Command{
+					{
+						Name:   "show",
+						Usage:  "print MEMORY.md",
+						Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+						Action: runAssistantMemory,
+					},
+					{
+						Name:  "add",
+						Usage: "append a ledger entry",
+						Flags: []cli.Flag{
+							&cli.StringFlag{Name: "text", Usage: "entry text", Required: true},
+							&cli.StringFlag{Name: "date", Usage: "YYYY-MM-DD (default today)"},
+						},
+						Action: runAssistantMemoryAdd,
+					},
+					{
+						Name:      "remove",
+						Usage:     "delete a ledger entry",
+						ArgsUsage: "<entry-id>",
+						Action:    runAssistantMemoryRemove,
+					},
+				},
+			},
+			{
 				Name:  "history",
 				Usage: "list assistant runs (shortcut for runs list --kind assistant)",
 				Flags: []cli.Flag{
@@ -61,6 +88,56 @@ func assistantCommand() *cli.Command {
 			},
 		},
 	}
+}
+
+func runAssistantMemory(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.GetJSON("/v1/workspaces/"+wsID+"/assistant/memory", &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(body)
+	}
+	fmt.Fprint(outWriter(c), mapStr(body, "content"))
+	return nil
+}
+
+func runAssistantMemoryAdd(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildAssistantMemoryEntryAdd(wsID, c.String("date"), c.String("text")), nil)
+}
+
+func runAssistantMemoryRemove(c *cli.Context) error {
+	eid := c.Args().Get(0)
+	if eid == "" {
+		return fmt.Errorf("usage: trebi assistant memory remove <entry-id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildAssistantMemoryEntryDelete(wsID, eid), nil)
 }
 
 func runAssistantWake(c *cli.Context) error {

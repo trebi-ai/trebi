@@ -43,6 +43,113 @@ func BuildRunsKill(id string) HTTPRequest {
 	}
 }
 
+// BuildRunsRetry builds POST /v1/runs/{id}/retry.
+func BuildRunsRetry(id string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/runs/" + url.PathEscape(id) + "/retry",
+	}
+}
+
+// BuildEventsListPath builds GET /v1/events?cursor=&limit=.
+func BuildEventsListPath(cursor string, limit int) string {
+	return listQuery("/v1/events", cursor, limit)
+}
+
+// BuildEventsRetrigger builds POST /v1/events/{id}/retrigger.
+func BuildEventsRetrigger(id string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/events/" + url.PathEscape(id) + "/retrigger",
+	}
+}
+
+// BuildConversationsListPath builds GET /v1/conversations?cursor=&limit=.
+func BuildConversationsListPath(cursor string, limit int) string {
+	return listQuery("/v1/conversations", cursor, limit)
+}
+
+// BuildConversationGet builds GET /v1/conversations/{id}.
+func BuildConversationGet(id string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/conversations/" + url.PathEscape(id)}
+}
+
+// BuildApprovalsListPath builds GET /v1/approvals?cursor=&limit=.
+func BuildApprovalsListPath(cursor string, limit int) string {
+	return listQuery("/v1/approvals", cursor, limit)
+}
+
+// BuildServiceShutdown builds POST /v1/system/shutdown.
+func BuildServiceShutdown() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/system/shutdown"}
+}
+
+// BuildJobMemoryEntryAdd builds POST /v1/jobs/{name}/memory/entries.
+func BuildJobMemoryEntryAdd(name, workspace, date, text string) HTTPRequest {
+	body := map[string]any{"text": text}
+	if date != "" {
+		body["date"] = date
+	}
+	return HTTPRequest{
+		Method: "POST",
+		Path:   withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory/entries", workspaceQ(workspace)),
+		Body:   body,
+	}
+}
+
+// BuildJobMemoryEntryDelete builds DELETE /v1/jobs/{name}/memory/entries/{id}.
+func BuildJobMemoryEntryDelete(name, workspace, entryID string) HTTPRequest {
+	return HTTPRequest{
+		Method: "DELETE",
+		Path:   withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory/entries/"+url.PathEscape(entryID), workspaceQ(workspace)),
+	}
+}
+
+// BuildAssistantMemoryEntryAdd builds POST /v1/workspaces/{id}/assistant/memory/entries.
+func BuildAssistantMemoryEntryAdd(workspaceID, date, text string) HTTPRequest {
+	body := map[string]any{"text": text}
+	if date != "" {
+		body["date"] = date
+	}
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory/entries",
+		Body:   body,
+	}
+}
+
+// BuildAssistantMemoryEntryDelete builds DELETE /v1/workspaces/{id}/assistant/memory/entries/{eid}.
+func BuildAssistantMemoryEntryDelete(workspaceID, entryID string) HTTPRequest {
+	return HTTPRequest{
+		Method: "DELETE",
+		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory/entries/" + url.PathEscape(entryID),
+	}
+}
+
+// BuildQueueListPath builds GET /v1/queue?status=&cursor=&limit=.
+func BuildQueueListPath(status, cursor string, limit int) string {
+	kv := map[string]string{"status": status, "cursor": cursor}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return withQuery("/v1/queue", kv)
+}
+
+// BuildSchedulesListPath builds GET /v1/schedules?limit=.
+func BuildSchedulesListPath(limit int) string {
+	return listQuery("/v1/schedules", "", limit)
+}
+
+// BuildSkillsListPath builds GET /v1/skills?limit=.
+func BuildSkillsListPath(limit int) string {
+	return listQuery("/v1/skills", "", limit)
+}
+
+// BuildIntegrationsListPath builds GET /v1/integrations?limit=.
+func BuildIntegrationsListPath(limit int) string {
+	return listQuery("/v1/integrations", "", limit)
+}
+
 // BuildInboxListPath builds GET /v1/inbox query from list flags.
 func BuildInboxListPath(status, kind, cursor string, limit int) string {
 	kv := map[string]string{"status": status, "kind": kind, "cursor": cursor}
@@ -370,6 +477,14 @@ func FilterJobsByKind(rows []map[string]any, assistantsOnly, jobsOnly bool) []ma
 		}
 	}
 	return out
+}
+
+func listQuery(path, cursor string, limit int) string {
+	kv := map[string]string{"cursor": cursor}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return withQuery(path, kv)
 }
 
 func withQuery(path string, kv map[string]string) string {

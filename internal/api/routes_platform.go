@@ -10,11 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"time"
 
-	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -130,7 +127,10 @@ func setETag(w http.ResponseWriter, path string) {
 	w.Header().Set("ETag", `"`+job.ContentHash(data)+`"`)
 }
 
-// appendBus emits one bus event and logs append failures.
+// appendBus emits one bus event after a non-DB write (files, secrets, config).
+// Do not use this for DB-backed entities — wrap those with store.AppendEntity
+// so the row and the bus frame commit together. A crash must not advance an
+// entity past what the bus recorded.
 func (s *Server) appendBus(ctx context.Context, ev store.BusEvent) {
 	if _, err := s.st.Append(ctx, ev); err != nil {
 		s.log.Warn("bus append failed", "topic", ev.Topic, "error", err)
@@ -174,7 +174,7 @@ func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
-	_, _ = w.Write(data)
+	_, _ = w.Write(data) // client disconnect after headers is not actionable
 }
 
 func (s *Server) handleRunLog(w http.ResponseWriter, r *http.Request) {
@@ -297,24 +297,26 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 		if prev.EndReason == runs.EndLimit {
 			br = dispatch.BlockLimitExceeded
 		}
-		id := ulid.Make().String()
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		_, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO event_queue (
-			id, integration, workspace_id, job, kind, conversation_key, status, block_reason,
-			resume_of, prompt, trace_id, created_at, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			id, "retry", prev.Workspace, prev.Job, prev.Kind, prev.ConversationKey,
-			string(dispatch.QueueBlocked), string(br), prev.ID, "resume after "+string(prev.EndReason),
-			ulid.Make().String(), now, now)
-		if err != nil {
+		item := &dispatch.QueueItem{
+			Integration:     "retry",
+			WorkspaceID:     prev.Workspace,
+			Job:             prev.Job,
+			Kind:            prev.Kind,
+			ConversationKey: prev.ConversationKey,
+			Status:          dispatch.QueueBlocked,
+			BlockReason:     br,
+			ResumeOf:        prev.ID,
+			Prompt:          "resume after " + string(prev.EndReason),
+		}
+		if err := s.queue.Enqueue(r.Context(), item); err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
 		s.runs.AddEvent(r.Context(), prev.ID, "parked", "retry", map[string]string{
-			"queue_id": id, "block_reason": string(br),
+			"queue_id": item.ID, "block_reason": string(br),
 		})
 		writeJSON(w, http.StatusOK, map[string]any{
-			"action": "parked", "queue_id": id, "block_reason": br, "run_id": prev.ID,
+			"action": "parked", "queue_id": item.ID, "block_reason": br, "run_id": prev.ID,
 		})
 		return
 	case runs.EndSessionGone, runs.EndLaunch:
@@ -330,7 +332,7 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 			if err == nil && run != nil {
 				// Inject failure note if session live
 				if run.TmuxSession != "" {
-					_ = s.runs.InjectMessage(r.Context(), run.ID, note)
+					_ = s.runs.InjectMessage(r.Context(), run.ID, note) // resume already succeeded; note is best-effort
 				}
 				writeJSON(w, http.StatusCreated, map[string]any{
 					"action": "resume", "run": run, "note": note,
@@ -381,36 +383,30 @@ func (s *Server) handleRunApprove(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Decision string `json:"decision"` // allow|deny
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	if body.Decision == "" {
-		body.Decision = "allow"
+	_ = json.NewDecoder(r.Body).Decode(&body) // empty body defaults to allow
+	a, err := s.runs.DecideApproval(r.Context(), r.PathValue("id"), body.Decision)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+		return
 	}
-	id := ulid.Make().String()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	runID := r.PathValue("id")
-	_, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO approvals (id, run_id, question, status, decision, created_at, decided_at)
-		VALUES (?,?,?,?,?,?,?)`, id, runID, "", "decided", body.Decision, now, now)
+	if errors.Is(err, runs.ErrInvalidDecision) {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	s.appendBus(r.Context(), store.BusEvent{
-		Topic: "approval.decided", Entity: "approval", EntityID: id, Action: "updated",
-		Attrs: map[string]string{"run_id": runID, "decision": body.Decision},
-	})
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "decision": body.Decision})
+	writeJSON(w, http.StatusOK, a)
 }
 
 func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	cursor := q.Get("cursor")
-	if cursor != "" {
-		if _, err := ulid.Parse(cursor); err != nil {
-			writeErr(w, http.StatusBadRequest, "validation", "malformed cursor: not an inbox id")
-			return
-		}
+	cursor, ok := parseULIDCursor(w, r, "inbox")
+	if !ok {
+		return
 	}
-	limit, _ := strconv.Atoi(q.Get("limit"))
+	limit := parseLimit(r)
 	items, err := s.alerts.List(r.Context(), alerts.ListOpts{
 		Status: q.Get("status"), Kind: q.Get("kind"), Limit: limit, Cursor: cursor,
 	})
@@ -484,7 +480,7 @@ func (s *Server) handleEventRetrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var event any
-	_ = json.Unmarshal([]byte(raw), &event)
+	_ = json.Unmarshal([]byte(raw), &event) // retrigger still fires with a raw string if json is corrupt
 	_, err = s.integ.InjectEvent(r.Context(), integ, event)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -493,38 +489,42 @@ func (s *Server) handleEventRetrigger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"retrigged": true, "event_id": id})
 }
 
-// listRows runs query, scans nCols strings per row, and maps each row to a
-// wire object. A query error returns an empty list (table may be absent).
-func (s *Server) listRows(ctx context.Context, query string, nCols int, mapRow func([]string) map[string]any) []map[string]any {
-	list := []map[string]any{}
-	rows, err := s.st.DB().QueryContext(ctx, query)
+func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
+	cursor, ok := parseULIDCursor(w, r, "conversation")
+	if !ok {
+		return
+	}
+	limit := parseLimit(r)
+	q := `SELECT id, workspace_id, COALESCE(key,''), COALESCE(title,''), updated_at
+		FROM conversations WHERE 1=1`
+	args := []any{}
+	if cursor != "" {
+		q += ` AND id < ?`
+		args = append(args, cursor)
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.st.DB().QueryContext(r.Context(), q, args...)
 	if err != nil {
-		return list
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
 	}
 	defer rows.Close()
+	list := []map[string]any{}
 	for rows.Next() {
-		vals := make([]string, nCols)
-		ptrs := make([]any, nCols)
-		for i := range vals {
-			ptrs[i] = &vals[i]
+		var id, ws, key, title, updated string
+		if rows.Scan(&id, &ws, &key, &title, &updated) != nil {
+			continue
 		}
-		if rows.Scan(ptrs...) == nil {
-			list = append(list, mapRow(vals))
-		}
-	}
-	return list
-}
-
-func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
-	list := s.listRows(r.Context(), `
-		SELECT id, workspace_id, COALESCE(key,''), COALESCE(title,''), updated_at
-		FROM conversations ORDER BY updated_at DESC LIMIT 100`, 5,
-		func(v []string) map[string]any {
-			return map[string]any{
-				"id": v[0], "workspace": v[1], "key": v[2], "title": v[3], "updated_at": v[4],
-			}
+		list = append(list, map[string]any{
+			"id": id, "workspace": ws, "key": key, "title": title, "updated_at": updated,
 		})
-	writeJSON(w, http.StatusOK, map[string]any{"conversations": list})
+	}
+	resp := map[string]any{"conversations": list}
+	if len(list) == limit {
+		resp["next_cursor"] = list[len(list)-1]["id"]
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleConversationGet(w http.ResponseWriter, r *http.Request) {
@@ -543,15 +543,23 @@ func (s *Server) handleConversationGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
-	list := s.listRows(r.Context(), `
-		SELECT id, run_id, status, COALESCE(question,''), created_at FROM approvals
-		ORDER BY created_at DESC LIMIT 100`, 5,
-		func(v []string) map[string]any {
-			return map[string]any{
-				"id": v[0], "run_id": v[1], "status": v[2], "prompt": v[3], "created_at": v[4],
-			}
-		})
-	writeJSON(w, http.StatusOK, map[string]any{"approvals": list})
+	cursor, ok := parseULIDCursor(w, r, "approval")
+	if !ok {
+		return
+	}
+	limit := parseLimit(r)
+	list, err := s.runs.ListApprovals(r.Context(), runs.ApprovalListOpts{
+		Limit: limit, Cursor: cursor,
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	resp := map[string]any{"approvals": list}
+	if len(list) == limit {
+		resp["next_cursor"] = list[len(list)-1].ID
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleSystemLogs(w http.ResponseWriter, r *http.Request) {
@@ -708,7 +716,7 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	_ = s.ws.RebuildIndex(r.Context(), ws)
+	_ = s.ws.RebuildIndex(r.Context(), ws) // file is written; watcher will retry the index
 	s.appendBus(r.Context(), store.BusEvent{
 		Topic: "job.created", Entity: "job", EntityID: body.Name, Action: "created",
 		Attrs: map[string]string{"workspace": ws.ID, "path": path},
@@ -801,7 +809,7 @@ func (s *Server) handleJobDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ws, err := s.ws.Get(r.Context(), row.WorkspaceID); err == nil {
-		_ = s.ws.RebuildIndex(r.Context(), ws)
+		_ = s.ws.RebuildIndex(r.Context(), ws) // file is gone; watcher will retry the index
 	}
 	s.appendBus(r.Context(), store.BusEvent{
 		Topic: "job.deleted", Entity: "job", EntityID: name, Action: "deleted",
@@ -814,25 +822,26 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name string `json:"name"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is a no-op get
 	id := r.PathValue("id")
 	if body.Name != "" {
-		_, err := s.st.DB().ExecContext(r.Context(), `UPDATE workspaces SET name=?, updated_at=? WHERE id=?`,
-			body.Name, time.Now().UTC().Format(time.RFC3339), id)
+		ws, err := s.ws.Rename(r.Context(), id, body.Name)
+		if errors.Is(err, workspaces.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+			return
+		}
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
+		writeJSON(w, http.StatusOK, ws)
+		return
 	}
 	ws, err := s.ws.Get(r.Context(), id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
 		return
 	}
-	s.appendBus(r.Context(), store.BusEvent{
-		Topic: "workspace.updated", Entity: "workspace", EntityID: id, Action: "updated",
-		Attrs: map[string]string{"name": ws.Name},
-	})
 	writeJSON(w, http.StatusOK, ws)
 }
 
@@ -856,7 +865,7 @@ func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
 		runID = r.URL.Query().Get("run_id")
 	}
 	body, _ := io.ReadAll(r.Body)
-	_ = body
+	_ = body // hook payload is logged via AddEvent; body is unused by state mapping
 	if runID != "" {
 		switch event {
 		case "waiting", "permission-request":
@@ -870,5 +879,5 @@ func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
 	}
 	// Claude requires JSON hook stdout
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte("{}"))
+	_, _ = w.Write([]byte("{}")) // Claude requires JSON hook stdout; disconnect is fine
 }

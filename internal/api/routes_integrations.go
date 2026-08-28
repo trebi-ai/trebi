@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	config "github.com/trebi-ai/trebi/internal/config"
@@ -41,8 +42,17 @@ func (s *Server) routeIntegrations(mux *http.ServeMux) {
 }
 
 func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
-	_ = s.integ.Load()
-	writeJSON(w, http.StatusOK, map[string]any{"integrations": s.integ.List()})
+	_ = s.integ.Load() // refresh from disk; stale list is worse than a load error
+	list := s.integ.List()
+	sort.Slice(list, func(i, j int) bool {
+		return fmt.Sprint(list[i]["name"]) < fmt.Sprint(list[j]["name"])
+	})
+	// Name-keyed collection: limit only, no ULID cursor.
+	limit := parseLimit(r)
+	if len(list) > limit {
+		list = list[:limit]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"integrations": list})
 }
 
 func (s *Server) handleIntegrationsCreate(w http.ResponseWriter, r *http.Request) {
@@ -207,8 +217,9 @@ func (s *Server) handleIntegrationCursorPut(w http.ResponseWriter, r *http.Reque
 	var body struct {
 		LastEventID string `json:"last_event_id"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(r.Body).Decode(&body) // empty body sets last_event_id to ""
 	now := time.Now().UTC().Format(time.RFC3339)
+	// integration_cursors is internal bookkeeping, not a B10 bus entity.
 	_, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO integration_cursors (name, last_event_id, updated_at)
 		VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
 		name, body.LastEventID, now)
@@ -252,7 +263,8 @@ func (s *Server) handleHarnessAuthGet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHarnessAuthPost(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	now := time.Now().UTC().Format(time.RFC3339)
+	// harness_state is internal bookkeeping, not a B10 bus entity.
 	_, _ = s.st.DB().ExecContext(r.Context(), `INSERT INTO harness_state (name, auth_ok, updated_at)
-		VALUES (?,1,?) ON CONFLICT(name) DO UPDATE SET auth_ok=1, updated_at=excluded.updated_at`, name, now)
+		VALUES (?,1,?) ON CONFLICT(name) DO UPDATE SET auth_ok=1, updated_at=excluded.updated_at`, name, now) // probe row; auth_ok is best-effort
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "auth_ok": true})
 }

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -384,6 +385,109 @@ func TestDrainFlagPersistsAcrossRestart(t *testing.T) {
 	})
 	if code != 201 {
 		t.Fatalf("manual under flag: want 201 got %d %v", code, body)
+	}
+}
+
+func TestWorkspaceRenameAtomicWithBus(t *testing.T) {
+	s, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "orig")
+	code, body, _ := doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID, s.Token(), map[string]any{"name": "renamed"})
+	if code != 200 {
+		t.Fatalf("%d %v", code, body)
+	}
+	if fmt.Sprint(body["name"]) != "renamed" {
+		t.Fatalf("name %v", body["name"])
+	}
+	rev := int64(0)
+	switch n := body["revision"].(type) {
+	case float64:
+		rev = int64(n)
+	case json.Number:
+		rev, _ = n.Int64()
+	}
+	if rev < 2 {
+		t.Fatalf("revision %v want >=2", body["revision"])
+	}
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	defer st.Close()
+	var dbRev int64
+	var dbName string
+	if err := st.DB().QueryRow(`SELECT name, revision FROM workspaces WHERE id=?`, wsID).Scan(&dbName, &dbRev); err != nil {
+		t.Fatal(err)
+	}
+	if dbName != "renamed" || dbRev != rev {
+		t.Fatalf("db name=%s rev=%d", dbName, dbRev)
+	}
+	evs, err := st.ListBus(t.Context(), 0, []string{"workspace.updated"}, 10)
+	if err != nil || len(evs) < 1 {
+		t.Fatalf("bus %d %v", len(evs), err)
+	}
+	last := evs[len(evs)-1]
+	if last.Revision != rev || last.ID != wsID {
+		t.Fatalf("frame %+v want rev=%d id=%s", last, rev, wsID)
+	}
+}
+
+func TestListRoutesCursorAndLimit(t *testing.T) {
+	s, base, dir := startAPI(t)
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	defer st.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	ctx := t.Context()
+	for i := 0; i < 5; i++ {
+		id := ulid.Make().String()
+		if _, err := st.DB().ExecContext(ctx, `INSERT INTO conversations (id, workspace_id, key, title, created_at, updated_at)
+			VALUES (?,?,?,?,?,?)`, id, "ws", fmt.Sprintf("k%d", i), "t", now, now); err != nil {
+			t.Fatal(err)
+		}
+		eid := ulid.Make().String()
+		if _, err := st.DB().ExecContext(ctx, `INSERT INTO events (id, integration, received_at, summary, trace_id)
+			VALUES (?,?,?,?,?)`, eid, "src", now, "s", eid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := dispatch.NewQueue(st)
+	for i := 0; i < 5; i++ {
+		if err := q.Enqueue(ctx, &dispatch.QueueItem{Integration: "src", WorkspaceID: "ws", Job: "j"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	assertPage := func(path, key string) {
+		t.Helper()
+		code, body, _ := doJSON(t, "GET", base+path+"?limit=2", s.Token(), nil)
+		if code != 200 {
+			t.Fatalf("%s %d %v", path, code, body)
+		}
+		items, _ := body[key].([]any)
+		if len(items) != 2 {
+			t.Fatalf("%s page size %d want 2 (%v)", path, len(items), body)
+		}
+		next, _ := body["next_cursor"].(string)
+		if next == "" {
+			t.Fatalf("%s missing next_cursor", path)
+		}
+		code, body, _ = doJSON(t, "GET", base+path+"?limit=2&cursor="+next, s.Token(), nil)
+		if code != 200 {
+			t.Fatalf("%s page2 %d %v", path, code, body)
+		}
+		code, body, _ = doJSON(t, "GET", base+path+"?cursor=@@bad@@", s.Token(), nil)
+		if code != 400 || errCode(body) != "validation" {
+			t.Fatalf("%s bad cursor %d %v", path, code, body)
+		}
+	}
+	assertPage("/v1/conversations", "conversations")
+	assertPage("/v1/events", "events")
+	assertPage("/v1/queue", "items")
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/skills?limit=1", s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("skills %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/approvals?cursor=@@bad@@", s.Token(), nil)
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("approvals bad cursor %d %v", code, body)
 	}
 }
 

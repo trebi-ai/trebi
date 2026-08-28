@@ -27,6 +27,7 @@ func scheduleCommand() *cli.Command {
 				Name:  "list",
 				Usage: "list schedules",
 				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: func(c *cli.Context) error {
@@ -37,7 +38,7 @@ func scheduleCommand() *cli.Command {
 					var body struct {
 						Schedules []map[string]any `json:"schedules"`
 					}
-					if err := client.GetJSON("/v1/schedules", &body); err != nil {
+					if err := client.GetJSON(BuildSchedulesListPath(c.Int("limit")), &body); err != nil {
 						return err
 					}
 					if c.Bool("json") {

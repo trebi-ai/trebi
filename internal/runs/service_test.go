@@ -327,3 +327,44 @@ func TestListHarnessAndModelFilters(t *testing.T) {
 		t.Fatalf("harness+model filter: got %+v", both)
 	}
 }
+
+func TestDecideApprovalAtomicWithBus(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st)
+	ctx := context.Background()
+
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := svc.DecideApproval(ctx, run.ID, "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Revision != 1 || a.Decision != "allow" || a.RunID != run.ID {
+		t.Fatalf("%+v", a)
+	}
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM approvals WHERE id=?`, a.ID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("row n=%d err=%v", n, err)
+	}
+	evs, err := st.ListBus(ctx, 0, []string{"approval.decided"}, 10)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("bus %d %v", len(evs), err)
+	}
+	if evs[0].Revision != 1 || evs[0].ID != a.ID {
+		t.Fatalf("frame %+v", evs[0])
+	}
+
+	if _, err := svc.DecideApproval(ctx, run.ID, "nope"); err == nil {
+		t.Fatal("expected invalid decision")
+	}
+	if _, err := svc.DecideApproval(ctx, "missing", "allow"); err == nil {
+		t.Fatal("expected missing run")
+	}
+}

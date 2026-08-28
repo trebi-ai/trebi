@@ -359,13 +359,13 @@ func TestCommandRegistration(t *testing.T) {
 	for _, c := range app.Commands {
 		names[c.Name] = true
 	}
-	for _, want := range []string{"list", "run", "runs", "job", "harness", "integration", "config", "service"} {
+	for _, want := range []string{"list", "run", "runs", "job", "harness", "integration", "config", "service", "conversation", "approvals", "events"} {
 		if !names[want] {
 			t.Fatalf("missing top-level %s", want)
 		}
 	}
 	svc := findCmd(app.Commands, "service")
-	for _, want := range []string{"install", "uninstall", "start", "stop", "restart", "status", "logs", "daemon"} {
+	for _, want := range []string{"install", "uninstall", "start", "stop", "restart", "status", "logs", "daemon", "shutdown"} {
 		if findCmd(svc.Subcommands, want) == nil {
 			t.Fatalf("service missing %s", want)
 		}
@@ -423,6 +423,19 @@ func TestCommandRegistration(t *testing.T) {
 	if findCmd(findCmd(app.Commands, "runs").Subcommands, "attach") == nil {
 		t.Fatal("runs attach missing")
 	}
+	if findCmd(findCmd(app.Commands, "runs").Subcommands, "retry") == nil {
+		t.Fatal("runs retry missing")
+	}
+	ev := findCmd(app.Commands, "events")
+	if findCmd(ev.Subcommands, "retrigger") == nil {
+		t.Fatal("events retrigger missing")
+	}
+	mem := findCmd(findCmd(app.Commands, "job").Subcommands, "memory")
+	for _, want := range []string{"show", "add", "remove"} {
+		if findCmd(mem.Subcommands, want) == nil {
+			t.Fatalf("job memory missing %s", want)
+		}
+	}
 	cfgShow := findCmd(findCmd(app.Commands, "config").Subcommands, "show")
 	if !hasFlag(cfgShow, "yaml") || !hasFlag(cfgShow, "tree") {
 		t.Fatal("config show missing --yaml/--tree")
@@ -474,6 +487,50 @@ func TestBuildRunsKill(t *testing.T) {
 	req := BuildRunsKill("01ABC")
 	if req.Method != "POST" || req.Path != "/v1/runs/01ABC/kill" {
 		t.Fatalf("%+v", req)
+	}
+}
+
+func TestBuildContractGapRequests(t *testing.T) {
+	t.Parallel()
+	req := BuildRunsRetry("01ABC")
+	if req.Method != "POST" || req.Path != "/v1/runs/01ABC/retry" {
+		t.Fatalf("retry %+v", req)
+	}
+	req = BuildEventsRetrigger("01EV")
+	if req.Method != "POST" || req.Path != "/v1/events/01EV/retrigger" {
+		t.Fatalf("retrigger %+v", req)
+	}
+	req = BuildConversationGet("01C")
+	if req.Method != "GET" || req.Path != "/v1/conversations/01C" {
+		t.Fatalf("conv get %+v", req)
+	}
+	req = BuildServiceShutdown()
+	if req.Method != "POST" || req.Path != "/v1/system/shutdown" {
+		t.Fatalf("shutdown %+v", req)
+	}
+	req = BuildJobMemoryEntryAdd("demo", "ws1", "2026-08-28", "note")
+	if req.Method != "POST" || !strings.Contains(req.Path, "/v1/jobs/demo/memory/entries") {
+		t.Fatalf("mem add %+v", req)
+	}
+	req = BuildJobMemoryEntryDelete("demo", "ws1", "e1")
+	if req.Method != "DELETE" || !strings.Contains(req.Path, "/memory/entries/e1") {
+		t.Fatalf("mem del %+v", req)
+	}
+	req = BuildAssistantMemoryEntryAdd("ws1", "", "note")
+	if req.Method != "POST" || !strings.Contains(req.Path, "/assistant/memory/entries") {
+		t.Fatalf("asst add %+v", req)
+	}
+	req = BuildAssistantMemoryEntryDelete("ws1", "e1")
+	if req.Method != "DELETE" || !strings.Contains(req.Path, "/entries/e1") {
+		t.Fatalf("asst del %+v", req)
+	}
+	path := BuildEventsListPath("01C", 10)
+	if !strings.Contains(path, "cursor=01C") || !strings.Contains(path, "limit=10") {
+		t.Fatalf("events list %s", path)
+	}
+	path = BuildQueueListPath("pending", "01Q", 5)
+	if !strings.Contains(path, "status=pending") || !strings.Contains(path, "cursor=01Q") {
+		t.Fatalf("queue list %s", path)
 	}
 }
 

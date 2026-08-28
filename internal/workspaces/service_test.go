@@ -216,6 +216,55 @@ func TestRemoveEmitsWorkspaceDeleted(t *testing.T) {
 	}
 }
 
+func TestRenameBumpsRevisionAndBusFrame(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+
+	root := t.TempDir()
+	ws, err := svc.Add(ctx, root, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Revision != 1 {
+		t.Fatalf("create revision=%d want 1", ws.Revision)
+	}
+
+	seq := mustSeq(t, st)
+	got, err := svc.Rename(ctx, ws.ID, "beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "beta" || got.Revision != 2 {
+		t.Fatalf("first rename %+v", got)
+	}
+	evs, err := st.ListBus(ctx, seq, []string{"workspace.updated"}, 10)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("bus %d %v", len(evs), err)
+	}
+	if evs[0].Revision != 2 || evs[0].ID != ws.ID {
+		t.Fatalf("frame %+v", evs[0])
+	}
+
+	got, err = svc.Rename(ctx, ws.ID, "gamma")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != 3 {
+		t.Fatalf("second rename revision=%d want 3", got.Revision)
+	}
+
+	seq = mustSeq(t, st)
+	if _, err := svc.Rename(ctx, "ws_nope", "x"); !errors.Is(err, workspaces.ErrNotFound) {
+		t.Fatalf("missing id: %v", err)
+	}
+	n, err := st.ListBus(ctx, seq, nil, 10)
+	if err != nil || len(n) != 0 {
+		t.Fatalf("not-found must not emit: %d %v", len(n), err)
+	}
+}
+
 func TestRemoveNotFound(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

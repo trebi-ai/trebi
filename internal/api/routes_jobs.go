@@ -167,7 +167,8 @@ func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.st.DB().QueryContext(r.Context(), `SELECT workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at FROM schedules ORDER BY next_due_at`)
+	// Name-keyed collection: limit only, no ULID cursor.
+	rows, err := s.st.DB().QueryContext(r.Context(), `SELECT workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at FROM schedules ORDER BY next_due_at LIMIT ?`, parseLimit(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return

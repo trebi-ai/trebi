@@ -16,8 +16,12 @@ func skillCommand() *cli.Command {
 		Usage: "manage skills",
 		Subcommands: []*cli.Command{
 			{
-				Name:   "list",
-				Usage:  "list skills",
+				Name:  "list",
+				Usage: "list skills",
+				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
 				Action: runSkillList,
 			},
 			{
@@ -71,8 +75,13 @@ func runSkillList(c *cli.Context) error {
 	var body struct {
 		Skills []map[string]any `json:"skills"`
 	}
-	if err := client.GetJSON("/v1/skills", &body); err != nil {
+	if err := client.GetJSON(BuildSkillsListPath(c.Int("limit")), &body); err != nil {
 		return err
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"Name", "Provenance", "Hash", "Used 30d"})

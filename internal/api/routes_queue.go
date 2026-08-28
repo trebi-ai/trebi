@@ -17,12 +17,21 @@ func (s *Server) routeQueue(mux *http.ServeMux) {
 }
 
 func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request) {
-	items, err := s.queue.List(r.Context(), r.URL.Query().Get("status"), 50)
+	cursor, ok := parseULIDCursor(w, r, "queue")
+	if !ok {
+		return
+	}
+	limit := parseLimit(r)
+	items, err := s.queue.List(r.Context(), r.URL.Query().Get("status"), cursor, limit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	resp := map[string]any{"items": items}
+	if len(items) == limit {
+		resp["next_cursor"] = items[len(items)-1].ID
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleQueueRequeue(w http.ResponseWriter, r *http.Request) {
@@ -133,9 +142,10 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	if _, err := s.st.DB().ExecContext(r.Context(), `INSERT OR IGNORE INTO event_outcomes
+	if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO event_outcomes
 		(event_id, workspace_id, job, on_index, outcome, queue_id, created_at)
-		VALUES (?,?,?,?,?,?,?)`, eid, body.Workspace, body.Job, body.OnIndex,
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT (event_id, workspace_id, job, on_index) DO NOTHING`, eid, body.Workspace, body.Job, body.OnIndex,
 		string(dispatch.OutcomeQueued), item.ID, now); err != nil {
 		s.log.Warn("rules.fire outcome insert", "event_id", eid, "error", err)
 	}

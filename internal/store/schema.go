@@ -1,10 +1,23 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
+//
+// B10 "DB-backed objects" (monotonic revision, carried on the bus frame):
+//
+//	workspaces, approvals, runs, inbox_items
+//
+// Not in this change (internal bookkeeping, file index, or not yet a sync source):
+//
+//	integration_cursors, harness_state, skill_index, job_index,
+//	event_queue, schedules, conversations
+//
+// AUTOINCREMENT (run_segments.id, run_events.id, event_log.seq) is a known
+// Postgres-port blocker. Leave it until the port is scheduled; a migration
+// purely for portability has no payoff on SQLite.
 func migrations() []string { //nolint:funlen // static data table
 	return []string{
 		// v1: complete Phase-2 schema
@@ -82,7 +95,7 @@ CREATE INDEX idx_runs_session ON runs(session_id);
 CREATE UNIQUE INDEX idx_runs_queue_id ON runs(queue_id) WHERE queue_id IS NOT NULL AND queue_id != '';
 
 CREATE TABLE run_segments (
-	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	id            INTEGER PRIMARY KEY AUTOINCREMENT, -- Postgres-port: GENERATED ALWAYS AS IDENTITY
 	run_id        TEXT    NOT NULL,
 	layer         TEXT    NOT NULL,
 	state         TEXT    NOT NULL,
@@ -97,7 +110,7 @@ CREATE INDEX idx_seg_run_layer ON run_segments(run_id, layer, started_at);
 CREATE INDEX idx_seg_open ON run_segments(run_id, layer) WHERE ended_at IS NULL;
 
 CREATE TABLE run_events (
-	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	id            INTEGER PRIMARY KEY AUTOINCREMENT, -- Postgres-port: GENERATED ALWAYS AS IDENTITY
 	run_id        TEXT    NOT NULL,
 	at            TEXT    NOT NULL,
 	kind          TEXT    NOT NULL,
@@ -289,7 +302,7 @@ CREATE TABLE cloud_cursors (
 );
 
 CREATE TABLE event_log (
-	seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+	seq         INTEGER PRIMARY KEY AUTOINCREMENT, -- Postgres-port: GENERATED ALWAYS AS IDENTITY
 	event_id    TEXT NOT NULL,
 	topic       TEXT NOT NULL,
 	ts          TEXT NOT NULL,
@@ -306,6 +319,12 @@ CREATE TABLE system_flags (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+`,
+		// v2: B10 revision on bus-entity tables that cloudlink will sync.
+		// Append-only — v1 may already be applied on developer DBs.
+		`
+ALTER TABLE workspaces ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE approvals ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
 `,
 	}
 }
