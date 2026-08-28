@@ -92,6 +92,29 @@ func TestBuildFilePaths(t *testing.T) {
 	}
 }
 
+func TestBuildJobFilePaths(t *testing.T) {
+	t.Parallel()
+	list := BuildJobFileListPath("report", "ws1", "tools/", "tools/a.py", 20)
+	if !strings.HasPrefix(list, "/v1/jobs/report/files?") {
+		t.Fatalf("list %s", list)
+	}
+	for _, want := range []string{"prefix=tools", "cursor=tools", "limit=20", "workspace=ws1"} {
+		if !strings.Contains(list, want) {
+			t.Fatalf("missing %q in %s", want, list)
+		}
+	}
+	get := BuildJobFileGetPath("report", "ws1", "render.py", true)
+	if !strings.Contains(get, "/v1/jobs/report/files/render.py") || !strings.Contains(get, "stat=1") || !strings.Contains(get, "workspace=ws1") {
+		t.Fatalf("get %s", get)
+	}
+	if p := BuildJobFilePutPath("report", "ws1", "a/b.py"); p != "/v1/jobs/report/files/a/b.py?workspace=ws1" {
+		t.Fatalf("put %s", p)
+	}
+	if p := BuildJobFileDeletePath("report", "", "a/b.py"); p != "/v1/jobs/report/files/a/b.py" {
+		t.Fatalf("delete %s", p)
+	}
+}
+
 func TestBuildJobDelete(t *testing.T) {
 	t.Parallel()
 	req := BuildJobDelete("demo", "ws1")

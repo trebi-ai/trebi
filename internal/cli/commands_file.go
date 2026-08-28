@@ -13,49 +13,59 @@ import (
 
 func fileCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "file",
-		Usage: "workspace files (scripts, templates, any path)",
-		Subcommands: []*cli.Command{
-			{
-				Name:      "ls",
-				Usage:     "list files in the workspace",
-				ArgsUsage: "[prefix]",
-				Flags: []cli.Flag{
-					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
-					&cli.IntFlag{Name: "limit", Usage: "page size"},
-					&cli.StringFlag{Name: "cursor", Usage: "path of the last row from the previous page"},
-				},
-				Action: runFileList,
+		Name:        "file",
+		Usage:       "workspace files (shared assets, assistant support files)",
+		Subcommands: fileActionCommands(false, runFileList, runFileGet, runFilePut, runFileRm),
+	}
+}
+
+func jobFileSubcommand() *cli.Command {
+	return &cli.Command{
+		Name:        "file",
+		Usage:       "files next to a job (scripts, templates)",
+		Subcommands: fileActionCommands(true, runJobFileList, runJobFileGet, runJobFilePut, runJobFileRm),
+	}
+}
+
+func fileActionCommands(jobScoped bool, ls, get, put, rm cli.ActionFunc) []*cli.Command {
+	listUsage, listArgs := "list files in the workspace", "[prefix]"
+	noun, pathArgs := "a workspace file", "<path>"
+	if jobScoped {
+		listUsage, listArgs = "list files in the job folder", "<job> [prefix]"
+		noun, pathArgs = "a file next to the job", "<job> <path>"
+	}
+	return []*cli.Command{
+		{
+			Name: "ls", Usage: listUsage, ArgsUsage: listArgs,
+			Flags: []cli.Flag{
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				&cli.IntFlag{Name: "limit", Usage: "page size"},
+				&cli.StringFlag{Name: "cursor", Usage: "path of the last row from the previous page"},
 			},
-			{
-				Name:      "get",
-				Usage:     "read a workspace file",
-				ArgsUsage: "<path>",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "out", Usage: "write bytes to a local file instead of stdout"},
-					&cli.BoolFlag{Name: "stat", Usage: "JSON metadata only"},
-				},
-				Action: runFileGet,
+			Action: ls,
+		},
+		{
+			Name: "get", Usage: "read " + noun, ArgsUsage: pathArgs,
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "out", Usage: "write bytes to a local file instead of stdout"},
+				&cli.BoolFlag{Name: "stat", Usage: "JSON metadata only"},
 			},
-			{
-				Name:      "put",
-				Usage:     "write a workspace file (--from or stdin)",
-				ArgsUsage: "<path>",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "from", Usage: "local file to upload"},
-					&cli.StringFlag{Name: "if-match", Usage: "If-Match content hash"},
-				},
-				Action: runFilePut,
+			Action: get,
+		},
+		{
+			Name: "put", Usage: "write " + noun + " (--from or stdin)", ArgsUsage: pathArgs,
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "from", Usage: "local file to upload"},
+				&cli.StringFlag{Name: "if-match", Usage: "If-Match content hash"},
 			},
-			{
-				Name:      "rm",
-				Usage:     "delete a workspace file",
-				ArgsUsage: "<path>",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "if-match", Usage: "If-Match content hash"},
-				},
-				Action: runFileRm,
+			Action: put,
+		},
+		{
+			Name: "rm", Usage: "delete " + noun, ArgsUsage: pathArgs,
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "if-match", Usage: "If-Match content hash"},
 			},
+			Action: rm,
 		},
 	}
 }
@@ -65,7 +75,94 @@ func runFileList(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	path := BuildFileListPath(wsID, c.Args().Get(0), c.String("cursor"), c.Int("limit"))
+	return fileListAction(c, client, BuildFileListPath(wsID, c.Args().Get(0), c.String("cursor"), c.Int("limit")))
+}
+
+func runFileGet(c *cli.Context) error {
+	rel, err := fileArg(c)
+	if err != nil {
+		return err
+	}
+	client, wsID, err := fileClient(c)
+	if err != nil {
+		return err
+	}
+	return fileGetAction(c, client, BuildFileGetPath(wsID, rel, c.Bool("stat")))
+}
+
+func runFilePut(c *cli.Context) error {
+	rel, err := fileArg(c)
+	if err != nil {
+		return err
+	}
+	client, wsID, err := fileClient(c)
+	if err != nil {
+		return err
+	}
+	return filePutAction(c, client, BuildFilePutPath(wsID, rel))
+}
+
+func runFileRm(c *cli.Context) error {
+	rel, err := fileArg(c)
+	if err != nil {
+		return err
+	}
+	client, wsID, err := fileClient(c)
+	if err != nil {
+		return err
+	}
+	return fileRmAction(c, client, BuildFileDeletePath(wsID, rel))
+}
+
+func runJobFileList(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("job name required")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return fileListAction(c, client, BuildJobFileListPath(name, workspaceFor(c), c.Args().Get(1), c.String("cursor"), c.Int("limit")))
+}
+
+func runJobFileGet(c *cli.Context) error {
+	name, rel, err := jobFileArgs(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return fileGetAction(c, client, BuildJobFileGetPath(name, workspaceFor(c), rel, c.Bool("stat")))
+}
+
+func runJobFilePut(c *cli.Context) error {
+	name, rel, err := jobFileArgs(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return filePutAction(c, client, BuildJobFilePutPath(name, workspaceFor(c), rel))
+}
+
+func runJobFileRm(c *cli.Context) error {
+	name, rel, err := jobFileArgs(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return fileRmAction(c, client, BuildJobFileDeletePath(name, workspaceFor(c), rel))
+}
+
+func fileListAction(c *cli.Context, client *APIClient, path string) error {
 	var body struct {
 		Files      []map[string]any `json:"files"`
 		NextCursor string           `json:"next_cursor"`
@@ -87,16 +184,7 @@ func runFileList(c *cli.Context) error {
 	return nil
 }
 
-func runFileGet(c *cli.Context) error {
-	rel, err := fileArg(c)
-	if err != nil {
-		return err
-	}
-	client, wsID, err := fileClient(c)
-	if err != nil {
-		return err
-	}
-	path := BuildFileGetPath(wsID, rel, c.Bool("stat"))
+func fileGetAction(c *cli.Context, client *APIClient, path string) error {
 	if c.Bool("stat") {
 		var body map[string]any
 		if err := client.GetJSON(path, &body); err != nil {
@@ -117,20 +205,12 @@ func runFileGet(c *cli.Context) error {
 	return err
 }
 
-func runFilePut(c *cli.Context) error {
-	rel, err := fileArg(c)
-	if err != nil {
-		return err
-	}
-	client, wsID, err := fileClient(c)
-	if err != nil {
-		return err
-	}
+func filePutAction(c *cli.Context, client *APIClient, path string) error {
 	data, err := readBytesOrStdin(c.String("from"))
 	if err != nil {
 		return err
 	}
-	_, raw, err := client.PutRaw(BuildFilePutPath(wsID, rel), bytes.NewReader(data), "", c.String("if-match"))
+	_, raw, err := client.PutRaw(path, bytes.NewReader(data), "", c.String("if-match"))
 	if err != nil {
 		return err
 	}
@@ -138,16 +218,8 @@ func runFilePut(c *cli.Context) error {
 	return nil
 }
 
-func runFileRm(c *cli.Context) error {
-	rel, err := fileArg(c)
-	if err != nil {
-		return err
-	}
-	client, wsID, err := fileClient(c)
-	if err != nil {
-		return err
-	}
-	return client.DeleteIfMatch(BuildFileDeletePath(wsID, rel), c.String("if-match"))
+func fileRmAction(c *cli.Context, client *APIClient, path string) error {
+	return client.DeleteIfMatch(path, c.String("if-match"))
 }
 
 func fileClient(c *cli.Context) (*APIClient, string, error) {
@@ -171,6 +243,18 @@ func fileArg(c *cli.Context) (string, error) {
 		return "", fmt.Errorf("path required")
 	}
 	return rel, nil
+}
+
+func jobFileArgs(c *cli.Context) (name, rel string, err error) {
+	name = c.Args().Get(0)
+	rel = c.Args().Get(1)
+	if name == "" {
+		return "", "", fmt.Errorf("job name required")
+	}
+	if rel == "" {
+		return "", "", fmt.Errorf("path required")
+	}
+	return name, rel, nil
 }
 
 func readBytesOrStdin(path string) ([]byte, error) {

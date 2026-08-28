@@ -210,6 +210,34 @@ func BuildFileDeletePath(workspaceID, rel string) string {
 	return filePathURL(workspaceID, rel)
 }
 
+// BuildJobFileListPath builds GET /v1/jobs/{name}/files?prefix=&cursor=&limit=&workspace=.
+func BuildJobFileListPath(name, workspace, prefix, afterPath string, limit int) string {
+	kv := map[string]string{"prefix": prefix, "cursor": afterPath, "workspace": workspace}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return withQuery("/v1/jobs/"+url.PathEscape(name)+"/files", kv)
+}
+
+// BuildJobFileGetPath builds GET /v1/jobs/{name}/files/{path}. stat adds ?stat=1.
+func BuildJobFileGetPath(name, workspace, rel string, stat bool) string {
+	kv := map[string]string{"workspace": workspace}
+	if stat {
+		kv["stat"] = "1"
+	}
+	return withQuery(jobFilePathURL(name, rel), kv)
+}
+
+// BuildJobFilePutPath builds PUT /v1/jobs/{name}/files/{path}?workspace=.
+func BuildJobFilePutPath(name, workspace, rel string) string {
+	return withQuery(jobFilePathURL(name, rel), workspaceQ(workspace))
+}
+
+// BuildJobFileDeletePath builds DELETE /v1/jobs/{name}/files/{path}?workspace=.
+func BuildJobFileDeletePath(name, workspace, rel string) string {
+	return withQuery(jobFilePathURL(name, rel), workspaceQ(workspace))
+}
+
 // BuildRulesTest builds POST /v1/rules/test.
 func BuildRulesTest(match, extract string, event any) HTTPRequest {
 	return HTTPRequest{
@@ -705,11 +733,19 @@ func withQuery(path string, kv map[string]string) string {
 }
 
 func filePathURL(workspaceID, rel string) string {
+	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/files/" + escapeFileRel(rel)
+}
+
+func jobFilePathURL(name, rel string) string {
+	return "/v1/jobs/" + url.PathEscape(name) + "/files/" + escapeFileRel(rel)
+}
+
+func escapeFileRel(rel string) string {
 	parts := strings.Split(rel, "/")
 	for i, p := range parts {
 		parts[i] = url.PathEscape(p)
 	}
-	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/files/" + strings.Join(parts, "/")
+	return strings.Join(parts, "/")
 }
 
 func workspaceQ(ws string) map[string]string {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -228,6 +229,287 @@ func TestFileMutationIsAudited(t *testing.T) {
 	if code != 201 {
 		t.Fatalf("put %d (audit wrapper must not block raw PUT)", code)
 	}
+}
+
+func TestJobFilesCRUD(t *testing.T) {
+	s, base := startTestServer(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "job-files")
+	createTestJob(t, base, s.Token(), wsID, "report")
+	createTestJob(t, base, s.Token(), wsID, "other")
+
+	body := []byte("print('hi')\n")
+	code, resp, hdr := doRaw(t, "PUT", base+"/v1/jobs/report/files/render.py?workspace="+wsID, s.Token(), nil, body)
+	if code != 201 {
+		t.Fatalf("put create %d %v", code, resp)
+	}
+	if resp["created"] != true || resp["path"] != "render.py" {
+		t.Fatalf("put body (job-relative path): %v", resp)
+	}
+	hash, _ := resp["hash"].(string)
+	if hash == "" || hdr.Get("ETag") != `"`+hash+`"` {
+		t.Fatalf("etag %q hash %q", hdr.Get("ETag"), hash)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(wsDir, "report", "render.py"))
+	if err != nil || string(onDisk) != string(body) {
+		t.Fatalf("disk: %q %v", onDisk, err)
+	}
+
+	code, _, _ = doRaw(t, "GET", base+"/v1/jobs/report/files/render.py?workspace="+wsID, s.Token(), nil, nil)
+	if code != 200 {
+		t.Fatalf("get %d", code)
+	}
+	req, _ := http.NewRequest("GET", base+"/v1/jobs/report/files/render.py?workspace="+wsID, nil)
+	req.Header.Set("Authorization", "Bearer "+s.Token())
+	httpResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(httpResp.Body)
+	httpResp.Body.Close()
+	if string(raw) != string(body) {
+		t.Fatalf("body %q", raw)
+	}
+
+	req, _ = http.NewRequest("GET", base+"/v1/jobs/report/files/render.py?workspace="+wsID, nil)
+	req.Header.Set("Authorization", "Bearer "+s.Token())
+	req.Header.Set("If-None-Match", `"`+hash+`"`)
+	httpResp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpResp.Body.Close()
+	if httpResp.StatusCode != 304 {
+		t.Fatalf("if-none-match %d", httpResp.StatusCode)
+	}
+
+	code, stat, _ := doJSON(t, "GET", base+"/v1/jobs/report/files/render.py?stat=1&workspace="+wsID, s.Token(), nil)
+	if code != 200 || stat["hash"] != hash || stat["path"] != "render.py" {
+		t.Fatalf("stat %d %v", code, stat)
+	}
+
+	code, list, _ := doJSON(t, "GET", base+"/v1/jobs/report/files?workspace="+wsID, s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("list %d %v", code, list)
+	}
+	listed, _ := list["files"].([]any)
+	for _, item := range listed {
+		m, _ := item.(map[string]any)
+		p, _ := m["path"].(string)
+		if strings.Contains(p, "other") || strings.HasPrefix(p, "report/") {
+			t.Fatalf("job list leaked workspace layout: %v", list)
+		}
+	}
+
+	code, _, _ = doRaw(t, "PUT", base+"/v1/jobs/other/files/secret.py?workspace="+wsID, s.Token(), nil, []byte("nope"))
+	if code != 201 {
+		t.Fatalf("sibling put %d", code)
+	}
+	code, list, _ = doJSON(t, "GET", base+"/v1/jobs/report/files?workspace="+wsID, s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("list after sibling %d %v", code, list)
+	}
+	listed, _ = list["files"].([]any)
+	for _, item := range listed {
+		m, _ := item.(map[string]any)
+		if mapStrPath(m) == "secret.py" {
+			t.Fatalf("sibling file visible in job list: %v", list)
+		}
+	}
+
+	code, body412, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/render.py?workspace="+wsID, s.Token(),
+		map[string]string{"If-Match": "deadbeef"}, []byte("v2"))
+	if code != 412 || errCode(body412) != "precondition_failed" {
+		t.Fatalf("stale %d %v", code, body412)
+	}
+
+	code, _, _ = doRaw(t, "DELETE", base+"/v1/jobs/report/files/render.py?workspace="+wsID, s.Token(), nil, nil)
+	if code != 200 {
+		t.Fatalf("delete %d", code)
+	}
+	code, _, _ = doRaw(t, "DELETE", base+"/v1/jobs/report/files/render.py?workspace="+wsID, s.Token(), nil, nil)
+	if code != 404 {
+		t.Fatalf("delete missing %d", code)
+	}
+}
+
+func TestJobFilesErrors(t *testing.T) {
+	s, base := startTestServer(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "job-files-err")
+	createTestJob(t, base, s.Token(), wsID, "report")
+
+	code, body, _ := doRaw(t, "PUT", base+"/v1/jobs/no-such/files/a.py", s.Token(), nil, []byte("x"))
+	if code != 404 || errCode(body) != "not_found" {
+		t.Fatalf("unknown job %d %v", code, body)
+	}
+
+	code, body, _ = doRaw(t, "PUT", base+"/v1/jobs/report/files/%2e%2e%2fsibling%2fx?workspace="+wsID, s.Token(), nil, []byte("x"))
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("escape %d %v", code, body)
+	}
+	if msg := errMsg(body); strings.Contains(msg, wsDir) {
+		t.Fatalf("echoed abs path: %s", msg)
+	}
+
+	code, body, _ = doRaw(t, "PUT", base+"/v1/jobs/report/files/JOB.md?workspace="+wsID, s.Token(), nil, []byte("x"))
+	if code != 409 || errCode(body) != "conflict" {
+		t.Fatalf("JOB.md put %d %v", code, body)
+	}
+	if !strings.Contains(errMsg(body), "trebi job") {
+		t.Fatalf("JOB.md message: %s", errMsg(body))
+	}
+
+	code, body, _ = doRaw(t, "PUT", base+"/v1/jobs/report/files/tools/JOB.md?workspace="+wsID, s.Token(), nil, []byte("x"))
+	if code != 409 || errCode(body) != "conflict" {
+		t.Fatalf("nested JOB.md %d %v", code, body)
+	}
+
+	code, body, _ = doRaw(t, "DELETE", base+"/v1/jobs/report/files/MEMORY.md?workspace="+wsID, s.Token(), nil, nil)
+	if code != 409 || errCode(body) != "conflict" {
+		t.Fatalf("MEMORY.md delete %d %v", code, body)
+	}
+	if !strings.Contains(errMsg(body), "trebi job memory") {
+		t.Fatalf("MEMORY.md message: %s", errMsg(body))
+	}
+
+	code, _, hdr := doRaw(t, "GET", base+"/v1/jobs/report/files/JOB.md?workspace="+wsID, s.Token(), nil, nil)
+	if code != 200 {
+		t.Fatalf("GET JOB.md %d", code)
+	}
+	req, _ := http.NewRequest("GET", base+"/v1/jobs/report/files/JOB.md?workspace="+wsID, nil)
+	req.Header.Set("Authorization", "Bearer "+s.Token())
+	httpResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(httpResp.Body)
+	httpResp.Body.Close()
+	if !strings.Contains(string(raw), "Do work") {
+		t.Fatalf("GET JOB.md body %q hdr %v", raw, hdr)
+	}
+}
+
+func TestJobFilesAmbiguous(t *testing.T) {
+	s, base := startTestServer(t)
+	ws1 := t.TempDir()
+	ws2 := t.TempDir()
+	writeJobFile(t, ws1, "dup")
+	writeJobFile(t, ws2, "dup")
+	id1 := addWorkspace(t, base, s.Token(), ws1, "jf-a")
+	_ = addWorkspace(t, base, s.Token(), ws2, "jf-b")
+
+	code, body, _ := doRaw(t, "PUT", base+"/v1/jobs/dup/files/a.py", s.Token(), nil, []byte("x"))
+	if code != 400 || errCode(body) != "ambiguous" {
+		t.Fatalf("want 400 ambiguous, got %d %v", code, body)
+	}
+	code, resp, _ := doRaw(t, "PUT", base+"/v1/jobs/dup/files/a.py?workspace="+id1, s.Token(), nil, []byte("x"))
+	if code != 201 || resp["path"] != "a.py" {
+		t.Fatalf("scoped put %d %v", code, resp)
+	}
+}
+
+func TestJobFilesBusPathIsWorkspaceRelative(t *testing.T) {
+	s, base := startTestServer(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "job-bus")
+	createTestJob(t, base, s.Token(), wsID, "report")
+
+	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/render.py?workspace="+wsID, s.Token(), nil, []byte("v1"))
+	if code != 201 {
+		t.Fatalf("job put %d", code)
+	}
+	code, _, _ = doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/report/render.py", s.Token(), nil, []byte("v2"))
+	if code != 200 {
+		t.Fatalf("ws put %d", code)
+	}
+
+	frames := collectBus(t, base, s.Token(), "file.created,file.updated", 600*time.Millisecond)
+	wantID := wsID + ":report/render.py"
+	var createdID, updatedID, createdPath, updatedPath string
+	for _, f := range frames {
+		id, _ := f["id"].(string)
+		attrs, _ := f["attrs"].(map[string]any)
+		p, _ := attrs["path"].(string)
+		switch f["topic"] {
+		case "file.created":
+			createdID, createdPath = id, p
+		case "file.updated":
+			updatedID, updatedPath = id, p
+		}
+	}
+	if createdID != wantID || updatedID != wantID {
+		t.Fatalf("entity id created=%q updated=%q want %q frames=%v", createdID, updatedID, wantID, topicsOf(frames))
+	}
+	if createdPath != "report/render.py" || updatedPath != "report/render.py" {
+		t.Fatalf("bus path created=%q updated=%q", createdPath, updatedPath)
+	}
+}
+
+func TestJobFilesRootLevelJob(t *testing.T) {
+	s, base := startTestServer(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "root-job")
+	md := []byte("---\nharness: fake\n---\n\nRoot job.\n")
+	code, _, _ := doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/JOB.md", s.Token(), nil, md)
+	if code != 201 {
+		t.Fatalf("root JOB.md %d", code)
+	}
+	jobName := filepath.Base(wsDir)
+	code, body, _ := doRaw(t, "PUT", base+"/v1/jobs/"+jobName+"/files/trebi.yaml?workspace="+wsID, s.Token(), nil, []byte("x"))
+	if code != 409 || errCode(body) != "conflict" {
+		t.Fatalf("trebi.yaml via root job %d %v", code, body)
+	}
+	code, resp, _ := doRaw(t, "PUT", base+"/v1/jobs/"+jobName+"/files/note.txt?workspace="+wsID, s.Token(), nil, []byte("hi"))
+	if code != 201 || resp["path"] != "note.txt" {
+		t.Fatalf("root-job put %d %v", code, resp)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(wsDir, "note.txt"))
+	if err != nil || string(onDisk) != "hi" {
+		t.Fatalf("root-job disk: %q %v", onDisk, err)
+	}
+}
+
+func TestJobFilesOversize(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s := api.New(st, api.Options{Token: "test-token", FilesMaxBytes: 8})
+	addr, err := s.ListenAndServe("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
+	base := "http://" + addr
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "report")
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "tiny-job")
+
+	code, body, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/big.bin?workspace="+wsID, s.Token(), nil, []byte("0123456789"))
+	if code != 413 || errCode(body) != "validation" {
+		t.Fatalf("oversize %d %v", code, body)
+	}
+}
+
+func createTestJob(t *testing.T, base, token, wsID, name string) {
+	t.Helper()
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs", token, map[string]any{
+		"workspace": wsID, "name": name, "markdown": "---\nharness: fake\n---\n\nDo work.\n",
+	})
+	if code != 201 {
+		t.Fatalf("create job %s: %d %v", name, code, body)
+	}
+}
+
+func mapStrPath(m map[string]any) string {
+	p, _ := m["path"].(string)
+	return p
 }
 
 func doRaw(t *testing.T, method, url, token string, headers map[string]string, body []byte) (int, map[string]any, http.Header) {

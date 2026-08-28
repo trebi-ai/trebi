@@ -22,14 +22,127 @@ func (s *Server) routeFiles(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces/{id}/files/{path...}", s.handleFilesGet)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/files/{path...}", s.handleFilesPut)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/files/{path...}", s.handleFilesDelete)
+
+	// Job-scoped alias: same bytes plane, jail rooted at the job folder.
+	// Request/response paths are job-relative; bus attrs.path is workspace-relative.
+	mux.HandleFunc("GET /v1/jobs/{name}/files", s.handleJobFilesList)
+	mux.HandleFunc("GET /v1/jobs/{name}/files/{path...}", s.handleJobFilesGet)
+	mux.HandleFunc("PUT /v1/jobs/{name}/files/{path...}", s.handleJobFilesPut)
+	mux.HandleFunc("DELETE /v1/jobs/{name}/files/{path...}", s.handleJobFilesDelete)
+}
+
+// fileScope is one resolved jail for the file handlers.
+type fileScope struct {
+	ws       *workspaces.Workspace
+	root     string // jail root: ws.Path or the job folder
+	wsPrefix string // "" for workspace scope; "<job-dir>/" for job scope
+	denyDocs bool   // job scope: refuse PUT/DELETE of indexed markdown
+}
+
+func (sc fileScope) wsRel(rel string) string {
+	if sc.wsPrefix == "" {
+		return rel
+	}
+	return sc.wsPrefix + rel
+}
+
+func (s *Server) workspaceFileScope(w http.ResponseWriter, r *http.Request) (fileScope, bool) {
+	ws, ok := s.workspaceByID(w, r)
+	if !ok {
+		return fileScope{}, false
+	}
+	return fileScope{ws: ws, root: ws.Path}, true
+}
+
+func (s *Server) jobFileScope(w http.ResponseWriter, r *http.Request) (fileScope, bool) {
+	row, ok := s.resolveJob(w, r, r.PathValue("name"))
+	if !ok {
+		return fileScope{}, false
+	}
+	ws, err := s.ws.Get(r.Context(), row.WorkspaceID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return fileScope{}, false
+	}
+	jobDir := filepath.Dir(row.Path)
+	rel, err := workspaceRel(ws.Path, jobDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return fileScope{}, false
+	}
+	prefix := ""
+	if rel != "." && rel != "" {
+		prefix = strings.TrimSuffix(rel, "/") + "/"
+	}
+	return fileScope{ws: ws, root: jobDir, wsPrefix: prefix, denyDocs: true}, true
 }
 
 func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
+	scope, ok := s.workspaceFileScope(w, r)
 	if !ok {
 		return
 	}
-	items, next, err := s.files.List(r.Context(), ws.Path, files.ListOpts{
+	s.filesList(scope, w, r)
+}
+
+func (s *Server) handleFilesGet(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.workspaceFileScope(w, r)
+	if !ok {
+		return
+	}
+	s.filesGet(scope, w, r)
+}
+
+func (s *Server) handleFilesPut(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.workspaceFileScope(w, r)
+	if !ok {
+		return
+	}
+	s.filesPut(scope, w, r)
+}
+
+func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.workspaceFileScope(w, r)
+	if !ok {
+		return
+	}
+	s.filesDelete(scope, w, r)
+}
+
+func (s *Server) handleJobFilesList(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.jobFileScope(w, r)
+	if !ok {
+		return
+	}
+	s.filesList(scope, w, r)
+}
+
+func (s *Server) handleJobFilesGet(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.jobFileScope(w, r)
+	if !ok {
+		return
+	}
+	s.filesGet(scope, w, r)
+}
+
+func (s *Server) handleJobFilesPut(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.jobFileScope(w, r)
+	if !ok {
+		return
+	}
+	s.filesPut(scope, w, r)
+}
+
+func (s *Server) handleJobFilesDelete(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.jobFileScope(w, r)
+	if !ok {
+		return
+	}
+	s.filesDelete(scope, w, r)
+}
+
+func (s *Server) filesList(scope fileScope, w http.ResponseWriter, r *http.Request) {
+	items, next, err := s.files.List(r.Context(), scope.root, files.ListOpts{
 		Prefix:    r.URL.Query().Get("prefix"),
 		AfterPath: r.URL.Query().Get("cursor"),
 		Limit:     parseLimit(r),
@@ -45,14 +158,10 @@ func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleFilesGet(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
-	if !ok {
-		return
-	}
+func (s *Server) filesGet(scope fileScope, w http.ResponseWriter, r *http.Request) {
 	rel := r.PathValue("path")
 	if r.URL.Query().Get("stat") == "1" {
-		info, err := s.files.Stat(r.Context(), ws.Path, rel)
+		info, err := s.files.Stat(r.Context(), scope.root, rel)
 		if err != nil {
 			writeFilesErr(w, err)
 			return
@@ -66,7 +175,7 @@ func (s *Server) handleFilesGet(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	data, info, err := s.files.Read(r.Context(), ws.Path, rel)
+	data, info, err := s.files.Read(r.Context(), scope.root, rel)
 	if err != nil {
 		writeFilesErr(w, err)
 		return
@@ -83,22 +192,21 @@ func (s *Server) handleFilesGet(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-func (s *Server) handleFilesPut(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
-	if !ok {
+func (s *Server) filesPut(scope fileScope, w http.ResponseWriter, r *http.Request) {
+	rel := r.PathValue("path")
+	if !s.allowFileMutation(w, scope, rel) {
 		return
 	}
-	rel := r.PathValue("path")
 	data, ok := s.readFileBody(w, r)
 	if !ok {
 		return
 	}
-	info, created, err := s.files.Write(r.Context(), ws.Path, rel, data, ifMatchHeader(r))
+	info, created, err := s.files.Write(r.Context(), scope.root, rel, data, ifMatchHeader(r))
 	if err != nil {
 		writeFilesErr(w, err)
 		return
 	}
-	s.afterFileWrite(r.Context(), ws, info.Path, created)
+	s.afterFileWrite(r.Context(), scope.ws, scope.wsRel(info.Path), created)
 	setETagHash(w, info.Hash)
 	code := http.StatusOK
 	if created {
@@ -109,21 +217,44 @@ func (s *Server) handleFilesPut(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
-	if !ok {
+func (s *Server) filesDelete(scope fileScope, w http.ResponseWriter, r *http.Request) {
+	rel := r.PathValue("path")
+	if !s.allowFileMutation(w, scope, rel) {
 		return
 	}
-	rel := r.PathValue("path")
-	if err := s.files.Delete(r.Context(), ws.Path, rel, ifMatchHeader(r)); err != nil {
+	if err := s.files.Delete(r.Context(), scope.root, rel, ifMatchHeader(r)); err != nil {
 		writeFilesErr(w, err)
 		return
 	}
-	if indexedMarkdown(rel) {
-		_ = s.ws.RebuildIndex(r.Context(), ws)
+	wsRel := scope.wsRel(rel)
+	if indexedMarkdown(wsRel) {
+		_ = s.ws.RebuildIndex(r.Context(), scope.ws)
 	}
-	s.emitFileBus(r.Context(), ws.ID, rel, "deleted")
+	s.emitFileBus(r.Context(), scope.ws.ID, wsRel, "deleted")
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": rel})
+}
+
+func (s *Server) allowFileMutation(w http.ResponseWriter, scope fileScope, rel string) bool {
+	if !scope.denyDocs {
+		return true
+	}
+	if msg := typedDocMessage(rel); msg != "" {
+		writeErr(w, http.StatusConflict, "conflict", msg)
+		return false
+	}
+	return true
+}
+
+func typedDocMessage(rel string) string {
+	switch strings.ToLower(filepath.Base(rel)) {
+	case "job.md":
+		return "use PUT /v1/jobs/{name} (trebi job) for JOB.md"
+	case "memory.md":
+		return "use the memory routes (trebi job memory) for MEMORY.md"
+	case "trebi.md":
+		return "use the assistant routes (trebi assistant) for TREBI.md"
+	}
+	return ""
 }
 
 func (s *Server) requireIfMatch(w http.ResponseWriter, r *http.Request, root, rel string) bool {

@@ -564,3 +564,46 @@ func TestFileListAndPut(t *testing.T) {
 		t.Fatalf("put %s %s body=%q out=%s", gotMethod, gotPath, gotBody, out)
 	}
 }
+
+func TestJobFileListAndPut(t *testing.T) {
+	var gotMethod, gotPath, gotRawQuery string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotRawQuery = r.Method, r.URL.Path, r.URL.RawQuery
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/jobs/report/files"):
+			_, _ = w.Write([]byte(`{"files":[{"path":"a.py","size_bytes":3,"mtime":"2026-08-28T14:00:00Z"}],"truncated":false}`))
+		case r.Method == "PUT":
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(`{"path":"a.py","hash":"abc","size_bytes":3,"created":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+
+	out, err := runCLI(t, client, "--workspace", "ws1", "job", "file", "ls", "--json", "report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"a.py"`) {
+		t.Fatalf("ls: %s", out)
+	}
+	if gotPath != "/v1/jobs/report/files" || !strings.Contains(gotRawQuery, "workspace=ws1") {
+		t.Fatalf("ls path %s query %s", gotPath, gotRawQuery)
+	}
+
+	out, err = runCLI(t, client, "--workspace", "ws1", "job", "file", "put", "report", "a.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != "PUT" || gotPath != "/v1/jobs/report/files/a.py" {
+		t.Fatalf("put %s %s body=%q out=%s", gotMethod, gotPath, gotBody, out)
+	}
+	if !strings.Contains(gotRawQuery, "workspace=ws1") {
+		t.Fatalf("put missing workspace: %s", gotRawQuery)
+	}
+}

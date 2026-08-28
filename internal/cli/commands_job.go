@@ -17,6 +17,7 @@ func jobCommand() *cli.Command {
 		Usage: "manage jobs",
 		Subcommands: append(jobManageSubcommands(),
 			runCommand(),
+			jobFileSubcommand(),
 			&cli.Command{
 				Name:      "status",
 				Usage:     "show job + latest run summary",
