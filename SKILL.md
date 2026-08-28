@@ -305,15 +305,22 @@ trebi harness auth mark <name>    # record auth_ok after you log in yourself
 ## Config
 
 ```bash
-trebi config show --yaml                 # effective config
-trebi config show --tree -k runs -k api
+trebi config show                        # table: KEY VALUE SOURCE DEFAULT DESCRIPTION
+trebi config show --json                 # array of {key,value,source,default,description}
+trebi config show --yaml                 # same list as YAML
+trebi config show --tree                 # nested tree, value/source/default leaves
+trebi config show -k tools.grok          # section prefix
+trebi config show -k defaults.command    # exact key
+trebi config show -k 'defaults.*'        # glob (quote it)
 trebi config path
-trebi config set <dotted.key> <value>
+trebi config set <dotted.key> <value>    # prints the resulting effective row
 trebi config validate                    # works with the daemon down
 trebi config bridge status [tool] --json
 trebi config bridge set <tool> <resource> inherit|false
 trebi config bridge set --global never <resource>
 ```
+
+`show` lists every known key, not only the ones written to config.yaml. The table cuts VALUE at 40 characters; use `--json`, `--yaml`, or `--tree` to read a long value in full. `SOURCE` is `config` when the key is declared in the file and `default` when the built-in applies. Bare `trebi config` prints the help menu. When the daemon is up, `show` reports the server config, so a remote CLI sees the daemon truth and not its own local file.
 
 ## Conversations
 

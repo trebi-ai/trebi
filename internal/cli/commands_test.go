@@ -12,7 +12,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
+	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/urfave/cli/v2"
 )
@@ -389,4 +391,139 @@ func runCLI(t *testing.T, client *APIClient, args ...string) (string, error) {
 	}
 	err := app.Run(append([]string{"trebi"}, args...))
 	return buf.String(), err
+}
+
+func TestConfigShowUsesAPIEntries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/config" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"config":{},"entries":[
+			{"key":"defaults.command","value":"grok","source":"config","default":"claude","description":"Default harness CLI when a job omits command"},
+			{"key":"terminal","value":"Ghostty","source":"config","default":"Terminal","description":"macOS app"}
+		]}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+
+	out, err := runCLI(t, client, "config", "show")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Server values win over anything in the local file.
+	for _, want := range []string{"SOURCE", "DEFAULT", "DESCRIPTION", "grok", "Ghostty", "claude"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+
+	// --key filters the same entry list.
+	out, err = runCLI(t, client, "config", "show", "--key", "terminal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "defaults.command") || !strings.Contains(out, "Ghostty") {
+		t.Fatalf("filter: %s", out)
+	}
+}
+
+func TestConfigShowOfflineListsAllKeys(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	out, err := runCLI(t, nil, "config", "show", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []config.PathEntry
+	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if len(entries) != len(config.SortedPaths()) {
+		t.Fatalf("got %d entries, want %d", len(entries), len(config.SortedPaths()))
+	}
+	for _, e := range entries {
+		if e.Description == "" || e.Source == "" || e.Default == "" || e.Value == "" {
+			t.Fatalf("incomplete row: %+v", e)
+		}
+	}
+}
+
+func TestConfigBareShowsHelp(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	out, err := runCLI(t, nil, "config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "COMMANDS") || !strings.Contains(out, "show") {
+		t.Fatalf("want help, got: %s", out)
+	}
+	// Bare config must not render the table.
+	if strings.Contains(out, "DESCRIPTION") {
+		t.Fatalf("bare config ran show: %s", out)
+	}
+}
+
+func TestTruncateDisplay(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"short", 40, "short"},
+		{"exactly-ten", 11, "exactly-ten"},
+		{"abcdefghij", 5, "ab..."},
+		{"abcdefghij", 3, "abc"},
+		{"abcdefghij", 0, "abcdefghij"},
+		// Multi-byte runes must not be split mid-character.
+		{"→→→→→→→→→→", 5, "→→..."},
+		{"日本語のテキストです", 6, "日本語..."},
+	}
+	for _, c := range cases {
+		if got := truncateDisplay(c.in, c.max); got != c.want {
+			t.Errorf("truncateDisplay(%q, %d) = %q, want %q", c.in, c.max, got, c.want)
+		}
+		if !utf8.ValidString(truncateDisplay(c.in, c.max)) {
+			t.Errorf("truncateDisplay(%q, %d) split a rune", c.in, c.max)
+		}
+	}
+}
+
+func TestConfigShowTruncatesValue(t *testing.T) {
+	long := strings.Repeat("x", 120)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"config":{},"entries":[
+			{"key":"notify.email","value":"` + long + `","source":"config","default":"-","description":"Shell cmd"}
+		]}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+
+	out, err := runCLI(t, client, "config", "show")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, long) {
+		t.Fatal("table printed the untruncated value")
+	}
+	if !strings.Contains(out, "...") {
+		t.Fatalf("want ellipsis: %s", out)
+	}
+
+	// --json keeps the full value.
+	out, err = runCLI(t, client, "config", "show", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, long) {
+		t.Fatal("--json truncated the value")
+	}
 }

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/config"
@@ -22,10 +22,14 @@ func configCommand() *cli.Command {
 				Name:  "show",
 				Usage: "show effective config (API when daemon up)",
 				Flags: []cli.Flag{
-					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
-					&cli.BoolFlag{Name: "yaml", Usage: "emit YAML"},
-					&cli.BoolFlag{Name: "tree", Usage: "nested YAML tree"},
-					&cli.StringSliceFlag{Name: "key", Aliases: []string{"k"}, Usage: "filter key path or prefix (repeatable)"},
+					&cli.StringSliceFlag{
+						Name:    "key",
+						Aliases: []string{"k"},
+						Usage:   "Filter by key path or glob (repeatable); e.g. tools.grok (section), defaults.command (exact), or defaults.*",
+					},
+					&cli.BoolFlag{Name: "json", Usage: "JSON array of {key,value,source,default,description}"},
+					&cli.BoolFlag{Name: "yaml", Usage: "YAML list of key entries"},
+					&cli.BoolFlag{Name: "tree", Usage: "Nested tree (value/source/default leaves)"},
 				},
 				Action: runConfigShow,
 			},
@@ -81,9 +85,6 @@ func configCommand() *cli.Command {
 				},
 			},
 		},
-		// Default action: show (compat with old `trebi config`)
-		Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON (default show)"}},
-		Action: runConfigShow,
 	}
 }
 
@@ -92,30 +93,37 @@ func runConfigShow(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	body, err := loadEffectiveConfig(appStateFor(c))
+	entries, err := loadConfigEntries(appStateFor(c))
 	if err != nil {
 		return err
 	}
-	keys := c.StringSlice("key")
-	if len(keys) > 0 && format != "" {
-		body = filterConfigKeysNested(body, keys)
+	entries, err = config.FilterPathEntries(entries, c.StringSlice("key"))
+	if err != nil {
+		return err
 	}
 	w := outWriter(c)
 	switch format {
 	case "json":
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		return enc.Encode(body)
-	case "yaml", "tree":
-		// Nested YAML for both; --tree keeps map shape (not flat key list).
-		data, err := yaml.Marshal(body)
+		return enc.Encode(entries)
+	case "yaml":
+		data, err := yaml.Marshal(entries)
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(data)
+		return err
+	case "tree":
+		// Nested map shape; each leaf keeps value/source/default/description.
+		data, err := yaml.Marshal(config.EntriesToTreeMap(entries))
 		if err != nil {
 			return err
 		}
 		_, err = w.Write(data)
 		return err
 	default:
-		renderConfigTable(w, body, keys)
+		renderConfigTable(w, entries)
 		return nil
 	}
 }
@@ -138,104 +146,51 @@ func configShowFormat(c *cli.Context) (string, error) {
 	}
 }
 
-// loadEffectiveConfig prefers GET /v1/config; falls back to local config.yaml.
-func loadEffectiveConfig(state *appState) (map[string]any, error) {
-	client, err := state.client, state.clientErr
-	var body map[string]any
-	if err == nil && client != nil {
-		if gerr := client.GetJSON("/v1/config", &body); gerr != nil {
-			err = gerr
+// loadConfigEntries prefers the daemon's entries so a remote CLI reports the
+// server config, not its own file. Falls back to the local config.yaml.
+func loadConfigEntries(state *appState) ([]config.PathEntry, error) {
+	if state.clientErr == nil && state.client != nil {
+		var body struct {
+			Entries []config.PathEntry `json:"entries"`
+		}
+		if err := state.client.GetJSON("/v1/config", &body); err == nil && len(body.Entries) > 0 {
+			return body.Entries, nil
 		}
 	}
-	if err != nil || client == nil {
-		// Local fallback
-		if state.configErr != nil {
-			return nil, state.configErr
-		}
-		raw, marshalErr := json.Marshal(state.config)
-		if marshalErr != nil {
-			return nil, marshalErr
-		}
-		if unmarshalErr := json.Unmarshal(raw, &body); unmarshalErr != nil {
-			return nil, unmarshalErr
-		}
+	cfg, declared, err := config.LoadWithDeclared()
+	if err != nil {
+		return nil, err
 	}
-	if body == nil {
-		body = map[string]any{}
-	}
-	// API wraps as {"config":{…}}; local load is flat.
-	return unwrapConfigMap(body), nil
+	return config.ListPathEntries(cfg, declared), nil
 }
 
-func renderConfigTable(w io.Writer, body map[string]any, keys []string) {
-	tbl := newTable(w, []string{"Key", "Value"})
-	if len(keys) > 0 {
-		flat := map[string]string{}
-		collectFlat("", body, flat)
-		for _, k := range keys {
-			for fk, fv := range flat {
-				if fk == k || strings.HasPrefix(fk, k+".") {
-					tbl.AppendRow(table.Row{fk, fv})
-				}
-			}
+// configValueWidth caps the Value column. Long notify commands would otherwise
+// wrap over several lines; --json/--yaml/--tree still carry the full value.
+const configValueWidth = 40
+
+func renderConfigTable(w io.Writer, entries []config.PathEntry) {
+	tbl := newTable(w, []string{"Key", "Value", "Source", "Default", "Description"})
+	for _, e := range entries {
+		desc := e.Description
+		if desc == "" {
+			desc = "-"
 		}
-	} else {
-		flattenConfig(tbl, "", body)
+		tbl.AppendRow(table.Row{e.Key, truncateDisplay(e.Value, configValueWidth), e.Source, e.Default, desc})
 	}
 	renderTable(tbl)
 }
 
-// filterConfigKeysNested keeps only subtrees matching key paths or prefixes.
-func filterConfigKeysNested(body map[string]any, keys []string) map[string]any {
-	flat := map[string]string{}
-	collectFlat("", body, flat)
-	out := map[string]any{}
-	for _, k := range keys {
-		// Prefer full nested object when key is an exact map path.
-		if sub, ok := lookupNested(body, k); ok {
-			setNested(out, k, sub)
-			continue
-		}
-		for fk, fv := range flat {
-			if fk == k || strings.HasPrefix(fk, k+".") {
-				setNested(out, fk, fv)
-			}
-		}
+// truncateDisplay shortens s to max display runes, ending with "...".
+// It counts runes, not bytes, so a multi-byte character is never split.
+func truncateDisplay(s string, max int) string {
+	if max <= 0 || utf8.RuneCountInString(s) <= max {
+		return s
 	}
-	return out
-}
-
-func lookupNested(body map[string]any, dotted string) (any, bool) {
-	parts := strings.Split(dotted, ".")
-	var cur any = body
-	for _, p := range parts {
-		m, ok := cur.(map[string]any)
-		if !ok {
-			return nil, false
-		}
-		cur, ok = m[p]
-		if !ok {
-			return nil, false
-		}
+	runes := []rune(s)
+	if max <= 3 {
+		return string(runes[:max])
 	}
-	return cur, true
-}
-
-func setNested(out map[string]any, dotted string, val any) {
-	parts := strings.Split(dotted, ".")
-	cur := out
-	for i, p := range parts {
-		if i == len(parts)-1 {
-			cur[p] = val
-			return
-		}
-		next, ok := cur[p].(map[string]any)
-		if !ok {
-			next = map[string]any{}
-			cur[p] = next
-		}
-		cur = next
-	}
+	return string(runes[:max-3]) + "..."
 }
 
 // unwrapConfigMap peels GET /v1/config {"config":{…}} so keys match local defaults.*.
@@ -247,23 +202,6 @@ func unwrapConfigMap(body map[string]any) map[string]any {
 		return inner
 	}
 	return body
-}
-
-func collectFlat(prefix string, v any, out map[string]string) {
-	switch x := v.(type) {
-	case map[string]any:
-		for k, vv := range x {
-			key := k
-			if prefix != "" {
-				key = prefix + "." + k
-			}
-			collectFlat(key, vv, out)
-		}
-	default:
-		if prefix != "" {
-			out[prefix] = fmt.Sprint(x)
-		}
-	}
 }
 
 func runConfigSet(c *cli.Context) error {
@@ -285,14 +223,30 @@ func runConfigSet(c *cli.Context) error {
 		if err := state.config.Save(); err != nil {
 			return err
 		}
-		fmt.Fprintf(outWriter(c), "set %s (local)\n", key)
+		printConfigKey(c, state, key, " (local)")
 		return nil
 	}
 	if err := state.client.DoHTTP(req, nil); err != nil {
 		return err
 	}
-	fmt.Fprintf(outWriter(c), "set %s\n", key)
+	printConfigKey(c, state, key, "")
 	return nil
+}
+
+// printConfigKey echoes the effective row after a set, so the caller sees the
+// value the daemon actually holds. Falls back to the key name on a read error.
+func printConfigKey(c *cli.Context, state *appState, key, suffix string) {
+	w := outWriter(c)
+	entries, err := loadConfigEntries(state)
+	if err == nil {
+		for _, e := range entries {
+			if e.Key == key {
+				fmt.Fprintf(w, "%s = %s (%s)%s\n", e.Key, e.Value, e.Source, suffix)
+				return
+			}
+		}
+	}
+	fmt.Fprintf(w, "set %s%s\n", key, suffix)
 }
 
 func runConfigBridgeStatus(c *cli.Context) error {
@@ -424,30 +378,4 @@ func applyConfigHTTPOrLocal(c *cli.Context, state *appState, req HTTPRequest, ke
 	}
 	fmt.Fprintf(outWriter(c), "set %s\n", key)
 	return nil
-}
-
-func flattenConfig(tbl table.Writer, prefix string, v any) {
-	switch x := v.(type) {
-	case map[string]any:
-		keys := make([]string, 0, len(x))
-		for k := range x {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			key := k
-			if prefix != "" {
-				key = prefix + "." + k
-			}
-			flattenConfig(tbl, key, x[k])
-		}
-	case []any:
-		b, _ := json.Marshal(x)
-		tbl.AppendRow(table.Row{prefix, string(b)})
-	default:
-		if prefix == "" {
-			return
-		}
-		tbl.AppendRow(table.Row{prefix, fmt.Sprint(x)})
-	}
 }

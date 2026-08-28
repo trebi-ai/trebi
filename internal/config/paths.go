@@ -554,7 +554,7 @@ func pathKeyDescriptions() map[string]string {
 		"defaults.session.keep_alive":   "Hold session after COMPLETE for follow-ups",
 		"defaults.session.nudge":        "Idle delay before typing continue (default off; set e.g. 5m)",
 		"defaults.session.if_running":   "Overlap policy: skip|replace|coalesce|allow",
-		"terminal":                      "macOS app for jobi attach (Terminal|iTerm|Ghostty)",
+		"terminal":                      "macOS app for trebi run attach (Terminal|iTerm|Ghostty)",
 		"tools.fallback":                "When pin missing: require (fail) or path (use PATH)",
 		"notify.email":                  "Shell cmd for email alerts (tried first)",
 		"notify.whatsapp":               "Shell cmd for WhatsApp alerts (tried second)",
@@ -588,6 +588,9 @@ func bridgeResourceDescriptions() map[string]string {
 		"prompts":              "Codex prompts/skills-like assets",
 		"config":               "OpenCode full user config (default off)",
 		"settings":             "Copilot settings → harness",
+		"cli_config_prefs":     "Cursor CLI config prefs (non-hook) → harness",
+		"themes":               "Pi themes → harness",
+		"models":               "Pi model definitions → harness",
 	}
 }
 

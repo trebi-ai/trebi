@@ -160,7 +160,9 @@ func (s *Server) handleConfigGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"config": map[string]any{}})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"config": cfg})
+	// entries carries every known key with its source, default, and description
+	// so a remote CLI renders the server truth instead of its own local file.
+	writeJSON(w, http.StatusOK, map[string]any{"config": cfg, "entries": configEntries()})
 }
 
 func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +196,17 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.appendBus(r.Context(), store.BusEvent{Topic: "config.updated", Action: "updated"})
 	m, _ := loadConfigMap()
-	writeJSON(w, http.StatusOK, map[string]any{"config": m})
+	writeJSON(w, http.StatusOK, map[string]any{"config": m, "entries": configEntries()})
+}
+
+// configEntries lists every known key with effective value, source, and default.
+// A read error yields no rows: the caller still gets the config map.
+func configEntries() []config.PathEntry {
+	cfg, declared, err := config.LoadWithDeclared()
+	if err != nil {
+		return nil
+	}
+	return config.ListPathEntries(cfg, declared)
 }
 
 func loadConfigMap() (map[string]any, error) {

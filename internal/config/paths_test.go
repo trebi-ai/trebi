@@ -20,6 +20,14 @@ func TestPathKeyDescription_Coverage(t *testing.T) {
 	if !strings.Contains(PathKeyDescription("tools.claude.auth"), "shared") {
 		t.Fatal(PathKeyDescription("tools.claude.auth"))
 	}
+	// Every bridge resource needs a written description, not the generic
+	// "Bridge resource %q" fallback that PathKeyDescription returns for
+	// keys missing from bridgeResourceDescriptions.
+	for _, e := range ListPathEntries(cfg, nil) {
+		if strings.HasPrefix(e.Description, "Bridge resource ") {
+			t.Errorf("%s: undocumented bridge resource", e.Key)
+		}
+	}
 }
 
 func TestListPathEntries_SourceConfigVsDefault(t *testing.T) {

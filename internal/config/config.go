@@ -168,7 +168,7 @@ func (m *ResourceModeMap) UnmarshalYAML(value *yaml.Node) error {
 type ToolPin struct {
 	Version string `yaml:"version,omitempty"` // exact x.y.z after ensure target
 	Channel string `yaml:"channel,omitempty"` // last channel target (stable/latest)
-	// Auth: "shared" (default, bridge user login) or "separate" (jobi-only creds).
+	// Auth: "shared" (default, bridge user login) or "separate" (trebi-only creds).
 	Auth string `yaml:"auth,omitempty"`
 	// Path overrides the store binary (skip download; still version-check if possible).
 	Path string `yaml:"path,omitempty"`
@@ -287,12 +287,12 @@ func BinDir() string {
 	return filepath.Join(BaseDir(), "bin")
 }
 
-// LibexecDir is ~/.trebi/libexec — jobi helpers (not versioned harness CLIs).
+// LibexecDir is ~/.trebi/libexec — trebi helpers (not versioned harness CLIs).
 func LibexecDir() string {
 	return filepath.Join(BaseDir(), "libexec")
 }
 
-// HarnessDir is ~/.trebi/harness/<tool> — jobi-owned config/session tree for a harness.
+// HarnessDir is ~/.trebi/harness/<tool> — trebi-owned config/session tree for a harness.
 func HarnessDir(tool string) string {
 	return filepath.Join(BaseDir(), "harness", tool)
 }
