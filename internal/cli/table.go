@@ -223,7 +223,8 @@ func isWrappableColumn(header string) bool {
 	case "job", "name", "path", "conversation", "trigger", "detail", "note",
 		"notes", "window", "value", "description", "plan / note", "plan/note",
 		"last err", "reason", "message", "error", "started", "when", "duration",
-		"integration", "workspace", "harness", "title", "spec", "block":
+		"integration", "workspace", "harness", "title", "spec", "block",
+		"origin", "timezone", "next", "last":
 		return true
 	}
 	if strings.Contains(h, "note") || strings.Contains(h, "detail") ||

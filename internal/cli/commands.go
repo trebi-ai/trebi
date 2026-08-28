@@ -18,54 +18,6 @@ func outWriter(c *cli.Context) io.Writer {
 	return os.Stdout
 }
 
-func scheduleCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "schedule",
-		Usage: "schedules",
-		Subcommands: []*cli.Command{
-			{
-				Name:  "list",
-				Usage: "list schedules",
-				Flags: []cli.Flag{
-					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
-					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
-				},
-				Action: func(c *cli.Context) error {
-					client, err := clientFor(c)
-					if err != nil {
-						return err
-					}
-					var body struct {
-						Schedules []map[string]any `json:"schedules"`
-					}
-					if err := client.GetJSON(BuildSchedulesListPath(c.Int("limit")), &body); err != nil {
-						return err
-					}
-					if c.Bool("json") {
-						enc := json.NewEncoder(outWriter(c))
-						enc.SetIndent("", "  ")
-						return enc.Encode(body)
-					}
-					w := outWriter(c)
-					tbl := newTable(w, []string{"Workspace", "Job", "Spec", "Timezone", "Next", "Last"})
-					for _, s := range body.Schedules {
-						tbl.AppendRow(table.Row{
-							mapStr(s, "workspace"),
-							mapStr(s, "job"),
-							mapStr(s, "spec"),
-							dash(mapStr(s, "timezone")),
-							dash(mapStr(s, "next_due_at")),
-							dash(mapStr(s, "last_fired_at")),
-						})
-					}
-					renderTable(tbl)
-					return nil
-				},
-			},
-		},
-	}
-}
-
 func doctorCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "doctor",

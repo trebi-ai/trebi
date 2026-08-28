@@ -359,10 +359,16 @@ func TestCommandRegistration(t *testing.T) {
 	for _, c := range app.Commands {
 		names[c.Name] = true
 	}
-	for _, want := range []string{"list", "run", "runs", "job", "harness", "integration", "config", "service", "conversation", "approvals", "events"} {
+	for _, want := range []string{"list", "runs", "job", "harness", "integration", "config", "service", "conversation", "approvals", "events"} {
 		if !names[want] {
 			t.Fatalf("missing top-level %s", want)
 		}
+	}
+	if names["run"] {
+		t.Fatal("top-level run should be removed (use trebi job run)")
+	}
+	if names["schedule"] {
+		t.Fatal("top-level schedule should be removed (use trebi job list --schedule)")
 	}
 	svc := findCmd(app.Commands, "service")
 	for _, want := range []string{"install", "uninstall", "start", "stop", "restart", "status", "logs", "daemon", "shutdown"} {
@@ -374,10 +380,14 @@ func TestCommandRegistration(t *testing.T) {
 	if job == nil {
 		t.Fatal("job missing")
 	}
-	for _, want := range []string{"delete", "schedule", "status", "tail", "list", "pause", "unpause"} {
+	for _, want := range []string{"delete", "schedule", "status", "tail", "list", "pause", "unpause", "run"} {
 		if findCmd(job.Subcommands, want) == nil {
 			t.Fatalf("job missing %s", want)
 		}
+	}
+	jobList := findCmd(job.Subcommands, "list")
+	if !hasFlag(jobList, "schedule") {
+		t.Fatal("job list missing --schedule")
 	}
 	h := findCmd(app.Commands, "harness")
 	for _, want := range []string{"list", "ensure", "auth"} {
@@ -407,9 +417,9 @@ func TestCommandRegistration(t *testing.T) {
 	if !hasFlag(list, "detailed") || !hasFlag(list, "assistants-only") {
 		t.Fatal("list flags")
 	}
-	run := findCmd(app.Commands, "run")
+	run := findCmd(job.Subcommands, "run")
 	if !hasFlag(run, "extra-prompt") || !hasFlag(run, "test") || !hasFlag(run, "attach") {
-		t.Fatal("run flags")
+		t.Fatal("job run flags")
 	}
 	runsList := findCmd(findCmd(app.Commands, "runs").Subcommands, "list")
 	for _, f := range []string{"status", "job", "kind", "workspace", "harness", "model", "conversation", "limit"} {

@@ -343,7 +343,7 @@ func runCommand() *cli.Command {
 
 func runLaunch(c *cli.Context) error {
 	if c.NArg() < 1 {
-		return fmt.Errorf("job name required")
+		return fmt.Errorf("usage: trebi job run <job>")
 	}
 	client, err := clientFor(c)
 	if err != nil {

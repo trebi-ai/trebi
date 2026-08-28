@@ -15,6 +15,7 @@ func jobCommand() *cli.Command {
 		Name:  "job",
 		Usage: "manage jobs",
 		Subcommands: append(jobManageSubcommands(),
+			runCommand(),
 			&cli.Command{
 				Name:      "status",
 				Usage:     "show job + latest run summary",
@@ -91,6 +92,7 @@ func jobManageSubcommands() []*cli.Command {
 			Flags: []cli.Flag{
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				&cli.BoolFlag{Name: "detailed", Aliases: []string{"d"}, Usage: "extra columns (path, status)"},
+				&cli.BoolFlag{Name: "schedule", Usage: "add SPEC, TIMEZONE, NEXT, LAST columns"},
 			},
 			Action: runJobList,
 		},
@@ -140,6 +142,19 @@ func runJobList(c *cli.Context) error {
 	if err := client.GetJSON(path, &body); err != nil {
 		return err
 	}
+	if c.Bool("schedule") {
+		sched, err := loadScheduleIndex(client)
+		if err != nil {
+			return err
+		}
+		for _, j := range body.Jobs {
+			cols := sched[jobScheduleKey(j)]
+			j["spec"] = cols.Spec
+			j["timezone"] = cols.Timezone
+			j["next_due_at"] = cols.Next
+			j["last_fired_at"] = cols.Last
+		}
+	}
 	if c.Bool("json") {
 		enc := json.NewEncoder(outWriter(c))
 		enc.SetIndent("", "  ")
@@ -149,6 +164,9 @@ func runJobList(c *cli.Context) error {
 	headers := []string{"Name", "Workspace", "Harness", "Active"}
 	if c.Bool("detailed") {
 		headers = append(headers, "Status", "Path")
+	}
+	if c.Bool("schedule") {
+		headers = append(headers, "Spec", "Timezone", "Next", "Last")
 	}
 	tbl := newTable(w, headers)
 	for _, j := range body.Jobs {
@@ -164,10 +182,67 @@ func runJobList(c *cli.Context) error {
 		if c.Bool("detailed") {
 			row = append(row, dash(mapStr(j, "status")), dash(mapStr(j, "path")))
 		}
+		if c.Bool("schedule") {
+			row = append(row,
+				dash(mapStr(j, "spec")),
+				dash(mapStr(j, "timezone")),
+				dash(mapStr(j, "next_due_at")),
+				dash(mapStr(j, "last_fired_at")),
+			)
+		}
 		tbl.AppendRow(row)
 	}
 	renderTable(tbl)
 	return nil
+}
+
+// jobScheduleCols is the extra job-list columns from GET /v1/schedules.
+type jobScheduleCols struct {
+	Spec, Timezone, Next, Last string
+}
+
+func jobScheduleKey(j map[string]any) string {
+	return mapStr(j, "workspace_id", "workspace") + "/" + mapStr(j, "name")
+}
+
+func loadScheduleIndex(client *APIClient) (map[string]jobScheduleCols, error) {
+	var body struct {
+		Schedules []map[string]any `json:"schedules"`
+	}
+	if err := client.GetJSON(BuildSchedulesListPath(200), &body); err != nil {
+		return nil, err
+	}
+	return indexSchedules(body.Schedules), nil
+}
+
+func indexSchedules(rows []map[string]any) map[string]jobScheduleCols {
+	out := map[string]jobScheduleCols{}
+	for _, s := range rows {
+		key := mapStr(s, "workspace") + "/" + mapStr(s, "job")
+		cur := out[key]
+		spec := mapStr(s, "spec")
+		if cur.Spec == "" {
+			cur.Spec = spec
+		} else if spec != "" {
+			cur.Spec = cur.Spec + ", " + spec
+		}
+		tz := mapStr(s, "timezone")
+		if cur.Timezone == "" {
+			cur.Timezone = tz
+		} else if tz != "" && cur.Timezone != tz && !strings.Contains(cur.Timezone, tz) {
+			cur.Timezone = cur.Timezone + ", " + tz
+		}
+		next := mapStr(s, "next_due_at")
+		if cur.Next == "" || (next != "" && next < cur.Next) {
+			cur.Next = next
+		}
+		last := mapStr(s, "last_fired_at")
+		if last > cur.Last {
+			cur.Last = last
+		}
+		out[key] = cur
+	}
+	return out
 }
 
 func runJobShow(c *cli.Context) error {

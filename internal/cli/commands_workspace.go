@@ -116,7 +116,7 @@ func runWorkspaceList(c *cli.Context) error {
 		return nil
 	}
 	w := outWriter(c)
-	tbl := newTable(w, []string{"", "ID", "Name", "Path", "Origin"})
+	tbl := newTable(w, []string{"*", "ID", "Name", "Path", "Origin"})
 	for _, r := range rows {
 		tbl.AppendRow(table.Row{r.Active, r.ID, dash(r.Name), dash(r.Path), r.Origin})
 	}
