@@ -63,6 +63,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	maxBytes := files.DefaultMaxBytes
 	if cfg, err := config.Load(); err == nil && cfg != nil {
 		maxBytes = cfg.Files.MaxBytesOrDefault()
+		ws.WithRoot(cfg.Workspaces.RootOrDefault())
 	}
 	return &ControlPlane{
 		Store:        st,

@@ -131,10 +131,11 @@ func jobManageSubcommands() []*cli.Command {
 		},
 		{
 			Name:      "delete",
-			Usage:     "delete a job file (JOB.md)",
+			Usage:     "delete a job file (JOB.md); --purge removes the folder",
 			ArgsUsage: "<name>",
 			Flags: []cli.Flag{
 				&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "skip confirm (always true over API)"},
+				&cli.BoolFlag{Name: "purge", Usage: "remove the job folder, not only JOB.md"},
 			},
 			Action: runJobDelete,
 		},
@@ -325,7 +326,7 @@ func runJobDelete(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	req := BuildJobDelete(name, workspaceFor(c))
+	req := BuildJobDelete(name, workspaceFor(c), c.Bool("purge"))
 	if err := client.DoHTTP(req, nil); err != nil {
 		return err
 	}

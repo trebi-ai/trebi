@@ -825,6 +825,15 @@ func (s *Server) handleJobDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if r.URL.Query().Get("purge") == "1" {
+		s.purgeJob(w, r, name, row, ws, rel)
+		return
+	}
+	jobDir := filepath.Dir(row.Path)
+	remaining := 0
+	if n, err := s.countFiles(r.Context(), jobDir); err == nil && n > 0 {
+		remaining = n - 1
+	}
 	if err := s.files.Delete(r.Context(), ws.Path, rel, ifMatchHeader(r)); err != nil {
 		writeFilesErr(w, err)
 		return
@@ -834,31 +843,112 @@ func (s *Server) handleJobDelete(w http.ResponseWriter, r *http.Request) {
 		Topic: "job.deleted", Entity: "job", EntityID: name, Action: "deleted",
 		Attrs: map[string]string{"workspace": row.WorkspaceID, "path": row.Path},
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": name})
+	out := map[string]any{"deleted": name}
+	if remaining > 0 {
+		out["files_remaining"] = remaining
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) purgeJob(w http.ResponseWriter, r *http.Request, name string, row workspaces.JobRow, ws *workspaces.Workspace, rel string) {
+	if !s.requireIfMatch(w, r, ws.Path, rel) {
+		return
+	}
+	jobDir := filepath.Dir(row.Path)
+	if filepath.Clean(jobDir) == filepath.Clean(ws.Path) {
+		writeErr(w, http.StatusConflict, "conflict", "cannot purge a root-level job; it would delete the workspace")
+		return
+	}
+	if msg := s.purgeBlockers(r.Context(), row, jobDir); msg != "" {
+		writeErr(w, http.StatusConflict, "conflict", msg)
+		return
+	}
+	n, err := s.countFiles(r.Context(), jobDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if err := os.RemoveAll(jobDir); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	_ = s.ws.RebuildIndex(r.Context(), ws)
+	s.appendBus(r.Context(), store.BusEvent{
+		Topic: "job.deleted", Entity: "job", EntityID: name, Action: "deleted",
+		Attrs: map[string]string{"workspace": row.WorkspaceID, "path": row.Path},
+	})
+	folderRel, _ := workspaceRel(ws.Path, jobDir)
+	s.appendBus(r.Context(), store.BusEvent{
+		Topic: "file.deleted", Entity: "file", EntityID: ws.ID + ":" + folderRel, Action: "deleted",
+		Attrs: map[string]string{"workspace": ws.ID, "path": folderRel, "purge": "true"},
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": name, "purged": true, "files_removed": n,
+	})
+}
+
+func (s *Server) purgeBlockers(ctx context.Context, row workspaces.JobRow, jobDir string) string {
+	rows, err := s.ws.ListJobs(ctx, row.WorkspaceID)
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, other := range rows {
+		if other.Name == row.Name {
+			continue
+		}
+		if pathInside(jobDir, other.Path) {
+			names = append(names, other.Name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return "cannot purge: nested jobs " + strings.Join(names, ", ")
+}
+
+func (s *Server) countFiles(ctx context.Context, root string) (int, error) {
+	n := 0
+	after := ""
+	for {
+		items, next, err := s.files.List(ctx, root, files.ListOpts{AfterPath: after, Limit: 500})
+		if err != nil {
+			return 0, err
+		}
+		n += len(items)
+		if next == "" {
+			return n, nil
+		}
+		after = next
+	}
 }
 
 func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
+		Name       *string `json:"name"`
+		GitEnabled *bool   `json:"git_enabled"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is a no-op get
 	id := r.PathValue("id")
-	if body.Name != "" {
-		ws, err := s.ws.Rename(r.Context(), id, body.Name)
-		if errors.Is(err, workspaces.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-			return
-		}
+	if body.Name != nil && strings.TrimSpace(*body.Name) == "" {
+		body.Name = nil
+	}
+	if body.Name == nil && body.GitEnabled == nil {
+		ws, err := s.ws.Get(r.Context(), id)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
 			return
 		}
 		writeJSON(w, http.StatusOK, ws)
 		return
 	}
-	ws, err := s.ws.Get(r.Context(), id)
-	if err != nil {
+	ws, err := s.ws.Patch(r.Context(), id, workspaces.Patch{Name: body.Name, GitEnabled: body.GitEnabled})
+	if errors.Is(err, workspaces.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)

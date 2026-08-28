@@ -222,7 +222,31 @@ func (s *Service) Delete(ctx context.Context, root, rel string, ifMatch string) 
 	if err := checkIfMatch(joined, ifMatch, true); err != nil {
 		return err
 	}
-	return os.Remove(joined)
+	if err := os.Remove(joined); err != nil {
+		return err
+	}
+	pruneEmptyParents(joined, root)
+	return nil
+}
+
+// pruneEmptyParents removes now-empty directories from the deleted file's
+// parent up to (never including) the jail root.
+func pruneEmptyParents(joined, root string) {
+	root = filepath.Clean(root)
+	dir := filepath.Dir(joined)
+	for {
+		if dir == root || !underRoot(root, dir) {
+			return
+		}
+		if err := os.Remove(dir); err != nil {
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return
+		}
+		dir = parent
+	}
 }
 
 // CheckIfMatch enforces If-Match against the current file. An empty ifMatch

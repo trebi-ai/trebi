@@ -115,14 +115,53 @@ func TestBuildJobFilePaths(t *testing.T) {
 	}
 }
 
+func TestBuildSkillFilePaths(t *testing.T) {
+	t.Parallel()
+	list := BuildSkillFileListPath("demo", "scripts/", "scripts/a.py", 20)
+	if !strings.HasPrefix(list, "/v1/skills/demo/files?") {
+		t.Fatalf("list %s", list)
+	}
+	get := BuildSkillFileGetPath("demo", "helper.py", true)
+	if !strings.Contains(get, "/v1/skills/demo/files/helper.py") || !strings.Contains(get, "stat=1") {
+		t.Fatalf("get %s", get)
+	}
+	if p := BuildSkillFilePutPath("demo", "a/b.py"); p != "/v1/skills/demo/files/a/b.py" {
+		t.Fatalf("put %s", p)
+	}
+	if p := BuildSkillFileDeletePath("demo", "a/b.py"); p != "/v1/skills/demo/files/a/b.py" {
+		t.Fatalf("delete %s", p)
+	}
+}
+
+func TestBuildWorkspaceAdd(t *testing.T) {
+	t.Parallel()
+	req := BuildWorkspaceAdd("/tmp/ws", "reports", true)
+	if req.Method != "POST" || req.Path != "/v1/workspaces" {
+		t.Fatalf("%+v", req)
+	}
+	body, _ := req.Body.(map[string]any)
+	if body["path"] != "/tmp/ws" || body["name"] != "reports" || body["create"] != true {
+		t.Fatalf("body %+v", body)
+	}
+	req = BuildWorkspaceAdd("", "reports", true)
+	body, _ = req.Body.(map[string]any)
+	if _, ok := body["path"]; ok {
+		t.Fatalf("pathless should omit path: %+v", body)
+	}
+}
+
 func TestBuildJobDelete(t *testing.T) {
 	t.Parallel()
-	req := BuildJobDelete("demo", "ws1")
+	req := BuildJobDelete("demo", "ws1", false)
 	if req.Method != "DELETE" {
 		t.Fatalf("method %s", req.Method)
 	}
 	if !strings.HasPrefix(req.Path, "/v1/jobs/demo") || !strings.Contains(req.Path, "workspace=ws1") {
 		t.Fatalf("path %s", req.Path)
+	}
+	req = BuildJobDelete("demo", "ws1", true)
+	if !strings.Contains(req.Path, "purge=1") {
+		t.Fatalf("purge path %s", req.Path)
 	}
 }
 
@@ -359,7 +398,7 @@ func TestDoHTTPRoundTrip(t *testing.T) {
 	}
 
 	// job delete
-	req = BuildJobDelete("demo", "ws1")
+	req = BuildJobDelete("demo", "ws1", false)
 	if err := client.DoHTTP(req, nil); err != nil {
 		t.Fatal(err)
 	}

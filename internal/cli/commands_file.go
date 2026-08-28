@@ -15,7 +15,7 @@ func fileCommand() *cli.Command {
 	return &cli.Command{
 		Name:        "file",
 		Usage:       "workspace files (shared assets, assistant support files)",
-		Subcommands: fileActionCommands(false, runFileList, runFileGet, runFilePut, runFileRm),
+		Subcommands: fileActionCommands("", runFileList, runFileGet, runFilePut, runFileRm),
 	}
 }
 
@@ -23,16 +23,24 @@ func jobFileSubcommand() *cli.Command {
 	return &cli.Command{
 		Name:        "file",
 		Usage:       "files next to a job (scripts, templates)",
-		Subcommands: fileActionCommands(true, runJobFileList, runJobFileGet, runJobFilePut, runJobFileRm),
+		Subcommands: fileActionCommands("job", runJobFileList, runJobFileGet, runJobFilePut, runJobFileRm),
 	}
 }
 
-func fileActionCommands(jobScoped bool, ls, get, put, rm cli.ActionFunc) []*cli.Command {
+func skillFileSubcommand() *cli.Command {
+	return &cli.Command{
+		Name:        "file",
+		Usage:       "files in a skill bundle (scripts)",
+		Subcommands: fileActionCommands("skill", runSkillFileList, runSkillFileGet, runSkillFilePut, runSkillFileRm),
+	}
+}
+
+func fileActionCommands(owner string, ls, get, put, rm cli.ActionFunc) []*cli.Command {
 	listUsage, listArgs := "list files in the workspace", "[prefix]"
 	noun, pathArgs := "a workspace file", "<path>"
-	if jobScoped {
-		listUsage, listArgs = "list files in the job folder", "<job> [prefix]"
-		noun, pathArgs = "a file next to the job", "<job> <path>"
+	if owner != "" {
+		listUsage, listArgs = "list files in the "+owner+" folder", "<"+owner+"> [prefix]"
+		noun, pathArgs = "a "+owner+" file", "<"+owner+"> <path>"
 	}
 	return []*cli.Command{
 		{
@@ -246,15 +254,71 @@ func fileArg(c *cli.Context) (string, error) {
 }
 
 func jobFileArgs(c *cli.Context) (name, rel string, err error) {
+	return scopedFileArgs(c, "job")
+}
+
+func skillFileArgs(c *cli.Context) (name, rel string, err error) {
+	return scopedFileArgs(c, "skill")
+}
+
+func scopedFileArgs(c *cli.Context, owner string) (name, rel string, err error) {
 	name = c.Args().Get(0)
 	rel = c.Args().Get(1)
 	if name == "" {
-		return "", "", fmt.Errorf("job name required")
+		return "", "", fmt.Errorf("%s name required", owner)
 	}
 	if rel == "" {
 		return "", "", fmt.Errorf("path required")
 	}
 	return name, rel, nil
+}
+
+func runSkillFileList(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("skill name required")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return fileListAction(c, client, BuildSkillFileListPath(name, c.Args().Get(1), c.String("cursor"), c.Int("limit")))
+}
+
+func runSkillFileGet(c *cli.Context) error {
+	name, rel, err := skillFileArgs(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return fileGetAction(c, client, BuildSkillFileGetPath(name, rel, c.Bool("stat")))
+}
+
+func runSkillFilePut(c *cli.Context) error {
+	name, rel, err := skillFileArgs(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return filePutAction(c, client, BuildSkillFilePutPath(name, rel))
+}
+
+func runSkillFileRm(c *cli.Context) error {
+	name, rel, err := skillFileArgs(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return fileRmAction(c, client, BuildSkillFileDeletePath(name, rel))
 }
 
 func readBytesOrStdin(path string) ([]byte, error) {

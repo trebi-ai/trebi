@@ -173,13 +173,40 @@ func BuildWorkspaceDelete(id string) HTTPRequest {
 	return HTTPRequest{Method: "DELETE", Path: "/v1/workspaces/" + url.PathEscape(id)}
 }
 
-// BuildWorkspaceRename builds PATCH /v1/workspaces/{id} with name.
-func BuildWorkspaceRename(id, name string) HTTPRequest {
+// BuildWorkspaceAdd builds POST /v1/workspaces.
+func BuildWorkspaceAdd(path, name string, create bool) HTTPRequest {
+	body := map[string]any{}
+	if name != "" {
+		body["name"] = name
+	}
+	if path != "" {
+		body["path"] = path
+	}
+	if create {
+		body["create"] = true
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/workspaces", Body: body}
+}
+
+// BuildWorkspacePatch builds PATCH /v1/workspaces/{id}.
+func BuildWorkspacePatch(id string, name *string, gitEnabled *bool) HTTPRequest {
+	body := map[string]any{}
+	if name != nil {
+		body["name"] = *name
+	}
+	if gitEnabled != nil {
+		body["git_enabled"] = *gitEnabled
+	}
 	return HTTPRequest{
 		Method: "PATCH",
 		Path:   "/v1/workspaces/" + url.PathEscape(id),
-		Body:   map[string]any{"name": name},
+		Body:   body,
 	}
+}
+
+// BuildWorkspaceRename builds PATCH /v1/workspaces/{id} with name.
+func BuildWorkspaceRename(id, name string) HTTPRequest {
+	return BuildWorkspacePatch(id, &name, nil)
 }
 
 // BuildFileListPath builds GET /v1/workspaces/{id}/files?prefix=&cursor=&limit=.
@@ -236,6 +263,34 @@ func BuildJobFilePutPath(name, workspace, rel string) string {
 // BuildJobFileDeletePath builds DELETE /v1/jobs/{name}/files/{path}?workspace=.
 func BuildJobFileDeletePath(name, workspace, rel string) string {
 	return withQuery(jobFilePathURL(name, rel), workspaceQ(workspace))
+}
+
+// BuildSkillFileListPath builds GET /v1/skills/{name}/files?prefix=&cursor=&limit=.
+func BuildSkillFileListPath(name, prefix, afterPath string, limit int) string {
+	kv := map[string]string{"prefix": prefix, "cursor": afterPath}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return withQuery("/v1/skills/"+url.PathEscape(name)+"/files", kv)
+}
+
+// BuildSkillFileGetPath builds GET /v1/skills/{name}/files/{path}. stat adds ?stat=1.
+func BuildSkillFileGetPath(name, rel string, stat bool) string {
+	p := skillFilePathURL(name, rel)
+	if stat {
+		return withQuery(p, map[string]string{"stat": "1"})
+	}
+	return p
+}
+
+// BuildSkillFilePutPath builds PUT /v1/skills/{name}/files/{path}.
+func BuildSkillFilePutPath(name, rel string) string {
+	return skillFilePathURL(name, rel)
+}
+
+// BuildSkillFileDeletePath builds DELETE /v1/skills/{name}/files/{path}.
+func BuildSkillFileDeletePath(name, rel string) string {
+	return skillFilePathURL(name, rel)
 }
 
 // BuildRulesTest builds POST /v1/rules/test.
@@ -458,10 +513,17 @@ func MatchConversation(conversationKey, substr string) bool {
 }
 
 // BuildJobDelete builds DELETE /v1/jobs/{name}.
-func BuildJobDelete(name, workspace string) HTTPRequest {
+func BuildJobDelete(name, workspace string, purge bool) HTTPRequest {
+	kv := workspaceQ(workspace)
+	if purge {
+		if kv == nil {
+			kv = map[string]string{}
+		}
+		kv["purge"] = "1"
+	}
 	return HTTPRequest{
 		Method: "DELETE",
-		Path:   withQuery("/v1/jobs/"+url.PathEscape(name), workspaceQ(workspace)),
+		Path:   withQuery("/v1/jobs/"+url.PathEscape(name), kv),
 	}
 }
 
@@ -738,6 +800,10 @@ func filePathURL(workspaceID, rel string) string {
 
 func jobFilePathURL(name, rel string) string {
 	return "/v1/jobs/" + url.PathEscape(name) + "/files/" + escapeFileRel(rel)
+}
+
+func skillFilePathURL(name, rel string) string {
+	return "/v1/skills/" + url.PathEscape(name) + "/files/" + escapeFileRel(rel)
 }
 
 func escapeFileRel(rel string) string {

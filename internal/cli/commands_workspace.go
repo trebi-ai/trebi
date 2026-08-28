@@ -36,6 +36,7 @@ func workspaceCommand() *cli.Command {
 				ArgsUsage: "[path]",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "name", Usage: "display name (default: basename of path)"},
+					&cli.BoolFlag{Name: "create", Usage: "mkdir the folder if missing; path optional with --name"},
 					&cli.StringFlag{Name: "url", Aliases: []string{"remote"}, Usage: "remote trebid base URL"},
 					&cli.StringFlag{Name: "token", Usage: "remote bearer token"},
 					&cli.BoolFlag{Name: "token-stdin", Usage: "read remote token from stdin"},
@@ -70,6 +71,16 @@ func workspaceCommand() *cli.Command {
 				Usage:     "rename a workspace",
 				ArgsUsage: "<id> <new-name>",
 				Action:    runWorkspaceRename,
+			},
+			{
+				Name:      "set",
+				Usage:     "update workspace name and/or git_enabled",
+				ArgsUsage: "<id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "name", Usage: "display name"},
+					&cli.BoolFlag{Name: "git-enabled", Usage: "write git_enabled to trebi.yaml"},
+				},
+				Action: runWorkspaceSet,
 			},
 			{
 				Name:      "unlink",
@@ -138,6 +149,35 @@ func runWorkspaceRename(c *cli.Context) error {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "renamed %s → %s\n", id, name)
+	return nil
+}
+
+func runWorkspaceSet(c *cli.Context) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi workspace set <id> [--name] [--git-enabled]")
+	}
+	if !c.IsSet("name") && !c.IsSet("git-enabled") {
+		return fmt.Errorf("set --name and/or --git-enabled")
+	}
+	var name *string
+	var git *bool
+	if c.IsSet("name") {
+		n := c.String("name")
+		name = &n
+	}
+	if c.IsSet("git-enabled") {
+		g := c.Bool("git-enabled")
+		git = &g
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if err := client.DoHTTP(BuildWorkspacePatch(id, name, git), nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "updated %s\n", id)
 	return nil
 }
 
@@ -237,11 +277,11 @@ func linkedWorkspaceRows(sticky *StickyContext, linked []LinkedWorkspace) []wsRo
 func runWorkspaceAdd(c *cli.Context) error {
 	remoteURL := strings.TrimSpace(c.String("url"))
 	if remoteURL == "" {
-		// Local add requires path.
-		if c.NArg() < 1 {
-			return fmt.Errorf("path required (or --url/--remote for a remote workspace)")
+		path := c.Args().Get(0)
+		if path == "" && (!c.Bool("create") || c.String("name") == "") {
+			return fmt.Errorf("path required (or --create --name for pathless, or --url/--remote)")
 		}
-		return workspaceAddLocal(c, c.Args().Get(0))
+		return workspaceAddLocal(c, path)
 	}
 	return workspaceAddRemote(c, remoteURL)
 }
@@ -252,13 +292,11 @@ func workspaceAddLocal(c *cli.Context, path string) error {
 		return fmt.Errorf("local daemon: %w (is trebid running?)", err)
 	}
 	name := c.String("name")
-	if name == "" {
+	if name == "" && path != "" {
 		name = filepath.Base(path)
 	}
 	var out map[string]any
-	if err := client.PostJSON("/v1/workspaces", map[string]string{
-		"path": path, "name": name,
-	}, &out); err != nil {
+	if err := client.DoHTTP(BuildWorkspaceAdd(path, name, c.Bool("create")), &out); err != nil {
 		return err
 	}
 	id := mapStr(out, "id")
@@ -268,6 +306,9 @@ func workspaceAddLocal(c *cli.Context, path string) error {
 	dispName := mapStr(out, "name")
 	if dispName == "" {
 		dispName = name
+	}
+	if p := mapStr(out, "path"); p != "" {
+		path = p
 	}
 	fmt.Fprintf(outWriter(c), "workspace %s path=%s\n", dash(id), path)
 	if c.Bool("use") && id != "" {
@@ -307,14 +348,14 @@ func workspaceAddRemote(c *cli.Context, remoteURL string) error {
 		if n := c.String("name"); n != "" {
 			name = n
 		}
-	case c.NArg() >= 1:
-		// Register path on remote host, then link.
+	case c.NArg() >= 1 || (c.Bool("create") && c.String("name") != ""):
+		// Register path on remote host, then link (path optional with --create --name).
 		id, name, path, err = registerRemoteWorkspace(c, client)
 		if err != nil {
 			return err
 		}
 	default:
-		return fmt.Errorf("remote add needs a path (register on host) or --id (link existing)")
+		return fmt.Errorf("remote add needs a path (register on host), --create --name, or --id (link existing)")
 	}
 	if id == "" {
 		return fmt.Errorf("remote workspace id missing in response")
@@ -368,13 +409,15 @@ func findRemoteWorkspace(client *APIClient, id, remoteURL string) (name, path st
 func registerRemoteWorkspace(c *cli.Context, client *APIClient) (id, name, path string, err error) {
 	path = c.Args().Get(0)
 	name = c.String("name")
-	if name == "" {
+	create := c.Bool("create")
+	if path == "" && (!create || name == "") {
+		return "", "", "", fmt.Errorf("remote add needs a path (register on host) or --id (link existing)")
+	}
+	if name == "" && path != "" {
 		name = filepath.Base(path)
 	}
 	var out map[string]any
-	if err := client.PostJSON("/v1/workspaces", map[string]string{
-		"path": path, "name": name,
-	}, &out); err != nil {
+	if err := client.DoHTTP(BuildWorkspaceAdd(path, name, create), &out); err != nil {
 		return "", "", "", err
 	}
 	id = mapStr(out, "id")

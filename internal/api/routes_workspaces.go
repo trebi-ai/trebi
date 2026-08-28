@@ -3,10 +3,12 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
 func (s *Server) routeWorkspaces(mux *http.ServeMux) {
@@ -44,19 +46,31 @@ func (s *Server) handleWorkspacesList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWorkspacesAdd(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Path string `json:"path"`
-		Name string `json:"name"`
+		Path   string `json:"path"`
+		Name   string `json:"name"`
+		Create bool   `json:"create"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	ws, err := s.ws.Add(r.Context(), body.Path, body.Name)
+	ws, err := s.ws.AddWith(r.Context(), workspaces.AddOpts{
+		Path: body.Path, Name: body.Name, Create: body.Create,
+	})
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		writeWorkspaceAddErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, ws)
+}
+
+func writeWorkspaceAddErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, workspaces.ErrNested), errors.Is(err, workspaces.ErrContains):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	default:
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	}
 }
 
 func (s *Server) handleWorkspaceGet(w http.ResponseWriter, r *http.Request) {

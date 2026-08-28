@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -116,13 +117,22 @@ func TestRebuildIndexSkipsNestedWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wsB, err := svc.Add(ctx, filepath.Join(root, "sub"), "B")
+	sub := filepath.Join(root, "sub")
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.DB().Exec(`INSERT INTO workspaces (id, name, path, git_enabled, created_at, updated_at)
+		VALUES (?,?,?,?,?,?)`, "ws_nested", "B", sub, 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	wsB, err := svc.Get(ctx, "ws_nested")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := svc.RebuildIndex(ctx, wsB); err != nil {
+		t.Fatal(err)
+	}
 
-	// Remove B's trebi.yaml marker: the registry boundary must still hold.
-	if err := os.Remove(filepath.Join(root, "sub", "trebi.yaml")); err != nil {
+	// Remove B's trebi.yaml marker if present: the registry boundary must still hold.
+	if err := os.Remove(filepath.Join(root, "sub", "trebi.yaml")); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 	if err := svc.RebuildIndex(ctx, wsA); err != nil {
@@ -262,6 +272,104 @@ func TestRenameBumpsRevisionAndBusFrame(t *testing.T) {
 	n, err := st.ListBus(ctx, seq, nil, 10)
 	if err != nil || len(n) != 0 {
 		t.Fatalf("not-found must not emit: %d %v", len(n), err)
+	}
+}
+
+func TestAddCreateAndGuards(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	root := t.TempDir()
+	svc := workspaces.New(st).WithRoot(root)
+
+	missing := filepath.Join(root, "fresh")
+	if _, err := svc.AddWith(ctx, workspaces.AddOpts{Path: missing, Name: "fresh", Create: true}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(missing); err != nil || !st.IsDir() {
+		t.Fatalf("mkdir: %v %v", st, err)
+	}
+	seq := mustSeq(t, st)
+	if _, err := svc.AddWith(ctx, workspaces.AddOpts{Path: missing, Name: "fresh", Create: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustSeq(t, st); got != seq {
+		t.Fatalf("bus grew on idempotent create: %v", busTopics(t, st, seq))
+	}
+
+	inside := filepath.Join(missing, "nested")
+	if _, err := svc.AddWith(ctx, workspaces.AddOpts{Path: inside, Name: "nested", Create: true}); !errors.Is(err, workspaces.ErrNested) {
+		t.Fatalf("nested: %v", err)
+	}
+
+	pathless, err := svc.AddWith(ctx, workspaces.AddOpts{Name: "reports", Create: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathless.Path != filepath.Join(root, "reports") {
+		t.Fatalf("pathless path %s", pathless.Path)
+	}
+
+	bare := workspaces.New(st)
+	if _, err := bare.AddWith(ctx, workspaces.AddOpts{Name: "x", Create: true}); !errors.Is(err, workspaces.ErrNoRoot) {
+		t.Fatalf("no root: %v", err)
+	}
+
+	filePath := filepath.Join(root, "not-a-dir")
+	writeFile(t, filePath, "x")
+	if _, err := svc.AddWith(ctx, workspaces.AddOpts{Path: filepath.Join(filePath, "sub"), Name: "bad", Create: true}); !errors.Is(err, workspaces.ErrAncestorFile) {
+		t.Fatalf("ancestor file: %v", err)
+	}
+
+	child := filepath.Join(root, "child")
+	if _, err := svc.AddWith(ctx, workspaces.AddOpts{Path: child, Name: "child", Create: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AddWith(ctx, workspaces.AddOpts{Path: root, Name: "parent"}); !errors.Is(err, workspaces.ErrContains) {
+		t.Fatalf("contains: %v", err)
+	}
+}
+
+func TestPatchWritesTrebiYAML(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+	root := t.TempDir()
+	ws, err := svc.Add(ctx, root, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	on := true
+	got, err := svc.Patch(ctx, ws.ID, workspaces.Patch{GitEnabled: &on})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.GitEnabled || got.Revision != 2 {
+		t.Fatalf("%+v", got)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "trebi.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "git_enabled: true") || !strings.Contains(string(data), "name: alpha") {
+		t.Fatalf("yaml: %s", data)
+	}
+
+	if err := os.Chmod(root, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
+	name := "blocked"
+	if _, err := svc.Patch(ctx, ws.ID, workspaces.Patch{Name: &name}); err == nil {
+		t.Fatal("want file-write error")
+	}
+	cur, err := svc.Get(ctx, ws.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.Name != "alpha" {
+		t.Fatalf("registry changed after file failure: %s", cur.Name)
 	}
 }
 

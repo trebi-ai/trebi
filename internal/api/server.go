@@ -56,15 +56,16 @@ type Server struct {
 
 // Options for New.
 type Options struct {
-	Token         string
-	Shadow        bool
-	Drain         bool
-	FilesMaxBytes int64 // 0 = files.DefaultMaxBytes
+	Token          string
+	Shadow         bool
+	Drain          bool
+	FilesMaxBytes  int64  // 0 = files.DefaultMaxBytes
+	WorkspacesRoot string // pathless workspace create; empty refuses it
 }
 
 // New builds an API server.
 func New(st *store.Store, opts Options) *Server {
-	ws := workspaces.New(st)
+	ws := workspaces.New(st).WithRoot(opts.WorkspacesRoot)
 	r := runs.New(st)
 	pol := dispatch.NewPolicy()
 	s := &Server{

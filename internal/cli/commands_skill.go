@@ -70,6 +70,7 @@ func skillCommand() *cli.Command {
 					return client.Delete("/v1/skills/" + c.Args().Get(0))
 				},
 			},
+			skillFileSubcommand(),
 		},
 	}
 }

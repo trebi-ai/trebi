@@ -16,11 +16,29 @@ import (
 func BaseDir() string { return home.Base() }
 
 type Config struct {
-	Defaults Defaults     `yaml:"defaults"`
-	Terminal string       `yaml:"terminal,omitempty"` // macOS: Terminal | iTerm | Ghostty
-	Tools    ToolsConfig  `yaml:"tools,omitempty"`
-	Notify   NotifyConfig `yaml:"notify,omitempty"`
-	Files    FilesConfig  `yaml:"files,omitempty"`
+	Defaults   Defaults         `yaml:"defaults"`
+	Terminal   string           `yaml:"terminal,omitempty"` // macOS: Terminal | iTerm | Ghostty
+	Tools      ToolsConfig      `yaml:"tools,omitempty"`
+	Notify     NotifyConfig     `yaml:"notify,omitempty"`
+	Files      FilesConfig      `yaml:"files,omitempty"`
+	Workspaces WorkspacesConfig `yaml:"workspaces,omitempty"`
+}
+
+// WorkspacesConfig is the pathless-create root for remote workspace bootstrap.
+type WorkspacesConfig struct {
+	Root string `yaml:"root,omitempty"`
+}
+
+// DefaultWorkspacesRoot is used when workspaces.root is unset.
+const DefaultWorkspacesRoot = "~/trebi"
+
+// RootOrDefault expands workspaces.root (default ~/trebi). Empty if ~ cannot resolve.
+func (w WorkspacesConfig) RootOrDefault() string {
+	raw := strings.TrimSpace(w.Root)
+	if raw == "" {
+		raw = DefaultWorkspacesRoot
+	}
+	return expandTilde(raw)
 }
 
 // FilesConfig is the workspace file-plane cap.
@@ -444,6 +462,9 @@ tools:
 
 # files:
 #   max_bytes: 10485760    # workspace file PUT/GET cap (10 MiB)
+
+# workspaces:
+#   root: ~/trebi          # pathless workspace add --create --name lands here
 `
 
 // Seed writes config.yaml with the documented defaults when it does not exist.
@@ -521,6 +542,28 @@ func ParseSessionDefaults(s SessionDefaults) (ParsedSession, error) {
 		out.IfRunning = ir
 	}
 	return out, nil
+}
+
+func expandTilde(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		h, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		if p == "~" {
+			return h
+		}
+		return filepath.Join(h, p[2:])
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	return abs
 }
 
 func parseDurationOrOff(raw string) (time.Duration, error) {

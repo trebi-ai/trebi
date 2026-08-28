@@ -212,6 +212,9 @@ func SetPath(cfg *Config, path, value string) error {
 	if handled, err := cfg.setFilesKey(path, value); handled {
 		return err
 	}
+	if handled, err := cfg.setWorkspacesKey(path, value); handled {
+		return err
+	}
 
 	// tools.<name>.…
 	parts := strings.Split(path, ".")
@@ -355,6 +358,11 @@ func (l *pathEntryList) addCore(cfg *Config) {
 		mb = DefaultFilesMaxBytes
 	}
 	l.add("files.max_bytes", strconv.FormatInt(mb, 10), strconv.FormatInt(DefaultFilesMaxBytes, 10))
+	rootShow := strings.TrimSpace(cfg.Workspaces.Root)
+	if rootShow == "" {
+		rootShow = DefaultWorkspacesRoot
+	}
+	l.add("workspaces.root", rootShow, DefaultWorkspacesRoot)
 }
 
 // addGlobalBridge adds the tools.bridge rows.
@@ -488,6 +496,15 @@ func (c *Config) setFilesKey(path, value string) (handled bool, err error) {
 	return true, nil
 }
 
+// setWorkspacesKey handles workspaces.* keys; handled=false when path is not one.
+func (c *Config) setWorkspacesKey(path, value string) (handled bool, err error) {
+	if path != "workspaces.root" {
+		return false, nil
+	}
+	c.Workspaces.Root = value
+	return true, nil
+}
+
 // setToolKey handles tools.<tool>.<rest> keys on the tool pin.
 func (c *Config) setToolKey(tool, rest, value string) error {
 	pin := c.Tools.Pin(tool)
@@ -583,6 +600,7 @@ func pathKeyDescriptions() map[string]string {
 		"notify.waiting_after":          "Escalate waiting tasks via notify chain (default 5m; off/0 disables)",
 		"notify.usage_warn_at":          "Harness usage percent that pages a warning (default 80)",
 		"files.max_bytes":               "Workspace file PUT/GET size cap in bytes (default 10485760)",
+		"workspaces.root":               "Directory for pathless workspace create (default ~/trebi)",
 		"tools.bridge.inherit":          "Global default: inherit user harness resources",
 		"tools.bridge.only":             "If set, only these resource keys may inherit",
 		"tools.bridge.never":            "Resource keys force-disabled globally",

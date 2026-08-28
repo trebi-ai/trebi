@@ -50,16 +50,18 @@ Only these work with the daemon down: `service install|start|stop|status`, `doct
 
 ```bash
 trebi workspace list                       # local + linked remote
-trebi workspace add /path/to/repo --use    # register a folder, make it sticky
+trebi workspace add --name reports --create --use   # remote default; lands in workspaces.root (~/trebi)
+trebi workspace add /path/to/repo --use    # register an existing folder
 trebi workspace add --name proj --url https://host:7433 --token-stdin --use
 trebi workspace use <id|name>              # set sticky context
 trebi workspace current
 trebi workspace rename <id> <new-name>
+trebi workspace set <id> --name new --git-enabled
 trebi workspace unlink <id|name>           # drop a remote link
 trebi workspace remove <id>                # unregister
 ```
 
-A remote workspace is context, not a flag: link it, then `use` it, and every command routes to that daemon. Client resolution order is fixed: linked remote → remote sticky context → `TREBI_URL`/`TREBI_TOKEN` → local `~/.trebi/api.json`.
+Pathless `--create --name` is the remote default: the daemon mkdirs `<workspaces.root>/<name>` (config key `workspaces.root`, default `~/trebi`). Pass an absolute `--create` path only when you know the server filesystem. A remote workspace is context, not a flag: link it, then `use` it, and every command routes to that daemon. Client resolution order is fixed: linked remote → remote sticky context → `TREBI_URL`/`TREBI_TOKEN` → local `~/.trebi/api.json`.
 
 ## Jobs
 
@@ -127,10 +129,11 @@ trebi job run <name> --attach           # launch, then attach to the session
 trebi job tail <name> -n 400            # tail the latest run log
 trebi job pause <name> / unpause <name>
 trebi job schedule <name> disable       # or: enable | "0 9 * * *" | @every 15m
-trebi job delete <name>
+trebi job delete <name>                 # removes JOB.md; supporting files remain
+trebi job delete <name> --purge         # removes the job folder
 ```
 
-Always `trebi job validate` after you write a `JOB.md`, and prefer `trebi job run <name> --test` before the first real launch.
+`--purge` is how you end a project remotely. Plain delete leaves scripts/templates so the job can be recreated over them; the response may include `files_remaining`. Always `trebi job validate` after you write a `JOB.md`, and prefer `trebi job run <name> --test` before the first real launch.
 
 ### Job memory
 
@@ -304,8 +307,14 @@ trebi skill list --json
 trebi skill show <name>
 trebi skill create <name> --file ./SKILL.md
 cat SKILL.md | trebi skill update <name>
+trebi skill file ls  <skill> [prefix] --json --limit
+trebi skill file get <skill> helper.py
+trebi skill file put <skill> helper.py --from ./helper.py
+trebi skill file rm  <skill> helper.py
 trebi skill delete <name>
 ```
+
+Create the skill first (`trebi skill create`), then put scripts with `trebi skill file`. `SKILL.md` writes 409 here — use `trebi skill update`. File writes are denied for non-local provenance (git/registry/integration).
 
 ## Secrets
 
@@ -329,7 +338,7 @@ trebi harness auth status [name] --json
 trebi harness auth mark <name>    # record auth_ok after you log in yourself
 ```
 
-`auth mark` only records the fact. Interactive vendor login is not possible over HTTP — the user must log in with the vendor CLI first.
+Harness login is a human/local operation. `auth mark` only records the fact. Interactive vendor login (Claude OAuth, etc.) is not possible over HTTP — the user must log in with the vendor CLI on the machine that runs the daemon.
 
 ## Config
 
@@ -475,6 +484,6 @@ trebi runs list --status failed --limit 20
 - Prefer `--json` plus `jq` over parsing tables.
 - Run `trebi job validate` after every `JOB.md` write.
 - Use `--test` before the first real launch of a new or edited job.
-- Ask the user before `job delete`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, and `service uninstall`. They destroy state.
+- Ask the user before `job delete` / `job delete --purge`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, and `service uninstall`. They destroy state.
 - Do not write to `~/.trebi` and do not call `/v1` with `curl`. The daemon is the single writer.
 - `trebi bus`, `integration logs -f`, and `service logs -f` block. Add `--limit`, drop `-f`, or run them in the background.

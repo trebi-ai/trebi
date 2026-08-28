@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/files"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -29,14 +30,21 @@ func (s *Server) routeFiles(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/jobs/{name}/files/{path...}", s.handleJobFilesGet)
 	mux.HandleFunc("PUT /v1/jobs/{name}/files/{path...}", s.handleJobFilesPut)
 	mux.HandleFunc("DELETE /v1/jobs/{name}/files/{path...}", s.handleJobFilesDelete)
+
+	mux.HandleFunc("GET /v1/skills/{name}/files", s.handleSkillFilesList)
+	mux.HandleFunc("GET /v1/skills/{name}/files/{path...}", s.handleSkillFilesGet)
+	mux.HandleFunc("PUT /v1/skills/{name}/files/{path...}", s.handleSkillFilesPut)
+	mux.HandleFunc("DELETE /v1/skills/{name}/files/{path...}", s.handleSkillFilesDelete)
 }
 
 // fileScope is one resolved jail for the file handlers.
 type fileScope struct {
-	ws       *workspaces.Workspace
-	root     string // jail root: ws.Path or the job folder
-	wsPrefix string // "" for workspace scope; "<job-dir>/" for job scope
-	denyDocs bool   // job scope: refuse PUT/DELETE of indexed markdown
+	ws          *workspaces.Workspace // nil for skill scope
+	root        string                // jail root: ws.Path, job folder, or skill dir
+	wsPrefix    string                // "" for workspace/skill; "<job-dir>/" for job scope
+	denyDocs    bool                  // job scope: refuse PUT/DELETE of indexed markdown
+	denySkillMD bool                  // skill scope: refuse PUT/DELETE of SKILL.md
+	emit        func(ctx context.Context, rel, action string)
 }
 
 func (sc fileScope) wsRel(rel string) string {
@@ -51,7 +59,13 @@ func (s *Server) workspaceFileScope(w http.ResponseWriter, r *http.Request) (fil
 	if !ok {
 		return fileScope{}, false
 	}
-	return fileScope{ws: ws, root: ws.Path}, true
+	return fileScope{ws: ws, root: ws.Path, emit: s.fileEmitter(ws.ID)}, true
+}
+
+func (s *Server) fileEmitter(wsID string) func(context.Context, string, string) {
+	return func(ctx context.Context, rel, action string) {
+		s.emitFileBus(ctx, wsID, rel, action)
+	}
 }
 
 func (s *Server) jobFileScope(w http.ResponseWriter, r *http.Request) (fileScope, bool) {
@@ -74,7 +88,33 @@ func (s *Server) jobFileScope(w http.ResponseWriter, r *http.Request) (fileScope
 	if rel != "." && rel != "" {
 		prefix = strings.TrimSuffix(rel, "/") + "/"
 	}
-	return fileScope{ws: ws, root: jobDir, wsPrefix: prefix, denyDocs: true}, true
+	return fileScope{ws: ws, root: jobDir, wsPrefix: prefix, denyDocs: true, emit: s.fileEmitter(ws.ID)}, true
+}
+
+func (s *Server) skillFileScope(w http.ResponseWriter, r *http.Request, mutating bool) (fileScope, bool) {
+	name := r.PathValue("name")
+	sk, err := s.skills.Get(r.Context(), name, false)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "skill not found")
+		return fileScope{}, false
+	}
+	if mutating && !skillFilesWritable(sk.Provenance) {
+		writeErr(w, http.StatusConflict, "conflict",
+			"skill file writes are denied for provenance "+string(sk.Provenance)+"; copy to a local skill")
+		return fileScope{}, false
+	}
+	return fileScope{
+		root: sk.Path, denySkillMD: true,
+		emit: func(ctx context.Context, _, _ string) {
+			s.appendBus(ctx, store.BusEvent{
+				Topic: "skill.updated", Entity: "skill", EntityID: sk.Name, Action: "updated",
+			})
+		},
+	}, true
+}
+
+func skillFilesWritable(p skills.Provenance) bool {
+	return p == skills.ProvenanceLocal || p == skills.ProvenanceAssistant || p == ""
 }
 
 func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +175,38 @@ func (s *Server) handleJobFilesPut(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleJobFilesDelete(w http.ResponseWriter, r *http.Request) {
 	scope, ok := s.jobFileScope(w, r)
+	if !ok {
+		return
+	}
+	s.filesDelete(scope, w, r)
+}
+
+func (s *Server) handleSkillFilesList(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.skillFileScope(w, r, false)
+	if !ok {
+		return
+	}
+	s.filesList(scope, w, r)
+}
+
+func (s *Server) handleSkillFilesGet(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.skillFileScope(w, r, false)
+	if !ok {
+		return
+	}
+	s.filesGet(scope, w, r)
+}
+
+func (s *Server) handleSkillFilesPut(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.skillFileScope(w, r, true)
+	if !ok {
+		return
+	}
+	s.filesPut(scope, w, r)
+}
+
+func (s *Server) handleSkillFilesDelete(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.skillFileScope(w, r, true)
 	if !ok {
 		return
 	}
@@ -206,7 +278,7 @@ func (s *Server) filesPut(scope fileScope, w http.ResponseWriter, r *http.Reques
 		writeFilesErr(w, err)
 		return
 	}
-	s.afterFileWrite(r.Context(), scope.ws, scope.wsRel(info.Path), created)
+	s.afterFileWrite(r.Context(), scope, info.Path, created)
 	setETagHash(w, info.Hash)
 	code := http.StatusOK
 	if created {
@@ -226,15 +298,21 @@ func (s *Server) filesDelete(scope fileScope, w http.ResponseWriter, r *http.Req
 		writeFilesErr(w, err)
 		return
 	}
-	wsRel := scope.wsRel(rel)
-	if indexedMarkdown(wsRel) {
+	busRel := scope.wsRel(rel)
+	if scope.ws != nil && indexedMarkdown(busRel) {
 		_ = s.ws.RebuildIndex(r.Context(), scope.ws)
 	}
-	s.emitFileBus(r.Context(), scope.ws.ID, wsRel, "deleted")
+	if scope.emit != nil {
+		scope.emit(r.Context(), busRel, "deleted")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": rel})
 }
 
 func (s *Server) allowFileMutation(w http.ResponseWriter, scope fileScope, rel string) bool {
+	if scope.denySkillMD && strings.EqualFold(filepath.Base(rel), "skill.md") {
+		writeErr(w, http.StatusConflict, "conflict", "use PUT /v1/skills/{name} (trebi skill update) for SKILL.md")
+		return false
+	}
 	if !scope.denyDocs {
 		return true
 	}
@@ -273,6 +351,19 @@ func workspaceRel(root, abs string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
+func pathInside(root, target string) bool {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	if target == root {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func (s *Server) workspaceByID(w http.ResponseWriter, r *http.Request) (*workspaces.Workspace, bool) {
 	ws, err := s.ws.Get(r.Context(), r.PathValue("id"))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -306,15 +397,18 @@ func (s *Server) readFileBody(w http.ResponseWriter, r *http.Request) ([]byte, b
 	return data, true
 }
 
-func (s *Server) afterFileWrite(ctx context.Context, ws *workspaces.Workspace, rel string, created bool) {
-	if indexedMarkdown(rel) {
-		_ = s.ws.RebuildIndex(ctx, ws)
+func (s *Server) afterFileWrite(ctx context.Context, scope fileScope, rel string, created bool) {
+	busRel := scope.wsRel(rel)
+	if scope.ws != nil && indexedMarkdown(busRel) {
+		_ = s.ws.RebuildIndex(ctx, scope.ws)
 	}
 	action := "updated"
 	if created {
 		action = "created"
 	}
-	s.emitFileBus(ctx, ws.ID, rel, action)
+	if scope.emit != nil {
+		scope.emit(ctx, busRel, action)
+	}
 }
 
 func (s *Server) emitFileBus(ctx context.Context, wsID, rel, action string) {

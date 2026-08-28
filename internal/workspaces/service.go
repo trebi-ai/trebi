@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/job"
@@ -33,13 +34,33 @@ type Workspace struct {
 
 // Service owns workspace registry rows.
 type Service struct {
-	st  *store.Store
-	log *slog.Logger
+	st   *store.Store
+	root string // workspaces.root; empty refuses pathless create
+	log  *slog.Logger
 }
 
 // New creates a workspace service.
 func New(st *store.Store) *Service {
 	return &Service{st: st, log: slog.Default().With("source", "workspaces")}
+}
+
+// WithRoot injects workspaces.root (already expanded). Empty refuses pathless create.
+func (s *Service) WithRoot(root string) *Service {
+	s.root = strings.TrimSpace(root)
+	return s
+}
+
+// AddOpts is the register-workspace request.
+type AddOpts struct {
+	Path   string
+	Name   string
+	Create bool
+}
+
+// Patch is a partial workspace update. Nil fields are left unchanged.
+type Patch struct {
+	Name       *string
+	GitEnabled *bool
 }
 
 // trebiYAML is the on-disk workspace config (B26).
@@ -49,21 +70,38 @@ type trebiYAML struct {
 	GitEnabled bool   `yaml:"git_enabled"`
 }
 
+var (
+	// ErrNotFound reports a workspace id that is not registered.
+	ErrNotFound = errors.New("workspace not found")
+	// ErrNested reports a target inside an existing workspace.
+	ErrNested = errors.New("target is inside an existing workspace")
+	// ErrContains reports a target that contains an existing workspace.
+	ErrContains = errors.New("target contains an existing workspace")
+	// ErrNoRoot reports pathless create with workspaces.root unset.
+	ErrNoRoot = errors.New("workspaces.root is not configured")
+	// ErrAncestorFile reports create under a path whose nearest ancestor is a file.
+	ErrAncestorFile = errors.New("nearest existing ancestor is a file")
+)
+
 // Add registers a workspace folder, minting id into trebi.yaml if missing.
 func (s *Service) Add(ctx context.Context, path, name string) (*Workspace, error) {
-	abs, err := filepath.Abs(path)
+	return s.AddWith(ctx, AddOpts{Path: path, Name: name})
+}
+
+// AddWith registers a workspace, optionally creating the directory.
+func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error) {
+	abs, err := s.resolveAddPath(opts)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(abs)
-	if err != nil {
+	if err := s.prepareDir(abs, opts.Create); err != nil {
 		return nil, err
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("not a directory: %s", abs)
+	if err := s.rejectNested(ctx, abs); err != nil {
+		return nil, err
 	}
 
-	id, dispName, gitEn, err := ensureTrebiYAML(abs, name)
+	id, dispName, gitEn, err := ensureTrebiYAML(abs, opts.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -101,17 +139,81 @@ func (s *Service) Add(ctx context.Context, path, name string) (*Workspace, error
 	return ws, nil
 }
 
-// ErrNotFound reports a workspace id that is not registered.
-var ErrNotFound = errors.New("workspace not found")
+func validateWorkspaceName(name string) error {
+	if name == "" {
+		return fmt.Errorf("name required for pathless create")
+	}
+	if name != filepath.Base(name) || name == "." || name == ".." {
+		return fmt.Errorf("invalid workspace name %q", name)
+	}
+	return nil
+}
 
-// Rename sets the display name, bumps revision, and emits workspace.updated
-// in one transaction. An unknown id returns ErrNotFound and emits nothing.
+func nearestExisting(p string) (string, os.FileInfo, error) {
+	cur := filepath.Clean(p)
+	for {
+		st, err := os.Lstat(cur)
+		if err == nil {
+			return cur, st, nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", nil, fmt.Errorf("no existing ancestor for %s", p)
+		}
+		cur = parent
+	}
+}
+
+func pathInside(root, target string) bool {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	if target == root {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// Rename sets the display name. Prefer Patch when git_enabled is also changing.
 func (s *Service) Rename(ctx context.Context, id, name string) (*Workspace, error) {
+	return s.Patch(ctx, id, Patch{Name: &name})
+}
+
+// Patch writes trebi.yaml first, then the registry row and workspace.updated.
+func (s *Service) Patch(ctx context.Context, id string, p Patch) (*Workspace, error) {
+	if p.Name == nil && p.GitEnabled == nil {
+		ws, err := s.Get(ctx, id)
+		if err != nil {
+			return nil, ErrNotFound
+		}
+		return ws, nil
+	}
+	cur, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	name := cur.Name
+	git := cur.GitEnabled
+	if p.Name != nil {
+		name = strings.TrimSpace(*p.Name)
+		if name == "" {
+			return nil, fmt.Errorf("name must not be empty")
+		}
+	}
+	if p.GitEnabled != nil {
+		git = *p.GitEnabled
+	}
+	if err := writeTrebiYAML(cur.Path, cur.ID, name, git); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	var rev int64
 	s.st.LockBus()
 	defer s.st.UnlockBus()
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRow(`SELECT revision FROM workspaces WHERE id=?`, id).Scan(&rev)
 		if err == sql.ErrNoRows {
 			return ErrNotFound
@@ -120,14 +222,14 @@ func (s *Service) Rename(ctx context.Context, id, name string) (*Workspace, erro
 			return err
 		}
 		rev++
-		if _, err := tx.Exec(`UPDATE workspaces SET name=?, updated_at=?, revision=? WHERE id=?`,
-			name, now, rev, id); err != nil {
+		if _, err := tx.Exec(`UPDATE workspaces SET name=?, git_enabled=?, updated_at=?, revision=? WHERE id=?`,
+			name, boolInt(git), now, rev, id); err != nil {
 			return err
 		}
 		_, err = store.AppendInTx(tx, store.BusEvent{
 			Topic: "workspace.updated", Entity: "workspace", EntityID: id, Action: "updated",
 			Revision: rev,
-			Attrs:    map[string]string{"name": name},
+			Attrs:    map[string]string{"name": name, "git_enabled": fmt.Sprintf("%t", git)},
 		})
 		return err
 	})
@@ -290,6 +392,66 @@ func (s *Service) ListJobs(ctx context.Context, workspaceID string) ([]JobRow, e
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *Service) resolveAddPath(opts AddOpts) (string, error) {
+	path := strings.TrimSpace(opts.Path)
+	name := strings.TrimSpace(opts.Name)
+	if path == "" {
+		if !opts.Create {
+			return "", fmt.Errorf("path required")
+		}
+		if s.root == "" {
+			return "", ErrNoRoot
+		}
+		if err := validateWorkspaceName(name); err != nil {
+			return "", err
+		}
+		path = filepath.Join(s.root, name)
+	}
+	return filepath.Abs(path)
+}
+
+func (s *Service) prepareDir(abs string, create bool) error {
+	info, err := os.Stat(abs)
+	if err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("not a directory: %s", abs)
+		}
+		return nil
+	}
+	if !create {
+		return err
+	}
+	anc, st, err := nearestExisting(abs)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("%w: %s", ErrAncestorFile, anc)
+	}
+	return os.MkdirAll(abs, 0o755)
+}
+
+func (s *Service) rejectNested(ctx context.Context, abs string) error {
+	roots, err := s.otherWorkspaceRoots(ctx, "")
+	if err != nil {
+		return err
+	}
+	abs = filepath.Clean(abs)
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		if root == abs {
+			continue
+		}
+		if pathInside(root, abs) {
+			return fmt.Errorf("%w: %s", ErrNested, root)
+		}
+		if pathInside(abs, root) {
+			return fmt.Errorf("%w: %s", ErrContains, root)
+		}
+	}
+	return nil
 }
 
 // existingIndexRows loads current job_index rows by name.
@@ -458,6 +620,15 @@ func ensureTrebiYAML(dir, name string) (id, dispName string, git bool, err error
 		return "", "", false, err
 	}
 	return id, name, false, nil
+}
+
+func writeTrebiYAML(dir, id, name string, git bool) error {
+	y := trebiYAML{ID: id, Name: name, GitEnabled: git}
+	b, err := yaml.Marshal(&y)
+	if err != nil {
+		return err
+	}
+	return job.WriteAtomic(filepath.Join(dir, "trebi.yaml"), b)
 }
 
 func mintID() string {

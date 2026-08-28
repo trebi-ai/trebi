@@ -204,6 +204,44 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestDeletePrunesEmptyParents(t *testing.T) {
+	t.Parallel()
+	s := New(1 << 20)
+	ctx := context.Background()
+	root := t.TempDir()
+	if _, _, err := s.Write(ctx, root, "a/b/c.txt", []byte("x"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, root, "a/b/c.txt", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a", "b")); !os.IsNotExist(err) {
+		t.Fatal("empty a/b should be pruned")
+	}
+	if _, err := os.Stat(filepath.Join(root, "a")); !os.IsNotExist(err) {
+		t.Fatal("empty a should be pruned")
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("root must stay: %v", err)
+	}
+
+	if _, _, err := s.Write(ctx, root, "a/b/c.txt", []byte("x"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Write(ctx, root, "a/other.txt", []byte("y"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, root, "a/b/c.txt", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a", "b")); !os.IsNotExist(err) {
+		t.Fatal("empty a/b should be pruned")
+	}
+	if _, err := os.Stat(filepath.Join(root, "a", "other.txt")); err != nil {
+		t.Fatalf("sibling must stay: %v", err)
+	}
+}
+
 func TestListPagination(t *testing.T) {
 	t.Parallel()
 	s := New(4)
