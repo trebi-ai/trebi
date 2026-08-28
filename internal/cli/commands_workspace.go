@@ -59,8 +59,21 @@ func workspaceCommand() *cli.Command {
 				Action:  runWorkspaceCurrent,
 			},
 			{
+				Name:      "remove",
+				Usage:     "delete a workspace on the daemon",
+				ArgsUsage: "<id>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "required; deletes the workspace"}},
+				Action:    runWorkspaceRemove,
+			},
+			{
+				Name:      "rename",
+				Usage:     "rename a workspace",
+				ArgsUsage: "<id> <new-name>",
+				Action:    runWorkspaceRename,
+			},
+			{
 				Name:      "unlink",
-				Usage:     "remove a client-side remote workspace link",
+				Usage:     "remove a client-side remote workspace link (does not delete the workspace; see workspace remove)",
 				ArgsUsage: "<id|name>",
 				Action: func(c *cli.Context) error {
 					id := c.Args().Get(0)
@@ -88,6 +101,58 @@ func workspaceCommand() *cli.Command {
 			},
 		},
 	}
+}
+
+func runWorkspaceRemove(c *cli.Context) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi workspace remove <id>")
+	}
+	if !c.Bool("force") {
+		return fmt.Errorf("refusing to remove workspace %s without --force", id)
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if err := client.DoHTTP(BuildWorkspaceDelete(id), nil); err != nil {
+		return err
+	}
+	if err := clearStickyIfWorkspace(c, id); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "removed %s\n", id)
+	return nil
+}
+
+func runWorkspaceRename(c *cli.Context) error {
+	id, name := c.Args().Get(0), c.Args().Get(1)
+	if id == "" || name == "" {
+		return fmt.Errorf("usage: trebi workspace rename <id> <new-name>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if err := client.DoHTTP(BuildWorkspaceRename(id, name), nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "renamed %s → %s\n", id, name)
+	return nil
+}
+
+func clearStickyIfWorkspace(c *cli.Context, id string) error {
+	st, err := stickyFor(c)
+	if err != nil {
+		return err
+	}
+	if st == nil {
+		return nil
+	}
+	if st.WorkspaceID == id || equalFoldName(id, st.Name) {
+		return ClearStickyContext()
+	}
+	return nil
 }
 
 func runWorkspaceList(c *cli.Context) error {

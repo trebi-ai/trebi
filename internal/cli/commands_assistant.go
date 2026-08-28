@@ -69,6 +69,18 @@ func assistantCommand() *cli.Command {
 						ArgsUsage: "<entry-id>",
 						Action:    runAssistantMemoryRemove,
 					},
+					{
+						Name:   "set",
+						Usage:  "replace MEMORY.md (--file or stdin)",
+						Flags:  []cli.Flag{&cli.StringFlag{Name: "file", Usage: "path to MEMORY.md"}},
+						Action: runAssistantMemorySet,
+					},
+					{
+						Name:   "clear",
+						Usage:  "delete MEMORY.md (destroys the ledger)",
+						Flags:  []cli.Flag{&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "required; destroys the ledger"}},
+						Action: runAssistantMemoryClear,
+					},
 				},
 			},
 			{
@@ -138,6 +150,41 @@ func runAssistantMemoryRemove(c *cli.Context) error {
 		return err
 	}
 	return client.DoHTTP(BuildAssistantMemoryEntryDelete(wsID, eid), nil)
+}
+
+func runAssistantMemorySet(c *cli.Context) error {
+	content, err := readFileOrStdin(c.String("file"))
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildAssistantMemoryPut(wsID, content), nil)
+}
+
+func runAssistantMemoryClear(c *cli.Context) error {
+	if !c.Bool("force") {
+		return fmt.Errorf("refusing to clear assistant memory without --force")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	if err := client.DoHTTP(BuildAssistantMemoryClear(wsID), nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "cleared assistant memory for %s\n", wsID)
+	return nil
 }
 
 func runAssistantWake(c *cli.Context) error {

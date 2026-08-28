@@ -2,7 +2,6 @@
 package cli
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/urfave/cli/v2"
@@ -34,7 +33,6 @@ func NewApp() *cli.App {
 			workspaceCommand(),
 			jobCommand(),
 			runsCommand(),
-			listCommand(),
 			doctorCommand(),
 			busCommand(),
 			configCommand(),
@@ -46,17 +44,10 @@ func NewApp() *cli.App {
 			inboxCommand(),
 			eventsCommand(),
 			conversationCommand(),
-			approvalsCommand(),
 			alertsCommand(),
 			agentHookCommand(),
-			{
-				Name:  "version",
-				Usage: "print version",
-				Action: func(c *cli.Context) error {
-					fmt.Println("trebi 0.1.0")
-					return nil
-				},
-			},
+			queueCommand(),
+			rulesCommand(),
 		},
 	}
 	sortCommands(app.Commands)

@@ -49,8 +49,20 @@ func integrationCommand() *cli.Command {
 				Action:    runIntegrationRemove,
 			},
 			{
+				Name:      "connect",
+				Usage:     "start an integration (begin listening; inverse of disconnect)",
+				ArgsUsage: "<name>",
+				Action:    runIntegrationConnect,
+			},
+			{
+				Name:      "disconnect",
+				Usage:     "stop an integration (same as stop; halt the listening process)",
+				ArgsUsage: "<name>",
+				Action:    runIntegrationDisconnect,
+			},
+			{
 				Name:      "stop",
-				Usage:     "stop a running integration",
+				Usage:     "stop a running integration (alias of disconnect)",
 				ArgsUsage: "<name>",
 				Action:    runIntegrationStop,
 			},
@@ -59,6 +71,31 @@ func integrationCommand() *cli.Command {
 				Usage:     "restart an integration",
 				ArgsUsage: "<name>",
 				Action:    runIntegrationRestart,
+			},
+			{
+				Name:  "cursor",
+				Usage: "show or set integration_cursors.last_event_id (replay position)",
+				Subcommands: []*cli.Command{
+					{
+						Name:      "show",
+						Usage:     "show last_event_id",
+						ArgsUsage: "<name>",
+						Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+						Action:    runIntegrationCursorShow,
+					},
+					{
+						Name:      "set",
+						Usage:     "set last_event_id",
+						ArgsUsage: "<name> <last-event-id>",
+						Action:    runIntegrationCursorSet,
+					},
+					{
+						Name:      "reset",
+						Usage:     "reset last_event_id to empty (replay from start)",
+						ArgsUsage: "<name>",
+						Action:    runIntegrationCursorReset,
+					},
+				},
 			},
 			{
 				Name:      "logs",
@@ -78,15 +115,21 @@ func integrationCommand() *cli.Command {
 				},
 				Action: runIntegrationTest,
 			},
-			integrationQueueCommand(),
+			integrationQueueAlias(),
 		},
 	}
 }
 
-func integrationQueueCommand() *cli.Command {
+func integrationQueueAlias() *cli.Command {
+	q := queueCommand()
+	q.Hidden = true
+	return q
+}
+
+func queueCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "queue",
-		Usage: "inspect event queue",
+		Usage: "inspect the dispatch queue",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "status", Usage: "filter by status"},
 			&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (queue id)"},
@@ -254,6 +297,30 @@ func runIntegrationRemove(c *cli.Context) error {
 	return client.DoHTTP(BuildIntegrationDelete(name), nil)
 }
 
+func runIntegrationConnect(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildIntegrationConnect(name), nil)
+}
+
+func runIntegrationDisconnect(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildIntegrationDisconnect(name), nil)
+}
+
 func runIntegrationStop(c *cli.Context) error {
 	name := c.Args().Get(0)
 	if name == "" {
@@ -264,6 +331,59 @@ func runIntegrationStop(c *cli.Context) error {
 		return err
 	}
 	return client.DoHTTP(BuildIntegrationStop(name), nil)
+}
+
+func runIntegrationCursorShow(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(BuildIntegrationCursorGet(name), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(body)
+	}
+	w := outWriter(c)
+	tbl := newTable(w, []string{"Name", "Last Event ID", "Updated"})
+	tbl.AppendRow(table.Row{
+		mapStr(body, "name"),
+		dash(mapStr(body, "last_event_id")),
+		dash(mapStr(body, "updated_at")),
+	})
+	renderTable(tbl)
+	return nil
+}
+
+func runIntegrationCursorSet(c *cli.Context) error {
+	name, last := c.Args().Get(0), c.Args().Get(1)
+	if name == "" || last == "" {
+		return fmt.Errorf("usage: trebi integration cursor set <name> <last-event-id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildIntegrationCursorSet(name, last), nil)
+}
+
+func runIntegrationCursorReset(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("usage: trebi integration cursor reset <name>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildIntegrationCursorReset(name), nil)
 }
 
 func runIntegrationRestart(c *cli.Context) error {

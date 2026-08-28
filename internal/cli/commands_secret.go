@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 
+	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/urfave/cli/v2"
 )
 
@@ -14,6 +16,7 @@ func secretCommand() *cli.Command {
 			{
 				Name:  "list",
 				Usage: "list secret names",
+				Flags: []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
 				Action: func(c *cli.Context) error {
 					client, err := clientFor(c)
 					if err != nil {
@@ -25,9 +28,17 @@ func secretCommand() *cli.Command {
 					if err := client.GetJSON("/v1/secrets", &body); err != nil {
 						return err
 					}
-					for _, n := range body.Secrets {
-						fmt.Fprintln(outWriter(c), n)
+					if c.Bool("json") {
+						enc := json.NewEncoder(outWriter(c))
+						enc.SetIndent("", "  ")
+						return enc.Encode(body)
 					}
+					w := outWriter(c)
+					tbl := newTable(w, []string{"Name"})
+					for _, n := range body.Secrets {
+						tbl.AppendRow(table.Row{n})
+					}
+					renderTable(tbl)
 					return nil
 				},
 			},

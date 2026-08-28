@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -77,6 +78,20 @@ func jobCommand() *cli.Command {
 						ArgsUsage: "<name> <entry-id>",
 						Action:    runJobMemoryRemove,
 					},
+					{
+						Name:      "set",
+						Usage:     "replace MEMORY.md (--file or stdin)",
+						ArgsUsage: "<name>",
+						Flags:     []cli.Flag{&cli.StringFlag{Name: "file", Usage: "path to MEMORY.md"}},
+						Action:    runJobMemorySet,
+					},
+					{
+						Name:      "clear",
+						Usage:     "delete MEMORY.md (destroys the ledger)",
+						ArgsUsage: "<name>",
+						Flags:     []cli.Flag{&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "required; destroys the ledger"}},
+						Action:    runJobMemoryClear,
+					},
 				},
 			},
 		),
@@ -93,6 +108,7 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				&cli.BoolFlag{Name: "detailed", Aliases: []string{"d"}, Usage: "extra columns (path, status)"},
 				&cli.BoolFlag{Name: "schedule", Usage: "add SPEC, TIMEZONE, NEXT, LAST columns"},
+				&cli.StringFlag{Name: "kind", Value: "job", Usage: "job|assistant|all (default job)"},
 			},
 			Action: runJobList,
 		},
@@ -131,9 +147,19 @@ func jobManageSubcommands() []*cli.Command {
 }
 
 func runJobList(c *cli.Context) error {
+	kind, err := parseJobListKind(c.String("kind"))
+	if err != nil {
+		return err
+	}
+	if kind == "assistant" && c.Bool("schedule") {
+		return fmt.Errorf("--schedule is not valid with --kind assistant (assistants have no triggers)")
+	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
+	}
+	if kind == "assistant" {
+		return runListAssistants(c, client)
 	}
 	path := withQuery("/v1/jobs", workspaceQ(workspaceFor(c)))
 	var body struct {
@@ -142,6 +168,7 @@ func runJobList(c *cli.Context) error {
 	if err := client.GetJSON(path, &body); err != nil {
 		return err
 	}
+	body.Jobs = FilterJobsByKindFlag(body.Jobs, kind)
 	if c.Bool("schedule") {
 		sched, err := loadScheduleIndex(client)
 		if err != nil {
@@ -161,7 +188,12 @@ func runJobList(c *cli.Context) error {
 		return enc.Encode(body)
 	}
 	w := outWriter(c)
-	headers := []string{"Name", "Workspace", "Harness", "Active"}
+	showKind := kind == "all"
+	headers := []string{}
+	if showKind {
+		headers = append(headers, "Kind")
+	}
+	headers = append(headers, "Name", "Workspace", "Harness", "Active")
 	if c.Bool("detailed") {
 		headers = append(headers, "Status", "Path")
 	}
@@ -170,15 +202,16 @@ func runJobList(c *cli.Context) error {
 	}
 	tbl := newTable(w, headers)
 	for _, j := range body.Jobs {
-		if mapStr(j, "kind") == "assistant" {
-			continue
+		row := table.Row{}
+		if showKind {
+			row = append(row, dash(mapStr(j, "kind")))
 		}
-		row := table.Row{
+		row = append(row,
 			mapStr(j, "name"),
 			mapStr(j, "workspace_id", "workspace"),
 			dash(mapStr(j, "harness")),
 			colorStatus(w, mapStr(j, "active")),
-		}
+		)
 		if c.Bool("detailed") {
 			row = append(row, dash(mapStr(j, "status")), dash(mapStr(j, "path")))
 		}
@@ -377,6 +410,41 @@ func runJobMemoryRemove(c *cli.Context) error {
 	return client.DoHTTP(BuildJobMemoryEntryDelete(name, workspaceFor(c), eid), nil)
 }
 
+func runJobMemorySet(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("usage: trebi job memory set <name> --file <path>")
+	}
+	content, err := readFileOrStdin(c.String("file"))
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildJobMemoryPut(name, workspaceFor(c), content), nil)
+}
+
+func runJobMemoryClear(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("usage: trebi job memory clear <name>")
+	}
+	if !c.Bool("force") {
+		return fmt.Errorf("refusing to clear memory for %s without --force", name)
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if err := client.DoHTTP(BuildJobMemoryClear(name, workspaceFor(c)), nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "cleared memory for %s\n", name)
+	return nil
+}
+
 func runJobSchedule(c *cli.Context) error {
 	if c.NArg() < 2 {
 		return fmt.Errorf("usage: trebi job schedule <name> <enable|disable|cron|@every …>")
@@ -518,61 +586,6 @@ func fetchRunLogText(client *APIClient, id string) (string, error) {
 	return string(raw), nil
 }
 
-func listCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "list",
-		Usage: "list jobs and assistants across workspaces",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{Name: "detailed", Aliases: []string{"d"}, Usage: "extra columns (path, status, active)"},
-			&cli.BoolFlag{Name: "assistants-only", Aliases: []string{"a", "agents-only"}, Usage: "list workspace assistants only"},
-			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
-		},
-		Action: runList,
-	}
-}
-
-func runList(c *cli.Context) error {
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	if c.Bool("assistants-only") {
-		return runListAssistants(c, client)
-	}
-	w := outWriter(c)
-	path := withQuery("/v1/jobs", workspaceQ(workspaceFor(c)))
-	var jobs struct {
-		Jobs []map[string]any `json:"jobs"`
-	}
-	if err := client.GetJSON(path, &jobs); err != nil {
-		return err
-	}
-	if c.Bool("json") {
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		return enc.Encode(jobs)
-	}
-	headers := []string{"Kind", "Name", "Workspace", "Harness"}
-	if c.Bool("detailed") {
-		headers = append(headers, "Active", "Status", "Path")
-	}
-	tbl := newTable(w, headers)
-	for _, j := range jobs.Jobs {
-		r := table.Row{
-			mapStr(j, "kind"),
-			mapStr(j, "name"),
-			mapStr(j, "workspace_id", "workspace"),
-			dash(mapStr(j, "harness")),
-		}
-		if c.Bool("detailed") {
-			r = append(r, colorStatus(w, mapStr(j, "active")), dash(mapStr(j, "status")), dash(mapStr(j, "path")))
-		}
-		tbl.AppendRow(r)
-	}
-	renderTable(tbl)
-	return nil
-}
-
 // runListAssistants lists the singleton assistant of each workspace.
 func runListAssistants(c *cli.Context, client *APIClient) error {
 	w := outWriter(c)
@@ -583,36 +596,53 @@ func runListAssistants(c *cli.Context, client *APIClient) error {
 		return err
 	}
 	var rows []map[string]any
+	skipped := 0
 	for _, ws := range wss.Workspaces {
 		id := mapStr(ws, "id")
 		var a map[string]any
 		if err := client.GetJSON("/v1/workspaces/"+id+"/assistant", &a); err != nil {
+			skipped++
 			continue
 		}
 		rows = append(rows, map[string]any{
 			"kind": "assistant", "name": mapStr(a, "name", "nickname", "title"),
 			"workspace_id": id, "workspace": mapStr(ws, "name"),
 			"harness": mapStr(a, "harness"), "path": mapStr(a, "path"),
-			"active": mapStr(a, "active"),
+			"active": mapStr(a, "active"), "status": mapStr(a, "status"),
 		})
 	}
 	if c.Bool("json") {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{"items": rows})
-	}
-	headers := []string{"Kind", "Name", "Workspace", "Harness"}
-	if c.Bool("detailed") {
-		headers = append(headers, "Active", "Path")
-	}
-	tbl := newTable(w, headers)
-	for _, j := range rows {
-		r := table.Row{mapStr(j, "kind"), dash(mapStr(j, "name")), mapStr(j, "workspace", "workspace_id"), dash(mapStr(j, "harness"))}
-		if c.Bool("detailed") {
-			r = append(r, dash(mapStr(j, "active")), dash(mapStr(j, "path")))
+		if err := enc.Encode(map[string]any{"jobs": rows}); err != nil {
+			return err
 		}
-		tbl.AppendRow(r)
+	} else {
+		headers := []string{"Name", "Workspace", "Harness", "Active"}
+		if c.Bool("detailed") {
+			headers = append(headers, "Status", "Path")
+		}
+		tbl := newTable(w, headers)
+		for _, j := range rows {
+			r := table.Row{
+				dash(mapStr(j, "name")),
+				mapStr(j, "workspace", "workspace_id"),
+				dash(mapStr(j, "harness")),
+				colorStatus(w, mapStr(j, "active")),
+			}
+			if c.Bool("detailed") {
+				r = append(r, dash(mapStr(j, "status")), dash(mapStr(j, "path")))
+			}
+			tbl.AppendRow(r)
+		}
+		renderTable(tbl)
 	}
-	renderTable(tbl)
+	if skipped > 0 {
+		var ew io.Writer = os.Stderr
+		if c.App != nil && c.App.ErrWriter != nil {
+			ew = c.App.ErrWriter
+		}
+		fmt.Fprintf(ew, "%d workspace(s) unreachable\n", skipped)
+	}
 	return nil
 }

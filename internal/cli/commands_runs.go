@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/urfave/cli/v2"
@@ -83,6 +85,34 @@ func runsCommand() *cli.Command {
 				ArgsUsage: "<id>",
 				Flags:     []cli.Flag{&cli.StringFlag{Name: "decision", Value: "allow"}},
 				Action:    runRunsApprove,
+			},
+			{
+				Name:      "message",
+				Usage:     "send text to a live run",
+				ArgsUsage: "<id> <text...>",
+				Action:    runRunsMessage,
+			},
+			{
+				Name:   "stats",
+				Usage:  "run counts (total and currently running)",
+				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action: runRunsStats,
+			},
+			{
+				Name:   "agents",
+				Usage:  "in-memory agent state of live runs (empty on a fresh daemon; not persisted status)",
+				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action: runRunsAgents,
+			},
+			{
+				Name:  "approvals",
+				Usage: "list run approvals",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (approval id)"},
+					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runApprovalsList,
 			},
 		},
 	}
@@ -211,6 +241,108 @@ func runRunsApprove(c *cli.Context) error {
 		map[string]string{"decision": c.String("decision")}, nil)
 }
 
+func runRunsMessage(c *cli.Context) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi runs message <id> <text...>")
+	}
+	argText := strings.Join(c.Args().Tail(), " ")
+	stdinText := ""
+	if strings.TrimSpace(argText) == "" {
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		stdinText = string(b)
+	}
+	text, err := resolveRunMessageText(argText, stdinText)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if err := client.DoHTTP(BuildRunMessage(id, text), nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "sent to %s\n", id)
+	return nil
+}
+
+func resolveRunMessageText(argText, stdinText string) (string, error) {
+	argText = strings.TrimSpace(argText)
+	stdinText = strings.TrimSpace(stdinText)
+	switch {
+	case argText != "" && stdinText != "":
+		return "", fmt.Errorf("provide text as arguments or stdin, not both")
+	case argText != "":
+		return argText, nil
+	case stdinText != "":
+		return stdinText, nil
+	default:
+		return "", fmt.Errorf("text required")
+	}
+}
+
+func runRunsStats(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(BuildRunsStats(), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(body)
+	}
+	w := outWriter(c)
+	tbl := newTable(w, []string{"Key", "Value"})
+	tbl.AppendRow(table.Row{"total", fmt.Sprint(body["total"])})
+	tbl.AppendRow(table.Row{"running", fmt.Sprint(body["running"])})
+	renderTable(tbl)
+	return nil
+}
+
+func runRunsAgents(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		Agents map[string]any `json:"agents"`
+	}
+	if err := client.DoHTTP(BuildAgentsState(), &body); err != nil {
+		return err
+	}
+	if body.Agents == nil {
+		body.Agents = map[string]any{}
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(body)
+	}
+	w := outWriter(c)
+	tbl := newTable(w, []string{"Run", "AgentState"})
+	ids := make([]string, 0, len(body.Agents))
+	for id := range body.Agents {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		tbl.AppendRow(table.Row{id, colorStatus(w, fmt.Sprint(body.Agents[id]))})
+	}
+	renderTable(tbl)
+	if len(body.Agents) == 0 {
+		fmt.Fprintln(w, "in-memory snapshot of live runs only; empty on a fresh daemon")
+	}
+	return nil
+}
+
 // runRunsList implements runs list.
 func runRunsList(c *cli.Context) error {
 	client, err := clientFor(c)
@@ -275,25 +407,6 @@ func runRunsList(c *cli.Context) error {
 	}
 	renderTable(tbl)
 	return nil
-}
-
-func approvalsCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "approvals",
-		Usage: "list run approvals",
-		Subcommands: []*cli.Command{
-			{
-				Name:  "list",
-				Usage: "list approvals",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (approval id)"},
-					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
-					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
-				},
-				Action: runApprovalsList,
-			},
-		},
-	}
 }
 
 func runApprovalsList(c *cli.Context) error {

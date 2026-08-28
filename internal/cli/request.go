@@ -51,6 +51,163 @@ func BuildRunsRetry(id string) HTTPRequest {
 	}
 }
 
+// BuildRunMessage builds POST /v1/runs/{id}/message.
+func BuildRunMessage(id, text string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/runs/" + url.PathEscape(id) + "/message",
+		Body:   map[string]any{"text": text},
+	}
+}
+
+// BuildRunsStats builds GET /v1/stats/runs.
+func BuildRunsStats() HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/stats/runs"}
+}
+
+// BuildAgentsState builds GET /v1/agents/state.
+func BuildAgentsState() HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/agents/state"}
+}
+
+// BuildStreamPath builds GET /v1/stream?topics=&cursor=.
+// cursor is the bus cursor (event_log.seq); empty omits the param.
+func BuildStreamPath(topics, cursor string) string {
+	return withQuery("/v1/stream", map[string]string{"topics": topics, "cursor": cursor})
+}
+
+// BuildDoctorFix builds POST /v1/system/doctor/{id}/fix.
+func BuildDoctorFix(id string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/system/doctor/" + url.PathEscape(id) + "/fix",
+	}
+}
+
+// BuildSkillPut builds PUT /v1/skills/{name}.
+func BuildSkillPut(name, skillMD string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PUT",
+		Path:   "/v1/skills/" + url.PathEscape(name),
+		Body:   map[string]any{"skill_md": skillMD},
+	}
+}
+
+// BuildIntegrationConnect builds POST /v1/integrations/{name}/connect.
+func BuildIntegrationConnect(name string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/integrations/" + url.PathEscape(name) + "/connect",
+	}
+}
+
+// BuildIntegrationDisconnect builds POST /v1/integrations/{name}/disconnect.
+func BuildIntegrationDisconnect(name string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/integrations/" + url.PathEscape(name) + "/disconnect",
+	}
+}
+
+// BuildIntegrationCursorGet builds GET /v1/integrations/{name}/cursor.
+func BuildIntegrationCursorGet(name string) HTTPRequest {
+	return HTTPRequest{
+		Method: "GET",
+		Path:   "/v1/integrations/" + url.PathEscape(name) + "/cursor",
+	}
+}
+
+// BuildIntegrationCursorSet builds PUT /v1/integrations/{name}/cursor with last_event_id.
+func BuildIntegrationCursorSet(name, lastEventID string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PUT",
+		Path:   "/v1/integrations/" + url.PathEscape(name) + "/cursor",
+		Body:   map[string]any{"last_event_id": lastEventID},
+	}
+}
+
+// BuildIntegrationCursorReset builds PUT /v1/integrations/{name}/cursor with an empty body.
+func BuildIntegrationCursorReset(name string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PUT",
+		Path:   "/v1/integrations/" + url.PathEscape(name) + "/cursor",
+	}
+}
+
+// BuildJobMemoryPut builds PUT /v1/jobs/{name}/memory.
+func BuildJobMemoryPut(name, workspace, content string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PUT",
+		Path:   withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace)),
+		Body:   map[string]any{"content": content},
+	}
+}
+
+// BuildJobMemoryClear builds DELETE /v1/jobs/{name}/memory.
+func BuildJobMemoryClear(name, workspace string) HTTPRequest {
+	return HTTPRequest{
+		Method: "DELETE",
+		Path:   withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace)),
+	}
+}
+
+// BuildAssistantMemoryPut builds PUT /v1/workspaces/{id}/assistant/memory.
+func BuildAssistantMemoryPut(workspaceID, content string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PUT",
+		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory",
+		Body:   map[string]any{"content": content},
+	}
+}
+
+// BuildAssistantMemoryClear builds DELETE /v1/workspaces/{id}/assistant/memory.
+func BuildAssistantMemoryClear(workspaceID string) HTTPRequest {
+	return HTTPRequest{
+		Method: "DELETE",
+		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory",
+	}
+}
+
+// BuildWorkspaceDelete builds DELETE /v1/workspaces/{id}.
+func BuildWorkspaceDelete(id string) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: "/v1/workspaces/" + url.PathEscape(id)}
+}
+
+// BuildWorkspaceRename builds PATCH /v1/workspaces/{id} with name.
+func BuildWorkspaceRename(id, name string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PATCH",
+		Path:   "/v1/workspaces/" + url.PathEscape(id),
+		Body:   map[string]any{"name": name},
+	}
+}
+
+// BuildRulesTest builds POST /v1/rules/test.
+func BuildRulesTest(match, extract string, event any) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/rules/test",
+		Body:   map[string]any{"match": match, "extract": extract, "event": event},
+	}
+}
+
+// BuildRulesFire builds POST /v1/rules/fire.
+func BuildRulesFire(integration, workspace, job, match, extract string, event any, onIndex int) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/rules/fire",
+		Body: map[string]any{
+			"integration": integration,
+			"workspace":   workspace,
+			"job":         job,
+			"match":       match,
+			"extract":     extract,
+			"event":       event,
+			"on_index":    onIndex,
+		},
+	}
+}
+
 // BuildEventsListPath builds GET /v1/events?cursor=&limit=.
 func BuildEventsListPath(cursor string, limit int) string {
 	return listQuery("/v1/events", cursor, limit)
@@ -460,23 +617,37 @@ func BuildConfigBridgeSet(tool, resource, mode string) (HTTPRequest, error) {
 	return BuildConfigSet(key, norm), nil
 }
 
-// FilterJobsByKind filters list rows. assistantsOnly keeps kind==assistant; jobsOnly keeps job.
-func FilterJobsByKind(rows []map[string]any, assistantsOnly, jobsOnly bool) []map[string]any {
-	if !assistantsOnly && !jobsOnly {
-		return rows
-	}
+// FilterJobsByKindFlag keeps rows matching --kind (job|assistant|all).
+func FilterJobsByKindFlag(rows []map[string]any, kind string) []map[string]any {
 	out := make([]map[string]any, 0, len(rows))
 	for _, j := range rows {
-		k := mapStr(j, "kind")
-		if assistantsOnly && k == "assistant" {
-			out = append(out, j)
-			continue
-		}
-		if jobsOnly && (k == "job" || k == "") {
+		if keepJobKind(kind, mapStr(j, "kind")) {
 			out = append(out, j)
 		}
 	}
 	return out
+}
+
+func parseJobListKind(s string) (string, error) {
+	switch strings.TrimSpace(s) {
+	case "", "job":
+		return "job", nil
+	case "assistant", "all":
+		return s, nil
+	default:
+		return "", fmt.Errorf("invalid --kind %q (want job|assistant|all)", s)
+	}
+}
+
+func keepJobKind(want, rowKind string) bool {
+	switch want {
+	case "all":
+		return true
+	case "assistant":
+		return rowKind == "assistant"
+	default:
+		return rowKind != "assistant"
+	}
 }
 
 func listQuery(path, cursor string, limit int) string {

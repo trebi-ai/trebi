@@ -3,8 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/urfave/cli/v2"
@@ -50,6 +48,15 @@ func skillCommand() *cli.Command {
 					&cli.StringFlag{Name: "file", Usage: "path to SKILL.md"},
 				},
 				Action: runSkillCreate,
+			},
+			{
+				Name:      "update",
+				Usage:     "replace SKILL.md content from --file or stdin",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "file", Usage: "path to SKILL.md"},
+				},
+				Action: runSkillUpdate,
 			},
 			{
 				Name:      "delete",
@@ -100,19 +107,9 @@ func runSkillCreate(c *cli.Context) error {
 	if name == "" {
 		return fmt.Errorf("name required")
 	}
-	md := ""
-	if f := c.String("file"); f != "" {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			return err
-		}
-		md = string(b)
-	} else {
-		b, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return err
-		}
-		md = string(b)
+	md, err := readFileOrStdin(c.String("file"))
+	if err != nil {
+		return err
 	}
 	client, err := clientFor(c)
 	if err != nil {
@@ -120,4 +117,20 @@ func runSkillCreate(c *cli.Context) error {
 	}
 	var out map[string]any
 	return client.PostJSON("/v1/skills", map[string]any{"name": name, "skill_md": md}, &out)
+}
+
+func runSkillUpdate(c *cli.Context) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	md, err := readFileOrStdin(c.String("file"))
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(BuildSkillPut(name, md), nil)
 }

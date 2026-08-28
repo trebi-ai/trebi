@@ -10,7 +10,7 @@ import (
 func alertsCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "alerts",
-		Usage: "view alert.* bus events",
+		Usage: "per-firing alert feed (not the inbox queue you drain)",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "since", Usage: "RFC3339 lower bound"},
 			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},

@@ -359,7 +359,7 @@ func TestCommandRegistration(t *testing.T) {
 	for _, c := range app.Commands {
 		names[c.Name] = true
 	}
-	for _, want := range []string{"list", "runs", "job", "harness", "integration", "config", "service", "conversation", "approvals", "events"} {
+	for _, want := range []string{"runs", "job", "harness", "integration", "config", "service", "conversation", "events", "queue", "rules", "bus", "doctor"} {
 		if !names[want] {
 			t.Fatalf("missing top-level %s", want)
 		}
@@ -369,6 +369,15 @@ func TestCommandRegistration(t *testing.T) {
 	}
 	if names["schedule"] {
 		t.Fatal("top-level schedule should be removed (use trebi job list --schedule)")
+	}
+	if names["list"] {
+		t.Fatal("top-level list should be removed (use trebi job list)")
+	}
+	if names["approvals"] {
+		t.Fatal("top-level approvals should be removed (use trebi runs approvals)")
+	}
+	if names["version"] {
+		t.Fatal("top-level version should be removed (use --version)")
 	}
 	svc := findCmd(app.Commands, "service")
 	for _, want := range []string{"install", "uninstall", "start", "stop", "restart", "status", "logs", "daemon", "shutdown"} {
@@ -389,6 +398,9 @@ func TestCommandRegistration(t *testing.T) {
 	if !hasFlag(jobList, "schedule") {
 		t.Fatal("job list missing --schedule")
 	}
+	if !hasFlag(jobList, "kind") {
+		t.Fatal("job list missing --kind")
+	}
 	h := findCmd(app.Commands, "harness")
 	for _, want := range []string{"list", "ensure", "auth"} {
 		if findCmd(h.Subcommands, want) == nil {
@@ -402,20 +414,25 @@ func TestCommandRegistration(t *testing.T) {
 		}
 	}
 	integ := findCmd(app.Commands, "integration")
-	for _, want := range []string{"list", "show", "set", "remove", "stop", "restart", "logs", "test"} {
+	for _, want := range []string{"list", "show", "set", "remove", "stop", "restart", "logs", "test", "connect", "disconnect", "cursor"} {
 		if findCmd(integ.Subcommands, want) == nil {
 			t.Fatalf("integration missing %s", want)
 		}
+	}
+	cur := findCmd(integ.Subcommands, "cursor")
+	for _, want := range []string{"show", "set", "reset"} {
+		if findCmd(cur.Subcommands, want) == nil {
+			t.Fatalf("integration cursor missing %s", want)
+		}
+	}
+	if findCmd(integ.Subcommands, "queue") == nil || !findCmd(integ.Subcommands, "queue").Hidden {
+		t.Fatal("integration queue should remain as a hidden alias")
 	}
 	cfg := findCmd(app.Commands, "config")
 	for _, want := range []string{"show", "set", "validate", "path", "bridge"} {
 		if findCmd(cfg.Subcommands, want) == nil {
 			t.Fatalf("config missing %s", want)
 		}
-	}
-	list := findCmd(app.Commands, "list")
-	if !hasFlag(list, "detailed") || !hasFlag(list, "assistants-only") {
-		t.Fatal("list flags")
 	}
 	run := findCmd(job.Subcommands, "run")
 	if !hasFlag(run, "extra-prompt") || !hasFlag(run, "test") || !hasFlag(run, "attach") {
@@ -436,14 +453,46 @@ func TestCommandRegistration(t *testing.T) {
 	if findCmd(findCmd(app.Commands, "runs").Subcommands, "retry") == nil {
 		t.Fatal("runs retry missing")
 	}
+	runs := findCmd(app.Commands, "runs")
+	msg := findCmd(runs.Subcommands, "message")
+	if msg == nil {
+		t.Fatal("runs message missing")
+	}
+	if msg.ArgsUsage != "<id> <text...>" {
+		t.Fatalf("runs message ArgsUsage %q", msg.ArgsUsage)
+	}
+	for _, want := range []string{"stats", "agents", "approvals"} {
+		if findCmd(runs.Subcommands, want) == nil {
+			t.Fatalf("runs missing %s", want)
+		}
+	}
 	ev := findCmd(app.Commands, "events")
 	if findCmd(ev.Subcommands, "retrigger") == nil {
 		t.Fatal("events retrigger missing")
 	}
 	mem := findCmd(findCmd(app.Commands, "job").Subcommands, "memory")
-	for _, want := range []string{"show", "add", "remove"} {
+	for _, want := range []string{"show", "add", "remove", "set", "clear"} {
 		if findCmd(mem.Subcommands, want) == nil {
 			t.Fatalf("job memory missing %s", want)
+		}
+	}
+	if !hasFlag(findCmd(mem.Subcommands, "clear"), "force") {
+		t.Fatal("job memory clear missing --force")
+	}
+	if findCmd(findCmd(app.Commands, "skill").Subcommands, "update") == nil {
+		t.Fatal("skill update missing")
+	}
+	doc := findCmd(app.Commands, "doctor")
+	if !hasFlag(doc, "fix") || !hasFlag(doc, "json") {
+		t.Fatal("doctor missing --fix/--json")
+	}
+	if findCmd(doc.Subcommands, "fix") == nil {
+		t.Fatal("doctor fix missing")
+	}
+	bus := findCmd(app.Commands, "bus")
+	for _, f := range []string{"topics", "cursor", "replay", "since", "entity", "id", "action", "limit", "json"} {
+		if !hasFlag(bus, f) {
+			t.Fatalf("bus missing flag %s", f)
 		}
 	}
 	cfgShow := findCmd(findCmd(app.Commands, "config").Subcommands, "show")
@@ -469,9 +518,24 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatal("trebi remote should be removed")
 	}
 	ws := findCmd(app.Commands, "workspace")
-	for _, want := range []string{"list", "add", "use", "current", "unlink"} {
+	for _, want := range []string{"list", "add", "use", "current", "unlink", "remove", "rename"} {
 		if findCmd(ws.Subcommands, want) == nil {
 			t.Fatalf("workspace missing %s", want)
+		}
+	}
+	if !hasFlag(findCmd(ws.Subcommands, "remove"), "force") {
+		t.Fatal("workspace remove missing --force")
+	}
+	asstMem := findCmd(findCmd(app.Commands, "assistant").Subcommands, "memory")
+	for _, want := range []string{"show", "add", "remove", "set", "clear"} {
+		if findCmd(asstMem.Subcommands, want) == nil {
+			t.Fatalf("assistant memory missing %s", want)
+		}
+	}
+	rules := findCmd(app.Commands, "rules")
+	for _, want := range []string{"test", "fire"} {
+		if findCmd(rules.Subcommands, want) == nil {
+			t.Fatalf("rules missing %s", want)
 		}
 	}
 	add := findCmd(ws.Subcommands, "add")
@@ -588,6 +652,169 @@ func TestBuildAssistantWake(t *testing.T) {
 	_ = json.Unmarshal(b, &m)
 	if m["prompt_override"] != "hello" || m["dry_run"] != true {
 		t.Fatalf("body %s", b)
+	}
+}
+
+func TestBuildRunMessage(t *testing.T) {
+	t.Parallel()
+	req := BuildRunMessage("a/b", "hello world")
+	if req.Method != "POST" || req.Path != "/v1/runs/a%2Fb/message" {
+		t.Fatalf("%+v", req)
+	}
+	b, _ := json.Marshal(req.Body)
+	if string(b) != `{"text":"hello world"}` {
+		t.Fatalf("body %s", b)
+	}
+}
+
+func TestBuildStreamPath(t *testing.T) {
+	t.Parallel()
+	path := BuildStreamPath("run.failed,alert", "42")
+	if !strings.Contains(path, "/v1/stream?") {
+		t.Fatalf("%s", path)
+	}
+	if !strings.Contains(path, "topics=run.failed%2Calert") && !strings.Contains(path, "topics=run.failed,alert") {
+		t.Fatalf("topics %s", path)
+	}
+	if !strings.Contains(path, "cursor=42") {
+		t.Fatalf("cursor %s", path)
+	}
+	bare := BuildStreamPath("run", "")
+	if strings.Contains(bare, "cursor=") {
+		t.Fatalf("empty cursor should be omitted: %s", bare)
+	}
+	if !strings.Contains(bare, "topics=run") {
+		t.Fatalf("%s", bare)
+	}
+}
+
+func TestBuildDoctorFix(t *testing.T) {
+	t.Parallel()
+	req := BuildDoctorFix("config-missing")
+	if req.Method != "POST" || req.Path != "/v1/system/doctor/config-missing/fix" {
+		t.Fatalf("%+v", req)
+	}
+}
+
+func TestBuildSkillPut(t *testing.T) {
+	t.Parallel()
+	req := BuildSkillPut("demo", "# skill")
+	if req.Method != "PUT" || req.Path != "/v1/skills/demo" {
+		t.Fatalf("%+v", req)
+	}
+	b, _ := json.Marshal(req.Body)
+	if !strings.Contains(string(b), `"skill_md":"# skill"`) {
+		t.Fatalf("%s", b)
+	}
+}
+
+func TestBuildIntegrationCursor(t *testing.T) {
+	t.Parallel()
+	got := BuildIntegrationCursorGet("mail")
+	if got.Method != "GET" || got.Path != "/v1/integrations/mail/cursor" {
+		t.Fatalf("get %+v", got)
+	}
+	got = BuildIntegrationCursorSet("mail", "evt-1")
+	if got.Method != "PUT" || got.Body == nil {
+		t.Fatalf("set %+v", got)
+	}
+	b, _ := json.Marshal(got.Body)
+	if !strings.Contains(string(b), `"last_event_id":"evt-1"`) {
+		t.Fatalf("%s", b)
+	}
+	got = BuildIntegrationCursorReset("mail")
+	if got.Method != "PUT" || got.Body != nil {
+		t.Fatalf("reset must send empty body, got %+v", got)
+	}
+}
+
+func TestBuildWorkspaceAndMemoryAndRules(t *testing.T) {
+	t.Parallel()
+	req := BuildWorkspaceDelete("ws1")
+	if req.Method != "DELETE" || req.Path != "/v1/workspaces/ws1" {
+		t.Fatalf("delete %+v", req)
+	}
+	req = BuildWorkspaceRename("ws1", "new")
+	if req.Method != "PATCH" {
+		t.Fatalf("rename %+v", req)
+	}
+	req = BuildJobMemoryPut("demo", "ws1", "hello")
+	if req.Method != "PUT" || !strings.Contains(req.Path, "/memory") {
+		t.Fatalf("mem put %+v", req)
+	}
+	req = BuildJobMemoryClear("demo", "ws1")
+	if req.Method != "DELETE" {
+		t.Fatalf("mem clear %+v", req)
+	}
+	req = BuildRulesTest("true", "x", map[string]any{"a": 1})
+	if req.Method != "POST" || req.Path != "/v1/rules/test" {
+		t.Fatalf("rules test %+v", req)
+	}
+	req = BuildRulesFire("mail", "ws", "job", "true", "", map[string]any{"a": 1}, 0)
+	if req.Path != "/v1/rules/fire" {
+		t.Fatalf("rules fire %+v", req)
+	}
+	req = BuildIntegrationConnect("mail")
+	if req.Path != "/v1/integrations/mail/connect" {
+		t.Fatalf("connect %+v", req)
+	}
+	req = BuildIntegrationDisconnect("mail")
+	if req.Path != "/v1/integrations/mail/disconnect" {
+		t.Fatalf("disconnect %+v", req)
+	}
+}
+
+func TestParseJobListKind(t *testing.T) {
+	t.Parallel()
+	got, err := parseJobListKind("")
+	if err != nil || got != "job" {
+		t.Fatalf("%q %v", got, err)
+	}
+	got, err = parseJobListKind("all")
+	if err != nil || got != "all" {
+		t.Fatalf("%q %v", got, err)
+	}
+	if _, err := parseJobListKind("bogus"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestKeepJobKind(t *testing.T) {
+	t.Parallel()
+	rows := []map[string]any{
+		{"kind": "job", "name": "a"},
+		{"kind": "assistant", "name": "b"},
+		{"kind": "", "name": "c"},
+	}
+	jobs := FilterJobsByKindFlag(rows, "job")
+	if len(jobs) != 2 || mapStr(jobs[0], "name") != "a" {
+		t.Fatalf("%v", jobs)
+	}
+	as := FilterJobsByKindFlag(rows, "assistant")
+	if len(as) != 1 || mapStr(as[0], "name") != "b" {
+		t.Fatalf("%v", as)
+	}
+	all := FilterJobsByKindFlag(rows, "all")
+	if len(all) != 3 {
+		t.Fatalf("%v", all)
+	}
+}
+
+func TestResolveRunMessageText(t *testing.T) {
+	t.Parallel()
+	got, err := resolveRunMessageText("deploy the branch", "")
+	if err != nil || got != "deploy the branch" {
+		t.Fatalf("%q %v", got, err)
+	}
+	got, err = resolveRunMessageText("", "from stdin")
+	if err != nil || got != "from stdin" {
+		t.Fatalf("%q %v", got, err)
+	}
+	if _, err := resolveRunMessageText("args", "stdin"); err == nil {
+		t.Fatal("both should error")
+	}
+	if _, err := resolveRunMessageText("", ""); err == nil {
+		t.Fatal("empty should error")
 	}
 }
 
