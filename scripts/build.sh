@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo"
 
 mkdir -p build
 
@@ -12,7 +13,7 @@ fi
 
 go build -o build/trebi ./cmd/trebi
 
-echo "Built $(pwd)/build/trebi"
+echo "Built $repo/build/trebi"
 
 # Kick the LaunchAgent so it picks up the new binary when installed.
 if launchctl list ai.trebi.daemon &>/dev/null; then
@@ -20,5 +21,5 @@ if launchctl list ai.trebi.daemon &>/dev/null; then
   launchctl kickstart -k "gui/$UID/ai.trebi.daemon"
 fi
 
-# Symlink into PATH (and skill links when SKILL.md exists).
-"$(dirname "$0")/register.sh"
+# Symlink into PATH and refresh the skill links.
+"$repo/scripts/register.sh"
