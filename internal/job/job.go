@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/adrg/frontmatter"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"gopkg.in/yaml.v3"
 )
@@ -125,6 +126,49 @@ type Job struct {
 	ParseError       string
 	Hash             string
 	Description      string
+}
+
+// ResolvedWorkingDir is working_dir, else the JOB.md directory.
+func (j *Job) ResolvedWorkingDir() string {
+	if j == nil {
+		return ""
+	}
+	if j.WorkingDir != "" {
+		return j.WorkingDir
+	}
+	return j.Dir
+}
+
+// ResolvedHarness is the job harness, else "claude".
+func (j *Job) ResolvedHarness() string {
+	if j != nil && j.Harness != "" {
+		return j.Harness
+	}
+	return "claude"
+}
+
+// ResolvedEnv merges envset: then inline env:. Missing envset is ignored.
+func (j *Job) ResolvedEnv() map[string]string {
+	if j == nil {
+		return nil
+	}
+	env := map[string]string{}
+	if j.Envset != "" {
+		if sets, err := config.LoadEnvSets(); err == nil {
+			if kv, ok := sets.Get(j.Envset); ok {
+				for k, v := range kv {
+					env[k] = v
+				}
+			}
+		}
+	}
+	for k, v := range j.Env {
+		env[k] = v
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 // Trigger is a normalized trigger entry with family index.

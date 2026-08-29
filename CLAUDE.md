@@ -265,7 +265,7 @@ func New(st *store.Store) *Service {
 
 `internal/api` is a thin, dumb layer: decode, validate, call a service, write JSON. Business rules live in the service.
 
-- **One file per route area**, named `routes_<area>.go`, each exporting one `func (s *Server) route<Area>(mux *http.ServeMux)` that lists its routes at the top of the file. `routes.go` only composes them. Add a route to the existing area file; do not add a file per handler.
+- **One file per route area**, named `routes_<area>.go`, each exporting one `func (s *Server) route<Area>(mux *http.ServeMux)` that lists its routes at the top of the file. `Server.Handler()` in `server.go` composes them. Add a route to the existing area file; do not add a file per handler. Keep registration next to the handlers.
 - Use Go 1.22 method-and-pattern routes (`"POST /v1/runs/{id}/kill"`) and `r.PathValue("id")`. No router library.
 - Route shape: plural nouns; non-CRUD actions are `POST /{resource}/{id}/{verb}`; sub-resources nest one level only.
 - Every response goes through `writeJSON` / `writeErr`. The error envelope is `{"error":{"code","message","details"}}` with a stable machine code (`not_found`, `conflict`, `ambiguous`, `validation`, `draining`, `precondition_failed`, `unauthorized`, `internal`). Never write a bare string body.
@@ -297,7 +297,7 @@ One append-only log in `event_log`, one registry, one wire frame.
 The CLI is a thin API client. It holds no business logic and never touches the store or spawns a session.
 
 - **Parity rule: the CLI covers 100% of the control-plane API.** A new route ships with its `trebi` command and its skill entry in the same change. The assistant drives trebi through this CLI, so an endpoint with no command is unreachable.
-- Command tree: one `func <area>Command() *cli.Command` per file, named `commands_<area>.go`, registered in `root.go`. Split subcommands into named groups (`jobManageSubcommands`) when a list grows past a screen; do not split into more files.
+- Command tree: one file per command *area*, named `commands_<area>.go`, registered in `NewApp()` in `app.go`. Tiny sibling commands may live in the larger sibling's file (`queue`+`events` in `commands_integration.go`, `alerts` in `commands_inbox.go`). Split subcommands into named groups (`jobManageSubcommands`) when a list grows past a screen; do not split into more files.
 - Startup context is built once in `Before` and stored as `appState` in `App.Metadata`. Actions read it through `appStateFor(c)` / `clientFor(c)` / `workspaceFor(c)`. Do not reload config, sticky context, or the API client inside an action.
 - Request building is pure and separately testable: `Build*` returns an `HTTPRequest{Method, Path, Body}`, and `client.DoHTTP` executes it. Test the shape without a daemon.
 - Client resolution order is fixed: linked remote workspace → remote sticky context → `TREBI_URL`/`TREBI_TOKEN` → local `~/.trebi/api.json`. Remote is workspace context, not a `--remote` flag.

@@ -262,21 +262,51 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]*Run, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 50
 	}
+	if !opts.pseudoStatus() {
+		return s.listPage(ctx, opts)
+	}
+	want := opts.Limit
+	var out []*Run
+	cursor := opts.Cursor
+	for len(out) < want {
+		pageOpts := opts
+		pageOpts.Limit = want * 4
+		pageOpts.Cursor = cursor
+		page, err := s.listPage(ctx, pageOpts)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, r := range page {
+			if string(r.AgentState) == opts.Status {
+				out = append(out, r)
+				if len(out) == want {
+					break
+				}
+			}
+		}
+		cursor = page[len(page)-1].ID
+		if len(page) < pageOpts.Limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) listPage(ctx context.Context, opts ListOpts) ([]*Run, error) {
 	q, args := opts.query()
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
 	var out []*Run
 	for rows.Next() {
 		r, err := scanRun(rows, s)
 		if err != nil {
 			return nil, err
-		}
-		if opts.pseudoStatus() && string(r.AgentState) != opts.Status {
-			continue
 		}
 		out = append(out, r)
 	}
@@ -334,9 +364,6 @@ func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([
 // DecideApproval records a allow|deny decision for runID in one transaction
 // with the approval.decided bus frame. Revision starts at 1 (insert-as-decided).
 func (s *Service) DecideApproval(ctx context.Context, runID, decision string) (*Approval, error) {
-	if decision == "" {
-		decision = "allow"
-	}
 	if decision != "allow" && decision != "deny" {
 		return nil, ErrInvalidDecision
 	}
@@ -634,6 +661,42 @@ func (s *Service) RunningCount(ctx context.Context) (int, error) {
 	var n int
 	err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE status='running'`).Scan(&n)
 	return n, err
+}
+
+// Counts returns total and running run counts.
+func (s *Service) Counts(ctx context.Context) (total, running int, err error) {
+	err = s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM runs`).Scan(&total)
+	if err != nil {
+		return 0, 0, err
+	}
+	running, err = s.RunningCount(ctx)
+	return total, running, err
+}
+
+// StatusByJob returns the newest run status and live run ids per "workspace/job" lane.
+func (s *Service) StatusByJob(ctx context.Context) (last map[string]Status, live map[string][]string, err error) {
+	rows, err := s.st.DB().QueryContext(ctx, `
+		SELECT workspace_id, job, id, status FROM runs WHERE kind='job' AND (
+			status='running' OR id IN (SELECT MAX(id) FROM runs WHERE kind='job' GROUP BY workspace_id, job)
+		)`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	last = map[string]Status{}
+	live = map[string][]string{}
+	for rows.Next() {
+		var ws, jb, id, st string
+		if err := rows.Scan(&ws, &jb, &id, &st); err != nil {
+			return nil, nil, err
+		}
+		key := ws + "/" + jb
+		last[key] = Status(st)
+		if Status(st).IsLive() {
+			live[key] = append(live[key], id)
+		}
+	}
+	return last, live, rows.Err()
 }
 
 // AddEvent appends a timeline point event (best-effort).

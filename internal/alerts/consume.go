@@ -345,11 +345,10 @@ func (s *Service) enqueueDeliver(ctx context.Context, opts RaiseOpts, id string)
 }
 
 func (s *Service) skipNotify() bool {
-	if s.opts.Shadow || s.opts.Drain {
+	if s.opts.Shadow {
 		return true
 	}
-	v, ok, err := s.st.GetFlag("drain")
-	return err == nil && ok && v == "1"
+	return s.st.IsDraining()
 }
 
 // deliver tries channels in order and stops at the first success.

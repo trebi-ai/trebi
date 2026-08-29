@@ -50,6 +50,9 @@ func TestEnqueueClaimDone(t *testing.T) {
 	if claimed.Status != dispatch.QueueClaimed {
 		t.Fatalf("status=%s", claimed.Status)
 	}
+	if claimed.Vars["from"] != "a" {
+		t.Fatalf("vars=%v want from=a", claimed.Vars)
+	}
 
 	// second claim empty
 	c2, err := q.ClaimNext(ctx, "ws1", "receipts", runs.KindJob, "")

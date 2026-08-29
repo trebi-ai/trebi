@@ -12,7 +12,7 @@ import (
 func integrationCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "integration",
-		Usage: "manage integrations (jobi sources)",
+		Usage: "manage integrations",
 		Subcommands: []*cli.Command{
 			{
 				Name:  "list",
@@ -56,7 +56,7 @@ func integrationCommand() *cli.Command {
 			},
 			{
 				Name:      "disconnect",
-				Usage:     "stop an integration (same as stop; halt the listening process)",
+				Usage:     "halt the listening process (alias: stop)",
 				ArgsUsage: "<name>",
 				Action:    runIntegrationDisconnect,
 			},
@@ -480,6 +480,13 @@ func eventsCommand() *cli.Command {
 				Action: runEventsList,
 			},
 			{
+				Name:      "show",
+				Usage:     "show one event",
+				ArgsUsage: "<id>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action:    runEventsShow,
+			},
+			{
 				Name:      "retrigger",
 				Usage:     "re-inject a stored event into its integration",
 				ArgsUsage: "<id>",
@@ -517,6 +524,25 @@ func runEventsList(c *cli.Context) error {
 	}
 	renderTable(tbl)
 	return nil
+}
+
+func runEventsShow(c *cli.Context) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi events show <id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	req := BuildEventGet(id)
+	var body map[string]any
+	if err := client.DoHTTP(req, &body); err != nil {
+		return err
+	}
+	enc := json.NewEncoder(outWriter(c))
+	enc.SetIndent("", "  ")
+	return enc.Encode(body)
 }
 
 func runEventsRetrigger(c *cli.Context) error {

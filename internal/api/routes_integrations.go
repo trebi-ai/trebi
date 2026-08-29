@@ -41,10 +41,15 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 	})
 	// Name-keyed collection: limit only, no ULID cursor.
 	limit := parseLimit(r)
-	if len(list) > limit {
+	truncated := len(list) > limit
+	if truncated {
 		list = list[:limit]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"integrations": list})
+	resp := map[string]any{"integrations": list}
+	if truncated {
+		resp["truncated"] = true
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleIntegrationsCreate(w http.ResponseWriter, r *http.Request) {
@@ -193,15 +198,16 @@ func (s *Server) handleIntegrationLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleIntegrationCursorGet(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	var lastID, updated string
-	err := s.st.DB().QueryRowContext(r.Context(),
-		`SELECT last_event_id, updated_at FROM integration_cursors WHERE name=?`, name).
-		Scan(&lastID, &updated)
+	cur, err := s.integ.GetCursor(r.Context(), name)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"name": name, "last_event_id": "", "updated_at": nil})
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "last_event_id": lastID, "updated_at": updated})
+	var updated any
+	if cur.UpdatedAt != "" {
+		updated = cur.UpdatedAt
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "last_event_id": cur.LastEventID, "updated_at": updated})
 }
 
 func (s *Server) handleIntegrationCursorPut(w http.ResponseWriter, r *http.Request) {
@@ -210,12 +216,7 @@ func (s *Server) handleIntegrationCursorPut(w http.ResponseWriter, r *http.Reque
 		LastEventID string `json:"last_event_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body sets last_event_id to ""
-	now := time.Now().UTC().Format(time.RFC3339)
-	// integration_cursors is internal bookkeeping, not a B10 bus entity.
-	_, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO integration_cursors (name, last_event_id, updated_at)
-		VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
-		name, body.LastEventID, now)
-	if err != nil {
+	if err := s.integ.PutCursor(r.Context(), name, body.LastEventID); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -62,6 +63,9 @@ type Skill struct {
 type Service struct {
 	st *store.Store
 }
+
+// ErrPrecondition is If-Match / hash mismatch.
+var ErrPrecondition = errors.New("precondition failed")
 
 // New creates a skills service.
 func New(st *store.Store) *Service { return &Service{st: st} }
@@ -142,7 +146,7 @@ func (s *Service) Update(ctx context.Context, name, skillMD, ifMatch string, har
 		return nil, err
 	}
 	if ifMatch != "" && ifMatch != cur.Hash {
-		return nil, fmt.Errorf("precondition failed: hash mismatch")
+		return nil, fmt.Errorf("%w: hash mismatch", ErrPrecondition)
 	}
 	if skillMD != "" {
 		if err := os.WriteFile(filepath.Join(home.SkillsDir(), name, "SKILL.md"), []byte(skillMD), 0o644); err != nil {

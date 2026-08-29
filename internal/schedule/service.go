@@ -4,6 +4,7 @@ package schedule
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -22,19 +23,28 @@ func New(st *store.Store) *Service {
 }
 
 // RecomputeFromJob rebuilds schedule rows for one job from its triggers.
+// Unchanged (workspace, job, idx, spec, timezone) rows keep next_due_at and
+// last_fired_at so a periodic index rebuild cannot push @every into the future.
 func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *job.Job, cutoverStartedAt time.Time) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`DELETE FROM schedules WHERE workspace_id=? AND job=?`, workspaceID, j.Name); err != nil {
+		if j.Disabled {
+			_, err := tx.Exec(`DELETE FROM schedules WHERE workspace_id=? AND job=?`, workspaceID, j.Name)
 			return err
 		}
-		// schedules PK is (workspace, job, idx); idx from B21 schedule family (cron+every).
+
+		existing, err := loadRows(tx, workspaceID, j.Name)
+		if err != nil {
+			return err
+		}
+
+		keep := map[int]bool{}
 		for _, tr := range j.Triggers {
 			if tr.Family != "cron" && tr.Family != "every" {
 				continue
 			}
 			if tr.Disabled {
-				continue // index still reserved on the job; row omitted until re-enabled
+				continue
 			}
 			spec := tr.Cron
 			catchUp := 1
@@ -46,7 +56,13 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 			if tz == "" {
 				tz = "UTC"
 			}
-			next := nextDue(spec, cutoverStartedAt)
+			keep[tr.Index] = true
+
+			if old, ok := existing[tr.Index]; ok && old.Spec == spec && old.Timezone == tz {
+				continue
+			}
+
+			next := nextDue(spec, cutoverStartedAt, tz)
 			var nextStr *string
 			if !next.IsZero() {
 				s := next.UTC().Format(time.RFC3339)
@@ -56,9 +72,26 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 			if tr.Anchor != "" {
 				anchor = &tr.Anchor
 			}
+			if _, ok := existing[tr.Index]; ok {
+				if _, err := tx.Exec(`UPDATE schedules SET spec=?, timezone=?, catch_up=?, next_due_at=?, last_fired_at=NULL, anchor=?, updated_at=?
+					WHERE workspace_id=? AND job=? AND idx=?`,
+					spec, tz, catchUp, nextStr, anchor, now, workspaceID, j.Name, tr.Index); err != nil {
+					return err
+				}
+				continue
+			}
 			if _, err := tx.Exec(`INSERT INTO schedules (workspace_id, job, idx, spec, timezone, catch_up, next_due_at, anchor, updated_at)
 				VALUES (?,?,?,?,?,?,?,?,?)`,
 				workspaceID, j.Name, tr.Index, spec, tz, catchUp, nextStr, anchor, now); err != nil {
+				return err
+			}
+		}
+		for idx := range existing {
+			if keep[idx] {
+				continue
+			}
+			if _, err := tx.Exec(`DELETE FROM schedules WHERE workspace_id=? AND job=? AND idx=?`,
+				workspaceID, j.Name, idx); err != nil {
 				return err
 			}
 		}
@@ -66,26 +99,59 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 	})
 }
 
-// NextDuePublic is the exported next-due calculator (daemon schedule fire).
-func NextDuePublic(spec string, from time.Time) time.Time { return nextDue(spec, from) }
+func loadRows(tx *sql.Tx, workspaceID, jobName string) (map[int]Row, error) {
+	rows, err := tx.Query(`SELECT workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at
+		FROM schedules WHERE workspace_id=? AND job=?`, workspaceID, jobName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]Row{}
+	for rows.Next() {
+		var r Row
+		var next, last sql.NullString
+		var catch int
+		if err := rows.Scan(&r.WorkspaceID, &r.Job, &r.Idx, &r.Spec, &r.Timezone, &catch, &next, &last); err != nil {
+			return nil, err
+		}
+		r.CatchUp = catch == 1
+		r.NextDueAt = next.String
+		r.LastFiredAt = last.String
+		out[r.Idx] = r
+	}
+	return out, rows.Err()
+}
 
-func nextDue(spec string, from time.Time) time.Time {
+// NextDuePublic is the exported next-due calculator (tests / callers with a tz).
+func NextDuePublic(spec string, from time.Time, tz string) time.Time {
+	return nextDue(spec, from, tz)
+}
+
+func nextDue(spec string, from time.Time, tz string) time.Time {
+	loc := time.UTC
+	if tz != "" && !strings.EqualFold(tz, "UTC") {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
 	if from.IsZero() {
-		from = time.Now().UTC()
+		from = time.Now().In(loc)
+	} else {
+		from = from.In(loc)
 	}
 	if len(spec) > 7 && spec[:7] == "@every " {
 		d, err := time.ParseDuration(spec[7:])
 		if err != nil || d <= 0 {
 			return time.Time{}
 		}
-		return from.Add(d)
+		return from.Add(d).UTC()
 	}
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	sched, err := parser.Parse(spec)
 	if err != nil {
 		return time.Time{}
 	}
-	return sched.Next(from)
+	return sched.Next(from).UTC()
 }
 
 // ClaimDue atomically claims schedules with next_due_at <= now by advancing next_due_at.
@@ -121,8 +187,7 @@ func (s *Service) ClaimDue(ctx context.Context, now time.Time, limit int) ([]Row
 			return err
 		}
 		for _, r := range candidates {
-			// Tentative next so another worker cannot re-claim until MarkFired.
-			next := nextDue(r.Spec, now)
+			next := nextDue(r.Spec, now, r.Timezone)
 			var nextStr *string
 			if !next.IsZero() {
 				s := next.UTC().Format(time.RFC3339)
@@ -158,7 +223,7 @@ type Row struct {
 
 // MarkFired updates last_fired_at and next_due_at after a fire.
 func (s *Service) MarkFired(ctx context.Context, r Row, firedAt time.Time) error {
-	next := nextDue(r.Spec, firedAt)
+	next := nextDue(r.Spec, firedAt, r.Timezone)
 	now := firedAt.UTC().Format(time.RFC3339)
 	var nextStr *string
 	if !next.IsZero() {
@@ -167,5 +232,40 @@ func (s *Service) MarkFired(ctx context.Context, r Row, firedAt time.Time) error
 	}
 	_, err := s.st.DB().ExecContext(ctx, `UPDATE schedules SET last_fired_at=?, next_due_at=?, updated_at=? WHERE workspace_id=? AND job=? AND idx=?`,
 		now, nextStr, now, r.WorkspaceID, r.Job, r.Idx)
+	return err
+}
+
+// List returns schedule rows ordered by next_due_at.
+func (s *Service) List(ctx context.Context, limit int) ([]Row, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at
+		 FROM schedules ORDER BY next_due_at LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []Row
+	for rows.Next() {
+		var r Row
+		var next, last sql.NullString
+		var catch int
+		if err := rows.Scan(&r.WorkspaceID, &r.Job, &r.Idx, &r.Spec, &r.Timezone, &catch, &next, &last); err != nil {
+			return nil, err
+		}
+		r.CatchUp = catch == 1
+		r.NextDueAt = next.String
+		r.LastFiredAt = last.String
+		list = append(list, r)
+	}
+	return list, rows.Err()
+}
+
+// Delete removes one schedule row (orphan job).
+func (s *Service) Delete(ctx context.Context, workspaceID, jobName string, idx int) error {
+	_, err := s.st.DB().ExecContext(ctx,
+		`DELETE FROM schedules WHERE workspace_id=? AND job=? AND idx=?`, workspaceID, jobName, idx)
 	return err
 }

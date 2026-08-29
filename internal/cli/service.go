@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -444,7 +445,7 @@ func runDaemon(parent context.Context, c *cli.Context) error {
 		Drain:  drain,
 	})
 	// Share control-plane services so API and workers see the same state.
-	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Policy, cp.Integrations, cp.Schedule, cp.Alerts, cp.Files, cp.Conversations, cp.Harness)
+	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Integrations, cp.Schedule, cp.Alerts, cp.Files, cp.Conversations, cp.Harness)
 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -498,4 +499,56 @@ func (s *appState) appendBusEvent(st *store.Store, topic string) {
 	if _, err := st.Append(context.Background(), store.BusEvent{Topic: topic}); err != nil {
 		s.log.Warn("bus append", "error", err)
 	}
+}
+
+const parentFDEnv = "TREBI_PARENT_FD"
+
+// startParentWatch cancels when the eval (or other) parent dies, including
+// SIGKILL: the parent holds the write end of a pipe passed as ExtraFiles.
+func startParentWatch(cancel context.CancelFunc, parentPID int) {
+	if parentPID <= 0 {
+		parentPID, _ = strconv.Atoi(os.Getenv("TREBI_PARENT_PID"))
+	}
+	fd := parentWatchFile()
+	if parentPID <= 0 && fd == nil {
+		return
+	}
+	go watchParent(cancel, parentPID, fd)
+}
+
+func parentWatchFile() *os.File {
+	v := os.Getenv(parentFDEnv)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 3 {
+		return nil
+	}
+	return os.NewFile(uintptr(n), "parent-watch")
+}
+
+func watchParent(cancel context.CancelFunc, pid int, fd *os.File) {
+	if fd != nil {
+		buf := make([]byte, 1)
+		_, _ = fd.Read(buf)
+		cancel()
+		return
+	}
+	if pid <= 0 {
+		return
+	}
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
+	for range t.C {
+		if !processAlive(pid) {
+			cancel()
+			return
+		}
+	}
+}
+
+func processAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
 }

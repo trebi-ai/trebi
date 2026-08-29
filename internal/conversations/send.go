@@ -149,9 +149,9 @@ func (s *Service) deliver(ctx context.Context, conv *Conversation, text string) 
 		if ierr == nil {
 			return DeliveryInjected, live.ID, "", nil
 		}
-		if !errors.Is(ierr, runs.ErrNotRunning) {
-			// Pane errors still fall back to a queued wake.
-			s.log.Info("inject fallback", "run_id", live.ID, "err", ierr)
+		if live.TmuxSession != "" && live.Harness != "fake" && !errors.Is(ierr, runs.ErrNotRunning) {
+			s.log.Info("inject failed", "run_id", live.ID, "err", ierr)
+			return "", "", "", ierr
 		}
 	}
 	if s.queue == nil || s.ws == nil {

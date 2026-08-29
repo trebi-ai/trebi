@@ -361,6 +361,9 @@ func TestDecideApprovalAtomicWithBus(t *testing.T) {
 		t.Fatalf("frame %+v", evs[0])
 	}
 
+	if _, err := svc.DecideApproval(ctx, run.ID, ""); err == nil {
+		t.Fatal("expected empty decision rejected")
+	}
 	if _, err := svc.DecideApproval(ctx, run.ID, "nope"); err == nil {
 		t.Fatal("expected invalid decision")
 	}

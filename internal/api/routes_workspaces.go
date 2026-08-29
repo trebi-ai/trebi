@@ -4,12 +4,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -43,7 +45,16 @@ func (s *Server) handleWorkspacesList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workspaces": list})
+	limit := parseLimit(r)
+	truncated := len(list) > limit
+	if truncated {
+		list = list[:limit]
+	}
+	resp := map[string]any{"workspaces": list}
+	if truncated {
+		resp["truncated"] = true
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleWorkspacesAdd(w http.ResponseWriter, r *http.Request) {
@@ -287,4 +298,150 @@ func (s *Server) handleAssistantDelete(w http.ResponseWriter, r *http.Request) {
 	_ = os.Remove(path)
 	_ = s.ws.RebuildIndex(r.Context(), ws)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": path})
+}
+
+// memoryRootRel maps a memory request to workspace root + relative path + abs path.
+func (s *Server) memoryRootRel(r *http.Request, assistant bool) (root, rel, abs string, err error) {
+	abs, err = s.memoryPath(r, assistant)
+	if err != nil {
+		return "", "", "", err
+	}
+	var wsID string
+	if assistant {
+		wsID = r.PathValue("id")
+	} else {
+		row, err := s.findJobRow(r.Context(), r.URL.Query().Get("workspace"), r.PathValue("name"))
+		if err != nil {
+			return "", "", "", err
+		}
+		wsID = row.WorkspaceID
+	}
+	ws, err := s.ws.Get(r.Context(), wsID)
+	if err != nil {
+		return "", "", "", err
+	}
+	rel, err = workspaceRel(ws.Path, abs)
+	if err != nil {
+		return "", "", "", err
+	}
+	return ws.Path, rel, abs, nil
+}
+
+func (s *Server) handleAssistantWake(w http.ResponseWriter, r *http.Request) {
+	wsID := r.PathValue("id")
+	var body runCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	row, err := s.findAssistantRow(r.Context(), wsID)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "no assistant in workspace")
+		return
+	}
+	// Assistant lane: keep client prompt_override/inputs, pin identity fields.
+	body.Job = row.Name
+	body.Workspace = wsID
+	body.Kind = "assistant"
+	if body.Reason == "" {
+		body.Reason = string(runs.ReasonManual)
+	}
+	s.createRun(w, r, body)
+}
+
+func (s *Server) handleAssistantMemoryGet(w http.ResponseWriter, r *http.Request) {
+	s.handleMemoryFile(w, r, true)
+}
+
+func (s *Server) handleAssistantMemoryPut(w http.ResponseWriter, r *http.Request) {
+	s.handleMemoryFilePut(w, r, true)
+}
+
+// handleMemoryFile serves the B22 memory ledger wire shape.
+func (s *Server) handleMemoryFile(w http.ResponseWriter, r *http.Request, assistant bool) {
+	path, err := s.memoryPath(r, assistant)
+	if err != nil {
+		writeResolveErr(w, err)
+		return
+	}
+	info, err := job.LoadMemoryInfo(path)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if info == nil {
+		info = &job.MemoryInfo{Entries: []job.MemoryEntry{}}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path": path, "size_bytes": info.SizeBytes, "updated_at": info.UpdatedAt,
+		"hash": info.Hash, "preamble": info.Preamble, "entries": info.Entries,
+		"content": info.Content,
+	})
+}
+
+// handleMemoryFilePut replaces the whole memory file (reset).
+func (s *Server) handleMemoryFilePut(w http.ResponseWriter, r *http.Request, assistant bool) {
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	root, rel, abs, err := s.memoryRootRel(r, assistant)
+	if err != nil {
+		writeResolveErr(w, err)
+		return
+	}
+	info, _, err := s.files.Write(r.Context(), root, rel, []byte(body.Content), ifMatchHeader(r))
+	if err != nil {
+		writeFilesErr(w, err)
+		return
+	}
+	setETagHash(w, info.Hash)
+	writeJSON(w, http.StatusOK, map[string]any{"path": abs, "hash": info.Hash})
+}
+
+func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name       *string `json:"name"`
+		GitEnabled *bool   `json:"git_enabled"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is a no-op get
+	id := r.PathValue("id")
+	if body.Name != nil && strings.TrimSpace(*body.Name) == "" {
+		body.Name = nil
+	}
+	if body.Name == nil && body.GitEnabled == nil {
+		ws, err := s.ws.Get(r.Context(), id)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, ws)
+		return
+	}
+	ws, err := s.ws.Patch(r.Context(), id, workspaces.Patch{Name: body.Name, GitEnabled: body.GitEnabled})
+	if errors.Is(err, workspaces.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ws)
+}
+
+func (s *Server) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.ws.Remove(r.Context(), id); err != nil {
+		if errors.Is(err, workspaces.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }

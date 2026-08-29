@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"sync"
@@ -43,6 +44,7 @@ type Server struct {
 	integ   *integrations.Service
 	conv    *conversations.Service
 	harness *harness.Service
+	sched   *schedule.Service
 
 	token     string
 	startedAt time.Time
@@ -84,6 +86,7 @@ func New(st *store.Store, opts Options) *Server {
 		integ:     integrations.New(st, ws, r, pol),
 		conv:      conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
 		harness:   harness.New(st, tmux.DefaultDriver{}, harness.Options{}),
+		sched:     schedule.New(st),
 		token:     opts.Token,
 		startedAt: time.Now().UTC(),
 		shadow:    opts.Shadow,
@@ -92,7 +95,7 @@ func New(st *store.Store, opts Options) *Server {
 		log:       slog.Default().With("source", "http_server"),
 		queue:     q,
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
+			CheckOrigin: checkWSOrigin,
 		},
 	}
 	if s.token == "" {
@@ -103,9 +106,7 @@ func New(st *store.Store, opts Options) *Server {
 }
 
 // BindControlPlane replaces core services with the daemon's shared instances.
-// The policy and schedule services stay with the daemon; the API does not
-// read them.
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, _ *dispatch.Policy, integ *integrations.Service, _ *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service) {
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, integ *integrations.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
 	}
@@ -114,6 +115,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	}
 	if integ != nil {
 		s.integ = integ
+	}
+	if sched != nil {
+		s.sched = sched
 	}
 	if alertsSvc != nil {
 		s.alerts = alertsSvc
@@ -127,6 +131,19 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	if harnessSvc != nil {
 		s.harness = harnessSvc
 	}
+}
+
+func checkWSOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 // Runs returns the runs service.
@@ -151,6 +168,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeRuns(mux)
 	s.routeQueue(mux)
 	s.routeEvents(mux)
+	s.routeInbox(mux)
 	s.routeConversations(mux)
 	s.routeIntegrations(mux)
 	s.routeHarness(mux)
@@ -232,4 +250,14 @@ func writeErrDetails(w http.ResponseWriter, code int, errCode, msg string, detai
 func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+// appendBus emits one bus event after a non-DB write (files, secrets, config).
+// Do not use this for DB-backed entities — wrap those with store.AppendEntity
+// so the row and the bus frame commit together. A crash must not advance an
+// entity past what the bus recorded.
+func (s *Server) appendBus(ctx context.Context, ev store.BusEvent) {
+	if _, err := s.st.Append(ctx, ev); err != nil {
+		s.log.Warn("bus append failed", "topic", ev.Topic, "error", err)
+	}
 }

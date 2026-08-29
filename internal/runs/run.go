@@ -55,6 +55,7 @@ const (
 	EndLimit         EndReason = "limit"
 	EndKill          EndReason = "kill"
 	EndReplace       EndReason = "replace"
+	EndSkip          EndReason = "skip"
 	EndLaunch        EndReason = "launch"
 	EndFailed        EndReason = "failed"
 	EndSessionGone   EndReason = "session_gone"
@@ -133,7 +134,7 @@ func ValidStatus(s string) bool {
 func ValidEndReason(r string) bool {
 	switch EndReason(r) {
 	case EndSentinel, EndKeepAlive, EndKeepAliveIdle, EndIdleTimeout, EndMaxDuration,
-		EndAuth, EndLimit, EndKill, EndReplace, EndLaunch, EndFailed, EndSessionGone, EndUpdate:
+		EndAuth, EndLimit, EndKill, EndReplace, EndSkip, EndLaunch, EndFailed, EndSessionGone, EndUpdate:
 		return true
 	}
 	return false

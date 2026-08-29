@@ -58,6 +58,18 @@ func conversationCommand() *cli.Command {
 				ArgsUsage: "<id>",
 				Action:    runConversationSwitch,
 			},
+			{
+				Name:      "patch",
+				Usage:     "update conversation title or summary",
+				ArgsUsage: "<id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "title", Usage: "new title"},
+					&cli.StringFlag{Name: "summary", Usage: "new summary"},
+					&cli.Int64Flag{Name: "revision", Usage: "expected revision"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runConversationPatch,
+			},
 		},
 	}
 }
@@ -185,6 +197,28 @@ func runConversationSwitch(c *cli.Context) error {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "switched cli → %s\n", id)
+	return nil
+}
+
+func runConversationPatch(c *cli.Context) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi conversation patch <id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := client.DoHTTP(BuildConversationPatch(id, c.String("title"), c.String("summary"), c.Int64("revision")), &out); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+	fmt.Fprintf(outWriter(c), "conversation %s\n", mapStr(out, "id"))
 	return nil
 }
 

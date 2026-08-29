@@ -55,3 +55,55 @@ hi
 		t.Fatal(err)
 	}
 }
+
+func TestRecomputePreservesDueTimes(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := schedule.New(st)
+	ctx := context.Background()
+
+	j, err := job.ParseBytes("/ws/demo/JOB.md", []byte(`---
+working_dir: .
+harness: claude
+triggers:
+  - every: 1h
+---
+hi
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Name = "demo"
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := svc.RecomputeFromJob(ctx, "ws1", j, from); err != nil {
+		t.Fatal(err)
+	}
+	var next1 string
+	if err := st.DB().QueryRow(`SELECT next_due_at FROM schedules WHERE job='demo'`).Scan(&next1); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecomputeFromJob(ctx, "ws1", j, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	var next2 string
+	if err := st.DB().QueryRow(`SELECT next_due_at FROM schedules WHERE job='demo'`).Scan(&next2); err != nil {
+		t.Fatal(err)
+	}
+	if next1 != next2 {
+		t.Fatalf("next_due_at changed across no-op rebuild: %s -> %s", next1, next2)
+	}
+}
+
+func TestNextDueUsesTimezone(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	utc := schedule.NextDuePublic("0 9 * * *", from, "UTC")
+	sp := schedule.NextDuePublic("0 9 * * *", from, "America/Sao_Paulo")
+	if utc.Equal(sp) {
+		t.Fatalf("timezone ignored: both %s", utc)
+	}
+}

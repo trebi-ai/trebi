@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/alerts"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -38,9 +39,6 @@ func (s *Server) routeSystem(mux *http.ServeMux) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	drain := s.drain
-	s.mu.RUnlock()
 	schema, _ := s.st.SchemaVersion()
 	running, _ := s.runs.RunningCount(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -49,7 +47,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"api":            "v1",
 		"uptime_ms":      time.Since(s.startedAt).Milliseconds(),
 		"schema_version": schema,
-		"drain_state":    map[string]any{"draining": drain, "running_count": running},
+		"drain_state":    map[string]any{"draining": s.isDraining(), "running_count": running},
 		"waiting_count":  s.runs.WaitingCount(),
 		"shadow":         s.shadow,
 	})
@@ -180,42 +178,6 @@ func (s *Server) streamOpts(w http.ResponseWriter, r *http.Request, flusher http
 	return cursor, topics
 }
 
-func (s *Server) handleAgentState(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"agents": s.runs.AgentSnapshot()})
-}
-
-func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	var total, running int
-	_ = s.st.DB().QueryRowContext(r.Context(), `SELECT COUNT(*) FROM runs`).Scan(&total)
-	_ = s.st.DB().QueryRowContext(r.Context(), `SELECT COUNT(*) FROM runs WHERE status='running'`).Scan(&running)
-	writeJSON(w, http.StatusOK, map[string]any{"total": total, "running": running})
-}
-
-func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
-	var since time.Time
-	if raw := r.URL.Query().Get("since"); raw != "" {
-		t, err := time.Parse(time.RFC3339, raw)
-		if err != nil {
-			t, err = time.Parse(time.RFC3339Nano, raw)
-		}
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "validation", "malformed since: want RFC3339")
-			return
-		}
-		since = t
-	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	events, err := s.alerts.ListAlerts(r.Context(), since, limit)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	if events == nil {
-		events = []store.StreamEvent{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"alerts": events})
-}
-
 func (s *Server) handleDoctorFix(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("finding_id")
 	switch {
@@ -241,4 +203,43 @@ func (s *Server) handleDoctorFix(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("doctor.fix_applied", "id", id)
 	_ = s.alerts.ResolveSubject(r.Context(), "doctor/"+id, "auto")
+}
+
+func (s *Server) doctorFindings() []map[string]any {
+	src := alerts.CollectDoctorFindings()
+	out := make([]map[string]any, 0, len(src))
+	for _, f := range src {
+		out = append(out, map[string]any{
+			"id": f.ID, "severity": f.Severity, "code": f.Code, "message": f.Message,
+		})
+	}
+	return out
+}
+
+func (s *Server) handleSystemLogs(w http.ResponseWriter, r *http.Request) {
+	path := home.DaemonLogPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"lines": []string{}})
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) > 200 {
+		lines = lines[len(lines)-200:]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+}
+
+func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"current": Version, "latest": Version, "update_available": false,
+	})
+}
+
+func (s *Server) handleCloudLink(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"linked": false, "status": "not_configured", "note": "cloudlink broker not configured"})
+}
+
+func (s *Server) handleCloudUnlink(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"linked": false})
 }

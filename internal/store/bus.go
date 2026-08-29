@@ -42,8 +42,8 @@ func AppendInTx(tx *sql.Tx, ev BusEvent) (int64, error) {
 	ts := time.Now().UTC().Format("2006-01-02T15:04:05.000000Z")
 	res, err := tx.Exec(`INSERT INTO event_log (event_id, topic, ts, trace_id, entity, entity_id, action, revision, attrs_json)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		eventID, ev.Topic, ts, nullStr(ev.TraceID), nullStr(ev.Entity), nullStr(ev.EntityID),
-		nullStr(ev.Action), nullInt64(ev.Revision), attrsJSON)
+		eventID, ev.Topic, ts, NullStr(ev.TraceID), NullStr(ev.Entity), NullStr(ev.EntityID),
+		NullStr(ev.Action), nullInt64(ev.Revision), attrsJSON)
 	if err != nil {
 		return 0, err
 	}
@@ -433,8 +433,6 @@ func scanStreamEvent(rows *sql.Rows) (StreamEvent, error) {
 	}
 	return ev, nil
 }
-
-func nullStr(s string) any { return NullStr(s) }
 
 func nullInt64(n int64) any {
 	if n == 0 {

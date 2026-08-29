@@ -465,12 +465,17 @@ func TestNotifySuppressedInShadowAndDrain(t *testing.T) {
 		opts alerts.Options
 	}{
 		{"shadow", alerts.Options{Shadow: true}},
-		{"drain", alerts.Options{Drain: true}},
+		{"drain", alerts.Options{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tc.opts.Notify = []alerts.NotifyChannel{{Name: "email", Command: "true"}}
 			svc, st := testSvc(t, tc.opts)
+			if tc.name == "drain" {
+				if err := st.SetFlag("drain", "1"); err != nil {
+					t.Fatal(err)
+				}
+			}
 			ctx := context.Background()
 			id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
 			if err != nil || id == "" {

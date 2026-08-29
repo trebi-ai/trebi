@@ -3,7 +3,6 @@ package job
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -69,9 +68,6 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 	}
 	return applySessionPatch(path, patch)
 }
-
-// FormatBool for tests.
-func FormatBool(v bool) string { return strconv.FormatBool(v) }
 
 // flattenSessionPatch lifts a nested session map into dotted session.* keys.
 func flattenSessionPatch(patch map[string]any) {

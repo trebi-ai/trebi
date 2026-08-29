@@ -35,6 +35,9 @@ func (c *ControlPlane) queueWorker(ctx context.Context) {
 }
 
 func (c *ControlPlane) drainQueue(ctx context.Context) {
+	if _, err := c.queue.ReclaimStale(ctx, 2*time.Minute); err != nil {
+		c.log.Warn("queue reclaim", "error", err)
+	}
 	c.releaseAuthBlocks(ctx)
 	for _, l := range c.queueLanes(ctx) {
 		c.dispatchLane(ctx, l)
@@ -104,17 +107,25 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	if err != nil || item == nil {
 		return
 	}
-	j, path := c.findJob(ctx, l.ws, l.job)
+	kind := item.Kind
+	if kind == "" {
+		kind = "job"
+	}
+	j, path := c.findJobKind(ctx, l.ws, l.job, kind)
 	if j == nil {
 		_ = c.queue.MarkBlocked(ctx, item.ID, dispatch.BlockJobMissing)
 		return
 	}
-	prompt := queuePrompt(item, j)
-	harness := j.Harness
-	if harness == "" {
-		harness = "claude"
+	if item.Attempts > dispatch.MaxAttempts {
+		_ = c.queue.MarkDone(ctx, item.ID, dispatch.ResultDead, "")
+		return
 	}
-	// Readiness gate: auth / limit (harness_state)
+	if item.ResumeOf != "" {
+		c.dispatchResume(ctx, item)
+		return
+	}
+	prompt := queuePrompt(item, j)
+	harness := j.ResolvedHarness()
 	if reason := c.harnessBlocked(ctx, harness); reason != "" {
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
 		return
@@ -124,9 +135,15 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		ifRunning = "skip"
 	}
 	maxMS, idleMS, keepMS, nudgeMS := j.Session.KnobsMS()
-	cwd := j.WorkingDir
+	cwd := j.ResolvedWorkingDir()
 	if cwd == "" {
 		cwd = dirOf(path)
+	}
+	var trigger *runs.TriggerCapture
+	if item.Vars != nil || item.EventID != "" {
+		trigger = &runs.TriggerCapture{
+			EventID: item.EventID, Integration: item.Integration, Vars: item.Vars,
+		}
 	}
 	run, outcome, err := c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
@@ -140,6 +157,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			ConversationKey: item.ConversationKey,
 			ConversationID:  c.conversationID(ctx, item.WorkspaceID, item.ConversationKey),
 			TraceID:         item.TraceID,
+			Trigger:         trigger,
 			MaxDurationMS:   maxMS,
 			IdleTimeoutMS:   idleMS,
 			KeepAliveMS:     keepMS,
@@ -148,12 +166,19 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		Prompt:     prompt,
 		WorkingDir: cwd,
 		IfRunning:  ifRunning,
+		Env:        j.ResolvedEnv(),
 	})
 	if err != nil || run == nil {
 		c.log.Warn("queue launch", "job", item.Job, "queue_id", item.ID, "error", err)
-		if merr := c.queue.MarkDone(ctx, item.ID, dispatch.ResultDead, ""); merr != nil {
-			c.log.Warn("queue mark dead", "queue_id", item.ID, "error", merr)
+		c.failOrRetry(ctx, item, err, run)
+		return
+	}
+	if run.Status == runs.StatusFailed && (run.EndReason == runs.EndAuth || run.EndReason == runs.EndLimit) {
+		reason := dispatch.BlockAuthMissing
+		if run.EndReason == runs.EndLimit {
+			reason = dispatch.BlockLimitExceeded
 		}
+		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
 		return
 	}
 	if merr := c.queue.MarkDone(ctx, item.ID, queueResult(outcome, run), run.ID); merr != nil {
@@ -161,6 +186,40 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	}
 	if item.Kind == runs.KindAssistant {
 		c.log.Info("assistant.woken", "reason", string(runs.ReasonTrigger), "channel", "")
+	}
+}
+
+func (c *ControlPlane) dispatchResume(ctx context.Context, item *dispatch.QueueItem) {
+	run, err := c.Runs.Resume(ctx, item.ResumeOf)
+	if err != nil || run == nil {
+		c.log.Warn("queue resume", "job", item.Job, "queue_id", item.ID, "error", err)
+		c.failOrRetry(ctx, item, err, run)
+		return
+	}
+	if merr := c.queue.MarkDone(ctx, item.ID, dispatch.ResultLaunched, run.ID); merr != nil {
+		c.log.Warn("queue mark done", "queue_id", item.ID, "error", merr)
+	}
+}
+
+func (c *ControlPlane) failOrRetry(ctx context.Context, item *dispatch.QueueItem, err error, run *runs.Run) {
+	if run != nil && run.Status == runs.StatusFailed {
+		switch run.EndReason {
+		case runs.EndAuth:
+			_ = c.queue.MarkBlocked(ctx, item.ID, dispatch.BlockAuthMissing)
+			return
+		case runs.EndLimit:
+			_ = c.queue.MarkBlocked(ctx, item.ID, dispatch.BlockLimitExceeded)
+			return
+		}
+	}
+	if err != nil && item.Attempts < dispatch.MaxAttempts {
+		if rerr := c.queue.Requeue(ctx, item.ID); rerr != nil {
+			c.log.Warn("queue requeue", "queue_id", item.ID, "error", rerr)
+		}
+		return
+	}
+	if merr := c.queue.MarkDone(ctx, item.ID, dispatch.ResultDead, ""); merr != nil {
+		c.log.Warn("queue mark dead", "queue_id", item.ID, "error", merr)
 	}
 }
 

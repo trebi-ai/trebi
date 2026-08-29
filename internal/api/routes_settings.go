@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -37,10 +38,15 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	}
 	// Name-keyed collection: limit only, no ULID cursor.
 	limit := parseLimit(r)
-	if len(list) > limit {
+	truncated := len(list) > limit
+	if truncated {
 		list = list[:limit]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"skills": list})
+	resp := map[string]any{"skills": list}
+	if truncated {
+		resp["truncated"] = true
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleSkillsCreate(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +91,10 @@ func (s *Server) handleSkillPut(w http.ResponseWriter, r *http.Request) {
 	}
 	ifMatch := r.Header.Get("If-Match")
 	sk, err := s.skills.Update(r.Context(), r.PathValue("name"), body.SkillMD, ifMatch, body.Harnesses)
+	if errors.Is(err, skills.ErrPrecondition) {
+		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", err.Error())
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
@@ -119,7 +129,16 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 	if names == nil {
 		names = []string{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"secrets": names})
+	limit := parseLimit(r)
+	truncated := len(names) > limit
+	if truncated {
+		names = names[:limit]
+	}
+	resp := map[string]any{"secrets": names}
+	if truncated {
+		resp["truncated"] = true
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {

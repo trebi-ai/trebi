@@ -76,8 +76,10 @@ func (r *Reaper) Sweep(ctx context.Context) {
 }
 
 func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
-	// max duration
-	if run.Session.MaxDurationMS > 0 {
+	r.mu.Lock()
+	_, keeping := r.idleSince["keep:"+run.ID]
+	r.mu.Unlock()
+	if !keeping && run.Session.MaxDurationMS > 0 {
 		if now.Sub(run.StartedAt) >= time.Duration(run.Session.MaxDurationMS)*time.Millisecond {
 			r.finish(ctx, run, StatusTimedOut, EndMaxDuration)
 			return
@@ -98,9 +100,9 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
 		return
 	}
 
-	// agent screen classification (busy/idle) when not waiting via hooks
+	idle := screenIdle(run, screen)
 	if r.Svc.AgentState(run.ID) != AgentWaiting {
-		if isScreenIdle(screen) {
+		if idle {
 			r.Svc.SetAgentState(ctx, run.ID, AgentIdle, "screen")
 		} else {
 			r.Svc.SetAgentState(ctx, run.ID, AgentRunning, "screen")
@@ -170,7 +172,7 @@ func (r *Reaper) checkIdle(ctx context.Context, run *Run, screen string, now tim
 	if run.Session.IdleTimeoutMS <= 0 || r.Svc.AgentState(run.ID) == AgentWaiting {
 		return false
 	}
-	if !isScreenIdle(screen) {
+	if !screenIdle(run, screen) {
 		r.mu.Lock()
 		delete(r.idleSince, run.ID)
 		r.mu.Unlock()
@@ -215,10 +217,25 @@ func authFailed(screen string) bool {
 		strings.Contains(low, "please run /login")
 }
 
+func screenIdle(run *Run, screen string) bool {
+	if run != nil {
+		if tool, ok := tmux.ByName(run.Harness); ok {
+			if c, ok := tool.(tmux.ScreenClassifier); ok {
+				switch c.ClassifyScreen(screen) {
+				case tmux.ScreenBusy:
+					return false
+				case tmux.ScreenIdle:
+					return true
+				}
+			}
+		}
+	}
+	return isScreenIdle(screen)
+}
+
 func isScreenIdle(screen string) bool {
-	// Coarse: no "esc to interrupt" / spinner-like busy markers.
 	low := strings.ToLower(screen)
-	busy := []string{"esc to interrupt", "thinking", "running…", "running...", "crafting", "working"}
+	busy := []string{"esc to interrupt", "thinking", "running…", "running...", "crafting"}
 	for _, b := range busy {
 		if strings.Contains(low, b) {
 			return false

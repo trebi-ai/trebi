@@ -452,6 +452,34 @@ func (s *Service) InjectEvent(ctx context.Context, name string, event any) (stri
 	return "ok", nil
 }
 
+// Cursor is one integration_cursors row.
+type Cursor struct {
+	Name        string
+	LastEventID string
+	UpdatedAt   string
+}
+
+// GetCursor returns the stored cursor, or a zero LastEventID when missing.
+func (s *Service) GetCursor(ctx context.Context, name string) (Cursor, error) {
+	c := Cursor{Name: name}
+	err := s.st.DB().QueryRowContext(ctx,
+		`SELECT last_event_id, updated_at FROM integration_cursors WHERE name=?`, name).
+		Scan(&c.LastEventID, &c.UpdatedAt)
+	if err != nil {
+		return c, nil
+	}
+	return c, nil
+}
+
+// PutCursor upserts the last-event cursor. Not a bus entity.
+func (s *Service) PutCursor(ctx context.Context, name, lastEventID string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.st.DB().ExecContext(ctx, `INSERT INTO integration_cursors (name, last_event_id, updated_at)
+		VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
+		name, lastEventID, now)
+	return err
+}
+
 func (s *Service) readLoop(ctx context.Context, name string, d Definition, r io.Reader, cmd *exec.Cmd, p *proc) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -561,6 +589,9 @@ func (s *Service) dispatchEvent(ctx context.Context, name string, ev eventRecord
 
 // dispatchTrigger gates one trigger (allowlist, match, policy) and enqueues.
 func (s *Service) dispatchTrigger(ctx context.Context, name string, ev eventRecord, row workspaces.JobRow, j *job.Job, tr job.Trigger) {
+	if s.st.IsDraining() {
+		return
+	}
 	// Ingress allowlist (security layer 1): deterministic gate before JS match.
 	if len(tr.Allowlist) > 0 && !allowlistPasses(tr.Allowlist, ev.payload) {
 		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeBlocked), "", ev.receivedAt)

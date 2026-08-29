@@ -415,6 +415,7 @@ func (s *Service) Resume(ctx context.Context, fromID string) (*Run, error) {
 		},
 		ResumeSessionID: prev.SessionID,
 		Prompt:          "Continue from where you left off.",
+		IfRunning:       "allow",
 	}
 	run, _, err := s.CreateAndLaunch(ctx, opts)
 	return run, err
@@ -492,7 +493,7 @@ func paneEnvExport(runID, toolName string, optEnv, planEnv map[string]string) st
 	binCurrent := filepath.Join(config.BinDir(), toolName, "current")
 	if st, err := os.Stat(binCurrent); err == nil && st.IsDir() {
 		envExport = fmt.Sprintf("export PATH=%s:$PATH TREBI_RUN_ID=%s TREBI_HOOK_TOOL=%s",
-			binCurrent, runID, toolName)
+			shellQuote(binCurrent), runID, toolName)
 	}
 	merged := map[string]string{}
 	if env, err := harness.LoadSecretEnv(toolName); err == nil {
@@ -527,6 +528,10 @@ func sendPrompt(session, prompt, harness string) error {
 		_ = tmux.SendKey(session, "enter")
 	}
 	return nil
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func buildEnvExport(env map[string]string) string {
@@ -716,7 +721,10 @@ func (s *Service) overlapSkip(ctx context.Context, opts *LaunchOpts, existing *R
 	if err != nil {
 		return nil, err
 	}
-	_ = s.Terminate(ctx, skipped.ID, StatusSkipped, EndReplace, nil)
+	if err := s.Terminate(ctx, skipped.ID, StatusSkipped, EndSkip, nil); err != nil {
+		s.log.Warn("overlap skip terminate", "run", skipped.ID, "error", err)
+		return nil, err
+	}
 	s.AddEvent(ctx, skipped.ID, "skip", "runner", map[string]string{
 		"because": existing.ID, "policy": "skip",
 	})

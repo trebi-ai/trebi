@@ -25,31 +25,30 @@ func EvalMatch(ctx context.Context, match, extract string, event any) EvalResult
 	if match == "" {
 		return EvalResult{Error: "match is required"}
 	}
+	vm := goja.New()
 	type result struct {
 		r EvalResult
 	}
 	ch := make(chan result, 1)
-	// The evaluator ends when evalMatchSync returns; the buffered channel lets it
-	// finish safely even when this caller returns on cancellation or timeout.
 	go func() {
-		ch <- result{r: evalMatchSync(match, extract, event)}
+		ch <- result{r: evalMatchOn(vm, match, extract, event)}
 	}()
 	select {
 	case <-ctx.Done():
+		vm.Interrupt("cancelled")
 		return EvalResult{Error: "js cancelled"}
 	case <-time.After(jsStageTimeout):
+		vm.Interrupt("timeout")
 		return EvalResult{Error: "js stage timeout"}
 	case res := <-ch:
 		return res.r
 	}
 }
 
-func evalMatchSync(match, extract string, event any) EvalResult {
-	vm := goja.New()
+func evalMatchOn(vm *goja.Runtime, match, extract string, event any) EvalResult {
 	if err := vm.Set("event", event); err != nil {
 		return EvalResult{Error: fmt.Sprintf("bind event: %v", err)}
 	}
-	// helpers
 	if err := vm.Set("json", func(s string) any {
 		var v any
 		if err := json.Unmarshal([]byte(s), &v); err != nil {
@@ -65,19 +64,16 @@ func evalMatchSync(match, extract string, event any) EvalResult {
 		if err != nil {
 			return EvalResult{Error: fmt.Sprintf("extract: %v", err)}
 		}
-		// Re-bind event to extract result when object.
 		if v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
 			exported := v.Export()
 			if err := vm.Set("event", exported); err != nil {
 				return EvalResult{Error: fmt.Sprintf("bind extracted event: %v", err)}
 			}
-			// If object, collect string vars
 			if m, ok := exported.(map[string]any); ok {
 				vars := map[string]string{}
 				for k, val := range m {
 					vars[k] = fmt.Sprint(val)
 				}
-				// continue with match; vars returned if match fires
 				matched, err := runMatch(vm, match)
 				if err != nil {
 					return EvalResult{Error: err.Error()}

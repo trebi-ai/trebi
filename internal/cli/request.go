@@ -333,6 +333,11 @@ func BuildEventsListPath(cursor string, limit int) string {
 	return listQuery("/v1/events", cursor, limit)
 }
 
+// BuildEventGet builds GET /v1/events/{id}.
+func BuildEventGet(id string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/events/" + url.PathEscape(id)}
+}
+
 // BuildEventsRetrigger builds POST /v1/events/{id}/retrigger.
 func BuildEventsRetrigger(id string) HTTPRequest {
 	return HTTPRequest{
@@ -764,14 +769,6 @@ func BuildHarnessLoginCode(name, code string) HTTPRequest {
 func BuildHarnessLoginGet(name string) HTTPRequest {
 	return HTTPRequest{
 		Method: "GET",
-		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/login",
-	}
-}
-
-// BuildHarnessLoginDelete builds DELETE /v1/harnesses/{name}/login.
-func BuildHarnessLoginDelete(name string) HTTPRequest {
-	return HTTPRequest{
-		Method: "DELETE",
 		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/login",
 	}
 }

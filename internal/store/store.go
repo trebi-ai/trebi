@@ -149,3 +149,9 @@ func (s *Store) DeleteFlag(key string) error {
 	_, err := s.db.Exec(`DELETE FROM system_flags WHERE key = ?`, key)
 	return err
 }
+
+// IsDraining reports the persisted drain flag (shared by API, daemon, alerts).
+func (s *Store) IsDraining() bool {
+	v, ok, err := s.GetFlag("drain")
+	return err == nil && ok && v == "1"
+}

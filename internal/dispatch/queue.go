@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -13,25 +14,36 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
+// MaxAttempts caps how many times a queue row may be claimed.
+const MaxAttempts = 5
+
+var (
+	// ErrNotFound is a missing queue row.
+	ErrNotFound = errors.New("queue item not found")
+	// ErrDone is a mutation against a finished row.
+	ErrDone = errors.New("queue item is done")
+)
+
 // QueueItem is an event_queue row.
 type QueueItem struct {
-	ID              string
-	Integration     string
-	WorkspaceID     string
-	Job             string
-	Kind            string
-	OnIndex         int
-	ConversationKey string
-	EventID         string
-	EventRaw        string
-	Status          QueueStatus
-	BlockReason     BlockReason
-	Prompt          string
-	Vars            map[string]string
-	TraceID         string
-	RunID           string
-	ResumeOf        string
-	CreatedAt       time.Time
+	ID              string            `json:"id"`
+	Integration     string            `json:"integration"`
+	WorkspaceID     string            `json:"workspace_id"`
+	Job             string            `json:"job"`
+	Kind            string            `json:"kind"`
+	OnIndex         int               `json:"on_index"`
+	ConversationKey string            `json:"conversation_key,omitempty"`
+	EventID         string            `json:"event_id,omitempty"`
+	EventRaw        string            `json:"event_raw,omitempty"`
+	Status          QueueStatus       `json:"status"`
+	BlockReason     BlockReason       `json:"block_reason,omitempty"`
+	Prompt          string            `json:"prompt,omitempty"`
+	Vars            map[string]string `json:"vars,omitempty"`
+	TraceID         string            `json:"trace_id,omitempty"`
+	RunID           string            `json:"run_id,omitempty"`
+	ResumeOf        string            `json:"resume_of,omitempty"`
+	Attempts        int               `json:"attempts"`
+	CreatedAt       time.Time         `json:"created_at"`
 }
 
 // QueueStatus / QueueResult / BlockReason — jobi event_queue, verbatim.
@@ -147,19 +159,25 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 func (q *Queue) ClaimNext(ctx context.Context, workspaceID, job, kind, conversationKey string) (*QueueItem, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	var item QueueItem
+	q.st.LockBus()
+	defer q.st.UnlockBus()
 	err := q.st.WithTx(ctx, func(tx *sql.Tx) error {
 		row := tx.QueryRow(`SELECT id, integration, workspace_id, job, kind, on_index, conversation_key,
-			COALESCE(event_id,''), COALESCE(event_raw,''), status, COALESCE(prompt,''), COALESCE(trace_id,''), created_at
+			COALESCE(event_id,''), COALESCE(event_raw,''), status, COALESCE(prompt,''), COALESCE(trace_id,''),
+			COALESCE(resume_of,''), attempts, COALESCE(vars_json,''), created_at
 			FROM event_queue
 			WHERE status='pending' AND workspace_id=? AND job=? AND kind=? AND conversation_key=?
 			ORDER BY id ASC LIMIT 1`, workspaceID, job, kind, conversationKey)
-		var created, status string
+		var created, status, varsJSON string
 		if err := row.Scan(&item.ID, &item.Integration, &item.WorkspaceID, &item.Job, &item.Kind,
 			&item.OnIndex, &item.ConversationKey, &item.EventID, &item.EventRaw, &status, &item.Prompt,
-			&item.TraceID, &created); err != nil {
+			&item.TraceID, &item.ResumeOf, &item.Attempts, &varsJSON, &created); err != nil {
 			return err
 		}
 		item.Status = QueueStatus(status)
+		if varsJSON != "" {
+			_ = json.Unmarshal([]byte(varsJSON), &item.Vars)
+		}
 		createdAt, parseErr := time.Parse(time.RFC3339Nano, created)
 		if parseErr != nil {
 			return fmt.Errorf("parse queue item %s created_at: %w", item.ID, parseErr)
@@ -175,19 +193,18 @@ func (q *Queue) ClaimNext(ctx context.Context, workspaceID, job, kind, conversat
 			return errClaimLost
 		}
 		item.Status = QueueClaimed
-		return nil
+		item.Attempts++
+		_, err = store.AppendInTx(tx, store.BusEvent{
+			Topic: "queue.updated", Entity: "queue", EntityID: item.ID, Action: "updated",
+			Attrs: map[string]string{"status": "claimed"},
+		})
+		return err
 	})
-	if err == sql.ErrNoRows || err == errClaimLost {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, errClaimLost) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
-	}
-	if _, err := q.st.Append(ctx, store.BusEvent{
-		Topic: "queue.updated", Entity: "queue", EntityID: item.ID, Action: "updated",
-		Attrs: map[string]string{"status": "claimed"},
-	}); err != nil {
-		q.log.Warn("bus append", "error", err)
 	}
 	return &item, nil
 }
@@ -197,21 +214,21 @@ var errClaimLost = fmt.Errorf("claim lost to concurrent worker")
 // MarkDone marks a queue row done with result and optional run_id.
 func (q *Queue) MarkDone(ctx context.Context, id string, result QueueResult, runID string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := q.st.DB().ExecContext(ctx, `UPDATE event_queue SET status='done', result=?, run_id=?, done_at=?, updated_at=? WHERE id=?`,
-		string(result), store.NullStr(runID), now, now, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("queue item %s not found", id)
-	}
-	if _, err := q.st.Append(ctx, store.BusEvent{
+	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE event_queue SET status='done', result=?, run_id=?, done_at=?, updated_at=? WHERE id=?`,
+			string(result), store.NullStr(runID), now, now, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("%w: %s", ErrNotFound, id)
+		}
+		return nil
+	}, store.BusEvent{
 		Topic: "queue.updated", Entity: "queue", EntityID: id, Action: "updated",
 		Attrs: map[string]string{"status": "done", "result": string(result)},
-	}); err != nil {
-		q.log.Warn("bus append", "error", err)
-	}
-	return nil
+	})
+	return err
 }
 
 // MarkBlocked sets status=blocked with a block_reason (auth/limit/policy/job_missing).
@@ -219,23 +236,24 @@ func (q *Queue) MarkDone(ctx context.Context, id string, result QueueResult, run
 // (callers may requeue). Blocked rows do not launch.
 func (q *Queue) MarkBlocked(ctx context.Context, id string, reason BlockReason) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := q.st.DB().ExecContext(ctx, `UPDATE event_queue SET status='blocked', block_reason=?, updated_at=? WHERE id=?`,
-		string(reason), now, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("queue item %s not found", id)
-	}
-	// queue.blocked is log-only; the bus rides queue.updated.
-	q.log.Info("queue.blocked", "queue_id", id, "block_reason", string(reason))
-	if _, err := q.st.Append(ctx, store.BusEvent{
+	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE event_queue SET status='blocked', block_reason=?, updated_at=? WHERE id=?`,
+			string(reason), now, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("%w: %s", ErrNotFound, id)
+		}
+		return nil
+	}, store.BusEvent{
 		Topic: "queue.updated", Entity: "queue", EntityID: id, Action: "updated",
 		Attrs: map[string]string{"status": "blocked", "block_reason": string(reason)},
-	}); err != nil {
-		q.log.Warn("bus append", "topic", "queue.updated", "error", err)
+	})
+	if err == nil {
+		q.log.Info("queue.blocked", "queue_id", id, "block_reason", string(reason))
 	}
-	return nil
+	return err
 }
 
 // Requeue resets a row to pending and clears block_reason + next_attempt_at.
@@ -243,61 +261,66 @@ func (q *Queue) MarkBlocked(ctx context.Context, id string, reason BlockReason) 
 // cannot ('dead' exists only as a result on done rows).
 func (q *Queue) Requeue(ctx context.Context, id string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	err := q.st.WithTx(ctx, func(tx *sql.Tx) error {
+	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		var status string
 		if err := tx.QueryRow(`SELECT status FROM event_queue WHERE id=?`, id).Scan(&status); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("queue item %s not found", id)
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("%w: %s", ErrNotFound, id)
 			}
 			return err
 		}
 		if status == string(QueueDone) {
-			return fmt.Errorf("queue item %s is done", id)
+			return fmt.Errorf("%w: %s", ErrDone, id)
 		}
 		_, err := tx.Exec(`UPDATE event_queue SET status='pending', block_reason=NULL, next_attempt_at=NULL, updated_at=? WHERE id=?`,
 			now, id)
 		return err
-	})
-	if err != nil {
-		return err
-	}
-	if _, err := q.st.Append(ctx, store.BusEvent{
+	}, store.BusEvent{
 		Topic: "queue.updated", Entity: "queue", EntityID: id, Action: "updated",
 		Attrs: map[string]string{"status": "pending"},
-	}); err != nil {
-		q.log.Warn("bus append", "error", err)
-	}
-	return nil
+	})
+	return err
 }
 
 // Cancel marks a row done with result=skipped. Errors if missing or already done.
 func (q *Queue) Cancel(ctx context.Context, id string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	err := q.st.WithTx(ctx, func(tx *sql.Tx) error {
+	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		var status string
 		if err := tx.QueryRow(`SELECT status FROM event_queue WHERE id=?`, id).Scan(&status); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("queue item %s not found", id)
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("%w: %s", ErrNotFound, id)
 			}
 			return err
 		}
 		if status == string(QueueDone) {
-			return fmt.Errorf("queue item %s already done", id)
+			return fmt.Errorf("%w: %s", ErrDone, id)
 		}
 		_, err := tx.Exec(`UPDATE event_queue SET status='done', result=?, done_at=?, updated_at=? WHERE id=?`,
 			string(ResultSkipped), now, now, id)
 		return err
-	})
-	if err != nil {
-		return err
-	}
-	if _, err := q.st.Append(ctx, store.BusEvent{
+	}, store.BusEvent{
 		Topic: "queue.updated", Entity: "queue", EntityID: id, Action: "updated",
 		Attrs: map[string]string{"status": "done", "result": string(ResultSkipped)},
-	}); err != nil {
-		q.log.Warn("bus append", "error", err)
+	})
+	return err
+}
+
+// ReclaimStale resets claimed rows older than d back to pending.
+func (q *Queue) ReclaimStale(ctx context.Context, d time.Duration) (int64, error) {
+	if d <= 0 {
+		d = 2 * time.Minute
 	}
-	return nil
+	cutoff := time.Now().UTC().Add(-d).Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := q.st.DB().ExecContext(ctx,
+		`UPDATE event_queue SET status='pending', updated_at=? WHERE status='claimed' AND claimed_at IS NOT NULL AND claimed_at < ?`,
+		now, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // List returns queue rows with optional status filter and ULID cursor.

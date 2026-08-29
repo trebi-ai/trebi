@@ -16,7 +16,7 @@ import (
 func harnessCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "harness",
-		Usage: "harness tools (jobi tool subset over API)",
+		Usage: "harness tools",
 		Subcommands: []*cli.Command{
 			{
 				Name:  "list",

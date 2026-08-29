@@ -333,19 +333,9 @@ func HarnessDir(tool string) string {
 	return filepath.Join(BaseDir(), "harness", tool)
 }
 
-// ToolsRoot is ~/.trebi/bin — root of versioned harness binaries (alias of BinDir).
-func ToolsRoot() string {
-	return BinDir()
-}
-
 // ToolStoreDir is ~/.trebi/bin/<tool>.
 func ToolStoreDir(tool string) string {
 	return filepath.Join(BinDir(), tool)
-}
-
-// ToolVersionDir is ~/.trebi/bin/<tool>/<version>.
-func ToolVersionDir(tool, version string) string {
-	return filepath.Join(ToolStoreDir(tool), version)
 }
 
 // ToolCurrentLink is ~/.trebi/bin/<tool>/current (symlink to a version dir).
@@ -361,11 +351,6 @@ func SecretsDir() string {
 // SecretEnvPath is ~/.trebi/secrets/<tool>.env.
 func SecretEnvPath(tool string) string {
 	return filepath.Join(SecretsDir(), tool+".env")
-}
-
-// ToolVersionsCachePath caches remote latest resolutions.
-func ToolVersionsCachePath() string {
-	return filepath.Join(BaseDir(), "cache", "tool-versions.json")
 }
 
 // EnsureDirs creates the home tree via home.EnsureDirs (which also fixes the

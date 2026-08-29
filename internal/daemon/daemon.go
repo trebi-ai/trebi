@@ -73,8 +73,9 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()
 	integ := integrations.New(st, ws, r, pol)
+	cfg, _ := config.Load()
 	maxBytes := files.DefaultMaxBytes
-	if cfg, err := config.Load(); err == nil && cfg != nil {
+	if cfg != nil {
 		maxBytes = cfg.Files.MaxBytesOrDefault()
 		ws.WithRoot(cfg.Workspaces.RootOrDefault())
 	}
@@ -87,7 +88,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Integrations:  integ,
 		Policy:        pol,
 		Reaper:        runs.NewReaper(r),
-		Alerts:        newAlerts(st, opts),
+		Alerts:        newAlerts(st, opts, cfg),
 		Conversations: conv,
 		Harness:       harness.New(st, tmux.DefaultDriver{}, harness.Options{LoginMaxAge: opts.LoginMaxAge}),
 		Opts:          opts,
@@ -96,15 +97,13 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	}
 }
 
-func newAlerts(st *store.Store, opts Options) *alerts.Service {
+func newAlerts(st *store.Store, opts Options, cfg *config.Config) *alerts.Service {
 	aopts := alerts.Options{
 		TickInterval: opts.AlertsInterval,
 		Shadow:       opts.Shadow,
-		Drain:        opts.Drain,
 		Doctor:       alerts.CollectDoctorFindings,
 	}
-	cfg, err := config.Load()
-	if err == nil && cfg != nil {
+	if cfg != nil {
 		if d, ok := cfg.Notify.WaitingAfterDuration(); ok {
 			aopts.WaitingAfter = d
 		} else {
@@ -200,29 +199,30 @@ func (c *ControlPlane) Stop() {
 	c.wg.Wait()
 }
 
-// draining reports the shared drain state: the startup option or the
-// store flag the API drain endpoints write.
+// draining reports the persisted drain flag. Shadow is a process-lifetime
+// mode (workers never start); drain is a runtime flag that undrain clears.
 func (c *ControlPlane) draining(_ context.Context) bool {
-	if c.Opts.Drain {
-		return true
-	}
-	v, ok, err := c.Store.GetFlag("drain")
-	if err != nil {
-		c.log.Warn("drain flag read", "error", err)
-		return false
-	}
-	return ok && v == "1"
+	return c.Store.IsDraining()
 }
 
 // findJob resolves a job by name in a workspace. It returns the parsed job
 // (nil when absent or unparsable) and its file path.
 func (c *ControlPlane) findJob(ctx context.Context, ws, name string) (*job.Job, string) {
+	return c.findJobKind(ctx, ws, name, "")
+}
+
+// findJobKind matches name and, when kind is set, job_index.kind.
+func (c *ControlPlane) findJobKind(ctx context.Context, ws, name, kind string) (*job.Job, string) {
 	jobs, _ := c.Workspaces.ListJobs(ctx, ws)
 	for _, row := range jobs {
-		if row.Name == name {
-			j, _ := job.ParseFile(row.Path)
-			return j, row.Path
+		if row.Name != name {
+			continue
 		}
+		if kind != "" && row.Kind != kind {
+			continue
+		}
+		j, _ := job.ParseFile(row.Path)
+		return j, row.Path
 	}
 	return nil, ""
 }

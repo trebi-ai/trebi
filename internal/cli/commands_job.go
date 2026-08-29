@@ -141,7 +141,7 @@ func jobManageSubcommands() []*cli.Command {
 		},
 		{
 			Name:      "schedule",
-			Usage:     "set schedule: enable|disable|cron|@every (trebi triggers[], not jobi schedule:)",
+			Usage:     "set schedule: enable|disable|cron|@every",
 			ArgsUsage: "<name> <value>",
 			Action:    runJobSchedule,
 		},

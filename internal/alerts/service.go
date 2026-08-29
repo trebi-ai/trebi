@@ -340,18 +340,24 @@ func (s *Service) SetStatus(ctx context.Context, id string, status InboxStatus, 
 // ReadAll marks every unread item read.
 func (s *Service) ReadAll(ctx context.Context) (int64, error) {
 	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
-	res, err := s.st.DB().ExecContext(ctx,
-		`UPDATE inbox_items SET status='read', updated_at=?, revision=revision+1 WHERE status='unread'`, nowStr)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return 0, nil
-	}
-	_, err = s.st.Append(ctx, store.BusEvent{
-		Topic: "inbox.updated", Entity: "inbox", Action: "updated",
-		Attrs: map[string]string{"status": "read", "count": fmt.Sprint(n)},
+	var n int64
+	s.st.LockBus()
+	defer s.st.UnlockBus()
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec(
+			`UPDATE inbox_items SET status='read', updated_at=?, revision=revision+1 WHERE status='unread'`, nowStr)
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		if n == 0 {
+			return nil
+		}
+		_, err = store.AppendInTx(tx, store.BusEvent{
+			Topic: "inbox.updated", Entity: "inbox", Action: "updated",
+			Attrs: map[string]string{"status": "read", "count": fmt.Sprint(n)},
+		})
+		return err
 	})
 	return n, err
 }

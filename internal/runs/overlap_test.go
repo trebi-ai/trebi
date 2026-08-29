@@ -12,19 +12,6 @@ import (
 
 func TestIfRunningSkip(t *testing.T) {
 	svc, ctx := openRuns(t)
-	// Keep first run live (no sentinel → still running if we don't wait for fake complete)
-	// Use a long-running fake so first is live when second fires.
-	r1, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
-		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
-		},
-		Prompt: "a", IfRunning: "allow",
-		// Fake completes instantly — so for skip we need a still-running row.
-		// Create a running row without terminal via Create only, then attach tmux name.
-	})
-	_ = r1
-	_ = err
-	// Explicit: Create running row (no terminate)
 	live, err := svc.Create(ctx, runs.CreateOpts{
 		WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
 		TmuxSession: "trebi-live-1",
@@ -52,6 +39,9 @@ func TestIfRunningSkip(t *testing.T) {
 	}
 	if r2.Status != runs.StatusSkipped {
 		t.Fatalf("status=%s want skipped", r2.Status)
+	}
+	if r2.EndReason != runs.EndSkip {
+		t.Fatalf("end_reason=%s want skip", r2.EndReason)
 	}
 	// original still running
 	got, _ := svc.Get(ctx, live.ID)

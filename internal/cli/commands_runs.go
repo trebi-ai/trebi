@@ -15,7 +15,7 @@ import (
 func runsCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "runs",
-		Usage: "list and inspect runs (jobi history)",
+		Usage: "list and inspect runs",
 		Subcommands: []*cli.Command{
 			{
 				Name:  "list",

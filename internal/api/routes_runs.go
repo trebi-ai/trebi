@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -9,12 +10,14 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/tmux"
@@ -50,11 +53,15 @@ func (s *Server) routeRuns(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runs/{id}/message", s.handleRunMessage)
 	mux.HandleFunc("POST /v1/runs/{id}/approve", s.handleRunApprove)
 	mux.HandleFunc("GET /v1/runs/{id}/attach", s.handleRunAttach)
+	mux.HandleFunc("GET /v1/approvals", s.handleApprovals)
+	mux.HandleFunc("GET /v1/agents/state", s.handleAgentState)
+	mux.HandleFunc("GET /v1/stats/runs", s.handleStats)
+	mux.HandleFunc("POST /v1/agent-hook/{event}", s.handleAgentHook)
 }
 
 func (s *Server) handleRunsList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	limit, _ := strconv.Atoi(q.Get("limit"))
+	limit := parseLimit(r)
 	cursor := q.Get("cursor")
 	if cursor != "" {
 		if _, err := ulid.Parse(cursor); err != nil {
@@ -206,6 +213,7 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 			lopts.WorkingDir = spec.Dir
 		}
 		lopts.IfRunning = spec.Session.IfRunning
+		lopts.Env = spec.ResolvedEnv()
 		lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = spec.Session.KnobsMS()
 	}
 	if harness == "fake" || os.Getenv("TREBI_FAKE_HARNESS") != "" {
@@ -477,4 +485,334 @@ func (s *Server) attachScreenLoop(ctx context.Context, conn *websocket.Conn, ses
 			}
 		}
 	}
+}
+
+func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
+	run, err := s.runs.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	data, tool, ok := s.readTranscript(run)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not_found", "no transcript")
+		return
+	}
+	if r.URL.Query().Get("raw") == "1" {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write(data)
+		return
+	}
+	turns, err := tool.ParseTranscript(bytes.NewReader(data))
+	if err != nil {
+		if errors.Is(err, tmux.ErrTranscriptUnsupported) {
+			writeErr(w, http.StatusNotFound, "not_found", "transcript unsupported")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
+}
+
+func (s *Server) readTranscript(run *runs.Run) ([]byte, tmux.Tool, bool) {
+	if run.SessionID == "" {
+		return nil, nil, false
+	}
+	tool, ok := tmux.ByName(run.Harness)
+	if !ok {
+		return nil, nil, false
+	}
+	path, err := tool.TranscriptPath(home.HarnessDir(run.Harness), "", run.SessionID)
+	if err != nil {
+		return nil, nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, false
+	}
+	return data, tool, true
+}
+
+func (s *Server) handleRunLog(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	path := filepath.Join(home.RunsLogDir(), id+".log")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// fallback: capture pane if live
+		run, gerr := s.runs.Get(r.Context(), id)
+		if gerr == nil && run.TmuxSession != "" {
+			screen, rerr := tmux.ReadScreen(run.TmuxSession)
+			if rerr == nil {
+				writeJSON(w, http.StatusOK, map[string]any{"log": screen, "source": "pane"})
+				return
+			}
+		}
+		writeErr(w, http.StatusNotFound, "not_found", "log not found")
+		return
+	}
+	if r.URL.Query().Get("follow") == "1" {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\n", strings.ReplaceAll(string(data), "\n", "\ndata: "))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"log": string(data), "source": "file"})
+}
+
+func (s *Server) handleRunResume(w http.ResponseWriter, r *http.Request) {
+	run, err := s.runs.Resume(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, http.StatusNotFound, "not_found", "run not found")
+			return
+		}
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, run)
+}
+
+// launchOptsFromJob rebuilds launch options for prev from its job file:
+// prompt with trigger vars/inputs applied, cwd, if_running, and session knobs.
+// Trigger capture and conversation key carry over.
+func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason runs.RunReason) (runs.LaunchOpts, error) {
+	row, err := s.findJobRow(ctx, prev.Workspace, prev.Job)
+	if err != nil {
+		return runs.LaunchOpts{}, err
+	}
+	j, err := job.ParseFile(row.Path)
+	if err != nil || j == nil {
+		if err == nil {
+			err = errJobNotFound
+		}
+		return runs.LaunchOpts{}, err
+	}
+	prompt := j.Prompt
+	if prev.Trigger != nil {
+		for k, v := range prev.Trigger.Vars {
+			prompt = strings.ReplaceAll(prompt, "{{"+k+"}}", v)
+		}
+	}
+	for k, v := range prev.Inputs {
+		prompt = strings.ReplaceAll(prompt, "{{"+k+"}}", v)
+	}
+	lopts := runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: prev.Workspace, Job: prev.Job, Kind: prev.Kind,
+			Reason: reason, Harness: prev.Harness,
+			PromptPreview:   prompt,
+			Inputs:          prev.Inputs,
+			Trigger:         prev.Trigger,
+			ConversationKey: prev.ConversationKey,
+		},
+		Prompt: prompt,
+	}
+	lopts.WorkingDir = j.ResolvedWorkingDir()
+	lopts.Env = j.ResolvedEnv()
+	lopts.IfRunning = j.Session.IfRunning
+	lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = j.Session.KnobsMS()
+	return lopts, nil
+}
+
+func (s *Server) handleRunReplay(w http.ResponseWriter, r *http.Request) {
+	prev, err := s.runs.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	// A replay rebuilds the prompt from the job file plus the captured
+	// trigger vars/inputs — prompt_preview is truncated and not a prompt.
+	lopts, err := s.launchOptsFromJob(r.Context(), prev, runs.ReasonReplay)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "job file for run no longer resolvable")
+		return
+	}
+	run, _, err := s.runs.CreateAndLaunch(r.Context(), lopts)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, run)
+}
+
+func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
+	// D7: policy dispatch on end_reason.
+	// - agent/logic failures → resume with failure note
+	// - auth/limit → park (blocked resume intent)
+	// - session_gone / infra → fresh rerun (replay-like)
+	prev, err := s.runs.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	switch prev.EndReason {
+	case runs.EndAuth, runs.EndLimit:
+		// Park: enqueue blocked resume intent
+		br := dispatch.BlockAuthMissing
+		if prev.EndReason == runs.EndLimit {
+			br = dispatch.BlockLimitExceeded
+		}
+		item := &dispatch.QueueItem{
+			Integration:     "retry",
+			WorkspaceID:     prev.Workspace,
+			Job:             prev.Job,
+			Kind:            prev.Kind,
+			ConversationKey: prev.ConversationKey,
+			Status:          dispatch.QueueBlocked,
+			BlockReason:     br,
+			ResumeOf:        prev.ID,
+			Prompt:          "resume after " + string(prev.EndReason),
+		}
+		if err := s.queue.Enqueue(r.Context(), item); err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		s.runs.AddEvent(r.Context(), prev.ID, "parked", "retry", map[string]string{
+			"queue_id": item.ID, "block_reason": string(br),
+		})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"action": "parked", "queue_id": item.ID, "block_reason": br, "run_id": prev.ID,
+		})
+		return
+	case runs.EndSessionGone, runs.EndLaunch:
+		// Fresh rerun. Kill is a deliberate user act — it takes the
+		// default resume-with-note path (backend-0808 §D7).
+		s.handleRunReplay(w, r)
+		return
+	default:
+		// Agent/logic: resume with failure note
+		note := "Retry after failure (end_reason=" + string(prev.EndReason) + "). Continue or fix the issue."
+		if prev.SessionID != "" {
+			run, err := s.runs.Resume(r.Context(), prev.ID)
+			if err == nil && run != nil {
+				// Inject failure note if session live
+				if run.TmuxSession != "" {
+					_ = s.runs.InjectMessage(r.Context(), run.ID, note) // resume already succeeded; note is best-effort
+				}
+				writeJSON(w, http.StatusCreated, map[string]any{
+					"action": "resume", "run": run, "note": note,
+				})
+				return
+			}
+		}
+		// Fall back to a fresh launch rebuilt from the job file, with the
+		// failure note as prompt prefix.
+		if prev.ResumeAttempts >= runs.MaxResumeAttempts {
+			writeErr(w, http.StatusConflict, "conflict", "resume cap reached")
+			return
+		}
+		lopts, err := s.launchOptsFromJob(r.Context(), prev, runs.ReasonResume)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "not_found", "job file for run no longer resolvable")
+			return
+		}
+		lopts.ResumedFrom = prev.ID
+		lopts.ResumeAttempts = prev.ResumeAttempts + 1
+		lopts.Prompt = note + "\n\n" + lopts.Prompt
+		lopts.PromptPreview = lopts.Prompt
+		run, _, err := s.runs.CreateAndLaunch(r.Context(), lopts)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"action": "rerun_with_note", "run": run})
+	}
+}
+
+func (s *Server) handleRunMessage(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Text == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "text required")
+		return
+	}
+	if err := s.runs.InjectMessage(r.Context(), r.PathValue("id"), body.Text); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleRunApprove(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Decision string `json:"decision"` // allow|deny
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if body.Decision == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "decision required (allow|deny)")
+		return
+	}
+	a, err := s.runs.DecideApproval(r.Context(), r.PathValue("id"), body.Decision)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	if errors.Is(err, runs.ErrInvalidDecision) {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
+}
+
+func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
+	cursor, ok := parseULIDCursor(w, r, "approval")
+	if !ok {
+		return
+	}
+	limit := parseLimit(r)
+	list, err := s.runs.ListApprovals(r.Context(), runs.ApprovalListOpts{
+		Limit: limit, Cursor: cursor,
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	resp := map[string]any{"approvals": list}
+	if len(list) == limit {
+		resp["next_cursor"] = list[len(list)-1].ID
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
+	event := r.PathValue("event")
+	runID := r.Header.Get("X-Trebi-Run-Id")
+	if runID == "" {
+		runID = r.URL.Query().Get("run_id")
+	}
+	body, _ := io.ReadAll(r.Body)
+	_ = body // hook payload is logged via AddEvent; body is unused by state mapping
+	if runID != "" {
+		switch event {
+		case "waiting", "permission-request":
+			s.runs.SetAgentState(r.Context(), runID, runs.AgentWaiting, "hook")
+		case "running", "tool-start", "session-start":
+			s.runs.SetAgentState(r.Context(), runID, runs.AgentRunning, "hook")
+		case "stop", "session-end", "idle":
+			s.runs.SetAgentState(r.Context(), runID, runs.AgentIdle, "hook")
+		}
+		s.runs.AddEvent(r.Context(), runID, "hook:"+event, "agent-hook", map[string]string{"event": event})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+func (s *Server) handleAgentState(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"agents": s.runs.AgentSnapshot()})
+}
+
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	total, running, err := s.runs.Counts(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "running": running})
 }

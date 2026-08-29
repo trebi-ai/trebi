@@ -9,16 +9,15 @@ import (
 	"github.com/trebi-ai/trebi/internal/schedule"
 )
 
-// due is one schedule row at or past its due time.
-type due struct {
-	ws, job, spec, tz string
-	idx               int
-}
-
 // FireDue claims due schedule rows and launches runs (exported for tests).
 func (c *ControlPlane) FireDue(ctx context.Context) {
-	for _, d := range c.dueSchedules(ctx) {
-		c.fireOne(ctx, d)
+	due, err := c.Schedule.ClaimDue(ctx, time.Now().UTC(), 20)
+	if err != nil {
+		c.log.Warn("schedule claim", "error", err)
+		return
+	}
+	for _, r := range due {
+		c.fireOne(ctx, r)
 	}
 }
 
@@ -42,59 +41,37 @@ func (c *ControlPlane) scheduleTicker(ctx context.Context) {
 	}
 }
 
-// dueSchedules lists schedule rows whose next_due_at has passed.
-func (c *ControlPlane) dueSchedules(ctx context.Context) []due {
-	now := time.Now().UTC().Format(time.RFC3339)
-	rows, err := c.Store.DB().QueryContext(ctx, `
-		SELECT workspace_id, job, idx, spec, timezone FROM schedules
-		WHERE next_due_at IS NOT NULL AND next_due_at <= ? LIMIT 20`, now)
-	if err != nil {
-		c.log.Warn("schedule due query", "error", err)
-		return nil
-	}
-	defer rows.Close()
-	var list []due
-	for rows.Next() {
-		var d due
-		if rows.Scan(&d.ws, &d.job, &d.idx, &d.spec, &d.tz) == nil {
-			list = append(list, d)
-		}
-	}
-	return list
-}
-
-// fireOne launches one due schedule entry and advances it.
-func (c *ControlPlane) fireOne(ctx context.Context, d due) {
-	j, path := c.findJob(ctx, d.ws, d.job)
+// fireOne launches one claimed schedule entry. ClaimDue already advanced next_due_at.
+func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
+	j, path := c.findJobKind(ctx, r.WorkspaceID, r.Job, "job")
 	if j == nil {
-		// Job gone: drop the orphan row so it does not stay due forever.
-		c.log.Info("schedule orphan deleted", "workspace", d.ws, "job", d.job, "idx", d.idx)
-		if _, derr := c.Store.DB().ExecContext(ctx,
-			`DELETE FROM schedules WHERE workspace_id=? AND job=? AND idx=?`,
-			d.ws, d.job, d.idx); derr != nil {
-			c.log.Warn("schedule orphan delete", "job", d.job, "error", derr)
+		c.log.Info("schedule orphan deleted", "workspace", r.WorkspaceID, "job", r.Job, "idx", r.Idx)
+		if err := c.Schedule.Delete(ctx, r.WorkspaceID, r.Job, r.Idx); err != nil {
+			c.log.Warn("schedule orphan delete", "job", r.Job, "error", err)
 		}
 		return
 	}
 	if j.Disabled {
 		return
 	}
-	// Per-entry when: gate (B25). A skip or a gate error must not launch,
-	// but the schedule still advances so the entry does not refire every tick.
-	prompt, gateSkip := c.evalWhenGate(ctx, j, d, path)
+	prompt, gateSkip := c.evalWhenGate(ctx, j, r, path)
 	if gateSkip {
-		c.advanceSchedule(ctx, d.ws, d.job, d.idx, d.spec, "")
 		return
 	}
-	harness := j.Harness
-	if harness == "" {
-		harness = "claude"
+	harness := j.ResolvedHarness()
+	if reason := c.harnessBlocked(ctx, harness); reason != "" {
+		c.log.Info("schedule skip harness", "job", r.Job, "harness", harness, "reason", reason)
+		return
 	}
 	maxMS, idleMS, keepMS, nudgeMS := j.Session.KnobsMS()
+	cwd := j.ResolvedWorkingDir()
+	if cwd == "" {
+		cwd = dirOf(path)
+	}
 	_, _, err := c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID:   d.ws,
-			Job:           d.job,
+			WorkspaceID:   r.WorkspaceID,
+			Job:           r.Job,
 			Kind:          j.Kind,
 			Reason:        runs.ReasonSchedule,
 			Harness:       harness,
@@ -105,52 +82,38 @@ func (c *ControlPlane) fireOne(ctx context.Context, d due) {
 			NudgeMS:       nudgeMS,
 		},
 		Prompt:     prompt,
-		WorkingDir: dirOf(path),
+		WorkingDir: cwd,
 		IfRunning:  j.Session.IfRunning,
+		Env:        j.ResolvedEnv(),
 	})
 	if err != nil {
-		// Advance anyway: a persistent launch error must not refire every tick.
-		c.log.Warn("schedule fire", "job", d.job, "error", err)
-		c.advanceSchedule(ctx, d.ws, d.job, d.idx, d.spec, "")
+		c.log.Warn("schedule fire", "job", r.Job, "error", err)
 		return
 	}
-	c.advanceSchedule(ctx, d.ws, d.job, d.idx, d.spec, time.Now().UTC().Format(time.RFC3339))
-}
-
-// advanceSchedule moves next_due_at forward; firedAt non-empty also stamps last_fired_at.
-func (c *ControlPlane) advanceSchedule(ctx context.Context, ws, jobName string, idx int, spec, firedAt string) {
-	now := time.Now().UTC().Format(time.RFC3339)
-	next := schedule.NextDuePublic(spec, time.Now().UTC())
-	nextStr := next.UTC().Format(time.RFC3339)
-	var err error
-	if firedAt != "" {
-		_, err = c.Store.DB().ExecContext(ctx, `UPDATE schedules SET last_fired_at=?, next_due_at=?, updated_at=?
-			WHERE workspace_id=? AND job=? AND idx=?`, firedAt, nextStr, now, ws, jobName, idx)
-	} else {
-		_, err = c.Store.DB().ExecContext(ctx, `UPDATE schedules SET next_due_at=?, updated_at=?
-			WHERE workspace_id=? AND job=? AND idx=?`, nextStr, now, ws, jobName, idx)
-	}
-	if err != nil {
-		c.log.Warn("schedule advance", "job", jobName, "error", err)
+	if err := c.Schedule.MarkFired(ctx, r, time.Now().UTC()); err != nil {
+		c.log.Warn("schedule mark fired", "job", r.Job, "error", err)
 	}
 }
 
 // evalWhenGate runs the when: gate of the matching cron/every trigger.
-// It returns the prompt with gate vars expanded, and whether to skip the fire.
-func (c *ControlPlane) evalWhenGate(ctx context.Context, j *job.Job, d due, path string) (string, bool) {
+func (c *ControlPlane) evalWhenGate(ctx context.Context, j *job.Job, r schedule.Row, path string) (string, bool) {
 	prompt := j.Prompt
+	cwd := j.ResolvedWorkingDir()
+	if cwd == "" {
+		cwd = dirOf(path)
+	}
 	for _, tr := range j.Triggers {
-		if (tr.Family != "cron" && tr.Family != "every") || tr.Index != d.idx {
+		if (tr.Family != "cron" && tr.Family != "every") || tr.Index != r.Idx {
 			continue
 		}
 		if tr.When != nil {
-			wr := job.EvalWhen(ctx, tr.When, dirOf(path), j.Env)
+			wr := job.EvalWhen(ctx, tr.When, cwd, j.Env)
 			if wr.Error != "" {
-				c.log.Warn("when gate error", "job", d.job, "error", wr.Error)
+				c.log.Warn("when gate error", "job", r.Job, "error", wr.Error)
 				return prompt, true
 			}
 			if wr.Skip || !wr.Fire {
-				c.log.Info("when gate skip", "job", d.job)
+				c.log.Info("when gate skip", "job", r.Job)
 				return prompt, true
 			}
 			for k, v := range wr.Vars {
