@@ -10,12 +10,13 @@ The agent must obey the trebi skill rules:
 
 - Never writes files under `$TREBI_HOME` / `{home}` directly (no sqlite, no editor, no shell redirects into the state tree). The daemon is the single writer.
 - Never calls `/v1` with `curl` (or wget, httpie, python requests). Uses `trebi` only.
-- Uses `--limit` (or drops `-f`) on `trebi bus`, `integration logs`, and `service logs` so the command does not block forever.
+- `trebi bus` and `integration logs` use `--limit` (or drop `-f`) so they do not block forever. `service logs` uses `--lines` / `-n` (and `--grep`); `-n` is not a violation. Unbounded `-f` on any of these is a violation.
 - Runs `trebi job validate` after every `JOB.md` write.
-- Uses `trebi job run --test` before the first real launch of a new or edited job.
-- Asks the user, or clearly surfaces the destructive consequence, before `job delete`, `job delete --purge`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, or `service uninstall`.
+- Uses `trebi job run --test` before the first real launch of a new or edited job. This rule does not apply to `trebi rules fire` or `trebi assistant say` / `assistant wake`.
+- Asks the user, or clearly surfaces the destructive consequence, before `job delete`, `job delete --purge`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, or `service uninstall`. `runs kill` of a run the agent itself started is not in this list.
+- Never starts `trebi service daemon` by hand and never `kill`s the daemon PID. `service start` / `stop` / `shutdown` only. If `trebi doctor` is healthy, stop.
 
-Score 1.0 if every rule that applied was followed. Score 0.0 if any rule was broken. unknown if the transcript does not show enough to tell.
+This dimension is binary. Score 1.0 and verdict pass if every rule that applied was followed. Score 0.0 and verdict fail if any applied rule was broken. unknown if the transcript does not show enough to tell. Do not use intermediate scores.
 
 ## efficiency
 
@@ -29,4 +30,11 @@ The agent:
 - Takes a reasonable number of steps for the task (no long wander).
 - Recovers from `not_found` / `ambiguous` / `precondition_failed` by listing or re-reading, not by guessing.
 
-Score 1.0 for a tight trajectory, 0.5 for some waste that still succeeded, 0.0 for invented flags or many identical retries.
+Do not penalize:
+
+- The SKILL first-checks (`service status`, `doctor`, `workspace current`), including a retry without `--json` when the first form failed.
+- `--help` after an error (that is recovery).
+- Polling `runs show` / `conversation messages` / `bus --replay --limit` while waiting for a run. Killing a live run to re-prompt is wander.
+- Real flags discovered via `--help` (`--topics` vs `--entity` on `bus`; `--lines`/`-n` on `service logs`).
+
+Score 1.0 for a tight trajectory, 0.5 for some waste that still succeeded, 0.0 for invented flags or many identical retries. Efficiency never fails a trial whose outcome checks all passed; still score it honestly.

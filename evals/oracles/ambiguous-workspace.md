@@ -1,7 +1,7 @@
 # Oracle: ambiguous-workspace
 
 ```bash
-trebi job run report -w staging
+trebi -w staging job run report
 sleep 2
-trebi runs list --json
+trebi -w staging runs list --job report --json
 ```

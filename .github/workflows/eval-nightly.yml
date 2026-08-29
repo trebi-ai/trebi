@@ -15,10 +15,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v4
       - name: run suite
         env:
           TREBI_BIN: ${{ github.workspace }}/build/trebi
-        run: scripts/eval.sh run --budget 50
+        run: uv run scripts/eval.py run --budget 50
       - name: upload report
         if: always()
         uses: actions/upload-artifact@v4

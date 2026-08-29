@@ -9,14 +9,18 @@ Default server-side harness is `codex` (probes `ok` on macOS today).
 ## Run
 
 ```bash
-scripts/eval.sh run
-scripts/eval.sh run --tier onboarding --trials 1 --client codex
-scripts/eval.sh oracle onboarding-first-workspace
-scripts/eval.sh review --run out/<runid>
+scripts/eval.py run
+scripts/eval.py run --tier onboarding --trials 1 --client codex
+scripts/eval.py oracle onboarding-first-workspace
+scripts/eval.py review --run out/<runid>
+scripts/eval.py report                  # latest run; writes analysis.json
+scripts/eval.py why --task <id> --commands
 ```
 
-Reports land in `out/<runid>/report.md`. Infra-failures retry once and do not
-count against the agent. Regression is checked against `evals/baseline.json`.
+Reports land in `out/<runid>/report.md`. `scripts/eval.py report` adds a
+check-vs-judge classification table (`analysis.json` / `analysis.md`).
+Infra-failures retry once and do not count against the agent. Regression is
+checked against `evals/baseline.json`. `scripts/eval.sh` is the legacy wrapper.
 
 ## Layout
 

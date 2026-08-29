@@ -171,6 +171,14 @@ func workspaceFor(c *cli.Context) string {
 	return appStateFor(c).workspace
 }
 
+// workspaceFlag is the command --workspace / -w if set, else the global/sticky workspace.
+func workspaceFlag(c *cli.Context) string {
+	if w := strings.TrimSpace(c.String("workspace")); w != "" {
+		return w
+	}
+	return workspaceFor(c)
+}
+
 func stickyFor(c *cli.Context) (*StickyContext, error) {
 	state := appStateFor(c)
 	return state.sticky, state.stickyErr

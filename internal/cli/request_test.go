@@ -555,7 +555,7 @@ func TestCommandRegistration(t *testing.T) {
 		}
 	}
 	run := findCmd(job.Subcommands, "run")
-	if !hasFlag(run, "extra-prompt") || !hasFlag(run, "test") || !hasFlag(run, "attach") {
+	if !hasFlag(run, "extra-prompt") || !hasFlag(run, "test") || !hasFlag(run, "attach") || !hasFlag(run, "workspace") || !hasFlag(run, "json") {
 		t.Fatal("job run flags")
 	}
 	runsList := findCmd(findCmd(app.Commands, "runs").Subcommands, "list")

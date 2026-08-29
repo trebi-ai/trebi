@@ -24,7 +24,7 @@ func runsCommand() *cli.Command {
 					&cli.StringFlag{Name: "status", Aliases: []string{"s"}, Usage: "status filter (running, complete, idle, waiting, …)"},
 					&cli.StringFlag{Name: "job", Usage: "job name filter"},
 					&cli.StringFlag{Name: "kind", Usage: "kind filter (job|assistant)"},
-					&cli.StringFlag{Name: "workspace", Usage: "workspace id filter"},
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name filter"},
 					&cli.StringFlag{Name: "harness", Usage: "harness filter (claude, grok, cursor, …)"},
 					&cli.StringFlag{Name: "model", Aliases: []string{"m"}, Usage: "model filter (tokens_model exact match)"},
 					&cli.StringFlag{Name: "conversation", Usage: "substring match on conversation_key (client-side)"},
@@ -386,7 +386,7 @@ func runRunsList(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	ws := workspaceFor(c)
+	ws := workspaceFlag(c)
 	kind := c.String("kind")
 	path := BuildRunsListPath(
 		c.String("status"), c.String("job"), ws,
@@ -486,6 +486,8 @@ func runCommand() *cli.Command {
 			&cli.StringFlag{Name: "extra-prompt", Aliases: []string{"e"}, Usage: "append text to the job prompt (fetched then prompt_override)"},
 			&cli.BoolFlag{Name: "test", Usage: "dry_run: evaluate gates, print plan, do not launch"},
 			&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (tmux local or WebSocket remote)"},
+			&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 		},
 		Action: runLaunch,
 	}
@@ -500,7 +502,7 @@ func runLaunch(c *cli.Context) error {
 		return err
 	}
 	jobName := c.Args().Get(0)
-	ws := workspaceFor(c)
+	ws := workspaceFlag(c)
 	promptOverride := ""
 	if extra := c.String("extra-prompt"); extra != "" {
 		// Append to job body so we match jobi -e (API prompt_override is full replace).
@@ -516,13 +518,19 @@ func runLaunch(c *cli.Context) error {
 	if err := client.DoHTTP(req, &out); err != nil {
 		return err
 	}
-	if c.Bool("test") {
+	if c.Bool("test") || c.Bool("json") {
 		enc := json.NewEncoder(outWriter(c))
 		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		if err := enc.Encode(out); err != nil {
+			return err
+		}
+		if c.Bool("test") {
+			return nil
+		}
+	} else {
+		fmt.Fprintf(outWriter(c), "run %v status=%v\n", mapStr(out, "id"), out["status"])
 	}
 	runID := mapStr(out, "id")
-	fmt.Fprintf(outWriter(c), "run %v status=%v\n", runID, out["status"])
 	if c.Bool("attach") && runID != "" {
 		return attachAfterLaunch(c, client, out)
 	}

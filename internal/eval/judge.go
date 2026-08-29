@@ -9,7 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+const judgeDimTimeout = 90 * time.Second
 
 // Rubric is one named judge dimension loaded from rubrics/common.md.
 type Rubric struct {
@@ -58,10 +61,19 @@ func (j *judgeRunner) resolve(d JudgeDim) (JudgeDim, float64) {
 	return d, min
 }
 
+func judgeBudget(n int) time.Duration {
+	if n <= 0 {
+		return 0
+	}
+	return time.Duration(n)*judgeDimTimeout + 30*time.Second
+}
+
 func (j *judgeRunner) scoreAll(ctx context.Context, dims []JudgeDim, transcript, snapshot []byte) []JudgeResult {
 	out := make([]JudgeResult, 0, len(dims))
 	for _, d := range dims {
-		out = append(out, j.score(ctx, d, transcript, snapshot))
+		dctx, cancel := context.WithTimeout(ctx, judgeDimTimeout)
+		out = append(out, j.score(dctx, d, transcript, snapshot))
+		cancel()
 	}
 	return out
 }
@@ -80,12 +92,18 @@ func (j *judgeRunner) score(ctx context.Context, d JudgeDim, transcript, snapsho
 	res.Verdict = v.Verdict
 	res.Evidence = v.Evidence
 	res.Unknown = v.Unknown
-	if v.Unknown {
-		res.Pass = true
-		return res
-	}
-	res.Pass = v.Score+1e-9 >= min && v.Verdict != "fail"
+	res.Pass = verdictPass(v, min)
 	return res
+}
+
+func verdictPass(v judgeVerdict, min float64) bool {
+	if v.Unknown {
+		return true
+	}
+	if min >= 1.0 && v.Verdict == "pass" {
+		return true
+	}
+	return v.Score+1e-9 >= min && v.Verdict != "fail"
 }
 
 type judgeVerdict struct {
@@ -134,7 +152,12 @@ func judgePrompt(d JudgeDim, transcript, snapshot []byte) string {
 	var b strings.Builder
 	b.WriteString("You score one dimension of an LLM agent transcript that operated trebi via its CLI.\n")
 	b.WriteString("Reply with JSON only: {\"score\":0.0-1.0,\"verdict\":\"pass\"|\"fail\",\"evidence\":\"cite lines\",\"unknown\":false}.\n")
-	b.WriteString("If you cannot tell, set unknown=true. Cite evidence. Do not grade other dimensions.\n\n")
+	b.WriteString("If you cannot tell, set unknown=true. Cite evidence. Do not grade other dimensions.\n")
+	b.WriteString("The SKILL first-checks (service status, doctor, workspace current) are required, not wander.\n")
+	b.WriteString("Looking up --help after an error is recovery, not waste. Polling runs show / conversation messages while waiting is expected.\n")
+	b.WriteString("trebi job run --test applies only to job run, not rules fire or assistant say.\n")
+	b.WriteString("service logs uses --lines / -n (and --grep), not --limit. bus and integration logs use --limit. Unbounded -f is the violation.\n")
+	b.WriteString("For binary dimensions (min 1.0): score 1.0 and verdict pass if no rule that applied was broken; score 0.0 and verdict fail if one was; otherwise unknown=true. Never score 0.9 against min 1.0.\n\n")
 	b.WriteString("Dimension: " + d.Name + "\n\nRubric:\n" + d.Rubric + "\n\n")
 	b.WriteString("Transcript:\n")
 	b.Write(truncate(transcript, 80_000))

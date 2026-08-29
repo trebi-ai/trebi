@@ -10,7 +10,7 @@ Trebi is one binary (`trebi`) that is both the daemon (`trebi service daemon`) a
 
 ```text
 cmd/trebi/           # thin main: cli.NewApp().Run(os.Args)
-cmd/trebi-eval/      # dev-only eval runner; built by scripts/eval.sh, never shipped
+cmd/trebi-eval/      # dev-only eval runner; built by scripts/eval.py, never shipped
 internal/api/        # /v1 HTTP + SSE server; one file per route area
 internal/cli/        # the trebi command surface; a thin API client
 internal/daemon/     # ControlPlane: background workers (queue, schedule, watch, prune)
@@ -20,7 +20,7 @@ internal/<domain>/   # one service per object family (runs, workspaces, alerts, 
 internal/tmux/       # harness drivers: one file per harness tool
 internal/tray/       # macOS menu bar (build-tagged)
 evals/               # tasks/, seeds/, oracles/, rubrics/, baseline.json
-scripts/ testdata/   # build helpers, jobi fixtures, eval.sh
+scripts/ testdata/   # build helpers, jobi fixtures, eval.py
 ```
 
 Domain packages own one object family and are named after it: `runs`, `workspaces`, `alerts`, `skills`, `integrations`, `schedule`, `dispatch`, `job`, `secrets`, `harness`, `config`, `home`, `pricing`, `platform`. Each exports a `Service` (or an equivalent concrete type) built by `New(st *store.Store)`.
@@ -149,30 +149,37 @@ return fmt.Errorf("save user %s: %w", id, err)
 
 ## Evals
 
-Live LLM-driven CLI evals: skill → client LLM (`claude` / `codex`) → `trebi` CLI → `/v1` → a per-trial daemon. Grade outcome state, not wording. Always go through `scripts/eval.sh` (builds `trebi` + `trebi-eval`, tees `out/eval-live.log`, sweeps leftover trial daemons on exit).
+Live LLM-driven CLI evals: skill → client LLM (`claude` / `codex`) → `trebi` CLI → `/v1` → a per-trial daemon. Grade outcome state, not wording. Always go through `scripts/eval.py` (uv script; builds `trebi` + `trebi-eval`, tees timestamped `out/eval-live.log`, sweeps leftover trial daemons on exit). `scripts/eval.sh` is the legacy wrapper, left for in-flight runs.
 
 ```bash
 # full suite, one client (25 tasks × 3 trials)
-scripts/eval.sh run --client codex
-scripts/eval.sh run --client claude
+scripts/eval.py run --client codex
+scripts/eval.py run --client claude
 
 # smoke one task
-scripts/eval.sh run --client codex --trials 1 --task onboarding-health
+scripts/eval.py run --client codex --trials 1 --task onboarding-health
 
 # one tier
-scripts/eval.sh run --client codex --tier debug
+scripts/eval.py run --client codex --tier debug
 
 # default client via env if you omit --client
-EVAL_CLIENT=codex scripts/eval.sh run --trials 1 --task onboarding-health
+EVAL_CLIENT=codex scripts/eval.py run --trials 1 --task onboarding-health
 
 # replay the reference script (no LLM); a task without a green oracle is broken
-scripts/eval.sh oracle onboarding-health
+scripts/eval.py oracle onboarding-health
 
 # sample judge verdicts for human labels
-scripts/eval.sh review --run out/<runid>
+scripts/eval.py review --run out/<runid>
+
+# analyse a finished (or partial) run — writes analysis.json / analysis.md
+scripts/eval.py ls
+scripts/eval.py report                  # latest out/<runid>
+scripts/eval.py report 20260829T184851Z --fail-only
+scripts/eval.py why --task not-found-honesty --commands
+scripts/eval.py compare RUN_A RUN_B
 ```
 
-`--task`, `--tier`, `--client` (repeatable), `--trials`, `--budget` (abort at cumulative `cost_usd`), `--baseline`. Server-side jobs default to harness `codex` (the one that probes `ok` on this Mac). Each trial is isolated with `TREBI_HOME` under `out/<runid>/`. Ctrl-C cancels the suite, writes a partial `report.md` / `report.json`, and kills trial daemons. Do not `exec` `trebi-eval` or redirect its stdout without the wrapper: Go fully buffers piped stdout, and a killed runner used to leak `trebi service daemon --listen 127.0.0.1:0`.
+`--task`, `--tier`, `--client` (repeatable), `--trials`, `--budget` (abort at cumulative `cost_usd`), `--baseline`. `--no-build` skips the Go rebuild. Server-side jobs default to harness `codex` (the one that probes `ok` on this Mac). Each trial is isolated with `TREBI_HOME` under `out/<runid>/`. Ctrl-C cancels the suite, writes a partial `report.md` / `report.json`, and kills trial daemons. Do not `exec` `trebi-eval` or redirect its stdout without the wrapper: Go fully buffers piped stdout, and a killed runner used to leak `trebi service daemon --listen 127.0.0.1:0`.
 
 ## Logging and observability
 

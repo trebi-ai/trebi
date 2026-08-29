@@ -30,20 +30,23 @@ Trebi is one binary that is both a daemon (`trebid`) and a CLI. The daemon owns 
 Run these before anything else. Most failures are a daemon that is down.
 
 ```bash
-trebi service status      # OS service + API health
-trebi doctor              # findings; add --fix to repair automatically
-trebi workspace current   # the sticky workspace context
+trebi service status --json      # OS service + API health
+trebi doctor --json              # findings; add --fix to repair automatically
+trebi workspace current --json   # the sticky workspace context
 ```
 
-If the daemon is down: `trebi service start`. If it was never installed: `trebi service install` then `trebi service start`.
+If `doctor` is healthy, stop. Do not "fix" the database, edit `$TREBI_HOME`, or send signals to trebid.
+
+If the daemon is down: `trebi service start`. If it was never installed: `trebi service install` then `trebi service start`. Never run `trebi service daemon` yourself and never `kill` the daemon PID. `service daemon` is a foreground dev entrypoint; `start`/`stop` own the process.
 
 Only these work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate`. Everything else fails with a clear message.
 
 ## Global rules
 
-- `--workspace` / `-w` (or `$TREBI_WORKSPACE`) selects the workspace. Without it, trebi uses the sticky context from `trebi workspace use`.
+- `--workspace` / `-w` (or `$TREBI_WORKSPACE`) selects the workspace. Put it **before** the verb: `trebi -w staging job run report`. urfave does not parse flags after a positional name (`trebi job run report -w staging` fails). `job run` / `job show` / `job status` / `job validate` / `runs list` also accept `--workspace` **before** the name: `trebi job run --workspace staging report`.
+- Without `-w`, trebi uses the sticky context from `trebi workspace use`.
 - Every read command takes `--json`. Use `--json` and pipe to `jq` when you parse output. Never parse the human tables.
-- List commands paginate with `--limit` and `--cursor`. The cursor is the id of the last row.
+- List commands paginate with `--limit` and `--cursor`. The cursor is the id of the last row. `trebi service logs` is not a list command: it uses `--lines` / `-n` and `--grep`, not `--limit`.
 - Times are RFC3339 UTC. Durations end in `_ms`. Keys are snake_case.
 - The server computes `duration_ms`, `cost_usd`, and `billed`. Never recompute money or duration yourself.
 
@@ -123,6 +126,8 @@ trebi job list --kind all --detailed
 trebi job show <name>
 trebi job status <name>                 # job + latest run summary
 trebi job validate <name>               # check frontmatter before running
+trebi -w staging job run <name>         # launch in a named workspace
+trebi job run --workspace staging <name>
 trebi job run <name>                    # launch now
 trebi job run <name> --test             # dry run: evaluate gates, print the plan
 trebi job run <name> -e "extra prompt"  # append to the prompt
@@ -134,7 +139,7 @@ trebi job delete <name>                 # removes JOB.md; supporting files remai
 trebi job delete <name> --purge         # removes the job folder
 ```
 
-`--purge` is how you end a project remotely. Plain delete leaves scripts/templates so the job can be recreated over them; the response may include `files_remaining`. Always `trebi job validate` after you write a `JOB.md`, and prefer `trebi job run <name> --test` before the first real launch.
+`--purge` is how you end a project remotely. Plain delete leaves scripts/templates so the job can be recreated over them; the response may include `files_remaining`. Always `trebi job validate` after you write a `JOB.md`, and prefer `trebi job run <name> --test` before the first real launch. `--test` is only on `job run` (and `assistant wake --test`). Do not expect it on `rules fire` or `assistant say`.
 
 ### Job memory
 
@@ -180,6 +185,8 @@ trebi file rm  templates/base.html --if-match <hash>
 
 ```bash
 trebi runs list                                    # add --json
+trebi -w staging runs list --job report --json
+trebi runs list --workspace staging --job report --json
 trebi runs list --status running --job my-job --limit 50
 trebi runs list --harness claude --model <model> --kind assistant
 trebi runs show <id>
@@ -304,16 +311,19 @@ trebi events retrigger <id>        # re-inject a stored event
 `trebi bus` is the live stream. It is not the trigger pipeline (`trebi events`) and it is not a complete audit trail — retention is 7 days.
 
 ```bash
-trebi bus                                        # live frames
+trebi bus --replay --topics run --limit 10 --json   # last run events, then exit
+trebi bus                                        # live frames (blocks)
 trebi bus --topics run.failed,alert --json       # server-side topic filter
 trebi bus --topics run --replay --limit 100      # include retained history
 trebi bus --cursor <seq> --json                  # resume from a known point
-trebi bus --entity run --id <id> --action updated
+trebi bus --entity run --id <id> --action updated  # client-side entity filter
 ```
+
+`--topics` is server-side (family or exact topic). `--entity` is a client-side filter on the same frames. Prefer `--topics run` for "run events".
 
 Frames are thin: `entity`, `id`, `action`, `revision`. They carry no payload — refetch with `trebi runs show` / `trebi job show` when you need the object.
 
-`trebi bus` blocks. Use `--limit` so it exits, or run it in the background.
+`trebi bus` blocks. Use `--limit` so it exits, or run it in the background. Never follow with `-f` / no `--limit`.
 
 ## Skills
 
@@ -392,17 +402,17 @@ trebi conversation show <id> --json
 trebi service install            # launchd LaunchAgent (macOS); --no-tray for headless
 trebi service install --bin /usr/local/bin/trebi
 trebi service start / stop / restart
-trebi service status
-trebi service logs -f -n 200 --level error --grep timeout
+trebi service status --json
+trebi service logs -n 200 --level error --grep timeout
 trebi service drain              # block automatic producers; manual launches still pass
 trebi service undrain
 trebi service shutdown           # ask the daemon to exit
 trebi service migrate-db         # apply store migrations
 trebi service token show         # the local bearer token
 trebi service uninstall
-trebi service daemon --listen 127.0.0.1:7433   # foreground; for development
-trebi service daemon --log-level debug         # show the tray health polls
 ```
+
+`service logs` takes `--lines`/`-n` and `--grep`. Do not pass `--limit` (that is `bus` / list commands). Drop `-f` unless you intend to block. Do not run `trebi service daemon` from an agent session — that is the foreground dev entrypoint; use `start`/`stop`.
 
 Drain returns 503 `draining` to automatic producers. Use it before maintenance, then `undrain`.
 
@@ -471,10 +481,14 @@ trebi runs retry <id>
 **Watch a job until it finishes**
 
 ```bash
-trebi job run my-job
-trebi bus --topics run --entity run --limit 20
-trebi runs list --job my-job --limit 1 --json | jq '.[0].status'
+trebi job run my-job --json
+# poll; do not kill and re-prompt
+trebi runs show <id> --json | jq '{id,status,end_reason}'
+trebi bus --replay --topics run --limit 20 --json
+trebi runs list --job my-job --limit 1 --json | jq '.runs[0].status'
 ```
+
+For the assistant, poll `trebi conversation messages <id> --json` the same way. Do not `runs kill` a live session to "unstick" it.
 
 **Wire an integration to a job**
 
@@ -491,8 +505,8 @@ trebi events list --limit 20
 **Daily triage**
 
 ```bash
-trebi service status
-trebi doctor
+trebi service status --json
+trebi doctor --json
 trebi inbox list --status unread --json
 trebi runs approvals --json
 trebi runs list --status failed --limit 20
@@ -502,7 +516,9 @@ trebi runs list --status failed --limit 20
 
 - Prefer `--json` plus `jq` over parsing tables.
 - Run `trebi job validate` after every `JOB.md` write.
-- Use `--test` before the first real launch of a new or edited job.
-- Ask the user before `job delete` / `job delete --purge`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, and `service uninstall`. They destroy state.
-- Do not write to `~/.trebi` and do not call `/v1` with `curl`. The daemon is the single writer.
-- `trebi bus`, `integration logs -f`, and `service logs -f` block. Add `--limit`, drop `-f`, or run them in the background.
+- Use `trebi job run --test` before the first real launch of a new or edited job. Not `rules fire`, not `assistant say`.
+- Ask the user before `job delete` / `job delete --purge`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, and `service uninstall`. They destroy state. `runs kill` of a run you just started to debug is not in that list.
+- Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.
+- Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
+- `trebi bus` and `integration logs` block without `--limit` (or with `-f`). `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.
+- Put `-w` / `--workspace` before the verb or before the job name. Flags after a positional argument are ignored/rejected.

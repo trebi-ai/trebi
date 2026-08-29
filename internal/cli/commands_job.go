@@ -22,8 +22,11 @@ func jobCommand() *cli.Command {
 				Name:      "status",
 				Usage:     "show job + latest run summary",
 				ArgsUsage: "<name>",
-				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-				Action:    runJobStatus,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				},
+				Action: runJobStatus,
 			},
 			&cli.Command{
 				Name:      "tail",
@@ -50,7 +53,10 @@ func jobCommand() *cli.Command {
 				Name:      "validate",
 				Usage:     "validate job frontmatter",
 				ArgsUsage: "<name>",
-				Action:    runJobValidate,
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				},
+				Action: runJobValidate,
 			},
 			&cli.Command{
 				Name:  "memory",
@@ -117,7 +123,11 @@ func jobManageSubcommands() []*cli.Command {
 			Name:      "show",
 			Usage:     "show job detail",
 			ArgsUsage: "<name>",
-			Action:    runJobShow,
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON (always on)"},
+			},
+			Action: runJobShow,
 		},
 		{
 			Name:      "create",
@@ -125,7 +135,7 @@ func jobManageSubcommands() []*cli.Command {
 			ArgsUsage: "<name>",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "file", Usage: "JOB.md path"},
-				&cli.StringFlag{Name: "workspace", Usage: "workspace id"},
+				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 			},
 			Action: runJobCreate,
 		},
@@ -285,7 +295,7 @@ func runJobShow(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	path := withQuery("/v1/jobs/"+c.Args().Get(0), workspaceQ(workspaceFor(c)))
+	path := withQuery("/v1/jobs/"+c.Args().Get(0), workspaceQ(workspaceFlag(c)))
 	var body map[string]any
 	if err := client.GetJSON(path, &body); err != nil {
 		return err
@@ -313,7 +323,7 @@ func runJobCreate(c *cli.Context) error {
 		return err
 	}
 	return client.PostJSON("/v1/jobs", map[string]any{
-		"name": name, "workspace": workspaceFor(c), "content": content,
+		"name": name, "workspace": workspaceFlag(c), "content": content,
 	}, nil)
 }
 
@@ -355,7 +365,7 @@ func runJobValidate(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	path := withQuery("/v1/jobs/"+c.Args().Get(0)+"/validate", workspaceQ(workspaceFor(c)))
+	path := withQuery("/v1/jobs/"+c.Args().Get(0)+"/validate", workspaceQ(workspaceFlag(c)))
 	var body map[string]any
 	if err := client.PostJSON(path, nil, &body); err != nil {
 		return err
@@ -499,7 +509,7 @@ func runJobStatus(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	ws := workspaceFor(c)
+	ws := workspaceFlag(c)
 	var job map[string]any
 	if err := client.GetJSON(withQuery("/v1/jobs/"+name, workspaceQ(ws)), &job); err != nil {
 		return err

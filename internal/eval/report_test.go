@@ -110,3 +110,35 @@ func TestParseRubricsAndVerdict(t *testing.T) {
 		t.Fatalf("%+v %v", v, err)
 	}
 }
+
+func TestVerdictPass(t *testing.T) {
+	t.Parallel()
+	if !verdictPass(judgeVerdict{Score: 0.9, Verdict: "pass"}, 1.0) {
+		t.Fatal("binary min trusts verdict pass")
+	}
+	if verdictPass(judgeVerdict{Score: 0.9, Verdict: "fail"}, 1.0) {
+		t.Fatal("verdict fail")
+	}
+	if verdictPass(judgeVerdict{Score: 0.4, Verdict: "pass"}, 0.5) {
+		t.Fatal("score below min")
+	}
+	if !verdictPass(judgeVerdict{Unknown: true, Verdict: "fail"}, 1.0) {
+		t.Fatal("unknown does not fail")
+	}
+}
+
+func TestTrialOutcomeSkipsEfficiency(t *testing.T) {
+	t.Parallel()
+	checks := []CheckResult{{Name: "ok", Pass: true}}
+	judge := []JudgeResult{
+		{Name: "guardrails", Pass: true, Min: 1},
+		{Name: "efficiency", Pass: false, Min: 0.5},
+	}
+	if trialOutcome(checks, judge) != OutcomePass {
+		t.Fatal("efficiency must not fail a green outcome")
+	}
+	judge[0].Pass = false
+	if trialOutcome(checks, judge) != OutcomeFail {
+		t.Fatal("guardrails still fails")
+	}
+}

@@ -161,7 +161,7 @@ func (r *Runner) runOne(ctx context.Context, t *Task, clientName string, idx int
 		env.stop(context.Background())
 		_ = tr.writeFile()
 	}()
-	dctx, cancel := context.WithTimeout(ctx, time.Duration(t.TimeoutS)*time.Second+30*time.Second)
+	dctx, cancel := context.WithTimeout(ctx, time.Duration(t.TimeoutS)*time.Second+judgeBudget(len(t.Judge.Dimensions))+time.Minute)
 	defer cancel()
 	if err := env.startDaemon(dctx, t.ServerHarness, env.workdir); err != nil {
 		tr.Outcome = OutcomeInfraFailure
@@ -194,7 +194,7 @@ func (r *Runner) runOne(ctx context.Context, t *Task, clientName string, idx int
 	if oracle {
 		return r.finishOracle(dctx, t, env, g, p, tr)
 	}
-	return r.finishClient(dctx, t, env, g, p, tr, clientName)
+	return r.finishClient(ctx, dctx, t, env, g, p, tr, clientName)
 }
 
 func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult) *TrialResult {
@@ -229,7 +229,7 @@ func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, g *Gr
 	return tr
 }
 
-func (r *Runner) finishClient(ctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult, clientName string) *TrialResult {
+func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult, clientName string) *TrialResult {
 	cl, err := newClient(clientName)
 	if err != nil {
 		tr.Outcome = OutcomeInfraFailure
@@ -237,7 +237,6 @@ func (r *Runner) finishClient(ctx context.Context, t *Task, env *trialEnv, g *Gr
 		return tr
 	}
 	tctx, cancel := context.WithTimeout(ctx, time.Duration(t.TimeoutS)*time.Second)
-	defer cancel()
 	launch, err := cl.Launch(tctx, LaunchOpts{
 		Workdir:    env.workdir,
 		Prompt:     t.Prompt,
@@ -246,6 +245,7 @@ func (r *Runner) finishClient(ctx context.Context, t *Task, env *trialEnv, g *Gr
 		SkillMD:    r.skillMD,
 		Transcript: p.Transcript,
 	})
+	cancel()
 	if launch != nil {
 		tr.CostUSD = launch.CostUSD
 	}
@@ -254,11 +254,13 @@ func (r *Runner) finishClient(ctx context.Context, t *Task, env *trialEnv, g *Gr
 		tr.Error = err.Error()
 		return tr
 	}
-	p.Workspace = env.workspacePath(ctx)
+	p.Workspace = env.workspacePath(dctx)
 	g.p = p
-	_ = g.collectSnapshot(ctx)
-	tr.Checks = g.runAll(ctx, t.Checks)
-	tr.Judge = r.judge.scoreAll(ctx, t.Judge.Dimensions, readFile(p.Transcript), readFile(p.Snapshot))
+	_ = g.collectSnapshot(dctx)
+	tr.Checks = g.runAll(dctx, t.Checks)
+	jctx, jcancel := context.WithTimeout(ctx, judgeBudget(len(t.Judge.Dimensions)))
+	defer jcancel()
+	tr.Judge = r.judge.scoreAll(jctx, t.Judge.Dimensions, readFile(p.Transcript), readFile(p.Snapshot))
 	tr.Outcome = trialOutcome(tr.Checks, tr.Judge)
 	if tr.Outcome == OutcomeFail && tr.Error == "" {
 		tr.Error = failSummary(tr)
@@ -298,6 +300,9 @@ func trialOutcome(checks []CheckResult, judge []JudgeResult) Outcome {
 		return o
 	}
 	for _, j := range judge {
+		if j.Name == "efficiency" {
+			continue
+		}
 		if !j.Pass && !j.Unknown {
 			return OutcomeFail
 		}

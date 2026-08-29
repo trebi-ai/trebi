@@ -1,5 +1,5 @@
 # Oracle: bus-inspect
 
 ```bash
-trebi bus --replay --limit 10 --json
+trebi bus --replay --topics run --limit 10 --json
 ```

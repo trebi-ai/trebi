@@ -21,6 +21,7 @@ trebi/
     api/               # /v1 HTTP + SSE
     cli/               # urfave/cli commands
   scripts/
+    eval.py                    # uv: run/oracle/review + report/ls/why/compare
     migrate-jobi-to-trebi.py   # uv migration (dry-run default)
 ```
 

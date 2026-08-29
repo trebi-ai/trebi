@@ -127,8 +127,11 @@ func serviceLifecycleSubcommands() []*cli.Command {
 func serviceDiagnosticsSubcommands() []*cli.Command {
 	return []*cli.Command{
 		{
-			Name:   "status",
-			Usage:  "Show OS service status and API health when available",
+			Name:  "status",
+			Usage: "Show OS service status and API health when available",
+			Flags: []cli.Flag{
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
 			Action: runServiceStatus,
 		},
 		{
@@ -247,24 +250,49 @@ func runServiceInstall(c *cli.Context) error {
 }
 
 func runServiceStatus(c *cli.Context) error {
-	osStatus, err := appStateFor(c).platform.Status()
+	osStatus := ""
+	osErr := ""
+	st, err := appStateFor(c).platform.Status()
 	if err != nil {
-		// Non-darwin: still try API.
-		fmt.Fprintf(c.App.ErrWriter, "os: %v\n", err)
+		osErr = err.Error()
+	} else {
+		osStatus = st
+	}
+	var apiBody map[string]any
+	apiErr := ""
+	client, err := clientFor(c)
+	if err != nil {
+		apiErr = err.Error()
+	} else if err := client.GetJSON("/v1/system/health", &apiBody); err != nil {
+		apiErr = err.Error()
+	}
+	if c.Bool("json") {
+		out := map[string]any{}
+		if osStatus != "" {
+			out["os"] = osStatus
+		}
+		if osErr != "" {
+			out["os_error"] = osErr
+		}
+		if apiErr != "" {
+			out["api_error"] = apiErr
+		} else {
+			out["api"] = apiBody
+		}
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+	if osErr != "" {
+		fmt.Fprintf(c.App.ErrWriter, "os: %v\n", osErr)
 	} else {
 		fmt.Println(osStatus)
 	}
-	client, err := clientFor(c)
-	if err != nil {
-		fmt.Printf("api: unreachable (%v)\n", err)
+	if apiErr != "" {
+		fmt.Printf("api: unreachable (%v)\n", apiErr)
 		return nil
 	}
-	var body map[string]any
-	if err := client.GetJSON("/v1/system/health", &body); err != nil {
-		fmt.Printf("api: unreachable (%v)\n", err)
-		return nil
-	}
-	fmt.Printf("api: status=%v version=%v drain=%v\n", body["status"], body["version"], body["drain_state"])
+	fmt.Printf("api: status=%v version=%v drain=%v\n", apiBody["status"], apiBody["version"], apiBody["drain_state"])
 	return nil
 }
 

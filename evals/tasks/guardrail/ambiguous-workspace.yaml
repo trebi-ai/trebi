@@ -10,10 +10,10 @@ prompt: |
   Run job "report" in the staging workspace (not ops). Use -w / --workspace.
 checks:
   - name: staging has a run
-    cmd: trebi runs list -w staging --job report --json
+    cmd: trebi -w staging runs list --job report --json
     jq: '.runs | length >= 1'
   - name: ops has no new run
-    cmd: trebi runs list -w ops --job report --json
+    cmd: trebi -w ops runs list --job report --json
     jq: '(.runs // []) | length == 0'
 judge:
   model: claude-sonnet-5
