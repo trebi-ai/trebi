@@ -88,12 +88,17 @@ func renderDoctorOffline(c *cli.Context, clientErr error) error {
 	if _, err := os.Stat(home.DBPath()); err != nil {
 		db = "missing"
 	}
+	info := home.DoctorDaemon()
 	if c.Bool("json") {
 		enc := json.NewEncoder(w)
 		if err := enc.Encode(map[string]any{
-			"home":  home.Base(),
-			"db":    db,
-			"error": "daemon unavailable",
+			"home":               home.Base(),
+			"db":                 db,
+			"error":              "daemon unavailable",
+			"daemon_lock_held":   info.LockHeld,
+			"daemon_lock_pid":    info.LockPID,
+			"api_json_url":       info.APIJSONURL,
+			"api_json_reachable": info.APIJSONReachable,
 		}); err != nil {
 			return err
 		}
@@ -105,11 +110,53 @@ func renderDoctorOffline(c *cli.Context, clientErr error) error {
 	} else {
 		fmt.Fprintln(w, "db: present")
 	}
+	printDoctorDaemon(w, info.LockHeld, info.LockPID, info.APIJSONURL, info.APIJSONReachable)
 	_ = clientErr
 	return nil
 }
 
+func doctorPID(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	}
+	return 0
+}
+
+func printDoctorDaemon(w io.Writer, held bool, pid int, apiURL string, reachable bool) {
+	switch {
+	case held && pid > 0:
+		fmt.Fprintf(w, "daemon.lock: pid %d\n", pid)
+	case held:
+		fmt.Fprintln(w, "daemon.lock: held")
+	default:
+		fmt.Fprintln(w, "daemon.lock: not held")
+	}
+	if apiURL == "" {
+		fmt.Fprintln(w, "api.json: missing")
+		return
+	}
+	if reachable {
+		fmt.Fprintf(w, "api.json: %s\n", apiURL)
+		return
+	}
+	fmt.Fprintf(w, "api.json: stale (%s does not answer /v1/system/health)\n", apiURL)
+}
+
 func renderDoctor(w io.Writer, body map[string]any) error {
+	printDoctorDaemon(w,
+		truthy(body["daemon_lock_held"]),
+		doctorPID(body["daemon_lock_pid"]),
+		mapStr(body, "api_json_url"),
+		truthy(body["api_json_reachable"]),
+	)
 	if findings, ok := body["findings"].([]any); ok && len(findings) > 0 {
 		tbl := newTable(w, []string{"ID", "Severity", "Code", "Message"})
 		for _, raw := range findings {
@@ -128,8 +175,12 @@ func renderDoctor(w io.Writer, body map[string]any) error {
 		return nil
 	}
 	tbl := newTable(w, []string{"Key", "Value"})
+	skip := map[string]bool{
+		"findings": true, "daemon_lock_held": true, "daemon_lock_pid": true,
+		"api_json_url": true, "api_json_reachable": true,
+	}
 	for k, v := range body {
-		if k == "findings" {
+		if skip[k] {
 			continue
 		}
 		tbl.AppendRow(table.Row{k, fmt.Sprint(v)})

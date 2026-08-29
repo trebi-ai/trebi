@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -87,7 +88,21 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"findings": s.doctorFindings()})
+	info := home.DoctorDaemon()
+	findings := s.doctorFindings()
+	if info.APIJSONURL != "" && !info.APIJSONReachable {
+		findings = append(findings, map[string]any{
+			"id": "api-json-stale", "severity": "warn", "code": "api_json_stale",
+			"message": fmt.Sprintf("api.json URL %s does not answer /v1/system/health", info.APIJSONURL),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"findings":           findings,
+		"daemon_lock_held":   info.LockHeld,
+		"daemon_lock_pid":    info.LockPID,
+		"api_json_url":       emptyNil(info.APIJSONURL),
+		"api_json_reachable": info.APIJSONReachable,
+	})
 }
 
 func (s *Server) handleCloudStatus(w http.ResponseWriter, r *http.Request) {

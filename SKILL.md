@@ -355,7 +355,7 @@ trebi harness auth logout <name> [--yes]
 trebi harness auth mode <name> shared|separate
 ```
 
-Login runs on the daemon (tmux, harness isolation env) and is driven through the API. The CLI prints the verification URL + user code; complete OAuth in any browser and paste the code back. `--attach` opens the vendor TUI over WebSocket. Cursor has no device flow — use `--token-stdin` or log in on the daemon machine.
+Login runs on the daemon (tmux, harness isolation env) and is driven through the API. The CLI prints the verification URL + user code; complete OAuth in any browser and paste the code back. `--attach` opens the vendor TUI over WebSocket. Cursor has no device flow — use `--token-stdin` or log in on the daemon machine. On macOS, claude credentials live in the Keychain (file bridge cannot share them); `trebi harness auth login claude` runs `setup-token` in both shared and separate mode and injects `CLAUDE_CODE_OAUTH_TOKEN`. An API key via `--token-stdin` also works.
 
 ## Config
 

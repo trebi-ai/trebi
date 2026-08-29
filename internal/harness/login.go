@@ -267,6 +267,8 @@ func (s *Service) tickLogin(name string, extractDeadline time.Time) bool {
 		ls.phase = PhaseAwaitingCode
 	}
 	if ex.Token != "" {
+		// Relay capture stores the setup-token and leaves auth mode alone.
+		// LoginToken (explicit API key) is the path that forces separate.
 		_ = StoreOAuthToken(name, "CLAUDE_CODE_OAUTH_TOKEN", ex.Token)
 	}
 	phase := ls.phase

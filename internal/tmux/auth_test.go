@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,10 @@ func TestAuthCapsMatrix(t *testing.T) {
 		if caps.ExpiryReader != w.expiry {
 			t.Errorf("%s expiry=%v", tool.Name(), caps.ExpiryReader)
 		}
+		wantKC := runtime.GOOS == "darwin" && tool.Name() == Claude
+		if caps.KeychainBound != wantKC {
+			t.Errorf("%s KeychainBound=%v want %v", tool.Name(), caps.KeychainBound, wantKC)
+		}
 	}
 	unk := unknownTool{}.AuthCapabilities()
 	if len(unk.LoginModes) != 0 {
@@ -125,14 +130,17 @@ func TestProbeLadder_FileUnknown(t *testing.T) {
 	if err := os.MkdirAll(credDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Parsed JSON without accessToken is a Keychain stub, not unknown.
 	if err := os.WriteFile(filepath.Join(credDir, ".credentials.json"), []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// No L2 binary on a PATH without claude.
 	t.Setenv("PATH", t.TempDir()+"/no-such-bin")
 	st := claudeTool{}.ProbeAuth(context.Background())
-	if st.Status != harness.AuthUnknown {
-		t.Fatalf("file without L2 must be unknown, got %s", st.Status)
+	if st.Status != harness.AuthMissing {
+		t.Fatalf("stub without L2 must be missing, got %s", st.Status)
+	}
+	if st.Detail != claudeKeychainDetail {
+		t.Fatalf("detail=%q", st.Detail)
 	}
 }
 
@@ -152,6 +160,138 @@ func TestProbeClaudeL2(t *testing.T) {
 	st := claudeTool{}.ProbeAuth(context.Background())
 	if st.Status != harness.AuthOK || st.Detail != "a@b.c" {
 		t.Fatalf("%+v", st)
+	}
+}
+
+func TestParseClaudeCred(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	future := time.Now().Add(24 * time.Hour).UnixMilli()
+	past := time.Now().Add(-time.Hour).UnixMilli()
+
+	cases := []struct {
+		name     string
+		body     string
+		hasToken bool
+		expired  bool
+		nilExp   bool
+	}{
+		{"stub", `{"claudeAiOauth":{"expiresAt":` + itoa(past) + `}}`, false, false, false},
+		{"full-valid", `{"claudeAiOauth":{"accessToken":"sk","expiresAt":` + itoa(future) + `}}`, true, false, false},
+		{"full-expired", `{"claudeAiOauth":{"accessToken":"sk","expiresAt":` + itoa(past) + `}}`, true, true, false},
+		{"malformed", `not json`, false, false, true},
+	}
+	for _, tc := range cases {
+		p := filepath.Join(dir, tc.name+".json")
+		if err := os.WriteFile(p, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		has, exp := parseClaudeCred(p)
+		if has != tc.hasToken {
+			t.Errorf("%s hasToken=%v want %v", tc.name, has, tc.hasToken)
+		}
+		if tc.nilExp || !tc.hasToken {
+			if tc.name == "stub" && exp != nil {
+				// stub may parse expiresAt but callers must not use it as L0
+			}
+			if tc.name == "malformed" && exp != nil {
+				t.Errorf("%s expires must be nil", tc.name)
+			}
+		}
+		if tc.hasToken && exp == nil {
+			t.Errorf("%s missing expires", tc.name)
+		}
+		if tc.hasToken && tc.expired && (exp == nil || !exp.Before(time.Now())) {
+			t.Errorf("%s want past expiry, got %v", tc.name, exp)
+		}
+	}
+}
+
+func TestProbeClaudeCredFixtures(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour).UnixMilli()
+	past := time.Now().Add(-time.Hour).UnixMilli()
+	cases := []struct {
+		name, body, status string
+		wantExpired        bool
+	}{
+		{"stub", `{"claudeAiOauth":{"expiresAt":` + itoa(past) + `}}`, harness.AuthMissing, false},
+		{"full-valid", `{"claudeAiOauth":{"accessToken":"sk-real","expiresAt":` + itoa(future) + `}}`, harness.AuthUnknown, false},
+		{"full-expired", `{"claudeAiOauth":{"accessToken":"sk-real","expiresAt":` + itoa(past) + `}}`, harness.AuthExpired, true},
+		{"malformed", `not json`, harness.AuthUnknown, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateHome(t)
+			t.Setenv("PATH", t.TempDir()+"/no-such-bin")
+			credDir := filepath.Join(home.Base(), "harness", Claude)
+			if err := os.MkdirAll(credDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(credDir, ".credentials.json"), []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			st := claudeTool{}.ProbeAuth(context.Background())
+			if st.Status != tc.status {
+				t.Fatalf("status=%s want %s detail=%q", st.Status, tc.status, st.Detail)
+			}
+			if st.Status == harness.AuthExpired && tc.name == "stub" {
+				t.Fatal("stub must never yield expired")
+			}
+			if tc.name == "stub" {
+				if st.Status == harness.AuthExpired {
+					t.Fatal("stub must never yield expired")
+				}
+				if st.Detail != claudeKeychainDetail {
+					t.Fatalf("detail=%q", st.Detail)
+				}
+				if st.ExpiresAt != nil {
+					t.Fatalf("stub must not publish expires_at: %v", st.ExpiresAt)
+				}
+				if st.Hint != "trebi harness auth login claude" {
+					t.Fatalf("hint=%q", st.Hint)
+				}
+			}
+			if tc.wantExpired && st.ExpiresAt == nil {
+				t.Fatal("expired fixture must carry ExpiresAt")
+			}
+		})
+	}
+}
+
+func TestProbeClaude_OAuthTokenL1(t *testing.T) {
+	isolateHome(t)
+	if err := os.MkdirAll(config.SecretsDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.WriteSecretEnv(Claude, map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-test"}); err != nil {
+		t.Fatal(err)
+	}
+	st := claudeTool{}.ProbeAuth(context.Background())
+	if st.Status != harness.AuthOK || !strings.Contains(st.Detail, "CLAUDE_CODE_OAUTH_TOKEN") {
+		t.Fatalf("%+v", st)
+	}
+}
+
+func TestVendorLoginArgsClaude(t *testing.T) {
+	t.Parallel()
+	args, env := vendorLoginArgsFor(Claude, harness.AuthModeShared, "darwin")
+	if len(args) != 1 || args[0] != "setup-token" {
+		t.Fatalf("darwin shared: %v", args)
+	}
+	if len(env) == 0 || !strings.Contains(env[0], "CLAUDE_CONFIG_DIR=") {
+		t.Fatalf("env %v", env)
+	}
+	args, _ = vendorLoginArgsFor(Claude, harness.AuthModeSeparate, "darwin")
+	if len(args) != 1 || args[0] != "setup-token" {
+		t.Fatalf("darwin separate: %v", args)
+	}
+	args, _ = vendorLoginArgsFor(Claude, harness.AuthModeShared, "linux")
+	if len(args) != 2 || args[0] != "auth" || args[1] != "login" {
+		t.Fatalf("linux shared: %v", args)
+	}
+	args, _ = vendorLoginArgsFor(Claude, harness.AuthModeSeparate, "linux")
+	if len(args) != 1 || args[0] != "setup-token" {
+		t.Fatalf("linux separate: %v", args)
 	}
 }
 

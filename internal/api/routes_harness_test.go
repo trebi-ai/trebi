@@ -23,6 +23,9 @@ func TestHarnessAuthGetMode(t *testing.T) {
 	if _, ok := body["login_modes"]; !ok {
 		t.Fatalf("login_modes missing: %v", body)
 	}
+	if _, ok := body["keychain_bound"]; !ok {
+		t.Fatalf("keychain_bound missing: %v", body)
+	}
 
 	code, body, _ = doJSON(t, "GET", base+"/v1/harnesses/nope/auth", token, nil)
 	if code != 404 {
@@ -49,7 +52,7 @@ func TestHarnessListAuthFields(t *testing.T) {
 		t.Fatal("empty")
 	}
 	row, _ := list[0].(map[string]any)
-	for _, k := range []string{"auth_mode", "login_modes"} {
+	for _, k := range []string{"auth_mode", "login_modes", "keychain_bound"} {
 		if _, ok := row[k]; !ok {
 			t.Fatalf("missing %s in %v", k, row)
 		}

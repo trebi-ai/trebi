@@ -2,22 +2,34 @@ package harness
 
 import (
 	"context"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/trebi-ai/trebi/internal/home"
 )
 
 type fakeDriver struct {
 	mu      sync.Mutex
 	caps    map[string]AuthCaps
 	probe   AuthStatus
+	probeFn func(string) AuthStatus
 	screen  string
 	has     bool
 	sent    []string
 	started string
 }
 
-func (f *fakeDriver) ProbeAuth(context.Context, string) AuthStatus { return f.probe }
+func (f *fakeDriver) ProbeAuth(_ context.Context, name string) AuthStatus {
+	if f.probeFn != nil {
+		return f.probeFn(name)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.probe
+}
 func (f *fakeDriver) AuthCaps(name string) AuthCaps {
 	if c, ok := f.caps[name]; ok {
 		return c
@@ -33,6 +45,14 @@ func (f *fakeDriver) ExtractLogin(_, screen string) LoginExtract {
 }
 func extractFrom(screen string) LoginExtract {
 	ex := LoginExtract{}
+	if i := strings.Index(screen, "sk-ant-oat01-"); i >= 0 {
+		tok := screen[i:]
+		if j := strings.IndexAny(tok, " \n\t"); j >= 0 {
+			tok = tok[:j]
+		}
+		ex.Token = tok
+		return ex
+	}
 	if len(screen) > 0 {
 		ex.URL = "https://example.test/device"
 		ex.UserCode = "ABCD-EFGH"
@@ -146,6 +166,98 @@ func TestLoginLocalOnly(t *testing.T) {
 	_, err := svc.StartLogin(context.Background(), "cursor", "")
 	if _, ok := IsLocalOnly(err); !ok {
 		t.Fatalf("want local_only, got %v", err)
+	}
+}
+
+func TestLoginCapturesSetupToken(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+	if err := os.MkdirAll(home.SecretsDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	st := openStore(t)
+	ctx := context.Background()
+	_, err := Stamp(ctx, st, AuthStatus{Tool: "claude", Status: AuthMissing}, SourceProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := BlockedNames(ctx, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, n := range blocked {
+		if n == "claude" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("queue gate should block claude before login")
+	}
+
+	drv := &fakeDriver{
+		probe: AuthStatus{Tool: "claude", Status: AuthMissing},
+		probeFn: func(name string) AuthStatus {
+			if env, _ := LoadSecretEnv(name); env["CLAUDE_CODE_OAUTH_TOKEN"] != "" {
+				return AuthStatus{Tool: name, Status: AuthOK, Detail: "key (CLAUDE_CODE_OAUTH_TOKEN)"}
+			}
+			return AuthStatus{Tool: name, Status: AuthMissing}
+		},
+	}
+	svc := New(st, drv, Options{LoginMaxAge: 5 * time.Second})
+	if _, err := svc.StartLogin(ctx, "claude", ""); err != nil {
+		t.Fatal(err)
+	}
+	drv.mu.Lock()
+	drv.screen = "Your token: sk-ant-oat01-goldenTOKEN\n"
+	drv.mu.Unlock()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		env, _ := LoadSecretEnv("claude")
+		if env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-goldenTOKEN" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	env, _ := LoadSecretEnv("claude")
+	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat01-goldenTOKEN" {
+		t.Fatalf("secrets env %v", env)
+	}
+
+	drv.mu.Lock()
+	drv.has = false
+	drv.mu.Unlock()
+	deadline = time.Now().Add(2 * time.Second)
+	var got LoginSession
+	for time.Now().Before(deadline) {
+		got = svc.GetLogin("claude")
+		if got.Phase == PhaseDone {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got.Phase != PhaseDone {
+		t.Fatalf("want done after setup-token capture, got %+v", got)
+	}
+	row, err := svc.GetState(ctx, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !row.AuthOK.Valid || row.AuthOK.Int64 != 1 {
+		t.Fatalf("stamp %+v", row)
+	}
+	blocked, err = BlockedNames(ctx, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range blocked {
+		if n == "claude" {
+			t.Fatal("queue gate must open after setup-token")
+		}
 	}
 }
 

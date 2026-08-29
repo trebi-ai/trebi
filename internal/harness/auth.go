@@ -59,13 +59,14 @@ func (s AuthStatus) OK() bool { return s.Status == AuthOK }
 
 // AuthCaps is the per-driver declaration of the auth matrix.
 type AuthCaps struct {
-	LoginModes   []string `json:"login_modes"`
-	TokenEnvKeys []string `json:"token_env_keys,omitempty"`
-	LocalCmd     string   `json:"local_cmd,omitempty"`
-	CredFile     string   `json:"cred_file,omitempty"`
-	ExpiryReader bool     `json:"expiry_reader,omitempty"`
-	RelayFragile bool     `json:"relay_fragile,omitempty"`
-	AttachOnly   bool     `json:"attach_only,omitempty"`
+	LoginModes    []string `json:"login_modes"`
+	TokenEnvKeys  []string `json:"token_env_keys,omitempty"`
+	LocalCmd      string   `json:"local_cmd,omitempty"`
+	CredFile      string   `json:"cred_file,omitempty"`
+	ExpiryReader  bool     `json:"expiry_reader,omitempty"`
+	RelayFragile  bool     `json:"relay_fragile,omitempty"`
+	AttachOnly    bool     `json:"attach_only,omitempty"`
+	KeychainBound bool     `json:"keychain_bound,omitempty"`
 }
 
 // HasLoginMode reports whether mode is in LoginModes.

@@ -407,6 +407,11 @@ func runDaemon(parent context.Context, c *cli.Context) error {
 	if err := home.EnsureDirs(); err != nil {
 		return err
 	}
+	lock, err := home.AcquireDaemonLock()
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 	if err := setLogLevel(c.String("log-level")); err != nil {
 		return err
 	}

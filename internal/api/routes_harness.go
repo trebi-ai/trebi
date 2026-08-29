@@ -40,6 +40,7 @@ func (s *Server) handleHarnesses(w http.ResponseWriter, r *http.Request) {
 		row["auth_mode"] = authMode(info.Name)
 		caps := s.harness.Caps(info.Name)
 		row["login_modes"] = caps.LoginModes
+		row["keychain_bound"] = caps.KeychainBound
 		if st, ok := states[info.Name]; ok {
 			row["auth_ok"] = st.AuthOK.Valid && st.AuthOK.Int64 == 1
 			row["auth_status"] = st.Status
@@ -244,11 +245,12 @@ func authMode(name string) string {
 
 func authWire(st harness.AuthStatus, caps harness.AuthCaps) map[string]any {
 	out := map[string]any{
-		"name":        st.Tool,
-		"auth_ok":     st.OK(),
-		"auth_status": st.Status,
-		"auth_mode":   st.Mode,
-		"login_modes": caps.LoginModes,
+		"name":           st.Tool,
+		"auth_ok":        st.OK(),
+		"auth_status":    st.Status,
+		"auth_mode":      st.Mode,
+		"login_modes":    caps.LoginModes,
+		"keychain_bound": caps.KeychainBound,
 	}
 	if st.Detail != "" {
 		out["auth_detail"] = st.Detail

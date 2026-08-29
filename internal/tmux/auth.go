@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -128,9 +129,16 @@ func applyAuthMode(name, mode string) error {
 }
 
 func vendorLoginArgs(tool, mode string) (args []string, env []string) {
+	return vendorLoginArgsFor(tool, mode, runtime.GOOS)
+}
+
+func vendorLoginArgsFor(tool, mode, goos string) (args []string, env []string) {
 	switch tool {
 	case Claude:
-		if mode == harness.AuthModeSeparate {
+		// macOS Keychain is bound to the default config dir; setup-token
+		// injects CLAUDE_CODE_OAUTH_TOKEN and works in both auth modes.
+		// Linux shared mode can still use the credentials-file bridge.
+		if goos == "darwin" || mode == harness.AuthModeSeparate {
 			args = []string{"setup-token"}
 		} else {
 			args = []string{"auth", "login"}
@@ -230,6 +238,36 @@ func loginHint(tool string) string {
 	return "trebi harness auth login " + tool
 }
 
+// parseClaudeCred reads a Claude credentials JSON once. hasToken is true when
+// claudeAiOauth.accessToken is a non-empty string (a real Linux-shaped file).
+// A Keychain stub has expiresAt only — never treat its expiry as L0.
+func parseClaudeCred(path string) (hasToken bool, expires *time.Time) {
+	has, exp, _ := readClaudeCred(path)
+	return has, exp
+}
+
+func readClaudeCred(path string) (hasToken bool, expires *time.Time, parsed bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false, nil, false
+	}
+	var top map[string]any
+	if json.Unmarshal(b, &top) != nil {
+		return false, nil, false
+	}
+	oauth, _ := top["claudeAiOauth"].(map[string]any)
+	if oauth == nil {
+		return false, nil, true
+	}
+	if tok, ok := oauth["accessToken"].(string); ok && tok != "" {
+		hasToken = true
+	}
+	if t := coerceTime(oauth["expiresAt"]); !t.IsZero() {
+		expires = &t
+	}
+	return hasToken, expires, true
+}
+
 // parseExpiryMS reads a JSON file and returns the first matching nested field
 // as milliseconds-since-epoch (or RFC3339 / unix seconds). Zero on failure.
 func parseExpiryMS(path string, dotted string) *time.Time {
@@ -323,28 +361,43 @@ func unknownFile(st harness.AuthStatus, detail string) harness.AuthStatus {
 
 func (claudeTool) AuthCapabilities() harness.AuthCaps {
 	return harness.AuthCaps{
-		LoginModes:   []string{harness.LoginRelay, harness.LoginToken},
-		TokenEnvKeys: []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"},
-		LocalCmd:     "claude auth login",
-		CredFile:     filepath.Join(config.HarnessDir(Claude), ".credentials.json"),
-		ExpiryReader: true,
+		LoginModes:    []string{harness.LoginRelay, harness.LoginToken},
+		TokenEnvKeys:  []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"},
+		LocalCmd:      "claude auth login",
+		CredFile:      filepath.Join(config.HarnessDir(Claude), ".credentials.json"),
+		ExpiryReader:  true,
+		KeychainBound: runtime.GOOS == "darwin",
 	}
 }
+
+const claudeKeychainDetail = "credentials live in the macOS Keychain; file bridge cannot share them"
 
 func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Claude)
 	_ = BridgeClaudeAuth(st.Mode)
 	cred := filepath.Join(config.HarnessDir(Claude), ".credentials.json")
 	userCred := filepath.Join(harness.UserHome(), ".claude", ".credentials.json")
-	if fileExists(cred) {
-		st.ExpiresAt = parseExpiryMS(cred, "claudeAiOauth.expiresAt")
-	} else if st.Mode != harness.AuthModeSeparate && fileExists(userCred) {
-		st.ExpiresAt = parseExpiryMS(userCred, "claudeAiOauth.expiresAt")
+
+	hHas, hExp, hParsed := readClaudeCred(cred)
+	uHas, uExp, uParsed := readClaudeCred(userCred)
+	hExists := fileExists(cred)
+	uExists := fileExists(userCred)
+	useUser := st.Mode != harness.AuthModeSeparate
+
+	// L0: expiry is only meaningful on a real credential, never a Keychain stub.
+	if hHas {
+		st.ExpiresAt = hExp
+	} else if useUser && uHas {
+		st.ExpiresAt = uExp
 	}
+
 	if st, ok := l1Token(st, "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"); ok {
 		return st
 	}
+
 	bin := lookPathTool(Claude)
+	l2LoggedOut := false
+	l2Unavailable := bin == ""
 	if bin != "" {
 		out, err := runVendor(ctx, bin, []string{"auth", "status"},
 			[]string{"CLAUDE_CONFIG_DIR=" + config.HarnessDir(Claude)})
@@ -358,24 +411,49 @@ func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 				st.Detail = payload.Email
 				return st
 			}
-			return expiredOrMissing(st, st.ExpiresAt)
-		}
-		low := strings.ToLower(out)
-		if strings.Contains(low, "not logged") || strings.Contains(low, `"loggedin": false`) {
-			return expiredOrMissing(st, st.ExpiresAt)
-		}
-		if err == nil && strings.Contains(low, "logged in") {
-			st.Status = harness.AuthOK
-			return st
-		}
-		if err != nil {
-			st.Detail = "auth status probe failed"
+			l2LoggedOut = true
+		} else {
+			low := strings.ToLower(out)
+			if strings.Contains(low, "not logged") || strings.Contains(low, `"loggedin": false`) {
+				l2LoggedOut = true
+			} else if err == nil && strings.Contains(low, "logged in") {
+				st.Status = harness.AuthOK
+				return st
+			} else if err != nil {
+				st.Detail = "auth status probe failed"
+				l2Unavailable = true
+			}
 		}
 	}
-	if st.ExpiresAt != nil && st.ExpiresAt.Before(time.Now()) {
+
+	hasReal := hHas || (useUser && uHas)
+	if hasReal {
+		if l2LoggedOut {
+			return expiredOrMissing(st, st.ExpiresAt)
+		}
+		if st.ExpiresAt != nil && st.ExpiresAt.Before(time.Now()) {
+			return expiredOrMissing(st, st.ExpiresAt)
+		}
+		if hExists || (useUser && uExists) {
+			return unknownFile(st, "credentials file present; auth status unconfirmed")
+		}
+	}
+
+	hStub := hExists && !hHas && hParsed
+	uStub := uExists && !uHas && uParsed
+	stubOnly := (hStub || (useUser && uStub)) && !hasReal
+	if stubOnly && (l2LoggedOut || l2Unavailable) {
+		st.Status = harness.AuthMissing
+		st.ExpiresAt = nil
+		st.Detail = claudeKeychainDetail
+		st.Hint = loginHint(Claude)
+		return st
+	}
+
+	if l2LoggedOut {
 		return expiredOrMissing(st, st.ExpiresAt)
 	}
-	if fileExists(cred) || (st.Mode != harness.AuthModeSeparate && fileExists(userCred)) {
+	if (hExists || (useUser && uExists)) && !hasReal && !stubOnly {
 		return unknownFile(st, "credentials file present; auth status unconfirmed")
 	}
 	st.Status = harness.AuthMissing

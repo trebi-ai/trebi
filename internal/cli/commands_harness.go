@@ -210,10 +210,27 @@ func runHarnessAuthStatus(c *cli.Context) error {
 		})
 	}
 	renderTable(tbl)
+	for _, r := range rows {
+		st := mapStr(r, "auth_status", "status")
+		if keychainBound(r) && st != "ok" && st != "" {
+			fmt.Fprintln(w, "shared file bridge unavailable on macOS — run: trebi harness auth login claude, or provide an API key")
+			break
+		}
+	}
 	if name != "" && bad {
 		return fmt.Errorf("auth not ok")
 	}
 	return nil
+}
+
+func keychainBound(r map[string]any) bool {
+	switch v := r["keychain_bound"].(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true" || v == "1"
+	}
+	return false
 }
 
 func runHarnessAuthMode(c *cli.Context) error {
