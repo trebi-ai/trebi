@@ -61,9 +61,9 @@ func workspaceCommand() *cli.Command {
 			},
 			{
 				Name:      "remove",
-				Usage:     "delete a workspace on the daemon",
+				Usage:     "delete a workspace and its folder",
 				ArgsUsage: "<id>",
-				Flags:     []cli.Flag{&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "required; deletes the workspace"}},
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "required; deletes the workspace folder"}},
 				Action:    runWorkspaceRemove,
 			},
 			{

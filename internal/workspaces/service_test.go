@@ -224,6 +224,55 @@ func TestRemoveEmitsWorkspaceDeleted(t *testing.T) {
 	if len(rows) != 0 {
 		t.Fatalf("job_index rows remain: %v", rows)
 	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("workspace folder still present: %v", err)
+	}
+}
+
+func TestRemoveDeletesCreatedFolder(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	root := t.TempDir()
+	svc := workspaces.New(st).WithRoot(root)
+
+	ws, err := svc.AddWith(ctx, workspaces.AddOpts{Name: "test", Create: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(ws.Path, "trebi.yaml")); err != nil {
+		t.Fatalf("trebi.yaml: %v", err)
+	}
+	if err := svc.Remove(ctx, ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ws.Path); !os.IsNotExist(err) {
+		t.Fatalf("created folder still present: %v", err)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("workspaces.root should remain: %v", err)
+	}
+}
+
+func TestRemoveMissingFolderStillUnregisters(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+	root := t.TempDir()
+	ws, err := svc.Add(ctx, root, "gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Remove(ctx, ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Get(ctx, ws.ID); err == nil {
+		t.Fatal("workspace still present after Remove")
+	}
 }
 
 func TestRenameBumpsRevisionAndBusFrame(t *testing.T) {

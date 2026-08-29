@@ -59,7 +59,7 @@ trebi workspace current
 trebi workspace rename <id> <new-name>
 trebi workspace set <id> --name new --git-enabled
 trebi workspace unlink <id|name>           # drop a remote link
-trebi workspace remove <id>                # unregister
+trebi workspace remove <id> --force        # delete folder + unregister
 ```
 
 Pathless `--create --name` is the remote default: the daemon mkdirs `<workspaces.root>/<name>` (config key `workspaces.root`, default `~/trebi`). Pass an absolute `--create` path only when you know the server filesystem. A remote workspace is context, not a flag: link it, then `use` it, and every command routes to that daemon. Client resolution order is fixed: linked remote → remote sticky context → `TREBI_URL`/`TREBI_TOKEN` → local `~/.trebi/api.json`.

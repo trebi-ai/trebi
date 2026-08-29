@@ -239,10 +239,17 @@ func (s *Service) Patch(ctx context.Context, id string, p Patch) (*Workspace, er
 	return s.Get(ctx, id)
 }
 
-// Remove deletes a workspace row and its job index, and emits workspace.deleted.
+// Remove unregisters a workspace, deletes its folder, and emits workspace.deleted.
 // An unknown id returns ErrNotFound and emits nothing.
 func (s *Service) Remove(ctx context.Context, id string) error {
-	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+	ws, err := s.Get(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`DELETE FROM job_index WHERE workspace_id=?`, id); err != nil {
 			return err
 		}
@@ -261,7 +268,31 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 	}, store.BusEvent{
 		Topic: "workspace.deleted", Entity: "workspace", EntityID: id, Action: "deleted", Revision: 1,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if err := refuseFolderDelete(ws.Path, s.root); err != nil {
+		s.log.Warn("workspace unregistered; folder kept", "id", id, "path", ws.Path, "error", err)
+		return nil
+	}
+	if err := os.RemoveAll(ws.Path); err != nil {
+		return fmt.Errorf("unregistered %s but failed to delete %s: %w", id, ws.Path, err)
+	}
+	return nil
+}
+
+func refuseFolderDelete(path, root string) error {
+	path = filepath.Clean(path)
+	if path == "" || path == "." || path == string(filepath.Separator) {
+		return fmt.Errorf("refusing to delete %q", path)
+	}
+	if root != "" && filepath.Clean(root) == path {
+		return fmt.Errorf("refusing to delete workspaces.root %s", path)
+	}
+	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(home) == path {
+		return fmt.Errorf("refusing to delete home directory %s", path)
+	}
+	return nil
 }
 
 // List returns all workspaces.
