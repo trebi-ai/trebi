@@ -140,11 +140,7 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
 	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
 	cmd.Dir = dir
-	// TREBI_RUN_COMPLETE carries the run-scoped sentinel so fake scripts can echo it.
-	cmd.Env = append(os.Environ(),
-		"TREBI_RUN_ID="+run.ID,
-		"TREBI_RUN_COMPLETE="+CompletionSentinel(run.ID),
-	)
+	cmd.Env = fakeEnv(run, opts, dir)
 	out, err := cmd.CombinedOutput()
 	_ = os.WriteFile(logPath, out, 0o644)
 	output := string(out)
@@ -315,20 +311,56 @@ func (s *Service) InjectMessage(ctx context.Context, runID, text string) error {
 		return err
 	}
 	if run.Status != StatusRunning {
-		return fmt.Errorf("run %s is not running", runID)
+		return fmt.Errorf("%w: %s", ErrNotRunning, runID)
+	}
+	if err := sendToPane(run, text); err != nil {
+		return err
+	}
+	s.AddEvent(ctx, runID, "message", "api", map[string]string{"bytes": fmt.Sprint(len(text))})
+	return nil
+}
+
+func sendToPane(run *Run, text string) error {
+	if run.Harness == "fake" || strings.HasPrefix(run.TmuxSession, "trebi-fake-") {
+		return nil
 	}
 	if run.TmuxSession == "" {
-		return fmt.Errorf("run %s has no tmux session", runID)
+		return fmt.Errorf("run %s has no tmux session", run.ID)
 	}
 	if err := tmux.Send(run.TmuxSession, text); err != nil {
 		return err
 	}
 	time.Sleep(300 * time.Millisecond)
-	if err := tmux.SendKey(run.TmuxSession, "enter"); err != nil {
-		return err
+	return tmux.SendKey(run.TmuxSession, "enter")
+}
+
+func fakeEnv(run *Run, opts LaunchOpts, dir string) []string {
+	env := append(os.Environ(),
+		"TREBI_RUN_ID="+run.ID,
+		"TREBI_RUN_COMPLETE="+CompletionSentinel(run.ID),
+		"TREBI_SESSION_ID="+opts.SessionID,
+	)
+	if path := fakeTranscriptPath(opts, dir); path != "" {
+		_ = os.MkdirAll(filepath.Dir(path), 0o755)
+		env = append(env, "TREBI_TRANSCRIPT_PATH="+path)
 	}
-	s.AddEvent(ctx, runID, "message", "api", map[string]string{"bytes": fmt.Sprint(len(text))})
-	return nil
+	return env
+}
+
+func fakeTranscriptPath(opts LaunchOpts, dir string) string {
+	name := opts.Harness
+	if name == "" || name == "fake" {
+		name = tmux.Claude
+	}
+	tool, ok := tmux.ByName(name)
+	if !ok {
+		return ""
+	}
+	path, err := tool.TranscriptPath(home.HarnessDir(name), "", opts.SessionID)
+	if err != nil {
+		return ""
+	}
+	return path
 }
 
 // Kill terminates a running run (Ctrl+C then kill session). Idempotent for terminal runs.

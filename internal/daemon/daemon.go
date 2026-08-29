@@ -11,6 +11,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -32,20 +33,23 @@ type Options struct {
 	QueueInterval time.Duration
 	// AlertsInterval overrides the AlertService poll tick (default 2s).
 	AlertsInterval time.Duration
+	// TurnWatchInterval overrides the transcript watcher tick (default 2s).
+	TurnWatchInterval time.Duration
 }
 
 // ControlPlane wires workers to services.
 type ControlPlane struct {
-	Store        *store.Store
-	Runs         *runs.Service
-	Workspaces   *workspaces.Service
-	Files        *files.Service
-	Schedule     *schedule.Service
-	Integrations *integrations.Service
-	Policy       *dispatch.Policy
-	Reaper       *runs.Reaper
-	Alerts       *alerts.Service
-	Opts         Options
+	Store         *store.Store
+	Runs          *runs.Service
+	Workspaces    *workspaces.Service
+	Files         *files.Service
+	Schedule      *schedule.Service
+	Integrations  *integrations.Service
+	Policy        *dispatch.Policy
+	Reaper        *runs.Reaper
+	Alerts        *alerts.Service
+	Conversations *conversations.Service
+	Opts          Options
 
 	log   *slog.Logger
 	queue *dispatch.Queue
@@ -58,6 +62,8 @@ type ControlPlane struct {
 func New(st *store.Store, opts Options) *ControlPlane {
 	ws := workspaces.New(st)
 	r := runs.New(st)
+	q := dispatch.NewQueue(st)
+	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()
 	integ := integrations.New(st, ws, r, pol)
 	maxBytes := files.DefaultMaxBytes
@@ -66,18 +72,19 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		ws.WithRoot(cfg.Workspaces.RootOrDefault())
 	}
 	return &ControlPlane{
-		Store:        st,
-		Runs:         r,
-		Workspaces:   ws,
-		Files:        files.New(maxBytes),
-		Schedule:     schedule.New(st),
-		Integrations: integ,
-		Policy:       pol,
-		Reaper:       runs.NewReaper(r),
-		Alerts:       newAlerts(st, opts),
-		Opts:         opts,
-		log:          slog.Default().With("source", "daemon"),
-		queue:        dispatch.NewQueue(st),
+		Store:         st,
+		Runs:          r,
+		Workspaces:    ws,
+		Files:         files.New(maxBytes),
+		Schedule:      schedule.New(st),
+		Integrations:  integ,
+		Policy:        pol,
+		Reaper:        runs.NewReaper(r),
+		Alerts:        newAlerts(st, opts),
+		Conversations: conv,
+		Opts:          opts,
+		log:           slog.Default().With("source", "daemon"),
+		queue:         q,
 	}
 }
 
@@ -141,6 +148,14 @@ func (c *ControlPlane) Start(parent context.Context) {
 	go func() {
 		defer c.wg.Done()
 		c.Alerts.Run(ctx)
+	}()
+
+	// Turn watcher is a consumer: persist assistant replies even under
+	// shadow and drain so chat history is complete.
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.turnWatch(ctx)
 	}()
 
 	c.wg.Add(1)

@@ -3,6 +3,7 @@ package tmux
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -62,7 +63,26 @@ type Tool interface {
 	HandleStartup(screen string) []Action
 	PostReadyDelay() time.Duration
 	TranscriptPath(home, workingDir, sessionID string) (string, error)
+	// ParseTranscript maps a harness session file into the §3.6 Turn shape.
+	ParseTranscript(r io.Reader) ([]Turn, error)
 	Lifecycle() LifecycleAdapter // nil if no hooks
+}
+
+// Turn is one §3.6 transcript turn.
+type Turn struct {
+	Role  string     `json:"role"` // user|assistant|tools
+	At    time.Time  `json:"at"`
+	Text  string     `json:"text,omitempty"`
+	Tools []ToolCall `json:"tools,omitempty"`
+}
+
+// ToolCall is one tool invocation on a turn.
+type ToolCall struct {
+	Name       string `json:"name"`
+	Input      string `json:"input"`
+	Output     string `json:"output,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
+	ExitCode   *int   `json:"exit_code,omitempty"`
 }
 
 // EventModeCapability describes how a tool reports agent lifecycle to jobi.
@@ -233,6 +253,9 @@ func (unknownTool) HandleStartup(screen string) []Action { return nil }
 func (unknownTool) PostReadyDelay() time.Duration        { return 3 * time.Second }
 func (unknownTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
 	return "", ErrTranscriptUnsupported
+}
+func (unknownTool) ParseTranscript(io.Reader) ([]Turn, error) {
+	return nil, ErrTranscriptUnsupported
 }
 func (unknownTool) Lifecycle() LifecycleAdapter { return nil }
 

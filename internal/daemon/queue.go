@@ -100,6 +100,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			PromptPreview:   trunc(prompt, 200),
 			QueueID:         item.ID,
 			ConversationKey: item.ConversationKey,
+			ConversationID:  c.conversationID(ctx, item.WorkspaceID, item.ConversationKey),
 			TraceID:         item.TraceID,
 			MaxDurationMS:   maxMS,
 			IdleTimeoutMS:   idleMS,
@@ -120,6 +121,20 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	if merr := c.queue.MarkDone(ctx, item.ID, queueResult(outcome, run), run.ID); merr != nil {
 		c.log.Warn("queue mark done", "queue_id", item.ID, "error", merr)
 	}
+	if item.Kind == runs.KindAssistant {
+		c.log.Info("assistant.woken", "reason", string(runs.ReasonTrigger), "channel", "")
+	}
+}
+
+func (c *ControlPlane) conversationID(ctx context.Context, workspaceID, key string) string {
+	if c.Conversations == nil || key == "" {
+		return ""
+	}
+	id, err := c.Conversations.IDByKey(ctx, workspaceID, key)
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 // harnessBlocked returns a BlockReason when harness_state says not ready.

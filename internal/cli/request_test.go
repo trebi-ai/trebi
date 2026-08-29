@@ -585,9 +585,15 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatal("config show missing --yaml/--tree")
 	}
 	asst := findCmd(app.Commands, "assistant")
-	for _, want := range []string{"show", "wake", "history"} {
+	for _, want := range []string{"show", "wake", "history", "say", "chat"} {
 		if findCmd(asst.Subcommands, want) == nil {
 			t.Fatalf("assistant missing %s", want)
+		}
+	}
+	conv := findCmd(app.Commands, "conversation")
+	for _, want := range []string{"list", "show", "messages", "new", "switch"} {
+		if findCmd(conv.Subcommands, want) == nil {
+			t.Fatalf("conversation missing %s", want)
 		}
 	}
 	if !hasFlag(findCmd(asst.Subcommands, "wake"), "attach") {
@@ -735,8 +741,49 @@ func TestBuildAssistantWake(t *testing.T) {
 	b, _ := json.Marshal(req.Body)
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
-	if m["prompt_override"] != "hello" || m["dry_run"] != true {
+	if m["extra_prompt"] != "hello" || m["dry_run"] != true {
 		t.Fatalf("body %s", b)
+	}
+}
+
+func TestBuildConversationChatRequests(t *testing.T) {
+	t.Parallel()
+	path := BuildConversationsListPath("ws1", "cli", "01C", 10)
+	if !strings.Contains(path, "workspace=ws1") || !strings.Contains(path, "channel=cli") {
+		t.Fatalf("list %s", path)
+	}
+	req := BuildConversationCreate("ws1", "t", "cli", "cli", "ws1")
+	if req.Method != "POST" || req.Path != "/v1/conversations" {
+		t.Fatalf("create %+v", req)
+	}
+	req = BuildConversationPatch("01C", "n", "s", 2)
+	if req.Method != "PATCH" || req.Path != "/v1/conversations/01C" {
+		t.Fatalf("patch %+v", req)
+	}
+	mp := BuildConversationMessagesPath("01C", "01M", 20)
+	if !strings.Contains(mp, "/v1/conversations/01C/messages") || !strings.Contains(mp, "cursor=01M") {
+		t.Fatalf("messages %s", mp)
+	}
+	req = BuildConversationSend("01C", "hi", "cli", "ws1", "k1")
+	if req.Method != "POST" || !strings.Contains(req.Path, "/messages") {
+		t.Fatalf("send %+v", req)
+	}
+	req = BuildPointerGet("cli", "ws1")
+	if req.Method != "GET" || req.Path != "/v1/channel-pointers/cli/ws1" {
+		t.Fatalf("ptr get %+v", req)
+	}
+	req = BuildPointerPut("cli", "ws1", "01C")
+	if req.Method != "PUT" || req.Path != "/v1/channel-pointers/cli/ws1" {
+		t.Fatalf("ptr put %+v", req)
+	}
+	req = BuildAssistantSay("01C", "hi", "ws1")
+	if req.Method != "POST" || !strings.Contains(req.Path, "/v1/conversations/01C/messages") {
+		t.Fatalf("say %+v", req)
+	}
+	// Remote sticky context uses the same request shape (no local branch).
+	remote := BuildAssistantSay("01C", "hi", "ws1")
+	if req.Method != remote.Method || req.Path != remote.Path {
+		t.Fatalf("remote say shape %+v vs %+v", req, remote)
 	}
 }
 

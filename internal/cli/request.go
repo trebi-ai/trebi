@@ -332,14 +332,80 @@ func BuildEventsRetrigger(id string) HTTPRequest {
 	}
 }
 
-// BuildConversationsListPath builds GET /v1/conversations?cursor=&limit=.
-func BuildConversationsListPath(cursor string, limit int) string {
-	return listQuery("/v1/conversations", cursor, limit)
+// BuildConversationsListPath builds GET /v1/conversations?workspace=&channel=&cursor=&limit=.
+func BuildConversationsListPath(workspace, channel, cursor string, limit int) string {
+	kv := map[string]string{"workspace": workspace, "channel": channel, "cursor": cursor}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return withQuery("/v1/conversations", kv)
 }
 
 // BuildConversationGet builds GET /v1/conversations/{id}.
 func BuildConversationGet(id string) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/conversations/" + url.PathEscape(id)}
+}
+
+// BuildConversationCreate builds POST /v1/conversations.
+func BuildConversationCreate(workspace, title, originChannel, channelType, channelRef string) HTTPRequest {
+	body := map[string]any{"workspace": workspace, "origin_channel": originChannel}
+	if title != "" {
+		body["title"] = title
+	}
+	if channelType != "" && channelRef != "" {
+		body["activate"] = map[string]any{"channel_type": channelType, "channel_ref": channelRef}
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/conversations", Body: body}
+}
+
+// BuildConversationPatch builds PATCH /v1/conversations/{id}.
+func BuildConversationPatch(id, title, summary string, revision int64) HTTPRequest {
+	body := map[string]any{}
+	if title != "" {
+		body["title"] = title
+	}
+	if summary != "" {
+		body["summary"] = summary
+	}
+	if revision > 0 {
+		body["revision"] = revision
+	}
+	return HTTPRequest{Method: "PATCH", Path: "/v1/conversations/" + url.PathEscape(id), Body: body}
+}
+
+// BuildConversationMessagesPath builds GET /v1/conversations/{id}/messages.
+func BuildConversationMessagesPath(id, cursor string, limit int) string {
+	return listQuery("/v1/conversations/"+url.PathEscape(id)+"/messages", cursor, limit)
+}
+
+// BuildConversationSend builds POST /v1/conversations/{id}/messages.
+func BuildConversationSend(id, text, channelType, channelRef, idempotencyKey string) HTTPRequest {
+	body := map[string]any{"text": text, "channel_type": channelType, "channel_ref": channelRef}
+	if idempotencyKey != "" {
+		body["idempotency_key"] = idempotencyKey
+	}
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/conversations/" + url.PathEscape(id) + "/messages",
+		Body:   body,
+	}
+}
+
+// BuildPointerGet builds GET /v1/channel-pointers/{type}/{ref}.
+func BuildPointerGet(channelType, channelRef string) HTTPRequest {
+	return HTTPRequest{
+		Method: "GET",
+		Path:   "/v1/channel-pointers/" + url.PathEscape(channelType) + "/" + url.PathEscape(channelRef),
+	}
+}
+
+// BuildPointerPut builds PUT /v1/channel-pointers/{type}/{ref}.
+func BuildPointerPut(channelType, channelRef, conversationID string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PUT",
+		Path:   "/v1/channel-pointers/" + url.PathEscape(channelType) + "/" + url.PathEscape(channelRef),
+		Body:   map[string]any{"conversation_id": conversationID},
+	}
 }
 
 // BuildApprovalsListPath builds GET /v1/approvals?cursor=&limit=.
@@ -453,13 +519,13 @@ func BuildAlertsPath(since string) string {
 }
 
 // BuildAssistantWake builds POST /v1/workspaces/{id}/assistant/wake.
-// Optional promptOverride becomes prompt_override; dryRun sets dry_run.
-func BuildAssistantWake(workspaceID, promptOverride string, dryRun bool) HTTPRequest {
+// extraPrompt is composed server-side; dryRun sets dry_run.
+func BuildAssistantWake(workspaceID, extraPrompt string, dryRun bool) HTTPRequest {
 	body := map[string]any{
 		"reason": "manual",
 	}
-	if promptOverride != "" {
-		body["prompt_override"] = promptOverride
+	if extraPrompt != "" {
+		body["extra_prompt"] = extraPrompt
 	}
 	if dryRun {
 		body["dry_run"] = true
@@ -469,6 +535,11 @@ func BuildAssistantWake(workspaceID, promptOverride string, dryRun bool) HTTPReq
 		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/wake",
 		Body:   body,
 	}
+}
+
+// BuildAssistantSay is POST /v1/conversations/{id}/messages from the cli channel.
+func BuildAssistantSay(convID, text, workspaceID string) HTTPRequest {
+	return BuildConversationSend(convID, text, "cli", workspaceID, "")
 }
 
 // AppendExtraPrompt joins the job base prompt with extra text (jobi run -e semantics).

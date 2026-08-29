@@ -32,8 +32,6 @@ func (s *Server) routeEvents(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/inbox/{id}/read", s.handleInboxRead)
 	mux.HandleFunc("POST /v1/inbox/read-all", s.handleInboxReadAll)
 	mux.HandleFunc("POST /v1/inbox/{id}/resolve", s.handleInboxResolve)
-	mux.HandleFunc("GET /v1/conversations", s.handleConversations)
-	mux.HandleFunc("GET /v1/conversations/{id}", s.handleConversationGet)
 	mux.HandleFunc("GET /v1/approvals", s.handleApprovals)
 	mux.HandleFunc("GET /v1/agents/state", s.handleAgentState)
 	mux.HandleFunc("GET /v1/stats/runs", s.handleStats)

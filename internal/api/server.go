@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -38,6 +39,7 @@ type Server struct {
 	alerts *alerts.Service
 	skills *skills.Service
 	integ  *integrations.Service
+	conv   *conversations.Service
 
 	token     string
 	startedAt time.Time
@@ -67,6 +69,7 @@ type Options struct {
 func New(st *store.Store, opts Options) *Server {
 	ws := workspaces.New(st).WithRoot(opts.WorkspacesRoot)
 	r := runs.New(st)
+	q := dispatch.NewQueue(st)
 	pol := dispatch.NewPolicy()
 	s := &Server{
 		st:        st,
@@ -76,13 +79,14 @@ func New(st *store.Store, opts Options) *Server {
 		alerts:    alerts.New(st, alerts.Options{}),
 		skills:    skills.New(st),
 		integ:     integrations.New(st, ws, r, pol),
+		conv:      conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
 		token:     opts.Token,
 		startedAt: time.Now().UTC(),
 		shadow:    opts.Shadow,
 		drain:     opts.Drain || opts.Shadow,
 		done:      make(chan struct{}),
 		log:       slog.Default().With("source", "http_server"),
-		queue:     dispatch.NewQueue(st),
+		queue:     q,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -97,7 +101,7 @@ func New(st *store.Store, opts Options) *Server {
 // BindControlPlane replaces core services with the daemon's shared instances.
 // The policy and schedule services stay with the daemon; the API does not
 // read them.
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, _ *dispatch.Policy, integ *integrations.Service, _ *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service) {
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, _ *dispatch.Policy, integ *integrations.Service, _ *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
 	}
@@ -112,6 +116,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	}
 	if filesSvc != nil {
 		s.files = filesSvc
+	}
+	if conv != nil {
+		s.conv = conv
 	}
 }
 

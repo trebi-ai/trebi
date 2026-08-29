@@ -30,8 +30,12 @@ type agentSnap struct {
 	Since time.Time
 }
 
-// ErrInvalidDecision reports an approval decision other than allow|deny.
-var ErrInvalidDecision = errors.New("decision must be allow or deny")
+var (
+	// ErrInvalidDecision reports an approval decision other than allow|deny.
+	ErrInvalidDecision = errors.New("decision must be allow or deny")
+	// ErrNotRunning reports InjectMessage against a run that is not live.
+	ErrNotRunning = errors.New("run is not running")
+)
 
 // New creates a runs service.
 func New(st *store.Store) *Service {
@@ -51,6 +55,7 @@ type CreateOpts struct {
 	QueueID         string
 	TraceID         string
 	ConversationKey string
+	ConversationID  string
 	Trigger         *TriggerCapture
 	Inputs          map[string]string
 	MaxDurationMS   int64
@@ -188,9 +193,10 @@ type ListOpts struct {
 	// Harness filters runs.harness (claude, grok, cursor, …).
 	Harness string
 	// Model matches tokens_model (exact, case-insensitive).
-	Model  string
-	Limit  int
-	Cursor string
+	Model           string
+	ConversationKey string
+	Limit           int
+	Cursor          string
 }
 
 // pseudoStatus reports an agent-map status (idle|waiting) filtered in memory.
@@ -238,6 +244,10 @@ func (o ListOpts) query() (string, []any) {
 		q += ` AND status = ?`
 		args = append(args, o.Status)
 	}
+	if o.ConversationKey != "" {
+		q += ` AND conversation_key = ?`
+		args = append(args, o.ConversationKey)
+	}
 	if o.Cursor != "" {
 		q += ` AND id < ?`
 		args = append(args, o.Cursor)
@@ -267,6 +277,54 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]*Run, error) {
 		}
 		if opts.pseudoStatus() && string(r.AgentState) != opts.Status {
 			continue
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// FindLive returns the running run on a conversation lane, or sql.ErrNoRows.
+func (s *Service) FindLive(ctx context.Context, workspaceID, kind, conversationKey string) (*Run, error) {
+	list, err := s.List(ctx, ListOpts{
+		Workspace:       workspaceID,
+		Kind:            kind,
+		Status:          string(StatusRunning),
+		ConversationKey: conversationKey,
+		Limit:           1,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return list[0], nil
+}
+
+// ListForTurnWatch returns conversation-linked runs that are live or just ended.
+func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([]*Run, error) {
+	q := `SELECT id, workspace_id, job, kind, COALESCE(reason,''), status, COALESCE(end_reason,''),
+		COALESCE(prompt_preview,''), COALESCE(session_id,''), COALESCE(harness,''),
+		COALESCE(runtime,'tui'), COALESCE(tmux_session,''),
+		COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
+		COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
+		started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
+		COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
+		COALESCE(conversation_key,''), COALESCE(conversation_id,''),
+		trigger_event_id, trigger_integration, trigger_capture_json, trigger_vars_json, inputs_json
+		FROM runs WHERE COALESCE(conversation_id,'') != ''
+		AND (status = ? OR (ended_at IS NOT NULL AND ended_at >= ?))
+		ORDER BY id DESC LIMIT 200`
+	rows, err := s.st.DB().QueryContext(ctx, q, string(StatusRunning), endedAfter.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Run
+	for rows.Next() {
+		r, err := scanRun(rows, s)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, r)
 	}
@@ -609,6 +667,7 @@ func newRun(id string, now time.Time, opts CreateOpts) *Run {
 		Inputs:          opts.Inputs,
 		Trigger:         opts.Trigger,
 		ConversationKey: opts.ConversationKey,
+		ConversationID:  opts.ConversationID,
 		QueueID:         opts.QueueID,
 		TraceID:         opts.TraceID,
 		Revision:        1,
@@ -644,13 +703,13 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 	_, err := tx.Exec(`INSERT INTO runs (
 		id, workspace_id, job, kind, reason, status, prompt_preview, inputs_json,
 		trigger_event_id, trigger_integration, trigger_capture_json, trigger_vars_json,
-		conversation_key, session_id, runtime, harness, tmux_session,
+		conversation_key, conversation_id, session_id, runtime, harness, tmux_session,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		resumed_from, resume_attempts, queue_id, trace_id, revision, updated_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.Job, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON,
-		store.NullStr(opts.ConversationKey), store.NullStr(opts.SessionID), "tui", opts.Harness, store.NullStr(opts.TmuxSession),
+		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.SessionID), "tui", opts.Harness, store.NullStr(opts.TmuxSession),
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
 		store.NullStr(opts.ResumedFrom), opts.ResumeAttempts, queueID, opts.TraceID, 1, nowStr,
 	)

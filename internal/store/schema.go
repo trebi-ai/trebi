@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -330,6 +330,31 @@ ALTER TABLE inbox_items ADD COLUMN trace_id TEXT;
 ALTER TABLE inbox_items ADD COLUMN escalates_at TEXT;
 ALTER TABLE inbox_items ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_inbox_kind_subject ON inbox_items(alert_kind, subject, status);
+`,
+		// v4: conversation wire fields + durable message rows (assistant chat).
+		`
+ALTER TABLE conversations ADD COLUMN origin_channel   TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN summary          TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN last_activity_at TEXT;
+ALTER TABLE conversations ADD COLUMN revision         INTEGER NOT NULL DEFAULT 1;
+
+CREATE TABLE conversation_messages (
+	id              TEXT PRIMARY KEY,
+	conversation_id TEXT NOT NULL,
+	role            TEXT NOT NULL,
+	channel_type    TEXT NOT NULL DEFAULT '',
+	channel_ref     TEXT NOT NULL DEFAULT '',
+	text            TEXT NOT NULL,
+	run_id          TEXT,
+	turn_index      INTEGER,
+	idempotency_key TEXT,
+	created_at      TEXT NOT NULL
+);
+CREATE INDEX idx_convmsg_conv ON conversation_messages(conversation_id, id);
+CREATE UNIQUE INDEX idx_convmsg_turn ON conversation_messages(run_id, turn_index)
+	WHERE run_id IS NOT NULL AND turn_index IS NOT NULL;
+CREATE UNIQUE INDEX idx_convmsg_idem ON conversation_messages(conversation_id, idempotency_key)
+	WHERE idempotency_key IS NOT NULL;
 `,
 	}
 }

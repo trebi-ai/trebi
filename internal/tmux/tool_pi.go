@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -124,6 +125,8 @@ func (piTool) HandleStartup(screen string) []Action {
 }
 
 func (piTool) PostReadyDelay() time.Duration { return defaultPostReadyDelay }
+
+func (piTool) ParseTranscript(r io.Reader) ([]Turn, error) { return unsupportedParse(r) }
 
 func (piTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
 	if sessionID == "" {

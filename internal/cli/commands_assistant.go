@@ -1,10 +1,16 @@
 package cli
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/urfave/cli/v2"
 )
 
@@ -38,11 +44,23 @@ func assistantCommand() *cli.Command {
 				Name:  "wake",
 				Usage: "run the workspace assistant (TREBI.md → kind=assistant run)",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "extra-prompt", Aliases: []string{"e"}, Usage: "append text to the assistant prompt"},
+					&cli.StringFlag{Name: "extra-prompt", Aliases: []string{"e"}, Usage: "append text to the assistant prompt (server-side)"},
 					&cli.BoolFlag{Name: "test", Usage: "dry_run: evaluate gates, print plan, do not launch"},
 					&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (tmux local or WebSocket remote)"},
 				},
 				Action: runAssistantWake,
+			},
+			{
+				Name:      "say",
+				Usage:     "send a chat message to the workspace assistant",
+				ArgsUsage: "<message>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action:    runAssistantSay,
+			},
+			{
+				Name:   "chat",
+				Usage:  "interactive assistant chat (POST + SSE refetch)",
+				Action: runAssistantChat,
 			},
 			{
 				Name:  "memory",
@@ -196,20 +214,7 @@ func runAssistantWake(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	promptOverride := ""
-	if extra := c.String("extra-prompt"); extra != "" {
-		var got map[string]any
-		if err := client.GetJSON("/v1/workspaces/"+wsID+"/assistant", &got); err != nil {
-			return err
-		}
-		base := mapStr(got, "prompt", "content")
-		// content may be full markdown; prefer prompt field when present.
-		if mapStr(got, "prompt") == "" {
-			base = mapStr(got, "content")
-		}
-		promptOverride = AppendExtraPrompt(base, extra)
-	}
-	req := BuildAssistantWake(wsID, promptOverride, c.Bool("test"))
+	req := BuildAssistantWake(wsID, c.String("extra-prompt"), c.Bool("test"))
 	var out map[string]any
 	if err := client.DoHTTP(req, &out); err != nil {
 		return err
@@ -285,4 +290,183 @@ func runAssistantHistory(c *cli.Context) error {
 	}
 	renderTable(tbl)
 	return nil
+}
+
+func runAssistantSay(c *cli.Context) error {
+	text := strings.TrimSpace(strings.Join(c.Args().Slice(), " "))
+	if text == "" {
+		return fmt.Errorf("usage: trebi assistant say <message>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	convID, err := ensureCLIConversation(client, wsID)
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := client.DoHTTP(BuildAssistantSay(convID, text, wsID), &out); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+	fmt.Fprintf(outWriter(c), "delivery=%s conversation=%s\n", mapStr(out, "delivery"), convID)
+	return nil
+}
+
+func runAssistantChat(c *cli.Context) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	convID, err := ensureCLIConversation(client, wsID)
+	if err != nil {
+		return err
+	}
+	w := outWriter(c)
+	fmt.Fprintf(w, "conversation %s  (/new /switch <id> /quit)\n", convID)
+	sc := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Fprint(w, "> ")
+		if !sc.Scan() {
+			return sc.Err()
+		}
+		line := strings.TrimSpace(sc.Text())
+		next, err := chatLine(c, client, wsID, &convID, line)
+		if err != nil {
+			return err
+		}
+		if !next {
+			return nil
+		}
+	}
+}
+
+func chatLine(c *cli.Context, client *APIClient, wsID string, convID *string, line string) (bool, error) {
+	switch {
+	case line == "":
+		return true, nil
+	case line == "/quit" || line == "/exit":
+		return false, nil
+	case line == "/new":
+		var out map[string]any
+		if err := client.DoHTTP(BuildConversationCreate(wsID, "", "cli", "cli", wsID), &out); err != nil {
+			return false, err
+		}
+		*convID = mapStr(out, "id")
+		fmt.Fprintf(outWriter(c), "conversation %s\n", *convID)
+		return true, nil
+	case strings.HasPrefix(line, "/switch"):
+		id := strings.TrimSpace(strings.TrimPrefix(line, "/switch"))
+		if id == "" {
+			return true, fmt.Errorf("usage: /switch <id>")
+		}
+		if err := client.DoHTTP(BuildPointerPut("cli", wsID, id), nil); err != nil {
+			return false, err
+		}
+		*convID = id
+		fmt.Fprintf(outWriter(c), "switched → %s\n", id)
+		return true, nil
+	default:
+		return true, chatSend(c, client, wsID, *convID, line)
+	}
+}
+
+func chatSend(c *cli.Context, client *APIClient, wsID, convID, text string) error {
+	var out map[string]any
+	if err := client.DoHTTP(BuildAssistantSay(convID, text, wsID), &out); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "… %s\n", mapStr(out, "delivery"))
+	return waitAssistantReply(c, client, convID)
+}
+
+func waitAssistantReply(c *cli.Context, client *APIClient, convID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	seen := messageIDs(client, convID)
+	err := client.StreamEvents(ctx, BuildStreamPath("conversation.updated,agent.state", "0"), func(ev store.StreamEvent) error {
+		if ev.Topic == "agent.state" {
+			fmt.Fprint(outWriter(c), "thinking…\r")
+			return nil
+		}
+		if ev.Topic != "conversation.updated" || ev.ID != convID {
+			return nil
+		}
+		if printNewAssistant(c, client, convID, seen) {
+			cancel()
+		}
+		return nil
+	})
+	if err != nil && ctx.Err() == nil {
+		return err
+	}
+	return nil
+}
+
+func messageIDs(client *APIClient, convID string) map[string]struct{} {
+	out := map[string]struct{}{}
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := client.GetJSON(BuildConversationMessagesPath(convID, "", 200), &body); err != nil {
+		return out
+	}
+	for _, m := range body.Messages {
+		out[mapStr(m, "id")] = struct{}{}
+	}
+	return out
+}
+
+func printNewAssistant(c *cli.Context, client *APIClient, convID string, seen map[string]struct{}) bool {
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := client.GetJSON(BuildConversationMessagesPath(convID, "", 200), &body); err != nil {
+		return false
+	}
+	printed := false
+	for _, m := range body.Messages {
+		id := mapStr(m, "id")
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if mapStr(m, "role") != "assistant" {
+			continue
+		}
+		fmt.Fprintf(outWriter(c), "assistant: %s\n", mapStr(m, "text"))
+		printed = true
+	}
+	return printed
+}
+
+func ensureCLIConversation(client *APIClient, wsID string) (string, error) {
+	var ptr map[string]any
+	err := client.DoHTTP(BuildPointerGet("cli", wsID), &ptr)
+	if err == nil {
+		if id := mapStr(ptr, "conversation_id"); id != "" {
+			return id, nil
+		}
+	}
+	if err != nil && !strings.Contains(err.Error(), "404") {
+		return "", err
+	}
+	var created map[string]any
+	if err := client.DoHTTP(BuildConversationCreate(wsID, "", "cli", "cli", wsID), &created); err != nil {
+		return "", err
+	}
+	return mapStr(created, "id"), nil
 }

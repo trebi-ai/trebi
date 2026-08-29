@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/job"
@@ -18,14 +19,17 @@ import (
 
 // runCreateRequest is the POST /v1/runs body, shared with createRunFromJob.
 type runCreateRequest struct {
-	Workspace      string            `json:"workspace"`
-	Job            string            `json:"job"`
-	Kind           string            `json:"kind"`
-	Reason         string            `json:"reason"`
-	PromptOverride string            `json:"prompt_override"`
-	Inputs         map[string]string `json:"inputs"`
-	DryRun         bool              `json:"dry_run"`
-	Harness        string            `json:"harness"`
+	Workspace       string            `json:"workspace"`
+	Job             string            `json:"job"`
+	Kind            string            `json:"kind"`
+	Reason          string            `json:"reason"`
+	PromptOverride  string            `json:"prompt_override"`
+	ExtraPrompt     string            `json:"extra_prompt"`
+	ConversationID  string            `json:"conversation_id"`
+	Inputs          map[string]string `json:"inputs"`
+	DryRun          bool              `json:"dry_run"`
+	Harness         string            `json:"harness"`
+	conversationKey string
 }
 
 func (s *Server) routeRuns(mux *http.ServeMux) {
@@ -112,7 +116,12 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	if body.Workspace == "" {
 		body.Workspace = row.WorkspaceID
 	}
+	if err := s.bindConversation(r.Context(), &body); err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "conversation not found")
+		return
+	}
 	harness, prompt, spec := runSpec(row.Path, body.Harness, body.PromptOverride)
+	prompt = s.assistantPrompt(r.Context(), body, prompt)
 	if body.DryRun {
 		// B25: dry_run evaluates schedule when: gates without launching.
 		s.handleRunsDryRun(w, r, body.Workspace, body.Job, body.Kind, reason, harness, prompt, body.Inputs)
@@ -124,6 +133,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
+	}
+	if body.Kind == runs.KindAssistant {
+		s.log.Info("assistant.woken", "reason", string(reason), "channel", "")
 	}
 	writeJSON(w, http.StatusCreated, run)
 }
@@ -172,13 +184,15 @@ func runSpec(path, harness, prompt string) (string, string, *job.Job) {
 func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt string, spec *job.Job) runs.LaunchOpts {
 	lopts := runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID:   body.Workspace,
-			Job:           body.Job,
-			Kind:          body.Kind,
-			Reason:        reason,
-			Harness:       harness,
-			PromptPreview: prompt,
-			Inputs:        body.Inputs,
+			WorkspaceID:     body.Workspace,
+			Job:             body.Job,
+			Kind:            body.Kind,
+			Reason:          reason,
+			Harness:         harness,
+			PromptPreview:   prompt,
+			Inputs:          body.Inputs,
+			ConversationID:  body.ConversationID,
+			ConversationKey: body.conversationKey,
 		},
 		Prompt: prompt,
 	}
@@ -200,6 +214,43 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 		lopts.WorkingDir = os.TempDir()
 	}
 	return lopts
+}
+
+func (s *Server) bindConversation(ctx context.Context, body *runCreateRequest) error {
+	if body.ConversationID == "" || s.conv == nil {
+		return nil
+	}
+	conv, err := s.conv.Get(ctx, body.ConversationID)
+	if err != nil {
+		return err
+	}
+	body.conversationKey = conv.Key
+	return nil
+}
+
+func (s *Server) assistantPrompt(ctx context.Context, body runCreateRequest, base string) string {
+	if body.PromptOverride != "" {
+		return body.PromptOverride
+	}
+	if body.Kind != runs.KindAssistant || s.ws == nil {
+		return base
+	}
+	recap := ""
+	if body.ConversationID != "" && s.conv != nil {
+		recap = s.conv.Recap(ctx, body.ConversationID, 10)
+	}
+	composed, err := s.ws.ComposeWakePrompt(ctx, body.Workspace, workspaces.WakeOpts{
+		ExtraPrompt: body.ExtraPrompt,
+		Recap:       recap,
+		Message:     body.ExtraPrompt,
+	})
+	if err != nil || composed == "" {
+		if body.ExtraPrompt != "" {
+			return strings.TrimRight(base, "\n") + "\n" + body.ExtraPrompt
+		}
+		return base
+	}
+	return composed
 }
 
 func (s *Server) createRunFromJob(w http.ResponseWriter, r *http.Request, name string) {

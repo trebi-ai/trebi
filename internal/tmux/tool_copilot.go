@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -54,5 +55,7 @@ func (copilotTool) PostReadyDelay() time.Duration { return defaultPostReadyDelay
 func (copilotTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
 	return "", ErrTranscriptUnsupported
 }
+
+func (copilotTool) ParseTranscript(r io.Reader) ([]Turn, error) { return unsupportedParse(r) }
 
 func (copilotTool) Lifecycle() LifecycleAdapter { return nil }

@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -48,5 +49,7 @@ func (geminiTool) PostReadyDelay() time.Duration { return defaultPostReadyDelay 
 func (geminiTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
 	return "", ErrTranscriptUnsupported
 }
+
+func (geminiTool) ParseTranscript(r io.Reader) ([]Turn, error) { return unsupportedParse(r) }
 
 func (geminiTool) Lifecycle() LifecycleAdapter { return nil }

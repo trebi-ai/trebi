@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -165,27 +166,45 @@ func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")
 		return
 	}
-	if run.SessionID == "" {
+	data, tool, ok := s.readTranscript(run)
+	if !ok {
 		writeErr(w, http.StatusNotFound, "not_found", "no transcript")
 		return
 	}
+	if r.URL.Query().Get("raw") == "1" {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write(data)
+		return
+	}
+	turns, err := tool.ParseTranscript(bytes.NewReader(data))
+	if err != nil {
+		if errors.Is(err, tmux.ErrTranscriptUnsupported) {
+			writeErr(w, http.StatusNotFound, "not_found", "transcript unsupported")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
+}
+
+func (s *Server) readTranscript(run *runs.Run) ([]byte, tmux.Tool, bool) {
+	if run.SessionID == "" {
+		return nil, nil, false
+	}
 	tool, ok := tmux.ByName(run.Harness)
 	if !ok {
-		writeErr(w, http.StatusNotFound, "not_found", "transcript unsupported")
-		return
+		return nil, nil, false
 	}
 	path, err := tool.TranscriptPath(home.HarnessDir(run.Harness), "", run.SessionID)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", err.Error())
-		return
+		return nil, nil, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", err.Error())
-		return
+		return nil, nil, false
 	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	_, _ = w.Write(data) // client disconnect after headers is not actionable
+	return data, tool, true
 }
 
 func (s *Server) handleRunLog(w http.ResponseWriter, r *http.Request) {
@@ -498,59 +517,6 @@ func (s *Server) handleEventRetrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"retrigged": true, "event_id": id})
-}
-
-func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
-	cursor, ok := parseULIDCursor(w, r, "conversation")
-	if !ok {
-		return
-	}
-	limit := parseLimit(r)
-	q := `SELECT id, workspace_id, COALESCE(key,''), COALESCE(title,''), updated_at
-		FROM conversations WHERE 1=1`
-	args := []any{}
-	if cursor != "" {
-		q += ` AND id < ?`
-		args = append(args, cursor)
-	}
-	q += ` ORDER BY id DESC LIMIT ?`
-	args = append(args, limit)
-	rows, err := s.st.DB().QueryContext(r.Context(), q, args...)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	defer rows.Close()
-	list := []map[string]any{}
-	for rows.Next() {
-		var id, ws, key, title, updated string
-		if rows.Scan(&id, &ws, &key, &title, &updated) != nil {
-			continue
-		}
-		list = append(list, map[string]any{
-			"id": id, "workspace": ws, "key": key, "title": title, "updated_at": updated,
-		})
-	}
-	resp := map[string]any{"conversations": list}
-	if len(list) == limit {
-		resp["next_cursor"] = list[len(list)-1]["id"]
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func (s *Server) handleConversationGet(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var ws, key, title, updated string
-	err := s.st.DB().QueryRowContext(r.Context(), `
-		SELECT workspace_id, COALESCE(key,''), COALESCE(title,''), updated_at
-		FROM conversations WHERE id=?`, id).Scan(&ws, &key, &title, &updated)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "conversation not found")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id": id, "workspace": ws, "key": key, "title": title, "updated_at": updated,
-	})
 }
 
 func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {

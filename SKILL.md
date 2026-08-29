@@ -1,6 +1,6 @@
 ---
 name: trebi
-description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, skills, secrets, integrations, and event rules; drain the inbox or alerts; tail the event bus; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi inbox", "trebi bus", "trebi integration", "trebi doctor", "wake the assistant".
+description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, skills, secrets, integrations, and event rules; drain the inbox or alerts; tail the event bus; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi inbox", "trebi bus", "trebi integration", "trebi doctor", "wake the assistant", "trebi assistant say", "trebi assistant chat", "trebi conversation".
 ---
 
 # Trebi
@@ -16,6 +16,7 @@ Trebi is one binary that is both a daemon (`trebid`) and a CLI. The daemon owns 
 | file | any path inside a workspace (scripts, templates, eval files). Raw bytes; no job semantics. Job-scoped via `trebi job file`; workspace-wide via `trebi file` |
 | run | one launch of a job in a harness session (tmux locally) |
 | assistant | the singleton `TREBI.md` job of a workspace, kind=assistant |
+| conversation | a chat thread with the assistant; the CLI/UI are channels onto it |
 | integration | an external event producer (a `stream`, `cli`, or `mcp` command) |
 | trigger | a rule on a job: `cron`, `every`, or `event` from an integration |
 | skill | a stored `SKILL.md` the harness can load |
@@ -211,12 +212,24 @@ trebi assistant show
 trebi assistant wake                        # launch a kind=assistant run
 trebi assistant wake --test                 # evaluate gates only
 trebi assistant wake -e "focus on the CI failures" --attach
+trebi assistant say "what is blocked?"      # chat send; prints delivery=injected|queued
+trebi assistant chat                        # REPL: POST + SSE refetch; /new /switch /quit
 trebi assistant history --limit 20 --json
 trebi assistant memory show
 trebi assistant memory add --text "Reviewed the backlog"
 trebi assistant memory set --file ./MEMORY.md
 trebi assistant memory remove <entry-id>
 trebi assistant memory clear
+```
+
+Conversations are the chat object. The CLI channel pointer is per workspace.
+
+```bash
+trebi conversation list --json
+trebi conversation show <id>
+trebi conversation messages <id> --json
+trebi conversation new --title "CI firefight"
+trebi conversation switch <id>
 ```
 
 ## Inbox and alerts

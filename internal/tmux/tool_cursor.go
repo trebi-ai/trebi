@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -233,6 +234,8 @@ func (cursorTool) HandleStartup(screen string) []Action {
 }
 
 func (cursorTool) PostReadyDelay() time.Duration { return defaultPostReadyDelay }
+
+func (cursorTool) ParseTranscript(r io.Reader) ([]Turn, error) { return unsupportedParse(r) }
 
 func (cursorTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
 	if sessionID == "" {

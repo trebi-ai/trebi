@@ -3,6 +3,7 @@ package tmux
 import (
 	_ "embed"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,6 +67,8 @@ func (opencodeTool) TranscriptPath(home, workingDir, sessionID string) (string, 
 	// Prefer opencode export; no stable single-file path in all versions.
 	return "", ErrTranscriptUnsupported
 }
+
+func (opencodeTool) ParseTranscript(r io.Reader) ([]Turn, error) { return unsupportedParse(r) }
 
 func (opencodeTool) Lifecycle() LifecycleAdapter { return opencodeLifecycle{} }
 

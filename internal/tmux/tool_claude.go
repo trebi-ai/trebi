@@ -1,9 +1,11 @@
 package tmux
 
 import (
+	"bufio"
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,6 +89,10 @@ func (claudeTool) HandleStartup(screen string) []Action {
 }
 
 func (claudeTool) PostReadyDelay() time.Duration { return claudePostReadyDelay }
+
+func (claudeTool) ParseTranscript(r io.Reader) ([]Turn, error) {
+	return parseClaudeTranscript(r)
+}
 
 func (claudeTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
 	if sessionID == "" {
@@ -275,4 +281,127 @@ func (claudeLifecycle) materialize(dir string) error {
 		return fmt.Errorf("writing claude settings: %w", err)
 	}
 	return harness.WriteSchemaStamp(dir)
+}
+
+type claudeLine struct {
+	Type      string          `json:"type"`
+	Timestamp string          `json:"timestamp"`
+	Message   json.RawMessage `json:"message"`
+}
+
+type claudeMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+type claudeBlock struct {
+	Type    string          `json:"type"`
+	Text    string          `json:"text"`
+	Name    string          `json:"name"`
+	Input   json.RawMessage `json:"input"`
+	Content json.RawMessage `json:"content"`
+}
+
+func parseClaudeTranscript(r io.Reader) ([]Turn, error) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	var turns []Turn
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		t, ok := parseClaudeLine(line)
+		if ok {
+			turns = append(turns, t)
+		}
+	}
+	if turns == nil {
+		turns = []Turn{}
+	}
+	return turns, sc.Err()
+}
+
+func parseClaudeLine(line string) (Turn, bool) {
+	var raw claudeLine
+	if json.Unmarshal([]byte(line), &raw) != nil {
+		return Turn{}, false
+	}
+	switch raw.Type {
+	case "user", "assistant":
+	default:
+		return Turn{}, false
+	}
+	msg := decodeClaudeMessage(raw.Message)
+	turn := Turn{Role: raw.Type, At: parseClaudeTime(raw.Timestamp)}
+	text, tools := claudeContent(msg.Content)
+	turn.Text = text
+	turn.Tools = tools
+	if turn.Role == "user" && len(tools) > 0 && text == "" {
+		turn.Role = "tools"
+	}
+	if turn.Text == "" && len(turn.Tools) == 0 {
+		return Turn{}, false
+	}
+	return turn, true
+}
+
+func decodeClaudeMessage(raw json.RawMessage) claudeMessage {
+	var msg claudeMessage
+	if len(raw) == 0 {
+		return msg
+	}
+	_ = json.Unmarshal(raw, &msg)
+	return msg
+}
+
+func claudeContent(raw json.RawMessage) (string, []ToolCall) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var asString string
+	if json.Unmarshal(raw, &asString) == nil {
+		return asString, nil
+	}
+	var blocks []claudeBlock
+	if json.Unmarshal(raw, &blocks) != nil {
+		return "", nil
+	}
+	var texts []string
+	var tools []ToolCall
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			if b.Text != "" {
+				texts = append(texts, b.Text)
+			}
+		case "tool_use":
+			tools = append(tools, ToolCall{Name: b.Name, Input: string(b.Input)})
+		case "tool_result":
+			tools = append(tools, ToolCall{Name: "tool_result", Output: claudeToolResult(b.Content)})
+		}
+	}
+	return strings.Join(texts, "\n"), tools
+}
+
+func claudeToolResult(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return string(raw)
+}
+
+func parseClaudeTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		t, _ = time.Parse(time.RFC3339, s)
+	}
+	return t.UTC()
 }

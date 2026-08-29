@@ -3,6 +3,7 @@ package tmux
 import (
 	_ "embed"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +74,8 @@ func (codexTool) PostReadyDelay() time.Duration { return defaultPostReadyDelay }
 func (codexTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
 	return "", ErrTranscriptUnsupported
 }
+
+func (codexTool) ParseTranscript(r io.Reader) ([]Turn, error) { return unsupportedParse(r) }
 
 func (codexTool) Lifecycle() LifecycleAdapter { return codexLifecycle{} }
 

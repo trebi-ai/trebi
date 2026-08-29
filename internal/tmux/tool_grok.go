@@ -3,6 +3,7 @@ package tmux
 import (
 	_ "embed"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,6 +102,8 @@ func (grokTool) HandleStartup(screen string) []Action {
 }
 
 func (grokTool) PostReadyDelay() time.Duration { return defaultPostReadyDelay }
+
+func (grokTool) ParseTranscript(r io.Reader) ([]Turn, error) { return unsupportedParse(r) }
 
 func (grokTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
 	if sessionID == "" {
