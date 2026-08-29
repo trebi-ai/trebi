@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -48,8 +49,7 @@ func OpenPath(path string) (*Store, error) {
 }
 
 func ensureParent(path string) error {
-	dir := filepath.Dir(path)
-	return mkdirAll(dir)
+	return os.MkdirAll(filepath.Dir(path), 0o755)
 }
 
 // DB returns the underlying *sql.DB.

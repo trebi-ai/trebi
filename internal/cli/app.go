@@ -1,10 +1,13 @@
+// Package cli is the trebi command surface (API client + local service commands).
 package cli
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +17,64 @@ import (
 )
 
 const appStateKey = "trebi.cli.state"
+
+// NewApp builds the root CLI.
+func NewApp() *cli.App {
+	app := &cli.App{
+		Name:    "trebi",
+		Usage:   "Trebi — LLM task runner (daemon + CLI)",
+		Version: "0.1.0",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "workspace",
+				Aliases: []string{"w"},
+				EnvVars: []string{"TREBI_WORKSPACE"},
+				Usage:   "workspace id/name (sticky context if omitted; remote links route the API)",
+			},
+		},
+		Before: func(c *cli.Context) error {
+			if c.App.Metadata == nil {
+				c.App.Metadata = map[string]any{}
+			}
+			c.App.Metadata[appStateKey] = newAppState(c.String("workspace"))
+			return nil
+		},
+		Commands: []*cli.Command{
+			serviceCommand(),
+			workspaceCommand(),
+			jobCommand(),
+			runsCommand(),
+			doctorCommand(),
+			busCommand(),
+			configCommand(),
+			assistantCommand(),
+			integrationCommand(),
+			harnessCommand(),
+			skillCommand(),
+			secretCommand(),
+			inboxCommand(),
+			eventsCommand(),
+			fileCommand(),
+			conversationCommand(),
+			alertsCommand(),
+			agentHookCommand(),
+			queueCommand(),
+			rulesCommand(),
+		},
+	}
+	sortCommands(app.Commands)
+	return app
+}
+
+// sortCommands orders help subcommands alphabetically at every nesting level.
+func sortCommands(cmds []*cli.Command) {
+	sort.Sort(cli.CommandsByName(cmds))
+	for _, c := range cmds {
+		if c != nil && len(c.Subcommands) > 0 {
+			sortCommands(c.Subcommands)
+		}
+	}
+}
 
 // appState is the immutable startup context shared by all command actions.
 type appState struct {
@@ -185,4 +246,26 @@ func findLinked(all []LinkedWorkspace, idOrName string) (LinkedWorkspace, bool) 
 		}
 	}
 	return LinkedWorkspace{}, false
+}
+
+func outWriter(c *cli.Context) io.Writer {
+	if c != nil && c.App != nil && c.App.Writer != nil {
+		return c.App.Writer
+	}
+	return os.Stdout
+}
+
+func readFileOrStdin(path string) (string, error) {
+	if path != "" {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+	b, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }

@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 )
 
 // statusWriter records the response code for the audit log.
@@ -101,4 +104,34 @@ func allowQueryToken(r *http.Request) bool {
 		return true
 	}
 	return strings.HasPrefix(r.URL.Path, "/v1/runs/") && strings.HasSuffix(r.URL.Path, "/attach")
+}
+
+const (
+	defaultListLimit = 50
+	maxListLimit     = 200
+)
+
+// parseLimit reads ?limit= with default 50 and a hard cap of 200.
+func parseLimit(r *http.Request) int {
+	n, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if n <= 0 {
+		return defaultListLimit
+	}
+	if n > maxListLimit {
+		return maxListLimit
+	}
+	return n
+}
+
+// parseULIDCursor reads ?cursor=. Empty is ok; a malformed ULID is a 400.
+func parseULIDCursor(w http.ResponseWriter, r *http.Request, kind string) (string, bool) {
+	cursor := r.URL.Query().Get("cursor")
+	if cursor == "" {
+		return "", true
+	}
+	if _, err := ulid.Parse(cursor); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "malformed cursor: not a "+kind+" id")
+		return "", false
+	}
+	return cursor, true
 }

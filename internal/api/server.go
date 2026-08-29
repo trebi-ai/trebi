@@ -141,6 +141,23 @@ func (s *Server) Token() string { return s.token }
 // Alerts returns the alert service (tests).
 func (s *Server) Alerts() *alerts.Service { return s.alerts }
 
+// Handler returns the root mux.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	s.routeSystem(mux)
+	s.routeWorkspaces(mux)
+	s.routeFiles(mux)
+	s.routeJobs(mux)
+	s.routeRuns(mux)
+	s.routeQueue(mux)
+	s.routeEvents(mux)
+	s.routeConversations(mux)
+	s.routeIntegrations(mux)
+	s.routeHarness(mux)
+	s.routeSettings(mux)
+	return s.authMiddleware(s.auditMiddleware(mux))
+}
+
 // ListenAndServe binds addr (e.g. 127.0.0.1:0) and serves.
 func (s *Server) ListenAndServe(addr string) (actual string, err error) {
 	ln, err := net.Listen("tcp", addr)

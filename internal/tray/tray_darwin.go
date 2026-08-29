@@ -4,6 +4,7 @@ package tray
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,12 @@ import (
 	"github.com/caseymrm/menuet"
 	"github.com/trebi-ai/trebi/internal/home"
 )
+
+//go:embed assets/idle.png
+var idleIcon []byte
+
+//go:embed assets/alert.png
+var alertIcon []byte
 
 // Available is true on macOS with cgo (menuet).
 const Available = true

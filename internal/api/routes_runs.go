@@ -5,15 +5,19 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -292,4 +296,185 @@ func (s *Server) handleRunKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "exited"})
+}
+
+// handleRunsDryRun evaluates when: gates on schedule triggers without launching (B25).
+func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request,
+	workspace, jobName, kind string, reason runs.RunReason, harness, prompt string, inputs map[string]string,
+) {
+	ctx := r.Context()
+	// Resolve job file through the A4 resolver.
+	var j *job.Job
+	var path string
+	if row, err := s.findJobRow(ctx, workspace, jobName); err == nil {
+		path = row.Path
+		if parsed, perr := job.ParseFile(row.Path); perr == nil {
+			j = parsed
+		}
+		if workspace == "" {
+			workspace = row.WorkspaceID
+		}
+	}
+	verdicts := []map[string]any{}
+	fire := true
+	var vars map[string]string
+	if j != nil {
+		if harness == "" {
+			harness = j.Harness
+		}
+		if prompt == "" {
+			prompt = j.Prompt
+		}
+		verdicts, fire, vars = scheduleVerdicts(ctx, j)
+	}
+	// Apply extracted vars to prompt for preview
+	preview := prompt
+	for k, v := range vars {
+		preview = strings.ReplaceAll(preview, "{{"+k+"}}", v)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"dry_run":        true,
+		"fire":           fire,
+		"workspace":      workspace,
+		"job":            jobName,
+		"kind":           kind,
+		"reason":         reason,
+		"harness":        harness,
+		"prompt_preview": truncStr(preview, 500),
+		"inputs":         inputs,
+		"path":           path,
+		"when":           verdicts,
+		"vars":           vars,
+	})
+}
+
+// scheduleVerdicts evaluates the when: gate of each cron/every trigger.
+func scheduleVerdicts(ctx context.Context, j *job.Job) (verdicts []map[string]any, fire bool, vars map[string]string) {
+	verdicts = []map[string]any{}
+	fire = true
+	cwd := j.WorkingDir
+	if cwd == "" {
+		cwd = j.Dir
+	}
+	for _, tr := range j.Triggers {
+		if tr.Family != "cron" && tr.Family != "every" {
+			continue
+		}
+		if tr.When == nil {
+			verdicts = append(verdicts, map[string]any{
+				"family": tr.Family, "index": tr.Index, "fire": true, "skip": false,
+				"note": "no when: gate",
+			})
+			continue
+		}
+		wr := job.EvalWhen(ctx, tr.When, cwd, j.Env)
+		if wr.Vars != nil {
+			vars = wr.Vars
+		}
+		verdicts = append(verdicts, whenVerdict(tr, wr))
+		if wr.Skip || !wr.Fire || wr.Error != "" {
+			fire = false
+		}
+	}
+	return verdicts, fire, vars
+}
+
+// whenVerdict maps one when: evaluation to its wire object.
+func whenVerdict(tr job.Trigger, wr job.WhenResult) map[string]any {
+	v := map[string]any{
+		"family": tr.Family, "index": tr.Index,
+		"fire": wr.Fire, "skip": wr.Skip || !wr.Fire,
+	}
+	if wr.Error != "" {
+		v["error"] = wr.Error
+	}
+	if wr.Vars != nil {
+		v["vars"] = wr.Vars
+	}
+	if wr.Stdout != "" {
+		v["stdout"] = truncStr(wr.Stdout, 500)
+	}
+	return v
+}
+
+func truncStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+// handleRunAttach streams terminal bytes over WebSocket (D2).
+// Protocol: client may send {"type":"input","data":"..."} or {"type":"take_control"}.
+// Server sends {"type":"screen","data":"..."}.
+func (s *Server) handleRunAttach(w http.ResponseWriter, r *http.Request) {
+	run, err := s.runs.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	if run.TmuxSession == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "no tmux session")
+		return
+	}
+	conn, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	done := make(chan struct{})
+	go s.attachInputPump(conn, run.TmuxSession, done)
+	s.attachScreenLoop(r.Context(), conn, run.TmuxSession, done)
+}
+
+// attachInputPump forwards client input messages into tmux. It closes done
+// when the client read fails (disconnect).
+func (s *Server) attachInputPump(conn *websocket.Conn, session string, done chan<- struct{}) {
+	defer close(done)
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var m map[string]any
+		if json.Unmarshal(msg, &m) != nil {
+			continue
+		}
+		switch fmt.Sprint(m["type"]) {
+		case "input", "keys":
+			_ = tmux.Send(session, fmt.Sprint(m["data"]))
+		case "key":
+			_ = tmux.SendKey(session, fmt.Sprint(m["data"]))
+		case "take_control":
+			// acknowledged — full TUI already live in tmux
+		}
+	}
+}
+
+// attachScreenLoop sends screen snapshots until the client disconnects or
+// the tmux session ends.
+func (s *Server) attachScreenLoop(ctx context.Context, conn *websocket.Conn, session string, done <-chan struct{}) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			screen, err := tmux.ReadScreen(session)
+			if err != nil {
+				_ = conn.WriteJSON(map[string]any{"type": "error", "data": err.Error()})
+				return
+			}
+			if err := conn.WriteJSON(map[string]any{"type": "screen", "data": screen}); err != nil {
+				return
+			}
+			if !tmux.HasSession(session) {
+				_ = conn.WriteJSON(map[string]any{"type": "ended"})
+				return
+			}
+		}
+	}
 }
