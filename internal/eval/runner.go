@@ -78,6 +78,9 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 		}
 		r.runTask(ctx, t, rep, outRoot)
 	}
+	if err := ctx.Err(); err != nil && rep.Aborted == "" {
+		rep.Aborted = err.Error()
+	}
 	rep.finish()
 	if err := rep.write(outRoot); err != nil {
 		return rep, err
@@ -119,9 +122,15 @@ func (r *Runner) runTask(ctx context.Context, t *Task, rep *Report, outRoot stri
 	for _, name := range clients {
 		for i := 0; i < trials; i++ {
 			if err := ctx.Err(); err != nil {
+				if rep.Aborted == "" {
+					rep.Aborted = err.Error()
+				}
 				return
 			}
 			if r.opts.BudgetUSD > 0 && rep.CostUSD >= r.opts.BudgetUSD {
+				if rep.Aborted == "" {
+					rep.Aborted = fmt.Sprintf("budget cap %.4f", r.opts.BudgetUSD)
+				}
 				return
 			}
 			art := filepath.Join(outRoot, t.ID, name, fmt.Sprintf("%d", i))
@@ -130,6 +139,8 @@ func (r *Runner) runTask(ctx context.Context, t *Task, rep *Report, outRoot stri
 				tr = r.runOne(ctx, t, name, i, art+"-retry", false)
 			}
 			rep.add(*tr)
+			fmt.Fprintf(os.Stderr, "eval %s/%s#%d %s %.1fs\n", tr.TaskID, tr.Client, tr.Index, tr.Outcome, tr.DurationS)
+			_ = rep.checkpoint(outRoot)
 		}
 	}
 }
@@ -148,6 +159,7 @@ func (r *Runner) runOne(ctx context.Context, t *Task, clientName string, idx int
 	defer func() {
 		tr.DurationS = time.Since(start).Seconds()
 		env.stop(context.Background())
+		_ = tr.writeFile()
 	}()
 	dctx, cancel := context.WithTimeout(ctx, time.Duration(t.TimeoutS)*time.Second+30*time.Second)
 	defer cancel()

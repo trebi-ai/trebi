@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -72,6 +73,7 @@ type trialEnv struct {
 	apiURL  string
 	bin     string
 	cmd     *exec.Cmd
+	parentW *os.File
 	hashes  map[string]string
 }
 
@@ -128,18 +130,29 @@ func (e *trialEnv) startDaemon(ctx context.Context, harness, wsRoot string) erro
 		return err
 	}
 	_ = os.Symlink(logPath, filepath.Join(e.artDir, "daemon.log"))
-	cmd := exec.CommandContext(ctx, e.bin, "service", "daemon",
-		"--listen", "127.0.0.1:0", "--no-tray")
-	cmd.Env = e.environ()
+	r, w, err := os.Pipe()
+	if err != nil {
+		_ = logFile.Close()
+		return err
+	}
+	cmd := exec.Command(e.bin, "service", "daemon",
+		"--listen", "127.0.0.1:0", "--no-tray",
+		"--parent-pid", strconv.Itoa(os.Getpid()))
+	cmd.Env = append(e.environ(), "TREBI_PARENT_FD=3")
 	cmd.Dir = e.workdir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.ExtraFiles = []*os.File{r}
+	setProcGroup(cmd)
 	if err := cmd.Start(); err != nil {
+		_ = r.Close()
+		_ = w.Close()
 		_ = logFile.Close()
 		return fmt.Errorf("start daemon: %w", err)
 	}
+	_ = r.Close()
 	e.cmd = cmd
+	e.parentW = w
 	if err := e.waitAPIJSON(ctx, 20*time.Second); err != nil {
 		e.kill()
 		return err
@@ -172,6 +185,8 @@ func (e *trialEnv) waitAPIJSON(ctx context.Context, d time.Duration) error {
 }
 
 func (e *trialEnv) stop(ctx context.Context) {
+	e.closeParentPipe()
+	e.killTrialTmux()
 	if b, err := os.ReadFile(filepath.Join(e.workdir, "remote.pid")); err == nil {
 		var pid int
 		if _, err := fmt.Sscanf(string(b), "%d", &pid); err == nil && pid > 0 {
@@ -179,6 +194,7 @@ func (e *trialEnv) stop(ctx context.Context) {
 		}
 	}
 	if e.cmd == nil || e.cmd.Process == nil {
+		e.killPIDFile()
 		return
 	}
 	shutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -195,13 +211,59 @@ func (e *trialEnv) stop(ctx context.Context) {
 		e.kill()
 		<-done
 	}
+	e.killPIDFile()
+}
+
+func (e *trialEnv) closeParentPipe() {
+	if e.parentW == nil {
+		return
+	}
+	_ = e.parentW.Close()
+	e.parentW = nil
 }
 
 func (e *trialEnv) kill() {
-	if e.cmd == nil || e.cmd.Process == nil {
+	e.closeParentPipe()
+	killProcGroup(e.cmd)
+	e.killPIDFile()
+}
+
+func (e *trialEnv) killPIDFile() {
+	b, err := os.ReadFile(filepath.Join(e.home, "trebid.pid"))
+	if err != nil {
 		return
 	}
-	_ = syscall.Kill(-e.cmd.Process.Pid, syscall.SIGKILL)
+	var pid int
+	if _, err := fmt.Sscanf(string(b), "%d", &pid); err != nil || pid <= 0 {
+		return
+	}
+	if e.cmd != nil && e.cmd.Process != nil && e.cmd.Process.Pid == pid {
+		return
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+}
+
+func (e *trialEnv) killTrialTmux() {
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}").Output()
+	if err != nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		sess, path, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if !ok || sess == "" {
+			continue
+		}
+		if !strings.HasPrefix(path, e.workdir) && !strings.HasPrefix(path, e.home) {
+			continue
+		}
+		if seen[sess] {
+			continue
+		}
+		seen[sess] = true
+		_ = exec.Command("tmux", "kill-session", "-t", sess).Run()
+	}
 }
 
 func (e *trialEnv) run(ctx context.Context, name string, args ...string) error {

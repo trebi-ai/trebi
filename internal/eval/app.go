@@ -9,11 +9,21 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+type syncWriter struct{ f *os.File }
+
+func (s syncWriter) Write(p []byte) (int, error) {
+	n, err := s.f.Write(p)
+	_ = s.f.Sync()
+	return n, err
+}
+
 // NewApp builds the trebi-eval command surface.
 func NewApp() *cli.App {
 	return &cli.App{
-		Name:  "trebi-eval",
-		Usage: "live LLM-driven CLI eval suite for trebi (dev-only)",
+		Name:      "trebi-eval",
+		Usage:     "live LLM-driven CLI eval suite for trebi (dev-only)",
+		Writer:    syncWriter{os.Stdout},
+		ErrWriter: syncWriter{os.Stderr},
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "evals", Value: "evals", Usage: "evals/ directory"},
 			&cli.StringFlag{Name: "out", Value: "out", Usage: "report output directory"},

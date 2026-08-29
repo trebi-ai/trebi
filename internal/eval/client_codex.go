@@ -34,14 +34,14 @@ func (c *codexClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResul
 		"--skip-git-repo-check",
 		opts.Prompt,
 	}
-	cmd := exec.CommandContext(ctx, "codex", args...)
+	cmd := exec.Command("codex", args...)
 	cmd.Dir = opts.Workdir
 	cmd.Env = opts.Env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	start := time.Now()
-	err := cmd.Run()
+	err := runWithGroup(ctx, cmd)
 	raw := stdout.Bytes()
 	res := parseCodexJSON(raw)
 	res.Duration = time.Since(start)

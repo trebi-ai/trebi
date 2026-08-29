@@ -53,6 +53,24 @@ func (r *Report) finish() {
 	r.Cells = r.rollup()
 }
 
+// checkpoint writes a partial report so a killed runner still has scores.
+func (r *Report) checkpoint(dir string) error {
+	r.Finished = time.Now().UTC()
+	r.Cells = r.rollup()
+	return r.write(dir)
+}
+
+func (t *TrialResult) writeFile() error {
+	if t == nil || t.Dir == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(t, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(t.Dir, "trial.json"), data, 0o644)
+}
+
 func (r *Report) rollup() []Cell {
 	type key struct{ task, client string }
 	type acc struct {

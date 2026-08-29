@@ -42,6 +42,32 @@ func TestDaemonHeadlessForeignHome(t *testing.T) {
 	}
 }
 
+func TestDaemonExitsWhenParentPipeCloses(t *testing.T) {
+	bin := lookTrebi(t)
+	art := t.TempDir()
+	env := newTrialEnv(filepath.Join(art, "home"), filepath.Join(art, "work"), art, bin)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := env.startDaemon(ctx, "codex", env.workdir); err != nil {
+		t.Fatal(err)
+	}
+	if env.parentW == nil || env.cmd == nil || env.cmd.Process == nil {
+		t.Fatal("parent pipe or daemon missing")
+	}
+	if err := env.parentW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	env.parentW = nil
+	done := make(chan error, 1)
+	go func() { done <- env.cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		env.kill()
+		t.Fatal("daemon did not exit after parent pipe close")
+	}
+}
+
 func lookTrebi(t *testing.T) string {
 	t.Helper()
 	if p := os.Getenv("TREBI_BIN"); p != "" {

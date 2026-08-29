@@ -65,6 +65,26 @@ func TestReportWrite(t *testing.T) {
 	}
 }
 
+func TestReportCheckpointAndTrialFile(t *testing.T) {
+	t.Parallel()
+	r := newReport()
+	tr := TrialResult{TaskID: "a", Client: "codex", Outcome: OutcomePass, Dir: t.TempDir()}
+	r.add(tr)
+	dir := t.TempDir()
+	if err := r.checkpoint(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "report.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.writeFile(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(tr.Dir, "trial.json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReviewAgreement(t *testing.T) {
 	t.Parallel()
 	ttrue, ffalse := true, false

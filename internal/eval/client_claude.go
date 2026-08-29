@@ -36,14 +36,14 @@ func (c *claudeClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResu
 		"--max-turns", strconv.Itoa(maxTurns),
 		"--dangerously-skip-permissions",
 	}
-	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd := exec.Command("claude", args...)
 	cmd.Dir = opts.Workdir
 	cmd.Env = opts.Env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	start := time.Now()
-	err := cmd.Run()
+	err := runWithGroup(ctx, cmd)
 	raw := stdout.Bytes()
 	res := parseClaudeStream(raw)
 	res.Duration = time.Since(start)

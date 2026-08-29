@@ -161,6 +161,11 @@ func serviceDaemonSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "listen", Value: "127.0.0.1:0", Usage: "HTTP listen address"},
 				&cli.BoolFlag{Name: "shadow", Usage: "shadow mode: drain + no integrations/schedules"},
 				&cli.BoolFlag{Name: "no-tray", Usage: "disable menu-bar tray (headless)"},
+				&cli.IntFlag{
+					Name:    "parent-pid",
+					EnvVars: []string{"TREBI_PARENT_PID"},
+					Usage:   "exit when this pid dies (eval harness; also TREBI_PARENT_FD pipe)",
+				},
 				&cli.StringFlag{
 					Name:    "log-level",
 					EnvVars: []string{"TREBI_LOG_LEVEL"},
@@ -443,6 +448,7 @@ func runDaemon(parent context.Context, c *cli.Context) error {
 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	startParentWatch(cancel, c.Int("parent-pid"))
 	cp.Start(ctx)
 
 	addr, err := srv.ListenAndServe(c.String("listen"))
