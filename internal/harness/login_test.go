@@ -100,6 +100,7 @@ func TestLoginSessionMachine(t *testing.T) {
 	st := openStore(t)
 	drv := &fakeDriver{probe: AuthStatus{Tool: "claude", Status: AuthOK}}
 	svc := New(st, drv, Options{LoginMaxAge: 5 * time.Second})
+	t.Cleanup(svc.StopLoginWatchers)
 	ctx := context.Background()
 
 	sess, err := svc.StartLogin(ctx, "claude", "")
@@ -156,6 +157,42 @@ func TestLoginSessionMachine(t *testing.T) {
 	}
 }
 
+func TestLoginCancelAndTimeout(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	drv := &fakeDriver{probe: AuthStatus{Tool: "claude", Status: AuthMissing}}
+	svc := New(st, drv, Options{LoginMaxAge: 200 * time.Millisecond})
+	t.Cleanup(svc.StopLoginWatchers)
+	ctx := context.Background()
+	if _, err := svc.StartLogin(ctx, "claude", ""); err != nil {
+		t.Fatal(err)
+	}
+	svc.CancelLogin("claude")
+	got := svc.GetLogin("claude")
+	if got.Phase != PhaseFailed {
+		t.Fatalf("cancel: %+v", got)
+	}
+
+	st2 := openStore(t)
+	drv2 := &fakeDriver{probe: AuthStatus{Tool: "claude", Status: AuthMissing}, has: true}
+	svc2 := New(st2, drv2, Options{LoginMaxAge: 150 * time.Millisecond})
+	t.Cleanup(svc2.StopLoginWatchers)
+	if _, err := svc2.StartLogin(ctx, "claude", ""); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got = svc2.GetLogin("claude")
+		if got.Phase == PhaseFailed {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got.Phase != PhaseFailed {
+		t.Fatalf("timeout want failed, got %+v", got)
+	}
+}
+
 func TestLoginLocalOnly(t *testing.T) {
 	t.Parallel()
 	st := openStore(t)
@@ -208,6 +245,7 @@ func TestLoginCapturesSetupToken(t *testing.T) {
 		},
 	}
 	svc := New(st, drv, Options{LoginMaxAge: 5 * time.Second})
+	t.Cleanup(svc.StopLoginWatchers)
 	if _, err := svc.StartLogin(ctx, "claude", ""); err != nil {
 		t.Fatal(err)
 	}

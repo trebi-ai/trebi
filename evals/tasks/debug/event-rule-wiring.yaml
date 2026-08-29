@@ -1,0 +1,22 @@
+id: event-rule-wiring
+title: Wire events from tick to job ingest
+tier: debug
+clients: [claude, codex]
+trials: 3
+timeout_s: 400
+server_harness: codex
+seed: seeds/ops-tick.sh
+prompt: |
+  Integration "tick" (cli type) is already defined. Wire events from tick
+  to job "ingest" with a match rule that always matches, then test it with
+  trebi rules fire so a run is queued or launched.
+checks:
+  - name: trigger present
+    cmd: trebi job show ingest --json
+    jq: '(.markdown | test("tick")) or ((.triggers // []) | length >= 1)'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+oracle: oracles/event-rule-wiring.md

@@ -1,0 +1,22 @@
+id: remote-link
+title: Link the other daemon as a remote workspace
+tier: operate
+clients: [claude, codex]
+trials: 3
+timeout_s: 400
+server_harness: codex
+seed: seeds/remote-peer.sh
+prompt: |
+  A second trebi daemon is already running. Its API URL is in remote.url
+  and its token is in remote.token in this working directory. Link it as
+  a remote workspace named "remote" and list its jobs.
+checks:
+  - name: linked entry
+    cmd: trebi workspace list --json
+    jq: '[.workspaces[].name] | index("remote") != null'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+oracle: oracles/remote-link.md

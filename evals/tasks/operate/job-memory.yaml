@@ -1,0 +1,21 @@
+id: job-memory
+title: Record two durable facts in the job's memory
+tier: operate
+clients: [claude, codex]
+trials: 3
+timeout_s: 300
+server_harness: codex
+seed: seeds/ops-report.sh
+prompt: |
+  Record two durable facts in job "report"'s memory: "Shipped v1" and
+  "Pager rotation on Fridays".
+checks:
+  - name: both entries
+    cmd: trebi job memory show report --json
+    jq: '(.content // .entries[]?.text // "") as $c | ($c | tostring | test("Shipped v1")) and ($c | tostring | test("Pager rotation"))'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+oracle: oracles/job-memory.md

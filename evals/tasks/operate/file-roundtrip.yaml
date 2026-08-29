@@ -1,0 +1,21 @@
+id: file-roundtrip
+title: Upload a CSV, read it back, delete it
+tier: operate
+clients: [claude, codex]
+trials: 3
+timeout_s: 300
+server_harness: codex
+seed: seeds/ops.sh
+prompt: |
+  In workspace ops, upload a small CSV as data.csv, read it back, then
+  delete it using If-Match. Do not leave the file behind.
+checks:
+  - name: file gone
+    cmd: trebi file ls --json
+    jq: '[.files[]?.path // empty] | map(select(. == "data.csv")) | length == 0'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+oracle: oracles/file-roundtrip.md

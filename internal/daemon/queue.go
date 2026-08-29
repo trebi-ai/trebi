@@ -35,8 +35,46 @@ func (c *ControlPlane) queueWorker(ctx context.Context) {
 }
 
 func (c *ControlPlane) drainQueue(ctx context.Context) {
+	c.releaseAuthBlocks(ctx)
 	for _, l := range c.queueLanes(ctx) {
 		c.dispatchLane(ctx, l)
+	}
+}
+
+// releaseAuthBlocks requeues items blocked on auth_missing once the harness
+// stamp is ok again — recovery must drain without a manual requeue.
+func (c *ControlPlane) releaseAuthBlocks(ctx context.Context) {
+	rows, err := c.Store.DB().QueryContext(ctx, `
+		SELECT id, workspace_id, job FROM event_queue
+		WHERE status='blocked' AND block_reason=?`, string(dispatch.BlockAuthMissing))
+	if err != nil {
+		c.log.Warn("list auth-blocked queue", "error", err)
+		return
+	}
+	defer rows.Close()
+	type blocked struct{ id, ws, job string }
+	var list []blocked
+	for rows.Next() {
+		var r blocked
+		if rows.Scan(&r.id, &r.ws, &r.job) == nil {
+			list = append(list, r)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		c.log.Warn("list auth-blocked queue", "error", err)
+		return
+	}
+	for _, r := range list {
+		j, _ := c.findJob(ctx, r.ws, r.job)
+		name := "claude"
+		if j != nil && j.Harness != "" {
+			name = j.Harness
+		}
+		if c.harnessBlocked(ctx, name) == "" {
+			if err := c.queue.Requeue(ctx, r.id); err != nil {
+				c.log.Warn("requeue after auth", "queue_id", r.id, "error", err)
+			}
+		}
 	}
 }
 

@@ -1,0 +1,200 @@
+package eval
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+// Rubric is one named judge dimension loaded from rubrics/common.md.
+type Rubric struct {
+	Name string
+	Min  float64
+	Text string
+}
+
+type judgeRunner struct {
+	model   string
+	rubrics map[string]Rubric
+}
+
+func newJudge(evalsDir, model string) (*judgeRunner, error) {
+	if model == "" {
+		model = defaultJudgeModel
+	}
+	r := &judgeRunner{model: model, rubrics: map[string]Rubric{}}
+	path := filepath.Join(evalsDir, "rubrics", "common.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return r, nil
+	}
+	r.rubrics = parseRubrics(string(data))
+	return r, nil
+}
+
+func (j *judgeRunner) resolve(d JudgeDim) (JudgeDim, float64) {
+	min := 0.7
+	if d.Use != "" {
+		if r, ok := j.rubrics[d.Use]; ok {
+			if d.Name == "" {
+				d.Name = r.Name
+			}
+			if d.Rubric == "" {
+				d.Rubric = r.Text
+			}
+			min = r.Min
+		} else if d.Name == "" {
+			d.Name = d.Use
+		}
+	}
+	if d.Min != nil {
+		min = *d.Min
+	}
+	return d, min
+}
+
+func (j *judgeRunner) scoreAll(ctx context.Context, dims []JudgeDim, transcript, snapshot []byte) []JudgeResult {
+	out := make([]JudgeResult, 0, len(dims))
+	for _, d := range dims {
+		out = append(out, j.score(ctx, d, transcript, snapshot))
+	}
+	return out
+}
+
+func (j *judgeRunner) score(ctx context.Context, d JudgeDim, transcript, snapshot []byte) JudgeResult {
+	d, min := j.resolve(d)
+	res := JudgeResult{Name: d.Name, Min: min}
+	v, err := j.call(ctx, d, transcript, snapshot)
+	if err != nil {
+		res.Unknown = true
+		res.Pass = true // unknown does not fail the trial
+		res.Evidence = err.Error()
+		return res
+	}
+	res.Score = v.Score
+	res.Verdict = v.Verdict
+	res.Evidence = v.Evidence
+	res.Unknown = v.Unknown
+	if v.Unknown {
+		res.Pass = true
+		return res
+	}
+	res.Pass = v.Score+1e-9 >= min && v.Verdict != "fail"
+	return res
+}
+
+type judgeVerdict struct {
+	Score    float64 `json:"score"`
+	Verdict  string  `json:"verdict"`
+	Evidence string  `json:"evidence"`
+	Unknown  bool    `json:"unknown"`
+}
+
+func (j *judgeRunner) call(ctx context.Context, d JudgeDim, transcript, snapshot []byte) (judgeVerdict, error) {
+	prompt := judgePrompt(d, transcript, snapshot)
+	raw, err := j.invoke(ctx, prompt)
+	if err != nil {
+		return judgeVerdict{}, err
+	}
+	v, err := parseVerdict(raw)
+	if err == nil {
+		return v, nil
+	}
+	raw, err2 := j.invoke(ctx, prompt+"\n\nYour previous reply was not valid JSON. Reply with JSON only.")
+	if err2 != nil {
+		return judgeVerdict{}, err
+	}
+	return parseVerdict(raw)
+}
+
+func (j *judgeRunner) invoke(ctx context.Context, prompt string) ([]byte, error) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		return nil, fmt.Errorf("judge: claude not on PATH")
+	}
+	args := []string{"-p", prompt, "--output-format", "text", "--dangerously-skip-permissions"}
+	if j.model != "" {
+		args = append(args, "--model", j.model)
+	}
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("judge invoke: %w\n%s", err, stderr.Bytes())
+	}
+	return stdout.Bytes(), nil
+}
+
+func judgePrompt(d JudgeDim, transcript, snapshot []byte) string {
+	var b strings.Builder
+	b.WriteString("You score one dimension of an LLM agent transcript that operated trebi via its CLI.\n")
+	b.WriteString("Reply with JSON only: {\"score\":0.0-1.0,\"verdict\":\"pass\"|\"fail\",\"evidence\":\"cite lines\",\"unknown\":false}.\n")
+	b.WriteString("If you cannot tell, set unknown=true. Cite evidence. Do not grade other dimensions.\n\n")
+	b.WriteString("Dimension: " + d.Name + "\n\nRubric:\n" + d.Rubric + "\n\n")
+	b.WriteString("Transcript:\n")
+	b.Write(truncate(transcript, 80_000))
+	b.WriteString("\n\nState snapshot:\n")
+	b.Write(truncate(snapshot, 40_000))
+	return b.String()
+}
+
+func parseVerdict(raw []byte) (judgeVerdict, error) {
+	s := strings.TrimSpace(string(raw))
+	if i := strings.Index(s, "{"); i >= 0 {
+		if j := strings.LastIndex(s, "}"); j > i {
+			s = s[i : j+1]
+		}
+	}
+	var v judgeVerdict
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return v, fmt.Errorf("verdict json: %w (%s)", err, truncate([]byte(s), 200))
+	}
+	return v, nil
+}
+
+func parseRubrics(md string) map[string]Rubric {
+	out := map[string]Rubric{}
+	var cur Rubric
+	flush := func() {
+		if cur.Name == "" {
+			return
+		}
+		cur.Text = strings.TrimSpace(cur.Text)
+		if cur.Min == 0 {
+			cur.Min = 0.7
+		}
+		out[cur.Name] = cur
+		cur = Rubric{}
+	}
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			flush()
+			cur.Name = strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "**min:**") {
+			var min float64
+			if _, err := fmt.Sscanf(strings.TrimSpace(line), "**min:** %f", &min); err == nil {
+				cur.Min = min
+			}
+			continue
+		}
+		if cur.Name != "" {
+			cur.Text += line + "\n"
+		}
+	}
+	flush()
+	return out
+}
+
+func truncate(b []byte, n int) []byte {
+	if len(b) <= n {
+		return b
+	}
+	return b[:n]
+}

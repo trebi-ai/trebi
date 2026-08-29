@@ -13,11 +13,11 @@ import (
 // When URL is set, the workspace lives on a remote trebid and all API
 // traffic goes there — no separate --remote flag.
 type StickyContext struct {
-	WorkspaceID string `yaml:"workspace_id"`
-	Name        string `yaml:"name,omitempty"`
-	Path        string `yaml:"path,omitempty"`
-	URL         string `yaml:"url,omitempty"`   // empty = local daemon
-	Token       string `yaml:"token,omitempty"` // with URL only
+	WorkspaceID string `yaml:"workspace_id" json:"workspace_id"`
+	Name        string `yaml:"name,omitempty" json:"name,omitempty"`
+	Path        string `yaml:"path,omitempty" json:"path,omitempty"`
+	URL         string `yaml:"url,omitempty" json:"url,omitempty"`     // empty = local daemon
+	Token       string `yaml:"token,omitempty" json:"token,omitempty"` // with URL only
 }
 
 // LinkedWorkspace is a client-side pointer to a workspace on a remote daemon.

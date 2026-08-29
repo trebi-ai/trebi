@@ -324,6 +324,43 @@ func TestParseExpiryMS(t *testing.T) {
 	}
 }
 
+func TestProbeLadder_CodexGemini(t *testing.T) {
+	isolateHome(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Tools.SetPin(Codex, &config.ToolPin{Auth: harness.AuthModeSeparate})
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	t.Setenv("PATH", t.TempDir()+"/no-such-bin")
+
+	st := codexTool{}.ProbeAuth(ctx)
+	if st.Status != harness.AuthMissing {
+		t.Fatalf("codex empty: %s", st.Status)
+	}
+	if err := os.MkdirAll(config.SecretsDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.WriteSecretEnv(Codex, map[string]string{"OPENAI_API_KEY": "sk"}); err != nil {
+		t.Fatal(err)
+	}
+	st = codexTool{}.ProbeAuth(ctx)
+	if st.Status != harness.AuthOK {
+		t.Fatalf("codex key: %+v", st)
+	}
+
+	if err := harness.WriteSecretEnv(Gemini, map[string]string{"GEMINI_API_KEY": "gk"}); err != nil {
+		t.Fatal(err)
+	}
+	st = geminiTool{}.ProbeAuth(ctx)
+	if st.Status != harness.AuthOK {
+		t.Fatalf("gemini key: %+v", st)
+	}
+}
+
 func TestExtractLoginGoldens(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

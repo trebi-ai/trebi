@@ -117,6 +117,7 @@ func (c *ControlPlane) probeExpiring(ctx context.Context) {
 }
 
 func (c *ControlPlane) syncCredWatch(w *fsnotify.Watcher) {
+	userHome, _ := os.UserHomeDir()
 	seen := map[string]struct{}{}
 	for _, n := range harness.Names() {
 		caps := c.Harness.Caps(n)
@@ -124,6 +125,14 @@ func (c *ControlPlane) syncCredWatch(w *fsnotify.Watcher) {
 			continue
 		}
 		dir := filepath.Dir(caps.CredFile)
+		if fi, err := os.Stat(caps.CredFile); err == nil && fi.IsDir() {
+			dir = caps.CredFile // credential location is a directory (copilot)
+		}
+		// Never watch the user home: kqueue opens every entry, which trips
+		// macOS TCC prompts for Desktop/Documents/Downloads.
+		if userHome != "" && filepath.Clean(dir) == filepath.Clean(userHome) {
+			continue
+		}
 		if _, ok := seen[dir]; ok {
 			continue
 		}
@@ -136,16 +145,17 @@ func (c *ControlPlane) syncCredWatch(w *fsnotify.Watcher) {
 }
 
 func credFileHarness(path string) string {
-	base := filepath.Base(path)
-	switch base {
+	if filepath.Base(filepath.Dir(path)) == ".copilot" {
+		return "copilot"
+	}
+	switch filepath.Base(path) {
 	case ".credentials.json":
 		return "claude"
 	case "oauth_creds.json":
 		return "gemini"
 	case "auth.json":
 		// disambiguate by parent
-		parent := filepath.Base(filepath.Dir(path))
-		switch parent {
+		switch filepath.Base(filepath.Dir(path)) {
 		case "codex":
 			return "codex"
 		case "grok":
@@ -154,11 +164,6 @@ func credFileHarness(path string) string {
 			return "pi"
 		case "opencode":
 			return "opencode"
-		}
-		for _, n := range []string{"codex", "grok", "pi", "opencode"} {
-			if filepath.Base(filepath.Dir(path)) == n {
-				return n
-			}
 		}
 	}
 	return ""

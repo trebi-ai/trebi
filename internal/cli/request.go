@@ -60,6 +60,15 @@ func BuildRunMessage(id, text string) HTTPRequest {
 	}
 }
 
+// BuildRunTranscript builds GET /v1/runs/{id}/transcript.
+func BuildRunTranscript(id string, raw bool) HTTPRequest {
+	path := "/v1/runs/" + url.PathEscape(id) + "/transcript"
+	if raw {
+		path += "?raw=1"
+	}
+	return HTTPRequest{Method: "GET", Path: path}
+}
+
 // BuildRunsStats builds GET /v1/stats/runs.
 func BuildRunsStats() HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/stats/runs"}

@@ -1,0 +1,24 @@
+id: job-schedule
+title: Put report on a daily 07:00 schedule, then pause it
+tier: operate
+clients: [claude, codex]
+trials: 3
+timeout_s: 300
+server_harness: codex
+seed: seeds/ops-report.sh
+prompt: |
+  Job "report" already exists in workspace ops. Put it on a daily 07:00
+  schedule, then pause it.
+checks:
+  - name: trigger present
+    cmd: trebi job show report --json
+    jq: '.markdown | test("0 7") or test("7 \\* \\*")'
+  - name: job disabled
+    cmd: trebi job show report --json
+    jq: '.active == false'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+oracle: oracles/job-schedule.md

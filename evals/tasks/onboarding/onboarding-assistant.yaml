@@ -1,0 +1,27 @@
+id: onboarding-assistant
+title: Set up the workspace assistant and send a first message
+tier: onboarding
+clients: [claude, codex]
+trials: 3
+timeout_s: 600
+server_harness: codex
+prompt: |
+  Create a workspace named "ops" if needed, set up the workspace assistant
+  (TREBI.md), and send it a first message asking what this workspace is for.
+  Show me the reply.
+checks:
+  - name: TREBI.md at root
+    file_exists: "{workspace}/TREBI.md"
+  - name: assistant run recorded
+    cmd: trebi runs list --kind assistant --json
+    jq: '.runs | length >= 1'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+    - name: user answer
+      min: 0.7
+      rubric: |
+        The final message surfaces a real assistant reply, not a fabricated one.
+oracle: oracles/onboarding-assistant.md

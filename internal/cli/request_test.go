@@ -40,6 +40,18 @@ func TestBuildRunsCreate(t *testing.T) {
 	}
 }
 
+func TestBuildRunTranscript(t *testing.T) {
+	t.Parallel()
+	req := BuildRunTranscript("01ABC", false)
+	if req.Method != "GET" || req.Path != "/v1/runs/01ABC/transcript" {
+		t.Fatalf("parsed: %+v", req)
+	}
+	raw := BuildRunTranscript("01ABC", true)
+	if raw.Path != "/v1/runs/01ABC/transcript?raw=1" {
+		t.Fatalf("raw: %s", raw.Path)
+	}
+}
+
 func TestBuildRunsListPath(t *testing.T) {
 	t.Parallel()
 	path := BuildRunsListPath("running", "demo", "ws1", "job", "01ABC", "claude", "sonnet", 20)

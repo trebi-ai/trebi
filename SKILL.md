@@ -184,6 +184,8 @@ trebi runs list --status running --job my-job --limit 50
 trebi runs list --harness claude --model <model> --kind assistant
 trebi runs show <id>
 trebi runs timeline <id>                           # ordered events of the run
+trebi runs transcript <id>                         # parsed turns (JSON)
+trebi runs transcript <id> --raw                   # raw ndjson from the harness
 trebi runs stats                                   # totals and currently running
 trebi runs agents                                  # live in-memory agent state
 trebi runs attach <id>                             # tmux locally, WebSocket remotely

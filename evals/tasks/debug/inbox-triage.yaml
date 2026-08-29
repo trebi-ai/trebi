@@ -1,0 +1,22 @@
+id: inbox-triage
+title: Drain the inbox
+tier: debug
+clients: [claude, codex]
+trials: 3
+timeout_s: 400
+server_harness: codex
+seed: seeds/ops-inbox.sh
+prompt: |
+  Drain the trebi inbox. Resolve unread failure items. If an approval is
+  present, decide it (allow or deny) with an explicit decision. Leave no
+  unread items.
+checks:
+  - name: inbox empty of unread
+    cmd: trebi inbox list --status unread --json
+    jq: '(.items // []) | length == 0'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+oracle: oracles/inbox-triage.md

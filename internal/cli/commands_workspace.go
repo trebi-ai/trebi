@@ -14,7 +14,11 @@ import (
 
 // wsRow is one row of workspace list output (JSON keys stay exported).
 type wsRow struct {
-	ID, Name, Path, Origin, Active string
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Origin string `json:"origin"`
+	Active string `json:"active"`
 }
 
 func workspaceCommand() *cli.Command {

@@ -2,10 +2,13 @@ package harness
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -64,6 +67,62 @@ func TestLogoutDoesNotAlert(t *testing.T) {
 	}
 	if countTopic(t, st, "auth.probe.failed") != 0 {
 		t.Fatal("logout must not emit auth.probe.failed")
+	}
+}
+
+func TestLogoutSeparateRemovesFilesKeepsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	hdir := config.HarnessDir("claude")
+	if err := os.MkdirAll(hdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(hdir, "auth.json")
+	if err := os.WriteFile(real, []byte(`{"ok":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(hdir, ".credentials.json")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(config.SecretsDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSecretEnv("claude", map[string]string{"ANTHROPIC_API_KEY": "sk"}); err != nil {
+		t.Fatal(err)
+	}
+
+	st := openStore(t)
+	svc := New(st, nil, Options{})
+	ctx := context.Background()
+	if _, err := Stamp(ctx, st, AuthStatus{Tool: "claude", Status: AuthOK}, SourceLaunch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Logout(ctx, "claude", AuthModeSeparate, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(real); !os.IsNotExist(err) {
+		t.Fatalf("real cred file should be gone: %v", err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("symlink should remain: %v", err)
+	}
+	env, _ := LoadSecretEnv("claude")
+	if env["ANTHROPIC_API_KEY"] != "" {
+		t.Fatalf("secret env %v", env)
+	}
+	if countTopic(t, st, "auth.probe.failed") != 0 {
+		t.Fatal("logout must not emit auth.probe.failed")
+	}
+	row, err := svc.GetState(ctx, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !row.AuthOK.Valid || row.AuthOK.Int64 != 0 {
+		t.Fatalf("stamp %+v", row)
 	}
 }
 

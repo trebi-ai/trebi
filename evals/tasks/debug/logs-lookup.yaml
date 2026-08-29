@@ -1,0 +1,26 @@
+id: logs-lookup
+title: Find the error line in the daemon logs
+tier: debug
+clients: [claude, codex]
+trials: 3
+timeout_s: 300
+server_harness: codex
+seed: seeds/ops-logs.sh
+prompt: |
+  Find the error or not_found line in the daemon logs from the last hour
+  that mentions eval-log-canary-xyzzy. Quote the real line.
+checks:
+  - name: line still greppable
+    cmd: trebi service logs -n 200 --grep eval-log-canary-xyzzy
+    stdout_contains: "eval-log-canary-xyzzy"
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+    - name: quotes the line
+      min: 0.7
+      rubric: |
+        The final answer quotes a log line containing eval-log-canary-xyzzy.
+        Inventing a line is a fail.
+oracle: oracles/logs-lookup.md

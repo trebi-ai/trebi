@@ -56,6 +56,16 @@ func runsCommand() *cli.Command {
 				},
 			},
 			{
+				Name:      "transcript",
+				Usage:     "show run transcript (parsed turns)",
+				ArgsUsage: "<id>",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON (default)"},
+					&cli.BoolFlag{Name: "raw", Usage: "print raw ndjson transcript"},
+				},
+				Action: runRunsTranscript,
+			},
+			{
 				Name:      "kill",
 				Usage:     "kill one or more running runs",
 				ArgsUsage: "<id>...",
@@ -159,6 +169,33 @@ func runRunsTimeline(c *cli.Context) error {
 		return enc.Encode(body)
 	}
 	return renderTimeline(outWriter(c), body)
+}
+
+func runRunsTranscript(c *cli.Context) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi runs transcript <id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	req := BuildRunTranscript(id, c.Bool("raw"))
+	if c.Bool("raw") {
+		raw, err := client.GetRaw(req.Path)
+		if err != nil {
+			return err
+		}
+		_, err = outWriter(c).Write(raw)
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(req, &body); err != nil {
+		return err
+	}
+	enc := json.NewEncoder(outWriter(c))
+	enc.SetIndent("", "  ")
+	return enc.Encode(body)
 }
 
 func runRunsKill(c *cli.Context) error {

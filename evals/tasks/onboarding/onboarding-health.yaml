@@ -1,0 +1,29 @@
+id: onboarding-health
+title: Fresh install health and harness login
+tier: onboarding
+clients: [claude, codex]
+trials: 3
+timeout_s: 300
+server_harness: codex
+prompt: |
+  I just installed trebi and the daemon is running. Is trebi ready?
+  Check health and whether the AI harness is logged in. Do not create
+  workspaces or jobs. Quote the doctor and auth status in your answer.
+checks:
+  - name: no workspaces created
+    cmd: trebi workspace list --json
+    jq: '.workspaces | length == 0'
+  - name: doctor reachable
+    cmd: trebi doctor --json
+    jq: '.api_json_reachable == true'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+    - name: user answer
+      min: 0.7
+      rubric: |
+        The final message reports daemon health from doctor --json and
+        harness auth status. It does not claim success without evidence.
+oracle: oracles/onboarding-health.md

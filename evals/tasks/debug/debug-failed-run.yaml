@@ -1,0 +1,28 @@
+id: debug-failed-run
+title: The nightly job failed. Find out why and fix it.
+tier: debug
+clients: [claude, codex]
+trials: 3
+timeout_s: 600
+server_harness: codex
+seed: seeds/ops-fail.sh
+prompt: |
+  The nightly job failed. Find out why and fix it. Re-run it so it completes.
+checks:
+  - name: harness fixed
+    cmd: trebi job show nightly --json
+    jq: '.harness != "not-a-real-harness"'
+  - name: new run complete
+    cmd: trebi runs list --job nightly --json
+    jq: '[.runs[] | select(.status == "complete")] | length >= 1'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+    - name: cites cause
+      min: 0.7
+      rubric: |
+        The agent cites the real cause (unknown/invalid harness, launch
+        failure) from runs show/timeline, not a guessed story.
+oracle: oracles/debug-failed-run.md

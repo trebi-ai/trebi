@@ -19,6 +19,26 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+func TestRunsTranscript(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/v1/runs/01ABC/transcript" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"run_id":"01ABC","turns":[{"role":"assistant","text":"hi"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	out, err := runCLI(t, client, "runs", "transcript", "01ABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"run_id": "01ABC"`) {
+		t.Fatalf("out %q", out)
+	}
+}
+
 func TestRunsMessageJoinAndError(t *testing.T) {
 
 	var gotBody string
@@ -605,5 +625,19 @@ func TestJobFileListAndPut(t *testing.T) {
 	}
 	if !strings.Contains(gotRawQuery, "workspace=ws1") {
 		t.Fatalf("put missing workspace: %s", gotRawQuery)
+	}
+}
+
+func TestRenderLocalOnly(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	app := &cli.App{Writer: &buf}
+	c := cli.NewContext(app, nil, nil)
+	err := renderLocalOnly(c, fmt.Errorf("precondition_failed: cursor login needs a browser on the daemon machine"))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(buf.String(), "log in on the daemon machine") {
+		t.Fatalf("output %q", buf.String())
 	}
 }

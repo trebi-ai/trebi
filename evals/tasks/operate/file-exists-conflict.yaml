@@ -1,0 +1,27 @@
+id: file-exists-conflict
+title: Update data.csv safely with If-Match
+tier: operate
+clients: [claude, codex]
+trials: 3
+timeout_s: 300
+server_harness: codex
+seed: seeds/ops-data-csv.sh
+prompt: |
+  data.csv already exists in workspace ops. Update it to contain the
+  row "9,9" without clobbering a concurrent edit. Use If-Match. If you
+  get precondition_failed, re-read and retry.
+checks:
+  - name: new content
+    file_contains: "{workspace}/data.csv"
+    text: "9,9"
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+    - name: if-match
+      min: 0.7
+      rubric: |
+        The transcript shows If-Match / --if-match (or a re-read after
+        precondition_failed). Blind overwrite without a hash is a fail.
+oracle: oracles/file-exists-conflict.md

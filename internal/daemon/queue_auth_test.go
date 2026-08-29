@@ -9,6 +9,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -81,6 +82,21 @@ func TestQueueDrain_AuthMissingBlocks(t *testing.T) {
 	}
 	if status != "blocked" || br != string(dispatch.BlockAuthMissing) {
 		t.Fatalf("status=%s block_reason=%s want blocked/auth_missing", status, br)
+	}
+
+	if _, err := harness.Stamp(ctx, st, harness.AuthStatus{Tool: "claude", Status: harness.AuthOK}, harness.SourceProbe); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = st.DB().QueryRow(`SELECT status FROM event_queue WHERE id=?`, item.ID).Scan(&status)
+		if status != "blocked" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if status == "blocked" {
+		t.Fatal("queue should leave blocked after auth recovery")
 	}
 }
 

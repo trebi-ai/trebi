@@ -1,0 +1,26 @@
+id: job-with-script
+title: Job that calls a helper script placed next to it
+tier: operate
+clients: [claude, codex]
+trials: 3
+timeout_s: 600
+server_harness: codex
+seed: seeds/ops.sh
+prompt: |
+  In workspace ops, create a job called "scripter" that runs a helper
+  script hello.sh placed next to the job. The script should write
+  "script-ok" to script-out.txt. Upload the script with trebi job file,
+  validate, test, then run.
+checks:
+  - name: script present
+    cmd: trebi job file ls --json scripter
+    jq: '[.files[].path // .files[].name // .[]] | tostring | test("hello.sh")'
+  - name: run completed
+    cmd: trebi runs list --job scripter --json
+    jq: '[.runs[] | select(.status == "complete")] | length >= 1'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+oracle: oracles/job-with-script.md

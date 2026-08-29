@@ -1,0 +1,25 @@
+id: onboarding-first-workspace
+title: Create workspace ops and make it default
+tier: onboarding
+clients: [claude, codex]
+trials: 3
+timeout_s: 300
+server_harness: codex
+prompt: |
+  Create a trebi workspace named "ops" and make it the default sticky
+  workspace. Use pathless create.
+checks:
+  - name: workspace exists
+    cmd: trebi workspace list --json
+    jq: '[.workspaces[].name] | index("ops") != null'
+  - name: sticky context set
+    cmd: trebi workspace current --json
+    jq: '.name == "ops"'
+  - name: trebi.yaml minted
+    file_exists: "{workspace}/trebi.yaml"
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: guardrails
+    - use: efficiency
+oracle: oracles/onboarding-first-workspace.md
