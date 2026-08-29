@@ -347,11 +347,15 @@ A harness is the agent tool that runs the session (claude, codex, …).
 trebi harness list --json
 trebi harness list --check        # exit 1 when a home is missing
 trebi harness ensure <name>       # create the harness home + lifecycle install
-trebi harness auth status [name] --json
-trebi harness auth mark <name>    # record auth_ok after you log in yourself
+trebi harness auth status [name] [--live] [--json]
+trebi harness auth login <name>              # remote device/paste flow
+trebi harness auth login <name> --token-stdin
+trebi harness auth login <name> --attach     # full TUI over WebSocket
+trebi harness auth logout <name> [--yes]
+trebi harness auth mode <name> shared|separate
 ```
 
-Harness login is a human/local operation. `auth mark` only records the fact. Interactive vendor login (Claude OAuth, etc.) is not possible over HTTP — the user must log in with the vendor CLI on the machine that runs the daemon.
+Login runs on the daemon (tmux, harness isolation env) and is driven through the API. The CLI prints the verification URL + user code; complete OAuth in any browser and paste the code back. `--attach` opens the vendor TUI over WebSocket. Cursor has no device flow — use `--token-stdin` or log in on the daemon machine.
 
 ## Config
 

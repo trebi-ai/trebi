@@ -49,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeEvents(mux)
 	s.routeConversations(mux)
 	s.routeIntegrations(mux)
+	s.routeHarness(mux)
 	s.routeSettings(mux)
 	return s.authMiddleware(s.auditMiddleware(mux))
 }

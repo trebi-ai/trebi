@@ -552,9 +552,6 @@ func defaultSubject(opts RaiseOpts) string {
 	case KindWaiting:
 		return "run/" + opts.RunID
 	case KindAuthMissing:
-		if opts.RunID != "" {
-			return "run/" + opts.RunID
-		}
 		return "harness/" + opts.Harness
 	case KindLimitExceeded, KindUsageWarning:
 		return "harness/" + firstNonEmpty(opts.Harness, opts.Integration)
@@ -616,7 +613,7 @@ func defaultActions(opts RaiseOpts) []InboxAction {
 		if name == "" {
 			return []InboxAction{}
 		}
-		return []InboxAction{{Kind: ActionReAuth, Route: "/v1/harnesses/" + name + "/auth", Label: "Re-auth"}}
+		return []InboxAction{{Kind: ActionReAuth, Route: "/v1/harnesses/" + name + "/login", Label: "Re-auth"}}
 	}
 	return []InboxAction{}
 }

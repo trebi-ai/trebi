@@ -38,6 +38,19 @@ func NewSession(cwd string) (string, error) {
 	return name, nil
 }
 
+// NewNamedSession starts a detached tmux session with a caller-chosen name.
+func NewNamedSession(name, cwd string) error {
+	args := []string{"new-session", "-d", "-s", name}
+	if cwd != "" {
+		args = append(args, "-c", cwd)
+	}
+	if _, err := run(args...); err != nil {
+		return fmt.Errorf("tmux new-session: %w", err)
+	}
+	applyScrollbackMouseBindings(name)
+	return nil
+}
+
 // Send pastes literal text into the active pane. Multi-line or large payloads
 // use load-buffer/paste-buffer (bracketed paste). Short single-line text uses
 // send-keys -l, with one paste-buffer retry on timeout or other failure.

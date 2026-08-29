@@ -128,6 +128,30 @@ func TestDedupeAndCooldown(t *testing.T) {
 	}
 }
 
+func TestAuthMissingAutoResolve(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindAuthMissing, Harness: "claude", Title: "Auth missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "harness.updated", Entity: "harness", EntityID: "claude", Action: "updated",
+		Attrs: map[string]string{"harness": "claude", "auth_ok": "true", "auth_status": "ok"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Consume(ctx)
+	got, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != alerts.InboxResolved {
+		t.Fatalf("status %s", got.Status)
+	}
+}
+
 func TestAutoResolve(t *testing.T) {
 	t.Parallel()
 	svc, st := testSvc(t, alerts.Options{})

@@ -130,6 +130,8 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.autoResolve(ctx, KindIntegrationUnhealthy, "integration/"+ev.ID, "auto")
 	case "auth.probe.failed":
 		s.onAuthMissing(ctx, ev, attrs)
+	case "harness.updated":
+		s.onHarnessUpdated(ctx, ev, attrs)
 	case "harness.limit_exceeded":
 		s.onLimitExceeded(ctx, ev, attrs)
 	case "harness.limit_cleared":
@@ -248,13 +250,27 @@ func (s *Service) onIntegrationUnhealthy(ctx context.Context, ev store.StreamEve
 }
 
 func (s *Service) onAuthMissing(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	if attrs["source"] == "logout" {
+		return
+	}
 	_, err := s.Raise(ctx, RaiseOpts{
-		Kind: KindAuthMissing, RunID: attrs["run_id"], Harness: attrs["harness"],
-		TraceID: ev.TraceID, Title: "Auth missing",
+		Kind: KindAuthMissing, Harness: firstNonEmpty(attrs["harness"], ev.ID),
+		RunID: attrs["run_id"], TraceID: ev.TraceID, Title: "Auth missing",
 	})
 	if err != nil {
 		s.log.Warn("raise auth_missing", "error", err)
 	}
+}
+
+func (s *Service) onHarnessUpdated(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	if attrs["auth_ok"] != "true" && attrs["auth_ok"] != "1" {
+		return
+	}
+	name := firstNonEmpty(attrs["harness"], ev.ID)
+	if name == "" {
+		return
+	}
+	s.autoResolve(ctx, KindAuthMissing, "harness/"+name, "auto")
 }
 
 func (s *Service) onLimitExceeded(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
@@ -479,6 +495,7 @@ func consumeTopics() []string {
 		"integration.unhealthy",
 		"integration.recovered",
 		"auth.probe.failed",
+		"harness.updated",
 		"harness.limit_exceeded",
 		"harness.limit_cleared",
 	}

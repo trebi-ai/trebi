@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -355,6 +355,13 @@ CREATE UNIQUE INDEX idx_convmsg_turn ON conversation_messages(run_id, turn_index
 	WHERE run_id IS NOT NULL AND turn_index IS NOT NULL;
 CREATE UNIQUE INDEX idx_convmsg_idem ON conversation_messages(conversation_id, idempotency_key)
 	WHERE idempotency_key IS NOT NULL;
+`,
+		// v5: harness auth probe columns (status, detail, probed_at, expires_at).
+		`
+ALTER TABLE harness_state ADD COLUMN auth_status TEXT;
+ALTER TABLE harness_state ADD COLUMN auth_detail TEXT;
+ALTER TABLE harness_state ADD COLUMN auth_probed_at TEXT;
+ALTER TABLE harness_state ADD COLUMN auth_expires_at TEXT;
 `,
 	}
 }

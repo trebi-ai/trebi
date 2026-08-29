@@ -14,12 +14,14 @@ import (
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/integrations"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -35,6 +37,10 @@ type Options struct {
 	AlertsInterval time.Duration
 	// TurnWatchInterval overrides the transcript watcher tick (default 2s).
 	TurnWatchInterval time.Duration
+	// AuthProbeInterval is how often blocked harnesses are re-probed (default 5m; tests 50ms).
+	AuthProbeInterval time.Duration
+	// LoginMaxAge is the interactive login session lifetime (default 10m).
+	LoginMaxAge time.Duration
 }
 
 // ControlPlane wires workers to services.
@@ -49,6 +55,7 @@ type ControlPlane struct {
 	Reaper        *runs.Reaper
 	Alerts        *alerts.Service
 	Conversations *conversations.Service
+	Harness       *harness.Service
 	Opts          Options
 
 	log   *slog.Logger
@@ -82,6 +89,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Reaper:        runs.NewReaper(r),
 		Alerts:        newAlerts(st, opts),
 		Conversations: conv,
+		Harness:       harness.New(st, tmux.DefaultDriver{}, harness.Options{LoginMaxAge: opts.LoginMaxAge}),
 		Opts:          opts,
 		log:           slog.Default().With("source", "daemon"),
 		queue:         q,
@@ -169,6 +177,15 @@ func (c *ControlPlane) Start(parent context.Context) {
 		defer c.wg.Done()
 		c.busPrune(ctx)
 	}()
+
+	if c.Harness != nil {
+		c.Harness.ReapOrphanLogins()
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.authProbe(ctx)
+		}()
+	}
 }
 
 // Stop cancels workers and waits.
@@ -177,6 +194,9 @@ func (c *ControlPlane) Stop() {
 		c.cancel()
 	}
 	c.Reaper.Stop()
+	if c.Harness != nil {
+		c.Harness.StopLoginWatchers()
+	}
 	c.wg.Wait()
 }
 

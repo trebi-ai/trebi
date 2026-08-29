@@ -1,0 +1,568 @@
+package harness
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/store"
+)
+
+// Auth statuses (ladder output).
+const (
+	AuthOK      = "ok"
+	AuthMissing = "missing"
+	AuthExpired = "expired"
+	AuthUnknown = "unknown"
+)
+
+// Login mode tokens declared on AuthCaps.LoginModes.
+const (
+	LoginRelay = "relay"
+	LoginToken = "token"
+)
+
+// Stamp sources. "logout" suppresses a fresh auth_missing alert.
+const (
+	SourceLaunch = "launch"
+	SourceProbe  = "probe"
+	SourceLogout = "logout"
+	SourceLogin  = "login"
+	SourceReaper = "mid-session"
+)
+
+// ExpiryGrace is how long after auth_expires_at the prober waits before probing.
+const ExpiryGrace = 30 * time.Second
+
+// DefaultLoginMaxAge is the login-session lifetime.
+const DefaultLoginMaxAge = 10 * time.Minute
+
+// AuthStatus is the result of one probe ladder run.
+type AuthStatus struct {
+	Tool      string     `json:"tool"`
+	Mode      string     `json:"mode"`
+	Status    string     `json:"status"` // ok|missing|expired|unknown
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Hint      string     `json:"hint,omitempty"`
+	Detail    string     `json:"detail,omitempty"`
+	ProbedAt  time.Time  `json:"probed_at,omitempty"`
+}
+
+// OK reports whether the queue gate should pass.
+func (s AuthStatus) OK() bool { return s.Status == AuthOK }
+
+// AuthCaps is the per-driver declaration of the auth matrix.
+type AuthCaps struct {
+	LoginModes   []string `json:"login_modes"`
+	TokenEnvKeys []string `json:"token_env_keys,omitempty"`
+	LocalCmd     string   `json:"local_cmd,omitempty"`
+	CredFile     string   `json:"cred_file,omitempty"`
+	ExpiryReader bool     `json:"expiry_reader,omitempty"`
+	RelayFragile bool     `json:"relay_fragile,omitempty"`
+	AttachOnly   bool     `json:"attach_only,omitempty"`
+}
+
+// HasLoginMode reports whether mode is in LoginModes.
+func (c AuthCaps) HasLoginMode(mode string) bool {
+	for _, m := range c.LoginModes {
+		if m == mode {
+			return true
+		}
+	}
+	return false
+}
+
+// State is the durable harness_state auth row plus config mode.
+type State struct {
+	Name      string
+	AuthOK    sql.NullInt64
+	Status    string
+	Detail    string
+	ProbedAt  string
+	ExpiresAt string
+	UpdatedAt string
+}
+
+// StampResult is the outcome of Stamp.
+type StampResult struct {
+	Flipped bool
+	PrevOK  bool
+	HadRow  bool
+	OK      bool
+}
+
+// Driver is the tmux/vendor seam. Defined here so harness does not import tmux.
+type Driver interface {
+	ProbeAuth(ctx context.Context, name string) AuthStatus
+	AuthCaps(name string) AuthCaps
+	ApplyAuthMode(name, mode string) error
+	LoginCommand(name, mode string) (command string, env []string, err error)
+	ExtractLogin(name, screen string) LoginExtract
+	ExecLogout(ctx context.Context, name string) error
+	LoginAPIKey(ctx context.Context, name, token string) error
+	NewNamedSession(session, cwd string) error
+	ReadScreen(session string) (string, error)
+	Send(session, text string) error
+	SendKey(session, key string) error
+	KillSession(session string) error
+	HasSession(session string) bool
+}
+
+// LoginExtract is one screen-scrape of an interactive vendor login.
+type LoginExtract struct {
+	URL       string
+	UserCode  string
+	AwaitCode bool
+	Token     string // captured setup-token (sk-ant-oat01-…)
+	NoExtract bool   // driver has no scraper (attach-only)
+}
+
+// Options for New.
+type Options struct {
+	LoginMaxAge time.Duration
+}
+
+// Service owns harness auth stamps, probes, logout/mode, and login sessions.
+type Service struct {
+	st     *store.Store
+	driver Driver
+	log    *slog.Logger
+	opts   Options
+
+	mu      sync.Mutex
+	logins  map[string]*loginSession
+	loginWG sync.WaitGroup
+}
+
+// New builds a harness service. driver may be nil only in tests that never probe.
+func New(st *store.Store, driver Driver, opts Options) *Service {
+	if opts.LoginMaxAge <= 0 {
+		opts.LoginMaxAge = DefaultLoginMaxAge
+	}
+	return &Service{
+		st:     st,
+		driver: driver,
+		log:    slog.Default().With("source", "harness"),
+		opts:   opts,
+		logins: map[string]*loginSession{},
+	}
+}
+
+// ReapOrphanLogins kills leftover trebi-login-* tmux sessions (daemon restart).
+func (s *Service) ReapOrphanLogins() {
+	if s.driver == nil {
+		return
+	}
+	for _, n := range Names() {
+		sess := LoginSessionName(n)
+		if s.driver.HasSession(sess) {
+			_ = s.driver.KillSession(sess)
+		}
+	}
+}
+
+// Caps returns declared capabilities for name.
+func (s *Service) Caps(name string) AuthCaps {
+	if s.driver == nil {
+		return AuthCaps{}
+	}
+	return s.driver.AuthCaps(name)
+}
+
+// Probe runs the ladder and stamps. source is recorded on the bus attrs.
+func (s *Service) Probe(ctx context.Context, name, source string) (AuthStatus, error) {
+	if s.driver == nil {
+		return AuthStatus{Tool: name, Status: AuthUnknown}, fmt.Errorf("no auth driver")
+	}
+	st := s.driver.ProbeAuth(ctx, name)
+	st.Tool = name
+	if st.Mode == "" {
+		st.Mode = currentMode(name)
+	}
+	st.ProbedAt = time.Now().UTC()
+	res, err := Stamp(ctx, s.st, st, source)
+	if err != nil {
+		return st, err
+	}
+	if !st.OK() && source != SourceLogout && (res.Flipped || !res.HadRow) {
+		if _, err := s.st.Append(ctx, store.BusEvent{
+			Topic: "auth.probe.failed", Entity: "harness", EntityID: name, Action: "updated",
+			Attrs: map[string]string{"harness": name, "source": source, "status": st.Status},
+		}); err != nil {
+			s.log.Warn("auth.probe.failed", "error", err)
+		}
+	}
+	return st, nil
+}
+
+// GetState returns the stored stamp (zero State if no row).
+func (s *Service) GetState(ctx context.Context, name string) (State, error) {
+	return loadState(ctx, s.st, name)
+}
+
+// LoadStates returns every harness_state row keyed by name.
+func LoadStates(ctx context.Context, st *store.Store) (map[string]State, error) {
+	rows, err := st.DB().QueryContext(ctx, `
+		SELECT name, auth_ok, COALESCE(auth_status,''), COALESCE(auth_detail,''),
+			COALESCE(auth_probed_at,''), COALESCE(auth_expires_at,''), updated_at
+		FROM harness_state`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]State{}
+	for rows.Next() {
+		var s State
+		if err := rows.Scan(&s.Name, &s.AuthOK, &s.Status, &s.Detail, &s.ProbedAt, &s.ExpiresAt, &s.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out[s.Name] = s
+	}
+	return out, rows.Err()
+}
+
+func loadState(ctx context.Context, st *store.Store, name string) (State, error) {
+	var s State
+	s.Name = name
+	err := st.DB().QueryRowContext(ctx, `
+		SELECT auth_ok, COALESCE(auth_status,''), COALESCE(auth_detail,''),
+			COALESCE(auth_probed_at,''), COALESCE(auth_expires_at,''), updated_at
+		FROM harness_state WHERE name=?`, name).
+		Scan(&s.AuthOK, &s.Status, &s.Detail, &s.ProbedAt, &s.ExpiresAt, &s.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return s, nil
+	}
+	return s, err
+}
+
+// Stamp writes harness_state auth columns and emits harness.updated on a flip.
+func Stamp(ctx context.Context, st *store.Store, status AuthStatus, source string) (StampResult, error) {
+	var res StampResult
+	if status.Tool == "" {
+		return res, nil
+	}
+	if status.Mode == "" {
+		status.Mode = currentMode(status.Tool)
+	}
+	if status.ProbedAt.IsZero() {
+		status.ProbedAt = time.Now().UTC()
+	}
+	res.OK = status.OK()
+	flag := 0
+	if res.OK {
+		flag = 1
+	}
+
+	var prev sql.NullInt64
+	err := st.DB().QueryRowContext(ctx, `SELECT auth_ok FROM harness_state WHERE name=?`, status.Tool).Scan(&prev)
+	switch {
+	case err == nil:
+		res.HadRow = true
+		res.PrevOK = prev.Valid && prev.Int64 == 1
+	case err == sql.ErrNoRows:
+		// first stamp
+	default:
+		return res, err
+	}
+	res.Flipped = !res.HadRow || res.PrevOK != res.OK
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	probed := status.ProbedAt.UTC().Format(time.RFC3339Nano)
+	var expires any
+	if status.ExpiresAt != nil && !status.ExpiresAt.IsZero() {
+		expires = status.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	_, err = st.DB().ExecContext(ctx, `INSERT INTO harness_state
+		(name, auth_ok, auth_status, auth_detail, auth_probed_at, auth_expires_at, updated_at)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(name) DO UPDATE SET
+			auth_ok=excluded.auth_ok,
+			auth_status=excluded.auth_status,
+			auth_detail=excluded.auth_detail,
+			auth_probed_at=excluded.auth_probed_at,
+			auth_expires_at=excluded.auth_expires_at,
+			updated_at=excluded.updated_at`,
+		status.Tool, flag, status.Status, status.Detail, probed, expires, now)
+	if err != nil {
+		return res, err
+	}
+	if !res.Flipped {
+		return res, nil
+	}
+	attrs := map[string]string{
+		"harness":     status.Tool,
+		"auth_ok":     fmt.Sprintf("%t", res.OK),
+		"auth_status": status.Status,
+		"source":      source,
+		"mode":        status.Mode,
+	}
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "harness.updated", Entity: "harness", EntityID: status.Tool, Action: "updated",
+		Attrs: attrs,
+	}); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+// SetMode persists tools.<name>.auth, re-bridges, and re-probes.
+func (s *Service) SetMode(ctx context.Context, name, mode string) (AuthStatus, error) {
+	if err := s.persistMode(name, mode); err != nil {
+		return AuthStatus{}, err
+	}
+	return s.Probe(ctx, name, SourceProbe)
+}
+
+func (s *Service) persistMode(name, mode string) error {
+	if mode != AuthModeShared && mode != AuthModeSeparate {
+		return fmt.Errorf("auth mode must be shared or separate")
+	}
+	if !Known(name) {
+		return fmt.Errorf("unknown harness %q", name)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = &config.Config{}
+	}
+	pin := cfg.Tools.Pin(name)
+	if pin == nil {
+		pin = &config.ToolPin{}
+	}
+	pin.Auth = mode
+	cfg.Tools.SetPin(name, pin)
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	if s.driver != nil {
+		if err := s.driver.ApplyAuthMode(name, mode); err != nil {
+			s.log.Warn("apply auth mode", "harness", name, "error", err)
+		}
+	}
+	return nil
+}
+
+// Logout clears credentials. shared requires confirm.
+func (s *Service) Logout(ctx context.Context, name, mode string, confirm bool) (AuthStatus, error) {
+	if !Known(name) {
+		return AuthStatus{}, fmt.Errorf("unknown harness %q", name)
+	}
+	if mode == "" {
+		mode = currentMode(name)
+	}
+	if mode != AuthModeShared && mode != AuthModeSeparate {
+		return AuthStatus{}, fmt.Errorf("auth mode must be shared or separate")
+	}
+	if mode == AuthModeShared && !confirm {
+		return AuthStatus{}, errSharedLogout
+	}
+	if mode == AuthModeSeparate {
+		_ = RemoveSecretEnv(name)
+		removeNonSymlinkCreds(name)
+	} else if s.driver != nil {
+		if err := s.driver.ExecLogout(ctx, name); err != nil {
+			return AuthStatus{}, err
+		}
+	}
+	st := AuthStatus{
+		Tool: name, Mode: mode, Status: AuthMissing,
+		Hint: "trebi harness auth login " + name, Detail: "logout",
+		ProbedAt: time.Now().UTC(),
+	}
+	_, err := Stamp(ctx, s.st, st, SourceLogout)
+	return st, err
+}
+
+// ErrSharedLogout is returned when shared logout is missing confirm.
+var errSharedLogout = fmt.Errorf("shared logout affects interactive CLI — re-run with confirm")
+
+// ErrSharedLogout reports the confirm-required error (API maps to 400 validation).
+func ErrSharedLogout() error { return errSharedLogout }
+
+// LoginToken stores an API key via the secrets env, forces separate, probes.
+func (s *Service) LoginToken(ctx context.Context, name, token string) (AuthStatus, error) {
+	if !Known(name) {
+		return AuthStatus{}, fmt.Errorf("unknown harness %q", name)
+	}
+	token = trimSpace(token)
+	if token == "" {
+		return AuthStatus{}, fmt.Errorf("empty token")
+	}
+	if err := s.persistMode(name, AuthModeSeparate); err != nil {
+		return AuthStatus{}, err
+	}
+	if s.driver != nil {
+		if err := s.driver.LoginAPIKey(ctx, name, token); err != nil {
+			// Fall through to writing the env file ourselves.
+			s.log.Debug("vendor api-key login", "harness", name, "error", err)
+			if err := writeTokenEnv(name, token); err != nil {
+				return AuthStatus{}, err
+			}
+		}
+	} else if err := writeTokenEnv(name, token); err != nil {
+		return AuthStatus{}, err
+	}
+	st, err := s.Probe(ctx, name, SourceLogin)
+	if err != nil {
+		return st, err
+	}
+	if st.Status != AuthOK {
+		return st, fmt.Errorf("login completed but auth status is %s", st.Status)
+	}
+	return st, nil
+}
+
+func writeTokenEnv(name, token string) error {
+	key := TokenEnvKey(name)
+	if key == "" {
+		return fmt.Errorf("no token env key for %s", name)
+	}
+	return WriteSecretEnv(name, map[string]string{key: token})
+}
+
+// TokenEnvKey maps a harness to its primary API-key env var.
+func TokenEnvKey(tool string) string {
+	switch tool {
+	case "claude":
+		return "ANTHROPIC_API_KEY"
+	case "grok":
+		return "XAI_API_KEY"
+	case "codex":
+		return "OPENAI_API_KEY"
+	case "copilot":
+		return "COPILOT_GITHUB_TOKEN"
+	case "cursor":
+		return "CURSOR_API_KEY"
+	case "gemini":
+		return "GEMINI_API_KEY"
+	case "pi":
+		return "ANTHROPIC_API_KEY"
+	default:
+		return ""
+	}
+}
+
+// StoreOAuthToken writes a long-lived OAuth token (claude setup-token) into secret env.
+func StoreOAuthToken(tool, key, token string) error {
+	env, err := LoadSecretEnv(tool)
+	if err != nil {
+		return err
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	env[key] = token
+	return WriteSecretEnv(tool, env)
+}
+
+func currentMode(name string) string {
+	cfg, err := config.Load()
+	if err != nil {
+		return AuthModeShared
+	}
+	return AuthModeFromConfig(cfg, name)
+}
+
+func removeNonSymlinkCreds(tool string) {
+	dir := config.HarnessDir(tool)
+	for _, p := range []string{
+		filepath.Join(dir, "auth.json"),
+		filepath.Join(dir, ".credentials.json"),
+		filepath.Join(dir, "oauth_creds.json"),
+	} {
+		fi, err := os.Lstat(p)
+		if err != nil {
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			_ = os.Remove(p)
+		}
+	}
+}
+
+func trimSpace(s string) string {
+	i, j := 0, len(s)
+	for i < j && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
+		i++
+	}
+	for j > i && (s[j-1] == ' ' || s[j-1] == '\t' || s[j-1] == '\n' || s[j-1] == '\r') {
+		j--
+	}
+	return s[i:j]
+}
+
+// EarliestExpiry returns the soonest stored auth_expires_at among harnesses,
+// or zero if none.
+func EarliestExpiry(ctx context.Context, st *store.Store) (name string, at time.Time, err error) {
+	rows, err := st.DB().QueryContext(ctx, `
+		SELECT name, auth_expires_at FROM harness_state
+		WHERE auth_expires_at IS NOT NULL AND auth_expires_at != ''`)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	defer rows.Close()
+	var soonest time.Time
+	var soonestName string
+	for rows.Next() {
+		var n, raw string
+		if err := rows.Scan(&n, &raw); err != nil {
+			return "", time.Time{}, err
+		}
+		t, perr := time.Parse(time.RFC3339Nano, raw)
+		if perr != nil {
+			t, perr = time.Parse(time.RFC3339, raw)
+		}
+		if perr != nil || t.IsZero() {
+			continue
+		}
+		if soonest.IsZero() || t.Before(soonest) {
+			soonest = t
+			soonestName = n
+		}
+	}
+	return soonestName, soonest, rows.Err()
+}
+
+// BlockedNames returns harnesses with auth_ok=0.
+func BlockedNames(ctx context.Context, st *store.Store) ([]string, error) {
+	rows, err := st.DB().QueryContext(ctx, `SELECT name FROM harness_state WHERE auth_ok=0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
+}
+
+// LocalOnlyDetails is the typed 422 payload for a remote login refusal.
+func LocalOnlyDetails(name string, caps AuthCaps) map[string]any {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "the daemon machine"
+	}
+	cmd := caps.LocalCmd
+	if cmd == "" {
+		cmd = name + " login"
+	}
+	hint := "run it on " + host
+	if caps.HasLoginMode(LoginToken) {
+		hint += ", or POST {token} with a " + TokenEnvKey(name)
+	}
+	return map[string]any{
+		"login_modes": caps.LoginModes,
+		"local_cmd":   cmd,
+		"hint":        hint,
+	}
+}

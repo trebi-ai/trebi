@@ -690,19 +690,80 @@ func BuildHarnessEnsure(name string) HTTPRequest {
 }
 
 // BuildHarnessAuthGet builds GET /v1/harnesses/{name}/auth.
-func BuildHarnessAuthGet(name string) HTTPRequest {
+func BuildHarnessAuthGet(name string, live bool) HTTPRequest {
+	path := "/v1/harnesses/" + url.PathEscape(name) + "/auth"
+	if live {
+		path += "?live=1"
+	}
+	return HTTPRequest{Method: "GET", Path: path}
+}
+
+// BuildHarnessPatch builds PATCH /v1/harnesses/{name}.
+func BuildHarnessPatch(name, authMode string) HTTPRequest {
 	return HTTPRequest{
-		Method: "GET",
-		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/auth",
+		Method: "PATCH",
+		Path:   "/v1/harnesses/" + url.PathEscape(name),
+		Body:   map[string]any{"auth_mode": authMode},
 	}
 }
 
-// BuildHarnessAuthPost builds POST /v1/harnesses/{name}/auth (marks auth_ok in daemon state).
-// Full interactive vendor login is not available over the HTTP API (see docs).
-func BuildHarnessAuthPost(name string) HTTPRequest {
+// BuildHarnessLogout builds POST /v1/harnesses/{name}/logout.
+func BuildHarnessLogout(name, mode string, confirm bool) HTTPRequest {
+	body := map[string]any{"confirm": confirm}
+	if mode != "" {
+		body["mode"] = mode
+	}
 	return HTTPRequest{
 		Method: "POST",
-		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/auth",
+		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/logout",
+		Body:   body,
+	}
+}
+
+// BuildHarnessLoginStart builds POST /v1/harnesses/{name}/login (interactive).
+func BuildHarnessLoginStart(name, mode string) HTTPRequest {
+	body := map[string]any{}
+	if mode != "" {
+		body["mode"] = mode
+	}
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/login",
+		Body:   body,
+	}
+}
+
+// BuildHarnessLoginToken builds POST /v1/harnesses/{name}/login with an API key.
+func BuildHarnessLoginToken(name, token string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/login",
+		Body:   map[string]any{"token": token},
+	}
+}
+
+// BuildHarnessLoginCode builds POST /v1/harnesses/{name}/login with a paste-back code.
+func BuildHarnessLoginCode(name, code string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/login",
+		Body:   map[string]any{"code": code},
+	}
+}
+
+// BuildHarnessLoginGet builds GET /v1/harnesses/{name}/login.
+func BuildHarnessLoginGet(name string) HTTPRequest {
+	return HTTPRequest{
+		Method: "GET",
+		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/login",
+	}
+}
+
+// BuildHarnessLoginDelete builds DELETE /v1/harnesses/{name}/login.
+func BuildHarnessLoginDelete(name string) HTTPRequest {
+	return HTTPRequest{
+		Method: "DELETE",
+		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/login",
 	}
 }
 

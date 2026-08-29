@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/oklog/ulid/v2"
 	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -264,7 +265,7 @@ func (s *Service) waitHarnessReady(ctx context.Context, runID, wsRef string, too
 		switch {
 		case errors.Is(err, tmux.ErrAuthMissing):
 			end = EndAuth
-			s.emitAuthProbeFailed(ctx, tool.Name(), runID, "probe")
+			s.emitAuthProbeFailed(ctx, tool.Name(), runID, harness.SourceProbe)
 		case errors.Is(err, tmux.ErrLimitExceeded):
 			end = EndLimit
 			s.emitLimitExceeded(ctx, tool.Name(), runID)
@@ -274,6 +275,7 @@ func (s *Service) waitHarnessReady(ctx context.Context, runID, wsRef string, too
 		return false
 	}
 	time.Sleep(tool.PostReadyDelay())
+	s.stampHarnessAuthOK(ctx, tool.Name())
 	return true
 }
 
@@ -493,6 +495,11 @@ func paneEnvExport(runID, toolName string, optEnv, planEnv map[string]string) st
 			binCurrent, runID, toolName)
 	}
 	merged := map[string]string{}
+	if env, err := harness.LoadSecretEnv(toolName); err == nil {
+		for k, v := range env {
+			merged[k] = v
+		}
+	}
 	for k, v := range optEnv {
 		merged[k] = v
 	}
@@ -588,13 +595,23 @@ func isDetectRune(r rune) bool {
 	return strings.ContainsRune("_:,.!?-/", r)
 }
 
-func (s *Service) emitAuthProbeFailed(ctx context.Context, harness, runID, source string) {
+func (s *Service) emitAuthProbeFailed(ctx context.Context, name, runID, source string) {
+	_, _ = harness.Stamp(ctx, s.st, harness.AuthStatus{
+		Tool: name, Status: harness.AuthMissing, Hint: "trebi harness auth login " + name,
+	}, source)
 	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: "auth.probe.failed", Entity: "harness", EntityID: harness, Action: "updated",
-		Attrs: map[string]string{"harness": harness, "run_id": runID, "source": source},
+		Topic: "auth.probe.failed", Entity: "harness", EntityID: name, Action: "updated",
+		Attrs: map[string]string{"harness": name, "run_id": runID, "source": source},
 	}); err != nil {
 		s.log.Warn("auth.probe.failed", "error", err)
 	}
+}
+
+func (s *Service) stampHarnessAuthOK(ctx context.Context, name string) {
+	if name == "" || name == "unknown" || name == "fake" {
+		return
+	}
+	_, _ = harness.Stamp(ctx, s.st, harness.AuthStatus{Tool: name, Status: harness.AuthOK}, harness.SourceLaunch)
 }
 
 func (s *Service) emitLimitExceeded(ctx context.Context, harness, runID string) {

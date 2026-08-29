@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
@@ -117,7 +118,7 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
 
 	// auth / limit chrome (coarse markers)
 	if tmux.IsAuthBlocker(screen) || authFailed(screen) {
-		r.Svc.emitAuthProbeFailed(ctx, run.Harness, run.ID, "mid-session")
+		r.Svc.emitAuthProbeFailed(ctx, run.Harness, run.ID, harness.SourceReaper)
 		r.finish(ctx, run, StatusFailed, EndAuth)
 		return
 	}

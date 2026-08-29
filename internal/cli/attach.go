@@ -193,7 +193,11 @@ func attachWebSocket(c *cli.Context, client *APIClient, runID string) error {
 }
 
 func dialAttach(client *APIClient, runID string) (*websocket.Conn, error) {
-	wsURL, err := httpToWS(client.Base + "/v1/runs/" + url.PathEscape(runID) + "/attach")
+	return dialAttachPath(client, "/v1/runs/"+url.PathEscape(runID)+"/attach")
+}
+
+func dialAttachPath(client *APIClient, path string) (*websocket.Conn, error) {
+	wsURL, err := httpToWS(client.Base + path)
 	if err != nil {
 		return nil, err
 	}

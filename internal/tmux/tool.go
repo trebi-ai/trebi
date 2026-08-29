@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -66,6 +67,8 @@ type Tool interface {
 	// ParseTranscript maps a harness session file into the §3.6 Turn shape.
 	ParseTranscript(r io.Reader) ([]Turn, error)
 	Lifecycle() LifecycleAdapter // nil if no hooks
+	ProbeAuth(ctx context.Context) harness.AuthStatus
+	AuthCapabilities() harness.AuthCaps
 }
 
 // Turn is one §3.6 transcript turn.
@@ -258,6 +261,10 @@ func (unknownTool) ParseTranscript(io.Reader) ([]Turn, error) {
 	return nil, ErrTranscriptUnsupported
 }
 func (unknownTool) Lifecycle() LifecycleAdapter { return nil }
+func (unknownTool) ProbeAuth(context.Context) harness.AuthStatus {
+	return harness.AuthStatus{Tool: "unknown", Status: harness.AuthUnknown}
+}
+func (unknownTool) AuthCapabilities() harness.AuthCaps { return harness.AuthCaps{} }
 
 // IsUnknown reports whether t is the unknown fallback.
 func IsUnknown(t Tool) bool {

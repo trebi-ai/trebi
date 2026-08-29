@@ -18,12 +18,14 @@ import (
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/integrations"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -32,14 +34,15 @@ const Version = "0.1.0"
 
 // Server is the trebid HTTP API.
 type Server struct {
-	st     *store.Store
-	runs   *runs.Service
-	ws     *workspaces.Service
-	files  *files.Service
-	alerts *alerts.Service
-	skills *skills.Service
-	integ  *integrations.Service
-	conv   *conversations.Service
+	st      *store.Store
+	runs    *runs.Service
+	ws      *workspaces.Service
+	files   *files.Service
+	alerts  *alerts.Service
+	skills  *skills.Service
+	integ   *integrations.Service
+	conv    *conversations.Service
+	harness *harness.Service
 
 	token     string
 	startedAt time.Time
@@ -80,6 +83,7 @@ func New(st *store.Store, opts Options) *Server {
 		skills:    skills.New(st),
 		integ:     integrations.New(st, ws, r, pol),
 		conv:      conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
+		harness:   harness.New(st, tmux.DefaultDriver{}, harness.Options{}),
 		token:     opts.Token,
 		startedAt: time.Now().UTC(),
 		shadow:    opts.Shadow,
@@ -101,7 +105,7 @@ func New(st *store.Store, opts Options) *Server {
 // BindControlPlane replaces core services with the daemon's shared instances.
 // The policy and schedule services stay with the daemon; the API does not
 // read them.
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, _ *dispatch.Policy, integ *integrations.Service, _ *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service) {
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, _ *dispatch.Policy, integ *integrations.Service, _ *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
 	}
@@ -119,6 +123,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	}
 	if conv != nil {
 		s.conv = conv
+	}
+	if harnessSvc != nil {
+		s.harness = harnessSvc
 	}
 }
 
@@ -197,6 +204,12 @@ type ErrorBody struct {
 
 func writeErr(w http.ResponseWriter, code int, errCode, msg string) {
 	writeJSON(w, code, ErrorBody{Error: APIError{Code: errCode, Message: msg}})
+}
+
+func writeErrDetails(w http.ResponseWriter, code int, errCode, msg string, details any) {
+	writeJSON(w, code, map[string]any{
+		"error": map[string]any{"code": errCode, "message": msg, "details": details},
+	})
 }
 
 func mustJSON(v any) string {

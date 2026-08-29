@@ -343,13 +343,33 @@ func TestBuildHarnessEnsureAndAuth(t *testing.T) {
 	if e.Path != "/v1/harnesses/claude/ensure" || e.Method != "POST" {
 		t.Fatalf("%+v", e)
 	}
-	a := BuildHarnessAuthGet("claude")
+	a := BuildHarnessAuthGet("claude", false)
 	if a.Path != "/v1/harnesses/claude/auth" || a.Method != "GET" {
 		t.Fatalf("%+v", a)
 	}
-	p := BuildHarnessAuthPost("claude")
-	if p.Method != "POST" {
+	live := BuildHarnessAuthGet("claude", true)
+	if live.Path != "/v1/harnesses/claude/auth?live=1" {
+		t.Fatalf("%+v", live)
+	}
+	p := BuildHarnessLoginStart("claude", "")
+	if p.Method != "POST" || p.Path != "/v1/harnesses/claude/login" {
 		t.Fatalf("%+v", p)
+	}
+	tok := BuildHarnessLoginToken("claude", "sk")
+	if tok.Body.(map[string]any)["token"] != "sk" {
+		t.Fatalf("%+v", tok)
+	}
+	code := BuildHarnessLoginCode("claude", "ABCD")
+	if code.Body.(map[string]any)["code"] != "ABCD" {
+		t.Fatalf("%+v", code)
+	}
+	lo := BuildHarnessLogout("claude", "shared", true)
+	if lo.Method != "POST" || lo.Path != "/v1/harnesses/claude/logout" {
+		t.Fatalf("%+v", lo)
+	}
+	md := BuildHarnessPatch("claude", "separate")
+	if md.Method != "PATCH" {
+		t.Fatalf("%+v", md)
 	}
 }
 
@@ -493,10 +513,13 @@ func TestCommandRegistration(t *testing.T) {
 		}
 	}
 	auth := findCmd(h.Subcommands, "auth")
-	for _, want := range []string{"status", "mark"} {
+	for _, want := range []string{"status", "login", "logout", "mode"} {
 		if findCmd(auth.Subcommands, want) == nil {
 			t.Fatalf("harness auth missing %s", want)
 		}
+	}
+	if findCmd(auth.Subcommands, "mark") != nil {
+		t.Fatal("harness auth mark should be gone")
 	}
 	integ := findCmd(app.Commands, "integration")
 	for _, want := range []string{"list", "show", "set", "remove", "stop", "restart", "logs", "test", "connect", "disconnect", "cursor"} {

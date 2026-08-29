@@ -444,7 +444,7 @@ func listScenarioDirs(dir string) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() && e.Name()[0] != '_' && e.Name()[0] != '.' {
+		if e.IsDir() && e.Name()[0] != '_' && e.Name()[0] != '.' && e.Name() != "login" {
 			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}

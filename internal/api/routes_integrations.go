@@ -2,7 +2,6 @@ package api
 
 import (
 	"bufio"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,11 +11,8 @@ import (
 	"sort"
 	"time"
 
-	config "github.com/trebi-ai/trebi/internal/config"
-	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/integrations"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 //nolint:dupl // route tables stay explicit and colocated with area handlers.
@@ -35,10 +31,6 @@ func (s *Server) routeIntegrations(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/integrations/{name}/logs", s.handleIntegrationLogs)
 	mux.HandleFunc("GET /v1/integrations/{name}/cursor", s.handleIntegrationCursorGet)
 	mux.HandleFunc("PUT /v1/integrations/{name}/cursor", s.handleIntegrationCursorPut)
-	mux.HandleFunc("GET /v1/harnesses", s.handleHarnesses)
-	mux.HandleFunc("POST /v1/harnesses/{name}/ensure", s.handleHarnessEnsure)
-	mux.HandleFunc("GET /v1/harnesses/{name}/auth", s.handleHarnessAuthGet)
-	mux.HandleFunc("POST /v1/harnesses/{name}/auth", s.handleHarnessAuthPost)
 }
 
 func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
@@ -228,47 +220,4 @@ func (s *Server) handleIntegrationCursorPut(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "last_event_id": body.LastEventID})
-}
-
-func (s *Server) handleHarnesses(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"harnesses": harness.List()})
-}
-
-func (s *Server) handleHarnessEnsure(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if !harness.Known(name) {
-		writeErr(w, http.StatusBadRequest, "validation", "unknown harness")
-		return
-	}
-	dir := home.HarnessDir(name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	// Materialize lifecycle if tool known
-	tool, ok := tmux.ByName(name)
-	if ok {
-		if life := tool.Lifecycle(); life != nil {
-			_ = life.Install(config.BaseDir(), config.BinDir())
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "home": dir, "ensured": true})
-}
-
-func (s *Server) handleHarnessAuthGet(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	var authOK sql.NullInt64
-	_ = s.st.DB().QueryRowContext(r.Context(), `SELECT auth_ok FROM harness_state WHERE name=?`, name).Scan(&authOK)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"name": name, "auth_ok": authOK.Valid && authOK.Int64 == 1, "mode": "shared",
-	})
-}
-
-func (s *Server) handleHarnessAuthPost(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	now := time.Now().UTC().Format(time.RFC3339)
-	// harness_state is internal bookkeeping, not a B10 bus entity.
-	_, _ = s.st.DB().ExecContext(r.Context(), `INSERT INTO harness_state (name, auth_ok, updated_at)
-		VALUES (?,1,?) ON CONFLICT(name) DO UPDATE SET auth_ok=1, updated_at=excluded.updated_at`, name, now) // probe row; auth_ok is best-effort
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "auth_ok": true})
 }
