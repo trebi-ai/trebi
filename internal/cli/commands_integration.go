@@ -46,7 +46,6 @@ func integrationCommand() *cli.Command {
 				Name:      "remove",
 				Usage:     "delete an integration",
 				ArgsUsage: "<name>",
-				Aliases:   []string{"rm", "delete"},
 				Action:    runIntegrationRemove,
 			},
 			{
