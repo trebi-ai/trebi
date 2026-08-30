@@ -14,7 +14,7 @@ checks:
     cmd: trebi skill show tiny
     stdout_contains: "tiny"
   - name: support file
-    cmd: trebi skill file ls --json tiny
+    cmd: trebi skill file list --json tiny
     stdout_contains: "helper.py"
 judge:
   model: claude-sonnet-5

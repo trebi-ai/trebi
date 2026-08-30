@@ -162,14 +162,14 @@ Supporting files for a job (Python scripts, HTML templates, eval fixtures) go ne
 `JOB.md` / `MEMORY.md` / `TREBI.md` writes on this command 409: edit those with `trebi job` and `trebi job memory`.
 
 ```bash
-trebi job file ls --json --limit 100 <job> [prefix]
-trebi job file get  <job> render.py                  # bytes to stdout
-trebi job file get  <job> render.py --out ./render.py
-trebi job file get  <job> render.py --stat           # JSON: path, size_bytes, mtime, hash
-trebi job file put  <job> render.py --from ./render.py
+trebi job file list   --json --limit 100 <job> [prefix]
+trebi job file get    <job> render.py                  # bytes to stdout
+trebi job file get    <job> render.py --out ./render.py
+trebi job file get    <job> render.py --stat           # JSON: path, size_bytes, mtime, hash
+trebi job file put    <job> render.py --from ./render.py
 cat render.py | trebi job file put <job> render.py
-trebi job file put  <job> render.py --from ./render.py --if-match <hash>
-trebi job file rm   <job> render.py --if-match <hash>
+trebi job file put    <job> render.py --from ./render.py --if-match <hash>
+trebi job file remove <job> render.py --if-match <hash>
 ```
 
 `--workspace` disambiguates a duplicate job name, same as `trebi job show`. `put` is a full replace. Re-read (`--stat`) after a 412 `precondition_failed`.
@@ -177,10 +177,10 @@ trebi job file rm   <job> render.py --if-match <hash>
 `trebi file` is workspace-level: use only for assets shared across jobs (`templates/`, `lib/`) or assistant support files. Same If-Match / size-cap rules. `JOB.md` / `TREBI.md` / `MEMORY.md` are allowed there — the index rebuilds the same way as an editor save. `trebi.yaml` and `.git/**` are denied.
 
 ```bash
-trebi file ls --json --limit 100 [prefix]
+trebi file list --json --limit 100 [prefix]
 trebi file get templates/base.html
 trebi file put templates/base.html --from ./base.html
-trebi file rm  templates/base.html --if-match <hash>
+trebi file remove templates/base.html --if-match <hash>
 ```
 
 ## Runs
@@ -334,10 +334,10 @@ trebi skill list --json
 trebi skill show <name>
 trebi skill create <name> --file ./SKILL.md
 cat SKILL.md | trebi skill update <name>
-trebi skill file ls  <skill> [prefix] --json --limit
-trebi skill file get <skill> helper.py
-trebi skill file put <skill> helper.py --from ./helper.py
-trebi skill file rm  <skill> helper.py
+trebi skill file list   <skill> [prefix] --json --limit
+trebi skill file get    <skill> helper.py
+trebi skill file put    <skill> helper.py --from ./helper.py
+trebi skill file remove <skill> helper.py
 trebi skill delete <name>
 ```
 

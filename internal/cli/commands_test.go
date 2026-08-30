@@ -661,12 +661,12 @@ func TestFileListAndPut(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
-	out, err := runCLI(t, client, "file", "ls", "--json")
+	out, err := runCLI(t, client, "file", "list", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, `"a.py"`) {
-		t.Fatalf("ls: %s", out)
+		t.Fatalf("list: %s", out)
 	}
 	out, err = runCLI(t, client, "file", "put", "a.py")
 	if err != nil {
@@ -697,15 +697,15 @@ func TestJobFileListAndPut(t *testing.T) {
 	t.Cleanup(srv.Close)
 	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
 
-	out, err := runCLI(t, client, "--workspace", "ws1", "job", "file", "ls", "--json", "report")
+	out, err := runCLI(t, client, "--workspace", "ws1", "job", "file", "list", "--json", "report")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, `"a.py"`) {
-		t.Fatalf("ls: %s", out)
+		t.Fatalf("list: %s", out)
 	}
 	if gotPath != "/v1/jobs/report/files" || !strings.Contains(gotRawQuery, "workspace=ws1") {
-		t.Fatalf("ls path %s query %s", gotPath, gotRawQuery)
+		t.Fatalf("list path %s query %s", gotPath, gotRawQuery)
 	}
 
 	out, err = runCLI(t, client, "--workspace", "ws1", "job", "file", "put", "report", "a.py")

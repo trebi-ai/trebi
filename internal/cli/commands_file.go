@@ -16,7 +16,7 @@ func fileCommand() *cli.Command {
 	return &cli.Command{
 		Name:     "file",
 		Usage:    "workspace files (shared assets, assistant support files)",
-		Commands: fileActionCommands("", runFileList, runFileGet, runFilePut, runFileRm),
+		Commands: fileActionCommands("", runFileList, runFileGet, runFilePut, runFileRemove),
 	}
 }
 
@@ -24,7 +24,7 @@ func jobFileSubcommand() *cli.Command {
 	return &cli.Command{
 		Name:     "file",
 		Usage:    "files next to a job (scripts, templates)",
-		Commands: fileActionCommands("job", runJobFileList, runJobFileGet, runJobFilePut, runJobFileRm),
+		Commands: fileActionCommands("job", runJobFileList, runJobFileGet, runJobFilePut, runJobFileRemove),
 	}
 }
 
@@ -32,11 +32,11 @@ func skillFileSubcommand() *cli.Command {
 	return &cli.Command{
 		Name:     "file",
 		Usage:    "files in a skill bundle (scripts)",
-		Commands: fileActionCommands("skill", runSkillFileList, runSkillFileGet, runSkillFilePut, runSkillFileRm),
+		Commands: fileActionCommands("skill", runSkillFileList, runSkillFileGet, runSkillFilePut, runSkillFileRemove),
 	}
 }
 
-func fileActionCommands(owner string, ls, get, put, rm cli.ActionFunc) []*cli.Command {
+func fileActionCommands(owner string, list, get, put, remove cli.ActionFunc) []*cli.Command {
 	listUsage, listArgs := "list files in the workspace", "[prefix]"
 	noun, pathArgs := "a workspace file", "<path>"
 	if owner != "" {
@@ -45,13 +45,13 @@ func fileActionCommands(owner string, ls, get, put, rm cli.ActionFunc) []*cli.Co
 	}
 	return []*cli.Command{
 		{
-			Name: "ls", Usage: listUsage, ArgsUsage: listArgs,
+			Name: "list", Aliases: []string{"ls"}, Usage: listUsage, ArgsUsage: listArgs,
 			Flags: []cli.Flag{
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				&cli.IntFlag{Name: "limit", Usage: "page size"},
 				&cli.StringFlag{Name: "cursor", Usage: "path of the last row from the previous page"},
 			},
-			Action: ls,
+			Action: list,
 		},
 		{
 			Name: "get", Usage: "read " + noun, ArgsUsage: pathArgs,
@@ -70,11 +70,11 @@ func fileActionCommands(owner string, ls, get, put, rm cli.ActionFunc) []*cli.Co
 			Action: put,
 		},
 		{
-			Name: "rm", Usage: "delete " + noun, ArgsUsage: pathArgs,
+			Name: "remove", Aliases: []string{"rm"}, Usage: "delete " + noun, ArgsUsage: pathArgs,
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "if-match", Usage: "If-Match content hash"},
 			},
-			Action: rm,
+			Action: remove,
 		},
 	}
 }
@@ -111,7 +111,7 @@ func runFilePut(_ context.Context, c *cli.Command) error {
 	return filePutAction(c, client, BuildFilePutPath(wsID, rel))
 }
 
-func runFileRm(_ context.Context, c *cli.Command) error {
+func runFileRemove(_ context.Context, c *cli.Command) error {
 	rel, err := fileArg(c)
 	if err != nil {
 		return err
@@ -120,7 +120,7 @@ func runFileRm(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileRmAction(c, client, BuildFileDeletePath(wsID, rel))
+	return fileRemoveAction(c, client, BuildFileDeletePath(wsID, rel))
 }
 
 func runJobFileList(_ context.Context, c *cli.Command) error {
@@ -159,7 +159,7 @@ func runJobFilePut(_ context.Context, c *cli.Command) error {
 	return filePutAction(c, client, BuildJobFilePutPath(name, workspaceFor(c), rel))
 }
 
-func runJobFileRm(_ context.Context, c *cli.Command) error {
+func runJobFileRemove(_ context.Context, c *cli.Command) error {
 	name, rel, err := jobFileArgs(c)
 	if err != nil {
 		return err
@@ -168,7 +168,7 @@ func runJobFileRm(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileRmAction(c, client, BuildJobFileDeletePath(name, workspaceFor(c), rel))
+	return fileRemoveAction(c, client, BuildJobFileDeletePath(name, workspaceFor(c), rel))
 }
 
 func fileListAction(c *cli.Command, client *APIClient, path string) error {
@@ -227,7 +227,7 @@ func filePutAction(c *cli.Command, client *APIClient, path string) error {
 	return nil
 }
 
-func fileRmAction(c *cli.Command, client *APIClient, path string) error {
+func fileRemoveAction(c *cli.Command, client *APIClient, path string) error {
 	return client.DeleteIfMatch(path, c.String("if-match"))
 }
 
@@ -310,7 +310,7 @@ func runSkillFilePut(_ context.Context, c *cli.Command) error {
 	return filePutAction(c, client, BuildSkillFilePutPath(name, rel))
 }
 
-func runSkillFileRm(_ context.Context, c *cli.Command) error {
+func runSkillFileRemove(_ context.Context, c *cli.Command) error {
 	name, rel, err := skillFileArgs(c)
 	if err != nil {
 		return err
@@ -319,7 +319,7 @@ func runSkillFileRm(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileRmAction(c, client, BuildSkillFileDeletePath(name, rel))
+	return fileRemoveAction(c, client, BuildSkillFileDeletePath(name, rel))
 }
 
 func readBytesOrStdin(path string) ([]byte, error) {

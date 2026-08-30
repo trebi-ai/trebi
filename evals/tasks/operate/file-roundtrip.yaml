@@ -11,7 +11,7 @@ prompt: |
   delete it using If-Match. Do not leave the file behind.
 checks:
   - name: file gone
-    cmd: trebi file ls --json
+    cmd: trebi file list --json
     jq: '[.files[]?.path // empty] | map(select(. == "data.csv")) | length == 0'
 judge:
   model: claude-sonnet-5

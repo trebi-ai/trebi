@@ -13,7 +13,7 @@ prompt: |
   validate, test, then run.
 checks:
   - name: script present
-    cmd: trebi job file ls --json scripter
+    cmd: trebi job file list --json scripter
     jq: '[.files[].path // .files[].name // .[]] | tostring | test("hello.sh")'
   - name: run completed
     cmd: trebi runs list --job scripter --json

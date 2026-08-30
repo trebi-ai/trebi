@@ -11,9 +11,8 @@ import (
 
 func conversationCommand() *cli.Command {
 	return &cli.Command{
-		Name:    "conversation",
-		Aliases: []string{"conversations"},
-		Usage:   "list and inspect conversations",
+		Name:  "conversation",
+		Usage: "list and inspect conversations",
 		Commands: []*cli.Command{
 			{
 				Name:  "list",
