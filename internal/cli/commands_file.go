@@ -45,7 +45,7 @@ func fileActionCommands(owner string, list, get, put, remove cli.ActionFunc) []*
 	}
 	return []*cli.Command{
 		{
-			Name: "list", Aliases: []string{"ls"}, Usage: listUsage, ArgsUsage: listArgs,
+			Name: "list", Usage: listUsage, ArgsUsage: listArgs,
 			Flags: []cli.Flag{
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				&cli.IntFlag{Name: "limit", Usage: "page size"},
@@ -70,7 +70,7 @@ func fileActionCommands(owner string, list, get, put, remove cli.ActionFunc) []*
 			Action: put,
 		},
 		{
-			Name: "remove", Aliases: []string{"rm"}, Usage: "delete " + noun, ArgsUsage: pathArgs,
+			Name: "remove", Usage: "delete " + noun, ArgsUsage: pathArgs,
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "if-match", Usage: "If-Match content hash"},
 			},
