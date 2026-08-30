@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,14 +10,14 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func runsCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "runs",
 		Usage: "list and inspect runs",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "list",
 				Usage: "list runs",
@@ -128,7 +129,7 @@ func runsCommand() *cli.Command {
 	}
 }
 
-func runRunsAttach(c *cli.Context) error {
+func runRunsAttach(ctx context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi runs attach <id>")
@@ -137,10 +138,10 @@ func runRunsAttach(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	return attachRun(c, client, id)
+	return attachRun(ctx, c, client, id)
 }
 
-func runRunsShow(c *cli.Context) error {
+func runRunsShow(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -154,7 +155,7 @@ func runRunsShow(c *cli.Context) error {
 	return enc.Encode(body)
 }
 
-func runRunsTimeline(c *cli.Context) error {
+func runRunsTimeline(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -171,7 +172,7 @@ func runRunsTimeline(c *cli.Context) error {
 	return renderTimeline(outWriter(c), body)
 }
 
-func runRunsTranscript(c *cli.Context) error {
+func runRunsTranscript(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi runs transcript <id>")
@@ -198,7 +199,7 @@ func runRunsTranscript(c *cli.Context) error {
 	return enc.Encode(body)
 }
 
-func runRunsKill(c *cli.Context) error {
+func runRunsKill(_ context.Context, c *cli.Command) error {
 	if c.NArg() < 1 {
 		return fmt.Errorf("usage: trebi runs kill <id> [id...]")
 	}
@@ -221,7 +222,7 @@ func runRunsKill(c *cli.Context) error {
 	return nil
 }
 
-func runRunsResume(c *cli.Context) error {
+func runRunsResume(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -234,7 +235,7 @@ func runRunsResume(c *cli.Context) error {
 	return nil
 }
 
-func runRunsReplay(c *cli.Context) error {
+func runRunsReplay(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -247,7 +248,7 @@ func runRunsReplay(c *cli.Context) error {
 	return nil
 }
 
-func runRunsRetry(c *cli.Context) error {
+func runRunsRetry(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi runs retry <id>")
@@ -269,7 +270,7 @@ func runRunsRetry(c *cli.Context) error {
 	return nil
 }
 
-func runRunsApprove(c *cli.Context) error {
+func runRunsApprove(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -278,7 +279,7 @@ func runRunsApprove(c *cli.Context) error {
 		map[string]string{"decision": c.String("decision")}, nil)
 }
 
-func runRunsMessage(c *cli.Context) error {
+func runRunsMessage(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi runs message <id> <text...>")
@@ -322,7 +323,7 @@ func resolveRunMessageText(argText, stdinText string) (string, error) {
 	}
 }
 
-func runRunsStats(c *cli.Context) error {
+func runRunsStats(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -344,7 +345,7 @@ func runRunsStats(c *cli.Context) error {
 	return nil
 }
 
-func runRunsAgents(c *cli.Context) error {
+func runRunsAgents(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -381,7 +382,7 @@ func runRunsAgents(c *cli.Context) error {
 }
 
 // runRunsList implements runs list.
-func runRunsList(c *cli.Context) error {
+func runRunsList(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -446,7 +447,7 @@ func runRunsList(c *cli.Context) error {
 	return nil
 }
 
-func runApprovalsList(c *cli.Context) error {
+func runApprovalsList(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -493,7 +494,7 @@ func runCommand() *cli.Command {
 	}
 }
 
-func runLaunch(c *cli.Context) error {
+func runLaunch(ctx context.Context, c *cli.Command) error {
 	if c.NArg() < 1 {
 		return fmt.Errorf("usage: trebi job run <job>")
 	}
@@ -532,7 +533,7 @@ func runLaunch(c *cli.Context) error {
 	}
 	runID := mapStr(out, "id")
 	if c.Bool("attach") && runID != "" {
-		return attachAfterLaunch(c, client, out)
+		return attachAfterLaunch(ctx, c, client, out)
 	}
 	return nil
 }

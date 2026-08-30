@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 var errBusLimit = errors.New("bus frame limit reached")
@@ -37,8 +37,8 @@ func busCommand() *cli.Command {
 	}
 }
 
-func runBus(c *cli.Context) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+func runBus(ctx context.Context, c *cli.Command) error {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err := runBusWith(ctx, c)
 	if err == nil || errors.Is(err, errBusLimit) || errors.Is(err, context.Canceled) {
@@ -47,7 +47,7 @@ func runBus(c *cli.Context) error {
 	return err
 }
 
-func runBusWith(ctx context.Context, c *cli.Context) error {
+func runBusWith(ctx context.Context, c *cli.Command) error {
 	topics, err := normalizeBusTopics(c.String("topics"))
 	if err != nil {
 		return err
@@ -137,7 +137,7 @@ type busFilter struct {
 	since              time.Time
 }
 
-func busFilterFrom(c *cli.Context) (busFilter, error) {
+func busFilterFrom(c *cli.Command) (busFilter, error) {
 	f := busFilter{
 		entity: c.String("entity"),
 		id:     c.String("id"),

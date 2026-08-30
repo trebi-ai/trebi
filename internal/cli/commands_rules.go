@@ -1,18 +1,19 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func rulesCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "rules",
 		Usage: "dry-run integration routing rules",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "test",
 				Usage: "evaluate match/extract against a sample event",
@@ -43,7 +44,7 @@ func rulesCommand() *cli.Command {
 	}
 }
 
-func loadRuleEvent(c *cli.Context) (any, error) {
+func loadRuleEvent(c *cli.Command) (any, error) {
 	raw, err := readFileOrStdin(c.String("event-file"))
 	if err != nil {
 		return nil, err
@@ -59,7 +60,7 @@ func loadRuleEvent(c *cli.Context) (any, error) {
 	return event, nil
 }
 
-func runRulesTest(c *cli.Context) error {
+func runRulesTest(_ context.Context, c *cli.Command) error {
 	event, err := loadRuleEvent(c)
 	if err != nil {
 		return err
@@ -86,7 +87,7 @@ func runRulesTest(c *cli.Context) error {
 	return nil
 }
 
-func runRulesFire(c *cli.Context) error {
+func runRulesFire(_ context.Context, c *cli.Command) error {
 	event, err := loadRuleEvent(c)
 	if err != nil {
 		return err

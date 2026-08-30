@@ -63,7 +63,7 @@ func assertCommandsSorted(t *testing.T, path string, cmds []*urfaveCommand) {
 			continue
 		}
 		visible = append(visible, c.Name)
-		assertCommandsSorted(t, path+" "+c.Name, c.Subcommands)
+		assertCommandsSorted(t, path+" "+c.Name, c.Commands)
 	}
 	if !sort.StringsAreSorted(visible) {
 		t.Fatalf("%s subcommands not alphabetical: %v", path, visible)

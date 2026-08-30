@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,7 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 	"golang.org/x/term"
 )
 
@@ -84,7 +85,7 @@ func (a *wsAttach) forwardKeys(stdin io.Reader, errCh chan<- error) {
 
 // attachRun attaches to a live run: local tmux when available, else WebSocket
 // screen stream (works for remote daemons).
-func attachRun(c *cli.Context, client *APIClient, runID string) error {
+func attachRun(ctx context.Context, c *cli.Command, client *APIClient, runID string) error {
 	if runID == "" {
 		return fmt.Errorf("run id required")
 	}
@@ -92,18 +93,18 @@ func attachRun(c *cli.Context, client *APIClient, runID string) error {
 	if err := client.GetJSON("/v1/runs/"+runID, &run); err != nil {
 		return err
 	}
-	return attachAfterLaunch(c, client, run)
+	return attachAfterLaunch(ctx, c, client, run)
 }
 
 // attachAfterLaunch attaches after create/wake. Local prefers tmux; remote
 // always uses WS /v1/runs/{id}/attach.
-func attachAfterLaunch(c *cli.Context, client *APIClient, run map[string]any) error {
+func attachAfterLaunch(ctx context.Context, c *cli.Command, client *APIClient, run map[string]any) error {
 	runID := mapStr(run, "id")
 	if runID == "" {
 		return fmt.Errorf("run has no id")
 	}
 	if client.IsRemote() {
-		return attachWebSocket(c, client, runID)
+		return attachWebSocket(ctx, c, client, runID)
 	}
 	session := mapStr(run, "tmux_session")
 	if session == "" {
@@ -113,7 +114,7 @@ func attachAfterLaunch(c *cli.Context, client *APIClient, run map[string]any) er
 		return execTmuxAttach(session)
 	}
 	// Local fallback when session is not ready: WS screen stream.
-	return attachWebSocket(c, client, runID)
+	return attachWebSocket(ctx, c, client, runID)
 }
 
 func waitTmuxSession(client *APIClient, runID string, maxWait time.Duration) string {
@@ -144,7 +145,7 @@ func execTmuxAttach(session string) error {
 }
 
 // attachWebSocket streams GET /v1/runs/{id}/attach (screen + optional keys).
-func attachWebSocket(c *cli.Context, client *APIClient, runID string) error {
+func attachWebSocket(ctx context.Context, c *cli.Command, client *APIClient, runID string) error {
 	conn, err := dialAttach(client, runID)
 	if err != nil {
 		return err
@@ -187,8 +188,8 @@ func attachWebSocket(c *cli.Context, client *APIClient, runID string) error {
 		return err
 	case <-sigCh:
 		return nil
-	case <-c.Done():
-		return c.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

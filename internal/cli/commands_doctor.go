@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,7 +9,7 @@ import (
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func doctorCommand() *cli.Command {
@@ -20,7 +21,7 @@ func doctorCommand() *cli.Command {
 			&cli.BoolFlag{Name: "fix", Usage: "apply automatic fixes for every finding"},
 		},
 		Action: runDoctor,
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:      "fix",
 				Usage:     "apply the automatic fix for one finding",
@@ -31,7 +32,7 @@ func doctorCommand() *cli.Command {
 	}
 }
 
-func runDoctor(c *cli.Context) error {
+func runDoctor(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return renderDoctorOffline(c, err)
@@ -51,7 +52,7 @@ func runDoctor(c *cli.Context) error {
 	return renderDoctor(outWriter(c), body)
 }
 
-func renderDoctorOffline(c *cli.Context, clientErr error) error {
+func renderDoctorOffline(c *cli.Command, clientErr error) error {
 	w := outWriter(c)
 	db := "present"
 	if _, err := os.Stat(home.DBPath()); err != nil {
@@ -158,7 +159,7 @@ func renderDoctor(w io.Writer, body map[string]any) error {
 	return nil
 }
 
-func applyDoctorFixes(c *cli.Context, client *APIClient, body map[string]any) error {
+func applyDoctorFixes(c *cli.Command, client *APIClient, body map[string]any) error {
 	findings, _ := body["findings"].([]any)
 	w := outWriter(c)
 	var results []map[string]any
@@ -185,7 +186,7 @@ func applyDoctorFixes(c *cli.Context, client *APIClient, body map[string]any) er
 	return nil
 }
 
-func runDoctorFixOne(c *cli.Context) error {
+func runDoctorFixOne(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi doctor fix <id>")

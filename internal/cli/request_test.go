@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 // urfaveCommand is a local alias so registration tests stay readable.
@@ -498,7 +498,7 @@ func TestCommandRegistration(t *testing.T) {
 	}
 	svc := findCmd(app.Commands, "service")
 	for _, want := range []string{"install", "uninstall", "start", "stop", "restart", "status", "logs", "daemon", "shutdown"} {
-		if findCmd(svc.Subcommands, want) == nil {
+		if findCmd(svc.Commands, want) == nil {
 			t.Fatalf("service missing %s", want)
 		}
 	}
@@ -507,11 +507,11 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatal("job missing")
 	}
 	for _, want := range []string{"delete", "schedule", "status", "tail", "list", "pause", "unpause", "run"} {
-		if findCmd(job.Subcommands, want) == nil {
+		if findCmd(job.Commands, want) == nil {
 			t.Fatalf("job missing %s", want)
 		}
 	}
-	jobList := findCmd(job.Subcommands, "list")
+	jobList := findCmd(job.Commands, "list")
 	if !hasFlag(jobList, "schedule") {
 		t.Fatal("job list missing --schedule")
 	}
@@ -520,45 +520,45 @@ func TestCommandRegistration(t *testing.T) {
 	}
 	h := findCmd(app.Commands, "harness")
 	for _, want := range []string{"list", "ensure", "auth"} {
-		if findCmd(h.Subcommands, want) == nil {
+		if findCmd(h.Commands, want) == nil {
 			t.Fatalf("harness missing %s", want)
 		}
 	}
-	auth := findCmd(h.Subcommands, "auth")
+	auth := findCmd(h.Commands, "auth")
 	for _, want := range []string{"status", "login", "logout", "mode"} {
-		if findCmd(auth.Subcommands, want) == nil {
+		if findCmd(auth.Commands, want) == nil {
 			t.Fatalf("harness auth missing %s", want)
 		}
 	}
-	if findCmd(auth.Subcommands, "mark") != nil {
+	if findCmd(auth.Commands, "mark") != nil {
 		t.Fatal("harness auth mark should be gone")
 	}
 	integ := findCmd(app.Commands, "integration")
 	for _, want := range []string{"list", "show", "set", "remove", "stop", "restart", "logs", "test", "connect", "disconnect", "cursor"} {
-		if findCmd(integ.Subcommands, want) == nil {
+		if findCmd(integ.Commands, want) == nil {
 			t.Fatalf("integration missing %s", want)
 		}
 	}
-	cur := findCmd(integ.Subcommands, "cursor")
+	cur := findCmd(integ.Commands, "cursor")
 	for _, want := range []string{"show", "set", "reset"} {
-		if findCmd(cur.Subcommands, want) == nil {
+		if findCmd(cur.Commands, want) == nil {
 			t.Fatalf("integration cursor missing %s", want)
 		}
 	}
-	if findCmd(integ.Subcommands, "queue") == nil || !findCmd(integ.Subcommands, "queue").Hidden {
+	if findCmd(integ.Commands, "queue") == nil || !findCmd(integ.Commands, "queue").Hidden {
 		t.Fatal("integration queue should remain as a hidden alias")
 	}
 	cfg := findCmd(app.Commands, "config")
 	for _, want := range []string{"show", "set", "validate", "path", "bridge"} {
-		if findCmd(cfg.Subcommands, want) == nil {
+		if findCmd(cfg.Commands, want) == nil {
 			t.Fatalf("config missing %s", want)
 		}
 	}
-	run := findCmd(job.Subcommands, "run")
+	run := findCmd(job.Commands, "run")
 	if !hasFlag(run, "extra-prompt") || !hasFlag(run, "test") || !hasFlag(run, "attach") || !hasFlag(run, "workspace") || !hasFlag(run, "json") {
 		t.Fatal("job run flags")
 	}
-	runsList := findCmd(findCmd(app.Commands, "runs").Subcommands, "list")
+	runsList := findCmd(findCmd(app.Commands, "runs").Commands, "list")
 	for _, f := range []string{"status", "job", "kind", "workspace", "harness", "model", "conversation", "limit"} {
 		if !hasFlag(runsList, f) {
 			t.Fatalf("runs list missing flag %s", f)
@@ -567,14 +567,14 @@ func TestCommandRegistration(t *testing.T) {
 	if hasFlag(runsList, "assistant") {
 		t.Fatal("runs list should not have --assistant (use --kind assistant)")
 	}
-	if findCmd(findCmd(app.Commands, "runs").Subcommands, "attach") == nil {
+	if findCmd(findCmd(app.Commands, "runs").Commands, "attach") == nil {
 		t.Fatal("runs attach missing")
 	}
-	if findCmd(findCmd(app.Commands, "runs").Subcommands, "retry") == nil {
+	if findCmd(findCmd(app.Commands, "runs").Commands, "retry") == nil {
 		t.Fatal("runs retry missing")
 	}
 	runs := findCmd(app.Commands, "runs")
-	msg := findCmd(runs.Subcommands, "message")
+	msg := findCmd(runs.Commands, "message")
 	if msg == nil {
 		t.Fatal("runs message missing")
 	}
@@ -582,31 +582,31 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatalf("runs message ArgsUsage %q", msg.ArgsUsage)
 	}
 	for _, want := range []string{"stats", "agents", "approvals"} {
-		if findCmd(runs.Subcommands, want) == nil {
+		if findCmd(runs.Commands, want) == nil {
 			t.Fatalf("runs missing %s", want)
 		}
 	}
 	ev := findCmd(app.Commands, "events")
-	if findCmd(ev.Subcommands, "retrigger") == nil {
+	if findCmd(ev.Commands, "retrigger") == nil {
 		t.Fatal("events retrigger missing")
 	}
-	mem := findCmd(findCmd(app.Commands, "job").Subcommands, "memory")
+	mem := findCmd(findCmd(app.Commands, "job").Commands, "memory")
 	for _, want := range []string{"show", "add", "remove", "set", "clear"} {
-		if findCmd(mem.Subcommands, want) == nil {
+		if findCmd(mem.Commands, want) == nil {
 			t.Fatalf("job memory missing %s", want)
 		}
 	}
-	if !hasFlag(findCmd(mem.Subcommands, "clear"), "force") {
+	if !hasFlag(findCmd(mem.Commands, "clear"), "force") {
 		t.Fatal("job memory clear missing --force")
 	}
-	if findCmd(findCmd(app.Commands, "skill").Subcommands, "update") == nil {
+	if findCmd(findCmd(app.Commands, "skill").Commands, "update") == nil {
 		t.Fatal("skill update missing")
 	}
 	doc := findCmd(app.Commands, "doctor")
 	if !hasFlag(doc, "fix") || !hasFlag(doc, "json") {
 		t.Fatal("doctor missing --fix/--json")
 	}
-	if findCmd(doc.Subcommands, "fix") == nil {
+	if findCmd(doc.Commands, "fix") == nil {
 		t.Fatal("doctor fix missing")
 	}
 	bus := findCmd(app.Commands, "bus")
@@ -615,26 +615,26 @@ func TestCommandRegistration(t *testing.T) {
 			t.Fatalf("bus missing flag %s", f)
 		}
 	}
-	cfgShow := findCmd(findCmd(app.Commands, "config").Subcommands, "show")
+	cfgShow := findCmd(findCmd(app.Commands, "config").Commands, "show")
 	if !hasFlag(cfgShow, "yaml") || !hasFlag(cfgShow, "tree") {
 		t.Fatal("config show missing --yaml/--tree")
 	}
 	asst := findCmd(app.Commands, "assistant")
 	for _, want := range []string{"show", "wake", "history", "say", "chat"} {
-		if findCmd(asst.Subcommands, want) == nil {
+		if findCmd(asst.Commands, want) == nil {
 			t.Fatalf("assistant missing %s", want)
 		}
 	}
 	conv := findCmd(app.Commands, "conversation")
 	for _, want := range []string{"list", "show", "messages", "new", "switch"} {
-		if findCmd(conv.Subcommands, want) == nil {
+		if findCmd(conv.Commands, want) == nil {
 			t.Fatalf("conversation missing %s", want)
 		}
 	}
-	if !hasFlag(findCmd(asst.Subcommands, "wake"), "attach") {
+	if !hasFlag(findCmd(asst.Commands, "wake"), "attach") {
 		t.Fatal("assistant wake missing --attach")
 	}
-	hist := findCmd(asst.Subcommands, "history")
+	hist := findCmd(asst.Commands, "history")
 	for _, f := range []string{"status", "job", "harness", "model", "conversation", "limit", "json"} {
 		if !hasFlag(hist, f) {
 			t.Fatalf("assistant history missing flag %s", f)
@@ -645,26 +645,26 @@ func TestCommandRegistration(t *testing.T) {
 	}
 	ws := findCmd(app.Commands, "workspace")
 	for _, want := range []string{"list", "add", "use", "current", "unlink", "remove", "rename"} {
-		if findCmd(ws.Subcommands, want) == nil {
+		if findCmd(ws.Commands, want) == nil {
 			t.Fatalf("workspace missing %s", want)
 		}
 	}
-	if !hasFlag(findCmd(ws.Subcommands, "remove"), "force") {
+	if !hasFlag(findCmd(ws.Commands, "remove"), "force") {
 		t.Fatal("workspace remove missing --force")
 	}
-	asstMem := findCmd(findCmd(app.Commands, "assistant").Subcommands, "memory")
+	asstMem := findCmd(findCmd(app.Commands, "assistant").Commands, "memory")
 	for _, want := range []string{"show", "add", "remove", "set", "clear"} {
-		if findCmd(asstMem.Subcommands, want) == nil {
+		if findCmd(asstMem.Commands, want) == nil {
 			t.Fatalf("assistant memory missing %s", want)
 		}
 	}
 	rules := findCmd(app.Commands, "rules")
 	for _, want := range []string{"test", "fire"} {
-		if findCmd(rules.Subcommands, want) == nil {
+		if findCmd(rules.Commands, want) == nil {
 			t.Fatalf("rules missing %s", want)
 		}
 	}
-	add := findCmd(ws.Subcommands, "add")
+	add := findCmd(ws.Commands, "add")
 	if !hasFlag(add, "url") || !hasFlag(add, "token") || !hasFlag(add, "id") {
 		t.Fatal("workspace add missing remote flags")
 	}

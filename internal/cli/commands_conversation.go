@@ -1,11 +1,12 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func conversationCommand() *cli.Command {
@@ -13,7 +14,7 @@ func conversationCommand() *cli.Command {
 		Name:    "conversation",
 		Aliases: []string{"conversations"},
 		Usage:   "list and inspect conversations",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "list",
 				Usage: "list conversations",
@@ -74,7 +75,7 @@ func conversationCommand() *cli.Command {
 	}
 }
 
-func runConversationList(c *cli.Context) error {
+func runConversationList(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -106,7 +107,7 @@ func runConversationList(c *cli.Context) error {
 	return nil
 }
 
-func runConversationShow(c *cli.Context) error {
+func runConversationShow(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi conversation show <id>")
@@ -124,7 +125,7 @@ func runConversationShow(c *cli.Context) error {
 	return enc.Encode(body)
 }
 
-func runConversationMessages(c *cli.Context) error {
+func runConversationMessages(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi conversation messages <id>")
@@ -158,7 +159,7 @@ func runConversationMessages(c *cli.Context) error {
 	return nil
 }
 
-func runConversationNew(c *cli.Context) error {
+func runConversationNew(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -180,7 +181,7 @@ func runConversationNew(c *cli.Context) error {
 	return nil
 }
 
-func runConversationSwitch(c *cli.Context) error {
+func runConversationSwitch(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi conversation switch <id>")
@@ -200,7 +201,7 @@ func runConversationSwitch(c *cli.Context) error {
 	return nil
 }
 
-func runConversationPatch(c *cli.Context) error {
+func runConversationPatch(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi conversation patch <id>")

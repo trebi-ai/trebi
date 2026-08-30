@@ -70,11 +70,11 @@ func TestServiceCommandRegistration(t *testing.T) {
 		"install", "uninstall", "start", "stop", "restart",
 		"status", "logs", "migrate-db", "daemon", "drain", "undrain", "token",
 	} {
-		if findCmd(svc.Subcommands, want) == nil {
+		if findCmd(svc.Commands, want) == nil {
 			t.Fatalf("service missing %s", want)
 		}
 	}
-	inst := findCmd(svc.Subcommands, "install")
+	inst := findCmd(svc.Commands, "install")
 	hasBin, hasNoTray := false, false
 	for _, f := range inst.Flags {
 		switch f.Names()[0] {
@@ -87,7 +87,7 @@ func TestServiceCommandRegistration(t *testing.T) {
 	if !hasBin || !hasNoTray {
 		t.Fatalf("install flags: bin=%v no-tray=%v", hasBin, hasNoTray)
 	}
-	daemon := findCmd(svc.Subcommands, "daemon")
+	daemon := findCmd(svc.Commands, "daemon")
 	hasParent := false
 	for _, f := range daemon.Flags {
 		if f.Names()[0] == "parent-pid" {
@@ -97,7 +97,7 @@ func TestServiceCommandRegistration(t *testing.T) {
 	if !hasParent {
 		t.Fatal("daemon missing --parent-pid")
 	}
-	logs := findCmd(svc.Subcommands, "logs")
+	logs := findCmd(svc.Commands, "logs")
 	for _, name := range []string{"follow", "lines", "level", "grep", "json"} {
 		found := false
 		for _, f := range logs.Flags {

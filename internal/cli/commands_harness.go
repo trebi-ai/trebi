@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,14 +11,14 @@ import (
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func harnessCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "harness",
 		Usage: "harness tools",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "list",
 				Usage: "list harnesses",
@@ -31,7 +32,7 @@ func harnessCommand() *cli.Command {
 				Name:      "ensure",
 				Usage:     "ensure harness home + lifecycle install",
 				ArgsUsage: "<name>",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					name := c.Args().Get(0)
 					if name == "" {
 						return fmt.Errorf("name required")
@@ -51,7 +52,7 @@ func harnessCommand() *cli.Command {
 			{
 				Name:  "auth",
 				Usage: "probe and manage harness authentication",
-				Subcommands: []*cli.Command{
+				Commands: []*cli.Command{
 					{
 						Name:      "status",
 						Usage:     "auth probe (ok|missing|expired|unknown)",
@@ -95,7 +96,7 @@ func harnessCommand() *cli.Command {
 	}
 }
 
-func runHarnessList(c *cli.Context) error {
+func runHarnessList(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -148,7 +149,7 @@ func runHarnessList(c *cli.Context) error {
 	return nil
 }
 
-func runHarnessAuthStatus(c *cli.Context) error {
+func runHarnessAuthStatus(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -233,7 +234,7 @@ func keychainBound(r map[string]any) bool {
 	return false
 }
 
-func runHarnessAuthMode(c *cli.Context) error {
+func runHarnessAuthMode(_ context.Context, c *cli.Command) error {
 	name, mode := c.Args().Get(0), c.Args().Get(1)
 	if name == "" || (mode != "shared" && mode != "separate") {
 		return fmt.Errorf("usage: trebi harness auth mode <name> shared|separate")
@@ -250,7 +251,7 @@ func runHarnessAuthMode(c *cli.Context) error {
 	return nil
 }
 
-func runHarnessAuthLogout(c *cli.Context) error {
+func runHarnessAuthLogout(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -262,7 +263,7 @@ func runHarnessAuthLogout(c *cli.Context) error {
 	return client.DoHTTP(BuildHarnessLogout(name, c.String("mode"), c.Bool("yes")), nil)
 }
 
-func runHarnessAuthLogin(c *cli.Context) error {
+func runHarnessAuthLogin(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -301,7 +302,7 @@ func runHarnessAuthLogin(c *cli.Context) error {
 	return driveLogin(c, client, name, sess)
 }
 
-func driveLogin(c *cli.Context, client *APIClient, name string, sess map[string]any) error {
+func driveLogin(c *cli.Command, client *APIClient, name string, sess map[string]any) error {
 	w := outWriter(c)
 	printedURL := ""
 	for {
@@ -365,7 +366,7 @@ func truthy(v any) bool {
 	return false
 }
 
-func renderLocalOnly(c *cli.Context, err error) error {
+func renderLocalOnly(c *cli.Command, err error) error {
 	msg := err.Error()
 	if strings.Contains(msg, "precondition_failed") || strings.Contains(msg, "daemon machine") {
 		fmt.Fprintf(outWriter(c), "log in on the daemon machine (this harness has no remote relay)\n")
@@ -373,7 +374,7 @@ func renderLocalOnly(c *cli.Context, err error) error {
 	return err
 }
 
-func attachLoginWS(c *cli.Context, client *APIClient, name string) error {
+func attachLoginWS(c *cli.Command, client *APIClient, name string) error {
 	conn, err := dialAttachPath(client, "/v1/harnesses/"+name+"/login/attach")
 	if err != nil {
 		return err
@@ -402,7 +403,7 @@ func agentHookCommand() *cli.Command {
 		Usage:     "harness lifecycle hook (called by tools; prints {})",
 		Hidden:    true,
 		ArgsUsage: "<event>",
-		Action: func(c *cli.Context) error {
+		Action: func(_ context.Context, c *cli.Command) error {
 			event := c.Args().Get(0)
 			if event == "" {
 				event = "running"

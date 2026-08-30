@@ -13,7 +13,7 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := eval.NewApp().RunContext(ctx, os.Args); err != nil {
+	if err := eval.NewApp().Run(ctx, os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

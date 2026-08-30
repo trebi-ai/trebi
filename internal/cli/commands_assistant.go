@@ -11,18 +11,18 @@ import (
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func assistantCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "assistant",
 		Usage: "workspace assistant (singleton TREBI.md)",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "show",
 				Usage: "show assistant for current/default workspace",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
@@ -65,7 +65,7 @@ func assistantCommand() *cli.Command {
 			{
 				Name:  "memory",
 				Usage: "assistant MEMORY.md ledger",
-				Subcommands: []*cli.Command{
+				Commands: []*cli.Command{
 					{
 						Name:   "show",
 						Usage:  "print MEMORY.md",
@@ -120,7 +120,7 @@ func assistantCommand() *cli.Command {
 	}
 }
 
-func runAssistantMemory(c *cli.Context) error {
+func runAssistantMemory(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -142,7 +142,7 @@ func runAssistantMemory(c *cli.Context) error {
 	return nil
 }
 
-func runAssistantMemoryAdd(c *cli.Context) error {
+func runAssistantMemoryAdd(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -154,7 +154,7 @@ func runAssistantMemoryAdd(c *cli.Context) error {
 	return client.DoHTTP(BuildAssistantMemoryEntryAdd(wsID, c.String("date"), c.String("text")), nil)
 }
 
-func runAssistantMemoryRemove(c *cli.Context) error {
+func runAssistantMemoryRemove(_ context.Context, c *cli.Command) error {
 	eid := c.Args().Get(0)
 	if eid == "" {
 		return fmt.Errorf("usage: trebi assistant memory remove <entry-id>")
@@ -170,7 +170,7 @@ func runAssistantMemoryRemove(c *cli.Context) error {
 	return client.DoHTTP(BuildAssistantMemoryEntryDelete(wsID, eid), nil)
 }
 
-func runAssistantMemorySet(c *cli.Context) error {
+func runAssistantMemorySet(_ context.Context, c *cli.Command) error {
 	content, err := readFileOrStdin(c.String("file"))
 	if err != nil {
 		return err
@@ -186,7 +186,7 @@ func runAssistantMemorySet(c *cli.Context) error {
 	return client.DoHTTP(BuildAssistantMemoryPut(wsID, content), nil)
 }
 
-func runAssistantMemoryClear(c *cli.Context) error {
+func runAssistantMemoryClear(_ context.Context, c *cli.Command) error {
 	if !c.Bool("force") {
 		return fmt.Errorf("refusing to clear assistant memory without --force")
 	}
@@ -205,7 +205,7 @@ func runAssistantMemoryClear(c *cli.Context) error {
 	return nil
 }
 
-func runAssistantWake(c *cli.Context) error {
+func runAssistantWake(ctx context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -227,12 +227,12 @@ func runAssistantWake(c *cli.Context) error {
 	runID := mapStr(out, "id")
 	fmt.Fprintf(outWriter(c), "run %v status=%v kind=assistant\n", runID, out["status"])
 	if c.Bool("attach") && runID != "" {
-		return attachAfterLaunch(c, client, out)
+		return attachAfterLaunch(ctx, c, client, out)
 	}
 	return nil
 }
 
-func runAssistantHistory(c *cli.Context) error {
+func runAssistantHistory(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -292,7 +292,7 @@ func runAssistantHistory(c *cli.Context) error {
 	return nil
 }
 
-func runAssistantSay(c *cli.Context) error {
+func runAssistantSay(_ context.Context, c *cli.Command) error {
 	text := strings.TrimSpace(strings.Join(c.Args().Slice(), " "))
 	if text == "" {
 		return fmt.Errorf("usage: trebi assistant say <message>")
@@ -322,7 +322,7 @@ func runAssistantSay(c *cli.Context) error {
 	return nil
 }
 
-func runAssistantChat(c *cli.Context) error {
+func runAssistantChat(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -354,7 +354,7 @@ func runAssistantChat(c *cli.Context) error {
 	}
 }
 
-func chatLine(c *cli.Context, client *APIClient, wsID string, convID *string, line string) (bool, error) {
+func chatLine(c *cli.Command, client *APIClient, wsID string, convID *string, line string) (bool, error) {
 	switch {
 	case line == "":
 		return true, nil
@@ -384,7 +384,7 @@ func chatLine(c *cli.Context, client *APIClient, wsID string, convID *string, li
 	}
 }
 
-func chatSend(c *cli.Context, client *APIClient, wsID, convID, text string) error {
+func chatSend(c *cli.Command, client *APIClient, wsID, convID, text string) error {
 	var out map[string]any
 	if err := client.DoHTTP(BuildAssistantSay(convID, text, wsID), &out); err != nil {
 		return err
@@ -393,7 +393,7 @@ func chatSend(c *cli.Context, client *APIClient, wsID, convID, text string) erro
 	return waitAssistantReply(c, client, convID)
 }
 
-func waitAssistantReply(c *cli.Context, client *APIClient, convID string) error {
+func waitAssistantReply(c *cli.Command, client *APIClient, convID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	seen := messageIDs(client, convID)
@@ -430,7 +430,7 @@ func messageIDs(client *APIClient, convID string) map[string]struct{} {
 	return out
 }
 
-func printNewAssistant(c *cli.Context, client *APIClient, convID string, seen map[string]struct{}) bool {
+func printNewAssistant(c *cli.Command, client *APIClient, convID string, seen map[string]struct{}) bool {
 	var body struct {
 		Messages []map[string]any `json:"messages"`
 	}

@@ -2,25 +2,26 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/platform"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 const appStateKey = "trebi.cli.state"
 
 // NewApp builds the root CLI.
-func NewApp() *cli.App {
-	app := &cli.App{
+func NewApp() *cli.Command {
+	app := &cli.Command{
 		Name:    "trebi",
 		Usage:   "Trebi — LLM task runner (daemon + CLI)",
 		Version: "0.1.0",
@@ -28,16 +29,16 @@ func NewApp() *cli.App {
 			&cli.StringFlag{
 				Name:    "workspace",
 				Aliases: []string{"w"},
-				EnvVars: []string{"TREBI_WORKSPACE"},
+				Sources: cli.EnvVars("TREBI_WORKSPACE"),
 				Usage:   "workspace id/name (sticky context if omitted; remote links route the API)",
 			},
 		},
-		Before: func(c *cli.Context) error {
-			if c.App.Metadata == nil {
-				c.App.Metadata = map[string]any{}
+		Before: func(ctx context.Context, c *cli.Command) (context.Context, error) {
+			if c.Root().Metadata == nil {
+				c.Root().Metadata = map[string]any{}
 			}
-			c.App.Metadata[appStateKey] = newAppState(c.String("workspace"))
-			return nil
+			c.Root().Metadata[appStateKey] = newAppState(c.String("workspace"))
+			return ctx, nil
 		},
 		Commands: []*cli.Command{
 			serviceCommand(),
@@ -68,10 +69,19 @@ func NewApp() *cli.App {
 
 // sortCommands orders help subcommands alphabetically at every nesting level.
 func sortCommands(cmds []*cli.Command) {
-	sort.Sort(cli.CommandsByName(cmds))
+	slices.SortFunc(cmds, func(a, b *cli.Command) int {
+		an, bn := "", ""
+		if a != nil {
+			an = a.Name
+		}
+		if b != nil {
+			bn = b.Name
+		}
+		return strings.Compare(an, bn)
+	})
 	for _, c := range cmds {
-		if c != nil && len(c.Subcommands) > 0 {
-			sortCommands(c.Subcommands)
+		if c != nil && len(c.Commands) > 0 {
+			sortCommands(c.Commands)
 		}
 	}
 }
@@ -122,19 +132,17 @@ func newAppState(workspaceHint string) *appState {
 	return state
 }
 
-func appStateFor(c *cli.Context) *appState {
-	if c != nil && c.App != nil && c.App.Metadata != nil {
-		if state, ok := c.App.Metadata[appStateKey].(*appState); ok && state != nil {
+func appStateFor(c *cli.Command) *appState {
+	if c != nil {
+		if state, ok := c.Root().Metadata[appStateKey].(*appState); ok && state != nil {
 			return state
 		}
-	}
-	if c != nil {
 		return newAppState(c.String("workspace"))
 	}
 	return newAppState("")
 }
 
-func clientFor(c *cli.Context) (*APIClient, error) {
+func clientFor(c *cli.Command) (*APIClient, error) {
 	state := appStateFor(c)
 	if state.clientErr != nil {
 		return nil, state.clientErr
@@ -145,7 +153,7 @@ func clientFor(c *cli.Context) (*APIClient, error) {
 	return state.client, nil
 }
 
-func localClientFor(c *cli.Context) (*APIClient, error) {
+func localClientFor(c *cli.Command) (*APIClient, error) {
 	state := appStateFor(c)
 	if state.localClientErr != nil {
 		return nil, state.localClientErr
@@ -156,7 +164,7 @@ func localClientFor(c *cli.Context) (*APIClient, error) {
 	return state.localClient, nil
 }
 
-func configFor(c *cli.Context) (*config.Config, error) {
+func configFor(c *cli.Command) (*config.Config, error) {
 	state := appStateFor(c)
 	if state.configErr != nil {
 		return nil, state.configErr
@@ -167,12 +175,12 @@ func configFor(c *cli.Context) (*config.Config, error) {
 	return state.config, nil
 }
 
-func workspaceFor(c *cli.Context) string {
+func workspaceFor(c *cli.Command) string {
 	return resolveWorkspaceHint(c, appStateFor(c).workspace)
 }
 
 // workspaceFlag is the command --workspace / -w if set, else the global/sticky workspace.
-func workspaceFlag(c *cli.Context) string {
+func workspaceFlag(c *cli.Command) string {
 	if w := strings.TrimSpace(c.String("workspace")); w != "" {
 		return resolveWorkspaceHint(c, w)
 	}
@@ -181,7 +189,7 @@ func workspaceFlag(c *cli.Context) string {
 
 // resolveWorkspaceHint maps a name or id to a workspace id via sticky/linked
 // context, then the daemon's workspace list.
-func resolveWorkspaceHint(c *cli.Context, hint string) string {
+func resolveWorkspaceHint(c *cli.Command, hint string) string {
 	hint = strings.TrimSpace(hint)
 	if hint == "" {
 		return ""
@@ -218,12 +226,12 @@ func lookupWorkspaceID(client *APIClient, hint string) string {
 	return ""
 }
 
-func stickyFor(c *cli.Context) (*StickyContext, error) {
+func stickyFor(c *cli.Command) (*StickyContext, error) {
 	state := appStateFor(c)
 	return state.sticky, state.stickyErr
 }
 
-func linkedFor(c *cli.Context) ([]LinkedWorkspace, error) {
+func linkedFor(c *cli.Command) ([]LinkedWorkspace, error) {
 	state := appStateFor(c)
 	return state.linked, state.linkedErr
 }
@@ -295,9 +303,11 @@ func findLinked(all []LinkedWorkspace, idOrName string) (LinkedWorkspace, bool) 
 	return LinkedWorkspace{}, false
 }
 
-func outWriter(c *cli.Context) io.Writer {
-	if c != nil && c.App != nil && c.App.Writer != nil {
-		return c.App.Writer
+func outWriter(c *cli.Command) io.Writer {
+	if c != nil {
+		if w := c.Root().Writer; w != nil {
+			return w
+		}
 	}
 	return os.Stdout
 }

@@ -1,19 +1,20 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func integrationCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "integration",
 		Usage: "manage integrations",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "list",
 				Usage: "list integrations",
@@ -75,7 +76,7 @@ func integrationCommand() *cli.Command {
 			{
 				Name:  "cursor",
 				Usage: "show or set integration_cursors.last_event_id (replay position)",
-				Subcommands: []*cli.Command{
+				Commands: []*cli.Command{
 					{
 						Name:      "show",
 						Usage:     "show last_event_id",
@@ -136,7 +137,7 @@ func queueCommand() *cli.Command {
 			&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
 			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 		},
-		Action: func(c *cli.Context) error {
+		Action: func(_ context.Context, c *cli.Command) error {
 			client, err := clientFor(c)
 			if err != nil {
 				return err
@@ -172,12 +173,12 @@ func queueCommand() *cli.Command {
 			renderTable(tbl)
 			return nil
 		},
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:      "requeue",
 				Usage:     "requeue a blocked/done row to pending",
 				ArgsUsage: "<id>",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
@@ -189,7 +190,7 @@ func queueCommand() *cli.Command {
 				Name:      "cancel",
 				Usage:     "cancel a queue row",
 				ArgsUsage: "<id>",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
@@ -201,7 +202,7 @@ func queueCommand() *cli.Command {
 	}
 }
 
-func runIntegrationList(c *cli.Context) error {
+func runIntegrationList(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -240,7 +241,7 @@ func runIntegrationList(c *cli.Context) error {
 	return enc.Encode(body)
 }
 
-func runIntegrationShow(c *cli.Context) error {
+func runIntegrationShow(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -258,7 +259,7 @@ func runIntegrationShow(c *cli.Context) error {
 	return enc.Encode(body)
 }
 
-func runIntegrationSet(c *cli.Context) error {
+func runIntegrationSet(_ context.Context, c *cli.Command) error {
 	if c.NArg() < 2 {
 		return fmt.Errorf("usage: trebi integration set <name> <command...>")
 	}
@@ -285,7 +286,7 @@ func runIntegrationSet(c *cli.Context) error {
 	return nil
 }
 
-func runIntegrationRemove(c *cli.Context) error {
+func runIntegrationRemove(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -297,7 +298,7 @@ func runIntegrationRemove(c *cli.Context) error {
 	return client.DoHTTP(BuildIntegrationDelete(name), nil)
 }
 
-func runIntegrationConnect(c *cli.Context) error {
+func runIntegrationConnect(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -309,7 +310,7 @@ func runIntegrationConnect(c *cli.Context) error {
 	return client.DoHTTP(BuildIntegrationConnect(name), nil)
 }
 
-func runIntegrationDisconnect(c *cli.Context) error {
+func runIntegrationDisconnect(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -321,7 +322,7 @@ func runIntegrationDisconnect(c *cli.Context) error {
 	return client.DoHTTP(BuildIntegrationDisconnect(name), nil)
 }
 
-func runIntegrationStop(c *cli.Context) error {
+func runIntegrationStop(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -333,7 +334,7 @@ func runIntegrationStop(c *cli.Context) error {
 	return client.DoHTTP(BuildIntegrationStop(name), nil)
 }
 
-func runIntegrationCursorShow(c *cli.Context) error {
+func runIntegrationCursorShow(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -362,7 +363,7 @@ func runIntegrationCursorShow(c *cli.Context) error {
 	return nil
 }
 
-func runIntegrationCursorSet(c *cli.Context) error {
+func runIntegrationCursorSet(_ context.Context, c *cli.Command) error {
 	name, last := c.Args().Get(0), c.Args().Get(1)
 	if name == "" || last == "" {
 		return fmt.Errorf("usage: trebi integration cursor set <name> <last-event-id>")
@@ -374,7 +375,7 @@ func runIntegrationCursorSet(c *cli.Context) error {
 	return client.DoHTTP(BuildIntegrationCursorSet(name, last), nil)
 }
 
-func runIntegrationCursorReset(c *cli.Context) error {
+func runIntegrationCursorReset(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("usage: trebi integration cursor reset <name>")
@@ -386,7 +387,7 @@ func runIntegrationCursorReset(c *cli.Context) error {
 	return client.DoHTTP(BuildIntegrationCursorReset(name), nil)
 }
 
-func runIntegrationRestart(c *cli.Context) error {
+func runIntegrationRestart(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -398,7 +399,7 @@ func runIntegrationRestart(c *cli.Context) error {
 	return client.DoHTTP(BuildIntegrationRestart(name), nil)
 }
 
-func runIntegrationLogs(c *cli.Context) error {
+func runIntegrationLogs(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -440,7 +441,7 @@ func decodeLogBody(raw []byte) string {
 	return ""
 }
 
-func runIntegrationTest(c *cli.Context) error {
+func runIntegrationTest(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -468,7 +469,7 @@ func eventsCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "events",
 		Usage: "trigger events",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "list",
 				Usage: "list durable events",
@@ -496,7 +497,7 @@ func eventsCommand() *cli.Command {
 	}
 }
 
-func runEventsList(c *cli.Context) error {
+func runEventsList(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -526,7 +527,7 @@ func runEventsList(c *cli.Context) error {
 	return nil
 }
 
-func runEventsShow(c *cli.Context) error {
+func runEventsShow(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi events show <id>")
@@ -545,7 +546,7 @@ func runEventsShow(c *cli.Context) error {
 	return enc.Encode(body)
 }
 
-func runEventsRetrigger(c *cli.Context) error {
+func runEventsRetrigger(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi events retrigger <id>")

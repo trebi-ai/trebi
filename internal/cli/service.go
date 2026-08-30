@@ -26,7 +26,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/platform"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tray"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 // errIfRemoteSticky blocks local-only service commands when sticky context is remote.
@@ -44,7 +44,7 @@ func serviceCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "service",
 		Usage: "daemon lifecycle",
-		Subcommands: slices.Concat(
+		Commands: slices.Concat(
 			serviceLifecycleSubcommands(),
 			serviceDiagnosticsSubcommands(),
 			serviceDaemonSubcommands(),
@@ -74,7 +74,7 @@ func serviceLifecycleSubcommands() []*cli.Command {
 		{
 			Name:  "uninstall",
 			Usage: "Remove launchd LaunchAgent",
-			Action: func(c *cli.Context) error {
+			Action: func(_ context.Context, c *cli.Command) error {
 				if err := errIfRemoteSticky(appStateFor(c)); err != nil {
 					return err
 				}
@@ -84,7 +84,7 @@ func serviceLifecycleSubcommands() []*cli.Command {
 		{
 			Name:  "start",
 			Usage: "Start the OS-supervised daemon",
-			Action: func(c *cli.Context) error {
+			Action: func(_ context.Context, c *cli.Command) error {
 				if err := errIfRemoteSticky(appStateFor(c)); err != nil {
 					return err
 				}
@@ -98,7 +98,7 @@ func serviceLifecycleSubcommands() []*cli.Command {
 		{
 			Name:  "stop",
 			Usage: "Stop the OS-supervised daemon",
-			Action: func(c *cli.Context) error {
+			Action: func(_ context.Context, c *cli.Command) error {
 				if err := errIfRemoteSticky(appStateFor(c)); err != nil {
 					return err
 				}
@@ -112,7 +112,7 @@ func serviceLifecycleSubcommands() []*cli.Command {
 		{
 			Name:  "restart",
 			Usage: "Restart the OS-supervised daemon",
-			Action: func(c *cli.Context) error {
+			Action: func(_ context.Context, c *cli.Command) error {
 				if err := appStateFor(c).platform.Restart(); err != nil {
 					return err
 				}
@@ -167,12 +167,12 @@ func serviceDaemonSubcommands() []*cli.Command {
 				&cli.BoolFlag{Name: "no-tray", Usage: "disable menu-bar tray (headless)"},
 				&cli.IntFlag{
 					Name:    "parent-pid",
-					EnvVars: []string{"TREBI_PARENT_PID"},
+					Sources: cli.EnvVars("TREBI_PARENT_PID"),
 					Usage:   "exit when this pid dies (eval harness; also TREBI_PARENT_FD pipe)",
 				},
 				&cli.StringFlag{
 					Name:    "log-level",
-					EnvVars: []string{"TREBI_LOG_LEVEL"},
+					Sources: cli.EnvVars("TREBI_LOG_LEVEL"),
 					Value:   "info",
 					Usage:   "debug|info|warn|error (debug shows tray health polls)",
 				},
@@ -182,7 +182,7 @@ func serviceDaemonSubcommands() []*cli.Command {
 		{
 			Name:  "drain",
 			Usage: "enter drain mode",
-			Action: func(c *cli.Context) error {
+			Action: func(_ context.Context, c *cli.Command) error {
 				client, err := clientFor(c)
 				if err != nil {
 					return err
@@ -193,7 +193,7 @@ func serviceDaemonSubcommands() []*cli.Command {
 		{
 			Name:  "undrain",
 			Usage: "leave drain mode",
-			Action: func(c *cli.Context) error {
+			Action: func(_ context.Context, c *cli.Command) error {
 				client, err := clientFor(c)
 				if err != nil {
 					return err
@@ -204,7 +204,7 @@ func serviceDaemonSubcommands() []*cli.Command {
 		{
 			Name:  "shutdown",
 			Usage: "ask the daemon to shut down",
-			Action: func(c *cli.Context) error {
+			Action: func(_ context.Context, c *cli.Command) error {
 				client, err := clientFor(c)
 				if err != nil {
 					return err
@@ -221,11 +221,11 @@ func serviceTokenSubcommands() []*cli.Command {
 		{
 			Name:  "token",
 			Usage: "token management",
-			Subcommands: []*cli.Command{
+			Commands: []*cli.Command{
 				{
 					Name:  "show",
 					Usage: "print current API token",
-					Action: func(c *cli.Context) error {
+					Action: func(_ context.Context, c *cli.Command) error {
 						client, err := clientFor(c)
 						if err != nil {
 							return err
@@ -239,7 +239,7 @@ func serviceTokenSubcommands() []*cli.Command {
 	}
 }
 
-func runServiceInstall(c *cli.Context) error {
+func runServiceInstall(_ context.Context, c *cli.Command) error {
 	if err := errIfRemoteSticky(appStateFor(c)); err != nil {
 		return err
 	}
@@ -249,7 +249,7 @@ func runServiceInstall(c *cli.Context) error {
 	})
 }
 
-func runServiceStatus(c *cli.Context) error {
+func runServiceStatus(_ context.Context, c *cli.Command) error {
 	osStatus := ""
 	osErr := ""
 	st, err := appStateFor(c).platform.Status()
@@ -284,7 +284,7 @@ func runServiceStatus(c *cli.Context) error {
 		return enc.Encode(out)
 	}
 	if osErr != "" {
-		fmt.Fprintf(c.App.ErrWriter, "os: %v\n", osErr)
+		fmt.Fprintf(c.Root().ErrWriter, "os: %v\n", osErr)
 	} else {
 		fmt.Println(osStatus)
 	}
@@ -296,7 +296,7 @@ func runServiceStatus(c *cli.Context) error {
 	return nil
 }
 
-func runServiceLogs(c *cli.Context) error {
+func runServiceLogs(_ context.Context, c *cli.Command) error {
 	logFile := home.DaemonLogPath()
 	if _, err := os.Stat(logFile); os.IsNotExist(err) {
 		return fmt.Errorf("log file not found: %s (start the service once)", logFile)
@@ -315,11 +315,11 @@ func runServiceLogs(c *cli.Context) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	streamServiceLog(c.App.Writer, stdout, c.String("level"), c.String("grep"), c.Bool("json"))
+	streamServiceLog(c.Root().Writer, stdout, c.String("level"), c.String("grep"), c.Bool("json"))
 	return cmd.Wait()
 }
 
-func runServiceMigrateDB(_ *cli.Context) error {
+func runServiceMigrateDB(_ context.Context, _ *cli.Command) error {
 	if err := home.EnsureDirs(); err != nil {
 		return err
 	}
@@ -380,7 +380,7 @@ func lineHasLevel(line, want string) bool {
 // runDaemonProcess starts the HTTP control plane and, on macOS, the menu-bar tray.
 // Tray icon means the service process is alive. Quit from the tray exits 0 and
 // stops the whole process (daemon + tray).
-func runDaemonProcess(c *cli.Context) error {
+func runDaemonProcess(ctx context.Context, c *cli.Command) error {
 	if err := errIfRemoteSticky(appStateFor(c)); err != nil {
 		return err
 	}
@@ -389,10 +389,10 @@ func runDaemonProcess(c *cli.Context) error {
 		if !c.Bool("no-tray") && runtime.GOOS == "darwin" && !tray.Available {
 			appStateFor(c).log.Warn("tray unavailable (need cgo on darwin); running headless")
 		}
-		return runDaemon(context.Background(), c)
+		return runDaemon(ctx, c)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	errCh := make(chan error, 1)
@@ -437,7 +437,7 @@ func setLogLevel(name string) error {
 	return nil
 }
 
-func runDaemon(parent context.Context, c *cli.Context) error {
+func runDaemon(parent context.Context, c *cli.Command) error {
 	if err := home.EnsureDirs(); err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,7 +17,7 @@ import (
 
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func TestRunsTranscript(t *testing.T) {
@@ -226,14 +227,14 @@ func TestDoctorJSONOffline(t *testing.T) {
 	app.Writer = &buf
 	app.ErrWriter = &buf
 	prev := app.Before
-	app.Before = func(c *cli.Context) error {
+	app.Before = func(ctx context.Context, c *cli.Command) (context.Context, error) {
 		if prev != nil {
-			_ = prev(c)
+			ctx, _ = prev(ctx, c)
 		}
-		c.App.Metadata[appStateKey] = &appState{clientErr: fmt.Errorf("reading api.json")}
-		return nil
+		c.Root().Metadata[appStateKey] = &appState{clientErr: fmt.Errorf("reading api.json")}
+		return ctx, nil
 	}
-	err := app.Run([]string{"trebi", "doctor", "--json"})
+	err := app.Run(context.Background(), []string{"trebi", "doctor", "--json"})
 	if err == nil {
 		t.Fatal("expected non-zero exit")
 	}
@@ -446,9 +447,9 @@ func runCLI(t *testing.T, client *APIClient, args ...string) (string, error) {
 	app.Writer = &buf
 	app.ErrWriter = &buf
 	prev := app.Before
-	app.Before = func(c *cli.Context) error {
+	app.Before = func(ctx context.Context, c *cli.Command) (context.Context, error) {
 		if prev != nil {
-			_ = prev(c)
+			ctx, _ = prev(ctx, c)
 		}
 		st := appStateFor(c)
 		st.client = client
@@ -458,9 +459,9 @@ func runCLI(t *testing.T, client *APIClient, args ...string) (string, error) {
 		} else {
 			st.clientErr = nil
 		}
-		return nil
+		return ctx, nil
 	}
-	err := app.Run(append([]string{"trebi"}, args...))
+	err := app.Run(context.Background(), append([]string{"trebi"}, args...))
 	return buf.String(), err
 }
 
@@ -679,12 +680,45 @@ func TestJobFileListAndPut(t *testing.T) {
 	}
 }
 
+func TestFlagsAfterPositional(t *testing.T) {
+	var gotPath, gotRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotRawQuery = r.URL.Path, r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/jobs/report/memory":
+			_, _ = w.Write([]byte(`{"content":"ledger text","entries":[]}`))
+		case "/v1/jobs/report":
+			_, _ = w.Write([]byte(`{"name":"report","workspace_id":"staging"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+
+	out, err := runCLI(t, client, "job", "memory", "show", "report", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"content": "ledger text"`) {
+		t.Fatalf("expected JSON (--json after name); got %q", out)
+	}
+
+	out, err = runCLI(t, client, "job", "show", "report", "-w", "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/jobs/report" || !strings.Contains(gotRawQuery, "workspace=staging") {
+		t.Fatalf("expected -w after name; path %s query %s out %s", gotPath, gotRawQuery, out)
+	}
+}
+
 func TestRenderLocalOnly(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	app := &cli.App{Writer: &buf}
-	c := cli.NewContext(app, nil, nil)
-	err := renderLocalOnly(c, fmt.Errorf("precondition_failed: cursor login needs a browser on the daemon machine"))
+	app := &cli.Command{Writer: &buf}
+	err := renderLocalOnly(app, fmt.Errorf("precondition_failed: cursor login needs a browser on the daemon machine"))
 	if err == nil {
 		t.Fatal("expected error")
 	}

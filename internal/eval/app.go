@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 type syncWriter struct{ f *os.File }
@@ -18,8 +18,8 @@ func (s syncWriter) Write(p []byte) (int, error) {
 }
 
 // NewApp builds the trebi-eval command surface.
-func NewApp() *cli.App {
-	return &cli.App{
+func NewApp() *cli.Command {
+	return &cli.Command{
 		Name:      "trebi-eval",
 		Usage:     "live LLM-driven CLI eval suite for trebi (dev-only)",
 		Writer:    syncWriter{os.Stdout},
@@ -27,7 +27,7 @@ func NewApp() *cli.App {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "evals", Value: "evals", Usage: "evals/ directory"},
 			&cli.StringFlag{Name: "out", Value: "out", Usage: "report output directory"},
-			&cli.StringFlag{Name: "bin", EnvVars: []string{"TREBI_BIN"}, Usage: "trebi binary"},
+			&cli.StringFlag{Name: "bin", Sources: cli.EnvVars("TREBI_BIN"), Usage: "trebi binary"},
 			&cli.StringFlag{Name: "skill", Value: "SKILL.md", Usage: "path to SKILL.md"},
 		},
 		Commands: []*cli.Command{
@@ -65,7 +65,7 @@ func NewApp() *cli.App {
 	}
 }
 
-func runEval(c *cli.Context) error {
+func runEval(ctx context.Context, c *cli.Command) error {
 	opts, err := optionsFrom(c)
 	if err != nil {
 		return err
@@ -80,16 +80,16 @@ func runEval(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	rep, err := r.Run(cliCtx(c))
+	rep, err := r.Run(ctx)
 	if rep != nil {
-		fmt.Fprintf(c.App.Writer, "report %s  cost=%.4f  trials=%d\n",
+		fmt.Fprintf(c.Root().Writer, "report %s  cost=%.4f  trials=%d\n",
 			filepath.Join(opts.OutDir, rep.ID), rep.CostUSD, len(rep.Trials))
-		fmt.Fprint(c.App.Writer, rep.markdown())
+		fmt.Fprint(c.Root().Writer, rep.markdown())
 	}
 	return err
 }
 
-func runOracle(c *cli.Context) error {
+func runOracle(ctx context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi-eval oracle <task-id>")
@@ -102,21 +102,21 @@ func runOracle(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	tr, err := r.ReplayOracle(cliCtx(c), id)
+	tr, err := r.ReplayOracle(ctx, id)
 	if tr != nil {
-		fmt.Fprintf(c.App.Writer, "oracle %s outcome=%s dir=%s\n", id, tr.Outcome, tr.Dir)
+		fmt.Fprintf(c.Root().Writer, "oracle %s outcome=%s dir=%s\n", id, tr.Outcome, tr.Dir)
 		for _, ch := range tr.Checks {
 			mark := "FAIL"
 			if ch.Pass {
 				mark = "PASS"
 			}
-			fmt.Fprintf(c.App.Writer, "  %s %s %s\n", mark, ch.Name, ch.Detail)
+			fmt.Fprintf(c.Root().Writer, "  %s %s %s\n", mark, ch.Name, ch.Detail)
 		}
 	}
 	return err
 }
 
-func runReview(c *cli.Context) error {
+func runReview(_ context.Context, c *cli.Command) error {
 	dir := c.String("run")
 	if labels := c.String("labels"); labels != "" {
 		items, err := loadReview(labels)
@@ -128,7 +128,7 @@ func runReview(c *cli.Context) error {
 			return err
 		}
 		msg := reviewReport(rate, agree, total)
-		fmt.Fprint(c.App.Writer, msg)
+		fmt.Fprint(c.Root().Writer, msg)
 		if rate+1e-9 < reviewAgreeMin {
 			return fmt.Errorf("agreement %.2f below %.2f", rate, reviewAgreeMin)
 		}
@@ -145,12 +145,12 @@ func runReview(c *cli.Context) error {
 	if err := writeReviewQueue(q, items); err != nil {
 		return err
 	}
-	fmt.Fprintf(c.App.Writer, "wrote %d items to %s\nset human_pass on each, then: trebi-eval review --run %s --labels %s\n",
+	fmt.Fprintf(c.Root().Writer, "wrote %d items to %s\nset human_pass on each, then: trebi-eval review --run %s --labels %s\n",
 		len(items), q, dir, q)
 	return nil
 }
 
-func optionsFrom(c *cli.Context) (Options, error) {
+func optionsFrom(c *cli.Command) (Options, error) {
 	evals := c.String("evals")
 	skill := c.String("skill")
 	if !filepath.IsAbs(evals) {
@@ -171,11 +171,4 @@ func optionsFrom(c *cli.Context) (Options, error) {
 		TrebiBin:  c.String("bin"),
 		SkillPath: skill,
 	}, nil
-}
-
-func cliCtx(c *cli.Context) context.Context {
-	if c != nil && c.Context != nil {
-		return c.Context
-	}
-	return context.Background()
 }

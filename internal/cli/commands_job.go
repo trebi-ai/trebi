@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,14 +9,14 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func jobCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "job",
 		Usage: "manage jobs",
-		Subcommands: append(jobManageSubcommands(),
+		Commands: append(jobManageSubcommands(),
 			runCommand(),
 			jobFileSubcommand(),
 			&cli.Command{
@@ -61,7 +62,7 @@ func jobCommand() *cli.Command {
 			&cli.Command{
 				Name:  "memory",
 				Usage: "job MEMORY.md ledger",
-				Subcommands: []*cli.Command{
+				Commands: []*cli.Command{
 					{
 						Name:      "show",
 						Usage:     "print MEMORY.md",
@@ -158,7 +159,7 @@ func jobManageSubcommands() []*cli.Command {
 	}
 }
 
-func runJobList(c *cli.Context) error {
+func runJobList(_ context.Context, c *cli.Command) error {
 	kind, err := parseJobListKind(c.String("kind"))
 	if err != nil {
 		return err
@@ -290,7 +291,7 @@ func indexSchedules(rows []map[string]any) map[string]jobScheduleCols {
 	return out
 }
 
-func runJobShow(c *cli.Context) error {
+func runJobShow(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -305,7 +306,7 @@ func runJobShow(c *cli.Context) error {
 	return enc.Encode(body)
 }
 
-func runJobCreate(c *cli.Context) error {
+func runJobCreate(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -327,7 +328,7 @@ func runJobCreate(c *cli.Context) error {
 	}, nil)
 }
 
-func runJobDelete(c *cli.Context) error {
+func runJobDelete(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -344,7 +345,7 @@ func runJobDelete(c *cli.Context) error {
 	return nil
 }
 
-func runJobPause(c *cli.Context) error {
+func runJobPause(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -352,7 +353,7 @@ func runJobPause(c *cli.Context) error {
 	return client.DoHTTP(BuildJobPause(c.Args().Get(0), workspaceFor(c), true), nil)
 }
 
-func runJobUnpause(c *cli.Context) error {
+func runJobUnpause(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -360,7 +361,7 @@ func runJobUnpause(c *cli.Context) error {
 	return client.DoHTTP(BuildJobPause(c.Args().Get(0), workspaceFor(c), false), nil)
 }
 
-func runJobValidate(c *cli.Context) error {
+func runJobValidate(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -374,7 +375,7 @@ func runJobValidate(c *cli.Context) error {
 	return nil
 }
 
-func runJobMemory(c *cli.Context) error {
+func runJobMemory(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("usage: trebi job memory show <name>")
@@ -397,7 +398,7 @@ func runJobMemory(c *cli.Context) error {
 	return nil
 }
 
-func runJobMemoryAdd(c *cli.Context) error {
+func runJobMemoryAdd(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("usage: trebi job memory add <name> --text <text>")
@@ -410,7 +411,7 @@ func runJobMemoryAdd(c *cli.Context) error {
 	return client.DoHTTP(req, nil)
 }
 
-func runJobMemoryRemove(c *cli.Context) error {
+func runJobMemoryRemove(_ context.Context, c *cli.Command) error {
 	name, eid := c.Args().Get(0), c.Args().Get(1)
 	if name == "" || eid == "" {
 		return fmt.Errorf("usage: trebi job memory remove <name> <entry-id>")
@@ -422,7 +423,7 @@ func runJobMemoryRemove(c *cli.Context) error {
 	return client.DoHTTP(BuildJobMemoryEntryDelete(name, workspaceFor(c), eid), nil)
 }
 
-func runJobMemorySet(c *cli.Context) error {
+func runJobMemorySet(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("usage: trebi job memory set <name> --file <path>")
@@ -438,7 +439,7 @@ func runJobMemorySet(c *cli.Context) error {
 	return client.DoHTTP(BuildJobMemoryPut(name, workspaceFor(c), content), nil)
 }
 
-func runJobMemoryClear(c *cli.Context) error {
+func runJobMemoryClear(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("usage: trebi job memory clear <name>")
@@ -457,7 +458,7 @@ func runJobMemoryClear(c *cli.Context) error {
 	return nil
 }
 
-func runJobSchedule(c *cli.Context) error {
+func runJobSchedule(_ context.Context, c *cli.Command) error {
 	if c.NArg() < 2 {
 		return fmt.Errorf("usage: trebi job schedule <name> <enable|disable|cron|@every …>")
 	}
@@ -500,7 +501,7 @@ func runJobSchedule(c *cli.Context) error {
 	return nil
 }
 
-func runJobStatus(c *cli.Context) error {
+func runJobStatus(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -538,7 +539,7 @@ func runJobStatus(c *cli.Context) error {
 	return nil
 }
 
-func runJobTail(c *cli.Context) error {
+func runJobTail(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -599,7 +600,7 @@ func fetchRunLogText(client *APIClient, id string) (string, error) {
 }
 
 // runListAssistants lists the singleton assistant of each workspace.
-func runListAssistants(c *cli.Context, client *APIClient) error {
+func runListAssistants(c *cli.Command, client *APIClient) error {
 	w := outWriter(c)
 	var wss struct {
 		Workspaces []map[string]any `json:"workspaces"`
@@ -651,8 +652,8 @@ func runListAssistants(c *cli.Context, client *APIClient) error {
 	}
 	if skipped > 0 {
 		var ew io.Writer = os.Stderr
-		if c.App != nil && c.App.ErrWriter != nil {
-			ew = c.App.ErrWriter
+		if c.Root().ErrWriter != nil {
+			ew = c.Root().ErrWriter
 		}
 		fmt.Fprintf(ew, "%d workspace(s) unreachable\n", skipped)
 	}

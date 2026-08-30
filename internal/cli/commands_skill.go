@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,14 +9,14 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func skillCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "skill",
 		Usage: "manage skills",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "list",
 				Usage: "list skills",
@@ -29,7 +30,7 @@ func skillCommand() *cli.Command {
 				Name:      "show",
 				Usage:     "show skill",
 				ArgsUsage: "<name>",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
@@ -65,7 +66,7 @@ func skillCommand() *cli.Command {
 				Name:      "delete",
 				Usage:     "delete skill",
 				ArgsUsage: "<name>",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
@@ -78,7 +79,7 @@ func skillCommand() *cli.Command {
 	}
 }
 
-func runSkillList(c *cli.Context) error {
+func runSkillList(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -106,7 +107,7 @@ func runSkillList(c *cli.Context) error {
 	return nil
 }
 
-func runSkillCreate(c *cli.Context) error {
+func runSkillCreate(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -123,7 +124,7 @@ func runSkillCreate(c *cli.Context) error {
 	return client.PostJSON("/v1/skills", map[string]any{"name": name, "skill_md": md}, &out)
 }
 
-func runSkillUpdate(c *cli.Context) error {
+func runSkillUpdate(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -143,12 +144,12 @@ func secretCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "secret",
 		Usage: "manage secrets",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "list",
 				Usage: "list secret names",
 				Flags: []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
@@ -180,7 +181,7 @@ func secretCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "from-file", Usage: "read value from file (`-` for stdin)"},
 				},
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					if c.NArg() < 1 {
 						return fmt.Errorf("name required")
 					}
@@ -199,7 +200,7 @@ func secretCommand() *cli.Command {
 				Name:      "delete",
 				Usage:     "delete secret",
 				ArgsUsage: "<name>",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
@@ -211,7 +212,7 @@ func secretCommand() *cli.Command {
 	}
 }
 
-func secretSetValue(c *cli.Context) (string, error) {
+func secretSetValue(c *cli.Command) (string, error) {
 	if f := c.String("from-file"); f != "" {
 		if f == "-" {
 			b, err := io.ReadAll(os.Stdin)

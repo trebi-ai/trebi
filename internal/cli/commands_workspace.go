@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 // wsRow is one row of workspace list output (JSON keys stay exported).
@@ -25,7 +26,7 @@ func workspaceCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "workspace",
 		Usage: "manage workspaces and sticky context",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "list",
 				Usage: "list local daemon workspaces and linked remote workspaces",
@@ -90,7 +91,7 @@ func workspaceCommand() *cli.Command {
 				Name:      "unlink",
 				Usage:     "remove a client-side remote workspace link (does not delete the workspace; see workspace remove)",
 				ArgsUsage: "<id|name>",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					id := c.Args().Get(0)
 					if id == "" {
 						return fmt.Errorf("id or name required")
@@ -118,7 +119,7 @@ func workspaceCommand() *cli.Command {
 	}
 }
 
-func runWorkspaceRemove(c *cli.Context) error {
+func runWorkspaceRemove(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi workspace remove <id>")
@@ -140,7 +141,7 @@ func runWorkspaceRemove(c *cli.Context) error {
 	return nil
 }
 
-func runWorkspaceRename(c *cli.Context) error {
+func runWorkspaceRename(_ context.Context, c *cli.Command) error {
 	id, name := c.Args().Get(0), c.Args().Get(1)
 	if id == "" || name == "" {
 		return fmt.Errorf("usage: trebi workspace rename <id> <new-name>")
@@ -156,7 +157,7 @@ func runWorkspaceRename(c *cli.Context) error {
 	return nil
 }
 
-func runWorkspaceSet(c *cli.Context) error {
+func runWorkspaceSet(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi workspace set <id> [--name] [--git-enabled]")
@@ -185,7 +186,7 @@ func runWorkspaceSet(c *cli.Context) error {
 	return nil
 }
 
-func clearStickyIfWorkspace(c *cli.Context, id string) error {
+func clearStickyIfWorkspace(c *cli.Command, id string) error {
 	st, err := stickyFor(c)
 	if err != nil {
 		return err
@@ -199,7 +200,7 @@ func clearStickyIfWorkspace(c *cli.Context, id string) error {
 	return nil
 }
 
-func runWorkspaceList(c *cli.Context) error {
+func runWorkspaceList(_ context.Context, c *cli.Command) error {
 	sticky, err := stickyFor(c)
 	if err != nil {
 		return err
@@ -278,7 +279,7 @@ func linkedWorkspaceRows(sticky *StickyContext, linked []LinkedWorkspace) []wsRo
 	return rows
 }
 
-func runWorkspaceAdd(c *cli.Context) error {
+func runWorkspaceAdd(_ context.Context, c *cli.Command) error {
 	remoteURL := strings.TrimSpace(c.String("url"))
 	if remoteURL == "" {
 		path := c.Args().Get(0)
@@ -290,7 +291,7 @@ func runWorkspaceAdd(c *cli.Context) error {
 	return workspaceAddRemote(c, remoteURL)
 }
 
-func workspaceAddLocal(c *cli.Context, path string) error {
+func workspaceAddLocal(c *cli.Command, path string) error {
 	client, err := localClientFor(c)
 	if err != nil {
 		return fmt.Errorf("local daemon: %w (is trebid running?)", err)
@@ -326,7 +327,7 @@ func workspaceAddLocal(c *cli.Context, path string) error {
 	return nil
 }
 
-func workspaceAddRemote(c *cli.Context, remoteURL string) error {
+func workspaceAddRemote(c *cli.Command, remoteURL string) error {
 	token, err := remoteAddToken(c)
 	if err != nil {
 		return err
@@ -378,7 +379,7 @@ func workspaceAddRemote(c *cli.Context, remoteURL string) error {
 }
 
 // remoteAddToken reads the remote token from --token or stdin.
-func remoteAddToken(c *cli.Context) (string, error) {
+func remoteAddToken(c *cli.Command) (string, error) {
 	token := c.String("token")
 	if c.Bool("token-stdin") {
 		line, err := io.ReadAll(os.Stdin)
@@ -410,7 +411,7 @@ func findRemoteWorkspace(client *APIClient, id, remoteURL string) (name, path st
 }
 
 // registerRemoteWorkspace registers the path argument on the remote host.
-func registerRemoteWorkspace(c *cli.Context, client *APIClient) (id, name, path string, err error) {
+func registerRemoteWorkspace(c *cli.Command, client *APIClient) (id, name, path string, err error) {
 	path = c.Args().Get(0)
 	name = c.String("name")
 	create := c.Bool("create")
@@ -437,7 +438,7 @@ func registerRemoteWorkspace(c *cli.Context, client *APIClient) (id, name, path 
 	return id, name, path, nil
 }
 
-func runWorkspaceUse(c *cli.Context) error {
+func runWorkspaceUse(_ context.Context, c *cli.Command) error {
 	key := c.Args().Get(0)
 	if key == "" {
 		return fmt.Errorf("usage: trebi workspace use <id|name>")
@@ -484,7 +485,7 @@ func runWorkspaceUse(c *cli.Context) error {
 	return fmt.Errorf("workspace %q not found (local or linked)", key)
 }
 
-func runWorkspaceCurrent(c *cli.Context) error {
+func runWorkspaceCurrent(_ context.Context, c *cli.Command) error {
 	st, err := stickyFor(c)
 	if err != nil {
 		return err
@@ -514,7 +515,7 @@ func runWorkspaceCurrent(c *cli.Context) error {
 }
 
 // resolveWorkspaceID picks sticky / -w workspace, else the first on the active daemon.
-func resolveWorkspaceID(c *cli.Context, client *APIClient) (string, error) {
+func resolveWorkspaceID(c *cli.Command, client *APIClient) (string, error) {
 	if ws := workspaceFor(c); ws != "" {
 		return ws, nil
 	}

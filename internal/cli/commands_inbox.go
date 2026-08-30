@@ -1,18 +1,19 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func inboxCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "inbox",
 		Usage: "inbox items",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "list",
 				Usage: "list inbox",
@@ -36,7 +37,7 @@ func inboxCommand() *cli.Command {
 				Name:      "read",
 				Usage:     "mark read",
 				ArgsUsage: "<id>",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
@@ -47,7 +48,7 @@ func inboxCommand() *cli.Command {
 			{
 				Name:  "read-all",
 				Usage: "mark all unread items read",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
@@ -59,7 +60,7 @@ func inboxCommand() *cli.Command {
 				Name:      "resolve",
 				Usage:     "manually dismiss an inbox item",
 				ArgsUsage: "<id>",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
@@ -71,7 +72,7 @@ func inboxCommand() *cli.Command {
 	}
 }
 
-func runInboxList(c *cli.Context) error {
+func runInboxList(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -99,7 +100,7 @@ func runInboxList(c *cli.Context) error {
 	return nil
 }
 
-func runInboxShow(c *cli.Context) error {
+func runInboxShow(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
 		return fmt.Errorf("usage: trebi inbox show <id>")
@@ -143,7 +144,7 @@ func alertsCommand() *cli.Command {
 	}
 }
 
-func runAlerts(c *cli.Context) error {
+func runAlerts(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err

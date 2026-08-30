@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +10,7 @@ import (
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/config"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,7 +18,7 @@ func configCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "config",
 		Usage: "inspect and edit trebi config",
-		Subcommands: []*cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:  "show",
 				Usage: "show effective config (API when daemon up)",
@@ -42,7 +43,7 @@ func configCommand() *cli.Command {
 			{
 				Name:  "validate",
 				Usage: "validate local config.yaml (no daemon required)",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					cfg, err := configFor(c)
 					if err != nil {
 						return err
@@ -57,7 +58,7 @@ func configCommand() *cli.Command {
 			{
 				Name:  "path",
 				Usage: "print path to config.yaml",
-				Action: func(c *cli.Context) error {
+				Action: func(_ context.Context, c *cli.Command) error {
 					fmt.Fprintln(outWriter(c), config.ConfigPath())
 					return nil
 				},
@@ -65,7 +66,7 @@ func configCommand() *cli.Command {
 			{
 				Name:  "bridge",
 				Usage: "harness resource inheritance (skills, MCP, …)",
-				Subcommands: []*cli.Command{
+				Commands: []*cli.Command{
 					{
 						Name:      "status",
 						Usage:     "show bridge policy from local config",
@@ -88,7 +89,7 @@ func configCommand() *cli.Command {
 	}
 }
 
-func runConfigShow(c *cli.Context) error {
+func runConfigShow(_ context.Context, c *cli.Command) error {
 	format, err := configShowFormat(c)
 	if err != nil {
 		return err
@@ -129,7 +130,7 @@ func runConfigShow(c *cli.Context) error {
 }
 
 // configShowFormat validates the mutually exclusive output flags.
-func configShowFormat(c *cli.Context) (string, error) {
+func configShowFormat(c *cli.Command) (string, error) {
 	var formats []string
 	for _, f := range []string{"json", "yaml", "tree"} {
 		if c.Bool(f) {
@@ -204,7 +205,7 @@ func unwrapConfigMap(body map[string]any) map[string]any {
 	return body
 }
 
-func runConfigSet(c *cli.Context) error {
+func runConfigSet(_ context.Context, c *cli.Command) error {
 	if c.NArg() < 2 {
 		return fmt.Errorf("usage: trebi config set <key> <value>")
 	}
@@ -235,7 +236,7 @@ func runConfigSet(c *cli.Context) error {
 
 // printConfigKey echoes the effective row after a set, so the caller sees the
 // value the daemon actually holds. Falls back to the key name on a read error.
-func printConfigKey(c *cli.Context, state *appState, key, suffix string) {
+func printConfigKey(c *cli.Command, state *appState, key, suffix string) {
 	w := outWriter(c)
 	entries, err := loadConfigEntries(state)
 	if err == nil {
@@ -249,7 +250,7 @@ func printConfigKey(c *cli.Context, state *appState, key, suffix string) {
 	fmt.Fprintf(w, "set %s%s\n", key, suffix)
 }
 
-func runConfigBridgeStatus(c *cli.Context) error {
+func runConfigBridgeStatus(_ context.Context, c *cli.Command) error {
 	cfg, err := configFor(c)
 	if err != nil {
 		return err
@@ -281,7 +282,7 @@ func runConfigBridgeStatus(c *cli.Context) error {
 	return enc.Encode(out)
 }
 
-func runConfigBridgeSet(c *cli.Context) error {
+func runConfigBridgeSet(_ context.Context, c *cli.Command) error {
 	state := appStateFor(c)
 	cfg, err := configFor(c)
 	if err != nil {
@@ -347,7 +348,7 @@ func mergeBridgeNever(cfg *config.Config, client *APIClient, resource string) (s
 	return strings.Join(list, ","), nil
 }
 
-func applyConfigHTTPOrLocal(c *cli.Context, state *appState, req HTTPRequest, key, value string) error {
+func applyConfigHTTPOrLocal(c *cli.Command, state *appState, req HTTPRequest, key, value string) error {
 	if state.clientErr != nil || state.client == nil {
 		if state.configErr != nil {
 			return state.configErr

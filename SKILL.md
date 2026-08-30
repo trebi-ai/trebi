@@ -43,9 +43,8 @@ Only these work with the daemon down: `service install|start|stop|status`, `doct
 
 ## Global rules
 
-- `--workspace` / `-w` (or `$TREBI_WORKSPACE`) selects the workspace by **name or id**. Put it **before** the verb: `trebi -w staging job run report`. urfave does not parse flags after a positional name (`trebi job run report -w staging` fails). `job run` / `job show` / `job status` / `job validate` / `runs list` also accept `--workspace` **before** the name: `trebi job run --workspace staging report`.
+- `--workspace` / `-w` (or `$TREBI_WORKSPACE`) selects the workspace by **name or id**. Flags can go before or after the name: `trebi -w staging job run report`, `trebi job run --workspace staging report`, and `trebi job run report -w staging` are equivalent.
 - Without `-w`, trebi uses the sticky context from `trebi workspace use`. On `not_found` after `-w <name>`, run `trebi workspace list --json` and retry with the `id`.
-- Flags (including `--json`) go **before** any positional name: `trebi job memory show --json report`. Flags after a positional are ignored.
 - List / show / status / current commands take `--json`. Mutating commands (`create`, `add`, `run`, `set`) and `assistant show` / `say` / `wake` often do not. On `flag provided but not defined: -json`, drop `--json` once; do not retry it.
 - Use `--json` and pipe to `jq` when you parse output. Never parse the human tables.
 - List commands paginate with `--limit` and `--cursor`. The cursor is the id of the last row. `trebi service logs` is not a list command: it uses `--lines` / `-n` and `--grep`, not `--limit`.
@@ -528,12 +527,12 @@ trebi runs list --status failed --limit 20
 
 ## Rules for the agent
 
-- Prefer `--json` plus `jq` over parsing tables. Put `--json` before any positional name. If a command rejects `--json`, drop it once.
+- Prefer `--json` plus `jq` over parsing tables. If a command rejects `--json`, drop it once.
 - Run `trebi job validate` after every `JOB.md` write.
 - Use `trebi job run --test` before the first real launch of a new or edited job. Not `rules fire`, not `assistant say`.
 - Ask the user before `job delete` / `job delete --purge`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, and `service uninstall`. They destroy state. `runs kill` of a run you just started to debug is not in that list.
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.
 - Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
 - `trebi bus --limit N` dumps up to N frames and exits. `integration logs` blocks without `--limit` (or with `-f`). `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.
-- Put `-w` / `--workspace` before the verb or before the job name. It accepts name or id. Flags after a positional argument are ignored/rejected.
+- `-w` / `--workspace` accepts name or id and can go before the verb or after the job name.
 - Do not `runs attach` from an agent session. Poll `runs show` / `conversation messages`. Do not `runs kill` a live session to re-prompt.
