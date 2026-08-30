@@ -371,6 +371,57 @@ func TestRunsAgentsEmptyNote(t *testing.T) {
 	}
 }
 
+func TestWorkspaceFlagResolvesName(t *testing.T) {
+	var gotJobsQ string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/workspaces":
+			_, _ = w.Write([]byte(`{"workspaces":[{"id":"ws_ops","name":"ops"},{"id":"ws_stg","name":"staging"}]}`))
+		case "/v1/jobs":
+			gotJobsQ = r.URL.Query().Get("workspace")
+			_, _ = w.Write([]byte(`{"jobs":[{"name":"report","kind":"job","workspace_id":"ws_stg"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	if _, err := runCLI(t, client, "-w", "staging", "job", "list", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	if gotJobsQ != "ws_stg" {
+		t.Fatalf("workspace query %q want ws_stg", gotJobsQ)
+	}
+}
+
+func TestSecretSetFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "key.txt")
+	if err := os.WriteFile(path, []byte("sk-from-file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PUT" || r.URL.Path != "/v1/secrets/eval_api_key" {
+			http.NotFound(w, r)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"name":"eval_api_key"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	if _, err := runCLI(t, client, "secret", "set", "--from-file", path, "eval_api_key"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotBody, `"value":"sk-from-file"`) {
+		t.Fatalf("body %s", gotBody)
+	}
+}
+
 func TestSecretListTableJSON(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

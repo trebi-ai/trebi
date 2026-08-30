@@ -355,6 +355,29 @@ func (s *Service) GetByName(ctx context.Context, name string) (*Workspace, error
 	return nil, sql.ErrNoRows
 }
 
+// Resolve finds a workspace by id or display name (case-insensitive name).
+func (s *Service) Resolve(ctx context.Context, idOrName string) (*Workspace, error) {
+	idOrName = strings.TrimSpace(idOrName)
+	if idOrName == "" {
+		return nil, sql.ErrNoRows
+	}
+	if ws, err := s.Get(ctx, idOrName); err == nil {
+		return ws, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	list, err := s.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		if strings.EqualFold(list[i].Name, idOrName) {
+			return &list[i], nil
+		}
+	}
+	return nil, sql.ErrNoRows
+}
+
 // indexRow is one desired or existing job_index row for the diff.
 type indexRow struct {
 	name, path, kind, harness, hash, parseError string

@@ -3,6 +3,9 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/urfave/cli/v2"
@@ -173,16 +176,23 @@ func secretCommand() *cli.Command {
 			{
 				Name:      "set",
 				Usage:     "set secret value",
-				ArgsUsage: "<name> <value>",
+				ArgsUsage: "<name> [<value>]",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "from-file", Usage: "read value from file (`-` for stdin)"},
+				},
 				Action: func(c *cli.Context) error {
-					if c.NArg() < 2 {
-						return fmt.Errorf("name and value required")
+					if c.NArg() < 1 {
+						return fmt.Errorf("name required")
+					}
+					value, err := secretSetValue(c)
+					if err != nil {
+						return err
 					}
 					client, err := clientFor(c)
 					if err != nil {
 						return err
 					}
-					return client.PutJSON("/v1/secrets/"+c.Args().Get(0), map[string]string{"value": c.Args().Get(1)}, nil)
+					return client.PutJSON("/v1/secrets/"+c.Args().Get(0), map[string]string{"value": value}, nil)
 				},
 			},
 			{
@@ -199,4 +209,33 @@ func secretCommand() *cli.Command {
 			},
 		},
 	}
+}
+
+func secretSetValue(c *cli.Context) (string, error) {
+	if f := c.String("from-file"); f != "" {
+		if f == "-" {
+			b, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimRight(string(b), "\n"), nil
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimRight(string(b), "\n"), nil
+	}
+	if c.NArg() >= 2 {
+		return c.Args().Get(1), nil
+	}
+	st, err := os.Stdin.Stat()
+	if err == nil && st.Mode()&os.ModeCharDevice == 0 {
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimRight(string(b), "\n"), nil
+	}
+	return "", fmt.Errorf("value required (pass <value>, --from-file, or stdin)")
 }

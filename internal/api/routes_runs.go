@@ -70,7 +70,7 @@ func (s *Server) handleRunsList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	list, err := s.runs.List(r.Context(), runs.ListOpts{
-		Workspace: q.Get("workspace"),
+		Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
 		Job:       q.Get("job"),
 		Status:    q.Get("status"),
 		Kind:      q.Get("kind"),
@@ -119,6 +119,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		writeErr(w, http.StatusServiceUnavailable, "draining", "daemon is draining")
 		return
 	}
+	body.Workspace = s.workspaceID(r.Context(), body.Workspace)
 	row, rerr := s.resolveRunRow(r.Context(), body)
 	if rerr != nil {
 		writeResolveErr(w, rerr)
@@ -213,7 +214,7 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 			lopts.WorkingDir = spec.Dir
 		}
 		lopts.IfRunning = spec.Session.IfRunning
-		lopts.Env = spec.ResolvedEnv()
+		lopts.Env = spec.LaunchEnv()
 		lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = spec.Session.KnobsMS()
 	}
 	if harness == "fake" || os.Getenv("TREBI_FAKE_HARNESS") != "" {
@@ -608,7 +609,7 @@ func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason r
 		Prompt: prompt,
 	}
 	lopts.WorkingDir = j.ResolvedWorkingDir()
-	lopts.Env = j.ResolvedEnv()
+	lopts.Env = j.LaunchEnv()
 	lopts.IfRunning = j.Session.IfRunning
 	lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = j.Session.KnobsMS()
 	return lopts, nil

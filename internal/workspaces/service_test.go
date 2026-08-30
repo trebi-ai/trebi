@@ -157,6 +157,29 @@ func TestRebuildIndexSkipsNestedWorkspace(t *testing.T) {
 	}
 }
 
+func TestResolveIDOrName(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+	root := t.TempDir()
+	ws, err := svc.Add(ctx, root, "Staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Resolve(ctx, ws.ID)
+	if err != nil || got.ID != ws.ID {
+		t.Fatalf("id: %v %v", got, err)
+	}
+	got, err = svc.Resolve(ctx, "staging")
+	if err != nil || got.ID != ws.ID {
+		t.Fatalf("name: %v %v", got, err)
+	}
+	if _, err := svc.Resolve(ctx, "missing"); err == nil {
+		t.Fatal("want not found")
+	}
+}
+
 func TestAddIDCollision(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

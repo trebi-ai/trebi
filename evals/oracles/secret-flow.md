@@ -1,7 +1,7 @@
 # Oracle: secret-flow
 
 ```bash
-trebi secret set eval_api_key sk-eval-secret-do-not-leak
+trebi secret set --from-file "$EVAL_WORKDIR/api-key.txt" eval_api_key
 cat > "$EVAL_WORKDIR/JOB.md" << 'EOF'
 ---
 title: Secret user

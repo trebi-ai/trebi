@@ -123,8 +123,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush() // send headers before the first event
 
 	cursor, topics := s.streamOpts(w, r, flusher)
+	follow := r.URL.Query().Get("follow") != "0"
 
 	// Catch-up, then poll until the client disconnects or the server stops.
+	// follow=0 (CLI --limit) dumps history and closes; --limit is a max.
 	lastWrite := time.Now()
 	for {
 		events, err := s.st.ListBus(r.Context(), cursor, topics, 100)
@@ -146,6 +148,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 			lastWrite = time.Now()
+		}
+		if !follow && len(events) < 100 {
+			return
 		}
 		select {
 		case <-r.Context().Done():

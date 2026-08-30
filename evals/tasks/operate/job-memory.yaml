@@ -11,7 +11,7 @@ prompt: |
   "Pager rotation on Fridays".
 checks:
   - name: both entries
-    cmd: trebi job memory show report --json
+    cmd: trebi job memory show --json report
     jq: '(.content // .entries[]?.text // "") as $c | ($c | tostring | test("Shipped v1")) and ($c | tostring | test("Pager rotation"))'
 judge:
   model: claude-sonnet-5

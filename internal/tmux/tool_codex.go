@@ -22,24 +22,24 @@ func (codexTool) Match(command string) bool {
 }
 
 func (codexTool) PrepareLaunch(command string) LaunchPlan {
-	// Strategy A: inject notify via -c without relocating CODEX_HOME.
 	// Soft-event only (agent-turn-complete → stop) so screen still drives busy.
+	// Quote the TOML array so bash does not strip the quotes and Codex 0.149+
+	// does not deserialize notify as a string.
 	notifyBin := filepath.Join(config.LibexecDir(), "trebi-codex-notify")
 	cmd := command
 	if _, err := os.Stat(notifyBin); err == nil {
-		// notify is a string list: program + args
 		cmd = AppendFlags(cmd, []string{
-			"-c", fmt.Sprintf(`notify=["%s"]`, notifyBin),
+			"-c", fmt.Sprintf(`'notify=["%s"]'`, notifyBin),
 		})
 	}
-	// Bridge catalog into harness/codex (dormant isolation until CODEX_HOME).
 	var cfg *config.Config
 	if c, err := config.Load(); err == nil {
 		cfg = c
 	}
-	_ = harness.EnsureDir(config.HarnessDir(Codex))
+	dir := config.HarnessDir(Codex)
+	_ = harness.EnsureDir(dir)
 	_ = harness.EnsureBridges(Codex, cfg)
-	return LaunchPlan{Command: cmd, Env: nil}
+	return LaunchPlan{Command: cmd, Env: map[string]string{"CODEX_HOME": dir}}
 }
 
 func (codexTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {

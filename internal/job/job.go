@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/adrg/frontmatter"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/secrets"
 	"gopkg.in/yaml.v3"
 )
 
@@ -167,6 +169,16 @@ func (j *Job) ResolvedEnv() map[string]string {
 	}
 	if len(env) == 0 {
 		return nil
+	}
+	return env
+}
+
+// LaunchEnv is ResolvedEnv with secret-name values expanded. A missing
+// secret is left as the literal name and logged as secret.referenced_missing.
+func (j *Job) LaunchEnv() map[string]string {
+	env, missing := secrets.ExpandRefs(j.ResolvedEnv())
+	for _, name := range missing {
+		slog.Default().Info("secret.referenced_missing", "name", name)
 	}
 	return env
 }

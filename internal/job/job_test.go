@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/secrets"
 )
 
 const canonicalJob = `---
@@ -79,6 +81,23 @@ func TestRejectLegacyScheduleOn(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected reject for %s", key)
 		}
+	}
+}
+
+func TestLaunchEnvExpandsSecretNames(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	if err := secrets.Set("eval_api_key", "sk-secret"); err != nil {
+		t.Fatal(err)
+	}
+	raw := "---\nharness: claude\nenv:\n  EVAL_API_KEY: eval_api_key\n  PLAIN: hello\n---\nbody\n"
+	j, err := job.ParseBytes("/ws/x/JOB.md", []byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := j.LaunchEnv()
+	if env["EVAL_API_KEY"] != "sk-secret" || env["PLAIN"] != "hello" {
+		t.Fatalf("%v", env)
 	}
 }
 

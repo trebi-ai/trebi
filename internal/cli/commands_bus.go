@@ -30,7 +30,7 @@ func busCommand() *cli.Command {
 			&cli.StringFlag{Name: "entity", Usage: "match entity (run, job, alert, …) (client-side)"},
 			&cli.StringFlag{Name: "id", Usage: "match entity id (client-side)"},
 			&cli.StringFlag{Name: "action", Usage: "match action (created/updated/deleted) (client-side)"},
-			&cli.IntFlag{Name: "limit", Usage: "exit after n rendered frames (client-side)"},
+			&cli.IntFlag{Name: "limit", Usage: "max rendered frames, then exit (does not follow live)"},
 			&cli.BoolFlag{Name: "json", Usage: "JSONL (one raw frame per line)"},
 		},
 		Action: runBus,
@@ -71,7 +71,11 @@ func runBusWith(ctx context.Context, c *cli.Context) error {
 		limit: c.Int("limit"),
 		filt:  filt,
 	}
-	streamErr := client.streamEvents(ctx, BuildStreamPath(topics, cursor), !c.Bool("replay") && !cursorSet, tail.onFrame)
+	path := BuildStreamPath(topics, cursor)
+	if tail.limit > 0 {
+		path = withQuery(path, map[string]string{"follow": "0"})
+	}
+	streamErr := client.streamEvents(ctx, path, !c.Bool("replay") && !cursorSet, tail.onFrame)
 	return tail.finish(streamErr)
 }
 
@@ -117,6 +121,10 @@ func (t *busTail) noticeReset(seq int64) error {
 func (t *busTail) finish(streamErr error) error {
 	if streamErr == nil || errors.Is(streamErr, errBusLimit) || errors.Is(streamErr, context.Canceled) {
 		return streamErr
+	}
+	// --limit is a max. A clean close after fewer frames than N is success.
+	if t.limit > 0 && errors.Is(streamErr, io.EOF) {
+		return nil
 	}
 	if t.lastSeq > 0 {
 		return fmt.Errorf("bus connection dropped after seq %d; resume with --cursor %d: %w", t.lastSeq, t.lastSeq, streamErr)

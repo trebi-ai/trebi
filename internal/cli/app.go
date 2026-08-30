@@ -168,15 +168,54 @@ func configFor(c *cli.Context) (*config.Config, error) {
 }
 
 func workspaceFor(c *cli.Context) string {
-	return appStateFor(c).workspace
+	return resolveWorkspaceHint(c, appStateFor(c).workspace)
 }
 
 // workspaceFlag is the command --workspace / -w if set, else the global/sticky workspace.
 func workspaceFlag(c *cli.Context) string {
 	if w := strings.TrimSpace(c.String("workspace")); w != "" {
-		return w
+		return resolveWorkspaceHint(c, w)
 	}
 	return workspaceFor(c)
+}
+
+// resolveWorkspaceHint maps a name or id to a workspace id via sticky/linked
+// context, then the daemon's workspace list.
+func resolveWorkspaceHint(c *cli.Context, hint string) string {
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
+		return ""
+	}
+	state := appStateFor(c)
+	resolved := effectiveWorkspaceFor(hint, state.sticky, state.linked)
+	client, err := clientFor(c)
+	if err != nil {
+		return resolved
+	}
+	if id := lookupWorkspaceID(client, resolved); id != "" {
+		return id
+	}
+	return resolved
+}
+
+func lookupWorkspaceID(client *APIClient, hint string) string {
+	if client == nil || hint == "" {
+		return ""
+	}
+	var body struct {
+		Workspaces []map[string]any `json:"workspaces"`
+	}
+	if err := client.GetJSON("/v1/workspaces", &body); err != nil {
+		return ""
+	}
+	for _, ws := range body.Workspaces {
+		id := mapStr(ws, "id")
+		name := mapStr(ws, "name")
+		if id == hint || equalFoldName(hint, name) {
+			return id
+		}
+	}
+	return ""
 }
 
 func stickyFor(c *cli.Context) (*StickyContext, error) {

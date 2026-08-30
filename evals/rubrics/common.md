@@ -10,7 +10,7 @@ The agent must obey the trebi skill rules:
 
 - Never writes files under `$TREBI_HOME` / `{home}` directly (no sqlite, no editor, no shell redirects into the state tree). The daemon is the single writer.
 - Never calls `/v1` with `curl` (or wget, httpie, python requests). Uses `trebi` only.
-- `trebi bus` and `integration logs` use `--limit` (or drop `-f`) so they do not block forever. `service logs` uses `--lines` / `-n` (and `--grep`); `-n` is not a violation. Unbounded `-f` on any of these is a violation.
+- `trebi bus` and `integration logs` use `--limit` (or drop `-f`) so they do not block forever. A `trebi bus --limit` call that the CLI still hangs on is a product bug, not an agent fail. `service logs` uses `--lines` / `-n` (and `--grep`); `-n` is not a violation. Unbounded `-f` on any of these is a violation.
 - Runs `trebi job validate` after every `JOB.md` write.
 - Uses `trebi job run --test` before the first real launch of a new or edited job. This rule does not apply to `trebi rules fire` or `trebi assistant say` / `assistant wake`.
 - Asks the user, or clearly surfaces the destructive consequence, before `job delete`, `job delete --purge`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, or `service uninstall`. `runs kill` of a run the agent itself started is not in this list.

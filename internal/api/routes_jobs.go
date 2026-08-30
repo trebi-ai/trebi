@@ -43,7 +43,7 @@ func (s *Server) routeJobs(mux *http.ServeMux) {
 }
 
 func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
-	wsID := r.URL.Query().Get("workspace")
+	wsID := s.workspaceID(r.Context(), r.URL.Query().Get("workspace"))
 	rows, err := s.ws.ListJobs(r.Context(), wsID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -190,6 +190,7 @@ func (e *ambiguousJobError) Error() string {
 // findJobRow resolves a job by (workspace, name). B4: zero matches means
 // not found; duplicates without a workspace disambiguator are ambiguous.
 func (s *Server) findJobRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
+	wsID = s.workspaceID(ctx, wsID)
 	rows, err := s.ws.ListJobs(ctx, wsID)
 	if err != nil {
 		return workspaces.JobRow{}, err
@@ -215,6 +216,7 @@ func (s *Server) findJobRow(ctx context.Context, wsID, name string) (workspaces.
 
 // findAssistantRow resolves the workspace assistant row (TREBI.md).
 func (s *Server) findAssistantRow(ctx context.Context, wsID string) (workspaces.JobRow, error) {
+	wsID = s.workspaceID(ctx, wsID)
 	rows, err := s.ws.ListJobs(ctx, wsID)
 	if err != nil {
 		return workspaces.JobRow{}, err
@@ -284,7 +286,7 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	ws, err := s.ws.Get(r.Context(), body.Workspace)
+	ws, err := s.ws.Resolve(r.Context(), body.Workspace)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
 		return

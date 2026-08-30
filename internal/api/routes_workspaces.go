@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -37,6 +38,20 @@ func (s *Server) routeWorkspaces(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant/memory/entries/{eid}", func(w http.ResponseWriter, r *http.Request) {
 		s.handleMemoryEntriesDelete(w, r, true)
 	})
+}
+
+// workspaceID resolves a workspace id or display name to an id. Unknown
+// values are returned unchanged so existing not-found paths still fire.
+func (s *Server) workspaceID(ctx context.Context, idOrName string) string {
+	idOrName = strings.TrimSpace(idOrName)
+	if idOrName == "" {
+		return ""
+	}
+	ws, err := s.ws.Resolve(ctx, idOrName)
+	if err != nil {
+		return idOrName
+	}
+	return ws.ID
 }
 
 func (s *Server) handleWorkspacesList(w http.ResponseWriter, r *http.Request) {

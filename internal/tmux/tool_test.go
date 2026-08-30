@@ -213,6 +213,32 @@ func TestEnsurePiPackageInSettings(t *testing.T) {
 	}
 }
 
+func TestPrepareLaunch_CodexNotifyQuoted(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+
+	plan := (codexTool{}).PrepareLaunch("codex")
+	if strings.Contains(plan.Command, "-c") {
+		t.Fatalf("no shim: command still has -c: %q", plan.Command)
+	}
+	if plan.Env["CODEX_HOME"] != config.HarnessDir(Codex) {
+		t.Fatalf("CODEX_HOME=%q", plan.Env["CODEX_HOME"])
+	}
+
+	notify := filepath.Join(config.LibexecDir(), "trebi-codex-notify")
+	if err := os.MkdirAll(filepath.Dir(notify), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notify, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan = (codexTool{}).PrepareLaunch("codex exec")
+	want := `-c 'notify=["` + notify + `"]'`
+	if !strings.Contains(plan.Command, want) {
+		t.Fatalf("command %q want substring %q", plan.Command, want)
+	}
+}
+
 func TestPrepareLaunch_PassThrough(t *testing.T) {
 	// Codex injects -c notify when shim exists; allow extra flags.
 	for _, name := range []string{Copilot, Gemini} {

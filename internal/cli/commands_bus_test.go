@@ -37,6 +37,27 @@ func TestStreamEventsQueryPassthrough(t *testing.T) {
 	if !strings.Contains(gotPath, "cursor=42") {
 		t.Fatalf("cursor not passed: %s", gotPath)
 	}
+	if !strings.Contains(gotPath, "follow=0") {
+		t.Fatalf("follow=0 not passed: %s", gotPath)
+	}
+}
+
+func TestBusLimitShortHistoryExits(t *testing.T) {
+	srv := fakeStreamHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "data: %s\n\n", frameJSON(1, "inbox.created", "inbox", "01", "created"))
+		fmt.Fprintf(w, "data: %s\n\n", frameJSON(2, "job.created", "job", "report", "created"))
+		flusher.Flush()
+	})
+	out, err := runCLI(t, streamClient(srv), "bus", "--replay", "--limit", "10", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "inbox.created") || !strings.Contains(out, "job.created") {
+		t.Fatalf("%q", out)
+	}
 }
 
 func TestStreamEventsFamilyPrefixNotExpanded(t *testing.T) {

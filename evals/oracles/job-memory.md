@@ -1,7 +1,7 @@
 # Oracle: job-memory
 
 ```bash
-trebi job memory add report --text "Shipped v1"
-trebi job memory add report --text "Pager rotation on Fridays"
-trebi job memory show report --json
+trebi job memory add --text "Shipped v1" report
+trebi job memory add --text "Pager rotation on Fridays" report
+trebi job memory show --json report
 ```

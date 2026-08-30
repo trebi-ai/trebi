@@ -62,3 +62,34 @@ func Get(name string) (Secret, error) {
 	}
 	return Secret(b), nil
 }
+
+// ExpandRefs replaces env values that match a secret name with the secret
+// value. Names that are missing stay as the literal and are returned in missing.
+func ExpandRefs(env map[string]string) (out map[string]string, missing []string) {
+	if len(env) == 0 {
+		return env, nil
+	}
+	names, err := List()
+	if err != nil || len(names) == 0 {
+		return env, nil
+	}
+	have := map[string]bool{}
+	for _, n := range names {
+		have[n] = true
+	}
+	out = make(map[string]string, len(env))
+	for k, v := range env {
+		if !have[v] {
+			out[k] = v
+			continue
+		}
+		sec, err := Get(v)
+		if err != nil {
+			missing = append(missing, v)
+			out[k] = v
+			continue
+		}
+		out[k] = string(sec)
+	}
+	return out, missing
+}

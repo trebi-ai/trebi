@@ -43,9 +43,11 @@ Only these work with the daemon down: `service install|start|stop|status`, `doct
 
 ## Global rules
 
-- `--workspace` / `-w` (or `$TREBI_WORKSPACE`) selects the workspace. Put it **before** the verb: `trebi -w staging job run report`. urfave does not parse flags after a positional name (`trebi job run report -w staging` fails). `job run` / `job show` / `job status` / `job validate` / `runs list` also accept `--workspace` **before** the name: `trebi job run --workspace staging report`.
-- Without `-w`, trebi uses the sticky context from `trebi workspace use`.
-- Every read command takes `--json`. Use `--json` and pipe to `jq` when you parse output. Never parse the human tables.
+- `--workspace` / `-w` (or `$TREBI_WORKSPACE`) selects the workspace by **name or id**. Put it **before** the verb: `trebi -w staging job run report`. urfave does not parse flags after a positional name (`trebi job run report -w staging` fails). `job run` / `job show` / `job status` / `job validate` / `runs list` also accept `--workspace` **before** the name: `trebi job run --workspace staging report`.
+- Without `-w`, trebi uses the sticky context from `trebi workspace use`. On `not_found` after `-w <name>`, run `trebi workspace list --json` and retry with the `id`.
+- Flags (including `--json`) go **before** any positional name: `trebi job memory show --json report`. Flags after a positional are ignored.
+- List / show / status / current commands take `--json`. Mutating commands (`create`, `add`, `run`, `set`) and `assistant show` / `say` / `wake` often do not. On `flag provided but not defined: -json`, drop `--json` once; do not retry it.
+- Use `--json` and pipe to `jq` when you parse output. Never parse the human tables.
 - List commands paginate with `--limit` and `--cursor`. The cursor is the id of the last row. `trebi service logs` is not a list command: it uses `--lines` / `-n` and `--grep`, not `--limit`.
 - Times are RFC3339 UTC. Durations end in `_ms`. Keys are snake_case.
 - The server computes `duration_ms`, `cost_usd`, and `billed`. Never recompute money or duration yourself.
@@ -146,10 +148,10 @@ trebi job delete <name> --purge         # removes the job folder
 Each job keeps a `MEMORY.md` ledger that survives between runs.
 
 ```bash
-trebi job memory show <name>
-trebi job memory add <name> --text "Shipped v2" --date 2026-08-28
+trebi job memory show --json <name>
+trebi job memory add --text "Shipped v2" --date 2026-08-28 <name>
 trebi job memory remove <name> <entry-id>
-trebi job memory set <name> --file ./MEMORY.md   # replace whole file
+trebi job memory set --file ./MEMORY.md <name>   # replace whole file
 trebi job memory clear <name>                    # destructive
 ```
 
@@ -160,7 +162,7 @@ Supporting files for a job (Python scripts, HTML templates, eval fixtures) go ne
 `JOB.md` / `MEMORY.md` / `TREBI.md` writes on this command 409: edit those with `trebi job` and `trebi job memory`.
 
 ```bash
-trebi job file ls   <job> [prefix] --json --limit 100
+trebi job file ls --json --limit 100 <job> [prefix]
 trebi job file get  <job> render.py                  # bytes to stdout
 trebi job file get  <job> render.py --out ./render.py
 trebi job file get  <job> render.py --stat           # JSON: path, size_bytes, mtime, hash
@@ -175,7 +177,7 @@ trebi job file rm   <job> render.py --if-match <hash>
 `trebi file` is workspace-level: use only for assets shared across jobs (`templates/`, `lib/`) or assistant support files. Same If-Match / size-cap rules. `JOB.md` / `TREBI.md` / `MEMORY.md` are allowed there — the index rebuilds the same way as an editor save. `trebi.yaml` and `.git/**` are denied.
 
 ```bash
-trebi file ls [prefix] --json --limit 100
+trebi file ls --json --limit 100 [prefix]
 trebi file get templates/base.html
 trebi file put templates/base.html --from ./base.html
 trebi file rm  templates/base.html --if-match <hash>
@@ -195,9 +197,9 @@ trebi runs transcript <id>                         # parsed turns (JSON)
 trebi runs transcript <id> --raw                   # raw ndjson from the harness
 trebi runs stats                                   # totals and currently running
 trebi runs agents                                  # live in-memory agent state
-trebi runs attach <id>                             # tmux locally, WebSocket remotely
+trebi runs attach <id>                             # interactive TUI only; never from an agent session
 trebi runs message <id> "answer to the prompt"     # send text to a live run
-trebi runs kill <id> [<id>...]
+trebi runs kill <id> [<id>...]                     # do not kill a live run to "unstick" it; poll instead
 trebi runs resume <id>                             # resume the prior session
 trebi runs replay <id>                             # new launch from the prior prompt
 trebi runs retry <id>                              # resume, park, or rerun by end_reason
@@ -323,7 +325,7 @@ trebi bus --entity run --id <id> --action updated  # client-side entity filter
 
 Frames are thin: `entity`, `id`, `action`, `revision`. They carry no payload — refetch with `trebi runs show` / `trebi job show` when you need the object.
 
-`trebi bus` blocks. Use `--limit` so it exits, or run it in the background. Never follow with `-f` / no `--limit`.
+`trebi bus` without `--limit` follows live and blocks. `--limit` is a max: dump matching history (up to N frames) and exit, even if fewer than N exist. Never omit `--limit` from an agent session.
 
 ## Skills
 
@@ -344,12 +346,24 @@ Create the skill first (`trebi skill create`), then put scripts with `trebi skil
 ## Secrets
 
 ```bash
-trebi secret list           # names only; values are never printed
-trebi secret set <name> <value>
-trebi secret delete <name>
+trebi secret list --json           # names only; values are never printed
+trebi secret set --from-file ./api-key.txt eval_api_key
+trebi secret set eval_api_key      # value from stdin when piped
+trebi secret delete eval_api_key
 ```
 
-Reference secrets from a job through `envset` or `env`, never inline in the prompt.
+Reference a stored secret from a job by putting the **secret name** as the env value. The daemon resolves it at launch. Never put the secret value in the prompt, JOB.md, or a command line.
+
+```markdown
+---
+harness: codex
+env:
+  EVAL_API_KEY: eval_api_key
+---
+Print the names of environment variables that start with EVAL_, never their values.
+```
+
+Do not `strings`/`grep` the trebi binary to learn this. `secret list` is names only.
 
 ## Harnesses
 
@@ -514,11 +528,12 @@ trebi runs list --status failed --limit 20
 
 ## Rules for the agent
 
-- Prefer `--json` plus `jq` over parsing tables.
+- Prefer `--json` plus `jq` over parsing tables. Put `--json` before any positional name. If a command rejects `--json`, drop it once.
 - Run `trebi job validate` after every `JOB.md` write.
 - Use `trebi job run --test` before the first real launch of a new or edited job. Not `rules fire`, not `assistant say`.
 - Ask the user before `job delete` / `job delete --purge`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, and `service uninstall`. They destroy state. `runs kill` of a run you just started to debug is not in that list.
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.
 - Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
-- `trebi bus` and `integration logs` block without `--limit` (or with `-f`). `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.
-- Put `-w` / `--workspace` before the verb or before the job name. Flags after a positional argument are ignored/rejected.
+- `trebi bus --limit N` dumps up to N frames and exits. `integration logs` blocks without `--limit` (or with `-f`). `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.
+- Put `-w` / `--workspace` before the verb or before the job name. It accepts name or id. Flags after a positional argument are ignored/rejected.
+- Do not `runs attach` from an agent session. Poll `runs show` / `conversation messages`. Do not `runs kill` a live session to re-prompt.

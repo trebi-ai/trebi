@@ -166,7 +166,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		Prompt:     prompt,
 		WorkingDir: cwd,
 		IfRunning:  ifRunning,
-		Env:        j.ResolvedEnv(),
+		Env:        j.LaunchEnv(),
 	})
 	if err != nil || run == nil {
 		c.log.Warn("queue launch", "job", item.Job, "queue_id", item.ID, "error", err)

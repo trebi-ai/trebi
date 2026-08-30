@@ -11,6 +11,29 @@ import (
 	"testing"
 )
 
+func TestJobsListByWorkspaceName(t *testing.T) {
+	s, base, _ := startAPI(t)
+	ops := t.TempDir()
+	staging := t.TempDir()
+	writeJobFile(t, ops, "report")
+	writeJobFile(t, staging, "report")
+	_ = addWorkspace(t, base, s.Token(), ops, "ops")
+	stID := addWorkspace(t, base, s.Token(), staging, "staging")
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace=staging", s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("list by name %d %v", code, body)
+	}
+	jobs, _ := body["jobs"].([]any)
+	if len(jobs) != 1 {
+		t.Fatalf("jobs=%v", body)
+	}
+	row, _ := jobs[0].(map[string]any)
+	if row["workspace_id"] != stID || row["name"] != "report" {
+		t.Fatalf("row=%v want workspace %s", row, stID)
+	}
+}
+
 // TestJobDeleteAmbiguousAcrossWorkspaces covers A4/B4: a duplicate job name
 // without ?workspace= must 400, never delete the first match.
 func TestJobDeleteAmbiguousAcrossWorkspaces(t *testing.T) {

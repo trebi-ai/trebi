@@ -21,6 +21,7 @@ judge:
     - name: used --limit
       min: 1.0
       rubric: |
-        The transcript shows trebi bus invoked with --limit (not a
-        hanging live follow). Missing --limit is a fail.
+        Pass if every `trebi bus` invocation includes `--limit`. Fail only
+        if any bus call omits `--limit`. A `--limit` call that the CLI
+        still hangs on is a product bug, not an agent fail.
 oracle: oracles/bus-inspect.md

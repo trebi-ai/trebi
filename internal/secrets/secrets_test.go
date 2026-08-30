@@ -37,3 +37,25 @@ func TestSecretRedactionAndRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestExpandRefs(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	if err := secrets.Set("eval_api_key", "sk-secret"); err != nil {
+		t.Fatal(err)
+	}
+	out, missing := secrets.ExpandRefs(map[string]string{
+		"EVAL_API_KEY": "eval_api_key",
+		"PLAIN":        "literal",
+	})
+	if len(missing) != 0 {
+		t.Fatalf("missing %v", missing)
+	}
+	if out["EVAL_API_KEY"] != "sk-secret" || out["PLAIN"] != "literal" {
+		t.Fatalf("%v", out)
+	}
+	out, missing = secrets.ExpandRefs(map[string]string{"X": "no-such-secret"})
+	if len(missing) != 0 || out["X"] != "no-such-secret" {
+		t.Fatalf("%v %v", out, missing)
+	}
+}
