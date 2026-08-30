@@ -62,6 +62,15 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, t := range tasks {
+		if len(t.Judge.Dimensions) == 0 {
+			continue
+		}
+		if err := r.judge.preflight(ctx); err != nil {
+			return nil, err
+		}
+		break
+	}
 	rep := newReport()
 	outRoot := filepath.Join(r.opts.OutDir, rep.ID)
 	if err := os.MkdirAll(outRoot, 0o755); err != nil {

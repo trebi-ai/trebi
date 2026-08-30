@@ -61,6 +61,21 @@ func (j *judgeRunner) resolve(d JudgeDim) (JudgeDim, float64) {
 	return d, min
 }
 
+// preflight makes one cheap judge call. It fails fast when the judge CLI
+// cannot answer (auth expired, quota exhausted), before any trial spends money.
+func (j *judgeRunner) preflight(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, judgeDimTimeout)
+	defer cancel()
+	out, err := j.invoke(ctx, `Reply with JSON only: {"ok":true}`)
+	if err != nil {
+		return fmt.Errorf("judge preflight (model %s): %w", j.model, err)
+	}
+	if len(bytes.TrimSpace(out)) == 0 {
+		return fmt.Errorf("judge preflight (model %s): empty reply", j.model)
+	}
+	return nil
+}
+
 func judgeBudget(n int) time.Duration {
 	if n <= 0 {
 		return 0
@@ -144,7 +159,12 @@ func (j *judgeRunner) invoke(ctx context.Context, prompt string) ([]byte, error)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("judge invoke: %w\n%s", err, stderr.Bytes())
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			// The claude CLI writes some errors (quota, auth) to stdout.
+			detail = strings.TrimSpace(stdout.String())
+		}
+		return nil, fmt.Errorf("judge invoke: %w\n%s", err, detail)
 	}
 	return stdout.Bytes(), nil
 }
