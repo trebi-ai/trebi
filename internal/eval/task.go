@@ -74,10 +74,16 @@ type Task struct {
 	Checks        []Check   `yaml:"checks"`
 	Judge         JudgeSpec `yaml:"judge"`
 	Oracle        string    `yaml:"oracle"`
+	Surfaces      []string  `yaml:"surfaces"`
 
 	path     string
 	evalsDir string
 }
+
+const (
+	surfaceCLI = "cli"
+	surfaceMCP = "mcp"
+)
 
 // Placeholders are expanded in checks, seeds, and file paths.
 type Placeholders struct {
@@ -155,6 +161,9 @@ func (t *Task) Validate() error {
 	if err := t.validateClients(); err != nil {
 		return err
 	}
+	if err := t.validateSurfaces(); err != nil {
+		return err
+	}
 	if len(t.Checks) == 0 {
 		return fmt.Errorf("at least one check required")
 	}
@@ -204,6 +213,9 @@ func (t *Task) applyDefaults() {
 	if t.Judge.Model == "" {
 		t.Judge.Model = defaultJudgeModel
 	}
+	if len(t.Surfaces) == 0 {
+		t.Surfaces = []string{surfaceCLI}
+	}
 }
 
 func (t *Task) validateTier() error {
@@ -214,6 +226,41 @@ func (t *Task) validateTier() error {
 		return fmt.Errorf("tier required")
 	default:
 		return fmt.Errorf("tier %q: want onboarding|operate|debug|guardrail", t.Tier)
+	}
+}
+
+func (t *Task) validateSurfaces() error {
+	for _, s := range t.Surfaces {
+		if s != surfaceCLI && s != surfaceMCP {
+			return fmt.Errorf("surface %q: want cli|mcp", s)
+		}
+	}
+	return nil
+}
+
+func (t *Task) hasSurface(s string) bool {
+	for _, x := range t.Surfaces {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *Task) runSurfaces(want string) []string {
+	switch want {
+	case surfaceMCP:
+		if t.hasSurface(surfaceMCP) {
+			return []string{surfaceMCP}
+		}
+		return nil
+	case "both":
+		return append([]string(nil), t.Surfaces...)
+	default:
+		if t.hasSurface(surfaceCLI) {
+			return []string{surfaceCLI}
+		}
+		return nil
 	}
 }
 

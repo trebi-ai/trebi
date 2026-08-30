@@ -47,3 +47,7 @@ Delete one file. Destructive.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
 - `path` (string, required): file path relative to the owner root.
 - `if_match` (string, optional): current revision; a stale value returns 412.
+
+## Related guides
+
+`files`

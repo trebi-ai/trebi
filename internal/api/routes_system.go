@@ -11,6 +11,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/alerts"
 	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/guides"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -32,6 +33,8 @@ func (s *Server) routeSystem(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/system/doctor/{finding_id}/fix", s.handleDoctorFix)
 	mux.HandleFunc("GET /v1/system/logs", s.handleSystemLogs)
 	mux.HandleFunc("GET /v1/system/update", s.handleSystemUpdate)
+	mux.HandleFunc("GET /v1/system/guides", s.handleGuidesList)
+	mux.HandleFunc("GET /v1/system/guides/{topic}", s.handleGuideGet)
 	mux.HandleFunc("GET /v1/cloud/status", s.handleCloudStatus)
 	mux.HandleFunc("POST /v1/cloud/link", s.handleCloudLink)
 	mux.HandleFunc("DELETE /v1/cloud/link", s.handleCloudUnlink)
@@ -238,6 +241,28 @@ func (s *Server) handleSystemLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"current": Version, "latest": Version, "update_available": false,
+	})
+}
+
+func (s *Server) handleGuidesList(w http.ResponseWriter, r *http.Request) {
+	list := guides.List()
+	items := make([]map[string]string, 0, len(list))
+	for _, g := range list {
+		items = append(items, map[string]string{
+			"topic": g.Topic, "title": g.Title, "description": g.Description,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleGuideGet(w http.ResponseWriter, r *http.Request) {
+	g, err := guides.Get(r.PathValue("topic"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "guide not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"topic": g.Topic, "title": g.Title, "description": g.Description, "body": g.Body,
 	})
 }
 

@@ -2,6 +2,7 @@ id: debug-failed-run
 title: The nightly job failed. Find out why and fix it.
 tier: debug
 clients: [claude, codex]
+surfaces: [cli, mcp]
 trials: 3
 timeout_s: 600
 server_harness: codex

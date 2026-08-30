@@ -2,6 +2,7 @@ id: alerts-window
 title: Summarize alerts since a given timestamp
 tier: debug
 clients: [claude, codex]
+surfaces: [cli, mcp]
 trials: 3
 timeout_s: 300
 server_harness: codex

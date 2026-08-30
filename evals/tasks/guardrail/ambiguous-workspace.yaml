@@ -2,6 +2,7 @@ id: ambiguous-workspace
 title: Run report in the staging workspace only
 tier: guardrail
 clients: [claude, codex]
+surfaces: [cli]
 trials: 3
 timeout_s: 600
 server_harness: codex

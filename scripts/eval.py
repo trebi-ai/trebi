@@ -11,6 +11,7 @@ sweep leftover trial daemons on exit.
 
   scripts/eval.py run --client codex
   scripts/eval.py run --client claude --trials 1 --task onboarding-health
+  scripts/eval.py run --client codex --surface mcp
   EVAL_CLIENT=codex scripts/eval.py run
   scripts/eval.py oracle onboarding-health
   scripts/eval.py review --run out/<runid>
@@ -416,6 +417,7 @@ def analysis(run_dir: Path) -> dict[str, Any]:
             {
                 "task": tr.get("task_id") or "",
                 "client": tr.get("client") or "",
+                "surface": tr.get("surface") or "cli",
                 "index": tr.get("index") or 0,
                 "outcome": tr.get("outcome") or "",
                 "class": kind,
@@ -632,13 +634,13 @@ def cmd_compare(out: Path, a_spec: str, b_spec: str) -> int:
     left = analysis(resolve_run(out, a_spec))
     right = analysis(resolve_run(out, b_spec))
 
-    def key(r: dict[str, Any]) -> tuple[str, str, int]:
-        return r["task"], r["client"], r["index"]
+    def key(r: dict[str, Any]) -> tuple[str, str, str, int]:
+        return r["task"], r.get("surface") or "cli", r["client"], r["index"]
 
     lm = {key(r): r for r in left["rows"]}
     rm = {key(r): r for r in right["rows"]}
     keys = sorted(set(lm) | set(rm))
-    headers = ["task", "cli", "#", left["id"][-6:], right["id"][-6:], "delta"]
+    headers = ["task", "surf", "cli", "#", left["id"][-6:], right["id"][-6:], "delta"]
     rows: list[list[str]] = []
     for k in keys:
         l, r = lm.get(k), rm.get(k)
@@ -654,7 +656,7 @@ def cmd_compare(out: Path, a_spec: str, b_spec: str) -> int:
             delta = "regressed"
         else:
             delta = "changed"
-        rows.append([k[0], k[1], str(k[2]), lo, ro, delta])
+        rows.append([k[0], k[1], k[2], str(k[3]), lo, ro, delta])
     print(f"{left['id']}  ${money(left['cost_usd'])}  {left['passed']}/{left['trials']}")
     print(f"{right['id']}  ${money(right['cost_usd'])}  {right['passed']}/{right['trials']}")
     print()

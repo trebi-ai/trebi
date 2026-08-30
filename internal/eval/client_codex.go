@@ -19,7 +19,11 @@ func (c *codexClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResul
 	if _, err := exec.LookPath("codex"); err != nil {
 		return nil, fmt.Errorf("codex not on PATH: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(opts.Workdir, "AGENTS.md"), AgentsMarkdown(opts.SkillMD), 0o644); err != nil {
+	if opts.Surface != surfaceMCP {
+		if err := os.WriteFile(filepath.Join(opts.Workdir, "AGENTS.md"), AgentsMarkdown(opts.SkillMD), 0o644); err != nil {
+			return nil, err
+		}
+	} else if err := writeCodexMCPConfig(opts.ConfigHome, opts.MCPURL, opts.MCPToken); err != nil {
 		return nil, err
 	}
 	timeout := opts.Timeout
@@ -49,6 +53,15 @@ func (c *codexClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResul
 		return res, fmt.Errorf("codex: %w\n%s", err, stderr.Bytes())
 	}
 	return res, nil
+}
+
+func writeCodexMCPConfig(dir, mcpURL, token string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	body := fmt.Sprintf("[mcp_servers.trebi]\nurl = %q\nhttp_headers = { Authorization = %q }\n",
+		mcpURL, "Bearer "+token)
+	return os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o600)
 }
 
 func codexLaunchArgs(prompt, model string) []string {

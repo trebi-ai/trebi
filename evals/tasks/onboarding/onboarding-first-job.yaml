@@ -2,6 +2,7 @@ id: onboarding-first-job
 title: Fresh install to first successful run
 tier: onboarding
 clients: [claude, codex]
+surfaces: [cli, mcp]
 trials: 3
 timeout_s: 600
 server_harness: codex

@@ -46,3 +46,14 @@ No input fields.
 Read new events from the bus, then stop. There is no follow mode: pass `next_cursor` back on the next call. The response is `{"events": […], "next_cursor": N}`.
 - `topics` (string, optional): comma-separated topic filter.
 - `cursor` (number, optional): last seen sequence number. Omit it to read from the start of the retained log.
+
+### guides
+List workflow guide topics. No input fields. Response is `{"items":[{"topic","title","description"}]}`.
+
+### guide
+Read one workflow guide body.
+- `topic` (string, required): guide topic from `guides`.
+
+## Related guides
+
+`mcp-basics`, `observability`

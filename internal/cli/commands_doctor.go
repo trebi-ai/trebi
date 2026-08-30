@@ -6,12 +6,65 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/guides"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
+
+func guideCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "guide",
+		Usage:     "print a workflow guide (works with the daemon down)",
+		ArgsUsage: "[topic]",
+		Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+		Action:    runGuide,
+	}
+}
+
+func runGuide(_ context.Context, c *cli.Command) error {
+	topic := strings.TrimSpace(c.Args().Get(0))
+	if topic == "" {
+		return runGuideList(c)
+	}
+	g, err := guides.Get(topic)
+	if err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]string{
+			"topic": g.Topic, "title": g.Title, "description": g.Description, "body": g.Body,
+		})
+	}
+	_, err = fmt.Fprint(outWriter(c), g.Body)
+	return err
+}
+
+func runGuideList(c *cli.Command) error {
+	list := guides.List()
+	if c.Bool("json") {
+		items := make([]map[string]string, 0, len(list))
+		for _, g := range list {
+			items = append(items, map[string]string{
+				"topic": g.Topic, "title": g.Title, "description": g.Description,
+			})
+		}
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{"items": items})
+	}
+	tbl := newTable(outWriter(c), []string{"Topic", "Title", "Description"})
+	for _, g := range list {
+		tbl.AppendRow(table.Row{g.Topic, g.Title, g.Description})
+	}
+	renderTable(tbl)
+	return nil
+}
 
 func doctorCommand() *cli.Command {
 	return &cli.Command{

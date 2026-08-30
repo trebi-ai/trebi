@@ -262,6 +262,67 @@ func TestMCPDrainUndrain(t *testing.T) {
 	}
 }
 
+func TestGuidesHTTP(t *testing.T) {
+	s, base := startTestServer(t)
+	token := s.Token()
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/system/guides", token, nil)
+	if code != http.StatusOK {
+		t.Fatalf("list: %d %v", code, body)
+	}
+	items, _ := body["items"].([]any)
+	if len(items) != 10 {
+		t.Fatalf("list items %d; want 10", len(items))
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/guides/getting-started", token, nil)
+	if code != http.StatusOK {
+		t.Fatalf("get: %d %v", code, body)
+	}
+	if body["topic"] != "getting-started" || body["body"] == nil || body["body"] == "" {
+		t.Fatalf("get body: %v", body)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/guides/no-such-topic", token, nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("unknown: %d", code)
+	}
+	if errCode(body) != "not_found" {
+		t.Fatalf("unknown code %v", body)
+	}
+}
+
+func TestMCPGuides(t *testing.T) {
+	s, base := startTestServer(t)
+	cs := mcpSession(t, base, s.Token())
+
+	res, text := mcpCall(t, cs, "system", "guides", nil)
+	m := mcpOK(t, "system.guides", res, text)
+	items, _ := m["items"].([]any)
+	if len(items) != 10 {
+		t.Fatalf("guides items %d", len(items))
+	}
+
+	res, text = mcpCall(t, cs, "system", "guide", map[string]any{"topic": "getting-started"})
+	got := mcpOK(t, "system.guide", res, text)
+	if got["topic"] != "getting-started" || fmt.Sprint(got["body"]) == "" {
+		t.Fatalf("guide: %v", got)
+	}
+
+	res, text = mcpCall(t, cs, "system", "guide", map[string]any{"topic": "nope"})
+	if !res.IsError {
+		t.Fatalf("bogus topic: want IsError, got %s", text)
+	}
+	if code := errCode(mcpJSON(t, "system.guide", text)); code != "not_found" {
+		t.Fatalf("bogus topic code = %q (%s)", code, text)
+	}
+
+	ir := cs.InitializeResult()
+	if ir == nil || !strings.Contains(ir.Instructions, "mcp-basics") {
+		t.Fatalf("initialize instructions = %v", ir)
+	}
+}
+
 func TestMCPDocsAction(t *testing.T) {
 	s, base := startTestServer(t)
 	cs := mcpSession(t, base, s.Token())

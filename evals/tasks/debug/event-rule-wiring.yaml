@@ -2,6 +2,7 @@ id: event-rule-wiring
 title: Wire events from tick to job ingest
 tier: debug
 clients: [claude, codex]
+surfaces: [cli, mcp]
 trials: 3
 timeout_s: 400
 server_harness: codex

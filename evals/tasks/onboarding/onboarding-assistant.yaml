@@ -2,6 +2,7 @@ id: onboarding-assistant
 title: Set up the workspace assistant and send a first message
 tier: onboarding
 clients: [claude, codex]
+surfaces: [cli, mcp]
 trials: 3
 timeout_s: 600
 server_harness: codex

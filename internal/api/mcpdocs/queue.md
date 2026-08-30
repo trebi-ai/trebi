@@ -19,3 +19,7 @@ Move one queued run back to the ready state.
 ### cancel
 Drop one queued run.
 - `id` (string, required): queue entry id.
+
+## Related guides
+
+`integrations-and-rules`

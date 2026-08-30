@@ -2,6 +2,7 @@ id: config-tune
 title: Change a config value and prove it is valid
 tier: operate
 clients: [claude, codex]
+surfaces: [cli, mcp]
 trials: 3
 timeout_s: 300
 server_harness: codex

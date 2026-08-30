@@ -31,3 +31,7 @@ Resolve one inbox item.
 ### alerts
 List alerts raised since a time.
 - `since` (string, optional): RFC3339 cut-off; omit for all.
+
+## Related guides
+
+`inbox-and-alerts`

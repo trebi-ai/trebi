@@ -56,3 +56,7 @@ Point one channel at a conversation.
 - `channel_type` (string, required): channel type.
 - `channel_ref` (string, required): channel reference.
 - `conversation` (string, required): conversation id.
+
+## Related guides
+
+`assistant`

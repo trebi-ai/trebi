@@ -657,6 +657,16 @@ func BuildSystemUpdatePath() string {
 	return "/v1/system/update"
 }
 
+// BuildSystemGuidesPath builds GET /v1/system/guides.
+func BuildSystemGuidesPath() string {
+	return "/v1/system/guides"
+}
+
+// BuildSystemGuidePath builds GET /v1/system/guides/{topic}.
+func BuildSystemGuidePath(topic string) string {
+	return "/v1/system/guides/" + url.PathEscape(topic)
+}
+
 // BuildSystemDrain builds POST /v1/system/drain.
 func BuildSystemDrain() HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/system/drain"}

@@ -17,6 +17,9 @@ import (
 //go:embed mcpdocs/*.md
 var mcpDocsFS embed.FS
 
+// mcpInstructions is the remote client's front door (initialize result).
+const mcpInstructions = `Trebi is an LLM task runner (daemon + /v1 API). Call each tool as {"action": "<name>", "input": {…}}. Call docs on a tool before first use. Call system.guide with topic mcp-basics before your first workflow, and system.guides for the index. Always pass workspace explicitly on workspace-scoped calls.`
+
 // routeMCP mounts the MCP endpoint at /mcp (no /v1 prefix). Handler() must
 // store apiWrapped after this runs: tool dispatch re-enters the audit-wrapped
 // mux, not the outer auth layer.
@@ -27,7 +30,9 @@ func (s *Server) routeMCP(mux *http.ServeMux) {
 // newMCPHandler builds the MCP server (one tool per catalog key) wrapped in
 // the stateless streamable HTTP handler.
 func (s *Server) newMCPHandler() http.Handler {
-	srv := mcp.NewServer(&mcp.Implementation{Name: "trebi", Version: Version}, nil)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "trebi", Version: Version}, &mcp.ServerOptions{
+		Instructions: mcpInstructions,
+	})
 	for tool, actions := range s.mcpCatalog {
 		srv.AddTool(mcpToolDef(tool, actions), s.mcpToolHandler(tool))
 	}

@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,6 +30,10 @@ type LaunchOpts struct {
 	MaxTurns   int
 	SkillMD    []byte
 	Transcript string // path to write raw + normalized JSON
+	Surface    string
+	MCPURL     string
+	MCPToken   string
+	ConfigHome string
 }
 
 // Step is one normalized transcript turn.
@@ -96,6 +102,71 @@ func writeTranscript(path string, raw []byte, steps []Step) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+var trebiShellRE = regexp.MustCompile(`(?i)(^|[;&|` + "`" + `\s/"'])trebi\s`)
+
+func isTrebiMCPTool(name string) bool {
+	switch name {
+	case "assistant", "config", "conversation", "events", "file", "harness",
+		"inbox", "integration", "job", "queue", "run", "secret", "skill",
+		"system", "workspace":
+		return true
+	default:
+		return false
+	}
+}
+
+func mcpIsolationViolations(steps []Step, apiURL string) []string {
+	host := trialHost(apiURL)
+	var out []string
+	for _, s := range steps {
+		if s.Role != "tool" {
+			continue
+		}
+		if looksLikeTrebiShell(s) {
+			out = append(out, "trebi shell invocation in "+s.Name)
+		}
+		if host != "" && looksLikeCurlTo(s.Content, host) {
+			out = append(out, "curl to trial port in "+s.Name)
+		}
+		if leak := mcpServerLeak(s.Name); leak != "" {
+			out = append(out, leak)
+		}
+	}
+	return out
+}
+
+func looksLikeTrebiShell(s Step) bool {
+	if isTrebiMCPTool(s.Name) || strings.HasPrefix(s.Name, "mcp__trebi") {
+		return false
+	}
+	return trebiShellRE.MatchString(s.Content)
+}
+
+func looksLikeCurlTo(content, host string) bool {
+	if !strings.Contains(strings.ToLower(content), "curl") {
+		return false
+	}
+	return strings.Contains(content, host)
+}
+
+func mcpServerLeak(name string) string {
+	if !strings.HasPrefix(name, "mcp__") {
+		return ""
+	}
+	if strings.HasPrefix(name, "mcp__trebi") {
+		return ""
+	}
+	return "unexpected MCP tool " + name
+}
+
+func trialHost(apiURL string) string {
+	u, err := url.Parse(apiURL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 func usageCost(model string, in, out, cacheRead, cacheCreate int64) (pricing.TokenUsage, float64) {

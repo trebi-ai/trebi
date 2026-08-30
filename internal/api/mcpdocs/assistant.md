@@ -61,3 +61,7 @@ Remove one memory entry. Destructive.
 ### memory_clear
 Erase the whole assistant memory. Destructive.
 - `workspace` (string, required): workspace id.
+
+## Related guides
+
+`assistant`

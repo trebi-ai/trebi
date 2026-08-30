@@ -2,6 +2,7 @@ id: job-with-script
 title: Job that calls a helper script placed next to it
 tier: operate
 clients: [claude, codex]
+surfaces: [cli, mcp]
 trials: 3
 timeout_s: 600
 server_harness: codex

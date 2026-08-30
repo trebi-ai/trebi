@@ -982,6 +982,16 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				e.transform = busPollTransform
 				return e
 			}(),
+			"guides": act("GET /v1/system/guides", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) {
+				return mcpGet(request.BuildSystemGuidesPath()), nil
+			}),
+			"guide": act("GET /v1/system/guides/{topic}", mcpInput{"topic": "getting-started"}, func(in mcpInput) (request.HTTPRequest, error) {
+				topic, err := in.reqStr("topic")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildSystemGuidePath(topic)), nil
+			}),
 		},
 	}
 }

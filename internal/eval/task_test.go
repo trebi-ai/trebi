@@ -33,6 +33,9 @@ checks:
 	if task.Trials != defaultTrials || task.ServerHarness != defaultHarness {
 		t.Fatalf("defaults: %+v", task)
 	}
+	if len(task.Surfaces) != 1 || task.Surfaces[0] != surfaceCLI {
+		t.Fatalf("surfaces default: %v", task.Surfaces)
+	}
 	p := Placeholders{Workspace: "/ws/ops"}
 	got := p.Expand(task.Checks[1].FileExists)
 	if got != "/ws/ops/hello/out.txt" {

@@ -51,3 +51,7 @@ Drop the stored credential of one harness. Destructive.
 - `name` (string, required): harness name.
 - `mode` (string, optional): logout mode.
 - `confirm` (boolean, optional): confirm the logout.
+
+## Related guides
+
+`skills-secrets-config`

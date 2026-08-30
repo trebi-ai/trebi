@@ -28,3 +28,7 @@ Change one workspace.
 ### remove
 Unregister one workspace. Destructive. Files on disk stay.
 - `id` (string, required): workspace id.
+
+## Related guides
+
+`getting-started`

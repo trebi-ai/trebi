@@ -79,3 +79,7 @@ Read aggregate run statistics. No input fields.
 
 ### agents
 Read the live agent state table. No input fields.
+
+## Related guides
+
+`runs-and-debugging`

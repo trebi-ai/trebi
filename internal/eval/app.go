@@ -41,6 +41,7 @@ func NewApp() *cli.Command {
 					&cli.IntFlag{Name: "trials", Usage: "override trials per task"},
 					&cli.Float64Flag{Name: "budget", Usage: "abort when cumulative cost_usd reaches this"},
 					&cli.StringFlag{Name: "baseline", Usage: "checked-in baseline.json"},
+					&cli.StringFlag{Name: "surface", Value: "cli", Usage: "cli, mcp, or both"},
 				},
 				Action: runEval,
 			},
@@ -76,6 +77,7 @@ func runEval(ctx context.Context, c *cli.Command) error {
 	opts.Trials = c.Int("trials")
 	opts.BudgetUSD = c.Float64("budget")
 	opts.Baseline = c.String("baseline")
+	opts.Surface = c.String("surface")
 	r, err := NewRunner(opts)
 	if err != nil {
 		return err

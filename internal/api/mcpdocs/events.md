@@ -36,3 +36,7 @@ Evaluate one rule and fire its actions when it matches.
 - `extract` (string, optional): extract expression.
 - `event` (any, optional): event payload.
 - `on_index` (number, optional): fire only the action at this index.
+
+## Related guides
+
+`integrations-and-rules`

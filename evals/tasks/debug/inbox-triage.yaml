@@ -2,6 +2,7 @@ id: inbox-triage
 title: Drain the inbox
 tier: debug
 clients: [claude, codex]
+surfaces: [cli, mcp]
 trials: 3
 timeout_s: 400
 server_harness: codex

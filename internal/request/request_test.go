@@ -872,6 +872,12 @@ func TestBuildSystemAndCloudRequests(t *testing.T) {
 	if BuildSystemLogsPath() != "/v1/system/logs" || BuildSystemUpdatePath() != "/v1/system/update" {
 		t.Fatal("system paths 2")
 	}
+	if BuildSystemGuidesPath() != "/v1/system/guides" {
+		t.Fatal("guides path")
+	}
+	if BuildSystemGuidePath("getting-started") != "/v1/system/guides/getting-started" {
+		t.Fatal("guide topic path")
+	}
 	if BuildCloudStatusPath() != "/v1/cloud/status" {
 		t.Fatal("cloud status")
 	}

@@ -2,6 +2,7 @@ id: run-lifecycle
 title: Start the job, send it a message, then stop it
 tier: debug
 clients: [claude, codex]
+surfaces: [cli, mcp]
 trials: 3
 timeout_s: 600
 server_harness: codex

@@ -59,6 +59,7 @@ type TrialResult struct {
 	DurationS float64       `json:"duration_s"`
 	Error     string        `json:"error,omitempty"`
 	Dir       string        `json:"dir"`
+	Surface   string        `json:"surface,omitempty"`
 }
 
 // Passed reports deterministic checks and judge minima all green.
@@ -72,6 +73,7 @@ type trialEnv struct {
 	workdir string
 	artDir  string
 	apiURL  string
+	token   string
 	bin     string
 	cmd     *exec.Cmd
 	parentW *os.File
@@ -110,6 +112,33 @@ func (e *trialEnv) environ() []string {
 		"PATH="+filepath.Dir(e.bin)+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
 	return env
+}
+
+func (e *trialEnv) mcpEnviron(cfgHome string) []string {
+	env := os.Environ()
+	env = filterEnv(env, "TREBI_HOME", "TREBI_URL", "TREBI_TOKEN", "TREBI_WORKSPACE", "PATH", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME")
+	return append(env,
+		"PATH="+stripPathDir(os.Getenv("PATH"), filepath.Dir(e.bin)),
+		"HOME="+cfgHome,
+		"CLAUDE_CONFIG_DIR="+cfgHome,
+		"CODEX_HOME="+cfgHome,
+	)
+}
+
+func stripPathDir(path, dir string) string {
+	dir, _ = filepath.Abs(dir)
+	var parts []string
+	for _, p := range strings.Split(path, string(os.PathListSeparator)) {
+		if p == "" {
+			continue
+		}
+		abs, err := filepath.Abs(p)
+		if err == nil && abs == dir {
+			continue
+		}
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, string(os.PathListSeparator))
 }
 
 func (e *trialEnv) startDaemon(ctx context.Context, harness, wsRoot string) error {
@@ -174,10 +203,12 @@ func (e *trialEnv) waitAPIJSON(ctx context.Context, d time.Duration) error {
 		data, err := os.ReadFile(path)
 		if err == nil {
 			var doc struct {
-				URL string `json:"url"`
+				URL   string `json:"url"`
+				Token string `json:"token"`
 			}
 			if json.Unmarshal(data, &doc) == nil && doc.URL != "" {
 				e.apiURL = doc.URL
+				e.token = doc.Token
 				return nil
 			}
 		}

@@ -58,6 +58,27 @@ func TestParseCodexItemCompleted(t *testing.T) {
 	}
 }
 
+func TestMCPIsolationViolations(t *testing.T) {
+	t.Parallel()
+	steps := []Step{
+		{Role: "tool", Name: "Bash", Content: `{"command":"trebi doctor --json"}`},
+		{Role: "tool", Name: "Bash", Content: `{"command":"curl http://127.0.0.1:1234/v1/jobs"}`},
+		{Role: "tool", Name: "mcp__other__list", Content: `{}`},
+		{Role: "tool", Name: "job", Content: `{"action":"list"}`},
+	}
+	got := mcpIsolationViolations(steps, "http://127.0.0.1:1234")
+	if len(got) != 3 {
+		t.Fatalf("violations %v", got)
+	}
+	clean := mcpIsolationViolations([]Step{
+		{Role: "tool", Name: "system", Content: `{"action":"guide","input":{"topic":"mcp-basics"}}`},
+		{Role: "assistant", Content: "trebi is ready"},
+	}, "http://127.0.0.1:1234")
+	if len(clean) != 0 {
+		t.Fatalf("clean %v", clean)
+	}
+}
+
 func TestParseClientSpec(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

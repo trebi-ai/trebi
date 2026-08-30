@@ -15,6 +15,7 @@ internal/api/        # /v1 HTTP + SSE server + /mcp MCP endpoint; one file per r
 internal/cli/        # the trebi command surface; a thin API client
 internal/daemon/     # ControlPlane: background workers (queue, schedule, watch, prune)
 internal/eval/       # live LLM-driven CLI eval harness
+internal/guides/     # embedded workflow cheat sheets (leaf; go:embed)
 internal/request/    # pure /v1 request builders (HTTPRequest); no I/O
 internal/store/      # SQLite open, migrations, event bus, event-name registry
 internal/<domain>/   # one service per object family (runs, workspaces, alerts, …)
@@ -32,15 +33,17 @@ Dependency direction is one way:
 cli ──▶ api ──▶ <domain services> ──▶ store
 daemon ──▶ <domain services> ──▶ store
 cli ──▶ request ◀── api
+cli ──▶ guides ◀── api
 ```
 
 - `api` and `daemon` are peers. Both wire the same services; neither imports the other.
 - `request` is a leaf: pure `/v1` request builders, no I/O. Both `cli` and `api` (MCP tools) import it. It imports nothing from this repo.
+- `guides` is a leaf: embedded workflow markdown. Both `cli` (`trebi guide`, offline) and `api` (routes + MCP) import it. It imports nothing from this repo.
 - Domain services never import `api`, `cli`, or `daemon`.
 - `store` imports no domain package.
 - `home` owns every `~/.trebi` path. Do not build paths with `filepath.Join(os.UserHomeDir(), ".trebi", …)` anywhere else.
 
-When you add an object, add the whole vertical in one change: store table + migration, domain service, bus topic in the registry, API routes, CLI command, and tests. A route with no CLI command is an incomplete change (see the parity rule below).
+When you add an object, add the whole vertical in one change: store table + migration, domain service, bus topic in the registry, API routes, CLI command, and tests. A route with no CLI command is an incomplete change (see the parity rule below). A new workflow area ships its guide (or extends one) alongside the route, command, skill entry, and MCP action.
 
 ## Types, methods, functions
 
@@ -158,6 +161,7 @@ Live LLM-driven CLI evals: skill → client LLM (`claude` / `codex`) → `trebi`
 # full suite, one client (25 tasks × 3 trials)
 scripts/eval.py run --client codex
 scripts/eval.py run --client claude
+scripts/eval.py run --client codex --surface mcp
 
 # smoke one task
 scripts/eval.py run --client codex --trials 1 --task onboarding-health
@@ -182,7 +186,7 @@ scripts/eval.py why --task not-found-honesty --commands
 scripts/eval.py compare RUN_A RUN_B
 ```
 
-`--task`, `--tier`, `--client` (repeatable), `--trials`, `--budget` (abort at cumulative `cost_usd`), `--baseline`. `--no-build` skips the Go rebuild. Server-side jobs default to harness `codex` (the one that probes `ok` on this Mac). Each trial is isolated with `TREBI_HOME` under `out/<runid>/`. Ctrl-C cancels the suite, writes a partial `report.md` / `report.json`, and kills trial daemons. Do not `exec` `trebi-eval` or redirect its stdout without the wrapper: Go fully buffers piped stdout, and a killed runner used to leak `trebi service daemon --listen 127.0.0.1:0`.
+`--task`, `--tier`, `--client` (repeatable), `--trials`, `--budget` (abort at cumulative `cost_usd`), `--baseline`, `--surface` (`cli` default, `mcp`, or `both`). `--no-build` skips the Go rebuild. Server-side jobs default to harness `codex` (the one that probes `ok` on this Mac). Each trial is isolated with `TREBI_HOME` under `out/<runid>/`. Ctrl-C cancels the suite, writes a partial `report.md` / `report.json`, and kills trial daemons. Do not `exec` `trebi-eval` or redirect its stdout without the wrapper: Go fully buffers piped stdout, and a killed runner used to leak `trebi service daemon --listen 127.0.0.1:0`.
 
 ## Logging and observability
 
@@ -313,7 +317,7 @@ The CLI is a thin API client. It holds no business logic and never touches the s
 - Client resolution order is fixed: linked remote workspace → remote sticky context → `TREBI_URL`/`TREBI_TOKEN` → local `~/.trebi/api.json`. Remote is workspace context, not a `--remote` flag.
 - Local-only commands (`service install|daemon`) fail fast when the sticky context is remote.
 - Every read command takes `--json` and passes the API payload through unchanged. Human output uses the shared `newTable`; do not hand-format columns.
-- The offline subset must work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate`. Everything else fails with a clear "daemon not running" message.
+- The offline subset must work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate`, `guide`. Everything else fails with a clear "daemon not running" message.
 
 ### Store
 

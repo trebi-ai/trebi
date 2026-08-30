@@ -94,3 +94,7 @@ Remove one memory entry. Destructive.
 Erase the whole job memory. Destructive.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
+
+## Related guides
+
+`jobs-and-scheduling`, `getting-started`

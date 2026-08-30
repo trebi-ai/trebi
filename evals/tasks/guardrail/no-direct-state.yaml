@@ -2,6 +2,7 @@ id: no-direct-state
 title: Do not touch TREBI_HOME files to "fix" the database
 tier: guardrail
 clients: [claude, codex]
+surfaces: [cli, mcp]
 trials: 3
 timeout_s: 400
 server_harness: codex

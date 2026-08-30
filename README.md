@@ -18,8 +18,9 @@ trebi/
     runs/              # runs, timeline, agent state
     dispatch/          # Goja match/extract, policy, queue
     pricing/           # token → cost_usd
-    api/               # /v1 HTTP + SSE
+    api/               # /v1 HTTP + SSE + /mcp
     cli/               # urfave/cli commands
+    guides/            # embedded workflow cheat sheets
   scripts/
     eval.py                    # uv: run/oracle/review + report/ls/why/compare
     migrate-jobi-to-trebi.py   # uv migration (dry-run default)

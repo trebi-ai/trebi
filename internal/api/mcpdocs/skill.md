@@ -32,3 +32,7 @@ Refresh one skill from its source.
 ### delete
 Remove one skill. Destructive.
 - `name` (string, required): skill name.
+
+## Related guides
+
+`skills-secrets-config`

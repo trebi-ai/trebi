@@ -23,6 +23,7 @@ type Options struct {
 	BudgetUSD float64
 	Baseline  string
 	KeepHome  bool
+	Surface   string // cli (default), mcp, or both
 }
 
 // Runner owns suite execution.
@@ -76,6 +77,18 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 	if err := os.MkdirAll(outRoot, 0o755); err != nil {
 		return nil, err
 	}
+	if r.opts.Surface == surfaceMCP {
+		filtered := tasks[:0]
+		for _, t := range tasks {
+			if t.hasSurface(surfaceMCP) {
+				filtered = append(filtered, t)
+			}
+		}
+		tasks = filtered
+		if len(tasks) == 0 {
+			return nil, fmt.Errorf("no tasks support surface mcp")
+		}
+	}
 	for _, t := range tasks {
 		if err := ctx.Err(); err != nil {
 			rep.Aborted = err.Error()
@@ -112,7 +125,7 @@ func (r *Runner) ReplayOracle(ctx context.Context, taskID string) (*TrialResult,
 	}
 	rep := newReport()
 	art := filepath.Join(r.opts.OutDir, rep.ID, t.ID, "oracle", "0")
-	tr := r.runOne(ctx, t, "oracle", 0, art, true)
+	tr := r.runOne(ctx, t, "oracle", 0, art, true, surfaceCLI)
 	if !tr.Passed() {
 		return tr, fmt.Errorf("oracle %s: %s", t.ID, tr.Error)
 	}
@@ -128,34 +141,39 @@ func (r *Runner) runTask(ctx context.Context, t *Task, rep *Report, outRoot stri
 	if r.opts.Trials > 0 {
 		trials = r.opts.Trials
 	}
-	for _, name := range clients {
-		for i := 0; i < trials; i++ {
-			if err := ctx.Err(); err != nil {
-				if rep.Aborted == "" {
-					rep.Aborted = err.Error()
+	for _, surf := range t.runSurfaces(r.opts.Surface) {
+		for _, name := range clients {
+			for i := 0; i < trials; i++ {
+				if err := ctx.Err(); err != nil {
+					if rep.Aborted == "" {
+						rep.Aborted = err.Error()
+					}
+					return
 				}
-				return
-			}
-			if r.opts.BudgetUSD > 0 && rep.CostUSD >= r.opts.BudgetUSD {
-				if rep.Aborted == "" {
-					rep.Aborted = fmt.Sprintf("budget cap %.4f", r.opts.BudgetUSD)
+				if r.opts.BudgetUSD > 0 && rep.CostUSD >= r.opts.BudgetUSD {
+					if rep.Aborted == "" {
+						rep.Aborted = fmt.Sprintf("budget cap %.4f", r.opts.BudgetUSD)
+					}
+					return
 				}
-				return
+				art := filepath.Join(outRoot, t.ID, name, fmt.Sprintf("%d", i))
+				if surf == surfaceMCP {
+					art = filepath.Join(outRoot, t.ID, "mcp", name, fmt.Sprintf("%d", i))
+				}
+				tr := r.runOne(ctx, t, name, i, art, false, surf)
+				if tr.Outcome == OutcomeInfraFailure {
+					tr = r.runOne(ctx, t, name, i, art+"-retry", false, surf)
+				}
+				rep.add(*tr)
+				fmt.Fprintf(os.Stderr, "eval %s/%s/%s#%d %s %.1fs\n", tr.TaskID, tr.Surface, tr.Client, tr.Index, tr.Outcome, tr.DurationS)
+				_ = rep.checkpoint(outRoot)
 			}
-			art := filepath.Join(outRoot, t.ID, name, fmt.Sprintf("%d", i))
-			tr := r.runOne(ctx, t, name, i, art, false)
-			if tr.Outcome == OutcomeInfraFailure {
-				tr = r.runOne(ctx, t, name, i, art+"-retry", false)
-			}
-			rep.add(*tr)
-			fmt.Fprintf(os.Stderr, "eval %s/%s#%d %s %.1fs\n", tr.TaskID, tr.Client, tr.Index, tr.Outcome, tr.DurationS)
-			_ = rep.checkpoint(outRoot)
 		}
 	}
 }
 
-func (r *Runner) runOne(ctx context.Context, t *Task, clientName string, idx int, art string, oracle bool) *TrialResult {
-	tr := &TrialResult{TaskID: t.ID, Client: clientName, Index: idx, Dir: art, Outcome: OutcomeFail}
+func (r *Runner) runOne(ctx context.Context, t *Task, clientName string, idx int, art string, oracle bool, surface string) *TrialResult {
+	tr := &TrialResult{TaskID: t.ID, Client: clientName, Index: idx, Dir: art, Outcome: OutcomeFail, Surface: surface}
 	if err := os.MkdirAll(art, 0o755); err != nil {
 		tr.Outcome = OutcomeInfraFailure
 		tr.Error = err.Error()
@@ -203,7 +221,7 @@ func (r *Runner) runOne(ctx context.Context, t *Task, clientName string, idx int
 	if oracle {
 		return r.finishOracle(dctx, t, env, g, p, tr)
 	}
-	return r.finishClient(ctx, dctx, t, env, g, p, tr, clientName)
+	return r.finishClient(ctx, dctx, t, env, g, p, tr, clientName, surface)
 }
 
 func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult) *TrialResult {
@@ -238,22 +256,37 @@ func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, g *Gr
 	return tr
 }
 
-func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult, clientName string) *TrialResult {
+func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult, clientName, surface string) *TrialResult {
 	cl, err := newClient(clientName)
 	if err != nil {
 		tr.Outcome = OutcomeInfraFailure
 		tr.Error = err.Error()
 		return tr
 	}
-	tctx, cancel := context.WithTimeout(ctx, time.Duration(t.TimeoutS)*time.Second)
-	launch, err := cl.Launch(tctx, LaunchOpts{
+	opts := LaunchOpts{
 		Workdir:    env.workdir,
 		Prompt:     t.Prompt,
 		Env:        env.environ(),
 		Timeout:    time.Duration(t.TimeoutS) * time.Second,
 		SkillMD:    r.skillMD,
 		Transcript: p.Transcript,
-	})
+		Surface:    surface,
+	}
+	if surface == surfaceMCP {
+		cfgHome := filepath.Join(env.artDir, "client-home")
+		if err := os.MkdirAll(cfgHome, 0o755); err != nil {
+			tr.Outcome = OutcomeInfraFailure
+			tr.Error = err.Error()
+			return tr
+		}
+		opts.SkillMD = nil
+		opts.MCPURL = strings.TrimRight(env.apiURL, "/") + "/mcp"
+		opts.MCPToken = env.token
+		opts.ConfigHome = cfgHome
+		opts.Env = env.mcpEnviron(cfgHome)
+	}
+	tctx, cancel := context.WithTimeout(ctx, time.Duration(t.TimeoutS)*time.Second)
+	launch, err := cl.Launch(tctx, opts)
 	cancel()
 	if launch != nil {
 		tr.CostUSD = launch.CostUSD
@@ -262,6 +295,13 @@ func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv,
 		tr.Outcome = OutcomeInfraFailure
 		tr.Error = err.Error()
 		return tr
+	}
+	if surface == surfaceMCP && launch != nil {
+		if viol := mcpIsolationViolations(launch.Steps, env.apiURL); len(viol) > 0 {
+			tr.Outcome = OutcomeFail
+			tr.Error = "mcp isolation: " + strings.Join(viol, "; ")
+			return tr
+		}
 	}
 	p.Workspace = env.workspacePath(dctx)
 	g.p = p

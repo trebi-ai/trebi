@@ -2,6 +2,7 @@ id: skill-create
 title: Create a small skill with one support file
 tier: operate
 clients: [claude, codex]
+surfaces: [cli, mcp]
 trials: 3
 timeout_s: 600
 server_harness: codex

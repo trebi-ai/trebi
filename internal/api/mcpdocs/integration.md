@@ -64,3 +64,7 @@ Set the event cursor of one integration.
 ### cursor_reset
 Reset the event cursor of one integration to the start.
 - `name` (string, required): integration name.
+
+## Related guides
+
+`integrations-and-rules`

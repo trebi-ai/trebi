@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -29,7 +31,18 @@ func (c *claudeClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResu
 		maxTurns = 40
 	}
 	prompt := "Use the trebi skill. Drive trebi only through the `trebi` CLI.\n\n" + opts.Prompt
-	cmd := exec.Command("claude", claudeLaunchArgs(prompt, maxTurns, c.model)...)
+	if opts.Surface == surfaceMCP {
+		prompt = "Trebi is available as the MCP server named trebi. Use its tools. Do not shell out to trebi or curl the API.\n\n" + opts.Prompt
+	}
+	args := claudeLaunchArgs(prompt, maxTurns, c.model)
+	if opts.Surface == surfaceMCP {
+		cfg, err := writeClaudeMCPConfig(opts.ConfigHome, opts.MCPURL, opts.MCPToken)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "--mcp-config", cfg)
+	}
+	cmd := exec.Command("claude", args...)
 	cmd.Dir = opts.Workdir
 	cmd.Env = opts.Env
 	var stdout, stderr bytes.Buffer
@@ -50,6 +63,32 @@ func (c *claudeClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResu
 		return res, fmt.Errorf("claude: %w\n%s", err, stderr.Bytes())
 	}
 	return res, nil
+}
+
+func writeClaudeMCPConfig(dir, mcpURL, token string) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "mcp.json")
+	doc := map[string]any{
+		"mcpServers": map[string]any{
+			"trebi": map[string]any{
+				"type": "http",
+				"url":  mcpURL,
+				"headers": map[string]string{
+					"Authorization": "Bearer " + token,
+				},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func claudeLaunchArgs(prompt string, maxTurns int, model string) []string {

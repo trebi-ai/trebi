@@ -13,3 +13,7 @@ Read the effective config. No input fields.
 Change one config key.
 - `key` (string, required): config key, for example `daemon.log_level`.
 - `value` (string, required): new value text.
+
+## Related guides
+
+`skills-secrets-config`

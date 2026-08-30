@@ -47,6 +47,7 @@ func NewApp() *cli.Command {
 			jobCommand(),
 			runsCommand(),
 			doctorCommand(),
+			guideCommand(),
 			busCommand(),
 			configCommand(),
 			assistantCommand(),

@@ -22,6 +22,14 @@ type Cell struct {
 	PassHatK float64 `json:"pass_hat_k"`
 	CostUSD  float64 `json:"cost_usd"`
 	DurS     float64 `json:"duration_s"`
+	Surface  string  `json:"surface,omitempty"`
+}
+
+func cellSurface(s string) string {
+	if s == "" {
+		return surfaceCLI
+	}
+	return s
 }
 
 // Report is one suite run.
@@ -72,7 +80,7 @@ func (t *TrialResult) writeFile() error {
 }
 
 func (r *Report) rollup() []Cell {
-	type key struct{ task, client string }
+	type key struct{ task, client, surface string }
 	type acc struct {
 		n, pass, infra int
 		cost, dur      float64
@@ -80,7 +88,7 @@ func (r *Report) rollup() []Cell {
 	m := map[key]*acc{}
 	var order []key
 	for _, t := range r.Trials {
-		k := key{t.TaskID, t.Client}
+		k := key{t.TaskID, t.Client, cellSurface(t.Surface)}
 		a, ok := m[k]
 		if !ok {
 			a = &acc{}
@@ -109,7 +117,7 @@ func (r *Report) rollup() []Cell {
 			}
 		}
 		cells = append(cells, Cell{
-			Task: k.task, Client: k.client, Trials: a.n, Passed: a.pass, Infra: a.infra,
+			Task: k.task, Client: k.client, Surface: k.surface, Trials: a.n, Passed: a.pass, Infra: a.infra,
 			PassAt1: p1, PassHatK: pk, CostUSD: a.cost, DurS: a.dur,
 		})
 	}
@@ -137,11 +145,11 @@ func (r *Report) markdown() string {
 	if r.Aborted != "" {
 		b.WriteString("aborted: " + r.Aborted + "\n\n")
 	}
-	b.WriteString("| Task | Client | pass@1 | pass^k | trials | infra | cost |\n")
-	b.WriteString("| --- | --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("| Task | Surface | Client | pass@1 | pass^k | trials | infra | cost |\n")
+	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, c := range r.Cells {
-		fmt.Fprintf(&b, "| %s | %s | %.2f | %.2f | %d | %d | %.4f |\n",
-			c.Task, c.Client, c.PassAt1, c.PassHatK, c.Trials, c.Infra, c.CostUSD)
+		fmt.Fprintf(&b, "| %s | %s | %s | %.2f | %.2f | %d | %d | %.4f |\n",
+			c.Task, cellSurface(c.Surface), c.Client, c.PassAt1, c.PassHatK, c.Trials, c.Infra, c.CostUSD)
 	}
 	b.WriteString("\n## Trials\n\n")
 	for _, t := range r.Trials {
@@ -178,14 +186,14 @@ func (r *Report) regress(base *Baseline) []string {
 	if base == nil || len(base.Cells) == 0 {
 		return nil
 	}
-	type key struct{ task, client string }
+	type key struct{ task, client, surface string }
 	got := map[key]Cell{}
 	for _, c := range r.Cells {
-		got[key{c.Task, c.Client}] = c
+		got[key{c.Task, c.Client, cellSurface(c.Surface)}] = c
 	}
 	var drops []string
 	for _, c := range base.Cells {
-		g, ok := got[key{c.Task, c.Client}]
+		g, ok := got[key{c.Task, c.Client, cellSurface(c.Surface)}]
 		if !ok {
 			continue
 		}

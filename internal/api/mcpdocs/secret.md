@@ -19,3 +19,7 @@ Set one secret value.
 ### delete
 Remove one secret. Destructive.
 - `name` (string, required): secret name.
+
+## Related guides
+
+`skills-secrets-config`

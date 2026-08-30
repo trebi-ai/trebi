@@ -2,6 +2,7 @@ id: remote-link
 title: Link the other daemon as a remote workspace
 tier: operate
 clients: [claude, codex]
+surfaces: [cli]
 trials: 3
 timeout_s: 400
 server_harness: codex
