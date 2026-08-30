@@ -15,6 +15,19 @@ import (
 // urfaveCommand is a local alias so registration tests stay readable.
 type urfaveCommand = cli.Command
 
+func TestLaunchHTTPPath(t *testing.T) {
+	t.Parallel()
+	if !launchHTTPPath("/v1/runs") || !launchHTTPPath("/v1/runs?workspace=ws") {
+		t.Fatal("create")
+	}
+	if !launchHTTPPath("/v1/runs/01ABC/retry") || !launchHTTPPath("/v1/runs/01ABC/replay") {
+		t.Fatal("retry/replay")
+	}
+	if launchHTTPPath("/v1/jobs") || launchHTTPPath("/v1/runs/01ABC") {
+		t.Fatal("non-launch")
+	}
+}
+
 func TestBuildRunsCreate(t *testing.T) {
 	t.Parallel()
 	req := BuildRunsCreate("demo", "ws1", "extra text", true)

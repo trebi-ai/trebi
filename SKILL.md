@@ -45,7 +45,7 @@ Only these work with the daemon down: `service install|start|stop|status`, `doct
 
 - `--workspace` / `-w` (or `$TREBI_WORKSPACE`) selects the workspace by **name or id**. Flags can go before or after the name: `trebi -w staging job run report`, `trebi job run --workspace staging report`, and `trebi job run report -w staging` are equivalent.
 - Without `-w`, trebi uses the sticky context from `trebi workspace use`. On `not_found` after `-w <name>`, run `trebi workspace list --json` and retry with the `id`.
-- List / show / status / current commands take `--json`. Mutating commands (`create`, `add`, `run`, `set`) and `assistant show` / `say` / `wake` often do not. On `flag provided but not defined: -json`, drop `--json` once; do not retry it.
+- List / show / status / current commands take `--json`. `runs show`, `job show`, `skill show`, and `assistant show` already print JSON; `--json` is accepted and is a no-op. `job validate --json` emits the validate body. Mutating commands (`create`, `add`, `set`) and `assistant say` / `wake` often do not. On `flag provided but not defined: -json`, drop `--json` once; do not retry it.
 - Use `--json` and pipe to `jq` when you parse output. Never parse the human tables.
 - List commands paginate with `--limit` and `--cursor`. The cursor is the id of the last row. `trebi service logs` is not a list command: it uses `--lines` / `-n` and `--grep`, not `--limit`.
 - Times are RFC3339 UTC. Durations end in `_ms`. Keys are snake_case.
@@ -63,7 +63,8 @@ trebi workspace current
 trebi workspace rename <id> <new-name>
 trebi workspace set <id> --name new --git-enabled
 trebi workspace unlink <id|name>           # drop a remote link
-trebi workspace remove <id> --force        # delete folder + unregister
+trebi workspace remove <id>                # ask the user first; deletes the folder
+trebi workspace remove <id> --force        # skips the confirm prompt — still ask first
 ```
 
 Pathless `--create --name` is the remote default: the daemon mkdirs `<workspaces.root>/<name>` (config key `workspaces.root`, default `~/trebi`). Pass an absolute `--create` path only when you know the server filesystem. A remote workspace is context, not a flag: link it, then `use` it, and every command routes to that daemon. Client resolution order is fixed: linked remote → remote sticky context → `TREBI_URL`/`TREBI_TOKEN` → local `~/.trebi/api.json`.
@@ -140,7 +141,7 @@ trebi job delete <name>                 # removes JOB.md; supporting files remai
 trebi job delete <name> --purge         # removes the job folder
 ```
 
-`--purge` is how you end a project remotely. Plain delete leaves scripts/templates so the job can be recreated over them; the response may include `files_remaining`. Always `trebi job validate` after you write a `JOB.md`, and prefer `trebi job run <name> --test` before the first real launch. `--test` is only on `job run` (and `assistant wake --test`). Do not expect it on `rules fire` or `assistant say`.
+`--purge` is how you end a project remotely. Plain delete leaves scripts/templates so the job can be recreated over them; the response may include `files_remaining`. Always `trebi job validate` after you write a `JOB.md`. Use `trebi job run <name> --test` before the first real launch **only if this session created or edited that JOB.md**. A job that already existed (seeded, listed, already running) does not need `--test`. `--test` is only on `job run` (and `assistant wake --test`). Do not expect it on `rules fire` or `assistant say`.
 
 ### Job memory
 
@@ -487,14 +488,17 @@ trebi job run nightly-report --test
 trebi runs list --status failed --limit 10 --json
 trebi runs show <id> --json | jq '.end_reason, .duration_ms, .cost_usd'
 trebi runs timeline <id>
-trebi service logs --level error -n 100
+trebi service logs --level error -n 100 --grep <id>
 trebi runs retry <id>
 ```
+
+After `end_reason=session_gone` or `launch`, use `runs timeline` and `service logs --grep <id>`. Do not `sqlite3` / `find` under `$TREBI_HOME`.
 
 **Watch a job until it finishes**
 
 ```bash
 trebi job run my-job --json
+# returns when the tmux session exists; the prompt is pasted after the harness is ready
 # poll; do not kill and re-prompt
 trebi runs show <id> --json | jq '{id,status,end_reason}'
 trebi bus --replay --topics run --limit 20 --json
@@ -527,10 +531,10 @@ trebi runs list --status failed --limit 20
 
 ## Rules for the agent
 
-- Prefer `--json` plus `jq` over parsing tables. If a command rejects `--json`, drop it once.
+- Prefer `--json` plus `jq` over parsing tables. If a command rejects `--json`, drop it once. `runs show --json` is valid.
 - Run `trebi job validate` after every `JOB.md` write.
-- Use `trebi job run --test` before the first real launch of a new or edited job. Not `rules fire`, not `assistant say`.
-- Ask the user before `job delete` / `job delete --purge`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, and `service uninstall`. They destroy state. `runs kill` of a run you just started to debug is not in that list.
+- Use `trebi job run --test` before the first real launch only when **this session** created or edited the `JOB.md`. Not `rules fire`, not `assistant say`, not a job that already existed.
+- Ask the user before `job delete` / `job delete --purge`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, and `service uninstall`. They destroy state. `runs kill` of a run you just started to debug is not in that list. `--force` on `workspace remove` skips the CLI confirm; you still ask the user first.
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.
 - Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
 - `trebi bus --limit N` dumps up to N frames and exits. `integration logs` blocks without `--limit` (or with `-f`). `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.

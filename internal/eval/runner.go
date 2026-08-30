@@ -262,7 +262,7 @@ func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv,
 	defer jcancel()
 	tr.Judge = r.judge.scoreAll(jctx, t.Judge.Dimensions, readFile(p.Transcript), readFile(p.Snapshot))
 	tr.Outcome = trialOutcome(tr.Checks, tr.Judge)
-	if tr.Outcome == OutcomeFail && tr.Error == "" {
+	if tr.Outcome != OutcomePass && tr.Error == "" {
 		tr.Error = failSummary(tr)
 	}
 	return tr
@@ -299,13 +299,22 @@ func trialOutcome(checks []CheckResult, judge []JudgeResult) Outcome {
 	if o != OutcomePass {
 		return o
 	}
+	n, nInfra := 0, 0
 	for _, j := range judge {
 		if j.Name == "efficiency" {
+			continue
+		}
+		n++
+		if j.Infra {
+			nInfra++
 			continue
 		}
 		if !j.Pass && !j.Unknown {
 			return OutcomeFail
 		}
+	}
+	if n > 0 && nInfra == n {
+		return OutcomeInfraFailure
 	}
 	return OutcomePass
 }
@@ -318,6 +327,10 @@ func failSummary(tr *TrialResult) string {
 		}
 	}
 	for _, j := range tr.Judge {
+		if j.Infra {
+			parts = append(parts, "judge "+j.Name+" infra")
+			continue
+		}
 		if !j.Pass && !j.Unknown {
 			parts = append(parts, "judge "+j.Name)
 		}

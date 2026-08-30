@@ -20,6 +20,46 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+func TestRunsShowAcceptsJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/v1/runs/01ABC" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"01ABC","status":"complete"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	out, err := runCLI(t, client, "runs", "show", "--json", "01ABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"id": "01ABC"`) {
+		t.Fatalf("out %q", out)
+	}
+}
+
+func TestJobValidateJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || !strings.HasSuffix(r.URL.Path, "/validate") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"error":""}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	out, err := runCLI(t, client, "job", "validate", "--json", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"ok": true`) {
+		t.Fatalf("out %q", out)
+	}
+}
+
 func TestRunsTranscript(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || r.URL.Path != "/v1/runs/01ABC/transcript" {

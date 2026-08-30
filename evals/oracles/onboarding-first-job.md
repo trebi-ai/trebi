@@ -1,7 +1,6 @@
 # Oracle: onboarding-first-job
 
 ```bash
-trebi workspace add --name ops --create --use "$EVAL_WORKDIR/ops"
 cat > "$EVAL_WORKDIR/JOB.md" << 'EOF'
 ---
 title: Hello

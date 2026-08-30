@@ -44,6 +44,7 @@ type JudgeResult struct {
 	Evidence string  `json:"evidence,omitempty"`
 	Unknown  bool    `json:"unknown"`
 	Pass     bool    `json:"pass"`
+	Infra    bool    `json:"infra,omitempty"`
 }
 
 // TrialResult is the full record of one isolated trial.

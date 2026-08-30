@@ -30,6 +30,7 @@ func skillCommand() *cli.Command {
 				Name:      "show",
 				Usage:     "show skill",
 				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON (always on)"}},
 				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {

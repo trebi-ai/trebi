@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	readyTimeout       = 30 * time.Second
+	readyTimeout       = 90 * time.Second
 	resumeReadyTimeout = 90 * time.Second
 	CompletionPrefix   = "TREBI_RUN_COMPLETE"
 )
@@ -212,23 +212,39 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 		return s.failLaunch(ctx, run, wsRef, err)
 	}
 
-	if !opts.SkipReady && !s.waitHarnessReady(ctx, run.ID, wsRef, tool, resuming) {
-		return s.Get(ctx, run.ID)
-	}
-
 	prompt := opts.Prompt
 	if prompt == "" {
 		prompt = opts.PromptPreview
 	}
 	prompt += PromptSuffix(run.ID)
-	if err := sendPrompt(wsRef, prompt, tool.Name()); err != nil {
-		return s.failLaunch(ctx, run, wsRef, err)
+
+	if opts.SkipReady {
+		if err := sendPrompt(wsRef, prompt, tool.Name()); err != nil {
+			return s.failLaunch(ctx, run, wsRef, err)
+		}
+		s.SetAgentState(ctx, run.ID, AgentRunning, "launch")
+		s.log.Info("run launched", "id", run.ID, "tmux", wsRef, "harness", tool.Name())
+		return s.Get(ctx, run.ID)
 	}
 
-	// Start in screen agent mode until first hook promotes.
+	// WaitReady must not hold the HTTP request: the CLI times out at 30s and
+	// cancelling the request used to kill the pane (session_gone / launch).
+	go s.finishLaunch(run, wsRef, tool, prompt, resuming)
+	return s.Get(ctx, run.ID)
+}
+
+// finishLaunch waits for the harness composer, then pastes the prompt.
+func (s *Service) finishLaunch(run *Run, wsRef string, tool tmux.Tool, prompt string, resuming bool) {
+	ctx := context.Background()
+	if !s.waitHarnessReady(ctx, run.ID, wsRef, tool, resuming) {
+		return
+	}
+	if err := sendPrompt(wsRef, prompt, tool.Name()); err != nil {
+		_, _ = s.failLaunch(ctx, run, wsRef, err)
+		return
+	}
 	s.SetAgentState(ctx, run.ID, AgentRunning, "launch")
 	s.log.Info("run launched", "id", run.ID, "tmux", wsRef, "harness", tool.Name())
-	return s.Get(ctx, run.ID)
 }
 
 // failFast records a failed run so the API does not hang on WaitReady.

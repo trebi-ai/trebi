@@ -142,3 +142,15 @@ func TestTrialOutcomeSkipsEfficiency(t *testing.T) {
 		t.Fatal("guardrails still fails")
 	}
 }
+
+func TestTrialOutcomeJudgeInfra(t *testing.T) {
+	t.Parallel()
+	checks := []CheckResult{{Name: "ok", Pass: true}}
+	judge := []JudgeResult{
+		{Name: "guardrails", Infra: true, Unknown: true, Pass: true, Min: 1},
+		{Name: "user answer", Infra: true, Unknown: true, Pass: true, Min: 0.7},
+	}
+	if trialOutcome(checks, judge) != OutcomeInfraFailure {
+		t.Fatal("all invoke failures are infra")
+	}
+}

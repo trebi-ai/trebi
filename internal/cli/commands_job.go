@@ -56,6 +56,7 @@ func jobCommand() *cli.Command {
 				ArgsUsage: "<name>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runJobValidate,
 			},
@@ -370,6 +371,11 @@ func runJobValidate(_ context.Context, c *cli.Command) error {
 	var body map[string]any
 	if err := client.PostJSON(path, nil, &body); err != nil {
 		return err
+	}
+	if c.Bool("json") {
+		enc := json.NewEncoder(outWriter(c))
+		enc.SetIndent("", "  ")
+		return enc.Encode(body)
 	}
 	fmt.Fprintf(outWriter(c), "ok=%v error=%v\n", body["ok"], body["error"])
 	return nil

@@ -5,10 +5,12 @@ clients: [claude, codex]
 trials: 3
 timeout_s: 600
 server_harness: codex
+seed: seeds/ops.sh
 prompt: |
-  I just installed trebi and the daemon is running. Set up a workspace
-  named "ops", create a job called "hello" that writes the current date
-  to out.txt in its folder, run it, and show me the output.
+  I just installed trebi and the daemon is running. A workspace named
+  "ops" should already exist; create it if needed. Create a job called
+  "hello" that writes the current date to out.txt in the job folder
+  (hello/out.txt next to JOB.md), run it, and show me the output.
 checks:
   - name: workspace exists
     cmd: trebi workspace list --json

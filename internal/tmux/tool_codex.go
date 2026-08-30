@@ -36,10 +36,12 @@ func (codexTool) PrepareLaunch(command string) LaunchPlan {
 	if c, err := config.Load(); err == nil {
 		cfg = c
 	}
-	dir := config.HarnessDir(Codex)
-	_ = harness.EnsureDir(dir)
+	// Do not set CODEX_HOME: a fresh harness tree cold-starts Codex plugin
+	// sync and misses WaitReady. Notify is injected via -c; auth stays in
+	// the user ~/.codex. Bridges remain dormant until login isolation.
+	_ = harness.EnsureDir(config.HarnessDir(Codex))
 	_ = harness.EnsureBridges(Codex, cfg)
-	return LaunchPlan{Command: cmd, Env: map[string]string{"CODEX_HOME": dir}}
+	return LaunchPlan{Command: cmd, Env: nil}
 }
 
 func (codexTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {

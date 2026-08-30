@@ -221,8 +221,8 @@ func TestPrepareLaunch_CodexNotifyQuoted(t *testing.T) {
 	if strings.Contains(plan.Command, "-c") {
 		t.Fatalf("no shim: command still has -c: %q", plan.Command)
 	}
-	if plan.Env["CODEX_HOME"] != config.HarnessDir(Codex) {
-		t.Fatalf("CODEX_HOME=%q", plan.Env["CODEX_HOME"])
+	if plan.Env["CODEX_HOME"] != "" {
+		t.Fatalf("CODEX_HOME=%q want empty (no cold harness home)", plan.Env["CODEX_HOME"])
 	}
 
 	notify := filepath.Join(config.LibexecDir(), "trebi-codex-notify")

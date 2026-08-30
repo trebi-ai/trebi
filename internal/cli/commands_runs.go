@@ -45,6 +45,7 @@ func runsCommand() *cli.Command {
 				Name:      "show",
 				Usage:     "show a run",
 				ArgsUsage: "<id>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON (always on)"}},
 				Action:    runRunsShow,
 			},
 			{

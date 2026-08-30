@@ -306,7 +306,7 @@ func (c *APIClient) doJSON(method, path string, body any, out any) error {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.httpFor(method, path).Do(req)
 	if err != nil {
 		return err
 	}
@@ -352,6 +352,40 @@ func remoteClient(url, token string) *APIClient {
 		Token:  token,
 		Remote: true,
 		HTTP:   &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+const (
+	defaultHTTPTimeout = 30 * time.Second
+	launchHTTPTimeout  = 120 * time.Second
+)
+
+func (c *APIClient) httpFor(method, path string) *http.Client {
+	h := c.HTTP
+	if h == nil {
+		h = &http.Client{Timeout: defaultHTTPTimeout}
+	}
+	if !strings.EqualFold(method, "POST") || !launchHTTPPath(path) {
+		return h
+	}
+	cp := *h
+	if cp.Timeout != 0 && cp.Timeout < launchHTTPTimeout {
+		cp.Timeout = launchHTTPTimeout
+	}
+	return &cp
+}
+
+func launchHTTPPath(path string) bool {
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	switch {
+	case path == "/v1/runs":
+		return true
+	case strings.HasSuffix(path, "/retry"), strings.HasSuffix(path, "/replay"), strings.HasSuffix(path, "/resume"):
+		return strings.Contains(path, "/v1/runs/")
+	default:
+		return false
 	}
 }
 
