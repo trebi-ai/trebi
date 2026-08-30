@@ -28,14 +28,17 @@ import argparse
 import json
 import os
 import platform
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+MAX_RUN_AGE = timedelta(days=7)
 
 # ── paths ──────────────────────────────────────────────────────────────────
 
@@ -84,6 +87,19 @@ def sweep_eval_daemons(out: Path) -> None:
                 os.kill(target, signal.SIGKILL)
             except OSError:
                 pass
+
+
+def clean_old_runs(out: Path, *, max_age: timedelta = MAX_RUN_AGE) -> None:
+    if not out.is_dir():
+        return
+    cutoff = time.time() - max_age.total_seconds()
+    for d in out.iterdir():
+        if not looks_like_run(d):
+            continue
+        if d.stat().st_mtime >= cutoff:
+            continue
+        ts_err(f"clean: removing stale run {d} (older than {max_age.days}d)")
+        shutil.rmtree(d, ignore_errors=True)
 
 
 # ── build + invoke trebi-eval ──────────────────────────────────────────────
@@ -182,6 +198,8 @@ def cmd_live(repo: Path, sub: str, rest: list[str], *, no_build: bool) -> int:
     if sub == "run":
         rest = ensure_client_flag(rest)
     out = repo / "out"
+    if sub == "run":
+        clean_old_runs(out)
 
     def _term(_signum: int, _frame: Any) -> None:
         raise KeyboardInterrupt
