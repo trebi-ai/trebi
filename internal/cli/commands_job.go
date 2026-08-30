@@ -451,7 +451,7 @@ func runJobMemoryClear(_ context.Context, c *cli.Command) error {
 		return fmt.Errorf("usage: trebi job memory clear <name>")
 	}
 	if !c.Bool("force") {
-		return fmt.Errorf("refusing to clear memory for %s without --force", name)
+		return fmt.Errorf("memory clear destroys the memory ledger for %s. Confirm with the user first, then re-run with --force", name)
 	}
 	client, err := clientFor(c)
 	if err != nil {

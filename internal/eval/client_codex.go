@@ -11,9 +11,9 @@ import (
 	"time"
 )
 
-type codexClient struct{}
+type codexClient struct{ model string }
 
-func (c *codexClient) Name() string { return clientCodex }
+func (c *codexClient) Name() string { return clientLabel(clientCodex, c.model) }
 
 func (c *codexClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResult, error) {
 	if _, err := exec.LookPath("codex"); err != nil {
@@ -28,13 +28,7 @@ func (c *codexClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResul
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	args := []string{
-		"exec", "--json",
-		"--dangerously-bypass-approvals-and-sandbox",
-		"--skip-git-repo-check",
-		opts.Prompt,
-	}
-	cmd := exec.Command("codex", args...)
+	cmd := exec.Command("codex", codexLaunchArgs(opts.Prompt, c.model)...)
 	cmd.Dir = opts.Workdir
 	cmd.Env = opts.Env
 	var stdout, stderr bytes.Buffer
@@ -55,6 +49,18 @@ func (c *codexClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResul
 		return res, fmt.Errorf("codex: %w\n%s", err, stderr.Bytes())
 	}
 	return res, nil
+}
+
+func codexLaunchArgs(prompt, model string) []string {
+	args := []string{
+		"exec", "--json",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--skip-git-repo-check",
+	}
+	if model != "" {
+		args = append(args, "-m", model)
+	}
+	return append(args, prompt)
 }
 
 func parseCodexJSON(raw []byte) *LaunchResult {

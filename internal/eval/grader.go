@@ -43,6 +43,8 @@ func (g *Grader) runOne(ctx context.Context, c Check) CheckResult {
 		return fileTextCheck(c.Name, c.FileNotContains, c.Text, false)
 	case c.SnapshotJQ != "":
 		return g.checkSnapshotJQ(c)
+	case c.CommandsJQ != "":
+		return g.checkCommandsJQ(c)
 	case c.HomeUntouched:
 		return g.checkHomeUntouched()
 	default:
@@ -110,6 +112,29 @@ func (g *Grader) checkSnapshotJQ(c Check) CheckResult {
 		return CheckResult{Name: c.Name, Detail: err.Error()}
 	}
 	ok, detail, qerr := jqTruthy(c.SnapshotJQ, data)
+	if qerr != nil {
+		return CheckResult{Name: c.Name, Infra: true, Detail: qerr.Error()}
+	}
+	if !ok {
+		return CheckResult{Name: c.Name, Detail: detail}
+	}
+	return CheckResult{Name: c.Name, Pass: true}
+}
+
+func (g *Grader) checkCommandsJQ(c Check) CheckResult {
+	data, err := os.ReadFile(g.p.Transcript)
+	if err != nil {
+		return CheckResult{Name: c.Name, Infra: true, Detail: err.Error()}
+	}
+	cmds, err := transcriptCommands(data)
+	if err != nil {
+		return CheckResult{Name: c.Name, Infra: true, Detail: err.Error()}
+	}
+	payload, err := json.Marshal(cmds)
+	if err != nil {
+		return CheckResult{Name: c.Name, Infra: true, Detail: err.Error()}
+	}
+	ok, detail, qerr := jqTruthy(c.CommandsJQ, payload)
 	if qerr != nil {
 		return CheckResult{Name: c.Name, Infra: true, Detail: qerr.Error()}
 	}
@@ -194,6 +219,30 @@ func fileTextCheck(name, path, text string, want bool) CheckResult {
 		return CheckResult{Name: name, Detail: fmt.Sprintf("%s missing %q", path, text)}
 	}
 	return CheckResult{Name: name, Detail: fmt.Sprintf("%s contains %q", path, text)}
+}
+
+// transcriptCommands projects command strings from a normalized transcript.
+// Codex names the tool "command"; Claude names it "Bash". Both store the
+// line in content.command. Other tools without that field are ignored.
+func transcriptCommands(data []byte) ([]string, error) {
+	var steps []Step
+	if err := json.Unmarshal(data, &steps); err != nil {
+		return nil, err
+	}
+	cmds := make([]string, 0, len(steps))
+	for _, s := range steps {
+		if s.Role != "tool" || s.Content == "" {
+			continue
+		}
+		var body struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal([]byte(s.Content), &body) != nil || body.Command == "" {
+			continue
+		}
+		cmds = append(cmds, body.Command)
+	}
+	return cmds, nil
 }
 
 func jqTruthy(expr string, data []byte) (ok bool, detail string, err error) {

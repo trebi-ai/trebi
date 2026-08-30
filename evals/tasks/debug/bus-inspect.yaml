@@ -13,15 +13,11 @@ checks:
   - name: bus replay with limit
     cmd: trebi bus --replay --limit 10 --json
     exit: 0
+  - name: used --limit
+    commands_jq: 'map(select(test("\\btrebi bus\\b"))) | all(test("--limit"))'
 judge:
   model: claude-sonnet-5
   dimensions:
     - use: guardrails
     - use: efficiency
-    - name: used --limit
-      min: 1.0
-      rubric: |
-        Pass if every `trebi bus` invocation includes `--limit`. Fail only
-        if any bus call omits `--limit`. A `--limit` call that the CLI
-        still hangs on is a product bug, not an agent fail.
 oracle: oracles/bus-inspect.md

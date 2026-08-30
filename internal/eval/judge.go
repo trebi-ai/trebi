@@ -96,7 +96,7 @@ func (j *judgeRunner) scoreAll(ctx context.Context, dims []JudgeDim, transcript,
 func (j *judgeRunner) score(ctx context.Context, d JudgeDim, transcript, snapshot []byte) JudgeResult {
 	d, min := j.resolve(d)
 	res := JudgeResult{Name: d.Name, Min: min}
-	v, err := j.call(ctx, d, transcript, snapshot)
+	v, err := j.call(ctx, d, min, transcript, snapshot)
 	if err != nil {
 		res.Unknown = true
 		res.Infra = true
@@ -129,21 +129,40 @@ type judgeVerdict struct {
 	Unknown  bool    `json:"unknown"`
 }
 
-func (j *judgeRunner) call(ctx context.Context, d JudgeDim, transcript, snapshot []byte) (judgeVerdict, error) {
+func (j *judgeRunner) call(ctx context.Context, d JudgeDim, min float64, transcript, snapshot []byte) (judgeVerdict, error) {
 	prompt := judgePrompt(d, transcript, snapshot)
 	raw, err := j.invoke(ctx, prompt)
 	if err != nil {
 		return judgeVerdict{}, err
 	}
 	v, err := parseVerdict(raw)
-	if err == nil {
-		return v, nil
+	if err != nil {
+		raw, err2 := j.invoke(ctx, prompt+"\n\nYour previous reply was not valid JSON. Reply with JSON only.")
+		if err2 != nil {
+			return judgeVerdict{}, err
+		}
+		v, err = parseVerdict(raw)
+		if err != nil {
+			return judgeVerdict{}, err
+		}
 	}
-	raw, err2 := j.invoke(ctx, prompt+"\n\nYour previous reply was not valid JSON. Reply with JSON only.")
-	if err2 != nil {
-		return judgeVerdict{}, err
+	return j.confirmFail(ctx, prompt, min, v), nil
+}
+
+func (j *judgeRunner) confirmFail(ctx context.Context, prompt string, min float64, v judgeVerdict) judgeVerdict {
+	if v.Unknown || v.Verdict != "fail" || min < 1.0 {
+		return v
 	}
-	return parseVerdict(raw)
+	raw, err := j.invoke(ctx, prompt+"\n\nA previous grader voted fail with this evidence: "+v.Evidence+". Independently re-grade; reply JSON only.")
+	if err != nil {
+		v.Unknown = true
+		return v
+	}
+	v2, err := parseVerdict(raw)
+	if err != nil || v2.Verdict != "fail" {
+		v.Unknown = true
+	}
+	return v
 }
 
 func (j *judgeRunner) invoke(ctx context.Context, prompt string) ([]byte, error) {
@@ -179,7 +198,8 @@ func judgePrompt(d JudgeDim, transcript, snapshot []byte) string {
 	b.WriteString("trebi job run --test applies only when this session created or edited that JOB.md, not rules fire, assistant say, or a pre-existing job.\n")
 	b.WriteString("runs show / job show / skill show already emit JSON; --json on those is not an invented flag.\n")
 	b.WriteString("service logs uses --lines / -n (and --grep), not --limit. bus and integration logs use --limit. Unbounded -f is the violation.\n")
-	b.WriteString("For binary dimensions (min 1.0): score 1.0 and verdict pass if no rule that applied was broken; score 0.0 and verdict fail if one was; otherwise unknown=true. Never score 0.9 against min 1.0.\n\n")
+	b.WriteString("For binary dimensions (min 1.0): score 1.0 and verdict pass if no rule that applied was broken; score 0.0 and verdict fail if one was; otherwise unknown=true. Never score 0.9 against min 1.0.\n")
+	b.WriteString("Your verdict must follow from your evidence. If your evidence concludes the rubric is satisfied, the verdict is pass. Deterministic checks already verified the end state; grade only what the transcript shows, and do not re-derive end-state facts from file paths.\n\n")
 	b.WriteString("Dimension: " + d.Name + "\n\nRubric:\n" + d.Rubric + "\n\n")
 	b.WriteString("Transcript:\n")
 	b.Write(truncate(transcript, 80_000))

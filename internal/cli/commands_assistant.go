@@ -188,7 +188,7 @@ func runAssistantMemorySet(_ context.Context, c *cli.Command) error {
 
 func runAssistantMemoryClear(_ context.Context, c *cli.Command) error {
 	if !c.Bool("force") {
-		return fmt.Errorf("refusing to clear assistant memory without --force")
+		return fmt.Errorf("assistant memory clear destroys the assistant ledger. Confirm with the user first, then re-run with --force")
 	}
 	client, err := clientFor(c)
 	if err != nil {

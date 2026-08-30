@@ -56,15 +56,32 @@ func AgentsMarkdown(skill []byte) []byte {
 	return b.Bytes()
 }
 
-func newClient(name string) (Client, error) {
+func parseClientSpec(spec string) (name, model string, err error) {
+	name, model, _ = strings.Cut(spec, ":")
 	switch name {
-	case clientClaude:
-		return &claudeClient{}, nil
-	case clientCodex:
-		return &codexClient{}, nil
+	case clientClaude, clientCodex:
+		return name, model, nil
 	default:
-		return nil, fmt.Errorf("unknown client %q", name)
+		return "", "", fmt.Errorf("unknown client %q", spec)
 	}
+}
+
+func clientLabel(name, model string) string {
+	if model == "" {
+		return name
+	}
+	return name + ":" + model
+}
+
+func newClient(spec string) (Client, error) {
+	name, model, err := parseClientSpec(spec)
+	if err != nil {
+		return nil, err
+	}
+	if name == clientCodex {
+		return &codexClient{model: model}, nil
+	}
+	return &claudeClient{model: model}, nil
 }
 
 func writeTranscript(path string, raw []byte, steps []Step) error {

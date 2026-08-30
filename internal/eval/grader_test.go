@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,55 @@ func TestFileChecks(t *testing.T) {
 	if fileTextCheck("missing", p, "nope", true).Pass {
 		t.Fatal("should fail")
 	}
+}
+
+func TestCommandsJQ(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not on PATH")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.json")
+	fixture := `[
+  {"role":"tool","name":"command","content":"{\"command\":\"trebi -w staging job run report\"}"},
+  {"role":"tool","name":"Bash","content":"{\"command\":\"trebi bus --limit 10\"}"},
+  {"role":"tool","name":"command","content":"{\"command\":\"trebi doctor\"}"}
+]`
+	if err := os.WriteFile(path, []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &Grader{p: Placeholders{Transcript: path}}
+	ctx := context.Background()
+	cases := []struct {
+		name  string
+		expr  string
+		pass  bool
+		infra bool
+	}{
+		{"match", `any(test("-w staging"))`, true, false},
+		{"no-match", `any(test("--force"))`, false, false},
+		{"filtered all-match", `map(select(test("\\btrebi bus\\b"))) | all(test("--limit"))`, true, false},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := g.runOne(ctx, Check{Name: tt.name, CommandsJQ: tt.expr})
+			if got.Infra != tt.infra || got.Pass != tt.pass {
+				t.Fatalf("pass=%v infra=%v detail=%q", got.Pass, got.Infra, got.Detail)
+			}
+		})
+	}
+	t.Run("malformed transcript", func(t *testing.T) {
+		t.Parallel()
+		bad := filepath.Join(dir, "bad.json")
+		if err := os.WriteFile(bad, []byte("{"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := (&Grader{p: Placeholders{Transcript: bad}}).runOne(ctx, Check{Name: "bad", CommandsJQ: "any(true)"})
+		if !got.Infra || got.Pass {
+			t.Fatalf("want infra, got pass=%v infra=%v detail=%q", got.Pass, got.Infra, got.Detail)
+		}
+	})
 }
 
 func TestJQTruthy(t *testing.T) {

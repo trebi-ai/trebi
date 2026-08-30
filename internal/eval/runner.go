@@ -233,7 +233,7 @@ func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, g *Gr
 		return tr
 	}
 	_ = g.collectSnapshot(ctx)
-	tr.Checks = g.runAll(ctx, t.Checks)
+	tr.Checks = g.runAll(ctx, skipOracleChecks(t.Checks))
 	tr.Outcome = checksOutcome(tr.Checks)
 	return tr
 }
@@ -286,6 +286,17 @@ func (r *Runner) baselineDrops(rep *Report) []string {
 		return nil
 	}
 	return rep.regress(b)
+}
+
+func skipOracleChecks(checks []Check) []Check {
+	out := make([]Check, 0, len(checks))
+	for _, c := range checks {
+		if c.CommandsJQ != "" {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 func checksOutcome(checks []CheckResult) Outcome {

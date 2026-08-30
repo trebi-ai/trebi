@@ -535,6 +535,7 @@ trebi runs list --status failed --limit 20
 - Run `trebi job validate` after every `JOB.md` write.
 - Use `trebi job run --test` before the first real launch only when **this session** created or edited the `JOB.md`. Not `rules fire`, not `assistant say`, not a job that already existed.
 - Ask the user before `job delete` / `job delete --purge`, `workspace remove`, `memory clear`, `secret delete`, `integration remove`, and `service uninstall`. They destroy state. `runs kill` of a run you just started to debug is not in that list. `--force` on `workspace remove` skips the CLI confirm; you still ask the user first.
+- If a trebi command fails with "Confirm with the user first", stop. That refusal is the confirmation gate. Report the consequence to the user and wait. Do not retry with `--force` in the same turn.
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.
 - Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
 - `trebi bus --limit N` dumps up to N frames and exits. `integration logs` blocks without `--limit` (or with `-f`). `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.

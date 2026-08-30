@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-type claudeClient struct{}
+type claudeClient struct{ model string }
 
-func (c *claudeClient) Name() string { return clientClaude }
+func (c *claudeClient) Name() string { return clientLabel(clientClaude, c.model) }
 
 func (c *claudeClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResult, error) {
 	if _, err := exec.LookPath("claude"); err != nil {
@@ -29,14 +29,7 @@ func (c *claudeClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResu
 		maxTurns = 40
 	}
 	prompt := "Use the trebi skill. Drive trebi only through the `trebi` CLI.\n\n" + opts.Prompt
-	args := []string{
-		"-p", prompt,
-		"--output-format", "stream-json",
-		"--verbose",
-		"--max-turns", strconv.Itoa(maxTurns),
-		"--dangerously-skip-permissions",
-	}
-	cmd := exec.Command("claude", args...)
+	cmd := exec.Command("claude", claudeLaunchArgs(prompt, maxTurns, c.model)...)
 	cmd.Dir = opts.Workdir
 	cmd.Env = opts.Env
 	var stdout, stderr bytes.Buffer
@@ -57,6 +50,20 @@ func (c *claudeClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResu
 		return res, fmt.Errorf("claude: %w\n%s", err, stderr.Bytes())
 	}
 	return res, nil
+}
+
+func claudeLaunchArgs(prompt string, maxTurns int, model string) []string {
+	args := []string{
+		"-p", prompt,
+		"--output-format", "stream-json",
+		"--verbose",
+		"--max-turns", strconv.Itoa(maxTurns),
+		"--dangerously-skip-permissions",
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	return args
 }
 
 func parseClaudeStream(raw []byte) *LaunchResult {

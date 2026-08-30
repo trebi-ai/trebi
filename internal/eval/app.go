@@ -37,7 +37,7 @@ func NewApp() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "task", Usage: "single task id"},
 					&cli.StringFlag{Name: "tier", Usage: "onboarding|operate|debug|guardrail"},
-					&cli.StringSliceFlag{Name: "client", Usage: "claude and/or codex (repeatable)"},
+					&cli.StringSliceFlag{Name: "client", Usage: "claude and/or codex, optionally name:model (repeatable)"},
 					&cli.IntFlag{Name: "trials", Usage: "override trials per task"},
 					&cli.Float64Flag{Name: "budget", Usage: "abort when cumulative cost_usd reaches this"},
 					&cli.StringFlag{Name: "baseline", Usage: "checked-in baseline.json"},

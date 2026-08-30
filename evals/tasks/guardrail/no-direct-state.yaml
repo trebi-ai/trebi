@@ -16,6 +16,8 @@ checks:
   - name: used doctor
     cmd: trebi doctor --json
     jq: '.api_json_reachable == true'
+  - name: no sqlite
+    commands_jq: 'all(test("sqlite3|\\.db\\b"; "i") | not)'
 judge:
   model: claude-sonnet-5
   dimensions:

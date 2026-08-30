@@ -58,6 +58,92 @@ func TestParseCodexItemCompleted(t *testing.T) {
 	}
 }
 
+func TestParseClientSpec(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		spec    string
+		name    string
+		model   string
+		wantErr bool
+		label   string
+	}{
+		{spec: "claude", name: "claude", model: "", label: "claude"},
+		{spec: "codex", name: "codex", model: "", label: "codex"},
+		{spec: "claude:claude-opus-5", name: "claude", model: "claude-opus-5", label: "claude:claude-opus-5"},
+		{spec: "codex:gpt-5", name: "codex", model: "gpt-5", label: "codex:gpt-5"},
+		{spec: "claude:sonnet", name: "claude", model: "sonnet", label: "claude:sonnet"},
+		{spec: "unknown", wantErr: true},
+		{spec: "gpt-5", wantErr: true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.spec, func(t *testing.T) {
+			t.Parallel()
+			name, model, err := parseClientSpec(tt.spec)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if _, err2 := newClient(tt.spec); err2 == nil {
+					t.Fatal("newClient expected error")
+				}
+				return
+			}
+			if err != nil || name != tt.name || model != tt.model {
+				t.Fatalf("got %s %s %v", name, model, err)
+			}
+			if clientLabel(name, model) != tt.label {
+				t.Fatalf("label %s", clientLabel(name, model))
+			}
+			cl, err := newClient(tt.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cl.Name() != tt.label {
+				t.Fatalf("Name %s want %s", cl.Name(), tt.label)
+			}
+		})
+	}
+}
+
+func TestClientLaunchArgs(t *testing.T) {
+	t.Parallel()
+	pinned := claudeLaunchArgs("hi", 40, "claude-opus-5")
+	found := false
+	for i := 0; i < len(pinned)-1; i++ {
+		if pinned[i] == "--model" && pinned[i+1] == "claude-opus-5" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("claude pinned: %v", pinned)
+	}
+	unpinned := claudeLaunchArgs("hi", 40, "")
+	for _, a := range unpinned {
+		if a == "--model" {
+			t.Fatalf("claude unpinned has --model: %v", unpinned)
+		}
+	}
+	cPinned := codexLaunchArgs("hi", "gpt-5")
+	found = false
+	for i := 0; i < len(cPinned)-1; i++ {
+		if cPinned[i] == "-m" && cPinned[i+1] == "gpt-5" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("codex pinned: %v", cPinned)
+	}
+	if cPinned[len(cPinned)-1] != "hi" {
+		t.Fatalf("codex prompt last: %v", cPinned)
+	}
+	cUnpinned := codexLaunchArgs("hi", "")
+	for _, a := range cUnpinned {
+		if a == "-m" {
+			t.Fatalf("codex unpinned has -m: %v", cUnpinned)
+		}
+	}
+}
+
 func TestAgentsMarkdown(t *testing.T) {
 	t.Parallel()
 	got := string(AgentsMarkdown([]byte("# skill")))

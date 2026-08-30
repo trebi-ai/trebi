@@ -17,14 +17,11 @@ checks:
   - name: not still running
     cmd: trebi runs list --job sleeper --status running --json
     jq: '(.runs // []) | length == 0'
+  - name: message recorded
+    commands_jq: 'any(test("runs message")) and any(test("runs kill"))'
 judge:
   model: claude-sonnet-5
   dimensions:
     - use: guardrails
     - use: efficiency
-    - name: message recorded
-      min: 0.5
-      rubric: |
-        The transcript shows trebi runs message and trebi runs kill (or
-        equivalent). Skipping the message is a fail.
 oracle: oracles/run-lifecycle.md

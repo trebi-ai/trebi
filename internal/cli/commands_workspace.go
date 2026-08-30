@@ -125,7 +125,7 @@ func runWorkspaceRemove(_ context.Context, c *cli.Command) error {
 		return fmt.Errorf("usage: trebi workspace remove <id>")
 	}
 	if !c.Bool("force") {
-		return fmt.Errorf("refusing to remove workspace %s without --force", id)
+		return fmt.Errorf("workspace remove deletes the workspace folder for %s. Confirm with the user first, then re-run with --force", id)
 	}
 	client, err := clientFor(c)
 	if err != nil {

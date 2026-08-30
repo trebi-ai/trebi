@@ -43,6 +43,7 @@ type Check struct {
 	StdoutContains  string `yaml:"stdout_contains"`
 	StdoutAbsent    string `yaml:"stdout_absent"`
 	HomeUntouched   bool   `yaml:"home_untouched"`
+	CommandsJQ      string `yaml:"commands_jq"`
 }
 
 // JudgeDim is one isolated judge call.
@@ -218,8 +219,8 @@ func (t *Task) validateTier() error {
 
 func (t *Task) validateClients() error {
 	for _, c := range t.Clients {
-		if c != clientClaude && c != clientCodex {
-			return fmt.Errorf("client %q: want claude|codex", c)
+		if _, _, err := parseClientSpec(c); err != nil {
+			return fmt.Errorf("client %q: want claude|codex or name:model", c)
 		}
 	}
 	return nil
@@ -251,8 +252,11 @@ func (c Check) validate() error {
 	if c.HomeUntouched {
 		n++
 	}
+	if c.CommandsJQ != "" {
+		n++
+	}
 	if n != 1 {
-		return fmt.Errorf("need exactly one of cmd, file_exists, file_absent, file_contains, file_not_contains, snapshot_jq, home_untouched")
+		return fmt.Errorf("need exactly one of cmd, file_exists, file_absent, file_contains, file_not_contains, snapshot_jq, home_untouched, commands_jq")
 	}
 	if (c.FileContains != "" || c.FileNotContains != "") && c.Text == "" {
 		return fmt.Errorf("text required with file_contains/file_not_contains")

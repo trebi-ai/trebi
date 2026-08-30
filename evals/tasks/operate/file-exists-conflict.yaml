@@ -14,14 +14,11 @@ checks:
   - name: new content
     file_contains: "{workspace}/data.csv"
     text: "9,9"
+  - name: if-match
+    commands_jq: 'any(test("--if-match") or test("If-Match") or test("precondition_failed"))'
 judge:
   model: claude-sonnet-5
   dimensions:
     - use: guardrails
     - use: efficiency
-    - name: if-match
-      min: 0.7
-      rubric: |
-        The transcript shows If-Match / --if-match (or a re-read after
-        precondition_failed). Blind overwrite without a hash is a fail.
 oracle: oracles/file-exists-conflict.md

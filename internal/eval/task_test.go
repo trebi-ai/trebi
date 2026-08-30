@@ -50,6 +50,10 @@ func TestCheckValidate(t *testing.T) {
 	if err := ok.validate(); err != nil {
 		t.Fatal(err)
 	}
+	jq := Check{Name: "x", CommandsJQ: "any(true)"}
+	if err := jq.validate(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestLoadTaskRejectsUnknownTier(t *testing.T) {
