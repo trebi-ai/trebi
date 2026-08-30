@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 	"golang.org/x/term"
 )
@@ -90,7 +91,7 @@ func attachRun(ctx context.Context, c *cli.Command, client *APIClient, runID str
 		return fmt.Errorf("run id required")
 	}
 	var run map[string]any
-	if err := client.GetJSON("/v1/runs/"+runID, &run); err != nil {
+	if err := client.GetJSON(request.BuildRunGetPath(runID), &run); err != nil {
 		return err
 	}
 	return attachAfterLaunch(ctx, c, client, run)
@@ -121,7 +122,7 @@ func waitTmuxSession(client *APIClient, runID string, maxWait time.Duration) str
 	deadline := time.Now().Add(maxWait)
 	for time.Now().Before(deadline) {
 		var body map[string]any
-		if err := client.GetJSON("/v1/runs/"+runID, &body); err == nil {
+		if err := client.GetJSON(request.BuildRunGetPath(runID), &body); err == nil {
 			if s := mapStr(body, "tmux_session"); s != "" {
 				return s
 			}

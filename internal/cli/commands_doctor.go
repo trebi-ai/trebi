@@ -9,6 +9,7 @@ import (
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -38,7 +39,7 @@ func runDoctor(_ context.Context, c *cli.Command) error {
 		return renderDoctorOffline(c, err)
 	}
 	var body map[string]any
-	if err := client.GetJSON("/v1/system/doctor", &body); err != nil {
+	if err := client.GetJSON(request.BuildSystemDoctorPath(), &body); err != nil {
 		return err
 	}
 	if c.Bool("fix") {
@@ -202,7 +203,7 @@ func runDoctorFixOne(_ context.Context, c *cli.Command) error {
 
 func doctorFixOne(client *APIClient, id string) (string, map[string]any) {
 	var out map[string]any
-	if err := client.DoHTTP(BuildDoctorFix(id), &out); err != nil {
+	if err := client.DoHTTP(request.BuildDoctorFix(id), &out); err != nil {
 		return fmt.Sprintf("%s: error: %v", id, err), map[string]any{"id": id, "error": err.Error()}
 	}
 	if fixed, ok := out["fixed"]; ok {

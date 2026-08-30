@@ -11,10 +11,11 @@ Trebi is one binary (`trebi`) that is both the daemon (`trebi service daemon`) a
 ```text
 cmd/trebi/           # thin main: cli.NewApp().Run(os.Args)
 cmd/trebi-eval/      # dev-only eval runner; built by scripts/eval.py, never shipped
-internal/api/        # /v1 HTTP + SSE server; one file per route area
+internal/api/        # /v1 HTTP + SSE server + /mcp MCP endpoint; one file per route area
 internal/cli/        # the trebi command surface; a thin API client
 internal/daemon/     # ControlPlane: background workers (queue, schedule, watch, prune)
 internal/eval/       # live LLM-driven CLI eval harness
+internal/request/    # pure /v1 request builders (HTTPRequest); no I/O
 internal/store/      # SQLite open, migrations, event bus, event-name registry
 internal/<domain>/   # one service per object family (runs, workspaces, alerts, …)
 internal/tmux/       # harness drivers: one file per harness tool
@@ -30,9 +31,11 @@ Dependency direction is one way:
 ```text
 cli ──▶ api ──▶ <domain services> ──▶ store
 daemon ──▶ <domain services> ──▶ store
+cli ──▶ request ◀── api
 ```
 
 - `api` and `daemon` are peers. Both wire the same services; neither imports the other.
+- `request` is a leaf: pure `/v1` request builders, no I/O. Both `cli` and `api` (MCP tools) import it. It imports nothing from this repo.
 - Domain services never import `api`, `cli`, or `daemon`.
 - `store` imports no domain package.
 - `home` owns every `~/.trebi` path. Do not build paths with `filepath.Join(os.UserHomeDir(), ".trebi", …)` anywhere else.
@@ -303,7 +306,7 @@ One append-only log in `event_log`, one registry, one wire frame.
 
 The CLI is a thin API client. It holds no business logic and never touches the store or spawns a session.
 
-- **Parity rule: the CLI covers 100% of the control-plane API.** A new route ships with its `trebi` command and its skill entry in the same change. The assistant drives trebi through this CLI, so an endpoint with no command is unreachable.
+- **Parity rule: the CLI covers 100% of the control-plane API.** A new route ships with its `trebi` command, its skill entry, and its MCP action (or `mcpExcluded` entry in `internal/api/mcp_parity_test.go`) in the same change. The assistant drives trebi through this CLI, so an endpoint with no command is unreachable.
 - Command tree: one file per command *area*, named `commands_<area>.go`, registered in `NewApp()` in `app.go`. Tiny sibling commands may live in the larger sibling's file (`queue`+`events` in `commands_integration.go`, `alerts` in `commands_inbox.go`). Split subcommands into named groups (`jobManageSubcommands`) when a list grows past a screen; do not split into more files.
 - Startup context is built once in `Before` and stored as `appState` in `App.Metadata`. Actions read it through `appStateFor(c)` / `clientFor(c)` / `workspaceFor(c)`. Do not reload config, sticky context, or the API client inside an action.
 - Request building is pure and separately testable: `Build*` returns an `HTTPRequest{Method, Path, Body}`, and `client.DoHTTP` executes it. Test the shape without a daemon.

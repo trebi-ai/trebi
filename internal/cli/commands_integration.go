@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -141,7 +142,7 @@ func queueCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			path := BuildQueueListPath(c.String("status"), c.String("cursor"), c.Int("limit"))
+			path := request.BuildQueueListPath(c.String("status"), c.String("cursor"), c.Int("limit"))
 			var body struct {
 				Items []map[string]any `json:"items"`
 			}
@@ -182,7 +183,7 @@ func queueCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					return client.PostJSON("/v1/queue/"+c.Args().Get(0)+"/requeue", nil, nil)
+					return client.DoHTTP(request.BuildQueueRequeue(c.Args().Get(0)), nil)
 				},
 			},
 			{
@@ -194,7 +195,7 @@ func queueCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					return client.PostJSON("/v1/queue/"+c.Args().Get(0)+"/cancel", nil, nil)
+					return client.DoHTTP(request.BuildQueueCancel(c.Args().Get(0)), nil)
 				},
 			},
 		},
@@ -207,7 +208,7 @@ func runIntegrationList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON(BuildIntegrationsListPath(c.Int("limit")), &body); err != nil {
+	if err := client.GetJSON(request.BuildIntegrationsListPath(c.Int("limit")), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -250,7 +251,7 @@ func runIntegrationShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON("/v1/integrations/"+name, &body); err != nil {
+	if err := client.GetJSON(request.BuildIntegrationGetPath(name), &body); err != nil {
 		return err
 	}
 	enc := json.NewEncoder(outWriter(c))
@@ -273,7 +274,7 @@ func runIntegrationSet(_ context.Context, c *cli.Command) error {
 		}
 		env[k] = v
 	}
-	req := BuildIntegrationSet(name, command, c.String("format"), c.String("type"), c.String("cwd"), env)
+	req := request.BuildIntegrationSet(name, command, c.String("format"), c.String("type"), c.String("cwd"), env)
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -294,7 +295,7 @@ func runIntegrationRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildIntegrationDelete(name), nil)
+	return client.DoHTTP(request.BuildIntegrationDelete(name), nil)
 }
 
 func runIntegrationConnect(_ context.Context, c *cli.Command) error {
@@ -306,7 +307,7 @@ func runIntegrationConnect(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildIntegrationConnect(name), nil)
+	return client.DoHTTP(request.BuildIntegrationConnect(name), nil)
 }
 
 func runIntegrationDisconnect(_ context.Context, c *cli.Command) error {
@@ -318,7 +319,7 @@ func runIntegrationDisconnect(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildIntegrationDisconnect(name), nil)
+	return client.DoHTTP(request.BuildIntegrationDisconnect(name), nil)
 }
 
 func runIntegrationStop(_ context.Context, c *cli.Command) error {
@@ -330,7 +331,7 @@ func runIntegrationStop(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildIntegrationStop(name), nil)
+	return client.DoHTTP(request.BuildIntegrationStop(name), nil)
 }
 
 func runIntegrationCursorShow(_ context.Context, c *cli.Command) error {
@@ -343,7 +344,7 @@ func runIntegrationCursorShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.DoHTTP(BuildIntegrationCursorGet(name), &body); err != nil {
+	if err := client.DoHTTP(request.BuildIntegrationCursorGet(name), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -371,7 +372,7 @@ func runIntegrationCursorSet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildIntegrationCursorSet(name, last), nil)
+	return client.DoHTTP(request.BuildIntegrationCursorSet(name, last), nil)
 }
 
 func runIntegrationCursorReset(_ context.Context, c *cli.Command) error {
@@ -383,7 +384,7 @@ func runIntegrationCursorReset(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildIntegrationCursorReset(name), nil)
+	return client.DoHTTP(request.BuildIntegrationCursorReset(name), nil)
 }
 
 func runIntegrationRestart(_ context.Context, c *cli.Command) error {
@@ -395,7 +396,7 @@ func runIntegrationRestart(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildIntegrationRestart(name), nil)
+	return client.DoHTTP(request.BuildIntegrationRestart(name), nil)
 }
 
 func runIntegrationLogs(_ context.Context, c *cli.Command) error {
@@ -407,7 +408,7 @@ func runIntegrationLogs(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := BuildIntegrationLogsPath(name, c.Bool("follow"))
+	path := request.BuildIntegrationLogsPath(name, c.Bool("follow"))
 	if c.Bool("follow") {
 		return client.StreamGET(path, outWriter(c))
 	}
@@ -451,7 +452,7 @@ func runIntegrationTest(_ context.Context, c *cli.Command) error {
 			return fmt.Errorf("event JSON: %w", err)
 		}
 	}
-	req := BuildIntegrationTest(name, event)
+	req := request.BuildIntegrationTest(name, event)
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -501,7 +502,7 @@ func runEventsList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := BuildEventsListPath(c.String("cursor"), c.Int("limit"))
+	path := request.BuildEventsListPath(c.String("cursor"), c.Int("limit"))
 	var body struct {
 		Events     []map[string]any `json:"events"`
 		NextCursor string           `json:"next_cursor"`
@@ -535,7 +536,7 @@ func runEventsShow(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	req := BuildEventGet(id)
+	req := request.BuildEventGet(id)
 	var body map[string]any
 	if err := client.DoHTTP(req, &body); err != nil {
 		return err
@@ -554,5 +555,5 @@ func runEventsRetrigger(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildEventsRetrigger(id), nil)
+	return client.DoHTTP(request.BuildEventsRetrigger(id), nil)
 }

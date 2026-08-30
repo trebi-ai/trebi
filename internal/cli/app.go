@@ -14,6 +14,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/platform"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -213,7 +214,7 @@ func lookupWorkspaceID(client *APIClient, hint string) string {
 	var body struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := client.GetJSON("/v1/workspaces", &body); err != nil {
+	if err := client.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
 		return ""
 	}
 	for _, ws := range body.Workspaces {

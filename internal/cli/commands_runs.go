@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -148,7 +149,7 @@ func runRunsShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON("/v1/runs/"+c.Args().Get(0), &body); err != nil {
+	if err := client.GetJSON(request.BuildRunGetPath(c.Args().Get(0)), &body); err != nil {
 		return err
 	}
 	enc := json.NewEncoder(outWriter(c))
@@ -162,7 +163,7 @@ func runRunsTimeline(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON("/v1/runs/"+c.Args().Get(0)+"/timeline", &body); err != nil {
+	if err := client.GetJSON(request.BuildRunTimelinePath(c.Args().Get(0)), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -182,7 +183,7 @@ func runRunsTranscript(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	req := BuildRunTranscript(id, c.Bool("raw"))
+	req := request.BuildRunTranscript(id, c.Bool("raw"))
 	if c.Bool("raw") {
 		raw, err := client.GetRaw(req.Path)
 		if err != nil {
@@ -211,7 +212,7 @@ func runRunsKill(_ context.Context, c *cli.Command) error {
 	// Kill each independently so one bad ID does not abort the rest.
 	var failed int
 	for _, id := range c.Args().Slice() {
-		req := BuildRunsKill(id)
+		req := request.BuildRunsKill(id)
 		if err := client.DoHTTP(req, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", id, err)
 			failed++
@@ -229,7 +230,7 @@ func runRunsResume(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var out map[string]any
-	if err := client.PostJSON("/v1/runs/"+c.Args().Get(0)+"/resume", nil, &out); err != nil {
+	if err := client.DoHTTP(request.BuildRunResume(c.Args().Get(0)), &out); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "run %v status=%v\n", out["id"], out["status"])
@@ -242,7 +243,7 @@ func runRunsReplay(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var out map[string]any
-	if err := client.PostJSON("/v1/runs/"+c.Args().Get(0)+"/replay", nil, &out); err != nil {
+	if err := client.DoHTTP(request.BuildRunReplay(c.Args().Get(0)), &out); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "run %v status=%v\n", out["id"], out["status"])
@@ -258,7 +259,7 @@ func runRunsRetry(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	req := BuildRunsRetry(id)
+	req := request.BuildRunsRetry(id)
 	var out map[string]any
 	if err := client.DoHTTP(req, &out); err != nil {
 		return err
@@ -276,8 +277,7 @@ func runRunsApprove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.PostJSON("/v1/runs/"+c.Args().Get(0)+"/approve",
-		map[string]string{"decision": c.String("decision")}, nil)
+	return client.DoHTTP(request.BuildRunApprove(c.Args().Get(0), c.String("decision")), nil)
 }
 
 func runRunsMessage(_ context.Context, c *cli.Command) error {
@@ -302,7 +302,7 @@ func runRunsMessage(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(BuildRunMessage(id, text), nil); err != nil {
+	if err := client.DoHTTP(request.BuildRunMessage(id, text), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "sent to %s\n", id)
@@ -330,7 +330,7 @@ func runRunsStats(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.DoHTTP(BuildRunsStats(), &body); err != nil {
+	if err := client.DoHTTP(request.BuildRunsStats(), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -354,7 +354,7 @@ func runRunsAgents(_ context.Context, c *cli.Command) error {
 	var body struct {
 		Agents map[string]any `json:"agents"`
 	}
-	if err := client.DoHTTP(BuildAgentsState(), &body); err != nil {
+	if err := client.DoHTTP(request.BuildAgentsState(), &body); err != nil {
 		return err
 	}
 	if body.Agents == nil {
@@ -390,7 +390,7 @@ func runRunsList(_ context.Context, c *cli.Command) error {
 	}
 	ws := workspaceFlag(c)
 	kind := c.String("kind")
-	path := BuildRunsListPath(
+	path := request.BuildRunsListPath(
 		c.String("status"), c.String("job"), ws,
 		kind, c.String("cursor"),
 		c.String("harness"), c.String("model"), c.Int("limit"),
@@ -398,7 +398,7 @@ func runRunsList(_ context.Context, c *cli.Command) error {
 	// Fetch a wider page when conversation filter needs post-filter.
 	conv := c.String("conversation")
 	if conv != "" && c.Int("limit") > 0 {
-		path = BuildRunsListPath(
+		path = request.BuildRunsListPath(
 			c.String("status"), c.String("job"), ws,
 			kind, c.String("cursor"),
 			c.String("harness"), c.String("model"), c.Int("limit")*5,
@@ -414,7 +414,7 @@ func runRunsList(_ context.Context, c *cli.Command) error {
 	if conv != "" {
 		filtered := body.Runs[:0]
 		for _, r := range body.Runs {
-			if MatchConversation(mapStr(r, "conversation_key"), conv) {
+			if request.MatchConversation(mapStr(r, "conversation_key"), conv) {
 				filtered = append(filtered, r)
 			}
 		}
@@ -453,7 +453,7 @@ func runApprovalsList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := BuildApprovalsListPath(c.String("cursor"), c.Int("limit"))
+	path := request.BuildApprovalsListPath(c.String("cursor"), c.Int("limit"))
 	var body struct {
 		Approvals  []map[string]any `json:"approvals"`
 		NextCursor string           `json:"next_cursor"`
@@ -509,13 +509,13 @@ func runLaunch(ctx context.Context, c *cli.Command) error {
 	if extra := c.String("extra-prompt"); extra != "" {
 		// Append to job body so we match jobi -e (API prompt_override is full replace).
 		var got map[string]any
-		if err := client.GetJSON(withQuery("/v1/jobs/"+jobName, workspaceQ(ws)), &got); err != nil {
+		if err := client.GetJSON(request.BuildJobGetPath(jobName, ws), &got); err != nil {
 			return err
 		}
 		base := mapStr(got, "prompt")
-		promptOverride = AppendExtraPrompt(base, extra)
+		promptOverride = request.AppendExtraPrompt(base, extra)
 	}
-	req := BuildRunsCreate(jobName, ws, promptOverride, c.Bool("test"))
+	req := request.BuildRunsCreate(jobName, ws, promptOverride, c.Bool("test"))
 	var out map[string]any
 	if err := client.DoHTTP(req, &out); err != nil {
 		return err

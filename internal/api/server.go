@@ -59,6 +59,11 @@ type Server struct {
 	upgrader   websocket.Upgrader
 	httpServer *http.Server
 	listener   net.Listener
+
+	apiMux     *http.ServeMux
+	apiWrapped http.Handler
+	mcpCatalog map[string]map[string]mcpAction
+	mcpHTTP    http.Handler
 }
 
 // Options for New.
@@ -102,6 +107,8 @@ func New(st *store.Store, opts Options) *Server {
 		s.token = ulid.Make().String()
 	}
 	_ = s.integ.Load()
+	s.mcpCatalog = newMCPCatalog()
+	s.mcpHTTP = s.newMCPHandler()
 	return s
 }
 
@@ -173,7 +180,12 @@ func (s *Server) Handler() http.Handler {
 	s.routeIntegrations(mux)
 	s.routeHarness(mux)
 	s.routeSettings(mux)
-	return s.authMiddleware(s.auditMiddleware(mux))
+	s.routeMCP(mux)
+	// Dispatch from MCP tools re-enters here, audit-wrapped but not
+	// auth-wrapped: the /mcp request already passed authMiddleware.
+	s.apiMux = mux
+	s.apiWrapped = s.auditMiddleware(mux)
+	return s.authMiddleware(s.apiWrapped)
 }
 
 // ListenAndServe binds addr (e.g. 127.0.0.1:0) and serves.

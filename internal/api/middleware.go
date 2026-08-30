@@ -85,7 +85,9 @@ func (s *Server) auditMiddleware(next http.Handler) http.Handler {
 // ones are demoted: a failing poll still says so at INFO.
 func isPollRoute(r *http.Request) bool {
 	if r.Method != http.MethodGet {
-		return false
+		// A successful /mcp call logs at DEBUG: the inner /v1 request it
+		// dispatched already logged at INFO.
+		return r.Method == http.MethodPost && r.URL.Path == "/mcp"
 	}
 	switch r.URL.Path {
 	case "/v1/system/health", "/v1/agents/state":

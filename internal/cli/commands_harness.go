@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -42,7 +43,7 @@ func harnessCommand() *cli.Command {
 						return err
 					}
 					var out map[string]any
-					if err := client.DoHTTP(BuildHarnessEnsure(name), &out); err != nil {
+					if err := client.DoHTTP(request.BuildHarnessEnsure(name), &out); err != nil {
 						return err
 					}
 					fmt.Fprintf(outWriter(c), "ensured %s home=%v\n", name, out["home"])
@@ -104,7 +105,7 @@ func runHarnessList(_ context.Context, c *cli.Command) error {
 	var body struct {
 		Harnesses []map[string]any `json:"harnesses"`
 	}
-	if err := client.GetJSON("/v1/harnesses", &body); err != nil {
+	if err := client.GetJSON(request.BuildHarnessesListPath(), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -159,7 +160,7 @@ func runHarnessAuthStatus(_ context.Context, c *cli.Command) error {
 	var rows []map[string]any
 	if name != "" {
 		var body map[string]any
-		if err := client.DoHTTP(BuildHarnessAuthGet(name, live), &body); err != nil {
+		if err := client.DoHTTP(request.BuildHarnessAuthGet(name, live), &body); err != nil {
 			return err
 		}
 		rows = []map[string]any{body}
@@ -167,14 +168,14 @@ func runHarnessAuthStatus(_ context.Context, c *cli.Command) error {
 		var list struct {
 			Harnesses []map[string]any `json:"harnesses"`
 		}
-		if err := client.GetJSON("/v1/harnesses", &list); err != nil {
+		if err := client.GetJSON(request.BuildHarnessesListPath(), &list); err != nil {
 			return err
 		}
 		if live {
 			for _, h := range list.Harnesses {
 				n := mapStr(h, "name", "Name")
 				var body map[string]any
-				if err := client.DoHTTP(BuildHarnessAuthGet(n, true), &body); err != nil {
+				if err := client.DoHTTP(request.BuildHarnessAuthGet(n, true), &body); err != nil {
 					rows = append(rows, map[string]any{"name": n, "auth_status": "error", "detail": err.Error()})
 					continue
 				}
@@ -244,7 +245,7 @@ func runHarnessAuthMode(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var out map[string]any
-	if err := client.DoHTTP(BuildHarnessPatch(name, mode), &out); err != nil {
+	if err := client.DoHTTP(request.BuildHarnessPatch(name, mode), &out); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "%s mode=%v status=%v\n", name, out["auth_mode"], out["auth_status"])
@@ -260,7 +261,7 @@ func runHarnessAuthLogout(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildHarnessLogout(name, c.String("mode"), c.Bool("yes")), nil)
+	return client.DoHTTP(request.BuildHarnessLogout(name, c.String("mode"), c.Bool("yes")), nil)
 }
 
 func runHarnessAuthLogin(_ context.Context, c *cli.Command) error {
@@ -283,20 +284,20 @@ func runHarnessAuthLogin(_ context.Context, c *cli.Command) error {
 			return fmt.Errorf("empty token on stdin")
 		}
 		var out map[string]any
-		if err := client.DoHTTP(BuildHarnessLoginToken(name, token), &out); err != nil {
+		if err := client.DoHTTP(request.BuildHarnessLoginToken(name, token), &out); err != nil {
 			return err
 		}
 		fmt.Fprintf(outWriter(c), "%s status=%v\n", name, out["auth_status"])
 		return nil
 	}
 	if c.Bool("attach") {
-		if err := client.DoHTTP(BuildHarnessLoginStart(name, mode), nil); err != nil {
+		if err := client.DoHTTP(request.BuildHarnessLoginStart(name, mode), nil); err != nil {
 			return renderLocalOnly(c, err)
 		}
 		return attachLoginWS(c, client, name)
 	}
 	var sess map[string]any
-	if err := client.DoHTTP(BuildHarnessLoginStart(name, mode), &sess); err != nil {
+	if err := client.DoHTTP(request.BuildHarnessLoginStart(name, mode), &sess); err != nil {
 		return renderLocalOnly(c, err)
 	}
 	return driveLogin(c, client, name, sess)
@@ -337,13 +338,13 @@ func driveLogin(c *cli.Command, client *APIClient, name string, sess map[string]
 			if !sc.Scan() {
 				return fmt.Errorf("no code")
 			}
-			if err := client.DoHTTP(BuildHarnessLoginCode(name, strings.TrimSpace(sc.Text())), &sess); err != nil {
+			if err := client.DoHTTP(request.BuildHarnessLoginCode(name, strings.TrimSpace(sc.Text())), &sess); err != nil {
 				return err
 			}
 			continue
 		}
 		time.Sleep(500 * time.Millisecond)
-		if err := client.DoHTTP(BuildHarnessLoginGet(name), &sess); err != nil {
+		if err := client.DoHTTP(request.BuildHarnessLoginGet(name), &sess); err != nil {
 			return err
 		}
 		if !truthy(sess["active"]) && phase != "done" && phase != "failed" && phase != "" {

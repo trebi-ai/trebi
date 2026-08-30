@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/urfave/cli/v3"
 )
@@ -32,7 +33,7 @@ func assistantCommand() *cli.Command {
 						return err
 					}
 					var body map[string]any
-					if err := client.GetJSON("/v1/workspaces/"+id+"/assistant", &body); err != nil {
+					if err := client.GetJSON(request.BuildAssistantGetPath(id), &body); err != nil {
 						return err
 					}
 					enc := json.NewEncoder(outWriter(c))
@@ -130,7 +131,7 @@ func runAssistantMemory(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON("/v1/workspaces/"+wsID+"/assistant/memory", &body); err != nil {
+	if err := client.GetJSON(request.BuildAssistantMemoryGetPath(wsID), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -151,7 +152,7 @@ func runAssistantMemoryAdd(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildAssistantMemoryEntryAdd(wsID, c.String("date"), c.String("text")), nil)
+	return client.DoHTTP(request.BuildAssistantMemoryEntryAdd(wsID, c.String("date"), c.String("text")), nil)
 }
 
 func runAssistantMemoryRemove(_ context.Context, c *cli.Command) error {
@@ -167,7 +168,7 @@ func runAssistantMemoryRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildAssistantMemoryEntryDelete(wsID, eid), nil)
+	return client.DoHTTP(request.BuildAssistantMemoryEntryDelete(wsID, eid), nil)
 }
 
 func runAssistantMemorySet(_ context.Context, c *cli.Command) error {
@@ -183,7 +184,7 @@ func runAssistantMemorySet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildAssistantMemoryPut(wsID, content), nil)
+	return client.DoHTTP(request.BuildAssistantMemoryPut(wsID, content), nil)
 }
 
 func runAssistantMemoryClear(_ context.Context, c *cli.Command) error {
@@ -198,7 +199,7 @@ func runAssistantMemoryClear(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(BuildAssistantMemoryClear(wsID), nil); err != nil {
+	if err := client.DoHTTP(request.BuildAssistantMemoryClear(wsID), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "cleared assistant memory for %s\n", wsID)
@@ -214,7 +215,7 @@ func runAssistantWake(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	req := BuildAssistantWake(wsID, c.String("extra-prompt"), c.Bool("test"))
+	req := request.BuildAssistantWake(wsID, c.String("extra-prompt"), c.Bool("test"))
 	var out map[string]any
 	if err := client.DoHTTP(req, &out); err != nil {
 		return err
@@ -238,13 +239,13 @@ func runAssistantHistory(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	ws := workspaceFor(c)
-	path := BuildRunsListPath(
+	path := request.BuildRunsListPath(
 		c.String("status"), c.String("job"), ws, "assistant",
 		c.String("cursor"), c.String("harness"), c.String("model"), c.Int("limit"),
 	)
 	conv := c.String("conversation")
 	if conv != "" && c.Int("limit") > 0 {
-		path = BuildRunsListPath(
+		path = request.BuildRunsListPath(
 			c.String("status"), c.String("job"), ws, "assistant",
 			c.String("cursor"), c.String("harness"), c.String("model"), c.Int("limit")*5,
 		)
@@ -259,7 +260,7 @@ func runAssistantHistory(_ context.Context, c *cli.Command) error {
 	if conv != "" {
 		filtered := body.Runs[:0]
 		for _, r := range body.Runs {
-			if MatchConversation(mapStr(r, "conversation_key"), conv) {
+			if request.MatchConversation(mapStr(r, "conversation_key"), conv) {
 				filtered = append(filtered, r)
 			}
 		}
@@ -310,7 +311,7 @@ func runAssistantSay(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var out map[string]any
-	if err := client.DoHTTP(BuildAssistantSay(convID, text, wsID), &out); err != nil {
+	if err := client.DoHTTP(request.BuildAssistantSay(convID, text, wsID), &out); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -362,7 +363,7 @@ func chatLine(c *cli.Command, client *APIClient, wsID string, convID *string, li
 		return false, nil
 	case line == "/new":
 		var out map[string]any
-		if err := client.DoHTTP(BuildConversationCreate(wsID, "", "cli", "cli", wsID), &out); err != nil {
+		if err := client.DoHTTP(request.BuildConversationCreate(wsID, "", "cli", "cli", wsID), &out); err != nil {
 			return false, err
 		}
 		*convID = mapStr(out, "id")
@@ -373,7 +374,7 @@ func chatLine(c *cli.Command, client *APIClient, wsID string, convID *string, li
 		if id == "" {
 			return true, fmt.Errorf("usage: /switch <id>")
 		}
-		if err := client.DoHTTP(BuildPointerPut("cli", wsID, id), nil); err != nil {
+		if err := client.DoHTTP(request.BuildPointerPut("cli", wsID, id), nil); err != nil {
 			return false, err
 		}
 		*convID = id
@@ -386,7 +387,7 @@ func chatLine(c *cli.Command, client *APIClient, wsID string, convID *string, li
 
 func chatSend(c *cli.Command, client *APIClient, wsID, convID, text string) error {
 	var out map[string]any
-	if err := client.DoHTTP(BuildAssistantSay(convID, text, wsID), &out); err != nil {
+	if err := client.DoHTTP(request.BuildAssistantSay(convID, text, wsID), &out); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "… %s\n", mapStr(out, "delivery"))
@@ -397,7 +398,7 @@ func waitAssistantReply(c *cli.Command, client *APIClient, convID string) error 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	seen := messageIDs(client, convID)
-	err := client.StreamEvents(ctx, BuildStreamPath("conversation.updated,agent.state", "0"), func(ev store.StreamEvent) error {
+	err := client.StreamEvents(ctx, request.BuildStreamPath("conversation.updated,agent.state", "0"), func(ev store.StreamEvent) error {
 		if ev.Topic == "agent.state" {
 			fmt.Fprint(outWriter(c), "thinking…\r")
 			return nil
@@ -421,7 +422,7 @@ func messageIDs(client *APIClient, convID string) map[string]struct{} {
 	var body struct {
 		Messages []map[string]any `json:"messages"`
 	}
-	if err := client.GetJSON(BuildConversationMessagesPath(convID, "", 200), &body); err != nil {
+	if err := client.GetJSON(request.BuildConversationMessagesPath(convID, "", 200), &body); err != nil {
 		return out
 	}
 	for _, m := range body.Messages {
@@ -434,7 +435,7 @@ func printNewAssistant(c *cli.Command, client *APIClient, convID string, seen ma
 	var body struct {
 		Messages []map[string]any `json:"messages"`
 	}
-	if err := client.GetJSON(BuildConversationMessagesPath(convID, "", 200), &body); err != nil {
+	if err := client.GetJSON(request.BuildConversationMessagesPath(convID, "", 200), &body); err != nil {
 		return false
 	}
 	printed := false
@@ -455,7 +456,7 @@ func printNewAssistant(c *cli.Command, client *APIClient, convID string, seen ma
 
 func ensureCLIConversation(client *APIClient, wsID string) (string, error) {
 	var ptr map[string]any
-	err := client.DoHTTP(BuildPointerGet("cli", wsID), &ptr)
+	err := client.DoHTTP(request.BuildPointerGet("cli", wsID), &ptr)
 	if err == nil {
 		if id := mapStr(ptr, "conversation_id"); id != "" {
 			return id, nil
@@ -465,7 +466,7 @@ func ensureCLIConversation(client *APIClient, wsID string) (string, error) {
 		return "", err
 	}
 	var created map[string]any
-	if err := client.DoHTTP(BuildConversationCreate(wsID, "", "cli", "cli", wsID), &created); err != nil {
+	if err := client.DoHTTP(request.BuildConversationCreate(wsID, "", "cli", "cli", wsID), &created); err != nil {
 		return "", err
 	}
 	return mapStr(created, "id"), nil

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -127,54 +129,6 @@ func (c *APIClient) GetRaw(path string) ([]byte, error) {
 	return raw, nil
 }
 
-// PutRaw PUTs a raw body (file plane). ifMatch is sent as If-Match when non-empty.
-func (c *APIClient) PutRaw(path string, body io.Reader, contentType, ifMatch string) (int, []byte, error) {
-	req, err := http.NewRequest("PUT", c.Base+path, body)
-	if err != nil {
-		return 0, nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	req.Header.Set("Content-Type", contentType)
-	if ifMatch != "" {
-		req.Header.Set("If-Match", ifMatch)
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return resp.StatusCode, raw, fmt.Errorf("PUT %s: %s: %s", path, resp.Status, raw)
-	}
-	return resp.StatusCode, raw, nil
-}
-
-// DeleteIfMatch DELETEs with optional If-Match.
-func (c *APIClient) DeleteIfMatch(path, ifMatch string) error {
-	req, err := http.NewRequest("DELETE", c.Base+path, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	if ifMatch != "" {
-		req.Header.Set("If-Match", ifMatch)
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("DELETE %s: %s: %s", path, resp.Status, raw)
-	}
-	return nil
-}
-
 // StreamGET copies a GET response body to dst until EOF or ctx cancel.
 // Used for integration logs --follow (SSE). Timeout is disabled on this call.
 func (c *APIClient) StreamGET(path string, dst io.Writer) error {
@@ -211,8 +165,11 @@ func (c *APIClient) StreamEvents(ctx context.Context, path string, fn func(store
 	return c.streamEvents(ctx, path, false, fn)
 }
 
-// DoHTTP executes a pure HTTPRequest against this client.
-func (c *APIClient) DoHTTP(r HTTPRequest, out any) error {
+// DoHTTP executes a pure request.HTTPRequest against this client.
+func (c *APIClient) DoHTTP(r request.HTTPRequest, out any) error {
+	if r.Raw != nil || r.IfMatch != "" {
+		return c.doRaw(r, out)
+	}
 	switch strings.ToUpper(r.Method) {
 	case "GET":
 		return c.GetJSON(r.Path, out)
@@ -227,6 +184,39 @@ func (c *APIClient) DoHTTP(r HTTPRequest, out any) error {
 	default:
 		return fmt.Errorf("unsupported method %s", r.Method)
 	}
+}
+
+// doRaw executes a file-plane request: raw body and/or If-Match header.
+func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
+	method := strings.ToUpper(r.Method)
+	req, err := http.NewRequest(method, c.Base+r.Path, bytes.NewReader(r.Raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	if r.Raw != nil {
+		ct := r.ContentType
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		req.Header.Set("Content-Type", ct)
+	}
+	if r.IfMatch != "" {
+		req.Header.Set("If-Match", r.IfMatch)
+	}
+	resp, err := c.httpFor(method, r.Path).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("%s %s: %s: %s", method, r.Path, resp.Status, raw)
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(raw, out)
 }
 
 func (c *APIClient) streamEvents(ctx context.Context, path string, skipCatchup bool, fn func(store.StreamEvent) error) error {

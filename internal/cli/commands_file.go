@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -84,7 +85,7 @@ func runFileList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileListAction(c, client, BuildFileListPath(wsID, c.Args().Get(0), c.String("cursor"), c.Int("limit")))
+	return fileListAction(c, client, request.BuildFileListPath(wsID, c.Args().Get(0), c.String("cursor"), c.Int("limit")))
 }
 
 func runFileGet(_ context.Context, c *cli.Command) error {
@@ -96,7 +97,7 @@ func runFileGet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileGetAction(c, client, BuildFileGetPath(wsID, rel, c.Bool("stat")))
+	return fileGetAction(c, client, request.BuildFileGetPath(wsID, rel, c.Bool("stat")))
 }
 
 func runFilePut(_ context.Context, c *cli.Command) error {
@@ -108,7 +109,7 @@ func runFilePut(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return filePutAction(c, client, BuildFilePutPath(wsID, rel))
+	return filePutAction(c, client, request.BuildFilePut(wsID, rel, nil, "", c.String("if-match")))
 }
 
 func runFileRemove(_ context.Context, c *cli.Command) error {
@@ -120,7 +121,7 @@ func runFileRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileRemoveAction(c, client, BuildFileDeletePath(wsID, rel))
+	return fileRemoveAction(c, client, request.BuildFileDelete(wsID, rel, c.String("if-match")))
 }
 
 func runJobFileList(_ context.Context, c *cli.Command) error {
@@ -132,7 +133,7 @@ func runJobFileList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileListAction(c, client, BuildJobFileListPath(name, workspaceFor(c), c.Args().Get(1), c.String("cursor"), c.Int("limit")))
+	return fileListAction(c, client, request.BuildJobFileListPath(name, workspaceFor(c), c.Args().Get(1), c.String("cursor"), c.Int("limit")))
 }
 
 func runJobFileGet(_ context.Context, c *cli.Command) error {
@@ -144,7 +145,7 @@ func runJobFileGet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileGetAction(c, client, BuildJobFileGetPath(name, workspaceFor(c), rel, c.Bool("stat")))
+	return fileGetAction(c, client, request.BuildJobFileGetPath(name, workspaceFor(c), rel, c.Bool("stat")))
 }
 
 func runJobFilePut(_ context.Context, c *cli.Command) error {
@@ -156,7 +157,7 @@ func runJobFilePut(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return filePutAction(c, client, BuildJobFilePutPath(name, workspaceFor(c), rel))
+	return filePutAction(c, client, request.BuildJobFilePut(name, workspaceFor(c), rel, nil, "", c.String("if-match")))
 }
 
 func runJobFileRemove(_ context.Context, c *cli.Command) error {
@@ -168,7 +169,7 @@ func runJobFileRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileRemoveAction(c, client, BuildJobFileDeletePath(name, workspaceFor(c), rel))
+	return fileRemoveAction(c, client, request.BuildJobFileDelete(name, workspaceFor(c), rel, c.String("if-match")))
 }
 
 func fileListAction(c *cli.Command, client *APIClient, path string) error {
@@ -214,21 +215,22 @@ func fileGetAction(c *cli.Command, client *APIClient, path string) error {
 	return err
 }
 
-func filePutAction(c *cli.Command, client *APIClient, path string) error {
+func filePutAction(c *cli.Command, client *APIClient, req request.HTTPRequest) error {
 	data, err := readBytesOrStdin(c.String("from"))
 	if err != nil {
 		return err
 	}
-	_, raw, err := client.PutRaw(path, bytes.NewReader(data), "", c.String("if-match"))
-	if err != nil {
+	req.Raw = data
+	var out json.RawMessage
+	if err := client.DoHTTP(req, &out); err != nil {
 		return err
 	}
-	fmt.Fprintln(outWriter(c), string(bytes.TrimSpace(raw)))
+	fmt.Fprintln(outWriter(c), string(bytes.TrimSpace(out)))
 	return nil
 }
 
-func fileRemoveAction(c *cli.Command, client *APIClient, path string) error {
-	return client.DeleteIfMatch(path, c.String("if-match"))
+func fileRemoveAction(_ *cli.Command, client *APIClient, req request.HTTPRequest) error {
+	return client.DoHTTP(req, nil)
 }
 
 func fileClient(c *cli.Command) (*APIClient, string, error) {
@@ -283,7 +285,7 @@ func runSkillFileList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileListAction(c, client, BuildSkillFileListPath(name, c.Args().Get(1), c.String("cursor"), c.Int("limit")))
+	return fileListAction(c, client, request.BuildSkillFileListPath(name, c.Args().Get(1), c.String("cursor"), c.Int("limit")))
 }
 
 func runSkillFileGet(_ context.Context, c *cli.Command) error {
@@ -295,7 +297,7 @@ func runSkillFileGet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileGetAction(c, client, BuildSkillFileGetPath(name, rel, c.Bool("stat")))
+	return fileGetAction(c, client, request.BuildSkillFileGetPath(name, rel, c.Bool("stat")))
 }
 
 func runSkillFilePut(_ context.Context, c *cli.Command) error {
@@ -307,7 +309,7 @@ func runSkillFilePut(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return filePutAction(c, client, BuildSkillFilePutPath(name, rel))
+	return filePutAction(c, client, request.BuildSkillFilePut(name, rel, nil, "", c.String("if-match")))
 }
 
 func runSkillFileRemove(_ context.Context, c *cli.Command) error {
@@ -319,7 +321,7 @@ func runSkillFileRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileRemoveAction(c, client, BuildSkillFileDeletePath(name, rel))
+	return fileRemoveAction(c, client, request.BuildSkillFileDelete(name, rel, c.String("if-match")))
 }
 
 func readBytesOrStdin(path string) ([]byte, error) {

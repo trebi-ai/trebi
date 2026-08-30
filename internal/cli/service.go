@@ -24,6 +24,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/platform"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tray"
 	"github.com/urfave/cli/v3"
@@ -187,7 +188,7 @@ func serviceDaemonSubcommands() []*cli.Command {
 				if err != nil {
 					return err
 				}
-				return client.PostJSON("/v1/system/drain", nil, nil)
+				return client.DoHTTP(request.BuildSystemDrain(), nil)
 			},
 		},
 		{
@@ -198,7 +199,7 @@ func serviceDaemonSubcommands() []*cli.Command {
 				if err != nil {
 					return err
 				}
-				return client.PostJSON("/v1/system/undrain", nil, nil)
+				return client.DoHTTP(request.BuildSystemUndrain(), nil)
 			},
 		},
 		{
@@ -209,7 +210,7 @@ func serviceDaemonSubcommands() []*cli.Command {
 				if err != nil {
 					return err
 				}
-				return client.DoHTTP(BuildServiceShutdown(), nil)
+				return client.DoHTTP(request.BuildServiceShutdown(), nil)
 			},
 		},
 	}
@@ -263,7 +264,7 @@ func runServiceStatus(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		apiErr = err.Error()
-	} else if err := client.GetJSON("/v1/system/health", &apiBody); err != nil {
+	} else if err := client.GetJSON(request.BuildSystemHealthPath(), &apiBody); err != nil {
 		apiErr = err.Error()
 	}
 	if c.Bool("json") {

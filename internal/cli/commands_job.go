@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -161,7 +162,7 @@ func jobManageSubcommands() []*cli.Command {
 }
 
 func runJobList(_ context.Context, c *cli.Command) error {
-	kind, err := parseJobListKind(c.String("kind"))
+	kind, err := request.ParseJobListKind(c.String("kind"))
 	if err != nil {
 		return err
 	}
@@ -175,14 +176,14 @@ func runJobList(_ context.Context, c *cli.Command) error {
 	if kind == "assistant" {
 		return runListAssistants(c, client)
 	}
-	path := withQuery("/v1/jobs", workspaceQ(workspaceFor(c)))
+	path := request.BuildJobsListPath(workspaceFor(c))
 	var body struct {
 		Jobs []map[string]any `json:"jobs"`
 	}
 	if err := client.GetJSON(path, &body); err != nil {
 		return err
 	}
-	body.Jobs = FilterJobsByKindFlag(body.Jobs, kind)
+	body.Jobs = request.FilterJobsByKindFlag(body.Jobs, kind)
 	if c.Bool("schedule") {
 		sched, err := loadScheduleIndex(client)
 		if err != nil {
@@ -256,7 +257,7 @@ func loadScheduleIndex(client *APIClient) (map[string]jobScheduleCols, error) {
 	var body struct {
 		Schedules []map[string]any `json:"schedules"`
 	}
-	if err := client.GetJSON(BuildSchedulesListPath(200), &body); err != nil {
+	if err := client.GetJSON(request.BuildSchedulesListPath(200), &body); err != nil {
 		return nil, err
 	}
 	return indexSchedules(body.Schedules), nil
@@ -297,7 +298,7 @@ func runJobShow(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := withQuery("/v1/jobs/"+c.Args().Get(0), workspaceQ(workspaceFlag(c)))
+	path := request.BuildJobGetPath(c.Args().Get(0), workspaceFlag(c))
 	var body map[string]any
 	if err := client.GetJSON(path, &body); err != nil {
 		return err
@@ -324,9 +325,7 @@ func runJobCreate(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.PostJSON("/v1/jobs", map[string]any{
-		"name": name, "workspace": workspaceFlag(c), "content": content,
-	}, nil)
+	return client.DoHTTP(request.BuildJobCreate(name, workspaceFlag(c), content), nil)
 }
 
 func runJobDelete(_ context.Context, c *cli.Command) error {
@@ -338,7 +337,7 @@ func runJobDelete(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	req := BuildJobDelete(name, workspaceFor(c), c.Bool("purge"))
+	req := request.BuildJobDelete(name, workspaceFor(c), c.Bool("purge"))
 	if err := client.DoHTTP(req, nil); err != nil {
 		return err
 	}
@@ -351,7 +350,7 @@ func runJobPause(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildJobPause(c.Args().Get(0), workspaceFor(c), true), nil)
+	return client.DoHTTP(request.BuildJobPause(c.Args().Get(0), workspaceFor(c), true), nil)
 }
 
 func runJobUnpause(_ context.Context, c *cli.Command) error {
@@ -359,7 +358,7 @@ func runJobUnpause(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildJobPause(c.Args().Get(0), workspaceFor(c), false), nil)
+	return client.DoHTTP(request.BuildJobPause(c.Args().Get(0), workspaceFor(c), false), nil)
 }
 
 func runJobValidate(_ context.Context, c *cli.Command) error {
@@ -367,7 +366,7 @@ func runJobValidate(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := withQuery("/v1/jobs/"+c.Args().Get(0)+"/validate", workspaceQ(workspaceFlag(c)))
+	path := request.BuildJobValidatePath(c.Args().Get(0), workspaceFlag(c))
 	var body map[string]any
 	if err := client.PostJSON(path, nil, &body); err != nil {
 		return err
@@ -390,7 +389,7 @@ func runJobMemory(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := withQuery("/v1/jobs/"+name+"/memory", workspaceQ(workspaceFor(c)))
+	path := request.BuildJobMemoryGetPath(name, workspaceFor(c))
 	var body map[string]any
 	if err := client.GetJSON(path, &body); err != nil {
 		return err
@@ -413,7 +412,7 @@ func runJobMemoryAdd(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	req := BuildJobMemoryEntryAdd(name, workspaceFor(c), c.String("date"), c.String("text"))
+	req := request.BuildJobMemoryEntryAdd(name, workspaceFor(c), c.String("date"), c.String("text"))
 	return client.DoHTTP(req, nil)
 }
 
@@ -426,7 +425,7 @@ func runJobMemoryRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildJobMemoryEntryDelete(name, workspaceFor(c), eid), nil)
+	return client.DoHTTP(request.BuildJobMemoryEntryDelete(name, workspaceFor(c), eid), nil)
 }
 
 func runJobMemorySet(_ context.Context, c *cli.Command) error {
@@ -442,7 +441,7 @@ func runJobMemorySet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildJobMemoryPut(name, workspaceFor(c), content), nil)
+	return client.DoHTTP(request.BuildJobMemoryPut(name, workspaceFor(c), content), nil)
 }
 
 func runJobMemoryClear(_ context.Context, c *cli.Command) error {
@@ -457,7 +456,7 @@ func runJobMemoryClear(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(BuildJobMemoryClear(name, workspaceFor(c)), nil); err != nil {
+	if err := client.DoHTTP(request.BuildJobMemoryClear(name, workspaceFor(c)), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "cleared memory for %s\n", name)
@@ -471,7 +470,7 @@ func runJobSchedule(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	value := strings.Join(c.Args().Tail(), " ")
 	ws := workspaceFor(c)
-	plan, err := PlanJobSchedule(name, ws, value)
+	plan, err := request.PlanJobSchedule(name, ws, value)
 	if err != nil {
 		return err
 	}
@@ -488,18 +487,18 @@ func runJobSchedule(_ context.Context, c *cli.Command) error {
 	}
 	// GET markdown → rewrite triggers → PUT
 	var got map[string]any
-	if err := client.GetJSON(withQuery("/v1/jobs/"+name, workspaceQ(ws)), &got); err != nil {
+	if err := client.GetJSON(request.BuildJobGetPath(name, ws), &got); err != nil {
 		return err
 	}
 	md := mapStr(got, "markdown")
 	if md == "" {
 		return fmt.Errorf("job has no markdown payload")
 	}
-	newMD, err := ApplyScheduleMarkdown(md, value)
+	newMD, err := request.ApplyScheduleMarkdown(md, value)
 	if err != nil {
 		return err
 	}
-	req := BuildJobPutMarkdown(name, ws, newMD)
+	req := request.BuildJobPutMarkdown(name, ws, newMD)
 	if err := client.DoHTTP(req, nil); err != nil {
 		return err
 	}
@@ -518,10 +517,10 @@ func runJobStatus(_ context.Context, c *cli.Command) error {
 	}
 	ws := workspaceFlag(c)
 	var job map[string]any
-	if err := client.GetJSON(withQuery("/v1/jobs/"+name, workspaceQ(ws)), &job); err != nil {
+	if err := client.GetJSON(request.BuildJobGetPath(name, ws), &job); err != nil {
 		return err
 	}
-	path := BuildRunsListPath("", name, ws, "job", "", "", "", 5)
+	path := request.BuildRunsListPath("", name, ws, "job", "", "", "", 5)
 	var runsBody struct {
 		Runs []map[string]any `json:"runs"`
 	}
@@ -555,7 +554,7 @@ func runJobTail(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	ws := workspaceFor(c)
-	path := BuildRunsListPath("", name, ws, "job", "", "", "", 1)
+	path := request.BuildRunsListPath("", name, ws, "job", "", "", "", 1)
 	var runsBody struct {
 		Runs []map[string]any `json:"runs"`
 	}
@@ -585,7 +584,7 @@ func runJobTail(_ context.Context, c *cli.Command) error {
 
 // fetchRunLogText decodes GET /v1/runs/{id}/log JSON {"log":"…"} or falls back to transcript raw.
 func fetchRunLogText(client *APIClient, id string) (string, error) {
-	raw, err := client.GetRaw("/v1/runs/" + id + "/log")
+	raw, err := client.GetRaw(request.BuildRunLogPath(id, false))
 	if err == nil {
 		var wrap map[string]any
 		if json.Unmarshal(raw, &wrap) == nil {
@@ -598,7 +597,7 @@ func fetchRunLogText(client *APIClient, id string) (string, error) {
 			return string(raw), nil
 		}
 	}
-	raw, err = client.GetRaw("/v1/runs/" + id + "/transcript")
+	raw, err = client.GetRaw(request.BuildRunTranscript(id, false).Path)
 	if err != nil {
 		return "", err
 	}
@@ -611,7 +610,7 @@ func runListAssistants(c *cli.Command, client *APIClient) error {
 	var wss struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := client.GetJSON("/v1/workspaces", &wss); err != nil {
+	if err := client.GetJSON(request.BuildWorkspacesListPath(), &wss); err != nil {
 		return err
 	}
 	var rows []map[string]any
@@ -619,7 +618,7 @@ func runListAssistants(c *cli.Command, client *APIClient) error {
 	for _, ws := range wss.Workspaces {
 		id := mapStr(ws, "id")
 		var a map[string]any
-		if err := client.GetJSON("/v1/workspaces/"+id+"/assistant", &a); err != nil {
+		if err := client.GetJSON(request.BuildAssistantGetPath(id), &a); err != nil {
 			skipped++
 			continue
 		}

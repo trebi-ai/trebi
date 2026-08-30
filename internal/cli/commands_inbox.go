@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -42,7 +43,7 @@ func inboxCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					return client.DoHTTP(BuildInboxRead(c.Args().Get(0)), nil)
+					return client.DoHTTP(request.BuildInboxRead(c.Args().Get(0)), nil)
 				},
 			},
 			{
@@ -53,7 +54,7 @@ func inboxCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					return client.DoHTTP(BuildInboxReadAll(), nil)
+					return client.DoHTTP(request.BuildInboxReadAll(), nil)
 				},
 			},
 			{
@@ -65,7 +66,7 @@ func inboxCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					return client.DoHTTP(BuildInboxResolve(c.Args().Get(0)), nil)
+					return client.DoHTTP(request.BuildInboxResolve(c.Args().Get(0)), nil)
 				},
 			},
 		},
@@ -80,7 +81,7 @@ func runInboxList(_ context.Context, c *cli.Command) error {
 	var body struct {
 		Items []map[string]any `json:"items"`
 	}
-	if err := client.GetJSON(BuildInboxListPath(c.String("status"), c.String("kind"), c.String("cursor"), c.Int("limit")), &body); err != nil {
+	if err := client.GetJSON(request.BuildInboxListPath(c.String("status"), c.String("kind"), c.String("cursor"), c.Int("limit")), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -110,7 +111,7 @@ func runInboxShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.DoHTTP(BuildInboxGet(id), &body); err != nil {
+	if err := client.DoHTTP(request.BuildInboxGet(id), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -152,7 +153,7 @@ func runAlerts(_ context.Context, c *cli.Command) error {
 	var body struct {
 		Alerts []map[string]any `json:"alerts"`
 	}
-	if err := client.GetJSON(BuildAlertsPath(c.String("since")), &body); err != nil {
+	if err := client.GetJSON(request.BuildAlertsPath(c.String("since")), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {

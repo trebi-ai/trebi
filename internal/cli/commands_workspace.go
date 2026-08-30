@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -131,7 +132,7 @@ func runWorkspaceRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(BuildWorkspaceDelete(id), nil); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspaceDelete(id), nil); err != nil {
 		return err
 	}
 	if err := clearStickyIfWorkspace(c, id); err != nil {
@@ -150,7 +151,7 @@ func runWorkspaceRename(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(BuildWorkspaceRename(id, name), nil); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspaceRename(id, name), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "renamed %s → %s\n", id, name)
@@ -179,7 +180,7 @@ func runWorkspaceSet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(BuildWorkspacePatch(id, name, git), nil); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspacePatch(id, name, git), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "updated %s\n", id)
@@ -246,7 +247,7 @@ func localWorkspaceRows(sticky *StickyContext, client *APIClient) []wsRow {
 	var body struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := client.GetJSON("/v1/workspaces", &body); err != nil {
+	if err := client.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
 		return nil
 	}
 	var rows []wsRow
@@ -301,7 +302,7 @@ func workspaceAddLocal(c *cli.Command, path string) error {
 		name = filepath.Base(path)
 	}
 	var out map[string]any
-	if err := client.DoHTTP(BuildWorkspaceAdd(path, name, c.Bool("create")), &out); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspaceAdd(path, name, c.Bool("create")), &out); err != nil {
 		return err
 	}
 	id := mapStr(out, "id")
@@ -336,7 +337,7 @@ func workspaceAddRemote(c *cli.Command, remoteURL string) error {
 	client := remoteClient(remoteURL, token)
 	if !c.Bool("skip-check") {
 		var health map[string]any
-		if err := client.GetJSON("/v1/system/health", &health); err != nil {
+		if err := client.GetJSON(request.BuildSystemHealthPath(), &health); err != nil {
 			return fmt.Errorf("remote health check failed: %w", err)
 		}
 	}
@@ -399,7 +400,7 @@ func findRemoteWorkspace(client *APIClient, id, remoteURL string) (name, path st
 	var body struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := client.GetJSON("/v1/workspaces", &body); err != nil {
+	if err := client.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
 		return "", "", err
 	}
 	for _, ws := range body.Workspaces {
@@ -422,7 +423,7 @@ func registerRemoteWorkspace(c *cli.Command, client *APIClient) (id, name, path 
 		name = filepath.Base(path)
 	}
 	var out map[string]any
-	if err := client.DoHTTP(BuildWorkspaceAdd(path, name, create), &out); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspaceAdd(path, name, create), &out); err != nil {
 		return "", "", "", err
 	}
 	id = mapStr(out, "id")
@@ -463,7 +464,7 @@ func runWorkspaceUse(_ context.Context, c *cli.Command) error {
 	var body struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := client.GetJSON("/v1/workspaces", &body); err != nil {
+	if err := client.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
 		return err
 	}
 	for _, ws := range body.Workspaces {
@@ -522,7 +523,7 @@ func resolveWorkspaceID(c *cli.Command, client *APIClient) (string, error) {
 	var wss struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := client.GetJSON("/v1/workspaces", &wss); err != nil {
+	if err := client.GetJSON(request.BuildWorkspacesListPath(), &wss); err != nil {
 		return "", err
 	}
 	if len(wss.Workspaces) == 0 {

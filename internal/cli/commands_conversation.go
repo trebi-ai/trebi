@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -80,7 +81,7 @@ func runConversationList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	ws, _ := resolveWorkspaceID(c, client)
-	path := BuildConversationsListPath(ws, c.String("channel"), c.String("cursor"), c.Int("limit"))
+	path := request.BuildConversationsListPath(ws, c.String("channel"), c.String("cursor"), c.Int("limit"))
 	var body struct {
 		Conversations []map[string]any `json:"conversations"`
 		NextCursor    string           `json:"next_cursor"`
@@ -116,7 +117,7 @@ func runConversationShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.DoHTTP(BuildConversationGet(id), &body); err != nil {
+	if err := client.DoHTTP(request.BuildConversationGet(id), &body); err != nil {
 		return err
 	}
 	enc := json.NewEncoder(outWriter(c))
@@ -133,7 +134,7 @@ func runConversationMessages(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := BuildConversationMessagesPath(id, c.String("cursor"), c.Int("limit"))
+	path := request.BuildConversationMessagesPath(id, c.String("cursor"), c.Int("limit"))
 	var body struct {
 		Messages   []map[string]any `json:"messages"`
 		NextCursor string           `json:"next_cursor"`
@@ -168,7 +169,7 @@ func runConversationNew(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var out map[string]any
-	if err := client.DoHTTP(BuildConversationCreate(wsID, c.String("title"), "cli", "cli", wsID), &out); err != nil {
+	if err := client.DoHTTP(request.BuildConversationCreate(wsID, c.String("title"), "cli", "cli", wsID), &out); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -193,7 +194,7 @@ func runConversationSwitch(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(BuildPointerPut("cli", wsID, id), nil); err != nil {
+	if err := client.DoHTTP(request.BuildPointerPut("cli", wsID, id), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "switched cli → %s\n", id)
@@ -210,7 +211,7 @@ func runConversationPatch(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var out map[string]any
-	if err := client.DoHTTP(BuildConversationPatch(id, c.String("title"), c.String("summary"), c.Int64("revision")), &out); err != nil {
+	if err := client.DoHTTP(request.BuildConversationPatch(id, c.String("title"), c.String("summary"), c.Int64("revision")), &out); err != nil {
 		return err
 	}
 	if c.Bool("json") {

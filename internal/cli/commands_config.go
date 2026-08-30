@@ -10,6 +10,7 @@ import (
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 	"gopkg.in/yaml.v3"
 )
@@ -154,7 +155,7 @@ func loadConfigEntries(state *appState) ([]config.PathEntry, error) {
 		var body struct {
 			Entries []config.PathEntry `json:"entries"`
 		}
-		if err := state.client.GetJSON("/v1/config", &body); err == nil && len(body.Entries) > 0 {
+		if err := state.client.GetJSON(request.BuildConfigGet().Path, &body); err == nil && len(body.Entries) > 0 {
 			return body.Entries, nil
 		}
 	}
@@ -211,7 +212,7 @@ func runConfigSet(_ context.Context, c *cli.Command) error {
 	}
 	key := c.Args().Get(0)
 	value := strings.Join(c.Args().Tail(), " ")
-	req := BuildConfigSet(key, value)
+	req := request.BuildConfigSet(key, value)
 	state := appStateFor(c)
 	if state.clientErr != nil || state.client == nil {
 		// Local set when daemon down
@@ -298,14 +299,14 @@ func runConfigBridgeSet(_ context.Context, c *cli.Command) error {
 		if err != nil {
 			return err
 		}
-		req := BuildConfigSet("tools.bridge.never", joined)
+		req := request.BuildConfigSet("tools.bridge.never", joined)
 		return applyConfigHTTPOrLocal(c, state, req, "tools.bridge.never", joined)
 	}
 	if c.NArg() < 3 {
 		return fmt.Errorf("usage: trebi config bridge set <tool> <resource> <inherit|false>")
 	}
 	tool, resource, mode := c.Args().Get(0), c.Args().Get(1), c.Args().Get(2)
-	req, err := BuildConfigBridgeSet(tool, resource, mode)
+	req, err := request.BuildConfigBridgeSet(tool, resource, mode)
 	if err != nil {
 		return err
 	}
@@ -322,7 +323,7 @@ func mergeBridgeNever(cfg *config.Config, client *APIClient, resource string) (s
 	// Also try API when available (daemon may have newer state).
 	if client != nil {
 		var body map[string]any
-		if err := client.GetJSON("/v1/config", &body); err == nil {
+		if err := client.GetJSON(request.BuildConfigGet().Path, &body); err == nil {
 			doc := unwrapConfigMap(body)
 			if tools, ok := doc["tools"].(map[string]any); ok {
 				if br, ok := tools["bridge"].(map[string]any); ok {
@@ -348,7 +349,7 @@ func mergeBridgeNever(cfg *config.Config, client *APIClient, resource string) (s
 	return strings.Join(list, ","), nil
 }
 
-func applyConfigHTTPOrLocal(c *cli.Command, state *appState, req HTTPRequest, key, value string) error {
+func applyConfigHTTPOrLocal(c *cli.Command, state *appState, req request.HTTPRequest, key, value string) error {
 	if state.clientErr != nil || state.client == nil {
 		if state.configErr != nil {
 			return state.configErr

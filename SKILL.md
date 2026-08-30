@@ -410,6 +410,19 @@ trebi conversation list --limit 50 --json
 trebi conversation show <id> --json
 ```
 
+## MCP
+
+The daemon also serves the control plane as an MCP server at `/mcp` (Streamable HTTP, bearer auth). Fifteen tools (`run`, `job`, `workspace`, `assistant`, `file`, `harness`, `integration`, `events`, `queue`, `inbox`, `conversation`, `skill`, `secret`, `config`, `system`). Each tool takes `{"action": "<name>", "input": {…}}`. Action `docs` returns the input field reference for that tool. Errors return the HTTP error envelope unchanged.
+
+Connect an MCP client with the URL and token from `~/.trebi/api.json` (`{"url", "token"}`):
+
+```bash
+claude mcp add --transport http trebi http://127.0.0.1:<port>/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+Prefer the CLI when both paths exist. The CLI is the fuller client: run attach, harness login, and the streaming bus have no MCP action. Everything else is covered.
+
 ## Daemon lifecycle
 
 ```bash

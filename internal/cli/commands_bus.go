@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/urfave/cli/v3"
 )
@@ -71,9 +72,9 @@ func runBusWith(ctx context.Context, c *cli.Command) error {
 		limit: c.Int("limit"),
 		filt:  filt,
 	}
-	path := BuildStreamPath(topics, cursor)
+	path := request.BuildStreamPath(topics, cursor)
 	if tail.limit > 0 {
-		path = withQuery(path, map[string]string{"follow": "0"})
+		path = request.BuildStreamDumpPath(topics, cursor)
 	}
 	streamErr := client.streamEvents(ctx, path, !c.Bool("replay") && !cursorSet, tail.onFrame)
 	return tail.finish(streamErr)

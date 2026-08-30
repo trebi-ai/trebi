@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -70,7 +71,7 @@ func runRulesTest(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var out map[string]any
-	if err := client.DoHTTP(BuildRulesTest(c.String("match"), c.String("extract"), event), &out); err != nil {
+	if err := client.DoHTTP(request.BuildRulesTest(c.String("match"), c.String("extract"), event), &out); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -101,7 +102,7 @@ func runRulesFire(_ context.Context, c *cli.Command) error {
 		ws = workspaceFor(c)
 	}
 	var out map[string]any
-	if err := client.DoHTTP(BuildRulesFire(
+	if err := client.DoHTTP(request.BuildRulesFire(
 		c.String("integration"), ws, c.String("job"),
 		c.String("match"), c.String("extract"), event, c.Int("on-index"),
 	), &out); err != nil {

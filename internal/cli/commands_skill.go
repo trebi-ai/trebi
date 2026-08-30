@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -37,7 +38,7 @@ func skillCommand() *cli.Command {
 						return err
 					}
 					var body map[string]any
-					if err := client.GetJSON("/v1/skills/"+c.Args().Get(0), &body); err != nil {
+					if err := client.GetJSON(request.BuildSkillGetPath(c.Args().Get(0)), &body); err != nil {
 						return err
 					}
 					enc := json.NewEncoder(outWriter(c))
@@ -72,7 +73,7 @@ func skillCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					return client.Delete("/v1/skills/" + c.Args().Get(0))
+					return client.DoHTTP(request.BuildSkillDelete(c.Args().Get(0)), nil)
 				},
 			},
 			skillFileSubcommand(),
@@ -88,7 +89,7 @@ func runSkillList(_ context.Context, c *cli.Command) error {
 	var body struct {
 		Skills []map[string]any `json:"skills"`
 	}
-	if err := client.GetJSON(BuildSkillsListPath(c.Int("limit")), &body); err != nil {
+	if err := client.GetJSON(request.BuildSkillsListPath(c.Int("limit")), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -122,7 +123,7 @@ func runSkillCreate(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var out map[string]any
-	return client.PostJSON("/v1/skills", map[string]any{"name": name, "skill_md": md}, &out)
+	return client.DoHTTP(request.BuildSkillCreate(name, md, ""), &out)
 }
 
 func runSkillUpdate(_ context.Context, c *cli.Command) error {
@@ -138,7 +139,7 @@ func runSkillUpdate(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(BuildSkillPut(name, md), nil)
+	return client.DoHTTP(request.BuildSkillPut(name, md), nil)
 }
 
 func secretCommand() *cli.Command {
@@ -158,7 +159,7 @@ func secretCommand() *cli.Command {
 					var body struct {
 						Secrets []string `json:"secrets"`
 					}
-					if err := client.GetJSON("/v1/secrets", &body); err != nil {
+					if err := client.GetJSON(request.BuildSecretsListPath(), &body); err != nil {
 						return err
 					}
 					if c.Bool("json") {
@@ -194,7 +195,7 @@ func secretCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					return client.PutJSON("/v1/secrets/"+c.Args().Get(0), map[string]string{"value": value}, nil)
+					return client.DoHTTP(request.BuildSecretPut(c.Args().Get(0), value), nil)
 				},
 			},
 			{
@@ -206,7 +207,7 @@ func secretCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					return client.Delete("/v1/secrets/" + c.Args().Get(0))
+					return client.DoHTTP(request.BuildSecretDelete(c.Args().Get(0)), nil)
 				},
 			},
 		},

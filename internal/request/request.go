@@ -1,4 +1,7 @@
-package cli
+// Package request holds the pure CLI/MCP → API request catalog.
+// Every Build* function returns an HTTPRequest describing one /v1 call,
+// testable without a daemon. No I/O, no trebi imports.
+package request
 
 import (
 	"fmt"
@@ -11,9 +14,12 @@ import (
 
 // HTTPRequest is a pure description of a CLI→API call (testable without a daemon).
 type HTTPRequest struct {
-	Method string
-	Path   string
-	Body   any // nil when no body
+	Method      string
+	Path        string
+	Body        any    // JSON body; nil when no body
+	Raw         []byte // raw body; mutually exclusive with Body
+	ContentType string // for Raw; default application/octet-stream
+	IfMatch     string // optional If-Match header
 }
 
 // BuildRunsCreate builds POST /v1/runs from CLI flags.
@@ -69,6 +75,44 @@ func BuildRunTranscript(id string, raw bool) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: path}
 }
 
+// BuildRunGetPath builds GET /v1/runs/{id}.
+func BuildRunGetPath(id string) string {
+	return "/v1/runs/" + url.PathEscape(id)
+}
+
+// BuildRunTimelinePath builds GET /v1/runs/{id}/timeline.
+func BuildRunTimelinePath(id string) string {
+	return "/v1/runs/" + url.PathEscape(id) + "/timeline"
+}
+
+// BuildRunLogPath builds GET /v1/runs/{id}/log. follow adds follow=1 (SSE).
+func BuildRunLogPath(id string, follow bool) string {
+	path := "/v1/runs/" + url.PathEscape(id) + "/log"
+	if follow {
+		path += "?follow=1"
+	}
+	return path
+}
+
+// BuildRunResume builds POST /v1/runs/{id}/resume.
+func BuildRunResume(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/runs/" + url.PathEscape(id) + "/resume"}
+}
+
+// BuildRunReplay builds POST /v1/runs/{id}/replay.
+func BuildRunReplay(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/runs/" + url.PathEscape(id) + "/replay"}
+}
+
+// BuildRunApprove builds POST /v1/runs/{id}/approve. decision is allow|deny.
+func BuildRunApprove(id, decision string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/runs/" + url.PathEscape(id) + "/approve",
+		Body:   map[string]string{"decision": decision},
+	}
+}
+
 // BuildRunsStats builds GET /v1/stats/runs.
 func BuildRunsStats() HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/stats/runs"}
@@ -85,12 +129,62 @@ func BuildStreamPath(topics, cursor string) string {
 	return withQuery("/v1/stream", map[string]string{"topics": topics, "cursor": cursor})
 }
 
+// BuildStreamDumpPath builds GET /v1/stream in dump mode (follow=0):
+// retained history only, then close.
+func BuildStreamDumpPath(topics, cursor string) string {
+	return withQuery(BuildStreamPath(topics, cursor), map[string]string{"follow": "0"})
+}
+
 // BuildDoctorFix builds POST /v1/system/doctor/{id}/fix.
 func BuildDoctorFix(id string) HTTPRequest {
 	return HTTPRequest{
 		Method: "POST",
 		Path:   "/v1/system/doctor/" + url.PathEscape(id) + "/fix",
 	}
+}
+
+// BuildSkillGetPath builds GET /v1/skills/{name}.
+func BuildSkillGetPath(name string) string {
+	return "/v1/skills/" + url.PathEscape(name)
+}
+
+// BuildSkillCreate builds POST /v1/skills with SKILL.md content.
+// provenance empty defaults to local server-side.
+func BuildSkillCreate(name, skillMD, provenance string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/skills",
+		Body:   map[string]any{"name": name, "skill_md": skillMD, "provenance": provenance},
+	}
+}
+
+// BuildSkillUpdate builds POST /v1/skills/{name}/update (pull upstream).
+func BuildSkillUpdate(name string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/skills/" + url.PathEscape(name) + "/update"}
+}
+
+// BuildSkillDelete builds DELETE /v1/skills/{name}.
+func BuildSkillDelete(name string) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: "/v1/skills/" + url.PathEscape(name)}
+}
+
+// BuildSecretsListPath builds GET /v1/secrets.
+func BuildSecretsListPath() string {
+	return "/v1/secrets"
+}
+
+// BuildSecretPut builds PUT /v1/secrets/{name}.
+func BuildSecretPut(name, value string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PUT",
+		Path:   "/v1/secrets/" + url.PathEscape(name),
+		Body:   map[string]string{"value": value},
+	}
+}
+
+// BuildSecretDelete builds DELETE /v1/secrets/{name}.
+func BuildSecretDelete(name string) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: "/v1/secrets/" + url.PathEscape(name)}
 }
 
 // BuildSkillPut builds PUT /v1/skills/{name}.
@@ -175,6 +269,56 @@ func BuildAssistantMemoryClear(workspaceID string) HTTPRequest {
 		Method: "DELETE",
 		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory",
 	}
+}
+
+// BuildWorkspacesListPath builds GET /v1/workspaces.
+func BuildWorkspacesListPath() string {
+	return "/v1/workspaces"
+}
+
+// BuildWorkspaceGetPath builds GET /v1/workspaces/{id}.
+func BuildWorkspaceGetPath(id string) string {
+	return "/v1/workspaces/" + url.PathEscape(id)
+}
+
+// BuildAssistantGetPath builds GET /v1/workspaces/{id}/assistant.
+func BuildAssistantGetPath(workspaceID string) string {
+	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant"
+}
+
+// BuildAssistantPut builds PUT /v1/workspaces/{id}/assistant with TREBI.md content.
+// Empty content lets the server write its default template.
+func BuildAssistantPut(workspaceID, content string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PUT",
+		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant",
+		Body:   map[string]string{"content": content},
+	}
+}
+
+// BuildAssistantPatch builds PATCH /v1/workspaces/{id}/assistant (disabled flag).
+// disabled nil leaves the flag alone.
+func BuildAssistantPatch(workspaceID string, disabled *bool, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:  "PATCH",
+		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant",
+		Body:    map[string]any{"disabled": disabled},
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildAssistantDelete builds DELETE /v1/workspaces/{id}/assistant.
+func BuildAssistantDelete(workspaceID, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:  "DELETE",
+		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant",
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildAssistantMemoryGetPath builds GET /v1/workspaces/{id}/assistant/memory.
+func BuildAssistantMemoryGetPath(workspaceID string) string {
+	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory"
 }
 
 // BuildWorkspaceDelete builds DELETE /v1/workspaces/{id}.
@@ -300,6 +444,67 @@ func BuildSkillFilePutPath(name, rel string) string {
 // BuildSkillFileDeletePath builds DELETE /v1/skills/{name}/files/{path}.
 func BuildSkillFileDeletePath(name, rel string) string {
 	return skillFilePathURL(name, rel)
+}
+
+// BuildFilePut builds PUT /v1/workspaces/{id}/files/{path} with a raw body.
+// contentType empty defaults to application/octet-stream at send time.
+func BuildFilePut(workspaceID, rel string, content []byte, contentType, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:      "PUT",
+		Path:        BuildFilePutPath(workspaceID, rel),
+		Raw:         content,
+		ContentType: contentType,
+		IfMatch:     ifMatch,
+	}
+}
+
+// BuildFileDelete builds DELETE /v1/workspaces/{id}/files/{path} with optional If-Match.
+func BuildFileDelete(workspaceID, rel, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:  "DELETE",
+		Path:    BuildFileDeletePath(workspaceID, rel),
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildJobFilePut builds PUT /v1/jobs/{name}/files/{path}?workspace= with a raw body.
+func BuildJobFilePut(name, workspace, rel string, content []byte, contentType, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:      "PUT",
+		Path:        BuildJobFilePutPath(name, workspace, rel),
+		Raw:         content,
+		ContentType: contentType,
+		IfMatch:     ifMatch,
+	}
+}
+
+// BuildJobFileDelete builds DELETE /v1/jobs/{name}/files/{path}?workspace= with optional If-Match.
+func BuildJobFileDelete(name, workspace, rel, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:  "DELETE",
+		Path:    BuildJobFileDeletePath(name, workspace, rel),
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildSkillFilePut builds PUT /v1/skills/{name}/files/{path} with a raw body.
+func BuildSkillFilePut(name, rel string, content []byte, contentType, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:      "PUT",
+		Path:        BuildSkillFilePutPath(name, rel),
+		Raw:         content,
+		ContentType: contentType,
+		IfMatch:     ifMatch,
+	}
+}
+
+// BuildSkillFileDelete builds DELETE /v1/skills/{name}/files/{path} with optional If-Match.
+func BuildSkillFileDelete(name, rel, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:  "DELETE",
+		Path:    BuildSkillFileDeletePath(name, rel),
+		IfMatch: ifMatch,
+	}
 }
 
 // BuildRulesTest builds POST /v1/rules/test.
@@ -432,6 +637,51 @@ func BuildServiceShutdown() HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/system/shutdown"}
 }
 
+// BuildSystemHealthPath builds GET /v1/system/health.
+func BuildSystemHealthPath() string {
+	return "/v1/system/health"
+}
+
+// BuildSystemDoctorPath builds GET /v1/system/doctor.
+func BuildSystemDoctorPath() string {
+	return "/v1/system/doctor"
+}
+
+// BuildSystemLogsPath builds GET /v1/system/logs (last 200 daemon log lines).
+func BuildSystemLogsPath() string {
+	return "/v1/system/logs"
+}
+
+// BuildSystemUpdatePath builds GET /v1/system/update (version check).
+func BuildSystemUpdatePath() string {
+	return "/v1/system/update"
+}
+
+// BuildSystemDrain builds POST /v1/system/drain.
+func BuildSystemDrain() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/system/drain"}
+}
+
+// BuildSystemUndrain builds POST /v1/system/undrain.
+func BuildSystemUndrain() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/system/undrain"}
+}
+
+// BuildCloudStatusPath builds GET /v1/cloud/status.
+func BuildCloudStatusPath() string {
+	return "/v1/cloud/status"
+}
+
+// BuildCloudLink builds POST /v1/cloud/link.
+func BuildCloudLink() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/cloud/link"}
+}
+
+// BuildCloudUnlink builds DELETE /v1/cloud/link.
+func BuildCloudUnlink() HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: "/v1/cloud/link"}
+}
+
 // BuildJobMemoryEntryAdd builds POST /v1/jobs/{name}/memory/entries.
 func BuildJobMemoryEntryAdd(name, workspace, date, text string) HTTPRequest {
 	body := map[string]any{"text": text}
@@ -472,6 +722,16 @@ func BuildAssistantMemoryEntryDelete(workspaceID, entryID string) HTTPRequest {
 		Method: "DELETE",
 		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory/entries/" + url.PathEscape(entryID),
 	}
+}
+
+// BuildQueueRequeue builds POST /v1/queue/{id}/requeue.
+func BuildQueueRequeue(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/queue/" + url.PathEscape(id) + "/requeue"}
+}
+
+// BuildQueueCancel builds POST /v1/queue/{id}/cancel.
+func BuildQueueCancel(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/queue/" + url.PathEscape(id) + "/cancel"}
 }
 
 // BuildQueueListPath builds GET /v1/queue?status=&cursor=&limit=.
@@ -597,6 +857,51 @@ func MatchConversation(conversationKey, substr string) bool {
 	return strings.Contains(strings.ToLower(conversationKey), strings.ToLower(substr))
 }
 
+// BuildJobsListPath builds GET /v1/jobs?workspace=.
+func BuildJobsListPath(workspace string) string {
+	return withQuery("/v1/jobs", workspaceQ(workspace))
+}
+
+// BuildJobCreate builds POST /v1/jobs with full JOB.md content.
+func BuildJobCreate(name, workspace, content string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/jobs",
+		Body:   map[string]any{"name": name, "workspace": workspace, "content": content},
+	}
+}
+
+// BuildJobPatch builds PATCH /v1/jobs/{name}?workspace= with a JSON-merge-patch
+// of frontmatter scalar fields. ifMatch is sent as If-Match when non-empty.
+func BuildJobPatch(name, workspace string, patch map[string]any, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:  "PATCH",
+		Path:    withQuery("/v1/jobs/"+url.PathEscape(name), workspaceQ(workspace)),
+		Body:    patch,
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildJobRunPath builds POST /v1/jobs/{name}/run?workspace=.
+func BuildJobRunPath(name, workspace string) string {
+	return withQuery("/v1/jobs/"+url.PathEscape(name)+"/run", workspaceQ(workspace))
+}
+
+// BuildJobGetPath builds GET /v1/jobs/{name}?workspace=.
+func BuildJobGetPath(name, workspace string) string {
+	return withQuery("/v1/jobs/"+url.PathEscape(name), workspaceQ(workspace))
+}
+
+// BuildJobValidatePath builds POST /v1/jobs/{name}/validate?workspace=.
+func BuildJobValidatePath(name, workspace string) string {
+	return withQuery("/v1/jobs/"+url.PathEscape(name)+"/validate", workspaceQ(workspace))
+}
+
+// BuildJobMemoryGetPath builds GET /v1/jobs/{name}/memory?workspace=.
+func BuildJobMemoryGetPath(name, workspace string) string {
+	return withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace))
+}
+
 // BuildJobDelete builds DELETE /v1/jobs/{name}.
 func BuildJobDelete(name, workspace string, purge bool) HTTPRequest {
 	kv := workspaceQ(workspace)
@@ -695,6 +1000,19 @@ func ApplyScheduleMarkdown(markdown, value string) (string, error) {
 	return "---\n" + string(outFM) + "---\n" + body, nil
 }
 
+// BuildHarnessesListPath builds GET /v1/harnesses.
+func BuildHarnessesListPath() string {
+	return "/v1/harnesses"
+}
+
+// BuildHarnessLoginCancel builds DELETE /v1/harnesses/{name}/login.
+func BuildHarnessLoginCancel(name string) HTTPRequest {
+	return HTTPRequest{
+		Method: "DELETE",
+		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/login",
+	}
+}
+
 // BuildHarnessEnsure builds POST /v1/harnesses/{name}/ensure.
 func BuildHarnessEnsure(name string) HTTPRequest {
 	return HTTPRequest{
@@ -773,6 +1091,16 @@ func BuildHarnessLoginGet(name string) HTTPRequest {
 	}
 }
 
+// BuildIntegrationGetPath builds GET /v1/integrations/{name}.
+func BuildIntegrationGetPath(name string) string {
+	return "/v1/integrations/" + url.PathEscape(name)
+}
+
+// BuildIntegrationCreate builds POST /v1/integrations with a full definition.
+func BuildIntegrationCreate(def map[string]any) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/integrations", Body: def}
+}
+
 // BuildIntegrationRestart builds POST /v1/integrations/{name}/restart.
 func BuildIntegrationRestart(name string) HTTPRequest {
 	return HTTPRequest{
@@ -846,6 +1174,11 @@ func BuildIntegrationLogsPath(name string, follow bool) string {
 	return withQuery("/v1/integrations/"+url.PathEscape(name)+"/logs", kv)
 }
 
+// BuildConfigGet builds GET /v1/config.
+func BuildConfigGet() HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/config"}
+}
+
 // BuildConfigSet builds PATCH /v1/config with dotted key set.
 func BuildConfigSet(key, value string) HTTPRequest {
 	return HTTPRequest{
@@ -877,14 +1210,16 @@ func BuildConfigBridgeSet(tool, resource, mode string) (HTTPRequest, error) {
 func FilterJobsByKindFlag(rows []map[string]any, kind string) []map[string]any {
 	out := make([]map[string]any, 0, len(rows))
 	for _, j := range rows {
-		if keepJobKind(kind, mapStr(j, "kind")) {
+		rowKind, _ := j["kind"].(string)
+		if keepJobKind(kind, rowKind) {
 			out = append(out, j)
 		}
 	}
 	return out
 }
 
-func parseJobListKind(s string) (string, error) {
+// ParseJobListKind validates a --kind flag value (job|assistant|all).
+func ParseJobListKind(s string) (string, error) {
 	switch strings.TrimSpace(s) {
 	case "", "job":
 		return "job", nil
