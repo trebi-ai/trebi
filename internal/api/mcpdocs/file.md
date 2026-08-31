@@ -7,7 +7,9 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 The `owner` field selects the file plane:
 - `workspace`: set `workspace` to the workspace id.
 - `job`: set `name` to the job name; `workspace` is optional.
-- `skill`: set `name` to the skill name.
+- `skill`: set `name` to the skill name. Only skills whose provenance is `local`
+  or `assistant` accept writes; any other provenance returns `conflict`.
+  `SKILL.md` itself is not writable here — use the `skill` tool `set` action.
 
 Content is text. Binary content is not supported over this tool.
 

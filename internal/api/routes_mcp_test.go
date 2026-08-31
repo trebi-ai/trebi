@@ -355,7 +355,7 @@ func TestMCPTraversalIsError(t *testing.T) {
 	ws := mcpOK(t, "workspace.add", res, text)
 	wsID := fmt.Sprint(ws["id"])
 
-	for _, p := range []string{"../notes.txt", "a/../../notes.txt", "./notes.txt"} {
+	for _, p := range []string{"../notes.txt", "a/../../notes.txt", "./notes.txt", "/tmp/notes.txt"} {
 		res, text = mcpCall(t, cs, "file", "put", map[string]any{
 			"owner": "workspace", "workspace": wsID, "path": p, "content": "SHOULD NOT LAND\n",
 		})

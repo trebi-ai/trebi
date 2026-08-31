@@ -58,6 +58,14 @@ func noTraversalMiddleware(next http.Handler) http.Handler {
 				"path segment "+strconv.Quote(seg)+" is not allowed; use a path relative to the resource root")
 			return
 		}
+		// A resource path that itself starts with "/" produces a doubled
+		// slash. ServeMux would clean it and answer 307, so the caller sees a
+		// redirect instead of the real mistake: an absolute path.
+		if strings.Contains(r.URL.EscapedPath(), "//") {
+			writeErr(w, http.StatusBadRequest, "validation",
+				"path must be relative to the resource root; absolute paths are not allowed")
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }

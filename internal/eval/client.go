@@ -133,7 +133,22 @@ func clientErrorSummary(res *LaunchResult) string {
 	if len(res.Errors) > 0 {
 		return strings.Join(res.Errors, "; ")
 	}
+	if n := toolStepCount(res.Steps); n > 0 {
+		return fmt.Sprintf("no final answer after %d tool calls (timeout)", n)
+	}
 	return "zero assistant steps"
+}
+
+// toolStepCount counts tool calls the client actually made. A client that made
+// some is alive; it ran out of time before its final message.
+func toolStepCount(steps []Step) int {
+	n := 0
+	for _, s := range steps {
+		if s.Role == "tool" {
+			n++
+		}
+	}
+	return n
 }
 
 func mcpHandshakeOK(steps []Step) bool {

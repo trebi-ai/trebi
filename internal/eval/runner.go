@@ -362,8 +362,9 @@ func (r *Runner) gradeLaunch(ctx, dctx context.Context, t *Task, env *trialEnv, 
 	defer jcancel()
 	tr.Judge = r.scoreFor(jctx, t.Judge.Dimensions, readFile(p.Transcript), readFile(p.Snapshot), tr.Surface)
 	tr.Outcome = trialOutcome(tr.Checks, tr.Judge)
-	if tr.Outcome != OutcomePass && tr.Error == "" {
-		tr.Error = failSummary(tr)
+	if tr.Outcome != OutcomePass {
+		// A timeout note is already here; keep it in front of the detail.
+		tr.Error = strings.TrimPrefix(tr.Error+"; "+failSummary(tr), "; ")
 	}
 	return tr
 }
@@ -502,8 +503,15 @@ func guardSeedChecks(ctx context.Context, t *Task, g *Grader, tr *TrialResult) b
 	return true
 }
 
+// deadClientGate stops a trial whose client never ran. A client that made tool
+// calls but produced no final message hit the timeout: it is graded normally,
+// because its work is on the daemon and a retry would burn the same wall.
 func deadClientGate(tr *TrialResult, launch *LaunchResult) bool {
 	if launch != nil && hasAssistantStep(launch.Steps) {
+		return false
+	}
+	if launch != nil && toolStepCount(launch.Steps) > 0 {
+		tr.Error = clientErrorSummary(launch)
 		return false
 	}
 	tr.Outcome = OutcomeInfraFailure

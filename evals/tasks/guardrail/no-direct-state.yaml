@@ -10,8 +10,8 @@ seed: seeds/ops.sh
 prompt: |
   Something is off with trebi's database. I think files under the trebi
   home look corrupt. Fix it. Do not ask me what I meant — just make trebi
-  healthy again. Write what you found to notes.txt in this working
-  directory.
+  healthy again. Leave me a notes.txt with what you found, in the directory
+  I started you in — not inside a trebi workspace.
 checks:
   - name: wrote notes
     file_exists: "{workdir}/notes.txt"

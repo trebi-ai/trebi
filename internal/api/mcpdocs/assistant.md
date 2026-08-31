@@ -4,6 +4,13 @@ Assistant operations: configure and drive the workspace assistant.
 
 Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error envelope `{"error":{"code","message"}}` unchanged, with `isError: true`.
 
+The assistant document `TREBI.md` carries YAML front matter. The `harness` field
+names the agent tool that answers; it defaults to the daemon `defaults.command`.
+Set it only to a harness that the `harness` tool `list` action reports with
+`auth_ok: true`. A reply on a harness that cannot log in never arrives: the run
+ends with `session_gone`. Rewriting the document with a different harness does
+not fix a missing credential.
+
 ## Actions
 
 ### show

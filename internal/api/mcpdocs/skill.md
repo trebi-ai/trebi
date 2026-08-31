@@ -18,7 +18,12 @@ Read one skill.
 Create one skill.
 - `name` (string, required): skill name.
 - `content` (string, required): skill document text.
-- `provenance` (string, optional): origin label.
+- `provenance` (string, optional): origin of the skill, one of `local`,
+  `assistant`, `git`, `registry`, `integration`. Leave it unset unless you know
+  the skill came from elsewhere: it defaults to `local`, and only `local` and
+  `assistant` skills accept support-file writes. A skill created with any other
+  provenance rejects `file put` with `conflict`, and the fix is to create the
+  skill again as `local`.
 
 ### set
 Replace one skill document.

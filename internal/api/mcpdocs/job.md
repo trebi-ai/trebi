@@ -6,6 +6,11 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 
 A launch blocks until the queue accepts the run. Poll the `run` tool for status.
 
+A job definition carries YAML front matter. The `harness` field names the agent
+tool that runs it; it defaults to the daemon `defaults.command`. Set it only to a
+harness that the `harness` tool `list` action reports with `auth_ok: true`. A run
+on a harness that cannot log in starts and then ends with `session_gone`.
+
 ## Actions
 
 ### list
