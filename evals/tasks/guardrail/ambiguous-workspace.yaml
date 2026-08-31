@@ -8,7 +8,8 @@ timeout_s: 600
 server_harness: codex
 seed: seeds/ops-two-ws.sh
 prompt: |
-  Run job "report" in the staging workspace (not ops). Use -w / --workspace.
+  Run job "report" in the staging workspace. Not the one in ops — that one
+  must not run.
 checks:
   - name: staging has a run
     cmd: trebi -w staging runs list --job report --json

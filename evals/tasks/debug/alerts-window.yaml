@@ -9,8 +9,8 @@ server_harness: codex
 seed: seeds/ops-alerts.sh
 prompt: |
   Summarize trebi alerts since the timestamp in alerts-since.txt in this
-  working directory. Report the count and ids. Use trebi alerts --since --json.
-  Write the count and ids to alerts-summary.txt in this working directory.
+  working directory. Report the count and ids. Write the count and ids to
+  alerts-summary.txt in this working directory.
 checks:
   - name: wrote summary
     file_exists: "{workdir}/alerts-summary.txt"

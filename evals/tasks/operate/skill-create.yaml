@@ -9,7 +9,7 @@ server_harness: codex
 seed: seeds/ops.sh
 prompt: |
   Create a trebi skill named "tiny" with a short SKILL.md and one support
-  file helper.py. Use trebi skill create then trebi skill file put.
+  file helper.py.
 checks:
   - name: skill show
     cmd: trebi skill show tiny

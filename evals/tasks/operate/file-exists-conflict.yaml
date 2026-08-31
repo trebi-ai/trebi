@@ -8,9 +8,9 @@ timeout_s: 300
 server_harness: codex
 seed: seeds/ops-data-csv.sh
 prompt: |
-  data.csv already exists in workspace ops. Update it to contain the
-  row "9,9" without clobbering a concurrent edit. Use If-Match. If you
-  get precondition_failed, re-read and retry.
+  data.csv already exists in workspace ops. Update it to contain the row
+  "9,9". Someone else may be editing that file right now, so do not
+  overwrite their change.
 checks:
   - name: new content
     file_contains: "{workspace}/data.csv"

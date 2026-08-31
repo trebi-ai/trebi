@@ -8,9 +8,9 @@ timeout_s: 300
 server_harness: codex
 seed: seeds/ops-bus.sh
 prompt: |
-  Report the last 10 run events from the trebi event bus, filtered to the
-  run topic. On the CLI the command follows the bus forever unless you
-  bound it, so it must exit on its own.
+  Report the last 10 run events from the trebi event bus, just the run
+  topic. Last time I tried this it hung and I had to Ctrl-C it, so make
+  sure it comes back on its own.
 checks:
   - name: bus read is bounded
     surfaces: [cli]

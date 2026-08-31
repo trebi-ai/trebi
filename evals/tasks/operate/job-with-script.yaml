@@ -10,8 +10,7 @@ seed: seeds/ops.sh
 prompt: |
   In workspace ops, create a job called "scripter" that runs a helper
   script hello.sh placed next to the job. The script should write
-  "script-ok" to script-out.txt. Upload the script with trebi job file,
-  validate, test, then run.
+  "script-ok" to script-out.txt. Get it working and show me a completed run.
 checks:
   - name: script present
     cmd: trebi job file list --json scripter

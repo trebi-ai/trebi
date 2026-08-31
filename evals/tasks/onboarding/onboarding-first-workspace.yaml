@@ -7,8 +7,9 @@ trials: 3
 timeout_s: 300
 server_harness: codex
 prompt: |
-  Create a trebi workspace named "ops" using pathless create. If your
-  interface supports a default sticky workspace, make "ops" the default.
+  Create a trebi workspace named "ops". I have no folder for it yet, so let
+  trebi put it wherever it keeps workspaces. If your interface supports a
+  default workspace, make "ops" the default.
 checks:
   - name: workspace exists
     cmd: trebi workspace list --json
