@@ -20,12 +20,13 @@ func (c *codexClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResul
 	if _, err := exec.LookPath("codex"); err != nil {
 		return nil, fmt.Errorf("codex not on PATH: %w", err)
 	}
-	if opts.Surface != surfaceMCP {
-		if err := os.WriteFile(filepath.Join(opts.Workdir, "AGENTS.md"), AgentsMarkdown(opts.SkillMD), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(opts.Workdir, "AGENTS.md"), AgentsMarkdown(opts.SkillMD, opts.Surface), 0o644); err != nil {
+		return nil, err
+	}
+	if opts.Surface == surfaceMCP {
+		if err := writeCodexMCPConfig(opts.ConfigHome, opts.MCPURL, opts.MCPToken); err != nil {
 			return nil, err
 		}
-	} else if err := writeCodexMCPConfig(opts.ConfigHome, opts.MCPURL, opts.MCPToken); err != nil {
-		return nil, err
 	}
 	timeout := opts.Timeout
 	if timeout <= 0 {

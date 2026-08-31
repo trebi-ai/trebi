@@ -44,7 +44,7 @@ func TestJudgeConfirmFail(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			stubClaude(t, tt.script)
 			j := &judgeRunner{model: "claude-sonnet-5"}
-			v, err := j.call(context.Background(), JudgeDim{Name: "d", Rubric: "r"}, tt.min, nil, nil)
+			v, err := j.call(context.Background(), JudgeDim{Name: "d", Rubric: "r"}, tt.min, nil, nil, surfaceCLI)
 			if err != nil {
 				t.Fatalf("call: %v", err)
 			}
@@ -60,7 +60,7 @@ func TestJudgeConfirmFailDisagreement(t *testing.T) {
 	script := "if [ ! -f '" + nfile + "' ]; then echo 1 > '" + nfile + "'; echo '{\"score\":0,\"verdict\":\"fail\",\"evidence\":\"looks bad\",\"unknown\":false}'\nelse echo '{\"score\":1,\"verdict\":\"pass\",\"evidence\":\"actually ok\",\"unknown\":false}'\nfi"
 	stubClaude(t, script)
 	j := &judgeRunner{model: "claude-sonnet-5"}
-	v, err := j.call(context.Background(), JudgeDim{Name: "d", Rubric: "r"}, 1.0, nil, nil)
+	v, err := j.call(context.Background(), JudgeDim{Name: "d", Rubric: "r"}, 1.0, nil, nil, surfaceCLI)
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestJudgeConfirmFailDisagreement(t *testing.T) {
 
 func TestJudgePromptConsistencyRule(t *testing.T) {
 	t.Parallel()
-	p := judgePrompt(JudgeDim{Name: "used -w", Rubric: "cite -w"}, nil, nil)
+	p := judgePrompt(JudgeDim{Name: "used -w", Rubric: "cite -w"}, nil, nil, surfaceCLI)
 	if !strings.Contains(p, "Your verdict must follow from your evidence") {
 		t.Fatal("missing consistency rule")
 	}

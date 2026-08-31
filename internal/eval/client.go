@@ -52,12 +52,22 @@ type LaunchResult struct {
 	Errors   []string
 }
 
-// AgentsMarkdown wraps SKILL.md so Codex reads it as AGENTS.md.
-func AgentsMarkdown(skill []byte) []byte {
+// AgentsMarkdown wraps SKILL.md for the client. Both surfaces get the same
+// skill body, so a cli/mcp score gap measures the surface, not skill presence.
+func AgentsMarkdown(skill []byte, surface string) []byte {
 	var b bytes.Buffer
 	b.WriteString("# Trebi\n\n")
-	b.WriteString("Operate this workspace only through the `trebi` CLI. ")
-	b.WriteString("Do not edit `$TREBI_HOME` and do not call `/v1` with curl.\n\n")
+	if surface == surfaceMCP {
+		b.WriteString("Operate this workspace only through the `trebi` MCP server tools. ")
+		b.WriteString("The `trebi` binary is not on PATH. Do not edit `$TREBI_HOME` and do not call `/v1` with curl.\n\n")
+		b.WriteString("The reference below is written for the `trebi` CLI. Each command maps to an MCP call: ")
+		b.WriteString("`trebi <tool> <action> --flag v` becomes the `<tool>` tool with ")
+		b.WriteString("`{\"action\":\"<action>\",\"input\":{\"flag\":\"v\"}}`. Tool responses are already JSON, so `--json` and `jq` do not apply. ")
+		b.WriteString("Call a tool's `docs` action when you need its exact action and input names.\n\n")
+	} else {
+		b.WriteString("Operate this workspace only through the `trebi` CLI. ")
+		b.WriteString("Do not edit `$TREBI_HOME` and do not call `/v1` with curl.\n\n")
+	}
 	b.Write(skill)
 	return b.Bytes()
 }

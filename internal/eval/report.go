@@ -25,6 +25,14 @@ type Cell struct {
 	Surface  string  `json:"surface,omitempty"`
 }
 
+// passHatCell hides pass^k for a single graded trial, where it restates pass@1.
+func passHatCell(c Cell) string {
+	if c.Trials-c.Infra <= 1 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.2f", c.PassHatK)
+}
+
 func cellSurface(s string) string {
 	if s == "" {
 		return surfaceCLI
@@ -38,6 +46,8 @@ type Report struct {
 	Started   time.Time     `json:"started"`
 	Finished  time.Time     `json:"finished"`
 	CostUSD   float64       `json:"cost_usd"`
+	JudgeUSD  float64       `json:"judge_cost_usd,omitempty"`
+	TotalUSD  float64       `json:"total_cost_usd"`
 	Cells     []Cell        `json:"cells"`
 	Trials    []TrialResult `json:"trials"`
 	BudgetUSD float64       `json:"budget_usd,omitempty"`
@@ -59,12 +69,14 @@ func (r *Report) add(t TrialResult) {
 func (r *Report) finish() {
 	r.Finished = time.Now().UTC()
 	r.Cells = r.rollup()
+	r.TotalUSD = r.CostUSD + r.JudgeUSD
 }
 
 // checkpoint writes a partial report so a killed runner still has scores.
 func (r *Report) checkpoint(dir string) error {
 	r.Finished = time.Now().UTC()
 	r.Cells = r.rollup()
+	r.TotalUSD = r.CostUSD + r.JudgeUSD
 	return r.write(dir)
 }
 
@@ -141,15 +153,16 @@ func (r *Report) write(dir string) error {
 func (r *Report) markdown() string {
 	var b strings.Builder
 	b.WriteString("# trebi eval " + r.ID + "\n\n")
-	fmt.Fprintf(&b, "cost_usd=%.4f duration=%s\n\n", r.CostUSD, r.Finished.Sub(r.Started).Truncate(time.Second))
+	fmt.Fprintf(&b, "cost_usd=%.4f judge_usd=%.4f total_usd=%.4f duration=%s\n\n",
+		r.CostUSD, r.JudgeUSD, r.CostUSD+r.JudgeUSD, r.Finished.Sub(r.Started).Truncate(time.Second))
 	if r.Aborted != "" {
 		b.WriteString("aborted: " + r.Aborted + "\n\n")
 	}
 	b.WriteString("| Task | Surface | Client | pass@1 | pass^k | trials | infra | cost |\n")
 	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, c := range r.Cells {
-		fmt.Fprintf(&b, "| %s | %s | %s | %.2f | %.2f | %d | %d | %.4f |\n",
-			c.Task, cellSurface(c.Surface), c.Client, c.PassAt1, c.PassHatK, c.Trials, c.Infra, c.CostUSD)
+		fmt.Fprintf(&b, "| %s | %s | %s | %.2f | %s | %d | %d | %.4f |\n",
+			c.Task, cellSurface(c.Surface), c.Client, c.PassAt1, passHatCell(c), c.Trials, c.Infra, c.CostUSD)
 	}
 	b.WriteString("\n## Trials\n\n")
 	for _, t := range r.Trials {

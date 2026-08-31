@@ -93,7 +93,7 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 			rep.Aborted = err.Error()
 			break
 		}
-		if r.opts.BudgetUSD > 0 && rep.CostUSD >= r.opts.BudgetUSD {
+		if r.overBudget(rep) {
 			rep.Aborted = fmt.Sprintf("budget cap %.4f", r.opts.BudgetUSD)
 			break
 		}
@@ -138,11 +138,18 @@ func (r *Runner) clientFor(name string) (Client, error) {
 	return newClient(name)
 }
 
-func (r *Runner) scoreFor(ctx context.Context, dims []JudgeDim, transcript, snapshot []byte) []JudgeResult {
+func (r *Runner) overBudget(rep *Report) bool {
+	if r.opts.BudgetUSD <= 0 {
+		return false
+	}
+	return rep.CostUSD+rep.JudgeUSD >= r.opts.BudgetUSD
+}
+
+func (r *Runner) scoreFor(ctx context.Context, dims []JudgeDim, transcript, snapshot []byte, surface string) []JudgeResult {
 	if r.scoreAll != nil {
 		return r.scoreAll(ctx, dims, transcript, snapshot)
 	}
-	return r.judge.scoreAll(ctx, dims, transcript, snapshot)
+	return r.judge.scoreAll(ctx, dims, transcript, snapshot, surface)
 }
 
 func (r *Runner) runTask(ctx context.Context, t *Task, rep *Report, outRoot string) {
@@ -163,7 +170,7 @@ func (r *Runner) runTask(ctx context.Context, t *Task, rep *Report, outRoot stri
 					}
 					return
 				}
-				if r.opts.BudgetUSD > 0 && rep.CostUSD >= r.opts.BudgetUSD {
+				if r.overBudget(rep) {
 					if rep.Aborted == "" {
 						rep.Aborted = fmt.Sprintf("budget cap %.4f", r.opts.BudgetUSD)
 					}
@@ -178,6 +185,9 @@ func (r *Runner) runTask(ctx context.Context, t *Task, rep *Report, outRoot stri
 					tr = r.runOne(ctx, t, name, i, art+"-retry", false, surf)
 				}
 				rep.add(*tr)
+				if r.judge != nil {
+					rep.JudgeUSD = r.judge.spendUSD()
+				}
 				fmt.Fprintf(os.Stderr, "eval %s/%s/%s#%d %s %.1fs\n", tr.TaskID, tr.Surface, tr.Client, tr.Index, tr.Outcome, tr.DurationS)
 				_ = rep.checkpoint(outRoot)
 			}
@@ -295,6 +305,9 @@ func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv,
 	if launch != nil {
 		tr.CostUSD = launch.CostUSD
 	}
+	if surface == surfaceMCP {
+		tr.ClientSkills = clientSkillFingerprint(opts.ConfigHome)
+	}
 	if err != nil && (launch == nil || len(launch.Raw) == 0) {
 		tr.Outcome = OutcomeInfraFailure
 		tr.Error = err.Error()
@@ -333,7 +346,6 @@ func (r *Runner) launchOpts(env *trialEnv, p Placeholders, t *Task, clientName, 
 	if err := seedClientHome(cfgHome, clientName); err != nil {
 		return opts, err
 	}
-	opts.SkillMD = nil
 	opts.MCPURL = strings.TrimRight(env.apiURL, "/") + "/mcp"
 	opts.MCPToken = env.token
 	opts.ConfigHome = cfgHome
@@ -348,7 +360,7 @@ func (r *Runner) gradeLaunch(ctx, dctx context.Context, t *Task, env *trialEnv, 
 	tr.Checks = g.runAll(dctx, t.Checks)
 	jctx, jcancel := context.WithTimeout(ctx, judgeBudget(len(t.Judge.Dimensions)))
 	defer jcancel()
-	tr.Judge = r.scoreFor(jctx, t.Judge.Dimensions, readFile(p.Transcript), readFile(p.Snapshot))
+	tr.Judge = r.scoreFor(jctx, t.Judge.Dimensions, readFile(p.Transcript), readFile(p.Snapshot), tr.Surface)
 	tr.Outcome = trialOutcome(tr.Checks, tr.Judge)
 	if tr.Outcome != OutcomePass && tr.Error == "" {
 		tr.Error = failSummary(tr)

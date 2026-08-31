@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -44,6 +46,7 @@ type Check struct {
 	StdoutAbsent    string `yaml:"stdout_absent"`
 	HomeUntouched   bool   `yaml:"home_untouched"`
 	CommandsJQ      string `yaml:"commands_jq"`
+	FileMatches     string `yaml:"file_matches"` // path; pattern goes in Text
 }
 
 // JudgeDim is one isolated judge call.
@@ -273,40 +276,43 @@ func (t *Task) validateClients() error {
 	return nil
 }
 
+// kinds names every check field that selects a mode. Exactly one may be set.
+func (c Check) kinds() []string {
+	set := map[string]bool{
+		"cmd":               c.Cmd != "",
+		"file_exists":       c.FileExists != "",
+		"file_absent":       c.FileAbsent != "",
+		"file_contains":     c.FileContains != "",
+		"file_not_contains": c.FileNotContains != "",
+		"file_matches":      c.FileMatches != "",
+		"snapshot_jq":       c.SnapshotJQ != "",
+		"home_untouched":    c.HomeUntouched,
+		"commands_jq":       c.CommandsJQ != "",
+	}
+	names := make([]string, 0, len(set))
+	for k, on := range set {
+		if on {
+			names = append(names, k)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (c Check) validate() error {
 	if c.Name == "" {
 		return fmt.Errorf("name required")
 	}
-	n := 0
-	if c.Cmd != "" {
-		n++
+	if got := c.kinds(); len(got) != 1 {
+		return fmt.Errorf("need exactly one check mode, got %d %v", len(got), got)
 	}
-	if c.FileExists != "" {
-		n++
+	if (c.FileContains != "" || c.FileNotContains != "" || c.FileMatches != "") && c.Text == "" {
+		return fmt.Errorf("text required with file_contains/file_not_contains/file_matches")
 	}
-	if c.FileAbsent != "" {
-		n++
-	}
-	if c.FileContains != "" {
-		n++
-	}
-	if c.FileNotContains != "" {
-		n++
-	}
-	if c.SnapshotJQ != "" {
-		n++
-	}
-	if c.HomeUntouched {
-		n++
-	}
-	if c.CommandsJQ != "" {
-		n++
-	}
-	if n != 1 {
-		return fmt.Errorf("need exactly one of cmd, file_exists, file_absent, file_contains, file_not_contains, snapshot_jq, home_untouched, commands_jq")
-	}
-	if (c.FileContains != "" || c.FileNotContains != "") && c.Text == "" {
-		return fmt.Errorf("text required with file_contains/file_not_contains")
+	if c.FileMatches != "" {
+		if _, err := regexp.Compile(c.Text); err != nil {
+			return fmt.Errorf("file_matches pattern: %w", err)
+		}
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -41,6 +42,8 @@ func (g *Grader) runOne(ctx context.Context, c Check) CheckResult {
 		return fileTextCheck(c.Name, c.FileContains, c.Text, true)
 	case c.FileNotContains != "":
 		return fileTextCheck(c.Name, c.FileNotContains, c.Text, false)
+	case c.FileMatches != "":
+		return fileMatchCheck(c.Name, c.FileMatches, c.Text)
 	case c.SnapshotJQ != "":
 		return g.checkSnapshotJQ(c)
 	case c.CommandsJQ != "":
@@ -58,6 +61,7 @@ func (g *Grader) expandCheck(c Check) Check {
 	c.FileAbsent = g.p.Expand(c.FileAbsent)
 	c.FileContains = g.p.Expand(c.FileContains)
 	c.FileNotContains = g.p.Expand(c.FileNotContains)
+	c.FileMatches = g.p.Expand(c.FileMatches)
 	c.Text = g.p.Expand(c.Text)
 	c.StdoutContains = g.p.Expand(c.StdoutContains)
 	c.StdoutAbsent = g.p.Expand(c.StdoutAbsent)
@@ -219,6 +223,22 @@ func fileTextCheck(name, path, text string, want bool) CheckResult {
 		return CheckResult{Name: name, Detail: fmt.Sprintf("%s missing %q", path, text)}
 	}
 	return CheckResult{Name: name, Detail: fmt.Sprintf("%s contains %q", path, text)}
+}
+
+// fileMatchCheck matches a file against a Go regexp. A bad pattern is infra.
+func fileMatchCheck(name, path, pattern string) CheckResult {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return CheckResult{Name: name, Infra: true, Detail: err.Error()}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CheckResult{Name: name, Detail: err.Error()}
+	}
+	if re.Match(data) {
+		return CheckResult{Name: name, Pass: true}
+	}
+	return CheckResult{Name: name, Detail: fmt.Sprintf("%s does not match %q:\n%s", path, pattern, truncate(data, 400))}
 }
 
 // transcriptCommands projects command strings from a normalized transcript.

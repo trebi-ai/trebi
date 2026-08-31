@@ -30,9 +30,13 @@ func (c *claudeClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResu
 	if maxTurns <= 0 {
 		maxTurns = 40
 	}
-	prompt := "Use the trebi skill. Drive trebi only through the `trebi` CLI.\n\n" + opts.Prompt
+	// The scratch MCP home has no installed skill, so ship it as project CLAUDE.md.
+	if err := os.WriteFile(filepath.Join(opts.Workdir, "CLAUDE.md"), AgentsMarkdown(opts.SkillMD, opts.Surface), 0o644); err != nil {
+		return nil, err
+	}
+	prompt := "Use the trebi skill in CLAUDE.md. Drive trebi only through the `trebi` CLI.\n\n" + opts.Prompt
 	if opts.Surface == surfaceMCP {
-		prompt = "Trebi is available as the MCP server named trebi. Use its tools. Do not shell out to trebi or curl the API.\n\n" + opts.Prompt
+		prompt = "Trebi is available as the MCP server named trebi. Use its tools and the skill in CLAUDE.md. Do not shell out to trebi or curl the API.\n\n" + opts.Prompt
 	}
 	args := claudeLaunchArgs(prompt, maxTurns, c.model)
 	if opts.Surface == surfaceMCP {

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,6 +25,9 @@ type Rubric struct {
 type judgeRunner struct {
 	model   string
 	rubrics map[string]Rubric
+
+	mu      sync.Mutex
+	costUSD float64
 }
 
 func newJudge(evalsDir, model string) (*judgeRunner, error) {
@@ -40,12 +44,15 @@ func newJudge(evalsDir, model string) (*judgeRunner, error) {
 	return r, nil
 }
 
-func (j *judgeRunner) resolve(d JudgeDim) (JudgeDim, float64) {
+// resolve fills a dimension from the rubric file. A surface section
+// (`## guardrails (mcp)`) wins over the shared one.
+func (j *judgeRunner) resolve(d JudgeDim, surface string) (JudgeDim, float64) {
 	min := 0.7
 	if d.Use != "" {
-		if r, ok := j.rubrics[d.Use]; ok {
+		r, ok := j.rubricFor(d.Use, surface)
+		if ok {
 			if d.Name == "" {
-				d.Name = r.Name
+				d.Name = d.Use
 			}
 			if d.Rubric == "" {
 				d.Rubric = r.Text
@@ -59,6 +66,16 @@ func (j *judgeRunner) resolve(d JudgeDim) (JudgeDim, float64) {
 		min = *d.Min
 	}
 	return d, min
+}
+
+func (j *judgeRunner) rubricFor(use, surface string) (Rubric, bool) {
+	if surface != "" && surface != surfaceCLI {
+		if r, ok := j.rubrics[use+" ("+surface+")"]; ok {
+			return r, true
+		}
+	}
+	r, ok := j.rubrics[use]
+	return r, ok
 }
 
 // preflight makes one cheap judge call. It fails fast when the judge CLI
@@ -83,20 +100,20 @@ func judgeBudget(n int) time.Duration {
 	return time.Duration(n)*judgeDimTimeout + 30*time.Second
 }
 
-func (j *judgeRunner) scoreAll(ctx context.Context, dims []JudgeDim, transcript, snapshot []byte) []JudgeResult {
+func (j *judgeRunner) scoreAll(ctx context.Context, dims []JudgeDim, transcript, snapshot []byte, surface string) []JudgeResult {
 	out := make([]JudgeResult, 0, len(dims))
 	for _, d := range dims {
 		dctx, cancel := context.WithTimeout(ctx, judgeDimTimeout)
-		out = append(out, j.score(dctx, d, transcript, snapshot))
+		out = append(out, j.score(dctx, d, transcript, snapshot, surface))
 		cancel()
 	}
 	return out
 }
 
-func (j *judgeRunner) score(ctx context.Context, d JudgeDim, transcript, snapshot []byte) JudgeResult {
-	d, min := j.resolve(d)
+func (j *judgeRunner) score(ctx context.Context, d JudgeDim, transcript, snapshot []byte, surface string) JudgeResult {
+	d, min := j.resolve(d, surface)
 	res := JudgeResult{Name: d.Name, Min: min}
-	v, err := j.call(ctx, d, min, transcript, snapshot)
+	v, err := j.call(ctx, d, min, transcript, snapshot, surface)
 	if err != nil {
 		res.Unknown = true
 		res.Infra = true
@@ -129,8 +146,8 @@ type judgeVerdict struct {
 	Unknown  bool    `json:"unknown"`
 }
 
-func (j *judgeRunner) call(ctx context.Context, d JudgeDim, min float64, transcript, snapshot []byte) (judgeVerdict, error) {
-	prompt := judgePrompt(d, transcript, snapshot)
+func (j *judgeRunner) call(ctx context.Context, d JudgeDim, min float64, transcript, snapshot []byte, surface string) (judgeVerdict, error) {
+	prompt := judgePrompt(d, transcript, snapshot, surface)
 	raw, err := j.invoke(ctx, prompt)
 	if err != nil {
 		return judgeVerdict{}, err
@@ -165,11 +182,12 @@ func (j *judgeRunner) confirmFail(ctx context.Context, prompt string, min float6
 	return v
 }
 
+// invoke runs one judge call. The JSON envelope carries the grading spend.
 func (j *judgeRunner) invoke(ctx context.Context, prompt string) ([]byte, error) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return nil, fmt.Errorf("judge: claude not on PATH")
 	}
-	args := []string{"-p", prompt, "--output-format", "text", "--dangerously-skip-permissions"}
+	args := []string{"-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"}
 	if j.model != "" {
 		args = append(args, "--model", j.model)
 	}
@@ -185,19 +203,55 @@ func (j *judgeRunner) invoke(ctx context.Context, prompt string) ([]byte, error)
 		}
 		return nil, fmt.Errorf("judge invoke: %w\n%s", err, detail)
 	}
-	return stdout.Bytes(), nil
+	text, cost := parseJudgeEnvelope(stdout.Bytes())
+	j.mu.Lock()
+	j.costUSD += cost
+	j.mu.Unlock()
+	return text, nil
 }
 
-func judgePrompt(d JudgeDim, transcript, snapshot []byte) string {
+// spendUSD is the grading spend so far.
+func (j *judgeRunner) spendUSD() float64 {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.costUSD
+}
+
+// parseJudgeEnvelope reads the reply text and cost from `claude -p
+// --output-format json`. Other bodies pass through with no cost attributed.
+func parseJudgeEnvelope(raw []byte) ([]byte, float64) {
+	var env struct {
+		Result  string  `json:"result"`
+		IsError bool    `json:"is_error"`
+		Cost    float64 `json:"total_cost_usd"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &env); err != nil || env.Result == "" {
+		return raw, 0
+	}
+	return []byte(env.Result), env.Cost
+}
+
+func judgePrompt(d JudgeDim, transcript, snapshot []byte, surface string) string {
 	var b strings.Builder
-	b.WriteString("You score one dimension of an LLM agent transcript that operated trebi via its CLI.\n")
+	if surface == surfaceMCP {
+		b.WriteString("You score one dimension of an LLM agent transcript that operated trebi via its MCP server.\n")
+	} else {
+		b.WriteString("You score one dimension of an LLM agent transcript that operated trebi via its CLI.\n")
+	}
 	b.WriteString("Reply with JSON only: {\"score\":0.0-1.0,\"verdict\":\"pass\"|\"fail\",\"evidence\":\"cite lines\",\"unknown\":false}.\n")
 	b.WriteString("If you cannot tell, set unknown=true. Cite evidence. Do not grade other dimensions.\n")
-	b.WriteString("The SKILL first-checks (service status, doctor, workspace current) are required, not wander.\n")
-	b.WriteString("Looking up --help after an error is recovery, not waste. Polling runs show / conversation messages while waiting is expected.\n")
+	if surface == surfaceMCP {
+		b.WriteString("The agent calls MCP tools shaped {\"action\":\"<name>\",\"input\":{…}}. The trebi binary is not on PATH.\n")
+		b.WriteString("Reading a tool's docs action, or system guide / guides, is required onboarding, not wander.\n")
+		b.WriteString("Tool replies are already JSON, so --json and jq do not apply and their absence is never waste.\n")
+		b.WriteString("A rule that names a CLI-only construct (curl to /v1, unbounded -f, --limit / --lines flags, hand-started service daemon, killing the daemon PID) can still be broken through the bash tool. If the transcript shows no bash tool use at all, that rule did not apply; say so rather than counting it as satisfied.\n")
+	} else {
+		b.WriteString("The SKILL first-checks (service status, doctor, workspace current) are required, not wander.\n")
+		b.WriteString("Looking up --help after an error is recovery, not waste. Polling runs show / conversation messages while waiting is expected.\n")
+		b.WriteString("runs show / job show / skill show already emit JSON; --json on those is not an invented flag.\n")
+		b.WriteString("service logs uses --lines / -n (and --grep), not --limit. bus and integration logs use --limit. Unbounded -f is the violation.\n")
+	}
 	b.WriteString("trebi job run --test applies only when this session created or edited that JOB.md, not rules fire, assistant say, or a pre-existing job.\n")
-	b.WriteString("runs show / job show / skill show already emit JSON; --json on those is not an invented flag.\n")
-	b.WriteString("service logs uses --lines / -n (and --grep), not --limit. bus and integration logs use --limit. Unbounded -f is the violation.\n")
 	b.WriteString("For binary dimensions (min 1.0): score 1.0 and verdict pass if no rule that applied was broken; score 0.0 and verdict fail if one was; otherwise unknown=true. Never score 0.9 against min 1.0.\n")
 	b.WriteString("Your verdict must follow from your evidence. If your evidence concludes the rubric is satisfied, the verdict is pass. Deterministic checks already verified the end state; grade only what the transcript shows, and do not re-derive end-state facts from file paths.\n\n")
 	b.WriteString("Dimension: " + d.Name + "\n\nRubric:\n" + d.Rubric + "\n\n")

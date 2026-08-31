@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -60,6 +61,9 @@ type TrialResult struct {
 	Error     string        `json:"error,omitempty"`
 	Dir       string        `json:"dir"`
 	Surface   string        `json:"surface,omitempty"`
+	// ClientSkills fingerprints skills the client bootstrapped into the scratch
+	// home. Uncontrolled input: it moves when the client ships a new skill.
+	ClientSkills string `json:"client_skills,omitempty"`
 }
 
 // Passed reports deterministic checks and judge minima all green.
@@ -630,6 +634,31 @@ func filterEnv(env []string, drop ...string) []string {
 		out = append(out, e)
 	}
 	return out
+}
+
+// clientSkillFingerprint hashes the skills a client bootstrapped into the
+// scratch MCP home. Empty when it installed none.
+func clientSkillFingerprint(cfgHome string) string {
+	root := filepath.Join(cfgHome, "skills")
+	tree, err := hashTree(root)
+	if err != nil || len(tree) == 0 {
+		return ""
+	}
+	rels := make([]string, 0, len(tree))
+	for rel := range tree {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels)
+	names := map[string]bool{}
+	h := sha256.New()
+	for _, rel := range rels {
+		fmt.Fprintf(h, "%s %s\n", rel, tree[rel])
+		if parts := strings.Split(rel, "/"); len(parts) > 1 {
+			names[parts[len(parts)-2]] = true
+		}
+	}
+	return fmt.Sprintf("%d files, %d skills, sha256:%s",
+		len(rels), len(names), hex.EncodeToString(h.Sum(nil))[:12])
 }
 
 func hashTree(root string) (map[string]string, error) {

@@ -275,7 +275,7 @@ func TestWriteTranscriptEmptySteps(t *testing.T) {
 
 func TestAgentsMarkdown(t *testing.T) {
 	t.Parallel()
-	got := string(AgentsMarkdown([]byte("# skill")))
+	got := string(AgentsMarkdown([]byte("# skill"), surfaceCLI))
 	if !strings.Contains(got, "trebi") || !strings.Contains(got, "# skill") {
 		t.Fatalf("%s", got)
 	}

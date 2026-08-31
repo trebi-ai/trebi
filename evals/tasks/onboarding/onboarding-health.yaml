@@ -15,6 +15,9 @@ prompt: |
 checks:
   - name: wrote verdict
     file_exists: "{workdir}/health.txt"
+  - name: verdict is one line and says ready
+    file_matches: "{workdir}/health.txt"
+    text: '(?is)\A\s*[^\n]*\bready\b[^\n]*\s*\z'
   - name: no workspaces created
     cmd: trebi workspace list --json
     jq: '.workspaces | length == 0'
