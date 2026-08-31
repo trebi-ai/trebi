@@ -485,6 +485,137 @@ func runWithGroup(ctx context.Context, cmd *exec.Cmd) error {
 	}
 }
 
+func seedClientHome(cfgHome, clientName string) error {
+	name, _, _ := parseClientSpec(clientName)
+	switch name {
+	case clientCodex:
+		return copyCodexAuth(cfgHome)
+	case clientClaude:
+		return seedClaudeOnboarding(cfgHome)
+	default:
+		return nil
+	}
+}
+
+func copyCodexAuth(dst string) error {
+	src := filepath.Join(realCodexHome(), "auth.json")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dst, "auth.json"), data, 0o600)
+}
+
+// writeBackCodexAuth copies scratch auth.json over the real one when the
+// scratch last_refresh is newer. Overlapping eval suites can still race a
+// token rotation; trials in one run are sequential.
+func writeBackCodexAuth(scratchHome string) error {
+	if scratchHome == "" {
+		return nil
+	}
+	realHome := realCodexHome()
+	if realHome == "" || sameAbs(scratchHome, realHome) {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(scratchHome, "auth.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	scratchAt, ok := authLastRefresh(data)
+	if !ok {
+		return fmt.Errorf("scratch auth.json missing last_refresh")
+	}
+	realPath := filepath.Join(realHome, "auth.json")
+	if !codexAuthNewer(scratchAt, realPath) {
+		return nil
+	}
+	if err := atomicWriteFile(realPath, data, 0o600); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "eval: wrote back codex auth.json\n")
+	return nil
+}
+
+func sameAbs(a, b string) bool {
+	aa, _ := filepath.Abs(a)
+	bb, _ := filepath.Abs(b)
+	return aa == bb
+}
+
+func codexAuthNewer(scratchAt time.Time, realPath string) bool {
+	realData, err := os.ReadFile(realPath)
+	if err != nil {
+		return true
+	}
+	realAt, ok := authLastRefresh(realData)
+	return !ok || scratchAt.After(realAt)
+}
+
+func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".auth-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+func authLastRefresh(data []byte) (time.Time, bool) {
+	var doc struct {
+		LastRefresh string `json:"last_refresh"`
+	}
+	if json.Unmarshal(data, &doc) != nil || doc.LastRefresh == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, doc.LastRefresh)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+func seedClaudeOnboarding(dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dst, ".claude.json"), []byte(`{"hasCompletedOnboarding": true}`+"\n"), 0o644)
+}
+
+func realCodexHome() string {
+	if h := os.Getenv("CODEX_HOME"); h != "" {
+		return h
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".codex")
+}
+
 func filterEnv(env []string, drop ...string) []string {
 	skip := map[string]bool{}
 	for _, k := range drop {

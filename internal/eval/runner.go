@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+const preflightTimeout = 90 * time.Second
+
+const (
+	preflightPromptMCP = "call the system tool with action health, then reply DONE"
+	preflightPromptCLI = "trebi doctor --json"
+)
+
 // Options is process wiring for the eval runner.
 type Options struct {
 	EvalsDir  string
@@ -28,9 +35,12 @@ type Options struct {
 
 // Runner owns suite execution.
 type Runner struct {
-	opts    Options
-	skillMD []byte
-	judge   *judgeRunner
+	opts            Options
+	skillMD         []byte
+	judge           *judgeRunner
+	newClient       func(string) (Client, error)
+	scoreAll        func(context.Context, []JudgeDim, []byte, []byte) []JudgeResult
+	preflightLaunch func(context.Context, string, string) (*LaunchResult, string, error)
 }
 
 // NewRunner loads skill + rubrics. Missing files fail fast.
@@ -63,31 +73,20 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, t := range tasks {
-		if len(t.Judge.Dimensions) == 0 {
-			continue
-		}
-		if err := r.judge.preflight(ctx); err != nil {
-			return nil, err
-		}
-		break
+	tasks, err = filterSurface(tasks, r.opts.Surface)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.preflightJudge(ctx, tasks); err != nil {
+		return nil, err
+	}
+	if err := r.runClientPreflight(ctx, tasks); err != nil {
+		return nil, err
 	}
 	rep := newReport()
 	outRoot := filepath.Join(r.opts.OutDir, rep.ID)
 	if err := os.MkdirAll(outRoot, 0o755); err != nil {
 		return nil, err
-	}
-	if r.opts.Surface == surfaceMCP {
-		filtered := tasks[:0]
-		for _, t := range tasks {
-			if t.hasSurface(surfaceMCP) {
-				filtered = append(filtered, t)
-			}
-		}
-		tasks = filtered
-		if len(tasks) == 0 {
-			return nil, fmt.Errorf("no tasks support surface mcp")
-		}
 	}
 	for _, t := range tasks {
 		if err := ctx.Err(); err != nil {
@@ -130,6 +129,20 @@ func (r *Runner) ReplayOracle(ctx context.Context, taskID string) (*TrialResult,
 		return tr, fmt.Errorf("oracle %s: %s", t.ID, tr.Error)
 	}
 	return tr, nil
+}
+
+func (r *Runner) clientFor(name string) (Client, error) {
+	if r.newClient != nil {
+		return r.newClient(name)
+	}
+	return newClient(name)
+}
+
+func (r *Runner) scoreFor(ctx context.Context, dims []JudgeDim, transcript, snapshot []byte) []JudgeResult {
+	if r.scoreAll != nil {
+		return r.scoreAll(ctx, dims, transcript, snapshot)
+	}
+	return r.judge.scoreAll(ctx, dims, transcript, snapshot)
 }
 
 func (r *Runner) runTask(ctx context.Context, t *Task, rep *Report, outRoot string) {
@@ -218,8 +231,15 @@ func (r *Runner) runOne(ctx context.Context, t *Task, clientName string, idx int
 		return tr
 	}
 	g := newGrader(env, p)
+	return r.runAfterSeed(ctx, dctx, t, env, g, p, tr, clientName, surface, oracle)
+}
+
+func (r *Runner) runAfterSeed(ctx, dctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult, clientName, surface string, oracle bool) *TrialResult {
 	if oracle {
 		return r.finishOracle(dctx, t, env, g, p, tr)
+	}
+	if guardSeedChecks(dctx, t, g, tr) {
+		return tr
 	}
 	return r.finishClient(ctx, dctx, t, env, g, p, tr, clientName, surface)
 }
@@ -257,33 +277,17 @@ func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, g *Gr
 }
 
 func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult, clientName, surface string) *TrialResult {
-	cl, err := newClient(clientName)
+	cl, err := r.clientFor(clientName)
 	if err != nil {
 		tr.Outcome = OutcomeInfraFailure
 		tr.Error = err.Error()
 		return tr
 	}
-	opts := LaunchOpts{
-		Workdir:    env.workdir,
-		Prompt:     t.Prompt,
-		Env:        env.environ(),
-		Timeout:    time.Duration(t.TimeoutS) * time.Second,
-		SkillMD:    r.skillMD,
-		Transcript: p.Transcript,
-		Surface:    surface,
-	}
-	if surface == surfaceMCP {
-		cfgHome := filepath.Join(env.artDir, "client-home")
-		if err := os.MkdirAll(cfgHome, 0o755); err != nil {
-			tr.Outcome = OutcomeInfraFailure
-			tr.Error = err.Error()
-			return tr
-		}
-		opts.SkillMD = nil
-		opts.MCPURL = strings.TrimRight(env.apiURL, "/") + "/mcp"
-		opts.MCPToken = env.token
-		opts.ConfigHome = cfgHome
-		opts.Env = env.mcpEnviron(cfgHome)
+	opts, err := r.launchOpts(env, p, t, clientName, surface)
+	if err != nil {
+		tr.Outcome = OutcomeInfraFailure
+		tr.Error = err.Error()
+		return tr
 	}
 	tctx, cancel := context.WithTimeout(ctx, time.Duration(t.TimeoutS)*time.Second)
 	launch, err := cl.Launch(tctx, opts)
@@ -303,18 +307,134 @@ func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv,
 			return tr
 		}
 	}
+	if deadClientGate(tr, launch) {
+		return tr
+	}
+	return r.gradeLaunch(ctx, dctx, t, env, g, p, tr)
+}
+
+func (r *Runner) launchOpts(env *trialEnv, p Placeholders, t *Task, clientName, surface string) (LaunchOpts, error) {
+	opts := LaunchOpts{
+		Workdir:    env.workdir,
+		Prompt:     t.Prompt,
+		Env:        env.environ(),
+		Timeout:    time.Duration(t.TimeoutS) * time.Second,
+		SkillMD:    r.skillMD,
+		Transcript: p.Transcript,
+		Surface:    surface,
+	}
+	if surface != surfaceMCP {
+		return opts, nil
+	}
+	cfgHome := filepath.Join(env.artDir, "client-home")
+	if err := os.MkdirAll(cfgHome, 0o755); err != nil {
+		return opts, err
+	}
+	if err := seedClientHome(cfgHome, clientName); err != nil {
+		return opts, err
+	}
+	opts.SkillMD = nil
+	opts.MCPURL = strings.TrimRight(env.apiURL, "/") + "/mcp"
+	opts.MCPToken = env.token
+	opts.ConfigHome = cfgHome
+	opts.Env = env.mcpEnviron(cfgHome)
+	return opts, nil
+}
+
+func (r *Runner) gradeLaunch(ctx, dctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult) *TrialResult {
 	p.Workspace = env.workspacePath(dctx)
 	g.p = p
 	_ = g.collectSnapshot(dctx)
 	tr.Checks = g.runAll(dctx, t.Checks)
 	jctx, jcancel := context.WithTimeout(ctx, judgeBudget(len(t.Judge.Dimensions)))
 	defer jcancel()
-	tr.Judge = r.judge.scoreAll(jctx, t.Judge.Dimensions, readFile(p.Transcript), readFile(p.Snapshot))
+	tr.Judge = r.scoreFor(jctx, t.Judge.Dimensions, readFile(p.Transcript), readFile(p.Snapshot))
 	tr.Outcome = trialOutcome(tr.Checks, tr.Judge)
 	if tr.Outcome != OutcomePass && tr.Error == "" {
 		tr.Error = failSummary(tr)
 	}
 	return tr
+}
+
+func (r *Runner) preflightJudge(ctx context.Context, tasks []*Task) error {
+	if r.scoreAll != nil {
+		return nil
+	}
+	for _, t := range tasks {
+		if len(t.Judge.Dimensions) == 0 {
+			continue
+		}
+		return r.judge.preflight(ctx)
+	}
+	return nil
+}
+
+func (r *Runner) runClientPreflight(ctx context.Context, tasks []*Task) error {
+	launchFn := r.preflightLaunch
+	if launchFn == nil {
+		launchFn = r.livePreflightLaunch
+	}
+	for _, pair := range preflightCombos(r.opts, tasks) {
+		client, surface := pair[0], pair[1]
+		launch, cfgPath, err := launchFn(ctx, client, surface)
+		if err != nil && launch == nil {
+			return fmt.Errorf("preflight: %s/%s: %w", client, surface, err)
+		}
+		if err := preflightVerdict(client, surface, launch, cfgPath); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "preflight: %s/%s ok\n", client, surface)
+	}
+	return nil
+}
+
+func (r *Runner) livePreflightLaunch(ctx context.Context, clientName, surface string) (*LaunchResult, string, error) {
+	art, err := os.MkdirTemp("", "trebi-eval-preflight-*")
+	if err != nil {
+		return nil, "", err
+	}
+	defer os.RemoveAll(art)
+	env := newTrialEnv(filepath.Join(art, "home"), filepath.Join(art, "work"), art, r.opts.TrebiBin)
+	defer env.stop(context.Background())
+	dctx, cancel := context.WithTimeout(ctx, preflightTimeout+time.Minute)
+	defer cancel()
+	if err := env.startDaemon(dctx, defaultHarness, env.workdir); err != nil {
+		return nil, "", err
+	}
+	if err := env.configure(dctx, defaultHarness); err != nil {
+		return nil, "", err
+	}
+	return r.launchPreflightClient(ctx, env, clientName, surface)
+}
+
+func (r *Runner) launchPreflightClient(ctx context.Context, env *trialEnv, clientName, surface string) (*LaunchResult, string, error) {
+	cl, err := r.clientFor(clientName)
+	if err != nil {
+		return nil, "", err
+	}
+	prompt := preflightPromptCLI
+	if surface == surfaceMCP {
+		prompt = preflightPromptMCP
+	}
+	t := &Task{Prompt: prompt, TimeoutS: int(preflightTimeout / time.Second)}
+	p := env.placeholders(env.workdir)
+	p.Transcript = filepath.Join(env.artDir, "transcript.json")
+	opts, err := r.launchOpts(env, p, t, clientName, surface)
+	if err != nil {
+		return nil, "", err
+	}
+	cfgPath := ""
+	if surface == surfaceMCP {
+		cfgPath = filepath.Join(opts.ConfigHome, "config.toml")
+		name, _, _ := parseClientSpec(clientName)
+		if name == clientClaude {
+			cfgPath = filepath.Join(opts.ConfigHome, "mcp.json")
+		}
+	}
+	tctx, cancel := context.WithTimeout(ctx, preflightTimeout)
+	defer cancel()
+	launch, err := cl.Launch(tctx, opts)
+	return launch, cfgPath, err
 }
 
 func (r *Runner) baselineDrops(rep *Report) []string {
@@ -335,6 +455,89 @@ func skipOracleChecks(checks []Check) []Check {
 			continue
 		}
 		out = append(out, c)
+	}
+	return out
+}
+
+func filterSurface(tasks []*Task, surface string) ([]*Task, error) {
+	if surface != surfaceMCP {
+		return tasks, nil
+	}
+	out := make([]*Task, 0, len(tasks))
+	for _, t := range tasks {
+		if t.hasSurface(surfaceMCP) {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no tasks support surface mcp")
+	}
+	return out, nil
+}
+
+func guardSeedChecks(ctx context.Context, t *Task, g *Grader, tr *TrialResult) bool {
+	pre := skipOracleChecks(t.Checks)
+	if len(pre) == 0 {
+		return false
+	}
+	for _, c := range g.runAll(ctx, pre) {
+		if !c.Pass {
+			return false
+		}
+	}
+	tr.Outcome = OutcomeInfraFailure
+	tr.Error = "checks green on seed state"
+	return true
+}
+
+func deadClientGate(tr *TrialResult, launch *LaunchResult) bool {
+	if launch != nil && hasAssistantStep(launch.Steps) {
+		return false
+	}
+	tr.Outcome = OutcomeInfraFailure
+	tr.Error = clientErrorSummary(launch)
+	return true
+}
+
+func preflightVerdict(client, surface string, launch *LaunchResult, cfgPath string) error {
+	if launch == nil || !hasAssistantStep(launch.Steps) {
+		return fmt.Errorf("preflight: %s/%s cannot reach its model: %s", client, surface, clientErrorSummary(launch))
+	}
+	if surface == surfaceMCP && !mcpHandshakeOK(launch.Steps) {
+		if cfgPath == "" {
+			cfgPath = "(unknown config path)"
+		}
+		return fmt.Errorf("preflight: %s/%s MCP handshake failed (no mcp__trebi* tool call); config %s", client, surface, cfgPath)
+	}
+	return nil
+}
+
+func preflightCombos(opts Options, tasks []*Task) [][2]string {
+	clients := opts.Clients
+	if len(clients) == 0 {
+		seen := map[string]bool{}
+		for _, t := range tasks {
+			for _, c := range t.Clients {
+				if seen[c] {
+					continue
+				}
+				seen[c] = true
+				clients = append(clients, c)
+			}
+		}
+	}
+	surfaces := []string{surfaceCLI}
+	switch opts.Surface {
+	case surfaceMCP:
+		surfaces = []string{surfaceMCP}
+	case "both":
+		surfaces = []string{surfaceCLI, surfaceMCP}
+	}
+	var out [][2]string
+	for _, s := range surfaces {
+		for _, c := range clients {
+			out = append(out, [2]string{c, s})
+		}
 	}
 	return out
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -50,6 +49,7 @@ type LaunchResult struct {
 	CostUSD  float64
 	Duration time.Duration
 	Usage    pricing.TokenUsage
+	Errors   []string
 }
 
 // AgentsMarkdown wraps SKILL.md so Codex reads it as AGENTS.md.
@@ -97,6 +97,9 @@ func writeTranscript(path string, raw []byte, steps []Step) error {
 	if err := os.WriteFile(path+".raw", raw, 0o644); err != nil {
 		return err
 	}
+	if steps == nil {
+		steps = []Step{}
+	}
 	data, err := json.MarshalIndent(steps, "", "  ")
 	if err != nil {
 		return err
@@ -104,7 +107,48 @@ func writeTranscript(path string, raw []byte, steps []Step) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-var trebiShellRE = regexp.MustCompile(`(?i)(^|[;&|` + "`" + `\s/"'])trebi\s`)
+func hasAssistantStep(steps []Step) bool {
+	for _, s := range steps {
+		if s.Role == "assistant" && strings.TrimSpace(s.Content) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func clientErrorSummary(res *LaunchResult) string {
+	if res == nil {
+		return "no launch result"
+	}
+	if len(res.Errors) > 0 {
+		return strings.Join(res.Errors, "; ")
+	}
+	return "zero assistant steps"
+}
+
+func mcpHandshakeOK(steps []Step) bool {
+	for _, s := range steps {
+		if s.Role != "tool" {
+			continue
+		}
+		if strings.HasPrefix(s.Name, "mcp__trebi") || isTrebiMCPTool(s.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func appendUnique(dst []string, msg string) []string {
+	if msg == "" {
+		return dst
+	}
+	for _, e := range dst {
+		if e == msg {
+			return dst
+		}
+	}
+	return append(dst, msg)
+}
 
 func isTrebiMCPTool(name string) bool {
 	switch name {
@@ -141,14 +185,253 @@ func looksLikeTrebiShell(s Step) bool {
 	if isTrebiMCPTool(s.Name) || strings.HasPrefix(s.Name, "mcp__trebi") {
 		return false
 	}
-	return trebiShellRE.MatchString(s.Content)
+	cmd := jsonCommandField(s.Content)
+	if cmd == "" {
+		return false
+	}
+	return commandInvokes(cmd, "trebi")
 }
 
 func looksLikeCurlTo(content, host string) bool {
-	if !strings.Contains(strings.ToLower(content), "curl") {
+	cmd := jsonCommandField(content)
+	if cmd == "" {
 		return false
 	}
-	return strings.Contains(content, host)
+	return commandInvokes(cmd, "curl") && strings.Contains(cmd, host)
+}
+
+func jsonCommandField(content string) string {
+	var body struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal([]byte(content), &body) != nil {
+		return ""
+	}
+	return body.Command
+}
+
+func commandInvokes(cmd, name string) bool {
+	return scriptInvokes(cmd, name, 2)
+}
+
+func scriptInvokes(cmd, name string, depth int) bool {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return false
+	}
+	if depth > 0 {
+		if inner, ok := peelShellC(cmd); ok {
+			return scriptInvokes(inner, name, depth-1)
+		}
+	}
+	segs := splitShellSegments(cmd)
+	if len(segs) > 1 {
+		for _, seg := range segs {
+			if scriptInvokes(seg, name, depth) {
+				return true
+			}
+		}
+		return false
+	}
+	return segmentInvokes(cmd, name)
+}
+
+func peelShellC(cmd string) (string, bool) {
+	toks := shellTokens(cmd)
+	if len(toks) < 3 || !isShellBin(toks[0]) {
+		return cmd, false
+	}
+	for i := 1; i < len(toks)-1; i++ {
+		if isShortFlagC(toks[i]) {
+			return toks[i+1], true
+		}
+	}
+	return cmd, false
+}
+
+func isShellBin(t string) bool {
+	switch cmdBase(t) {
+	case "bash", "sh", "zsh", "dash", "ksh":
+		return true
+	default:
+		return false
+	}
+}
+
+func isShortFlagC(t string) bool {
+	return strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--") && strings.Contains(t, "c")
+}
+
+func splitShellSegments(s string) []string {
+	var segs []string
+	var b strings.Builder
+	quote := byte(0)
+	flush := func() {
+		if t := strings.TrimSpace(b.String()); t != "" {
+			segs = append(segs, t)
+		}
+		b.Reset()
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote == '\'' {
+			b.WriteByte(c)
+			if c == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if quote == '"' {
+			if c == '\\' && i+1 < len(s) {
+				b.WriteByte(c)
+				b.WriteByte(s[i+1])
+				i++
+				continue
+			}
+			b.WriteByte(c)
+			if c == '"' {
+				quote = 0
+			}
+			continue
+		}
+		if c == '\\' && i+1 < len(s) {
+			b.WriteByte(s[i+1])
+			i++
+			continue
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+			b.WriteByte(c)
+			continue
+		}
+		if n := shellSepLen(s, i); n > 0 {
+			flush()
+			i += n - 1
+			continue
+		}
+		b.WriteByte(c)
+	}
+	flush()
+	return segs
+}
+
+func shellSepLen(s string, i int) int {
+	switch s[i] {
+	case '`', ';', '\n':
+		return 1
+	case '|':
+		if i+1 < len(s) && s[i+1] == '|' {
+			return 2
+		}
+		return 1
+	case '&':
+		if i+1 < len(s) && s[i+1] == '&' {
+			return 2
+		}
+	case '$':
+		if i+1 < len(s) && s[i+1] == '(' {
+			return 2
+		}
+	}
+	return 0
+}
+
+func segmentInvokes(seg, name string) bool {
+	toks := shellTokens(seg)
+	i := 0
+	for i < len(toks) {
+		t := toks[i]
+		if isEnvAssign(t) || isCmdWrapper(t) || strings.HasPrefix(t, "-") {
+			i++
+			continue
+		}
+		break
+	}
+	if i >= len(toks) {
+		return false
+	}
+	t := toks[i]
+	return t == name || strings.HasSuffix(t, "/"+name)
+}
+
+func isCmdWrapper(t string) bool {
+	switch cmdBase(t) {
+	case "env", "command", "nohup", "time", "xargs":
+		return true
+	default:
+		return false
+	}
+}
+
+func isEnvAssign(t string) bool {
+	eq := strings.IndexByte(t, '=')
+	if eq <= 0 || t[0] == '-' {
+		return false
+	}
+	for _, c := range t[:eq] {
+		if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func cmdBase(t string) string {
+	if i := strings.LastIndex(t, "/"); i >= 0 {
+		return t[i+1:]
+	}
+	return t
+}
+
+func shellTokens(s string) []string {
+	var toks []string
+	var b strings.Builder
+	quote := byte(0)
+	flush := func() {
+		if b.Len() > 0 {
+			toks = append(toks, b.String())
+			b.Reset()
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote == '\'' {
+			if c == '\'' {
+				quote = 0
+				continue
+			}
+			b.WriteByte(c)
+			continue
+		}
+		if quote == '"' {
+			if c == '\\' && i+1 < len(s) {
+				b.WriteByte(s[i+1])
+				i++
+				continue
+			}
+			if c == '"' {
+				quote = 0
+				continue
+			}
+			b.WriteByte(c)
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+		case ' ', '\t':
+			flush()
+		case '\\':
+			if i+1 < len(s) {
+				b.WriteByte(s[i+1])
+				i++
+			}
+		default:
+			b.WriteByte(c)
+		}
+	}
+	flush()
+	return toks
 }
 
 func mcpServerLeak(name string) string {

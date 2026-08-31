@@ -5,4 +5,5 @@ Read-only. Do not mutate state.
 ```bash
 trebi doctor --json
 trebi harness auth status --json
+echo ready > "$EVAL_WORKDIR/health.txt"
 ```

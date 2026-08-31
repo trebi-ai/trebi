@@ -12,7 +12,7 @@ prompt: |
 checks:
   - name: value set
     cmd: trebi config show -k files.max_bytes --json
-    jq: '[.[] | select(.key == "files.max_bytes") | .value] | first | tostring | test("1048576")'
+    jq: '[.[] | select(.key == "files.max_bytes") | .value] | first | tostring | test("^1048576$")'
   - name: config validate
     cmd: trebi config validate
     exit: 0

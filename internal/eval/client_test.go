@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,58 @@ func TestMCPIsolationViolations(t *testing.T) {
 	}, "http://127.0.0.1:1234")
 	if len(clean) != 0 {
 		t.Fatalf("clean %v", clean)
+	}
+}
+
+func TestMCPIsolationCommandPosition(t *testing.T) {
+	t.Parallel()
+	api := "http://127.0.0.1:1234"
+	incident, err := json.Marshal(map[string]any{
+		"command":   `bash -lc "printf '%s\n' 'READY: Trebi health is ok (daemon reachable, API token present). Codex harness auth_status=ok.' > health.txt"`,
+		"exit_code": 0,
+		"output":    "READY: Trebi health is ok\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		cmd  string
+		out  string
+		want int
+	}{
+		{name: "incident prose", cmd: "", want: 0},
+		{name: "trebi service", cmd: "trebi service status", want: 1},
+		{name: "abs path", cmd: "/usr/local/bin/trebi doctor", want: 1},
+		{name: "env assign", cmd: "FOO=1 trebi x", want: 1},
+		{name: "bash -lc", cmd: `bash -lc "trebi x"`, want: 1},
+		{name: "echo prose", cmd: "echo 'run trebi later'", want: 0},
+		{name: "printf Trebi", cmd: "printf 'Trebi health ok' > f", want: 0},
+		{name: "curl in output", cmd: "echo hello", out: "curl http://127.0.0.1:1234/v1/jobs", want: 0},
+		{name: "curl in command", cmd: "curl http://127.0.0.1:1234/v1/jobs", want: 1},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var step Step
+			if tt.name == "incident prose" {
+				step = Step{Role: "tool", Name: "command", Content: string(incident)}
+			} else {
+				body := map[string]any{"command": tt.cmd}
+				if tt.out != "" {
+					body["output"] = tt.out
+				}
+				raw, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				step = Step{Role: "tool", Name: "command", Content: string(raw)}
+			}
+			got := mcpIsolationViolations([]Step{step}, api)
+			if len(got) != tt.want {
+				t.Fatalf("want %d got %v", tt.want, got)
+			}
+		})
 	}
 }
 
@@ -162,6 +215,61 @@ func TestClientLaunchArgs(t *testing.T) {
 		if a == "-m" {
 			t.Fatalf("codex unpinned has -m: %v", cUnpinned)
 		}
+	}
+}
+
+func TestParseCodexErrors(t *testing.T) {
+	t.Parallel()
+	raw := []byte(strings.Join([]string{
+		`{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: wss://api.openai.com/v1/responses, cf-ray: abc)"}`,
+		`{"type":"error","message":"Reconnecting... 3/5 (unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: wss://api.openai.com/v1/responses, cf-ray: def)"}`,
+		`{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, request id: req_1"}}`,
+	}, "\n"))
+	res := parseCodexJSON(raw)
+	if hasAssistantStep(res.Steps) {
+		t.Fatalf("steps %+v", res.Steps)
+	}
+	sum := clientErrorSummary(res)
+	if !strings.Contains(sum, "401 Unauthorized") {
+		t.Fatalf("errors %v summary %q", res.Errors, sum)
+	}
+}
+
+func TestParseCodexMCPToolCall(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"trebi","tool":"system","arguments":{"action":"health"},"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"DONE"}}`)
+	res := parseCodexJSON(raw)
+	if !mcpHandshakeOK(res.Steps) {
+		t.Fatalf("steps %+v", res.Steps)
+	}
+	if !hasAssistantStep(res.Steps) {
+		t.Fatal("missing assistant")
+	}
+}
+
+func TestParseClaudeResultError(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{"type":"result","is_error":true,"subtype":"error","result":"Authentication error"}`)
+	res := parseClaudeStream(raw)
+	if len(res.Errors) != 1 || res.Errors[0] != "Authentication error" {
+		t.Fatalf("%+v", res.Errors)
+	}
+}
+
+func TestWriteTranscriptEmptySteps(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.json")
+	if err := writeTranscript(path, []byte("raw"), nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != "[]" {
+		t.Fatalf("got %q", got)
 	}
 }
 

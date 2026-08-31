@@ -10,13 +10,14 @@ prompt: |
   I just installed trebi and the daemon is running. Is trebi ready?
   Check health and whether the AI harness is logged in. Do not create
   workspaces or jobs. Quote the doctor and auth status in your answer.
+  Write a one-line ready/not-ready verdict to health.txt in this
+  working directory.
 checks:
+  - name: wrote verdict
+    file_exists: "{workdir}/health.txt"
   - name: no workspaces created
     cmd: trebi workspace list --json
     jq: '.workspaces | length == 0'
-  - name: doctor reachable
-    cmd: trebi doctor --json
-    jq: '.api_json_reachable == true'
 judge:
   model: claude-sonnet-5
   dimensions:

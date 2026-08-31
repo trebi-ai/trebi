@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -40,6 +41,9 @@ func (c *codexClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResul
 	cmd.Stderr = &stderr
 	start := time.Now()
 	err := runWithGroup(ctx, cmd)
+	if werr := writeBackCodexAuth(opts.ConfigHome); werr != nil {
+		fmt.Fprintf(os.Stderr, "eval: skip auth write-back: %v\n", werr)
+	}
 	raw := stdout.Bytes()
 	res := parseCodexJSON(raw)
 	res.Duration = time.Since(start)
@@ -59,9 +63,138 @@ func writeCodexMCPConfig(dir, mcpURL, token string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	body := fmt.Sprintf("[mcp_servers.trebi]\nurl = %q\nhttp_headers = { Authorization = %q }\n",
+	mcp := fmt.Sprintf("[mcp_servers.trebi]\nurl = %q\nhttp_headers = { Authorization = %q }\n",
 		mcpURL, "Bearer "+token)
+	body := mcp
+	if carried := carryCodexModelConfig(); carried != "" {
+		body = carried + "\n\n" + mcp
+	}
 	return os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o600)
+}
+
+func carryCodexModelConfig() string {
+	home := realCodexHome()
+	if home == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		return ""
+	}
+	userHome, _ := os.UserHomeDir()
+	return extractCodexModelConfig(data, userHome)
+}
+
+func extractCodexModelConfig(src []byte, userHome string) string {
+	var root, tables []string
+	var header string
+	var block []string
+	flush := func() {
+		if header == "" {
+			return
+		}
+		if header == "model_providers" || strings.HasPrefix(header, "model_providers.") {
+			tables = append(tables, strings.TrimRight(strings.Join(block, "\n"), "\n"))
+		}
+		header = ""
+		block = nil
+	}
+	for _, line := range strings.Split(string(src), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if h, ok := tomlTableHeader(line); ok {
+			flush()
+			header = h
+			block = []string{line}
+			continue
+		}
+		if header != "" {
+			block = append(block, line)
+			continue
+		}
+		key := tomlBareKey(line)
+		if !isCodexModelKey(key) {
+			continue
+		}
+		if key == "model_catalog_json" {
+			line = rewriteCatalogTilde(line, userHome)
+		}
+		root = append(root, line)
+	}
+	flush()
+	var parts []string
+	if len(root) > 0 {
+		parts = append(parts, strings.Join(root, "\n"))
+	}
+	parts = append(parts, tables...)
+	return strings.Join(parts, "\n\n")
+}
+
+func isCodexModelKey(k string) bool {
+	switch k {
+	case "model", "model_provider", "model_reasoning_effort", "model_catalog_json":
+		return true
+	default:
+		return false
+	}
+}
+
+func tomlTableHeader(line string) (string, bool) {
+	s := strings.TrimSpace(line)
+	if len(s) < 3 || s[0] != '[' {
+		return "", false
+	}
+	i := 1
+	if s[1] == '[' {
+		i = 2
+	}
+	end := strings.IndexByte(s[i:], ']')
+	if end < 0 {
+		return "", false
+	}
+	return strings.TrimSpace(s[i : i+end]), true
+}
+
+func tomlBareKey(line string) string {
+	s := strings.TrimSpace(line)
+	if s == "" || s[0] == '#' || s[0] == '[' {
+		return ""
+	}
+	key, _, ok := strings.Cut(s, "=")
+	if !ok {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(key), `"'`)
+}
+
+func rewriteCatalogTilde(line, userHome string) string {
+	if userHome == "" {
+		return line
+	}
+	key, rest, ok := strings.Cut(line, "=")
+	if !ok {
+		return line
+	}
+	val := strings.TrimSpace(rest)
+	quote := ""
+	unquoted := val
+	if len(val) > 0 && (val[0] == '"' || val[0] == '\'') {
+		q := val[0]
+		if i := strings.IndexByte(val[1:], q); i >= 0 {
+			quote = string(q)
+			unquoted = val[1 : 1+i]
+		}
+	}
+	if unquoted != "~" && !strings.HasPrefix(unquoted, "~/") {
+		return line
+	}
+	expanded := userHome
+	if unquoted != "~" {
+		expanded = filepath.Join(userHome, unquoted[2:])
+	}
+	if quote == "" {
+		quote = `"`
+	}
+	return strings.TrimRight(key, " \t") + " = " + quote + expanded + quote
 }
 
 func codexLaunchArgs(prompt, model string) []string {
@@ -77,14 +210,14 @@ func codexLaunchArgs(prompt, model string) []string {
 }
 
 func parseCodexJSON(raw []byte) *LaunchResult {
-	res := &LaunchResult{Raw: raw}
+	res := &LaunchResult{Raw: raw, Steps: []Step{}}
 	var in, out, cacheR, cacheC int64
 	model := "codex"
 	byID := map[string]int{}
 	for _, m := range ndjsonMaps(raw) {
 		parseCodexEvent(m, res, &in, &out, &cacheR, &cacheC, &model, byID)
 	}
-	if len(res.Steps) == 0 && len(raw) > 0 {
+	if len(res.Steps) == 0 && len(res.Errors) == 0 && len(raw) > 0 {
 		var one map[string]any
 		if json.Unmarshal(raw, &one) == nil {
 			parseCodexEvent(one, res, &in, &out, &cacheR, &cacheC, &model, byID)
@@ -100,6 +233,7 @@ func parseCodexEvent(m map[string]any, res *LaunchResult, in, out, cacheR, cache
 		typ = asString(m["event"])
 	}
 	item := asMap(m["item"])
+	collectCodexError(typ, m, item, res)
 	switch typ {
 	case "item.started", "item.completed", "agent_message", "message", "tool", "command":
 		parseCodexItem(typ, m, item, res, byID)
@@ -118,9 +252,36 @@ func parseCodexEvent(m map[string]any, res *LaunchResult, in, out, cacheR, cache
 	}
 }
 
+func collectCodexError(typ string, m, item map[string]any, res *LaunchResult) {
+	if typ != "error" && typ != "turn.failed" && asString(item["type"]) != "error" {
+		return
+	}
+	msg := firstNonEmpty(asString(m["message"]), asString(asMap(m["error"])["message"]), asString(item["message"]))
+	res.Errors = appendUnique(res.Errors, stripCodexNoise(msg))
+}
+
+func stripCodexNoise(msg string) string {
+	msg = strings.TrimSpace(msg)
+	if strings.HasPrefix(msg, "Reconnecting") {
+		if i := strings.Index(msg, "("); i >= 0 && strings.HasSuffix(msg, ")") {
+			msg = msg[i+1 : len(msg)-1]
+		}
+	}
+	for _, p := range []string{", cf-ray:", ", request id:"} {
+		if i := strings.Index(msg, p); i >= 0 {
+			msg = msg[:i]
+		}
+	}
+	return strings.TrimSpace(msg)
+}
+
 func parseCodexItem(typ string, m, item map[string]any, res *LaunchResult, byID map[string]int) {
 	if item == nil {
 		item = m
+	}
+	if asString(item["type"]) == "mcp_tool_call" {
+		parseCodexMCP(item, res, byID)
+		return
 	}
 	text := firstNonEmpty(asString(item["text"]), contentText(item["content"]), asString(m["text"]), contentText(m["content"]), asString(m["message"]))
 	if asString(item["type"]) == "agent_message" || typ == "agent_message" || typ == "message" {
@@ -135,6 +296,22 @@ func parseCodexItem(typ string, m, item map[string]any, res *LaunchResult, byID 
 	}
 	raw, _ := json.Marshal(body)
 	upsertCodexStep(res, byID, asString(item["id"]), Step{Role: "tool", Name: "command", Content: string(raw)})
+}
+
+func parseCodexMCP(item map[string]any, res *LaunchResult, byID map[string]int) {
+	server := asString(item["server"])
+	tool := asString(item["tool"])
+	if server == "" || tool == "" {
+		return
+	}
+	args := item["arguments"]
+	if args == nil {
+		args = map[string]any{}
+	}
+	raw, _ := json.Marshal(args)
+	upsertCodexStep(res, byID, asString(item["id"]), Step{
+		Role: "tool", Name: "mcp__" + server + "__" + tool, Content: string(raw),
+	})
 }
 
 func codexCommandBody(typ string, m, item map[string]any) (map[string]any, bool) {

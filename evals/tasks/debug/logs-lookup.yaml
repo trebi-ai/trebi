@@ -9,11 +9,14 @@ server_harness: codex
 seed: seeds/ops-logs.sh
 prompt: |
   Find the error or not_found line in the daemon logs from the last hour
-  that mentions eval-log-canary-xyzzy. Quote the real line.
+  that mentions eval-log-canary-xyzzy. Quote the real line. Write that
+  quoted line to log-line.txt in this working directory.
 checks:
-  - name: line still greppable
-    cmd: trebi service logs -n 200 --grep eval-log-canary-xyzzy
-    stdout_contains: "eval-log-canary-xyzzy"
+  - name: wrote the line
+    file_exists: "{workdir}/log-line.txt"
+  - name: quoted canary
+    file_contains: "{workdir}/log-line.txt"
+    text: "eval-log-canary-xyzzy"
 judge:
   model: claude-sonnet-5
   dimensions:

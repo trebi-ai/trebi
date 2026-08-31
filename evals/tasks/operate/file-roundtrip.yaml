@@ -8,9 +8,12 @@ timeout_s: 300
 server_harness: codex
 seed: seeds/ops.sh
 prompt: |
-  In workspace ops, upload a small CSV as data.csv, read it back, then
-  delete it using If-Match. Do not leave the file behind.
+  In workspace ops, upload a small CSV as data.csv, read it back to
+  got.csv in this working directory, then delete it using If-Match.
+  Do not leave the workspace file behind.
 checks:
+  - name: downloaded copy
+    file_exists: "{workdir}/got.csv"
   - name: file gone
     cmd: trebi file list --json
     jq: '[.files[]?.path // empty] | map(select(. == "data.csv")) | length == 0'

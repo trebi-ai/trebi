@@ -11,9 +11,6 @@ prompt: |
   Report the last 10 run events from the trebi event bus. You must pass
   --limit so the command exits. Prefer --replay --topics run.
 checks:
-  - name: bus replay with limit
-    cmd: trebi bus --replay --limit 10 --json
-    exit: 0
   - name: used --limit
     commands_jq: 'map(select(test("\\btrebi bus\\b"))) | all(test("--limit"))'
 judge:

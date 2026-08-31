@@ -7,7 +7,9 @@
 
 Same live-run behaviour as scripts/eval.sh (left in place for in-flight
 runs): build trebi + trebi-eval, tee timestamped lines to out/eval-live.log,
-sweep leftover trial daemons on exit.
+sweep leftover trial daemons on exit. The Go runner probes each
+(client, surface) before the first trial (`preflight: <client>/<surface> ok`
+on stderr) and aborts the suite on model auth or MCP handshake failure.
 
   scripts/eval.py run --client codex
   scripts/eval.py run --client claude --trials 1 --task onboarding-health

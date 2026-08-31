@@ -106,7 +106,7 @@ func claudeLaunchArgs(prompt string, maxTurns int, model string) []string {
 }
 
 func parseClaudeStream(raw []byte) *LaunchResult {
-	res := &LaunchResult{Raw: raw}
+	res := &LaunchResult{Raw: raw, Steps: []Step{}}
 	var in, out, cacheR, cacheC int64
 	model := "claude"
 	for _, m := range ndjsonMaps(raw) {
@@ -118,6 +118,7 @@ func parseClaudeStream(raw []byte) *LaunchResult {
 				res.Steps = append(res.Steps, Step{Role: "user", Content: s})
 			}
 		case "result":
+			collectClaudeResult(m, res)
 			usage := asMap(m["usage"])
 			if usage == nil {
 				usage = asMap(m)
@@ -133,6 +134,15 @@ func parseClaudeStream(raw []byte) *LaunchResult {
 	}
 	res.Usage, res.CostUSD = usageCost(model, in, out, cacheR, cacheC)
 	return res
+}
+
+func collectClaudeResult(m map[string]any, res *LaunchResult) {
+	errish := m["is_error"] == true || asString(m["subtype"]) == "error"
+	if !errish {
+		return
+	}
+	msg := firstNonEmpty(asString(m["result"]), asString(m["error"]))
+	res.Errors = appendUnique(res.Errors, msg)
 }
 
 func claudeAssistantSteps(m map[string]any) []Step {
