@@ -23,6 +23,7 @@ type Rubric struct {
 }
 
 type judgeRunner struct {
+	harness string // claude | codex
 	model   string
 	rubrics map[string]Rubric
 
@@ -30,11 +31,12 @@ type judgeRunner struct {
 	costUSD float64
 }
 
-func newJudge(evalsDir, model string) (*judgeRunner, error) {
-	if model == "" {
-		model = defaultJudgeModel
+func newJudge(evalsDir, spec string) (*judgeRunner, error) {
+	harness, model, err := parseJudgeSpec(spec)
+	if err != nil {
+		return nil, err
 	}
-	r := &judgeRunner{model: model, rubrics: map[string]Rubric{}}
+	r := &judgeRunner{harness: harness, model: model, rubrics: map[string]Rubric{}}
 	path := filepath.Join(evalsDir, "rubrics", "common.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -42,6 +44,30 @@ func newJudge(evalsDir, model string) (*judgeRunner, error) {
 	}
 	r.rubrics = parseRubrics(string(data))
 	return r, nil
+}
+
+// parseJudgeSpec accepts the same name[:model] shape as --client.
+// Empty spec keeps the pinned Claude default.
+func parseJudgeSpec(spec string) (name, model string, err error) {
+	if spec == "" {
+		return clientClaude, defaultJudgeModel, nil
+	}
+	name, model, err = parseClientSpec(spec)
+	if err != nil {
+		return "", "", fmt.Errorf("judge %q: want claude|codex or name:model", spec)
+	}
+	if name == clientClaude && model == "" {
+		model = defaultJudgeModel
+	}
+	return name, model, nil
+}
+
+func (j *judgeRunner) label() string {
+	h := j.harness
+	if h == "" {
+		h = clientClaude
+	}
+	return clientLabel(h, j.model)
 }
 
 // resolve fills a dimension from the rubric file. A surface section
@@ -85,10 +111,10 @@ func (j *judgeRunner) preflight(ctx context.Context) error {
 	defer cancel()
 	out, err := j.invoke(ctx, `Reply with JSON only: {"ok":true}`)
 	if err != nil {
-		return fmt.Errorf("judge preflight (model %s): %w", j.model, err)
+		return fmt.Errorf("judge preflight (%s): %w", j.label(), err)
 	}
 	if len(bytes.TrimSpace(out)) == 0 {
-		return fmt.Errorf("judge preflight (model %s): empty reply", j.model)
+		return fmt.Errorf("judge preflight (%s): empty reply", j.label())
 	}
 	return nil
 }
@@ -184,6 +210,13 @@ func (j *judgeRunner) confirmFail(ctx context.Context, prompt string, min float6
 
 // invoke runs one judge call. The JSON envelope carries the grading spend.
 func (j *judgeRunner) invoke(ctx context.Context, prompt string) ([]byte, error) {
+	if j.harness == clientCodex {
+		return j.invokeCodex(ctx, prompt)
+	}
+	return j.invokeClaude(ctx, prompt)
+}
+
+func (j *judgeRunner) invokeClaude(ctx context.Context, prompt string) ([]byte, error) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return nil, fmt.Errorf("judge: claude not on PATH")
 	}
@@ -204,10 +237,105 @@ func (j *judgeRunner) invoke(ctx context.Context, prompt string) ([]byte, error)
 		return nil, fmt.Errorf("judge invoke: %w\n%s", err, detail)
 	}
 	text, cost := parseJudgeEnvelope(stdout.Bytes())
-	j.mu.Lock()
-	j.costUSD += cost
-	j.mu.Unlock()
+	j.addCost(cost)
 	return text, nil
+}
+
+func (j *judgeRunner) invokeCodex(ctx context.Context, prompt string) ([]byte, error) {
+	if _, err := exec.LookPath("codex"); err != nil {
+		return nil, fmt.Errorf("judge: codex not on PATH")
+	}
+	workdir, err := os.MkdirTemp("", "trebi-eval-judge-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(workdir)
+	scratch := filepath.Join(workdir, "home")
+	if err := j.seedCodexHome(scratch); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if werr := writeBackCodexAuth(scratch); werr != nil {
+			fmt.Fprintf(os.Stderr, "eval: skip auth write-back: %v\n", werr)
+		}
+	}()
+	cmd := exec.Command("codex", codexJudgeArgs(j.model)...)
+	cmd.Dir = workdir
+	cmd.Env = append(filterEnv(os.Environ(), "CODEX_HOME", "HOME"),
+		"CODEX_HOME="+scratch,
+		"HOME="+scratch,
+	)
+	cmd.Stdin = strings.NewReader(prompt)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = runWithGroup(ctx, cmd)
+	res := parseCodexJSON(stdout.Bytes())
+	j.addCost(res.CostUSD)
+	text, rerr := judgeReplyFromCodex(res)
+	if rerr == nil {
+		return text, nil
+	}
+	if err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		return nil, fmt.Errorf("judge invoke: %w\n%s", err, detail)
+	}
+	return nil, rerr
+}
+
+func (j *judgeRunner) seedCodexHome(dir string) error {
+	if err := copyCodexAuth(dir); err != nil {
+		return fmt.Errorf("judge: copy codex auth: %w", err)
+	}
+	if j.model != "" {
+		return nil
+	}
+	carried := carryCodexModelConfig()
+	if carried == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "config.toml"), []byte(carried+"\n"), 0o600)
+}
+
+func (j *judgeRunner) addCost(usd float64) {
+	j.mu.Lock()
+	j.costUSD += usd
+	j.mu.Unlock()
+}
+
+func codexJudgeArgs(model string) []string {
+	args := []string{
+		"exec", "--json",
+		"--ephemeral",
+		"--skip-git-repo-check",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--color", "never",
+	}
+	if model != "" {
+		args = append(args, "-m", model)
+	}
+	return append(args, "-")
+}
+
+func judgeReplyFromCodex(res *LaunchResult) ([]byte, error) {
+	if res == nil {
+		return nil, fmt.Errorf("judge invoke: empty reply")
+	}
+	for i := len(res.Steps) - 1; i >= 0; i-- {
+		if res.Steps[i].Role == "assistant" && strings.TrimSpace(res.Steps[i].Content) != "" {
+			return []byte(res.Steps[i].Content), nil
+		}
+	}
+	if len(res.Errors) > 0 {
+		return nil, fmt.Errorf("judge invoke: %s", strings.Join(res.Errors, "; "))
+	}
+	return nil, fmt.Errorf("judge invoke: empty reply")
 }
 
 // spendUSD is the grading spend so far.

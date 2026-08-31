@@ -11,6 +11,8 @@ Default server-side harness is `codex` (probes `ok` on macOS today).
 ```bash
 scripts/eval.py run
 scripts/eval.py run --tier onboarding --trials 1 --client codex
+scripts/eval.py run --client codex --judge codex
+scripts/eval.py run --judge codex:gpt-5
 scripts/eval.py oracle onboarding-first-workspace
 scripts/eval.py review --run out/<runid>
 scripts/eval.py report                  # latest run; writes analysis.json

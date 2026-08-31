@@ -24,6 +24,7 @@ type Options struct {
 	TrebiBin  string
 	SkillPath string
 	Clients   []string
+	Judge     string // claude|codex, optionally name:model
 	TaskID    string
 	Tier      string
 	Trials    int
@@ -60,7 +61,7 @@ func NewRunner(opts Options) (*Runner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("skill: %w", err)
 	}
-	j, err := newJudge(opts.EvalsDir, "")
+	j, err := newJudge(opts.EvalsDir, opts.Judge)
 	if err != nil {
 		return nil, err
 	}

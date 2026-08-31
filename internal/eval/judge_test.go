@@ -93,7 +93,7 @@ func TestJudgePreflight(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stubClaude(t, tt.script)
+			stubBin(t, "claude", tt.script)
 			j := &judgeRunner{model: "claude-sonnet-5"}
 			err := j.preflight(context.Background())
 			if tt.wantErr == "" {
@@ -109,11 +109,129 @@ func TestJudgePreflight(t *testing.T) {
 	}
 }
 
-// stubClaude puts a fake claude binary on PATH that runs the given script.
+func TestParseJudgeSpec(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		spec    string
+		name    string
+		model   string
+		wantErr bool
+	}{
+		{spec: "", name: clientClaude, model: defaultJudgeModel},
+		{spec: "claude", name: clientClaude, model: defaultJudgeModel},
+		{spec: "claude:sonnet", name: clientClaude, model: "sonnet"},
+		{spec: "codex", name: clientCodex, model: ""},
+		{spec: "codex:gpt-5", name: clientCodex, model: "gpt-5"},
+		{spec: "unknown", wantErr: true},
+		{spec: "gpt-5", wantErr: true},
+	}
+	for _, tt := range cases {
+		name := tt.spec
+		if name == "" {
+			name = "default"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			name, model, err := parseJudgeSpec(tt.spec)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil || name != tt.name || model != tt.model {
+				t.Fatalf("got %s %s %v", name, model, err)
+			}
+		})
+	}
+}
+
+func TestNewJudgeInvalidSpec(t *testing.T) {
+	t.Parallel()
+	if _, err := newJudge(t.TempDir(), "nope"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestJudgePreflightCodex(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	stubBin(t, "codex", `echo '{"type":"agent_message","text":"{\"ok\":true}"}'`)
+	j := &judgeRunner{harness: clientCodex}
+	if err := j.preflight(context.Background()); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+}
+
+func TestJudgeInvokeCodexPassesModel(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	argsfile := filepath.Join(t.TempDir(), "args")
+	stubBin(t, "codex", "printf '%s\\n' \"$@\" > '"+argsfile+"'\necho '{\"type\":\"agent_message\",\"text\":\"{\\\"ok\\\":true}\"}'")
+	j := &judgeRunner{harness: clientCodex, model: "gpt-5"}
+	if _, err := j.invoke(context.Background(), `{"ok":true}`); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	got, err := os.ReadFile(argsfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "-m") || !strings.Contains(s, "gpt-5") {
+		t.Fatalf("args missing -m gpt-5:\n%s", s)
+	}
+}
+
+func TestJudgeInvokeCodexMissing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	j := &judgeRunner{harness: clientCodex}
+	_, err := j.invoke(context.Background(), "x")
+	if err == nil || !strings.Contains(err.Error(), "codex not on PATH") {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestJudgeReplyFromCodex(t *testing.T) {
+	t.Parallel()
+	text, err := judgeReplyFromCodex(&LaunchResult{Steps: []Step{
+		{Role: "tool", Content: "ignored"},
+		{Role: "assistant", Content: `{"ok":true}`},
+	}})
+	if err != nil || string(text) != `{"ok":true}` {
+		t.Fatalf("got %q %v", text, err)
+	}
+	if _, err := judgeReplyFromCodex(&LaunchResult{Errors: []string{"401"}}); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("err %v", err)
+	}
+	if _, err := judgeReplyFromCodex(&LaunchResult{}); err == nil {
+		t.Fatal("expected empty reply")
+	}
+}
+
+func TestCodexJudgeArgs(t *testing.T) {
+	t.Parallel()
+	got := strings.Join(codexJudgeArgs(""), " ")
+	if !strings.Contains(got, "exec --json") || !strings.HasSuffix(got, " -") {
+		t.Fatalf("args %q", got)
+	}
+	if strings.Contains(got, "-m") {
+		t.Fatalf("unexpected -m in %q", got)
+	}
+	got = strings.Join(codexJudgeArgs("gpt-5"), " ")
+	if !strings.Contains(got, "-m gpt-5") {
+		t.Fatalf("args %q", got)
+	}
+}
+
 func stubClaude(t *testing.T, script string) {
+	stubBin(t, "claude", script)
+}
+
+// stubBin puts a fake binary on PATH that runs the given script.
+func stubBin(t *testing.T, name, script string) {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "claude")
+	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

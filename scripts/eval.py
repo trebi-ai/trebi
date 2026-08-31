@@ -14,7 +14,10 @@ on stderr) and aborts the suite on model auth or MCP handshake failure.
   scripts/eval.py run --client codex
   scripts/eval.py run --client claude --trials 1 --task onboarding-health
   scripts/eval.py run --client codex --surface mcp
+  scripts/eval.py run --client codex --judge codex
+  scripts/eval.py run --judge codex:gpt-5
   EVAL_CLIENT=codex scripts/eval.py run
+  EVAL_JUDGE=codex scripts/eval.py run
   scripts/eval.py oracle onboarding-health
   scripts/eval.py review --run out/<runid>
 
@@ -195,11 +198,21 @@ def ensure_client_flag(rest: list[str]) -> list[str]:
     return rest
 
 
+def ensure_judge_flag(rest: list[str]) -> list[str]:
+    if any(a == "--judge" or a.startswith("--judge=") for a in rest):
+        return rest
+    env = os.environ.get("EVAL_JUDGE", "").strip()
+    if env:
+        return ["--judge", env, *rest]
+    return rest
+
+
 def cmd_live(repo: Path, sub: str, rest: list[str], *, no_build: bool) -> int:
     if not no_build:
         build(repo)
     if sub == "run":
         rest = ensure_client_flag(rest)
+        rest = ensure_judge_flag(rest)
     out = repo / "out"
     if sub == "run":
         clean_old_runs(out)

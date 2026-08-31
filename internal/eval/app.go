@@ -38,6 +38,7 @@ func NewApp() *cli.Command {
 					&cli.StringFlag{Name: "task", Usage: "single task id"},
 					&cli.StringFlag{Name: "tier", Usage: "onboarding|operate|debug|guardrail"},
 					&cli.StringSliceFlag{Name: "client", Usage: "claude and/or codex, optionally name:model (repeatable)"},
+					&cli.StringFlag{Name: "judge", Usage: "claude or codex, optionally name:model (default claude:claude-sonnet-5)"},
 					&cli.IntFlag{Name: "trials", Usage: "override trials per task"},
 					&cli.Float64Flag{Name: "budget", Usage: "abort when cumulative cost_usd reaches this"},
 					&cli.StringFlag{Name: "baseline", Usage: "checked-in baseline.json"},
@@ -74,6 +75,7 @@ func runEval(ctx context.Context, c *cli.Command) error {
 	opts.TaskID = c.String("task")
 	opts.Tier = c.String("tier")
 	opts.Clients = c.StringSlice("client")
+	opts.Judge = c.String("judge")
 	opts.Trials = c.Int("trials")
 	opts.BudgetUSD = c.Float64("budget")
 	opts.Baseline = c.String("baseline")
