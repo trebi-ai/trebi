@@ -279,3 +279,42 @@ func TestAuthProbeCredWatcherSkipsHome(t *testing.T) {
 		t.Fatalf("watcher observed the user home: %d probes", n)
 	}
 }
+
+// A probe that cannot refresh the credential leaves auth_expires_at in the
+// past. The expiry timer must not re-arm on that same date: doing so spins the
+// daemon at full CPU until the credential is renewed.
+func TestAuthProbeExpiredDoesNotSpin(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	past := time.Now().UTC().Add(-42 * 24 * time.Hour)
+	if _, err := harness.Stamp(ctx, st, harness.AuthStatus{
+		Tool: "gemini", Status: harness.AuthOK, ExpiresAt: &past,
+	}, harness.SourceProbe); err != nil {
+		t.Fatal(err)
+	}
+
+	// The probe keeps reporting expired and re-stamps the same past expiry.
+	stub := &probeStub{probeFn: func() harness.AuthStatus {
+		return harness.AuthStatus{Tool: "gemini", Status: harness.AuthExpired, ExpiresAt: &past}
+	}}
+	cp := daemon.New(st, daemon.Options{Shadow: true, AuthProbeInterval: time.Hour})
+	cp.Harness = harness.New(st, stub, harness.Options{})
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+
+	time.Sleep(time.Second)
+	if n := stub.probes(); n > 3 {
+		t.Fatalf("expired credential probed %d times in 1s; expiry timer is spinning", n)
+	}
+}

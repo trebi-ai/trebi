@@ -21,6 +21,11 @@ func (c *ControlPlane) authProbe(ctx context.Context) {
 	defer ticker.Stop()
 
 	var expiry *time.Timer
+	// probed records the expiry each harness was last woken for. A probe that
+	// cannot refresh the credential leaves auth_expires_at unchanged, so
+	// without this the zero-duration timer re-arms on the same past date and
+	// spins. Each expiry value earns one immediate probe; the ticker retries.
+	probed := map[string]time.Time{}
 	armExpiry := func() {
 		name, at, err := harness.EarliestExpiry(ctx, c.Store)
 		if expiry != nil {
@@ -32,6 +37,9 @@ func (c *ControlPlane) authProbe(ctx context.Context) {
 		}
 		d := time.Until(at.Add(harness.ExpiryGrace))
 		if d < 0 {
+			if last, ok := probed[name]; ok && last.Equal(at) {
+				return
+			}
 			d = 0
 		}
 		expiry = time.NewTimer(d)
@@ -64,12 +72,16 @@ func (c *ControlPlane) authProbe(ctx context.Context) {
 			}
 			return
 		case <-ticker.C:
+			clear(probed)
 			c.probeBlocked(ctx)
 			if w != nil {
 				c.syncCredWatch(w)
 			}
 			armExpiry()
 		case <-expC:
+			if name, at, err := harness.EarliestExpiry(ctx, c.Store); err == nil && !at.IsZero() {
+				probed[name] = at
+			}
 			c.probeExpiring(ctx)
 			armExpiry()
 		case ev, ok := <-events:
