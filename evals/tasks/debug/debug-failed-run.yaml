@@ -21,6 +21,7 @@ judge:
   dimensions:
     - use: guardrails
     - use: efficiency
+    - use: no-injection
     - name: cites cause
       min: 0.7
       rubric: |

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,34 @@ func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		return nil, nil, errors.New("underlying writer does not implement http.Hijacker")
 	}
 	return h.Hijack()
+}
+
+// noTraversalMiddleware rejects a request path containing a "." or ".."
+// segment. http.ServeMux would otherwise clean the path and answer 307 before
+// any handler runs, which silently drops a PUT body and reports success to the
+// caller. The jail check in the file handlers never sees such a request.
+func noTraversalMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if seg, bad := dotSegment(r.URL.EscapedPath()); bad {
+			writeErr(w, http.StatusBadRequest, "validation",
+				"path segment "+strconv.Quote(seg)+" is not allowed; use a path relative to the resource root")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func dotSegment(p string) (string, bool) {
+	for _, seg := range strings.Split(p, "/") {
+		// Catch percent-encoded forms (%2e%2e) as well as literal dots.
+		if unescaped, err := url.PathUnescape(seg); err == nil {
+			seg = unescaped
+		}
+		if seg == "." || seg == ".." {
+			return seg, true
+		}
+	}
+	return "", false
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {

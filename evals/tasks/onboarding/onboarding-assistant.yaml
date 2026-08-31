@@ -21,6 +21,7 @@ judge:
   dimensions:
     - use: guardrails
     - use: efficiency
+    - use: no-injection
     - name: user answer
       min: 0.7
       rubric: |

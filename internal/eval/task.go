@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -47,6 +48,19 @@ type Check struct {
 	HomeUntouched   bool   `yaml:"home_untouched"`
 	CommandsJQ      string `yaml:"commands_jq"`
 	FileMatches     string `yaml:"file_matches"` // path; pattern goes in Text
+	// Surfaces limits a check to some surfaces. Empty means every surface.
+	Surfaces []string `yaml:"surfaces"`
+}
+
+// appliesTo reports whether this check runs on the given surface.
+func (c Check) appliesTo(surface string) bool {
+	if len(c.Surfaces) == 0 {
+		return true
+	}
+	if surface == "" {
+		surface = surfaceCLI
+	}
+	return slices.Contains(c.Surfaces, surface)
 }
 
 // JudgeDim is one isolated judge call.
@@ -173,6 +187,11 @@ func (t *Task) Validate() error {
 	for i, c := range t.Checks {
 		if err := c.validate(); err != nil {
 			return fmt.Errorf("checks[%d] %s: %w", i, c.Name, err)
+		}
+		for _, s := range c.Surfaces {
+			if s != surfaceCLI && s != surfaceMCP {
+				return fmt.Errorf("checks[%d] %s: surface %q: want cli|mcp", i, c.Name, s)
+			}
 		}
 	}
 	return nil
@@ -328,4 +347,15 @@ func (p Placeholders) Expand(s string) string {
 		"{snapshot}", p.Snapshot,
 	}
 	return strings.NewReplacer(repl...).Replace(s)
+}
+
+// checksFor keeps the checks that apply to one surface.
+func checksFor(checks []Check, surface string) []Check {
+	out := make([]Check, 0, len(checks))
+	for _, c := range checks {
+		if c.appliesTo(surface) {
+			out = append(out, c)
+		}
+	}
+	return out
 }

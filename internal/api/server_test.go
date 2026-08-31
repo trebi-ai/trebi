@@ -454,6 +454,13 @@ func TestJobRunEndpointLaunchesFakeHarness(t *testing.T) {
 
 func startTestServer(t *testing.T) (*api.Server, string) {
 	t.Helper()
+	return startTestServerOpts(t, api.Options{Token: "test-token"})
+}
+
+// startTestServerOpts starts a server with caller-chosen options. Token is
+// filled in when empty so callers only set what they care about.
+func startTestServerOpts(t *testing.T, opts api.Options) (*api.Server, string) {
+	t.Helper()
 	dir := t.TempDir()
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
@@ -466,7 +473,10 @@ func startTestServer(t *testing.T) (*api.Server, string) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	s := api.New(st, api.Options{Token: "test-token"})
+	if opts.Token == "" {
+		opts.Token = "test-token"
+	}
+	s := api.New(st, opts)
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

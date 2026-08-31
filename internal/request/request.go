@@ -897,6 +897,18 @@ func BuildJobRunPath(name, workspace string) string {
 	return withQuery("/v1/jobs/"+url.PathEscape(name)+"/run", workspaceQ(workspace))
 }
 
+// BuildJobRunDryPath builds POST /v1/jobs/{name}/run?workspace=&dry_run=true.
+func BuildJobRunDryPath(name, workspace string, dryRun bool) string {
+	p := BuildJobRunPath(name, workspace)
+	if !dryRun {
+		return p
+	}
+	if strings.Contains(p, "?") {
+		return p + "&dry_run=true"
+	}
+	return p + "?dry_run=true"
+}
+
 // BuildJobGetPath builds GET /v1/jobs/{name}?workspace=.
 func BuildJobGetPath(name, workspace string) string {
 	return withQuery("/v1/jobs/"+url.PathEscape(name), workspaceQ(workspace))

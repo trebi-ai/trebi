@@ -383,7 +383,11 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpPost(request.BuildJobRunPath(v[0], v[1])), nil
+				dryRun, err := in.flag("dry_run")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpPost(request.BuildJobRunDryPath(v[0], v[1], dryRun)), nil
 			}),
 			"pause":   act("POST /v1/jobs/{name}/pause", mcpInput{"name": "nightly-sync"}, jobPauseAction(true)),
 			"unpause": act("POST /v1/jobs/{name}/unpause", mcpInput{"name": "nightly-sync"}, jobPauseAction(false)),
@@ -450,13 +454,18 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 			}),
 			"show": idGet("GET /v1/workspaces/{id}", "id", "ws1", request.BuildWorkspaceGetPath),
 			"add": act("POST /v1/workspaces", mcpInput{"path": "/tmp/reports", "name": "reports"}, func(in mcpInput) (request.HTTPRequest, error) {
-				v, err := in.head("path", "name")
+				v, err := in.strs("path", "name")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				create, err := in.flag("create")
 				if err != nil {
 					return request.HTTPRequest{}, err
+				}
+				// Pathless add mints a folder under the trebi home; it needs
+				// create plus a name. This matches `trebi workspace add`.
+				if v[0] == "" && (!create || v[1] == "") {
+					return request.HTTPRequest{}, fmt.Errorf(`input field "path" is required (or pass "create": true with "name" to mint one)`)
 				}
 				return request.BuildWorkspaceAdd(v[0], v[1], create), nil
 			}),

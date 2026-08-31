@@ -281,7 +281,7 @@ func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, g *Gr
 		return tr
 	}
 	_ = g.collectSnapshot(ctx)
-	tr.Checks = g.runAll(ctx, skipOracleChecks(t.Checks))
+	tr.Checks = g.runAll(ctx, skipOracleChecks(checksFor(t.Checks, surfaceCLI)))
 	tr.Outcome = checksOutcome(tr.Checks)
 	return tr
 }
@@ -357,7 +357,7 @@ func (r *Runner) gradeLaunch(ctx, dctx context.Context, t *Task, env *trialEnv, 
 	p.Workspace = env.workspacePath(dctx)
 	g.p = p
 	_ = g.collectSnapshot(dctx)
-	tr.Checks = g.runAll(dctx, t.Checks)
+	tr.Checks = g.runAll(dctx, checksFor(t.Checks, tr.Surface))
 	jctx, jcancel := context.WithTimeout(ctx, judgeBudget(len(t.Judge.Dimensions)))
 	defer jcancel()
 	tr.Judge = r.scoreFor(jctx, t.Judge.Dimensions, readFile(p.Transcript), readFile(p.Snapshot), tr.Surface)
@@ -488,7 +488,7 @@ func filterSurface(tasks []*Task, surface string) ([]*Task, error) {
 }
 
 func guardSeedChecks(ctx context.Context, t *Task, g *Grader, tr *TrialResult) bool {
-	pre := skipOracleChecks(t.Checks)
+	pre := skipOracleChecks(checksFor(t.Checks, tr.Surface))
 	if len(pre) == 0 {
 		return false
 	}

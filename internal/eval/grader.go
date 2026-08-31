@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -134,6 +135,11 @@ func (g *Grader) checkCommandsJQ(c Check) CheckResult {
 	if err != nil {
 		return CheckResult{Name: c.Name, Infra: true, Detail: err.Error()}
 	}
+	// all(...) is vacuously true on an empty list, so a transcript that
+	// projected no actions would pass without the agent doing anything.
+	if len(cmds) == 0 {
+		return CheckResult{Name: c.Name, Detail: "no commands or trebi MCP calls in transcript"}
+	}
 	payload, err := json.Marshal(cmds)
 	if err != nil {
 		return CheckResult{Name: c.Name, Infra: true, Detail: err.Error()}
@@ -241,9 +247,14 @@ func fileMatchCheck(name, path, pattern string) CheckResult {
 	return CheckResult{Name: name, Detail: fmt.Sprintf("%s does not match %q:\n%s", path, pattern, truncate(data, 400))}
 }
 
-// transcriptCommands projects command strings from a normalized transcript.
-// Codex names the tool "command"; Claude names it "Bash". Both store the
-// line in content.command. Other tools without that field are ignored.
+// transcriptCommands projects one string per agent action from a normalized
+// transcript, so a commands_jq pattern matches on either surface.
+//
+// Shell calls contribute content.command verbatim (codex names the tool
+// "command", claude names it "Bash"). MCP calls contribute a CLI-shaped
+// rendering, "trebi <tool> <action> --<field> <value>", so that a pattern
+// written for the CLI ("runs message", "--if-match") also matches the MCP
+// call that does the same work.
 func transcriptCommands(data []byte) ([]string, error) {
 	var steps []Step
 	if err := json.Unmarshal(data, &steps); err != nil {
@@ -254,15 +265,89 @@ func transcriptCommands(data []byte) ([]string, error) {
 		if s.Role != "tool" || s.Content == "" {
 			continue
 		}
-		var body struct {
-			Command string `json:"command"`
-		}
-		if json.Unmarshal([]byte(s.Content), &body) != nil || body.Command == "" {
+		if cmd := shellCommandOf(s); cmd != "" {
+			cmds = append(cmds, cmd)
 			continue
 		}
-		cmds = append(cmds, body.Command)
+		if cmd := mcpCommandOf(s); cmd != "" {
+			cmds = append(cmds, cmd)
+		}
 	}
 	return cmds, nil
+}
+
+// cliAliases gives the CLI spellings of one MCP tool+action, for tools the
+// CLI names differently. Empty when the MCP spelling is already the CLI one.
+func cliAliases(tool, action string) []string {
+	switch tool {
+	case "run":
+		return []string{"runs " + action}
+	case "system":
+		switch action {
+		case "doctor", "doctor_fix":
+			return []string{"doctor"}
+		case "bus_poll":
+			return []string{"bus"}
+		case "logs":
+			return []string{"service logs"}
+		case "guide", "guides":
+			return []string{"guide"}
+		}
+	}
+	return nil
+}
+
+func shellCommandOf(s Step) string {
+	var body struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal([]byte(s.Content), &body) != nil {
+		return ""
+	}
+	return body.Command
+}
+
+// mcpCommandOf renders one trebi MCP call as the equivalent CLI line. Input
+// keys are sorted so the projection is stable, and underscores are also
+// emitted as dashes ("if_match" -> "--if-match") so a CLI-flavored pattern
+// matches.
+func mcpCommandOf(s Step) string {
+	tool := strings.TrimPrefix(s.Name, "mcp__trebi__")
+	tool = strings.TrimPrefix(tool, "mcp__trebi_")
+	if tool == s.Name && !isTrebiMCPTool(tool) {
+		return ""
+	}
+	if !isTrebiMCPTool(tool) {
+		return ""
+	}
+	var body struct {
+		Action string         `json:"action"`
+		Input  map[string]any `json:"input"`
+	}
+	if json.Unmarshal([]byte(s.Content), &body) != nil || body.Action == "" {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "trebi %s %s", tool, body.Action)
+	// Some CLI commands are spelled differently from the MCP tool that does
+	// the same work ("runs kill" vs the run tool; "bus" vs system bus_poll).
+	// Emit those spellings too so one pattern matches both surfaces.
+	for _, alias := range cliAliases(tool, body.Action) {
+		fmt.Fprintf(&b, " trebi %s", alias)
+	}
+	keys := make([]string, 0, len(body.Input))
+	for k := range body.Input {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := fmt.Sprintf("%v", body.Input[k])
+		fmt.Fprintf(&b, " --%s %s", k, v)
+		if dashed := strings.ReplaceAll(k, "_", "-"); dashed != k {
+			fmt.Fprintf(&b, " --%s %s", dashed, v)
+		}
+	}
+	return b.String()
 }
 
 func jqTruthy(expr string, data []byte) (ok bool, detail string, err error) {
@@ -273,7 +358,11 @@ func jqTruthy(expr string, data []byte) (ok bool, detail string, err error) {
 	cmd.Stdin = bytes.NewReader(data)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+		// 1 is a false result; 5 is a runtime error against the data (for
+		// example iterating a null the agent never created). Both say the
+		// check did not hold. Anything else is a broken expression or a
+		// missing jq, which is infra.
+		if ee, ok := err.(*exec.ExitError); ok && (ee.ExitCode() == 1 || ee.ExitCode() == 5) {
 			return false, fmt.Sprintf("jq %s => %s", expr, bytes.TrimSpace(out)), nil
 		}
 		return false, "", fmt.Errorf("jq %s: %w\n%s", expr, err, out)

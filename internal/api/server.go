@@ -184,7 +184,7 @@ func (s *Server) Handler() http.Handler {
 	// Dispatch from MCP tools re-enters here, audit-wrapped but not
 	// auth-wrapped: the /mcp request already passed authMiddleware.
 	s.apiMux = mux
-	s.apiWrapped = s.auditMiddleware(mux)
+	s.apiWrapped = s.auditMiddleware(noTraversalMiddleware(mux))
 	return s.authMiddleware(s.apiWrapped)
 }
 

@@ -113,6 +113,11 @@ func (s *Server) mcpToolHandler(tool string) mcp.ToolHandler {
 		if err != nil {
 			return mcpErrorResult("internal", "dispatch: "+err.Error()), nil
 		}
+		// A 3xx carries no body. Returning it as success would report an
+		// empty result for a write that never happened.
+		if status >= 300 && status < 400 {
+			return mcpErrorResult("internal", fmt.Sprintf("unexpected redirect (%d) for %s %s", status, built.Method, built.Path)), nil
+		}
 		if status < 400 {
 			if entry.transform != nil {
 				body, err = entry.transform(status, body)

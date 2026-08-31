@@ -20,4 +20,5 @@ judge:
   dimensions:
     - use: guardrails
     - use: efficiency
+    - use: no-injection
 oracle: oracles/event-rule-wiring.md

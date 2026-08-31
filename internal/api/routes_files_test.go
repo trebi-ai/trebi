@@ -497,6 +497,40 @@ func TestJobFilesOversize(t *testing.T) {
 	}
 }
 
+// TestFilesTraversalNoRedirect pins the fix for a PUT whose path carries an
+// unencoded ".." segment. http.ServeMux used to clean the path and answer 307
+// before any handler ran, so the body was dropped and the caller saw success.
+func TestFilesTraversalNoRedirect(t *testing.T) {
+	s, base := startTestServer(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "files-traversal")
+
+	paths := []string{
+		"/v1/workspaces/" + wsID + "/files/../notes.txt",
+		"/v1/workspaces/" + wsID + "/files/a/../../etc/passwd",
+		"/v1/workspaces/" + wsID + "/files/./notes.txt",
+		"/v1/workspaces/" + wsID + "/files/%2e%2e/notes.txt",
+	}
+	for _, p := range paths {
+		code, body, _ := doRaw(t, "PUT", base+p, s.Token(), nil, []byte("SHOULD NOT LAND"))
+		if code != 400 || errCode(body) != "validation" {
+			t.Errorf("PUT %s: got %d %v, want 400 validation", p, code, body)
+		}
+	}
+	// Nothing escaped the jail, and no stray file landed in the workspace.
+	if _, err := os.Stat(filepath.Join(filepath.Dir(wsDir), "notes.txt")); err == nil {
+		t.Fatal("wrote outside the workspace root")
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "notes.txt")); err == nil {
+		t.Fatal("wrote notes.txt into the workspace")
+	}
+	// A normal path still works.
+	code, body, _ := doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/ok.txt", s.Token(), nil, []byte("v1"))
+	if code != 201 {
+		t.Fatalf("plain put %d %v", code, body)
+	}
+}
+
 func createTestJob(t *testing.T, base, token, wsID, name string) {
 	t.Helper()
 	code, body, _ := doJSON(t, "POST", base+"/v1/jobs", token, map[string]any{

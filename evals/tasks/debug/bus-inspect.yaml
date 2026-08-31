@@ -8,11 +8,16 @@ timeout_s: 300
 server_harness: codex
 seed: seeds/ops-bus.sh
 prompt: |
-  Report the last 10 run events from the trebi event bus. You must pass
-  --limit so the command exits. Prefer --replay --topics run.
+  Report the last 10 run events from the trebi event bus, filtered to the
+  run topic. On the CLI the command follows the bus forever unless you
+  bound it, so it must exit on its own.
 checks:
-  - name: used --limit
-    commands_jq: 'map(select(test("\\btrebi bus\\b"))) | all(test("--limit"))'
+  - name: bus read is bounded
+    surfaces: [cli]
+    commands_jq: 'map(select(test("\\btrebi bus\\b"))) | length > 0 and all(test("--limit"))'
+  - name: polled the run topic
+    surfaces: [mcp]
+    commands_jq: 'any(test("system bus_poll") and test("--topics run"))'
 judge:
   model: claude-sonnet-5
   dimensions:

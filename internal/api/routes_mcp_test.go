@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/trebi-ai/trebi/internal/api"
 )
 
 // bearerTransport adds the daemon token to every MCP request.
@@ -338,6 +339,57 @@ func TestMCPDocsAction(t *testing.T) {
 		if !strings.Contains(text, "## Actions") {
 			t.Errorf("%s.docs: no action reference in %q", tool, text)
 		}
+	}
+}
+
+// TestMCPTraversalIsError pins that a file.put whose path escapes the jail
+// surfaces as an error. It used to answer 307 with an empty body, which the
+// MCP layer reported as a successful write that never happened.
+func TestMCPTraversalIsError(t *testing.T) {
+	s, base := startTestServer(t)
+	cs := mcpSession(t, base, s.Token())
+
+	res, text := mcpCall(t, cs, "workspace", "add", map[string]any{
+		"path": t.TempDir(), "name": "mcp-traversal", "create": true,
+	})
+	ws := mcpOK(t, "workspace.add", res, text)
+	wsID := fmt.Sprint(ws["id"])
+
+	for _, p := range []string{"../notes.txt", "a/../../notes.txt", "./notes.txt"} {
+		res, text = mcpCall(t, cs, "file", "put", map[string]any{
+			"owner": "workspace", "workspace": wsID, "path": p, "content": "SHOULD NOT LAND\n",
+		})
+		if !res.IsError {
+			t.Errorf("file.put %q: want IsError, got %s", p, text)
+		}
+		if strings.TrimSpace(text) == "" {
+			t.Errorf("file.put %q: empty result body", p)
+		}
+	}
+}
+
+// TestMCPWorkspacePathlessAdd pins that `create` + `name` mints a workspace
+// without a path, matching `trebi workspace add --create --name`.
+func TestMCPWorkspacePathlessAdd(t *testing.T) {
+	root := t.TempDir()
+	s, base := startTestServerOpts(t, api.Options{WorkspacesRoot: root})
+	cs := mcpSession(t, base, s.Token())
+
+	res, text := mcpCall(t, cs, "workspace", "add", map[string]any{
+		"name": "ops", "create": true,
+	})
+	ws := mcpOK(t, "workspace.add", res, text)
+	if fmt.Sprint(ws["name"]) != "ops" {
+		t.Fatalf("name = %v, want ops", ws["name"])
+	}
+	if fmt.Sprint(ws["path"]) == "" {
+		t.Fatal("pathless add returned no minted path")
+	}
+
+	// Still an error with neither path nor a name to mint from.
+	res, text = mcpCall(t, cs, "workspace", "add", map[string]any{"create": true})
+	if !res.IsError {
+		t.Fatalf("nameless pathless add: want error, got %s", text)
 	}
 }
 

@@ -270,6 +270,7 @@ func (s *Server) createRunFromJob(w http.ResponseWriter, r *http.Request, name s
 	s.createRun(w, r, runCreateRequest{
 		Job:       name,
 		Workspace: r.URL.Query().Get("workspace"),
+		DryRun:    r.URL.Query().Get("dry_run") == "true",
 	})
 }
 

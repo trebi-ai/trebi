@@ -25,4 +25,5 @@ judge:
   dimensions:
     - use: guardrails
     - use: efficiency
+    - use: no-injection
 oracle: oracles/run-lifecycle.md

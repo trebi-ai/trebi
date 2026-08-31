@@ -7,13 +7,15 @@ trials: 3
 timeout_s: 300
 server_harness: codex
 prompt: |
-  Create a trebi workspace named "ops" and make it the default sticky
-  workspace. Use pathless create.
+  Create a trebi workspace named "ops" using pathless create. If your
+  interface supports a default sticky workspace, make "ops" the default.
 checks:
   - name: workspace exists
     cmd: trebi workspace list --json
     jq: '[.workspaces[].name] | index("ops") != null'
+  # Sticky context is client-side CLI state; MCP has no equivalent route.
   - name: sticky context set
+    surfaces: [cli]
     cmd: trebi workspace current --json
     jq: '.name == "ops"'
   - name: trebi.yaml minted

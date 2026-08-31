@@ -46,6 +46,7 @@ Remove one job. Destructive.
 Launch one run of the job now.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
+- `dry_run` (boolean, optional): evaluate gates and return the plan without launching. Use it before the first real launch of a job this session created or edited.
 
 ### pause
 Stop automatic scheduling of one job.
