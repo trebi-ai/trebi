@@ -49,7 +49,7 @@ func configCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					if err := config.Validate(cfg); err != nil {
+					if err := cfg.Validate(); err != nil {
 						return err
 					}
 					fmt.Fprintln(outWriter(c), "ok")
@@ -163,7 +163,7 @@ func loadConfigEntries(state *appState) ([]config.PathEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return config.ListPathEntries(cfg, declared), nil
+	return cfg.PathEntries(declared), nil
 }
 
 // configValueWidth caps the Value column. Long notify commands would otherwise
@@ -219,7 +219,7 @@ func runConfigSet(_ context.Context, c *cli.Command) error {
 		if state.configErr != nil {
 			return state.configErr
 		}
-		if err := config.SetPath(state.config, key, value); err != nil {
+		if err := state.config.SetPath(key, value); err != nil {
 			return err
 		}
 		if err := state.config.Save(); err != nil {
@@ -359,14 +359,14 @@ func applyConfigHTTPOrLocal(c *cli.Command, state *appState, req request.HTTPReq
 		if sets, ok := req.Body.(map[string]any); ok {
 			if setMap, ok := sets["set"].(map[string]any); ok {
 				for k, v := range setMap {
-					if err := config.SetPath(cfg, k, fmt.Sprint(v)); err != nil {
+					if err := cfg.SetPath(k, fmt.Sprint(v)); err != nil {
 						return err
 					}
 					key = k
 					value = fmt.Sprint(v)
 				}
 			}
-		} else if err := config.SetPath(cfg, key, value); err != nil {
+		} else if err := cfg.SetPath(key, value); err != nil {
 			return err
 		}
 		if err := cfg.Save(); err != nil {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 	"golang.org/x/term"
 )
@@ -84,19 +82,6 @@ func (a *wsAttach) forwardKeys(stdin io.Reader, errCh chan<- error) {
 	}
 }
 
-// attachRun attaches to a live run: local tmux when available, else WebSocket
-// screen stream (works for remote daemons).
-func attachRun(ctx context.Context, c *cli.Command, client *APIClient, runID string) error {
-	if runID == "" {
-		return fmt.Errorf("run id required")
-	}
-	var run map[string]any
-	if err := client.GetJSON(request.BuildRunGetPath(runID), &run); err != nil {
-		return err
-	}
-	return attachAfterLaunch(ctx, c, client, run)
-}
-
 // attachAfterLaunch attaches after create/wake. Local prefers tmux; remote
 // always uses WS /v1/runs/{id}/attach.
 func attachAfterLaunch(ctx context.Context, c *cli.Command, client *APIClient, run map[string]any) error {
@@ -109,45 +94,22 @@ func attachAfterLaunch(ctx context.Context, c *cli.Command, client *APIClient, r
 	}
 	session := mapStr(run, "tmux_session")
 	if session == "" {
-		session = waitTmuxSession(client, runID, 5*time.Second)
+		session = client.WaitTmuxSession(runID, 5*time.Second)
 	}
 	if session != "" {
-		return execTmuxAttach(session)
+		bin, err := exec.LookPath("tmux")
+		if err != nil {
+			return fmt.Errorf("locating tmux: %w", err)
+		}
+		return syscall.Exec(bin, []string{"tmux", "attach", "-t", session}, os.Environ())
 	}
 	// Local fallback when session is not ready: WS screen stream.
 	return attachWebSocket(ctx, c, client, runID)
 }
 
-func waitTmuxSession(client *APIClient, runID string, maxWait time.Duration) string {
-	deadline := time.Now().Add(maxWait)
-	for time.Now().Before(deadline) {
-		var body map[string]any
-		if err := client.GetJSON(request.BuildRunGetPath(runID), &body); err == nil {
-			if s := mapStr(body, "tmux_session"); s != "" {
-				return s
-			}
-			st := mapStr(body, "status")
-			if st != "" && st != "running" && st != "starting" {
-				return ""
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return ""
-}
-
-// execTmuxAttach replaces the process with tmux attach (jobi run --attach parity).
-func execTmuxAttach(session string) error {
-	bin, err := exec.LookPath("tmux")
-	if err != nil {
-		return fmt.Errorf("locating tmux: %w", err)
-	}
-	return syscall.Exec(bin, []string{"tmux", "attach", "-t", session}, os.Environ())
-}
-
 // attachWebSocket streams GET /v1/runs/{id}/attach (screen + optional keys).
 func attachWebSocket(ctx context.Context, c *cli.Command, client *APIClient, runID string) error {
-	conn, err := dialAttach(client, runID)
+	conn, err := client.DialAttach(runID)
 	if err != nil {
 		return err
 	}
@@ -194,35 +156,6 @@ func attachWebSocket(ctx context.Context, c *cli.Command, client *APIClient, run
 	}
 }
 
-func dialAttach(client *APIClient, runID string) (*websocket.Conn, error) {
-	return dialAttachPath(client, "/v1/runs/"+url.PathEscape(runID)+"/attach")
-}
-
-func dialAttachPath(client *APIClient, path string) (*websocket.Conn, error) {
-	wsURL, err := httpToWS(client.Base + path)
-	if err != nil {
-		return nil, err
-	}
-	hdr := http.Header{}
-	if client.Token != "" {
-		hdr.Set("Authorization", "Bearer "+client.Token)
-	}
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	conn, resp, err := dialer.Dial(wsURL, hdr)
-	if err != nil {
-		if resp != nil {
-			body, readErr := io.ReadAll(resp.Body)
-			_ = resp.Body.Close() // response body is closed after reporting the handshake failure
-			if readErr != nil {
-				return nil, fmt.Errorf("attach ws: %w (read handshake response: %v)", err, readErr)
-			}
-			return nil, fmt.Errorf("attach ws: %w (%s: %s)", err, resp.Status, body)
-		}
-		return nil, fmt.Errorf("attach ws: %w", err)
-	}
-	return conn, nil
-}
-
 // attachEndOK reports errors that mean a normal session end.
 func attachEndOK(err error) bool {
 	if err == nil || err == io.EOF {
@@ -251,13 +184,4 @@ func httpToWS(httpURL string) (string, error) {
 		return "", fmt.Errorf("unsupported scheme %q", u.Scheme)
 	}
 	return u.String(), nil
-}
-
-func isTerminalRunStatus(st string) bool {
-	switch strings.ToLower(st) {
-	case "complete", "failed", "exited", "skipped", "timed_out", "resumed":
-		return true
-	default:
-		return false
-	}
 }

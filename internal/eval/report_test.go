@@ -139,16 +139,16 @@ func TestParseRubricsAndVerdict(t *testing.T) {
 
 func TestVerdictPass(t *testing.T) {
 	t.Parallel()
-	if !verdictPass(judgeVerdict{Score: 0.9, Verdict: "pass"}, 1.0) {
+	if !(judgeVerdict{Score: 0.9, Verdict: "pass"}).pass(1.0) {
 		t.Fatal("binary min trusts verdict pass")
 	}
-	if verdictPass(judgeVerdict{Score: 0.9, Verdict: "fail"}, 1.0) {
+	if (judgeVerdict{Score: 0.9, Verdict: "fail"}).pass(1.0) {
 		t.Fatal("verdict fail")
 	}
-	if verdictPass(judgeVerdict{Score: 0.4, Verdict: "pass"}, 0.5) {
+	if (judgeVerdict{Score: 0.4, Verdict: "pass"}).pass(0.5) {
 		t.Fatal("score below min")
 	}
-	if !verdictPass(judgeVerdict{Unknown: true, Verdict: "fail"}, 1.0) {
+	if !(judgeVerdict{Unknown: true, Verdict: "fail"}).pass(1.0) {
 		t.Fatal("unknown does not fail")
 	}
 }

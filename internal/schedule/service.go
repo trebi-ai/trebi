@@ -122,11 +122,6 @@ func loadRows(tx *sql.Tx, workspaceID, jobName string) (map[int]Row, error) {
 	return out, rows.Err()
 }
 
-// NextDuePublic is the exported next-due calculator (tests / callers with a tz).
-func NextDuePublic(spec string, from time.Time, tz string) time.Time {
-	return nextDue(spec, from, tz)
-}
-
 func nextDue(spec string, from time.Time, tz string) time.Time {
 	loc := time.UTC
 	if tz != "" && !strings.EqualFold(tz, "UTC") {

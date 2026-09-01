@@ -140,7 +140,11 @@ func runRunsAttach(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return attachRun(ctx, c, client, id)
+	var run map[string]any
+	if err := client.GetJSON(request.BuildRunGetPath(id), &run); err != nil {
+		return err
+	}
+	return attachAfterLaunch(ctx, c, client, run)
 }
 
 func runRunsShow(_ context.Context, c *cli.Command) error {

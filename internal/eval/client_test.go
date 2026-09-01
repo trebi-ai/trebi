@@ -67,14 +67,14 @@ func TestMCPIsolationViolations(t *testing.T) {
 		{Role: "tool", Name: "mcp__other__list", Content: `{}`},
 		{Role: "tool", Name: "job", Content: `{"action":"list"}`},
 	}
-	got := mcpIsolationViolations(steps, "http://127.0.0.1:1234")
+	got := Steps(steps).mcpIsolationViolations("http://127.0.0.1:1234")
 	if len(got) != 3 {
 		t.Fatalf("violations %v", got)
 	}
-	clean := mcpIsolationViolations([]Step{
+	clean := Steps{
 		{Role: "tool", Name: "system", Content: `{"action":"guide","input":{"topic":"mcp-basics"}}`},
 		{Role: "assistant", Content: "trebi is ready"},
-	}, "http://127.0.0.1:1234")
+	}.mcpIsolationViolations("http://127.0.0.1:1234")
 	if len(clean) != 0 {
 		t.Fatalf("clean %v", clean)
 	}
@@ -124,7 +124,7 @@ func TestMCPIsolationCommandPosition(t *testing.T) {
 				}
 				step = Step{Role: "tool", Name: "command", Content: string(raw)}
 			}
-			got := mcpIsolationViolations([]Step{step}, api)
+			got := Steps{step}.mcpIsolationViolations(api)
 			if len(got) != tt.want {
 				t.Fatalf("want %d got %v", tt.want, got)
 			}
@@ -226,10 +226,10 @@ func TestParseCodexErrors(t *testing.T) {
 		`{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, request id: req_1"}}`,
 	}, "\n"))
 	res := parseCodexJSON(raw)
-	if hasAssistantStep(res.Steps) {
+	if res.Steps.hasAssistant() {
 		t.Fatalf("steps %+v", res.Steps)
 	}
-	sum := clientErrorSummary(res)
+	sum := res.errorSummary()
 	if !strings.Contains(sum, "401 Unauthorized") {
 		t.Fatalf("errors %v summary %q", res.Errors, sum)
 	}
@@ -240,10 +240,10 @@ func TestParseCodexMCPToolCall(t *testing.T) {
 	raw := []byte(`{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"trebi","tool":"system","arguments":{"action":"health"},"status":"completed"}}
 {"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"DONE"}}`)
 	res := parseCodexJSON(raw)
-	if !mcpHandshakeOK(res.Steps) {
+	if !res.Steps.mcpHandshakeOK() {
 		t.Fatalf("steps %+v", res.Steps)
 	}
-	if !hasAssistantStep(res.Steps) {
+	if !res.Steps.hasAssistant() {
 		t.Fatal("missing assistant")
 	}
 }

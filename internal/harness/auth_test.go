@@ -16,15 +16,16 @@ func TestStampFlipOnly(t *testing.T) {
 	t.Parallel()
 	st := openStore(t)
 	ctx := context.Background()
+	svc := New(st, nil, Options{})
 
-	res, err := Stamp(ctx, st, AuthStatus{Tool: "claude", Status: AuthOK}, SourceLaunch)
+	res, err := svc.Stamp(ctx, AuthStatus{Tool: "claude", Status: AuthOK}, SourceLaunch)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.Flipped || !res.OK {
 		t.Fatalf("%+v", res)
 	}
-	res, err = Stamp(ctx, st, AuthStatus{Tool: "claude", Status: AuthOK}, SourceLaunch)
+	res, err = svc.Stamp(ctx, AuthStatus{Tool: "claude", Status: AuthOK}, SourceLaunch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +38,7 @@ func TestStampFlipOnly(t *testing.T) {
 		t.Fatalf("harness.updated count=%d want 1", n)
 	}
 
-	res, err = Stamp(ctx, st, AuthStatus{Tool: "claude", Status: AuthMissing}, SourceProbe)
+	res, err = svc.Stamp(ctx, AuthStatus{Tool: "claude", Status: AuthMissing}, SourceProbe)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +55,7 @@ func TestLogoutDoesNotAlert(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	svc := New(st, nil, Options{})
-	_, err := Stamp(ctx, st, AuthStatus{Tool: "claude", Status: AuthOK}, SourceLaunch)
+	_, err := svc.Stamp(ctx, AuthStatus{Tool: "claude", Status: AuthOK}, SourceLaunch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,7 @@ func TestLogoutSeparateRemovesFilesKeepsSymlink(t *testing.T) {
 	st := openStore(t)
 	svc := New(st, nil, Options{})
 	ctx := context.Background()
-	if _, err := Stamp(ctx, st, AuthStatus{Tool: "claude", Status: AuthOK}, SourceLaunch); err != nil {
+	if _, err := svc.Stamp(ctx, AuthStatus{Tool: "claude", Status: AuthOK}, SourceLaunch); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Logout(ctx, "claude", AuthModeSeparate, false); err != nil {
@@ -160,12 +161,13 @@ func TestEarliestExpiry(t *testing.T) {
 	t.Parallel()
 	st := openStore(t)
 	ctx := context.Background()
+	svc := New(st, nil, Options{})
 	soon := time.Now().UTC().Add(200 * time.Millisecond)
-	_, err := Stamp(ctx, st, AuthStatus{Tool: "claude", Status: AuthOK, ExpiresAt: &soon}, SourceProbe)
+	_, err := svc.Stamp(ctx, AuthStatus{Tool: "claude", Status: AuthOK, ExpiresAt: &soon}, SourceProbe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	name, at, err := EarliestExpiry(ctx, st)
+	name, at, err := svc.EarliestExpiry(ctx)
 	if err != nil || name != "claude" || at.IsZero() {
 		t.Fatalf("%s %v %v", name, at, err)
 	}

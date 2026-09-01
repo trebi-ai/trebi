@@ -15,7 +15,7 @@ func TestApplyResumePlanKeepsResumedFrom(t *testing.T) {
 		ResumeSessionID: "uuid-session-1",
 	}
 	plan := tmux.LaunchPlan{}
-	applyResumePlan(&opts, &plan)
+	opts.applyResumePlan(&plan)
 	if opts.ResumedFrom != "01PREDECESSOR" {
 		t.Fatalf("resumed_from=%q, want predecessor run id", opts.ResumedFrom)
 	}
@@ -28,7 +28,7 @@ func TestApplyResumePlanKeepsResumedFrom(t *testing.T) {
 
 	// Empty ResumedFrom keeps the session-id fallback.
 	opts2 := LaunchOpts{ResumeSessionID: "uuid-session-2"}
-	applyResumePlan(&opts2, &tmux.LaunchPlan{SessionID: "uuid-session-2"})
+	opts2.applyResumePlan(&tmux.LaunchPlan{SessionID: "uuid-session-2"})
 	if opts2.ResumedFrom != "uuid-session-2" {
 		t.Fatalf("fallback resumed_from=%q", opts2.ResumedFrom)
 	}

@@ -217,11 +217,12 @@ func TestLoginCapturesSetupToken(t *testing.T) {
 
 	st := openStore(t)
 	ctx := context.Background()
-	_, err := Stamp(ctx, st, AuthStatus{Tool: "claude", Status: AuthMissing}, SourceProbe)
+	auth := New(st, nil, Options{})
+	_, err := auth.Stamp(ctx, AuthStatus{Tool: "claude", Status: AuthMissing}, SourceProbe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocked, err := BlockedNames(ctx, st)
+	blocked, err := auth.BlockedNames(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +289,7 @@ func TestLoginCapturesSetupToken(t *testing.T) {
 	if !row.AuthOK.Valid || row.AuthOK.Int64 != 1 {
 		t.Fatalf("stamp %+v", row)
 	}
-	blocked, err = BlockedNames(ctx, st)
+	blocked, err = auth.BlockedNames(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

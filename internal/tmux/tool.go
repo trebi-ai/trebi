@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -117,14 +118,14 @@ func EventMode(name string) EventModeCapability {
 // Claude is checked first so paths containing "claude" win over weaker matches.
 func AllTools() []Tool {
 	return []Tool{
-		claudeTool{},
-		grokTool{},
-		opencodeTool{},
-		cursorTool{},
-		codexTool{},
+		claudeTool{harnessHome{tool: Claude}},
+		grokTool{harnessHome{tool: Grok}},
+		opencodeTool{harnessHome{tool: OpenCode}},
+		cursorTool{harnessHome{tool: Cursor}},
+		codexTool{harnessHome{tool: Codex}},
 		copilotTool{},
 		geminiTool{},
-		piTool{},
+		piTool{harnessHome{tool: Pi}},
 	}
 }
 
@@ -311,10 +312,6 @@ func binaryMatch(command, name string) bool {
 	return base == name || strings.Contains(base, name)
 }
 
-func containsToken(command, name string) bool {
-	return strings.Contains(command, name)
-}
-
 // injectSessionIDFlag appends --session-id <uuid> (or custom flag) and returns the id.
 func injectSessionIDFlag(command, flag string) (cmd, sessionID string) {
 	id := uuid.New().String()
@@ -332,4 +329,47 @@ func resumeWithFlag(command, sessionID string, launchFlags []string, resumeFlag 
 // planWithSession builds a LaunchPlan with command + session id.
 func planWithSession(command, sessionID string, env map[string]string) LaunchPlan {
 	return LaunchPlan{Command: command, SessionID: sessionID, Env: env}
+}
+
+// harnessHome is the shared ~/.trebi/harness/<tool> tree: materialize,
+// load config, ensure resource bridges. Tool is an interface, so this
+// lives on an embedded base rather than on Tool.
+type harnessHome struct{ tool string }
+
+func (h harnessHome) prepare() (*config.Config, string) {
+	dir := config.HarnessDir(h.tool)
+	h.materialize(dir)
+	var cfg *config.Config
+	if c, err := config.Load(); err == nil {
+		cfg = c
+	}
+	_ = harness.EnsureBridges(h.tool, cfg)
+	return cfg, dir
+}
+
+func (h harnessHome) bridgeAuth(userRel, mode string) error {
+	userHome := harness.UserHome()
+	if userHome == "" {
+		return nil
+	}
+	src := filepath.Join(userHome, userRel)
+	dst := filepath.Join(config.HarnessDir(h.tool), filepath.Base(userRel))
+	return harness.SymlinkAuth(src, dst, mode)
+}
+
+func (h harnessHome) materialize(dir string) {
+	switch h.tool {
+	case Claude:
+		_ = (claudeLifecycle{}).materialize(dir)
+	case Grok:
+		_ = (grokLifecycle{}).materialize(dir)
+	case Cursor:
+		_ = (cursorLifecycle{}).materialize(dir)
+	case OpenCode:
+		_ = (opencodeLifecycle{}).materialize(dir)
+	case Pi:
+		_ = newPiLifecycle().materialize(dir)
+	default:
+		_ = harness.EnsureDir(dir)
+	}
 }

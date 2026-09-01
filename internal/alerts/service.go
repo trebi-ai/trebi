@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -227,10 +228,10 @@ func (s *Service) Raise(ctx context.Context, opts RaiseOpts) (string, error) {
 		return "", nil
 	}
 	if opts.Subject == "" {
-		opts.Subject = defaultSubject(opts)
+		opts.Subject = opts.defaultSubject()
 	}
 	if opts.Title == "" {
-		opts.Title = defaultTitle(opts)
+		opts.Title = opts.defaultTitle()
 	}
 	opts.Title = sanitizeText(opts.Title)
 	opts.Body = sanitizeText(opts.Body)
@@ -431,7 +432,7 @@ func (s *Service) insertItem(ctx context.Context, spec KindSpec, opts RaiseOpts)
 	id := ulid.Make().String()
 	now := s.opts.Now().UTC()
 	nowStr := now.Format(time.RFC3339Nano)
-	actions := defaultActions(opts)
+	actions := opts.defaultActions()
 	actJSON, _ := json.Marshal(actions)
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO inbox_items (
@@ -475,7 +476,7 @@ func (s *Service) updateActive(ctx context.Context, item *InboxItem, opts RaiseO
 		title = fmt.Sprintf("%s (%d×)", opts.Title, n)
 	}
 	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
-	actions := defaultActions(opts)
+	actions := opts.defaultActions()
 	actJSON, _ := json.Marshal(actions)
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`UPDATE inbox_items SET title=?, body=?, hint=?, actions=?,
@@ -553,75 +554,11 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 	}
 }
 
-func defaultSubject(opts RaiseOpts) string {
-	switch opts.Kind {
-	case KindWaiting:
-		return "run/" + opts.RunID
-	case KindAuthMissing:
-		return "harness/" + opts.Harness
-	case KindLimitExceeded, KindUsageWarning:
-		return "harness/" + firstNonEmpty(opts.Harness, opts.Integration)
-	case KindIntegrationUnhealthy:
-		return "integration/" + opts.Integration
-	case KindRunFailed:
-		return "job/" + opts.WorkspaceID + "/" + opts.JobName
-	case KindResumeExhausted:
-		if opts.SessionID != "" {
-			return "session/" + opts.SessionID
-		}
-		return "run/" + opts.RunID
-	case KindMachineDown:
-		return "machine"
-	}
-	return opts.Kind.String()
-}
-
-func defaultTitle(opts RaiseOpts) string {
-	switch opts.Kind {
-	case KindWaiting:
-		return "Agent waiting"
-	case KindAuthMissing:
-		return "Auth missing"
-	case KindLimitExceeded:
-		return "Harness limit exceeded"
-	case KindUsageWarning:
-		return "Harness usage warning"
-	case KindIntegrationUnhealthy:
-		return "Integration unhealthy"
-	case KindRunFailed:
-		return "Run failed"
-	case KindResumeExhausted:
-		return "Resume exhausted"
-	case KindMachineDown:
-		return "Machine down"
-	}
-	return string(opts.Kind)
-}
-
 func firstNonEmpty(a, b string) string {
 	if a != "" {
 		return a
 	}
 	return b
-}
-
-func defaultActions(opts RaiseOpts) []InboxAction {
-	switch opts.Kind {
-	case KindWaiting:
-		if opts.RunID == "" {
-			return []InboxAction{}
-		}
-		return []InboxAction{{Kind: ActionOpenSession, Route: "/v1/runs/" + opts.RunID + "/attach", Label: "Open session"}}
-	case KindRunFailed:
-		return runFailedActions(opts.RunID)
-	case KindAuthMissing:
-		name := firstNonEmpty(opts.Harness, opts.Integration)
-		if name == "" {
-			return []InboxAction{}
-		}
-		return []InboxAction{{Kind: ActionReAuth, Route: "/v1/harnesses/" + name + "/login", Label: "Re-auth"}}
-	}
-	return []InboxAction{}
 }
 
 func runFailedActions(runID string) []InboxAction {
@@ -682,4 +619,88 @@ func parseTime(s string) time.Time {
 		t, _ = time.Parse(time.RFC3339, s)
 	}
 	return t
+}
+
+func (o RaiseOpts) defaultSubject() string {
+	switch o.Kind {
+	case KindWaiting:
+		return "run/" + o.RunID
+	case KindAuthMissing:
+		return "harness/" + o.Harness
+	case KindLimitExceeded, KindUsageWarning:
+		return "harness/" + firstNonEmpty(o.Harness, o.Integration)
+	case KindIntegrationUnhealthy:
+		return "integration/" + o.Integration
+	case KindRunFailed:
+		return "job/" + o.WorkspaceID + "/" + o.JobName
+	case KindResumeExhausted:
+		if o.SessionID != "" {
+			return "session/" + o.SessionID
+		}
+		return "run/" + o.RunID
+	case KindMachineDown:
+		return "machine"
+	}
+	return o.Kind.String()
+}
+
+func (o RaiseOpts) defaultTitle() string {
+	switch o.Kind {
+	case KindWaiting:
+		return "Agent waiting"
+	case KindAuthMissing:
+		return "Auth missing"
+	case KindLimitExceeded:
+		return "Harness limit exceeded"
+	case KindUsageWarning:
+		return "Harness usage warning"
+	case KindIntegrationUnhealthy:
+		return "Integration unhealthy"
+	case KindRunFailed:
+		return "Run failed"
+	case KindResumeExhausted:
+		return "Resume exhausted"
+	case KindMachineDown:
+		return "Machine down"
+	}
+	return string(o.Kind)
+}
+
+func (o RaiseOpts) defaultActions() []InboxAction {
+	switch o.Kind {
+	case KindWaiting:
+		if o.RunID == "" {
+			return []InboxAction{}
+		}
+		return []InboxAction{{Kind: ActionOpenSession, Route: "/v1/runs/" + o.RunID + "/attach", Label: "Open session"}}
+	case KindRunFailed:
+		return runFailedActions(o.RunID)
+	case KindAuthMissing:
+		name := firstNonEmpty(o.Harness, o.Integration)
+		if name == "" {
+			return []InboxAction{}
+		}
+		return []InboxAction{{Kind: ActionReAuth, Route: "/v1/harnesses/" + name + "/login", Label: "Re-auth"}}
+	}
+	return []InboxAction{}
+}
+
+func (o RaiseOpts) notifyEnv(id string) []string {
+	vals := map[string]string{
+		"TREBI_ALERT_KIND":        string(o.Kind),
+		"TREBI_ALERT_TOOL":        o.Harness,
+		"TREBI_ALERT_TASK_ID":     o.RunID,
+		"TREBI_ALERT_JOB":         o.JobName,
+		"TREBI_ALERT_WORKSPACE":   o.WorkspaceID,
+		"TREBI_ALERT_MESSAGE":     o.Title,
+		"TREBI_ALERT_HINT":        o.Hint,
+		"TREBI_ALERT_BODY":        o.Body,
+		"TREBI_ALERT_RESUME":      id,
+		"TREBI_ALERT_INTEGRATION": o.Integration,
+	}
+	env := os.Environ()
+	for k, v := range vals {
+		env = append(env, k+"="+v)
+	}
+	return env
 }

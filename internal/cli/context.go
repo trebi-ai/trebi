@@ -38,6 +38,23 @@ func (s *StickyContext) IsRemote() bool {
 	return s != nil && strings.TrimSpace(s.URL) != ""
 }
 
+// Save writes ~/.trebi/context (0600).
+func (s *StickyContext) Save() error {
+	if s == nil {
+		return fmt.Errorf("no sticky context")
+	}
+	if err := home.EnsureDirs(); err != nil {
+		return err
+	}
+	cp := *s
+	cp.URL = strings.TrimRight(strings.TrimSpace(cp.URL), "/")
+	data, err := yaml.Marshal(&cp)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(home.ContextPath(), data, 0o600)
+}
+
 // LoadStickyContext reads ~/.trebi/context (nil if missing).
 func LoadStickyContext() (*StickyContext, error) {
 	data, err := os.ReadFile(home.ContextPath())
@@ -55,19 +72,6 @@ func LoadStickyContext() (*StickyContext, error) {
 		return nil, nil
 	}
 	return &s, nil
-}
-
-// SaveStickyContext writes ~/.trebi/context (0600).
-func SaveStickyContext(s StickyContext) error {
-	if err := home.EnsureDirs(); err != nil {
-		return err
-	}
-	s.URL = strings.TrimRight(strings.TrimSpace(s.URL), "/")
-	data, err := yaml.Marshal(&s)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(home.ContextPath(), data, 0o600)
 }
 
 // ClearStickyContext removes the sticky context file.
@@ -117,8 +121,8 @@ func FindLinked(idOrName string) (LinkedWorkspace, bool) {
 	return LinkedWorkspace{}, false
 }
 
-// SaveLinkedWorkspace upserts a remote link by id.
-func SaveLinkedWorkspace(w LinkedWorkspace) error {
+// Save upserts a remote link by id.
+func (w LinkedWorkspace) Save() error {
 	w.URL = strings.TrimRight(strings.TrimSpace(w.URL), "/")
 	if w.ID == "" || w.URL == "" {
 		return fmt.Errorf("linked workspace requires id and url")
@@ -150,6 +154,17 @@ func SaveLinkedWorkspace(w LinkedWorkspace) error {
 	return writeLinked(all)
 }
 
+// Sticky builds sticky context from a linked remote workspace.
+func (w LinkedWorkspace) Sticky() StickyContext {
+	return StickyContext{
+		WorkspaceID: w.ID,
+		Name:        w.Name,
+		Path:        w.Path,
+		URL:         w.URL,
+		Token:       w.Token,
+	}
+}
+
 // RemoveLinkedWorkspace deletes a client-side link (id or name).
 func RemoveLinkedWorkspace(idOrName string) error {
 	all, err := LoadLinkedWorkspaces()
@@ -168,17 +183,6 @@ func RemoveLinkedWorkspace(idOrName string) error {
 		out = append(out, x)
 	}
 	return writeLinked(out)
-}
-
-// StickyFromLinked builds sticky context from a linked remote workspace.
-func StickyFromLinked(w LinkedWorkspace) StickyContext {
-	return StickyContext{
-		WorkspaceID: w.ID,
-		Name:        w.Name,
-		Path:        w.Path,
-		URL:         w.URL,
-		Token:       w.Token,
-	}
 }
 
 func writeLinked(all []LinkedWorkspace) error {

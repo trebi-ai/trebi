@@ -67,8 +67,55 @@ type TrialResult struct {
 }
 
 // Passed reports deterministic checks and judge minima all green.
-func (r *TrialResult) Passed() bool {
-	return r != nil && r.Outcome == OutcomePass
+func (t *TrialResult) Passed() bool {
+	return t != nil && t.Outcome == OutcomePass
+}
+
+func (t *TrialResult) writeFile() error {
+	if t == nil || t.Dir == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(t, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(t.Dir, "trial.json"), data, 0o644)
+}
+
+// deadClientGate stops a trial whose client never produced an answer. A client
+// that made tool calls but ran out of time is graded normally: its work is on
+// the daemon and a retry would burn the same wall. A client that reported a
+// fault instead is infra, and retries: it was cut off, not slow.
+func (t *TrialResult) deadClientGate(launch *LaunchResult) bool {
+	if launch != nil && launch.Steps.hasAssistant() {
+		return false
+	}
+	if launch != nil && launch.Steps.toolCount() > 0 && len(launch.Errors) == 0 {
+		t.Error = launch.errorSummary()
+		return false
+	}
+	t.Outcome = OutcomeInfraFailure
+	t.Error = launch.errorSummary()
+	return true
+}
+
+func (t *TrialResult) failSummary() string {
+	var parts []string
+	for _, c := range t.Checks {
+		if !c.Pass {
+			parts = append(parts, "check "+c.Name+": "+c.Detail)
+		}
+	}
+	for _, j := range t.Judge {
+		if j.Infra {
+			parts = append(parts, "judge "+j.Name+" infra")
+			continue
+		}
+		if !j.Pass && !j.Unknown {
+			parts = append(parts, "judge "+j.Name)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // trialEnv is one isolated TREBI_HOME + workdir + daemon child.
@@ -495,7 +542,7 @@ func seedClientHome(cfgHome, clientName string) error {
 	case clientCodex:
 		return copyCodexAuth(cfgHome)
 	case clientClaude:
-		return seedClaudeOnboarding(cfgHome)
+		return seedIsolatedClaudeHome(cfgHome)
 	default:
 		return nil
 	}
@@ -524,7 +571,9 @@ func writeBackCodexAuth(scratchHome string) error {
 		return nil
 	}
 	realHome := realCodexHome()
-	if realHome == "" || sameAbs(scratchHome, realHome) {
+	scratchAbs, _ := filepath.Abs(scratchHome)
+	realAbs, _ := filepath.Abs(realHome)
+	if realHome == "" || scratchAbs == realAbs {
 		return nil
 	}
 	data, err := os.ReadFile(filepath.Join(scratchHome, "auth.json"))
@@ -547,12 +596,6 @@ func writeBackCodexAuth(scratchHome string) error {
 	}
 	fmt.Fprintf(os.Stderr, "eval: wrote back codex auth.json\n")
 	return nil
-}
-
-func sameAbs(a, b string) bool {
-	aa, _ := filepath.Abs(a)
-	bb, _ := filepath.Abs(b)
-	return aa == bb
 }
 
 func codexAuthNewer(scratchAt time.Time, realPath string) bool {
@@ -602,7 +645,12 @@ func authLastRefresh(data []byte) (time.Time, bool) {
 	return t, true
 }
 
-func seedClaudeOnboarding(dst string) error {
+// seedIsolatedClaudeHome writes a minimal onboarding flag into an isolated
+// scratch home so eval trials skip the first-run wizard without inheriting
+// operator config. Differs from tmux.seedClaudeOnboarding, which merges
+// keys from the real ~/.claude.json — that would leak personal settings
+// into trial state and break reproducibility.
+func seedIsolatedClaudeHome(dst string) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
 	}

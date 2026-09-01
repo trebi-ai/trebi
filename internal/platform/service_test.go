@@ -16,7 +16,7 @@ func TestRenderPlist_AbsoluteProgramArguments(t *testing.T) {
 	def := DaemonAgent(false)
 	def.LogPath = "/tmp/trebid.log"
 	bin := "/Users/me/Applications/Trebi.app/Contents/MacOS/trebi"
-	got := RenderPlist(def, bin, "/usr/bin:/bin", "/Users/me")
+	got := def.Render(bin, "/usr/bin:/bin", "/Users/me")
 
 	mustContain(t, got, "<string>ai.trebi.daemon</string>")
 	mustContain(t, got, "<string>/Users/me/Applications/Trebi.app/Contents/MacOS/trebi</string>")
@@ -39,7 +39,7 @@ func TestRenderPlist_AbsoluteProgramArguments(t *testing.T) {
 	}
 
 	headless := DaemonAgent(true)
-	gotH := RenderPlist(headless, bin, "/usr/bin:/bin", "/Users/me")
+	gotH := headless.Render(bin, "/usr/bin:/bin", "/Users/me")
 	mustContain(t, gotH, "<string>--no-tray</string>")
 	mustContain(t, gotH, "<key>KeepAlive</key>\n    <true/>")
 }
@@ -53,7 +53,7 @@ func TestRenderPlist_XMLEscapeAndKeepAliveOnFailure(t *testing.T) {
 		KeepAlive: false,
 		LogPath:   "/tmp/a&b<c>.log",
 	}
-	got := RenderPlist(def, "/opt/bin/trebi", "a&b:/bin", "/Users/a&b")
+	got := def.Render("/opt/bin/trebi", "a&b:/bin", "/Users/a&b")
 	mustContain(t, got, "<string>a&amp;b:/bin</string>")
 	mustContain(t, got, "<string>/Users/a&amp;b</string>")
 	mustContain(t, got, "<string>/tmp/a&amp;b&lt;c&gt;.log</string>")
@@ -64,7 +64,7 @@ func TestRenderPlist_DefaultPathAndHome(t *testing.T) {
 	t.Parallel()
 	def := DaemonAgent(false)
 	def.LogPath = "/tmp/t.log"
-	got := RenderPlist(def, "/bin/trebi", "", "")
+	got := def.Render("/bin/trebi", "", "")
 	mustContain(t, got, "<string>/usr/bin:/bin:/usr/sbin:/sbin</string>")
 	// HOME falls back to user home; still present as a key.
 	mustContain(t, got, "<key>HOME</key>")

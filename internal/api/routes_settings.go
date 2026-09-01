@@ -204,7 +204,7 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 		if k == "set" {
 			continue
 		}
-		if err := config.SetPath(cfg, k, fmt.Sprint(v)); err != nil {
+		if err := cfg.SetPath(k, fmt.Sprint(v)); err != nil {
 			writeErr(w, http.StatusBadRequest, "validation", err.Error())
 			return
 		}
@@ -225,7 +225,7 @@ func configEntries() []config.PathEntry {
 	if err != nil {
 		return nil
 	}
-	return config.ListPathEntries(cfg, declared)
+	return cfg.PathEntries(declared)
 }
 
 func loadConfigMap() (map[string]any, error) {

@@ -89,16 +89,6 @@ func ReadScreen(session string) (string, error) {
 	return out, nil
 }
 
-// CaptureScrollback returns the pane content including scrollback history (from
-// the first scrollback line through the visible screen), for post-mortem debug.
-func CaptureScrollback(session string) (string, error) {
-	out, err := run("capture-pane", "-p", "-S", "-", "-t", session)
-	if err != nil {
-		return "", fmt.Errorf("tmux capture-pane (scrollback): %w", err)
-	}
-	return out, nil
-}
-
 // RenameSession sets the window title only — not the session name (our handle).
 func RenameSession(session, title string) error {
 	sanitized := sanitizeWindowName(title)
@@ -107,14 +97,6 @@ func RenameSession(session, title string) error {
 	}
 	if _, err := run("rename-window", "-t", session, sanitized); err != nil {
 		return fmt.Errorf("tmux rename-window: %w", err)
-	}
-	return nil
-}
-
-// SelectSession switches the current client (requires $TMUX). Outside tmux, use attach.
-func SelectSession(session string) error {
-	if _, err := run("switch-client", "-t", session); err != nil {
-		return fmt.Errorf("tmux switch-client: %w", err)
 	}
 	return nil
 }
@@ -132,28 +114,6 @@ func ListSessionsFormatted(format string) (string, error) {
 		return "", fmt.Errorf("tmux list-sessions: %w", err)
 	}
 	return out, nil
-}
-
-func ListTrebiSessions() ([]string, error) {
-	out, err := ListSessions()
-	if err != nil {
-		return nil, err
-	}
-	var names []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		name := line
-		if idx := strings.IndexByte(line, '\t'); idx >= 0 {
-			name = line[:idx]
-		}
-		if strings.HasPrefix(name, SessionNamePrefix) {
-			names = append(names, name)
-		}
-	}
-	return names, nil
 }
 
 // KillSession kills the session.

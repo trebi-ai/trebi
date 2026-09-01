@@ -306,7 +306,7 @@ func runAssistantSay(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	convID, err := ensureCLIConversation(client, wsID)
+	convID, err := client.EnsureCLIConversation(wsID)
 	if err != nil {
 		return err
 	}
@@ -332,7 +332,7 @@ func runAssistantChat(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	convID, err := ensureCLIConversation(client, wsID)
+	convID, err := client.EnsureCLIConversation(wsID)
 	if err != nil {
 		return err
 	}
@@ -381,23 +381,19 @@ func chatLine(c *cli.Command, client *APIClient, wsID string, convID *string, li
 		fmt.Fprintf(outWriter(c), "switched → %s\n", id)
 		return true, nil
 	default:
-		return true, chatSend(c, client, wsID, *convID, line)
+		var out map[string]any
+		if err := client.DoHTTP(request.BuildAssistantSay(*convID, line, wsID), &out); err != nil {
+			return true, err
+		}
+		fmt.Fprintf(outWriter(c), "… %s\n", mapStr(out, "delivery"))
+		return true, waitAssistantReply(c, client, *convID)
 	}
-}
-
-func chatSend(c *cli.Command, client *APIClient, wsID, convID, text string) error {
-	var out map[string]any
-	if err := client.DoHTTP(request.BuildAssistantSay(convID, text, wsID), &out); err != nil {
-		return err
-	}
-	fmt.Fprintf(outWriter(c), "… %s\n", mapStr(out, "delivery"))
-	return waitAssistantReply(c, client, convID)
 }
 
 func waitAssistantReply(c *cli.Command, client *APIClient, convID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	seen := messageIDs(client, convID)
+	seen := client.MessageIDSet(convID)
 	err := client.StreamEvents(ctx, request.BuildStreamPath("conversation.updated,agent.state", "0"), func(ev store.StreamEvent) error {
 		if ev.Topic == "agent.state" {
 			fmt.Fprint(outWriter(c), "thinking…\r")
@@ -415,20 +411,6 @@ func waitAssistantReply(c *cli.Command, client *APIClient, convID string) error 
 		return err
 	}
 	return nil
-}
-
-func messageIDs(client *APIClient, convID string) map[string]struct{} {
-	out := map[string]struct{}{}
-	var body struct {
-		Messages []map[string]any `json:"messages"`
-	}
-	if err := client.GetJSON(request.BuildConversationMessagesPath(convID, "", 200), &body); err != nil {
-		return out
-	}
-	for _, m := range body.Messages {
-		out[mapStr(m, "id")] = struct{}{}
-	}
-	return out
 }
 
 func printNewAssistant(c *cli.Command, client *APIClient, convID string, seen map[string]struct{}) bool {
@@ -452,22 +434,4 @@ func printNewAssistant(c *cli.Command, client *APIClient, convID string, seen ma
 		printed = true
 	}
 	return printed
-}
-
-func ensureCLIConversation(client *APIClient, wsID string) (string, error) {
-	var ptr map[string]any
-	err := client.DoHTTP(request.BuildPointerGet("cli", wsID), &ptr)
-	if err == nil {
-		if id := mapStr(ptr, "conversation_id"); id != "" {
-			return id, nil
-		}
-	}
-	if err != nil && !strings.Contains(err.Error(), "404") {
-		return "", err
-	}
-	var created map[string]any
-	if err := client.DoHTTP(request.BuildConversationCreate(wsID, "", "cli", "cli", wsID), &created); err != nil {
-		return "", err
-	}
-	return mapStr(created, "id"), nil
 }

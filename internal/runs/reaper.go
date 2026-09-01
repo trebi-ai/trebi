@@ -13,9 +13,9 @@ import (
 
 // Reaper watches live runs for sentinel, idle timeout, max duration, and gone sessions.
 type Reaper struct {
-	Svc      *Service
-	Interval time.Duration
-	Now      func() time.Time
+	svc      *Service
+	interval time.Duration
+	now      func() time.Time
 	log      *slog.Logger
 
 	mu        sync.Mutex
@@ -27,9 +27,9 @@ type Reaper struct {
 // NewReaper builds a reaper bound to the runs service.
 func NewReaper(svc *Service) *Reaper {
 	return &Reaper{
-		Svc:       svc,
-		Interval:  5 * time.Second,
-		Now:       time.Now,
+		svc:       svc,
+		interval:  5 * time.Second,
+		now:       time.Now,
 		log:       slog.Default().With("source", "reaper"),
 		idleSince: make(map[string]time.Time),
 		limitHits: make(map[string]int),
@@ -39,7 +39,7 @@ func NewReaper(svc *Service) *Reaper {
 
 // Start runs the reaper loop until ctx is done or Stop.
 func (r *Reaper) Start(ctx context.Context) {
-	t := time.NewTicker(r.Interval)
+	t := time.NewTicker(r.interval)
 	defer t.Stop()
 	for {
 		select {
@@ -64,12 +64,12 @@ func (r *Reaper) Stop() {
 
 // Sweep checks all running runs once.
 func (r *Reaper) Sweep(ctx context.Context) {
-	list, err := r.Svc.List(ctx, ListOpts{Status: string(StatusRunning), Limit: 500})
+	list, err := r.svc.List(ctx, ListOpts{Status: string(StatusRunning), Limit: 500})
 	if err != nil {
 		r.log.Warn("reaper list", "error", err)
 		return
 	}
-	now := r.Now()
+	now := r.now()
 	for _, run := range list {
 		r.checkOne(ctx, run, now)
 	}
@@ -100,12 +100,12 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
 		return
 	}
 
-	idle := screenIdle(run, screen)
-	if r.Svc.AgentState(run.ID) != AgentWaiting {
+	idle := run.screenIdle(screen)
+	if r.svc.AgentState(run.ID) != AgentWaiting {
 		if idle {
-			r.Svc.SetAgentState(ctx, run.ID, AgentIdle, "screen")
+			r.svc.SetAgentState(ctx, run.ID, AgentIdle, "screen")
 		} else {
-			r.Svc.SetAgentState(ctx, run.ID, AgentRunning, "screen")
+			r.svc.SetAgentState(ctx, run.ID, AgentRunning, "screen")
 		}
 	}
 
@@ -120,7 +120,7 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
 
 	// auth / limit chrome (coarse markers)
 	if tmux.IsAuthBlocker(screen) || authFailed(screen) {
-		r.Svc.emitAuthProbeFailed(ctx, run.Harness, run.ID, harness.SourceReaper)
+		r.svc.emitAuthProbeFailed(ctx, run.Harness, run.ID, harness.SourceReaper)
 		r.finish(ctx, run, StatusFailed, EndAuth)
 		return
 	}
@@ -130,7 +130,7 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
 		n := r.limitHits[run.ID]
 		r.mu.Unlock()
 		if n >= 2 {
-			r.Svc.emitLimitExceeded(ctx, run.Harness, run.ID)
+			r.svc.emitLimitExceeded(ctx, run.Harness, run.ID)
 			r.finish(ctx, run, StatusFailed, EndLimit)
 		}
 		return
@@ -140,7 +140,7 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
 	delete(r.limitHits, run.ID)
 	r.mu.Unlock()
 	if cleared {
-		r.Svc.emitLimitCleared(ctx, run.Harness)
+		r.svc.emitLimitCleared(ctx, run.Harness)
 	}
 }
 
@@ -157,7 +157,7 @@ func (r *Reaper) finishComplete(ctx context.Context, run *Run, now time.Time) {
 	if !ok {
 		r.idleSince[key] = now
 		r.mu.Unlock()
-		r.Svc.AddEvent(ctx, run.ID, "sentinel", "reaper", map[string]string{"keep_alive": "true"})
+		r.svc.AddEvent(ctx, run.ID, "sentinel", "reaper", map[string]string{"keep_alive": "true"})
 		return
 	}
 	r.mu.Unlock()
@@ -169,10 +169,10 @@ func (r *Reaper) finishComplete(ctx context.Context, run *Run, now time.Time) {
 
 // checkIdle tracks the idle-timeout window. True means checkOne must stop.
 func (r *Reaper) checkIdle(ctx context.Context, run *Run, screen string, now time.Time) bool {
-	if run.Session.IdleTimeoutMS <= 0 || r.Svc.AgentState(run.ID) == AgentWaiting {
+	if run.Session.IdleTimeoutMS <= 0 || r.svc.AgentState(run.ID) == AgentWaiting {
 		return false
 	}
-	if !screenIdle(run, screen) {
+	if !run.screenIdle(screen) {
 		r.mu.Lock()
 		delete(r.idleSince, run.ID)
 		r.mu.Unlock()
@@ -199,7 +199,7 @@ func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndRea
 		time.Sleep(100 * time.Millisecond)
 		_ = tmux.KillSession(run.TmuxSession)
 	}
-	if err := r.Svc.Terminate(ctx, run.ID, status, end, nil); err != nil {
+	if err := r.svc.Terminate(ctx, run.ID, status, end, nil); err != nil {
 		r.log.Warn("reaper terminate", "run", run.ID, "error", err)
 	}
 	r.mu.Lock()
@@ -217,9 +217,9 @@ func authFailed(screen string) bool {
 		strings.Contains(low, "please run /login")
 }
 
-func screenIdle(run *Run, screen string) bool {
-	if run != nil {
-		if tool, ok := tmux.ByName(run.Harness); ok {
+func (r *Run) screenIdle(screen string) bool {
+	if r != nil {
+		if tool, ok := tmux.ByName(r.Harness); ok {
 			if c, ok := tool.(tmux.ScreenClassifier); ok {
 				switch c.ClassifyScreen(screen) {
 				case tmux.ScreenBusy:

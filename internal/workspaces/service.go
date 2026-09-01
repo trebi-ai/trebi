@@ -164,7 +164,8 @@ func nearestExisting(p string) (string, os.FileInfo, error) {
 	}
 }
 
-func pathInside(root, target string) bool {
+// PathInside reports whether target is strictly inside root (not equal to it).
+func PathInside(root, target string) bool {
 	root = filepath.Clean(root)
 	target = filepath.Clean(target)
 	if target == root {
@@ -498,10 +499,10 @@ func (s *Service) rejectNested(ctx context.Context, abs string) error {
 		if root == abs {
 			continue
 		}
-		if pathInside(root, abs) {
+		if PathInside(root, abs) {
 			return fmt.Errorf("%w: %s", ErrNested, root)
 		}
-		if pathInside(abs, root) {
+		if PathInside(abs, root) {
 			return fmt.Errorf("%w: %s", ErrContains, root)
 		}
 	}

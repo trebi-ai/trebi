@@ -417,9 +417,12 @@ func runIntegrationLogs(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	// Non-follow may be SSE lines or JSON {"log":"…"}.
-	if text := decodeLogBody(raw); text != "" {
-		fmt.Fprint(outWriter(c), text)
-		if !strings.HasSuffix(text, "\n") {
+	var wrap struct {
+		Log string `json:"log"`
+	}
+	if json.Unmarshal(raw, &wrap) == nil && wrap.Log != "" {
+		fmt.Fprint(outWriter(c), wrap.Log)
+		if !strings.HasSuffix(wrap.Log, "\n") {
 			fmt.Fprintln(outWriter(c))
 		}
 		return nil
@@ -429,16 +432,6 @@ func runIntegrationLogs(_ context.Context, c *cli.Command) error {
 		fmt.Fprintln(outWriter(c))
 	}
 	return nil
-}
-
-func decodeLogBody(raw []byte) string {
-	var wrap struct {
-		Log string `json:"log"`
-	}
-	if json.Unmarshal(raw, &wrap) == nil && wrap.Log != "" {
-		return wrap.Log
-	}
-	return ""
 }
 
 func runIntegrationTest(_ context.Context, c *cli.Command) error {

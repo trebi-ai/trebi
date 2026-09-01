@@ -53,7 +53,7 @@ func runBusWith(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	filt, err := busFilterFrom(c)
+	filt, err := newBusFilter(c)
 	if err != nil {
 		return err
 	}
@@ -138,7 +138,7 @@ type busFilter struct {
 	since              time.Time
 }
 
-func busFilterFrom(c *cli.Command) (busFilter, error) {
+func newBusFilter(c *cli.Command) (busFilter, error) {
 	f := busFilter{
 		entity: c.String("entity"),
 		id:     c.String("id"),
@@ -201,22 +201,15 @@ func normalizeBusTopics(raw string) (string, error) {
 		if t == "" {
 			return "", fmt.Errorf("empty topic term in %q", raw)
 		}
-		if err := validateTopicTerm(t); err != nil {
-			return "", err
+		if !topicKnown(t) {
+			if near := nearestTopic(t); near != "" {
+				return "", fmt.Errorf("unknown topic %q (did you mean %q?)", t, near)
+			}
+			return "", fmt.Errorf("unknown topic %q", t)
 		}
 		parts = append(parts, t)
 	}
 	return strings.Join(parts, ","), nil
-}
-
-func validateTopicTerm(term string) error {
-	if topicKnown(term) {
-		return nil
-	}
-	if near := nearestTopic(term); near != "" {
-		return fmt.Errorf("unknown topic %q (did you mean %q?)", term, near)
-	}
-	return fmt.Errorf("unknown topic %q", term)
 }
 
 func topicKnown(term string) bool {

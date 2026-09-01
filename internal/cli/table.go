@@ -167,7 +167,10 @@ func fitColumnWidths(headers []string, natural []int, termWidth int) []int {
 		}
 	}
 
-	sum := sumInts(maxes)
+	sum := 0
+	for _, v := range maxes {
+		sum += v
+	}
 	if sum <= budget {
 		// Fits on one line — keep content minimums, no stretch.
 		return maxes
@@ -180,14 +183,6 @@ func fitColumnWidths(headers []string, natural []int, termWidth int) []int {
 		shrinkLongestFirst(maxes, floor, wrap, false, overflow)
 	}
 	return maxes
-}
-
-func sumInts(a []int) int {
-	s := 0
-	for _, v := range a {
-		s += v
-	}
-	return s
 }
 
 // shrinkLongestFirst removes overflow by decrementing the widest eligible column.

@@ -62,8 +62,38 @@ type LaunchOpts struct {
 }
 
 // wantsFake reports the fake-harness path (contract e2e without real LLM binary).
-func (o LaunchOpts) wantsFake() bool {
+func (o *LaunchOpts) wantsFake() bool {
 	return len(o.FakeCommand) > 0 || o.Harness == "fake" || os.Getenv("TREBI_FAKE_HARNESS") != ""
+}
+
+func (o *LaunchOpts) fakeTranscriptPath(dir string) string {
+	name := o.Harness
+	if name == "" || name == "fake" {
+		name = tmux.Claude
+	}
+	tool, ok := tmux.ByName(name)
+	if !ok {
+		return ""
+	}
+	path, err := tool.TranscriptPath(home.HarnessDir(name), "", o.SessionID)
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
+// applyResumePlan sets session identity for a resume launch.
+// It keeps a caller-set ResumedFrom (predecessor run ULID) so the
+// B17 UPDATE in Create matches the predecessor row (not a session UUID).
+func (o *LaunchOpts) applyResumePlan(plan *tmux.LaunchPlan) {
+	if plan.SessionID == "" {
+		plan.SessionID = o.ResumeSessionID
+	}
+	o.SessionID = plan.SessionID
+	if o.ResumedFrom == "" {
+		o.ResumedFrom = o.ResumeSessionID
+	}
+	o.Reason = ReasonResume
 }
 
 // CreateAndLaunch inserts a run and starts the harness (tmux) or fake process.
@@ -337,25 +367,25 @@ func (s *Service) InjectMessage(ctx context.Context, runID, text string) error {
 	if run.Status != StatusRunning {
 		return fmt.Errorf("%w: %s", ErrNotRunning, runID)
 	}
-	if err := sendToPane(run, text); err != nil {
+	if err := run.sendToPane(text); err != nil {
 		return err
 	}
 	s.AddEvent(ctx, runID, "message", "api", map[string]string{"bytes": fmt.Sprint(len(text))})
 	return nil
 }
 
-func sendToPane(run *Run, text string) error {
-	if run.Harness == "fake" || strings.HasPrefix(run.TmuxSession, "trebi-fake-") {
+func (r *Run) sendToPane(text string) error {
+	if r.Harness == "fake" || strings.HasPrefix(r.TmuxSession, "trebi-fake-") {
 		return nil
 	}
-	if run.TmuxSession == "" {
-		return fmt.Errorf("run %s has no tmux session", run.ID)
+	if r.TmuxSession == "" {
+		return fmt.Errorf("run %s has no tmux session", r.ID)
 	}
-	if err := tmux.Send(run.TmuxSession, text); err != nil {
+	if err := tmux.Send(r.TmuxSession, text); err != nil {
 		return err
 	}
 	time.Sleep(300 * time.Millisecond)
-	return tmux.SendKey(run.TmuxSession, "enter")
+	return tmux.SendKey(r.TmuxSession, "enter")
 }
 
 func fakeEnv(run *Run, opts LaunchOpts, dir string) []string {
@@ -364,27 +394,11 @@ func fakeEnv(run *Run, opts LaunchOpts, dir string) []string {
 		"TREBI_RUN_COMPLETE="+CompletionSentinel(run.ID),
 		"TREBI_SESSION_ID="+opts.SessionID,
 	)
-	if path := fakeTranscriptPath(opts, dir); path != "" {
+	if path := opts.fakeTranscriptPath(dir); path != "" {
 		_ = os.MkdirAll(filepath.Dir(path), 0o755)
 		env = append(env, "TREBI_TRANSCRIPT_PATH="+path)
 	}
 	return env
-}
-
-func fakeTranscriptPath(opts LaunchOpts, dir string) string {
-	name := opts.Harness
-	if name == "" || name == "fake" {
-		name = tmux.Claude
-	}
-	tool, ok := tmux.ByName(name)
-	if !ok {
-		return ""
-	}
-	path, err := tool.TranscriptPath(home.HarnessDir(name), "", opts.SessionID)
-	if err != nil {
-		return ""
-	}
-	return path
 }
 
 // Kill terminates a running run (Ctrl+C then kill session). Idempotent for terminal runs.
@@ -475,7 +489,7 @@ func preparePlan(tool tmux.Tool, command string, opts *LaunchOpts) (tmux.LaunchP
 		if err != nil {
 			return plan, fmt.Errorf("resume: %w", err)
 		}
-		applyResumePlan(opts, &plan)
+		opts.applyResumePlan(&plan)
 		return plan, nil
 	}
 	plan := tool.PrepareLaunch(command)
@@ -483,20 +497,6 @@ func preparePlan(tool tmux.Tool, command string, opts *LaunchOpts) (tmux.LaunchP
 		opts.SessionID = plan.SessionID
 	}
 	return plan, nil
-}
-
-// applyResumePlan sets session identity for a resume launch.
-// It keeps a caller-set ResumedFrom (predecessor run ULID) so the
-// B17 UPDATE in Create matches the predecessor row (not a session UUID).
-func applyResumePlan(opts *LaunchOpts, plan *tmux.LaunchPlan) {
-	if plan.SessionID == "" {
-		plan.SessionID = opts.ResumeSessionID
-	}
-	opts.SessionID = plan.SessionID
-	if opts.ResumedFrom == "" {
-		opts.ResumedFrom = opts.ResumeSessionID
-	}
-	opts.Reason = ReasonResume
 }
 
 // sessionTitle labels the tmux session with the job name and time.
@@ -623,7 +623,7 @@ func isDetectRune(r rune) bool {
 }
 
 func (s *Service) emitAuthProbeFailed(ctx context.Context, name, runID, source string) {
-	_, _ = harness.Stamp(ctx, s.st, harness.AuthStatus{
+	_, _ = harness.New(s.st, nil, harness.Options{}).Stamp(ctx, harness.AuthStatus{
 		Tool: name, Status: harness.AuthMissing, Hint: "trebi harness auth login " + name,
 	}, source)
 	if _, err := s.st.Append(ctx, store.BusEvent{
@@ -638,7 +638,7 @@ func (s *Service) stampHarnessAuthOK(ctx context.Context, name string) {
 	if name == "" || name == "unknown" || name == "fake" {
 		return
 	}
-	_, _ = harness.Stamp(ctx, s.st, harness.AuthStatus{Tool: name, Status: harness.AuthOK}, harness.SourceLaunch)
+	_, _ = harness.New(s.st, nil, harness.Options{}).Stamp(ctx, harness.AuthStatus{Tool: name, Status: harness.AuthOK}, harness.SourceLaunch)
 }
 
 func (s *Service) emitLimitExceeded(ctx context.Context, harness, runID string) {

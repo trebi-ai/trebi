@@ -9,20 +9,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 )
 
-func TestRewriteSentinel(t *testing.T) {
-	t.Parallel()
-	in := []byte("finish with JOBI_TASK_COMPLETE please")
-	out, changed := job.RewriteSentinel(in)
-	if !changed || !strings.Contains(string(out), "TREBI_RUN_COMPLETE") {
-		t.Fatalf("%s changed=%v", out, changed)
-	}
-	out2, changed2 := job.RewriteSentinel(out)
-	if changed2 {
-		t.Fatal("second pass should be no-op")
-	}
-	_ = out2
-}
-
 func TestSetDisabledPreservesComment(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

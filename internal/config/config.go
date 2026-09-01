@@ -382,7 +382,7 @@ func Load() (*Config, error) {
 	data, err := os.ReadFile(ConfigPath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			applyLoadDefaults(cfg)
+			cfg.applyDefaults()
 			return cfg, nil
 		}
 		return nil, err
@@ -391,33 +391,15 @@ func Load() (*Config, error) {
 	if err := decodeConfig(data, cfg); err != nil {
 		return nil, err
 	}
-	applyLoadDefaults(cfg)
-	if err := Validate(cfg); err != nil {
-		return nil, err
-	}
-	return cfg, nil
-}
-
-// ParseConfigBytes decodes and validates config YAML without touching the filesystem
-// (aside from no I/O). Used by tests and validate-before-write helpers.
-func ParseConfigBytes(data []byte) (*Config, error) {
-	cfg := defaultConfig()
-	if len(bytes.TrimSpace(data)) == 0 {
-		applyLoadDefaults(cfg)
-		return cfg, Validate(cfg)
-	}
-	if err := decodeConfig(data, cfg); err != nil {
-		return nil, err
-	}
-	applyLoadDefaults(cfg)
-	if err := Validate(cfg); err != nil {
+	cfg.applyDefaults()
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
 // seedTemplate documents every tunable key. Active lines are the values
-// applyLoadDefaults would supply anyway; the rest are commented with the
+// applyDefaults would supply anyway; the rest are commented with the
 // default the loader uses, so the file shows what exists without pinning it.
 const seedTemplate = `# trebi config. Written once, on first daemon start.
 # Commented keys show the built-in default; uncomment to pin one.
@@ -475,8 +457,8 @@ func (c *Config) Save() error {
 	if err := EnsureDirs(); err != nil {
 		return err
 	}
-	applyLoadDefaults(c)
-	if err := Validate(c); err != nil {
+	c.applyDefaults()
+	if err := c.Validate(); err != nil {
 		return err
 	}
 	data, err := yaml.Marshal(c)
@@ -484,50 +466,6 @@ func (c *Config) Save() error {
 		return err
 	}
 	return os.WriteFile(ConfigPath(), data, 0644)
-}
-
-// ParsedSession is defaults.session with durations resolved.
-type ParsedSession struct {
-	Timeout     time.Duration
-	MaxDuration time.Duration
-	KeepAlive   time.Duration
-	Nudge       time.Duration
-	NudgeSet    bool // true when nudge key was present (incl. off)
-	IfRunning   string
-}
-
-// ParseSessionDefaults resolves defaults.session strings (call after Validate).
-func ParseSessionDefaults(s SessionDefaults) (ParsedSession, error) {
-	var out ParsedSession
-	var err error
-	out.Timeout, err = parseDurationOrOff(s.Timeout)
-	if err != nil {
-		return out, fmt.Errorf("defaults.session.timeout: %w", err)
-	}
-	out.MaxDuration, err = parseDurationOrOff(s.MaxDuration)
-	if err != nil {
-		return out, fmt.Errorf("defaults.session.max_duration: %w", err)
-	}
-	out.KeepAlive, err = parseDurationOrOff(s.KeepAlive)
-	if err != nil {
-		return out, fmt.Errorf("defaults.session.keep_alive: %w", err)
-	}
-	if strings.TrimSpace(s.Nudge) != "" {
-		out.NudgeSet = true
-		if s.Nudge == "0" || strings.EqualFold(strings.TrimSpace(s.Nudge), "off") {
-			out.Nudge = 0
-		} else {
-			out.Nudge, err = parseDurationOrOff(s.Nudge)
-			if err != nil {
-				return out, fmt.Errorf("defaults.session.nudge: %w", err)
-			}
-		}
-	}
-	ir := strings.ToLower(strings.TrimSpace(s.IfRunning))
-	if ir != "" {
-		out.IfRunning = ir
-	}
-	return out, nil
 }
 
 func expandTilde(p string) string {
@@ -552,24 +490,6 @@ func expandTilde(p string) string {
 	return abs
 }
 
-func parseDurationOrOff(raw string) (time.Duration, error) {
-	s := strings.TrimSpace(raw)
-	if s == "" || s == "0" || strings.EqualFold(s, "off") {
-		return 0, nil
-	}
-	if !durationRe.MatchString(s) {
-		return 0, fmt.Errorf("invalid duration %q", s)
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 0, err
-	}
-	if d <= 0 {
-		return 0, fmt.Errorf("duration %q must be positive", s)
-	}
-	return d, nil
-}
-
 func defaultConfig() *Config {
 	return &Config{
 		Defaults: Defaults{Command: "claude"},
@@ -587,18 +507,6 @@ func decodeConfig(data []byte, cfg *Config) error {
 		return fmt.Errorf("%s: %w", filepath.Base(ConfigPath()), err)
 	}
 	return nil
-}
-
-func applyLoadDefaults(cfg *Config) {
-	if cfg.Defaults.Command == "" {
-		cfg.Defaults.Command = "claude"
-	}
-	if cfg.Terminal == "" {
-		cfg.Terminal = "Terminal"
-	}
-	if cfg.Tools.Fallback == "" {
-		cfg.Tools.Fallback = "path"
-	}
 }
 
 // ConfigError is one or more field-level validation problems.
@@ -644,10 +552,7 @@ var durationRe = regexp.MustCompile(`^(\d+(?:h|m|s))+$`)
 
 // Validate checks enums, durations, and bridge resource keys/modes.
 // Returns *ConfigError listing all problems when possible.
-func Validate(cfg *Config) error {
-	if cfg == nil {
-		return nil
-	}
+func (c *Config) Validate() error {
 	ce := &ConfigError{Path: "config.yaml"}
 	if base := ConfigPath(); base != "" {
 		ce.Path = base
@@ -656,52 +561,64 @@ func Validate(cfg *Config) error {
 	}
 
 	// Terminal
-	if cfg.Terminal != "" && !validTerminal(cfg.Terminal) {
-		ce.add("terminal", fmt.Sprintf("%q not in [Terminal, iTerm, Ghostty]", cfg.Terminal))
+	if c.Terminal != "" && !validTerminal(c.Terminal) {
+		ce.add("terminal", fmt.Sprintf("%q not in [Terminal, iTerm, Ghostty]", c.Terminal))
 	}
 
 	// defaults.session
-	s := cfg.Defaults.Session
-	validateDurationField(ce, "defaults.session.timeout", s.Timeout, true)
-	validateDurationField(ce, "defaults.session.max_duration", s.MaxDuration, true)
-	validateDurationField(ce, "defaults.session.keep_alive", s.KeepAlive, true)
-	validateNudgeField(ce, "defaults.session.nudge", s.Nudge)
+	s := c.Defaults.Session
+	ce.checkDuration("defaults.session.timeout", s.Timeout, true)
+	ce.checkDuration("defaults.session.max_duration", s.MaxDuration, true)
+	ce.checkDuration("defaults.session.keep_alive", s.KeepAlive, true)
+	ce.checkNudge("defaults.session.nudge", s.Nudge)
 	if s.IfRunning != "" && !validIfRunningMode(strings.ToLower(strings.TrimSpace(s.IfRunning))) {
 		ce.add("defaults.session.if_running",
 			fmt.Sprintf("%q not in [skip, replace, coalesce, allow]", s.IfRunning))
 	}
 
 	// notify.waiting_after: empty → default 5m; 0/off disables escalate
-	validateNudgeField(ce, "notify.waiting_after", cfg.Notify.WaitingAfter)
+	ce.checkNudge("notify.waiting_after", c.Notify.WaitingAfter)
 
-	if cfg.Files.MaxBytes < 0 {
+	if c.Files.MaxBytes < 0 {
 		ce.add("files.max_bytes", "must be >= 0")
 	}
 
 	// tools.fallback
-	if cfg.Tools.Fallback != "" && !validFallbackMode(cfg.Tools.Fallback) {
-		ce.add("tools.fallback", fmt.Sprintf("%q not in [require, path]", cfg.Tools.Fallback))
+	if c.Tools.Fallback != "" && !validFallbackMode(c.Tools.Fallback) {
+		ce.add("tools.fallback", fmt.Sprintf("%q not in [require, path]", c.Tools.Fallback))
 	}
 
 	// global bridge
-	validateBridge(ce, "tools.bridge", cfg.Tools.Bridge, "")
+	ce.checkBridge("tools.bridge", c.Tools.Bridge, "")
 
 	for _, name := range FirstClassTools() {
-		p := cfg.Tools.Pin(name)
+		p := c.Tools.Pin(name)
 		if p == nil {
 			continue
 		}
 		prefix := "tools." + name
-		if p.Auth != "" && !validAuthMode(p.Auth) {
+		if p.Auth != "" && p.Auth != "shared" && p.Auth != "separate" {
 			ce.add(prefix+".auth", fmt.Sprintf("%q not in [shared, separate]", p.Auth))
 		}
-		validateBridge(ce, prefix+".bridge", p.Bridge, name)
+		ce.checkBridge(prefix+".bridge", p.Bridge, name)
 	}
 
 	if len(ce.Errors) == 0 {
 		return nil
 	}
 	return ce
+}
+
+func (c *Config) applyDefaults() {
+	if c.Defaults.Command == "" {
+		c.Defaults.Command = "claude"
+	}
+	if c.Terminal == "" {
+		c.Terminal = "Terminal"
+	}
+	if c.Tools.Fallback == "" {
+		c.Tools.Fallback = "path"
+	}
 }
 
 // NormalizeBridgeMode maps aliases to inherit|false. Invalid returns empty and false.
@@ -722,41 +639,41 @@ func IsInherit(raw string) bool {
 	return ok && m == "inherit"
 }
 
-func validateBridge(ce *ConfigError, prefix string, b *BridgeConfig, tool string) {
+func (e *ConfigError) checkBridge(prefix string, b *BridgeConfig, tool string) {
 	if b == nil {
 		return
 	}
 	for _, k := range b.Only {
 		if tool != "" {
 			if !knownResource(tool, k) {
-				ce.add(prefix+".only", fmt.Sprintf("unknown resource %q (known: %s)", k, strings.Join(KnownBridgeResources()[tool], ", ")))
+				e.add(prefix+".only", fmt.Sprintf("unknown resource %q (known: %s)", k, strings.Join(KnownBridgeResources()[tool], ", ")))
 			}
 		} else if !knownResourceAny(k) {
-			ce.add(prefix+".only", fmt.Sprintf("unknown resource %q", k))
+			e.add(prefix+".only", fmt.Sprintf("unknown resource %q", k))
 		}
 	}
 	for _, k := range b.Never {
 		if tool != "" {
 			if !knownResource(tool, k) {
-				ce.add(prefix+".never", fmt.Sprintf("unknown resource %q (known: %s)", k, strings.Join(KnownBridgeResources()[tool], ", ")))
+				e.add(prefix+".never", fmt.Sprintf("unknown resource %q (known: %s)", k, strings.Join(KnownBridgeResources()[tool], ", ")))
 			}
 		} else if !knownResourceAny(k) {
-			ce.add(prefix+".never", fmt.Sprintf("unknown resource %q", k))
+			e.add(prefix+".never", fmt.Sprintf("unknown resource %q", k))
 		}
 	}
 	for k, mode := range b.Resources {
 		field := prefix + ".resources." + k
 		if tool != "" {
 			if !knownResource(tool, k) {
-				ce.add(field, fmt.Sprintf("unknown resource (known: %s)", strings.Join(KnownBridgeResources()[tool], ", ")))
+				e.add(field, fmt.Sprintf("unknown resource (known: %s)", strings.Join(KnownBridgeResources()[tool], ", ")))
 				continue
 			}
 		} else if !knownResourceAny(k) {
-			ce.add(field, "unknown resource")
+			e.add(field, "unknown resource")
 			continue
 		}
 		if !validBridgeModeValue(mode) {
-			ce.add(field, fmt.Sprintf("%q not in [true, false, inherit, link, off, none]", mode))
+			e.add(field, fmt.Sprintf("%q not in [true, false, inherit, link, off, none]", mode))
 		}
 	}
 }
@@ -781,7 +698,7 @@ func knownResourceAny(key string) bool {
 	return false
 }
 
-func validateDurationField(ce *ConfigError, field, raw string, allowZeroOff bool) {
+func (e *ConfigError) checkDuration(field, raw string, allowZeroOff bool) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return
@@ -790,25 +707,25 @@ func validateDurationField(ce *ConfigError, field, raw string, allowZeroOff bool
 		return
 	}
 	if !durationRe.MatchString(s) {
-		ce.add(field, fmt.Sprintf("invalid duration %q (use s/m/h, e.g. 30m, 1h)", s))
+		e.add(field, fmt.Sprintf("invalid duration %q (use s/m/h, e.g. 30m, 1h)", s))
 		return
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil {
-		ce.add(field, fmt.Sprintf("invalid duration %q: %v", s, err))
+		e.add(field, fmt.Sprintf("invalid duration %q: %v", s, err))
 		return
 	}
 	if d <= 0 {
-		ce.add(field, fmt.Sprintf("duration %q must be positive", s))
+		e.add(field, fmt.Sprintf("duration %q must be positive", s))
 	}
 }
 
-func validateNudgeField(ce *ConfigError, field, raw string) {
+func (e *ConfigError) checkNudge(field, raw string) {
 	s := strings.TrimSpace(raw)
 	if s == "" || s == "0" || strings.EqualFold(s, "off") {
 		return
 	}
-	validateDurationField(ce, field, s, false)
+	e.checkDuration(field, s, false)
 }
 
 func validTerminal(v string) bool {
@@ -821,11 +738,6 @@ func validTerminal(v string) bool {
 
 func validFallbackMode(v string) bool {
 	return v == "require" || v == "path"
-}
-
-// validAuthMode accepts empty (default shared).
-func validAuthMode(v string) bool {
-	return v == "" || v == "shared" || v == "separate"
 }
 
 // validIfRunningMode accepts empty (default policy).

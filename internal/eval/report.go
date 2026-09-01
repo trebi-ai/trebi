@@ -26,8 +26,8 @@ type Cell struct {
 	Surface  string  `json:"surface,omitempty"`
 }
 
-// passHatCell hides pass^k for a single graded trial, where it restates pass@1.
-func passHatCell(c Cell) string {
+// passHat hides pass^k for a single graded trial, where it restates pass@1.
+func (c Cell) passHat() string {
 	if c.Trials-c.Infra <= 1 {
 		return "n/a"
 	}
@@ -81,17 +81,6 @@ func (r *Report) checkpoint(dir string) error {
 	return r.write(dir)
 }
 
-func (t *TrialResult) writeFile() error {
-	if t == nil || t.Dir == "" {
-		return nil
-	}
-	data, err := json.MarshalIndent(t, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(t.Dir, "trial.json"), data, 0o644)
-}
-
 func (r *Report) rollup() []Cell {
 	type key struct{ task, client, surface string }
 	type acc struct {
@@ -111,7 +100,7 @@ func (r *Report) rollup() []Cell {
 		a.n++
 		a.cost += t.CostUSD
 		a.dur += t.DurationS
-		a.ungraded += ungradedDims(t.Judge)
+		a.ungraded += len(ungradedNames(t.Judge))
 		switch t.Outcome {
 		case OutcomePass:
 			a.pass++
@@ -165,7 +154,7 @@ func (r *Report) markdown() string {
 	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, c := range r.Cells {
 		fmt.Fprintf(&b, "| %s | %s | %s | %.2f | %s | %d | %d | %d | %.4f |\n",
-			c.Task, cellSurface(c.Surface), c.Client, c.PassAt1, passHatCell(c), c.Trials, c.Infra, c.Ungraded, c.CostUSD)
+			c.Task, cellSurface(c.Surface), c.Client, c.PassAt1, c.passHat(), c.Trials, c.Infra, c.Ungraded, c.CostUSD)
 	}
 	b.WriteString("\n## Trials\n\n")
 	for _, t := range r.Trials {
@@ -313,12 +302,6 @@ func reviewReport(rate float64, agree, total int) string {
 		b.WriteString("below threshold: block rubric changes until calibrated\n")
 	}
 	return b.String()
-}
-
-// ungradedDims counts judge dimensions that produced no verdict. They default
-// to pass, so a run can degrade quietly; the report shows the count instead.
-func ungradedDims(judge []JudgeResult) int {
-	return len(ungradedNames(judge))
 }
 
 // ungradedNames lists the dimensions that abstained or failed to invoke.

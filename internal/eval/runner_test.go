@@ -44,10 +44,9 @@ func TestDeadClientGate(t *testing.T) {
 	}
 	env := &trialEnv{workdir: dir, artDir: dir, bin: "true", apiURL: "http://127.0.0.1:1"}
 	p := Placeholders{Workdir: dir, Home: dir, Transcript: filepath.Join(dir, "transcript.json"), Snapshot: filepath.Join(dir, "snapshot.json")}
-	g := newGrader(env, p)
 	task := &Task{ID: "x", Prompt: "hi", TimeoutS: 5, Checks: []Check{{Name: "f", FileExists: filepath.Join(dir, "missing")}}}
 	tr := &TrialResult{TaskID: "x"}
-	got := r.finishClient(context.Background(), context.Background(), task, env, g, p, tr, "codex", surfaceMCP)
+	got := r.finishClient(context.Background(), context.Background(), task, env, p, tr, "codex", surfaceMCP)
 	if got.Outcome != OutcomeInfraFailure {
 		t.Fatalf("outcome %s err %s", got.Outcome, got.Error)
 	}
@@ -73,7 +72,7 @@ func TestDeadClientOneAssistantGrades(t *testing.T) {
 	r := &Runner{
 		newClient: func(string) (Client, error) {
 			return &fakeClient{name: "codex", launch: &LaunchResult{
-				Steps: []Step{{Role: "assistant", Content: "DONE"}},
+				Steps: Steps{{Role: "assistant", Content: "DONE"}},
 			}}, nil
 		},
 		scoreAll: func(context.Context, []JudgeDim, []byte, []byte) []JudgeResult {
@@ -83,10 +82,9 @@ func TestDeadClientOneAssistantGrades(t *testing.T) {
 	}
 	env := &trialEnv{workdir: dir, artDir: dir, bin: "true", apiURL: "http://127.0.0.1:1"}
 	p := Placeholders{Workdir: dir, Home: dir, Transcript: filepath.Join(dir, "transcript.json"), Snapshot: filepath.Join(dir, "snapshot.json")}
-	g := newGrader(env, p)
 	task := &Task{ID: "x", Prompt: "hi", TimeoutS: 5, Checks: []Check{{Name: "f", FileExists: exist}}}
 	tr := &TrialResult{TaskID: "x"}
-	got := r.finishClient(context.Background(), context.Background(), task, env, g, p, tr, "codex", surfaceCLI)
+	got := r.finishClient(context.Background(), context.Background(), task, env, p, tr, "codex", surfaceCLI)
 	if got.Outcome == OutcomeInfraFailure {
 		t.Fatalf("infra: %s", got.Error)
 	}
@@ -118,9 +116,8 @@ func TestClientTransportFaultRetries(t *testing.T) {
 	}
 	env := &trialEnv{workdir: dir, artDir: dir, bin: "true", apiURL: "http://127.0.0.1:1"}
 	p := Placeholders{Workdir: dir, Home: dir, Transcript: filepath.Join(dir, "transcript.json"), Snapshot: filepath.Join(dir, "snapshot.json")}
-	g := newGrader(env, p)
 	task := &Task{ID: "x", Prompt: "hi", TimeoutS: 5, Checks: []Check{{Name: "f", FileExists: filepath.Join(dir, "missing")}}}
-	got := r.finishClient(context.Background(), context.Background(), task, env, g, p, &TrialResult{TaskID: "x"}, "codex", surfaceMCP)
+	got := r.finishClient(context.Background(), context.Background(), task, env, p, &TrialResult{TaskID: "x"}, "codex", surfaceMCP)
 	if got.Outcome != OutcomeInfraFailure {
 		t.Fatalf("outcome %s err %q", got.Outcome, got.Error)
 	}
@@ -141,16 +138,15 @@ func TestClientTimeoutStillGrades(t *testing.T) {
 	r := &Runner{
 		newClient: func(string) (Client, error) {
 			return &fakeClient{name: "codex", launch: &LaunchResult{
-				Steps: []Step{{Role: "tool", Name: "mcp__trebi__system", Content: `{"action":"health"}`}},
+				Steps: Steps{{Role: "tool", Name: "mcp__trebi__system", Content: `{"action":"health"}`}},
 			}}, nil
 		},
 		scoreAll: func(context.Context, []JudgeDim, []byte, []byte) []JudgeResult { return nil },
 	}
 	env := &trialEnv{workdir: dir, artDir: dir, bin: "true", apiURL: "http://127.0.0.1:1"}
 	p := Placeholders{Workdir: dir, Home: dir, Transcript: filepath.Join(dir, "transcript.json"), Snapshot: filepath.Join(dir, "snapshot.json")}
-	g := newGrader(env, p)
 	task := &Task{ID: "x", Prompt: "hi", TimeoutS: 5, Checks: []Check{{Name: "f", FileExists: exist}}}
-	got := r.finishClient(context.Background(), context.Background(), task, env, g, p, &TrialResult{TaskID: "x"}, "codex", surfaceCLI)
+	got := r.finishClient(context.Background(), context.Background(), task, env, p, &TrialResult{TaskID: "x"}, "codex", surfaceCLI)
 	if got.Outcome == OutcomeInfraFailure {
 		t.Fatalf("infra: %s", got.Error)
 	}
@@ -198,7 +194,7 @@ func TestSeedChecksRedProceeds(t *testing.T) {
 		newClient: func(string) (Client, error) {
 			called++
 			return &fakeClient{name: "codex", launch: &LaunchResult{
-				Steps: []Step{{Role: "assistant", Content: "DONE"}},
+				Steps: Steps{{Role: "assistant", Content: "DONE"}},
 			}}, nil
 		},
 		scoreAll: func(context.Context, []JudgeDim, []byte, []byte) []JudgeResult { return nil },
@@ -260,7 +256,7 @@ func TestPreflightAuthAbortsBeforeArtifacts(t *testing.T) {
 
 func TestPreflightHandshakeNamesConfig(t *testing.T) {
 	t.Parallel()
-	launch := &LaunchResult{Steps: []Step{{Role: "assistant", Content: "DONE"}}}
+	launch := &LaunchResult{Steps: Steps{{Role: "assistant", Content: "DONE"}}}
 	err := preflightVerdict("codex", surfaceMCP, launch, "/tmp/client-home/config.toml")
 	if err == nil || !strings.Contains(err.Error(), "config.toml") {
 		t.Fatalf("err %v", err)
@@ -272,7 +268,7 @@ func TestPreflightHandshakeNamesConfig(t *testing.T) {
 
 func TestPreflightOK(t *testing.T) {
 	t.Parallel()
-	launch := &LaunchResult{Steps: []Step{
+	launch := &LaunchResult{Steps: Steps{
 		{Role: "tool", Name: "mcp__trebi__system", Content: `{"action":"health"}`},
 		{Role: "assistant", Content: "DONE"},
 	}}

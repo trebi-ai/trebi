@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -301,11 +300,11 @@ func transcriptCommands(data []byte) ([]string, error) {
 		if s.Role != "tool" || s.Content == "" {
 			continue
 		}
-		if cmd := shellCommandOf(s); cmd != "" {
+		if cmd := s.shellCommand(); cmd != "" {
 			cmds = append(cmds, cmd)
 			continue
 		}
-		if cmd := mcpCommandOf(s); cmd != "" {
+		if cmd := s.mcpCommand(); cmd != "" {
 			cmds = append(cmds, cmd)
 		}
 	}
@@ -331,59 +330,6 @@ func cliAliases(tool, action string) []string {
 		}
 	}
 	return nil
-}
-
-func shellCommandOf(s Step) string {
-	var body struct {
-		Command string `json:"command"`
-	}
-	if json.Unmarshal([]byte(s.Content), &body) != nil {
-		return ""
-	}
-	return body.Command
-}
-
-// mcpCommandOf renders one trebi MCP call as the equivalent CLI line. Input
-// keys are sorted so the projection is stable, and underscores are also
-// emitted as dashes ("if_match" -> "--if-match") so a CLI-flavored pattern
-// matches.
-func mcpCommandOf(s Step) string {
-	tool := strings.TrimPrefix(s.Name, "mcp__trebi__")
-	tool = strings.TrimPrefix(tool, "mcp__trebi_")
-	if tool == s.Name && !isTrebiMCPTool(tool) {
-		return ""
-	}
-	if !isTrebiMCPTool(tool) {
-		return ""
-	}
-	var body struct {
-		Action string         `json:"action"`
-		Input  map[string]any `json:"input"`
-	}
-	if json.Unmarshal([]byte(s.Content), &body) != nil || body.Action == "" {
-		return ""
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "trebi %s %s", tool, body.Action)
-	// Some CLI commands are spelled differently from the MCP tool that does
-	// the same work ("runs kill" vs the run tool; "bus" vs system bus_poll).
-	// Emit those spellings too so one pattern matches both surfaces.
-	for _, alias := range cliAliases(tool, body.Action) {
-		fmt.Fprintf(&b, " trebi %s", alias)
-	}
-	keys := make([]string, 0, len(body.Input))
-	for k := range body.Input {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		v := fmt.Sprintf("%v", body.Input[k])
-		fmt.Fprintf(&b, " --%s %s", k, v)
-		if dashed := strings.ReplaceAll(k, "_", "-"); dashed != k {
-			fmt.Fprintf(&b, " --%s %s", dashed, v)
-		}
-	}
-	return b.String()
 }
 
 func jqTruthy(expr string, data []byte) (ok bool, detail string, err error) {

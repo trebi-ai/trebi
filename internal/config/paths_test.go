@@ -8,8 +8,8 @@ import (
 func TestPathKeyDescription_Coverage(t *testing.T) {
 	t.Parallel()
 	cfg := defaultConfig()
-	applyLoadDefaults(cfg)
-	for _, e := range ListPathEntries(cfg, nil) {
+	cfg.applyDefaults()
+	for _, e := range cfg.PathEntries(nil) {
 		if e.Description == "" {
 			t.Errorf("missing description for %s", e.Key)
 		}
@@ -23,7 +23,7 @@ func TestPathKeyDescription_Coverage(t *testing.T) {
 	// Every bridge resource needs a written description, not the generic
 	// "Bridge resource %q" fallback that PathKeyDescription returns for
 	// keys missing from bridgeResourceDescriptions.
-	for _, e := range ListPathEntries(cfg, nil) {
+	for _, e := range cfg.PathEntries(nil) {
 		if strings.HasPrefix(e.Description, "Bridge resource ") {
 			t.Errorf("%s: undocumented bridge resource", e.Key)
 		}
@@ -43,15 +43,16 @@ tools:
       resources:
         user_memory: false
 `)
-	cfg, err := ParseConfigBytes(yaml)
-	if err != nil {
+	cfg := defaultConfig()
+	if err := decodeConfig(yaml, cfg); err != nil {
 		t.Fatal(err)
 	}
+	cfg.applyDefaults()
 	decl, err := DeclaredPaths(yaml)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ents := ListPathEntries(cfg, decl)
+	ents := cfg.PathEntries(decl)
 	by := map[string]PathEntry{}
 	for _, e := range ents {
 		by[e.Key] = e
@@ -78,15 +79,15 @@ tools:
 // TestSetPath_AllShowKeys ensures every key from config show is settable.
 func TestSetPath_AllShowKeys(t *testing.T) {
 	cfg := defaultConfig()
-	applyLoadDefaults(cfg)
-	ents := ListPathEntries(cfg, nil)
+	cfg.applyDefaults()
+	ents := cfg.PathEntries(nil)
 	for _, e := range ents {
 		sample := sampleSetValue(e.Key)
-		if err := SetPath(cfg, e.Key, sample); err != nil {
+		if err := cfg.SetPath(e.Key, sample); err != nil {
 			t.Errorf("SetPath(%q, %q): %v", e.Key, sample, err)
 		}
 	}
-	if err := Validate(cfg); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatalf("after set all: %v", err)
 	}
 }
@@ -94,44 +95,44 @@ func TestSetPath_AllShowKeys(t *testing.T) {
 func TestSetPath_RoundTrip(t *testing.T) {
 	t.Parallel()
 	cfg := defaultConfig()
-	applyLoadDefaults(cfg)
-	if err := SetPath(cfg, "defaults.session.timeout", "45m"); err != nil {
+	cfg.applyDefaults()
+	if err := cfg.SetPath("defaults.session.timeout", "45m"); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Defaults.Session.Timeout != "45m" {
 		t.Fatal(cfg.Defaults.Session.Timeout)
 	}
-	if err := SetPath(cfg, "tools.claude.bridge.resources.user_memory", "false"); err != nil {
+	if err := cfg.SetPath("tools.claude.bridge.resources.user_memory", "false"); err != nil {
 		t.Fatal(err)
 	}
 	if !IsInherit("false") && cfg.Tools.Claude.Bridge.Resources["user_memory"] != "false" {
 		t.Fatalf("%v", cfg.Tools.Claude.Bridge.Resources)
 	}
-	if err := SetPath(cfg, "defaults.session.if_running", "retry"); err == nil {
+	if err := cfg.SetPath("defaults.session.if_running", "retry"); err == nil {
 		t.Fatal("want bad if_running error")
 	}
-	if err := SetPath(cfg, "no.such.path", "x"); err == nil {
+	if err := cfg.SetPath("no.such.path", "x"); err == nil {
 		t.Fatal("want unknown key")
 	}
-	if err := SetPath(cfg, "notify.email", "inbox-cli send …"); err != nil {
+	if err := cfg.SetPath("notify.email", "inbox-cli send …"); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Notify.Email != "inbox-cli send …" {
 		t.Fatalf("%q", cfg.Notify.Email)
 	}
-	if err := SetPath(cfg, "notify.discord", "discord-cli dm …"); err != nil {
+	if err := cfg.SetPath("notify.discord", "discord-cli dm …"); err != nil {
 		t.Fatal(err)
 	}
 	if len(cfg.Notify.Channels()) != 2 {
 		t.Fatalf("channels: %v", cfg.Notify.Channels())
 	}
-	if err := SetPath(cfg, "notify.email", "-"); err != nil {
+	if err := cfg.SetPath("notify.email", "-"); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Notify.Email != "" {
 		t.Fatalf("%q", cfg.Notify.Email)
 	}
-	if err := Validate(cfg); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -139,8 +140,8 @@ func TestSetPath_RoundTrip(t *testing.T) {
 func TestFilterPathEntries(t *testing.T) {
 	t.Parallel()
 	cfg := defaultConfig()
-	applyLoadDefaults(cfg)
-	ents := ListPathEntries(cfg, nil)
+	cfg.applyDefaults()
+	ents := cfg.PathEntries(nil)
 
 	got, err := FilterPathEntries(ents, []string{"defaults.*"})
 	if err != nil {

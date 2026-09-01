@@ -166,7 +166,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 			COALESCE(conversation_key,''), COALESCE(conversation_id,''),
 			trigger_event_id, trigger_integration, trigger_capture_json, trigger_vars_json, inputs_json
 		FROM runs WHERE id = ?`, id)
-	return scanRun(row, s)
+	return s.scanRun(row)
 }
 
 // Approval is a decided permission prompt for a run.
@@ -307,7 +307,7 @@ func (s *Service) listPage(ctx context.Context, opts ListOpts) ([]*Run, error) {
 	defer rows.Close()
 	var out []*Run
 	for rows.Next() {
-		r, err := scanRun(rows, s)
+		r, err := s.scanRun(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -355,7 +355,7 @@ func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([
 	defer rows.Close()
 	var out []*Run
 	for rows.Next() {
-		r, err := scanRun(rows, s)
+		r, err := s.scanRun(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -433,7 +433,7 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 	var modelName string
 	if tokens != nil {
 		tokens.FillDerived()
-		pricing.Apply(tokens)
+		tokens.ApplyRates()
 		ti, to, tcr, tcc = tokens.Input, tokens.Output, tokens.CacheRead, tokens.CacheCreation
 		modelName = tokens.Model
 	}
@@ -823,7 +823,7 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanRun(row rowScanner, s *Service) (*Run, error) {
+func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r := &Run{}
 	var reason, endReason, started, ended sql.NullString
 	var trigEvent, trigInteg, capJSON, varsJSON, inputsJSON sql.NullString
@@ -877,7 +877,7 @@ func scanRun(row rowScanner, s *Service) (*Run, error) {
 	}
 	r.Tokens = pricing.TokenUsage{Input: ti, Output: to, CacheRead: tcr, CacheCreation: tcc, Model: modelName}
 	r.Tokens.FillDerived()
-	pricing.Apply(&r.Tokens)
+	r.Tokens.ApplyRates()
 	r.Session = SessionSpec{MaxDurationMS: maxD, IdleTimeoutMS: idle, KeepAliveMS: keep, NudgeMS: nudge}
 	r.TmuxSession = tmux
 	if tmux != "" {

@@ -123,15 +123,15 @@ func ProgramArguments(bin string, def PlistDef) []string {
 	return out
 }
 
-// RenderPlist produces LaunchAgent XML. bin must be absolute.
-func RenderPlist(def PlistDef, bin, pathEnv, homeDir string) string {
-	progArgs := ProgramArguments(bin, def)
+// Render produces LaunchAgent XML. bin must be absolute.
+func (d PlistDef) Render(bin, pathEnv, homeDir string) string {
+	progArgs := ProgramArguments(bin, d)
 	var argLines []string
 	for _, a := range progArgs {
 		argLines = append(argLines, fmt.Sprintf("        <string>%s</string>", xmlEscape(a)))
 	}
 	keepAlive := "    <key>KeepAlive</key>\n    <true/>"
-	if !def.KeepAlive {
+	if !d.KeepAlive {
 		keepAlive = "    <key>KeepAlive</key>\n    <dict>\n        <key>SuccessfulExit</key>\n        <false/>\n    </dict>"
 	}
 	if pathEnv == "" {
@@ -168,7 +168,7 @@ func RenderPlist(def PlistDef, bin, pathEnv, homeDir string) string {
     <string>%s</string>
 </dict>
 </plist>
-`, def.Label, strings.Join(argLines, "\n"), xmlEscape(pathEnv), xmlEscape(homeDir), keepAlive, xmlEscape(def.LogPath), xmlEscape(def.LogPath))
+`, d.Label, strings.Join(argLines, "\n"), xmlEscape(pathEnv), xmlEscape(homeDir), keepAlive, xmlEscape(d.LogPath), xmlEscape(d.LogPath))
 }
 
 // Install writes the LaunchAgent plist with an absolute Program path.
@@ -192,7 +192,7 @@ func (s *Service) Install(opts InstallOpts) error {
 	if h, err := os.UserHomeDir(); err == nil {
 		homeDir = h
 	}
-	content := RenderPlist(def, bin, pathEnv, homeDir)
+	content := def.Render(bin, pathEnv, homeDir)
 	path := s.plistPath(def.FileName)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)

@@ -55,7 +55,7 @@ func TestAuthCapsMatrix(t *testing.T) {
 		if caps.HasLoginMode(harness.LoginToken) != w.token {
 			t.Errorf("%s token=%v want %v", tool.Name(), caps.HasLoginMode(harness.LoginToken), w.token)
 		}
-		args, _ := vendorLoginArgs(tool.Name(), harness.AuthModeShared)
+		args, _ := vendorLoginArgsFor(tool.Name(), harness.AuthModeShared, runtime.GOOS)
 		if w.relay && len(args) == 0 && !w.attach {
 			// gemini/copilot/pi may have empty args (env-only or TUI)
 			if tool.Name() != Gemini && tool.Name() != Copilot && tool.Name() != Pi {

@@ -9,11 +9,10 @@ import (
 	"strings"
 	"time"
 
-	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 )
 
-type grokTool struct{}
+type grokTool struct{ harnessHome }
 
 func (grokTool) Name() string { return Grok }
 
@@ -30,44 +29,18 @@ func (grokTool) Match(command string) bool {
 	return base == Grok || base == "grok.exe"
 }
 
-func (grokTool) PrepareLaunch(command string) LaunchPlan {
+func (t grokTool) PrepareLaunch(command string) LaunchPlan {
 	// Grok Build: -s / --session-id names a new session with a UUID you supply.
 	cmd, sid := injectSessionIDFlag(command, "--session-id")
-	env := grokLaunchEnv()
-	return planWithSession(cmd, sid, env)
+	return planWithSession(cmd, sid, t.launchEnv())
 }
 
-func (grokTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
+func (t grokTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
 	cmd, err := resumeWithFlag(command, sessionID, []string{"--session-id", "-s"}, "--resume", Grok)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	return LaunchPlan{Command: cmd, SessionID: sessionID, Env: grokLaunchEnv()}, nil
-}
-
-func grokLaunchEnv() map[string]string {
-	dir := config.HarnessDir(Grok)
-	// Best-effort materialize so first run without service install still works.
-	_ = (grokLifecycle{}).materialize(dir)
-	mode := harness.AuthModeShared
-	var cfg *config.Config
-	if c, err := config.Load(); err == nil {
-		cfg = c
-		mode = harness.AuthModeFromConfig(cfg, Grok)
-	}
-	_ = bridgeGrokAuth(dir, mode)
-	_ = harness.EnsureBridges(Grok, cfg)
-	return map[string]string{"GROK_HOME": dir}
-}
-
-func bridgeGrokAuth(harnessDir, mode string) error {
-	userHome := harness.UserHome()
-	if userHome == "" {
-		return nil
-	}
-	src := filepath.Join(userHome, ".grok", "auth.json")
-	dst := filepath.Join(harnessDir, "auth.json")
-	return harness.SymlinkAuth(src, dst, mode)
+	return LaunchPlan{Command: cmd, SessionID: sessionID, Env: t.launchEnv()}, nil
 }
 
 func (grokTool) IsReady(screen string) bool {
@@ -120,6 +93,17 @@ func (grokTool) TranscriptPath(home, workingDir, sessionID string) (string, erro
 }
 
 func (grokTool) Lifecycle() LifecycleAdapter { return grokLifecycle{} }
+
+func (t grokTool) launchEnv() map[string]string {
+	t.tool = Grok
+	cfg, dir := t.prepare()
+	mode := harness.AuthModeShared
+	if cfg != nil {
+		mode = harness.AuthModeFromConfig(cfg, Grok)
+	}
+	_ = t.bridgeAuth(filepath.Join(".grok", "auth.json"), mode)
+	return map[string]string{"GROK_HOME": dir}
+}
 
 //go:embed lifecycle/grok-jobi.json
 var grokHooksJSON []byte

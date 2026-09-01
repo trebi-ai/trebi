@@ -86,7 +86,7 @@ func Run(ctx context.Context, onQuit func()) error {
 
 func buildMenu(st *State, onQuit func()) []menuet.MenuItem {
 	snap := st.Get()
-	lines := BuildMenuLines(snap)
+	lines := snap.MenuLines()
 	items := make([]menuet.MenuItem, 0, len(lines)+4)
 	// Status header (non-clickable text rows except Quit).
 	for i, line := range lines {

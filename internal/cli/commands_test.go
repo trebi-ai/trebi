@@ -30,7 +30,7 @@ func TestRunsShowAcceptsJSON(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"01ABC","status":"complete"}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	out, err := runCLI(t, client, "runs", "show", "--json", "01ABC")
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestJobValidateJSON(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true,"error":""}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	out, err := runCLI(t, client, "job", "validate", "--json", "hello")
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestRunsTranscript(t *testing.T) {
 		_, _ = w.Write([]byte(`{"run_id":"01ABC","turns":[{"role":"assistant","text":"hi"}]}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	out, err := runCLI(t, client, "runs", "transcript", "01ABC")
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestRunsMessageJoinAndError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	if _, err := runCLI(t, client, "runs", "message", "01ABC", "deploy", "the", "branch"); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestRunsMessageJoinAndError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"code":"validation","message":"not running"}}`))
 	}))
 	t.Cleanup(srv400.Close)
-	c400 := &APIClient{Base: srv400.URL, Token: "t", HTTP: srv400.Client()}
+	c400 := &APIClient{base: srv400.URL, token: "t", httpClient: srv400.Client()}
 	_, err := runCLI(t, c400, "runs", "message", "01ABC", "hi")
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("want server message, got %v", err)
@@ -140,7 +140,7 @@ func TestJobListKind(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 
 	out, err := runCLI(t, client, "job", "list")
 	if err != nil {
@@ -208,7 +208,7 @@ func TestJobListKindBogusNoHTTP(t *testing.T) {
 		w.WriteHeader(200)
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	if _, err := runCLI(t, client, "job", "list", "--kind", "bogus"); err == nil {
 		t.Fatal("expected usage error")
 	}
@@ -238,7 +238,7 @@ func TestDoctorIDAndFix(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	out, err := runCLI(t, client, "doctor")
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +295,7 @@ func TestIntegrationCursorBodies(t *testing.T) {
 		_, _ = w.Write([]byte(`{"name":"mail","last_event_id":""}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	if _, err := runCLI(t, client, "integration", "cursor", "reset", "mail"); err != nil {
 		t.Fatal(err)
 	}
@@ -326,9 +326,10 @@ func TestWorkspaceRemoveClearsSticky(t *testing.T) {
 		_, _ = w.Write([]byte(`{"deleted":"ws1"}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 
-	if err := SaveStickyContext(StickyContext{WorkspaceID: "ws1", Name: "one"}); err != nil {
+	st1 := StickyContext{WorkspaceID: "ws1", Name: "one"}
+	if err := st1.Save(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runCLI(t, client, "workspace", "remove", "--force", "ws1"); err != nil {
@@ -342,7 +343,8 @@ func TestWorkspaceRemoveClearsSticky(t *testing.T) {
 		t.Fatalf("sticky should be cleared, got %+v", st)
 	}
 
-	if err := SaveStickyContext(StickyContext{WorkspaceID: "ws-other", Name: "other"}); err != nil {
+	st2 := StickyContext{WorkspaceID: "ws-other", Name: "other"}
+	if err := st2.Save(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runCLI(t, client, "workspace", "remove", "--force", "ws1"); err != nil {
@@ -363,7 +365,7 @@ func TestRulesTestEventFileAndStdin(t *testing.T) {
 		_, _ = w.Write([]byte(`{"matched":true,"vars":{"k":"v"},"error":""}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	f := filepath.Join(t.TempDir(), "ev.json")
 	if err := os.WriteFile(f, []byte(`{"type":"mail"}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -402,7 +404,7 @@ func TestRunsAgentsEmptyNote(t *testing.T) {
 		_, _ = w.Write([]byte(`{"agents":{}}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	out, err := runCLI(t, client, "runs", "agents")
 	if err != nil {
 		t.Fatal(err)
@@ -427,7 +429,7 @@ func TestWorkspaceFlagResolvesName(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	if _, err := runCLI(t, client, "-w", "staging", "job", "list", "--json"); err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +456,7 @@ func TestSecretSetFromFile(t *testing.T) {
 		_, _ = w.Write([]byte(`{"name":"eval_api_key"}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	if _, err := runCLI(t, client, "secret", "set", "--from-file", path, "eval_api_key"); err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +472,7 @@ func TestSecretListTableJSON(t *testing.T) {
 		_, _ = w.Write([]byte(`{"secrets":["alpha","beta"]}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	out, err := runCLI(t, client, "secret", "list", "--json")
 	if err != nil {
 		t.Fatal(err)
@@ -518,7 +520,7 @@ func TestConfigShowUsesAPIEntries(t *testing.T) {
 		]}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 
 	out, err := runCLI(t, client, "config", "show")
 	if err != nil {
@@ -617,7 +619,7 @@ func TestConfigShowTruncatesValue(t *testing.T) {
 		]}`))
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 
 	out, err := runCLI(t, client, "config", "show")
 	if err != nil {
@@ -660,7 +662,7 @@ func TestFileListAndPut(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 	out, err := runCLI(t, client, "file", "list", "--json")
 	if err != nil {
 		t.Fatal(err)
@@ -695,7 +697,7 @@ func TestJobFileListAndPut(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 
 	out, err := runCLI(t, client, "--workspace", "ws1", "job", "file", "list", "--json", "report")
 	if err != nil {
@@ -735,7 +737,7 @@ func TestFlagsAfterPositional(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 
 	out, err := runCLI(t, client, "job", "memory", "show", "report", "--json")
 	if err != nil {

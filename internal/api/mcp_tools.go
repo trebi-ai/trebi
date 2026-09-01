@@ -144,6 +144,159 @@ func (in mcpInput) strMap(key string) (map[string]string, error) {
 // value reads one field as a raw JSON value: nil when the field is absent.
 func (in mcpInput) value(key string) any { return in[key] }
 
+// owner reads the file-plane owner selector: workspace (default), job, or skill.
+func (in mcpInput) owner() (string, error) {
+	owner, err := in.str("owner")
+	if err != nil {
+		return "", err
+	}
+	switch owner {
+	case "", "workspace":
+		return "workspace", nil
+	case "job", "skill":
+		return owner, nil
+	default:
+		return "", fmt.Errorf("input field %q must be workspace, job, or skill", "owner")
+	}
+}
+
+// buildFileList lists files for one owner: workspace, job, or skill.
+func (in mcpInput) buildFileList() (request.HTTPRequest, error) {
+	v, err := in.strs("workspace", "name", "prefix", "cursor")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	limit, _, err := in.num("limit")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	owner, err := in.owner()
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	switch owner {
+	case "workspace":
+		if v[0] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
+		}
+		return mcpGet(request.BuildFileListPath(v[0], v[2], v[3], limit)), nil
+	case "job":
+		if v[1] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
+		}
+		return mcpGet(request.BuildJobFileListPath(v[1], v[0], v[2], v[3], limit)), nil
+	default:
+		if v[1] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
+		}
+		return mcpGet(request.BuildSkillFileListPath(v[1], v[2], v[3], limit)), nil
+	}
+}
+
+// buildFileGet reads one file for one owner. stat returns JSON metadata only.
+func (in mcpInput) buildFileGet() (request.HTTPRequest, error) {
+	v, err := in.strs("workspace", "name", "path")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	stat, err := in.flag("stat")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	owner, err := in.owner()
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	if v[2] == "" {
+		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "path")
+	}
+	switch owner {
+	case "workspace":
+		if v[0] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
+		}
+		return mcpGet(request.BuildFileGetPath(v[0], v[2], stat)), nil
+	case "job":
+		if v[1] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
+		}
+		return mcpGet(request.BuildJobFileGetPath(v[1], v[0], v[2], stat)), nil
+	default:
+		if v[1] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
+		}
+		return mcpGet(request.BuildSkillFileGetPath(v[1], v[2], stat)), nil
+	}
+}
+
+// buildFilePut writes one text file for one owner with optional If-Match.
+func (in mcpInput) buildFilePut() (request.HTTPRequest, error) {
+	v, err := in.strs("workspace", "name", "path", "content", "content_type", "if_match")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	owner, err := in.owner()
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	if v[2] == "" {
+		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "path")
+	}
+	if v[3] == "" {
+		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "content")
+	}
+	content := []byte(v[3])
+	switch owner {
+	case "workspace":
+		if v[0] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
+		}
+		return request.BuildFilePut(v[0], v[2], content, v[4], v[5]), nil
+	case "job":
+		if v[1] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
+		}
+		return request.BuildJobFilePut(v[1], v[0], v[2], content, v[4], v[5]), nil
+	default:
+		if v[1] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
+		}
+		return request.BuildSkillFilePut(v[1], v[2], content, v[4], v[5]), nil
+	}
+}
+
+// buildFileDelete removes one file for one owner with optional If-Match.
+func (in mcpInput) buildFileDelete() (request.HTTPRequest, error) {
+	v, err := in.strs("workspace", "name", "path", "if_match")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	owner, err := in.owner()
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	if v[2] == "" {
+		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "path")
+	}
+	switch owner {
+	case "workspace":
+		if v[0] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
+		}
+		return request.BuildFileDelete(v[0], v[2], v[3]), nil
+	case "job":
+		if v[1] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
+		}
+		return request.BuildJobFileDelete(v[1], v[0], v[2], v[3]), nil
+	default:
+		if v[1] == "" {
+			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
+		}
+		return request.BuildSkillFileDelete(v[1], v[2], v[3]), nil
+	}
+}
+
 // mcpAction maps one tool action onto /v1 routes.
 type mcpAction struct {
 	routes      []string                                       // registered patterns this action can hit
@@ -592,21 +745,21 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"file": {
-			"list": fileEntry(mcpInput{"owner": "workspace", "workspace": "ws1", "prefix": "reports/"}, fileListAdapter, "GET /v1/workspaces/{id}/files", "GET /v1/jobs/{name}/files", "GET /v1/skills/{name}/files"),
+			"list": fileEntry(mcpInput{"owner": "workspace", "workspace": "ws1", "prefix": "reports/"}, mcpInput.buildFileList, "GET /v1/workspaces/{id}/files", "GET /v1/jobs/{name}/files", "GET /v1/skills/{name}/files"),
 			"get": fileEntry(
 				mcpInput{"owner": "workspace", "workspace": "ws1", "path": "reports/a.md"},
-				fileGetAdapter,
+				mcpInput.buildFileGet,
 				"GET /v1/workspaces/{id}/files/{path...}", "GET /v1/jobs/{name}/files/{path...}", "GET /v1/skills/{name}/files/{path...}",
 			),
 			"put": fileEntry(
 				mcpInput{"owner": "workspace", "workspace": "ws1", "path": "reports/a.md", "content": "# hi\n"},
-				filePutAdapter,
+				mcpInput.buildFilePut,
 				"PUT /v1/workspaces/{id}/files/{path...}", "PUT /v1/jobs/{name}/files/{path...}", "PUT /v1/skills/{name}/files/{path...}",
 			),
 			"remove": func() mcpAction {
 				e := fileEntry(
 					mcpInput{"owner": "workspace", "workspace": "ws1", "path": "reports/a.md"},
-					fileDeleteAdapter,
+					mcpInput.buildFileDelete,
 					"DELETE /v1/workspaces/{id}/files/{path...}", "DELETE /v1/jobs/{name}/files/{path...}", "DELETE /v1/skills/{name}/files/{path...}",
 				)
 				e.destructive = true
@@ -1013,158 +1166,5 @@ func jobPauseAction(pause bool) func(mcpInput) (request.HTTPRequest, error) {
 			return request.HTTPRequest{}, err
 		}
 		return request.BuildJobPause(v[0], v[1], pause), nil
-	}
-}
-
-// fileListAdapter lists files for one owner: workspace, job, or skill.
-func fileListAdapter(in mcpInput) (request.HTTPRequest, error) {
-	v, err := in.strs("workspace", "name", "prefix", "cursor")
-	if err != nil {
-		return request.HTTPRequest{}, err
-	}
-	limit, _, err := in.num("limit")
-	if err != nil {
-		return request.HTTPRequest{}, err
-	}
-	owner, err := in.owner()
-	if err != nil {
-		return request.HTTPRequest{}, err
-	}
-	switch owner {
-	case "workspace":
-		if v[0] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
-		}
-		return mcpGet(request.BuildFileListPath(v[0], v[2], v[3], limit)), nil
-	case "job":
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return mcpGet(request.BuildJobFileListPath(v[1], v[0], v[2], v[3], limit)), nil
-	default:
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return mcpGet(request.BuildSkillFileListPath(v[1], v[2], v[3], limit)), nil
-	}
-}
-
-// fileGetAdapter reads one file for one owner. stat returns JSON metadata only.
-func fileGetAdapter(in mcpInput) (request.HTTPRequest, error) {
-	v, err := in.strs("workspace", "name", "path")
-	if err != nil {
-		return request.HTTPRequest{}, err
-	}
-	stat, err := in.flag("stat")
-	if err != nil {
-		return request.HTTPRequest{}, err
-	}
-	owner, err := in.owner()
-	if err != nil {
-		return request.HTTPRequest{}, err
-	}
-	if v[2] == "" {
-		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "path")
-	}
-	switch owner {
-	case "workspace":
-		if v[0] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
-		}
-		return mcpGet(request.BuildFileGetPath(v[0], v[2], stat)), nil
-	case "job":
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return mcpGet(request.BuildJobFileGetPath(v[1], v[0], v[2], stat)), nil
-	default:
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return mcpGet(request.BuildSkillFileGetPath(v[1], v[2], stat)), nil
-	}
-}
-
-// filePutAdapter writes one text file for one owner with optional If-Match.
-func filePutAdapter(in mcpInput) (request.HTTPRequest, error) {
-	v, err := in.strs("workspace", "name", "path", "content", "content_type", "if_match")
-	if err != nil {
-		return request.HTTPRequest{}, err
-	}
-	owner, err := in.owner()
-	if err != nil {
-		return request.HTTPRequest{}, err
-	}
-	if v[2] == "" {
-		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "path")
-	}
-	if v[3] == "" {
-		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "content")
-	}
-	content := []byte(v[3])
-	switch owner {
-	case "workspace":
-		if v[0] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
-		}
-		return request.BuildFilePut(v[0], v[2], content, v[4], v[5]), nil
-	case "job":
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return request.BuildJobFilePut(v[1], v[0], v[2], content, v[4], v[5]), nil
-	default:
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return request.BuildSkillFilePut(v[1], v[2], content, v[4], v[5]), nil
-	}
-}
-
-// fileDeleteAdapter removes one file for one owner with optional If-Match.
-func fileDeleteAdapter(in mcpInput) (request.HTTPRequest, error) {
-	v, err := in.strs("workspace", "name", "path", "if_match")
-	if err != nil {
-		return request.HTTPRequest{}, err
-	}
-	owner, err := in.owner()
-	if err != nil {
-		return request.HTTPRequest{}, err
-	}
-	if v[2] == "" {
-		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "path")
-	}
-	switch owner {
-	case "workspace":
-		if v[0] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
-		}
-		return request.BuildFileDelete(v[0], v[2], v[3]), nil
-	case "job":
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return request.BuildJobFileDelete(v[1], v[0], v[2], v[3]), nil
-	default:
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return request.BuildSkillFileDelete(v[1], v[2], v[3]), nil
-	}
-}
-
-// owner reads the file-plane owner selector: workspace (default), job, or skill.
-func (in mcpInput) owner() (string, error) {
-	owner, err := in.str("owner")
-	if err != nil {
-		return "", err
-	}
-	switch owner {
-	case "", "workspace":
-		return "workspace", nil
-	case "job", "skill":
-		return owner, nil
-	default:
-		return "", fmt.Errorf("input field %q must be workspace, job, or skill", "owner")
 	}
 }

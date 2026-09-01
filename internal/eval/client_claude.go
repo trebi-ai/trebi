@@ -110,42 +110,55 @@ func claudeLaunchArgs(prompt string, maxTurns int, model string) []string {
 	return args
 }
 
-func parseClaudeStream(raw []byte) *LaunchResult {
-	res := &LaunchResult{Raw: raw, Steps: []Step{}}
-	var in, out, cacheR, cacheC int64
-	model := "claude"
-	byID := map[string]int{}
-	for _, m := range ndjsonMaps(raw) {
-		switch asString(m["type"]) {
-		case "assistant":
-			appendClaudeAssistant(m, res, byID)
-		case "user":
-			if attachClaudeResults(m, res, byID) {
-				continue
-			}
-			if s := contentText(asMap(m["message"])["content"]); s != "" {
-				res.Steps = append(res.Steps, Step{Role: "user", Content: s})
-			}
-		case "result":
-			collectClaudeResult(m, res)
-			usage := asMap(m["usage"])
-			if usage == nil {
-				usage = asMap(m)
-			}
-			in += jsonNumber(usage, "input_tokens", "input")
-			out += jsonNumber(usage, "output_tokens", "output")
-			cacheR += jsonNumber(usage, "cache_read_input_tokens", "cache_read")
-			cacheC += jsonNumber(usage, "cache_creation_input_tokens", "cache_creation")
-			if mname := asString(m["model"]); mname != "" {
-				model = mname
-			}
-		}
-	}
-	res.Usage, res.CostUSD = usageCost(model, in, out, cacheR, cacheC)
-	return res
+type claudeParser struct {
+	res            *LaunchResult
+	byID           map[string]int
+	in, out        int64
+	cacheR, cacheC int64
+	model          string
 }
 
-func collectClaudeResult(m map[string]any, res *LaunchResult) {
+func parseClaudeStream(raw []byte) *LaunchResult {
+	p := &claudeParser{
+		res:   &LaunchResult{Raw: raw, Steps: Steps{}},
+		byID:  map[string]int{},
+		model: "claude",
+	}
+	for _, m := range ndjsonMaps(raw) {
+		p.event(m)
+	}
+	p.res.Usage, p.res.CostUSD = usageCost(p.model, p.in, p.out, p.cacheR, p.cacheC)
+	return p.res
+}
+
+func (p *claudeParser) event(m map[string]any) {
+	switch asString(m["type"]) {
+	case "assistant":
+		p.res.appendClaudeAssistant(m, p.byID)
+	case "user":
+		if p.res.attachClaudeResults(m, p.byID) {
+			return
+		}
+		if s := contentText(asMap(m["message"])["content"]); s != "" {
+			p.res.Steps = append(p.res.Steps, Step{Role: "user", Content: s})
+		}
+	case "result":
+		p.res.collectClaudeResult(m)
+		usage := asMap(m["usage"])
+		if usage == nil {
+			usage = asMap(m)
+		}
+		p.in += jsonNumber(usage, "input_tokens", "input")
+		p.out += jsonNumber(usage, "output_tokens", "output")
+		p.cacheR += jsonNumber(usage, "cache_read_input_tokens", "cache_read")
+		p.cacheC += jsonNumber(usage, "cache_creation_input_tokens", "cache_creation")
+		if mname := asString(m["model"]); mname != "" {
+			p.model = mname
+		}
+	}
+}
+
+func (res *LaunchResult) collectClaudeResult(m map[string]any) {
 	errish := m["is_error"] == true || asString(m["subtype"]) == "error"
 	if !errish {
 		return
@@ -156,7 +169,7 @@ func collectClaudeResult(m map[string]any, res *LaunchResult) {
 
 // appendClaudeAssistant appends one assistant message and indexes each tool
 // call by id, so the later tool_result can find the step it belongs to.
-func appendClaudeAssistant(m map[string]any, res *LaunchResult, byID map[string]int) {
+func (res *LaunchResult) appendClaudeAssistant(m map[string]any, byID map[string]int) {
 	msg := asMap(m["message"])
 	content, _ := msg["content"].([]any)
 	for _, item := range content {
@@ -183,7 +196,7 @@ func appendClaudeAssistant(m map[string]any, res *LaunchResult, byID map[string]
 // attachClaudeResults writes each tool_result onto the step that called it.
 // It reports whether the message was only tool results, so the caller does not
 // also record it as user prose.
-func attachClaudeResults(m map[string]any, res *LaunchResult, byID map[string]int) bool {
+func (res *LaunchResult) attachClaudeResults(m map[string]any, byID map[string]int) bool {
 	content, _ := asMap(m["message"])["content"].([]any)
 	if len(content) == 0 {
 		return false

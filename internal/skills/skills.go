@@ -233,6 +233,8 @@ func (s *Service) loadSkill(ctx context.Context, name string, includeMD bool) (*
 }
 
 // ProjectForRun materializes allow/deny skill scope into a temp dir; returns path.
+// Declared skill-scoping entry point; no production caller yet (parity test
+// pins it). The missing API route is a functionality gap, not dead code.
 func ProjectForRun(allow, deny []string) (string, error) {
 	root := home.SkillsDir()
 	all, err := os.ReadDir(root)

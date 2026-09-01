@@ -120,21 +120,21 @@ func ResolveResourceInherit(tool, key string, cfg *Config) bool {
 	return def
 }
 
-// ListPathEntries returns all known config paths with effective value and source.
+// PathEntries returns all known config paths with effective value and source.
 // declared is optional set of dotted paths present in the YAML file.
-func ListPathEntries(cfg *Config, declared map[string]bool) []PathEntry {
-	if cfg == nil {
-		cfg = defaultConfig()
-		applyLoadDefaults(cfg)
+func (c *Config) PathEntries(declared map[string]bool) []PathEntry {
+	if c == nil {
+		c = defaultConfig()
+		c.applyDefaults()
 	}
 	if declared == nil {
 		declared = map[string]bool{}
 	}
 	l := &pathEntryList{declared: declared}
-	l.addCore(cfg)
-	l.addGlobalBridge(cfg)
+	l.addCore(c)
+	l.addGlobalBridge(c)
 	for _, tool := range FirstClassTools() {
-		l.addTool(cfg, tool)
+		l.addTool(c, tool)
 	}
 	return l.entries
 }
@@ -168,28 +168,28 @@ func LoadWithDeclared() (*Config, map[string]bool, error) {
 	data, err := os.ReadFile(ConfigPath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			applyLoadDefaults(cfg)
+			cfg.applyDefaults()
 			return cfg, declared, nil
 		}
 		return nil, nil, err
 	}
 	declared, err = DeclaredPaths(data)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", filepathBase(ConfigPath()), err)
+		return nil, nil, fmt.Errorf("%s: %w", path.Base(ConfigPath()), err)
 	}
 	if err := decodeConfig(data, cfg); err != nil {
 		return nil, nil, err
 	}
-	applyLoadDefaults(cfg)
-	if err := Validate(cfg); err != nil {
+	cfg.applyDefaults()
+	if err := cfg.Validate(); err != nil {
 		return nil, nil, err
 	}
 	return cfg, declared, nil
 }
 
-// SetPath sets a known dotted config key on cfg. Does not Save.
-func SetPath(cfg *Config, path, value string) error {
-	if cfg == nil {
+// SetPath sets a known dotted config key on c. Does not Save.
+func (c *Config) SetPath(path, value string) error {
+	if c == nil {
 		return fmt.Errorf("nil config")
 	}
 	path = strings.TrimSpace(path)
@@ -198,21 +198,21 @@ func SetPath(cfg *Config, path, value string) error {
 		return fmt.Errorf("empty key")
 	}
 	if path == "terminal" {
-		return setTerminal(&cfg.Terminal, value)
+		return setTerminal(&c.Terminal, value)
 	}
-	if handled, err := cfg.setDefaultsKey(path, value); handled {
+	if handled, err := c.setDefaultsKey(path, value); handled {
 		return err
 	}
-	if handled, err := cfg.setNotifyKey(path, value); handled {
+	if handled, err := c.setNotifyKey(path, value); handled {
 		return err
 	}
-	if handled, err := cfg.setToolsKey(path, value); handled {
+	if handled, err := c.setToolsKey(path, value); handled {
 		return err
 	}
-	if handled, err := cfg.setFilesKey(path, value); handled {
+	if handled, err := c.setFilesKey(path, value); handled {
 		return err
 	}
-	if handled, err := cfg.setWorkspacesKey(path, value); handled {
+	if handled, err := c.setWorkspacesKey(path, value); handled {
 		return err
 	}
 
@@ -224,7 +224,7 @@ func SetPath(cfg *Config, path, value string) error {
 			return fmt.Errorf("unknown tool %q", tool)
 		}
 		rest := strings.Join(parts[2:], ".")
-		return cfg.setToolKey(tool, rest, value)
+		return c.setToolKey(tool, rest, value)
 	}
 	return fmt.Errorf("unknown key %q (see trebi config show)", path)
 }
@@ -249,8 +249,8 @@ func EntriesToTreeMap(entries []PathEntry) map[string]any {
 // SortedPaths returns known config keys for completion/docs.
 func SortedPaths() []string {
 	cfg := defaultConfig()
-	applyLoadDefaults(cfg)
-	ents := ListPathEntries(cfg, nil)
+	cfg.applyDefaults()
+	ents := cfg.PathEntries(nil)
 	paths := make([]string, len(ents))
 	for i, e := range ents {
 		paths[i] = e.Key
@@ -397,7 +397,7 @@ func (l *pathEntryList) addTool(cfg *Config, tool string) {
 	if p != nil && p.Bridge != nil && p.Bridge.Inherit != nil {
 		tInherit = strconv.FormatBool(*p.Bridge.Inherit)
 	}
-	l.add(prefix+".bridge.inherit", dashIfEmpty(tInherit), "") // no single default string; empty = use global
+	l.add(prefix+".bridge.inherit", tInherit, "") // no single default string; empty = use global
 
 	for _, key := range KnownBridgeResources()[tool] {
 		rpath := prefix + ".bridge.resources." + key
@@ -710,13 +710,6 @@ func clearOrValue(value string) string {
 	return value
 }
 
-func dashIfEmpty(s string) string {
-	if s == "" {
-		return ""
-	}
-	return s
-}
-
 func walkYAMLPaths(n *yaml.Node, prefix string, out map[string]bool) {
 	if n == nil {
 		return
@@ -734,14 +727,6 @@ func walkYAMLPaths(n *yaml.Node, prefix string, out map[string]bool) {
 	}
 }
 
-func filepathBase(p string) string {
-	i := strings.LastIndex(p, "/")
-	if i < 0 {
-		return p
-	}
-	return p[i+1:]
-}
-
 func isFirstClass(name string) bool {
 	for _, t := range FirstClassTools() {
 		if t == name {
@@ -757,7 +742,7 @@ func setDurationOrEmpty(dst *string, value, path string) error {
 		return nil
 	}
 	ce := &ConfigError{Path: "config.yaml"}
-	validateDurationField(ce, path, value, true)
+	ce.checkDuration(path, value, true)
 	if len(ce.Errors) > 0 {
 		return fmt.Errorf("%s", ce.Errors[0].Msg)
 	}
@@ -771,7 +756,7 @@ func setNudge(dst *string, value, path string) error {
 		return nil
 	}
 	ce := &ConfigError{Path: "config.yaml"}
-	validateNudgeField(ce, path, value)
+	ce.checkNudge(path, value)
 	if len(ce.Errors) > 0 {
 		return fmt.Errorf("%s", ce.Errors[0].Msg)
 	}

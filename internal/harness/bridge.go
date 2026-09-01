@@ -129,11 +129,6 @@ func EnsureBridgesRoots(tool string, cfg *config.Config, roots Roots) error {
 	return ensureBridges(tool, cfg, roots, EnsureOpts{})
 }
 
-// BridgeStatus returns status rows for tool (or all first-class if tool empty).
-func BridgeStatus(tool string, cfg *config.Config) []BridgeStatusRow {
-	return BridgeStatusRoots(tool, cfg, Roots{}.withDefaults())
-}
-
 // BridgeStatusRoots is BridgeStatus with injectable roots.
 func BridgeStatusRoots(tool string, cfg *config.Config, roots Roots) []BridgeStatusRow {
 	var tools []string
@@ -170,7 +165,7 @@ func BridgeStatusRoots(tool string, cfg *config.Config, roots Roots) []BridgeSta
 				rows = append(rows, row)
 				continue
 			}
-			row.Status, row.Detail = probeStatus(def, src, dst, harnessDir, roots.UserHome)
+			row.Status, row.Detail = def.probeStatus(src, dst, harnessDir, roots.UserHome)
 			rows = append(rows, row)
 		}
 	}
@@ -259,8 +254,8 @@ func claudeSettingsModes(cfg *config.Config, defs []ResourceDef) (settingsInheri
 	return settingsInherit, pluginEn, statusLine
 }
 
-func probeStatus(def ResourceDef, src, dst, harnessDir, userHome string) (status, detail string) {
-	switch def.Kind {
+func (d ResourceDef) probeStatus(src, dst, harnessDir, userHome string) (status, detail string) {
+	switch d.Kind {
 	case KindSymlinkDir, KindSymlinkFile:
 		return probeSymlink(src, dst)
 	case KindMCPClaude:

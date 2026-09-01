@@ -34,6 +34,36 @@ type Options struct {
 	Surface   string // cli (default), mcp, or both
 }
 
+func (opts Options) preflightCombos(tasks []*Task) [][2]string {
+	clients := opts.Clients
+	if len(clients) == 0 {
+		seen := map[string]bool{}
+		for _, t := range tasks {
+			for _, c := range t.Clients {
+				if seen[c] {
+					continue
+				}
+				seen[c] = true
+				clients = append(clients, c)
+			}
+		}
+	}
+	surfaces := []string{surfaceCLI}
+	switch opts.Surface {
+	case surfaceMCP:
+		surfaces = []string{surfaceMCP}
+	case "both":
+		surfaces = []string{surfaceCLI, surfaceMCP}
+	}
+	var out [][2]string
+	for _, s := range surfaces {
+		for _, c := range clients {
+			out = append(out, [2]string{c, s})
+		}
+	}
+	return out
+}
+
 // Runner owns suite execution.
 type Runner struct {
 	opts            Options
@@ -247,15 +277,15 @@ func (r *Runner) runOne(ctx context.Context, t *Task, clientName string, idx int
 
 func (r *Runner) runAfterSeed(ctx, dctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult, clientName, surface string, oracle bool) *TrialResult {
 	if oracle {
-		return r.finishOracle(dctx, t, env, g, p, tr)
+		return r.finishOracle(dctx, t, env, p, tr)
 	}
 	if guardSeedChecks(dctx, t, g, tr) {
 		return tr
 	}
-	return r.finishClient(ctx, dctx, t, env, g, p, tr, clientName, surface)
+	return r.finishClient(ctx, dctx, t, env, p, tr, clientName, surface)
 }
 
-func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult) *TrialResult {
+func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, p Placeholders, tr *TrialResult) *TrialResult {
 	script, err := oracleScript(t.OraclePath())
 	if err != nil {
 		tr.Outcome = OutcomeInfraFailure
@@ -275,7 +305,7 @@ func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, g *Gr
 		return tr
 	}
 	p.Workspace = env.workspacePath(ctx)
-	g.p = p
+	g := newGrader(env, p)
 	if err := os.WriteFile(p.Transcript, []byte("[]\n"), 0o644); err != nil {
 		tr.Outcome = OutcomeInfraFailure
 		tr.Error = err.Error()
@@ -287,7 +317,7 @@ func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, g *Gr
 	return tr
 }
 
-func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult, clientName, surface string) *TrialResult {
+func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv, p Placeholders, tr *TrialResult, clientName, surface string) *TrialResult {
 	cl, err := r.clientFor(clientName)
 	if err != nil {
 		tr.Outcome = OutcomeInfraFailure
@@ -315,16 +345,16 @@ func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv,
 		return tr
 	}
 	if surface == surfaceMCP && launch != nil {
-		if viol := mcpIsolationViolations(launch.Steps, env.apiURL); len(viol) > 0 {
+		if viol := launch.Steps.mcpIsolationViolations(env.apiURL); len(viol) > 0 {
 			tr.Outcome = OutcomeFail
 			tr.Error = "mcp isolation: " + strings.Join(viol, "; ")
 			return tr
 		}
 	}
-	if deadClientGate(tr, launch) {
+	if tr.deadClientGate(launch) {
 		return tr
 	}
-	return r.gradeLaunch(ctx, dctx, t, env, g, p, tr)
+	return r.gradeLaunch(ctx, dctx, t, env, p, tr)
 }
 
 func (r *Runner) launchOpts(env *trialEnv, p Placeholders, t *Task, clientName, surface string) (LaunchOpts, error) {
@@ -354,9 +384,9 @@ func (r *Runner) launchOpts(env *trialEnv, p Placeholders, t *Task, clientName, 
 	return opts, nil
 }
 
-func (r *Runner) gradeLaunch(ctx, dctx context.Context, t *Task, env *trialEnv, g *Grader, p Placeholders, tr *TrialResult) *TrialResult {
+func (r *Runner) gradeLaunch(ctx, dctx context.Context, t *Task, env *trialEnv, p Placeholders, tr *TrialResult) *TrialResult {
 	p.Workspace = env.workspacePath(dctx)
-	g.p = p
+	g := newGrader(env, p)
 	_ = g.collectSnapshot(dctx)
 	tr.Checks = g.runAll(dctx, checksFor(t.Checks, tr.Surface))
 	jctx, jcancel := context.WithTimeout(ctx, judgeBudget(len(t.Judge.Dimensions)))
@@ -365,7 +395,7 @@ func (r *Runner) gradeLaunch(ctx, dctx context.Context, t *Task, env *trialEnv, 
 	tr.Outcome = trialOutcome(tr.Checks, tr.Judge)
 	if tr.Outcome != OutcomePass {
 		// A timeout note is already here; keep it in front of the detail.
-		tr.Error = strings.TrimPrefix(tr.Error+"; "+failSummary(tr), "; ")
+		tr.Error = strings.TrimPrefix(tr.Error+"; "+tr.failSummary(), "; ")
 	}
 	return tr
 }
@@ -388,7 +418,7 @@ func (r *Runner) runClientPreflight(ctx context.Context, tasks []*Task) error {
 	if launchFn == nil {
 		launchFn = r.livePreflightLaunch
 	}
-	for _, pair := range preflightCombos(r.opts, tasks) {
+	for _, pair := range r.opts.preflightCombos(tasks) {
 		client, surface := pair[0], pair[1]
 		launch, cfgPath, err := launchFn(ctx, client, surface)
 		if err != nil && launch == nil {
@@ -504,64 +534,17 @@ func guardSeedChecks(ctx context.Context, t *Task, g *Grader, tr *TrialResult) b
 	return true
 }
 
-// deadClientGate stops a trial whose client never produced an answer. A client
-// that made tool calls but ran out of time is graded normally: its work is on
-// the daemon and a retry would burn the same wall. A client that reported a
-// fault instead is infra, and retries: it was cut off, not slow.
-func deadClientGate(tr *TrialResult, launch *LaunchResult) bool {
-	if launch != nil && hasAssistantStep(launch.Steps) {
-		return false
-	}
-	if launch != nil && toolStepCount(launch.Steps) > 0 && len(launch.Errors) == 0 {
-		tr.Error = clientErrorSummary(launch)
-		return false
-	}
-	tr.Outcome = OutcomeInfraFailure
-	tr.Error = clientErrorSummary(launch)
-	return true
-}
-
 func preflightVerdict(client, surface string, launch *LaunchResult, cfgPath string) error {
-	if launch == nil || !hasAssistantStep(launch.Steps) {
-		return fmt.Errorf("preflight: %s/%s cannot reach its model: %s", client, surface, clientErrorSummary(launch))
+	if launch == nil || !launch.Steps.hasAssistant() {
+		return fmt.Errorf("preflight: %s/%s cannot reach its model: %s", client, surface, launch.errorSummary())
 	}
-	if surface == surfaceMCP && !mcpHandshakeOK(launch.Steps) {
+	if surface == surfaceMCP && !launch.Steps.mcpHandshakeOK() {
 		if cfgPath == "" {
 			cfgPath = "(unknown config path)"
 		}
 		return fmt.Errorf("preflight: %s/%s MCP handshake failed (no mcp__trebi* tool call); config %s", client, surface, cfgPath)
 	}
 	return nil
-}
-
-func preflightCombos(opts Options, tasks []*Task) [][2]string {
-	clients := opts.Clients
-	if len(clients) == 0 {
-		seen := map[string]bool{}
-		for _, t := range tasks {
-			for _, c := range t.Clients {
-				if seen[c] {
-					continue
-				}
-				seen[c] = true
-				clients = append(clients, c)
-			}
-		}
-	}
-	surfaces := []string{surfaceCLI}
-	switch opts.Surface {
-	case surfaceMCP:
-		surfaces = []string{surfaceMCP}
-	case "both":
-		surfaces = []string{surfaceCLI, surfaceMCP}
-	}
-	var out [][2]string
-	for _, s := range surfaces {
-		for _, c := range clients {
-			out = append(out, [2]string{c, s})
-		}
-	}
-	return out
 }
 
 func checksOutcome(checks []CheckResult) Outcome {
@@ -602,25 +585,6 @@ func trialOutcome(checks []CheckResult, judge []JudgeResult) Outcome {
 		return OutcomeInfraFailure
 	}
 	return OutcomePass
-}
-
-func failSummary(tr *TrialResult) string {
-	var parts []string
-	for _, c := range tr.Checks {
-		if !c.Pass {
-			parts = append(parts, "check "+c.Name+": "+c.Detail)
-		}
-	}
-	for _, j := range tr.Judge {
-		if j.Infra {
-			parts = append(parts, "judge "+j.Name+" infra")
-			continue
-		}
-		if !j.Pass && !j.Unknown {
-			parts = append(parts, "judge "+j.Name)
-		}
-	}
-	return strings.Join(parts, "; ")
 }
 
 func oracleScript(path string) (string, error) {

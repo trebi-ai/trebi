@@ -7,7 +7,7 @@ import (
 )
 
 // IsAuthBlocker is true for strong harness login chrome (not agent prose about website logins).
-// WaitReady fails fast; mid-session reaper still needs sticky hits + ProbeAuth.
+// WaitReadyTool fails fast; mid-session reaper still needs sticky hits + ProbeAuth.
 func IsAuthBlocker(screen string) bool {
 	ok, _ := AuthBlockerMatch(screen)
 	return ok
@@ -29,7 +29,7 @@ func AuthBlockerMatch(screen string) (matched bool, reason string) {
 }
 
 // IsLimitBlocker is true for strong harness usage/session-limit chrome (not agent
-// prose about API rate limits). WaitReady fails fast; mid-session reaper sticky-hits.
+// prose about API rate limits). WaitReadyTool fails fast; mid-session reaper sticky-hits.
 func IsLimitBlocker(screen string) bool {
 	ok, _ := LimitBlockerMatch(screen)
 	return ok
@@ -63,7 +63,7 @@ func (e *AuthMissingError) Error() string {
 
 func (e *AuthMissingError) Unwrap() error { return ErrAuthMissing }
 
-// ErrAuthMissing is returned by WaitReady when the pane shows a login prompt.
+// ErrAuthMissing is returned by WaitReadyTool when the pane shows a login prompt.
 var ErrAuthMissing = fmt.Errorf("auth missing: tool shows login prompt")
 
 // LimitExceededError reports tool and wraps ErrLimitExceeded for errors.Is.
@@ -83,21 +83,8 @@ func (e *LimitExceededError) Error() string {
 
 func (e *LimitExceededError) Unwrap() error { return ErrLimitExceeded }
 
-// ErrLimitExceeded is returned by WaitReady when the pane shows usage/session limit chrome.
+// ErrLimitExceeded is returned by WaitReadyTool when the pane shows usage/session limit chrome.
 var ErrLimitExceeded = fmt.Errorf("limit exceeded: tool shows usage/session limit")
-
-// WaitReady polls the tmux pane until the harness Tool reports IsReady, applying
-// HandleStartup actions (trust/bypass prompts) as they appear.
-// Unknown tools sleep PostReadyDelay once and return.
-// Auth blockers fail immediately (do not wait for the full readiness timeout).
-func WaitReady(session, command string, timeout time.Duration) error {
-	tool := Detect(command)
-	if IsUnknown(tool) {
-		time.Sleep(tool.PostReadyDelay())
-		return nil
-	}
-	return WaitReadyTool(session, tool, timeout)
-}
 
 func WaitReadyTool(session string, tool Tool, timeout time.Duration) error {
 	if tool == nil || IsUnknown(tool) {

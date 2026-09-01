@@ -101,8 +101,8 @@ hi
 func TestNextDueUsesTimezone(t *testing.T) {
 	t.Parallel()
 	from := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	utc := schedule.NextDuePublic("0 9 * * *", from, "UTC")
-	sp := schedule.NextDuePublic("0 9 * * *", from, "America/Sao_Paulo")
+	utc := schedule.NextDue("0 9 * * *", from, "UTC")
+	sp := schedule.NextDue("0 9 * * *", from, "America/Sao_Paulo")
 	if utc.Equal(sp) {
 		t.Fatalf("timezone ignored: both %s", utc)
 	}

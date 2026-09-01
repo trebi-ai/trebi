@@ -351,19 +351,6 @@ func workspaceRel(root, abs string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
-func pathInside(root, target string) bool {
-	root = filepath.Clean(root)
-	target = filepath.Clean(target)
-	if target == root {
-		return false
-	}
-	rel, err := filepath.Rel(root, target)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
 func (s *Server) workspaceByID(w http.ResponseWriter, r *http.Request) (*workspaces.Workspace, bool) {
 	ws, err := s.ws.Get(r.Context(), r.PathValue("id"))
 	if errors.Is(err, sql.ErrNoRows) {

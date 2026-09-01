@@ -14,7 +14,6 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/platform"
-	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
 
@@ -126,9 +125,16 @@ func newAppState(workspaceHint string) *appState {
 			workspaceHint, sticky, linked, os.Getenv("TREBI_URL"), os.Getenv("TREBI_TOKEN"),
 		)
 	}
-	state.localClient, state.localClientErr = loadLocalAPIClientWithEnv(
-		os.Getenv("TREBI_URL"), os.Getenv("TREBI_TOKEN"),
-	)
+	url, token := os.Getenv("TREBI_URL"), os.Getenv("TREBI_TOKEN")
+	if url != "" {
+		state.localClient = &APIClient{
+			base:       strings.TrimRight(url, "/"),
+			token:      token,
+			httpClient: &http.Client{Timeout: 30 * time.Second},
+		}
+	} else {
+		state.localClient, state.localClientErr = apiJSONClient()
+	}
 	state.config, state.configErr = config.Load()
 	state.workspace = effectiveWorkspaceFor(workspaceHint, sticky, linked)
 	return state
@@ -202,30 +208,10 @@ func resolveWorkspaceHint(c *cli.Command, hint string) string {
 	if err != nil {
 		return resolved
 	}
-	if id := lookupWorkspaceID(client, resolved); id != "" {
+	if id := client.WorkspaceIDFor(resolved); id != "" {
 		return id
 	}
 	return resolved
-}
-
-func lookupWorkspaceID(client *APIClient, hint string) string {
-	if client == nil || hint == "" {
-		return ""
-	}
-	var body struct {
-		Workspaces []map[string]any `json:"workspaces"`
-	}
-	if err := client.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
-		return ""
-	}
-	for _, ws := range body.Workspaces {
-		id := mapStr(ws, "id")
-		name := mapStr(ws, "name")
-		if id == hint || equalFoldName(hint, name) {
-			return id
-		}
-	}
-	return ""
 }
 
 func stickyFor(c *cli.Command) (*StickyContext, error) {
@@ -252,20 +238,9 @@ func loadAPIClientWithContext(hint string, sticky *StickyContext, linked []Linke
 	}
 	if url != "" {
 		return &APIClient{
-			Base:  strings.TrimRight(url, "/"),
-			Token: token,
-			HTTP:  &http.Client{Timeout: 30 * time.Second},
-		}, nil
-	}
-	return apiJSONClient()
-}
-
-func loadLocalAPIClientWithEnv(url, token string) (*APIClient, error) {
-	if url != "" {
-		return &APIClient{
-			Base:  strings.TrimRight(url, "/"),
-			Token: token,
-			HTTP:  &http.Client{Timeout: 30 * time.Second},
+			base:       strings.TrimRight(url, "/"),
+			token:      token,
+			httpClient: &http.Client{Timeout: 30 * time.Second},
 		}, nil
 	}
 	return apiJSONClient()

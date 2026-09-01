@@ -15,39 +15,28 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 )
 
-type claudeTool struct{}
+type claudeTool struct{ harnessHome }
 
 func (claudeTool) Name() string { return Claude }
 
 func (claudeTool) Match(command string) bool {
 	// Full command: paths and multi-arg "claude --dangerously-skip-permissions".
-	return containsToken(command, Claude)
+	return strings.Contains(command, Claude)
 }
 
 func (t claudeTool) PrepareLaunch(command string) LaunchPlan {
 	cmd, sid := injectSessionIDFlag(command, "--session-id")
 	cmd = injectClaudeSettings(cmd)
-	return planWithSession(cmd, sid, claudeLaunchEnv())
+	return planWithSession(cmd, sid, t.launchEnv())
 }
 
-func (claudeTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
+func (t claudeTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
 	cmd, err := resumeWithFlag(command, sessionID, []string{"--session-id"}, "--resume", Claude)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
 	cmd = injectClaudeSettings(cmd)
-	return LaunchPlan{Command: cmd, SessionID: sessionID, Env: claudeLaunchEnv()}, nil
-}
-
-// BridgeClaudeAuth symlinks user credentials into harness CLAUDE_CONFIG_DIR when shared.
-func BridgeClaudeAuth(mode string) error {
-	userHome := harness.UserHome()
-	if userHome == "" {
-		return nil
-	}
-	src := filepath.Join(userHome, ".claude", ".credentials.json")
-	dst := filepath.Join(config.HarnessDir(Claude), ".credentials.json")
-	return harness.SymlinkAuth(src, dst, mode)
+	return LaunchPlan{Command: cmd, SessionID: sessionID, Env: t.launchEnv()}, nil
 }
 
 func (claudeTool) IsReady(screen string) bool {
@@ -122,6 +111,22 @@ func (claudeTool) TranscriptPath(home, workingDir, sessionID string) (string, er
 
 func (claudeTool) Lifecycle() LifecycleAdapter { return claudeLifecycle{} }
 
+func (t claudeTool) launchEnv() map[string]string {
+	t.tool = Claude
+	cfg, dir := t.prepare()
+	mode := harness.AuthModeShared
+	if cfg != nil {
+		mode = harness.AuthModeFromConfig(cfg, Claude)
+	}
+	_ = t.bridgeAuth(filepath.Join(".claude", ".credentials.json"), mode)
+	_ = seedClaudeOnboarding(dir)
+	return map[string]string{
+		"CLAUDE_CONFIG_DIR":   dir,
+		"DISABLE_AUTOUPDATER": "1",
+		"DISABLE_UPDATES":     "1",
+	}
+}
+
 // ClaudeProjectDir maps a working dir to ~/.claude/projects/<slug>
 // (non-alphanumerics → "-"; trailing slash stripped).
 func ClaudeProjectDir(wd string) string {
@@ -138,28 +143,11 @@ func ClaudeProjectDir(wd string) string {
 	return b.String()
 }
 
-func claudeLaunchEnv() map[string]string {
-	dir := config.HarnessDir(Claude)
-	_ = (claudeLifecycle{}).materialize(dir)
-	mode := harness.AuthModeShared
-	var cfg *config.Config
-	if c, err := config.Load(); err == nil {
-		cfg = c
-		mode = harness.AuthModeFromConfig(cfg, Claude)
-	}
-	_ = BridgeClaudeAuth(mode)
-	_ = seedClaudeOnboarding(dir)
-	// Resource inheritance (skills, MCP, user_memory, …) — soft on failure.
-	_ = harness.EnsureBridges(Claude, cfg)
-	return map[string]string{
-		"CLAUDE_CONFIG_DIR":   dir,
-		"DISABLE_AUTOUPDATER": "1",
-		"DISABLE_UPDATES":     "1",
-	}
-}
-
 // seedClaudeOnboarding marks harness past first-run (skip theme wizard) and disables Claude-in-Chrome.
 // Best-effort; merges a few keys from ~/.claude.json when present.
+// Differs from eval.seedIsolatedClaudeHome, which writes a fixed
+// {"hasCompletedOnboarding": true} into a scratch home so trials stay
+// isolated from operator config.
 func seedClaudeOnboarding(configDir string) error {
 	if configDir == "" {
 		return nil

@@ -20,7 +20,7 @@ import (
 // Jobi tool identity is Cursor ("cursor") — defined in tool.go.
 const CursorAgentBinary = "cursor-agent"
 
-type cursorTool struct{}
+type cursorTool struct{ harnessHome }
 
 func (cursorTool) Name() string { return Cursor }
 
@@ -39,24 +39,24 @@ func (cursorTool) Match(command string) bool {
 	return base == CursorAgentBinary || base == Cursor
 }
 
-func (cursorTool) PrepareLaunch(command string) LaunchPlan {
+func (t cursorTool) PrepareLaunch(command string) LaunchPlan {
 	cmd := injectCursorFlags(normalizeCursorCommand(command))
 	sid := createCursorChat()
 	if sid != "" {
 		cmd = StripFlags(cmd, "--resume", "--continue")
 		cmd = AppendFlags(cmd, []string{"--resume", sid})
 	}
-	return planWithSession(cmd, sid, cursorLaunchEnv())
+	return planWithSession(cmd, sid, t.launchEnv())
 }
 
-func (cursorTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
+func (t cursorTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
 	if sessionID == "" {
 		return LaunchPlan{}, fmt.Errorf("no session ID available for cursor resume")
 	}
 	base := StripFlags(normalizeCursorCommand(command), "--resume", "--continue")
 	base = injectCursorFlags(base)
 	cmd := AppendFlags(base, []string{"--resume", sessionID})
-	return LaunchPlan{Command: cmd, SessionID: sessionID, Env: cursorLaunchEnv()}, nil
+	return LaunchPlan{Command: cmd, SessionID: sessionID, Env: t.launchEnv()}, nil
 }
 
 // normalizeCursorCommand rewrites jobi/tool-id "cursor" to the vendor agent CLI.
@@ -96,23 +96,6 @@ func injectCursorFlags(command string) string {
 		command = AppendFlags(command, []string{"--trust"})
 	}
 	return command
-}
-
-func cursorLaunchEnv() map[string]string {
-	dir := config.HarnessDir(Cursor)
-	_ = (cursorLifecycle{}).materialize(dir)
-	var cfg *config.Config
-	if c, err := config.Load(); err == nil {
-		cfg = c
-	}
-	_ = harness.EnsureBridges(Cursor, cfg)
-	return map[string]string{
-		// Relocates cli-config.json + chats/projects under harness.
-		// Hooks are NOT loaded from CURSOR_CONFIG_DIR — see ensureCursorUserHooks.
-		"CURSOR_CONFIG_DIR": dir,
-		// Keep data (projects/chats) with config so isolation is complete.
-		"CURSOR_DATA_DIR": dir,
-	}
 }
 
 // createCursorChatTimeout bounds create-chat; the vendor CLI has been observed
@@ -279,6 +262,18 @@ func (cursorTool) ClassifyScreen(screen string) ScreenClass {
 		[]string{"ctrl+c to stop", "Working", "Generating", "Thinking", "Esc to cancel"},
 		[]string{"→ Plan, search, build anything", "→ Add a follow-up"},
 	)
+}
+
+func (t cursorTool) launchEnv() map[string]string {
+	t.tool = Cursor
+	_, dir := t.prepare()
+	return map[string]string{
+		// Relocates cli-config.json + chats/projects under harness.
+		// Hooks are NOT loaded from CURSOR_CONFIG_DIR — see ensureCursorUserHooks.
+		"CURSOR_CONFIG_DIR": dir,
+		// Keep data (projects/chats) with config so isolation is complete.
+		"CURSOR_DATA_DIR": dir,
+	}
 }
 
 //go:embed lifecycle/cursor-jobi-hooks.json

@@ -9,13 +9,13 @@ func TestSeedTemplateLoads(t *testing.T) {
 	if err := decodeConfig([]byte(seedTemplate), cfg); err != nil {
 		t.Fatalf("decode seed: %v", err)
 	}
-	applyLoadDefaults(cfg)
-	if err := Validate(cfg); err != nil {
+	cfg.applyDefaults()
+	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate seed: %v", err)
 	}
 
 	bare := defaultConfig()
-	applyLoadDefaults(bare)
+	bare.applyDefaults()
 	if cfg.Defaults.Command != bare.Defaults.Command {
 		t.Errorf("command: seed %q != default %q", cfg.Defaults.Command, bare.Defaults.Command)
 	}

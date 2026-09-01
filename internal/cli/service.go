@@ -31,12 +31,12 @@ import (
 )
 
 // errIfRemoteSticky blocks local-only service commands when sticky context is remote.
-func errIfRemoteSticky(state *appState) error {
-	if state.stickyErr != nil {
-		return state.stickyErr
+func (a *appState) errIfRemoteSticky() error {
+	if a.stickyErr != nil {
+		return a.stickyErr
 	}
-	if state.sticky != nil && state.sticky.IsRemote() {
-		return fmt.Errorf("service commands are local-only (sticky workspace is remote %s); trebi workspace use <local-id>", state.sticky.URL)
+	if a.sticky != nil && a.sticky.IsRemote() {
+		return fmt.Errorf("service commands are local-only (sticky workspace is remote %s); trebi workspace use <local-id>", a.sticky.URL)
 	}
 	return nil
 }
@@ -76,7 +76,7 @@ func serviceLifecycleSubcommands() []*cli.Command {
 			Name:  "uninstall",
 			Usage: "Remove launchd LaunchAgent",
 			Action: func(_ context.Context, c *cli.Command) error {
-				if err := errIfRemoteSticky(appStateFor(c)); err != nil {
+				if err := appStateFor(c).errIfRemoteSticky(); err != nil {
 					return err
 				}
 				return appStateFor(c).platform.Uninstall()
@@ -86,7 +86,7 @@ func serviceLifecycleSubcommands() []*cli.Command {
 			Name:  "start",
 			Usage: "Start the OS-supervised daemon",
 			Action: func(_ context.Context, c *cli.Command) error {
-				if err := errIfRemoteSticky(appStateFor(c)); err != nil {
+				if err := appStateFor(c).errIfRemoteSticky(); err != nil {
 					return err
 				}
 				if err := appStateFor(c).platform.Start(); err != nil {
@@ -100,7 +100,7 @@ func serviceLifecycleSubcommands() []*cli.Command {
 			Name:  "stop",
 			Usage: "Stop the OS-supervised daemon",
 			Action: func(_ context.Context, c *cli.Command) error {
-				if err := errIfRemoteSticky(appStateFor(c)); err != nil {
+				if err := appStateFor(c).errIfRemoteSticky(); err != nil {
 					return err
 				}
 				if err := appStateFor(c).platform.Stop(); err != nil {
@@ -231,7 +231,7 @@ func serviceTokenSubcommands() []*cli.Command {
 						if err != nil {
 							return err
 						}
-						fmt.Println(client.Token)
+						fmt.Println(client.token)
 						return nil
 					},
 				},
@@ -241,7 +241,7 @@ func serviceTokenSubcommands() []*cli.Command {
 }
 
 func runServiceInstall(_ context.Context, c *cli.Command) error {
-	if err := errIfRemoteSticky(appStateFor(c)); err != nil {
+	if err := appStateFor(c).errIfRemoteSticky(); err != nil {
 		return err
 	}
 	return appStateFor(c).platform.Install(platform.InstallOpts{
@@ -382,7 +382,7 @@ func lineHasLevel(line, want string) bool {
 // Tray icon means the service process is alive. Quit from the tray exits 0 and
 // stops the whole process (daemon + tray).
 func runDaemonProcess(ctx context.Context, c *cli.Command) error {
-	if err := errIfRemoteSticky(appStateFor(c)); err != nil {
+	if err := appStateFor(c).errIfRemoteSticky(); err != nil {
 		return err
 	}
 	noTray := c.Bool("no-tray") || runtime.GOOS != "darwin" || !tray.Available
@@ -538,23 +538,16 @@ func startParentWatch(cancel context.CancelFunc, parentPID int) {
 	if parentPID <= 0 {
 		parentPID, _ = strconv.Atoi(os.Getenv("TREBI_PARENT_PID"))
 	}
-	fd := parentWatchFile()
+	var fd *os.File
+	if v := os.Getenv(parentFDEnv); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 3 {
+			fd = os.NewFile(uintptr(n), "parent-watch")
+		}
+	}
 	if parentPID <= 0 && fd == nil {
 		return
 	}
 	go watchParent(cancel, parentPID, fd)
-}
-
-func parentWatchFile() *os.File {
-	v := os.Getenv(parentFDEnv)
-	if v == "" {
-		return nil
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 3 {
-		return nil
-	}
-	return os.NewFile(uintptr(n), "parent-watch")
 }
 
 func watchParent(cancel context.CancelFunc, pid int, fd *os.File) {

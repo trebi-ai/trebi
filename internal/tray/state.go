@@ -39,35 +39,32 @@ func (s *State) Get() Snapshot {
 	return s.cur
 }
 
-// BuildMenuLines returns pure text rows for tests (no menuet).
-func BuildMenuLines(snap Snapshot) []string {
+// MenuLines returns pure text rows for tests (no menuet).
+func (s Snapshot) MenuLines() []string {
 	status := "offline"
-	if snap.Healthy {
+	if s.Healthy {
 		status = "running"
-		if snap.Draining {
+		if s.Draining {
 			status = "draining"
 		}
 	}
 	head := "trebi · " + status
-	if snap.Version != "" {
-		head += " · " + snap.Version
+	if s.Version != "" {
+		head += " · " + s.Version
 	}
 	lines := []string{head}
-	if snap.Message != "" {
-		lines = append(lines, snap.Message)
+	if s.Message != "" {
+		lines = append(lines, s.Message)
 	}
-	if snap.Healthy {
-		lines = append(lines, fmtRunning(snap.RunningCount, snap.WaitingCount))
+	if s.Healthy {
+		running := "Runs: " + itoa(s.RunningCount)
+		if s.WaitingCount > 0 {
+			running += " · waiting: " + itoa(s.WaitingCount)
+		}
+		lines = append(lines, running)
 	}
 	lines = append(lines, "Quit Trebi service")
 	return lines
-}
-
-func fmtRunning(running, waiting int) string {
-	if waiting > 0 {
-		return "Runs: " + itoa(running) + " · waiting: " + itoa(waiting)
-	}
-	return "Runs: " + itoa(running)
 }
 
 func itoa(n int) string {

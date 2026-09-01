@@ -6,17 +6,6 @@ import (
 	"strings"
 )
 
-// RewriteSentinel replaces JOBI_TASK_COMPLETE with TREBI_RUN_COMPLETE in body text.
-// Returns the new content and whether a change was made.
-func RewriteSentinel(data []byte) ([]byte, bool) {
-	const oldVal, newVal = "JOBI_TASK_COMPLETE", "TREBI_RUN_COMPLETE"
-	s := string(data)
-	if !strings.Contains(s, oldVal) {
-		return data, false
-	}
-	return []byte(strings.ReplaceAll(s, oldVal, newVal)), true
-}
-
 // WriteAtomic writes data to path via temp+rename.
 func WriteAtomic(path string, data []byte) error {
 	dir := path

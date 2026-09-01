@@ -480,7 +480,7 @@ func (s *Server) purgeBlockers(ctx context.Context, row workspaces.JobRow, jobDi
 		if other.Name == row.Name {
 			continue
 		}
-		if pathInside(jobDir, other.Path) {
+		if workspaces.PathInside(jobDir, other.Path) {
 			names = append(names, other.Name)
 		}
 	}

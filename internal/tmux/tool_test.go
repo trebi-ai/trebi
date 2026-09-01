@@ -213,6 +213,29 @@ func TestEnsurePiPackageInSettings(t *testing.T) {
 	}
 }
 
+func TestTruncateRunes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		s    string
+		n    int
+		want string
+	}{
+		{"hello", 10, "hello"},
+		{"hello", 5, "hello"},
+		{"hello", 3, "hel…"},
+		{"café", 3, "caf…"},
+		{"日本語です", 3, "日本語…"},
+		{"emoji😀end", 6, "emoji😀…"},
+		{"", 4, ""},
+		{"ab", 0, ""},
+	}
+	for _, tc := range cases {
+		if got := truncateRunes(tc.s, tc.n); got != tc.want {
+			t.Errorf("truncateRunes(%q, %d) = %q, want %q", tc.s, tc.n, got, tc.want)
+		}
+	}
+}
+
 func TestPrepareLaunch_CodexNotifyQuoted(t *testing.T) {
 	home.SetBase(t.TempDir())
 	t.Cleanup(func() { home.SetBase("") })

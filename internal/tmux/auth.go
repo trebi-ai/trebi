@@ -44,7 +44,7 @@ func (DefaultDriver) LoginCommand(name, mode string) (string, []string, error) {
 	if bin == "" {
 		return "", nil, fmt.Errorf("%s binary not found", name)
 	}
-	args, env := vendorLoginArgs(name, mode)
+	args, env := vendorLoginArgsFor(name, mode, runtime.GOOS)
 	cmd := bin
 	if len(args) > 0 {
 		cmd = bin + " " + strings.Join(args, " ")
@@ -114,22 +114,16 @@ func loginCodexAPIKey(ctx context.Context, token string) error {
 func applyAuthMode(name, mode string) error {
 	switch name {
 	case Claude:
-		return BridgeClaudeAuth(mode)
+		return (harnessHome{tool: Claude}).bridgeAuth(filepath.Join(".claude", ".credentials.json"), mode)
 	case Grok:
-		return bridgeGrokAuth(config.HarnessDir(Grok), mode)
+		return (harnessHome{tool: Grok}).bridgeAuth(filepath.Join(".grok", "auth.json"), mode)
 	case Codex:
-		src := filepath.Join(harness.UserHome(), ".codex", "auth.json")
-		dst := filepath.Join(config.HarnessDir(Codex), "auth.json")
-		return harness.SymlinkAuth(src, dst, mode)
+		return (harnessHome{tool: Codex}).bridgeAuth(filepath.Join(".codex", "auth.json"), mode)
 	case Pi:
-		return BridgePiAuth(mode)
+		return (harnessHome{tool: Pi}).bridgeAuth(filepath.Join(".pi", "agent", "auth.json"), mode)
 	default:
 		return nil
 	}
-}
-
-func vendorLoginArgs(tool, mode string) (args []string, env []string) {
-	return vendorLoginArgsFor(tool, mode, runtime.GOOS)
 }
 
 func vendorLoginArgsFor(tool, mode, goos string) (args []string, env []string) {
@@ -374,7 +368,7 @@ const claudeKeychainDetail = "credentials live in the macOS Keychain; file bridg
 
 func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Claude)
-	_ = BridgeClaudeAuth(st.Mode)
+	_ = (harnessHome{tool: Claude}).bridgeAuth(filepath.Join(".claude", ".credentials.json"), st.Mode)
 	cred := filepath.Join(config.HarnessDir(Claude), ".credentials.json")
 	userCred := filepath.Join(harness.UserHome(), ".claude", ".credentials.json")
 

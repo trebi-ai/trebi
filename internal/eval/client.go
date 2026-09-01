@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,14 +45,170 @@ type Step struct {
 	Result  string `json:"result,omitempty"`
 }
 
+func (s Step) invokesTrebiShell() bool {
+	if isTrebiMCPTool(s.Name) || strings.HasPrefix(s.Name, "mcp__trebi") {
+		return false
+	}
+	cmd := jsonCommandField(s.Content)
+	if cmd == "" {
+		return false
+	}
+	return commandInvokes(cmd, "trebi")
+}
+
+func (s Step) shellCommand() string {
+	var body struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal([]byte(s.Content), &body) != nil {
+		return ""
+	}
+	return body.Command
+}
+
+// mcpCommand renders one trebi MCP call as the equivalent CLI line. Input
+// keys are sorted so the projection is stable, and underscores are also
+// emitted as dashes ("if_match" -> "--if-match") so a CLI-flavored pattern
+// matches.
+func (s Step) mcpCommand() string {
+	tool := strings.TrimPrefix(s.Name, "mcp__trebi__")
+	tool = strings.TrimPrefix(tool, "mcp__trebi_")
+	if tool == s.Name && !isTrebiMCPTool(tool) {
+		return ""
+	}
+	if !isTrebiMCPTool(tool) {
+		return ""
+	}
+	var body struct {
+		Action string         `json:"action"`
+		Input  map[string]any `json:"input"`
+	}
+	if json.Unmarshal([]byte(s.Content), &body) != nil || body.Action == "" {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "trebi %s %s", tool, body.Action)
+	// Some CLI commands are spelled differently from the MCP tool that does
+	// the same work ("runs kill" vs the run tool; "bus" vs system bus_poll).
+	// Emit those spellings too so one pattern matches both surfaces.
+	for _, alias := range cliAliases(tool, body.Action) {
+		fmt.Fprintf(&b, " trebi %s", alias)
+	}
+	keys := make([]string, 0, len(body.Input))
+	for k := range body.Input {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := fmt.Sprintf("%v", body.Input[k])
+		fmt.Fprintf(&b, " --%s %s", k, v)
+		if dashed := strings.ReplaceAll(k, "_", "-"); dashed != k {
+			fmt.Fprintf(&b, " --%s %s", dashed, v)
+		}
+	}
+	return b.String()
+}
+
+type Steps []Step
+
+func (ss Steps) hasAssistant() bool {
+	for _, s := range ss {
+		if s.Role == "assistant" && strings.TrimSpace(s.Content) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (ss Steps) toolCount() int {
+	n := 0
+	for _, s := range ss {
+		if s.Role == "tool" {
+			n++
+		}
+	}
+	return n
+}
+
+func (ss Steps) mcpHandshakeOK() bool {
+	for _, s := range ss {
+		if s.Role != "tool" {
+			continue
+		}
+		if strings.HasPrefix(s.Name, "mcp__trebi") || isTrebiMCPTool(s.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (ss Steps) mcpIsolationViolations(apiURL string) []string {
+	host := trialHost(apiURL)
+	var out []string
+	for _, s := range ss {
+		if s.Role != "tool" {
+			continue
+		}
+		if s.invokesTrebiShell() {
+			out = append(out, "trebi shell invocation in "+s.Name)
+		}
+		if host != "" && looksLikeCurlTo(s.Content, host) {
+			out = append(out, "curl to trial port in "+s.Name)
+		}
+		if leak := mcpServerLeak(s.Name); leak != "" {
+			out = append(out, leak)
+		}
+	}
+	return out
+}
+
 // LaunchResult is the normalized client output.
 type LaunchResult struct {
 	Raw      []byte
-	Steps    []Step
+	Steps    Steps
 	CostUSD  float64
 	Duration time.Duration
 	Usage    pricing.TokenUsage
 	Errors   []string
+}
+
+func (res *LaunchResult) errorSummary() string {
+	if res == nil {
+		return "no launch result"
+	}
+	if len(res.Errors) > 0 {
+		return strings.Join(res.Errors, "; ")
+	}
+	if n := res.Steps.toolCount(); n > 0 {
+		return fmt.Sprintf("no final answer after %d tool calls (timeout)", n)
+	}
+	return "zero assistant steps"
+}
+
+func (res *LaunchResult) judgeReply() ([]byte, error) {
+	if res == nil {
+		return nil, fmt.Errorf("judge invoke: empty reply")
+	}
+	for i := len(res.Steps) - 1; i >= 0; i-- {
+		if res.Steps[i].Role == "assistant" && strings.TrimSpace(res.Steps[i].Content) != "" {
+			return []byte(res.Steps[i].Content), nil
+		}
+	}
+	if len(res.Errors) > 0 {
+		return nil, fmt.Errorf("judge invoke: %s", strings.Join(res.Errors, "; "))
+	}
+	return nil, fmt.Errorf("judge invoke: empty reply")
+}
+
+func (res *LaunchResult) upsert(byID map[string]int, id string, step Step) {
+	if id != "" {
+		if i, ok := byID[id]; ok {
+			res.Steps[i] = step
+			return
+		}
+		byID[id] = len(res.Steps)
+	}
+	res.Steps = append(res.Steps, step)
 }
 
 // AgentsMarkdown wraps SKILL.md for the client. Both surfaces get the same
@@ -102,7 +259,7 @@ func newClient(spec string) (Client, error) {
 	return &claudeClient{model: model}, nil
 }
 
-func writeTranscript(path string, raw []byte, steps []Step) error {
+func writeTranscript(path string, raw []byte, steps Steps) error {
 	if path == "" {
 		return nil
 	}
@@ -110,59 +267,13 @@ func writeTranscript(path string, raw []byte, steps []Step) error {
 		return err
 	}
 	if steps == nil {
-		steps = []Step{}
+		steps = Steps{}
 	}
 	data, err := json.MarshalIndent(steps, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
-}
-
-func hasAssistantStep(steps []Step) bool {
-	for _, s := range steps {
-		if s.Role == "assistant" && strings.TrimSpace(s.Content) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func clientErrorSummary(res *LaunchResult) string {
-	if res == nil {
-		return "no launch result"
-	}
-	if len(res.Errors) > 0 {
-		return strings.Join(res.Errors, "; ")
-	}
-	if n := toolStepCount(res.Steps); n > 0 {
-		return fmt.Sprintf("no final answer after %d tool calls (timeout)", n)
-	}
-	return "zero assistant steps"
-}
-
-// toolStepCount counts tool calls the client actually made. A client that made
-// some is alive; it ran out of time before its final message.
-func toolStepCount(steps []Step) int {
-	n := 0
-	for _, s := range steps {
-		if s.Role == "tool" {
-			n++
-		}
-	}
-	return n
-}
-
-func mcpHandshakeOK(steps []Step) bool {
-	for _, s := range steps {
-		if s.Role != "tool" {
-			continue
-		}
-		if strings.HasPrefix(s.Name, "mcp__trebi") || isTrebiMCPTool(s.Name) {
-			return true
-		}
-	}
-	return false
 }
 
 func appendUnique(dst []string, msg string) []string {
@@ -186,37 +297,6 @@ func isTrebiMCPTool(name string) bool {
 	default:
 		return false
 	}
-}
-
-func mcpIsolationViolations(steps []Step, apiURL string) []string {
-	host := trialHost(apiURL)
-	var out []string
-	for _, s := range steps {
-		if s.Role != "tool" {
-			continue
-		}
-		if looksLikeTrebiShell(s) {
-			out = append(out, "trebi shell invocation in "+s.Name)
-		}
-		if host != "" && looksLikeCurlTo(s.Content, host) {
-			out = append(out, "curl to trial port in "+s.Name)
-		}
-		if leak := mcpServerLeak(s.Name); leak != "" {
-			out = append(out, leak)
-		}
-	}
-	return out
-}
-
-func looksLikeTrebiShell(s Step) bool {
-	if isTrebiMCPTool(s.Name) || strings.HasPrefix(s.Name, "mcp__trebi") {
-		return false
-	}
-	cmd := jsonCommandField(s.Content)
-	if cmd == "" {
-		return false
-	}
-	return commandInvokes(cmd, "trebi")
 }
 
 func looksLikeCurlTo(content, host string) bool {
@@ -269,7 +349,8 @@ func peelShellC(cmd string) (string, bool) {
 		return cmd, false
 	}
 	for i := 1; i < len(toks)-1; i++ {
-		if isShortFlagC(toks[i]) {
+		t := toks[i]
+		if strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--") && strings.Contains(t, "c") {
 			return toks[i+1], true
 		}
 	}
@@ -283,10 +364,6 @@ func isShellBin(t string) bool {
 	default:
 		return false
 	}
-}
-
-func isShortFlagC(t string) bool {
-	return strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--") && strings.Contains(t, "c")
 }
 
 func splitShellSegments(s string) []string {
@@ -483,7 +560,7 @@ func usageCost(model string, in, out, cacheRead, cacheCreate int64) (pricing.Tok
 	u := pricing.TokenUsage{
 		Input: in, Output: out, CacheRead: cacheRead, CacheCreation: cacheCreate, Model: model,
 	}
-	pricing.Apply(&u)
+	u.ApplyRates()
 	return u, u.CostUSD
 }
 

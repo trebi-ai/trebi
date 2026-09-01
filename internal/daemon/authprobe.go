@@ -27,7 +27,7 @@ func (c *ControlPlane) authProbe(ctx context.Context) {
 	// spins. Each expiry value earns one immediate probe; the ticker retries.
 	probed := map[string]time.Time{}
 	armExpiry := func() {
-		name, at, err := harness.EarliestExpiry(ctx, c.Store)
+		name, at, err := c.Harness.EarliestExpiry(ctx)
 		if expiry != nil {
 			expiry.Stop()
 			expiry = nil
@@ -79,7 +79,7 @@ func (c *ControlPlane) authProbe(ctx context.Context) {
 			}
 			armExpiry()
 		case <-expC:
-			if name, at, err := harness.EarliestExpiry(ctx, c.Store); err == nil && !at.IsZero() {
+			if name, at, err := c.Harness.EarliestExpiry(ctx); err == nil && !at.IsZero() {
 				probed[name] = at
 			}
 			c.probeExpiring(ctx)
@@ -103,7 +103,7 @@ func (c *ControlPlane) authProbe(ctx context.Context) {
 }
 
 func (c *ControlPlane) probeBlocked(ctx context.Context) {
-	names, err := harness.BlockedNames(ctx, c.Store)
+	names, err := c.Harness.BlockedNames(ctx)
 	if err != nil {
 		c.log.Warn("list blocked harnesses", "error", err)
 		return
@@ -116,7 +116,7 @@ func (c *ControlPlane) probeBlocked(ctx context.Context) {
 }
 
 func (c *ControlPlane) probeExpiring(ctx context.Context) {
-	name, at, err := harness.EarliestExpiry(ctx, c.Store)
+	name, at, err := c.Harness.EarliestExpiry(ctx)
 	if err != nil || name == "" {
 		return
 	}

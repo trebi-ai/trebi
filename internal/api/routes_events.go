@@ -243,14 +243,14 @@ func (s *Server) patchDoneResults(ctx context.Context, outcomesByEvent map[strin
 			if !ok {
 				continue
 			}
-			patchOutcome(o, q)
+			q.patchInto(o)
 			outcomesByEvent[eid][i] = o
 		}
 	}
 }
 
-// patchOutcome overwrites one outcome entry with the current queue state.
-func patchOutcome(o map[string]any, q queueResult) {
+// patchInto overwrites one outcome entry with the current queue state.
+func (q queueResult) patchInto(o map[string]any) {
 	qi, _ := o["queue"].(map[string]any)
 	if qi == nil {
 		qi = map[string]any{}

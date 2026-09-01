@@ -199,49 +199,6 @@ func TestSave_RejectsInvalid(t *testing.T) {
 	}
 }
 
-func TestParseConfigBytes_BoolResource(t *testing.T) {
-	t.Parallel()
-	yaml := []byte(`
-tools:
-  claude:
-    bridge:
-      resources:
-        user_memory: false
-        skills: true
-`)
-	cfg, err := ParseConfigBytes(yaml)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Tools.Claude.Bridge.Resources["user_memory"] != "false" {
-		t.Fatalf("%v", cfg.Tools.Claude.Bridge.Resources)
-	}
-	if cfg.Tools.Claude.Bridge.Resources["skills"] != "inherit" {
-		t.Fatalf("%v", cfg.Tools.Claude.Bridge.Resources)
-	}
-}
-
-func TestParseSessionDefaults(t *testing.T) {
-	t.Parallel()
-	p, err := ParseSessionDefaults(SessionDefaults{
-		Timeout:   "30m",
-		Nudge:     "off",
-		IfRunning: "coalesce",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Timeout.Minutes() != 30 {
-		t.Fatalf("timeout %v", p.Timeout)
-	}
-	if !p.NudgeSet || p.Nudge != 0 {
-		t.Fatalf("nudge set=%v val=%v", p.NudgeSet, p.Nudge)
-	}
-	if p.IfRunning != "coalesce" {
-		t.Fatalf("if_running %q", p.IfRunning)
-	}
-}
-
 func withTempBase(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

@@ -214,7 +214,7 @@ func runHarnessAuthStatus(_ context.Context, c *cli.Command) error {
 	renderTable(tbl)
 	for _, r := range rows {
 		st := mapStr(r, "auth_status", "status")
-		if keychainBound(r) && st != "ok" && st != "" {
+		if truthy(r["keychain_bound"]) && st != "ok" && st != "" {
 			fmt.Fprintln(w, "shared file bridge unavailable on macOS — run: trebi harness auth login claude, or provide an API key")
 			break
 		}
@@ -223,16 +223,6 @@ func runHarnessAuthStatus(_ context.Context, c *cli.Command) error {
 		return fmt.Errorf("auth not ok")
 	}
 	return nil
-}
-
-func keychainBound(r map[string]any) bool {
-	switch v := r["keychain_bound"].(type) {
-	case bool:
-		return v
-	case string:
-		return v == "true" || v == "1"
-	}
-	return false
 }
 
 func runHarnessAuthMode(_ context.Context, c *cli.Command) error {
@@ -376,7 +366,7 @@ func renderLocalOnly(c *cli.Command, err error) error {
 }
 
 func attachLoginWS(c *cli.Command, client *APIClient, name string) error {
-	conn, err := dialAttachPath(client, "/v1/harnesses/"+name+"/login/attach")
+	conn, err := client.DialWS("/v1/harnesses/" + name + "/login/attach")
 	if err != nil {
 		return err
 	}

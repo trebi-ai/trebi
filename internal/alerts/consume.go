@@ -30,6 +30,34 @@ type deliverJob struct {
 	id   string
 }
 
+//nolint:gochecknoglobals // static table
+var consumeTopics = []string{
+	"agent.state",
+	"run.failed",
+	"run.updated",
+	"run.resume_exhausted",
+	"integration.unhealthy",
+	"integration.recovered",
+	"auth.probe.failed",
+	"harness.updated",
+	"harness.limit_exceeded",
+	"harness.limit_cleared",
+}
+
+//nolint:gochecknoglobals // static table
+var notifyPlaceholders = []struct{ ph, env string }{
+	{"kind", "TREBI_ALERT_KIND"},
+	{"tool", "TREBI_ALERT_TOOL"},
+	{"task_id", "TREBI_ALERT_TASK_ID"},
+	{"job", "TREBI_ALERT_JOB"},
+	{"workspace", "TREBI_ALERT_WORKSPACE"},
+	{"message", "TREBI_ALERT_MESSAGE"},
+	{"hint", "TREBI_ALERT_HINT"},
+	{"body", "TREBI_ALERT_BODY"},
+	{"resume", "TREBI_ALERT_RESUME"},
+	{"integration", "TREBI_ALERT_INTEGRATION"},
+}
+
 // Run polls the bus until ctx is cancelled. Tick interval comes from Options.
 // A delivery goroutine drains the notify queue and exits when ctx is done, so
 // it does not outlive Stop().
@@ -88,7 +116,7 @@ func (s *Service) Tick(ctx context.Context) {
 // Consume reads event_log after the persisted cursor and raises/resolves.
 func (s *Service) Consume(ctx context.Context) {
 	after := s.loadCursor()
-	events, err := s.st.ListBus(ctx, after, consumeTopics(), 200)
+	events, err := s.st.ListBus(ctx, after, consumeTopics, 200)
 	if err != nil {
 		s.log.Warn("alerts consume", "error", err)
 		return
@@ -360,7 +388,7 @@ func (s *Service) deliver(ctx context.Context, opts RaiseOpts, id string) {
 	for i, ch := range s.opts.Notify {
 		cctx, cancel := context.WithTimeout(ctx, timeout)
 		cmd := exec.CommandContext(cctx, "sh", "-c", expandNotify(ch.Command))
-		cmd.Env = notifyEnv(opts, id)
+		cmd.Env = opts.notifyEnv(id)
 		err := cmd.Run()
 		cancel()
 		status := "ok"
@@ -485,21 +513,6 @@ func CollectDoctorFindings() []DoctorFinding {
 	return findings
 }
 
-func consumeTopics() []string {
-	return []string{
-		"agent.state",
-		"run.failed",
-		"run.updated",
-		"run.resume_exhausted",
-		"integration.unhealthy",
-		"integration.recovered",
-		"auth.probe.failed",
-		"harness.updated",
-		"harness.limit_exceeded",
-		"harness.limit_cleared",
-	}
-}
-
 func attrMap(raw json.RawMessage) map[string]string {
 	out := map[string]string{}
 	if len(raw) == 0 {
@@ -521,48 +534,13 @@ func attrMap(raw json.RawMessage) map[string]string {
 // expandNotify rewrites {{placeholders}} to quoted $TREBI_ALERT_* references.
 // Untrusted values never enter the command string; they travel via the env.
 func expandNotify(cmd string) string {
-	for _, p := range notifyPlaceholders() {
+	for _, p := range notifyPlaceholders {
 		wrapped := `"$` + p.env + `"`
 		cmd = strings.ReplaceAll(cmd, "'{{"+p.ph+"}}'", wrapped)
 		cmd = strings.ReplaceAll(cmd, `"{{`+p.ph+`}}"`, wrapped)
 		cmd = strings.ReplaceAll(cmd, "{{"+p.ph+"}}", wrapped)
 	}
 	return cmd
-}
-
-func notifyEnv(opts RaiseOpts, id string) []string {
-	vals := map[string]string{
-		"TREBI_ALERT_KIND":        string(opts.Kind),
-		"TREBI_ALERT_TOOL":        opts.Harness,
-		"TREBI_ALERT_TASK_ID":     opts.RunID,
-		"TREBI_ALERT_JOB":         opts.JobName,
-		"TREBI_ALERT_WORKSPACE":   opts.WorkspaceID,
-		"TREBI_ALERT_MESSAGE":     opts.Title,
-		"TREBI_ALERT_HINT":        opts.Hint,
-		"TREBI_ALERT_BODY":        opts.Body,
-		"TREBI_ALERT_RESUME":      id,
-		"TREBI_ALERT_INTEGRATION": opts.Integration,
-	}
-	env := os.Environ()
-	for k, v := range vals {
-		env = append(env, k+"="+v)
-	}
-	return env
-}
-
-func notifyPlaceholders() []struct{ ph, env string } {
-	return []struct{ ph, env string }{
-		{"kind", "TREBI_ALERT_KIND"},
-		{"tool", "TREBI_ALERT_TOOL"},
-		{"task_id", "TREBI_ALERT_TASK_ID"},
-		{"job", "TREBI_ALERT_JOB"},
-		{"workspace", "TREBI_ALERT_WORKSPACE"},
-		{"message", "TREBI_ALERT_MESSAGE"},
-		{"hint", "TREBI_ALERT_HINT"},
-		{"body", "TREBI_ALERT_BODY"},
-		{"resume", "TREBI_ALERT_RESUME"},
-		{"integration", "TREBI_ALERT_INTEGRATION"},
-	}
 }
 
 // sanitizeText strips shell-metacharacters and control chars from alert text

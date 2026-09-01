@@ -84,7 +84,7 @@ func TestQueueDrain_AuthMissingBlocks(t *testing.T) {
 		t.Fatalf("status=%s block_reason=%s want blocked/auth_missing", status, br)
 	}
 
-	if _, err := harness.Stamp(ctx, st, harness.AuthStatus{Tool: "claude", Status: harness.AuthOK}, harness.SourceProbe); err != nil {
+	if _, err := harness.New(st, nil, harness.Options{}).Stamp(ctx, harness.AuthStatus{Tool: "claude", Status: harness.AuthOK}, harness.SourceProbe); err != nil {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(5 * time.Second)

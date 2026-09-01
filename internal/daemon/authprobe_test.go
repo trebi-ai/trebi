@@ -71,7 +71,7 @@ func TestAuthProbeExpiryWakes(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()
 	past := time.Now().UTC().Add(-time.Minute)
-	if _, err := harness.Stamp(ctx, st, harness.AuthStatus{
+	if _, err := harness.New(st, nil, harness.Options{}).Stamp(ctx, harness.AuthStatus{
 		Tool: "claude", Status: harness.AuthOK, ExpiresAt: &past,
 	}, harness.SourceProbe); err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestAuthProbeExpiryRefreshStaysOK(t *testing.T) {
 	ctx := context.Background()
 	past := time.Now().UTC().Add(-time.Minute)
 	future := time.Now().UTC().Add(time.Hour)
-	if _, err := harness.Stamp(ctx, st, harness.AuthStatus{
+	if _, err := harness.New(st, nil, harness.Options{}).Stamp(ctx, harness.AuthStatus{
 		Tool: "claude", Status: harness.AuthOK, ExpiresAt: &past,
 	}, harness.SourceProbe); err != nil {
 		t.Fatal(err)
@@ -296,7 +296,7 @@ func TestAuthProbeExpiredDoesNotSpin(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()
 	past := time.Now().UTC().Add(-42 * 24 * time.Hour)
-	if _, err := harness.Stamp(ctx, st, harness.AuthStatus{
+	if _, err := harness.New(st, nil, harness.Options{}).Stamp(ctx, harness.AuthStatus{
 		Tool: "gemini", Status: harness.AuthOK, ExpiresAt: &past,
 	}, harness.SourceProbe); err != nil {
 		t.Fatal(err)

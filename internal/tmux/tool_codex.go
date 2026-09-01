@@ -16,7 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 )
 
-type codexTool struct{}
+type codexTool struct{ harnessHome }
 
 func (codexTool) Name() string { return Codex }
 
@@ -24,7 +24,7 @@ func (codexTool) Match(command string) bool {
 	return binaryMatch(command, Codex)
 }
 
-func (codexTool) PrepareLaunch(command string) LaunchPlan {
+func (t codexTool) PrepareLaunch(command string) LaunchPlan {
 	// Soft-event only (agent-turn-complete → stop) so screen still drives busy.
 	// Quote the TOML array so bash does not strip the quotes and Codex 0.149+
 	// does not deserialize notify as a string.
@@ -35,15 +35,11 @@ func (codexTool) PrepareLaunch(command string) LaunchPlan {
 			"-c", fmt.Sprintf(`'notify=["%s"]'`, notifyBin),
 		})
 	}
-	var cfg *config.Config
-	if c, err := config.Load(); err == nil {
-		cfg = c
-	}
+	t.tool = Codex
 	// Do not set CODEX_HOME: a fresh harness tree cold-starts Codex plugin
 	// sync and misses WaitReady. Notify is injected via -c; auth stays in
 	// the user ~/.codex. Bridges remain dormant until login isolation.
-	_ = harness.EnsureDir(config.HarnessDir(Codex))
-	_ = harness.EnsureBridges(Codex, cfg)
+	_, _ = t.prepare()
 	return LaunchPlan{Command: cmd, Env: nil}
 }
 
@@ -169,17 +165,6 @@ func (codexLifecycle) Uninstall(trebiBase, binDir string) error {
 		}
 	}
 	return nil
-}
-
-// BridgeCodexAuth symlinks user auth into harness CODEX_HOME when mode is shared.
-func BridgeCodexAuth(mode string) error {
-	userHome := harness.UserHome()
-	if userHome == "" {
-		return nil
-	}
-	src := filepath.Join(userHome, ".codex", "auth.json")
-	dst := filepath.Join(config.HarnessDir(Codex), "auth.json")
-	return harness.SymlinkAuth(src, dst, mode)
 }
 
 // codexRollout is one line of a codex rollout file.

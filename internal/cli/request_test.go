@@ -56,8 +56,8 @@ func TestFetchRunLogText(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
-	text, err := fetchRunLogText(client, "01ABC")
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
+	text, err := client.RunLogText("01ABC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestDoHTTPRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 
 	// run dry_run + prompt
 	req := request.BuildRunsCreate("demo", "ws", "hi", true)
@@ -166,7 +166,7 @@ func TestDoHTTPRawRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &APIClient{Base: srv.URL, Token: "t", HTTP: srv.Client()}
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 
 	req := request.HTTPRequest{
 		Method:      "PUT",
@@ -436,16 +436,6 @@ func TestResolveRunMessageText(t *testing.T) {
 	}
 	if _, err := resolveRunMessageText("", ""); err == nil {
 		t.Fatal("empty should error")
-	}
-}
-
-func TestIsTerminalRunStatus(t *testing.T) {
-	t.Parallel()
-	if !isTerminalRunStatus("complete") || !isTerminalRunStatus("failed") {
-		t.Fatal("expected terminal")
-	}
-	if isTerminalRunStatus("running") {
-		t.Fatal("running is not terminal")
 	}
 }
 

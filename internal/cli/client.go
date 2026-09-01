@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -19,63 +21,25 @@ import (
 
 // APIClient talks to trebid over HTTP.
 type APIClient struct {
-	Base   string
-	Token  string
-	Remote bool // true when sticky/linked remote workspace is active
-	HTTP   *http.Client
-}
-
-// LoadAPIClient resolves the daemon for the active workspace context:
-//  1. -w / TREBI_WORKSPACE matching a linked remote workspace
-//  2. sticky context with remote URL
-//  3. TREBI_URL + TREBI_TOKEN
-//  4. local ~/.trebi/api.json
-func LoadAPIClient() (*APIClient, error) {
-	hint := strings.TrimSpace(os.Getenv("TREBI_WORKSPACE"))
-	sticky, err := LoadStickyContext()
-	if err != nil {
-		return nil, err
-	}
-	linked, linkedErr := LoadLinkedWorkspaces()
-	if linkedErr != nil {
-		linked = nil
-	}
-	return loadAPIClientWithContext(hint, sticky, linked, os.Getenv("TREBI_URL"), os.Getenv("TREBI_TOKEN"))
+	base       string
+	token      string
+	remote     bool // true when sticky/linked remote workspace is active
+	httpClient *http.Client
 }
 
 // IsRemote reports whether this client targets a remote daemon.
 func (c *APIClient) IsRemote() bool {
-	return c != nil && c.Remote
-}
-
-// EffectiveWorkspace returns the workspace id for API query params using the
-// process environment and persisted workspace context.
-func EffectiveWorkspace(c interface{ String(string) string }) string {
-	hint := strings.TrimSpace(os.Getenv("TREBI_WORKSPACE"))
-	if c != nil {
-		if w := strings.TrimSpace(c.String("workspace")); w != "" {
-			hint = w
-		}
-	}
-	sticky, stickyErr := LoadStickyContext()
-	if stickyErr != nil {
-		sticky = nil
-	}
-	linked, linkedErr := LoadLinkedWorkspaces()
-	if linkedErr != nil {
-		linked = nil
-	}
-	return effectiveWorkspaceFor(hint, sticky, linked)
+	return c != nil && c.remote
 }
 
 // GetJSON performs GET and decodes JSON.
 func (c *APIClient) GetJSON(path string, out any) error {
-	req, err := http.NewRequest("GET", c.Base+path, nil)
+	req, err := http.NewRequest("GET", c.base+path, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	resp, err := c.HTTP.Do(req)
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -112,12 +76,12 @@ func (c *APIClient) Delete(path string) error {
 
 // GetRaw performs GET and returns the response body bytes (any content-type).
 func (c *APIClient) GetRaw(path string) ([]byte, error) {
-	req, err := http.NewRequest("GET", c.Base+path, nil)
+	req, err := http.NewRequest("GET", c.base+path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	resp, err := c.HTTP.Do(req)
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -132,12 +96,12 @@ func (c *APIClient) GetRaw(path string) ([]byte, error) {
 // StreamGET copies a GET response body to dst until EOF or ctx cancel.
 // Used for integration logs --follow (SSE). Timeout is disabled on this call.
 func (c *APIClient) StreamGET(path string, dst io.Writer) error {
-	req, err := http.NewRequest("GET", c.Base+path, nil)
+	req, err := http.NewRequest("GET", c.base+path, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	httpClient := c.HTTP
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	httpClient := c.httpClient
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
@@ -186,14 +150,193 @@ func (c *APIClient) DoHTTP(r request.HTTPRequest, out any) error {
 	}
 }
 
+// WorkspaceIDFor maps a workspace name or id hint to an id via GET /v1/workspaces.
+func (c *APIClient) WorkspaceIDFor(hint string) string {
+	if c == nil || hint == "" {
+		return ""
+	}
+	var body struct {
+		Workspaces []map[string]any `json:"workspaces"`
+	}
+	if err := c.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
+		return ""
+	}
+	for _, ws := range body.Workspaces {
+		id := mapStr(ws, "id")
+		name := mapStr(ws, "name")
+		if id == hint || equalFoldName(hint, name) {
+			return id
+		}
+	}
+	return ""
+}
+
+// WaitTmuxSession polls the run until tmux_session is set or the run leaves starting/running.
+func (c *APIClient) WaitTmuxSession(runID string, maxWait time.Duration) string {
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		var body map[string]any
+		if err := c.GetJSON(request.BuildRunGetPath(runID), &body); err == nil {
+			if s := mapStr(body, "tmux_session"); s != "" {
+				return s
+			}
+			st := mapStr(body, "status")
+			if st != "" && st != "running" && st != "starting" {
+				return ""
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return ""
+}
+
+// DialAttach opens a WebSocket to GET /v1/runs/{id}/attach.
+func (c *APIClient) DialAttach(runID string) (*websocket.Conn, error) {
+	return c.DialWS("/v1/runs/" + url.PathEscape(runID) + "/attach")
+}
+
+// DialWS opens a WebSocket to path on this client's base URL.
+func (c *APIClient) DialWS(path string) (*websocket.Conn, error) {
+	wsURL, err := httpToWS(c.base + path)
+	if err != nil {
+		return nil, err
+	}
+	hdr := http.Header{}
+	if c.token != "" {
+		hdr.Set("Authorization", "Bearer "+c.token)
+	}
+	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	conn, resp, err := dialer.Dial(wsURL, hdr)
+	if err != nil {
+		if resp != nil {
+			body, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close() // response body is closed after reporting the handshake failure
+			if readErr != nil {
+				return nil, fmt.Errorf("attach ws: %w (read handshake response: %v)", err, readErr)
+			}
+			return nil, fmt.Errorf("attach ws: %w (%s: %s)", err, resp.Status, body)
+		}
+		return nil, fmt.Errorf("attach ws: %w", err)
+	}
+	return conn, nil
+}
+
+// MessageIDSet returns the set of message ids currently in a conversation.
+func (c *APIClient) MessageIDSet(convID string) map[string]struct{} {
+	out := map[string]struct{}{}
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := c.GetJSON(request.BuildConversationMessagesPath(convID, "", 200), &body); err != nil {
+		return out
+	}
+	for _, m := range body.Messages {
+		out[mapStr(m, "id")] = struct{}{}
+	}
+	return out
+}
+
+// EnsureCLIConversation returns the CLI pointer conversation for wsID, creating one if needed.
+func (c *APIClient) EnsureCLIConversation(wsID string) (string, error) {
+	var ptr map[string]any
+	err := c.DoHTTP(request.BuildPointerGet("cli", wsID), &ptr)
+	if err == nil {
+		if id := mapStr(ptr, "conversation_id"); id != "" {
+			return id, nil
+		}
+	}
+	if err != nil && !strings.Contains(err.Error(), "404") {
+		return "", err
+	}
+	var created map[string]any
+	if err := c.DoHTTP(request.BuildConversationCreate(wsID, "", "cli", "cli", wsID), &created); err != nil {
+		return "", err
+	}
+	return mapStr(created, "id"), nil
+}
+
+// DoctorFix applies one doctor finding by id.
+func (c *APIClient) DoctorFix(id string) (string, map[string]any) {
+	var out map[string]any
+	if err := c.DoHTTP(request.BuildDoctorFix(id), &out); err != nil {
+		return fmt.Sprintf("%s: error: %v", id, err), map[string]any{"id": id, "error": err.Error()}
+	}
+	if fixed, ok := out["fixed"]; ok {
+		switch v := fixed.(type) {
+		case bool:
+			if !v {
+				note := mapStr(out, "note")
+				return fmt.Sprintf("%s: skip (%s)", id, dash(note)), out
+			}
+		case string:
+			if v == "false" {
+				return fmt.Sprintf("%s: skip (%s)", id, dash(mapStr(out, "note"))), out
+			}
+		}
+	}
+	action := mapStr(out, "action")
+	if action == "" {
+		action = "fixed"
+	}
+	return fmt.Sprintf("%s: %s", id, action), out
+}
+
+// ScheduleIndex maps workspace/job keys to schedule columns from GET /v1/schedules.
+func (c *APIClient) ScheduleIndex() (map[string]JobScheduleCols, error) {
+	var body struct {
+		Schedules []map[string]any `json:"schedules"`
+	}
+	if err := c.GetJSON(request.BuildSchedulesListPath(200), &body); err != nil {
+		return nil, err
+	}
+	return indexSchedules(body.Schedules), nil
+}
+
+// RunLogText decodes GET /v1/runs/{id}/log JSON {"log":"…"} or falls back to transcript raw.
+func (c *APIClient) RunLogText(runID string) (string, error) {
+	raw, err := c.GetRaw(request.BuildRunLogPath(runID, false))
+	if err == nil {
+		var wrap map[string]any
+		if json.Unmarshal(raw, &wrap) == nil {
+			if _, has := wrap["log"]; has {
+				return fmt.Sprint(wrap["log"]), nil
+			}
+		}
+		if len(raw) > 0 {
+			return string(raw), nil
+		}
+	}
+	raw, err = c.GetRaw(request.BuildRunTranscript(runID, false).Path)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+// FindWorkspace resolves name and path for an existing workspace id on this client.
+func (c *APIClient) FindWorkspace(id, remoteURL string) (name, path string, err error) {
+	var body struct {
+		Workspaces []map[string]any `json:"workspaces"`
+	}
+	if err := c.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
+		return "", "", err
+	}
+	for _, ws := range body.Workspaces {
+		if mapStr(ws, "id") == id {
+			return mapStr(ws, "name"), mapStr(ws, "path"), nil
+		}
+	}
+	return "", "", fmt.Errorf("workspace id %q not found on %s", id, remoteURL)
+}
+
 // doRaw executes a file-plane request: raw body and/or If-Match header.
 func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
 	method := strings.ToUpper(r.Method)
-	req, err := http.NewRequest(method, c.Base+r.Path, bytes.NewReader(r.Raw))
+	req, err := http.NewRequest(method, c.base+r.Path, bytes.NewReader(r.Raw))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Authorization", "Bearer "+c.token)
 	if r.Raw != nil {
 		ct := r.ContentType
 		if ct == "" {
@@ -220,12 +363,12 @@ func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
 }
 
 func (c *APIClient) streamEvents(ctx context.Context, path string, skipCatchup bool, fn func(store.StreamEvent) error) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.Base+path, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	httpClient := c.HTTP
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	httpClient := c.httpClient
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
@@ -288,11 +431,11 @@ func (c *APIClient) doJSON(method, path string, body any, out any) error {
 		}
 		r = strings.NewReader(string(b))
 	}
-	req, err := http.NewRequest(method, c.Base+path, r)
+	req, err := http.NewRequest(method, c.base+path, r)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -330,18 +473,18 @@ func apiJSONClient() (*APIClient, error) {
 		base = fmt.Sprintf("http://127.0.0.1:%d", doc.Port)
 	}
 	return &APIClient{
-		Base:  base,
-		Token: doc.Token,
-		HTTP:  &http.Client{Timeout: 30 * time.Second},
+		base:       base,
+		token:      doc.Token,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
 
 func remoteClient(url, token string) *APIClient {
 	return &APIClient{
-		Base:   strings.TrimRight(url, "/"),
-		Token:  token,
-		Remote: true,
-		HTTP:   &http.Client{Timeout: 30 * time.Second},
+		base:       strings.TrimRight(url, "/"),
+		token:      token,
+		remote:     true,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -351,7 +494,7 @@ const (
 )
 
 func (c *APIClient) httpFor(method, path string) *http.Client {
-	h := c.HTTP
+	h := c.httpClient
 	if h == nil {
 		h = &http.Client{Timeout: defaultHTTPTimeout}
 	}

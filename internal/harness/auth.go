@@ -187,7 +187,7 @@ func (s *Service) Probe(ctx context.Context, name, source string) (AuthStatus, e
 		st.Mode = currentMode(name)
 	}
 	st.ProbedAt = time.Now().UTC()
-	res, err := Stamp(ctx, s.st, st, source)
+	res, err := s.Stamp(ctx, st, source)
 	if err != nil {
 		return st, err
 	}
@@ -204,12 +204,22 @@ func (s *Service) Probe(ctx context.Context, name, source string) (AuthStatus, e
 
 // GetState returns the stored stamp (zero State if no row).
 func (s *Service) GetState(ctx context.Context, name string) (State, error) {
-	return loadState(ctx, s.st, name)
+	var st State
+	st.Name = name
+	err := s.st.DB().QueryRowContext(ctx, `
+		SELECT auth_ok, COALESCE(auth_status,''), COALESCE(auth_detail,''),
+			COALESCE(auth_probed_at,''), COALESCE(auth_expires_at,''), updated_at
+		FROM harness_state WHERE name=?`, name).
+		Scan(&st.AuthOK, &st.Status, &st.Detail, &st.ProbedAt, &st.ExpiresAt, &st.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return st, nil
+	}
+	return st, err
 }
 
-// LoadStates returns every harness_state row keyed by name.
-func LoadStates(ctx context.Context, st *store.Store) (map[string]State, error) {
-	rows, err := st.DB().QueryContext(ctx, `
+// States returns every harness_state row keyed by name.
+func (s *Service) States(ctx context.Context) (map[string]State, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `
 		SELECT name, auth_ok, COALESCE(auth_status,''), COALESCE(auth_detail,''),
 			COALESCE(auth_probed_at,''), COALESCE(auth_expires_at,''), updated_at
 		FROM harness_state`)
@@ -219,31 +229,17 @@ func LoadStates(ctx context.Context, st *store.Store) (map[string]State, error) 
 	defer rows.Close()
 	out := map[string]State{}
 	for rows.Next() {
-		var s State
-		if err := rows.Scan(&s.Name, &s.AuthOK, &s.Status, &s.Detail, &s.ProbedAt, &s.ExpiresAt, &s.UpdatedAt); err != nil {
+		var st State
+		if err := rows.Scan(&st.Name, &st.AuthOK, &st.Status, &st.Detail, &st.ProbedAt, &st.ExpiresAt, &st.UpdatedAt); err != nil {
 			return nil, err
 		}
-		out[s.Name] = s
+		out[st.Name] = st
 	}
 	return out, rows.Err()
 }
 
-func loadState(ctx context.Context, st *store.Store, name string) (State, error) {
-	var s State
-	s.Name = name
-	err := st.DB().QueryRowContext(ctx, `
-		SELECT auth_ok, COALESCE(auth_status,''), COALESCE(auth_detail,''),
-			COALESCE(auth_probed_at,''), COALESCE(auth_expires_at,''), updated_at
-		FROM harness_state WHERE name=?`, name).
-		Scan(&s.AuthOK, &s.Status, &s.Detail, &s.ProbedAt, &s.ExpiresAt, &s.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return s, nil
-	}
-	return s, err
-}
-
 // Stamp writes harness_state auth columns and emits harness.updated on a flip.
-func Stamp(ctx context.Context, st *store.Store, status AuthStatus, source string) (StampResult, error) {
+func (s *Service) Stamp(ctx context.Context, status AuthStatus, source string) (StampResult, error) {
 	var res StampResult
 	if status.Tool == "" {
 		return res, nil
@@ -261,7 +257,7 @@ func Stamp(ctx context.Context, st *store.Store, status AuthStatus, source strin
 	}
 
 	var prev sql.NullInt64
-	err := st.DB().QueryRowContext(ctx, `SELECT auth_ok FROM harness_state WHERE name=?`, status.Tool).Scan(&prev)
+	err := s.st.DB().QueryRowContext(ctx, `SELECT auth_ok FROM harness_state WHERE name=?`, status.Tool).Scan(&prev)
 	switch {
 	case err == nil:
 		res.HadRow = true
@@ -279,7 +275,7 @@ func Stamp(ctx context.Context, st *store.Store, status AuthStatus, source strin
 	if status.ExpiresAt != nil && !status.ExpiresAt.IsZero() {
 		expires = status.ExpiresAt.UTC().Format(time.RFC3339Nano)
 	}
-	_, err = st.DB().ExecContext(ctx, `INSERT INTO harness_state
+	_, err = s.st.DB().ExecContext(ctx, `INSERT INTO harness_state
 		(name, auth_ok, auth_status, auth_detail, auth_probed_at, auth_expires_at, updated_at)
 		VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
@@ -303,7 +299,7 @@ func Stamp(ctx context.Context, st *store.Store, status AuthStatus, source strin
 		"source":      source,
 		"mode":        status.Mode,
 	}
-	if _, err := st.Append(ctx, store.BusEvent{
+	if _, err := s.st.Append(ctx, store.BusEvent{
 		Topic: "harness.updated", Entity: "harness", EntityID: status.Tool, Action: "updated",
 		Attrs: attrs,
 	}); err != nil {
@@ -318,34 +314,6 @@ func (s *Service) SetMode(ctx context.Context, name, mode string) (AuthStatus, e
 		return AuthStatus{}, err
 	}
 	return s.Probe(ctx, name, SourceProbe)
-}
-
-func (s *Service) persistMode(name, mode string) error {
-	if mode != AuthModeShared && mode != AuthModeSeparate {
-		return fmt.Errorf("auth mode must be shared or separate")
-	}
-	if !Known(name) {
-		return fmt.Errorf("unknown harness %q", name)
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		cfg = &config.Config{}
-	}
-	pin := cfg.Tools.Pin(name)
-	if pin == nil {
-		pin = &config.ToolPin{}
-	}
-	pin.Auth = mode
-	cfg.Tools.SetPin(name, pin)
-	if err := cfg.Save(); err != nil {
-		return err
-	}
-	if s.driver != nil {
-		if err := s.driver.ApplyAuthMode(name, mode); err != nil {
-			s.log.Warn("apply auth mode", "harness", name, "error", err)
-		}
-	}
-	return nil
 }
 
 // Logout clears credentials. shared requires confirm.
@@ -375,7 +343,7 @@ func (s *Service) Logout(ctx context.Context, name, mode string, confirm bool) (
 		Hint: "trebi harness auth login " + name, Detail: "logout",
 		ProbedAt: time.Now().UTC(),
 	}
-	_, err := Stamp(ctx, s.st, st, SourceLogout)
+	_, err := s.Stamp(ctx, st, SourceLogout)
 	return st, err
 }
 
@@ -499,8 +467,8 @@ func trimSpace(s string) string {
 
 // EarliestExpiry returns the soonest stored auth_expires_at among harnesses,
 // or zero if none.
-func EarliestExpiry(ctx context.Context, st *store.Store) (name string, at time.Time, err error) {
-	rows, err := st.DB().QueryContext(ctx, `
+func (s *Service) EarliestExpiry(ctx context.Context) (name string, at time.Time, err error) {
+	rows, err := s.st.DB().QueryContext(ctx, `
 		SELECT name, auth_expires_at FROM harness_state
 		WHERE auth_expires_at IS NOT NULL AND auth_expires_at != ''`)
 	if err != nil {
@@ -530,8 +498,8 @@ func EarliestExpiry(ctx context.Context, st *store.Store) (name string, at time.
 }
 
 // BlockedNames returns harnesses with auth_ok=0.
-func BlockedNames(ctx context.Context, st *store.Store) ([]string, error) {
-	rows, err := st.DB().QueryContext(ctx, `SELECT name FROM harness_state WHERE auth_ok=0`)
+func (s *Service) BlockedNames(ctx context.Context) ([]string, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT name FROM harness_state WHERE auth_ok=0`)
 	if err != nil {
 		return nil, err
 	}
@@ -545,6 +513,34 @@ func BlockedNames(ctx context.Context, st *store.Store) ([]string, error) {
 		names = append(names, n)
 	}
 	return names, rows.Err()
+}
+
+func (s *Service) persistMode(name, mode string) error {
+	if mode != AuthModeShared && mode != AuthModeSeparate {
+		return fmt.Errorf("auth mode must be shared or separate")
+	}
+	if !Known(name) {
+		return fmt.Errorf("unknown harness %q", name)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = &config.Config{}
+	}
+	pin := cfg.Tools.Pin(name)
+	if pin == nil {
+		pin = &config.ToolPin{}
+	}
+	pin.Auth = mode
+	cfg.Tools.SetPin(name, pin)
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	if s.driver != nil {
+		if err := s.driver.ApplyAuthMode(name, mode); err != nil {
+			s.log.Warn("apply auth mode", "harness", name, "error", err)
+		}
+	}
+	return nil
 }
 
 // LocalOnlyDetails is the typed 422 payload for a remote login refusal.

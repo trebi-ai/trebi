@@ -185,7 +185,7 @@ func runJobList(_ context.Context, c *cli.Command) error {
 	}
 	body.Jobs = request.FilterJobsByKindFlag(body.Jobs, kind)
 	if c.Bool("schedule") {
-		sched, err := loadScheduleIndex(client)
+		sched, err := client.ScheduleIndex()
 		if err != nil {
 			return err
 		}
@@ -244,8 +244,8 @@ func runJobList(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
-// jobScheduleCols is the extra job-list columns from GET /v1/schedules.
-type jobScheduleCols struct {
+// JobScheduleCols is the extra job-list columns from GET /v1/schedules.
+type JobScheduleCols struct {
 	Spec, Timezone, Next, Last string
 }
 
@@ -253,18 +253,8 @@ func jobScheduleKey(j map[string]any) string {
 	return mapStr(j, "workspace_id", "workspace") + "/" + mapStr(j, "name")
 }
 
-func loadScheduleIndex(client *APIClient) (map[string]jobScheduleCols, error) {
-	var body struct {
-		Schedules []map[string]any `json:"schedules"`
-	}
-	if err := client.GetJSON(request.BuildSchedulesListPath(200), &body); err != nil {
-		return nil, err
-	}
-	return indexSchedules(body.Schedules), nil
-}
-
-func indexSchedules(rows []map[string]any) map[string]jobScheduleCols {
-	out := map[string]jobScheduleCols{}
+func indexSchedules(rows []map[string]any) map[string]JobScheduleCols {
+	out := map[string]JobScheduleCols{}
 	for _, s := range rows {
 		key := mapStr(s, "workspace") + "/" + mapStr(s, "job")
 		cur := out[key]
@@ -565,7 +555,7 @@ func runJobTail(_ context.Context, c *cli.Command) error {
 		return fmt.Errorf("no runs for job %q", name)
 	}
 	id := mapStr(runsBody.Runs[0], "id")
-	text, err := fetchRunLogText(client, id)
+	text, err := client.RunLogText(id)
 	if err != nil {
 		return err
 	}
@@ -580,28 +570,6 @@ func runJobTail(_ context.Context, c *cli.Command) error {
 		fmt.Fprintln(outWriter(c))
 	}
 	return nil
-}
-
-// fetchRunLogText decodes GET /v1/runs/{id}/log JSON {"log":"…"} or falls back to transcript raw.
-func fetchRunLogText(client *APIClient, id string) (string, error) {
-	raw, err := client.GetRaw(request.BuildRunLogPath(id, false))
-	if err == nil {
-		var wrap map[string]any
-		if json.Unmarshal(raw, &wrap) == nil {
-			if _, has := wrap["log"]; has {
-				return fmt.Sprint(wrap["log"]), nil
-			}
-		}
-		// Non-JSON envelope: return body as-is.
-		if len(raw) > 0 {
-			return string(raw), nil
-		}
-	}
-	raw, err = client.GetRaw(request.BuildRunTranscript(id, false).Path)
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
 }
 
 // runListAssistants lists the singleton assistant of each workspace.

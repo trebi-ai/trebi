@@ -27,7 +27,7 @@ func (s *Server) routeHarness(mux *http.ServeMux) {
 }
 
 func (s *Server) handleHarnesses(w http.ResponseWriter, r *http.Request) {
-	states, _ := harness.LoadStates(r.Context(), s.st)
+	states, _ := s.harness.States(r.Context())
 	list := harness.List()
 	rows := make([]map[string]any, 0, len(list))
 	for _, info := range list {

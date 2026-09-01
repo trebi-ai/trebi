@@ -172,18 +172,8 @@ func (j *judgeRunner) score(ctx context.Context, d JudgeDim, transcript, snapsho
 	res.Verdict = v.Verdict
 	res.Evidence = v.Evidence
 	res.Unknown = v.Unknown
-	res.Pass = verdictPass(v, min)
+	res.Pass = v.pass(min)
 	return res
-}
-
-func verdictPass(v judgeVerdict, min float64) bool {
-	if v.Unknown {
-		return true
-	}
-	if min >= 1.0 && v.Verdict == "pass" {
-		return true
-	}
-	return v.Score+1e-9 >= min && v.Verdict != "fail"
 }
 
 type judgeVerdict struct {
@@ -193,8 +183,18 @@ type judgeVerdict struct {
 	Unknown  bool    `json:"unknown"`
 }
 
+func (v judgeVerdict) pass(min float64) bool {
+	if v.Unknown {
+		return true
+	}
+	if min >= 1.0 && v.Verdict == "pass" {
+		return true
+	}
+	return v.Score+1e-9 >= min && v.Verdict != "fail"
+}
+
 func (j *judgeRunner) call(ctx context.Context, d JudgeDim, min float64, transcript, snapshot []byte, surface string) (judgeVerdict, error) {
-	prompt := judgePrompt(d, transcript, snapshot, surface)
+	prompt := d.prompt(transcript, snapshot, surface)
 	raw, err := j.invoke(ctx, prompt)
 	if err != nil {
 		return judgeVerdict{}, err
@@ -296,7 +296,7 @@ func (j *judgeRunner) invokeCodex(ctx context.Context, prompt string) ([]byte, e
 	err = runWithGroup(ctx, cmd)
 	res := parseCodexJSON(stdout.Bytes())
 	j.addCost(res.CostUSD)
-	text, rerr := judgeReplyFromCodex(res)
+	text, rerr := res.judgeReply()
 	if rerr == nil {
 		return text, nil
 	}
@@ -347,21 +347,6 @@ func codexJudgeArgs(model string) []string {
 	return append(args, "-")
 }
 
-func judgeReplyFromCodex(res *LaunchResult) ([]byte, error) {
-	if res == nil {
-		return nil, fmt.Errorf("judge invoke: empty reply")
-	}
-	for i := len(res.Steps) - 1; i >= 0; i-- {
-		if res.Steps[i].Role == "assistant" && strings.TrimSpace(res.Steps[i].Content) != "" {
-			return []byte(res.Steps[i].Content), nil
-		}
-	}
-	if len(res.Errors) > 0 {
-		return nil, fmt.Errorf("judge invoke: %s", strings.Join(res.Errors, "; "))
-	}
-	return nil, fmt.Errorf("judge invoke: empty reply")
-}
-
 // spendUSD is the grading spend so far.
 func (j *judgeRunner) spendUSD() float64 {
 	j.mu.Lock()
@@ -383,7 +368,7 @@ func parseJudgeEnvelope(raw []byte) ([]byte, float64) {
 	return []byte(env.Result), env.Cost
 }
 
-func judgePrompt(d JudgeDim, transcript, snapshot []byte, surface string) string {
+func (d JudgeDim) prompt(transcript, snapshot []byte, surface string) string {
 	var b strings.Builder
 	if surface == surfaceMCP {
 		b.WriteString("You score one dimension of an LLM agent transcript that operated trebi via its MCP server.\n")

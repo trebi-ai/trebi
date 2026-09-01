@@ -152,7 +152,7 @@ func runConversationMessages(_ context.Context, c *cli.Command) error {
 	for _, m := range body.Messages {
 		tbl.AppendRow(table.Row{
 			mapStr(m, "id"), mapStr(m, "role"),
-			dash(mapStr(m, "channel_type")), truncMsg(mapStr(m, "text")),
+			dash(mapStr(m, "channel_type")), truncateDisplay(mapStr(m, "text"), 60),
 		})
 	}
 	renderTable(tbl)
@@ -221,12 +221,4 @@ func runConversationPatch(_ context.Context, c *cli.Command) error {
 	}
 	fmt.Fprintf(outWriter(c), "conversation %s\n", mapStr(out, "id"))
 	return nil
-}
-
-func truncMsg(s string) string {
-	const n = 60
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }

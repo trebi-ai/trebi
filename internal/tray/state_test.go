@@ -7,12 +7,12 @@ import (
 
 func TestBuildMenuLines_Healthy(t *testing.T) {
 	t.Parallel()
-	lines := BuildMenuLines(Snapshot{
+	lines := Snapshot{
 		Healthy:      true,
 		Version:      "0.1.0",
 		RunningCount: 2,
 		WaitingCount: 1,
-	})
+	}.MenuLines()
 	if !strings.Contains(lines[0], "running") || !strings.Contains(lines[0], "0.1.0") {
 		t.Fatalf("head: %q", lines[0])
 	}
@@ -27,11 +27,11 @@ func TestBuildMenuLines_Healthy(t *testing.T) {
 
 func TestBuildMenuLines_DrainingAndOffline(t *testing.T) {
 	t.Parallel()
-	d := BuildMenuLines(Snapshot{Healthy: true, Draining: true})
+	d := Snapshot{Healthy: true, Draining: true}.MenuLines()
 	if !strings.Contains(d[0], "draining") {
 		t.Fatalf("draining: %q", d[0])
 	}
-	o := BuildMenuLines(Snapshot{Healthy: false, Message: "api.json missing"})
+	o := Snapshot{Healthy: false, Message: "api.json missing"}.MenuLines()
 	if !strings.Contains(o[0], "offline") {
 		t.Fatalf("offline: %q", o[0])
 	}

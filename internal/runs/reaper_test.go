@@ -1,4 +1,4 @@
-package runs_test
+package runs
 
 import (
 	"context"
@@ -8,20 +8,19 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
 func TestDetectCompletion(t *testing.T) {
 	t.Parallel()
 	id := "01TESTRUNID00000000000000001"
-	sent := runs.CompletionSentinel(id)
-	if !runs.DetectCompletion("done\n"+sent+"\n", id) {
+	sent := CompletionSentinel(id)
+	if !DetectCompletion("done\n"+sent+"\n", id) {
 		t.Fatal("expected detect")
 	}
 	// echo of instruction should not count
 	echo := "When done, output exactly this: " + sent
-	if runs.DetectCompletion(echo, id) {
+	if DetectCompletion(echo, id) {
 		t.Fatal("echo should not count")
 	}
 }
@@ -35,9 +34,9 @@ func TestReaperMaxDuration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := New(st)
 	ctx := context.Background()
-	run, err := svc.Create(ctx, runs.CreateOpts{
+	run, err := svc.Create(ctx, CreateOpts{
 		WorkspaceID: "ws", Job: "j", Harness: "fake",
 		MaxDurationMS: 1, // 1ms
 	})
@@ -48,18 +47,18 @@ func TestReaperMaxDuration(t *testing.T) {
 	_, _ = st.DB().Exec(`UPDATE runs SET started_at=? WHERE id=?`,
 		time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano), run.ID)
 
-	r := runs.NewReaper(svc)
-	r.Interval = time.Hour // we call Sweep manually
+	r := NewReaper(svc)
+	r.interval = time.Hour // we call Sweep manually
 	r.Sweep(ctx)
 
 	got, err := svc.Get(ctx, run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != runs.StatusTimedOut {
+	if got.Status != StatusTimedOut {
 		t.Fatalf("status=%s want timed_out", got.Status)
 	}
-	if got.EndReason != runs.EndMaxDuration {
+	if got.EndReason != EndMaxDuration {
 		t.Fatalf("end=%s want max_duration", got.EndReason)
 	}
 }
@@ -74,10 +73,10 @@ func TestFakeHarnessSentinelViaCreateAndLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := New(st)
 	ctx := context.Background()
-	run, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
-		CreateOpts: runs.CreateOpts{
+	run, _, err := svc.CreateAndLaunch(ctx, LaunchOpts{
+		CreateOpts: CreateOpts{
 			WorkspaceID: "ws", Job: "demo", Harness: "fake",
 			PromptPreview: "hi",
 		},
@@ -87,10 +86,10 @@ func TestFakeHarnessSentinelViaCreateAndLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Status != runs.StatusComplete {
+	if run.Status != StatusComplete {
 		t.Fatalf("status=%s", run.Status)
 	}
-	if run.EndReason != runs.EndSentinel {
+	if run.EndReason != EndSentinel {
 		t.Fatalf("end=%s", run.EndReason)
 	}
 }

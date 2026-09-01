@@ -9,11 +9,10 @@ import (
 	"strings"
 	"time"
 
-	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 )
 
-type opencodeTool struct{}
+type opencodeTool struct{ harnessHome }
 
 func (opencodeTool) Name() string { return OpenCode }
 
@@ -21,33 +20,18 @@ func (opencodeTool) Match(command string) bool {
 	return binaryMatch(command, OpenCode)
 }
 
-func (opencodeTool) PrepareLaunch(command string) LaunchPlan {
+func (t opencodeTool) PrepareLaunch(command string) LaunchPlan {
 	// Session ID is assigned by OpenCode; capture via lifecycle plugin.
-	return LaunchPlan{Command: command, Env: opencodeLaunchEnv()}
+	return LaunchPlan{Command: command, Env: t.launchEnv()}
 }
 
-func (opencodeTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
+func (t opencodeTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
 	if sessionID == "" {
 		return LaunchPlan{}, fmt.Errorf("no session ID available for opencode resume")
 	}
 	base := StripFlags(command, "--session", "-s")
 	cmd := AppendFlags(base, []string{"--session", sessionID})
-	return LaunchPlan{Command: cmd, SessionID: sessionID, Env: opencodeLaunchEnv()}, nil
-}
-
-func opencodeLaunchEnv() map[string]string {
-	dir := config.HarnessDir(OpenCode)
-	_ = (opencodeLifecycle{}).materialize(dir)
-	var cfg *config.Config
-	if c, err := config.Load(); err == nil {
-		cfg = c
-	}
-	_ = harness.EnsureBridges(OpenCode, cfg)
-	cfgPath := filepath.Join(dir, "opencode.json")
-	return map[string]string{
-		// Merge plugin with user config; does not relocate auth (XDG data).
-		"OPENCODE_CONFIG": cfgPath,
-	}
+	return LaunchPlan{Command: cmd, SessionID: sessionID, Env: t.launchEnv()}, nil
 }
 
 // Session id: never on the TUI; the lifecycle plugin delivers it via hook
@@ -71,6 +55,16 @@ func (opencodeTool) TranscriptPath(home, workingDir, sessionID string) (string, 
 func (opencodeTool) ParseTranscript(r io.Reader) ([]Turn, error) { return unsupportedParse(r) }
 
 func (opencodeTool) Lifecycle() LifecycleAdapter { return opencodeLifecycle{} }
+
+func (t opencodeTool) launchEnv() map[string]string {
+	t.tool = OpenCode
+	_, dir := t.prepare()
+	cfgPath := filepath.Join(dir, "opencode.json")
+	return map[string]string{
+		// Merge plugin with user config; does not relocate auth (XDG data).
+		"OPENCODE_CONFIG": cfgPath,
+	}
+}
 
 //go:embed lifecycle/opencode-jobi.js
 var opencodePluginJS []byte

@@ -226,7 +226,7 @@ func applyDoctorFixes(c *cli.Command, client *APIClient, body map[string]any) er
 		if id == "" {
 			continue
 		}
-		line, result := doctorFixOne(client, id)
+		line, result := client.DoctorFix(id)
 		results = append(results, result)
 		if !c.Bool("json") {
 			fmt.Fprintln(w, line)
@@ -249,32 +249,7 @@ func runDoctorFixOne(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	line, _ := doctorFixOne(client, id)
+	line, _ := client.DoctorFix(id)
 	fmt.Fprintln(outWriter(c), line)
 	return nil
-}
-
-func doctorFixOne(client *APIClient, id string) (string, map[string]any) {
-	var out map[string]any
-	if err := client.DoHTTP(request.BuildDoctorFix(id), &out); err != nil {
-		return fmt.Sprintf("%s: error: %v", id, err), map[string]any{"id": id, "error": err.Error()}
-	}
-	if fixed, ok := out["fixed"]; ok {
-		switch v := fixed.(type) {
-		case bool:
-			if !v {
-				note := mapStr(out, "note")
-				return fmt.Sprintf("%s: skip (%s)", id, dash(note)), out
-			}
-		case string:
-			if v == "false" {
-				return fmt.Sprintf("%s: skip (%s)", id, dash(mapStr(out, "note"))), out
-			}
-		}
-	}
-	action := mapStr(out, "action")
-	if action == "" {
-		action = "fixed"
-	}
-	return fmt.Sprintf("%s: %s", id, action), out
 }

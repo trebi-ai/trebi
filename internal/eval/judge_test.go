@@ -72,7 +72,7 @@ func TestJudgeConfirmFailDisagreement(t *testing.T) {
 
 func TestJudgePromptConsistencyRule(t *testing.T) {
 	t.Parallel()
-	p := judgePrompt(JudgeDim{Name: "used -w", Rubric: "cite -w"}, nil, nil, surfaceCLI)
+	p := (JudgeDim{Name: "used -w", Rubric: "cite -w"}).prompt(nil, nil, surfaceCLI)
 	if !strings.Contains(p, "Your verdict must follow from your evidence") {
 		t.Fatal("missing consistency rule")
 	}
@@ -194,17 +194,17 @@ func TestJudgeInvokeCodexMissing(t *testing.T) {
 
 func TestJudgeReplyFromCodex(t *testing.T) {
 	t.Parallel()
-	text, err := judgeReplyFromCodex(&LaunchResult{Steps: []Step{
+	text, err := (&LaunchResult{Steps: Steps{
 		{Role: "tool", Content: "ignored"},
 		{Role: "assistant", Content: `{"ok":true}`},
-	}})
+	}}).judgeReply()
 	if err != nil || string(text) != `{"ok":true}` {
 		t.Fatalf("got %q %v", text, err)
 	}
-	if _, err := judgeReplyFromCodex(&LaunchResult{Errors: []string{"401"}}); err == nil || !strings.Contains(err.Error(), "401") {
+	if _, err := (&LaunchResult{Errors: []string{"401"}}).judgeReply(); err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("err %v", err)
 	}
-	if _, err := judgeReplyFromCodex(&LaunchResult{}); err == nil {
+	if _, err := (&LaunchResult{}).judgeReply(); err == nil {
 		t.Fatal("expected empty reply")
 	}
 }

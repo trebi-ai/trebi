@@ -210,50 +210,134 @@ func codexLaunchArgs(prompt, model string) []string {
 	return append(args, prompt)
 }
 
-func parseCodexJSON(raw []byte) *LaunchResult {
-	res := &LaunchResult{Raw: raw, Steps: []Step{}}
-	var in, out, cacheR, cacheC int64
-	model := "codex"
-	byID := map[string]int{}
-	for _, m := range ndjsonMaps(raw) {
-		parseCodexEvent(m, res, &in, &out, &cacheR, &cacheC, &model, byID)
-	}
-	if len(res.Steps) == 0 && len(res.Errors) == 0 && len(raw) > 0 {
-		var one map[string]any
-		if json.Unmarshal(raw, &one) == nil {
-			parseCodexEvent(one, res, &in, &out, &cacheR, &cacheC, &model, byID)
-		}
-	}
-	res.Usage, res.CostUSD = usageCost(model, in, out, cacheR, cacheC)
-	return res
+type codexParser struct {
+	res            *LaunchResult
+	byID           map[string]int
+	in, out        int64
+	cacheR, cacheC int64
+	model          string
 }
 
-func parseCodexEvent(m map[string]any, res *LaunchResult, in, out, cacheR, cacheC *int64, model *string, byID map[string]int) {
+func parseCodexJSON(raw []byte) *LaunchResult {
+	p := &codexParser{
+		res:   &LaunchResult{Raw: raw, Steps: Steps{}},
+		byID:  map[string]int{},
+		model: "codex",
+	}
+	for _, m := range ndjsonMaps(raw) {
+		p.event(m)
+	}
+	if len(p.res.Steps) == 0 && len(p.res.Errors) == 0 && len(raw) > 0 {
+		var one map[string]any
+		if json.Unmarshal(raw, &one) == nil {
+			p.event(one)
+		}
+	}
+	p.res.Usage, p.res.CostUSD = usageCost(p.model, p.in, p.out, p.cacheR, p.cacheC)
+	return p.res
+}
+
+func (p *codexParser) event(m map[string]any) {
 	typ := asString(m["type"])
 	if typ == "" {
 		typ = asString(m["event"])
 	}
 	item := asMap(m["item"])
-	collectCodexError(typ, m, item, res)
+	p.res.collectCodexError(typ, m, item)
 	switch typ {
 	case "item.started", "item.completed", "agent_message", "message", "tool", "command":
-		parseCodexItem(typ, m, item, res, byID)
+		p.item(typ, m, item)
 	case "turn.completed", "result", "usage":
 		usage := asMap(m["usage"])
 		if usage == nil {
 			usage = m
 		}
-		*in += jsonNumber(usage, "input_tokens", "input")
-		*out += jsonNumber(usage, "output_tokens", "output")
-		*cacheR += jsonNumber(usage, "cached_input_tokens", "cache_read_input_tokens", "cache_read")
-		*cacheC += jsonNumber(usage, "cache_write_input_tokens", "cache_creation_input_tokens", "cache_creation")
+		p.in += jsonNumber(usage, "input_tokens", "input")
+		p.out += jsonNumber(usage, "output_tokens", "output")
+		p.cacheR += jsonNumber(usage, "cached_input_tokens", "cache_read_input_tokens", "cache_read")
+		p.cacheC += jsonNumber(usage, "cache_write_input_tokens", "cache_creation_input_tokens", "cache_creation")
 		if mname := asString(m["model"]); mname != "" {
-			*model = mname
+			p.model = mname
 		}
 	}
 }
 
-func collectCodexError(typ string, m, item map[string]any, res *LaunchResult) {
+func (p *codexParser) item(typ string, m, item map[string]any) {
+	if item == nil {
+		item = m
+	}
+	if asString(item["type"]) == "mcp_tool_call" {
+		p.mcp(item)
+		return
+	}
+	if asString(item["type"]) == "file_change" {
+		p.fileChange(item)
+		return
+	}
+	text := firstNonEmpty(asString(item["text"]), contentText(item["content"]), asString(m["text"]), contentText(m["content"]), asString(m["message"]))
+	if asString(item["type"]) == "agent_message" || typ == "agent_message" || typ == "message" {
+		if text != "" {
+			p.res.Steps = append(p.res.Steps, Step{Role: "assistant", Content: text})
+		}
+		return
+	}
+	body, ok := codexCommandBody(typ, m, item)
+	if !ok {
+		return
+	}
+	raw, _ := json.Marshal(body)
+	p.upsert(asString(item["id"]), Step{Role: "tool", Name: "command", Content: string(raw)})
+}
+
+// fileChange records a write the client made with its own file tool, not
+// through trebi. The judge needs it: a task can be finished this way after
+// a trebi call fails, and a write into the trebi home is itself a violation.
+func (p *codexParser) fileChange(item map[string]any) {
+	changes, _ := item["changes"].([]any)
+	paths := make([]string, 0, len(changes))
+	kinds := make([]string, 0, len(changes))
+	for _, c := range changes {
+		cm := asMap(c)
+		if path := asString(cm["path"]); path != "" {
+			paths = append(paths, path)
+			kinds = append(kinds, asString(cm["kind"]))
+		}
+	}
+	if len(paths) == 0 {
+		return
+	}
+	body, _ := json.Marshal(map[string]any{"paths": paths, "kinds": kinds})
+	p.upsert(asString(item["id"]), Step{
+		Role: "tool", Name: "file_change", Content: string(body),
+		Result: asString(item["status"]),
+	})
+}
+
+func (p *codexParser) mcp(item map[string]any) {
+	server := asString(item["server"])
+	tool := asString(item["tool"])
+	if server == "" || tool == "" {
+		return
+	}
+	args := item["arguments"]
+	if args == nil {
+		args = map[string]any{}
+	}
+	raw, _ := json.Marshal(args)
+	out := stepResult(item["result"])
+	if e := strings.TrimSpace(asString(item["error"])); e != "" {
+		out = strings.TrimSpace("error: " + e + "\n" + out)
+	}
+	p.upsert(asString(item["id"]), Step{
+		Role: "tool", Name: "mcp__" + server + "__" + tool, Content: string(raw), Result: out,
+	})
+}
+
+func (p *codexParser) upsert(id string, step Step) {
+	p.res.upsert(p.byID, id, step)
+}
+
+func (res *LaunchResult) collectCodexError(typ string, m, item map[string]any) {
 	if typ != "error" && typ != "turn.failed" && asString(item["type"]) != "error" {
 		return
 	}
@@ -276,77 +360,6 @@ func stripCodexNoise(msg string) string {
 	return strings.TrimSpace(msg)
 }
 
-func parseCodexItem(typ string, m, item map[string]any, res *LaunchResult, byID map[string]int) {
-	if item == nil {
-		item = m
-	}
-	if asString(item["type"]) == "mcp_tool_call" {
-		parseCodexMCP(item, res, byID)
-		return
-	}
-	if asString(item["type"]) == "file_change" {
-		parseCodexFileChange(item, res, byID)
-		return
-	}
-	text := firstNonEmpty(asString(item["text"]), contentText(item["content"]), asString(m["text"]), contentText(m["content"]), asString(m["message"]))
-	if asString(item["type"]) == "agent_message" || typ == "agent_message" || typ == "message" {
-		if text != "" {
-			res.Steps = append(res.Steps, Step{Role: "assistant", Content: text})
-		}
-		return
-	}
-	body, ok := codexCommandBody(typ, m, item)
-	if !ok {
-		return
-	}
-	raw, _ := json.Marshal(body)
-	upsertCodexStep(res, byID, asString(item["id"]), Step{Role: "tool", Name: "command", Content: string(raw)})
-}
-
-// parseCodexFileChange records a write the client made with its own file tool,
-// not through trebi. The judge needs it: a task can be finished this way after
-// a trebi call fails, and a write into the trebi home is itself a violation.
-func parseCodexFileChange(item map[string]any, res *LaunchResult, byID map[string]int) {
-	changes, _ := item["changes"].([]any)
-	paths := make([]string, 0, len(changes))
-	kinds := make([]string, 0, len(changes))
-	for _, c := range changes {
-		cm := asMap(c)
-		if p := asString(cm["path"]); p != "" {
-			paths = append(paths, p)
-			kinds = append(kinds, asString(cm["kind"]))
-		}
-	}
-	if len(paths) == 0 {
-		return
-	}
-	body, _ := json.Marshal(map[string]any{"paths": paths, "kinds": kinds})
-	upsertCodexStep(res, byID, asString(item["id"]), Step{
-		Role: "tool", Name: "file_change", Content: string(body),
-		Result: asString(item["status"]),
-	})
-}
-
-func parseCodexMCP(item map[string]any, res *LaunchResult, byID map[string]int) {
-	server := asString(item["server"])
-	tool := asString(item["tool"])
-	if server == "" || tool == "" {
-		return
-	}
-	args := item["arguments"]
-	if args == nil {
-		args = map[string]any{}
-	}
-	raw, _ := json.Marshal(args)
-	out := stepResult(item["result"])
-	if e := strings.TrimSpace(asString(item["error"])); e != "" {
-		out = strings.TrimSpace("error: " + e + "\n" + out)
-	}
-	upsertCodexStep(res, byID, asString(item["id"]), Step{
-		Role: "tool", Name: "mcp__" + server + "__" + tool, Content: string(raw), Result: out,
-	})
-}
-
 func codexCommandBody(typ string, m, item map[string]any) (map[string]any, bool) {
 	cmd := firstNonEmpty(asString(item["command"]), asString(m["command"]))
 	out := asString(item["aggregated_output"])
@@ -365,17 +378,6 @@ func codexCommandBody(typ string, m, item map[string]any) (map[string]any, bool)
 		body["output"] = out
 	}
 	return body, true
-}
-
-func upsertCodexStep(res *LaunchResult, byID map[string]int, id string, step Step) {
-	if id != "" {
-		if i, ok := byID[id]; ok {
-			res.Steps[i] = step
-			return
-		}
-		byID[id] = len(res.Steps)
-	}
-	res.Steps = append(res.Steps, step)
 }
 
 func firstNonEmpty(ss ...string) string {

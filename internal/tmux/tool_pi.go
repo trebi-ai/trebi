@@ -16,7 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 )
 
-type piTool struct{}
+type piTool struct{ harnessHome }
 
 func (piTool) Name() string { return Pi }
 
@@ -34,14 +34,14 @@ func (piTool) Match(command string) bool {
 	return base == Pi
 }
 
-func (piTool) PrepareLaunch(command string) LaunchPlan {
+func (t piTool) PrepareLaunch(command string) LaunchPlan {
 	// --session-id <uuid> creates a known-upfront project session id.
 	cmd, sid := injectSessionIDFlag(command, "--session-id")
 	cmd = injectPiFlags(cmd)
-	return planWithSession(cmd, sid, piLaunchEnv())
+	return planWithSession(cmd, sid, t.launchEnv())
 }
 
-func (piTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
+func (t piTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
 	if sessionID == "" {
 		return LaunchPlan{}, fmt.Errorf("no session ID available for pi resume")
 	}
@@ -49,12 +49,7 @@ func (piTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
 	base = injectPiFlags(base)
 	// --session <id> reopens an existing session by id (partial UUID ok).
 	cmd := AppendFlags(base, []string{"--session", sessionID})
-	return LaunchPlan{Command: cmd, SessionID: sessionID, Env: piLaunchEnv()}, nil
-}
-
-// BridgePiAuth is exported for harness auth bridge callers.
-func BridgePiAuth(mode string) error {
-	return bridgePiAuth(config.HarnessDir(Pi), mode)
+	return LaunchPlan{Command: cmd, SessionID: sessionID, Env: t.launchEnv()}, nil
 }
 
 // injectPiFlags adds --approve so unattended launches skip project-trust prompts.
@@ -64,41 +59,6 @@ func injectPiFlags(command string) string {
 		command = AppendFlags(command, []string{"--approve"})
 	}
 	return command
-}
-
-func piLaunchEnv() map[string]string {
-	dir := config.HarnessDir(Pi)
-	_ = newPiLifecycle().materialize(dir)
-	mode := harness.AuthModeShared
-	var cfg *config.Config
-	if c, err := config.Load(); err == nil {
-		cfg = c
-		mode = harness.AuthModeFromConfig(cfg, Pi)
-	}
-	_ = bridgePiAuth(dir, mode)
-	_ = harness.EnsureBridges(Pi, cfg)
-	// MCP config after bridges: trebi owns harness mcp.json (merge user + host discovery).
-	inheritMCP := true
-	if cfg != nil {
-		inheritMCP = config.ResolveResourceInherit(Pi, "mcp", cfg)
-	}
-	_ = ensurePiMcpConfig(dir, inheritMCP)
-	return map[string]string{
-		// Relocates ~/.pi/agent → harness (settings, auth, sessions, extensions).
-		"PI_CODING_AGENT_DIR":   dir,
-		"PI_SKIP_VERSION_CHECK": "1",
-		"PI_TELEMETRY":          "0",
-	}
-}
-
-func bridgePiAuth(harnessDir, mode string) error {
-	userHome := harness.UserHome()
-	if userHome == "" {
-		return nil
-	}
-	src := filepath.Join(userHome, ".pi", "agent", "auth.json")
-	dst := filepath.Join(harnessDir, "auth.json")
-	return harness.SymlinkAuth(src, dst, mode)
 }
 
 func (piTool) IsReady(screen string) bool {
@@ -188,6 +148,28 @@ func (piTool) ClassifyScreen(screen string) ScreenClass {
 		[]string{"Working...", "Working"},
 		[]string{"•"},
 	)
+}
+
+func (t piTool) launchEnv() map[string]string {
+	t.tool = Pi
+	cfg, dir := t.prepare()
+	mode := harness.AuthModeShared
+	if cfg != nil {
+		mode = harness.AuthModeFromConfig(cfg, Pi)
+	}
+	_ = t.bridgeAuth(filepath.Join(".pi", "agent", "auth.json"), mode)
+	// MCP config after bridges: trebi owns harness mcp.json (merge user + host discovery).
+	inheritMCP := true
+	if cfg != nil {
+		inheritMCP = config.ResolveResourceInherit(Pi, "mcp", cfg)
+	}
+	_ = ensurePiMcpConfig(dir, inheritMCP)
+	return map[string]string{
+		// Relocates ~/.pi/agent → harness (settings, auth, sessions, extensions).
+		"PI_CODING_AGENT_DIR":   dir,
+		"PI_SKIP_VERSION_CHECK": "1",
+		"PI_TELEMETRY":          "0",
+	}
 }
 
 //go:embed lifecycle/pi-jobi-lifecycle.ts
@@ -480,8 +462,12 @@ func mergeStringList(existing any, add any) []string {
 }
 
 func truncateRunes(s string, n int) string {
-	if len(s) <= n {
+	runes := []rune(s)
+	if n <= 0 {
+		return ""
+	}
+	if len(runes) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string(runes[:n]) + "…"
 }

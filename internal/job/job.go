@@ -302,14 +302,10 @@ func ContentHash(data []byte) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// legacyKeys are top-level keys that must cause a loud parse error (M1/B23).
-// Note: top-level `env` as a string is legacy (use envset); map form is canonical (B24).
-func legacyKeys() []string {
-	return []string{"command", "schedule", "on", "tool"}
-}
-
 func rejectLegacyKeys(data []byte) error {
 	// Parse raw map to detect forbidden top-level keys.
+	// command/schedule/on/tool must cause a loud parse error (M1/B23).
+	// Note: top-level `env` as a string is legacy (use envset); map form is canonical (B24).
 	block, ok := extractFM(data)
 	if !ok {
 		return nil
@@ -318,7 +314,7 @@ func rejectLegacyKeys(data []byte) error {
 	if err := yaml.Unmarshal(block, &raw); err != nil {
 		return nil // let frontmatter.Parse report YAML errors
 	}
-	for _, k := range legacyKeys() {
+	for _, k := range []string{"command", "schedule", "on", "tool"} {
 		if _, exists := raw[k]; exists {
 			return fmt.Errorf("legacy key %q not accepted; use canonical trebi frontmatter (B23)", k)
 		}

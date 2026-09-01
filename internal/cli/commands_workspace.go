@@ -318,9 +318,10 @@ func workspaceAddLocal(c *cli.Command, path string) error {
 	}
 	fmt.Fprintf(outWriter(c), "workspace %s path=%s\n", dash(id), path)
 	if c.Bool("use") && id != "" {
-		if err := SaveStickyContext(StickyContext{
+		st := StickyContext{
 			WorkspaceID: id, Name: dispName, Path: path,
-		}); err != nil {
+		}
+		if err := st.Save(); err != nil {
 			return err
 		}
 		fmt.Fprintln(outWriter(c), "sticky context → local "+id)
@@ -347,7 +348,7 @@ func workspaceAddRemote(c *cli.Command, remoteURL string) error {
 	case c.String("id") != "":
 		// Link existing remote workspace.
 		id = c.String("id")
-		name, path, err = findRemoteWorkspace(client, id, remoteURL)
+		name, path, err = client.FindWorkspace(id, remoteURL)
 		if err != nil {
 			return err
 		}
@@ -367,12 +368,13 @@ func workspaceAddRemote(c *cli.Command, remoteURL string) error {
 		return fmt.Errorf("remote workspace id missing in response")
 	}
 	link := LinkedWorkspace{ID: id, Name: name, Path: path, URL: remoteURL, Token: token}
-	if err := SaveLinkedWorkspace(link); err != nil {
+	if err := link.Save(); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "linked workspace %s @ %s\n", id, remoteURL)
 	// Remote add always becomes sticky so later commands use that API endpoint.
-	if err := SaveStickyContext(StickyFromLinked(link)); err != nil {
+	st := link.Sticky()
+	if err := st.Save(); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "sticky context → %s (%s)\n", id, remoteURL)
@@ -393,22 +395,6 @@ func remoteAddToken(c *cli.Command) (string, error) {
 		return "", fmt.Errorf("remote token required (--token or --token-stdin); on host: trebi service token show")
 	}
 	return token, nil
-}
-
-// findRemoteWorkspace resolves name and path for an existing remote workspace id.
-func findRemoteWorkspace(client *APIClient, id, remoteURL string) (name, path string, err error) {
-	var body struct {
-		Workspaces []map[string]any `json:"workspaces"`
-	}
-	if err := client.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
-		return "", "", err
-	}
-	for _, ws := range body.Workspaces {
-		if mapStr(ws, "id") == id {
-			return mapStr(ws, "name"), mapStr(ws, "path"), nil
-		}
-	}
-	return "", "", fmt.Errorf("workspace id %q not found on %s", id, remoteURL)
 }
 
 // registerRemoteWorkspace registers the path argument on the remote host.
@@ -450,7 +436,8 @@ func runWorkspaceUse(_ context.Context, c *cli.Command) error {
 	}
 	// Linked remote first.
 	if link, ok := findLinked(linked, key); ok {
-		if err := SaveStickyContext(StickyFromLinked(link)); err != nil {
+		st := link.Sticky()
+		if err := st.Save(); err != nil {
 			return err
 		}
 		fmt.Fprintf(outWriter(c), "sticky context → %s @ %s\n", link.ID, link.URL)
@@ -476,7 +463,7 @@ func runWorkspaceUse(_ context.Context, c *cli.Command) error {
 				Name:        name,
 				Path:        mapStr(ws, "path"),
 			}
-			if err := SaveStickyContext(st); err != nil {
+			if err := st.Save(); err != nil {
 				return err
 			}
 			fmt.Fprintf(outWriter(c), "sticky context → local %s\n", id)
