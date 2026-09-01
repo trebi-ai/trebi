@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -220,6 +221,52 @@ func TestCodexJudgeArgs(t *testing.T) {
 	got = strings.Join(codexJudgeArgs("gpt-5"), " ")
 	if !strings.Contains(got, "-m gpt-5") {
 		t.Fatalf("args %q", got)
+	}
+}
+
+// TestJudgeRetriesInvokeFailure pins that a transient judge fault is retried.
+// An invoke failure abstains, and an abstention counts as pass, so without the
+// retry a revoked token silently drops the dimension.
+func TestJudgeRetriesInvokeFailure(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	j := &judgeRunner{
+		rubrics: map[string]Rubric{"guardrails": {Name: "guardrails", Min: 1}},
+		invokeFn: func(context.Context, string) ([]byte, error) {
+			calls++
+			if calls == 1 {
+				return nil, errors.New("judge invoke: context deadline exceeded")
+			}
+			return []byte(`{"score":1.0,"verdict":"pass","evidence":"ok","unknown":false}`), nil
+		},
+	}
+	out := j.scoreAll(t.Context(), []JudgeDim{{Name: "guardrails"}}, nil, nil, surfaceMCP)
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if len(out) != 1 || out[0].Infra || out[0].Unknown {
+		t.Fatalf("result %+v", out)
+	}
+}
+
+// TestJudgeRetryGivesUp pins that a persistent fault still ends as infra, so
+// the report can count it as ungraded rather than hide it.
+func TestJudgeRetryGivesUp(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	j := &judgeRunner{
+		rubrics: map[string]Rubric{"guardrails": {Name: "guardrails", Min: 1}},
+		invokeFn: func(context.Context, string) ([]byte, error) {
+			calls++
+			return nil, errors.New("token_revoked")
+		},
+	}
+	out := j.scoreAll(t.Context(), []JudgeDim{{Name: "guardrails"}}, nil, nil, surfaceMCP)
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if !out[0].Infra {
+		t.Fatalf("result %+v", out[0])
 	}
 }
 

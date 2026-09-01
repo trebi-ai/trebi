@@ -18,6 +18,7 @@ type Cell struct {
 	Trials   int     `json:"trials"`
 	Passed   int     `json:"passed"`
 	Infra    int     `json:"infra"`
+	Ungraded int     `json:"ungraded,omitempty"`
 	PassAt1  float64 `json:"pass_at_1"`
 	PassHatK float64 `json:"pass_hat_k"`
 	CostUSD  float64 `json:"cost_usd"`
@@ -94,8 +95,8 @@ func (t *TrialResult) writeFile() error {
 func (r *Report) rollup() []Cell {
 	type key struct{ task, client, surface string }
 	type acc struct {
-		n, pass, infra int
-		cost, dur      float64
+		n, pass, infra, ungraded int
+		cost, dur                float64
 	}
 	m := map[key]*acc{}
 	var order []key
@@ -110,6 +111,7 @@ func (r *Report) rollup() []Cell {
 		a.n++
 		a.cost += t.CostUSD
 		a.dur += t.DurationS
+		a.ungraded += ungradedDims(t.Judge)
 		switch t.Outcome {
 		case OutcomePass:
 			a.pass++
@@ -130,7 +132,8 @@ func (r *Report) rollup() []Cell {
 		}
 		cells = append(cells, Cell{
 			Task: k.task, Client: k.client, Surface: k.surface, Trials: a.n, Passed: a.pass, Infra: a.infra,
-			PassAt1: p1, PassHatK: pk, CostUSD: a.cost, DurS: a.dur,
+			Ungraded: a.ungraded,
+			PassAt1:  p1, PassHatK: pk, CostUSD: a.cost, DurS: a.dur,
 		})
 	}
 	return cells
@@ -158,11 +161,11 @@ func (r *Report) markdown() string {
 	if r.Aborted != "" {
 		b.WriteString("aborted: " + r.Aborted + "\n\n")
 	}
-	b.WriteString("| Task | Surface | Client | pass@1 | pass^k | trials | infra | cost |\n")
-	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("| Task | Surface | Client | pass@1 | pass^k | trials | infra | ungraded | cost |\n")
+	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, c := range r.Cells {
-		fmt.Fprintf(&b, "| %s | %s | %s | %.2f | %s | %d | %d | %.4f |\n",
-			c.Task, cellSurface(c.Surface), c.Client, c.PassAt1, passHatCell(c), c.Trials, c.Infra, c.CostUSD)
+		fmt.Fprintf(&b, "| %s | %s | %s | %.2f | %s | %d | %d | %d | %.4f |\n",
+			c.Task, cellSurface(c.Surface), c.Client, c.PassAt1, passHatCell(c), c.Trials, c.Infra, c.Ungraded, c.CostUSD)
 	}
 	b.WriteString("\n## Trials\n\n")
 	for _, t := range r.Trials {
@@ -170,6 +173,9 @@ func (r *Report) markdown() string {
 			t.TaskID, t.Client, t.Index, t.Outcome, t.CostUSD, t.Dir)
 		if t.Error != "" {
 			b.WriteString("  - error: " + t.Error + "\n")
+		}
+		if names := ungradedNames(t.Judge); len(names) > 0 {
+			b.WriteString("  - ungraded: " + strings.Join(names, ", ") + "\n")
 		}
 	}
 	return b.String()
@@ -307,4 +313,21 @@ func reviewReport(rate float64, agree, total int) string {
 		b.WriteString("below threshold: block rubric changes until calibrated\n")
 	}
 	return b.String()
+}
+
+// ungradedDims counts judge dimensions that produced no verdict. They default
+// to pass, so a run can degrade quietly; the report shows the count instead.
+func ungradedDims(judge []JudgeResult) int {
+	return len(ungradedNames(judge))
+}
+
+// ungradedNames lists the dimensions that abstained or failed to invoke.
+func ungradedNames(judge []JudgeResult) []string {
+	var out []string
+	for _, j := range judge {
+		if j.Infra || j.Unknown {
+			out = append(out, j.Name)
+		}
+	}
+	return out
 }

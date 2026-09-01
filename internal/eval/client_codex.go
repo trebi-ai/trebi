@@ -310,8 +310,12 @@ func parseCodexMCP(item map[string]any, res *LaunchResult, byID map[string]int) 
 		args = map[string]any{}
 	}
 	raw, _ := json.Marshal(args)
+	out := stepResult(item["result"])
+	if e := strings.TrimSpace(asString(item["error"])); e != "" {
+		out = strings.TrimSpace("error: " + e + "\n" + out)
+	}
 	upsertCodexStep(res, byID, asString(item["id"]), Step{
-		Role: "tool", Name: "mcp__" + server + "__" + tool, Content: string(raw),
+		Role: "tool", Name: "mcp__" + server + "__" + tool, Content: string(raw), Result: out,
 	})
 }
 

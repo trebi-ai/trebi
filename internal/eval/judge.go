@@ -27,6 +27,10 @@ type judgeRunner struct {
 	model   string
 	rubrics map[string]Rubric
 
+	// invokeFn overrides the harness call. Tests set it; production leaves it
+	// nil and invoke dispatches on harness.
+	invokeFn func(context.Context, string) ([]byte, error)
+
 	mu      sync.Mutex
 	costUSD float64
 }
@@ -129,11 +133,28 @@ func judgeBudget(n int) time.Duration {
 func (j *judgeRunner) scoreAll(ctx context.Context, dims []JudgeDim, transcript, snapshot []byte, surface string) []JudgeResult {
 	out := make([]JudgeResult, 0, len(dims))
 	for _, d := range dims {
-		dctx, cancel := context.WithTimeout(ctx, judgeDimTimeout)
-		out = append(out, j.score(dctx, d, transcript, snapshot, surface))
-		cancel()
+		out = append(out, j.scoreRetry(ctx, d, transcript, snapshot, surface))
 	}
 	return out
+}
+
+// scoreRetry grades one dimension, retrying an invoke failure once. A judge
+// timeout or a revoked token would otherwise abstain, and an abstention counts
+// as pass: a transient fault must not quietly drop a dimension.
+func (j *judgeRunner) scoreRetry(ctx context.Context, d JudgeDim, transcript, snapshot []byte, surface string) JudgeResult {
+	var res JudgeResult
+	for attempt := range 2 {
+		if attempt > 0 && ctx.Err() != nil {
+			break
+		}
+		dctx, cancel := context.WithTimeout(ctx, judgeDimTimeout)
+		res = j.score(dctx, d, transcript, snapshot, surface)
+		cancel()
+		if !res.Infra {
+			return res
+		}
+	}
+	return res
 }
 
 func (j *judgeRunner) score(ctx context.Context, d JudgeDim, transcript, snapshot []byte, surface string) JudgeResult {
@@ -210,6 +231,9 @@ func (j *judgeRunner) confirmFail(ctx context.Context, prompt string, min float6
 
 // invoke runs one judge call. The JSON envelope carries the grading spend.
 func (j *judgeRunner) invoke(ctx context.Context, prompt string) ([]byte, error) {
+	if j.invokeFn != nil {
+		return j.invokeFn(ctx, prompt)
+	}
 	if j.harness == clientCodex {
 		return j.invokeCodex(ctx, prompt)
 	}

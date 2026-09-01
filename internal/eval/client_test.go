@@ -248,6 +248,61 @@ func TestParseCodexMCPToolCall(t *testing.T) {
 	}
 }
 
+// TestParseCodexMCPResult pins that a tool response lands on the step. Without
+// it the judge sees the request only, and a rubric rule about what trebi
+// answered can never be graded.
+func TestParseCodexMCPResult(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"trebi","tool":"harness","arguments":{"action":"list"},"status":"in_progress","result":null}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"trebi","tool":"harness","arguments":{"action":"list"},"status":"completed","result":{"content":[{"type":"text","text":"{\"harnesses\":[{\"name\":\"codex\",\"auth_ok\":true}]}"}]}}}`)
+	res := parseCodexJSON(raw)
+	if len(res.Steps) != 1 {
+		t.Fatalf("steps %+v", res.Steps)
+	}
+	if got := res.Steps[0].Content; got != `{"action":"list"}` {
+		t.Errorf("content = %s", got)
+	}
+	if !strings.Contains(res.Steps[0].Result, `"auth_ok":true`) {
+		t.Errorf("result = %q", res.Steps[0].Result)
+	}
+}
+
+// TestParseCodexMCPError pins that a failed call is visible as an error.
+func TestParseCodexMCPError(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","server":"trebi","tool":"file","arguments":{"action":"put"},"status":"completed","error":"conflict: skill is not local"}}`)
+	res := parseCodexJSON(raw)
+	if len(res.Steps) != 1 || !strings.Contains(res.Steps[0].Result, "conflict") {
+		t.Fatalf("steps %+v", res.Steps)
+	}
+}
+
+// TestParseClaudeToolResult pins that a tool_result attaches to the tool_use
+// that asked for it, instead of becoming anonymous user prose.
+func TestParseClaudeToolResult(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"trebi harness list"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":[{"type":"text","text":"codex auth_ok=true"}]}]}}`)
+	res := parseClaudeStream(raw)
+	if len(res.Steps) != 1 {
+		t.Fatalf("steps %+v", res.Steps)
+	}
+	if res.Steps[0].Role != "tool" || res.Steps[0].Result != "codex auth_ok=true" {
+		t.Fatalf("step %+v", res.Steps[0])
+	}
+}
+
+// TestParseClaudeUserProseKept pins that real user text still records as a
+// user step; only tool-result messages are folded into their tool step.
+func TestParseClaudeUserProseKept(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{"type":"user","message":{"content":[{"type":"text","text":"go on"}]}}`)
+	res := parseClaudeStream(raw)
+	if len(res.Steps) != 1 || res.Steps[0].Role != "user" {
+		t.Fatalf("steps %+v", res.Steps)
+	}
+}
+
 func TestParseClaudeResultError(t *testing.T) {
 	t.Parallel()
 	raw := []byte(`{"type":"result","is_error":true,"subtype":"error","result":"Authentication error"}`)

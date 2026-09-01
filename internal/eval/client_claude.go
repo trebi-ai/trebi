@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -113,11 +114,15 @@ func parseClaudeStream(raw []byte) *LaunchResult {
 	res := &LaunchResult{Raw: raw, Steps: []Step{}}
 	var in, out, cacheR, cacheC int64
 	model := "claude"
+	byID := map[string]int{}
 	for _, m := range ndjsonMaps(raw) {
 		switch asString(m["type"]) {
 		case "assistant":
-			res.Steps = append(res.Steps, claudeAssistantSteps(m)...)
+			appendClaudeAssistant(m, res, byID)
 		case "user":
+			if attachClaudeResults(m, res, byID) {
+				continue
+			}
 			if s := contentText(asMap(m["message"])["content"]); s != "" {
 				res.Steps = append(res.Steps, Step{Role: "user", Content: s})
 			}
@@ -149,25 +154,56 @@ func collectClaudeResult(m map[string]any, res *LaunchResult) {
 	res.Errors = appendUnique(res.Errors, msg)
 }
 
-func claudeAssistantSteps(m map[string]any) []Step {
+// appendClaudeAssistant appends one assistant message and indexes each tool
+// call by id, so the later tool_result can find the step it belongs to.
+func appendClaudeAssistant(m map[string]any, res *LaunchResult, byID map[string]int) {
 	msg := asMap(m["message"])
 	content, _ := msg["content"].([]any)
-	var steps []Step
 	for _, item := range content {
 		cm := asMap(item)
 		switch asString(cm["type"]) {
 		case "text":
 			if s := asString(cm["text"]); s != "" {
-				steps = append(steps, Step{Role: "assistant", Content: s})
+				res.Steps = append(res.Steps, Step{Role: "assistant", Content: s})
 			}
 		case "tool_use":
 			body, _ := json.Marshal(cm["input"])
-			steps = append(steps, Step{
+			if id := asString(cm["id"]); id != "" {
+				byID[id] = len(res.Steps)
+			}
+			res.Steps = append(res.Steps, Step{
 				Role:    "tool",
 				Name:    asString(cm["name"]),
 				Content: string(body),
 			})
 		}
 	}
-	return steps
+}
+
+// attachClaudeResults writes each tool_result onto the step that called it.
+// It reports whether the message was only tool results, so the caller does not
+// also record it as user prose.
+func attachClaudeResults(m map[string]any, res *LaunchResult, byID map[string]int) bool {
+	content, _ := asMap(m["message"])["content"].([]any)
+	if len(content) == 0 {
+		return false
+	}
+	all := true
+	for _, item := range content {
+		cm := asMap(item)
+		if asString(cm["type"]) != "tool_result" {
+			all = false
+			continue
+		}
+		i, ok := byID[asString(cm["tool_use_id"])]
+		if !ok || i >= len(res.Steps) {
+			continue
+		}
+		out := stepResult(cm["content"])
+		if cm["is_error"] == true {
+			out = strings.TrimSpace("error: " + out)
+		}
+		res.Steps[i].Result = out
+	}
+	return all
 }

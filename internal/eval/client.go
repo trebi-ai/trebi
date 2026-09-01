@@ -35,11 +35,13 @@ type LaunchOpts struct {
 	ConfigHome string
 }
 
-// Step is one normalized transcript turn.
+// Step is one normalized transcript turn. Content holds the tool arguments;
+// Result holds what the tool answered, so a rubric rule can grade a response.
 type Step struct {
 	Role    string `json:"role"`
 	Name    string `json:"name,omitempty"`
 	Content string `json:"content,omitempty"`
+	Result  string `json:"result,omitempty"`
 }
 
 // LaunchResult is the normalized client output.
@@ -526,6 +528,26 @@ func ndjsonMaps(raw []byte) []map[string]any {
 		out = append(out, m)
 	}
 	return out
+}
+
+// maxStepResult caps one recorded tool result. A docs action answers with
+// several KB; the whole transcript must still fit the judge prompt.
+const maxStepResult = 4000
+
+// stepResult renders a tool response for the transcript. It flattens the MCP
+// content envelope and keeps the head, where an error or a status field sits.
+func stepResult(v any) string {
+	s := contentText(v)
+	if s == "" {
+		if m := asMap(v); m != nil {
+			s = contentText(m["content"])
+		}
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > maxStepResult {
+		s = s[:maxStepResult] + "\n…truncated"
+	}
+	return s
 }
 
 func contentText(v any) string {

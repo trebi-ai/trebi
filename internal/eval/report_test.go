@@ -3,6 +3,7 @@ package eval
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +37,31 @@ func TestPassHatKAllGreen(t *testing.T) {
 	r.finish()
 	if r.Cells[0].PassHatK != 1 {
 		t.Fatalf("%+v", r.Cells[0])
+	}
+}
+
+// TestUngradedCounted pins that a dimension which abstained or failed to
+// invoke is reported. Such a dimension defaults to pass, so without the count
+// a run can silently grade less than it claims.
+func TestUngradedCounted(t *testing.T) {
+	t.Parallel()
+	r := newReport()
+	r.add(TrialResult{TaskID: "a", Client: "codex", Outcome: OutcomePass, Judge: []JudgeResult{
+		{Name: "guardrails", Pass: true, Unknown: true},
+		{Name: "efficiency", Pass: true, Infra: true},
+		{Name: "accuracy", Pass: true},
+	}})
+	r.finish()
+	c := r.Cells[0]
+	if c.Ungraded != 2 {
+		t.Fatalf("ungraded = %d, want 2 (%+v)", c.Ungraded, c)
+	}
+	if c.Infra != 0 {
+		t.Fatalf("infra = %d; a passed trial is not an infra trial", c.Infra)
+	}
+	md := r.markdown()
+	if !strings.Contains(md, "ungraded: guardrails, efficiency") {
+		t.Fatalf("markdown missing ungraded line:\n%s", md)
 	}
 }
 
