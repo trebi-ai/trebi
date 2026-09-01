@@ -129,3 +129,47 @@ func TestHashTree(t *testing.T) {
 		t.Fatalf("%v %v", h, err)
 	}
 }
+
+// A workspace roots one level below the working directory, so the trebi file
+// store writes a prompt's bare file name there. The check must find it.
+func TestFileCheckFindsWorkspaceCopy(t *testing.T) {
+	wd := t.TempDir()
+	ws := filepath.Join(wd, "ops")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "log-line.txt"), []byte("canary-xyzzy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(wd, "log-line.txt")
+	if r := fileStatCheck("exists", want, true); !r.Pass {
+		t.Fatalf("file_exists did not find the workspace copy: %s", r.Detail)
+	}
+	if r := fileTextCheck("contains", want, "canary-xyzzy", true); !r.Pass {
+		t.Fatalf("file_contains did not find the workspace copy: %s", r.Detail)
+	}
+}
+
+// An absence check must not search: a file written into a sibling directory is
+// still a leak, and searching would report it as clean.
+func TestFileAbsentStaysExact(t *testing.T) {
+	wd := t.TempDir()
+	ws := filepath.Join(wd, "ops")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "leak.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := fileStatCheck("absent", filepath.Join(wd, "leak.txt"), false); !r.Pass {
+		t.Fatal("file_absent searched subdirectories; it must stay exact")
+	}
+}
+
+// A file that was never written must still fail, or every check would pass.
+func TestFileCheckStillFailsWhenMissing(t *testing.T) {
+	wd := t.TempDir()
+	if r := fileStatCheck("exists", filepath.Join(wd, "nope.txt"), true); r.Pass {
+		t.Fatal("missing file reported as present")
+	}
+}

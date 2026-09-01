@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -204,7 +205,39 @@ func (g *Grader) addDump(ctx context.Context, snap map[string]any, key string, a
 	snap[key] = v
 }
 
+// resolveWanted finds a file the agent was asked to write. A prompt names a
+// bare file name in the working directory, but a workspace is rooted one level
+// down, so the trebi file store writes it there. Both places satisfy the task.
+// Only a check that wants the file present may search: an absence check must
+// stay exact, or a leak into a sibling directory would pass.
+func resolveWanted(path string) string {
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	dir, base := filepath.Split(path)
+	if dir == "" || base == "" {
+		return path
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return path
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		cand := filepath.Join(dir, e.Name(), base)
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			return cand
+		}
+	}
+	return path
+}
+
 func fileStatCheck(name, path string, wantExist bool) CheckResult {
+	if wantExist {
+		path = resolveWanted(path)
+	}
 	_, err := os.Stat(path)
 	exists := err == nil
 	if exists == wantExist {
@@ -217,6 +250,9 @@ func fileStatCheck(name, path string, wantExist bool) CheckResult {
 }
 
 func fileTextCheck(name, path, text string, want bool) CheckResult {
+	if want {
+		path = resolveWanted(path)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return CheckResult{Name: name, Detail: err.Error()}
@@ -237,7 +273,7 @@ func fileMatchCheck(name, path, pattern string) CheckResult {
 	if err != nil {
 		return CheckResult{Name: name, Infra: true, Detail: err.Error()}
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(resolveWanted(path))
 	if err != nil {
 		return CheckResult{Name: name, Detail: err.Error()}
 	}

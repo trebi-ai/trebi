@@ -813,12 +813,17 @@ func TestTranscriptPath(t *testing.T) {
 		t.Errorf("grok path: %s", path)
 	}
 
-	for _, name := range []string{Codex, Copilot, Gemini, OpenCode} {
+	for _, name := range []string{Copilot, Gemini, OpenCode} {
 		tool, _ := ByName(name)
 		_, err := tool.TranscriptPath(userHome, wd, sid)
 		if !errors.Is(err, ErrTranscriptUnsupported) {
 			t.Errorf("%s: want ErrTranscriptUnsupported, got %v", name, err)
 		}
+	}
+
+	// Codex reads rollouts, but this store holds none for that session.
+	if _, err := (codexTool{}).TranscriptPath(userHome, wd, sid); err == nil {
+		t.Error("codex: want an error for a session with no rollout")
 	}
 
 	if _, err := (claudeTool{}).TranscriptPath(userHome, wd, ""); err == nil {

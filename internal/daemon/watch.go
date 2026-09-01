@@ -166,7 +166,14 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 	if !ok {
 		return
 	}
-	path, err := tool.TranscriptPath(home.HarnessDir(run.Harness), "", run.SessionID)
+	// Only codex needs the working dir: it mints its own session id, so its
+	// rollout is found by path. Claude derives its file name from the dir, and
+	// the launcher recorded that path with an empty one.
+	workingDir := ""
+	if run.Harness == tmux.Codex {
+		workingDir = tmux.CodexWorkingDir(c.runWorkingDir(ctx, run), run.StartedAt)
+	}
+	path, err := tool.TranscriptPath(home.HarnessDir(run.Harness), workingDir, run.SessionID)
 	if err != nil {
 		return
 	}
@@ -185,4 +192,17 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 	if _, err := c.Conversations.IngestAssistantTurns(ctx, run.ID, run.ConversationID, incoming); err != nil {
 		c.log.Warn("turn ingest", "run_id", run.ID, "error", err)
 	}
+}
+
+// runWorkingDir resolves the directory a run launched in. A harness that mints
+// its own session id (codex) finds its transcript by this path, not by id.
+func (c *ControlPlane) runWorkingDir(ctx context.Context, run *runs.Run) string {
+	j, path := c.findJobKind(ctx, run.Workspace, run.Job, run.Kind)
+	if j == nil {
+		return ""
+	}
+	if cwd := j.ResolvedWorkingDir(); cwd != "" {
+		return cwd
+	}
+	return dirOf(path)
 }
