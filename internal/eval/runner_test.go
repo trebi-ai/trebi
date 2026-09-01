@@ -98,6 +98,70 @@ func TestDeadClientOneAssistantGrades(t *testing.T) {
 	}
 }
 
+// TestClientTransportFaultRetries pins that a client cut off mid-stream is
+// infra, not a fail. It made tool calls but reported a fault, so its answer is
+// missing for a reason a retry can fix.
+func TestClientTransportFaultRetries(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	r := &Runner{
+		newClient: func(string) (Client, error) {
+			return &fakeClient{name: "codex", launch: &LaunchResult{
+				Steps:  []Step{{Role: "tool", Name: "mcp__trebi__system", Content: `{"action":"health"}`}},
+				Errors: []string{"stream disconnected before completion: Transport error"},
+			}}, nil
+		},
+		scoreAll: func(context.Context, []JudgeDim, []byte, []byte) []JudgeResult {
+			t.Fatal("judge invoked")
+			return nil
+		},
+	}
+	env := &trialEnv{workdir: dir, artDir: dir, bin: "true", apiURL: "http://127.0.0.1:1"}
+	p := Placeholders{Workdir: dir, Home: dir, Transcript: filepath.Join(dir, "transcript.json"), Snapshot: filepath.Join(dir, "snapshot.json")}
+	g := newGrader(env, p)
+	task := &Task{ID: "x", Prompt: "hi", TimeoutS: 5, Checks: []Check{{Name: "f", FileExists: filepath.Join(dir, "missing")}}}
+	got := r.finishClient(context.Background(), context.Background(), task, env, g, p, &TrialResult{TaskID: "x"}, "codex", surfaceMCP)
+	if got.Outcome != OutcomeInfraFailure {
+		t.Fatalf("outcome %s err %q", got.Outcome, got.Error)
+	}
+	if !strings.Contains(got.Error, "Transport error") {
+		t.Fatalf("error %q", got.Error)
+	}
+}
+
+// TestClientTimeoutStillGrades pins the other half: a client that simply ran
+// out of time reports no fault, and its work is on the daemon, so it grades.
+func TestClientTimeoutStillGrades(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	exist := filepath.Join(dir, "ok.txt")
+	if err := os.WriteFile(exist, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{
+		newClient: func(string) (Client, error) {
+			return &fakeClient{name: "codex", launch: &LaunchResult{
+				Steps: []Step{{Role: "tool", Name: "mcp__trebi__system", Content: `{"action":"health"}`}},
+			}}, nil
+		},
+		scoreAll: func(context.Context, []JudgeDim, []byte, []byte) []JudgeResult { return nil },
+	}
+	env := &trialEnv{workdir: dir, artDir: dir, bin: "true", apiURL: "http://127.0.0.1:1"}
+	p := Placeholders{Workdir: dir, Home: dir, Transcript: filepath.Join(dir, "transcript.json"), Snapshot: filepath.Join(dir, "snapshot.json")}
+	g := newGrader(env, p)
+	task := &Task{ID: "x", Prompt: "hi", TimeoutS: 5, Checks: []Check{{Name: "f", FileExists: exist}}}
+	got := r.finishClient(context.Background(), context.Background(), task, env, g, p, &TrialResult{TaskID: "x"}, "codex", surfaceCLI)
+	if got.Outcome == OutcomeInfraFailure {
+		t.Fatalf("infra: %s", got.Error)
+	}
+	if len(got.Checks) == 0 {
+		t.Fatal("expected checks to run")
+	}
+	if !strings.Contains(got.Error, "timeout") {
+		t.Fatalf("error %q, want timeout note", got.Error)
+	}
+}
+
 func TestSeedChecksGreenSkipsClient(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

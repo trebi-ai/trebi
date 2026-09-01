@@ -60,7 +60,10 @@ Retry one failed run from the point of failure.
 - `id` (string, required): run id.
 
 ### message
-Send one message into a live run.
+Send one message into a live run. The text must not contain the run completion
+sentinel (`TREBI_RUN_COMPLETE...`): only the agent reports that it finished, and
+a sentinel from you ends the run as complete with the work undone. If a run
+stalled, read its log and fix the blocker instead.
 - `id` (string, required): run id.
 - `text` (string, required): message text.
 

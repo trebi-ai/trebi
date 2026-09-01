@@ -324,6 +324,12 @@ func DetectCompletion(screen, runID string) bool {
 
 // InjectMessage types a follow-up into a running run's pane.
 func (s *Service) InjectMessage(ctx context.Context, runID, text string) error {
+	// The sentinel is how the agent reports it finished. A caller that sends it
+	// ends the run as complete without the work being done. Text is validated
+	// before run state, so the message is rejected for the real reason.
+	if strings.Contains(text, CompletionPrefix) {
+		return fmt.Errorf("%w: %s", ErrSentinelInMessage, runID)
+	}
 	run, err := s.Get(ctx, runID)
 	if err != nil {
 		return err

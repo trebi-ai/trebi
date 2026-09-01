@@ -284,6 +284,10 @@ func parseCodexItem(typ string, m, item map[string]any, res *LaunchResult, byID 
 		parseCodexMCP(item, res, byID)
 		return
 	}
+	if asString(item["type"]) == "file_change" {
+		parseCodexFileChange(item, res, byID)
+		return
+	}
 	text := firstNonEmpty(asString(item["text"]), contentText(item["content"]), asString(m["text"]), contentText(m["content"]), asString(m["message"]))
 	if asString(item["type"]) == "agent_message" || typ == "agent_message" || typ == "message" {
 		if text != "" {
@@ -297,6 +301,30 @@ func parseCodexItem(typ string, m, item map[string]any, res *LaunchResult, byID 
 	}
 	raw, _ := json.Marshal(body)
 	upsertCodexStep(res, byID, asString(item["id"]), Step{Role: "tool", Name: "command", Content: string(raw)})
+}
+
+// parseCodexFileChange records a write the client made with its own file tool,
+// not through trebi. The judge needs it: a task can be finished this way after
+// a trebi call fails, and a write into the trebi home is itself a violation.
+func parseCodexFileChange(item map[string]any, res *LaunchResult, byID map[string]int) {
+	changes, _ := item["changes"].([]any)
+	paths := make([]string, 0, len(changes))
+	kinds := make([]string, 0, len(changes))
+	for _, c := range changes {
+		cm := asMap(c)
+		if p := asString(cm["path"]); p != "" {
+			paths = append(paths, p)
+			kinds = append(kinds, asString(cm["kind"]))
+		}
+	}
+	if len(paths) == 0 {
+		return
+	}
+	body, _ := json.Marshal(map[string]any{"paths": paths, "kinds": kinds})
+	upsertCodexStep(res, byID, asString(item["id"]), Step{
+		Role: "tool", Name: "file_change", Content: string(body),
+		Result: asString(item["status"]),
+	})
 }
 
 func parseCodexMCP(item map[string]any, res *LaunchResult, byID map[string]int) {

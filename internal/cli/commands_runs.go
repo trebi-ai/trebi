@@ -101,7 +101,7 @@ func runsCommand() *cli.Command {
 			},
 			{
 				Name:      "message",
-				Usage:     "send text to a live run",
+				Usage:     "send text to a live run (not the completion sentinel)",
 				ArgsUsage: "<id> <text...>",
 				Action:    runRunsMessage,
 			},

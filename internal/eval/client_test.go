@@ -277,6 +277,44 @@ func TestParseCodexMCPError(t *testing.T) {
 	}
 }
 
+// TestParseCodexFileChange pins that a write made with the client's own file
+// tool is recorded. The codex stream reports it as its own item type, not a
+// tool call, so it was invisible: a task finished that way looked unfinished.
+func TestParseCodexFileChange(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{"type":"item.started","item":{"id":"f1","type":"file_change","changes":[{"path":"/w/health.txt","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"f1","type":"file_change","changes":[{"path":"/w/health.txt","kind":"add"}],"status":"completed"}}`)
+	res := parseCodexJSON(raw)
+	if len(res.Steps) != 1 {
+		t.Fatalf("steps %+v", res.Steps)
+	}
+	s := res.Steps[0]
+	if s.Name != "file_change" || !strings.Contains(s.Content, "/w/health.txt") {
+		t.Fatalf("step %+v", s)
+	}
+	if s.Result != "completed" {
+		t.Errorf("result = %q", s.Result)
+	}
+}
+
+// TestFileChangeNotACommand pins that a file_change step does not project into
+// the commands_jq view, which matches trebi CLI and MCP calls only.
+func TestFileChangeNotACommand(t *testing.T) {
+	t.Parallel()
+	steps := []Step{{Role: "tool", Name: "file_change", Content: `{"paths":["/w/a.txt"],"kinds":["add"]}`}}
+	data, err := json.Marshal(steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds, err := transcriptCommands(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cmds) != 0 {
+		t.Fatalf("commands = %v, want none", cmds)
+	}
+}
+
 // TestParseClaudeToolResult pins that a tool_result attaches to the tool_use
 // that asked for it, instead of becoming anonymous user prose.
 func TestParseClaudeToolResult(t *testing.T) {

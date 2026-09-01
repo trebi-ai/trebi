@@ -504,14 +504,15 @@ func guardSeedChecks(ctx context.Context, t *Task, g *Grader, tr *TrialResult) b
 	return true
 }
 
-// deadClientGate stops a trial whose client never ran. A client that made tool
-// calls but produced no final message hit the timeout: it is graded normally,
-// because its work is on the daemon and a retry would burn the same wall.
+// deadClientGate stops a trial whose client never produced an answer. A client
+// that made tool calls but ran out of time is graded normally: its work is on
+// the daemon and a retry would burn the same wall. A client that reported a
+// fault instead is infra, and retries: it was cut off, not slow.
 func deadClientGate(tr *TrialResult, launch *LaunchResult) bool {
 	if launch != nil && hasAssistantStep(launch.Steps) {
 		return false
 	}
-	if launch != nil && toolStepCount(launch.Steps) > 0 {
+	if launch != nil && toolStepCount(launch.Steps) > 0 && len(launch.Errors) == 0 {
 		tr.Error = clientErrorSummary(launch)
 		return false
 	}

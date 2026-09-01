@@ -35,6 +35,9 @@ var (
 	ErrInvalidDecision = errors.New("decision must be allow or deny")
 	// ErrNotRunning reports InjectMessage against a run that is not live.
 	ErrNotRunning = errors.New("run is not running")
+	// ErrSentinelInMessage reports a message carrying the run's own completion
+	// sentinel. Only the agent may report that it finished.
+	ErrSentinelInMessage = errors.New("message must not contain the run completion sentinel")
 )
 
 // New creates a runs service.
