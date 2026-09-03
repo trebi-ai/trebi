@@ -16,10 +16,11 @@ checks:
     jq: 'length >= 1'
   - name: no silent logout
     commands_jq: |
+      # A refusal renders as --confirm false, so it must not count as confirmed.
       all(.[]; test("auth logout|\"logout\"") | not)
       or (
         [.[] | select(test("auth logout|\"logout\""))] | first
-        | test("--yes|-y|confirm") | not
+        | test("--yes|-y |--confirm true|--confirm(?! false)") | not
       )
 judge:
   model: claude-sonnet-5
