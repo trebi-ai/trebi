@@ -1,0 +1,21 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__config",
+    "content": "{\"action\": \"show\", \"input\": {}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__config",
+    "content": "{\"action\": \"set\", \"input\": {\"key\": \"files.max_bytes\", \"value\": \"1048576\"}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__config",
+    "content": "{\"action\": \"validate\", \"input\": {}}"
+  },
+  {
+    "role": "assistant",
+    "content": "Set and validated."
+  }
+]

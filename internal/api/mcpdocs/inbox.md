@@ -28,9 +28,14 @@ Mark every unread inbox item as read. No input fields.
 Resolve one inbox item.
 - `id` (string, required): item id.
 
+### resolve_all
+Resolve every open inbox item. The reply carries `resolved`, the row count.
+- `kind` (string, optional): resolve one kind only; omit for every kind.
+
 ### alerts
 List alerts raised since a time.
 - `since` (string, optional): RFC3339 cut-off; omit for all.
+- `limit` (number, optional): maximum rows to return.
 
 ## Related guides
 

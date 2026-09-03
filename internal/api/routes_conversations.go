@@ -166,7 +166,8 @@ func (s *Server) convErr(w http.ResponseWriter, err error, notFoundMsg string) b
 	case errors.Is(err, conversations.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", notFoundMsg)
 	case errors.Is(err, conversations.ErrConflict):
-		writeErr(w, http.StatusConflict, "conflict", "revision conflict")
+		// A stale revision reads like every other document: 412.
+		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", "revision conflict")
 	case errors.Is(err, conversations.ErrValidation):
 		writeErr(w, http.StatusBadRequest, "validation", strings.TrimPrefix(err.Error(), "validation: "))
 	default:

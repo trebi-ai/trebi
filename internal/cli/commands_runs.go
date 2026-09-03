@@ -30,6 +30,10 @@ func runsCommand() *cli.Command {
 					&cli.StringFlag{Name: "harness", Usage: "harness filter (claude, grok, cursor, …)"},
 					&cli.StringFlag{Name: "model", Aliases: []string{"m"}, Usage: "model filter (tokens_model exact match)"},
 					&cli.StringFlag{Name: "conversation", Usage: "substring match on conversation_key (client-side)"},
+					&cli.StringFlag{Name: "end-reason", Usage: "end reason filter (sentinel, kill, auth, …)"},
+					&cli.StringFlag{Name: "search", Usage: "text match on prompt preview, job, or id"},
+					&cli.StringFlag{Name: "since", Usage: "RFC3339 time or a duration such as 24h"},
+					&cli.StringFlag{Name: "until", Usage: "RFC3339 time or a duration such as 1h"},
 					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (run id)"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 20, Usage: "max rows"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
@@ -50,6 +54,16 @@ func runsCommand() *cli.Command {
 				Action:    runRunsShow,
 			},
 			{
+				Name:      "wait",
+				Usage:     "wait until a run ends, then show it",
+				ArgsUsage: "<id>",
+				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "wait-ms", Value: 60000, Usage: "long-poll milliseconds (max 120000)"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON (always on)"},
+				},
+				Action: runRunsShow,
+			},
+			{
 				Name:      "timeline",
 				Usage:     "show run timeline",
 				ArgsUsage: "<id>",
@@ -67,6 +81,28 @@ func runsCommand() *cli.Command {
 					&cli.BoolFlag{Name: "raw", Usage: "print raw ndjson transcript"},
 				},
 				Action: runRunsTranscript,
+			},
+			{
+				Name:      "logs",
+				Aliases:   []string{"log"},
+				Usage:     "print the harness log of one run",
+				ArgsUsage: "<id>",
+				Action: func(_ context.Context, c *cli.Command) error {
+					id := c.Args().Get(0)
+					if id == "" {
+						return fmt.Errorf("usage: trebi runs logs <id>")
+					}
+					client, err := clientFor(c)
+					if err != nil {
+						return err
+					}
+					text, err := client.RunLogText(id)
+					if err != nil {
+						return err
+					}
+					fmt.Fprint(outWriter(c), text)
+					return nil
+				},
 			},
 			{
 				Name:      "kill",
@@ -96,8 +132,11 @@ func runsCommand() *cli.Command {
 				Name:      "approve",
 				Usage:     "decide an approval for a run",
 				ArgsUsage: "<id>",
-				Flags:     []cli.Flag{&cli.StringFlag{Name: "decision", Value: "allow"}},
-				Action:    runRunsApprove,
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "decision", Value: "allow"},
+					&cli.StringFlag{Name: "approval", Usage: "approval id; defaults to the pending one"},
+				},
+				Action: runRunsApprove,
 			},
 			{
 				Name:      "message",
@@ -106,9 +145,14 @@ func runsCommand() *cli.Command {
 				Action:    runRunsMessage,
 			},
 			{
-				Name:   "stats",
-				Usage:  "run counts (total and currently running)",
-				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Name:  "stats",
+				Usage: "run counts and cost for a range, plus month to date",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name filter"},
+					&cli.StringFlag{Name: "job", Usage: "filter by job name"},
+					&cli.StringFlag{Name: "range", Usage: "24h|7d|30d|mtd", Value: "30d"},
+				},
 				Action: runRunsStats,
 			},
 			{
@@ -122,6 +166,7 @@ func runsCommand() *cli.Command {
 				Usage: "list run approvals",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (approval id)"},
+					&cli.StringFlag{Name: "state", Usage: "pending|decided"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
@@ -141,7 +186,7 @@ func runRunsAttach(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 	var run map[string]any
-	if err := client.GetJSON(request.BuildRunGetPath(id), &run); err != nil {
+	if err := client.GetJSON(request.BuildRunGetPath(id, 0), &run); err != nil {
 		return err
 	}
 	return attachAfterLaunch(ctx, c, client, run)
@@ -153,7 +198,7 @@ func runRunsShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON(request.BuildRunGetPath(c.Args().Get(0)), &body); err != nil {
+	if err := client.GetJSON(request.BuildRunGetPath(c.Args().Get(0), c.Int("wait-ms")), &body); err != nil {
 		return err
 	}
 	enc := json.NewEncoder(outWriter(c))
@@ -213,17 +258,23 @@ func runRunsKill(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	// Kill each independently so one bad ID does not abort the rest.
-	var failed int
-	for _, id := range c.Args().Slice() {
-		req := request.BuildRunsKill(id)
-		if err := client.DoHTTP(req, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", id, err)
-			failed++
-		}
+	ids := c.Args().Slice()
+	if len(ids) == 1 {
+		return client.DoHTTP(request.BuildRunsKill(ids[0]), nil)
 	}
-	if failed > 0 {
-		return fmt.Errorf("%d of %d run(s) could not be killed", failed, c.NArg())
+	// The bulk route kills each id independently, so one bad id does not abort
+	// the rest. It reports which ones failed.
+	var out struct {
+		Failed map[string]string `json:"failed"`
+	}
+	if err := client.DoHTTP(request.BuildRunsKillBulk(ids), &out); err != nil {
+		return err
+	}
+	for id, msg := range out.Failed {
+		fmt.Fprintf(os.Stderr, "%s: %s\n", id, msg)
+	}
+	if len(out.Failed) > 0 {
+		return fmt.Errorf("%d of %d run(s) could not be killed", len(out.Failed), len(ids))
 	}
 	return nil
 }
@@ -281,7 +332,7 @@ func runRunsApprove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildRunApprove(c.Args().Get(0), c.String("decision")), nil)
+	return client.DoHTTP(request.BuildRunApprove(c.Args().Get(0), c.String("decision"), c.String("approval")), nil)
 }
 
 func runRunsMessage(_ context.Context, c *cli.Command) error {
@@ -333,19 +384,37 @@ func runRunsStats(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	var body map[string]any
-	if err := client.DoHTTP(request.BuildRunsStats(), &body); err != nil {
+	type totals struct {
+		Runs         int     `json:"runs"`
+		OK           int     `json:"ok"`
+		Failed       int     `json:"failed"`
+		CostUSD      float64 `json:"cost_usd"`
+		TokensBilled int64   `json:"tokens_billed"`
+	}
+	var body struct {
+		Range   string `json:"range"`
+		Totals  totals `json:"totals"`
+		MTD     totals `json:"mtd"`
+		Running int    `json:"running"`
+	}
+	req := request.BuildRunsStats(workspaceFlag(c), c.String("job"), c.String("range"))
+	if c.Bool("json") {
+		var raw map[string]any
+		if err := client.DoHTTP(req, &raw); err != nil {
+			return err
+		}
+		return encodeJSON(c, raw)
+	}
+	if err := client.DoHTTP(req, &body); err != nil {
 		return err
 	}
-	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
-	}
-	w := outWriter(c)
-	tbl := newTable(w, []string{"Key", "Value"})
-	tbl.AppendRow(table.Row{"total", fmt.Sprint(body["total"])})
-	tbl.AppendRow(table.Row{"running", fmt.Sprint(body["running"])})
+	tbl := newTable(outWriter(c), []string{"Metric", body.Range, "MTD"})
+	tbl.AppendRow(table.Row{"runs", body.Totals.Runs, body.MTD.Runs})
+	tbl.AppendRow(table.Row{"ok", body.Totals.OK, body.MTD.OK})
+	tbl.AppendRow(table.Row{"failed", body.Totals.Failed, body.MTD.Failed})
+	tbl.AppendRow(table.Row{"cost_usd", fmt.Sprintf("%.4f", body.Totals.CostUSD), fmt.Sprintf("%.4f", body.MTD.CostUSD)})
+	tbl.AppendRow(table.Row{"tokens_billed", body.Totals.TokensBilled, body.MTD.TokensBilled})
+	tbl.AppendRow(table.Row{"running", body.Running, ""})
 	renderTable(tbl)
 	return nil
 }
@@ -394,20 +463,18 @@ func runRunsList(_ context.Context, c *cli.Command) error {
 	}
 	ws := workspaceFlag(c)
 	kind := c.String("kind")
-	path := request.BuildRunsListPath(
-		c.String("status"), c.String("job"), ws,
-		kind, c.String("cursor"),
-		c.String("harness"), c.String("model"), c.Int("limit"),
-	)
+	q := request.RunsQuery{
+		Status: c.String("status"), Job: c.String("job"), Workspace: ws, Kind: kind,
+		Cursor: c.String("cursor"), Harness: c.String("harness"), Model: c.String("model"),
+		EndReason: c.String("end-reason"), Q: c.String("search"),
+		Since: c.String("since"), Until: c.String("until"), Limit: c.Int("limit"),
+	}
 	// Fetch a wider page when conversation filter needs post-filter.
 	conv := c.String("conversation")
-	if conv != "" && c.Int("limit") > 0 {
-		path = request.BuildRunsListPath(
-			c.String("status"), c.String("job"), ws,
-			kind, c.String("cursor"),
-			c.String("harness"), c.String("model"), c.Int("limit")*5,
-		)
+	if conv != "" && q.Limit > 0 {
+		q.Limit *= 5
 	}
+	path := q.Path()
 	var body struct {
 		Runs       []map[string]any `json:"runs"`
 		NextCursor string           `json:"next_cursor"`
@@ -457,7 +524,7 @@ func runApprovalsList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := request.BuildApprovalsListPath(c.String("cursor"), c.Int("limit"))
+	path := request.BuildApprovalsListPath(c.String("cursor"), c.Int("limit"), c.String("state"))
 	var body struct {
 		Approvals  []map[string]any `json:"approvals"`
 		NextCursor string           `json:"next_cursor"`
@@ -489,9 +556,13 @@ func runCommand() *cli.Command {
 		Usage:     "launch a job",
 		ArgsUsage: "<job>",
 		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "extra-prompt", Aliases: []string{"e"}, Usage: "append text to the job prompt (fetched then prompt_override)"},
+			&cli.StringFlag{Name: "extra-prompt", Aliases: []string{"e"}, Usage: "append text to the job prompt"},
+			&cli.StringFlag{Name: "prompt", Usage: "replace the job prompt"},
+			&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "job placeholder value, key=value (repeatable)"},
+			&cli.StringFlag{Name: "harness", Usage: "agent tool to run with"},
 			&cli.BoolFlag{Name: "test", Usage: "dry_run: evaluate gates, print plan, do not launch"},
 			&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (tmux local or WebSocket remote)"},
+			&cli.IntFlag{Name: "wait", Usage: "wait milliseconds for the run to end (max 120000)"},
 			&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 		},
@@ -507,21 +578,22 @@ func runLaunch(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	jobName := c.Args().Get(0)
-	ws := workspaceFlag(c)
-	promptOverride := ""
-	if extra := c.String("extra-prompt"); extra != "" {
-		// Append to job body so we match jobi -e (API prompt_override is full replace).
-		var got map[string]any
-		if err := client.GetJSON(request.BuildJobGetPath(jobName, ws), &got); err != nil {
-			return err
-		}
-		base := mapStr(got, "prompt")
-		promptOverride = request.AppendExtraPrompt(base, extra)
+	inputs, err := parseKeyValues(c.StringSlice("input"))
+	if err != nil {
+		return err
 	}
-	req := request.BuildRunsCreate(jobName, ws, promptOverride, c.Bool("test"))
+	spec := request.RunSpec{
+		Job:         c.Args().Get(0),
+		Workspace:   workspaceFlag(c),
+		Prompt:      c.String("prompt"),
+		ExtraPrompt: c.String("extra-prompt"),
+		Inputs:      inputs,
+		Harness:     c.String("harness"),
+		DryRun:      c.Bool("test"),
+		WaitMS:      c.Int("wait"),
+	}
 	var out map[string]any
-	if err := client.DoHTTP(req, &out); err != nil {
+	if err := client.DoHTTP(spec.Build(), &out); err != nil {
 		return err
 	}
 	if c.Bool("test") || c.Bool("json") {

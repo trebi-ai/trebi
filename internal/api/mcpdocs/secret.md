@@ -10,6 +10,7 @@ Caution: a secret value you send passes through the model context of this sessio
 
 ### list
 List secret names. Values are never returned. No input fields.
+- `limit` (number, optional): maximum rows to return.
 
 ### set
 Set one secret value.
@@ -17,8 +18,9 @@ Set one secret value.
 - `value` (string, required): secret text.
 
 ### delete
-Remove one secret. Destructive.
+Remove one secret. Destructive. Jobs that read it will fail.
 - `name` (string, required): secret name.
+- `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
 ## Related guides
 

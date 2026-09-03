@@ -158,8 +158,8 @@ func (r *Report) markdown() string {
 	}
 	b.WriteString("\n## Trials\n\n")
 	for _, t := range r.Trials {
-		fmt.Fprintf(&b, "- %s/%s#%d **%s** cost=%.4f dir=`%s`\n",
-			t.TaskID, t.Client, t.Index, t.Outcome, t.CostUSD, t.Dir)
+		fmt.Fprintf(&b, "- %s/%s/%s#%d **%s** cost=%.4f dir=`%s`\n",
+			t.TaskID, cellSurface(t.Surface), t.Client, t.Index, t.Outcome, t.CostUSD, t.Dir)
 		if t.Error != "" {
 			b.WriteString("  - error: " + t.Error + "\n")
 		}
@@ -206,7 +206,8 @@ func (r *Report) regress(base *Baseline) []string {
 			continue
 		}
 		if g.PassAt1+1e-9 < c.PassAt1 {
-			drops = append(drops, fmt.Sprintf("%s/%s pass@1 %.2f -> %.2f", c.Task, c.Client, c.PassAt1, g.PassAt1))
+			drops = append(drops, fmt.Sprintf("%s/%s/%s pass@1 %.2f -> %.2f",
+				c.Task, cellSurface(c.Surface), c.Client, c.PassAt1, g.PassAt1))
 		}
 	}
 	return drops
@@ -308,6 +309,9 @@ func reviewReport(rate float64, agree, total int) string {
 func ungradedNames(judge []JudgeResult) []string {
 	var out []string
 	for _, j := range judge {
+		if j.Telemetry {
+			continue
+		}
 		if j.Infra || j.Unknown {
 			out = append(out, j.Name)
 		}

@@ -32,25 +32,34 @@ func workspaceCommand() *cli.Command {
 				Name:  "list",
 				Usage: "list local daemon workspaces and linked remote workspaces",
 				Flags: []cli.Flag{
+					limitFlag(),
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runWorkspaceList,
 			},
 			{
-				Name:      "add",
+				Name:      "create",
+				Aliases:   []string{"add"},
 				Usage:     "register a local folder, or link a remote workspace (--url/--remote)",
 				ArgsUsage: "[path]",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "name", Usage: "display name (default: basename of path)"},
-					&cli.BoolFlag{Name: "create", Usage: "mkdir the folder if missing; path optional with --name"},
+					&cli.BoolFlag{Name: "mkdir", Aliases: []string{"create"}, Usage: "make the folder if missing; path optional with --name"},
 					&cli.StringFlag{Name: "url", Aliases: []string{"remote"}, Usage: "remote trebid base URL"},
 					&cli.StringFlag{Name: "token", Usage: "remote bearer token"},
 					&cli.BoolFlag{Name: "token-stdin", Usage: "read remote token from stdin"},
 					&cli.StringFlag{Name: "id", Usage: "existing remote workspace id to link (with --url)"},
-					&cli.BoolFlag{Name: "use", Usage: "set sticky context to this workspace after add"},
+					&cli.BoolFlag{Name: "use", Usage: "set sticky context to this workspace after create"},
 					&cli.BoolFlag{Name: "skip-check", Usage: "skip remote health check"},
 				},
 				Action: runWorkspaceAdd,
+			},
+			{
+				Name:      "show",
+				Usage:     "show one workspace",
+				ArgsUsage: "<id|name>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON (always on)"}},
+				Action:    showByName(request.BuildWorkspaceGetPath),
 			},
 			{
 				Name:      "use",
@@ -59,17 +68,17 @@ func workspaceCommand() *cli.Command {
 				Action:    runWorkspaceUse,
 			},
 			{
-				Name:    "current",
-				Aliases: []string{"show"},
-				Usage:   "print sticky workspace context",
-				Flags:   []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-				Action:  runWorkspaceCurrent,
+				Name:   "current",
+				Usage:  "print sticky workspace context",
+				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action: runWorkspaceCurrent,
 			},
 			{
-				Name:      "remove",
+				Name:      "delete",
+				Aliases:   []string{"remove"},
 				Usage:     "delete a workspace and its folder",
 				ArgsUsage: "<id>",
-				Flags:     []cli.Flag{&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "required; deletes the workspace folder"}},
+				Flags:     []cli.Flag{forceFlag("required; deletes the workspace folder")},
 				Action:    runWorkspaceRemove,
 			},
 			{
@@ -125,14 +134,15 @@ func runWorkspaceRemove(_ context.Context, c *cli.Command) error {
 	if id == "" {
 		return fmt.Errorf("usage: trebi workspace remove <id>")
 	}
-	if !c.Bool("force") {
-		return fmt.Errorf("workspace remove deletes the workspace folder for %s. Confirm with the user first, then re-run with --force", id)
+	confirm, err := confirmed(c, "deletes the workspace folder for "+id)
+	if err != nil {
+		return err
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(request.BuildWorkspaceDelete(id), nil); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspaceDelete(id, confirm), nil); err != nil {
 		return err
 	}
 	if err := clearStickyIfWorkspace(c, id); err != nil {
@@ -214,7 +224,7 @@ func runWorkspaceList(_ context.Context, c *cli.Command) error {
 	if localErr != nil {
 		local = nil // the local daemon is optional; linked workspaces still render
 	}
-	rows := localWorkspaceRows(sticky, local)
+	rows := localWorkspaceRows(sticky, local, c.Int("limit"))
 	rows = append(rows, linkedWorkspaceRows(sticky, linked)...)
 
 	if c.Bool("json") {
@@ -236,7 +246,7 @@ func runWorkspaceList(_ context.Context, c *cli.Command) error {
 }
 
 // localWorkspaceRows lists daemon workspaces (empty when the daemon is offline).
-func localWorkspaceRows(sticky *StickyContext, client *APIClient) []wsRow {
+func localWorkspaceRows(sticky *StickyContext, client *APIClient, limit int) []wsRow {
 	activeID := ""
 	if sticky != nil {
 		activeID = sticky.WorkspaceID
@@ -247,7 +257,7 @@ func localWorkspaceRows(sticky *StickyContext, client *APIClient) []wsRow {
 	var body struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := client.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
+	if err := client.GetJSON(request.BuildWorkspacesListPath(limit), &body); err != nil {
 		return nil
 	}
 	var rows []wsRow
@@ -284,7 +294,7 @@ func runWorkspaceAdd(_ context.Context, c *cli.Command) error {
 	remoteURL := strings.TrimSpace(c.String("url"))
 	if remoteURL == "" {
 		path := c.Args().Get(0)
-		if path == "" && (!c.Bool("create") || c.String("name") == "") {
+		if path == "" && (!c.Bool("mkdir") || c.String("name") == "") {
 			return fmt.Errorf("path required (or --create --name for pathless, or --url/--remote)")
 		}
 		return workspaceAddLocal(c, path)
@@ -302,7 +312,7 @@ func workspaceAddLocal(c *cli.Command, path string) error {
 		name = filepath.Base(path)
 	}
 	var out map[string]any
-	if err := client.DoHTTP(request.BuildWorkspaceAdd(path, name, c.Bool("create")), &out); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspaceAdd(path, name, c.Bool("mkdir")), &out); err != nil {
 		return err
 	}
 	id := mapStr(out, "id")
@@ -355,7 +365,7 @@ func workspaceAddRemote(c *cli.Command, remoteURL string) error {
 		if n := c.String("name"); n != "" {
 			name = n
 		}
-	case c.NArg() >= 1 || (c.Bool("create") && c.String("name") != ""):
+	case c.NArg() >= 1 || (c.Bool("mkdir") && c.String("name") != ""):
 		// Register path on remote host, then link (path optional with --create --name).
 		id, name, path, err = registerRemoteWorkspace(c, client)
 		if err != nil {
@@ -401,7 +411,7 @@ func remoteAddToken(c *cli.Command) (string, error) {
 func registerRemoteWorkspace(c *cli.Command, client *APIClient) (id, name, path string, err error) {
 	path = c.Args().Get(0)
 	name = c.String("name")
-	create := c.Bool("create")
+	create := c.Bool("mkdir")
 	if path == "" && (!create || name == "") {
 		return "", "", "", fmt.Errorf("remote add needs a path (register on host) or --id (link existing)")
 	}
@@ -451,7 +461,7 @@ func runWorkspaceUse(_ context.Context, c *cli.Command) error {
 	var body struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := client.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
+	if err := client.GetJSON(request.BuildWorkspacesListPath(0), &body); err != nil {
 		return err
 	}
 	for _, ws := range body.Workspaces {
@@ -510,7 +520,7 @@ func resolveWorkspaceID(c *cli.Command, client *APIClient) (string, error) {
 	var wss struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := client.GetJSON(request.BuildWorkspacesListPath(), &wss); err != nil {
+	if err := client.GetJSON(request.BuildWorkspacesListPath(0), &wss); err != nil {
 		return "", err
 	}
 	if len(wss.Workspaces) == 0 {

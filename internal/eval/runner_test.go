@@ -293,6 +293,63 @@ func TestPreflightTimeoutBudget(t *testing.T) {
 	}
 }
 
+func TestPlanCoversTrialMatrix(t *testing.T) {
+	t.Parallel()
+	task := &Task{ID: "t1", Clients: []string{"codex", "claude"}, Trials: 2, Surfaces: []string{surfaceCLI, surfaceMCP}}
+	r := &Runner{opts: Options{Surface: "both"}}
+	plans := r.plan([]*Task{task}, "/out")
+	if len(plans) != 8 {
+		t.Fatalf("plans %d", len(plans))
+	}
+	dirs := map[string]bool{}
+	for _, p := range plans {
+		if dirs[p.art] {
+			t.Fatalf("duplicate art dir %s", p.art)
+		}
+		dirs[p.art] = true
+	}
+	if !dirs[filepath.Join("/out", "t1", "codex", "0")] || !dirs[filepath.Join("/out", "t1", "mcp", "claude", "1")] {
+		t.Fatalf("dirs %v", dirs)
+	}
+}
+
+func TestParallelRunsEveryTrial(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	task := &Task{ID: "t1", Clients: []string{"codex"}, Trials: 6, Surfaces: []string{surfaceCLI}, Prompt: "hi", TimeoutS: 1}
+	r := &Runner{opts: Options{Parallel: 3, TrebiBin: "true"}}
+	rep := newReport()
+	r.runTrials(context.Background(), r.plan([]*Task{task}, dir), rep, dir)
+	if len(rep.Trials) != 6 {
+		t.Fatalf("trials %d", len(rep.Trials))
+	}
+	seen := map[int]int{}
+	for _, tr := range rep.Trials {
+		seen[tr.Index]++
+	}
+	for i := range 6 {
+		if seen[i] != 1 {
+			t.Fatalf("index %d ran %d times", i, seen[i])
+		}
+	}
+}
+
+// A task whose checks are all commands_jq leaves an oracle replay nothing to
+// run. finishOracle passes it, so such a task is not permanently red.
+func TestSkipOracleChecksEmptiesCommandsJQOnlyTask(t *testing.T) {
+	t.Parallel()
+	checks := []Check{
+		{Name: "cli jq", CommandsJQ: "any(true)"},
+		{Name: "mcp jq", CommandsJQ: "any(true)"},
+	}
+	if got := skipOracleChecks(checks); len(got) != 0 {
+		t.Fatalf("kept %+v, want none", got)
+	}
+	if checksOutcome(nil) != OutcomeFail {
+		t.Fatal("a real trial with no checks still fails")
+	}
+}
+
 func authFailLaunch() *LaunchResult {
 	raw := []byte(`{"type":"error","message":"unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: wss://api.openai.com/v1/responses"}`)
 	return parseCodexJSON(raw)

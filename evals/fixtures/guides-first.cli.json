@@ -1,0 +1,16 @@
+[
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi guide --json\"}"
+  },
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi guide getting-started\"}"
+  },
+  {
+    "role": "assistant",
+    "content": "Three things to know."
+  }
+]

@@ -42,12 +42,66 @@ func assistantCommand() *cli.Command {
 				},
 			},
 			{
+				Name:  "set",
+				Usage: "replace TREBI.md (--file or stdin)",
+				Flags: []cli.Flag{&cli.StringFlag{Name: "file", Usage: "path to TREBI.md"}, ifMatchFlag()},
+				Action: func(_ context.Context, c *cli.Command) error {
+					content, err := readFileOrStdin(c.String("file"))
+					if err != nil {
+						return err
+					}
+					client, err := clientFor(c)
+					if err != nil {
+						return err
+					}
+					id, err := resolveWorkspaceID(c, client)
+					if err != nil {
+						return err
+					}
+					return client.DoHTTP(request.BuildAssistantPut(id, content, c.String("if-match")), nil)
+				},
+			},
+			{
+				Name:    "delete",
+				Aliases: []string{"remove"},
+				Usage:   "delete TREBI.md of the current workspace",
+				Flags:   []cli.Flag{forceFlag("required; deletes the assistant definition"), ifMatchFlag()},
+				Action: func(_ context.Context, c *cli.Command) error {
+					if _, err := confirmed(c, "deletes the workspace assistant definition"); err != nil {
+						return err
+					}
+					client, err := clientFor(c)
+					if err != nil {
+						return err
+					}
+					id, err := resolveWorkspaceID(c, client)
+					if err != nil {
+						return err
+					}
+					return client.DoHTTP(request.BuildAssistantDelete(id, c.String("if-match")), nil)
+				},
+			},
+			{
+				Name:  "patch",
+				Usage: "enable or disable the workspace assistant",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "disabled", Usage: "disable the assistant (--disabled=false enables it)"},
+					ifMatchFlag(),
+				},
+				Action: runAssistantPatch,
+			},
+			{
 				Name:  "wake",
 				Usage: "run the workspace assistant (TREBI.md → kind=assistant run)",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "extra-prompt", Aliases: []string{"e"}, Usage: "append text to the assistant prompt (server-side)"},
+					&cli.StringFlag{Name: "prompt", Usage: "replace the assistant prompt"},
+					&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "KEY=VALUE placeholder (repeatable)"},
+					&cli.StringFlag{Name: "harness", Usage: "override the harness"},
+					&cli.StringFlag{Name: "conversation", Usage: "attach the run to a conversation id"},
 					&cli.BoolFlag{Name: "test", Usage: "dry_run: evaluate gates, print plan, do not launch"},
 					&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (tmux local or WebSocket remote)"},
+					&cli.IntFlag{Name: "wait", Usage: "wait milliseconds for the run to end (max 120000)"},
 				},
 				Action: runAssistantWake,
 			},
@@ -55,8 +109,11 @@ func assistantCommand() *cli.Command {
 				Name:      "say",
 				Usage:     "send a chat message to the workspace assistant",
 				ArgsUsage: "<message>",
-				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-				Action:    runAssistantSay,
+				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "wait", Usage: "wait milliseconds for the reply (max 120000)"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runAssistantSay,
 			},
 			{
 				Name:   "chat",
@@ -79,25 +136,28 @@ func assistantCommand() *cli.Command {
 						Flags: []cli.Flag{
 							&cli.StringFlag{Name: "text", Usage: "entry text", Required: true},
 							&cli.StringFlag{Name: "date", Usage: "YYYY-MM-DD (default today)"},
+							ifMatchFlag(),
 						},
 						Action: runAssistantMemoryAdd,
 					},
 					{
-						Name:      "remove",
+						Name:      "delete",
+						Aliases:   []string{"remove"},
 						Usage:     "delete a ledger entry",
 						ArgsUsage: "<entry-id>",
+						Flags:     []cli.Flag{ifMatchFlag()},
 						Action:    runAssistantMemoryRemove,
 					},
 					{
 						Name:   "set",
 						Usage:  "replace MEMORY.md (--file or stdin)",
-						Flags:  []cli.Flag{&cli.StringFlag{Name: "file", Usage: "path to MEMORY.md"}},
+						Flags:  []cli.Flag{&cli.StringFlag{Name: "file", Usage: "path to MEMORY.md"}, ifMatchFlag()},
 						Action: runAssistantMemorySet,
 					},
 					{
 						Name:   "clear",
 						Usage:  "delete MEMORY.md (destroys the ledger)",
-						Flags:  []cli.Flag{&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "required; destroys the ledger"}},
+						Flags:  []cli.Flag{forceFlag("required; destroys the ledger"), ifMatchFlag()},
 						Action: runAssistantMemoryClear,
 					},
 				},
@@ -152,7 +212,7 @@ func runAssistantMemoryAdd(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildAssistantMemoryEntryAdd(wsID, c.String("date"), c.String("text")), nil)
+	return client.DoHTTP(request.BuildAssistantMemoryEntryAdd(wsID, c.String("date"), c.String("text"), c.String("if-match")), nil)
 }
 
 func runAssistantMemoryRemove(_ context.Context, c *cli.Command) error {
@@ -168,7 +228,7 @@ func runAssistantMemoryRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildAssistantMemoryEntryDelete(wsID, eid), nil)
+	return client.DoHTTP(request.BuildAssistantMemoryEntryDelete(wsID, eid, c.String("if-match")), nil)
 }
 
 func runAssistantMemorySet(_ context.Context, c *cli.Command) error {
@@ -184,12 +244,13 @@ func runAssistantMemorySet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildAssistantMemoryPut(wsID, content), nil)
+	return client.DoHTTP(request.BuildAssistantMemoryPut(wsID, content, c.String("if-match")), nil)
 }
 
 func runAssistantMemoryClear(_ context.Context, c *cli.Command) error {
-	if !c.Bool("force") {
-		return fmt.Errorf("assistant memory clear destroys the assistant ledger. Confirm with the user first, then re-run with --force")
+	confirm, err := confirmed(c, "destroys the assistant memory ledger")
+	if err != nil {
+		return err
 	}
 	client, err := clientFor(c)
 	if err != nil {
@@ -199,11 +260,27 @@ func runAssistantMemoryClear(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(request.BuildAssistantMemoryClear(wsID), nil); err != nil {
+	if err := client.DoHTTP(request.BuildAssistantMemoryClear(wsID, c.String("if-match"), confirm), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "cleared assistant memory for %s\n", wsID)
 	return nil
+}
+
+func runAssistantPatch(_ context.Context, c *cli.Command) error {
+	if !c.IsSet("disabled") {
+		return fmt.Errorf("--disabled required")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	id, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	disabled := c.Bool("disabled")
+	return client.DoHTTP(request.BuildAssistantPatch(id, &disabled, c.String("if-match")), nil)
 }
 
 func runAssistantWake(ctx context.Context, c *cli.Command) error {
@@ -215,9 +292,22 @@ func runAssistantWake(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	req := request.BuildAssistantWake(wsID, c.String("extra-prompt"), c.Bool("test"))
+	inputs, err := parseKeyValues(c.StringSlice("input"))
+	if err != nil {
+		return err
+	}
+	spec := request.RunSpec{
+		Workspace:      wsID,
+		Prompt:         c.String("prompt"),
+		ExtraPrompt:    c.String("extra-prompt"),
+		Inputs:         inputs,
+		Harness:        c.String("harness"),
+		ConversationID: c.String("conversation"),
+		DryRun:         c.Bool("test"),
+		WaitMS:         c.Int("wait"),
+	}
 	var out map[string]any
-	if err := client.DoHTTP(req, &out); err != nil {
+	if err := client.DoHTTP(spec.BuildWake(), &out); err != nil {
 		return err
 	}
 	if c.Bool("test") {
@@ -239,17 +329,17 @@ func runAssistantHistory(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	ws := workspaceFor(c)
-	path := request.BuildRunsListPath(
-		c.String("status"), c.String("job"), ws, "assistant",
-		c.String("cursor"), c.String("harness"), c.String("model"), c.Int("limit"),
-	)
-	conv := c.String("conversation")
-	if conv != "" && c.Int("limit") > 0 {
-		path = request.BuildRunsListPath(
-			c.String("status"), c.String("job"), ws, "assistant",
-			c.String("cursor"), c.String("harness"), c.String("model"), c.Int("limit")*5,
-		)
+	q := request.RunsQuery{
+		Status: c.String("status"), Job: c.String("job"), Workspace: ws, Kind: "assistant",
+		Cursor: c.String("cursor"), Harness: c.String("harness"), Model: c.String("model"),
+		Limit: c.Int("limit"),
 	}
+	conv := c.String("conversation")
+	if conv != "" && q.Limit > 0 {
+		// The substring match runs client-side, so over-fetch before filtering.
+		q.Limit *= 5
+	}
+	path := q.Path()
 	var body struct {
 		Runs       []map[string]any `json:"runs"`
 		NextCursor string           `json:"next_cursor"`
@@ -306,12 +396,9 @@ func runAssistantSay(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	convID, err := client.EnsureCLIConversation(wsID)
-	if err != nil {
-		return err
-	}
 	var out map[string]any
-	if err := client.DoHTTP(request.BuildAssistantSay(convID, text, wsID), &out); err != nil {
+	spec := request.AskSpec{Workspace: wsID, Text: text, WaitMS: c.Int("wait")}
+	if err := client.DoHTTP(spec.Build(), &out); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -319,7 +406,7 @@ func runAssistantSay(_ context.Context, c *cli.Command) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(out)
 	}
-	fmt.Fprintf(outWriter(c), "delivery=%s conversation=%s\n", mapStr(out, "delivery"), convID)
+	fmt.Fprintf(outWriter(c), "delivery=%s conversation=%s\n", mapStr(out, "delivery"), mapStr(out, "conversation_id"))
 	return nil
 }
 
@@ -332,12 +419,9 @@ func runAssistantChat(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	convID, err := client.EnsureCLIConversation(wsID)
-	if err != nil {
-		return err
-	}
+	convID := client.CLIConversation(wsID)
 	w := outWriter(c)
-	fmt.Fprintf(w, "conversation %s  (/new /switch <id> /quit)\n", convID)
+	fmt.Fprintf(w, "conversation %s  (/new /switch <id> /quit)\n", dash(convID))
 	sc := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Fprint(w, "> ")
@@ -382,8 +466,15 @@ func chatLine(c *cli.Command, client *APIClient, wsID string, convID *string, li
 		return true, nil
 	default:
 		var out map[string]any
-		if err := client.DoHTTP(request.BuildAssistantSay(*convID, line, wsID), &out); err != nil {
+		req := request.AskSpec{Workspace: wsID, Text: line}.Build()
+		if *convID != "" {
+			req = request.BuildConversationSend(*convID, line, "cli", wsID, "")
+		}
+		if err := client.DoHTTP(req, &out); err != nil {
 			return true, err
+		}
+		if *convID == "" {
+			*convID = mapStr(out, "conversation_id")
 		}
 		fmt.Fprintf(outWriter(c), "… %s\n", mapStr(out, "delivery"))
 		return true, waitAssistantReply(c, client, *convID)

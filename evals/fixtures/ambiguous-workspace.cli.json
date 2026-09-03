@@ -1,0 +1,16 @@
+[
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi workspace list --json\"}"
+  },
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi job run --workspace staging report\"}"
+  },
+  {
+    "role": "assistant",
+    "content": "Done."
+  }
+]

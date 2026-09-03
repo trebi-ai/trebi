@@ -126,7 +126,7 @@ func TestJobPurge(t *testing.T) {
 		t.Fatalf("put support %d", code)
 	}
 
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&purge=1", s.Token(), nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&purge=1&confirm=1", s.Token(), nil)
 	if code != 200 {
 		t.Fatalf("purge %d %v", code, body)
 	}
@@ -160,7 +160,7 @@ func TestJobPurgeGuards(t *testing.T) {
 		t.Fatalf("root JOB.md %d", code)
 	}
 	jobName := filepath.Base(wsDir)
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/"+jobName+"?workspace="+wsID+"&purge=1", s.Token(), nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/"+jobName+"?workspace="+wsID+"&purge=1&confirm=1", s.Token(), nil)
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("root purge %d %v", code, body)
 	}
@@ -176,7 +176,7 @@ func TestJobPurgeGuards(t *testing.T) {
 	if code != 201 {
 		t.Fatalf("inner %d", code)
 	}
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/outer?workspace="+wsID+"&purge=1", s.Token(), nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/outer?workspace="+wsID+"&purge=1&confirm=1", s.Token(), nil)
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("nested purge %d %v", code, body)
 	}
@@ -196,7 +196,7 @@ func TestJobPurgeStaleIfMatch(t *testing.T) {
 	}
 
 	reqHeaders := map[string]string{"If-Match": "deadbeef"}
-	code, body, _ := doRaw(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&purge=1", s.Token(), reqHeaders, nil)
+	code, body, _ := doRaw(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&purge=1&confirm=1", s.Token(), reqHeaders, nil)
 	if code != 412 || errCode(body) != "precondition_failed" {
 		t.Fatalf("stale %d %v", code, body)
 	}
@@ -214,7 +214,7 @@ func TestJobDeleteFilesRemaining(t *testing.T) {
 	if code != 201 {
 		t.Fatalf("put %d", code)
 	}
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID, s.Token(), nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&confirm=1", s.Token(), nil)
 	if code != 200 {
 		t.Fatalf("delete %d %v", code, body)
 	}

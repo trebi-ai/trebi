@@ -11,7 +11,8 @@ The `owner` field selects the file plane:
   or `assistant` accept writes; any other provenance returns `conflict`.
   `SKILL.md` itself is not writable here — use the `skill` tool `set` action.
 
-Content is text. Binary content is not supported over this tool.
+Content is text by default. For a binary file, `put` takes `encoding: "base64"`,
+and `get` returns `{"content": "…", "encoding": "base64"}`.
 
 ## Actions
 
@@ -21,6 +22,7 @@ List files of one owner.
 - `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
 - `prefix` (string, optional): path prefix filter.
+- `recursive` (boolean, optional): add a row per folder, marked `dir: true`, so the tree shape is visible. Files are always listed at full depth.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.
 
@@ -31,6 +33,8 @@ Read one file, or its metadata.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
 - `path` (string, required): file path relative to the owner root.
 - `stat` (boolean, optional): return JSON metadata instead of content.
+- `max_bytes` (number, optional): cap the body at this size; default 64 KB. A cut body returns `{"content": "…", "truncated": true}`.
+- `encoding` (string, optional): a binary file comes back as `{"content": "…", "encoding": "base64"}`; text comes back as text.
 
 ### put
 Write one text file.
@@ -39,16 +43,17 @@ Write one text file.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
 - `path` (string, required): file path relative to the owner root.
 - `content` (string, required): full file text.
-- `content_type` (string, optional): media type; default inferred.
 - `if_match` (string, optional): current revision; a stale value returns 412.
+- `encoding` (string, optional): `text` (default) or `base64` for binary content.
 
-### remove
+### delete
 Delete one file. Destructive.
 - `owner` (string, optional): `workspace` (default), `job`, or `skill`.
 - `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
 - `path` (string, required): file path relative to the owner root.
 - `if_match` (string, optional): current revision; a stale value returns 412.
+- `confirm` (boolean, required for a workspace file): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
 ## Related guides
 

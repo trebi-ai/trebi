@@ -41,6 +41,7 @@ func TestAuthCapsMatrix(t *testing.T) {
 		Copilot:  {relay: true, token: true, attach: true},
 		Cursor:   {token: true, localCmd: "cursor-agent login"},
 		Pi:       {relay: true, token: true, attach: true},
+		Fake:     {relay: true, localCmd: "fake login"},
 	}
 	for _, tool := range AllTools() {
 		caps := tool.AuthCapabilities()

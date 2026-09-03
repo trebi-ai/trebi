@@ -9,17 +9,18 @@ There is no sticky workspace over MCP: `trebi workspace use` writes client-side 
 ## Actions
 
 ### list
-List workspaces. No input fields.
+List workspaces. Each row carries `job_count` and `running_count`.
+- `limit` (number, optional): maximum rows to return.
 
 ### show
 Read one workspace.
 - `id` (string, required): workspace id.
 
-### add
+### create
 Register one directory as a workspace.
 - `path` (string, required unless you mint one): absolute directory path.
 - `name` (string, optional): display name. Required for a pathless add.
-- `create` (boolean, optional): create the directory when absent.
+- `mkdir` (boolean, optional): create the directory when absent.
 
 Pass `create: true` with `name` and no `path` to mint a folder under the trebi home.
 
@@ -29,9 +30,10 @@ Change one workspace.
 - `name` (string, optional): new display name.
 - `git_enabled` (boolean, optional): enable or disable git tracking.
 
-### remove
-Unregister one workspace. Destructive. Files on disk stay.
+### delete
+Unregister one workspace and delete its folder on disk. Destructive. Run rows stay.
 - `id` (string, required): workspace id.
+- `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required` and a message that names what goes.
 
 ## Related guides
 

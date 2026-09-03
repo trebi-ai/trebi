@@ -162,6 +162,8 @@ Live LLM-driven CLI evals: skill → client LLM (`claude` / `codex`) → `trebi`
 scripts/eval.py run --client codex
 scripts/eval.py run --client claude
 scripts/eval.py run --client codex --surface mcp
+scripts/eval.py run --surface both --parallel 4
+scripts/eval.py run --parallel 1        # serial
 scripts/eval.py run --client codex --judge codex
 scripts/eval.py run --judge codex:gpt-5
 
@@ -188,7 +190,7 @@ scripts/eval.py why --task not-found-honesty --commands
 scripts/eval.py compare RUN_A RUN_B
 ```
 
-`--task`, `--tier`, `--client` (repeatable), `--judge` (`claude` default, or `codex` / `name:model`), `--trials`, `--budget` (abort at cumulative `cost_usd`), `--baseline`, `--surface` (`cli` default, `mcp`, or `both`). `--no-build` skips the Go rebuild. `EVAL_JUDGE` fills `--judge` when the flag is omitted, same as `EVAL_CLIENT`. Server-side jobs default to harness `codex` (the one that probes `ok` on this Mac). Each trial is isolated with `TREBI_HOME` under `out/<runid>/`. MCP trials also get a scratch client home: credentials are copied in (`auth.json` for codex; `.claude.json` onboarding seed for claude); model selection (`model`, `model_provider`, `[model_providers.*]`) is merged from the real `config.toml` so mcp and cli evaluate the same model; skills, `AGENTS.md`, and extra MCP servers stay out. After a scratch codex launch, a newer `auth.json` `last_refresh` is written back so token rotation is not discarded. The MCP isolation tripwire flags `trebi` or `curl` at command position only, not in echoed prose. Before the first trial the runner preflights each (client, surface) and aborts on model 401 or a missing `mcp__trebi*` handshake. A client that produces zero assistant steps is `infra-failure` (no checks, no judge). Checks that are already green on seed state also abort the trial as infra so vacuous passes cannot land. Ctrl-C cancels the suite, writes a partial `report.md` / `report.json`, and kills trial daemons. Do not `exec` `trebi-eval` or redirect its stdout without the wrapper: Go fully buffers piped stdout, and a killed runner used to leak `trebi service daemon --listen 127.0.0.1:0`.
+`--task`, `--tier`, `--client` (repeatable), `--judge` (`claude` default, or `codex` / `name:model`), `--trials`, `--budget` (abort at cumulative `cost_usd`), `--baseline`, `--surface` (`cli` default, `mcp`, or `both`), `--parallel` (trials in flight, default 2, or `EVAL_PARALLEL`; use `--parallel 1` for serial). Trials are hermetic, so the pool spans tasks, clients, surfaces, and trials at once. `--no-build` skips the Go rebuild. `EVAL_JUDGE` fills `--judge` when the flag is omitted, same as `EVAL_CLIENT`. Server-side jobs default to harness `codex` (the one that probes `ok` on this Mac). Each trial is isolated with `TREBI_HOME` under `out/<runid>/`. MCP trials also get a scratch client home: credentials are copied in (`auth.json` for codex; `.claude.json` onboarding seed for claude); model selection (`model`, `model_provider`, `[model_providers.*]`) is merged from the real `config.toml` so mcp and cli evaluate the same model; skills, `AGENTS.md`, and extra MCP servers stay out. After a scratch codex launch, a newer `auth.json` `last_refresh` is written back so token rotation is not discarded. The MCP isolation tripwire flags `trebi` or `curl` at command position only, not in echoed prose. Before the first trial the runner preflights each (client, surface) and aborts on model 401 or a missing `mcp__trebi*` handshake. A client that produces zero assistant steps is `infra-failure` (no checks, no judge). Checks that are already green on seed state also abort the trial as infra so vacuous passes cannot land. An oracle replay skips every `commands_jq` check, so a task whose checks are all `commands_jq` passes its oracle on script exit alone; its `commands_jq` is proven instead by the fixture under `evals/fixtures/<id>.<surface>.json`. Ctrl-C cancels the suite, writes a partial `report.md` / `report.json`, and kills trial daemons. Do not `exec` `trebi-eval` or redirect its stdout without the wrapper: Go fully buffers piped stdout, and a killed runner used to leak `trebi service daemon --listen 127.0.0.1:0`.
 
 ## Logging and observability
 
@@ -340,6 +342,7 @@ The CLI is a thin API client. It holds no business logic and never touches the s
 - A harness is a `tmux.Tool` implementation, one file per tool (`tool_claude.go`, `tool_codex.go`). Adding a harness means adding a file, never editing a switch in the launch path.
 - Screen behavior is proven by golden fixtures under `internal/tmux/testdata/screens/<tool>/<scenario>/`. A new tool ships with its captures.
 - Keep planning pure: `PrepareLaunch` / `PrepareResume` return a `LaunchPlan`; the caller executes it.
+- `fake` (`tool_fake.go`, binary in `cmd/fake`) is the eval stand-in. It prints a device login screen, accepts any code, and writes a marker file under `harness/fake/`, so `harness-login` and `harness-logout-confirm` never touch a vendor account. It has no TUI, so it ships a `login` fixture only.
 
 ### Logging
 

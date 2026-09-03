@@ -230,14 +230,33 @@ func (s *Service) MarkFired(ctx context.Context, r Row, firedAt time.Time) error
 	return err
 }
 
+// ListOpts filters the schedule list.
+type ListOpts struct {
+	Workspace string
+	// DueBefore keeps rows due at or before this RFC3339 time.
+	DueBefore string
+	Limit     int
+}
+
 // List returns schedule rows ordered by next_due_at.
-func (s *Service) List(ctx context.Context, limit int) ([]Row, error) {
-	if limit <= 0 {
-		limit = 50
+func (s *Service) List(ctx context.Context, opts ListOpts) ([]Row, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 50
 	}
-	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at
-		 FROM schedules ORDER BY next_due_at LIMIT ?`, limit)
+	q := `SELECT workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at
+		 FROM schedules WHERE 1=1`
+	var args []any
+	if opts.Workspace != "" {
+		q += ` AND workspace_id = ?`
+		args = append(args, opts.Workspace)
+	}
+	if opts.DueBefore != "" {
+		q += ` AND next_due_at IS NOT NULL AND next_due_at <= ?`
+		args = append(args, opts.DueBefore)
+	}
+	q += ` ORDER BY next_due_at LIMIT ?`
+	args = append(args, opts.Limit)
+	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

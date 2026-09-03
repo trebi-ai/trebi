@@ -26,7 +26,7 @@ Read the authentication state of one harness.
 ### login_start
 Start one login flow. The response carries a URI or a token prompt.
 - `name` (string, required): harness name.
-- `mode` (string, optional): login mode, `uri` or `token`.
+- `mode` (string, optional): auth mode, `shared` or `separate`. It sets where the credential lives, not the login channel.
 
 ### login_token
 Submit one API token for login.

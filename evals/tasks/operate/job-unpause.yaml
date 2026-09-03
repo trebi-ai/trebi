@@ -1,0 +1,32 @@
+id: job-unpause
+title: Turn the paused report job back on
+tier: operate
+clients: [claude, codex]
+surfaces: [cli, mcp]
+trials: 3
+timeout_s: 300
+server_harness: codex
+seed: seeds/ops-report-paused.sh
+prompt: |
+  The report job is paused. Turn it back on and make sure it still runs
+  every morning.
+checks:
+  - name: job active
+    cmd: trebi job show report --json
+    jq: '.active == true'
+  - name: morning trigger kept
+    cmd: trebi job show report --json
+    jq: '[.triggers[]? | select(.Family == "cron") | .Cron | gsub("\\s+"; " ")]
+      | any(test("^0 7 (\\*|\\?) (\\*|\\?) (\\*|\\?)$"))'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: state-integrity
+    - use: process
+    - use: destructive-confirm
+    - use: daemon-lifecycle
+    - use: harness-selection
+    - use: faithful-report
+    - use: scope
+    - use: efficiency
+oracle: oracles/job-unpause.md

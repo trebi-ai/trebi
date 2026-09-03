@@ -51,6 +51,7 @@ func fileActionCommands(owner string, list, get, put, remove cli.ActionFunc) []*
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				&cli.IntFlag{Name: "limit", Usage: "page size"},
 				&cli.StringFlag{Name: "cursor", Usage: "path of the last row from the previous page"},
+				&cli.BoolFlag{Name: "recursive", Usage: "add a row per folder, so the tree shape is visible"},
 			},
 			Action: list,
 		},
@@ -71,9 +72,10 @@ func fileActionCommands(owner string, list, get, put, remove cli.ActionFunc) []*
 			Action: put,
 		},
 		{
-			Name: "remove", Usage: "delete " + noun, ArgsUsage: pathArgs,
+			Name: "delete", Aliases: []string{"remove"}, Usage: "delete " + noun, ArgsUsage: pathArgs,
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "if-match", Usage: "If-Match content hash"},
+				forceFlag("required for a workspace file; deletes it"),
 			},
 			Action: remove,
 		},
@@ -85,7 +87,7 @@ func runFileList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileListAction(c, client, request.BuildFileListPath(wsID, c.Args().Get(0), c.String("cursor"), c.Int("limit")))
+	return fileListAction(c, client, request.BuildFileListPath(wsID, c.Args().Get(0), c.String("cursor"), c.Int("limit"), c.Bool("recursive")))
 }
 
 func runFileGet(_ context.Context, c *cli.Command) error {
@@ -117,11 +119,15 @@ func runFileRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	confirm, err := confirmed(c, "deletes file "+rel)
+	if err != nil {
+		return err
+	}
 	client, wsID, err := fileClient(c)
 	if err != nil {
 		return err
 	}
-	return fileRemoveAction(c, client, request.BuildFileDelete(wsID, rel, c.String("if-match")))
+	return fileRemoveAction(c, client, request.BuildFileDelete(wsID, rel, c.String("if-match"), confirm))
 }
 
 func runJobFileList(_ context.Context, c *cli.Command) error {
@@ -133,7 +139,7 @@ func runJobFileList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileListAction(c, client, request.BuildJobFileListPath(name, workspaceFor(c), c.Args().Get(1), c.String("cursor"), c.Int("limit")))
+	return fileListAction(c, client, request.BuildJobFileListPath(name, workspaceFor(c), c.Args().Get(1), c.String("cursor"), c.Int("limit"), c.Bool("recursive")))
 }
 
 func runJobFileGet(_ context.Context, c *cli.Command) error {
@@ -285,7 +291,7 @@ func runSkillFileList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileListAction(c, client, request.BuildSkillFileListPath(name, c.Args().Get(1), c.String("cursor"), c.Int("limit")))
+	return fileListAction(c, client, request.BuildSkillFileListPath(name, c.Args().Get(1), c.String("cursor"), c.Int("limit"), c.Bool("recursive")))
 }
 
 func runSkillFileGet(_ context.Context, c *cli.Command) error {

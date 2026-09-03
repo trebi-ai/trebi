@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -43,12 +44,14 @@ func jobCommand() *cli.Command {
 				Name:      "pause",
 				Usage:     "pause (disable) a job",
 				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{ifMatchFlag()},
 				Action:    runJobPause,
 			},
 			&cli.Command{
 				Name:      "unpause",
 				Usage:     "unpause a job",
 				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{ifMatchFlag()},
 				Action:    runJobUnpause,
 			},
 			&cli.Command{
@@ -79,27 +82,30 @@ func jobCommand() *cli.Command {
 						Flags: []cli.Flag{
 							&cli.StringFlag{Name: "text", Usage: "entry text", Required: true},
 							&cli.StringFlag{Name: "date", Usage: "YYYY-MM-DD (default today)"},
+							ifMatchFlag(),
 						},
 						Action: runJobMemoryAdd,
 					},
 					{
-						Name:      "remove",
+						Name:      "delete",
+						Aliases:   []string{"remove"},
 						Usage:     "delete a ledger entry",
 						ArgsUsage: "<name> <entry-id>",
+						Flags:     []cli.Flag{ifMatchFlag()},
 						Action:    runJobMemoryRemove,
 					},
 					{
 						Name:      "set",
 						Usage:     "replace MEMORY.md (--file or stdin)",
 						ArgsUsage: "<name>",
-						Flags:     []cli.Flag{&cli.StringFlag{Name: "file", Usage: "path to MEMORY.md"}},
+						Flags:     []cli.Flag{&cli.StringFlag{Name: "file", Usage: "path to MEMORY.md"}, ifMatchFlag()},
 						Action:    runJobMemorySet,
 					},
 					{
 						Name:      "clear",
 						Usage:     "delete MEMORY.md (destroys the ledger)",
 						ArgsUsage: "<name>",
-						Flags:     []cli.Flag{&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "required; destroys the ledger"}},
+						Flags:     []cli.Flag{forceFlag("required; destroys the ledger"), ifMatchFlag()},
 						Action:    runJobMemoryClear,
 					},
 				},
@@ -119,6 +125,9 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.BoolFlag{Name: "detailed", Aliases: []string{"d"}, Usage: "extra columns (path, status)"},
 				&cli.BoolFlag{Name: "schedule", Usage: "add SPEC, TIMEZONE, NEXT, LAST columns"},
 				&cli.StringFlag{Name: "kind", Value: "job", Usage: "job|assistant|all (default job)"},
+				&cli.StringFlag{Name: "search", Usage: "substring match on job name"},
+				&cli.StringFlag{Name: "harness", Usage: "harness filter (claude, codex, …)"},
+				&cli.BoolFlag{Name: "active", Usage: "keep only active (or, with --active=false, paused) jobs"},
 			},
 			Action: runJobList,
 		},
@@ -134,21 +143,51 @@ func jobManageSubcommands() []*cli.Command {
 		},
 		{
 			Name:      "create",
-			Usage:     "create a job (content via --file or stdin)",
+			Usage:     "create a job (--file or stdin for full text, or --prompt and a trigger flag)",
 			ArgsUsage: "<name>",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "file", Usage: "JOB.md path"},
 				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				&cli.StringFlag{Name: "prompt", Usage: "job body; the daemon composes the front matter"},
+				&cli.StringFlag{Name: "harness", Usage: "harness that runs the job"},
+				&cli.StringFlag{Name: "description", Usage: "job description"},
+				&cli.StringFlag{Name: "cron", Usage: "cron trigger, for example \"0 3 * * *\""},
+				&cli.StringFlag{Name: "every", Usage: "interval trigger, for example 15m"},
+				&cli.StringFlag{Name: "on", Usage: "event trigger: the integration name"},
+				&cli.StringFlag{Name: "match", Usage: "event match expression, with --on"},
+				&cli.BoolFlag{Name: "validate", Usage: "check the definition; write nothing"},
 			},
 			Action: runJobCreate,
+		},
+		{
+			Name:      "set",
+			Usage:     "replace JOB.md (content via --file or stdin)",
+			ArgsUsage: "<name>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "file", Usage: "JOB.md path"},
+				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				ifMatchFlag(),
+			},
+			Action: runJobSet,
+		},
+		{
+			Name:      "patch",
+			Usage:     "patch JOB.md frontmatter fields",
+			ArgsUsage: "<name> KEY=VALUE …",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				ifMatchFlag(),
+			},
+			Action: runJobPatch,
 		},
 		{
 			Name:      "delete",
 			Usage:     "delete a job file (JOB.md); --purge removes the folder",
 			ArgsUsage: "<name>",
 			Flags: []cli.Flag{
-				&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "skip confirm (always true over API)"},
+				forceFlag("required; deletes the job definition"),
 				&cli.BoolFlag{Name: "purge", Usage: "remove the job folder, not only JOB.md"},
+				ifMatchFlag(),
 			},
 			Action: runJobDelete,
 		},
@@ -176,7 +215,11 @@ func runJobList(_ context.Context, c *cli.Command) error {
 	if kind == "assistant" {
 		return runListAssistants(c, client)
 	}
-	path := request.BuildJobsListPath(workspaceFor(c))
+	active := ""
+	if c.IsSet("active") {
+		active = strconv.FormatBool(c.Bool("active"))
+	}
+	path := request.BuildJobsListPath(workspaceFor(c), c.String("search"), c.String("harness"), active)
 	var body struct {
 		Jobs []map[string]any `json:"jobs"`
 	}
@@ -303,19 +346,71 @@ func runJobCreate(_ context.Context, c *cli.Command) error {
 	if name == "" {
 		return fmt.Errorf("name required")
 	}
-	content := "---\nharness: claude\n---\n\nDo the task.\n"
-	if f := c.String("file"); f != "" {
-		b, err := os.ReadFile(f)
+	spec := request.JobSpec{
+		Name: name, Workspace: workspaceFlag(c), Prompt: c.String("prompt"),
+		Harness: c.String("harness"), Description: c.String("description"),
+		Cron: c.String("cron"), Every: c.String("every"),
+		Event: c.String("on"), Match: c.String("match"),
+	}
+	switch {
+	case c.String("file") != "" || stdinPiped():
+		read, err := readFileOrStdin(c.String("file"))
 		if err != nil {
 			return err
 		}
-		content = string(b)
+		spec.Content = read
+	case spec.Prompt == "":
+		// A template with no harness lets the daemon apply defaults.command.
+		spec.Content = "---\n---\n\nDo the task.\n"
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildJobCreate(name, workspaceFlag(c), content), nil)
+	if c.Bool("validate") {
+		var body map[string]any
+		if err := client.DoHTTP(spec.BuildValidate(), &body); err != nil {
+			return err
+		}
+		return encodeJSON(c, body)
+	}
+	return client.DoHTTP(spec.Build(), nil)
+}
+
+func runJobSet(_ context.Context, c *cli.Command) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	content, err := readFileOrStdin(c.String("file"))
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(request.BuildJobPutMarkdown(name, workspaceFlag(c), content, c.String("if-match")), nil)
+}
+
+func runJobPatch(_ context.Context, c *cli.Command) error {
+	name := c.Args().Get(0)
+	if name == "" || c.NArg() < 2 {
+		return fmt.Errorf("usage: trebi job patch <name> KEY=VALUE …")
+	}
+	fields, err := parseKeyValues(c.Args().Tail())
+	if err != nil {
+		return err
+	}
+	patch := make(map[string]any, len(fields))
+	for k, v := range fields {
+		patch[k] = v
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(request.BuildJobPatch(name, workspaceFlag(c), patch, c.String("if-match")), nil)
 }
 
 func runJobDelete(_ context.Context, c *cli.Command) error {
@@ -323,11 +418,15 @@ func runJobDelete(_ context.Context, c *cli.Command) error {
 	if name == "" {
 		return fmt.Errorf("name required")
 	}
+	confirm, err := confirmed(c, "deletes job "+name)
+	if err != nil {
+		return err
+	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	req := request.BuildJobDelete(name, workspaceFor(c), c.Bool("purge"))
+	req := request.BuildJobDelete(name, workspaceFor(c), c.String("if-match"), c.Bool("purge"), confirm)
 	if err := client.DoHTTP(req, nil); err != nil {
 		return err
 	}
@@ -340,7 +439,7 @@ func runJobPause(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildJobPause(c.Args().Get(0), workspaceFor(c), true), nil)
+	return client.DoHTTP(request.BuildJobPause(c.Args().Get(0), workspaceFor(c), c.String("if-match"), true), nil)
 }
 
 func runJobUnpause(_ context.Context, c *cli.Command) error {
@@ -348,7 +447,7 @@ func runJobUnpause(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildJobPause(c.Args().Get(0), workspaceFor(c), false), nil)
+	return client.DoHTTP(request.BuildJobPause(c.Args().Get(0), workspaceFor(c), c.String("if-match"), false), nil)
 }
 
 func runJobValidate(_ context.Context, c *cli.Command) error {
@@ -402,7 +501,7 @@ func runJobMemoryAdd(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	req := request.BuildJobMemoryEntryAdd(name, workspaceFor(c), c.String("date"), c.String("text"))
+	req := request.BuildJobMemoryEntryAdd(name, workspaceFor(c), c.String("date"), c.String("text"), c.String("if-match"))
 	return client.DoHTTP(req, nil)
 }
 
@@ -415,7 +514,7 @@ func runJobMemoryRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildJobMemoryEntryDelete(name, workspaceFor(c), eid), nil)
+	return client.DoHTTP(request.BuildJobMemoryEntryDelete(name, workspaceFor(c), eid, c.String("if-match")), nil)
 }
 
 func runJobMemorySet(_ context.Context, c *cli.Command) error {
@@ -431,7 +530,7 @@ func runJobMemorySet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildJobMemoryPut(name, workspaceFor(c), content), nil)
+	return client.DoHTTP(request.BuildJobMemoryPut(name, workspaceFor(c), content, c.String("if-match")), nil)
 }
 
 func runJobMemoryClear(_ context.Context, c *cli.Command) error {
@@ -439,14 +538,15 @@ func runJobMemoryClear(_ context.Context, c *cli.Command) error {
 	if name == "" {
 		return fmt.Errorf("usage: trebi job memory clear <name>")
 	}
-	if !c.Bool("force") {
-		return fmt.Errorf("memory clear destroys the memory ledger for %s. Confirm with the user first, then re-run with --force", name)
+	confirm, err := confirmed(c, "destroys the memory ledger for "+name)
+	if err != nil {
+		return err
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(request.BuildJobMemoryClear(name, workspaceFor(c)), nil); err != nil {
+	if err := client.DoHTTP(request.BuildJobMemoryClear(name, workspaceFor(c), c.String("if-match"), confirm), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "cleared memory for %s\n", name)
@@ -488,7 +588,7 @@ func runJobSchedule(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	req := request.BuildJobPutMarkdown(name, ws, newMD)
+	req := request.BuildJobPutMarkdown(name, ws, newMD, mapStr(got, "hash"))
 	if err := client.DoHTTP(req, nil); err != nil {
 		return err
 	}
@@ -510,7 +610,7 @@ func runJobStatus(_ context.Context, c *cli.Command) error {
 	if err := client.GetJSON(request.BuildJobGetPath(name, ws), &job); err != nil {
 		return err
 	}
-	path := request.BuildRunsListPath("", name, ws, "job", "", "", "", 5)
+	path := request.RunsQuery{Job: name, Workspace: ws, Kind: "job", Limit: 5}.Path()
 	var runsBody struct {
 		Runs []map[string]any `json:"runs"`
 	}
@@ -544,7 +644,7 @@ func runJobTail(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	ws := workspaceFor(c)
-	path := request.BuildRunsListPath("", name, ws, "job", "", "", "", 1)
+	path := request.RunsQuery{Job: name, Workspace: ws, Kind: "job", Limit: 1}.Path()
 	var runsBody struct {
 		Runs []map[string]any `json:"runs"`
 	}
@@ -578,7 +678,7 @@ func runListAssistants(c *cli.Command, client *APIClient) error {
 	var wss struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := client.GetJSON(request.BuildWorkspacesListPath(), &wss); err != nil {
+	if err := client.GetJSON(request.BuildWorkspacesListPath(0), &wss); err != nil {
 		return err
 	}
 	var rows []map[string]any

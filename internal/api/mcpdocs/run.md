@@ -16,6 +16,11 @@ List runs, newest first.
 - `kind` (string, optional): filter by run kind.
 - `harness` (string, optional): filter by harness name.
 - `model` (string, optional): filter by model.
+- `conversation` (string, optional): filter by conversation id.
+- `end_reason` (string, optional): filter by end reason, for example `sentinel`.
+- `q` (string, optional): text match on the prompt preview, the job, or the id.
+- `since` (string, optional): RFC3339 time, or a duration such as `24h` meaning "that long ago".
+- `until` (string, optional): RFC3339 time, or a duration such as `1h`.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.
 
@@ -29,6 +34,7 @@ Launch one run of a job.
 ### show
 Read one run.
 - `id` (string, required): run id.
+- `wait_ms` (number, optional): long-poll until the run ends, up to 120000 ms. The response is the final run row.
 
 ### timeline
 Read the event timeline of one run.
@@ -38,14 +44,17 @@ Read the event timeline of one run.
 Read the agent transcript of one run.
 - `id` (string, required): run id.
 - `raw` (boolean, optional): return the raw transcript without formatting.
+- `max_bytes` (number, optional): cap the body at this size; default 64 KB. A cut body returns `{"content": "…", "truncated": true}`.
 
-### log
+### logs
 Read the log tail of one run.
 - `id` (string, required): run id.
+- `max_bytes` (number, optional): cap the body at this size; default 64 KB. A cut body returns `{"content": "…", "truncated": true}`.
 
 ### kill
-Stop one run. Destructive.
-- `id` (string, required): run id.
+Stop one run, or several. Destructive.
+- `id` (string, required unless `ids` is given): run id.
+- `ids` (array, optional): kill several runs in one call. The reply carries `ok`, `count`, and `failed`, so a partial kill is visible.
 
 ### resume
 Resume one interrupted run.
@@ -71,14 +80,23 @@ stalled, read its log and fix the blocker instead.
 Answer one approval request of a run.
 - `id` (string, required): run id.
 - `decision` (string, required): `allow` or `deny`.
+- `approval_id` (string, optional): the row to answer; defaults to the pending one.
 
 ### approvals
-List open approval requests.
+List approval rows. The daemon opens a pending row with the question when a run
+starts to wait, and the decision closes the same row.
+- `state` (string, optional): `pending` or `decided`; both when absent.
 - `cursor` (string, optional): pagination cursor.
 - `limit` (number, optional): page size.
 
 ### stats
-Read aggregate run statistics. No input fields.
+Read run counts and cost. The response is `{range, totals, mtd, days}`, with
+`totals` and `mtd` holding `runs`, `ok`, `failed`, `cost_usd`, and
+`tokens_billed`. `days` is one row per day of the range, oldest first. Use it
+to answer "how much did we spend".
+- `range` (string, optional): `24h`, `7d`, `30d`, or `mtd`; default `30d`.
+- `workspace` (string, optional): filter by workspace id.
+- `job` (string, optional): filter by job name.
 
 ### agents
 Read the live agent state table. No input fields.

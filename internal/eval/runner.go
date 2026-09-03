@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,7 @@ type Options struct {
 	Baseline  string
 	KeepHome  bool
 	Surface   string // cli (default), mcp, or both
+	Parallel  int    // trials in flight at once; 0 or 1 is serial
 }
 
 func (opts Options) preflightCombos(tasks []*Task) [][2]string {
@@ -119,17 +121,7 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 	if err := os.MkdirAll(outRoot, 0o755); err != nil {
 		return nil, err
 	}
-	for _, t := range tasks {
-		if err := ctx.Err(); err != nil {
-			rep.Aborted = err.Error()
-			break
-		}
-		if r.overBudget(rep) {
-			rep.Aborted = fmt.Sprintf("budget cap %.4f", r.opts.BudgetUSD)
-			break
-		}
-		r.runTask(ctx, t, rep, outRoot)
-	}
+	r.runTrials(ctx, r.plan(tasks, outRoot), rep, outRoot)
 	if err := ctx.Err(); err != nil && rep.Aborted == "" {
 		rep.Aborted = err.Error()
 	}
@@ -183,47 +175,90 @@ func (r *Runner) scoreFor(ctx context.Context, dims []JudgeDim, transcript, snap
 	return r.judge.scoreAll(ctx, dims, transcript, snapshot, surface)
 }
 
-func (r *Runner) runTask(ctx context.Context, t *Task, rep *Report, outRoot string) {
-	clients := t.Clients
-	if len(r.opts.Clients) > 0 {
-		clients = r.opts.Clients
-	}
-	trials := t.Trials
-	if r.opts.Trials > 0 {
-		trials = r.opts.Trials
-	}
-	for _, surf := range t.runSurfaces(r.opts.Surface) {
-		for _, name := range clients {
-			for i := 0; i < trials; i++ {
-				if err := ctx.Err(); err != nil {
-					if rep.Aborted == "" {
-						rep.Aborted = err.Error()
+// trialPlan is one trial of one task on one client and surface.
+type trialPlan struct {
+	task    *Task
+	client  string
+	surface string
+	index   int
+	art     string
+}
+
+func (r *Runner) plan(tasks []*Task, outRoot string) []trialPlan {
+	var out []trialPlan
+	for _, t := range tasks {
+		clients := t.Clients
+		if len(r.opts.Clients) > 0 {
+			clients = r.opts.Clients
+		}
+		trials := t.Trials
+		if r.opts.Trials > 0 {
+			trials = r.opts.Trials
+		}
+		for _, surf := range t.runSurfaces(r.opts.Surface) {
+			for _, name := range clients {
+				for i := range trials {
+					art := filepath.Join(outRoot, t.ID, name, fmt.Sprintf("%d", i))
+					if surf == surfaceMCP {
+						art = filepath.Join(outRoot, t.ID, "mcp", name, fmt.Sprintf("%d", i))
 					}
-					return
+					out = append(out, trialPlan{task: t, client: name, surface: surf, index: i, art: art})
 				}
-				if r.overBudget(rep) {
-					if rep.Aborted == "" {
-						rep.Aborted = fmt.Sprintf("budget cap %.4f", r.opts.BudgetUSD)
-					}
-					return
-				}
-				art := filepath.Join(outRoot, t.ID, name, fmt.Sprintf("%d", i))
-				if surf == surfaceMCP {
-					art = filepath.Join(outRoot, t.ID, "mcp", name, fmt.Sprintf("%d", i))
-				}
-				tr := r.runOne(ctx, t, name, i, art, false, surf)
+			}
+		}
+	}
+	return out
+}
+
+// runTrials executes the plan with at most Parallel trials in flight. Each trial
+// owns its home, workdir, and daemon port, so they do not share state.
+func (r *Runner) runTrials(ctx context.Context, plans []trialPlan, rep *Report, outRoot string) {
+	workers := max(r.opts.Parallel, 1)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	stop := false
+	work := make(chan trialPlan)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range work {
+				tr := r.runOne(ctx, p.task, p.client, p.index, p.art, false, p.surface)
 				if tr.Outcome == OutcomeInfraFailure {
-					tr = r.runOne(ctx, t, name, i, art+"-retry", false, surf)
+					tr = r.runOne(ctx, p.task, p.client, p.index, p.art+"-retry", false, p.surface)
 				}
+				mu.Lock()
 				rep.add(*tr)
 				if r.judge != nil {
 					rep.JudgeUSD = r.judge.spendUSD()
 				}
 				fmt.Fprintf(os.Stderr, "eval %s/%s/%s#%d %s %.1fs\n", tr.TaskID, tr.Surface, tr.Client, tr.Index, tr.Outcome, tr.DurationS)
 				_ = rep.checkpoint(outRoot)
+				mu.Unlock()
 			}
-		}
+		}()
 	}
+	for _, p := range plans {
+		mu.Lock()
+		if err := ctx.Err(); err != nil {
+			if rep.Aborted == "" {
+				rep.Aborted = err.Error()
+			}
+			stop = true
+		} else if r.overBudget(rep) {
+			if rep.Aborted == "" {
+				rep.Aborted = fmt.Sprintf("budget cap %.4f", r.opts.BudgetUSD)
+			}
+			stop = true
+		}
+		mu.Unlock()
+		if stop {
+			break
+		}
+		work <- p
+	}
+	close(work)
+	wg.Wait()
 }
 
 func (r *Runner) runOne(ctx context.Context, t *Task, clientName string, idx int, art string, oracle bool, surface string) *TrialResult {
@@ -312,7 +347,14 @@ func (r *Runner) finishOracle(ctx context.Context, t *Task, env *trialEnv, p Pla
 		return tr
 	}
 	_ = g.collectSnapshot(ctx)
-	tr.Checks = g.runAll(ctx, skipOracleChecks(checksFor(t.Checks, surfaceCLI)))
+	kept := skipOracleChecks(checksFor(t.Checks, surfaceCLI))
+	tr.Checks = g.runAll(ctx, kept)
+	if len(kept) == 0 {
+		// Every check was commands_jq, which a replay cannot run. The script
+		// itself completed, so there is nothing left for the oracle to fail.
+		tr.Outcome = OutcomePass
+		return tr
+	}
 	tr.Outcome = checksOutcome(tr.Checks)
 	return tr
 }
@@ -336,18 +378,16 @@ func (r *Runner) finishClient(ctx, dctx context.Context, t *Task, env *trialEnv,
 	if launch != nil {
 		tr.CostUSD = launch.CostUSD
 	}
-	if surface == surfaceMCP {
-		tr.ClientSkills = clientSkillFingerprint(opts.ConfigHome)
-	}
+	tr.ClientSkills = clientSkillFingerprint(opts.ConfigHome)
 	if err != nil && (launch == nil || len(launch.Raw) == 0) {
 		tr.Outcome = OutcomeInfraFailure
 		tr.Error = err.Error()
 		return tr
 	}
-	if surface == surfaceMCP && launch != nil {
-		if viol := launch.Steps.mcpIsolationViolations(env.apiURL); len(viol) > 0 {
+	if launch != nil {
+		if viol := launch.Steps.isolationViolations(env.apiURL, surface); len(viol) > 0 {
 			tr.Outcome = OutcomeFail
-			tr.Error = "mcp isolation: " + strings.Join(viol, "; ")
+			tr.Error = "isolation: " + strings.Join(viol, "; ")
 			return tr
 		}
 	}
@@ -361,14 +401,10 @@ func (r *Runner) launchOpts(env *trialEnv, p Placeholders, t *Task, clientName, 
 	opts := LaunchOpts{
 		Workdir:    env.workdir,
 		Prompt:     t.Prompt,
-		Env:        env.environ(),
 		Timeout:    time.Duration(t.TimeoutS) * time.Second,
 		SkillMD:    r.skillMD,
 		Transcript: p.Transcript,
 		Surface:    surface,
-	}
-	if surface != surfaceMCP {
-		return opts, nil
 	}
 	cfgHome := filepath.Join(env.artDir, "client-home")
 	if err := os.MkdirAll(cfgHome, 0o755); err != nil {
@@ -377,9 +413,13 @@ func (r *Runner) launchOpts(env *trialEnv, p Placeholders, t *Task, clientName, 
 	if err := seedClientHome(cfgHome, clientName); err != nil {
 		return opts, err
 	}
+	opts.ConfigHome = cfgHome
+	if surface != surfaceMCP {
+		opts.Env = env.cliEnviron(cfgHome)
+		return opts, nil
+	}
 	opts.MCPURL = strings.TrimRight(env.apiURL, "/") + "/mcp"
 	opts.MCPToken = env.token
-	opts.ConfigHome = cfgHome
 	opts.Env = env.mcpEnviron(cfgHome)
 	return opts, nil
 }
@@ -388,6 +428,7 @@ func (r *Runner) gradeLaunch(ctx, dctx context.Context, t *Task, env *trialEnv, 
 	p.Workspace = env.workspacePath(dctx)
 	g := newGrader(env, p)
 	_ = g.collectSnapshot(dctx)
+	_ = writeCommands(env.artDir, readFile(p.Transcript))
 	tr.Checks = g.runAll(dctx, checksFor(t.Checks, tr.Surface))
 	jctx, jcancel := context.WithTimeout(ctx, judgeBudget(len(t.Judge.Dimensions)))
 	defer jcancel()
@@ -562,14 +603,19 @@ func checksOutcome(checks []CheckResult) Outcome {
 	return OutcomePass
 }
 
+// maxUngradedShare is how much of a trial's judge may come back unknown
+// before the trial is not graded at all. Above it, a pass would rest on
+// dimensions no judge answered.
+const maxUngradedShare = 1.0 / 3.0
+
 func trialOutcome(checks []CheckResult, judge []JudgeResult) Outcome {
 	o := checksOutcome(checks)
 	if o != OutcomePass {
 		return o
 	}
-	n, nInfra := 0, 0
+	n, nInfra, nUnknown := 0, 0, 0
 	for _, j := range judge {
-		if j.Name == "efficiency" {
+		if j.Telemetry {
 			continue
 		}
 		n++
@@ -577,12 +623,20 @@ func trialOutcome(checks []CheckResult, judge []JudgeResult) Outcome {
 			nInfra++
 			continue
 		}
-		if !j.Pass && !j.Unknown {
+		if j.Unknown {
+			nUnknown++
+			continue
+		}
+		if !j.Pass {
 			return OutcomeFail
 		}
 	}
 	if n > 0 && nInfra == n {
 		return OutcomeInfraFailure
+	}
+	graded := n - nInfra
+	if graded > 0 && float64(nUnknown) > float64(graded)*maxUngradedShare {
+		return OutcomeFail
 	}
 	return OutcomePass
 }

@@ -30,7 +30,7 @@ func TestMCPToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	want := []string{"assistant", "config", "conversation", "events", "file",
+	want := []string{"assistant", "config", "conversation", "event", "file",
 		"harness", "inbox", "integration", "job", "queue", "run", "secret",
 		"skill", "system", "workspace"}
 	got := make([]string, 0, len(res.Tools))
@@ -70,10 +70,10 @@ func TestMCPJobRoundTrip(t *testing.T) {
 	token := s.Token()
 	cs := mcpSession(t, base, token)
 
-	res, text := mcpCall(t, cs, "workspace", "add", map[string]any{
+	res, text := mcpCall(t, cs, "workspace", "create", map[string]any{
 		"path": t.TempDir(), "name": "mcp-jobs", "create": true,
 	})
-	wsID := fmt.Sprint(mcpOK(t, "workspace.add", res, text)["id"])
+	wsID := fmt.Sprint(mcpOK(t, "workspace.create", res, text)["id"])
 
 	res, text = mcpCall(t, cs, "job", "create", map[string]any{
 		"workspace": wsID, "name": "mcp-roundtrip",
@@ -155,10 +155,10 @@ func TestMCPFilePlane(t *testing.T) {
 	token := s.Token()
 	cs := mcpSession(t, base, token)
 
-	res, text := mcpCall(t, cs, "workspace", "add", map[string]any{
+	res, text := mcpCall(t, cs, "workspace", "create", map[string]any{
 		"path": t.TempDir(), "name": "mcp-files", "create": true,
 	})
-	ws := mcpOK(t, "workspace.add", res, text)
+	ws := mcpOK(t, "workspace.create", res, text)
 	wsID := fmt.Sprint(ws["id"])
 
 	put := map[string]any{
@@ -191,10 +191,10 @@ func TestMCPBusPoll(t *testing.T) {
 	s, base := startTestServer(t)
 	cs := mcpSession(t, base, s.Token())
 
-	res, text := mcpCall(t, cs, "workspace", "add", map[string]any{
+	res, text := mcpCall(t, cs, "workspace", "create", map[string]any{
 		"path": t.TempDir(), "name": "mcp-poll", "create": true,
 	})
-	wsID := fmt.Sprint(mcpOK(t, "workspace.add", res, text)["id"])
+	wsID := fmt.Sprint(mcpOK(t, "workspace.create", res, text)["id"])
 	mustCreate := func(name string) {
 		res, text := mcpCall(t, cs, "job", "create", map[string]any{
 			"workspace": wsID, "name": name,
@@ -327,7 +327,7 @@ func TestMCPGuides(t *testing.T) {
 func TestMCPDocsAction(t *testing.T) {
 	s, base := startTestServer(t)
 	cs := mcpSession(t, base, s.Token())
-	tools := []string{"assistant", "config", "conversation", "events", "file",
+	tools := []string{"assistant", "config", "conversation", "event", "file",
 		"harness", "inbox", "integration", "job", "queue", "run", "secret",
 		"skill", "system", "workspace"}
 	for _, tool := range tools {
@@ -349,10 +349,10 @@ func TestMCPTraversalIsError(t *testing.T) {
 	s, base := startTestServer(t)
 	cs := mcpSession(t, base, s.Token())
 
-	res, text := mcpCall(t, cs, "workspace", "add", map[string]any{
+	res, text := mcpCall(t, cs, "workspace", "create", map[string]any{
 		"path": t.TempDir(), "name": "mcp-traversal", "create": true,
 	})
-	ws := mcpOK(t, "workspace.add", res, text)
+	ws := mcpOK(t, "workspace.create", res, text)
 	wsID := fmt.Sprint(ws["id"])
 
 	for _, p := range []string{"../notes.txt", "a/../../notes.txt", "./notes.txt", "/tmp/notes.txt"} {
@@ -370,26 +370,26 @@ func TestMCPTraversalIsError(t *testing.T) {
 
 // TestMCPWorkspacePathlessAdd pins that `create` + `name` mints a workspace
 // without a path, matching `trebi workspace add --create --name`.
-func TestMCPWorkspacePathlessAdd(t *testing.T) {
+func TestMCPWorkspacePathlessCreate(t *testing.T) {
 	root := t.TempDir()
 	s, base := startTestServerOpts(t, api.Options{WorkspacesRoot: root})
 	cs := mcpSession(t, base, s.Token())
 
-	res, text := mcpCall(t, cs, "workspace", "add", map[string]any{
-		"name": "ops", "create": true,
+	res, text := mcpCall(t, cs, "workspace", "create", map[string]any{
+		"name": "ops", "mkdir": true,
 	})
-	ws := mcpOK(t, "workspace.add", res, text)
+	ws := mcpOK(t, "workspace.create", res, text)
 	if fmt.Sprint(ws["name"]) != "ops" {
 		t.Fatalf("name = %v, want ops", ws["name"])
 	}
 	if fmt.Sprint(ws["path"]) == "" {
-		t.Fatal("pathless add returned no minted path")
+		t.Fatal("a pathless create returned no minted path")
 	}
 
 	// Still an error with neither path nor a name to mint from.
-	res, text = mcpCall(t, cs, "workspace", "add", map[string]any{"create": true})
+	res, text = mcpCall(t, cs, "workspace", "create", map[string]any{"mkdir": true})
 	if !res.IsError {
-		t.Fatalf("nameless pathless add: want error, got %s", text)
+		t.Fatalf("nameless pathless create: want error, got %s", text)
 	}
 }
 

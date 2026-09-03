@@ -176,6 +176,46 @@ func TestPointerSwitchAnd404(t *testing.T) {
 	}
 }
 
+func TestAskCreatesAndReusesTheChannelConversation(t *testing.T) {
+	t.Parallel()
+	svc := testSvc(t)
+	ctx := context.Background()
+
+	first, err := svc.Ask(ctx, conversations.AskOpts{Workspace: "ws1", Text: "status?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ConversationID == "" || first.Message.Text != "status?" {
+		t.Fatalf("%+v", first)
+	}
+	ptr, err := svc.GetPointer(ctx, "cli", "ws1")
+	if err != nil || ptr.ConversationID != first.ConversationID {
+		t.Fatalf("pointer %+v %v", ptr, err)
+	}
+
+	second, err := svc.Ask(ctx, conversations.AskOpts{Workspace: "ws1", Text: "again"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ConversationID != first.ConversationID {
+		t.Fatalf("ask made a second conversation: %s then %s", first.ConversationID, second.ConversationID)
+	}
+
+	other, err := svc.Ask(ctx, conversations.AskOpts{
+		Workspace: "ws1", Text: "hi", ChannelType: "ui", ChannelRef: "panel",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.ConversationID == first.ConversationID {
+		t.Fatal("a different channel must get its own conversation")
+	}
+
+	if _, err := svc.Ask(ctx, conversations.AskOpts{Text: "no workspace"}); !errors.Is(err, conversations.ErrValidation) {
+		t.Fatalf("missing workspace: %v", err)
+	}
+}
+
 func testSvc(t *testing.T) *conversations.Service {
 	t.Helper()
 	st, err := store.OpenPath(filepath.Join(t.TempDir(), "c.db"))

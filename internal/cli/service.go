@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/api"
 	config "github.com/trebi-ai/trebi/internal/config"
@@ -50,8 +51,55 @@ func serviceCommand() *cli.Command {
 			serviceDiagnosticsSubcommands(),
 			serviceDaemonSubcommands(),
 			serviceTokenSubcommands(),
+			serviceCloudSubcommands(),
 		),
 	}
+}
+
+// statusCommand is the one-call operator view: "is trebi ready, and what needs
+// me?". It degrades to the OS service status when the daemon is down.
+func statusCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "status",
+		Usage: "one-screen overview: health, runs, inbox, next due",
+		Flags: []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+		Action: func(_ context.Context, c *cli.Command) error {
+			client, err := clientFor(c)
+			if err != nil {
+				return runServiceStatus(context.Background(), c)
+			}
+			var body map[string]any
+			if err := client.GetJSON(request.BuildSystemOverviewPath(), &body); err != nil {
+				return runServiceStatus(context.Background(), c)
+			}
+			if c.Bool("json") {
+				return encodeJSON(c, body)
+			}
+			return printOverview(outWriter(c), body)
+		},
+	}
+}
+
+func printOverview(w io.Writer, body map[string]any) error {
+	runs, _ := body["runs"].(map[string]any)
+	inbox, _ := body["inbox"].(map[string]any)
+	doctor, _ := body["doctor"].(map[string]any)
+	tbl := newTable(w, []string{"Field", "Value"})
+	for _, row := range [][2]any{
+		{"version", body["version"]},
+		{"workspaces", body["workspaces"]},
+		{"running", runs["running"]},
+		{"waiting", runs["waiting"]},
+		{"inbox unread", inbox["unread"]},
+		{"approvals", inbox["approvals"]},
+		{"doctor warn", doctor["warn"]},
+		{"doctor error", doctor["error"]},
+		{"next due", dash(fmt.Sprint(body["next_due_at"]))},
+	} {
+		tbl.AppendRow(table.Row{row[0], row[1]})
+	}
+	renderTable(tbl)
+	return nil
 }
 
 // serviceLifecycleSubcommands returns the OS-supervisor commands: install, uninstall, start, stop, restart.
@@ -136,6 +184,24 @@ func serviceDiagnosticsSubcommands() []*cli.Command {
 			Action: runServiceStatus,
 		},
 		{
+			Name:  "version",
+			Usage: "Show the running version and whether an upgrade is available",
+			Flags: []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+			Action: func(_ context.Context, c *cli.Command) error {
+				client, err := clientFor(c)
+				if err != nil {
+					return err
+				}
+				var body map[string]any
+				if err := client.GetJSON(request.BuildSystemUpdatePath(), &body); err != nil {
+					return err
+				}
+				enc := json.NewEncoder(outWriter(c))
+				enc.SetIndent("", "  ")
+				return enc.Encode(body)
+			},
+		},
+		{
 			Name:    "logs",
 			Aliases: []string{"log"},
 			Usage:   "View the daemon log (launchd stdout/stderr → trebid.log)",
@@ -205,12 +271,76 @@ func serviceDaemonSubcommands() []*cli.Command {
 		{
 			Name:  "shutdown",
 			Usage: "ask the daemon to shut down",
+			Flags: []cli.Flag{forceFlag("required; scheduled jobs stop firing")},
 			Action: func(_ context.Context, c *cli.Command) error {
+				confirm, err := confirmed(c, "stops the daemon; scheduled jobs stop firing until it starts again")
+				if err != nil {
+					return err
+				}
 				client, err := clientFor(c)
 				if err != nil {
 					return err
 				}
-				return client.DoHTTP(request.BuildServiceShutdown(), nil)
+				return client.DoHTTP(request.BuildServiceShutdown(confirm), nil)
+			},
+		},
+	}
+}
+
+// serviceCloudSubcommands returns the cloudlink command group.
+func serviceCloudSubcommands() []*cli.Command {
+	return []*cli.Command{
+		{
+			Name:  "cloud",
+			Usage: "cloudlink status and pairing",
+			Commands: []*cli.Command{
+				{
+					Name:  "status",
+					Usage: "show the cloud link state",
+					Flags: []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+					Action: func(_ context.Context, c *cli.Command) error {
+						client, err := clientFor(c)
+						if err != nil {
+							return err
+						}
+						var body map[string]any
+						if err := client.GetJSON(request.BuildCloudStatusPath(), &body); err != nil {
+							return err
+						}
+						return encodeJSON(c, body)
+					},
+				},
+				{
+					Name:  "link",
+					Usage: "link this daemon to the cloud service",
+					Action: func(_ context.Context, c *cli.Command) error {
+						client, err := clientFor(c)
+						if err != nil {
+							return err
+						}
+						var body map[string]any
+						if err := client.DoHTTP(request.BuildCloudLink(), &body); err != nil {
+							return err
+						}
+						return encodeJSON(c, body)
+					},
+				},
+				{
+					Name:  "unlink",
+					Usage: "unlink this daemon from the cloud service",
+					Flags: []cli.Flag{forceFlag("required; remote clients lose access")},
+					Action: func(_ context.Context, c *cli.Command) error {
+						confirm, err := confirmed(c, "unlinks this daemon from the cloud; remote clients lose access")
+						if err != nil {
+							return err
+						}
+						client, err := clientFor(c)
+						if err != nil {
+							return err
+						}
+						return client.DoHTTP(request.BuildCloudUnlink(confirm), nil)
+					},
+				},
 			},
 		},
 	}

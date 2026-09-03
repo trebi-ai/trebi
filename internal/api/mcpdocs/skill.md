@@ -15,9 +15,11 @@ Read one skill.
 - `name` (string, required): skill name.
 
 ### create
-Create one skill.
+Create one skill. Give `content`, or one source field to pull the bundle.
 - `name` (string, required): skill name.
-- `content` (string, required): skill document text.
+- `content` (string, required unless a source field is set): skill document text.
+- `source_git` (string, optional): git remote to clone the skill bundle from. The clone must hold a `SKILL.md`.
+- `source_folder` (string, optional): local folder to copy the skill bundle from. It must hold a `SKILL.md`.
 - `provenance` (string, optional): origin of the skill, one of `local`,
   `assistant`, `git`, `registry`, `integration`. Leave it unset unless you know
   the skill came from elsewhere: it defaults to `local`, and only `local` and
@@ -29,14 +31,19 @@ Create one skill.
 Replace one skill document.
 - `name` (string, required): skill name.
 - `content` (string, required): full skill document text.
+- `harnesses` (object, optional): harness name to skill path, for tools that keep their own copy.
+- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
 
-### update
-Refresh one skill from its source.
+### refresh
+Pull the skill source again. The reply carries `updated`, which is false when
+the source is unchanged, and false with a `note` when the skill has no source.
+A skill made from a source keeps it, so `refresh` needs the name only.
 - `name` (string, required): skill name.
 
 ### delete
-Remove one skill. Destructive.
+Remove one skill and its folder. Destructive.
 - `name` (string, required): skill name.
+- `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
 ## Related guides
 

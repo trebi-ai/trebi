@@ -10,7 +10,7 @@ harness: codex
 ---
 Write ok to nightly.txt in this job folder, then stop.
 EOF
-trebi job create --file "$EVAL_WORKDIR/JOB.md" nightly
+trebi job set --file "$EVAL_WORKDIR/JOB.md" nightly
 trebi job validate nightly
 trebi job run nightly --test
 trebi job run nightly

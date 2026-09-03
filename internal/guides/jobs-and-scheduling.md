@@ -53,7 +53,11 @@ The prompt body. This is what the harness receives.
 ## Create, inspect, validate
 
 ```bash
+trebi job create my-job --prompt "Run the sync." --cron "0 3 * * *" --workspace reports
+trebi job create my-job --prompt "Read it." --on mail --match '.subject' --workspace reports
+trebi job create my-job --prompt "Run the sync." --cron "0 3 * * *" --validate
 trebi job create my-job --file ./JOB.md --workspace reports
+trebi job list --workspace reports --search sync --harness claude --json
 trebi job list --workspace reports --json
 trebi job list --workspace reports --kind all --detailed --json
 trebi job list --workspace reports --schedule --json
@@ -61,7 +65,10 @@ trebi job show my-job --workspace reports --json
 trebi job validate my-job --workspace reports --json
 ```
 
-`--file` is **local only** (reads a path); remote: pass `content`. Always `validate` after you write a `JOB.md`.
+`--prompt` with a trigger flag lets the daemon compose the front matter. Prefer
+it over hand-written YAML. `--validate` checks the definition and writes
+nothing. `--file` is **local only** (reads a path); remote: pass `content`.
+Always `validate` after you write a `JOB.md` yourself.
 
 ## Launch
 
@@ -84,7 +91,7 @@ trebi job status my-job --workspace reports --json
 trebi --workspace reports job tail my-job --lines 400
 ```
 
-`job status` and `job tail` are **local only** convenience; remote: `job show` plus `runs list --job my-job` / `runs log`.
+`job status` and `job tail` are **local only** convenience; remote: `job show` plus `runs list --job my-job` / `runs logs`.
 
 ## Pause and schedule
 

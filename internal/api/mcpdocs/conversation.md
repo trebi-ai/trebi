@@ -23,13 +23,13 @@ List messages of one conversation.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.
 
-### new
+### create
 Create one conversation.
-- `workspace` (string, optional): workspace id.
+- `workspace` (string, required): workspace id. The service rejects an empty value.
 - `title` (string, optional): title text.
-- `origin_channel` (string, optional): originating channel reference.
-- `channel_type` (string, optional): channel type.
-- `channel_ref` (string, optional): channel reference.
+- `origin_channel` (string, optional): originating channel reference. Defaults to `mcp`.
+- `channel_type` (string, optional, with `channel_ref`): channel type. Both together activate the conversation on that channel.
+- `channel_ref` (string, optional, with `channel_type`): channel reference.
 
 ### patch
 Change one conversation.
@@ -55,7 +55,7 @@ Read the conversation pointer of one channel.
 Point one channel at a conversation.
 - `channel_type` (string, required): channel type.
 - `channel_ref` (string, required): channel reference.
-- `conversation` (string, required): conversation id.
+- `conversation_id` (string, required): conversation id.
 
 ## Related guides
 

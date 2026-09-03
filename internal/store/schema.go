@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 5
+const SchemaVersion = 7
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -362,6 +362,22 @@ ALTER TABLE harness_state ADD COLUMN auth_status TEXT;
 ALTER TABLE harness_state ADD COLUMN auth_detail TEXT;
 ALTER TABLE harness_state ADD COLUMN auth_probed_at TEXT;
 ALTER TABLE harness_state ADD COLUMN auth_expires_at TEXT;
+`,
+		// v6: idempotency keys for repeat-safe POSTs (§3.4).
+		`
+CREATE TABLE idempotency_keys (
+	scope           TEXT NOT NULL,
+	key             TEXT NOT NULL,
+	result_id       TEXT NOT NULL,
+	created_at      TEXT NOT NULL,
+	PRIMARY KEY (scope, key)
+);
+CREATE INDEX idx_idempotency_created ON idempotency_keys(created_at);
+`,
+		// v7: skill source, so refresh can re-pull (A6.10).
+		`
+ALTER TABLE skill_index ADD COLUMN source_kind TEXT;
+ALTER TABLE skill_index ADD COLUMN source_ref TEXT;
 `,
 	}
 }

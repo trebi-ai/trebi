@@ -30,6 +30,9 @@ type Workspace struct {
 	Orphaned   bool      `json:"orphaned,omitempty"`
 	Assistant  *string   `json:"assistant,omitempty"` // nickname if TREBI.md present
 	Revision   int64     `json:"revision"`
+	// JobCount and RunningCount are filled by list reads only.
+	JobCount     int `json:"job_count"`
+	RunningCount int `json:"running_count"`
 }
 
 // Service owns workspace registry rows.
@@ -325,7 +328,17 @@ func (s *Service) List(ctx context.Context) ([]Workspace, error) {
 		}
 		out = append(out, w)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	counts, err := s.jobCounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].JobCount = counts[out[i].ID]
+	}
+	return out, nil
 }
 
 // Get returns one workspace by id.
@@ -784,4 +797,24 @@ func capSection(s string, n int) string {
 		return s
 	}
 	return s[:n] + truncMark
+}
+
+// jobCounts returns the number of indexed jobs per workspace.
+func (s *Service) jobCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT workspace_id, COUNT(*) FROM job_index WHERE kind='job' GROUP BY workspace_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
 }

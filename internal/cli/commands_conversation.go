@@ -45,8 +45,9 @@ func conversationCommand() *cli.Command {
 				Action: runConversationMessages,
 			},
 			{
-				Name:  "new",
-				Usage: "create a conversation and point the cli channel at it",
+				Name:    "create",
+				Aliases: []string{"new"},
+				Usage:   "create a conversation and point the cli channel at it",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "title", Usage: "optional title"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
@@ -211,7 +212,8 @@ func runConversationPatch(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var out map[string]any
-	if err := client.DoHTTP(request.BuildConversationPatch(id, c.String("title"), c.String("summary"), c.Int64("revision")), &out); err != nil {
+	req := request.BuildConversationPatch(id, setStr(c, "title"), setStr(c, "summary"), c.Int64("revision"))
+	if err := client.DoHTTP(req, &out); err != nil {
 		return err
 	}
 	if c.Bool("json") {

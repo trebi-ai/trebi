@@ -1,9 +1,13 @@
 package job
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // WriteAtomic writes data to path via temp+rename.
@@ -41,14 +45,32 @@ func SetDisabled(path string, disabled bool) error {
 	return setScalarField(path, "disabled", val)
 }
 
+// patchScalars are the top-level frontmatter fields a patch may set.
+var patchScalars = []string{"harness", "title", "envset", "description", "working_dir", "followup_prompt"} //nolint:gochecknoglobals // static field list, never mutated
+
+// patchSessionFields map a dotted session key to its frontmatter field.
+var patchSessionFields = map[string]string{ //nolint:gochecknoglobals // static field table, never mutated
+	"session.max_duration": "max_duration",
+	"session.idle_timeout": "idle_timeout",
+	"session.keep_alive":   "keep_alive",
+	"session.nudge":        "nudge",
+	"session.resumable":    "resumable",
+	"session.if_running":   "if_running",
+}
+
 // MergePatchFrontmatter applies a JSON-merge-patch of known scalar frontmatter fields.
-// Supports: harness, title, disabled, envset, description, and session.* scalars.
-// Nested "session" map is flattened to session.idle_timeout etc. via line rewrite.
+// Supports: disabled, harness, title, envset, description, working_dir,
+// followup_prompt, and session.* scalars. A nested "session" map is flattened
+// to session.idle_timeout etc. via line rewrite. An unknown key is an error:
+// a silent success would tell the caller a change landed when it did not.
 func MergePatchFrontmatter(path string, patch map[string]any) error {
 	if len(patch) == 0 {
 		return nil
 	}
 	flattenSessionPatch(patch)
+	if err := checkPatchKeys(patch); err != nil {
+		return err
+	}
 	if err := applyDisabledPatch(path, patch); err != nil {
 		return err
 	}
@@ -56,6 +78,31 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 		return err
 	}
 	return applySessionPatch(path, patch)
+}
+
+// checkPatchKeys rejects a key the writer does not honor.
+func checkPatchKeys(patch map[string]any) error {
+	known := map[string]bool{"disabled": true}
+	for _, k := range patchScalars {
+		known[k] = true
+	}
+	for k := range patchSessionFields {
+		known[k] = true
+	}
+	unknown := make([]string, 0, len(patch))
+	for k := range patch {
+		if !known[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	valid := append([]string{"disabled"}, patchScalars...)
+	valid = append(valid, "session")
+	return fmt.Errorf("unknown patch field(s) %s; valid fields are %s",
+		strings.Join(unknown, ", "), strings.Join(valid, ", "))
 }
 
 // flattenSessionPatch lifts a nested session map into dotted session.* keys.
@@ -90,8 +137,7 @@ func applyDisabledPatch(path string, patch map[string]any) error {
 
 // applyScalarPatch writes the known top-level scalar fields present in patch.
 func applyScalarPatch(path string, patch map[string]any) error {
-	scalars := []string{"harness", "title", "envset", "description", "working_dir", "followup_prompt"}
-	for _, k := range scalars {
+	for _, k := range patchScalars {
 		if v, ok := patch[k]; ok && v != nil {
 			if err := setScalarField(path, k, fmt.Sprint(v)); err != nil {
 				return err
@@ -103,15 +149,7 @@ func applyScalarPatch(path string, patch map[string]any) error {
 
 // applySessionPatch writes session.* keys under the session: block.
 func applySessionPatch(path string, patch map[string]any) error {
-	sessionKeys := map[string]string{
-		"session.max_duration": "max_duration",
-		"session.idle_timeout": "idle_timeout",
-		"session.keep_alive":   "keep_alive",
-		"session.nudge":        "nudge",
-		"session.resumable":    "resumable",
-		"session.if_running":   "if_running",
-	}
-	for patchKey, field := range sessionKeys {
+	for patchKey, field := range patchSessionFields {
 		v, ok := patch[patchKey]
 		if !ok || v == nil {
 			continue
@@ -248,4 +286,66 @@ func setInSessionBlock(fmLines []string, sessIdx int, key, entry string) []strin
 	tail := append([]string{}, fmLines[insertAt:]...)
 	fmLines = append(fmLines[:insertAt], entry)
 	return append(fmLines, tail...)
+}
+
+// Spec is a structured job definition. The server composes the front matter,
+// so a client does not write YAML by hand. Content, when set, wins over every
+// other field.
+type Spec struct {
+	Content     string
+	Prompt      string
+	Harness     string
+	Description string
+	Cron        string
+	Every       string
+	// On is one event trigger: the integration name plus its optional gates.
+	On      *EventSpec
+	Session SessionYAML
+	Env     map[string]string
+}
+
+// EventSpec is the on: field of a Spec.
+type EventSpec struct {
+	Event   string
+	Match   string
+	Extract string
+}
+
+// Render composes JOB.md text. It returns Content unchanged when set.
+func (s Spec) Render() (string, error) {
+	if strings.TrimSpace(s.Content) != "" {
+		return s.Content, nil
+	}
+	if strings.TrimSpace(s.Prompt) == "" {
+		return "", errors.New("prompt or content is required")
+	}
+	fm := Frontmatter{
+		Harness:     s.Harness,
+		Description: s.Description,
+		Session:     s.Session,
+		Env:         s.Env,
+		Triggers:    s.triggers(),
+	}
+	if fm.Harness == "" {
+		fm.Harness = "claude"
+	}
+	block, err := yaml.Marshal(fm)
+	if err != nil {
+		return "", err
+	}
+	return "---\n" + string(block) + "---\n\n" + strings.TrimSpace(s.Prompt) + "\n", nil
+}
+
+func (s Spec) triggers() []TriggerYAML {
+	var out []TriggerYAML
+	if s.Cron != "" {
+		out = append(out, TriggerYAML{Cron: s.Cron})
+	}
+	if s.Every != "" {
+		out = append(out, TriggerYAML{Every: s.Every})
+	}
+	if s.On != nil && s.On.Event != "" {
+		out = append(out, TriggerYAML{Event: s.On.Event, Match: s.On.Match, Extract: s.On.Extract})
+	}
+	return out
 }

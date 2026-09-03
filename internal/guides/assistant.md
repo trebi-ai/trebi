@@ -18,9 +18,10 @@ trebi --workspace reports assistant wake
 trebi --workspace reports assistant wake --test
 trebi --workspace reports assistant wake --extra-prompt "focus on the CI failures"
 trebi --workspace reports assistant say "what is blocked?"
+trebi --workspace reports assistant say "what is blocked?" --wait 60000 --json
 ```
 
-`assistant say` prints `delivery=injected|queued`. `--test` evaluates gates only (same rule as `job run --test`).
+`assistant say` prints `delivery=injected|queued`. The daemon resolves or creates the conversation, so no pointer call is needed first. `--wait` long-polls for the reply, up to 120000 ms; `replies` carries what arrived. `--test` evaluates gates only (same rule as `job run --test`).
 
 ```bash
 trebi --workspace reports assistant wake --attach
@@ -47,9 +48,9 @@ trebi conversation new --title "CI firefight"
 trebi conversation switch <id>
 ```
 
-`conversation switch` is **local only** (sticky CLI pointer); remote: pass `conversation` on `assistant.say`, or `pointer_set`.
+`conversation switch` is **local only** (sticky CLI pointer); remote: pass `channel_ref` on `assistant.say`, or `pointer_set`.
 
-Poll `conversation messages` until the assistant replies. Do not `runs kill` a live assistant session to re-prompt.
+Use `assistant say --wait`, or poll `conversation messages`, until the assistant replies. Do not `runs kill` a live assistant session to re-prompt.
 
 ## Assistant memory
 
@@ -57,7 +58,7 @@ Poll `conversation messages` until the assistant replies. Do not `runs kill` a l
 trebi --workspace reports assistant memory show --json
 trebi --workspace reports assistant memory add --text "Reviewed the backlog"
 trebi --workspace reports assistant memory set --file ./MEMORY.md
-trebi --workspace reports assistant memory remove <entry-id>
+trebi --workspace reports assistant memory delete <entry-id>
 trebi --workspace reports assistant memory clear --force
 ```
 

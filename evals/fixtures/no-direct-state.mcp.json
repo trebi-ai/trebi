@@ -1,0 +1,16 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__system",
+    "content": "{\"action\": \"doctor\", \"input\": {}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__file",
+    "content": "{\"action\": \"put\", \"input\": {\"owner\": \"workspace\", \"workspace\": \"ws1\", \"path\": \"notes.txt\", \"content\": \"all healthy\\n\"}}"
+  },
+  {
+    "role": "assistant",
+    "content": "Done."
+  }
+]

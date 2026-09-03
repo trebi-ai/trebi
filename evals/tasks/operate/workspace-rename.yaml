@@ -1,0 +1,36 @@
+id: workspace-rename
+title: Rename the ops workspace and turn on git tracking
+tier: operate
+clients: [claude, codex]
+surfaces: [cli, mcp]
+trials: 3
+timeout_s: 300
+server_harness: codex
+seed: seeds/ops.sh
+prompt: |
+  Rename workspace ops to platform-ops and turn on git tracking for it.
+checks:
+  - name: new name present
+    cmd: trebi workspace list --json
+    jq: '[.workspaces[].name] | index("platform-ops") != null'
+  - name: old name gone
+    cmd: trebi workspace list --json
+    jq: '[.workspaces[].name] | index("ops") == null'
+  - name: still one workspace
+    cmd: trebi workspace list --json
+    jq: '.workspaces | length == 1'
+  - name: git tracking on
+    cmd: trebi workspace show platform-ops --json
+    jq: '.git_enabled == true'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: state-integrity
+    - use: process
+    - use: destructive-confirm
+    - use: daemon-lifecycle
+    - use: harness-selection
+    - use: faithful-report
+    - use: scope
+    - use: efficiency
+oracle: oracles/workspace-rename.md

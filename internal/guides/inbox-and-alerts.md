@@ -16,22 +16,23 @@ trebi inbox list --kind approval --json
 trebi inbox show <id> --json
 trebi inbox read <id>
 trebi inbox read-all
+trebi inbox resolve-all --kind approval
 trebi inbox resolve <id>
 ```
 
-Kinds: `approval` | `failure` | `health` | `watchdog`. `resolve` manually dismisses.
+Kinds: `approval` | `failure` | `health` | `watchdog`. `resolve` manually dismisses one item; `resolve-all` clears every open item, or one kind with `--kind`.
 
 ## Approvals (runs)
 
 An approval inbox item points at a blocked run. Decide on the run:
 
 ```bash
-trebi runs approvals --json
+trebi runs approvals --state pending --json
 trebi runs approve <id> --decision allow
 trebi runs approve <id> --decision deny
 ```
 
-See `trebi guide runs-and-debugging`.
+A pending row carries the question the agent asked. See `trebi guide runs-and-debugging`.
 
 ## Alerts
 

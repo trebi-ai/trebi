@@ -45,7 +45,7 @@ func TestJobDeleteAmbiguousAcrossWorkspaces(t *testing.T) {
 	id1 := addWorkspace(t, base, s.Token(), ws1, "amb-a")
 	_ = addWorkspace(t, base, s.Token(), ws2, "amb-b")
 
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/dup", s.Token(), nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/dup?confirm=1", s.Token(), nil)
 	if code != 400 || errCode(body) != "ambiguous" {
 		t.Fatalf("want 400 ambiguous, got %d %v", code, body)
 	}
@@ -56,7 +56,7 @@ func TestJobDeleteAmbiguousAcrossWorkspaces(t *testing.T) {
 		t.Fatalf("ws2 job removed on ambiguous delete: %v", err)
 	}
 
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/dup?workspace="+id1, s.Token(), nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/dup?workspace="+id1+"&confirm=1", s.Token(), nil)
 	if code != 200 {
 		t.Fatalf("scoped delete %d %v", code, body)
 	}
@@ -214,6 +214,38 @@ func errCode(m map[string]any) string {
 	return fmt.Sprint(e["code"])
 }
 
+// A full replace and a patch both change frontmatter, so job_index must
+// follow. Without a rebuild, `job list` keeps reporting the old harness.
+func TestJobWriteRefreshesIndex(t *testing.T) {
+	s, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "idx-ws")
+	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", s.Token(), map[string]any{
+		"workspace": wsID, "name": "sweep", "markdown": "---\nharness: claude\n---\n\nDo work.\n",
+	})
+	if code != 201 {
+		t.Fatalf("create %d %v", code, created)
+	}
+	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/sweep?workspace="+wsID, s.Token(), map[string]any{
+		"markdown": "---\nharness: codex\n---\n\nDo work.\n",
+	})
+	if code != 200 {
+		t.Fatalf("put %d %v", code, body)
+	}
+	if got := jobHarness(t, base, s.Token(), wsID, "sweep"); got != "codex" {
+		t.Fatalf("after put harness = %q, want codex", got)
+	}
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/jobs/sweep?workspace="+wsID, s.Token(), map[string]any{
+		"harness": "claude",
+	})
+	if code != 200 {
+		t.Fatalf("patch %d %v", code, body)
+	}
+	if got := jobHarness(t, base, s.Token(), wsID, "sweep"); got != "claude" {
+		t.Fatalf("after patch harness = %q, want claude", got)
+	}
+}
+
 func writeJobFile(t *testing.T, wsDir, jobName string) string {
 	t.Helper()
 	dir := filepath.Join(wsDir, jobName)
@@ -238,4 +270,22 @@ func addWorkspace(t *testing.T, base, token, path, name string) string {
 		t.Fatalf("no workspace id: %v", ws)
 	}
 	return id
+}
+
+func jobHarness(t *testing.T, base, token, wsID, name string) string {
+	t.Helper()
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID, token, nil)
+	if code != 200 {
+		t.Fatalf("list %d %v", code, body)
+	}
+	jobs, _ := body["jobs"].([]any)
+	for _, j := range jobs {
+		row, _ := j.(map[string]any)
+		if row["name"] == name {
+			h, _ := row["harness"].(string)
+			return h
+		}
+	}
+	t.Fatalf("job %s not listed: %v", name, body)
+	return ""
 }

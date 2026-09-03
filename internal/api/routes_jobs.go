@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -27,6 +29,7 @@ func (s *Server) routeJobs(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/jobs/{name}/run", s.handleJobRun)
 	mux.HandleFunc("POST /v1/jobs/{name}/pause", s.handleJobPause)
 	mux.HandleFunc("POST /v1/jobs/{name}/unpause", s.handleJobUnpause)
+	mux.HandleFunc("POST /v1/jobs/validate", s.handleJobValidateText)
 	mux.HandleFunc("POST /v1/jobs/{name}/validate", s.handleJobValidate)
 	mux.HandleFunc("GET /v1/jobs/{name}/memory", s.handleJobMemoryGet)
 	mux.HandleFunc("PUT /v1/jobs/{name}/memory", s.handleJobMemoryPut)
@@ -43,7 +46,8 @@ func (s *Server) routeJobs(mux *http.ServeMux) {
 }
 
 func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
-	wsID := s.workspaceID(r.Context(), r.URL.Query().Get("workspace"))
+	q := r.URL.Query()
+	wsID := s.workspaceID(r.Context(), q.Get("workspace"))
 	rows, err := s.ws.ListJobs(r.Context(), wsID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -54,10 +58,20 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	filter := jobFilter{
+		q:       strings.ToLower(strings.TrimSpace(q.Get("q"))),
+		harness: strings.TrimSpace(q.Get("harness")),
+		active:  q.Get("active"),
+	}
+	if !filter.validActive() {
+		writeErr(w, http.StatusBadRequest, "validation", "active must be true or false")
+		return
+	}
+	enrich := s.jobEnrichment(r.Context(), wsID)
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		// B4: the assistant is a separate singleton; jobs list is jobs only.
-		if row.Kind != "job" {
+		if row.Kind != "job" || !filter.keep(row) {
 			continue
 		}
 		key := row.WorkspaceID + "/" + row.Name
@@ -69,13 +83,85 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		status := runs.DeriveJobDisplayStatus(row.Active, len(live[key]), waiting, last[key])
-		out = append(out, map[string]any{
+		item := map[string]any{
 			"workspace_id": row.WorkspaceID, "name": row.Name, "path": row.Path,
 			"kind": row.Kind, "active": row.Active, "harness": row.Harness,
 			"hash": row.Hash, "parse_error": row.ParseError, "status": status,
-		})
+			"last_run_at": "", "last_status": "", "next_due_at": "", "mtd_usd": 0.0,
+			"triggers": []string{},
+		}
+		enrich(key, row.Path, item)
+		out = append(out, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": out})
+}
+
+// jobFilter holds the A6.5 list filters of GET /v1/jobs.
+type jobFilter struct {
+	q       string
+	harness string
+	active  string
+}
+
+func (f jobFilter) validActive() bool {
+	return f.active == "" || f.active == "true" || f.active == "false"
+}
+
+func (f jobFilter) keep(row workspaces.JobRow) bool {
+	if f.q != "" && !strings.Contains(strings.ToLower(row.Name), f.q) {
+		return false
+	}
+	if f.harness != "" && !strings.EqualFold(row.Harness, f.harness) {
+		return false
+	}
+	if f.active != "" && row.Active != (f.active == "true") {
+		return false
+	}
+	return true
+}
+
+// jobEnrichment returns a function that fills the per-job A6.5 columns:
+// last run, next due time, month-to-date cost, and trigger kinds. It reads the
+// three tables once, not once per row.
+func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path string, item map[string]any) {
+	last, _, _ := s.runs.StatusByJob(ctx)
+	due := map[string]string{}
+	if rows, err := s.sched.List(ctx, schedule.ListOpts{Workspace: wsID, Limit: maxListLimit}); err == nil {
+		for _, row := range rows {
+			k := row.WorkspaceID + "/" + row.Job
+			if due[k] == "" || (row.NextDueAt != "" && row.NextDueAt < due[k]) {
+				due[k] = row.NextDueAt
+			}
+		}
+	}
+	mtd := map[string]float64{}
+	recent, _ := s.runs.List(ctx, runs.ListOpts{Workspace: wsID, Limit: maxListLimit})
+	lastAt := map[string]string{}
+	monthStart := time.Now().UTC().Format("2006-01")
+	for _, run := range recent {
+		k := run.Workspace + "/" + run.Job
+		if lastAt[k] == "" {
+			lastAt[k] = run.StartedAt.UTC().Format(time.RFC3339)
+		}
+		if run.StartedAt.UTC().Format("2006-01") == monthStart {
+			mtd[k] += run.Tokens.CostUSD
+		}
+	}
+	return func(key, path string, item map[string]any) {
+		item["last_run_at"] = lastAt[key]
+		if st, ok := last[key]; ok {
+			item["last_status"] = string(st)
+		}
+		item["next_due_at"] = due[key]
+		item["mtd_usd"] = mtd[key]
+		if j, err := job.ParseFile(path); err == nil && j != nil {
+			kinds := make([]string, 0, len(j.Triggers))
+			for _, t := range j.Triggers {
+				kinds = append(kinds, t.Family)
+			}
+			item["triggers"] = kinds
+		}
+	}
 }
 
 // runStatusByJob returns the newest run status and live run ids per
@@ -155,9 +241,43 @@ func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": valid, "error": msg})
 }
 
+// handleJobValidateText checks job text, or a structured spec, without writing
+// a job. Use it before create so a bad harness or trigger key is caught early.
+func (s *Server) handleJobValidateText(w http.ResponseWriter, r *http.Request) {
+	var body jobCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	md, err := body.markdown()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	name := cmp.Or(body.Name, "job")
+	j, err := job.ParseBytes(filepath.Join(name, "JOB.md"), []byte(md))
+	switch {
+	case err != nil:
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "markdown": md})
+	case j != nil && j.ParseError != "":
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": j.ParseError, "markdown": md})
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "error": "", "markdown": md})
+	}
+}
+
 func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r)
-	rows, err := s.sched.List(r.Context(), limit)
+	dueBefore, err := parseTimeFilter(r.URL.Query().Get("due_before"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "due_before: "+err.Error())
+		return
+	}
+	rows, err := s.sched.List(r.Context(), schedule.ListOpts{
+		Workspace: s.workspaceID(r.Context(), r.URL.Query().Get("workspace")),
+		DueBefore: dueBefore,
+		Limit:     limit,
+	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -275,16 +395,70 @@ func (s *Server) handleJobMemoryPut(w http.ResponseWriter, r *http.Request) {
 	s.handleMemoryFilePut(w, r, false)
 }
 
-func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Workspace string `json:"workspace"`
-		Name      string `json:"name"`
-		Content   string `json:"content"`
-		Markdown  string `json:"markdown"`
+// jobCreateRequest is the POST /v1/jobs body. It takes either full text
+// (content or markdown) or the structured fields the server composes into
+// front matter.
+type jobCreateRequest struct {
+	Workspace   string            `json:"workspace"`
+	Name        string            `json:"name"`
+	Content     string            `json:"content"`
+	Markdown    string            `json:"markdown"`
+	Idem        string            `json:"idempotency_key"`
+	Prompt      string            `json:"prompt"`
+	Harness     string            `json:"harness"`
+	Description string            `json:"description"`
+	Cron        string            `json:"cron"`
+	Every       string            `json:"every"`
+	On          *jobEventTrigger  `json:"on"`
+	Session     job.SessionYAML   `json:"session"`
+	Env         map[string]string `json:"env"`
+}
+
+// jobEventTrigger is the on: field of a structured job body.
+type jobEventTrigger struct {
+	Event   string `json:"event"`
+	Match   string `json:"match"`
+	Extract string `json:"extract"`
+}
+
+// markdown renders the JOB.md text of the request. A body with neither text nor
+// a prompt gets the placeholder job, which keeps the old bare-create working.
+func (b jobCreateRequest) markdown() (string, error) {
+	spec := job.Spec{
+		Content: cmp.Or(b.Markdown, b.Content), Prompt: b.Prompt, Harness: b.Harness,
+		Description: b.Description, Cron: b.Cron, Every: b.Every,
+		Session: b.Session, Env: b.Env,
 	}
+	if b.On != nil {
+		spec.On = &job.EventSpec{Event: b.On.Event, Match: b.On.Match, Extract: b.On.Extract}
+	}
+	if spec.Content == "" && spec.Prompt == "" {
+		spec.Prompt = "Do the task."
+	}
+	return spec.Render()
+}
+
+func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
+	var body jobCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
+	}
+	key := idempotencyKey(r, body.Idem)
+	if key != "" {
+		name, found, err := s.st.Idempotent(r.Context(), idempotencyJobs, key)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		if found {
+			if row, err := s.findJobRow(r.Context(), body.Workspace, name); err == nil {
+				writeJSON(w, http.StatusCreated, map[string]any{
+					"name": row.Name, "path": row.Path, "hash": row.Hash,
+				})
+				return
+			}
+		}
 	}
 	ws, err := s.ws.Resolve(r.Context(), body.Workspace)
 	if err != nil {
@@ -295,13 +469,10 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "name required")
 		return
 	}
-	// Prefer markdown (contract) over content alias
-	md := body.Markdown
-	if md == "" {
-		md = body.Content
-	}
-	if md == "" {
-		md = "---\nharness: claude\n---\n\nDo the task.\n"
+	md, err := body.markdown()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
 	}
 	rel := filepath.ToSlash(filepath.Join(body.Name, "JOB.md"))
 	if _, err := s.files.Stat(r.Context(), ws.Path, rel); err == nil {
@@ -318,6 +489,11 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	path := filepath.Join(ws.Path, filepath.FromSlash(rel))
 	_ = s.ws.RebuildIndex(r.Context(), ws)
+	if key != "" {
+		if _, err := s.st.RememberIdempotent(r.Context(), idempotencyJobs, key, body.Name); err != nil {
+			s.log.Warn("remember idempotency key", "job", body.Name, "error", err)
+		}
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"name": body.Name, "path": path, "hash": info.Hash,
 	})
@@ -354,6 +530,8 @@ func (s *Server) handleJobPut(w http.ResponseWriter, r *http.Request) {
 		writeFilesErr(w, err)
 		return
 	}
+	// Frontmatter drives job_index; a full replace can change harness or active.
+	_ = s.ws.RebuildIndex(r.Context(), ws)
 	setETagHash(w, info.Hash)
 	s.appendBus(r.Context(), store.BusEvent{
 		Topic: "job.updated", Entity: "job", EntityID: name, Action: "updated",
@@ -392,6 +570,7 @@ func (s *Server) handleJobPatch(w http.ResponseWriter, r *http.Request) {
 		writeFilesErr(w, err)
 		return
 	}
+	_ = s.ws.RebuildIndex(r.Context(), ws)
 	setETagHash(w, info.Hash)
 	s.appendBus(r.Context(), store.BusEvent{
 		Topic: "job.updated", Entity: "job", EntityID: name, Action: "updated",

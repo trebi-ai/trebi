@@ -1,0 +1,21 @@
+[
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi job run sleeper\"}"
+  },
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi runs message 01ABC 'hello'\"}"
+  },
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi runs kill 01ABC\"}"
+  },
+  {
+    "role": "assistant",
+    "content": "Done."
+  }
+]

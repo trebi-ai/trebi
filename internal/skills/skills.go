@@ -57,6 +57,8 @@ type Skill struct {
 	Revision        int64              `json:"revision"`
 	Path            string             `json:"path,omitempty"`
 	Used30d         int                `json:"used_30d,omitempty"`
+	// Source is set when the skill came from a git remote or a folder.
+	Source *Source `json:"source,omitempty"`
 }
 
 // Service manages skill folders + index.
@@ -205,8 +207,9 @@ func (s *Service) loadSkill(ctx context.Context, name string, includeMD bool) (*
 	hash := hashDir(dir)
 	prov := string(ProvenanceLocal)
 	var used int
-	_ = s.st.DB().QueryRowContext(ctx, `SELECT provenance, COALESCE(used_30d,0)
-		FROM skill_index WHERE name=?`, name).Scan(&prov, &used)
+	var srcKind, srcRef sql.NullString
+	_ = s.st.DB().QueryRowContext(ctx, `SELECT provenance, COALESCE(used_30d,0), source_kind, source_ref
+		FROM skill_index WHERE name=?`, name).Scan(&prov, &used, &srcKind, &srcRef)
 
 	sk := &Skill{
 		Name:        name,
@@ -220,6 +223,14 @@ func (s *Service) loadSkill(ctx context.Context, name string, includeMD bool) (*
 		Harnesses:   projectionState(name),
 		Scripts:     listScripts(dir),
 		Requires:    parseRequires(string(mdBytes)),
+	}
+	if srcKind.String != "" {
+		sk.Source = &Source{Kind: srcKind.String}
+		if srcKind.String == "git" {
+			sk.Source.URL = srcRef.String
+		} else {
+			sk.Source.Path = srcRef.String
+		}
 	}
 	if includeMD {
 		sk.SkillMD = string(mdBytes)
@@ -360,4 +371,164 @@ func applyProjection(name string, harnesses map[string]bool) error {
 		}
 	}
 	return nil
+}
+
+// Source names where a skill comes from, so a refresh can pull it again.
+type Source struct {
+	// Kind is git or folder.
+	Kind string `json:"kind"`
+	// URL is the git remote; Path is the folder. Give one.
+	URL  string `json:"url,omitempty"`
+	Path string `json:"path,omitempty"`
+}
+
+// ref returns the single source location, whichever field carries it.
+func (src Source) ref() string {
+	if src.URL != "" {
+		return src.URL
+	}
+	return src.Path
+}
+
+// validate checks the kind and that exactly one location is set.
+func (src Source) validate() error {
+	switch src.Kind {
+	case "git":
+		if src.URL == "" {
+			return fmt.Errorf("source kind git needs url")
+		}
+	case "folder":
+		if src.Path == "" {
+			return fmt.Errorf("source kind folder needs path")
+		}
+	default:
+		return fmt.Errorf("source kind must be git or folder")
+	}
+	return nil
+}
+
+// fetch copies the source into dir. An existing dir is replaced.
+func (src Source) fetch(ctx context.Context, dir string) error {
+	if err := src.validate(); err != nil {
+		return err
+	}
+	tmp := dir + ".fetch"
+	if err := os.RemoveAll(tmp); err != nil {
+		return err
+	}
+	if err := src.fetchInto(ctx, tmp); err != nil {
+		os.RemoveAll(tmp)
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "SKILL.md")); err != nil {
+		os.RemoveAll(tmp)
+		return fmt.Errorf("source has no SKILL.md")
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		os.RemoveAll(tmp)
+		return err
+	}
+	return os.Rename(tmp, dir)
+}
+
+func (src Source) fetchInto(ctx context.Context, tmp string) error {
+	if src.Kind == "git" {
+		out, err := exec.CommandContext(ctx, "git", "clone", "--depth", "1", src.URL, tmp).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("git clone: %s", strings.TrimSpace(string(out)))
+		}
+		return os.RemoveAll(filepath.Join(tmp, ".git"))
+	}
+	return copyTree(src.Path, tmp)
+}
+
+// CreateFromSource installs one skill from a git remote or a folder.
+func (s *Service) CreateFromSource(ctx context.Context, name string, src Source) (*Skill, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name required")
+	}
+	dir := filepath.Join(home.SkillsDir(), name)
+	if _, err := os.Stat(dir); err == nil {
+		return nil, fmt.Errorf("skill %q already exists", name)
+	}
+	if err := src.fetch(ctx, dir); err != nil {
+		return nil, err
+	}
+	prov := ProvenanceGit
+	if src.Kind == "folder" {
+		prov = ProvenanceLocal
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO skill_index (name, provenance, path, hash, used_30d, updated_at, source_kind, source_ref)
+			VALUES (?,?,?,?,0,?,?,?)`, name, string(prov), dir, hashDir(dir), now, src.Kind, src.ref())
+		return err
+	}, store.BusEvent{
+		Topic: "skill.created", Entity: "skill", EntityID: name, Action: "created",
+		Attrs: map[string]string{"provenance": string(prov), "source": src.Kind},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, name, true)
+}
+
+// Refresh pulls the skill source again. A skill with no source is unchanged.
+func (s *Service) Refresh(ctx context.Context, name string) (*Skill, bool, error) {
+	cur, err := s.Get(ctx, name, false)
+	if err != nil {
+		return nil, false, err
+	}
+	if cur.Source == nil {
+		sk, err := s.Get(ctx, name, true)
+		return sk, false, err
+	}
+	src := *cur.Source
+	dir := filepath.Join(home.SkillsDir(), name)
+	before := hashDir(dir)
+	if err := src.fetch(ctx, dir); err != nil {
+		return nil, false, err
+	}
+	after := hashDir(dir)
+	if after == before {
+		sk, err := s.Get(ctx, name, true)
+		return sk, false, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE skill_index SET hash=?, updated_at=? WHERE name=?`, after, now, name)
+		return err
+	}, store.BusEvent{
+		Topic: "skill.updated", Entity: "skill", EntityID: name, Action: "updated",
+		Attrs: map[string]string{"source": src.Kind},
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	sk, err := s.Get(ctx, name, true)
+	return sk, true, err
+}
+
+// copyTree copies src into dst, skipping .git.
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dst, rel), data, 0o644)
+	})
 }

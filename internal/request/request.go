@@ -22,23 +22,66 @@ type HTTPRequest struct {
 	IfMatch     string // optional If-Match header
 }
 
-// BuildRunsCreate builds POST /v1/runs from CLI flags.
-// promptOverride is the full prompt sent as prompt_override (caller appends job body if needed).
-func BuildRunsCreate(job, workspace, promptOverride string, dryRun bool) HTTPRequest {
-	body := map[string]any{
-		"job":    job,
-		"reason": "manual",
+// RunSpec is the launch body of POST /v1/jobs/{name}/run. It is the one
+// launch shape: the CLI, the UI, and MCP all fill it.
+type RunSpec struct {
+	Job            string
+	Workspace      string
+	Prompt         string // full prompt override
+	ExtraPrompt    string // appended to the job body server-side
+	Inputs         map[string]string
+	Harness        string
+	Kind           string
+	Reason         string // defaults to manual
+	ConversationID string
+	IdempotencyKey string
+	DryRun         bool
+	WaitMS         int // long-poll: return when the run ends or the time elapses
+}
+
+// Build renders the spec as POST /v1/jobs/{name}/run.
+func (r RunSpec) Build() HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   withQuery("/v1/jobs/"+url.PathEscape(r.Job)+"/run", mergeQ(workspaceQ(r.Workspace), waitQ(r.WaitMS))),
+		Body:   r.body(),
 	}
-	if workspace != "" {
-		body["workspace"] = workspace
+}
+
+// BuildWake renders the spec as POST /v1/workspaces/{id}/assistant/wake. The
+// daemon pins job, kind, and workspace; the rest of the spec passes through.
+func (r RunSpec) BuildWake() HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   withQuery("/v1/workspaces/"+url.PathEscape(r.Workspace)+"/assistant/wake", waitQ(r.WaitMS)),
+		Body:   r.body(),
 	}
-	if promptOverride != "" {
-		body["prompt_override"] = promptOverride
+}
+
+func (r RunSpec) body() map[string]any {
+	body := map[string]any{"reason": r.Reason}
+	if r.Reason == "" {
+		body["reason"] = "manual"
 	}
-	if dryRun {
+	for k, v := range map[string]string{
+		"prompt_override": r.Prompt,
+		"extra_prompt":    r.ExtraPrompt,
+		"harness":         r.Harness,
+		"kind":            r.Kind,
+		"conversation_id": r.ConversationID,
+		"idempotency_key": r.IdempotencyKey,
+	} {
+		if v != "" {
+			body[k] = v
+		}
+	}
+	if len(r.Inputs) > 0 {
+		body["inputs"] = r.Inputs
+	}
+	if r.DryRun {
 		body["dry_run"] = true
 	}
-	return HTTPRequest{Method: "POST", Path: "/v1/runs", Body: body}
+	return body
 }
 
 // BuildRunsKill builds POST /v1/runs/{id}/kill.
@@ -47,6 +90,11 @@ func BuildRunsKill(id string) HTTPRequest {
 		Method: "POST",
 		Path:   "/v1/runs/" + url.PathEscape(id) + "/kill",
 	}
+}
+
+// BuildRunsKillBulk builds POST /v1/runs/kill with an id list.
+func BuildRunsKillBulk(ids []string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/runs/kill", Body: map[string]any{"ids": ids}}
 }
 
 // BuildRunsRetry builds POST /v1/runs/{id}/retry.
@@ -75,9 +123,10 @@ func BuildRunTranscript(id string, raw bool) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: path}
 }
 
-// BuildRunGetPath builds GET /v1/runs/{id}.
-func BuildRunGetPath(id string) string {
-	return "/v1/runs/" + url.PathEscape(id)
+// BuildRunGetPath builds GET /v1/runs/{id}. A positive waitMS long-polls until
+// the run ends.
+func BuildRunGetPath(id string, waitMS int) string {
+	return withQuery("/v1/runs/"+url.PathEscape(id), waitQ(waitMS))
 }
 
 // BuildRunTimelinePath builds GET /v1/runs/{id}/timeline.
@@ -105,17 +154,24 @@ func BuildRunReplay(id string) HTTPRequest {
 }
 
 // BuildRunApprove builds POST /v1/runs/{id}/approve. decision is allow|deny.
-func BuildRunApprove(id, decision string) HTTPRequest {
+// An empty approvalID answers the run's pending row.
+func BuildRunApprove(id, decision, approvalID string) HTTPRequest {
+	body := map[string]string{"decision": decision}
+	if approvalID != "" {
+		body["approval_id"] = approvalID
+	}
 	return HTTPRequest{
 		Method: "POST",
 		Path:   "/v1/runs/" + url.PathEscape(id) + "/approve",
-		Body:   map[string]string{"decision": decision},
+		Body:   body,
 	}
 }
 
-// BuildRunsStats builds GET /v1/stats/runs.
-func BuildRunsStats() HTTPRequest {
-	return HTTPRequest{Method: "GET", Path: "/v1/stats/runs"}
+// BuildRunsStats builds GET /v1/stats/runs. An empty range means 30d.
+func BuildRunsStats(workspace, job, rng string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: withQuery("/v1/stats/runs", map[string]string{
+		"workspace": workspace, "job": job, "range": rng,
+	})}
 }
 
 // BuildAgentsState builds GET /v1/agents/state.
@@ -148,29 +204,45 @@ func BuildSkillGetPath(name string) string {
 	return "/v1/skills/" + url.PathEscape(name)
 }
 
-// BuildSkillCreate builds POST /v1/skills with SKILL.md content.
-// provenance empty defaults to local server-side.
-func BuildSkillCreate(name, skillMD, provenance string) HTTPRequest {
-	return HTTPRequest{
-		Method: "POST",
-		Path:   "/v1/skills",
-		Body:   map[string]any{"name": name, "skill_md": skillMD, "provenance": provenance},
-	}
+// SkillSpec is the POST /v1/skills body. Give SkillMD for a local skill, or
+// SourceGit or SourceFolder to pull the bundle from a source.
+type SkillSpec struct {
+	Name         string
+	SkillMD      string
+	Provenance   string
+	SourceGit    string
+	SourceFolder string
 }
 
-// BuildSkillUpdate builds POST /v1/skills/{name}/update (pull upstream).
-func BuildSkillUpdate(name string) HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: "/v1/skills/" + url.PathEscape(name) + "/update"}
+// Build builds POST /v1/skills.
+func (sp SkillSpec) Build() HTTPRequest {
+	body := map[string]any{"name": sp.Name}
+	switch {
+	case sp.SourceGit != "":
+		body["source"] = map[string]any{"kind": "git", "url": sp.SourceGit}
+	case sp.SourceFolder != "":
+		body["source"] = map[string]any{"kind": "folder", "path": sp.SourceFolder}
+	default:
+		body["skill_md"] = sp.SkillMD
+		body["provenance"] = sp.Provenance
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/skills", Body: body}
+}
+
+// BuildSkillRefresh builds POST /v1/skills/{name}/refresh, which pulls the
+// skill source again.
+func BuildSkillRefresh(name string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/skills/" + url.PathEscape(name) + "/refresh"}
 }
 
 // BuildSkillDelete builds DELETE /v1/skills/{name}.
-func BuildSkillDelete(name string) HTTPRequest {
-	return HTTPRequest{Method: "DELETE", Path: "/v1/skills/" + url.PathEscape(name)}
+func BuildSkillDelete(name string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/skills/"+url.PathEscape(name), confirmQ(confirm))}
 }
 
 // BuildSecretsListPath builds GET /v1/secrets.
-func BuildSecretsListPath() string {
-	return "/v1/secrets"
+func BuildSecretsListPath(limit int) string {
+	return withQuery("/v1/secrets", limitQ(limit))
 }
 
 // BuildSecretPut builds PUT /v1/secrets/{name}.
@@ -183,16 +255,21 @@ func BuildSecretPut(name, value string) HTTPRequest {
 }
 
 // BuildSecretDelete builds DELETE /v1/secrets/{name}.
-func BuildSecretDelete(name string) HTTPRequest {
-	return HTTPRequest{Method: "DELETE", Path: "/v1/secrets/" + url.PathEscape(name)}
+func BuildSecretDelete(name string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/secrets/"+url.PathEscape(name), confirmQ(confirm))}
 }
 
 // BuildSkillPut builds PUT /v1/skills/{name}.
-func BuildSkillPut(name, skillMD string) HTTPRequest {
+func BuildSkillPut(name, skillMD string, harnesses map[string]string, ifMatch string) HTTPRequest {
+	body := map[string]any{"skill_md": skillMD}
+	if len(harnesses) > 0 {
+		body["harnesses"] = harnesses
+	}
 	return HTTPRequest{
-		Method: "PUT",
-		Path:   "/v1/skills/" + url.PathEscape(name),
-		Body:   map[string]any{"skill_md": skillMD},
+		Method:  "PUT",
+		Path:    "/v1/skills/" + url.PathEscape(name),
+		Body:    body,
+		IfMatch: ifMatch,
 	}
 }
 
@@ -238,42 +315,46 @@ func BuildIntegrationCursorReset(name string) HTTPRequest {
 }
 
 // BuildJobMemoryPut builds PUT /v1/jobs/{name}/memory.
-func BuildJobMemoryPut(name, workspace, content string) HTTPRequest {
+func BuildJobMemoryPut(name, workspace, content, ifMatch string) HTTPRequest {
 	return HTTPRequest{
-		Method: "PUT",
-		Path:   withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace)),
-		Body:   map[string]any{"content": content},
+		Method:  "PUT",
+		Path:    withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace)),
+		Body:    map[string]any{"content": content},
+		IfMatch: ifMatch,
 	}
 }
 
 // BuildJobMemoryClear builds DELETE /v1/jobs/{name}/memory.
-func BuildJobMemoryClear(name, workspace string) HTTPRequest {
+func BuildJobMemoryClear(name, workspace, ifMatch string, confirm bool) HTTPRequest {
 	return HTTPRequest{
-		Method: "DELETE",
-		Path:   withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace)),
+		Method:  "DELETE",
+		Path:    withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory", mergeQ(workspaceQ(workspace), confirmQ(confirm))),
+		IfMatch: ifMatch,
 	}
 }
 
 // BuildAssistantMemoryPut builds PUT /v1/workspaces/{id}/assistant/memory.
-func BuildAssistantMemoryPut(workspaceID, content string) HTTPRequest {
+func BuildAssistantMemoryPut(workspaceID, content, ifMatch string) HTTPRequest {
 	return HTTPRequest{
-		Method: "PUT",
-		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory",
-		Body:   map[string]any{"content": content},
+		Method:  "PUT",
+		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory",
+		Body:    map[string]any{"content": content},
+		IfMatch: ifMatch,
 	}
 }
 
 // BuildAssistantMemoryClear builds DELETE /v1/workspaces/{id}/assistant/memory.
-func BuildAssistantMemoryClear(workspaceID string) HTTPRequest {
+func BuildAssistantMemoryClear(workspaceID, ifMatch string, confirm bool) HTTPRequest {
 	return HTTPRequest{
-		Method: "DELETE",
-		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory",
+		Method:  "DELETE",
+		Path:    withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/assistant/memory", confirmQ(confirm)),
+		IfMatch: ifMatch,
 	}
 }
 
 // BuildWorkspacesListPath builds GET /v1/workspaces.
-func BuildWorkspacesListPath() string {
-	return "/v1/workspaces"
+func BuildWorkspacesListPath(limit int) string {
+	return withQuery("/v1/workspaces", limitQ(limit))
 }
 
 // BuildWorkspaceGetPath builds GET /v1/workspaces/{id}.
@@ -288,11 +369,12 @@ func BuildAssistantGetPath(workspaceID string) string {
 
 // BuildAssistantPut builds PUT /v1/workspaces/{id}/assistant with TREBI.md content.
 // Empty content lets the server write its default template.
-func BuildAssistantPut(workspaceID, content string) HTTPRequest {
+func BuildAssistantPut(workspaceID, content, ifMatch string) HTTPRequest {
 	return HTTPRequest{
-		Method: "PUT",
-		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant",
-		Body:   map[string]string{"content": content},
+		Method:  "PUT",
+		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant",
+		Body:    map[string]string{"content": content},
+		IfMatch: ifMatch,
 	}
 }
 
@@ -322,8 +404,8 @@ func BuildAssistantMemoryGetPath(workspaceID string) string {
 }
 
 // BuildWorkspaceDelete builds DELETE /v1/workspaces/{id}.
-func BuildWorkspaceDelete(id string) HTTPRequest {
-	return HTTPRequest{Method: "DELETE", Path: "/v1/workspaces/" + url.PathEscape(id)}
+func BuildWorkspaceDelete(id string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/workspaces/"+url.PathEscape(id), confirmQ(confirm))}
 }
 
 // BuildWorkspaceAdd builds POST /v1/workspaces.
@@ -363,12 +445,9 @@ func BuildWorkspaceRename(id, name string) HTTPRequest {
 }
 
 // BuildFileListPath builds GET /v1/workspaces/{id}/files?prefix=&cursor=&limit=.
-func BuildFileListPath(workspaceID, prefix, afterPath string, limit int) string {
-	kv := map[string]string{"prefix": prefix, "cursor": afterPath}
-	if limit > 0 {
-		kv["limit"] = strconv.Itoa(limit)
-	}
-	return withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/files", kv)
+func BuildFileListPath(workspaceID, prefix, afterPath string, limit int, recursive bool) string {
+	return withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/files",
+		fileListQ(prefix, afterPath, "", limit, recursive))
 }
 
 // BuildFileGetPath builds GET /v1/workspaces/{id}/files/{path}. stat adds ?stat=1.
@@ -391,12 +470,9 @@ func BuildFileDeletePath(workspaceID, rel string) string {
 }
 
 // BuildJobFileListPath builds GET /v1/jobs/{name}/files?prefix=&cursor=&limit=&workspace=.
-func BuildJobFileListPath(name, workspace, prefix, afterPath string, limit int) string {
-	kv := map[string]string{"prefix": prefix, "cursor": afterPath, "workspace": workspace}
-	if limit > 0 {
-		kv["limit"] = strconv.Itoa(limit)
-	}
-	return withQuery("/v1/jobs/"+url.PathEscape(name)+"/files", kv)
+func BuildJobFileListPath(name, workspace, prefix, afterPath string, limit int, recursive bool) string {
+	return withQuery("/v1/jobs/"+url.PathEscape(name)+"/files",
+		fileListQ(prefix, afterPath, workspace, limit, recursive))
 }
 
 // BuildJobFileGetPath builds GET /v1/jobs/{name}/files/{path}. stat adds ?stat=1.
@@ -419,12 +495,9 @@ func BuildJobFileDeletePath(name, workspace, rel string) string {
 }
 
 // BuildSkillFileListPath builds GET /v1/skills/{name}/files?prefix=&cursor=&limit=.
-func BuildSkillFileListPath(name, prefix, afterPath string, limit int) string {
-	kv := map[string]string{"prefix": prefix, "cursor": afterPath}
-	if limit > 0 {
-		kv["limit"] = strconv.Itoa(limit)
-	}
-	return withQuery("/v1/skills/"+url.PathEscape(name)+"/files", kv)
+func BuildSkillFileListPath(name, prefix, afterPath string, limit int, recursive bool) string {
+	return withQuery("/v1/skills/"+url.PathEscape(name)+"/files",
+		fileListQ(prefix, afterPath, "", limit, recursive))
 }
 
 // BuildSkillFileGetPath builds GET /v1/skills/{name}/files/{path}. stat adds ?stat=1.
@@ -459,10 +532,10 @@ func BuildFilePut(workspaceID, rel string, content []byte, contentType, ifMatch 
 }
 
 // BuildFileDelete builds DELETE /v1/workspaces/{id}/files/{path} with optional If-Match.
-func BuildFileDelete(workspaceID, rel, ifMatch string) HTTPRequest {
+func BuildFileDelete(workspaceID, rel, ifMatch string, confirm bool) HTTPRequest {
 	return HTTPRequest{
 		Method:  "DELETE",
-		Path:    BuildFileDeletePath(workspaceID, rel),
+		Path:    withQuery(BuildFileDeletePath(workspaceID, rel), confirmQ(confirm)),
 		IfMatch: ifMatch,
 	}
 }
@@ -533,9 +606,11 @@ func BuildRulesFire(integration, workspace, job, match, extract string, event an
 	}
 }
 
-// BuildEventsListPath builds GET /v1/events?cursor=&limit=.
-func BuildEventsListPath(cursor string, limit int) string {
-	return listQuery("/v1/events", cursor, limit)
+// BuildEventsListPath builds GET /v1/events?cursor=&limit=&integration=&since=&q=.
+func BuildEventsListPath(cursor string, limit int, integration, since, q string) string {
+	return withQuery("/v1/events", mergeQ(
+		map[string]string{"cursor": cursor, "integration": integration, "since": since, "q": q},
+		limitQ(limit)))
 }
 
 // BuildEventGet builds GET /v1/events/{id}.
@@ -578,13 +653,14 @@ func BuildConversationCreate(workspace, title, originChannel, channelType, chann
 }
 
 // BuildConversationPatch builds PATCH /v1/conversations/{id}.
-func BuildConversationPatch(id, title, summary string, revision int64) HTTPRequest {
+// A nil title or summary is left alone; a pointer to "" clears the field.
+func BuildConversationPatch(id string, title, summary *string, revision int64) HTTPRequest {
 	body := map[string]any{}
-	if title != "" {
-		body["title"] = title
+	if title != nil {
+		body["title"] = *title
 	}
-	if summary != "" {
-		body["summary"] = summary
+	if summary != nil {
+		body["summary"] = *summary
 	}
 	if revision > 0 {
 		body["revision"] = revision
@@ -627,14 +703,14 @@ func BuildPointerPut(channelType, channelRef, conversationID string) HTTPRequest
 	}
 }
 
-// BuildApprovalsListPath builds GET /v1/approvals?cursor=&limit=.
-func BuildApprovalsListPath(cursor string, limit int) string {
-	return listQuery("/v1/approvals", cursor, limit)
+// BuildApprovalsListPath builds GET /v1/approvals?cursor=&limit=&state=.
+func BuildApprovalsListPath(cursor string, limit int, state string) string {
+	return withQuery(listQuery("/v1/approvals", cursor, limit), map[string]string{"state": state})
 }
 
 // BuildServiceShutdown builds POST /v1/system/shutdown.
-func BuildServiceShutdown() HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: "/v1/system/shutdown"}
+func BuildServiceShutdown(confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: withQuery("/v1/system/shutdown", confirmQ(confirm))}
 }
 
 // BuildSystemHealthPath builds GET /v1/system/health.
@@ -677,6 +753,11 @@ func BuildSystemUndrain() HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/system/undrain"}
 }
 
+// BuildSystemOverviewPath builds GET /v1/system/overview.
+func BuildSystemOverviewPath() string {
+	return "/v1/system/overview"
+}
+
 // BuildCloudStatusPath builds GET /v1/cloud/status.
 func BuildCloudStatusPath() string {
 	return "/v1/cloud/status"
@@ -688,49 +769,53 @@ func BuildCloudLink() HTTPRequest {
 }
 
 // BuildCloudUnlink builds DELETE /v1/cloud/link.
-func BuildCloudUnlink() HTTPRequest {
-	return HTTPRequest{Method: "DELETE", Path: "/v1/cloud/link"}
+func BuildCloudUnlink(confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/cloud/link", confirmQ(confirm))}
 }
 
 // BuildJobMemoryEntryAdd builds POST /v1/jobs/{name}/memory/entries.
-func BuildJobMemoryEntryAdd(name, workspace, date, text string) HTTPRequest {
+func BuildJobMemoryEntryAdd(name, workspace, date, text, ifMatch string) HTTPRequest {
 	body := map[string]any{"text": text}
 	if date != "" {
 		body["date"] = date
 	}
 	return HTTPRequest{
-		Method: "POST",
-		Path:   withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory/entries", workspaceQ(workspace)),
-		Body:   body,
+		Method:  "POST",
+		Path:    withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory/entries", workspaceQ(workspace)),
+		Body:    body,
+		IfMatch: ifMatch,
 	}
 }
 
 // BuildJobMemoryEntryDelete builds DELETE /v1/jobs/{name}/memory/entries/{id}.
-func BuildJobMemoryEntryDelete(name, workspace, entryID string) HTTPRequest {
+func BuildJobMemoryEntryDelete(name, workspace, entryID, ifMatch string) HTTPRequest {
 	return HTTPRequest{
-		Method: "DELETE",
-		Path:   withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory/entries/"+url.PathEscape(entryID), workspaceQ(workspace)),
+		Method:  "DELETE",
+		Path:    withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory/entries/"+url.PathEscape(entryID), workspaceQ(workspace)),
+		IfMatch: ifMatch,
 	}
 }
 
 // BuildAssistantMemoryEntryAdd builds POST /v1/workspaces/{id}/assistant/memory/entries.
-func BuildAssistantMemoryEntryAdd(workspaceID, date, text string) HTTPRequest {
+func BuildAssistantMemoryEntryAdd(workspaceID, date, text, ifMatch string) HTTPRequest {
 	body := map[string]any{"text": text}
 	if date != "" {
 		body["date"] = date
 	}
 	return HTTPRequest{
-		Method: "POST",
-		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory/entries",
-		Body:   body,
+		Method:  "POST",
+		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory/entries",
+		Body:    body,
+		IfMatch: ifMatch,
 	}
 }
 
 // BuildAssistantMemoryEntryDelete builds DELETE /v1/workspaces/{id}/assistant/memory/entries/{eid}.
-func BuildAssistantMemoryEntryDelete(workspaceID, entryID string) HTTPRequest {
+func BuildAssistantMemoryEntryDelete(workspaceID, entryID, ifMatch string) HTTPRequest {
 	return HTTPRequest{
-		Method: "DELETE",
-		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory/entries/" + url.PathEscape(entryID),
+		Method:  "DELETE",
+		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory/entries/" + url.PathEscape(entryID),
+		IfMatch: ifMatch,
 	}
 }
 
@@ -744,6 +829,11 @@ func BuildQueueCancel(id string) HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/queue/" + url.PathEscape(id) + "/cancel"}
 }
 
+// BuildQueueCancelBulk builds POST /v1/queue/cancel with an id list.
+func BuildQueueCancelBulk(ids []string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/queue/cancel", Body: map[string]any{"ids": ids}}
+}
+
 // BuildQueueListPath builds GET /v1/queue?status=&cursor=&limit=.
 func BuildQueueListPath(status, cursor string, limit int) string {
 	kv := map[string]string{"status": status, "cursor": cursor}
@@ -753,10 +843,15 @@ func BuildQueueListPath(status, cursor string, limit int) string {
 	return withQuery("/v1/queue", kv)
 }
 
-// BuildSchedulesListPath builds GET /v1/schedules?limit=.
-func BuildSchedulesListPath(limit int) string {
-	return listQuery("/v1/schedules", "", limit)
+// BuildSchedulesListPath builds GET /v1/schedules?limit=&workspace=&due_before=.
+func BuildSchedulesListPath(limit int, workspace, dueBefore string) string {
+	return withQuery("/v1/schedules", mergeQ(
+		map[string]string{"workspace": workspace, "due_before": dueBefore},
+		limitQ(limit)))
 }
+
+// BuildConfigValidatePath builds GET /v1/config/validate.
+func BuildConfigValidatePath() string { return "/v1/config/validate" }
 
 // BuildSkillsListPath builds GET /v1/skills?limit=.
 func BuildSkillsListPath(limit int) string {
@@ -797,33 +892,46 @@ func BuildInboxReadAll() HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/inbox/read-all"}
 }
 
-// BuildAlertsPath builds GET /v1/alerts?since=.
-func BuildAlertsPath(since string) string {
-	return withQuery("/v1/alerts", map[string]string{"since": since})
+// BuildInboxResolveAll builds POST /v1/inbox/resolve-all. An empty kind covers
+// every kind.
+func BuildInboxResolveAll(kind string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: withQuery("/v1/inbox/resolve-all", map[string]string{"kind": kind})}
 }
 
-// BuildAssistantWake builds POST /v1/workspaces/{id}/assistant/wake.
-// extraPrompt is composed server-side; dryRun sets dry_run.
-func BuildAssistantWake(workspaceID, extraPrompt string, dryRun bool) HTTPRequest {
-	body := map[string]any{
-		"reason": "manual",
-	}
-	if extraPrompt != "" {
-		body["extra_prompt"] = extraPrompt
-	}
-	if dryRun {
-		body["dry_run"] = true
+// BuildAlertsPath builds GET /v1/alerts?since=.
+func BuildAlertsPath(since string, limit int) string {
+	return withQuery("/v1/alerts", mergeQ(map[string]string{"since": since}, limitQ(limit)))
+}
+
+// AskSpec is POST /v1/workspaces/{id}/assistant/messages. The daemon resolves
+// or creates the channel conversation, so a client sends no pointer calls.
+type AskSpec struct {
+	Workspace      string
+	Text           string
+	ChannelType    string // defaults to cli server-side
+	ChannelRef     string // defaults to the workspace id server-side
+	IdempotencyKey string
+	WaitMS         int // long-poll for the assistant reply
+}
+
+// Build renders the ask as POST /v1/workspaces/{id}/assistant/messages.
+func (a AskSpec) Build() HTTPRequest {
+	body := map[string]any{"text": a.Text}
+	for k, v := range map[string]string{
+		"channel_type":    a.ChannelType,
+		"channel_ref":     a.ChannelRef,
+		"idempotency_key": a.IdempotencyKey,
+	} {
+		if v != "" {
+			body[k] = v
+		}
 	}
 	return HTTPRequest{
 		Method: "POST",
-		Path:   "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/wake",
-		Body:   body,
+		Path: withQuery("/v1/workspaces/"+url.PathEscape(a.Workspace)+"/assistant/messages",
+			waitQ(a.WaitMS)),
+		Body: body,
 	}
-}
-
-// BuildAssistantSay is POST /v1/conversations/{id}/messages from the cli channel.
-func BuildAssistantSay(convID, text, workspaceID string) HTTPRequest {
-	return BuildConversationSend(convID, text, "cli", workspaceID, "")
 }
 
 // AppendExtraPrompt joins the job base prompt with extra text (jobi run -e semantics).
@@ -839,21 +947,43 @@ func AppendExtraPrompt(base, extra string) string {
 	return base + "\n" + extra
 }
 
-// BuildRunsListPath builds GET /v1/runs query from list flags.
-// conversation is not an API filter — callers apply it client-side.
-// harness filters runs.harness; model filters tokens_model.
-func BuildRunsListPath(status, job, workspace, kind, cursor, harness, model string, limit int) string {
+// RunsQuery is the filter set of GET /v1/runs. Harness filters runs.harness;
+// Model filters tokens_model. Since and Until take RFC3339 or a duration such
+// as 24h.
+type RunsQuery struct {
+	Status       string
+	Job          string
+	Workspace    string
+	Kind         string
+	Cursor       string
+	Harness      string
+	Model        string
+	Conversation string
+	EndReason    string
+	Q            string
+	Since        string
+	Until        string
+	Limit        int
+}
+
+// Path renders the query as GET /v1/runs.
+func (r RunsQuery) Path() string {
 	kv := map[string]string{
-		"status":    status,
-		"job":       job,
-		"workspace": workspace,
-		"kind":      kind,
-		"cursor":    cursor,
-		"harness":   harness,
-		"model":     model,
+		"status":       r.Status,
+		"job":          r.Job,
+		"workspace":    r.Workspace,
+		"kind":         r.Kind,
+		"cursor":       r.Cursor,
+		"harness":      r.Harness,
+		"model":        r.Model,
+		"conversation": r.Conversation,
+		"end_reason":   r.EndReason,
+		"q":            r.Q,
+		"since":        r.Since,
+		"until":        r.Until,
 	}
-	if limit > 0 {
-		kv["limit"] = strconv.Itoa(limit)
+	if r.Limit > 0 {
+		kv["limit"] = strconv.Itoa(r.Limit)
 	}
 	return withQuery("/v1/runs", kv)
 }
@@ -867,18 +997,61 @@ func MatchConversation(conversationKey, substr string) bool {
 	return strings.Contains(strings.ToLower(conversationKey), strings.ToLower(substr))
 }
 
-// BuildJobsListPath builds GET /v1/jobs?workspace=.
-func BuildJobsListPath(workspace string) string {
-	return withQuery("/v1/jobs", workspaceQ(workspace))
+// BuildJobsListPath builds GET /v1/jobs?workspace=&q=&harness=&active=.
+func BuildJobsListPath(workspace, q, harness, active string) string {
+	return withQuery("/v1/jobs", mergeQ(workspaceQ(workspace),
+		map[string]string{"q": q, "harness": harness, "active": active}))
 }
 
-// BuildJobCreate builds POST /v1/jobs with full JOB.md content.
-func BuildJobCreate(name, workspace, content string) HTTPRequest {
-	return HTTPRequest{
-		Method: "POST",
-		Path:   "/v1/jobs",
-		Body:   map[string]any{"name": name, "workspace": workspace, "content": content},
+// JobSpec is the POST /v1/jobs body. Give Content for full control, or the
+// structured fields and let the daemon compose the front matter.
+type JobSpec struct {
+	Name           string
+	Workspace      string
+	Content        string
+	Prompt         string
+	Harness        string
+	Description    string
+	Cron           string
+	Every          string
+	Event          string
+	Match          string
+	Extract        string
+	IdempotencyKey string
+}
+
+// Build renders the spec as POST /v1/jobs.
+func (j JobSpec) Build() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/jobs", Body: j.body()}
+}
+
+// BuildValidate renders the spec as POST /v1/jobs/validate, which checks the
+// definition without writing a job.
+func (j JobSpec) BuildValidate() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/jobs/validate", Body: j.body()}
+}
+
+func (j JobSpec) body() map[string]any {
+	body := map[string]any{"name": j.Name, "workspace": j.Workspace, "content": j.Content}
+	for k, v := range map[string]string{
+		"prompt": j.Prompt, "harness": j.Harness, "description": j.Description,
+		"cron": j.Cron, "every": j.Every, "idempotency_key": j.IdempotencyKey,
+	} {
+		if v != "" {
+			body[k] = v
+		}
 	}
+	if j.Event != "" {
+		on := map[string]any{"event": j.Event}
+		if j.Match != "" {
+			on["match"] = j.Match
+		}
+		if j.Extract != "" {
+			on["extract"] = j.Extract
+		}
+		body["on"] = on
+	}
+	return body
 }
 
 // BuildJobPatch builds PATCH /v1/jobs/{name}?workspace= with a JSON-merge-patch
@@ -890,23 +1063,6 @@ func BuildJobPatch(name, workspace string, patch map[string]any, ifMatch string)
 		Body:    patch,
 		IfMatch: ifMatch,
 	}
-}
-
-// BuildJobRunPath builds POST /v1/jobs/{name}/run?workspace=.
-func BuildJobRunPath(name, workspace string) string {
-	return withQuery("/v1/jobs/"+url.PathEscape(name)+"/run", workspaceQ(workspace))
-}
-
-// BuildJobRunDryPath builds POST /v1/jobs/{name}/run?workspace=&dry_run=true.
-func BuildJobRunDryPath(name, workspace string, dryRun bool) string {
-	p := BuildJobRunPath(name, workspace)
-	if !dryRun {
-		return p
-	}
-	if strings.Contains(p, "?") {
-		return p + "&dry_run=true"
-	}
-	return p + "?dry_run=true"
 }
 
 // BuildJobGetPath builds GET /v1/jobs/{name}?workspace=.
@@ -925,29 +1081,28 @@ func BuildJobMemoryGetPath(name, workspace string) string {
 }
 
 // BuildJobDelete builds DELETE /v1/jobs/{name}.
-func BuildJobDelete(name, workspace string, purge bool) HTTPRequest {
-	kv := workspaceQ(workspace)
+func BuildJobDelete(name, workspace, ifMatch string, purge, confirm bool) HTTPRequest {
+	kv := mergeQ(workspaceQ(workspace), confirmQ(confirm))
 	if purge {
-		if kv == nil {
-			kv = map[string]string{}
-		}
 		kv["purge"] = "1"
 	}
 	return HTTPRequest{
-		Method: "DELETE",
-		Path:   withQuery("/v1/jobs/"+url.PathEscape(name), kv),
+		Method:  "DELETE",
+		Path:    withQuery("/v1/jobs/"+url.PathEscape(name), kv),
+		IfMatch: ifMatch,
 	}
 }
 
 // BuildJobPause builds POST pause/unpause.
-func BuildJobPause(name, workspace string, pause bool) HTTPRequest {
+func BuildJobPause(name, workspace, ifMatch string, pause bool) HTTPRequest {
 	op := "unpause"
 	if pause {
 		op = "pause"
 	}
 	return HTTPRequest{
-		Method: "POST",
-		Path:   withQuery("/v1/jobs/"+url.PathEscape(name)+"/"+op, workspaceQ(workspace)),
+		Method:  "POST",
+		Path:    withQuery("/v1/jobs/"+url.PathEscape(name)+"/"+op, workspaceQ(workspace)),
+		IfMatch: ifMatch,
 	}
 }
 
@@ -964,9 +1119,9 @@ func PlanJobSchedule(name, workspace, value string) (JobSchedulePlan, error) {
 	v := strings.TrimSpace(value)
 	switch v {
 	case "enable":
-		return JobSchedulePlan{Mode: "unpause", HTTP: BuildJobPause(name, workspace, false)}, nil
+		return JobSchedulePlan{Mode: "unpause", HTTP: BuildJobPause(name, workspace, "", false)}, nil
 	case "disable":
-		return JobSchedulePlan{Mode: "pause", HTTP: BuildJobPause(name, workspace, true)}, nil
+		return JobSchedulePlan{Mode: "pause", HTTP: BuildJobPause(name, workspace, "", true)}, nil
 	case "":
 		return JobSchedulePlan{}, fmt.Errorf("schedule value required (enable|disable|cron|@every …)")
 	default:
@@ -975,11 +1130,12 @@ func PlanJobSchedule(name, workspace, value string) (JobSchedulePlan, error) {
 }
 
 // BuildJobPutMarkdown builds PUT /v1/jobs/{name} with full markdown body.
-func BuildJobPutMarkdown(name, workspace, markdown string) HTTPRequest {
+func BuildJobPutMarkdown(name, workspace, markdown, ifMatch string) HTTPRequest {
 	return HTTPRequest{
-		Method: "PUT",
-		Path:   withQuery("/v1/jobs/"+url.PathEscape(name), workspaceQ(workspace)),
-		Body:   map[string]any{"markdown": markdown},
+		Method:  "PUT",
+		Path:    withQuery("/v1/jobs/"+url.PathEscape(name), workspaceQ(workspace)),
+		Body:    map[string]any{"markdown": markdown},
+		IfMatch: ifMatch,
 	}
 }
 
@@ -1140,36 +1296,47 @@ func BuildIntegrationStop(name string) HTTPRequest {
 }
 
 // BuildIntegrationDelete builds DELETE /v1/integrations/{name}.
-func BuildIntegrationDelete(name string) HTTPRequest {
+func BuildIntegrationDelete(name string, confirm bool) HTTPRequest {
 	return HTTPRequest{
 		Method: "DELETE",
-		Path:   "/v1/integrations/" + url.PathEscape(name),
+		Path:   withQuery("/v1/integrations/"+url.PathEscape(name), confirmQ(confirm)),
 	}
 }
 
-// BuildIntegrationSet builds PUT /v1/integrations/{name} body (upsert).
-func BuildIntegrationSet(name, command, format, typ, cwd string, env map[string]string) HTTPRequest {
-	if format == "" {
-		format = "line"
+// IntegrationSpec is the PUT /v1/integrations/{name} body. Empty fields are
+// omitted, and the daemon keeps the current value: PUT is an upsert-merge.
+type IntegrationSpec struct {
+	Name    string
+	Command string
+	Format  string // json|line
+	Type    string // stream|cli|mcp
+	Cwd     string
+	Env     map[string]string
+	Facets  []string
+}
+
+// Build renders the spec as PUT /v1/integrations/{name}.
+func (i IntegrationSpec) Build() HTTPRequest {
+	body := map[string]any{"name": i.Name}
+	for k, v := range map[string]string{
+		"command": i.Command,
+		"format":  i.Format,
+		"type":    i.Type,
+		"cwd":     i.Cwd,
+	} {
+		if v != "" {
+			body[k] = v
+		}
 	}
-	if typ == "" {
-		typ = "stream"
+	if len(i.Env) > 0 {
+		body["env"] = i.Env
 	}
-	body := map[string]any{
-		"name":    name,
-		"command": command,
-		"format":  format,
-		"type":    typ,
-	}
-	if cwd != "" {
-		body["cwd"] = cwd
-	}
-	if len(env) > 0 {
-		body["env"] = env
+	if len(i.Facets) > 0 {
+		body["facets"] = i.Facets
 	}
 	return HTTPRequest{
 		Method: "PUT",
-		Path:   "/v1/integrations/" + url.PathEscape(name),
+		Path:   "/v1/integrations/" + url.PathEscape(i.Name),
 		Body:   body,
 	}
 }
@@ -1201,14 +1368,18 @@ func BuildConfigGet() HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/config"}
 }
 
-// BuildConfigSet builds PATCH /v1/config with dotted key set.
+// BuildConfigSet builds PATCH /v1/config with one dotted key.
 func BuildConfigSet(key, value string) HTTPRequest {
+	return BuildConfigSetValues(map[string]any{key: value})
+}
+
+// BuildConfigSetValues builds PATCH /v1/config with several dotted keys. The
+// values keep their JSON type: the handler accepts any scalar.
+func BuildConfigSetValues(values map[string]any) HTTPRequest {
 	return HTTPRequest{
 		Method: "PATCH",
 		Path:   "/v1/config",
-		Body: map[string]any{
-			"set": map[string]any{key: value},
-		},
+		Body:   map[string]any{"set": values},
 	}
 }
 
@@ -1411,4 +1582,53 @@ func normalizeBridgeModeCLI(raw string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// limitQ carries a page size. A non-positive limit means "server default".
+// waitQ carries the long-poll deadline. The API caps it at 120 s.
+func waitQ(waitMS int) map[string]string {
+	if waitMS <= 0 {
+		return nil
+	}
+	return map[string]string{"wait_ms": strconv.Itoa(waitMS)}
+}
+
+func limitQ(limit int) map[string]string {
+	if limit <= 0 {
+		return nil
+	}
+	return map[string]string{"limit": strconv.Itoa(limit)}
+}
+
+// confirmQ carries the destructive-route confirm gate. The API answers
+// `validation` with `confirm_required` when it is absent.
+func confirmQ(confirm bool) map[string]string {
+	if !confirm {
+		return nil
+	}
+	return map[string]string{"confirm": "1"}
+}
+
+// mergeQ combines query maps; a later map wins on a repeated key.
+func mergeQ(maps ...map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, m := range maps {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// fileListQ is the shared query of the three file list routes. recursive adds a
+// row per directory, so a client sees the folder shape.
+func fileListQ(prefix, afterPath, workspace string, limit int, recursive bool) map[string]string {
+	kv := map[string]string{"prefix": prefix, "cursor": afterPath, "workspace": workspace}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	if recursive {
+		kv["recursive"] = "1"
+	}
+	return kv
 }

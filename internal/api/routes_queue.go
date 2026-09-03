@@ -11,6 +11,7 @@ func (s *Server) routeQueue(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/queue", s.handleQueueList)
 	mux.HandleFunc("POST /v1/queue/{id}/requeue", s.handleQueueRequeue)
 	mux.HandleFunc("POST /v1/queue/{id}/cancel", s.handleQueueCancel)
+	mux.HandleFunc("POST /v1/queue/cancel", s.handleQueueCancelBulk)
 }
 
 func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +50,15 @@ func (s *Server) handleQueueCancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": id, "status": string(dispatch.QueueDone), "result": string(dispatch.ResultSkipped),
 	})
+}
+
+// handleQueueCancelBulk cancels every queue item named in ids.
+func (s *Server) handleQueueCancelBulk(w http.ResponseWriter, r *http.Request) {
+	ids, ok := bulkIDs(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, applyBulk(r.Context(), ids, s.queue.Cancel))
 }
 
 // writeQueueErr maps dispatch queue errors to HTTP codes.

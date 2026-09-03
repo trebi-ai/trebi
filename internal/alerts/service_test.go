@@ -265,6 +265,34 @@ func TestSetStatusAndReadAll(t *testing.T) {
 	}
 }
 
+func TestResolveAllByKind(t *testing.T) {
+	t.Parallel()
+	svc, _ := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	health, _ := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindAuthMissing, Harness: "claude", Title: "Auth missing"})
+	down, _ := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindMachineDown, Title: "machine down"})
+
+	n, err := svc.ResolveAll(ctx, string(alerts.InboxHealth))
+	if err != nil || n != 1 {
+		t.Fatalf("kind resolve %d %v", n, err)
+	}
+	got, _ := svc.Get(ctx, health)
+	if got.Status != alerts.InboxResolved {
+		t.Fatalf("health status %s", got.Status)
+	}
+	other, _ := svc.Get(ctx, down)
+	if other.Status == alerts.InboxResolved {
+		t.Fatal("other kind must stay open")
+	}
+
+	if n, err = svc.ResolveAll(ctx, ""); err != nil || n != 1 {
+		t.Fatalf("resolve rest %d %v", n, err)
+	}
+	if n, err = svc.ResolveAll(ctx, ""); err != nil || n != 0 {
+		t.Fatalf("second call must be a no-op: %d %v", n, err)
+	}
+}
+
 func TestRunLoop(t *testing.T) {
 	t.Parallel()
 	svc, st := testSvc(t, alerts.Options{TickInterval: 10 * time.Millisecond})

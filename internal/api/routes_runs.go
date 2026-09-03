@@ -19,6 +19,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -36,17 +37,18 @@ type runCreateRequest struct {
 	Inputs          map[string]string `json:"inputs"`
 	DryRun          bool              `json:"dry_run"`
 	Harness         string            `json:"harness"`
+	IdempotencyKey  string            `json:"idempotency_key"`
 	conversationKey string
 }
 
 func (s *Server) routeRuns(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/runs", s.handleRunsList)
-	mux.HandleFunc("POST /v1/runs", s.handleRunsCreate)
 	mux.HandleFunc("GET /v1/runs/{id}", s.handleRunGet)
 	mux.HandleFunc("GET /v1/runs/{id}/timeline", s.handleRunTimeline)
 	mux.HandleFunc("GET /v1/runs/{id}/transcript", s.handleRunTranscript)
 	mux.HandleFunc("GET /v1/runs/{id}/log", s.handleRunLog)
 	mux.HandleFunc("POST /v1/runs/{id}/kill", s.handleRunKill)
+	mux.HandleFunc("POST /v1/runs/kill", s.handleRunsKill)
 	mux.HandleFunc("POST /v1/runs/{id}/resume", s.handleRunResume)
 	mux.HandleFunc("POST /v1/runs/{id}/replay", s.handleRunReplay)
 	mux.HandleFunc("POST /v1/runs/{id}/retry", s.handleRunRetry)
@@ -69,15 +71,30 @@ func (s *Server) handleRunsList(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	since, err := parseTimeFilter(q.Get("since"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "since: "+err.Error())
+		return
+	}
+	until, err := parseTimeFilter(q.Get("until"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "until: "+err.Error())
+		return
+	}
 	list, err := s.runs.List(r.Context(), runs.ListOpts{
-		Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
-		Job:       q.Get("job"),
-		Status:    q.Get("status"),
-		Kind:      q.Get("kind"),
-		Harness:   q.Get("harness"),
-		Model:     q.Get("model"),
-		Limit:     limit,
-		Cursor:    cursor,
+		Workspace:    s.workspaceID(r.Context(), q.Get("workspace")),
+		Job:          q.Get("job"),
+		Status:       q.Get("status"),
+		Kind:         q.Get("kind"),
+		Harness:      q.Get("harness"),
+		Model:        q.Get("model"),
+		Conversation: q.Get("conversation"),
+		EndReason:    q.Get("end_reason"),
+		Q:            q.Get("q"),
+		Since:        since,
+		Until:        until,
+		Limit:        limit,
+		Cursor:       cursor,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -95,15 +112,6 @@ func (s *Server) handleRunsList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) handleRunsCreate(w http.ResponseWriter, r *http.Request) {
-	var body runCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	s.createRun(w, r, body)
-}
-
 // createRun validates the request and launches the run.
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreateRequest) {
 	if body.Job == "" {
@@ -119,6 +127,15 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		writeErr(w, http.StatusServiceUnavailable, "draining", "daemon is draining")
 		return
 	}
+	if key := idempotencyKey(r, body.IdempotencyKey); key != "" && !body.DryRun {
+		if run, ok := s.runForKey(w, r, key); ok {
+			if run != nil {
+				writeJSON(w, http.StatusCreated, run)
+			}
+			return
+		}
+		body.IdempotencyKey = key
+	}
 	body.Workspace = s.workspaceID(r.Context(), body.Workspace)
 	row, rerr := s.resolveRunRow(r.Context(), body)
 	if rerr != nil {
@@ -133,7 +150,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		return
 	}
 	harness, prompt, spec := runSpec(row.Path, body.Harness, body.PromptOverride)
-	prompt = s.assistantPrompt(r.Context(), body, prompt)
+	prompt = s.launchPrompt(r.Context(), body, prompt)
 	if body.DryRun {
 		// B25: dry_run evaluates schedule when: gates without launching.
 		s.handleRunsDryRun(w, r, body.Workspace, body.Job, body.Kind, reason, harness, prompt, body.Inputs)
@@ -149,7 +166,35 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	if body.Kind == runs.KindAssistant {
 		s.log.Info("assistant.woken", "reason", string(reason), "channel", "")
 	}
+	if body.IdempotencyKey != "" {
+		if _, err := s.st.RememberIdempotent(r.Context(), idempotencyRuns, body.IdempotencyKey, run.ID); err != nil {
+			s.log.Warn("remember idempotency key", "run", run.ID, "error", err)
+		}
+	}
+	if wait := parseWait(r); wait > 0 {
+		if waited, werr := s.runs.WaitFor(r.Context(), run.ID, wait); werr == nil {
+			run = waited
+		}
+	}
 	writeJSON(w, http.StatusCreated, run)
+}
+
+// runForKey answers a repeated launch. ok reports that the caller must stop: it
+// returns the first run, or nil when the lookup already wrote an error.
+func (s *Server) runForKey(w http.ResponseWriter, r *http.Request, key string) (*runs.Run, bool) {
+	id, found, err := s.st.Idempotent(r.Context(), idempotencyRuns, key)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return nil, true
+	}
+	if !found {
+		return nil, false
+	}
+	run, err := s.runs.Get(r.Context(), id)
+	if err != nil {
+		return nil, false
+	}
+	return run, true
 }
 
 // isDraining reports drain state. The persisted flag keeps drain effective
@@ -241,11 +286,17 @@ func (s *Server) bindConversation(ctx context.Context, body *runCreateRequest) e
 	return nil
 }
 
-func (s *Server) assistantPrompt(ctx context.Context, body runCreateRequest, base string) string {
+// launchPrompt resolves the prompt of one run: a full override wins, an
+// assistant run composes its wake prompt, and extra_prompt appends to the job
+// body for every other kind.
+func (s *Server) launchPrompt(ctx context.Context, body runCreateRequest, base string) string {
 	if body.PromptOverride != "" {
 		return body.PromptOverride
 	}
 	if body.Kind != runs.KindAssistant || s.ws == nil {
+		if body.ExtraPrompt != "" {
+			return request.AppendExtraPrompt(base, body.ExtraPrompt)
+		}
 		return base
 	}
 	recap := ""
@@ -266,16 +317,26 @@ func (s *Server) assistantPrompt(ctx context.Context, body runCreateRequest, bas
 	return composed
 }
 
+// createRunFromJob is the one launch path. The body carries every launch
+// field; the query keeps workspace and dry_run so a body-less POST still works.
 func (s *Server) createRunFromJob(w http.ResponseWriter, r *http.Request, name string) {
-	s.createRun(w, r, runCreateRequest{
-		Job:       name,
-		Workspace: r.URL.Query().Get("workspace"),
-		DryRun:    r.URL.Query().Get("dry_run") == "true",
-	})
+	var body runCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	body.Job = name
+	if body.Workspace == "" {
+		body.Workspace = r.URL.Query().Get("workspace")
+	}
+	if r.URL.Query().Get("dry_run") == "true" {
+		body.DryRun = true
+	}
+	s.createRun(w, r, body)
 }
 
 func (s *Server) handleRunGet(w http.ResponseWriter, r *http.Request) {
-	run, err := s.runs.Get(r.Context(), r.PathValue("id"))
+	run, err := s.runs.WaitFor(r.Context(), r.PathValue("id"), parseWait(r))
 	if err == sql.ErrNoRows {
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")
 		return
@@ -294,6 +355,15 @@ func (s *Server) handleRunTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, tl)
+}
+
+// handleRunsKill kills every run named in ids.
+func (s *Server) handleRunsKill(w http.ResponseWriter, r *http.Request) {
+	ids, ok := bulkIDs(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, applyBulk(r.Context(), ids, s.runs.Kill))
 }
 
 func (s *Server) handleRunKill(w http.ResponseWriter, r *http.Request) {
@@ -738,7 +808,8 @@ func (s *Server) handleRunMessage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRunApprove(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Decision string `json:"decision"` // allow|deny
+		Decision   string `json:"decision"` // allow|deny
+		ApprovalID string `json:"approval_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
@@ -748,12 +819,12 @@ func (s *Server) handleRunApprove(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "decision required (allow|deny)")
 		return
 	}
-	a, err := s.runs.DecideApproval(r.Context(), r.PathValue("id"), body.Decision)
+	a, err := s.runs.DecideApproval(r.Context(), r.PathValue("id"), body.ApprovalID, body.Decision)
 	if errors.Is(err, sql.ErrNoRows) {
-		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+		writeErr(w, http.StatusNotFound, "not_found", "run or approval not found")
 		return
 	}
-	if errors.Is(err, runs.ErrInvalidDecision) {
+	if errors.Is(err, runs.ErrInvalidDecision) || errors.Is(err, runs.ErrApprovalRunMismatch) {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
@@ -770,8 +841,13 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := parseLimit(r)
+	state := r.URL.Query().Get("state")
+	if state != "" && state != "pending" && state != "decided" {
+		writeErr(w, http.StatusBadRequest, "validation", "state must be pending or decided")
+		return
+	}
 	list, err := s.runs.ListApprovals(r.Context(), runs.ApprovalListOpts{
-		Limit: limit, Cursor: cursor,
+		Limit: limit, Cursor: cursor, State: state,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -791,11 +867,13 @@ func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
 		runID = r.URL.Query().Get("run_id")
 	}
 	body, _ := io.ReadAll(r.Body)
-	_ = body // hook payload is logged via AddEvent; body is unused by state mapping
 	if runID != "" {
 		switch event {
 		case "waiting", "permission-request":
 			s.runs.SetAgentState(r.Context(), runID, runs.AgentWaiting, "hook")
+			if _, err := s.runs.OpenApproval(r.Context(), runID, hookQuestion(body)); err != nil {
+				s.log.Warn("open approval", "run", runID, "error", err)
+			}
 		case "running", "tool-start", "session-start":
 			s.runs.SetAgentState(r.Context(), runID, runs.AgentRunning, "hook")
 		case "stop", "session-end", "idle":
@@ -806,15 +884,53 @@ func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
+// hookQuestion reads the prompt text a harness hook sends with a waiting event.
+// The key differs per harness, so the first non-empty one wins. `trebi
+// agent-hook` wraps the harness body in a payload string, so unwrap that first.
+func hookQuestion(body []byte) string {
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		return ""
+	}
+	if inner, ok := payload["payload"].(string); ok {
+		if q := hookQuestion([]byte(inner)); q != "" {
+			return q
+		}
+	}
+	for _, key := range []string{"question", "prompt", "message", "text"} {
+		if s, ok := payload[key].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 func (s *Server) handleAgentState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"agents": s.runs.AgentSnapshot()})
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if !runs.ValidRange(q.Get("range")) {
+		writeErr(w, http.StatusBadRequest, "validation", "range must be 24h, 7d, 30d, or mtd")
+		return
+	}
+	stats, err := s.runs.Stats(r.Context(), runs.StatsOpts{
+		Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
+		Job:       q.Get("job"),
+		Range:     q.Get("range"),
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
 	total, running, err := s.runs.Counts(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"total": total, "running": running})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"range": stats.Range, "totals": stats.Totals, "mtd": stats.MTD, "days": stats.Days,
+		"total": total, "running": running,
+	})
 }

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/secrets"
@@ -19,12 +21,14 @@ func (s *Server) routeSettings(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/skills/{name}", s.handleSkillGet)
 	mux.HandleFunc("PUT /v1/skills/{name}", s.handleSkillPut)
 	mux.HandleFunc("DELETE /v1/skills/{name}", s.handleSkillDelete)
-	mux.HandleFunc("POST /v1/skills/{name}/update", s.handleSkillUpdate)
+	mux.HandleFunc("POST /v1/skills/{name}/update", s.handleSkillRefresh)
+	mux.HandleFunc("POST /v1/skills/{name}/refresh", s.handleSkillRefresh)
 	mux.HandleFunc("GET /v1/secrets", s.handleSecrets)
 	mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSecretPut)
 	mux.HandleFunc("DELETE /v1/secrets/{name}", s.handleSecretDelete)
 	mux.HandleFunc("GET /v1/config", s.handleConfigGet)
 	mux.HandleFunc("PATCH /v1/config", s.handleConfigPatch)
+	mux.HandleFunc("GET /v1/config/validate", s.handleConfigValidate)
 }
 
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
@@ -51,19 +55,26 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSkillsCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name       string `json:"name"`
-		SkillMD    string `json:"skill_md"`
-		Provenance string `json:"provenance"`
+		Name       string         `json:"name"`
+		SkillMD    string         `json:"skill_md"`
+		Provenance string         `json:"provenance"`
+		Source     *skills.Source `json:"source"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	prov := skills.Provenance(body.Provenance)
-	if prov == "" {
-		prov = skills.ProvenanceLocal
+	var sk *skills.Skill
+	var err error
+	if body.Source != nil {
+		sk, err = s.skills.CreateFromSource(r.Context(), body.Name, *body.Source)
+	} else {
+		prov := skills.Provenance(body.Provenance)
+		if prov == "" {
+			prov = skills.ProvenanceLocal
+		}
+		sk, err = s.skills.Create(r.Context(), body.Name, body.SkillMD, prov)
 	}
-	sk, err := s.skills.Create(r.Context(), body.Name, body.SkillMD, prov)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
@@ -110,14 +121,23 @@ func (s *Server) handleSkillDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": r.PathValue("name")})
 }
 
-func (s *Server) handleSkillUpdate(w http.ResponseWriter, r *http.Request) {
-	// pull upstream — not implemented for local; return current
-	sk, err := s.skills.Get(r.Context(), r.PathValue("name"), true)
-	if err != nil {
+// handleSkillRefresh pulls the skill source again. A skill with no source
+// comes back unchanged, with updated false.
+func (s *Server) handleSkillRefresh(w http.ResponseWriter, r *http.Request) {
+	sk, updated, err := s.skills.Refresh(r.Context(), r.PathValue("name"))
+	if os.IsNotExist(errors.Unwrap(err)) {
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"skill": sk, "updated": false, "note": "local skills have no upstream"})
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	resp := map[string]any{"skill": sk, "updated": updated}
+	if sk.Source == nil {
+		resp["note"] = "skill has no source"
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +204,21 @@ func (s *Server) handleConfigGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"config": cfg, "entries": configEntries()})
 }
 
+// handleConfigValidate checks the daemon config. It answers 200 either way,
+// with ok and the problems, so a client reads one shape.
+func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
+	cfg, err := config.Load()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if err := cfg.Validate(); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -204,7 +239,12 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 		if k == "set" {
 			continue
 		}
-		if err := cfg.SetPath(k, fmt.Sprint(v)); err != nil {
+		val, err := configScalar(v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", "key "+k+": "+err.Error())
+			return
+		}
+		if err := cfg.SetPath(k, val); err != nil {
 			writeErr(w, http.StatusBadRequest, "validation", err.Error())
 			return
 		}
@@ -216,6 +256,23 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 	s.appendBus(r.Context(), store.BusEvent{Topic: "config.updated", Action: "updated"})
 	m, _ := loadConfigMap()
 	writeJSON(w, http.StatusOK, map[string]any{"config": m, "entries": configEntries()})
+}
+
+// configScalar renders one JSON scalar as the text SetPath parses. An object
+// or array is rejected: every config key holds a scalar.
+func configScalar(v any) (string, error) {
+	switch t := v.(type) {
+	case string:
+		return t, nil
+	case bool:
+		return strconv.FormatBool(t), nil
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64), nil
+	case nil:
+		return "", nil
+	default:
+		return "", fmt.Errorf("value must be a string, number, or boolean, not %T", v)
+	}
 }
 
 // configEntries lists every known key with effective value, source, and default.

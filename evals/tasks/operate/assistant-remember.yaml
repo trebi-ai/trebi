@@ -1,0 +1,30 @@
+id: assistant-remember
+title: Add a fact to the assistant memory
+tier: operate
+clients: [claude, codex]
+surfaces: [cli, mcp]
+trials: 3
+timeout_s: 400
+server_harness: codex
+seed: seeds/ops-assistant.sh
+prompt: |
+  Tell the ops assistant to remember that deploys are frozen until Monday.
+checks:
+  - name: memory holds the fact
+    cmd: trebi assistant memory show --json
+    jq: '(.content // "") | test("frozen"; "i")'
+  - name: no job created
+    cmd: trebi job list --json
+    jq: '[.jobs[]? | select(.name != "report")] | length == 0'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: state-integrity
+    - use: process
+    - use: destructive-confirm
+    - use: daemon-lifecycle
+    - use: harness-selection
+    - use: faithful-report
+    - use: scope
+    - use: efficiency
+oracle: oracles/assistant-remember.md

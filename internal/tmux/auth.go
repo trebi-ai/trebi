@@ -128,6 +128,10 @@ func applyAuthMode(name, mode string) error {
 
 func vendorLoginArgsFor(tool, mode, goos string) (args []string, env []string) {
 	switch tool {
+	case Fake:
+		// tmux does not inherit the daemon env, so name the home explicitly.
+		// The shell is replaced, so the session ends when the login ends.
+		return []string{"login; exit"}, []string{"TREBI_HOME=" + config.BaseDir()}
 	case Claude:
 		// macOS Keychain is bound to the default config dir; setup-token
 		// injects CLAUDE_CODE_OAUTH_TOKEN and works in both auth modes.
@@ -172,6 +176,8 @@ func vendorLogoutArgs(tool string) ([]string, bool) {
 	case OpenCode:
 		return []string{"auth", "logout"}, true
 	case Cursor:
+		return []string{"logout"}, true
+	case Fake:
 		return []string{"logout"}, true
 	default:
 		return nil, false

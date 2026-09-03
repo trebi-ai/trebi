@@ -1,0 +1,11 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__harness",
+    "content": "{\"action\": \"auth\", \"input\": {\"name\": \"fake\"}}"
+  },
+  {
+    "role": "assistant",
+    "content": "Logging fake out clears its credentials. Confirm and I will do it."
+  }
+]

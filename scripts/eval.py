@@ -11,13 +11,20 @@ sweep leftover trial daemons on exit. The Go runner probes each
 (client, surface) before the first trial (`preflight: <client>/<surface> ok`
 on stderr) and aborts the suite on model auth or MCP handshake failure.
 
+`run` puts 2 trials in flight by default (`--parallel`, or
+EVAL_PARALLEL). Trials are hermetic: each owns its trebi home, workdir,
+client home, and daemon port, so tasks do not spill into each other.
+
   scripts/eval.py run --client codex
   scripts/eval.py run --client claude --trials 1 --task onboarding-health
   scripts/eval.py run --client codex --surface mcp
+  scripts/eval.py run --surface both --parallel 4
+  scripts/eval.py run --parallel 1            # serial
   scripts/eval.py run --client codex --judge codex
   scripts/eval.py run --judge codex:gpt-5
   EVAL_CLIENT=codex scripts/eval.py run
   EVAL_JUDGE=codex scripts/eval.py run
+  EVAL_PARALLEL=4 scripts/eval.py run
   scripts/eval.py oracle onboarding-health
   scripts/eval.py review --run out/<runid>
 
@@ -45,6 +52,9 @@ from pathlib import Path
 from typing import Any
 
 MAX_RUN_AGE = timedelta(days=7)
+
+# Trials in flight at once. Each trial owns its home, workdir, and port.
+DEFAULT_PARALLEL = 2
 
 # ── paths ──────────────────────────────────────────────────────────────────
 
@@ -121,6 +131,8 @@ def build(repo: Path) -> None:
     subprocess.check_call(
         ["go", "build", "-o", "build/trebi-eval", "./cmd/trebi-eval"], cwd=repo, env=env
     )
+    # The fake harness sits next to trebi, so a trial PATH reaches it.
+    subprocess.check_call(["go", "build", "-o", "build/fake", "./cmd/fake"], cwd=repo, env=env)
     os.environ["TREBI_BIN"] = str(repo / "build" / "trebi")
 
 
@@ -207,12 +219,20 @@ def ensure_judge_flag(rest: list[str]) -> list[str]:
     return rest
 
 
+def ensure_parallel_flag(rest: list[str]) -> list[str]:
+    if any(a == "--parallel" or a.startswith("--parallel=") for a in rest):
+        return rest
+    env = os.environ.get("EVAL_PARALLEL", "").strip()
+    return ["--parallel", env or str(DEFAULT_PARALLEL), *rest]
+
+
 def cmd_live(repo: Path, sub: str, rest: list[str], *, no_build: bool) -> int:
     if not no_build:
         build(repo)
     if sub == "run":
         rest = ensure_client_flag(rest)
         rest = ensure_judge_flag(rest)
+        rest = ensure_parallel_flag(rest)
     out = repo / "out"
     if sub == "run":
         clean_old_runs(out)
@@ -292,7 +312,12 @@ def check_fail(tr: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def judge_fail(tr: dict[str, Any]) -> list[dict[str, Any]]:
-    return [j for j in tr.get("judge") or [] if not j.get("pass") and not j.get("unknown")]
+    """Graded dimensions that failed. Telemetry dimensions never gate."""
+    return [
+        j
+        for j in tr.get("judge") or []
+        if not j.get("pass") and not j.get("unknown") and not j.get("telemetry")
+    ]
 
 
 def classify(tr: dict[str, Any]) -> str:
@@ -319,6 +344,16 @@ def one_line_error(tr: dict[str, Any], n: int = 80) -> str:
 
 
 def trial_commands(trial_dir: Path) -> list[dict[str, Any]]:
+    """The agent's actions. commands.json is the projection commands_jq graded,
+    so it carries MCP calls too; the transcript is the fallback."""
+    projected = trial_dir / "commands.json"
+    if projected.exists():
+        try:
+            rows = load_json(projected)
+        except json.JSONDecodeError:
+            rows = None
+        if isinstance(rows, list):
+            return [{"command": r} for r in rows if isinstance(r, str)]
     p = trial_dir / "transcript.json"
     if not p.exists():
         return []

@@ -131,8 +131,9 @@ func TestHashTree(t *testing.T) {
 }
 
 // A workspace roots one level below the working directory, so the trebi file
-// store writes a prompt's bare file name there. The check must find it.
-func TestFileCheckFindsWorkspaceCopy(t *testing.T) {
+// store writes a prompt's bare file name there. Only file_exists_any accepts
+// that; the exact checks must not.
+func TestFileExistsAnyFindsWorkspaceCopy(t *testing.T) {
 	wd := t.TempDir()
 	ws := filepath.Join(wd, "ops")
 	if err := os.MkdirAll(ws, 0o755); err != nil {
@@ -142,11 +143,14 @@ func TestFileCheckFindsWorkspaceCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := filepath.Join(wd, "log-line.txt")
-	if r := fileStatCheck("exists", want, true); !r.Pass {
-		t.Fatalf("file_exists did not find the workspace copy: %s", r.Detail)
+	if r := fileStatCheck("any", resolveWanted(want), true); !r.Pass {
+		t.Fatalf("file_exists_any did not find the workspace copy: %s", r.Detail)
 	}
-	if r := fileTextCheck("contains", want, "canary-xyzzy", true); !r.Pass {
-		t.Fatalf("file_contains did not find the workspace copy: %s", r.Detail)
+	if r := fileStatCheck("exact", want, true); r.Pass {
+		t.Fatal("file_exists searched subdirectories; it must stay exact")
+	}
+	if r := fileTextCheck("exact", want, "canary-xyzzy", true); r.Pass {
+		t.Fatal("file_contains searched subdirectories; it must stay exact")
 	}
 }
 

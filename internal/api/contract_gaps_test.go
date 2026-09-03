@@ -126,8 +126,8 @@ Do it.
 	}
 	wsID, _ := ws["id"].(string)
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/runs", s.Token(), map[string]any{
-		"job": "gated", "workspace": wsID, "dry_run": true,
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/gated/run", s.Token(), map[string]any{
+		"workspace": wsID, "dry_run": true,
 	})
 	if code != 200 {
 		t.Fatalf("dry_run status %d %v", code, body)
@@ -165,8 +165,8 @@ Skip.
 	}
 	_ = s.Workspaces().RebuildIndex(t.Context(), wsObj)
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/runs", s.Token(), map[string]any{
-		"job": "gated", "workspace": wsID, "dry_run": true,
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/gated/run", s.Token(), map[string]any{
+		"workspace": wsID, "dry_run": true,
 	})
 	if code != 200 {
 		t.Fatalf("%d %v", code, body)
@@ -307,8 +307,8 @@ func TestRetryPolicyByEndReason(t *testing.T) {
 	wsID := addWorkspace(t, base, s.Token(), wsDir, "retry-ws")
 
 	// Create completed fake run then force end_reason
-	code, run, _ := doJSON(t, "POST", base+"/v1/runs", s.Token(), map[string]any{
-		"job": "x", "workspace": wsID, "harness": "fake", "prompt_override": "hi",
+	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/x/run", s.Token(), map[string]any{
+		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
 	})
 	if code != 201 {
 		t.Fatalf("%d %v", code, run)
@@ -333,8 +333,8 @@ func TestRetryPolicyByEndReason(t *testing.T) {
 	}
 
 	// session_gone → fresh rerun (creates new run)
-	code, run2, _ := doJSON(t, "POST", base+"/v1/runs", s.Token(), map[string]any{
-		"job": "y", "workspace": wsID, "harness": "fake", "prompt_override": "hi2",
+	code, run2, _ := doJSON(t, "POST", base+"/v1/jobs/y/run", s.Token(), map[string]any{
+		"workspace": wsID, "harness": "fake", "prompt_override": "hi2",
 	})
 	if code != 201 {
 		t.Fatal(code)
@@ -372,16 +372,16 @@ func TestDrainFlagPersistsAcrossRestart(t *testing.T) {
 	}
 
 	// Auto producer blocked by the persisted flag alone.
-	code, body, _ := doJSON(t, "POST", base+"/v1/runs", s.Token(), map[string]any{
-		"job": "dj", "workspace": wsID, "reason": "trigger",
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/dj/run", s.Token(), map[string]any{
+		"workspace": wsID, "reason": "trigger",
 	})
 	if code != 503 || errCode(body) != "draining" {
 		t.Fatalf("trigger under flag: want 503 draining got %d %v", code, body)
 	}
 
 	// Manual carve-out still launches.
-	code, body, _ = doJSON(t, "POST", base+"/v1/runs", s.Token(), map[string]any{
-		"job": "dj", "workspace": wsID, "reason": "manual", "harness": "fake",
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/dj/run", s.Token(), map[string]any{
+		"workspace": wsID, "reason": "manual", "harness": "fake",
 	})
 	if code != 201 {
 		t.Fatalf("manual under flag: want 201 got %d %v", code, body)

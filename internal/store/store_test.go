@@ -296,3 +296,24 @@ func openTest(t *testing.T) *store.Store {
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
+
+func TestIdempotentKeys(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+
+	if _, found, err := st.Idempotent(ctx, "runs", "k1"); err != nil || found {
+		t.Fatalf("unknown key: found=%v err=%v", found, err)
+	}
+	if got, err := st.RememberIdempotent(ctx, "runs", "k1", "run-1"); err != nil || got != "run-1" {
+		t.Fatalf("remember: %q %v", got, err)
+	}
+	if got, err := st.RememberIdempotent(ctx, "runs", "k1", "run-2"); err != nil || got != "run-1" {
+		t.Fatalf("first writer must win: %q %v", got, err)
+	}
+	if got, err := st.RememberIdempotent(ctx, "jobs", "k1", "job-1"); err != nil || got != "job-1" {
+		t.Fatalf("scopes must not collide: %q %v", got, err)
+	}
+	if n, err := st.PruneIdempotent(ctx, -time.Minute); err != nil || n != 2 {
+		t.Fatalf("prune: %d %v", n, err)
+	}
+}

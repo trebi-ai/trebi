@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -27,6 +28,7 @@ func (s *Server) routeWorkspaces(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /v1/workspaces/{id}/assistant", s.handleAssistantPatch)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant", s.handleAssistantDelete)
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/wake", s.handleAssistantWake)
+	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/messages", s.handleAssistantAsk)
 	mux.HandleFunc("GET /v1/workspaces/{id}/assistant/memory", s.handleAssistantMemoryGet)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/assistant/memory", s.handleAssistantMemoryPut)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant/memory", func(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +67,18 @@ func (s *Server) handleWorkspacesList(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		list = list[:limit]
 	}
+	if _, live, err := s.runs.StatusByJob(r.Context()); err == nil {
+		running := map[string]int{}
+		for key, ids := range live {
+			wsID, _, ok := strings.Cut(key, "/")
+			if ok {
+				running[wsID] += len(ids)
+			}
+		}
+		for i := range list {
+			list[i].RunningCount = running[list[i].ID]
+		}
+	}
 	resp := map[string]any{"workspaces": list}
 	if truncated {
 		resp["truncated"] = true
@@ -101,8 +115,9 @@ func writeWorkspaceAddErr(w http.ResponseWriter, err error) {
 	}
 }
 
+// handleWorkspaceGet takes an id or a name, the same as `trebi workspace show`.
 func (s *Server) handleWorkspaceGet(w http.ResponseWriter, r *http.Request) {
-	ws, err := s.ws.Get(r.Context(), r.PathValue("id"))
+	ws, err := s.ws.Resolve(r.Context(), r.PathValue("id"))
 	if err == sql.ErrNoRows {
 		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
 		return
@@ -340,6 +355,34 @@ func (s *Server) memoryRootRel(r *http.Request, assistant bool) (root, rel, abs 
 		return "", "", "", err
 	}
 	return ws.Path, rel, abs, nil
+}
+
+// handleAssistantAsk sends one message to the workspace assistant. The daemon
+// resolves or creates the channel conversation, so a client needs no pointer
+// calls of its own.
+func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Text           string `json:"text"`
+		ChannelType    string `json:"channel_type"`
+		ChannelRef     string `json:"channel_ref"`
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	out, err := s.conv.Ask(r.Context(), conversations.AskOpts{
+		Workspace:      r.PathValue("id"),
+		Text:           body.Text,
+		ChannelType:    body.ChannelType,
+		ChannelRef:     body.ChannelRef,
+		IdempotencyKey: body.IdempotencyKey,
+		Wait:           parseWait(r),
+	})
+	if s.convErr(w, err, "workspace not found") {
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
 }
 
 func (s *Server) handleAssistantWake(w http.ResponseWriter, r *http.Request) {

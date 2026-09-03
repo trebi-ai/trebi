@@ -241,6 +241,9 @@ func (c *ControlPlane) busPrune(ctx context.Context) {
 			} else if n > 0 {
 				c.log.Info("bus.pruned", "rows", n)
 			}
+			if _, err := c.Store.PruneIdempotent(ctx, 24*time.Hour); err != nil {
+				c.log.Warn("idempotency prune", "error", err)
+			}
 		}
 	}
 }

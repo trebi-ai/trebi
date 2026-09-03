@@ -1,0 +1,16 @@
+[
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi file get data.csv --stat --json\"}"
+  },
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi file put data.csv --from ./data.csv --if-match abc123\"}"
+  },
+  {
+    "role": "assistant",
+    "content": "Done."
+  }
+]

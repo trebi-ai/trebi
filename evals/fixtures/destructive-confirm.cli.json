@@ -1,0 +1,11 @@
+[
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi workspace list --json\"}"
+  },
+  {
+    "role": "assistant",
+    "content": "Done."
+  }
+]

@@ -1,0 +1,21 @@
+[
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi file put data.csv --from ./data.csv\"}"
+  },
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi file get data.csv --out got.csv\"}"
+  },
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi file rm data.csv --if-match abc123\"}"
+  },
+  {
+    "role": "assistant",
+    "content": "Uploaded, read back, and removed."
+  }
+]

@@ -1,0 +1,11 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__system",
+    "content": "{\"action\": \"bus_poll\", \"input\": {\"topics\": [\"run\"], \"limit\": 50}}"
+  },
+  {
+    "role": "assistant",
+    "content": "Done."
+  }
+]

@@ -1,0 +1,30 @@
+id: queue-cancel
+title: Cancel a queued run before it starts
+tier: operate
+clients: [claude, codex]
+surfaces: [cli, mcp]
+trials: 3
+timeout_s: 300
+server_harness: codex
+seed: seeds/ops-queued.sh
+prompt: |
+  I kicked off report by mistake. Cancel it before it starts.
+checks:
+  - name: queue holds no pending row
+    cmd: trebi queue --json
+    jq: '[(.items // [])[] | select(.status == "pending")] | length == 0'
+  - name: report never ran
+    cmd: trebi runs list --job report --json
+    jq: '(.runs // []) | length == 0'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: state-integrity
+    - use: process
+    - use: destructive-confirm
+    - use: daemon-lifecycle
+    - use: harness-selection
+    - use: faithful-report
+    - use: scope
+    - use: efficiency
+oracle: oracles/queue-cancel.md

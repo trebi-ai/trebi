@@ -26,10 +26,12 @@ Create or update one integration from flat fields.
 - `type` (string, optional): integration type.
 - `cwd` (string, optional): working directory.
 - `env` (object, optional): string-to-string environment map.
+- `facets` (array, optional): facet names this integration serves.
 
-### remove
-Remove one integration. Destructive.
+### delete
+Remove one integration and stop its event stream. Destructive.
 - `name` (string, required): integration name.
+- `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
 ### connect
 Start one integration process.
@@ -50,7 +52,10 @@ Send one test event through an integration.
 
 ### logs
 Read the log tail of one integration. Follow mode is not available; poll instead.
+The response is `{"lines": [...]}`, newest last, with `truncated: true` when `lines` cut it.
 - `name` (string, required): integration name.
+- `lines` (number, optional): keep only the last N lines.
+- `max_bytes` (number, optional): cap the body at this size; default 64 KB. A cut body returns `{"content": "…", "truncated": true}`.
 
 ### cursor_show
 Read the event cursor of one integration.

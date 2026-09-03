@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -76,7 +77,7 @@ func TestDoHTTPRoundTrip(t *testing.T) {
 		gotBody = string(b)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/v1/runs":
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/run"):
 			_, _ = w.Write([]byte(`{"id":"01TEST","status":"running"}`))
 		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/v1/jobs/"):
 			_, _ = w.Write([]byte(`{"deleted":"demo"}`))
@@ -95,12 +96,12 @@ func TestDoHTTPRoundTrip(t *testing.T) {
 	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
 
 	// run dry_run + prompt
-	req := request.BuildRunsCreate("demo", "ws", "hi", true)
+	req := request.RunSpec{Job: "demo", Workspace: "ws", Prompt: "hi", DryRun: true}.Build()
 	var out map[string]any
 	if err := client.DoHTTP(req, &out); err != nil {
 		t.Fatal(err)
 	}
-	if gotMethod != "POST" || gotPath != "/v1/runs" {
+	if gotMethod != "POST" || gotPath != "/v1/jobs/demo/run?workspace=ws" {
 		t.Fatalf("got %s %s", gotMethod, gotPath)
 	}
 	if !strings.Contains(gotBody, `"dry_run":true`) || !strings.Contains(gotBody, `"prompt_override":"hi"`) {
@@ -111,7 +112,7 @@ func TestDoHTTPRoundTrip(t *testing.T) {
 	}
 
 	// job delete
-	req = request.BuildJobDelete("demo", "ws1", false)
+	req = request.BuildJobDelete("demo", "ws1", "", false, true)
 	if err := client.DoHTTP(req, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +207,19 @@ func TestDoHTTPRawRoundTrip(t *testing.T) {
 	if gotMethod != "DELETE" || gotIfMatch != "etag-2" || gotBody != "" {
 		t.Fatalf("delete %s ifmatch=%q body=%q", gotMethod, gotIfMatch, gotBody)
 	}
+
+	// A JSON Body plus If-Match must still send the body. `trebi job schedule`
+	// takes this path, and an empty body reaches the API as a 400.
+	req = request.BuildJobPutMarkdown("report", "ws1", "---\ntitle: r\n---\n", "hash-1")
+	if err := client.DoHTTP(req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if gotIfMatch != "hash-1" || gotContentType != "application/json" {
+		t.Fatalf("ifmatch=%q ct=%q", gotIfMatch, gotContentType)
+	}
+	if !strings.Contains(gotBody, `"markdown"`) {
+		t.Fatalf("body %q", gotBody)
+	}
 }
 
 func TestCommandRegistration(t *testing.T) {
@@ -215,7 +229,7 @@ func TestCommandRegistration(t *testing.T) {
 	for _, c := range app.Commands {
 		names[c.Name] = true
 	}
-	for _, want := range []string{"runs", "job", "harness", "integration", "config", "service", "conversation", "events", "queue", "rules", "bus", "doctor"} {
+	for _, want := range []string{"runs", "job", "harness", "integration", "config", "service", "conversation", "event", "queue", "rules", "bus", "doctor"} {
 		if !names[want] {
 			t.Fatalf("missing top-level %s", want)
 		}
@@ -439,9 +453,14 @@ func TestResolveRunMessageText(t *testing.T) {
 	}
 }
 
+// findCmd resolves a command by its name or by any alias, so a renamed
+// command still answers to the spelling it replaced.
 func findCmd(cmds []*urfaveCommand, name string) *urfaveCommand {
 	for _, c := range cmds {
-		if c != nil && c.Name == name {
+		if c == nil {
+			continue
+		}
+		if c.Name == name || slices.Contains(c.Aliases, name) {
 			return c
 		}
 	}

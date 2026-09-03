@@ -9,9 +9,12 @@ description: How to pull logs, follow the event bus, and read doctor findings.
 ## Doctor and health
 
 ```bash
+trebi status --json
 trebi doctor --json
 trebi service status --json
 ```
+
+`status` is the one-call operator view: version, doctor counts, harness auth, workspace count, running and waiting runs, unread inbox, and the next due schedule. Start there. When the daemon is down it falls back to the OS service status.
 
 `service status` is **local only**; remote: `system.health`. If `doctor` is healthy, stop. Do not "fix" the database, edit `$TREBI_HOME`, or send signals to trebid.
 
@@ -22,7 +25,7 @@ trebi doctor fix <id>
 
 ## Event bus
 
-`trebi bus` is the live stream. It is not the trigger pipeline (`trebi events`) and it is not a complete audit trail — retention is 7 days.
+`trebi bus` is the live stream. It is not the trigger pipeline (`trebi event`) and it is not a complete audit trail — retention is 7 days.
 
 ```bash
 trebi bus --replay --topics run --limit 10 --json
@@ -63,10 +66,16 @@ The daemon logs each API request as `api.request`. Successful reads of `/v1/syst
 
 ```bash
 trebi runs stats --json
+trebi runs stats --range mtd --json
+trebi runs stats --range 7d --job my-job --json
 trebi runs agents --json
 trebi service drain
 trebi service undrain
 ```
+
+`runs stats` answers "how much did we spend". It returns `totals` for the range,
+`mtd` for the month to date, and one `days` row per day. The range is `24h`,
+`7d`, `30d` (default), or `mtd`.
 
 Drain returns 503 `draining` to automatic producers. Manual launches still pass. Use drain before maintenance, then `undrain`.
 
@@ -75,3 +84,13 @@ trebi service shutdown
 ```
 
 `service shutdown` asks the daemon to exit. `service start` / `stop` / `restart` / `install` / `uninstall` / `migrate-db` / `daemon` are **local only**; remote: none (if MCP is down, there is no daemon to talk to). Never `kill` the daemon PID.
+
+## Cloud link
+
+```bash
+trebi service cloud status --json
+trebi service cloud link
+trebi service cloud unlink --force
+```
+
+`cloud unlink` is destructive: remote clients lose access. The broker is not configured yet, so `link` reports `not_configured`.

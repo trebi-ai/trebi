@@ -33,6 +33,8 @@ type agentSnap struct {
 var (
 	// ErrInvalidDecision reports an approval decision other than allow|deny.
 	ErrInvalidDecision = errors.New("decision must be allow or deny")
+	// ErrApprovalRunMismatch reports an approval_id that belongs to another run.
+	ErrApprovalRunMismatch = errors.New("approval belongs to a different run")
 	// ErrNotRunning reports InjectMessage against a run that is not live.
 	ErrNotRunning = errors.New("run is not running")
 	// ErrSentinelInMessage reports a message carrying the run's own completion
@@ -154,6 +156,32 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Run, error) {
 }
 
 // Get returns a run by id.
+// MaxWait caps one long-poll. A client that needs longer calls again.
+const MaxWait = 120 * time.Second
+
+// waitPoll is the interval between status reads inside WaitFor.
+const waitPoll = 250 * time.Millisecond
+
+// WaitFor returns the run when it reaches a terminal status, or the current row
+// when wait elapses. A run that is already terminal returns at once.
+func (s *Service) WaitFor(ctx context.Context, id string, wait time.Duration) (*Run, error) {
+	if wait > MaxWait {
+		wait = MaxWait
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		run, err := s.Get(ctx, id)
+		if err != nil || run.Status.IsTerminal() || !time.Now().Before(deadline) {
+			return run, err
+		}
+		select {
+		case <-ctx.Done():
+			return run, nil
+		case <-time.After(min(waitPoll, time.Until(deadline))):
+		}
+	}
+}
+
 func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 	row := s.st.DB().QueryRowContext(ctx, `
 		SELECT id, workspace_id, job, kind, COALESCE(reason,''), status, COALESCE(end_reason,''),
@@ -181,10 +209,14 @@ type Approval struct {
 	DecidedAt string `json:"decided_at,omitempty"`
 }
 
+const approvalCols = `SELECT id, run_id, status, COALESCE(question,''), COALESCE(decision,''),
+	revision, created_at, COALESCE(decided_at,'')`
+
 // ApprovalListOpts filters for ListApprovals.
 type ApprovalListOpts struct {
 	Limit  int
 	Cursor string
+	State  string // pending|decided; empty returns both
 }
 
 // ListOpts filters for List.
@@ -198,8 +230,16 @@ type ListOpts struct {
 	// Model matches tokens_model (exact, case-insensitive).
 	Model           string
 	ConversationKey string
-	Limit           int
-	Cursor          string
+	// Conversation matches conversation_id.
+	Conversation string
+	EndReason    string
+	// Q matches the prompt preview, the job, and the run id.
+	Q string
+	// Since and Until bound started_at; both are optional.
+	Since  string
+	Until  string
+	Limit  int
+	Cursor string
 }
 
 // pseudoStatus reports an agent-map status (idle|waiting) filtered in memory.
@@ -250,6 +290,27 @@ func (o ListOpts) query() (string, []any) {
 	if o.ConversationKey != "" {
 		q += ` AND conversation_key = ?`
 		args = append(args, o.ConversationKey)
+	}
+	if o.Conversation != "" {
+		q += ` AND conversation_id = ?`
+		args = append(args, o.Conversation)
+	}
+	if o.EndReason != "" {
+		q += ` AND end_reason = ?`
+		args = append(args, o.EndReason)
+	}
+	if o.Since != "" {
+		q += ` AND started_at >= ?`
+		args = append(args, o.Since)
+	}
+	if o.Until != "" {
+		q += ` AND started_at <= ?`
+		args = append(args, o.Until)
+	}
+	if o.Q != "" {
+		like := "%" + strings.ToLower(strings.TrimSpace(o.Q)) + "%"
+		q += ` AND (LOWER(COALESCE(prompt_preview,'')) LIKE ? OR LOWER(job) LIKE ? OR LOWER(id) LIKE ?)`
+		args = append(args, like, like, like)
 	}
 	if o.Cursor != "" {
 		q += ` AND id < ?`
@@ -364,28 +425,63 @@ func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([
 	return out, rows.Err()
 }
 
-// DecideApproval records a allow|deny decision for runID in one transaction
-// with the approval.decided bus frame. Revision starts at 1 (insert-as-decided).
-func (s *Service) DecideApproval(ctx context.Context, runID, decision string) (*Approval, error) {
+// OpenApproval records that a run is waiting on an answer. It is a no-op when
+// the run already has a pending row, so a repeated hook does not stack rows.
+func (s *Service) OpenApproval(ctx context.Context, runID, question string) (*Approval, error) {
+	if existing, err := s.pendingApproval(ctx, runID); err != nil || existing != nil {
+		return existing, err
+	}
+	id := ulid.Make().String()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	a := &Approval{ID: id, RunID: runID, Status: "pending", Prompt: question, Revision: 1, CreatedAt: now}
+	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO approvals (id, run_id, question, status, created_at, revision)
+			VALUES (?,?,?,'pending',?,1)`, id, runID, store.NullStr(question), now)
+		return err
+	}, store.BusEvent{
+		Topic: "approval.created", Entity: "approval", EntityID: id, Action: "created",
+		Revision: 1,
+		Attrs:    map[string]string{"run_id": runID},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+// DecideApproval records a allow|deny decision for runID in one transaction with
+// the approval.decided bus frame. It answers the pending row when there is one,
+// and otherwise inserts an already-decided row.
+func (s *Service) DecideApproval(ctx context.Context, runID, approvalID, decision string) (*Approval, error) {
 	if decision != "allow" && decision != "deny" {
 		return nil, ErrInvalidDecision
 	}
 	if _, err := s.Get(ctx, runID); err != nil {
 		return nil, err
 	}
-	id := ulid.Make().String()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	a := &Approval{
-		ID: id, RunID: runID, Status: "decided", Decision: decision,
-		Revision: 1, CreatedAt: now, DecidedAt: now,
+	a, err := s.approvalToDecide(ctx, runID, approvalID)
+	if err != nil {
+		return nil, err
 	}
-	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT INTO approvals (id, run_id, question, status, decision, created_at, decided_at, revision)
-			VALUES (?,?,?,?,?,?,?,1)`, id, runID, "", "decided", decision, now, now)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	a.Status, a.Decision, a.DecidedAt = "decided", decision, now
+	a.Revision++
+	insert := a.CreatedAt == ""
+	if insert {
+		a.CreatedAt = now
+	}
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		if insert {
+			_, err := tx.Exec(`INSERT INTO approvals (id, run_id, question, status, decision, created_at, decided_at, revision)
+				VALUES (?,?,'','decided',?,?,?,?)`, a.ID, runID, decision, now, now, a.Revision)
+			return err
+		}
+		_, err := tx.Exec(`UPDATE approvals SET status='decided', decision=?, decided_at=?, revision=? WHERE id=?`,
+			decision, now, a.Revision, a.ID)
 		return err
 	}, store.BusEvent{
-		Topic: "approval.decided", Entity: "approval", EntityID: id, Action: "updated",
-		Revision: 1,
+		Topic: "approval.decided", Entity: "approval", EntityID: a.ID, Action: "updated",
+		Revision: a.Revision,
 		Attrs:    map[string]string{"run_id": runID, "decision": decision},
 	})
 	if err != nil {
@@ -399,9 +495,12 @@ func (s *Service) ListApprovals(ctx context.Context, opts ApprovalListOpts) ([]A
 	if opts.Limit <= 0 {
 		opts.Limit = 50
 	}
-	q := `SELECT id, run_id, status, COALESCE(question,''), COALESCE(decision,''), revision, created_at, COALESCE(decided_at,'')
-		FROM approvals WHERE 1=1`
+	q := approvalCols + ` FROM approvals WHERE 1=1`
 	var args []any
+	if opts.State != "" {
+		q += ` AND status=?`
+		args = append(args, opts.State)
+	}
 	if opts.Cursor != "" {
 		q += ` AND id < ?`
 		args = append(args, opts.Cursor)
@@ -821,6 +920,214 @@ func markResumedPredecessor(tx *sql.Tx, predecessorID, newID, nowStr string) err
 // rowScanner is satisfied by *sql.Row and *sql.Rows.
 type rowScanner interface {
 	Scan(dest ...any) error
+}
+
+// StatsOpts selects the rows of a run report.
+type StatsOpts struct {
+	Workspace string
+	Job       string
+	// Range is 24h, 7d, 30d, or mtd. An empty value means 30d.
+	Range string
+}
+
+// Stats is the §3.9 run report: the selected range, the month to date, and one
+// row per day of the range.
+type Stats struct {
+	Range  string      `json:"range"`
+	Totals StatsTotals `json:"totals"`
+	MTD    StatsTotals `json:"mtd"`
+	Days   []StatsDay  `json:"days"`
+}
+
+// StatsTotals counts runs and money over one period.
+type StatsTotals struct {
+	Runs         int     `json:"runs"`
+	OK           int     `json:"ok"`
+	Failed       int     `json:"failed"`
+	CostUSD      float64 `json:"cost_usd"`
+	TokensBilled int64   `json:"tokens_billed"`
+}
+
+// StatsDay is one calendar day of the range, oldest first.
+type StatsDay struct {
+	Date string `json:"date"`
+	StatsTotals
+}
+
+// since returns the start of the range and its label.
+func (o StatsOpts) since(now time.Time) (time.Time, string) {
+	switch o.Range {
+	case "24h":
+		return now.Add(-24 * time.Hour), "24h"
+	case "7d":
+		return now.AddDate(0, 0, -7), "7d"
+	case "mtd":
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC), "mtd"
+	default:
+		return now.AddDate(0, 0, -30), "30d"
+	}
+}
+
+// ValidRange reports whether r names a stats range.
+func ValidRange(r string) bool {
+	switch r {
+	case "", "24h", "7d", "30d", "mtd":
+		return true
+	}
+	return false
+}
+
+// Stats reports run counts and cost for the selected range, plus the month to
+// date. Cost is priced per model, the same way a single run row is priced.
+func (s *Service) Stats(ctx context.Context, opts StatsOpts) (*Stats, error) {
+	now := time.Now().UTC()
+	from, label := opts.since(now)
+	mtdFrom := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	earliest := from
+	if mtdFrom.Before(earliest) {
+		earliest = mtdFrom
+	}
+
+	rows, err := s.statsRows(ctx, opts, earliest)
+	if err != nil {
+		return nil, err
+	}
+	out := &Stats{Range: label, Days: dailyStats(rows, from, now)}
+	for _, row := range rows {
+		if !row.at.Before(from) {
+			out.Totals.add(row)
+		}
+		if !row.at.Before(mtdFrom) {
+			out.MTD.add(row)
+		}
+	}
+	return out, nil
+}
+
+// statsRow is one run reduced to what a report needs.
+type statsRow struct {
+	at     time.Time
+	status Status
+	usage  pricing.TokenUsage
+}
+
+// add folds one run into the totals.
+func (t *StatsTotals) add(row statsRow) {
+	t.Runs++
+	switch row.status {
+	case StatusComplete:
+		t.OK++
+	case StatusFailed, StatusExited, StatusTimedOut:
+		t.Failed++
+	}
+	t.CostUSD += row.usage.CostUSD
+	t.TokensBilled += row.usage.Billed
+}
+
+// dailyStats buckets rows by UTC day, oldest first, with empty days present.
+func dailyStats(rows []statsRow, from, now time.Time) []StatsDay {
+	const day = "2006-01-02"
+	byDate := map[string]*StatsTotals{}
+	var days []StatsDay
+	for d := from.UTC().Truncate(24 * time.Hour); !d.After(now); d = d.AddDate(0, 0, 1) {
+		days = append(days, StatsDay{Date: d.Format(day)})
+		byDate[d.Format(day)] = &days[len(days)-1].StatsTotals
+	}
+	for _, row := range rows {
+		if t := byDate[row.at.UTC().Format(day)]; t != nil {
+			t.add(row)
+		}
+	}
+	return days
+}
+
+// statsRows reads the runs of the report window and prices each one.
+func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time) ([]statsRow, error) {
+	q := `SELECT started_at, status, COALESCE(tokens_input,0), COALESCE(tokens_output,0),
+		COALESCE(tokens_cache_read,0), COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,'')
+		FROM runs WHERE started_at >= ?`
+	args := []any{from.Format(time.RFC3339)}
+	if opts.Workspace != "" {
+		q += ` AND workspace_id = ?`
+		args = append(args, opts.Workspace)
+	}
+	if opts.Job != "" {
+		q += ` AND job = ?`
+		args = append(args, opts.Job)
+	}
+	rows, err := s.st.DB().QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []statsRow
+	for rows.Next() {
+		var started, status, model string
+		var in, outTok, cacheR, cacheC int64
+		if err := rows.Scan(&started, &status, &in, &outTok, &cacheR, &cacheC, &model); err != nil {
+			return nil, err
+		}
+		at, err := time.Parse(time.RFC3339, started)
+		if err != nil {
+			continue
+		}
+		u := pricing.TokenUsage{Input: in, Output: outTok, CacheRead: cacheR, CacheCreation: cacheC, Model: model}
+		u.FillDerived()
+		u.ApplyRates()
+		out = append(out, statsRow{at: at.UTC(), status: Status(status), usage: u})
+	}
+	return out, rows.Err()
+}
+
+// approvalToDecide picks the row a decision answers: the named one, else the
+// run's pending row, else a fresh id for an insert-as-decided row.
+func (s *Service) approvalToDecide(ctx context.Context, runID, approvalID string) (*Approval, error) {
+	if approvalID != "" {
+		a, err := s.approvalByID(ctx, approvalID)
+		if err != nil {
+			return nil, err
+		}
+		if a.RunID != runID {
+			return nil, ErrApprovalRunMismatch
+		}
+		return a, nil
+	}
+	if a, err := s.pendingApproval(ctx, runID); err != nil {
+		return nil, err
+	} else if a != nil {
+		return a, nil
+	}
+	return &Approval{ID: ulid.Make().String(), RunID: runID}, nil
+}
+
+func (s *Service) pendingApproval(ctx context.Context, runID string) (*Approval, error) {
+	return s.scanApproval(s.st.DB().QueryRowContext(ctx, approvalCols+
+		` FROM approvals WHERE run_id=? AND status='pending' ORDER BY id DESC LIMIT 1`, runID))
+}
+
+func (s *Service) approvalByID(ctx context.Context, id string) (*Approval, error) {
+	a, err := s.scanApproval(s.st.DB().QueryRowContext(ctx, approvalCols+` FROM approvals WHERE id=?`, id))
+	if err != nil {
+		return nil, err
+	}
+	if a == nil {
+		return nil, sql.ErrNoRows
+	}
+	return a, nil
+}
+
+// scanApproval reads one row; a missing row is (nil, nil).
+func (s *Service) scanApproval(row *sql.Row) (*Approval, error) {
+	var a Approval
+	err := row.Scan(&a.ID, &a.RunID, &a.Status, &a.Prompt, &a.Decision, &a.Revision, &a.CreatedAt, &a.DecidedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
 }
 
 func (s *Service) scanRun(row rowScanner) (*Run, error) {

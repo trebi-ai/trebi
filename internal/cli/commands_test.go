@@ -768,3 +768,48 @@ func TestRenderLocalOnly(t *testing.T) {
 		t.Fatalf("output %q", buf.String())
 	}
 }
+
+// `trebi workspace set --git-enabled` must send git_enabled, so a rename plus
+// git tracking in one call reaches the API as both fields.
+func TestWorkspaceSetSendsGitEnabled(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ws1","name":"platform-ops","git_enabled":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
+
+	if _, err := runCLI(t, client, "workspace", "set", "ws1", "--name", "platform-ops", "--git-enabled"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotBody, `"git_enabled":true`) || !strings.Contains(gotBody, `"name":"platform-ops"`) {
+		t.Fatalf("body %s", gotBody)
+	}
+}
+
+// `workspace show` must reach GET /v1/workspaces/{id}. An alias on a sibling
+// command once shadowed it, so the call silently listed instead.
+func TestWorkspaceShowHitsGetRoute(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ws1","name":"ops","git_enabled":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "workspace", "show", "ops", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/workspaces/ops" {
+		t.Fatalf("path %q", gotPath)
+	}
+	if !strings.Contains(out, `"git_enabled": true`) {
+		t.Fatalf("out %q", out)
+	}
+}

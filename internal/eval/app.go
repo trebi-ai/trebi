@@ -43,6 +43,7 @@ func NewApp() *cli.Command {
 					&cli.Float64Flag{Name: "budget", Usage: "abort when cumulative cost_usd reaches this"},
 					&cli.StringFlag{Name: "baseline", Usage: "checked-in baseline.json"},
 					&cli.StringFlag{Name: "surface", Value: "cli", Usage: "cli, mcp, or both"},
+					&cli.IntFlag{Name: "parallel", Value: 1, Usage: "trials in flight at once"},
 				},
 				Action: runEval,
 			},
@@ -80,6 +81,7 @@ func runEval(ctx context.Context, c *cli.Command) error {
 	opts.BudgetUSD = c.Float64("budget")
 	opts.Baseline = c.String("baseline")
 	opts.Surface = c.String("surface")
+	opts.Parallel = c.Int("parallel")
 	r, err := NewRunner(opts)
 	if err != nil {
 		return err

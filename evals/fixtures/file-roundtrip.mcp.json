@@ -1,0 +1,21 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__file",
+    "content": "{\"action\": \"put\", \"input\": {\"owner\": \"workspace\", \"workspace\": \"ws1\", \"path\": \"data.csv\", \"content\": \"a,b\\n1,2\\n\"}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__file",
+    "content": "{\"action\": \"get\", \"input\": {\"owner\": \"workspace\", \"workspace\": \"ws1\", \"path\": \"data.csv\"}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__file",
+    "content": "{\"action\": \"delete\", \"input\": {\"owner\": \"workspace\", \"workspace\": \"ws1\", \"path\": \"data.csv\", \"if_match\": \"abc123\"}}"
+  },
+  {
+    "role": "assistant",
+    "content": "Uploaded, read back, and removed."
+  }
+]

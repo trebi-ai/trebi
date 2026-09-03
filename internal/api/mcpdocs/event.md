@@ -1,4 +1,4 @@
-# events
+# event
 
 Event operations: inspect the event log and test rules.
 
@@ -10,6 +10,9 @@ The event log feeds the rule pipeline. Use the `system` tool action `bus_poll` f
 
 ### list
 List events, newest first.
+- `integration` (string, optional): filter by integration name.
+- `since` (string, optional): RFC3339 time, or a duration such as `24h` meaning "that long ago".
+- `q` (string, optional): text match on the summary or the payload.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.
 

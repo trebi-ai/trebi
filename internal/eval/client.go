@@ -100,7 +100,7 @@ func (s Step) mcpCommand() string {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		v := fmt.Sprintf("%v", body.Input[k])
+		v := renderInputValue(k, body.Input[k])
 		fmt.Fprintf(&b, " --%s %s", k, v)
 		if dashed := strings.ReplaceAll(k, "_", "-"); dashed != k {
 			fmt.Fprintf(&b, " --%s %s", dashed, v)
@@ -142,18 +142,23 @@ func (ss Steps) mcpHandshakeOK() bool {
 	return false
 }
 
-func (ss Steps) mcpIsolationViolations(apiURL string) []string {
+// isolationViolations reports leaks of the operator's own environment into a
+// trial. An mcp trial must not shell out to trebi or curl the trial port; a
+// cli trial may do both, but neither surface may reach another MCP server.
+func (ss Steps) isolationViolations(apiURL, surface string) []string {
 	host := trialHost(apiURL)
 	var out []string
 	for _, s := range ss {
 		if s.Role != "tool" {
 			continue
 		}
-		if s.invokesTrebiShell() {
-			out = append(out, "trebi shell invocation in "+s.Name)
-		}
-		if host != "" && looksLikeCurlTo(s.Content, host) {
-			out = append(out, "curl to trial port in "+s.Name)
+		if surface == surfaceMCP {
+			if s.invokesTrebiShell() {
+				out = append(out, "trebi shell invocation in "+s.Name)
+			}
+			if host != "" && looksLikeCurlTo(s.Content, host) {
+				out = append(out, "curl to trial port in "+s.Name)
+			}
 		}
 		if leak := mcpServerLeak(s.Name); leak != "" {
 			out = append(out, leak)
@@ -649,4 +654,27 @@ func contentText(v any) string {
 	default:
 		return ""
 	}
+}
+
+// bulkyInputKeys carry a document body. Inlining one puts arbitrary text into
+// the command projection, where a pattern such as \.db can match it.
+var bulkyInputKeys = map[string]bool{ //nolint:gochecknoglobals // static key set, never mutated
+	"content": true, "value": true, "token": true, "markdown": true, "skill_md": true,
+}
+
+// renderInputValue prints one MCP input value the way a CLI flag value reads.
+// A list joins with commas, and a document body becomes its size.
+func renderInputValue(key string, v any) string {
+	if bulkyInputKeys[key] {
+		return fmt.Sprintf("<%d bytes>", len(fmt.Sprintf("%v", v)))
+	}
+	list, ok := v.([]any)
+	if !ok {
+		return fmt.Sprintf("%v", v)
+	}
+	parts := make([]string, 0, len(list))
+	for _, item := range list {
+		parts = append(parts, fmt.Sprintf("%v", item))
+	}
+	return strings.Join(parts, ",")
 }

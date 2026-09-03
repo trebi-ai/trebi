@@ -1,0 +1,5 @@
+To authenticate, visit:
+
+https://example.invalid/fake/device
+
+Enter code: FAKE-0000

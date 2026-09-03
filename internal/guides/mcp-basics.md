@@ -6,9 +6,20 @@ description: Tool/action/input shape, docs actions, CLI-to-MCP translation, work
 
 # MCP entry point
 
-Trebi's control plane is also an MCP server at `/mcp` (Streamable HTTP, bearer auth). Fifteen tools (`run`, `job`, `workspace`, `assistant`, `file`, `harness`, `integration`, `events`, `queue`, `inbox`, `conversation`, `skill`, `secret`, `config`, `system`). Each tool takes `{"action": "<name>", "input": {…}}`. Action `docs` returns the input field reference for that tool. Errors return the HTTP error envelope unchanged.
+Trebi's control plane is also an MCP server at `/mcp` (Streamable HTTP, bearer auth). Fifteen tools (`run`, `job`, `workspace`, `assistant`, `file`, `harness`, `integration`, `event`, `queue`, `inbox`, `conversation`, `skill`, `secret`, `config`, `system`). Each tool takes `{"action": "<name>", "input": {…}}`. Action `docs` returns the input field reference for that tool. Errors return the HTTP error envelope unchanged.
 
 Connect with the URL and token from `~/.trebi/api.json` (`{"url", "token"}`).
+
+`trebi mcp` writes that config for you. It is **local only** and works with the daemon down:
+
+```bash
+trebi mcp config --client claude          # the config block for one client
+trebi mcp config --client claude --command  # the add command instead
+trebi mcp install --client claude         # runs the add command
+trebi mcp serve                           # stdio bridge for a client without HTTP
+```
+
+Every `mcp` command is **local only**. Clients: `claude`, `codex`, `opencode`, `cursor`, `vscode`, and `json` for the raw url and token. `install` covers `claude`, `codex`, and `opencode`.
 
 ## Translation rule
 
@@ -27,11 +38,17 @@ CLI area names that differ from the tool name:
 | `doctor` | `system.doctor` |
 | `bus` | `system.bus_poll` |
 | `alerts` | `inbox.alerts` |
-| `rules test` / `rules fire` | `events.rules_test` / `events.rules_fire` |
+| `rules test` / `rules fire` | `event.rules_test` / `event.rules_fire` |
 | `job file` / `skill file` / `file` | `file` (`owner`: `job` / `skill` / `workspace`) |
 | `queue` (no subcommand) | `queue.list` |
 | `service logs` / `drain` / `undrain` / `shutdown` | `system.logs` / `drain` / `undrain` / `shutdown` |
 | `service status` | `system.health` |
+| `service version` | `system.version` |
+| `service cloud status` / `link` / `unlink` | `system.cloud_status` / `cloud_link` / `cloud_unlink` |
+| `harness auth status` / `login` / `logout` / `mode` / `cancel` | `harness.auth` / `login_start` / `logout` / `patch` / `login_cancel` |
+
+These CLI commands have no MCP action; they are **local only**: `job status`,
+`job tail`, `job schedule`, and `conversation switch`.
 
 `--json` in examples is a no-op remotely; responses are already the API payload. Local path flags (`--file`, `--from`, `--from-file`, `--out`, `--event-file`, `--token-stdin`) become the document/value fields (`content`, `value`, `event`, `token`).
 
@@ -47,7 +64,21 @@ If the daemon is down there is no MCP server to talk to; `service start` / `inst
 
 ## No interactive surfaces
 
-`runs attach` and `assistant chat` are **local only**; the remote alternatives are `run.transcript` / `run.log` polling and `assistant.say` + `conversation.messages`. `harness auth login --attach` is **local only**; remote: `login_start` / `login_token` / `login_code`.
+`runs attach` and `assistant chat` are **local only**; the remote alternatives are `run.transcript` / `run.logs` polling and `assistant.say` + `conversation.messages`. `harness auth login --attach` is **local only**; remote: `login_start` / `login_token` / `login_code`.
+
+## Verbs
+
+Actions use one verb set: `list`, `show`, `create`, `set` (replace a whole
+document), `patch` (change named fields), `delete`, plus `clear` for a document
+you empty and `cancel` for in-flight work. The CLI keeps the older spellings
+(`add`, `new`, `remove`, `update`) as aliases; guides and docs use the
+canonical one.
+
+## Destructive actions
+
+A destructive action refuses the first call: it answers `validation` with
+`details.confirm_required` and a message that names what it deletes. Ask the
+user, then repeat the call with `confirm: true`.
 
 ## Errors
 

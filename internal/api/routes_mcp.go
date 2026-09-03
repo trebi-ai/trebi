@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/trebi-ai/trebi/internal/request"
@@ -18,7 +21,16 @@ import (
 var mcpDocsFS embed.FS
 
 // mcpInstructions is the remote client's front door (initialize result).
-const mcpInstructions = `Trebi is an LLM task runner (daemon + /v1 API). Call each tool as {"action": "<name>", "input": {…}}. Call docs on a tool before first use. Call system.guide with topic mcp-basics before your first workflow, and system.guides for the index. Always pass workspace explicitly on workspace-scoped calls.`
+const mcpInstructions = `Trebi is an LLM task runner (daemon + /v1 API). Call each tool as {"action": "<name>", "input": {…}}.
+
+Call docs on a tool before its first use: docs carries the field signature of every action and is authoritative.
+
+Three rules:
+1. Validate after you write a JOB.md (job.validate).
+2. Dry-run before the first launch of a job you wrote or edited (job.run with dry_run).
+3. Ask the user before a destructive action. Such an action answers "validation" with details.confirm_required and a message that names what it deletes; repeat the call with confirm: true once the user agrees.
+
+Call system.guide with topic mcp-basics before your first workflow, and system.guides for the index. Always pass workspace explicitly on workspace-scoped calls.`
 
 // routeMCP mounts the MCP endpoint at /mcp (no /v1 prefix). Handler() must
 // store apiWrapped after this runs: tool dispatch re-enters the audit-wrapped
@@ -120,9 +132,14 @@ func (s *Server) mcpToolHandler(tool string) mcp.ToolHandler {
 		}
 		if status < 400 {
 			if entry.transform != nil {
-				body, err = entry.transform(status, body)
+				body, err = entry.transform(args.Input, status, body)
 				if err != nil {
 					return mcpErrorResult("internal", "transform: "+err.Error()), nil
+				}
+			}
+			if entry.bounded {
+				if body, err = boundedBody(args.Input, body, entry.tail); err != nil {
+					return mcpErrorResult("validation", err.Error()), nil
 				}
 			}
 			return mcpTextResult(body), nil
@@ -134,13 +151,80 @@ func (s *Server) mcpToolHandler(tool string) mcp.ToolHandler {
 	}
 }
 
-// mcpDocsResult returns the embedded field reference for one tool.
+// mcpDocsResult returns the field reference for one tool: a generated
+// signature block, then the embedded prose.
 func (s *Server) mcpDocsResult(tool string) (*mcp.CallToolResult, error) {
 	doc, err := mcpDocsFS.ReadFile("mcpdocs/" + tool + ".md")
 	if err != nil {
 		return mcpErrorResult("internal", "no docs for tool "+tool), nil
 	}
-	return mcpTextResult(doc), nil
+	return mcpTextResult([]byte(docSignatures(string(doc)) + string(doc))), nil
+}
+
+// docSignatures renders one line per documented action, so a client reads the
+// whole call shape of a tool at a glance. A ? marks an optional field.
+func docSignatures(doc string) string {
+	var b strings.Builder
+	b.WriteString("## Signatures\n\n```\n")
+	for _, action := range docActions(doc) {
+		names := make([]string, 0, 8)
+		for _, f := range docFields(docSection(doc, action)) {
+			if f.required {
+				names = append(names, f.name)
+				continue
+			}
+			names = append(names, f.name+"?")
+		}
+		b.WriteString(action + "(" + strings.Join(names, ", ") + ")\n")
+	}
+	b.WriteString("docs()\n```\n\n")
+	return b.String()
+}
+
+// docActions lists the action names of one tool document, in document order.
+func docActions(doc string) []string {
+	var out []string
+	for _, line := range strings.Split(doc, "\n") {
+		if name, ok := strings.CutPrefix(line, "### "); ok {
+			out = append(out, strings.TrimSpace(name))
+		}
+	}
+	return out
+}
+
+// docField is one input field of one documented action.
+type docField struct {
+	name     string
+	typ      string
+	required bool
+}
+
+var docFieldRE = regexp.MustCompile(`^- ` + "`" + `([a-z_]+)` + "`" + ` \(([\w ]+?), (required|optional)([^)]*)\)`) //nolint:gochecknoglobals // compiled pattern
+
+// docSection returns the body of one "### <action>" section.
+func docSection(doc, action string) string {
+	_, rest, ok := strings.Cut(doc, "### "+action+"\n")
+	if !ok {
+		return ""
+	}
+	if next := strings.Index(rest, "\n### "); next >= 0 {
+		return rest[:next]
+	}
+	return rest
+}
+
+// docFields parses the field list of one action section. A conditional
+// "required for owner job" is not a bare requirement, so it reads as optional.
+func docFields(section string) []docField {
+	var out []docField
+	for _, line := range strings.Split(section, "\n") {
+		m := docFieldRE.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		out = append(out, docField{name: m[1], typ: m[2], required: m[3] == "required" && m[4] == ""})
+	}
+	return out
 }
 
 // mcpTextResult wraps one body as the tool response content.
@@ -223,7 +307,7 @@ func (r *mcpRecorder) Flush() {}
 // busPollTransform parses one /v1/stream SSE dump into a JSON object:
 // {"events": […], "next_cursor": N}. The model carries next_cursor back on
 // the next poll.
-func busPollTransform(status int, body []byte) ([]byte, error) {
+func busPollTransform(_ mcpInput, _ int, body []byte) ([]byte, error) {
 	events := []map[string]any{}
 	next := int64(0)
 	for _, line := range strings.Split(string(body), "\n") {
@@ -242,4 +326,61 @@ func busPollTransform(status int, body []byte) ([]byte, error) {
 		}
 	}
 	return json.Marshal(map[string]any{"events": events, "next_cursor": next})
+}
+
+// fileGetTransform wraps a non-text file body as base64 so a binary read is
+// not mangled into replacement characters. Text passes through unchanged.
+func fileGetTransform(_ mcpInput, _ int, body []byte) ([]byte, error) {
+	if utf8.Valid(body) && !bytes.ContainsRune(body, 0) {
+		return body, nil
+	}
+	return json.Marshal(map[string]any{
+		"content":  base64.StdEncoding.EncodeToString(body),
+		"encoding": "base64",
+	})
+}
+
+// boundedBody caps one response at max_bytes. A cut body is no longer valid
+// JSON, so it comes back wrapped and marked.
+func boundedBody(in mcpInput, body []byte, tail bool) ([]byte, error) {
+	cut, truncated, err := in.clampBody(body, tail)
+	if err != nil {
+		return nil, err
+	}
+	if !truncated {
+		return body, nil
+	}
+	return json.Marshal(map[string]any{"content": string(cut), "truncated": true})
+}
+
+// sseLines pulls the `data:` payloads out of one SSE dump, newest last.
+func sseLines(body []byte) []string {
+	out := []string{}
+	for _, line := range strings.Split(string(body), "\n") {
+		data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:")
+		if !ok {
+			continue // keepalive comments and blank separators
+		}
+		if text := strings.TrimSpace(data); text != "" && text != "{}" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+// logLinesTransform rewrites one SSE log dump into {"lines": [...]}. Without
+// it the model reads raw `data: {...}` text. The `lines` input bounds the
+// tail; absent it keeps everything the handler sent.
+func logLinesTransform(in mcpInput, _ int, body []byte) ([]byte, error) {
+	lines := sseLines(body)
+	n, ok, err := in.num("lines")
+	if err != nil {
+		return nil, err
+	}
+	res := map[string]any{"lines": lines}
+	if ok && n > 0 && len(lines) > n {
+		res["lines"] = lines[len(lines)-n:]
+		res["truncated"] = true
+	}
+	return json.Marshal(res)
 }

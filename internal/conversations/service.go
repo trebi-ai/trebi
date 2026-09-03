@@ -135,6 +135,25 @@ type SendResult struct {
 	QueueID  string  `json:"queue_id,omitempty"`
 }
 
+// AskOpts is POST /v1/workspaces/{id}/assistant/messages. The daemon resolves
+// or creates the channel conversation, so a client sends no pointer calls.
+type AskOpts struct {
+	Workspace      string
+	Text           string
+	ChannelType    string // defaults to cli
+	ChannelRef     string // defaults to the workspace id
+	IdempotencyKey string
+	Wait           time.Duration // 0 returns as soon as the message is queued
+}
+
+// AskResult carries the send outcome plus the assistant replies that arrived
+// inside the wait window.
+type AskResult struct {
+	SendResult
+	ConversationID string    `json:"conversation_id"`
+	Replies        []Message `json:"replies,omitempty"`
+}
+
 // IncomingTurn is one parsed transcript turn for the watcher to persist.
 type IncomingTurn struct {
 	Role string

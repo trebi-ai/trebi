@@ -340,27 +340,12 @@ func (s *Service) SetStatus(ctx context.Context, id string, status InboxStatus, 
 
 // ReadAll marks every unread item read.
 func (s *Service) ReadAll(ctx context.Context) (int64, error) {
-	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
-	var n int64
-	s.st.LockBus()
-	defer s.st.UnlockBus()
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.Exec(
-			`UPDATE inbox_items SET status='read', updated_at=?, revision=revision+1 WHERE status='unread'`, nowStr)
-		if err != nil {
-			return err
-		}
-		n, _ = res.RowsAffected()
-		if n == 0 {
-			return nil
-		}
-		_, err = store.AppendInTx(tx, store.BusEvent{
-			Topic: "inbox.updated", Entity: "inbox", Action: "updated",
-			Attrs: map[string]string{"status": "read", "count": fmt.Sprint(n)},
-		})
-		return err
-	})
-	return n, err
+	return s.setAll(ctx, "unread", InboxRead, "")
+}
+
+// ResolveAll resolves every open item. An empty kind covers every kind.
+func (s *Service) ResolveAll(ctx context.Context, kind string) (int64, error) {
+	return s.setAll(ctx, "", InboxResolved, kind)
 }
 
 // ListAlerts returns alert.* bus rows, newest first, optionally since.
@@ -703,4 +688,42 @@ func (o RaiseOpts) notifyEnv(id string) []string {
 		env = append(env, k+"="+v)
 	}
 	return env
+}
+
+// setAll moves every item of one status, and optionally one kind, to status.
+// An empty from covers unread and read alike.
+func (s *Service) setAll(ctx context.Context, from string, to InboxStatus, kind string) (int64, error) {
+	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
+	q := `UPDATE inbox_items SET status=?, updated_at=?, revision=revision+1 WHERE status<>?`
+	args := []any{string(to), nowStr, string(to)}
+	if from != "" {
+		q += ` AND status=?`
+		args = append(args, from)
+	}
+	if kind != "" {
+		q += ` AND kind=?`
+		args = append(args, kind)
+	}
+	var n int64
+	s.st.LockBus()
+	defer s.st.UnlockBus()
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec(q, args...)
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		if n == 0 {
+			return nil
+		}
+		attrs := map[string]string{"status": string(to), "count": fmt.Sprint(n)}
+		if kind != "" {
+			attrs["kind"] = kind
+		}
+		_, err = store.AppendInTx(tx, store.BusEvent{
+			Topic: "inbox.updated", Entity: "inbox", Action: "updated", Attrs: attrs,
+		})
+		return err
+	})
+	return n, err
 }

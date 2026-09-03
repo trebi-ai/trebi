@@ -1,0 +1,21 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__run",
+    "content": "{\"action\": \"create\", \"input\": {\"job\": \"sleeper\", \"workspace\": \"ws1\"}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__run",
+    "content": "{\"action\": \"message\", \"input\": {\"id\": \"01ABC\", \"text\": \"hello\"}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__run",
+    "content": "{\"action\": \"kill\", \"input\": {\"id\": \"01ABC\"}}"
+  },
+  {
+    "role": "assistant",
+    "content": "Done."
+  }
+]

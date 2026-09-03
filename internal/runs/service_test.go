@@ -2,9 +2,11 @@ package runs_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -342,7 +344,7 @@ func TestDecideApprovalAtomicWithBus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := svc.DecideApproval(ctx, run.ID, "allow")
+	a, err := svc.DecideApproval(ctx, run.ID, "", "allow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,13 +363,162 @@ func TestDecideApprovalAtomicWithBus(t *testing.T) {
 		t.Fatalf("frame %+v", evs[0])
 	}
 
-	if _, err := svc.DecideApproval(ctx, run.ID, ""); err == nil {
+	if _, err := svc.DecideApproval(ctx, run.ID, "", ""); err == nil {
 		t.Fatal("expected empty decision rejected")
 	}
-	if _, err := svc.DecideApproval(ctx, run.ID, "nope"); err == nil {
+	if _, err := svc.DecideApproval(ctx, run.ID, "", "nope"); err == nil {
 		t.Fatal("expected invalid decision")
 	}
-	if _, err := svc.DecideApproval(ctx, "missing", "allow"); err == nil {
+	if _, err := svc.DecideApproval(ctx, "missing", "", "allow"); err == nil {
 		t.Fatal("expected missing run")
+	}
+}
+
+func TestOpenApprovalThenDecide(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st)
+	ctx := context.Background()
+
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, err := svc.OpenApproval(ctx, run.ID, "may I write the file?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open.Status != "pending" || open.Prompt != "may I write the file?" {
+		t.Fatalf("%+v", open)
+	}
+	again, err := svc.OpenApproval(ctx, run.ID, "second ask")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != open.ID {
+		t.Fatal("a repeated hook must not stack a second pending row")
+	}
+
+	pending, err := svc.ListApprovals(ctx, runs.ApprovalListOpts{State: "pending"})
+	if err != nil || len(pending) != 1 || pending[0].Prompt != "may I write the file?" {
+		t.Fatalf("pending %+v %v", pending, err)
+	}
+
+	decided, err := svc.DecideApproval(ctx, run.ID, "", "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decided.ID != open.ID || decided.Status != "decided" || decided.Revision != 2 {
+		t.Fatalf("decide answered the wrong row: %+v", decided)
+	}
+	if left, err := svc.ListApprovals(ctx, runs.ApprovalListOpts{State: "pending"}); err != nil || len(left) != 0 {
+		t.Fatalf("still pending %+v %v", left, err)
+	}
+
+	other, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DecideApproval(ctx, other.ID, open.ID, "allow"); !errors.Is(err, runs.ErrApprovalRunMismatch) {
+		t.Fatalf("cross-run approval id: %v", err)
+	}
+}
+
+func TestWaitFor(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st)
+	ctx := context.Background()
+
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Reason: runs.ReasonManual})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	got, err := svc.WaitFor(ctx, run.ID, 300*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.IsTerminal() {
+		t.Fatalf("a running run must not read as terminal: %s", got.Status)
+	}
+	if time.Since(start) < 300*time.Millisecond {
+		t.Fatal("wait returned before the deadline")
+	}
+
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndSentinel, nil); err != nil {
+		t.Fatal(err)
+	}
+	start = time.Now()
+	got, err = svc.WaitFor(ctx, run.ID, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != runs.StatusComplete {
+		t.Fatalf("status=%s", got.Status)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("a terminal run must return at once")
+	}
+}
+
+func TestStatsRangeAndMTD(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st)
+	ctx := context.Background()
+
+	rep, err := svc.Stats(ctx, runs.StatsOpts{Range: "7d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Range != "7d" || rep.Totals.Runs != 0 {
+		t.Fatalf("empty store: %+v", rep)
+	}
+	if len(rep.Days) != 8 {
+		t.Fatalf("7d must cover 8 day buckets, got %d", len(rep.Days))
+	}
+
+	run, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws1", Job: "demo", Reason: runs.ReasonManual, Harness: "fake",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := &pricing.TokenUsage{Input: 1000, Output: 500, Model: "claude"}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndSentinel, usage); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err = svc.Stats(ctx, runs.StatsOpts{Range: "24h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Totals.Runs != 1 || rep.Totals.OK != 1 || rep.MTD.Runs != 1 {
+		t.Fatalf("after one run: %+v", rep)
+	}
+	if rep.Totals.TokensBilled != 1500 || rep.Totals.CostUSD <= 0 {
+		t.Fatalf("cost and tokens: %+v", rep.Totals)
+	}
+	if rep.Days[len(rep.Days)-1].Runs != 1 {
+		t.Fatalf("today bucket must hold the run: %+v", rep.Days)
+	}
+
+	rep, err = svc.Stats(ctx, runs.StatsOpts{Range: "24h", Job: "other"})
+	if err != nil || rep.Totals.Runs != 0 {
+		t.Fatalf("job filter: %+v %v", rep, err)
 	}
 }

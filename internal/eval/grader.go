@@ -37,6 +37,8 @@ func (g *Grader) runOne(ctx context.Context, c Check) CheckResult {
 		return g.checkCmd(ctx, c)
 	case c.FileExists != "":
 		return fileStatCheck(c.Name, c.FileExists, true)
+	case c.FileExistsAny != "":
+		return fileStatCheck(c.Name, resolveWanted(c.FileExistsAny), true)
 	case c.FileAbsent != "":
 		return fileStatCheck(c.Name, c.FileAbsent, false)
 	case c.FileContains != "":
@@ -59,6 +61,7 @@ func (g *Grader) runOne(ctx context.Context, c Check) CheckResult {
 func (g *Grader) expandCheck(c Check) Check {
 	c.Cmd = g.p.Expand(c.Cmd)
 	c.FileExists = g.p.Expand(c.FileExists)
+	c.FileExistsAny = g.p.Expand(c.FileExistsAny)
 	c.FileAbsent = g.p.Expand(c.FileAbsent)
 	c.FileContains = g.p.Expand(c.FileContains)
 	c.FileNotContains = g.p.Expand(c.FileNotContains)
@@ -183,11 +186,44 @@ func (g *Grader) collectSnapshot(ctx context.Context) error {
 	g.addDump(ctx, snap, "inbox", "inbox", "list", "--json")
 	g.addDump(ctx, snap, "config", "config", "show", "--json")
 	g.addDump(ctx, snap, "secrets", "secret", "list", "--json")
+	snap["conversations"] = g.conversations(ctx)
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(g.p.Snapshot, data, 0o644)
+}
+
+// conversations lists every conversation with its messages inline, so a check
+// can assert an assistant reply without knowing the conversation id.
+func (g *Grader) conversations(ctx context.Context) []map[string]any {
+	out, err := g.env.trebi(ctx, "conversation", "list", "--json", "--limit", "50")
+	if err != nil {
+		return nil
+	}
+	var list struct {
+		Conversations []map[string]any `json:"conversations"`
+	}
+	if json.Unmarshal(out, &list) != nil {
+		return nil
+	}
+	for _, conv := range list.Conversations {
+		id, _ := conv["id"].(string)
+		if id == "" {
+			continue
+		}
+		msgs, err := g.env.trebi(ctx, "conversation", "messages", id, "--json", "--limit", "50")
+		if err != nil {
+			continue
+		}
+		var body struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if json.Unmarshal(msgs, &body) == nil {
+			conv["messages"] = body.Messages
+		}
+	}
+	return list.Conversations
 }
 
 func (g *Grader) addDump(ctx context.Context, snap map[string]any, key string, args ...string) {
@@ -206,9 +242,9 @@ func (g *Grader) addDump(ctx context.Context, snap map[string]any, key string, a
 
 // resolveWanted finds a file the agent was asked to write. A prompt names a
 // bare file name in the working directory, but a workspace is rooted one level
-// down, so the trebi file store writes it there. Both places satisfy the task.
-// Only a check that wants the file present may search: an absence check must
-// stay exact, or a leak into a sibling directory would pass.
+// down, so the trebi file store writes it there. Only file_exists_any opts
+// into this search: an exact check must stay exact, or a file in the wrong
+// folder would pass.
 func resolveWanted(path string) string {
 	if _, err := os.Stat(path); err == nil {
 		return path
@@ -234,9 +270,6 @@ func resolveWanted(path string) string {
 }
 
 func fileStatCheck(name, path string, wantExist bool) CheckResult {
-	if wantExist {
-		path = resolveWanted(path)
-	}
 	_, err := os.Stat(path)
 	exists := err == nil
 	if exists == wantExist {
@@ -249,9 +282,6 @@ func fileStatCheck(name, path string, wantExist bool) CheckResult {
 }
 
 func fileTextCheck(name, path, text string, want bool) CheckResult {
-	if want {
-		path = resolveWanted(path)
-	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return CheckResult{Name: name, Detail: err.Error()}
@@ -272,7 +302,7 @@ func fileMatchCheck(name, path, pattern string) CheckResult {
 	if err != nil {
 		return CheckResult{Name: name, Infra: true, Detail: err.Error()}
 	}
-	data, err := os.ReadFile(resolveWanted(path))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return CheckResult{Name: name, Detail: err.Error()}
 	}
@@ -280,6 +310,20 @@ func fileMatchCheck(name, path, pattern string) CheckResult {
 		return CheckResult{Name: name, Pass: true}
 	}
 	return CheckResult{Name: name, Detail: fmt.Sprintf("%s does not match %q:\n%s", path, pattern, truncate(data, 400))}
+}
+
+// writeCommands saves the command projection next to the transcript, so
+// scripts/eval.py why can show the same list commands_jq graded.
+func writeCommands(artDir string, transcript []byte) error {
+	cmds, err := transcriptCommands(transcript)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cmds, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(artDir, "commands.json"), data, 0o644)
 }
 
 // transcriptCommands projects one string per agent action from a normalized
@@ -317,6 +361,12 @@ func cliAliases(tool, action string) []string {
 	switch tool {
 	case "run":
 		return []string{"runs " + action}
+	case "event":
+		switch action {
+		case "rules_test", "rules_fire":
+			return []string{"rules " + strings.TrimPrefix(action, "rules_")}
+		}
+		return []string{"event " + action, "events " + action}
 	case "system":
 		switch action {
 		case "doctor", "doctor_fix":
@@ -325,11 +375,30 @@ func cliAliases(tool, action string) []string {
 			return []string{"bus"}
 		case "logs":
 			return []string{"service logs"}
+		case "version":
+			return []string{"service status"}
+		case "overview":
+			return []string{"status"}
 		case "guide", "guides":
 			return []string{"guide"}
+		case "cloud_status", "cloud_link", "cloud_unlink":
+			return []string{"service cloud " + strings.TrimPrefix(action, "cloud_")}
 		}
 	}
+	// A renamed action keeps its old CLI spelling as an alias.
+	if old, ok := renamedActions[action]; ok {
+		return []string{tool + " " + old}
+	}
 	return nil
+}
+
+// renamedActions maps a canonical action to the CLI alias it replaced (A4).
+var renamedActions = map[string]string{ //nolint:gochecknoglobals // static rename table, never mutated
+	"create":        "add",
+	"delete":        "remove",
+	"memory_delete": "memory remove",
+	"refresh":       "update",
+	"logs":          "log",
 }
 
 func jqTruthy(expr string, data []byte) (ok bool, detail string, err error) {

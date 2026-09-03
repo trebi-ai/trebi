@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"strings"
+
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 )
@@ -141,12 +143,30 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := parseLimit(r)
+	since, err := parseTimeFilter(r.URL.Query().Get("since"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "since: "+err.Error())
+		return
+	}
 	q := `SELECT id, integration, received_at, COALESCE(summary,''), COALESCE(trace_id,''), COALESCE(raw_json,'')
 		FROM events WHERE 1=1`
 	args := []any{}
 	if cursor != "" {
 		q += ` AND id < ?`
 		args = append(args, cursor)
+	}
+	if integ := r.URL.Query().Get("integration"); integ != "" {
+		q += ` AND integration = ?`
+		args = append(args, integ)
+	}
+	if since != "" {
+		q += ` AND received_at >= ?`
+		args = append(args, since)
+	}
+	if text := strings.TrimSpace(r.URL.Query().Get("q")); text != "" {
+		like := "%" + strings.ToLower(text) + "%"
+		q += ` AND (LOWER(COALESCE(summary,'')) LIKE ? OR LOWER(COALESCE(raw_json,'')) LIKE ?)`
+		args = append(args, like, like)
 	}
 	q += ` ORDER BY id DESC LIMIT ?`
 	args = append(args, limit)

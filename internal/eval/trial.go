@@ -46,6 +46,8 @@ type JudgeResult struct {
 	Unknown  bool    `json:"unknown"`
 	Pass     bool    `json:"pass"`
 	Infra    bool    `json:"infra,omitempty"`
+	// Telemetry marks a dimension that reports but never fails a trial.
+	Telemetry bool `json:"telemetry,omitempty"`
 }
 
 // TrialResult is the full record of one isolated trial.
@@ -107,6 +109,9 @@ func (t *TrialResult) failSummary() string {
 		}
 	}
 	for _, j := range t.Judge {
+		if j.Telemetry {
+			continue
+		}
 		if j.Infra {
 			parts = append(parts, "judge "+j.Name+" infra")
 			continue
@@ -155,21 +160,40 @@ func (e *trialEnv) placeholders(workspace string) Placeholders {
 	}
 }
 
+// environ is the trial environment for seed scripts and check commands. They
+// call trebi directly, so the trebi bin dir leads PATH.
 func (e *trialEnv) environ() []string {
 	env := os.Environ()
 	env = filterEnv(env, "TREBI_HOME", "TREBI_URL", "TREBI_TOKEN", "TREBI_WORKSPACE")
-	env = append(env,
+	return append(env,
 		"TREBI_HOME="+e.home,
 		"PATH="+filepath.Dir(e.bin)+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
-	return env
 }
 
+// cliEnviron is the environment of a cli trial. The client home is scratch, so
+// the operator's own skills, AGENTS.md, and MCP servers stay out of the trial.
+// The trebi bin dir leads PATH, because a cli trial must call trebi.
+func (e *trialEnv) cliEnviron(cfgHome string) []string {
+	env := e.clientHomeEnviron(cfgHome)
+	return append(env,
+		"TREBI_HOME="+e.home,
+		"PATH="+filepath.Dir(e.bin)+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+}
+
+// mcpEnviron is the environment of an mcp trial. It drops the trebi bin dir
+// from PATH, so the client can only reach the daemon through /mcp.
 func (e *trialEnv) mcpEnviron(cfgHome string) []string {
+	env := e.clientHomeEnviron(cfgHome)
+	return append(env, "PATH="+stripPathDir(os.Getenv("PATH"), filepath.Dir(e.bin)))
+}
+
+// clientHomeEnviron points the client at a scratch home, with no PATH set.
+func (e *trialEnv) clientHomeEnviron(cfgHome string) []string {
 	env := os.Environ()
 	env = filterEnv(env, "TREBI_HOME", "TREBI_URL", "TREBI_TOKEN", "TREBI_WORKSPACE", "PATH", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME")
 	return append(env,
-		"PATH="+stripPathDir(os.Getenv("PATH"), filepath.Dir(e.bin)),
 		"HOME="+cfgHome,
 		"CLAUDE_CONFIG_DIR="+cfgHome,
 		"CODEX_HOME="+cfgHome,
@@ -745,12 +769,15 @@ func fileSHA(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// daemonOwned reports paths the daemon itself rewrites while a trial runs.
+// Only those are exempt from "home untouched". A file the agent can edit by
+// hand — config.yaml, skills, secrets, integrations — is not on this list,
+// so a hand edit is a violation even when the daemon also writes the file.
 func daemonOwned(rel string) bool {
 	rel = filepath.ToSlash(rel)
 	owned := []string{
 		"trebi.db", "logs/", "api.json", "daemon.lock", "trebid.pid",
-		"state/", "harness/", "config.yaml", "context", "linked-workspaces.yaml",
-		"skills/", "secrets/", "envsets.yaml", "integrations.yaml",
+		"state/", "context", "harness/", "linked-workspaces.yaml",
 	}
 	for _, p := range owned {
 		trim := strings.TrimSuffix(p, "/")

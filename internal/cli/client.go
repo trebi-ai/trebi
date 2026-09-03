@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,7 +159,7 @@ func (c *APIClient) WorkspaceIDFor(hint string) string {
 	var body struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := c.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
+	if err := c.GetJSON(request.BuildWorkspacesListPath(0), &body); err != nil {
 		return ""
 	}
 	for _, ws := range body.Workspaces {
@@ -176,7 +177,7 @@ func (c *APIClient) WaitTmuxSession(runID string, maxWait time.Duration) string 
 	deadline := time.Now().Add(maxWait)
 	for time.Now().Before(deadline) {
 		var body map[string]any
-		if err := c.GetJSON(request.BuildRunGetPath(runID), &body); err == nil {
+		if err := c.GetJSON(request.BuildRunGetPath(runID, 0), &body); err == nil {
 			if s := mapStr(body, "tmux_session"); s != "" {
 				return s
 			}
@@ -236,23 +237,14 @@ func (c *APIClient) MessageIDSet(convID string) map[string]struct{} {
 	return out
 }
 
-// EnsureCLIConversation returns the CLI pointer conversation for wsID, creating one if needed.
-func (c *APIClient) EnsureCLIConversation(wsID string) (string, error) {
+// CLIConversation returns the conversation the cli channel points at, or "" when
+// none exists yet. The daemon creates one on the first assistant message.
+func (c *APIClient) CLIConversation(wsID string) string {
 	var ptr map[string]any
-	err := c.DoHTTP(request.BuildPointerGet("cli", wsID), &ptr)
-	if err == nil {
-		if id := mapStr(ptr, "conversation_id"); id != "" {
-			return id, nil
-		}
+	if err := c.DoHTTP(request.BuildPointerGet("cli", wsID), &ptr); err != nil {
+		return ""
 	}
-	if err != nil && !strings.Contains(err.Error(), "404") {
-		return "", err
-	}
-	var created map[string]any
-	if err := c.DoHTTP(request.BuildConversationCreate(wsID, "", "cli", "cli", wsID), &created); err != nil {
-		return "", err
-	}
-	return mapStr(created, "id"), nil
+	return mapStr(ptr, "conversation_id")
 }
 
 // DoctorFix applies one doctor finding by id.
@@ -286,7 +278,7 @@ func (c *APIClient) ScheduleIndex() (map[string]JobScheduleCols, error) {
 	var body struct {
 		Schedules []map[string]any `json:"schedules"`
 	}
-	if err := c.GetJSON(request.BuildSchedulesListPath(200), &body); err != nil {
+	if err := c.GetJSON(request.BuildSchedulesListPath(200, "", ""), &body); err != nil {
 		return nil, err
 	}
 	return indexSchedules(body.Schedules), nil
@@ -318,7 +310,7 @@ func (c *APIClient) FindWorkspace(id, remoteURL string) (name, path string, err 
 	var body struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
-	if err := c.GetJSON(request.BuildWorkspacesListPath(), &body); err != nil {
+	if err := c.GetJSON(request.BuildWorkspacesListPath(0), &body); err != nil {
 		return "", "", err
 	}
 	for _, ws := range body.Workspaces {
@@ -330,19 +322,29 @@ func (c *APIClient) FindWorkspace(id, remoteURL string) (name, path string, err 
 }
 
 // doRaw executes a file-plane request: raw body and/or If-Match header.
+// doRaw sends a request that carries an If-Match, a raw body, or both. A
+// request with If-Match and a JSON Body still needs that body encoded.
 func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
 	method := strings.ToUpper(r.Method)
-	req, err := http.NewRequest(method, c.base+r.Path, bytes.NewReader(r.Raw))
+	payload := r.Raw
+	contentType := r.ContentType
+	if payload == nil && r.Body != nil {
+		var err error
+		if payload, err = json.Marshal(r.Body); err != nil {
+			return err
+		}
+		contentType = "application/json"
+	}
+	req, err := http.NewRequest(method, c.base+r.Path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	if r.Raw != nil {
-		ct := r.ContentType
-		if ct == "" {
-			ct = "application/octet-stream"
+	if payload != nil {
+		if contentType == "" {
+			contentType = "application/octet-stream"
 		}
-		req.Header.Set("Content-Type", ct)
+		req.Header.Set("Content-Type", contentType)
 	}
 	if r.IfMatch != "" {
 		req.Header.Set("If-Match", r.IfMatch)
@@ -491,6 +493,8 @@ func remoteClient(url, token string) *APIClient {
 const (
 	defaultHTTPTimeout = 30 * time.Second
 	launchHTTPTimeout  = 120 * time.Second
+	// waitHTTPSlack covers the round trip on top of the server-side wait_ms.
+	waitHTTPSlack = 30 * time.Second
 )
 
 func (c *APIClient) httpFor(method, path string) *http.Client {
@@ -498,14 +502,36 @@ func (c *APIClient) httpFor(method, path string) *http.Client {
 	if h == nil {
 		h = &http.Client{Timeout: defaultHTTPTimeout}
 	}
-	if !strings.EqualFold(method, "POST") || !launchHTTPPath(path) {
+	want := time.Duration(0)
+	if strings.EqualFold(method, "POST") && launchHTTPPath(path) {
+		want = launchHTTPTimeout
+	}
+	if d := waitHTTPTimeout(path); d > want {
+		want = d
+	}
+	if want == 0 || h.Timeout == 0 || h.Timeout >= want {
 		return h
 	}
 	cp := *h
-	if cp.Timeout != 0 && cp.Timeout < launchHTTPTimeout {
-		cp.Timeout = launchHTTPTimeout
-	}
+	cp.Timeout = want
 	return &cp
+}
+
+// waitHTTPTimeout gives a long-poll request room for its own wait_ms.
+func waitHTTPTimeout(path string) time.Duration {
+	i := strings.IndexByte(path, '?')
+	if i < 0 {
+		return 0
+	}
+	q, err := url.ParseQuery(path[i+1:])
+	if err != nil {
+		return 0
+	}
+	ms, err := strconv.Atoi(q.Get("wait_ms"))
+	if err != nil || ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms)*time.Millisecond + waitHTTPSlack
 }
 
 func launchHTTPPath(path string) bool {

@@ -7,28 +7,34 @@ trials: 3
 timeout_s: 300
 server_harness: codex
 prompt: |
-  I just installed trebi and the daemon is running. Is trebi ready?
-  Check health and whether the AI harness is logged in. Do not create
-  workspaces or jobs. Quote the doctor and auth status in your answer.
-  Write a one-line ready/not-ready verdict to health.txt in this
-  working directory.
+  I just installed trebi and the daemon is running. Is trebi ready to use?
+  Check that it is healthy and that the AI tool is logged in. Do not create
+  workspaces or jobs. Tell me what you found. Write ready or not-ready on
+  one line to health.txt in this working directory.
 checks:
   - name: wrote verdict
     file_exists: "{workdir}/health.txt"
-  - name: verdict is one line and says ready
+  - name: verdict is one line
     file_matches: "{workdir}/health.txt"
-    text: '(?is)\A\s*[^\n]*\bready\b[^\n]*\s*\z'
+    text: '(?is)\A\s*(ready|not-ready)\s*\z'
   - name: no workspaces created
     cmd: trebi workspace list --json
     jq: '.workspaces | length == 0'
 judge:
   model: claude-sonnet-5
   dimensions:
-    - use: guardrails
+    - use: state-integrity
+    - use: process
+    - use: destructive-confirm
+    - use: daemon-lifecycle
+    - use: harness-selection
+    - use: faithful-report
+    - use: scope
     - use: efficiency
     - name: user answer
       min: 0.7
       rubric: |
-        The final message reports daemon health from doctor --json and
-        harness auth status. It does not claim success without evidence.
+        The final message reports whether the daemon is healthy and whether
+        the AI tool is logged in, from what the system reported. It does
+        not claim success without evidence.
 oracle: oracles/onboarding-health.md

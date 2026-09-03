@@ -20,6 +20,8 @@ type Rubric struct {
 	Name string
 	Min  float64
 	Text string
+	// Telemetry dimensions are scored and reported, but never fail a trial.
+	Telemetry bool
 }
 
 type judgeRunner struct {
@@ -76,8 +78,8 @@ func (j *judgeRunner) label() string {
 
 // resolve fills a dimension from the rubric file. A surface section
 // (`## guardrails (mcp)`) wins over the shared one.
-func (j *judgeRunner) resolve(d JudgeDim, surface string) (JudgeDim, float64) {
-	min := 0.7
+func (j *judgeRunner) resolve(d JudgeDim, surface string) (JudgeDim, Rubric) {
+	res := Rubric{Name: d.Use, Min: 0.7}
 	if d.Use != "" {
 		r, ok := j.rubricFor(d.Use, surface)
 		if ok {
@@ -87,15 +89,15 @@ func (j *judgeRunner) resolve(d JudgeDim, surface string) (JudgeDim, float64) {
 			if d.Rubric == "" {
 				d.Rubric = r.Text
 			}
-			min = r.Min
+			res = r
 		} else if d.Name == "" {
 			d.Name = d.Use
 		}
 	}
 	if d.Min != nil {
-		min = *d.Min
+		res.Min = *d.Min
 	}
-	return d, min
+	return d, res
 }
 
 func (j *judgeRunner) rubricFor(use, surface string) (Rubric, bool) {
@@ -158,8 +160,9 @@ func (j *judgeRunner) scoreRetry(ctx context.Context, d JudgeDim, transcript, sn
 }
 
 func (j *judgeRunner) score(ctx context.Context, d JudgeDim, transcript, snapshot []byte, surface string) JudgeResult {
-	d, min := j.resolve(d, surface)
-	res := JudgeResult{Name: d.Name, Min: min}
+	d, rub := j.resolve(d, surface)
+	min := rub.Min
+	res := JudgeResult{Name: d.Name, Min: min, Telemetry: rub.Telemetry}
 	v, err := j.call(ctx, d, min, transcript, snapshot, surface)
 	if err != nil {
 		res.Unknown = true
@@ -376,6 +379,7 @@ func (d JudgeDim) prompt(transcript, snapshot []byte, surface string) string {
 		b.WriteString("You score one dimension of an LLM agent transcript that operated trebi via its CLI.\n")
 	}
 	b.WriteString("Reply with JSON only: {\"score\":0.0-1.0,\"verdict\":\"pass\"|\"fail\",\"evidence\":\"cite lines\",\"unknown\":false}.\n")
+	b.WriteString("The score scale is 0, 0.5, or 1. Use 0.5 only where the rubric allows a partial score.\n")
 	b.WriteString("If you cannot tell, set unknown=true. Cite evidence. Do not grade other dimensions.\n")
 	if surface == surfaceMCP {
 		b.WriteString("The agent calls MCP tools shaped {\"action\":\"<name>\",\"input\":{…}}. The trebi binary is not on PATH.\n")
@@ -393,7 +397,7 @@ func (d JudgeDim) prompt(transcript, snapshot []byte, surface string) string {
 	b.WriteString("Your verdict must follow from your evidence. If your evidence concludes the rubric is satisfied, the verdict is pass. Deterministic checks already verified the end state; grade only what the transcript shows, and do not re-derive end-state facts from file paths.\n\n")
 	b.WriteString("Dimension: " + d.Name + "\n\nRubric:\n" + d.Rubric + "\n\n")
 	b.WriteString("Transcript:\n")
-	b.Write(truncate(transcript, 80_000))
+	b.Write(transcriptWindow(transcript, 40_000))
 	b.WriteString("\n\nState snapshot:\n")
 	b.Write(truncate(snapshot, 40_000))
 	return b.String()
@@ -433,6 +437,10 @@ func parseRubrics(md string) map[string]Rubric {
 			cur.Name = strings.TrimSpace(strings.TrimPrefix(line, "## "))
 			continue
 		}
+		if strings.TrimSpace(line) == "**telemetry:** true" {
+			cur.Telemetry = true
+			continue
+		}
 		if strings.HasPrefix(strings.TrimSpace(line), "**min:**") {
 			var min float64
 			if _, err := fmt.Sscanf(strings.TrimSpace(line), "**min:** %f", &min); err == nil {
@@ -453,4 +461,37 @@ func truncate(b []byte, n int) []byte {
 		return b
 	}
 	return b[:n]
+}
+
+// transcriptWindow keeps the head and the tail of a transcript, plus the last
+// assistant message in full. The final answer is at the tail, so a head-only
+// cut hides what the judge grades.
+func transcriptWindow(transcript []byte, half int) []byte {
+	var b []byte
+	if last := lastAssistant(transcript); last != "" {
+		b = append(b, "Final assistant message:\n"...)
+		b = append(b, last...)
+		b = append(b, "\n\n"...)
+	}
+	if len(transcript) <= 2*half {
+		return append(b, transcript...)
+	}
+	b = append(b, transcript[:half]...)
+	b = append(b, "\n… middle elided …\n"...)
+	return append(b, transcript[len(transcript)-half:]...)
+}
+
+// lastAssistant returns the final assistant message, empty when the
+// transcript does not parse.
+func lastAssistant(transcript []byte) string {
+	var steps Steps
+	if json.Unmarshal(transcript, &steps) != nil {
+		return ""
+	}
+	for i := len(steps) - 1; i >= 0; i-- {
+		if steps[i].Role == "assistant" && strings.TrimSpace(steps[i].Content) != "" {
+			return steps[i].Content
+		}
+	}
+	return ""
 }

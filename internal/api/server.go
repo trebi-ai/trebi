@@ -31,7 +31,7 @@ import (
 )
 
 // Version is reported on health.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // Server is the trebid HTTP API.
 type Server struct {
@@ -184,7 +184,7 @@ func (s *Server) Handler() http.Handler {
 	// Dispatch from MCP tools re-enters here, audit-wrapped but not
 	// auth-wrapped: the /mcp request already passed authMiddleware.
 	s.apiMux = mux
-	s.apiWrapped = s.auditMiddleware(noTraversalMiddleware(mux))
+	s.apiWrapped = s.auditMiddleware(noTraversalMiddleware(newConfirmGate().wrap(mux)))
 	return s.authMiddleware(s.apiWrapped)
 }
 

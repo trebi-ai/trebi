@@ -1,0 +1,16 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__file",
+    "content": "{\"action\": \"get\", \"input\": {\"owner\": \"workspace\", \"workspace\": \"ws1\", \"path\": \"data.csv\", \"stat\": true}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__file",
+    "content": "{\"action\": \"put\", \"input\": {\"owner\": \"workspace\", \"workspace\": \"ws1\", \"path\": \"data.csv\", \"content\": \"a,b\\n1,2\\n\", \"if_match\": \"abc123\"}}"
+  },
+  {
+    "role": "assistant",
+    "content": "Done."
+  }
+]

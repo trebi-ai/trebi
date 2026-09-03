@@ -25,6 +25,9 @@ const (
 	OpenCode = "opencode"
 	Grok     = "grok"
 	Pi       = "pi"
+	// Fake is the eval stand-in harness (cmd/fake). It is off the default
+	// harness list, so only a job or login that names it reaches it.
+	Fake = "fake"
 )
 
 // ErrTranscriptUnsupported: harness has no known on-disk transcript layout.
@@ -126,6 +129,7 @@ func AllTools() []Tool {
 		copilotTool{},
 		geminiTool{},
 		piTool{harnessHome{tool: Pi}},
+		fakeTool{},
 	}
 }
 

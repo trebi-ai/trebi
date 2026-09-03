@@ -30,6 +30,7 @@ type Info struct {
 	MTime     time.Time `json:"mtime"`
 	Hash      string    `json:"hash,omitempty"`
 	Oversize  bool      `json:"oversize,omitempty"`
+	Dir       bool      `json:"dir,omitempty"`
 }
 
 // ListOpts filters a directory walk. AfterPath is the last path from a
@@ -38,6 +39,8 @@ type ListOpts struct {
 	Prefix    string
 	AfterPath string
 	Limit     int
+	// Tree adds a row per directory, so a client sees the folder shape.
+	Tree bool
 }
 
 // StaleError is ErrStale with the current hash when the file exists.
@@ -97,7 +100,7 @@ func (s *Service) List(ctx context.Context, root string, opts ListOpts) ([]Info,
 		return nil, "", err
 	}
 	root = filepath.Clean(root)
-	all, err := s.walkFiles(ctx, root, prefix)
+	all, err := s.walkFiles(ctx, root, prefix, opts.Tree)
 	if err != nil {
 		return nil, "", err
 	}
@@ -317,7 +320,7 @@ func (s *Service) statJoined(joined, cleaned string, hash bool) (Info, error) {
 	return info, nil
 }
 
-func (s *Service) walkFiles(ctx context.Context, root, prefix string) ([]Info, error) {
+func (s *Service) walkFiles(ctx context.Context, root, prefix string, tree bool) ([]Info, error) {
 	var all []Info
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
@@ -327,8 +330,14 @@ func (s *Service) walkFiles(ctx context.Context, root, prefix string) ([]Info, e
 			return nil
 		}
 		if d.IsDir() {
-			if p != root && skipListDir(d.Name()) {
+			if p == root {
+				return nil
+			}
+			if skipListDir(d.Name()) {
 				return filepath.SkipDir
+			}
+			if tree {
+				all = appendDir(all, root, p, prefix)
 			}
 			return nil
 		}
@@ -521,4 +530,17 @@ func mapReadErr(err error) error {
 		return ErrNotFound
 	}
 	return err
+}
+
+// appendDir adds one folder row to a tree listing.
+func appendDir(all []Info, root, p, prefix string) []Info {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return all
+	}
+	rel = filepath.ToSlash(rel)
+	if !prefixOK(rel, prefix) {
+		return all
+	}
+	return append(all, Info{Path: rel, Dir: true})
 }

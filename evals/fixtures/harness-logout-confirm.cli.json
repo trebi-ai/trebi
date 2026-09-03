@@ -1,0 +1,11 @@
+[
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi harness auth status fake --json\"}"
+  },
+  {
+    "role": "assistant",
+    "content": "Logging fake out clears its credentials. Confirm and I will do it."
+  }
+]

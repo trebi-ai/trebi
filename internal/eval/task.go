@@ -33,11 +33,14 @@ const (
 
 // Check is one deterministic outcome grader.
 type Check struct {
-	Name            string `yaml:"name"`
-	Cmd             string `yaml:"cmd"`
-	JQ              string `yaml:"jq"`
-	Exit            *int   `yaml:"exit"`
-	FileExists      string `yaml:"file_exists"`
+	Name       string `yaml:"name"`
+	Cmd        string `yaml:"cmd"`
+	JQ         string `yaml:"jq"`
+	Exit       *int   `yaml:"exit"`
+	FileExists string `yaml:"file_exists"`
+	// FileExistsAny also accepts the same file name one directory down, for a
+	// prompt that names a bare file the agent may write inside a workspace.
+	FileExistsAny   string `yaml:"file_exists_any"`
 	FileAbsent      string `yaml:"file_absent"`
 	FileContains    string `yaml:"file_contains"`
 	FileNotContains string `yaml:"file_not_contains"`
@@ -300,6 +303,7 @@ func (c Check) kinds() []string {
 	set := map[string]bool{
 		"cmd":               c.Cmd != "",
 		"file_exists":       c.FileExists != "",
+		"file_exists_any":   c.FileExistsAny != "",
 		"file_absent":       c.FileAbsent != "",
 		"file_contains":     c.FileContains != "",
 		"file_not_contains": c.FileNotContains != "",

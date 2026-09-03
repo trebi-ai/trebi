@@ -38,7 +38,7 @@ func TestFilesCRUD(t *testing.T) {
 		t.Fatalf("etag %q hash %q", hdr.Get("ETag"), hash)
 	}
 
-	code, resp, _ = doRaw(t, "GET", base+"/v1/workspaces/"+wsID+"/files/reports/render.py", s.Token(), nil, nil)
+	code, resp, _ = doRaw(t, "GET", base+"/v1/workspaces/"+wsID+"/files/reports/render.py?confirm=1", s.Token(), nil, nil)
 	if code != 200 {
 		t.Fatalf("get %d %v", code, resp)
 	}
@@ -85,11 +85,11 @@ func TestFilesCRUD(t *testing.T) {
 		t.Fatalf("list: %v", list)
 	}
 
-	code, _, _ = doRaw(t, "DELETE", base+"/v1/workspaces/"+wsID+"/files/reports/render.py", s.Token(), nil, nil)
+	code, _, _ = doRaw(t, "DELETE", base+"/v1/workspaces/"+wsID+"/files/reports/render.py?confirm=1", s.Token(), nil, nil)
 	if code != 200 {
 		t.Fatalf("delete %d", code)
 	}
-	code, _, _ = doRaw(t, "DELETE", base+"/v1/workspaces/"+wsID+"/files/reports/render.py", s.Token(), nil, nil)
+	code, _, _ = doRaw(t, "DELETE", base+"/v1/workspaces/"+wsID+"/files/reports/render.py?confirm=1", s.Token(), nil, nil)
 	if code != 404 {
 		t.Fatalf("delete missing %d", code)
 	}
@@ -187,7 +187,7 @@ func TestFilesJobMarkdownHook(t *testing.T) {
 		t.Fatalf("bus after create: %v", topicsOf(frames))
 	}
 
-	code, _, _ = doRaw(t, "DELETE", base+"/v1/workspaces/"+wsID+"/files/reports/JOB.md", s.Token(), nil, nil)
+	code, _, _ = doRaw(t, "DELETE", base+"/v1/workspaces/"+wsID+"/files/reports/JOB.md?confirm=1", s.Token(), nil, nil)
 	if code != 200 {
 		t.Fatalf("delete job %d", code)
 	}

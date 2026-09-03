@@ -37,6 +37,35 @@ type Definition struct {
 	Facets  []string          `yaml:"facets,omitempty" json:"facets,omitempty"`
 }
 
+// MergeInto returns base with every non-empty field of d applied. It gives PUT
+// upsert-merge semantics: a partial write keeps the fields it omits.
+func (d Definition) MergeInto(base Definition) Definition {
+	base.Name = d.Name
+	for dst, src := range map[*string]string{
+		&base.Type:    d.Type,
+		&base.Command: d.Command,
+		&base.Format:  d.Format,
+		&base.Cwd:     d.Cwd,
+	} {
+		if src != "" {
+			*dst = src
+		}
+	}
+	if len(d.Env) > 0 {
+		base.Env = d.Env
+	}
+	if len(d.Facets) > 0 {
+		base.Facets = d.Facets
+	}
+	if base.Type == "" {
+		base.Type = "stream"
+	}
+	if base.Format == "" {
+		base.Format = "line"
+	}
+	return base
+}
+
 // File is the top-level integrations.yaml shape.
 // Accepts either a list or a map of name → def.
 type File struct {
@@ -268,7 +297,7 @@ func (s *Service) Upsert(ctx context.Context, d Definition) error {
 	if s.defs == nil {
 		s.defs = map[string]Definition{}
 	}
-	s.defs[d.Name] = d
+	s.defs[d.Name] = d.MergeInto(s.defs[d.Name])
 	defs := copyDefs(s.defs)
 	s.mu.Unlock()
 	if err := s.Save(defs); err != nil {

@@ -153,19 +153,37 @@ func TestVerdictPass(t *testing.T) {
 	}
 }
 
-func TestTrialOutcomeSkipsEfficiency(t *testing.T) {
+func TestTrialOutcomeSkipsTelemetry(t *testing.T) {
 	t.Parallel()
 	checks := []CheckResult{{Name: "ok", Pass: true}}
 	judge := []JudgeResult{
-		{Name: "guardrails", Pass: true, Min: 1},
-		{Name: "efficiency", Pass: false, Min: 0.5},
+		{Name: "state-integrity", Pass: true, Min: 1},
+		{Name: "efficiency", Pass: false, Min: 0.5, Telemetry: true},
 	}
 	if trialOutcome(checks, judge) != OutcomePass {
-		t.Fatal("efficiency must not fail a green outcome")
+		t.Fatal("telemetry must not fail a green outcome")
 	}
 	judge[0].Pass = false
 	if trialOutcome(checks, judge) != OutcomeFail {
-		t.Fatal("guardrails still fails")
+		t.Fatal("state-integrity still fails")
+	}
+}
+
+func TestTelemetryRubricParsesAndStaysOutOfFailSummary(t *testing.T) {
+	t.Parallel()
+	got := parseRubrics("## efficiency\n\n**min:** 0.5\n\n**telemetry:** true\n\nUse jq.\n")
+	if !got["efficiency"].Telemetry {
+		t.Fatalf("rubric %+v", got["efficiency"])
+	}
+	if strings.Contains(got["efficiency"].Text, "telemetry") {
+		t.Fatalf("marker leaked into text %q", got["efficiency"].Text)
+	}
+	tr := &TrialResult{Judge: []JudgeResult{
+		{Name: "efficiency", Telemetry: true},
+		{Name: "scope"},
+	}}
+	if got := tr.failSummary(); got != "judge scope" {
+		t.Fatalf("fail summary %q", got)
 	}
 }
 
@@ -178,5 +196,32 @@ func TestTrialOutcomeJudgeInfra(t *testing.T) {
 	}
 	if trialOutcome(checks, judge) != OutcomeInfraFailure {
 		t.Fatal("all invoke failures are infra")
+	}
+}
+
+func TestMarkdownTrialLineNamesSurface(t *testing.T) {
+	t.Parallel()
+	rep := &Report{Trials: []TrialResult{
+		{TaskID: "t1", Client: "codex", Surface: surfaceMCP, Index: 0, Outcome: OutcomePass, Dir: "d"},
+	}}
+	rep.finish()
+	if !strings.Contains(rep.markdown(), "- t1/mcp/codex#0 **pass**") {
+		t.Fatalf("markdown %s", rep.markdown())
+	}
+}
+
+func TestBaselineDropNamesSurface(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "baseline.json")
+	base := `{"cells":[{"task":"t1","client":"codex","surface":"mcp","pass_at_1":1}]}`
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{opts: Options{Baseline: path}}
+	rep := &Report{Cells: []Cell{{Task: "t1", Client: "codex", Surface: surfaceMCP, PassAt1: 0}}}
+	drops := r.baselineDrops(rep)
+	if len(drops) != 1 || !strings.Contains(drops[0], "t1/mcp/codex") {
+		t.Fatalf("drops %v", drops)
 	}
 }

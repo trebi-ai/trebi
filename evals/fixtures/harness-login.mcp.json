@@ -1,0 +1,16 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__harness",
+    "content": "{\"action\": \"auth\", \"input\": {\"name\": \"fake\"}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__harness",
+    "content": "{\"action\": \"login_code\", \"input\": {\"name\": \"fake\", \"code\": \"1234\"}}"
+  },
+  {
+    "role": "assistant",
+    "content": "fake is logged in."
+  }
+]

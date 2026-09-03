@@ -50,6 +50,17 @@ export TREBI_HOME=/tmp/trebi-dev
 
 The daemon also serves Streamable HTTP MCP at `/mcp`, with the same bearer token as `/v1`. The daemon must be running.
 
+`trebi mcp` writes the client config for you:
+
+```bash
+trebi mcp config --client claude             # the config block
+trebi mcp config --client claude --command   # the add command
+trebi mcp install --client claude            # runs the add command
+trebi mcp serve                              # stdio bridge for a client without HTTP
+```
+
+Clients: `claude`, `codex`, `opencode`, `cursor`, `vscode`, and `json` for the raw url and token. The sections below show the same blocks, filled in by hand:
+
 ```bash
 trebi service status --json          # confirms the API is up
 URL=$(jq -r .url ~/.trebi/api.json)/mcp

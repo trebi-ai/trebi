@@ -1,0 +1,16 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__workspace",
+    "content": "{\"action\": \"list\", \"input\": {}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__job",
+    "content": "{\"action\": \"run\", \"input\": {\"name\": \"report\", \"workspace\": \"01JQ0STAGING0000000000000\"}}"
+  },
+  {
+    "role": "assistant",
+    "content": "Done."
+  }
+]

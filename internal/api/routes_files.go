@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"io"
 	"mime"
@@ -218,6 +219,7 @@ func (s *Server) filesList(scope fileScope, w http.ResponseWriter, r *http.Reque
 		Prefix:    r.URL.Query().Get("prefix"),
 		AfterPath: r.URL.Query().Get("cursor"),
 		Limit:     parseLimit(r),
+		Tree:      r.URL.Query().Get("recursive") == "1",
 	})
 	if err != nil {
 		writeFilesErr(w, err)
@@ -252,6 +254,15 @@ func (s *Server) filesGet(scope fileScope, w http.ResponseWriter, r *http.Reques
 		writeFilesErr(w, err)
 		return
 	}
+	if r.URL.Query().Get("encoding") == "base64" {
+		setETagHash(w, info.Hash)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"path": info.Path, "encoding": "base64", "hash": info.Hash,
+			"size_bytes": info.SizeBytes, "content_type": contentTypeFor(info.Path),
+			"content": base64.StdEncoding.EncodeToString(data),
+		})
+		return
+	}
 	etag := `"` + info.Hash + `"`
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Last-Modified", info.MTime.UTC().Format(http.TimeFormat))
@@ -272,6 +283,14 @@ func (s *Server) filesPut(scope fileScope, w http.ResponseWriter, r *http.Reques
 	data, ok := s.readFileBody(w, r)
 	if !ok {
 		return
+	}
+	if r.URL.Query().Get("encoding") == "base64" {
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", "body is not valid base64: "+err.Error())
+			return
+		}
+		data = decoded
 	}
 	info, created, err := s.files.Write(r.Context(), scope.root, rel, data, ifMatchHeader(r))
 	if err != nil {

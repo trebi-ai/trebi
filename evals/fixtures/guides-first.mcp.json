@@ -1,0 +1,16 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__system",
+    "content": "{\"action\": \"guides\", \"input\": {}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__system",
+    "content": "{\"action\": \"guide\", \"input\": {\"topic\": \"getting-started\"}}"
+  },
+  {
+    "role": "assistant",
+    "content": "Three things to know."
+  }
+]

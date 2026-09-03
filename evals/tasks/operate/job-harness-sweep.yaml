@@ -1,0 +1,31 @@
+id: job-harness-sweep
+title: Move every job in the workspace to one harness
+tier: operate
+clients: [claude, codex]
+surfaces: [cli, mcp]
+trials: 3
+timeout_s: 600
+server_harness: codex
+seed: seeds/ops-jobs-mixed.sh
+prompt: |
+  Move every job in ops to the codex harness and check they all still
+  validate.
+checks:
+  - name: every job on codex
+    cmd: trebi job list --json
+    jq: '[.jobs[]? | select(.harness != "codex")] | length == 0'
+  - name: all three jobs kept
+    cmd: trebi job list --json
+    jq: '[.jobs[]?.name] | (index("alpha") and index("beta") and index("gamma")) != null'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: state-integrity
+    - use: process
+    - use: destructive-confirm
+    - use: daemon-lifecycle
+    - use: harness-selection
+    - use: faithful-report
+    - use: scope
+    - use: efficiency
+oracle: oracles/job-harness-sweep.md

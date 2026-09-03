@@ -2,9 +2,11 @@ package eval
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 )
 
@@ -30,97 +32,104 @@ func TestCatalogLoads(t *testing.T) {
 	}
 }
 
-func TestConvertedTaskCommandsJQ(t *testing.T) {
+func TestCommandsJQAgainstFixtures(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq not on PATH")
 	}
 	t.Parallel()
 	evals := catalogDir(t)
-	payloads := map[string][]string{
-		"ambiguous-workspace":  {`/bin/bash -lc 'trebi -w staging job run report'`},
-		"bus-inspect":          {`/bin/bash -lc 'trebi bus --replay --topics run --limit 10 --json'`},
-		"file-exists-conflict": {`printf 'a,b\n9,9\n' | trebi file put data.csv --if-match abc`},
-		"run-lifecycle":        {`trebi runs message id "hi"`, `trebi runs kill id`},
-		"no-direct-state":      {`trebi doctor --json`},
+	tasks, err := LoadTasks(evals, "", "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for id, cmds := range payloads {
-		t.Run(id, func(t *testing.T) {
-			t.Parallel()
-			tasks, err := LoadTasks(evals, id, "")
-			if err != nil {
-				t.Fatal(err)
+	for _, task := range tasks {
+		for _, c := range task.Checks {
+			if c.CommandsJQ == "" {
+				continue
 			}
-			var expr string
-			for _, c := range tasks[0].Checks {
-				if c.CommandsJQ != "" {
-					expr = c.CommandsJQ
-					break
+			for _, surface := range []string{surfaceCLI, surfaceMCP} {
+				if !slices.Contains(task.Surfaces, surface) || !c.appliesTo(surface) {
+					continue
+				}
+				t.Run(task.ID+"/"+surface+"/"+c.Name, func(t *testing.T) {
+					t.Parallel()
+					assertFixturePasses(t, evals, task.ID, surface, c.CommandsJQ)
+				})
+			}
+		}
+	}
+}
+
+// Every judge dimension a task names must resolve to a rubric section on every
+// surface the task runs. An unresolved use silently grades an empty rubric.
+func TestTaskDimensionsResolve(t *testing.T) {
+	t.Parallel()
+	evals := catalogDir(t)
+	tasks, err := LoadTasks(evals, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := newJudge(evals, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tsk := range tasks {
+		for _, surf := range tsk.Surfaces {
+			for _, d := range tsk.Judge.Dimensions {
+				if d.Use == "" {
+					continue
+				}
+				if _, ok := j.rubricFor(d.Use, surf); !ok {
+					t.Errorf("%s/%s: dimension %q has no rubric section", tsk.ID, surf, d.Use)
 				}
 			}
-			if expr == "" {
-				t.Fatal("missing commands_jq")
-			}
-			data, err := json.Marshal(cmds)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ok, detail, qerr := jqTruthy(expr, data)
-			if qerr != nil {
-				t.Fatalf("jq %s: %v", expr, qerr)
-			}
-			if !ok {
-				t.Fatalf("predicate failed: %s", detail)
-			}
-		})
+		}
 	}
-	t.Run("bus without --limit fails", func(t *testing.T) {
-		t.Parallel()
-		tasks, err := LoadTasks(evals, "bus-inspect", "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var expr string
-		for _, c := range tasks[0].Checks {
-			if c.CommandsJQ != "" {
-				expr = c.CommandsJQ
-			}
-		}
-		data, err := json.Marshal([]string{`trebi bus --replay --topics run --json`})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ok, _, qerr := jqTruthy(expr, data)
-		if qerr != nil {
-			t.Fatal(qerr)
-		}
-		if ok {
-			t.Fatal("expected fail without --limit")
-		}
-	})
-	t.Run("sqlite is rejected", func(t *testing.T) {
-		t.Parallel()
-		tasks, err := LoadTasks(evals, "no-direct-state", "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var expr string
-		for _, c := range tasks[0].Checks {
-			if c.CommandsJQ != "" {
-				expr = c.CommandsJQ
-			}
-		}
-		data, err := json.Marshal([]string{`sqlite3 $TREBI_HOME/trebi.db '.tables'`})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ok, _, qerr := jqTruthy(expr, data)
-		if qerr != nil {
-			t.Fatal(qerr)
-		}
-		if ok {
-			t.Fatal("expected fail on sqlite3")
-		}
-	})
+}
+
+// Every commands_jq must pass on its fixture transcript and fail on an empty
+// command list, on each surface the check runs. The fixture goes through the
+// same projection a trial uses, so an mcp-only check is validated too.
+
+func assertFixturePasses(t *testing.T, evals, id, surface, expr string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(evals, "fixtures", id+"."+surface+".json"))
+	if err != nil {
+		t.Fatalf("missing fixture: %v", err)
+	}
+	cmds, err := transcriptCommands(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cmds) == 0 {
+		t.Fatal("fixture projects no commands")
+	}
+	data, err := json.Marshal(cmds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, detail, qerr := jqTruthy(expr, data)
+	if qerr != nil {
+		t.Fatalf("jq %s: %v", expr, qerr)
+	}
+	if !ok {
+		t.Fatalf("fixture does not satisfy %s: %s\ncommands: %s", expr, detail, data)
+	}
+	// A vacuous pass on an empty list is caught by the grader, which fails a
+	// check before jq runs when the agent produced no commands.
+	if r := (&Grader{p: Placeholders{Transcript: emptyTranscript(t)}}).checkCommandsJQ(Check{Name: "x", CommandsJQ: expr}); r.Pass {
+		t.Errorf("%s passes with no commands in the transcript", expr)
+	}
+}
+
+// emptyTranscript writes a transcript that carries no agent action.
+func emptyTranscript(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "transcript.json")
+	if err := os.WriteFile(p, []byte(`[{"role":"assistant","content":"done"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func catalogDir(t *testing.T) string {

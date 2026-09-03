@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +51,30 @@ func TestHealthAndAuth(t *testing.T) {
 	}
 }
 
+func TestSystemOverview(t *testing.T) {
+	s, base := startTestServer(t)
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "demo")
+	addWorkspace(t, base, s.Token(), wsDir, "overview-ws")
+
+	status, body, _ := doJSON(t, "GET", base+"/v1/system/overview", s.Token(), nil)
+	if status != 200 {
+		t.Fatalf("status=%d body=%v", status, body)
+	}
+	if body["version"] == "" || body["workspaces"] != float64(1) {
+		t.Fatalf("%v", body)
+	}
+	for _, key := range []string{"doctor", "harnesses", "runs", "inbox", "drain_state"} {
+		if _, ok := body[key]; !ok {
+			t.Errorf("overview omits %q: %v", key, body)
+		}
+	}
+	runsBlock, _ := body["runs"].(map[string]any)
+	if runsBlock["running"] != float64(0) || runsBlock["waiting"] != float64(0) {
+		t.Fatalf("runs %v", runsBlock)
+	}
+}
+
 func TestRunsLifecycle(t *testing.T) {
 	s, base := startTestServer(t)
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -57,8 +83,8 @@ func TestRunsLifecycle(t *testing.T) {
 	wsID := addWorkspace(t, base, s.Token(), wsDir, "life-ws")
 
 	// create run
-	payload := `{"job":"demo","workspace":` + mustQuote(wsID) + `,"harness":"claude","prompt_override":"hello TREBI_RUN_COMPLETE"}`
-	req, _ := http.NewRequest("POST", base+"/v1/runs", bytes.NewBufferString(payload))
+	payload := `{"workspace":` + mustQuote(wsID) + `,"harness":"claude","prompt_override":"hello TREBI_RUN_COMPLETE"}`
+	req, _ := http.NewRequest("POST", base+"/v1/jobs/demo/run", bytes.NewBufferString(payload))
 	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
@@ -258,8 +284,8 @@ func TestShadowAllowsManualBlocksTrigger(t *testing.T) {
 	wsID := addWorkspace(t, base, "t", wsDir, "shadow-ws")
 
 	// manual OK
-	req, _ := http.NewRequest("POST", base+"/v1/runs", bytes.NewBufferString(
-		`{"job":"j","workspace":`+mustQuote(wsID)+`,"reason":"manual","harness":"claude"}`))
+	req, _ := http.NewRequest("POST", base+"/v1/jobs/j/run", bytes.NewBufferString(
+		`{"workspace":`+mustQuote(wsID)+`,"reason":"manual","harness":"claude"}`))
 	req.Header.Set("Authorization", "Bearer t")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -272,7 +298,7 @@ func TestShadowAllowsManualBlocksTrigger(t *testing.T) {
 	}
 
 	// trigger blocked
-	req, _ = http.NewRequest("POST", base+"/v1/runs", bytes.NewBufferString(`{"job":"j","reason":"trigger"}`))
+	req, _ = http.NewRequest("POST", base+"/v1/jobs/j/run", bytes.NewBufferString(`{"reason":"trigger"}`))
 	req.Header.Set("Authorization", "Bearer t")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = http.DefaultClient.Do(req)
@@ -315,8 +341,8 @@ func TestRunsCreateFakeHarnessCompletes(t *testing.T) {
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "demo")
 	wsID := addWorkspace(t, base, s.Token(), wsDir, "fake-ws")
-	payload := `{"job":"demo","workspace":` + mustQuote(wsID) + `,"harness":"fake","prompt_override":"hi"}`
-	req, _ := http.NewRequest("POST", base+"/v1/runs", bytes.NewBufferString(payload))
+	payload := `{"workspace":` + mustQuote(wsID) + `,"harness":"fake","prompt_override":"hi"}`
+	req, _ := http.NewRequest("POST", base+"/v1/jobs/demo/run", bytes.NewBufferString(payload))
 	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -488,4 +514,280 @@ func startTestServerOpts(t *testing.T, opts api.Options) (*api.Server, string) {
 func mustQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// TestIdempotentLaunch covers A6.8: a repeated key returns the first run.
+func TestIdempotentLaunch(t *testing.T) {
+	s, base := startTestServer(t)
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "idem")
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "idem-ws")
+
+	launch := map[string]any{
+		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
+		"idempotency_key": "k1",
+	}
+	code, first, _ := doJSON(t, "POST", base+"/v1/jobs/idem/run", s.Token(), launch)
+	if code != 201 {
+		t.Fatalf("first launch: %d %v", code, first)
+	}
+	code, second, _ := doJSON(t, "POST", base+"/v1/jobs/idem/run", s.Token(), launch)
+	if code != 201 {
+		t.Fatalf("repeat launch: %d %v", code, second)
+	}
+	if first["id"] != second["id"] {
+		t.Fatalf("repeat launched a second run: %v vs %v", first["id"], second["id"])
+	}
+
+	code, third, _ := doJSON(t, "POST", base+"/v1/jobs/idem/run", s.Token(), map[string]any{
+		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
+	})
+	if code != 201 || third["id"] == first["id"] {
+		t.Fatalf("keyless launch must start a new run: %d %v", code, third)
+	}
+
+	// The Idempotency-Key header is the same contract as the body field.
+	req, _ := http.NewRequest("POST", base+"/v1/jobs/idem/run",
+		strings.NewReader(`{"workspace":"`+wsID+`","harness":"fake","prompt_override":"hi"}`))
+	req.Header.Set("Authorization", "Bearer "+s.Token())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "k1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var byHeader map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&byHeader)
+	if byHeader["id"] != first["id"] {
+		t.Fatalf("header key must reuse the first run: %v", byHeader["id"])
+	}
+}
+
+// TestListFilters covers A6.5 on runs, jobs, and workspaces.
+func TestListFilters(t *testing.T) {
+	s, base := startTestServer(t)
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "alpha")
+	writeJobFile(t, wsDir, "beta")
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "filter-ws")
+
+	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/alpha/run", s.Token(), map[string]any{
+		"workspace": wsID, "harness": "fake", "prompt_override": "deploy the thing",
+	})
+	if code != 201 {
+		t.Fatalf("launch: %d %v", code, run)
+	}
+
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{
+		{"?job=alpha", 1},
+		{"?job=beta", 0},
+		{"?q=deploy", 1},
+		{"?q=nothing-matches", 0},
+		{"?since=1h", 1},
+		{"?since=" + url.QueryEscape(time.Now().UTC().Add(time.Hour).Format(time.RFC3339)), 0},
+	} {
+		code, body, _ := doJSON(t, "GET", base+"/v1/runs"+tc.query, s.Token(), nil)
+		if code != 200 {
+			t.Fatalf("%s: %d %v", tc.query, code, body)
+		}
+		list, _ := body["runs"].([]any)
+		if len(list) != tc.want {
+			t.Fatalf("%s: got %d runs, want %d", tc.query, len(list), tc.want)
+		}
+	}
+
+	if code, body, _ := doJSON(t, "GET", base+"/v1/runs?since=bogus", s.Token(), nil); code != 400 {
+		t.Fatalf("bad since must be 400: %d %v", code, body)
+	}
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?q=alph", s.Token(), nil)
+	jobs, _ := body["jobs"].([]any)
+	if code != 200 || len(jobs) != 1 {
+		t.Fatalf("job q filter: %d %v", code, body)
+	}
+	row, _ := jobs[0].(map[string]any)
+	if row["last_run_at"] == "" || row["last_status"] != "complete" {
+		t.Fatalf("job row enrichment: %v", row)
+	}
+	if _, ok := row["mtd_usd"]; !ok {
+		t.Fatalf("job row must carry mtd_usd: %v", row)
+	}
+
+	if code, body, _ := doJSON(t, "GET", base+"/v1/jobs?active=maybe", s.Token(), nil); code != 400 {
+		t.Fatalf("bad active must be 400: %d %v", code, body)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces", s.Token(), nil)
+	list, _ := body["workspaces"].([]any)
+	if code != 200 || len(list) != 1 {
+		t.Fatalf("workspaces: %d %v", code, body)
+	}
+	ws, _ := list[0].(map[string]any)
+	if ws["job_count"] != float64(2) {
+		t.Fatalf("job_count: %v", ws)
+	}
+}
+
+// TestJobValidateText covers A6.7: check a definition without writing a job.
+func TestJobValidateText(t *testing.T) {
+	s, base := startTestServer(t)
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/validate", s.Token(), map[string]any{
+		"prompt": "Run the sync.", "cron": "0 3 * * *", "harness": "codex",
+	})
+	if code != 200 || body["ok"] != true {
+		t.Fatalf("structured spec: %d %v", code, body)
+	}
+	md, _ := body["markdown"].(string)
+	if !strings.Contains(md, "harness: codex") || !strings.Contains(md, "cron: 0 3 * * *") {
+		t.Fatalf("composed front matter: %q", md)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/validate", s.Token(), map[string]any{
+		"content": "---\nharness: [broken\n---\n\nhi\n",
+	})
+	if code != 200 || body["ok"] != false || body["error"] == "" {
+		t.Fatalf("bad yaml must report ok=false: %d %v", code, body)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/jobs", s.Token(), nil)
+	jobs, _ := body["jobs"].([]any)
+	if code != 200 || len(jobs) != 0 {
+		t.Fatalf("validate must write nothing: %d %v", code, body)
+	}
+}
+
+// TestFileTreeAndBase64 covers A6.9.
+func TestFileTreeAndBase64(t *testing.T) {
+	s, base := startTestServer(t)
+	wsDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wsDir, "reports", "q1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "reports", "q1", "a.md"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "tree-ws")
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/files", s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("list: %d %v", code, body)
+	}
+	if dirRows(body) != 0 {
+		t.Fatalf("plain list must carry no folders: %v", body)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/files?recursive=1", s.Token(), nil)
+	if code != 200 || dirRows(body) == 0 {
+		t.Fatalf("recursive list must carry folders: %d %v", code, body)
+	}
+
+	png := []byte{0x89, 'P', 'N', 'G', 0x00, 0x01}
+	req, _ := http.NewRequest("PUT", base+"/v1/workspaces/"+wsID+"/files/img.png?encoding=base64",
+		strings.NewReader(base64.StdEncoding.EncodeToString(png)))
+	req.Header.Set("Authorization", "Bearer "+s.Token())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 201 {
+		t.Fatalf("base64 put: %d", resp.StatusCode)
+	}
+	got, err := os.ReadFile(filepath.Join(wsDir, "img.png"))
+	if err != nil || !bytes.Equal(got, png) {
+		t.Fatalf("stored bytes: %v %v", got, err)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/files/img.png?encoding=base64", s.Token(), nil)
+	if code != 200 || body["content"] != base64.StdEncoding.EncodeToString(png) {
+		t.Fatalf("base64 get: %d %v", code, body)
+	}
+}
+
+func TestSkillFromFolderSource(t *testing.T) {
+	s, base := startTestServer(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte("# deploy\n\nOne.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/skills", s.Token(),
+		map[string]any{"name": "deploy", "source": map[string]any{"kind": "folder", "path": src}})
+	if code != 201 {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	got, _ := body["source"].(map[string]any)
+	if got["kind"] != "folder" || got["path"] != src {
+		t.Fatalf("source not kept: %v", body)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/skills/deploy/refresh", s.Token(), nil)
+	if code != 200 || body["updated"] != false {
+		t.Fatalf("unchanged refresh: %d %v", code, body)
+	}
+
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte("# deploy\n\nTwo.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/skills/deploy/refresh", s.Token(), nil)
+	if code != 200 || body["updated"] != true {
+		t.Fatalf("changed refresh: %d %v", code, body)
+	}
+	sk, _ := body["skill"].(map[string]any)
+	if !strings.Contains(sk["skill_md"].(string), "Two.") {
+		t.Fatalf("body not pulled: %v", sk)
+	}
+}
+
+func TestSkillWithoutSourceRefresh(t *testing.T) {
+	s, base := startTestServer(t)
+	if code, body, _ := doJSON(t, "POST", base+"/v1/skills", s.Token(),
+		map[string]any{"name": "local-one", "skill_md": "# local\n"}); code != 201 {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	code, body, _ := doJSON(t, "POST", base+"/v1/skills/local-one/refresh", s.Token(), nil)
+	if code != 200 || body["updated"] != false || body["note"] == nil {
+		t.Fatalf("refresh: %d %v", code, body)
+	}
+}
+
+func TestBulkVerbs(t *testing.T) {
+	s, base := startTestServer(t)
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs/kill", s.Token(), map[string]any{"ids": []string{}})
+	if code != 400 {
+		t.Fatalf("empty ids must be a validation error: %d %v", code, body)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/runs/kill", s.Token(),
+		map[string]any{"ids": []string{"01MISSINGA", "01MISSINGB"}})
+	if code != 200 {
+		t.Fatalf("bulk kill: %d %v", code, body)
+	}
+	failed, _ := body["failed"].(map[string]any)
+	if len(failed) != 2 {
+		t.Fatalf("both ids must fail on their own: %v", body)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/inbox/resolve-all", s.Token(), nil)
+	if code != 200 || body["resolved"] == nil {
+		t.Fatalf("resolve-all: %d %v", code, body)
+	}
+}
+
+// dirRows counts folder entries in a file list response.
+func dirRows(body map[string]any) int {
+	n := 0
+	rows, _ := body["files"].([]any)
+	for _, row := range rows {
+		if m, ok := row.(map[string]any); ok && m["dir"] == true {
+			n++
+		}
+	}
+	return n
 }

@@ -51,6 +51,102 @@ func (s *Service) ListMessages(ctx context.Context, convID string, opts MessageL
 	return out, rows.Err()
 }
 
+// askPoll is the interval between reply reads inside Ask.
+const askPoll = 500 * time.Millisecond
+
+// Ask resolves the channel conversation, sends one message, and when Wait is
+// set returns the assistant replies that arrive before the deadline.
+func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
+	if strings.TrimSpace(opts.Workspace) == "" {
+		return nil, fmt.Errorf("%w: workspace is required", ErrValidation)
+	}
+	if opts.ChannelType == "" {
+		opts.ChannelType = ChannelCLI
+	}
+	if opts.ChannelRef == "" {
+		opts.ChannelRef = opts.Workspace
+	}
+	convID, err := s.EnsureForChannel(ctx, opts.Workspace, opts.ChannelType, opts.ChannelRef)
+	if err != nil {
+		return nil, err
+	}
+	before, err := s.lastMessageID(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	sent, err := s.Send(ctx, convID, SendOpts{
+		Text: opts.Text, ChannelType: opts.ChannelType,
+		ChannelRef: opts.ChannelRef, IdempotencyKey: opts.IdempotencyKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	res := &AskResult{SendResult: *sent, ConversationID: convID}
+	if opts.Wait <= 0 {
+		return res, nil
+	}
+	res.Replies = s.waitReplies(ctx, convID, before, opts.Wait)
+	return res, nil
+}
+
+// EnsureForChannel returns the conversation the channel points at, creating one
+// when the pointer is absent.
+func (s *Service) EnsureForChannel(ctx context.Context, workspace, channelType, channelRef string) (string, error) {
+	p, err := s.GetPointer(ctx, channelType, channelRef)
+	if err == nil && p.ConversationID != "" {
+		return p.ConversationID, nil
+	}
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return "", err
+	}
+	conv, err := s.Create(ctx, CreateOpts{
+		Workspace:     workspace,
+		OriginChannel: channelType,
+		Activate:      &Activate{ChannelType: channelType, ChannelRef: channelRef},
+	})
+	if err != nil {
+		return "", err
+	}
+	return conv.ID, nil
+}
+
+// waitReplies polls for assistant messages newer than after until the deadline.
+// It returns what arrived; an empty slice means the assistant is still working.
+func (s *Service) waitReplies(ctx context.Context, convID, after string, wait time.Duration) []Message {
+	deadline := time.Now().Add(wait)
+	for {
+		msgs, err := s.ListMessages(ctx, convID, MessageListOpts{Cursor: after, Limit: 50})
+		if err != nil {
+			return nil
+		}
+		var replies []Message
+		for _, m := range msgs {
+			if m.Role == RoleAssistant {
+				replies = append(replies, m)
+			}
+		}
+		if len(replies) > 0 || !time.Now().Before(deadline) {
+			return replies
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(min(askPoll, time.Until(deadline))):
+		}
+	}
+}
+
+// lastMessageID returns the newest message id, or "" for an empty conversation.
+func (s *Service) lastMessageID(ctx context.Context, convID string) (string, error) {
+	var id sql.NullString
+	err := s.st.DB().QueryRowContext(ctx,
+		`SELECT MAX(id) FROM conversation_messages WHERE conversation_id=?`, convID).Scan(&id)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	return id.String, nil
+}
+
 // Send inserts a user message and injects or enqueues a wake.
 func (s *Service) Send(ctx context.Context, convID string, opts SendOpts) (*SendResult, error) {
 	text := strings.TrimSpace(opts.Text)

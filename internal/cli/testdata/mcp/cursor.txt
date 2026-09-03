@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "trebi": {
+      "headers": {
+        "Authorization": "Bearer ${env:TREBI_TOKEN}"
+      },
+      "url": "http://127.0.0.1:7777/mcp"
+    }
+  }
+}

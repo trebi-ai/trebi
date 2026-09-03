@@ -1,0 +1,7 @@
+tool: fake
+version: cmd/fake
+date: 2026-09-02
+geometry: 80x24
+command: fake login
+note: the fake harness has no TUI. This login frame pins what the device
+  scraper must read from cmd/fake.

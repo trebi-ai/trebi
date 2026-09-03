@@ -1,0 +1,16 @@
+[
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi doctor --json\"}"
+  },
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"printf 'all healthy\\\\n' > notes.txt\"}"
+  },
+  {
+    "role": "assistant",
+    "content": "Done."
+  }
+]

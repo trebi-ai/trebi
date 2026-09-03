@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -154,4 +155,46 @@ func (s *Store) DeleteFlag(key string) error {
 func (s *Store) IsDraining() bool {
 	v, ok, err := s.GetFlag("drain")
 	return err == nil && ok && v == "1"
+}
+
+// Idempotent returns the id an earlier call under scope and key produced, when
+// the key is still retained.
+func (s *Store) Idempotent(ctx context.Context, scope, key string) (string, bool, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT result_id FROM idempotency_keys WHERE scope = ? AND key = ?`, scope, key).Scan(&id)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	}
+	return id, true, nil
+}
+
+// RememberIdempotent binds key to resultID. The first writer wins, so a racing
+// retry reads the id the winner stored.
+func (s *Store) RememberIdempotent(ctx context.Context, scope, key, resultID string) (string, error) {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO idempotency_keys (scope, key, result_id, created_at)
+		VALUES (?, ?, ?, ?) ON CONFLICT(scope, key) DO NOTHING`,
+		scope, key, resultID, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return "", err
+	}
+	got, _, err := s.Idempotent(ctx, scope, key)
+	if err != nil || got == "" {
+		return resultID, err
+	}
+	return got, nil
+}
+
+// PruneIdempotent drops keys older than retention.
+func (s *Store) PruneIdempotent(ctx context.Context, retention time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-retention).Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM idempotency_keys WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

@@ -2,8 +2,12 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,6 +17,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/runs"
 )
 
 // statusWriter records the response code for the audit log.
@@ -162,6 +167,36 @@ func parseLimit(r *http.Request) int {
 	return n
 }
 
+// parseTimeFilter reads a since/until value. It takes RFC3339, or a duration
+// such as 24h meaning "that long ago". An empty value returns "".
+func parseTimeFilter(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t.UTC().Format(time.RFC3339), nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return "", fmt.Errorf("want RFC3339 or a duration such as 24h, got %q", v)
+	}
+	return time.Now().UTC().Add(-d).Format(time.RFC3339), nil
+}
+
+// parseWait reads ?wait_ms= as a long-poll duration, capped at runs.MaxWait.
+func parseWait(r *http.Request) time.Duration {
+	n, _ := strconv.Atoi(r.URL.Query().Get("wait_ms"))
+	if n <= 0 {
+		return 0
+	}
+	d := time.Duration(n) * time.Millisecond
+	if d > runs.MaxWait {
+		return runs.MaxWait
+	}
+	return d
+}
+
 // parseULIDCursor reads ?cursor=. Empty is ok; a malformed ULID is a 400.
 func parseULIDCursor(w http.ResponseWriter, r *http.Request, kind string) (string, bool) {
 	cursor := r.URL.Query().Get("cursor")
@@ -173,4 +208,54 @@ func parseULIDCursor(w http.ResponseWriter, r *http.Request, kind string) (strin
 		return "", false
 	}
 	return cursor, true
+}
+
+// Idempotency scopes keep run and job keys apart in one table.
+const (
+	idempotencyRuns = "runs"
+	idempotencyJobs = "jobs"
+)
+
+// idempotencyKey reads the Idempotency-Key header, falling back to the body field.
+func idempotencyKey(r *http.Request, bodyKey string) string {
+	if h := strings.TrimSpace(r.Header.Get("Idempotency-Key")); h != "" {
+		return h
+	}
+	return strings.TrimSpace(bodyKey)
+}
+
+// bulkIDs reads the {"ids": [...]} body of a bulk verb. An empty list is a 400,
+// because a silent no-op would read as success.
+func bulkIDs(w http.ResponseWriter, r *http.Request) ([]string, bool) {
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return nil, false
+	}
+	if len(body.IDs) == 0 {
+		writeErr(w, http.StatusBadRequest, "validation", "ids must hold at least one id")
+		return nil, false
+	}
+	return body.IDs, true
+}
+
+// applyBulk runs verb over ids and returns the per-id outcome. One failure does
+// not stop the rest: the caller sees which id failed and why.
+func applyBulk(ctx context.Context, ids []string, verb func(context.Context, string) error) map[string]any {
+	done := make([]string, 0, len(ids))
+	failed := map[string]string{}
+	for _, id := range ids {
+		if err := verb(ctx, id); err != nil {
+			failed[id] = err.Error()
+			continue
+		}
+		done = append(done, id)
+	}
+	out := map[string]any{"ok": done, "count": len(done)}
+	if len(failed) > 0 {
+		out["failed"] = failed
+	}
+	return out
 }

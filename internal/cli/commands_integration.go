@@ -36,17 +36,20 @@ func integrationCommand() *cli.Command {
 				Usage:     "create or update an integration",
 				ArgsUsage: "<name> <command...>",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "format", Aliases: []string{"f"}, Value: "line", Usage: "json|line"},
-					&cli.StringFlag{Name: "type", Value: "stream", Usage: "stream|cli|mcp"},
+					&cli.StringFlag{Name: "format", Aliases: []string{"f"}, Usage: "json|line (default line)"},
+					&cli.StringFlag{Name: "type", Usage: "stream|cli|mcp (default stream)"},
 					&cli.StringFlag{Name: "cwd", Usage: "working directory"},
 					&cli.StringSliceFlag{Name: "env", Aliases: []string{"e"}, Usage: "KEY=VALUE (repeatable)"},
+					&cli.StringSliceFlag{Name: "facet", Usage: "facet name (repeatable)"},
 				},
 				Action: runIntegrationSet,
 			},
 			{
-				Name:      "remove",
+				Name:      "delete",
+				Aliases:   []string{"remove"},
 				Usage:     "delete an integration",
 				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{forceFlag("required; stops the event stream")},
 				Action:    runIntegrationRemove,
 			},
 			{
@@ -188,14 +191,21 @@ func queueCommand() *cli.Command {
 			},
 			{
 				Name:      "cancel",
-				Usage:     "cancel a queue row",
-				ArgsUsage: "<id>",
+				Usage:     "cancel one queue row, or several",
+				ArgsUsage: "<id> [id...]",
 				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
 					}
-					return client.DoHTTP(request.BuildQueueCancel(c.Args().Get(0)), nil)
+					ids := c.Args().Slice()
+					if len(ids) == 0 {
+						return fmt.Errorf("usage: trebi queue cancel <id> [id...]")
+					}
+					if len(ids) == 1 {
+						return client.DoHTTP(request.BuildQueueCancel(ids[0]), nil)
+					}
+					return client.DoHTTP(request.BuildQueueCancelBulk(ids), nil)
 				},
 			},
 		},
@@ -266,15 +276,15 @@ func runIntegrationSet(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	cmdParts := c.Args().Tail()
 	command := strings.Join(cmdParts, " ")
-	env := map[string]string{}
-	for _, e := range c.StringSlice("env") {
-		k, v, ok := strings.Cut(e, "=")
-		if !ok {
-			return fmt.Errorf("env %q: want KEY=VALUE", e)
-		}
-		env[k] = v
+	env, err := parseKeyValues(c.StringSlice("env"))
+	if err != nil {
+		return fmt.Errorf("env %w", err)
 	}
-	req := request.BuildIntegrationSet(name, command, c.String("format"), c.String("type"), c.String("cwd"), env)
+	req := request.IntegrationSpec{
+		Name: name, Command: command, Format: c.String("format"),
+		Type: c.String("type"), Cwd: c.String("cwd"),
+		Env: env, Facets: c.StringSlice("facet"),
+	}.Build()
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -291,11 +301,15 @@ func runIntegrationRemove(_ context.Context, c *cli.Command) error {
 	if name == "" {
 		return fmt.Errorf("name required")
 	}
+	confirm, err := confirmed(c, "deletes integration "+name+" and stops its event stream")
+	if err != nil {
+		return err
+	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildIntegrationDelete(name), nil)
+	return client.DoHTTP(request.BuildIntegrationDelete(name, confirm), nil)
 }
 
 func runIntegrationConnect(_ context.Context, c *cli.Command) error {
@@ -460,8 +474,9 @@ func runIntegrationTest(_ context.Context, c *cli.Command) error {
 
 func eventsCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "events",
-		Usage: "trigger events",
+		Name:    "event",
+		Aliases: []string{"events"},
+		Usage:   "trigger events",
 		Commands: []*cli.Command{
 			{
 				Name:  "list",
@@ -469,6 +484,9 @@ func eventsCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (event id)"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
+					&cli.StringFlag{Name: "integration", Usage: "integration name filter"},
+					&cli.StringFlag{Name: "since", Usage: "RFC3339 time or a duration such as 24h"},
+					&cli.StringFlag{Name: "search", Usage: "text match on summary or payload"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runEventsList,
@@ -495,7 +513,8 @@ func runEventsList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := request.BuildEventsListPath(c.String("cursor"), c.Int("limit"))
+	path := request.BuildEventsListPath(c.String("cursor"), c.Int("limit"),
+		c.String("integration"), c.String("since"), c.String("search"))
 	var body struct {
 		Events     []map[string]any `json:"events"`
 		NextCursor string           `json:"next_cursor"`

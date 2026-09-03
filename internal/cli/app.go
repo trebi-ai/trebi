@@ -3,6 +3,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -42,6 +43,7 @@ func NewApp() *cli.Command {
 		},
 		Commands: []*cli.Command{
 			serviceCommand(),
+			statusCommand(),
 			workspaceCommand(),
 			jobCommand(),
 			runsCommand(),
@@ -60,6 +62,7 @@ func NewApp() *cli.Command {
 			conversationCommand(),
 			alertsCommand(),
 			agentHookCommand(),
+			mcpCommand(),
 			queueCommand(),
 			rulesCommand(),
 		},
@@ -280,6 +283,78 @@ func findLinked(all []LinkedWorkspace, idOrName string) (LinkedWorkspace, bool) 
 	return LinkedWorkspace{}, false
 }
 
+// parseKeyValues turns repeated KEY=VALUE flags into a map.
+func parseKeyValues(pairs []string) (map[string]string, error) {
+	if len(pairs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(pairs))
+	for _, p := range pairs {
+		k, v, ok := strings.Cut(p, "=")
+		if !ok {
+			return nil, fmt.Errorf("%q: want KEY=VALUE", p)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// forceFlag is the confirm gate flag every destructive command carries.
+func forceFlag(usage string) cli.Flag {
+	return &cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: usage}
+}
+
+// ifMatchFlag guards a document write against a concurrent edit.
+func ifMatchFlag() cli.Flag {
+	return &cli.StringFlag{Name: "if-match", Usage: "write only when the current hash matches"}
+}
+
+// limitFlag caps the rows a list command asks for.
+func limitFlag() cli.Flag {
+	return &cli.IntFlag{Name: "limit", Usage: "maximum rows to return"}
+}
+
+// setStr returns a pointer to a string flag only when it was given, so a
+// patch can tell "leave alone" from "clear to empty".
+func setStr(c *cli.Command, name string) *string {
+	if !c.IsSet(name) {
+		return nil
+	}
+	v := c.String(name)
+	return &v
+}
+
+// confirmed reports whether --force was given, and otherwise names what the
+// call destroys. The API refuses the call without confirm=1.
+func confirmed(c *cli.Command, what string) (bool, error) {
+	if c.Bool("force") {
+		return true, nil
+	}
+	return false, fmt.Errorf("this %s. Confirm with the user first, then re-run with --force", what)
+}
+
+// showByName builds a `show <name>` action that GETs one resource and prints it.
+func showByName(path func(string) string) cli.ActionFunc {
+	return func(_ context.Context, c *cli.Command) error {
+		client, err := clientFor(c)
+		if err != nil {
+			return err
+		}
+		var body map[string]any
+		if err := client.GetJSON(path(c.Args().Get(0)), &body); err != nil {
+			return err
+		}
+		return encodeJSON(c, body)
+	}
+}
+
+// encodeJSON writes one payload as indented JSON.
+func encodeJSON(c *cli.Command, body any) error {
+	enc := json.NewEncoder(outWriter(c))
+	enc.SetIndent("", "  ")
+	return enc.Encode(body)
+}
+
 func outWriter(c *cli.Command) io.Writer {
 	if c != nil {
 		if w := c.Root().Writer; w != nil {
@@ -287,6 +362,12 @@ func outWriter(c *cli.Command) io.Writer {
 		}
 	}
 	return os.Stdout
+}
+
+// stdinPiped reports whether stdin carries input rather than a terminal.
+func stdinPiped() bool {
+	st, err := os.Stdin.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice == 0
 }
 
 func readFileOrStdin(path string) (string, error) {

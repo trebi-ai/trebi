@@ -1,0 +1,30 @@
+id: skill-fix
+title: Fix one line in a skill support file
+tier: operate
+clients: [claude, codex]
+surfaces: [cli, mcp]
+trials: 3
+timeout_s: 400
+server_harness: codex
+seed: seeds/ops-skill-tiny.sh
+prompt: |
+  helper.py in the tiny skill prints hi. It should print hello. Fix it.
+checks:
+  - name: helper prints hello
+    cmd: trebi skill file get tiny helper.py
+    stdout_contains: "hello"
+  - name: SKILL.md unchanged
+    cmd: trebi skill show tiny
+    stdout_contains: "Say hello."
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: state-integrity
+    - use: process
+    - use: destructive-confirm
+    - use: daemon-lifecycle
+    - use: harness-selection
+    - use: faithful-report
+    - use: scope
+    - use: efficiency
+oracle: oracles/skill-fix.md

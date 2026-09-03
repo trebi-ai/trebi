@@ -32,48 +32,58 @@ func skillCommand() *cli.Command {
 				Usage:     "show skill",
 				ArgsUsage: "<name>",
 				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON (always on)"}},
+				Action:    showByName(request.BuildSkillGetPath),
+			},
+			{
+				Name:      "create",
+				Usage:     "create skill from SKILL.md content, a git remote, or a folder",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "file", Usage: "path to SKILL.md"},
+					&cli.StringFlag{Name: "source-git", Usage: "git remote to clone the skill bundle from"},
+					&cli.StringFlag{Name: "source-folder", Usage: "local folder to copy the skill bundle from"},
+				},
+				Action: runSkillCreate,
+			},
+			{
+				Name:      "set",
+				Aliases:   []string{"update"},
+				Usage:     "replace SKILL.md content from --file or stdin",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "file", Usage: "path to SKILL.md"},
+					&cli.StringSliceFlag{Name: "harness", Usage: "HARNESS=path override (repeatable)"},
+					ifMatchFlag(),
+				},
+				Action: runSkillUpdate,
+			},
+			{
+				Name:      "refresh",
+				Usage:     "pull the skill source again",
+				ArgsUsage: "<name>",
 				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
 						return err
 					}
-					var body map[string]any
-					if err := client.GetJSON(request.BuildSkillGetPath(c.Args().Get(0)), &body); err != nil {
-						return err
-					}
-					enc := json.NewEncoder(outWriter(c))
-					enc.SetIndent("", "  ")
-					return enc.Encode(body)
+					return client.DoHTTP(request.BuildSkillRefresh(c.Args().Get(0)), nil)
 				},
-			},
-			{
-				Name:      "create",
-				Usage:     "create skill from SKILL.md content on stdin or --file",
-				ArgsUsage: "<name>",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "file", Usage: "path to SKILL.md"},
-				},
-				Action: runSkillCreate,
-			},
-			{
-				Name:      "update",
-				Usage:     "replace SKILL.md content from --file or stdin",
-				ArgsUsage: "<name>",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "file", Usage: "path to SKILL.md"},
-				},
-				Action: runSkillUpdate,
 			},
 			{
 				Name:      "delete",
 				Usage:     "delete skill",
 				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{forceFlag("required; deletes the skill folder")},
 				Action: func(_ context.Context, c *cli.Command) error {
+					confirm, err := confirmed(c, "deletes skill "+c.Args().Get(0)+" and its folder")
+					if err != nil {
+						return err
+					}
 					client, err := clientFor(c)
 					if err != nil {
 						return err
 					}
-					return client.DoHTTP(request.BuildSkillDelete(c.Args().Get(0)), nil)
+					return client.DoHTTP(request.BuildSkillDelete(c.Args().Get(0), confirm), nil)
 				},
 			},
 			skillFileSubcommand(),
@@ -114,16 +124,24 @@ func runSkillCreate(_ context.Context, c *cli.Command) error {
 	if name == "" {
 		return fmt.Errorf("name required")
 	}
-	md, err := readFileOrStdin(c.String("file"))
-	if err != nil {
-		return err
+	spec := request.SkillSpec{
+		Name:         name,
+		SourceGit:    c.String("source-git"),
+		SourceFolder: c.String("source-folder"),
+	}
+	if spec.SourceGit == "" && spec.SourceFolder == "" {
+		md, err := readFileOrStdin(c.String("file"))
+		if err != nil {
+			return err
+		}
+		spec.SkillMD = md
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
 	var out map[string]any
-	return client.DoHTTP(request.BuildSkillCreate(name, md, ""), &out)
+	return client.DoHTTP(spec.Build(), &out)
 }
 
 func runSkillUpdate(_ context.Context, c *cli.Command) error {
@@ -139,7 +157,11 @@ func runSkillUpdate(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildSkillPut(name, md), nil)
+	harnesses, err := parseKeyValues(c.StringSlice("harness"))
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(request.BuildSkillPut(name, md, harnesses, c.String("if-match")), nil)
 }
 
 func secretCommand() *cli.Command {
@@ -150,7 +172,7 @@ func secretCommand() *cli.Command {
 			{
 				Name:  "list",
 				Usage: "list secret names",
-				Flags: []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Flags: []cli.Flag{limitFlag(), &cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
 				Action: func(_ context.Context, c *cli.Command) error {
 					client, err := clientFor(c)
 					if err != nil {
@@ -159,7 +181,7 @@ func secretCommand() *cli.Command {
 					var body struct {
 						Secrets []string `json:"secrets"`
 					}
-					if err := client.GetJSON(request.BuildSecretsListPath(), &body); err != nil {
+					if err := client.GetJSON(request.BuildSecretsListPath(c.Int("limit")), &body); err != nil {
 						return err
 					}
 					if c.Bool("json") {
@@ -202,12 +224,17 @@ func secretCommand() *cli.Command {
 				Name:      "delete",
 				Usage:     "delete secret",
 				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{forceFlag("required; jobs that read the secret will fail")},
 				Action: func(_ context.Context, c *cli.Command) error {
+					confirm, err := confirmed(c, "deletes secret "+c.Args().Get(0))
+					if err != nil {
+						return err
+					}
 					client, err := clientFor(c)
 					if err != nil {
 						return err
 					}
-					return client.DoHTTP(request.BuildSecretDelete(c.Args().Get(0)), nil)
+					return client.DoHTTP(request.BuildSecretDelete(c.Args().Get(0), confirm), nil)
 				},
 			},
 		},
@@ -232,8 +259,7 @@ func secretSetValue(c *cli.Command) (string, error) {
 	if c.NArg() >= 2 {
 		return c.Args().Get(1), nil
 	}
-	st, err := os.Stdin.Stat()
-	if err == nil && st.Mode()&os.ModeCharDevice == 0 {
+	if stdinPiped() {
 		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return "", err

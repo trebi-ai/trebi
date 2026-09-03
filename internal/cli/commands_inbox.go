@@ -58,6 +58,18 @@ func inboxCommand() *cli.Command {
 				},
 			},
 			{
+				Name:  "resolve-all",
+				Usage: "resolve every open item",
+				Flags: []cli.Flag{&cli.StringFlag{Name: "kind", Usage: "resolve one kind only"}},
+				Action: func(_ context.Context, c *cli.Command) error {
+					client, err := clientFor(c)
+					if err != nil {
+						return err
+					}
+					return client.DoHTTP(request.BuildInboxResolveAll(c.String("kind")), nil)
+				},
+			},
+			{
 				Name:      "resolve",
 				Usage:     "manually dismiss an inbox item",
 				ArgsUsage: "<id>",
@@ -139,6 +151,7 @@ func alertsCommand() *cli.Command {
 		Usage: "per-firing alert feed (not the inbox queue you drain)",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "since", Usage: "RFC3339 lower bound"},
+			limitFlag(),
 			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 		},
 		Action: runAlerts,
@@ -153,7 +166,7 @@ func runAlerts(_ context.Context, c *cli.Command) error {
 	var body struct {
 		Alerts []map[string]any `json:"alerts"`
 	}
-	if err := client.GetJSON(request.BuildAlertsPath(c.String("since")), &body); err != nil {
+	if err := client.GetJSON(request.BuildAlertsPath(c.String("since"), c.Int("limit")), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {

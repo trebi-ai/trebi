@@ -179,8 +179,8 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	}
 
 	// --- Attach: WebSocket upgrade through the audit wrapper ---
-	code, run := do("POST", "/v1/runs", map[string]any{
-		"job": "demo", "workspace": wsID, "harness": "fake", "prompt_override": "hi",
+	code, run := do("POST", "/v1/jobs/demo/run", map[string]any{
+		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
 	})
 	if code != 201 {
 		t.Fatalf("run create %d %v", code, run)

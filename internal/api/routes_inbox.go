@@ -16,6 +16,7 @@ func (s *Server) routeInbox(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/inbox/{id}/read", s.handleInboxRead)
 	mux.HandleFunc("POST /v1/inbox/read-all", s.handleInboxReadAll)
 	mux.HandleFunc("POST /v1/inbox/{id}/resolve", s.handleInboxResolve)
+	mux.HandleFunc("POST /v1/inbox/resolve-all", s.handleInboxResolveAll)
 	mux.HandleFunc("GET /v1/alerts", s.handleAlerts)
 }
 
@@ -72,6 +73,16 @@ func (s *Server) handleInboxReadAll(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleInboxResolve(w http.ResponseWriter, r *http.Request) {
 	s.setInboxStatus(w, r, r.PathValue("id"), alerts.InboxResolved, "manual")
+}
+
+// handleInboxResolveAll resolves every open item. ?kind= narrows it to one kind.
+func (s *Server) handleInboxResolveAll(w http.ResponseWriter, r *http.Request) {
+	n, err := s.alerts.ResolveAll(r.Context(), r.URL.Query().Get("kind"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resolved": n})
 }
 
 func (s *Server) setInboxStatus(w http.ResponseWriter, r *http.Request, id string, status alerts.InboxStatus, how string) {

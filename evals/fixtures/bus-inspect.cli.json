@@ -1,0 +1,11 @@
+[
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi bus --limit 50 --topics run --json\"}"
+  },
+  {
+    "role": "assistant",
+    "content": "Done."
+  }
+]

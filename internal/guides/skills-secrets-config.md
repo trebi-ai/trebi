@@ -12,8 +12,13 @@ description: Stored skills, secrets, config keys, and harness auth.
 trebi skill list --json
 trebi skill show <name> --json
 trebi skill create <name> --file ./SKILL.md
+trebi skill create <name> --source-git https://example.com/deploy.git
+trebi skill create <name> --source-folder ./bundles/deploy
+trebi skill refresh <name>
 trebi skill delete <name>
 ```
+
+A source bundle must hold a `SKILL.md`. The skill keeps the source, so `trebi skill refresh <name>` pulls it again; the reply reports `updated`. A skill with no source refreshes to no change.
 
 `--file` is **local only**; remote: pass `content`. Create the skill first, then put scripts with `trebi skill file`. `SKILL.md` writes 409 on the file command — use `trebi skill create` / the update path. File writes are denied for non-local provenance (git/registry/integration). `skill delete` is destructive — ask first.
 
@@ -69,6 +74,7 @@ trebi harness auth login <name> --attach
 trebi harness auth logout <name> --yes
 trebi harness auth mode <name> shared
 trebi harness auth mode <name> separate
+trebi harness auth cancel <name>
 ```
 
 `harness auth login --attach` is **local only** (TUI over WebSocket); remote: `login_start` / `login_token` / `login_code`. `--token-stdin` is **local only**; remote: pass `token`. Cursor has no device flow — use `--token-stdin` or log in on the daemon machine.

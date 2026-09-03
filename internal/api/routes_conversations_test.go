@@ -113,7 +113,7 @@ func TestConversationPatchConflictAndPointer(t *testing.T) {
 	code, body, _ := doJSON(t, "PATCH", base+"/v1/conversations/"+id, s.Token(), map[string]any{
 		"title": "n", "revision": 99,
 	})
-	if code != 409 || errCode(body) != "conflict" {
+	if code != 412 || errCode(body) != "precondition_failed" {
 		t.Fatalf("conflict %d %v", code, body)
 	}
 	code, _, _ = doJSON(t, "PATCH", base+"/v1/conversations/"+id, s.Token(), map[string]any{

@@ -48,8 +48,8 @@ trebi rules fire --integration slack --job my-job --workspace reports --match "e
 ## Durable trigger events
 
 ```bash
-trebi events list --limit 50 --json
-trebi events retrigger <id>
+trebi event list --limit 50 --json
+trebi event retrigger <id>
 ```
 
 `events retrigger` re-injects a stored event.
@@ -60,7 +60,7 @@ The dispatch queue of pending launches.
 
 ```bash
 trebi queue --status pending --json
-trebi queue cancel <id>
+trebi queue cancel <id> [id...]
 trebi queue requeue <id>
 ```
 

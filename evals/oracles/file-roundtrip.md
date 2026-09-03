@@ -7,5 +7,5 @@ trebi file list --json
 trebi file get data.csv --out "$EVAL_WORKDIR/got.csv"
 trebi file get data.csv --stat
 hash=$(trebi file get data.csv --stat | jq -r .hash)
-trebi file remove data.csv --if-match "$hash"
+trebi file remove data.csv --if-match "$hash" --force
 ```

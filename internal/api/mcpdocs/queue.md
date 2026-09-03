@@ -17,8 +17,9 @@ Move one queued run back to the ready state.
 - `id` (string, required): queue entry id.
 
 ### cancel
-Drop one queued run.
-- `id` (string, required): queue entry id.
+Drop one queued run, or several.
+- `id` (string, required unless `ids` is given): queue entry id.
+- `ids` (array, optional): cancel several entries in one call. The reply carries `ok`, `count`, and `failed`.
 
 ## Related guides
 

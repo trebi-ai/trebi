@@ -6,19 +6,16 @@ import (
 	"testing"
 )
 
-func TestBuildRunsCreate(t *testing.T) {
+func TestRunSpecBuild(t *testing.T) {
 	t.Parallel()
-	req := BuildRunsCreate("demo", "ws1", "extra text", true)
-	if req.Method != "POST" || req.Path != "/v1/runs" {
+	req := RunSpec{Job: "demo", Workspace: "ws1", Prompt: "extra text", DryRun: true}.Build()
+	if req.Method != "POST" || req.Path != "/v1/jobs/demo/run?workspace=ws1" {
 		t.Fatalf("method/path: %+v", req)
 	}
 	b, _ := json.Marshal(req.Body)
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatal(err)
-	}
-	if m["job"] != "demo" || m["workspace"] != "ws1" {
-		t.Fatalf("body: %s", b)
 	}
 	if m["prompt_override"] != "extra text" {
 		t.Fatalf("prompt: %s", b)
@@ -43,19 +40,27 @@ func TestBuildRunTranscript(t *testing.T) {
 	}
 }
 
-func TestBuildRunsListPath(t *testing.T) {
+func TestRunsQueryPath(t *testing.T) {
 	t.Parallel()
-	path := BuildRunsListPath("running", "demo", "ws1", "job", "01ABC", "claude", "sonnet", 20)
+	path := RunsQuery{
+		Status: "running", Job: "demo", Workspace: "ws1", Kind: "job", Cursor: "01ABC",
+		Harness: "claude", Model: "sonnet", Conversation: "conv1", EndReason: "sentinel",
+		Q: "deploy", Since: "24h", Until: "1h", Limit: 20,
+	}.Path()
 	if !strings.Contains(path, "/v1/runs?") {
 		t.Fatalf("path: %s", path)
 	}
 	for _, want := range []string{
 		"status=running", "job=demo", "workspace=ws1", "kind=job",
 		"cursor=01ABC", "harness=claude", "model=sonnet", "limit=20",
+		"conversation=conv1", "end_reason=sentinel", "q=deploy", "since=24h", "until=1h",
 	} {
 		if !strings.Contains(path, want) {
 			t.Fatalf("missing %q in %s", want, path)
 		}
+	}
+	if got := (RunsQuery{Limit: 5}).Path(); got != "/v1/runs?limit=5" {
+		t.Fatalf("empty filters must be dropped: %s", got)
 	}
 }
 
@@ -74,11 +79,11 @@ func TestMatchConversation(t *testing.T) {
 
 func TestBuildFilePaths(t *testing.T) {
 	t.Parallel()
-	list := BuildFileListPath("ws1", "reports/", "reports/a.py", 20)
+	list := BuildFileListPath("ws1", "reports/", "reports/a.py", 20, true)
 	if !strings.HasPrefix(list, "/v1/workspaces/ws1/files?") {
 		t.Fatalf("list %s", list)
 	}
-	for _, want := range []string{"prefix=reports", "cursor=reports", "limit=20"} {
+	for _, want := range []string{"prefix=reports", "cursor=reports", "limit=20", "recursive=1"} {
 		if !strings.Contains(list, want) {
 			t.Fatalf("missing %q in %s", want, list)
 		}
@@ -97,7 +102,7 @@ func TestBuildFilePaths(t *testing.T) {
 
 func TestBuildJobFilePaths(t *testing.T) {
 	t.Parallel()
-	list := BuildJobFileListPath("report", "ws1", "tools/", "tools/a.py", 20)
+	list := BuildJobFileListPath("report", "ws1", "tools/", "tools/a.py", 20, false)
 	if !strings.HasPrefix(list, "/v1/jobs/report/files?") {
 		t.Fatalf("list %s", list)
 	}
@@ -120,7 +125,7 @@ func TestBuildJobFilePaths(t *testing.T) {
 
 func TestBuildSkillFilePaths(t *testing.T) {
 	t.Parallel()
-	list := BuildSkillFileListPath("demo", "scripts/", "scripts/a.py", 20)
+	list := BuildSkillFileListPath("demo", "scripts/", "scripts/a.py", 20, false)
 	if !strings.HasPrefix(list, "/v1/skills/demo/files?") {
 		t.Fatalf("list %s", list)
 	}
@@ -155,16 +160,22 @@ func TestBuildWorkspaceAdd(t *testing.T) {
 
 func TestBuildJobDelete(t *testing.T) {
 	t.Parallel()
-	req := BuildJobDelete("demo", "ws1", false)
+	req := BuildJobDelete("demo", "ws1", "", false, false)
 	if req.Method != "DELETE" {
 		t.Fatalf("method %s", req.Method)
 	}
 	if !strings.HasPrefix(req.Path, "/v1/jobs/demo") || !strings.Contains(req.Path, "workspace=ws1") {
 		t.Fatalf("path %s", req.Path)
 	}
-	req = BuildJobDelete("demo", "ws1", true)
-	if !strings.Contains(req.Path, "purge=1") {
+	if strings.Contains(req.Path, "confirm=") {
+		t.Fatalf("unconfirmed delete must not send confirm: %s", req.Path)
+	}
+	req = BuildJobDelete("demo", "ws1", "abc123", true, true)
+	if !strings.Contains(req.Path, "purge=1") || !strings.Contains(req.Path, "confirm=1") {
 		t.Fatalf("purge path %s", req.Path)
+	}
+	if req.IfMatch != "abc123" {
+		t.Fatalf("if-match %q", req.IfMatch)
 	}
 }
 
@@ -255,17 +266,27 @@ func TestBuildIntegrationRestart(t *testing.T) {
 	}
 }
 
-func TestBuildIntegrationSet(t *testing.T) {
+func TestIntegrationSpecBuild(t *testing.T) {
 	t.Parallel()
-	req := BuildIntegrationSet("echo", "echo hi", "json", "stream", "/tmp", map[string]string{"A": "1"})
+	req := IntegrationSpec{
+		Name: "echo", Command: "echo hi", Format: "json", Type: "stream", Cwd: "/tmp",
+		Env: map[string]string{"A": "1"}, Facets: []string{"mail"},
+	}.Build()
 	if req.Method != "PUT" || req.Path != "/v1/integrations/echo" {
 		t.Fatalf("%+v", req)
 	}
 	b, _ := json.Marshal(req.Body)
 	s := string(b)
-	for _, want := range []string{`"name":"echo"`, `"command":"echo hi"`, `"format":"json"`, `"cwd":"/tmp"`} {
+	for _, want := range []string{`"name":"echo"`, `"command":"echo hi"`, `"format":"json"`, `"cwd":"/tmp"`, `"facets":["mail"]`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %s in %s", want, s)
+		}
+	}
+	// A partial set omits the fields it does not name, so the daemon keeps them.
+	b, _ = json.Marshal(IntegrationSpec{Name: "echo", Command: "echo hi"}.Build().Body)
+	for _, unwanted := range []string{`"format"`, `"type"`, `"cwd"`, `"env"`, `"facets"`} {
+		if strings.Contains(string(b), unwanted) {
+			t.Fatalf("partial set must omit %s: %s", unwanted, b)
 		}
 	}
 }
@@ -360,27 +381,30 @@ func TestBuildContractGapRequests(t *testing.T) {
 	if req.Method != "GET" || req.Path != "/v1/conversations/01C" {
 		t.Fatalf("conv get %+v", req)
 	}
-	req = BuildServiceShutdown()
-	if req.Method != "POST" || req.Path != "/v1/system/shutdown" {
+	req = BuildServiceShutdown(true)
+	if req.Method != "POST" || req.Path != "/v1/system/shutdown?confirm=1" {
 		t.Fatalf("shutdown %+v", req)
 	}
-	req = BuildJobMemoryEntryAdd("demo", "ws1", "2026-08-28", "note")
+	req = BuildJobMemoryEntryAdd("demo", "ws1", "2026-08-28", "note", "h1")
+	if req.IfMatch != "h1" {
+		t.Fatalf("mem add if-match %q", req.IfMatch)
+	}
 	if req.Method != "POST" || !strings.Contains(req.Path, "/v1/jobs/demo/memory/entries") {
 		t.Fatalf("mem add %+v", req)
 	}
-	req = BuildJobMemoryEntryDelete("demo", "ws1", "e1")
+	req = BuildJobMemoryEntryDelete("demo", "ws1", "e1", "")
 	if req.Method != "DELETE" || !strings.Contains(req.Path, "/memory/entries/e1") {
 		t.Fatalf("mem del %+v", req)
 	}
-	req = BuildAssistantMemoryEntryAdd("ws1", "", "note")
+	req = BuildAssistantMemoryEntryAdd("ws1", "", "note", "")
 	if req.Method != "POST" || !strings.Contains(req.Path, "/assistant/memory/entries") {
 		t.Fatalf("asst add %+v", req)
 	}
-	req = BuildAssistantMemoryEntryDelete("ws1", "e1")
+	req = BuildAssistantMemoryEntryDelete("ws1", "e1", "")
 	if req.Method != "DELETE" || !strings.Contains(req.Path, "/entries/e1") {
 		t.Fatalf("asst del %+v", req)
 	}
-	path := BuildEventsListPath("01C", 10)
+	path := BuildEventsListPath("01C", 10, "", "", "")
 	if !strings.Contains(path, "cursor=01C") || !strings.Contains(path, "limit=10") {
 		t.Fatalf("events list %s", path)
 	}
@@ -417,26 +441,36 @@ func TestBuildInboxAndAlerts(t *testing.T) {
 	if got.Method != "POST" || got.Path != "/v1/inbox/read-all" {
 		t.Fatalf("%+v", got)
 	}
-	ap := BuildAlertsPath("2026-08-28T00:00:00Z")
+	ap := BuildAlertsPath("2026-08-28T00:00:00Z", 5)
 	if !strings.Contains(ap, "/v1/alerts?") || !strings.Contains(ap, "since=2026-08-28T00%3A00%3A00Z") {
 		t.Fatalf("alerts path %s", ap)
 	}
+	if !strings.Contains(ap, "limit=5") {
+		t.Fatalf("alerts limit %s", ap)
+	}
+	if strings.Contains(BuildAlertsPath("", 0), "limit=") {
+		t.Fatalf("no limit must omit the parameter")
+	}
 }
 
-func TestBuildAssistantWake(t *testing.T) {
+func TestRunSpecBuildWake(t *testing.T) {
 	t.Parallel()
-	req := BuildAssistantWake("ws1", "hello", true)
-	if req.Method != "POST" || !strings.Contains(req.Path, "/v1/workspaces/ws1/assistant/wake") {
+	req := RunSpec{
+		Workspace: "ws1", ExtraPrompt: "hello", Harness: "codex",
+		ConversationID: "01C", Inputs: map[string]string{"env": "prod"}, DryRun: true,
+	}.BuildWake()
+	if req.Method != "POST" || req.Path != "/v1/workspaces/ws1/assistant/wake" {
 		t.Fatalf("%+v", req)
 	}
-	b, _ := json.Marshal(req.Body)
-	var m map[string]any
-	_ = json.Unmarshal(b, &m)
-	if m["extra_prompt"] != "hello" || m["dry_run"] != true {
-		t.Fatalf("body %s", b)
+	body, _ := req.Body.(map[string]any)
+	if body["extra_prompt"] != "hello" || body["dry_run"] != true ||
+		body["harness"] != "codex" || body["conversation_id"] != "01C" {
+		t.Fatalf("wake body %+v", body)
+	}
+	if inputs, _ := body["inputs"].(map[string]string); inputs["env"] != "prod" {
+		t.Fatalf("wake inputs %+v", body)
 	}
 }
-
 func TestBuildConversationChatRequests(t *testing.T) {
 	t.Parallel()
 	path := BuildConversationsListPath("ws1", "cli", "01C", 10)
@@ -447,9 +481,18 @@ func TestBuildConversationChatRequests(t *testing.T) {
 	if req.Method != "POST" || req.Path != "/v1/conversations" {
 		t.Fatalf("create %+v", req)
 	}
-	req = BuildConversationPatch("01C", "n", "s", 2)
+	title, summary, empty := "n", "s", ""
+	req = BuildConversationPatch("01C", &title, &summary, 2)
 	if req.Method != "PATCH" || req.Path != "/v1/conversations/01C" {
 		t.Fatalf("patch %+v", req)
+	}
+	// Presence, not emptiness: a pointer to "" clears; nil leaves alone.
+	patch, _ := BuildConversationPatch("01C", &empty, nil, 0).Body.(map[string]any)
+	if v, ok := patch["title"]; !ok || v != "" {
+		t.Fatalf("clear title %+v", patch)
+	}
+	if _, ok := patch["summary"]; ok {
+		t.Fatalf("absent summary must stay absent: %+v", patch)
 	}
 	mp := BuildConversationMessagesPath("01C", "01M", 20)
 	if !strings.Contains(mp, "/v1/conversations/01C/messages") || !strings.Contains(mp, "cursor=01M") {
@@ -467,14 +510,21 @@ func TestBuildConversationChatRequests(t *testing.T) {
 	if req.Method != "PUT" || req.Path != "/v1/channel-pointers/cli/ws1" {
 		t.Fatalf("ptr put %+v", req)
 	}
-	req = BuildAssistantSay("01C", "hi", "ws1")
-	if req.Method != "POST" || !strings.Contains(req.Path, "/v1/conversations/01C/messages") {
-		t.Fatalf("say %+v", req)
+	// The ask route lets the daemon resolve the conversation, so a client
+	// sends no pointer calls of its own.
+	ask := AskSpec{Workspace: "ws1", Text: "hi"}.Build()
+	if ask.Method != "POST" || ask.Path != "/v1/workspaces/ws1/assistant/messages" {
+		t.Fatalf("ask %+v", ask)
 	}
-	// Remote sticky context uses the same request shape (no local branch).
-	remote := BuildAssistantSay("01C", "hi", "ws1")
-	if req.Method != remote.Method || req.Path != remote.Path {
-		t.Fatalf("remote say shape %+v vs %+v", req, remote)
+	if body, _ := ask.Body.(map[string]any); body["text"] != "hi" || len(body) != 1 {
+		t.Fatalf("ask body %+v", ask.Body)
+	}
+	waited := AskSpec{Workspace: "ws1", Text: "hi", ChannelType: "ui", WaitMS: 5000}.Build()
+	if waited.Path != "/v1/workspaces/ws1/assistant/messages?wait_ms=5000" {
+		t.Fatalf("ask wait %+v", waited)
+	}
+	if body, _ := waited.Body.(map[string]any); body["channel_type"] != "ui" {
+		t.Fatalf("ask channel %+v", waited.Body)
 	}
 }
 
@@ -521,13 +571,18 @@ func TestBuildDoctorFix(t *testing.T) {
 
 func TestBuildSkillPut(t *testing.T) {
 	t.Parallel()
-	req := BuildSkillPut("demo", "# skill")
-	if req.Method != "PUT" || req.Path != "/v1/skills/demo" {
+	req := BuildSkillPut("demo", "# skill", map[string]string{"claude": "sk/demo"}, "h1")
+	if req.Method != "PUT" || req.Path != "/v1/skills/demo" || req.IfMatch != "h1" {
 		t.Fatalf("%+v", req)
 	}
 	b, _ := json.Marshal(req.Body)
-	if !strings.Contains(string(b), `"skill_md":"# skill"`) {
-		t.Fatalf("%s", b)
+	for _, want := range []string{`"skill_md":"# skill"`, `"harnesses":{"claude":"sk/demo"}`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %s in %s", want, b)
+		}
+	}
+	if _, ok := BuildSkillPut("demo", "# skill", nil, "").Body.(map[string]any)["harnesses"]; ok {
+		t.Fatalf("no harnesses must omit the field")
 	}
 }
 
@@ -553,20 +608,24 @@ func TestBuildIntegrationCursor(t *testing.T) {
 
 func TestBuildWorkspaceAndMemoryAndRules(t *testing.T) {
 	t.Parallel()
-	req := BuildWorkspaceDelete("ws1")
+	req := BuildWorkspaceDelete("ws1", false)
 	if req.Method != "DELETE" || req.Path != "/v1/workspaces/ws1" {
 		t.Fatalf("delete %+v", req)
+	}
+	req = BuildWorkspaceDelete("ws1", true)
+	if req.Path != "/v1/workspaces/ws1?confirm=1" {
+		t.Fatalf("confirmed delete %+v", req)
 	}
 	req = BuildWorkspaceRename("ws1", "new")
 	if req.Method != "PATCH" {
 		t.Fatalf("rename %+v", req)
 	}
-	req = BuildJobMemoryPut("demo", "ws1", "hello")
-	if req.Method != "PUT" || !strings.Contains(req.Path, "/memory") {
+	req = BuildJobMemoryPut("demo", "ws1", "hello", "h2")
+	if req.Method != "PUT" || !strings.Contains(req.Path, "/memory") || req.IfMatch != "h2" {
 		t.Fatalf("mem put %+v", req)
 	}
-	req = BuildJobMemoryClear("demo", "ws1")
-	if req.Method != "DELETE" {
+	req = BuildJobMemoryClear("demo", "ws1", "", true)
+	if req.Method != "DELETE" || !strings.Contains(req.Path, "confirm=1") {
 		t.Fatalf("mem clear %+v", req)
 	}
 	req = BuildRulesTest("true", "x", map[string]any{"a": 1})
@@ -630,8 +689,8 @@ func TestBuildJobPaths(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"list", BuildJobsListPath("ws1"), "/v1/jobs?workspace=ws1"},
-		{"list no workspace", BuildJobsListPath(""), "/v1/jobs"},
+		{"list", BuildJobsListPath("ws1", "", "", ""), "/v1/jobs?workspace=ws1"},
+		{"list no workspace", BuildJobsListPath("", "", "", ""), "/v1/jobs"},
 		{"get", BuildJobGetPath("nightly", "ws1"), "/v1/jobs/nightly?workspace=ws1"},
 		{"validate", BuildJobValidatePath("nightly", ""), "/v1/jobs/nightly/validate"},
 		{"memory", BuildJobMemoryGetPath("nightly", "ws1"), "/v1/jobs/nightly/memory?workspace=ws1"},
@@ -665,9 +724,12 @@ func TestBuildRawFileRequests(t *testing.T) {
 	if string(put.Raw) != "x=1\n" || put.ContentType != "text/x-python" || put.IfMatch != "etag-1" {
 		t.Fatalf("%+v", put)
 	}
-	del := BuildFileDelete("ws1", "a/b.py", "etag-2")
+	del := BuildFileDelete("ws1", "a/b.py", "etag-2", false)
 	if del.Method != "DELETE" || del.Path != "/v1/workspaces/ws1/files/a/b.py" || del.IfMatch != "etag-2" || del.Raw != nil {
 		t.Fatalf("%+v", del)
+	}
+	if c := BuildFileDelete("ws1", "a/b.py", "", true); c.Path != "/v1/workspaces/ws1/files/a/b.py?confirm=1" {
+		t.Fatalf("confirmed %+v", c)
 	}
 	jp := BuildJobFilePut("nightly", "ws1", "run.py", []byte("print(1)"), "", "")
 	if jp.Path != "/v1/jobs/nightly/files/run.py?workspace=ws1" || jp.ContentType != "" || jp.IfMatch != "" {
@@ -698,7 +760,7 @@ func TestBuildRunPathsAndActions(t *testing.T) {
 	}{
 		{"resume", BuildRunResume("01ABC"), "POST", "/v1/runs/01ABC/resume", ""},
 		{"replay", BuildRunReplay("01ABC"), "POST", "/v1/runs/01ABC/replay", ""},
-		{"approve", BuildRunApprove("01ABC", "allow"), "POST", "/v1/runs/01ABC/approve", `{"decision":"allow"}`},
+		{"approve", BuildRunApprove("01ABC", "allow", ""), "POST", "/v1/runs/01ABC/approve", `{"decision":"allow"}`},
 	}
 	for _, tc := range cases {
 		if tc.req.Method != tc.wantMethod || tc.req.Path != tc.wantPath {
@@ -711,8 +773,11 @@ func TestBuildRunPathsAndActions(t *testing.T) {
 			}
 		}
 	}
-	if p := BuildRunGetPath("01ABC"); p != "/v1/runs/01ABC" {
+	if p := BuildRunGetPath("01ABC", 0); p != "/v1/runs/01ABC" {
 		t.Fatalf("get %s", p)
+	}
+	if p := BuildRunGetPath("01ABC", 5000); p != "/v1/runs/01ABC?wait_ms=5000" {
+		t.Fatalf("get wait %s", p)
 	}
 	if p := BuildRunTimelinePath("01ABC"); p != "/v1/runs/01ABC/timeline" {
 		t.Fatalf("timeline %s", p)
@@ -727,7 +792,7 @@ func TestBuildRunPathsAndActions(t *testing.T) {
 
 func TestBuildJobCreatePatchRun(t *testing.T) {
 	t.Parallel()
-	create := BuildJobCreate("nightly", "ws1", "---\nharness: claude\n---\n")
+	create := JobSpec{Name: "nightly", Workspace: "ws1", Content: "---\nharness: claude\n---\n"}.Build()
 	if create.Method != "POST" || create.Path != "/v1/jobs" {
 		t.Fatalf("%+v", create)
 	}
@@ -739,18 +804,21 @@ func TestBuildJobCreatePatchRun(t *testing.T) {
 	if patch.Method != "PATCH" || patch.Path != "/v1/jobs/nightly?workspace=ws1" || patch.IfMatch != "etag-1" {
 		t.Fatalf("%+v", patch)
 	}
-	if p := BuildJobRunPath("nightly", "ws1"); p != "/v1/jobs/nightly/run?workspace=ws1" {
-		t.Fatalf("run %s", p)
+	if r := (RunSpec{Job: "nightly", Workspace: "ws1"}).Build(); r.Path != "/v1/jobs/nightly/run?workspace=ws1" {
+		t.Fatalf("run %s", r.Path)
 	}
-	if p := BuildJobRunPath("nightly", ""); p != "/v1/jobs/nightly/run" {
-		t.Fatalf("run no ws %s", p)
+	if r := (RunSpec{Job: "nightly"}).Build(); r.Path != "/v1/jobs/nightly/run" {
+		t.Fatalf("run no ws %s", r.Path)
 	}
 }
 
 func TestBuildWorkspaceAndAssistantRequests(t *testing.T) {
 	t.Parallel()
-	if p := BuildWorkspacesListPath(); p != "/v1/workspaces" {
+	if p := BuildWorkspacesListPath(0); p != "/v1/workspaces" {
 		t.Fatalf("list %s", p)
+	}
+	if p := BuildWorkspacesListPath(7); p != "/v1/workspaces?limit=7" {
+		t.Fatalf("list limit %s", p)
 	}
 	if p := BuildWorkspaceGetPath("ws1"); p != "/v1/workspaces/ws1" {
 		t.Fatalf("get %s", p)
@@ -761,8 +829,8 @@ func TestBuildWorkspaceAndAssistantRequests(t *testing.T) {
 	if p := BuildAssistantMemoryGetPath("ws1"); p != "/v1/workspaces/ws1/assistant/memory" {
 		t.Fatalf("asst mem %s", p)
 	}
-	put := BuildAssistantPut("ws1", "# hi\n")
-	if put.Method != "PUT" || put.Path != "/v1/workspaces/ws1/assistant" {
+	put := BuildAssistantPut("ws1", "# hi\n", "h3")
+	if put.Method != "PUT" || put.Path != "/v1/workspaces/ws1/assistant" || put.IfMatch != "h3" {
 		t.Fatalf("%+v", put)
 	}
 	m, _ := put.Body.(map[string]string)
@@ -819,7 +887,7 @@ func TestBuildSkillSecretRequests(t *testing.T) {
 	if p := BuildSkillGetPath("deploy"); p != "/v1/skills/deploy" {
 		t.Fatalf("get %s", p)
 	}
-	sc := BuildSkillCreate("deploy", "# SKILL.md\n", "")
+	sc := SkillSpec{Name: "deploy", SkillMD: "# SKILL.md\n"}.Build()
 	if sc.Method != "POST" || sc.Path != "/v1/skills" {
 		t.Fatalf("%+v", sc)
 	}
@@ -827,15 +895,22 @@ func TestBuildSkillSecretRequests(t *testing.T) {
 	if m["name"] != "deploy" || m["skill_md"] != "# SKILL.md\n" {
 		t.Fatalf("%v", m)
 	}
-	up := BuildSkillUpdate("deploy")
-	if up.Method != "POST" || up.Path != "/v1/skills/deploy/update" {
+	src, _ := SkillSpec{Name: "deploy", SourceGit: "git@host:x.git"}.Build().Body.(map[string]any)
+	if _, ok := src["skill_md"]; ok {
+		t.Fatalf("source spec must not send skill_md: %v", src)
+	}
+	if got := src["source"].(map[string]any); got["kind"] != "git" || got["url"] != "git@host:x.git" {
+		t.Fatalf("%v", got)
+	}
+	up := BuildSkillRefresh("deploy")
+	if up.Method != "POST" || up.Path != "/v1/skills/deploy/refresh" {
 		t.Fatalf("%+v", up)
 	}
-	del := BuildSkillDelete("deploy")
-	if del.Method != "DELETE" || del.Path != "/v1/skills/deploy" {
+	del := BuildSkillDelete("deploy", true)
+	if del.Method != "DELETE" || del.Path != "/v1/skills/deploy?confirm=1" {
 		t.Fatalf("%+v", del)
 	}
-	if p := BuildSecretsListPath(); p != "/v1/secrets" {
+	if p := BuildSecretsListPath(0); p != "/v1/secrets" {
 		t.Fatalf("secrets %s", p)
 	}
 	sp := BuildSecretPut("api_key", "s3cr3t")
@@ -846,8 +921,8 @@ func TestBuildSkillSecretRequests(t *testing.T) {
 	if sm["value"] != "s3cr3t" {
 		t.Fatalf("%v", sm)
 	}
-	sd := BuildSecretDelete("api_key")
-	if sd.Method != "DELETE" || sd.Path != "/v1/secrets/api_key" {
+	sd := BuildSecretDelete("api_key", true)
+	if sd.Method != "DELETE" || sd.Path != "/v1/secrets/api_key?confirm=1" {
 		t.Fatalf("%+v", sd)
 	}
 }
@@ -889,12 +964,64 @@ func TestBuildSystemAndCloudRequests(t *testing.T) {
 		{"drain", BuildSystemDrain(), "POST /v1/system/drain"},
 		{"undrain", BuildSystemUndrain(), "POST /v1/system/undrain"},
 		{"link", BuildCloudLink(), "POST /v1/cloud/link"},
-		{"unlink", BuildCloudUnlink(), "DELETE /v1/cloud/link"},
+		{"unlink", BuildCloudUnlink(true), "DELETE /v1/cloud/link?confirm=1"},
 		{"config get", BuildConfigGet(), "GET /v1/config"},
 	}
 	for _, tc := range cases {
 		if got := tc.req.Method + " " + tc.req.Path; got != tc.want {
 			t.Fatalf("%s: %s", tc.name, got)
 		}
+	}
+}
+
+// TestIfMatchOnDocumentWrites covers A3: every file-backed document write
+// carries If-Match, so a concurrent edit is refused instead of clobbered.
+func TestIfMatchOnDocumentWrites(t *testing.T) {
+	t.Parallel()
+	cases := map[string]HTTPRequest{
+		"job put":           BuildJobPutMarkdown("demo", "ws1", "# job", "h"),
+		"job delete":        BuildJobDelete("demo", "ws1", "h", false, true),
+		"job pause":         BuildJobPause("demo", "ws1", "h", true),
+		"job unpause":       BuildJobPause("demo", "ws1", "h", false),
+		"job memory put":    BuildJobMemoryPut("demo", "ws1", "m", "h"),
+		"job memory add":    BuildJobMemoryEntryAdd("demo", "ws1", "", "note", "h"),
+		"job memory remove": BuildJobMemoryEntryDelete("demo", "ws1", "e1", "h"),
+		"job memory clear":  BuildJobMemoryClear("demo", "ws1", "h", true),
+		"assistant put":     BuildAssistantPut("ws1", "# t", "h"),
+		"assistant mem put": BuildAssistantMemoryPut("ws1", "m", "h"),
+		"assistant mem add": BuildAssistantMemoryEntryAdd("ws1", "", "note", "h"),
+		"assistant mem del": BuildAssistantMemoryEntryDelete("ws1", "e1", "h"),
+		"assistant mem clr": BuildAssistantMemoryClear("ws1", "h", true),
+		"skill put":         BuildSkillPut("demo", "# s", nil, "h"),
+	}
+	for name, req := range cases {
+		if req.IfMatch != "h" {
+			t.Errorf("%s: if-match %q, want h", name, req.IfMatch)
+		}
+	}
+}
+
+// TestBuildConfigSetValues covers the multi-key typed form of config.set.
+func TestBuildConfigSetValues(t *testing.T) {
+	t.Parallel()
+	req := BuildConfigSetValues(map[string]any{"a": 1, "b": true})
+	if req.Method != "PATCH" || req.Path != "/v1/config" {
+		t.Fatalf("%+v", req)
+	}
+	body, _ := req.Body.(map[string]any)
+	set, _ := body["set"].(map[string]any)
+	if set["a"] != 1 || set["b"] != true {
+		t.Fatalf("set %+v", body)
+	}
+}
+
+// TestBuildSecretsListLimit covers the limit parameter added in A3.
+func TestBuildSecretsListLimit(t *testing.T) {
+	t.Parallel()
+	if p := BuildSecretsListPath(3); p != "/v1/secrets?limit=3" {
+		t.Fatalf("limit %s", p)
+	}
+	if p := BuildSecretsListPath(0); p != "/v1/secrets" {
+		t.Fatalf("no limit %s", p)
 	}
 }

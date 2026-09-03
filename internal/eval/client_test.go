@@ -67,16 +67,29 @@ func TestMCPIsolationViolations(t *testing.T) {
 		{Role: "tool", Name: "mcp__other__list", Content: `{}`},
 		{Role: "tool", Name: "job", Content: `{"action":"list"}`},
 	}
-	got := Steps(steps).mcpIsolationViolations("http://127.0.0.1:1234")
+	got := Steps(steps).isolationViolations("http://127.0.0.1:1234", surfaceMCP)
 	if len(got) != 3 {
 		t.Fatalf("violations %v", got)
 	}
 	clean := Steps{
 		{Role: "tool", Name: "system", Content: `{"action":"guide","input":{"topic":"mcp-basics"}}`},
 		{Role: "assistant", Content: "trebi is ready"},
-	}.mcpIsolationViolations("http://127.0.0.1:1234")
+	}.isolationViolations("http://127.0.0.1:1234", surfaceMCP)
 	if len(clean) != 0 {
 		t.Fatalf("clean %v", clean)
+	}
+}
+
+func TestCLIIsolationAllowsTrebi(t *testing.T) {
+	t.Parallel()
+	steps := Steps{
+		{Role: "tool", Name: "Bash", Content: `{"command":"trebi doctor --json"}`},
+		{Role: "tool", Name: "Bash", Content: `{"command":"curl http://127.0.0.1:1234/v1/jobs"}`},
+		{Role: "tool", Name: "mcp__other__list", Content: `{}`},
+	}
+	got := steps.isolationViolations("http://127.0.0.1:1234", surfaceCLI)
+	if len(got) != 1 {
+		t.Fatalf("a cli trial may call trebi and curl; only a foreign MCP server is a leak: %v", got)
 	}
 }
 
@@ -124,7 +137,7 @@ func TestMCPIsolationCommandPosition(t *testing.T) {
 				}
 				step = Step{Role: "tool", Name: "command", Content: string(raw)}
 			}
-			got := Steps{step}.mcpIsolationViolations(api)
+			got := Steps{step}.isolationViolations(api, surfaceMCP)
 			if len(got) != tt.want {
 				t.Fatalf("want %d got %v", tt.want, got)
 			}

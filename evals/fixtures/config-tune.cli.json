@@ -1,0 +1,21 @@
+[
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi config show -k files.max_bytes --json\"}"
+  },
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi config set files.max_bytes 1048576\"}"
+  },
+  {
+    "role": "tool",
+    "name": "Bash",
+    "content": "{\"command\": \"trebi config validate\"}"
+  },
+  {
+    "role": "assistant",
+    "content": "Set and validated."
+  }
+]

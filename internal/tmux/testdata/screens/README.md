@@ -9,7 +9,7 @@ captured once on a dev machine and replayed offline by
 
 ```
 screens/
-  <tool>/                 # claude, grok, opencode, codex, copilot, gemini, cursor, pi
+  <tool>/                 # claude, grok, opencode, codex, copilot, gemini, cursor, pi, fake
     <scenario>/           # startup, idle, resume-picker, mid-session, ...
       01-boot.txt         # numbered frames in pane order: <NN>-<state>.txt
       02-ready.txt

@@ -86,6 +86,18 @@ func harnessCommand() *cli.Command {
 						Action: runHarnessAuthLogout,
 					},
 					{
+						Name:      "cancel",
+						Usage:     "cancel a pending login session",
+						ArgsUsage: "<name>",
+						Action: func(_ context.Context, c *cli.Command) error {
+							client, err := clientFor(c)
+							if err != nil {
+								return err
+							}
+							return client.DoHTTP(request.BuildHarnessLoginCancel(c.Args().Get(0)), nil)
+						},
+					},
+					{
 						Name:      "mode",
 						Usage:     "set auth mode shared|separate",
 						ArgsUsage: "<name> <shared|separate>",

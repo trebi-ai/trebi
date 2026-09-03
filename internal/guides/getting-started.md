@@ -64,4 +64,4 @@ trebi runs list --workspace reports --job daily-report --limit 1 --json
 trebi runs show <id> --json
 ```
 
-Do not `runs attach` from an agent session (**local only**; remote: poll `runs show` / `runs transcript` / `runs log`). See `trebi guide runs-and-debugging`.
+Do not `runs attach` from an agent session (**local only**; remote: poll `runs show` / `runs transcript` / `runs logs`). See `trebi guide runs-and-debugging`.
