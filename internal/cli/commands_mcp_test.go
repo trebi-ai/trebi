@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -90,5 +91,56 @@ func TestMCPServeRoundTrip(t *testing.T) {
 	}
 	if reply.ID != 1 || reply.Result["tools"] == nil {
 		t.Fatalf("unwrapped reply: %+v", reply)
+	}
+}
+
+// The bridge runs on the client machine, so it reads value_file itself. The
+// daemon receives the value and the client transcript keeps only the path.
+func TestMCPServeResolvesValueFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api-key.txt")
+	if err := os.WriteFile(path, []byte("sk-do-not-leak\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bridge := newMCPBridge(mcpTarget{})
+	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"secret","arguments":{"action":"set","input":{"name":"API_KEY","value_file":%q}}}}`, path)
+	out, err := bridge.resolveValueFile([]byte(msg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Params struct {
+			Arguments struct {
+				Input map[string]any `json:"input"`
+			} `json:"arguments"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Params.Arguments.Input["value"] != "sk-do-not-leak" {
+		t.Fatalf("value not substituted: %+v", got.Params.Arguments.Input)
+	}
+	if _, ok := got.Params.Arguments.Input["value_file"]; ok {
+		t.Fatal("value_file must not reach the daemon")
+	}
+}
+
+// A tools/call for another tool, and a message that is not a call, pass through.
+func TestMCPServeLeavesOtherCallsAlone(t *testing.T) {
+	t.Parallel()
+	bridge := newMCPBridge(mcpTarget{})
+	for _, msg := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"job","arguments":{"action":"list","input":{}}}}`,
+	} {
+		out, err := bridge.resolveValueFile([]byte(msg))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != msg {
+			t.Fatalf("changed %s -> %s", msg, out)
+		}
 	}
 }

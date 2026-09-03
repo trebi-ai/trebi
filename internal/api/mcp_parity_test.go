@@ -348,7 +348,7 @@ func assertFieldRead(t *testing.T, tool, action string, f docField, entry mcpAct
 			break
 		}
 	}
-	if !read && !entry.bounded && !entry.readsResponseField(f.name) {
+	if !read && !entry.bounded && !entry.readsResponseField(f.name) && !clientSideField(tool, action, f.name) {
 		t.Errorf("%s.%s documents field %q, but no sample shows the builder reading it", tool, action, f.name)
 	}
 	// The confirm gate lives in the API, so a builder must not enforce it.
@@ -401,6 +401,13 @@ func assertKnownFieldsDocumented(t *testing.T, tool, action string, entry mcpAct
 		}
 		t.Errorf("%s.%s reads field %q, which its docs do not list", tool, action, f.name)
 	}
+}
+
+// clientSideField reports a field the local `trebi mcp serve` bridge consumes
+// before the call reaches the daemon. The builder never sees it, so the read
+// probe cannot find it here.
+func clientSideField(tool, action, name string) bool {
+	return tool == "secret" && action == "set" && name == "value_file"
 }
 
 // readsResponseField reports whether one field steers the response transform

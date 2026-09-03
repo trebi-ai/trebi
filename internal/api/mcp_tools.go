@@ -1458,13 +1458,16 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return mcpGet(request.BuildSecretsListPath(limit)), nil
 			}),
-			"set": act("PUT /v1/secrets/{name}", mcpInput{"name": "API_KEY", "value": "s3cr3t"}, func(in mcpInput) (request.HTTPRequest, error) {
+			// value_file is read by the local `trebi mcp serve` bridge, which
+			// replaces it with value. It keeps the secret out of the client
+			// transcript, the way the CLI --from-file does.
+			"set": act("PUT /v1/secrets/{name}", mcpInput{"name": "API_KEY", "value": "s3cr3t", "value_file": "./api-key.txt"}, func(in mcpInput) (request.HTTPRequest, error) {
 				v, err := in.head("name", "value")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				if v[1] == "" {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "value")
+					return request.HTTPRequest{}, fmt.Errorf("input field %q is required (or value_file through `trebi mcp serve`)", "value")
 				}
 				return request.BuildSecretPut(v[0], v[1]), nil
 			}),

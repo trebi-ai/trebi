@@ -41,6 +41,8 @@ trebi secret delete eval_api_key
 
 `--from-file` is **local only**; remote: pass `value`. Values are never printed. `secret list` is names only. `secret delete` is destructive — ask first.
 
+On the MCP surface `secret set` takes `value_file` for the same reason: pass the path and `trebi mcp serve` reads it, so the value never enters your transcript. Do not read the file yourself first. Over plain HTTP, where no local bridge runs, pass `value`.
+
 Reference a stored secret from a job by putting the **secret name** as the env value. The daemon resolves it at launch. Never put the secret value in the prompt, JOB.md, or a command line.
 
 ```markdown

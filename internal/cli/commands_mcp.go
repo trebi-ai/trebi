@@ -196,6 +196,10 @@ func (b *mcpBridge) run(ctx context.Context, in io.Reader, out io.Writer) error 
 			}
 			return err
 		}
+		msg, err := b.resolveValueFile(msg)
+		if err != nil {
+			return err
+		}
 		reply, err := b.forward(ctx, msg)
 		if err != nil {
 			return err
@@ -207,6 +211,51 @@ func (b *mcpBridge) run(ctx context.Context, in io.Reader, out io.Writer) error 
 			return err
 		}
 	}
+}
+
+// resolveValueFile replaces a secret value_file argument with the file
+// content. The bridge runs on the client machine, so the daemon never reads a
+// local path and the value stays out of the client transcript.
+func (b *mcpBridge) resolveValueFile(msg json.RawMessage) (json.RawMessage, error) {
+	var frame struct {
+		Method string `json:"method"`
+		Params struct {
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(msg, &frame); err != nil {
+		return msg, nil
+	}
+	if frame.Method != "tools/call" || frame.Params.Name != "secret" {
+		return msg, nil
+	}
+	input, ok := frame.Params.Arguments["input"].(map[string]any)
+	if !ok {
+		return msg, nil
+	}
+	path, _ := input["value_file"].(string)
+	if path == "" {
+		return msg, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("value_file %s: %w", path, err)
+	}
+	delete(input, "value_file")
+	input["value"] = strings.TrimRight(string(data), "\n")
+	var full map[string]any
+	if err := json.Unmarshal(msg, &full); err != nil {
+		return msg, nil
+	}
+	params, _ := full["params"].(map[string]any)
+	args, _ := params["arguments"].(map[string]any)
+	args["input"] = input
+	out, err := json.Marshal(full)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // forward posts one message and returns the reply body, empty for a

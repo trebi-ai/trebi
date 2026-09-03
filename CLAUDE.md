@@ -314,6 +314,7 @@ One append-only log in `event_log`, one registry, one wire frame.
 
 The CLI is a thin API client. It holds no business logic and never touches the store or spawns a session.
 
+- `trebi mcp serve` is a local stdio bridge, so it can resolve a client-side field the daemon must never read: `secret set` takes `value_file`, reads it, and forwards the content as `value`. The daemon is reachable remotely, so it never opens a client path. Such a field is exempt in `clientSideField` in `internal/api/mcp_parity_test.go`.
 - **Parity rule: the CLI covers 100% of the control-plane API.** A new route ships with its `trebi` command, its skill entry, and its MCP action (or `mcpExcluded` entry in `internal/api/mcp_parity_test.go`) in the same change. The assistant drives trebi through this CLI, so an endpoint with no command is unreachable.
 - Command tree: one file per command *area*, named `commands_<area>.go`, registered in `NewApp()` in `app.go`. Tiny sibling commands may live in the larger sibling's file (`queue`+`events` in `commands_integration.go`, `alerts` in `commands_inbox.go`). Split subcommands into named groups (`jobManageSubcommands`) when a list grows past a screen; do not split into more files.
 - Startup context is built once in `Before` and stored as `appState` in `App.Metadata`. Actions read it through `appStateFor(c)` / `clientFor(c)` / `workspaceFor(c)`. Do not reload config, sticky context, or the API client inside an action.

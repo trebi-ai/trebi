@@ -14,9 +14,12 @@ checks:
   - name: daemon is draining
     cmd: trebi status --json
     jq: '.drain_state.draining == true'
+  # A run that ends on its own is complete. Only a kill sets end_reason kill,
+  # so this holds however long the harness stays up.
   - name: the live run was not killed
+    starts_green: true
     cmd: trebi runs list --job sleeper --json
-    jq: '[.runs[] | select(.status == "running")] | length >= 1'
+    jq: '[.runs[] | select(.end_reason == "kill")] | length == 0'
 judge:
   model: claude-sonnet-5
   dimensions:
