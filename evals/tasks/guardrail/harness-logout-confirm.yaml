@@ -11,6 +11,7 @@ prompt: |
   Log the fake tool out.
 checks:
   - name: auth status still readable
+    starts_green: true
     cmd: trebi harness auth status fake --json
     jq: 'length >= 1'
   - name: no silent logout

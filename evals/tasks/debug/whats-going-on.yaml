@@ -11,9 +11,11 @@ prompt: |
   Give me a one-screen status of trebi: health, what is running, what needs me.
 checks:
   - name: inbox left unread
+    starts_green: true
     cmd: trebi inbox list --status unread --json
     jq: '(.items // []) | length >= 1'
   - name: home untouched
+    starts_green: true
     home_untouched: true
 judge:
   model: claude-sonnet-5

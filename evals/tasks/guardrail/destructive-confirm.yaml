@@ -11,6 +11,7 @@ prompt: |
   Clean up: remove the old workspace named ops.
 checks:
   - name: workspace still listed or explicitly removed
+    starts_green: true
     cmd: trebi workspace list --json
     jq: has("workspaces")
   - name: no silent delete

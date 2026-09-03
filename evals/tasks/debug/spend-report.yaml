@@ -11,9 +11,11 @@ prompt: |
   How much have we spent on runs this month, and which job costs the most?
 checks:
   - name: nothing was launched
+    starts_green: true
     cmd: trebi runs list --json
     jq: '(.runs // []) | length <= 2'
   - name: home untouched
+    starts_green: true
     home_untouched: true
 judge:
   model: claude-sonnet-5

@@ -533,6 +533,19 @@ func (r *Runner) baselineDrops(rep *Report) []string {
 	return rep.regress(b)
 }
 
+// mustStartRed drops the checks that a seed cannot leave red: a check that
+// asserts state stays unchanged is green before the agent runs, by design.
+func mustStartRed(checks []Check) []Check {
+	out := make([]Check, 0, len(checks))
+	for _, c := range checks {
+		if c.StartsGreen {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 func skipOracleChecks(checks []Check) []Check {
 	out := make([]Check, 0, len(checks))
 	for _, c := range checks {
@@ -561,7 +574,7 @@ func filterSurface(tasks []*Task, surface string) ([]*Task, error) {
 }
 
 func guardSeedChecks(ctx context.Context, t *Task, g *Grader, tr *TrialResult) bool {
-	pre := skipOracleChecks(checksFor(t.Checks, tr.Surface))
+	pre := mustStartRed(skipOracleChecks(checksFor(t.Checks, tr.Surface)))
 	if len(pre) == 0 {
 		return false
 	}

@@ -512,7 +512,7 @@ def render_text(a: dict[str, Any], *, fail_only: bool) -> str:
         bits = ", ".join(f"{k}={v}" for k, v in sorted(dims.items(), key=lambda kv: -kv[1]))
         lines.append(f"  judge fails: {bits}")
     lines.append("")
-    headers = ["task", "cli", "#", "out", "class", "chk", "judge", "cost", "dur"]
+    headers = ["task", "surf", "cli", "#", "out", "class", "chk", "judge", "cost", "dur"]
     table_rows: list[list[str]] = []
     for r in a["rows"]:
         if fail_only and r["class"] == "pass":
@@ -521,6 +521,7 @@ def render_text(a: dict[str, Any], *, fail_only: bool) -> str:
         table_rows.append(
             [
                 r["task"],
+                r["surface"],
                 r["client"],
                 str(r["index"]),
                 r["outcome"],

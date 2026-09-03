@@ -11,9 +11,11 @@ prompt: |
   know before my first job?
 checks:
   - name: no workspace created
+    starts_green: true
     cmd: trebi workspace list --json
     jq: '(.workspaces // []) | length == 0'
   - name: home untouched
+    starts_green: true
     home_untouched: true
   - name: read a guide
     commands_jq: 'any(test("guide|docs"; "i"))'

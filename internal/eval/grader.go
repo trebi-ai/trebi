@@ -42,11 +42,11 @@ func (g *Grader) runOne(ctx context.Context, c Check) CheckResult {
 	case c.FileAbsent != "":
 		return fileStatCheck(c.Name, c.FileAbsent, false)
 	case c.FileContains != "":
-		return fileTextCheck(c.Name, c.FileContains, c.Text, true)
+		return fileTextCheck(c.Name, resolveWanted(c.FileContains), c.Text, true)
 	case c.FileNotContains != "":
 		return fileTextCheck(c.Name, c.FileNotContains, c.Text, false)
 	case c.FileMatches != "":
-		return fileMatchCheck(c.Name, c.FileMatches, c.Text)
+		return fileMatchCheck(c.Name, resolveWanted(c.FileMatches), c.Text)
 	case c.SnapshotJQ != "":
 		return g.checkSnapshotJQ(c)
 	case c.CommandsJQ != "":

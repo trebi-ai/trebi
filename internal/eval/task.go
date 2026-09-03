@@ -50,7 +50,10 @@ type Check struct {
 	StdoutAbsent    string `yaml:"stdout_absent"`
 	HomeUntouched   bool   `yaml:"home_untouched"`
 	CommandsJQ      string `yaml:"commands_jq"`
-	FileMatches     string `yaml:"file_matches"` // path; pattern goes in Text
+	// StartsGreen marks a check that asserts state stays unchanged. Such a
+	// check is green on seed state by design, so it cannot start red.
+	StartsGreen bool   `yaml:"starts_green"`
+	FileMatches string `yaml:"file_matches"` // path; pattern goes in Text
 	// Surfaces limits a check to some surfaces. Empty means every surface.
 	Surfaces []string `yaml:"surfaces"`
 }

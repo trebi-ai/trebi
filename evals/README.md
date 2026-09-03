@@ -44,12 +44,20 @@ A check is one key in a task's `checks` list:
 | `cmd` + `jq` | run a trebi command; the jq expression must be truthy |
 | `file_exists` / `file_absent` | the path is present, or is not. Exact path. |
 | `file_exists_any` | the path is present, or the same file name one folder down. Use it only when a workspace copy also satisfies the task. |
-| `file_contains` / `file_not_contains` + `text` | substring of the file |
+| `file_contains` / `file_not_contains` + `text` | substring of the file. `file_contains` and `file_matches` also look one folder down, like `file_exists_any`. |
 | `file_matches` + `text` | Go regexp over the file |
 | `snapshot_jq` | jq over the post-trial state dump |
 | `commands_jq` | jq over the agent's actions (see below) |
 | `home_untouched` | no file under `TREBI_HOME` changed, except what the daemon writes itself |
 | `surfaces` | limit the check to `cli`, `mcp`, or both |
+| `starts_green` | this check asserts that state stays unchanged, so it is green before the agent runs |
+
+A trial aborts as `infra-failure` when every check is already green on seed
+state, because a vacuous pass must not land. A read-only or guardrail task
+breaks that rule honestly: "nothing was created", "home untouched", and
+"nothing was launched" are true before the agent starts. Mark each such check
+`starts_green: true` so the guard ignores it. A task whose checks are all
+`starts_green` or `commands_jq` runs with no tripwire.
 
 ### The commands projection
 

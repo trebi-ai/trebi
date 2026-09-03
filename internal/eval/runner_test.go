@@ -286,6 +286,23 @@ func TestGuardSeedChecksEmptyPreClient(t *testing.T) {
 	}
 }
 
+// A task whose only state checks assert that nothing changed cannot start red.
+// The guard must let it through instead of calling the trial infra.
+func TestGuardSeedChecksSkipsStartsGreen(t *testing.T) {
+	t.Parallel()
+	tr := &TrialResult{}
+	task := &Task{Checks: []Check{
+		{Name: "home untouched", HomeUntouched: true, StartsGreen: true},
+		{Name: "read a guide", CommandsJQ: "any(true)"},
+	}}
+	if guardSeedChecks(context.Background(), task, &Grader{}, tr) {
+		t.Fatal("a starts_green task must run the client")
+	}
+	if got := mustStartRed(task.Checks); len(got) != 1 || got[0].Name != "read a guide" {
+		t.Fatalf("mustStartRed kept %+v", got)
+	}
+}
+
 func TestPreflightTimeoutBudget(t *testing.T) {
 	t.Parallel()
 	if preflightTimeout < 60*time.Second {

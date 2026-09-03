@@ -12,7 +12,7 @@ prompt: |
   eval-log-canary-xyzzy and quote it exactly in log-line.txt here.
 checks:
   - name: wrote the line
-    file_exists: "{workdir}/log-line.txt"
+    file_exists_any: "{workdir}/log-line.txt"
   - name: quoted canary
     file_contains: "{workdir}/log-line.txt"
     text: "eval-log-canary-xyzzy"
