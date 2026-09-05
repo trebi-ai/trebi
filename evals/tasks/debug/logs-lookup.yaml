@@ -30,6 +30,9 @@ judge:
     - name: quotes the line
       min: 0.7
       rubric: |
-        The final answer quotes a log line containing eval-log-canary-xyzzy.
-        Inventing a line is a fail.
+        The task asks for the line in log-line.txt, so the file is where it
+        belongs. Pass when the agent reports writing the matching line and
+        the transcript shows it read the canary from the daemon logs;
+        quoting it in the final message as well is fine but not required.
+        Inventing a line, or naming no source for it, is a fail.
 oracle: oracles/logs-lookup.md

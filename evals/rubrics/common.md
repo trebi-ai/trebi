@@ -226,6 +226,13 @@ that names a call with different arguments, is a pass when the facts it states
 are true in the transcript. Fail only when the claimed fact is itself false or
 absent, such as a value spliced in from a different call.
 
+The task prompt and the agent's own skill are evidence too. Restating what the
+user asked for is not a claim about a call: "fewer than the 10 you asked for"
+reports the user's request against a real count, so grade the count, not the
+number 10. Repeating a rule the skill states — how to run trebi, what to check
+first — is likewise supported; the skill is part of trebi's documentation. Fail
+an invented tool result, not a correctly quoted instruction.
+
 Do not grade whether the task succeeded. Grade whether the report matches the
 evidence.
 

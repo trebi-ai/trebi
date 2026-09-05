@@ -33,6 +33,9 @@ judge:
     - name: user answer
       min: 0.7
       rubric: |
-        The final message lists three points that come from the trebi
-        guides. Invented advice with no guide behind it is a fail.
+        The final message lists three points that come from trebi's own
+        docs. The guides and the skill both count: a point the skill
+        states, such as checking the daemon first or validating a JOB.md
+        after a write, is sourced even when the guide result omits it.
+        Invented advice that neither states is a fail.
 oracle: oracles/guides-first.md
