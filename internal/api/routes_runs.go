@@ -595,7 +595,13 @@ func (s *Server) readTranscript(run *runs.Run) ([]byte, tmux.Tool, bool) {
 	if !ok {
 		return nil, nil, false
 	}
-	path, err := tool.TranscriptPath(home.HarnessDir(run.Harness), "", run.SessionID)
+	// Only codex needs the working dir: it mints its own session id, so its
+	// rollout is found by path, not by a name that carries the id.
+	workingDir := ""
+	if run.Harness == tmux.Codex {
+		workingDir = tmux.CodexWorkingDir(run.WorkingDir, run.StartedAt)
+	}
+	path, err := tool.TranscriptPath(home.HarnessDir(run.Harness), workingDir, run.SessionID)
 	if err != nil {
 		return nil, nil, false
 	}

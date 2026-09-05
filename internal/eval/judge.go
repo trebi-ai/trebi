@@ -213,23 +213,37 @@ func (j *judgeRunner) call(ctx context.Context, d JudgeDim, min float64, transcr
 			return judgeVerdict{}, err
 		}
 	}
-	return j.confirmFail(ctx, prompt, min, v), nil
+	return j.confirmFail(ctx, prompt, min, v)
 }
 
-func (j *judgeRunner) confirmFail(ctx context.Context, prompt string, min float64, v judgeVerdict) judgeVerdict {
+// confirmFail re-grades a binary fail with a second independent call. Only a
+// fail is confirmed: a false fail is the expensive error, because it lands in
+// the report as an agent defect someone then chases. A pass is not re-graded,
+// so this guard is one-sided by design.
+//
+// The two ways the second call can end must not be conflated. A grader that
+// disagreed is a split: the dimension abstains, which counts as pass, and the
+// evidence says so. A grader that could not run at all is infra, and returns
+// an error so scoreRetry retries it and the trial sees the fault. Swallowing
+// that as an abstention would let an expired judge token turn a voted fail
+// into a silent pass.
+func (j *judgeRunner) confirmFail(ctx context.Context, prompt string, min float64, v judgeVerdict) (judgeVerdict, error) {
 	if v.Unknown || v.Verdict != "fail" || min < 1.0 {
-		return v
+		return v, nil
 	}
 	raw, err := j.invoke(ctx, prompt+"\n\nA previous grader voted fail with this evidence: "+v.Evidence+". Independently re-grade; reply JSON only.")
 	if err != nil {
-		v.Unknown = true
-		return v
+		return v, fmt.Errorf("confirm-fail invoke: %w", err)
 	}
 	v2, err := parseVerdict(raw)
-	if err != nil || v2.Verdict != "fail" {
-		v.Unknown = true
+	if err != nil {
+		return v, fmt.Errorf("confirm-fail reply: %w", err)
 	}
-	return v
+	if v2.Verdict != "fail" {
+		v.Unknown = true
+		v.Evidence = "graders split, counted as pass | first grader (fail): " + v.Evidence + " | second grader: " + v2.Evidence
+	}
+	return v, nil
 }
 
 // invoke runs one judge call. The JSON envelope carries the grading spend.

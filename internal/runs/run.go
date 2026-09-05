@@ -214,6 +214,7 @@ type Run struct {
 	Trigger         *TriggerCapture    `json:"trigger,omitempty"`
 	ConversationKey string             `json:"conversation_key,omitempty"`
 	ConversationID  string             `json:"conversation_id,omitempty"`
+	WorkingDir      string             `json:"working_dir,omitempty"`
 	Tokens          pricing.TokenUsage `json:"tokens"`
 	CoalescedCount  int                `json:"coalesced_count,omitempty"`
 	Session         SessionSpec        `json:"session"`

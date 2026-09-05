@@ -89,6 +89,18 @@ func ReadScreen(session string) (string, error) {
 	return out, nil
 }
 
+// ReadHistory captures the pane plus its scrollback. ReadScreen returns only
+// the visible rows, which is what a liveness probe wants; a run log wants
+// everything the session printed, so this is the one to persist before the
+// session is killed.
+func ReadHistory(session string) (string, error) {
+	out, err := run("capture-pane", "-p", "-S", "-", "-t", session)
+	if err != nil {
+		return "", fmt.Errorf("tmux capture-pane history: %w", err)
+	}
+	return out, nil
+}
+
 // RenameSession sets the window title only — not the session name (our handle).
 func RenameSession(session, title string) error {
 	sanitized := sanitizeWindowName(title)

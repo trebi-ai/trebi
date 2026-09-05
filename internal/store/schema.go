@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 7
+const SchemaVersion = 8
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -378,6 +378,12 @@ CREATE INDEX idx_idempotency_created ON idempotency_keys(created_at);
 		`
 ALTER TABLE skill_index ADD COLUMN source_kind TEXT;
 ALTER TABLE skill_index ADD COLUMN source_ref TEXT;
+`,
+		// v8: the directory a run launched in. Codex mints its own rollout id,
+		// so its transcript is found by path; without this column every reader
+		// had to re-parse the JOB.md to guess where the run started.
+		`
+ALTER TABLE runs ADD COLUMN working_dir TEXT;
 `,
 	}
 }

@@ -141,10 +141,7 @@ func readTranscript(t *testing.T, tool, name string) []byte {
 func TestCodexTranscriptPathByCwd(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
-	dir := filepath.Join(home, ".codex", "sessions", "2026", "09", "01")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	dir := codexSessionDay(t, home)
 	data := readTranscript(t, "codex", "full.jsonl")
 	hit := filepath.Join(dir, "rollout-2026-09-01T14-36-33-01a05d66-6eaa-7961-b470-6964936c59b2.jsonl")
 	if err := os.WriteFile(hit, data, 0o644); err != nil {
@@ -178,10 +175,7 @@ func TestCodexTranscriptPathByCwd(t *testing.T) {
 func TestCodexTranscriptPathByStartTime(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
-	dir := filepath.Join(home, ".codex", "sessions", "2026", "09", "01")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	dir := codexSessionDay(t, home)
 	write := func(name, started string) string {
 		p := filepath.Join(dir, name)
 		line := `{"type":"session_meta","payload":{"cwd":"/w/ops","timestamp":"` + started + `"}}` + "\n"
@@ -190,22 +184,19 @@ func TestCodexTranscriptPathByStartTime(t *testing.T) {
 		}
 		return p
 	}
-	first := write("rollout-a-01a00000-0000-7000-8000-000000000001.jsonl", "2026-09-01T17:35:29Z")
-	second := write("rollout-b-01a00000-0000-7000-8000-000000000002.jsonl", "2026-09-01T17:38:08Z")
+	base := time.Now().UTC().Add(-2 * time.Hour)
+	at := func(d time.Duration) time.Time { return base.Add(d) }
+	stamp := func(d time.Duration) string { return at(d).Format(time.RFC3339) }
 
-	at := func(s string) time.Time {
-		v, err := time.Parse(time.RFC3339, s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return v
-	}
+	first := write("rollout-a-01a00000-0000-7000-8000-000000000001.jsonl", stamp(0))
+	second := write("rollout-b-01a00000-0000-7000-8000-000000000002.jsonl", stamp(3*time.Minute))
+
 	cases := []struct {
-		run  string
+		run  time.Duration
 		want string
 	}{
-		{"2026-09-01T17:35:26Z", first},
-		{"2026-09-01T17:38:06Z", second},
+		{-3 * time.Second, first},
+		{3*time.Minute - 2*time.Second, second},
 	}
 	for _, c := range cases {
 		got, err := codexTool{}.TranscriptPath(home, CodexWorkingDir("/w/ops", at(c.run)), "trebi-uuid")
@@ -218,7 +209,7 @@ func TestCodexTranscriptPathByStartTime(t *testing.T) {
 	}
 
 	// A run that started after every rollout has no session of its own.
-	if _, err := (codexTool{}).TranscriptPath(home, CodexWorkingDir("/w/ops", at("2026-09-01T18:00:00Z")), "trebi-uuid"); err == nil {
+	if _, err := (codexTool{}).TranscriptPath(home, CodexWorkingDir("/w/ops", at(time.Hour)), "trebi-uuid"); err == nil {
 		t.Error("a run later than every rollout resolved one anyway")
 	}
 }
@@ -287,4 +278,17 @@ func TestCodexRolloutFoundBehindNewerOnes(t *testing.T) {
 	if got != want {
 		t.Errorf("scan limit dropped the correct rollout")
 	}
+}
+
+// codexSessionDay makes the rollout directory for today. The lookup only scans
+// the last two day directories, so a fixed date turns the test into a time bomb.
+func codexSessionDay(t *testing.T, home string) string {
+	t.Helper()
+	now := time.Now().UTC()
+	dir := filepath.Join(home, ".codex", "sessions",
+		now.Format("2006"), now.Format("01"), now.Format("02"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

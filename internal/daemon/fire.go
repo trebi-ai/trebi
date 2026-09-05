@@ -80,11 +80,11 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 			IdleTimeoutMS: idleMS,
 			KeepAliveMS:   keepMS,
 			NudgeMS:       nudgeMS,
+			WorkingDir:    cwd,
 		},
-		Prompt:     prompt,
-		WorkingDir: cwd,
-		IfRunning:  j.Session.IfRunning,
-		Env:        j.LaunchEnv(),
+		Prompt:    prompt,
+		IfRunning: j.Session.IfRunning,
+		Env:       j.LaunchEnv(),
 	})
 	if err != nil {
 		c.log.Warn("schedule fire", "job", r.Job, "error", err)

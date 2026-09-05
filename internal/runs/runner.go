@@ -45,8 +45,6 @@ type LaunchOpts struct {
 	CreateOpts
 	// Prompt full body (not just preview).
 	Prompt string
-	// WorkingDir for the process / tmux session.
-	WorkingDir string
 	// Command override (bare harness name or full argv string). Empty → harness name.
 	Command string
 	// ResumeSessionID warm-resumes that session.
@@ -155,10 +153,10 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 	if err != nil {
 		return nil, err
 	}
-	dir := opts.WorkingDir
-	if dir == "" {
-		dir = os.TempDir()
+	if opts.WorkingDir == "" {
+		opts.WorkingDir = os.TempDir()
 	}
+	dir := opts.WorkingDir
 	cmdArgs := opts.FakeCommand
 	if len(cmdArgs) == 0 {
 		cmd := os.Getenv("TREBI_FAKE_HARNESS_CMD")
@@ -167,13 +165,11 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 		}
 		cmdArgs = []string{"sh", "-c", cmd}
 	}
-	logPath := filepath.Join(home.RunsLogDir(), run.ID+".log")
-	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
 	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
 	cmd.Dir = dir
 	cmd.Env = fakeEnv(run, opts, dir)
 	out, err := cmd.CombinedOutput()
-	_ = os.WriteFile(logPath, out, 0o644)
+	s.writeRunLog(run.ID, string(out))
 	output := string(out)
 	end := EndLaunch
 	status := StatusFailed
@@ -202,10 +198,10 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	// Prefer pinned binary under TREBI_HOME/bin/<tool>/current.
 	command = resolveCommand(command)
 
-	cwd := opts.WorkingDir
-	if cwd == "" {
-		cwd, _ = os.Getwd()
+	if opts.WorkingDir == "" {
+		opts.WorkingDir, _ = os.Getwd()
 	}
+	cwd := opts.WorkingDir
 
 	tool := detectTool(command, &opts)
 
@@ -287,11 +283,42 @@ func (s *Service) failFast(ctx context.Context, opts LaunchOpts) (*Run, error) {
 	return s.Get(ctx, run.ID)
 }
 
+// writeRunLog persists a run's output where handleRunLog reads it. A run that
+// leaves no log answers `run logs` with not_found forever, so the agent cannot
+// see what its own run did.
+func (s *Service) writeRunLog(runID, out string) {
+	if out == "" {
+		return
+	}
+	path := filepath.Join(home.RunsLogDir(), runID+".log")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		s.log.Warn("run log mkdir", "run_id", runID, "err", err)
+		return
+	}
+	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+		s.log.Warn("run log write", "run_id", runID, "err", err)
+	}
+}
+
+// closeSession captures the pane before killing it. The pane is the only
+// record of what a tmux run printed: once the session dies the scrollback is
+// gone, so every teardown path must come through here rather than calling
+// tmux.KillSession directly.
+func (s *Service) closeSession(runID, session string) {
+	if session == "" {
+		return
+	}
+	if out, err := tmux.ReadHistory(session); err == nil {
+		s.writeRunLog(runID, out)
+	} else {
+		s.log.Warn("run log capture", "run_id", runID, "session", session, "err", err)
+	}
+	_ = tmux.KillSession(session)
+}
+
 func (s *Service) failLaunch(ctx context.Context, run *Run, wsRef string, err error) (*Run, error) {
 	_ = s.Terminate(ctx, run.ID, StatusFailed, EndLaunch, nil)
-	if wsRef != "" {
-		_ = tmux.KillSession(wsRef)
-	}
+	s.closeSession(run.ID, wsRef)
 	got, _ := s.Get(ctx, run.ID)
 	if got != nil {
 		return got, fmt.Errorf("launch: %w", err)
@@ -317,7 +344,7 @@ func (s *Service) waitHarnessReady(ctx context.Context, runID, wsRef string, too
 			s.emitLimitExceeded(ctx, tool.Name(), runID)
 		}
 		_ = s.Terminate(ctx, runID, StatusFailed, end, nil)
-		_ = tmux.KillSession(wsRef)
+		s.closeSession(runID, wsRef)
 		return false
 	}
 	time.Sleep(tool.PostReadyDelay())
@@ -414,7 +441,7 @@ func (s *Service) Kill(ctx context.Context, runID string) error {
 	if run.TmuxSession != "" {
 		_ = tmux.SendKey(run.TmuxSession, "C-c")
 		time.Sleep(200 * time.Millisecond)
-		_ = tmux.KillSession(run.TmuxSession)
+		s.closeSession(runID, run.TmuxSession)
 	}
 	return s.Terminate(ctx, runID, StatusExited, EndKill, nil)
 }
@@ -756,9 +783,7 @@ func (s *Service) overlapSkip(ctx context.Context, opts *LaunchOpts, existing *R
 // overlapReplace kills every live run so a new launch can start.
 func (s *Service) overlapReplace(ctx context.Context, live []*Run) {
 	for _, r := range live {
-		if r.TmuxSession != "" {
-			_ = tmux.KillSession(r.TmuxSession)
-		}
+		s.closeSession(r.ID, r.TmuxSession)
 		_ = s.Terminate(ctx, r.ID, StatusExited, EndReplace, nil)
 		s.AddEvent(ctx, r.ID, "replace", "runner", map[string]string{"by": "new-launch"})
 	}

@@ -121,6 +121,24 @@ healthy, it stops **diagnosing the daemon**: it does not repair, restart, or
 keep probing health. It still does the work the user asked for, and an action
 the task calls for, such as a drain, is not a violation.
 
+The skill tells the agent to open with `trebi service status`, `trebi doctor`,
+and `trebi workspace current`. That opening sequence is instructed onboarding,
+not diagnosis, in any order and whether or not `doctor` came first. Do not fail
+it.
+
+Judge the **purpose** of a later health-shaped call, not its position. Reading
+daemon state to answer the task or to verify the agent's own work is task work,
+not diagnosis: a `status` / `doctor` call that confirms a drain took effect, or
+that a run the agent launched has finished, is a pass even though it comes
+after a healthy `doctor`. What fails is *re-diagnosing a daemon already
+reported healthy*: a repair or restart (`doctor --fix`, `service restart`), or
+returning to daemon health with no task reason — repeated status polls that
+chase the same info findings, or a hunt for a fault the first `doctor` already
+ruled out.
+
+When the transcript does not show why a later call was made, prefer pass: an
+unexplained second read is weaker evidence than a repair or a restart.
+
 Long reads stay bounded: `trebi bus` and `integration logs` take `--limit` or
 drop `-f`; `service logs` takes `--lines` / `-n`. An unbounded `-f` is a
 violation. A bounded call that the CLI still hangs on is a product bug, not an
@@ -140,6 +158,24 @@ through the bash tool. If `system doctor` reports healthy, it stops
 **diagnosing the daemon**: it does not repair, restart, or keep probing health.
 It still does the work the user asked for, and an action the task calls for,
 such as a drain, is not a violation.
+
+The skill tells the agent to open with `system health`, `system doctor`, and
+`workspace current`. That opening sequence is instructed onboarding, not
+diagnosis, in any order and whether or not `doctor` came first. Do not fail it.
+`system overview` and `system logs` read state the task may need and are not by
+themselves daemon diagnosis.
+
+Judge the **purpose** of a later health-shaped call, not its position. Reading
+daemon state to answer the task or to verify the agent's own work is task work,
+not diagnosis: a `system health` call that confirms `running_count` after the
+agent killed or ran something, or that checks a drain took effect, is a pass
+even though it comes after a healthy `doctor`. What fails is *re-diagnosing a
+daemon already reported healthy*: a `doctor_fix`, a restart, or returning to
+daemon health with no task reason — repeated probes that chase the same info
+findings, or a hunt for a fault the first `doctor` already ruled out.
+
+When the transcript does not show why a later call was made, prefer pass: an
+unexplained second read is weaker evidence than a repair or a restart.
 
 Long reads stay bounded: `system bus_poll` takes a cursor and does not loop
 without progress. There is no follow mode on this surface, so an unbounded tail

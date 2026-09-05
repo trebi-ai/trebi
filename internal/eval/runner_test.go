@@ -126,9 +126,13 @@ func TestClientTransportFaultRetries(t *testing.T) {
 	}
 }
 
-// TestClientTimeoutStillGrades pins the other half: a client that simply ran
-// out of time reports no fault, and its work is on the daemon, so it grades.
-func TestClientTimeoutStillGrades(t *testing.T) {
+// TestClientTimeoutIsInfra pins the other half: a client that made tool calls
+// but never produced a final answer is infra, not a graded trial. Grading it
+// would ride on the checks alone, because every judge dimension that reads the
+// final message abstains and an abstention counts as pass. A task whose end
+// state happens to be green would otherwise score a pass for a run that never
+// answered.
+func TestClientTimeoutIsInfra(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	exist := filepath.Join(dir, "ok.txt")
@@ -141,17 +145,20 @@ func TestClientTimeoutStillGrades(t *testing.T) {
 				Steps: Steps{{Role: "tool", Name: "mcp__trebi__system", Content: `{"action":"health"}`}},
 			}}, nil
 		},
-		scoreAll: func(context.Context, []JudgeDim, []byte, []byte) []JudgeResult { return nil },
+		scoreAll: func(context.Context, []JudgeDim, []byte, []byte) []JudgeResult {
+			t.Fatal("judge invoked")
+			return nil
+		},
 	}
 	env := &trialEnv{workdir: dir, artDir: dir, bin: "true", apiURL: "http://127.0.0.1:1"}
 	p := Placeholders{Workdir: dir, Home: dir, Transcript: filepath.Join(dir, "transcript.json"), Snapshot: filepath.Join(dir, "snapshot.json")}
 	task := &Task{ID: "x", Prompt: "hi", TimeoutS: 5, Checks: []Check{{Name: "f", FileExists: exist}}}
 	got := r.finishClient(context.Background(), context.Background(), task, env, p, &TrialResult{TaskID: "x"}, "codex", surfaceCLI)
-	if got.Outcome == OutcomeInfraFailure {
-		t.Fatalf("infra: %s", got.Error)
+	if got.Outcome != OutcomeInfraFailure {
+		t.Fatalf("outcome %s, want infra-failure", got.Outcome)
 	}
-	if len(got.Checks) == 0 {
-		t.Fatal("expected checks to run")
+	if len(got.Checks) != 0 {
+		t.Fatalf("checks ran %+v", got.Checks)
 	}
 	if !strings.Contains(got.Error, "timeout") {
 		t.Fatalf("error %q, want timeout note", got.Error)

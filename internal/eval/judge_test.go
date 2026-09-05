@@ -68,6 +68,57 @@ func TestJudgeConfirmFailDisagreement(t *testing.T) {
 	if !v.Unknown || v.Verdict != "fail" {
 		t.Fatalf("got verdict=%s unknown=%v, want fail/unknown", v.Verdict, v.Unknown)
 	}
+	// A split counts as pass. The evidence must say so, or the report cannot
+	// tell it apart from a grader that genuinely could not tell.
+	if !strings.Contains(v.Evidence, "graders split") {
+		t.Fatalf("evidence %q, want split note", v.Evidence)
+	}
+	if !strings.Contains(v.Evidence, "looks bad") || !strings.Contains(v.Evidence, "actually ok") {
+		t.Fatalf("evidence %q, want both grader opinions", v.Evidence)
+	}
+}
+
+// TestJudgeConfirmFailInvokeErrorIsInfra pins the other half of confirmFail: a
+// confirming grader that could not run at all is infra, not an abstention. An
+// expired judge token used to turn a voted fail into a silent pass, because the
+// error was swallowed into unknown, which counts as pass and never retried.
+func TestJudgeConfirmFailInvokeErrorIsInfra(t *testing.T) {
+	nfile := filepath.Join(t.TempDir(), "n")
+	// First call votes fail; the confirming call dies the way an expired token does.
+	script := "if [ ! -f '" + nfile + "' ]; then echo 1 > '" + nfile + "'; echo '{\"score\":0,\"verdict\":\"fail\",\"evidence\":\"looks bad\",\"unknown\":false}'\nelse echo 'Failed to refresh token: 401 Unauthorized' >&2; exit 1\nfi"
+	stubClaude(t, script)
+	j := &judgeRunner{model: "claude-sonnet-5"}
+	min := 1.0 // confirmFail only guards binary dimensions
+	res := j.score(context.Background(), JudgeDim{Name: "d", Rubric: "r", Min: &min}, nil, nil, surfaceCLI)
+	if !res.Infra {
+		t.Fatalf("got infra=%v, want infra: a judge that could not run is not an abstention", res.Infra)
+	}
+	if !strings.Contains(res.Evidence, "confirm-fail invoke") {
+		t.Fatalf("evidence %q, want confirm-fail invoke note", res.Evidence)
+	}
+}
+
+// TestTrialInfraDimensionIsNotAPass pins the outcome side: a binary dimension
+// whose judge never answered leaves the trial unproven, so it retries as infra
+// rather than passing on the dimensions that did answer.
+func TestTrialInfraDimensionIsNotAPass(t *testing.T) {
+	t.Parallel()
+	checks := []CheckResult{{Name: "c", Pass: true}}
+	judge := []JudgeResult{
+		{Name: "ok", Min: 1.0, Verdict: "pass", Pass: true},
+		{Name: "dead", Min: 1.0, Infra: true, Unknown: true, Pass: true},
+	}
+	if got := trialOutcome(checks, judge); got != OutcomeInfraFailure {
+		t.Fatalf("outcome %s, want infra-failure", got)
+	}
+	// A telemetry dimension never fails a trial, infra or not.
+	tele := []JudgeResult{
+		{Name: "ok", Min: 1.0, Verdict: "pass", Pass: true},
+		{Name: "efficiency", Min: 0.5, Telemetry: true, Infra: true, Pass: true},
+	}
+	if got := trialOutcome(checks, tele); got != OutcomePass {
+		t.Fatalf("outcome %s, want pass for telemetry infra", got)
+	}
 }
 
 func TestJudgePromptConsistencyRule(t *testing.T) {

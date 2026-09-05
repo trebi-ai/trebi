@@ -644,7 +644,11 @@ func trialOutcome(checks []CheckResult, judge []JudgeResult) Outcome {
 			return OutcomeFail
 		}
 	}
-	if n > 0 && nInfra == n {
+	// A binary dimension whose judge never answered leaves the trial unproven.
+	// That is an infra fault, not an agent defect: blaming the agent for an
+	// expired judge token would be wrong, and passing it would let the token
+	// expiry inflate the score. Retry the trial instead.
+	if nInfra > 0 && binaryInfra(judge) {
 		return OutcomeInfraFailure
 	}
 	graded := n - nInfra
@@ -652,6 +656,17 @@ func trialOutcome(checks []CheckResult, judge []JudgeResult) Outcome {
 		return OutcomeFail
 	}
 	return OutcomePass
+}
+
+// binaryInfra reports whether any dimension that can fail a trial went
+// ungraded because its judge could not be invoked.
+func binaryInfra(judge []JudgeResult) bool {
+	for _, j := range judge {
+		if !j.Telemetry && j.Infra && j.Min >= 1.0 {
+			return true
+		}
+	}
+	return false
 }
 
 func oracleScript(path string) (string, error) {

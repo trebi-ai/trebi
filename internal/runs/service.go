@@ -61,14 +61,17 @@ type CreateOpts struct {
 	TraceID         string
 	ConversationKey string
 	ConversationID  string
-	Trigger         *TriggerCapture
-	Inputs          map[string]string
-	MaxDurationMS   int64
-	IdleTimeoutMS   int64
-	KeepAliveMS     int64
-	NudgeMS         int64
-	ResumedFrom     string
-	ResumeAttempts  int
+	// WorkingDir is the directory the session launched in. Persisted because a
+	// harness that mints its own session id finds its transcript by path.
+	WorkingDir     string
+	Trigger        *TriggerCapture
+	Inputs         map[string]string
+	MaxDurationMS  int64
+	IdleTimeoutMS  int64
+	KeepAliveMS    int64
+	NudgeMS        int64
+	ResumedFrom    string
+	ResumeAttempts int
 	// DryRun evaluates without persisting (when gate only).
 	DryRun bool
 }
@@ -191,7 +194,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 			COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
 			started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 			COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
-			COALESCE(conversation_key,''), COALESCE(conversation_id,''),
+			COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
 			trigger_event_id, trigger_integration, trigger_capture_json, trigger_vars_json, inputs_json
 		FROM runs WHERE id = ?`, id)
 	return s.scanRun(row)
@@ -256,7 +259,7 @@ func (o ListOpts) query() (string, []any) {
 		COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
 		started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
-		COALESCE(conversation_key,''), COALESCE(conversation_id,''),
+		COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
 		trigger_event_id, trigger_integration, trigger_capture_json, trigger_vars_json, inputs_json
 		FROM runs WHERE 1=1`
 	var args []any
@@ -404,7 +407,7 @@ func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([
 		COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
 		started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
-		COALESCE(conversation_key,''), COALESCE(conversation_id,''),
+		COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
 		trigger_event_id, trigger_integration, trigger_capture_json, trigger_vars_json, inputs_json
 		FROM runs WHERE COALESCE(conversation_id,'') != ''
 		AND (status = ? OR (ended_at IS NOT NULL AND ended_at >= ?))
@@ -833,6 +836,7 @@ func newRun(id string, now time.Time, opts CreateOpts) *Run {
 		Trigger:         opts.Trigger,
 		ConversationKey: opts.ConversationKey,
 		ConversationID:  opts.ConversationID,
+		WorkingDir:      opts.WorkingDir,
 		QueueID:         opts.QueueID,
 		TraceID:         opts.TraceID,
 		Revision:        1,
@@ -868,13 +872,13 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 	_, err := tx.Exec(`INSERT INTO runs (
 		id, workspace_id, job, kind, reason, status, prompt_preview, inputs_json,
 		trigger_event_id, trigger_integration, trigger_capture_json, trigger_vars_json,
-		conversation_key, conversation_id, session_id, runtime, harness, tmux_session,
+		conversation_key, conversation_id, working_dir, session_id, runtime, harness, tmux_session,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		resumed_from, resume_attempts, queue_id, trace_id, revision, updated_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.Job, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON,
-		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.SessionID), "tui", opts.Harness, store.NullStr(opts.TmuxSession),
+		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), "tui", opts.Harness, store.NullStr(opts.TmuxSession),
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
 		store.NullStr(opts.ResumedFrom), opts.ResumeAttempts, queueID, opts.TraceID, 1, nowStr,
 	)
@@ -1135,7 +1139,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	var reason, endReason, started, ended sql.NullString
 	var trigEvent, trigInteg, capJSON, varsJSON, inputsJSON sql.NullString
 	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev int64
-	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, resumedFrom string
+	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, workingDir, resumedFrom string
 	var prompt, ws, job, kind, status string
 	err := row.Scan(
 		&r.ID, &ws, &job, &kind, &reason, &status, &endReason,
@@ -1143,7 +1147,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		&ti, &to, &tcr, &tcc, &modelName,
 		&started, &ended, &maxD, &idle, &keep, &nudge,
 		&resumedFrom, &resumeAtt, &qid, &trace, &rev,
-		&convKey, &convID, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
+		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
 	)
 	if err != nil {
 		return nil, err
@@ -1168,6 +1172,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r.Revision = rev
 	r.ConversationKey = convKey
 	r.ConversationID = convID
+	r.WorkingDir = workingDir
 	r.StartedAt, _ = time.Parse(time.RFC3339Nano, started.String)
 	if r.StartedAt.IsZero() {
 		r.StartedAt, _ = time.Parse(time.RFC3339, started.String)

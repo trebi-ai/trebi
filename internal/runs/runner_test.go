@@ -3,7 +3,9 @@ package runs_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -26,9 +28,9 @@ func TestFakeHarnessSentinel(t *testing.T) {
 			Job:         "demo",
 			Harness:     "fake",
 			Reason:      runs.ReasonManual,
+			WorkingDir:  t.TempDir(),
 		},
 		Prompt:      "do it",
-		WorkingDir:  t.TempDir(),
 		FakeCommand: []string{"sh", "-c", `echo working; echo "$TREBI_RUN_COMPLETE"`},
 	})
 	if err != nil {
@@ -57,8 +59,8 @@ func TestFakeHarnessFailure(t *testing.T) {
 	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
+			WorkingDir: t.TempDir(),
 		},
-		WorkingDir:  t.TempDir(),
 		FakeCommand: []string{"sh", "-c", "echo no sentinel; exit 1"},
 	})
 	if err != nil {
@@ -95,5 +97,67 @@ func TestInjectMessageRejectsSentinel(t *testing.T) {
 	err = svc.InjectMessage(ctx, "01ABC", "Check the log and fix the blocker.")
 	if errors.Is(err, runs.ErrSentinelInMessage) {
 		t.Errorf("ordinary message rejected as sentinel: %v", err)
+	}
+}
+
+// A run that leaves no log answers `run logs` with not_found forever, so the
+// agent cannot see what its own run did.
+func TestFakeHarnessWritesRunLog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TREBI_HOME", home)
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "r.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	run, _, err := runs.New(st).CreateAndLaunch(context.Background(), runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
+			WorkingDir: t.TempDir(),
+		},
+		FakeCommand: []string{"sh", "-c", "echo hello-from-the-pane"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "logs", "runs", run.ID+".log"))
+	if err != nil {
+		t.Fatalf("run log: %v", err)
+	}
+	if !strings.Contains(string(data), "hello-from-the-pane") {
+		t.Fatalf("log = %q", data)
+	}
+}
+
+// Codex mints its own rollout id, so its transcript is found by the directory
+// the run launched in. The run row is the only place that survives to hold it.
+func TestLaunchPersistsWorkingDir(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "r.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st)
+	dir := t.TempDir()
+	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
+			WorkingDir: dir,
+		},
+		FakeCommand: []string{"sh", "-c", "true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.WorkingDir != dir {
+		t.Fatalf("launch working dir = %q, want %q", run.WorkingDir, dir)
+	}
+	got, err := svc.Get(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WorkingDir != dir {
+		t.Fatalf("reloaded working dir = %q, want %q", got.WorkingDir, dir)
 	}
 }

@@ -197,7 +197,7 @@ func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndRea
 	if run.TmuxSession != "" {
 		_ = tmux.SendKey(run.TmuxSession, "C-c")
 		time.Sleep(100 * time.Millisecond)
-		_ = tmux.KillSession(run.TmuxSession)
+		r.svc.closeSession(run.ID, run.TmuxSession)
 	}
 	if err := r.svc.Terminate(ctx, run.ID, status, end, nil); err != nil {
 		r.log.Warn("reaper terminate", "run", run.ID, "error", err)

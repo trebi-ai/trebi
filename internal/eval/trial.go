@@ -84,16 +84,14 @@ func (t *TrialResult) writeFile() error {
 	return os.WriteFile(filepath.Join(t.Dir, "trial.json"), data, 0o644)
 }
 
-// deadClientGate stops a trial whose client never produced an answer. A client
-// that made tool calls but ran out of time is graded normally: its work is on
-// the daemon and a retry would burn the same wall. A client that reported a
-// fault instead is infra, and retries: it was cut off, not slow.
+// deadClientGate stops a trial whose client never produced a final answer,
+// whether it timed out mid-tool-call or never started. Grading one is not
+// sound: the judge dimensions that read the final message abstain, an
+// abstention counts as pass, and the trial then rides on its checks alone. A
+// task whose end state happens to be green would score a pass for a run that
+// never answered. Both shapes are infra, and retry.
 func (t *TrialResult) deadClientGate(launch *LaunchResult) bool {
 	if launch != nil && launch.Steps.hasAssistant() {
-		return false
-	}
-	if launch != nil && launch.Steps.toolCount() > 0 && len(launch.Errors) == 0 {
-		t.Error = launch.errorSummary()
 		return false
 	}
 	t.Outcome = OutcomeInfraFailure
