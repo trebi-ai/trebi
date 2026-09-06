@@ -93,7 +93,7 @@ type ToolCall struct {
 	ExitCode   *int   `json:"exit_code,omitempty"`
 }
 
-// EventModeCapability describes how a tool reports agent lifecycle to jobi.
+// EventModeCapability describes how a tool reports agent lifecycle to trebi.
 type EventModeCapability string
 
 const (

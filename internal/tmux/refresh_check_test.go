@@ -25,10 +25,10 @@ func TestDiagListSessions(t *testing.T) {
 		active[name] = true
 	}
 	t.Logf("parsed names: %v", keys(active))
-	if active["jobi-2d4143f5"] {
-		t.Logf("jobi-2d4143f5 IS active (RefreshRunning would NOT mark it exited)")
+	if active["trebi-2d4143f5"] {
+		t.Logf("trebi-2d4143f5 IS active (RefreshRunning would NOT mark it exited)")
 	} else {
-		t.Logf("jobi-2d4143f5 NOT found (RefreshRunning WOULD mark it exited)")
+		t.Logf("trebi-2d4143f5 NOT found (RefreshRunning WOULD mark it exited)")
 	}
 }
 

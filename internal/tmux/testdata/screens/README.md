@@ -50,8 +50,8 @@ assert the coarse screen classifier instead.
 ```
 
 - Fixed 120x40 geometry — wrapping is part of the fixture.
-- Runs in a temp dir with `~/.jobi/bin` stripped from PATH: fixtures reflect
-  the stock TUI, not the jobi shim (hooks are Track B).
+- Runs in a temp dir with `~/.trebi/bin` stripped from PATH: fixtures reflect
+  the stock TUI, not the trebi shim (hooks are Track B).
 - A new frame is written whenever the pane content changes; interact with the
   TUI normally (`tmux attach -t <session>`) — splash, dialogs, and ready all
   land in one recording.

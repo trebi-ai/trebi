@@ -934,7 +934,7 @@ func (a AskSpec) Build() HTTPRequest {
 	}
 }
 
-// AppendExtraPrompt joins the job base prompt with extra text (jobi run -e semantics).
+// AppendExtraPrompt joins the job base prompt with extra text (trebi run -e semantics).
 func AppendExtraPrompt(base, extra string) string {
 	extra = strings.TrimSpace(extra)
 	if extra == "" {
@@ -1106,7 +1106,7 @@ func BuildJobPause(name, workspace, ifMatch string, pause bool) HTTPRequest {
 	}
 }
 
-// BuildJobSchedule describes how to apply a jobi-style schedule value in trebi.
+// BuildJobSchedule describes how to apply a schedule value.
 // enable/disable → pause endpoints; cron/@every → caller must GET markdown, ApplyScheduleMarkdown, PUT.
 type JobSchedulePlan struct {
 	Mode string // "pause" | "unpause" | "put_markdown"
@@ -1529,7 +1529,7 @@ func timeTriggers(value string) ([]any, error) {
 }
 
 func splitScheduleValues(value string) []string {
-	// Multiple schedules use ", " (comma+space), matching jobi multi-cron examples.
+	// Multiple schedules use ", " (comma+space), matching trebi multi-cron examples.
 	// Bare commas inside a field (e.g. DOW 1,3,5) stay intact.
 	value = strings.TrimSpace(value)
 	if strings.HasPrefix(value, "@every") {

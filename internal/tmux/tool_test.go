@@ -117,7 +117,7 @@ func TestPrepareLaunch_PiIsolationEnv(t *testing.T) {
 	if !strings.Contains(plan.Command, "--approve") {
 		t.Errorf("command missing --approve: %q", plan.Command)
 	}
-	ext := filepath.Join(dir, "extensions", "jobi-lifecycle.ts")
+	ext := filepath.Join(dir, "extensions", "trebi-lifecycle.ts")
 	data, err := os.ReadFile(ext)
 	if err != nil {
 		t.Fatalf("lifecycle extension: %v", err)
@@ -304,7 +304,7 @@ func TestPrepareLaunch_GrokIsolationEnv(t *testing.T) {
 		t.Errorf("GROK_HOME = %q", plan.Env["GROK_HOME"])
 	}
 	// Hooks should be materialized under harness.
-	hooks := filepath.Join(plan.Env["GROK_HOME"], "hooks", "jobi.json")
+	hooks := filepath.Join(plan.Env["GROK_HOME"], "hooks", "trebi.json")
 	data, err := os.ReadFile(hooks)
 	if err != nil {
 		t.Fatalf("hooks: %v", err)
@@ -343,7 +343,7 @@ func TestPrepareLaunch_ClaudeSettingsMatchHumanAttention(t *testing.T) {
 	if plan.Env["CLAUDE_CONFIG_DIR"] == "" {
 		t.Fatal("expected CLAUDE_CONFIG_DIR")
 	}
-	settings := filepath.Join(plan.Env["CLAUDE_CONFIG_DIR"], "jobi-settings.json")
+	settings := filepath.Join(plan.Env["CLAUDE_CONFIG_DIR"], "trebi-settings.json")
 	data, err := os.ReadFile(settings)
 	if err != nil {
 		t.Fatalf("settings: %v", err)
@@ -457,10 +457,10 @@ func TestEnsureCursorUserHooks(t *testing.T) {
 	}
 	// User audit preserved.
 	if len(got.Hooks["stop"]) < 2 {
-		t.Fatalf("stop hooks: want user+jobi, got %s", raw)
+		t.Fatalf("stop hooks: want user+trebi, got %s", raw)
 	}
 	foundUser := false
-	jobiStops := 0
+	trebiStops := 0
 	for _, e := range got.Hooks["stop"] {
 		var c struct {
 			Command string `json:"command"`
@@ -469,32 +469,32 @@ func TestEnsureCursorUserHooks(t *testing.T) {
 		if c.Command == "./my-audit.sh" {
 			foundUser = true
 		}
-		if strings.Contains(c.Command, jobiCursorHookMarker) {
-			jobiStops++
+		if strings.Contains(c.Command, trebiCursorHookMarker) {
+			trebiStops++
 		}
 	}
 	if !foundUser {
 		t.Fatal("user stop hook lost")
 	}
-	if jobiStops != 1 {
-		t.Fatalf("want exactly one jobi stop hook, got %d", jobiStops)
+	if trebiStops != 1 {
+		t.Fatalf("want exactly one trebi stop hook, got %d", trebiStops)
 	}
-	// sessionStart should be jobi only (old jobi replaced, no duplicate).
-	if n := countJobiHooks(got.Hooks["sessionStart"]); n != 1 {
-		t.Fatalf("sessionStart jobi hooks: %d", n)
+	// sessionStart should be trebi only (old trebi replaced, no duplicate).
+	if n := countTrebiHooks(got.Hooks["sessionStart"]); n != 1 {
+		t.Fatalf("sessionStart trebi hooks: %d", n)
 	}
-	if n := countJobiHooks(got.Hooks["preToolUse"]); n != 1 {
+	if n := countTrebiHooks(got.Hooks["preToolUse"]); n != 1 {
 		t.Fatalf("preToolUse missing: %d", n)
 	}
 
-	// Idempotent re-merge: still one jobi stop.
+	// Idempotent re-merge: still one trebi stop.
 	if err := ensureCursorUserHooksAt(path, cursorHooksJSON); err != nil {
 		t.Fatal(err)
 	}
 	raw2, _ := os.ReadFile(path)
 	_ = json.Unmarshal(raw2, &got)
-	if n := countJobiHooks(got.Hooks["stop"]); n != 1 {
-		t.Fatalf("after re-merge stop jobi count=%d", n)
+	if n := countTrebiHooks(got.Hooks["stop"]); n != 1 {
+		t.Fatalf("after re-merge stop trebi count=%d", n)
 	}
 
 	if err := stripCursorUserHooksAt(path); err != nil {
@@ -508,8 +508,8 @@ func TestEnsureCursorUserHooks(t *testing.T) {
 	if err := json.Unmarshal(raw3, &stripped); err != nil {
 		t.Fatal(err)
 	}
-	if countJobiHooks(stripped.Hooks["stop"]) != 0 || countJobiHooks(stripped.Hooks["sessionStart"]) != 0 {
-		t.Fatalf("strip left jobi hooks: %s", raw3)
+	if countTrebiHooks(stripped.Hooks["stop"]) != 0 || countTrebiHooks(stripped.Hooks["sessionStart"]) != 0 {
+		t.Fatalf("strip left trebi hooks: %s", raw3)
 	}
 	if len(stripped.Hooks["stop"]) != 1 {
 		t.Fatalf("user stop should remain: %s", raw3)
@@ -531,8 +531,8 @@ func TestCursorMaterialize_BridgesUserHooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("user hooks not written: %v", err)
 	}
-	if !strings.Contains(string(raw), jobiCursorHookMarker) {
-		t.Fatalf("missing jobi hooks: %s", raw)
+	if !strings.Contains(string(raw), trebiCursorHookMarker) {
+		t.Fatalf("missing trebi hooks: %s", raw)
 	}
 	// Harness copy still present.
 	if _, err := os.Stat(filepath.Join(dir, "hooks.json")); err != nil {
@@ -859,8 +859,8 @@ func TestClaudeProjectDir(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"/Users/fritz/.jobi/workspace/", "-Users-fritz--jobi-workspace"},
-		{"/Users/fritz/.jobi/workspace", "-Users-fritz--jobi-workspace"},
+		{"/Users/fritz/.trebi/workspace/", "-Users-fritz--trebi-workspace"},
+		{"/Users/fritz/.trebi/workspace", "-Users-fritz--trebi-workspace"},
 		{"/tmp/work///", "-tmp-work"},
 		{"/home/.config", "-home--config"},
 	}
@@ -896,7 +896,7 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 	if fi, err := os.Lstat(legacyShim); err == nil && !fi.IsDir() {
 		t.Fatal("legacy claude shim file should be removed")
 	}
-	settingsPath := filepath.Join(trebiBase, "harness", "claude", "jobi-settings.json")
+	settingsPath := filepath.Join(trebiBase, "harness", "claude", "trebi-settings.json")
 	sdata, err := os.ReadFile(settingsPath)
 	if err != nil {
 		t.Fatalf("claude settings: %v", err)
@@ -922,8 +922,8 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 		t.Error("claude settings should map PermissionRequest to waiting")
 	}
 
-	// Grok hooks only under jobi harness — never user home.
-	grokHarness := filepath.Join(trebiBase, "harness", "grok", "hooks", "jobi.json")
+	// Grok hooks only under trebi harness — never user home.
+	grokHarness := filepath.Join(trebiBase, "harness", "grok", "hooks", "trebi.json")
 	if _, err := os.Stat(grokHarness); err != nil {
 		t.Fatalf("grok harness hooks missing: %v", err)
 	}
@@ -931,13 +931,13 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 	if !strings.Contains(string(gdata), "permission_prompt") {
 		t.Error("grok hooks should use permission_prompt matcher")
 	}
-	userGrok := filepath.Join(userHome, ".grok", "hooks", "jobi.json")
+	userGrok := filepath.Join(userHome, ".grok", "hooks", "trebi.json")
 	if _, err := os.Stat(userGrok); !os.IsNotExist(err) {
 		t.Error("must not write grok hooks under user home")
 	}
 
 	// OpenCode plugin under harness only
-	ocPath := filepath.Join(trebiBase, "harness", "opencode", "plugins", "jobi-lifecycle.js")
+	ocPath := filepath.Join(trebiBase, "harness", "opencode", "plugins", "trebi-lifecycle.js")
 	odata, err := os.ReadFile(ocPath)
 	if err != nil {
 		t.Fatalf("opencode plugin: %v", err)
@@ -948,13 +948,13 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 	if !strings.Contains(string(odata), "TREBI_RUN_ID") {
 		t.Error("opencode plugin should check TREBI_RUN_ID")
 	}
-	userOC := filepath.Join(userHome, ".config", "opencode", "plugins", "jobi-lifecycle.js")
+	userOC := filepath.Join(userHome, ".config", "opencode", "plugins", "trebi-lifecycle.js")
 	if _, err := os.Stat(userOC); !os.IsNotExist(err) {
 		t.Error("must not write opencode plugin under user config")
 	}
 
 	// Pi lifecycle extension under harness only
-	piExt := filepath.Join(trebiBase, "harness", "pi", "extensions", "jobi-lifecycle.ts")
+	piExt := filepath.Join(trebiBase, "harness", "pi", "extensions", "trebi-lifecycle.ts")
 	pdata, err := os.ReadFile(piExt)
 	if err != nil {
 		t.Fatalf("pi extension: %v", err)
@@ -1043,10 +1043,10 @@ func TestAllTools_UniqueNames(t *testing.T) {
 	}
 }
 
-func countJobiHooks(entries []json.RawMessage) int {
+func countTrebiHooks(entries []json.RawMessage) int {
 	n := 0
 	for _, e := range entries {
-		if isJobiCursorHookEntry(e) {
+		if isTrebiCursorHookEntry(e) {
 			n++
 		}
 	}

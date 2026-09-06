@@ -105,11 +105,11 @@ func (t grokTool) launchEnv() map[string]string {
 	return map[string]string{"GROK_HOME": dir}
 }
 
-//go:embed lifecycle/grok-jobi.json
+//go:embed lifecycle/grok-trebi.json
 var grokHooksJSON []byte
 
-// Minimal jobi-seeded config for isolated GROK_HOME.
-const grokConfigTOML = `# jobi-seeded defaults for isolated GROK_HOME (do not copy interactive config)
+// Minimal trebi-seeded config for isolated GROK_HOME.
+const grokConfigTOML = `# trebi-seeded defaults for isolated GROK_HOME (do not copy interactive config)
 [compat.claude]
 hooks = false
 
@@ -120,7 +120,7 @@ trace_upload = false
 disable_codebase_upload = true
 `
 
-const grokHookFileName = "jobi.json"
+const grokHookFileName = "trebi.json"
 
 type grokLifecycle struct{}
 
@@ -138,7 +138,7 @@ func (g grokLifecycle) Install(trebiBase, binDir string) error {
 }
 
 func (grokLifecycle) Uninstall(trebiBase, binDir string) error {
-	// Remove jobi harness hooks (leave auth symlink / sessions).
+	// Remove trebi harness hooks (leave auth symlink / sessions).
 	dir := filepath.Join(trebiBase, "harness", Grok)
 	path := filepath.Join(dir, "hooks", grokHookFileName)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

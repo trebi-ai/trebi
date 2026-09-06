@@ -172,7 +172,7 @@ func (t piTool) launchEnv() map[string]string {
 	}
 }
 
-//go:embed lifecycle/pi-jobi-lifecycle.ts
+//go:embed lifecycle/pi-trebi-lifecycle.ts
 var piLifecycleTS []byte
 
 // Minimal trebi-seeded settings for isolated PI_CODING_AGENT_DIR.
@@ -187,7 +187,7 @@ const piSettingsJSON = `{
 }
 `
 
-const piExtensionFileName = "jobi-lifecycle.ts"
+const piExtensionFileName = "trebi-lifecycle.ts"
 
 // Default pi-mcp-adapter package (npm: source in settings; version pin for install).
 const (

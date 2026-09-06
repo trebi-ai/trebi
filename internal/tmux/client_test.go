@@ -126,8 +126,8 @@ func TestSendLargePayloadViaBuffer(t *testing.T) {
 		t.Fatalf("Send (large): %v", err)
 	}
 
-	// Confirm no Send-owned buffer was leaked (jobi-<8hex> from newBufferName).
-	assertNoJobiSendBuffers(t)
+	// Confirm no Send-owned buffer was leaked (trebi-<8hex> from newBufferName).
+	assertNoTrebiSendBuffers(t)
 }
 
 func TestSendMultilineUsesPasteBuffer(t *testing.T) {
@@ -137,7 +137,7 @@ func TestSendMultilineUsesPasteBuffer(t *testing.T) {
 	if err := Send(name, payload); err != nil {
 		t.Fatalf("Send (multiline): %v", err)
 	}
-	assertNoJobiSendBuffers(t)
+	assertNoTrebiSendBuffers(t)
 }
 
 func TestRunTimeout(t *testing.T) {
@@ -208,7 +208,7 @@ func TestListWorkspacesIncludesSession(t *testing.T) {
 func TestWaitForPromptFindsSnippet(t *testing.T) {
 	name := newTestSession(t)
 
-	marker := "jobi-waitforprompt-test"
+	marker := "trebi-waitforprompt-test"
 	// Run waitgroup-style: send asynchronously then verify WaitForPrompt
 	// returns once the text appears.
 	go func() {
@@ -249,9 +249,9 @@ func newTestSession(t *testing.T) string {
 	return name
 }
 
-// assertNoJobiSendBuffers fails if a load-buffer name from newBufferName remains
-// (jobi- + 8 hex). Ignores unrelated buffers that merely contain "trebi-".
-func assertNoJobiSendBuffers(t *testing.T) {
+// assertNoTrebiSendBuffers fails if a load-buffer name from newBufferName remains
+// (trebi- + 8 hex). Ignores unrelated buffers that merely contain "trebi-".
+func assertNoTrebiSendBuffers(t *testing.T) {
 	t.Helper()
 	out, err := run("list-buffers")
 	if err != nil {
@@ -267,7 +267,7 @@ func assertNoJobiSendBuffers(t *testing.T) {
 		if len(name) == len("trebi-")+8 && strings.HasPrefix(name, "trebi-") {
 			hexPart := name[len("trebi-"):]
 			if isHex(hexPart) {
-				t.Errorf("expected jobi- send buffer deleted after paste, still have: %s", line)
+				t.Errorf("expected trebi- send buffer deleted after paste, still have: %s", line)
 			}
 		}
 	}

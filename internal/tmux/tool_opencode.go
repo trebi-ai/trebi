@@ -66,10 +66,10 @@ func (t opencodeTool) launchEnv() map[string]string {
 	}
 }
 
-//go:embed lifecycle/opencode-jobi.js
+//go:embed lifecycle/opencode-trebi.js
 var opencodePluginJS []byte
 
-const opencodePluginFileName = "jobi-lifecycle.js"
+const opencodePluginFileName = "trebi-lifecycle.js"
 
 type opencodeLifecycle struct{}
 

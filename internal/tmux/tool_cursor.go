@@ -17,7 +17,7 @@ import (
 )
 
 // CursorAgentBinary is the primary PATH name for the Cursor Agent CLI.
-// Jobi tool identity is Cursor ("cursor") — defined in tool.go.
+// Trebi tool identity is Cursor ("cursor") — defined in tool.go.
 const CursorAgentBinary = "cursor-agent"
 
 type cursorTool struct{ harnessHome }
@@ -34,7 +34,7 @@ func (cursorTool) Match(command string) bool {
 		base = base[i+1:]
 	}
 	base = strings.TrimSuffix(base, ".exe")
-	// Match cursor-agent (vendor) and bare "cursor" (jobi store / pin name).
+	// Match cursor-agent (vendor) and bare "cursor" (trebi store / pin name).
 	// Do not match bare "agent" — too ambiguous with other tools.
 	return base == CursorAgentBinary || base == Cursor
 }
@@ -59,7 +59,7 @@ func (t cursorTool) PrepareResume(command, sessionID string) (LaunchPlan, error)
 	return LaunchPlan{Command: cmd, SessionID: sessionID, Env: t.launchEnv()}, nil
 }
 
-// normalizeCursorCommand rewrites jobi/tool-id "cursor" to the vendor agent CLI.
+// normalizeCursorCommand rewrites trebi/tool-id "cursor" to the vendor agent CLI.
 // macOS Cursor.app also installs /usr/local/bin/cursor (VS Code `code` shim); using
 // that for resume/launch opens the editor, not the agent. Prefer an absolute
 // agent path from findCursorBinary; else bare "cursor-agent".
@@ -77,7 +77,7 @@ func normalizeCursorCommand(command string) string {
 	if name != Cursor {
 		return command
 	}
-	// Absolute store pin named "cursor" (jobi copies the agent there) — keep.
+	// Absolute store pin named "cursor" (trebi copies the agent there) — keep.
 	if strings.Contains(base, string(os.PathSeparator)) && !isCursorIDEBinary(base) {
 		return command
 	}
@@ -140,7 +140,7 @@ func findCursorBinary() string {
 	if p, err := exec.LookPath(CursorAgentBinary); err == nil {
 		return p
 	}
-	// Store pin path (jobi ensure); prefer cursor-agent name, then store "cursor" copy.
+	// Store pin path (trebi ensure); prefer cursor-agent name, then store "cursor" copy.
 	current := config.ToolCurrentLink(Cursor)
 	for _, c := range []string{
 		filepath.Join(current, "bin", CursorAgentBinary),
@@ -276,10 +276,10 @@ func (t cursorTool) launchEnv() map[string]string {
 	}
 }
 
-//go:embed lifecycle/cursor-jobi-hooks.json
+//go:embed lifecycle/cursor-trebi-hooks.json
 var cursorHooksJSON []byte
 
-// Minimal jobi-seeded cli-config for isolated CURSOR_CONFIG_DIR (unattended-friendly).
+// Minimal trebi-seeded cli-config for isolated CURSOR_CONFIG_DIR (unattended-friendly).
 const cursorCLIConfigJSON = `{
   "version": 1,
   "editor": { "vimMode": false },
@@ -336,7 +336,7 @@ func (cursorLifecycle) materialize(dir string) error {
 		return fmt.Errorf("writing cursor hooks: %w", err)
 	}
 	// Cursor Agent CLI only loads ~/.cursor/hooks.json (and project .cursor/hooks.json).
-	// CURSOR_CONFIG_DIR does not relocate hooks — merge jobi entries into the user file.
+	// CURSOR_CONFIG_DIR does not relocate hooks — merge trebi entries into the user file.
 	if err := ensureCursorUserHooks(cursorHooksJSON); err != nil {
 		return fmt.Errorf("bridging cursor user hooks: %w", err)
 	}
@@ -350,8 +350,8 @@ func (cursorLifecycle) materialize(dir string) error {
 	return harness.WriteSchemaStamp(dir)
 }
 
-// jobiCursorHookMarker identifies jobi-owned entries inside ~/.cursor/hooks.json.
-const jobiCursorHookMarker = "trebi agent-hook"
+// trebiCursorHookMarker identifies trebi-owned entries inside ~/.cursor/hooks.json.
+const trebiCursorHookMarker = "trebi agent-hook"
 
 type cursorHooksFile struct {
 	Version int                          `json:"version"`
@@ -362,14 +362,14 @@ type cursorHooksFile struct {
 func parseCursorHooks(raw []byte) (cursorHooksFile, error) {
 	var f cursorHooksFile
 	if err := json.Unmarshal(raw, &f); err != nil {
-		return f, fmt.Errorf("parse jobi hooks: %w", err)
+		return f, fmt.Errorf("parse trebi hooks: %w", err)
 	}
 	f.fillDefaults()
 	return f, nil
 }
 
 // loadCursorHooksFile reads the user hooks file. A corrupt file is renamed to
-// .bad and an empty file state is returned, so jobi hooks start fresh.
+// .bad and an empty file state is returned, so trebi hooks start fresh.
 func loadCursorHooksFile(path string) (cursorHooksFile, error) {
 	fresh := cursorHooksFile{Version: 1, Hooks: map[string][]json.RawMessage{}}
 	raw, err := os.ReadFile(path)
@@ -400,14 +400,14 @@ func (f *cursorHooksFile) fillDefaults() {
 	}
 }
 
-// hooksWithoutJobi returns the hooks minus jobi-marked entries; dropped
+// hooksWithoutTrebi returns the hooks minus trebi-marked entries; dropped
 // reports whether any entry was removed.
-func (f *cursorHooksFile) hooksWithoutJobi() (kept map[string][]json.RawMessage, dropped bool) {
+func (f *cursorHooksFile) hooksWithoutTrebi() (kept map[string][]json.RawMessage, dropped bool) {
 	kept = map[string][]json.RawMessage{}
 	for event, entries := range f.Hooks {
 		out := make([]json.RawMessage, 0, len(entries))
 		for _, e := range entries {
-			if isJobiCursorHookEntry(e) {
+			if isTrebiCursorHookEntry(e) {
 				dropped = true
 				continue
 			}
@@ -432,18 +432,18 @@ func (f *cursorHooksFile) writeTo(path string) error {
 	return harness.WriteFileIfChanged(path, b, 0644)
 }
 
-// ensureCursorUserHooks merges jobi lifecycle hooks into ~/.cursor/hooks.json.
-// Existing non-jobi entries are preserved; prior trebi agent-hook entries are replaced.
-func ensureCursorUserHooks(jobiJSON []byte) error {
+// ensureCursorUserHooks merges trebi lifecycle hooks into ~/.cursor/hooks.json.
+// Existing non-trebi entries are preserved; prior trebi agent-hook entries are replaced.
+func ensureCursorUserHooks(trebiJSON []byte) error {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return fmt.Errorf("resolving home: %w", err)
 	}
-	return ensureCursorUserHooksAt(filepath.Join(home, ".cursor", "hooks.json"), jobiJSON)
+	return ensureCursorUserHooksAt(filepath.Join(home, ".cursor", "hooks.json"), trebiJSON)
 }
 
-func ensureCursorUserHooksAt(path string, jobiJSON []byte) error {
-	desired, err := parseCursorHooks(jobiJSON)
+func ensureCursorUserHooksAt(path string, trebiJSON []byte) error {
+	desired, err := parseCursorHooks(trebiJSON)
 	if err != nil {
 		return err
 	}
@@ -451,10 +451,10 @@ func ensureCursorUserHooksAt(path string, jobiJSON []byte) error {
 	if err != nil {
 		return err
 	}
-	// Keep user entries; drop prior jobi markers.
-	kept, _ := existing.hooksWithoutJobi()
+	// Keep user entries; drop prior trebi markers.
+	kept, _ := existing.hooksWithoutTrebi()
 	out := cursorHooksFile{Version: existing.Version, Hooks: kept}
-	// Append current jobi hooks.
+	// Append current trebi hooks.
 	for event, entries := range desired.Hooks {
 		out.Hooks[event] = append(out.Hooks[event], entries...)
 	}
@@ -484,12 +484,12 @@ func stripCursorUserHooksAt(path string) error {
 	if existing.Hooks == nil {
 		return nil
 	}
-	kept, changed := existing.hooksWithoutJobi()
+	kept, changed := existing.hooksWithoutTrebi()
 	if !changed {
 		return nil
 	}
 	if len(kept) == 0 {
-		// File was jobi-only — remove rather than leave an empty husk.
+		// File was trebi-only — remove rather than leave an empty husk.
 		return os.Remove(path)
 	}
 	out := cursorHooksFile{Version: existing.Version, Hooks: kept}
@@ -499,12 +499,12 @@ func stripCursorUserHooksAt(path string) error {
 	return out.writeTo(path)
 }
 
-func isJobiCursorHookEntry(raw json.RawMessage) bool {
+func isTrebiCursorHookEntry(raw json.RawMessage) bool {
 	var e struct {
 		Command string `json:"command"`
 	}
 	if json.Unmarshal(raw, &e) != nil {
 		return false
 	}
-	return strings.Contains(e.Command, jobiCursorHookMarker)
+	return strings.Contains(e.Command, trebiCursorHookMarker)
 }

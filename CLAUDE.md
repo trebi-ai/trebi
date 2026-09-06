@@ -22,7 +22,7 @@ internal/<domain>/   # one service per object family (runs, workspaces, alerts, 
 internal/tmux/       # harness drivers: one file per harness tool
 internal/tray/       # macOS menu bar (build-tagged)
 evals/               # tasks/, seeds/, oracles/, rubrics/, baseline.json
-scripts/ testdata/   # build helpers, jobi fixtures, eval.py
+scripts/ testdata/   # build helpers, fixtures, eval.py
 ```
 
 Domain packages own one object family and are named after it: `runs`, `workspaces`, `alerts`, `skills`, `integrations`, `schedule`, `dispatch`, `job`, `secrets`, `harness`, `config`, `home`, `pricing`, `platform`. Each exports a `Service` (or an equivalent concrete type) built by `New(st *store.Store)`.

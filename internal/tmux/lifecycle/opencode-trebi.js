@@ -1,8 +1,8 @@
-// jobi lifecycle plugin for OpenCode.
+// trebi lifecycle plugin for OpenCode.
 // Forwards session/permission events to `trebi agent-hook` when TREBI_RUN_ID is set.
-// Materialized under ~/.jobi/harness/opencode/plugins/ (never user config).
+// Materialized under ~/.trebi/harness/opencode/plugins/ (never user config).
 
-export const JobiLifecycle = async ({ $ }) => {
+export const TrebiLifecycle = async ({ $ }) => {
   const taskID = process.env.TREBI_RUN_ID || ""
   if (!taskID) {
     return {}

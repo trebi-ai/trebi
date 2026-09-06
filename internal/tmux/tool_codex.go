@@ -128,7 +128,7 @@ func (codexTool) ParseTranscript(r io.Reader) ([]Turn, error) {
 
 func (codexTool) Lifecycle() LifecycleAdapter { return codexLifecycle{} }
 
-//go:embed lifecycle/jobi-codex-notify.sh
+//go:embed lifecycle/trebi-codex-notify.sh
 var codexNotifyScript []byte
 
 type codexLifecycle struct{}

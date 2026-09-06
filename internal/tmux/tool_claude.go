@@ -193,13 +193,13 @@ func seedClaudeOnboarding(configDir string) error {
 	return os.WriteFile(path, b, 0o600)
 }
 
-// injectClaudeSettings appends --settings with jobi lifecycle hooks unless already present.
+// injectClaudeSettings appends --settings with trebi lifecycle hooks unless already present.
 func injectClaudeSettings(command string) string {
 	if strings.Contains(command, "--settings") {
 		return command
 	}
 	// Prefer settings file under harness when available; else inline JSON.
-	settingsPath := filepath.Join(config.HarnessDir(Claude), "jobi-settings.json")
+	settingsPath := filepath.Join(config.HarnessDir(Claude), "trebi-settings.json")
 	if st, err := os.Stat(settingsPath); err == nil && !st.IsDir() {
 		return AppendFlags(command, []string{"--settings", settingsPath})
 	}
@@ -223,7 +223,7 @@ func claudeReady(screen string) bool {
 // claudeSettingsJSON is the Claude lifecycle-hooks --settings payload.
 // waiting = real human attention only; idle_prompt Notification omitted (that's idle).
 //
-//go:embed lifecycle/claude-jobi-settings.json
+//go:embed lifecycle/claude-trebi-settings.json
 var claudeSettingsJSON string
 
 type claudeLifecycle struct{}
@@ -244,8 +244,8 @@ func (claudeLifecycle) Uninstall(trebiBase, binDir string) error {
 	if fi, err := os.Lstat(legacyShim); err == nil && !fi.IsDir() {
 		_ = os.Remove(legacyShim)
 	}
-	// Leave harness/claude sessions; only drop jobi-settings.
-	settings := filepath.Join(trebiBase, "harness", Claude, "jobi-settings.json")
+	// Leave harness/claude sessions; only drop trebi-settings.
+	settings := filepath.Join(trebiBase, "harness", Claude, "trebi-settings.json")
 	if err := os.Remove(settings); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -262,7 +262,7 @@ func (claudeLifecycle) materialize(dir string) error {
 		payload += "\n"
 	}
 	if err := harness.WriteFileIfChanged(
-		filepath.Join(dir, "jobi-settings.json"),
+		filepath.Join(dir, "trebi-settings.json"),
 		[]byte(payload),
 		0644,
 	); err != nil {

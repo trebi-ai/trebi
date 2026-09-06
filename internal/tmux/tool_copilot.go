@@ -39,7 +39,7 @@ func (copilotTool) IsReady(screen string) bool {
 }
 
 // HandleStartup: folder-trust dialog has "1. Yes" preselected. The VS Code
-// multi-line keybinding offer is declined — jobi must not write into the
+// multi-line keybinding offer is declined — trebi must not write into the
 // user's terminal config (goldens: testdata/screens/copilot/keybinding-setup).
 func (copilotTool) HandleStartup(screen string) []Action {
 	if strings.Contains(screen, "Do you trust the files in this folder") {

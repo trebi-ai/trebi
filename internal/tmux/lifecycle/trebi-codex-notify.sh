@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# jobi Codex notify wrapper. Codex invokes notify as a program with a JSON
+# trebi Codex notify wrapper. Codex invokes notify as a program with a JSON
 # payload on stdin (agent-turn-complete). We soft-publish stop so AgentBus
 # updates idle without promoting to full event mode (screen still drives busy).
 set -eu

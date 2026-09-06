@@ -505,7 +505,7 @@ func (codexTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	}
 	if fileExists(authPath) {
 		// Codex L2 is optional; a real auth.json is treated as ok when L2 is
-		// unavailable (jobi). File present + L2 logged-out already returned.
+		// unavailable. File present + L2 logged-out already returned.
 		if bin == "" {
 			return unknownFile(st, "auth.json present; login status unconfirmed")
 		}

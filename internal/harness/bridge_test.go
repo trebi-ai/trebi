@@ -237,13 +237,13 @@ func TestMCPMergeAndSettingsPrefs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(user, ".claude", "settings.json"), sb, 0644); err != nil {
 		t.Fatal(err)
 	}
-	// jobi-settings must survive
+	// trebi-settings must survive
 	hClaude := filepath.Join(harnessBase, "claude")
 	if err := os.MkdirAll(hClaude, 0755); err != nil {
 		t.Fatal(err)
 	}
-	jobiPath := filepath.Join(hClaude, "jobi-settings.json")
-	if err := os.WriteFile(jobiPath, []byte(`{"hooks":{"Stop":[]}}`), 0644); err != nil {
+	trebiPath := filepath.Join(hClaude, "trebi-settings.json")
+	if err := os.WriteFile(trebiPath, []byte(`{"hooks":{"Stop":[]}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -279,10 +279,10 @@ func TestMCPMergeAndSettingsPrefs(t *testing.T) {
 	if _, ok := hs["statusLine"]; ok {
 		t.Fatal("statusLine should not copy by default")
 	}
-	// jobi-settings untouched
-	jb, _ := os.ReadFile(jobiPath)
+	// trebi-settings untouched
+	jb, _ := os.ReadFile(trebiPath)
 	if !strings.Contains(string(jb), "Stop") {
-		t.Fatalf("jobi-settings clobbered: %s", jb)
+		t.Fatalf("trebi-settings clobbered: %s", jb)
 	}
 }
 

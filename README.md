@@ -1,8 +1,8 @@
 # trebi
 
-Trebi is the successor to jobi: an LLM task runner with an HTTP `/v1` API, SSE event bus, SQLite store, and `trebi` CLI.
+Trebi is an LLM task runner with an HTTP `/v1` API, SSE event bus, SQLite store, and `trebi` CLI.
 
-This tree implements Phase 2 of the migration plan ([docs/trebi/backend-jobi-migration-0808.md](../docs/trebi/backend-jobi-migration-0808.md)) against the contract in [docs/trebi/backend-0808.md](../docs/trebi/backend-0808.md).
+This tree implements the contract in [docs/trebi/backend-0808.md](../docs/trebi/backend-0808.md).
 
 ## Layout
 
@@ -23,7 +23,6 @@ trebi/
     guides/            # embedded workflow cheat sheets
   scripts/
     eval.py                    # uv: run/oracle/review + report/ls/why/compare
-    migrate-jobi-to-trebi.py   # uv migration (dry-run default)
 ```
 
 ## Build & test

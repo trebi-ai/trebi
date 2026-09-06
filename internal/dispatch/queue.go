@@ -46,7 +46,7 @@ type QueueItem struct {
 	CreatedAt       time.Time         `json:"created_at"`
 }
 
-// QueueStatus / QueueResult / BlockReason — jobi event_queue, verbatim.
+// QueueStatus / QueueResult / BlockReason — trebi event_queue, verbatim.
 type QueueStatus string
 
 const (

@@ -7,7 +7,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/pricing"
 )
 
-// Run status — jobi's taxonomy, verbatim (B2).
+// Run status — trebi's taxonomy, verbatim (B2).
 // LIVE = {running}. `resumed` is SUPERSEDED-terminal (B17).
 type Status string
 

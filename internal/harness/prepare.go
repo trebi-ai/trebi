@@ -1,4 +1,4 @@
-// Package harness materializes jobi-owned config trees under ~/.trebi/harness
+// Package harness materializes trebi-owned config trees under ~/.trebi/harness
 // and bridges auth from the user's interactive profile when mode is shared.
 package harness
 
@@ -14,10 +14,10 @@ import (
 // Harness schema version; bumped when defaults under harness/<tool> change.
 const SchemaVersion = 1
 
-// AuthModeShared bridges user credentials into the jobi harness tree.
+// AuthModeShared bridges user credentials into the trebi harness tree.
 const AuthModeShared = "shared"
 
-// AuthModeSeparate keeps credentials only under jobi (no user symlink).
+// AuthModeSeparate keeps credentials only under trebi (no user symlink).
 const AuthModeSeparate = "separate"
 
 // EnsureDir creates dir with 0755 if missing.

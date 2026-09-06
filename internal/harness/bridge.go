@@ -312,7 +312,7 @@ func applySymlink(kind BridgeKind, inherit bool, src, dst string, force bool) er
 		return nil
 	}
 	if !inherit {
-		return removeJobiSymlink(dst)
+		return removeTrebiSymlink(dst)
 	}
 	if src == "" || !pathExists(src) {
 		return nil // missing source — soft
@@ -345,7 +345,7 @@ func applySymlink(kind BridgeKind, inherit bool, src, dst string, force bool) er
 	return nil
 }
 
-func removeJobiSymlink(dst string) error {
+func removeTrebiSymlink(dst string) error {
 	fi, err := os.Lstat(dst)
 	if err != nil {
 		return nil
@@ -366,7 +366,7 @@ func applyMCPClaude(inherit bool, userHome, harnessDir string, force bool) error
 	userMCP := filepath.Join(userHome, ".claude", "mcp.json")
 	harnessMCP := filepath.Join(harnessDir, "mcp.json")
 	if !inherit {
-		_ = removeJobiSymlink(harnessMCP) // leftover symlink is harmless if inherit is off
+		_ = removeTrebiSymlink(harnessMCP) // leftover symlink is harmless if inherit is off
 		// leave harness .claude.json mcpServers as-is (v1)
 		return nil
 	}
@@ -431,7 +431,7 @@ func mergeMCPServers(userClaudeJSON, harnessClaudeJSON string) error {
 func applyClaudeSettingsPrefs(userHome, harnessDir string, pluginEnablement, statusLine bool) error {
 	userPath := filepath.Join(userHome, ".claude", "settings.json")
 	harnessPath := filepath.Join(harnessDir, "settings.json")
-	// Never touch harnessDir/jobi-settings.json.
+	// Never touch harnessDir/trebi-settings.json.
 
 	ub, err := os.ReadFile(userPath)
 	if err != nil {
@@ -474,7 +474,7 @@ func applyClaudeSettingsPrefs(userHome, harnessDir string, pluginEnablement, sta
 }
 
 // applyConfigTOMLPrefs merges a small allowlist of user TOML prefs into the
-// harness config without clobbering jobi-owned sections (Grok hooks flags, etc.).
+// harness config without clobbering trebi-owned sections (Grok hooks flags, etc.).
 func applyConfigTOMLPrefs(inherit bool, userPath, harnessPath, tool string) error {
 	if !inherit || userPath == "" || harnessPath == "" {
 		return nil
@@ -496,7 +496,7 @@ func applyConfigTOMLPrefs(inherit bool, userPath, harnessPath, tool string) erro
 	}
 	out := string(hb)
 	if out == "" {
-		out = "# jobi harness config\n"
+		out = "# trebi harness config\n"
 	}
 	if tool == "grok" {
 		if !strings.Contains(out, "hooks") {
@@ -538,7 +538,7 @@ func userTOMLPrefs(data []byte, tool string) map[string]string {
 		}
 		// Codex often uses model = "..." at top level (already covered).
 		if tool == "codex" && (k == "model" || k == "notify") {
-			// never import notify — jobi injects its own
+			// never import notify — trebi injects its own
 			if k == "notify" {
 				continue
 			}
@@ -570,7 +570,7 @@ func appendMissingTOMLPrefs(out string, prefs map[string]string) string {
 func applyOpenCodePlugins(inherit bool, userHome, harnessDir string, force bool) error {
 	userPlugins := filepath.Join(userHome, ".config", "opencode", "plugins")
 	harnessPlugins := filepath.Join(harnessDir, "plugins")
-	jobiPlugin := "jobi-lifecycle.js"
+	trebiPlugin := "trebi-lifecycle.js"
 	if !inherit {
 		// Remove only symlinks in harness plugins that point into user tree.
 		entries, err := os.ReadDir(harnessPlugins)
@@ -578,7 +578,7 @@ func applyOpenCodePlugins(inherit bool, userHome, harnessDir string, force bool)
 			return nil
 		}
 		for _, e := range entries {
-			if e.Name() == jobiPlugin {
+			if e.Name() == trebiPlugin {
 				continue
 			}
 			p := filepath.Join(harnessPlugins, e.Name())
@@ -605,7 +605,7 @@ func applyOpenCodePlugins(inherit bool, userHome, harnessDir string, force bool)
 	}
 	var errs []error
 	for _, e := range entries {
-		if e.Name() == jobiPlugin {
+		if e.Name() == trebiPlugin {
 			continue
 		}
 		src := filepath.Join(userPlugins, e.Name())
@@ -672,7 +672,7 @@ func copilotCatalog() []ResourceDef {
 
 func cursorCatalog() []ResourceDef {
 	// Under CURSOR_CONFIG_DIR isolation; inherit capability resources from ~/.cursor.
-	// Sessions/chats stay harness-local (not listed). cli-config is jobi-seeded — prefs
+	// Sessions/chats stay harness-local (not listed). cli-config is trebi-seeded — prefs
 	// inheritance is opt-in via cli_config_prefs (noop in v1 to avoid clobbering hooks).
 	// Lifecycle hooks are merged into ~/.cursor/hooks.json by ensureCursorUserHooks
 	// (Cursor Agent CLI does not load hooks from CURSOR_CONFIG_DIR).

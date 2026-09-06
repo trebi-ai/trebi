@@ -267,7 +267,7 @@ func sampleSetValue(key string) string {
 	case key == "tools.fallback":
 		return "path"
 	case key == "notify.email", key == "notify.whatsapp", key == "notify.discord":
-		return "echo jobi-notify-{{message}}"
+		return "echo trebi-notify-{{message}}"
 	case key == "notify.waiting_after":
 		return "5m"
 	case key == "notify.usage_warn_at":
@@ -291,7 +291,7 @@ func sampleSetValue(key string) string {
 	case strings.HasSuffix(key, ".channel"):
 		return "latest"
 	case strings.HasSuffix(key, ".path"):
-		return "/tmp/jobi-tool"
+		return "/tmp/trebi-tool"
 	case strings.HasSuffix(key, ".bridge.inherit"):
 		return "true"
 	case strings.Contains(key, ".bridge.resources."):

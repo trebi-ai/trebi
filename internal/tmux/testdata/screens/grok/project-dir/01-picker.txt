@@ -1,5 +1,5 @@
 
-  /private/tmp/claude-501/-Users-dev-Projects-jobi/d53c73a1-e3fe-4ad3-92f3-462f6d6a47b4/scratchpad/rec-grok-ws
+  /private/tmp/claude-501/-Users-dev-Projects-trebi/d53c73a1-e3fe-4ad3-92f3-462f6d6a47b4/scratchpad/rec-grok-ws
 
 
 
@@ -25,9 +25,9 @@
   ┃
   ┃  This gives Grok Build full context of your codebase for better results.
   ┃
-  ┃  1 (○) rec-grok-ws (current)  /private/tmp/claude-501/-Users-dev-Projects-jobi/d53c73a1-e3fe-4ad3-92f3-        █
+  ┃  1 (○) rec-grok-ws (current)  /private/tmp/claude-501/-Users-dev-Projects-trebi/d53c73a1-e3fe-4ad3-92f3-        █
   ┃                               462f6d6a47b4/scratchpad/rec-grok-ws                                                █
-  ┃  2 (○) jobi                   ~/Projects/jobi  (1m ago)                                                          █
+  ┃  2 (○) trebi                   ~/Projects/trebi  (1m ago)                                                          █
   ┃  3 (○) sling-workspace        ~/Projects/sling-workspace  (3h ago)                                               █
   ┃  4 (○) _                      ~/_  (1d ago)                                                                      █
   ┃  5 (○) Don't ask me again     Always start in the current directory (reset in config.toml)                       █

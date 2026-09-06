@@ -533,7 +533,7 @@ func runDaemonProcess(ctx context.Context, c *cli.Command) error {
 		cancel() // daemon died → tear down tray
 	}()
 
-	// Menuet owns the main thread (like jobi).
+	// Menuet owns the main thread.
 	trayErr := tray.Run(ctx, cancel)
 	cancel()
 
