@@ -11,29 +11,29 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-func integrationCommand() *cli.Command {
+func connectorCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "integration",
-		Usage: "manage integrations",
+		Name:  "connector",
+		Usage: "manage connectors",
 		Commands: []*cli.Command{
 			{
 				Name:  "list",
-				Usage: "list integrations",
+				Usage: "list connectors",
 				Flags: []cli.Flag{
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
-				Action: runIntegrationList,
+				Action: runConnectorList,
 			},
 			{
 				Name:      "show",
-				Usage:     "show one integration",
+				Usage:     "show one connector",
 				ArgsUsage: "<name>",
-				Action:    runIntegrationShow,
+				Action:    runConnectorShow,
 			},
 			{
 				Name:      "set",
-				Usage:     "create or update an integration",
+				Usage:     "create or update a connector",
 				ArgsUsage: "<name> <command...>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "format", Aliases: []string{"f"}, Usage: "json|line (default line)"},
@@ -42,89 +42,89 @@ func integrationCommand() *cli.Command {
 					&cli.StringSliceFlag{Name: "env", Aliases: []string{"e"}, Usage: "KEY=VALUE (repeatable)"},
 					&cli.StringSliceFlag{Name: "facet", Usage: "facet name (repeatable)"},
 				},
-				Action: runIntegrationSet,
+				Action: runConnectorSet,
 			},
 			{
 				Name:      "delete",
 				Aliases:   []string{"remove"},
-				Usage:     "delete an integration",
+				Usage:     "delete a connector",
 				ArgsUsage: "<name>",
 				Flags:     []cli.Flag{forceFlag("required; stops the event stream")},
-				Action:    runIntegrationRemove,
+				Action:    runConnectorRemove,
 			},
 			{
 				Name:      "connect",
-				Usage:     "start an integration (begin listening; inverse of disconnect)",
+				Usage:     "start a connector (begin listening; inverse of disconnect)",
 				ArgsUsage: "<name>",
-				Action:    runIntegrationConnect,
+				Action:    runConnectorConnect,
 			},
 			{
 				Name:      "disconnect",
 				Usage:     "halt the listening process (alias: stop)",
 				ArgsUsage: "<name>",
-				Action:    runIntegrationDisconnect,
+				Action:    runConnectorDisconnect,
 			},
 			{
 				Name:      "stop",
-				Usage:     "stop a running integration (alias of disconnect)",
+				Usage:     "stop a running connector (alias of disconnect)",
 				ArgsUsage: "<name>",
-				Action:    runIntegrationStop,
+				Action:    runConnectorStop,
 			},
 			{
 				Name:      "restart",
-				Usage:     "restart an integration",
+				Usage:     "restart a connector",
 				ArgsUsage: "<name>",
-				Action:    runIntegrationRestart,
+				Action:    runConnectorRestart,
 			},
 			{
 				Name:  "cursor",
-				Usage: "show or set integration_cursors.last_event_id (replay position)",
+				Usage: "show or set connector_cursors.last_event_id (replay position)",
 				Commands: []*cli.Command{
 					{
 						Name:      "show",
 						Usage:     "show last_event_id",
 						ArgsUsage: "<name>",
 						Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-						Action:    runIntegrationCursorShow,
+						Action:    runConnectorCursorShow,
 					},
 					{
 						Name:      "set",
 						Usage:     "set last_event_id",
 						ArgsUsage: "<name> <last-event-id>",
-						Action:    runIntegrationCursorSet,
+						Action:    runConnectorCursorSet,
 					},
 					{
 						Name:      "reset",
 						Usage:     "reset last_event_id to empty (replay from start)",
 						ArgsUsage: "<name>",
-						Action:    runIntegrationCursorReset,
+						Action:    runConnectorCursorReset,
 					},
 				},
 			},
 			{
 				Name:      "logs",
-				Usage:     "show integration log stream",
+				Usage:     "show connector log stream",
 				ArgsUsage: "<name>",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "follow (SSE; may block)"},
 				},
-				Action: runIntegrationLogs,
+				Action: runConnectorLogs,
 			},
 			{
 				Name:      "test",
-				Usage:     "inject a test event into an integration",
+				Usage:     "inject a test event into a connector",
 				ArgsUsage: "<name>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "event", Aliases: []string{"e"}, Usage: "event JSON object (default {\"test\":true})"},
 				},
-				Action: runIntegrationTest,
+				Action: runConnectorTest,
 			},
-			integrationQueueAlias(),
+			connectorQueueAlias(),
 		},
 	}
 }
 
-func integrationQueueAlias() *cli.Command {
+func connectorQueueAlias() *cli.Command {
 	q := queueCommand()
 	q.Hidden = true
 	return q
@@ -159,13 +159,13 @@ func queueCommand() *cli.Command {
 			}
 			w := outWriter(c)
 			// QueueItem has no json tags → PascalCase keys from the API.
-			tbl := newTable(w, []string{"ID", "Status", "Integration", "Job", "Conversation", "Block", "Run", "Created"})
+			tbl := newTable(w, []string{"ID", "Status", "Connector", "Job", "Conversation", "Block", "Run", "Created"})
 			for _, it := range body.Items {
 				status := mapStr(it, "Status", "status")
 				tbl.AppendRow(table.Row{
 					mapStr(it, "ID", "id"),
 					colorStatus(w, status),
-					dash(mapStr(it, "Integration", "integration")),
+					dash(mapStr(it, "Connector", "connector")),
 					dash(mapStr(it, "Job", "job")),
 					dash(mapStr(it, "ConversationKey", "conversation_key")),
 					dash(mapStr(it, "BlockReason", "block_reason")),
@@ -212,13 +212,13 @@ func queueCommand() *cli.Command {
 	}
 }
 
-func runIntegrationList(_ context.Context, c *cli.Command) error {
+func runConnectorList(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON(request.BuildIntegrationsListPath(c.Int("limit")), &body); err != nil {
+	if err := client.GetJSON(request.BuildConnectorsListPath(c.Int("limit")), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -227,7 +227,7 @@ func runIntegrationList(_ context.Context, c *cli.Command) error {
 		return enc.Encode(body)
 	}
 	w := outWriter(c)
-	if list, ok := body["integrations"].([]any); ok {
+	if list, ok := body["connectors"].([]any); ok {
 		tbl := newTable(w, []string{"Name", "Type", "Format", "Status", "Command"})
 		for _, raw := range list {
 			m, ok := raw.(map[string]any)
@@ -251,7 +251,7 @@ func runIntegrationList(_ context.Context, c *cli.Command) error {
 	return enc.Encode(body)
 }
 
-func runIntegrationShow(_ context.Context, c *cli.Command) error {
+func runConnectorShow(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -261,7 +261,7 @@ func runIntegrationShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON(request.BuildIntegrationGetPath(name), &body); err != nil {
+	if err := client.GetJSON(request.BuildConnectorGetPath(name), &body); err != nil {
 		return err
 	}
 	enc := json.NewEncoder(outWriter(c))
@@ -269,9 +269,9 @@ func runIntegrationShow(_ context.Context, c *cli.Command) error {
 	return enc.Encode(body)
 }
 
-func runIntegrationSet(_ context.Context, c *cli.Command) error {
+func runConnectorSet(_ context.Context, c *cli.Command) error {
 	if c.NArg() < 2 {
-		return fmt.Errorf("usage: trebi integration set <name> <command...>")
+		return fmt.Errorf("usage: trebi connector set <name> <command...>")
 	}
 	name := c.Args().Get(0)
 	cmdParts := c.Args().Tail()
@@ -280,7 +280,7 @@ func runIntegrationSet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return fmt.Errorf("env %w", err)
 	}
-	req := request.IntegrationSpec{
+	req := request.ConnectorSpec{
 		Name: name, Command: command, Format: c.String("format"),
 		Type: c.String("type"), Cwd: c.String("cwd"),
 		Env: env, Facets: c.StringSlice("facet"),
@@ -292,16 +292,16 @@ func runIntegrationSet(_ context.Context, c *cli.Command) error {
 	if err := client.DoHTTP(req, nil); err != nil {
 		return err
 	}
-	fmt.Fprintf(outWriter(c), "integration %s set\n", name)
+	fmt.Fprintf(outWriter(c), "connector %s set\n", name)
 	return nil
 }
 
-func runIntegrationRemove(_ context.Context, c *cli.Command) error {
+func runConnectorRemove(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
 	}
-	confirm, err := confirmed(c, "deletes integration "+name+" and stops its event stream")
+	confirm, err := confirmed(c, "deletes connector "+name+" and stops its event stream")
 	if err != nil {
 		return err
 	}
@@ -309,22 +309,10 @@ func runIntegrationRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildIntegrationDelete(name, confirm), nil)
+	return client.DoHTTP(request.BuildConnectorDelete(name, confirm), nil)
 }
 
-func runIntegrationConnect(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("name required")
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildIntegrationConnect(name), nil)
-}
-
-func runIntegrationDisconnect(_ context.Context, c *cli.Command) error {
+func runConnectorConnect(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -333,10 +321,10 @@ func runIntegrationDisconnect(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildIntegrationDisconnect(name), nil)
+	return client.DoHTTP(request.BuildConnectorConnect(name), nil)
 }
 
-func runIntegrationStop(_ context.Context, c *cli.Command) error {
+func runConnectorDisconnect(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -345,10 +333,22 @@ func runIntegrationStop(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildIntegrationStop(name), nil)
+	return client.DoHTTP(request.BuildConnectorDisconnect(name), nil)
 }
 
-func runIntegrationCursorShow(_ context.Context, c *cli.Command) error {
+func runConnectorStop(_ context.Context, c *cli.Command) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(request.BuildConnectorStop(name), nil)
+}
+
+func runConnectorCursorShow(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -358,7 +358,7 @@ func runIntegrationCursorShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.DoHTTP(request.BuildIntegrationCursorGet(name), &body); err != nil {
+	if err := client.DoHTTP(request.BuildConnectorCursorGet(name), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -377,43 +377,31 @@ func runIntegrationCursorShow(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
-func runIntegrationCursorSet(_ context.Context, c *cli.Command) error {
+func runConnectorCursorSet(_ context.Context, c *cli.Command) error {
 	name, last := c.Args().Get(0), c.Args().Get(1)
 	if name == "" || last == "" {
-		return fmt.Errorf("usage: trebi integration cursor set <name> <last-event-id>")
+		return fmt.Errorf("usage: trebi connector cursor set <name> <last-event-id>")
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildIntegrationCursorSet(name, last), nil)
+	return client.DoHTTP(request.BuildConnectorCursorSet(name, last), nil)
 }
 
-func runIntegrationCursorReset(_ context.Context, c *cli.Command) error {
+func runConnectorCursorReset(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
-		return fmt.Errorf("usage: trebi integration cursor reset <name>")
+		return fmt.Errorf("usage: trebi connector cursor reset <name>")
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildIntegrationCursorReset(name), nil)
+	return client.DoHTTP(request.BuildConnectorCursorReset(name), nil)
 }
 
-func runIntegrationRestart(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("name required")
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildIntegrationRestart(name), nil)
-}
-
-func runIntegrationLogs(_ context.Context, c *cli.Command) error {
+func runConnectorRestart(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -422,7 +410,19 @@ func runIntegrationLogs(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := request.BuildIntegrationLogsPath(name, c.Bool("follow"))
+	return client.DoHTTP(request.BuildConnectorRestart(name), nil)
+}
+
+func runConnectorLogs(_ context.Context, c *cli.Command) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	path := request.BuildConnectorLogsPath(name, c.Bool("follow"))
 	if c.Bool("follow") {
 		return client.StreamGET(path, outWriter(c))
 	}
@@ -448,7 +448,7 @@ func runIntegrationLogs(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
-func runIntegrationTest(_ context.Context, c *cli.Command) error {
+func runConnectorTest(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -459,7 +459,7 @@ func runIntegrationTest(_ context.Context, c *cli.Command) error {
 			return fmt.Errorf("event JSON: %w", err)
 		}
 	}
-	req := request.BuildIntegrationTest(name, event)
+	req := request.BuildConnectorTest(name, event)
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -484,7 +484,7 @@ func eventsCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (event id)"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
-					&cli.StringFlag{Name: "integration", Usage: "integration name filter"},
+					&cli.StringFlag{Name: "connector", Usage: "connector name filter"},
 					&cli.StringFlag{Name: "since", Usage: "RFC3339 time or a duration such as 24h"},
 					&cli.StringFlag{Name: "search", Usage: "text match on summary or payload"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
@@ -500,7 +500,7 @@ func eventsCommand() *cli.Command {
 			},
 			{
 				Name:      "retrigger",
-				Usage:     "re-inject a stored event into its integration",
+				Usage:     "re-inject a stored event into its connector",
 				ArgsUsage: "<id>",
 				Action:    runEventsRetrigger,
 			},
@@ -514,7 +514,7 @@ func runEventsList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	path := request.BuildEventsListPath(c.String("cursor"), c.Int("limit"),
-		c.String("integration"), c.String("since"), c.String("search"))
+		c.String("connector"), c.String("since"), c.String("search"))
 	var body struct {
 		Events     []map[string]any `json:"events"`
 		NextCursor string           `json:"next_cursor"`
@@ -528,10 +528,10 @@ func runEventsList(_ context.Context, c *cli.Command) error {
 		return enc.Encode(body)
 	}
 	w := outWriter(c)
-	tbl := newTable(w, []string{"ID", "Integration", "Summary", "Received"})
+	tbl := newTable(w, []string{"ID", "Connector", "Summary", "Received"})
 	for _, e := range body.Events {
 		tbl.AppendRow(table.Row{
-			mapStr(e, "id"), mapStr(e, "integration"),
+			mapStr(e, "id"), mapStr(e, "connector"),
 			dash(mapStr(e, "summary")), mapStr(e, "received_at"),
 		})
 	}

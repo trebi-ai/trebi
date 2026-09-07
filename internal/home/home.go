@@ -40,12 +40,12 @@ func SetBase(dir string) {
 }
 
 // Paths under home.
-func DBPath() string           { return filepath.Join(Base(), "trebi.db") }
-func ConfigPath() string       { return filepath.Join(Base(), "config.yaml") }
-func IntegrationsPath() string { return filepath.Join(Base(), "integrations.yaml") }
-func APIJSONPath() string      { return filepath.Join(Base(), "api.json") }
-func DaemonLockPath() string   { return filepath.Join(Base(), "daemon.lock") }
-func ContextPath() string      { return filepath.Join(Base(), "context") }
+func DBPath() string         { return filepath.Join(Base(), "trebi.db") }
+func ConfigPath() string     { return filepath.Join(Base(), "config.yaml") }
+func ConnectorsPath() string { return filepath.Join(Base(), "connectors.yaml") }
+func APIJSONPath() string    { return filepath.Join(Base(), "api.json") }
+func DaemonLockPath() string { return filepath.Join(Base(), "daemon.lock") }
+func ContextPath() string    { return filepath.Join(Base(), "context") }
 func LinkedWorkspacesPath() string {
 	return filepath.Join(Base(), "linked-workspaces.yaml")
 }
@@ -58,8 +58,8 @@ func BinDir() string     { return filepath.Join(Base(), "bin") }
 func LibexecDir() string { return filepath.Join(Base(), "libexec") }
 func LogsDir() string    { return filepath.Join(Base(), "logs") }
 func RunsLogDir() string { return filepath.Join(Base(), "logs", "runs") }
-func IntegrationsLogDir() string {
-	return filepath.Join(Base(), "logs", "integrations")
+func ConnectorsLogDir() string {
+	return filepath.Join(Base(), "logs", "connectors")
 }
 func DaemonLogPath() string { return filepath.Join(Base(), "logs", "trebid.log") }
 
@@ -73,7 +73,7 @@ func EnsureDirs() error {
 		LibexecDir(),
 		LogsDir(),
 		RunsLogDir(),
-		IntegrationsLogDir(),
+		ConnectorsLogDir(),
 		filepath.Join(Base(), "state"),
 	}
 	for _, d := range dirs {

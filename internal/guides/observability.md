@@ -50,7 +50,7 @@ trebi bus --entity run --id <id> --action updated --limit 20 --json
 
 `--entity` is **local only** (client-side filter); remote: pass `topics` and filter the returned events.
 
-Trigger events (durable): `trebi guide integrations-and-rules`.
+Trigger events (durable): `trebi guide connectors-and-rules`.
 
 ## Service logs
 

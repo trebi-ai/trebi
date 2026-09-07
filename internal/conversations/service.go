@@ -216,7 +216,7 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]Conversation, erro
 		q += ` AND id < ?`
 		args = append(args, opts.Cursor)
 	}
-	q += ` ORDER BY id DESC LIMIT ?`
+	q += ` ORDER BY COALESCE(last_activity_at, created_at) DESC, id DESC LIMIT ?`
 	args = append(args, opts.Limit)
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
@@ -354,6 +354,9 @@ func (s *Service) GetPointer(ctx context.Context, channelType, channelRef string
 func (s *Service) PutPointer(ctx context.Context, channelType, channelRef, convID string) (*Pointer, error) {
 	if channelType == "" || channelRef == "" {
 		return nil, fmt.Errorf("%w: channel_type and channel_ref are required", ErrValidation)
+	}
+	if cur, err := s.GetPointer(ctx, channelType, channelRef); err == nil && cur.ConversationID == convID {
+		return cur, nil
 	}
 	conv, err := s.Get(ctx, convID)
 	if err != nil {

@@ -1,7 +1,9 @@
 package tmux
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"path/filepath"
 	"strings"
@@ -12,7 +14,8 @@ import (
 )
 
 // fakeTool drives the `fake` binary (cmd/fake). It exists so eval trials can
-// exercise login and logout without touching a vendor account.
+// exercise login and logout without touching a vendor account. Default
+// invocation (no subcommand) is canned-reply mode: one assistant turn.
 type fakeTool struct{}
 
 func (fakeTool) Name() string { return Fake }
@@ -36,10 +39,31 @@ func (fakeTool) HandleStartup(screen string) []Action { return nil }
 func (fakeTool) PostReadyDelay() time.Duration        { return 0 }
 
 func (fakeTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
-	return "", ErrTranscriptUnsupported
+	return filepath.Join(config.HarnessDir(Fake), "transcript.jsonl"), nil
 }
 
-func (fakeTool) ParseTranscript(r io.Reader) ([]Turn, error) { return unsupportedParse(r) }
+func (fakeTool) ParseTranscript(r io.Reader) ([]Turn, error) {
+	sc := bufio.NewScanner(r)
+	var turns []Turn
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var row struct {
+			Role string `json:"role"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			continue
+		}
+		if row.Role == "" {
+			row.Role = "assistant"
+		}
+		turns = append(turns, Turn{Role: row.Role, Text: row.Text, At: time.Now().UTC()})
+	}
+	return turns, sc.Err()
+}
 
 func (fakeTool) Lifecycle() LifecycleAdapter { return nil }
 

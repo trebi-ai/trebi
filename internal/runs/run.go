@@ -183,10 +183,10 @@ type AttachInfo struct {
 
 // TriggerCapture — replay input (D4).
 type TriggerCapture struct {
-	EventID     string            `json:"event_id,omitempty"`
-	Integration string            `json:"integration,omitempty"`
-	Vars        map[string]string `json:"vars,omitempty"`
-	Event       json.RawMessage   `json:"event,omitempty"`
+	EventID   string            `json:"event_id,omitempty"`
+	Connector string            `json:"connector,omitempty"`
+	Vars      map[string]string `json:"vars,omitempty"`
+	Event     json.RawMessage   `json:"event,omitempty"`
 }
 
 // Run — one execution (wire shape §3.4).

@@ -120,12 +120,12 @@ func TestDoHTTPRoundTrip(t *testing.T) {
 		t.Fatalf("delete %s %s", gotMethod, gotPath)
 	}
 
-	// integration restart
-	req = request.BuildIntegrationRestart("mail")
+	// connector restart
+	req = request.BuildConnectorRestart("mail")
 	if err := client.DoHTTP(req, nil); err != nil {
 		t.Fatal(err)
 	}
-	if gotMethod != "POST" || gotPath != "/v1/integrations/mail/restart" {
+	if gotMethod != "POST" || gotPath != "/v1/connectors/mail/restart" {
 		t.Fatalf("restart %s %s", gotMethod, gotPath)
 	}
 
@@ -229,7 +229,7 @@ func TestCommandRegistration(t *testing.T) {
 	for _, c := range app.Commands {
 		names[c.Name] = true
 	}
-	for _, want := range []string{"runs", "job", "harness", "integration", "config", "service", "conversation", "event", "queue", "rules", "bus", "doctor"} {
+	for _, want := range []string{"runs", "job", "harness", "connector", "config", "service", "conversation", "event", "queue", "rules", "bus", "doctor"} {
 		if !names[want] {
 			t.Fatalf("missing top-level %s", want)
 		}
@@ -286,20 +286,20 @@ func TestCommandRegistration(t *testing.T) {
 	if findCmd(auth.Commands, "mark") != nil {
 		t.Fatal("harness auth mark should be gone")
 	}
-	integ := findCmd(app.Commands, "integration")
+	connector := findCmd(app.Commands, "connector")
 	for _, want := range []string{"list", "show", "set", "remove", "stop", "restart", "logs", "test", "connect", "disconnect", "cursor"} {
-		if findCmd(integ.Commands, want) == nil {
-			t.Fatalf("integration missing %s", want)
+		if findCmd(connector.Commands, want) == nil {
+			t.Fatalf("connector missing %s", want)
 		}
 	}
-	cur := findCmd(integ.Commands, "cursor")
+	cur := findCmd(connector.Commands, "cursor")
 	for _, want := range []string{"show", "set", "reset"} {
 		if findCmd(cur.Commands, want) == nil {
-			t.Fatalf("integration cursor missing %s", want)
+			t.Fatalf("connector cursor missing %s", want)
 		}
 	}
-	if findCmd(integ.Commands, "queue") == nil || !findCmd(integ.Commands, "queue").Hidden {
-		t.Fatal("integration queue should remain as a hidden alias")
+	if findCmd(connector.Commands, "queue") == nil || !findCmd(connector.Commands, "queue").Hidden {
+		t.Fatal("connector queue should remain as a hidden alias")
 	}
 	cfg := findCmd(app.Commands, "config")
 	for _, want := range []string{"show", "set", "validate", "path", "bridge"} {

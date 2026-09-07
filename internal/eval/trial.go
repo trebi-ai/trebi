@@ -769,7 +769,7 @@ func fileSHA(path string) (string, error) {
 
 // daemonOwned reports paths the daemon itself rewrites while a trial runs.
 // Only those are exempt from "home untouched". A file the agent can edit by
-// hand — config.yaml, skills, secrets, integrations — is not on this list,
+// hand — config.yaml, skills, secrets, connectors — is not on this list,
 // so a hand edit is a violation even when the daemon also writes the file.
 func daemonOwned(rel string) bool {
 	rel = filepath.ToSlash(rel)

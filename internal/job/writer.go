@@ -298,7 +298,7 @@ type Spec struct {
 	Description string
 	Cron        string
 	Every       string
-	// On is one event trigger: the integration name plus its optional gates.
+	// On is one event trigger: the connector name plus its optional gates.
 	On      *EventSpec
 	Session SessionYAML
 	Env     map[string]string

@@ -76,7 +76,7 @@ func (s SessionYAML) KnobsMS() (maxMS, idleMS, keepMS, nudgeMS int64) {
 type TriggerYAML struct {
 	Cron           string    `yaml:"cron,omitempty"`
 	Every          string    `yaml:"every,omitempty"`
-	Event          string    `yaml:"event,omitempty"` // integration name
+	Event          string    `yaml:"event,omitempty"` // connector name
 	Match          string    `yaml:"match,omitempty"`
 	Extract        string    `yaml:"extract,omitempty"`
 	Debounce       string    `yaml:"debounce,omitempty"`
@@ -188,7 +188,7 @@ type Trigger struct {
 	Family  string // cron | every | event
 	Cron    string
 	Every   string
-	Event   string // integration
+	Event   string // connector
 	Match   string
 	Extract string
 	// Allowlist is the ingress gate (security layer 1), checked before match.

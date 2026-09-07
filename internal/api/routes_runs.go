@@ -731,7 +731,7 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 			br = dispatch.BlockLimitExceeded
 		}
 		item := &dispatch.QueueItem{
-			Integration:     "retry",
+			Connector:       "retry",
 			WorkspaceID:     prev.Workspace,
 			Job:             prev.Job,
 			Kind:            prev.Kind,

@@ -151,7 +151,7 @@ func TestJobPauseIfMatch(t *testing.T) {
 func TestQueueCancelAndRequeue(t *testing.T) {
 	s, base, _ := startAPI(t)
 	fire := map[string]any{
-		"integration": "qtest", "workspace": "ws", "job": "j",
+		"connector": "qtest", "workspace": "ws", "job": "j",
 		"match": "true", "event": map[string]any{"x": 1},
 	}
 	code, res, _ := doJSON(t, "POST", base+"/v1/rules/fire", s.Token(), fire)

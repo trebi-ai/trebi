@@ -1153,16 +1153,16 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 			}),
 		},
 
-		"integration": {
-			"list": act("GET /v1/integrations", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+		"connector": {
+			"list": act("GET /v1/connectors", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
 				limit, _, err := in.num("limit")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildIntegrationsListPath(limit)), nil
+				return mcpGet(request.BuildConnectorsListPath(limit)), nil
 			}),
-			"show": idGet("GET /v1/integrations/{name}", "name", "mail", request.BuildIntegrationGetPath),
-			"create": act("POST /v1/integrations", mcpInput{"definition": map[string]any{"name": "mail", "command": "fetch-mail.sh"}}, func(in mcpInput) (request.HTTPRequest, error) {
+			"show": idGet("GET /v1/connectors/{name}", "name", "mail", request.BuildConnectorGetPath),
+			"create": act("POST /v1/connectors", mcpInput{"definition": map[string]any{"name": "mail", "command": "fetch-mail.sh"}}, func(in mcpInput) (request.HTTPRequest, error) {
 				def, err := in.obj("definition")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1170,9 +1170,9 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				if def == nil {
 					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "definition")
 				}
-				return request.BuildIntegrationCreate(def), nil
+				return request.BuildConnectorCreate(def), nil
 			}),
-			"set": act("PUT /v1/integrations/{name}", mcpInput{"name": "mail", "command": "fetch-mail.sh"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"set": act("PUT /v1/connectors/{name}", mcpInput{"name": "mail", "command": "fetch-mail.sh"}, func(in mcpInput) (request.HTTPRequest, error) {
 				v, err := in.head("name", "command", "format", "type", "cwd")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1185,35 +1185,35 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.IntegrationSpec{
+				return request.ConnectorSpec{
 					Name: v[0], Command: v[1], Format: v[2], Type: v[3], Cwd: v[4],
 					Env: env, Facets: facets,
 				}.Build(), nil
 			}),
-			"delete":     confirmDel("DELETE /v1/integrations/{name}", "name", "mail", request.BuildIntegrationDelete),
-			"connect":    idPost("POST /v1/integrations/{name}/connect", "name", "mail", request.BuildIntegrationConnect),
-			"disconnect": idPost("POST /v1/integrations/{name}/disconnect", "name", "mail", request.BuildIntegrationDisconnect),
-			"restart":    idPost("POST /v1/integrations/{name}/restart", "name", "mail", request.BuildIntegrationRestart),
-			"test": act("POST /v1/integrations/{name}/test", mcpInput{"name": "mail", "event": map[string]any{"kind": "mail"}}, func(in mcpInput) (request.HTTPRequest, error) {
+			"delete":     confirmDel("DELETE /v1/connectors/{name}", "name", "mail", request.BuildConnectorDelete),
+			"connect":    idPost("POST /v1/connectors/{name}/connect", "name", "mail", request.BuildConnectorConnect),
+			"disconnect": idPost("POST /v1/connectors/{name}/disconnect", "name", "mail", request.BuildConnectorDisconnect),
+			"restart":    idPost("POST /v1/connectors/{name}/restart", "name", "mail", request.BuildConnectorRestart),
+			"test": act("POST /v1/connectors/{name}/test", mcpInput{"name": "mail", "event": map[string]any{"kind": "mail"}}, func(in mcpInput) (request.HTTPRequest, error) {
 				name, err := in.reqStr("name")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildIntegrationTest(name, in.value("event")), nil
+				return request.BuildConnectorTest(name, in.value("event")), nil
 			}),
 			"logs": func() mcpAction {
-				e := act("GET /v1/integrations/{name}/logs", mcpInput{"name": "mail"}, func(in mcpInput) (request.HTTPRequest, error) {
+				e := act("GET /v1/connectors/{name}/logs", mcpInput{"name": "mail"}, func(in mcpInput) (request.HTTPRequest, error) {
 					name, err := in.reqStr("name")
 					if err != nil {
 						return request.HTTPRequest{}, err
 					}
-					return mcpGet(request.BuildIntegrationLogsPath(name, false)), nil // follow is not available over MCP
+					return mcpGet(request.BuildConnectorLogsPath(name, false)), nil // follow is not available over MCP
 				})
 				e.transform = logLinesTransform
 				return bound(e, true)
 			}(),
-			"cursor_show": getReq("GET /v1/integrations/{name}/cursor", "name", "mail", request.BuildIntegrationCursorGet),
-			"cursor_set": act("PUT /v1/integrations/{name}/cursor", mcpInput{"name": "mail", "last_event_id": "42"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"cursor_show": getReq("GET /v1/connectors/{name}/cursor", "name", "mail", request.BuildConnectorCursorGet),
+			"cursor_set": act("PUT /v1/connectors/{name}/cursor", mcpInput{"name": "mail", "last_event_id": "42"}, func(in mcpInput) (request.HTTPRequest, error) {
 				v, err := in.head("name", "last_event_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1221,9 +1221,9 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				if v[1] == "" {
 					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "last_event_id")
 				}
-				return request.BuildIntegrationCursorSet(v[0], v[1]), nil
+				return request.BuildConnectorCursorSet(v[0], v[1]), nil
 			}),
-			"cursor_reset": idPost("PUT /v1/integrations/{name}/cursor", "name", "mail", request.BuildIntegrationCursorReset),
+			"cursor_reset": idPost("PUT /v1/connectors/{name}/cursor", "name", "mail", request.BuildConnectorCursorReset),
 		},
 
 		"event": {
@@ -1236,7 +1236,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				v, err := in.strs("integration", "since", "q")
+				v, err := in.strs("connector", "since", "q")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -1251,8 +1251,8 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildRulesTest(v[0], v[1], in.value("event")), nil
 			}),
-			"rules_fire": act("POST /v1/rules/fire", mcpInput{"integration": "mail", "job": "nightly-sync", "match": "kind = 'mail'"}, func(in mcpInput) (request.HTTPRequest, error) {
-				req, err := in.reqStrs("integration", "job", "match")
+			"rules_fire": act("POST /v1/rules/fire", mcpInput{"connector": "mail", "job": "nightly-sync", "match": "kind = 'mail'"}, func(in mcpInput) (request.HTTPRequest, error) {
+				req, err := in.reqStrs("connector", "job", "match")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}

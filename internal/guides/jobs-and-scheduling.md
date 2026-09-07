@@ -104,7 +104,7 @@ trebi job schedule my-job "0 9 * * *"
 trebi job schedule my-job "@every 15m"
 ```
 
-`job schedule` is **local only**; remote: `job patch` the triggers / `job pause`. Event triggers: `trebi guide integrations-and-rules`.
+`job schedule` is **local only**; remote: `job patch` the triggers / `job pause`. Event triggers: `trebi guide connectors-and-rules`.
 
 ## Delete
 

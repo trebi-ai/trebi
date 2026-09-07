@@ -10,7 +10,7 @@ The event log feeds the rule pipeline. Use the `system` tool action `bus_poll` f
 
 ### list
 List events, newest first.
-- `integration` (string, optional): filter by integration name.
+- `connector` (string, optional): filter by connector name.
 - `since` (string, optional): RFC3339 time, or a duration such as `24h` meaning "that long ago".
 - `q` (string, optional): text match on the summary or the payload.
 - `cursor` (string, optional): pagination cursor from a prior page.
@@ -32,7 +32,7 @@ Evaluate one match expression against an event. No rule is recorded.
 
 ### rules_fire
 Evaluate one rule and fire its actions when it matches.
-- `integration` (string, required): integration name.
+- `connector` (string, required): connector name.
 - `job` (string, optional): job name.
 - `match` (string, required): match expression.
 - `workspace` (string, optional): workspace id.
@@ -42,4 +42,4 @@ Evaluate one rule and fire its actions when it matches.
 
 ## Related guides
 
-`integrations-and-rules`
+`connectors-and-rules`

@@ -228,8 +228,8 @@ TABLE_MAP = {
     "task_events": "run_events",
     "event_queue": "event_queue",
     "trigger_policy": "dispatch_policy",
-    "source_metrics": "integration_metrics",
-    "source_cursors": "integration_cursors",
+    "source_metrics": "connector_metrics",
+    "source_cursors": "connector_cursors",
     "schedule_anchors": "schedules",
 }
 
@@ -376,7 +376,7 @@ def plan_migrate(jobi_dir: Path, trebi_dir: Path, mode: str) -> MigrationPlan:
     cfg = PhasePlan("config", "map config.yaml + envsets → trebi config")
     for name in ("config.yaml", "envsets.yaml", "sources.yaml"):
         cfg.counts[name] = int((jobi_dir / name).exists())
-    cfg.notes.append("sources.yaml → integrations.yaml (same shape, top key integrations)")
+    cfg.notes.append("sources.yaml → connectors.yaml (same shape, top key connectors)")
     cfg.notes.append("defaults.command → defaults.harness; session.timeout → idle_timeout")
     plan.phases.append(cfg)
 
@@ -408,7 +408,7 @@ def plan_migrate(jobi_dir: Path, trebi_dir: Path, mode: str) -> MigrationPlan:
                     except sqlite3.Error:
                         pass
                 if src == "event_queue":
-                    ph.notes.append("source→integration; all statuses migrate incl. pending/blocked")
+                    ph.notes.append("source→connector; all statuses migrate incl. pending/blocked")
                 if src == "source_cursors":
                     ph.notes.append("cursors cutover-critical; refuse apply if stored cursor fails copy")
                 if src == "schedule_anchors":
@@ -566,7 +566,7 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
         return 2
     # config files
     mapping = {
-        "sources.yaml": "integrations.yaml",
+        "sources.yaml": "connectors.yaml",
         "config.yaml": "config.yaml",
     }
     for src_name, dst_name in mapping.items():
@@ -575,7 +575,7 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
             continue
         raw = src.read_text(encoding="utf-8", errors="replace")
         if src_name == "sources.yaml":
-            raw = raw.replace("sources:", "integrations:", 1) if raw.lstrip().startswith("sources:") else raw
+            raw = raw.replace("sources:", "connectors:", 1) if raw.lstrip().startswith("sources:") else raw
         if src_name == "config.yaml":
             raw = raw.replace("defaults:\n  command:", "defaults:\n  harness:")
             raw = raw.replace("timeout:", "idle_timeout:")  # session.timeout
@@ -816,7 +816,7 @@ def apply_tasks(jconn: sqlite3.Connection, tconn: sqlite3.Connection, wmap: dict
               id, workspace_id, job, kind, reason, status, end_reason, prompt_preview, session_id, runtime, harness,
               tmux_session, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_model,
               started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
-              trigger_integration, trigger_capture_json, trigger_vars_json, conversation_key, queue_id,
+              trigger_connector, trigger_capture_json, trigger_vars_json, conversation_key, queue_id,
               trace_id, revision, updated_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
             (
@@ -860,7 +860,7 @@ def apply_queue(jconn: sqlite3.Connection, tconn: sqlite3.Connection, wmap: dict
         kind = "assistant" if d.get("job_name") and d.get("job_name") == d.get("parent_agent") else "job"
         tconn.execute(
             """INSERT OR REPLACE INTO event_queue (
-              id, integration, workspace_id, job, kind, on_index, conversation_key,
+              id, connector, workspace_id, job, kind, on_index, conversation_key,
               event_raw, capture_json, vars_json, prompt, status, block_reason, result,
               attempts, next_attempt_at, claimed_at, run_id, error_message, created_at, updated_at, done_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -889,7 +889,7 @@ def apply_policy_cursors(jconn: sqlite3.Connection, tconn: sqlite3.Connection, w
     try:
         for name, eid, upd in jconn.execute("SELECT source_name, last_event_id, updated_at FROM source_cursors"):
             tconn.execute(
-                "INSERT OR REPLACE INTO integration_cursors (name, last_event_id, updated_at) VALUES (?,?,?)",
+                "INSERT OR REPLACE INTO connector_cursors (name, last_event_id, updated_at) VALUES (?,?,?)",
                 (name, eid, upd),
             )
     except sqlite3.Error:
@@ -897,7 +897,7 @@ def apply_policy_cursors(jconn: sqlite3.Connection, tconn: sqlite3.Connection, w
     try:
         for row in jconn.execute("SELECT name, events_total, parse_errors, match_errors, fires, drops, last_event_at, updated_at FROM source_metrics"):
             tconn.execute(
-                "INSERT OR REPLACE INTO integration_metrics (name, events_total, parse_errors, match_errors, fires, drops, last_event_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO connector_metrics (name, events_total, parse_errors, match_errors, fires, drops, last_event_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
                 row,
             )
     except sqlite3.Error:

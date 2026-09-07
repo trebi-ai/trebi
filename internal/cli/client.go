@@ -95,7 +95,7 @@ func (c *APIClient) GetRaw(path string) ([]byte, error) {
 }
 
 // StreamGET copies a GET response body to dst until EOF or ctx cancel.
-// Used for integration logs --follow (SSE). Timeout is disabled on this call.
+// Used for connector logs --follow (SSE). Timeout is disabled on this call.
 func (c *APIClient) StreamGET(path string, dst io.Writer) error {
 	req, err := http.NewRequest("GET", c.base+path, nil)
 	if err != nil {

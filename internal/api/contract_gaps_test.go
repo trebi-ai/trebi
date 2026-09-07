@@ -26,7 +26,7 @@ func TestEventsJoinOutcomesFromQueue(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	// rules/fire creates event + outcome + queue pending
-	payload := `{"integration":"src","workspace":"ws1","job":"demo","match":"true","event":{"n":1}}`
+	payload := `{"connector":"src","workspace":"ws1","job":"demo","match":"true","event":{"n":1}}`
 	req, _ := http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(payload))
 	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
@@ -442,14 +442,14 @@ func TestListRoutesCursorAndLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 		eid := ulid.Make().String()
-		if _, err := st.DB().ExecContext(ctx, `INSERT INTO events (id, integration, received_at, summary, trace_id)
+		if _, err := st.DB().ExecContext(ctx, `INSERT INTO events (id, connector, received_at, summary, trace_id)
 			VALUES (?,?,?,?,?)`, eid, "src", now, "s", eid); err != nil {
 			t.Fatal(err)
 		}
 	}
 	q := dispatch.NewQueue(st)
 	for i := 0; i < 5; i++ {
-		if err := q.Enqueue(ctx, &dispatch.QueueItem{Integration: "src", WorkspaceID: "ws", Job: "j"}); err != nil {
+		if err := q.Enqueue(ctx, &dispatch.QueueItem{Connector: "src", WorkspaceID: "ws", Job: "j"}); err != nil {
 			t.Fatal(err)
 		}
 	}

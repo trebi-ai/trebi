@@ -61,7 +61,7 @@ func (f FilesConfig) MaxBytesOrDefault() int64 {
 // NotifyConfig: shell templates per channel (email → whatsapp → discord).
 // Values are passed as TREBI_ALERT_* environment variables. Existing
 // {{kind}} {{tool}} {{task_id}} {{job}} {{workspace}} {{message}} {{hint}}
-// {{body}} {{resume}} {{integration}} placeholders are rewritten to
+// {{body}} {{resume}} {{connector}} placeholders are rewritten to
 // "$TREBI_ALERT_*" so untrusted text is never interpolated into the shell string.
 type NotifyConfig struct {
 	Email        string `yaml:"email,omitempty"`

@@ -26,7 +26,7 @@ func TestEnqueueClaimDone(t *testing.T) {
 	q := dispatch.NewQueue(st)
 
 	item := &dispatch.QueueItem{
-		Integration: "whatsapp",
+		Connector:   "whatsapp",
 		WorkspaceID: "ws1",
 		Job:         "receipts",
 		OnIndex:     0,
@@ -87,7 +87,7 @@ func TestClaimNextFIFOByULID(t *testing.T) {
 	for i, created := range createds {
 		id := ulid.MustNew(ulid.Timestamp(base.Add(time.Duration(i)*time.Second)), nil).String()
 		ids[i] = id
-		item := &dispatch.QueueItem{ID: id, Integration: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
+		item := &dispatch.QueueItem{ID: id, Connector: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
 		if err := q.Enqueue(ctx, item); err != nil {
 			t.Fatal(err)
 		}
@@ -115,7 +115,7 @@ func TestClaimNextExactlyOnceUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	q := dispatch.NewQueue(st)
 
-	item := &dispatch.QueueItem{Integration: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
 	if err := q.Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestRequeueAndCancel(t *testing.T) {
 	q := dispatch.NewQueue(st)
 
 	enqueue := func() *dispatch.QueueItem {
-		item := &dispatch.QueueItem{Integration: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
+		item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
 		if err := q.Enqueue(ctx, item); err != nil {
 			t.Fatal(err)
 		}

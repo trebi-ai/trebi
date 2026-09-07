@@ -21,7 +21,7 @@ Create one skill. Give `content`, or one source field to pull the bundle.
 - `source_git` (string, optional): git remote to clone the skill bundle from. The clone must hold a `SKILL.md`.
 - `source_folder` (string, optional): local folder to copy the skill bundle from. It must hold a `SKILL.md`.
 - `provenance` (string, optional): origin of the skill, one of `local`,
-  `assistant`, `git`, `registry`, `integration`. Leave it unset unless you know
+  `assistant`, `git`, `registry`, `connector`. Leave it unset unless you know
   the skill came from elsewhere: it defaults to `local`, and only `local` and
   `assistant` skills accept support-file writes. A skill created with any other
   provenance rejects `file put` with `conflict`, and the fix is to create the

@@ -1,4 +1,4 @@
-package integrations_test
+package connectors_test
 
 import (
 	"context"
@@ -9,20 +9,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/integrations"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
-// TestIntegrations_UpsertListSaveRoundTrip writes definition to integrations.yaml
+// TestConnectors_UpsertListSaveRoundTrip writes definition to connectors.yaml
 // and lists it back through the real service API.
-func TestIntegrations_UpsertListSaveRoundTrip(t *testing.T) {
+func TestConnectors_UpsertListSaveRoundTrip(t *testing.T) {
 	_, _, _, svc := openStack(t)
 	ctx := context.Background()
-	d := integrations.Definition{
+	d := connectors.Definition{
 		Name:    "line-echo",
 		Type:    "stream",
 		Command: "echo hello",
@@ -32,7 +32,7 @@ func TestIntegrations_UpsertListSaveRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	// File must exist
-	if _, err := os.Stat(home.IntegrationsPath()); err != nil {
+	if _, err := os.Stat(home.ConnectorsPath()); err != nil {
 		t.Fatal(err)
 	}
 	list := svc.List()
@@ -54,13 +54,13 @@ func TestIntegrations_UpsertListSaveRoundTrip(t *testing.T) {
 	}
 }
 
-// TestIntegrations_StartStopLifecycle runs a short-lived stream process and
+// TestConnectors_StartStopLifecycle runs a short-lived stream process and
 // observes listening → stopped status transitions.
-func TestIntegrations_StartStopLifecycle(t *testing.T) {
+func TestConnectors_StartStopLifecycle(t *testing.T) {
 	_, _, _, svc := openStack(t)
 	ctx := context.Background()
 	// Keepalive stream: print a line every 200ms until killed.
-	d := integrations.Definition{
+	d := connectors.Definition{
 		Name:    "tick",
 		Type:    "stream",
 		Command: `while true; do echo '{"n":1}'; sleep 0.2; done`,
@@ -120,13 +120,13 @@ func TestIntegrations_StartStopLifecycle(t *testing.T) {
 	}
 }
 
-// TestIntegrations_ConcurrentStartSingleProcess proves the slot reservation:
+// TestConnectors_ConcurrentStartSingleProcess proves the slot reservation:
 // two concurrent Starts spawn exactly one subprocess.
-func TestIntegrations_ConcurrentStartSingleProcess(t *testing.T) {
+func TestConnectors_ConcurrentStartSingleProcess(t *testing.T) {
 	_, _, _, svc := openStack(t)
 	ctx := context.Background()
 	out := filepath.Join(t.TempDir(), "pids")
-	d := integrations.Definition{
+	d := connectors.Definition{
 		Name:    "once",
 		Type:    "stream",
 		Command: `echo started >> "$OUT"; sleep 3`,
@@ -166,12 +166,12 @@ func TestIntegrations_ConcurrentStartSingleProcess(t *testing.T) {
 	}
 }
 
-// TestIntegrations_NonZeroExitCrashes: a self-exit with a non-zero code must
-// mark the integration crashed and emit integration.updated on the bus.
-func TestIntegrations_NonZeroExitCrashes(t *testing.T) {
+// TestConnectors_NonZeroExitCrashes: a self-exit with a non-zero code must
+// mark the connector crashed and emit connector.updated on the bus.
+func TestConnectors_NonZeroExitCrashes(t *testing.T) {
 	st, _, _, svc := openStack(t)
 	ctx := context.Background()
-	d := integrations.Definition{Name: "boom", Type: "stream", Command: "echo one; exit 1", Format: "line"}
+	d := connectors.Definition{Name: "boom", Type: "stream", Command: "echo one; exit 1", Format: "line"}
 	if err := svc.Upsert(ctx, d); err != nil {
 		t.Fatal(err)
 	}
@@ -186,26 +186,26 @@ func TestIntegrations_NonZeroExitCrashes(t *testing.T) {
 	// Bus must carry the terminal status (the append follows the status flip).
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		evs, err := st.ListBus(ctx, 0, []string{"integration"}, 100)
+		evs, err := st.ListBus(ctx, 0, []string{"connector"}, 100)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, ev := range evs {
-			if ev.Topic == "integration.updated" && strings.Contains(string(ev.Attrs), "crashed") {
+			if ev.Topic == "connector.updated" && strings.Contains(string(ev.Attrs), "crashed") {
 				return
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatal("no integration.updated with status crashed on bus")
+	t.Fatal("no connector.updated with status crashed on bus")
 }
 
-// TestIntegrations_CleanSelfExitStops: a zero-exit self-termination ends as
+// TestConnectors_CleanSelfExitStops: a zero-exit self-termination ends as
 // "stopped", not "crashed".
-func TestIntegrations_CleanSelfExitStops(t *testing.T) {
+func TestConnectors_CleanSelfExitStops(t *testing.T) {
 	_, _, _, svc := openStack(t)
 	ctx := context.Background()
-	d := integrations.Definition{Name: "brief", Type: "stream", Command: "echo one; exit 0", Format: "line"}
+	d := connectors.Definition{Name: "brief", Type: "stream", Command: "echo one; exit 0", Format: "line"}
 	if err := svc.Upsert(ctx, d); err != nil {
 		t.Fatal(err)
 	}
@@ -219,9 +219,9 @@ func TestIntegrations_CleanSelfExitStops(t *testing.T) {
 	}
 }
 
-// TestIntegrations_InjectEventMatchesJob enqueues via handleLine when a job
+// TestConnectors_InjectEventMatchesJob enqueues via handleLine when a job
 // subscribes with match true.
-func TestIntegrations_InjectEventMatchesJob(t *testing.T) {
+func TestConnectors_InjectEventMatchesJob(t *testing.T) {
 	st, ws, _, svc := openStack(t)
 	ctx := context.Background()
 
@@ -230,7 +230,7 @@ func TestIntegrations_InjectEventMatchesJob(t *testing.T) {
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Event trigger on integration "src"
+	// Event trigger on connector "src"
 	md := "---\nharness: fake\ntriggers:\n  - event: src\n    match: \"true\"\n---\n\nRun.\n"
 	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
 		t.Fatal(err)
@@ -243,8 +243,8 @@ func TestIntegrations_InjectEventMatchesJob(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Register integration def (inject works even without Start)
-	_ = svc.Upsert(ctx, integrations.Definition{Name: "src", Format: "json", Command: "true"})
+	// Register connector def (inject works even without Start)
+	_ = svc.Upsert(ctx, connectors.Definition{Name: "src", Format: "json", Command: "true"})
 
 	if _, err := svc.InjectEvent(ctx, "src", map[string]any{"n": 42}); err != nil {
 		t.Fatal(err)
@@ -252,7 +252,7 @@ func TestIntegrations_InjectEventMatchesJob(t *testing.T) {
 
 	// Durable event row
 	var n int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE integration='src'`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE connector='src'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n < 1 {
@@ -267,9 +267,9 @@ func TestIntegrations_InjectEventMatchesJob(t *testing.T) {
 	}
 }
 
-// TestIntegrations_AllowlistGate proves the B3 ingress allowlist: a sender not
+// TestConnectors_AllowlistGate proves the B3 ingress allowlist: a sender not
 // on the list is blocked before match; a listed sender enqueues.
-func TestIntegrations_AllowlistGate(t *testing.T) {
+func TestConnectors_AllowlistGate(t *testing.T) {
 	st, ws, _, svc := openStack(t)
 	ctx := context.Background()
 
@@ -289,7 +289,7 @@ func TestIntegrations_AllowlistGate(t *testing.T) {
 	if err := ws.RebuildIndex(ctx, w); err != nil {
 		t.Fatal(err)
 	}
-	_ = svc.Upsert(ctx, integrations.Definition{Name: "src", Format: "json", Command: "true"})
+	_ = svc.Upsert(ctx, connectors.Definition{Name: "src", Format: "json", Command: "true"})
 
 	// Unlisted sender → blocked outcome, no queue row.
 	if _, err := svc.InjectEvent(ctx, "src", map[string]any{"sender": "mallory", "n": 1}); err != nil {
@@ -332,9 +332,9 @@ func TestIntegrations_AllowlistGate(t *testing.T) {
 	}
 }
 
-// TestIntegrations_AllowlistScopedAndNumeric proves scoped "key:value"
+// TestConnectors_AllowlistScopedAndNumeric proves scoped "key:value"
 // entries bind to one field, and numeric identity values match.
-func TestIntegrations_AllowlistScopedAndNumeric(t *testing.T) {
+func TestConnectors_AllowlistScopedAndNumeric(t *testing.T) {
 	st, ws, _, svc := openStack(t)
 	ctx := context.Background()
 
@@ -354,7 +354,7 @@ func TestIntegrations_AllowlistScopedAndNumeric(t *testing.T) {
 	if err := ws.RebuildIndex(ctx, w); err != nil {
 		t.Fatal(err)
 	}
-	_ = svc.Upsert(ctx, integrations.Definition{Name: "src", Format: "json", Command: "true"})
+	_ = svc.Upsert(ctx, connectors.Definition{Name: "src", Format: "json", Command: "true"})
 
 	queueRows := func() int {
 		t.Helper()
@@ -390,7 +390,7 @@ func TestIntegrations_AllowlistScopedAndNumeric(t *testing.T) {
 	}
 }
 
-func openStack(t *testing.T) (*store.Store, *workspaces.Service, *runs.Service, *integrations.Service) {
+func openStack(t *testing.T) (*store.Store, *workspaces.Service, *runs.Service, *connectors.Service) {
 	t.Helper()
 	dir := t.TempDir()
 	home.SetBase(dir)
@@ -404,12 +404,12 @@ func openStack(t *testing.T) (*store.Store, *workspaces.Service, *runs.Service, 
 	ws := workspaces.New(st)
 	r := runs.New(st)
 	pol := dispatch.NewPolicy()
-	svc := integrations.New(st, ws, r, pol)
+	svc := connectors.New(st, ws, r, pol)
 	return st, ws, r, svc
 }
 
-// waitStatus polls Get until the integration reaches want (or times out).
-func waitStatus(t *testing.T, svc *integrations.Service, name, want string) {
+// waitStatus polls Get until the connector reaches want (or times out).
+func waitStatus(t *testing.T, svc *connectors.Service, name, want string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	var status string

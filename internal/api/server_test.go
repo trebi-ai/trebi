@@ -180,7 +180,7 @@ func TestRulesTestAndQueueFire(t *testing.T) {
 		t.Fatalf("%v", res)
 	}
 
-	fire := `{"integration":"test","workspace":"ws","job":"j","match":"true","event":{"x":1}}`
+	fire := `{"connector":"test","workspace":"ws","job":"j","match":"true","event":{"x":1}}`
 	req, _ = http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(fire))
 	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")

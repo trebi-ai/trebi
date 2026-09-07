@@ -6,7 +6,7 @@ description: Tool/action/input shape, docs actions, CLI-to-MCP translation, work
 
 # MCP entry point
 
-Trebi's control plane is also an MCP server at `/mcp` (Streamable HTTP, bearer auth). Fifteen tools (`run`, `job`, `workspace`, `assistant`, `file`, `harness`, `integration`, `event`, `queue`, `inbox`, `conversation`, `skill`, `secret`, `config`, `system`). Each tool takes `{"action": "<name>", "input": {…}}`. Action `docs` returns the input field reference for that tool. Errors return the HTTP error envelope unchanged.
+Trebi's control plane is also an MCP server at `/mcp` (Streamable HTTP, bearer auth). Fifteen tools (`run`, `job`, `workspace`, `assistant`, `file`, `harness`, `connector`, `event`, `queue`, `inbox`, `conversation`, `skill`, `secret`, `config`, `system`). Each tool takes `{"action": "<name>", "input": {…}}`. Action `docs` returns the input field reference for that tool. Errors return the HTTP error envelope unchanged.
 
 Connect with the URL and token from `~/.trebi/api.json` (`{"url", "token"}`).
 
@@ -28,7 +28,7 @@ As an MCP client, call tool `<tool>` with
 `{"action": "<action>", "input": {"flag": "value", "name": "<name>"}}`.
 The tool's `docs` action lists the exact input fields.
 
-Hyphens in flags become underscores in input keys (`--if-match` → `if_match`, `--extra-prompt` → `extra_prompt`). The positional argument is the primary identifier (`name` / `id` / `topic`). Nested CLI words join with an underscore (`job memory show` → `job.memory_show`, `integration cursor show` → `integration.cursor_show`).
+Hyphens in flags become underscores in input keys (`--if-match` → `if_match`, `--extra-prompt` → `extra_prompt`). The positional argument is the primary identifier (`name` / `id` / `topic`). Nested CLI words join with an underscore (`job memory show` → `job.memory_show`, `connector cursor show` → `connector.cursor_show`).
 
 CLI area names that differ from the tool name:
 

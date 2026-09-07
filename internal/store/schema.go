@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 8
+const SchemaVersion = 9
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -12,7 +12,7 @@ const SchemaVersion = 8
 //
 // Not in this change (internal bookkeeping, file index, or not yet a sync source):
 //
-//	integration_cursors, harness_state, skill_index, job_index,
+//	connector_cursors, harness_state, skill_index, job_index,
 //	event_queue, schedules, conversations
 //
 // AUTOINCREMENT (run_segments.id, run_events.id, event_log.seq) is a known
@@ -384,6 +384,24 @@ ALTER TABLE skill_index ADD COLUMN source_ref TEXT;
 		// had to re-parse the JOB.md to guess where the run started.
 		`
 ALTER TABLE runs ADD COLUMN working_dir TEXT;
+`,
+		// v9: integration → connector (object-family rename).
+		`
+DROP INDEX IF EXISTS idx_events_integration;
+ALTER TABLE events RENAME COLUMN integration TO connector;
+CREATE INDEX idx_events_connector ON events(connector, received_at DESC);
+
+DROP INDEX IF EXISTS idx_eq_integration;
+ALTER TABLE event_queue RENAME COLUMN integration TO connector;
+CREATE INDEX idx_eq_connector ON event_queue(connector, created_at DESC);
+
+ALTER TABLE runs RENAME COLUMN trigger_integration TO trigger_connector;
+ALTER TABLE inbox_items RENAME COLUMN integration TO connector;
+ALTER TABLE integration_cursors RENAME TO connector_cursors;
+ALTER TABLE integration_metrics RENAME TO connector_metrics;
+
+UPDATE inbox_items SET alert_kind='connector_unhealthy' WHERE alert_kind='integration_unhealthy';
+UPDATE skill_index SET provenance='connector' WHERE provenance='integration';
 `,
 	}
 }

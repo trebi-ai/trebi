@@ -96,15 +96,15 @@ func (o *CreateOpts) applyDefaults() {
 }
 
 // triggerJSON flattens the trigger capture into insert columns.
-func (o *CreateOpts) triggerJSON() (eventID, integration, capture, vars *string) {
+func (o *CreateOpts) triggerJSON() (eventID, connector, capture, vars *string) {
 	if o.Trigger == nil {
 		return nil, nil, nil, nil
 	}
 	if o.Trigger.EventID != "" {
 		eventID = &o.Trigger.EventID
 	}
-	if o.Trigger.Integration != "" {
-		integration = &o.Trigger.Integration
+	if o.Trigger.Connector != "" {
+		connector = &o.Trigger.Connector
 	}
 	if o.Trigger.Event != nil {
 		s := string(o.Trigger.Event)
@@ -115,7 +115,7 @@ func (o *CreateOpts) triggerJSON() (eventID, integration, capture, vars *string)
 		s := string(b)
 		vars = &s
 	}
-	return eventID, integration, capture, vars
+	return eventID, connector, capture, vars
 }
 
 // Create inserts a running row + launch timeline + bus event.
@@ -148,7 +148,11 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Run, error) {
 		EntityID: id,
 		Action:   "created",
 		Revision: 1,
-		Attrs:    map[string]string{"job": opts.Job, "workspace": opts.WorkspaceID},
+		Attrs: map[string]string{
+			"job": opts.Job, "workspace": opts.WorkspaceID,
+			"kind": opts.Kind, "conversation_key": opts.ConversationKey,
+			"conversation_id": opts.ConversationID,
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -195,7 +199,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 			started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 			COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
 			COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
-			trigger_event_id, trigger_integration, trigger_capture_json, trigger_vars_json, inputs_json
+			trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json
 		FROM runs WHERE id = ?`, id)
 	return s.scanRun(row)
 }
@@ -260,7 +264,7 @@ func (o ListOpts) query() (string, []any) {
 		started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
 		COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
-		trigger_event_id, trigger_integration, trigger_capture_json, trigger_vars_json, inputs_json
+		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json
 		FROM runs WHERE 1=1`
 	var args []any
 	if o.Workspace != "" {
@@ -408,7 +412,7 @@ func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([
 		started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
 		COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
-		trigger_event_id, trigger_integration, trigger_capture_json, trigger_vars_json, inputs_json
+		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json
 		FROM runs WHERE COALESCE(conversation_id,'') != ''
 		AND (status = ? OR (ended_at IS NOT NULL AND ended_at >= ?))
 		ORDER BY id DESC LIMIT 200`
@@ -716,7 +720,9 @@ func (s *Service) SetAgentState(ctx context.Context, runID string, state AgentSt
 	var ws, job string
 	_ = s.st.DB().QueryRowContext(ctx, `SELECT workspace_id, job FROM runs WHERE id=?`, runID).Scan(&ws, &job)
 	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: "agent.state",
+		Topic:    "agent.state",
+		Entity:   "run",
+		EntityID: runID,
 		Attrs: map[string]any{
 			"run_id": runID, "state": string(state), "since": nowStr, "source": source,
 			"workspace": ws, "job": job,
@@ -871,7 +877,7 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 
 	_, err := tx.Exec(`INSERT INTO runs (
 		id, workspace_id, job, kind, reason, status, prompt_preview, inputs_json,
-		trigger_event_id, trigger_integration, trigger_capture_json, trigger_vars_json,
+		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json,
 		conversation_key, conversation_id, working_dir, session_id, runtime, harness, tmux_session,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		resumed_from, resume_attempts, queue_id, trace_id, revision, updated_at
@@ -1196,7 +1202,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		r.Attach = &AttachInfo{Kind: "tmux", Tmux: tmux}
 	}
 	if trigInteg.Valid || capJSON.Valid {
-		r.Trigger = &TriggerCapture{Integration: trigInteg.String, EventID: trigEvent.String}
+		r.Trigger = &TriggerCapture{Connector: trigInteg.String, EventID: trigEvent.String}
 		if capJSON.Valid {
 			r.Trigger.Event = json.RawMessage(capJSON.String)
 		}

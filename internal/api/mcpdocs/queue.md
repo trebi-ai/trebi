@@ -23,4 +23,4 @@ Drop one queued run, or several.
 
 ## Related guides
 
-`integrations-and-rules`
+`connectors-and-rules`

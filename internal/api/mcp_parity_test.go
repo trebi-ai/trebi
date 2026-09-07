@@ -175,7 +175,7 @@ var mcpExcluded = map[string]string{
 	"GET /v1/runs/{id}/attach":              "WebSocket terminal",
 	"GET /v1/harnesses/{name}/login/attach": "WebSocket login TUI",
 	"POST /v1/agent-hook/{event}":           "internal harness hook, not a client operation",
-	"POST /v1/integrations/{name}/stop":     "alias of disconnect (same handler)",
+	"POST /v1/connectors/{name}/stop":       "alias of disconnect (same handler)",
 	"POST /v1/skills/{name}/update":         "alias of refresh (same handler)",
 }
 
@@ -219,7 +219,7 @@ func mcpTestMux() *http.ServeMux {
 	s.routeFiles(mux)
 	s.routeHarness(mux)
 	s.routeInbox(mux)
-	s.routeIntegrations(mux)
+	s.routeConnectors(mux)
 	s.routeJobs(mux)
 	s.routeQueue(mux)
 	s.routeRuns(mux)

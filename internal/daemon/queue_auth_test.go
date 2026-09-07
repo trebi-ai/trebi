@@ -58,7 +58,7 @@ func TestQueueDrain_AuthMissingBlocks(t *testing.T) {
 	_ = cp.Workspaces.RebuildIndex(ctx, ws)
 
 	item := &dispatch.QueueItem{
-		Integration: "x", WorkspaceID: ws.ID, Job: "gated",
+		Connector: "x", WorkspaceID: ws.ID, Job: "gated",
 		Status: dispatch.QueuePending, EventRaw: `{}`,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
@@ -141,7 +141,7 @@ func TestQueueDrain_IfRunningSkipResult(t *testing.T) {
 	}
 
 	item := &dispatch.QueueItem{
-		Integration: "x", WorkspaceID: ws.ID, Job: "skipme",
+		Connector: "x", WorkspaceID: ws.ID, Job: "skipme",
 		Status: dispatch.QueuePending, EventRaw: `{}`,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {

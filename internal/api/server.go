@@ -16,12 +16,12 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/integrations"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
@@ -35,16 +35,16 @@ const Version = "0.2.0"
 
 // Server is the trebid HTTP API.
 type Server struct {
-	st      *store.Store
-	runs    *runs.Service
-	ws      *workspaces.Service
-	files   *files.Service
-	alerts  *alerts.Service
-	skills  *skills.Service
-	integ   *integrations.Service
-	conv    *conversations.Service
-	harness *harness.Service
-	sched   *schedule.Service
+	st         *store.Store
+	runs       *runs.Service
+	ws         *workspaces.Service
+	files      *files.Service
+	alerts     *alerts.Service
+	skills     *skills.Service
+	connectors *connectors.Service
+	conv       *conversations.Service
+	harness    *harness.Service
+	sched      *schedule.Service
 
 	token     string
 	startedAt time.Time
@@ -82,23 +82,23 @@ func New(st *store.Store, opts Options) *Server {
 	q := dispatch.NewQueue(st)
 	pol := dispatch.NewPolicy()
 	s := &Server{
-		st:        st,
-		runs:      r,
-		ws:        ws,
-		files:     files.New(opts.FilesMaxBytes),
-		alerts:    alerts.New(st, alerts.Options{}),
-		skills:    skills.New(st),
-		integ:     integrations.New(st, ws, r, pol),
-		conv:      conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
-		harness:   harness.New(st, tmux.DefaultDriver{}, harness.Options{}),
-		sched:     schedule.New(st),
-		token:     opts.Token,
-		startedAt: time.Now().UTC(),
-		shadow:    opts.Shadow,
-		drain:     opts.Drain || opts.Shadow,
-		done:      make(chan struct{}),
-		log:       slog.Default().With("source", "http_server"),
-		queue:     q,
+		st:         st,
+		runs:       r,
+		ws:         ws,
+		files:      files.New(opts.FilesMaxBytes),
+		alerts:     alerts.New(st, alerts.Options{}),
+		skills:     skills.New(st),
+		connectors: connectors.New(st, ws, r, pol),
+		conv:       conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
+		harness:    harness.New(st, tmux.DefaultDriver{}, harness.Options{}),
+		sched:      schedule.New(st),
+		token:      opts.Token,
+		startedAt:  time.Now().UTC(),
+		shadow:     opts.Shadow,
+		drain:      opts.Drain || opts.Shadow,
+		done:       make(chan struct{}),
+		log:        slog.Default().With("source", "http_server"),
+		queue:      q,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: checkWSOrigin,
 		},
@@ -106,22 +106,22 @@ func New(st *store.Store, opts Options) *Server {
 	if s.token == "" {
 		s.token = ulid.Make().String()
 	}
-	_ = s.integ.Load()
+	_ = s.connectors.Load()
 	s.mcpCatalog = newMCPCatalog()
 	s.mcpHTTP = s.newMCPHandler()
 	return s
 }
 
 // BindControlPlane replaces core services with the daemon's shared instances.
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, integ *integrations.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service) {
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
 	}
 	if ws != nil {
 		s.ws = ws
 	}
-	if integ != nil {
-		s.integ = integ
+	if connectors != nil {
+		s.connectors = connectors
 	}
 	if sched != nil {
 		s.sched = sched
@@ -177,7 +177,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeEvents(mux)
 	s.routeInbox(mux)
 	s.routeConversations(mux)
-	s.routeIntegrations(mux)
+	s.routeConnectors(mux)
 	s.routeHarness(mux)
 	s.routeSettings(mux)
 	s.routeMCP(mux)

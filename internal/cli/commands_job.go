@@ -153,7 +153,7 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "description", Usage: "job description"},
 				&cli.StringFlag{Name: "cron", Usage: "cron trigger, for example \"0 3 * * *\""},
 				&cli.StringFlag{Name: "every", Usage: "interval trigger, for example 15m"},
-				&cli.StringFlag{Name: "on", Usage: "event trigger: the integration name"},
+				&cli.StringFlag{Name: "on", Usage: "event trigger: the connector name"},
 				&cli.StringFlag{Name: "match", Usage: "event match expression, with --on"},
 				&cli.BoolFlag{Name: "validate", Usage: "check the definition; write nothing"},
 			},

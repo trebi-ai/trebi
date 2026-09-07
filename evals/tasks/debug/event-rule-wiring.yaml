@@ -8,7 +8,7 @@ timeout_s: 400
 server_harness: codex
 seed: seeds/ops-tick.sh
 prompt: |
-  The tick integration is set up. Make the ingest job run every time tick
+  The tick connector is set up. Make the ingest job run every time tick
   emits an event, then prove it works by firing a test event.
 checks:
   - name: trigger present

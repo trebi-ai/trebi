@@ -63,7 +63,7 @@ func TestRegistry(t *testing.T) {
 		{alerts.KindAuthMissing, alerts.SeverityBlocker, alerts.InboxHealth, 5 * time.Minute, "", true},
 		{alerts.KindLimitExceeded, alerts.SeverityBlocker, alerts.InboxHealth, 15 * time.Minute, "", true},
 		{alerts.KindUsageWarning, alerts.SeverityAttention, alerts.InboxHealth, 0, "", true},
-		{alerts.KindIntegrationUnhealthy, alerts.SeverityBlocker, alerts.InboxHealth, 8 * time.Hour, "", true},
+		{alerts.KindConnectorUnhealthy, alerts.SeverityBlocker, alerts.InboxHealth, 8 * time.Hour, "", true},
 		{alerts.KindRunFailed, alerts.SeverityError, alerts.InboxFailure, time.Hour, "idle_timeout", true},
 		{alerts.KindRunFailed, alerts.SeverityError, alerts.InboxFailure, time.Hour, "kill", false},
 		{alerts.KindRunFailed, alerts.SeverityError, alerts.InboxFailure, time.Hour, "auth", false},
@@ -300,8 +300,8 @@ func TestRunLoop(t *testing.T) {
 	defer cancel()
 	go svc.Run(ctx)
 	if _, err := st.Append(ctx, store.BusEvent{
-		Topic: "integration.unhealthy", Entity: "integration", EntityID: "mail", Action: "updated",
-		Attrs: map[string]string{"integration": "mail", "status": "crashed"},
+		Topic: "connector.unhealthy", Entity: "connector", EntityID: "mail", Action: "updated",
+		Attrs: map[string]string{"connector": "mail", "status": "crashed"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -399,8 +399,8 @@ func TestNotifyNoShellInjection(t *testing.T) {
 	})
 	ctx := context.Background()
 	if _, err := st.Append(ctx, store.BusEvent{
-		Topic: "integration.unhealthy", Entity: "integration", EntityID: "mail", Action: "updated",
-		Attrs: map[string]string{"integration": "mail", "status": status},
+		Topic: "connector.unhealthy", Entity: "connector", EntityID: "mail", Action: "updated",
+		Attrs: map[string]string{"connector": "mail", "status": status},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -531,8 +531,8 @@ func TestDeliverDoesNotBlockConsume(t *testing.T) {
 	go svc.Run(ctx)
 
 	if _, err := st.Append(ctx, store.BusEvent{
-		Topic: "integration.unhealthy", Entity: "integration", EntityID: "mail", Action: "updated",
-		Attrs: map[string]string{"integration": "mail", "status": "down"},
+		Topic: "connector.unhealthy", Entity: "connector", EntityID: "mail", Action: "updated",
+		Attrs: map[string]string{"connector": "mail", "status": "down"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -540,8 +540,8 @@ func TestDeliverDoesNotBlockConsume(t *testing.T) {
 
 	start := time.Now()
 	if _, err := st.Append(ctx, store.BusEvent{
-		Topic: "integration.unhealthy", Entity: "integration", EntityID: "chat", Action: "updated",
-		Attrs: map[string]string{"integration": "chat", "status": "down"},
+		Topic: "connector.unhealthy", Entity: "connector", EntityID: "chat", Action: "updated",
+		Attrs: map[string]string{"connector": "chat", "status": "down"},
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -142,7 +142,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	var trigger *runs.TriggerCapture
 	if item.Vars != nil || item.EventID != "" {
 		trigger = &runs.TriggerCapture{
-			EventID: item.EventID, Integration: item.Integration, Vars: item.Vars,
+			EventID: item.EventID, Connector: item.Connector, Vars: item.Vars,
 		}
 	}
 	run, outcome, err := c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{

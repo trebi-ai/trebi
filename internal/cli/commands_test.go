@@ -284,7 +284,7 @@ func TestDoctorJSONOffline(t *testing.T) {
 	}
 }
 
-func TestIntegrationCursorBodies(t *testing.T) {
+func TestConnectorCursorBodies(t *testing.T) {
 
 	var gotMethod, gotPath, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -296,13 +296,13 @@ func TestIntegrationCursorBodies(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
-	if _, err := runCLI(t, client, "integration", "cursor", "reset", "mail"); err != nil {
+	if _, err := runCLI(t, client, "connector", "cursor", "reset", "mail"); err != nil {
 		t.Fatal(err)
 	}
-	if gotMethod != "PUT" || gotPath != "/v1/integrations/mail/cursor" || gotBody != "" {
+	if gotMethod != "PUT" || gotPath != "/v1/connectors/mail/cursor" || gotBody != "" {
 		t.Fatalf("reset %s %s body=%q", gotMethod, gotPath, gotBody)
 	}
-	if _, err := runCLI(t, client, "integration", "cursor", "set", "mail", "evt-9"); err != nil {
+	if _, err := runCLI(t, client, "connector", "cursor", "set", "mail", "evt-9"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(gotBody, `"last_event_id":"evt-9"`) {

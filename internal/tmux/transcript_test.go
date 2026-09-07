@@ -126,6 +126,17 @@ func TestParseTranscriptUnsupported(t *testing.T) {
 	}
 }
 
+func TestParseTranscriptFake(t *testing.T) {
+	t.Parallel()
+	turns, err := fakeTool{}.ParseTranscript(bytes.NewReader([]byte("{\"role\":\"assistant\",\"text\":\"fake: ok\"}\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 1 || turns[0].Role != "assistant" || turns[0].Text != "fake: ok" {
+		t.Fatalf("%+v", turns)
+	}
+}
+
 func readTranscript(t *testing.T, tool, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "transcripts", tool, name))

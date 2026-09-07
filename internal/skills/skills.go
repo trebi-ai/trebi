@@ -24,11 +24,11 @@ import (
 type Provenance string
 
 const (
-	ProvenanceAssistant   Provenance = "assistant"
-	ProvenanceLocal       Provenance = "local"
-	ProvenanceGit         Provenance = "git"
-	ProvenanceRegistry    Provenance = "registry"
-	ProvenanceIntegration Provenance = "integration"
+	ProvenanceAssistant Provenance = "assistant"
+	ProvenanceLocal     Provenance = "local"
+	ProvenanceGit       Provenance = "git"
+	ProvenanceRegistry  Provenance = "registry"
+	ProvenanceConnector Provenance = "connector"
 )
 
 // SkillRequirement is a structured requires entry (B12).
@@ -42,7 +42,7 @@ type SkillRequirement struct {
 type Skill struct {
 	Name            string             `json:"name"`
 	Provenance      Provenance         `json:"provenance"`
-	FromIntegration string             `json:"from_integration,omitempty"`
+	FromConnector   string             `json:"from_connector,omitempty"`
 	Description     string             `json:"description,omitempty"`
 	Version         string             `json:"version,omitempty"`
 	UpdatedAt       time.Time          `json:"updated_at"`
@@ -175,14 +175,14 @@ func (s *Service) Update(ctx context.Context, name, skillMD, ifMatch string, har
 	return s.Get(ctx, name, true)
 }
 
-// Delete removes a skill folder (refused for integration provenance).
+// Delete removes a skill folder (refused for connector provenance).
 func (s *Service) Delete(ctx context.Context, name string) error {
 	cur, err := s.Get(ctx, name, false)
 	if err != nil {
 		return err
 	}
-	if cur.Provenance == ProvenanceIntegration {
-		return fmt.Errorf("managed skill: remove the integration instead")
+	if cur.Provenance == ProvenanceConnector {
+		return fmt.Errorf("managed skill: remove the connector instead")
 	}
 	if err := os.RemoveAll(filepath.Join(home.SkillsDir(), name)); err != nil {
 		return err

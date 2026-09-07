@@ -53,7 +53,7 @@ func TestControlPlane_QueueWorkerDrainsPending(t *testing.T) {
 	}
 
 	item := &dispatch.QueueItem{
-		Integration: "test-src",
+		Connector:   "test-src",
 		WorkspaceID: ws.ID,
 		Job:         "demo",
 		Kind:        runs.KindJob,
@@ -238,7 +238,7 @@ func TestScheduleWhenGateSkips(t *testing.T) {
 	}
 }
 
-// TestControlPlane_ShadowSkipsAutoWorkers ensures shadow does not start integrations/queue/schedule.
+// TestControlPlane_ShadowSkipsAutoWorkers ensures shadow does not start connectors/queue/schedule.
 func TestControlPlane_ShadowSkipsAutoWorkers(t *testing.T) {
 	dir := t.TempDir()
 	home.SetBase(dir)
@@ -259,7 +259,7 @@ func TestControlPlane_ShadowSkipsAutoWorkers(t *testing.T) {
 
 	// Enqueue a pending row — shadow must not drain it.
 	item := &dispatch.QueueItem{
-		Integration: "x", WorkspaceID: "ws", Job: "j", Status: dispatch.QueuePending,
+		Connector: "x", WorkspaceID: "ws", Job: "j", Status: dispatch.QueuePending,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
@@ -296,15 +296,15 @@ func TestControlPlane_ShadowStillConsumesAlerts(t *testing.T) {
 	defer cp.Stop()
 
 	if _, err := st.Append(ctx, store.BusEvent{
-		Topic: "integration.unhealthy", Entity: "integration", EntityID: "mail", Action: "updated",
-		Attrs: map[string]string{"integration": "mail", "status": "down"},
+		Topic: "connector.unhealthy", Entity: "connector", EntityID: "mail", Action: "updated",
+		Attrs: map[string]string{"connector": "mail", "status": "down"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		var n int
-		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE subject=?`, "integration/mail").Scan(&n); err != nil {
+		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE subject=?`, "connector/mail").Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		if n >= 1 {

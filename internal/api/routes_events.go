@@ -15,7 +15,7 @@ import (
 
 // eventRow is one scanned events table row.
 type eventRow struct {
-	id, integ, at, sum, trace, raw string
+	id, connector, at, sum, trace, raw string
 }
 
 // queueResult is the queue state joined into event outcomes.
@@ -148,16 +148,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "since: "+err.Error())
 		return
 	}
-	q := `SELECT id, integration, received_at, COALESCE(summary,''), COALESCE(trace_id,''), COALESCE(raw_json,'')
+	q := `SELECT id, connector, received_at, COALESCE(summary,''), COALESCE(trace_id,''), COALESCE(raw_json,'')
 		FROM events WHERE 1=1`
 	args := []any{}
 	if cursor != "" {
 		q += ` AND id < ?`
 		args = append(args, cursor)
 	}
-	if integ := r.URL.Query().Get("integration"); integ != "" {
-		q += ` AND integration = ?`
-		args = append(args, integ)
+	if connector := r.URL.Query().Get("connector"); connector != "" {
+		q += ` AND connector = ?`
+		args = append(args, connector)
 	}
 	if since != "" {
 		q += ` AND received_at >= ?`
@@ -180,7 +180,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	var ids []string
 	for rows.Next() {
 		var e eventRow
-		if rows.Scan(&e.id, &e.integ, &e.at, &e.sum, &e.trace, &e.raw) == nil {
+		if rows.Scan(&e.id, &e.connector, &e.at, &e.sum, &e.trace, &e.raw) == nil {
 			evs = append(evs, e)
 			ids = append(ids, e.id)
 		}
@@ -206,7 +206,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // outcome, a single collapsed row when every outcome is no_match.
 func (e eventRow) listEntries(outs []map[string]any) []map[string]any {
 	base := map[string]any{
-		"id": e.id, "integration": e.integ, "at": e.at, "received_at": e.at,
+		"id": e.id, "connector": e.connector, "at": e.at, "received_at": e.at,
 		"summary": e.sum, "trace_id": e.trace,
 	}
 	if len(outs) == 0 {
@@ -231,7 +231,7 @@ func (e eventRow) listEntries(outs []map[string]any) []map[string]any {
 			continue // skip pure no_match when mixed (list is per interesting outcome)
 		}
 		row := map[string]any{
-			"id": e.id, "integration": e.integ, "at": e.at, "received_at": e.at,
+			"id": e.id, "connector": e.connector, "at": e.at, "received_at": e.at,
 			"summary": e.sum, "trace_id": e.trace,
 			"workspace": o["workspace"], "job": o["job"], "on_index": o["on_index"],
 			"outcome": o["outcome"],
@@ -378,10 +378,10 @@ func fmtSprint(v any) string {
 
 func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var integ, at, sum, raw, trace string
+	var connector, at, sum, raw, trace string
 	err := s.st.DB().QueryRowContext(r.Context(), `
-		SELECT integration, received_at, COALESCE(summary,''), COALESCE(raw_json,''), COALESCE(trace_id,'')
-		FROM events WHERE id=?`, id).Scan(&integ, &at, &sum, &raw, &trace)
+		SELECT connector, received_at, COALESCE(summary,''), COALESCE(raw_json,''), COALESCE(trace_id,'')
+		FROM events WHERE id=?`, id).Scan(&connector, &at, &sum, &raw, &trace)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "event not found")
 		return
@@ -397,23 +397,23 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 		rawMsg = json.RawMessage(raw)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id": id, "integration": integ, "at": at, "received_at": at, "summary": sum,
+		"id": id, "connector": connector, "at": at, "received_at": at, "summary": sum,
 		"raw": rawMsg, "trace_id": trace, "outcomes": outs,
 	})
 }
 
 func (s *Server) handleEventRetrigger(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var integ, raw string
-	err := s.st.DB().QueryRowContext(r.Context(), `SELECT integration, COALESCE(raw_json,'') FROM events WHERE id=?`, id).
-		Scan(&integ, &raw)
+	var connector, raw string
+	err := s.st.DB().QueryRowContext(r.Context(), `SELECT connector, COALESCE(raw_json,'') FROM events WHERE id=?`, id).
+		Scan(&connector, &raw)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "event not found")
 		return
 	}
 	var event any
 	_ = json.Unmarshal([]byte(raw), &event) // retrigger still fires with a raw string if json is corrupt
-	_, err = s.integ.InjectEvent(r.Context(), integ, event)
+	_, err = s.connectors.InjectEvent(r.Context(), connector, event)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -439,20 +439,20 @@ func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Integration string `json:"integration"`
-		Workspace   string `json:"workspace"`
-		Job         string `json:"job"`
-		Match       string `json:"match"`
-		Extract     string `json:"extract"`
-		Event       any    `json:"event"`
-		OnIndex     int    `json:"on_index"`
+		Connector string `json:"connector"`
+		Workspace string `json:"workspace"`
+		Job       string `json:"job"`
+		Match     string `json:"match"`
+		Extract   string `json:"extract"`
+		Event     any    `json:"event"`
+		OnIndex   int    `json:"on_index"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	if body.Integration == "" {
-		body.Integration = "rules-fire"
+	if body.Connector == "" {
+		body.Connector = "rules-fire"
 	}
 	res := dispatch.EvalMatch(r.Context(), body.Match, body.Extract, body.Event)
 	if res.Error != "" {
@@ -468,7 +468,7 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	// Durable event row (same pipeline as integration handleLine)
+	// Durable event row (same pipeline as connector handleLine)
 	eid := ulid.Make().String()
 	trace := ulid.Make().String()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -476,13 +476,13 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	if len(summary) > 200 {
 		summary = summary[:200]
 	}
-	if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO events (id, integration, received_at, summary, raw_json, trace_id)
-		VALUES (?,?,?,?,?,?)`, eid, body.Integration, now, summary, string(raw), trace); err != nil {
+	if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO events (id, connector, received_at, summary, raw_json, trace_id)
+		VALUES (?,?,?,?,?,?)`, eid, body.Connector, now, summary, string(raw), trace); err != nil {
 		s.log.Warn("rules.fire event insert", "event_id", eid, "error", err)
 	}
 
 	item := &dispatch.QueueItem{
-		Integration: body.Integration,
+		Connector:   body.Connector,
 		WorkspaceID: body.Workspace,
 		Job:         body.Job,
 		OnIndex:     body.OnIndex,

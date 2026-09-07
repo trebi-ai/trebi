@@ -20,10 +20,11 @@ func main() {
 			os.Exit(logout())
 		case "status":
 			os.Exit(status())
+		case "chat":
+			os.Exit(chat())
 		}
 	}
-	fmt.Println("usage: fake login|logout|status")
-	os.Exit(2)
+	os.Exit(chat())
 }
 
 // markerPath is the credential file, under the same harness directory the
@@ -73,6 +74,25 @@ func logout() int {
 	}
 	fmt.Println("Logged out.")
 	return 0
+}
+
+func chat() int {
+	fmt.Println("fake: ok")
+	path := transcriptPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fmt.Println("chat failed:", err)
+		return 1
+	}
+	body := "{\"role\":\"assistant\",\"text\":\"fake: ok\"}\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		fmt.Println("chat failed:", err)
+		return 1
+	}
+	return 0
+}
+
+func transcriptPath() string {
+	return filepath.Join(filepath.Dir(markerPath()), "transcript.jsonl")
 }
 
 func status() int {

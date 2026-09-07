@@ -25,7 +25,7 @@ evals/               # tasks/, seeds/, oracles/, rubrics/, baseline.json
 scripts/ testdata/   # build helpers, fixtures, eval.py
 ```
 
-Domain packages own one object family and are named after it: `runs`, `workspaces`, `alerts`, `skills`, `integrations`, `schedule`, `dispatch`, `job`, `secrets`, `harness`, `config`, `home`, `pricing`, `platform`. Each exports a `Service` (or an equivalent concrete type) built by `New(st *store.Store)`.
+Domain packages own one object family and are named after it: `runs`, `workspaces`, `alerts`, `skills`, `connectors`, `schedule`, `dispatch`, `job`, `secrets`, `harness`, `config`, `home`, `pricing`, `platform`. Each exports a `Service` (or an equivalent concrete type) built by `New(st *store.Store)`.
 
 Dependency direction is one way:
 
@@ -307,7 +307,7 @@ One append-only log in `event_log`, one registry, one wire frame.
 - **Frames are thin.** Entity events carry `entity`, `id`, `action`, `revision` — never the payload. The client refetches. Domain events may carry a small `attrs` object.
 - **Every mutation path emits.** An API write and a file-watcher reload both emit the same `job.updated`; a client cannot tell them apart and must not need to.
 - `/v1/stream` is the bus. `/v1/events` is the trigger pipeline. Never conflate the two names.
-- Three cursors, three jobs — always name the subject: `event_log.seq` (bus cursor), `integration_cursors.last_event_id` (integration cursor), `schedules.next_due_at`. The bare word `cursor` is banned in identifiers.
+- Three cursors, three jobs — always name the subject: `event_log.seq` (bus cursor), `connector_cursors.last_event_id` (connector cursor), `schedules.next_due_at`. The bare word `cursor` is banned in identifiers.
 - Retention is a single 7-day prune. Anything that must survive longer reads from a durable table, not from the bus.
 
 ### CLI
@@ -316,7 +316,7 @@ The CLI is a thin API client. It holds no business logic and never touches the s
 
 - `trebi mcp serve` is a local stdio bridge, so it can resolve a client-side field the daemon must never read: `secret set` takes `value_file`, reads it, and forwards the content as `value`. The daemon is reachable remotely, so it never opens a client path. Such a field is exempt in `clientSideField` in `internal/api/mcp_parity_test.go`.
 - **Parity rule: the CLI covers 100% of the control-plane API.** A new route ships with its `trebi` command, its skill entry, and its MCP action (or `mcpExcluded` entry in `internal/api/mcp_parity_test.go`) in the same change. The assistant drives trebi through this CLI, so an endpoint with no command is unreachable.
-- Command tree: one file per command *area*, named `commands_<area>.go`, registered in `NewApp()` in `app.go`. Tiny sibling commands may live in the larger sibling's file (`queue`+`events` in `commands_integration.go`, `alerts` in `commands_inbox.go`). Split subcommands into named groups (`jobManageSubcommands`) when a list grows past a screen; do not split into more files.
+- Command tree: one file per command *area*, named `commands_<area>.go`, registered in `NewApp()` in `app.go`. Tiny sibling commands may live in the larger sibling's file (`queue`+`events` in `commands_connector.go`, `alerts` in `commands_inbox.go`). Split subcommands into named groups (`jobManageSubcommands`) when a list grows past a screen; do not split into more files.
 - Startup context is built once in `Before` and stored as `appState` in `App.Metadata`. Actions read it through `appStateFor(c)` / `clientFor(c)` / `workspaceFor(c)`. Do not reload config, sticky context, or the API client inside an action.
 - Request building is pure and separately testable: `Build*` returns an `HTTPRequest{Method, Path, Body}`, and `client.DoHTTP` executes it. Test the shape without a daemon.
 - Client resolution order is fixed: linked remote workspace → remote sticky context → `TREBI_URL`/`TREBI_TOKEN` → local `~/.trebi/api.json`. Remote is workspace context, not a `--remote` flag.
@@ -335,7 +335,7 @@ The CLI is a thin API client. It holds no business logic and never touches the s
 ### Daemon workers
 
 - `ControlPlane` owns every background goroutine. Each is started in `Start(ctx)` under the `WaitGroup` and stops on `ctx.Done()`; `Stop` cancels and waits. No goroutine without a stop condition.
-- `Options.Shadow` skips producers (integrations, schedule fire, queue drain). Keep new workers honest about shadow and drain.
+- `Options.Shadow` skips producers (connectors, schedule fire, queue drain). Keep new workers honest about shadow and drain.
 - Tick intervals are `Options` fields with defaults, so tests can drive them fast. Do not hard-code a sleep in a worker.
 
 ### Harness drivers

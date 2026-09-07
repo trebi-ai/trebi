@@ -1,6 +1,6 @@
 ---
 name: trebi
-description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, skills, secrets, integrations, and event rules; drain the inbox or alerts; tail the event bus; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi inbox", "trebi bus", "trebi integration", "trebi doctor", "wake the assistant", "trebi assistant say", "trebi assistant chat", "trebi conversation".
+description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, skills, secrets, connectors, and event rules; drain the inbox or alerts; tail the event bus; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi inbox", "trebi bus", "trebi connector", "trebi doctor", "wake the assistant", "trebi assistant say", "trebi assistant chat", "trebi conversation".
 ---
 
 # Trebi
@@ -17,8 +17,8 @@ Trebi is one binary that is both a daemon (`trebid`) and a CLI. The daemon owns 
 | run | one launch of a job in a harness session (tmux locally) |
 | assistant | the singleton `TREBI.md` job of a workspace, kind=assistant |
 | conversation | a chat thread with the assistant; the CLI/UI are channels onto it |
-| integration | an external event producer (a `stream`, `cli`, or `mcp` command) |
-| trigger | a rule on a job: `cron`, `every`, or `event` from an integration |
+| connector | an external event producer (a `stream`, `cli`, or `mcp` command) |
+| trigger | a rule on a job: `cron`, `every`, or `event` from a connector |
 | skill | a stored `SKILL.md` the harness can load |
 | inbox | the queue you drain: approvals, failures, health, watchdog |
 | alerts | the per-firing alert feed; a log, not a queue |
@@ -62,7 +62,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `runs-and-debugging` | show/timeline/transcript/logs, retry/resume/replay, attach, approvals |
 | `files` | job-scoped vs workspace files, scripts next to jobs, If-Match |
 | `assistant` | wake, say, conversations, memory |
-| `integrations-and-rules` | create/connect integrations, rules test/fire, event triggers, queue |
+| `connectors-and-rules` | create/connect connectors, rules test/fire, event triggers, queue |
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed |
 | `observability` | bus, service logs, doctor, stats |
 | `skills-secrets-config` | stored skills, secrets, config keys, harness auth |
@@ -88,12 +88,12 @@ Every error is `{"error":{"code","message","details"}}` with a stable code:
 - Prefer `--json` plus `jq` over parsing tables. If a command rejects `--json`, drop it once. `runs show --json` is valid.
 - Run `trebi job validate` after every `JOB.md` write.
 - Use `trebi job run --test` before the first real launch only when **this session** created or edited the `JOB.md`. Not `rules fire`, not `assistant say`, not a job that already existed.
-- Ask the user before `job delete` / `job delete --purge`, `workspace delete`, `memory clear`, `secret delete`, `integration delete`, `service cloud unlink`, and `service uninstall`. They destroy state. Ask **before** you make the call, not after: state what the action deletes, then stop and wait for the answer. Do not send the call to see what it says. The daemon refuses it without `--force` (`confirm=1` over the API) and names what it deletes, but that gate is a backstop, not your confirmation step. `runs kill` of a run you just started to debug is not in that list.
+- Ask the user before `job delete` / `job delete --purge`, `workspace delete`, `memory clear`, `secret delete`, `connector delete`, `service cloud unlink`, and `service uninstall`. They destroy state. Ask **before** you make the call, not after: state what the action deletes, then stop and wait for the answer. Do not send the call to see what it says. The daemon refuses it without `--force` (`confirm=1` over the API) and names what it deletes, but that gate is a backstop, not your confirmation step. `runs kill` of a run you just started to debug is not in that list.
 - If a trebi command fails with "Confirm with the user first", stop. That refusal is the confirmation gate. Report the consequence to the user and wait. Do not retry with `--force` in the same turn.
 - Never show a secret value you did not have to read. Always prefer the form that keeps it out of your transcript: on the CLI pass the path, `trebi secret set --from-file ./key.txt NAME`; on MCP pass `value_file`, which `trebi mcp serve` reads for you. Over plain HTTP no bridge runs, so `value_file` returns `input field "value" is required`. There the `set` action takes the value inline and you have no quiet read, so read the key once, pass it straight to `secret set`, and never show it again: no second `cat`, not in the final message, not in a job prompt or a file. One read that feeds the `set` call is the cost of the surface; every later appearance is your choice. Do not stop the task over this — store the secret and carry on. Reference a stored secret from a job by its **name**; the daemon resolves it at launch. A secret name is not a secret.
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.
 - Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
-- `trebi bus --limit N` dumps up to N frames and exits. `integration logs` returns at once; `-f` follows and blocks. `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.
+- `trebi bus --limit N` dumps up to N frames and exits. `connector logs` returns at once; `-f` follows and blocks. `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.
 - `-w` / `--workspace` accepts name or id and can go before the verb or after the job name.
 - Do not `runs attach` from an agent session. Poll `runs show` / `conversation messages`. Do not `runs kill` a live session to re-prompt.
 - Report only what a call returned. Do not carry a value from one call into a claim about another: if a filtered read returned nothing, say it returned nothing, and do not borrow a count or a cursor from the unfiltered read next to it. If a read failed or came back `not_found`, say so — do not claim what you would have seen. Reporting a failure plainly is a good answer; an unsupported claim is not.

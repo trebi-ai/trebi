@@ -29,7 +29,7 @@ func TestReplayUsesCapturedTrigger(t *testing.T) {
 		WorkspaceID: wsID, Job: "greeter", Harness: "fake",
 		Reason:        runs.ReasonTrigger,
 		PromptPreview: "STALE-PREVIEW-MUST-NOT-BE-REPLAYED",
-		Trigger:       &runs.TriggerCapture{Integration: "src", Vars: map[string]string{"x": "hello"}},
+		Trigger:       &runs.TriggerCapture{Connector: "src", Vars: map[string]string{"x": "hello"}},
 	})
 	if err != nil {
 		t.Fatal(err)

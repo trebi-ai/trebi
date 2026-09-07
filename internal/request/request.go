@@ -273,44 +273,44 @@ func BuildSkillPut(name, skillMD string, harnesses map[string]string, ifMatch st
 	}
 }
 
-// BuildIntegrationConnect builds POST /v1/integrations/{name}/connect.
-func BuildIntegrationConnect(name string) HTTPRequest {
+// BuildConnectorConnect builds POST /v1/connectors/{name}/connect.
+func BuildConnectorConnect(name string) HTTPRequest {
 	return HTTPRequest{
 		Method: "POST",
-		Path:   "/v1/integrations/" + url.PathEscape(name) + "/connect",
+		Path:   "/v1/connectors/" + url.PathEscape(name) + "/connect",
 	}
 }
 
-// BuildIntegrationDisconnect builds POST /v1/integrations/{name}/disconnect.
-func BuildIntegrationDisconnect(name string) HTTPRequest {
+// BuildConnectorDisconnect builds POST /v1/connectors/{name}/disconnect.
+func BuildConnectorDisconnect(name string) HTTPRequest {
 	return HTTPRequest{
 		Method: "POST",
-		Path:   "/v1/integrations/" + url.PathEscape(name) + "/disconnect",
+		Path:   "/v1/connectors/" + url.PathEscape(name) + "/disconnect",
 	}
 }
 
-// BuildIntegrationCursorGet builds GET /v1/integrations/{name}/cursor.
-func BuildIntegrationCursorGet(name string) HTTPRequest {
+// BuildConnectorCursorGet builds GET /v1/connectors/{name}/cursor.
+func BuildConnectorCursorGet(name string) HTTPRequest {
 	return HTTPRequest{
 		Method: "GET",
-		Path:   "/v1/integrations/" + url.PathEscape(name) + "/cursor",
+		Path:   "/v1/connectors/" + url.PathEscape(name) + "/cursor",
 	}
 }
 
-// BuildIntegrationCursorSet builds PUT /v1/integrations/{name}/cursor with last_event_id.
-func BuildIntegrationCursorSet(name, lastEventID string) HTTPRequest {
+// BuildConnectorCursorSet builds PUT /v1/connectors/{name}/cursor with last_event_id.
+func BuildConnectorCursorSet(name, lastEventID string) HTTPRequest {
 	return HTTPRequest{
 		Method: "PUT",
-		Path:   "/v1/integrations/" + url.PathEscape(name) + "/cursor",
+		Path:   "/v1/connectors/" + url.PathEscape(name) + "/cursor",
 		Body:   map[string]any{"last_event_id": lastEventID},
 	}
 }
 
-// BuildIntegrationCursorReset builds PUT /v1/integrations/{name}/cursor with an empty body.
-func BuildIntegrationCursorReset(name string) HTTPRequest {
+// BuildConnectorCursorReset builds PUT /v1/connectors/{name}/cursor with an empty body.
+func BuildConnectorCursorReset(name string) HTTPRequest {
 	return HTTPRequest{
 		Method: "PUT",
-		Path:   "/v1/integrations/" + url.PathEscape(name) + "/cursor",
+		Path:   "/v1/connectors/" + url.PathEscape(name) + "/cursor",
 	}
 }
 
@@ -590,26 +590,26 @@ func BuildRulesTest(match, extract string, event any) HTTPRequest {
 }
 
 // BuildRulesFire builds POST /v1/rules/fire.
-func BuildRulesFire(integration, workspace, job, match, extract string, event any, onIndex int) HTTPRequest {
+func BuildRulesFire(connector, workspace, job, match, extract string, event any, onIndex int) HTTPRequest {
 	return HTTPRequest{
 		Method: "POST",
 		Path:   "/v1/rules/fire",
 		Body: map[string]any{
-			"integration": integration,
-			"workspace":   workspace,
-			"job":         job,
-			"match":       match,
-			"extract":     extract,
-			"event":       event,
-			"on_index":    onIndex,
+			"connector": connector,
+			"workspace": workspace,
+			"job":       job,
+			"match":     match,
+			"extract":   extract,
+			"event":     event,
+			"on_index":  onIndex,
 		},
 	}
 }
 
-// BuildEventsListPath builds GET /v1/events?cursor=&limit=&integration=&since=&q=.
-func BuildEventsListPath(cursor string, limit int, integration, since, q string) string {
+// BuildEventsListPath builds GET /v1/events?cursor=&limit=&connector=&since=&q=.
+func BuildEventsListPath(cursor string, limit int, connector, since, q string) string {
 	return withQuery("/v1/events", mergeQ(
-		map[string]string{"cursor": cursor, "integration": integration, "since": since, "q": q},
+		map[string]string{"cursor": cursor, "connector": connector, "since": since, "q": q},
 		limitQ(limit)))
 }
 
@@ -858,9 +858,9 @@ func BuildSkillsListPath(limit int) string {
 	return listQuery("/v1/skills", "", limit)
 }
 
-// BuildIntegrationsListPath builds GET /v1/integrations?limit=.
-func BuildIntegrationsListPath(limit int) string {
-	return listQuery("/v1/integrations", "", limit)
+// BuildConnectorsListPath builds GET /v1/connectors?limit=.
+func BuildConnectorsListPath(limit int) string {
+	return listQuery("/v1/connectors", "", limit)
 }
 
 // BuildInboxListPath builds GET /v1/inbox query from list flags.
@@ -1269,43 +1269,43 @@ func BuildHarnessLoginGet(name string) HTTPRequest {
 	}
 }
 
-// BuildIntegrationGetPath builds GET /v1/integrations/{name}.
-func BuildIntegrationGetPath(name string) string {
-	return "/v1/integrations/" + url.PathEscape(name)
+// BuildConnectorGetPath builds GET /v1/connectors/{name}.
+func BuildConnectorGetPath(name string) string {
+	return "/v1/connectors/" + url.PathEscape(name)
 }
 
-// BuildIntegrationCreate builds POST /v1/integrations with a full definition.
-func BuildIntegrationCreate(def map[string]any) HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: "/v1/integrations", Body: def}
+// BuildConnectorCreate builds POST /v1/connectors with a full definition.
+func BuildConnectorCreate(def map[string]any) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors", Body: def}
 }
 
-// BuildIntegrationRestart builds POST /v1/integrations/{name}/restart.
-func BuildIntegrationRestart(name string) HTTPRequest {
+// BuildConnectorRestart builds POST /v1/connectors/{name}/restart.
+func BuildConnectorRestart(name string) HTTPRequest {
 	return HTTPRequest{
 		Method: "POST",
-		Path:   "/v1/integrations/" + url.PathEscape(name) + "/restart",
+		Path:   "/v1/connectors/" + url.PathEscape(name) + "/restart",
 	}
 }
 
-// BuildIntegrationStop builds POST /v1/integrations/{name}/stop.
-func BuildIntegrationStop(name string) HTTPRequest {
+// BuildConnectorStop builds POST /v1/connectors/{name}/stop.
+func BuildConnectorStop(name string) HTTPRequest {
 	return HTTPRequest{
 		Method: "POST",
-		Path:   "/v1/integrations/" + url.PathEscape(name) + "/stop",
+		Path:   "/v1/connectors/" + url.PathEscape(name) + "/stop",
 	}
 }
 
-// BuildIntegrationDelete builds DELETE /v1/integrations/{name}.
-func BuildIntegrationDelete(name string, confirm bool) HTTPRequest {
+// BuildConnectorDelete builds DELETE /v1/connectors/{name}.
+func BuildConnectorDelete(name string, confirm bool) HTTPRequest {
 	return HTTPRequest{
 		Method: "DELETE",
-		Path:   withQuery("/v1/integrations/"+url.PathEscape(name), confirmQ(confirm)),
+		Path:   withQuery("/v1/connectors/"+url.PathEscape(name), confirmQ(confirm)),
 	}
 }
 
-// IntegrationSpec is the PUT /v1/integrations/{name} body. Empty fields are
+// ConnectorSpec is the PUT /v1/connectors/{name} body. Empty fields are
 // omitted, and the daemon keeps the current value: PUT is an upsert-merge.
-type IntegrationSpec struct {
+type ConnectorSpec struct {
 	Name    string
 	Command string
 	Format  string // json|line
@@ -1315,8 +1315,8 @@ type IntegrationSpec struct {
 	Facets  []string
 }
 
-// Build renders the spec as PUT /v1/integrations/{name}.
-func (i IntegrationSpec) Build() HTTPRequest {
+// Build renders the spec as PUT /v1/connectors/{name}.
+func (i ConnectorSpec) Build() HTTPRequest {
 	body := map[string]any{"name": i.Name}
 	for k, v := range map[string]string{
 		"command": i.Command,
@@ -1336,31 +1336,31 @@ func (i IntegrationSpec) Build() HTTPRequest {
 	}
 	return HTTPRequest{
 		Method: "PUT",
-		Path:   "/v1/integrations/" + url.PathEscape(i.Name),
+		Path:   "/v1/connectors/" + url.PathEscape(i.Name),
 		Body:   body,
 	}
 }
 
-// BuildIntegrationTest builds POST /v1/integrations/{name}/test.
-func BuildIntegrationTest(name string, event any) HTTPRequest {
+// BuildConnectorTest builds POST /v1/connectors/{name}/test.
+func BuildConnectorTest(name string, event any) HTTPRequest {
 	body := map[string]any{}
 	if event != nil {
 		body["event"] = event
 	}
 	return HTTPRequest{
 		Method: "POST",
-		Path:   "/v1/integrations/" + url.PathEscape(name) + "/test",
+		Path:   "/v1/connectors/" + url.PathEscape(name) + "/test",
 		Body:   body,
 	}
 }
 
-// BuildIntegrationLogsPath builds GET logs path.
-func BuildIntegrationLogsPath(name string, follow bool) string {
+// BuildConnectorLogsPath builds GET logs path.
+func BuildConnectorLogsPath(name string, follow bool) string {
 	kv := map[string]string{}
 	if follow {
 		kv["follow"] = "1"
 	}
-	return withQuery("/v1/integrations/"+url.PathEscape(name)+"/logs", kv)
+	return withQuery("/v1/connectors/"+url.PathEscape(name)+"/logs", kv)
 }
 
 // BuildConfigGet builds GET /v1/config.
@@ -1487,7 +1487,7 @@ func workspaceQ(ws string) map[string]string {
 	return map[string]string{"workspace": ws}
 }
 
-// keepEventTriggers keeps event integrations from a triggers list; time triggers drop.
+// keepEventTriggers keeps event connectors from a triggers list; time triggers drop.
 func keepEventTriggers(raw any) []any {
 	list, ok := raw.([]any)
 	if !ok {

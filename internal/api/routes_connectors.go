@@ -11,31 +11,31 @@ import (
 	"sort"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/integrations"
 )
 
 //nolint:dupl // route tables stay explicit and colocated with area handlers.
-func (s *Server) routeIntegrations(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/integrations", s.handleIntegrations)
-	mux.HandleFunc("POST /v1/integrations", s.handleIntegrationsCreate)
-	mux.HandleFunc("GET /v1/integrations/{name}", s.handleIntegrationGet)
-	mux.HandleFunc("PUT /v1/integrations/{name}", s.handleIntegrationPut)
-	mux.HandleFunc("DELETE /v1/integrations/{name}", s.handleIntegrationDelete)
-	mux.HandleFunc("POST /v1/integrations/{name}/connect", s.handleIntegrationStart)
-	mux.HandleFunc("POST /v1/integrations/{name}/disconnect", s.handleIntegrationStop)
-	mux.HandleFunc("POST /v1/integrations/{name}/restart", s.handleIntegrationRestart)
-	// /stop is a contract alias of /disconnect (backend-0808 integrations).
-	mux.HandleFunc("POST /v1/integrations/{name}/stop", s.handleIntegrationStop)
-	mux.HandleFunc("POST /v1/integrations/{name}/test", s.handleIntegrationTest)
-	mux.HandleFunc("GET /v1/integrations/{name}/logs", s.handleIntegrationLogs)
-	mux.HandleFunc("GET /v1/integrations/{name}/cursor", s.handleIntegrationCursorGet)
-	mux.HandleFunc("PUT /v1/integrations/{name}/cursor", s.handleIntegrationCursorPut)
+func (s *Server) routeConnectors(mux *http.ServeMux) {
+	mux.HandleFunc("GET /v1/connectors", s.handleConnectors)
+	mux.HandleFunc("POST /v1/connectors", s.handleConnectorsCreate)
+	mux.HandleFunc("GET /v1/connectors/{name}", s.handleConnectorGet)
+	mux.HandleFunc("PUT /v1/connectors/{name}", s.handleConnectorPut)
+	mux.HandleFunc("DELETE /v1/connectors/{name}", s.handleConnectorDelete)
+	mux.HandleFunc("POST /v1/connectors/{name}/connect", s.handleConnectorStart)
+	mux.HandleFunc("POST /v1/connectors/{name}/disconnect", s.handleConnectorStop)
+	mux.HandleFunc("POST /v1/connectors/{name}/restart", s.handleConnectorRestart)
+	// /stop is a contract alias of /disconnect (backend-0808 connectors).
+	mux.HandleFunc("POST /v1/connectors/{name}/stop", s.handleConnectorStop)
+	mux.HandleFunc("POST /v1/connectors/{name}/test", s.handleConnectorTest)
+	mux.HandleFunc("GET /v1/connectors/{name}/logs", s.handleConnectorLogs)
+	mux.HandleFunc("GET /v1/connectors/{name}/cursor", s.handleConnectorCursorGet)
+	mux.HandleFunc("PUT /v1/connectors/{name}/cursor", s.handleConnectorCursorPut)
 }
 
-func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
-	_ = s.integ.Load() // refresh from disk; stale list is worse than a load error
-	list := s.integ.List()
+func (s *Server) handleConnectors(w http.ResponseWriter, r *http.Request) {
+	_ = s.connectors.Load() // refresh from disk; stale list is worse than a load error
+	list := s.connectors.List()
 	sort.Slice(list, func(i, j int) bool {
 		return fmt.Sprint(list[i]["name"]) < fmt.Sprint(list[j]["name"])
 	})
@@ -45,15 +45,15 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		list = list[:limit]
 	}
-	resp := map[string]any{"integrations": list}
+	resp := map[string]any{"connectors": list}
 	if truncated {
 		resp["truncated"] = true
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) handleIntegrationsCreate(w http.ResponseWriter, r *http.Request) {
-	var d integrations.Definition
+func (s *Server) handleConnectorsCreate(w http.ResponseWriter, r *http.Request) {
+	var d connectors.Definition
 	if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
@@ -62,15 +62,15 @@ func (s *Server) handleIntegrationsCreate(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadRequest, "validation", "name required")
 		return
 	}
-	if err := s.integ.Upsert(r.Context(), d); err != nil {
+	if err := s.connectors.Upsert(r.Context(), d); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, d)
 }
 
-func (s *Server) handleIntegrationGet(w http.ResponseWriter, r *http.Request) {
-	row, err := s.integ.Get(r.PathValue("name"))
+func (s *Server) handleConnectorGet(w http.ResponseWriter, r *http.Request) {
+	row, err := s.connectors.Get(r.PathValue("name"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 		return
@@ -78,50 +78,50 @@ func (s *Server) handleIntegrationGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, row)
 }
 
-func (s *Server) handleIntegrationPut(w http.ResponseWriter, r *http.Request) {
-	var d integrations.Definition
+func (s *Server) handleConnectorPut(w http.ResponseWriter, r *http.Request) {
+	var d connectors.Definition
 	if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
 	d.Name = r.PathValue("name")
-	if err := s.integ.Upsert(r.Context(), d); err != nil {
+	if err := s.connectors.Upsert(r.Context(), d); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
 }
 
-func (s *Server) handleIntegrationDelete(w http.ResponseWriter, r *http.Request) {
-	if err := s.integ.Delete(r.Context(), r.PathValue("name")); err != nil {
+func (s *Server) handleConnectorDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.connectors.Delete(r.Context(), r.PathValue("name")); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": r.PathValue("name")})
 }
 
-func (s *Server) handleIntegrationStart(w http.ResponseWriter, r *http.Request) {
-	if err := s.integ.Start(r.Context(), r.PathValue("name")); err != nil {
+func (s *Server) handleConnectorStart(w http.ResponseWriter, r *http.Request) {
+	if err := s.connectors.Start(r.Context(), r.PathValue("name")); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "listening"})
 }
 
-func (s *Server) handleIntegrationStop(w http.ResponseWriter, r *http.Request) {
-	_ = s.integ.Stop(r.PathValue("name"))
+func (s *Server) handleConnectorStop(w http.ResponseWriter, r *http.Request) {
+	_ = s.connectors.Stop(r.PathValue("name"))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped"})
 }
 
-func (s *Server) handleIntegrationRestart(w http.ResponseWriter, r *http.Request) {
-	if err := s.integ.Restart(r.Context(), r.PathValue("name")); err != nil {
+func (s *Server) handleConnectorRestart(w http.ResponseWriter, r *http.Request) {
+	if err := s.connectors.Restart(r.Context(), r.PathValue("name")); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "listening"})
 }
 
-func (s *Server) handleIntegrationTest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Event any `json:"event"`
 	}
@@ -129,7 +129,7 @@ func (s *Server) handleIntegrationTest(w http.ResponseWriter, r *http.Request) {
 	if body.Event == nil {
 		body.Event = map[string]any{"test": true}
 	}
-	_, err := s.integ.InjectEvent(r.Context(), r.PathValue("name"), body.Event)
+	_, err := s.connectors.InjectEvent(r.Context(), r.PathValue("name"), body.Event)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
@@ -137,9 +137,9 @@ func (s *Server) handleIntegrationTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleIntegrationLogs(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleConnectorLogs(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	path := filepath.Join(home.IntegrationsLogDir(), name+".jsonl")
+	path := filepath.Join(home.ConnectorsLogDir(), name+".jsonl")
 	f, err := os.Open(path)
 	if err != nil {
 		// empty stream
@@ -196,9 +196,9 @@ func (s *Server) handleIntegrationLogs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleIntegrationCursorGet(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleConnectorCursorGet(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	cur, err := s.integ.GetCursor(r.Context(), name)
+	cur, err := s.connectors.GetCursor(r.Context(), name)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -210,13 +210,13 @@ func (s *Server) handleIntegrationCursorGet(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "last_event_id": cur.LastEventID, "updated_at": updated})
 }
 
-func (s *Server) handleIntegrationCursorPut(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleConnectorCursorPut(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var body struct {
 		LastEventID string `json:"last_event_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body sets last_event_id to ""
-	if err := s.integ.PutCursor(r.Context(), name, body.LastEventID); err != nil {
+	if err := s.connectors.PutCursor(r.Context(), name, body.LastEventID); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}

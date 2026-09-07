@@ -36,8 +36,8 @@ var consumeTopics = []string{
 	"run.failed",
 	"run.updated",
 	"run.resume_exhausted",
-	"integration.unhealthy",
-	"integration.recovered",
+	"connector.unhealthy",
+	"connector.recovered",
 	"auth.probe.failed",
 	"harness.updated",
 	"harness.limit_exceeded",
@@ -55,7 +55,7 @@ var notifyPlaceholders = []struct{ ph, env string }{
 	{"hint", "TREBI_ALERT_HINT"},
 	{"body", "TREBI_ALERT_BODY"},
 	{"resume", "TREBI_ALERT_RESUME"},
-	{"integration", "TREBI_ALERT_INTEGRATION"},
+	{"connector", "TREBI_ALERT_CONNECTOR"},
 }
 
 // Run polls the bus until ctx is cancelled. Tick interval comes from Options.
@@ -152,10 +152,10 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.onRunUpdated(ctx, ev, attrs)
 	case "run.resume_exhausted":
 		s.onResumeExhausted(ctx, ev, attrs)
-	case "integration.unhealthy":
-		s.onIntegrationUnhealthy(ctx, ev, attrs)
-	case "integration.recovered":
-		s.autoResolve(ctx, KindIntegrationUnhealthy, "integration/"+ev.ID, "auto")
+	case "connector.unhealthy":
+		s.onConnectorUnhealthy(ctx, ev, attrs)
+	case "connector.recovered":
+		s.autoResolve(ctx, KindConnectorUnhealthy, "connector/"+ev.ID, "auto")
 	case "auth.probe.failed":
 		s.onAuthMissing(ctx, ev, attrs)
 	case "harness.updated":
@@ -266,14 +266,14 @@ func (s *Service) onResumeExhausted(ctx context.Context, ev store.StreamEvent, a
 	}
 }
 
-func (s *Service) onIntegrationUnhealthy(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
-	name := firstNonEmpty(attrs["integration"], ev.ID)
+func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	name := firstNonEmpty(attrs["connector"], ev.ID)
 	_, err := s.Raise(ctx, RaiseOpts{
-		Kind: KindIntegrationUnhealthy, Integration: name, TraceID: ev.TraceID,
-		Title: "Integration unhealthy", Body: attrs["status"],
+		Kind: KindConnectorUnhealthy, Connector: name, TraceID: ev.TraceID,
+		Title: "Connector unhealthy", Body: attrs["status"],
 	})
 	if err != nil {
-		s.log.Warn("raise integration_unhealthy", "integration", name, "error", err)
+		s.log.Warn("raise connector_unhealthy", "connector", name, "error", err)
 	}
 }
 

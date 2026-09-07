@@ -84,7 +84,7 @@ func confirmCases(wsID string) []confirmCase {
 		{"job memory", http.MethodDelete, "/v1/jobs/report/memory?workspace=" + wsID, "job", "memory_clear", map[string]any{"name": "report", "workspace": wsID}},
 		{"assistant memory", http.MethodDelete, "/v1/workspaces/" + wsID + "/assistant/memory", "assistant", "memory_clear", map[string]any{"workspace": wsID}},
 		{"secret", http.MethodDelete, "/v1/secrets/eval_key", "secret", "delete", map[string]any{"name": "eval_key"}},
-		{"integration", http.MethodDelete, "/v1/integrations/tick", "integration", "delete", map[string]any{"name": "tick"}},
+		{"connector", http.MethodDelete, "/v1/connectors/tick", "connector", "delete", map[string]any{"name": "tick"}},
 		{"skill", http.MethodDelete, "/v1/skills/tiny", "skill", "delete", map[string]any{"name": "tiny"}},
 		{"workspace file", http.MethodDelete, "/v1/workspaces/" + wsID + "/files/notes.txt", "file", "delete", map[string]any{"workspace": wsID, "path": "notes.txt"}},
 		{"cloud unlink", http.MethodDelete, "/v1/cloud/link", "system", "cloud_unlink", map[string]any{}},

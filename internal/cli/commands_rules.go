@@ -13,7 +13,7 @@ import (
 func rulesCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "rules",
-		Usage: "dry-run integration routing rules",
+		Usage: "dry-run connector routing rules",
 		Commands: []*cli.Command{
 			{
 				Name:  "test",
@@ -30,7 +30,7 @@ func rulesCommand() *cli.Command {
 				Name:  "fire",
 				Usage: "evaluate a rule and enqueue on match",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "integration", Usage: "integration name"},
+					&cli.StringFlag{Name: "connector", Usage: "connector name"},
 					&cli.StringFlag{Name: "workspace", Usage: "workspace id"},
 					&cli.StringFlag{Name: "job", Usage: "job name"},
 					&cli.StringFlag{Name: "match", Usage: "match expression"},
@@ -103,7 +103,7 @@ func runRulesFire(_ context.Context, c *cli.Command) error {
 	}
 	var out map[string]any
 	if err := client.DoHTTP(request.BuildRulesFire(
-		c.String("integration"), ws, c.String("job"),
+		c.String("connector"), ws, c.String("job"),
 		c.String("match"), c.String("extract"), event, c.Int("on-index"),
 	), &out); err != nil {
 		return err

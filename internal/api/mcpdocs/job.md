@@ -38,7 +38,7 @@ structured fields cover the job.
 - `description` (string, optional): description text.
 - `cron` (string, optional): cron trigger, for example `0 3 * * *`.
 - `every` (string, optional): interval trigger, for example `15m`.
-- `event` (string, optional): event trigger; the integration name.
+- `event` (string, optional): event trigger; the connector name.
 - `match` (string, optional): event match expression, with `event`.
 - `extract` (string, optional): event extract expression, with `event`.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first job.
@@ -54,7 +54,7 @@ compose a definition yourself. The response is `{ok, error, markdown}`, where
 - `description` (string, optional): description text.
 - `cron` (string, optional): cron trigger.
 - `every` (string, optional): interval trigger.
-- `event` (string, optional): event trigger; the integration name.
+- `event` (string, optional): event trigger; the connector name.
 - `match` (string, optional): event match expression, with `event`.
 - `extract` (string, optional): event extract expression, with `event`.
 - `workspace` (string, optional): workspace id.

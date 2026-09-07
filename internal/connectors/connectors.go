@@ -1,5 +1,5 @@
-// Package integrations loads integrations.yaml and supervises stream processes.
-package integrations
+// Package connectors loads connectors.yaml and supervises stream processes.
+package connectors
 
 import (
 	"bufio"
@@ -26,7 +26,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Definition is one integration from integrations.yaml.
+// Definition is one connector from connectors.yaml.
 type Definition struct {
 	Name    string            `yaml:"name" json:"name"`
 	Type    string            `yaml:"type" json:"type"` // stream|cli|mcp
@@ -66,10 +66,10 @@ func (d Definition) MergeInto(base Definition) Definition {
 	return base
 }
 
-// File is the top-level integrations.yaml shape.
+// File is the top-level connectors.yaml shape.
 // Accepts either a list or a map of name → def.
 type File struct {
-	Integrations []Definition `yaml:"integrations"`
+	Connectors []Definition `yaml:"connectors"`
 }
 
 // Status is live supervision state.
@@ -82,7 +82,7 @@ type Status struct {
 	Events   int64  `json:"events"`
 }
 
-// Service supervises integrations and dispatches matched events.
+// Service supervises connectors and dispatches matched events.
 type Service struct {
 	st    *store.Store
 	ws    *workspaces.Service
@@ -162,20 +162,20 @@ func (p *proc) snapshot() (status string, restarts int, events int64, lastErr st
 	return p.status, p.restarts, p.events, p.lastErr, pid
 }
 
-// New creates an integrations service.
+// New creates a connectors service.
 func New(st *store.Store, ws *workspaces.Service, r *runs.Service, pol *dispatch.Policy) *Service {
 	return &Service{
 		st: st, ws: ws, runs: r, pol: pol,
 		queue: dispatch.NewQueue(st),
-		log:   slog.Default().With("source", "integrations"),
+		log:   slog.Default().With("source", "connectors"),
 		procs: make(map[string]*proc),
 		defs:  make(map[string]Definition),
 	}
 }
 
-// Load reads integrations.yaml into memory.
+// Load reads connectors.yaml into memory.
 func (s *Service) Load() error {
-	data, err := os.ReadFile(home.IntegrationsPath())
+	data, err := os.ReadFile(home.ConnectorsPath())
 	if err != nil {
 		if os.IsNotExist(err) {
 			s.mu.Lock()
@@ -185,7 +185,7 @@ func (s *Service) Load() error {
 		}
 		return err
 	}
-	defs, err := parseIntegrationsYAML(data)
+	defs, err := parseConnectorsYAML(data)
 	if err != nil {
 		return err
 	}
@@ -195,12 +195,12 @@ func (s *Service) Load() error {
 	return nil
 }
 
-func parseIntegrationsYAML(data []byte) (map[string]Definition, error) {
+func parseConnectorsYAML(data []byte) (map[string]Definition, error) {
 	out := map[string]Definition{}
 	// try list form
 	var file File
-	if err := yaml.Unmarshal(data, &file); err == nil && len(file.Integrations) > 0 {
-		for _, d := range file.Integrations {
+	if err := yaml.Unmarshal(data, &file); err == nil && len(file.Connectors) > 0 {
+		for _, d := range file.Connectors {
 			if d.Name != "" {
 				out[d.Name] = d
 			}
@@ -222,7 +222,7 @@ func parseIntegrationsYAML(data []byte) (map[string]Definition, error) {
 		return nil, err
 	}
 	for name, v := range raw {
-		if name == "integrations" {
+		if name == "connectors" {
 			continue
 		}
 		b, _ := yaml.Marshal(v)
@@ -262,17 +262,17 @@ func (s *Service) List() []map[string]any {
 	return out
 }
 
-// Get returns one integration.
+// Get returns one connector.
 func (s *Service) Get(name string) (map[string]any, error) {
 	for _, row := range s.List() {
 		if row["name"] == name {
 			return row, nil
 		}
 	}
-	return nil, fmt.Errorf("integration %q not found", name)
+	return nil, fmt.Errorf("connector %q not found", name)
 }
 
-// Save writes defs back to integrations.yaml.
+// Save writes defs back to connectors.yaml.
 func (s *Service) Save(defs map[string]Definition) error {
 	if err := home.EnsureDirs(); err != nil {
 		return err
@@ -282,7 +282,7 @@ func (s *Service) Save(defs map[string]Definition) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(home.IntegrationsPath(), b, 0o644); err != nil {
+	if err := os.WriteFile(home.ConnectorsPath(), b, 0o644); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -291,7 +291,7 @@ func (s *Service) Save(defs map[string]Definition) error {
 	return nil
 }
 
-// Upsert registers or updates an integration definition.
+// Upsert registers or updates a connector definition.
 func (s *Service) Upsert(ctx context.Context, d Definition) error {
 	s.mu.Lock()
 	if s.defs == nil {
@@ -304,14 +304,14 @@ func (s *Service) Upsert(ctx context.Context, d Definition) error {
 		return err
 	}
 	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: "integration.created", Entity: "integration", EntityID: d.Name, Action: "created",
+		Topic: "connector.created", Entity: "connector", EntityID: d.Name, Action: "created",
 	}); err != nil {
 		s.log.Warn("bus append", "error", err)
 	}
 	return nil
 }
 
-// Delete removes an integration.
+// Delete removes a connector.
 func (s *Service) Delete(ctx context.Context, name string) error {
 	_ = s.Stop(name) // already-stopped is fine; delete proceeds either way
 	s.mu.Lock()
@@ -322,7 +322,7 @@ func (s *Service) Delete(ctx context.Context, name string) error {
 		return err
 	}
 	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: "integration.deleted", Entity: "integration", EntityID: name, Action: "deleted",
+		Topic: "connector.deleted", Entity: "connector", EntityID: name, Action: "deleted",
 	}); err != nil {
 		s.log.Warn("bus append", "error", err)
 	}
@@ -337,7 +337,7 @@ func copyDefs(in map[string]Definition) map[string]Definition {
 	return out
 }
 
-// StartAll launches all stream integrations.
+// StartAll launches all stream connectors.
 func (s *Service) StartAll(ctx context.Context) {
 	_ = s.Load() // start whatever is already in memory if disk reload fails
 	s.mu.Lock()
@@ -350,19 +350,19 @@ func (s *Service) StartAll(ctx context.Context) {
 	s.mu.Unlock()
 	for _, n := range names {
 		if err := s.Start(ctx, n); err != nil {
-			s.log.Warn("integration start", "name", n, "error", err)
+			s.log.Warn("connector start", "name", n, "error", err)
 		}
 	}
 }
 
-// Start launches one integration process. It reserves the s.procs slot
+// Start launches one connector process. It reserves the s.procs slot
 // under s.mu (status "starting") so concurrent Starts launch one process.
 func (s *Service) Start(parent context.Context, name string) error {
 	s.mu.Lock()
 	d, ok := s.defs[name]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("unknown integration %q", name)
+		return fmt.Errorf("unknown connector %q", name)
 	}
 	wasCrashed := false
 	if p, ok := s.procs[name]; ok {
@@ -417,26 +417,26 @@ func (s *Service) Start(parent context.Context, name string) error {
 	p.mu.Unlock()
 
 	go s.readLoop(ctx, name, d, stdout, cmd, p)
-	// integration.started is log-only; the bus rides integration.updated.
-	s.log.Info("integration.started", "integration", name)
+	// connector.started is log-only; the bus rides connector.updated.
+	s.log.Info("connector.started", "connector", name)
 	if _, err := s.st.Append(parent, store.BusEvent{
-		Topic: "integration.updated", Entity: "integration", EntityID: name, Action: "updated",
+		Topic: "connector.updated", Entity: "connector", EntityID: name, Action: "updated",
 		Attrs: map[string]string{"status": "listening"},
 	}); err != nil {
-		s.log.Warn("bus append", "topic", "integration.updated", "error", err)
+		s.log.Warn("bus append", "topic", "connector.updated", "error", err)
 	}
 	if wasCrashed {
 		if _, err := s.st.Append(parent, store.BusEvent{
-			Topic: "integration.recovered", Entity: "integration", EntityID: name, Action: "updated",
+			Topic: "connector.recovered", Entity: "connector", EntityID: name, Action: "updated",
 			Attrs: map[string]string{"status": "listening"},
 		}); err != nil {
-			s.log.Warn("bus append", "topic", "integration.recovered", "error", err)
+			s.log.Warn("bus append", "topic", "connector.recovered", "error", err)
 		}
 	}
 	return nil
 }
 
-// Stop kills an integration process.
+// Stop kills a connector process.
 func (s *Service) Stop(name string) error {
 	s.mu.Lock()
 	p, ok := s.procs[name]
@@ -481,7 +481,7 @@ func (s *Service) InjectEvent(ctx context.Context, name string, event any) (stri
 	return "ok", nil
 }
 
-// Cursor is one integration_cursors row.
+// Cursor is one connector_cursors row.
 type Cursor struct {
 	Name        string
 	LastEventID string
@@ -492,7 +492,7 @@ type Cursor struct {
 func (s *Service) GetCursor(ctx context.Context, name string) (Cursor, error) {
 	c := Cursor{Name: name}
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT last_event_id, updated_at FROM integration_cursors WHERE name=?`, name).
+		`SELECT last_event_id, updated_at FROM connector_cursors WHERE name=?`, name).
 		Scan(&c.LastEventID, &c.UpdatedAt)
 	if err != nil {
 		return c, nil
@@ -503,7 +503,7 @@ func (s *Service) GetCursor(ctx context.Context, name string) (Cursor, error) {
 // PutCursor upserts the last-event cursor. Not a bus entity.
 func (s *Service) PutCursor(ctx context.Context, name, lastEventID string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.st.DB().ExecContext(ctx, `INSERT INTO integration_cursors (name, last_event_id, updated_at)
+	_, err := s.st.DB().ExecContext(ctx, `INSERT INTO connector_cursors (name, last_event_id, updated_at)
 		VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
 		name, lastEventID, now)
 	return err
@@ -512,7 +512,7 @@ func (s *Service) PutCursor(ctx context.Context, name, lastEventID string) error
 func (s *Service) readLoop(ctx context.Context, name string, d Definition, r io.Reader, cmd *exec.Cmd, p *proc) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	logPath := filepath.Join(home.IntegrationsLogDir(), name+".jsonl")
+	logPath := filepath.Join(home.ConnectorsLogDir(), name+".jsonl")
 	_ = os.MkdirAll(filepath.Dir(logPath), 0o755) // log dir is best-effort
 	logf, _ := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	defer func() {
@@ -521,13 +521,13 @@ func (s *Service) readLoop(ctx context.Context, name string, d Definition, r io.
 		}
 		p.markStopped()
 		final := p.getStatus()
-		s.log.Info("integration.exited", "integration", name, "status", final)
+		s.log.Info("connector.exited", "connector", name, "status", final)
 		// The loop ctx is canceled on Stop; use Background for the bus write.
 		if _, err := s.st.Append(context.Background(), store.BusEvent{
-			Topic: "integration.updated", Entity: "integration", EntityID: name, Action: "updated",
+			Topic: "connector.updated", Entity: "connector", EntityID: name, Action: "updated",
 			Attrs: map[string]string{"status": final},
 		}); err != nil {
-			s.log.Warn("bus append", "topic", "integration.updated", "error", err)
+			s.log.Warn("bus append", "topic", "connector.updated", "error", err)
 		}
 	}()
 	for sc.Scan() {
@@ -557,10 +557,10 @@ func (s *Service) readLoop(ctx context.Context, name string, d Definition, r io.
 
 func (s *Service) emitUnhealthy(name, status string) {
 	if _, err := s.st.Append(context.Background(), store.BusEvent{
-		Topic: "integration.unhealthy", Entity: "integration", EntityID: name, Action: "updated",
-		Attrs: map[string]string{"integration": name, "status": status},
+		Topic: "connector.unhealthy", Entity: "connector", EntityID: name, Action: "updated",
+		Attrs: map[string]string{"connector": name, "status": status},
 	}); err != nil {
-		s.log.Warn("bus append", "topic", "integration.unhealthy", "error", err)
+		s.log.Warn("bus append", "topic", "connector.unhealthy", "error", err)
 	}
 }
 
@@ -583,9 +583,9 @@ func (s *Service) persistEvent(ctx context.Context, name, line string, payload a
 		receivedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		payload:    payload,
 	}
-	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO events (id, integration, received_at, summary, raw_json, trace_id)
+	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO events (id, connector, received_at, summary, raw_json, trace_id)
 		VALUES (?,?,?,?,?,?)`, ev.id, name, ev.receivedAt, summary, ev.raw, ev.trace); err != nil {
-		s.log.Warn("event insert", "integration", name, "error", err)
+		s.log.Warn("event insert", "connector", name, "error", err)
 	}
 	return ev
 }
@@ -644,7 +644,7 @@ func (s *Service) dispatchTrigger(ctx context.Context, name string, ev eventReco
 		}
 	}
 	item := &dispatch.QueueItem{
-		Integration: name,
+		Connector:   name,
 		WorkspaceID: row.WorkspaceID,
 		Job:         j.Name,
 		OnIndex:     tr.Index,

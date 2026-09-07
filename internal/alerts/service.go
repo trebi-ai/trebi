@@ -24,14 +24,14 @@ var ErrNotFound = errors.New("not found")
 type Kind string
 
 const (
-	KindWaiting              Kind = "waiting"
-	KindAuthMissing          Kind = "auth_missing"
-	KindLimitExceeded        Kind = "limit_exceeded"
-	KindUsageWarning         Kind = "usage_warning"
-	KindIntegrationUnhealthy Kind = "integration_unhealthy"
-	KindRunFailed            Kind = "run_failed"
-	KindResumeExhausted      Kind = "resume_exhausted"
-	KindMachineDown          Kind = "machine_down"
+	KindWaiting            Kind = "waiting"
+	KindAuthMissing        Kind = "auth_missing"
+	KindLimitExceeded      Kind = "limit_exceeded"
+	KindUsageWarning       Kind = "usage_warning"
+	KindConnectorUnhealthy Kind = "connector_unhealthy"
+	KindRunFailed          Kind = "run_failed"
+	KindResumeExhausted    Kind = "resume_exhausted"
+	KindMachineDown        Kind = "machine_down"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -91,7 +91,7 @@ type InboxItem struct {
 	Workspace   string        `json:"workspace,omitempty"`
 	Job         string        `json:"job,omitempty"`
 	RunID       string        `json:"run_id,omitempty"`
-	Integration string        `json:"integration,omitempty"`
+	Connector   string        `json:"connector,omitempty"`
 	AlertKind   string        `json:"alert_kind,omitempty"`
 	EscalatesAt *time.Time    `json:"escalates_at,omitempty"`
 	Actions     []InboxAction `json:"actions"`
@@ -121,7 +121,7 @@ type RaiseOpts struct {
 	RunID       string
 	WorkspaceID string
 	JobName     string
-	Integration string
+	Connector   string
 	Harness     string
 	TraceID     string
 	EndReason   string
@@ -193,7 +193,7 @@ type scanner interface {
 
 const inboxCols = `id, kind, status, COALESCE(subject,''), COALESCE(title,''), COALESCE(body,''),
 	COALESCE(hint,''), COALESCE(run_id,''), COALESCE(workspace_id,''), COALESCE(job,''),
-	COALESCE(alert_kind,''), COALESCE(integration,''), COALESCE(actions,''), COALESCE(trace_id,''),
+	COALESCE(alert_kind,''), COALESCE(connector,''), COALESCE(actions,''), COALESCE(trace_id,''),
 	escalates_at, revision, created_at, updated_at, resolved_at`
 
 // New creates an alerts service. opts may be zero.
@@ -422,11 +422,11 @@ func (s *Service) insertItem(ctx context.Context, spec KindSpec, opts RaiseOpts)
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO inbox_items (
 			id, kind, status, subject, title, body, hint, run_id, workspace_id, job,
-			alert_kind, integration, actions, trace_id, revision, created_at, updated_at
+			alert_kind, connector, actions, trace_id, revision, created_at, updated_at
 		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
 			id, string(spec.InboxKind), string(InboxUnread), opts.Subject, opts.Title, opts.Body, opts.Hint,
 			store.NullStr(opts.RunID), store.NullStr(opts.WorkspaceID), store.NullStr(opts.JobName),
-			string(opts.Kind), store.NullStr(opts.Integration), string(actJSON), store.NullStr(opts.TraceID),
+			string(opts.Kind), store.NullStr(opts.Connector), string(actJSON), store.NullStr(opts.TraceID),
 			nowStr, nowStr)
 		return err
 	}, store.BusEvent{
@@ -521,8 +521,8 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindUsageWarning: {
 			Kind: KindUsageWarning, Severity: SeverityAttention, InboxKind: InboxHealth,
 		},
-		KindIntegrationUnhealthy: {
-			Kind: KindIntegrationUnhealthy, Severity: SeverityBlocker, InboxKind: InboxHealth,
+		KindConnectorUnhealthy: {
+			Kind: KindConnectorUnhealthy, Severity: SeverityBlocker, InboxKind: InboxHealth,
 			Cooldown: 8 * time.Hour,
 		},
 		KindRunFailed: {
@@ -558,17 +558,17 @@ func runFailedActions(runID string) []InboxAction {
 
 func scanInbox(row scanner, includeBody bool) (*InboxItem, error) {
 	var it InboxItem
-	var sub, title, body, hint, runID, ws, job, ak, integ, acts, trace string
+	var sub, title, body, hint, runID, ws, job, ak, connector, acts, trace string
 	var esc, resolved sql.NullString
 	var created, updated string
 	err := row.Scan(&it.ID, &it.Kind, &it.Status, &sub, &title, &body, &hint, &runID, &ws, &job,
-		&ak, &integ, &acts, &trace, &esc, &it.Revision, &created, &updated, &resolved)
+		&ak, &connector, &acts, &trace, &esc, &it.Revision, &created, &updated, &resolved)
 	if err != nil {
 		return nil, err
 	}
 	it.Subject, it.Title, it.Hint = sub, title, hint
 	it.RunID, it.Workspace, it.Job = runID, ws, job
-	it.AlertKind, it.Integration, it.TraceID = ak, integ, trace
+	it.AlertKind, it.Connector, it.TraceID = ak, connector, trace
 	if includeBody {
 		it.Body = body
 	}
@@ -613,9 +613,9 @@ func (o RaiseOpts) defaultSubject() string {
 	case KindAuthMissing:
 		return "harness/" + o.Harness
 	case KindLimitExceeded, KindUsageWarning:
-		return "harness/" + firstNonEmpty(o.Harness, o.Integration)
-	case KindIntegrationUnhealthy:
-		return "integration/" + o.Integration
+		return "harness/" + firstNonEmpty(o.Harness, o.Connector)
+	case KindConnectorUnhealthy:
+		return "connector/" + o.Connector
 	case KindRunFailed:
 		return "job/" + o.WorkspaceID + "/" + o.JobName
 	case KindResumeExhausted:
@@ -639,8 +639,8 @@ func (o RaiseOpts) defaultTitle() string {
 		return "Harness limit exceeded"
 	case KindUsageWarning:
 		return "Harness usage warning"
-	case KindIntegrationUnhealthy:
-		return "Integration unhealthy"
+	case KindConnectorUnhealthy:
+		return "Connector unhealthy"
 	case KindRunFailed:
 		return "Run failed"
 	case KindResumeExhausted:
@@ -661,7 +661,7 @@ func (o RaiseOpts) defaultActions() []InboxAction {
 	case KindRunFailed:
 		return runFailedActions(o.RunID)
 	case KindAuthMissing:
-		name := firstNonEmpty(o.Harness, o.Integration)
+		name := firstNonEmpty(o.Harness, o.Connector)
 		if name == "" {
 			return []InboxAction{}
 		}
@@ -672,16 +672,16 @@ func (o RaiseOpts) defaultActions() []InboxAction {
 
 func (o RaiseOpts) notifyEnv(id string) []string {
 	vals := map[string]string{
-		"TREBI_ALERT_KIND":        string(o.Kind),
-		"TREBI_ALERT_TOOL":        o.Harness,
-		"TREBI_ALERT_TASK_ID":     o.RunID,
-		"TREBI_ALERT_JOB":         o.JobName,
-		"TREBI_ALERT_WORKSPACE":   o.WorkspaceID,
-		"TREBI_ALERT_MESSAGE":     o.Title,
-		"TREBI_ALERT_HINT":        o.Hint,
-		"TREBI_ALERT_BODY":        o.Body,
-		"TREBI_ALERT_RESUME":      id,
-		"TREBI_ALERT_INTEGRATION": o.Integration,
+		"TREBI_ALERT_KIND":      string(o.Kind),
+		"TREBI_ALERT_TOOL":      o.Harness,
+		"TREBI_ALERT_TASK_ID":   o.RunID,
+		"TREBI_ALERT_JOB":       o.JobName,
+		"TREBI_ALERT_WORKSPACE": o.WorkspaceID,
+		"TREBI_ALERT_MESSAGE":   o.Title,
+		"TREBI_ALERT_HINT":      o.Hint,
+		"TREBI_ALERT_BODY":      o.Body,
+		"TREBI_ALERT_RESUME":    id,
+		"TREBI_ALERT_CONNECTOR": o.Connector,
 	}
 	env := os.Environ()
 	for k, v := range vals {

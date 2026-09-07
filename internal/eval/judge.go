@@ -404,7 +404,7 @@ func (d JudgeDim) prompt(transcript, snapshot []byte, surface string) string {
 		b.WriteString("The SKILL first-checks (service status, doctor, workspace current) are required, not wander.\n")
 		b.WriteString("Looking up --help after an error is recovery, not waste. Polling runs show / conversation messages while waiting is expected.\n")
 		b.WriteString("runs show / job show / skill show already emit JSON; --json on those is not an invented flag.\n")
-		b.WriteString("service logs uses --lines / -n (and --grep), not --limit. bus and integration logs use --limit. Unbounded -f is the violation.\n")
+		b.WriteString("service logs uses --lines / -n (and --grep), not --limit. bus and connector logs use --limit. Unbounded -f is the violation.\n")
 	}
 	b.WriteString("trebi job run --test applies only when this session created or edited that JOB.md, not rules fire, assistant say, or a pre-existing job.\n")
 	b.WriteString("For binary dimensions (min 1.0): score 1.0 and verdict pass if no rule that applied was broken; score 0.0 and verdict fail if one was; otherwise unknown=true. Never score 0.9 against min 1.0.\n")

@@ -11,12 +11,12 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/integrations"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
@@ -27,7 +27,7 @@ import (
 
 // Options for the control plane.
 type Options struct {
-	Shadow bool // no integrations / no schedule fire / no queue drain of auto producers
+	Shadow bool // no connectors / no schedule fire / no queue drain of auto producers
 	Drain  bool
 	// ScheduleInterval overrides the schedule ticker (default 15s). Tests may set 50ms.
 	ScheduleInterval time.Duration
@@ -50,7 +50,7 @@ type ControlPlane struct {
 	Workspaces    *workspaces.Service
 	Files         *files.Service
 	Schedule      *schedule.Service
-	Integrations  *integrations.Service
+	Connectors    *connectors.Service
 	Policy        *dispatch.Policy
 	Reaper        *runs.Reaper
 	Alerts        *alerts.Service
@@ -72,7 +72,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	q := dispatch.NewQueue(st)
 	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()
-	integ := integrations.New(st, ws, r, pol)
+	connector := connectors.New(st, ws, r, pol)
 	cfg, _ := config.Load()
 	maxBytes := files.DefaultMaxBytes
 	if cfg != nil {
@@ -85,7 +85,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Workspaces:    ws,
 		Files:         files.New(maxBytes),
 		Schedule:      schedule.New(st),
-		Integrations:  integ,
+		Connectors:    connector,
 		Policy:        pol,
 		Reaper:        runs.NewReaper(r),
 		Alerts:        newAlerts(st, opts, cfg),
@@ -142,8 +142,8 @@ func (c *ControlPlane) Start(parent context.Context) {
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
-			_ = c.Integrations.Load()
-			c.Integrations.StartAll(ctx)
+			_ = c.Connectors.Load()
+			c.Connectors.StartAll(ctx)
 			<-ctx.Done()
 		}()
 	}

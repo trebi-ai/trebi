@@ -155,6 +155,14 @@ func TestPointerSwitchAnd404(t *testing.T) {
 	if _, err := svc.PutPointer(ctx, "cli", "ws", a.ID); err != nil {
 		t.Fatal(err)
 	}
+	msgsA, _ := svc.ListMessages(ctx, a.ID, conversations.MessageListOpts{Limit: 10})
+	if _, err := svc.PutPointer(ctx, "cli", "ws", a.ID); err != nil {
+		t.Fatal(err)
+	}
+	msgsA2, _ := svc.ListMessages(ctx, a.ID, conversations.MessageListOpts{Limit: 10})
+	if len(msgsA2) != len(msgsA) {
+		t.Fatalf("repeat PutPointer added recap rows: %d -> %d", len(msgsA), len(msgsA2))
+	}
 	if _, err := svc.PutPointer(ctx, "cli", "ws", b.ID); err != nil {
 		t.Fatal(err)
 	}

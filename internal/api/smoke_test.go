@@ -114,8 +114,8 @@ func TestPlatformSurface_NonStub(t *testing.T) {
 		t.Fatalf("doctor: %v", doc)
 	}
 
-	// integrations upsert
-	req, _ = http.NewRequest("POST", base+"/v1/integrations", bytes.NewBufferString(
+	// connectors upsert
+	req, _ = http.NewRequest("POST", base+"/v1/connectors", bytes.NewBufferString(
 		`{"name":"line-src","type":"stream","command":"yes","format":"line"}`))
 	auth(req)
 	resp, err = client.Do(req)
@@ -125,18 +125,18 @@ func TestPlatformSurface_NonStub(t *testing.T) {
 	if resp.StatusCode != 201 {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		t.Fatalf("integ create %d %s", resp.StatusCode, b)
+		t.Fatalf("connector create %d %s", resp.StatusCode, b)
 	}
 	resp.Body.Close()
-	req, _ = http.NewRequest("GET", base+"/v1/integrations", nil)
+	req, _ = http.NewRequest("GET", base+"/v1/connectors", nil)
 	auth(req)
 	resp, _ = client.Do(req)
-	var integ map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&integ)
+	var connector map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&connector)
 	resp.Body.Close()
-	ilist, _ := integ["integrations"].([]any)
+	ilist, _ := connector["connectors"].([]any)
 	if len(ilist) < 1 {
-		t.Fatalf("integrations: %v", integ)
+		t.Fatalf("connectors: %v", connector)
 	}
 
 	// ensure skill folder on disk
@@ -149,7 +149,7 @@ func TestDispatchRulesFireCreatesQueue(t *testing.T) {
 	s, base := startTestServer(t)
 	client := &http.Client{Timeout: 5 * time.Second}
 	// workspace + job with event trigger so fire can match — rules/fire enqueues directly
-	payload := `{"integration":"src","workspace":"ws","job":"j","match":"true","event":{"n":1}}`
+	payload := `{"connector":"src","workspace":"ws","job":"j","match":"true","event":{"n":1}}`
 	req, _ := http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(payload))
 	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")

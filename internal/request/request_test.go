@@ -258,21 +258,21 @@ func TestSplitScheduleValues(t *testing.T) {
 	}
 }
 
-func TestBuildIntegrationRestart(t *testing.T) {
+func TestBuildConnectorRestart(t *testing.T) {
 	t.Parallel()
-	req := BuildIntegrationRestart("echo-src")
-	if req.Method != "POST" || req.Path != "/v1/integrations/echo-src/restart" {
+	req := BuildConnectorRestart("echo-src")
+	if req.Method != "POST" || req.Path != "/v1/connectors/echo-src/restart" {
 		t.Fatalf("%+v", req)
 	}
 }
 
-func TestIntegrationSpecBuild(t *testing.T) {
+func TestConnectorSpecBuild(t *testing.T) {
 	t.Parallel()
-	req := IntegrationSpec{
+	req := ConnectorSpec{
 		Name: "echo", Command: "echo hi", Format: "json", Type: "stream", Cwd: "/tmp",
 		Env: map[string]string{"A": "1"}, Facets: []string{"mail"},
 	}.Build()
-	if req.Method != "PUT" || req.Path != "/v1/integrations/echo" {
+	if req.Method != "PUT" || req.Path != "/v1/connectors/echo" {
 		t.Fatalf("%+v", req)
 	}
 	b, _ := json.Marshal(req.Body)
@@ -283,7 +283,7 @@ func TestIntegrationSpecBuild(t *testing.T) {
 		}
 	}
 	// A partial set omits the fields it does not name, so the daemon keeps them.
-	b, _ = json.Marshal(IntegrationSpec{Name: "echo", Command: "echo hi"}.Build().Body)
+	b, _ = json.Marshal(ConnectorSpec{Name: "echo", Command: "echo hi"}.Build().Body)
 	for _, unwanted := range []string{`"format"`, `"type"`, `"cwd"`, `"env"`, `"facets"`} {
 		if strings.Contains(string(b), unwanted) {
 			t.Fatalf("partial set must omit %s: %s", unwanted, b)
@@ -586,13 +586,13 @@ func TestBuildSkillPut(t *testing.T) {
 	}
 }
 
-func TestBuildIntegrationCursor(t *testing.T) {
+func TestBuildConnectorCursor(t *testing.T) {
 	t.Parallel()
-	got := BuildIntegrationCursorGet("mail")
-	if got.Method != "GET" || got.Path != "/v1/integrations/mail/cursor" {
+	got := BuildConnectorCursorGet("mail")
+	if got.Method != "GET" || got.Path != "/v1/connectors/mail/cursor" {
 		t.Fatalf("get %+v", got)
 	}
-	got = BuildIntegrationCursorSet("mail", "evt-1")
+	got = BuildConnectorCursorSet("mail", "evt-1")
 	if got.Method != "PUT" || got.Body == nil {
 		t.Fatalf("set %+v", got)
 	}
@@ -600,7 +600,7 @@ func TestBuildIntegrationCursor(t *testing.T) {
 	if !strings.Contains(string(b), `"last_event_id":"evt-1"`) {
 		t.Fatalf("%s", b)
 	}
-	got = BuildIntegrationCursorReset("mail")
+	got = BuildConnectorCursorReset("mail")
 	if got.Method != "PUT" || got.Body != nil {
 		t.Fatalf("reset must send empty body, got %+v", got)
 	}
@@ -636,12 +636,12 @@ func TestBuildWorkspaceAndMemoryAndRules(t *testing.T) {
 	if req.Path != "/v1/rules/fire" {
 		t.Fatalf("rules fire %+v", req)
 	}
-	req = BuildIntegrationConnect("mail")
-	if req.Path != "/v1/integrations/mail/connect" {
+	req = BuildConnectorConnect("mail")
+	if req.Path != "/v1/connectors/mail/connect" {
 		t.Fatalf("connect %+v", req)
 	}
-	req = BuildIntegrationDisconnect("mail")
-	if req.Path != "/v1/integrations/mail/disconnect" {
+	req = BuildConnectorDisconnect("mail")
+	if req.Path != "/v1/connectors/mail/disconnect" {
 		t.Fatalf("disconnect %+v", req)
 	}
 }
@@ -855,7 +855,7 @@ func TestBuildWorkspaceAndAssistantRequests(t *testing.T) {
 	}
 }
 
-func TestBuildHarnessIntegrationQueueRequests(t *testing.T) {
+func TestBuildHarnessConnectorQueueRequests(t *testing.T) {
 	t.Parallel()
 	if p := BuildHarnessesListPath(); p != "/v1/harnesses" {
 		t.Fatalf("harnesses %s", p)
@@ -864,12 +864,12 @@ func TestBuildHarnessIntegrationQueueRequests(t *testing.T) {
 	if cancel.Method != "DELETE" || cancel.Path != "/v1/harnesses/claude/login" {
 		t.Fatalf("%+v", cancel)
 	}
-	if p := BuildIntegrationGetPath("mail"); p != "/v1/integrations/mail" {
-		t.Fatalf("integ get %s", p)
+	if p := BuildConnectorGetPath("mail"); p != "/v1/connectors/mail" {
+		t.Fatalf("connector get %s", p)
 	}
 	def := map[string]any{"name": "mail", "kind": "imap"}
-	create := BuildIntegrationCreate(def)
-	if create.Method != "POST" || create.Path != "/v1/integrations" || create.Body.(map[string]any)["name"] != "mail" {
+	create := BuildConnectorCreate(def)
+	if create.Method != "POST" || create.Path != "/v1/connectors" || create.Body.(map[string]any)["name"] != "mail" {
 		t.Fatalf("%+v", create)
 	}
 	rq := BuildQueueRequeue("01ABC")

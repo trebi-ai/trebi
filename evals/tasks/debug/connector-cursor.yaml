@@ -1,5 +1,5 @@
-id: integration-cursor
-title: Reset an integration cursor to replay from the start
+id: connector-cursor
+title: Reset a connector cursor to replay from the start
 tier: debug
 clients: [claude, codex]
 surfaces: [cli, mcp]
@@ -11,11 +11,11 @@ prompt: |
   tick missed events yesterday. Replay everything from the beginning.
 checks:
   - name: cursor back at the start
-    cmd: trebi integration cursor show tick --json
+    cmd: trebi connector cursor show tick --json
     jq: '(.last_event_id // "") == ""'
-  - name: the integration is still set up
-    cmd: trebi integration list --json
-    jq: '[.integrations[]? | select(.name == "tick")] | length == 1'
+  - name: the connector is still set up
+    cmd: trebi connector list --json
+    jq: '[.connectors[]? | select(.name == "tick")] | length == 1'
 judge:
   model: claude-sonnet-5
   dimensions:
@@ -27,4 +27,4 @@ judge:
     - use: faithful-report
     - use: scope
     - use: efficiency
-oracle: oracles/integration-cursor.md
+oracle: oracles/connector-cursor.md

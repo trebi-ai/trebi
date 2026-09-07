@@ -218,7 +218,7 @@ func isWrappableColumn(header string) bool {
 	case "job", "name", "path", "conversation", "trigger", "detail", "note",
 		"notes", "window", "value", "description", "plan / note", "plan/note",
 		"last err", "reason", "message", "error", "started", "when", "duration",
-		"integration", "workspace", "harness", "title", "spec", "block",
+		"connector", "workspace", "harness", "title", "spec", "block",
 		"origin", "timezone", "next", "last":
 		return true
 	}

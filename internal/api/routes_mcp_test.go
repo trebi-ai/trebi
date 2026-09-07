@@ -30,8 +30,8 @@ func TestMCPToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	want := []string{"assistant", "config", "conversation", "event", "file",
-		"harness", "inbox", "integration", "job", "queue", "run", "secret",
+	want := []string{"assistant", "config", "connector", "conversation", "event", "file",
+		"harness", "inbox", "job", "queue", "run", "secret",
 		"skill", "system", "workspace"}
 	got := make([]string, 0, len(res.Tools))
 	total := 0
@@ -328,7 +328,7 @@ func TestMCPDocsAction(t *testing.T) {
 	s, base := startTestServer(t)
 	cs := mcpSession(t, base, s.Token())
 	tools := []string{"assistant", "config", "conversation", "event", "file",
-		"harness", "inbox", "integration", "job", "queue", "run", "secret",
+		"harness", "inbox", "connector", "job", "queue", "run", "secret",
 		"skill", "system", "workspace"}
 	for _, tool := range tools {
 		res, text := mcpCall(t, cs, tool, "docs", nil)

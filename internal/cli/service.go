@@ -230,7 +230,7 @@ func serviceDaemonSubcommands() []*cli.Command {
 			Usage: "run trebid (HTTP API + workers; menu-bar tray on macOS unless --no-tray)",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "listen", Value: "127.0.0.1:0", Usage: "HTTP listen address"},
-				&cli.BoolFlag{Name: "shadow", Usage: "shadow mode: drain + no integrations/schedules"},
+				&cli.BoolFlag{Name: "shadow", Usage: "shadow mode: drain + no connectors/schedules"},
 				&cli.BoolFlag{Name: "no-tray", Usage: "disable menu-bar tray (headless)"},
 				&cli.IntFlag{
 					Name:    "parent-pid",
@@ -604,7 +604,7 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 		Drain:  drain,
 	})
 	// Share control-plane services so API and workers see the same state.
-	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Integrations, cp.Schedule, cp.Alerts, cp.Files, cp.Conversations, cp.Harness)
+	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Conversations, cp.Harness)
 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()

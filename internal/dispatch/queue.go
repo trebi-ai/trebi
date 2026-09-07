@@ -27,7 +27,7 @@ var (
 // QueueItem is an event_queue row.
 type QueueItem struct {
 	ID              string            `json:"id"`
-	Integration     string            `json:"integration"`
+	Connector       string            `json:"connector"`
 	WorkspaceID     string            `json:"workspace_id"`
 	Job             string            `json:"job"`
 	Kind            string            `json:"kind"`
@@ -133,11 +133,11 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 
 	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO event_queue (
-			id, integration, workspace_id, job, kind, on_index, conversation_key,
+			id, connector, workspace_id, job, kind, on_index, conversation_key,
 			event_id, event_raw, vars_json, prompt, status, block_reason, resume_of,
 			trace_id, created_at, updated_at
 		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			item.ID, item.Integration, item.WorkspaceID, item.Job, item.Kind, item.OnIndex,
+			item.ID, item.Connector, item.WorkspaceID, item.Job, item.Kind, item.OnIndex,
 			item.ConversationKey, eventID, store.NullStr(item.EventRaw), varsJSON, item.Prompt,
 			string(item.Status), store.NullStr(string(item.BlockReason)), store.NullStr(item.ResumeOf),
 			item.TraceID, now, now)
@@ -162,14 +162,14 @@ func (q *Queue) ClaimNext(ctx context.Context, workspaceID, job, kind, conversat
 	q.st.LockBus()
 	defer q.st.UnlockBus()
 	err := q.st.WithTx(ctx, func(tx *sql.Tx) error {
-		row := tx.QueryRow(`SELECT id, integration, workspace_id, job, kind, on_index, conversation_key,
+		row := tx.QueryRow(`SELECT id, connector, workspace_id, job, kind, on_index, conversation_key,
 			COALESCE(event_id,''), COALESCE(event_raw,''), status, COALESCE(prompt,''), COALESCE(trace_id,''),
 			COALESCE(resume_of,''), attempts, COALESCE(vars_json,''), created_at
 			FROM event_queue
 			WHERE status='pending' AND workspace_id=? AND job=? AND kind=? AND conversation_key=?
 			ORDER BY id ASC LIMIT 1`, workspaceID, job, kind, conversationKey)
 		var created, status, varsJSON string
-		if err := row.Scan(&item.ID, &item.Integration, &item.WorkspaceID, &item.Job, &item.Kind,
+		if err := row.Scan(&item.ID, &item.Connector, &item.WorkspaceID, &item.Job, &item.Kind,
 			&item.OnIndex, &item.ConversationKey, &item.EventID, &item.EventRaw, &status, &item.Prompt,
 			&item.TraceID, &item.ResumeOf, &item.Attempts, &varsJSON, &created); err != nil {
 			return err
@@ -328,7 +328,7 @@ func (q *Queue) List(ctx context.Context, status, cursor string, limit int) ([]Q
 	if limit <= 0 {
 		limit = 50
 	}
-	query := `SELECT id, integration, workspace_id, job, kind, on_index, conversation_key,
+	query := `SELECT id, connector, workspace_id, job, kind, on_index, conversation_key,
 		COALESCE(event_id,''), COALESCE(event_raw,''), status, COALESCE(block_reason,''),
 		COALESCE(prompt,''), COALESCE(trace_id,''), COALESCE(run_id,''), created_at
 		FROM event_queue WHERE 1=1`
@@ -352,7 +352,7 @@ func (q *Queue) List(ctx context.Context, status, cursor string, limit int) ([]Q
 	for rows.Next() {
 		var it QueueItem
 		var stStr, br, created string
-		if err := rows.Scan(&it.ID, &it.Integration, &it.WorkspaceID, &it.Job, &it.Kind, &it.OnIndex,
+		if err := rows.Scan(&it.ID, &it.Connector, &it.WorkspaceID, &it.Job, &it.Kind, &it.OnIndex,
 			&it.ConversationKey, &it.EventID, &it.EventRaw, &stStr, &br, &it.Prompt, &it.TraceID, &it.RunID, &created); err != nil {
 			return nil, err
 		}

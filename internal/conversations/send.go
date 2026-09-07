@@ -281,7 +281,7 @@ func (s *Service) enqueueWake(ctx context.Context, conv *Conversation, text stri
 	}
 	prompt := s.wakePrompt(ctx, conv, text)
 	item := &dispatch.QueueItem{
-		Integration:     "assistant",
+		Connector:       "assistant",
 		WorkspaceID:     conv.Workspace,
 		Job:             jobName,
 		Kind:            runs.KindAssistant,

@@ -1,6 +1,6 @@
 # secret
 
-Secret operations: manage named secrets used by jobs and integrations.
+Secret operations: manage named secrets used by jobs and connectors.
 
 Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error envelope `{"error":{"code","message"}}` unchanged, with `isError: true`.
 

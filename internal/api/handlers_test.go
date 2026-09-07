@@ -18,7 +18,7 @@ import (
 )
 
 // TestGapHandlers_RealNotStubs exercises attach-related setup, memory ledger,
-// assistant PUT, integration cursor/logs, and doctor fix — proving handlers
+// assistant PUT, connector cursor/logs, and doctor fix — proving handlers
 // are more than empty JSON stubs.
 func TestGapHandlers_RealNotStubs(t *testing.T) {
 	dir := t.TempDir()
@@ -135,25 +135,25 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 		}
 	}
 
-	// --- Integration cursor (DB write) ---
-	// create integration first
-	code, _ = do("POST", "/v1/integrations", map[string]any{
+	// --- Connector cursor (DB write) ---
+	// create connector first
+	code, _ = do("POST", "/v1/connectors", map[string]any{
 		"name": "gap-src", "type": "stream", "command": "true", "format": "line",
 	})
 	if code != 201 {
-		t.Fatalf("integ create %d", code)
+		t.Fatalf("connector create %d", code)
 	}
-	code, cur := do("PUT", "/v1/integrations/gap-src/cursor", map[string]string{"last_event_id": "evt-99"})
+	code, cur := do("PUT", "/v1/connectors/gap-src/cursor", map[string]string{"last_event_id": "evt-99"})
 	if code != 200 {
 		t.Fatalf("cursor put %d %v", code, cur)
 	}
-	code, cur = do("GET", "/v1/integrations/gap-src/cursor", nil)
+	code, cur = do("GET", "/v1/connectors/gap-src/cursor", nil)
 	if code != 200 || cur["last_event_id"] != "evt-99" {
 		t.Fatalf("cursor get %d %v", code, cur)
 	}
 
-	// --- Integration logs (route returns SSE or JSON, not 404) ---
-	req, _ = http.NewRequest("GET", base+"/v1/integrations/gap-src/logs", nil)
+	// --- Connector logs (route returns SSE or JSON, not 404) ---
+	req, _ = http.NewRequest("GET", base+"/v1/connectors/gap-src/logs", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	resp, err = client.Do(req)
 	if err != nil {
