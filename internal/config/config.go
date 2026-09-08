@@ -217,6 +217,16 @@ func FirstClassTools() []string {
 	return []string{"claude", "grok", "codex", "opencode", "copilot", "cursor", "pi"}
 }
 
+// IsFirstClass reports whether name has a dedicated tools.<name> field in config.yaml.
+func IsFirstClass(name string) bool {
+	for _, t := range FirstClassTools() {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}
+
 // KnownBridgeResources returns the valid bridge resource keys per tool (for Validate).
 func KnownBridgeResources() map[string][]string {
 	return map[string][]string{

@@ -120,6 +120,43 @@ func TestConnectors_StartStopLifecycle(t *testing.T) {
 	}
 }
 
+// TestConnectors_StartOutlivesCallerContext: HTTP connect/restart pass
+// r.Context(), which cancels when the response is written. The process must
+// keep listening after that, and only Stop() should tear it down.
+func TestConnectors_StartOutlivesCallerContext(t *testing.T) {
+	_, _, _, svc := openStack(t)
+	d := connectors.Definition{
+		Name:    "tick",
+		Type:    "stream",
+		Command: `while true; do echo '{"n":1}'; sleep 0.2; done`,
+		Format:  "json",
+	}
+	if err := svc.Upsert(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := svc.Start(ctx, "tick"); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	var status string
+	for time.Now().Before(deadline) {
+		row, _ := svc.Get("tick")
+		status, _ = row["status"].(string)
+		if status == "listening" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if status != "listening" {
+		t.Fatalf("after caller cancel: status=%s want listening", status)
+	}
+	if err := svc.Stop("tick"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestConnectors_ConcurrentStartSingleProcess proves the slot reservation:
 // two concurrent Starts spawn exactly one subprocess.
 func TestConnectors_ConcurrentStartSingleProcess(t *testing.T) {

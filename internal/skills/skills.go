@@ -214,7 +214,8 @@ func (s *Service) loadSkill(ctx context.Context, name string, includeMD bool) (*
 	sk := &Skill{
 		Name:        name,
 		Provenance:  Provenance(prov),
-		Description: firstLine(string(mdBytes)),
+		Description: skillDescription(string(mdBytes)),
+		Version:     skillVersion(string(mdBytes)),
 		UpdatedAt:   st.ModTime().UTC(),
 		Hash:        hash,
 		Path:        dir,
@@ -301,6 +302,32 @@ func hashDir(dir string) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
+func frontmatter(md string) (meta map[string]string, body string) {
+	meta = map[string]string{}
+	body = md
+	trimmed := strings.TrimSpace(md)
+	if !strings.HasPrefix(trimmed, "---") {
+		return meta, md
+	}
+	rest := strings.TrimPrefix(trimmed, "---")
+	parts := strings.SplitN(rest, "\n---", 2)
+	if len(parts) != 2 {
+		return meta, md
+	}
+	for _, line := range strings.Split(parts[0], "\n") {
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		val = strings.Trim(strings.TrimSpace(val), `"'`)
+		if key != "" {
+			meta[key] = val
+		}
+	}
+	return meta, parts[1]
+}
+
 func firstLine(s string) string {
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(strings.TrimPrefix(line, "#"))
@@ -309,6 +336,19 @@ func firstLine(s string) string {
 		}
 	}
 	return ""
+}
+
+func skillDescription(md string) string {
+	meta, body := frontmatter(md)
+	if d := strings.TrimSpace(meta["description"]); d != "" {
+		return d
+	}
+	return firstLine(body)
+}
+
+func skillVersion(md string) string {
+	meta, _ := frontmatter(md)
+	return strings.TrimSpace(meta["version"])
 }
 
 func listScripts(dir string) []string {
@@ -330,13 +370,29 @@ func parseRequires(md string) []SkillRequirement {
 	var out []SkillRequirement
 	for _, line := range strings.Split(md, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "- bin:") {
-			name := strings.TrimSpace(strings.TrimPrefix(line, "- bin:"))
-			if name == "" {
-				continue
-			}
+		kind, name, ok := strings.Cut(strings.TrimPrefix(line, "- "), ":")
+		if !ok || !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		kind = strings.TrimSpace(kind)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		switch kind {
+		case "bin":
 			_, err := exec.LookPath(name)
 			out = append(out, SkillRequirement{Name: name, Kind: "bin", Satisfied: err == nil})
+		case "env":
+			satisfied := os.Getenv(name) != ""
+			if !satisfied {
+				if _, err := os.Stat(filepath.Join(home.SecretsDir(), name)); err == nil {
+					satisfied = true
+				}
+			}
+			out = append(out, SkillRequirement{Name: name, Kind: "env", Satisfied: satisfied})
+		case "mcp":
+			out = append(out, SkillRequirement{Name: name, Kind: "mcp", Satisfied: false})
 		}
 	}
 	return out

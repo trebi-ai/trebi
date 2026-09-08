@@ -139,7 +139,7 @@ func isPollRoute(r *http.Request) bool {
 }
 
 // allowQueryToken permits ?token= only where clients cannot set headers:
-// the SSE stream and the WebSocket attach route.
+// the SSE stream and WebSocket attach routes (run and harness login).
 func allowQueryToken(r *http.Request) bool {
 	if r.Method != http.MethodGet {
 		return false
@@ -147,7 +147,11 @@ func allowQueryToken(r *http.Request) bool {
 	if r.URL.Path == "/v1/stream" {
 		return true
 	}
-	return strings.HasPrefix(r.URL.Path, "/v1/runs/") && strings.HasSuffix(r.URL.Path, "/attach")
+	if !strings.HasSuffix(r.URL.Path, "/attach") {
+		return false
+	}
+	return strings.HasPrefix(r.URL.Path, "/v1/runs/") ||
+		strings.HasPrefix(r.URL.Path, "/v1/harnesses/")
 }
 
 const (

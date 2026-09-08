@@ -89,7 +89,12 @@ func (s *Server) handleConnectorPut(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, d)
+	row, err := s.connectors.Get(d.Name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
 }
 
 func (s *Server) handleConnectorDelete(w http.ResponseWriter, r *http.Request) {
@@ -122,6 +127,11 @@ func (s *Server) handleConnectorRestart(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if _, err := s.connectors.Get(name); err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
 	var body struct {
 		Event any `json:"event"`
 	}
@@ -129,7 +139,7 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 	if body.Event == nil {
 		body.Event = map[string]any{"test": true}
 	}
-	_, err := s.connectors.InjectEvent(r.Context(), r.PathValue("name"), body.Event)
+	_, err := s.connectors.InjectEvent(r.Context(), name, body.Event)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
@@ -140,58 +150,58 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConnectorLogs(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	path := filepath.Join(home.ConnectorsLogDir(), name+".jsonl")
-	f, err := os.Open(path)
-	if err != nil {
-		// empty stream
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "event: ready\ndata: {}\n\n")
-		return
-	}
-	defer f.Close()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		// fall back to full body
-		data, _ := io.ReadAll(f)
+		data, _ := os.ReadFile(path)
 		writeJSON(w, http.StatusOK, map[string]any{"log": string(data)})
 		return
 	}
+	// Headers must go out before the first log line, or an empty file + follow
+	// holds the connection with no response and proxies time out as 502.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		fmt.Fprintf(w, "data: %s\n\n", sc.Text())
-		flusher.Flush()
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "event: ready\ndata: {}\n\n")
+	flusher.Flush()
+
+	var offset int64
+	if f, err := os.Open(path); err == nil {
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			fmt.Fprintf(w, "data: %s\n\n", sc.Text())
+			flusher.Flush()
+		}
+		offset, _ = f.Seek(0, io.SeekCurrent)
+		_ = f.Close()
 	}
-	// follow
-	if r.URL.Query().Get("follow") == "1" {
-		offset, _ := f.Seek(0, io.SeekCurrent)
-		t := time.NewTicker(500 * time.Millisecond)
-		defer t.Stop()
-		for {
-			select {
-			case <-r.Context().Done():
-				return
-			case <-t.C:
-				st, err := f.Stat()
-				if err != nil {
-					return
-				}
-				if st.Size() <= offset {
-					continue
-				}
-				f2, err := os.Open(path)
-				if err != nil {
-					return
-				}
-				_, _ = f2.Seek(offset, io.SeekStart)
-				sc2 := bufio.NewScanner(f2)
-				for sc2.Scan() {
-					fmt.Fprintf(w, "data: %s\n\n", sc2.Text())
-					flusher.Flush()
-				}
-				offset, _ = f2.Seek(0, io.SeekCurrent)
-				_ = f2.Close()
+
+	if r.URL.Query().Get("follow") != "1" {
+		return
+	}
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-t.C:
+			f2, err := os.Open(path)
+			if err != nil {
+				continue
 			}
+			st, err := f2.Stat()
+			if err != nil || st.Size() <= offset {
+				_ = f2.Close()
+				continue
+			}
+			_, _ = f2.Seek(offset, io.SeekStart)
+			sc2 := bufio.NewScanner(f2)
+			for sc2.Scan() {
+				fmt.Fprintf(w, "data: %s\n\n", sc2.Text())
+				flusher.Flush()
+			}
+			offset, _ = f2.Seek(0, io.SeekCurrent)
+			_ = f2.Close()
 		}
 	}
 }

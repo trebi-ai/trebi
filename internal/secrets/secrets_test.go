@@ -58,4 +58,16 @@ func TestExpandRefs(t *testing.T) {
 	if len(missing) != 0 || out["X"] != "no-such-secret" {
 		t.Fatalf("%v %v", out, missing)
 	}
+
+	out, missing = secrets.ExpandRefs(map[string]string{
+		"EVAL_API_KEY": "secret:eval_api_key",
+		"MISSING":      "secret:no-such-secret",
+		"PLAIN":        "literal",
+	})
+	if out["EVAL_API_KEY"] != "sk-secret" || out["PLAIN"] != "literal" || out["MISSING"] != "secret:no-such-secret" {
+		t.Fatalf("%v", out)
+	}
+	if len(missing) != 1 || missing[0] != "no-such-secret" {
+		t.Fatalf("missing %v", missing)
+	}
 }

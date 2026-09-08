@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/trebi-ai/trebi/internal/home"
 )
@@ -79,11 +80,18 @@ func ExpandRefs(env map[string]string) (out map[string]string, missing []string)
 	}
 	out = make(map[string]string, len(env))
 	for k, v := range env {
-		if !have[v] {
+		name := v
+		if strings.HasPrefix(v, "secret:") {
+			name = strings.TrimPrefix(v, "secret:")
+		}
+		if !have[name] {
+			if strings.HasPrefix(v, "secret:") {
+				missing = append(missing, name)
+			}
 			out[k] = v
 			continue
 		}
-		sec, err := Get(v)
+		sec, err := Get(name)
 		if err != nil {
 			missing = append(missing, v)
 			out[k] = v

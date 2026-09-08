@@ -71,7 +71,12 @@ func (s *Server) handleHarnessEnsure(w http.ResponseWriter, r *http.Request) {
 	tool, ok := tmux.ByName(name)
 	if ok {
 		if life := tool.Lifecycle(); life != nil {
-			_ = life.Install(config.BaseDir(), config.BinDir())
+			if err := life.Install(config.BaseDir(), config.BinDir()); err != nil {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"name": name, "home": dir, "ensured": false, "error": err.Error(),
+				})
+				return
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "home": dir, "ensured": true})
@@ -116,6 +121,11 @@ func (s *Server) handleHarnessPatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
+	if !config.IsFirstClass(name) {
+		writeErr(w, http.StatusUnprocessableEntity, "precondition_failed",
+			"auth_mode is not persisted for "+name+"; only first-class tools store a pin in config.yaml")
+		return
+	}
 	st, err := s.harness.SetMode(r.Context(), name, body.AuthMode)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
@@ -137,10 +147,6 @@ func (s *Server) handleHarnessLogout(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	st, err := s.harness.Logout(r.Context(), name, body.Mode, body.Confirm)
 	if err != nil {
-		if errors.Is(err, harness.ErrSharedLogout()) {
-			writeErr(w, http.StatusBadRequest, "validation", err.Error())
-			return
-		}
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}

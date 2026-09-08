@@ -23,6 +23,8 @@ const (
 	streamPollInterval = 200 * time.Millisecond
 	// streamKeepalive is the max idle time before an SSE comment flush.
 	streamKeepalive = 15 * time.Second
+	// systemLogCap is the default and max number of lines GET /v1/system/logs returns.
+	systemLogCap = 200
 )
 
 func (s *Server) routeSystem(mux *http.ServeMux) {
@@ -326,16 +328,51 @@ func (s *Server) handleSystemLogs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"lines": []string{}})
 		return
 	}
-	lines := strings.Split(string(data), "\n")
-	if len(lines) > 200 {
-		lines = lines[len(lines)-200:]
+	q := r.URL.Query()
+	n := systemLogCap
+	if raw := q.Get("lines"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil {
+			n = v
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"lines": filterLogLines(strings.Split(string(data), "\n"), n, q.Get("level"), q.Get("grep")),
+	})
 }
 
+// filterLogLines keeps lines matching level and grep substrings (case-insensitive),
+// then the last n (default and max systemLogCap).
+func filterLogLines(lines []string, n int, level, grep string) []string {
+	if n <= 0 || n > systemLogCap {
+		n = systemLogCap
+	}
+	level = strings.ToLower(level)
+	grep = strings.ToLower(grep)
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		low := strings.ToLower(line)
+		if level != "" && !strings.Contains(low, level) {
+			continue
+		}
+		if grep != "" && !strings.Contains(low, grep) {
+			continue
+		}
+		out = append(out, line)
+	}
+	if len(out) > n {
+		out = out[len(out)-n:]
+	}
+	return out
+}
+
+// handleSystemUpdate is a stub: it does not consult a release feed.
+// source is empty until a real feed exists so the UI can show versions without a verdict.
 func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"current": Version, "latest": Version, "update_available": false,
+		"current": Version, "latest": Version, "update_available": false, "source": "",
 	})
 }
 

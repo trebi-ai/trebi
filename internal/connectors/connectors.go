@@ -21,6 +21,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 	"gopkg.in/yaml.v3"
@@ -75,7 +76,7 @@ type File struct {
 // Status is live supervision state.
 type Status struct {
 	Name     string `json:"name"`
-	Status   string `json:"status"` // listening|stopped|crashed|running
+	Status   string `json:"status"` // stopped|starting|listening|crashed
 	PID      int    `json:"pid,omitempty"`
 	Restarts int    `json:"restarts"`
 	LastErr  string `json:"last_err,omitempty"`
@@ -91,20 +92,22 @@ type Service struct {
 	queue *dispatch.Queue
 	log   *slog.Logger
 
-	mu    sync.Mutex
-	procs map[string]*proc
-	defs  map[string]Definition
+	mu     sync.Mutex
+	procs  map[string]*proc
+	defs   map[string]Definition
+	runCtx context.Context // process lifetime; not the caller's (HTTP) context
 }
 
 type proc struct {
 	cancel context.CancelFunc // set once at creation
 
 	mu       sync.Mutex // guards the fields below (readLoop writes, List reads)
-	cmd      *exec.Cmd  // nil until the launch completes
-	restarts int
-	events   int64
-	lastErr  string
-	status   string
+	cmd       *exec.Cmd  // nil until the launch completes
+	restarts  int
+	events    int64
+	lastErr   string
+	status    string
+	startedAt time.Time
 }
 
 // eventRecord is one persisted ingress event.
@@ -153,23 +156,24 @@ func (p *proc) addRestart() {
 	p.mu.Unlock()
 }
 
-func (p *proc) snapshot() (status string, restarts int, events int64, lastErr string, pid int) {
+func (p *proc) snapshot() (status string, restarts int, events int64, lastErr string, pid int, startedAt time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.cmd != nil && p.cmd.Process != nil {
 		pid = p.cmd.Process.Pid
 	}
-	return p.status, p.restarts, p.events, p.lastErr, pid
+	return p.status, p.restarts, p.events, p.lastErr, pid, p.startedAt
 }
 
 // New creates a connectors service.
 func New(st *store.Store, ws *workspaces.Service, r *runs.Service, pol *dispatch.Policy) *Service {
 	return &Service{
 		st: st, ws: ws, runs: r, pol: pol,
-		queue: dispatch.NewQueue(st),
-		log:   slog.Default().With("source", "connectors"),
-		procs: make(map[string]*proc),
-		defs:  make(map[string]Definition),
+		queue:  dispatch.NewQueue(st),
+		log:    slog.Default().With("source", "connectors"),
+		procs:  make(map[string]*proc),
+		defs:   make(map[string]Definition),
+		runCtx: context.Background(),
 	}
 }
 
@@ -245,16 +249,22 @@ func (s *Service) List() []map[string]any {
 	for name, d := range s.defs {
 		row := map[string]any{
 			"name": name, "type": d.Type, "command": d.Command, "format": d.Format,
-			"facets": d.Facets, "status": "stopped",
+			"cwd": d.Cwd, "facets": d.Facets, "status": "stopped",
+		}
+		if d.Env != nil {
+			row["env"] = d.Env
 		}
 		if p, ok := s.procs[name]; ok {
-			st, restarts, events, lastErr, pid := p.snapshot()
+			st, restarts, events, lastErr, pid, startedAt := p.snapshot()
 			row["status"] = st
 			row["restarts"] = restarts
 			row["events"] = events
 			row["last_err"] = lastErr
 			if pid != 0 {
 				row["pid"] = pid
+			}
+			if !startedAt.IsZero() {
+				row["started_at"] = startedAt.UTC().Format(time.RFC3339Nano)
 			}
 		}
 		out = append(out, row)
@@ -341,6 +351,7 @@ func copyDefs(in map[string]Definition) map[string]Definition {
 func (s *Service) StartAll(ctx context.Context) {
 	_ = s.Load() // start whatever is already in memory if disk reload fails
 	s.mu.Lock()
+	s.runCtx = ctx
 	names := make([]string, 0, len(s.defs))
 	for n, d := range s.defs {
 		if d.Command != "" {
@@ -364,6 +375,10 @@ func (s *Service) Start(parent context.Context, name string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("unknown connector %q", name)
 	}
+	runCtx := s.runCtx
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
 	wasCrashed := false
 	if p, ok := s.procs[name]; ok {
 		st := p.getStatus()
@@ -373,7 +388,9 @@ func (s *Service) Start(parent context.Context, name string) error {
 		}
 		wasCrashed = st == "crashed"
 	}
-	ctx, cancel := context.WithCancel(parent)
+	// Process lifetime is Stop() / runCtx, not the caller's context. HTTP
+	// connect/restart pass r.Context(), which cancels when the response ends.
+	ctx, cancel := context.WithCancel(runCtx)
 	p := &proc{cancel: cancel, status: "starting"}
 	s.procs[name] = p
 	s.mu.Unlock()
@@ -391,19 +408,27 @@ func (s *Service) Start(parent context.Context, name string) error {
 	if d.Cwd != "" {
 		cmd.Dir = d.Cwd
 	}
-	if len(d.Env) > 0 {
-		env := os.Environ()
-		for k, v := range d.Env {
-			env = append(env, k+"="+v)
-		}
-		cmd.Env = env
+	env := os.Environ()
+	resolved, missing := secrets.ExpandRefs(d.Env)
+	for _, secName := range missing {
+		s.log.Info("secret.referenced_missing", "name", secName, "connector", d.Name)
 	}
+	for k, v := range resolved {
+		env = append(env, k+"="+v)
+	}
+	cur, _ := s.GetCursor(parent, name)
+	env = append(env, "TREBI_LAST_EVENT_ID="+cur.LastEventID)
+	cmd.Env = env
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		remove()
 		return err
 	}
-	cmd.Stderr = cmd.Stdout
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		remove()
+		return err
+	}
 	if err := cmd.Start(); err != nil {
 		remove()
 		return err
@@ -413,10 +438,12 @@ func (s *Service) Start(parent context.Context, name string) error {
 	// A Stop during the launch already set "stopped"; keep it.
 	if p.status == "starting" {
 		p.status = "listening"
+		p.startedAt = time.Now().UTC()
 	}
 	p.mu.Unlock()
 
 	go s.readLoop(ctx, name, d, stdout, cmd, p)
+	go s.readStderr(name, stderr)
 	// connector.started is log-only; the bus rides connector.updated.
 	s.log.Info("connector.started", "connector", name)
 	if _, err := s.st.Append(parent, store.BusEvent{
@@ -509,16 +536,30 @@ func (s *Service) PutCursor(ctx context.Context, name, lastEventID string) error
 	return err
 }
 
+func appendConnectorLog(name, stream, line string) {
+	logPath := filepath.Join(home.ConnectorsLogDir(), name+".jsonl")
+	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+	logf, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(logf, `{"t":%q,"stream":%q,"line":%q}`+"\n",
+		time.Now().UTC().Format(time.RFC3339Nano), stream, line)
+	_ = logf.Close()
+}
+
+func (s *Service) readStderr(name string, r io.Reader) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		appendConnectorLog(name, "stderr", sc.Text())
+	}
+}
+
 func (s *Service) readLoop(ctx context.Context, name string, d Definition, r io.Reader, cmd *exec.Cmd, p *proc) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	logPath := filepath.Join(home.ConnectorsLogDir(), name+".jsonl")
-	_ = os.MkdirAll(filepath.Dir(logPath), 0o755) // log dir is best-effort
-	logf, _ := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	defer func() {
-		if logf != nil {
-			_ = logf.Close() // read-loop teardown; process is already exiting
-		}
 		p.markStopped()
 		final := p.getStatus()
 		s.log.Info("connector.exited", "connector", name, "status", final)
@@ -532,10 +573,7 @@ func (s *Service) readLoop(ctx context.Context, name string, d Definition, r io.
 	}()
 	for sc.Scan() {
 		line := sc.Text()
-		if logf != nil {
-			_, _ = fmt.Fprintf(logf, `{"t":%q,"stream":"stdout","line":%q}`+"\n",
-				time.Now().UTC().Format(time.RFC3339Nano), line) // disk log must not drop the event
-		}
+		appendConnectorLog(name, "stdout", line)
 		p.addEvent()
 		s.handleLine(ctx, name, d, line)
 	}
@@ -586,6 +624,13 @@ func (s *Service) persistEvent(ctx context.Context, name, line string, payload a
 	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO events (id, connector, received_at, summary, raw_json, trace_id)
 		VALUES (?,?,?,?,?,?)`, ev.id, name, ev.receivedAt, summary, ev.raw, ev.trace); err != nil {
 		s.log.Warn("event insert", "connector", name, "error", err)
+		return ev
+	}
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "event.created", Entity: "event", EntityID: ev.id, Action: "created",
+		Attrs: map[string]string{"connector": name},
+	}); err != nil {
+		s.log.Warn("bus append", "topic", "event.created", "error", err)
 	}
 	return ev
 }

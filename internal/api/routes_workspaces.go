@@ -152,6 +152,7 @@ func (s *Server) handleAssistantGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": j.Name, "harness": j.Harness, "description": j.Description,
 		"memory": j.Memory, "path": path, "parse_error": j.ParseError, "hash": j.Hash,
+		"disabled": j.Disabled,
 	})
 }
 

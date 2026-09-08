@@ -220,7 +220,7 @@ func (c *Config) SetPath(path, value string) error {
 	parts := strings.Split(path, ".")
 	if len(parts) >= 3 && parts[0] == "tools" {
 		tool := parts[1]
-		if !isFirstClass(tool) {
+		if !IsFirstClass(tool) {
 			return fmt.Errorf("unknown tool %q", tool)
 		}
 		rest := strings.Join(parts[2:], ".")
@@ -725,15 +725,6 @@ func walkYAMLPaths(n *yaml.Node, prefix string, out map[string]bool) {
 			walkYAMLPaths(n.Content[i+1], path, out)
 		}
 	}
-}
-
-func isFirstClass(name string) bool {
-	for _, t := range FirstClassTools() {
-		if t == name {
-			return true
-		}
-	}
-	return false
 }
 
 func setDurationOrEmpty(dst *string, value, path string) error {

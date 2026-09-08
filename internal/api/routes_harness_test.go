@@ -1,9 +1,12 @@
 package api_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/home"
 )
 
 func TestHarnessAuthGetMode(t *testing.T) {
@@ -114,5 +117,44 @@ func TestHarnessPatchMode(t *testing.T) {
 	}
 	if body["auth_mode"] != "separate" {
 		t.Fatalf("%v", body)
+	}
+}
+
+func TestHarnessPatchModeFakeNotPersisted(t *testing.T) {
+	s, base := startTestServer(t)
+	code, body, _ := doJSON(t, "PATCH", base+"/v1/harnesses/fake", s.Token(), map[string]any{
+		"auth_mode": "separate",
+	})
+	if code != 422 || errCode(body) != "precondition_failed" {
+		t.Fatalf("%d %v", code, body)
+	}
+}
+
+func TestHarnessEnsureFake(t *testing.T) {
+	s, base := startTestServer(t)
+	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/fake/ensure", s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("%d %v", code, body)
+	}
+	if body["ensured"] != true {
+		t.Fatalf("%v", body)
+	}
+}
+
+func TestHarnessEnsureInstallError(t *testing.T) {
+	s, base := startTestServer(t)
+	dir := filepath.Join(home.Base(), "harness", "claude")
+	if err := os.MkdirAll(filepath.Join(dir, "trebi-settings.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/claude/ensure", s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("%d %v", code, body)
+	}
+	if body["ensured"] != false {
+		t.Fatalf("want ensured false got %v", body)
+	}
+	if body["error"] == nil || body["error"] == "" {
+		t.Fatalf("want error got %v", body)
 	}
 }
