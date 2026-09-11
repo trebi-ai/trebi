@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -91,6 +92,60 @@ func TestMCPServeRoundTrip(t *testing.T) {
 	}
 	if reply.ID != 1 || reply.Result["tools"] == nil {
 		t.Fatalf("unwrapped reply: %+v", reply)
+	}
+}
+
+func TestMCPServeRetargetsOnPortChange(t *testing.T) {
+	t.Parallel()
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Mcp-Session-Id"); got != "" {
+			t.Errorf("stale session after retarget: %q", got)
+		}
+		w.Header().Set("Mcp-Session-Id", "sess-new")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`))
+	}))
+	defer live.Close()
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	dead.Close()
+
+	bridge := newMCPBridge(mcpTarget{URL: dead.URL + "/mcp", Token: "old"})
+	bridge.session = "sess-old"
+	bridge.refresh = func() (mcpTarget, error) {
+		return mcpTarget{URL: live.URL + "/mcp", Token: "new"}, nil
+	}
+	var out strings.Builder
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if err := bridge.run(context.Background(), in, &out); err != nil {
+		t.Fatal(err)
+	}
+	if bridge.target.URL != live.URL+"/mcp" || bridge.target.Token != "new" {
+		t.Fatalf("target not updated: %+v", bridge.target)
+	}
+	if bridge.session != "sess-new" {
+		t.Fatalf("session %q", bridge.session)
+	}
+	if !strings.Contains(out.String(), `"ok":true`) {
+		t.Fatalf("reply %q", out.String())
+	}
+}
+
+func TestMCPServeDoesNotRetrySameEndpoint(t *testing.T) {
+	t.Parallel()
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	dead.Close()
+	refreshes := 0
+	bridge := newMCPBridge(mcpTarget{URL: dead.URL + "/mcp", Token: "tok"})
+	bridge.refresh = func() (mcpTarget, error) {
+		refreshes++
+		return mcpTarget{URL: dead.URL + "/mcp", Token: "tok"}, nil
+	}
+	err := bridge.run(context.Background(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`), io.Discard)
+	if err == nil {
+		t.Fatal("want transport error")
+	}
+	if refreshes != 1 {
+		t.Fatalf("refreshes %d", refreshes)
 	}
 }
 

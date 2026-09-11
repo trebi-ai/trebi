@@ -179,10 +179,12 @@ type mcpBridge struct {
 	target  mcpTarget
 	http    *http.Client
 	session string
+	// refresh re-reads api.json. Tests inject a stub; production uses mcpConn.
+	refresh func() (mcpTarget, error)
 }
 
 func newMCPBridge(target mcpTarget) *mcpBridge {
-	return &mcpBridge{target: target, http: &http.Client{}}
+	return &mcpBridge{target: target, http: &http.Client{}, refresh: mcpConn}
 }
 
 // run reads one JSON message per line and writes one reply per line. A
@@ -257,8 +259,35 @@ func (b *mcpBridge) resolveValueFile(msg json.RawMessage) (json.RawMessage, erro
 }
 
 // forward posts one message and returns the reply body, empty for a
-// notification.
+// notification. A transport error re-reads api.json once so a daemon
+// restart on a new port does not kill the stdio session.
 func (b *mcpBridge) forward(ctx context.Context, msg json.RawMessage) ([]byte, error) {
+	body, err := b.post(ctx, msg)
+	if err == nil || !b.retarget() {
+		return body, err
+	}
+	return b.post(ctx, msg)
+}
+
+// retarget reloads the daemon URL/token from api.json. It reports true only
+// when the endpoint actually moved, so a dead daemon is not retried in a loop.
+func (b *mcpBridge) retarget() bool {
+	if b.refresh == nil {
+		return false
+	}
+	next, err := b.refresh()
+	if err != nil || next.URL == "" {
+		return false
+	}
+	if next.URL == b.target.URL && next.Token == b.target.Token {
+		return false
+	}
+	b.target = next
+	b.session = ""
+	return true
+}
+
+func (b *mcpBridge) post(ctx context.Context, msg json.RawMessage) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", b.target.URL, bytes.NewReader(msg))
 	if err != nil {
 		return nil, err
