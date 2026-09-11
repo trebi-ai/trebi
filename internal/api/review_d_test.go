@@ -58,6 +58,40 @@ func TestReplayUsesCapturedTrigger(t *testing.T) {
 	}
 }
 
+// TestRetrySkipRerunsAssistant: a skipped assistant wake has no session.
+// Retry must rebuild from TREBI.md (not JOB.md) and launch a fresh run.
+func TestRetrySkipRerunsAssistant(t *testing.T) {
+	s, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, "TREBI.md"), []byte("---\nharness: fake\n---\n\nYou are the assistant.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "assistant-retry")
+
+	prev, err := s.Runs().Create(context.Background(), runs.CreateOpts{
+		WorkspaceID: wsID, Job: "assistant-retry", Kind: runs.KindAssistant,
+		Harness: "fake", Reason: runs.ReasonTrigger,
+		PromptPreview: "skipped wake",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Runs().Terminate(context.Background(), prev.ID, runs.StatusSkipped, runs.EndSkip, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+prev.ID+"/retry", s.Token(), nil)
+	if code != 201 {
+		t.Fatalf("retry skip assistant %d %v", code, body)
+	}
+	if fmt.Sprint(body["kind"]) != "assistant" {
+		t.Fatalf("kind=%v want assistant", body["kind"])
+	}
+	if fmt.Sprint(body["id"]) == prev.ID {
+		t.Fatal("retry skip reused the skipped row")
+	}
+}
+
 // TestErrorEnvelopeShapeAndCodes covers D11: every error is
 // {"error":{"code","message"}} with a stable code vocabulary.
 func TestErrorEnvelopeShapeAndCodes(t *testing.T) {

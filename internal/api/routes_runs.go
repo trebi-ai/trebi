@@ -677,8 +677,17 @@ func (s *Server) handleRunResume(w http.ResponseWriter, r *http.Request) {
 // launchOptsFromJob rebuilds launch options for prev from its job file:
 // prompt with trigger vars/inputs applied, cwd, if_running, and session knobs.
 // Trigger capture and conversation key carry over.
+// jobFileForRun resolves the markdown that produced this run. Assistant
+// runs are TREBI.md (kind=assistant); findJobRow only returns JOB.md rows.
+func (s *Server) jobFileForRun(ctx context.Context, prev *runs.Run) (workspaces.JobRow, error) {
+	if prev.Kind == runs.KindAssistant {
+		return s.findAssistantRow(ctx, prev.Workspace)
+	}
+	return s.findJobRow(ctx, prev.Workspace, prev.Job)
+}
+
 func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason runs.RunReason) (runs.LaunchOpts, error) {
-	row, err := s.findJobRow(ctx, prev.Workspace, prev.Job)
+	row, err := s.jobFileForRun(ctx, prev)
 	if err != nil {
 		return runs.LaunchOpts{}, err
 	}
@@ -776,9 +785,10 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 			"action": "parked", "queue_id": item.ID, "block_reason": br, "run_id": prev.ID,
 		})
 		return
-	case runs.EndSessionGone, runs.EndLaunch:
-		// Fresh rerun. Kill is a deliberate user act — it takes the
-		// default resume-with-note path (backend-0808 §D7).
+	case runs.EndSessionGone, runs.EndLaunch, runs.EndSkip:
+		// Fresh rerun. Skip never launched, so resume has no session.
+		// Kill is a deliberate user act — it takes the default
+		// resume-with-note path (backend-0808 §D7).
 		s.handleRunReplay(w, r)
 		return
 	default:

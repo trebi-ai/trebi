@@ -102,7 +102,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 		opts.IfRunning = "skip"
 	}
 	var outcome string
-	// Overlap policy against live runs of same job.
+	// Overlap policy against live runs of the same job (assistant: same conversation).
 	if opts.Job != "" && opts.WorkspaceID != "" {
 		oc, done, err := s.applyIfRunning(ctx, &opts)
 		if err != nil {
@@ -726,7 +726,8 @@ func (s *Service) stampHarnessLimit(ctx context.Context, name string, exceeded b
 		name, flag, now)
 }
 
-// applyIfRunning enforces session.if_running against live runs of the same job.
+// applyIfRunning enforces session.if_running against live runs of the same job
+// (or, for assistant, the same conversation).
 // It returns the outcome ("" when no live run, else skip|coalesce|replace|allow)
 // and, for skip/coalesce, the run row the caller must return instead of a launch.
 func (s *Service) applyIfRunning(ctx context.Context, opts *LaunchOpts) (string, *Run, error) {
@@ -735,12 +736,18 @@ func (s *Service) applyIfRunning(ctx context.Context, opts *LaunchOpts) (string,
 		policy = "skip"
 	}
 
-	live, err := s.List(ctx, ListOpts{
+	listOpts := ListOpts{
 		Workspace: opts.WorkspaceID,
 		Job:       opts.Job,
 		Status:    string(StatusRunning),
 		Limit:     20,
-	})
+	}
+	// Assistant overlap is per conversation: a new thread is a new run.
+	// Cron/event jobs stay job-wide (one live copy of the same JOB.md).
+	if opts.Kind == KindAssistant && opts.ConversationKey != "" {
+		listOpts.ConversationKey = opts.ConversationKey
+	}
+	live, err := s.List(ctx, listOpts)
 	if err != nil {
 		return "", nil, err
 	}
