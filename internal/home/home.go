@@ -58,6 +58,7 @@ func BinDir() string     { return filepath.Join(Base(), "bin") }
 func LibexecDir() string { return filepath.Join(Base(), "libexec") }
 func LogsDir() string    { return filepath.Join(Base(), "logs") }
 func RunsLogDir() string { return filepath.Join(Base(), "logs", "runs") }
+func RunsDir() string    { return filepath.Join(Base(), "runs") }
 func ConnectorsLogDir() string {
 	return filepath.Join(Base(), "logs", "connectors")
 }
@@ -73,6 +74,7 @@ func EnsureDirs() error {
 		LibexecDir(),
 		LogsDir(),
 		RunsLogDir(),
+		RunsDir(),
 		ConnectorsLogDir(),
 		filepath.Join(Base(), "state"),
 	}

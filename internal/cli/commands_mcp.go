@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/urfave/cli/v3"
 )
 
@@ -234,23 +235,20 @@ func (b *mcpBridge) resolveValueFile(msg json.RawMessage) (json.RawMessage, erro
 	if !ok {
 		return msg, nil
 	}
-	path, _ := input["value_file"].(string)
-	if path == "" {
+	resolved, err := tools.ResolveValueFile(input)
+	if err != nil {
+		return nil, err
+	}
+	if _, had := input["value_file"]; !had {
 		return msg, nil
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("value_file %s: %w", path, err)
-	}
-	delete(input, "value_file")
-	input["value"] = strings.TrimRight(string(data), "\n")
 	var full map[string]any
 	if err := json.Unmarshal(msg, &full); err != nil {
 		return msg, nil
 	}
 	params, _ := full["params"].(map[string]any)
 	args, _ := params["arguments"].(map[string]any)
-	args["input"] = input
+	args["input"] = resolved
 	out, err := json.Marshal(full)
 	if err != nil {
 		return nil, err

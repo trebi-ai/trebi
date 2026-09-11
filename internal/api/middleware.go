@@ -18,6 +18,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/tools"
 )
 
 // statusWriter records the response code for the audit log.
@@ -119,6 +120,8 @@ func (s *Server) auditMiddleware(next http.Handler) http.Handler {
 			"route", r.URL.Path,
 			"status", rw.code,
 			"duration_ms", time.Since(start).Milliseconds(),
+			"actor", r.Header.Get(tools.HeaderActor),
+			"run_id", r.Header.Get(tools.HeaderRunID),
 		)
 	})
 }

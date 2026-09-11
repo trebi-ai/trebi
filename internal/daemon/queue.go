@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -48,18 +50,18 @@ func (c *ControlPlane) drainQueue(ctx context.Context) {
 // stamp is ok again — recovery must drain without a manual requeue.
 func (c *ControlPlane) releaseAuthBlocks(ctx context.Context) {
 	rows, err := c.Store.DB().QueryContext(ctx, `
-		SELECT id, workspace_id, job FROM event_queue
+		SELECT id, workspace_id, job, kind FROM event_queue
 		WHERE status='blocked' AND block_reason=?`, string(dispatch.BlockAuthMissing))
 	if err != nil {
 		c.log.Warn("list auth-blocked queue", "error", err)
 		return
 	}
 	defer rows.Close()
-	type blocked struct{ id, ws, job string }
+	type blocked struct{ id, ws, job, kind string }
 	var list []blocked
 	for rows.Next() {
 		var r blocked
-		if rows.Scan(&r.id, &r.ws, &r.job) == nil {
+		if rows.Scan(&r.id, &r.ws, &r.job, &r.kind) == nil {
 			list = append(list, r)
 		}
 	}
@@ -68,12 +70,16 @@ func (c *ControlPlane) releaseAuthBlocks(ctx context.Context) {
 		return
 	}
 	for _, r := range list {
-		j, _ := c.findJob(ctx, r.ws, r.job)
+		j, _ := c.findJobKind(ctx, r.ws, r.job, r.kind)
 		name := "claude"
 		if j != nil && j.Harness != "" {
 			name = j.Harness
 		}
-		if c.harnessBlocked(ctx, name) == "" {
+		kind := r.kind
+		if kind == "" {
+			kind = "job"
+		}
+		if c.blockedFor(ctx, kind, name) == "" {
 			if err := c.queue.Requeue(ctx, r.id); err != nil {
 				c.log.Warn("requeue after auth", "queue_id", r.id, "error", err)
 			}
@@ -126,7 +132,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	}
 	prompt := queuePrompt(item, j)
 	harness := j.ResolvedHarness()
-	if reason := c.harnessBlocked(ctx, harness); reason != "" {
+	if reason := c.blockedFor(ctx, kind, harness); reason != "" {
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
 		return
 	}
@@ -163,6 +169,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			KeepAliveMS:     keepMS,
 			NudgeMS:         nudgeMS,
 			WorkingDir:      cwd,
+			Runtime:         j.Runtime,
 		},
 		Prompt:    prompt,
 		IfRunning: ifRunning,
@@ -232,6 +239,20 @@ func (c *ControlPlane) conversationID(ctx context.Context, workspaceID, key stri
 		return ""
 	}
 	return id
+}
+
+// blockedFor is the queue auth gate. Native assistants probe the API key, not the vendor stamp.
+func (c *ControlPlane) blockedFor(ctx context.Context, kind, harness string) dispatch.BlockReason {
+	if kind == runs.KindAssistant {
+		cfg, err := config.Load()
+		if err == nil && cfg != nil && strings.TrimSpace(cfg.Assistant.Model) != "" {
+			if cfg.Assistant.Enabled() {
+				return ""
+			}
+			return dispatch.BlockAuthMissing
+		}
+	}
+	return c.harnessBlocked(ctx, harness)
 }
 
 // harnessBlocked returns a BlockReason when harness_state says not ready.

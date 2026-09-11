@@ -21,6 +21,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/runtime/native"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -493,6 +494,10 @@ func (s *Server) handleRunAttach(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")
 		return
 	}
+	if run.Harness == "native" || run.Runtime == "native" {
+		writeErr(w, http.StatusNotFound, "not_found", "native runs have no attach")
+		return
+	}
 	if run.TmuxSession == "" {
 		writeErr(w, http.StatusBadRequest, "validation", "no tmux session")
 		return
@@ -565,6 +570,10 @@ func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")
 		return
 	}
+	if run.Harness == "native" || run.Runtime == "native" {
+		s.writeNativeTranscript(w, r, run)
+		return
+	}
 	data, tool, ok := s.readTranscript(run)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "not_found", "no transcript")
@@ -595,12 +604,7 @@ func (s *Server) readTranscript(run *runs.Run) ([]byte, tmux.Tool, bool) {
 	if !ok {
 		return nil, nil, false
 	}
-	// Only codex needs the working dir: it mints its own session id, so its
-	// rollout is found by path, not by a name that carries the id.
-	workingDir := ""
-	if run.Harness == tmux.Codex {
-		workingDir = tmux.CodexWorkingDir(run.WorkingDir, run.StartedAt)
-	}
+	workingDir := tmux.TranscriptWorkingDir(run.Harness, run.WorkingDir, run.StartedAt)
 	path, err := tool.TranscriptPath(home.HarnessDir(run.Harness), workingDir, run.SessionID)
 	if err != nil {
 		return nil, nil, false
@@ -610,6 +614,26 @@ func (s *Server) readTranscript(run *runs.Run) ([]byte, tmux.Tool, bool) {
 		return nil, nil, false
 	}
 	return data, tool, true
+}
+
+func (s *Server) writeNativeTranscript(w http.ResponseWriter, r *http.Request, run *runs.Run) {
+	path := native.TranscriptPath(run.ID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "no transcript")
+		return
+	}
+	if r.URL.Query().Get("raw") == "1" {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write(data)
+		return
+	}
+	turns, err := native.ReadTurns(path)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
 }
 
 func (s *Server) handleRunLog(w http.ResponseWriter, r *http.Request) {

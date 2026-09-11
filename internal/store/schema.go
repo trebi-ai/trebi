@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 9
+const SchemaVersion = 10
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -402,6 +402,13 @@ ALTER TABLE integration_metrics RENAME TO connector_metrics;
 
 UPDATE inbox_items SET alert_kind='connector_unhealthy' WHERE alert_kind='integration_unhealthy';
 UPDATE skill_index SET provenance='connector' WHERE provenance='integration';
+`,
+		// v10: native assistant UTC-day token counter.
+		`
+CREATE TABLE assistant_usage (
+	day    TEXT PRIMARY KEY,
+	tokens INTEGER NOT NULL DEFAULT 0
+);
 `,
 	}
 }

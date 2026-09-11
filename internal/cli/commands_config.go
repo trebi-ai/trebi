@@ -42,6 +42,12 @@ func configCommand() *cli.Command {
 				Action:    runConfigSet,
 			},
 			{
+				Name:      "unset",
+				Usage:     "clear a dotted config key (deletes assistant.api_key from secrets)",
+				ArgsUsage: "<key>",
+				Action:    runConfigUnset,
+			},
+			{
 				Name:  "validate",
 				Usage: "validate local config.yaml (no daemon required)",
 				Action: func(_ context.Context, c *cli.Command) error {
@@ -232,6 +238,33 @@ func runConfigSet(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	printConfigKey(c, state, key, "")
+	return nil
+}
+
+func runConfigUnset(_ context.Context, c *cli.Command) error {
+	if c.NArg() < 1 {
+		return fmt.Errorf("usage: trebi config unset <key>")
+	}
+	key := c.Args().Get(0)
+	state := appStateFor(c)
+	if state.clientErr != nil || state.client == nil {
+		if state.configErr != nil {
+			return state.configErr
+		}
+		if err := state.config.UnsetPath(key); err != nil {
+			return err
+		}
+		if err := state.config.Save(); err != nil {
+			return err
+		}
+		fmt.Fprintf(outWriter(c), "unset %s (local)\n", key)
+		return nil
+	}
+	req := request.BuildConfigUnset(key)
+	if err := state.client.DoHTTP(req, nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "unset %s\n", key)
 	return nil
 }
 

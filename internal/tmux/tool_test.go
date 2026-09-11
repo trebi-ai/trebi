@@ -3,6 +3,7 @@ package tmux
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -832,8 +833,18 @@ func TestTranscriptPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(path, filepath.Join(".grok", "sessions", sid+".jsonl")) {
-		t.Errorf("grok path: %s", path)
+	wantGrok := filepath.Join(".grok", "sessions", url.PathEscape(wd), sid, "chat_history.jsonl")
+	if !strings.Contains(path, wantGrok) {
+		t.Errorf("grok path: %s want %s", path, wantGrok)
+	}
+
+	harnessHome := filepath.Join(t.TempDir(), "harness", Grok)
+	path, err = grokTool{}.TranscriptPath(harnessHome, wd, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != grokChatHistoryPath(harnessHome, wd, sid) {
+		t.Errorf("grok harness path: %s", path)
 	}
 
 	for _, name := range []string{Copilot, Gemini, OpenCode} {
@@ -851,6 +862,27 @@ func TestTranscriptPath(t *testing.T) {
 
 	if _, err := (claudeTool{}).TranscriptPath(userHome, wd, ""); err == nil {
 		t.Error("empty session should error")
+	}
+}
+
+func TestGrokTranscriptPathFindsChatHistory(t *testing.T) {
+	root := t.TempDir()
+	sid := "sess-find"
+	wd := "/tmp/ops/nightly"
+	want := grokChatHistoryPath(root, wd, sid)
+	if err := os.MkdirAll(filepath.Dir(want), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte("{}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GROK_HOME", root)
+	got, err := grokTool{}.TranscriptPath("", "", sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("got %s want %s", got, want)
 	}
 }
 

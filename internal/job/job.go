@@ -26,6 +26,7 @@ import (
 type Frontmatter struct {
 	WorkingDir       string            `yaml:"working_dir"`
 	Harness          string            `yaml:"harness"`
+	Runtime          string            `yaml:"runtime"`
 	Title            string            `yaml:"title"`
 	Memory           any               `yaml:"memory"`
 	Envset           string            `yaml:"envset"`
@@ -114,6 +115,7 @@ type Job struct {
 	WorkspacePath    string
 	WorkingDir       string
 	Harness          string
+	Runtime          string
 	Title            string
 	Memory           bool
 	Envset           string
@@ -279,6 +281,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Dir:              filepath.Dir(filePath),
 		WorkingDir:       fm.WorkingDir,
 		Harness:          fm.Harness,
+		Runtime:          fm.Runtime,
 		Title:            fm.Title,
 		Memory:           mem,
 		Envset:           fm.Envset,

@@ -1,9 +1,12 @@
 package tmux
 
 import (
+	"bufio"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,20 +79,162 @@ func (grokTool) HandleStartup(screen string) []Action {
 
 func (grokTool) PostReadyDelay() time.Duration { return defaultPostReadyDelay }
 
-func (grokTool) ParseTranscript(r io.Reader) ([]Turn, error) { return unsupportedParse(r) }
+func (grokTool) ParseTranscript(r io.Reader) ([]Turn, error) { return parseGrokTranscript(r) }
 
 func (grokTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
 	if sessionID == "" {
 		return "", fmt.Errorf("no session id recorded")
 	}
-	// Prefer isolated GROK_HOME when set.
-	if gh := os.Getenv("GROK_HOME"); gh != "" {
-		return filepath.Join(gh, "sessions", sessionID+".jsonl"), nil
-	}
-	if home == "" {
+	root := grokTranscriptRoot(home)
+	if root == "" {
 		return "", fmt.Errorf("home directory required")
 	}
-	return filepath.Join(home, ".grok", "sessions", sessionID+".jsonl"), nil
+	if workingDir != "" {
+		return grokChatHistoryPath(root, workingDir, sessionID), nil
+	}
+	if found := findGrokChatHistory(root, sessionID); found != "" {
+		return found, nil
+	}
+	return "", fmt.Errorf("grok transcript not found")
+}
+
+func grokTranscriptRoot(home string) string {
+	if gh := os.Getenv("GROK_HOME"); gh != "" {
+		return gh
+	}
+	if home == "" {
+		return ""
+	}
+	if filepath.Base(home) == Grok {
+		return home
+	}
+	return filepath.Join(home, ".grok")
+}
+
+func grokSessionDir(workingDir string) string {
+	return url.PathEscape(workingDir)
+}
+
+func grokChatHistoryPath(root, workingDir, sessionID string) string {
+	return filepath.Join(root, "sessions", grokSessionDir(workingDir), sessionID, "chat_history.jsonl")
+}
+
+func findGrokChatHistory(root, sessionID string) string {
+	matches, err := filepath.Glob(filepath.Join(root, "sessions", "*", sessionID, "chat_history.jsonl"))
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	best, bestMod := "", time.Time{}
+	for _, p := range matches {
+		st, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if best == "" || st.ModTime().After(bestMod) {
+			best, bestMod = p, st.ModTime()
+		}
+	}
+	return best
+}
+
+type grokLine struct {
+	Type    string          `json:"type"`
+	Content json.RawMessage `json:"content"`
+}
+
+type grokTextPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+func parseGrokTranscript(r io.Reader) ([]Turn, error) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	turns := []Turn{}
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		t, ok := parseGrokLine(line)
+		if ok {
+			turns = append(turns, t)
+		}
+	}
+	return turns, sc.Err()
+}
+
+func parseGrokLine(line string) (Turn, bool) {
+	var raw grokLine
+	if json.Unmarshal([]byte(line), &raw) != nil {
+		return Turn{}, false
+	}
+	if raw.Type != "user" && raw.Type != "assistant" {
+		return Turn{}, false
+	}
+	text := grokContentText(raw.Content)
+	if raw.Type == "user" {
+		text = grokUserQuery(text)
+		if grokSkipUser(text) {
+			return Turn{}, false
+		}
+	} else {
+		text = stripRunComplete(text)
+	}
+	if text == "" {
+		return Turn{}, false
+	}
+	return Turn{Role: raw.Type, Text: text}, true
+}
+
+func grokContentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var asString string
+	if json.Unmarshal(raw, &asString) == nil {
+		return strings.TrimSpace(asString)
+	}
+	var parts []grokTextPart
+	if json.Unmarshal(raw, &parts) != nil {
+		return ""
+	}
+	var texts []string
+	for _, p := range parts {
+		if p.Type != "" && p.Type != "text" {
+			continue
+		}
+		if p.Text != "" {
+			texts = append(texts, p.Text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(texts, "\n"))
+}
+
+func grokUserQuery(s string) string {
+	const open, close = "<user_query>", "</user_query>"
+	i := strings.Index(s, open)
+	j := strings.LastIndex(s, close)
+	if i >= 0 && j > i {
+		return strings.TrimSpace(s[i+len(open) : j])
+	}
+	return strings.TrimSpace(s)
+}
+
+func grokSkipUser(text string) bool {
+	t := strings.TrimSpace(text)
+	return strings.HasPrefix(t, "<system-reminder>") || strings.HasPrefix(t, "<user_info>")
+}
+
+func stripRunComplete(text string) string {
+	var keep []string
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "TREBI_RUN_COMPLETE") {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return strings.TrimSpace(strings.Join(keep, "\n"))
 }
 
 func (grokTool) Lifecycle() LifecycleAdapter { return grokLifecycle{} }

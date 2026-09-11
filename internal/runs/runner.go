@@ -125,6 +125,10 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 		run, err := s.launchFake(ctx, opts)
 		return run, outcome, err
 	}
+	if s.wantsNative(opts) {
+		run, err := s.launchNative(ctx, opts)
+		return run, outcome, err
+	}
 
 	command := opts.Command
 	if command == "" {
@@ -394,6 +398,13 @@ func (s *Service) InjectMessage(ctx context.Context, runID, text string) error {
 	if run.Status != StatusRunning {
 		return fmt.Errorf("%w: %s", ErrNotRunning, runID)
 	}
+	if run.Harness == nativeHarness {
+		if !s.injectNative(runID, text) {
+			return fmt.Errorf("native inbox full")
+		}
+		s.AddEvent(ctx, runID, "message", "api", map[string]string{"bytes": fmt.Sprint(len(text)), "delivery": "injected"})
+		return nil
+	}
 	if err := run.sendToPane(text); err != nil {
 		return err
 	}
@@ -438,6 +449,7 @@ func (s *Service) Kill(ctx context.Context, runID string) error {
 		// already terminal — success (idempotent)
 		return nil
 	}
+	s.cancelNative(runID)
 	if run.TmuxSession != "" {
 		_ = tmux.SendKey(run.TmuxSession, "C-c")
 		time.Sleep(200 * time.Millisecond)
@@ -783,6 +795,7 @@ func (s *Service) overlapSkip(ctx context.Context, opts *LaunchOpts, existing *R
 // overlapReplace kills every live run so a new launch can start.
 func (s *Service) overlapReplace(ctx context.Context, live []*Run) {
 	for _, r := range live {
+		s.cancelNative(r.ID)
 		s.closeSession(r.ID, r.TmuxSession)
 		_ = s.Terminate(ctx, r.ID, StatusExited, EndReplace, nil)
 		s.AddEvent(ctx, r.ID, "replace", "runner", map[string]string{"by": "new-launch"})
@@ -798,7 +811,9 @@ func (s *Service) overlapCoalesce(ctx context.Context, opts *LaunchOpts, existin
 	if text == "" {
 		text = "(coalesced event)"
 	}
-	if existing.TmuxSession != "" {
+	if existing.Harness == nativeHarness {
+		_ = s.injectNative(existing.ID, text)
+	} else if existing.TmuxSession != "" {
 		_ = tmux.Send(existing.TmuxSession, text)
 		_ = tmux.SendKey(existing.TmuxSession, "enter")
 	}

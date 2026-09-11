@@ -11,12 +11,13 @@ Trebi is one binary (`trebi`) that is both the daemon (`trebi service daemon`) a
 ```text
 cmd/trebi/           # thin main: cli.NewApp().Run(os.Args)
 cmd/trebi-eval/      # dev-only eval runner; built by scripts/eval.py, never shipped
-internal/api/        # /v1 HTTP + SSE server + /mcp MCP endpoint; one file per route area
+internal/api/        # /v1 HTTP + SSE server + /mcp MCP adapter; one file per route area
 internal/cli/        # the trebi command surface; a thin API client
 internal/daemon/     # ControlPlane: background workers (queue, schedule, watch, prune)
 internal/eval/       # live LLM-driven CLI eval harness
 internal/guides/     # embedded workflow cheat sheets (leaf; go:embed)
 internal/request/    # pure /v1 request builders (HTTPRequest); no I/O
+internal/tools/      # transport-neutral tool catalog (MCP + native + CLI)
 internal/store/      # SQLite open, migrations, event bus, event-name registry
 internal/<domain>/   # one service per object family (runs, workspaces, alerts, …)
 internal/tmux/       # harness drivers: one file per harness tool
@@ -34,10 +35,12 @@ cli ──▶ api ──▶ <domain services> ──▶ store
 daemon ──▶ <domain services> ──▶ store
 cli ──▶ request ◀── api
 cli ──▶ guides ◀── api
+cli ──▶ tools  ◀── api, runtime/native
 ```
 
 - `api` and `daemon` are peers. Both wire the same services; neither imports the other.
-- `request` is a leaf: pure `/v1` request builders, no I/O. Both `cli` and `api` (MCP tools) import it. It imports nothing from this repo.
+- `request` is a leaf: pure `/v1` request builders, no I/O. `cli`, `api`, and `tools` import it. It imports nothing from this repo.
+- `tools` is a leaf besides `request`: the catalog, docs, and in-process dispatcher seam. `/mcp`, the native loop, and `trebi mcp serve` (`value_file`) all call it. It does not import `api`.
 - `guides` is a leaf: embedded workflow markdown. Both `cli` (`trebi guide`, offline) and `api` (routes + MCP) import it. It imports nothing from this repo.
 - Domain services never import `api`, `cli`, or `daemon`.
 - `store` imports no domain package.

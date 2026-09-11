@@ -92,6 +92,10 @@ trebi config show --tree
 trebi config show --key tools.grok --json
 trebi config show --key defaults.command --json
 trebi config set daemon.log_level debug
+trebi config set assistant.model claude-sonnet-4-5
+trebi config set assistant.api_format anthropic
+trebi config set assistant.api_key_env ANTHROPIC_API_KEY
+trebi config unset assistant.api_key
 ```
 
 `show` lists every known key, not only the ones written to config.yaml. When the daemon is up, `show` reports the server config. Bare `trebi config` prints the help menu.

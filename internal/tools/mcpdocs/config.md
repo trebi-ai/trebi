@@ -15,6 +15,10 @@ Change config keys. Give `values`, or `key` with `value`.
 - `key` (string, required unless `values` is given): config key, for example `daemon.log_level`.
 - `value` (any, optional, required with `key`): new value; a string, a number, or a boolean.
 
+### unset
+Clear a config key. For `assistant.api_key`, this also deletes the stored secret so env fallback can take over.
+- `key` (string, required): config key, for example `assistant.api_key`.
+
 ### validate
 Check the config. The reply is `{"ok": true}`, or `{"ok": false, "error": "…"}`
 with the problems named. No input fields.

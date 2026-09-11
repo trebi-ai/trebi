@@ -33,6 +33,20 @@ const (
 // ErrTranscriptUnsupported: harness has no known on-disk transcript layout.
 var ErrTranscriptUnsupported = errors.New("transcript not supported for this tool")
 
+// TranscriptWorkingDir is the working-dir argument for Tool.TranscriptPath.
+// Codex finds rollouts by cwd + start time. Grok nests chat_history under an
+// escaped cwd. Claude's launcher recorded the path with an empty working dir.
+func TranscriptWorkingDir(harness, workingDir string, startedAt time.Time) string {
+	switch harness {
+	case Codex:
+		return CodexWorkingDir(workingDir, startedAt)
+	case Grok:
+		return workingDir
+	default:
+		return ""
+	}
+}
+
 // ErrResumeUnsupported: tool cannot build a resume command.
 var ErrResumeUnsupported = errors.New("session resume not supported for this tool")
 

@@ -476,38 +476,151 @@ func applyClaudeSettingsPrefs(userHome, harnessDir string, pluginEnablement, sta
 // applyConfigTOMLPrefs merges a small allowlist of user TOML prefs into the
 // harness config without clobbering trebi-owned sections (Grok hooks flags, etc.).
 func applyConfigTOMLPrefs(inherit bool, userPath, harnessPath, tool string) error {
-	if !inherit || userPath == "" || harnessPath == "" {
+	if harnessPath == "" {
 		return nil
-	}
-	ub, err := os.ReadFile(userPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
 	}
 	hb, err := os.ReadFile(harnessPath)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	prefs := userTOMLPrefs(ub, tool)
-	if len(prefs) == 0 {
+	out := string(hb)
+	prefs := map[string]string{}
+	if inherit && userPath != "" {
+		ub, err := os.ReadFile(userPath)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err == nil {
+			prefs = userTOMLPrefs(ub, tool)
+		}
+	}
+	if tool != "grok" && len(prefs) == 0 {
 		return nil
 	}
-	out := string(hb)
 	if out == "" {
 		out = "# trebi harness config\n"
 	}
 	if tool == "grok" {
-		if !strings.Contains(out, "hooks") {
-			out += "\n[compat.claude]\nhooks = false\n"
+		out = ensureGrokConfigTOML(out)
+	}
+	if len(prefs) > 0 {
+		out = appendMissingTOMLPrefs(out, prefs)
+	}
+	return WriteFileIfChanged(harnessPath, []byte(out), 0644)
+}
+
+// ensureGrokConfigTOML keeps trebi-owned grok flags valid. Grok rewrites
+// [harness] on its own; appending a second table makes the file unparsable.
+func ensureGrokConfigTOML(out string) string {
+	out = mergeDuplicateTOMLSection(out, "harness")
+	if !strings.Contains(out, "hooks") {
+		out += "\n[compat.claude]\nhooks = false\n"
+	}
+	return upsertTOMLKey(out, "harness", "disable_codebase_upload", "true")
+}
+
+// mergeDuplicateTOMLSection folds repeated [section] tables into the first.
+func mergeDuplicateTOMLSection(in, section string) string {
+	header := "[" + section + "]"
+	type block struct {
+		header string
+		lines  []string
+	}
+	var blocks []block
+	cur := block{}
+	flush := func() {
+		blocks = append(blocks, cur)
+		cur = block{}
+	}
+	for _, line := range strings.Split(in, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "[") && strings.HasSuffix(trim, "]") {
+			flush()
+			cur.header = trim
+			continue
 		}
-		if !strings.Contains(out, "disable_codebase_upload") {
-			out += "\n[harness]\ndisable_codebase_upload = true\n"
+		cur.lines = append(cur.lines, line)
+	}
+	flush()
+	n := 0
+	for _, b := range blocks {
+		if b.header == header {
+			n++
 		}
 	}
-	out = appendMissingTOMLPrefs(out, prefs)
-	return WriteFileIfChanged(harnessPath, []byte(out), 0644)
+	if n < 2 {
+		return in
+	}
+	first := -1
+	var merged []block
+	for _, b := range blocks {
+		if b.header == header {
+			if first < 0 {
+				merged = append(merged, b)
+				first = len(merged) - 1
+				continue
+			}
+			merged[first].lines = append(merged[first].lines, b.lines...)
+			continue
+		}
+		merged = append(merged, b)
+	}
+	var b strings.Builder
+	for i, blk := range merged {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		if blk.header != "" {
+			b.WriteString(blk.header)
+			b.WriteByte('\n')
+		}
+		b.WriteString(strings.Join(blk.lines, "\n"))
+	}
+	out := b.String()
+	if strings.HasSuffix(in, "\n") && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return out
+}
+
+// upsertTOMLKey sets key in [section], creating the table if needed. It never
+// appends a second copy of the table.
+func upsertTOMLKey(out, section, key, value string) string {
+	if strings.Contains(out, key+" =") || strings.Contains(out, key+"=") {
+		return out
+	}
+	header := "[" + section + "]"
+	line := key + " = " + value
+	idx := indexTOMLHeader(out, header)
+	if idx < 0 {
+		if out != "" && !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		return out + "\n" + header + "\n" + line + "\n"
+	}
+	rest := idx + len(header)
+	if rest < len(out) && out[rest] == '\n' {
+		rest++
+	}
+	return out[:rest] + line + "\n" + out[rest:]
+}
+
+func indexTOMLHeader(out, header string) int {
+	searchFrom := 0
+	for {
+		i := strings.Index(out[searchFrom:], header)
+		if i < 0 {
+			return -1
+		}
+		i += searchFrom
+		atLineStart := i == 0 || out[i-1] == '\n'
+		after := i + len(header)
+		atLineEnd := after == len(out) || out[after] == '\n' || out[after] == '\r'
+		if atLineStart && atLineEnd {
+			return i
+		}
+		searchFrom = i + 1
+	}
 }
 
 // userTOMLPrefs scans user TOML and collects the allowlisted prefs.

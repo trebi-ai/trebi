@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/guides"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -312,11 +314,36 @@ func (s *Server) handleDoctorFix(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) doctorFindings() []map[string]any {
 	src := alerts.CollectDoctorFindings()
+	src = append(src, s.nativeAssistantDoctor()...)
 	out := make([]map[string]any, 0, len(src))
 	for _, f := range src {
 		out = append(out, map[string]any{
 			"id": f.ID, "severity": f.Severity, "code": f.Code, "message": f.Message,
 		})
+	}
+	return out
+}
+
+func (s *Server) nativeAssistantDoctor() []alerts.DoctorFinding {
+	cfg, err := config.Load()
+	if err != nil || cfg == nil || !cfg.Assistant.Enabled() {
+		return nil
+	}
+	list, err := s.ws.List(context.Background())
+	if err != nil {
+		return nil
+	}
+	var out []alerts.DoctorFinding
+	for _, ws := range list {
+		j, err := job.ParseFile(filepath.Join(ws.Path, "TREBI.md"))
+		if err != nil || j == nil || strings.TrimSpace(j.Harness) == "" {
+			continue
+		}
+		out = append(out, alerts.DoctorFinding{
+			ID: "assistant-harness-" + ws.ID, Severity: "info", Code: "assistant_harness_ignored",
+			Message: "TREBI.md harness: no longer selects the assistant runtime (it still pins job runs). Native is on via assistant.model; escape hatch is runtime: tui.",
+		})
+		break
 	}
 	return out
 }

@@ -201,6 +201,7 @@ func (s *Server) handleConfigGet(w http.ResponseWriter, r *http.Request) {
 	}
 	// entries carries every known key with its source, default, and description
 	// so a remote CLI renders the server truth instead of its own local file.
+	redactAssistantConfig(cfg)
 	writeJSON(w, http.StatusOK, map[string]any{"config": cfg, "entries": configEntries()})
 }
 
@@ -231,12 +232,24 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Accept { "set": { "defaults.command": "claude" } } or flat dotted keys
+	if raw, ok := body["unset"].([]any); ok {
+		for _, item := range raw {
+			k, _ := item.(string)
+			if k == "" {
+				continue
+			}
+			if err := cfg.UnsetPath(k); err != nil {
+				writeErr(w, http.StatusBadRequest, "validation", err.Error())
+				return
+			}
+		}
+	}
 	sets, _ := body["set"].(map[string]any)
 	if sets == nil {
 		sets = body
 	}
 	for k, v := range sets {
-		if k == "set" {
+		if k == "set" || k == "unset" {
 			continue
 		}
 		val, err := configScalar(v)
@@ -255,7 +268,27 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.appendBus(r.Context(), store.BusEvent{Topic: "config.updated", Action: "updated"})
 	m, _ := loadConfigMap()
+	redactAssistantConfig(m)
 	writeJSON(w, http.StatusOK, map[string]any{"config": m, "entries": configEntries()})
+}
+
+func redactAssistantConfig(m map[string]any) {
+	if m == nil {
+		return
+	}
+	asst, _ := m["assistant"].(map[string]any)
+	if asst == nil {
+		return
+	}
+	delete(asst, "api_key")
+	cfg, err := config.Load()
+	if err != nil {
+		return
+	}
+	if cfg.Assistant.APIKeyPresent {
+		asst["api_key"] = "********"
+	}
+	asst["api_key_source"] = cfg.Assistant.KeySourceName()
 }
 
 // configScalar renders one JSON scalar as the text SetPath parses. An object

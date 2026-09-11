@@ -121,6 +121,28 @@ func newAlerts(st *store.Store, opts Options, cfg *config.Config) *alerts.Servic
 func (c *ControlPlane) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	c.cancel = cancel
+	c.Runs.SetNativeHooks(runs.NativeHooks{
+		Lifetime: ctx,
+		Ingest: func(ctx context.Context, runID, convID string, texts []string) error {
+			if c.Conversations == nil {
+				return nil
+			}
+			turns := make([]conversations.IncomingTurn, len(texts))
+			now := time.Now()
+			for i, t := range texts {
+				turns[i] = conversations.IncomingTurn{Role: conversations.RoleAssistant, Text: t, At: now}
+			}
+			_, err := c.Conversations.IngestAssistantTurns(ctx, runID, convID, turns)
+			return err
+		},
+		Recap: func(ctx context.Context, convID, text string) error {
+			if c.Conversations == nil {
+				return nil
+			}
+			return c.Conversations.AppendSystem(ctx, convID, text)
+		},
+	})
+	c.Runs.RecoverNative(ctx)
 
 	c.wg.Add(1)
 	go func() {

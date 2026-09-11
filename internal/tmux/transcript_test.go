@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -115,6 +116,30 @@ func TestParseCodexTranscriptEmpty(t *testing.T) {
 	}
 	if len(turns) != 0 {
 		t.Fatalf("turns %+v", turns)
+	}
+}
+
+func TestParseGrokTranscriptFixture(t *testing.T) {
+	t.Parallel()
+	data := readTranscript(t, "grok", "full.jsonl")
+	turns, err := grokTool{}.ParseTranscript(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 4 {
+		t.Fatalf("turns %d want 4: %+v", len(turns), turns)
+	}
+	if turns[0].Role != "user" || !strings.HasPrefix(turns[0].Text, "hi") {
+		t.Fatalf("user0 %+v", turns[0])
+	}
+	if turns[1].Role != "assistant" || turns[1].Text != "hi" {
+		t.Fatalf("assistant0 %+v", turns[1])
+	}
+	if turns[2].Role != "user" || turns[2].Text != "hello" {
+		t.Fatalf("user1 %+v", turns[2])
+	}
+	if turns[3].Role != "assistant" || turns[3].Text != "hello" {
+		t.Fatalf("assistant1 %+v", turns[3])
 	}
 }
 

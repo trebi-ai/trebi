@@ -84,6 +84,9 @@ func TestSetPath_AllShowKeys(t *testing.T) {
 	for _, e := range ents {
 		sample := sampleSetValue(e.Key)
 		if err := cfg.SetPath(e.Key, sample); err != nil {
+			if strings.Contains(err.Error(), "read-only") {
+				continue
+			}
 			t.Errorf("SetPath(%q, %q): %v", e.Key, sample, err)
 		}
 	}
@@ -296,6 +299,16 @@ func sampleSetValue(key string) string {
 		return "true"
 	case strings.Contains(key, ".bridge.resources."):
 		return "inherit"
+	case key == "assistant.api_format":
+		return "openai"
+	case key == "assistant.max_tokens":
+		return "8192"
+	case key == "assistant.context_tokens", key == "assistant.limits.daily_tokens", key == "assistant.limits.max_turns":
+		return "0"
+	case key == "assistant.web_search":
+		return "true"
+	case key == "assistant.api_key":
+		return "sk-test"
 	default:
 		return "x"
 	}

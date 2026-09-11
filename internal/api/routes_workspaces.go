@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -149,10 +150,17 @@ func (s *Server) handleAssistantGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "no assistant")
 		return
 	}
+	cfg, _ := config.Load()
+	var asst config.AssistantConfig
+	if cfg != nil {
+		asst = cfg.Assistant
+	}
+	runtime, reason, auth := asst.Route(j.Runtime)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": j.Name, "harness": j.Harness, "description": j.Description,
 		"memory": j.Memory, "path": path, "parse_error": j.ParseError, "hash": j.Hash,
 		"disabled": j.Disabled,
+		"runtime":  runtime, "model": asst.Model, "auth_status": auth, "runtime_reason": reason,
 	})
 }
 
@@ -280,7 +288,7 @@ func (s *Server) handleAssistantPut(w http.ResponseWriter, r *http.Request) {
 	}
 	path := filepath.Join(ws.Path, "TREBI.md")
 	if body.Content == "" {
-		body.Content = "---\nharness: claude\n---\n\nYou are the workspace assistant.\n"
+		body.Content = "---\n---\n\nYou are the workspace assistant.\n# Escape hatch: runtime: tui\n"
 	}
 	info, _, err := s.files.Write(r.Context(), ws.Path, "TREBI.md", []byte(body.Content), ifMatchHeader(r))
 	if err != nil {

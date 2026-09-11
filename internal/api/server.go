@@ -27,6 +27,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
+	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -62,7 +63,7 @@ type Server struct {
 
 	apiMux     *http.ServeMux
 	apiWrapped http.Handler
-	mcpCatalog map[string]map[string]mcpAction
+	toolsReg   *tools.Registry
 	mcpHTTP    http.Handler
 }
 
@@ -106,8 +107,24 @@ func New(st *store.Store, opts Options) *Server {
 	if s.token == "" {
 		s.token = ulid.Make().String()
 	}
+	r.SetNativeHooks(runs.NativeHooks{
+		Lifetime: context.Background(),
+		Ingest: func(ctx context.Context, runID, convID string, texts []string) error {
+			turns := make([]conversations.IncomingTurn, len(texts))
+			now := time.Now()
+			for i, t := range texts {
+				turns[i] = conversations.IncomingTurn{Role: conversations.RoleAssistant, Text: t, At: now}
+			}
+			_, err := s.conv.IngestAssistantTurns(ctx, runID, convID, turns)
+			return err
+		},
+		Recap: func(ctx context.Context, convID, text string) error {
+			return s.conv.AppendSystem(ctx, convID, text)
+		},
+		Dispatch: s,
+	})
 	_ = s.connectors.Load()
-	s.mcpCatalog = newMCPCatalog()
+	s.toolsReg = tools.NewRegistry(s)
 	s.mcpHTTP = s.newMCPHandler()
 	return s
 }
@@ -116,6 +133,7 @@ func New(st *store.Store, opts Options) *Server {
 func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
+		s.runs.SetNativeHooks(runs.NativeHooks{Dispatch: s})
 	}
 	if ws != nil {
 		s.ws = ws
@@ -181,8 +199,8 @@ func (s *Server) Handler() http.Handler {
 	s.routeHarness(mux)
 	s.routeSettings(mux)
 	s.routeMCP(mux)
-	// Dispatch from MCP tools re-enters here, audit-wrapped but not
-	// auth-wrapped: the /mcp request already passed authMiddleware.
+	// Dispatch from catalog tools re-enters here, audit-wrapped but not
+	// auth-wrapped. MCP already passed authMiddleware; native is the daemon.
 	s.apiMux = mux
 	s.apiWrapped = s.auditMiddleware(noTraversalMiddleware(newConfirmGate().wrap(mux)))
 	return s.authMiddleware(s.apiWrapped)

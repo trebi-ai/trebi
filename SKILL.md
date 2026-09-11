@@ -5,7 +5,13 @@ description: Operate trebi, an LLM task runner (daemon + CLI), fully from the sh
 
 # Trebi
 
-Trebi is one binary that is both a daemon (`trebid`) and a CLI. The daemon owns an HTTP `/v1` API, an SSE event bus, and a SQLite store under `~/.trebi`. The CLI is a thin client of that API and covers the whole control plane; the MCP surface covers 100% of the routes. Drive trebi only through `trebi`. Do not edit files under `~/.trebi` and do not call the API with `curl`.
+Trebi is one binary that is both a daemon (`trebid`) and a CLI. The daemon owns an HTTP `/v1` API, an SSE event bus, and a SQLite store under `~/.trebi`. The CLI is a thin client of that API and covers the whole control plane; the MCP surface and the native assistant share the same 15 catalog tools.
+
+## How to reach trebi
+
+If this session has trebi tools registered (`run`, `job`, `workspace`, `file`, `system`, and the rest of the catalog), use those. Call `docs` on a tool before its first use. Do not shell out to `trebi` for anything the catalog covers. `bash` is for the workspace filesystem: read a log, run a build, grep.
+
+If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do not edit files under `~/.trebi` and do not call the API with `curl`.
 
 ## Object model
 
@@ -39,7 +45,9 @@ If `doctor` is healthy, stop. Do not "fix" the database, edit `$TREBI_HOME`, or 
 
 If the daemon is down: `trebi service start`. If it was never installed: `trebi service install` then `trebi service start`. Never run `trebi service daemon` yourself and never `kill` the daemon PID. `service daemon` is a foreground dev entrypoint; `start`/`stop` own the process.
 
-Only these work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate|path|show|set`, `guide`, `mcp config|install`, and `workspace list|current|use|unlink`. Everything else fails with a clear message.
+Only these work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate|path|show|set|unset`, `guide`, `mcp config|install`, and `workspace list|current|use|unlink`. Everything else fails with a clear message.
+
+Native assistant (no vendor CLI): `trebi config set assistant.model claude-sonnet-4-5` and `trebi config set assistant.api_key_env ANTHROPIC_API_KEY`. API key only; `runtime: tui` in TREBI.md is the tmux escape hatch.
 
 ## Global rules
 
@@ -85,12 +93,13 @@ Every error is `{"error":{"code","message","details"}}` with a stable code:
 
 ## Rules for the agent
 
+- If trebi tools are registered, use them instead of the CLI recipes below. The same rules apply: validate after a JOB.md write (`job.validate`), dry-run a job you wrote (`job.run` with `dry_run`), ask before destructive.
 - Prefer `--json` plus `jq` over parsing tables. If a command rejects `--json`, drop it once. `runs show --json` is valid.
 - Run `trebi job validate` after every `JOB.md` write.
 - Use `trebi job run --test` before the first real launch only when **this session** created or edited the `JOB.md`. Not `rules fire`, not `assistant say`, not a job that already existed.
 - Ask the user before `job delete` / `job delete --purge`, `workspace delete`, `memory clear`, `secret delete`, `connector delete`, `service cloud unlink`, and `service uninstall`. They destroy state. Ask **before** you make the call, not after: state what the action deletes, then stop and wait for the answer. Do not send the call to see what it says. The daemon refuses it without `--force` (`confirm=1` over the API) and names what it deletes, but that gate is a backstop, not your confirmation step. `runs kill` of a run you just started to debug is not in that list.
 - If a trebi command fails with "Confirm with the user first", stop. That refusal is the confirmation gate. Report the consequence to the user and wait. Do not retry with `--force` in the same turn.
-- Never show a secret value you did not have to read. Always prefer the form that keeps it out of your transcript: on the CLI pass the path, `trebi secret set --from-file ./key.txt NAME`; on MCP pass `value_file`, which `trebi mcp serve` reads for you. Over plain HTTP no bridge runs, so `value_file` returns `input field "value" is required`. There the `set` action takes the value inline and you have no quiet read, so read the key once, pass it straight to `secret set`, and never show it again: no second `cat`, not in the final message, not in a job prompt or a file. One read that feeds the `set` call is the cost of the surface; every later appearance is your choice. Do not stop the task over this — store the secret and carry on. Reference a stored secret from a job by its **name**; the daemon resolves it at launch. A secret name is not a secret.
+- Never show a secret value you did not have to read. Always prefer the form that keeps it out of your transcript: on the CLI pass the path, `trebi secret set --from-file ./key.txt NAME`; on the catalog pass `value_file`, which is resolved before dispatch. If you only have the value in context, pass `value` once and never show it again: no second `cat`, not in the final message, not in a job prompt or a file. Do not stop the task over this — store the secret and carry on. Reference a stored secret from a job by its **name**; the daemon resolves it at launch. A secret name is not a secret.
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.
 - Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
 - `trebi bus --limit N` dumps up to N frames and exits. `connector logs` returns at once; `-f` follows and blocks. `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.

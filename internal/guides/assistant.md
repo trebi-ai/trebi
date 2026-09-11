@@ -6,7 +6,7 @@ description: Wake, say, conversations, and the assistant memory ledger.
 
 # Assistant, conversations, and memory
 
-The assistant is the workspace singleton driven by `TREBI.md`.
+The assistant is the workspace singleton driven by `TREBI.md`. When `assistant.model` is set and an API key resolves, the daemon runs it in-process (`harness=native`) — no vendor CLI, no tmux pane, no attach. `runtime: tui` in TREBI.md is the escape hatch back to the old harness. Native is API-key only (`assistant.api_key` / `assistant.api_key_env`).
 
 ## Drive the assistant
 

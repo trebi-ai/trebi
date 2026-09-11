@@ -86,7 +86,8 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
 		}
 	}
 
-	// no tmux (fake already terminal or deferred without session)
+	// no tmux (fake already terminal or deferred without session).
+	// Native runs have no pane; max-duration already ran above.
 	if run.TmuxSession == "" {
 		return
 	}
@@ -194,6 +195,7 @@ func (r *Reaper) checkIdle(ctx context.Context, run *Run, screen string, now tim
 }
 
 func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndReason) {
+	r.svc.cancelNative(run.ID)
 	if run.TmuxSession != "" {
 		_ = tmux.SendKey(run.TmuxSession, "C-c")
 		time.Sleep(100 * time.Millisecond)

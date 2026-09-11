@@ -16,7 +16,7 @@ List secret names. Values are never returned. No input fields.
 Set one secret value.
 - `name` (string, required): secret name.
 - `value` (string, required): secret text. Prefer `value_file`, so the value stays out of your transcript.
-- `value_file` (string, optional): path to a local file holding the value. `trebi mcp serve` reads it and sends the content as `value`. Only a stdio bridge can do this; over plain HTTP, pass `value`.
+- `value_file` (string, optional): path to a file holding the value. Resolved before dispatch (native registry and `trebi mcp serve`) so the path never reaches the API. Prefer this over `value`.
 
 ### delete
 Remove one secret. Destructive. Jobs that read it will fail.

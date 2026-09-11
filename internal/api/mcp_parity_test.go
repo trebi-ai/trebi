@@ -11,15 +11,16 @@ import (
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/request"
+	"github.com/trebi-ai/trebi/internal/tools"
 )
 
 func TestMCPCatalogCoversRouteUniverse(t *testing.T) {
 	t.Parallel()
 	universe := mcpRouteUniverse(t)
 	covered := map[string]bool{}
-	for tool, actions := range newMCPCatalog() {
+	for tool, actions := range tools.NewCatalog() {
 		for name, entry := range actions {
-			for _, route := range entry.routes {
+			for _, route := range entry.Routes {
 				if !universe[route] {
 					t.Errorf("%s.%s declares route %q, which no route file registers", tool, name, route)
 				}
@@ -48,12 +49,12 @@ func TestMCPCatalogCoversRouteUniverse(t *testing.T) {
 func TestMCPCatalogSamplesHitDeclaredRoutes(t *testing.T) {
 	t.Parallel()
 	mux := mcpTestMux()
-	for tool, actions := range newMCPCatalog() {
+	for tool, actions := range tools.NewCatalog() {
 		for name, entry := range actions {
-			samples := append([]mcpInput{entry.sample}, entry.samples...)
+			samples := append([]tools.Input{entry.Sample}, entry.Samples...)
 			hit := map[string]bool{}
 			for i, sample := range samples {
-				built, err := entry.build(sample)
+				built, err := entry.Build(sample)
 				if err != nil {
 					t.Errorf("%s.%s sample %d: build: %v", tool, name, i, err)
 					continue
@@ -63,13 +64,13 @@ func TestMCPCatalogSamplesHitDeclaredRoutes(t *testing.T) {
 					t.Fatalf("%s.%s sample %d: request: %v", tool, name, i, err)
 				}
 				_, pattern := mux.Handler(req)
-				if !slices.Contains(entry.routes, pattern) {
-					t.Errorf("%s.%s sample %d hit %q; want one of %v", tool, name, i, pattern, entry.routes)
+				if !slices.Contains(entry.Routes, pattern) {
+					t.Errorf("%s.%s sample %d hit %q; want one of %v", tool, name, i, pattern, entry.Routes)
 					continue
 				}
 				hit[pattern] = true
 			}
-			for _, route := range entry.routes {
+			for _, route := range entry.Routes {
 				if !hit[route] {
 					t.Errorf("%s.%s declares route %q but no sample hits it", tool, name, route)
 				}
@@ -80,8 +81,8 @@ func TestMCPCatalogSamplesHitDeclaredRoutes(t *testing.T) {
 
 func TestMCPDocsCoverEveryCatalogAction(t *testing.T) {
 	t.Parallel()
-	for tool, actions := range newMCPCatalog() {
-		doc, err := mcpDocsFS.ReadFile("mcpdocs/" + tool + ".md")
+	for tool, actions := range tools.NewCatalog() {
+		doc, err := tools.ReadDoc(tool)
 		if err != nil {
 			t.Errorf("tool %q: read mcpdocs/%s.md: %v", tool, tool, err)
 			continue
@@ -100,15 +101,15 @@ func TestMCPDocsCoverEveryCatalogAction(t *testing.T) {
 func TestMCPDocsDocumentConfirmOnGatedActions(t *testing.T) {
 	t.Parallel()
 	gate := newConfirmGate()
-	for tool, actions := range newMCPCatalog() {
-		doc, err := mcpDocsFS.ReadFile("mcpdocs/" + tool + ".md")
+	for tool, actions := range tools.NewCatalog() {
+		doc, err := tools.ReadDoc(tool)
 		if err != nil {
 			t.Errorf("tool %q: read docs: %v", tool, err)
 			continue
 		}
 		for name, entry := range actions {
 			gated := false
-			for _, route := range entry.routes {
+			for _, route := range entry.Routes {
 				if _, ok := gate.routes[route]; ok {
 					gated = true
 				}
@@ -116,7 +117,7 @@ func TestMCPDocsDocumentConfirmOnGatedActions(t *testing.T) {
 			if !gated {
 				continue
 			}
-			section := docSection(string(doc), name)
+			section := tools.DocSection(string(doc), name)
 			if section == "" {
 				t.Errorf("%s.%s: no docs section", tool, name)
 				continue
@@ -124,47 +125,10 @@ func TestMCPDocsDocumentConfirmOnGatedActions(t *testing.T) {
 			if !strings.Contains(section, "`confirm`") {
 				t.Errorf("%s.%s hits a confirm-gated route but its docs do not name the confirm field", tool, name)
 			}
-			if _, ok := entry.sample["confirm"]; !ok {
+			if _, ok := entry.Sample["confirm"]; !ok {
 				t.Errorf("%s.%s sample omits confirm; the parity sample would be refused", tool, name)
 			}
 		}
-	}
-}
-
-// docSection returns the body of one "### <action>" section.
-
-func TestBusPollTransform(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name       string
-		body       string
-		wantEvents int
-		wantCursor int64
-	}{
-		{"empty dump", "", 0, 0},
-		{"keepalive only", ": ping\n\n", 0, 0},
-		{"events in order", "data: {\"seq\":5,\"topic\":\"job.created\"}\n\ndata: {\"seq\":7,\"topic\":\"job.updated\"}\n\n", 2, 7},
-		{"cursor takes the max seq", "data: {\"seq\":9}\n\ndata: {\"seq\":2}\n\n", 2, 9},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := busPollTransform(nil, 200, []byte(c.body))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var res struct {
-				Events     []map[string]any `json:"events"`
-				NextCursor int64            `json:"next_cursor"`
-			}
-			if err := json.Unmarshal(got, &res); err != nil {
-				t.Fatalf("decode %s: %v", got, err)
-			}
-			if len(res.Events) != c.wantEvents || res.NextCursor != c.wantCursor {
-				t.Fatalf("got %d events, cursor %d; want %d events, cursor %d",
-					len(res.Events), res.NextCursor, c.wantEvents, c.wantCursor)
-			}
-		})
 	}
 }
 
@@ -231,19 +195,19 @@ func mcpTestMux() *http.ServeMux {
 
 // knownFields is every input key the catalog may read. The docs check probes
 // each one against each action: a key that changes the request must be listed.
-var knownFields = []docField{ //nolint:gochecknoglobals // static probe list, never mutated
-	{"if_match", "string", false}, {"limit", "number", false}, {"cursor", "string", false},
-	{"max_bytes", "number", false}, {"lines", "number", false}, {"encoding", "string", false},
-	{"harnesses", "object", false}, {"facets", "array", false}, {"inputs", "object", false},
-	{"harness", "string", false}, {"kind", "string", false}, {"reason", "string", false},
-	{"conversation_id", "string", false}, {"idempotency_key", "string", false},
-	{"extra_prompt", "string", false}, {"prompt", "string", false}, {"dry_run", "boolean", false},
-	{"workspace", "string", false}, {"purge", "boolean", false}, {"values", "object", false},
-	{"summary", "string", false}, {"revision", "number", false}, {"stat", "boolean", false},
-	{"raw", "boolean", false}, {"prefix", "string", false}, {"env", "object", false},
-	{"cwd", "string", false}, {"format", "string", false}, {"date", "string", false},
-	{"wait_ms", "number", false}, {"state", "string", false}, {"approval_id", "string", false},
-	{"channel_type", "string", false}, {"channel_ref", "string", false},
+var knownFields = []tools.DocField{ //nolint:gochecknoglobals // static probe list, never mutated
+	{Name: "if_match", Type: "string"}, {Name: "limit", Type: "number"}, {Name: "cursor", Type: "string"},
+	{Name: "max_bytes", Type: "number"}, {Name: "lines", Type: "number"}, {Name: "encoding", Type: "string"},
+	{Name: "harnesses", Type: "object"}, {Name: "facets", Type: "array"}, {Name: "inputs", Type: "object"},
+	{Name: "harness", Type: "string"}, {Name: "kind", Type: "string"}, {Name: "reason", Type: "string"},
+	{Name: "conversation_id", Type: "string"}, {Name: "idempotency_key", Type: "string"},
+	{Name: "extra_prompt", Type: "string"}, {Name: "prompt", Type: "string"}, {Name: "dry_run", Type: "boolean"},
+	{Name: "workspace", Type: "string"}, {Name: "purge", Type: "boolean"}, {Name: "values", Type: "object"},
+	{Name: "summary", Type: "string"}, {Name: "revision", Type: "number"}, {Name: "stat", Type: "boolean"},
+	{Name: "raw", Type: "boolean"}, {Name: "prefix", Type: "string"}, {Name: "env", Type: "object"},
+	{Name: "cwd", Type: "string"}, {Name: "format", Type: "string"}, {Name: "date", Type: "string"},
+	{Name: "wait_ms", Type: "number"}, {Name: "state", Type: "string"}, {Name: "approval_id", Type: "string"},
+	{Name: "channel_type", Type: "string"}, {Name: "channel_ref", Type: "string"},
 }
 
 // probeValue returns a value that differs from what the sample carries, so a
@@ -254,25 +218,25 @@ var knownFields = []docField{ //nolint:gochecknoglobals // static probe list, ne
 // required, and no action may read a field the docs do not list.
 func TestMCPDocsFieldParity(t *testing.T) {
 	t.Parallel()
-	for tool, actions := range newMCPCatalog() {
-		doc, err := mcpDocsFS.ReadFile("mcpdocs/" + tool + ".md")
+	for tool, actions := range tools.NewCatalog() {
+		doc, err := tools.ReadDoc(tool)
 		if err != nil {
 			t.Fatalf("read docs for %s: %v", tool, err)
 		}
 		for name, entry := range actions {
-			section := docSection(string(doc), name)
+			section := tools.DocSection(string(doc), name)
 			if section == "" {
 				t.Errorf("%s.%s has no docs section", tool, name)
 				continue
 			}
-			if _, err := entry.build(entry.sample); err != nil {
+			if _, err := entry.Build(entry.Sample); err != nil {
 				t.Errorf("%s.%s: build sample: %v", tool, name, err)
 				continue
 			}
-			fields := docFields(section)
+			fields := tools.DocFields(section)
 			documented := map[string]bool{}
 			for _, f := range fields {
-				documented[f.name] = true
+				documented[f.Name] = true
 				assertFieldRead(t, tool, name, f, entry)
 			}
 			assertNoUndocumentedRead(t, tool, name, entry, documented)
@@ -283,12 +247,12 @@ func TestMCPDocsFieldParity(t *testing.T) {
 
 func TestDocsSignatureBlock(t *testing.T) {
 	t.Parallel()
-	for tool, actions := range newMCPCatalog() {
-		doc, err := mcpDocsFS.ReadFile("mcpdocs/" + tool + ".md")
+	for tool, actions := range tools.NewCatalog() {
+		doc, err := tools.ReadDoc(tool)
 		if err != nil {
 			t.Fatalf("read docs for %s: %v", tool, err)
 		}
-		block := docSignatures(string(doc))
+		block := tools.DocSignatures(string(doc))
 		if !strings.Contains(block, "docs()") {
 			t.Errorf("%s: block must list docs()", tool)
 		}
@@ -298,10 +262,10 @@ func TestDocsSignatureBlock(t *testing.T) {
 				t.Errorf("%s: block has no signature for %q", tool, action)
 				continue
 			}
-			for _, f := range docFields(docSection(string(doc), action)) {
-				want := f.name + "?"
-				if f.required {
-					want = f.name
+			for _, f := range tools.DocFields(tools.DocSection(string(doc), action)) {
+				want := f.Name + "?"
+				if f.Required {
+					want = f.Name
 				}
 				if !strings.Contains(line, want) {
 					t.Errorf("%s.%s: signature omits %q: %s", tool, action, want, line)
@@ -323,23 +287,23 @@ func sigLine(block, action string) string {
 
 // assertFieldRead checks that setting one documented field changes the request
 // under at least one sample, and that a documented required field is enforced.
-func assertFieldRead(t *testing.T, tool, action string, f docField, entry mcpAction) {
+func assertFieldRead(t *testing.T, tool, action string, f tools.DocField, entry tools.Action) {
 	t.Helper()
 	read := false
-	for _, sample := range append([]mcpInput{entry.sample}, entry.samples...) {
-		base, err := entry.build(sample)
+	for _, sample := range append([]tools.Input{entry.Sample}, entry.Samples...) {
+		base, err := entry.Build(sample)
 		if err != nil {
 			continue // this sample does not apply to this field
 		}
-		probe := mcpInput{}
+		probe := tools.Input{}
 		for k, v := range sample {
 			probe[k] = v
 		}
-		probe[f.name] = probeValue(f, sample)
-		if f.name == "encoding" {
+		probe[f.Name] = probeValue(f, sample)
+		if f.Name == "encoding" {
 			probe["content"] = "aGk=" // base64 must decode; the sample text does not
 		}
-		got, err := entry.build(probe)
+		got, err := entry.Build(probe)
 		if err != nil {
 			continue
 		}
@@ -348,30 +312,30 @@ func assertFieldRead(t *testing.T, tool, action string, f docField, entry mcpAct
 			break
 		}
 	}
-	if !read && !entry.bounded && !entry.readsResponseField(f.name) && !clientSideField(tool, action, f.name) {
-		t.Errorf("%s.%s documents field %q, but no sample shows the builder reading it", tool, action, f.name)
+	if !read && !entry.Bounded && !readsResponseField(entry, f.Name) && !clientSideField(tool, action, f.Name) {
+		t.Errorf("%s.%s documents field %q, but no sample shows the builder reading it", tool, action, f.Name)
 	}
 	// The confirm gate lives in the API, so a builder must not enforce it.
-	if !f.required || f.name == "confirm" {
+	if !f.Required || f.Name == "confirm" {
 		return
 	}
-	without := mcpInput{}
-	for k, v := range entry.sample {
-		if k != f.name {
+	without := tools.Input{}
+	for k, v := range entry.Sample {
+		if k != f.Name {
 			without[k] = v
 		}
 	}
-	if _, err := entry.build(without); err == nil {
-		t.Errorf("%s.%s documents %q as required, but the builder accepts it missing", tool, action, f.name)
+	if _, err := entry.Build(without); err == nil {
+		t.Errorf("%s.%s documents %q as required, but the builder accepts it missing", tool, action, f.Name)
 	}
 }
 
 // assertNoUndocumentedRead checks that the primary sample names no field the
 // docs leave out. The extra samples are route probes and may carry a union of
 // fields across the tool, so they are not checked here.
-func assertNoUndocumentedRead(t *testing.T, tool, action string, entry mcpAction, documented map[string]bool) {
+func assertNoUndocumentedRead(t *testing.T, tool, action string, entry tools.Action, documented map[string]bool) {
 	t.Helper()
-	for k := range entry.sample {
+	for k := range entry.Sample {
 		if !documented[k] {
 			t.Errorf("%s.%s reads field %q, which its docs do not list", tool, action, k)
 		}
@@ -380,26 +344,26 @@ func assertNoUndocumentedRead(t *testing.T, tool, action string, entry mcpAction
 
 // assertKnownFieldsDocumented probes every catalog input key against one
 // action: a key that changes the built request must appear in the docs.
-func assertKnownFieldsDocumented(t *testing.T, tool, action string, entry mcpAction, documented map[string]bool) {
+func assertKnownFieldsDocumented(t *testing.T, tool, action string, entry tools.Action, documented map[string]bool) {
 	t.Helper()
-	base, err := entry.build(entry.sample)
+	base, err := entry.Build(entry.Sample)
 	if err != nil {
 		return
 	}
 	for _, f := range knownFields {
-		if documented[f.name] {
+		if documented[f.Name] {
 			continue
 		}
-		probe := mcpInput{}
-		for k, v := range entry.sample {
+		probe := tools.Input{}
+		for k, v := range entry.Sample {
 			probe[k] = v
 		}
-		probe[f.name] = probeValue(f, entry.sample)
-		got, err := entry.build(probe)
+		probe[f.Name] = probeValue(f, entry.Sample)
+		got, err := entry.Build(probe)
 		if err != nil || sameRequest(base, got) {
 			continue
 		}
-		t.Errorf("%s.%s reads field %q, which its docs do not list", tool, action, f.name)
+		t.Errorf("%s.%s reads field %q, which its docs do not list", tool, action, f.Name)
 	}
 }
 
@@ -412,8 +376,8 @@ func clientSideField(tool, action, name string) bool {
 
 // readsResponseField reports whether one field steers the response transform
 // instead of the request, so the built request is rightly unchanged.
-func (e mcpAction) readsResponseField(name string) bool {
-	return e.transform != nil && (name == "lines" || name == "max_bytes")
+func readsResponseField(e tools.Action, name string) bool {
+	return e.Transform != nil && (name == "lines" || name == "max_bytes")
 }
 
 // sameRequest compares two built requests by every field a change can touch.
@@ -424,12 +388,12 @@ func sameRequest(a, b request.HTTPRequest) bool {
 		a.ContentType == b.ContentType && string(a.Raw) == string(b.Raw) && string(ab) == string(bb)
 }
 
-func probeValue(f docField, sample mcpInput) any {
-	switch f.typ {
+func probeValue(f tools.DocField, sample tools.Input) any {
+	switch f.Type {
 	case "boolean":
-		return sample[f.name] != true
+		return sample[f.Name] != true
 	case "number":
-		if n, ok := sample[f.name].(float64); ok {
+		if n, ok := sample[f.Name].(float64); ok {
 			return n + 1
 		}
 		return float64(7)
@@ -438,11 +402,11 @@ func probeValue(f docField, sample mcpInput) any {
 	case "array":
 		return []any{"probe"}
 	}
-	if f.name == "encoding" {
+	if f.Name == "encoding" {
 		return "base64"
 	}
-	if f.name == "owner" {
-		if sample[f.name] == "job" {
+	if f.Name == "owner" {
+		if sample[f.Name] == "job" {
 			return "skill"
 		}
 		return "job"

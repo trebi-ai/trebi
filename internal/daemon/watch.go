@@ -166,13 +166,7 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 	if !ok {
 		return
 	}
-	// Only codex needs the working dir: it mints its own session id, so its
-	// rollout is found by path. Claude derives its file name from the dir, and
-	// the launcher recorded that path with an empty one.
-	workingDir := ""
-	if run.Harness == tmux.Codex {
-		workingDir = tmux.CodexWorkingDir(run.WorkingDir, run.StartedAt)
-	}
+	workingDir := tmux.TranscriptWorkingDir(run.Harness, run.WorkingDir, run.StartedAt)
 	path, err := tool.TranscriptPath(home.HarnessDir(run.Harness), workingDir, run.SessionID)
 	if err != nil {
 		return

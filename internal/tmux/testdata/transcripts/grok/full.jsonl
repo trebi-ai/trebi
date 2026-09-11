@@ -1,0 +1,8 @@
+{"type":"system","content":"You are Grok."}
+{"type":"user","content":[{"type":"text","text":"<user_info>\nOS Version: macos\n</user_info>"}]}
+{"type":"user","content":[{"type":"text","text":"<system-reminder>\nMCP servers connected.\n</system-reminder>"}]}
+{"type":"user","content":[{"type":"text","text":"<user_query>\nhi\n\nWhen you have completed this task successfully, output exactly this on its own line (nothing else): TREBI_RUN_COMPLETE_01ABC\n</user_query>"}]}
+{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"greeting"}],"status":"completed"}
+{"type":"assistant","content":"hi\n\nTREBI_RUN_COMPLETE_01ABC"}
+{"type":"user","content":[{"type":"text","text":"<user_query>\nhello\n</user_query>"}]}
+{"type":"assistant","content":[{"type":"text","text":"hello\n\nTREBI_RUN_COMPLETE_01ABC"}]}

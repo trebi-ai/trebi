@@ -23,6 +23,7 @@ type Config struct {
 	Notify     NotifyConfig     `yaml:"notify,omitempty"`
 	Files      FilesConfig      `yaml:"files,omitempty"`
 	Workspaces WorkspacesConfig `yaml:"workspaces,omitempty"`
+	Assistant  AssistantConfig  `yaml:"assistant,omitempty"`
 }
 
 // WorkspacesConfig is the pathless-create root for remote workspace bootstrap.
@@ -405,6 +406,9 @@ func Load() (*Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	if err := cfg.migrateAssistantKey(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -443,6 +447,16 @@ tools:
 
 # workspaces:
 #   root: ~/trebi          # pathless workspace add --create --name lands here
+
+# assistant:                 # in-process workspace assistant (API key only)
+#   model: ""                # empty = native off; set a model to enable
+#   api_format: openai       # openai | anthropic
+#   base_url: ""             # default api.openai.com / api.anthropic.com (no /v1)
+#   api_key_env: ""          # prefer this over api_key
+#   max_tokens: 8192
+#   context_tokens: 0        # 0 = no compaction
+#   system_extra: ""
+#   web_search: true         # anthropic server tool only; ignored for openai
 `
 
 // Seed writes config.yaml with the documented defaults when it does not exist.
@@ -462,7 +476,7 @@ func Seed() (bool, error) {
 	return true, nil
 }
 
-// Save validates then writes config.yaml.
+// Save validates then writes config.yaml. assistant.api_key is never marshaled.
 func (c *Config) Save() error {
 	if err := EnsureDirs(); err != nil {
 		return err
@@ -471,11 +485,25 @@ func (c *Config) Save() error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
+	if err := c.Assistant.flushKey(); err != nil {
+		return err
+	}
+	c.Assistant.APIKey = ""
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(ConfigPath(), data, 0644)
+}
+
+// migrateAssistantKey moves a YAML api_key into the secrets store.
+func (c *Config) migrateAssistantKey() error {
+	if strings.TrimSpace(c.Assistant.APIKey) == "" {
+		return nil
+	}
+	c.Assistant.pendingKey = c.Assistant.APIKey
+	c.Assistant.APIKey = ""
+	return c.Save()
 }
 
 func expandTilde(p string) string {
@@ -612,6 +640,8 @@ func (c *Config) Validate() error {
 		}
 		ce.checkBridge(prefix+".bridge", p.Bridge, name)
 	}
+
+	ce.checkAssistant(c.Assistant)
 
 	if len(ce.Errors) == 0 {
 		return nil

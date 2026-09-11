@@ -11,6 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/trebi-ai/trebi/internal/api"
+	"github.com/trebi-ai/trebi/internal/tools"
 )
 
 // bearerTransport adds the daemon token to every MCP request.
@@ -134,6 +135,36 @@ func TestMCPErrorMapping(t *testing.T) {
 	res, text = mcpCall(t, cs, "job", "create", "not-an-object")
 	if !res.IsError || errCode(mcpJSON(t, "job.create", text)) != "validation" {
 		t.Fatalf("input of wrong type: want validation, got %s", text)
+	}
+}
+
+func TestNativeConfirmGate(t *testing.T) {
+	s, base := startTestServer(t)
+	token := s.Token()
+	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", token, map[string]any{
+		"path": t.TempDir(), "name": "confirm-ws", "create": true,
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("workspace %d %v", code, ws)
+	}
+	wsID := fmt.Sprint(ws["id"])
+	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", token, map[string]any{
+		"workspace": wsID, "name": "keep-me",
+		"content": "---\nharness: fake\n---\n\nStay.\n",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("job create %d %v", code, created)
+	}
+	res := tools.NewNativeRegistry(s).Call(context.Background(), "job", "delete", tools.Input{"name": "keep-me", "workspace": wsID})
+	if res.Status != http.StatusBadRequest {
+		t.Fatalf("status %d body %s", res.Status, res.Body)
+	}
+	if !strings.Contains(string(res.Body), "confirm_required") {
+		t.Fatalf("want confirm_required, got %s", res.Body)
+	}
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/keep-me?workspace="+wsID, token, nil)
+	if code != http.StatusOK {
+		t.Fatalf("job deleted without confirm: %d %v", code, body)
 	}
 }
 

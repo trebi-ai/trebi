@@ -208,6 +208,31 @@ func (s *Service) IngestAssistantTurns(ctx context.Context, runID, convID string
 	return n, nil
 }
 
+// AppendSystem persists a system recap row (native compaction).
+func (s *Service) AppendSystem(ctx context.Context, convID, text string) error {
+	if convID == "" || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	if _, err := s.Get(ctx, convID); err != nil {
+		return err
+	}
+	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+	id := ulid.Make().String()
+	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`INSERT INTO conversation_messages
+			(id, conversation_id, role, text, created_at) VALUES (?,?,?,?,?)`,
+			id, convID, RoleSystem, text, nowStr); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`UPDATE conversations SET updated_at=?, revision=revision+1 WHERE id=?`,
+			nowStr, convID)
+		return err
+	}, store.BusEvent{
+		Topic: "conversation.updated", Entity: "conversation", EntityID: convID, Action: "updated",
+	})
+	return err
+}
+
 func (s *Service) insertUserMessage(ctx context.Context, conv *Conversation, opts SendOpts, text string) (Message, error) {
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339Nano)

@@ -9,11 +9,12 @@ import (
 	"unicode"
 
 	"github.com/trebi-ai/trebi/internal/guides"
+	"github.com/trebi-ai/trebi/internal/tools"
 )
 
 func TestGuideTranslationDrift(t *testing.T) {
 	t.Parallel()
-	catalog := newMCPCatalog()
+	catalog := tools.NewCatalog()
 	dir := filepath.Join("..", "guides")
 	ents, err := os.ReadDir(dir)
 	if err != nil {
@@ -60,7 +61,7 @@ func TestGuideCrossReferences(t *testing.T) {
 		topics[g.Topic] = true
 	}
 	footerTopics := map[string]bool{}
-	docs, err := filepath.Glob("mcpdocs/*.md")
+	docs, err := filepath.Glob("../tools/mcpdocs/*.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +168,7 @@ var exactFolds = map[string]string{
 	"status":               "system.overview",
 }
 
-func mcpMatch(catalog map[string]map[string]mcpAction, words []string) (tool, action string, local, ok bool) {
+func mcpMatch(catalog tools.Catalog, words []string) (tool, action string, local, ok bool) {
 	if len(words) == 0 {
 		return "", "", false, false
 	}

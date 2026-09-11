@@ -184,6 +184,9 @@ func LoadWithDeclared() (*Config, map[string]bool, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, err
 	}
+	if err := cfg.migrateAssistantKey(); err != nil {
+		return nil, nil, err
+	}
 	return cfg, declared, nil
 }
 
@@ -213,6 +216,9 @@ func (c *Config) SetPath(path, value string) error {
 		return err
 	}
 	if handled, err := c.setWorkspacesKey(path, value); handled {
+		return err
+	}
+	if handled, err := c.setAssistantKey(path, value); handled {
 		return err
 	}
 
@@ -363,6 +369,39 @@ func (l *pathEntryList) addCore(cfg *Config) {
 		rootShow = DefaultWorkspacesRoot
 	}
 	l.add("workspaces.root", rootShow, DefaultWorkspacesRoot)
+	l.addAssistant(cfg)
+}
+
+func (l *pathEntryList) addAssistant(cfg *Config) {
+	a := cfg.Assistant
+	l.add("assistant.model", a.Model, "")
+	format := a.APIFormat
+	if format == "" {
+		format = "openai"
+	}
+	l.add("assistant.api_format", format, "openai")
+	base := strings.TrimSpace(a.BaseURL)
+	if base == "" {
+		base = a.DefaultBaseURL()
+	}
+	l.add("assistant.base_url", base, a.DefaultBaseURL())
+	keyVal := "-"
+	if a.APIKeyPresent || strings.TrimSpace(a.pendingKey) != "" {
+		keyVal = "********"
+	}
+	l.add("assistant.api_key", keyVal, "")
+	l.add("assistant.api_key_env", a.APIKeyEnv, "")
+	l.add("assistant.api_key_source", a.KeySourceName(), KeySourceNone)
+	l.add("assistant.max_tokens", strconv.Itoa(a.MaxTokensOrDefault()), strconv.Itoa(DefaultAssistantMaxTokens))
+	l.add("assistant.context_tokens", strconv.Itoa(a.ContextTokens), "0")
+	l.add("assistant.system_extra", a.SystemExtra, "")
+	ws := "true"
+	if a.WebSearch != nil && !*a.WebSearch {
+		ws = "false"
+	}
+	l.add("assistant.web_search", ws, "true")
+	l.add("assistant.limits.daily_tokens", strconv.Itoa(a.Limits.DailyTokens), "0")
+	l.add("assistant.limits.max_turns", strconv.Itoa(a.Limits.MaxTurns), "0")
 }
 
 // addGlobalBridge adds the tools.bridge rows.
@@ -505,6 +544,87 @@ func (c *Config) setWorkspacesKey(path, value string) (handled bool, err error) 
 	return true, nil
 }
 
+// UnsetPath clears a dotted key. assistant.api_key also deletes the secret.
+func (c *Config) UnsetPath(path string) error {
+	if c == nil {
+		return fmt.Errorf("nil config")
+	}
+	path = strings.TrimSpace(path)
+	if path == "assistant.api_key" {
+		c.Assistant.pendingKey = ""
+		c.Assistant.APIKey = ""
+		c.Assistant.APIKeyPresent = false
+		c.Assistant.clearSecret = true
+		return nil
+	}
+	return c.SetPath(path, "")
+}
+
+func (c *Config) setAssistantKey(path, value string) (handled bool, err error) {
+	switch path {
+	case "assistant.model":
+		c.Assistant.Model = clearOrValue(value)
+	case "assistant.api_format":
+		v := strings.ToLower(strings.TrimSpace(value))
+		if v != "" && v != "openai" && v != "anthropic" {
+			return true, fmt.Errorf("assistant.api_format: %q not in [openai, anthropic]", value)
+		}
+		c.Assistant.APIFormat = v
+	case "assistant.base_url":
+		c.Assistant.BaseURL = clearOrValue(value)
+	case "assistant.api_key":
+		if value == "" || value == "-" {
+			return true, c.UnsetPath(path)
+		}
+		c.Assistant.pendingKey = value
+		c.Assistant.APIKey = ""
+		c.Assistant.clearSecret = false
+	case "assistant.api_key_env":
+		c.Assistant.APIKeyEnv = clearOrValue(value)
+		// A later env pin replaces a stored secret so precedence can fall back.
+		c.Assistant.clearSecret = true
+		c.Assistant.APIKeyPresent = false
+		c.Assistant.pendingKey = ""
+	case "assistant.api_key_source":
+		return true, fmt.Errorf("assistant.api_key_source: read-only")
+	case "assistant.max_tokens":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 0 {
+			return true, fmt.Errorf("assistant.max_tokens: want integer > 0")
+		}
+		c.Assistant.MaxTokens = n
+	case "assistant.context_tokens":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 0 {
+			return true, fmt.Errorf("assistant.context_tokens: want integer >= 0")
+		}
+		c.Assistant.ContextTokens = n
+	case "assistant.system_extra":
+		c.Assistant.SystemExtra = clearOrValue(value)
+	case "assistant.web_search":
+		b, err := parseBoolish(value)
+		if err != nil {
+			return true, fmt.Errorf("assistant.web_search: %w", err)
+		}
+		c.Assistant.WebSearch = &b
+	case "assistant.limits.daily_tokens":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 0 {
+			return true, fmt.Errorf("assistant.limits.daily_tokens: want integer >= 0")
+		}
+		c.Assistant.Limits.DailyTokens = n
+	case "assistant.limits.max_turns":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 0 {
+			return true, fmt.Errorf("assistant.limits.max_turns: want integer >= 0")
+		}
+		c.Assistant.Limits.MaxTurns = n
+	default:
+		return false, nil
+	}
+	return true, nil
+}
+
 // setToolKey handles tools.<tool>.<rest> keys on the tool pin.
 func (c *Config) setToolKey(tool, rest, value string) error {
 	pin := c.Tools.Pin(tool)
@@ -604,6 +724,18 @@ func pathKeyDescriptions() map[string]string {
 		"tools.bridge.inherit":          "Global default: inherit user harness resources",
 		"tools.bridge.only":             "If set, only these resource keys may inherit",
 		"tools.bridge.never":            "Resource keys force-disabled globally",
+		"assistant.model":               "Native assistant model; empty keeps the tmux harness",
+		"assistant.api_format":          "Provider wire format: openai or anthropic (default openai)",
+		"assistant.base_url":            "API origin without a required /v1 suffix",
+		"assistant.api_key":             "API key (write-only; stored in secrets, never returned)",
+		"assistant.api_key_env":         "Env var holding the API key (preferred over api_key)",
+		"assistant.api_key_source":      "Live key source: secret, env:NAME, well-known:NAME, or none",
+		"assistant.max_tokens":          "Max output tokens per turn (default 8192)",
+		"assistant.context_tokens":      "Compaction window; 0 disables (default 0)",
+		"assistant.system_extra":        "Extra system text prepended to the native assistant",
+		"assistant.web_search":          "Anthropic server web_search tool (ignored for openai)",
+		"assistant.limits.daily_tokens": "UTC-day token cap; 0 unlimited",
+		"assistant.limits.max_turns":    "Max tool turns per run; 0 uses the built-in 20",
 	}
 }
 

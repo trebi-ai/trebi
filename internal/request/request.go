@@ -1383,6 +1383,15 @@ func BuildConfigSetValues(values map[string]any) HTTPRequest {
 	}
 }
 
+// BuildConfigUnset builds PATCH /v1/config with an unset list.
+func BuildConfigUnset(key string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PATCH",
+		Path:   "/v1/config",
+		Body:   map[string]any{"unset": []string{key}},
+	}
+}
+
 // BuildConfigBridgeSet builds PATCH body for a per-tool/global bridge resource mode.
 // tool empty → tools.bridge.resources.<resource>
 // tool set → tools.<tool>.bridge.resources.<resource>

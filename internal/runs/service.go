@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/llm"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tools"
 )
 
 // Service is the runs subsystem.
@@ -21,8 +23,19 @@ type Service struct {
 	st  *store.Store
 	log *slog.Logger
 
-	mu     sync.RWMutex
-	agents map[string]agentSnap // run_id → state
+	mu       sync.RWMutex
+	agents   map[string]agentSnap // run_id → state
+	native   map[string]*nativeHandle
+	life     context.Context
+	ingest   func(ctx context.Context, runID, convID string, texts []string) error
+	recap    func(ctx context.Context, convID, text string) error
+	prov     llm.Provider // test seam; nil → llm.New from config
+	dispatch tools.Dispatcher
+}
+
+type nativeHandle struct {
+	cancel context.CancelFunc
+	inbox  chan string
 }
 
 type agentSnap struct {
@@ -44,7 +57,39 @@ var (
 
 // New creates a runs service.
 func New(st *store.Store) *Service {
-	return &Service{st: st, log: slog.Default().With("source", "runs"), agents: make(map[string]agentSnap)}
+	return &Service{
+		st: st, log: slog.Default().With("source", "runs"),
+		agents: make(map[string]agentSnap), native: make(map[string]*nativeHandle),
+		life: context.Background(),
+	}
+}
+
+// NativeHooks wires the in-process assistant loop.
+type NativeHooks struct {
+	Lifetime context.Context
+	Ingest   func(ctx context.Context, runID, convID string, texts []string) error
+	Recap    func(ctx context.Context, convID, text string) error
+	Provider llm.Provider
+	Dispatch tools.Dispatcher
+}
+
+// SetNativeHooks installs native-assistant dependencies. Nil fields are left as-is.
+func (s *Service) SetNativeHooks(h NativeHooks) {
+	if h.Lifetime != nil {
+		s.life = h.Lifetime
+	}
+	if h.Ingest != nil {
+		s.ingest = h.Ingest
+	}
+	if h.Recap != nil {
+		s.recap = h.Recap
+	}
+	if h.Provider != nil {
+		s.prov = h.Provider
+	}
+	if h.Dispatch != nil {
+		s.dispatch = h.Dispatch
+	}
 }
 
 // CreateOpts for launching a run.
@@ -64,6 +109,7 @@ type CreateOpts struct {
 	// WorkingDir is the directory the session launched in. Persisted because a
 	// harness that mints its own session id finds its transcript by path.
 	WorkingDir     string
+	Runtime        string
 	Trigger        *TriggerCapture
 	Inputs         map[string]string
 	MaxDurationMS  int64
@@ -86,6 +132,9 @@ func (o *CreateOpts) applyDefaults() {
 	}
 	if o.Harness == "" {
 		o.Harness = "claude"
+	}
+	if o.Runtime == "" {
+		o.Runtime = "tui"
 	}
 	if o.TraceID == "" {
 		o.TraceID = ulid.Make().String()
@@ -835,7 +884,7 @@ func newRun(id string, now time.Time, opts CreateOpts) *Run {
 		Status:          StatusRunning,
 		StartedAt:       now,
 		Harness:         opts.Harness,
-		Runtime:         "tui",
+		Runtime:         opts.Runtime,
 		SessionID:       opts.SessionID,
 		PromptPreview:   trunc(opts.PromptPreview, 80),
 		Inputs:          opts.Inputs,
@@ -857,6 +906,8 @@ func newRun(id string, now time.Time, opts CreateOpts) *Run {
 	}
 	if opts.TmuxSession != "" {
 		run.Attach = &AttachInfo{Kind: "tmux", Tmux: opts.TmuxSession}
+	} else if opts.Runtime == "native" {
+		run.Attach = &AttachInfo{Kind: "none"}
 	}
 	return run
 }
@@ -884,7 +935,7 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.Job, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON,
-		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), "tui", opts.Harness, store.NullStr(opts.TmuxSession),
+		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.TmuxSession),
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
 		store.NullStr(opts.ResumedFrom), opts.ResumeAttempts, queueID, opts.TraceID, 1, nowStr,
 	)

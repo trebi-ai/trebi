@@ -1,22 +1,27 @@
-package api
+// Package tools is the transport-neutral trebi tool catalog. /mcp, the CLI,
+// and the native assistant loop all call the same actions; none of them own
+// a private copy of the table.
+package tools
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/trebi-ai/trebi/internal/request"
 )
 
-// mcpInput is the flat input object of one tool call: path params, query
+// Input is the flat input object of one tool call: path params, query
 // params, and body fields together in one map.
-type mcpInput map[string]any
+type Input map[string]any
 
 // str reads one optional string field. An absent field reads as "".
-func (in mcpInput) str(key string) (string, error) {
+func (in Input) str(key string) (string, error) {
 	v, ok := in[key]
 	if !ok || v == nil {
 		return "", nil
@@ -29,7 +34,7 @@ func (in mcpInput) str(key string) (string, error) {
 }
 
 // strs reads optional string fields in order.
-func (in mcpInput) strs(keys ...string) ([]string, error) {
+func (in Input) strs(keys ...string) ([]string, error) {
 	vals := make([]string, len(keys))
 	for i, k := range keys {
 		v, err := in.str(k)
@@ -42,7 +47,7 @@ func (in mcpInput) strs(keys ...string) ([]string, error) {
 }
 
 // reqStr reads one required non-empty string field.
-func (in mcpInput) reqStr(key string) (string, error) {
+func (in Input) reqStr(key string) (string, error) {
 	s, err := in.str(key)
 	if err != nil {
 		return "", err
@@ -54,7 +59,7 @@ func (in mcpInput) reqStr(key string) (string, error) {
 }
 
 // reqStrs reads several required non-empty string fields in order.
-func (in mcpInput) reqStrs(keys ...string) ([]string, error) {
+func (in Input) reqStrs(keys ...string) ([]string, error) {
 	vals := make([]string, len(keys))
 	for i, k := range keys {
 		v, err := in.reqStr(k)
@@ -67,7 +72,7 @@ func (in mcpInput) reqStrs(keys ...string) ([]string, error) {
 }
 
 // head reads one required field followed by optional fields.
-func (in mcpInput) head(req string, opts ...string) ([]string, error) {
+func (in Input) head(req string, opts ...string) ([]string, error) {
 	first, err := in.reqStr(req)
 	if err != nil {
 		return nil, err
@@ -80,7 +85,7 @@ func (in mcpInput) head(req string, opts ...string) ([]string, error) {
 }
 
 // optStr reads one string field with presence: nil when absent or empty.
-func (in mcpInput) optStr(key string) (*string, error) {
+func (in Input) optStr(key string) (*string, error) {
 	s, err := in.str(key)
 	if err != nil || s == "" {
 		return nil, err
@@ -90,7 +95,7 @@ func (in mcpInput) optStr(key string) (*string, error) {
 
 // presentStr reads one string field with presence: nil only when the key is
 // absent. An explicit "" clears the field it patches.
-func (in mcpInput) presentStr(key string) (*string, error) {
+func (in Input) presentStr(key string) (*string, error) {
 	if _, ok := in[key]; !ok {
 		return nil, nil
 	}
@@ -102,7 +107,7 @@ func (in mcpInput) presentStr(key string) (*string, error) {
 }
 
 // num reads one optional integer field. ok is false when the field is absent.
-func (in mcpInput) num(key string) (n int, ok bool, err error) {
+func (in Input) num(key string) (n int, ok bool, err error) {
 	v, exists := in[key]
 	if !exists || v == nil {
 		return 0, false, nil
@@ -115,7 +120,7 @@ func (in mcpInput) num(key string) (n int, ok bool, err error) {
 }
 
 // flag reads one optional boolean field. An absent field reads as false.
-func (in mcpInput) flag(key string) (bool, error) {
+func (in Input) flag(key string) (bool, error) {
 	v, ok := in[key]
 	if !ok || v == nil {
 		return false, nil
@@ -128,7 +133,7 @@ func (in mcpInput) flag(key string) (bool, error) {
 }
 
 // optBool reads one boolean field with presence: nil when the field is absent.
-func (in mcpInput) optBool(key string) (*bool, error) {
+func (in Input) optBool(key string) (*bool, error) {
 	v, exists := in[key]
 	if !exists || v == nil {
 		return nil, nil
@@ -141,7 +146,7 @@ func (in mcpInput) optBool(key string) (*bool, error) {
 }
 
 // obj reads one object field: nil when the field is absent.
-func (in mcpInput) obj(key string) (map[string]any, error) {
+func (in Input) obj(key string) (map[string]any, error) {
 	v, ok := in[key]
 	if !ok || v == nil {
 		return nil, nil
@@ -154,7 +159,7 @@ func (in mcpInput) obj(key string) (map[string]any, error) {
 }
 
 // strMap reads one string-to-string object field: nil when the field is absent.
-func (in mcpInput) strMap(key string) (map[string]string, error) {
+func (in Input) strMap(key string) (map[string]string, error) {
 	m, err := in.obj(key)
 	if err != nil || m == nil {
 		return nil, err
@@ -171,7 +176,7 @@ func (in mcpInput) strMap(key string) (map[string]string, error) {
 }
 
 // strList reads one array-of-strings field: nil when the field is absent.
-func (in mcpInput) strList(key string) ([]string, error) {
+func (in Input) strList(key string) ([]string, error) {
 	v, ok := in[key]
 	if !ok || v == nil {
 		return nil, nil
@@ -193,7 +198,7 @@ func (in mcpInput) strList(key string) ([]string, error) {
 
 // pick collects the named fields that are present, keeping their JSON types.
 // An empty result means the caller gave none of them.
-func (in mcpInput) pick(keys ...string) map[string]any {
+func (in Input) pick(keys ...string) map[string]any {
 	out := map[string]any{}
 	for _, k := range keys {
 		if v, ok := in[k]; ok && v != nil {
@@ -205,7 +210,7 @@ func (in mcpInput) pick(keys ...string) map[string]any {
 
 // scalarStr reads one field that may arrive as a string or a number. A large
 // cursor loses precision as a float64, so a string spelling is accepted.
-func (in mcpInput) scalarStr(key string) (string, error) {
+func (in Input) scalarStr(key string) (string, error) {
 	v, ok := in[key]
 	if !ok || v == nil {
 		return "", nil
@@ -223,10 +228,10 @@ func (in mcpInput) scalarStr(key string) (string, error) {
 }
 
 // value reads one field as a raw JSON value: nil when the field is absent.
-func (in mcpInput) value(key string) any { return in[key] }
+func (in Input) value(key string) any { return in[key] }
 
 // owner reads the file-plane owner selector: workspace (default), job, or skill.
-func (in mcpInput) owner() (string, error) {
+func (in Input) owner() (string, error) {
 	owner, err := in.str("owner")
 	if err != nil {
 		return "", err
@@ -242,7 +247,7 @@ func (in mcpInput) owner() (string, error) {
 }
 
 // buildFileList lists files for one owner: workspace, job, or skill.
-func (in mcpInput) buildFileList() (request.HTTPRequest, error) {
+func (in Input) buildFileList() (request.HTTPRequest, error) {
 	v, err := in.strs("workspace", "name", "prefix", "cursor")
 	if err != nil {
 		return request.HTTPRequest{}, err
@@ -279,7 +284,7 @@ func (in mcpInput) buildFileList() (request.HTTPRequest, error) {
 }
 
 // buildFileGet reads one file for one owner. stat returns JSON metadata only.
-func (in mcpInput) buildFileGet() (request.HTTPRequest, error) {
+func (in Input) buildFileGet() (request.HTTPRequest, error) {
 	v, err := in.strs("workspace", "name", "path")
 	if err != nil {
 		return request.HTTPRequest{}, err
@@ -315,7 +320,7 @@ func (in mcpInput) buildFileGet() (request.HTTPRequest, error) {
 }
 
 // buildFilePut writes one text file for one owner with optional If-Match.
-func (in mcpInput) buildFilePut() (request.HTTPRequest, error) {
+func (in Input) buildFilePut() (request.HTTPRequest, error) {
 	v, err := in.strs("workspace", "name", "path", "content", "if_match")
 	if err != nil {
 		return request.HTTPRequest{}, err
@@ -355,7 +360,7 @@ func (in mcpInput) buildFilePut() (request.HTTPRequest, error) {
 
 // decodeContent reads the content field. encoding "base64" carries binary; the
 // default "text" is passed through as written.
-func (in mcpInput) decodeContent(content string) ([]byte, error) {
+func (in Input) decodeContent(content string) ([]byte, error) {
 	encoding, err := in.str("encoding")
 	if err != nil {
 		return nil, err
@@ -375,7 +380,7 @@ func (in mcpInput) decodeContent(content string) ([]byte, error) {
 }
 
 // buildFileDelete removes one file for one owner with optional If-Match.
-func (in mcpInput) buildFileDelete() (request.HTTPRequest, error) {
+func (in Input) buildFileDelete() (request.HTTPRequest, error) {
 	v, err := in.strs("workspace", "name", "path", "if_match")
 	if err != nil {
 		return request.HTTPRequest{}, err
@@ -411,7 +416,7 @@ func (in mcpInput) buildFileDelete() (request.HTTPRequest, error) {
 }
 
 // jobSpec reads the authoring body of job.create and job.validate_text.
-func (in mcpInput) jobSpec() (request.JobSpec, error) {
+func (in Input) jobSpec() (request.JobSpec, error) {
 	v, err := in.strs("name", "workspace", "content", "prompt", "harness", "description")
 	if err != nil {
 		return request.JobSpec{}, err
@@ -428,7 +433,7 @@ func (in mcpInput) jobSpec() (request.JobSpec, error) {
 
 // runSpec reads the launch body of job.run. It is the one launch shape on
 // every surface.
-func (in mcpInput) runSpec() (request.RunSpec, error) {
+func (in Input) runSpec() (request.RunSpec, error) {
 	v, err := in.strs("name", "workspace", "prompt", "extra_prompt", "harness", "kind", "reason", "conversation_id", "idempotency_key")
 	if err != nil {
 		return request.RunSpec{}, err
@@ -452,76 +457,57 @@ func (in mcpInput) runSpec() (request.RunSpec, error) {
 	}, nil
 }
 
-// mcpAction maps one tool action onto /v1 routes.
-type mcpAction struct {
-	routes      []string                                                   // registered patterns this action can hit
-	sample      mcpInput                                                   // valid example input (docs, parity checks)
-	samples     []mcpInput                                                 // extra examples; with sample they cover every route
-	build       func(in mcpInput) (request.HTTPRequest, error)             // input → pure request
-	transform   func(in mcpInput, status int, body []byte) ([]byte, error) // optional response rewrite
-	destructive bool                                                       // sets the MCP destructiveHint annotation
-	bounded     bool                                                       // honors max_bytes; a long body arrives truncated
-	tail        bool                                                       // bounded from the end, not the start (logs)
+// Catalog is the tool → action table. One action per CLI verb.
+type Catalog map[string]map[string]Action
+
+// Action maps one tool action onto /v1 routes.
+type Action struct {
+	Routes      []string                                                // registered patterns this action can hit
+	Sample      Input                                                   // valid example input (docs, parity checks)
+	Samples     []Input                                                 // extra examples; with sample they cover every route
+	Build       func(in Input) (request.HTTPRequest, error)             // input → pure request
+	Transform   func(in Input, status int, body []byte) ([]byte, error) // optional response rewrite
+	Destructive bool                                                    // sets the MCP destructiveHint annotation
+	Bounded     bool                                                    // honors max_bytes; a long body arrives truncated
+	Tail        bool                                                    // bounded from the end, not the start (logs)
 }
 
-// defaultMaxBytes caps a bounded body when the caller names no max_bytes. A
-// whole log file in the model context is never the useful answer.
-const defaultMaxBytes = 64 << 10
-
 // bound marks one entry as size-bounded. tail keeps the end of the body.
-func bound(e mcpAction, tail bool) mcpAction {
-	e.bounded, e.tail = true, tail
+func bound(e Action, tail bool) Action {
+	e.Bounded, e.Tail = true, tail
 	return e
 }
 
-// clampBody cuts body to max_bytes and reports whether it cut anything.
-func (in mcpInput) clampBody(body []byte, tail bool) ([]byte, bool, error) {
-	max, ok, err := in.num("max_bytes")
-	if err != nil {
-		return nil, false, err
-	}
-	if !ok || max <= 0 {
-		max = defaultMaxBytes
-	}
-	if len(body) <= max {
-		return body, false, nil
-	}
-	if tail {
-		return body[len(body)-max:], true, nil
-	}
-	return body[:max], true, nil
-}
-
 // act starts one catalog entry on a single route.
-func act(route string, sample mcpInput, build func(mcpInput) (request.HTTPRequest, error)) mcpAction {
-	return mcpAction{routes: []string{route}, sample: sample, build: build}
+func act(route string, sample Input, build func(Input) (request.HTTPRequest, error)) Action {
+	return Action{Routes: []string{route}, Sample: sample, Build: build}
 }
 
 // actSamples is act with extra examples, for a field pair that only changes
 // the request when both halves are given.
-func actSamples(route string, sample mcpInput, extra []mcpInput, build func(mcpInput) (request.HTTPRequest, error)) mcpAction {
+func actSamples(route string, sample Input, extra []Input, build func(Input) (request.HTTPRequest, error)) Action {
 	e := act(route, sample, build)
-	e.samples = extra
+	e.Samples = extra
 	return e
 }
 
 // multiAct starts one entry that spans several patterns (owner-scoped routes).
-func multiAct(sample mcpInput, build func(mcpInput) (request.HTTPRequest, error), routes ...string) mcpAction {
-	return mcpAction{routes: routes, sample: sample, build: build}
+func multiAct(sample Input, build func(Input) (request.HTTPRequest, error), routes ...string) Action {
+	return Action{Routes: routes, Sample: sample, Build: build}
 }
 
 // del is act plus the destructive annotation.
-func del(route string, sample mcpInput, build func(mcpInput) (request.HTTPRequest, error)) mcpAction {
+func del(route string, sample Input, build func(Input) (request.HTTPRequest, error)) Action {
 	e := act(route, sample, build)
-	e.destructive = true
+	e.Destructive = true
 	return e
 }
 
 // fileEntry builds one file-plane entry. The owner-variant samples make the
 // parity check cover all three owner routes.
-func fileEntry(sample mcpInput, build func(mcpInput) (request.HTTPRequest, error), routes ...string) mcpAction {
+func fileEntry(sample Input, build func(Input) (request.HTTPRequest, error), routes ...string) Action {
 	e := multiAct(sample, build, routes...)
-	e.samples = []mcpInput{
+	e.Samples = []Input{
 		{"owner": "job", "name": "nightly-sync", "workspace": "ws1", "path": "notes/a.md", "prefix": "notes/", "content": "# hi\n"},
 		{"owner": "skill", "name": "deploy", "path": "notes/a.md", "prefix": "notes/", "content": "# hi\n"},
 	}
@@ -539,8 +525,8 @@ func mcpPost(path string) request.HTTPRequest {
 }
 
 // idGet adapts one required field to a GET path builder.
-func idGet(route, key, sampleVal string, path func(string) string) mcpAction {
-	return act(route, mcpInput{key: sampleVal}, func(in mcpInput) (request.HTTPRequest, error) {
+func idGet(route, key, sampleVal string, path func(string) string) Action {
+	return act(route, Input{key: sampleVal}, func(in Input) (request.HTTPRequest, error) {
 		id, err := in.reqStr(key)
 		if err != nil {
 			return request.HTTPRequest{}, err
@@ -550,8 +536,8 @@ func idGet(route, key, sampleVal string, path func(string) string) mcpAction {
 }
 
 // getReq adapts one required field to a GET request builder.
-func getReq(route, key, sampleVal string, build func(string) request.HTTPRequest) mcpAction {
-	return act(route, mcpInput{key: sampleVal}, func(in mcpInput) (request.HTTPRequest, error) {
+func getReq(route, key, sampleVal string, build func(string) request.HTTPRequest) Action {
+	return act(route, Input{key: sampleVal}, func(in Input) (request.HTTPRequest, error) {
 		id, err := in.reqStr(key)
 		if err != nil {
 			return request.HTTPRequest{}, err
@@ -561,8 +547,8 @@ func getReq(route, key, sampleVal string, build func(string) request.HTTPRequest
 }
 
 // idPost adapts one required field to a POST request builder.
-func idPost(route, key, sampleVal string, build func(string) request.HTTPRequest) mcpAction {
-	return act(route, mcpInput{key: sampleVal}, func(in mcpInput) (request.HTTPRequest, error) {
+func idPost(route, key, sampleVal string, build func(string) request.HTTPRequest) Action {
+	return act(route, Input{key: sampleVal}, func(in Input) (request.HTTPRequest, error) {
 		id, err := in.reqStr(key)
 		if err != nil {
 			return request.HTTPRequest{}, err
@@ -574,9 +560,9 @@ func idPost(route, key, sampleVal string, build func(string) request.HTTPRequest
 // bulkAct takes one id or an ids list and picks the matching route. The bulk
 // reply names the ids that failed, so a partial run is visible.
 func bulkAct(route, bulkRoute, sampleVal string, one func(string) request.HTTPRequest,
-	many func([]string) request.HTTPRequest) mcpAction {
-	e := actSamples(route, mcpInput{"id": sampleVal}, []mcpInput{{"ids": []any{sampleVal}}},
-		func(in mcpInput) (request.HTTPRequest, error) {
+	many func([]string) request.HTTPRequest) Action {
+	e := actSamples(route, Input{"id": sampleVal}, []Input{{"ids": []any{sampleVal}}},
+		func(in Input) (request.HTTPRequest, error) {
 			ids, err := in.strList("ids")
 			if err != nil {
 				return request.HTTPRequest{}, err
@@ -590,21 +576,21 @@ func bulkAct(route, bulkRoute, sampleVal string, one func(string) request.HTTPRe
 			}
 			return one(id), nil
 		})
-	e.routes = []string{route, bulkRoute}
+	e.Routes = []string{route, bulkRoute}
 	return e
 }
 
 // idDel is idPost plus the destructive annotation.
-func idDel(route, key, sampleVal string, build func(string) request.HTTPRequest) mcpAction {
+func idDel(route, key, sampleVal string, build func(string) request.HTTPRequest) Action {
 	e := idPost(route, key, sampleVal, build)
-	e.destructive = true
+	e.Destructive = true
 	return e
 }
 
 // confirmDel adapts one required field plus the confirm gate to a destructive
 // request builder. The API answers `confirm_required` without it.
-func confirmDel(route, key, sampleVal string, build func(string, bool) request.HTTPRequest) mcpAction {
-	e := act(route, mcpInput{key: sampleVal, "confirm": true}, func(in mcpInput) (request.HTTPRequest, error) {
+func confirmDel(route, key, sampleVal string, build func(string, bool) request.HTTPRequest) Action {
+	e := act(route, Input{key: sampleVal, "confirm": true}, func(in Input) (request.HTTPRequest, error) {
 		id, err := in.reqStr(key)
 		if err != nil {
 			return request.HTTPRequest{}, err
@@ -615,16 +601,16 @@ func confirmDel(route, key, sampleVal string, build func(string, bool) request.H
 		}
 		return build(id, confirm), nil
 	})
-	e.destructive = true
+	e.Destructive = true
 	return e
 }
 
-// newMCPCatalog builds the tool→action table. One action per CLI verb; every
+// NewCatalog builds the tool→action table. One action per CLI verb; every
 // entry names the /v1 pattern it hits so the parity test can check coverage.
-func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen // static action table, one literal per action
-	return map[string]map[string]mcpAction{
+func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one literal per action
+	return Catalog{
 		"run": {
-			"list": act("GET /v1/runs", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"list": act("GET /v1/runs", Input{}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("status", "job", "workspace", "kind", "cursor", "harness", "model")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -643,7 +629,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 					Q: f[2], Since: f[3], Until: f[4], Limit: limit,
 				}.Path()), nil
 			}),
-			"show": act("GET /v1/runs/{id}", mcpInput{"id": "01ABC"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"show": act("GET /v1/runs/{id}", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -655,7 +641,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				return mcpGet(request.BuildRunGetPath(id, wait)), nil
 			}),
 			"timeline": idGet("GET /v1/runs/{id}/timeline", "id", "01ABC", request.BuildRunTimelinePath),
-			"transcript": bound(act("GET /v1/runs/{id}/transcript", mcpInput{"id": "01ABC"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"transcript": bound(act("GET /v1/runs/{id}/transcript", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -667,23 +653,23 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				return request.BuildRunTranscript(id, raw), nil
 			}), true),
 			"logs": bound(idGet("GET /v1/runs/{id}/log", "id", "01ABC", func(id string) string { return request.BuildRunLogPath(id, false) }), true),
-			"kill": func() mcpAction {
+			"kill": func() Action {
 				e := bulkAct("POST /v1/runs/{id}/kill", "POST /v1/runs/kill", "01ABC",
 					request.BuildRunsKill, request.BuildRunsKillBulk)
-				e.destructive = true
+				e.Destructive = true
 				return e
 			}(),
 			"resume": idPost("POST /v1/runs/{id}/resume", "id", "01ABC", request.BuildRunResume),
 			"replay": idPost("POST /v1/runs/{id}/replay", "id", "01ABC", request.BuildRunReplay),
 			"retry":  idPost("POST /v1/runs/{id}/retry", "id", "01ABC", request.BuildRunsRetry),
-			"message": act("POST /v1/runs/{id}/message", mcpInput{"id": "01ABC", "text": "ship it"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"message": act("POST /v1/runs/{id}/message", Input{"id": "01ABC", "text": "ship it"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("id", "text")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildRunMessage(v[0], v[1]), nil
 			}),
-			"approve": act("POST /v1/runs/{id}/approve", mcpInput{"id": "01ABC", "decision": "allow"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"approve": act("POST /v1/runs/{id}/approve", Input{"id": "01ABC", "decision": "allow"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("id", "decision")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -694,7 +680,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildRunApprove(v[0], v[1], approvalID), nil
 			}),
-			"approvals": act("GET /v1/approvals", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"approvals": act("GET /v1/approvals", Input{}, func(in Input) (request.HTTPRequest, error) {
 				cursor, err := in.str("cursor")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -709,25 +695,25 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return mcpGet(request.BuildApprovalsListPath(cursor, limit, state)), nil
 			}),
-			"stats": act("GET /v1/stats/runs", mcpInput{"range": "mtd"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"stats": act("GET /v1/stats/runs", Input{"range": "mtd"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("workspace", "job", "range")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildRunsStats(v[0], v[1], v[2]), nil
 			}),
-			"agents": act("GET /v1/agents/state", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) { return request.BuildAgentsState(), nil }),
+			"agents": act("GET /v1/agents/state", Input{}, func(Input) (request.HTTPRequest, error) { return request.BuildAgentsState(), nil }),
 		},
 
 		"job": {
-			"list": act("GET /v1/jobs", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"list": act("GET /v1/jobs", Input{}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("workspace", "q", "harness", "active")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return mcpGet(request.BuildJobsListPath(v[0], v[1], v[2], v[3])), nil
 			}),
-			"show": act("GET /v1/jobs/{name}", mcpInput{"name": "nightly-sync"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"show": act("GET /v1/jobs/{name}", Input{"name": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -735,9 +721,9 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				return mcpGet(request.BuildJobGetPath(v[0], v[1])), nil
 			}),
 			"create": actSamples("POST /v1/jobs",
-				mcpInput{"name": "nightly-sync", "workspace": "ws1", "prompt": "Run the sync.", "cron": "0 3 * * *"},
-				[]mcpInput{{"name": "on-mail", "workspace": "ws1", "prompt": "Read it.", "event": "mail"}},
-				func(in mcpInput) (request.HTTPRequest, error) {
+				Input{"name": "nightly-sync", "workspace": "ws1", "prompt": "Run the sync.", "cron": "0 3 * * *"},
+				[]Input{{"name": "on-mail", "workspace": "ws1", "prompt": "Read it.", "event": "mail"}},
+				func(in Input) (request.HTTPRequest, error) {
 					spec, err := in.jobSpec()
 					if err != nil {
 						return request.HTTPRequest{}, err
@@ -753,16 +739,16 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 					return spec.Build(), nil
 				}),
 			"validate_text": actSamples("POST /v1/jobs/validate",
-				mcpInput{"prompt": "Run the sync.", "cron": "0 3 * * *"},
-				[]mcpInput{{"prompt": "Read it.", "event": "mail"}},
-				func(in mcpInput) (request.HTTPRequest, error) {
+				Input{"prompt": "Run the sync.", "cron": "0 3 * * *"},
+				[]Input{{"prompt": "Read it.", "event": "mail"}},
+				func(in Input) (request.HTTPRequest, error) {
 					spec, err := in.jobSpec()
 					if err != nil {
 						return request.HTTPRequest{}, err
 					}
 					return spec.BuildValidate(), nil
 				}),
-			"set": act("PUT /v1/jobs/{name}", mcpInput{"name": "nightly-sync", "content": "---\nharness: claude\n---\n\nRun the sync.\n"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"set": act("PUT /v1/jobs/{name}", Input{"name": "nightly-sync", "content": "---\nharness: claude\n---\n\nRun the sync.\n"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace", "content", "if_match")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -772,7 +758,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildJobPutMarkdown(v[0], v[1], v[2], v[3]), nil
 			}),
-			"patch": act("PATCH /v1/jobs/{name}", mcpInput{"name": "nightly-sync", "disabled": true}, func(in mcpInput) (request.HTTPRequest, error) {
+			"patch": act("PATCH /v1/jobs/{name}", Input{"name": "nightly-sync", "disabled": true}, func(in Input) (request.HTTPRequest, error) {
 				name, err := in.reqStr("name")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -791,7 +777,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildJobPatch(name, ws, patch, ifMatch), nil
 			}),
-			"delete": del("DELETE /v1/jobs/{name}", mcpInput{"name": "nightly-sync", "confirm": true}, func(in mcpInput) (request.HTTPRequest, error) {
+			"delete": del("DELETE /v1/jobs/{name}", Input{"name": "nightly-sync", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				name, err := in.reqStr("name")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -814,7 +800,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildJobDelete(name, ws, ifMatch, purge, confirm), nil
 			}),
-			"run": act("POST /v1/jobs/{name}/run", mcpInput{"name": "nightly-sync"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"run": act("POST /v1/jobs/{name}/run", Input{"name": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
 				spec, err := in.runSpec()
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -824,16 +810,16 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return spec.Build(), nil
 			}),
-			"pause":   act("POST /v1/jobs/{name}/pause", mcpInput{"name": "nightly-sync"}, jobPauseAction(true)),
-			"unpause": act("POST /v1/jobs/{name}/unpause", mcpInput{"name": "nightly-sync"}, jobPauseAction(false)),
-			"validate": act("POST /v1/jobs/{name}/validate", mcpInput{"name": "nightly-sync"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"pause":   act("POST /v1/jobs/{name}/pause", Input{"name": "nightly-sync"}, jobPauseAction(true)),
+			"unpause": act("POST /v1/jobs/{name}/unpause", Input{"name": "nightly-sync"}, jobPauseAction(false)),
+			"validate": act("POST /v1/jobs/{name}/validate", Input{"name": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return mcpPost(request.BuildJobValidatePath(v[0], v[1])), nil
 			}),
-			"schedules": act("GET /v1/schedules", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"schedules": act("GET /v1/schedules", Input{}, func(in Input) (request.HTTPRequest, error) {
 				limit, _, err := in.num("limit")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -844,14 +830,14 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return mcpGet(request.BuildSchedulesListPath(limit, v[0], v[1])), nil
 			}),
-			"memory_show": act("GET /v1/jobs/{name}/memory", mcpInput{"name": "nightly-sync"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"memory_show": act("GET /v1/jobs/{name}/memory", Input{"name": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return mcpGet(request.BuildJobMemoryGetPath(v[0], v[1])), nil
 			}),
-			"memory_set": act("PUT /v1/jobs/{name}/memory", mcpInput{"name": "nightly-sync", "content": "# MEMORY\n"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"memory_set": act("PUT /v1/jobs/{name}/memory", Input{"name": "nightly-sync", "content": "# MEMORY\n"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace", "content", "if_match")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -861,7 +847,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildJobMemoryPut(v[0], v[1], v[2], v[3]), nil
 			}),
-			"memory_add": act("POST /v1/jobs/{name}/memory/entries", mcpInput{"name": "nightly-sync", "text": "learned the API"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"memory_add": act("POST /v1/jobs/{name}/memory/entries", Input{"name": "nightly-sync", "text": "learned the API"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace", "date", "text", "if_match")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -871,7 +857,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildJobMemoryEntryAdd(v[0], v[1], v[2], v[3], v[4]), nil
 			}),
-			"memory_delete": del("DELETE /v1/jobs/{name}/memory/entries/{id}", mcpInput{"name": "nightly-sync", "entry_id": "01ABC"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"memory_delete": del("DELETE /v1/jobs/{name}/memory/entries/{id}", Input{"name": "nightly-sync", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStrs("name", "entry_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -882,7 +868,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildJobMemoryEntryDelete(id[0], v[0], id[1], v[1]), nil
 			}),
-			"memory_clear": del("DELETE /v1/jobs/{name}/memory", mcpInput{"name": "nightly-sync", "confirm": true}, func(in mcpInput) (request.HTTPRequest, error) {
+			"memory_clear": del("DELETE /v1/jobs/{name}/memory", Input{"name": "nightly-sync", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -900,7 +886,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"workspace": {
-			"list": act("GET /v1/workspaces", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"list": act("GET /v1/workspaces", Input{}, func(in Input) (request.HTTPRequest, error) {
 				limit, _, err := in.num("limit")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -908,7 +894,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				return mcpGet(request.BuildWorkspacesListPath(limit)), nil
 			}),
 			"show": idGet("GET /v1/workspaces/{id}", "id", "ws1", request.BuildWorkspaceGetPath),
-			"create": act("POST /v1/workspaces", mcpInput{"path": "/tmp/reports", "name": "reports"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"create": act("POST /v1/workspaces", Input{"path": "/tmp/reports", "name": "reports"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("path", "name")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -924,7 +910,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildWorkspaceAdd(v[0], v[1], mkdir), nil
 			}),
-			"patch": act("PATCH /v1/workspaces/{id}", mcpInput{"id": "ws1"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"patch": act("PATCH /v1/workspaces/{id}", Input{"id": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -943,14 +929,14 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"assistant": {
-			"show": act("GET /v1/workspaces/{id}/assistant", mcpInput{"workspace": "ws1"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"show": act("GET /v1/workspaces/{id}/assistant", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 				ws, err := in.reqStr("workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return mcpGet(request.BuildAssistantGetPath(ws)), nil
 			}),
-			"set": act("PUT /v1/workspaces/{id}/assistant", mcpInput{"workspace": "ws1", "content": "# TREBI\n"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"set": act("PUT /v1/workspaces/{id}/assistant", Input{"workspace": "ws1", "content": "# TREBI\n"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("workspace", "content", "if_match")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -960,7 +946,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildAssistantPut(v[0], v[1], v[2]), nil
 			}),
-			"patch": act("PATCH /v1/workspaces/{id}/assistant", mcpInput{"workspace": "ws1", "disabled": false}, func(in mcpInput) (request.HTTPRequest, error) {
+			"patch": act("PATCH /v1/workspaces/{id}/assistant", Input{"workspace": "ws1", "disabled": false}, func(in Input) (request.HTTPRequest, error) {
 				ws, err := in.reqStr("workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -975,14 +961,14 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildAssistantPatch(ws, disabled, ifMatch), nil
 			}),
-			"delete": del("DELETE /v1/workspaces/{id}/assistant", mcpInput{"workspace": "ws1"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"delete": del("DELETE /v1/workspaces/{id}/assistant", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("workspace", "if_match")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildAssistantDelete(v[0], v[1]), nil
 			}),
-			"wake": act("POST /v1/workspaces/{id}/assistant/wake", mcpInput{"workspace": "ws1"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"wake": act("POST /v1/workspaces/{id}/assistant/wake", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 				spec, err := in.runSpec()
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -992,7 +978,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return spec.BuildWake(), nil
 			}),
-			"say": act("POST /v1/workspaces/{id}/assistant/messages", mcpInput{"workspace": "ws1", "text": "status?"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"say": act("POST /v1/workspaces/{id}/assistant/messages", Input{"workspace": "ws1", "text": "status?"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("workspace", "text")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1010,14 +996,14 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 					IdempotencyKey: rest[2], WaitMS: wait,
 				}.Build(), nil
 			}),
-			"memory_show": act("GET /v1/workspaces/{id}/assistant/memory", mcpInput{"workspace": "ws1"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"memory_show": act("GET /v1/workspaces/{id}/assistant/memory", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 				ws, err := in.reqStr("workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return mcpGet(request.BuildAssistantMemoryGetPath(ws)), nil
 			}),
-			"memory_set": act("PUT /v1/workspaces/{id}/assistant/memory", mcpInput{"workspace": "ws1", "content": "# MEMORY\n"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"memory_set": act("PUT /v1/workspaces/{id}/assistant/memory", Input{"workspace": "ws1", "content": "# MEMORY\n"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("workspace", "content", "if_match")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1027,7 +1013,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildAssistantMemoryPut(v[0], v[1], v[2]), nil
 			}),
-			"memory_add": act("POST /v1/workspaces/{id}/assistant/memory/entries", mcpInput{"workspace": "ws1", "text": "learned the API"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"memory_add": act("POST /v1/workspaces/{id}/assistant/memory/entries", Input{"workspace": "ws1", "text": "learned the API"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("workspace", "date", "text", "if_match")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1037,7 +1023,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildAssistantMemoryEntryAdd(v[0], v[1], v[2], v[3]), nil
 			}),
-			"memory_delete": del("DELETE /v1/workspaces/{id}/assistant/memory/entries/{eid}", mcpInput{"workspace": "ws1", "entry_id": "01ABC"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"memory_delete": del("DELETE /v1/workspaces/{id}/assistant/memory/entries/{eid}", Input{"workspace": "ws1", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStrs("workspace", "entry_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1048,7 +1034,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildAssistantMemoryEntryDelete(id[0], id[1], ifMatch), nil
 			}),
-			"memory_clear": del("DELETE /v1/workspaces/{id}/assistant/memory", mcpInput{"workspace": "ws1", "confirm": true}, func(in mcpInput) (request.HTTPRequest, error) {
+			"memory_clear": del("DELETE /v1/workspaces/{id}/assistant/memory", Input{"workspace": "ws1", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("workspace", "if_match")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1062,37 +1048,37 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"file": {
-			"list": fileEntry(mcpInput{"owner": "workspace", "workspace": "ws1", "prefix": "reports/"}, mcpInput.buildFileList, "GET /v1/workspaces/{id}/files", "GET /v1/jobs/{name}/files", "GET /v1/skills/{name}/files"),
-			"get": func() mcpAction {
+			"list": fileEntry(Input{"owner": "workspace", "workspace": "ws1", "prefix": "reports/"}, Input.buildFileList, "GET /v1/workspaces/{id}/files", "GET /v1/jobs/{name}/files", "GET /v1/skills/{name}/files"),
+			"get": func() Action {
 				e := fileEntry(
-					mcpInput{"owner": "workspace", "workspace": "ws1", "path": "reports/a.md"},
-					mcpInput.buildFileGet,
+					Input{"owner": "workspace", "workspace": "ws1", "path": "reports/a.md"},
+					Input.buildFileGet,
 					"GET /v1/workspaces/{id}/files/{path...}", "GET /v1/jobs/{name}/files/{path...}", "GET /v1/skills/{name}/files/{path...}",
 				)
-				e.transform = fileGetTransform
+				e.Transform = fileGetTransform
 				return bound(e, false)
 			}(),
 			"put": fileEntry(
-				mcpInput{"owner": "workspace", "workspace": "ws1", "path": "reports/a.md", "content": "# hi\n"},
-				mcpInput.buildFilePut,
+				Input{"owner": "workspace", "workspace": "ws1", "path": "reports/a.md", "content": "# hi\n"},
+				Input.buildFilePut,
 				"PUT /v1/workspaces/{id}/files/{path...}", "PUT /v1/jobs/{name}/files/{path...}", "PUT /v1/skills/{name}/files/{path...}",
 			),
-			"delete": func() mcpAction {
+			"delete": func() Action {
 				e := fileEntry(
-					mcpInput{"owner": "workspace", "workspace": "ws1", "path": "reports/a.md", "confirm": true},
-					mcpInput.buildFileDelete,
+					Input{"owner": "workspace", "workspace": "ws1", "path": "reports/a.md", "confirm": true},
+					Input.buildFileDelete,
 					"DELETE /v1/workspaces/{id}/files/{path...}", "DELETE /v1/jobs/{name}/files/{path...}", "DELETE /v1/skills/{name}/files/{path...}",
 				)
-				e.destructive = true
+				e.Destructive = true
 				return e
 			}(),
 		},
 
 		"harness": {
-			"list": act("GET /v1/harnesses", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) {
+			"list": act("GET /v1/harnesses", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildHarnessesListPath()), nil
 			}),
-			"patch": act("PATCH /v1/harnesses/{name}", mcpInput{"name": "claude", "auth_mode": "auto"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"patch": act("PATCH /v1/harnesses/{name}", Input{"name": "claude", "auth_mode": "auto"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "auth_mode")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1100,7 +1086,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				return request.BuildHarnessPatch(v[0], v[1]), nil
 			}),
 			"ensure": idPost("POST /v1/harnesses/{name}/ensure", "name", "claude", request.BuildHarnessEnsure),
-			"auth": act("GET /v1/harnesses/{name}/auth", mcpInput{"name": "claude"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"auth": act("GET /v1/harnesses/{name}/auth", Input{"name": "claude"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1111,14 +1097,14 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildHarnessAuthGet(v[0], live), nil
 			}),
-			"login_start": act("POST /v1/harnesses/{name}/login", mcpInput{"name": "claude", "mode": "uri"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"login_start": act("POST /v1/harnesses/{name}/login", Input{"name": "claude", "mode": "uri"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "mode")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildHarnessLoginStart(v[0], v[1]), nil
 			}),
-			"login_token": act("POST /v1/harnesses/{name}/login", mcpInput{"name": "claude", "token": "sk-..."}, func(in mcpInput) (request.HTTPRequest, error) {
+			"login_token": act("POST /v1/harnesses/{name}/login", Input{"name": "claude", "token": "sk-..."}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "token")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1128,7 +1114,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildHarnessLoginToken(v[0], v[1]), nil
 			}),
-			"login_code": act("POST /v1/harnesses/{name}/login", mcpInput{"name": "claude", "code": "1234"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"login_code": act("POST /v1/harnesses/{name}/login", Input{"name": "claude", "code": "1234"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "code")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1140,7 +1126,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 			}),
 			"login_status": getReq("GET /v1/harnesses/{name}/login", "name", "claude", request.BuildHarnessLoginGet),
 			"login_cancel": idDel("DELETE /v1/harnesses/{name}/login", "name", "claude", request.BuildHarnessLoginCancel),
-			"logout": act("POST /v1/harnesses/{name}/logout", mcpInput{"name": "claude"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"logout": act("POST /v1/harnesses/{name}/logout", Input{"name": "claude"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "mode")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1154,7 +1140,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"connector": {
-			"list": act("GET /v1/connectors", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"list": act("GET /v1/connectors", Input{}, func(in Input) (request.HTTPRequest, error) {
 				limit, _, err := in.num("limit")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1162,7 +1148,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				return mcpGet(request.BuildConnectorsListPath(limit)), nil
 			}),
 			"show": idGet("GET /v1/connectors/{name}", "name", "mail", request.BuildConnectorGetPath),
-			"create": act("POST /v1/connectors", mcpInput{"definition": map[string]any{"name": "mail", "command": "fetch-mail.sh"}}, func(in mcpInput) (request.HTTPRequest, error) {
+			"create": act("POST /v1/connectors", Input{"definition": map[string]any{"name": "mail", "command": "fetch-mail.sh"}}, func(in Input) (request.HTTPRequest, error) {
 				def, err := in.obj("definition")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1172,7 +1158,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildConnectorCreate(def), nil
 			}),
-			"set": act("PUT /v1/connectors/{name}", mcpInput{"name": "mail", "command": "fetch-mail.sh"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"set": act("PUT /v1/connectors/{name}", Input{"name": "mail", "command": "fetch-mail.sh"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "command", "format", "type", "cwd")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1194,26 +1180,26 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 			"connect":    idPost("POST /v1/connectors/{name}/connect", "name", "mail", request.BuildConnectorConnect),
 			"disconnect": idPost("POST /v1/connectors/{name}/disconnect", "name", "mail", request.BuildConnectorDisconnect),
 			"restart":    idPost("POST /v1/connectors/{name}/restart", "name", "mail", request.BuildConnectorRestart),
-			"test": act("POST /v1/connectors/{name}/test", mcpInput{"name": "mail", "event": map[string]any{"kind": "mail"}}, func(in mcpInput) (request.HTTPRequest, error) {
+			"test": act("POST /v1/connectors/{name}/test", Input{"name": "mail", "event": map[string]any{"kind": "mail"}}, func(in Input) (request.HTTPRequest, error) {
 				name, err := in.reqStr("name")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildConnectorTest(name, in.value("event")), nil
 			}),
-			"logs": func() mcpAction {
-				e := act("GET /v1/connectors/{name}/logs", mcpInput{"name": "mail"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"logs": func() Action {
+				e := act("GET /v1/connectors/{name}/logs", Input{"name": "mail"}, func(in Input) (request.HTTPRequest, error) {
 					name, err := in.reqStr("name")
 					if err != nil {
 						return request.HTTPRequest{}, err
 					}
 					return mcpGet(request.BuildConnectorLogsPath(name, false)), nil // follow is not available over MCP
 				})
-				e.transform = logLinesTransform
+				e.Transform = logLinesTransform
 				return bound(e, true)
 			}(),
 			"cursor_show": getReq("GET /v1/connectors/{name}/cursor", "name", "mail", request.BuildConnectorCursorGet),
-			"cursor_set": act("PUT /v1/connectors/{name}/cursor", mcpInput{"name": "mail", "last_event_id": "42"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"cursor_set": act("PUT /v1/connectors/{name}/cursor", Input{"name": "mail", "last_event_id": "42"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "last_event_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1227,7 +1213,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"event": {
-			"list": act("GET /v1/events", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"list": act("GET /v1/events", Input{}, func(in Input) (request.HTTPRequest, error) {
 				cursor, err := in.str("cursor")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1244,14 +1230,14 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 			}),
 			"show":      getReq("GET /v1/events/{id}", "id", "01ABC", request.BuildEventGet),
 			"retrigger": idPost("POST /v1/events/{id}/retrigger", "id", "01ABC", request.BuildEventsRetrigger),
-			"rules_test": act("POST /v1/rules/test", mcpInput{"match": "kind = 'mail'", "event": map[string]any{"kind": "mail"}}, func(in mcpInput) (request.HTTPRequest, error) {
+			"rules_test": act("POST /v1/rules/test", Input{"match": "kind = 'mail'", "event": map[string]any{"kind": "mail"}}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("match", "extract")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildRulesTest(v[0], v[1], in.value("event")), nil
 			}),
-			"rules_fire": act("POST /v1/rules/fire", mcpInput{"connector": "mail", "job": "nightly-sync", "match": "kind = 'mail'"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"rules_fire": act("POST /v1/rules/fire", Input{"connector": "mail", "job": "nightly-sync", "match": "kind = 'mail'"}, func(in Input) (request.HTTPRequest, error) {
 				req, err := in.reqStrs("connector", "job", "match")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1269,7 +1255,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"queue": {
-			"list": act("GET /v1/queue", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"list": act("GET /v1/queue", Input{}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("status", "cursor")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1286,7 +1272,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"inbox": {
-			"list": act("GET /v1/inbox", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"list": act("GET /v1/inbox", Input{}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("status", "kind", "cursor")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1299,16 +1285,16 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 			}),
 			"show":     getReq("GET /v1/inbox/{id}", "id", "01ABC", request.BuildInboxGet),
 			"read":     idPost("POST /v1/inbox/{id}/read", "id", "01ABC", request.BuildInboxRead),
-			"read_all": act("POST /v1/inbox/read-all", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) { return request.BuildInboxReadAll(), nil }),
+			"read_all": act("POST /v1/inbox/read-all", Input{}, func(Input) (request.HTTPRequest, error) { return request.BuildInboxReadAll(), nil }),
 			"resolve":  idPost("POST /v1/inbox/{id}/resolve", "id", "01ABC", request.BuildInboxResolve),
-			"resolve_all": act("POST /v1/inbox/resolve-all", mcpInput{"kind": "approval"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"resolve_all": act("POST /v1/inbox/resolve-all", Input{"kind": "approval"}, func(in Input) (request.HTTPRequest, error) {
 				kind, err := in.str("kind")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildInboxResolveAll(kind), nil
 			}),
-			"alerts": act("GET /v1/alerts", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"alerts": act("GET /v1/alerts", Input{}, func(in Input) (request.HTTPRequest, error) {
 				since, err := in.str("since")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1322,7 +1308,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"conversation": {
-			"list": act("GET /v1/conversations", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"list": act("GET /v1/conversations", Input{}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("workspace", "channel", "cursor")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1334,7 +1320,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				return mcpGet(request.BuildConversationsListPath(v[0], v[1], v[2], limit)), nil
 			}),
 			"show": getReq("GET /v1/conversations/{id}", "id", "01ABC", request.BuildConversationGet),
-			"messages": act("GET /v1/conversations/{id}/messages", mcpInput{"id": "01ABC"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"messages": act("GET /v1/conversations/{id}/messages", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("id", "cursor")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1346,9 +1332,9 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				return mcpGet(request.BuildConversationMessagesPath(v[0], v[1], limit)), nil
 			}),
 			"create": actSamples("POST /v1/conversations",
-				mcpInput{"workspace": "ws1", "title": "sync check"},
-				[]mcpInput{{"workspace": "ws1", "channel_type": "cli", "channel_ref": "fritz"}},
-				func(in mcpInput) (request.HTTPRequest, error) {
+				Input{"workspace": "ws1", "title": "sync check"},
+				[]Input{{"workspace": "ws1", "channel_type": "cli", "channel_ref": "fritz"}},
+				func(in Input) (request.HTTPRequest, error) {
 					v, err := in.head("workspace", "title", "origin_channel", "channel_type", "channel_ref")
 					if err != nil {
 						return request.HTTPRequest{}, err
@@ -1358,7 +1344,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 					}
 					return request.BuildConversationCreate(v[0], v[1], v[2], v[3], v[4]), nil
 				}),
-			"patch": act("PATCH /v1/conversations/{id}", mcpInput{"id": "01ABC"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"patch": act("PATCH /v1/conversations/{id}", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1377,7 +1363,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildConversationPatch(id, title, summary, int64(revision)), nil
 			}),
-			"send": act("POST /v1/conversations/{id}/messages", mcpInput{"id": "01ABC", "text": "run the sync"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"send": act("POST /v1/conversations/{id}/messages", Input{"id": "01ABC", "text": "run the sync"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("id", "text", "channel_type", "channel_ref", "idempotency_key")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1387,14 +1373,14 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildConversationSend(v[0], v[1], v[2], v[3], v[4]), nil
 			}),
-			"pointer_show": act("GET /v1/channel-pointers/{type}/{ref}", mcpInput{"channel_type": "cli", "channel_ref": "fritz"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"pointer_show": act("GET /v1/channel-pointers/{type}/{ref}", Input{"channel_type": "cli", "channel_ref": "fritz"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("channel_type", "channel_ref")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildPointerGet(v[0], v[1]), nil
 			}),
-			"pointer_set": act("PUT /v1/channel-pointers/{type}/{ref}", mcpInput{"channel_type": "cli", "channel_ref": "fritz", "conversation_id": "01ABC"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"pointer_set": act("PUT /v1/channel-pointers/{type}/{ref}", Input{"channel_type": "cli", "channel_ref": "fritz", "conversation_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("channel_type", "channel_ref", "conversation_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1404,7 +1390,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"skill": {
-			"list": act("GET /v1/skills", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"list": act("GET /v1/skills", Input{}, func(in Input) (request.HTTPRequest, error) {
 				limit, _, err := in.num("limit")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1413,12 +1399,12 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 			}),
 			"show": idGet("GET /v1/skills/{name}", "name", "deploy", request.BuildSkillGetPath),
 			"create": actSamples("POST /v1/skills",
-				mcpInput{"name": "deploy", "content": "# SKILL.md\n", "provenance": "local"},
-				[]mcpInput{
+				Input{"name": "deploy", "content": "# SKILL.md\n", "provenance": "local"},
+				[]Input{
 					{"name": "deploy", "source_git": "https://example.com/deploy.git"},
 					{"name": "deploy", "source_folder": "/tmp/deploy"},
 				},
-				func(in mcpInput) (request.HTTPRequest, error) {
+				func(in Input) (request.HTTPRequest, error) {
 					v, err := in.head("name", "content", "provenance", "source_git", "source_folder")
 					if err != nil {
 						return request.HTTPRequest{}, err
@@ -1432,7 +1418,7 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 					}
 					return spec.Build(), nil
 				}),
-			"set": act("PUT /v1/skills/{name}", mcpInput{"name": "deploy", "content": "# SKILL.md\n"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"set": act("PUT /v1/skills/{name}", Input{"name": "deploy", "content": "# SKILL.md\n"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "content", "if_match")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1451,17 +1437,17 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"secret": {
-			"list": act("GET /v1/secrets", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"list": act("GET /v1/secrets", Input{}, func(in Input) (request.HTTPRequest, error) {
 				limit, _, err := in.num("limit")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return mcpGet(request.BuildSecretsListPath(limit)), nil
 			}),
-			// value_file is read by the local `trebi mcp serve` bridge, which
-			// replaces it with value. It keeps the secret out of the client
-			// transcript, the way the CLI --from-file does.
-			"set": act("PUT /v1/secrets/{name}", mcpInput{"name": "API_KEY", "value": "s3cr3t", "value_file": "./api-key.txt"}, func(in mcpInput) (request.HTTPRequest, error) {
+			// value_file is resolved before dispatch (native registry and the
+			// CLI `trebi mcp serve` bridge share ResolveValueFile). It keeps
+			// the secret out of the client transcript, the way --from-file does.
+			"set": act("PUT /v1/secrets/{name}", Input{"name": "API_KEY", "value": "s3cr3t", "value_file": "./api-key.txt"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "value")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1475,8 +1461,8 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 		},
 
 		"config": {
-			"show": act("GET /v1/config", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) { return request.BuildConfigGet(), nil }),
-			"set": act("PATCH /v1/config", mcpInput{"key": "daemon.log_level", "value": "debug"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"show": act("GET /v1/config", Input{}, func(Input) (request.HTTPRequest, error) { return request.BuildConfigGet(), nil }),
+			"set": act("PATCH /v1/config", Input{"key": "daemon.log_level", "value": "debug"}, func(in Input) (request.HTTPRequest, error) {
 				values, err := in.obj("values")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1494,50 +1480,57 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 				}
 				return request.BuildConfigSetValues(map[string]any{key: value}), nil
 			}),
-			"validate": act("GET /v1/config/validate", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) {
+			"unset": act("PATCH /v1/config", Input{"key": "assistant.api_key"}, func(in Input) (request.HTTPRequest, error) {
+				key, err := in.reqStr("key")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildConfigUnset(key), nil
+			}),
+			"validate": act("GET /v1/config/validate", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildConfigValidatePath()), nil
 			}),
 		},
 
 		"system": {
-			"health": act("GET /v1/system/health", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) {
+			"health": act("GET /v1/system/health", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildSystemHealthPath()), nil
 			}),
-			"doctor": act("GET /v1/system/doctor", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) {
+			"doctor": act("GET /v1/system/doctor", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildSystemDoctorPath()), nil
 			}),
 			"doctor_fix": idPost("POST /v1/system/doctor/{finding_id}/fix", "finding_id", "stale-api-json", request.BuildDoctorFix),
-			"logs": bound(act("GET /v1/system/logs", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) {
+			"logs": bound(act("GET /v1/system/logs", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildSystemLogsPath()), nil
 			}), true),
-			"version": act("GET /v1/system/update", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) {
+			"version": act("GET /v1/system/update", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildSystemUpdatePath()), nil
 			}),
-			"drain":   act("POST /v1/system/drain", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) { return request.BuildSystemDrain(), nil }),
-			"undrain": act("POST /v1/system/undrain", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) { return request.BuildSystemUndrain(), nil }),
-			"shutdown": del("POST /v1/system/shutdown", mcpInput{"confirm": true}, func(in mcpInput) (request.HTTPRequest, error) {
+			"drain":   act("POST /v1/system/drain", Input{}, func(Input) (request.HTTPRequest, error) { return request.BuildSystemDrain(), nil }),
+			"undrain": act("POST /v1/system/undrain", Input{}, func(Input) (request.HTTPRequest, error) { return request.BuildSystemUndrain(), nil }),
+			"shutdown": del("POST /v1/system/shutdown", Input{"confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				confirm, err := in.flag("confirm")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildServiceShutdown(confirm), nil
 			}),
-			"overview": act("GET /v1/system/overview", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) {
+			"overview": act("GET /v1/system/overview", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildSystemOverviewPath()), nil
 			}),
-			"cloud_status": act("GET /v1/cloud/status", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) {
+			"cloud_status": act("GET /v1/cloud/status", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildCloudStatusPath()), nil
 			}),
-			"cloud_link": act("POST /v1/cloud/link", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) { return request.BuildCloudLink(), nil }),
-			"cloud_unlink": del("DELETE /v1/cloud/link", mcpInput{"confirm": true}, func(in mcpInput) (request.HTTPRequest, error) {
+			"cloud_link": act("POST /v1/cloud/link", Input{}, func(Input) (request.HTTPRequest, error) { return request.BuildCloudLink(), nil }),
+			"cloud_unlink": del("DELETE /v1/cloud/link", Input{"confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				confirm, err := in.flag("confirm")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildCloudUnlink(confirm), nil
 			}),
-			"bus_poll": func() mcpAction {
-				e := act("GET /v1/stream", mcpInput{}, func(in mcpInput) (request.HTTPRequest, error) {
+			"bus_poll": func() Action {
+				e := act("GET /v1/stream", Input{}, func(in Input) (request.HTTPRequest, error) {
 					topics, err := in.str("topics")
 					if err != nil {
 						return request.HTTPRequest{}, err
@@ -1548,13 +1541,13 @@ func newMCPCatalog() map[string]map[string]mcpAction { //nolint:gocyclo,funlen /
 					}
 					return mcpGet(request.BuildStreamDumpPath(topics, cursor)), nil
 				})
-				e.transform = busPollTransform
+				e.Transform = busPollTransform
 				return e
 			}(),
-			"guides": act("GET /v1/system/guides", mcpInput{}, func(mcpInput) (request.HTTPRequest, error) {
+			"guides": act("GET /v1/system/guides", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildSystemGuidesPath()), nil
 			}),
-			"guide": act("GET /v1/system/guides/{topic}", mcpInput{"topic": "getting-started"}, func(in mcpInput) (request.HTTPRequest, error) {
+			"guide": act("GET /v1/system/guides/{topic}", Input{"topic": "getting-started"}, func(in Input) (request.HTTPRequest, error) {
 				topic, err := in.reqStr("topic")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1572,12 +1565,80 @@ var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, n
 }
 
 // jobPauseAction adapts the shared pause/unpause builder.
-func jobPauseAction(pause bool) func(mcpInput) (request.HTTPRequest, error) {
-	return func(in mcpInput) (request.HTTPRequest, error) {
+func jobPauseAction(pause bool) func(Input) (request.HTTPRequest, error) {
+	return func(in Input) (request.HTTPRequest, error) {
 		v, err := in.head("name", "workspace", "if_match")
 		if err != nil {
 			return request.HTTPRequest{}, err
 		}
 		return request.BuildJobPause(v[0], v[1], v[2], pause), nil
 	}
+}
+
+// busPollTransform parses one /v1/stream SSE dump into a JSON object:
+// {"events": […], "next_cursor": N}. The model carries next_cursor back on
+// the next poll.
+func busPollTransform(_ Input, _ int, body []byte) ([]byte, error) {
+	events := []map[string]any{}
+	next := int64(0)
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		data, ok := strings.CutPrefix(line, "data:")
+		if !ok {
+			continue // keepalive comments and blank separators
+		}
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(data)), &ev); err != nil {
+			return nil, fmt.Errorf("parse stream event: %w", err)
+		}
+		events = append(events, ev)
+		if seq, ok := ev["seq"].(float64); ok && int64(seq) > next {
+			next = int64(seq)
+		}
+	}
+	return json.Marshal(map[string]any{"events": events, "next_cursor": next})
+}
+
+// fileGetTransform wraps a non-text file body as base64 so a binary read is
+// not mangled into replacement characters. Text passes through unchanged.
+func fileGetTransform(_ Input, _ int, body []byte) ([]byte, error) {
+	if utf8.Valid(body) && !bytes.ContainsRune(body, 0) {
+		return body, nil
+	}
+	return json.Marshal(map[string]any{
+		"content":  base64.StdEncoding.EncodeToString(body),
+		"encoding": "base64",
+	})
+}
+
+// sseLines pulls the `data:` payloads out of one SSE dump, newest last.
+func sseLines(body []byte) []string {
+	out := []string{}
+	for _, line := range strings.Split(string(body), "\n") {
+		data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:")
+		if !ok {
+			continue // keepalive comments and blank separators
+		}
+		if text := strings.TrimSpace(data); text != "" && text != "{}" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+// logLinesTransform rewrites one SSE log dump into {"lines": [...]}. Without
+// it the model reads raw `data: {...}` text. The `lines` input bounds the
+// tail; absent it keeps everything the handler sent.
+func logLinesTransform(in Input, _ int, body []byte) ([]byte, error) {
+	lines := sseLines(body)
+	n, ok, err := in.num("lines")
+	if err != nil {
+		return nil, err
+	}
+	res := map[string]any{"lines": lines}
+	if ok && n > 0 && len(lines) > n {
+		res["lines"] = lines[len(lines)-n:]
+		res["truncated"] = true
+	}
+	return json.Marshal(res)
 }

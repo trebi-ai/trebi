@@ -322,6 +322,59 @@ func TestGrokConfigPrefs_PreservesHooks(t *testing.T) {
 	}
 }
 
+func TestGrokConfigPrefs_MergesDuplicateHarnessTable(t *testing.T) {
+	t.Parallel()
+	user := t.TempDir()
+	harnessBase := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(user, ".grok"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, ".grok", "config.toml"), []byte("permission_mode = \"always_allow\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	hGrok := filepath.Join(harnessBase, "grok")
+	if err := os.MkdirAll(hGrok, 0755); err != nil {
+		t.Fatal(err)
+	}
+	broken := "[compat.claude]\nhooks = false\n\n[harness]\ndisable_workspace_teleport = true\n\n[models]\ndefault = \"grok-4\"\n\n[harness]\ndisable_codebase_upload = true\n"
+	if err := os.WriteFile(filepath.Join(hGrok, "config.toml"), []byte(broken), 0644); err != nil {
+		t.Fatal(err)
+	}
+	roots := Roots{UserHome: user, HarnessBase: harnessBase}
+	if err := EnsureBridgesRoots("grok", &config.Config{}, roots); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(hGrok, "config.toml"))
+	s := string(b)
+	if n := strings.Count(s, "[harness]"); n != 1 {
+		t.Fatalf("duplicate [harness] tables: %d\n%s", n, s)
+	}
+	if !strings.Contains(s, "disable_workspace_teleport") {
+		t.Fatalf("teleport flag lost: %s", s)
+	}
+	if !strings.Contains(s, "disable_codebase_upload") {
+		t.Fatalf("upload flag lost: %s", s)
+	}
+	if !strings.Contains(s, "permission_mode") {
+		t.Fatalf("permission_mode not merged: %s", s)
+	}
+}
+
+func TestUpsertTOMLKey_InsertsIntoExistingSection(t *testing.T) {
+	t.Parallel()
+	in := "[harness]\ndisable_workspace_teleport = true\n\n[models]\ndefault = \"x\"\n"
+	got := upsertTOMLKey(in, "harness", "disable_codebase_upload", "true")
+	if strings.Count(got, "[harness]") != 1 {
+		t.Fatalf("duplicate table:\n%s", got)
+	}
+	if !strings.Contains(got, "disable_codebase_upload = true") {
+		t.Fatalf("missing key:\n%s", got)
+	}
+	if got := upsertTOMLKey(got, "harness", "disable_codebase_upload", "true"); strings.Count(got, "disable_codebase_upload") != 1 {
+		t.Fatalf("inserted twice:\n%s", got)
+	}
+}
+
 func dirSnapshot(root string) (string, error) {
 	var b strings.Builder
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
