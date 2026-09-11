@@ -320,6 +320,41 @@ func TestGrokConfigPrefs_PreservesHooks(t *testing.T) {
 	if !strings.Contains(s, "permission_mode") {
 		t.Fatalf("permission_mode not merged: %s", s)
 	}
+	if !strings.Contains(s, "[mcp_servers.trebi]") || !strings.Contains(s, `args = ["mcp", "serve"]`) {
+		t.Fatalf("trebi mcp not injected: %s", s)
+	}
+}
+
+func TestGrokConfigPrefs_LeavesExistingTrebiMCP(t *testing.T) {
+	t.Parallel()
+	user := t.TempDir()
+	harnessBase := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(user, ".grok"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	hGrok := filepath.Join(harnessBase, "grok")
+	if err := os.MkdirAll(hGrok, 0755); err != nil {
+		t.Fatal(err)
+	}
+	seed := "[compat.claude]\nhooks = false\n\n[harness]\ndisable_codebase_upload = true\n\n[mcp_servers.trebi]\nurl = \"http://127.0.0.1:9/mcp\"\n"
+	if err := os.WriteFile(filepath.Join(hGrok, "config.toml"), []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	roots := Roots{UserHome: user, HarnessBase: harnessBase}
+	if err := EnsureBridgesRoots("grok", &config.Config{}, roots); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(hGrok, "config.toml"))
+	s := string(b)
+	if n := strings.Count(s, "[mcp_servers.trebi]"); n != 1 {
+		t.Fatalf("duplicate trebi mcp tables: %d\n%s", n, s)
+	}
+	if !strings.Contains(s, `url = "http://127.0.0.1:9/mcp"`) {
+		t.Fatalf("existing trebi mcp replaced: %s", s)
+	}
+	if strings.Contains(s, `command = "trebi"`) {
+		t.Fatalf("stdio block appended over http: %s", s)
+	}
 }
 
 func TestGrokConfigPrefs_MergesDuplicateHarnessTable(t *testing.T) {

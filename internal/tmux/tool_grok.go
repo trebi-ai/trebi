@@ -263,6 +263,10 @@ trace_upload = false
 
 [harness]
 disable_codebase_upload = true
+
+[mcp_servers.trebi]
+command = "trebi"
+args = ["mcp", "serve"]
 `
 
 const grokHookFileName = "trebi.json"

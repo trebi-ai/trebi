@@ -509,6 +509,13 @@ func applyConfigTOMLPrefs(inherit bool, userPath, harnessPath, tool string) erro
 	return WriteFileIfChanged(harnessPath, []byte(out), 0644)
 }
 
+// grokTrebiMCPBlock is the isolated-GROK_HOME MCP server. Stdio (not HTTP)
+// so a daemon port change does not drop the tools mid-session.
+const grokTrebiMCPBlock = `[mcp_servers.trebi]
+command = "trebi"
+args = ["mcp", "serve"]
+`
+
 // ensureGrokConfigTOML keeps trebi-owned grok flags valid. Grok rewrites
 // [harness] on its own; appending a second table makes the file unparsable.
 func ensureGrokConfigTOML(out string) string {
@@ -516,7 +523,20 @@ func ensureGrokConfigTOML(out string) string {
 	if !strings.Contains(out, "hooks") {
 		out += "\n[compat.claude]\nhooks = false\n"
 	}
-	return upsertTOMLKey(out, "harness", "disable_codebase_upload", "true")
+	out = upsertTOMLKey(out, "harness", "disable_codebase_upload", "true")
+	return ensureGrokTrebiMCP(out)
+}
+
+// ensureGrokTrebiMCP adds the trebi MCP stdio bridge when missing. An existing
+// [mcp_servers.trebi] table (HTTP url, custom command) is left alone.
+func ensureGrokTrebiMCP(out string) string {
+	if strings.Contains(out, "[mcp_servers.trebi]") {
+		return out
+	}
+	if out != "" && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return out + "\n" + grokTrebiMCPBlock
 }
 
 // mergeDuplicateTOMLSection folds repeated [section] tables into the first.
