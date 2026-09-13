@@ -3,26 +3,40 @@
 # requires-python = ">=3.11"
 # dependencies = ["ruamel.yaml>=0.18"]
 # ///
-"""jobi → trebi migration (Workstream B/C/D).
+"""jobi → trebi migration.
 
-Default mode is DRY-RUN: prints the plan and never mutates source trees.
-Pass --apply only for real writes (cutover); this goal never runs --apply.
+Default is dry-run: prints the plan and never writes. Pass --apply to execute.
 
-Subcommands:
-  status, migrate, rewrite-jobs, verify, make-fixture, retire-jobi
+  uv run scripts/migrate-jobi-to-trebi.py status
+  uv run scripts/migrate-jobi-to-trebi.py migrate --shadow
+  uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --diff
+  uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --job receipts --target-workspace ellis
+  uv run scripts/migrate-jobi-to-trebi.py migrate --shadow --job receipts --target-workspace ellis
+
+--job limits file rewrite and DB copy to one job. --target-workspace is the
+trebi destination (id, name, or path). Incremental --job --apply copies into
+the target and leaves ~/.jobi files untouched. Full rewrite-jobs --apply
+without --job still rewrites in place (cutover).
+
+--jobi-dir, --trebi-dir, --job and --target-workspace are accepted on either
+side of the subcommand. make-fixture takes only its output directory.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
+import socket
 import sqlite3
 import sys
-from collections import defaultdict
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,8 +47,33 @@ from ruamel.yaml import YAML
 yaml = YAML()
 yaml.preserve_quotes = True
 yaml.default_flow_style = False
+yaml.width = 4096
 
-# ── paths ──────────────────────────────────────────────────────────────────
+KNOWN_HARNESSES = (
+    "claude",
+    "grok",
+    "codex",
+    "opencode",
+    "gemini",
+    "cursor",
+    "copilot",
+    "pi",
+    "fake",
+)
+SENTINEL_OLD = "JOBI_TASK_COMPLETE"
+SENTINEL_NEW = "TREBI_RUN_COMPLETE"
+TABLE_MAP = {
+    "tasks": "runs",
+    "task_segments": "run_segments",
+    "task_events": "run_events",
+    "event_queue": "event_queue",
+    "trigger_policy": "dispatch_policy",
+    "source_metrics": "connector_metrics",
+    "source_cursors": "connector_cursors",
+    "schedule_anchors": "schedules",
+}
+SECRET_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|AUTH)", re.I)
+EXPECTED_SCHEMA = 10
 
 
 def default_jobi_dir() -> Path:
@@ -45,21 +84,72 @@ def default_trebi_dir() -> Path:
     return Path(os.environ.get("TREBI_HOME", Path.home() / ".trebi"))
 
 
-# ── frontmatter helpers (Workstream B) ─────────────────────────────────────
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-LEGACY_TOP_KEYS = {"command", "schedule", "on", "env", "tool", "when"}
-SENTINEL_OLD = "JOBI_TASK_COMPLETE"
-SENTINEL_NEW = "TREBI_RUN_COMPLETE"
+
+# ── harness ────────────────────────────────────────────────────────────────
+
+
+def _token_harness(tok: str) -> str | None:
+    s = tok.strip().lower()
+    if not s:
+        return None
+    base = Path(s.split("@", 1)[0]).name
+    if base in KNOWN_HARNESSES:
+        return base
+    if "claude-code" in s or base.startswith("claude"):
+        return "claude"
+    for name in KNOWN_HARNESSES:
+        if name in base:
+            return name
+    return None
+
+
+def detect_harness(command: Any, tool: Any) -> tuple[str | None, list[str]]:
+    """Return (harness_name, notes). Never copies a full argv into harness."""
+    notes: list[str] = []
+    if tool is not None:
+        h = _token_harness(str(tool))
+        if h:
+            if str(tool).strip() not in (h, ""):
+                notes.append(f"tool {tool!r} → harness {h}")
+            return h, notes
+        notes.append(f"unrecognized tool: {tool!r}")
+
+    if command is None or command == "":
+        return None, notes
+    if isinstance(command, list):
+        cmd = shlex.join(str(x) for x in command)
+    else:
+        cmd = str(command).strip()
+    h = _token_harness(cmd)
+    if h and cmd == h:
+        return h, notes
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        tokens = cmd.split()
+    for tok in tokens:
+        h = _token_harness(tok)
+        if h:
+            notes.append(f"command {cmd!r} → harness {h} (argv not copied)")
+            return h, notes
+    low = cmd.lower()
+    if "claude-code" in low or "anthropic" in low:
+        notes.append(f"command {cmd!r} → harness claude (argv not copied)")
+        return "claude", notes
+    notes.append(f"could not map command to a harness name: {cmd!r}")
+    return None, notes
+
+
+# ── frontmatter ────────────────────────────────────────────────────────────
 
 
 def split_frontmatter(text: str) -> tuple[str | None, str, str]:
-    """Return (fm_body, opening, rest) or (None, '', text) if no FM."""
     if not text.startswith("---"):
         return None, "", text
     lines = text.splitlines(keepends=True)
-    if not lines:
-        return None, "", text
-    # find closing ---
     end = None
     for i in range(1, len(lines)):
         if lines[i].strip() == "---":
@@ -98,37 +188,36 @@ def _schedule_entry(item: str, top_when: Any) -> dict[str, Any]:
 
 
 def rewrite_frontmatter_inplace(data: Any, report: list[str]) -> None:
-    """Mutate a ruamel CommentedMap in place (preserves comments on kept keys)."""
     if not isinstance(data, dict):
         return
 
-    # harness: rename command → harness
+    command = data.get("command")
+    tool = data.get("tool")
+    harness, notes = detect_harness(command, tool)
+    report.extend(notes)
+    if harness:
+        data["harness"] = harness
+    elif "harness" not in data:
+        report.append("no harness resolved — job will use defaults.command")
+
     if "command" in data:
-        data["harness"] = data.pop("command")
+        del data["command"]
     if "tool" in data:
-        report.append(f"dead key tool: {data['tool']!r} — reported, not auto-written (M22)")
-        # leave tool in place for human decision? M22 says never auto-written — drop from output
-        # but report only; remove so parse is clean after rewrite
         del data["tool"]
 
-    # env: string → envset; map stays as env
     if "env" in data and isinstance(data["env"], str):
         data["envset"] = data.pop("env")
 
-    # session.timeout → idle_timeout (mutate nested map in place)
     sess = data.get("session")
     if isinstance(sess, dict) and "timeout" in sess:
         sess["idle_timeout"] = sess.pop("timeout")
 
-    # agent_context → assistant_context
     if "agent_context" in data:
         data["assistant_context"] = data.pop("agent_context")
 
-    # memory string → true
     if "memory" in data and isinstance(data["memory"], str) and data["memory"].strip():
         data["memory"] = True
 
-    # Build triggers from schedule/on unless already canonical
     if "triggers" not in data or not isinstance(data.get("triggers"), list):
         triggers: list[Any] = []
         top_when = data.get("when")
@@ -160,6 +249,7 @@ def rewrite_frontmatter_inplace(data: Any, report: list[str]) -> None:
                     "typing_max",
                     "followup_prompt",
                     "allowlist",
+                    "when",
                 ):
                     if k in on:
                         entry[k] = on[k]
@@ -171,14 +261,12 @@ def rewrite_frontmatter_inplace(data: Any, report: list[str]) -> None:
                 "top-level when: with no schedule — manual-only gate; needs human decision (B25)"
             )
 
-    # drop legacy keys after conversion
     for k in ("schedule", "on", "when", "command"):
         if k in data:
             del data[k]
 
 
 def rewrite_frontmatter_map(data: dict[str, Any], report: list[str]) -> dict[str, Any]:
-    """Pure dict conversion (tests / agents merge). Mutates a copy via inplace logic."""
     from copy import deepcopy
 
     out = deepcopy(data)
@@ -199,7 +287,6 @@ def dump_frontmatter(data: Any, body: str) -> str:
 
 
 def rewrite_job_text(text: str, report: list[str], *, rewrite_sentinel: bool = True) -> tuple[str, bool]:
-    """Return (new_text, changed). Comment-preserving via ruamel round-trip on the FM block."""
     fm_raw, _full, body = split_frontmatter(text)
     if fm_raw is None:
         new_body = body
@@ -209,7 +296,6 @@ def rewrite_job_text(text: str, report: list[str], *, rewrite_sentinel: bool = T
             changed = new_body != body
         return new_body if changed else text, changed
 
-    # Load with ruamel → CommentedMap keeps key/value comments for keys we keep.
     data = yaml.load(fm_raw) if fm_raw.strip() else {}
     if not isinstance(data, dict):
         data = {}
@@ -220,74 +306,200 @@ def rewrite_job_text(text: str, report: list[str], *, rewrite_sentinel: bool = T
     new_text = dump_frontmatter(data, new_body)
     return new_text, new_text != text
 
-# ── DB inventory / mapping (Workstream C) ──────────────────────────────────
 
-TABLE_MAP = {
-    "tasks": "runs",
-    "task_segments": "run_segments",
-    "task_events": "run_events",
-    "event_queue": "event_queue",
-    "trigger_policy": "dispatch_policy",
-    "source_metrics": "connector_metrics",
-    "source_cursors": "connector_cursors",
-    "schedule_anchors": "schedules",
-}
+# ── config / connectors (current trebi shapes) ─────────────────────────────
 
 
-@dataclass
-class PhasePlan:
-    name: str
-    action: str
-    counts: dict[str, int] = field(default_factory=dict)
-    notes: list[str] = field(default_factory=list)
+def command_to_string(cmd: Any) -> str:
+    if cmd is None:
+        return ""
+    if isinstance(cmd, str):
+        return cmd
+    if isinstance(cmd, list):
+        return shlex.join(str(x) for x in cmd)
+    return str(cmd)
 
 
-@dataclass
-class MigrationPlan:
-    jobi_dir: Path
-    trebi_dir: Path
-    mode: str  # shadow | final
-    phases: list[PhasePlan] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    workspace_map: dict[str, str] = field(default_factory=dict)  # path → id
+def convert_source_entry(src: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if src.get("name"):
+        out["name"] = src["name"]
+    out["type"] = src.get("type") or "stream"
+    out["command"] = command_to_string(src.get("command"))
+    if src.get("format"):
+        out["format"] = src["format"]
+    if src.get("cwd"):
+        out["cwd"] = src["cwd"]
+    if src.get("env"):
+        out["env"] = src["env"]
+    if src.get("facets"):
+        out["facets"] = src["facets"]
+    # Preserve jobi-only fields so they are not silently dropped from disk.
+    # Current trebi Definition ignores them on load.
+    for k in ("cursor", "catchup", "restart"):
+        if k not in src:
+            continue
+        val = src[k]
+        if k == "catchup" and isinstance(val, dict) and "command" in val:
+            val = dict(val)
+            val["command"] = command_to_string(val.get("command"))
+        out[k] = val
+    return out
 
-    def render(self) -> str:
-        lines = [
-            f"# Migration plan ({self.mode}) — DRY RUN",
-            f"jobi:  {self.jobi_dir}",
-            f"trebi: {self.trebi_dir}",
-            f"generated: {datetime.now(timezone.utc).isoformat()}",
-            "",
-            "## Phases",
-        ]
-        for p in self.phases:
-            lines.append(f"### {p.name}")
-            lines.append(f"- action: {p.action}")
-            for k, v in p.counts.items():
-                lines.append(f"- {k}: {v}")
-            for n in p.notes:
-                lines.append(f"- note: {n}")
-            lines.append("")
-        if self.workspace_map:
-            lines.append("## Workspace id map (minted at apply)")
-            for path, wid in self.workspace_map.items():
-                lines.append(f"- {wid} ← {path}")
-            lines.append("")
-        if self.warnings:
-            lines.append("## Warnings")
-            for w in self.warnings:
-                lines.append(f"- {w}")
-        lines.append("")
-        lines.append("No files written (dry-run default). Pass --apply to execute.")
-        return "\n".join(lines)
+
+def convert_sources_yaml(raw_text: str) -> tuple[Any, list[str]]:
+    notes: list[str] = []
+    data = yaml.load(raw_text) or {}
+    entries: list[Any] = []
+    if isinstance(data, dict):
+        src = data.get("sources") or data.get("connectors") or []
+        if isinstance(src, list):
+            entries = src
+        elif isinstance(src, dict):
+            entries = [{"name": k, **(v if isinstance(v, dict) else {"command": v})} for k, v in src.items()]
+    elif isinstance(data, list):
+        entries = data
+    converted: list[dict[str, Any]] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            notes.append(f"skipped non-object source: {item!r}")
+            continue
+        conv = convert_source_entry(item)
+        if not conv.get("command"):
+            notes.append(f"source {conv.get('name', '?')}: empty command after conversion")
+        if "catchup" in conv or "cursor" in conv:
+            notes.append(
+                f"source {conv.get('name', '?')}: cursor/catchup preserved in YAML; "
+                "trebi Definition does not load them yet"
+            )
+        converted.append(conv)
+    notes.append(f"connectors: {len(converted)} (command lists joined for sh -c)")
+    return {"connectors": converted}, notes
+
+
+def envsets_secret_key_names(jobi_dir: Path) -> list[str]:
+    path = jobi_dir / "envsets.yaml"
+    if not path.exists():
+        return []
+    data = yaml.load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    if not isinstance(data, dict):
+        return []
+    flagged: list[str] = []
+    for set_name, kv in data.items():
+        if not isinstance(kv, dict):
+            continue
+        for k in kv:
+            if SECRET_KEY_RE.search(str(k)):
+                flagged.append(f"{set_name}.{k}")
+    return flagged
+
+
+# ── paths / matching ───────────────────────────────────────────────────────
+
+
+# ── daemon liveness ────────────────────────────────────────────────────────
+#
+# trebi has no unix socket: the daemon is an HTTP server on a loopback port
+# (internal/api/server.go, net.Listen("tcp", ...)). Liveness is an advisory
+# flock on daemon.lock (internal/home/lock_unix.go), with api.json holding the
+# url + bearer token. An earlier guard here tested for a daemon.sock that this
+# codebase never creates, so it never fired.
+
+
+def daemon_lock_held(trebi_dir: Path) -> tuple[bool, int | None]:
+    """True if another process holds the daemon.lock flock. Mirrors inspectDaemonLock."""
+    lock = trebi_dir / "daemon.lock"
+    if not lock.exists():
+        return False, None
+    try:
+        fh = open(lock, "r+")
+    except OSError:
+        return False, None
+    try:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Locked by the daemon. The pid is written inside the file.
+            try:
+                fh.seek(0)
+                return True, int(fh.read().strip() or 0) or None
+            except (OSError, ValueError):
+                return True, None
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        return False, None
+    finally:
+        fh.close()
+
+
+def daemon_http_alive(trebi_dir: Path, timeout: float = 2.0) -> bool:
+    """Probe GET /v1/system/health with the api.json token. Catches a daemon
+    started against this home from elsewhere, whose flock we cannot see."""
+    api = trebi_dir / "api.json"
+    if not api.exists():
+        return False
+    try:
+        cfg = json.loads(api.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    url = str(cfg.get("url") or "").rstrip("/")
+    token = str(cfg.get("token") or "")
+    if not url:
+        return False
+    req = urllib.request.Request(  # noqa: S310 - loopback url from local api.json
+        f"{url}/v1/system/health", headers={"Authorization": f"Bearer {token}"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        # 401/403 still proves something is listening and serving /v1.
+        return e.code in (401, 403)
+    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError):
+        return False
+
+
+def refuse_if_daemon_running(trebi_dir: Path, what: str) -> bool:
+    """Print why and return True when the daemon must be stopped first.
+
+    The daemon is the single writer: it owns the bus, the scheduler, and the
+    queue drainer. This script writes rows with raw SQL and emits no bus
+    events, so a live daemon could fire an imported schedule or claim an
+    imported queue row mid-import.
+    """
+    held, pid = daemon_lock_held(trebi_dir)
+    if held:
+        where = f" (pid {pid})" if pid else ""
+        print(
+            f"ERROR: trebid holds {trebi_dir / 'daemon.lock'}{where} — "
+            f"stop it before {what} (trebi service stop)",
+            file=sys.stderr,
+        )
+        return True
+    if daemon_http_alive(trebi_dir):
+        print(
+            f"ERROR: a trebid is answering /v1/system/health for {trebi_dir} — "
+            f"stop it before {what} (trebi service stop)",
+            file=sys.stderr,
+        )
+        return True
+    return False
 
 
 def open_jobi_ro(jobi_dir: Path) -> sqlite3.Connection | None:
     db = jobi_dir / "jobi.db"
     if not db.exists():
         return None
-    uri = f"file:{db}?mode=ro"
-    return sqlite3.connect(uri, uri=True)
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    # jobi rows can contain invalid UTF-8 in prompt_preview / event payloads.
+    conn.text_factory = lambda b: b.decode("utf-8", "replace") if isinstance(b, bytes) else b
+    return conn
+
+
+def open_trebi_ro(trebi_dir: Path) -> sqlite3.Connection | None:
+    db = trebi_dir / "trebi.db"
+    if not db.exists():
+        return None
+    return sqlite3.connect(f"file:{db}?mode=ro", uri=True)
 
 
 def table_count(conn: sqlite3.Connection, table: str) -> int:
@@ -303,7 +515,6 @@ def load_workspaces_yaml(jobi_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     data = yaml.load(path.read_text()) or {}
-    # jobi shape: workspaces: [{path, name?}] or list
     raw: list[Any] = []
     if isinstance(data, list):
         raw = data
@@ -313,7 +524,6 @@ def load_workspaces_yaml(jobi_dir: Path) -> list[dict[str, Any]]:
             raw = ws
         elif isinstance(ws, dict):
             raw = [{"name": k, "path": v} for k, v in ws.items()]
-    # Resolve relative paths against jobi_dir (portable fixtures use path: ws).
     out: list[dict[str, Any]] = []
     for w in raw:
         if isinstance(w, str):
@@ -338,49 +548,302 @@ def load_workspaces_yaml(jobi_dir: Path) -> list[dict[str, Any]]:
             out.append(w)
     return out
 
+
+def nested_agent_dirs(ws_path: Path) -> list[Path]:
+    agents = ws_path / "agents"
+    if not agents.is_dir():
+        return []
+    out: list[Path] = []
+    for p in sorted(agents.iterdir()):
+        if p.is_dir() and ((p / "AGENT.md").exists() or (p / "TREBI.md").exists()):
+            out.append(p)
+    return out
+
+
 def mint_ws_id(path: str) -> str:
     h = hashlib.sha256(path.encode()).hexdigest()[:8]
     return f"ws_{h}"
 
 
-def plan_migrate(jobi_dir: Path, trebi_dir: Path, mode: str) -> MigrationPlan:
-    plan = MigrationPlan(jobi_dir=jobi_dir, trebi_dir=trebi_dir, mode=mode)
+def workspace_paths_from_jobi(jobi_dir: Path) -> list[Path]:
+    out: list[Path] = []
+    for w in load_workspaces_yaml(jobi_dir):
+        p = w.get("path") or w.get("dir") if isinstance(w, dict) else w
+        if p:
+            out.append(Path(p))
+    return out
 
-    # preflight
-    pf = PhasePlan("preflight", "check jobi present, free space, latch")
+
+def source_workspace_for(path: Path, workspaces: list[Path]) -> Path | None:
+    pl = str(path.resolve())
+    best: Path | None = None
+    for ws in workspaces:
+        wpl = str(ws.resolve())
+        if pl.startswith(wpl.rstrip("/") + "/") or pl == wpl:
+            if best is None or len(wpl) > len(str(best)):
+                best = ws
+    return best
+
+
+def job_file_name(path: Path) -> str:
+    if path.name in ("JOB.md", "job.md"):
+        return path.parent.name
+    if path.name in ("AGENT.md", "TREBI.md", "SOUL.md"):
+        return path.parent.name
+    return path.stem
+
+
+def job_spec_matches(path: Path, spec: str, source_ws: Path | None) -> bool:
+    spec = spec.strip()
+    if not spec:
+        return True
+    if path.as_posix() == spec or str(path) == spec:
+        return True
+    name = job_file_name(path)
+    if name == spec:
+        return True
+    if spec.lower() == name.lower():
+        return True
+    posix = path.as_posix()
+    if posix.endswith("/" + spec) or posix.endswith("/" + spec + "/JOB.md"):
+        return True
+    if spec in posix:
+        return True
+    if source_ws:
+        try:
+            rel = path.resolve().relative_to(source_ws.resolve()).as_posix()
+            if rel == spec or rel.endswith("/" + spec) or spec in rel:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+@dataclass
+class TargetWorkspace:
+    id: str
+    name: str
+    path: Path
+    source: str
+
+
+def load_trebi_workspaces(trebi_dir: Path) -> list[TargetWorkspace]:
+    out: list[TargetWorkspace] = []
+    conn = open_trebi_ro(trebi_dir)
+    if conn:
+        try:
+            for rid, name, path in conn.execute("SELECT id, name, path FROM workspaces"):
+                out.append(TargetWorkspace(id=rid, name=name, path=Path(path), source="db"))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return out
+
+
+def resolve_target_workspace(trebi_dir: Path, spec: str | None) -> TargetWorkspace | None:
+    if not spec:
+        return None
+    spec = spec.strip()
+    registered = load_trebi_workspaces(trebi_dir)
+    for ws in registered:
+        if spec in (ws.id, ws.name) or Path(spec).resolve() == ws.path.resolve():
+            return ws
+    p = Path(spec).expanduser()
+    if p.exists() and p.is_dir():
+        ty = p / "trebi.yaml"
+        wid, name = mint_ws_id(str(p.resolve())), p.name
+        if ty.exists():
+            data = yaml.load(ty.read_text()) or {}
+            if isinstance(data, dict):
+                wid = str(data.get("id") or wid)
+                name = str(data.get("name") or name)
+        return TargetWorkspace(id=wid, name=name, path=p.resolve(), source="path")
+    # dry-run may point at a path that does not exist yet
+    return TargetWorkspace(id=mint_ws_id(spec), name=Path(spec).name, path=p, source="pending-path")
+
+
+# ── plan ───────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class PhasePlan:
+    name: str
+    action: str
+    counts: dict[str, int] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class MigrationPlan:
+    jobi_dir: Path
+    trebi_dir: Path
+    mode: str
+    job: str | None = None
+    target: TargetWorkspace | None = None
+    phases: list[PhasePlan] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    workspace_map: dict[str, str] = field(default_factory=dict)
+
+    def render(self) -> str:
+        lines = [
+            f"# Migration plan ({self.mode}) — DRY RUN",
+            f"jobi:  {self.jobi_dir}",
+            f"trebi: {self.trebi_dir}",
+            f"generated: {now_iso()}",
+        ]
+        if self.job:
+            lines.append(f"job filter: {self.job}")
+        if self.target:
+            lines.append(
+                f"target workspace: {self.target.name} ({self.target.id}) "
+                f"path={self.target.path} source={self.target.source}"
+            )
+        lines += ["", "## Phases"]
+        for p in self.phases:
+            lines.append(f"### {p.name}")
+            lines.append(f"- action: {p.action}")
+            for k, v in p.counts.items():
+                lines.append(f"- {k}: {v}")
+            for n in p.notes:
+                lines.append(f"- note: {n}")
+            lines.append("")
+        if self.workspace_map:
+            lines.append("## Workspace id map")
+            for path, wid in self.workspace_map.items():
+                lines.append(f"- {wid} ← {path}")
+            lines.append("")
+        if self.warnings:
+            lines.append("## Warnings")
+            for w in self.warnings:
+                lines.append(f"- {w}")
+        lines.append("")
+        lines.append("No files written (dry-run default). Pass --apply to execute.")
+        return "\n".join(lines)
+
+
+def is_junk_task(d: dict[str, Any]) -> bool:
+    return not d.get("started_at") and not d.get("workspace_path")
+
+
+def project_task_derivations(
+    conn: sqlite3.Connection, job_filter: str | None = None
+) -> dict[str, int]:
+    counts = {
+        "reason_set": 0,
+        "reason_null": 0,
+        "end_reason_set": 0,
+        "end_reason_null": 0,
+        "conversation_key_set": 0,
+        "dropped_junk": 0,
+        "will_insert": 0,
+        "filtered_out": 0,
+    }
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)")]
+    except sqlite3.Error:
+        return counts
+    for row in conn.execute("SELECT * FROM tasks"):
+        d = dict(zip(cols, row))
+        if job_filter and not _task_matches_job(d, job_filter):
+            counts["filtered_out"] += 1
+            continue
+        if is_junk_task(d):
+            counts["dropped_junk"] += 1
+            continue
+        counts["will_insert"] += 1
+        r = derive_reason(conn, d["id"], d.get("trigger_source"))
+        counts["reason_set" if r else "reason_null"] += 1
+        er = derive_end_reason(conn, d["id"])
+        counts["end_reason_set" if er else "end_reason_null"] += 1
+        if derive_conversation_key(d.get("trigger_vars_json")):
+            counts["conversation_key_set"] += 1
+    return counts
+
+
+def _task_matches_job(d: dict[str, Any], spec: str) -> bool:
+    spec = spec.strip()
+    name = str(d.get("job_name") or "")
+    if name == spec or name.lower() == spec.lower():
+        return True
+    jf = str(d.get("job_file") or "")
+    if spec in jf or jf.endswith("/" + spec + "/JOB.md"):
+        return True
+    return Path(jf).parent.name == spec if jf else False
+
+
+def plan_migrate(
+    jobi_dir: Path,
+    trebi_dir: Path,
+    mode: str,
+    *,
+    job: str | None = None,
+    target: TargetWorkspace | None = None,
+) -> MigrationPlan:
+    plan = MigrationPlan(
+        jobi_dir=jobi_dir, trebi_dir=trebi_dir, mode=mode, job=job, target=target
+    )
+
+    pf = PhasePlan("preflight", "check jobi present, schema, latch")
     pf.counts["jobi_db_exists"] = int((jobi_dir / "jobi.db").exists())
     pf.counts["trebi_dir_exists"] = int(trebi_dir.exists())
+    pf.counts["trebi_db_exists"] = int((trebi_dir / "trebi.db").exists())
+    tconn = open_trebi_ro(trebi_dir)
+    if tconn:
+        try:
+            ver = tconn.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0]
+            pf.counts["schema_version"] = int(ver)
+            if int(ver) < EXPECTED_SCHEMA:
+                plan.warnings.append(
+                    f"trebi schema {ver} < {EXPECTED_SCHEMA}; run `trebi service migrate-db`"
+                )
+        except sqlite3.Error:
+            plan.warnings.append("could not read trebi schema_migrations")
+        tconn.close()
+    if job:
+        pf.notes.append(f"job filter: {job} — skip harness/bin/logs copy")
     if mode == "final":
         pf.notes.append("final mode requires jobi daemon stopped (not checked in dry-run)")
+    if target:
+        pf.notes.append(f"rows remap to workspace {target.id} ({target.name})")
     plan.phases.append(pf)
 
-    # workspaces
-    ws_phase = PhasePlan("workspaces", "mint ids + registry rows; trebi.yaml via rewrite-jobs")
+    ws_phase = PhasePlan("workspaces", "mint ids + registry rows")
     workspaces = load_workspaces_yaml(jobi_dir)
     for w in workspaces:
-        if isinstance(w, str):
-            path = w
-            name = Path(w).name
-        else:
-            path = str(w.get("path") or w.get("dir") or "")
-            name = str(w.get("name") or Path(path).name)
+        path = str(w.get("path") or "")
+        name = str(w.get("name") or Path(path).name)
         if not path:
             continue
         plan.workspace_map[path] = mint_ws_id(path)
         ws_phase.notes.append(f"{name}: {path} → {plan.workspace_map[path]}")
+        for nested in nested_agent_dirs(Path(path)):
+            nid = mint_ws_id(str(nested))
+            plan.workspace_map[str(nested)] = nid
+            ws_phase.notes.append(f"  nested {nested.name}: {nested} → {nid}")
+    if target:
+        plan.workspace_map[str(target.path)] = target.id
+        ws_phase.notes.append(f"target override: {target.name} → {target.id}")
     ws_phase.counts["workspaces"] = len(plan.workspace_map)
-    # nested split note for multi-agent workspaces is report-only in dry-run
     plan.phases.append(ws_phase)
 
-    # config
-    cfg = PhasePlan("config", "map config.yaml + envsets → trebi config")
-    for name in ("config.yaml", "envsets.yaml", "sources.yaml"):
-        cfg.counts[name] = int((jobi_dir / name).exists())
-    cfg.notes.append("sources.yaml → connectors.yaml (same shape, top key connectors)")
-    cfg.notes.append("defaults.command → defaults.harness; session.timeout → idle_timeout")
+    cfg = PhasePlan("config", "copy config.yaml + envsets.yaml (no key renames)")
+    cfg.counts["config.yaml"] = int((jobi_dir / "config.yaml").exists())
+    cfg.counts["envsets.yaml"] = int((jobi_dir / "envsets.yaml").exists())
+    cfg.counts["sources.yaml"] = int((jobi_dir / "sources.yaml").exists())
+    cfg.notes.append("defaults.command and session.timeout stay (current trebi config)")
+    cfg.notes.append("envsets.yaml copied as envsets.yaml (not nested under config)")
+    flagged = envsets_secret_key_names(jobi_dir)
+    if flagged:
+        cfg.notes.append(f"secret-like envset keys (names only): {len(flagged)}")
+        plan.warnings.append(f"plaintext envsets keys: {', '.join(flagged)}")
+    if (jobi_dir / "sources.yaml").exists():
+        _, cnotes = convert_sources_yaml((jobi_dir / "sources.yaml").read_text())
+        cfg.notes.extend(cnotes)
+    if job:
+        cfg.notes.append("--job: config/connectors not copied on apply")
     plan.phases.append(cfg)
 
-    # DB phases
     conn = open_jobi_ro(jobi_dir)
     if conn is None:
         plan.warnings.append("jobi.db missing — DB phases empty")
@@ -388,270 +851,70 @@ def plan_migrate(jobi_dir: Path, trebi_dir: Path, mode: str) -> MigrationPlan:
         try:
             for src, dst in TABLE_MAP.items():
                 n = table_count(conn, src)
-                ph = PhasePlan(f"db-{dst}", f"copy {src} → {dst} with renames/derivations")
+                ph = PhasePlan(f"db-{dst}", f"copy {src} → {dst}")
                 ph.counts["source_rows"] = n
                 if src == "tasks":
-                    ph.notes.append("workspace_path → workspace_id; command → harness; agent→assistant")
-                    ph.notes.append("seconds → _ms (×1000)")
-                    # Project derivation counts (same logic as apply_tasks) for dry-run truth.
-                    proj = project_task_derivations(conn)
+                    proj = project_task_derivations(conn, job)
                     ph.counts.update(proj)
-                    ph.notes.append(
-                        "reason from launch event/segment else NULL (M13); "
-                        "end_reason from terminal task segment; "
-                        "conversation_key from trigger_vars_json"
-                    )
-                    # status breakdown
+                    ph.notes.append("workspace_path → workspace_id; command detected → harness name")
+                    ph.notes.append("seconds → _ms (×1000); reason NULL if no launch fact (M13)")
                     try:
-                        for st, c in conn.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status"):
+                        q = "SELECT status, COUNT(*) FROM tasks"
+                        params: tuple[Any, ...] = ()
+                        if job:
+                            q += " WHERE job_name = ? OR job_file LIKE ?"
+                            params = (job, f"%/{job}/%")
+                        q += " GROUP BY status"
+                        for st, c in conn.execute(q, params):
                             ph.counts[f"status_{st}"] = c
                     except sqlite3.Error:
                         pass
                 if src == "event_queue":
-                    ph.notes.append("source→connector; all statuses migrate incl. pending/blocked")
-                if src == "source_cursors":
-                    ph.notes.append("cursors cutover-critical; refuse apply if stored cursor fails copy")
+                    ph.notes.append("source→connector; all statuses migrate")
                 if src == "schedule_anchors":
-                    ph.notes.append("@every: seed last_fired_at = on-phase tick ≤ now (not raw anchor)")
+                    ph.notes.append("@every: seed schedules.last_fired_at from anchor_time")
+                if job:
+                    ph.notes.append("filtered by --job")
                 plan.phases.append(ph)
         finally:
             conn.close()
 
-    # file phases
-    for name, src_rel, dst_rel in (
-        ("harness-homes", "harness", "harness"),
-        ("bin-tree", "bin", "bin"),
-        ("logs", "logs", "logs"),
-    ):
-        src = jobi_dir / src_rel
-        ph = PhasePlan(name, f"copy {src} → {trebi_dir / dst_rel}")
-        if src.exists():
-            files = sum(1 for _ in src.rglob("*") if _.is_file())
-            ph.counts["files"] = files
-            ph.counts["bytes"] = sum(f.stat().st_size for f in src.rglob("*") if f.is_file())
-        else:
-            ph.counts["files"] = 0
-            ph.notes.append("source missing")
-        if mode == "shadow":
-            ph.notes.append("shadow: file phases need brief jobi bootout window")
-        plan.phases.append(ph)
+    if job:
+        plan.phases.append(
+            PhasePlan("files", "skipped for --job (harness/bin/logs are global)")
+        )
+    else:
+        for name, src_rel, dst_rel in (
+            ("harness-homes", "harness", "harness"),
+            ("bin-tree", "bin", "bin"),
+            ("logs", "logs", "logs"),
+        ):
+            src = jobi_dir / src_rel
+            ph = PhasePlan(name, f"copy {src} → {trebi_dir / dst_rel}")
+            if name == "logs":
+                ph.notes.append("logs/tasks → logs/runs; logs/sources → logs/connectors")
+                ph.notes.append("logs/jobi.log* → logs/imported-jobi/")
+            if src.exists():
+                files = sum(1 for _ in src.rglob("*") if _.is_file())
+                ph.counts["files"] = files
+                ph.counts["bytes"] = sum(f.stat().st_size for f in src.rglob("*") if f.is_file())
+            else:
+                ph.counts["files"] = 0
+                ph.notes.append("source missing")
+            plan.phases.append(ph)
 
-    plan.phases.append(PhasePlan("verify", "run §7.4 invariants (after apply)"))
+    plan.phases.append(PhasePlan("verify", "run invariants (after apply)"))
     return plan
 
 
-# ── rewrite-jobs ───────────────────────────────────────────────────────────
+# ── DB apply ───────────────────────────────────────────────────────────────
 
 
-def find_job_files(workspace: Path) -> list[Path]:
-    out: list[Path] = []
-    for root, dirs, files in os.walk(workspace):
-        # skip nested trebi.yaml workspaces' children? still list all for dry-run
-        dirs[:] = [d for d in dirs if d not in {".git", "node_modules", ".trebi"}]
-        for f in files:
-            if f in ("JOB.md", "AGENT.md", "SOUL.md", "TREBI.md") or f.endswith(".md") and f.upper() in {
-                "JOB.MD",
-                "AGENT.MD",
-            }:
-                if f in ("JOB.md", "AGENT.md", "SOUL.md", "TREBI.md"):
-                    out.append(Path(root) / f)
-    return out
-
-
-def plan_rewrite(
-    workspaces: list[Path],
-    *,
-    mirror_root: Path | None,
-    rewrite_sentinel: bool,
-) -> tuple[list[str], list[dict[str, Any]]]:
-    lines: list[str] = []
-    details: list[dict[str, Any]] = []
-    for ws in workspaces:
-        if not ws.exists():
-            lines.append(f"SKIP missing workspace {ws}")
-            continue
-        files = find_job_files(ws)
-        lines.append(f"workspace {ws}: {len(files)} def files")
-        for path in files:
-            report: list[str] = []
-            text = path.read_text(encoding="utf-8", errors="replace")
-            if path.name == "SOUL.md":
-                details.append({"path": str(path), "action": "merge-into-TREBI.md", "changed": True})
-                lines.append(f"  MERGE {path.relative_to(ws)} → TREBI.md ## Soul")
-                continue
-            if path.name == "AGENT.md":
-                details.append({"path": str(path), "action": "merge-into-TREBI.md + delete on apply", "changed": True})
-                lines.append(f"  MERGE {path.relative_to(ws)} → TREBI.md (delete on --apply)")
-                # still show frontmatter rewrite preview of agent alone
-                new_text, changed = rewrite_job_text(text, report, rewrite_sentinel=rewrite_sentinel)
-                for r in report:
-                    lines.append(f"    ! {r}")
-                continue
-            new_text, changed = rewrite_job_text(text, report, rewrite_sentinel=rewrite_sentinel)
-            action = "rewrite" if changed else "unchanged"
-            if mirror_root:
-                action = f"mirror→{mirror_root / ws.name / path.relative_to(ws)}"
-            details.append({"path": str(path), "action": action, "changed": changed})
-            rel = path.relative_to(ws)
-            mark = "*" if changed else " "
-            lines.append(f"  {mark} {rel} ({action})")
-            for r in report:
-                lines.append(f"    ! {r}")
-            if changed and os.environ.get("TREBI_MIGRATE_DIFF"):
-                lines.append("    --- old keys sample ---")
-                fm, _, _ = split_frontmatter(text)
-                if fm:
-                    keys = list(load_fm_map(fm).keys())
-                    lines.append(f"    old keys: {keys}")
-                fm2, _, _ = split_frontmatter(new_text)
-                if fm2:
-                    keys = list(load_fm_map(fm2).keys())
-                    lines.append(f"    new keys: {keys}")
-    return lines, details
-
-
-def cmd_status(args: argparse.Namespace) -> int:
-    jobi = Path(args.jobi_dir)
-    trebi = Path(args.trebi_dir)
-    print(f"jobi_dir:  {jobi} exists={jobi.exists()}")
-    print(f"trebi_dir: {trebi} exists={trebi.exists()}")
-    ws = load_workspaces_yaml(jobi)
-    print(f"workspaces.yaml entries: {len(ws)}")
-    for w in ws:
-        if isinstance(w, str):
-            print(f"  - {w}")
-        else:
-            print(f"  - {w.get('name', '?')}: {w.get('path') or w.get('dir')}")
-    conn = open_jobi_ro(jobi)
-    if conn:
-        print("jobi.db tables:")
-        for src, dst in TABLE_MAP.items():
-            n = table_count(conn, src)
-            print(f"  {src:20} {n:>8}  → {dst}")
-        conn.close()
-    else:
-        print("jobi.db: missing")
-    for name in ("config.yaml", "sources.yaml", "envsets.yaml", "harness", "bin", "logs"):
-        p = jobi / name
-        print(f"  artifact {name}: exists={p.exists()}")
-    return 0
-
-
-def cmd_migrate(args: argparse.Namespace) -> int:
-    mode = "shadow" if args.shadow else "final" if args.final else ""
-    if not mode:
-        print("ERROR: migrate requires exactly one of --shadow / --final", file=sys.stderr)
-        return 2
-    jobi = Path(args.jobi_dir)
-    trebi = Path(args.trebi_dir)
-    plan = plan_migrate(jobi, trebi, mode)
-    text = plan.render()
-    print(text)
-    if args.report:
-        Path(args.report).write_text(text)
-        print(f"\n(report written to {args.report})")
-    if not args.apply:
-        print("\nDry-run only. Re-run with --apply to execute.")
-        return 0
-    return apply_migrate(jobi, trebi, mode, plan)
-
-
-def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> int:
-    """Execute migration into trebi (copy-only; never writes jobi)."""
-    trebi.mkdir(parents=True, exist_ok=True)
-    # refuse if daemon sock answers
-    sock = trebi / "daemon.sock"
-    if sock.exists():
-        print("ERROR: trebi daemon.sock present — stop trebid before migrate --apply", file=sys.stderr)
-        return 2
-    # config files
-    mapping = {
-        "sources.yaml": "connectors.yaml",
-        "config.yaml": "config.yaml",
-    }
-    for src_name, dst_name in mapping.items():
-        src = jobi / src_name
-        if not src.exists():
-            continue
-        raw = src.read_text(encoding="utf-8", errors="replace")
-        if src_name == "sources.yaml":
-            raw = raw.replace("sources:", "connectors:", 1) if raw.lstrip().startswith("sources:") else raw
-        if src_name == "config.yaml":
-            raw = raw.replace("defaults:\n  command:", "defaults:\n  harness:")
-            raw = raw.replace("timeout:", "idle_timeout:")  # session.timeout
-        (trebi / dst_name).write_text(raw)
-        print(f"wrote {dst_name}")
-    # envsets → append into config if present
-    envsets = jobi / "envsets.yaml"
-    if envsets.exists():
-        cfg = trebi / "config.yaml"
-        extra = "\nenv_sets:\n" + "\n".join(
-            "  " + line if line.strip() else line for line in envsets.read_text().splitlines()
-        )
-        # crude: if envsets is a map at top level, nest under env_sets
-        data = yaml.load(envsets.read_text()) or {}
-        from io import StringIO
-        buf = StringIO()
-        yaml.dump({"env_sets": data}, buf)
-        existing = cfg.read_text() if cfg.exists() else ""
-        cfg.write_text(existing + "\n" + buf.getvalue())
-        print("merged envsets into config.yaml")
-    # harness/bin/logs copy
-    for name in ("harness", "bin", "logs"):
-        src = jobi / name
-        dst = trebi / name
-        if src.exists():
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst, symlinks=True)
-            print(f"copied {name}/")
-    # DB insert if trebi.db exists (schema owned by trebid)
-    tdb = trebi / "trebi.db"
-    jdb = jobi / "jobi.db"
-    if not jdb.exists():
-        print("no jobi.db — skip db phases")
-        return 0
-    if not tdb.exists():
-        print("WARNING: trebi.db missing — run `trebi service migrate-db` first; DB rows not inserted")
-        return 0
-    jconn = sqlite3.connect(f"file:{jdb}?mode=ro", uri=True)
-    tconn = sqlite3.connect(tdb)
-    try:
-        n = apply_tasks(jconn, tconn, plan.workspace_map)
-        print(f"inserted runs: {n}")
-        n = apply_timeline(jconn, tconn)
-        print(f"timeline segments+events copied")
-        n = apply_queue(jconn, tconn, plan.workspace_map)
-        print(f"queue rows: {n}")
-        apply_policy_cursors(jconn, tconn, plan.workspace_map)
-        print("policy + cursors + metrics copied")
-        # workspaces registry
-        now = datetime.now(timezone.utc).isoformat()
-        for path, wid in plan.workspace_map.items():
-            name = Path(path).name
-            tconn.execute(
-                "INSERT OR REPLACE INTO workspaces (id, name, path, git_enabled, orphaned, created_at, updated_at) VALUES (?,?,?,0,0,?,?)",
-                (wid, name, path if mode == "final" else str(trebi / "shadow-workspaces" / name), now, now),
-            )
-        tconn.commit()
-        # manifest
-        manifest = {
-            "mode": mode,
-            "workspace_map": plan.workspace_map,
-            "cutover_started_at": now if mode == "final" else None,
-        }
-        (trebi / "migration-manifest.json").write_text(json.dumps(manifest, indent=2))
-        print("wrote migration-manifest.json")
-    finally:
-        jconn.close()
-        tconn.close()
-    return 0
-
-
-def workspace_id_for(path: str, wmap: dict[str, str]) -> str:
+def workspace_id_for(path: str, wmap: dict[str, str], target_id: str | None = None) -> str:
+    if target_id:
+        return target_id
     if not path:
         return "imported-orphans"
-    # longest prefix, case-insensitive
     best = ""
     best_id = "imported-orphans"
     pl = path.lower()
@@ -664,7 +927,6 @@ def workspace_id_for(path: str, wmap: dict[str, str]) -> str:
 
 
 def derive_reason(jconn: sqlite3.Connection, task_id: str, trigger_source: str | None) -> str | None:
-    """M13: launch event/segment reason; else trigger→trigger; else NULL (never fabricate manual)."""
     try:
         row = jconn.execute(
             "SELECT detail_json FROM task_events WHERE task_id=? AND kind='launch' ORDER BY at LIMIT 1",
@@ -678,19 +940,17 @@ def derive_reason(jconn: sqlite3.Connection, task_id: str, trigger_source: str |
             except json.JSONDecodeError:
                 pass
         row = jconn.execute(
-            "SELECT reason FROM task_segments WHERE task_id=? AND layer='task' AND reason IS NOT NULL AND reason!='' ORDER BY started_at LIMIT 1",
+            "SELECT reason FROM task_segments WHERE task_id=? AND layer='task' "
+            "AND reason IS NOT NULL AND reason!='' ORDER BY started_at LIMIT 1",
             (task_id,),
         ).fetchone()
-        if row and row[0] and row[0] != "launch":
-            # launch segment reason is often 'launch' not RunReason — prefer trigger heuristic
-            pass
         if row and row[0] in ("manual", "schedule", "trigger", "when", "resume", "replay"):
             return row[0]
     except sqlite3.Error:
         pass
     if trigger_source:
         return "trigger"
-    return None  # M13: NULL for pre-timeline rows
+    return None
 
 
 def derive_end_reason(jconn: sqlite3.Connection, task_id: str) -> str | None:
@@ -704,10 +964,10 @@ def derive_end_reason(jconn: sqlite3.Connection, task_id: str) -> str | None:
         ).fetchone()
         if row and row[0]:
             return row[0]
-        # terminal segment may store end reason in reason column of the terminal state row
         row = jconn.execute(
             """SELECT reason FROM task_segments
-               WHERE task_id=? AND layer='task' AND state IN ('complete','failed','exited','skipped','timed_out','resumed')
+               WHERE task_id=? AND layer='task'
+                 AND state IN ('complete','failed','exited','skipped','timed_out','resumed')
                ORDER BY started_at DESC LIMIT 1""",
             (task_id,),
         ).fetchone()
@@ -730,62 +990,39 @@ def derive_conversation_key(trigger_vars_json: str | None) -> str | None:
     return None
 
 
-def project_task_derivations(conn: sqlite3.Connection) -> dict[str, int]:
-    """Dry-run projection of apply_tasks derivation outcomes."""
-    counts = {
-        "reason_set": 0,
-        "reason_null": 0,
-        "end_reason_set": 0,
-        "end_reason_null": 0,
-        "conversation_key_set": 0,
-        "dropped_junk": 0,
-        "will_insert": 0,
-    }
-    try:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)")]
-    except sqlite3.Error:
-        return counts
-    for row in conn.execute("SELECT * FROM tasks"):
-        d = dict(zip(cols, row))
-        if not d.get("started_at") and not d.get("workspace_path"):
-            counts["dropped_junk"] += 1
-            continue
-        counts["will_insert"] += 1
-        r = derive_reason(conn, d["id"], d.get("trigger_source"))
-        if r:
-            counts["reason_set"] += 1
-        else:
-            counts["reason_null"] += 1
-        er = derive_end_reason(conn, d["id"])
-        if er:
-            counts["end_reason_set"] += 1
-        else:
-            counts["end_reason_null"] += 1
-        if derive_conversation_key(d.get("trigger_vars_json")):
-            counts["conversation_key_set"] += 1
-    return counts
-
-
-def apply_tasks(jconn: sqlite3.Connection, tconn: sqlite3.Connection, wmap: dict[str, str]) -> int:
+def apply_tasks(
+    jconn: sqlite3.Connection,
+    tconn: sqlite3.Connection,
+    wmap: dict[str, str],
+    *,
+    job_filter: str | None = None,
+    target_id: str | None = None,
+) -> tuple[int, set[str]]:
     cols = [r[1] for r in jconn.execute("PRAGMA table_info(tasks)")]
-    rows = jconn.execute("SELECT * FROM tasks").fetchall()
+    ids: set[str] = set()
     n = 0
-    for row in rows:
+    for row in jconn.execute("SELECT * FROM tasks"):
         d = dict(zip(cols, row))
-        if not d.get("started_at") and not d.get("workspace_path"):
-            continue  # junk
-        # Prefer job_file longest-prefix (M23); fallback workspace_path
+        if job_filter and not _task_matches_job(d, job_filter):
+            continue
+        if is_junk_task(d):
+            continue
         path_for_ws = d.get("job_file") or d.get("workspace_path") or ""
-        wid = workspace_id_for(path_for_ws, wmap)
+        wid = workspace_id_for(path_for_ws, wmap, target_id)
         kind = d.get("kind") or "job"
         if kind == "agent":
             kind = "assistant"
-        # durations
-        def ms(sec_key, default=0):
+        harness, _notes = detect_harness(d.get("command"), None)
+        if not harness:
+            harness = d.get("command") or "claude"
+            if harness and " " in str(harness):
+                harness = "claude"
+
+        def ms(sec_key: str, default: int = 0) -> int:
             v = d.get(sec_key)
             if v is None:
                 return default
-            return int(v) * 1000 if int(v) > 0 else int(v)  # preserve 0 and -1
+            return int(v) * 1000 if int(v) > 0 else int(v)
 
         nudge = d.get("nudge_seconds")
         if nudge is None:
@@ -794,13 +1031,10 @@ def apply_tasks(jconn: sqlite3.Connection, tconn: sqlite3.Connection, wmap: dict
             nudge_ms = int(nudge) if int(nudge) < 0 else int(nudge) * 1000
         idle = d.get("timeout_seconds") or 0
         idle_ms = int(idle) * 1000 if idle else 0
-        max_ms = ms("max_duration_seconds")
-        keep_ms = ms("keep_alive_seconds")
         trace = hashlib.sha256((d["id"] + "trace").encode()).hexdigest()[:32]
         reason = derive_reason(jconn, d["id"], d.get("trigger_source"))
         end_reason = derive_end_reason(jconn, d["id"])
         conv_key = derive_conversation_key(d.get("trigger_vars_json"))
-        # queue_id reverse-join
         queue_id = None
         try:
             qrow = jconn.execute(
@@ -817,29 +1051,65 @@ def apply_tasks(jconn: sqlite3.Connection, tconn: sqlite3.Connection, wmap: dict
               tmux_session, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_model,
               started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
               trigger_connector, trigger_capture_json, trigger_vars_json, conversation_key, queue_id,
-              trace_id, revision, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+              trace_id, revision, updated_at, working_dir
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
             (
-                d["id"], wid, d.get("job_name") or "", kind, reason, d.get("status") or "exited", end_reason,
-                d.get("prompt_preview"), d.get("session_id"), "tui", d.get("command") or "claude",
-                d.get("tmux_session"), d.get("tokens_input"), d.get("tokens_output"),
-                d.get("tokens_cache_read"), d.get("tokens_cache_creation"), d.get("tokens_model"),
-                d.get("started_at"), d.get("ended_at"), max_ms, idle_ms, keep_ms, nudge_ms,
-                d.get("trigger_source"), d.get("trigger_capture_json"), d.get("trigger_vars_json"),
-                conv_key, queue_id, trace, d.get("ended_at") or d.get("started_at"),
+                d["id"],
+                wid,
+                d.get("job_name") or "",
+                kind,
+                reason,
+                d.get("status") or "exited",
+                end_reason,
+                d.get("prompt_preview"),
+                d.get("session_id"),
+                "tui",
+                harness,
+                d.get("tmux_session"),
+                d.get("tokens_input"),
+                d.get("tokens_output"),
+                d.get("tokens_cache_read"),
+                d.get("tokens_cache_creation"),
+                d.get("tokens_model"),
+                d.get("started_at"),
+                d.get("ended_at"),
+                ms("max_duration_seconds"),
+                idle_ms,
+                ms("keep_alive_seconds"),
+                nudge_ms,
+                d.get("trigger_source"),
+                d.get("trigger_capture_json"),
+                d.get("trigger_vars_json"),
+                conv_key,
+                queue_id,
+                trace,
+                d.get("ended_at") or d.get("started_at"),
+                d.get("working_dir"),
             ),
         )
+        ids.add(d["id"])
         n += 1
-    return n
+    return n, ids
 
-def apply_timeline(jconn: sqlite3.Connection, tconn: sqlite3.Connection) -> None:
+
+def apply_timeline(
+    jconn: sqlite3.Connection, tconn: sqlite3.Connection, task_ids: set[str] | None
+) -> None:
     try:
-        for row in jconn.execute("SELECT task_id, layer, state, started_at, ended_at, duration_ms, reason, source, detail_json FROM task_segments"):
+        for row in jconn.execute(
+            "SELECT task_id, layer, state, started_at, ended_at, duration_ms, reason, source, detail_json FROM task_segments"
+        ):
+            if task_ids is not None and row[0] not in task_ids:
+                continue
             tconn.execute(
                 "INSERT INTO run_segments (run_id, layer, state, started_at, ended_at, duration_ms, reason, source, detail_json) VALUES (?,?,?,?,?,?,?,?,?)",
                 row,
             )
-        for row in jconn.execute("SELECT task_id, at, kind, source, detail_json FROM task_events"):
+        for row in jconn.execute(
+            "SELECT task_id, at, kind, source, detail_json FROM task_events"
+        ):
+            if task_ids is not None and row[0] not in task_ids:
+                continue
             tconn.execute(
                 "INSERT INTO run_events (run_id, at, kind, source, detail_json) VALUES (?,?,?,?,?)",
                 row,
@@ -848,7 +1118,14 @@ def apply_timeline(jconn: sqlite3.Connection, tconn: sqlite3.Connection) -> None
         print(f"timeline skip: {e}")
 
 
-def apply_queue(jconn: sqlite3.Connection, tconn: sqlite3.Connection, wmap: dict[str, str]) -> int:
+def apply_queue(
+    jconn: sqlite3.Connection,
+    tconn: sqlite3.Connection,
+    wmap: dict[str, str],
+    *,
+    job_filter: str | None = None,
+    target_id: str | None = None,
+) -> int:
     try:
         cols = [r[1] for r in jconn.execute("PRAGMA table_info(event_queue)")]
     except sqlite3.Error:
@@ -856,7 +1133,11 @@ def apply_queue(jconn: sqlite3.Connection, tconn: sqlite3.Connection, wmap: dict
     n = 0
     for row in jconn.execute("SELECT * FROM event_queue"):
         d = dict(zip(cols, row))
-        wid = workspace_id_for(d.get("workspace_path") or "", wmap)
+        if job_filter:
+            jn = str(d.get("job_name") or "")
+            if jn != job_filter and job_filter.lower() != jn.lower():
+                continue
+        wid = workspace_id_for(d.get("workspace_path") or "", wmap, target_id)
         kind = "assistant" if d.get("job_name") and d.get("job_name") == d.get("parent_agent") else "job"
         tconn.execute(
             """INSERT OR REPLACE INTO event_queue (
@@ -865,21 +1146,39 @@ def apply_queue(jconn: sqlite3.Connection, tconn: sqlite3.Connection, wmap: dict
               attempts, next_attempt_at, claimed_at, run_id, error_message, created_at, updated_at, done_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                d["id"], d.get("source"), wid, d.get("job_name"), kind, d.get("on_index") or 0,
-                d.get("conversation_key") or "", d.get("event_raw"), d.get("capture_json"),
-                d.get("vars_json"), d.get("prompt") or "", d.get("status"), d.get("block_reason"),
-                d.get("result"), d.get("attempts") or 0, d.get("next_attempt_at"), d.get("claimed_at"),
-                d.get("task_id"), d.get("error_message"), d.get("created_at"), d.get("updated_at"), d.get("done_at"),
+                d["id"],
+                d.get("source"),
+                wid,
+                d.get("job_name"),
+                kind,
+                d.get("on_index") or 0,
+                d.get("conversation_key") or "",
+                d.get("event_raw"),
+                d.get("capture_json"),
+                d.get("vars_json"),
+                d.get("prompt") or "",
+                d.get("status"),
+                d.get("block_reason"),
+                d.get("result"),
+                d.get("attempts") or 0,
+                d.get("next_attempt_at"),
+                d.get("claimed_at"),
+                d.get("task_id"),
+                d.get("error_message"),
+                d.get("created_at"),
+                d.get("updated_at"),
+                d.get("done_at"),
             ),
         )
         n += 1
     return n
 
 
-def apply_policy_cursors(jconn: sqlite3.Connection, tconn: sqlite3.Connection, wmap: dict[str, str]) -> None:
+def apply_policy_cursors(jconn: sqlite3.Connection, tconn: sqlite3.Connection) -> None:
     try:
-        for key, last, win in jconn.execute("SELECT key, last_fired_at, window_json FROM trigger_policy"):
-            # rewrite path prefix in key if needed — keep as-is with note
+        for key, last, win in jconn.execute(
+            "SELECT key, last_fired_at, window_json FROM trigger_policy"
+        ):
             tconn.execute(
                 "INSERT OR REPLACE INTO dispatch_policy (key, last_fired_at, window_json) VALUES (?,?,?)",
                 (key, last, win),
@@ -887,7 +1186,9 @@ def apply_policy_cursors(jconn: sqlite3.Connection, tconn: sqlite3.Connection, w
     except sqlite3.Error:
         pass
     try:
-        for name, eid, upd in jconn.execute("SELECT source_name, last_event_id, updated_at FROM source_cursors"):
+        for name, eid, upd in jconn.execute(
+            "SELECT source_name, last_event_id, updated_at FROM source_cursors"
+        ):
             tconn.execute(
                 "INSERT OR REPLACE INTO connector_cursors (name, last_event_id, updated_at) VALUES (?,?,?)",
                 (name, eid, upd),
@@ -895,25 +1196,326 @@ def apply_policy_cursors(jconn: sqlite3.Connection, tconn: sqlite3.Connection, w
     except sqlite3.Error:
         pass
     try:
-        for row in jconn.execute("SELECT name, events_total, parse_errors, match_errors, fires, drops, last_event_at, updated_at FROM source_metrics"):
+        for row in jconn.execute(
+            "SELECT name, events_total, parse_errors, match_errors, fires, drops, last_event_at, updated_at FROM source_metrics"
+        ):
             tconn.execute(
-                "INSERT OR REPLACE INTO connector_metrics (name, events_total, parse_errors, match_errors, fires, drops, last_event_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO connector_metrics "
+                "(name, events_total, parse_errors, match_errors, fires, drops, last_event_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 row,
             )
     except sqlite3.Error:
         pass
 
 
-def workspace_paths_from_jobi(jobi_dir: Path) -> list[Path]:
-    out: list[Path] = []
-    for w in load_workspaces_yaml(jobi_dir):
-        if isinstance(w, str):
-            out.append(Path(w))
+def apply_schedules(
+    jconn: sqlite3.Connection,
+    tconn: sqlite3.Connection,
+    wmap: dict[str, str],
+    *,
+    job_filter: str | None = None,
+    target_id: str | None = None,
+) -> int:
+    try:
+        rows = list(jconn.execute("SELECT key, anchor_time, interval FROM schedule_anchors"))
+    except sqlite3.Error:
+        return 0
+    job_ws: dict[str, str] = {}
+    try:
+        for jn, wp, jf in jconn.execute(
+            "SELECT job_name, workspace_path, job_file FROM tasks WHERE job_name IS NOT NULL"
+        ):
+            if jn and jn not in job_ws:
+                job_ws[jn] = workspace_id_for(jf or wp or "", wmap, target_id)
+    except sqlite3.Error:
+        pass
+    n = 0
+    now = now_iso()
+    for key, anchor_time, interval in rows:
+        job, idx = key, 0
+        if "#" in key:
+            job, _, rest = key.partition("#")
+            try:
+                idx = int(rest)
+            except ValueError:
+                idx = 0
+        if job_filter and job != job_filter and job.lower() != job_filter.lower():
+            continue
+        wid = target_id or job_ws.get(job) or "imported-orphans"
+        tconn.execute(
+            """INSERT OR REPLACE INTO schedules (
+              workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at, anchor, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (wid, job, idx, interval or "", "UTC", 0, None, anchor_time, anchor_time, now),
+        )
+        n += 1
+    return n
+
+
+def copy_logs(jobi: Path, trebi: Path) -> None:
+    src = jobi / "logs"
+    if not src.exists():
+        return
+    tasks = src / "tasks"
+    if tasks.exists():
+        dst = trebi / "logs" / "runs"
+        dst.mkdir(parents=True, exist_ok=True)
+        for f in tasks.iterdir():
+            if f.is_file():
+                shutil.copy2(f, dst / f.name)
+    sources = src / "sources"
+    if sources.exists():
+        dst = trebi / "logs" / "connectors"
+        dst.mkdir(parents=True, exist_ok=True)
+        for f in sources.rglob("*"):
+            if f.is_file():
+                shutil.copy2(f, dst / f.name)
+    imported = trebi / "logs" / "imported-jobi"
+    imported.mkdir(parents=True, exist_ok=True)
+    for f in src.glob("jobi.log*"):
+        shutil.copy2(f, imported / f.name)
+    tray = src / "tray.log"
+    if tray.exists():
+        shutil.copy2(tray, imported / "tray.log")
+
+
+def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> int:
+    trebi.mkdir(parents=True, exist_ok=True)
+    if refuse_if_daemon_running(trebi, "migrate --apply"):
+        return 2
+    job_filter = plan.job
+    target_id = plan.target.id if plan.target else None
+
+    if not job_filter:
+        src_cfg = jobi / "config.yaml"
+        if src_cfg.exists():
+            # Current trebi still uses defaults.command and session.timeout — copy as-is.
+            (trebi / "config.yaml").write_text(src_cfg.read_text(encoding="utf-8", errors="replace"))
+            print("wrote config.yaml (keys unchanged)")
+        src_env = jobi / "envsets.yaml"
+        if src_env.exists():
+            (trebi / "envsets.yaml").write_text(src_env.read_text(encoding="utf-8", errors="replace"))
+            print("wrote envsets.yaml (values not printed)")
+        src_src = jobi / "sources.yaml"
+        if src_src.exists():
+            converted, notes = convert_sources_yaml(src_src.read_text(encoding="utf-8", errors="replace"))
+            from io import StringIO
+
+            buf = StringIO()
+            yaml.dump(converted, buf)
+            (trebi / "connectors.yaml").write_text(buf.getvalue())
+            for n in notes:
+                print(f"  {n}")
+            print("wrote connectors.yaml")
+        for name in ("harness", "bin"):
+            src = jobi / name
+            dst = trebi / name
+            if src.exists():
+                if dst.exists():
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst, symlinks=True)
+                print(f"copied {name}/")
+        copy_logs(jobi, trebi)
+        print("copied logs (tasks→runs, sources→connectors)")
+
+    tdb = trebi / "trebi.db"
+    jdb = jobi / "jobi.db"
+    if not jdb.exists():
+        print("no jobi.db — skip db phases")
+        return 0
+    if not tdb.exists():
+        print("WARNING: trebi.db missing — run `trebi service migrate-db` first; DB rows not inserted")
+        return 0
+    jconn = open_jobi_ro(jobi)
+    if jconn is None:
+        print("no jobi.db — skip db phases")
+        return 0
+    tconn = sqlite3.connect(tdb)
+    try:
+        n, ids = apply_tasks(
+            jconn, tconn, plan.workspace_map, job_filter=job_filter, target_id=target_id
+        )
+        print(f"inserted runs: {n}")
+        apply_timeline(jconn, tconn, ids if job_filter else None)
+        print("timeline segments+events copied")
+        n = apply_queue(
+            jconn, tconn, plan.workspace_map, job_filter=job_filter, target_id=target_id
+        )
+        print(f"queue rows: {n}")
+        if not job_filter:
+            apply_policy_cursors(jconn, tconn)
+            print("policy + cursors + metrics copied")
+        n = apply_schedules(
+            jconn, tconn, plan.workspace_map, job_filter=job_filter, target_id=target_id
+        )
+        print(f"schedule seeds: {n}")
+        now = now_iso()
+        if plan.target:
+            tconn.execute(
+                "INSERT OR REPLACE INTO workspaces (id, name, path, git_enabled, orphaned, created_at, updated_at) "
+                "VALUES (?,?,?,0,0,?,?)",
+                (plan.target.id, plan.target.name, str(plan.target.path), now, now),
+            )
         else:
-            p = w.get("path") or w.get("dir")
-            if p:
-                out.append(Path(p))
+            for path, wid in plan.workspace_map.items():
+                name = Path(path).name
+                dest = path if mode == "final" else str(trebi / "shadow-workspaces" / name)
+                tconn.execute(
+                    "INSERT OR REPLACE INTO workspaces (id, name, path, git_enabled, orphaned, created_at, updated_at) "
+                    "VALUES (?,?,?,0,0,?,?)",
+                    (wid, name, dest, now, now),
+                )
+        tconn.commit()
+        manifest = {
+            "mode": mode,
+            "workspace_map": plan.workspace_map,
+            "job": job_filter,
+            "target": None
+            if not plan.target
+            else {"id": plan.target.id, "name": plan.target.name, "path": str(plan.target.path)},
+            "cutover_started_at": now if mode == "final" and not job_filter else None,
+        }
+        (trebi / "migration-manifest.json").write_text(json.dumps(manifest, indent=2))
+        print("wrote migration-manifest.json")
+    finally:
+        jconn.close()
+        tconn.close()
+    return 0
+
+
+# ── rewrite-jobs ───────────────────────────────────────────────────────────
+
+
+def find_job_files(workspace: Path) -> list[Path]:
+    out: list[Path] = []
+    for root, dirs, files in os.walk(workspace):
+        dirs[:] = [d for d in dirs if d not in {".git", "node_modules", ".trebi"}]
+        for f in files:
+            if f in ("JOB.md", "AGENT.md", "SOUL.md", "TREBI.md"):
+                out.append(Path(root) / f)
     return out
+
+
+def dest_for_job(
+    path: Path,
+    source_ws: Path | None,
+    target: TargetWorkspace | None,
+    incremental: bool,
+) -> Path:
+    if incremental and target:
+        if source_ws:
+            try:
+                rel = path.resolve().relative_to(source_ws.resolve())
+                # If the target is a nested agent dir of the source, strip that prefix.
+                try:
+                    nested = target.path.resolve().relative_to(source_ws.resolve())
+                    rel_s = rel.as_posix()
+                    prefix = nested.as_posix().rstrip("/") + "/"
+                    if rel_s.startswith(prefix):
+                        rel = Path(rel_s[len(prefix) :])
+                except ValueError:
+                    pass
+                return target.path / rel
+            except ValueError:
+                pass
+        return target.path / job_file_name(path) / path.name
+    return path
+
+
+def plan_rewrite(
+    workspaces: list[Path],
+    *,
+    job: str | None,
+    target: TargetWorkspace | None,
+    incremental: bool,
+    rewrite_sentinel: bool,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    lines: list[str] = []
+    details: list[dict[str, Any]] = []
+    for ws in workspaces:
+        if not ws.exists():
+            lines.append(f"SKIP missing workspace {ws}")
+            continue
+        files = find_job_files(ws)
+        matched = 0
+        header_written = False
+        for path in files:
+            if job and not job_spec_matches(path, job, ws):
+                continue
+            if path.name == "SOUL.md" and job and job_file_name(path) != job:
+                continue
+            matched += 1
+            if not header_written:
+                lines.append(f"workspace {ws}:")
+                header_written = True
+            report: list[str] = []
+            text = path.read_text(encoding="utf-8", errors="replace")
+            dest = dest_for_job(path, ws, target, incremental)
+            if path.name == "SOUL.md":
+                details.append(
+                    {
+                        "path": str(path),
+                        "dest": str(dest.with_name("TREBI.md")),
+                        "action": "merge-into-TREBI.md",
+                        "changed": True,
+                        "source_ws": str(ws),
+                    }
+                )
+                lines.append(f"  MERGE {path.relative_to(ws)} → {dest.with_name('TREBI.md')}")
+                continue
+            if path.name == "AGENT.md":
+                details.append(
+                    {
+                        "path": str(path),
+                        "dest": str(dest.with_name("TREBI.md")),
+                        "action": "merge-into-TREBI.md",
+                        "changed": True,
+                        "source_ws": str(ws),
+                    }
+                )
+                lines.append(f"  MERGE {path.relative_to(ws)} → {dest.with_name('TREBI.md')}")
+                new_text, _changed = rewrite_job_text(text, report, rewrite_sentinel=rewrite_sentinel)
+                for r in report:
+                    lines.append(f"    ! {r}")
+                continue
+            new_text, changed = rewrite_job_text(text, report, rewrite_sentinel=rewrite_sentinel)
+            action = "rewrite" if changed else "unchanged"
+            if incremental and target:
+                action = f"copy→{dest}"
+            details.append(
+                {
+                    "path": str(path),
+                    "dest": str(dest),
+                    "action": action,
+                    "changed": changed,
+                    "source_ws": str(ws),
+                    "new_text": new_text if changed else None,
+                }
+            )
+            mark = "*" if changed else " "
+            try:
+                rel = path.relative_to(ws)
+            except ValueError:
+                rel = path
+            lines.append(f"  {mark} {rel} ({action})")
+            for r in report:
+                lines.append(f"    ! {r}")
+        if job and matched == 0:
+            lines.append(f"workspace {ws}: no files matched --job {job}")
+        elif not job:
+            pass
+    return lines, details
+
+
+def backup_file(backup_root: Path, original: Path) -> None:
+    key = hashlib.sha256(str(original).encode()).hexdigest()[:12]
+    bdir = backup_root / key
+    bdir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(original, bdir / original.name)
+    (bdir / "meta.json").write_text(
+        json.dumps({"original": str(original), "name": original.name}, indent=2)
+    )
 
 
 def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
@@ -922,19 +1524,36 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
     workspaces = workspace_paths_from_jobi(jobi)
     if args.workspace:
         workspaces = [Path(args.workspace)]
-    mirror = trebi / "shadow-workspaces" if args.mirror else None
-    if args.mirror and not args.apply:
-        print(f"MIRROR plan → {mirror} (dry-run: not writing)")
+    job = getattr(args, "job", None)
+    target_spec = getattr(args, "target_workspace", None)
+    if not target_spec and args.mirror:
+        target_spec = str(trebi / "shadow-workspaces")
+    target = resolve_target_workspace(trebi, target_spec)
+    incremental = bool(job or args.mirror)
+    if incremental and args.apply and not target:
+        print("ERROR: --job --apply requires --target-workspace", file=sys.stderr)
+        return 2
+    if getattr(args, "target_workspace", None) and target is None:
+        print(f"ERROR: could not resolve --target-workspace {args.target_workspace!r}", file=sys.stderr)
+        return 2
+    if incremental and target:
+        print(f"TARGET {target.name} ({target.id}) {target.path} [{target.source}]")
     lines, details = plan_rewrite(
         workspaces,
-        mirror_root=mirror,
+        job=job,
+        target=target,
+        incremental=incremental,
         rewrite_sentinel=not args.no_sentinels,
     )
     for line in lines:
         print(line)
     changed = sum(1 for d in details if d.get("changed"))
     print(f"\n{len(details)} files considered, {changed} would change")
+    if not details and job:
+        print(f"ERROR: no job matched --job {job}", file=sys.stderr)
+        return 2
     if args.diff and not args.apply:
+        shown = 0
         for d in details:
             if not d.get("changed"):
                 continue
@@ -944,39 +1563,58 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             text = path.read_text(encoding="utf-8", errors="replace")
             report: list[str] = []
             new_text, _ = rewrite_job_text(text, report, rewrite_sentinel=not args.no_sentinels)
-            print(f"\n--- diff sample: {path}")
-            print("OLD head:")
-            print("\n".join(text.splitlines()[:20]))
-            print("NEW head:")
-            print("\n".join(new_text.splitlines()[:20]))
-            break
-    if not args.apply and not args.revert:
-        print("\nNo files written (dry-run).")
-        return 0
+            print(f"\n--- {path}")
+            if d.get("dest") and d["dest"] != d["path"]:
+                print(f"+++ {d['dest']}")
+            print("OLD frontmatter:")
+            fm, _, _ = split_frontmatter(text)
+            print((fm or text).rstrip()[:2000])
+            print("NEW frontmatter:")
+            fm2, _, _ = split_frontmatter(new_text)
+            print((fm2 or new_text).rstrip()[:2000])
+            shown += 1
+            if shown >= 5:
+                break
     if args.revert:
+        if not args.apply:
+            print("\nRevert is a no-op without --apply.")
+            return 0
         backup = trebi / "rewrite-backup"
         if not backup.exists():
             print("no rewrite-backup to revert", file=sys.stderr)
             return 2
-        # restore all files under backup
-        for src in backup.rglob("*"):
-            if src.is_file():
-                rel = src.relative_to(backup)
-                # backup layout: <hash-or-path>
-                print(f"would restore {rel} (implement path map from manifest)")
-        print("revert: restore from backup (see migration-manifest)")
+        restored = 0
+        for meta in backup.glob("*/meta.json"):
+            info = json.loads(meta.read_text())
+            original = Path(info["original"])
+            src = meta.parent / info["name"]
+            if not src.exists():
+                continue
+            original.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, original)
+            print(f"restored {original}")
+            restored += 1
+        print(f"restored {restored} files")
         return 0
-    # apply rewrite
+    if not args.apply:
+        print("\nNo files written (dry-run).")
+        if incremental and not target:
+            print("Hint: pass --target-workspace <id|name|path> to set the destination.")
+        return 0
+
+    # The daemon watches these files; a live watcher would index half-written jobs.
+    if refuse_if_daemon_running(trebi, "rewrite-jobs --apply"):
+        return 2
+
     backup = trebi / "rewrite-backup"
     backup.mkdir(parents=True, exist_ok=True)
     for d in details:
         path = Path(d["path"])
+        dest = Path(d.get("dest") or path)
         if path.name == "SOUL.md":
-            continue  # handled with AGENT
+            continue
         if path.name == "AGENT.md":
-            # merge AGENT+SOUL into TREBI.md at workspace root
             ws_root = path.parent
-            # climb if under agents/x
             soul = path.parent / "SOUL.md"
             agent_text = path.read_text(encoding="utf-8", errors="replace")
             report: list[str] = []
@@ -984,7 +1622,6 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             soul_body = ""
             if soul.exists():
                 soul_body = soul.read_text(encoding="utf-8", errors="replace")
-                # strip frontmatter from soul if any
                 _, _, soul_body = split_frontmatter(soul_body)
             fm, _, body = split_frontmatter(new_agent)
             data = load_fm_map(fm or "")
@@ -992,73 +1629,119 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             data.setdefault("memory", True)
             merged_body = f"## Soul\n{soul_body.strip()}\n\n## Instructions\n{body.strip()}\n"
             out = dump_frontmatter(data, merged_body)
-            dest = ws_root / "TREBI.md"
-            # backup originals
-            bdir = backup / hashlib.sha256(str(path).encode()).hexdigest()[:12]
-            bdir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, bdir / "AGENT.md")
-            if soul.exists():
-                shutil.copy2(soul, bdir / "SOUL.md")
-            if args.mirror and mirror:
-                mdest = mirror / ws_root.name / "TREBI.md"
-                mdest.parent.mkdir(parents=True, exist_ok=True)
-                mdest.write_text(out)
-                print(f"mirror TREBI.md → {mdest}")
-            else:
-                dest.write_text(out)
+            dest = dest.with_name("TREBI.md") if dest.suffix else dest / "TREBI.md"
+            if not incremental:
+                backup_file(backup, path)
+                if soul.exists():
+                    backup_file(backup, soul)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(out)
+            print(f"wrote {dest}")
+            if not incremental:
                 path.unlink()
                 if soul.exists():
                     soul.unlink()
-                print(f"wrote {dest}; removed AGENT.md/SOUL.md")
-            # mint trebi.yaml
-            ty = ws_root / "trebi.yaml"
-            if not ty.exists():
-                wid = mint_ws_id(str(ws_root))
-                ty.write_text(f"id: {wid}\nname: {ws_root.name}\ngit_enabled: false\n")
+                print(f"removed {path}")
             continue
         if path.name not in ("JOB.md", "TREBI.md"):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         report: list[str] = []
         new_text, changed = rewrite_job_text(text, report, rewrite_sentinel=not args.no_sentinels)
-        if not changed and not args.mirror:
+        if not changed and dest == path:
             continue
-        bdir = backup / hashlib.sha256(str(path).encode()).hexdigest()[:12]
-        bdir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, bdir / path.name)
-        if args.mirror and mirror:
-            # find workspace root from workspaces list
-            rel = path.name
-            for ws in workspaces:
-                try:
-                    rel_path = path.relative_to(ws)
-                    mdest = mirror / ws.name / rel_path
-                    mdest.parent.mkdir(parents=True, exist_ok=True)
-                    mdest.write_text(new_text)
-                    print(f"mirror {mdest}")
-                    break
-                except ValueError:
-                    continue
-        else:
-            path.write_text(new_text)
-            print(f"rewrote {path}")
-        # trebi.yaml at workspace root for each ws
-    for ws in workspaces:
-        if not ws.exists():
-            continue
-        ty = (mirror / ws.name / "trebi.yaml") if (args.mirror and mirror) else (ws / "trebi.yaml")
-        if args.mirror and mirror:
-            ty.parent.mkdir(parents=True, exist_ok=True)
-        if not ty.exists():
-            ty.write_text(f"id: {mint_ws_id(str(ws))}\nname: {ws.name}\ngit_enabled: false\n")
-            print(f"minted {ty}")
+        if not incremental:
+            backup_file(backup, path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(new_text if changed else text)
+        print(f"{'copied' if incremental else 'rewrote'} {dest}")
+
+    if not incremental:
+        for ws in workspaces:
+            if not ws.exists():
+                continue
+            ty = ws / "trebi.yaml"
+            if not ty.exists():
+                ty.write_text(f"id: {mint_ws_id(str(ws))}\nname: {ws.name}\ngit_enabled: false\n")
+                print(f"minted {ty}")
     return 0
 
 
+# ── other commands ─────────────────────────────────────────────────────────
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    jobi = Path(args.jobi_dir)
+    trebi = Path(args.trebi_dir)
+    print(f"jobi_dir:  {jobi} exists={jobi.exists()}")
+    print(f"trebi_dir: {trebi} exists={trebi.exists()}")
+    ws = load_workspaces_yaml(jobi)
+    print(f"jobi workspaces.yaml entries: {len(ws)}")
+    for w in ws:
+        print(f"  - {w.get('name', '?')}: {w.get('path')}")
+        for nested in nested_agent_dirs(Path(w.get("path") or "")):
+            print(f"      nested agent: {nested.name} ({nested})")
+    registered = load_trebi_workspaces(trebi)
+    print(f"trebi workspaces: {len(registered)}")
+    for w in registered:
+        print(f"  - {w.name} ({w.id}): {w.path}")
+    conn = open_jobi_ro(jobi)
+    if conn:
+        print("jobi.db tables:")
+        for src, dst in TABLE_MAP.items():
+            n = table_count(conn, src)
+            print(f"  {src:20} {n:>8}  → {dst}")
+        conn.close()
+    else:
+        print("jobi.db: missing")
+    for name in ("config.yaml", "sources.yaml", "envsets.yaml", "harness", "bin", "logs"):
+        p = jobi / name
+        print(f"  artifact {name}: exists={p.exists()}")
+    flagged = envsets_secret_key_names(jobi)
+    if flagged:
+        print(f"  envset secret-like keys: {len(flagged)} (values not shown)")
+    job = getattr(args, "job", None)
+    if job:
+        print(f"\n--job {job} matches:")
+        n = 0
+        for wpath in workspace_paths_from_jobi(jobi):
+            for path in find_job_files(wpath):
+                if job_spec_matches(path, job, wpath) and path.name == "JOB.md":
+                    print(f"  {path}")
+                    n += 1
+        if n == 0:
+            print("  (none)")
+    return 0
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    mode = "shadow" if args.shadow else "final" if args.final else ""
+    if not mode:
+        print("ERROR: migrate requires exactly one of --shadow / --final", file=sys.stderr)
+        return 2
+    jobi = Path(args.jobi_dir)
+    trebi = Path(args.trebi_dir)
+    job = getattr(args, "job", None)
+    target = resolve_target_workspace(trebi, getattr(args, "target_workspace", None))
+    if job and args.apply and not target:
+        print("ERROR: --job --apply requires --target-workspace", file=sys.stderr)
+        return 2
+    plan = plan_migrate(jobi, trebi, mode, job=job, target=target)
+    text = plan.render()
+    print(text)
+    if args.report:
+        Path(args.report).write_text(text)
+        print(f"\n(report written to {args.report})")
+    if not args.apply:
+        print("\nDry-run only. Re-run with --apply to execute.")
+        return 0
+    return apply_migrate(jobi, trebi, mode, plan)
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
-    """Verify planned invariants against trebi.db if present (read-only)."""
     trebi = Path(args.trebi_dir)
     jobi = Path(args.jobi_dir)
+    job = getattr(args, "job", None)
     db = trebi / "trebi.db"
     print(f"verify against {db}")
     if not db.exists():
@@ -1066,17 +1749,19 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 0
     tconn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     jconn = open_jobi_ro(jobi)
-    checks = []
     try:
-        runs = tconn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
-        checks.append(("runs_count", runs))
+        if job:
+            runs = tconn.execute("SELECT COUNT(*) FROM runs WHERE job=?", (job,)).fetchone()[0]
+        else:
+            runs = tconn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
         if jconn:
-            tasks = table_count(jconn, "tasks")
-            ok = runs == tasks
-            print(f"run conservation: trebi.runs={runs} jobi.tasks={tasks} ok={ok}")
+            proj = project_task_derivations(jconn, job)
+            want = proj["will_insert"]
+            ok = runs == want
+            print(f"run conservation: trebi.runs={runs} jobi.will_insert={want} junk={proj['dropped_junk']} ok={ok}")
         else:
             print(f"trebi.runs={runs} (no jobi.db to compare)")
-        for tbl in ("run_segments", "run_events", "event_queue", "event_log"):
+        for tbl in ("run_segments", "run_events", "event_queue", "schedules"):
             try:
                 n = tconn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
                 print(f"  {tbl}: {n}")
@@ -1090,20 +1775,17 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_make_fixture(args: argparse.Namespace) -> int:
-    """Create a scrubbed synthetic jobi-shaped fixture for CI (no real secrets)."""
     out = Path(args.dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    # Portable relative path: resolve against fixture root at load time (see load_workspaces_yaml).
-    (out / "workspaces.yaml").write_text(
-        "workspaces:\n  - name: fixture\n    path: ws\n"
-    )
+    (out / "workspaces.yaml").write_text("workspaces:\n  - name: fixture\n    path: ws\n")
     ws = out / "ws" / "demo"
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "JOB.md").write_text(
         "---\n"
         "# important comment\n"
         "working_dir: .\n"
-        "command: claude\n"
+        "command: npx @anthropic-ai/claude-code@2.1.142 --dangerously-skip-permissions\n"
+        "tool: claude\n"
         "schedule: \"0 9 * * *\"\n"
         "env: claude-zai\n"
         "session:\n"
@@ -1114,7 +1796,6 @@ def cmd_make_fixture(args: argparse.Namespace) -> int:
         "---\n"
         "Do the thing. JOBI_TASK_COMPLETE\n"
     )
-    # tiny sqlite with one task
     db = out / "jobi.db"
     conn = sqlite3.connect(db)
     conn.executescript(
@@ -1154,13 +1835,38 @@ def cmd_make_fixture(args: argparse.Namespace) -> int:
         """
     )
     conn.execute(
-        "INSERT INTO tasks (id, job_name, workspace_path, command, status, kind, started_at, prompt_preview) VALUES (?,?,?,?,?,?,?,?)",
-        ("01FIXTURE0000000000000000", "demo", str(out / "ws"), "claude", "complete", "job", "2026-01-01T00:00:00Z", "hi"),
+        "INSERT INTO tasks (id, job_name, workspace_path, command, status, kind, started_at, prompt_preview) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (
+            "01FIXTURE0000000000000000",
+            "demo",
+            str(out / "ws"),
+            "npx @anthropic-ai/claude-code@2.1.142 --dangerously-skip-permissions",
+            "complete",
+            "job",
+            "2026-01-01T00:00:00Z",
+            "hi",
+        ),
+    )
+    conn.execute(
+        "INSERT INTO schedule_anchors (key, anchor_time, interval) VALUES (?,?,?)",
+        ("demo", "2026-01-01T00:00:00Z", "6h"),
     )
     conn.commit()
     conn.close()
-    (out / "sources.yaml").write_text("sources: {}\n")
+    (out / "sources.yaml").write_text(
+        "sources:\n"
+        "  - name: whatsapp\n"
+        "    command:\n"
+        "      - whatsapp-cli\n"
+        "      - listen\n"
+        "      - --json\n"
+        "    format: json\n"
+        "    cursor:\n"
+        "      id: d.id\n"
+    )
     (out / "config.yaml").write_text("defaults:\n  command: claude\n  session:\n    timeout: 30m\n")
+    (out / "envsets.yaml").write_text("claude-zai:\n  API_TIMEOUT_MS: '1'\n")
     print(f"fixture written to {out}")
     return 0
 
@@ -1174,39 +1880,58 @@ def cmd_retire_jobi(args: argparse.Namespace) -> int:
     return 0
 
 
+def add_common_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--jobi-dir", default=str(default_jobi_dir()))
+    parser.add_argument("--trebi-dir", default=str(default_trebi_dir()))
+    parser.add_argument("--job", help="limit to one job (name, relative path, or JOB.md path)")
+    parser.add_argument(
+        "--target-workspace",
+        "-t",
+        help="trebi destination workspace (id, name, or path). Required with --job --apply.",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
+    # Common flags are declared twice: once on the top-level parser and once on a
+    # parent every subparser inherits. That accepts them on either side of the
+    # subcommand. Subparser defaults are suppressed so an unset flag after the
+    # subcommand does not overwrite a value given before it.
+    common = argparse.ArgumentParser(add_help=False)
+    add_common_args(common)
+    for action in common._actions:  # noqa: SLF001 - argparse exposes no public API
+        action.default = argparse.SUPPRESS
+
     p = argparse.ArgumentParser(description="jobi → trebi migration (dry-run default)")
-    p.add_argument("--jobi-dir", default=str(default_jobi_dir()))
-    p.add_argument("--trebi-dir", default=str(default_trebi_dir()))
+    add_common_args(p)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("status", help="inventory jobi + trebi trees")
+    s = sub.add_parser("status", help="inventory jobi + trebi trees", parents=[common])
     s.set_defaults(func=cmd_status)
 
-    m = sub.add_parser("migrate", help="plan DB/config/file migration")
+    m = sub.add_parser("migrate", help="plan DB/config/file migration", parents=[common])
     m.add_argument("--shadow", action="store_true")
     m.add_argument("--final", action="store_true")
-    m.add_argument("--apply", action="store_true", help="execute (disabled in goal; refused)")
+    m.add_argument("--apply", action="store_true", help="execute writes (refused while trebid is running)")
     m.add_argument("--report", help="write plan markdown to path")
     m.set_defaults(func=cmd_migrate)
 
-    r = sub.add_parser("rewrite-jobs", help="plan JOB.md/AGENT.md restructure")
+    r = sub.add_parser("rewrite-jobs", help="plan JOB.md/AGENT.md restructure", parents=[common])
     r.add_argument("--apply", action="store_true")
     r.add_argument("--mirror", action="store_true")
     r.add_argument("--revert", action="store_true")
     r.add_argument("--diff", action="store_true")
     r.add_argument("--no-sentinels", action="store_true")
-    r.add_argument("--workspace", help="single workspace path")
+    r.add_argument("--workspace", help="source jobi workspace path")
     r.set_defaults(func=cmd_rewrite_jobs)
 
-    v = sub.add_parser("verify", help="§7.4 invariant checks (read-only)")
+    v = sub.add_parser("verify", help="invariant checks (read-only)", parents=[common])
     v.set_defaults(func=cmd_verify)
 
     f = sub.add_parser("make-fixture", help="write scrubbed fixture dir")
     f.add_argument("dir")
     f.set_defaults(func=cmd_make_fixture)
 
-    ret = sub.add_parser("retire-jobi", help="print manual retirement steps")
+    ret = sub.add_parser("retire-jobi", help="print manual retirement steps", parents=[common])
     ret.set_defaults(func=cmd_retire_jobi)
 
     args = p.parse_args(argv)

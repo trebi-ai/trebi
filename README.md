@@ -224,10 +224,11 @@ Quit and relaunch Claude Desktop after editing.
 uv run scripts/migrate-jobi-to-trebi.py status
 uv run scripts/migrate-jobi-to-trebi.py migrate --shadow
 uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --diff
+uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --job receipts --target-workspace ellis
 uv run scripts/migrate-jobi-to-trebi.py verify
 ```
 
-**Never pass `--apply` until you are ready for cutover.** The script refuses `--apply` when the goal guard is active and defaults to dry-run plan output.
+`--job` limits rewrite and DB copy to one job. `--target-workspace` is the trebi destination (id, name, or path). Default is dry-run; `--apply` writes. Incremental `--job --apply` copies into the target and leaves `~/.jobi` files untouched. Full `rewrite-jobs --apply` without `--job` still rewrites in place (cutover). `--apply` refuses when `~/.trebi/daemon.sock` exists.
 
 ## Conventions
 
