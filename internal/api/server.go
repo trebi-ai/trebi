@@ -60,6 +60,7 @@ type Server struct {
 	upgrader   websocket.Upgrader
 	httpServer *http.Server
 	listener   net.Listener
+	scheme     string // http or https, set at listen
 
 	apiMux     *http.ServeMux
 	apiWrapped http.Handler
@@ -206,18 +207,37 @@ func (s *Server) Handler() http.Handler {
 	return s.authMiddleware(s.apiWrapped)
 }
 
-// ListenAndServe binds addr (e.g. 127.0.0.1:0) and serves.
+// ListenAndServe binds addr (e.g. 127.0.0.1:0) and serves HTTP.
 func (s *Server) ListenAndServe(addr string) (actual string, err error) {
+	return s.serve(addr, "", "")
+}
+
+// ListenAndServeTLS binds addr and serves HTTPS with the PEM pair.
+func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) (actual string, err error) {
+	return s.serve(addr, certFile, keyFile)
+}
+
+func (s *Server) serve(addr, certFile, keyFile string) (actual string, err error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return "", err
 	}
 	s.listener = ln
 	s.httpServer = &http.Server{Handler: s.Handler()}
+	s.scheme = "http"
+	if certFile != "" {
+		s.scheme = "https"
+	}
 	actual = ln.Addr().String()
 	// Serve exits when Shutdown closes the listener; Server owns that lifetime.
 	go func() {
-		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+		var err error
+		if certFile != "" {
+			err = s.httpServer.ServeTLS(ln, certFile, keyFile)
+		} else {
+			err = s.httpServer.Serve(ln)
+		}
+		if err != nil && err != http.ErrServerClosed {
 			s.log.Error("http serve", "error", err)
 		}
 	}()
@@ -229,13 +249,26 @@ func (s *Server) WriteAPIJSON(listenAddr string) error {
 	if err := home.EnsureDirs(); err != nil {
 		return err
 	}
-	// parse port
-	_, portStr, _ := net.SplitHostPort(listenAddr)
+	host, portStr, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return err
+	}
 	port, _ := strconv.Atoi(portStr)
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		if ip.To4() != nil {
+			host = "127.0.0.1"
+		} else {
+			host = "::1"
+		}
+	}
+	scheme := s.scheme
+	if scheme == "" {
+		scheme = "http"
+	}
 	doc := map[string]any{
 		"token": s.token,
 		"port":  port,
-		"url":   "http://" + listenAddr,
+		"url":   scheme + "://" + net.JoinHostPort(host, portStr),
 	}
 	b, _ := json.MarshalIndent(doc, "", "  ")
 	return os.WriteFile(home.APIJSONPath(), b, 0o600)

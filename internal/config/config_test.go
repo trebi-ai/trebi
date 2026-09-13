@@ -199,6 +199,106 @@ func TestSave_RejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestAPIConfig_ListenAddr(t *testing.T) {
+	t.Parallel()
+	if got := (APIConfig{}).ListenAddr(); got != "127.0.0.1:0" {
+		t.Fatalf("default: %q", got)
+	}
+	if got := (APIConfig{Host: "0.0.0.0"}).ListenAddr(); got != "0.0.0.0:0" {
+		t.Fatalf("host only: %q", got)
+	}
+	if got := (APIConfig{Host: "0.0.0.0", Port: 7433}).ListenAddr(); got != "0.0.0.0:7433" {
+		t.Fatalf("host+port: %q", got)
+	}
+	if got := (APIConfig{Host: "::1", Port: 80}).ListenAddr(); got != "[::1]:80" {
+		t.Fatalf("ipv6: %q", got)
+	}
+}
+
+func TestLoad_APIHostPort(t *testing.T) {
+	dir := withTempBase(t)
+	yaml := `
+api:
+  host: 0.0.0.0
+  port: 7433
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.API.ListenAddr() != "0.0.0.0:7433" {
+		t.Fatalf("listen = %q", cfg.API.ListenAddr())
+	}
+}
+
+func TestAPIConfig_BindGuard(t *testing.T) {
+	t.Parallel()
+	if err := BindGuard("127.0.0.1:0", APIConfig{}); err != nil {
+		t.Fatalf("loopback: %v", err)
+	}
+	if err := BindGuard("0.0.0.0:7433", APIConfig{}); err == nil {
+		t.Fatal("want refuse non-loopback without tls/insecure")
+	}
+	if err := BindGuard("0.0.0.0:7433", APIConfig{TLS: APITLS{Insecure: true}}); err != nil {
+		t.Fatalf("insecure: %v", err)
+	}
+	if err := BindGuard("0.0.0.0:443", APIConfig{TLS: APITLS{Cert: "/c", Key: "/k"}}); err != nil {
+		t.Fatalf("tls: %v", err)
+	}
+	a := APIConfig{Host: "0.0.0.0", TLS: APITLS{Insecure: true}}
+	if !a.PublicBind() {
+		t.Fatal("0.0.0.0 should be public")
+	}
+	if (APIConfig{Host: "192.168.1.9"}).PublicBind() {
+		t.Fatal("RFC1918 is not public")
+	}
+}
+
+func TestLoad_BadAPIHostPort(t *testing.T) {
+	dir := withTempBase(t)
+	yaml := `
+api:
+  host: "not a host!"
+  port: 70000
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "api.host") {
+		t.Fatalf("want api.host: %v", err)
+	}
+	if !strings.Contains(msg, "api.port") {
+		t.Fatalf("want api.port: %v", err)
+	}
+}
+
+func TestLoad_TLSPairRequired(t *testing.T) {
+	dir := withTempBase(t)
+	yaml := `
+api:
+  tls:
+    cert: /tmp/cert.pem
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "api.tls") {
+		t.Fatalf("want api.tls pair: %v", err)
+	}
+}
+
 func withTempBase(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

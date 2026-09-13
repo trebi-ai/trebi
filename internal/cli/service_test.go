@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/trebi-ai/trebi/internal/home"
 )
 
 func TestLineHasLevel(t *testing.T) {
@@ -136,5 +138,22 @@ func TestSetLogLevel(t *testing.T) {
 	}
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		t.Fatal("debug still enabled at info")
+	}
+}
+
+func TestResolveDaemonBind_FlagAndGuard(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	bind, err := resolveDaemonBind("127.0.0.1:9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bind.Addr != "127.0.0.1:9" || bind.Scheme != "http" {
+		t.Fatalf("%+v", bind)
+	}
+	if _, err := resolveDaemonBind("0.0.0.0:9"); err == nil {
+		t.Fatal("want bind guard on non-loopback without tls/insecure")
 	}
 }

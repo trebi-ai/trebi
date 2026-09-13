@@ -315,6 +315,7 @@ func (s *Server) handleDoctorFix(w http.ResponseWriter, r *http.Request) {
 func (s *Server) doctorFindings() []map[string]any {
 	src := alerts.CollectDoctorFindings()
 	src = append(src, s.nativeAssistantDoctor()...)
+	src = append(src, s.apiBindDoctor()...)
 	out := make([]map[string]any, 0, len(src))
 	for _, f := range src {
 		out = append(out, map[string]any{
@@ -322,6 +323,23 @@ func (s *Server) doctorFindings() []map[string]any {
 		})
 	}
 	return out
+}
+
+func (s *Server) apiBindDoctor() []alerts.DoctorFinding {
+	cfg, err := config.Load()
+	if err != nil || cfg == nil {
+		return nil
+	}
+	if !cfg.API.TLS.Insecure || cfg.API.Loopback() || cfg.API.TLSEnabled() {
+		return nil
+	}
+	if !cfg.API.PublicBind() {
+		return nil
+	}
+	return []alerts.DoctorFinding{{
+		ID: "api-tls-insecure", Severity: "error", Code: "api_tls_insecure",
+		Message: fmt.Sprintf("api.tls.insecure is set on a public bind (%s); use cert/key or a private/overlay address", cfg.API.HostOrDefault()),
+	}}
 }
 
 func (s *Server) nativeAssistantDoctor() []alerts.DoctorFinding {

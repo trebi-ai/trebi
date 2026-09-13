@@ -229,7 +229,7 @@ func serviceDaemonSubcommands() []*cli.Command {
 			Name:  "daemon",
 			Usage: "run trebid (HTTP API + workers; menu-bar tray on macOS unless --no-tray)",
 			Flags: []cli.Flag{
-				&cli.StringFlag{Name: "listen", Value: "127.0.0.1:0", Usage: "HTTP listen address"},
+				&cli.StringFlag{Name: "listen", Usage: "HTTP listen address (overrides api.host:api.port)"},
 				&cli.BoolFlag{Name: "shadow", Usage: "shadow mode: drain + no connectors/schedules"},
 				&cli.BoolFlag{Name: "no-tray", Usage: "disable menu-bar tray (headless)"},
 				&cli.IntFlag{
@@ -611,7 +611,17 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	startParentWatch(cancel, c.Int("parent-pid"))
 	cp.Start(ctx)
 
-	addr, err := srv.ListenAndServe(c.String("listen"))
+	bind, err := resolveDaemonBind(c.String("listen"))
+	if err != nil {
+		cp.Stop()
+		return err
+	}
+	var addr string
+	if bind.Cert != "" {
+		addr, err = srv.ListenAndServeTLS(bind.Addr, bind.Cert, bind.Key)
+	} else {
+		addr, err = srv.ListenAndServe(bind.Addr)
+	}
 	if err != nil {
 		cp.Stop()
 		return err
@@ -621,8 +631,8 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 		return err
 	}
 	appStateFor(c).appendBusEvent(st, "system.started")
-	fmt.Fprintf(os.Stderr, "trebid listening on http://%s (home=%s shadow=%v tray=%v)\n",
-		addr, home.Base(), shadow, !c.Bool("no-tray") && tray.Available && runtime.GOOS == "darwin")
+	fmt.Fprintf(os.Stderr, "trebid listening on %s://%s (home=%s shadow=%v tray=%v)\n",
+		bind.Scheme, addr, home.Base(), shadow, !c.Bool("no-tray") && tray.Available && runtime.GOOS == "darwin")
 	fmt.Fprintf(os.Stderr, "api.json → %s\n", home.APIJSONPath())
 
 	_ = os.WriteFile(filepath.Join(home.Base(), "trebid.pid"), []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)
@@ -638,6 +648,46 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutCancel()
 	return srv.Shutdown(shutCtx)
+}
+
+type daemonBind struct {
+	Addr   string
+	Cert   string
+	Key    string
+	Scheme string
+}
+
+// resolveDaemonBind prefers --listen; otherwise api.host:api.port. Non-loopback
+// requires TLS files or api.tls.insecure (B28).
+func resolveDaemonBind(flag string) (daemonBind, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return daemonBind{}, err
+	}
+	addr := strings.TrimSpace(flag)
+	if addr == "" {
+		addr = cfg.API.ListenAddr()
+	}
+	if err := config.BindGuard(addr, cfg.API); err != nil {
+		return daemonBind{}, err
+	}
+	cert, key, err := cfg.API.TLSFiles()
+	if err != nil {
+		return daemonBind{}, err
+	}
+	if cert != "" {
+		if _, err := os.Stat(cert); err != nil {
+			return daemonBind{}, fmt.Errorf("api.tls.cert: %w", err)
+		}
+		if _, err := os.Stat(key); err != nil {
+			return daemonBind{}, fmt.Errorf("api.tls.key: %w", err)
+		}
+	}
+	scheme := "http"
+	if cert != "" {
+		scheme = "https"
+	}
+	return daemonBind{Addr: addr, Cert: cert, Key: key, Scheme: scheme}, nil
 }
 
 // daemonToken reuses the token from api.json when present, else mints one.

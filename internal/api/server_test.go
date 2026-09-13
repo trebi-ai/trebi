@@ -780,6 +780,35 @@ func TestBulkVerbs(t *testing.T) {
 	}
 }
 
+func TestWriteAPIJSON_UnspecifiedHost(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s := api.New(st, api.Options{Token: "tok"})
+	if err := s.WriteAPIJSON("0.0.0.0:64119"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "api.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["url"] != "http://127.0.0.1:64119" {
+		t.Fatalf("url=%v", doc["url"])
+	}
+	if int(doc["port"].(float64)) != 64119 {
+		t.Fatalf("port=%v", doc["port"])
+	}
+}
+
 // dirRows counts folder entries in a file list response.
 func dirRows(body map[string]any) int {
 	n := 0

@@ -48,10 +48,10 @@ func NewService(plistDir string) *Service {
 }
 
 // DaemonAgent returns the OS-supervised trebid agent definition.
-// With tray (default): service daemon --listen 127.0.0.1:0, KeepAlive on failure.
+// Bind address comes from config api.host/api.port (default 127.0.0.1:0).
 // Headless: adds --no-tray, KeepAlive always.
 func DaemonAgent(noTray bool) PlistDef {
-	args := []string{"service", "daemon", "--listen", "127.0.0.1:0"}
+	args := []string{"service", "daemon"}
 	keepAlive := false // OnFailure: tray Quit (exit 0) stays quit
 	if noTray {
 		args = append(args, "--no-tray")

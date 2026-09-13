@@ -117,6 +117,36 @@ func TestSetPath_RoundTrip(t *testing.T) {
 	if err := cfg.SetPath("no.such.path", "x"); err == nil {
 		t.Fatal("want unknown key")
 	}
+	if err := cfg.SetPath("api.host", "0.0.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.API.Host != "0.0.0.0" {
+		t.Fatal(cfg.API.Host)
+	}
+	if err := cfg.SetPath("api.port", "7433"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.API.ListenAddr() != "0.0.0.0:7433" {
+		t.Fatal(cfg.API.ListenAddr())
+	}
+	if err := cfg.SetPath("api.host", "not a host!"); err == nil {
+		t.Fatal("want bad api.host error")
+	}
+	if err := cfg.SetPath("api.tls.insecure", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.API.TLS.Insecure {
+		t.Fatal("tls.insecure")
+	}
+	if err := cfg.SetPath("api.tls.cert", "/tmp/cert.pem"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetPath("api.tls.key", "/tmp/key.pem"); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.API.TLSEnabled() {
+		t.Fatal("tls")
+	}
 	if err := cfg.SetPath("notify.email", "inbox-cli send …"); err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +295,14 @@ func sampleSetValue(key string) string {
 	switch {
 	case key == "defaults.command":
 		return "claude"
+	case key == "api.host":
+		return "127.0.0.1"
+	case key == "api.port":
+		return "0"
+	case key == "api.tls.cert", key == "api.tls.key":
+		return "/tmp/trebi-tls.pem"
+	case key == "api.tls.insecure":
+		return "false"
 	case key == "terminal":
 		return "Terminal"
 	case key == "tools.fallback":

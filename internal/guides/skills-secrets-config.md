@@ -92,6 +92,11 @@ trebi config show --tree
 trebi config show --key tools.grok --json
 trebi config show --key defaults.command --json
 trebi config set daemon.log_level debug
+trebi config set api.host 0.0.0.0
+trebi config set api.port 7433
+trebi config set api.tls.insecure true
+trebi config set api.tls.cert /path/cert.pem
+trebi config set api.tls.key /path/key.pem
 trebi config set assistant.model claude-sonnet-4-5
 trebi config set assistant.api_format anthropic
 trebi config set assistant.api_key_env ANTHROPIC_API_KEY

@@ -22,13 +22,15 @@ func TestRenderPlist_AbsoluteProgramArguments(t *testing.T) {
 	mustContain(t, got, "<string>/Users/me/Applications/Trebi.app/Contents/MacOS/trebi</string>")
 	mustContain(t, got, "<string>service</string>")
 	mustContain(t, got, "<string>daemon</string>")
-	mustContain(t, got, "<string>127.0.0.1:0</string>")
 	mustContain(t, got, "<string>/Users/me</string>")
 	mustContain(t, got, "<string>/tmp/trebid.log</string>")
 	mustContain(t, got, "<key>SuccessfulExit</key>")
 	mustContain(t, got, "<key>RunAtLoad</key>\n    <true/>")
 	if strings.Contains(got, "--no-tray") {
 		t.Fatalf("tray install must not pass --no-tray:\n%s", got)
+	}
+	if strings.Contains(got, "--listen") {
+		t.Fatalf("install must not hardcode --listen; bind comes from api.host/api.port:\n%s", got)
 	}
 
 	// Absolute path must appear before subcommands.

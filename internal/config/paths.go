@@ -206,6 +206,9 @@ func (c *Config) SetPath(path, value string) error {
 	if handled, err := c.setDefaultsKey(path, value); handled {
 		return err
 	}
+	if handled, err := c.setAPIKey(path, value); handled {
+		return err
+	}
 	if handled, err := c.setNotifyKey(path, value); handled {
 		return err
 	}
@@ -343,6 +346,15 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.add("defaults.session.keep_alive", cfg.Defaults.Session.KeepAlive, "")
 	l.add("defaults.session.nudge", cfg.Defaults.Session.Nudge, "")
 	l.add("defaults.session.if_running", cfg.Defaults.Session.IfRunning, "")
+	l.add("api.host", cfg.API.HostOrDefault(), DefaultAPIHost)
+	l.add("api.port", strconv.Itoa(cfg.API.Port), strconv.Itoa(DefaultAPIPort))
+	l.add("api.tls.cert", cfg.API.TLS.Cert, "")
+	l.add("api.tls.key", cfg.API.TLS.Key, "")
+	insecure := "false"
+	if cfg.API.TLS.Insecure {
+		insecure = "true"
+	}
+	l.add("api.tls.insecure", insecure, "false")
 	l.add("terminal", cfg.Terminal, "Terminal")
 	l.add("tools.fallback", cfg.Tools.Fallback, "path")
 	l.add("notify.email", cfg.Notify.Email, "")
@@ -471,6 +483,48 @@ func (c *Config) setDefaultsKey(path, value string) (handled bool, err error) {
 		return true, setNudge(&c.Defaults.Session.Nudge, value, path)
 	case "defaults.session.if_running":
 		return true, setIfRunning(&c.Defaults.Session.IfRunning, value, path)
+	}
+	return false, nil
+}
+
+// setAPIKey handles api.* keys; handled=false when path is not one.
+func (c *Config) setAPIKey(path, value string) (handled bool, err error) {
+	switch path {
+	case "api.host":
+		v := clearOrValue(value)
+		if v != "" && !validAPIHost(v) {
+			return true, fmt.Errorf("api.host: invalid host %q", value)
+		}
+		c.API.Host = v
+		return true, nil
+	case "api.port":
+		if value == "" || value == "-" {
+			c.API.Port = 0
+			return true, nil
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 0 || n > 65535 {
+			return true, fmt.Errorf("api.port: want integer 0-65535")
+		}
+		c.API.Port = n
+		return true, nil
+	case "api.tls.cert":
+		c.API.TLS.Cert = clearOrValue(value)
+		return true, nil
+	case "api.tls.key":
+		c.API.TLS.Key = clearOrValue(value)
+		return true, nil
+	case "api.tls.insecure":
+		if value == "" || value == "-" {
+			c.API.TLS.Insecure = false
+			return true, nil
+		}
+		b, err := parseBoolish(value)
+		if err != nil {
+			return true, fmt.Errorf("api.tls.insecure: %w", err)
+		}
+		c.API.TLS.Insecure = b
+		return true, nil
 	}
 	return false, nil
 }
@@ -712,6 +766,11 @@ func pathKeyDescriptions() map[string]string {
 		"defaults.session.keep_alive":   "Hold session after COMPLETE for follow-ups",
 		"defaults.session.nudge":        "Idle delay before typing continue (default off; set e.g. 5m)",
 		"defaults.session.if_running":   "Overlap policy: skip|replace|coalesce|allow",
+		"api.host":                      "HTTP bind host (default 127.0.0.1; 0.0.0.0 opens LAN)",
+		"api.port":                      "HTTP bind port (default 0 = ephemeral; written to api.json)",
+		"api.tls.cert":                  "PEM cert path; required with api.tls.key for non-loopback HTTPS",
+		"api.tls.key":                   "PEM key path; required with api.tls.cert",
+		"api.tls.insecure":              "Allow plaintext on a non-loopback bind (Tailscale/LAN); default false",
 		"terminal":                      "macOS app for trebi run attach (Terminal|iTerm|Ghostty)",
 		"tools.fallback":                "When pin missing: require (fail) or path (use PATH)",
 		"notify.email":                  "Shell cmd for email alerts (tried first)",

@@ -3,9 +3,11 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,12 +20,109 @@ func BaseDir() string { return home.Base() }
 
 type Config struct {
 	Defaults   Defaults         `yaml:"defaults"`
+	API        APIConfig        `yaml:"api,omitempty"`
 	Terminal   string           `yaml:"terminal,omitempty"` // macOS: Terminal | iTerm | Ghostty
 	Tools      ToolsConfig      `yaml:"tools,omitempty"`
 	Notify     NotifyConfig     `yaml:"notify,omitempty"`
 	Files      FilesConfig      `yaml:"files,omitempty"`
 	Workspaces WorkspacesConfig `yaml:"workspaces,omitempty"`
 	Assistant  AssistantConfig  `yaml:"assistant,omitempty"`
+}
+
+// APIConfig is the HTTP bind for trebid. Default is loopback + ephemeral port.
+type APIConfig struct {
+	Host string `yaml:"host,omitempty"`
+	Port int    `yaml:"port,omitempty"`
+	TLS  APITLS `yaml:"tls,omitempty"`
+}
+
+// APITLS is the optional PEM pair for HTTPS. Both paths must be set together.
+// Insecure allows plaintext on a non-loopback bind (Tailscale/LAN).
+type APITLS struct {
+	Cert     string `yaml:"cert,omitempty"`
+	Key      string `yaml:"key,omitempty"`
+	Insecure bool   `yaml:"insecure,omitempty"`
+}
+
+const (
+	DefaultAPIHost = "127.0.0.1"
+	DefaultAPIPort = 0
+)
+
+// HostOrDefault is 127.0.0.1 when host is unset.
+func (a APIConfig) HostOrDefault() string {
+	h := strings.TrimSpace(a.Host)
+	if h == "" {
+		return DefaultAPIHost
+	}
+	return h
+}
+
+// ListenAddr is host:port for net.Listen (IPv6 hosts are bracketed).
+func (a APIConfig) ListenAddr() string {
+	return net.JoinHostPort(a.HostOrDefault(), strconv.Itoa(a.Port))
+}
+
+// TLSEnabled reports whether both cert and key paths are set.
+func (a APIConfig) TLSEnabled() bool {
+	return strings.TrimSpace(a.TLS.Cert) != "" && strings.TrimSpace(a.TLS.Key) != ""
+}
+
+// Loopback reports whether the bind host is loopback (or "localhost").
+func (a APIConfig) Loopback() bool {
+	h := a.HostOrDefault()
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+// PublicBind reports an unspecified or globally routed address (not RFC1918,
+// Tailscale CGNAT, or link-local). Doctor errors tls.insecure here.
+func (a APIConfig) PublicBind() bool {
+	h := a.HostOrDefault()
+	ip := net.ParseIP(h)
+	if ip == nil {
+		return !strings.EqualFold(h, "localhost")
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	return ip.IsUnspecified() || ip.IsGlobalUnicast()
+}
+
+// TLSFiles expands cert/key paths. Both empty is OK; one without the other errors.
+func (a APIConfig) TLSFiles() (cert, key string, err error) {
+	cert = expandTilde(strings.TrimSpace(a.TLS.Cert))
+	key = expandTilde(strings.TrimSpace(a.TLS.Key))
+	if cert == "" && key == "" {
+		return "", "", nil
+	}
+	if cert == "" || key == "" {
+		return "", "", fmt.Errorf("api.tls.cert and api.tls.key must both be set")
+	}
+	return cert, key, nil
+}
+
+// BindGuard refuses a non-loopback listen without TLS or tls.insecure (B28).
+func BindGuard(listenAddr string, a APIConfig) error {
+	host, _, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		host = listenAddr
+	}
+	g := a
+	g.Host = host
+	if g.Loopback() {
+		return nil
+	}
+	if g.TLSEnabled() {
+		return nil
+	}
+	if g.TLS.Insecure {
+		return nil
+	}
+	return fmt.Errorf("non-loopback bind %s requires api.tls.cert/api.tls.key or api.tls.insecure=true", listenAddr)
 }
 
 // WorkspacesConfig is the pathless-create root for remote workspace bootstrap.
@@ -428,6 +527,14 @@ defaults:
   #   nudge: ""
   #   if_running: ""       # skip | replace | coalesce | allow
 
+# api:
+#   host: 127.0.0.1        # 0.0.0.0 or a LAN/Tailscale IP opens remote access
+#   port: 0                # 0 = ephemeral; written to api.json after bind
+#   tls:
+#     cert: ""             # PEM cert; required with key for non-loopback HTTPS
+#     key: ""
+#     insecure: false      # allow plaintext on non-loopback (Tailscale/LAN)
+
 terminal: Terminal         # macOS: Terminal | iTerm | Ghostty
 
 tools:
@@ -603,6 +710,19 @@ func (c *Config) Validate() error {
 		ce.add("terminal", fmt.Sprintf("%q not in [Terminal, iTerm, Ghostty]", c.Terminal))
 	}
 
+	host := strings.TrimSpace(c.API.Host)
+	if host != "" && !validAPIHost(host) {
+		ce.add("api.host", fmt.Sprintf("invalid host %q", c.API.Host))
+	}
+	if c.API.Port < 0 || c.API.Port > 65535 {
+		ce.add("api.port", "must be 0-65535 (0 = ephemeral)")
+	}
+	cert := strings.TrimSpace(c.API.TLS.Cert)
+	key := strings.TrimSpace(c.API.TLS.Key)
+	if (cert == "") != (key == "") {
+		ce.add("api.tls", "cert and key must both be set, or both empty")
+	}
+
 	// defaults.session
 	s := c.Defaults.Session
 	ce.checkDuration("defaults.session.timeout", s.Timeout, true)
@@ -774,6 +894,34 @@ func validTerminal(v string) bool {
 		return true
 	}
 	return false
+}
+
+// validAPIHost accepts an IP or a DNS hostname. Empty is the default.
+func validAPIHost(h string) bool {
+	if h == "" {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return true
+	}
+	if len(h) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(h, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		for i, c := range label {
+			ok := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+			if !ok && c == '-' && i > 0 && i < len(label)-1 {
+				ok = true
+			}
+			if !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validFallbackMode(v string) bool {
