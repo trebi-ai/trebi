@@ -813,3 +813,50 @@ func TestWorkspaceShowHitsGetRoute(t *testing.T) {
 		t.Fatalf("out %q", out)
 	}
 }
+
+func TestWorkspaceMoveHitsPostRoute(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	if err := home.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	var gotMethod, gotPath, gotBody, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotQuery = r.Method, r.URL.Path, r.URL.RawQuery
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ws1","name":"ops","path":"/tmp/dest","rewritten":["alpha/JOB.md"]}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
+
+	if _, err := runCLI(t, client, "workspace", "move", "ops", "/tmp/dest"); err == nil {
+		t.Fatal("want confirm error without --force")
+	}
+	out, err := runCLI(t, client, "workspace", "move", "ops", "/tmp/dest", "--force")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != "POST" || gotPath != "/v1/workspaces/ops/move" {
+		t.Fatalf("%s %s", gotMethod, gotPath)
+	}
+	if !strings.Contains(gotQuery, "confirm=1") {
+		t.Fatalf("query %s", gotQuery)
+	}
+	if !strings.Contains(gotBody, `"path":"/tmp/dest"`) {
+		t.Fatalf("body %s", gotBody)
+	}
+	if !strings.Contains(out, "moved") || !strings.Contains(out, "/tmp/dest") {
+		t.Fatalf("out %q", out)
+	}
+
+	gotQuery = ""
+	if _, err := runCLI(t, client, "workspace", "move", "ops", "/tmp/dest", "--dry-run"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotQuery, "confirm=1") || !strings.Contains(gotBody, `"dry_run":true`) {
+		t.Fatalf("dry-run query=%s body=%s", gotQuery, gotBody)
+	}
+}

@@ -85,6 +85,20 @@ var (
 	ErrNoRoot = errors.New("workspaces.root is not configured")
 	// ErrAncestorFile reports create under a path whose nearest ancestor is a file.
 	ErrAncestorFile = errors.New("nearest existing ancestor is a file")
+	// ErrDestExists reports a move destination that already has content.
+	ErrDestExists = errors.New("destination exists")
+	// ErrDestInside reports a move destination inside the workspace itself.
+	ErrDestInside = errors.New("destination is inside the workspace")
+	// ErrSrcInsideDest reports a move destination that contains the workspace.
+	ErrSrcInsideDest = errors.New("destination contains the workspace")
+	// ErrSamePath reports a move to the current path.
+	ErrSamePath = errors.New("destination is the current path")
+	// ErrOrphaned reports a move of a history-only workspace with no folder.
+	ErrOrphaned = errors.New("orphaned workspace has no folder")
+	// ErrMissing reports both the current path and the destination are absent.
+	ErrMissing = errors.New("workspace folder is missing")
+	// ErrRebindID reports a rebind destination whose trebi.yaml id does not match.
+	ErrRebindID = errors.New("destination trebi.yaml id does not match")
 )
 
 // Add registers a workspace folder, minting id into trebi.yaml if missing.

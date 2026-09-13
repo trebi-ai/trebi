@@ -39,6 +39,15 @@ trebi workspace current --json
 
 `workspace current` is **local only**; remote: there is no sticky context — pass `workspace` explicitly.
 
+Move a registered folder (rewrites absolute paths in jobs and scripts; jobs should keep using absolute paths):
+
+```bash
+trebi workspace move reports /new/path/reports --force
+trebi workspace move reports /new/path/reports --dry-run
+```
+
+`--force` is required for the real move. `--mkdir` creates the destination parent. If you already `mv`'d the folder, pass the new path and trebi rebinds the id.
+
 ## Create and launch a job
 
 Write a `JOB.md` (see `trebi guide jobs-and-scheduling`), then:

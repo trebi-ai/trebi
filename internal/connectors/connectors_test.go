@@ -17,6 +17,45 @@ import (
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
+func TestConnectorsRewritePathPrefix(t *testing.T) {
+	_, _, _, svc := openStack(t)
+	ctx := context.Background()
+	old, neu := "/tmp/old-ws", "/tmp/new-ws"
+	d := connectors.Definition{
+		Name:    "mail",
+		Type:    "stream",
+		Command: "python " + old + "/hook.py",
+		Format:  "json",
+		Cwd:     old,
+		Env:     map[string]string{"ROOT": old + "/data"},
+	}
+	if err := svc.Upsert(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.RewritePathPrefix(old, neu, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview) != 1 || preview[0] != "mail" {
+		t.Fatalf("preview %v", preview)
+	}
+	got, _ := svc.Get("mail")
+	if got["cwd"] != old {
+		t.Fatalf("dry-run wrote cwd %v", got["cwd"])
+	}
+	names, err := svc.RewritePathPrefix(old, neu, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 {
+		t.Fatalf("names %v", names)
+	}
+	got, _ = svc.Get("mail")
+	if got["cwd"] != neu || got["command"] != "python "+neu+"/hook.py" {
+		t.Fatalf("rewritten %v", got)
+	}
+}
+
 // TestConnectors_UpsertListSaveRoundTrip writes definition to connectors.yaml
 // and lists it back through the real service API.
 func TestConnectors_UpsertListSaveRoundTrip(t *testing.T) {

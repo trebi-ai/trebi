@@ -23,6 +23,7 @@ func (s *Server) routeWorkspaces(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/workspaces", s.handleWorkspacesAdd)
 	mux.HandleFunc("GET /v1/workspaces/{id}", s.handleWorkspaceGet)
 	mux.HandleFunc("PATCH /v1/workspaces/{id}", s.handleWorkspacePatch)
+	mux.HandleFunc("POST /v1/workspaces/{id}/move", s.handleWorkspaceMove)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.handleWorkspaceDelete)
 	mux.HandleFunc("GET /v1/workspaces/{id}/assistant", s.handleAssistantGet)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/assistant", s.handleAssistantPut)
@@ -516,6 +517,85 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
+}
+
+func (s *Server) handleWorkspaceMove(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path   string `json:"path"`
+		Mkdir  bool   `json:"mkdir"`
+		DryRun bool   `json:"dry_run"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Path) == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "path required")
+		return
+	}
+	ws, err := s.ws.Resolve(r.Context(), r.PathValue("id"))
+	if err == sql.ErrNoRows {
+		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if !body.DryRun && s.workspaceHasLiveRuns(r.Context(), ws.ID) {
+		writeErr(w, http.StatusConflict, "conflict", "workspace has live runs; kill them first")
+		return
+	}
+	out, err := s.ws.Move(r.Context(), ws.ID, workspaces.MoveOpts{
+		Path: body.Path, Mkdir: body.Mkdir, DryRun: body.DryRun,
+	})
+	if err != nil {
+		writeWorkspaceMoveErr(w, err)
+		return
+	}
+	resp := struct {
+		workspaces.MoveResult
+		ConnectorsRewritten []string `json:"connectors_rewritten,omitempty"`
+	}{MoveResult: *out}
+	if s.connectors != nil {
+		names, err := s.connectors.RewritePathPrefix(ws.Path, out.Path, body.DryRun)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		resp.ConnectorsRewritten = names
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) workspaceHasLiveRuns(ctx context.Context, wsID string) bool {
+	if s.runs == nil {
+		return false
+	}
+	_, live, err := s.runs.StatusByJob(ctx)
+	if err != nil {
+		return false
+	}
+	prefix := wsID + "/"
+	for key, ids := range live {
+		if strings.HasPrefix(key, prefix) && len(ids) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func writeWorkspaceMoveErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, workspaces.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, workspaces.ErrNested), errors.Is(err, workspaces.ErrContains),
+		errors.Is(err, workspaces.ErrDestExists), errors.Is(err, workspaces.ErrDestInside),
+		errors.Is(err, workspaces.ErrSrcInsideDest):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	default:
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	}
 }
 
 func (s *Server) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request) {

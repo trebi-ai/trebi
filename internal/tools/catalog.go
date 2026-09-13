@@ -978,6 +978,33 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildWorkspacePatch(id, name, gitEnabled), nil
 			}),
+			"move": func() Action {
+				e := act("POST /v1/workspaces/{id}/move", Input{"id": "ws1", "path": "/tmp/reports", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
+					id, err := in.reqStr("id")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					path, err := in.reqStr("path")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					mkdir, err := in.flag("mkdir")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					dry, err := in.flag("dry_run")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					confirm, err := in.flag("confirm")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					return request.BuildWorkspaceMove(id, path, mkdir, dry, confirm), nil
+				})
+				e.Destructive = true
+				return e
+			}(),
 			"delete": confirmDel("DELETE /v1/workspaces/{id}", "id", "ws1", request.BuildWorkspaceDelete),
 		},
 

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,7 +102,7 @@ type Service struct {
 type proc struct {
 	cancel context.CancelFunc // set once at creation
 
-	mu       sync.Mutex // guards the fields below (readLoop writes, List reads)
+	mu        sync.Mutex // guards the fields below (readLoop writes, List reads)
 	cmd       *exec.Cmd  // nil until the launch completes
 	restarts  int
 	events    int64
@@ -337,6 +338,53 @@ func (s *Service) Delete(ctx context.Context, name string) error {
 		s.log.Warn("bus append", "error", err)
 	}
 	return nil
+}
+
+// RewritePathPrefix updates connector cwd/command/env that point at old.
+// dryRun reports the names without writing. Names are sorted.
+func (s *Service) RewritePathPrefix(old, new string, dryRun bool) ([]string, error) {
+	if s == nil || strings.TrimSpace(old) == "" || old == new {
+		return nil, nil
+	}
+	if err := s.Load(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defs := copyDefs(s.defs)
+	s.mu.Unlock()
+	var names []string
+	for name, d := range defs {
+		changed := false
+		if next, ok := workspaces.RewritePathPrefix(d.Cwd, old, new); ok {
+			d.Cwd = next
+			changed = true
+		}
+		if next, ok := workspaces.RewritePathPrefix(d.Command, old, new); ok {
+			d.Command = next
+			changed = true
+		}
+		if len(d.Env) > 0 {
+			env := make(map[string]string, len(d.Env))
+			for k, v := range d.Env {
+				if next, ok := workspaces.RewritePathPrefix(v, old, new); ok {
+					env[k] = next
+					changed = true
+				} else {
+					env[k] = v
+				}
+			}
+			d.Env = env
+		}
+		if changed {
+			defs[name] = d
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	if dryRun || len(names) == 0 {
+		return names, nil
+	}
+	return names, s.Save(defs)
 }
 
 func copyDefs(in map[string]Definition) map[string]Definition {

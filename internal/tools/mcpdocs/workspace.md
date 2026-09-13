@@ -30,6 +30,16 @@ Change one workspace.
 - `name` (string, optional): new display name.
 - `git_enabled` (boolean, optional): enable or disable git tracking.
 
+### move
+Move the workspace folder to a new absolute path and rewrite absolute path prefixes in its files (jobs, scripts). Connector `cwd` / command / env values that point at the old path are rewritten too. Historical run rows are left alone.
+- `id` (string, required): workspace id.
+- `path` (string, required): new absolute directory path.
+- `mkdir` (boolean, optional): create the destination parent when absent.
+- `dry_run` (boolean, optional): report rewrites without moving.
+- `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`. Live runs in the workspace return `conflict`.
+
+If the folder was already moved on disk and `trebi.yaml` still has this id, the call rebinds the registry to `path` and rewrites files there.
+
 ### delete
 Unregister one workspace and delete its folder on disk. Destructive. Run rows stay.
 - `id` (string, required): workspace id.

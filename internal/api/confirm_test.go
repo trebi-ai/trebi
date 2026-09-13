@@ -79,6 +79,7 @@ type confirmCase struct {
 func confirmCases(wsID string) []confirmCase {
 	return []confirmCase{
 		{"workspace", http.MethodDelete, "/v1/workspaces/" + wsID, "workspace", "delete", map[string]any{"id": wsID}},
+		{"workspace move", http.MethodPost, "/v1/workspaces/" + wsID + "/move", "workspace", "move", map[string]any{"id": wsID, "path": "/trebi-move-confirm-no-such/dest"}},
 		{"job", http.MethodDelete, "/v1/jobs/report?workspace=" + wsID, "job", "delete", map[string]any{"name": "report", "workspace": wsID}},
 		{"job purge", http.MethodDelete, "/v1/jobs/report?workspace=" + wsID + "&purge=1", "job", "delete", map[string]any{"name": "report", "workspace": wsID, "purge": true}},
 		{"job memory", http.MethodDelete, "/v1/jobs/report/memory?workspace=" + wsID, "job", "memory_clear", map[string]any{"name": "report", "workspace": wsID}},

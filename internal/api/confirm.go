@@ -24,6 +24,9 @@ func newConfirmGate() *confirmGate {
 		"DELETE /v1/workspaces/{id}": {2, func(n string, _ *http.Request) string {
 			return "deletes workspace " + n + " and its folder on disk; run rows stay"
 		}},
+		"POST /v1/workspaces/{id}/move": {2, func(n string, _ *http.Request) string {
+			return "moves workspace " + n + " and rewrites absolute paths in its files"
+		}},
 		"DELETE /v1/jobs/{name}": {2, func(n string, r *http.Request) string {
 			if r.URL.Query().Get("purge") == "1" {
 				return "deletes job " + n + " and its whole folder; run rows stay"

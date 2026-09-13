@@ -88,6 +88,18 @@ func workspaceCommand() *cli.Command {
 				Action:    runWorkspaceRename,
 			},
 			{
+				Name:      "move",
+				Usage:     "move a workspace folder and rewrite absolute paths inside it",
+				ArgsUsage: "<id|name> <new-path>",
+				Flags: []cli.Flag{
+					forceFlag("required; moves the folder and rewrites absolute paths"),
+					&cli.BoolFlag{Name: "mkdir", Usage: "create the destination parent if missing"},
+					&cli.BoolFlag{Name: "dry-run", Usage: "report rewrites without moving"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runWorkspaceMove,
+			},
+			{
 				Name:      "set",
 				Usage:     "update workspace name and/or git_enabled",
 				ArgsUsage: "<id>",
@@ -149,6 +161,86 @@ func runWorkspaceRemove(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "removed %s\n", id)
+	return nil
+}
+
+func runWorkspaceMove(_ context.Context, c *cli.Command) error {
+	id, dest := c.Args().Get(0), c.Args().Get(1)
+	if id == "" || dest == "" {
+		return fmt.Errorf("usage: trebi workspace move <id|name> <new-path>")
+	}
+	dry := c.Bool("dry-run")
+	confirm := dry
+	if !dry {
+		var err error
+		confirm, err = confirmed(c, "moves the workspace folder for "+id+" and rewrites absolute paths in its files")
+		if err != nil {
+			return err
+		}
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := client.DoHTTP(request.BuildWorkspaceMove(id, dest, c.Bool("mkdir"), dry, confirm), &out); err != nil {
+		return err
+	}
+	if !dry {
+		if err := updateStickyPath(c, id, mapStr(out, "name"), mapStr(out, "path")); err != nil {
+			return err
+		}
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, out)
+	}
+	from := dest
+	if p := mapStr(out, "path"); p != "" {
+		from = p
+	}
+	verb, rewrote := "moved", "rewrote"
+	if dry {
+		verb, rewrote = "would move", "would rewrite"
+	}
+	fmt.Fprintf(outWriter(c), "%s %s → %s\n", verb, dash(id), from)
+	if n := len(anySlice(out["rewritten"])); n > 0 {
+		fmt.Fprintf(outWriter(c), "%s %d file(s)\n", rewrote, n)
+	}
+	if n := len(anySlice(out["connectors_rewritten"])); n > 0 {
+		fmt.Fprintf(outWriter(c), "%s %d connector(s)\n", rewrote, n)
+	}
+	return nil
+}
+
+func anySlice(v any) []any {
+	s, _ := v.([]any)
+	return s
+}
+
+func updateStickyPath(c *cli.Command, id, name, newPath string) error {
+	if newPath == "" {
+		return nil
+	}
+	st, err := stickyFor(c)
+	if err != nil {
+		return err
+	}
+	if st != nil && (st.WorkspaceID == id || equalFoldName(id, st.Name) || equalFoldName(name, st.Name) || st.WorkspaceID == name) {
+		st.Path = newPath
+		if err := st.Save(); err != nil {
+			return err
+		}
+	}
+	if link, ok := FindLinked(id); ok {
+		link.Path = newPath
+		return link.Save()
+	}
+	if name != "" {
+		if link, ok := FindLinked(name); ok {
+			link.Path = newPath
+			return link.Save()
+		}
+	}
 	return nil
 }
 

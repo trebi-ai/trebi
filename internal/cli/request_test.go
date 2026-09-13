@@ -397,13 +397,17 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatal("trebi remote should be removed")
 	}
 	ws := findCmd(app.Commands, "workspace")
-	for _, want := range []string{"list", "add", "use", "current", "unlink", "remove", "rename"} {
+	for _, want := range []string{"list", "add", "use", "current", "unlink", "remove", "rename", "move"} {
 		if findCmd(ws.Commands, want) == nil {
 			t.Fatalf("workspace missing %s", want)
 		}
 	}
 	if !hasFlag(findCmd(ws.Commands, "remove"), "force") {
 		t.Fatal("workspace remove missing --force")
+	}
+	move := findCmd(ws.Commands, "move")
+	if !hasFlag(move, "force") || !hasFlag(move, "mkdir") || !hasFlag(move, "dry-run") {
+		t.Fatal("workspace move missing --force/--mkdir/--dry-run")
 	}
 	asstMem := findCmd(findCmd(app.Commands, "assistant").Commands, "memory")
 	for _, want := range []string{"show", "add", "remove", "set", "clear"} {

@@ -607,6 +607,22 @@ func BuildWorkspaceRename(id, name string) HTTPRequest {
 	return BuildWorkspacePatch(id, &name, nil)
 }
 
+// BuildWorkspaceMove builds POST /v1/workspaces/{id}/move.
+func BuildWorkspaceMove(id, path string, mkdir, dryRun, confirm bool) HTTPRequest {
+	body := map[string]any{"path": path}
+	if mkdir {
+		body["mkdir"] = true
+	}
+	if dryRun {
+		body["dry_run"] = true
+	}
+	return HTTPRequest{
+		Method: "POST",
+		Path:   withQuery("/v1/workspaces/"+url.PathEscape(id)+"/move", confirmQ(confirm)),
+		Body:   body,
+	}
+}
+
 // BuildFileListPath builds GET /v1/workspaces/{id}/files?prefix=&cursor=&limit=.
 func BuildFileListPath(workspaceID, prefix, afterPath string, limit int, recursive bool) string {
 	return withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/files",

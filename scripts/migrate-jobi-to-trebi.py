@@ -72,8 +72,10 @@ TABLE_MAP = {
     "source_cursors": "connector_cursors",
     "schedule_anchors": "schedules",
 }
+# Schema v11: run_segments.layer values agent→session, task→run.
+LAYER_MAP = {"agent": "session", "task": "run"}
 SECRET_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|AUTH)", re.I)
-EXPECTED_SCHEMA = 10
+EXPECTED_SCHEMA = 12
 
 
 def default_jobi_dir() -> Path:
@@ -187,9 +189,25 @@ def _schedule_entry(item: str, top_when: Any) -> dict[str, Any]:
     return entry
 
 
-def rewrite_frontmatter_inplace(data: Any, report: list[str]) -> None:
+def rewrite_frontmatter_inplace(
+    data: Any, report: list[str], *, src_dir: Path | None = None
+) -> None:
     if not isinstance(data, dict):
         return
+
+    # A working_dir that points at the job's own old folder goes stale once the
+    # folder moves. ResolvedWorkingDir falls back to the job dir, so dropping it
+    # keeps the same meaning and follows the move. Paths to an external project
+    # are deliberate and stay.
+    wd = data.get("working_dir")
+    if src_dir is not None and isinstance(wd, str) and wd.strip():
+        try:
+            same = Path(wd).expanduser().resolve() == src_dir.resolve()
+        except OSError:
+            same = False
+        if same:
+            report.append("dropped self-referential working_dir: follows the job folder")
+            del data["working_dir"]
 
     command = data.get("command")
     tool = data.get("tool")
@@ -214,6 +232,13 @@ def rewrite_frontmatter_inplace(data: Any, report: list[str]) -> None:
 
     if "agent_context" in data:
         data["assistant_context"] = data.pop("agent_context")
+
+    # Ownership is the folder since schema v12 (plan A.3): these pointer keys
+    # are dead and trebi's parser ignores them.
+    for dead in ("oversight", "parent_agent", "jobs"):
+        if dead in data:
+            report.append(f"dropped dead key {dead}: ownership is the folder")
+            del data[dead]
 
     if "memory" in data and isinstance(data["memory"], str) and data["memory"].strip():
         data["memory"] = True
@@ -286,7 +311,13 @@ def dump_frontmatter(data: Any, body: str) -> str:
     return f"---\n{fm}---\n{body}"
 
 
-def rewrite_job_text(text: str, report: list[str], *, rewrite_sentinel: bool = True) -> tuple[str, bool]:
+def rewrite_job_text(
+    text: str,
+    report: list[str],
+    *,
+    rewrite_sentinel: bool = True,
+    src_dir: Path | None = None,
+) -> tuple[str, bool]:
     fm_raw, _full, body = split_frontmatter(text)
     if fm_raw is None:
         new_body = body
@@ -299,7 +330,7 @@ def rewrite_job_text(text: str, report: list[str], *, rewrite_sentinel: bool = T
     data = yaml.load(fm_raw) if fm_raw.strip() else {}
     if not isinstance(data, dict):
         data = {}
-    rewrite_frontmatter_inplace(data, report)
+    rewrite_frontmatter_inplace(data, report, src_dir=src_dir)
     new_body = body
     if rewrite_sentinel and SENTINEL_OLD in new_body:
         new_body = new_body.replace(SENTINEL_OLD, SENTINEL_NEW)
@@ -681,6 +712,7 @@ class MigrationPlan:
     mode: str
     job: str | None = None
     target: TargetWorkspace | None = None
+    agent: str | None = None
     phases: list[PhasePlan] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     workspace_map: dict[str, str] = field(default_factory=dict)
@@ -779,9 +811,10 @@ def plan_migrate(
     *,
     job: str | None = None,
     target: TargetWorkspace | None = None,
+    agent: str | None = None,
 ) -> MigrationPlan:
     plan = MigrationPlan(
-        jobi_dir=jobi_dir, trebi_dir=trebi_dir, mode=mode, job=job, target=target
+        jobi_dir=jobi_dir, trebi_dir=trebi_dir, mode=mode, job=job, target=target, agent=agent
     )
 
     pf = PhasePlan("preflight", "check jobi present, schema, latch")
@@ -910,6 +943,26 @@ def plan_migrate(
 # ── DB apply ───────────────────────────────────────────────────────────────
 
 
+def run_job_name(d: dict[str, Any], agent: str | None) -> str:
+    """runs.job for a migrated task.
+
+    Job identity in trebi is the workspace-relative folder, so an agent-owned
+    job is agents/<name>/<job> (plan A.6/C.1). An agent's own wake keeps the
+    agent name: an agent does not own itself.
+
+    job_name is authoritative. job_file is history and can hold a path from an
+    older layout (workflows/<name>.md, or a since-corrected spelling), so it is
+    only a fallback when job_name is empty.
+    """
+    name = str(d.get("job_name") or "")
+    if not agent:
+        return name
+    if (d.get("kind") or "") == "agent":
+        return f"agents/{agent}"
+    folder = Path(name).name if name else Path(str(d.get("job_file") or "")).parent.name
+    return f"agents/{agent}/{folder}" if folder else name
+
+
 def workspace_id_for(path: str, wmap: dict[str, str], target_id: str | None = None) -> str:
     if target_id:
         return target_id
@@ -997,6 +1050,7 @@ def apply_tasks(
     *,
     job_filter: str | None = None,
     target_id: str | None = None,
+    agent: str | None = None,
 ) -> tuple[int, set[str]]:
     cols = [r[1] for r in jconn.execute("PRAGMA table_info(tasks)")]
     ids: set[str] = set()
@@ -1009,9 +1063,9 @@ def apply_tasks(
             continue
         path_for_ws = d.get("job_file") or d.get("workspace_path") or ""
         wid = workspace_id_for(path_for_ws, wmap, target_id)
+        # jobi 'agent' is first-class since v12; it no longer collapses into
+        # the workspace assistant.
         kind = d.get("kind") or "job"
-        if kind == "agent":
-            kind = "assistant"
         harness, _notes = detect_harness(d.get("command"), None)
         if not harness:
             harness = d.get("command") or "claude"
@@ -1056,7 +1110,7 @@ def apply_tasks(
             (
                 d["id"],
                 wid,
-                d.get("job_name") or "",
+                run_job_name(d, agent),
                 kind,
                 reason,
                 d.get("status") or "exited",
@@ -1101,9 +1155,13 @@ def apply_timeline(
         ):
             if task_ids is not None and row[0] not in task_ids:
                 continue
+            # Schema v11 renamed the segment layers so "agent" could become the
+            # product noun. Rows imported raw would bypass that migration.
+            vals = list(row)
+            vals[1] = LAYER_MAP.get(vals[1], vals[1])
             tconn.execute(
                 "INSERT INTO run_segments (run_id, layer, state, started_at, ended_at, duration_ms, reason, source, detail_json) VALUES (?,?,?,?,?,?,?,?,?)",
-                row,
+                vals,
             )
         for row in jconn.execute(
             "SELECT task_id, at, kind, source, detail_json FROM task_events"
@@ -1118,6 +1176,23 @@ def apply_timeline(
         print(f"timeline skip: {e}")
 
 
+def queue_kind(d: dict, task_kind: dict[str, str]) -> str:
+    """Run kind for a jobi event_queue row.
+
+    Prefer the launched task's kind. jobi marked an agent wake with an empty
+    parent_agent and a bare (slash-free) job_name; a job always has a parent
+    or a path-shaped name.
+    """
+    k = task_kind.get(str(d.get("task_id") or ""))
+    if k in ("agent", "job"):
+        return k
+    name = str(d.get("job_name") or "")
+    parent = str(d.get("parent_agent") or "")
+    if name and not parent and "/" not in name:
+        return "agent"
+    return "job"
+
+
 def apply_queue(
     jconn: sqlite3.Connection,
     tconn: sqlite3.Connection,
@@ -1125,11 +1200,23 @@ def apply_queue(
     *,
     job_filter: str | None = None,
     target_id: str | None = None,
+    agent: str | None = None,
 ) -> int:
     try:
         cols = [r[1] for r in jconn.execute("PRAGMA table_info(event_queue)")]
     except sqlite3.Error:
         return 0
+    # jobi's event_queue has no kind column. tasks.kind is authoritative, so
+    # resolve it through task_id instead of guessing from the name shape.
+    task_kind: dict[str, str] = {}
+    try:
+        for tid, tkind in jconn.execute(
+            "SELECT id, kind FROM tasks WHERE id IS NOT NULL AND kind IS NOT NULL"
+        ):
+            if tid:
+                task_kind[str(tid)] = str(tkind)
+    except sqlite3.Error:
+        pass
     n = 0
     for row in jconn.execute("SELECT * FROM event_queue"):
         d = dict(zip(cols, row))
@@ -1138,7 +1225,7 @@ def apply_queue(
             if jn != job_filter and job_filter.lower() != jn.lower():
                 continue
         wid = workspace_id_for(d.get("workspace_path") or "", wmap, target_id)
-        kind = "assistant" if d.get("job_name") and d.get("job_name") == d.get("parent_agent") else "job"
+        kind = queue_kind(d, task_kind)
         tconn.execute(
             """INSERT OR REPLACE INTO event_queue (
               id, connector, workspace_id, job, kind, on_index, conversation_key,
@@ -1149,7 +1236,7 @@ def apply_queue(
                 d["id"],
                 d.get("source"),
                 wid,
-                d.get("job_name"),
+                run_job_name(d, agent),
                 kind,
                 d.get("on_index") or 0,
                 d.get("conversation_key") or "",
@@ -1209,6 +1296,23 @@ def apply_policy_cursors(jconn: sqlite3.Connection, tconn: sqlite3.Connection) -
         pass
 
 
+def schedule_spec(interval: str) -> str:
+    """jobi interval -> trebi schedules.spec.
+
+    RecomputeFromJob writes "@every <d>" for every: triggers and keeps
+    last_fired_at only when the stored spec matches. A bare "6h" therefore
+    resets the anchor we just migrated.
+    """
+    s = (interval or "").strip()
+    if not s:
+        return ""
+    if s.startswith("@"):
+        return s
+    if " " in s:  # cron is passed through unchanged
+        return s
+    return "@every " + s
+
+
 def apply_schedules(
     jconn: sqlite3.Connection,
     tconn: sqlite3.Connection,
@@ -1216,6 +1320,7 @@ def apply_schedules(
     *,
     job_filter: str | None = None,
     target_id: str | None = None,
+    agent: str | None = None,
 ) -> int:
     try:
         rows = list(jconn.execute("SELECT key, anchor_time, interval FROM schedule_anchors"))
@@ -1243,11 +1348,13 @@ def apply_schedules(
         if job_filter and job != job_filter and job.lower() != job_filter.lower():
             continue
         wid = target_id or job_ws.get(job) or "imported-orphans"
+        if agent:
+            job = f"agents/{agent}/{job}"
         tconn.execute(
             """INSERT OR REPLACE INTO schedules (
               workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at, anchor, updated_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (wid, job, idx, interval or "", "UTC", 0, None, anchor_time, anchor_time, now),
+            (wid, job, idx, schedule_spec(interval), "UTC", 0, None, anchor_time, anchor_time, now),
         )
         n += 1
     return n
@@ -1334,20 +1441,35 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
     tconn = sqlite3.connect(tdb)
     try:
         n, ids = apply_tasks(
-            jconn, tconn, plan.workspace_map, job_filter=job_filter, target_id=target_id
+            jconn,
+            tconn,
+            plan.workspace_map,
+            job_filter=job_filter,
+            target_id=target_id,
+            agent=plan.agent,
         )
         print(f"inserted runs: {n}")
         apply_timeline(jconn, tconn, ids if job_filter else None)
         print("timeline segments+events copied")
         n = apply_queue(
-            jconn, tconn, plan.workspace_map, job_filter=job_filter, target_id=target_id
+            jconn,
+            tconn,
+            plan.workspace_map,
+            job_filter=job_filter,
+            target_id=target_id,
+            agent=plan.agent,
         )
         print(f"queue rows: {n}")
         if not job_filter:
             apply_policy_cursors(jconn, tconn)
             print("policy + cursors + metrics copied")
         n = apply_schedules(
-            jconn, tconn, plan.workspace_map, job_filter=job_filter, target_id=target_id
+            jconn,
+            tconn,
+            plan.workspace_map,
+            job_filter=job_filter,
+            target_id=target_id,
+            agent=plan.agent,
         )
         print(f"schedule seeds: {n}")
         now = now_iso()
@@ -1397,16 +1519,95 @@ def find_job_files(workspace: Path) -> list[Path]:
     return out
 
 
+# Directories never worth copying into a fresh workspace.
+SKIP_DIRS = {".git", "node_modules", ".trebi", "__pycache__", ".venv", ".pytest_cache", ".mypy_cache"}
+# Files that are build noise or local editor state.
+SKIP_FILES = {".DS_Store"}
+# Job manifests are rewritten separately; everything else beside them is support.
+JOB_MANIFESTS = {"JOB.md", "AGENT.md", "SOUL.md", "TREBI.md"}
+
+
+def agent_support_files(agent_dir: Path) -> list[Path]:
+    """Root-level files beside AGENT.md (its MEMORY.md), excluding job folders.
+
+    Only the top level: everything deeper belongs to a job and is carried by
+    that job's own entry.
+    """
+    out: list[Path] = []
+    if not agent_dir.is_dir():
+        return out
+    for f in sorted(agent_dir.iterdir()):
+        if not f.is_file():
+            continue
+        if f.name in JOB_MANIFESTS or f.name in SKIP_FILES:
+            continue
+        out.append(f)
+    return out
+
+
+def job_support_files(job_dir: Path) -> list[Path]:
+    """Every file in a job folder except its manifest, junk, and caches.
+
+    A job in trebi is its folder (internal/job/discover.go names the job from
+    the directory), so MEMORY.md, scripts/ and templates/ belong to it. These
+    are copied byte-for-byte: a jobi mailbox like jobi@ocral.org appears in
+    memory prose as a real address, so no substitution is safe here.
+    """
+    out: list[Path] = []
+    for root, dirs, files in os.walk(job_dir):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for f in sorted(files):
+            if f in JOB_MANIFESTS or f in SKIP_FILES:
+                continue
+            out.append(Path(root) / f)
+    return out
+
+
+AGENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def operator_dest(target: TargetWorkspace | None, fallback: Path, agent: str | None) -> Path:
+    """Where the jobi AGENT.md lands.
+
+    Agent mode keeps it as AGENT.md at agents/<name>/ (the shipped layout;
+    a nested operator). Without --agent it becomes the workspace assistant's
+    TREBI.md at the root, which was the pre-agents behaviour.
+    """
+    if agent and target:
+        return target.path / "agents" / agent / "AGENT.md"
+    return fallback.with_name("TREBI.md")
+
+
+def agent_rel_dest(rel: Path, agent: str) -> Path:
+    """Map a jobi-relative job path onto the canonical agent layout.
+
+    trebi has no jobs/ level: a job owned by an agent lives at
+    agents/<name>/<job>/JOB.md, and ownership is derived from that path
+    (internal/job/discover.go). jobi nested them as jobs/<area>/<job>/, so the
+    intermediate folders are flattened to the job's own folder name.
+    """
+    parts = list(rel.parts)
+    if parts and parts[0] == "jobs":
+        parts = parts[1:]
+    # Keep only the job folder + filename; drop grouping dirs like finance/.
+    if len(parts) > 2:
+        parts = parts[-2:]
+    return Path("agents") / agent / Path(*parts)
+
+
 def dest_for_job(
     path: Path,
     source_ws: Path | None,
     target: TargetWorkspace | None,
     incremental: bool,
+    agent: str | None = None,
 ) -> Path:
     if incremental and target:
         if source_ws:
             try:
                 rel = path.resolve().relative_to(source_ws.resolve())
+                if agent:
+                    return target.path / agent_rel_dest(rel, agent)
                 # If the target is a nested agent dir of the source, strip that prefix.
                 try:
                     nested = target.path.resolve().relative_to(source_ws.resolve())
@@ -1430,6 +1631,7 @@ def plan_rewrite(
     target: TargetWorkspace | None,
     incremental: bool,
     rewrite_sentinel: bool,
+    agent: str | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     lines: list[str] = []
     details: list[dict[str, Any]] = []
@@ -1451,35 +1653,51 @@ def plan_rewrite(
                 header_written = True
             report: list[str] = []
             text = path.read_text(encoding="utf-8", errors="replace")
-            dest = dest_for_job(path, ws, target, incremental)
+            dest = dest_for_job(path, ws, target, incremental, agent)
             if path.name == "SOUL.md":
+                op_dest = operator_dest(target, dest, agent)
                 details.append(
                     {
                         "path": str(path),
-                        "dest": str(dest.with_name("TREBI.md")),
-                        "action": "merge-into-TREBI.md",
+                        "dest": str(op_dest),
+                        "action": f"merge-into-{op_dest.name}",
                         "changed": True,
                         "source_ws": str(ws),
                     }
                 )
-                lines.append(f"  MERGE {path.relative_to(ws)} → {dest.with_name('TREBI.md')}")
+                lines.append(f"  MERGE {path.relative_to(ws)} → {op_dest}")
                 continue
             if path.name == "AGENT.md":
+                op_dest = operator_dest(target, dest, agent)
                 details.append(
                     {
                         "path": str(path),
-                        "dest": str(dest.with_name("TREBI.md")),
-                        "action": "merge-into-TREBI.md",
+                        "dest": str(op_dest),
+                        "action": f"merge-into-{op_dest.name}",
                         "changed": True,
                         "source_ws": str(ws),
                     }
                 )
-                lines.append(f"  MERGE {path.relative_to(ws)} → {dest.with_name('TREBI.md')}")
-                new_text, _changed = rewrite_job_text(text, report, rewrite_sentinel=rewrite_sentinel)
+                lines.append(f"  MERGE {path.relative_to(ws)} → {op_dest}")
+                # The agent's own MEMORY.md sits beside AGENT.md at the root.
+                agent_dest_dir = op_dest.parent
+                for sup in agent_support_files(path.parent):
+                    sup_dest = agent_dest_dir / sup.name
+                    details.append(
+                        {
+                            "path": str(sup),
+                            "dest": str(sup_dest),
+                            "action": "copy-support",
+                            "changed": False,
+                            "source_ws": str(ws),
+                        }
+                    )
+                    lines.append(f"  + {sup.name} (agent support → {sup_dest})")
+                new_text, _changed = rewrite_job_text(text, report, rewrite_sentinel=rewrite_sentinel, src_dir=path.parent)
                 for r in report:
                     lines.append(f"    ! {r}")
                 continue
-            new_text, changed = rewrite_job_text(text, report, rewrite_sentinel=rewrite_sentinel)
+            new_text, changed = rewrite_job_text(text, report, rewrite_sentinel=rewrite_sentinel, src_dir=path.parent)
             action = "rewrite" if changed else "unchanged"
             if incremental and target:
                 action = f"copy→{dest}"
@@ -1493,6 +1711,21 @@ def plan_rewrite(
                     "new_text": new_text if changed else None,
                 }
             )
+            # A job is its folder: carry MEMORY.md, scripts/, templates/ too.
+            for sup in job_support_files(path.parent):
+                sup_rel = sup.relative_to(path.parent)
+                sup_dest = dest.parent / sup_rel
+                details.append(
+                    {
+                        "path": str(sup),
+                        "dest": str(sup_dest),
+                        "action": "copy-support",
+                        "changed": False,
+                        "source_ws": str(ws),
+                    }
+                )
+                lines.append(f"  + {sup_rel} (support → {sup_dest})")
+
             mark = "*" if changed else " "
             try:
                 rel = path.relative_to(ws)
@@ -1525,11 +1758,26 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
     if args.workspace:
         workspaces = [Path(args.workspace)]
     job = getattr(args, "job", None)
+    agent = getattr(args, "agent", None)
+    if agent:
+        agent = agent.strip().lower()
+        if not AGENT_NAME_RE.match(agent):
+            print(
+                f"ERROR: --agent {agent!r} must match [a-z0-9][a-z0-9-]* "
+                "(internal/job/discover.go agentNameRe)",
+                file=sys.stderr,
+            )
+            return 2
     target_spec = getattr(args, "target_workspace", None)
     if not target_spec and args.mirror:
         target_spec = str(trebi / "shadow-workspaces")
     target = resolve_target_workspace(trebi, target_spec)
-    incremental = bool(job or args.mirror)
+    # An explicit --target-workspace always means copy-to-target. Only a full
+    # run with no target is an in-place cutover.
+    incremental = bool(job or args.mirror or target_spec or agent)
+    if agent and not target_spec:
+        print("ERROR: --agent requires --target-workspace", file=sys.stderr)
+        return 2
     if incremental and args.apply and not target:
         print("ERROR: --job --apply requires --target-workspace", file=sys.stderr)
         return 2
@@ -1544,6 +1792,7 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
         target=target,
         incremental=incremental,
         rewrite_sentinel=not args.no_sentinels,
+        agent=agent,
     )
     for line in lines:
         print(line)
@@ -1562,7 +1811,7 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
             report: list[str] = []
-            new_text, _ = rewrite_job_text(text, report, rewrite_sentinel=not args.no_sentinels)
+            new_text, _ = rewrite_job_text(text, report, rewrite_sentinel=not args.no_sentinels, src_dir=path.parent)
             print(f"\n--- {path}")
             if d.get("dest") and d["dest"] != d["path"]:
                 print(f"+++ {d['dest']}")
@@ -1618,7 +1867,7 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             soul = path.parent / "SOUL.md"
             agent_text = path.read_text(encoding="utf-8", errors="replace")
             report: list[str] = []
-            new_agent, _ = rewrite_job_text(agent_text, report, rewrite_sentinel=not args.no_sentinels)
+            new_agent, _ = rewrite_job_text(agent_text, report, rewrite_sentinel=not args.no_sentinels, src_dir=path.parent)
             soul_body = ""
             if soul.exists():
                 soul_body = soul.read_text(encoding="utf-8", errors="replace")
@@ -1627,9 +1876,14 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             data = load_fm_map(fm or "")
             data = rewrite_frontmatter_map(data, report)
             data.setdefault("memory", True)
+            if dest.name == "AGENT.md":
+                # C.2: frontmatter name: must equal the folder basename, so a
+                # stale jobi name is a validation error. The folder is identity.
+                data.pop("name", None)
             merged_body = f"## Soul\n{soul_body.strip()}\n\n## Instructions\n{body.strip()}\n"
             out = dump_frontmatter(data, merged_body)
-            dest = dest.with_name("TREBI.md") if dest.suffix else dest / "TREBI.md"
+            if not dest.suffix:
+                dest = dest / "TREBI.md"
             if not incremental:
                 backup_file(backup, path)
                 if soul.exists():
@@ -1643,11 +1897,20 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
                     soul.unlink()
                 print(f"removed {path}")
             continue
+        if d.get("action") == "copy-support":
+            # Byte-for-byte: memory prose contains real addresses (jobi@ocral.org)
+            # that a rewrite would corrupt. Only manifests are transformed.
+            if dest == path:
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, dest)
+            print(f"copied {dest}")
+            continue
         if path.name not in ("JOB.md", "TREBI.md"):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         report: list[str] = []
-        new_text, changed = rewrite_job_text(text, report, rewrite_sentinel=not args.no_sentinels)
+        new_text, changed = rewrite_job_text(text, report, rewrite_sentinel=not args.no_sentinels, src_dir=path.parent)
         if not changed and dest == path:
             continue
         if not incremental:
@@ -1722,11 +1985,23 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     jobi = Path(args.jobi_dir)
     trebi = Path(args.trebi_dir)
     job = getattr(args, "job", None)
+    agent = getattr(args, "agent", None)
+    if agent:
+        agent = agent.strip().lower()
+        if not AGENT_NAME_RE.match(agent):
+            print(
+                f"ERROR: --agent {agent!r} must match [a-z0-9][a-z0-9-]*",
+                file=sys.stderr,
+            )
+            return 2
     target = resolve_target_workspace(trebi, getattr(args, "target_workspace", None))
+    if agent and not target:
+        print("ERROR: --agent requires --target-workspace", file=sys.stderr)
+        return 2
     if job and args.apply and not target:
         print("ERROR: --job --apply requires --target-workspace", file=sys.stderr)
         return 2
-    plan = plan_migrate(jobi, trebi, mode, job=job, target=target)
+    plan = plan_migrate(jobi, trebi, mode, job=job, target=target, agent=agent)
     text = plan.render()
     print(text)
     if args.report:
@@ -1888,6 +2163,11 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         "--target-workspace",
         "-t",
         help="trebi destination workspace (id, name, or path). Required with --job --apply.",
+    )
+    parser.add_argument(
+        "--agent",
+        help="migrate the source as a nested agent: files land under "
+        "agents/<name>/ and AGENT.md stays an operator (schema v12).",
     )
 
 

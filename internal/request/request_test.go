@@ -620,6 +620,14 @@ func TestBuildWorkspaceAndMemoryAndRules(t *testing.T) {
 	if req.Method != "PATCH" {
 		t.Fatalf("rename %+v", req)
 	}
+	req = BuildWorkspaceMove("ws1", "/tmp/new", true, true, true)
+	if req.Method != "POST" || req.Path != "/v1/workspaces/ws1/move?confirm=1" {
+		t.Fatalf("move %+v", req)
+	}
+	body, _ := req.Body.(map[string]any)
+	if body["path"] != "/tmp/new" || body["mkdir"] != true || body["dry_run"] != true {
+		t.Fatalf("move body %+v", body)
+	}
 	req = BuildJobMemoryPut("demo", "ws1", "hello", "h2")
 	if req.Method != "PUT" || !strings.Contains(req.Path, "/memory") || req.IfMatch != "h2" {
 		t.Fatalf("mem put %+v", req)
