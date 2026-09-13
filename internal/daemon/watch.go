@@ -16,7 +16,7 @@ import (
 )
 
 func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
-	// Periodic full rebuild + live fsnotify for JOB.md/TREBI.md changes.
+	// Periodic full rebuild + live fsnotify for index-relevant file changes (C8).
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
 	w, err := fsnotify.NewWatcher()
@@ -51,8 +51,8 @@ func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
 			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
 				continue
 			}
-			// Discovery indexes markdown files only.
-			if !strings.HasSuffix(filepath.Base(ev.Name), ".md") {
+			// Only files discovery indexes or reads for composition (C8).
+			if !indexRelevantFile(ev.Name) {
 				continue
 			}
 			c.rebuildPath(ctx, ev.Name)
@@ -65,6 +65,16 @@ func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// indexRelevantFile reports whether a path can change the index or wake
+// composition (C8): the three definition files, ledgers, workspace config.
+func indexRelevantFile(path string) bool {
+	switch strings.ToLower(filepath.Base(path)) {
+	case "job.md", "trebi.md", "agent.md", "memory.md", "trebi.yaml":
+		return true
+	}
+	return false
 }
 
 // syncWatchPaths watches every directory under each workspace —

@@ -102,11 +102,11 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
 	}
 
 	idle := run.screenIdle(screen)
-	if r.svc.AgentState(run.ID) != AgentWaiting {
+	if r.svc.SessionState(run.ID) != SessionWaiting {
 		if idle {
-			r.svc.SetAgentState(ctx, run.ID, AgentIdle, "screen")
+			r.svc.SetSessionState(ctx, run.ID, SessionIdle, "screen")
 		} else {
-			r.svc.SetAgentState(ctx, run.ID, AgentRunning, "screen")
+			r.svc.SetSessionState(ctx, run.ID, SessionRunning, "screen")
 		}
 	}
 
@@ -170,7 +170,7 @@ func (r *Reaper) finishComplete(ctx context.Context, run *Run, now time.Time) {
 
 // checkIdle tracks the idle-timeout window. True means checkOne must stop.
 func (r *Reaper) checkIdle(ctx context.Context, run *Run, screen string, now time.Time) bool {
-	if run.Session.IdleTimeoutMS <= 0 || r.svc.AgentState(run.ID) == AgentWaiting {
+	if run.Session.IdleTimeoutMS <= 0 || r.svc.SessionState(run.ID) == SessionWaiting {
 		return false
 	}
 	if !run.screenIdle(screen) {

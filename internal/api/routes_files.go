@@ -350,6 +350,8 @@ func typedDocMessage(rel string) string {
 		return "use the memory routes (trebi job memory) for MEMORY.md"
 	case "trebi.md":
 		return "use the assistant routes (trebi assistant) for TREBI.md"
+	case "agent.md":
+		return "use the agent routes (trebi agent) for AGENT.md"
 	}
 	return ""
 }

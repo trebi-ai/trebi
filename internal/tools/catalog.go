@@ -421,22 +421,60 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 	if err != nil {
 		return request.JobSpec{}, err
 	}
-	t, err := in.strs("cron", "every", "event", "match", "extract", "idempotency_key")
+	t, err := in.strs("cron", "every", "event", "match", "extract", "idempotency_key", "agent")
 	if err != nil {
 		return request.JobSpec{}, err
 	}
 	return request.JobSpec{
 		Name: v[0], Workspace: v[1], Content: v[2], Prompt: v[3], Harness: v[4], Description: v[5],
 		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4], IdempotencyKey: t[5],
+		Agent: t[6],
 	}, nil
 }
 
-// runSpec reads the launch body of job.run. It is the one launch shape on
-// every surface.
+// agentSpec reads the PUT agent body of agent.create.
+func (in Input) agentSpec() (request.AgentSpec, error) {
+	v, err := in.strs("name", "workspace", "content", "prompt", "harness", "description")
+	if err != nil {
+		return request.AgentSpec{}, err
+	}
+	t, err := in.strs("cron", "every", "event", "match", "extract")
+	if err != nil {
+		return request.AgentSpec{}, err
+	}
+	return request.AgentSpec{
+		Name: v[0], Workspace: v[1], Content: v[2], Prompt: v[3], Harness: v[4], Description: v[5],
+		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4],
+	}, nil
+}
+
+// agentContentPut reads the shared body of agent set and memory_set:
+// workspace and name required, content required, if_match optional.
+func (in Input) agentContentPut() (workspace, name, content, ifMatch string, err error) {
+	id, err := in.reqStrs("workspace", "name")
+	if err != nil {
+		return "", "", "", "", err
+	}
+	v, err := in.strs("content", "if_match")
+	if err != nil {
+		return "", "", "", "", err
+	}
+	if v[0] == "" {
+		return "", "", "", "", fmt.Errorf("input field %q is required", "content")
+	}
+	return id[0], id[1], v[0], v[1], nil
+}
+
+// runSpec reads the launch body of job.run and run.create. It is the one
+// launch shape on every surface. The job key rides the body; name is the
+// jobs/{name}/run spelling.
 func (in Input) runSpec() (request.RunSpec, error) {
-	v, err := in.strs("name", "workspace", "prompt", "extra_prompt", "harness", "kind", "reason", "conversation_id", "idempotency_key")
+	v, err := in.strs("name", "job", "workspace", "prompt", "extra_prompt", "harness", "kind", "reason", "conversation_id", "idempotency_key")
 	if err != nil {
 		return request.RunSpec{}, err
+	}
+	if v[1] != "" {
+		v[0] = v[1]
 	}
 	inputs, err := in.strMap("inputs")
 	if err != nil {
@@ -451,9 +489,9 @@ func (in Input) runSpec() (request.RunSpec, error) {
 		return request.RunSpec{}, err
 	}
 	return request.RunSpec{
-		Job: v[0], Workspace: v[1], Prompt: v[2], ExtraPrompt: v[3],
-		Harness: v[4], Kind: v[5], Reason: v[6], ConversationID: v[7],
-		IdempotencyKey: v[8], Inputs: inputs, DryRun: dryRun, WaitMS: wait,
+		Job: v[0], Workspace: v[2], Prompt: v[3], ExtraPrompt: v[4],
+		Harness: v[5], Kind: v[6], Reason: v[7], ConversationID: v[8],
+		IdempotencyKey: v[9], Inputs: inputs, DryRun: dryRun, WaitMS: wait,
 	}, nil
 }
 
@@ -629,6 +667,16 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					Q: f[2], Since: f[3], Until: f[4], Limit: limit,
 				}.Path()), nil
 			}),
+			"create": act("POST /v1/runs", Input{"job": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
+				spec, err := in.runSpec()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if spec.Job == "" {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "job")
+				}
+				return spec.BuildRunsCreate(), nil
+			}),
 			"show": act("GET /v1/runs/{id}", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
 				if err != nil {
@@ -702,7 +750,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildRunsStats(v[0], v[1], v[2]), nil
 			}),
-			"agents": act("GET /v1/agents/state", Input{}, func(Input) (request.HTTPRequest, error) { return request.BuildAgentsState(), nil }),
+			"session_state": act("GET /v1/runs/session-state", Input{}, func(Input) (request.HTTPRequest, error) {
+				return request.BuildSessionState(), nil
+			}),
 		},
 
 		"job": {
@@ -722,7 +772,10 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			}),
 			"create": actSamples("POST /v1/jobs",
 				Input{"name": "nightly-sync", "workspace": "ws1", "prompt": "Run the sync.", "cron": "0 3 * * *"},
-				[]Input{{"name": "on-mail", "workspace": "ws1", "prompt": "Read it.", "event": "mail"}},
+				[]Input{
+					{"name": "on-mail", "workspace": "ws1", "prompt": "Read it.", "event": "mail"},
+					{"name": "weekly-digest", "workspace": "ws1", "prompt": "Write the digest.", "agent": "cmo"},
+				},
 				func(in Input) (request.HTTPRequest, error) {
 					spec, err := in.jobSpec()
 					if err != nil {
@@ -1044,6 +1097,143 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildAssistantMemoryClear(v[0], v[1], confirm), nil
+			}),
+		},
+
+		"agent": {
+			"list": act("GET /v1/workspaces/{id}/agents", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+				ws, err := in.reqStr("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildAgentListPath(ws)), nil
+			}),
+			"show": act("GET /v1/workspaces/{id}/agents/{name}", Input{"workspace": "ws1", "name": "cmo"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildAgentGetPath(v[0], v[1])), nil
+			}),
+			"create": actSamples("PUT /v1/workspaces/{id}/agents/{name}",
+				Input{"workspace": "ws1", "name": "cmo", "prompt": "Run growth."},
+				[]Input{{"workspace": "ws1", "name": "scout", "prompt": "Watch the feed.", "event": "mail"}},
+				func(in Input) (request.HTTPRequest, error) {
+					spec, err := in.agentSpec()
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					for field, v := range map[string]string{"name": spec.Name, "workspace": spec.Workspace} {
+						if v == "" {
+							return request.HTTPRequest{}, fmt.Errorf("input field %q is required", field)
+						}
+					}
+					return spec.Build(), nil
+				}),
+			"set": act("PUT /v1/workspaces/{id}/agents/{name}", Input{"workspace": "ws1", "name": "cmo", "content": "---\nmemory: true\n---\n\nRun growth.\n"}, func(in Input) (request.HTTPRequest, error) {
+				ws, name, content, ifMatch, err := in.agentContentPut()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentPut(ws, name, content, ifMatch), nil
+			}),
+			"patch": act("PATCH /v1/workspaces/{id}/agents/{name}", Input{"workspace": "ws1", "name": "cmo", "disabled": true}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				patch := in.pick(jobPatchFields...)
+				if len(patch) == 0 {
+					return request.HTTPRequest{}, fmt.Errorf("give at least one of %s", strings.Join(jobPatchFields, ", "))
+				}
+				ifMatch, err := in.str("if_match")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentPatch(v[0], v[1], patch, ifMatch), nil
+			}),
+			"delete": del("DELETE /v1/workspaces/{id}/agents/{name}", Input{"workspace": "ws1", "name": "cmo", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				purge, err := in.flag("purge")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				confirm, err := in.flag("confirm")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				ifMatch, err := in.str("if_match")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentDelete(v[0], v[1], ifMatch, purge, confirm), nil
+			}),
+			"wake": act("POST /v1/workspaces/{id}/agents/{name}/wake", Input{"workspace": "ws1", "name": "cmo"}, func(in Input) (request.HTTPRequest, error) {
+				spec, err := in.runSpec()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if spec.Workspace == "" || spec.Job == "" {
+					return request.HTTPRequest{}, fmt.Errorf("input fields %q and %q are required", "workspace", "name")
+				}
+				return spec.BuildAgentWake(), nil
+			}),
+			"memory_show": act("GET /v1/workspaces/{id}/agents/{name}/memory", Input{"workspace": "ws1", "name": "cmo"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildAgentMemoryGetPath(v[0], v[1])), nil
+			}),
+			"memory_set": act("PUT /v1/workspaces/{id}/agents/{name}/memory", Input{"workspace": "ws1", "name": "cmo", "content": "# MEMORY\n"}, func(in Input) (request.HTTPRequest, error) {
+				ws, name, content, ifMatch, err := in.agentContentPut()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentMemoryPut(ws, name, content, ifMatch), nil
+			}),
+			"memory_add": act("POST /v1/workspaces/{id}/agents/{name}/memory/entries", Input{"workspace": "ws1", "name": "cmo", "text": "learned the API"}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStrs("workspace", "name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				v, err := in.strs("date", "text", "if_match")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if v[1] == "" {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "text")
+				}
+				return request.BuildAgentMemoryEntryAdd(id[0], id[1], v[0], v[1], v[2]), nil
+			}),
+			"memory_delete": del("DELETE /v1/workspaces/{id}/agents/{name}/memory/entries/{eid}", Input{"workspace": "ws1", "name": "cmo", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name", "entry_id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				ifMatch, err := in.str("if_match")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentMemoryEntryDelete(v[0], v[1], v[2], ifMatch), nil
+			}),
+			"memory_clear": del("DELETE /v1/workspaces/{id}/agents/{name}/memory", Input{"workspace": "ws1", "name": "cmo", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStrs("workspace", "name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				ifMatch, err := in.str("if_match")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				confirm, err := in.flag("confirm")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentMemoryClear(id[0], id[1], ifMatch, confirm), nil
 			}),
 		},
 

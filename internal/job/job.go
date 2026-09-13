@@ -126,19 +126,24 @@ type Job struct {
 	FollowupPrompt   string
 	AssistantContext bool
 	Prompt           string
-	Kind             string // job | assistant
+	Kind             string // job | assistant | agent
+	Owner            string // owning agent index name (agents/<name>) for jobs under an agent folder
 	ParseError       string
 	Hash             string
 	Description      string
 }
 
 // ResolvedWorkingDir is working_dir, else the JOB.md directory.
+// Agents default to the workspace root (C.3): <ws>/agents/<name> → <ws>.
 func (j *Job) ResolvedWorkingDir() string {
 	if j == nil {
 		return ""
 	}
 	if j.WorkingDir != "" {
 		return j.WorkingDir
+	}
+	if j.Kind == "agent" {
+		return filepath.Dir(filepath.Dir(j.Dir))
 	}
 	return j.Dir
 }
@@ -258,9 +263,27 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		}, err
 	}
 
+	// An agent name: that differs from the folder basename is a validation
+	// error (C.2). The row stays indexed with parse_error.
+	if isAgentFile(filePath) && fm.Name != "" && fm.Name != filepath.Base(filepath.Dir(filePath)) {
+		err := fmt.Errorf("agent name %q must equal folder name %q", fm.Name, filepath.Base(filepath.Dir(filePath)))
+		return &Job{
+			Name:       deriveName(filePath),
+			FilePath:   filePath,
+			Dir:        filepath.Dir(filePath),
+			ParseError: err.Error(),
+			Hash:       hash,
+			Kind:       "agent",
+		}, err
+	}
+
 	mem, err := resolveMemory(fm.Memory)
 	if err != nil {
 		return nil, fmt.Errorf("%s: memory: %w", filePath, err)
+	}
+	// Agents default to memory on (C.3); jobs stay opt-in.
+	if fm.Memory == nil && isAgentFile(filePath) {
+		mem = true
 	}
 
 	triggers, err := normalizeTriggers(fm.Triggers)
@@ -447,6 +470,8 @@ func deriveName(filePath string) string {
 		return dir
 	case "trebi.md":
 		return dir // default; frontmatter name: overrides for assistants
+	case "agent.md":
+		return dir // discover rewrites to agents/<name>
 	default:
 		return strings.TrimSuffix(base, filepath.Ext(base))
 	}
@@ -457,10 +482,14 @@ func isAssistantFile(path string) bool {
 }
 
 func kindFromPath(path string) string {
-	if isAssistantFile(path) {
+	switch strings.ToLower(filepath.Base(path)) {
+	case "trebi.md":
 		return "assistant"
+	case "agent.md":
+		return "agent"
+	default:
+		return "job"
 	}
-	return "job"
 }
 
 // WhenResult is the outcome of a schedule when: gate.
@@ -572,4 +601,8 @@ func (w *WhenYAML) runGate(ctx context.Context, runCmd, cwd string, env map[stri
 		return exitCode, &WhenResult{Skip: true, Stdout: stdout.String(), Error: fmt.Sprintf("exit %d", exitCode)}
 	}
 	return exitCode, nil
+}
+
+func isAgentFile(path string) bool {
+	return strings.EqualFold(filepath.Base(path), "AGENT.md")
 }

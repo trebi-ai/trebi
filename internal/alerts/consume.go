@@ -32,7 +32,7 @@ type deliverJob struct {
 
 //nolint:gochecknoglobals // static table
 var consumeTopics = []string{
-	"agent.state",
+	"session.state",
 	"run.failed",
 	"run.updated",
 	"run.resume_exhausted",
@@ -144,8 +144,8 @@ func (s *Service) SyncDoctor(ctx context.Context, findings []DoctorFinding) {
 func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 	attrs := attrMap(ev.Attrs)
 	switch ev.Topic {
-	case "agent.state":
-		s.onAgentState(ctx, attrs)
+	case "session.state":
+		s.onSessionState(ctx, attrs)
 	case "run.failed":
 		s.onRunFailed(ctx, ev, attrs)
 	case "run.updated":
@@ -168,7 +168,7 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 	}
 }
 
-func (s *Service) onAgentState(ctx context.Context, attrs map[string]string) {
+func (s *Service) onSessionState(ctx context.Context, attrs map[string]string) {
 	runID := attrs["run_id"]
 	if runID == "" {
 		return

@@ -157,6 +157,97 @@ func TestRebuildIndexSkipsNestedWorkspace(t *testing.T) {
 	}
 }
 
+func TestRebuildIndexAgents(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\nharness: codex\n---\n\nLead growth.\n")
+	writeFile(t, filepath.Join(root, "agents", "cmo", "duty", "JOB.md"), jobMD)
+
+	ws, err := svc.Add(ctx, root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := svc.ListJobs(ctx, ws.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var agentRow, dutyRow *workspaces.JobRow
+	for i := range rows {
+		switch rows[i].Name {
+		case "agents/cmo":
+			agentRow = &rows[i]
+		case "agents/cmo/duty":
+			dutyRow = &rows[i]
+		}
+	}
+	if agentRow == nil || dutyRow == nil {
+		t.Fatalf("rows=%v want agents/cmo and agents/cmo/duty", rows)
+	}
+	if agentRow.Kind != "agent" || agentRow.Owner != "" {
+		t.Errorf("agent row %+v want kind=agent, no owner", agentRow)
+	}
+	if dutyRow.Owner != "agents/cmo" {
+		t.Errorf("duty owner=%q want agents/cmo", dutyRow.Owner)
+	}
+
+	// Edit the agent file: agent.updated only, never job.updated.
+	seq := mustSeq(t, st)
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\nharness: codex\n---\n\nLead all growth.\n")
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	topics := busTopics(t, st, seq)
+	if len(topics) != 1 || topics[0] != "agent.updated:agents/cmo" {
+		t.Fatalf("topics=%v want [agent.updated:agents/cmo]", topics)
+	}
+
+	// Remove the agents folder: one agent.deleted plus one job.deleted.
+	// Map order is random, so compare as a set.
+	seq = mustSeq(t, st)
+	if err := os.RemoveAll(filepath.Join(root, "agents")); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	topics = busTopics(t, st, seq)
+	want := map[string]bool{"agent.deleted:agents/cmo": true, "job.deleted:agents/cmo/duty": true}
+	if len(topics) != len(want) {
+		t.Fatalf("topics=%v want %v", topics, want)
+	}
+	for _, got := range topics {
+		if !want[got] {
+			t.Fatalf("topics=%v want %v", topics, want)
+		}
+	}
+}
+
+func TestRebuildIndexDisabledAgentInactive(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\ndisabled: true\n---\n\nLead growth.\n")
+	ws, err := svc.Add(ctx, root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := svc.ListJobs(ctx, ws.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Kind != "agent" || rows[0].Active {
+		t.Fatalf("rows=%v want one inactive agent row", rows)
+	}
+}
+
 func TestResolveIDOrName(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -2,71 +2,169 @@ package workspaces_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
-func TestComposeWakePromptOrder(t *testing.T) {
+func TestComposeAssistantWake(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
-		trebi   string
-		memory  string
-		jobs    bool
-		recap   string
-		extra   string
+		files   map[string]string
+		opts    runs.WakeOpts
 		want    []string
 		notWant []string
 	}{
 		{
-			name:  "empty memory no jobs",
-			trebi: "---\nharness: claude\n---\n\nYou are the assistant.\n",
-			want:  []string{"# Instructions", "You are the assistant.", "# Workspace jobs", "kind=assistant", "# Memory", "(empty)"},
+			name:  "empty workspace",
+			files: map[string]string{"TREBI.md": "---\nharness: claude\n---\n\nYou are the assistant.\n"},
+			want:  []string{"# Instructions", "You are the assistant.", "# Workspace jobs", "(none)", "# Agents", "(none)", "# Memory", "(empty)"},
 		},
 		{
-			name:   "recap present",
-			trebi:  "---\nharness: claude\n---\n\nBody.\n",
-			memory: "# ledger\nnote",
-			recap:  "user: hi\nassistant: hello",
-			extra:  "focus on CI",
-			want:   []string{"# Instructions", "Body.", "# Memory", "note", "# Conversation recap", "user: hi", "# Current message", "focus on CI"},
+			name: "portfolio split",
+			files: map[string]string{
+				"TREBI.md":               "---\nharness: claude\n---\n\nRun the workspace.\n",
+				"alpha/JOB.md":           jobMD,
+				"agents/cmo/AGENT.md":    "---\nharness: codex\n---\n\nLead growth.\n",
+				"agents/cmo/duty/JOB.md": jobMD,
+				"MEMORY.md":              "# ledger\nnote",
+			},
+			opts: runs.WakeOpts{Recap: "user: hi", Message: "focus on CI"},
+			want: []string{
+				"# Instructions", "Run the workspace.",
+				"# Workspace jobs", "- alpha kind=job harness=claude active",
+				"# Agents", "- agents/cmo kind=agent harness=codex active children=1",
+				"# Memory", "note",
+				"# Conversation recap", "user: hi",
+				"# Current message", "focus on CI",
+			},
+			notWant: []string{"kind=assistant", "- agents/cmo/duty kind=job"},
 		},
 		{
-			name:    "huge index truncated",
-			trebi:   "---\nharness: claude\n---\n\nX.\n",
-			jobs:    true,
-			want:    []string{"# Workspace jobs", "…[truncated]"},
-			notWant: []string{},
+			name:    "body override",
+			files:   map[string]string{"TREBI.md": "---\nharness: claude\n---\n\nFile body.\n"},
+			opts:    runs.WakeOpts{Body: "Expanded body."},
+			want:    []string{"# Instructions", "Expanded body."},
+			notWant: []string{"File body."},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			svc, wsID := wakeFixture(t, tc.trebi, tc.memory, tc.jobs)
-			got, err := svc.ComposeWakePrompt(context.Background(), wsID, workspaces.WakeOpts{
-				Recap: tc.recap, ExtraPrompt: tc.extra, Message: tc.extra,
-			})
+			svc, wsID, _ := wakeFixture(t, tc.files)
+			got, err := svc.ComposeAssistantWake(context.Background(), wsID, tc.opts)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, w := range tc.want {
-				if !strings.Contains(got, w) {
-					t.Fatalf("missing %q in:\n%s", w, got)
-				}
-			}
-			assertSectionOrder(t, got)
+			assertWake(t, got, tc.want, tc.notWant)
+			assertSectionOrder(t, got, "# Instructions", "# Workspace jobs", "# Agents", "# Memory")
 		})
 	}
 }
 
-func assertSectionOrder(t *testing.T, got string) {
+func TestComposeAgentWake(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		files   map[string]string
+		opts    runs.WakeOpts
+		want    []string
+		notWant []string
+	}{
+		{
+			name: "folder scoped",
+			files: map[string]string{
+				"TREBI.md":               "---\nharness: claude\n---\n\nWorkspace.\n",
+				"alpha/JOB.md":           jobMD,
+				"agents/cmo/AGENT.md":    "---\nharness: codex\n---\n\nLead growth from {{agent_dir}}.\n",
+				"agents/cmo/duty/JOB.md": jobMD,
+				"agents/cmo/MEMORY.md":   "grew 12 percent",
+			},
+			opts: runs.WakeOpts{Message: "check ads", Recap: "leak"},
+			want: []string{
+				"# Instructions", "Lead growth from {{agent_dir}}.",
+				"# Your jobs", "- agents/cmo/duty kind=job harness=claude active",
+				"# Memory", "grew 12 percent",
+				"# Current message", "check ads",
+			},
+			notWant: []string{"# Conversation recap", "# Agents", "Workspace jobs", "- alpha kind=job"},
+		},
+		{
+			name: "body override still expands vars",
+			files: map[string]string{
+				"agents/cmo/AGENT.md":    "---\n---\n\nFile body.\n",
+				"agents/cmo/duty/JOB.md": jobMD,
+			},
+			opts:    runs.WakeOpts{Body: "Raw {{agent_dir}} body."},
+			want:    []string{"# Instructions", "Raw {{agent_dir}} body."},
+			notWant: []string{"File body."},
+		},
+		{
+			name: "inline agent_jobs",
+			files: map[string]string{
+				"agents/cmo/AGENT.md":    "---\n---\n\nDuties:\n{{agent_jobs}}\nEnd.\n",
+				"agents/cmo/duty/JOB.md": jobMD,
+			},
+			want:    []string{"Duties:", "- agents/cmo/duty kind=job", "End."},
+			notWant: []string{"# Your jobs", "{{agent_jobs}}"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, wsID, wsPath := wakeFixture(t, tc.files)
+			got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{
+				WorkspaceID: wsID, Kind: "agent", Name: "agents/cmo",
+			}, tc.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// {{agent_dir}} expands to the agent folder.
+			got = strings.ReplaceAll(got, filepath.Join(wsPath, "agents", "cmo"), "{{agent_dir}}")
+			assertWake(t, got, tc.want, tc.notWant)
+		})
+	}
+}
+
+func TestComposeWakeTruncatesHugeIndex(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{"TREBI.md": "---\nharness: claude\n---\n\nX.\n"}
+	for i := 0; i < 250; i++ {
+		files[fmt.Sprintf("job%03d/JOB.md", i)] = jobMD
+	}
+	svc, wsID, _ := wakeFixture(t, files)
+	got, err := svc.ComposeAssistantWake(context.Background(), wsID, runs.WakeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "# Workspace jobs") || !strings.Contains(got, "…[truncated]") {
+		t.Fatalf("index not truncated:\n%.200s…", got)
+	}
+}
+
+func assertWake(t *testing.T, got string, want, notWant []string) {
 	t.Helper()
-	keys := []string{"# Instructions", "# Workspace jobs", "# Memory"}
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Fatalf("missing %q in:\n%s", w, got)
+		}
+	}
+	for _, w := range notWant {
+		if strings.Contains(got, w) {
+			t.Fatalf("unexpected %q in:\n%s", w, got)
+		}
+	}
+}
+
+func assertSectionOrder(t *testing.T, got string, keys ...string) {
+	t.Helper()
 	pos := 0
 	for _, k := range keys {
 		i := strings.Index(got, k)
@@ -77,7 +175,8 @@ func assertSectionOrder(t *testing.T, got string) {
 	}
 }
 
-func wakeFixture(t *testing.T, trebi, memory string, hugeIndex bool) (*workspaces.Service, string) {
+// wakeFixture writes files (workspace-relative) and indexes the workspace.
+func wakeFixture(t *testing.T, files map[string]string) (*workspaces.Service, string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := store.OpenPath(filepath.Join(dir, "w.db"))
@@ -87,14 +186,12 @@ func wakeFixture(t *testing.T, trebi, memory string, hugeIndex bool) (*workspace
 	t.Cleanup(func() { _ = st.Close() })
 	svc := workspaces.New(st)
 	wsPath := filepath.Join(dir, "ws")
-	if err := os.MkdirAll(wsPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(wsPath, "TREBI.md"), []byte(trebi), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if memory != "" {
-		if err := os.WriteFile(filepath.Join(wsPath, "MEMORY.md"), []byte(memory), 0o644); err != nil {
+	for rel, content := range files {
+		p := filepath.Join(wsPath, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -105,9 +202,5 @@ func wakeFixture(t *testing.T, trebi, memory string, hugeIndex bool) (*workspace
 	if err := svc.RebuildIndex(context.Background(), ws); err != nil {
 		t.Fatal(err)
 	}
-	if hugeIndex {
-		pad := strings.Repeat("jobxxxxxxxx ", 2000)
-		_, _ = st.DB().Exec(`UPDATE job_index SET name=? WHERE workspace_id=?`, pad, ws.ID)
-	}
-	return svc, ws.ID
+	return svc, ws.ID, wsPath
 }

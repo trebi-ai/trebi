@@ -6,9 +6,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
+
+// TestLaunchOptsWorkingDirCoversG5: an AGENT.md resolves its cwd to the
+// workspace root; a JOB.md keeps its own folder; working_dir: wins for both.
+func TestLaunchOptsWorkingDirCoversG5(t *testing.T) {
+	t.Parallel()
+	wsDir := t.TempDir()
+	agentMD := filepath.Join(wsDir, "agents", "cmo", "AGENT.md")
+	if err := os.MkdirAll(filepath.Dir(agentMD), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentMD, []byte("---\nharness: claude\n---\n\nRun growth.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := job.ParseFile(agentMD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lopts := launchOpts(runCreateRequest{Kind: runs.KindAgent, Job: "agents/cmo"}, runs.ReasonManual, "", "", spec)
+	if lopts.WorkingDir != wsDir {
+		t.Fatalf("agent cwd=%q want workspace root %q", lopts.WorkingDir, wsDir)
+	}
+}
 
 // `trebi agent-hook` wraps the harness body in a payload string, so an
 // approval opened from a waiting hook must still carry the question.

@@ -37,7 +37,7 @@ Remove the assistant configuration. Destructive.
 ### wake
 Start one assistant session.
 - `workspace` (string, required): workspace id.
-- `prompt` (string, optional): extra prompt text.
+- `prompt` (string, optional): full prompt override; it replaces the composed wake prompt.
 - `dry_run` (boolean, optional): validate only; do not start.
 - `inputs` (object, optional): values for `{{placeholder}}` fields in TREBI.md.
 - `harness` (string, optional): override the harness for this run.

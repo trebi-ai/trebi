@@ -42,6 +42,7 @@ structured fields cover the job.
 - `match` (string, optional): event match expression, with `event`.
 - `extract` (string, optional): event extract expression, with `event`.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first job.
+- `agent` (string, optional): agent short name. The job lands in `agents/<agent>/` and the name becomes the full relative path.
 
 ### validate_text
 Check a job definition without writing a job. Call it before `create` when you

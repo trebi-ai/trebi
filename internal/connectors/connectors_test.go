@@ -304,6 +304,44 @@ func TestConnectors_InjectEventMatchesJob(t *testing.T) {
 	}
 }
 
+// TestConnectors_InjectEventMatchesAssistant proves operator rows fan out:
+// an assistant with an on: trigger enqueues a kind=assistant queue item
+// (B27 regression).
+func TestConnectors_InjectEventMatchesAssistant(t *testing.T) {
+	st, ws, _, svc := openStack(t)
+	ctx := context.Background()
+
+	wsPath := filepath.Join(home.Base(), "ws")
+	if err := os.MkdirAll(wsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	trebiMD := "---\nname: aide\nharness: fake\ntriggers:\n  - event: src\n    match: \"true\"\n---\n\nHelp.\n"
+	if err := os.WriteFile(filepath.Join(wsPath, "TREBI.md"), []byte(trebiMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Add(ctx, wsPath, "aide-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = svc.Upsert(ctx, connectors.Definition{Name: "src", Format: "json", Command: "true"})
+	if _, err := svc.InjectEvent(ctx, "src", map[string]any{"n": 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	var kind string
+	err = st.DB().QueryRow(`SELECT kind FROM event_queue WHERE job='aide'`).Scan(&kind)
+	if err != nil {
+		t.Fatal("expected queue row for the assistant on: trigger")
+	}
+	if kind != "assistant" {
+		t.Fatalf("queue kind=%s want assistant", kind)
+	}
+}
+
 // TestConnectors_AllowlistGate proves the B3 ingress allowlist: a sender not
 // on the list is blocked before match; a listed sender enqueues.
 func TestConnectors_AllowlistGate(t *testing.T) {
@@ -439,7 +477,7 @@ func openStack(t *testing.T) (*store.Store, *workspaces.Service, *runs.Service, 
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	ws := workspaces.New(st)
-	r := runs.New(st)
+	r := runs.New(st, nil)
 	pol := dispatch.NewPolicy()
 	svc := connectors.New(st, ws, r, pol)
 	return st, ws, r, svc

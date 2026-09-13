@@ -156,10 +156,10 @@ func runsCommand() *cli.Command {
 				Action: runRunsStats,
 			},
 			{
-				Name:   "agents",
-				Usage:  "in-memory agent state of live runs (empty on a fresh daemon; not persisted status)",
+				Name:   "sessions",
+				Usage:  "in-memory session state of live runs (empty on a fresh daemon; not persisted status)",
 				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-				Action: runRunsAgents,
+				Action: runRunsSessions,
 			},
 			{
 				Name:  "approvals",
@@ -419,19 +419,19 @@ func runRunsStats(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
-func runRunsAgents(_ context.Context, c *cli.Command) error {
+func runRunsSessions(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
 	var body struct {
-		Agents map[string]any `json:"agents"`
+		Sessions map[string]any `json:"sessions"`
 	}
-	if err := client.DoHTTP(request.BuildAgentsState(), &body); err != nil {
+	if err := client.DoHTTP(request.BuildSessionState(), &body); err != nil {
 		return err
 	}
-	if body.Agents == nil {
-		body.Agents = map[string]any{}
+	if body.Sessions == nil {
+		body.Sessions = map[string]any{}
 	}
 	if c.Bool("json") {
 		enc := json.NewEncoder(outWriter(c))
@@ -439,17 +439,17 @@ func runRunsAgents(_ context.Context, c *cli.Command) error {
 		return enc.Encode(body)
 	}
 	w := outWriter(c)
-	tbl := newTable(w, []string{"Run", "AgentState"})
-	ids := make([]string, 0, len(body.Agents))
-	for id := range body.Agents {
+	tbl := newTable(w, []string{"Run", "Session"})
+	ids := make([]string, 0, len(body.Sessions))
+	for id := range body.Sessions {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		tbl.AppendRow(table.Row{id, colorStatus(w, fmt.Sprint(body.Agents[id]))})
+		tbl.AppendRow(table.Row{id, colorStatus(w, fmt.Sprint(body.Sessions[id]))})
 	}
 	renderTable(tbl)
-	if len(body.Agents) == 0 {
+	if len(body.Sessions) == 0 {
 		fmt.Fprintln(w, "in-memory snapshot of live runs only; empty on a fresh daemon")
 	}
 	return nil

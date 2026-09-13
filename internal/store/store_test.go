@@ -179,7 +179,7 @@ func TestGaplessSeqConcurrent(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			_, err := s.Append(ctx, store.BusEvent{
-				Topic:    "agent.state",
+				Topic:    "session.state",
 				Entity:   "run",
 				EntityID: "r1",
 				Action:   "updated",
@@ -205,8 +205,8 @@ func TestGaplessSeqConcurrent(t *testing.T) {
 			t.Fatalf("seq gap: index %d seq %d", i, ev.Seq)
 		}
 	}
-	if !store.IsBusTopic("agent.state") {
-		t.Fatal("agent.state must be bus topic")
+	if !store.IsBusTopic("session.state") {
+		t.Fatal("session.state must be bus topic")
 	}
 }
 

@@ -45,6 +45,9 @@ type LaunchOpts struct {
 	CreateOpts
 	// Prompt full body (not just preview).
 	Prompt string
+	// Wake asks the composer to build the prompt for an operator launch
+	// (Kind assistant|agent). Ignored when Prompt is set.
+	Wake *WakeOpts
 	// Command override (bare harness name or full argv string). Empty → harness name.
 	Command string
 	// ResumeSessionID warm-resumes that session.
@@ -117,6 +120,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	if opts.SessionID == "" && opts.ResumeSessionID == "" {
 		opts.SessionID = uuid.NewString()
 	}
+	s.applyWakePrompt(ctx, &opts)
 	if opts.PromptPreview == "" {
 		opts.PromptPreview = opts.Prompt
 	}
@@ -147,6 +151,27 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 
 	run, err := s.launchTmux(ctx, opts)
 	return run, outcome, err
+}
+
+// applyWakePrompt composes the prompt for an operator launch (Part F.3).
+// A set Prompt or nil Wake wins. Without a composer it falls back to the
+// var-expanded body plus extra prompt.
+func (s *Service) applyWakePrompt(ctx context.Context, opts *LaunchOpts) {
+	if opts.Prompt != "" || opts.Wake == nil {
+		return
+	}
+	if opts.Kind != KindJob && opts.Kind != "" && s.composer != nil {
+		composed, err := s.composer.ComposeWakePrompt(ctx, WakeScope{
+			WorkspaceID: opts.WorkspaceID, Kind: opts.Kind, Name: opts.Job,
+		}, *opts.Wake)
+		if err != nil {
+			s.log.Warn("wake compose failed; using raw body", "job", opts.Job, "err", err)
+		} else if strings.TrimSpace(composed) != "" {
+			opts.Prompt = composed
+			return
+		}
+	}
+	opts.Prompt = joinExtra(opts.Wake.Body, opts.Wake.ExtraPrompt)
 }
 
 func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error) {
@@ -252,7 +277,7 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 		if err := sendPrompt(wsRef, prompt, tool.Name()); err != nil {
 			return s.failLaunch(ctx, run, wsRef, err)
 		}
-		s.SetAgentState(ctx, run.ID, AgentRunning, "launch")
+		s.SetSessionState(ctx, run.ID, SessionRunning, "launch")
 		s.log.Info("run launched", "id", run.ID, "tmux", wsRef, "harness", tool.Name())
 		return s.Get(ctx, run.ID)
 	}
@@ -273,7 +298,7 @@ func (s *Service) finishLaunch(run *Run, wsRef string, tool tmux.Tool, prompt st
 		_, _ = s.failLaunch(ctx, run, wsRef, err)
 		return
 	}
-	s.SetAgentState(ctx, run.ID, AgentRunning, "launch")
+	s.SetSessionState(ctx, run.ID, SessionRunning, "launch")
 	s.log.Info("run launched", "id", run.ID, "tmux", wsRef, "harness", tool.Name())
 }
 
@@ -497,6 +522,20 @@ func (s *Service) Resume(ctx context.Context, fromID string) (*Run, error) {
 }
 
 // commandUnavailable reports a bare command whose binary is not on PATH.
+// joinExtra appends extra text to a base body (AppendExtraPrompt semantics;
+// request is a leaf this package must not import).
+func joinExtra(base, extra string) string {
+	extra = strings.TrimSpace(extra)
+	if extra == "" {
+		return base
+	}
+	base = strings.TrimRight(base, "\n")
+	if base == "" {
+		return extra
+	}
+	return base + "\n" + extra
+}
+
 func commandUnavailable(command string) bool {
 	resolved := resolveCommand(command)
 	bin := strings.Fields(resolved)[0]

@@ -485,8 +485,8 @@ func waitAssistantReply(c *cli.Command, client *APIClient, convID string) error 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	seen := client.MessageIDSet(convID)
-	err := client.StreamEvents(ctx, request.BuildStreamPath("conversation.updated,agent.state", "0"), func(ev store.StreamEvent) error {
-		if ev.Topic == "agent.state" {
+	err := client.StreamEvents(ctx, request.BuildStreamPath("conversation.updated,session.state", "0"), func(ev store.StreamEvent) error {
+		if ev.Topic == "session.state" {
 			fmt.Fprint(outWriter(c), "thinking…\r")
 			return nil
 		}

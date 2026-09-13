@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"gopkg.in/yaml.v3"
 )
@@ -394,26 +395,27 @@ func (s *Service) Resolve(ctx context.Context, idOrName string) (*Workspace, err
 
 // indexRow is one desired or existing job_index row for the diff.
 type indexRow struct {
-	name, path, kind, harness, hash, parseError string
-	active                                      bool
+	name, path, kind, harness, hash, parseError, owner string
+	active                                             bool
 }
 
 func rowFromJob(j *job.Job, kind string) indexRow {
 	return indexRow{
 		name: j.Name, path: j.FilePath, kind: kind, harness: j.Harness,
 		hash: j.Hash, parseError: j.ParseError, active: kind == "assistant" || !j.Disabled,
+		owner: j.Owner,
 	}
 }
 
 // RebuildIndex rescans job files into job_index (diff-aware, B5).
-// It emits job.created/job.updated/job.deleted and assistant.updated bus
-// events for changes. Bus errors never fail the rebuild.
+// It emits job.*/assistant.*/agent.* bus events for changes.
+// Bus errors never fail the rebuild.
 func (s *Service) RebuildIndex(ctx context.Context, ws *Workspace) error {
 	otherRoots, err := s.otherWorkspaceRoots(ctx, ws.ID)
 	if err != nil {
 		return err
 	}
-	jobs, assistant, err := job.Discover(ws.Path, otherRoots...)
+	disc, err := job.Discover(ws.Path, otherRoots...)
 	if err != nil {
 		return err
 	}
@@ -422,11 +424,14 @@ func (s *Service) RebuildIndex(ctx context.Context, ws *Workspace) error {
 		return err
 	}
 	desired := map[string]indexRow{}
-	for _, j := range jobs {
+	for _, j := range disc.Jobs {
 		desired[j.Name] = rowFromJob(j, "job")
 	}
-	if assistant != nil {
-		desired[assistant.Name] = rowFromJob(assistant, "assistant")
+	if disc.Assistant != nil {
+		desired[disc.Assistant.Name] = rowFromJob(disc.Assistant, "assistant")
+	}
+	for _, j := range disc.Agents {
+		desired[j.Name] = rowFromJob(j, "agent")
 	}
 	if err := s.writeIndexDiff(ctx, ws.ID, existing, desired); err != nil {
 		return err
@@ -437,7 +442,7 @@ func (s *Service) RebuildIndex(ctx context.Context, ws *Workspace) error {
 
 // ListJobs returns job_index rows for a workspace (empty workspace = all).
 func (s *Service) ListJobs(ctx context.Context, workspaceID string) ([]JobRow, error) {
-	q := `SELECT workspace_id, name, path, kind, active, COALESCE(harness,''), COALESCE(hash,''), COALESCE(parse_error,'') FROM job_index`
+	q := `SELECT workspace_id, name, path, kind, active, COALESCE(harness,''), COALESCE(hash,''), COALESCE(parse_error,''), COALESCE(owner,'') FROM job_index`
 	var args []any
 	if workspaceID != "" {
 		q += ` WHERE workspace_id=?`
@@ -453,7 +458,7 @@ func (s *Service) ListJobs(ctx context.Context, workspaceID string) ([]JobRow, e
 	for rows.Next() {
 		var r JobRow
 		var active int
-		if err := rows.Scan(&r.WorkspaceID, &r.Name, &r.Path, &r.Kind, &active, &r.Harness, &r.Hash, &r.ParseError); err != nil {
+		if err := rows.Scan(&r.WorkspaceID, &r.Name, &r.Path, &r.Kind, &active, &r.Harness, &r.Hash, &r.ParseError, &r.Owner); err != nil {
 			return nil, err
 		}
 		r.Active = active == 1
@@ -524,7 +529,7 @@ func (s *Service) rejectNested(ctx context.Context, abs string) error {
 
 // existingIndexRows loads current job_index rows by name.
 func (s *Service) existingIndexRows(ctx context.Context, wsID string) (map[string]indexRow, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT name, path, kind, active, COALESCE(harness,''), COALESCE(hash,''), COALESCE(parse_error,'')
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT name, path, kind, active, COALESCE(harness,''), COALESCE(hash,''), COALESCE(parse_error,''), COALESCE(owner,'')
 		FROM job_index WHERE workspace_id=?`, wsID)
 	if err != nil {
 		return nil, err
@@ -534,7 +539,7 @@ func (s *Service) existingIndexRows(ctx context.Context, wsID string) (map[strin
 	for rows.Next() {
 		var r indexRow
 		var active int
-		if err := rows.Scan(&r.name, &r.path, &r.kind, &active, &r.harness, &r.hash, &r.parseError); err != nil {
+		if err := rows.Scan(&r.name, &r.path, &r.kind, &active, &r.harness, &r.hash, &r.parseError, &r.owner); err != nil {
 			return nil, err
 		}
 		r.active = active == 1
@@ -559,13 +564,13 @@ func (s *Service) writeIndexDiff(ctx context.Context, wsID string, existing, des
 			if want.parseError != "" {
 				pe = &want.parseError
 			}
-			if _, err := tx.Exec(`INSERT INTO job_index (workspace_id, name, path, kind, active, harness, hash, parse_error, updated_at)
-				VALUES (?,?,?,?,?,?,?,?,?)
+			if _, err := tx.Exec(`INSERT INTO job_index (workspace_id, name, path, kind, active, harness, hash, parse_error, owner, updated_at)
+				VALUES (?,?,?,?,?,?,?,?,?,?)
 				ON CONFLICT(workspace_id, name) DO UPDATE SET
 					path=excluded.path, kind=excluded.kind, active=excluded.active,
 					harness=excluded.harness, hash=excluded.hash,
-					parse_error=excluded.parse_error, updated_at=excluded.updated_at`,
-				wsID, name, want.path, want.kind, active, want.harness, want.hash, pe, now); err != nil {
+					parse_error=excluded.parse_error, owner=excluded.owner, updated_at=excluded.updated_at`,
+				wsID, name, want.path, want.kind, active, want.harness, want.hash, pe, want.owner, now); err != nil {
 				return err
 			}
 		}
@@ -593,6 +598,12 @@ func (s *Service) emitIndexDiff(ctx context.Context, wsID string, existing, desi
 			Attrs: map[string]string{"workspace": wsID, "job": name},
 		}
 	}
+	agentEvent := func(action, name string) store.BusEvent {
+		return store.BusEvent{
+			Topic: "agent." + action, Entity: "agent", EntityID: name, Action: action,
+			Attrs: map[string]string{"workspace": wsID, "name": name},
+		}
+	}
 	for name, want := range desired {
 		have, ok := existing[name]
 		if want.kind == "assistant" {
@@ -601,6 +612,15 @@ func (s *Service) emitIndexDiff(ctx context.Context, wsID string, existing, desi
 					Topic: "assistant.updated", Entity: "assistant", EntityID: name, Action: "updated",
 					Attrs: map[string]string{"workspace": wsID, "name": name},
 				})
+			}
+			continue
+		}
+		if want.kind == "agent" {
+			switch {
+			case !ok:
+				emit(agentEvent("created", name))
+			case have.hash != want.hash:
+				emit(agentEvent("updated", name))
 			}
 			continue
 		}
@@ -620,6 +640,10 @@ func (s *Service) emitIndexDiff(ctx context.Context, wsID string, existing, desi
 				Topic: "assistant.updated", Entity: "assistant", EntityID: name, Action: "updated",
 				Attrs: map[string]string{"workspace": wsID, "name": name},
 			})
+			continue
+		}
+		if have.kind == "agent" {
+			emit(agentEvent("deleted", name))
 			continue
 		}
 		emit(jobEvent("deleted", name))
@@ -654,6 +678,7 @@ type JobRow struct {
 	Harness     string `json:"harness"`
 	Hash        string `json:"hash"`
 	ParseError  string `json:"parse_error,omitempty"`
+	Owner       string `json:"owner,omitempty"` // owning agent index name (agents/<name>) for child jobs
 }
 
 func ensureTrebiYAML(dir, name string) (id, dispName string, git bool, err error) {
@@ -718,35 +743,93 @@ const (
 	truncMark    = "\n…[truncated]"
 )
 
-// WakeOpts is the extra material folded into a composed assistant wake prompt.
-type WakeOpts struct {
-	ExtraPrompt string
-	Recap       string
-	Message     string
-}
-
-// ComposeWakePrompt builds the B27 assistant prompt:
-// TREBI.md body → job index → MEMORY.md → recap → triggering message / extra.
-func (s *Service) ComposeWakePrompt(ctx context.Context, wsID string, opts WakeOpts) (string, error) {
-	ws, err := s.Get(ctx, wsID)
+// ComposeWakePrompt builds the operator wake prompt (B27, Part F): the
+// assistant sees the workspace portfolio; an agent sees only its own folder.
+// It satisfies runs.WakeComposer — the one launch-path seam.
+func (s *Service) ComposeWakePrompt(ctx context.Context, scope runs.WakeScope, opts runs.WakeOpts) (string, error) {
+	ws, err := s.Get(ctx, scope.WorkspaceID)
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
-	writeSection(&b, "Instructions", trebiBody(ws.Path))
-	writeSection(&b, "Workspace jobs", capSection(s.jobIndex(ctx, wsID), wakeIndexCap))
-	writeSection(&b, "Memory", memoryBody(ws.Path))
+	if scope.Kind == "agent" {
+		s.writeAgentWake(ctx, &b, ws, scope, opts)
+	} else {
+		s.writeAssistantWake(ctx, &b, ws, opts)
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+// ComposeAssistantWake is the workspace-scoped wrapper (Kind: assistant).
+func (s *Service) ComposeAssistantWake(ctx context.Context, wsID string, opts runs.WakeOpts) (string, error) {
+	return s.ComposeWakePrompt(ctx, runs.WakeScope{WorkspaceID: wsID, Kind: "assistant"}, opts)
+}
+
+// writeAssistantWake renders the B27 sections: instructions, unowned jobs,
+// the agent rollup, memory, then the conversation tail.
+func (s *Service) writeAssistantWake(ctx context.Context, b *strings.Builder, ws *Workspace, opts runs.WakeOpts) {
+	body := opts.Body
+	if strings.TrimSpace(body) == "" {
+		body = trebiBody(ws.Path)
+	}
+	writeSection(b, "Instructions", body)
+	writeSection(b, "Workspace jobs", capSection(s.unownedIndex(ctx, ws.ID), wakeIndexCap))
+	writeSection(b, "Agents", capSection(s.agentRollup(ctx, ws.ID), wakeIndexCap))
+	writeSection(b, "Memory", memoryBody(ws.Path))
+	writeWakeTail(b, opts)
+}
+
+// writeAgentWake renders the F.2 sections: instructions, owned jobs, the
+// agent's own memory, then the triggering message. No recap: an agent has no
+// chat. {{agent_jobs}} moves the jobs block inline.
+func (s *Service) writeAgentWake(ctx context.Context, b *strings.Builder, ws *Workspace, scope runs.WakeScope, opts runs.WakeOpts) {
+	rows, _ := s.ListJobs(ctx, scope.WorkspaceID)
+	var agent *JobRow
+	for i := range rows {
+		if rows[i].Kind == "agent" && rows[i].Name == scope.Name {
+			agent = &rows[i]
+		}
+	}
+	body := opts.Body
+	if agent != nil {
+		if strings.TrimSpace(body) == "" {
+			if j, err := job.ParseFile(agent.Path); err == nil && j != nil {
+				body = j.Prompt
+			}
+		}
+		// A fire-time re-parse is raw, so expand here too (idempotent).
+		body = job.SubstituteAgentVars(body, filepath.Dir(agent.Path), ws.Path)
+	}
+	jobs := capSection(ownedIndex(rows, scope.Name), wakeIndexCap)
+	writeSection(b, "Instructions", body)
+	if !strings.Contains(body, "{{agent_jobs}}") {
+		writeSection(b, "Your jobs", jobs)
+	} else {
+		b.Reset()
+		writeSection(b, "Instructions", strings.ReplaceAll(body, "{{agent_jobs}}", jobs))
+	}
+	writeSection(b, "Memory", memoryBody(filepath.Join(ws.Path, filepath.FromSlash(scope.Name))))
+	msg := strings.TrimSpace(opts.Message)
+	if msg == "" {
+		msg = strings.TrimSpace(opts.ExtraPrompt)
+	}
+	if msg != "" {
+		writeSection(b, "Current message", msg)
+	}
+}
+
+// writeWakeTail renders the chat-only sections of an assistant wake.
+func writeWakeTail(b *strings.Builder, opts runs.WakeOpts) {
 	if recap := strings.TrimSpace(opts.Recap); recap != "" {
-		writeSection(&b, "Conversation recap", capSection(recap, wakeRecapCap))
+		writeSection(b, "Conversation recap", capSection(recap, wakeRecapCap))
 	}
 	msg := strings.TrimSpace(opts.Message)
 	if msg == "" {
 		msg = strings.TrimSpace(opts.ExtraPrompt)
 	}
 	if msg != "" {
-		writeSection(&b, "Current message", msg)
+		writeSection(b, "Current message", msg)
 	}
-	return strings.TrimSpace(b.String()), nil
 }
 
 func trebiBody(wsPath string) string {
@@ -757,32 +840,77 @@ func trebiBody(wsPath string) string {
 	return strings.TrimSpace(j.Prompt)
 }
 
-func memoryBody(wsPath string) string {
-	data, err := os.ReadFile(filepath.Join(wsPath, "MEMORY.md"))
+func memoryBody(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
 	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
 		return "(empty)"
 	}
 	return strings.TrimSpace(string(data))
 }
 
-func (s *Service) jobIndex(ctx context.Context, wsID string) string {
-	jobs, err := s.ListJobs(ctx, wsID)
-	if err != nil || len(jobs) == 0 {
-		return "(none)"
+// portfolioLine renders one index row for a wake rollup section (Part F):
+// every rollup reads alike.
+func portfolioLine(r JobRow) string {
+	active := "inactive"
+	if r.Active {
+		active = "active"
+	}
+	line := fmt.Sprintf("- %s kind=%s harness=%s %s", r.Name, r.Kind, r.Harness, active)
+	if r.ParseError != "" {
+		line += fmt.Sprintf(" parse_error=%s", r.ParseError)
+	}
+	return line
+}
+
+// unownedIndex lists workspace jobs with no owning agent (F.1).
+func (s *Service) unownedIndex(ctx context.Context, wsID string) string {
+	rows, _ := s.ListJobs(ctx, wsID)
+	var b strings.Builder
+	for _, row := range rows {
+		if row.Kind == "job" && row.Owner == "" {
+			b.WriteString(portfolioLine(row) + "\n")
+		}
+	}
+	return linesBlock(b.String())
+}
+
+// agentRollup lists one line per agent with its child count (F.1).
+func (s *Service) agentRollup(ctx context.Context, wsID string) string {
+	rows, _ := s.ListJobs(ctx, wsID)
+	children := map[string]int{}
+	for _, row := range rows {
+		if row.Owner != "" {
+			children[row.Owner]++
+		}
 	}
 	var b strings.Builder
-	for _, row := range jobs {
-		active := "inactive"
-		if row.Active {
-			active = "active"
+	for _, row := range rows {
+		if row.Kind != "agent" {
+			continue
 		}
-		fmt.Fprintf(&b, "- %s kind=%s harness=%s %s", row.Name, row.Kind, row.Harness, active)
-		if row.ParseError != "" {
-			fmt.Fprintf(&b, " parse_error=%s", row.ParseError)
-		}
-		b.WriteByte('\n')
+		fmt.Fprintf(&b, "%s children=%d\n", portfolioLine(row), children[row.Name])
 	}
-	return strings.TrimSpace(b.String())
+	return linesBlock(b.String())
+}
+
+// ownedIndex lists the portfolio lines of one agent's jobs (F.2).
+func ownedIndex(rows []JobRow, owner string) string {
+	var b strings.Builder
+	for _, row := range rows {
+		if row.Owner == owner {
+			b.WriteString(portfolioLine(row) + "\n")
+		}
+	}
+	return linesBlock(b.String())
+}
+
+// linesBlock trims a rendered list; an empty list reads "(none)".
+func linesBlock(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "(none)"
+	}
+	return s
 }
 
 func writeSection(b *strings.Builder, title, body string) {

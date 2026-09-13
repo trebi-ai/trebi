@@ -437,6 +437,16 @@ func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// indexRowKind returns job_index.kind for (workspace, name). Empty when the row
+// is absent; the queue then defaults the lane to job.
+func (s *Server) indexRowKind(ctx context.Context, wsID, name string) string {
+	var kind string
+	_ = s.st.DB().QueryRowContext(ctx,
+		`SELECT kind FROM job_index WHERE workspace_id=? AND name=?`,
+		s.workspaceID(ctx, wsID), name).Scan(&kind)
+	return kind
+}
+
 func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Connector string `json:"connector"`
@@ -485,6 +495,7 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 		Connector:   body.Connector,
 		WorkspaceID: body.Workspace,
 		Job:         body.Job,
+		Kind:        s.indexRowKind(r.Context(), body.Workspace, body.Job),
 		OnIndex:     body.OnIndex,
 		EventID:     eid,
 		EventRaw:    string(raw),

@@ -334,7 +334,7 @@ func TestCommandRegistration(t *testing.T) {
 	if msg.ArgsUsage != "<id> <text...>" {
 		t.Fatalf("runs message ArgsUsage %q", msg.ArgsUsage)
 	}
-	for _, want := range []string{"stats", "agents", "approvals"} {
+	for _, want := range []string{"stats", "sessions", "approvals"} {
 		if findCmd(runs.Commands, want) == nil {
 			t.Fatalf("runs missing %s", want)
 		}

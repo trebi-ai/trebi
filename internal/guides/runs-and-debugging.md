@@ -22,7 +22,7 @@ trebi runs timeline <id> --json
 trebi runs transcript <id> --json
 trebi runs transcript <id> --raw --json
 trebi runs stats --range mtd --json
-trebi runs agents --json
+trebi runs sessions --json
 ```
 
 ## Watch until it finishes

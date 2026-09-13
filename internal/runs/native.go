@@ -124,7 +124,7 @@ func (s *Service) runNative(ctx context.Context, run *Run, opts LaunchOpts, cfg 
 				return s.recap(ctx, run.ConversationID, text)
 			},
 			SetAgent: func(ctx context.Context, state string) {
-				s.SetAgentState(ctx, run.ID, AgentState(state), "native")
+				s.SetSessionState(ctx, run.ID, SessionState(state), "native")
 			},
 			Finish: func(ctx context.Context, status, end string, u llm.Usage) error {
 				tok := &pricing.TokenUsage{

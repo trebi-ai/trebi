@@ -13,6 +13,9 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 )
 
+// wakeRecapN is the message count folded into a composed wake recap.
+const wakeRecapN = 10
+
 // lane is one FIFO stream of pending queue rows.
 type lane struct{ ws, job, kind, conv string }
 
@@ -131,6 +134,20 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		return
 	}
 	prompt := queuePrompt(item, j)
+	convID := c.conversationID(ctx, item.WorkspaceID, item.ConversationKey)
+	var wake *runs.WakeOpts
+	if kind != runs.KindJob {
+		// Operator lane (Part F.3): the item prompt is the wake message; the
+		// var-expanded operator body feeds the composer at dispatch time.
+		wake = &runs.WakeOpts{
+			Body:    expandVars(j.Prompt, item.Vars),
+			Message: strings.TrimSpace(item.Prompt),
+		}
+		if convID != "" && c.Conversations != nil {
+			wake.Recap = c.Conversations.Recap(ctx, convID, wakeRecapN)
+		}
+		prompt = ""
+	}
 	harness := j.ResolvedHarness()
 	if reason := c.blockedFor(ctx, kind, harness); reason != "" {
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
@@ -161,7 +178,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			PromptPreview:   trunc(prompt, 200),
 			QueueID:         item.ID,
 			ConversationKey: item.ConversationKey,
-			ConversationID:  c.conversationID(ctx, item.WorkspaceID, item.ConversationKey),
+			ConversationID:  convID,
 			TraceID:         item.TraceID,
 			Trigger:         trigger,
 			MaxDurationMS:   maxMS,
@@ -172,6 +189,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			Runtime:         j.Runtime,
 		},
 		Prompt:    prompt,
+		Wake:      wake,
 		IfRunning: ifRunning,
 		Env:       j.LaunchEnv(),
 	})
@@ -193,6 +211,9 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	}
 	if item.Kind == runs.KindAssistant {
 		c.log.Info("assistant.woken", "reason", string(runs.ReasonTrigger), "channel", "")
+	}
+	if item.Kind == runs.KindAgent {
+		c.log.Info("agent.woken", "reason", string(runs.ReasonTrigger), "agent", item.Job)
 	}
 }
 
@@ -287,7 +308,12 @@ func queuePrompt(item *dispatch.QueueItem, j *job.Job) string {
 	if prompt == "" {
 		prompt = j.Prompt
 	}
-	for k, v := range item.Vars {
+	return expandVars(prompt, item.Vars)
+}
+
+// expandVars applies {{var}} substitutions from the trigger extract.
+func expandVars(prompt string, vars map[string]string) string {
+	for k, v := range vars {
 		prompt = replaceVar(prompt, k, v)
 	}
 	return prompt

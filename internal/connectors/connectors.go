@@ -645,7 +645,7 @@ func (s *Service) dispatchEvent(ctx context.Context, name string, ev eventRecord
 		return
 	}
 	for _, row := range jobs {
-		if row.Kind != "job" || !row.Active {
+		if !row.Active {
 			continue
 		}
 		j, err := job.ParseFile(row.Path)
@@ -692,6 +692,7 @@ func (s *Service) dispatchTrigger(ctx context.Context, name string, ev eventReco
 		Connector:   name,
 		WorkspaceID: row.WorkspaceID,
 		Job:         j.Name,
+		Kind:        row.Kind,
 		OnIndex:     tr.Index,
 		EventID:     ev.id,
 		EventRaw:    ev.raw,

@@ -135,7 +135,7 @@ func isPollRoute(r *http.Request) bool {
 		return r.Method == http.MethodPost && r.URL.Path == "/mcp"
 	}
 	switch r.URL.Path {
-	case "/v1/system/health", "/v1/agents/state":
+	case "/v1/system/health", "/v1/runs/session-state":
 		return true
 	}
 	return false

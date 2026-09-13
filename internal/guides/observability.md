@@ -60,7 +60,7 @@ trebi service logs --lines 200 --level error --grep timeout
 
 `service logs` takes `--lines` / `--grep`, not `--limit`. Drop follow/`-f` unless you intend to block (`-f` is **local only**; remote: `system.logs`).
 
-The daemon logs each API request as `api.request`. Successful reads of `/v1/system/health` and `/v1/agents/state` log at debug (the tray polls them). Everything else, and any poll that fails, logs at info.
+The daemon logs each API request as `api.request`. Successful reads of `/v1/system/health` and `/v1/runs/session-state` log at debug (the tray polls them). Everything else, and any poll that fails, logs at info.
 
 ## Stats and drain
 
@@ -68,7 +68,7 @@ The daemon logs each API request as `api.request`. Successful reads of `/v1/syst
 trebi runs stats --json
 trebi runs stats --range mtd --json
 trebi runs stats --range 7d --job my-job --json
-trebi runs agents --json
+trebi runs sessions --json
 trebi service drain
 trebi service undrain
 ```

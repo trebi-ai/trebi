@@ -33,13 +33,13 @@ func (s Status) IsTerminal() bool {
 	return false
 }
 
-// AgentState — separate from Status (B1).
-type AgentState string
+// SessionState — separate from Status (B1).
+type SessionState string
 
 const (
-	AgentRunning AgentState = "running"
-	AgentWaiting AgentState = "waiting"
-	AgentIdle    AgentState = "idle"
+	SessionRunning SessionState = "running"
+	SessionWaiting SessionState = "waiting"
+	SessionIdle    SessionState = "idle"
 )
 
 // EndReason — D7 failure classifier.
@@ -88,6 +88,7 @@ const (
 const (
 	KindJob       = "job"
 	KindAssistant = "assistant"
+	KindAgent     = "agent"
 )
 
 // JobDisplayStatus — derived for lists (not run Status).
@@ -191,38 +192,38 @@ type TriggerCapture struct {
 
 // Run — one execution (wire shape §3.4).
 type Run struct {
-	ID              string             `json:"id"`
-	Workspace       string             `json:"workspace"`
-	Job             string             `json:"job"`
-	Kind            string             `json:"kind"`
-	Reason          RunReason          `json:"reason,omitempty"`
-	Status          Status             `json:"status"`
-	EndReason       EndReason          `json:"end_reason,omitempty"`
-	AgentState      AgentState         `json:"agent_state,omitempty"`
-	AgentStateSince *time.Time         `json:"agent_state_since,omitempty"`
-	StartedAt       time.Time          `json:"started_at"`
-	EndedAt         *time.Time         `json:"ended_at,omitempty"`
-	DurationMS      int64              `json:"duration_ms"`
-	Harness         string             `json:"harness"`
-	Runtime         string             `json:"runtime"`
-	Model           string             `json:"model,omitempty"`
-	SessionID       string             `json:"session_id,omitempty"`
-	TmuxSession     string             `json:"tmux_session,omitempty"`
-	Attach          *AttachInfo        `json:"attach,omitempty"`
-	PromptPreview   string             `json:"prompt_preview"`
-	Inputs          map[string]string  `json:"inputs,omitempty"`
-	Trigger         *TriggerCapture    `json:"trigger,omitempty"`
-	ConversationKey string             `json:"conversation_key,omitempty"`
-	ConversationID  string             `json:"conversation_id,omitempty"`
-	WorkingDir      string             `json:"working_dir,omitempty"`
-	Tokens          pricing.TokenUsage `json:"tokens"`
-	CoalescedCount  int                `json:"coalesced_count,omitempty"`
-	Session         SessionSpec        `json:"session"`
-	ResumedFrom     string             `json:"resumed_from,omitempty"`
-	ResumeAttempts  int                `json:"resume_attempts,omitempty"`
-	QueueID         string             `json:"queue_id,omitempty"`
-	TraceID         string             `json:"trace_id"`
-	Revision        int64              `json:"revision"`
+	ID                string             `json:"id"`
+	Workspace         string             `json:"workspace"`
+	Job               string             `json:"job"`
+	Kind              string             `json:"kind"`
+	Reason            RunReason          `json:"reason,omitempty"`
+	Status            Status             `json:"status"`
+	EndReason         EndReason          `json:"end_reason,omitempty"`
+	SessionState      SessionState       `json:"session_state,omitempty"`
+	SessionStateSince *time.Time         `json:"session_state_since,omitempty"`
+	StartedAt         time.Time          `json:"started_at"`
+	EndedAt           *time.Time         `json:"ended_at,omitempty"`
+	DurationMS        int64              `json:"duration_ms"`
+	Harness           string             `json:"harness"`
+	Runtime           string             `json:"runtime"`
+	Model             string             `json:"model,omitempty"`
+	SessionID         string             `json:"session_id,omitempty"`
+	TmuxSession       string             `json:"tmux_session,omitempty"`
+	Attach            *AttachInfo        `json:"attach,omitempty"`
+	PromptPreview     string             `json:"prompt_preview"`
+	Inputs            map[string]string  `json:"inputs,omitempty"`
+	Trigger           *TriggerCapture    `json:"trigger,omitempty"`
+	ConversationKey   string             `json:"conversation_key,omitempty"`
+	ConversationID    string             `json:"conversation_id,omitempty"`
+	WorkingDir        string             `json:"working_dir,omitempty"`
+	Tokens            pricing.TokenUsage `json:"tokens"`
+	CoalescedCount    int                `json:"coalesced_count,omitempty"`
+	Session           SessionSpec        `json:"session"`
+	ResumedFrom       string             `json:"resumed_from,omitempty"`
+	ResumeAttempts    int                `json:"resume_attempts,omitempty"`
+	QueueID           string             `json:"queue_id,omitempty"`
+	TraceID           string             `json:"trace_id"`
+	Revision          int64              `json:"revision"`
 }
 
 // Timeline — two-layer segments + point events.
@@ -233,7 +234,7 @@ type Timeline struct {
 }
 
 type TimelineSegment struct {
-	Layer      string          `json:"layer"` // task|agent
+	Layer      string          `json:"layer"` // run|session
 	State      string          `json:"state"`
 	Start      time.Time       `json:"start"`
 	End        *time.Time      `json:"end,omitempty"`

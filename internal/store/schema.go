@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 10
+const SchemaVersion = 12
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -409,6 +409,18 @@ CREATE TABLE assistant_usage (
 	day    TEXT PRIMARY KEY,
 	tokens INTEGER NOT NULL DEFAULT 0
 );
+`,
+		// v11: run_segments layer rename (agent→session, task→run) so the
+		// "agent" noun is free for the product object.
+		`
+UPDATE run_segments SET layer='session' WHERE layer='agent';
+UPDATE run_segments SET layer='run' WHERE layer='task';
+`,
+		// v12: agent ownership — job_index.owner is the owning agent's index
+		// name (agents/<name>); '' = unowned.
+		`
+ALTER TABLE job_index ADD COLUMN owner TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_job_index_owner ON job_index(workspace_id, owner);
 `,
 	}
 }

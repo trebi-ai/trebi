@@ -68,7 +68,7 @@ type ControlPlane struct {
 // New builds a control plane.
 func New(st *store.Store, opts Options) *ControlPlane {
 	ws := workspaces.New(st)
-	r := runs.New(st)
+	r := runs.New(st, ws)
 	q := dispatch.NewQueue(st)
 	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()

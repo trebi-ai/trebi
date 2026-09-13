@@ -25,11 +25,19 @@ List runs, newest first.
 - `limit` (number, optional): page size.
 
 ### create
-Launch one run of a job.
+Launch one run now. This action is the canonical launch; `job.run` calls it with the job in the path. To launch a folder agent, set `kind` to `agent` and pass the agent short name as `job`.
 - `job` (string, required): job name.
 - `workspace` (string, optional): workspace id.
-- `prompt` (string, optional): prompt override text.
-- `dry_run` (boolean, optional): validate only; do not launch.
+- `kind` (string, optional): run kind; `agent` launches a folder agent.
+- `prompt` (string, optional): replace the job body for this run.
+- `extra_prompt` (string, optional): append text to the job body for this run.
+- `inputs` (object, optional): values for `{{placeholder}}` fields in the job body.
+- `harness` (string, optional): override the harness for this run.
+- `reason` (string, optional): launch reason; defaults to `manual`.
+- `conversation_id` (string, optional): attach the run to one conversation.
+- `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first run.
+- `dry_run` (boolean, optional): evaluate gates and return the plan without launching.
+- `wait_ms` (number, optional): long-poll until the run ends, up to 120000 ms. The response is the final run row.
 
 ### show
 Read one run.
@@ -98,8 +106,8 @@ to answer "how much did we spend".
 - `workspace` (string, optional): filter by workspace id.
 - `job` (string, optional): filter by job name.
 
-### agents
-Read the live agent state table. No input fields.
+### session_state
+Read the live session state table of runs. The response is `{"sessions": {run_id: state}}`. No input fields.
 
 ## Related guides
 

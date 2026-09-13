@@ -163,7 +163,7 @@ func TestAutoResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.Append(ctx, store.BusEvent{
-		Topic: "agent.state",
+		Topic: "session.state",
 		Attrs: map[string]string{"run_id": "r1", "state": "running"},
 	}); err != nil {
 		t.Fatal(err)
@@ -220,7 +220,7 @@ func TestWaitingDwell(t *testing.T) {
 	ctx := context.Background()
 	since := now.Add(-6 * time.Minute).Format(time.RFC3339Nano)
 	if _, err := st.Append(ctx, store.BusEvent{
-		Topic: "agent.state",
+		Topic: "session.state",
 		Attrs: map[string]string{"run_id": "r1", "state": "waiting", "since": since, "workspace": "ws", "job": "j"},
 	}); err != nil {
 		t.Fatal(err)

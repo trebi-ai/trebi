@@ -48,6 +48,17 @@ func (r RunSpec) Build() HTTPRequest {
 	}
 }
 
+// BuildRunsCreate renders the spec as POST /v1/runs, the canonical launch
+// (B9). Job and workspace ride the body; the sugar routes carry them in the path.
+func (r RunSpec) BuildRunsCreate() HTTPRequest {
+	body := r.body()
+	body["job"] = r.Job
+	if r.Workspace != "" {
+		body["workspace"] = r.Workspace
+	}
+	return HTTPRequest{Method: "POST", Path: withQuery("/v1/runs", waitQ(r.WaitMS)), Body: body}
+}
+
 // BuildWake renders the spec as POST /v1/workspaces/{id}/assistant/wake. The
 // daemon pins job, kind, and workspace; the rest of the spec passes through.
 func (r RunSpec) BuildWake() HTTPRequest {
@@ -55,6 +66,17 @@ func (r RunSpec) BuildWake() HTTPRequest {
 		Method: "POST",
 		Path:   withQuery("/v1/workspaces/"+url.PathEscape(r.Workspace)+"/assistant/wake", waitQ(r.WaitMS)),
 		Body:   r.body(),
+	}
+}
+
+// BuildAgentWake renders the spec as POST /v1/workspaces/{id}/agents/{name}/wake.
+// Job carries the agent short name; the daemon pins job, kind, and workspace.
+func (r RunSpec) BuildAgentWake() HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path: withQuery("/v1/workspaces/"+url.PathEscape(r.Workspace)+
+			"/agents/"+url.PathEscape(r.Job)+"/wake", waitQ(r.WaitMS)),
+		Body: r.body(),
 	}
 }
 
@@ -174,9 +196,9 @@ func BuildRunsStats(workspace, job, rng string) HTTPRequest {
 	})}
 }
 
-// BuildAgentsState builds GET /v1/agents/state.
-func BuildAgentsState() HTTPRequest {
-	return HTTPRequest{Method: "GET", Path: "/v1/agents/state"}
+// BuildSessionState builds GET /v1/runs/session-state.
+func BuildSessionState() HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/runs/session-state"}
 }
 
 // BuildStreamPath builds GET /v1/stream?topics=&cursor=.
@@ -401,6 +423,147 @@ func BuildAssistantDelete(workspaceID, ifMatch string) HTTPRequest {
 // BuildAssistantMemoryGetPath builds GET /v1/workspaces/{id}/assistant/memory.
 func BuildAssistantMemoryGetPath(workspaceID string) string {
 	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory"
+}
+
+// AgentIndexName maps an agent short name to its index name: cmo → agents/cmo.
+// A name that already carries the prefix passes through unchanged.
+func AgentIndexName(short string) string {
+	if short == "" || strings.HasPrefix(short, "agents/") {
+		return short
+	}
+	return "agents/" + short
+}
+
+// BuildAgentListPath builds GET /v1/workspaces/{id}/agents.
+func BuildAgentListPath(workspaceID string) string {
+	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/agents"
+}
+
+// BuildAgentGetPath builds GET /v1/workspaces/{id}/agents/{name}. name is the
+// short name.
+func BuildAgentGetPath(workspaceID, name string) string {
+	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/agents/" + url.PathEscape(name)
+}
+
+// AgentSpec is the PUT /v1/workspaces/{id}/agents/{name} create body. Give
+// Content for full control, or the structured fields and let the daemon
+// compose the front matter. Every field empty seeds the default AGENT.md.
+type AgentSpec struct {
+	Workspace   string
+	Name        string // short name
+	Content     string
+	Prompt      string
+	Harness     string
+	Description string
+	Cron        string
+	Every       string
+	Event       string
+	Match       string
+	Extract     string
+}
+
+// Build renders the spec as PUT /v1/workspaces/{id}/agents/{name} (upsert).
+func (a AgentSpec) Build() HTTPRequest {
+	body := map[string]any{"content": a.Content}
+	for k, v := range map[string]string{
+		"prompt": a.Prompt, "harness": a.Harness, "description": a.Description,
+		"cron": a.Cron, "every": a.Every,
+	} {
+		if v != "" {
+			body[k] = v
+		}
+	}
+	if a.Event != "" {
+		on := map[string]any{"event": a.Event}
+		if a.Match != "" {
+			on["match"] = a.Match
+		}
+		if a.Extract != "" {
+			on["extract"] = a.Extract
+		}
+		body["on"] = on
+	}
+	return HTTPRequest{Method: "PUT", Path: BuildAgentGetPath(a.Workspace, a.Name), Body: body}
+}
+
+// BuildAgentPut builds PUT /v1/workspaces/{id}/agents/{name} with the full
+// AGENT.md content (set).
+func BuildAgentPut(workspaceID, name, content, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:  "PUT",
+		Path:    BuildAgentGetPath(workspaceID, name),
+		Body:    map[string]string{"content": content},
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildAgentPatch builds PATCH /v1/workspaces/{id}/agents/{name} with a
+// JSON-merge-patch of frontmatter scalar fields.
+func BuildAgentPatch(workspaceID, name string, patch map[string]any, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:  "PATCH",
+		Path:    BuildAgentGetPath(workspaceID, name),
+		Body:    patch,
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildAgentDelete builds DELETE /v1/workspaces/{id}/agents/{name}. purge
+// removes the whole agents/<name>/ tree and needs confirm.
+func BuildAgentDelete(workspaceID, name, ifMatch string, purge, confirm bool) HTTPRequest {
+	kv := confirmQ(confirm)
+	if purge {
+		kv["purge"] = "1"
+	}
+	return HTTPRequest{
+		Method:  "DELETE",
+		Path:    withQuery(BuildAgentGetPath(workspaceID, name), kv),
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildAgentMemoryGetPath builds GET /v1/workspaces/{id}/agents/{name}/memory.
+func BuildAgentMemoryGetPath(workspaceID, name string) string {
+	return BuildAgentGetPath(workspaceID, name) + "/memory"
+}
+
+// BuildAgentMemoryPut builds PUT /v1/workspaces/{id}/agents/{name}/memory.
+func BuildAgentMemoryPut(workspaceID, name, content, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:  "PUT",
+		Path:    BuildAgentMemoryGetPath(workspaceID, name),
+		Body:    map[string]string{"content": content},
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildAgentMemoryClear builds DELETE /v1/workspaces/{id}/agents/{name}/memory.
+func BuildAgentMemoryClear(workspaceID, name, ifMatch string, confirm bool) HTTPRequest {
+	return HTTPRequest{
+		Method:  "DELETE",
+		Path:    withQuery(BuildAgentMemoryGetPath(workspaceID, name), confirmQ(confirm)),
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildAgentMemoryEntryAdd builds POST /v1/workspaces/{id}/agents/{name}/memory/entries.
+func BuildAgentMemoryEntryAdd(workspaceID, name, date, text, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:  "POST",
+		Path:    BuildAgentMemoryGetPath(workspaceID, name) + "/entries",
+		Body:    map[string]string{"date": date, "text": text},
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildAgentMemoryEntryDelete builds DELETE
+// /v1/workspaces/{id}/agents/{name}/memory/entries/{entry_id}.
+func BuildAgentMemoryEntryDelete(workspaceID, name, entryID, ifMatch string) HTTPRequest {
+	return HTTPRequest{
+		Method:  "DELETE",
+		Path:    BuildAgentMemoryGetPath(workspaceID, name) + "/entries/" + url.PathEscape(entryID),
+		IfMatch: ifMatch,
+	}
 }
 
 // BuildWorkspaceDelete builds DELETE /v1/workspaces/{id}.
@@ -1018,6 +1181,7 @@ type JobSpec struct {
 	Match          string
 	Extract        string
 	IdempotencyKey string
+	Agent          string // short name; the file lands under agents/<agent>/
 }
 
 // Build renders the spec as POST /v1/jobs.
@@ -1036,6 +1200,7 @@ func (j JobSpec) body() map[string]any {
 	for k, v := range map[string]string{
 		"prompt": j.Prompt, "harness": j.Harness, "description": j.Description,
 		"cron": j.Cron, "every": j.Every, "idempotency_key": j.IdempotencyKey,
+		"agent": j.Agent,
 	} {
 		if v != "" {
 			body[k] = v

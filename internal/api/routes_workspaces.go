@@ -33,15 +33,25 @@ func (s *Server) routeWorkspaces(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces/{id}/assistant/memory", s.handleAssistantMemoryGet)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/assistant/memory", s.handleAssistantMemoryPut)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant/memory", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryDelete(w, r, true)
+		s.handleMemoryDelete(w, r, memoryAssistant)
 	})
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/memory/entries", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryEntriesPost(w, r, true)
+		s.handleMemoryEntriesPost(w, r, memoryAssistant)
 	})
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant/memory/entries/{eid}", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryEntriesDelete(w, r, true)
+		s.handleMemoryEntriesDelete(w, r, memoryAssistant)
 	})
 }
+
+// memoryScope names whose MEMORY.md a memory request targets. One handler set
+// serves jobs, the workspace assistant, and folder agents.
+type memoryScope int
+
+const (
+	memoryJob memoryScope = iota
+	memoryAssistant
+	memoryAgent
+)
 
 // workspaceID resolves a workspace id or display name to an id. Unknown
 // values are returned unchanged so existing not-found paths still fire.
@@ -165,8 +175,8 @@ func (s *Server) handleAssistantGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMemoryDelete removes the whole memory file (reset to empty).
-func (s *Server) handleMemoryDelete(w http.ResponseWriter, r *http.Request, assistant bool) {
-	root, rel, path, err := s.memoryRootRel(r, assistant)
+func (s *Server) handleMemoryDelete(w http.ResponseWriter, r *http.Request, scope memoryScope) {
+	root, rel, path, err := s.memoryRootRel(r, scope)
 	if err != nil {
 		writeResolveErr(w, err)
 		return
@@ -182,7 +192,7 @@ func (s *Server) handleMemoryDelete(w http.ResponseWriter, r *http.Request, assi
 }
 
 // handleMemoryEntriesPost appends one B22 ledger entry ([YYYY-MM-DD] text).
-func (s *Server) handleMemoryEntriesPost(w http.ResponseWriter, r *http.Request, assistant bool) {
+func (s *Server) handleMemoryEntriesPost(w http.ResponseWriter, r *http.Request, scope memoryScope) {
 	var body struct {
 		Date  string `json:"date"`
 		Text  string `json:"text"`
@@ -197,7 +207,7 @@ func (s *Server) handleMemoryEntriesPost(w http.ResponseWriter, r *http.Request,
 		writeErr(w, http.StatusBadRequest, "validation", "text required")
 		return
 	}
-	root, rel, path, err := s.memoryRootRel(r, assistant)
+	root, rel, path, err := s.memoryRootRel(r, scope)
 	if err != nil {
 		writeResolveErr(w, err)
 		return
@@ -219,12 +229,12 @@ func (s *Server) handleMemoryEntriesPost(w http.ResponseWriter, r *http.Request,
 }
 
 // handleMemoryEntriesDelete removes one ledger entry by id.
-func (s *Server) handleMemoryEntriesDelete(w http.ResponseWriter, r *http.Request, assistant bool) {
+func (s *Server) handleMemoryEntriesDelete(w http.ResponseWriter, r *http.Request, scope memoryScope) {
 	eid := r.PathValue("eid")
 	if eid == "" {
 		eid = r.PathValue("id")
 	}
-	root, rel, path, err := s.memoryRootRel(r, assistant)
+	root, rel, path, err := s.memoryRootRel(r, scope)
 	if err != nil {
 		writeResolveErr(w, err)
 		return
@@ -245,9 +255,10 @@ func (s *Server) handleMemoryEntriesDelete(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": eid, "hash": hash})
 }
 
-// memoryPath maps the request to the MEMORY.md sibling of the job file.
-func (s *Server) memoryPath(r *http.Request, assistant bool) (string, error) {
-	if assistant {
+// memoryPath maps the request to the MEMORY.md sibling of the target document.
+func (s *Server) memoryPath(r *http.Request, scope memoryScope) (string, error) {
+	switch scope {
+	case memoryAssistant:
 		wsID := r.PathValue("id")
 		rows, err := s.ws.ListJobs(r.Context(), wsID)
 		if err != nil {
@@ -264,12 +275,19 @@ func (s *Server) memoryPath(r *http.Request, assistant bool) (string, error) {
 			return "", errJobNotFound
 		}
 		return filepath.Join(ws.Path, "MEMORY.md"), nil
+	case memoryAgent:
+		row, err := s.findAgentRow(r.Context(), r.PathValue("id"), r.PathValue("name"))
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(filepath.Dir(row.Path), "MEMORY.md"), nil
+	default:
+		row, err := s.findJobRow(r.Context(), r.URL.Query().Get("workspace"), r.PathValue("name"))
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(filepath.Dir(row.Path), "MEMORY.md"), nil
 	}
-	row, err := s.findJobRow(r.Context(), r.URL.Query().Get("workspace"), r.PathValue("name"))
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(filepath.Dir(row.Path), "MEMORY.md"), nil
 }
 
 func (s *Server) handleAssistantPut(w http.ResponseWriter, r *http.Request) {
@@ -340,20 +358,20 @@ func (s *Server) handleAssistantDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // memoryRootRel maps a memory request to workspace root + relative path + abs path.
-func (s *Server) memoryRootRel(r *http.Request, assistant bool) (root, rel, abs string, err error) {
-	abs, err = s.memoryPath(r, assistant)
+func (s *Server) memoryRootRel(r *http.Request, scope memoryScope) (root, rel, abs string, err error) {
+	abs, err = s.memoryPath(r, scope)
 	if err != nil {
 		return "", "", "", err
 	}
 	var wsID string
-	if assistant {
-		wsID = r.PathValue("id")
-	} else {
+	if scope == memoryJob {
 		row, err := s.findJobRow(r.Context(), r.URL.Query().Get("workspace"), r.PathValue("name"))
 		if err != nil {
 			return "", "", "", err
 		}
 		wsID = row.WorkspaceID
+	} else {
+		wsID = r.PathValue("id")
 	}
 	ws, err := s.ws.Get(r.Context(), wsID)
 	if err != nil {
@@ -417,16 +435,16 @@ func (s *Server) handleAssistantWake(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAssistantMemoryGet(w http.ResponseWriter, r *http.Request) {
-	s.handleMemoryFile(w, r, true)
+	s.handleMemoryFile(w, r, memoryAssistant)
 }
 
 func (s *Server) handleAssistantMemoryPut(w http.ResponseWriter, r *http.Request) {
-	s.handleMemoryFilePut(w, r, true)
+	s.handleMemoryFilePut(w, r, memoryAssistant)
 }
 
 // handleMemoryFile serves the B22 memory ledger wire shape.
-func (s *Server) handleMemoryFile(w http.ResponseWriter, r *http.Request, assistant bool) {
-	path, err := s.memoryPath(r, assistant)
+func (s *Server) handleMemoryFile(w http.ResponseWriter, r *http.Request, scope memoryScope) {
+	path, err := s.memoryPath(r, scope)
 	if err != nil {
 		writeResolveErr(w, err)
 		return
@@ -447,7 +465,7 @@ func (s *Server) handleMemoryFile(w http.ResponseWriter, r *http.Request, assist
 }
 
 // handleMemoryFilePut replaces the whole memory file (reset).
-func (s *Server) handleMemoryFilePut(w http.ResponseWriter, r *http.Request, assistant bool) {
+func (s *Server) handleMemoryFilePut(w http.ResponseWriter, r *http.Request, scope memoryScope) {
 	var body struct {
 		Content string `json:"content"`
 	}
@@ -455,7 +473,7 @@ func (s *Server) handleMemoryFilePut(w http.ResponseWriter, r *http.Request, ass
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	root, rel, abs, err := s.memoryRootRel(r, assistant)
+	root, rel, abs, err := s.memoryRootRel(r, scope)
 	if err != nil {
 		writeResolveErr(w, err)
 		return

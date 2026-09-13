@@ -44,6 +44,7 @@ type runCreateRequest struct {
 
 func (s *Server) routeRuns(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/runs", s.handleRunsList)
+	mux.HandleFunc("POST /v1/runs", s.handleRunsCreate)
 	mux.HandleFunc("GET /v1/runs/{id}", s.handleRunGet)
 	mux.HandleFunc("GET /v1/runs/{id}/timeline", s.handleRunTimeline)
 	mux.HandleFunc("GET /v1/runs/{id}/transcript", s.handleRunTranscript)
@@ -57,7 +58,7 @@ func (s *Server) routeRuns(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runs/{id}/approve", s.handleRunApprove)
 	mux.HandleFunc("GET /v1/runs/{id}/attach", s.handleRunAttach)
 	mux.HandleFunc("GET /v1/approvals", s.handleApprovals)
-	mux.HandleFunc("GET /v1/agents/state", s.handleAgentState)
+	mux.HandleFunc("GET /v1/runs/session-state", s.handleSessionState)
 	mux.HandleFunc("GET /v1/stats/runs", s.handleStats)
 	mux.HandleFunc("POST /v1/agent-hook/{event}", s.handleAgentHook)
 }
@@ -143,6 +144,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		writeResolveErr(w, rerr)
 		return
 	}
+	if body.Kind == runs.KindAgent {
+		// Canonical launch takes the short name; runs and wakes carry the index name.
+		body.Job = row.Name
+	}
 	if body.Workspace == "" {
 		body.Workspace = row.WorkspaceID
 	}
@@ -151,7 +156,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		return
 	}
 	harness, prompt, spec := runSpec(row.Path, body.Harness, body.PromptOverride)
-	prompt = s.launchPrompt(r.Context(), body, prompt)
+	prompt, wake := s.launchPrompt(r.Context(), body, prompt)
 	if body.DryRun {
 		// B25: dry_run evaluates schedule when: gates without launching.
 		s.handleRunsDryRun(w, r, body.Workspace, body.Job, body.Kind, reason, harness, prompt, body.Inputs)
@@ -159,13 +164,18 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	}
 
 	// One launch path: CreateAndLaunch (real tmux when binary present; harness=fake for CI).
-	run, _, err := s.runs.CreateAndLaunch(r.Context(), launchOpts(body, reason, harness, prompt, spec))
+	lopts := launchOpts(body, reason, harness, prompt, spec)
+	lopts.Wake = wake
+	run, _, err := s.runs.CreateAndLaunch(r.Context(), lopts)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	if body.Kind == runs.KindAssistant {
 		s.log.Info("assistant.woken", "reason", string(reason), "channel", "")
+	}
+	if body.Kind == runs.KindAgent {
+		s.log.Info("agent.woken", "reason", string(reason), "agent", body.Job)
 	}
 	if body.IdempotencyKey != "" {
 		if _, err := s.st.RememberIdempotent(r.Context(), idempotencyRuns, body.IdempotencyKey, run.ID); err != nil {
@@ -217,6 +227,9 @@ func (s *Server) resolveRunRow(ctx context.Context, body runCreateRequest) (work
 	if body.Kind == "assistant" {
 		return s.findAssistantRow(ctx, body.Workspace)
 	}
+	if body.Kind == runs.KindAgent {
+		return s.findAgentRow(ctx, body.Workspace, body.Job)
+	}
 	return s.findJobRow(ctx, body.Workspace, body.Job)
 }
 
@@ -255,10 +268,8 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 		Prompt: prompt,
 	}
 	if spec != nil {
-		lopts.WorkingDir = spec.WorkingDir
-		if lopts.WorkingDir == "" {
-			lopts.WorkingDir = spec.Dir
-		}
+		// Agents resolve to the workspace root unless working_dir: is set (G.5).
+		lopts.WorkingDir = spec.ResolvedWorkingDir()
 		lopts.IfRunning = spec.Session.IfRunning
 		lopts.Env = spec.LaunchEnv()
 		lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = spec.Session.KnobsMS()
@@ -287,35 +298,42 @@ func (s *Server) bindConversation(ctx context.Context, body *runCreateRequest) e
 	return nil
 }
 
-// launchPrompt resolves the prompt of one run: a full override wins, an
-// assistant run composes its wake prompt, and extra_prompt appends to the job
-// body for every other kind.
-func (s *Server) launchPrompt(ctx context.Context, body runCreateRequest, base string) string {
+// launchPrompt resolves the prompt of one run (Part F.3): a full override
+// wins; an operator run (assistant, agent) defers to the wake composer via
+// CreateAndLaunch; extra_prompt appends to the job body for every other kind.
+func (s *Server) launchPrompt(ctx context.Context, body runCreateRequest, base string) (string, *runs.WakeOpts) {
 	if body.PromptOverride != "" {
-		return body.PromptOverride
+		return body.PromptOverride, nil
 	}
-	if body.Kind != runs.KindAssistant || s.ws == nil {
+	operator := body.Kind == runs.KindAssistant || body.Kind == runs.KindAgent
+	if !operator || s.ws == nil {
 		if body.ExtraPrompt != "" {
-			return request.AppendExtraPrompt(base, body.ExtraPrompt)
+			return request.AppendExtraPrompt(base, body.ExtraPrompt), nil
 		}
-		return base
+		return base, nil
 	}
+	// Agents have no conversation, so the recap stays empty for them.
 	recap := ""
 	if body.ConversationID != "" && s.conv != nil {
 		recap = s.conv.Recap(ctx, body.ConversationID, 10)
 	}
-	composed, err := s.ws.ComposeWakePrompt(ctx, body.Workspace, workspaces.WakeOpts{
+	return "", &runs.WakeOpts{
+		Body:        base,
 		ExtraPrompt: body.ExtraPrompt,
 		Recap:       recap,
 		Message:     body.ExtraPrompt,
-	})
-	if err != nil || composed == "" {
-		if body.ExtraPrompt != "" {
-			return strings.TrimRight(base, "\n") + "\n" + body.ExtraPrompt
-		}
-		return base
 	}
-	return composed
+}
+
+// handleRunsCreate is the canonical launch (B9). The job and assistant run
+// routes sugar over it.
+func (s *Server) handleRunsCreate(w http.ResponseWriter, r *http.Request) {
+	var body runCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	s.createRun(w, r, body)
 }
 
 // createRunFromJob is the one launch path. The body carries every launch
@@ -678,10 +696,14 @@ func (s *Server) handleRunResume(w http.ResponseWriter, r *http.Request) {
 // prompt with trigger vars/inputs applied, cwd, if_running, and session knobs.
 // Trigger capture and conversation key carry over.
 // jobFileForRun resolves the markdown that produced this run. Assistant
-// runs are TREBI.md (kind=assistant); findJobRow only returns JOB.md rows.
+// runs are TREBI.md (kind=assistant); agent runs are AGENT.md; findJobRow
+// only returns JOB.md rows.
 func (s *Server) jobFileForRun(ctx context.Context, prev *runs.Run) (workspaces.JobRow, error) {
 	if prev.Kind == runs.KindAssistant {
 		return s.findAssistantRow(ctx, prev.Workspace)
+	}
+	if prev.Kind == runs.KindAgent {
+		return s.findAgentRow(ctx, prev.Workspace, prev.Job)
 	}
 	return s.findJobRow(ctx, prev.Workspace, prev.Job)
 }
@@ -910,14 +932,14 @@ func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
 	if runID != "" {
 		switch event {
 		case "waiting", "permission-request":
-			s.runs.SetAgentState(r.Context(), runID, runs.AgentWaiting, "hook")
+			s.runs.SetSessionState(r.Context(), runID, runs.SessionWaiting, "hook")
 			if _, err := s.runs.OpenApproval(r.Context(), runID, hookQuestion(body)); err != nil {
 				s.log.Warn("open approval", "run", runID, "error", err)
 			}
 		case "running", "tool-start", "session-start":
-			s.runs.SetAgentState(r.Context(), runID, runs.AgentRunning, "hook")
+			s.runs.SetSessionState(r.Context(), runID, runs.SessionRunning, "hook")
 		case "stop", "session-end", "idle":
-			s.runs.SetAgentState(r.Context(), runID, runs.AgentIdle, "hook")
+			s.runs.SetSessionState(r.Context(), runID, runs.SessionIdle, "hook")
 		}
 		s.runs.AddEvent(r.Context(), runID, "hook:"+event, "agent-hook", map[string]string{"event": event})
 	}
@@ -945,8 +967,8 @@ func hookQuestion(body []byte) string {
 	return ""
 }
 
-func (s *Server) handleAgentState(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"agents": s.runs.AgentSnapshot()})
+func (s *Server) handleSessionState(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": s.runs.SessionSnapshot()})
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {

@@ -1,4 +1,4 @@
-// Package runs owns run CRUD, timeline, launch path, and agent state.
+// Package runs owns run CRUD, timeline, launch path, and session state.
 package runs
 
 import (
@@ -18,19 +18,42 @@ import (
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
+// WakeOpts is the material one caller supplies for a composed wake prompt:
+// the var-expanded operator body plus the trigger-side text.
+type WakeOpts struct {
+	Body        string // operator body; when empty the composer reads the file
+	ExtraPrompt string
+	Recap       string
+	Message     string
+}
+
+// WakeScope names the operator one wake composes for.
+type WakeScope struct {
+	WorkspaceID string
+	Kind        string // assistant | agent
+	Name        string // agent index name (agents/<name>); ignored for assistant
+}
+
+// WakeComposer is the one seam from runs to workspace wake composition
+// (Part F.3). *workspaces.Service satisfies it; nil falls back to the raw body.
+type WakeComposer interface {
+	ComposeWakePrompt(ctx context.Context, scope WakeScope, opts WakeOpts) (string, error)
+}
+
 // Service is the runs subsystem.
 type Service struct {
 	st  *store.Store
 	log *slog.Logger
 
 	mu       sync.RWMutex
-	agents   map[string]agentSnap // run_id → state
+	sessions map[string]sessionSnap // run_id → state
 	native   map[string]*nativeHandle
 	life     context.Context
 	ingest   func(ctx context.Context, runID, convID string, texts []string) error
 	recap    func(ctx context.Context, convID, text string) error
 	prov     llm.Provider // test seam; nil → llm.New from config
 	dispatch tools.Dispatcher
+	composer WakeComposer
 }
 
 type nativeHandle struct {
@@ -38,8 +61,8 @@ type nativeHandle struct {
 	inbox  chan string
 }
 
-type agentSnap struct {
-	State AgentState
+type sessionSnap struct {
+	State SessionState
 	Since time.Time
 }
 
@@ -55,12 +78,13 @@ var (
 	ErrSentinelInMessage = errors.New("message must not contain the run completion sentinel")
 )
 
-// New creates a runs service.
-func New(st *store.Store) *Service {
+// New creates a runs service. A nil composer skips wake composition.
+func New(st *store.Store, composer WakeComposer) *Service {
 	return &Service{
 		st: st, log: slog.Default().With("source", "runs"),
-		agents: make(map[string]agentSnap), native: make(map[string]*nativeHandle),
-		life: context.Background(),
+		sessions: make(map[string]sessionSnap), native: make(map[string]*nativeHandle),
+		life:     context.Background(),
+		composer: composer,
 	}
 }
 
@@ -207,7 +231,7 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Run, error) {
 		return nil, err
 	}
 
-	s.SetAgentState(ctx, id, AgentRunning, "launch")
+	s.SetSessionState(ctx, id, SessionRunning, "launch")
 	return run, nil
 }
 
@@ -400,7 +424,7 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]*Run, error) {
 			break
 		}
 		for _, r := range page {
-			if string(r.AgentState) == opts.Status {
+			if string(r.SessionState) == opts.Status {
 				out = append(out, r)
 				if len(out) == want {
 					break
@@ -619,7 +643,7 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 			return err
 		}
 		// Close open task + agent segments (duration computed in Go — SQLite julianday mishandles RFC3339Nano).
-		for _, layer := range []string{"task", "agent"} {
+		for _, layer := range []string{"run", "session"} {
 			var segStart string
 			_ = tx.QueryRow(`SELECT started_at FROM run_segments WHERE run_id=? AND layer=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1`,
 				id, layer).Scan(&segStart)
@@ -634,7 +658,7 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 		}
 		// Terminal segment.
 		_, err = tx.Exec(`INSERT INTO run_segments (run_id, layer, state, started_at, ended_at, duration_ms, reason, source)
-			VALUES (?, 'task', ?, ?, ?, 0, ?, 'reaper')`, id, string(status), nowStr, nowStr, string(end))
+			VALUES (?, 'run', ?, ?, ?, 0, ?, 'reaper')`, id, string(status), nowStr, nowStr, string(end))
 		if err != nil {
 			return err
 		}
@@ -658,7 +682,7 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 		return nil
 	}
 	s.mu.Lock()
-	delete(s.agents, id)
+	delete(s.sessions, id)
 	s.mu.Unlock()
 	return nil
 }
@@ -719,18 +743,18 @@ func (s *Service) Timeline(ctx context.Context, id string) (*Timeline, error) {
 	return tl, erows.Err()
 }
 
-// SetAgentState updates in-memory agent state and opens/closes agent segments.
+// SetSessionState updates in-memory agent state and opens/closes agent segments.
 // source is free-form (hook|screen|launch).
-func (s *Service) SetAgentState(ctx context.Context, runID string, state AgentState, source string) {
+func (s *Service) SetSessionState(ctx context.Context, runID string, state SessionState, source string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	since := time.Now().UTC()
 	s.mu.Lock()
-	prev, had := s.agents[runID]
+	prev, had := s.sessions[runID]
 	changed := !had || prev.State != state
 	if changed {
-		s.agents[runID] = agentSnap{State: state, Since: since}
+		s.sessions[runID] = sessionSnap{State: state, Since: since}
 	}
 	s.mu.Unlock()
 	// No transition: no segment write, no bus append (reaper sweeps call this every tick).
@@ -740,25 +764,25 @@ func (s *Service) SetAgentState(ctx context.Context, runID string, state AgentSt
 
 	nowStr := since.Format(time.RFC3339Nano)
 	if source == "" {
-		source = "agent-bus"
+		source = "session"
 	}
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		if had {
 			// Duration computed in Go — SQLite julianday mishandles RFC3339Nano.
 			var segStart string
-			_ = tx.QueryRow(`SELECT started_at FROM run_segments WHERE run_id=? AND layer='agent' AND ended_at IS NULL ORDER BY id DESC LIMIT 1`,
+			_ = tx.QueryRow(`SELECT started_at FROM run_segments WHERE run_id=? AND layer='session' AND ended_at IS NULL ORDER BY id DESC LIMIT 1`,
 				runID).Scan(&segStart)
 			var durMS int64
 			if t0, perr := time.Parse(time.RFC3339Nano, segStart); perr == nil {
 				durMS = since.Sub(t0).Milliseconds()
 			}
 			if _, err := tx.Exec(`UPDATE run_segments SET ended_at=?, duration_ms=?
-				WHERE run_id=? AND layer='agent' AND ended_at IS NULL`, nowStr, durMS, runID); err != nil {
+				WHERE run_id=? AND layer='session' AND ended_at IS NULL`, nowStr, durMS, runID); err != nil {
 				return err
 			}
 		}
 		if _, err := tx.Exec(`INSERT INTO run_segments (run_id, layer, state, started_at, reason, source)
-			VALUES (?, 'agent', ?, ?, ?, 'agent-bus')`, runID, string(state), nowStr, source); err != nil {
+			VALUES (?, 'session', ?, ?, ?, 'session')`, runID, string(state), nowStr, source); err != nil {
 			return err
 		}
 		return nil
@@ -769,7 +793,7 @@ func (s *Service) SetAgentState(ctx context.Context, runID string, state AgentSt
 	var ws, job string
 	_ = s.st.DB().QueryRowContext(ctx, `SELECT workspace_id, job FROM runs WHERE id=?`, runID).Scan(&ws, &job)
 	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic:    "agent.state",
+		Topic:    "session.state",
 		Entity:   "run",
 		EntityID: runID,
 		Attrs: map[string]any{
@@ -777,26 +801,26 @@ func (s *Service) SetAgentState(ctx context.Context, runID string, state AgentSt
 			"workspace": ws, "job": job,
 		},
 	}); err != nil {
-		s.log.Warn("agent.state append", "run", runID, "error", err)
+		s.log.Warn("session.state append", "run", runID, "error", err)
 	}
 }
 
-// AgentState returns the current agent state for a run (empty if unknown).
-func (s *Service) AgentState(runID string) AgentState {
+// SessionState returns the current agent state for a run (empty if unknown).
+func (s *Service) SessionState(runID string) SessionState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if a, ok := s.agents[runID]; ok {
+	if a, ok := s.sessions[runID]; ok {
 		return a.State
 	}
 	return ""
 }
 
-// AgentSnapshot returns all live agent states.
-func (s *Service) AgentSnapshot() map[string]AgentState {
+// SessionSnapshot returns all live session states.
+func (s *Service) SessionSnapshot() map[string]SessionState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make(map[string]AgentState, len(s.agents))
-	for id, a := range s.agents {
+	out := make(map[string]SessionState, len(s.sessions))
+	for id, a := range s.sessions {
 		out[id] = a.State
 	}
 	return out
@@ -808,8 +832,8 @@ func (s *Service) WaitingCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	n := 0
-	for _, a := range s.agents {
-		if a.State == AgentWaiting {
+	for _, a := range s.sessions {
+		if a.State == SessionWaiting {
 			n++
 		}
 	}
@@ -943,7 +967,7 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		return err
 	}
 	_, err = tx.Exec(`INSERT INTO run_segments (run_id, layer, state, started_at, reason, source)
-		VALUES (?, 'task', 'running', ?, 'launch', 'runner')`, run.ID, nowStr)
+		VALUES (?, 'run', 'running', ?, 'launch', 'runner')`, run.ID, nowStr)
 	if err != nil {
 		return err
 	}
@@ -1263,10 +1287,10 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	}
 	if r.Status.IsLive() {
 		s.mu.RLock()
-		if a, ok := s.agents[r.ID]; ok {
-			r.AgentState = a.State
+		if a, ok := s.sessions[r.ID]; ok {
+			r.SessionState = a.State
 			st := a.Since
-			r.AgentStateSince = &st
+			r.SessionStateSince = &st
 		}
 		s.mu.RUnlock()
 	}

@@ -42,8 +42,10 @@ func (c *ControlPlane) scheduleTicker(ctx context.Context) {
 }
 
 // fireOne launches one claimed schedule entry. ClaimDue already advanced next_due_at.
+// The lookup carries no kind filter: assistant and agent rows fire with their own
+// kind instead of being orphan-deleted.
 func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
-	j, path := c.findJobKind(ctx, r.WorkspaceID, r.Job, "job")
+	j, path := c.findJob(ctx, r.WorkspaceID, r.Job)
 	if j == nil {
 		c.log.Info("schedule orphan deleted", "workspace", r.WorkspaceID, "job", r.Job, "idx", r.Idx)
 		if err := c.Schedule.Delete(ctx, r.WorkspaceID, r.Job, r.Idx); err != nil {
@@ -68,6 +70,13 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 	if cwd == "" {
 		cwd = dirOf(path)
 	}
+	// Operators (assistant, agent) wake through the composer; the gate has
+	// already var-expanded the body (Part F.3).
+	var wake *runs.WakeOpts
+	if j.Kind != runs.KindJob {
+		wake = &runs.WakeOpts{Body: prompt}
+		prompt = ""
+	}
 	_, _, err := c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID:   r.WorkspaceID,
@@ -83,6 +92,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 			WorkingDir:    cwd,
 		},
 		Prompt:    prompt,
+		Wake:      wake,
 		IfRunning: j.Session.IfRunning,
 		Env:       j.LaunchEnv(),
 	})

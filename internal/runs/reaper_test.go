@@ -34,7 +34,7 @@ func TestReaperMaxDuration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := New(st)
+	svc := New(st, nil)
 	ctx := context.Background()
 	run, err := svc.Create(ctx, CreateOpts{
 		WorkspaceID: "ws", Job: "j", Harness: "fake",
@@ -73,7 +73,7 @@ func TestFakeHarnessSentinelViaCreateAndLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := New(st)
+	svc := New(st, nil)
 	ctx := context.Background()
 	run, _, err := svc.CreateAndLaunch(ctx, LaunchOpts{
 		CreateOpts: CreateOpts{

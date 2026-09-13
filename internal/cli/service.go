@@ -111,7 +111,7 @@ func serviceLifecycleSubcommands() []*cli.Command {
 			Flags: []cli.Flag{
 				&cli.BoolFlag{
 					Name:  "no-tray",
-					Usage: "Headless agent (no menu-bar tray; KeepAlive always)",
+					Usage: "Headless daemon (no menu-bar tray; KeepAlive always)",
 				},
 				&cli.StringFlag{
 					Name:  "bin",

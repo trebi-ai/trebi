@@ -13,7 +13,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
 const msgCols = `id, conversation_id, role, COALESCE(channel_type,''), COALESCE(channel_ref,''),
@@ -304,35 +303,21 @@ func (s *Service) enqueueWake(ctx context.Context, conv *Conversation, text stri
 	if err != nil {
 		return "", err
 	}
-	prompt := s.wakePrompt(ctx, conv, text)
+	// The raw text rides the queue; dispatch composes the wake with a fresh
+	// recap (Part F.3). item.Prompt is the wake message.
 	item := &dispatch.QueueItem{
 		Connector:       "assistant",
 		WorkspaceID:     conv.Workspace,
 		Job:             jobName,
 		Kind:            runs.KindAssistant,
 		ConversationKey: conv.Key,
-		Prompt:          prompt,
+		Prompt:          text,
 		Status:          dispatch.QueuePending,
 	}
 	if err := s.queue.Enqueue(ctx, item); err != nil {
 		return "", err
 	}
 	return item.ID, nil
-}
-
-func (s *Service) wakePrompt(ctx context.Context, conv *Conversation, text string) string {
-	if s.ws == nil {
-		return text
-	}
-	composed, err := s.ws.ComposeWakePrompt(ctx, conv.Workspace, workspaces.WakeOpts{
-		ExtraPrompt: text,
-		Recap:       s.Recap(ctx, conv.ID, defaultRecapN),
-		Message:     text,
-	})
-	if err != nil || composed == "" {
-		return text
-	}
-	return composed
 }
 
 func (s *Service) assistantJob(ctx context.Context, wsID string) (string, error) {

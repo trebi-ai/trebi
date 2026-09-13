@@ -13,6 +13,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -34,13 +35,13 @@ func (s *Server) routeJobs(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/jobs/{name}/memory", s.handleJobMemoryGet)
 	mux.HandleFunc("PUT /v1/jobs/{name}/memory", s.handleJobMemoryPut)
 	mux.HandleFunc("DELETE /v1/jobs/{name}/memory", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryDelete(w, r, false)
+		s.handleMemoryDelete(w, r, memoryJob)
 	})
 	mux.HandleFunc("POST /v1/jobs/{name}/memory/entries", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryEntriesPost(w, r, false)
+		s.handleMemoryEntriesPost(w, r, memoryJob)
 	})
 	mux.HandleFunc("DELETE /v1/jobs/{name}/memory/entries/{id}", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryEntriesDelete(w, r, false)
+		s.handleMemoryEntriesDelete(w, r, memoryJob)
 	})
 	mux.HandleFunc("GET /v1/schedules", s.handleSchedules)
 }
@@ -62,6 +63,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		q:       strings.ToLower(strings.TrimSpace(q.Get("q"))),
 		harness: strings.TrimSpace(q.Get("harness")),
 		active:  q.Get("active"),
+		owner:   request.AgentIndexName(strings.TrimSpace(q.Get("owner"))),
 	}
 	if !filter.validActive() {
 		writeErr(w, http.StatusBadRequest, "validation", "active must be true or false")
@@ -77,7 +79,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		key := row.WorkspaceID + "/" + row.Name
 		waiting := false
 		for _, id := range live[key] {
-			if s.runs.AgentState(id) == runs.AgentWaiting {
+			if s.runs.SessionState(id) == runs.SessionWaiting {
 				waiting = true
 				break
 			}
@@ -101,6 +103,7 @@ type jobFilter struct {
 	q       string
 	harness string
 	active  string
+	owner   string // agent index name (agents/<short>)
 }
 
 func (f jobFilter) validActive() bool {
@@ -115,6 +118,9 @@ func (f jobFilter) keep(row workspaces.JobRow) bool {
 		return false
 	}
 	if f.active != "" && row.Active != (f.active == "true") {
+		return false
+	}
+	if f.owner != "" && row.Owner != f.owner {
 		return false
 	}
 	return true
@@ -349,6 +355,37 @@ func (s *Server) findAssistantRow(ctx context.Context, wsID string) (workspaces.
 	return workspaces.JobRow{}, errJobNotFound
 }
 
+// findAgentRow resolves an agent by (workspace, name). Both the short name
+// (cmo) and the index name (agents/cmo) match. Kind-strict: a kind=job
+// launch can never pick up an agent row.
+func (s *Server) findAgentRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
+	wsID = s.workspaceID(ctx, wsID)
+	rows, err := s.ws.ListJobs(ctx, wsID)
+	if err != nil {
+		return workspaces.JobRow{}, err
+	}
+	var matches []workspaces.JobRow
+	for _, row := range rows {
+		if row.Kind != "agent" {
+			continue
+		}
+		if row.Name == name || strings.TrimPrefix(row.Name, "agents/") == name {
+			matches = append(matches, row)
+		}
+	}
+	if len(matches) == 0 {
+		return workspaces.JobRow{}, errJobNotFound
+	}
+	if len(matches) > 1 && wsID == "" {
+		ids := make([]string, len(matches))
+		for i, m := range matches {
+			ids[i] = m.WorkspaceID
+		}
+		return workspaces.JobRow{}, &ambiguousJobError{workspaceIDs: ids}
+	}
+	return matches[0], nil
+}
+
 // resolveJob is findJobRow plus HTTP error mapping.
 func (s *Server) resolveJob(w http.ResponseWriter, r *http.Request, name string) (workspaces.JobRow, bool) {
 	row, err := s.findJobRow(r.Context(), r.URL.Query().Get("workspace"), name)
@@ -388,11 +425,11 @@ func writeResolveErr(w http.ResponseWriter, err error) {
 }
 
 func (s *Server) handleJobMemoryGet(w http.ResponseWriter, r *http.Request) {
-	s.handleMemoryFile(w, r, false)
+	s.handleMemoryFile(w, r, memoryJob)
 }
 
 func (s *Server) handleJobMemoryPut(w http.ResponseWriter, r *http.Request) {
-	s.handleMemoryFilePut(w, r, false)
+	s.handleMemoryFilePut(w, r, memoryJob)
 }
 
 // jobCreateRequest is the POST /v1/jobs body. It takes either full text
@@ -412,6 +449,7 @@ type jobCreateRequest struct {
 	On          *jobEventTrigger  `json:"on"`
 	Session     job.SessionYAML   `json:"session"`
 	Env         map[string]string `json:"env"`
+	Agent       string            `json:"agent"` // short name; file lands under agents/<agent>/
 }
 
 // jobEventTrigger is the on: field of a structured job body.
@@ -474,7 +512,19 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
+	// With agent set, the file lands under the agent folder and the wire
+	// name is the full relative path (agents/<agent>/<name>).
+	wireName := body.Name
 	rel := filepath.ToSlash(filepath.Join(body.Name, "JOB.md"))
+	if body.Agent != "" {
+		agentRow, err := s.findAgentRow(r.Context(), ws.ID, body.Agent)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "not_found", "agent not found")
+			return
+		}
+		wireName = agentRow.Name + "/" + body.Name
+		rel = filepath.ToSlash(filepath.Join(agentRow.Name, body.Name, "JOB.md"))
+	}
 	if _, err := s.files.Stat(r.Context(), ws.Path, rel); err == nil {
 		writeErr(w, http.StatusConflict, "conflict", "job exists")
 		return
@@ -490,12 +540,12 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 	path := filepath.Join(ws.Path, filepath.FromSlash(rel))
 	_ = s.ws.RebuildIndex(r.Context(), ws)
 	if key != "" {
-		if _, err := s.st.RememberIdempotent(r.Context(), idempotencyJobs, key, body.Name); err != nil {
-			s.log.Warn("remember idempotency key", "job", body.Name, "error", err)
+		if _, err := s.st.RememberIdempotent(r.Context(), idempotencyJobs, key, wireName); err != nil {
+			s.log.Warn("remember idempotency key", "job", wireName, "error", err)
 		}
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"name": body.Name, "path": path, "hash": info.Hash,
+		"name": wireName, "path": path, "hash": info.Hash,
 	})
 }
 

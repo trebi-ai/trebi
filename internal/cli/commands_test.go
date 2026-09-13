@@ -401,11 +401,11 @@ func TestRunsAgentsEmptyNote(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"agents":{}}`))
+		_, _ = w.Write([]byte(`{"sessions":{}}`))
 	}))
 	t.Cleanup(srv.Close)
 	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
-	out, err := runCLI(t, client, "runs", "agents")
+	out, err := runCLI(t, client, "runs", "sessions")
 	if err != nil {
 		t.Fatal(err)
 	}

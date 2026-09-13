@@ -20,7 +20,7 @@ func TestCreateTerminateTimeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := runs.New(st, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{
@@ -38,13 +38,13 @@ func TestCreateTerminateTimeline(t *testing.T) {
 		t.Fatalf("%+v", run)
 	}
 
-	svc.SetAgentState(context.Background(), run.ID, runs.AgentWaiting, "test")
+	svc.SetSessionState(context.Background(), run.ID, runs.SessionWaiting, "test")
 	got, err := svc.Get(ctx, run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.AgentState != runs.AgentWaiting {
-		t.Fatalf("agent=%s", got.AgentState)
+	if got.SessionState != runs.SessionWaiting {
+		t.Fatalf("agent=%s", got.SessionState)
 	}
 
 	tokens := &pricing.TokenUsage{Input: 100, Output: 50, Model: "claude"}
@@ -86,7 +86,7 @@ func TestQueueIDIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := runs.New(st, nil)
 	ctx := context.Background()
 
 	_, err = svc.Create(ctx, runs.CreateOpts{
@@ -111,7 +111,7 @@ func TestTerminateClosesAgentSegmentAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := runs.New(st, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{
@@ -120,7 +120,7 @@ func TestTerminateClosesAgentSegmentAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc.SetAgentState(ctx, run.ID, runs.AgentRunning, "test")
+	svc.SetSessionState(ctx, run.ID, runs.SessionRunning, "test")
 
 	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndSentinel, nil); err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestCreateMarksPredecessorResumed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := runs.New(st, nil)
 	ctx := context.Background()
 
 	prev, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
@@ -213,7 +213,7 @@ func TestResumeCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := runs.New(st, nil)
 	ctx := context.Background()
 
 	// SessionID present so Resume passes the no-session check and hits the cap.
@@ -237,15 +237,15 @@ func TestResumeCap(t *testing.T) {
 	}
 }
 
-// TestSetAgentStateUnchangedNoBusSpam proves a repeated identical state
-// appends no extra agent.state bus row and opens no extra segment.
-func TestSetAgentStateUnchangedNoBusSpam(t *testing.T) {
+// TestSetSessionStateUnchangedNoBusSpam proves a repeated identical state
+// appends no extra session.state bus row and opens no extra segment.
+func TestSetSessionStateUnchangedNoBusSpam(t *testing.T) {
 	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := runs.New(st, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
@@ -253,20 +253,20 @@ func TestSetAgentStateUnchangedNoBusSpam(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc.SetAgentState(ctx, run.ID, runs.AgentWaiting, "test")
-	svc.SetAgentState(ctx, run.ID, runs.AgentWaiting, "test") // reaper-style repeat
+	svc.SetSessionState(ctx, run.ID, runs.SessionWaiting, "test")
+	svc.SetSessionState(ctx, run.ID, runs.SessionWaiting, "test") // reaper-style repeat
 
 	var busRows int
 	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_log
-		WHERE topic='agent.state' AND attrs_json LIKE '%"state":"waiting"%'`).Scan(&busRows); err != nil {
+		WHERE topic='session.state' AND attrs_json LIKE '%"state":"waiting"%'`).Scan(&busRows); err != nil {
 		t.Fatal(err)
 	}
 	if busRows != 1 {
-		t.Fatalf("agent.state waiting rows=%d, want 1", busRows)
+		t.Fatalf("session.state waiting rows=%d, want 1", busRows)
 	}
 	var segRows int
 	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM run_segments
-		WHERE run_id=? AND layer='agent' AND state='waiting'`, run.ID).Scan(&segRows); err != nil {
+		WHERE run_id=? AND layer='session' AND state='waiting'`, run.ID).Scan(&segRows); err != nil {
 		t.Fatal(err)
 	}
 	if segRows != 1 {
@@ -281,7 +281,7 @@ func TestListHarnessAndModelFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := runs.New(st, nil)
 	ctx := context.Background()
 
 	claude, err := svc.Create(ctx, runs.CreateOpts{
@@ -337,7 +337,7 @@ func TestDecideApprovalAtomicWithBus(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := runs.New(st, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo", Harness: "claude"})
@@ -381,7 +381,7 @@ func TestOpenApprovalThenDecide(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := runs.New(st, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo"})
@@ -435,7 +435,7 @@ func TestWaitFor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := runs.New(st, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Reason: runs.ReasonManual})
@@ -478,7 +478,7 @@ func TestStatsRangeAndMTD(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st)
+	svc := runs.New(st, nil)
 	ctx := context.Background()
 
 	rep, err := svc.Stats(ctx, runs.StatsOpts{Range: "7d"})

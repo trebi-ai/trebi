@@ -178,6 +178,7 @@ var mcpRouteRe = regexp.MustCompile(`"(GET|POST|PUT|PATCH|DELETE) (/v1/[^"]+)"`)
 func mcpTestMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	s := &Server{}
+	s.routeAgents(mux)
 	s.routeConversations(mux)
 	s.routeEvents(mux)
 	s.routeFiles(mux)
