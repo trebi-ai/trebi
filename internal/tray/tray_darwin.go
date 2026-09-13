@@ -40,6 +40,9 @@ func Run(ctx context.Context, onQuit func()) error {
 	app := menuet.App()
 	app.Name = "trebi"
 	app.Label = "ai.trebi.daemon"
+	// LaunchAgent install already owns ai.trebi.daemon.plist; menuet's
+	// "Start at Login" would overwrite it.
+	app.HideStartup()
 
 	app.Children = func() []menuet.MenuItem {
 		return buildMenu(st, onQuit)
