@@ -110,6 +110,9 @@ func (c *ControlPlane) rebuildAll(ctx context.Context) {
 		jobs, _ := c.Workspaces.ListJobs(ctx, list[i].ID)
 		for _, row := range jobs {
 			if j, err := job.ParseFile(row.Path); err == nil && j != nil {
+				// ParseFile has no workspace context and names the job after its
+				// folder. Schedules key on the index name, which findJob matches.
+				j.Name = row.Name
 				_ = c.Schedule.RecomputeFromJob(ctx, list[i].ID, j, time.Time{})
 			}
 		}
@@ -125,6 +128,7 @@ func (c *ControlPlane) rebuildPath(ctx context.Context, path string) {
 			jobs, _ := c.Workspaces.ListJobs(ctx, ws.ID)
 			for _, row := range jobs {
 				if j, err := job.ParseFile(row.Path); err == nil && j != nil {
+					j.Name = row.Name
 					_ = c.Schedule.RecomputeFromJob(ctx, ws.ID, j, time.Time{})
 				}
 			}
