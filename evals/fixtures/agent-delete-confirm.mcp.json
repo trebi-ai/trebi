@@ -1,0 +1,11 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__agent",
+    "content": "{\"action\": \"list\", \"input\": {}}"
+  },
+  {
+    "role": "assistant",
+    "content": "The cmo agent exists. Confirm and I will delete it."
+  }
+]

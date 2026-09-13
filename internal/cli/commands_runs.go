@@ -25,7 +25,7 @@ func runsCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "status", Aliases: []string{"s"}, Usage: "status filter (running, complete, idle, waiting, …)"},
 					&cli.StringFlag{Name: "job", Usage: "job name filter"},
-					&cli.StringFlag{Name: "kind", Usage: "kind filter (job|assistant)"},
+					&cli.StringFlag{Name: "kind", Usage: "kind filter (job|assistant|agent)"},
 					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name filter"},
 					&cli.StringFlag{Name: "harness", Usage: "harness filter (claude, grok, cursor, …)"},
 					&cli.StringFlag{Name: "model", Aliases: []string{"m"}, Usage: "model filter (tokens_model exact match)"},

@@ -476,7 +476,7 @@ func noneMatchOK(r *http.Request, hash string) bool {
 
 func indexedMarkdown(rel string) bool {
 	switch strings.ToLower(filepath.Base(rel)) {
-	case "job.md", "trebi.md", "memory.md":
+	case "job.md", "trebi.md", "agent.md", "memory.md":
 		return true
 	}
 	return false

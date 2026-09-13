@@ -300,14 +300,16 @@ func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agen
 	}
 	j, err := job.ParseFile(row.Path)
 	if err != nil && j == nil {
-		p.ParseError = err.Error()
+		p.ParseError = job.JoinParseError(row.ParseError, err.Error())
 		return p
 	}
 	if j != nil {
 		p.Harness = j.Harness
 		p.Active = !j.Disabled
 		p.Disabled = j.Disabled
-		p.ParseError = j.ParseError
+		// Layout errors live only on the index row; keep them beside the
+		// live parse result so a broken layout stays visible.
+		p.ParseError = job.JoinParseError(row.ParseError, j.ParseError)
 		p.Prompt = j.Prompt
 		p.Description = j.Description
 		p.Memory = j.Memory

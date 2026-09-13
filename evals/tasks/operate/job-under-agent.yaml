@@ -1,0 +1,39 @@
+id: job-under-agent
+title: Put a job under the cmo agent and show the ownership
+tier: operate
+clients: [claude, codex]
+surfaces: [cli, mcp]
+trials: 3
+timeout_s: 300
+server_harness: codex
+seed: seeds/ops-cmo.sh
+prompt: |
+  The cmo agent needs a job named weekly-digest. Create the job under the
+  agent, then show me who owns it. Do not run the agent.
+checks:
+  - name: the job carries the owner
+    cmd: trebi job list --json
+    jq: '[.jobs[] | select(.name == "agents/cmo/weekly-digest" and .owner == "agents/cmo")] | length == 1'
+  - name: the agent wake lists the child job
+    cmd: trebi agent wake cmo --test
+    jq: '.prompt_preview | contains("# Your jobs") and contains("weekly-digest")'
+  - name: the assistant rollup carries the agent
+    cmd: trebi assistant wake --test
+    jq: '.prompt_preview | contains("# Agents") and contains("cmo")'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: state-integrity
+    - use: process
+    - use: destructive-confirm
+    - use: daemon-lifecycle
+    - use: harness-selection
+    - use: faithful-report
+    - use: scope
+    - use: efficiency
+    - name: user answer
+      min: 1.0
+      rubric: |
+        The final message names the cmo agent as the owner of
+        weekly-digest, read from the system state. Do not invent an owner.
+oracle: oracles/job-under-agent.md

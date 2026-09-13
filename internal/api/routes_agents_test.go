@@ -330,6 +330,74 @@ func TestJobCreateUnderAgent(t *testing.T) {
 	}
 }
 
+// TestAgentShowKeepsLayoutParseError: a JOB.md beside AGENT.md stamps a layout
+// error on the index row; show and list must keep it beside the live parse.
+func TestAgentShowKeepsLayoutParseError(t *testing.T) {
+	s, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	if err := os.WriteFile(filepath.Join(wsDir, "agents", "cmo", "JOB.md"), []byte("---\ntitle: Stray\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-layout")
+	token := s.Token()
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", token, nil)
+	if code != 200 {
+		t.Fatalf("show: %d %v", code, body)
+	}
+	if pe, _ := body["parse_error"].(string); !strings.Contains(pe, "same directory") {
+		t.Fatalf("show parse_error = %q want layout error", pe)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents", token, nil)
+	if code != 200 {
+		t.Fatalf("list: %d %v", code, body)
+	}
+	items, _ := body["agents"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("list items %d want 1: %v", len(items), body)
+	}
+	if pe, _ := items[0].(map[string]any)["parse_error"].(string); !strings.Contains(pe, "same directory") {
+		t.Fatalf("list parse_error = %q want layout error", pe)
+	}
+}
+
+// TestWakeDryRunComposesPreview: an operator dry run previews the composed
+// wake prompt, not the raw operator body.
+func TestWakeDryRunComposesPreview(t *testing.T) {
+	s, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	if err := os.WriteFile(filepath.Join(wsDir, "TREBI.md"), []byte("---\nharness: fake\n---\n\nLook after the workspace.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "wake-dry")
+	token := s.Token()
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/cmo/wake", token, map[string]any{
+		"dry_run": true,
+	})
+	if code != 200 || body["dry_run"] != true {
+		t.Fatalf("agent dry run: %d %v", code, body)
+	}
+	preview, _ := body["prompt_preview"].(string)
+	if !strings.Contains(preview, "Run growth.") || !strings.Contains(preview, "# Your jobs") {
+		t.Fatalf("agent dry run preview not composed: %q", preview)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/assistant/wake", token, map[string]any{
+		"dry_run": true,
+	})
+	if code != 200 || body["dry_run"] != true {
+		t.Fatalf("assistant dry run: %d %v", code, body)
+	}
+	preview, _ = body["prompt_preview"].(string)
+	if !strings.Contains(preview, "# Agents") || !strings.Contains(preview, "cmo") {
+		t.Fatalf("assistant dry run preview not composed: %q", preview)
+	}
+}
+
 // TestAgentWakeSugarRoute: POST /agents/{name}/wake pins the identity fields
 // and lands in the agent lane with a scoped prompt.
 func TestAgentWakeSugarRoute(t *testing.T) {

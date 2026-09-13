@@ -150,7 +150,7 @@ func (dv *discovery) agent(path string) *Job {
 	dv.validateAgent(j, rel, dir)
 	j.Prompt = SubstituteAgentVars(j.Prompt, dir, dv.workspacePath)
 	if dv.seenAgents[strings.ToLower(j.Name)] {
-		j.ParseError = joinParseError(j.ParseError, fmt.Sprintf("duplicate agent name %s", j.Name))
+		j.ParseError = JoinParseError(j.ParseError, fmt.Sprintf("duplicate agent name %s", j.Name))
 	}
 	dv.seenAgents[strings.ToLower(j.Name)] = true
 	return j
@@ -164,18 +164,18 @@ func (dv *discovery) validateAgent(j *Job, rel, dir string) {
 	layout := len(parts) == 2 && parts[0] == "agents" && parts[1] != ""
 	switch {
 	case len(parts) >= 3 && parts[0] == "agents":
-		j.ParseError = joinParseError(j.ParseError, "nested agent root: put AGENT.md directly in agents/<name>")
+		j.ParseError = JoinParseError(j.ParseError, "nested agent root: put AGENT.md directly in agents/<name>")
 	case !layout:
-		j.ParseError = joinParseError(j.ParseError, "misplaced AGENT.md: expected <workspace>/agents/<name>/AGENT.md")
+		j.ParseError = JoinParseError(j.ParseError, "misplaced AGENT.md: expected <workspace>/agents/<name>/AGENT.md")
 	}
 	if layout && !agentNameRe.MatchString(parts[1]) {
-		j.ParseError = joinParseError(j.ParseError, fmt.Sprintf("agent folder name %q must match [a-z0-9][a-z0-9-]*", parts[1]))
+		j.ParseError = JoinParseError(j.ParseError, fmt.Sprintf("agent folder name %q must match [a-z0-9][a-z0-9-]*", parts[1]))
 	}
 	if siblingExists(dir, "JOB.md") {
-		j.ParseError = joinParseError(j.ParseError, "AGENT.md and JOB.md in the same directory")
+		j.ParseError = JoinParseError(j.ParseError, "AGENT.md and JOB.md in the same directory")
 	}
 	if siblingExists(dir, "SOUL.md") {
-		j.ParseError = joinParseError(j.ParseError, "SOUL.md beside AGENT.md is not accepted")
+		j.ParseError = JoinParseError(j.ParseError, "SOUL.md beside AGENT.md is not accepted")
 	}
 }
 
@@ -201,9 +201,113 @@ func siblingExists(dir, name string) bool {
 	return err == nil
 }
 
-func joinParseError(existing, add string) string {
-	if existing == "" {
-		return add
+// Doctor layout codes (Part K). The doctor reports these from index rows.
+const (
+	CodeAgentMisplaced   = "agent_misplaced"
+	CodeAgentNested      = "agent_nested"
+	CodeAgentRootJob     = "agent_root_job"
+	CodeAgentOrphanedJob = "agent_orphaned_jobs"
+)
+
+// LayoutRow is one job_index row flattened for layout checks.
+type LayoutRow struct {
+	WorkspaceID, Name, Path, Kind, Owner string
+}
+
+// LayoutIssue is one agent layout problem found in index rows.
+type LayoutIssue struct {
+	Code, Path string
+}
+
+// Severity returns the doctor severity of the issue.
+func (i LayoutIssue) Severity() string {
+	switch i.Code {
+	case CodeAgentNested, CodeAgentRootJob:
+		return "error"
+	default:
+		return "warn"
 	}
-	return existing + "; " + add
+}
+
+// Message names the path and the rule the path breaks.
+func (i LayoutIssue) Message() string {
+	switch i.Code {
+	case CodeAgentNested:
+		return fmt.Sprintf("AGENT.md inside another agent: %s. Put AGENT.md directly in agents/<name>/.", i.Path)
+	case CodeAgentRootJob:
+		return fmt.Sprintf("JOB.md next to AGENT.md is not indexed: %s. Move JOB.md into a subfolder of the agent.", i.Path)
+	case CodeAgentOrphanedJob:
+		return fmt.Sprintf("job with no AGENT.md owner: %s. Move the job out, or recreate the agent.", i.Path)
+	default:
+		return fmt.Sprintf("AGENT.md outside agents/<name>/: %s. Put AGENT.md directly in agents/<name>/.", i.Path)
+	}
+}
+
+// LayoutIssues classifies agent layout problems in index rows. It mirrors
+// validateAgent from the index side: the doctor reads rows, not the walk.
+// It stats the filesystem once per agent row (the root JOB.md sibling).
+func LayoutIssues(rows []LayoutRow) []LayoutIssue {
+	okAgents := map[string]bool{}
+	for _, r := range rows {
+		if r.Kind == "agent" && agentIndexNameShape(r.Name) {
+			okAgents[r.WorkspaceID+"\x00"+r.Name] = true
+		}
+	}
+	var out []LayoutIssue
+	for _, r := range rows {
+		if r.Kind == "agent" {
+			out = append(out, r.agentIssues()...)
+			continue
+		}
+		if r.Kind != "job" {
+			continue
+		}
+		// The stamped owner, or the agents/<name> root the name sits at.
+		parts := strings.Split(r.Name, "/")
+		owner := r.Owner
+		if owner == "" && len(parts) == 2 && parts[0] == "agents" && parts[1] != "" {
+			owner = r.Name
+		}
+		if owner != "" && !okAgents[r.WorkspaceID+"\x00"+owner] {
+			out = append(out, LayoutIssue{Code: CodeAgentOrphanedJob, Path: r.Path})
+		}
+	}
+	return out
+}
+
+// agentIssues classifies one agent row: nested root, misplaced file, or a
+// JOB.md sibling that discovery refused to index.
+func (r LayoutRow) agentIssues() []LayoutIssue {
+	var out []LayoutIssue
+	parts := strings.Split(r.Name, "/")
+	switch {
+	case len(parts) >= 3 && parts[0] == "agents":
+		out = append(out, LayoutIssue{Code: CodeAgentNested, Path: r.Path})
+	case !agentIndexNameShape(r.Name):
+		out = append(out, LayoutIssue{Code: CodeAgentMisplaced, Path: r.Path})
+	}
+	if siblingExists(filepath.Dir(r.Path), "JOB.md") {
+		out = append(out, LayoutIssue{Code: CodeAgentRootJob, Path: r.Path})
+	}
+	return out
+}
+
+// JoinParseError merges two parse errors, dropping empties and repeats. The
+// API layer uses it to keep an index row's layout error beside a live parse
+// result; the same file error seen by both must not print twice.
+func JoinParseError(existing, add string) string {
+	switch {
+	case existing == "":
+		return add
+	case add == "" || add == existing:
+		return existing
+	default:
+		return existing + "; " + add
+	}
+}
+
+// agentIndexNameShape reports whether a name is a canonical agents/<name>.
+func agentIndexNameShape(name string) bool {
+	parts := strings.Split(name, "/")
+	return len(parts) == 2 && parts[0] == "agents" && parts[1] != ""
 }

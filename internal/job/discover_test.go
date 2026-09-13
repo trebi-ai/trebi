@@ -273,3 +273,113 @@ func jobNames(jobs []*job.Job) []string {
 	}
 	return out
 }
+
+func TestLayoutIssues(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	const ws = "ws1"
+	// Real files only where the sibling stat must find them.
+	agentMD := "---\nharness: claude\n---\n\nRun the area.\n"
+
+	cases := []struct {
+		name  string
+		rows  []job.LayoutRow
+		extra []string // sibling files the stat must find (not index rows)
+		want  []string // codes, in row order
+	}{
+		{
+			name: "canonical agent and owned job are clean",
+			rows: []job.LayoutRow{
+				{WorkspaceID: ws, Name: "agents/cmo", Path: filepath.Join(root, "agents", "cmo", "AGENT.md"), Kind: "agent"},
+				{WorkspaceID: ws, Name: "agents/cmo/weekly", Path: filepath.Join(root, "agents", "cmo", "weekly", "JOB.md"), Kind: "job", Owner: "agents/cmo"},
+				{WorkspaceID: ws, Name: "trebi", Path: filepath.Join(root, "TREBI.md"), Kind: "assistant"},
+			},
+			want: nil,
+		},
+		{
+			name: "misplaced agent",
+			rows: []job.LayoutRow{
+				{WorkspaceID: ws, Name: "notes", Path: filepath.Join(root, "notes", "AGENT.md"), Kind: "agent"},
+			},
+			want: []string{job.CodeAgentMisplaced},
+		},
+		{
+			name: "nested agent",
+			rows: []job.LayoutRow{
+				{WorkspaceID: ws, Name: "agents/cmo/scout", Path: filepath.Join(root, "agents", "cmo", "scout", "AGENT.md"), Kind: "agent"},
+			},
+			want: []string{job.CodeAgentNested},
+		},
+		{
+			name: "JOB.md beside AGENT.md",
+			rows: []job.LayoutRow{
+				{WorkspaceID: ws, Name: "agents/cmo", Path: filepath.Join(root, "rj", "AGENT.md"), Kind: "agent"},
+			},
+			extra: []string{filepath.Join(root, "rj", "JOB.md")},
+			want:  []string{job.CodeAgentRootJob},
+		},
+		{
+			name: "owned job whose agent row is gone",
+			rows: []job.LayoutRow{
+				{WorkspaceID: ws, Name: "agents/gone/weekly", Path: filepath.Join(root, "agents", "gone", "weekly", "JOB.md"), Kind: "job", Owner: "agents/gone"},
+			},
+			want: []string{job.CodeAgentOrphanedJob},
+		},
+		{
+			name: "job at an agent root with no AGENT.md",
+			rows: []job.LayoutRow{
+				{WorkspaceID: ws, Name: "agents/ghost", Path: filepath.Join(root, "agents", "ghost", "JOB.md"), Kind: "job"},
+			},
+			want: []string{job.CodeAgentOrphanedJob},
+		},
+		{
+			name: "owner in another workspace does not adopt",
+			rows: []job.LayoutRow{
+				{WorkspaceID: "ws2", Name: "agents/cmo", Path: filepath.Join(root, "agents", "cmo", "AGENT.md"), Kind: "agent"},
+				{WorkspaceID: ws, Name: "agents/cmo/weekly", Path: filepath.Join(root, "agents", "cmo", "weekly", "JOB.md"), Kind: "job", Owner: "agents/cmo"},
+			},
+			want: []string{job.CodeAgentOrphanedJob},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, r := range tc.rows {
+				content := discoverJobMD
+				if r.Kind == "agent" {
+					content = agentMD
+				}
+				writeFile(t, r.Path, content)
+			}
+			for _, p := range tc.extra {
+				writeFile(t, p, discoverJobMD)
+			}
+			got := job.LayoutIssues(tc.rows)
+			var codes []string
+			for _, iss := range got {
+				codes = append(codes, iss.Code)
+				if iss.Severity() == "" || iss.Message() == "" || !strings.Contains(iss.Message(), iss.Path) {
+					t.Errorf("issue %+v needs severity and a message naming the path", iss)
+				}
+			}
+			if strings.Join(codes, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("codes=%v want %v", codes, tc.want)
+			}
+		})
+	}
+}
+
+func TestLayoutIssueSeverity(t *testing.T) {
+	t.Parallel()
+	errorCodes := map[string]bool{job.CodeAgentNested: true, job.CodeAgentRootJob: true}
+	for _, code := range []string{job.CodeAgentMisplaced, job.CodeAgentNested, job.CodeAgentRootJob, job.CodeAgentOrphanedJob} {
+		iss := job.LayoutIssue{Code: code, Path: "/x"}
+		want := "warn"
+		if errorCodes[code] {
+			want = "error"
+		}
+		if iss.Severity() != want {
+			t.Errorf("%s severity=%q want %q", code, iss.Severity(), want)
+		}
+	}
+}

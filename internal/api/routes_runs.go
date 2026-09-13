@@ -159,6 +159,14 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	prompt, wake := s.launchPrompt(r.Context(), body, prompt)
 	if body.DryRun {
 		// B25: dry_run evaluates schedule when: gates without launching.
+		// An operator dry run previews the composed wake prompt, not the raw body.
+		if wake != nil {
+			if composed, err := s.ws.ComposeWakePrompt(r.Context(), runs.WakeScope{
+				WorkspaceID: body.Workspace, Kind: body.Kind, Name: body.Job,
+			}, *wake); err == nil {
+				prompt = composed
+			}
+		}
 		s.handleRunsDryRun(w, r, body.Workspace, body.Job, body.Kind, reason, harness, prompt, body.Inputs)
 		return
 	}

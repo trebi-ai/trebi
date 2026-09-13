@@ -88,6 +88,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		item := map[string]any{
 			"workspace_id": row.WorkspaceID, "name": row.Name, "path": row.Path,
 			"kind": row.Kind, "active": row.Active, "harness": row.Harness,
+			"owner": row.Owner,
 			"hash": row.Hash, "parse_error": row.ParseError, "status": status,
 			"last_run_at": "", "last_status": "", "next_due_at": "", "mtd_usd": 0.0,
 			"triggers": []string{},

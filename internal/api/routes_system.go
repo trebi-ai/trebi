@@ -316,10 +316,31 @@ func (s *Server) doctorFindings() []map[string]any {
 	src := alerts.CollectDoctorFindings()
 	src = append(src, s.nativeAssistantDoctor()...)
 	src = append(src, s.apiBindDoctor()...)
+	src = append(src, s.agentLayoutDoctor()...)
 	out := make([]map[string]any, 0, len(src))
 	for _, f := range src {
 		out = append(out, map[string]any{
 			"id": f.ID, "severity": f.Severity, "code": f.Code, "message": f.Message,
+		})
+	}
+	return out
+}
+
+// agentLayoutDoctor reports agent layout problems from the job index (Part K).
+// No automatic fix exists; --fix answers "no automatic fix" for these ids.
+func (s *Server) agentLayoutDoctor() []alerts.DoctorFinding {
+	rows, err := s.ws.ListJobs(context.Background(), "")
+	if err != nil {
+		return nil
+	}
+	lr := make([]job.LayoutRow, len(rows))
+	for i, r := range rows {
+		lr[i] = job.LayoutRow{WorkspaceID: r.WorkspaceID, Name: r.Name, Path: r.Path, Kind: r.Kind, Owner: r.Owner}
+	}
+	var out []alerts.DoctorFinding
+	for _, iss := range job.LayoutIssues(lr) {
+		out = append(out, alerts.DoctorFinding{
+			ID: iss.Code + ":" + iss.Path, Severity: iss.Severity(), Code: iss.Code, Message: iss.Message(),
 		})
 	}
 	return out
