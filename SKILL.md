@@ -1,11 +1,11 @@
 ---
 name: trebi
-description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, skills, secrets, connectors, and event rules; drain the inbox or alerts; tail the event bus; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi inbox", "trebi bus", "trebi connector", "trebi doctor", "wake the assistant", "trebi assistant say", "trebi assistant chat", "trebi conversation".
+description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, agents, skills, secrets, connectors, and event rules; drain the inbox or alerts; tail the event bus; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi agent", "wake an agent", "trebi inbox", "trebi bus", "trebi connector", "trebi doctor", "wake the assistant", "trebi assistant say", "trebi assistant chat", "trebi conversation".
 ---
 
 # Trebi
 
-Trebi is one binary that is both a daemon (`trebid`) and a CLI. The daemon owns an HTTP `/v1` API, an SSE event bus, and a SQLite store under `~/.trebi`. The CLI is a thin client of that API and covers the whole control plane; the MCP surface and the native assistant share the same 15 catalog tools.
+Trebi is one binary that is both a daemon (`trebid`) and a CLI. The daemon owns an HTTP `/v1` API, an SSE event bus, and a SQLite store under `~/.trebi`. The CLI is a thin client of that API and covers the whole control plane; the MCP surface and the native assistant share the same 16 catalog tools.
 
 ## How to reach trebi
 
@@ -22,6 +22,7 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | file | any path inside a workspace (scripts, templates, eval files). Raw bytes; no job semantics. Job-scoped via `trebi job file`; workspace-wide via `trebi file` |
 | run | one launch of a job in a harness session (tmux locally) |
 | assistant | the singleton `TREBI.md` job of a workspace, kind=assistant |
+| agent | a folder-scoped `AGENT.md` at `agents/<name>/`; owns the jobs inside that folder, kind=agent |
 | conversation | a chat thread with the assistant; the CLI/UI are channels onto it |
 | connector | an external event producer (a `stream`, `cli`, or `mcp` command) |
 | trigger | a rule on a job: `cron`, `every`, or `event` from a connector |
@@ -70,6 +71,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `runs-and-debugging` | show/timeline/transcript/logs, retry/resume/replay, attach, approvals |
 | `files` | job-scoped vs workspace files, scripts next to jobs, If-Match |
 | `assistant` | wake, say, conversations, memory |
+| `agents` | folder-scoped agents: create, owned jobs, wake, agent memory |
 | `connectors-and-rules` | create/connect connectors, rules test/fire, event triggers, queue |
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed |
 | `observability` | bus, service logs, doctor, stats |
@@ -93,11 +95,11 @@ Every error is `{"error":{"code","message","details"}}` with a stable code:
 
 ## Rules for the agent
 
-- If trebi tools are registered, use them instead of the CLI recipes below. The same rules apply: validate after a JOB.md write (`job.validate`), dry-run a job you wrote (`job.run` with `dry_run`), ask before destructive.
+- If trebi tools are registered, use them instead of the CLI recipes below. The same rules apply: validate after a JOB.md write (`job.validate`), dry-run a job you wrote (`job.run` with `dry_run`), dry-run an agent you wrote (`agent.wake` with `dry_run`), ask before destructive.
 - Prefer `--json` plus `jq` over parsing tables. If a command rejects `--json`, drop it once. `runs show --json` is valid.
 - Run `trebi job validate` after every `JOB.md` write.
-- Use `trebi job run --test` before the first real launch only when **this session** created or edited the `JOB.md`. Not `rules fire`, not `assistant say`, not a job that already existed.
-- Ask the user before `job delete` / `job delete --purge`, `workspace delete`, `memory clear`, `secret delete`, `connector delete`, `service cloud unlink`, and `service uninstall`. They destroy state. Ask **before** you make the call, not after: state what the action deletes, then stop and wait for the answer. Do not send the call to see what it says. The daemon refuses it without `--force` (`confirm=1` over the API) and names what it deletes, but that gate is a backstop, not your confirmation step. `runs kill` of a run you just started to debug is not in that list.
+- Use `trebi job run --test` (or `trebi agent wake --test`) before the first real launch only when **this session** created or edited that `JOB.md` / `AGENT.md`. Not `rules fire`, not `assistant say`, not a job that already existed.
+- Ask the user before `job delete` / `job delete --purge`, `agent delete` (plain or `--purge`), `workspace delete`, `memory clear`, `agent memory clear`, `secret delete`, `connector delete`, `service cloud unlink`, and `service uninstall`. They destroy state. Ask **before** you make the call, not after: state what the action deletes, then stop and wait for the answer. Do not send the call to see what it says. The daemon refuses it without `--force` (`confirm=1` over the API) and names what it deletes, but that gate is a backstop, not your confirmation step. `runs kill` of a run you just started to debug is not in that list.
 - If a trebi command fails with "Confirm with the user first", stop. That refusal is the confirmation gate. Report the consequence to the user and wait. Do not retry with `--force` in the same turn.
 - Never show a secret value you did not have to read. Always prefer the form that keeps it out of your transcript: on the CLI pass the path, `trebi secret set --from-file ./key.txt NAME`; on the catalog pass `value_file`, which is resolved before dispatch. If you only have the value in context, pass `value` once and never show it again: no second `cat`, not in the final message, not in a job prompt or a file. Do not stop the task over this — store the secret and carry on. Reference a stored secret from a job by its **name**; the daemon resolves it at launch. A secret name is not a secret.
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.

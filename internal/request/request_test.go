@@ -656,6 +656,10 @@ func TestParseJobListKind(t *testing.T) {
 	if err != nil || got != "all" {
 		t.Fatalf("%q %v", got, err)
 	}
+	got, err = ParseJobListKind("agent")
+	if err != nil || got != "agent" {
+		t.Fatalf("%q %v", got, err)
+	}
 	if _, err := ParseJobListKind("bogus"); err == nil {
 		t.Fatal("expected error")
 	}
@@ -666,6 +670,7 @@ func TestKeepJobKind(t *testing.T) {
 	rows := []map[string]any{
 		{"kind": "job", "name": "a"},
 		{"kind": "assistant", "name": "b"},
+		{"kind": "agent", "name": "agents/cmo"},
 		{"kind": "", "name": "c"},
 	}
 	jobs := FilterJobsByKindFlag(rows, "job")
@@ -676,8 +681,12 @@ func TestKeepJobKind(t *testing.T) {
 	if len(as) != 1 || as[0]["name"] != "b" {
 		t.Fatalf("%v", as)
 	}
+	ag := FilterJobsByKindFlag(rows, "agent")
+	if len(ag) != 1 || ag[0]["name"] != "agents/cmo" {
+		t.Fatalf("%v", ag)
+	}
 	all := FilterJobsByKindFlag(rows, "all")
-	if len(all) != 3 {
+	if len(all) != 4 {
 		t.Fatalf("%v", all)
 	}
 }

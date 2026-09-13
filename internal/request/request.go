@@ -1573,7 +1573,7 @@ func BuildConfigBridgeSet(tool, resource, mode string) (HTTPRequest, error) {
 	return BuildConfigSet(key, norm), nil
 }
 
-// FilterJobsByKindFlag keeps rows matching --kind (job|assistant|all).
+// FilterJobsByKindFlag keeps rows matching --kind (job|assistant|agent|all).
 func FilterJobsByKindFlag(rows []map[string]any, kind string) []map[string]any {
 	out := make([]map[string]any, 0, len(rows))
 	for _, j := range rows {
@@ -1585,15 +1585,15 @@ func FilterJobsByKindFlag(rows []map[string]any, kind string) []map[string]any {
 	return out
 }
 
-// ParseJobListKind validates a --kind flag value (job|assistant|all).
+// ParseJobListKind validates a --kind flag value (job|assistant|agent|all).
 func ParseJobListKind(s string) (string, error) {
 	switch strings.TrimSpace(s) {
 	case "", "job":
 		return "job", nil
-	case "assistant", "all":
+	case "assistant", "agent", "all":
 		return s, nil
 	default:
-		return "", fmt.Errorf("invalid --kind %q (want job|assistant|all)", s)
+		return "", fmt.Errorf("invalid --kind %q (want job|assistant|agent|all)", s)
 	}
 }
 
@@ -1603,8 +1603,10 @@ func keepJobKind(want, rowKind string) bool {
 		return true
 	case "assistant":
 		return rowKind == "assistant"
+	case "agent":
+		return rowKind == "agent"
 	default:
-		return rowKind != "assistant"
+		return rowKind == "job" || rowKind == ""
 	}
 }
 

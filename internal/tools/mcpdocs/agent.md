@@ -126,4 +126,4 @@ Erase the whole agent memory. Destructive.
 
 ## Related guides
 
-`jobs-and-scheduling`, `getting-started`
+`agents`, `jobs-and-scheduling`, `getting-started`

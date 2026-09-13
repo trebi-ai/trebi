@@ -303,8 +303,8 @@ func TestGuidesHTTP(t *testing.T) {
 		t.Fatalf("list: %d %v", code, body)
 	}
 	items, _ := body["items"].([]any)
-	if len(items) != 10 {
-		t.Fatalf("list items %d; want 10", len(items))
+	if len(items) != 11 {
+		t.Fatalf("list items %d; want 11", len(items))
 	}
 
 	code, body, _ = doJSON(t, "GET", base+"/v1/system/guides/getting-started", token, nil)
@@ -331,7 +331,7 @@ func TestMCPGuides(t *testing.T) {
 	res, text := mcpCall(t, cs, "system", "guides", nil)
 	m := mcpOK(t, "system.guides", res, text)
 	items, _ := m["items"].([]any)
-	if len(items) != 10 {
+	if len(items) != 11 {
 		t.Fatalf("guides items %d", len(items))
 	}
 

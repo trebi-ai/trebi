@@ -512,9 +512,10 @@ func runWorkspaceCurrent(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
-// resolveWorkspaceID picks sticky / -w workspace, else the first on the active daemon.
+// resolveWorkspaceID picks the subcommand --workspace / sticky / global -w
+// workspace, else the first on the active daemon.
 func resolveWorkspaceID(c *cli.Command, client *APIClient) (string, error) {
-	if ws := workspaceFor(c); ws != "" {
+	if ws := workspaceFlag(c); ws != "" {
 		return ws, nil
 	}
 	var wss struct {

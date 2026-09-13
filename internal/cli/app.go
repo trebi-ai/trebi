@@ -52,6 +52,7 @@ func NewApp() *cli.Command {
 			busCommand(),
 			configCommand(),
 			assistantCommand(),
+			agentCommand(),
 			connectorCommand(),
 			harnessCommand(),
 			skillCommand(),

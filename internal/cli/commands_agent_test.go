@@ -1,0 +1,221 @@
+package cli
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/trebi-ai/trebi/internal/request"
+)
+
+// agentTestServer answers the workspace, agents, and jobs routes the agent
+// CLI touches, and records the requests it saw.
+type agentTestServer struct {
+	srv       *httptest.Server
+	mu        sync.Mutex
+	seen      []request.HTTPRequest
+	jobsHits  int
+	agentsHit map[string]int
+}
+
+func (a *agentTestServer) client() *APIClient {
+	return &APIClient{base: a.srv.URL, token: "t", httpClient: a.srv.Client()}
+}
+
+func (a *agentTestServer) last() request.HTTPRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.seen) == 0 {
+		return request.HTTPRequest{}
+	}
+	return a.seen[len(a.seen)-1]
+}
+
+// TestAgentListCLI: `agent list` fans out workspaces, honors --workspace,
+// and answers an "agents" envelope.
+func TestAgentListCLI(t *testing.T) {
+	a := newAgentTestServer(t)
+	client := a.client()
+
+	out, err := runCLI(t, client, "agent", "list", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.jobsHits != 0 {
+		t.Fatal("agent list must not hit /v1/jobs")
+	}
+	var env struct {
+		Agents []map[string]any `json:"agents"`
+	}
+	if err := json.NewDecoder(strings.NewReader(out)).Decode(&env); err != nil {
+		t.Fatalf("json %v %q", err, out)
+	}
+	if len(env.Agents) != 1 || env.Agents[0]["name"] != "cmo" || env.Agents[0]["kind"] != "agent" {
+		t.Fatalf("agents envelope %q", out)
+	}
+
+	out, err = runCLI(t, client, "agent", "list", "--workspace", "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "cmo") {
+		t.Fatalf("--workspace two leaked ws1 agents: %q", out)
+	}
+}
+
+// TestJobListKindAgent: `job list --kind agent` fans out like the assistant
+// kind and never hits /v1/jobs; the envelope stays "jobs".
+func TestJobListKindAgent(t *testing.T) {
+	a := newAgentTestServer(t)
+	client := a.client()
+
+	out, err := runCLI(t, client, "job", "list", "--kind", "agent", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.jobsHits != 0 {
+		t.Fatal("--kind agent must not hit /v1/jobs")
+	}
+	if a.agentsHit["/v1/workspaces/ws1/agents"] == 0 {
+		t.Fatal("--kind agent should fan out to the agents routes")
+	}
+	var env struct {
+		Jobs []map[string]any `json:"jobs"`
+	}
+	if err := json.NewDecoder(strings.NewReader(out)).Decode(&env); err != nil {
+		t.Fatalf("json %v %q", err, out)
+	}
+	if len(env.Jobs) != 1 || env.Jobs[0]["name"] != "cmo" {
+		t.Fatalf("jobs envelope %q", out)
+	}
+
+	if _, err := runCLI(t, client, "job", "list", "--kind", "bogus"); err == nil {
+		t.Fatal("bogus kind")
+	}
+}
+
+// TestAgentCreateCLI: create is a PUT upsert; flags ride the body, and a bare
+// create still puts (the daemon seeds AGENT.md).
+func TestAgentCreateCLI(t *testing.T) {
+	a := newAgentTestServer(t)
+	client := a.client()
+
+	if _, err := runCLI(t, client, "agent", "create", "cmo", "--workspace", "ws1", "--prompt", "Run growth."); err != nil {
+		t.Fatal(err)
+	}
+	req := a.last()
+	if req.Method != "PUT" || req.Path != "/v1/workspaces/ws1/agents/cmo" {
+		t.Fatalf("create request %+v", req)
+	}
+	body, _ := req.Body.(map[string]any)
+	if body["prompt"] != "Run growth." {
+		t.Fatalf("create body %v", body)
+	}
+
+	if _, err := runCLI(t, client, "agent", "create", "scout", "--workspace", "ws1"); err != nil {
+		t.Fatal(err)
+	}
+	req = a.last()
+	if req.Method != "PUT" || req.Path != "/v1/workspaces/ws1/agents/scout" {
+		t.Fatalf("bare create request %+v", req)
+	}
+}
+
+// TestJobCreateAgentFlag: --agent rides the POST /v1/jobs body.
+func TestJobCreateAgentFlag(t *testing.T) {
+	a := newAgentTestServer(t)
+	client := a.client()
+
+	if _, err := runCLI(t, client, "job", "create", "weekly-digest", "--workspace", "ws1",
+		"--prompt", "Write it.", "--agent", "cmo"); err != nil {
+		t.Fatal(err)
+	}
+	req := a.last()
+	if req.Method != "POST" || req.Path != "/v1/jobs" {
+		t.Fatalf("job create request %+v", req)
+	}
+	body, _ := req.Body.(map[string]any)
+	if body["agent"] != "cmo" {
+		t.Fatalf("agent field missing: %v", body)
+	}
+
+	if _, err := runCLI(t, client, "job", "create", "solo", "--workspace", "ws1", "--prompt", "x"); err != nil {
+		t.Fatal(err)
+	}
+	body, _ = a.last().Body.(map[string]any)
+	if _, ok := body["agent"]; ok {
+		t.Fatalf("agent field set without --agent: %v", body)
+	}
+}
+
+// TestAgentWakeCLI: wake posts to the agent sugar route.
+func TestAgentWakeCLI(t *testing.T) {
+	a := newAgentTestServer(t)
+	client := a.client()
+
+	out, err := runCLI(t, client, "agent", "wake", "cmo", "--workspace", "ws1", "--test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := a.last()
+	if req.Method != "POST" || req.Path != "/v1/workspaces/ws1/agents/cmo/wake" {
+		t.Fatalf("wake request %+v", req)
+	}
+	if !strings.Contains(out, "01ABC") {
+		t.Fatalf("dry-run output %q", out)
+	}
+}
+
+func newAgentTestServer(t *testing.T) *agentTestServer {
+	t.Helper()
+	// An empty TREBI_HOME keeps the machine's sticky/linked workspaces out of
+	// workspace resolution, so --workspace names map only against the fake.
+	t.Setenv("TREBI_HOME", t.TempDir())
+	a := &agentTestServer{agentsHit: map[string]int{}}
+	a.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		body := map[string]any{}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
+		a.mu.Lock()
+		a.seen = append(a.seen, request.HTTPRequest{Method: r.Method, Path: r.URL.Path, Body: body})
+		a.mu.Unlock()
+		switch {
+		case r.URL.Path == "/v1/jobs" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "agents/cmo/weekly-digest"})
+		case r.URL.Path == "/v1/jobs":
+			a.mu.Lock()
+			a.jobsHits++
+			a.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"jobs": []any{}})
+		case r.URL.Path == "/v1/workspaces":
+			_ = json.NewEncoder(w).Encode(map[string]any{"workspaces": []any{
+				map[string]any{"id": "ws1", "name": "one"},
+				map[string]any{"id": "ws2", "name": "two"},
+			}})
+		case strings.HasSuffix(r.URL.Path, "/agents"):
+			a.mu.Lock()
+			a.agentsHit[r.URL.Path]++
+			a.mu.Unlock()
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"), "/agents")
+			if id == "ws2" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"agents": []any{}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"agents": []any{map[string]any{
+				"name": "cmo", "index_name": "agents/cmo", "workspace_id": "ws1",
+				"harness": "claude", "active": true, "memory": true, "job_count": 2,
+			}}})
+		case strings.HasSuffix(r.URL.Path, "/wake"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "01ABC", "status": "running", "kind": "agent"})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		}
+	}))
+	t.Cleanup(a.srv.Close)
+	return a
+}

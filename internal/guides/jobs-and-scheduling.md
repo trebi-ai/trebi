@@ -60,6 +60,7 @@ trebi job create my-job --file ./JOB.md --workspace reports
 trebi job list --workspace reports --search sync --harness claude --json
 trebi job list --workspace reports --json
 trebi job list --workspace reports --kind all --detailed --json
+trebi job list --workspace reports --kind agent --json
 trebi job list --workspace reports --schedule --json
 trebi job show my-job --workspace reports --json
 trebi job validate my-job --workspace reports --json
@@ -68,7 +69,10 @@ trebi job validate my-job --workspace reports --json
 `--prompt` with a trigger flag lets the daemon compose the front matter. Prefer
 it over hand-written YAML. `--validate` checks the definition and writes
 nothing. `--file` is **local only** (reads a path); remote: pass `content`.
-Always `validate` after you write a `JOB.md` yourself.
+Always `validate` after you write a `JOB.md` yourself. `--kind` picks `job`
+(default), `assistant`, `agent`, or `all`; the `agent` and `assistant` kinds
+list every workspace. Folder-scoped agents and the `--agent` owner field:
+`trebi guide agents`.
 
 ## Launch
 

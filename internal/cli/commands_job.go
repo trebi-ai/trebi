@@ -124,7 +124,7 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				&cli.BoolFlag{Name: "detailed", Aliases: []string{"d"}, Usage: "extra columns (path, status)"},
 				&cli.BoolFlag{Name: "schedule", Usage: "add SPEC, TIMEZONE, NEXT, LAST columns"},
-				&cli.StringFlag{Name: "kind", Value: "job", Usage: "job|assistant|all (default job)"},
+				&cli.StringFlag{Name: "kind", Value: "job", Usage: "job|assistant|agent|all (default job)"},
 				&cli.StringFlag{Name: "search", Usage: "substring match on job name"},
 				&cli.StringFlag{Name: "harness", Usage: "harness filter (claude, codex, …)"},
 				&cli.BoolFlag{Name: "active", Usage: "keep only active (or, with --active=false, paused) jobs"},
@@ -155,6 +155,7 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "every", Usage: "interval trigger, for example 15m"},
 				&cli.StringFlag{Name: "on", Usage: "event trigger: the connector name"},
 				&cli.StringFlag{Name: "match", Usage: "event match expression, with --on"},
+				&cli.StringFlag{Name: "agent", Usage: "owning agent short name; lands the job under agents/<name>/"},
 				&cli.BoolFlag{Name: "validate", Usage: "check the definition; write nothing"},
 			},
 			Action: runJobCreate,
@@ -214,6 +215,9 @@ func runJobList(_ context.Context, c *cli.Command) error {
 	}
 	if kind == "assistant" {
 		return runListAssistants(c, client)
+	}
+	if kind == "agent" {
+		return runListAgents(c, client, "jobs")
 	}
 	active := ""
 	if c.IsSet("active") {
@@ -350,7 +354,7 @@ func runJobCreate(_ context.Context, c *cli.Command) error {
 		Name: name, Workspace: workspaceFlag(c), Prompt: c.String("prompt"),
 		Harness: c.String("harness"), Description: c.String("description"),
 		Cron: c.String("cron"), Every: c.String("every"),
-		Event: c.String("on"), Match: c.String("match"),
+		Event: c.String("on"), Match: c.String("match"), Agent: c.String("agent"),
 	}
 	switch {
 	case c.String("file") != "" || stdinPiped():

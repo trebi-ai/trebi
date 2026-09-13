@@ -6,7 +6,7 @@ description: Tool/action/input shape, docs actions, CLI-to-MCP translation, work
 
 # MCP entry point
 
-Trebi's control plane is also an MCP server at `/mcp` (Streamable HTTP, bearer auth). Fifteen tools (`run`, `job`, `workspace`, `assistant`, `file`, `harness`, `connector`, `event`, `queue`, `inbox`, `conversation`, `skill`, `secret`, `config`, `system`). Each tool takes `{"action": "<name>", "input": {…}}`. Action `docs` returns the input field reference for that tool. Errors return the HTTP error envelope unchanged.
+Trebi's control plane is also an MCP server at `/mcp` (Streamable HTTP, bearer auth). Sixteen tools (`run`, `job`, `workspace`, `assistant`, `agent`, `file`, `harness`, `connector`, `event`, `queue`, `inbox`, `conversation`, `skill`, `secret`, `config`, `system`). Each tool takes `{"action": "<name>", "input": {…}}`. Action `docs` returns the input field reference for that tool. Errors return the HTTP error envelope unchanged.
 
 Connect with the URL and token from `~/.trebi/api.json` (`{"url", "token"}`).
 

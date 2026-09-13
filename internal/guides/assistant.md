@@ -64,4 +64,4 @@ trebi --workspace reports assistant memory clear --force
 
 `--file` is **local only**; remote: pass `content`. `memory clear` is destructive — ask first.
 
-Job memory (per job, not the assistant): `trebi guide jobs-and-scheduling`.
+Job memory (per job, not the assistant): `trebi guide jobs-and-scheduling`. Folder-scoped agents (nested operators with their own folders): `trebi guide agents`.
