@@ -89,7 +89,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 			"workspace_id": row.WorkspaceID, "name": row.Name, "path": row.Path,
 			"kind": row.Kind, "active": row.Active, "harness": row.Harness,
 			"owner": row.Owner,
-			"hash": row.Hash, "parse_error": row.ParseError, "status": status,
+			"hash":  row.Hash, "parse_error": row.ParseError, "status": status,
 			"last_run_at": "", "last_status": "", "next_due_at": "", "mtd_usd": 0.0,
 			"triggers": []string{},
 		}
@@ -179,24 +179,18 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	j, err := job.ParseFile(row.Path)
-	if err != nil && j == nil {
+	doc, err := readIndexedDoc(row.Path)
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	data, _ := os.ReadFile(row.Path)
-	// If-Match ETag is full content hash (not the short parse index hash).
-	hash := job.ContentHash(data)
-	var mtime string
-	if st, err := os.Stat(row.Path); err == nil {
-		mtime = st.ModTime().UTC().Format(time.RFC3339Nano)
-	}
+	j := doc.Job
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": j.Name, "workspace": row.WorkspaceID, "path": row.Path,
-		"harness": j.Harness, "active": !j.Disabled, "hash": hash,
+		"harness": j.Harness, "active": !j.Disabled, "hash": doc.Hash,
 		"parse_error": j.ParseError, "prompt": j.Prompt,
 		"triggers": j.Triggers, "session": j.Session, "env_set": j.Envset,
-		"markdown": string(data), "mtime": mtime,
+		"markdown": string(doc.Data), "mtime": doc.MTime,
 	})
 }
 
@@ -317,28 +311,9 @@ func (e *ambiguousJobError) Error() string {
 // findJobRow resolves a job by (workspace, name). B4: zero matches means
 // not found; duplicates without a workspace disambiguator are ambiguous.
 func (s *Server) findJobRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
-	wsID = s.workspaceID(ctx, wsID)
-	rows, err := s.ws.ListJobs(ctx, wsID)
-	if err != nil {
-		return workspaces.JobRow{}, err
-	}
-	var matches []workspaces.JobRow
-	for _, row := range rows {
-		if row.Name == name && row.Kind == "job" {
-			matches = append(matches, row)
-		}
-	}
-	if len(matches) == 0 {
-		return workspaces.JobRow{}, errJobNotFound
-	}
-	if len(matches) > 1 && wsID == "" {
-		ids := make([]string, len(matches))
-		for i, m := range matches {
-			ids[i] = m.WorkspaceID
-		}
-		return workspaces.JobRow{}, &ambiguousJobError{workspaceIDs: ids}
-	}
-	return matches[0], nil
+	return s.findIndexRow(ctx, wsID, "job", func(row workspaces.JobRow) bool {
+		return row.Name == name
+	})
 }
 
 // findAssistantRow resolves the workspace assistant row (TREBI.md).
@@ -360,6 +335,14 @@ func (s *Server) findAssistantRow(ctx context.Context, wsID string) (workspaces.
 // (cmo) and the index name (agents/cmo) match. Kind-strict: a kind=job
 // launch can never pick up an agent row.
 func (s *Server) findAgentRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
+	return s.findIndexRow(ctx, wsID, "agent", func(row workspaces.JobRow) bool {
+		return row.Name == name || strings.TrimPrefix(row.Name, "agents/") == name
+	})
+}
+
+// findIndexRow is the kind-strict job_index lookup. Zero matches is not
+// found; duplicates without a workspace disambiguator are ambiguous.
+func (s *Server) findIndexRow(ctx context.Context, wsID, kind string, match func(workspaces.JobRow) bool) (workspaces.JobRow, error) {
 	wsID = s.workspaceID(ctx, wsID)
 	rows, err := s.ws.ListJobs(ctx, wsID)
 	if err != nil {
@@ -367,12 +350,10 @@ func (s *Server) findAgentRow(ctx context.Context, wsID, name string) (workspace
 	}
 	var matches []workspaces.JobRow
 	for _, row := range rows {
-		if row.Kind != "agent" {
+		if row.Kind != kind || !match(row) {
 			continue
 		}
-		if row.Name == name || strings.TrimPrefix(row.Name, "agents/") == name {
-			matches = append(matches, row)
-		}
+		matches = append(matches, row)
 	}
 	if len(matches) == 0 {
 		return workspaces.JobRow{}, errJobNotFound
@@ -391,7 +372,7 @@ func (s *Server) findAgentRow(ctx context.Context, wsID, name string) (workspace
 func (s *Server) resolveJob(w http.ResponseWriter, r *http.Request, name string) (workspaces.JobRow, bool) {
 	row, err := s.findJobRow(r.Context(), r.URL.Query().Get("workspace"), name)
 	if err != nil {
-		writeResolveErr(w, err)
+		writeResolveErr(w, err, "job")
 		return workspaces.JobRow{}, false
 	}
 	return row, true
@@ -412,17 +393,83 @@ func (s *Server) jobFileLoc(w http.ResponseWriter, r *http.Request, row workspac
 	return ws, rel, true
 }
 
-// writeResolveErr maps job resolution errors to HTTP codes.
-func writeResolveErr(w http.ResponseWriter, err error) {
+// writeResolveErr maps index resolution errors to HTTP codes. noun is the
+// not-found message subject ("job", "agent").
+func writeResolveErr(w http.ResponseWriter, err error, noun string) {
 	var amb *ambiguousJobError
 	switch {
 	case errors.As(err, &amb):
 		writeErr(w, http.StatusBadRequest, "ambiguous", amb.Error())
 	case errors.Is(err, errJobNotFound):
-		writeErr(w, http.StatusNotFound, "not_found", "job not found")
+		writeErr(w, http.StatusNotFound, "not_found", noun+" not found")
 	default:
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 	}
+}
+
+// indexedDoc is the file IO of a JOB.md / AGENT.md GET: parse, bytes, full
+// content hash, mtime. Callers own the JSON envelope.
+type indexedDoc struct {
+	Job   *job.Job
+	Data  []byte
+	Hash  string
+	MTime string
+}
+
+func readIndexedDoc(path string) (indexedDoc, error) {
+	j, err := job.ParseFile(path)
+	if err != nil && j == nil {
+		return indexedDoc{}, err
+	}
+	data, _ := os.ReadFile(path)
+	var mtime string
+	if st, statErr := os.Stat(path); statErr == nil {
+		mtime = st.ModTime().UTC().Format(time.RFC3339Nano)
+	}
+	return indexedDoc{Job: j, Data: data, Hash: job.ContentHash(data), MTime: mtime}, nil
+}
+
+// patchIndexedMarkdown merge-patches frontmatter, rebuilds the index, and
+// sets ETag. The caller writes the JSON envelope and any extra bus events.
+func (s *Server) patchIndexedMarkdown(w http.ResponseWriter, r *http.Request, ws *workspaces.Workspace, path, rel string, body map[string]any) (hash string, ok bool) {
+	if !s.requireIfMatch(w, r, ws.Path, rel) {
+		return "", false
+	}
+	if err := job.MergePatchFrontmatter(path, body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return "", false
+	}
+	info, err := s.files.Stat(r.Context(), ws.Path, rel)
+	if err != nil {
+		writeFilesErr(w, err)
+		return "", false
+	}
+	_ = s.ws.RebuildIndex(r.Context(), ws)
+	setETagHash(w, info.Hash)
+	return info.Hash, true
+}
+
+// purgeFolder removes dir, rebuilds the index, emits extra then file.deleted.
+func (s *Server) purgeFolder(w http.ResponseWriter, r *http.Request, ws *workspaces.Workspace, dir string, extra ...store.BusEvent) (int, bool) {
+	n, err := s.countFiles(r.Context(), dir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return 0, false
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return 0, false
+	}
+	_ = s.ws.RebuildIndex(r.Context(), ws)
+	for _, ev := range extra {
+		s.appendBus(r.Context(), ev)
+	}
+	folderRel, _ := workspaceRel(ws.Path, dir)
+	s.appendBus(r.Context(), store.BusEvent{
+		Topic: "file.deleted", Entity: "file", EntityID: ws.ID + ":" + folderRel, Action: "deleted",
+		Attrs: map[string]string{"workspace": ws.ID, "path": folderRel, "purge": "true"},
+	})
+	return n, true
 }
 
 func (s *Server) handleJobMemoryGet(w http.ResponseWriter, r *http.Request) {
@@ -609,26 +656,16 @@ func (s *Server) handleJobPatch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.requireIfMatch(w, r, ws.Path, rel) {
+	hash, ok := s.patchIndexedMarkdown(w, r, ws, row.Path, rel, body)
+	if !ok {
 		return
 	}
-	if err := job.MergePatchFrontmatter(row.Path, body); err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	info, err := s.files.Stat(r.Context(), ws.Path, rel)
-	if err != nil {
-		writeFilesErr(w, err)
-		return
-	}
-	_ = s.ws.RebuildIndex(r.Context(), ws)
-	setETagHash(w, info.Hash)
 	s.appendBus(r.Context(), store.BusEvent{
 		Topic: "job.updated", Entity: "job", EntityID: name, Action: "updated",
 		Attrs: map[string]string{"workspace": row.WorkspaceID, "path": row.Path},
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": name, "patched": true, "hash": info.Hash,
+		"name": name, "patched": true, "hash": hash,
 	})
 }
 
@@ -676,25 +713,13 @@ func (s *Server) purgeJob(w http.ResponseWriter, r *http.Request, name string, r
 		writeErr(w, http.StatusConflict, "conflict", msg)
 		return
 	}
-	n, err := s.countFiles(r.Context(), jobDir)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	if err := os.RemoveAll(jobDir); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	_ = s.ws.RebuildIndex(r.Context(), ws)
-	s.appendBus(r.Context(), store.BusEvent{
+	n, ok := s.purgeFolder(w, r, ws, jobDir, store.BusEvent{
 		Topic: "job.deleted", Entity: "job", EntityID: name, Action: "deleted",
 		Attrs: map[string]string{"workspace": row.WorkspaceID, "path": row.Path},
 	})
-	folderRel, _ := workspaceRel(ws.Path, jobDir)
-	s.appendBus(r.Context(), store.BusEvent{
-		Topic: "file.deleted", Entity: "file", EntityID: ws.ID + ":" + folderRel, Action: "deleted",
-		Attrs: map[string]string{"workspace": ws.ID, "path": folderRel, "purge": "true"},
-	})
+	if !ok {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deleted": name, "purged": true, "files_removed": n,
 	})

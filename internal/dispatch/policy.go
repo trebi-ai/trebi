@@ -98,3 +98,19 @@ func (p *Policy) recordLocked(key string, rate *RateLimit, now time.Time) {
 		p.window[key] = append(p.window[key], now)
 	}
 }
+
+// PruneIdle drops keys whose last fire is older than idle.
+func (p *Policy) PruneIdle(now time.Time, idle time.Duration) {
+	if idle <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cut := now.Add(-idle)
+	for k, last := range p.lastFired {
+		if last.Before(cut) {
+			delete(p.lastFired, k)
+			delete(p.window, k)
+		}
+	}
+}

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -97,9 +96,7 @@ func runInboxList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"ID", "Kind", "Status", "Title", "Created"})
@@ -127,9 +124,7 @@ func runInboxShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	fmt.Fprintf(w, "ID:      %s\n", mapStr(body, "id"))
@@ -170,9 +165,7 @@ func runAlerts(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"Seq", "Topic", "Kind", "Subject", "Time"})

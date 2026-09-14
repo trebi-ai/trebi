@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -91,9 +90,7 @@ func runConversationList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"ID", "Workspace", "Key", "Title", "Updated"})
@@ -121,9 +118,7 @@ func runConversationShow(_ context.Context, c *cli.Command) error {
 	if err := client.DoHTTP(request.BuildConversationGet(id), &body); err != nil {
 		return err
 	}
-	enc := json.NewEncoder(outWriter(c))
-	enc.SetIndent("", "  ")
-	return enc.Encode(body)
+	return encodeJSON(c, body)
 }
 
 func runConversationMessages(_ context.Context, c *cli.Command) error {
@@ -144,9 +139,7 @@ func runConversationMessages(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"ID", "Role", "Channel", "Text"})
@@ -174,9 +167,7 @@ func runConversationNew(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		return encodeJSON(c, out)
 	}
 	fmt.Fprintf(outWriter(c), "conversation %s\n", mapStr(out, "id"))
 	return nil
@@ -217,9 +208,7 @@ func runConversationPatch(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		return encodeJSON(c, out)
 	}
 	fmt.Fprintf(outWriter(c), "conversation %s\n", mapStr(out, "id"))
 	return nil

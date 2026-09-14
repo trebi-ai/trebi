@@ -64,52 +64,7 @@ func jobCommand() *cli.Command {
 				},
 				Action: runJobValidate,
 			},
-			&cli.Command{
-				Name:  "memory",
-				Usage: "job MEMORY.md ledger",
-				Commands: []*cli.Command{
-					{
-						Name:      "show",
-						Usage:     "print MEMORY.md",
-						ArgsUsage: "<name>",
-						Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-						Action:    runJobMemory,
-					},
-					{
-						Name:      "add",
-						Usage:     "append a ledger entry",
-						ArgsUsage: "<name>",
-						Flags: []cli.Flag{
-							&cli.StringFlag{Name: "text", Usage: "entry text", Required: true},
-							&cli.StringFlag{Name: "date", Usage: "YYYY-MM-DD (default today)"},
-							ifMatchFlag(),
-						},
-						Action: runJobMemoryAdd,
-					},
-					{
-						Name:      "delete",
-						Aliases:   []string{"remove"},
-						Usage:     "delete a ledger entry",
-						ArgsUsage: "<name> <entry-id>",
-						Flags:     []cli.Flag{ifMatchFlag()},
-						Action:    runJobMemoryRemove,
-					},
-					{
-						Name:      "set",
-						Usage:     "replace MEMORY.md (--file or stdin)",
-						ArgsUsage: "<name>",
-						Flags:     []cli.Flag{&cli.StringFlag{Name: "file", Usage: "path to MEMORY.md"}, ifMatchFlag()},
-						Action:    runJobMemorySet,
-					},
-					{
-						Name:      "clear",
-						Usage:     "delete MEMORY.md (destroys the ledger)",
-						ArgsUsage: "<name>",
-						Flags:     []cli.Flag{forceFlag("required; destroys the ledger"), ifMatchFlag()},
-						Action:    runJobMemoryClear,
-					},
-				},
-			},
+			memorySubcommands(jobMemoryOwner()),
 		),
 	}
 }
@@ -245,9 +200,7 @@ func runJobList(_ context.Context, c *cli.Command) error {
 		}
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	showKind := kind == "all"
@@ -340,9 +293,7 @@ func runJobShow(_ context.Context, c *cli.Command) error {
 	if err := client.GetJSON(path, &body); err != nil {
 		return err
 	}
-	enc := json.NewEncoder(outWriter(c))
-	enc.SetIndent("", "  ")
-	return enc.Encode(body)
+	return encodeJSON(c, body)
 }
 
 func runJobCreate(_ context.Context, c *cli.Command) error {
@@ -465,96 +416,28 @@ func runJobValidate(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	fmt.Fprintf(outWriter(c), "ok=%v error=%v\n", body["ok"], body["error"])
 	return nil
 }
 
-func runJobMemory(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("usage: trebi job memory show <name>")
+func jobMemoryOwner() memoryOwner {
+	return memoryOwner{
+		noun: "job",
+		resolve: func(c *cli.Command) (*APIClient, string, string, error) {
+			client, err := clientFor(c)
+			if err != nil {
+				return nil, "", "", err
+			}
+			return client, c.Args().Get(0), workspaceFor(c), nil
+		},
+		getPath: request.BuildJobMemoryGetPath,
+		put:     request.BuildJobMemoryPut,
+		add:     request.BuildJobMemoryEntryAdd,
+		del:     request.BuildJobMemoryEntryDelete,
+		clear:   request.BuildJobMemoryClear,
 	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	path := request.BuildJobMemoryGetPath(name, workspaceFor(c))
-	var body map[string]any
-	if err := client.GetJSON(path, &body); err != nil {
-		return err
-	}
-	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
-	}
-	fmt.Fprint(outWriter(c), mapStr(body, "content"))
-	return nil
-}
-
-func runJobMemoryAdd(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("usage: trebi job memory add <name> --text <text>")
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	req := request.BuildJobMemoryEntryAdd(name, workspaceFor(c), c.String("date"), c.String("text"), c.String("if-match"))
-	return client.DoHTTP(req, nil)
-}
-
-func runJobMemoryRemove(_ context.Context, c *cli.Command) error {
-	name, eid := c.Args().Get(0), c.Args().Get(1)
-	if name == "" || eid == "" {
-		return fmt.Errorf("usage: trebi job memory remove <name> <entry-id>")
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildJobMemoryEntryDelete(name, workspaceFor(c), eid, c.String("if-match")), nil)
-}
-
-func runJobMemorySet(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("usage: trebi job memory set <name> --file <path>")
-	}
-	content, err := readFileOrStdin(c.String("file"))
-	if err != nil {
-		return err
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildJobMemoryPut(name, workspaceFor(c), content, c.String("if-match")), nil)
-}
-
-func runJobMemoryClear(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("usage: trebi job memory clear <name>")
-	}
-	confirm, err := confirmed(c, "destroys the memory ledger for "+name)
-	if err != nil {
-		return err
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	if err := client.DoHTTP(request.BuildJobMemoryClear(name, workspaceFor(c), c.String("if-match"), confirm), nil); err != nil {
-		return err
-	}
-	fmt.Fprintf(outWriter(c), "cleared memory for %s\n", name)
-	return nil
 }
 
 func runJobSchedule(_ context.Context, c *cli.Command) error {
@@ -621,9 +504,7 @@ func runJobStatus(_ context.Context, c *cli.Command) error {
 	_ = client.GetJSON(path, &runsBody) // job status remains useful when history is unavailable
 	out := map[string]any{"job": job, "recent_runs": runsBody.Runs}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		return encodeJSON(c, out)
 	}
 	w := outWriter(c)
 	fmt.Fprintf(w, "Name:      %s\n", mapStr(job, "name"))

@@ -63,6 +63,20 @@ type ControlPlane struct {
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	turnMu     sync.Mutex
+	turnCursor map[string]transcriptCursor
+
+	jobCacheMu sync.Mutex
+	jobCache   map[string]parsedJob
+
+	tickCfg *config.Config
+}
+
+type parsedJob struct {
+	hash string
+	job  *job.Job
+	path string
 }
 
 // New builds a control plane.
@@ -243,7 +257,21 @@ func (c *ControlPlane) findJobKind(ctx context.Context, ws, name, kind string) (
 		if kind != "" && row.Kind != kind {
 			continue
 		}
+		key := row.WorkspaceID + "\x00" + row.Name + "\x00" + row.Kind
+		c.jobCacheMu.Lock()
+		if c.jobCache == nil {
+			c.jobCache = map[string]parsedJob{}
+		}
+		if hit, ok := c.jobCache[key]; ok && hit.hash == row.Hash && hit.path == row.Path {
+			j := hit.job
+			c.jobCacheMu.Unlock()
+			return j, row.Path
+		}
+		c.jobCacheMu.Unlock()
 		j, _ := job.ParseFile(row.Path)
+		c.jobCacheMu.Lock()
+		c.jobCache[key] = parsedJob{hash: row.Hash, job: j, path: row.Path}
+		c.jobCacheMu.Unlock()
 		return j, row.Path
 	}
 	return nil, ""

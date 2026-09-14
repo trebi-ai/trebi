@@ -30,7 +30,7 @@ func TestRegistryUnique(t *testing.T) {
 
 func TestBusTopicsSubsetOfRegistry(t *testing.T) {
 	t.Parallel()
-	set := EventSet()
+	set := eventSet()
 	for _, topic := range BusTopics() {
 		meta, ok := set[topic]
 		if !ok {

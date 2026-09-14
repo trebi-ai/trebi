@@ -176,7 +176,7 @@ func ByName(name string) (Tool, bool) {
 
 // DetectTool returns the tool name for command, or "" if unknown.
 // Kept for callers that only need the string identity.
-func DetectTool(command string) string {
+func detectTool(command string) string {
 	t := Detect(command)
 	if _, ok := t.(unknownTool); ok {
 		return ""
@@ -186,7 +186,7 @@ func DetectTool(command string) string {
 
 // InstallLifecycleAssets installs shim/hook/plugin assets for every tool that
 // provides a LifecycleAdapter. trebiBase is typically config.BaseDir() (~/.trebi).
-func InstallLifecycleAssets(trebiBase, binDir string) error {
+func installLifecycleAssets(trebiBase, binDir string) error {
 	for _, t := range AllTools() {
 		if lc := t.Lifecycle(); lc != nil {
 			if err := lc.Install(trebiBase, binDir); err != nil {
@@ -206,7 +206,7 @@ func InstallLifecycleAssets(trebiBase, binDir string) error {
 }
 
 // UninstallLifecycleAssets removes lifecycle assets for every tool (best-effort).
-func UninstallLifecycleAssets(trebiBase, binDir string) error {
+func uninstallLifecycleAssets(trebiBase, binDir string) error {
 	var errs []string
 	for _, t := range AllTools() {
 		if lc := t.Lifecycle(); lc != nil {

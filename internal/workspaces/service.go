@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/job"
@@ -41,11 +42,17 @@ type Service struct {
 	st   *store.Store
 	root string // workspaces.root; empty refuses pathless create
 	log  *slog.Logger
+	mu   sync.Mutex
+	fp   map[string]string
+	jobs map[string][]*job.Job
 }
 
 // New creates a workspace service.
 func New(st *store.Store) *Service {
-	return &Service{st: st, log: slog.Default().With("source", "workspaces")}
+	return &Service{
+		st: st, log: slog.Default().With("source", "workspaces"),
+		fp: map[string]string{}, jobs: map[string][]*job.Job{},
+	}
 }
 
 // WithRoot injects workspaces.root (already expanded). Empty refuses pathless create.
@@ -314,74 +321,108 @@ func refuseFolderDelete(path, root string) error {
 	return nil
 }
 
-// List returns all workspaces.
-func (s *Service) List(ctx context.Context) ([]Workspace, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT id, name, path, git_enabled, orphaned, created_at, revision FROM workspaces ORDER BY name`)
+const workspaceCols = `id, name, path, git_enabled, orphaned, created_at, revision`
+
+func scanWorkspace(sc interface{ Scan(...any) error }) (Workspace, error) {
+	var w Workspace
+	var git, orphan int
+	var created string
+	if err := sc.Scan(&w.ID, &w.Name, &w.Path, &git, &orphan, &created, &w.Revision); err != nil {
+		return Workspace{}, err
+	}
+	w.GitEnabled = git == 1
+	w.Orphaned = orphan == 1
+	w.CreatedAt, _ = time.Parse(time.RFC3339, created)
+	w.Watching = !w.Orphaned
+	return w, nil
+}
+
+func (s *Service) decorateWorkspaces(ctx context.Context, list []Workspace) ([]Workspace, error) {
+	asst, err := s.assistantNicknames(ctx)
 	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Workspace
-	for rows.Next() {
-		var w Workspace
-		var git, orphan int
-		var created string
-		if err := rows.Scan(&w.ID, &w.Name, &w.Path, &git, &orphan, &created, &w.Revision); err != nil {
-			return nil, err
-		}
-		w.GitEnabled = git == 1
-		w.Orphaned = orphan == 1
-		w.CreatedAt, _ = time.Parse(time.RFC3339, created)
-		w.Watching = !w.Orphaned
-		// Assistant nickname from TREBI.md if present.
-		if _, err := os.Stat(filepath.Join(w.Path, "TREBI.md")); err == nil {
-			n := w.Name
-			w.Assistant = &n
-			if a, err := job.ParseFile(filepath.Join(w.Path, "TREBI.md")); err == nil && a.Name != "" {
-				w.Assistant = &a.Name
-			}
-		}
-		out = append(out, w)
-	}
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	counts, err := s.jobCounts(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for i := range out {
-		out[i].JobCount = counts[out[i].ID]
+	for i := range list {
+		list[i].JobCount = counts[list[i].ID]
+		if n, ok := asst[list[i].ID]; ok {
+			name := n
+			if name == "" {
+				name = list[i].Name
+			}
+			list[i].Assistant = &name
+		}
 	}
-	return out, nil
+	return list, nil
+}
+
+func (s *Service) assistantNicknames(ctx context.Context) (map[string]string, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT workspace_id, name FROM job_index WHERE kind='assistant'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
+}
+
+// List returns all workspaces.
+func (s *Service) List(ctx context.Context) ([]Workspace, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT `+workspaceCols+` FROM workspaces ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Workspace
+	for rows.Next() {
+		w, err := scanWorkspace(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return s.decorateWorkspaces(ctx, out)
 }
 
 // Get returns one workspace by id.
 func (s *Service) Get(ctx context.Context, id string) (*Workspace, error) {
-	list, err := s.List(ctx)
+	row := s.st.DB().QueryRowContext(ctx, `SELECT `+workspaceCols+` FROM workspaces WHERE id=?`, id)
+	w, err := scanWorkspace(row)
 	if err != nil {
 		return nil, err
 	}
-	for i := range list {
-		if list[i].ID == id {
-			return &list[i], nil
-		}
+	out, err := s.decorateWorkspaces(ctx, []Workspace{w})
+	if err != nil {
+		return nil, err
 	}
-	return nil, sql.ErrNoRows
+	return &out[0], nil
 }
 
-// GetByName finds by display name.
+// GetByName finds by display name (case-insensitive).
 func (s *Service) GetByName(ctx context.Context, name string) (*Workspace, error) {
-	list, err := s.List(ctx)
+	row := s.st.DB().QueryRowContext(ctx, `SELECT `+workspaceCols+` FROM workspaces WHERE LOWER(name)=LOWER(?) ORDER BY name LIMIT 1`, name)
+	w, err := scanWorkspace(row)
 	if err != nil {
 		return nil, err
 	}
-	for i := range list {
-		if list[i].Name == name {
-			return &list[i], nil
-		}
+	out, err := s.decorateWorkspaces(ctx, []Workspace{w})
+	if err != nil {
+		return nil, err
 	}
-	return nil, sql.ErrNoRows
+	return &out[0], nil
 }
 
 // Resolve finds a workspace by id or display name (case-insensitive name).
@@ -395,16 +436,7 @@ func (s *Service) Resolve(ctx context.Context, idOrName string) (*Workspace, err
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	list, err := s.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range list {
-		if strings.EqualFold(list[i].Name, idOrName) {
-			return &list[i], nil
-		}
-	}
-	return nil, sql.ErrNoRows
+	return s.GetByName(ctx, idOrName)
 }
 
 // indexRow is one desired or existing job_index row for the diff.
@@ -425,33 +457,106 @@ func rowFromJob(j *job.Job, kind string) indexRow {
 // It emits job.*/assistant.*/agent.* bus events for changes.
 // Bus errors never fail the rebuild.
 func (s *Service) RebuildIndex(ctx context.Context, ws *Workspace) error {
+	_, err := s.RebuildIndexJobs(ctx, ws)
+	return err
+}
+
+// RebuildIndexJobs is RebuildIndex plus the parsed jobs (index names already set).
+func (s *Service) RebuildIndexJobs(ctx context.Context, ws *Workspace) ([]*job.Job, error) {
 	otherRoots, err := s.otherWorkspaceRoots(ctx, ws.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	fp, err := job.IndexFingerprint(ws.Path, otherRoots...)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.fp[ws.ID] == fp {
+		cached := s.jobs[ws.ID]
+		s.mu.Unlock()
+		return cached, nil
+	}
+	s.mu.Unlock()
 	disc, err := job.Discover(ws.Path, otherRoots...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	existing, err := s.existingIndexRows(ctx, ws.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	desired := map[string]indexRow{}
+	jobs := make([]*job.Job, 0, len(disc.Jobs)+len(disc.Agents)+1)
 	for _, j := range disc.Jobs {
 		desired[j.Name] = rowFromJob(j, "job")
+		jobs = append(jobs, j)
 	}
 	if disc.Assistant != nil {
 		desired[disc.Assistant.Name] = rowFromJob(disc.Assistant, "assistant")
+		jobs = append(jobs, disc.Assistant)
 	}
 	for _, j := range disc.Agents {
 		desired[j.Name] = rowFromJob(j, "agent")
+		jobs = append(jobs, j)
 	}
 	if err := s.writeIndexDiff(ctx, ws.ID, existing, desired); err != nil {
-		return err
+		return nil, err
 	}
 	s.emitIndexDiff(ctx, ws.ID, existing, desired)
-	return nil
+	s.mu.Lock()
+	s.fp[ws.ID] = fp
+	s.jobs[ws.ID] = jobs
+	s.mu.Unlock()
+	return jobs, nil
+}
+
+// RebuildIndexPath updates one index row for a changed definition file.
+func (s *Service) RebuildIndexPath(ctx context.Context, ws *Workspace, path string) (*job.Job, error) {
+	otherRoots, err := s.otherWorkspaceRoots(ctx, ws.ID)
+	if err != nil {
+		return nil, err
+	}
+	j, err := job.DiscoverPath(ws.Path, path, otherRoots...)
+	if err != nil {
+		return nil, err
+	}
+	existing, err := s.existingIndexRows(ctx, ws.ID)
+	if err != nil {
+		return nil, err
+	}
+	desired := make(map[string]indexRow, len(existing)+1)
+	for k, v := range existing {
+		desired[k] = v
+	}
+	if j == nil {
+		for name, row := range existing {
+			if row.path == path {
+				delete(desired, name)
+			}
+		}
+	} else {
+		kind := "job"
+		switch strings.ToLower(filepath.Base(path)) {
+		case "trebi.md":
+			kind = "assistant"
+		case "agent.md":
+			kind = "agent"
+		}
+		desired[j.Name] = rowFromJob(j, kind)
+	}
+	if err := s.writeIndexDiff(ctx, ws.ID, existing, desired); err != nil {
+		return nil, err
+	}
+	s.emitIndexDiff(ctx, ws.ID, existing, desired)
+	s.mu.Lock()
+	delete(s.fp, ws.ID)
+	delete(s.jobs, ws.ID)
+	s.mu.Unlock()
+	if j != nil && j.ParseError != "" {
+		return nil, nil
+	}
+	return j, nil
 }
 
 // ListJobs returns job_index rows for a workspace (empty workspace = all).
@@ -772,11 +877,6 @@ func (s *Service) ComposeWakePrompt(ctx context.Context, scope runs.WakeScope, o
 		s.writeAssistantWake(ctx, &b, ws, opts)
 	}
 	return strings.TrimSpace(b.String()), nil
-}
-
-// ComposeAssistantWake is the workspace-scoped wrapper (Kind: assistant).
-func (s *Service) ComposeAssistantWake(ctx context.Context, wsID string, opts runs.WakeOpts) (string, error) {
-	return s.ComposeWakePrompt(ctx, runs.WakeScope{WorkspaceID: wsID, Kind: "assistant"}, opts)
 }
 
 // writeAssistantWake renders the B27 sections: instructions, unowned jobs,

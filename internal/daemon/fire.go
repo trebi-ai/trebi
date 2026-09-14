@@ -65,8 +65,8 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		c.log.Info("schedule skip harness", "job", r.Job, "harness", harness, "reason", reason)
 		return
 	}
-	maxMS, idleMS, keepMS, nudgeMS := j.Session.KnobsMS()
-	cwd := j.ResolvedWorkingDir()
+	d := j.LaunchDefaults()
+	cwd := d.WorkingDir
 	if cwd == "" {
 		cwd = dirOf(path)
 	}
@@ -85,16 +85,16 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 			Reason:        runs.ReasonSchedule,
 			Harness:       harness,
 			PromptPreview: trunc(prompt, 200),
-			MaxDurationMS: maxMS,
-			IdleTimeoutMS: idleMS,
-			KeepAliveMS:   keepMS,
-			NudgeMS:       nudgeMS,
+			MaxDurationMS: d.MaxDurationMS,
+			IdleTimeoutMS: d.IdleTimeoutMS,
+			KeepAliveMS:   d.KeepAliveMS,
+			NudgeMS:       d.NudgeMS,
 			WorkingDir:    cwd,
 		},
 		Prompt:    prompt,
 		Wake:      wake,
-		IfRunning: j.Session.IfRunning,
-		Env:       j.LaunchEnv(),
+		IfRunning: d.IfRunning,
+		Env:       d.Env,
 	})
 	if err != nil {
 		c.log.Warn("schedule fire", "job", r.Job, "error", err)

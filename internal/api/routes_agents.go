@@ -6,17 +6,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -68,7 +65,7 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := s.findAgentRow(r.Context(), ws.ID, r.PathValue("name"))
 	if err != nil {
-		writeAgentResolveErr(w, err)
+		writeResolveErr(w, err, "agent")
 		return
 	}
 	rows, err := s.ws.ListJobs(r.Context(), ws.ID)
@@ -147,7 +144,7 @@ func (s *Server) handleAgentPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := s.findAgentRow(r.Context(), ws.ID, r.PathValue("name"))
 	if err != nil {
-		writeAgentResolveErr(w, err)
+		writeResolveErr(w, err, "agent")
 		return
 	}
 	rel, err := workspaceRel(ws.Path, row.Path)
@@ -160,23 +157,13 @@ func (s *Server) handleAgentPatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	if !s.requireIfMatch(w, r, ws.Path, rel) {
+	hash, ok := s.patchIndexedMarkdown(w, r, ws, row.Path, rel, body)
+	if !ok {
 		return
 	}
-	if err := job.MergePatchFrontmatter(row.Path, body); err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	info, err := s.files.Stat(r.Context(), ws.Path, rel)
-	if err != nil {
-		writeFilesErr(w, err)
-		return
-	}
-	_ = s.ws.RebuildIndex(r.Context(), ws)
-	setETagHash(w, info.Hash)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": strings.TrimPrefix(row.Name, "agents/"), "index_name": row.Name,
-		"patched": true, "hash": info.Hash,
+		"patched": true, "hash": hash,
 	})
 }
 
@@ -187,7 +174,7 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := s.findAgentRow(r.Context(), ws.ID, r.PathValue("name"))
 	if err != nil {
-		writeAgentResolveErr(w, err)
+		writeResolveErr(w, err, "agent")
 		return
 	}
 	rel, err := workspaceRel(ws.Path, row.Path)
@@ -214,22 +201,10 @@ func (s *Server) purgeAgent(w http.ResponseWriter, r *http.Request, ws *workspac
 	if !s.requireIfMatch(w, r, ws.Path, rel) {
 		return
 	}
-	agentDir := filepath.Dir(row.Path)
-	n, err := s.countFiles(r.Context(), agentDir)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	n, ok := s.purgeFolder(w, r, ws, filepath.Dir(row.Path))
+	if !ok {
 		return
 	}
-	if err := os.RemoveAll(agentDir); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	_ = s.ws.RebuildIndex(r.Context(), ws)
-	folderRel, _ := workspaceRel(ws.Path, agentDir)
-	s.appendBus(r.Context(), store.BusEvent{
-		Topic: "file.deleted", Entity: "file", EntityID: ws.ID + ":" + folderRel, Action: "deleted",
-		Attrs: map[string]string{"workspace": ws.ID, "path": folderRel, "purge": "true"},
-	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deleted": short, "purged": true, "files_removed": n,
 	})
@@ -244,7 +219,7 @@ func (s *Server) handleAgentWake(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := s.findAgentRow(r.Context(), wsID, r.PathValue("name"))
 	if err != nil {
-		writeAgentResolveErr(w, err)
+		writeResolveErr(w, err, "agent")
 		return
 	}
 	// Agent lane: keep client prompt_override/inputs, pin identity fields.
@@ -298,10 +273,24 @@ func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agen
 		Harness: row.Harness, Active: row.Active, Hash: row.Hash,
 		Triggers: []job.Trigger{}, JobCount: len(jobs), Jobs: jobs,
 	}
-	j, err := job.ParseFile(row.Path)
-	if err != nil && j == nil {
-		p.ParseError = job.JoinParseError(row.ParseError, err.Error())
-		return p
+	var j *job.Job
+	if withDocs {
+		doc, err := readIndexedDoc(row.Path)
+		if err != nil {
+			p.ParseError = job.JoinParseError(row.ParseError, err.Error())
+			return p
+		}
+		j = doc.Job
+		p.Hash = doc.Hash
+		p.MTime = doc.MTime
+		p.Markdown = string(doc.Data)
+	} else {
+		parsed, err := job.ParseFile(row.Path)
+		if err != nil && parsed == nil {
+			p.ParseError = job.JoinParseError(row.ParseError, err.Error())
+			return p
+		}
+		j = parsed
 	}
 	if j != nil {
 		p.Harness = j.Harness
@@ -317,18 +306,9 @@ func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agen
 		p.Session = j.Session
 		p.EnvSet = j.Envset
 	}
-	if !withDocs {
-		if p.Triggers == nil {
-			p.Triggers = []job.Trigger{}
-		}
-		return p
+	if !withDocs && p.Triggers == nil {
+		p.Triggers = []job.Trigger{}
 	}
-	data, _ := os.ReadFile(row.Path)
-	p.Hash = job.ContentHash(data)
-	if st, err := os.Stat(row.Path); err == nil {
-		p.MTime = st.ModTime().UTC().Format(time.RFC3339Nano)
-	}
-	p.Markdown = string(data)
 	return p
 }
 
@@ -358,19 +338,6 @@ func (b agentPutRequest) markdown() (string, error) {
 		return "", nil
 	}
 	return spec.Render()
-}
-
-// writeAgentResolveErr maps agent resolution errors to HTTP codes.
-func writeAgentResolveErr(w http.ResponseWriter, err error) {
-	var amb *ambiguousJobError
-	switch {
-	case errors.As(err, &amb):
-		writeErr(w, http.StatusBadRequest, "ambiguous", amb.Error())
-	case errors.Is(err, errJobNotFound):
-		writeErr(w, http.StatusNotFound, "not_found", "agent not found")
-	default:
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-	}
 }
 
 // ownedJobNames groups job names by owning agent index name.

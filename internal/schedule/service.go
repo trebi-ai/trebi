@@ -26,6 +26,15 @@ func New(st *store.Store) *Service {
 // Unchanged (workspace, job, idx, spec, timezone) rows keep next_due_at and
 // last_fired_at so a periodic index rebuild cannot push @every into the future.
 func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *job.Job, cutoverStartedAt time.Time) error {
+	if !j.Disabled {
+		existing, err := loadRowsDB(ctx, s.st.DB(), workspaceID, j.Name)
+		if err != nil {
+			return err
+		}
+		if scheduleSpecUnchanged(existing, j) {
+			return nil
+		}
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		if j.Disabled {
@@ -99,8 +108,23 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 	})
 }
 
+const scheduleCols = `workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at`
+
+func scanSchedule(rows *sql.Rows) (Row, error) {
+	var r Row
+	var next, last sql.NullString
+	var catch int
+	if err := rows.Scan(&r.WorkspaceID, &r.Job, &r.Idx, &r.Spec, &r.Timezone, &catch, &next, &last); err != nil {
+		return Row{}, err
+	}
+	r.CatchUp = catch == 1
+	r.NextDueAt = next.String
+	r.LastFiredAt = last.String
+	return r, nil
+}
+
 func loadRows(tx *sql.Tx, workspaceID, jobName string) (map[int]Row, error) {
-	rows, err := tx.Query(`SELECT workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at
+	rows, err := tx.Query(`SELECT `+scheduleCols+`
 		FROM schedules WHERE workspace_id=? AND job=?`, workspaceID, jobName)
 	if err != nil {
 		return nil, err
@@ -108,18 +132,57 @@ func loadRows(tx *sql.Tx, workspaceID, jobName string) (map[int]Row, error) {
 	defer rows.Close()
 	out := map[int]Row{}
 	for rows.Next() {
-		var r Row
-		var next, last sql.NullString
-		var catch int
-		if err := rows.Scan(&r.WorkspaceID, &r.Job, &r.Idx, &r.Spec, &r.Timezone, &catch, &next, &last); err != nil {
+		r, err := scanSchedule(rows)
+		if err != nil {
 			return nil, err
 		}
-		r.CatchUp = catch == 1
-		r.NextDueAt = next.String
-		r.LastFiredAt = last.String
 		out[r.Idx] = r
 	}
 	return out, rows.Err()
+}
+
+func loadRowsDB(ctx context.Context, db *sql.DB, workspaceID, jobName string) (map[int]Row, error) {
+	rows, err := db.QueryContext(ctx, `SELECT `+scheduleCols+`
+		FROM schedules WHERE workspace_id=? AND job=?`, workspaceID, jobName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]Row{}
+	for rows.Next() {
+		r, err := scanSchedule(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[r.Idx] = r
+	}
+	return out, rows.Err()
+}
+
+func scheduleSpecUnchanged(existing map[int]Row, j *job.Job) bool {
+	want := 0
+	for _, tr := range j.Triggers {
+		if tr.Family != "cron" && tr.Family != "every" {
+			continue
+		}
+		if tr.Disabled {
+			continue
+		}
+		spec := tr.Cron
+		if tr.Family == "every" {
+			spec = "@every " + tr.Every
+		}
+		tz := tr.Timezone
+		if tz == "" {
+			tz = "UTC"
+		}
+		old, ok := existing[tr.Index]
+		if !ok || old.Spec != spec || old.Timezone != tz {
+			return false
+		}
+		want++
+	}
+	return want == len(existing)
 }
 
 func nextDue(spec string, from time.Time, tz string) time.Time {
@@ -158,7 +221,7 @@ func (s *Service) ClaimDue(ctx context.Context, now time.Time, limit int) ([]Row
 	var out []Row
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.Query(`
-			SELECT workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at
+			SELECT `+scheduleCols+`
 			FROM schedules WHERE next_due_at IS NOT NULL AND next_due_at <= ?
 			ORDER BY next_due_at ASC LIMIT ?`, nowStr, limit)
 		if err != nil {
@@ -167,15 +230,10 @@ func (s *Service) ClaimDue(ctx context.Context, now time.Time, limit int) ([]Row
 		defer rows.Close()
 		var candidates []Row
 		for rows.Next() {
-			var r Row
-			var next, last sql.NullString
-			var catch int
-			if err := rows.Scan(&r.WorkspaceID, &r.Job, &r.Idx, &r.Spec, &r.Timezone, &catch, &next, &last); err != nil {
+			r, err := scanSchedule(rows)
+			if err != nil {
 				return err
 			}
-			r.CatchUp = catch == 1
-			r.NextDueAt = next.String
-			r.LastFiredAt = last.String
 			candidates = append(candidates, r)
 		}
 		if err := rows.Err(); err != nil {
@@ -243,7 +301,7 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]Row, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 50
 	}
-	q := `SELECT workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at
+	q := `SELECT ` + scheduleCols + `
 		 FROM schedules WHERE 1=1`
 	var args []any
 	if opts.Workspace != "" {
@@ -263,15 +321,10 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]Row, error) {
 	defer rows.Close()
 	var list []Row
 	for rows.Next() {
-		var r Row
-		var next, last sql.NullString
-		var catch int
-		if err := rows.Scan(&r.WorkspaceID, &r.Job, &r.Idx, &r.Spec, &r.Timezone, &catch, &next, &last); err != nil {
+		r, err := scanSchedule(rows)
+		if err != nil {
 			return nil, err
 		}
-		r.CatchUp = catch == 1
-		r.NextDueAt = next.String
-		r.LastFiredAt = last.String
 		list = append(list, r)
 	}
 	return list, rows.Err()

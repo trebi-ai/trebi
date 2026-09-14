@@ -311,9 +311,7 @@ func runConfigBridgeStatus(_ context.Context, c *cli.Command) error {
 		}
 		out["tools"] = tools
 	}
-	enc := json.NewEncoder(outWriter(c))
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	return encodeJSON(c, out)
 }
 
 func runConfigBridgeSet(_ context.Context, c *cli.Command) error {

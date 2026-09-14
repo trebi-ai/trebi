@@ -153,9 +153,7 @@ func queueCommand() *cli.Command {
 				return err
 			}
 			if c.Bool("json") {
-				enc := json.NewEncoder(outWriter(c))
-				enc.SetIndent("", "  ")
-				return enc.Encode(body)
+				return encodeJSON(c, body)
 			}
 			w := outWriter(c)
 			// QueueItem has no json tags → PascalCase keys from the API.
@@ -222,9 +220,7 @@ func runConnectorList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	if list, ok := body["connectors"].([]any); ok {
@@ -264,9 +260,7 @@ func runConnectorShow(_ context.Context, c *cli.Command) error {
 	if err := client.GetJSON(request.BuildConnectorGetPath(name), &body); err != nil {
 		return err
 	}
-	enc := json.NewEncoder(outWriter(c))
-	enc.SetIndent("", "  ")
-	return enc.Encode(body)
+	return encodeJSON(c, body)
 }
 
 func runConnectorSet(_ context.Context, c *cli.Command) error {
@@ -362,9 +356,7 @@ func runConnectorCursorShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"Name", "Last Event ID", "Updated"})
@@ -523,9 +515,7 @@ func runEventsList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"ID", "Connector", "Summary", "Received"})
@@ -553,9 +543,7 @@ func runEventsShow(_ context.Context, c *cli.Command) error {
 	if err := client.DoHTTP(req, &body); err != nil {
 		return err
 	}
-	enc := json.NewEncoder(outWriter(c))
-	enc.SetIndent("", "  ")
-	return enc.Encode(body)
+	return encodeJSON(c, body)
 }
 
 func runEventsRetrigger(_ context.Context, c *cli.Command) error {

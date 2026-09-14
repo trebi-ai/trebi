@@ -117,6 +117,16 @@ type Service struct {
 	defs     map[string]Definition
 	runCtx   context.Context // process lifetime; not the caller's (HTTP) context
 	userHome string          // empty: skip MCP discovery (tests)
+
+	trigMu     sync.Mutex
+	trigFP     string
+	trigByConn map[string][]cachedTrig
+}
+
+type cachedTrig struct {
+	row workspaces.JobRow
+	j   *job.Job
+	tr  job.Trigger
 }
 
 type proc struct {
@@ -844,10 +854,38 @@ func (s *Service) dispatchEvent(ctx context.Context, name string, ev eventRecord
 	if s.ws == nil {
 		return
 	}
+	for _, t := range s.triggersFor(ctx, name) {
+		s.dispatchTrigger(ctx, name, ev, t.row, t.j, t.tr)
+	}
+	if s.pol != nil {
+		s.pol.PruneIdle(time.Now(), 24*time.Hour)
+	}
+}
+
+func (s *Service) triggersFor(ctx context.Context, connector string) []cachedTrig {
 	jobs, err := s.ws.ListJobs(ctx, "")
 	if err != nil {
-		return
+		return nil
 	}
+	var b strings.Builder
+	for _, row := range jobs {
+		if !row.Active {
+			continue
+		}
+		b.WriteString(row.WorkspaceID)
+		b.WriteByte('/')
+		b.WriteString(row.Name)
+		b.WriteByte('@')
+		b.WriteString(row.Hash)
+		b.WriteByte(';')
+	}
+	fp := b.String()
+	s.trigMu.Lock()
+	defer s.trigMu.Unlock()
+	if fp == s.trigFP && s.trigByConn != nil {
+		return s.trigByConn[connector]
+	}
+	by := map[string][]cachedTrig{}
 	for _, row := range jobs {
 		if !row.Active {
 			continue
@@ -857,12 +895,15 @@ func (s *Service) dispatchEvent(ctx context.Context, name string, ev eventRecord
 			continue
 		}
 		for _, tr := range j.Triggers {
-			if tr.Family != "event" || tr.Event != name || tr.Disabled {
+			if tr.Family != "event" || tr.Disabled || tr.Event == "" {
 				continue
 			}
-			s.dispatchTrigger(ctx, name, ev, row, j, tr)
+			by[tr.Event] = append(by[tr.Event], cachedTrig{row: row, j: j, tr: tr})
 		}
 	}
+	s.trigFP = fp
+	s.trigByConn = by
+	return by[connector]
 }
 
 // dispatchTrigger gates one trigger (allowlist, match, policy) and enqueues.

@@ -322,7 +322,14 @@ func (s *Service) statJoined(joined, cleaned string, hash bool) (Info, error) {
 
 func (s *Service) walkFiles(ctx context.Context, root, prefix string, tree bool) ([]Info, error) {
 	var all []Info
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
+	start := root
+	if prefix != "" {
+		cand := filepath.Join(root, filepath.FromSlash(prefix))
+		if st, err := os.Stat(cand); err == nil && st.IsDir() {
+			start = cand
+		}
+	}
+	err := filepath.WalkDir(start, func(p string, d fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -335,6 +342,16 @@ func (s *Service) walkFiles(ctx context.Context, root, prefix string, tree bool)
 			}
 			if skipListDir(d.Name()) {
 				return filepath.SkipDir
+			}
+			if prefix != "" && p != start {
+				rel, err := filepath.Rel(root, p)
+				if err != nil {
+					return nil
+				}
+				rel = filepath.ToSlash(rel)
+				if !couldMatchPrefix(rel, prefix) {
+					return filepath.SkipDir
+				}
 			}
 			if tree {
 				all = appendDir(all, root, p, prefix)
@@ -523,6 +540,15 @@ func prefixOK(rel, prefix string) bool {
 		return true
 	}
 	return rel == prefix || strings.HasPrefix(rel, prefix+"/")
+}
+
+// couldMatchPrefix reports whether a directory rel can contain or be a
+// prefix of paths matching prefix. Used to SkipDir on disjoint subtrees.
+func couldMatchPrefix(rel, prefix string) bool {
+	if prefix == "" || rel == prefix {
+		return true
+	}
+	return strings.HasPrefix(prefix, rel+"/") || strings.HasPrefix(rel, prefix+"/") || strings.HasPrefix(rel, prefix)
 }
 
 func mapReadErr(err error) error {

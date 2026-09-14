@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -103,9 +102,7 @@ func runSkillList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"Name", "Provenance", "Hash", "Used 30d"})
@@ -185,9 +182,7 @@ func secretCommand() *cli.Command {
 						return err
 					}
 					if c.Bool("json") {
-						enc := json.NewEncoder(outWriter(c))
-						enc.SetIndent("", "  ")
-						return enc.Encode(body)
+						return encodeJSON(c, body)
 					}
 					w := outWriter(c)
 					tbl := newTable(w, []string{"Name"})

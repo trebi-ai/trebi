@@ -40,6 +40,8 @@ func (c *ControlPlane) queueWorker(ctx context.Context) {
 }
 
 func (c *ControlPlane) drainQueue(ctx context.Context) {
+	c.tickCfg, _ = config.Load()
+	defer func() { c.tickCfg = nil }()
 	if _, err := c.queue.ReclaimStale(ctx, 2*time.Minute); err != nil {
 		c.log.Warn("queue reclaim", "error", err)
 	}
@@ -153,12 +155,12 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
 		return
 	}
-	ifRunning := j.Session.IfRunning
+	d := j.LaunchDefaults()
+	ifRunning := d.IfRunning
 	if ifRunning == "" {
 		ifRunning = "skip"
 	}
-	maxMS, idleMS, keepMS, nudgeMS := j.Session.KnobsMS()
-	cwd := j.ResolvedWorkingDir()
+	cwd := d.WorkingDir
 	if cwd == "" {
 		cwd = dirOf(path)
 	}
@@ -181,17 +183,17 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			ConversationID:  convID,
 			TraceID:         item.TraceID,
 			Trigger:         trigger,
-			MaxDurationMS:   maxMS,
-			IdleTimeoutMS:   idleMS,
-			KeepAliveMS:     keepMS,
-			NudgeMS:         nudgeMS,
+			MaxDurationMS:   d.MaxDurationMS,
+			IdleTimeoutMS:   d.IdleTimeoutMS,
+			KeepAliveMS:     d.KeepAliveMS,
+			NudgeMS:         d.NudgeMS,
 			WorkingDir:      cwd,
 			Runtime:         j.Runtime,
 		},
 		Prompt:    prompt,
 		Wake:      wake,
 		IfRunning: ifRunning,
-		Env:       j.LaunchEnv(),
+		Env:       d.Env,
 	})
 	if err != nil || run == nil {
 		c.log.Warn("queue launch", "job", item.Job, "queue_id", item.ID, "error", err)
@@ -265,8 +267,11 @@ func (c *ControlPlane) conversationID(ctx context.Context, workspaceID, key stri
 // blockedFor is the queue auth gate. Native assistants probe the API key, not the vendor stamp.
 func (c *ControlPlane) blockedFor(ctx context.Context, kind, harness string) dispatch.BlockReason {
 	if kind == runs.KindAssistant {
-		cfg, err := config.Load()
-		if err == nil && cfg != nil && strings.TrimSpace(cfg.Assistant.Model) != "" {
+		cfg := c.tickCfg
+		if cfg == nil {
+			cfg, _ = config.Load()
+		}
+		if cfg != nil && strings.TrimSpace(cfg.Assistant.Model) != "" {
 			if cfg.Assistant.Enabled() {
 				return ""
 			}

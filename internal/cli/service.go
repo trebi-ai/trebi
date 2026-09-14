@@ -196,9 +196,7 @@ func serviceDiagnosticsSubcommands() []*cli.Command {
 				if err := client.GetJSON(request.BuildSystemUpdatePath(), &body); err != nil {
 					return err
 				}
-				enc := json.NewEncoder(outWriter(c))
-				enc.SetIndent("", "  ")
-				return enc.Encode(body)
+				return encodeJSON(c, body)
 			},
 		},
 		{
@@ -410,9 +408,7 @@ func runServiceStatus(_ context.Context, c *cli.Command) error {
 		} else {
 			out["api"] = apiBody
 		}
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		return encodeJSON(c, out)
 	}
 	if osErr != "" {
 		fmt.Fprintf(c.Root().ErrWriter, "os: %v\n", osErr)

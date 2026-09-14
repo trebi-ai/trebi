@@ -201,9 +201,7 @@ func runRunsShow(_ context.Context, c *cli.Command) error {
 	if err := client.GetJSON(request.BuildRunGetPath(c.Args().Get(0), c.Int("wait-ms")), &body); err != nil {
 		return err
 	}
-	enc := json.NewEncoder(outWriter(c))
-	enc.SetIndent("", "  ")
-	return enc.Encode(body)
+	return encodeJSON(c, body)
 }
 
 func runRunsTimeline(_ context.Context, c *cli.Command) error {
@@ -216,9 +214,7 @@ func runRunsTimeline(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	return renderTimeline(outWriter(c), body)
 }
@@ -245,9 +241,7 @@ func runRunsTranscript(_ context.Context, c *cli.Command) error {
 	if err := client.DoHTTP(req, &body); err != nil {
 		return err
 	}
-	enc := json.NewEncoder(outWriter(c))
-	enc.SetIndent("", "  ")
-	return enc.Encode(body)
+	return encodeJSON(c, body)
 }
 
 func runRunsKill(_ context.Context, c *cli.Command) error {
@@ -434,9 +428,7 @@ func runRunsSessions(_ context.Context, c *cli.Command) error {
 		body.Sessions = map[string]any{}
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"Run", "Session"})
@@ -496,9 +488,7 @@ func runRunsList(_ context.Context, c *cli.Command) error {
 		}
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"ID", "Job", "Kind", "Status", "Harness", "Started", "Reason", "Conversation"})
@@ -533,9 +523,7 @@ func runApprovalsList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"ID", "Run", "Status", "Decision", "Created"})
@@ -578,37 +566,42 @@ func runLaunch(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	spec := request.RunSpec{Job: c.Args().Get(0), Workspace: workspaceFlag(c)}
+	return launchAndMaybeAttach(ctx, c, client, spec, "", request.RunSpec.Build)
+}
+
+// launchAndMaybeAttach is the shared job-run / agent-wake / assistant-wake
+// tail: fill RunSpec from flags, POST, print the id, optionally attach.
+// --json is a job-only flag; agent/assistant wake never define it.
+func launchAndMaybeAttach(ctx context.Context, c *cli.Command, client *APIClient, spec request.RunSpec, kind string, build func(request.RunSpec) request.HTTPRequest) error {
 	inputs, err := parseKeyValues(c.StringSlice("input"))
 	if err != nil {
 		return err
 	}
-	spec := request.RunSpec{
-		Job:         c.Args().Get(0),
-		Workspace:   workspaceFlag(c),
-		Prompt:      c.String("prompt"),
-		ExtraPrompt: c.String("extra-prompt"),
-		Inputs:      inputs,
-		Harness:     c.String("harness"),
-		DryRun:      c.Bool("test"),
-		WaitMS:      c.Int("wait"),
-	}
+	spec.Prompt = c.String("prompt")
+	spec.ExtraPrompt = c.String("extra-prompt")
+	spec.Inputs = inputs
+	spec.Harness = c.String("harness")
+	spec.ConversationID = c.String("conversation")
+	spec.DryRun = c.Bool("test")
+	spec.WaitMS = c.Int("wait")
 	var out map[string]any
-	if err := client.DoHTTP(spec.Build(), &out); err != nil {
+	if err := client.DoHTTP(build(spec), &out); err != nil {
 		return err
 	}
-	if c.Bool("test") || c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(out); err != nil {
-			return err
-		}
-		if c.Bool("test") {
-			return nil
-		}
-	} else {
-		fmt.Fprintf(outWriter(c), "run %v status=%v\n", mapStr(out, "id"), out["status"])
+	if c.Bool("test") {
+		return encodeJSON(c, out)
 	}
 	runID := mapStr(out, "id")
+	if c.Bool("json") {
+		if err := encodeJSON(c, out); err != nil {
+			return err
+		}
+	} else if kind != "" {
+		fmt.Fprintf(outWriter(c), "run %v status=%v kind=%s\n", runID, out["status"], kind)
+	} else {
+		fmt.Fprintf(outWriter(c), "run %v status=%v\n", runID, out["status"])
+	}
 	if c.Bool("attach") && runID != "" {
 		return attachAfterLaunch(ctx, c, client, out)
 	}

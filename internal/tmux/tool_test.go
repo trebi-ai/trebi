@@ -43,9 +43,9 @@ func TestDetect_AllTools(t *testing.T) {
 		{"pixel", ""},    // must not match pi
 	}
 	for _, c := range cases {
-		got := DetectTool(c.command)
+		got := detectTool(c.command)
 		if got != c.want {
-			t.Errorf("DetectTool(%q) = %q, want %q", c.command, got, c.want)
+			t.Errorf("detectTool(%q) = %q, want %q", c.command, got, c.want)
 		}
 		tool := Detect(c.command)
 		if c.want == "" {
@@ -920,7 +920,7 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := InstallLifecycleAssets(trebiBase, binDir); err != nil {
+	if err := installLifecycleAssets(trebiBase, binDir); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -1025,7 +1025,7 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 		t.Error("expected CLAUDE_CONFIG_DIR in launch env")
 	}
 
-	if err := UninstallLifecycleAssets(trebiBase, binDir); err != nil {
+	if err := uninstallLifecycleAssets(trebiBase, binDir); err != nil {
 		t.Fatalf("Uninstall: %v", err)
 	}
 	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
@@ -1072,6 +1072,25 @@ func TestAllTools_UniqueNames(t *testing.T) {
 		if !seen[want] {
 			t.Errorf("missing tool %s", want)
 		}
+	}
+}
+
+func TestFirstClassToolsMatchesAllToolsFilter(t *testing.T) {
+	t.Parallel()
+	want := map[string]bool{}
+	for _, n := range config.FirstClassTools() {
+		want[n] = true
+	}
+	for _, tool := range AllTools() {
+		n := tool.Name()
+		first := n != Gemini && n != Fake
+		if want[n] != first {
+			t.Errorf("%s: FirstClassTools=%v filter=%v", n, want[n], first)
+		}
+		delete(want, n)
+	}
+	for n := range want {
+		t.Errorf("FirstClassTools extra %s not in AllTools", n)
 	}
 }
 

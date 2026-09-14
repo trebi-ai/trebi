@@ -515,13 +515,7 @@ func scanConv(row convScanner) (Conversation, error) {
 	return c, nil
 }
 
-func parseTime(s string) time.Time {
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		t, _ = time.Parse(time.RFC3339, s)
-	}
-	return t.UTC()
-}
+func parseTime(s string) time.Time { return store.ParseTS(s) }
 
 func uniqueViolation(err error) bool {
 	if err == nil {

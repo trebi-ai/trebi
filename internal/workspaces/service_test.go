@@ -2,6 +2,7 @@ package workspaces_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -587,9 +588,13 @@ func busTopics(t *testing.T, st *store.Store, after int64) []string {
 
 func mustSeq(t *testing.T, st *store.Store) int64 {
 	t.Helper()
-	seq, err := st.NewestSeq(context.Background())
+	var v sql.NullInt64
+	err := st.DB().QueryRowContext(context.Background(), `SELECT MAX(seq) FROM event_log`).Scan(&v)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return seq
+	if !v.Valid {
+		return 0
+	}
+	return v.Int64
 }

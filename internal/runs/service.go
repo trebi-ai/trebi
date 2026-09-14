@@ -477,15 +477,8 @@ func (s *Service) FindLive(ctx context.Context, workspaceID, kind, conversationK
 
 // ListForTurnWatch returns conversation-linked runs that are live or just ended.
 func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([]*Run, error) {
-	q := `SELECT id, workspace_id, job, kind, COALESCE(reason,''), status, COALESCE(end_reason,''),
-		COALESCE(prompt_preview,''), COALESCE(session_id,''), COALESCE(harness,''),
-		COALESCE(runtime,'tui'), COALESCE(tmux_session,''),
-		COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
-		COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
-		started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
-		COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
-		COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
-		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json
+	q := `SELECT id, COALESCE(session_id,''), COALESCE(harness,''), COALESCE(conversation_id,''),
+		COALESCE(working_dir,''), started_at
 		FROM runs WHERE COALESCE(conversation_id,'') != ''
 		AND (status = ? OR (ended_at IS NOT NULL AND ended_at >= ?))
 		ORDER BY id DESC LIMIT 200`
@@ -496,9 +489,13 @@ func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([
 	defer rows.Close()
 	var out []*Run
 	for rows.Next() {
-		r, err := s.scanRun(rows)
-		if err != nil {
+		r := &Run{}
+		var started sql.NullString
+		if err := rows.Scan(&r.ID, &r.SessionID, &r.Harness, &r.ConversationID, &r.WorkingDir, &started); err != nil {
 			return nil, err
+		}
+		if started.Valid {
+			r.StartedAt = store.ParseTS(started.String)
 		}
 		out = append(out, r)
 	}
@@ -611,7 +608,6 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 	var ti, to, tcr, tcc int64
 	var modelName string
 	if tokens != nil {
-		tokens.FillDerived()
 		tokens.ApplyRates()
 		ti, to, tcr, tcc = tokens.Input, tokens.Output, tokens.CacheRead, tokens.CacheCreation
 		modelName = tokens.Model
@@ -1158,7 +1154,6 @@ func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time)
 			continue
 		}
 		u := pricing.TokenUsage{Input: in, Output: outTok, CacheRead: cacheR, CacheCreation: cacheC, Model: model}
-		u.FillDerived()
 		u.ApplyRates()
 		out = append(out, statsRow{at: at.UTC(), status: Status(status), usage: u})
 	}
@@ -1254,22 +1249,15 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r.ConversationKey = convKey
 	r.ConversationID = convID
 	r.WorkingDir = workingDir
-	r.StartedAt, _ = time.Parse(time.RFC3339Nano, started.String)
-	if r.StartedAt.IsZero() {
-		r.StartedAt, _ = time.Parse(time.RFC3339, started.String)
-	}
+	r.StartedAt = store.ParseTS(started.String)
 	if ended.Valid {
-		t, err := time.Parse(time.RFC3339Nano, ended.String)
-		if err != nil {
-			t, _ = time.Parse(time.RFC3339, ended.String)
-		}
+		t := store.ParseTS(ended.String)
 		r.EndedAt = &t
 		r.DurationMS = t.Sub(r.StartedAt).Milliseconds()
 	} else {
 		r.DurationMS = time.Since(r.StartedAt).Milliseconds()
 	}
 	r.Tokens = pricing.TokenUsage{Input: ti, Output: to, CacheRead: tcr, CacheCreation: tcc, Model: modelName}
-	r.Tokens.FillDerived()
 	r.Tokens.ApplyRates()
 	r.Session = SessionSpec{MaxDurationMS: maxD, IdleTimeoutMS: idle, KeepAliveMS: keep, NudgeMS: nudge}
 	r.TmuxSession = tmux

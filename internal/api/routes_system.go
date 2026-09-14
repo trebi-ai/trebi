@@ -230,6 +230,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// Catch-up, then poll until the client disconnects or the server stops.
 	// follow=0 (CLI --limit) dumps history and closes; --limit is a max.
 	lastWrite := time.Now()
+	lag := time.NewTicker(streamPollInterval)
+	defer lag.Stop()
 	for {
 		events, err := s.st.ListBus(r.Context(), cursor, topics, 100)
 		if err != nil {
@@ -259,7 +261,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-s.done:
 			return
-		case <-time.After(streamPollInterval):
+		case <-s.st.BusWake():
+		case <-lag.C:
 		}
 	}
 }

@@ -312,7 +312,9 @@ type ToolPin struct {
 	Bridge *BridgeConfig `yaml:"bridge,omitempty"`
 }
 
-// FirstClassTools returns the tools trebi pins / ensures (Gemini excluded).
+// FirstClassTools is the documented filter of tmux.AllTools(): every
+// registered harness except gemini and fake. Kept as this list because
+// config cannot import tmux; TestFirstClassToolsMatchesAllToolsFilter pins it.
 func FirstClassTools() []string {
 	return []string{"claude", "grok", "codex", "opencode", "copilot", "cursor", "pi"}
 }
@@ -429,19 +431,13 @@ func (tc *ToolsConfig) ToolBridge(name string) *BridgeConfig {
 }
 
 // BinDir is ~/.trebi/bin — versioned tool binaries live under BinDir/<tool>/<ver>/.
-func BinDir() string {
-	return filepath.Join(BaseDir(), "bin")
-}
+func BinDir() string { return home.BinDir() }
 
 // LibexecDir is ~/.trebi/libexec — trebi helpers (not versioned harness CLIs).
-func LibexecDir() string {
-	return filepath.Join(BaseDir(), "libexec")
-}
+func LibexecDir() string { return home.LibexecDir() }
 
 // HarnessDir is ~/.trebi/harness/<tool> — trebi-owned config/session tree for a harness.
-func HarnessDir(tool string) string {
-	return filepath.Join(BaseDir(), "harness", tool)
-}
+func HarnessDir(tool string) string { return home.HarnessDir(tool) }
 
 // ToolStoreDir is ~/.trebi/bin/<tool>.
 func ToolStoreDir(tool string) string {
@@ -454,9 +450,7 @@ func ToolCurrentLink(tool string) string {
 }
 
 // SecretsDir is ~/.trebi/secrets (mode 0700) for separate-mode env key files.
-func SecretsDir() string {
-	return filepath.Join(BaseDir(), "secrets")
-}
+func SecretsDir() string { return home.SecretsDir() }
 
 // SecretEnvPath is ~/.trebi/secrets/<tool>.env.
 func SecretEnvPath(tool string) string {
@@ -466,19 +460,11 @@ func SecretEnvPath(tool string) string {
 // EnsureDirs creates the home tree via home.EnsureDirs (which also fixes the
 // secrets dir to 0700), then the config extras.
 func EnsureDirs() error {
-	if err := home.EnsureDirs(); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(BaseDir(), "cache"), 0o755); err != nil {
-		return fmt.Errorf("creating cache dir: %w", err)
-	}
-	return nil
+	return home.EnsureDirs()
 }
 
 // ConfigPath is ~/.trebi/config.yaml (or under BaseDir in tests).
-func ConfigPath() string {
-	return filepath.Join(BaseDir(), "config.yaml")
-}
+func ConfigPath() string { return home.ConfigPath() }
 
 // Load reads and validates config.yaml. Missing file yields defaults (valid).
 // Bad format or schema returns a path-prefixed error.

@@ -13,6 +13,7 @@ import (
 
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 type claudeTool struct{ harnessHome }
@@ -383,13 +384,4 @@ func claudeToolResult(raw json.RawMessage) string {
 	return string(raw)
 }
 
-func parseClaudeTime(s string) time.Time {
-	if s == "" {
-		return time.Time{}
-	}
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		t, _ = time.Parse(time.RFC3339, s)
-	}
-	return t.UTC()
-}
+func parseClaudeTime(s string) time.Time { return store.ParseTS(s) }

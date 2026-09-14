@@ -69,19 +69,8 @@ const (
 	ReasonManual   RunReason = "manual"
 	ReasonSchedule RunReason = "schedule"
 	ReasonTrigger  RunReason = "trigger"
-	ReasonWhen     RunReason = "when"
 	ReasonResume   RunReason = "resume"
 	ReasonReplay   RunReason = "replay"
-)
-
-// IfRunning overlap policy.
-type IfRunning string
-
-const (
-	IfRunningSkip     IfRunning = "skip"
-	IfRunningReplace  IfRunning = "replace"
-	IfRunningCoalesce IfRunning = "coalesce"
-	IfRunningAllow    IfRunning = "allow"
 )
 
 // Kind for runs: job | assistant (B27).

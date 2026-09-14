@@ -141,7 +141,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	body.Workspace = s.workspaceID(r.Context(), body.Workspace)
 	row, rerr := s.resolveRunRow(r.Context(), body)
 	if rerr != nil {
-		writeResolveErr(w, rerr)
+		writeResolveErr(w, rerr, "job")
 		return
 	}
 	if body.Kind == runs.KindAgent {
@@ -232,7 +232,7 @@ func (s *Server) isDraining() bool {
 // resolveRunRow is the A4 resolver: unknown job gives 404, a duplicate name
 // without a workspace gives 400 (mapped by writeResolveErr).
 func (s *Server) resolveRunRow(ctx context.Context, body runCreateRequest) (workspaces.JobRow, error) {
-	if body.Kind == "assistant" {
+	if body.Kind == runs.KindAssistant {
 		return s.findAssistantRow(ctx, body.Workspace)
 	}
 	if body.Kind == runs.KindAgent {
@@ -277,10 +277,11 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 	}
 	if spec != nil {
 		// Agents resolve to the workspace root unless working_dir: is set (G.5).
-		lopts.WorkingDir = spec.ResolvedWorkingDir()
-		lopts.IfRunning = spec.Session.IfRunning
-		lopts.Env = spec.LaunchEnv()
-		lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = spec.Session.KnobsMS()
+		d := spec.LaunchDefaults()
+		lopts.WorkingDir = d.WorkingDir
+		lopts.IfRunning = d.IfRunning
+		lopts.Env = d.Env
+		lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = d.MaxDurationMS, d.IdleTimeoutMS, d.KeepAliveMS, d.NudgeMS
 	}
 	if harness == "fake" || os.Getenv("TREBI_FAKE_HARNESS") != "" {
 		// Test/e2e harness: shell that emits the run-scoped completion sentinel.
@@ -567,6 +568,8 @@ func (s *Server) attachInputPump(conn *websocket.Conn, session string, done chan
 func (s *Server) attachScreenLoop(ctx context.Context, conn *websocket.Conn, session string, done <-chan struct{}) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
+	var last string
+	sent := false
 	for {
 		select {
 		case <-done:
@@ -579,8 +582,12 @@ func (s *Server) attachScreenLoop(ctx context.Context, conn *websocket.Conn, ses
 				_ = conn.WriteJSON(map[string]any{"type": "error", "data": err.Error()})
 				return
 			}
-			if err := conn.WriteJSON(map[string]any{"type": "screen", "data": screen}); err != nil {
-				return
+			if !sent || screen != last {
+				last = screen
+				sent = true
+				if err := conn.WriteJSON(map[string]any{"type": "screen", "data": screen}); err != nil {
+					return
+				}
 			}
 			if !tmux.HasSession(session) {
 				_ = conn.WriteJSON(map[string]any{"type": "ended"})
@@ -748,10 +755,11 @@ func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason r
 		},
 		Prompt: prompt,
 	}
-	lopts.WorkingDir = j.ResolvedWorkingDir()
-	lopts.Env = j.LaunchEnv()
-	lopts.IfRunning = j.Session.IfRunning
-	lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = j.Session.KnobsMS()
+	d := j.LaunchDefaults()
+	lopts.WorkingDir = d.WorkingDir
+	lopts.Env = d.Env
+	lopts.IfRunning = d.IfRunning
+	lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = d.MaxDurationMS, d.IdleTimeoutMS, d.KeepAliveMS, d.NudgeMS
 	return lopts, nil
 }
 

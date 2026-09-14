@@ -2,6 +2,7 @@ package tray
 
 import (
 	"log/slog"
+	"strconv"
 	"sync"
 )
 
@@ -57,31 +58,12 @@ func (s Snapshot) MenuLines() []string {
 		lines = append(lines, s.Message)
 	}
 	if s.Healthy {
-		running := "Runs: " + itoa(s.RunningCount)
+		running := "Runs: " + strconv.Itoa(s.RunningCount)
 		if s.WaitingCount > 0 {
-			running += " · waiting: " + itoa(s.WaitingCount)
+			running += " · waiting: " + strconv.Itoa(s.WaitingCount)
 		}
 		lines = append(lines, running)
 	}
 	lines = append(lines, "Quit Trebi service")
 	return lines
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	// small int without strconv import cycle worries
-	const digits = "0123456789"
-	if n < 0 {
-		return "-" + itoa(-n)
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = digits[n%10]
-		n /= 10
-	}
-	return string(b[i:])
 }

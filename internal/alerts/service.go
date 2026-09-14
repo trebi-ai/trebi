@@ -598,13 +598,7 @@ func unmarshalActions(raw string) []InboxAction {
 	return out
 }
 
-func parseTime(s string) time.Time {
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		t, _ = time.Parse(time.RFC3339, s)
-	}
-	return t
-}
+func parseTime(s string) time.Time { return store.ParseTS(s) }
 
 func (o RaiseOpts) defaultSubject() string {
 	switch o.Kind {

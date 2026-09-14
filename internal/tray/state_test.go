@@ -39,10 +39,3 @@ func TestBuildMenuLines_DrainingAndOffline(t *testing.T) {
 		t.Fatalf("message: %v", o)
 	}
 }
-
-func TestItoa(t *testing.T) {
-	t.Parallel()
-	if itoa(0) != "0" || itoa(42) != "42" || itoa(-3) != "-3" {
-		t.Fatalf("itoa broken")
-	}
-}

@@ -69,13 +69,30 @@ func (r *Reaper) Sweep(ctx context.Context) {
 		r.log.Warn("reaper list", "error", err)
 		return
 	}
+	sessions, listOK := liveTmuxSessions()
 	now := r.now()
 	for _, run := range list {
-		r.checkOne(ctx, run, now)
+		r.checkOne(ctx, run, now, sessions, listOK)
 	}
 }
 
-func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
+func liveTmuxSessions() (map[string]struct{}, bool) {
+	out, err := tmux.ListSessions()
+	if err != nil {
+		return nil, false
+	}
+	set := map[string]struct{}{}
+	for _, line := range strings.Split(out, "\n") {
+		name, _, _ := strings.Cut(line, "\t")
+		name = strings.TrimSpace(name)
+		if name != "" {
+			set[name] = struct{}{}
+		}
+	}
+	return set, true
+}
+
+func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions map[string]struct{}, listOK bool) {
 	r.mu.Lock()
 	_, keeping := r.idleSince["keep:"+run.ID]
 	r.mu.Unlock()
@@ -91,7 +108,12 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time) {
 	if run.TmuxSession == "" {
 		return
 	}
-	if !tmux.HasSession(run.TmuxSession) {
+	if listOK {
+		if _, ok := sessions[run.TmuxSession]; !ok {
+			r.finish(ctx, run, StatusExited, EndSessionGone)
+			return
+		}
+	} else if !tmux.HasSession(run.TmuxSession) {
 		r.finish(ctx, run, StatusExited, EndSessionGone)
 		return
 	}

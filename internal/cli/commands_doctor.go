@@ -35,9 +35,7 @@ func runGuide(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]string{
+		return encodeJSON(c, map[string]string{
 			"topic": g.Topic, "title": g.Title, "description": g.Description, "body": g.Body,
 		})
 	}
@@ -54,9 +52,7 @@ func runGuideList(c *cli.Command) error {
 				"topic": g.Topic, "title": g.Title, "description": g.Description,
 			})
 		}
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{"items": items})
+		return encodeJSON(c, map[string]any{"items": items})
 	}
 	tbl := newTable(outWriter(c), []string{"Topic", "Title", "Description"})
 	for _, g := range list {
@@ -99,9 +95,7 @@ func runDoctor(_ context.Context, c *cli.Command) error {
 		return applyDoctorFixes(c, client, body)
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	return renderDoctor(outWriter(c), body)
 }

@@ -14,6 +14,7 @@ import (
 
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // DefaultDriver is the tmux/vendor implementation of harness.Driver.
@@ -311,12 +312,7 @@ func coerceTime(v any) time.Time {
 		f, _ := n.Float64()
 		return coerceTime(f)
 	case string:
-		if t, err := time.Parse(time.RFC3339Nano, n); err == nil {
-			return t.UTC()
-		}
-		if t, err := time.Parse(time.RFC3339, n); err == nil {
-			return t.UTC()
-		}
+		return store.ParseTS(n)
 	}
 	return time.Time{}
 }

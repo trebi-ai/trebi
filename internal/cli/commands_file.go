@@ -188,9 +188,7 @@ func fileListAction(c *cli.Command, client *APIClient, path string) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	tbl := newTable(outWriter(c), []string{"Path", "Size", "Mtime"})
 	for _, f := range body.Files {
@@ -206,9 +204,7 @@ func fileGetAction(c *cli.Command, client *APIClient, path string) error {
 		if err := client.GetJSON(path, &body); err != nil {
 			return err
 		}
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	raw, err := client.GetRaw(path)
 	if err != nil {
@@ -335,4 +331,188 @@ func readBytesOrStdin(path string) ([]byte, error) {
 		return os.ReadFile(path)
 	}
 	return io.ReadAll(os.Stdin)
+}
+
+// memoryOwner is one MEMORY.md ledger CLI (job, agent, or assistant).
+// resolve and the Build* closures stay owner-specific so job keeps
+// ?workspace= paths and agent/assistant keep /workspaces/{id} paths.
+type memoryOwner struct {
+	noun    string
+	resolve func(c *cli.Command) (*APIClient, string, string, error)
+	getPath func(name, ws string) string
+	put     func(name, ws, content, ifMatch string) request.HTTPRequest
+	add     func(name, ws, date, text, ifMatch string) request.HTTPRequest
+	del     func(name, ws, entryID, ifMatch string) request.HTTPRequest
+	clear   func(name, ws, ifMatch string, confirm bool) request.HTTPRequest
+}
+
+func (o memoryOwner) named() bool  { return o.noun != "assistant" }
+func (o memoryOwner) wsFlag() bool { return o.noun == "agent" }
+
+func (o memoryOwner) flags(extra ...cli.Flag) []cli.Flag {
+	if o.wsFlag() {
+		return append([]cli.Flag{&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"}}, extra...)
+	}
+	return extra
+}
+
+func memorySubcommands(o memoryOwner) *cli.Command {
+	nameArgs, entryArgs := "", "<entry-id>"
+	if o.named() {
+		nameArgs = "<name>"
+		entryArgs = "<name> <entry-id>"
+	}
+	return &cli.Command{
+		Name:  "memory",
+		Usage: o.noun + " MEMORY.md ledger",
+		Commands: []*cli.Command{
+			{
+				Name: "show", Usage: "print MEMORY.md", ArgsUsage: nameArgs,
+				Flags:  o.flags(&cli.BoolFlag{Name: "json", Usage: "emit JSON"}),
+				Action: o.runShow,
+			},
+			{
+				Name: "add", Usage: "append a ledger entry", ArgsUsage: nameArgs,
+				Flags: o.flags(
+					&cli.StringFlag{Name: "text", Usage: "entry text", Required: true},
+					&cli.StringFlag{Name: "date", Usage: "YYYY-MM-DD (default today)"},
+					ifMatchFlag(),
+				),
+				Action: o.runAdd,
+			},
+			{
+				Name: "delete", Aliases: []string{"remove"}, Usage: "delete a ledger entry", ArgsUsage: entryArgs,
+				Flags:  o.flags(ifMatchFlag()),
+				Action: o.runRemove,
+			},
+			{
+				Name: "set", Usage: "replace MEMORY.md (--file or stdin)", ArgsUsage: nameArgs,
+				Flags:  o.flags(&cli.StringFlag{Name: "file", Usage: "path to MEMORY.md"}, ifMatchFlag()),
+				Action: o.runSet,
+			},
+			{
+				Name: "clear", Usage: "delete MEMORY.md (destroys the ledger)", ArgsUsage: nameArgs,
+				Flags:  o.flags(forceFlag("required; destroys the ledger"), ifMatchFlag()),
+				Action: o.runClear,
+			},
+		},
+	}
+}
+
+func (o memoryOwner) runShow(_ context.Context, c *cli.Command) error {
+	client, name, ws, err := o.resolve(c)
+	if err != nil {
+		return err
+	}
+	if err := o.requireName(name, fmt.Sprintf("usage: trebi %s memory show <name>", o.noun)); err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.GetJSON(o.getPath(name, ws), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	fmt.Fprint(outWriter(c), mapStr(body, "content"))
+	return nil
+}
+
+func (o memoryOwner) runAdd(_ context.Context, c *cli.Command) error {
+	client, name, ws, err := o.resolve(c)
+	if err != nil {
+		return err
+	}
+	if err := o.requireName(name, fmt.Sprintf("usage: trebi %s memory add <name> --text <text>", o.noun)); err != nil {
+		return err
+	}
+	return client.DoHTTP(o.add(name, ws, c.String("date"), c.String("text"), c.String("if-match")), nil)
+}
+
+func (o memoryOwner) runRemove(_ context.Context, c *cli.Command) error {
+	client, name, ws, err := o.resolve(c)
+	if err != nil {
+		return err
+	}
+	eid := c.Args().Get(0)
+	if o.named() {
+		eid = c.Args().Get(1)
+	}
+	if eid == "" || (o.named() && name == "") {
+		if !o.named() {
+			return fmt.Errorf("usage: trebi assistant memory remove <entry-id>")
+		}
+		verb := "remove"
+		if o.noun == "agent" {
+			verb = "delete"
+		}
+		return fmt.Errorf("usage: trebi %s memory %s <name> <entry-id>", o.noun, verb)
+	}
+	return client.DoHTTP(o.del(name, ws, eid, c.String("if-match")), nil)
+}
+
+func (o memoryOwner) runSet(_ context.Context, c *cli.Command) error {
+	client, name, ws, err := o.resolve(c)
+	if err != nil {
+		return err
+	}
+	if err := o.requireName(name, fmt.Sprintf("usage: trebi %s memory set <name> --file <path>", o.noun)); err != nil {
+		return err
+	}
+	content, err := readFileOrStdin(c.String("file"))
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(o.put(name, ws, content, c.String("if-match")), nil)
+}
+
+func (o memoryOwner) runClear(_ context.Context, c *cli.Command) error {
+	client, name, ws, err := o.resolve(c)
+	if err != nil {
+		return err
+	}
+	if err := o.requireName(name, fmt.Sprintf("usage: trebi %s memory clear <name>", o.noun)); err != nil {
+		return err
+	}
+	confirm, err := confirmed(c, o.clearWhat(name))
+	if err != nil {
+		return err
+	}
+	if err := client.DoHTTP(o.clear(name, ws, c.String("if-match"), confirm), nil); err != nil {
+		return err
+	}
+	fmt.Fprint(outWriter(c), o.clearedMsg(name, ws))
+	return nil
+}
+
+func (o memoryOwner) requireName(name, usage string) error {
+	if !o.named() || name != "" {
+		return nil
+	}
+	if o.noun == "agent" {
+		return fmt.Errorf("name required")
+	}
+	return fmt.Errorf("%s", usage)
+}
+
+func (o memoryOwner) clearWhat(name string) string {
+	switch o.noun {
+	case "agent":
+		return "destroys the memory ledger of agent " + name
+	case "assistant":
+		return "destroys the assistant memory ledger"
+	default:
+		return "destroys the memory ledger for " + name
+	}
+}
+
+func (o memoryOwner) clearedMsg(name, ws string) string {
+	switch o.noun {
+	case "agent":
+		return fmt.Sprintf("cleared memory of %s\n", name)
+	case "assistant":
+		return fmt.Sprintf("cleared assistant memory for %s\n", ws)
+	default:
+		return fmt.Sprintf("cleared memory for %s\n", name)
+	}
 }

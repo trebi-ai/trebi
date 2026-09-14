@@ -129,67 +129,37 @@ func agentWakeCommand() *cli.Command {
 }
 
 func agentMemoryCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "memory",
-		Usage: "agent MEMORY.md ledger",
-		Commands: []*cli.Command{
-			{
-				Name:      "show",
-				ArgsUsage: "<name>",
-				Usage:     "print MEMORY.md",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
-					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
-				},
-				Action: runAgentMemory,
-			},
-			{
-				Name:      "add",
-				ArgsUsage: "<name>",
-				Usage:     "append a ledger entry",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
-					&cli.StringFlag{Name: "text", Usage: "entry text", Required: true},
-					&cli.StringFlag{Name: "date", Usage: "YYYY-MM-DD (default today)"},
-					ifMatchFlag(),
-				},
-				Action: runAgentMemoryAdd,
-			},
-			{
-				Name:      "delete",
-				Aliases:   []string{"remove"},
-				ArgsUsage: "<name> <entry-id>",
-				Usage:     "delete a ledger entry",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
-					ifMatchFlag(),
-				},
-				Action: runAgentMemoryRemove,
-			},
-			{
-				Name:      "set",
-				ArgsUsage: "<name>",
-				Usage:     "replace MEMORY.md (--file or stdin)",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
-					&cli.StringFlag{Name: "file", Usage: "path to MEMORY.md"},
-					ifMatchFlag(),
-				},
-				Action: runAgentMemorySet,
-			},
-			{
-				Name:      "clear",
-				ArgsUsage: "<name>",
-				Usage:     "delete MEMORY.md (destroys the ledger)",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
-					forceFlag("required; destroys the ledger"),
-					ifMatchFlag(),
-				},
-				Action: runAgentMemoryClear,
-			},
+	return memorySubcommands(memoryOwner{
+		noun: "agent",
+		resolve: func(c *cli.Command) (*APIClient, string, string, error) {
+			name, err := agentNameArg(c)
+			if err != nil {
+				return nil, "", "", err
+			}
+			client, err := clientFor(c)
+			if err != nil {
+				return nil, "", "", err
+			}
+			wsID, err := resolveWorkspaceID(c, client)
+			if err != nil {
+				return nil, "", "", err
+			}
+			return client, name, wsID, nil
 		},
-	}
+		getPath: func(name, ws string) string { return request.BuildAgentMemoryGetPath(ws, name) },
+		put: func(name, ws, content, ifMatch string) request.HTTPRequest {
+			return request.BuildAgentMemoryPut(ws, name, content, ifMatch)
+		},
+		add: func(name, ws, date, text, ifMatch string) request.HTTPRequest {
+			return request.BuildAgentMemoryEntryAdd(ws, name, date, text, ifMatch)
+		},
+		del: func(name, ws, entryID, ifMatch string) request.HTTPRequest {
+			return request.BuildAgentMemoryEntryDelete(ws, name, entryID, ifMatch)
+		},
+		clear: func(name, ws, ifMatch string, confirm bool) request.HTTPRequest {
+			return request.BuildAgentMemoryClear(ws, name, ifMatch, confirm)
+		},
+	})
 }
 
 func agentNameArg(c *cli.Command) (string, error) {
@@ -340,138 +310,7 @@ func runAgentWake(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	inputs, err := parseKeyValues(c.StringSlice("input"))
-	if err != nil {
-		return err
-	}
-	spec := request.RunSpec{
-		Job:            name,
-		Workspace:      wsID,
-		Prompt:         c.String("prompt"),
-		ExtraPrompt:    c.String("extra-prompt"),
-		Inputs:         inputs,
-		Harness:        c.String("harness"),
-		ConversationID: c.String("conversation"),
-		DryRun:         c.Bool("test"),
-		WaitMS:         c.Int("wait"),
-	}
-	var out map[string]any
-	if err := client.DoHTTP(spec.BuildAgentWake(), &out); err != nil {
-		return err
-	}
-	if c.Bool("test") {
-		return encodeJSON(c, out)
-	}
-	runID := mapStr(out, "id")
-	fmt.Fprintf(outWriter(c), "run %v status=%v kind=agent\n", runID, out["status"])
-	if c.Bool("attach") && runID != "" {
-		return attachAfterLaunch(ctx, c, client, out)
-	}
-	return nil
-}
-
-func runAgentMemory(_ context.Context, c *cli.Command) error {
-	name, err := agentNameArg(c)
-	if err != nil {
-		return err
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	wsID, err := resolveWorkspaceID(c, client)
-	if err != nil {
-		return err
-	}
-	var body map[string]any
-	if err := client.GetJSON(request.BuildAgentMemoryGetPath(wsID, name), &body); err != nil {
-		return err
-	}
-	if c.Bool("json") {
-		return encodeJSON(c, body)
-	}
-	fmt.Fprint(outWriter(c), mapStr(body, "content"))
-	return nil
-}
-
-func runAgentMemoryAdd(_ context.Context, c *cli.Command) error {
-	name, err := agentNameArg(c)
-	if err != nil {
-		return err
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	wsID, err := resolveWorkspaceID(c, client)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildAgentMemoryEntryAdd(wsID, name, c.String("date"), c.String("text"), c.String("if-match")), nil)
-}
-
-func runAgentMemoryRemove(_ context.Context, c *cli.Command) error {
-	name, err := agentNameArg(c)
-	if err != nil {
-		return err
-	}
-	eid := c.Args().Get(1)
-	if eid == "" {
-		return fmt.Errorf("usage: trebi agent memory delete <name> <entry-id>")
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	wsID, err := resolveWorkspaceID(c, client)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildAgentMemoryEntryDelete(wsID, name, eid, c.String("if-match")), nil)
-}
-
-func runAgentMemorySet(_ context.Context, c *cli.Command) error {
-	name, err := agentNameArg(c)
-	if err != nil {
-		return err
-	}
-	content, err := readFileOrStdin(c.String("file"))
-	if err != nil {
-		return err
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	wsID, err := resolveWorkspaceID(c, client)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildAgentMemoryPut(wsID, name, content, c.String("if-match")), nil)
-}
-
-func runAgentMemoryClear(_ context.Context, c *cli.Command) error {
-	name, err := agentNameArg(c)
-	if err != nil {
-		return err
-	}
-	confirm, err := confirmed(c, "destroys the memory ledger of agent "+name)
-	if err != nil {
-		return err
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	wsID, err := resolveWorkspaceID(c, client)
-	if err != nil {
-		return err
-	}
-	if err := client.DoHTTP(request.BuildAgentMemoryClear(wsID, name, c.String("if-match"), confirm), nil); err != nil {
-		return err
-	}
-	fmt.Fprintf(outWriter(c), "cleared memory of %s\n", name)
-	return nil
+	return launchAndMaybeAttach(ctx, c, client, request.RunSpec{Job: name, Workspace: wsID}, "agent", request.RunSpec.BuildAgentWake)
 }
 
 // agentRows collects the agents of every workspace, or of the one the want

@@ -482,11 +482,8 @@ func (s *Service) EarliestExpiry(ctx context.Context) (name string, at time.Time
 		if err := rows.Scan(&n, &raw); err != nil {
 			return "", time.Time{}, err
 		}
-		t, perr := time.Parse(time.RFC3339Nano, raw)
-		if perr != nil {
-			t, perr = time.Parse(time.RFC3339, raw)
-		}
-		if perr != nil || t.IsZero() {
+		t := store.ParseTS(raw)
+		if t.IsZero() {
 			continue
 		}
 		if soonest.IsZero() || t.Before(soonest) {

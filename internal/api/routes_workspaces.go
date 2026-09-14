@@ -142,13 +142,8 @@ func (s *Server) handleWorkspaceGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAssistantGet(w http.ResponseWriter, r *http.Request) {
-	ws, err := s.ws.Get(r.Context(), r.PathValue("id"))
-	if err == sql.ErrNoRows {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-		return
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	ws, ok := s.workspaceByID(w, r)
+	if !ok {
 		return
 	}
 	path := filepath.Join(ws.Path, "TREBI.md")
@@ -179,7 +174,7 @@ func (s *Server) handleAssistantGet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMemoryDelete(w http.ResponseWriter, r *http.Request, scope memoryScope) {
 	root, rel, path, err := s.memoryRootRel(r, scope)
 	if err != nil {
-		writeResolveErr(w, err)
+		writeResolveErr(w, err, "job")
 		return
 	}
 	if !s.requireIfMatch(w, r, root, rel) {
@@ -210,7 +205,7 @@ func (s *Server) handleMemoryEntriesPost(w http.ResponseWriter, r *http.Request,
 	}
 	root, rel, path, err := s.memoryRootRel(r, scope)
 	if err != nil {
-		writeResolveErr(w, err)
+		writeResolveErr(w, err, "job")
 		return
 	}
 	if !s.requireIfMatch(w, r, root, rel) {
@@ -237,7 +232,7 @@ func (s *Server) handleMemoryEntriesDelete(w http.ResponseWriter, r *http.Reques
 	}
 	root, rel, path, err := s.memoryRootRel(r, scope)
 	if err != nil {
-		writeResolveErr(w, err)
+		writeResolveErr(w, err, "job")
 		return
 	}
 	if !s.requireIfMatch(w, r, root, rel) {
@@ -447,7 +442,7 @@ func (s *Server) handleAssistantMemoryPut(w http.ResponseWriter, r *http.Request
 func (s *Server) handleMemoryFile(w http.ResponseWriter, r *http.Request, scope memoryScope) {
 	path, err := s.memoryPath(r, scope)
 	if err != nil {
-		writeResolveErr(w, err)
+		writeResolveErr(w, err, "job")
 		return
 	}
 	info, err := job.LoadMemoryInfo(path)
@@ -476,7 +471,7 @@ func (s *Server) handleMemoryFilePut(w http.ResponseWriter, r *http.Request, sco
 	}
 	root, rel, abs, err := s.memoryRootRel(r, scope)
 	if err != nil {
-		writeResolveErr(w, err)
+		writeResolveErr(w, err, "job")
 		return
 	}
 	info, _, err := s.files.Write(r.Context(), root, rel, []byte(body.Content), ifMatchHeader(r))

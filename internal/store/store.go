@@ -17,9 +17,11 @@ import (
 
 // Store is a trebi database handle.
 type Store struct {
-	db   *sql.DB
-	path string
-	mu   sync.Mutex // serializes bus appends (gapless seq)
+	db     *sql.DB
+	path   string
+	mu     sync.Mutex // serializes bus appends (gapless seq)
+	wakeMu sync.Mutex
+	wake   chan struct{}
 }
 
 // Open opens (or creates) trebi.db under home and runs migrations.
@@ -46,7 +48,7 @@ func OpenPath(path string) (*Store, error) {
 		_ = d.Close()
 		return nil, fmt.Errorf("migrating %s: %w", path, err)
 	}
-	return &Store{db: d, path: path}, nil
+	return &Store{db: d, path: path, wake: make(chan struct{})}, nil
 }
 
 func ensureParent(path string) error {
@@ -90,6 +92,31 @@ func (s *Store) WithTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 // LockBus serializes event_log inserts so seq is gapless-in-commit-order.
 func (s *Store) LockBus()   { s.mu.Lock() }
 func (s *Store) UnlockBus() { s.mu.Unlock() }
+
+// NotifyBus wakes SSE/alert waiters after a committed append.
+func (s *Store) NotifyBus() {
+	s.wakeMu.Lock()
+	close(s.wake)
+	s.wake = make(chan struct{})
+	s.wakeMu.Unlock()
+}
+
+// BusWake returns a channel that closes on the next bus append.
+func (s *Store) BusWake() <-chan struct{} {
+	s.wakeMu.Lock()
+	ch := s.wake
+	s.wakeMu.Unlock()
+	return ch
+}
+
+// ParseTS parses RFC3339Nano then RFC3339. Always UTC. Zero on failure.
+func ParseTS(s string) time.Time {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		t, _ = time.Parse(time.RFC3339, s)
+	}
+	return t.UTC()
+}
 
 func migrate(d *sql.DB) error {
 	if _, err := d.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (

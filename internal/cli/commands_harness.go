@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -121,9 +120,7 @@ func runHarnessList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	headers := []string{"Name", "Present", "Home", "Bin", "Mode", "Status"}
@@ -198,9 +195,7 @@ func runHarnessAuthStatus(_ context.Context, c *cli.Command) error {
 		}
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(rows)
+		return encodeJSON(c, rows)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"Tool", "Mode", "Status", "Expires", "Detail", "Hint"})

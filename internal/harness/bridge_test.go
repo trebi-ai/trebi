@@ -13,8 +13,7 @@ import (
 
 func TestResolveInherit_DefaultsAndOverrides(t *testing.T) {
 	t.Parallel()
-	def := ResourceDef{Key: "skills", DefaultInherit: true}
-	if !ResolveInherit("claude", "skills", nil, def) {
+	if !ResolveInherit("claude", "skills", nil) {
 		t.Fatal("default inherit")
 	}
 	falseV := false
@@ -23,7 +22,7 @@ func TestResolveInherit_DefaultsAndOverrides(t *testing.T) {
 			Bridge: &config.BridgeConfig{Inherit: &falseV},
 		},
 	}
-	if ResolveInherit("claude", "skills", cfg, def) {
+	if ResolveInherit("claude", "skills", cfg) {
 		t.Fatal("global inherit false")
 	}
 	cfg = &config.Config{
@@ -36,11 +35,10 @@ func TestResolveInherit_DefaultsAndOverrides(t *testing.T) {
 			},
 		},
 	}
-	if !ResolveInherit("claude", "skills", cfg, def) {
+	if !ResolveInherit("claude", "skills", cfg) {
 		t.Fatal("skills inherit")
 	}
-	mem := ResourceDef{Key: "user_memory", DefaultInherit: true}
-	if ResolveInherit("claude", "user_memory", cfg, mem) {
+	if ResolveInherit("claude", "user_memory", cfg) {
 		t.Fatal("user_memory false")
 	}
 	// never wins even if tool inherit true
@@ -51,8 +49,7 @@ func TestResolveInherit_DefaultsAndOverrides(t *testing.T) {
 			Claude: &config.ToolPin{Bridge: &config.BridgeConfig{Inherit: &trueV}},
 		},
 	}
-	mcp := ResourceDef{Key: "mcp", DefaultInherit: true}
-	if ResolveInherit("claude", "mcp", cfg, mcp) {
+	if ResolveInherit("claude", "mcp", cfg) {
 		t.Fatal("never should force false")
 	}
 	// only allowlist
@@ -61,15 +58,14 @@ func TestResolveInherit_DefaultsAndOverrides(t *testing.T) {
 			Bridge: &config.BridgeConfig{Only: []string{"skills"}},
 		},
 	}
-	if !ResolveInherit("claude", "skills", cfg, def) {
+	if !ResolveInherit("claude", "skills", cfg) {
 		t.Fatal("only skills")
 	}
-	if ResolveInherit("claude", "mcp", cfg, mcp) {
+	if ResolveInherit("claude", "mcp", cfg) {
 		t.Fatal("mcp not in only")
 	}
 	// keybindings default false
-	kb := ResourceDef{Key: "keybindings", DefaultInherit: false}
-	if ResolveInherit("claude", "keybindings", &config.Config{}, kb) {
+	if ResolveInherit("claude", "keybindings", &config.Config{}) {
 		t.Fatal("keybindings default off")
 	}
 }

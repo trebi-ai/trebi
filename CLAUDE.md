@@ -357,10 +357,14 @@ Every service sets `log` in `New` with `slog.Default().With("source", "<service>
 New code must pass:
 
 ```bash
+# On a branch (only files changed vs main):
 golangci-lint run --new-from-merge-base=main ./...
+
+# On main, or in CI (the merge-base flag lints nothing when HEAD is main):
+golangci-lint run ./...
 ```
 
-See `.golangci.yaml`.
+See `.golangci.yaml`. CI runs `go test ./...` and `golangci-lint run ./...` on every push.
 
 - Format with the project formatters (`gofmt` / `goimports`). Do not hand-format imports.
 - After edits, run the linter on the packages you touched.

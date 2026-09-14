@@ -182,18 +182,32 @@ func (s *Service) Send(ctx context.Context, convID string, opts SendOpts) (*Send
 
 // IngestAssistantTurns persists new assistant turns. Unique (run_id, turn_index) is idempotent.
 func (s *Service) IngestAssistantTurns(ctx context.Context, runID, convID string, turns []IncomingTurn) (int, error) {
+	return s.IngestAssistantTurnsAt(ctx, runID, convID, 0, turns)
+}
+
+// IngestAssistantTurnsAt is IngestAssistantTurns with turn_index = from+i.
+// from is the count of previously consumed transcript turns (all roles).
+func (s *Service) IngestAssistantTurnsAt(ctx context.Context, runID, convID string, from int, turns []IncomingTurn) (int, error) {
 	if runID == "" || convID == "" {
 		return 0, nil
 	}
 	if _, err := s.Get(ctx, convID); err != nil {
 		return 0, err
 	}
+	maxIdx := -1
+	_ = s.st.DB().QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(turn_index), -1) FROM conversation_messages WHERE run_id=? AND turn_index IS NOT NULL`,
+		runID).Scan(&maxIdx)
 	n := 0
 	for i, t := range turns {
+		idx := from + i
+		if idx <= maxIdx {
+			continue
+		}
 		if t.Role != RoleAssistant || strings.TrimSpace(t.Text) == "" {
 			continue
 		}
-		ok, err := s.insertAssistantTurn(ctx, convID, runID, i, t.Text)
+		ok, err := s.insertAssistantTurn(ctx, convID, runID, idx, t.Text)
 		if err != nil {
 			return n, err
 		}
@@ -337,33 +351,27 @@ func (s *Service) assistantJob(ctx context.Context, wsID string) (string, error)
 }
 
 func (s *Service) insertAssistantTurn(ctx context.Context, convID, runID string, turnIndex int, text string) (bool, error) {
-	var existing string
-	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT id FROM conversation_messages WHERE run_id=? AND turn_index=?`, runID, turnIndex).Scan(&existing)
-	if err == nil {
-		return false, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
 	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
 	id := ulid.Make().String()
+	res, err := s.st.DB().ExecContext(ctx, `INSERT INTO conversation_messages
+		(id, conversation_id, role, text, run_id, turn_index, created_at)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT DO NOTHING`,
+		id, convID, RoleAssistant, text, runID, turnIndex, nowStr)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return false, nil
+	}
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`INSERT INTO conversation_messages
-			(id, conversation_id, role, text, run_id, turn_index, created_at)
-			VALUES (?,?,?,?,?,?,?)`,
-			id, convID, RoleAssistant, text, runID, turnIndex, nowStr); err != nil {
-			return err
-		}
 		_, err := tx.Exec(`UPDATE conversations SET last_activity_at=?, updated_at=?, revision=revision+1 WHERE id=?`,
 			nowStr, nowStr, convID)
 		return err
 	}, store.BusEvent{
 		Topic: "conversation.updated", Entity: "conversation", EntityID: convID, Action: "updated",
 	})
-	if uniqueViolation(err) {
-		return false, nil
-	}
 	if err != nil {
 		return false, err
 	}

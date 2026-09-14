@@ -61,6 +61,9 @@ func (s *Store) Append(ctx context.Context, ev BusEvent) (int64, error) {
 		seq, err = AppendInTx(tx, ev)
 		return err
 	})
+	if err == nil {
+		s.NotifyBus()
+	}
 	return seq, err
 }
 
@@ -77,6 +80,9 @@ func (s *Store) AppendEntity(ctx context.Context, write func(tx *sql.Tx) error, 
 		seq, err = AppendInTx(tx, ev)
 		return err
 	})
+	if err == nil {
+		s.NotifyBus()
+	}
 	return seq, err
 }
 
@@ -151,19 +157,6 @@ func (s *Store) ListBusWith(ctx context.Context, opts ListBusOpts) ([]StreamEven
 func (s *Store) OldestSeq(ctx context.Context) (int64, error) {
 	var v sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `SELECT MIN(seq) FROM event_log`).Scan(&v)
-	if err != nil {
-		return 0, err
-	}
-	if !v.Valid {
-		return 0, nil
-	}
-	return v.Int64, nil
-}
-
-// NewestSeq returns the maximum seq (0 if empty).
-func (s *Store) NewestSeq(ctx context.Context) (int64, error) {
-	var v sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT MAX(seq) FROM event_log`).Scan(&v)
 	if err != nil {
 		return 0, err
 	}
@@ -365,35 +358,35 @@ func BusTopics() []string {
 	return out
 }
 
+// eventByName indexes AllEvents for O(1) IsBusTopic / IsRegistered.
+var eventByName = func() map[string]EventMeta { //nolint:gochecknoglobals // static registry index, never mutated
+	events := AllEvents()
+	m := make(map[string]EventMeta, len(events))
+	for _, e := range events {
+		m[e.Name] = e
+	}
+	return m
+}()
+
 // IsRegistered reports whether name is in the registry (or the synthetic reset).
 func IsRegistered(name string) bool {
 	if name == TopicSystemReset {
 		return true
 	}
-	for _, e := range AllEvents() {
-		if e.Name == name {
-			return true
-		}
-	}
-	return false
+	_, ok := eventByName[name]
+	return ok
 }
 
 // IsBusTopic reports whether name may be written to event_log (not system.reset).
 func IsBusTopic(name string) bool {
-	for _, e := range AllEvents() {
-		if e.Name == name && e.Bus {
-			return true
-		}
-	}
-	return false
+	e, ok := eventByName[name]
+	return ok && e.Bus
 }
 
-// EventSet is a set of registered names for O(1) lookup.
-func EventSet() map[string]EventMeta {
-	events := AllEvents()
-	m := make(map[string]EventMeta, len(events))
-	for _, e := range events {
-		m[e.Name] = e
+func eventSet() map[string]EventMeta {
+	m := make(map[string]EventMeta, len(eventByName))
+	for k, v := range eventByName {
+		m[k] = v
 	}
 	return m
 }

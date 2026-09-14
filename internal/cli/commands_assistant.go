@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -36,9 +35,7 @@ func assistantCommand() *cli.Command {
 					if err := client.GetJSON(request.BuildAssistantGetPath(id), &body); err != nil {
 						return err
 					}
-					enc := json.NewEncoder(outWriter(c))
-					enc.SetIndent("", "  ")
-					return enc.Encode(body)
+					return encodeJSON(c, body)
 				},
 			},
 			{
@@ -120,48 +117,7 @@ func assistantCommand() *cli.Command {
 				Usage:  "interactive assistant chat (POST + SSE refetch)",
 				Action: runAssistantChat,
 			},
-			{
-				Name:  "memory",
-				Usage: "assistant MEMORY.md ledger",
-				Commands: []*cli.Command{
-					{
-						Name:   "show",
-						Usage:  "print MEMORY.md",
-						Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-						Action: runAssistantMemory,
-					},
-					{
-						Name:  "add",
-						Usage: "append a ledger entry",
-						Flags: []cli.Flag{
-							&cli.StringFlag{Name: "text", Usage: "entry text", Required: true},
-							&cli.StringFlag{Name: "date", Usage: "YYYY-MM-DD (default today)"},
-							ifMatchFlag(),
-						},
-						Action: runAssistantMemoryAdd,
-					},
-					{
-						Name:      "delete",
-						Aliases:   []string{"remove"},
-						Usage:     "delete a ledger entry",
-						ArgsUsage: "<entry-id>",
-						Flags:     []cli.Flag{ifMatchFlag()},
-						Action:    runAssistantMemoryRemove,
-					},
-					{
-						Name:   "set",
-						Usage:  "replace MEMORY.md (--file or stdin)",
-						Flags:  []cli.Flag{&cli.StringFlag{Name: "file", Usage: "path to MEMORY.md"}, ifMatchFlag()},
-						Action: runAssistantMemorySet,
-					},
-					{
-						Name:   "clear",
-						Usage:  "delete MEMORY.md (destroys the ledger)",
-						Flags:  []cli.Flag{forceFlag("required; destroys the ledger"), ifMatchFlag()},
-						Action: runAssistantMemoryClear,
-					},
-				},
-			},
+			memorySubcommands(assistantMemoryOwner()),
 			{
 				Name:  "history",
 				Usage: "list assistant runs (shortcut for runs list --kind assistant)",
@@ -181,90 +137,34 @@ func assistantCommand() *cli.Command {
 	}
 }
 
-func runAssistantMemory(_ context.Context, c *cli.Command) error {
-	client, err := clientFor(c)
-	if err != nil {
-		return err
+func assistantMemoryOwner() memoryOwner {
+	return memoryOwner{
+		noun: "assistant",
+		resolve: func(c *cli.Command) (*APIClient, string, string, error) {
+			client, err := clientFor(c)
+			if err != nil {
+				return nil, "", "", err
+			}
+			wsID, err := resolveWorkspaceID(c, client)
+			if err != nil {
+				return nil, "", "", err
+			}
+			return client, "", wsID, nil
+		},
+		getPath: func(_, ws string) string { return request.BuildAssistantMemoryGetPath(ws) },
+		put: func(_, ws, content, ifMatch string) request.HTTPRequest {
+			return request.BuildAssistantMemoryPut(ws, content, ifMatch)
+		},
+		add: func(_, ws, date, text, ifMatch string) request.HTTPRequest {
+			return request.BuildAssistantMemoryEntryAdd(ws, date, text, ifMatch)
+		},
+		del: func(_, ws, entryID, ifMatch string) request.HTTPRequest {
+			return request.BuildAssistantMemoryEntryDelete(ws, entryID, ifMatch)
+		},
+		clear: func(_, ws, ifMatch string, confirm bool) request.HTTPRequest {
+			return request.BuildAssistantMemoryClear(ws, ifMatch, confirm)
+		},
 	}
-	wsID, err := resolveWorkspaceID(c, client)
-	if err != nil {
-		return err
-	}
-	var body map[string]any
-	if err := client.GetJSON(request.BuildAssistantMemoryGetPath(wsID), &body); err != nil {
-		return err
-	}
-	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
-	}
-	fmt.Fprint(outWriter(c), mapStr(body, "content"))
-	return nil
-}
-
-func runAssistantMemoryAdd(_ context.Context, c *cli.Command) error {
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	wsID, err := resolveWorkspaceID(c, client)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildAssistantMemoryEntryAdd(wsID, c.String("date"), c.String("text"), c.String("if-match")), nil)
-}
-
-func runAssistantMemoryRemove(_ context.Context, c *cli.Command) error {
-	eid := c.Args().Get(0)
-	if eid == "" {
-		return fmt.Errorf("usage: trebi assistant memory remove <entry-id>")
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	wsID, err := resolveWorkspaceID(c, client)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildAssistantMemoryEntryDelete(wsID, eid, c.String("if-match")), nil)
-}
-
-func runAssistantMemorySet(_ context.Context, c *cli.Command) error {
-	content, err := readFileOrStdin(c.String("file"))
-	if err != nil {
-		return err
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	wsID, err := resolveWorkspaceID(c, client)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildAssistantMemoryPut(wsID, content, c.String("if-match")), nil)
-}
-
-func runAssistantMemoryClear(_ context.Context, c *cli.Command) error {
-	confirm, err := confirmed(c, "destroys the assistant memory ledger")
-	if err != nil {
-		return err
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	wsID, err := resolveWorkspaceID(c, client)
-	if err != nil {
-		return err
-	}
-	if err := client.DoHTTP(request.BuildAssistantMemoryClear(wsID, c.String("if-match"), confirm), nil); err != nil {
-		return err
-	}
-	fmt.Fprintf(outWriter(c), "cleared assistant memory for %s\n", wsID)
-	return nil
 }
 
 func runAssistantPatch(_ context.Context, c *cli.Command) error {
@@ -292,35 +192,7 @@ func runAssistantWake(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	inputs, err := parseKeyValues(c.StringSlice("input"))
-	if err != nil {
-		return err
-	}
-	spec := request.RunSpec{
-		Workspace:      wsID,
-		Prompt:         c.String("prompt"),
-		ExtraPrompt:    c.String("extra-prompt"),
-		Inputs:         inputs,
-		Harness:        c.String("harness"),
-		ConversationID: c.String("conversation"),
-		DryRun:         c.Bool("test"),
-		WaitMS:         c.Int("wait"),
-	}
-	var out map[string]any
-	if err := client.DoHTTP(spec.BuildWake(), &out); err != nil {
-		return err
-	}
-	if c.Bool("test") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
-	}
-	runID := mapStr(out, "id")
-	fmt.Fprintf(outWriter(c), "run %v status=%v kind=assistant\n", runID, out["status"])
-	if c.Bool("attach") && runID != "" {
-		return attachAfterLaunch(ctx, c, client, out)
-	}
-	return nil
+	return launchAndMaybeAttach(ctx, c, client, request.RunSpec{Workspace: wsID}, "assistant", request.RunSpec.BuildWake)
 }
 
 func runAssistantHistory(_ context.Context, c *cli.Command) error {
@@ -361,9 +233,7 @@ func runAssistantHistory(_ context.Context, c *cli.Command) error {
 		}
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(body)
+		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
 	tbl := newTable(w, []string{"ID", "Job", "Kind", "Status", "Harness", "Started", "Reason", "Conversation"})
@@ -402,9 +272,7 @@ func runAssistantSay(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		return encodeJSON(c, out)
 	}
 	fmt.Fprintf(outWriter(c), "delivery=%s conversation=%s\n", mapStr(out, "delivery"), mapStr(out, "conversation_id"))
 	return nil

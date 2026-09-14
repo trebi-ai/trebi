@@ -26,8 +26,8 @@ func TestDetectTool(t *testing.T) {
 		{"unknown-tool", ""},
 	}
 	for _, c := range cases {
-		if got := DetectTool(c.command); got != c.want {
-			t.Errorf("DetectTool(%q) = %q, want %q", c.command, got, c.want)
+		if got := detectTool(c.command); got != c.want {
+			t.Errorf("detectTool(%q) = %q, want %q", c.command, got, c.want)
 		}
 	}
 }

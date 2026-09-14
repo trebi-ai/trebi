@@ -33,11 +33,13 @@ func EvalMatch(ctx context.Context, match, extract string, event any) EvalResult
 	go func() {
 		ch <- result{r: evalMatchOn(vm, match, extract, event)}
 	}()
+	timer := time.NewTimer(jsStageTimeout)
+	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		vm.Interrupt("cancelled")
 		return EvalResult{Error: "js cancelled"}
-	case <-time.After(jsStageTimeout):
+	case <-timer.C:
 		vm.Interrupt("timeout")
 		return EvalResult{Error: "js stage timeout"}
 	case res := <-ch:

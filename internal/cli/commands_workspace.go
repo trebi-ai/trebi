@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -320,9 +319,7 @@ func runWorkspaceList(_ context.Context, c *cli.Command) error {
 	rows = append(rows, linkedWorkspaceRows(sticky, linked)...)
 
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{"workspaces": rows})
+		return encodeJSON(c, map[string]any{"workspaces": rows})
 	}
 	if len(rows) == 0 {
 		fmt.Fprintln(outWriter(c), "(no workspaces; start local daemon or: trebi workspace add --url …)")
@@ -585,9 +582,7 @@ func runWorkspaceCurrent(_ context.Context, c *cli.Command) error {
 		return nil
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(st)
+		return encodeJSON(c, st)
 	}
 	origin := "local"
 	if st.IsRemote() {

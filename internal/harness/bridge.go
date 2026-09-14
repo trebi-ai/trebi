@@ -37,9 +37,8 @@ const (
 
 // ResourceDef is one catalog entry for a tool.
 type ResourceDef struct {
-	Key            string
-	Kind           BridgeKind
-	DefaultInherit bool
+	Key  string
+	Kind BridgeKind
 	// UserRel is path under user home (e.g. ".claude/skills").
 	UserRel string
 	// HarnessRel is path under harness dir (e.g. "skills").
@@ -107,8 +106,7 @@ func (r Roots) withDefaults() Roots {
 
 // ResolveInherit returns whether resource key should inherit for tool.
 // Policy lives in config.ResolveResourceInherit (single source of truth).
-func ResolveInherit(tool, key string, cfg *config.Config, def ResourceDef) bool {
-	_ = def // catalog DefaultInherit kept for docs; resolve uses KnownBridgeResources defaults
+func ResolveInherit(tool, key string, cfg *config.Config) bool {
 	return config.ResolveResourceInherit(tool, key, cfg)
 }
 
@@ -145,7 +143,7 @@ func BridgeStatusRoots(tool string, cfg *config.Config, roots Roots) []BridgeSta
 		}
 		harnessDir := filepath.Join(roots.HarnessBase, t)
 		for _, def := range Catalog(t) {
-			inherit := ResolveInherit(t, def.Key, cfg, def)
+			inherit := ResolveInherit(t, def.Key, cfg)
 			pol := "off"
 			if inherit {
 				pol = "inherit"
@@ -217,7 +215,7 @@ func ensureBridges(tool string, cfg *config.Config, roots Roots, opts EnsureOpts
 
 	var errs []error
 	for _, def := range defs {
-		inherit := ResolveInherit(tool, def.Key, cfg, def)
+		inherit := ResolveInherit(tool, def.Key, cfg)
 		if err := def.apply(tool, inherit, roots.UserHome, harnessDir, opts.Force); err != nil {
 			// No owning struct; stamp source inline (documented Phase 4.3 exception).
 			slog.Warn("bridge", "source", "harness", "tool", tool, "resource", def.Key, "error", err)
@@ -244,11 +242,11 @@ func claudeSettingsModes(cfg *config.Config, defs []ResourceDef) (settingsInheri
 	for _, d := range defs {
 		switch d.Key {
 		case "settings_prefs":
-			settingsInherit = ResolveInherit("claude", d.Key, cfg, d)
+			settingsInherit = ResolveInherit("claude", d.Key, cfg)
 		case "plugin_enablement":
-			pluginEn = ResolveInherit("claude", d.Key, cfg, d)
+			pluginEn = ResolveInherit("claude", d.Key, cfg)
 		case "status_line":
-			statusLine = ResolveInherit("claude", d.Key, cfg, d)
+			statusLine = ResolveInherit("claude", d.Key, cfg)
 		}
 	}
 	return settingsInherit, pluginEn, statusLine
@@ -753,53 +751,53 @@ func applyOpenCodePlugins(inherit bool, userHome, harnessDir string, force bool)
 
 func claudeCatalog() []ResourceDef {
 	return []ResourceDef{
-		{Key: "skills", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".claude/skills", HarnessRel: "skills"},
-		{Key: "mcp", Kind: KindMCPClaude, DefaultInherit: true},
-		{Key: "plugins", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".claude/plugins", HarnessRel: "plugins"},
-		{Key: "plugin_enablement", Kind: KindNoop, DefaultInherit: true}, // folded into settings_prefs
-		{Key: "user_memory", Kind: KindSymlinkFile, DefaultInherit: true, UserRel: ".claude/CLAUDE.md", HarnessRel: "CLAUDE.md"},
-		{Key: "settings_prefs", Kind: KindSettingsPrefs, DefaultInherit: true, UserRel: ".claude/settings.json", HarnessRel: "settings.json"},
-		{Key: "settings_local", Kind: KindSymlinkFile, DefaultInherit: true, UserRel: ".claude/settings.local.json", HarnessRel: "settings.local.json"},
-		{Key: "commands", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".claude/commands", HarnessRel: "commands"},
-		{Key: "agents", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".claude/agents", HarnessRel: "agents"},
-		{Key: "rules", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".claude/rules", HarnessRel: "rules"},
-		{Key: "keybindings", Kind: KindSymlinkFile, DefaultInherit: false, UserRel: ".claude/keybindings.json", HarnessRel: "keybindings.json"},
-		{Key: "status_line", Kind: KindNoop, DefaultInherit: false},
+		{Key: "skills", Kind: KindSymlinkDir, UserRel: ".claude/skills", HarnessRel: "skills"},
+		{Key: "mcp", Kind: KindMCPClaude},
+		{Key: "plugins", Kind: KindSymlinkDir, UserRel: ".claude/plugins", HarnessRel: "plugins"},
+		{Key: "plugin_enablement", Kind: KindNoop}, // folded into settings_prefs
+		{Key: "user_memory", Kind: KindSymlinkFile, UserRel: ".claude/CLAUDE.md", HarnessRel: "CLAUDE.md"},
+		{Key: "settings_prefs", Kind: KindSettingsPrefs, UserRel: ".claude/settings.json", HarnessRel: "settings.json"},
+		{Key: "settings_local", Kind: KindSymlinkFile, UserRel: ".claude/settings.local.json", HarnessRel: "settings.local.json"},
+		{Key: "commands", Kind: KindSymlinkDir, UserRel: ".claude/commands", HarnessRel: "commands"},
+		{Key: "agents", Kind: KindSymlinkDir, UserRel: ".claude/agents", HarnessRel: "agents"},
+		{Key: "rules", Kind: KindSymlinkDir, UserRel: ".claude/rules", HarnessRel: "rules"},
+		{Key: "keybindings", Kind: KindSymlinkFile, UserRel: ".claude/keybindings.json", HarnessRel: "keybindings.json"},
+		{Key: "status_line", Kind: KindNoop},
 	}
 }
 
 func grokCatalog() []ResourceDef {
 	return []ResourceDef{
-		{Key: "skills", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".grok/skills", HarnessRel: "skills"},
-		{Key: "claude_skills_compat", Kind: KindNoop, DefaultInherit: true},
-		{Key: "config_prefs", Kind: KindConfigTOMLPrefs, DefaultInherit: true, UserRel: ".grok/config.toml", HarnessRel: "config.toml"},
-		{Key: "marketplace", Kind: KindNoop, DefaultInherit: false},
-		{Key: "plugins", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".grok/installed-plugins", HarnessRel: "installed-plugins"},
+		{Key: "skills", Kind: KindSymlinkDir, UserRel: ".grok/skills", HarnessRel: "skills"},
+		{Key: "claude_skills_compat", Kind: KindNoop},
+		{Key: "config_prefs", Kind: KindConfigTOMLPrefs, UserRel: ".grok/config.toml", HarnessRel: "config.toml"},
+		{Key: "marketplace", Kind: KindNoop},
+		{Key: "plugins", Kind: KindSymlinkDir, UserRel: ".grok/installed-plugins", HarnessRel: "installed-plugins"},
 	}
 }
 
 func codexCatalog() []ResourceDef {
 	return []ResourceDef{
-		{Key: "config_prefs", Kind: KindConfigTOMLPrefs, DefaultInherit: true, UserRel: ".codex/config.toml", HarnessRel: "config.toml"},
-		{Key: "skills", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".codex/skills", HarnessRel: "skills"},
-		{Key: "prompts", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".codex/prompts", HarnessRel: "prompts"},
-		{Key: "mcp", Kind: KindSymlinkFile, DefaultInherit: true, UserRel: ".codex/mcp.json", HarnessRel: "mcp.json"},
+		{Key: "config_prefs", Kind: KindConfigTOMLPrefs, UserRel: ".codex/config.toml", HarnessRel: "config.toml"},
+		{Key: "skills", Kind: KindSymlinkDir, UserRel: ".codex/skills", HarnessRel: "skills"},
+		{Key: "prompts", Kind: KindSymlinkDir, UserRel: ".codex/prompts", HarnessRel: "prompts"},
+		{Key: "mcp", Kind: KindSymlinkFile, UserRel: ".codex/mcp.json", HarnessRel: "mcp.json"},
 	}
 }
 
 func opencodeCatalog() []ResourceDef {
 	return []ResourceDef{
-		{Key: "plugins", Kind: KindOpenCodePlugins, DefaultInherit: true, UserRel: ".config/opencode/plugins", HarnessRel: "plugins"},
-		{Key: "config", Kind: KindNoop, DefaultInherit: false}, // never full replace
-		{Key: "skills", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".config/opencode/skills", HarnessRel: "skills"},
+		{Key: "plugins", Kind: KindOpenCodePlugins, UserRel: ".config/opencode/plugins", HarnessRel: "plugins"},
+		{Key: "config", Kind: KindNoop}, // never full replace
+		{Key: "skills", Kind: KindSymlinkDir, UserRel: ".config/opencode/skills", HarnessRel: "skills"},
 	}
 }
 
 func copilotCatalog() []ResourceDef {
 	// Dormant until R6.
 	return []ResourceDef{
-		{Key: "settings", Kind: KindSymlinkFile, DefaultInherit: true, UserRel: ".copilot/settings.json", HarnessRel: "settings.json"},
-		{Key: "skills", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".copilot/skills", HarnessRel: "skills"},
+		{Key: "settings", Kind: KindSymlinkFile, UserRel: ".copilot/settings.json", HarnessRel: "settings.json"},
+		{Key: "skills", Kind: KindSymlinkDir, UserRel: ".copilot/skills", HarnessRel: "skills"},
 	}
 }
 
@@ -810,10 +808,10 @@ func cursorCatalog() []ResourceDef {
 	// Lifecycle hooks are merged into ~/.cursor/hooks.json by ensureCursorUserHooks
 	// (Cursor Agent CLI does not load hooks from CURSOR_CONFIG_DIR).
 	return []ResourceDef{
-		{Key: "mcp", Kind: KindSymlinkFile, DefaultInherit: true, UserRel: ".cursor/mcp.json", HarnessRel: "mcp.json"},
-		{Key: "rules", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".cursor/rules", HarnessRel: "rules"},
-		{Key: "skills", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".cursor/skills-cursor", HarnessRel: "skills-cursor"},
-		{Key: "cli_config_prefs", Kind: KindNoop, DefaultInherit: false},
+		{Key: "mcp", Kind: KindSymlinkFile, UserRel: ".cursor/mcp.json", HarnessRel: "mcp.json"},
+		{Key: "rules", Kind: KindSymlinkDir, UserRel: ".cursor/rules", HarnessRel: "rules"},
+		{Key: "skills", Kind: KindSymlinkDir, UserRel: ".cursor/skills-cursor", HarnessRel: "skills-cursor"},
+		{Key: "cli_config_prefs", Kind: KindNoop},
 	}
 }
 
@@ -824,11 +822,11 @@ func piCatalog() []ResourceDef {
 	// mcp is owned by tool_pi.ensurePiMcpConfig (merge user servers + host imports;
 	// pure symlink would block hostConfigDiscovery / imports).
 	return []ResourceDef{
-		{Key: "skills", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".pi/agent/skills", HarnessRel: "skills"},
-		{Key: "prompts", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".pi/agent/prompts", HarnessRel: "prompts"},
-		{Key: "themes", Kind: KindSymlinkDir, DefaultInherit: true, UserRel: ".pi/agent/themes", HarnessRel: "themes"},
-		{Key: "mcp", Kind: KindNoop, DefaultInherit: true, UserRel: ".pi/agent/mcp.json", HarnessRel: "mcp.json"},
-		{Key: "models", Kind: KindSymlinkFile, DefaultInherit: true, UserRel: ".pi/agent/models.json", HarnessRel: "models.json"},
-		{Key: "settings_prefs", Kind: KindNoop, DefaultInherit: false},
+		{Key: "skills", Kind: KindSymlinkDir, UserRel: ".pi/agent/skills", HarnessRel: "skills"},
+		{Key: "prompts", Kind: KindSymlinkDir, UserRel: ".pi/agent/prompts", HarnessRel: "prompts"},
+		{Key: "themes", Kind: KindSymlinkDir, UserRel: ".pi/agent/themes", HarnessRel: "themes"},
+		{Key: "mcp", Kind: KindNoop, UserRel: ".pi/agent/mcp.json", HarnessRel: "mcp.json"},
+		{Key: "models", Kind: KindSymlinkFile, UserRel: ".pi/agent/models.json", HarnessRel: "models.json"},
+		{Key: "settings_prefs", Kind: KindNoop},
 	}
 }

@@ -133,6 +133,17 @@ type Job struct {
 	Description      string
 }
 
+// LaunchDefaults is cwd, overlap policy, env, and session knobs for a run.
+type LaunchDefaults struct {
+	WorkingDir    string
+	IfRunning     string
+	Env           map[string]string
+	MaxDurationMS int64
+	IdleTimeoutMS int64
+	KeepAliveMS   int64
+	NudgeMS       int64
+}
+
 // ResolvedWorkingDir is working_dir, else the JOB.md directory.
 // Agents default to the workspace root (C.3): <ws>/agents/<name> → <ws>.
 func (j *Job) ResolvedWorkingDir() string {
@@ -190,6 +201,20 @@ func (j *Job) LaunchEnv() map[string]string {
 	return env
 }
 
+// LaunchDefaults returns the four-line launch seam (cwd / if_running / env / knobs).
+func (j *Job) LaunchDefaults() LaunchDefaults {
+	maxMS, idleMS, keepMS, nudgeMS := j.Session.KnobsMS()
+	return LaunchDefaults{
+		WorkingDir:    j.ResolvedWorkingDir(),
+		IfRunning:     j.Session.IfRunning,
+		Env:           j.LaunchEnv(),
+		MaxDurationMS: maxMS,
+		IdleTimeoutMS: idleMS,
+		KeepAliveMS:   keepMS,
+		NudgeMS:       nudgeMS,
+	}
+}
+
 // Trigger is a normalized trigger entry with family index.
 type Trigger struct {
 	Family  string // cron | every | event
@@ -227,54 +252,24 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	hash := hex.EncodeToString(sum[:8])
 
 	if err := rejectLegacyKeys(data); err != nil {
-		return &Job{
-			Name:       deriveName(filePath),
-			FilePath:   filePath,
-			Dir:        filepath.Dir(filePath),
-			ParseError: err.Error(),
-			Hash:       hash,
-			Kind:       kindFromPath(filePath),
-		}, err
+		return parseFail(filePath, hash, err)
 	}
 
 	var fm Frontmatter
 	body, err := frontmatter.Parse(bytes.NewReader(data), &fm, frontmatter.NewFormat("---", "---", yaml.Unmarshal))
 	if err != nil {
-		return &Job{
-			Name:       deriveName(filePath),
-			FilePath:   filePath,
-			Dir:        filepath.Dir(filePath),
-			ParseError: err.Error(),
-			Hash:       hash,
-			Kind:       kindFromPath(filePath),
-		}, fmt.Errorf("parsing frontmatter in %s: %w", filePath, err)
+		return parseFail(filePath, hash, fmt.Errorf("parsing frontmatter in %s: %w", filePath, err))
 	}
 
 	// session.timeout is legacy — detect raw.
 	if strings.Contains(string(data), "session:") && hasLegacySessionTimeout(data) {
-		err := fmt.Errorf("legacy key session.timeout: use session.idle_timeout")
-		return &Job{
-			Name:       deriveName(filePath),
-			FilePath:   filePath,
-			Dir:        filepath.Dir(filePath),
-			ParseError: err.Error(),
-			Hash:       hash,
-			Kind:       kindFromPath(filePath),
-		}, err
+		return parseFail(filePath, hash, fmt.Errorf("legacy key session.timeout: use session.idle_timeout"))
 	}
 
 	// An agent name: that differs from the folder basename is a validation
 	// error (C.2). The row stays indexed with parse_error.
 	if isAgentFile(filePath) && fm.Name != "" && fm.Name != filepath.Base(filepath.Dir(filePath)) {
-		err := fmt.Errorf("agent name %q must equal folder name %q", fm.Name, filepath.Base(filepath.Dir(filePath)))
-		return &Job{
-			Name:       deriveName(filePath),
-			FilePath:   filePath,
-			Dir:        filepath.Dir(filePath),
-			ParseError: err.Error(),
-			Hash:       hash,
-			Kind:       "agent",
-		}, err
+		return parseFail(filePath, hash, fmt.Errorf("agent name %q must equal folder name %q", fm.Name, filepath.Base(filepath.Dir(filePath))))
 	}
 
 	mem, err := resolveMemory(fm.Memory)
@@ -320,6 +315,17 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Description:      fm.Description,
 	}
 	return j, nil
+}
+
+func parseFail(path, hash string, err error) (*Job, error) {
+	return &Job{
+		Name:       deriveName(path),
+		FilePath:   path,
+		Dir:        filepath.Dir(path),
+		ParseError: err.Error(),
+		Hash:       hash,
+		Kind:       kindFromPath(path),
+	}, err
 }
 
 // ContentHash returns a short content hash for If-Match.

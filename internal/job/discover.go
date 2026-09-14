@@ -1,6 +1,8 @@
 package job
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -57,6 +59,71 @@ func Discover(workspacePath string, otherWorkspaceRoots ...string) (Discovery, e
 		return nil
 	})
 	return disc, err
+}
+
+// IndexFingerprint is a cheap mtime/size stamp of definition files in a workspace.
+func IndexFingerprint(workspacePath string, otherWorkspaceRoots ...string) (string, error) {
+	skipRoots := make(map[string]bool, len(otherWorkspaceRoots))
+	for _, r := range otherWorkspaceRoots {
+		if r != "" {
+			skipRoots[filepath.Clean(r)] = true
+		}
+	}
+	dv := &discovery{workspacePath: workspacePath, skipRoots: skipRoots, seenAgents: map[string]bool{}}
+	h := sha256.New()
+	err := filepath.WalkDir(workspacePath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if dv.skipDir(path, d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		base := d.Name()
+		if !strings.EqualFold(base, "JOB.md") && !strings.EqualFold(base, "TREBI.md") && !strings.EqualFold(base, "AGENT.md") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00%d\n", path, info.Size(), info.ModTime().UnixNano())
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// DiscoverPath parses one index-relevant file in a workspace. A missing file
+// returns (nil, nil). Non-definition files return (nil, nil).
+func DiscoverPath(workspacePath, filePath string, otherWorkspaceRoots ...string) (*Job, error) {
+	skipRoots := make(map[string]bool, len(otherWorkspaceRoots))
+	for _, r := range otherWorkspaceRoots {
+		if r != "" {
+			skipRoots[filepath.Clean(r)] = true
+		}
+	}
+	dv := &discovery{workspacePath: workspacePath, skipRoots: skipRoots, seenAgents: map[string]bool{}}
+	if _, err := os.Stat(filePath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	base := filepath.Base(filePath)
+	switch {
+	case strings.EqualFold(base, "JOB.md"):
+		return dv.job(filePath), nil
+	case strings.EqualFold(base, "TREBI.md") && filepath.Dir(filePath) == workspacePath:
+		return dv.assistant(filePath), nil
+	case strings.EqualFold(base, "AGENT.md"):
+		return dv.agent(filePath), nil
+	}
+	return nil, nil
 }
 
 // discovery holds the walk state for one workspace root.

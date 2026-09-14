@@ -75,9 +75,7 @@ func runRulesTest(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		return encodeJSON(c, out)
 	}
 	w := outWriter(c)
 	fmt.Fprintf(w, "matched=%v\n", out["matched"])
@@ -109,9 +107,7 @@ func runRulesFire(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if c.Bool("json") {
-		enc := json.NewEncoder(outWriter(c))
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		return encodeJSON(c, out)
 	}
 	fmt.Fprintf(outWriter(c), "outcome=%v\n", out["outcome"])
 	if qid := mapStr(out, "queue_id"); qid != "" {

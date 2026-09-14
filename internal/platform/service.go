@@ -287,24 +287,6 @@ func (s *Service) Status() (string, error) {
 	return FormatStatus(string(out), plistErr == nil), nil
 }
 
-// Install uses the default LaunchAgents directory.
-func Install(opts InstallOpts) error { return NewService("").Install(opts) }
-
-// Uninstall uses the default LaunchAgents directory.
-func Uninstall() error { return NewService("").Uninstall() }
-
-// Start uses the default LaunchAgents directory.
-func Start() error { return NewService("").Start() }
-
-// Stop uses the default LaunchAgents directory.
-func Stop() error { return NewService("").Stop() }
-
-// Restart uses the default LaunchAgents directory.
-func Restart() error { return NewService("").Restart() }
-
-// Status uses the default LaunchAgents directory.
-func Status() (string, error) { return NewService("").Status() }
-
 // FormatStatus builds the status line from launchctl list output and whether
 // the plist file is present. Exported for pure unit tests.
 func FormatStatus(launchctlList string, plistInstalled bool) string {

@@ -59,7 +59,7 @@ func TestComposeAssistantWake(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			svc, wsID, _ := wakeFixture(t, tc.files)
-			got, err := svc.ComposeAssistantWake(context.Background(), wsID, tc.opts)
+			got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{WorkspaceID: wsID, Kind: runs.KindAssistant}, tc.opts)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -140,7 +140,7 @@ func TestComposeWakeTruncatesHugeIndex(t *testing.T) {
 		files[fmt.Sprintf("job%03d/JOB.md", i)] = jobMD
 	}
 	svc, wsID, _ := wakeFixture(t, files)
-	got, err := svc.ComposeAssistantWake(context.Background(), wsID, runs.WakeOpts{})
+	got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{WorkspaceID: wsID, Kind: runs.KindAssistant}, runs.WakeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
