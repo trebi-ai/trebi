@@ -19,6 +19,7 @@ Three rules:
 1. Validate after you write a JOB.md (job.validate).
 2. Dry-run before the first launch of a job you wrote or edited (job.run with dry_run).
 3. Ask the user before a destructive action. Such an action answers "validation" with details.confirm_required and a message that names what it deletes; repeat the call with confirm: true once the user agrees.
+4. A job, agent, or assistant with memory keeps a structured MEMORY.md; read it with memory_show before you act, and append Log entries with memory_add as you work.
 
 Call system.guide with topic mcp-basics before your first workflow, and system.guides for the index. Always pass workspace explicitly on workspace-scoped calls.`
 

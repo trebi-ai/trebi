@@ -24,17 +24,6 @@ func (s *Server) routeAgents(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /v1/workspaces/{id}/agents/{name}", s.handleAgentPatch)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/agents/{name}", s.handleAgentDelete)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/wake", s.handleAgentWake)
-	mux.HandleFunc("GET /v1/workspaces/{id}/agents/{name}/memory", s.handleAgentMemoryGet)
-	mux.HandleFunc("PUT /v1/workspaces/{id}/agents/{name}/memory", s.handleAgentMemoryPut)
-	mux.HandleFunc("DELETE /v1/workspaces/{id}/agents/{name}/memory", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryDelete(w, r, memoryAgent)
-	})
-	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/memory/entries", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryEntriesPost(w, r, memoryAgent)
-	})
-	mux.HandleFunc("DELETE /v1/workspaces/{id}/agents/{name}/memory/entries/{eid}", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryEntriesDelete(w, r, memoryAgent)
-	})
 }
 
 func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
@@ -232,14 +221,6 @@ func (s *Server) handleAgentWake(w http.ResponseWriter, r *http.Request) {
 	s.createRun(w, r, body)
 }
 
-func (s *Server) handleAgentMemoryGet(w http.ResponseWriter, r *http.Request) {
-	s.handleMemoryFile(w, r, memoryAgent)
-}
-
-func (s *Server) handleAgentMemoryPut(w http.ResponseWriter, r *http.Request) {
-	s.handleMemoryFilePut(w, r, memoryAgent)
-}
-
 // agentPayload is the agent wire shape: the job show fields plus memory,
 // disabled, and the owned job list (Part H).
 type agentPayload struct {
@@ -369,14 +350,7 @@ func agentMemoryOn(md string) bool {
 	return err == nil && j != nil && j.Memory
 }
 
-// seedAgentMemory writes the ledger header file at create time (C.4).
+// seedAgentMemory writes the MEMORY.md skeleton at create time (C.4).
 func (s *Server) seedAgentMemory(ctx context.Context, ws *workspaces.Workspace, name string) {
-	rel := "agents/" + name + "/MEMORY.md"
-	if _, err := s.files.Stat(ctx, ws.Path, rel); err == nil {
-		return
-	}
-	body := "# Memory\n\nDated notes follow below.\n"
-	if _, _, err := s.files.Write(ctx, ws.Path, rel, []byte(body), ""); err != nil {
-		s.log.Warn("seed agent memory", "agent", name, "error", err)
-	}
+	s.seedMemory(ctx, ws, "agents/"+name+"/MEMORY.md")
 }

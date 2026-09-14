@@ -8,10 +8,28 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
+
+// memoryMD is a valid v1 MEMORY.md fixture: marker, H1, four sections.
+const memoryMD = `<!-- trebi memory v1. Keep these four sections in this order. Do not add other "## " headings. -->
+# Memory
+
+## Context
+Durable facts about the workspace.
+
+## State
+Watching CI.
+
+## Lessons
+- [2026-09-01 09:00] Prune stale branches weekly.
+
+## Log
+- [2026-09-02 08:00] Ran the weekly digest.
+`
 
 func TestComposeAssistantWake(t *testing.T) {
 	t.Parallel()
@@ -23,9 +41,10 @@ func TestComposeAssistantWake(t *testing.T) {
 		notWant []string
 	}{
 		{
-			name:  "empty workspace",
-			files: map[string]string{"TREBI.md": "---\nharness: claude\n---\n\nYou are the assistant.\n"},
-			want:  []string{"# Instructions", "You are the assistant.", "# Workspace jobs", "(none)", "# Agents", "(none)", "# Memory", "(empty)"},
+			name:    "empty workspace",
+			files:   map[string]string{"TREBI.md": "---\nharness: claude\n---\n\nYou are the assistant.\n"},
+			want:    []string{"# Instructions", "You are the assistant.", "# Workspace jobs", "(none)", "# Agents", "(none)"},
+			notWant: []string{"# Memory"},
 		},
 		{
 			name: "portfolio split",
@@ -34,31 +53,43 @@ func TestComposeAssistantWake(t *testing.T) {
 				"alpha/JOB.md":           jobMD,
 				"agents/cmo/AGENT.md":    "---\nharness: codex\n---\n\nLead growth.\n",
 				"agents/cmo/duty/JOB.md": jobMD,
-				"MEMORY.md":              "# ledger\nnote",
+				"MEMORY.md":              memoryMD,
 			},
-			opts: runs.WakeOpts{Recap: "user: hi", Message: "focus on CI"},
+			opts: runs.WakeOpts{Recap: "user: hi", Message: "focus on CI", Memory: wakeMemoryLaunch("", "MEMORY.md")},
 			want: []string{
 				"# Instructions", "Run the workspace.",
 				"# Workspace jobs", "- alpha kind=job harness=claude active",
 				"# Agents", "- agents/cmo kind=agent harness=codex active children=1",
-				"# Memory", "note",
+				"# Memory", "## Context", "Durable facts about the workspace.",
+				"## State", "Watching CI.",
+				"- [2026-09-01 09:00] Prune stale branches weekly.",
+				"- [2026-09-02 08:00] Ran the weekly digest.",
 				"# Conversation recap", "user: hi",
 				"# Current message", "focus on CI",
 			},
 			notWant: []string{"kind=assistant", "- agents/cmo/duty kind=job"},
 		},
 		{
+			name:  "memory file missing renders placeholders",
+			files: map[string]string{"TREBI.md": "---\nharness: claude\n---\n\nRun.\n"},
+			opts:  runs.WakeOpts{Memory: wakeMemoryLaunch("", "MEMORY.md")},
+			want:  []string{"# Memory", "## Context", "(empty)", "## Log"},
+		},
+		{
 			name:    "body override",
 			files:   map[string]string{"TREBI.md": "---\nharness: claude\n---\n\nFile body.\n"},
 			opts:    runs.WakeOpts{Body: "Expanded body."},
 			want:    []string{"# Instructions", "Expanded body."},
-			notWant: []string{"File body."},
+			notWant: []string{"File body.", "# Memory"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			svc, wsID, _ := wakeFixture(t, tc.files)
+			svc, wsID, wsPath := wakeFixture(t, tc.files)
+			if tc.opts.Memory != nil {
+				tc.opts.Memory.Root = wsPath
+			}
 			got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{WorkspaceID: wsID, Kind: runs.KindAssistant}, tc.opts)
 			if err != nil {
 				t.Fatal(err)
@@ -85,13 +116,14 @@ func TestComposeAgentWake(t *testing.T) {
 				"alpha/JOB.md":           jobMD,
 				"agents/cmo/AGENT.md":    "---\nharness: codex\n---\n\nLead growth from {{agent_dir}}.\n",
 				"agents/cmo/duty/JOB.md": jobMD,
-				"agents/cmo/MEMORY.md":   "grew 12 percent",
+				"agents/cmo/MEMORY.md":   memoryMD,
 			},
-			opts: runs.WakeOpts{Message: "check ads", Recap: "leak"},
+			opts: runs.WakeOpts{Message: "check ads", Recap: "leak", Memory: wakeMemoryLaunch("", "agents/cmo/MEMORY.md")},
 			want: []string{
 				"# Instructions", "Lead growth from {{agent_dir}}.",
 				"# Your jobs", "- agents/cmo/duty kind=job harness=claude active",
-				"# Memory", "grew 12 percent",
+				"# Memory", "## Context", "Durable facts about the workspace.",
+				"- [2026-09-02 08:00] Ran the weekly digest.",
 				"# Current message", "check ads",
 			},
 			notWant: []string{"# Conversation recap", "# Agents", "Workspace jobs", "- alpha kind=job"},
@@ -104,7 +136,7 @@ func TestComposeAgentWake(t *testing.T) {
 			},
 			opts:    runs.WakeOpts{Body: "Raw {{agent_dir}} body."},
 			want:    []string{"# Instructions", "Raw {{agent_dir}} body."},
-			notWant: []string{"File body."},
+			notWant: []string{"File body.", "# Memory"},
 		},
 		{
 			name: "inline agent_jobs",
@@ -113,13 +145,16 @@ func TestComposeAgentWake(t *testing.T) {
 				"agents/cmo/duty/JOB.md": jobMD,
 			},
 			want:    []string{"Duties:", "- agents/cmo/duty kind=job", "End."},
-			notWant: []string{"# Your jobs", "{{agent_jobs}}"},
+			notWant: []string{"# Your jobs", "{{agent_jobs}}", "# Memory"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			svc, wsID, wsPath := wakeFixture(t, tc.files)
+			if tc.opts.Memory != nil {
+				tc.opts.Memory.Root = wsPath
+			}
 			got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{
 				WorkspaceID: wsID, Kind: "agent", Name: "agents/cmo",
 			}, tc.opts)
@@ -168,6 +203,9 @@ func assertSectionOrder(t *testing.T, got string, keys ...string) {
 	pos := 0
 	for _, k := range keys {
 		i := strings.Index(got, k)
+		if i < 0 {
+			continue
+		}
 		if i < pos {
 			t.Fatalf("section order: %q at %d before %d\n%s", k, i, pos, got)
 		}
@@ -203,4 +241,12 @@ func wakeFixture(t *testing.T, files map[string]string) (*workspaces.Service, st
 		t.Fatal(err)
 	}
 	return svc, ws.ID, wsPath
+}
+
+// wakeMemoryLaunch builds the launch seam for a fixture workspace file.
+func wakeMemoryLaunch(wsPath, rel string) *runs.MemoryLaunch {
+	return &runs.MemoryLaunch{
+		Root: wsPath, Rel: rel,
+		Opt: memory.Options{MaxLogs: 100, RequireUpdate: true, InjectLogs: 20},
+	}
 }

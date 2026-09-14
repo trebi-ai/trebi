@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/secrets"
@@ -189,4 +190,117 @@ func TestContentHashStable(t *testing.T) {
 	if h1 != h2 || h1 == "" {
 		t.Fatalf("%s vs %s", h1, h2)
 	}
+}
+
+func TestParseMemoryFrontmatter(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		path    string
+		fm      string
+		enabled bool
+		maxLogs *int
+		require *bool
+		inject  *int
+	}{
+		{"true", "/ws/a/JOB.md", "memory: true", true, nil, nil, nil},
+		{"false", "/ws/a/JOB.md", "memory: false", false, nil, nil, nil},
+		{"absent job", "/ws/a/JOB.md", "", false, nil, nil, nil},
+		{"legacy string", "/ws/a/JOB.md", "memory: ledger", true, nil, nil, nil},
+		{"empty string", "/ws/a/JOB.md", `memory: ""`, false, nil, nil, nil},
+		{
+			"object", "/ws/a/JOB.md",
+			"memory:\n  max_logs: 60\n  require_update: false\n  inject_logs: 30",
+			true, ptrInt(60), ptrBool(false), ptrInt(30),
+		},
+		{"object empty", "/ws/a/JOB.md", "memory: {}", true, nil, nil, nil},
+		{"agent default", "/ws/agents/bot/AGENT.md", "", true, nil, nil, nil},
+		{"agent false", "/ws/agents/bot/AGENT.md", "memory: false", false, nil, nil, nil},
+		{"agent object", "/ws/agents/bot/AGENT.md", "memory:\n  max_logs: 5", true, ptrInt(5), nil, nil},
+	}
+	for _, tc := range cases {
+		doc := "---\n" + tc.fm + "\n---\nbody\n"
+		j, err := job.ParseBytes(tc.path, []byte(doc))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if j.Memory != tc.enabled || j.MemoryOpts.Enabled != tc.enabled {
+			t.Errorf("%s: enabled = %v / %+v", tc.name, j.Memory, j.MemoryOpts)
+		}
+		if !ptrEqInt(j.MemoryOpts.MaxLogs, tc.maxLogs) {
+			t.Errorf("%s: max_logs = %v, want %v", tc.name, j.MemoryOpts.MaxLogs, tc.maxLogs)
+		}
+		if !ptrEqBool(j.MemoryOpts.RequireUpdate, tc.require) {
+			t.Errorf("%s: require_update = %v, want %v", tc.name, j.MemoryOpts.RequireUpdate, tc.require)
+		}
+		if !ptrEqInt(j.MemoryOpts.InjectLogs, tc.inject) {
+			t.Errorf("%s: inject_logs = %v, want %v", tc.name, j.MemoryOpts.InjectLogs, tc.inject)
+		}
+	}
+}
+
+func TestParseMemoryErrors(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"unknown key":       "memory:\n  cap: 5",
+		"max_logs string":   "memory:\n  max_logs: many",
+		"inject float":      "memory:\n  inject_logs: 1.5",
+		"require as int":    "memory:\n  require_update: 1",
+		"memory as list":    "memory: [1, 2]",
+		"memory as int":     "memory: 3",
+		"require as string": "memory:\n  require_update: yes!",
+	}
+	for name, fm := range cases {
+		doc := "---\n" + fm + "\n---\nbody\n"
+		j, err := job.ParseBytes("/ws/a/JOB.md", []byte(doc))
+		if err == nil {
+			t.Errorf("%s: expected error", name)
+			continue
+		}
+		if j == nil || !strings.Contains(j.ParseError, "memory") {
+			t.Errorf("%s: ParseError = %q", name, parseErrOf(j))
+		}
+	}
+}
+
+func TestMemoryConfigResolve(t *testing.T) {
+	t.Parallel()
+	def := config.MemoryDefaults{MaxLogs: 100, RequireUpdate: true, InjectLogs: 20}
+
+	// Nil pointers take config defaults.
+	opt := job.MemoryConfig{}.Resolve(def)
+	if opt.MaxLogs != 100 || !opt.RequireUpdate || opt.InjectLogs != 20 {
+		t.Fatalf("defaults not filled: %+v", opt)
+	}
+
+	// Explicit values win, including zero (no cap) and false.
+	zero, noUpdate, none := 0, false, 0
+	opt = job.MemoryConfig{MaxLogs: &zero, RequireUpdate: &noUpdate, InjectLogs: &none}.Resolve(def)
+	if opt.MaxLogs != 0 || opt.RequireUpdate || opt.InjectLogs != 0 {
+		t.Fatalf("explicit zeros not kept: %+v", opt)
+	}
+}
+
+func ptrInt(n int) *int    { return &n }
+func ptrBool(b bool) *bool { return &b }
+
+func ptrEqInt(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func ptrEqBool(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func parseErrOf(j *job.Job) string {
+	if j == nil {
+		return "<nil job>"
+	}
+	return j.ParseError
 }

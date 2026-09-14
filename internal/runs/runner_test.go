@@ -19,7 +19,7 @@ func TestFakeHarnessSentinel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	run, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
@@ -55,7 +55,7 @@ func TestFakeHarnessFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
@@ -81,7 +81,7 @@ func TestInjectMessageRejectsSentinel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	for _, text := range []string{
@@ -110,7 +110,7 @@ func TestFakeHarnessWritesRunLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	run, _, err := runs.New(st, nil).CreateAndLaunch(context.Background(), runs.LaunchOpts{
+	run, _, err := runs.New(st, nil, nil).CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
 			WorkingDir: t.TempDir(),
@@ -138,7 +138,7 @@ func TestLaunchPersistsWorkingDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	dir := t.TempDir()
 	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
@@ -201,7 +201,7 @@ func TestWakeComposeShapesPrompt(t *testing.T) {
 			}
 			defer subSt.Close()
 			c := &stubComposer{text: "# Instructions\nCOMPOSED wake"}
-			svc := runs.New(subSt, c)
+			svc := runs.New(subSt, c, nil)
 			run, _, err := svc.CreateAndLaunch(ctx, wakeLaunchOpts(t, tc.kind, "agents/cmo",
 				&runs.WakeOpts{Body: "raw body", ExtraPrompt: "extra", Message: "msg"}))
 			if err != nil {
@@ -258,7 +258,7 @@ func TestWakeFallbacks(t *testing.T) {
 			}
 			lopts := wakeLaunchOpts(t, tc.kind, "demo", wake)
 			lopts.Prompt = tc.prompt
-			run, _, err := runs.New(st, composer).CreateAndLaunch(ctx, lopts)
+			run, _, err := runs.New(st, composer, nil).CreateAndLaunch(ctx, lopts)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -280,7 +280,7 @@ func TestWakePromptWins(t *testing.T) {
 	c := &stubComposer{text: "COMPOSED"}
 	lopts := wakeLaunchOpts(t, runs.KindAssistant, "demo", &runs.WakeOpts{Body: "body"})
 	lopts.Prompt = "explicit"
-	run, _, err := runs.New(st, c).CreateAndLaunch(context.Background(), lopts)
+	run, _, err := runs.New(st, c, nil).CreateAndLaunch(context.Background(), lopts)
 	if err != nil {
 		t.Fatal(err)
 	}

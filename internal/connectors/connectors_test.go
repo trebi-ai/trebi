@@ -615,7 +615,7 @@ func openStack(t *testing.T) (*store.Store, *workspaces.Service, *runs.Service, 
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	ws := workspaces.New(st)
-	r := runs.New(st, nil)
+	r := runs.New(st, nil, nil)
 	pol := dispatch.NewPolicy()
 	svc := connectors.New(st, ws, r, pol)
 	return st, ws, r, svc

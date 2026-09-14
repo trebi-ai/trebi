@@ -60,6 +60,7 @@ func NewApp() *cli.Command {
 			inboxCommand(),
 			eventsCommand(),
 			fileCommand(),
+			memoryCommand(),
 			conversationCommand(),
 			alertsCommand(),
 			agentHookCommand(),

@@ -306,3 +306,48 @@ func withTempBase(t *testing.T) string {
 	t.Cleanup(func() { home.SetBase("") })
 	return dir
 }
+
+func TestLoad_MemoryDefaults(t *testing.T) {
+	dir := withTempBase(t)
+	yaml := `
+defaults:
+  memory:
+    max_logs: 0
+    require_update: false
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := cfg.Defaults.Memory
+	if m.MaxLogs != 0 || m.RequireUpdate || m.InjectLogs != 20 {
+		t.Fatalf("partial override lost defaults: %+v", m)
+	}
+
+	// Absent block keeps the seeded defaults.
+	withTempBase(t)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := cfg.Defaults.Memory; m.MaxLogs != 100 || !m.RequireUpdate || m.InjectLogs != 20 {
+		t.Fatalf("seeded defaults: %+v", m)
+	}
+
+	// Unknown key under defaults.memory is a decode error.
+	dir = withTempBase(t)
+	yaml = `
+defaults:
+  memory:
+    cap: 5
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "cap") {
+		t.Fatalf("expected unknown-key error, got %v", err)
+	}
+}

@@ -52,7 +52,7 @@ func nativeSvc(t *testing.T, p llm.Provider) (*runs.Service, context.Context) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	svc.SetNativeHooks(runs.NativeHooks{
 		Lifetime: context.Background(),
 		Provider: p,

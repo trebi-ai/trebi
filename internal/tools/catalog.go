@@ -465,6 +465,37 @@ func (in Input) agentContentPut() (workspace, name, content, ifMatch string, err
 	return id[0], id[1], v[0], v[1], nil
 }
 
+// memorySectionBody reads the body of memory_set_context and memory_set_state.
+// The key must be present; an explicit "" clears the section.
+func (in Input) memorySectionBody() (string, error) {
+	body, err := in.presentStr("body")
+	if err != nil {
+		return "", err
+	}
+	if body == nil {
+		return "", fmt.Errorf("input field %q is required", "body")
+	}
+	return *body, nil
+}
+
+// agentMemoryEntry reads the shared body of the agent lesson and log adds:
+// workspace, name, and text required; at optional.
+func (in Input) agentMemoryEntry() (workspace, name, at, text string, err error) {
+	id, err := in.reqStrs("workspace", "name")
+	if err != nil {
+		return "", "", "", "", err
+	}
+	at, err = in.str("at")
+	if err != nil {
+		return "", "", "", "", err
+	}
+	text, err = in.reqStr("text")
+	if err != nil {
+		return "", "", "", "", err
+	}
+	return id[0], id[1], at, text, nil
+}
+
 // runSpec reads the launch body of job.run and run.create. It is the one
 // launch shape on every surface. The job key rides the body; name is the
 // jobs/{name}/run spelling.
@@ -890,36 +921,93 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildJobMemoryGetPath(v[0], v[1])), nil
 			}),
-			"memory_set": act("PUT /v1/jobs/{name}/memory", Input{"name": "nightly-sync", "content": "# MEMORY\n"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "workspace", "content", "if_match")
+			"memory_set": act("PUT /v1/jobs/{name}/memory", Input{"name": "nightly-sync", "content": "# Memory\n"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "workspace", "if_match")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if v[2] == "" {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "content")
-				}
-				return request.BuildJobMemoryPut(v[0], v[1], v[2], v[3]), nil
-			}),
-			"memory_add": act("POST /v1/jobs/{name}/memory/entries", Input{"name": "nightly-sync", "text": "learned the API"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "workspace", "date", "text", "if_match")
+				content, err := in.reqStr("content")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if v[3] == "" {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "text")
+				force, err := in.flag("force")
+				if err != nil {
+					return request.HTTPRequest{}, err
 				}
-				return request.BuildJobMemoryEntryAdd(v[0], v[1], v[2], v[3], v[4]), nil
+				return request.BuildJobMemoryPut(v[0], v[1], content, v[2], force), nil
 			}),
-			"memory_delete": del("DELETE /v1/jobs/{name}/memory/entries/{id}", Input{"name": "nightly-sync", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
+			"memory_validate": act("POST /v1/jobs/{name}/memory/validate", Input{"name": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "workspace", "content")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildJobMemoryValidate(v[0], v[1], v[2]), nil
+			}),
+			"memory_set_context": act("PUT /v1/jobs/{name}/memory/context", Input{"name": "nightly-sync", "body": "The feed lands in S3."}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				body, err := in.memorySectionBody()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildJobMemorySectionPut(v[0], v[1], "context", body), nil
+			}),
+			"memory_set_state": act("PUT /v1/jobs/{name}/memory/state", Input{"name": "nightly-sync", "body": "Cursor: 2026-09-14."}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				body, err := in.memorySectionBody()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildJobMemorySectionPut(v[0], v[1], "state", body), nil
+			}),
+			"memory_lesson_add": act("POST /v1/jobs/{name}/memory/lessons", Input{"name": "nightly-sync", "text": "The API needs the cursor header."}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "workspace", "at")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				text, err := in.reqStr("text")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildJobMemoryEntryAdd(v[0], v[1], "lessons", v[2], text), nil
+			}),
+			"memory_lesson_delete": del("DELETE /v1/jobs/{name}/memory/lessons/{eid}", Input{"name": "nightly-sync", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStrs("name", "entry_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				v, err := in.strs("workspace", "if_match")
+				ws, err := in.str("workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildJobMemoryEntryDelete(id[0], v[0], id[1], v[1]), nil
+				return request.BuildJobMemoryEntryDelete(id[0], ws, "lessons", id[1]), nil
+			}),
+			"memory_add": act("POST /v1/jobs/{name}/memory/log", Input{"name": "nightly-sync", "text": "ran the digest; 412 rows"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "workspace", "at")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				text, err := in.reqStr("text")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildJobMemoryEntryAdd(v[0], v[1], "log", v[2], text), nil
+			}),
+			"memory_delete": del("DELETE /v1/jobs/{name}/memory/log/{eid}", Input{"name": "nightly-sync", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStrs("name", "entry_id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				ws, err := in.str("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildJobMemoryEntryDelete(id[0], ws, "log", id[1]), nil
 			}),
 			"memory_clear": del("DELETE /v1/jobs/{name}/memory", Input{"name": "nightly-sync", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace")
@@ -1083,36 +1171,85 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildAssistantMemoryGetPath(ws)), nil
 			}),
-			"memory_set": act("PUT /v1/workspaces/{id}/assistant/memory", Input{"workspace": "ws1", "content": "# MEMORY\n"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("workspace", "content", "if_match")
+			"memory_set": act("PUT /v1/workspaces/{id}/assistant/memory", Input{"workspace": "ws1", "content": "# Memory\n"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("workspace", "if_match")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if v[1] == "" {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "content")
-				}
-				return request.BuildAssistantMemoryPut(v[0], v[1], v[2]), nil
-			}),
-			"memory_add": act("POST /v1/workspaces/{id}/assistant/memory/entries", Input{"workspace": "ws1", "text": "learned the API"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("workspace", "date", "text", "if_match")
+				content, err := in.reqStr("content")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if v[2] == "" {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "text")
+				force, err := in.flag("force")
+				if err != nil {
+					return request.HTTPRequest{}, err
 				}
-				return request.BuildAssistantMemoryEntryAdd(v[0], v[1], v[2], v[3]), nil
+				return request.BuildAssistantMemoryPut(v[0], content, v[1], force), nil
 			}),
-			"memory_delete": del("DELETE /v1/workspaces/{id}/assistant/memory/entries/{eid}", Input{"workspace": "ws1", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
+			"memory_validate": act("POST /v1/workspaces/{id}/assistant/memory/validate", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("workspace", "content")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAssistantMemoryValidate(v[0], v[1]), nil
+			}),
+			"memory_set_context": act("PUT /v1/workspaces/{id}/assistant/memory/context", Input{"workspace": "ws1", "body": "The workspace holds two jobs."}, func(in Input) (request.HTTPRequest, error) {
+				ws, err := in.reqStr("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				body, err := in.memorySectionBody()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAssistantMemorySectionPut(ws, "context", body), nil
+			}),
+			"memory_set_state": act("PUT /v1/workspaces/{id}/assistant/memory/state", Input{"workspace": "ws1", "body": "Last sweep: 2026-09-14."}, func(in Input) (request.HTTPRequest, error) {
+				ws, err := in.reqStr("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				body, err := in.memorySectionBody()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAssistantMemorySectionPut(ws, "state", body), nil
+			}),
+			"memory_lesson_add": act("POST /v1/workspaces/{id}/assistant/memory/lessons", Input{"workspace": "ws1", "text": "Fritz prefers short replies."}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("workspace", "at")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				text, err := in.reqStr("text")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAssistantMemoryEntryAdd(v[0], "lessons", v[1], text), nil
+			}),
+			"memory_lesson_delete": del("DELETE /v1/workspaces/{id}/assistant/memory/lessons/{eid}", Input{"workspace": "ws1", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStrs("workspace", "entry_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				ifMatch, err := in.str("if_match")
+				return request.BuildAssistantMemoryEntryDelete(id[0], "lessons", id[1]), nil
+			}),
+			"memory_add": act("POST /v1/workspaces/{id}/assistant/memory/log", Input{"workspace": "ws1", "text": "swept the queue; 3 alerts"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("workspace", "at")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildAssistantMemoryEntryDelete(id[0], id[1], ifMatch), nil
+				text, err := in.reqStr("text")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAssistantMemoryEntryAdd(v[0], "log", v[1], text), nil
+			}),
+			"memory_delete": del("DELETE /v1/workspaces/{id}/assistant/memory/log/{eid}", Input{"workspace": "ws1", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStrs("workspace", "entry_id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAssistantMemoryEntryDelete(id[0], "log", id[1]), nil
 			}),
 			"memory_clear": del("DELETE /v1/workspaces/{id}/assistant/memory", Input{"workspace": "ws1", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("workspace", "if_match")
@@ -1215,37 +1352,77 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildAgentMemoryGetPath(v[0], v[1])), nil
 			}),
-			"memory_set": act("PUT /v1/workspaces/{id}/agents/{name}/memory", Input{"workspace": "ws1", "name": "cmo", "content": "# MEMORY\n"}, func(in Input) (request.HTTPRequest, error) {
+			"memory_set": act("PUT /v1/workspaces/{id}/agents/{name}/memory", Input{"workspace": "ws1", "name": "cmo", "content": "# Memory\n"}, func(in Input) (request.HTTPRequest, error) {
 				ws, name, content, ifMatch, err := in.agentContentPut()
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildAgentMemoryPut(ws, name, content, ifMatch), nil
+				force, err := in.flag("force")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentMemoryPut(ws, name, content, ifMatch, force), nil
 			}),
-			"memory_add": act("POST /v1/workspaces/{id}/agents/{name}/memory/entries", Input{"workspace": "ws1", "name": "cmo", "text": "learned the API"}, func(in Input) (request.HTTPRequest, error) {
+			"memory_validate": act("POST /v1/workspaces/{id}/agents/{name}/memory/validate", Input{"workspace": "ws1", "name": "cmo"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStrs("workspace", "name")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				v, err := in.strs("date", "text", "if_match")
+				content, err := in.str("content")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if v[1] == "" {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "text")
-				}
-				return request.BuildAgentMemoryEntryAdd(id[0], id[1], v[0], v[1], v[2]), nil
+				return request.BuildAgentMemoryValidate(id[0], id[1], content), nil
 			}),
-			"memory_delete": del("DELETE /v1/workspaces/{id}/agents/{name}/memory/entries/{eid}", Input{"workspace": "ws1", "name": "cmo", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
+			"memory_set_context": act("PUT /v1/workspaces/{id}/agents/{name}/memory/context", Input{"workspace": "ws1", "name": "cmo", "body": "Growth reports land weekly."}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				body, err := in.memorySectionBody()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentMemorySectionPut(v[0], v[1], "context", body), nil
+			}),
+			"memory_set_state": act("PUT /v1/workspaces/{id}/agents/{name}/memory/state", Input{"workspace": "ws1", "name": "cmo", "body": "Draft two of the memo."}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				body, err := in.memorySectionBody()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentMemorySectionPut(v[0], v[1], "state", body), nil
+			}),
+			"memory_lesson_add": act("POST /v1/workspaces/{id}/agents/{name}/memory/lessons", Input{"workspace": "ws1", "name": "cmo", "text": "The growth deck needs the week number."}, func(in Input) (request.HTTPRequest, error) {
+				ws, name, at, text, err := in.agentMemoryEntry()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentMemoryEntryAdd(ws, name, "lessons", at, text), nil
+			}),
+			"memory_lesson_delete": del("DELETE /v1/workspaces/{id}/agents/{name}/memory/lessons/{eid}", Input{"workspace": "ws1", "name": "cmo", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("workspace", "name", "entry_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				ifMatch, err := in.str("if_match")
+				return request.BuildAgentMemoryEntryDelete(v[0], v[1], "lessons", v[2]), nil
+			}),
+			"memory_add": act("POST /v1/workspaces/{id}/agents/{name}/memory/log", Input{"workspace": "ws1", "name": "cmo", "text": "wrote the weekly memo"}, func(in Input) (request.HTTPRequest, error) {
+				ws, name, at, text, err := in.agentMemoryEntry()
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildAgentMemoryEntryDelete(v[0], v[1], v[2], ifMatch), nil
+				return request.BuildAgentMemoryEntryAdd(ws, name, "log", at, text), nil
+			}),
+			"memory_delete": del("DELETE /v1/workspaces/{id}/agents/{name}/memory/log/{eid}", Input{"workspace": "ws1", "name": "cmo", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name", "entry_id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentMemoryEntryDelete(v[0], v[1], "log", v[2]), nil
 			}),
 			"memory_clear": del("DELETE /v1/workspaces/{id}/agents/{name}/memory", Input{"workspace": "ws1", "name": "cmo", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStrs("workspace", "name")

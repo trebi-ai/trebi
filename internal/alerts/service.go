@@ -30,6 +30,7 @@ const (
 	KindUsageWarning       Kind = "usage_warning"
 	KindConnectorUnhealthy Kind = "connector_unhealthy"
 	KindRunFailed          Kind = "run_failed"
+	KindMemoryInvalid      Kind = "memory_invalid"
 	KindResumeExhausted    Kind = "resume_exhausted"
 	KindMachineDown        Kind = "machine_down"
 )
@@ -530,6 +531,10 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 			Cooldown:   time.Hour,
 			EndReasons: []string{"idle_timeout", "max_duration", "failed", "session_gone", "launch"},
 		},
+		KindMemoryInvalid: {
+			Kind: KindMemoryInvalid, Severity: SeverityAttention, InboxKind: InboxHealth,
+			Cooldown: 24 * time.Hour,
+		},
 		KindResumeExhausted: {
 			Kind: KindResumeExhausted, Severity: SeverityError, InboxKind: InboxFailure,
 		},
@@ -612,6 +617,8 @@ func (o RaiseOpts) defaultSubject() string {
 		return "connector/" + o.Connector
 	case KindRunFailed:
 		return "job/" + o.WorkspaceID + "/" + o.JobName
+	case KindMemoryInvalid:
+		return "memory/" + o.WorkspaceID + "/" + o.JobName
 	case KindResumeExhausted:
 		if o.SessionID != "" {
 			return "session/" + o.SessionID
@@ -637,6 +644,8 @@ func (o RaiseOpts) defaultTitle() string {
 		return "Connector unhealthy"
 	case KindRunFailed:
 		return "Run failed"
+	case KindMemoryInvalid:
+		return "Memory invalid"
 	case KindResumeExhausted:
 		return "Resume exhausted"
 	case KindMachineDown:

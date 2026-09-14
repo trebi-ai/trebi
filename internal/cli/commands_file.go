@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
@@ -333,17 +337,13 @@ func readBytesOrStdin(path string) ([]byte, error) {
 	return io.ReadAll(os.Stdin)
 }
 
-// memoryOwner is one MEMORY.md ledger CLI (job, agent, or assistant).
-// resolve and the Build* closures stay owner-specific so job keeps
-// ?workspace= paths and agent/assistant keep /workspaces/{id} paths.
+// memoryOwner is one structured MEMORY.md CLI (job, agent, or assistant).
+// resolve and req stay owner-specific so job keeps ?workspace= paths and
+// agent and assistant keep /workspaces/{id} paths.
 type memoryOwner struct {
 	noun    string
 	resolve func(c *cli.Command) (*APIClient, string, string, error)
-	getPath func(name, ws string) string
-	put     func(name, ws, content, ifMatch string) request.HTTPRequest
-	add     func(name, ws, date, text, ifMatch string) request.HTTPRequest
-	del     func(name, ws, entryID, ifMatch string) request.HTTPRequest
-	clear   func(name, ws, ifMatch string, confirm bool) request.HTTPRequest
+	req     request.MemoryRequests
 }
 
 func (o memoryOwner) named() bool  { return o.noun != "assistant" }
@@ -356,47 +356,120 @@ func (o memoryOwner) flags(extra ...cli.Flag) []cli.Flag {
 	return extra
 }
 
+// entryFlags are the shared flags of lesson add and log add.
+func (o memoryOwner) entryFlags() []cli.Flag {
+	return o.flags(
+		&cli.StringFlag{Name: "text", Usage: "entry text", Required: true},
+		&cli.StringFlag{Name: "at", Usage: `"YYYY-MM-DD HH:MM" or "YYYY-MM-DD" (default now)`},
+	)
+}
+
 func memorySubcommands(o memoryOwner) *cli.Command {
-	nameArgs, entryArgs := "", "<entry-id>"
+	nameArgs := ""
 	if o.named() {
 		nameArgs = "<name>"
-		entryArgs = "<name> <entry-id>"
 	}
 	return &cli.Command{
 		Name:  "memory",
-		Usage: o.noun + " MEMORY.md ledger",
+		Usage: o.noun + " structured MEMORY.md",
 		Commands: []*cli.Command{
 			{
-				Name: "show", Usage: "print MEMORY.md", ArgsUsage: nameArgs,
-				Flags:  o.flags(&cli.BoolFlag{Name: "json", Usage: "emit JSON"}),
+				Name: "show", Usage: "print the memory summary (or the raw file)", ArgsUsage: nameArgs,
+				Flags: o.flags(
+					&cli.BoolFlag{Name: "json", Usage: "emit the full info payload"},
+					&cli.BoolFlag{Name: "raw", Usage: "print MEMORY.md as stored"},
+				),
 				Action: o.runShow,
 			},
 			{
-				Name: "add", Usage: "append a ledger entry", ArgsUsage: nameArgs,
+				Name: "validate", Usage: "check MEMORY.md against the rules", ArgsUsage: nameArgs,
+				Flags:  o.flags(&cli.BoolFlag{Name: "json", Usage: "emit JSON"}),
+				Action: o.runValidate,
+			},
+			{
+				Name: "migrate", Usage: "convert a legacy ledger to the v1 layout", ArgsUsage: nameArgs,
+				Flags:  o.flags(),
+				Action: o.runMigrate,
+			},
+			{
+				Name: "set-context", Usage: "replace the Context section (--body FILE or stdin)", ArgsUsage: nameArgs,
+				Flags:  o.flags(bodyFlag()),
+				Action: o.runSectionPut("context"),
+			},
+			{
+				Name: "set-state", Usage: "replace the State section (--body FILE or stdin)", ArgsUsage: nameArgs,
+				Flags:  o.flags(bodyFlag()),
+				Action: o.runSectionPut("state"),
+			},
+			{
+				Name: "lesson", Usage: "lesson entries (never pruned by age)",
+				Commands: []*cli.Command{
+					{
+						Name: "add", Usage: "append a lesson", ArgsUsage: nameArgs,
+						Flags: o.entryFlags(), Action: o.runEntryAdd("lessons"),
+					},
+					{
+						Name: "delete", Usage: "remove a lesson by id", ArgsUsage: o.entryArgs(),
+						Flags: o.flags(), Action: o.runEntryDelete("lessons"),
+					},
+				},
+			},
+			{
+				Name: "log", Usage: "log entries (capped; prune the oldest)",
+				Commands: []*cli.Command{
+					{
+						Name: "add", Usage: "append a log entry", ArgsUsage: nameArgs,
+						Flags: o.entryFlags(), Action: o.runEntryAdd("log"),
+					},
+					{
+						Name: "delete", Usage: "remove a log entry by id", ArgsUsage: o.entryArgs(),
+						Flags: o.flags(), Action: o.runEntryDelete("log"),
+					},
+				},
+			},
+			{
+				Name: "add", Usage: "deprecated: use `log add`", ArgsUsage: nameArgs,
+				Flags:  o.entryFlags(),
+				Hidden: true,
+				Action: o.runDeprecatedAdd,
+			},
+			{
+				Name: "set", Usage: "replace MEMORY.md (--file FILE or stdin)", ArgsUsage: nameArgs,
 				Flags: o.flags(
-					&cli.StringFlag{Name: "text", Usage: "entry text", Required: true},
-					&cli.StringFlag{Name: "date", Usage: "YYYY-MM-DD (default today)"},
+					&cli.StringFlag{Name: "file", Usage: "path to the new MEMORY.md"},
+					forceFlag("write even when the new file has validation issues"),
 					ifMatchFlag(),
 				),
-				Action: o.runAdd,
-			},
-			{
-				Name: "delete", Aliases: []string{"remove"}, Usage: "delete a ledger entry", ArgsUsage: entryArgs,
-				Flags:  o.flags(ifMatchFlag()),
-				Action: o.runRemove,
-			},
-			{
-				Name: "set", Usage: "replace MEMORY.md (--file or stdin)", ArgsUsage: nameArgs,
-				Flags:  o.flags(&cli.StringFlag{Name: "file", Usage: "path to MEMORY.md"}, ifMatchFlag()),
 				Action: o.runSet,
 			},
 			{
-				Name: "clear", Usage: "delete MEMORY.md (destroys the ledger)", ArgsUsage: nameArgs,
-				Flags:  o.flags(forceFlag("required; destroys the ledger"), ifMatchFlag()),
+				Name: "clear", Usage: "rewrite MEMORY.md as an empty skeleton", ArgsUsage: nameArgs,
+				Flags:  o.flags(forceFlag("required; wipes Context, State, Lessons, and Log"), ifMatchFlag()),
 				Action: o.runClear,
 			},
 		},
 	}
+}
+
+// bodyFlag names the section-body input file; "-" and empty read stdin.
+func bodyFlag() cli.Flag {
+	return &cli.StringFlag{Name: "body", Value: "-", Usage: "FILE with the section body, - for stdin"}
+}
+
+// bodyOrStdin maps the --body value onto readFileOrStdin's empty-means-stdin.
+func bodyOrStdin(path string) (string, error) {
+	if path == "-" {
+		path = ""
+	}
+	return readFileOrStdin(path)
+}
+
+// entryArgs is the ArgsUsage of entry delete per owner shape.
+func (o memoryOwner) entryArgs() string {
+	if o.named() {
+		return "<name> <entry-id>"
+	}
+	return "<entry-id>"
 }
 
 func (o memoryOwner) runShow(_ context.Context, c *cli.Command) error {
@@ -404,51 +477,164 @@ func (o memoryOwner) runShow(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := o.requireName(name, fmt.Sprintf("usage: trebi %s memory show <name>", o.noun)); err != nil {
+	if err := o.requireName(name, "show"); err != nil {
 		return err
 	}
-	var body map[string]any
-	if err := client.GetJSON(o.getPath(name, ws), &body); err != nil {
+	var info memory.Info
+	if err := client.GetJSON(o.req.GetPath(name, ws), &info); err != nil {
 		return err
 	}
-	if c.Bool("json") {
-		return encodeJSON(c, body)
+	switch {
+	case c.Bool("json"):
+		return encodeJSON(c, info)
+	case c.Bool("raw"):
+		fmt.Fprint(outWriter(c), info.Content)
+		return nil
 	}
-	fmt.Fprint(outWriter(c), mapStr(body, "content"))
+	o.printInfo(c, &info)
+	for _, line := range memory.FormatIssues("MEMORY.md", info.Issues) {
+		fmt.Fprintln(outWriter(c), line)
+	}
+	if info.Legacy {
+		fmt.Fprintf(outWriter(c), "legacy file; run: trebi %s memory migrate%s\n", o.noun, o.nameSuffix(name))
+	}
 	return nil
 }
 
-func (o memoryOwner) runAdd(_ context.Context, c *cli.Command) error {
-	client, name, ws, err := o.resolve(c)
-	if err != nil {
-		return err
+// printInfo renders the default two-column summary.
+func (o memoryOwner) printInfo(c *cli.Command, info *memory.Info) {
+	lessons, log := 0, 0
+	if info.Doc != nil {
+		lessons, log = len(info.Doc.Lessons), len(info.Doc.Log)
 	}
-	if err := o.requireName(name, fmt.Sprintf("usage: trebi %s memory add <name> --text <text>", o.noun)); err != nil {
-		return err
+	logCell := strconv.Itoa(log)
+	if info.Options.MaxLogs > 0 {
+		logCell = fmt.Sprintf("%d / %d", log, info.Options.MaxLogs)
 	}
-	return client.DoHTTP(o.add(name, ws, c.String("date"), c.String("text"), c.String("if-match")), nil)
+	updated := "-"
+	if !info.UpdatedAt.IsZero() {
+		updated = info.UpdatedAt.Format(time.RFC3339)
+	}
+	t := newTable(outWriter(c), []string{"Field", "Value"})
+	t.AppendRow(table.Row{"bytes", info.SizeBytes})
+	t.AppendRow(table.Row{"updated", updated})
+	t.AppendRow(table.Row{"hash", dash(info.Hash)})
+	t.AppendRow(table.Row{"legacy", yesNo(info.Legacy)})
+	t.AppendRow(table.Row{"lessons", lessons})
+	t.AppendRow(table.Row{"log", logCell})
+	t.AppendRow(table.Row{"inject_logs", info.Options.InjectLogs})
+	t.AppendRow(table.Row{"require_update", yesNo(info.Options.RequireUpdate)})
+	t.AppendRow(table.Row{"issues", len(info.Issues)})
+	renderTable(t)
 }
 
-func (o memoryOwner) runRemove(_ context.Context, c *cli.Command) error {
+func (o memoryOwner) runValidate(_ context.Context, c *cli.Command) error {
 	client, name, ws, err := o.resolve(c)
 	if err != nil {
 		return err
 	}
-	eid := c.Args().Get(0)
-	if o.named() {
-		eid = c.Args().Get(1)
+	if err := o.requireName(name, "validate"); err != nil {
+		return err
 	}
-	if eid == "" || (o.named() && name == "") {
-		if !o.named() {
-			return fmt.Errorf("usage: trebi assistant memory remove <entry-id>")
-		}
-		verb := "remove"
-		if o.noun == "agent" {
-			verb = "delete"
-		}
-		return fmt.Errorf("usage: trebi %s memory %s <name> <entry-id>", o.noun, verb)
+	var res struct {
+		Valid  bool           `json:"valid"`
+		Issues []memory.Issue `json:"issues"`
+		Legacy bool           `json:"legacy"`
 	}
-	return client.DoHTTP(o.del(name, ws, eid, c.String("if-match")), nil)
+	if err := client.DoHTTP(o.req.Validate(name, ws, ""), &res); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		if err := encodeJSON(c, res); err != nil {
+			return err
+		}
+	} else if res.Valid {
+		fmt.Fprintln(outWriter(c), "valid")
+	}
+	if res.Valid {
+		return nil
+	}
+	lines := memory.FormatIssues("MEMORY.md", res.Issues)
+	if res.Legacy {
+		lines = append(lines, fmt.Sprintf("legacy file; run: trebi %s memory migrate%s", o.noun, o.nameSuffix(name)))
+	}
+	return fmt.Errorf("%s", strings.Join(lines, "\n"))
+}
+
+func (o memoryOwner) runMigrate(_ context.Context, c *cli.Command) error {
+	client, name, ws, err := o.resolve(c)
+	if err != nil {
+		return err
+	}
+	if err := o.requireName(name, "migrate"); err != nil {
+		return err
+	}
+	var info memory.Info
+	if err := client.DoHTTP(o.req.Migrate(name, ws), &info); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "migrated%s; new hash %s\n", o.nameSuffix(name), info.Hash)
+	return nil
+}
+
+// runSectionPut builds the action of set-context and set-state.
+func (o memoryOwner) runSectionPut(section string) cli.ActionFunc {
+	return func(_ context.Context, c *cli.Command) error {
+		client, name, ws, err := o.resolve(c)
+		if err != nil {
+			return err
+		}
+		if err := o.requireName(name, "set-"+section); err != nil {
+			return err
+		}
+		body, err := bodyOrStdin(c.String("body"))
+		if err != nil {
+			return err
+		}
+		return client.DoHTTP(o.req.Section(name, ws, section, body), nil)
+	}
+}
+
+// runEntryAdd builds the action of lesson add and log add.
+func (o memoryOwner) runEntryAdd(section string) cli.ActionFunc {
+	return func(_ context.Context, c *cli.Command) error {
+		client, name, ws, err := o.resolve(c)
+		if err != nil {
+			return err
+		}
+		if err := o.requireName(name, section+" add"); err != nil {
+			return err
+		}
+		return client.DoHTTP(o.req.EntryAdd(name, ws, section, c.String("at"), c.String("text")), nil)
+	}
+}
+
+// runEntryDelete builds the action of lesson delete and log delete.
+func (o memoryOwner) runEntryDelete(section string) cli.ActionFunc {
+	return func(_ context.Context, c *cli.Command) error {
+		client, name, ws, err := o.resolve(c)
+		if err != nil {
+			return err
+		}
+		eid := c.Args().First()
+		if o.named() {
+			eid = c.Args().Get(1)
+		}
+		if eid == "" || (o.named() && name == "") {
+			return fmt.Errorf("usage: trebi %s memory %s delete%s <entry-id>", o.noun, section, o.nameSuffix(name))
+		}
+		return client.DoHTTP(o.req.EntryDel(name, ws, section, eid), nil)
+	}
+}
+
+// runDeprecatedAdd keeps `memory add` for one release as `log add`.
+func (o memoryOwner) runDeprecatedAdd(ctx context.Context, c *cli.Command) error {
+	var ew io.Writer = os.Stderr
+	if c.Root().ErrWriter != nil {
+		ew = c.Root().ErrWriter
+	}
+	fmt.Fprintln(ew, "warning: `memory add` is deprecated; use `memory log add`")
+	return o.runEntryAdd("log")(ctx, c)
 }
 
 func (o memoryOwner) runSet(_ context.Context, c *cli.Command) error {
@@ -456,14 +642,14 @@ func (o memoryOwner) runSet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := o.requireName(name, fmt.Sprintf("usage: trebi %s memory set <name> --file <path>", o.noun)); err != nil {
+	if err := o.requireName(name, "set"); err != nil {
 		return err
 	}
 	content, err := readFileOrStdin(c.String("file"))
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(o.put(name, ws, content, c.String("if-match")), nil)
+	return client.DoHTTP(o.req.Put(name, ws, content, c.String("if-match"), c.Bool("force")), nil)
 }
 
 func (o memoryOwner) runClear(_ context.Context, c *cli.Command) error {
@@ -471,48 +657,135 @@ func (o memoryOwner) runClear(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := o.requireName(name, fmt.Sprintf("usage: trebi %s memory clear <name>", o.noun)); err != nil {
+	if err := o.requireName(name, "clear"); err != nil {
 		return err
 	}
 	confirm, err := confirmed(c, o.clearWhat(name))
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(o.clear(name, ws, c.String("if-match"), confirm), nil); err != nil {
+	if err := client.DoHTTP(o.req.Clear(name, ws, c.String("if-match"), confirm), nil); err != nil {
 		return err
 	}
-	fmt.Fprint(outWriter(c), o.clearedMsg(name, ws))
+	fmt.Fprintf(outWriter(c), "cleared%s; the file is the empty skeleton again\n", o.nameSuffix(name))
 	return nil
 }
 
-func (o memoryOwner) requireName(name, usage string) error {
+// requireName enforces the <name> arg on named owners.
+func (o memoryOwner) requireName(name, verb string) error {
 	if !o.named() || name != "" {
 		return nil
 	}
 	if o.noun == "agent" {
 		return fmt.Errorf("name required")
 	}
-	return fmt.Errorf("%s", usage)
+	return fmt.Errorf("usage: trebi %s memory %s <name>", o.noun, verb)
+}
+
+// nameSuffix renders the owner argument for hint lines.
+func (o memoryOwner) nameSuffix(name string) string {
+	if !o.named() {
+		return ""
+	}
+	return " " + name
 }
 
 func (o memoryOwner) clearWhat(name string) string {
 	switch o.noun {
 	case "agent":
-		return "destroys the memory ledger of agent " + name
+		return "wipes the memory of agent " + name
 	case "assistant":
-		return "destroys the assistant memory ledger"
+		return "wipes the assistant memory back to the skeleton"
 	default:
-		return "destroys the memory ledger for " + name
+		return "wipes the memory of job " + name + " back to the skeleton"
 	}
 }
 
-func (o memoryOwner) clearedMsg(name, ws string) string {
-	switch o.noun {
-	case "agent":
-		return fmt.Sprintf("cleared memory of %s\n", name)
-	case "assistant":
-		return fmt.Sprintf("cleared assistant memory for %s\n", ws)
-	default:
-		return fmt.Sprintf("cleared memory for %s\n", name)
+// yesNo renders a boolean table cell.
+func yesNo(b bool) string {
+	if b {
+		return "yes"
 	}
+	return "no"
+}
+
+// memoryCommand is the offline top-level: it checks and repairs MEMORY.md
+// files with the daemon down.
+func memoryCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "memory",
+		Usage: "offline MEMORY.md tools (no daemon)",
+		Commands: []*cli.Command{
+			{
+				Name: "validate", Usage: "check a MEMORY.md file", ArgsUsage: "[FILE]",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+					&cli.IntFlag{Name: "max-logs", Value: 100, Usage: "log entry cap (0 = no cap)"},
+					&cli.BoolFlag{Name: "fix", Usage: "migrate a legacy file; seed the skeleton when the file is missing"},
+				},
+				Action: runMemoryValidateOffline,
+			},
+			{
+				Name:   "skeleton",
+				Usage:  "print the empty MEMORY.md skeleton",
+				Action: runMemorySkeleton,
+			},
+		},
+	}
+}
+
+func runMemoryValidateOffline(_ context.Context, c *cli.Command) error {
+	path := c.Args().First()
+	if path == "" {
+		path = "MEMORY.md"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !c.Bool("fix") || !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.WriteFile(path, memory.Skeleton(), 0o644); err != nil {
+			return err
+		}
+		data = memory.Skeleton()
+		fmt.Fprintf(outWriter(c), "seeded %s\n", path)
+	}
+	fixed := ""
+	if doc, _ := memory.Parse(data); doc.Legacy {
+		if !c.Bool("fix") {
+			return memoryIssues(c, data, path, true)
+		}
+		data = memory.Migrate(data)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return err
+		}
+		fixed = fmt.Sprintf("migrated %s\n", path)
+	}
+	fmt.Fprint(outWriter(c), fixed)
+	return memoryIssues(c, data, path, false)
+}
+
+// memoryIssues reports the validation verdict; a file with issues exits 1.
+func memoryIssues(c *cli.Command, data []byte, path string, legacy bool) error {
+	opt := memory.Options{MaxLogs: c.Int("max-logs")}
+	issues := memory.Validate(data, opt)
+	if c.Bool("json") {
+		return encodeJSON(c, map[string]any{
+			"valid": len(issues) == 0, "issues": issues, "legacy": legacy,
+		})
+	}
+	if len(issues) == 0 {
+		fmt.Fprintln(outWriter(c), "valid")
+		return nil
+	}
+	lines := memory.FormatIssues(path, issues)
+	if legacy {
+		lines = append(lines, "legacy file; run with --fix to migrate")
+	}
+	return fmt.Errorf("%s", strings.Join(lines, "\n"))
+}
+
+func runMemorySkeleton(_ context.Context, c *cli.Command) error {
+	_, err := outWriter(c).Write(memory.Skeleton())
+	return err
 }

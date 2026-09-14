@@ -91,34 +91,64 @@ Start one agent session. The daemon composes the prompt from the agent instructi
 - `wait_ms` (number, optional): long-poll until the run ends, up to 120000 ms. The response is the final run row.
 
 ### memory_show
-Read the memory file of one agent. The file lives at `agents/<name>/MEMORY.md`.
+Read the structured memory file of one agent. The file lives at `agents/<name>/MEMORY.md`. The response carries `content`, `doc`, `issues`, `legacy`, and `options`. A missing file reads as the empty skeleton.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
 
 ### memory_set
-Replace the memory file of one agent.
+Replace the whole MEMORY.md of one agent. The daemon returns `validation` with the issues unless `force` is true.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
-- `content` (string, required): full memory text.
-- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+- `content` (string, required): full file text. Keep the four sections in order: Context, State, Lessons, Log.
+- `if_match` (string, optional): current hash from `memory_show`; a stale value returns 412.
+- `force` (boolean, optional): write the file even when it has validation issues.
+
+### memory_validate
+Check memory text against the file rules. The response is `{valid, issues, legacy}`.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name.
+- `content` (string, optional): file text to check instead of the stored file.
+
+### memory_set_context
+Replace the Context section of agent memory.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name.
+- `body` (string, required): section body. An explicit `""` clears the section.
+
+### memory_set_state
+Replace the State section of agent memory.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name.
+- `body` (string, required): section body. An explicit `""` clears the section.
+
+### memory_lesson_add
+Append one lesson to agent memory. Lessons carry a stamp and are never pruned by age.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name.
+- `text` (string, required): lesson text.
+- `at` (string, optional): entry stamp, `YYYY-MM-DD HH:MM` or `YYYY-MM-DD`; defaults to now.
+
+### memory_lesson_delete
+Remove one lesson from agent memory. Destructive.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name.
+- `entry_id` (string, required): lesson id from `memory_show`.
 
 ### memory_add
-Append one dated entry to agent memory.
+Append one entry to the Log section of agent memory. The call returns 422 `log_over_cap` when the Log is full.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
 - `text` (string, required): entry text.
-- `date` (string, optional): entry date, `YYYY-MM-DD`.
-- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+- `at` (string, optional): entry stamp, `YYYY-MM-DD HH:MM` or `YYYY-MM-DD`; defaults to now.
 
 ### memory_delete
-Remove one memory entry. Destructive.
+Remove one Log entry from agent memory. Destructive.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
-- `entry_id` (string, required): entry id.
-- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+- `entry_id` (string, required): log entry id from `memory_show`.
 
 ### memory_clear
-Erase the whole agent memory. Destructive.
+Rewrite agent memory as the empty skeleton. Destructive.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.

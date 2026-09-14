@@ -57,14 +57,17 @@ Ask the user first. Plain delete removes `AGENT.md` only; the owned jobs stay an
 
 ## Agent memory
 
-Each agent keeps a `MEMORY.md` ledger at `agents/<name>/MEMORY.md`. It survives between runs and feeds every wake.
+Each agent keeps a structured `MEMORY.md` at `agents/<name>/MEMORY.md`. It survives between runs and feeds every wake. It holds four sections in a fixed order: Context, State, Lessons, Log. The daemon validates it at wake completion, like job memory.
 
 ```bash
 trebi agent memory show cmo --workspace reports --json
-trebi agent memory add cmo --workspace reports --text "Learned the API"
+trebi agent memory validate cmo --workspace reports
+trebi agent memory set-context --body context.md cmo --workspace reports
+trebi agent memory lesson add cmo --workspace reports --text "Learned the API"
+trebi agent memory log add cmo --workspace reports --text "woke, shipped the digest"
+trebi agent memory log delete cmo --workspace reports <entry-id>
 trebi agent memory set cmo --workspace reports --file ./MEMORY.md
-trebi agent memory delete cmo --workspace reports <entry-id>
 trebi agent memory clear cmo --workspace reports --force
 ```
 
-`--file` on `memory set` is **local only**; remote: pass `content`. Job memory (per job, not the agent): `trebi guide jobs-and-scheduling`.
+`--body` and `--file` are **local only**; remote: pass `body` / `content`. `memory clear` is destructive — ask first. Offline repair: `trebi memory validate <path> --fix`. Job memory (per job, not the agent): `trebi guide jobs-and-scheduling`.

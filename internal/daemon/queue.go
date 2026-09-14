@@ -192,6 +192,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		},
 		Prompt:    prompt,
 		Wake:      wake,
+		Memory:    c.memoryLaunch(ctx, item.WorkspaceID, j),
 		IfRunning: ifRunning,
 		Env:       d.Env,
 	})

@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 12
+const SchemaVersion = 13
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -421,6 +421,11 @@ UPDATE run_segments SET layer='run' WHERE layer='task';
 		`
 ALTER TABLE job_index ADD COLUMN owner TEXT NOT NULL DEFAULT '';
 CREATE INDEX idx_job_index_owner ON job_index(workspace_id, owner);
+`,
+		// v13: launch-time MEMORY.md hash. The reaper freshness check compares
+		// it to the file at run close; '' = memory off for that run.
+		`
+ALTER TABLE runs ADD COLUMN memory_hash TEXT NOT NULL DEFAULT '';
 `,
 	}
 }

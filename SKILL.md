@@ -46,7 +46,7 @@ If `doctor` is healthy, stop. Do not "fix" the database, edit `$TREBI_HOME`, or 
 
 If the daemon is down: `trebi service start`. If it was never installed: `trebi service install` then `trebi service start`. Never run `trebi service daemon` yourself and never `kill` the daemon PID. `service daemon` is a foreground dev entrypoint; `start`/`stop` own the process.
 
-Only these work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate|path|show|set|unset`, `guide`, `mcp config|install`, and `workspace list|current|use|unlink`. Everything else fails with a clear message.
+Only these work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate|path|show|set|unset`, `guide`, `mcp config|install`, `memory validate|skeleton`, and `workspace list|current|use|unlink`. Everything else fails with a clear message.
 
 Native assistant (no vendor CLI): `trebi config set assistant.model claude-sonnet-4-5` and `trebi config set assistant.api_key_env ANTHROPIC_API_KEY`. API key only; `runtime: tui` in TREBI.md is the tmux escape hatch.
 
@@ -67,7 +67,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | Topic | Covers |
 |---|---|
 | `getting-started` | fresh install → workspace → first job → first run |
-| `jobs-and-scheduling` | JOB.md shape, cron/every/event triggers, pause, validate |
+| `jobs-and-scheduling` | JOB.md shape, cron/every/event triggers, pause, validate, job memory |
 | `runs-and-debugging` | show/timeline/transcript/logs, retry/resume/replay, attach, approvals |
 | `files` | job-scoped vs workspace files, scripts next to jobs, If-Match |
 | `assistant` | wake, say, conversations, memory |
@@ -98,8 +98,9 @@ Every error is `{"error":{"code","message","details"}}` with a stable code:
 - If trebi tools are registered, use them instead of the CLI recipes below. The same rules apply: validate after a JOB.md write (`job.validate`), dry-run a job you wrote (`job.run` with `dry_run`), dry-run an agent you wrote (`agent.wake` with `dry_run`), ask before destructive.
 - Prefer `--json` plus `jq` over parsing tables. If a command rejects `--json`, drop it once. `runs show --json` is valid.
 - Run `trebi job validate` after every `JOB.md` write.
+- Memory (`job` / `agent` / `assistant memory …`) is a structured `MEMORY.md`: Context, State, Lessons, Log. Edit it through the section commands (`set-context`, `set-state`, `lesson add`, `log add`), not by rewriting the whole file with `set`. Lessons persist; log entries are capped and pruned oldest-first. A run that ends with an invalid file gets two fix injections, then a `memory_invalid` alert.
 - Use `trebi job run --test` (or `trebi agent wake --test`) before the first real launch only when **this session** created or edited that `JOB.md` / `AGENT.md`. Not `rules fire`, not `assistant say`, not a job that already existed.
-- Ask the user before `job delete` / `job delete --purge`, `agent delete` (plain or `--purge`), `workspace delete`, `workspace move`, `memory clear`, `agent memory clear`, `secret delete`, `connector delete`, `service cloud unlink`, and `service uninstall`. They destroy state (move rewrites files). Ask **before** you make the call, not after: state what the action deletes, then stop and wait for the answer. Do not send the call to see what it says. The daemon refuses it without `--force` (`confirm=1` over the API) and names what it deletes, but that gate is a backstop, not your confirmation step. `runs kill` of a run you just started to debug is not in that list. `--dry-run` on `workspace move` is not in that list.
+- Ask the user before `job delete` / `job delete --purge`, `agent delete` (plain or `--purge`), `workspace delete`, `workspace move`, `memory clear`, `agent memory clear`, `assistant memory clear`, `secret delete`, `connector delete`, `service cloud unlink`, and `service uninstall`. They destroy state (move rewrites files). Ask **before** you make the call, not after: state what the action deletes, then stop and wait for the answer. Do not send the call to see what it says. The daemon refuses it without `--force` (`confirm=1` over the API) and names what it deletes, but that gate is a backstop, not your confirmation step. `runs kill` of a run you just started to debug is not in that list. `--dry-run` on `workspace move` is not in that list.
 - If a trebi command fails with "Confirm with the user first", stop. That refusal is the confirmation gate. Report the consequence to the user and wait. Do not retry with `--force` in the same turn.
 - Never show a secret value you did not have to read. Always prefer the form that keeps it out of your transcript: on the CLI pass the path, `trebi secret set --from-file ./key.txt NAME`; on the catalog pass `value_file`, which is resolved before dispatch. If you only have the value in context, pass `value` once and never show it again: no second `cat`, not in the final message, not in a job prompt or a file. Do not stop the task over this — store the secret and carry on. Reference a stored secret from a job by its **name**; the daemon resolves it at launch. A secret name is not a secret.
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.

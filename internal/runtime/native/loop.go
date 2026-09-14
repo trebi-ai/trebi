@@ -27,6 +27,9 @@ type Sink struct {
 	Recap    func(ctx context.Context, text string) error
 	SetAgent func(ctx context.Context, state string)
 	Finish   func(ctx context.Context, status, end string, usage llm.Usage) error
+	// Gate validates memory at the completion point. A non-empty return is a
+	// fix message the loop appends as the next user message; empty = pass.
+	Gate func(ctx context.Context) string
 }
 
 // RunOpts is one native assistant execution.
@@ -140,6 +143,12 @@ func loop(ctx context.Context, opts RunOpts, sys string, msgs []llm.Message, too
 		}
 		if resp.Stop == llm.StopMaxTokens {
 			return fmt.Errorf("%s", llm.StopMaxTokens)
+		}
+		if opts.Sink.Gate != nil {
+			if fix := opts.Sink.Gate(ctx); fix != "" {
+				msgs = append(msgs, llm.Message{Role: "user", Content: fix})
+				continue
+			}
 		}
 		return nil
 	}

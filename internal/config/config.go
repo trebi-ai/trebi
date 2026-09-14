@@ -226,6 +226,22 @@ func (n NotifyConfig) Channels() []NotifyChannel {
 type Defaults struct {
 	Command string          `yaml:"command"`
 	Session SessionDefaults `yaml:"session,omitempty"`
+	Memory  MemoryDefaults  `yaml:"memory,omitempty"`
+}
+
+// MemoryDefaults are the global structured-memory knobs when job frontmatter
+// omits them. Zero values are meaningful (no cap, no freshness check), so the
+// fields carry no omitempty and defaultConfig pre-seeds them.
+type MemoryDefaults struct {
+	MaxLogs       int  `yaml:"max_logs"`       // Log entry cap; 0 = no cap
+	RequireUpdate bool `yaml:"require_update"` // a run must rewrite MEMORY.md
+	InjectLogs    int  `yaml:"inject_logs"`    // Log entries in the launch prompt
+}
+
+// DefaultMemory returns the built-in memory defaults (also the seed of
+// defaultConfig), so per-launch resolvers can fall back without a config file.
+func DefaultMemory() MemoryDefaults {
+	return MemoryDefaults{MaxLogs: 100, RequireUpdate: true, InjectLogs: 20}
 }
 
 // SessionDefaults are global reaper/session knobs when job frontmatter omits them.
@@ -512,6 +528,10 @@ defaults:
   #   keep_alive: ""
   #   nudge: ""
   #   if_running: ""       # skip | replace | coalesce | allow
+  # memory:                # structured MEMORY.md defaults
+  #   max_logs: 100        # Log entry cap; 0 = no cap
+  #   require_update: true # a run must rewrite MEMORY.md
+  #   inject_logs: 20      # Log entries in the launch prompt
 
 # api:
 #   host: 127.0.0.1        # 0.0.0.0 or a LAN/Tailscale IP opens remote access
@@ -623,7 +643,10 @@ func expandTilde(p string) string {
 
 func defaultConfig() *Config {
 	return &Config{
-		Defaults: Defaults{Command: "claude"},
+		Defaults: Defaults{
+			Command: "claude",
+			Memory:  DefaultMemory(),
+		},
 	}
 }
 

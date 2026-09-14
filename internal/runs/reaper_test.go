@@ -25,16 +25,32 @@ func TestDetectCompletion(t *testing.T) {
 	}
 }
 
+func TestCountSentinels(t *testing.T) {
+	t.Parallel()
+	id := "01TESTRUNID00000000000000001"
+	sent := CompletionSentinel(id)
+	screen := "working\n" + sent + "\n" +
+		"Fix MEMORY.md, then print the completion line again: `" + sent + "`\n" +
+		"  " + sent + "  \n"
+	if n := countSentinels(screen, id); n != 2 {
+		t.Fatalf("countSentinels = %d, want 2 (exact lines only)", n)
+	}
+	if n := countSentinels(screen, "other"); n != 0 {
+		t.Fatalf("countSentinels other run = %d, want 0", n)
+	}
+}
+
 func TestReaperMaxDuration(t *testing.T) {
 	dir := t.TempDir()
 	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
 	_ = home.EnsureDirs()
 	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := New(st, nil)
+	svc := New(st, nil, nil)
 	ctx := context.Background()
 	run, err := svc.Create(ctx, CreateOpts{
 		WorkspaceID: "ws", Job: "j", Harness: "fake",
@@ -66,6 +82,7 @@ func TestReaperMaxDuration(t *testing.T) {
 func TestFakeHarnessSentinelViaCreateAndLaunch(t *testing.T) {
 	dir := t.TempDir()
 	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
 	_ = os.Setenv("TREBI_HOME", dir)
 	_ = home.EnsureDirs()
 	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
@@ -73,7 +90,7 @@ func TestFakeHarnessSentinelViaCreateAndLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := New(st, nil)
+	svc := New(st, nil, nil)
 	ctx := context.Background()
 	run, _, err := svc.CreateAndLaunch(ctx, LaunchOpts{
 		CreateOpts: CreateOpts{

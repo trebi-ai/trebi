@@ -82,22 +82,24 @@ type parsedJob struct {
 // New builds a control plane.
 func New(st *store.Store, opts Options) *ControlPlane {
 	ws := workspaces.New(st)
-	r := runs.New(st, ws)
-	q := dispatch.NewQueue(st)
-	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
-	pol := dispatch.NewPolicy()
-	connector := connectors.New(st, ws, r, pol).WithUserHome(harness.UserHome())
 	cfg, _ := config.Load()
 	maxBytes := files.DefaultMaxBytes
 	if cfg != nil {
 		maxBytes = cfg.Files.MaxBytesOrDefault()
 		ws.WithRoot(cfg.Workspaces.RootOrDefault())
 	}
+	fs := files.New(maxBytes)
+	r := runs.New(st, ws, fs)
+	r.SetMemoryResolver(ws)
+	q := dispatch.NewQueue(st)
+	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
+	pol := dispatch.NewPolicy()
+	connector := connectors.New(st, ws, r, pol).WithUserHome(harness.UserHome())
 	return &ControlPlane{
 		Store:         st,
 		Runs:          r,
 		Workspaces:    ws,
-		Files:         files.New(maxBytes),
+		Files:         fs,
 		Schedule:      schedule.New(st),
 		Connectors:    connector,
 		Policy:        pol,
@@ -275,6 +277,19 @@ func (c *ControlPlane) findJobKind(ctx context.Context, ws, name, kind string) (
 		return j, row.Path
 	}
 	return nil, ""
+}
+
+// memoryLaunch resolves the MEMORY.md seam for a daemon launch. Nil = off.
+func (c *ControlPlane) memoryLaunch(ctx context.Context, wsID string, j *job.Job) *runs.MemoryLaunch {
+	if j == nil || !j.Memory {
+		return nil
+	}
+	ws, err := c.Workspaces.Get(ctx, wsID)
+	if err != nil {
+		c.log.Warn("memory workspace lookup", "workspace", wsID, "err", err)
+		return nil
+	}
+	return runs.NewMemoryLaunch(j, ws.Path)
 }
 
 func (c *ControlPlane) busPrune(ctx context.Context) {

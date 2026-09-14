@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"gopkg.in/yaml.v3"
@@ -879,6 +880,46 @@ func (s *Service) ComposeWakePrompt(ctx context.Context, scope runs.WakeScope, o
 	return strings.TrimSpace(b.String()), nil
 }
 
+// MemoryLaunchFor resolves the gate-time MEMORY.md seam for a stored run
+// (B22 §3.3). The lookup is kind-strict, like the launch finders. Nil means
+// memory is off or the job file is gone. It satisfies runs.MemoryResolver.
+func (s *Service) MemoryLaunchFor(ctx context.Context, run *runs.Run) *runs.MemoryLaunch {
+	if run == nil || run.Workspace == "" {
+		return nil
+	}
+	ws, err := s.Get(ctx, run.Workspace)
+	if err != nil || ws == nil {
+		return nil
+	}
+	rows, err := s.ListJobs(ctx, ws.ID)
+	if err != nil {
+		return nil
+	}
+	for _, row := range rows {
+		if !rowMatchesKind(row, run.Kind, run.Job) {
+			continue
+		}
+		j, _ := job.ParseFile(row.Path)
+		return runs.NewMemoryLaunch(j, ws.Path)
+	}
+	return nil
+}
+
+// rowMatchesKind applies the kind-strict name match the launch finders use:
+// exact name for jobs, short or index name for agents, any row for the
+// assistant.
+func rowMatchesKind(row JobRow, kind, name string) bool {
+	switch kind {
+	case runs.KindAssistant:
+		return row.Kind == runs.KindAssistant
+	case runs.KindAgent:
+		return row.Kind == runs.KindAgent &&
+			(row.Name == name || strings.TrimPrefix(row.Name, "agents/") == name)
+	default:
+		return row.Kind == runs.KindJob && row.Name == name
+	}
+}
+
 // writeAssistantWake renders the B27 sections: instructions, unowned jobs,
 // the agent rollup, memory, then the conversation tail.
 func (s *Service) writeAssistantWake(ctx context.Context, b *strings.Builder, ws *Workspace, opts runs.WakeOpts) {
@@ -889,7 +930,9 @@ func (s *Service) writeAssistantWake(ctx context.Context, b *strings.Builder, ws
 	writeSection(b, "Instructions", body)
 	writeSection(b, "Workspace jobs", capSection(s.unownedIndex(ctx, ws.ID), wakeIndexCap))
 	writeSection(b, "Agents", capSection(s.agentRollup(ctx, ws.ID), wakeIndexCap))
-	writeSection(b, "Memory", memoryBody(ws.Path))
+	if m := wakeMemory(opts.Memory); m != "" {
+		writeSection(b, "Memory", m)
+	}
 	writeWakeTail(b, opts)
 }
 
@@ -922,7 +965,9 @@ func (s *Service) writeAgentWake(ctx context.Context, b *strings.Builder, ws *Wo
 		b.Reset()
 		writeSection(b, "Instructions", strings.ReplaceAll(body, "{{agent_jobs}}", jobs))
 	}
-	writeSection(b, "Memory", memoryBody(filepath.Join(ws.Path, filepath.FromSlash(scope.Name))))
+	if m := wakeMemory(opts.Memory); m != "" {
+		writeSection(b, "Memory", m)
+	}
 	msg := strings.TrimSpace(opts.Message)
 	if msg == "" {
 		msg = strings.TrimSpace(opts.ExtraPrompt)
@@ -954,12 +999,18 @@ func trebiBody(wsPath string) string {
 	return strings.TrimSpace(j.Prompt)
 }
 
-func memoryBody(dir string) string {
-	data, err := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
-	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
-		return "(empty)"
+// wakeMemory renders the Memory wake section from the launch seam. A missing
+// file renders the empty placeholders; a nil seam omits the section.
+func wakeMemory(mem *runs.MemoryLaunch) string {
+	if mem == nil {
+		return ""
 	}
-	return strings.TrimSpace(string(data))
+	data, err := os.ReadFile(filepath.Join(mem.Root, mem.Rel))
+	if err != nil {
+		data = nil
+	}
+	doc, _ := memory.Parse(data)
+	return memory.Render(doc, mem.Opt)
 }
 
 // portfolioLine renders one index row for a wake rollup section (Part F):

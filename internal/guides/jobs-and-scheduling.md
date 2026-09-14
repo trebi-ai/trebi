@@ -121,16 +121,23 @@ trebi --workspace reports job delete my-job --purge
 
 ## Job memory
 
-Each job keeps a `MEMORY.md` ledger that survives between runs.
+Each job keeps a structured `MEMORY.md` next to `JOB.md`. It holds four sections in a fixed order: Context, State, Lessons, Log. The daemon injects the file into each launch and validates it at run completion. An invalid file gets a fix message injected into the session, twice at most; the run then ends with a `memory_invalid` alert.
 
 ```bash
-trebi job memory show --json my-job
-trebi job memory add --text "Shipped v2" --date 2026-08-28 my-job
-trebi job memory remove my-job <entry-id>
+trebi job memory show my-job --json
+trebi job memory validate my-job
+trebi job memory set-context --body context.md my-job
+trebi job memory set-state --body state.md my-job
+trebi job memory lesson add --text "CSV comes zipped" --at 2026-09-12 my-job
+trebi job memory lesson delete my-job <entry-id>
+trebi job memory log add --text "ran the digest" my-job
+trebi job memory log delete my-job <entry-id>
 trebi job memory set --file ./MEMORY.md my-job
 trebi job memory clear --force my-job
 ```
 
-`--file` on `memory set` is **local only**; remote: pass `content`. `memory clear` is destructive — ask first.
+Lessons stay for the life of the job. Log entries are capped by `memory.max_logs` (default 100); the daemon prunes the oldest. Tune the gate with `memory:` frontmatter: `max_logs`, `require_update`, `inject_logs`, `max_bytes`. `--body` and `--file` are **local only**; remote: pass `body` / `content`. `memory clear` is destructive — ask first.
+
+Offline repair works with the daemon down: `trebi memory validate <path> --fix` migrates a legacy ledger or seeds the skeleton, and `trebi memory skeleton` prints the empty file.
 
 Supporting files next to the job: `trebi guide files`.

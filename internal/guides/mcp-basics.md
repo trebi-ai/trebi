@@ -28,7 +28,7 @@ As an MCP client, call tool `<tool>` with
 `{"action": "<action>", "input": {"flag": "value", "name": "<name>"}}`.
 The tool's `docs` action lists the exact input fields.
 
-Hyphens in flags become underscores in input keys (`--if-match` → `if_match`, `--extra-prompt` → `extra_prompt`). The positional argument is the primary identifier (`name` / `id` / `topic`). Nested CLI words join with an underscore (`job memory show` → `job.memory_show`, `connector cursor show` → `connector.cursor_show`).
+Hyphens in flags become underscores in input keys (`--if-match` → `if_match`, `--extra-prompt` → `extra_prompt`). The positional argument is the primary identifier (`name` / `id` / `topic`). Nested CLI words join with an underscore (`job memory lesson add` → `job.memory_lesson_add`, `connector cursor show` → `connector.cursor_show`).
 
 CLI area names that differ from the tool name:
 
@@ -46,9 +46,12 @@ CLI area names that differ from the tool name:
 | `service version` | `system.version` |
 | `service cloud status` / `link` / `unlink` | `system.cloud_status` / `cloud_link` / `cloud_unlink` |
 | `harness auth status` / `login` / `logout` / `mode` / `cancel` | `harness.auth` / `login_start` / `logout` / `patch` / `login_cancel` |
+| `job/agent/assistant memory log add` / `log delete` | same tool: `memory_add` / `memory_delete` |
 
 These CLI commands have no MCP action; they are **local only**: `job status`,
-`job tail`, `job schedule`, and `conversation switch`.
+`job tail`, `job schedule`, `conversation switch`, the offline
+`memory validate` / `memory skeleton`, and `memory migrate` (the daemon
+migrates legacy files at launch).
 
 `--json` in examples is a no-op remotely; responses are already the API payload. Local path flags (`--file`, `--from`, `--from-file`, `--out`, `--event-file`, `--token-stdin`) become the document/value fields (`content`, `value`, `event`, `token`).
 

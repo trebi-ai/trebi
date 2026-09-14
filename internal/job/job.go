@@ -18,6 +18,7 @@ import (
 	"github.com/adrg/frontmatter"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/secrets"
 	"gopkg.in/yaml.v3"
 )
@@ -118,6 +119,7 @@ type Job struct {
 	Runtime          string
 	Title            string
 	Memory           bool
+	MemoryOpts       MemoryConfig
 	Envset           string
 	Env              map[string]string
 	Session          SessionYAML
@@ -131,6 +133,34 @@ type Job struct {
 	ParseError       string
 	Hash             string
 	Description      string
+}
+
+// MemoryConfig is the parsed memory frontmatter. Nil pointers mean unset;
+// Resolve fills them from config. Explicit zeros stay (max_logs 0 = no cap).
+type MemoryConfig struct {
+	Enabled       bool
+	MaxLogs       *int
+	RequireUpdate *bool
+	InjectLogs    *int
+}
+
+// Resolve returns the effective options after config defaults.
+func (m MemoryConfig) Resolve(cfg config.MemoryDefaults) memory.Options {
+	opt := memory.Options{
+		MaxLogs:       cfg.MaxLogs,
+		RequireUpdate: cfg.RequireUpdate,
+		InjectLogs:    cfg.InjectLogs,
+	}
+	if m.MaxLogs != nil {
+		opt.MaxLogs = *m.MaxLogs
+	}
+	if m.RequireUpdate != nil {
+		opt.RequireUpdate = *m.RequireUpdate
+	}
+	if m.InjectLogs != nil {
+		opt.InjectLogs = *m.InjectLogs
+	}
+	return opt
 }
 
 // LaunchDefaults is cwd, overlap policy, env, and session knobs for a run.
@@ -272,13 +302,13 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		return parseFail(filePath, hash, fmt.Errorf("agent name %q must equal folder name %q", fm.Name, filepath.Base(filepath.Dir(filePath))))
 	}
 
-	mem, err := resolveMemory(fm.Memory)
+	memCfg, err := resolveMemory(fm.Memory)
 	if err != nil {
-		return nil, fmt.Errorf("%s: memory: %w", filePath, err)
+		return parseFail(filePath, hash, fmt.Errorf("memory: %w", err))
 	}
-	// Agents default to memory on (C.3); jobs stay opt-in.
-	if fm.Memory == nil && isAgentFile(filePath) {
-		mem = true
+	// Agents and the assistant default to memory on (C.3); jobs stay opt-in.
+	if fm.Memory == nil && (isAgentFile(filePath) || isAssistantFile(filePath)) {
+		memCfg.Enabled = true
 	}
 
 	triggers, err := normalizeTriggers(fm.Triggers)
@@ -301,7 +331,8 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Harness:          fm.Harness,
 		Runtime:          fm.Runtime,
 		Title:            fm.Title,
-		Memory:           mem,
+		Memory:           memCfg.Enabled,
+		MemoryOpts:       memCfg,
 		Envset:           fm.Envset,
 		Env:              fm.Env,
 		Session:          fm.Session,
@@ -397,20 +428,6 @@ func extractFM(data []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return rest[:end], true
-}
-
-func resolveMemory(raw any) (bool, error) {
-	if raw == nil {
-		return false, nil
-	}
-	switch v := raw.(type) {
-	case bool:
-		return v, nil
-	case string:
-		return strings.TrimSpace(v) != "", nil
-	default:
-		return false, fmt.Errorf("expected bool, got %T", raw)
-	}
 }
 
 func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
@@ -611,4 +628,67 @@ func (w *WhenYAML) runGate(ctx context.Context, runCmd, cwd string, env map[stri
 
 func isAgentFile(path string) bool {
 	return strings.EqualFold(filepath.Base(path), "AGENT.md")
+}
+
+// resolveMemory accepts bool, a non-empty string (legacy, true), nil, or a
+// map of the three option keys. Object form implies enabled.
+func resolveMemory(raw any) (MemoryConfig, error) {
+	switch v := raw.(type) {
+	case nil:
+		return MemoryConfig{}, nil
+	case bool:
+		return MemoryConfig{Enabled: v}, nil
+	case string:
+		return MemoryConfig{Enabled: strings.TrimSpace(v) != ""}, nil
+	case map[string]any:
+		return memoryFromMap(v)
+	case map[any]any:
+		conv := make(map[string]any, len(v))
+		for k, val := range v {
+			conv[fmt.Sprint(k)] = val
+		}
+		return memoryFromMap(conv)
+	default:
+		return MemoryConfig{}, fmt.Errorf("expected bool or map, got %T", raw)
+	}
+}
+
+func memoryFromMap(m map[string]any) (MemoryConfig, error) {
+	cfg := MemoryConfig{Enabled: true}
+	for k, v := range m {
+		switch k {
+		case "max_logs", "inject_logs":
+			n, err := memoryInt(k, v)
+			if err != nil {
+				return MemoryConfig{}, err
+			}
+			if k == "max_logs" {
+				cfg.MaxLogs = &n
+			} else {
+				cfg.InjectLogs = &n
+			}
+		case "require_update":
+			b, ok := v.(bool)
+			if !ok {
+				return MemoryConfig{}, fmt.Errorf("require_update: expected bool, got %T", v)
+			}
+			cfg.RequireUpdate = &b
+		default:
+			return MemoryConfig{}, fmt.Errorf("unknown key %q (known: max_logs, require_update, inject_logs)", k)
+		}
+	}
+	return cfg, nil
+}
+
+func memoryInt(key string, v any) (int, error) {
+	switch n := v.(type) {
+	case int:
+		return n, nil
+	case int64:
+		return int(n), nil
+	case uint64:
+		return int(n), nil
+	default:
+		return 0, fmt.Errorf("%s: expected int, got %T", key, v)
+	}
 }

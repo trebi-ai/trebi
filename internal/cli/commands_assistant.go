@@ -151,19 +151,7 @@ func assistantMemoryOwner() memoryOwner {
 			}
 			return client, "", wsID, nil
 		},
-		getPath: func(_, ws string) string { return request.BuildAssistantMemoryGetPath(ws) },
-		put: func(_, ws, content, ifMatch string) request.HTTPRequest {
-			return request.BuildAssistantMemoryPut(ws, content, ifMatch)
-		},
-		add: func(_, ws, date, text, ifMatch string) request.HTTPRequest {
-			return request.BuildAssistantMemoryEntryAdd(ws, date, text, ifMatch)
-		},
-		del: func(_, ws, entryID, ifMatch string) request.HTTPRequest {
-			return request.BuildAssistantMemoryEntryDelete(ws, entryID, ifMatch)
-		},
-		clear: func(_, ws, ifMatch string, confirm bool) request.HTTPRequest {
-			return request.BuildAssistantMemoryClear(ws, ifMatch, confirm)
-		},
+		req: request.AssistantMemoryRequests(),
 	}
 }
 

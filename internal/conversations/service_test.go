@@ -231,7 +231,7 @@ func testSvc(t *testing.T) *conversations.Service {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	r := runs.New(st, nil)
+	r := runs.New(st, nil, nil)
 	q := dispatch.NewQueue(st)
 	return conversations.New(st).WithRuns(r).WithQueue(q)
 }

@@ -93,6 +93,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		},
 		Prompt:    prompt,
 		Wake:      wake,
+		Memory:    c.memoryLaunch(ctx, r.WorkspaceID, j),
 		IfRunning: d.IfRunning,
 		Env:       d.Env,
 	})

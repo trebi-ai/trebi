@@ -432,11 +432,7 @@ func jobMemoryOwner() memoryOwner {
 			}
 			return client, c.Args().Get(0), workspaceFor(c), nil
 		},
-		getPath: request.BuildJobMemoryGetPath,
-		put:     request.BuildJobMemoryPut,
-		add:     request.BuildJobMemoryEntryAdd,
-		del:     request.BuildJobMemoryEntryDelete,
-		clear:   request.BuildJobMemoryClear,
+		req: request.JobMemoryRequests(),
 	}
 }
 

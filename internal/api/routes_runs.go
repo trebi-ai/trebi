@@ -156,14 +156,17 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		return
 	}
 	harness, prompt, spec := runSpec(row.Path, body.Harness, body.PromptOverride)
+	mem := s.memoryLaunchFor(r.Context(), body.Workspace, spec)
 	prompt, wake := s.launchPrompt(r.Context(), body, prompt)
 	if body.DryRun {
 		// B25: dry_run evaluates schedule when: gates without launching.
 		// An operator dry run previews the composed wake prompt, not the raw body.
 		if wake != nil {
+			wakeDry := *wake
+			wakeDry.Memory = mem
 			if composed, err := s.ws.ComposeWakePrompt(r.Context(), runs.WakeScope{
 				WorkspaceID: body.Workspace, Kind: body.Kind, Name: body.Job,
-			}, *wake); err == nil {
+			}, wakeDry); err == nil {
 				prompt = composed
 			}
 		}
@@ -174,6 +177,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	// One launch path: CreateAndLaunch (real tmux when binary present; harness=fake for CI).
 	lopts := launchOpts(body, reason, harness, prompt, spec)
 	lopts.Wake = wake
+	lopts.Memory = mem
 	run, _, err := s.runs.CreateAndLaunch(r.Context(), lopts)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -760,7 +764,20 @@ func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason r
 	lopts.Env = d.Env
 	lopts.IfRunning = d.IfRunning
 	lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = d.MaxDurationMS, d.IdleTimeoutMS, d.KeepAliveMS, d.NudgeMS
+	lopts.Memory = s.memoryLaunchFor(ctx, prev.Workspace, j)
 	return lopts, nil
+}
+
+// memoryLaunchFor resolves the MEMORY.md seam for a manual launch. Nil = off.
+func (s *Server) memoryLaunchFor(ctx context.Context, wsID string, spec *job.Job) *runs.MemoryLaunch {
+	if spec == nil || !spec.Memory || s.ws == nil {
+		return nil
+	}
+	ws, err := s.ws.Get(ctx, wsID)
+	if err != nil {
+		return nil
+	}
+	return runs.NewMemoryLaunch(spec, ws.Path)
 }
 
 func (s *Server) handleRunReplay(w http.ResponseWriter, r *http.Request) {

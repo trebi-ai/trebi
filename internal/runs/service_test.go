@@ -20,7 +20,7 @@ func TestCreateTerminateTimeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{
@@ -86,7 +86,7 @@ func TestQueueIDIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	_, err = svc.Create(ctx, runs.CreateOpts{
@@ -111,7 +111,7 @@ func TestTerminateClosesAgentSegmentAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{
@@ -158,7 +158,7 @@ func TestCreateMarksPredecessorResumed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	prev, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
@@ -213,7 +213,7 @@ func TestResumeCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	// SessionID present so Resume passes the no-session check and hits the cap.
@@ -245,7 +245,7 @@ func TestSetSessionStateUnchangedNoBusSpam(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
@@ -281,7 +281,7 @@ func TestListHarnessAndModelFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	claude, err := svc.Create(ctx, runs.CreateOpts{
@@ -337,7 +337,7 @@ func TestDecideApprovalAtomicWithBus(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo", Harness: "claude"})
@@ -381,7 +381,7 @@ func TestOpenApprovalThenDecide(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo"})
@@ -435,7 +435,7 @@ func TestWaitFor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Reason: runs.ReasonManual})
@@ -478,7 +478,7 @@ func TestStatsRangeAndMTD(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	svc := runs.New(st, nil)
+	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
 	rep, err := svc.Stats(ctx, runs.StatsOpts{Range: "7d"})

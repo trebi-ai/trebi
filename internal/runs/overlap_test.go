@@ -214,5 +214,5 @@ func openRuns(t *testing.T) (*runs.Service, context.Context) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return runs.New(st, nil), context.Background()
+	return runs.New(st, nil, nil), context.Background()
 }

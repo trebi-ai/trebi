@@ -31,28 +31,7 @@ func (s *Server) routeWorkspaces(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant", s.handleAssistantDelete)
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/wake", s.handleAssistantWake)
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/messages", s.handleAssistantAsk)
-	mux.HandleFunc("GET /v1/workspaces/{id}/assistant/memory", s.handleAssistantMemoryGet)
-	mux.HandleFunc("PUT /v1/workspaces/{id}/assistant/memory", s.handleAssistantMemoryPut)
-	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant/memory", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryDelete(w, r, memoryAssistant)
-	})
-	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/memory/entries", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryEntriesPost(w, r, memoryAssistant)
-	})
-	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant/memory/entries/{eid}", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryEntriesDelete(w, r, memoryAssistant)
-	})
 }
-
-// memoryScope names whose MEMORY.md a memory request targets. One handler set
-// serves jobs, the workspace assistant, and folder agents.
-type memoryScope int
-
-const (
-	memoryJob memoryScope = iota
-	memoryAssistant
-	memoryAgent
-)
 
 // workspaceID resolves a workspace id or display name to an id. Unknown
 // values are returned unchanged so existing not-found paths still fire.
@@ -170,122 +149,6 @@ func (s *Server) handleAssistantGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleMemoryDelete removes the whole memory file (reset to empty).
-func (s *Server) handleMemoryDelete(w http.ResponseWriter, r *http.Request, scope memoryScope) {
-	root, rel, path, err := s.memoryRootRel(r, scope)
-	if err != nil {
-		writeResolveErr(w, err, "job")
-		return
-	}
-	if !s.requireIfMatch(w, r, root, rel) {
-		return
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": path})
-}
-
-// handleMemoryEntriesPost appends one B22 ledger entry ([YYYY-MM-DD] text).
-func (s *Server) handleMemoryEntriesPost(w http.ResponseWriter, r *http.Request, scope memoryScope) {
-	var body struct {
-		Date  string `json:"date"`
-		Text  string `json:"text"`
-		Entry string `json:"entry"` // legacy alias for text
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	text := body.Text
-	if text == "" {
-		text = body.Entry
-	}
-	if text == "" {
-		writeErr(w, http.StatusBadRequest, "validation", "text required")
-		return
-	}
-	root, rel, path, err := s.memoryRootRel(r, scope)
-	if err != nil {
-		writeResolveErr(w, err, "job")
-		return
-	}
-	if !s.requireIfMatch(w, r, root, rel) {
-		return
-	}
-	ent, err := job.AppendMemoryEntry(path, body.Date, text)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	hash := s.fileHash(r.Context(), root, rel)
-	setETagHash(w, hash)
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": ent.ID, "date": ent.Date, "text": ent.Text,
-		"path": path, "hash": hash,
-	})
-}
-
-// handleMemoryEntriesDelete removes one ledger entry by id.
-func (s *Server) handleMemoryEntriesDelete(w http.ResponseWriter, r *http.Request, scope memoryScope) {
-	eid := r.PathValue("eid")
-	if eid == "" {
-		eid = r.PathValue("id")
-	}
-	root, rel, path, err := s.memoryRootRel(r, scope)
-	if err != nil {
-		writeResolveErr(w, err, "job")
-		return
-	}
-	if !s.requireIfMatch(w, r, root, rel) {
-		return
-	}
-	if err := job.RemoveMemoryEntry(path, eid); err != nil {
-		if os.IsNotExist(err) || strings.Contains(err.Error(), "not found") {
-			writeErr(w, http.StatusNotFound, "not_found", err.Error())
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	hash := s.fileHash(r.Context(), root, rel)
-	setETagHash(w, hash)
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": eid, "hash": hash})
-}
-
-// memoryPath maps the request to the MEMORY.md sibling of the target document.
-func (s *Server) memoryPath(r *http.Request, scope memoryScope) (string, error) {
-	switch scope {
-	case memoryAssistant:
-		wsID := r.PathValue("id")
-		rows, err := s.ws.ListJobs(r.Context(), wsID)
-		if err != nil {
-			return "", err
-		}
-		for _, row := range rows {
-			if row.Kind == "assistant" {
-				return filepath.Join(filepath.Dir(row.Path), "MEMORY.md"), nil
-			}
-		}
-		// assistant fallback: workspace-root MEMORY.md (TREBI.md sibling)
-		ws, err := s.ws.Get(r.Context(), wsID)
-		if err != nil {
-			return "", errJobNotFound
-		}
-		return filepath.Join(ws.Path, "MEMORY.md"), nil
-	case memoryAgent:
-		row, err := s.findAgentRow(r.Context(), r.PathValue("id"), r.PathValue("name"))
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(filepath.Dir(row.Path), "MEMORY.md"), nil
-	default:
-		row, err := s.findJobRow(r.Context(), r.URL.Query().Get("workspace"), r.PathValue("name"))
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(filepath.Dir(row.Path), "MEMORY.md"), nil
-	}
-}
-
 func (s *Server) handleAssistantPut(w http.ResponseWriter, r *http.Request) {
 	wsID := r.PathValue("id")
 	ws, err := s.ws.Get(r.Context(), wsID)
@@ -353,33 +216,6 @@ func (s *Server) handleAssistantDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": path})
 }
 
-// memoryRootRel maps a memory request to workspace root + relative path + abs path.
-func (s *Server) memoryRootRel(r *http.Request, scope memoryScope) (root, rel, abs string, err error) {
-	abs, err = s.memoryPath(r, scope)
-	if err != nil {
-		return "", "", "", err
-	}
-	var wsID string
-	if scope == memoryJob {
-		row, err := s.findJobRow(r.Context(), r.URL.Query().Get("workspace"), r.PathValue("name"))
-		if err != nil {
-			return "", "", "", err
-		}
-		wsID = row.WorkspaceID
-	} else {
-		wsID = r.PathValue("id")
-	}
-	ws, err := s.ws.Get(r.Context(), wsID)
-	if err != nil {
-		return "", "", "", err
-	}
-	rel, err = workspaceRel(ws.Path, abs)
-	if err != nil {
-		return "", "", "", err
-	}
-	return ws.Path, rel, abs, nil
-}
-
 // handleAssistantAsk sends one message to the workspace assistant. The daemon
 // resolves or creates the channel conversation, so a client needs no pointer
 // calls of its own.
@@ -428,59 +264,6 @@ func (s *Server) handleAssistantWake(w http.ResponseWriter, r *http.Request) {
 		body.Reason = string(runs.ReasonManual)
 	}
 	s.createRun(w, r, body)
-}
-
-func (s *Server) handleAssistantMemoryGet(w http.ResponseWriter, r *http.Request) {
-	s.handleMemoryFile(w, r, memoryAssistant)
-}
-
-func (s *Server) handleAssistantMemoryPut(w http.ResponseWriter, r *http.Request) {
-	s.handleMemoryFilePut(w, r, memoryAssistant)
-}
-
-// handleMemoryFile serves the B22 memory ledger wire shape.
-func (s *Server) handleMemoryFile(w http.ResponseWriter, r *http.Request, scope memoryScope) {
-	path, err := s.memoryPath(r, scope)
-	if err != nil {
-		writeResolveErr(w, err, "job")
-		return
-	}
-	info, err := job.LoadMemoryInfo(path)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	if info == nil {
-		info = &job.MemoryInfo{Entries: []job.MemoryEntry{}}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"path": path, "size_bytes": info.SizeBytes, "updated_at": info.UpdatedAt,
-		"hash": info.Hash, "preamble": info.Preamble, "entries": info.Entries,
-		"content": info.Content,
-	})
-}
-
-// handleMemoryFilePut replaces the whole memory file (reset).
-func (s *Server) handleMemoryFilePut(w http.ResponseWriter, r *http.Request, scope memoryScope) {
-	var body struct {
-		Content string `json:"content"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	root, rel, abs, err := s.memoryRootRel(r, scope)
-	if err != nil {
-		writeResolveErr(w, err, "job")
-		return
-	}
-	info, _, err := s.files.Write(r.Context(), root, rel, []byte(body.Content), ifMatchHeader(r))
-	if err != nil {
-		writeFilesErr(w, err)
-		return
-	}
-	setETagHash(w, info.Hash)
-	writeJSON(w, http.StatusOK, map[string]any{"path": abs, "hash": info.Hash})
 }
 
 func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {

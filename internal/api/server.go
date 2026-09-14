@@ -80,14 +80,16 @@ type Options struct {
 // New builds an API server.
 func New(st *store.Store, opts Options) *Server {
 	ws := workspaces.New(st).WithRoot(opts.WorkspacesRoot)
-	r := runs.New(st, ws)
+	fs := files.New(opts.FilesMaxBytes)
+	r := runs.New(st, ws, fs)
+	r.SetMemoryResolver(ws)
 	q := dispatch.NewQueue(st)
 	pol := dispatch.NewPolicy()
 	s := &Server{
 		st:         st,
 		runs:       r,
 		ws:         ws,
-		files:      files.New(opts.FilesMaxBytes),
+		files:      fs,
 		alerts:     alerts.New(st, alerts.Options{}),
 		skills:     skills.New(st),
 		connectors: connectors.New(st, ws, r, pol),
@@ -190,6 +192,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeSystem(mux)
 	s.routeWorkspaces(mux)
 	s.routeAgents(mux)
+	s.routeMemory(mux)
 	s.routeFiles(mux)
 	s.routeJobs(mux)
 	s.routeRuns(mux)

@@ -130,34 +130,64 @@ List due times of scheduled jobs.
 - `limit` (number, optional): page size.
 
 ### memory_show
-Read the memory file of one job.
+Read the structured memory file of one job. The response carries `content`, `doc`, `issues`, `legacy`, and `options`. A missing file reads as the empty skeleton.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 
 ### memory_set
-Replace the memory file of one job.
+Replace the whole MEMORY.md of one job. The daemon returns `validation` with the issues unless `force` is true.
 - `name` (string, required): job name.
-- `content` (string, required): full memory text.
+- `content` (string, required): full file text. Keep the four sections in order: Context, State, Lessons, Log.
 - `workspace` (string, optional): workspace id.
-- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+- `if_match` (string, optional): current hash from `memory_show`; a stale value returns 412.
+- `force` (boolean, optional): write the file even when it has validation issues.
+
+### memory_validate
+Check memory text against the file rules. The response is `{valid, issues, legacy}`.
+- `name` (string, required): job name.
+- `workspace` (string, optional): workspace id.
+- `content` (string, optional): file text to check instead of the stored file.
+
+### memory_set_context
+Replace the Context section of job memory.
+- `name` (string, required): job name.
+- `body` (string, required): section body. An explicit `""` clears the section.
+- `workspace` (string, optional): workspace id.
+
+### memory_set_state
+Replace the State section of job memory.
+- `name` (string, required): job name.
+- `body` (string, required): section body. An explicit `""` clears the section.
+- `workspace` (string, optional): workspace id.
+
+### memory_lesson_add
+Append one lesson to job memory. Lessons carry a stamp and are never pruned by age.
+- `name` (string, required): job name.
+- `text` (string, required): lesson text.
+- `at` (string, optional): entry stamp, `YYYY-MM-DD HH:MM` or `YYYY-MM-DD`; defaults to now.
+- `workspace` (string, optional): workspace id.
+
+### memory_lesson_delete
+Remove one lesson from job memory. Destructive.
+- `name` (string, required): job name.
+- `entry_id` (string, required): lesson id from `memory_show`.
+- `workspace` (string, optional): workspace id.
 
 ### memory_add
-Append one dated entry to job memory.
+Append one entry to the Log section of job memory. The call returns 422 `log_over_cap` when the Log is full.
 - `name` (string, required): job name.
 - `text` (string, required): entry text.
-- `date` (string, optional): entry date, `YYYY-MM-DD`.
+- `at` (string, optional): entry stamp, `YYYY-MM-DD HH:MM` or `YYYY-MM-DD`; defaults to now.
 - `workspace` (string, optional): workspace id.
-- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
 
 ### memory_delete
-Remove one memory entry. Destructive.
+Remove one Log entry from job memory. Destructive.
 - `name` (string, required): job name.
-- `entry_id` (string, required): entry id.
+- `entry_id` (string, required): log entry id from `memory_show`.
 - `workspace` (string, optional): workspace id.
-- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
 
 ### memory_clear
-Erase the whole job memory. Destructive.
+Rewrite job memory as the empty skeleton. Destructive.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/pricing"
 )
 
@@ -73,11 +74,12 @@ const (
 	ReasonReplay   RunReason = "replay"
 )
 
-// Kind for runs: job | assistant (B27).
+// Kind for runs: job | assistant (B27). Declared in dispatch, the lowest
+// consumer, so event_queue.kind and runs.kind share one spelling.
 const (
-	KindJob       = "job"
-	KindAssistant = "assistant"
-	KindAgent     = "agent"
+	KindJob       = dispatch.KindJob
+	KindAssistant = dispatch.KindAssistant
+	KindAgent     = dispatch.KindAgent
 )
 
 // JobDisplayStatus — derived for lists (not run Status).
@@ -212,7 +214,9 @@ type Run struct {
 	ResumeAttempts    int                `json:"resume_attempts,omitempty"`
 	QueueID           string             `json:"queue_id,omitempty"`
 	TraceID           string             `json:"trace_id"`
-	Revision          int64              `json:"revision"`
+	// MemoryHash is the launch-time MEMORY.md hash; empty when memory is off.
+	MemoryHash string `json:"memory_hash,omitempty"`
+	Revision   int64  `json:"revision"`
 }
 
 // Timeline — two-layer segments + point events.

@@ -1,20 +1,27 @@
 package runs
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/oklog/ulid/v2"
 	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
@@ -40,6 +47,37 @@ func PromptSuffix(runID string) string {
 		CompletionSentinel(runID))
 }
 
+// memoryPromptSentence is the one extra completion instruction for memory runs.
+const memoryPromptSentence = "Update MEMORY.md before you print the completion line. The daemon validates the file."
+
+// maxMemoryFixes caps the fix-injection cycle per run (B22 §3.3).
+const maxMemoryFixes = 2
+
+// MemoryLaunch is the MEMORY.md seam of one launch: the workspace root
+// (the files jail), the file path relative to it, and the resolved options.
+type MemoryLaunch struct {
+	Root string
+	Rel  string
+	Opt  memory.Options
+}
+
+// NewMemoryLaunch resolves the MEMORY.md launch seam for a parsed job: the
+// sibling path under root plus options after config defaults. Nil = off.
+func NewMemoryLaunch(j *job.Job, root string) *MemoryLaunch {
+	if j == nil || !j.Memory || root == "" {
+		return nil
+	}
+	dir, err := filepath.Rel(root, j.Dir)
+	if err != nil || dir == ".." || strings.HasPrefix(dir, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	def := config.DefaultMemory()
+	if c, cerr := config.Load(); cerr == nil {
+		def = c.Defaults.Memory
+	}
+	return &MemoryLaunch{Root: root, Rel: filepath.Join(dir, "MEMORY.md"), Opt: j.MemoryOpts.Resolve(def)}
+}
+
 // LaunchOpts controls how CreateAndLaunch runs a harness.
 type LaunchOpts struct {
 	CreateOpts
@@ -48,6 +86,8 @@ type LaunchOpts struct {
 	// Wake asks the composer to build the prompt for an operator launch
 	// (Kind assistant|agent). Ignored when Prompt is set.
 	Wake *WakeOpts
+	// Memory is the MEMORY.md seam; nil = memory off.
+	Memory *MemoryLaunch
 	// Command override (bare harness name or full argv string). Empty → harness name.
 	Command string
 	// ResumeSessionID warm-resumes that session.
@@ -120,6 +160,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	if opts.SessionID == "" && opts.ResumeSessionID == "" {
 		opts.SessionID = uuid.NewString()
 	}
+	s.prepMemory(ctx, &opts)
 	s.applyWakePrompt(ctx, &opts)
 	if opts.PromptPreview == "" {
 		opts.PromptPreview = opts.Prompt
@@ -161,9 +202,11 @@ func (s *Service) applyWakePrompt(ctx context.Context, opts *LaunchOpts) {
 		return
 	}
 	if opts.Kind != KindJob && opts.Kind != "" && s.composer != nil {
+		wake := *opts.Wake
+		wake.Memory = opts.Memory
 		composed, err := s.composer.ComposeWakePrompt(ctx, WakeScope{
 			WorkspaceID: opts.WorkspaceID, Kind: opts.Kind, Name: opts.Job,
-		}, *opts.Wake)
+		}, wake)
 		if err != nil {
 			s.log.Warn("wake compose failed; using raw body", "job", opts.Job, "err", err)
 		} else if strings.TrimSpace(composed) != "" {
@@ -172,6 +215,72 @@ func (s *Service) applyWakePrompt(ctx context.Context, opts *LaunchOpts) {
 		}
 	}
 	opts.Prompt = joinExtra(opts.Wake.Body, opts.Wake.ExtraPrompt)
+}
+
+// prepMemory seeds, migrates, hashes, and injects MEMORY.md for one launch
+// (B22 §3.3). It runs before wake composition so the composer reads a settled
+// file. A files error skips memory for the launch (logged).
+func (s *Service) prepMemory(ctx context.Context, opts *LaunchOpts) {
+	mem := opts.Memory
+	if mem == nil || s.fs == nil {
+		return
+	}
+	data, _, err := s.fs.Read(ctx, mem.Root, mem.Rel)
+	switch {
+	case errors.Is(err, files.ErrNotFound):
+		if _, _, werr := s.fs.Write(ctx, mem.Root, mem.Rel, memory.Skeleton(), ""); werr != nil {
+			s.log.Warn("memory seed", "rel", mem.Rel, "err", werr)
+			return
+		}
+		data = memory.Skeleton()
+	case err != nil:
+		s.log.Warn("memory read", "rel", mem.Rel, "err", err)
+		return
+	default:
+		if doc, _ := memory.Parse(data); doc.Legacy {
+			fixed := memory.Migrate(data)
+			if _, _, werr := s.fs.Write(ctx, mem.Root, mem.Rel, fixed, ""); werr != nil {
+				s.log.Warn("memory migrate", "rel", mem.Rel, "err", werr)
+			} else {
+				data = fixed
+				s.log.Info("memory.migrated", "rel", mem.Rel)
+			}
+		}
+	}
+	opts.MemoryHash = memory.Hash(data)
+	if opts.Kind == KindAssistant || opts.Kind == KindAgent {
+		return // operators get memory through the wake composer
+	}
+	doc, _ := memory.Parse(data)
+	opts.Prompt = memory.Render(doc, mem.Opt) + "\n\n" + memory.Protocol(mem.Opt) + "\n\n" + opts.Prompt
+}
+
+// memoryFor resolves the gate-time memory seam for a stored run. Nil when the
+// run launched without memory or no resolver is wired.
+func (s *Service) memoryFor(ctx context.Context, run *Run) *MemoryLaunch {
+	if run.MemoryHash == "" || s.memRes == nil {
+		return nil
+	}
+	return s.memRes.MemoryLaunchFor(ctx, run)
+}
+
+// gateMemory validates MEMORY.md at a completion sentinel. Empty result = pass.
+func (s *Service) gateMemory(ctx context.Context, run *Run, mem *MemoryLaunch) []string {
+	if mem == nil || run.MemoryHash == "" || s.fs == nil {
+		return nil
+	}
+	data, _, err := s.fs.Read(ctx, mem.Root, mem.Rel)
+	if err != nil {
+		if errors.Is(err, files.ErrNotFound) {
+			return []string{"MEMORY.md: file is missing. Restore it with the four sections."}
+		}
+		return []string{fmt.Sprintf("MEMORY.md: read failed: %v", err)}
+	}
+	issues := memory.FormatIssues("MEMORY.md", memory.Validate(data, mem.Opt))
+	if mem.Opt.RequireUpdate && memory.Hash(data) == run.MemoryHash {
+		issues = append(issues, "MEMORY.md: unchanged this run. Update State, and Log if anything happened.")
+	}
+	return issues
 }
 
 func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error) {
@@ -197,23 +306,81 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
 	cmd.Dir = dir
 	cmd.Env = fakeEnv(run, opts, dir)
-	out, err := cmd.CombinedOutput()
-	s.writeRunLog(run.ID, string(out))
-	output := string(out)
-	end := EndLaunch
-	status := StatusFailed
-	if strings.Contains(output, CompletionSentinel(run.ID)) {
-		end = EndSentinel
-		status = StatusComplete
-	} else if err != nil && ctx.Err() != nil {
-		end = EndMaxDuration
-		status = StatusTimedOut
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	out, done := s.driveFake(ctx, run, opts, stdout, stdin)
+	_ = stdin.Close()
+	_ = cmd.Wait()
+	output := out + errBuf.String()
+	s.writeRunLog(run.ID, output)
+	end, status := EndLaunch, StatusFailed
+	switch {
+	case done:
+		end, status = EndSentinel, StatusComplete
+	case ctx.Err() != nil:
+		end, status = EndMaxDuration, StatusTimedOut
 	}
 	tokens := &pricing.TokenUsage{Input: 1, Output: 1, Model: opts.Harness}
 	if termErr := s.Terminate(ctx, run.ID, status, end, tokens); termErr != nil {
 		return run, fmt.Errorf("terminate: %w", termErr)
 	}
 	return s.Get(ctx, run.ID)
+}
+
+// driveFake streams fake-harness stdout and gates memory at each completion
+// sentinel. It returns the captured stdout and whether the run completed.
+// A fix message goes to the fake's stdin; a fake that exits without answering
+// it counts as budget spent (recordMemoryInvalid, complete).
+func (s *Service) driveFake(ctx context.Context, run *Run, opts LaunchOpts, stdout io.Reader, stdin io.Writer) (string, bool) {
+	sentinel := CompletionSentinel(run.ID)
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var b strings.Builder
+	attempts := 0
+	awaitFix := false
+	lastIssues := []string(nil)
+	for sc.Scan() {
+		line := sc.Text()
+		b.WriteString(line)
+		b.WriteByte('\n')
+		if strings.TrimSpace(line) != sentinel {
+			continue
+		}
+		issues := s.gateMemory(ctx, run, opts.Memory)
+		if len(issues) == 0 {
+			return b.String(), true
+		}
+		if attempts >= maxMemoryFixes {
+			s.recordMemoryInvalid(ctx, run, issues, "fake")
+			return b.String(), true
+		}
+		attempts++
+		lastIssues = issues
+		s.AddEvent(ctx, run.ID, "memory.fix_requested", "fake", map[string]string{
+			"issues": strings.Join(issues, "\n"), "attempt": strconv.Itoa(attempts),
+		})
+		if _, werr := io.WriteString(stdin, fixMessage(issues, run.ID)+"\n"); werr != nil {
+			s.recordMemoryInvalid(ctx, run, issues, "fake")
+			return b.String(), true
+		}
+		awaitFix = true
+	}
+	if awaitFix {
+		s.recordMemoryInvalid(ctx, run, lastIssues, "fake")
+		return b.String(), true
+	}
+	return b.String(), false
 }
 
 func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error) {
@@ -272,6 +439,9 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 		prompt = opts.PromptPreview
 	}
 	prompt += PromptSuffix(run.ID)
+	if opts.Memory != nil {
+		prompt += " " + memoryPromptSentence
+	}
 
 	if opts.SkipReady {
 		if err := sendPrompt(wsRef, prompt, tool.Name()); err != nil {
@@ -408,6 +578,25 @@ func DetectCompletion(screen, runID string) bool {
 	}
 }
 
+// countSentinels counts exact-line sentinel occurrences on a whole screen. A
+// fix message quotes the sentinel mid-line, so exact-line matching keeps the
+// injected echo from counting as a fresh completion.
+func countSentinels(screen, runID string) int {
+	sentinel := CompletionSentinel(runID)
+	n := 0
+	for _, line := range strings.Split(screen, "\n") {
+		if strings.TrimSpace(line) == sentinel {
+			n++
+		}
+	}
+	return n
+}
+
+// fixMessage is the text injected into the pane when the memory gate fails.
+func fixMessage(issues []string, runID string) string {
+	return strings.Join(issues, "\n") + "\nFix MEMORY.md, then print the completion line again: `" + CompletionSentinel(runID) + "`"
+}
+
 // InjectMessage types a follow-up into a running run's pane.
 func (s *Service) InjectMessage(ctx context.Context, runID, text string) error {
 	// The sentinel is how the agent reports it finished. A caller that sends it
@@ -456,7 +645,14 @@ func fakeEnv(run *Run, opts LaunchOpts, dir string) []string {
 		"TREBI_RUN_ID="+run.ID,
 		"TREBI_RUN_COMPLETE="+CompletionSentinel(run.ID),
 		"TREBI_SESSION_ID="+opts.SessionID,
+		"TREBI_FAKE_PROMPT="+opts.Prompt,
 	)
+	for k, v := range opts.Env {
+		env = append(env, k+"="+v)
+	}
+	if opts.Memory != nil {
+		env = append(env, "TREBI_MEMORY_PATH="+filepath.Join(opts.Memory.Root, opts.Memory.Rel))
+	}
 	if path := opts.fakeTranscriptPath(dir); path != "" {
 		_ = os.MkdirAll(filepath.Dir(path), 0o755)
 		env = append(env, "TREBI_TRANSCRIPT_PATH="+path)
@@ -748,6 +944,25 @@ func (s *Service) emitResumeExhausted(ctx context.Context, run *Run) {
 		},
 	}); err != nil {
 		s.log.Warn("run.resume_exhausted", "error", err)
+	}
+}
+
+// recordMemoryInvalid logs the failed gate: one run event plus one bus event
+// for the alerts consumer (first issue line rides the frame).
+func (s *Service) recordMemoryInvalid(ctx context.Context, run *Run, issues []string, source string) {
+	s.AddEvent(ctx, run.ID, "memory.invalid", source, map[string]string{"issues": strings.Join(issues, "\n")})
+	attrs := map[string]string{
+		"run_id": run.ID, "kind": run.Kind,
+		"workspace": run.Workspace, "job": run.Job,
+	}
+	if len(issues) > 0 {
+		attrs["issue"] = issues[0]
+	}
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "memory.invalid", Entity: "run", EntityID: run.ID, Action: "updated",
+		Attrs: attrs,
+	}); err != nil {
+		s.log.Warn("memory.invalid", "error", err)
 	}
 }
 

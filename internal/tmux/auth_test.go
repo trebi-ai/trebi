@@ -91,6 +91,8 @@ func TestAuthCapsMatrix(t *testing.T) {
 
 func TestProbeLadder_Claude(t *testing.T) {
 	isolateHome(t)
+	// L2 reads the host Keychain, which no fake home isolates.
+	t.Setenv("PATH", t.TempDir()+"/no-such-bin")
 	ctx := context.Background()
 
 	st := claudeTool{}.ProbeAuth(ctx)

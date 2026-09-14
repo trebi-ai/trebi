@@ -36,6 +36,7 @@ var consumeTopics = []string{
 	"run.failed",
 	"run.updated",
 	"run.resume_exhausted",
+	"memory.invalid",
 	"connector.unhealthy",
 	"connector.recovered",
 	"auth.probe.failed",
@@ -152,6 +153,8 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.onRunUpdated(ctx, ev, attrs)
 	case "run.resume_exhausted":
 		s.onResumeExhausted(ctx, ev, attrs)
+	case "memory.invalid":
+		s.onMemoryInvalid(ctx, ev, attrs)
 	case "connector.unhealthy":
 		s.onConnectorUnhealthy(ctx, ev, attrs)
 	case "connector.recovered":
@@ -263,6 +266,17 @@ func (s *Service) onResumeExhausted(ctx context.Context, ev store.StreamEvent, a
 	})
 	if err != nil {
 		s.log.Warn("raise resume_exhausted", "run", ev.ID, "error", err)
+	}
+}
+
+func (s *Service) onMemoryInvalid(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	_, err := s.Raise(ctx, RaiseOpts{
+		Kind: KindMemoryInvalid, RunID: firstNonEmpty(attrs["run_id"], ev.ID),
+		WorkspaceID: attrs["workspace"], JobName: attrs["job"], TraceID: ev.TraceID,
+		Body: attrs["issue"],
+	})
+	if err != nil {
+		s.log.Warn("raise memory_invalid", "run", ev.ID, "error", err)
 	}
 }
 

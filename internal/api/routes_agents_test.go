@@ -152,53 +152,49 @@ func TestAgentDeleteCoversPurgeAndChildren(t *testing.T) {
 	}
 }
 
-// TestAgentMemoryRoutes: the seeded ledger reads back, entries append and
-// delete, and memory_clear sits behind the confirm gate.
+// TestAgentMemoryRoutes: the seeded file reads back, log entries append and
+// delete, and clear sits behind the confirm gate.
 func TestAgentMemoryRoutes(t *testing.T) {
 	s, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
-	// The fixture AGENT.md has no memory flag; write the ledger explicitly.
-	if err := os.WriteFile(filepath.Join(wsDir, "agents", "cmo", "MEMORY.md"), []byte("# Memory\n\nDated notes follow below.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-mem")
 	token := s.Token()
 	root := base + "/v1/workspaces/" + wsID + "/agents/cmo/memory"
 
 	code, body, _ := doJSON(t, "GET", root, token, nil)
-	if code != 200 || !strings.Contains(fmt.Sprint(body["content"]), "# Memory") {
+	if code != 200 || !strings.Contains(fmt.Sprint(body["content"]), "## Context") {
 		t.Fatalf("memory show: %d %v", code, body)
 	}
 
-	code, body, _ = doJSON(t, "POST", root+"/entries", token, map[string]any{
-		"date": "2026-09-12", "text": "learned the API",
+	code, body, _ = doJSON(t, "POST", root+"/log", token, map[string]any{
+		"at": "2026-09-12 09:00", "text": "learned the API",
 	})
 	if code != 201 {
-		t.Fatalf("memory add: %d %v", code, body)
+		t.Fatalf("memory log add: %d %v", code, body)
 	}
 	entryID := fmt.Sprint(body["id"])
 	code, body, _ = doJSON(t, "GET", root, token, nil)
 	if code != 200 {
 		t.Fatalf("memory show after add: %d %v", code, body)
 	}
-	if entries, _ := body["entries"].([]any); len(entries) != 1 {
-		t.Fatalf("entry not appended: %v", body)
+	if n := docEntries(t, body, "log"); n != 1 {
+		t.Fatalf("entry not appended: %d", n)
 	}
-	code, body, _ = doJSON(t, "DELETE", root+"/entries/"+entryID, token, nil)
+	code, body, _ = doJSON(t, "DELETE", root+"/log/"+entryID, token, nil)
 	if code != 200 {
-		t.Fatalf("memory entry delete: %d %v", code, body)
+		t.Fatalf("memory log delete: %d %v", code, body)
 	}
 	code, body, _ = doJSON(t, "GET", root, token, nil)
 	if code != 200 {
 		t.Fatalf("memory show after delete: %d %v", code, body)
 	}
-	if entries, _ := body["entries"].([]any); len(entries) != 0 {
-		t.Fatalf("entry survived delete: %v", body)
+	if n := docEntries(t, body, "log"); n != 0 {
+		t.Fatalf("entry survived delete: %d", n)
 	}
 
 	code, body, _ = doJSON(t, "DELETE", root, token, nil)
-	if code != 400 || !strings.Contains(fmt.Sprint(body), "confirm_required") {
+	if code != 400 || !strings.Contains(fmt.Sprint(body), "confirm") {
 		t.Fatalf("memory clear without confirm: %d %v", code, body)
 	}
 	code, body, _ = doJSON(t, "DELETE", root+"?confirm=1", token, nil)
@@ -206,8 +202,8 @@ func TestAgentMemoryRoutes(t *testing.T) {
 		t.Fatalf("memory clear: %d %v", code, body)
 	}
 	code, body, _ = doJSON(t, "GET", root, token, nil)
-	if code != 200 || fmt.Sprint(body["content"]) != "" {
-		t.Fatalf("memory not cleared: %d %v", code, body)
+	if code != 200 || !strings.Contains(fmt.Sprint(body["content"]), "## Context") {
+		t.Fatalf("memory not reset to skeleton: %d %v", code, body)
 	}
 }
 
@@ -426,4 +422,15 @@ func TestAgentWakeSugarRoute(t *testing.T) {
 	if code != 404 || errCode(body) != "not_found" {
 		t.Fatalf("wake unknown agent: %d %v", code, body)
 	}
+}
+
+// docEntries counts doc.<section> entries in a GET memory payload.
+func docEntries(t *testing.T, body map[string]any, section string) int {
+	t.Helper()
+	doc, ok := body["doc"].(map[string]any)
+	if !ok {
+		t.Fatalf("no doc in payload: %v", body)
+	}
+	list, _ := doc[section].([]any)
+	return len(list)
 }

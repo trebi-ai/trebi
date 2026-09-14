@@ -146,19 +146,7 @@ func agentMemoryCommand() *cli.Command {
 			}
 			return client, name, wsID, nil
 		},
-		getPath: func(name, ws string) string { return request.BuildAgentMemoryGetPath(ws, name) },
-		put: func(name, ws, content, ifMatch string) request.HTTPRequest {
-			return request.BuildAgentMemoryPut(ws, name, content, ifMatch)
-		},
-		add: func(name, ws, date, text, ifMatch string) request.HTTPRequest {
-			return request.BuildAgentMemoryEntryAdd(ws, name, date, text, ifMatch)
-		},
-		del: func(name, ws, entryID, ifMatch string) request.HTTPRequest {
-			return request.BuildAgentMemoryEntryDelete(ws, name, entryID, ifMatch)
-		},
-		clear: func(name, ws, ifMatch string, confirm bool) request.HTTPRequest {
-			return request.BuildAgentMemoryClear(ws, name, ifMatch, confirm)
-		},
+		req: request.AgentMemoryRequests(),
 	})
 }
 

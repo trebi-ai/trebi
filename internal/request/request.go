@@ -336,41 +336,207 @@ func BuildConnectorCursorReset(name string) HTTPRequest {
 	}
 }
 
+// --- Memory (B22 §3.3 rev 2) ---
+// Three owner roots share one route shape: the job root (?workspace=), the
+// folder agent root, and the assistant root. Shared constructors take a base
+// path plus query; per-root Build* bind them.
+
+// BuildJobMemoryGetPath builds GET /v1/jobs/{name}/memory?workspace=.
+func BuildJobMemoryGetPath(name, workspace string) string {
+	return withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace))
+}
+
+// BuildAssistantMemoryGetPath builds GET /v1/workspaces/{id}/assistant/memory.
+func BuildAssistantMemoryGetPath(workspaceID string) string {
+	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory"
+}
+
+// BuildAgentMemoryGetPath builds GET /v1/workspaces/{id}/agents/{name}/memory.
+func BuildAgentMemoryGetPath(workspaceID, name string) string {
+	return BuildAgentGetPath(workspaceID, name) + "/memory"
+}
+
 // BuildJobMemoryPut builds PUT /v1/jobs/{name}/memory.
-func BuildJobMemoryPut(name, workspace, content, ifMatch string) HTTPRequest {
-	return HTTPRequest{
-		Method:  "PUT",
-		Path:    withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace)),
-		Body:    map[string]any{"content": content},
-		IfMatch: ifMatch,
-	}
+func BuildJobMemoryPut(name, workspace, content, ifMatch string, force bool) HTTPRequest {
+	return memoryPut("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace), content, ifMatch, force)
 }
 
 // BuildJobMemoryClear builds DELETE /v1/jobs/{name}/memory.
 func BuildJobMemoryClear(name, workspace, ifMatch string, confirm bool) HTTPRequest {
-	return HTTPRequest{
-		Method:  "DELETE",
-		Path:    withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory", mergeQ(workspaceQ(workspace), confirmQ(confirm))),
-		IfMatch: ifMatch,
-	}
+	return memoryClear("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace), ifMatch, confirm)
+}
+
+// BuildJobMemoryValidate builds POST /v1/jobs/{name}/memory/validate.
+func BuildJobMemoryValidate(name, workspace, content string) HTTPRequest {
+	return memoryValidate("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace), content)
+}
+
+// BuildJobMemoryMigrate builds POST /v1/jobs/{name}/memory/migrate.
+func BuildJobMemoryMigrate(name, workspace string) HTTPRequest {
+	return memoryMigrate("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace))
+}
+
+// BuildJobMemorySectionPut builds PUT /v1/jobs/{name}/memory/{section}.
+func BuildJobMemorySectionPut(name, workspace, section, body string) HTTPRequest {
+	return memorySectionPut("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace), section, body)
+}
+
+// BuildJobMemoryEntryAdd builds POST /v1/jobs/{name}/memory/{section}.
+func BuildJobMemoryEntryAdd(name, workspace, section, at, text string) HTTPRequest {
+	return memoryEntryAdd("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace), section, at, text)
+}
+
+// BuildJobMemoryEntryDelete builds DELETE /v1/jobs/{name}/memory/{section}/{id}.
+func BuildJobMemoryEntryDelete(name, workspace, section, entryID string) HTTPRequest {
+	return memoryEntryDelete("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace), section, entryID)
 }
 
 // BuildAssistantMemoryPut builds PUT /v1/workspaces/{id}/assistant/memory.
-func BuildAssistantMemoryPut(workspaceID, content, ifMatch string) HTTPRequest {
-	return HTTPRequest{
-		Method:  "PUT",
-		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory",
-		Body:    map[string]any{"content": content},
-		IfMatch: ifMatch,
-	}
+func BuildAssistantMemoryPut(workspaceID, content, ifMatch string, force bool) HTTPRequest {
+	return memoryPut(BuildAssistantMemoryGetPath(workspaceID), nil, content, ifMatch, force)
 }
 
 // BuildAssistantMemoryClear builds DELETE /v1/workspaces/{id}/assistant/memory.
 func BuildAssistantMemoryClear(workspaceID, ifMatch string, confirm bool) HTTPRequest {
-	return HTTPRequest{
-		Method:  "DELETE",
-		Path:    withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/assistant/memory", confirmQ(confirm)),
-		IfMatch: ifMatch,
+	return memoryClear(BuildAssistantMemoryGetPath(workspaceID), nil, ifMatch, confirm)
+}
+
+// BuildAssistantMemoryValidate builds POST /v1/workspaces/{id}/assistant/memory/validate.
+func BuildAssistantMemoryValidate(workspaceID, content string) HTTPRequest {
+	return memoryValidate(BuildAssistantMemoryGetPath(workspaceID), nil, content)
+}
+
+// BuildAssistantMemoryMigrate builds POST /v1/workspaces/{id}/assistant/memory/migrate.
+func BuildAssistantMemoryMigrate(workspaceID string) HTTPRequest {
+	return memoryMigrate(BuildAssistantMemoryGetPath(workspaceID), nil)
+}
+
+// BuildAssistantMemorySectionPut builds PUT .../assistant/memory/{section}.
+func BuildAssistantMemorySectionPut(workspaceID, section, body string) HTTPRequest {
+	return memorySectionPut(BuildAssistantMemoryGetPath(workspaceID), nil, section, body)
+}
+
+// BuildAssistantMemoryEntryAdd builds POST .../assistant/memory/{section}.
+func BuildAssistantMemoryEntryAdd(workspaceID, section, at, text string) HTTPRequest {
+	return memoryEntryAdd(BuildAssistantMemoryGetPath(workspaceID), nil, section, at, text)
+}
+
+// BuildAssistantMemoryEntryDelete builds DELETE .../assistant/memory/{section}/{id}.
+func BuildAssistantMemoryEntryDelete(workspaceID, section, entryID string) HTTPRequest {
+	return memoryEntryDelete(BuildAssistantMemoryGetPath(workspaceID), nil, section, entryID)
+}
+
+// BuildAgentMemoryPut builds PUT /v1/workspaces/{id}/agents/{name}/memory.
+func BuildAgentMemoryPut(workspaceID, name, content, ifMatch string, force bool) HTTPRequest {
+	return memoryPut(BuildAgentMemoryGetPath(workspaceID, name), nil, content, ifMatch, force)
+}
+
+// BuildAgentMemoryClear builds DELETE /v1/workspaces/{id}/agents/{name}/memory.
+func BuildAgentMemoryClear(workspaceID, name, ifMatch string, confirm bool) HTTPRequest {
+	return memoryClear(BuildAgentMemoryGetPath(workspaceID, name), nil, ifMatch, confirm)
+}
+
+// BuildAgentMemoryValidate builds POST /v1/workspaces/{id}/agents/{name}/memory/validate.
+func BuildAgentMemoryValidate(workspaceID, name, content string) HTTPRequest {
+	return memoryValidate(BuildAgentMemoryGetPath(workspaceID, name), nil, content)
+}
+
+// BuildAgentMemoryMigrate builds POST /v1/workspaces/{id}/agents/{name}/memory/migrate.
+func BuildAgentMemoryMigrate(workspaceID, name string) HTTPRequest {
+	return memoryMigrate(BuildAgentMemoryGetPath(workspaceID, name), nil)
+}
+
+// BuildAgentMemorySectionPut builds PUT .../agents/{name}/memory/{section}.
+func BuildAgentMemorySectionPut(workspaceID, name, section, body string) HTTPRequest {
+	return memorySectionPut(BuildAgentMemoryGetPath(workspaceID, name), nil, section, body)
+}
+
+// BuildAgentMemoryEntryAdd builds POST .../agents/{name}/memory/{section}.
+func BuildAgentMemoryEntryAdd(workspaceID, name, section, at, text string) HTTPRequest {
+	return memoryEntryAdd(BuildAgentMemoryGetPath(workspaceID, name), nil, section, at, text)
+}
+
+// BuildAgentMemoryEntryDelete builds DELETE .../agents/{name}/memory/{section}/{id}.
+func BuildAgentMemoryEntryDelete(workspaceID, name, section, entryID string) HTTPRequest {
+	return memoryEntryDelete(BuildAgentMemoryGetPath(workspaceID, name), nil, section, entryID)
+}
+
+// MemoryRequests binds the memory request builders to one owner root, so the
+// CLI wires a whole owner with one value.
+type MemoryRequests struct {
+	GetPath  func(name, ws string) string
+	Put      func(name, ws, content, ifMatch string, force bool) HTTPRequest
+	Clear    func(name, ws, ifMatch string, confirm bool) HTTPRequest
+	Validate func(name, ws, content string) HTTPRequest
+	Migrate  func(name, ws string) HTTPRequest
+	Section  func(name, ws, section, body string) HTTPRequest
+	EntryAdd func(name, ws, section, at, text string) HTTPRequest
+	EntryDel func(name, ws, section, entryID string) HTTPRequest
+}
+
+// JobMemoryRequests binds the memory builders to the job root.
+func JobMemoryRequests() MemoryRequests {
+	return MemoryRequests{
+		GetPath:  BuildJobMemoryGetPath,
+		Put:      BuildJobMemoryPut,
+		Clear:    BuildJobMemoryClear,
+		Validate: BuildJobMemoryValidate,
+		Migrate:  BuildJobMemoryMigrate,
+		Section:  BuildJobMemorySectionPut,
+		EntryAdd: BuildJobMemoryEntryAdd,
+		EntryDel: BuildJobMemoryEntryDelete,
+	}
+}
+
+// AgentMemoryRequests binds the memory builders to the agent root.
+func AgentMemoryRequests() MemoryRequests {
+	return MemoryRequests{
+		GetPath: func(name, ws string) string { return BuildAgentMemoryGetPath(ws, name) },
+		Put: func(name, ws, content, ifMatch string, force bool) HTTPRequest {
+			return BuildAgentMemoryPut(ws, name, content, ifMatch, force)
+		},
+		Clear: func(name, ws, ifMatch string, confirm bool) HTTPRequest {
+			return BuildAgentMemoryClear(ws, name, ifMatch, confirm)
+		},
+		Validate: func(name, ws, content string) HTTPRequest {
+			return BuildAgentMemoryValidate(ws, name, content)
+		},
+		Migrate: func(name, ws string) HTTPRequest { return BuildAgentMemoryMigrate(ws, name) },
+		Section: func(name, ws, section, body string) HTTPRequest {
+			return BuildAgentMemorySectionPut(ws, name, section, body)
+		},
+		EntryAdd: func(name, ws, section, at, text string) HTTPRequest {
+			return BuildAgentMemoryEntryAdd(ws, name, section, at, text)
+		},
+		EntryDel: func(name, ws, section, entryID string) HTTPRequest {
+			return BuildAgentMemoryEntryDelete(ws, name, section, entryID)
+		},
+	}
+}
+
+// AssistantMemoryRequests binds the memory builders to the assistant root.
+func AssistantMemoryRequests() MemoryRequests {
+	return MemoryRequests{
+		GetPath: func(_, ws string) string { return BuildAssistantMemoryGetPath(ws) },
+		Put: func(_, ws, content, ifMatch string, force bool) HTTPRequest {
+			return BuildAssistantMemoryPut(ws, content, ifMatch, force)
+		},
+		Clear: func(_, ws, ifMatch string, confirm bool) HTTPRequest {
+			return BuildAssistantMemoryClear(ws, ifMatch, confirm)
+		},
+		Validate: func(_, ws, content string) HTTPRequest {
+			return BuildAssistantMemoryValidate(ws, content)
+		},
+		Migrate: func(_, ws string) HTTPRequest { return BuildAssistantMemoryMigrate(ws) },
+		Section: func(_, ws, section, body string) HTTPRequest {
+			return BuildAssistantMemorySectionPut(ws, section, body)
+		},
+		EntryAdd: func(_, ws, section, at, text string) HTTPRequest {
+			return BuildAssistantMemoryEntryAdd(ws, section, at, text)
+		},
+		EntryDel: func(_, ws, section, entryID string) HTTPRequest {
+			return BuildAssistantMemoryEntryDelete(ws, section, entryID)
+		},
 	}
 }
 
@@ -418,11 +584,6 @@ func BuildAssistantDelete(workspaceID, ifMatch string) HTTPRequest {
 		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant",
 		IfMatch: ifMatch,
 	}
-}
-
-// BuildAssistantMemoryGetPath builds GET /v1/workspaces/{id}/assistant/memory.
-func BuildAssistantMemoryGetPath(workspaceID string) string {
-	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory"
 }
 
 // AgentIndexName maps an agent short name to its index name: cmo → agents/cmo.
@@ -518,50 +679,6 @@ func BuildAgentDelete(workspaceID, name, ifMatch string, purge, confirm bool) HT
 	return HTTPRequest{
 		Method:  "DELETE",
 		Path:    withQuery(BuildAgentGetPath(workspaceID, name), kv),
-		IfMatch: ifMatch,
-	}
-}
-
-// BuildAgentMemoryGetPath builds GET /v1/workspaces/{id}/agents/{name}/memory.
-func BuildAgentMemoryGetPath(workspaceID, name string) string {
-	return BuildAgentGetPath(workspaceID, name) + "/memory"
-}
-
-// BuildAgentMemoryPut builds PUT /v1/workspaces/{id}/agents/{name}/memory.
-func BuildAgentMemoryPut(workspaceID, name, content, ifMatch string) HTTPRequest {
-	return HTTPRequest{
-		Method:  "PUT",
-		Path:    BuildAgentMemoryGetPath(workspaceID, name),
-		Body:    map[string]string{"content": content},
-		IfMatch: ifMatch,
-	}
-}
-
-// BuildAgentMemoryClear builds DELETE /v1/workspaces/{id}/agents/{name}/memory.
-func BuildAgentMemoryClear(workspaceID, name, ifMatch string, confirm bool) HTTPRequest {
-	return HTTPRequest{
-		Method:  "DELETE",
-		Path:    withQuery(BuildAgentMemoryGetPath(workspaceID, name), confirmQ(confirm)),
-		IfMatch: ifMatch,
-	}
-}
-
-// BuildAgentMemoryEntryAdd builds POST /v1/workspaces/{id}/agents/{name}/memory/entries.
-func BuildAgentMemoryEntryAdd(workspaceID, name, date, text, ifMatch string) HTTPRequest {
-	return HTTPRequest{
-		Method:  "POST",
-		Path:    BuildAgentMemoryGetPath(workspaceID, name) + "/entries",
-		Body:    map[string]string{"date": date, "text": text},
-		IfMatch: ifMatch,
-	}
-}
-
-// BuildAgentMemoryEntryDelete builds DELETE
-// /v1/workspaces/{id}/agents/{name}/memory/entries/{entry_id}.
-func BuildAgentMemoryEntryDelete(workspaceID, name, entryID, ifMatch string) HTTPRequest {
-	return HTTPRequest{
-		Method:  "DELETE",
-		Path:    BuildAgentMemoryGetPath(workspaceID, name) + "/entries/" + url.PathEscape(entryID),
 		IfMatch: ifMatch,
 	}
 }
@@ -952,52 +1069,6 @@ func BuildCloudUnlink(confirm bool) HTTPRequest {
 	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/cloud/link", confirmQ(confirm))}
 }
 
-// BuildJobMemoryEntryAdd builds POST /v1/jobs/{name}/memory/entries.
-func BuildJobMemoryEntryAdd(name, workspace, date, text, ifMatch string) HTTPRequest {
-	body := map[string]any{"text": text}
-	if date != "" {
-		body["date"] = date
-	}
-	return HTTPRequest{
-		Method:  "POST",
-		Path:    withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory/entries", workspaceQ(workspace)),
-		Body:    body,
-		IfMatch: ifMatch,
-	}
-}
-
-// BuildJobMemoryEntryDelete builds DELETE /v1/jobs/{name}/memory/entries/{id}.
-func BuildJobMemoryEntryDelete(name, workspace, entryID, ifMatch string) HTTPRequest {
-	return HTTPRequest{
-		Method:  "DELETE",
-		Path:    withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory/entries/"+url.PathEscape(entryID), workspaceQ(workspace)),
-		IfMatch: ifMatch,
-	}
-}
-
-// BuildAssistantMemoryEntryAdd builds POST /v1/workspaces/{id}/assistant/memory/entries.
-func BuildAssistantMemoryEntryAdd(workspaceID, date, text, ifMatch string) HTTPRequest {
-	body := map[string]any{"text": text}
-	if date != "" {
-		body["date"] = date
-	}
-	return HTTPRequest{
-		Method:  "POST",
-		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory/entries",
-		Body:    body,
-		IfMatch: ifMatch,
-	}
-}
-
-// BuildAssistantMemoryEntryDelete builds DELETE /v1/workspaces/{id}/assistant/memory/entries/{eid}.
-func BuildAssistantMemoryEntryDelete(workspaceID, entryID, ifMatch string) HTTPRequest {
-	return HTTPRequest{
-		Method:  "DELETE",
-		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant/memory/entries/" + url.PathEscape(entryID),
-		IfMatch: ifMatch,
-	}
-}
-
 // BuildQueueRequeue builds POST /v1/queue/{id}/requeue.
 func BuildQueueRequeue(id string) HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/queue/" + url.PathEscape(id) + "/requeue"}
@@ -1254,11 +1325,6 @@ func BuildJobGetPath(name, workspace string) string {
 // BuildJobValidatePath builds POST /v1/jobs/{name}/validate?workspace=.
 func BuildJobValidatePath(name, workspace string) string {
 	return withQuery("/v1/jobs/"+url.PathEscape(name)+"/validate", workspaceQ(workspace))
-}
-
-// BuildJobMemoryGetPath builds GET /v1/jobs/{name}/memory?workspace=.
-func BuildJobMemoryGetPath(name, workspace string) string {
-	return withQuery("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace))
 }
 
 // BuildJobDelete builds DELETE /v1/jobs/{name}.
@@ -1801,6 +1867,14 @@ func confirmQ(confirm bool) map[string]string {
 	return map[string]string{"confirm": "1"}
 }
 
+// forceQ carries the force flag of memory PUT: the daemon skips validation.
+func forceQ(force bool) map[string]string {
+	if !force {
+		return nil
+	}
+	return map[string]string{"force": "1"}
+}
+
 // mergeQ combines query maps; a later map wins on a repeated key.
 func mergeQ(maps ...map[string]string) map[string]string {
 	out := map[string]string{}
@@ -1810,6 +1884,66 @@ func mergeQ(maps ...map[string]string) map[string]string {
 		}
 	}
 	return out
+}
+
+// memoryPut builds PUT {base}; force skips server-side validation.
+func memoryPut(base string, q map[string]string, content, ifMatch string, force bool) HTTPRequest {
+	return HTTPRequest{
+		Method:  "PUT",
+		Path:    withQuery(base, mergeQ(q, forceQ(force))),
+		Body:    map[string]any{"content": content},
+		IfMatch: ifMatch,
+	}
+}
+
+// memoryClear builds DELETE {base} behind the confirm query gate.
+func memoryClear(base string, q map[string]string, ifMatch string, confirm bool) HTTPRequest {
+	return HTTPRequest{
+		Method:  "DELETE",
+		Path:    withQuery(base, mergeQ(q, confirmQ(confirm))),
+		IfMatch: ifMatch,
+	}
+}
+
+// memoryValidate builds POST {base}/validate. Empty content validates the
+// file on disk.
+func memoryValidate(base string, q map[string]string, content string) HTTPRequest {
+	var body map[string]any
+	if content != "" {
+		body = map[string]any{"content": content}
+	}
+	return HTTPRequest{Method: "POST", Path: withQuery(base+"/validate", q), Body: body}
+}
+
+// memoryMigrate builds POST {base}/migrate.
+func memoryMigrate(base string, q map[string]string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: withQuery(base+"/migrate", q)}
+}
+
+// memorySectionPut builds PUT {base}/{section} (context or state).
+func memorySectionPut(base string, q map[string]string, section, body string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PUT",
+		Path:   withQuery(base+"/"+section, q),
+		Body:   map[string]any{"body": body},
+	}
+}
+
+// memoryEntryAdd builds POST {base}/{section} (lessons or log).
+func memoryEntryAdd(base string, q map[string]string, section, at, text string) HTTPRequest {
+	body := map[string]any{"text": text}
+	if at != "" {
+		body["at"] = at
+	}
+	return HTTPRequest{Method: "POST", Path: withQuery(base+"/"+section, q), Body: body}
+}
+
+// memoryEntryDelete builds DELETE {base}/{section}/{entry_id}.
+func memoryEntryDelete(base string, q map[string]string, section, entryID string) HTTPRequest {
+	return HTTPRequest{
+		Method: "DELETE",
+		Path:   withQuery(base+"/"+section+"/"+url.PathEscape(entryID), q),
+	}
 }
 
 // fileListQ is the shared query of the three file list routes. recursive adds a

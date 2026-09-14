@@ -32,17 +32,6 @@ func (s *Server) routeJobs(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/jobs/{name}/unpause", s.handleJobUnpause)
 	mux.HandleFunc("POST /v1/jobs/validate", s.handleJobValidateText)
 	mux.HandleFunc("POST /v1/jobs/{name}/validate", s.handleJobValidate)
-	mux.HandleFunc("GET /v1/jobs/{name}/memory", s.handleJobMemoryGet)
-	mux.HandleFunc("PUT /v1/jobs/{name}/memory", s.handleJobMemoryPut)
-	mux.HandleFunc("DELETE /v1/jobs/{name}/memory", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryDelete(w, r, memoryJob)
-	})
-	mux.HandleFunc("POST /v1/jobs/{name}/memory/entries", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryEntriesPost(w, r, memoryJob)
-	})
-	mux.HandleFunc("DELETE /v1/jobs/{name}/memory/entries/{id}", func(w http.ResponseWriter, r *http.Request) {
-		s.handleMemoryEntriesDelete(w, r, memoryJob)
-	})
 	mux.HandleFunc("GET /v1/schedules", s.handleSchedules)
 }
 
@@ -474,14 +463,6 @@ func (s *Server) purgeFolder(w http.ResponseWriter, r *http.Request, ws *workspa
 	return n, true
 }
 
-func (s *Server) handleJobMemoryGet(w http.ResponseWriter, r *http.Request) {
-	s.handleMemoryFile(w, r, memoryJob)
-}
-
-func (s *Server) handleJobMemoryPut(w http.ResponseWriter, r *http.Request) {
-	s.handleMemoryFilePut(w, r, memoryJob)
-}
-
 // jobCreateRequest is the POST /v1/jobs body. It takes either full text
 // (content or markdown) or the structured fields the server composes into
 // front matter.
@@ -588,6 +569,9 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := filepath.Join(ws.Path, filepath.FromSlash(rel))
+	if spec, perr := job.ParseBytes(path, []byte(md)); perr == nil && spec != nil && spec.Memory {
+		s.seedMemory(r.Context(), ws, strings.TrimSuffix(rel, "JOB.md")+"MEMORY.md")
+	}
 	_ = s.ws.RebuildIndex(r.Context(), ws)
 	if key != "" {
 		if _, err := s.st.RememberIdempotent(r.Context(), idempotencyJobs, key, wireName); err != nil {

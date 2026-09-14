@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,6 +135,7 @@ func (s *Service) runNative(ctx context.Context, run *Run, opts LaunchOpts, cfg 
 				}
 				return s.Terminate(ctx, run.ID, Status(status), EndReason(end), tok)
 			},
+			Gate: nativeMemoryGate(s, run, opts),
 		},
 	})
 	if err != nil && ctx.Err() == nil {
@@ -244,6 +246,31 @@ func (s *Service) RecoverNative(ctx context.Context) {
 		}
 		_ = s.Terminate(ctx, run.ID, StatusExited, EndSessionGone, nil)
 		s.log.Info("native run recovered", "id", run.ID, "end_reason", EndSessionGone)
+	}
+}
+
+// nativeMemoryGate builds the Sink.Gate closure for one native run: validate
+// at the completion point, inject a fix message within the budget, then let
+// the run finish with a memory.invalid record (B22 §3.3).
+func nativeMemoryGate(s *Service, run *Run, opts LaunchOpts) func(ctx context.Context) string {
+	fixAttempts := 0
+	return func(ctx context.Context) string {
+		if opts.Memory == nil {
+			return ""
+		}
+		issues := s.gateMemory(ctx, run, opts.Memory)
+		if len(issues) == 0 {
+			return ""
+		}
+		if fixAttempts >= maxMemoryFixes {
+			s.recordMemoryInvalid(ctx, run, issues, "native")
+			return ""
+		}
+		fixAttempts++
+		s.AddEvent(ctx, run.ID, "memory.fix_requested", "native", map[string]string{
+			"issues": strings.Join(issues, "\n"), "attempt": strconv.Itoa(fixAttempts),
+		})
+		return fixMessage(issues, run.ID)
 	}
 }
 

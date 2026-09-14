@@ -385,23 +385,23 @@ func TestBuildContractGapRequests(t *testing.T) {
 	if req.Method != "POST" || req.Path != "/v1/system/shutdown?confirm=1" {
 		t.Fatalf("shutdown %+v", req)
 	}
-	req = BuildJobMemoryEntryAdd("demo", "ws1", "2026-08-28", "note", "h1")
-	if req.IfMatch != "h1" {
-		t.Fatalf("mem add if-match %q", req.IfMatch)
-	}
-	if req.Method != "POST" || !strings.Contains(req.Path, "/v1/jobs/demo/memory/entries") {
+	req = BuildJobMemoryEntryAdd("demo", "ws1", "log", "2026-09-14 09:00", "note")
+	if req.Method != "POST" || !strings.Contains(req.Path, "/v1/jobs/demo/memory/log") {
 		t.Fatalf("mem add %+v", req)
 	}
-	req = BuildJobMemoryEntryDelete("demo", "ws1", "e1", "")
-	if req.Method != "DELETE" || !strings.Contains(req.Path, "/memory/entries/e1") {
+	if body, _ := req.Body.(map[string]any); body["text"] != "note" || body["at"] != "2026-09-14 09:00" {
+		t.Fatalf("mem add body %+v", req.Body)
+	}
+	req = BuildJobMemoryEntryDelete("demo", "ws1", "lessons", "e1")
+	if req.Method != "DELETE" || !strings.Contains(req.Path, "/memory/lessons/e1") {
 		t.Fatalf("mem del %+v", req)
 	}
-	req = BuildAssistantMemoryEntryAdd("ws1", "", "note", "")
-	if req.Method != "POST" || !strings.Contains(req.Path, "/assistant/memory/entries") {
+	req = BuildAssistantMemoryEntryAdd("ws1", "log", "", "note")
+	if req.Method != "POST" || !strings.Contains(req.Path, "/assistant/memory/log") {
 		t.Fatalf("asst add %+v", req)
 	}
-	req = BuildAssistantMemoryEntryDelete("ws1", "e1", "")
-	if req.Method != "DELETE" || !strings.Contains(req.Path, "/entries/e1") {
+	req = BuildAssistantMemoryEntryDelete("ws1", "log", "e1")
+	if req.Method != "DELETE" || !strings.Contains(req.Path, "/memory/log/e1") {
 		t.Fatalf("asst del %+v", req)
 	}
 	path := BuildEventsListPath("01C", 10, "", "", "")
@@ -628,13 +628,23 @@ func TestBuildWorkspaceAndMemoryAndRules(t *testing.T) {
 	if body["path"] != "/tmp/new" || body["mkdir"] != true || body["dry_run"] != true {
 		t.Fatalf("move body %+v", body)
 	}
-	req = BuildJobMemoryPut("demo", "ws1", "hello", "h2")
+	req = BuildJobMemoryPut("demo", "ws1", "hello", "h2", false)
 	if req.Method != "PUT" || !strings.Contains(req.Path, "/memory") || req.IfMatch != "h2" {
 		t.Fatalf("mem put %+v", req)
+	}
+	if strings.Contains(req.Path, "force") {
+		t.Fatalf("mem put must omit force when false: %s", req.Path)
+	}
+	req = BuildJobMemoryPut("demo", "ws1", "hello", "", true)
+	if !strings.Contains(req.Path, "force=1") {
+		t.Fatalf("mem put force %+v", req)
 	}
 	req = BuildJobMemoryClear("demo", "ws1", "", true)
 	if req.Method != "DELETE" || !strings.Contains(req.Path, "confirm=1") {
 		t.Fatalf("mem clear %+v", req)
+	}
+	if req.Body != nil {
+		t.Fatalf("mem clear must carry no body: %+v", req.Body)
 	}
 	req = BuildRulesTest("true", "x", map[string]any{"a": 1})
 	if req.Method != "POST" || req.Path != "/v1/rules/test" {
@@ -1000,14 +1010,10 @@ func TestIfMatchOnDocumentWrites(t *testing.T) {
 		"job delete":        BuildJobDelete("demo", "ws1", "h", false, true),
 		"job pause":         BuildJobPause("demo", "ws1", "h", true),
 		"job unpause":       BuildJobPause("demo", "ws1", "h", false),
-		"job memory put":    BuildJobMemoryPut("demo", "ws1", "m", "h"),
-		"job memory add":    BuildJobMemoryEntryAdd("demo", "ws1", "", "note", "h"),
-		"job memory remove": BuildJobMemoryEntryDelete("demo", "ws1", "e1", "h"),
+		"job memory put":    BuildJobMemoryPut("demo", "ws1", "m", "h", false),
 		"job memory clear":  BuildJobMemoryClear("demo", "ws1", "h", true),
 		"assistant put":     BuildAssistantPut("ws1", "# t", "h"),
-		"assistant mem put": BuildAssistantMemoryPut("ws1", "m", "h"),
-		"assistant mem add": BuildAssistantMemoryEntryAdd("ws1", "", "note", "h"),
-		"assistant mem del": BuildAssistantMemoryEntryDelete("ws1", "e1", "h"),
+		"assistant mem put": BuildAssistantMemoryPut("ws1", "m", "h", false),
 		"assistant mem clr": BuildAssistantMemoryClear("ws1", "h", true),
 		"skill put":         BuildSkillPut("demo", "# s", nil, "h"),
 	}

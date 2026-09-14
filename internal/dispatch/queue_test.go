@@ -11,7 +11,6 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/dispatch"
-	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -40,7 +39,7 @@ func TestEnqueueClaimDone(t *testing.T) {
 		t.Fatal("id")
 	}
 
-	claimed, err := q.ClaimNext(ctx, "ws1", "receipts", runs.KindJob, "")
+	claimed, err := q.ClaimNext(ctx, "ws1", "receipts", dispatch.KindJob, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +54,7 @@ func TestEnqueueClaimDone(t *testing.T) {
 	}
 
 	// second claim empty
-	c2, err := q.ClaimNext(ctx, "ws1", "receipts", runs.KindJob, "")
+	c2, err := q.ClaimNext(ctx, "ws1", "receipts", dispatch.KindJob, "")
 	if err != nil || c2 != nil {
 		t.Fatalf("c2=%v err=%v", c2, err)
 	}
@@ -98,7 +97,7 @@ func TestClaimNextFIFOByULID(t *testing.T) {
 
 	var got []string
 	for range ids {
-		it, err := q.ClaimNext(ctx, "ws1", "j", runs.KindJob, "")
+		it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, "")
 		if err != nil || it == nil {
 			t.Fatalf("it=%v err=%v", it, err)
 		}
@@ -126,7 +125,7 @@ func TestClaimNextExactlyOnceUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			it, err := q.ClaimNext(ctx, "ws1", "j", runs.KindJob, "")
+			it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, "")
 			if err != nil {
 				t.Error(err)
 				return
@@ -205,7 +204,7 @@ func TestRequeueAndCancel(t *testing.T) {
 
 	// Requeue a blocked row: clears block_reason, keeps attempts.
 	b := enqueue()
-	if it, err := q.ClaimNext(ctx, "ws1", "j", runs.KindJob, ""); err != nil || it == nil || it.ID != b.ID {
+	if it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, ""); err != nil || it == nil || it.ID != b.ID {
 		t.Fatalf("it=%v err=%v", it, err)
 	}
 	if err := q.MarkBlocked(ctx, b.ID, dispatch.BlockAuthMissing); err != nil {

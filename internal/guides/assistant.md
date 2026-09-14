@@ -54,14 +54,18 @@ Use `assistant say --wait`, or poll `conversation messages`, until the assistant
 
 ## Assistant memory
 
+The assistant keeps a structured `MEMORY.md` at the workspace root. It holds four sections in a fixed order: Context, State, Lessons, Log. It uses the config defaults only; it reads no frontmatter.
+
 ```bash
 trebi --workspace reports assistant memory show --json
-trebi --workspace reports assistant memory add --text "Reviewed the backlog"
-trebi --workspace reports assistant memory set --file ./MEMORY.md
-trebi --workspace reports assistant memory delete <entry-id>
+trebi --workspace reports assistant memory validate
+trebi --workspace reports assistant memory set-state --body state.md
+trebi --workspace reports assistant memory lesson add --text "Reviewed the backlog"
+trebi --workspace reports assistant memory log add --text "planned the week"
+trebi --workspace reports assistant memory log delete <entry-id>
 trebi --workspace reports assistant memory clear --force
 ```
 
-`--file` is **local only**; remote: pass `content`. `memory clear` is destructive — ask first.
+`--body` and `--file` are **local only**; remote: pass `body` / `content`. `memory clear` is destructive — ask first. Offline repair: `trebi memory validate <path> --fix`.
 
 Job memory (per job, not the assistant): `trebi guide jobs-and-scheduling`. Folder-scoped agents (nested operators with their own folders): `trebi guide agents`.

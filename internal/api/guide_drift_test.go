@@ -166,6 +166,13 @@ var exactFolds = map[string]string{
 	"harness auth login":   "harness.login_start",
 	"inbox read-all":       "inbox.read_all",
 	"status":               "system.overview",
+	// The CLI says `memory log add`; the catalog kept the shorter name.
+	"job memory log add":          "job.memory_add",
+	"job memory log delete":       "job.memory_delete",
+	"agent memory log add":        "agent.memory_add",
+	"agent memory log delete":     "agent.memory_delete",
+	"assistant memory log add":    "assistant.memory_add",
+	"assistant memory log delete": "assistant.memory_delete",
 }
 
 func mcpMatch(catalog tools.Catalog, words []string) (tool, action string, local, ok bool) {

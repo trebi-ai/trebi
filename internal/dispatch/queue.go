@@ -10,12 +10,18 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
-	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // MaxAttempts caps how many times a queue row may be claimed.
 const MaxAttempts = 5
+
+// Launch kinds, one spelling with runs (event_queue.kind, runs.kind).
+const (
+	KindJob       = "job"
+	KindAssistant = "assistant"
+	KindAgent     = "agent"
+)
 
 var (
 	// ErrNotFound is a missing queue row.
@@ -109,7 +115,7 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 		item.ID = ulid.Make().String()
 	}
 	if item.Kind == "" {
-		item.Kind = runs.KindJob
+		item.Kind = KindJob
 	}
 	if item.Status == "" {
 		item.Status = QueuePending

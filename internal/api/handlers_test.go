@@ -115,12 +115,12 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 		t.Fatalf("TREBI.md not updated: %v %s", err, data)
 	}
 
-	// --- Memory entries (B22 ledger) ---
-	code, ent := do("POST", "/v1/jobs/demo/memory/entries?workspace="+wsID, map[string]string{
-		"entry": "remember the widget",
+	// --- Memory log entries ---
+	code, ent := do("POST", "/v1/jobs/demo/memory/log?workspace="+wsID, map[string]string{
+		"text": "remember the widget",
 	})
 	if code != 201 {
-		t.Fatalf("memory entry post %d %v", code, ent)
+		t.Fatalf("memory log post %d %v", code, ent)
 	}
 	eid, _ := ent["id"].(string)
 	memPath := filepath.Join(wsPath, "demo", "MEMORY.md")
@@ -129,9 +129,9 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 		t.Fatalf("MEMORY.md missing entry: %v %s", err, mb)
 	}
 	if eid != "" {
-		code, _ = do("DELETE", "/v1/jobs/demo/memory/entries/"+eid+"?workspace="+wsID, nil)
+		code, _ = do("DELETE", "/v1/jobs/demo/memory/log/"+eid+"?workspace="+wsID, nil)
 		if code != 200 {
-			t.Fatalf("memory entry delete %d", code)
+			t.Fatalf("memory log delete %d", code)
 		}
 	}
 

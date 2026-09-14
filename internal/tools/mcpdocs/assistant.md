@@ -59,30 +59,55 @@ channel conversation, so no pointer call is needed first.
 - `wait_ms` (number, optional): long-poll for the assistant reply, up to 120000 ms. `replies` carries what arrived.
 
 ### memory_show
-Read the assistant memory of one workspace.
+Read the structured assistant memory of one workspace. The response carries `content`, `doc`, `issues`, `legacy`, and `options`. A missing file reads as the empty skeleton.
 - `workspace` (string, required): workspace id.
 
 ### memory_set
-Replace the assistant memory.
+Replace the whole assistant MEMORY.md. The daemon returns `validation` with the issues unless `force` is true.
 - `workspace` (string, required): workspace id.
-- `content` (string, required): full memory text.
-- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+- `content` (string, required): full file text. Keep the four sections in order: Context, State, Lessons, Log.
+- `if_match` (string, optional): current hash from `memory_show`; a stale value returns 412.
+- `force` (boolean, optional): write the file even when it has validation issues.
+
+### memory_validate
+Check memory text against the file rules. The response is `{valid, issues, legacy}`.
+- `workspace` (string, required): workspace id.
+- `content` (string, optional): file text to check instead of the stored file.
+
+### memory_set_context
+Replace the Context section of the assistant memory.
+- `workspace` (string, required): workspace id.
+- `body` (string, required): section body. An explicit `""` clears the section.
+
+### memory_set_state
+Replace the State section of the assistant memory.
+- `workspace` (string, required): workspace id.
+- `body` (string, required): section body. An explicit `""` clears the section.
+
+### memory_lesson_add
+Append one lesson to assistant memory. Lessons carry a stamp and are never pruned by age.
+- `workspace` (string, required): workspace id.
+- `text` (string, required): lesson text.
+- `at` (string, optional): entry stamp, `YYYY-MM-DD HH:MM` or `YYYY-MM-DD`; defaults to now.
+
+### memory_lesson_delete
+Remove one lesson from assistant memory. Destructive.
+- `workspace` (string, required): workspace id.
+- `entry_id` (string, required): lesson id from `memory_show`.
 
 ### memory_add
-Append one dated entry to assistant memory.
+Append one entry to the Log section of assistant memory. The call returns 422 `log_over_cap` when the Log is full.
 - `workspace` (string, required): workspace id.
 - `text` (string, required): entry text.
-- `date` (string, optional): entry date, `YYYY-MM-DD`.
-- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+- `at` (string, optional): entry stamp, `YYYY-MM-DD HH:MM` or `YYYY-MM-DD`; defaults to now.
 
 ### memory_delete
-Remove one memory entry. Destructive.
+Remove one Log entry from assistant memory. Destructive.
 - `workspace` (string, required): workspace id.
-- `entry_id` (string, required): entry id.
-- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+- `entry_id` (string, required): log entry id from `memory_show`.
 
 ### memory_clear
-Erase the whole assistant memory. Destructive.
+Rewrite the assistant memory as the empty skeleton. Destructive.
 - `workspace` (string, required): workspace id.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 - `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.

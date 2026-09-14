@@ -3,6 +3,7 @@ package runs
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,22 +19,28 @@ type Reaper struct {
 	now      func() time.Time
 	log      *slog.Logger
 
-	mu        sync.Mutex
-	idleSince map[string]time.Time
-	limitHits map[string]int
-	stop      chan struct{}
+	mu          sync.Mutex
+	idleSince   map[string]time.Time
+	limitHits   map[string]int
+	sentinels   map[string]int
+	fixAttempts map[string]int
+	memDone     map[string]bool
+	stop        chan struct{}
 }
 
 // NewReaper builds a reaper bound to the runs service.
 func NewReaper(svc *Service) *Reaper {
 	return &Reaper{
-		svc:       svc,
-		interval:  5 * time.Second,
-		now:       time.Now,
-		log:       slog.Default().With("source", "reaper"),
-		idleSince: make(map[string]time.Time),
-		limitHits: make(map[string]int),
-		stop:      make(chan struct{}),
+		svc:         svc,
+		interval:    5 * time.Second,
+		now:         time.Now,
+		log:         slog.Default().With("source", "reaper"),
+		idleSince:   make(map[string]time.Time),
+		limitHits:   make(map[string]int),
+		sentinels:   make(map[string]int),
+		fixAttempts: make(map[string]int),
+		memDone:     make(map[string]bool),
+		stop:        make(chan struct{}),
 	}
 }
 
@@ -133,7 +140,7 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 	}
 
 	if DetectCompletion(screen, run.ID) {
-		r.finishComplete(ctx, run, now)
+		r.gateCompletion(ctx, run, screen, now)
 		return
 	}
 
@@ -165,6 +172,71 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 	if cleared {
 		r.svc.emitLimitCleared(ctx, run.Harness)
 	}
+}
+
+// gateCompletion runs the memory gate on a fresh completion sentinel (B22
+// §3.3). Only a rising exact-line sentinel count re-runs the gate, so the fix
+// message's quoted sentinel does not retrigger it.
+func (r *Reaper) gateCompletion(ctx context.Context, run *Run, screen string, now time.Time) {
+	n := countSentinels(screen, run.ID)
+	r.mu.Lock()
+	if n <= r.sentinels[run.ID] {
+		r.mu.Unlock()
+		return
+	}
+	r.sentinels[run.ID] = n
+	attempts := r.fixAttempts[run.ID]
+	r.mu.Unlock()
+
+	issues := r.svc.gateMemory(ctx, run, r.svc.memoryFor(ctx, run))
+	if len(issues) == 0 {
+		r.finishComplete(ctx, run, now)
+		return
+	}
+	if attempts >= maxMemoryFixes {
+		r.markMemDone(run.ID)
+		r.svc.recordMemoryInvalid(ctx, run, issues, "reaper")
+		r.finishComplete(ctx, run, now)
+		return
+	}
+	attempts++
+	r.mu.Lock()
+	r.fixAttempts[run.ID] = attempts
+	// The fix keeps the pane busy; reset the idle clock.
+	delete(r.idleSince, run.ID)
+	r.mu.Unlock()
+	r.svc.AddEvent(ctx, run.ID, "memory.fix_requested", "reaper", map[string]string{
+		"issues": strings.Join(issues, "\n"), "attempt": strconv.Itoa(attempts),
+	})
+	if err := tmux.Send(run.TmuxSession, fixMessage(issues, run.ID)); err != nil {
+		r.log.Warn("memory fix send", "run", run.ID, "error", err)
+		return
+	}
+	time.Sleep(300 * time.Millisecond)
+	_ = tmux.SendKey(run.TmuxSession, "enter")
+}
+
+// gateAtFinish validates memory when a run ends without a passing sentinel
+// (idle, kill, session gone, max duration). No fix cycle: record and alert.
+func (r *Reaper) gateAtFinish(ctx context.Context, run *Run) {
+	r.mu.Lock()
+	done := r.memDone[run.ID]
+	r.mu.Unlock()
+	if done {
+		return
+	}
+	issues := r.svc.gateMemory(ctx, run, r.svc.memoryFor(ctx, run))
+	if len(issues) == 0 {
+		return
+	}
+	r.markMemDone(run.ID)
+	r.svc.recordMemoryInvalid(ctx, run, issues, "reaper")
+}
+
+func (r *Reaper) markMemDone(runID string) {
+	r.mu.Lock()
+	r.memDone[runID] = true
+	r.mu.Unlock()
 }
 
 // finishComplete ends a completed run; keep_alive lets the session linger first.
@@ -217,6 +289,9 @@ func (r *Reaper) checkIdle(ctx context.Context, run *Run, screen string, now tim
 }
 
 func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndReason) {
+	if status != StatusComplete {
+		r.gateAtFinish(ctx, run)
+	}
 	r.svc.cancelNative(run.ID)
 	if run.TmuxSession != "" {
 		_ = tmux.SendKey(run.TmuxSession, "C-c")
@@ -230,6 +305,9 @@ func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndRea
 	delete(r.idleSince, run.ID)
 	delete(r.idleSince, "keep:"+run.ID)
 	delete(r.limitHits, run.ID)
+	delete(r.sentinels, run.ID)
+	delete(r.fixAttempts, run.ID)
+	delete(r.memDone, run.ID)
 	r.mu.Unlock()
 	r.log.Info("reaper finished run", "id", run.ID, "status", status, "end_reason", end)
 }

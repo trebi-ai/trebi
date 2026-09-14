@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/llm"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -25,6 +26,8 @@ type WakeOpts struct {
 	ExtraPrompt string
 	Recap       string
 	Message     string
+	// Memory carries the launch memory seam to the composer. Nil = off.
+	Memory *MemoryLaunch
 }
 
 // WakeScope names the operator one wake composes for.
@@ -40,10 +43,18 @@ type WakeComposer interface {
 	ComposeWakePrompt(ctx context.Context, scope WakeScope, opts WakeOpts) (string, error)
 }
 
+// MemoryResolver resolves the MEMORY.md seam for a stored run at gate time
+// (B22 §3.3). *workspaces.Service satisfies it; nil disables the gate. Runs
+// cannot import workspaces, so the seam is injected like WakeComposer.
+type MemoryResolver interface {
+	MemoryLaunchFor(ctx context.Context, run *Run) *MemoryLaunch
+}
+
 // Service is the runs subsystem.
 type Service struct {
 	st  *store.Store
 	log *slog.Logger
+	fs  *files.Service // MEMORY.md seed/migrate writes; nil skips memory prep
 
 	mu       sync.RWMutex
 	sessions map[string]sessionSnap // run_id → state
@@ -54,6 +65,7 @@ type Service struct {
 	prov     llm.Provider // test seam; nil → llm.New from config
 	dispatch tools.Dispatcher
 	composer WakeComposer
+	memRes   MemoryResolver
 }
 
 type nativeHandle struct {
@@ -78,14 +90,21 @@ var (
 	ErrSentinelInMessage = errors.New("message must not contain the run completion sentinel")
 )
 
-// New creates a runs service. A nil composer skips wake composition.
-func New(st *store.Store, composer WakeComposer) *Service {
+// New creates a runs service. A nil composer skips wake composition; a nil
+// fs skips MEMORY.md launch prep.
+func New(st *store.Store, composer WakeComposer, fs *files.Service) *Service {
 	return &Service{
-		st: st, log: slog.Default().With("source", "runs"),
+		st: st, log: slog.Default().With("source", "runs"), fs: fs,
 		sessions: make(map[string]sessionSnap), native: make(map[string]*nativeHandle),
 		life:     context.Background(),
 		composer: composer,
 	}
+}
+
+// SetMemoryResolver wires the gate-time memory seam. Both daemon and api hold
+// the workspaces service at their runs.New call sites.
+func (s *Service) SetMemoryResolver(r MemoryResolver) {
+	s.memRes = r
 }
 
 // NativeHooks wires the in-process assistant loop.
@@ -142,6 +161,8 @@ type CreateOpts struct {
 	NudgeMS        int64
 	ResumedFrom    string
 	ResumeAttempts int
+	// MemoryHash is the launch-time MEMORY.md hash; empty when memory is off.
+	MemoryHash string
 	// DryRun evaluates without persisting (when gate only).
 	DryRun bool
 }
@@ -272,7 +293,8 @@ func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 			started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 			COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
 			COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
-			trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json
+			trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
+			COALESCE(memory_hash,'')
 		FROM runs WHERE id = ?`, id)
 	return s.scanRun(row)
 }
@@ -337,7 +359,8 @@ func (o ListOpts) query() (string, []any) {
 		started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
 		COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
-		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json
+		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
+		COALESCE(memory_hash,'')
 		FROM runs WHERE 1=1`
 	var args []any
 	if o.Workspace != "" {
@@ -915,6 +938,7 @@ func newRun(id string, now time.Time, opts CreateOpts) *Run {
 		QueueID:         opts.QueueID,
 		TraceID:         opts.TraceID,
 		Revision:        1,
+		MemoryHash:      opts.MemoryHash,
 		ResumedFrom:     opts.ResumedFrom,
 		ResumeAttempts:  opts.ResumeAttempts,
 		Session: SessionSpec{
@@ -951,13 +975,13 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json,
 		conversation_key, conversation_id, working_dir, session_id, runtime, harness, tmux_session,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
-		resumed_from, resume_attempts, queue_id, trace_id, revision, updated_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		resumed_from, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.Job, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON,
 		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.TmuxSession),
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
-		store.NullStr(opts.ResumedFrom), opts.ResumeAttempts, queueID, opts.TraceID, 1, nowStr,
+		store.NullStr(opts.ResumedFrom), opts.ResumeAttempts, queueID, opts.TraceID, opts.MemoryHash, 1, nowStr,
 	)
 	if err != nil {
 		return err
@@ -1216,7 +1240,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	var trigEvent, trigInteg, capJSON, varsJSON, inputsJSON sql.NullString
 	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev int64
 	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, workingDir, resumedFrom string
-	var prompt, ws, job, kind, status string
+	var prompt, ws, job, kind, status, memoryHash string
 	err := row.Scan(
 		&r.ID, &ws, &job, &kind, &reason, &status, &endReason,
 		&prompt, &sess, &harness, &runtime, &tmux,
@@ -1224,6 +1248,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		&started, &ended, &maxD, &idle, &keep, &nudge,
 		&resumedFrom, &resumeAtt, &qid, &trace, &rev,
 		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
+		&memoryHash,
 	)
 	if err != nil {
 		return nil, err
@@ -1249,6 +1274,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r.ConversationKey = convKey
 	r.ConversationID = convID
 	r.WorkingDir = workingDir
+	r.MemoryHash = memoryHash
 	r.StartedAt = store.ParseTS(started.String)
 	if ended.Valid {
 		t := store.ParseTS(ended.String)
