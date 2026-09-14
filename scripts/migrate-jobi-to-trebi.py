@@ -11,12 +11,14 @@ Default is dry-run: prints the plan and never writes. Pass --apply to execute.
   uv run scripts/migrate-jobi-to-trebi.py migrate --shadow
   uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --diff
   uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --job receipts --target-workspace ellis
+  uv run scripts/migrate-jobi-to-trebi.py convert-memory path/to/MEMORY.md
   uv run scripts/migrate-jobi-to-trebi.py migrate --shadow --job receipts --target-workspace ellis
 
 --job limits file rewrite and DB copy to one job. --target-workspace is the
 trebi destination (id, name, or path). Incremental --job --apply copies into
 the target and leaves ~/.jobi files untouched. Full rewrite-jobs --apply
-without --job still rewrites in place (cutover).
+without --job still rewrites in place (cutover). rewrite-jobs converts jobi
+MEMORY.md (extra ## headings) to trebi v1; convert-memory does only that.
 
 --jobi-dir, --trebi-dir, --job and --target-workspace are accepted on either
 side of the subcommand. make-fixture takes only its output directory.
@@ -316,26 +318,442 @@ def rewrite_job_text(
     report: list[str],
     *,
     rewrite_sentinel: bool = True,
+    rewrite_memory_headings: bool = True,
     src_dir: Path | None = None,
 ) -> tuple[str, bool]:
     fm_raw, _full, body = split_frontmatter(text)
+
+    def touch_body(b: str) -> str:
+        if rewrite_sentinel and SENTINEL_OLD in b:
+            b = b.replace(SENTINEL_OLD, SENTINEL_NEW)
+        if rewrite_memory_headings:
+            b, notes = rewrite_memory_headings_in_job_body(b)
+            report.extend(notes)
+        return b
+
     if fm_raw is None:
-        new_body = body
-        changed = False
-        if rewrite_sentinel and SENTINEL_OLD in body:
-            new_body = body.replace(SENTINEL_OLD, SENTINEL_NEW)
-            changed = new_body != body
-        return new_body if changed else text, changed
+        new_body = touch_body(body)
+        return (new_body, True) if new_body != text else (text, False)
 
     data = yaml.load(fm_raw) if fm_raw.strip() else {}
     if not isinstance(data, dict):
         data = {}
     rewrite_frontmatter_inplace(data, report, src_dir=src_dir)
-    new_body = body
-    if rewrite_sentinel and SENTINEL_OLD in new_body:
-        new_body = new_body.replace(SENTINEL_OLD, SENTINEL_NEW)
-    new_text = dump_frontmatter(data, new_body)
+    new_text = dump_frontmatter(data, touch_body(body))
     return new_text, new_text != text
+
+
+# ── jobi MEMORY.md → trebi v1 ──────────────────────────────────────────────
+#
+# Trebi's built-in memory.Migrate only handles B22 ledgers (no H2 headings).
+# jobi files used extra ## sections (Shipped, Seen, Sources, …) which Parse
+# treats as unknown_section — they stay invalid until rewritten. Extra H2s
+# become ### under Context/State so rotation/dedup lists survive the Log cap.
+# Prose is copied as-is (addresses like jobi@ocral.org stay).
+
+
+MEMORY_MARKER = (
+    '<!-- trebi memory v1. Keep these four sections in this order. '
+    'Do not add other "## " headings. -->'
+)
+MEMORY_SECTION_COMMENTS = {
+    "Context": "<!-- Durable facts about this job: what it does, where things are, how they work. Free form. Rewrite when facts change. -->",
+    "State": "<!-- Current situation, open issues, next steps. Free form. Rewrite each run. -->",
+    "Lessons": "<!-- One bullet per lesson: `- [YYYY-MM-DD HH:MM] text`. Never prune by age. -->",
+    "Log": "<!-- One bullet per event, observation, or stat: `- [YYYY-MM-DD HH:MM] text`. Prune the oldest entries when over the cap. -->",
+}
+CANONICAL_H2 = {
+    "context": "Context",
+    "state": "State",
+    "lessons": "Lessons",
+    "lessons learned": "Lessons",
+    "log": "Log",
+}
+# Extra jobi H2s that are durable facts → Context as H3. Everything else extra
+# becomes State as H3 (operational lists: Shipped, Seen, Sources, Reported).
+CONTEXT_H2_PREFIXES = (
+    "confirmed dead ends",
+    "annual",
+)
+# JOB.md runbook headings / `## Foo` mentions that document memory lists.
+# Demote so the next run writes ### under State instead of a new unknown ##.
+RUNBOOK_MEMORY_H2_PREFIXES = (
+    "shipped",
+    "seen",
+    "sources",
+    "reported",
+    "candidates",
+    "confirmed dead ends",
+    "current regime",
+    "metro watch",
+    "active drivers",
+    "recent readings",
+    "outlook vs reality",
+    "sources tested",
+    "list reduced-share",
+    "active listings",
+)
+
+VALID_MEMORY_ENTRY = re.compile(r"^- \[(\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}))?\] (.+)$")
+DUP_STAMP_ENTRY = re.compile(
+    r"^- \[(\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?)\] \[(\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?)\] (.*)$"
+)
+BRACKET_STAMP_ENTRY = re.compile(
+    r"^- (?:\*\*)?\[(\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}))?([^\]]*)\]\*\*? ?(.*)$"
+)
+LEGACY_B22_ENTRY = re.compile(r"^\[(\d{4}-\d{2}-\d{2})\] ?(.*)$")
+ANY_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+H2_LINE = re.compile(r"^## (?!#)(.+)$", re.MULTILINE)
+INLINE_H2 = re.compile(r"`## ([^`]+)`")
+
+
+def _is_h2(line: str) -> bool:
+    return line.startswith("## ") and not line.startswith("###")
+
+
+def _heading_key(title: str) -> str:
+    return title.strip().lower()
+
+
+def _canonical_h2(title: str) -> str | None:
+    return CANONICAL_H2.get(_heading_key(title))
+
+
+def _matches_h2_prefix(title: str, prefix: str) -> bool:
+    key = _heading_key(title)
+    if key == prefix:
+        return True
+    if prefix.endswith("#"):
+        return key.startswith(prefix)
+    return key.startswith(prefix + " ") or key.startswith(prefix + ":")
+
+
+def _is_runbook_memory_h2(title: str) -> bool:
+    return any(_matches_h2_prefix(title, p) for p in RUNBOOK_MEMORY_H2_PREFIXES)
+
+
+def rewrite_memory_headings_in_job_body(body: str) -> tuple[str, list[str]]:
+    """Demote extra jobi memory H2s in a JOB.md/AGENT.md runbook to ###."""
+    n_head = 0
+    n_inline = 0
+
+    def heading(m: re.Match[str]) -> str:
+        nonlocal n_head
+        title = m.group(1).strip()
+        if _is_runbook_memory_h2(title):
+            n_head += 1
+            return f"### {title}"
+        return m.group(0)
+
+    def inline(m: re.Match[str]) -> str:
+        nonlocal n_inline
+        title = m.group(1).strip()
+        if _is_runbook_memory_h2(title):
+            n_inline += 1
+            return f"`### {title}`"
+        return m.group(0)
+
+    out = H2_LINE.sub(heading, body)
+    out = INLINE_H2.sub(inline, out)
+    notes: list[str] = []
+    if n_head:
+        notes.append(f"demoted {n_head} extra ## memory heading(s) to ###")
+    if n_inline:
+        notes.append(f"rewrote {n_inline} `## …` memory mention(s) to ###")
+    return out, notes
+
+
+def memory_skeleton() -> str:
+    parts = [MEMORY_MARKER, "# Memory", ""]
+    for name in ("Context", "State", "Lessons", "Log"):
+        parts.append(f"## {name}\n{MEMORY_SECTION_COMMENTS[name]}\n")
+    return "\n".join(parts)
+
+
+def _trim_body(s: str) -> str:
+    return s.strip("\n")
+
+
+def _drop_h1(preamble: str) -> str:
+    lines: list[str] = []
+    for ln in preamble.split("\n"):
+        if ln.startswith("# "):
+            continue
+        if ln.startswith("<!-- trebi memory v1"):
+            continue
+        lines.append(ln)
+    return _trim_body("\n".join(lines))
+
+
+def _stray_preamble(preamble: str) -> bool:
+    for ln in _drop_h1(preamble).split("\n"):
+        stripped = ln.strip()
+        if stripped and not stripped.startswith("<!--"):
+            return True
+    return False
+
+
+def split_memory_h2(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Split on ## headings only (`###` stays in the body)."""
+    preamble: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    current: str | None = None
+    buf: list[str] = []
+    for line in text.split("\n"):
+        if _is_h2(line):
+            if current is None:
+                preamble = buf
+            else:
+                sections.append((current, buf))
+            current = line[3:].strip()
+            buf = []
+        else:
+            buf.append(line)
+    if current is None:
+        preamble = buf
+    else:
+        sections.append((current, buf))
+    return "\n".join(preamble), [(t, "\n".join(b)) for t, b in sections]
+
+
+def _join_parts(parts: list[str]) -> str:
+    kept = [_trim_body(p) for p in parts if _trim_body(p)]
+    return "\n\n".join(kept)
+
+
+def _as_h3(title: str, body: str) -> str:
+    body = _trim_body(body)
+    if body:
+        return f"### {title}\n{body}"
+    return f"### {title}"
+
+
+def _classify_extra_h2(title: str) -> str:
+    for prefix in CONTEXT_H2_PREFIXES:
+        if _matches_h2_prefix(title, prefix):
+            return "Context"
+    return "State"
+
+
+def _fallback_date(text: str) -> str:
+    dates = ANY_DATE.findall(text)
+    if dates:
+        return min(dates)
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _stamp_line(line: str, fallback: str) -> str:
+    m = DUP_STAMP_ENTRY.match(line)
+    if m:
+        a, b, rest = m.group(1), m.group(2), m.group(3).strip()
+        # `- [date] [date extra]` from double-stamped jobi bullets.
+        if b == a or a.startswith(b) or b.startswith(a.split()[0]):
+            return f"- [{a}] {rest or 'noted'}"
+    if VALID_MEMORY_ENTRY.match(line):
+        return line
+    m = BRACKET_STAMP_ENTRY.match(line)
+    if m:
+        date, time, extra, rest = m.group(1), m.group(2), m.group(3).strip(), m.group(4)
+        at = f"{date} {time}" if time else date
+        text = f"{extra} {rest}".strip() if extra else rest.strip()
+        return f"- [{at}] {text or extra or 'noted'}"
+    if line.startswith("- "):
+        text = line[2:].strip() or "noted"
+        dates = ANY_DATE.findall(text)
+        date = dates[0] if dates else fallback
+        return f"- [{date}] {text}"
+    return line
+
+
+def _normalize_entries(body: str, fallback: str) -> str:
+    out: list[str] = []
+    open_entry = False
+    for raw in body.split("\n"):
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+        if stripped == "" or stripped.startswith("<!--"):
+            continue
+        if line.startswith("- "):
+            stamped = _stamp_line(line, fallback)
+            if not VALID_MEMORY_ENTRY.match(stamped):
+                text = stripped.lstrip("- ").strip() or "noted"
+                stamped = f"- [{fallback}] {text}"
+            out.append(stamped)
+            open_entry = True
+        elif line.startswith("  ") and open_entry:
+            out.append("  " + line.strip())
+        elif open_entry:
+            out.append("  " + stripped)
+        else:
+            text = stripped.lstrip("- ").strip() or "noted"
+            dates = ANY_DATE.findall(text)
+            date = dates[0] if dates else fallback
+            out.append(f"- [{date}] {text}")
+            open_entry = True
+    return "\n".join(out)
+
+
+def _entries_already_ok(body: str) -> bool:
+    open_entry = False
+    for raw in body.split("\n"):
+        stripped = raw.strip()
+        if stripped == "" or stripped.startswith("<!--"):
+            continue
+        if VALID_MEMORY_ENTRY.match(raw):
+            open_entry = True
+            continue
+        if raw.startswith("  ") and open_entry:
+            continue
+        return False
+    return True
+
+
+def _has_v1_marker(text: str) -> bool:
+    first = text.split("\n", 1)[0] if text else ""
+    return first.startswith("<!-- trebi memory v1")
+
+
+def render_memory_v1(context: str, state: str, lessons: str, log: str) -> str:
+    parts = [MEMORY_MARKER, "# Memory", ""]
+    for name, body in (
+        ("Context", context),
+        ("State", state),
+        ("Lessons", lessons),
+        ("Log", log),
+    ):
+        body = _trim_body(body)
+        if body:
+            parts.append(f"## {name}\n{body}\n")
+        else:
+            parts.append(f"## {name}\n{MEMORY_SECTION_COMMENTS[name]}\n")
+    text = "\n".join(parts)
+    if not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def convert_b22_ledger(raw: str) -> str:
+    """Preamble → Context, `[YYYY-MM-DD] text` lines → Log. Mirrors memory.Migrate."""
+    lines = raw.split("\n")
+    if lines and lines[-1] == "":
+        lines = lines[:-1]
+    preamble: list[str] = []
+    log_blocks: list[list[str]] = []
+    cur: list[str] | None = None
+    for line in lines:
+        m = LEGACY_B22_ENTRY.match(line)
+        if m:
+            if cur is not None:
+                log_blocks.append(cur)
+            cur = [m.group(1), m.group(2)]
+            continue
+        if cur is not None:
+            cur.append(line.lstrip(" "))
+            continue
+        preamble.append(line)
+    if cur is not None:
+        log_blocks.append(cur)
+    while preamble and preamble[0].startswith("# "):
+        preamble = preamble[1:]
+    ctx = _trim_body("\n".join(preamble))
+    log_lines: list[str] = []
+    for block in log_blocks:
+        at = block[0]
+        text = (block[1] if len(block) > 1 else "").strip() or "noted"
+        log_lines.append(f"- [{at}] {text}")
+        for cont in block[2:]:
+            if cont.strip():
+                log_lines.append("  " + cont.strip())
+    return render_memory_v1(ctx, "", "", "\n".join(log_lines))
+
+
+def convert_jobi_memory(text: str) -> tuple[str, list[str], bool]:
+    """Return (v1 text, notes, changed). Idempotent on a valid v1 file."""
+    raw = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not raw.strip():
+        return memory_skeleton(), ["empty file → v1 skeleton"], True
+
+    preamble, sections = split_memory_h2(raw)
+    if not sections:
+        out = convert_b22_ledger(raw)
+        return out, ["B22 ledger → v1 (preamble → Context, dated lines → Log)"], out != raw
+
+    extra = [t for t, _ in sections if _canonical_h2(t) is None]
+    canon_order = [_canonical_h2(t) for t, _ in sections]
+    present = {c for c in canon_order if c}
+    lessons_ok = all(
+        _entries_already_ok(b) for t, b in sections if _canonical_h2(t) == "Lessons"
+    )
+    log_ok = all(_entries_already_ok(b) for t, b in sections if _canonical_h2(t) == "Log")
+    stray_preamble = _stray_preamble(preamble)
+    already_v1 = (
+        not extra
+        and _has_v1_marker(raw)
+        and present == {"Context", "State", "Lessons", "Log"}
+        and [c for c in canon_order if c]
+        == ["Context", "State", "Lessons", "Log"]
+        and lessons_ok
+        and log_ok
+        and not stray_preamble
+    )
+    if already_v1:
+        out = raw if raw.endswith("\n") else raw + "\n"
+        return out, [], out != raw
+
+    notes: list[str] = []
+    fallback = _fallback_date(raw)
+    context_parts: list[str] = []
+    state_parts: list[str] = []
+    lessons = ""
+    log = ""
+    pre = _drop_h1(preamble)
+    if pre:
+        context_parts.append(pre)
+        notes.append("preamble → Context")
+
+    demoted: list[str] = []
+    for title, body in sections:
+        kind = _canonical_h2(title)
+        if kind == "Context":
+            context_parts.append(_trim_body(body))
+        elif kind == "State":
+            state_parts.append(_trim_body(body))
+        elif kind == "Lessons":
+            lessons = _normalize_entries(body, fallback)
+            if not lessons_ok:
+                notes.append("stamped Lessons bullets")
+        elif kind == "Log":
+            log = _normalize_entries(body, fallback)
+            if not log_ok:
+                notes.append("stamped Log bullets")
+        else:
+            dest = _classify_extra_h2(title)
+            block = _as_h3(title, body)
+            demoted.append(title)
+            if dest == "Context":
+                context_parts.append(block)
+            else:
+                state_parts.append(block)
+
+    if demoted:
+        shown = ", ".join(f"## {t}" for t in demoted[:8])
+        more = f" (+{len(demoted) - 8} more)" if len(demoted) > 8 else ""
+        notes.append(f"demoted extra {shown}{more} → ### under Context/State")
+    missing = [n for n in ("Context", "State", "Lessons", "Log") if n not in present]
+    if missing and not extra:
+        notes.append("added missing " + ", ".join(f"## {n}" for n in missing))
+    if not _has_v1_marker(raw):
+        notes.append("inserted v1 marker")
+    if not notes:
+        notes.append("jobi MEMORY.md → v1")
+
+    out = render_memory_v1(
+        _join_parts(context_parts),
+        _join_parts(state_parts),
+        lessons,
+        log,
+    )
+    return out, notes, out != raw
 
 
 # ── config / connectors (current trebi shapes) ─────────────────────────────
@@ -713,6 +1131,7 @@ class MigrationPlan:
     job: str | None = None
     target: TargetWorkspace | None = None
     agent: str | None = None
+    agent_scope: str | None = None
     phases: list[PhasePlan] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     workspace_map: dict[str, str] = field(default_factory=dict)
@@ -726,6 +1145,8 @@ class MigrationPlan:
         ]
         if self.job:
             lines.append(f"job filter: {self.job}")
+        if self.agent_scope:
+            lines.append(f"agent filter: {self.agent_scope} (agent + its jobs)")
         if self.target:
             lines.append(
                 f"target workspace: {self.target.name} ({self.target.id}) "
@@ -759,7 +1180,7 @@ def is_junk_task(d: dict[str, Any]) -> bool:
 
 
 def project_task_derivations(
-    conn: sqlite3.Connection, job_filter: str | None = None
+    conn: sqlite3.Connection, job_filter: str | None = None, agent_scope: str | None = None
 ) -> dict[str, int]:
     counts = {
         "reason_set": 0,
@@ -780,6 +1201,9 @@ def project_task_derivations(
         if job_filter and not _task_matches_job(d, job_filter):
             counts["filtered_out"] += 1
             continue
+        if agent_scope and not _row_matches_agent(d, agent_scope):
+            counts["filtered_out"] += 1
+            continue
         if is_junk_task(d):
             counts["dropped_junk"] += 1
             continue
@@ -791,6 +1215,23 @@ def project_task_derivations(
         if derive_conversation_key(d.get("trigger_vars_json")):
             counts["conversation_key_set"] += 1
     return counts
+
+
+def _row_matches_agent(d: dict[str, Any], agent: str) -> bool:
+    """True when a jobi row belongs to <agent> or to one of its jobs.
+
+    jobi stamps a child job with parent_agent, and the agent's own wake with
+    kind='agent' and job_name=<agent>. workspace_path is the fallback for rows
+    written before parent_agent existed.
+    """
+    a = agent.strip().lower()
+    if str(d.get("parent_agent") or "").strip().lower() == a:
+        return True
+    name = str(d.get("job_name") or "").strip().lower()
+    if name == a:
+        return True
+    ws = str(d.get("workspace_path") or "")
+    return bool(ws) and Path(ws).name.lower() == a
 
 
 def _task_matches_job(d: dict[str, Any], spec: str) -> bool:
@@ -812,9 +1253,11 @@ def plan_migrate(
     job: str | None = None,
     target: TargetWorkspace | None = None,
     agent: str | None = None,
+    agent_scope: str | None = None,
 ) -> MigrationPlan:
     plan = MigrationPlan(
-        jobi_dir=jobi_dir, trebi_dir=trebi_dir, mode=mode, job=job, target=target, agent=agent
+        jobi_dir=jobi_dir, trebi_dir=trebi_dir, mode=mode, job=job, target=target,
+        agent=agent, agent_scope=agent_scope,
     )
 
     pf = PhasePlan("preflight", "check jobi present, schema, latch")
@@ -887,7 +1330,7 @@ def plan_migrate(
                 ph = PhasePlan(f"db-{dst}", f"copy {src} → {dst}")
                 ph.counts["source_rows"] = n
                 if src == "tasks":
-                    proj = project_task_derivations(conn, job)
+                    proj = project_task_derivations(conn, job, agent_scope)
                     ph.counts.update(proj)
                     ph.notes.append("workspace_path → workspace_id; command detected → harness name")
                     ph.notes.append("seconds → _ms (×1000); reason NULL if no launch fact (M13)")
@@ -1051,6 +1494,7 @@ def apply_tasks(
     job_filter: str | None = None,
     target_id: str | None = None,
     agent: str | None = None,
+    agent_scope: str | None = None,
 ) -> tuple[int, set[str]]:
     cols = [r[1] for r in jconn.execute("PRAGMA table_info(tasks)")]
     ids: set[str] = set()
@@ -1058,6 +1502,8 @@ def apply_tasks(
     for row in jconn.execute("SELECT * FROM tasks"):
         d = dict(zip(cols, row))
         if job_filter and not _task_matches_job(d, job_filter):
+            continue
+        if agent_scope and not _row_matches_agent(d, agent_scope):
             continue
         if is_junk_task(d):
             continue
@@ -1201,6 +1647,7 @@ def apply_queue(
     job_filter: str | None = None,
     target_id: str | None = None,
     agent: str | None = None,
+    agent_scope: str | None = None,
 ) -> int:
     try:
         cols = [r[1] for r in jconn.execute("PRAGMA table_info(event_queue)")]
@@ -1224,6 +1671,8 @@ def apply_queue(
             jn = str(d.get("job_name") or "")
             if jn != job_filter and job_filter.lower() != jn.lower():
                 continue
+        if agent_scope and not _row_matches_agent(d, agent_scope):
+            continue
         wid = workspace_id_for(d.get("workspace_path") or "", wmap, target_id)
         kind = queue_kind(d, task_kind)
         tconn.execute(
@@ -1321,18 +1770,29 @@ def apply_schedules(
     job_filter: str | None = None,
     target_id: str | None = None,
     agent: str | None = None,
+    agent_scope: str | None = None,
 ) -> int:
     try:
         rows = list(jconn.execute("SELECT key, anchor_time, interval FROM schedule_anchors"))
     except sqlite3.Error:
         return 0
     job_ws: dict[str, str] = {}
+    # schedule_anchors keys are bare job names, so resolve agent ownership
+    # through the tasks table.
+    agent_jobs: set[str] = set()
     try:
-        for jn, wp, jf in jconn.execute(
-            "SELECT job_name, workspace_path, job_file FROM tasks WHERE job_name IS NOT NULL"
+        for jn, wp, jf, pa, kind in jconn.execute(
+            "SELECT job_name, workspace_path, job_file, parent_agent, kind FROM tasks "
+            "WHERE job_name IS NOT NULL"
         ):
             if jn and jn not in job_ws:
                 job_ws[jn] = workspace_id_for(jf or wp or "", wmap, target_id)
+            if agent_scope and jn and _row_matches_agent(
+                {"job_name": jn, "workspace_path": wp, "parent_agent": pa, "kind": kind},
+                agent_scope,
+            ):
+                agent_jobs.add(str(jn).lower())
+                agent_jobs.add(Path(str(jn)).name.lower())
     except sqlite3.Error:
         pass
     n = 0
@@ -1346,6 +1806,8 @@ def apply_schedules(
             except ValueError:
                 idx = 0
         if job_filter and job != job_filter and job.lower() != job_filter.lower():
+            continue
+        if agent_scope and job.lower() not in agent_jobs:
             continue
         wid = target_id or job_ws.get(job) or "imported-orphans"
         if agent:
@@ -1394,7 +1856,7 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
     job_filter = plan.job
     target_id = plan.target.id if plan.target else None
 
-    if not job_filter:
+    if not job_filter and not plan.agent_scope:
         src_cfg = jobi / "config.yaml"
         if src_cfg.exists():
             # Current trebi still uses defaults.command and session.timeout — copy as-is.
@@ -1447,9 +1909,10 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
             job_filter=job_filter,
             target_id=target_id,
             agent=plan.agent,
+            agent_scope=plan.agent_scope,
         )
         print(f"inserted runs: {n}")
-        apply_timeline(jconn, tconn, ids if job_filter else None)
+        apply_timeline(jconn, tconn, ids if (job_filter or plan.agent_scope) else None)
         print("timeline segments+events copied")
         n = apply_queue(
             jconn,
@@ -1458,9 +1921,10 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
             job_filter=job_filter,
             target_id=target_id,
             agent=plan.agent,
+            agent_scope=plan.agent_scope,
         )
         print(f"queue rows: {n}")
-        if not job_filter:
+        if not job_filter and not plan.agent_scope:
             apply_policy_cursors(jconn, tconn)
             print("policy + cursors + metrics copied")
         n = apply_schedules(
@@ -1470,6 +1934,7 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
             job_filter=job_filter,
             target_id=target_id,
             agent=plan.agent,
+            agent_scope=plan.agent_scope,
         )
         print(f"schedule seeds: {n}")
         now = now_iso()
@@ -1549,9 +2014,10 @@ def job_support_files(job_dir: Path) -> list[Path]:
     """Every file in a job folder except its manifest, junk, and caches.
 
     A job in trebi is its folder (internal/job/discover.go names the job from
-    the directory), so MEMORY.md, scripts/ and templates/ belong to it. These
-    are copied byte-for-byte: a jobi mailbox like jobi@ocral.org appears in
-    memory prose as a real address, so no substitution is safe here.
+    the directory), so MEMORY.md, scripts/ and templates/ belong to it.
+    MEMORY.md is converted jobi → v1 (headings + entry stamps only); other
+    support files stay byte-for-byte so addresses like jobi@ocral.org are
+    not substituted.
     """
     out: list[Path] = []
     for root, dirs, files in os.walk(job_dir):
@@ -1624,6 +2090,47 @@ def dest_for_job(
     return path
 
 
+def plan_support_file(
+    src: Path,
+    dest: Path,
+    ws: Path,
+    *,
+    convert_memory: bool,
+    label: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Plan one support-file copy, converting MEMORY.md to v1 when asked."""
+    lines: list[str] = []
+    try:
+        rel: Path | str = src.relative_to(ws)
+    except ValueError:
+        rel = src.name
+    if convert_memory and src.name == "MEMORY.md":
+        text = src.read_text(encoding="utf-8", errors="replace")
+        _new, notes, changed = convert_jobi_memory(text)
+        action = "convert-memory" if changed else "copy-support"
+        detail = {
+            "path": str(src),
+            "dest": str(dest),
+            "action": action,
+            "changed": changed,
+            "source_ws": str(ws),
+        }
+        mark = "*" if changed else "+"
+        lines.append(f"  {mark} {rel} ({action} → {dest})")
+        for n in notes:
+            lines.append(f"    ! {n}")
+        return detail, lines
+    detail = {
+        "path": str(src),
+        "dest": str(dest),
+        "action": "copy-support",
+        "changed": False,
+        "source_ws": str(ws),
+    }
+    lines.append(f"  + {rel} ({label} → {dest})")
+    return detail, lines
+
+
 def plan_rewrite(
     workspaces: list[Path],
     *,
@@ -1632,6 +2139,8 @@ def plan_rewrite(
     incremental: bool,
     rewrite_sentinel: bool,
     agent: str | None = None,
+    convert_memory: bool = True,
+    rewrite_memory_headings: bool = True,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     lines: list[str] = []
     details: list[dict[str, Any]] = []
@@ -1683,21 +2192,28 @@ def plan_rewrite(
                 agent_dest_dir = op_dest.parent
                 for sup in agent_support_files(path.parent):
                     sup_dest = agent_dest_dir / sup.name
-                    details.append(
-                        {
-                            "path": str(sup),
-                            "dest": str(sup_dest),
-                            "action": "copy-support",
-                            "changed": False,
-                            "source_ws": str(ws),
-                        }
+                    detail, extra = plan_support_file(
+                        sup, sup_dest, ws,
+                        convert_memory=convert_memory,
+                        label="agent support",
                     )
-                    lines.append(f"  + {sup.name} (agent support → {sup_dest})")
-                new_text, _changed = rewrite_job_text(text, report, rewrite_sentinel=rewrite_sentinel, src_dir=path.parent)
+                    details.append(detail)
+                    lines.extend(extra)
+                new_text, _changed = rewrite_job_text(
+                    text, report,
+                    rewrite_sentinel=rewrite_sentinel,
+                    rewrite_memory_headings=rewrite_memory_headings,
+                    src_dir=path.parent,
+                )
                 for r in report:
                     lines.append(f"    ! {r}")
                 continue
-            new_text, changed = rewrite_job_text(text, report, rewrite_sentinel=rewrite_sentinel, src_dir=path.parent)
+            new_text, changed = rewrite_job_text(
+                text, report,
+                rewrite_sentinel=rewrite_sentinel,
+                rewrite_memory_headings=rewrite_memory_headings,
+                src_dir=path.parent,
+            )
             action = "rewrite" if changed else "unchanged"
             if incremental and target:
                 action = f"copy→{dest}"
@@ -1715,16 +2231,13 @@ def plan_rewrite(
             for sup in job_support_files(path.parent):
                 sup_rel = sup.relative_to(path.parent)
                 sup_dest = dest.parent / sup_rel
-                details.append(
-                    {
-                        "path": str(sup),
-                        "dest": str(sup_dest),
-                        "action": "copy-support",
-                        "changed": False,
-                        "source_ws": str(ws),
-                    }
+                detail, extra = plan_support_file(
+                    sup, sup_dest, ws,
+                    convert_memory=convert_memory,
+                    label="support",
                 )
-                lines.append(f"  + {sup_rel} (support → {sup_dest})")
+                details.append(detail)
+                lines.extend(extra)
 
             mark = "*" if changed else " "
             try:
@@ -1786,6 +2299,7 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
         return 2
     if incremental and target:
         print(f"TARGET {target.name} ({target.id}) {target.path} [{target.source}]")
+    convert_memory = not getattr(args, "no_memory", False)
     lines, details = plan_rewrite(
         workspaces,
         job=job,
@@ -1793,6 +2307,8 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
         incremental=incremental,
         rewrite_sentinel=not args.no_sentinels,
         agent=agent,
+        convert_memory=convert_memory,
+        rewrite_memory_headings=convert_memory,
     )
     for line in lines:
         print(line)
@@ -1811,7 +2327,12 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
             report: list[str] = []
-            new_text, _ = rewrite_job_text(text, report, rewrite_sentinel=not args.no_sentinels, src_dir=path.parent)
+            new_text, _ = rewrite_job_text(
+                text, report,
+                rewrite_sentinel=not args.no_sentinels,
+                rewrite_memory_headings=convert_memory,
+                src_dir=path.parent,
+            )
             print(f"\n--- {path}")
             if d.get("dest") and d["dest"] != d["path"]:
                 print(f"+++ {d['dest']}")
@@ -1823,6 +2344,24 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             print((fm2 or new_text).rstrip()[:2000])
             shown += 1
             if shown >= 5:
+                break
+        mem_shown = 0
+        for d in details:
+            if d.get("action") != "convert-memory":
+                continue
+            path = Path(d["path"])
+            text = path.read_text(encoding="utf-8", errors="replace")
+            new_text, notes, _ = convert_jobi_memory(text)
+            print(f"\n--- {path}")
+            print(f"+++ {d.get('dest') or path} (memory v1)")
+            for n in notes:
+                print(f"    ! {n}")
+            preview = new_text[:2000]
+            print(preview)
+            if len(new_text) > 2000:
+                print("    …")
+            mem_shown += 1
+            if mem_shown >= 5:
                 break
     if args.revert:
         if not args.apply:
@@ -1867,7 +2406,12 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             soul = path.parent / "SOUL.md"
             agent_text = path.read_text(encoding="utf-8", errors="replace")
             report: list[str] = []
-            new_agent, _ = rewrite_job_text(agent_text, report, rewrite_sentinel=not args.no_sentinels, src_dir=path.parent)
+            new_agent, _ = rewrite_job_text(
+                agent_text, report,
+                rewrite_sentinel=not args.no_sentinels,
+                rewrite_memory_headings=convert_memory,
+                src_dir=path.parent,
+            )
             soul_body = ""
             if soul.exists():
                 soul_body = soul.read_text(encoding="utf-8", errors="replace")
@@ -1897,9 +2441,21 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
                     soul.unlink()
                 print(f"removed {path}")
             continue
+        if d.get("action") == "convert-memory" or (
+            convert_memory and path.name == "MEMORY.md"
+        ):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            new_text, _notes, changed = convert_jobi_memory(text)
+            if not changed and dest == path:
+                continue
+            if not incremental:
+                backup_file(backup, path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(new_text if changed else text, encoding="utf-8")
+            print(f"{'converted' if changed else 'copied'} {dest}")
+            continue
         if d.get("action") == "copy-support":
-            # Byte-for-byte: memory prose contains real addresses (jobi@ocral.org)
-            # that a rewrite would corrupt. Only manifests are transformed.
+            # Byte-for-byte for scripts/templates. MEMORY.md is handled above.
             if dest == path:
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1910,7 +2466,12 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         report: list[str] = []
-        new_text, changed = rewrite_job_text(text, report, rewrite_sentinel=not args.no_sentinels, src_dir=path.parent)
+        new_text, changed = rewrite_job_text(
+            text, report,
+            rewrite_sentinel=not args.no_sentinels,
+            rewrite_memory_headings=convert_memory,
+            src_dir=path.parent,
+        )
         if not changed and dest == path:
             continue
         if not incremental:
@@ -2001,7 +2562,7 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     if job and args.apply and not target:
         print("ERROR: --job --apply requires --target-workspace", file=sys.stderr)
         return 2
-    plan = plan_migrate(jobi, trebi, mode, job=job, target=target, agent=agent)
+    plan = plan_migrate(jobi, trebi, mode, job=job, target=target, agent=agent, agent_scope=agent)
     text = plan.render()
     print(text)
     if args.report:
@@ -2155,6 +2716,52 @@ def cmd_retire_jobi(args: argparse.Namespace) -> int:
     return 0
 
 
+def find_memory_files(root: Path) -> list[Path]:
+    if root.is_file():
+        return [root]
+    out: list[Path] = []
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        if "MEMORY.md" in files:
+            out.append(Path(dirpath) / "MEMORY.md")
+    return sorted(out)
+
+
+def cmd_convert_memory(args: argparse.Namespace) -> int:
+    paths: list[Path] = []
+    for raw in args.paths:
+        p = Path(raw)
+        if not p.exists():
+            print(f"ERROR: missing {p}", file=sys.stderr)
+            return 2
+        paths.extend(find_memory_files(p))
+    if not paths:
+        print("ERROR: no MEMORY.md found", file=sys.stderr)
+        return 2
+    changed_n = 0
+    for path in paths:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        new_text, notes, changed = convert_jobi_memory(text)
+        mark = "*" if changed else " "
+        print(f"{mark} {path}")
+        for n in notes:
+            print(f"    ! {n}")
+        if args.diff and changed:
+            preview = new_text[:3000]
+            print(preview)
+            if len(new_text) > 3000:
+                print("    …")
+        if changed:
+            changed_n += 1
+            if args.apply:
+                path.write_text(new_text, encoding="utf-8")
+                print(f"  wrote {path}")
+    print(f"\n{len(paths)} files, {changed_n} would change")
+    if not args.apply:
+        print("\nNo files written (dry-run). Pass --apply to write.")
+    return 0
+
+
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--jobi-dir", default=str(default_jobi_dir()))
     parser.add_argument("--trebi-dir", default=str(default_trebi_dir()))
@@ -2166,8 +2773,8 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--agent",
-        help="migrate the source as a nested agent: files land under "
-        "agents/<name>/ and AGENT.md stays an operator (schema v12).",
+        help="target one agent and its jobs: selects the agent's rows and files, "
+        "which land under agents/<name>/ with AGENT.md as an operator (schema v12).",
     )
 
 
@@ -2201,8 +2808,22 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--revert", action="store_true")
     r.add_argument("--diff", action="store_true")
     r.add_argument("--no-sentinels", action="store_true")
+    r.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="copy MEMORY.md byte-for-byte; do not convert jobi → v1 or demote extra ## in JOB.md",
+    )
     r.add_argument("--workspace", help="source jobi workspace path")
     r.set_defaults(func=cmd_rewrite_jobs)
+
+    cm = sub.add_parser(
+        "convert-memory",
+        help="convert jobi MEMORY.md files to trebi v1 (dry-run default)",
+    )
+    cm.add_argument("paths", nargs="+", help="MEMORY.md files or directories to walk")
+    cm.add_argument("--apply", action="store_true", help="write converted files")
+    cm.add_argument("--diff", action="store_true", help="print converted text (truncated)")
+    cm.set_defaults(func=cmd_convert_memory)
 
     v = sub.add_parser("verify", help="invariant checks (read-only)", parents=[common])
     v.set_defaults(func=cmd_verify)
