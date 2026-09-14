@@ -186,6 +186,9 @@ func (s *Server) Token() string { return s.token }
 // Alerts returns the alert service (tests).
 func (s *Server) Alerts() *alerts.Service { return s.alerts }
 
+// Skills returns the skills service.
+func (s *Server) Skills() *skills.Service { return s.skills }
+
 // Handler returns the root mux.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()

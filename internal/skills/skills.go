@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -29,6 +30,7 @@ const (
 	ProvenanceGit       Provenance = "git"
 	ProvenanceRegistry  Provenance = "registry"
 	ProvenanceConnector Provenance = "connector"
+	ProvenanceInherited Provenance = "inherited"
 )
 
 // SkillRequirement is a structured requires entry (B12).
@@ -59,30 +61,40 @@ type Skill struct {
 	Used30d         int                `json:"used_30d,omitempty"`
 	// Source is set when the skill came from a git remote or a folder.
 	Source *Source `json:"source,omitempty"`
+	// Origins and Injected are set when the skill was also found in user harness dirs.
+	Origins  []harness.SkillOrigin `json:"origins,omitempty"`
+	Injected bool                  `json:"injected,omitempty"`
 }
 
 // Service manages skill folders + index.
 type Service struct {
-	st *store.Store
+	st       *store.Store
+	userHome string // empty: skip inherited discovery (tests)
 }
 
 // ErrPrecondition is If-Match / hash mismatch.
 var ErrPrecondition = errors.New("precondition failed")
 
+// ErrInherited is a mutation against a read-only discovered user skill.
+var ErrInherited = errors.New("inherited from user skill dir")
+
 // New creates a skills service.
 func New(st *store.Store) *Service { return &Service{st: st} }
 
-// List discovers skills under SkillsDir and refreshes skill_index.
+// WithUserHome sets the home scanned for inherited skills. Empty skips.
+func (s *Service) WithUserHome(dir string) *Service {
+	s.userHome = dir
+	return s
+}
+
+// List discovers skills under SkillsDir, unioned with inherited user-home skills.
 func (s *Service) List(ctx context.Context) ([]Skill, error) {
 	if err := home.EnsureDirs(); err != nil {
 		return nil, err
 	}
 	root := home.SkillsDir()
 	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []Skill{}, nil
-		}
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	var out []Skill
@@ -96,12 +108,20 @@ func (s *Service) List(ctx context.Context) ([]Skill, error) {
 		}
 		out = append(out, *sk)
 	}
-	return out, nil
+	return s.unionInherited(out), nil
 }
 
 // Get returns one skill; includeMD loads SKILL.md body.
 func (s *Service) Get(ctx context.Context, name string, includeMD bool) (*Skill, error) {
-	return s.loadSkill(ctx, name, includeMD)
+	sk, err := s.loadSkill(ctx, name, includeMD)
+	if err == nil {
+		s.mergeInheritedMeta(sk)
+		return sk, nil
+	}
+	if ds := s.inheritedByName(name); ds != nil {
+		return s.skillFromDiscovered(*ds, includeMD), nil
+	}
+	return nil, err
 }
 
 // Create writes a new skill folder.
@@ -111,6 +131,9 @@ func (s *Service) Create(ctx context.Context, name, skillMD string, prov Provena
 	}
 	if prov == "" {
 		prov = ProvenanceLocal
+	}
+	if prov == ProvenanceInherited {
+		return nil, fmt.Errorf("provenance inherited is discovered, not created")
 	}
 	dir := filepath.Join(home.SkillsDir(), name)
 	if _, err := os.Stat(dir); err == nil {
@@ -143,6 +166,9 @@ func (s *Service) Create(ctx context.Context, name, skillMD string, prov Provena
 
 // Update replaces SKILL.md (If-Match via hash) and/or harness projection.
 func (s *Service) Update(ctx context.Context, name, skillMD, ifMatch string, harnesses map[string]bool) (*Skill, error) {
+	if err := s.GuardMutate(ctx, name); err != nil {
+		return nil, err
+	}
 	cur, err := s.Get(ctx, name, false)
 	if err != nil {
 		return nil, err
@@ -175,8 +201,11 @@ func (s *Service) Update(ctx context.Context, name, skillMD, ifMatch string, har
 	return s.Get(ctx, name, true)
 }
 
-// Delete removes a skill folder (refused for connector provenance).
+// Delete removes a skill folder (refused for connector and inherited provenance).
 func (s *Service) Delete(ctx context.Context, name string) error {
+	if err := s.GuardMutate(ctx, name); err != nil {
+		return err
+	}
 	cur, err := s.Get(ctx, name, false)
 	if err != nil {
 		return err
@@ -242,6 +271,103 @@ func (s *Service) loadSkill(ctx context.Context, name string, includeMD bool) (*
 		ON CONFLICT(name) DO UPDATE SET hash=excluded.hash, path=excluded.path, updated_at=excluded.updated_at`,
 		name, string(sk.Provenance), dir, hash, used, now)
 	return sk, nil
+}
+
+// GuardMutate refuses writes against inherited user-home skills.
+func (s *Service) GuardMutate(ctx context.Context, name string) error {
+	sk, err := s.Get(ctx, name, false)
+	if err != nil {
+		return err
+	}
+	if sk.Provenance != ProvenanceInherited {
+		return nil
+	}
+	return inheritedErr(sk)
+}
+
+func inheritedErr(sk *Skill) error {
+	path := inheritedOriginPath(sk)
+	if path != "" {
+		return fmt.Errorf("%w: inherited from %s; edit there", ErrInherited, path)
+	}
+	return fmt.Errorf("%w; edit the origin file", ErrInherited)
+}
+
+func inheritedOriginPath(sk *Skill) string {
+	if sk == nil {
+		return ""
+	}
+	if len(sk.Origins) > 0 {
+		return sk.Origins[0].Path
+	}
+	return sk.Path
+}
+
+func (s *Service) unionInherited(out []Skill) []Skill {
+	discovered := harness.DiscoverSkills(s.userHome, nil)
+	byName := map[string]int{}
+	for i, sk := range out {
+		byName[sk.Name] = i
+	}
+	for _, ds := range discovered {
+		if i, ok := byName[ds.Name]; ok {
+			out[i].Origins = ds.Origins
+			out[i].Injected = ds.Injected
+			continue
+		}
+		out = append(out, *s.skillFromDiscovered(ds, false))
+	}
+	return out
+}
+
+func (s *Service) mergeInheritedMeta(sk *Skill) {
+	if ds := s.inheritedByName(sk.Name); ds != nil {
+		sk.Origins = ds.Origins
+		sk.Injected = ds.Injected
+	}
+}
+
+func (s *Service) inheritedByName(name string) *harness.DiscoveredSkill {
+	for _, ds := range harness.DiscoverSkills(s.userHome, nil) {
+		if ds.Name == name {
+			return &ds
+		}
+	}
+	return nil
+}
+
+func (s *Service) skillFromDiscovered(ds harness.DiscoveredSkill, includeMD bool) *Skill {
+	mdBytes, _ := os.ReadFile(filepath.Join(ds.Path, "SKILL.md"))
+	updated := time.Now().UTC()
+	if st, err := os.Stat(ds.Path); err == nil {
+		updated = st.ModTime().UTC()
+	}
+	harnesses := map[string]bool{}
+	for _, h := range []string{"claude", "grok", "codex", "opencode", "gemini", "cursor", "pi"} {
+		harnesses[h] = false
+	}
+	for _, h := range ds.Harnesses {
+		harnesses[h] = true
+	}
+	sk := &Skill{
+		Name:        ds.Name,
+		Provenance:  ProvenanceInherited,
+		Description: skillDescription(string(mdBytes)),
+		Version:     skillVersion(string(mdBytes)),
+		UpdatedAt:   updated,
+		Hash:        hashDir(ds.Path),
+		Path:        ds.Path,
+		Revision:    1,
+		Harnesses:   harnesses,
+		Scripts:     listScripts(ds.Path),
+		Requires:    parseRequires(string(mdBytes)),
+		Origins:     ds.Origins,
+		Injected:    ds.Injected,
+	}
+	if includeMD {
+		sk.SkillMD = string(mdBytes)
+	}
+	return sk
 }
 
 // ProjectForRun materializes allow/deny skill scope into a temp dir; returns path.
@@ -531,6 +657,9 @@ func (s *Service) CreateFromSource(ctx context.Context, name string, src Source)
 
 // Refresh pulls the skill source again. A skill with no source is unchanged.
 func (s *Service) Refresh(ctx context.Context, name string) (*Skill, bool, error) {
+	if err := s.GuardMutate(ctx, name); err != nil {
+		return nil, false, err
+	}
 	cur, err := s.Get(ctx, name, false)
 	if err != nil {
 		return nil, false, err

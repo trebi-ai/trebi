@@ -2,6 +2,7 @@ package skills_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -67,5 +68,86 @@ func TestSkillCRUDAndProjection(t *testing.T) {
 	list, _ = svc.List(ctx)
 	if len(list) != 0 {
 		t.Fatalf("after delete: %v", list)
+	}
+}
+
+func TestSkills_InheritedUnionAndGuard(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	_ = home.EnsureDirs()
+	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := skills.New(st)
+	ctx := context.Background()
+
+	user := t.TempDir()
+	claude := filepath.Join(user, ".claude", "skills", "sling")
+	if err := os.MkdirAll(claude, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claude, "SKILL.md"), []byte("# Sling\n\nInherited.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc.WithUserHome(user)
+
+	list, err := svc.List(ctx)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list=%v err=%v", list, err)
+	}
+	row := list[0]
+	if row.Name != "sling" || row.Provenance != skills.ProvenanceInherited {
+		t.Fatalf("row %+v", row)
+	}
+	if len(row.Origins) != 1 || row.Origins[0].Tool != "claude" {
+		t.Fatalf("origins %+v", row.Origins)
+	}
+	got, err := svc.Get(ctx, "sling", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SkillMD == "" || got.Path != claude {
+		t.Fatalf("get %+v", got)
+	}
+	if _, err := svc.Update(ctx, "sling", "# no\n", "", nil); !errors.Is(err, skills.ErrInherited) {
+		t.Fatalf("update inherited: %v", err)
+	}
+	if err := svc.Delete(ctx, "sling"); !errors.Is(err, skills.ErrInherited) {
+		t.Fatalf("delete inherited: %v", err)
+	}
+	if _, _, err := svc.Refresh(ctx, "sling"); !errors.Is(err, skills.ErrInherited) {
+		t.Fatalf("refresh inherited: %v", err)
+	}
+
+	sk, err := svc.Create(ctx, "local-one", "# Local\n", skills.ProvenanceLocal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sk.Provenance != skills.ProvenanceLocal {
+		t.Fatalf("managed %+v", sk)
+	}
+	list, err = svc.List(ctx)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("managed+inherited %d %v", len(list), list)
+	}
+
+	// Same name as inherited becomes one managed row with origins attached.
+	if _, err := svc.Create(ctx, "sling", "# Managed sling\n", skills.ProvenanceLocal); err != nil {
+		t.Fatal(err)
+	}
+	list, err = svc.List(ctx)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("merged %d %v", len(list), list)
+	}
+	var merged *skills.Skill
+	for i := range list {
+		if list[i].Name == "sling" {
+			merged = &list[i]
+		}
+	}
+	if merged == nil || merged.Provenance != skills.ProvenanceLocal || len(merged.Origins) != 1 {
+		t.Fatalf("want merged managed+origins, got %+v", merged)
 	}
 }

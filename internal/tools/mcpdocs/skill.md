@@ -7,7 +7,10 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 ## Actions
 
 ### list
-List skills.
+List skills. Includes managed rows from `~/.trebi/skills` and read-only
+**inherited** skills discovered from user harness skill dirs. Inherited rows
+carry `provenance: inherited`, `origins[]` (tool, path, key), and `injected`
+(whether a trebi session of that harness will load them).
 - `limit` (number, optional): page size.
 
 ### show
@@ -25,7 +28,11 @@ Create one skill. Give `content`, or one source field to pull the bundle.
   the skill came from elsewhere: it defaults to `local`, and only `local` and
   `assistant` skills accept support-file writes. A skill created with any other
   provenance rejects `file put` with `conflict`, and the fix is to create the
-  skill again as `local`.
+  skill again as `local`. `inherited` is discovered from user home and cannot
+  be created.
+
+Mutations (`set`, `delete`, `refresh`, `file put`) on an inherited row return
+`conflict`.
 
 ### set
 Replace one skill document.

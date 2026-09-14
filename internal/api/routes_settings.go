@@ -102,11 +102,10 @@ func (s *Server) handleSkillPut(w http.ResponseWriter, r *http.Request) {
 	}
 	ifMatch := r.Header.Get("If-Match")
 	sk, err := s.skills.Update(r.Context(), r.PathValue("name"), body.SkillMD, ifMatch, body.Harnesses)
-	if errors.Is(err, skills.ErrPrecondition) {
-		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", err.Error())
-		return
-	}
 	if err != nil {
+		if s.writeSkillErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
@@ -115,6 +114,9 @@ func (s *Server) handleSkillPut(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSkillDelete(w http.ResponseWriter, r *http.Request) {
 	if err := s.skills.Delete(r.Context(), r.PathValue("name")); err != nil {
+		if s.writeSkillErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
@@ -130,6 +132,9 @@ func (s *Server) handleSkillRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		if s.writeSkillErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
@@ -270,6 +275,18 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 	m, _ := loadConfigMap()
 	redactAssistantConfig(m)
 	writeJSON(w, http.StatusOK, map[string]any{"config": m, "entries": configEntries()})
+}
+
+func (s *Server) writeSkillErr(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, skills.ErrInherited):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, skills.ErrPrecondition):
+		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", err.Error())
+	default:
+		return false
+	}
+	return true
 }
 
 func redactAssistantConfig(m map[string]any) {

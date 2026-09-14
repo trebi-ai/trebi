@@ -756,6 +756,46 @@ func TestSkillWithoutSourceRefresh(t *testing.T) {
 	}
 }
 
+func TestSkillInheritedListAndGuard(t *testing.T) {
+	s, base := startTestServer(t)
+	user := t.TempDir()
+	dir := filepath.Join(user, ".claude", "skills", "sling")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Sling\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.Skills().WithUserHome(user)
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/skills", s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("list: %d %v", code, body)
+	}
+	rows, _ := body["skills"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("list=%v", body)
+	}
+	row, _ := rows[0].(map[string]any)
+	if row["name"] != "sling" || row["provenance"] != "inherited" {
+		t.Fatalf("row %+v", row)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/skills/sling", s.Token(), nil)
+	if code != 200 || body["provenance"] != "inherited" {
+		t.Fatalf("get: %d %v", code, body)
+	}
+
+	code, body, _ = doJSON(t, "PUT", base+"/v1/skills/sling", s.Token(), map[string]any{"skill_md": "# no\n"})
+	if code != 409 || errCode(body) != "conflict" {
+		t.Fatalf("put: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/skills/sling?confirm=1", s.Token(), nil)
+	if code != 409 || errCode(body) != "conflict" {
+		t.Fatalf("delete: %d %v", code, body)
+	}
+}
+
 func TestBulkVerbs(t *testing.T) {
 	s, base := startTestServer(t)
 

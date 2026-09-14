@@ -23,6 +23,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/api"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/daemon"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/platform"
 	"github.com/trebi-ai/trebi/internal/request"
@@ -601,6 +602,7 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	})
 	// Share control-plane services so API and workers see the same state.
 	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Conversations, cp.Harness)
+	srv.Skills().WithUserHome(harness.UserHome())
 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()

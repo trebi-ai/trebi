@@ -225,10 +225,11 @@ uv run scripts/migrate-jobi-to-trebi.py status
 uv run scripts/migrate-jobi-to-trebi.py migrate --shadow
 uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --diff
 uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --job receipts --target-workspace ellis
+uv run scripts/migrate-jobi-to-trebi.py convert-memory path/to/MEMORY.md
 uv run scripts/migrate-jobi-to-trebi.py verify
 ```
 
-`--job` limits rewrite and DB copy to one job. `--target-workspace` is the trebi destination (id, name, or path). Default is dry-run; `--apply` writes. Incremental `--job --apply` copies into the target and leaves `~/.jobi` files untouched. Full `rewrite-jobs --apply` without `--job` still rewrites in place (cutover). `--apply` refuses when `~/.trebi/daemon.sock` exists.
+`--job` limits rewrite and DB copy to one job. `--target-workspace` is the trebi destination (id, name, or path). Default is dry-run; `--apply` writes. Incremental `--job --apply` copies into the target and leaves `~/.jobi` files untouched. Full `rewrite-jobs --apply` without `--job` still rewrites in place (cutover). `rewrite-jobs` converts jobi `MEMORY.md` (extra `##` headings) to trebi v1; `convert-memory` does that without a full rewrite. `--apply` refuses when a trebid is running.
 
 ## Conventions
 
