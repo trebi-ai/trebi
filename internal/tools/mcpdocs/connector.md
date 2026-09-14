@@ -7,16 +7,22 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 ## Actions
 
 ### list
-List connectors.
+List connectors. Includes managed rows from `connectors.yaml` and read-only
+**inherited** MCP servers discovered from user harness config. Inherited rows
+carry `provenance: inherited`, `managed: false`, `origins[]` (tool, path, key),
+and `injected` (whether a trebi session of that harness will load them).
 - `limit` (number, optional): page size.
 
 ### show
-Read one connector.
-- `name` (string, required): connector name.
+Read one connector by name or `id`. Duplicate names return `ambiguous`; use `id`.
+- `name` (string, required): connector name or id.
 
 ### create
 Create one connector from a definition object.
 - `definition` (object, required): connector fields, for example `{"name": "mail", "command": "fetch-mail.sh"}`.
+
+Mutations (`create`, `set`, `delete`, `connect`, `disconnect`, `restart`, `test`,
+`cursor_set`) on an inherited row return `conflict`.
 
 ### set
 Create or update one connector from flat fields.

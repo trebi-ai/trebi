@@ -8,6 +8,8 @@ description: Create and connect connectors, test and fire rules, event triggers,
 
 A connector is a command that produces events. A job trigger of type `event` matches those events. See `trebi guide jobs-and-scheduling` for the `triggers[]` shape.
 
+`trebi connector list` also shows **inherited** MCP servers discovered from the user harness configs the bridge injects (`~/.claude.json` / `~/.claude/mcp.json`, `~/.codex/mcp.json`, `~/.cursor/mcp.json`, `~/.pi/agent/mcp.json`). Those rows are read-only: connect, edit, and delete are refused. Edit the origin file instead. Managed rows are the ones in `connectors.yaml`.
+
 ## Connectors
 
 ```bash

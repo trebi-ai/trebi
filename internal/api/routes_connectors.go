@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -63,6 +64,9 @@ func (s *Server) handleConnectorsCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := s.connectors.Upsert(r.Context(), d); err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
@@ -72,6 +76,9 @@ func (s *Server) handleConnectorsCreate(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleConnectorGet(w http.ResponseWriter, r *http.Request) {
 	row, err := s.connectors.Get(r.PathValue("name"))
 	if err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
@@ -86,11 +93,17 @@ func (s *Server) handleConnectorPut(w http.ResponseWriter, r *http.Request) {
 	}
 	d.Name = r.PathValue("name")
 	if err := s.connectors.Upsert(r.Context(), d); err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	row, err := s.connectors.Get(d.Name)
 	if err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
@@ -99,6 +112,9 @@ func (s *Server) handleConnectorPut(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConnectorDelete(w http.ResponseWriter, r *http.Request) {
 	if err := s.connectors.Delete(r.Context(), r.PathValue("name")); err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
@@ -107,6 +123,9 @@ func (s *Server) handleConnectorDelete(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConnectorStart(w http.ResponseWriter, r *http.Request) {
 	if err := s.connectors.Start(r.Context(), r.PathValue("name")); err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
@@ -114,12 +133,21 @@ func (s *Server) handleConnectorStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConnectorStop(w http.ResponseWriter, r *http.Request) {
-	_ = s.connectors.Stop(r.PathValue("name"))
+	if err := s.connectors.Stop(r.PathValue("name")); err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped"})
 }
 
 func (s *Server) handleConnectorRestart(w http.ResponseWriter, r *http.Request) {
 	if err := s.connectors.Restart(r.Context(), r.PathValue("name")); err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
@@ -129,6 +157,9 @@ func (s *Server) handleConnectorRestart(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if _, err := s.connectors.Get(name); err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
@@ -141,6 +172,9 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err := s.connectors.InjectEvent(r.Context(), name, body.Event)
 	if err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
@@ -227,8 +261,26 @@ func (s *Server) handleConnectorCursorPut(w http.ResponseWriter, r *http.Request
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body sets last_event_id to ""
 	if err := s.connectors.PutCursor(r.Context(), name, body.LastEventID); err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "last_event_id": body.LastEventID})
+}
+
+func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
+	var amb *connectors.AmbiguousError
+	switch {
+	case errors.As(err, &amb):
+		writeErr(w, http.StatusBadRequest, "ambiguous", err.Error())
+	case errors.Is(err, connectors.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, connectors.ErrInherited):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	default:
+		return false
+	}
+	return true
 }

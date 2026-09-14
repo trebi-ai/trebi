@@ -72,7 +72,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	q := dispatch.NewQueue(st)
 	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()
-	connector := connectors.New(st, ws, r, pol)
+	connector := connectors.New(st, ws, r, pol).WithUserHome(harness.UserHome())
 	cfg, _ := config.Load()
 	maxBytes := files.DefaultMaxBytes
 	if cfg != nil {

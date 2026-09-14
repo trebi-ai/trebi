@@ -2,6 +2,7 @@ package connectors_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,6 +91,104 @@ func TestConnectors_UpsertListSaveRoundTrip(t *testing.T) {
 	}
 	if len(svc.List()) != 0 {
 		t.Fatalf("after delete: %v", svc.List())
+	}
+}
+
+func TestConnectors_InheritedUnionAndGuard(t *testing.T) {
+	_, _, _, svc := openStack(t)
+	ctx := context.Background()
+	user := t.TempDir()
+	claude := filepath.Join(user, ".claude.json")
+	if err := os.MkdirAll(filepath.Dir(claude), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claude, []byte(`{"mcpServers":{"sling":{"command":"sling","args":["serve","mcp"]}}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	svc.WithUserHome(user)
+
+	list := svc.List()
+	if len(list) != 1 {
+		t.Fatalf("list=%v", list)
+	}
+	row := list[0]
+	if row["name"] != "sling" || row["provenance"] != "inherited" || row["managed"] != false {
+		t.Fatalf("row %+v", row)
+	}
+	if row["status"] != "inherited" || row["type"] != "mcp" {
+		t.Fatalf("status/type %+v", row)
+	}
+	got, err := svc.Get("sling")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["id"] != "inherited:sling" {
+		t.Fatalf("id %v", got["id"])
+	}
+	if err := svc.Start(ctx, "sling"); !errors.Is(err, connectors.ErrInherited) {
+		t.Fatalf("start inherited: %v", err)
+	}
+	if err := svc.Delete(ctx, "sling"); !errors.Is(err, connectors.ErrInherited) {
+		t.Fatalf("delete inherited: %v", err)
+	}
+
+	// Managed stream with the same name stays a separate row.
+	if err := svc.Upsert(ctx, connectors.Definition{Name: "mail", Type: "stream", Command: "echo"}); err != nil {
+		t.Fatal(err)
+	}
+	list = svc.List()
+	if len(list) != 2 {
+		t.Fatalf("managed+inherited %d %v", len(list), list)
+	}
+}
+
+func TestConnectors_MergeManagedMCP(t *testing.T) {
+	_, _, _, svc := openStack(t)
+	ctx := context.Background()
+	if err := svc.Upsert(ctx, connectors.Definition{
+		Name: "sling", Type: "mcp", Command: "sling serve mcp",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user := t.TempDir()
+	if err := os.WriteFile(filepath.Join(user, ".claude.json"), []byte(`{"mcpServers":{"sling":{"command":"sling","args":["serve","mcp"]}}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	svc.WithUserHome(user)
+	list := svc.List()
+	if len(list) != 1 {
+		t.Fatalf("want merged 1 row, got %v", list)
+	}
+	row := list[0]
+	if row["managed"] != true || row["name"] != "sling" {
+		t.Fatalf("%+v", row)
+	}
+	if _, ok := row["origins"]; !ok {
+		t.Fatalf("origins missing %+v", row)
+	}
+}
+
+func TestConnectors_InheritedAmbiguousName(t *testing.T) {
+	_, _, _, svc := openStack(t)
+	user := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(user, ".cursor"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, ".claude.json"), []byte(`{"mcpServers":{"x":{"command":"echo","args":["a"]}}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, ".cursor", "mcp.json"), []byte(`{"mcpServers":{"x":{"command":"echo","args":["b"]}}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	svc.WithUserHome(user)
+	list := svc.List()
+	if len(list) != 2 {
+		t.Fatalf("want 2 fingerprints named x, got %v", list)
+	}
+	_, err := svc.Get("x")
+	var amb *connectors.AmbiguousError
+	if !errors.As(err, &amb) {
+		t.Fatalf("want ambiguous, got %v list=%v", err, list)
 	}
 }
 

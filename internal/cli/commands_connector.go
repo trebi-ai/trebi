@@ -228,7 +228,7 @@ func runConnectorList(_ context.Context, c *cli.Command) error {
 	}
 	w := outWriter(c)
 	if list, ok := body["connectors"].([]any); ok {
-		tbl := newTable(w, []string{"Name", "Type", "Format", "Status", "Command"})
+		tbl := newTable(w, []string{"Name", "Type", "Provenance", "Status", "Command"})
 		for _, raw := range list {
 			m, ok := raw.(map[string]any)
 			if !ok {
@@ -238,7 +238,7 @@ func runConnectorList(_ context.Context, c *cli.Command) error {
 			tbl.AppendRow(table.Row{
 				mapStr(m, "name", "Name", "id"),
 				dash(mapStr(m, "type", "Type")),
-				dash(mapStr(m, "format", "Format")),
+				dash(mapStr(m, "provenance", "Provenance")),
 				colorStatus(w, mapStr(m, "status", "Status")),
 				dash(mapStr(m, "command", "Command", "cmd")),
 			})

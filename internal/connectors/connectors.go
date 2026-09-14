@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -27,6 +29,23 @@ import (
 	"github.com/trebi-ai/trebi/internal/workspaces"
 	"gopkg.in/yaml.v3"
 )
+
+var (
+	// ErrNotFound is a missing connector name or id.
+	ErrNotFound = errors.New("connector not found")
+	// ErrInherited is a mutation against a read-only discovered MCP server.
+	ErrInherited = errors.New("inherited from user MCP config")
+)
+
+// AmbiguousError is a connector name that matches more than one row.
+type AmbiguousError struct {
+	Name string
+	IDs  []string
+}
+
+func (e *AmbiguousError) Error() string {
+	return fmt.Sprintf("connector name %q is ambiguous; use id (%s)", e.Name, strings.Join(e.IDs, ", "))
+}
 
 // Definition is one connector from connectors.yaml.
 type Definition struct {
@@ -93,10 +112,11 @@ type Service struct {
 	queue *dispatch.Queue
 	log   *slog.Logger
 
-	mu     sync.Mutex
-	procs  map[string]*proc
-	defs   map[string]Definition
-	runCtx context.Context // process lifetime; not the caller's (HTTP) context
+	mu       sync.Mutex
+	procs    map[string]*proc
+	defs     map[string]Definition
+	runCtx   context.Context // process lifetime; not the caller's (HTTP) context
+	userHome string          // empty: skip MCP discovery (tests)
 }
 
 type proc struct {
@@ -178,6 +198,12 @@ func New(st *store.Store, ws *workspaces.Service, r *runs.Service, pol *dispatch
 	}
 }
 
+// WithUserHome sets the home scanned for inherited MCP servers. Empty skips.
+func (s *Service) WithUserHome(dir string) *Service {
+	s.userHome = dir
+	return s
+}
+
 // Load reads connectors.yaml into memory.
 func (s *Service) Load() error {
 	data, err := os.ReadFile(home.ConnectorsPath())
@@ -242,15 +268,17 @@ func parseConnectorsYAML(data []byte) (map[string]Definition, error) {
 	return out, nil
 }
 
-// List returns definitions merged with live status.
+// List returns definitions merged with live status, unioned with inherited MCP servers.
 func (s *Service) List() []map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []map[string]any
+	fpIndex := map[string]int{}
 	for name, d := range s.defs {
 		row := map[string]any{
-			"name": name, "type": d.Type, "command": d.Command, "format": d.Format,
+			"id": name, "name": name, "type": d.Type, "command": d.Command, "format": d.Format,
 			"cwd": d.Cwd, "facets": d.Facets, "status": "stopped",
+			"provenance": "managed", "managed": true,
 		}
 		if d.Env != nil {
 			row["env"] = d.Env
@@ -268,19 +296,126 @@ func (s *Service) List() []map[string]any {
 				row["started_at"] = startedAt.UTC().Format(time.RFC3339Nano)
 			}
 		}
+		if fp := managedFingerprint(d); fp != "" {
+			fpIndex[fp] = len(out)
+		}
+		out = append(out, row)
+	}
+	return s.unionInherited(out, fpIndex)
+}
+
+func managedFingerprint(d Definition) string {
+	cmd := strings.TrimSpace(d.Command)
+	if d.Type != "mcp" || cmd == "" {
+		return ""
+	}
+	if strings.HasPrefix(cmd, "http://") || strings.HasPrefix(cmd, "https://") {
+		return "http:" + strings.TrimRight(cmd, "/")
+	}
+	return "stdio:" + strings.Join(strings.Fields(cmd), " ")
+}
+
+func (s *Service) unionInherited(out []map[string]any, fpIndex map[string]int) []map[string]any {
+	discovered := harness.DiscoverMCP(s.userHome, nil)
+	usedNames := map[string]int{}
+	for _, row := range out {
+		usedNames[fmt.Sprint(row["name"])]++
+	}
+	for _, srv := range discovered {
+		usedNames[srv.Name]++
+	}
+	for _, srv := range discovered {
+		if i, ok := fpIndex[srv.Fingerprint]; ok && srv.Fingerprint != "" {
+			row := out[i]
+			row["origins"] = srv.Origins
+			row["harnesses"] = srv.Harnesses
+			row["injected"] = srv.Injected
+			row["transport"] = srv.Transport
+			continue
+		}
+		id := "inherited:" + srv.Name
+		if usedNames[srv.Name] > 1 {
+			id = "inherited:" + srv.Name + "-" + harness.MCPFingerprintID(srv.Fingerprint)
+		}
+		row := map[string]any{
+			"id": id, "name": srv.Name, "type": "mcp", "command": srv.Command,
+			"facets": []string{"mcp"}, "status": "inherited",
+			"provenance": "inherited", "managed": false,
+			"transport": srv.Transport, "harnesses": srv.Harnesses,
+			"injected": srv.Injected, "origins": srv.Origins,
+		}
+		if srv.URL != "" {
+			row["url"] = srv.URL
+		}
 		out = append(out, row)
 	}
 	return out
 }
 
-// Get returns one connector.
+// Get returns one connector by id or unique name.
 func (s *Service) Get(name string) (map[string]any, error) {
-	for _, row := range s.List() {
-		if row["name"] == name {
+	list := s.List()
+	var names []map[string]any
+	for _, row := range list {
+		if fmt.Sprint(row["id"]) == name {
 			return row, nil
 		}
+		if fmt.Sprint(row["name"]) == name {
+			names = append(names, row)
+		}
 	}
-	return nil, fmt.Errorf("connector %q not found", name)
+	if len(names) == 1 {
+		return names[0], nil
+	}
+	if len(names) > 1 {
+		ids := make([]string, len(names))
+		for i, r := range names {
+			ids[i] = fmt.Sprint(r["id"])
+		}
+		return nil, &AmbiguousError{Name: name, IDs: ids}
+	}
+	return nil, fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
+}
+
+// GuardMutate refuses writes against inherited MCP rows. Missing names pass
+// through so Start/Delete keep their existing missing-name behavior.
+func (s *Service) GuardMutate(name string) error {
+	row, err := s.Get(name)
+	if err != nil {
+		var amb *AmbiguousError
+		if errors.As(err, &amb) {
+			return err
+		}
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	managed, _ := row["managed"].(bool)
+	if managed {
+		return nil
+	}
+	path := inheritedOriginPath(row)
+	if path != "" {
+		return fmt.Errorf("%w: inherited from %s; edit there", ErrInherited, path)
+	}
+	return fmt.Errorf("%w; edit the origin file", ErrInherited)
+}
+
+func inheritedOriginPath(row map[string]any) string {
+	switch origins := row["origins"].(type) {
+	case []harness.MCPOrigin:
+		if len(origins) > 0 {
+			return origins[0].Path
+		}
+	case []any:
+		if len(origins) > 0 {
+			if m, ok := origins[0].(map[string]any); ok {
+				return fmt.Sprint(m["path"])
+			}
+		}
+	}
+	return ""
 }
 
 // Save writes defs back to connectors.yaml.
@@ -304,6 +439,9 @@ func (s *Service) Save(defs map[string]Definition) error {
 
 // Upsert registers or updates a connector definition.
 func (s *Service) Upsert(ctx context.Context, d Definition) error {
+	if err := s.GuardMutate(d.Name); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if s.defs == nil {
 		s.defs = map[string]Definition{}
@@ -324,6 +462,9 @@ func (s *Service) Upsert(ctx context.Context, d Definition) error {
 
 // Delete removes a connector.
 func (s *Service) Delete(ctx context.Context, name string) error {
+	if err := s.GuardMutate(name); err != nil {
+		return err
+	}
 	_ = s.Stop(name) // already-stopped is fine; delete proceeds either way
 	s.mu.Lock()
 	delete(s.defs, name)
@@ -417,6 +558,9 @@ func (s *Service) StartAll(ctx context.Context) {
 // Start launches one connector process. It reserves the s.procs slot
 // under s.mu (status "starting") so concurrent Starts launch one process.
 func (s *Service) Start(parent context.Context, name string) error {
+	if err := s.GuardMutate(name); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	d, ok := s.defs[name]
 	if !ok {
@@ -513,6 +657,9 @@ func (s *Service) Start(parent context.Context, name string) error {
 
 // Stop kills a connector process.
 func (s *Service) Stop(name string) error {
+	if err := s.GuardMutate(name); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	p, ok := s.procs[name]
 	s.mu.Unlock()
@@ -532,6 +679,9 @@ func (s *Service) Stop(name string) error {
 
 // Restart stops then starts.
 func (s *Service) Restart(ctx context.Context, name string) error {
+	if err := s.GuardMutate(name); err != nil {
+		return err
+	}
 	_ = s.Stop(name) // not-running is the desired start state
 	s.mu.Lock()
 	p, ok := s.procs[name]
@@ -544,6 +694,9 @@ func (s *Service) Restart(ctx context.Context, name string) error {
 
 // InjectEvent handles a fake event (rules/fire) through the same path.
 func (s *Service) InjectEvent(ctx context.Context, name string, event any) (string, error) {
+	if err := s.GuardMutate(name); err != nil {
+		return "", err
+	}
 	raw, _ := json.Marshal(event)
 	s.mu.Lock()
 	d, ok := s.defs[name]
@@ -577,6 +730,9 @@ func (s *Service) GetCursor(ctx context.Context, name string) (Cursor, error) {
 
 // PutCursor upserts the last-event cursor. Not a bus entity.
 func (s *Service) PutCursor(ctx context.Context, name, lastEventID string) error {
+	if err := s.GuardMutate(name); err != nil {
+		return err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.st.DB().ExecContext(ctx, `INSERT INTO connector_cursors (name, last_event_id, updated_at)
 		VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
