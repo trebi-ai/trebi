@@ -246,6 +246,24 @@ func TestJobWriteRefreshesIndex(t *testing.T) {
 	}
 }
 
+// TestJobGetReturnsIndexName: an agent-owned job's GET name is the
+// workspace-relative path, the same key runs and list use — not the folder
+// basename ParseFile would return.
+func TestJobGetReturnsIndexName(t *testing.T) {
+	s, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "job-get-index")
+	name := "agents/cmo/duty"
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fcmo%2Fduty?workspace="+wsID, s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("get %d %v", code, body)
+	}
+	if body["name"] != name {
+		t.Fatalf("name=%v want %s", body["name"], name)
+	}
+}
+
 func writeJobFile(t *testing.T, wsDir, jobName string) string {
 	t.Helper()
 	dir := filepath.Join(wsDir, jobName)

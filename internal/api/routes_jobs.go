@@ -185,8 +185,10 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	j := doc.Job
+	// Index name, not ParseFile's folder basename. Runs, list, and pause
+	// all key off row.Name (agents/watchtower/job, not job).
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": j.Name, "workspace": row.WorkspaceID, "path": row.Path,
+		"name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
 		"harness": j.Harness, "active": !j.Disabled, "hash": doc.Hash,
 		"parse_error": j.ParseError, "prompt": j.Prompt,
 		"triggers": j.Triggers, "session": j.Session, "env_set": j.Envset,
