@@ -134,15 +134,14 @@ func vendorLoginArgsFor(tool, mode, goos string) (args []string, env []string) {
 		// The shell is replaced, so the session ends when the login ends.
 		return []string{"login; exit"}, []string{"TREBI_HOME=" + config.BaseDir()}
 	case Claude:
-		// macOS Keychain is bound to the default config dir; setup-token
-		// injects CLAUDE_CODE_OAUTH_TOKEN and works in both auth modes.
-		// Linux shared mode can still use the credentials-file bridge.
-		if goos == "darwin" || mode == harness.AuthModeSeparate {
+		dir := config.HarnessDir(Claude)
+		if mode == harness.AuthModeSeparate {
 			args = []string{"setup-token"}
 		} else {
 			args = []string{"auth", "login"}
 		}
-		env = []string{"CLAUDE_CONFIG_DIR=" + config.HarnessDir(Claude)}
+		env = envPairs(claudeIsolationEnvMap(dir, mode))
+		_ = goos // login args no longer differ by OS; shared uses auth login.
 	case Grok:
 		args = []string{"login", "--device-auth"}
 		env = []string{"GROK_HOME=" + config.HarnessDir(Grok)}
@@ -370,7 +369,7 @@ const claudeKeychainDetail = "credentials live in the macOS Keychain; file bridg
 
 func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Claude)
-	_ = (harnessHome{tool: Claude}).bridgeAuth(filepath.Join(".claude", ".credentials.json"), st.Mode)
+	_ = EnsureSharedAuth(Claude, st.Mode)
 	cred := filepath.Join(config.HarnessDir(Claude), ".credentials.json")
 	userCred := filepath.Join(harness.UserHome(), ".claude", ".credentials.json")
 
@@ -396,7 +395,7 @@ func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	l2Unavailable := bin == ""
 	if bin != "" {
 		out, err := runVendor(ctx, bin, []string{"auth", "status"},
-			[]string{"CLAUDE_CONFIG_DIR=" + config.HarnessDir(Claude)})
+			envPairs(claudeIsolationEnvMap(config.HarnessDir(Claude), st.Mode)))
 		var payload struct {
 			LoggedIn bool   `json:"loggedIn"`
 			Email    string `json:"email"`
@@ -469,6 +468,7 @@ func (codexTool) AuthCapabilities() harness.AuthCaps {
 
 func (codexTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Codex)
+	_ = EnsureSharedAuth(Codex, st.Mode)
 	authPath := filepath.Join(harness.UserHome(), ".codex", "auth.json")
 	hPath := filepath.Join(config.HarnessDir(Codex), "auth.json")
 	if st.Mode == harness.AuthModeSeparate {
@@ -523,6 +523,7 @@ func (grokTool) AuthCapabilities() harness.AuthCaps {
 
 func (grokTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Grok)
+	_ = EnsureSharedAuth(Grok, st.Mode)
 	if st, ok := l1Token(st, "XAI_API_KEY"); ok {
 		return st
 	}
@@ -556,6 +557,7 @@ func (opencodeTool) AuthCapabilities() harness.AuthCaps {
 
 func (opencodeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(OpenCode)
+	_ = EnsureSharedAuth(OpenCode, st.Mode)
 	authPath := filepath.Join(harness.UserHome(), ".local", "share", "opencode", "auth.json")
 	bin := lookPathTool(OpenCode)
 	if bin != "" {
@@ -586,6 +588,7 @@ func (copilotTool) AuthCapabilities() harness.AuthCaps {
 
 func (copilotTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Copilot)
+	_ = EnsureSharedAuth(Copilot, st.Mode)
 	if st, ok := l1Token(st, "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"); ok {
 		return st
 	}
@@ -607,6 +610,7 @@ func (cursorTool) AuthCapabilities() harness.AuthCaps {
 
 func (cursorTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Cursor)
+	_ = EnsureSharedAuth(Cursor, st.Mode)
 	if st, ok := l1Token(st, "CURSOR_API_KEY"); ok {
 		return st
 	}
@@ -654,6 +658,7 @@ func (piTool) AuthCapabilities() harness.AuthCaps {
 
 func (piTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Pi)
+	_ = EnsureSharedAuth(Pi, st.Mode)
 	keys := []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"}
 	if st, ok := l1Token(st, keys...); ok {
 		return st
@@ -704,6 +709,7 @@ func (geminiTool) AuthCapabilities() harness.AuthCaps {
 
 func (geminiTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Gemini)
+	_ = EnsureSharedAuth(Gemini, st.Mode)
 	if st, ok := l1Token(st, "GEMINI_API_KEY", "GOOGLE_API_KEY"); ok {
 		return st
 	}

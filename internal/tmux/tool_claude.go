@@ -119,13 +119,12 @@ func (t claudeTool) launchEnv() map[string]string {
 	if cfg != nil {
 		mode = harness.AuthModeFromConfig(cfg, Claude)
 	}
-	_ = t.bridgeAuth(filepath.Join(".claude", ".credentials.json"), mode)
+	_ = EnsureSharedAuth(Claude, mode)
 	_ = seedClaudeOnboarding(dir)
-	return map[string]string{
-		"CLAUDE_CONFIG_DIR":   dir,
-		"DISABLE_AUTOUPDATER": "1",
-		"DISABLE_UPDATES":     "1",
-	}
+	env := claudeIsolationEnvMap(dir, mode)
+	env["DISABLE_AUTOUPDATER"] = "1"
+	env["DISABLE_UPDATES"] = "1"
+	return env
 }
 
 // ClaudeProjectDir maps a working dir to ~/.claude/projects/<slug>

@@ -246,7 +246,7 @@ func (t grokTool) launchEnv() map[string]string {
 	if cfg != nil {
 		mode = harness.AuthModeFromConfig(cfg, Grok)
 	}
-	_ = t.bridgeAuth(filepath.Join(".grok", "auth.json"), mode)
+	_ = EnsureSharedAuth(Grok, mode)
 	return map[string]string{"GROK_HOME": dir}
 }
 

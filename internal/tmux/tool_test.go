@@ -329,6 +329,9 @@ func TestPrepareLaunch_ClaudeEnsureBridges(t *testing.T) {
 	if plan.Env["CLAUDE_CONFIG_DIR"] == "" {
 		t.Fatal("expected CLAUDE_CONFIG_DIR")
 	}
+	if _, ok := plan.Env["CLAUDE_SECURESTORAGE_CONFIG_DIR"]; !ok {
+		t.Fatal("shared launch must pin CLAUDE_SECURESTORAGE_CONFIG_DIR")
+	}
 	// harness dir materialized
 	if st, err := os.Stat(plan.Env["CLAUDE_CONFIG_DIR"]); err != nil || !st.IsDir() {
 		t.Fatalf("harness dir: %v", err)

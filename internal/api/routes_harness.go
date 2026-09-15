@@ -44,6 +44,7 @@ func (s *Server) handleHarnesses(w http.ResponseWriter, r *http.Request) {
 		if st, ok := states[info.Name]; ok {
 			row["auth_ok"] = st.AuthOK.Valid && st.AuthOK.Int64 == 1
 			row["auth_status"] = st.Status
+			row["auth_detail"] = st.Detail
 			row["auth_probed_at"] = emptyNil(st.ProbedAt)
 			row["auth_expires_at"] = emptyNil(st.ExpiresAt)
 		} else {

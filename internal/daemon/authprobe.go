@@ -46,6 +46,7 @@ func (c *ControlPlane) authProbe(ctx context.Context) {
 		c.log.Debug("auth expiry timer", "harness", name, "in", d)
 	}
 	armExpiry()
+	c.probeBlocked(ctx)
 
 	w, err := fsnotify.NewWatcher()
 	if err != nil {

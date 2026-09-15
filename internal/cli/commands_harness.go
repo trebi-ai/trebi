@@ -222,7 +222,7 @@ func runHarnessAuthStatus(_ context.Context, c *cli.Command) error {
 	for _, r := range rows {
 		st := mapStr(r, "auth_status", "status")
 		if truthy(r["keychain_bound"]) && st != "ok" && st != "" {
-			fmt.Fprintln(w, "shared file bridge unavailable on macOS — run: trebi harness auth login claude, or provide an API key")
+			fmt.Fprintln(w, "Claude did not pick up your macOS login — run: trebi harness auth login claude, or provide an API key")
 			break
 		}
 	}

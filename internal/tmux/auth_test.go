@@ -278,15 +278,22 @@ func TestProbeClaude_OAuthTokenL1(t *testing.T) {
 func TestVendorLoginArgsClaude(t *testing.T) {
 	t.Parallel()
 	args, env := vendorLoginArgsFor(Claude, harness.AuthModeShared, "darwin")
-	if len(args) != 1 || args[0] != "setup-token" {
+	if len(args) != 2 || args[0] != "auth" || args[1] != "login" {
 		t.Fatalf("darwin shared: %v", args)
 	}
-	if len(env) == 0 || !strings.Contains(env[0], "CLAUDE_CONFIG_DIR=") {
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "CLAUDE_CONFIG_DIR=") {
 		t.Fatalf("env %v", env)
 	}
-	args, _ = vendorLoginArgsFor(Claude, harness.AuthModeSeparate, "darwin")
+	if !strings.Contains(joined, "CLAUDE_SECURESTORAGE_CONFIG_DIR=") {
+		t.Fatalf("shared env missing secure-storage pin: %v", env)
+	}
+	args, env = vendorLoginArgsFor(Claude, harness.AuthModeSeparate, "darwin")
 	if len(args) != 1 || args[0] != "setup-token" {
 		t.Fatalf("darwin separate: %v", args)
+	}
+	if strings.Contains(strings.Join(env, "\n"), "CLAUDE_SECURESTORAGE_CONFIG_DIR=") {
+		t.Fatalf("separate must not pin default cred store: %v", env)
 	}
 	args, _ = vendorLoginArgsFor(Claude, harness.AuthModeShared, "linux")
 	if len(args) != 2 || args[0] != "auth" || args[1] != "login" {

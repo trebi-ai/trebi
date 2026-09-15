@@ -157,7 +157,7 @@ func (t piTool) launchEnv() map[string]string {
 	if cfg != nil {
 		mode = harness.AuthModeFromConfig(cfg, Pi)
 	}
-	_ = t.bridgeAuth(filepath.Join(".pi", "agent", "auth.json"), mode)
+	_ = EnsureSharedAuth(Pi, mode)
 	// MCP config after bridges: trebi owns harness mcp.json (merge user + host discovery).
 	inheritMCP := true
 	if cfg != nil {
