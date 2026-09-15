@@ -1458,6 +1458,14 @@ func BuildHarnessAuthGet(name string, live bool) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: path}
 }
 
+// BuildHarnessModels builds GET /v1/harnesses/{name}/models.
+func BuildHarnessModels(name string) HTTPRequest {
+	return HTTPRequest{
+		Method: "GET",
+		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/models",
+	}
+}
+
 // BuildHarnessPatch builds PATCH /v1/harnesses/{name}.
 func BuildHarnessPatch(name, authMode string) HTTPRequest {
 	return HTTPRequest{

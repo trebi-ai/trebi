@@ -33,6 +33,10 @@ Read the authentication state of one harness.
 - `name` (string, required): harness name.
 - `live` (boolean, optional): probe the live credential.
 
+### models
+List the models a harness CLI reports, when it has a list command (cursor, grok, opencode, pi). `source` is `cli` with the parsed catalog, or `none` with an empty list when the harness has no list command, is not installed, or answered nothing — keep the configured model free-text then.
+- `name` (string, required): harness name.
+
 ### login_start
 Start one login flow. The response carries a URI or a token prompt.
 - `name` (string, required): harness name.

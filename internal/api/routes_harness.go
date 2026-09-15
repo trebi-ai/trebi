@@ -19,6 +19,7 @@ func (s *Server) routeHarness(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /v1/harnesses/{name}", s.handleHarnessPatch)
 	mux.HandleFunc("POST /v1/harnesses/{name}/ensure", s.handleHarnessEnsure)
 	mux.HandleFunc("GET /v1/harnesses/{name}/auth", s.handleHarnessAuthGet)
+	mux.HandleFunc("GET /v1/harnesses/{name}/models", s.handleHarnessModels)
 	mux.HandleFunc("POST /v1/harnesses/{name}/login", s.handleHarnessLoginPost)
 	mux.HandleFunc("GET /v1/harnesses/{name}/login", s.handleHarnessLoginGet)
 	mux.HandleFunc("DELETE /v1/harnesses/{name}/login", s.handleHarnessLoginDelete)
@@ -81,6 +82,17 @@ func (s *Server) handleHarnessEnsure(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "home": dir, "ensured": true})
+}
+
+// handleHarnessModels lists the models a harness CLI reports (cli source) or
+// answers none, so the UI keeps a free-text input.
+func (s *Server) handleHarnessModels(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !harness.Known(name) {
+		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
+		return
+	}
+	writeJSON(w, http.StatusOK, tmux.ListModels(r.Context(), name))
 }
 
 func (s *Server) handleHarnessAuthGet(w http.ResponseWriter, r *http.Request) {

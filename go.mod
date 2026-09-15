@@ -3,7 +3,9 @@ module github.com/trebi-ai/trebi
 go 1.26.1
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	github.com/adrg/frontmatter v0.2.0
+	github.com/anthropics/anthropic-sdk-go v1.72.0
 	github.com/caseymrm/menuet v1.0.3
 	github.com/dop251/goja v0.0.0-20260806115107-493f22071ef6
 	github.com/fsnotify/fsnotify v1.9.0
@@ -12,6 +14,7 @@ require (
 	github.com/jedib0t/go-pretty/v6 v6.7.10
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/oklog/ulid/v2 v2.1.1
+	github.com/openai/openai-go/v3 v3.61.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/term v0.45.0
@@ -20,8 +23,6 @@ require (
 )
 
 require (
-	github.com/BurntSushi/toml v1.5.0 // indirect
-	github.com/anthropics/anthropic-sdk-go v1.72.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/caseymrm/askm v1.0.0 // indirect
@@ -34,7 +35,6 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/openai/openai-go/v3 v3.61.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
