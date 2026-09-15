@@ -20,7 +20,7 @@ trebi skill delete <name>
 
 A source bundle must hold a `SKILL.md`. The skill keeps the source, so `trebi skill refresh <name>` pulls it again; the reply reports `updated`. A skill with no source refreshes to no change.
 
-`trebi skill list` also shows **inherited** skills discovered from the user harness skill dirs the bridge injects (`~/.claude/skills`, `~/.codex/skills`, `~/.grok/skills`, `~/.config/opencode/skills`, `~/.cursor/skills-cursor`, `~/.pi/agent/skills`). Those rows are read-only: edit, refresh, delete, and file writes are refused. Edit the origin folder instead. Managed rows are the ones in `~/.trebi/skills`.
+`trebi skill list` also shows **inherited** skills discovered from the user harness skill dirs the bridge injects (`~/.claude/skills`, `~/.codex/skills`, `~/.grok/skills`, `~/.config/opencode/skills`, `~/.cursor/skills-cursor`, `~/.pi/agent/skills`) and the shared Agent Skills dir (`~/.agents/skills`). A `SKILL.md` that is a single `@path` line (Claude's pointer form) is followed to that file; the row's path is the directory that holds the real document. Those rows are read-only: edit, refresh, delete, and file writes are refused. Edit the origin folder instead. Managed rows are the ones in `~/.trebi/skills`.
 
 `--file` is **local only**; remote: pass `content`. Create the skill first, then put scripts with `trebi skill file`. `SKILL.md` writes 409 on the file command — use `trebi skill create` / the update path. File writes are denied for non-local provenance (git/registry/connector). `skill delete` is destructive — ask first.
 

@@ -57,3 +57,67 @@ func TestDiscoverSkills_InheritOff(t *testing.T) {
 		t.Fatalf("want declared not injected: %+v", got)
 	}
 }
+
+func TestDiscoverSkills_AgentsRoot(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, ".agents", "skills", "only-agents", "SKILL.md"), "# Only\n")
+
+	got := DiscoverSkills(home, &config.Config{})
+	if len(got) != 1 || got[0].Name != "only-agents" {
+		t.Fatalf("got %+v", got)
+	}
+	if got[0].Path != filepath.Join(home, ".agents", "skills", "only-agents") {
+		t.Fatalf("path %s", got[0].Path)
+	}
+	if len(got[0].Origins) != 1 || got[0].Origins[0].Tool != "agents" {
+		t.Fatalf("origins %+v", got[0].Origins)
+	}
+	if len(got[0].Harnesses) != 0 || got[0].Injected {
+		t.Fatalf("harnesses/injected %+v", got[0])
+	}
+}
+
+func TestDiscoverSkills_PointerFollows(t *testing.T) {
+	home := t.TempDir()
+	realDir := filepath.Join(home, ".agents", "skills", "sling")
+	write(t, filepath.Join(realDir, "SKILL.md"), "# Real sling\n\nBody.\n")
+	write(t, filepath.Join(realDir, "NOTES.md"), "notes\n")
+	ptr := filepath.Join(home, ".claude", "skills", "sling", "SKILL.md")
+	write(t, ptr, "@"+filepath.Join(realDir, "SKILL.md")+"\n")
+
+	got := DiscoverSkills(home, &config.Config{})
+	if len(got) != 1 || got[0].Name != "sling" {
+		t.Fatalf("got %+v", got)
+	}
+	if got[0].Path != realDir {
+		t.Fatalf("path want %s got %s", realDir, got[0].Path)
+	}
+	if len(got[0].Origins) != 2 {
+		t.Fatalf("origins %+v", got[0].Origins)
+	}
+	md := ReadSkillMD(got[0].Path, home)
+	if string(md) != "# Real sling\n\nBody.\n" {
+		t.Fatalf("md %q", md)
+	}
+	// Following the pointer dir itself also yields the real document.
+	md = ReadSkillMD(filepath.Dir(ptr), home)
+	if string(md) != "# Real sling\n\nBody.\n" {
+		t.Fatalf("follow %q", md)
+	}
+}
+
+func TestReadSkillMD_RefusesEscape(t *testing.T) {
+	home := t.TempDir()
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "secret.md"), "nope\n")
+	dir := filepath.Join(home, ".claude", "skills", "x")
+	ptr := "@" + filepath.Join(outside, "secret.md") + "\n"
+	write(t, filepath.Join(dir, "SKILL.md"), ptr)
+	md := ReadSkillMD(dir, home)
+	if string(md) != ptr {
+		t.Fatalf("want unfollowed pointer, got %q", md)
+	}
+	if ResolveSkillDir(dir, home) != dir {
+		t.Fatalf("resolve escaped")
+	}
+}

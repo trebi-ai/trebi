@@ -337,7 +337,7 @@ func (s *Service) inheritedByName(name string) *harness.DiscoveredSkill {
 }
 
 func (s *Service) skillFromDiscovered(ds harness.DiscoveredSkill, includeMD bool) *Skill {
-	mdBytes, _ := os.ReadFile(filepath.Join(ds.Path, "SKILL.md"))
+	mdBytes := harness.ReadSkillMD(ds.Path, s.userHome)
 	updated := time.Now().UTC()
 	if st, err := os.Stat(ds.Path); err == nil {
 		updated = st.ModTime().UTC()

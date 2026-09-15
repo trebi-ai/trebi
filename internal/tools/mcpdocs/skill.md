@@ -8,9 +8,10 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 
 ### list
 List skills. Includes managed rows from `~/.trebi/skills` and read-only
-**inherited** skills discovered from user harness skill dirs. Inherited rows
-carry `provenance: inherited`, `origins[]` (tool, path, key), and `injected`
-(whether a trebi session of that harness will load them).
+**inherited** skills discovered from user harness skill dirs and
+`~/.agents/skills`. A `SKILL.md` that is a single `@path` line is followed.
+Inherited rows carry `provenance: inherited`, `origins[]` (tool, path, key),
+and `injected` (whether a trebi session of that harness will load them).
 - `limit` (number, optional): page size.
 
 ### show

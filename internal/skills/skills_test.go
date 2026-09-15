@@ -151,3 +151,51 @@ func TestSkills_InheritedUnionAndGuard(t *testing.T) {
 		t.Fatalf("want merged managed+origins, got %+v", merged)
 	}
 }
+
+func TestSkills_InheritedPointerFollows(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	_ = home.EnsureDirs()
+	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := skills.New(st)
+	ctx := context.Background()
+
+	user := t.TempDir()
+	realDir := filepath.Join(user, ".agents", "skills", "sling-api-specs")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "# API Specifications\n\nReal body.\n"
+	if err := os.WriteFile(filepath.Join(realDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "AUTHENTICATION.md"), []byte("auth\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ptrDir := filepath.Join(user, ".claude", "skills", "sling-api-specs")
+	if err := os.MkdirAll(ptrDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ptrDir, "SKILL.md"), []byte("@"+filepath.Join(realDir, "SKILL.md")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc.WithUserHome(user)
+
+	got, err := svc.Get(ctx, "sling-api-specs", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provenance != skills.ProvenanceInherited || got.Path != realDir {
+		t.Fatalf("got %+v", got)
+	}
+	if got.SkillMD != body {
+		t.Fatalf("skill_md %q", got.SkillMD)
+	}
+	if len(got.Origins) != 2 {
+		t.Fatalf("origins %+v", got.Origins)
+	}
+}
