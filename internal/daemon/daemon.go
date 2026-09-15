@@ -271,12 +271,30 @@ func (c *ControlPlane) findJobKind(ctx context.Context, ws, name, kind string) (
 		}
 		c.jobCacheMu.Unlock()
 		j, _ := job.ParseFile(row.Path)
+		if j != nil {
+			j.WorkspacePath = c.workspacePath(ctx, ws)
+			if j.Kind == "job" {
+				j.Prompt = job.SubstituteJobVars(j.Prompt, j.Dir, j.WorkspacePath)
+				j.FollowupPrompt = job.SubstituteJobVars(j.FollowupPrompt, j.Dir, j.WorkspacePath)
+			}
+		}
 		c.jobCacheMu.Lock()
 		c.jobCache[key] = parsedJob{hash: row.Hash, job: j, path: row.Path}
 		c.jobCacheMu.Unlock()
 		return j, row.Path
 	}
 	return nil, ""
+}
+
+func (c *ControlPlane) workspacePath(ctx context.Context, id string) string {
+	if c.Workspaces == nil || id == "" {
+		return ""
+	}
+	w, err := c.Workspaces.Get(ctx, id)
+	if err != nil {
+		return ""
+	}
+	return w.Path
 }
 
 // memoryLaunch resolves the MEMORY.md seam for a daemon launch. Nil = off.

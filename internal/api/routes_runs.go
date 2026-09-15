@@ -158,6 +158,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	harness, prompt, spec := runSpec(row.Path, body.Harness, body.PromptOverride)
 	mem := s.memoryLaunchFor(r.Context(), body.Workspace, spec)
 	prompt, wake := s.launchPrompt(r.Context(), body, prompt)
+	prompt = s.expandLaunchPrompt(r.Context(), body.Workspace, spec, prompt, body.Inputs)
+	if wake != nil {
+		wake.Body = s.expandLaunchPrompt(r.Context(), body.Workspace, spec, wake.Body, body.Inputs)
+	}
 	if body.DryRun {
 		// B25: dry_run evaluates schedule when: gates without launching.
 		// An operator dry run previews the composed wake prompt, not the raw body.
@@ -260,6 +264,21 @@ func runSpec(path, harness, prompt string) (string, string, *job.Job) {
 		}
 	}
 	return harness, prompt, spec
+}
+
+// expandLaunchPrompt fills {{job_dir}}/{{workspace_dir}} and caller inputs.
+// Operator wakes still go through the composer for {{agent_dir}}.
+func (s *Server) expandLaunchPrompt(ctx context.Context, wsID string, spec *job.Job, prompt string, extra map[string]string) string {
+	jobDir, wsPath := "", ""
+	if spec != nil {
+		jobDir = spec.Dir
+	}
+	if s.ws != nil && wsID != "" {
+		if ws, err := s.ws.Get(ctx, wsID); err == nil {
+			wsPath = ws.Path
+		}
+	}
+	return job.ExpandPrompt(prompt, jobDir, wsPath, extra)
 }
 
 // launchOpts builds the launch options: cwd and session knobs from the spec,
@@ -439,11 +458,15 @@ func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request,
 		}
 		verdicts, fire, vars = scheduleVerdicts(ctx, j)
 	}
-	// Apply extracted vars to prompt for preview
-	preview := prompt
+	// Apply builtin path vars, when: extract, and caller inputs for preview.
+	extra := map[string]string{}
 	for k, v := range vars {
-		preview = strings.ReplaceAll(preview, "{{"+k+"}}", v)
+		extra[k] = v
 	}
+	for k, v := range inputs {
+		extra[k] = v
+	}
+	preview := s.expandLaunchPrompt(ctx, workspace, j, prompt, extra)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dry_run":        true,
 		"fire":           fire,
@@ -739,15 +762,16 @@ func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason r
 		}
 		return runs.LaunchOpts{}, err
 	}
-	prompt := j.Prompt
+	extra := map[string]string{}
 	if prev.Trigger != nil {
 		for k, v := range prev.Trigger.Vars {
-			prompt = strings.ReplaceAll(prompt, "{{"+k+"}}", v)
+			extra[k] = v
 		}
 	}
 	for k, v := range prev.Inputs {
-		prompt = strings.ReplaceAll(prompt, "{{"+k+"}}", v)
+		extra[k] = v
 	}
+	prompt := s.expandLaunchPrompt(ctx, prev.Workspace, j, j.Prompt, extra)
 	lopts := runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID: prev.Workspace, Job: prev.Job, Kind: prev.Kind,

@@ -202,6 +202,39 @@ func TestDiscoverDuplicateAgentNames(t *testing.T) {
 	}
 }
 
+func TestDiscoverSubstitutesJobVars(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	jobDir := filepath.Join(root, "digest")
+	writeFile(t, filepath.Join(jobDir, "JOB.md"),
+		"---\nharness: claude\n---\n\nRun {{job_dir}}/scripts/x.sh in {{workspace_dir}}\n")
+
+	disc, err := job.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disc.Jobs) != 1 {
+		t.Fatalf("jobs=%d want 1", len(disc.Jobs))
+	}
+	got := disc.Jobs[0].Prompt
+	want := "Run " + jobDir + "/scripts/x.sh in " + root
+	if got != want {
+		t.Errorf("Prompt = %q, want %q", got, want)
+	}
+}
+
+func TestExpandPromptOverridesJobDir(t *testing.T) {
+	t.Parallel()
+	got := job.ExpandPrompt("at {{job_dir}} for {{who}}", "/jobs/a", "/ws", map[string]string{
+		"job_dir": "/pinned",
+		"who":     "fritz",
+	})
+	want := "at /pinned for fritz"
+	if got != want {
+		t.Errorf("ExpandPrompt = %q, want %q", got, want)
+	}
+}
+
 func TestDiscoverSubstitutesAgentVars(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

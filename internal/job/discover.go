@@ -179,6 +179,8 @@ func (dv *discovery) job(path string) *Job {
 	if parseErr != nil && j.ParseError == "" {
 		j.ParseError = parseErr.Error()
 	}
+	j.Prompt = SubstituteJobVars(j.Prompt, j.Dir, dv.workspacePath)
+	j.FollowupPrompt = SubstituteJobVars(j.FollowupPrompt, j.Dir, dv.workspacePath)
 	return j
 }
 
@@ -250,6 +252,39 @@ func (dv *discovery) validateAgent(j *Job, rel, dir string) {
 // {{agent_jobs}} is wake-time (Part F) and stays literal here.
 func SubstituteAgentVars(body, agentDir, workspaceDir string) string {
 	return strings.NewReplacer("{{agent_dir}}", agentDir, "{{workspace_dir}}", workspaceDir).Replace(body)
+}
+
+// SubstituteJobVars expands {{job_dir}} and {{workspace_dir}} in a JOB.md body.
+// Manual run, cron, and the dispatcher all see the same resolved paths.
+func SubstituteJobVars(body, jobDir, workspaceDir string) string {
+	return strings.NewReplacer("{{job_dir}}", jobDir, "{{workspace_dir}}", workspaceDir).Replace(body)
+}
+
+// ExpandVars applies {{key}} substitutions. Unknown keys stay literal.
+func ExpandVars(body string, vars map[string]string) string {
+	for k, v := range vars {
+		if k == "" {
+			continue
+		}
+		body = strings.ReplaceAll(body, "{{"+k+"}}", v)
+	}
+	return body
+}
+
+// ExpandPrompt applies builtin path vars, then extra {{key}} substitutions.
+// Extra keys override builtins, so a caller can pin job_dir.
+func ExpandPrompt(body, jobDir, workspaceDir string, extra map[string]string) string {
+	vars := make(map[string]string, 2+len(extra))
+	if jobDir != "" {
+		vars["job_dir"] = jobDir
+	}
+	if workspaceDir != "" {
+		vars["workspace_dir"] = workspaceDir
+	}
+	for k, v := range extra {
+		vars[k] = v
+	}
+	return ExpandVars(body, vars)
 }
 
 // ownerForRelDir returns the owning agent index name for a workspace-relative

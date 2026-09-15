@@ -59,6 +59,56 @@ func TestReplayUsesCapturedTrigger(t *testing.T) {
 	}
 }
 
+// TestRunExpandsJobDir: Run Now and dry-run fill {{job_dir}}/{{workspace_dir}}
+// the same way a schedule fire does, without requiring them as inputs.
+func TestRunExpandsJobDir(t *testing.T) {
+	s, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	jobDir := filepath.Join(wsDir, "digest")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\nharness: fake\n---\n\nRun {{job_dir}}/scripts/x.sh in {{workspace_dir}} for {{who}}.\n"
+	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "jobdir-ws")
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/digest/run", s.Token(), map[string]any{
+		"workspace": wsID,
+		"dry_run":   true,
+		"inputs":    map[string]string{"who": "fritz"},
+	})
+	if code != 200 {
+		t.Fatalf("dry_run %d %v", code, body)
+	}
+	got := fmt.Sprint(body["prompt_preview"])
+	if !strings.Contains(got, jobDir+"/scripts/x.sh") {
+		t.Fatalf("job_dir not expanded: %q", got)
+	}
+	if !strings.Contains(got, wsDir) {
+		t.Fatalf("workspace_dir not expanded: %q", got)
+	}
+	if !strings.Contains(got, "fritz") {
+		t.Fatalf("input who not expanded: %q", got)
+	}
+	if strings.Contains(got, "{{job_dir}}") || strings.Contains(got, "{{workspace_dir}}") {
+		t.Fatalf("builtin placeholders left literal: %q", got)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/digest/run", s.Token(), map[string]any{
+		"workspace": wsID,
+		"inputs":    map[string]string{"who": "fritz"},
+	})
+	if code != 201 {
+		t.Fatalf("run %d %v", code, body)
+	}
+	got = fmt.Sprint(body["prompt_preview"])
+	if strings.Contains(got, "{{job_dir}}") {
+		t.Fatalf("launch left {{job_dir}} literal: %q", got)
+	}
+}
+
 // TestRetrySkipRerunsAssistant: a skipped assistant wake has no session.
 // Retry must rebuild from TREBI.md (not JOB.md) and launch a fresh run.
 func TestRetrySkipRerunsAssistant(t *testing.T) {
