@@ -478,9 +478,30 @@ func (s *Server) handleSystemLogs(w http.ResponseWriter, r *http.Request) {
 			n = v
 		}
 	}
+	lines := filterRunLines(strings.Split(string(data), "\n"), q.Get("run"))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"lines": filterLogLines(strings.Split(string(data), "\n"), n, q.Get("level"), q.Get("grep")),
+		"lines": filterLogLines(lines, n, q.Get("level"), q.Get("grep")),
 	})
+}
+
+// filterRunLines keeps the daemon records that belong to one run. Access log
+// lines name the run in the route they served but say nothing about the run
+// itself, so they are dropped. An empty run keeps every line.
+func filterRunLines(lines []string, run string) []string {
+	if run == "" {
+		return lines
+	}
+	out := make([]string, 0, 16)
+	for _, line := range lines {
+		if !strings.Contains(line, run) {
+			continue
+		}
+		if strings.Contains(line, "msg=api.request") || strings.Contains(line, `msg="api.request"`) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // filterLogLines keeps lines matching level and grep substrings (case-insensitive),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,6 +138,48 @@ func TestPendingPromptRoundtrip(t *testing.T) {
 	}
 }
 
+func TestCapturePaneLogStampsCaptures(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	if err := home.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	r := NewReaper(New(st, nil, nil))
+	run := &Run{ID: "01CAPTURE000000000000000001"}
+	r.capturePaneLog(run, "first line")
+	r.capturePaneLog(run, "first line\nsecond line")
+
+	data, err := os.ReadFile(filepath.Join(home.RunsLogDir(), run.ID+".log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if n := strings.Count(got, "msg=pane.capture"); n != 2 {
+		t.Fatalf("capture headers = %d in %q", n, got)
+	}
+	if !strings.Contains(got, "first line") || !strings.Contains(got, "second line") {
+		t.Fatalf("log %q", got)
+	}
+	if n := strings.Count(got, "lines=1"); n != 2 {
+		t.Fatalf("each delta is one line: %q", got)
+	}
+	// An unchanged pane appends nothing, so no empty capture is stamped.
+	r.capturePaneLog(run, "first line\nsecond line")
+	again, err := os.ReadFile(filepath.Join(home.RunsLogDir(), run.ID+".log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != got {
+		t.Fatalf("unchanged pane should not append:\n%s", again)
+	}
+}
+
 func TestPaneDelta(t *testing.T) {
 	t.Parallel()
 	if paneDelta("a\nb", "a\nb") != "" {
@@ -159,5 +202,21 @@ func TestPaneDelta(t *testing.T) {
 	redraw := paneDelta("aaaa\nbbbb\ncccc\ndddd", "aaaa\nXXXX\ncccc\ndddd")
 	if redraw != "" {
 		t.Fatalf("similar redraw should skip, got %q", redraw)
+	}
+}
+
+func TestPaneCaptureHeader(t *testing.T) {
+	t.Parallel()
+	line := paneCaptureHeader("one\ntwo\nthree")
+	for _, want := range []string{"time=", "level=INFO", "msg=pane.capture", "source=reaper", "lines=3"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("header %q missing %q", line, want)
+		}
+	}
+	if got := paneCaptureHeader("one\ntwo\n"); !strings.Contains(got, "lines=2") {
+		t.Fatalf("trailing newline should not count as a line: %q", got)
+	}
+	if got := paneCaptureHeader("  \n "); !strings.Contains(got, "lines=0") {
+		t.Fatalf("blank capture %q", got)
 	}
 }

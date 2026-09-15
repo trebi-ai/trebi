@@ -1,6 +1,22 @@
 package runs
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
+// paneCaptureHeader stamps an appended pane delta. It uses the daemon's slog
+// text shape so `run logs` and the UI can fold writes back into captures and
+// show when each one was taken; the captured text follows the header.
+func paneCaptureHeader(text string) string {
+	lines := 0
+	if trimmed := strings.TrimSpace(text); trimmed != "" {
+		lines = strings.Count(trimmed, "\n") + 1
+	}
+	return fmt.Sprintf("time=%s level=INFO msg=pane.capture source=reaper lines=%d",
+		time.Now().Format(time.RFC3339Nano), lines)
+}
 
 func splitPaneLines(s string) []string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")

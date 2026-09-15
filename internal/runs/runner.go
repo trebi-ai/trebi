@@ -585,7 +585,7 @@ func (s *Service) closeSession(runID, session string) {
 	if out, err := tmux.ReadHistory(session); err == nil {
 		// Keep the in-run capture; a final alt-screen is often just Ctrl-C chrome.
 		if !s.runLogExists(runID) {
-			s.writeRunLog(runID, out)
+			s.appendRunLog(runID, paneCaptureHeader(out)+"\n"+out)
 		}
 	} else {
 		s.log.Warn("run log capture", "run_id", runID, "session", session, "err", err)

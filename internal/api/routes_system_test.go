@@ -89,6 +89,52 @@ func TestSystemLogsFilters(t *testing.T) {
 	}
 }
 
+func TestSystemLogsRunFilter(t *testing.T) {
+	s, base := startTestServer(t)
+	logDir := filepath.Join(home.Base(), "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Join([]string{
+		`time=2026-09-15T15:05:15-03:00 level=INFO msg=api.request source=http_server route=/v1/runs/01RUN status=200`,
+		`time=2026-09-15T15:05:16-03:00 level=INFO msg="run launched" source=runs id=01RUN tmux=trebi-1 harness=claude`,
+		`time=2026-09-15T15:05:17-03:00 level=INFO msg="run launched" source=runs id=01OTHER tmux=trebi-2 harness=codex`,
+		`time=2026-09-15T15:14:51-03:00 level=INFO msg="reaper finished run" source=reaper id=01RUN status=complete end_reason=sentinel`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(logDir, "trebid.log"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, resp, _ := doJSON(t, "GET", base+"/v1/system/logs?run=01RUN", s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("run filter %d %v", code, resp)
+	}
+	got := logLines(t, resp)
+	if len(got) != 2 {
+		t.Fatalf("run filter got %d %v", len(got), got)
+	}
+	for i, line := range got {
+		if i == 0 && !strings.Contains(line, "run launched") {
+			t.Fatalf("launch line missing: %v", got)
+		}
+		if i == 1 && !strings.Contains(line, "reaper finished run") {
+			t.Fatalf("finish line missing: %v", got)
+		}
+		if !strings.Contains(line, "01RUN") || strings.Contains(line, "01OTHER") ||
+			strings.Contains(line, "msg=api.request") {
+			t.Fatalf("line should be filtered: %q", line)
+		}
+	}
+
+	code, resp, _ = doJSON(t, "GET", base+"/v1/system/logs?run=01RUN&grep=reaper", s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("run+grep %d %v", code, resp)
+	}
+	if got = logLines(t, resp); len(got) != 1 || !strings.Contains(got[0], "reaper finished run") {
+		t.Fatalf("run+grep got %v", got)
+	}
+}
+
 func logLines(t *testing.T, body map[string]any) []string {
 	t.Helper()
 	raw, ok := body["lines"].([]any)

@@ -377,7 +377,7 @@ func (r *Reaper) capturePaneLog(run *Run, screen string) {
 	r.lastPane[run.ID] = screen
 	r.mu.Unlock()
 	if extra := paneDelta(prev, screen); extra != "" {
-		r.svc.appendRunLog(run.ID, extra)
+		r.svc.appendRunLog(run.ID, paneCaptureHeader(extra)+"\n"+extra)
 	}
 }
 
