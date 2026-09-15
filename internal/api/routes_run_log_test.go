@@ -69,6 +69,9 @@ func TestHandleRunLogJSONAndFollowSnapshot(t *testing.T) {
 	if !strings.Contains(sse, "event: ready") {
 		t.Fatalf("missing ready: %q", sse[:min(200, len(sse))])
 	}
+	if !strings.Contains(sse, `"offset":50`) || !strings.Contains(sse, `"total":150`) {
+		t.Fatalf("ready metadata: %q", sse[:min(200, len(sse))])
+	}
 	if strings.Contains(sse, "L001") || strings.Contains(sse, "L050") {
 		t.Fatalf("snapshot should be last 100 lines, got early lines: %q", sse[:min(300, len(sse))])
 	}
@@ -105,5 +108,33 @@ func TestHandleRunLogFollowMissingIsSSENot404(t *testing.T) {
 	code, _, _ := doJSON(t, "GET", base+"/v1/runs/01MISSING0000000000000001/log", s.Token(), nil)
 	if code != 404 {
 		t.Fatalf("non-follow want 404 got %d", code)
+	}
+}
+
+func TestHandleRunLogBeforePage(t *testing.T) {
+	s, base := startTestServer(t)
+	id := "01TESTLOGPAGE000000000001"
+	dir := home.RunsLogDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for i := 1; i <= 150; i++ {
+		fmt.Fprintf(&b, "L%03d\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".log"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/runs/"+id+"/log?before=50&n=3", s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("status %d %v", code, body)
+	}
+	log, _ := body["log"].(string)
+	if log != "L048\nL049\nL050" {
+		t.Fatalf("page log %q", log)
+	}
+	if body["offset"] != float64(47) || body["total"] != float64(150) {
+		t.Fatalf("offset/total %v %v", body["offset"], body["total"])
 	}
 }

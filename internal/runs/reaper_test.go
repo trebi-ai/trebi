@@ -136,3 +136,28 @@ func TestPendingPromptRoundtrip(t *testing.T) {
 		t.Fatal("second take")
 	}
 }
+
+func TestPaneDelta(t *testing.T) {
+	t.Parallel()
+	if paneDelta("a\nb", "a\nb") != "" {
+		t.Fatal("identical")
+	}
+	got := paneDelta("a\nb\nc", "b\nc\nd")
+	if got != "d" {
+		t.Fatalf("scroll got %q", got)
+	}
+	if paneDelta("", "hello") != "hello" {
+		t.Fatal("first")
+	}
+	spinner := paneDelta(
+		"working\nesc to interrupt\n❯ ",
+		"working\nesc to interrupt\n❯ ",
+	)
+	if spinner != "" {
+		t.Fatalf("spinner %q", spinner)
+	}
+	redraw := paneDelta("aaaa\nbbbb\ncccc\ndddd", "aaaa\nXXXX\ncccc\ndddd")
+	if redraw != "" {
+		t.Fatalf("similar redraw should skip, got %q", redraw)
+	}
+}

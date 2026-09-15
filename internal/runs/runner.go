@@ -544,6 +544,36 @@ func (s *Service) writeRunLog(runID, out string) {
 	}
 }
 
+// appendRunLog adds chunk to the run log without replacing earlier captures.
+func (s *Service) appendRunLog(runID, chunk string) {
+	chunk = strings.TrimRight(chunk, "\n")
+	if runID == "" || chunk == "" {
+		return
+	}
+	path := filepath.Join(home.RunsLogDir(), runID+".log")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		s.log.Warn("run log mkdir", "run_id", runID, "err", err)
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		s.log.Warn("run log append", "run_id", runID, "err", err)
+		return
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err == nil && st.Size() > 0 {
+		chunk = "\n" + chunk
+	}
+	if _, err := f.WriteString(chunk + "\n"); err != nil {
+		s.log.Warn("run log append", "run_id", runID, "err", err)
+	}
+}
+
+func (s *Service) runLogExists(runID string) bool {
+	_, err := os.Stat(filepath.Join(home.RunsLogDir(), runID+".log"))
+	return err == nil
+}
+
 // closeSession captures the pane before killing it. The pane is the only
 // record of what a tmux run printed: once the session dies the scrollback is
 // gone, so every teardown path must come through here rather than calling
@@ -553,7 +583,10 @@ func (s *Service) closeSession(runID, session string) {
 		return
 	}
 	if out, err := tmux.ReadHistory(session); err == nil {
-		s.writeRunLog(runID, out)
+		// Keep the in-run capture; a final alt-screen is often just Ctrl-C chrome.
+		if !s.runLogExists(runID) {
+			s.writeRunLog(runID, out)
+		}
 	} else {
 		s.log.Warn("run log capture", "run_id", runID, "session", session, "err", err)
 	}

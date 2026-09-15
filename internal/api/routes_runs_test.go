@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,26 @@ func TestLastLogLines(t *testing.T) {
 	}
 	if got := lastLogLines("only", 100); len(got) != 1 || got[0] != "only" {
 		t.Fatalf("short %v", got)
+	}
+}
+
+func TestSliceLogLines(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	for i := 1; i <= 10; i++ {
+		fmt.Fprintf(&b, "L%02d\n", i)
+	}
+	chunk, offset, total := sliceLogLines(b.String(), 5, 3)
+	if total != 10 || offset != 2 || strings.Join(chunk, ",") != "L03,L04,L05" {
+		t.Fatalf("chunk=%v offset=%d total=%d", chunk, offset, total)
+	}
+	chunk, offset, total = sliceLogLines(b.String(), 2, 10)
+	if offset != 0 || total != 10 || strings.Join(chunk, ",") != "L01,L02" {
+		t.Fatalf("clamp chunk=%v offset=%d", chunk, offset)
+	}
+	chunk, offset, total = sliceLogLines(b.String(), 0, 5)
+	if offset != 0 || total != 10 || len(chunk) != 0 {
+		t.Fatalf("before 0: chunk=%v offset=%d total=%d", chunk, offset, total)
 	}
 }
 

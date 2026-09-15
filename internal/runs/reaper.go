@@ -26,6 +26,7 @@ type Reaper struct {
 	sentinels   map[string]int
 	fixAttempts map[string]int
 	memDone     map[string]bool
+	lastPane    map[string]string
 	stop        chan struct{}
 }
 
@@ -42,6 +43,7 @@ func NewReaper(svc *Service) *Reaper {
 		sentinels:   make(map[string]int),
 		fixAttempts: make(map[string]int),
 		memDone:     make(map[string]bool),
+		lastPane:    make(map[string]string),
 		stop:        make(chan struct{}),
 	}
 }
@@ -132,6 +134,8 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 		return
 	}
 
+	r.capturePaneLog(run, screen)
+
 	if tool, ok := tmux.ByName(run.Harness); ok && !r.svc.IsLaunching(run.ID) {
 		r.handleDialogs(ctx, run, tool, screen)
 	}
@@ -145,8 +149,13 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 		}
 	}
 
-	if DetectCompletion(screen, run.ID) {
-		r.gateCompletion(ctx, run, screen, now)
+	// Visible pane is a few dozen rows; the sentinel often scrolls off.
+	completeText := screen
+	if hist, herr := tmux.ReadHistory(run.TmuxSession); herr == nil && hist != "" {
+		completeText = hist
+	}
+	if DetectCompletion(completeText, run.ID) {
+		r.gateCompletion(ctx, run, completeText, now)
 		return
 	}
 
@@ -362,12 +371,25 @@ func (r *Reaper) checkIdle(ctx context.Context, run *Run, screen string, now tim
 	return false
 }
 
+func (r *Reaper) capturePaneLog(run *Run, screen string) {
+	r.mu.Lock()
+	prev := r.lastPane[run.ID]
+	r.lastPane[run.ID] = screen
+	r.mu.Unlock()
+	if extra := paneDelta(prev, screen); extra != "" {
+		r.svc.appendRunLog(run.ID, extra)
+	}
+}
+
 func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndReason) {
 	if status != StatusComplete {
 		r.gateAtFinish(ctx, run)
 	}
 	r.svc.cancelNative(run.ID)
 	if run.TmuxSession != "" {
+		if screen, err := tmux.ReadScreen(run.TmuxSession); err == nil {
+			r.capturePaneLog(run, screen)
+		}
 		_ = tmux.SendKey(run.TmuxSession, "C-c")
 		time.Sleep(100 * time.Millisecond)
 		r.svc.closeSession(run.ID, run.TmuxSession)
@@ -384,6 +406,7 @@ func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndRea
 	delete(r.sentinels, run.ID)
 	delete(r.fixAttempts, run.ID)
 	delete(r.memDone, run.ID)
+	delete(r.lastPane, run.ID)
 	r.mu.Unlock()
 	r.log.Info("reaper finished run", "id", run.ID, "status", status, "end_reason", end)
 }

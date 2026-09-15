@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -699,6 +700,8 @@ func (s *Server) writeNativeTranscript(w http.ResponseWriter, r *http.Request, r
 const (
 	runLogFollowLines    = 100
 	runLogFollowInterval = 500 * time.Millisecond
+	runLogPageLines      = 200
+	runLogPageMax        = 2000
 )
 
 func (s *Server) handleRunLog(w http.ResponseWriter, r *http.Request) {
@@ -710,7 +713,26 @@ func (s *Server) handleRunLog(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", "log not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"log": text, "source": source})
+		all := lastLogLines(text, 0)
+		if beforeQ := r.URL.Query().Get("before"); beforeQ != "" {
+			before, err := strconv.Atoi(beforeQ)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, "validation", "before must be an integer")
+				return
+			}
+			n, _ := strconv.Atoi(r.URL.Query().Get("n"))
+			chunk, offset, total := sliceLogLines(text, before, n)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"log":    strings.Join(chunk, "\n"),
+				"source": source,
+				"offset": offset,
+				"total":  total,
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"log": text, "source": source, "offset": 0, "total": len(all),
+		})
 		return
 	}
 
@@ -726,11 +748,17 @@ func (s *Server) handleRunLog(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "event: ready\ndata: {}\n\n")
-	flush()
 
 	prev := text
-	writeSSELogLines(w, flush, lastLogLines(text, runLogFollowLines))
+	snap := lastLogLines(text, runLogFollowLines)
+	total := len(lastLogLines(text, 0))
+	offset := total - len(snap)
+	if offset < 0 {
+		offset = 0
+	}
+	fmt.Fprintf(w, "event: ready\ndata: {\"offset\":%d,\"total\":%d}\n\n", offset, total)
+	flush()
+	writeSSELogLines(w, flush, snap)
 	if !s.runLogLive(r.Context(), id) {
 		return
 	}
@@ -781,6 +809,25 @@ func (s *Server) runLogText(ctx context.Context, id string) (text, source string
 func (s *Server) runLogLive(ctx context.Context, id string) bool {
 	run, err := s.runs.Get(ctx, id)
 	return err == nil && run.Status.IsLive()
+}
+
+func sliceLogLines(s string, before, n int) (chunk []string, offset, total int) {
+	lines := lastLogLines(s, 0)
+	total = len(lines)
+	if n <= 0 {
+		n = runLogPageLines
+	}
+	if n > runLogPageMax {
+		n = runLogPageMax
+	}
+	if before < 0 || before > total {
+		before = total
+	}
+	offset = before - n
+	if offset < 0 {
+		offset = 0
+	}
+	return lines[offset:before], offset, total
 }
 
 func lastLogLines(s string, n int) []string {
