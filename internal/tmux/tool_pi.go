@@ -79,7 +79,7 @@ func (piTool) IsReady(screen string) bool {
 func (piTool) HandleStartup(screen string) []Action {
 	// Preselected option is "→ Trust" (or "Trust"); Enter accepts.
 	if strings.Contains(screen, "Trust project folder?") {
-		return []Action{{Key: "enter"}}
+		return []Action{TrustAction(screen)}
 	}
 	return nil
 }

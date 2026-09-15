@@ -154,8 +154,9 @@ type readyIO struct {
 	now     func() time.Time
 }
 
-// waitReadyLoop polls io.read until tool.IsReady, applying each HandleStartup
-// action once per distinct dialog screen (fingerprint dedup).
+// waitReadyLoop polls io.read until tool.IsReady, applying HandleStartup
+// actions up to MaxDialogTries per dialog. A stuck or unknown choice dialog
+// returns DialogWaitingError instead of a ready timeout.
 func waitReadyLoop(tool Tool, io readyIO, timeout time.Duration) error {
 	if io.sleep == nil {
 		io.sleep = time.Sleep
@@ -165,9 +166,8 @@ func waitReadyLoop(tool Tool, io readyIO, timeout time.Duration) error {
 	}
 
 	deadline := io.now().Add(timeout)
-	// Track which startup action fingerprints we already applied so we don't
-	// re-send enter/2 on every poll.
-	applied := map[string]bool{}
+	// Track fires per dialog identity so we don't re-send on every poll.
+	applied := map[string]int{}
 
 	for io.now().Before(deadline) {
 		screen, err := io.read()
@@ -184,20 +184,16 @@ func waitReadyLoop(tool Tool, io readyIO, timeout time.Duration) error {
 			return &LimitExceededError{Tool: tool.Name()}
 		}
 
-		for _, act := range tool.HandleStartup(screen) {
-			key := act.Key + "\x00" + act.Text + "\x00" + screenFingerprint(screen, act)
-			if applied[key] {
-				continue
+		acts := tool.HandleStartup(screen)
+		fired := applyDialogActions(tool, screen, io, applied)
+		if len(acts) > 0 && fired == 0 {
+			// Auto-answer survived MaxDialogTries — don't burn the ready timeout.
+			return dialogWaiting(tool, screen)
+		}
+		if len(acts) == 0 {
+			if _, ok := ChoiceDialog(screen); ok {
+				return dialogWaiting(tool, screen)
 			}
-			io.sleep(1 * time.Second)
-			if act.Key != "" {
-				_ = io.sendKey(act.Key)
-			}
-			if act.Text != "" {
-				_ = io.send(act.Text)
-			}
-			applied[key] = true
-			io.sleep(1 * time.Second)
 		}
 
 		if tool.IsReady(screen) {
@@ -207,16 +203,6 @@ func waitReadyLoop(tool Tool, io readyIO, timeout time.Duration) error {
 	}
 
 	return fmt.Errorf("timeout waiting for %s to become ready", tool.Name())
-}
-
-// screenFingerprint distinguishes distinct dialog screens for the same action type.
-func screenFingerprint(screen string, act Action) string {
-	// Use a short prefix of the screen so re-rendered identical dialogs collapse.
-	const n = 120
-	if len(screen) <= n {
-		return screen + act.Key + act.Text
-	}
-	return screen[:n] + act.Key + act.Text
 }
 
 // ScreenClass is the coarse screen-derived state for tasks whose harness sent
@@ -274,7 +260,7 @@ func classifyChrome(screen string, busy, idle []string) ScreenClass {
 // "<spinner> <Verb>… (Ns · …)" line whose "… (" never appears on the
 // past-tense finished line ("✻ Cooked for 36s", no parens).
 func (claudeTool) ClassifyScreen(screen string) ScreenClass {
-	return classifyChrome(screen, []string{"esc to interrupt", "… ("}, []string{" min | "})
+	return classifyChrome(screen, []string{"esc to interrupt", "… ("}, []string{" min | ", "auto mode on"})
 }
 
 func (codexTool) ClassifyScreen(screen string) ScreenClass {

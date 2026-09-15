@@ -649,6 +649,7 @@ func TestIsReady(t *testing.T) {
 		want   bool
 	}{
 		{Claude, "❯ Try \"fix typecheck errors\"\n  Fable 5 | 0.5 min | 0K (0%) | /tmp/x", true},
+		{Claude, "❯ \n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents", true},
 		{Claude, "❯ only", false},
 		{Claude, "Fable 5 | 0.5 min | 0K (0%) without glyph", false},
 		{Claude, "❯ 1. Yes, I trust this folder\n  2. No, exit", false},
@@ -681,10 +682,10 @@ func TestIsReady(t *testing.T) {
 func TestHandleStartup_Claude(t *testing.T) {
 	t.Parallel()
 	tool := claudeTool{}
-	trust := "Is this a project you created or one you trust?\nYes, I trust this folder"
+	trust := "Is this a project you created or one you trust?\n❯ 1. Yes, I trust this folder\n  2. No, exit"
 	acts := tool.HandleStartup(trust)
-	if len(acts) != 1 || acts[0].Key != "enter" {
-		t.Fatalf("trust actions: %+v", acts)
+	if len(acts) != 1 || acts[0].Text != "1" {
+		t.Fatalf("trust actions: %+v, want Text=1", acts)
 	}
 	bypass := "Bypass Permissions mode\nYes, I accept"
 	acts = tool.HandleStartup(bypass)
@@ -800,6 +801,45 @@ func TestPostReadyDelay(t *testing.T) {
 	}
 	if (unknownTool{}).PostReadyDelay() != 3*time.Second {
 		t.Error("unknown delay")
+	}
+}
+
+func TestTranscriptWorkingDirPassesClaudeCwd(t *testing.T) {
+	t.Parallel()
+	wd := "/Users/fritz/trebi/ocral/agents/watchtower/fl-housing-tracker"
+	if got := TranscriptWorkingDir(Claude, wd, time.Time{}); got != wd {
+		t.Fatalf("claude cwd=%q want %q", got, wd)
+	}
+}
+
+func TestClaudeTranscriptPathFindsProjectSlug(t *testing.T) {
+	root := t.TempDir()
+	home.SetBase(root)
+	t.Cleanup(func() { home.SetBase("") })
+	wd := "/Users/me/proj"
+	sid := "sess-slug"
+	slug := ClaudeProjectDir(wd)
+	p := filepath.Join(config.HarnessDir(Claude), "projects", slug, sid+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (claudeTool{}).TranscriptPath("", wd, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != p {
+		t.Fatalf("got %s want %s", got, p)
+	}
+	// Empty cwd still finds the file under projects/.
+	got, err = (claudeTool{}).TranscriptPath("", "", sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != p {
+		t.Fatalf("walk got %s want %s", got, p)
 	}
 }
 

@@ -279,6 +279,10 @@ func translateKey(key string) string {
 		return "C-c"
 	case "c-d", "ctrl-d":
 		return "C-d"
+	case "down":
+		return "Down"
+	case "up":
+		return "Up"
 	}
 	return key
 }

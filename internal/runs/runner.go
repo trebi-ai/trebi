@@ -461,15 +461,32 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 // finishLaunch waits for the harness composer, then pastes the prompt.
 func (s *Service) finishLaunch(run *Run, wsRef string, tool tmux.Tool, prompt string, resuming bool) {
 	ctx := context.Background()
-	if !s.waitHarnessReady(ctx, run.ID, wsRef, tool, resuming) {
+	s.markLaunching(run.ID, true)
+	defer s.markLaunching(run.ID, false)
+	ready, waitQ := s.waitHarnessReady(ctx, run.ID, wsRef, tool, resuming)
+	if !ready {
 		return
 	}
-	if err := sendPrompt(wsRef, prompt, tool.Name()); err != nil {
-		_, _ = s.failLaunch(ctx, run, wsRef, err)
+	if waitQ != "" {
+		s.SetSessionState(ctx, run.ID, SessionWaiting, "dialog")
+		if _, err := s.OpenApproval(ctx, run.ID, waitQ); err != nil {
+			s.log.Warn("open approval", "run", run.ID, "error", err)
+		}
+		s.stashPendingPrompt(run.ID, pendingPrompt{session: wsRef, prompt: prompt, harness: tool.Name()})
+		s.AddEvent(ctx, run.ID, "waiting", "dialog", map[string]string{"question": waitQ})
+		s.log.Info("run waiting on dialog", "id", run.ID, "question", waitQ)
+		return
+	}
+	s.deliverPrompt(ctx, run, wsRef, tool.Name(), prompt)
+}
+
+func (s *Service) deliverPrompt(ctx context.Context, run *Run, session, harness, prompt string) {
+	if err := sendPrompt(session, prompt, harness); err != nil {
+		_, _ = s.failLaunch(ctx, run, session, err)
 		return
 	}
 	s.SetSessionState(ctx, run.ID, SessionRunning, "launch")
-	s.log.Info("run launched", "id", run.ID, "tmux", wsRef, "harness", tool.Name())
+	s.log.Info("run launched", "id", run.ID, "tmux", session, "harness", harness)
 }
 
 // FailBeforeLaunch records a terminal failed run without starting the harness.
@@ -553,30 +570,41 @@ func (s *Service) failLaunch(ctx context.Context, run *Run, wsRef string, err er
 	return run, fmt.Errorf("launch: %w", err)
 }
 
-// waitHarnessReady waits for the harness prompt. False means the launch
-// failed and the run is already terminal.
-func (s *Service) waitHarnessReady(ctx context.Context, runID, wsRef string, tool tmux.Tool, resuming bool) bool {
+// waitHarnessReady waits for the harness prompt.
+// ready=false means the run is already terminal.
+// ready=true with a non-empty waitQ means a TUI dialog is stuck: keep the
+// session, mark waiting, and let the reaper paste once the composer appears.
+func (s *Service) waitHarnessReady(ctx context.Context, runID, wsRef string, tool tmux.Tool, resuming bool) (ready bool, waitQ string) {
 	rt := readyTimeout
 	if resuming {
 		rt = resumeReadyTimeout
 	}
-	if err := tmux.WaitReadyTool(wsRef, tool, rt); err != nil {
-		end := EndLaunch
-		switch {
-		case errors.Is(err, tmux.ErrAuthMissing):
-			end = EndAuth
-			s.emitAuthProbeFailed(ctx, tool.Name(), runID, harness.SourceProbe)
-		case errors.Is(err, tmux.ErrLimitExceeded):
-			end = EndLimit
-			s.emitLimitExceeded(ctx, tool.Name(), runID)
-		}
-		_ = s.Terminate(ctx, runID, StatusFailed, end, nil)
-		s.closeSession(runID, wsRef)
-		return false
+	err := tmux.WaitReadyTool(wsRef, tool, rt)
+	if err == nil {
+		time.Sleep(tool.PostReadyDelay())
+		s.stampHarnessAuthOK(ctx, tool.Name())
+		return true, ""
 	}
-	time.Sleep(tool.PostReadyDelay())
-	s.stampHarnessAuthOK(ctx, tool.Name())
-	return true
+	var dw *tmux.DialogWaitingError
+	if errors.As(err, &dw) {
+		q := dw.Question
+		if q == "" {
+			q = "harness is waiting on a choice"
+		}
+		return true, q
+	}
+	end := EndLaunch
+	switch {
+	case errors.Is(err, tmux.ErrAuthMissing):
+		end = EndAuth
+		s.emitAuthProbeFailed(ctx, tool.Name(), runID, harness.SourceProbe)
+	case errors.Is(err, tmux.ErrLimitExceeded):
+		end = EndLimit
+		s.emitLimitExceeded(ctx, tool.Name(), runID)
+	}
+	_ = s.Terminate(ctx, runID, StatusFailed, end, nil)
+	s.closeSession(runID, wsRef)
+	return false, ""
 }
 
 // DetectCompletion reports whether the pane shows the run's sentinel.

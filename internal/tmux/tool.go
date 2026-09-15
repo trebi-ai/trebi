@@ -34,17 +34,13 @@ const (
 var ErrTranscriptUnsupported = errors.New("transcript not supported for this tool")
 
 // TranscriptWorkingDir is the working-dir argument for Tool.TranscriptPath.
-// Codex finds rollouts by cwd + start time. Grok nests chat_history under an
-// escaped cwd. Claude's launcher recorded the path with an empty working dir.
+// Codex finds rollouts by cwd + start time. Everyone else passes the run cwd
+// through (Claude slugs it into projects/<slug>/<session>.jsonl).
 func TranscriptWorkingDir(harness, workingDir string, startedAt time.Time) string {
-	switch harness {
-	case Codex:
+	if harness == Codex {
 		return CodexWorkingDir(workingDir, startedAt)
-	case Grok:
-		return workingDir
-	default:
-		return ""
 	}
+	return workingDir
 }
 
 // ErrResumeUnsupported: tool cannot build a resume command.
@@ -79,7 +75,8 @@ type Tool interface {
 	PrepareLaunch(command string) LaunchPlan
 	PrepareResume(command, sessionID string) (LaunchPlan, error)
 	IsReady(screen string) bool
-	// HandleStartup returns first-run dialog actions (trust, bypass); applied once per WaitReady loop.
+	// HandleStartup returns auto-answer actions for TUI dialogs (trust, bypass).
+	// Applied during WaitReady and again on live panes by the reaper.
 	HandleStartup(screen string) []Action
 	PostReadyDelay() time.Duration
 	TranscriptPath(home, workingDir, sessionID string) (string, error)

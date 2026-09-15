@@ -110,3 +110,29 @@ func TestFakeHarnessSentinelViaCreateAndLaunch(t *testing.T) {
 		t.Fatalf("end=%s", run.EndReason)
 	}
 }
+
+func TestPendingPromptRoundtrip(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := New(st, nil, nil)
+	svc.markLaunching("r1", true)
+	if !svc.IsLaunching("r1") {
+		t.Fatal("launching")
+	}
+	svc.markLaunching("r1", false)
+	if svc.IsLaunching("r1") {
+		t.Fatal("cleared")
+	}
+	svc.stashPendingPrompt("r1", pendingPrompt{session: "s", prompt: "hi", harness: "claude"})
+	p, ok := svc.takePendingPrompt("r1")
+	if !ok || p.prompt != "hi" || p.session != "s" {
+		t.Fatalf("%v %v", ok, p)
+	}
+	if _, ok := svc.takePendingPrompt("r1"); ok {
+		t.Fatal("second take")
+	}
+}

@@ -54,10 +54,10 @@ func (claudeTool) HandleStartup(screen string) []Action {
 			strings.Contains(screen, "Light mode")) {
 		actions = append(actions, Action{Key: "enter"})
 	}
-	// Trust this folder?
+	// Trust this folder? Numbered → "1"; unnumbered with No highlighted → down+enter.
 	if strings.Contains(screen, "Is this a project you created or one you trust?") &&
 		strings.Contains(screen, "Yes, I trust this folder") {
-		actions = append(actions, Action{Key: "enter"})
+		actions = append(actions, TrustYesActions(screen)...)
 	}
 	// Bypass permissions confirmation ("2" = yes).
 	if strings.Contains(screen, "Bypass Permissions mode") &&
@@ -88,26 +88,56 @@ func (claudeTool) TranscriptPath(home, workingDir, sessionID string) (string, er
 	if sessionID == "" {
 		return "", fmt.Errorf("no session id recorded")
 	}
+	name := sessionID + ".jsonl"
 	slug := ClaudeProjectDir(workingDir)
-	rel := filepath.Join("projects", slug, sessionID+".jsonl")
-
+	var roots []string
 	if configDir := os.Getenv("CLAUDE_CONFIG_DIR"); configDir != "" {
-		return filepath.Join(configDir, rel), nil
+		roots = append(roots, configDir)
 	}
+	roots = append(roots, config.HarnessDir(Claude))
+	if home != "" {
+		roots = append(roots, filepath.Join(home, ".claude"))
+	}
+	var first string
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		candidates := []string{filepath.Join(root, "projects", name)}
+		if slug != "" {
+			candidates = append([]string{filepath.Join(root, "projects", slug, name)}, candidates...)
+		}
+		for _, p := range candidates {
+			if first == "" {
+				first = p
+			}
+			if fileExistsNotDir(p) {
+				return p, nil
+			}
+		}
+		if found := findClaudeSessionJSONL(filepath.Join(root, "projects"), name); found != "" {
+			return found, nil
+		}
+	}
+	if first == "" {
+		return "", fmt.Errorf("transcript not found")
+	}
+	return first, nil
+}
 
-	// Prefer harness, fall back to user ~/.claude (legacy).
-	harnessPath := filepath.Join(config.HarnessDir(Claude), rel)
-	if fileExistsNotDir(harnessPath) {
-		return harnessPath, nil
-	}
-	if home == "" {
-		return "", fmt.Errorf("home directory required")
-	}
-	userPath := filepath.Join(home, ".claude", rel)
-	if fileExistsNotDir(userPath) {
-		return userPath, nil
-	}
-	return harnessPath, nil
+func findClaudeSessionJSONL(projects, name string) string {
+	var found string
+	_ = filepath.WalkDir(projects, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if d.Name() == name {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 func (claudeTool) Lifecycle() LifecycleAdapter { return claudeLifecycle{} }
@@ -211,13 +241,21 @@ func fileExistsNotDir(p string) bool {
 	return err == nil && !st.IsDir()
 }
 
-// claudeReady needs ❯ plus the status bar (" min | "); trust dialogs have ❯ only.
-// Login / limit chrome also matches both — exclude via blockers.
+// claudeReady needs ❯ plus idle footer. Trust/bypass dialogs also have ❯.
+// Login / limit chrome can match both — exclude via blockers.
 func claudeReady(screen string) bool {
 	if IsAuthBlocker(screen) || IsLimitBlocker(screen) {
 		return false
 	}
-	return strings.Contains(screen, "❯") && strings.Contains(screen, " min | ")
+	if strings.Contains(screen, "Yes, I trust this folder") ||
+		strings.Contains(screen, "Bypass Permissions mode") {
+		return false
+	}
+	if !strings.Contains(screen, "❯") {
+		return false
+	}
+	return strings.Contains(screen, " min | ") ||
+		strings.Contains(screen, "auto mode on")
 }
 
 // claudeSettingsJSON is the Claude lifecycle-hooks --settings payload.

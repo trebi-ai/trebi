@@ -22,6 +22,7 @@ type Reaper struct {
 	mu          sync.Mutex
 	idleSince   map[string]time.Time
 	limitHits   map[string]int
+	dialogHits  map[string]map[string]int
 	sentinels   map[string]int
 	fixAttempts map[string]int
 	memDone     map[string]bool
@@ -37,6 +38,7 @@ func NewReaper(svc *Service) *Reaper {
 		log:         slog.Default().With("source", "reaper"),
 		idleSince:   make(map[string]time.Time),
 		limitHits:   make(map[string]int),
+		dialogHits:  make(map[string]map[string]int),
 		sentinels:   make(map[string]int),
 		fixAttempts: make(map[string]int),
 		memDone:     make(map[string]bool),
@@ -130,6 +132,10 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 		return
 	}
 
+	if tool, ok := tmux.ByName(run.Harness); ok && !r.svc.IsLaunching(run.ID) {
+		r.handleDialogs(ctx, run, tool, screen)
+	}
+
 	idle := run.screenIdle(screen)
 	if r.svc.SessionState(run.ID) != SessionWaiting {
 		if idle {
@@ -172,6 +178,74 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 	if cleared {
 		r.svc.emitLimitCleared(ctx, run.Harness)
 	}
+}
+
+func (r *Reaper) handleDialogs(ctx context.Context, run *Run, tool tmux.Tool, screen string) {
+	r.mu.Lock()
+	hits := r.dialogHits[run.ID]
+	if hits == nil {
+		hits = map[string]int{}
+		r.dialogHits[run.ID] = hits
+	}
+	r.mu.Unlock()
+
+	acts := tool.HandleStartup(screen)
+	fired := 0
+	for _, act := range acts {
+		key := tmux.DialogKey(screen, act)
+		r.mu.Lock()
+		n := hits[key]
+		r.mu.Unlock()
+		if n >= tmux.MaxDialogTries {
+			continue
+		}
+		if err := tmux.SendAction(run.TmuxSession, act); err != nil {
+			r.log.Warn("dialog send", "run", run.ID, "error", err)
+			continue
+		}
+		r.mu.Lock()
+		hits[key]++
+		r.mu.Unlock()
+		fired++
+	}
+
+	if len(acts) > 0 && fired == 0 {
+		q, _ := tmux.ChoiceDialog(screen)
+		r.markDialogWaiting(ctx, run, q)
+	} else if len(acts) == 0 {
+		if q, ok := tmux.ChoiceDialog(screen); ok {
+			r.markDialogWaiting(ctx, run, q)
+		}
+	}
+
+	if !tool.IsReady(screen) {
+		return
+	}
+	p, ok := r.svc.takePendingPrompt(run.ID)
+	if !ok {
+		return
+	}
+	if err := sendPrompt(p.session, p.prompt, p.harness); err != nil {
+		r.log.Warn("pending prompt", "run", run.ID, "error", err)
+		r.svc.stashPendingPrompt(run.ID, p)
+		return
+	}
+	r.svc.SetSessionState(ctx, run.ID, SessionRunning, "launch")
+	r.log.Info("run launched after dialog", "id", run.ID)
+}
+
+func (r *Reaper) markDialogWaiting(ctx context.Context, run *Run, question string) {
+	if r.svc.SessionState(run.ID) == SessionWaiting {
+		return
+	}
+	if question == "" {
+		question = "harness is waiting on a choice"
+	}
+	r.svc.SetSessionState(ctx, run.ID, SessionWaiting, "dialog")
+	if _, err := r.svc.OpenApproval(ctx, run.ID, question); err != nil {
+		r.log.Warn("open approval", "run", run.ID, "error", err)
+	}
+	r.svc.AddEvent(ctx, run.ID, "waiting", "dialog", map[string]string{"question": question})
 }
 
 // gateCompletion runs the memory gate on a fresh completion sentinel (B22
@@ -301,10 +375,12 @@ func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndRea
 	if err := r.svc.Terminate(ctx, run.ID, status, end, nil); err != nil {
 		r.log.Warn("reaper terminate", "run", run.ID, "error", err)
 	}
+	r.svc.takePendingPrompt(run.ID)
 	r.mu.Lock()
 	delete(r.idleSince, run.ID)
 	delete(r.idleSince, "keep:"+run.ID)
 	delete(r.limitHits, run.ID)
+	delete(r.dialogHits, run.ID)
 	delete(r.sentinels, run.ID)
 	delete(r.fixAttempts, run.ID)
 	delete(r.memDone, run.ID)

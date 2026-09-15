@@ -43,7 +43,7 @@ func (copilotTool) IsReady(screen string) bool {
 // user's terminal config (goldens: testdata/screens/copilot/keybinding-setup).
 func (copilotTool) HandleStartup(screen string) []Action {
 	if strings.Contains(screen, "Do you trust the files in this folder") {
-		return []Action{{Key: "enter"}}
+		return []Action{{Text: "1"}}
 	}
 	if strings.Contains(screen, "Would you like to add this key binding to your terminal configuration?") {
 		return []Action{{Key: "escape"}}

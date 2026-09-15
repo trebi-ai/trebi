@@ -63,10 +63,10 @@ func (codexTool) IsReady(screen string) bool {
 	return strings.Contains(screen, "› ")
 }
 
-// HandleStartup: trust dialog has "1. Yes, continue" preselected.
+// HandleStartup: trust dialog — pick "1. Yes, continue", not the highlight.
 func (codexTool) HandleStartup(screen string) []Action {
 	if strings.Contains(screen, codexTrustDialog) {
-		return []Action{{Key: "enter"}}
+		return []Action{{Text: "1"}}
 	}
 	return nil
 }

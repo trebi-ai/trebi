@@ -40,7 +40,7 @@ func (geminiTool) HandleStartup(screen string) []Action {
 	// to this workspace"; option 1 (trust) is always preselected
 	// (goldens: testdata/screens/gemini/startup-trust).
 	if strings.Contains(screen, "Do you trust the") {
-		return []Action{{Key: "enter"}}
+		return []Action{{Text: "1"}}
 	}
 	return nil
 }

@@ -71,7 +71,7 @@ func TestScreenFixtureWalker_SelfTest(t *testing.T) {
 	writeSelfTestScenario(t, filepath.Join(root, "claude", "startup"), map[string]string{
 		"01-boot.txt":               "Welcome to Claude Code!\nLoading...",
 		"02-trust-folder.txt":       selfTestTrustScreen,
-		"03-trust-folder.txt":       selfTestTrustScreen, // re-rendered identical dialog: must not re-fire
+		"03-trust-folder.txt":       selfTestTrustScreen, // same dialog: second try, then ready follows
 		"04-bypass-permissions.txt": selfTestBypassScreen,
 		"05-ready.txt":              selfTestReadyScreen,
 		"info.txt":                  "synthetic",
@@ -280,8 +280,8 @@ func checkFrame(tool Tool, f screenFrame) error {
 			return fmt.Errorf("%s: %s frame produced startup actions %+v", f.path, f.state, acts)
 		}
 	case "trust-folder":
-		if len(acts) != 1 || acts[0].Key != "enter" || acts[0].Text != "" {
-			return fmt.Errorf("%s: trust-folder actions = %+v, want [{Key:enter}]", f.path, acts)
+		if !isTrustYes(acts) {
+			return fmt.Errorf("%s: trust-folder actions = %+v, want Text=1 or Key=enter", f.path, acts)
 		}
 	case "bypass-permissions":
 		if len(acts) != 1 || acts[0].Text != "2" || acts[0].Key != "" {
@@ -320,6 +320,17 @@ func checkClassifierFrame(tool Tool, f screenFrame) error {
 		return fmt.Errorf("%s: ClassifyScreen = %s, want %s", f.path, got, want)
 	}
 	return nil
+}
+
+func isTrustYes(acts []Action) bool {
+	if len(acts) == 2 && (acts[0].Key == "down" || acts[0].Key == "up") && acts[1].Key == "enter" {
+		return true
+	}
+	if len(acts) != 1 {
+		return false
+	}
+	a := acts[0]
+	return (a.Text == "1" && a.Key == "") || (a.Key == "enter" && a.Text == "")
 }
 
 func actionsEqual(a, b []Action) bool {
@@ -373,31 +384,36 @@ func replayScenario(tool Tool, frames []screenFrame) error {
 		if err == nil {
 			return fmt.Errorf("scenario has no ready frame but the loop reported ready — paste would fire")
 		}
-	} else {
-		if err != nil {
-			return fmt.Errorf("loop never reached ready: %v", err)
-		}
-		if reads != readyIdx+1 {
-			return fmt.Errorf("loop exited after %d reads, want %d (first ready frame %s)",
-				reads, readyIdx+1, frames[readyIdx].path)
-		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("loop never reached ready: %v", err)
+	}
+	if reads != readyIdx+1 {
+		return fmt.Errorf("loop exited after %d reads, want %d (first ready frame %s)",
+			reads, readyIdx+1, frames[readyIdx].path)
 	}
 
-	// Expected fires: one per distinct (action, dialog fingerprint) among the
-	// frames the loop visited. Identical re-rendered dialogs collapse to one.
+	// Expected fires: up to MaxDialogTries per dialog identity among visited frames.
 	visited := frames
 	if readyIdx >= 0 {
 		visited = frames[:readyIdx+1]
 	}
-	wantFires := map[string]bool{}
+	wantFires := map[string]int{}
+	wantTotal := 0
 	for _, f := range visited {
 		for _, act := range tool.HandleStartup(f.content) {
-			wantFires[act.Key+"\x00"+act.Text+"\x00"+screenFingerprint(f.content, act)] = true
+			k := DialogKey(f.content, act)
+			if wantFires[k] >= MaxDialogTries {
+				continue
+			}
+			wantFires[k]++
+			wantTotal++
 		}
 	}
-	if len(sent) != len(wantFires) {
-		return fmt.Errorf("actions fired %d times, want %d distinct dialog fires (sent %+v)",
-			len(sent), len(wantFires), sent)
+	if len(sent) != wantTotal {
+		return fmt.Errorf("actions fired %d times, want %d dialog fires (sent %+v)",
+			len(sent), wantTotal, sent)
 	}
 	return nil
 }

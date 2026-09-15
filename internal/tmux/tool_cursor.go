@@ -211,7 +211,7 @@ func (cursorTool) HandleStartup(screen string) []Action {
 	if strings.Contains(flat, "do you trust") ||
 		strings.Contains(flat, "trust this workspace") ||
 		strings.Contains(flat, "trust this folder") {
-		return []Action{{Key: "enter"}}
+		return []Action{TrustAction(screen)}
 	}
 	return nil
 }

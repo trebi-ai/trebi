@@ -56,16 +56,18 @@ type Service struct {
 	log *slog.Logger
 	fs  *files.Service // MEMORY.md seed/migrate writes; nil skips memory prep
 
-	mu       sync.RWMutex
-	sessions map[string]sessionSnap // run_id → state
-	native   map[string]*nativeHandle
-	life     context.Context
-	ingest   func(ctx context.Context, runID, convID string, texts []string) error
-	recap    func(ctx context.Context, convID, text string) error
-	prov     llm.Provider // test seam; nil → llm.New from config
-	dispatch tools.Dispatcher
-	composer WakeComposer
-	memRes   MemoryResolver
+	mu        sync.RWMutex
+	sessions  map[string]sessionSnap // run_id → state
+	native    map[string]*nativeHandle
+	launching map[string]bool
+	pending   map[string]pendingPrompt
+	life      context.Context
+	ingest    func(ctx context.Context, runID, convID string, texts []string) error
+	recap     func(ctx context.Context, convID, text string) error
+	prov      llm.Provider // test seam; nil → llm.New from config
+	dispatch  tools.Dispatcher
+	composer  WakeComposer
+	memRes    MemoryResolver
 }
 
 type nativeHandle struct {
@@ -76,6 +78,13 @@ type nativeHandle struct {
 type sessionSnap struct {
 	State SessionState
 	Since time.Time
+}
+
+// pendingPrompt is a launch prompt waiting for a TUI dialog to clear.
+type pendingPrompt struct {
+	session string
+	prompt  string
+	harness string
 }
 
 var (
@@ -95,10 +104,47 @@ var (
 func New(st *store.Store, composer WakeComposer, fs *files.Service) *Service {
 	return &Service{
 		st: st, log: slog.Default().With("source", "runs"), fs: fs,
-		sessions: make(map[string]sessionSnap), native: make(map[string]*nativeHandle),
-		life:     context.Background(),
-		composer: composer,
+		sessions:  make(map[string]sessionSnap),
+		native:    make(map[string]*nativeHandle),
+		launching: make(map[string]bool),
+		pending:   make(map[string]pendingPrompt),
+		life:      context.Background(),
+		composer:  composer,
 	}
+}
+
+func (s *Service) markLaunching(id string, on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if on {
+		s.launching[id] = true
+		return
+	}
+	delete(s.launching, id)
+}
+
+// IsLaunching reports that WaitReady is still in flight, so the reaper must
+// not also type into the pane.
+func (s *Service) IsLaunching(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.launching[id]
+}
+
+func (s *Service) stashPendingPrompt(id string, p pendingPrompt) {
+	s.mu.Lock()
+	s.pending[id] = p
+	s.mu.Unlock()
+}
+
+func (s *Service) takePendingPrompt(id string) (pendingPrompt, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pending[id]
+	if ok {
+		delete(s.pending, id)
+	}
+	return p, ok
 }
 
 // SetMemoryResolver wires the gate-time memory seam. Both daemon and api hold
