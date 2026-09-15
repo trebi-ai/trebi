@@ -247,6 +247,36 @@ func TestJobWriteRefreshesIndex(t *testing.T) {
 }
 
 // TestJobGetReturnsIndexName: an agent-owned job's GET name is the
+func TestJobGetInputKeysFromJobMarkdownOnly(t *testing.T) {
+	s, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "input-keys-ws")
+
+	md := "---\nharness: fake\n---\n\nEmail {{to}}. Template slots `{{PREHEADER}}`, `{{DATE_RANGE}}`.\n"
+	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", s.Token(), map[string]any{
+		"workspace": wsID, "name": "digest", "markdown": md,
+	})
+	if code != 201 {
+		t.Fatalf("create %d %v", code, created)
+	}
+	tpl := filepath.Join(wsDir, "digest", "templates", "email.html")
+	if err := os.MkdirAll(filepath.Dir(tpl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tpl, []byte("<div>{{PREHEADER}} {{SECTIONS}} {{ITEM_TITLE}}</div>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/digest?workspace="+wsID, s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("get %d %v", code, got)
+	}
+	keys, _ := got["input_keys"].([]any)
+	if len(keys) != 1 || keys[0] != "to" {
+		t.Fatalf("input_keys=%v want [to] (template-file placeholders must not appear)", got["input_keys"])
+	}
+}
+
 // workspace-relative path, the same key runs and list use — not the folder
 // basename ParseFile would return.
 func TestJobGetReturnsIndexName(t *testing.T) {

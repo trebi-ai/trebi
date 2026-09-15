@@ -180,7 +180,8 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
 		"harness": j.Harness, "active": !j.Disabled, "hash": doc.Hash,
 		"parse_error": j.ParseError, "prompt": j.Prompt,
-		"triggers": j.Triggers, "session": j.Session, "env_set": j.Envset,
+		"input_keys": job.DiscoverInputKeys(j.Prompt),
+		"triggers":   j.Triggers, "session": j.Session, "env_set": j.Envset,
 		"markdown": string(doc.Data), "mtime": doc.MTime,
 	})
 }

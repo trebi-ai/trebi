@@ -248,6 +248,41 @@ func (dv *discovery) validateAgent(j *Job, rel, dir string) {
 	}
 }
 
+var (
+	// builtinInputKeys are path vars the daemon fills at launch. They are not
+	// operator run inputs.
+	builtinInputKeys = map[string]bool{
+		"job_dir":       true,
+		"workspace_dir": true,
+		"agent_dir":     true,
+		"agent_jobs":    true,
+	}
+	inputPlaceholderRe = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
+	fencedCodeRe       = regexp.MustCompile("(?s)```.*?```|~~~.*?~~~")
+	inlineCodeRe       = regexp.MustCompile("`[^`\n]*`")
+)
+
+// DiscoverInputKeys returns {{placeholder}} names from a JOB.md prompt body
+// that a manual run may bind. Only that body is scanned — sibling files
+// (templates/, MEMORY.md, scripts/) are never read. Builtin path vars are
+// skipped. Placeholders inside markdown code (inline or fenced) are skipped:
+// those document template slots, they are not run inputs.
+func DiscoverInputKeys(body string) []string {
+	stripped := fencedCodeRe.ReplaceAllString(body, " ")
+	stripped = inlineCodeRe.ReplaceAllString(stripped, " ")
+	seen := make(map[string]bool)
+	keys := make([]string, 0)
+	for _, m := range inputPlaceholderRe.FindAllStringSubmatch(stripped, -1) {
+		k := m[1]
+		if k == "" || builtinInputKeys[k] || seen[k] {
+			continue
+		}
+		seen[k] = true
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // SubstituteAgentVars expands the AGENT.md body placeholders (C.3).
 // {{agent_jobs}} is wake-time (Part F) and stays literal here.
 func SubstituteAgentVars(body, agentDir, workspaceDir string) string {

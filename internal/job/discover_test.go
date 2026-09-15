@@ -3,6 +3,7 @@ package job_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -232,6 +233,79 @@ func TestExpandPromptOverridesJobDir(t *testing.T) {
 	want := "at /pinned for fritz"
 	if got != want {
 		t.Errorf("ExpandPrompt = %q, want %q", got, want)
+	}
+}
+
+func TestDiscoverInputKeys(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "live placeholders in JOB.md body",
+			body: "Hello {{period}} and {{name}} and {{period}}",
+			want: []string{"period", "name"},
+		},
+		{
+			name: "skips builtin path vars",
+			body: "Run {{job_dir}}/x.sh for {{period}} in {{workspace_dir}}",
+			want: []string{"period"},
+		},
+		{
+			name: "skips agent builtins",
+			body: "From {{agent_dir}} list {{agent_jobs}}",
+			want: []string{},
+		},
+		{
+			name: "skips inline-code template slots",
+			body: "Email {{to}}. Template slots `{{PREHEADER}}`, `{{DATE_RANGE}}`.",
+			want: []string{"to"},
+		},
+		{
+			name: "skips fenced-code template slots",
+			body: "Send to {{to}}.\n```html\n{{PREHEADER}} {{SECTIONS}}\n```\n",
+			want: []string{"to"},
+		},
+		{
+			name: "empty body",
+			body: "",
+			want: []string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := job.DiscoverInputKeys(tc.body)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("DiscoverInputKeys = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDiscoverInputKeysIgnoresSiblingFiles(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	jobDir := filepath.Join(root, "digest")
+	writeFile(t, filepath.Join(jobDir, "JOB.md"),
+		"---\nharness: claude\n---\n\nEmail {{to}}. Fill `{{PREHEADER}}` in the template.\n")
+	writeFile(t, filepath.Join(jobDir, "templates", "email.html"),
+		"<div>{{PREHEADER}} {{DATE_RANGE}} {{INTRO}}</div>\n")
+	writeFile(t, filepath.Join(jobDir, "MEMORY.md"), "{{ITEM_TITLE}}\n")
+
+	disc, err := job.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disc.Jobs) != 1 {
+		t.Fatalf("jobs=%d want 1", len(disc.Jobs))
+	}
+	got := job.DiscoverInputKeys(disc.Jobs[0].Prompt)
+	want := []string{"to"}
+	if !slices.Equal(got, want) {
+		t.Errorf("DiscoverInputKeys = %#v, want %#v (sibling template/memory slots must not count)", got, want)
 	}
 }
 
