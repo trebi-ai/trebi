@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -295,6 +296,115 @@ func TestScheduleWhenGateSkips(t *testing.T) {
 	var nextDue string
 	if err := st.DB().QueryRow(`SELECT next_due_at FROM schedules WHERE workspace_id=? AND job=?`, ws.ID, j.Name).Scan(&nextDue); err != nil {
 		t.Fatal(err)
+	}
+	nd, err := time.Parse(time.RFC3339, nextDue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !nd.After(time.Now().UTC()) {
+		t.Fatalf("schedule did not advance: next_due_at=%s", nextDue)
+	}
+}
+
+// TestScheduleFireDueAuthMissingCreatesFailedRun proves a due cron with a
+// blocked harness still creates a run so the attempt is visible.
+func TestScheduleFireDueAuthMissingCreatesFailedRun(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	// Do NOT set TREBI_FAKE_HARNESS so auth gate applies.
+	t.Cleanup(func() {
+		home.SetBase("")
+		_ = os.Unsetenv("TREBI_FAKE_HARNESS")
+	})
+	_ = os.Unsetenv("TREBI_FAKE_HARNESS")
+
+	wsPath := filepath.Join(dir, "ws")
+	jobDir := filepath.Join(wsPath, "blocked")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jobMD := "---\nharness: claude\ntriggers:\n  - every: 1h\n---\n\nBlocked.\n"
+	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(jobMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.DB().Exec(`INSERT INTO harness_state (name, auth_ok, limit_exceeded, updated_at) VALUES ('claude', 0, 0, ?)`, now); err != nil {
+		t.Fatal(err)
+	}
+
+	cp := daemon.New(st, daemon.Options{})
+	ctx := context.Background()
+	ws, err := cp.Workspaces.Add(ctx, wsPath, "auth-sched-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = cp.Workspaces.RebuildIndex(ctx, ws)
+
+	j, err := job.ParseFile(filepath.Join(jobDir, "JOB.md"))
+	if err != nil || j == nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := cp.Schedule.RecomputeFromJob(ctx, ws.ID, j, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	if _, err := st.DB().Exec(`UPDATE schedules SET next_due_at=? WHERE workspace_id=? AND job=?`, past, ws.ID, j.Name); err != nil {
+		t.Fatal(err)
+	}
+
+	cp.FireDue(ctx)
+
+	var id, status, end, reason, lastFired, nextDue string
+	err = st.DB().QueryRow(`SELECT id, status, end_reason, reason FROM runs WHERE job=?`, j.Name).
+		Scan(&id, &status, &end, &reason)
+	if err != nil {
+		t.Fatalf("expected a schedule run: %v", err)
+	}
+	if reason != string(runs.ReasonSchedule) || status != string(runs.StatusFailed) || end != string(runs.EndAuth) {
+		t.Fatalf("run reason=%s status=%s end=%s want schedule/failed/auth", reason, status, end)
+	}
+	got, err := cp.Runs.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TmuxSession != "" {
+		t.Fatalf("tmux session %q; harness must not launch", got.TmuxSession)
+	}
+	tl, err := cp.Runs.Timeline(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ev := range tl.Events {
+		if ev.Kind == "error" && strings.Contains(string(ev.Detail), "auth_missing") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("timeline missing auth_missing error: %+v", tl.Events)
+	}
+	logb, err := os.ReadFile(filepath.Join(home.RunsLogDir(), id+".log"))
+	if err != nil {
+		t.Fatalf("run log: %v", err)
+	}
+	if !strings.Contains(string(logb), "auth_missing") {
+		t.Fatalf("run log %q want auth_missing", logb)
+	}
+	if err := st.DB().QueryRow(`SELECT COALESCE(last_fired_at,''), next_due_at FROM schedules WHERE workspace_id=? AND job=?`, ws.ID, j.Name).
+		Scan(&lastFired, &nextDue); err != nil {
+		t.Fatal(err)
+	}
+	if lastFired == "" {
+		t.Fatal("last_fired_at empty after auth skip")
 	}
 	nd, err := time.Parse(time.RFC3339, nextDue)
 	if err != nil {

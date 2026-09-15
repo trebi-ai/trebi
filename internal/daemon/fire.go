@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
@@ -43,7 +44,8 @@ func (c *ControlPlane) scheduleTicker(ctx context.Context) {
 
 // fireOne launches one claimed schedule entry. ClaimDue already advanced next_due_at.
 // The lookup carries no kind filter: assistant and agent rows fire with their own
-// kind instead of being orphan-deleted.
+// kind instead of being orphan-deleted. Auth/limit gates create a failed run so
+// the attempt is visible; a false when: gate still skips without a run.
 func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 	j, path := c.findJob(ctx, r.WorkspaceID, r.Job)
 	if j == nil {
@@ -61,10 +63,6 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		return
 	}
 	harness := j.ResolvedHarness()
-	if reason := c.harnessBlocked(ctx, harness); reason != "" {
-		c.log.Info("schedule skip harness", "job", r.Job, "harness", harness, "reason", reason)
-		return
-	}
 	d := j.LaunchDefaults()
 	cwd := d.WorkingDir
 	if cwd == "" {
@@ -77,7 +75,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		wake = &runs.WakeOpts{Body: prompt}
 		prompt = ""
 	}
-	_, _, err := c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
+	lopts := runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID:   r.WorkspaceID,
 			Job:           r.Job,
@@ -96,11 +94,38 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		Memory:    c.memoryLaunch(ctx, r.WorkspaceID, j),
 		IfRunning: d.IfRunning,
 		Env:       d.Env,
-	})
-	if err != nil {
-		c.log.Warn("schedule fire", "job", r.Job, "error", err)
+	}
+	if reason := c.harnessBlocked(ctx, harness); reason != "" {
+		end := runs.EndAuth
+		if reason == dispatch.BlockLimitExceeded {
+			end = runs.EndLimit
+		}
+		c.log.Info("schedule skip harness", "job", r.Job, "harness", harness, "reason", reason)
+		if _, err := c.Runs.FailBeforeLaunch(ctx, lopts, end, map[string]string{
+			"harness": harness,
+			"reason":  string(reason),
+			"message": "schedule: harness " + harness + " blocked (" + string(reason) + ")",
+		}); err != nil {
+			c.log.Warn("schedule fail before launch", "job", r.Job, "error", err)
+		}
+		c.markFired(ctx, r)
 		return
 	}
+	run, _, err := c.Runs.CreateAndLaunch(ctx, lopts)
+	if err != nil {
+		c.log.Warn("schedule fire", "job", r.Job, "error", err)
+		if run == nil {
+			if _, ferr := c.Runs.FailBeforeLaunch(ctx, lopts, runs.EndLaunch, map[string]string{
+				"message": err.Error(),
+			}); ferr != nil {
+				c.log.Warn("schedule fail before launch", "job", r.Job, "error", ferr)
+			}
+		}
+	}
+	c.markFired(ctx, r)
+}
+
+func (c *ControlPlane) markFired(ctx context.Context, r schedule.Row) {
 	if err := c.Schedule.MarkFired(ctx, r, time.Now().UTC()); err != nil {
 		c.log.Warn("schedule mark fired", "job", r.Job, "error", err)
 	}

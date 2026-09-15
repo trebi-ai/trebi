@@ -472,14 +472,42 @@ func (s *Service) finishLaunch(run *Run, wsRef string, tool tmux.Tool, prompt st
 	s.log.Info("run launched", "id", run.ID, "tmux", wsRef, "harness", tool.Name())
 }
 
-// failFast records a failed run so the API does not hang on WaitReady.
-func (s *Service) failFast(ctx context.Context, opts LaunchOpts) (*Run, error) {
+// FailBeforeLaunch records a terminal failed run without starting the harness.
+// Use it when a producer (schedule, queue) has claimed work but cannot launch.
+func (s *Service) FailBeforeLaunch(ctx context.Context, opts LaunchOpts, end EndReason, detail map[string]string) (*Run, error) {
+	if opts.PromptPreview == "" {
+		opts.PromptPreview = opts.Prompt
+	}
 	run, err := s.Create(ctx, opts.CreateOpts)
 	if err != nil {
 		return nil, err
 	}
-	_ = s.Terminate(ctx, run.ID, StatusFailed, EndLaunch, nil)
+	if detail == nil {
+		detail = map[string]string{}
+	}
+	if detail["message"] == "" {
+		detail["message"] = "run failed: " + string(end)
+	}
+	if opts.Harness != "" && detail["harness"] == "" {
+		detail["harness"] = opts.Harness
+	}
+	s.AddEvent(ctx, run.ID, "error", "launch", detail)
+	s.writeRunLog(run.ID, detail["message"]+"\n")
+	switch end {
+	case EndAuth:
+		s.emitAuthProbeFailed(ctx, opts.Harness, run.ID, harness.SourceLaunch)
+	case EndLimit:
+		s.emitLimitExceeded(ctx, opts.Harness, run.ID)
+	}
+	_ = s.Terminate(ctx, run.ID, StatusFailed, end, nil)
 	return s.Get(ctx, run.ID)
+}
+
+// failFast records a failed run so the API does not hang on WaitReady.
+func (s *Service) failFast(ctx context.Context, opts LaunchOpts) (*Run, error) {
+	return s.FailBeforeLaunch(ctx, opts, EndLaunch, map[string]string{
+		"message": "harness binary unavailable",
+	})
 }
 
 // writeRunLog persists a run's output where handleRunLog reads it. A run that

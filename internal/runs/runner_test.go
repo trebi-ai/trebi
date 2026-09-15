@@ -8,9 +8,66 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
+
+func TestFailBeforeLaunch(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	st, err := store.OpenPath(filepath.Join(dir, "r.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+
+	run, err := svc.FailBeforeLaunch(ctx, runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "demo", Harness: "claude", Reason: runs.ReasonSchedule,
+			PromptPreview: "do it",
+		},
+		Prompt: "do it",
+	}, runs.EndAuth, map[string]string{
+		"reason":  "auth_missing",
+		"message": "schedule: harness claude blocked (auth_missing)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != runs.StatusFailed || run.EndReason != runs.EndAuth {
+		t.Fatalf("status=%s end=%s want failed/auth", run.Status, run.EndReason)
+	}
+	if run.TmuxSession != "" {
+		t.Fatalf("tmux session %q", run.TmuxSession)
+	}
+	tl, err := svc.Timeline(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ev := range tl.Events {
+		if ev.Kind == "error" && strings.Contains(string(ev.Detail), "auth_missing") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("timeline missing error: %+v", tl.Events)
+	}
+	logb, err := os.ReadFile(filepath.Join(home.RunsLogDir(), run.ID+".log"))
+	if err != nil {
+		t.Fatalf("run log: %v", err)
+	}
+	if !strings.Contains(string(logb), "auth_missing") {
+		t.Fatalf("run log %q", logb)
+	}
+}
 
 func TestFakeHarnessSentinel(t *testing.T) {
 	t.Parallel()
