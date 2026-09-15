@@ -696,29 +696,125 @@ func (s *Server) writeNativeTranscript(w http.ResponseWriter, r *http.Request, r
 	writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
 }
 
+const (
+	runLogFollowLines    = 100
+	runLogFollowInterval = 500 * time.Millisecond
+)
+
 func (s *Server) handleRunLog(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	path := filepath.Join(home.RunsLogDir(), id+".log")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		// fallback: capture pane if live
-		run, gerr := s.runs.Get(r.Context(), id)
-		if gerr == nil && run.TmuxSession != "" {
-			screen, rerr := tmux.ReadScreen(run.TmuxSession)
-			if rerr == nil {
-				writeJSON(w, http.StatusOK, map[string]any{"log": screen, "source": "pane"})
+	follow := r.URL.Query().Get("follow") == "1"
+	text, source := s.runLogText(r.Context(), id)
+	if !follow {
+		if text == "" {
+			writeErr(w, http.StatusNotFound, "not_found", "log not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"log": text, "source": source})
+		return
+	}
+
+	flusher, _ := w.(http.Flusher)
+	flush := func() {
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	// Headers must go out before the first log line, or an empty file + follow
+	// holds the connection with no response and proxies time out as 502.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "event: ready\ndata: {}\n\n")
+	flush()
+
+	prev := text
+	writeSSELogLines(w, flush, lastLogLines(text, runLogFollowLines))
+	if !s.runLogLive(r.Context(), id) {
+		return
+	}
+
+	t := time.NewTicker(runLogFollowInterval)
+	defer t.Stop()
+	idle := 0
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-t.C:
+			cur, _ := s.runLogText(r.Context(), id)
+			if extra := logSuffixLines(prev, cur); len(extra) > 0 {
+				writeSSELogLines(w, flush, extra)
+			}
+			prev = cur
+			if s.runLogLive(r.Context(), id) {
+				idle = 0
+				continue
+			}
+			idle++
+			if idle >= 2 {
 				return
 			}
 		}
-		writeErr(w, http.StatusNotFound, "not_found", "log not found")
-		return
 	}
-	if r.URL.Query().Get("follow") == "1" {
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "data: %s\n\n", strings.ReplaceAll(string(data), "\n", "\ndata: "))
-		return
+}
+
+func (s *Server) runLogText(ctx context.Context, id string) (text, source string) {
+	path := filepath.Join(home.RunsLogDir(), id+".log")
+	if data, err := os.ReadFile(path); err == nil {
+		return string(data), "file"
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"log": string(data), "source": "file"})
+	run, err := s.runs.Get(ctx, id)
+	if err != nil || run.TmuxSession == "" {
+		return "", ""
+	}
+	if hist, herr := tmux.ReadHistory(run.TmuxSession); herr == nil {
+		return hist, "pane"
+	}
+	if screen, rerr := tmux.ReadScreen(run.TmuxSession); rerr == nil {
+		return screen, "pane"
+	}
+	return "", ""
+}
+
+func (s *Server) runLogLive(ctx context.Context, id string) bool {
+	run, err := s.runs.Get(ctx, id)
+	return err == nil && run.Status.IsLive()
+}
+
+func lastLogLines(s string, n int) []string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return nil
+	}
+	lines := strings.Split(s, "\n")
+	if n > 0 && len(lines) > n {
+		return lines[len(lines)-n:]
+	}
+	return lines
+}
+
+func logSuffixLines(prev, next string) []string {
+	if next == "" || next == prev {
+		return nil
+	}
+	if prev == "" {
+		return lastLogLines(next, runLogFollowLines)
+	}
+	if strings.HasPrefix(next, prev) {
+		return lastLogLines(next[len(prev):], 0)
+	}
+	return nil
+}
+
+func writeSSELogLines(w http.ResponseWriter, flush func(), lines []string) {
+	for _, line := range lines {
+		fmt.Fprintf(w, "data: %s\n\n", line)
+		flush()
+	}
 }
 
 func (s *Server) handleRunResume(w http.ResponseWriter, r *http.Request) {

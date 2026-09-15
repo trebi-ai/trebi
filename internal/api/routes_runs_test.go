@@ -3,6 +3,7 @@ package api
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,38 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
+
+func TestLastLogLines(t *testing.T) {
+	t.Parallel()
+	got := lastLogLines("a\nb\nc\n", 2)
+	if strings.Join(got, ",") != "b,c" {
+		t.Fatalf("got %v", got)
+	}
+	if lastLogLines("", 10) != nil {
+		t.Fatal("empty")
+	}
+	if got := lastLogLines("only", 100); len(got) != 1 || got[0] != "only" {
+		t.Fatalf("short %v", got)
+	}
+}
+
+func TestLogSuffixLines(t *testing.T) {
+	t.Parallel()
+	if logSuffixLines("abc", "abc") != nil {
+		t.Fatal("equal")
+	}
+	got := logSuffixLines("ab", "abcd")
+	if strings.Join(got, ",") != "cd" {
+		t.Fatalf("suffix %v", got)
+	}
+	got = logSuffixLines("", "l1\nl2")
+	if strings.Join(got, ",") != "l1,l2" {
+		t.Fatalf("empty prev %v", got)
+	}
+	if logSuffixLines("xy", "ab") != nil {
+		t.Fatal("rewrite is not a suffix")
+	}
+}
 
 // TestLaunchOptsWorkingDirCoversG5: an AGENT.md resolves its cwd to the
 // workspace root; a JOB.md keeps its own folder; working_dir: wins for both.
