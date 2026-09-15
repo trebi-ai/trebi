@@ -1261,6 +1261,8 @@ type JobSpec struct {
 	Content        string
 	Prompt         string
 	Harness        string
+	Model          string
+	Effort         string
 	Description    string
 	Cron           string
 	Every          string
@@ -1285,8 +1287,9 @@ func (j JobSpec) BuildValidate() HTTPRequest {
 func (j JobSpec) body() map[string]any {
 	body := map[string]any{"name": j.Name, "workspace": j.Workspace, "content": j.Content}
 	for k, v := range map[string]string{
-		"prompt": j.Prompt, "harness": j.Harness, "description": j.Description,
-		"cron": j.Cron, "every": j.Every, "idempotency_key": j.IdempotencyKey,
+		"prompt": j.Prompt, "harness": j.Harness, "model": j.Model, "effort": j.Effort,
+		"description": j.Description,
+		"cron":        j.Cron, "every": j.Every, "idempotency_key": j.IdempotencyKey,
 		"agent": j.Agent,
 	} {
 		if v != "" {

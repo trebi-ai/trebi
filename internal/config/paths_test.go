@@ -95,6 +95,45 @@ func TestSetPath_AllShowKeys(t *testing.T) {
 	}
 }
 
+func TestSetPath_ToolModelEffortEnv(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	cfg.applyDefaults()
+	if err := cfg.SetPath("tools.claude.model", "sonnet"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetPath("tools.claude.effort", "xhigh"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Tools.Claude.Model != "sonnet" || cfg.Tools.Claude.Effort != "xhigh" {
+		t.Fatalf("%+v", cfg.Tools.Claude)
+	}
+	if err := cfg.SetPath("tools.claude.effort", "nope"); err == nil {
+		t.Fatal("invalid effort accepted")
+	}
+	if err := cfg.SetPath("tools.cursor.effort", "high"); err == nil {
+		t.Fatal("cursor has no effort flag")
+	}
+	if err := cfg.SetPath("tools.opencode.effort", "fast"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetPath("tools.claude.env.LOG_LEVEL", "debug"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetPath("tools.claude.env.1BAD", "x"); err == nil {
+		t.Fatal("invalid env key accepted")
+	}
+	if cfg.Tools.Claude.Env["LOG_LEVEL"] != "debug" {
+		t.Fatalf("env: %v", cfg.Tools.Claude.Env)
+	}
+	if err := cfg.SetPath("tools.claude.env.LOG_LEVEL", ""); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Tools.Claude.Env != nil {
+		t.Fatalf("clearing the last key must drop the map: %v", cfg.Tools.Claude.Env)
+	}
+}
+
 func TestSetPath_RoundTrip(t *testing.T) {
 	t.Parallel()
 	cfg := defaultConfig()
@@ -331,6 +370,12 @@ func sampleSetValue(key string) string {
 		return "1.0.0"
 	case strings.HasSuffix(key, ".channel"):
 		return "latest"
+	case strings.HasSuffix(key, ".model"):
+		return "claude-opus-5"
+	case strings.HasSuffix(key, ".effort"):
+		return "high"
+	case strings.Contains(key, ".env."):
+		return "1"
 	case strings.HasSuffix(key, ".path"):
 		return "/tmp/trebi-tool"
 	case strings.HasSuffix(key, ".bridge.inherit"):

@@ -46,7 +46,12 @@ func SetDisabled(path string, disabled bool) error {
 }
 
 // patchScalars are the top-level frontmatter fields a patch may set.
-var patchScalars = []string{"harness", "title", "envset", "description", "working_dir", "followup_prompt"} //nolint:gochecknoglobals // static field list, never mutated
+// harness, model, and effort are handled together by applyHarnessPatch because
+// they share one YAML node that can be a scalar or a map.
+var patchScalars = []string{"title", "envset", "description", "working_dir", "followup_prompt"} //nolint:gochecknoglobals // static field list, never mutated
+
+// patchHarnessFields are keys of the nested harness: node.
+var patchHarnessFields = map[string]bool{"harness": true, "model": true, "effort": true} //nolint:gochecknoglobals // static key set, never mutated
 
 // patchSessionFields map a dotted session key to its frontmatter field.
 var patchSessionFields = map[string]string{ //nolint:gochecknoglobals // static field table, never mutated
@@ -77,12 +82,18 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 	if err := applyScalarPatch(path, patch); err != nil {
 		return err
 	}
+	if err := applyHarnessPatch(path, patch); err != nil {
+		return err
+	}
 	return applySessionPatch(path, patch)
 }
 
 // checkPatchKeys rejects a key the writer does not honor.
 func checkPatchKeys(patch map[string]any) error {
-	known := map[string]bool{"disabled": true}
+	known := map[string]bool{"disabled": true, "harness": true}
+	for k := range patchHarnessFields {
+		known[k] = true
+	}
 	for _, k := range patchScalars {
 		known[k] = true
 	}
@@ -99,7 +110,7 @@ func checkPatchKeys(patch map[string]any) error {
 		return nil
 	}
 	sort.Strings(unknown)
-	valid := append([]string{"disabled"}, patchScalars...)
+	valid := append([]string{"disabled", "harness", "model", "effort"}, patchScalars...)
 	valid = append(valid, "session")
 	return fmt.Errorf("unknown patch field(s) %s; valid fields are %s",
 		strings.Join(unknown, ", "), strings.Join(valid, ", "))
@@ -161,6 +172,148 @@ func applySessionPatch(path string, patch map[string]any) error {
 	return nil
 }
 
+// applyHarnessPatch writes harness/model/effort into the one harness: node.
+// The node stays a plain scalar while no override is set, so files that only
+// name a harness keep their one-line form.
+func applyHarnessPatch(path string, patch map[string]any) error {
+	var name, model, effort *string
+	if v, ok := patch["harness"]; ok && v != nil {
+		s := fmt.Sprint(v)
+		name = &s
+	}
+	if v, ok := patch["model"]; ok && v != nil {
+		s := fmt.Sprint(v)
+		model = &s
+	}
+	if v, ok := patch["effort"]; ok && v != nil {
+		s := fmt.Sprint(v)
+		effort = &s
+	}
+	if name == nil && model == nil && effort == nil {
+		return nil
+	}
+	return setHarnessSpec(path, name, model, effort)
+}
+
+// harnessSpecValue is the mutable scalar view of the harness node.
+type harnessSpecValue struct {
+	Name   string
+	Model  string
+	Effort string
+}
+
+func setHarnessSpec(path string, name, model, effort *string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	fmStart, fmEnd, err := locateFrontmatter(data)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	fmContent := string(data[fmStart:fmEnd])
+	var fmLines []string
+	if fmContent != "" {
+		fmLines = strings.Split(strings.TrimRight(fmContent, "\n"), "\n")
+	}
+
+	idx, children := -1, 0
+	var cur harnessSpecValue
+	for i, line := range fmLines {
+		trim := strings.TrimSpace(line)
+		if !strings.HasPrefix(trim, "harness:") {
+			continue
+		}
+		idx = i
+		raw := strings.TrimSpace(strings.TrimPrefix(trim, "harness:"))
+		if raw != "" {
+			cur = parseHarnessScalar(raw)
+			break
+		}
+		// Block form: consume indented child lines.
+		for j := i + 1; j < len(fmLines); j++ {
+			child := fmLines[j]
+			if child == "" {
+				break
+			}
+			if child[0] != ' ' && child[0] != '\t' {
+				break
+			}
+			children++
+			k, v, ok := strings.Cut(strings.TrimSpace(child), ":")
+			if !ok {
+				continue
+			}
+			v = strings.Trim(strings.TrimSpace(v), `"'`)
+			switch strings.TrimSpace(k) {
+			case "name":
+				cur.Name = v
+			case "model":
+				cur.Model = v
+			case "effort":
+				cur.Effort = v
+			}
+		}
+		break
+	}
+
+	apply := func(dst *string, src *string) {
+		if src != nil {
+			*dst = *src
+		}
+	}
+	apply(&cur.Name, name)
+	apply(&cur.Model, model)
+	apply(&cur.Effort, effort)
+	if cur.Name == "" {
+		cur.Name = "claude"
+	}
+
+	block := renderHarnessSpec(cur)
+	if idx < 0 {
+		fmLines = append(block, fmLines...)
+	} else {
+		tail := append([]string{}, fmLines[idx+1+children:]...)
+		fmLines = append(fmLines[:idx], block...)
+		fmLines = append(fmLines, tail...)
+	}
+
+	newFm := strings.Join(fmLines, "\n") + "\n"
+	out := make([]byte, 0, len(data)+64)
+	out = append(out, data[:fmStart]...)
+	out = append(out, newFm...)
+	out = append(out, data[fmEnd:]...)
+	return WriteAtomic(path, out)
+}
+
+// parseHarnessScalar reads a scalar or flow-map harness value.
+func parseHarnessScalar(raw string) harnessSpecValue {
+	if strings.HasPrefix(raw, "{") {
+		var spec HarnessSpec
+		if err := yaml.Unmarshal([]byte(raw), &spec); err == nil {
+			return harnessSpecValue{Name: spec.Name, Model: spec.Model, Effort: spec.Effort}
+		}
+	}
+	return harnessSpecValue{Name: strings.Trim(raw, `"'`)}
+}
+
+// renderHarnessSpec returns the harness node lines: a scalar when only the
+// name is set, otherwise a two-space-indented block.
+func renderHarnessSpec(v harnessSpecValue) []string {
+	if v.Model == "" && v.Effort == "" {
+		return []string{"harness: " + v.Name}
+	}
+	out := []string{"harness:", "  name: " + v.Name}
+	if v.Model != "" {
+		out = append(out, "  model: "+v.Model)
+	}
+	if v.Effort != "" {
+		out = append(out, "  effort: "+v.Effort)
+	}
+	return out
+}
+
+// setScalarField writes one top-level scalar field.
 func setScalarField(path, key, value string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -295,6 +448,8 @@ type Spec struct {
 	Content     string
 	Prompt      string
 	Harness     string
+	Model       string
+	Effort      string
 	Description string
 	Cron        string
 	Every       string
@@ -320,14 +475,14 @@ func (s Spec) Render() (string, error) {
 		return "", errors.New("prompt or content is required")
 	}
 	fm := Frontmatter{
-		Harness:     s.Harness,
+		Harness:     HarnessSpec{Name: s.Harness, Model: s.Model, Effort: s.Effort},
 		Description: s.Description,
 		Session:     s.Session,
 		Env:         s.Env,
 		Triggers:    s.triggers(),
 	}
-	if fm.Harness == "" {
-		fm.Harness = "claude"
+	if fm.Harness.Name == "" {
+		fm.Harness.Name = "claude"
 	}
 	block, err := yaml.Marshal(fm)
 	if err != nil {

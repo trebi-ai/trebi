@@ -52,8 +52,22 @@ func PathKeyDescription(key string) string {
 			return fmt.Sprintf("Last ensure channel for %s (latest|stable|…)", tool)
 		case "path":
 			return fmt.Sprintf("Override binary path for %s (skip store download)", tool)
+		case "model":
+			return fmt.Sprintf("Default %s model, passed as a launch flag (empty = vendor default)", tool)
+		case "effort":
+			levels := HarnessEffortLevels(tool)
+			if len(levels) > 0 {
+				return fmt.Sprintf("Default %s reasoning effort (%s)", tool, strings.Join(levels, "|"))
+			}
+			if HarnessEffortFreeText(tool) {
+				return fmt.Sprintf("Default %s variant name (model-specific, empty = vendor default)", tool)
+			}
+			return fmt.Sprintf("%s has no effort flag; ignore", tool)
 		case "bridge.inherit":
 			return fmt.Sprintf("%s-only inherit default (empty = use global)", tool)
+		}
+		if strings.HasPrefix(rest, "env.") {
+			return fmt.Sprintf("Env for the %s process: %s", tool, strings.TrimPrefix(rest, "env."))
 		}
 		if strings.HasPrefix(rest, "bridge.resources.") {
 			rkey := strings.TrimPrefix(rest, "bridge.resources.")
@@ -444,6 +458,22 @@ func (l *pathEntryList) addTool(cfg *Config, tool string) {
 	l.add(prefix+".channel", ch, "")
 	l.add(prefix+".path", path, "")
 
+	model, effort := "", ""
+	if p != nil {
+		model, effort = p.Model, p.Effort
+	}
+	if HarnessSupportsModel(tool) {
+		l.add(prefix+".model", model, "")
+	}
+	if len(HarnessEffortLevels(tool)) > 0 || HarnessEffortFreeText(tool) {
+		l.add(prefix+".effort", effort, "")
+	}
+	if p != nil {
+		for _, k := range sortedKeys(p.Env) {
+			l.add(prefix+".env."+k, p.Env[k], "")
+		}
+	}
+
 	tInherit := ""
 	if p != nil && p.Bridge != nil && p.Bridge.Inherit != nil {
 		tInherit = strconv.FormatBool(*p.Bridge.Inherit)
@@ -697,11 +727,24 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 		pin.Channel = value
 	case "path":
 		pin.Path = value
+	case "model":
+		if value != "" && !HarnessSupportsModel(tool) {
+			return fmt.Errorf("tools.%s.model: %s takes no model flag", tool, tool)
+		}
+		pin.Model = value
+	case "effort":
+		if err := validateEffort(tool, value); err != nil {
+			return err
+		}
+		pin.Effort = value
 	case "bridge.inherit":
 		if err := pin.setBridgeInherit(tool, value); err != nil {
 			return err
 		}
 	default:
+		if strings.HasPrefix(rest, "env.") {
+			return pin.setEnv(strings.TrimPrefix(rest, "env."), value)
+		}
 		if !strings.HasPrefix(rest, "bridge.resources.") {
 			return fmt.Errorf("unknown key tools.%s.%s", tool, rest)
 		}
@@ -712,6 +755,60 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 	}
 	c.Tools.SetPin(tool, pin)
 	return nil
+}
+
+// sortedKeys returns map keys in stable order (config rows read top to bottom).
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// setEnv sets or clears one harness-process environment variable.
+func (p *ToolPin) setEnv(key, value string) error {
+	if !ValidEnvKey(key) {
+		return fmt.Errorf("invalid env key %q (want [A-Za-z_][A-Za-z0-9_]*)", key)
+	}
+	if value == "" || value == "-" {
+		if p.Env != nil {
+			delete(p.Env, key)
+			if len(p.Env) == 0 {
+				p.Env = nil
+			}
+		}
+		return nil
+	}
+	if p.Env == nil {
+		p.Env = map[string]string{}
+	}
+	p.Env[key] = value
+	return nil
+}
+
+// validateEffort checks value against the tool's effort list (or free text).
+func validateEffort(tool, value string) error {
+	if value == "" || value == "-" {
+		return nil
+	}
+	if HarnessEffortFreeText(tool) {
+		if strings.ContainsAny(value, " \t") {
+			return fmt.Errorf("tools.%s.effort: %q has whitespace", tool, value)
+		}
+		return nil
+	}
+	levels := HarnessEffortLevels(tool)
+	if len(levels) == 0 {
+		return fmt.Errorf("tools.%s.effort: %s has no effort flag", tool, tool)
+	}
+	for _, l := range levels {
+		if l == value {
+			return nil
+		}
+	}
+	return fmt.Errorf("tools.%s.effort: %q not in [%s]", tool, value, strings.Join(levels, ", "))
 }
 
 // setBridgeInherit sets or clears the per-tool inherit override.

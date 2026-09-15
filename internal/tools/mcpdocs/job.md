@@ -11,6 +11,21 @@ tool that runs it; it defaults to the daemon `defaults.command`. Set it only to 
 harness that the `harness` tool `list` action reports with `auth_ok: true`. A run
 on a harness that cannot log in starts and then ends with `session_gone`.
 
+`harness` is a plain name or a mapping with a per-job model and effort override:
+
+```yaml
+harness: claude
+# or
+harness:
+  name: claude
+  model: opus
+  effort: xhigh
+```
+
+`model` and `effort` fall through to `tools.<harness>.model|effort` in
+`config.yaml` (set with the `config` tool). They are passed as launch flags for
+that one session, never written to the vendor's own config file.
+
 ## Actions
 
 ### list
@@ -35,6 +50,8 @@ structured fields cover the job.
 - `prompt` (string, optional): job body; required when `content` is absent.
 - `content` (string, optional): full job definition text with front matter; it wins over every structured field.
 - `harness` (string, optional): agent tool that runs the job; default `claude`.
+- `model` (string, optional): job model override passed as a launch flag.
+- `effort` (string, optional): job reasoning-effort override; valid levels depend on the harness.
 - `description` (string, optional): description text.
 - `cron` (string, optional): cron trigger, for example `0 3 * * *`.
 - `every` (string, optional): interval trigger, for example `15m`.
@@ -52,6 +69,8 @@ compose a definition yourself. The response is `{ok, error, markdown}`, where
 - `content` (string, optional): full job definition text.
 - `name` (string, optional): job name used in the parse.
 - `harness` (string, optional): agent tool that runs the job.
+- `model` (string, optional): job model override passed as a launch flag.
+- `effort` (string, optional): job reasoning-effort override.
 - `description` (string, optional): description text.
 - `cron` (string, optional): cron trigger.
 - `every` (string, optional): interval trigger.
@@ -74,6 +93,8 @@ field returns `validation`; it is never a silent success.
 - `name` (string, required): job name.
 - `disabled` (boolean, optional): stop or restart automatic scheduling.
 - `harness` (string, optional): agent tool that runs the job.
+- `model` (string, optional): job model override; empty clears it.
+- `effort` (string, optional): job effort override; empty clears it.
 - `title` (string, optional): display title.
 - `description` (string, optional): description text.
 - `working_dir` (string, optional): run directory.

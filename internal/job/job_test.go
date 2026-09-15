@@ -1,6 +1,7 @@
 package job_test
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -99,6 +100,64 @@ func TestLaunchEnvExpandsSecretNames(t *testing.T) {
 	env := j.LaunchEnv()
 	if env["EVAL_API_KEY"] != "sk-secret" || env["PLAIN"] != "hello" {
 		t.Fatalf("%v", env)
+	}
+}
+
+func TestParseNestedHarness(t *testing.T) {
+	t.Parallel()
+	raw := "---\nharness:\n  name: codex\n  model: gpt-5.4\n  effort: high\n---\nbody\n"
+	j, err := job.ParseBytes("/ws/x/JOB.md", []byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.Harness != "codex" || j.Model != "gpt-5.4" || j.Effort != "high" {
+		t.Fatalf("harness=%q model=%q effort=%q", j.Harness, j.Model, j.Effort)
+	}
+	if j.ResolvedHarness() != "codex" {
+		t.Fatalf("resolved=%q", j.ResolvedHarness())
+	}
+}
+
+func TestParseHarnessBadShape(t *testing.T) {
+	t.Parallel()
+	raw := "---\nharness: [claude]\n---\nbody\n"
+	if _, err := job.ParseBytes("/ws/x/JOB.md", []byte(raw)); err == nil {
+		t.Fatal("want an error for a sequence harness")
+	}
+}
+
+func TestLaunchDefaultsHarnessPin(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	yaml := "tools:\n  claude:\n    model: pin-model\n    effort: high\n    env:\n      FROM_PIN: pin\n"
+	if err := os.WriteFile(config.ConfigPath(), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	raw := "---\nharness: claude\nenv:\n  FROM_PIN: job\n  JOB_ONLY: \"1\"\n---\nbody\n"
+	j, err := job.ParseBytes("/ws/x/JOB.md", []byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := j.LaunchDefaults()
+	if d.Model != "pin-model" || d.Effort != "high" {
+		t.Fatalf("pin defaults: model=%q effort=%q", d.Model, d.Effort)
+	}
+	if d.Env["FROM_PIN"] != "job" || d.Env["JOB_ONLY"] != "1" {
+		t.Fatalf("job env must win: %v", d.Env)
+	}
+
+	nested := "---\nharness:\n  name: claude\n  model: job-model\n  effort: xhigh\n---\nbody\n"
+	nj, err := job.ParseBytes("/ws/x/JOB.md", []byte(nested))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nd := nj.LaunchDefaults()
+	if nd.Model != "job-model" || nd.Effort != "xhigh" {
+		t.Fatalf("job overrides: model=%q effort=%q", nd.Model, nd.Effort)
+	}
+	if nd.Env["FROM_PIN"] != "pin" {
+		t.Fatalf("harness env: %v", nd.Env)
 	}
 }
 

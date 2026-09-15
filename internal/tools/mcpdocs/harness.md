@@ -4,6 +4,16 @@ Harness operations: manage agent harness tools and their login state.
 
 Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error envelope `{"error":{"code","message"}}` unchanged, with `isError: true`.
 
+Per-harness defaults live in `config.yaml` and are set with the `config` tool:
+
+- `tools.<name>.model`: session model, passed as a launch flag.
+- `tools.<name>.effort`: session reasoning effort; levels are per harness.
+- `tools.<name>.env.<KEY>`: environment for every trebi launch of that harness.
+
+A job may override model and effort under its own `harness:` node. Neither ever
+writes the vendor's own config file, so a shared-mode interactive CLI is not
+affected.
+
 ## Actions
 
 ### list

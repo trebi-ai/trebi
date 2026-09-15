@@ -98,6 +98,10 @@ type LaunchOpts struct {
 	SkipReady bool
 	// Env extra env for the pane.
 	Env map[string]string
+	// Model / Effort override the harness default for this run (launch flags).
+	// Both already include harness defaults; empty = vendor default.
+	Model  string
+	Effort string
 	// IfRunning policy for overlap: skip|replace|coalesce|allow.
 	IfRunning string
 }
@@ -856,6 +860,7 @@ func preparePlan(tool tmux.Tool, command string, opts *LaunchOpts) (tmux.LaunchP
 		return plan, nil
 	}
 	plan := tool.PrepareLaunch(command)
+	plan.Command = tmux.ApplyModelEffort(plan.Command, tool.Name(), opts.Model, opts.Effort)
 	if plan.SessionID != "" {
 		opts.SessionID = plan.SessionID
 	}

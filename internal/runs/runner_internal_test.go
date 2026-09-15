@@ -1,10 +1,38 @@
 package runs
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
+
+// TestPreparePlanAppliesModelEffort covers the launch seam: a model/effort
+// pair appends the tool's flags on launch and never on resume.
+func TestPreparePlanAppliesModelEffort(t *testing.T) {
+	tool, ok := tmux.ByName("claude")
+	if !ok {
+		t.Fatal("claude tool missing")
+	}
+	opts := LaunchOpts{Model: "sonnet", Effort: "high"}
+	plan, err := preparePlan(tool, "claude", &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.Command, "--model sonnet") ||
+		!strings.Contains(plan.Command, "--effort high") {
+		t.Fatalf("launch command: %q", plan.Command)
+	}
+
+	resume := LaunchOpts{ResumeSessionID: "uuid-1", Model: "sonnet", Effort: "high"}
+	plan, err = preparePlan(tool, "claude", &resume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plan.Command, "--model") || strings.Contains(plan.Command, "--effort") {
+		t.Fatalf("resume must keep the session defaults: %q", plan.Command)
+	}
+}
 
 // TestApplyResumePlanKeepsResumedFrom covers B17 on the real resume path:
 // the predecessor run ULID must survive; only an empty ResumedFrom falls

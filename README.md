@@ -234,6 +234,6 @@ uv run scripts/migrate-jobi-to-trebi.py verify
 ## Conventions
 
 - Names: run, workspace, connector, harness (not task/source/tool/integration).
-- Canonical frontmatter only (`harness`, `triggers`, `envset`, `session.idle_timeout`).
+- Canonical frontmatter only (`harness` — plain name or `{name, model, effort}` — plus `triggers`, `envset`, `env`, `session.idle_timeout`).
 - Bus topics and log event names share one registry (`internal/model/registry.go`).
 - Entity write + `event_log` append commit in one transaction (outbox).

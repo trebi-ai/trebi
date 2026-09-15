@@ -23,10 +23,56 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// HarnessSpec is the harness: frontmatter node. It accepts the plain name
+// (harness: claude) and the nested override form:
+//
+//	harness:
+//	  name: claude
+//	  model: opus
+//	  effort: xhigh
+//
+// Model and effort are job-level overrides of the harness default; empty
+// values fall through to tools.<name>.model|effort in config.yaml.
+type HarnessSpec struct {
+	Name   string `yaml:"name"`
+	Model  string `yaml:"model,omitempty"`
+	Effort string `yaml:"effort,omitempty"`
+}
+
+// UnmarshalYAML accepts a scalar name or a mapping.
+func (h *HarnessSpec) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		h.Name = strings.TrimSpace(value.Value)
+		h.Model, h.Effort = "", ""
+		return nil
+	case yaml.MappingNode:
+		type raw HarnessSpec
+		var r raw
+		if err := value.Decode(&r); err != nil {
+			return err
+		}
+		*h = HarnessSpec(r)
+		return nil
+	default:
+		return fmt.Errorf("harness: want a name or a {name, model, effort} map")
+	}
+}
+
+// MarshalYAML writes the plain scalar while no override is set, so existing
+// files keep their one-line form.
+func (h HarnessSpec) MarshalYAML() (any, error) {
+	if h.Model == "" && h.Effort == "" {
+		return h.Name, nil
+	}
+	type plain HarnessSpec
+	return plain(h), nil
+}
+
 // Frontmatter is the canonical YAML block.
 type Frontmatter struct {
 	WorkingDir       string            `yaml:"working_dir"`
-	Harness          string            `yaml:"harness"`
+	Harness          HarnessSpec       `yaml:"harness"`
 	Runtime          string            `yaml:"runtime"`
 	Title            string            `yaml:"title"`
 	Memory           any               `yaml:"memory"`
@@ -109,13 +155,17 @@ type WhenYAML struct {
 
 // Job is the resolved in-memory definition.
 type Job struct {
-	Name             string
-	FilePath         string
-	Dir              string
-	WorkspaceID      string
-	WorkspacePath    string
-	WorkingDir       string
-	Harness          string
+	Name          string
+	FilePath      string
+	Dir           string
+	WorkspaceID   string
+	WorkspacePath string
+	WorkingDir    string
+	Harness       string
+	// Model and Effort are job-level overrides of the harness default. Empty
+	// falls through to tools.<harness>.model|effort in config.yaml.
+	Model            string
+	Effort           string
 	Runtime          string
 	Title            string
 	Memory           bool
@@ -168,6 +218,8 @@ type LaunchDefaults struct {
 	WorkingDir    string
 	IfRunning     string
 	Env           map[string]string
+	Model         string
+	Effort        string
 	MaxDurationMS int64
 	IdleTimeoutMS int64
 	KeepAliveMS   int64
@@ -197,6 +249,45 @@ func (j *Job) ResolvedHarness() string {
 	return "claude"
 }
 
+// HarnessPin returns the tools.<harness> pin from config.yaml, or nil.
+func (j *Job) HarnessPin() *config.ToolPin {
+	c, err := config.Load()
+	if err != nil || c == nil {
+		return nil
+	}
+	return c.Tools.Pin(j.ResolvedHarness())
+}
+
+// ResolvedModel is the job model override, else the harness default, else "".
+func (j *Job) ResolvedModel() string {
+	if j != nil && j.Model != "" {
+		return j.Model
+	}
+	if p := j.HarnessPin(); p != nil {
+		return p.Model
+	}
+	return ""
+}
+
+// ResolvedEffort is the job effort override, else the harness default, else "".
+func (j *Job) ResolvedEffort() string {
+	if j != nil && j.Effort != "" {
+		return j.Effort
+	}
+	if p := j.HarnessPin(); p != nil {
+		return p.Effort
+	}
+	return ""
+}
+
+// ResolvedHarnessEnv is tools.<harness>.env (empty when unset).
+func (j *Job) ResolvedHarnessEnv() map[string]string {
+	if p := j.HarnessPin(); p != nil {
+		return p.Env
+	}
+	return nil
+}
+
 // ResolvedEnv merges envset: then inline env:. Missing envset is ignored.
 func (j *Job) ResolvedEnv() map[string]string {
 	if j == nil {
@@ -221,14 +312,26 @@ func (j *Job) ResolvedEnv() map[string]string {
 	return env
 }
 
-// LaunchEnv is ResolvedEnv with secret-name values expanded. A missing
-// secret is left as the literal name and logged as secret.referenced_missing.
+// LaunchEnv is the harness-process environment: tools.<harness>.env first,
+// then the job envset + inline env (job wins), with secret-name values
+// expanded. A missing secret is left as the literal name and logged as
+// secret.referenced_missing.
 func (j *Job) LaunchEnv() map[string]string {
-	env, missing := secrets.ExpandRefs(j.ResolvedEnv())
+	env := map[string]string{}
+	for k, v := range j.ResolvedHarnessEnv() {
+		env[k] = v
+	}
+	for k, v := range j.ResolvedEnv() {
+		env[k] = v
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	expanded, missing := secrets.ExpandRefs(env)
 	for _, name := range missing {
 		slog.Default().Info("secret.referenced_missing", "name", name)
 	}
-	return env
+	return expanded
 }
 
 // LaunchDefaults returns the four-line launch seam (cwd / if_running / env / knobs).
@@ -238,6 +341,8 @@ func (j *Job) LaunchDefaults() LaunchDefaults {
 		WorkingDir:    j.ResolvedWorkingDir(),
 		IfRunning:     j.Session.IfRunning,
 		Env:           j.LaunchEnv(),
+		Model:         j.ResolvedModel(),
+		Effort:        j.ResolvedEffort(),
 		MaxDurationMS: maxMS,
 		IdleTimeoutMS: idleMS,
 		KeepAliveMS:   keepMS,
@@ -328,7 +433,9 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		FilePath:         filePath,
 		Dir:              filepath.Dir(filePath),
 		WorkingDir:       fm.WorkingDir,
-		Harness:          fm.Harness,
+		Harness:          fm.Harness.Name,
+		Model:            fm.Harness.Model,
+		Effort:           fm.Harness.Effort,
 		Runtime:          fm.Runtime,
 		Title:            fm.Title,
 		Memory:           memCfg.Enabled,

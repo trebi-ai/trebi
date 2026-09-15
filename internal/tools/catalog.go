@@ -421,12 +421,17 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 	if err != nil {
 		return request.JobSpec{}, err
 	}
+	m, err := in.strs("model", "effort")
+	if err != nil {
+		return request.JobSpec{}, err
+	}
 	t, err := in.strs("cron", "every", "event", "match", "extract", "idempotency_key", "agent")
 	if err != nil {
 		return request.JobSpec{}, err
 	}
 	return request.JobSpec{
 		Name: v[0], Workspace: v[1], Content: v[2], Prompt: v[3], Harness: v[4], Description: v[5],
+		Model: m[0], Effort: m[1],
 		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4], IdempotencyKey: t[5],
 		Agent: t[6],
 	}, nil
@@ -1955,7 +1960,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 // jobPatchFields are the flat fields job.patch accepts. They mirror the keys
 // job.MergePatchFrontmatter honors; an unknown key is a validation error.
 var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
-	"disabled", "harness", "title", "description", "working_dir", "envset", "followup_prompt", "session",
+	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "envset", "followup_prompt", "session",
 }
 
 // jobPauseAction adapts the shared pause/unpause builder.

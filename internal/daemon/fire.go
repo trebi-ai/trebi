@@ -94,6 +94,8 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		Memory:    c.memoryLaunch(ctx, r.WorkspaceID, j),
 		IfRunning: d.IfRunning,
 		Env:       d.Env,
+		Model:     d.Model,
+		Effort:    d.Effort,
 	}
 	if reason := c.harnessBlocked(ctx, harness); reason != "" {
 		end := runs.EndAuth

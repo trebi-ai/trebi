@@ -48,7 +48,7 @@ The prompt body. This is what the harness receives.
 - `triggers[]` is the trebi form. Do not use a top-level `schedule:`.
 - `match` and `extract` are JavaScript, evaluated over the event as `e`.
 - `when` is an inline shell gate: the job runs only when `match` over `out` is true.
-- Only `harness`, `triggers`, `envset`, and `session.idle_timeout` are canonical frontmatter; keep other fields minimal.
+- Only `harness` (name, or a `{name, model, effort}` map), `triggers`, `envset`, `env` (inline map), and `session.idle_timeout` are canonical frontmatter; keep other fields minimal.
 
 ## Create, inspect, validate
 

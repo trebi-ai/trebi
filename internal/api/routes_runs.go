@@ -305,6 +305,7 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 		lopts.WorkingDir = d.WorkingDir
 		lopts.IfRunning = d.IfRunning
 		lopts.Env = d.Env
+		lopts.Model, lopts.Effort = d.Model, d.Effort
 		lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = d.MaxDurationMS, d.IdleTimeoutMS, d.KeepAliveMS, d.NudgeMS
 	}
 	if harness == "fake" || os.Getenv("TREBI_FAKE_HARNESS") != "" {
@@ -929,6 +930,7 @@ func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason r
 	d := j.LaunchDefaults()
 	lopts.WorkingDir = d.WorkingDir
 	lopts.Env = d.Env
+	lopts.Model, lopts.Effort = d.Model, d.Effort
 	lopts.IfRunning = d.IfRunning
 	lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = d.MaxDurationMS, d.IdleTimeoutMS, d.KeepAliveMS, d.NudgeMS
 	lopts.Memory = s.memoryLaunchFor(ctx, prev.Workspace, j)

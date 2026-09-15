@@ -229,6 +229,8 @@ type agentPayload struct {
 	WorkspaceID string          `json:"workspace_id"`
 	Path        string          `json:"path"`
 	Harness     string          `json:"harness"`
+	Model       string          `json:"model,omitempty"`
+	Effort      string          `json:"effort,omitempty"`
 	Active      bool            `json:"active"`
 	Disabled    bool            `json:"disabled"`
 	Hash        string          `json:"hash"`
@@ -275,6 +277,8 @@ func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agen
 	}
 	if j != nil {
 		p.Harness = j.Harness
+		p.Model = j.Model
+		p.Effort = j.Effort
 		p.Active = !j.Disabled
 		p.Disabled = j.Disabled
 		// Layout errors live only on the index row; keep them beside the

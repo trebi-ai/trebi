@@ -178,7 +178,8 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 	// all key off row.Name (agents/watchtower/job, not job).
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
-		"harness": j.Harness, "active": !j.Disabled, "hash": doc.Hash,
+		"harness": j.Harness, "model": j.Model, "effort": j.Effort,
+		"active": !j.Disabled, "hash": doc.Hash,
 		"parse_error": j.ParseError, "prompt": j.Prompt,
 		"input_keys": job.DiscoverInputKeys(j.Prompt),
 		"triggers":   j.Triggers, "session": j.Session, "env_set": j.Envset,
@@ -475,6 +476,8 @@ type jobCreateRequest struct {
 	Idem        string            `json:"idempotency_key"`
 	Prompt      string            `json:"prompt"`
 	Harness     string            `json:"harness"`
+	Model       string            `json:"model"`
+	Effort      string            `json:"effort"`
 	Description string            `json:"description"`
 	Cron        string            `json:"cron"`
 	Every       string            `json:"every"`
@@ -496,6 +499,7 @@ type jobEventTrigger struct {
 func (b jobCreateRequest) markdown() (string, error) {
 	spec := job.Spec{
 		Content: cmp.Or(b.Markdown, b.Content), Prompt: b.Prompt, Harness: b.Harness,
+		Model: b.Model, Effort: b.Effort,
 		Description: b.Description, Cron: b.Cron, Every: b.Every,
 		Session: b.Session, Env: b.Env,
 	}

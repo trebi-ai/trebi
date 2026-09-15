@@ -324,8 +324,74 @@ type ToolPin struct {
 	Auth string `yaml:"auth,omitempty"`
 	// Path overrides the store binary (skip download; still version-check if possible).
 	Path string `yaml:"path,omitempty"`
+	// Model is the session default model passed as a launch flag (never a
+	// vendor config file: a shared-mode user's interactive CLI must not see it).
+	Model string `yaml:"model,omitempty"`
+	// Effort is the session default reasoning effort passed as a launch flag.
+	// Empty = the vendor default. Levels are per-tool (HarnessEffortLevels).
+	Effort string `yaml:"effort,omitempty"`
+	// Env is the harness-process environment for every trebi launch of this
+	// tool. Job env (envset + inline env) overrides it; isolation still wins.
+	Env map[string]string `yaml:"env,omitempty"`
 	// Bridge overrides global tools.bridge for this tool.
 	Bridge *BridgeConfig `yaml:"bridge,omitempty"`
+}
+
+// HarnessEffortLevels returns the effort levels tool accepts on a launch flag,
+// in increasing depth. A nil non-empty result means free text (opencode
+// variants are model-specific). An empty result means the tool has no effort
+// knob (cursor, gemini, fake).
+func HarnessEffortLevels(tool string) []string {
+	switch tool {
+	case "claude":
+		return []string{"low", "medium", "high", "xhigh", "max"}
+	case "grok":
+		return []string{"low", "medium", "high"}
+	case "codex":
+		return []string{"none", "minimal", "low", "medium", "high", "xhigh"}
+	case "copilot":
+		return []string{"low", "medium", "high", "xhigh", "max"}
+	case "pi":
+		return []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+	case "opencode":
+		return nil // variant name, model-specific
+	case "cursor", "gemini", "fake":
+		return []string{}
+	}
+	return []string{}
+}
+
+// HarnessEffortFreeText reports whether tool's effort is a free-form variant
+// name (opencode) rather than a fixed level list.
+func HarnessEffortFreeText(tool string) bool {
+	return tool == "opencode"
+}
+
+// HarnessSupportsModel reports whether tool takes a --model launch flag.
+func HarnessSupportsModel(tool string) bool {
+	switch tool {
+	case "claude", "grok", "codex", "opencode", "copilot", "cursor", "pi", "gemini":
+		return true
+	}
+	return false
+}
+
+// ValidEnvKey reports whether s is a portable environment variable name.
+func ValidEnvKey(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r == '_':
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // FirstClassTools is the documented filter of tmux.AllTools(): every
@@ -766,6 +832,14 @@ func (c *Config) Validate() error {
 		prefix := "tools." + name
 		if p.Auth != "" && p.Auth != "shared" && p.Auth != "separate" {
 			ce.add(prefix+".auth", fmt.Sprintf("%q not in [shared, separate]", p.Auth))
+		}
+		if err := validateEffort(name, p.Effort); err != nil {
+			ce.add(prefix+".effort", strings.TrimPrefix(err.Error(), "tools."+name+".effort: "))
+		}
+		for k := range p.Env {
+			if !ValidEnvKey(k) {
+				ce.add(prefix+".env."+k, "invalid env key")
+			}
 		}
 		ce.checkBridge(prefix+".bridge", p.Bridge, name)
 	}
