@@ -2,6 +2,7 @@ package runs_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,135 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
+
+// TestTimelineCoalescesAssistantDeltas pins the timeline view of streamed
+// assistant output: one row per message, carrying the final text (or the text
+// so far while still streaming), not one row per delta chunk.
+func TestTimelineCoalescesAssistantDeltas(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.AddEvent(ctx, run.ID, "usage", "wire", map[string]string{"input": "2", "output": "1"})
+	svc.AddEvent(ctx, run.ID, "assistant", "wire", map[string]string{"text": "Hel", "delta": "true"})
+	svc.AddEvent(ctx, run.ID, "assistant", "wire", map[string]string{"text": "lo, ", "delta": "true"})
+	svc.AddEvent(ctx, run.ID, "assistant", "wire", map[string]string{"text": "Hello, world.", "delta": "false"})
+	svc.AddEvent(ctx, run.ID, "tool", "wire", map[string]string{"id": "t1", "name": "Bash", "status": "started"})
+	svc.AddEvent(ctx, run.ID, "assistant", "wire", map[string]string{"text": "Second", "delta": "true"})
+	svc.AddEvent(ctx, run.ID, "assistant", "wire", map[string]string{"text": " second.", "delta": "true"})
+
+	tl, err := svc.Timeline(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	var texts []string
+	for _, ev := range tl.Events {
+		kinds = append(kinds, ev.Kind)
+		if ev.Kind == "assistant" {
+			var d map[string]string
+			if err := json.Unmarshal(ev.Detail, &d); err != nil {
+				t.Fatalf("assistant detail: %s", ev.Detail)
+			}
+			if _, ok := d["delta"]; ok {
+				t.Fatalf("delta field leaked into timeline: %s", ev.Detail)
+			}
+			texts = append(texts, d["text"])
+		}
+	}
+	if len(texts) != 2 {
+		t.Fatalf("assistant rows: %d (%v)", len(texts), kinds)
+	}
+	if texts[0] != "Hello, world." {
+		t.Fatalf("complete message text: %q", texts[0])
+	}
+	if texts[1] != "Second second." {
+		t.Fatalf("streaming message text: %q", texts[1])
+	}
+	// Order holds: the coalesced message sits before the tool, the streaming
+	// one after it.
+	assistantIdx := []int{}
+	toolIdx := -1
+	for i, kind := range kinds {
+		if kind == "assistant" {
+			assistantIdx = append(assistantIdx, i)
+		}
+		if kind == "tool" {
+			toolIdx = i
+		}
+	}
+	if len(assistantIdx) != 2 || toolIdx < 0 || !(assistantIdx[0] < toolIdx && toolIdx < assistantIdx[1]) {
+		t.Fatalf("event order: %v", kinds)
+	}
+}
+
+// TestTimelineCoalescesToolCalls pins one row per tool call: the stream start
+// frame, the complete frame with the input, and the result frame fold into a
+// single point at the call's position.
+func TestTimelineCoalescesToolCalls(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.AddEvent(ctx, run.ID, "tool", "wire", map[string]string{"id": "t1", "name": "Bash", "status": "started", "input": "{}"})
+	svc.AddEvent(ctx, run.ID, "tool", "wire", map[string]string{"id": "t1", "name": "Bash", "status": "started", "input": `{"command":"ls"}`})
+	svc.AddEvent(ctx, run.ID, "usage", "wire", map[string]string{"input": "2"})
+	svc.AddEvent(ctx, run.ID, "tool", "wire", map[string]string{"id": "t1", "status": "failed", "output": "boom"})
+	svc.AddEvent(ctx, run.ID, "tool", "wire", map[string]string{"id": "t2", "name": "Read", "status": "started", "input": "{}"})
+
+	tl, err := svc.Timeline(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	var tools []map[string]string
+	for _, ev := range tl.Events {
+		kinds = append(kinds, ev.Kind)
+		if ev.Kind == "tool" {
+			var d map[string]string
+			if err := json.Unmarshal(ev.Detail, &d); err != nil {
+				t.Fatalf("tool detail: %s", ev.Detail)
+			}
+			if _, ok := d["id"]; ok {
+				t.Fatalf("tool id leaked into timeline: %s", ev.Detail)
+			}
+			tools = append(tools, d)
+		}
+	}
+	if len(tools) != 2 {
+		t.Fatalf("tool rows: %d (%v)", len(tools), kinds)
+	}
+	first := tools[0]
+	if first["name"] != "Bash" || first["input"] != `{"command":"ls"}` || first["output"] != "boom" || first["status"] != "failed" {
+		t.Fatalf("folded tool: %v", first)
+	}
+	if tools[1]["name"] != "Read" || tools[1]["status"] != "started" {
+		t.Fatalf("open tool: %v", tools[1])
+	}
+	// The call row keeps the position of its first frame: before usage and
+	// before the second call.
+	if got := strings.Join(kinds, ","); !strings.HasSuffix(got, "tool,usage,tool") {
+		t.Fatalf("event order: %s", got)
+	}
+}
 
 func TestCreateTerminateTimeline(t *testing.T) {
 	t.Parallel()

@@ -226,15 +226,18 @@ func hasFlag(args []string, flag string) bool {
 
 // claudeProtocol ports the SDK's stream-json message/control shapes.
 type claudeProtocol struct {
-	mu        sync.Mutex
-	w         *wireWriter
-	pending   map[string]json.RawMessage
+	mu      sync.Mutex
+	w       *wireWriter
+	pending map[string]json.RawMessage
+	// tools maps a tool_use id to its name: tool_result frames carry only the
+	// id, so the completion event would otherwise lose the tool name.
+	tools     map[string]string
 	sawResult bool
 	sawInit   bool
 }
 
 func newClaudeProtocol() *claudeProtocol {
-	return &claudeProtocol{pending: map[string]json.RawMessage{}}
+	return &claudeProtocol{pending: map[string]json.RawMessage{}, tools: map[string]string{}}
 }
 
 func (p *claudeProtocol) setWriter(w *wireWriter) {
@@ -395,8 +398,12 @@ func (p *claudeProtocol) parseAssistant(m map[string]any) []Event {
 					input = string(b)
 				}
 			}
+			id, name := str(block["id"]), str(block["name"])
+			if id != "" && name != "" {
+				p.tools[id] = name
+			}
 			out = append(out, Event{Type: EventTool, Tool: &ToolEvent{
-				ID: str(block["id"]), Name: str(block["name"]), Input: input, Status: "started",
+				ID: id, Name: name, Input: input, Status: "started",
 			}})
 		}
 	}
@@ -419,8 +426,9 @@ func (p *claudeProtocol) parseUser(m map[string]any) []Event {
 			if isErr, _ := block["is_error"].(bool); isErr {
 				status = "failed"
 			}
+			id := str(block["tool_use_id"])
 			out = append(out, Event{Type: EventTool, Tool: &ToolEvent{
-				ID: str(block["tool_use_id"]), Output: flattenContent(block["content"]), Status: status,
+				ID: id, Name: p.tools[id], Output: flattenContent(block["content"]), Status: status,
 			}})
 		case "text":
 			if text := str(block["text"]); text != "" {
@@ -461,8 +469,12 @@ func (p *claudeProtocol) parseStreamEvent(m map[string]any) []Event {
 					input = string(b)
 				}
 			}
+			id, name := str(block["id"]), str(block["name"])
+			if id != "" && name != "" {
+				p.tools[id] = name
+			}
 			return []Event{{Type: EventTool, Tool: &ToolEvent{
-				ID: str(block["id"]), Name: str(block["name"]), Input: input, Status: "started",
+				ID: id, Name: name, Input: input, Status: "started",
 			}}}
 		}
 	case "message_start":

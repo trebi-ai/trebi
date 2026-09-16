@@ -82,6 +82,28 @@ func TestClaudeFixtureBasic(t *testing.T) {
 
 // TestClaudePermissionRoundtrip pins the control_request/control_response
 // shapes (E.1): allow echoes updatedInput, deny carries a message.
+// TestClaudeToolResultCarriesName pins the id→name lookup: tool_result frames
+// carry only the id, so the completion event recovers the name from the
+// matching tool_use frame.
+func TestClaudeToolResultCarriesName(t *testing.T) {
+	t.Parallel()
+	proto := newClaudeProtocol()
+	start := proto.Parse([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}`))
+	if len(start) != 1 || start[0].Tool == nil {
+		t.Fatalf("start events: %+v", start)
+	}
+	if got := start[0].Tool; got.Name != "Bash" || got.Status != "started" || got.ID != "toolu_1" {
+		t.Fatalf("start tool: %+v", got)
+	}
+	done := proto.Parse([]byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}`))
+	if len(done) != 1 || done[0].Tool == nil {
+		t.Fatalf("result events: %+v", done)
+	}
+	if got := done[0].Tool; got.Name != "Bash" || got.Output != "ok" || got.Status != "completed" {
+		t.Fatalf("result lost the tool name: %+v", got)
+	}
+}
+
 func TestClaudePermissionRoundtrip(t *testing.T) {
 	t.Parallel()
 	proto := newClaudeProtocol()

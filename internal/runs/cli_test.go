@@ -382,6 +382,52 @@ echo '{"type":"result","subtype":"success"}'`,
 	}
 }
 
+// TestCLITurnsMatchesToolResultByID covers the claude wire shape: the
+// tool_result frame carries only the id. The opened call keeps its name and
+// input, the completion stamps the turn, and a call that never closes keeps
+// its start time instead of a zero timestamp.
+func TestCLITurnsMatchesToolResultByID(t *testing.T) {
+	svc, _, _ := cliFixture(t, cli.FakeDriver{
+		Script: `read -r line
+echo '{"type":"tool","id":"t1","name":"Bash","status":"started","input":"{}"}'
+echo '{"type":"tool","id":"t1","name":"","status":"completed","output":"ok"}'
+echo '{"type":"tool","id":"t2","name":"Read","status":"started","input":"{}"}'
+echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	waitTerminal(t, svc, run.ID)
+
+	turns, err := svc.CLITurns(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bashAt, readAt *time.Time
+	bashOut := ""
+	for i := range turns {
+		for _, tool := range turns[i].Tools {
+			at := turns[i].At
+			switch tool.Name {
+			case "Bash":
+				bashOut, bashAt = tool.Output, &at
+			case "Read":
+				readAt = &at
+			}
+		}
+	}
+	if bashAt == nil || bashOut != "ok" {
+		t.Fatalf("Bash turn: out=%q at=%v turns=%+v", bashOut, bashAt, turns)
+	}
+	if bashAt.IsZero() {
+		t.Fatalf("Bash turn must keep the completion time: %+v", turns)
+	}
+	if readAt == nil {
+		t.Fatalf("Read turn missing: %+v", turns)
+	}
+	if readAt.IsZero() {
+		t.Fatalf("started-only turn must keep its start time: %+v", turns)
+	}
+}
+
 // TestCLIEventsSince covers the attach cursor: events replay from id 0 and
 // resume after the last seen id.
 func TestCLIEventsSince(t *testing.T) {

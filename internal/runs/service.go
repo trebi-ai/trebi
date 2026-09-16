@@ -963,7 +963,135 @@ func (s *Service) Timeline(ctx context.Context, id string) (*Timeline, error) {
 		}
 		tl.Events = append(tl.Events, pt)
 	}
-	return tl, erows.Err()
+	if err := erows.Err(); err != nil {
+		return nil, err
+	}
+	tl.Events = coalesceTimelineEvents(tl.Events)
+	return tl, nil
+}
+
+// coalesceTimelineEvents folds the stream artifacts of the cli runtime into
+// one timeline point per unit: an assistant message (delta frames plus the
+// final frame) and a tool call (start frames plus the result frame). The
+// stored events stay untouched: the raw frames still feed the live attach
+// stream.
+func coalesceTimelineEvents(events []TimelinePoint) []TimelinePoint {
+	return coalesceToolEvents(coalesceAssistantEvents(events))
+}
+
+// coalesceAssistantEvents folds a streamed assistant message — the delta
+// events of the cli runtime plus the final event that closes it — into one
+// timeline point, so the timeline reads one row per message instead of one row
+// per text chunk.
+func coalesceAssistantEvents(events []TimelinePoint) []TimelinePoint {
+	out := make([]TimelinePoint, 0, len(events))
+	var first *TimelinePoint
+	var streamed strings.Builder
+	flush := func(final string) {
+		if first == nil {
+			return
+		}
+		text := streamed.String()
+		if final != "" {
+			text = final
+		}
+		detail, _ := json.Marshal(map[string]string{"text": text})
+		out = append(out, TimelinePoint{At: first.At, Kind: first.Kind, Source: first.Source, Detail: detail})
+		first, streamed = nil, strings.Builder{}
+	}
+	for _, ev := range events {
+		if ev.Kind != "assistant" {
+			flush("")
+			out = append(out, ev)
+			continue
+		}
+		text, delta := assistantText(ev.Detail)
+		if delta {
+			if first == nil {
+				start := ev
+				first = &start
+			}
+			streamed.WriteString(text)
+			continue
+		}
+		// A complete message closes the deltas it streamed from.
+		if first != nil {
+			flush(text)
+			continue
+		}
+		out = append(out, ev)
+	}
+	flush("") // message still streaming: show the text so far
+	return out
+}
+
+// assistantText returns an assistant event's text and whether it is a stream
+// delta rather than a complete message.
+func assistantText(detail json.RawMessage) (string, bool) {
+	var d map[string]string
+	if len(detail) == 0 || json.Unmarshal(detail, &d) != nil {
+		return "", false
+	}
+	return d["text"], d["delta"] == "true"
+}
+
+// toolRow is the folded detail of one tool call.
+type toolRow struct {
+	Name   string `json:"name,omitempty"`
+	Input  string `json:"input,omitempty"`
+	Output string `json:"output,omitempty"`
+	Status string `json:"status,omitempty"`
+}
+
+// coalesceToolEvents folds a tool call's start frames and result frame into
+// one point, kept at the position of the first frame. Two start frames are
+// normal: the stream opens the call with placeholder input, then the complete
+// assistant message carries the real input.
+func coalesceToolEvents(events []TimelinePoint) []TimelinePoint {
+	type fold struct {
+		row toolRow
+		idx int
+	}
+	out := make([]TimelinePoint, 0, len(events))
+	folds := map[string]*fold{}
+	for _, ev := range events {
+		if ev.Kind != "tool" {
+			out = append(out, ev)
+			continue
+		}
+		var frame struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Input  string `json:"input"`
+			Output string `json:"output"`
+			Status string `json:"status"`
+		}
+		if len(ev.Detail) == 0 || json.Unmarshal(ev.Detail, &frame) != nil || frame.ID == "" {
+			out = append(out, ev)
+			continue
+		}
+		f, open := folds[frame.ID]
+		if !open {
+			out = append(out, TimelinePoint{At: ev.At, Kind: "tool", Source: ev.Source})
+			f = &fold{idx: len(out) - 1}
+			folds[frame.ID] = f
+		}
+		if frame.Name != "" {
+			f.row.Name = frame.Name
+		}
+		if frame.Input != "" && frame.Input != "{}" {
+			f.row.Input = frame.Input
+		}
+		if frame.Output != "" {
+			f.row.Output = frame.Output
+		}
+		if frame.Status != "" {
+			f.row.Status = frame.Status
+		}
+		detail, _ := json.Marshal(f.row)
+		out[f.idx].Detail = detail
+	}
+	return out
 }
 
 // SetSessionState updates in-memory agent state and opens/closes agent segments.

@@ -505,7 +505,16 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, erro
 		after = page[len(page)-1].ID
 	}
 	var turns []tmux.Turn
-	var started []tmux.ToolCall
+	// Tool calls open on a "started" event and close on a "completed"/"failed"
+	// one. The closing frame may carry only the id (claude tool_result frames
+	// carry no name), so keep the opening call until its result lands.
+	type pendingTool struct {
+		call tmux.ToolCall
+		at   time.Time
+		done bool
+	}
+	var pending []*pendingTool
+	byID := map[string]*pendingTool{}
 	for _, ev := range evs {
 		var d map[string]string
 		if len(ev.Detail) > 0 {
@@ -521,20 +530,45 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, erro
 				turns = append(turns, tmux.Turn{Role: "assistant", Text: d["text"], At: ev.At})
 			}
 		case "tool":
-			if d["id"] == "" || d["name"] == "" {
+			id := d["id"]
+			if id == "" {
 				continue
 			}
-			call := tmux.ToolCall{Name: d["name"], Input: d["input"], Output: d["output"]}
 			switch d["status"] {
 			case "completed", "failed":
+				var call tmux.ToolCall
+				if open := byID[id]; open != nil {
+					call = open.call
+					open.done = true
+				} else if d["name"] != "" {
+					call = tmux.ToolCall{Name: d["name"], Input: d["input"]}
+				} else {
+					continue
+				}
+				if d["output"] != "" {
+					call.Output = d["output"]
+				}
 				turns = append(turns, tmux.Turn{Role: "tools", Tools: []tmux.ToolCall{call}, At: ev.At})
 			default:
-				started = append(started, call)
+				if d["name"] == "" {
+					continue
+				}
+				if open := byID[id]; open != nil {
+					open.call = tmux.ToolCall{Name: d["name"], Input: d["input"], Output: d["output"]}
+					open.at = ev.At
+					continue
+				}
+				open := &pendingTool{call: tmux.ToolCall{Name: d["name"], Input: d["input"], Output: d["output"]}, at: ev.At}
+				pending = append(pending, open)
+				byID[id] = open
 			}
 		}
 	}
-	for _, call := range started {
-		turns = append(turns, tmux.Turn{Role: "tools", Tools: []tmux.ToolCall{call}})
+	for _, open := range pending {
+		if open.done {
+			continue
+		}
+		turns = append(turns, tmux.Turn{Role: "tools", Tools: []tmux.ToolCall{open.call}, At: open.at})
 	}
 	if turns == nil {
 		turns = []tmux.Turn{}
