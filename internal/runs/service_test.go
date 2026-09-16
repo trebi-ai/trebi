@@ -55,6 +55,51 @@ func TestTerminateLogsRunFinish(t *testing.T) {
 	}
 }
 
+// TestResumeRefusesSuccessfulRun pins the guard: a run that finished its job
+// must not be resumed (the vendor session is complete); an interrupted run
+// still resumes into a successor row.
+func TestResumeRefusesSuccessfulRun(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+
+	mk := func() *runs.Run {
+		t.Helper()
+		run, err := svc.Create(ctx, runs.CreateOpts{
+			WorkspaceID: "ws1", Job: "demo", Harness: "fake", SessionID: "sess-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run
+	}
+
+	done := mk()
+	if err := svc.Terminate(ctx, done.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Resume(ctx, done.ID); err == nil || !strings.Contains(err.Error(), "finished successfully") {
+		t.Fatalf("resume of a successful run: err=%v", err)
+	}
+
+	killed := mk()
+	if err := svc.Terminate(ctx, killed.ID, runs.StatusExited, runs.EndKill, nil); err != nil {
+		t.Fatal(err)
+	}
+	next, err := svc.Resume(ctx, killed.ID)
+	if err != nil {
+		t.Fatalf("resume of an interrupted run: %v", err)
+	}
+	if next.Reason != runs.ReasonResume || next.ResumedFrom != killed.ID {
+		t.Fatalf("successor: %+v", next)
+	}
+}
+
 // TestAddEventPublishesRunEvent pins the live-view wakeup: significant run
 // events ride the bus as run.event, while streamed assistant deltas and
 // session.state (which has its own topic) do not.
@@ -586,7 +631,8 @@ func TestResumeCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Terminate(ctx, prev.ID, runs.StatusComplete, runs.EndSentinel, nil); err != nil {
+	// Interrupted, not finished: a successful run is refused before the cap.
+	if err := svc.Terminate(ctx, prev.ID, runs.StatusExited, runs.EndKill, nil); err != nil {
 		t.Fatal(err)
 	}
 	_, err = svc.Resume(ctx, prev.ID)

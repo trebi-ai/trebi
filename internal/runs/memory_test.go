@@ -146,6 +146,28 @@ waitfix
 	}
 }
 
+// TestMemoryPromptRecordedInTranscript pins the opening transcript turn: the
+// exact prompt the harness received, memory render included.
+func TestMemoryPromptRecordedInTranscript(t *testing.T) {
+	t.Parallel()
+	svc, _, root := memoryFixture(t)
+	run, prompt := launchMemoryRun(t, svc, memoryLaunch(root))
+
+	turns, err := svc.CLITurns(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) == 0 || turns[0].Role != "user" {
+		t.Fatalf("first turn: %+v", turns)
+	}
+	if turns[0].Text != prompt {
+		t.Fatalf("recorded prompt differs from the submitted one:\n got %q\nwant %q", turns[0].Text, prompt)
+	}
+	if !strings.Contains(turns[0].Text, "## State") || !strings.Contains(turns[0].Text, "run the digest") {
+		t.Fatalf("prompt missing memory render or body: %q", turns[0].Text)
+	}
+}
+
 // TestMemoryGateLogsOpsRecords pins the Log-tab side of the gate: each retry
 // and the final failure write an ops record naming the run.
 func TestMemoryGateLogsOpsRecords(t *testing.T) {

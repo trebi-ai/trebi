@@ -1127,6 +1127,12 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")
 		return
 	}
+	// Retry continues a failure; a run that finished its job has no failure to
+	// continue. Replay is the fresh-run action for it.
+	if prev.Status == runs.StatusComplete && (prev.EndReason == runs.EndResult || prev.EndReason == runs.EndSentinel) {
+		writeErr(w, http.StatusConflict, "conflict", "run finished successfully; replay it for a fresh run")
+		return
+	}
 	switch prev.EndReason {
 	case runs.EndAuth, runs.EndLimit:
 		// Park: enqueue blocked resume intent

@@ -223,6 +223,9 @@ type CreateOpts struct {
 	ResumeAttempts int
 	// MemoryHash is the launch-time MEMORY.md hash; empty when memory is off.
 	MemoryHash string
+	// Prompt is the final prompt submitted to the harness (memory injected,
+	// placeholders expanded). Recorded as the transcript's opening user turn.
+	Prompt string
 	// DryRun evaluates without persisting (when gate only).
 	DryRun bool
 }
@@ -312,6 +315,10 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Run, error) {
 		return nil, err
 	}
 
+	// The exact prompt the harness receives opens the transcript.
+	if opts.Prompt != "" {
+		s.AddEvent(ctx, id, "user", "launch", map[string]string{"text": opts.Prompt})
+	}
 	s.SetSessionState(ctx, id, SessionRunning, "launch")
 	return run, nil
 }

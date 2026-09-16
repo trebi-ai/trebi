@@ -170,6 +170,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	if opts.PromptPreview == "" {
 		opts.PromptPreview = opts.Prompt
 	}
+	opts.CreateOpts.Prompt = opts.Prompt
 
 	if opts.wantsFake() {
 		run, err := s.launchFake(ctx, opts)
@@ -804,6 +805,11 @@ func (s *Service) Resume(ctx context.Context, fromID string) (*Run, error) {
 	}
 	if prev.SessionID == "" {
 		return nil, fmt.Errorf("run %s has no session_id to resume", fromID)
+	}
+	// A run that finished its job has nothing to continue: the vendor session
+	// is complete, and resuming it errors out. A fresh run is the right move.
+	if prev.Status == StatusComplete && (prev.EndReason == EndResult || prev.EndReason == EndSentinel) {
+		return nil, fmt.Errorf("run %s finished successfully; replay it for a fresh run", fromID)
 	}
 	if prev.ResumeAttempts >= MaxResumeAttempts {
 		s.emitResumeExhausted(ctx, prev)
