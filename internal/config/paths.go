@@ -52,6 +52,8 @@ func PathKeyDescription(key string) string {
 			return fmt.Sprintf("Last ensure channel for %s (latest|stable|…)", tool)
 		case "path":
 			return fmt.Sprintf("Override binary path for %s (skip store download)", tool)
+		case "runtime":
+			return fmt.Sprintf("%s run runtime: cli (subprocess wire) or tui (pane)", tool)
 		case "model":
 			return fmt.Sprintf("Default %s model, passed as a launch flag (empty = vendor default)", tool)
 		case "effort":
@@ -229,6 +231,9 @@ func (c *Config) SetPath(path, value string) error {
 	if handled, err := c.setToolsKey(path, value); handled {
 		return err
 	}
+	if handled, err := c.setHarnessKey(path, value); handled {
+		return err
+	}
 	if handled, err := c.setFilesKey(path, value); handled {
 		return err
 	}
@@ -371,6 +376,11 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.add("api.tls.insecure", insecure, "false")
 	l.add("terminal", cfg.Terminal, "Terminal")
 	l.add("tools.fallback", cfg.Tools.Fallback, "path")
+	harnessRuntime := strings.TrimSpace(cfg.Harness.Runtime)
+	if harnessRuntime == "" {
+		harnessRuntime = "cli"
+	}
+	l.add("harness.runtime", harnessRuntime, "cli")
 	l.add("notify.email", cfg.Notify.Email, "")
 	l.add("notify.whatsapp", cfg.Notify.WhatsApp, "")
 	l.add("notify.discord", cfg.Notify.Discord, "")
@@ -457,6 +467,11 @@ func (l *pathEntryList) addTool(cfg *Config, tool string) {
 	l.add(prefix+".version", ver, "")
 	l.add(prefix+".channel", ch, "")
 	l.add(prefix+".path", path, "")
+	rt := ""
+	if p != nil {
+		rt = p.Runtime
+	}
+	l.add(prefix+".runtime", rt, "")
 
 	model, effort := "", ""
 	if p != nil {
@@ -606,6 +621,19 @@ func (c *Config) setToolsKey(path, value string) (handled bool, err error) {
 	return false, nil
 }
 
+// setHarnessKey handles harness.* keys; handled=false when path is not one.
+func (c *Config) setHarnessKey(path, value string) (handled bool, err error) {
+	if path != "harness.runtime" {
+		return false, nil
+	}
+	v := strings.ToLower(strings.TrimSpace(value))
+	if v != "" && v != "cli" && v != "tui" {
+		return true, fmt.Errorf("harness.runtime: want cli or tui")
+	}
+	c.Harness.Runtime = v
+	return true, nil
+}
+
 // setFilesKey handles files.* keys; handled=false when path is not one.
 func (c *Config) setFilesKey(path, value string) (handled bool, err error) {
 	if path != "files.max_bytes" {
@@ -727,6 +755,12 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 		pin.Channel = value
 	case "path":
 		pin.Path = value
+	case "runtime":
+		v := strings.ToLower(strings.TrimSpace(value))
+		if v != "" && v != "cli" && v != "tui" {
+			return fmt.Errorf("tools.%s.runtime: want cli or tui", tool)
+		}
+		pin.Runtime = v
 	case "model":
 		if value != "" && !HarnessSupportsModel(tool) {
 			return fmt.Errorf("tools.%s.model: %s takes no model flag", tool, tool)
@@ -870,6 +904,7 @@ func pathKeyDescriptions() map[string]string {
 		"api.tls.insecure":              "Allow plaintext on a non-loopback bind (Tailscale/LAN); default false",
 		"terminal":                      "macOS app for trebi run attach (Terminal|iTerm|Ghostty)",
 		"tools.fallback":                "When pin missing: require (fail) or path (use PATH)",
+		"harness.runtime":               "Vendor run runtime: cli (subprocess wire, default) or tui (incident kill switch)",
 		"notify.email":                  "Shell cmd for email alerts (tried first)",
 		"notify.whatsapp":               "Shell cmd for WhatsApp alerts (tried second)",
 		"notify.discord":                "Shell cmd for Discord alerts (tried third)",

@@ -1,0 +1,14 @@
+{
+  "name": "gen-claude-fixtures",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Records real `claude` stream-json NDJSON sessions for the trebi subprocess-runtime test fixtures. Dev/CI only; never shipped.",
+  "scripts": {
+    "generate": "node generate.mjs",
+    "conformance": "node conformance.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.273"
+  }
+}

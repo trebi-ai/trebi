@@ -6,6 +6,10 @@ cd "$repo"
 
 mkdir -p build
 
+# Live-tier compile gate (docs/plans/2026-09-16-harness-subprocess-runtime.md
+# Part L.1): build-tagged live tests must keep compiling even when not run.
+go test -tags live_cli -run '^$' ./internal/runtime/cli/...
+
 # menuet tray needs cgo on macOS
 if [[ "$(uname -s)" == "Darwin" ]]; then
   export CGO_ENABLED=1

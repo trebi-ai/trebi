@@ -88,6 +88,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 			KeepAliveMS:   d.KeepAliveMS,
 			NudgeMS:       d.NudgeMS,
 			WorkingDir:    cwd,
+			Runtime:       j.Runtime,
 		},
 		Prompt:    prompt,
 		Wake:      wake,

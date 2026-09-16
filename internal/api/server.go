@@ -23,6 +23,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -182,6 +183,10 @@ func (s *Server) Workspaces() *workspaces.Service { return s.ws }
 
 // Token returns the bearer token.
 func (s *Server) Token() string { return s.token }
+
+// SetCLIDriver installs a subprocess driver override on the runs service
+// (tests; production uses the built-in per-harness drivers).
+func (s *Server) SetCLIDriver(d cli.Driver) { s.runs.SetCLIDriver(d) }
 
 // Alerts returns the alert service (tests).
 func (s *Server) Alerts() *alerts.Service { return s.alerts }

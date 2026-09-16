@@ -9,8 +9,105 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/store"
 )
+
+// stubCLISession is a minimal cli.Session for reaper tests.
+type stubCLISession struct {
+	events chan cli.Event
+	done   chan struct{}
+}
+
+func newStubCLISession() *stubCLISession {
+	return &stubCLISession{events: make(chan cli.Event), done: make(chan struct{})}
+}
+
+func (s *stubCLISession) Provider() string                         { return "stub" }
+func (s *stubCLISession) ID() string                               { return "stub" }
+func (s *stubCLISession) PID() int                                 { return 1 }
+func (s *stubCLISession) Prompt(context.Context, cli.Prompt) error { return nil }
+func (s *stubCLISession) Interrupt(context.Context) error          { return nil }
+func (s *stubCLISession) Events() <-chan cli.Event                 { return s.events }
+func (s *stubCLISession) Close(context.Context) error {
+	select {
+	case <-s.done:
+	default:
+		close(s.done)
+	}
+	return nil
+}
+
+// cliReaperFixture builds a service + idle CLI run with a tracker already at
+// a terminal result.
+func cliReaperFixture(t *testing.T, opts CreateOpts) (*Service, *Run, *cliRun) {
+	t.Helper()
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+	_ = home.EnsureDirs()
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := New(st, nil, nil)
+	opts.Harness = "claude"
+	opts.Runtime = "cli"
+	run, err := svc.Create(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr := &cliRun{sess: newStubCLISession(), tracker: cli.NewTracker()}
+	cr.tracker.Observe(cli.Event{Type: cli.EventResult, Result: &cli.Result{Subtype: "success"}})
+	svc.registerCLIRun(run.ID, cr)
+	return svc, run, cr
+}
+
+// TestReaperCLIIdleTimeout pins the event-clock idle timeout (G.5): a
+// genuinely idle CLI session times out, no pane involved.
+func TestReaperCLIIdleTimeout(t *testing.T) {
+	svc, run, _ := cliReaperFixture(t, CreateOpts{WorkspaceID: "ws", Job: "j", IdleTimeoutMS: 1000})
+	r := NewReaper(svc)
+	now := time.Now()
+	r.checkOne(context.Background(), run, now, nil, false)                    // opens the idle clock
+	r.checkOne(context.Background(), run, now.Add(2*time.Second), nil, false) // over the window
+	got, err := svc.Get(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusTimedOut || got.EndReason != EndIdleTimeout {
+		t.Fatalf("run: status=%s end=%s", got.Status, got.EndReason)
+	}
+}
+
+// TestReaperCLIKeepAliveSuppressesMaxDuration pins the TUI parity fix: a
+// keep-alive window outlives max duration, then closes with keep_alive.
+func TestReaperCLIKeepAliveSuppressesMaxDuration(t *testing.T) {
+	svc, run, cr := cliReaperFixture(t, CreateOpts{
+		WorkspaceID: "ws", Job: "j", MaxDurationMS: 1000, KeepAliveMS: 60_000,
+	})
+	r := NewReaper(svc)
+	cr.markKeepAlive(time.Now())
+	r.checkOne(context.Background(), run, time.Now().Add(2*time.Second), nil, false)
+	got, err := svc.Get(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusRunning {
+		t.Fatalf("keep-alive run ended early: status=%s end=%s", got.Status, got.EndReason)
+	}
+	// Past the keep-alive window (and max duration): close with keep_alive.
+	r.checkOne(context.Background(), run, time.Now().Add(2*time.Minute), nil, false)
+	got, err = svc.Get(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusComplete || got.EndReason != EndKeepAlive {
+		t.Fatalf("run: status=%s end=%s", got.Status, got.EndReason)
+	}
+}
 
 func TestDetectCompletion(t *testing.T) {
 	t.Parallel()

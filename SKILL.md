@@ -20,7 +20,7 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | workspace | a registered folder; the unit of context. Jobs, runs, and the assistant belong to one |
 | job | a `JOB.md` file: YAML frontmatter (harness, triggers, session) plus a prompt body |
 | file | any path inside a workspace (scripts, templates, eval files). Raw bytes; no job semantics. Job-scoped via `trebi job file`; workspace-wide via `trebi file` |
-| run | one launch of a job in a harness session (tmux locally) |
+| run | one launch of a job in a harness session (subprocess by default; tmux when `runtime: tui`) |
 | assistant | the singleton `TREBI.md` job of a workspace, kind=assistant |
 | agent | a folder-scoped `AGENT.md` at `agents/<name>/`; owns the jobs inside that folder, kind=agent |
 | conversation | a chat thread with the assistant; the CLI/UI are channels onto it |
@@ -49,6 +49,8 @@ If the daemon is down: `trebi service start`. If it was never installed: `trebi 
 Only these work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate|path|show|set|unset`, `guide`, `mcp config|install`, `memory validate|skeleton`, and `workspace list|current|use|unlink`. Everything else fails with a clear message.
 
 Native assistant (no vendor CLI): `trebi config set assistant.model claude-sonnet-4-5` and `trebi config set assistant.api_key_env ANTHROPIC_API_KEY`. API key only; `runtime: tui` in TREBI.md is the tmux escape hatch.
+
+Vendor runs (`claude`, `codex`, `opencode`, `pi`, `copilot`, `cursor`) spawn the installed CLI as a subprocess and speak its structured protocol by default — no tmux pane, no prompt pasting. `runtime: tui` in `JOB.md` / `TREBI.md` / `AGENT.md` opts that run back into a pane; `trebi config set harness.runtime tui` is the incident-only global kill switch. A CLI run that fails closed leaves a doctor hint; relaunch or resume with `runtime: tui` — there is no silent fallback. `trebi runs attach` on a CLI run prints the event stream; `trebi runs logs -f` always works.
 
 ## Global rules
 

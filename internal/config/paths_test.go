@@ -346,6 +346,8 @@ func sampleSetValue(key string) string {
 		return "Terminal"
 	case key == "tools.fallback":
 		return "path"
+	case key == "harness.runtime":
+		return "cli"
 	case key == "notify.email", key == "notify.whatsapp", key == "notify.discord":
 		return "echo trebi-notify-{{message}}"
 	case key == "notify.waiting_after":
@@ -366,6 +368,8 @@ func sampleSetValue(key string) string {
 		return `["skills"]`
 	case strings.HasSuffix(key, ".auth"):
 		return "shared"
+	case strings.HasSuffix(key, ".runtime"):
+		return "cli"
 	case strings.HasSuffix(key, ".version"):
 		return "1.0.0"
 	case strings.HasSuffix(key, ".channel"):

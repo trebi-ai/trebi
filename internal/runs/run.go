@@ -49,6 +49,7 @@ type EndReason string
 
 const (
 	EndSentinel      EndReason = "sentinel"
+	EndResult        EndReason = "result"
 	EndKeepAlive     EndReason = "keep_alive"
 	EndKeepAliveIdle EndReason = "keep_alive_idle"
 	EndIdleTimeout   EndReason = "idle_timeout"
@@ -126,7 +127,7 @@ func ValidStatus(s string) bool {
 // ValidEndReason reports whether r is a known end reason.
 func ValidEndReason(r string) bool {
 	switch EndReason(r) {
-	case EndSentinel, EndKeepAlive, EndKeepAliveIdle, EndIdleTimeout, EndMaxDuration,
+	case EndSentinel, EndResult, EndKeepAlive, EndKeepAliveIdle, EndIdleTimeout, EndMaxDuration,
 		EndAuth, EndLimit, EndKill, EndReplace, EndSkip, EndLaunch, EndFailed, EndSessionGone, EndUpdate:
 		return true
 	}
@@ -201,7 +202,7 @@ type SessionSpec struct {
 
 // AttachInfo — how to attach to a live run.
 type AttachInfo struct {
-	Kind  string `json:"kind"` // tmux|web|none
+	Kind  string `json:"kind"` // tmux|events|web|none
 	Tmux  string `json:"tmux,omitempty"`
 	WSURL string `json:"ws_url,omitempty"`
 }
@@ -250,7 +251,22 @@ type Run struct {
 	TraceID           string             `json:"trace_id"`
 	// MemoryHash is the launch-time MEMORY.md hash; empty when memory is off.
 	MemoryHash string `json:"memory_hash,omitempty"`
-	Revision   int64  `json:"revision"`
+	// RuntimePID is the subprocess child pid for runtime=cli runs.
+	RuntimePID int   `json:"runtime_pid,omitempty"`
+	Revision   int64 `json:"revision"`
+}
+
+// attachKindFor derives the persisted attach kind from the launch options.
+func attachKindFor(opts CreateOpts) string {
+	switch {
+	case opts.TmuxSession != "":
+		return "tmux"
+	case opts.Runtime == "native":
+		return "none"
+	case opts.Runtime == "cli":
+		return "events"
+	}
+	return ""
 }
 
 // EffectiveStatus is the human outcome when one is set, else the machine

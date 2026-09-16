@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
@@ -107,6 +108,33 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 	r.mu.Lock()
 	_, keeping := r.idleSince["keep:"+run.ID]
 	r.mu.Unlock()
+	// CLI keep-alive suppresses max duration exactly like the pane path: the
+	// session is done, it lingers for follow-ups until the window closes.
+	if !keeping && run.Runtime == "cli" && run.Session.KeepAliveMS > 0 {
+		if cr := r.svc.cliRunFor(run.ID); cr != nil {
+			keeping = cr.keepAliveWithin(run.Session.KeepAliveMS, now)
+		}
+	}
+
+	// CLI runs are driven by the event pump and read the tracker, not a pane.
+	// Keep-alive expiry and the idle timeout are decided before max duration
+	// so an expired window reports keep_alive, not a timeout.
+	if run.Runtime == "cli" {
+		finished, linger := r.checkCLI(ctx, run, now)
+		if finished {
+			return
+		}
+		if linger {
+			keeping = true
+		}
+		if !keeping && run.Session.MaxDurationMS > 0 {
+			if now.Sub(run.StartedAt) >= time.Duration(run.Session.MaxDurationMS)*time.Millisecond {
+				r.finish(ctx, run, StatusTimedOut, EndMaxDuration)
+			}
+		}
+		return
+	}
+
 	if !keeping && run.Session.MaxDurationMS > 0 {
 		if now.Sub(run.StartedAt) >= time.Duration(run.Session.MaxDurationMS)*time.Millisecond {
 			r.finish(ctx, run, StatusTimedOut, EndMaxDuration)
@@ -385,15 +413,7 @@ func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndRea
 	if status != StatusComplete {
 		r.gateAtFinish(ctx, run)
 	}
-	r.svc.cancelNative(run.ID)
-	if run.TmuxSession != "" {
-		if screen, err := tmux.ReadScreen(run.TmuxSession); err == nil {
-			r.capturePaneLog(run, screen)
-		}
-		_ = tmux.SendKey(run.TmuxSession, "C-c")
-		time.Sleep(100 * time.Millisecond)
-		r.svc.closeSession(run.ID, run.TmuxSession)
-	}
+	r.svc.teardownRuntime(ctx, run)
 	if err := r.svc.Terminate(ctx, run.ID, status, end, nil); err != nil {
 		r.log.Warn("reaper terminate", "run", run.ID, "error", err)
 	}
@@ -401,6 +421,7 @@ func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndRea
 	r.mu.Lock()
 	delete(r.idleSince, run.ID)
 	delete(r.idleSince, "keep:"+run.ID)
+	delete(r.idleSince, "cli-idle:"+run.ID)
 	delete(r.limitHits, run.ID)
 	delete(r.dialogHits, run.ID)
 	delete(r.sentinels, run.ID)
@@ -409,6 +430,84 @@ func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndRea
 	delete(r.lastPane, run.ID)
 	r.mu.Unlock()
 	r.log.Info("reaper finished run", "id", run.ID, "status", status, "end_reason", end)
+}
+
+// checkCLI reads the CLI tracker instead of a pane (G.5): idle timeout is
+// suspended while an approval is open and blocked by in-flight tools;
+// keep-alive closes a completed session after its window. finished=true means
+// the run is terminal; linger=true means a keep-alive window is open and max
+// duration must not fire.
+func (r *Reaper) checkCLI(ctx context.Context, run *Run, now time.Time) (finished, linger bool) {
+	// A launch in flight (spawn, OpenCode health wait) is not a gone session.
+	if r.svc.IsLaunching(run.ID) {
+		return false, false
+	}
+	cr := r.svc.cliRunFor(run.ID)
+	if cr == nil {
+		// A sweep can race the launch window (row inserted, session not yet
+		// registered); only a fresh row is protected by the grace period.
+		if now.Sub(run.StartedAt) < cliLaunchGrace {
+			return false, false
+		}
+		// The pump unregisters after the terminal transition; a live row with
+		// no session means the child is gone.
+		r.finish(ctx, run, StatusExited, EndSessionGone)
+		return true, false
+	}
+	snap := cr.tracker.Snapshot()
+	switch snap.State {
+	case cli.StatusWaiting:
+		r.svc.SetSessionState(ctx, run.ID, SessionWaiting, "wire")
+	case cli.StatusRunning:
+		r.svc.SetSessionState(ctx, run.ID, SessionRunning, "wire")
+	case cli.StatusIdle:
+		r.svc.SetSessionState(ctx, run.ID, SessionIdle, "wire")
+	}
+	if snap.Stalled && !cr.stalledNow() {
+		cr.setStalled(true)
+		r.svc.AddEvent(ctx, run.ID, "agent.stall", "wire", map[string]string{
+			"last_event_at":  snap.LastEventAt.UTC().Format(time.RFC3339Nano),
+			"inflight_tools": strconv.Itoa(snap.InflightTools),
+		})
+	} else if !snap.Stalled && cr.stalledNow() {
+		cr.setStalled(false)
+	}
+
+	// Keep-alive: a result landed and the session lingers. The clock starts
+	// at the first idle sweep after the result.
+	if run.Session.KeepAliveMS > 0 && snap.LastResult != nil && snap.State == cli.StatusIdle {
+		if cr.keepAliveExpired(run.Session.KeepAliveMS, now) {
+			r.finish(ctx, run, StatusComplete, EndKeepAlive)
+			return true, false
+		}
+		if cr.keepAliveSince.IsZero() {
+			cr.markKeepAlive(now)
+		}
+		return false, true
+	}
+	// Idle timeout: only a genuinely idle session (no turn, no approval); in
+	// flight tools block it. A keep-alive window supersedes it.
+	keepAlive := run.Session.KeepAliveMS > 0 && snap.LastResult != nil
+	if run.Session.IdleTimeoutMS > 0 && snap.State == cli.StatusIdle && !keepAlive {
+		key := "cli-idle:" + run.ID
+		r.mu.Lock()
+		since, ok := r.idleSince[key]
+		if !ok {
+			r.idleSince[key] = now
+			r.mu.Unlock()
+			return false, false
+		}
+		r.mu.Unlock()
+		if now.Sub(since) >= time.Duration(run.Session.IdleTimeoutMS)*time.Millisecond {
+			r.finish(ctx, run, StatusTimedOut, EndIdleTimeout)
+			return true, false
+		}
+		return false, false
+	}
+	r.mu.Lock()
+	delete(r.idleSince, "cli-idle:"+run.ID)
+	r.mu.Unlock()
+	return false, keepAlive
 }
 
 // authFailed reports coarse login-required markers on the screen.

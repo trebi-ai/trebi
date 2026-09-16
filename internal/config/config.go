@@ -23,10 +23,19 @@ type Config struct {
 	API        APIConfig        `yaml:"api,omitempty"`
 	Terminal   string           `yaml:"terminal,omitempty"` // macOS: Terminal | iTerm | Ghostty
 	Tools      ToolsConfig      `yaml:"tools,omitempty"`
+	Harness    HarnessConfig    `yaml:"harness,omitempty"`
 	Notify     NotifyConfig     `yaml:"notify,omitempty"`
 	Files      FilesConfig      `yaml:"files,omitempty"`
 	Workspaces WorkspacesConfig `yaml:"workspaces,omitempty"`
 	Assistant  AssistantConfig  `yaml:"assistant,omitempty"`
+}
+
+// HarnessConfig is the vendor run-runtime policy (plan 2026-09-16 Part J).
+// The default runtime is the subprocess CLI wire; `runtime: tui` is the
+// incident-only kill switch back to tmux panes.
+type HarnessConfig struct {
+	// Runtime is "" (default cli) or "tui".
+	Runtime string `yaml:"runtime,omitempty"`
 }
 
 // APIConfig is the HTTP bind for trebid. Default is loopback + ephemeral port.
@@ -333,6 +342,9 @@ type ToolPin struct {
 	// Env is the harness-process environment for every trebi launch of this
 	// tool. Job env (envset + inline env) overrides it; isolation still wins.
 	Env map[string]string `yaml:"env,omitempty"`
+	// Runtime forces the run runtime for this tool: "tui" (pane) or "" (the
+	// default cli wire, subject to the global harness.runtime kill switch).
+	Runtime string `yaml:"runtime,omitempty"`
 	// Bridge overrides global tools.bridge for this tool.
 	Bridge *BridgeConfig `yaml:"bridge,omitempty"`
 }
@@ -438,6 +450,19 @@ func KnownBridgeResources() map[string][]string {
 			"skills", "prompts", "themes", "mcp", "models", "settings_prefs",
 		},
 	}
+}
+
+// HarnessRuntimeFor resolves the run runtime for one tool (Part J): the
+// per-tool tools.<name>.runtime wins, then the global harness.runtime, else
+// "" (the cli wire default).
+func (c *Config) HarnessRuntimeFor(tool string) string {
+	if c == nil {
+		return ""
+	}
+	if p := c.Tools.Pin(tool); p != nil && strings.TrimSpace(p.Runtime) != "" {
+		return strings.ToLower(strings.TrimSpace(p.Runtime))
+	}
+	return strings.ToLower(strings.TrimSpace(c.Harness.Runtime))
 }
 
 func (tc *ToolsConfig) Pin(name string) *ToolPin {
@@ -819,6 +844,20 @@ func (c *Config) Validate() error {
 	// tools.fallback
 	if c.Tools.Fallback != "" && !validFallbackMode(c.Tools.Fallback) {
 		ce.add("tools.fallback", fmt.Sprintf("%q not in [require, path]", c.Tools.Fallback))
+	}
+
+	// harness.runtime: "" = cli default, "tui" = incident kill switch.
+	if rt := strings.ToLower(strings.TrimSpace(c.Harness.Runtime)); rt != "" && rt != "cli" && rt != "tui" {
+		ce.add("harness.runtime", fmt.Sprintf("%q not in [cli, tui]", c.Harness.Runtime))
+	}
+	for _, tool := range []string{"claude", "grok", "codex", "opencode", "copilot", "cursor", "pi"} {
+		pin := c.Tools.Pin(tool)
+		if pin == nil {
+			continue
+		}
+		if rt := strings.ToLower(strings.TrimSpace(pin.Runtime)); rt != "" && rt != "cli" && rt != "tui" {
+			ce.add("tools."+tool+".runtime", fmt.Sprintf("%q not in [cli, tui]", pin.Runtime))
+		}
 	}
 
 	// global bridge

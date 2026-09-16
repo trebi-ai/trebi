@@ -2,6 +2,7 @@ package tmux
 
 import (
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -53,6 +54,68 @@ func (opencodeTool) TranscriptPath(home, workingDir, sessionID string) (string, 
 }
 
 func (opencodeTool) ParseTranscript(r io.Reader) ([]Turn, error) { return unsupportedParse(r) }
+
+// ParseOpenCodeMessages maps the `GET /session/:id/message` payload (an array
+// of {info, parts}) into the shared Turn shape. The CLI runtime uses it for
+// the transcript fallback when the SSE stream was missed (Part H).
+func ParseOpenCodeMessages(data []byte) ([]Turn, error) {
+	var msgs []struct {
+		Info struct {
+			Role string `json:"role"`
+			Time struct {
+				Created int64 `json:"created"`
+			} `json:"time"`
+		} `json:"info"`
+		Parts []struct {
+			Type  string `json:"type"`
+			Text  string `json:"text"`
+			Tool  string `json:"tool"`
+			State struct {
+				Status string          `json:"status"`
+				Input  json.RawMessage `json:"input"`
+				Output string          `json:"output"`
+			} `json:"state"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(data, &msgs); err != nil {
+		return nil, fmt.Errorf("opencode transcript: %w", err)
+	}
+	turns := []Turn{}
+	for _, m := range msgs {
+		turn := Turn{At: time.UnixMilli(m.Info.Time.Created)}
+		var texts []string
+		for _, p := range m.Parts {
+			switch p.Type {
+			case "text":
+				if p.Text != "" {
+					texts = append(texts, p.Text)
+				}
+			case "tool":
+				input := ""
+				if len(p.State.Input) > 0 {
+					input = string(p.State.Input)
+				}
+				turn.Tools = append(turn.Tools, ToolCall{
+					Name: p.Tool, Input: input, Output: p.State.Output,
+				})
+			}
+		}
+		turn.Text = strings.Join(texts, "\n")
+		switch {
+		case m.Info.Role == "user":
+			turn.Role = "user"
+		case turn.Text == "" && len(turn.Tools) > 0:
+			turn.Role = "tools"
+		default:
+			turn.Role = "assistant"
+		}
+		if turn.Text == "" && len(turn.Tools) == 0 {
+			continue
+		}
+		turns = append(turns, turn)
+	}
+	return turns, nil
+}
 
 func (opencodeTool) Lifecycle() LifecycleAdapter { return opencodeLifecycle{} }
 

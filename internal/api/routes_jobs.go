@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -304,9 +305,21 @@ func (e *ambiguousJobError) Error() string {
 // findJobRow resolves a job by (workspace, name). B4: zero matches means
 // not found; duplicates without a workspace disambiguator are ambiguous.
 func (s *Server) findJobRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
-	return s.findIndexRow(ctx, wsID, "job", func(row workspaces.JobRow) bool {
+	return s.findIndexRow(ctx, wsID, func(row workspaces.JobRow) bool {
 		return row.Name == name
-	})
+	}, "job")
+}
+
+// findFileRow resolves the folder a file request jails to: a job by index
+// name, or an agent by index name (agents/cmo). Both kinds own a folder, so
+// the agent Files tab browses agents/<name>/ through the job file routes.
+// Names stay exact -- a folder cannot hold both AGENT.md and JOB.md, so an
+// index name resolves at most one row -- and this resolver is used only for
+// file jails, never for launches.
+func (s *Server) findFileRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
+	return s.findIndexRow(ctx, wsID, func(row workspaces.JobRow) bool {
+		return row.Name == name
+	}, "job", "agent")
 }
 
 // findAssistantRow resolves the workspace assistant row (TREBI.md).
@@ -328,14 +341,15 @@ func (s *Server) findAssistantRow(ctx context.Context, wsID string) (workspaces.
 // (cmo) and the index name (agents/cmo) match. Kind-strict: a kind=job
 // launch can never pick up an agent row.
 func (s *Server) findAgentRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
-	return s.findIndexRow(ctx, wsID, "agent", func(row workspaces.JobRow) bool {
+	return s.findIndexRow(ctx, wsID, func(row workspaces.JobRow) bool {
 		return row.Name == name || strings.TrimPrefix(row.Name, "agents/") == name
-	})
+	}, "agent")
 }
 
-// findIndexRow is the kind-strict job_index lookup. Zero matches is not
-// found; duplicates without a workspace disambiguator are ambiguous.
-func (s *Server) findIndexRow(ctx context.Context, wsID, kind string, match func(workspaces.JobRow) bool) (workspaces.JobRow, error) {
+// findIndexRow is the kind-scoped job_index lookup: only rows whose kind is
+// in kinds match. Zero matches is not found; duplicates without a workspace
+// disambiguator are ambiguous.
+func (s *Server) findIndexRow(ctx context.Context, wsID string, match func(workspaces.JobRow) bool, kinds ...string) (workspaces.JobRow, error) {
 	wsID = s.workspaceID(ctx, wsID)
 	rows, err := s.ws.ListJobs(ctx, wsID)
 	if err != nil {
@@ -343,7 +357,7 @@ func (s *Server) findIndexRow(ctx context.Context, wsID, kind string, match func
 	}
 	var matches []workspaces.JobRow
 	for _, row := range rows {
-		if row.Kind != kind || !match(row) {
+		if !slices.Contains(kinds, row.Kind) || !match(row) {
 			continue
 		}
 		matches = append(matches, row)
@@ -364,6 +378,18 @@ func (s *Server) findIndexRow(ctx context.Context, wsID, kind string, match func
 // resolveJob is findJobRow plus HTTP error mapping.
 func (s *Server) resolveJob(w http.ResponseWriter, r *http.Request, name string) (workspaces.JobRow, bool) {
 	row, err := s.findJobRow(r.Context(), r.URL.Query().Get("workspace"), name)
+	if err != nil {
+		writeResolveErr(w, err, "job")
+		return workspaces.JobRow{}, false
+	}
+	return row, true
+}
+
+// resolveFileRow is findFileRow plus HTTP error mapping. The file routes are
+// job-flavored but jail to a folder, so an agent's index name resolves to
+// the agent folder; the not-found noun stays "job".
+func (s *Server) resolveFileRow(w http.ResponseWriter, r *http.Request, name string) (workspaces.JobRow, bool) {
+	row, err := s.findFileRow(r.Context(), r.URL.Query().Get("workspace"), name)
 	if err != nil {
 		writeResolveErr(w, err, "job")
 		return workspaces.JobRow{}, false

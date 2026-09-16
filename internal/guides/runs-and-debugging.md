@@ -43,6 +43,8 @@ For the assistant, poll `trebi conversation messages <id> --json` the same way. 
 trebi runs attach <id>
 ```
 
+A run's runtime is `cli` by default: the harness binary runs as a subprocess and the daemon speaks its structured protocol. `attach` on a CLI run streams normalized events (user, assistant, tool, permission, result, status); `runs logs -f` always works and is the remote-friendly view. `runtime: tui` in the job document, `tools.<harness>.runtime tui` in config, or the incident-only `harness.runtime: tui` puts that run back in a tmux pane, where `attach` is the pane. A CLI run that fails closed (protocol drift, missing login, quota) leaves a doctor hint; relaunch or resume with `runtime: tui` when needed — there is no silent TUI fallback. Transcripts prefer the live wire events, then the vendor session file.
+
 `runs attach` is **local only**; remote: none — poll `runs transcript` / `runs logs`. Never attach from an agent session.
 
 ```bash

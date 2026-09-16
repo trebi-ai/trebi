@@ -19,6 +19,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/memory"
+	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -324,10 +325,23 @@ func (s *Server) doctorFindings() []map[string]any {
 	src = append(src, s.apiBindDoctor()...)
 	src = append(src, s.agentLayoutDoctor()...)
 	src = append(src, s.memoryDoctor()...)
+	src = append(src, harnessRuntimeDoctor(context.Background())...)
 	out := make([]map[string]any, 0, len(src))
 	for _, f := range src {
 		out = append(out, map[string]any{
 			"id": f.ID, "severity": f.Severity, "code": f.Code, "message": f.Message,
+		})
+	}
+	return out
+}
+
+// harnessRuntimeDoctor maps the subprocess-runtime posture findings (Part J).
+func harnessRuntimeDoctor(ctx context.Context) []alerts.DoctorFinding {
+	findings := cli.DoctorFindings(ctx)
+	out := make([]alerts.DoctorFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, alerts.DoctorFinding{
+			ID: f.ID, Severity: f.Severity, Code: f.Code, Message: f.Message,
 		})
 	}
 	return out

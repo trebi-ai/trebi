@@ -15,6 +15,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/llm"
 	"github.com/trebi-ai/trebi/internal/pricing"
+	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
@@ -68,6 +69,12 @@ type Service struct {
 	dispatch  tools.Dispatcher
 	composer  WakeComposer
 	memRes    MemoryResolver
+
+	// Subprocess runtime (Part D). cliDriver is a test override; cliReg is
+	// the live session + pid ledger; cliRuns is the pump-owned state.
+	cliReg    *cli.Registry
+	cliDriver cli.Driver
+	cliRuns   map[string]*cliRun
 }
 
 type nativeHandle struct {
@@ -114,6 +121,7 @@ func New(st *store.Store, composer WakeComposer, fs *files.Service) *Service {
 		native:    make(map[string]*nativeHandle),
 		launching: make(map[string]bool),
 		pending:   make(map[string]pendingPrompt),
+		cliRuns:   make(map[string]*cliRun),
 		life:      context.Background(),
 		composer:  composer,
 	}
@@ -346,25 +354,29 @@ func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 			COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
 			COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
 			trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
-			COALESCE(memory_hash,''), outcome, COALESCE(outcome_note,''), outcome_at
+			COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
+			outcome, COALESCE(outcome_note,''), outcome_at
 		FROM runs WHERE id = ?`, id)
 	return s.scanRun(row)
 }
 
 // Approval is a decided permission prompt for a run.
 type Approval struct {
-	ID        string `json:"id"`
-	RunID     string `json:"run_id"`
-	Status    string `json:"status"`
-	Prompt    string `json:"prompt"`
-	Decision  string `json:"decision,omitempty"`
+	ID       string `json:"id"`
+	RunID    string `json:"run_id"`
+	Status   string `json:"status"`
+	Prompt   string `json:"prompt"`
+	Decision string `json:"decision,omitempty"`
+	// Key is the vendor permission id for wire approvals (CLI runtime); empty
+	// for pane/hook approvals.
+	Key       string `json:"permission_key,omitempty"`
 	Revision  int64  `json:"revision"`
 	CreatedAt string `json:"created_at"`
 	DecidedAt string `json:"decided_at,omitempty"`
 }
 
 const approvalCols = `SELECT id, run_id, status, COALESCE(question,''), COALESCE(decision,''),
-	revision, created_at, COALESCE(decided_at,'')`
+	COALESCE(permission_key,''), revision, created_at, COALESCE(decided_at,'')`
 
 // ApprovalListOpts filters for ListApprovals.
 type ApprovalListOpts struct {
@@ -412,7 +424,8 @@ func (o ListOpts) query() (string, []any) {
 		COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
 		COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
 		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
-		COALESCE(memory_hash,''), outcome, COALESCE(outcome_note,''), outcome_at
+		COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
+		outcome, COALESCE(outcome_note,''), outcome_at
 		FROM runs WHERE 1=1`
 	var args []any
 	if o.Workspace != "" {
@@ -581,16 +594,34 @@ func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([
 
 // OpenApproval records that a run is waiting on an answer. It is a no-op when
 // the run already has a pending row, so a repeated hook does not stack rows.
+// Pane and hook approvals are unkeyed; wire permissions use OpenApprovalKeyed.
 func (s *Service) OpenApproval(ctx context.Context, runID, question string) (*Approval, error) {
 	if existing, err := s.pendingApproval(ctx, runID); err != nil || existing != nil {
 		return existing, err
 	}
+	return s.openApproval(ctx, runID, question, "")
+}
+
+// OpenApprovalKeyed opens an approval bound to a vendor permission id, so
+// concurrent wire permissions each get their own answerable row (A.10).
+func (s *Service) OpenApprovalKeyed(ctx context.Context, runID, question, key string) (*Approval, error) {
+	if key == "" {
+		return s.OpenApproval(ctx, runID, question)
+	}
+	if existing, err := s.pendingApprovalKeyed(ctx, runID, key); err != nil || existing != nil {
+		return existing, err
+	}
+	return s.openApproval(ctx, runID, question, key)
+}
+
+// openApproval inserts one pending row.
+func (s *Service) openApproval(ctx context.Context, runID, question, key string) (*Approval, error) {
 	id := ulid.Make().String()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	a := &Approval{ID: id, RunID: runID, Status: "pending", Prompt: question, Revision: 1, CreatedAt: now}
+	a := &Approval{ID: id, RunID: runID, Status: "pending", Prompt: question, Key: key, Revision: 1, CreatedAt: now}
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT INTO approvals (id, run_id, question, status, created_at, revision)
-			VALUES (?,?,?,'pending',?,1)`, id, runID, store.NullStr(question), now)
+		_, err := tx.Exec(`INSERT INTO approvals (id, run_id, question, status, created_at, revision, permission_key)
+			VALUES (?,?,?,'pending',?,1,?)`, id, runID, store.NullStr(question), now, key)
 		return err
 	}, store.BusEvent{
 		Topic: "approval.created", Entity: "approval", EntityID: id, Action: "created",
@@ -641,6 +672,9 @@ func (s *Service) DecideApproval(ctx context.Context, runID, approvalID, decisio
 	if err != nil {
 		return nil, err
 	}
+	// CLI sessions route the decision to the vendor control channel (A.10),
+	// answering the exact wire permission the row was opened for.
+	s.onApprovalDecided(ctx, runID, a.Key, decision)
 	return a, nil
 }
 
@@ -669,7 +703,7 @@ func (s *Service) ListApprovals(ctx context.Context, opts ApprovalListOpts) ([]A
 	out := []Approval{}
 	for rows.Next() {
 		var a Approval
-		if err := rows.Scan(&a.ID, &a.RunID, &a.Status, &a.Prompt, &a.Decision, &a.Revision, &a.CreatedAt, &a.DecidedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Status, &a.Prompt, &a.Decision, &a.Key, &a.Revision, &a.CreatedAt, &a.DecidedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -838,6 +872,44 @@ func (s *Service) Mark(ctx context.Context, opts MarkOpts) (*Run, error) {
 	return s.Get(ctx, opts.ID)
 }
 
+// RunEvent is one run_events row with its cursor id (attach stream).
+type RunEvent struct {
+	ID     int64           `json:"id"`
+	At     time.Time       `json:"at"`
+	Kind   string          `json:"kind"`
+	Source string          `json:"source,omitempty"`
+	Detail json.RawMessage `json:"detail,omitempty"`
+}
+
+// EventsSince returns run_events rows with id > afterID, oldest first.
+func (s *Service) EventsSince(ctx context.Context, runID string, afterID int64, limit int) ([]RunEvent, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.st.DB().QueryContext(ctx, `
+		SELECT id, at, kind, COALESCE(source,''), detail_json
+		FROM run_events WHERE run_id=? AND id>? ORDER BY id LIMIT ?`, runID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RunEvent{}
+	for rows.Next() {
+		var ev RunEvent
+		var at string
+		var detail sql.NullString
+		if err := rows.Scan(&ev.ID, &at, &ev.Kind, &ev.Source, &detail); err != nil {
+			return nil, err
+		}
+		ev.At, _ = time.Parse(time.RFC3339Nano, at)
+		if detail.Valid {
+			ev.Detail = json.RawMessage(detail.String)
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
 // Timeline returns segments + events for a run.
 func (s *Service) Timeline(ctx context.Context, id string) (*Timeline, error) {
 	tl := &Timeline{RunID: id}
@@ -943,6 +1015,15 @@ func (s *Service) SetSessionState(ctx context.Context, runID string, state Sessi
 	}
 	var ws, job string
 	_ = s.st.DB().QueryRowContext(ctx, `SELECT workspace_id, job FROM runs WHERE id=?`, runID).Scan(&ws, &job)
+	// The transition is also a run_events point (Part H), so "why did it
+	// think idle?" is answerable from the timeline alone.
+	from := ""
+	if had {
+		from = string(prev.State)
+	}
+	s.AddEvent(ctx, runID, "session.state", source, map[string]string{
+		"state": string(state), "from": from,
+	})
 	if _, err := s.st.Append(ctx, store.BusEvent{
 		Topic:    "session.state",
 		Entity:   "run",
@@ -1112,12 +1193,14 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		id, workspace_id, job, kind, reason, status, prompt_preview, inputs_json,
 		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json,
 		conversation_key, conversation_id, working_dir, session_id, runtime, harness, tmux_session,
+		attach_kind, runtime_pid,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		resumed_from, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.Job, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON,
 		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.TmuxSession),
+		store.NullStr(attachKindFor(opts)), nil,
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
 		store.NullStr(opts.ResumedFrom), opts.ResumeAttempts, queueID, opts.TraceID, opts.MemoryHash, 1, nowStr,
 	)
@@ -1355,6 +1438,12 @@ func (s *Service) pendingApproval(ctx context.Context, runID string) (*Approval,
 		` FROM approvals WHERE run_id=? AND status='pending' ORDER BY id DESC LIMIT 1`, runID))
 }
 
+func (s *Service) pendingApprovalKeyed(ctx context.Context, runID, key string) (*Approval, error) {
+	return s.scanApproval(s.st.DB().QueryRowContext(ctx, approvalCols+
+		` FROM approvals WHERE run_id=? AND status='pending' AND permission_key=? ORDER BY id DESC LIMIT 1`,
+		runID, key))
+}
+
 func (s *Service) approvalByID(ctx context.Context, id string) (*Approval, error) {
 	a, err := s.scanApproval(s.st.DB().QueryRowContext(ctx, approvalCols+` FROM approvals WHERE id=?`, id))
 	if err != nil {
@@ -1369,7 +1458,7 @@ func (s *Service) approvalByID(ctx context.Context, id string) (*Approval, error
 // scanApproval reads one row; a missing row is (nil, nil).
 func (s *Service) scanApproval(row *sql.Row) (*Approval, error) {
 	var a Approval
-	err := row.Scan(&a.ID, &a.RunID, &a.Status, &a.Prompt, &a.Decision, &a.Revision, &a.CreatedAt, &a.DecidedAt)
+	err := row.Scan(&a.ID, &a.RunID, &a.Status, &a.Prompt, &a.Decision, &a.Key, &a.Revision, &a.CreatedAt, &a.DecidedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1383,9 +1472,9 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r := &Run{}
 	var reason, endReason, started, ended sql.NullString
 	var trigEvent, trigInteg, capJSON, varsJSON, inputsJSON sql.NullString
-	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev int64
+	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev, runtimePID int64
 	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, workingDir, resumedFrom string
-	var prompt, ws, job, kind, status, memoryHash string
+	var prompt, ws, job, kind, status, memoryHash, attachKind string
 	var outcomeStatus, outcomeNote, outcomeAt sql.NullString
 	err := row.Scan(
 		&r.ID, &ws, &job, &kind, &reason, &status, &endReason,
@@ -1394,7 +1483,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		&started, &ended, &maxD, &idle, &keep, &nudge,
 		&resumedFrom, &resumeAtt, &qid, &trace, &rev,
 		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
-		&memoryHash, &outcomeStatus, &outcomeNote, &outcomeAt,
+		&memoryHash, &runtimePID, &attachKind, &outcomeStatus, &outcomeNote, &outcomeAt,
 	)
 	if err != nil {
 		return nil, err
@@ -1421,6 +1510,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r.ConversationID = convID
 	r.WorkingDir = workingDir
 	r.MemoryHash = memoryHash
+	r.RuntimePID = int(runtimePID)
 	if outcomeStatus.Valid && outcomeStatus.String != "" {
 		r.Outcome = &Outcome{Status: Status(outcomeStatus.String), Note: outcomeNote.String}
 		if outcomeAt.Valid && outcomeAt.String != "" {
@@ -1441,6 +1531,11 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r.TmuxSession = tmux
 	if tmux != "" {
 		r.Attach = &AttachInfo{Kind: "tmux", Tmux: tmux}
+	} else if attachKind != "" {
+		r.Attach = &AttachInfo{Kind: attachKind}
+	} else if runtime == "cli" {
+		// Rows written before attach_kind landed still read as event runs.
+		r.Attach = &AttachInfo{Kind: "events"}
 	}
 	if trigInteg.Valid || capJSON.Valid {
 		r.Trigger = &TriggerCapture{Connector: trigInteg.String, EventID: trigEvent.String}

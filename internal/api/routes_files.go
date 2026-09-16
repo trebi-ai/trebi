@@ -27,6 +27,8 @@ func (s *Server) routeFiles(mux *http.ServeMux) {
 
 	// Job-scoped alias: same bytes plane, jail rooted at the job folder.
 	// Request/response paths are job-relative; bus attrs.path is workspace-relative.
+	// Agents resolve too (index name agents/<name>), so the agent Files tab
+	// browses agents/<name>/ through the same routes.
 	mux.HandleFunc("GET /v1/jobs/{name}/files", s.handleJobFilesList)
 	mux.HandleFunc("GET /v1/jobs/{name}/files/{path...}", s.handleJobFilesGet)
 	mux.HandleFunc("PUT /v1/jobs/{name}/files/{path...}", s.handleJobFilesPut)
@@ -70,7 +72,7 @@ func (s *Server) fileEmitter(wsID string) func(context.Context, string, string) 
 }
 
 func (s *Server) jobFileScope(w http.ResponseWriter, r *http.Request) (fileScope, bool) {
-	row, ok := s.resolveJob(w, r, r.PathValue("name"))
+	row, ok := s.resolveFileRow(w, r, r.PathValue("name"))
 	if !ok {
 		return fileScope{}, false
 	}

@@ -470,6 +470,54 @@ func TestJobFilesRootLevelJob(t *testing.T) {
 	}
 }
 
+// TestJobFilesResolveAgentFolder: the job-scoped file jail also resolves
+// kind=agent rows by index name (agents/cmo), so the agent Files tab and
+// `trebi job file agents/cmo` browse the agent folder. AGENT.md stays a
+// typed 409 there; plain files under the agent folder write normally.
+func TestJobFilesResolveAgentFolder(t *testing.T) {
+	s, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-jail-files")
+	token := s.Token()
+
+	code, list, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fcmo/files?workspace="+wsID+"&recursive=1", token, nil)
+	if code != 200 {
+		t.Fatalf("agent file list %d %v", code, list)
+	}
+	paths := map[string]bool{}
+	rows, _ := list["files"].([]any)
+	for _, r := range rows {
+		item, _ := r.(map[string]any)
+		p, _ := item["path"].(string)
+		paths[p] = true
+	}
+	if !paths["AGENT.md"] || !paths["duty"] {
+		t.Fatalf("agent list missing AGENT.md or duty/: %v", paths)
+	}
+
+	code, body, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fcmo/files/tools/run.py?workspace="+wsID, token, nil, []byte("print(1)\n"))
+	if code != 201 || body["path"] != "tools/run.py" {
+		t.Fatalf("agent file put %d %v", code, body)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(wsDir, "agents", "cmo", "tools", "run.py"))
+	if err != nil || string(onDisk) != "print(1)\n" {
+		t.Fatalf("agent file on disk %q %v", onDisk, err)
+	}
+
+	code, body, _ = doRaw(t, "PUT", base+"/v1/jobs/agents%2Fcmo/files/AGENT.md?workspace="+wsID, token, nil, []byte("sneak"))
+	if code != 409 || errCode(body) != "conflict" {
+		t.Fatalf("agent AGENT.md put %d %v want 409 conflict", code, body)
+	}
+
+	// The short name is an agent-route convenience; the job file routes
+	// match the index name exactly.
+	code, body, _ = doJSON(t, "GET", base+"/v1/jobs/cmo/files?workspace="+wsID, token, nil)
+	if code != 404 || errCode(body) != "not_found" {
+		t.Fatalf("short-name file list %d %v want 404", code, body)
+	}
+}
+
 func TestJobFilesOversize(t *testing.T) {
 	dir := t.TempDir()
 	home.SetBase(dir)

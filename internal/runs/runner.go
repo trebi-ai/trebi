@@ -23,6 +23,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/pricing"
+	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
@@ -191,6 +192,13 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 			return run, outcome, err
 		}
 		run, err := s.failFast(ctx, opts)
+		return run, outcome, err
+	}
+
+	// Subprocess is the default vendor runtime (Part F); runtime: tui, the
+	// kill switch, or a harness without a proven wire stays on the pane.
+	if s.wantsCLI(tmux.Detect(command), opts) {
+		run, err := s.launchCLI(ctx, opts)
 		return run, outcome, err
 	}
 
@@ -387,7 +395,9 @@ func (s *Service) driveFake(ctx context.Context, run *Run, opts LaunchOpts, stdo
 	return b.String(), false
 }
 
+// launchTmux drives a harness inside a tmux pane (explicit runtime: tui).
 func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error) {
+	opts.Runtime = "tui"
 	command := opts.Command
 	if command == "" {
 		command = opts.Harness
@@ -498,6 +508,13 @@ func (s *Service) deliverPrompt(ctx context.Context, run *Run, session, harness,
 func (s *Service) FailBeforeLaunch(ctx context.Context, opts LaunchOpts, end EndReason, detail map[string]string) (*Run, error) {
 	if opts.PromptPreview == "" {
 		opts.PromptPreview = opts.Prompt
+	}
+	// Record the runtime the launch would have used, so a blocked auth/limit
+	// row shows the subprocess posture rather than a pane it never opened.
+	if opts.Runtime == "" {
+		if _, ok := cli.DriverFor(opts.Harness); ok || s.cliDriverFor(opts.Harness) != nil {
+			opts.Runtime = "cli"
+		}
 	}
 	run, err := s.Create(ctx, opts.CreateOpts)
 	if err != nil {
@@ -712,6 +729,16 @@ func (s *Service) InjectMessage(ctx context.Context, runID, text string) error {
 		s.AddEvent(ctx, runID, "message", "api", map[string]string{"bytes": fmt.Sprint(len(text)), "delivery": "injected"})
 		return nil
 	}
+	// Subprocess sessions take the follow-up on stdin, never a pane paste.
+	if cr := s.cliRunFor(runID); cr != nil {
+		if err := cr.sess.Prompt(ctx, cli.Prompt{Text: text, Kind: "followup"}); err != nil {
+			return err
+		}
+		cr.tracker.PromptWritten()
+		s.SetSessionState(ctx, runID, SessionRunning, "wire")
+		s.AddEvent(ctx, runID, "message", "api", map[string]string{"bytes": fmt.Sprint(len(text)), "delivery": "prompt"})
+		return nil
+	}
 	if err := run.sendToPane(text); err != nil {
 		return err
 	}
@@ -753,7 +780,8 @@ func fakeEnv(run *Run, opts LaunchOpts, dir string) []string {
 	return env
 }
 
-// Kill terminates a running run (Ctrl+C then kill session). Idempotent for terminal runs.
+// Kill terminates a running run (interrupt + graceful close, or Ctrl+C then
+// kill session for TUI runs). Idempotent for terminal runs.
 func (s *Service) Kill(ctx context.Context, runID string) error {
 	run, err := s.Get(ctx, runID)
 	if err != nil {
@@ -763,12 +791,7 @@ func (s *Service) Kill(ctx context.Context, runID string) error {
 		// already terminal — success (idempotent)
 		return nil
 	}
-	s.cancelNative(runID)
-	if run.TmuxSession != "" {
-		_ = tmux.SendKey(run.TmuxSession, "C-c")
-		time.Sleep(200 * time.Millisecond)
-		s.closeSession(runID, run.TmuxSession)
-	}
+	s.teardownRuntime(ctx, run)
 	return s.Terminate(ctx, runID, StatusExited, EndKill, nil)
 }
 
@@ -801,6 +824,7 @@ func (s *Service) Resume(ctx context.Context, fromID string) (*Run, error) {
 			MaxDurationMS:  prev.Session.MaxDurationMS,
 			IdleTimeoutMS:  prev.Session.IdleTimeoutMS,
 			KeepAliveMS:    prev.Session.KeepAliveMS,
+			Runtime:        prev.Runtime,
 		},
 		ResumeSessionID: prev.SessionID,
 		Prompt:          "Continue from where you left off.",
@@ -1150,8 +1174,7 @@ func (s *Service) overlapSkip(ctx context.Context, opts *LaunchOpts, existing *R
 // overlapReplace kills every live run so a new launch can start.
 func (s *Service) overlapReplace(ctx context.Context, live []*Run) {
 	for _, r := range live {
-		s.cancelNative(r.ID)
-		s.closeSession(r.ID, r.TmuxSession)
+		s.teardownRuntime(ctx, r)
 		_ = s.Terminate(ctx, r.ID, StatusExited, EndReplace, nil)
 		s.AddEvent(ctx, r.ID, "replace", "runner", map[string]string{"by": "new-launch"})
 	}
@@ -1168,6 +1191,11 @@ func (s *Service) overlapCoalesce(ctx context.Context, opts *LaunchOpts, existin
 	}
 	if existing.Harness == nativeHarness {
 		_ = s.injectNative(existing.ID, text)
+	} else if cr := s.cliRunFor(existing.ID); cr != nil {
+		if err := cr.sess.Prompt(ctx, cli.Prompt{Text: text, Kind: "coalesce"}); err == nil {
+			cr.tracker.PromptWritten()
+			s.SetSessionState(ctx, existing.ID, SessionRunning, "wire")
+		}
 	} else if existing.TmuxSession != "" {
 		_ = tmux.Send(existing.TmuxSession, text)
 		_ = tmux.SendKey(existing.TmuxSession, "enter")

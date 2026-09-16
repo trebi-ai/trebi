@@ -36,3 +36,7 @@ __pycache__/
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Claude fixture generator (dev/CI only; fixtures themselves are checked in)
+scripts/gen-claude-fixtures/node_modules/
+scripts/gen-claude-fixtures/.work/

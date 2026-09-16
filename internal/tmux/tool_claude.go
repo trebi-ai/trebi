@@ -233,7 +233,14 @@ func injectClaudeSettings(command string) string {
 	if st, err := os.Stat(settingsPath); err == nil && !st.IsDir() {
 		return AppendFlags(command, []string{"--settings", settingsPath})
 	}
-	return AppendFlags(command, []string{"--settings", claudeSettingsJSON})
+	// The inline payload is multi-line JSON; shell-quote it so both the pane
+	// export and argv splitting keep it as one value.
+	return AppendFlags(command, []string{"--settings", shellSingleQuote(claudeSettingsJSON)})
+}
+
+// shellSingleQuote quotes a value for a POSIX shell / argv field splitter.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func fileExistsNotDir(p string) bool {

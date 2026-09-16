@@ -159,6 +159,7 @@ func (c *ControlPlane) Start(parent context.Context) {
 		},
 	})
 	c.Runs.RecoverNative(ctx)
+	c.Runs.RecoverCLI(ctx)
 
 	c.wg.Add(1)
 	go func() {
@@ -231,6 +232,9 @@ func (c *ControlPlane) Stop() {
 		c.cancel()
 	}
 	c.Reaper.Stop()
+	if c.Runs != nil {
+		c.Runs.CloseCLIRuns(context.Background())
+	}
 	if c.Harness != nil {
 		c.Harness.StopLoginWatchers()
 	}

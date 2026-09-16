@@ -1,0 +1,440 @@
+package runs_test
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/trebi-ai/trebi/internal/files"
+	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/memory"
+	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/runtime/cli"
+	"github.com/trebi-ai/trebi/internal/store"
+)
+
+// cliFixture builds a runs service with the fake subprocess driver injected
+// and a fake `claude` binary on PATH so resolveCommand/commandUnavailable
+// take the vendor path without touching a real vendor CLI.
+func cliFixture(t *testing.T, drv cli.Driver) (*runs.Service, *store.Store, string) {
+	t.Helper()
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	bin := t.TempDir()
+	fake := filepath.Join(bin, "claude")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	st, err := store.OpenPath(filepath.Join(dir, "r.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := runs.New(st, nil, files.New(files.DefaultMaxBytes))
+	svc.SetCLIDriver(drv)
+	// Let every event pump finish before the store/home teardown: a pump
+	// writing its ledger or a session segment after Close() is a test race,
+	// not a product bug.
+	t.Cleanup(func() { waitCLIIdle(t, svc) })
+	return svc, st, t.TempDir()
+}
+
+// waitCLIIdle drains live subprocess sessions before teardown.
+func waitCLIIdle(t *testing.T, svc *runs.Service) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if svc.CLIActiveCount() == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	svc.CloseCLIRuns(context.Background())
+}
+
+func launchCLIJob(t *testing.T, svc *runs.Service, opts ...func(*runs.LaunchOpts)) *runs.Run {
+	t.Helper()
+	lopts := runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "demo", Kind: runs.KindJob, Harness: "claude",
+			Reason: runs.ReasonManual, WorkingDir: t.TempDir(),
+		},
+		Prompt: "do the thing",
+	}
+	for _, fn := range opts {
+		fn(&lopts)
+	}
+	run, _, err := svc.CreateAndLaunch(context.Background(), lopts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return run
+}
+
+func waitTerminal(t *testing.T, svc *runs.Service, runID string) *runs.Run {
+	t.Helper()
+	run, err := svc.WaitFor(context.Background(), runID, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !run.Status.IsTerminal() {
+		t.Fatalf("run %s still %s", runID, run.Status)
+	}
+	return run
+}
+
+// TestCLIJobCompletesWithoutTmux is the phase-0 acceptance bar: a job
+// completes through the subprocess runtime with no tmux session.
+func TestCLIJobCompletesWithoutTmux(t *testing.T) {
+	svc, _, _ := cliFixture(t, cli.FakeDriver{})
+	run := launchCLIJob(t, svc)
+
+	if run.Runtime != "cli" {
+		t.Fatalf("runtime = %q", run.Runtime)
+	}
+	if run.TmuxSession != "" {
+		t.Fatalf("tmux session leaked: %q", run.TmuxSession)
+	}
+	done := waitTerminal(t, svc, run.ID)
+	if done.Status != runs.StatusComplete || done.EndReason != runs.EndResult {
+		t.Fatalf("run: status=%s end=%s", done.Status, done.EndReason)
+	}
+	if done.RuntimePID == 0 {
+		t.Fatalf("runtime_pid not recorded")
+	}
+	if done.Attach == nil || done.Attach.Kind != "events" {
+		t.Fatalf("attach: %+v", done.Attach)
+	}
+	if _, err := os.Stat(filepath.Join(home.RunsLogDir(), run.ID+".log")); err != nil {
+		t.Fatalf("run log: %v", err)
+	}
+}
+
+// TestCLIFailingResultClassifies pulls a limit result through the whole path.
+func TestCLIFailingResultClassifies(t *testing.T) {
+	svc, st, _ := cliFixture(t, cli.FakeDriver{
+		Script: `read -r line; echo '{"type":"result","subtype":"error_during_execution","is_error":true,"text":"You have hit your session limit","end_reason":"limit"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	done := waitTerminal(t, svc, run.ID)
+	if done.Status != runs.StatusFailed || done.EndReason != runs.EndLimit {
+		t.Fatalf("run: status=%s end=%s", done.Status, done.EndReason)
+	}
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_log WHERE topic='harness.limit_exceeded'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("limit bus event missing")
+	}
+}
+
+// TestCLIKillTreeKillsChild pins process-group kill through the service.
+func TestCLIKillTreeKillsChild(t *testing.T) {
+	svc, _, _ := cliFixture(t, cli.FakeDriver{Script: `sleep 60`})
+	run := launchCLIJob(t, svc)
+	deadline := time.Now().Add(5 * time.Second)
+	for run.RuntimePID == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		got, err := svc.Get(context.Background(), run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run = got
+	}
+	if run.RuntimePID == 0 {
+		t.Fatal("pid not recorded")
+	}
+	pid := run.RuntimePID
+	if err := svc.Kill(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := waitTerminal(t, svc, run.ID)
+	if done.Status != runs.StatusExited || done.EndReason != runs.EndKill {
+		t.Fatalf("run: status=%s end=%s", done.Status, done.EndReason)
+	}
+	waitProcGone(t, pid)
+}
+
+// TestCLILogStreamsBeforeTerminate pins the streaming run log (Part H): the
+// assistant text exists while the process is still alive.
+func TestCLILogStreamsBeforeTerminate(t *testing.T) {
+	svc, _, _ := cliFixture(t, cli.FakeDriver{
+		Script: `read -r line; echo '{"type":"assistant","text":"working on it"}'; sleep 60`,
+	})
+	run := launchCLIJob(t, svc)
+	path := filepath.Join(home.RunsLogDir(), run.ID+".log")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+			_ = svc.Kill(context.Background(), run.ID)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("run log was not streamed before terminate")
+}
+
+// TestCLIApprovalRoundtrip maps a wire permission to the approval inbox and
+// forwards the decision back to the session.
+func TestCLIApprovalRoundtrip(t *testing.T) {
+	svc, _, _ := cliFixture(t, cli.FakeDriver{
+		Script: `read -r line
+echo '{"type":"permission","id":"p1","tool":"Bash","question":"Allow Bash?"}'
+read -r decision
+echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+
+	deadline := time.Now().Add(5 * time.Second)
+	var approvalID string
+	for time.Now().Before(deadline) {
+		if svc.SessionState(run.ID) == runs.SessionWaiting {
+			list, err := svc.ListApprovals(context.Background(), runs.ApprovalListOpts{State: "pending", Limit: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, a := range list {
+				if a.RunID == run.ID {
+					approvalID = a.ID
+				}
+			}
+			if approvalID != "" {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if approvalID == "" {
+		t.Fatalf("no open approval; state=%s", svc.SessionState(run.ID))
+	}
+	if _, err := svc.DecideApproval(context.Background(), run.ID, approvalID, "allow"); err != nil {
+		t.Fatal(err)
+	}
+	done := waitTerminal(t, svc, run.ID)
+	if done.Status != runs.StatusComplete {
+		t.Fatalf("run: status=%s end=%s", done.Status, done.EndReason)
+	}
+}
+
+// TestCLIMemoryFixCycle proves the memory fix is a second prompt on the same
+// session, not a pane paste.
+func TestCLIMemoryFixCycle(t *testing.T) {
+	root := t.TempDir()
+	fixed := filepath.Join(root, "fixed.md")
+	if err := os.WriteFile(fixed, append(memory.Skeleton(), []byte("- [2026-01-01 00:00] ran\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, _, _ := cliFixture(t, cli.FakeDriver{
+		Script: `read -r line
+echo '{"type":"result","subtype":"success"}'
+read -r fix
+cp "` + fixed + `" "$TREBI_MEMORY_PATH"
+echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc, func(o *runs.LaunchOpts) {
+		o.WorkingDir = root
+		o.Memory = &runs.MemoryLaunch{
+			Root: root, Rel: filepath.Join("demo", "MEMORY.md"),
+			Opt: memory.Options{MaxLogs: 100, RequireUpdate: true, InjectLogs: 20},
+		}
+	})
+	done := waitTerminal(t, svc, run.ID)
+	if done.Status != runs.StatusComplete {
+		t.Fatalf("run: status=%s end=%s", done.Status, done.EndReason)
+	}
+	kinds := runEventKinds(t, svc, run.ID)
+	if kinds["memory.fix_requested"] != 1 {
+		t.Fatalf("memory events: %v", kinds)
+	}
+}
+
+// TestCLIRecoverMarksSessionGone simulates a daemon restart: the ledger child
+// is killed and the live row reconciles to session_gone.
+func TestCLIRecoverMarksSessionGone(t *testing.T) {
+	svc, st, _ := cliFixture(t, cli.FakeDriver{Script: `sleep 60`})
+	run := launchCLIJob(t, svc)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := svc.Get(context.Background(), run.ID)
+		if err == nil && got.RuntimePID != 0 {
+			run = got
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	pid := run.RuntimePID
+	if pid == 0 {
+		t.Fatal("pid not recorded")
+	}
+	// A fresh service has no live registry, exactly like a booted daemon.
+	svc2 := runs.New(st, nil, nil)
+	svc2.RecoverCLI(context.Background())
+	got, err := svc2.Get(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != runs.StatusExited || got.EndReason != runs.EndSessionGone {
+		t.Fatalf("recovered run: status=%s end=%s", got.Status, got.EndReason)
+	}
+	waitProcGone(t, pid)
+	_ = svc
+}
+
+// TestCLIConcurrentApprovals pins the keyed approval path (A.10): two wire
+// permissions each open their own row, and each decision reaches the session.
+func TestCLIConcurrentApprovals(t *testing.T) {
+	svc, _, _ := cliFixture(t, cli.FakeDriver{
+		Script: `read -r line
+echo '{"type":"permission","id":"p1","tool":"Bash","question":"first?"}'
+echo '{"type":"permission","id":"p2","tool":"Bash","question":"second?"}'
+read -r d1
+read -r d2
+echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	ctx := context.Background()
+
+	pending := func() map[string]string {
+		list, err := svc.ListApprovals(ctx, runs.ApprovalListOpts{State: "pending", Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		byKey := map[string]string{}
+		for _, a := range list {
+			if a.RunID == run.ID {
+				byKey[a.Key] = a.ID
+			}
+		}
+		return byKey
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var byKey map[string]string
+	for time.Now().Before(deadline) {
+		byKey = pending()
+		if byKey["p1"] != "" && byKey["p2"] != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if byKey["p1"] == "" || byKey["p2"] == "" {
+		t.Fatalf("expected one row per wire permission: %v", byKey)
+	}
+	// Decide the newer one first: the older must stay pending and the session
+	// must still get both answers for the run to complete.
+	if _, err := svc.DecideApproval(ctx, run.ID, byKey["p2"], "allow"); err != nil {
+		t.Fatal(err)
+	}
+	left := pending()
+	if left["p1"] == "" {
+		t.Fatalf("deciding p2 cleared p1: %v", left)
+	}
+	if left["p2"] != "" {
+		t.Fatalf("p2 still pending: %v", left)
+	}
+	if _, err := svc.DecideApproval(ctx, run.ID, byKey["p1"], "allow"); err != nil {
+		t.Fatal(err)
+	}
+	done := waitTerminal(t, svc, run.ID)
+	if done.Status != runs.StatusComplete {
+		t.Fatalf("run: status=%s end=%s", done.Status, done.EndReason)
+	}
+}
+
+// TestCLITurnsPrefersWireEvents pins the Part H transcript order: the turn
+// list is rebuilt from run_events, not the vendor file.
+func TestCLITurnsPrefersWireEvents(t *testing.T) {
+	svc, _, _ := cliFixture(t, cli.FakeDriver{
+		Script: `read -r line
+echo '{"type":"assistant","text":"hello from wire"}'
+echo '{"type":"tool","id":"t1","name":"Bash","status":"completed","output":"ok"}'
+echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	waitTerminal(t, svc, run.ID)
+
+	turns, err := svc.CLITurns(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawText, sawTool bool
+	for _, turn := range turns {
+		if turn.Role == "assistant" && strings.Contains(turn.Text, "hello from wire") {
+			sawText = true
+		}
+		for _, tool := range turn.Tools {
+			if tool.Name == "Bash" && tool.Output == "ok" {
+				sawTool = true
+			}
+		}
+	}
+	if !sawText || !sawTool {
+		t.Fatalf("turns: %+v", turns)
+	}
+}
+
+// TestCLIEventsSince covers the attach cursor: events replay from id 0 and
+// resume after the last seen id.
+func TestCLIEventsSince(t *testing.T) {
+	svc, _, _ := cliFixture(t, cli.FakeDriver{
+		Script: `read -r line; echo '{"type":"assistant","text":"hi"}'; echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	waitTerminal(t, svc, run.ID)
+
+	events, err := svc.EventsSince(context.Background(), run.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 {
+		t.Fatalf("events: %+v", events)
+	}
+	var lastID int64
+	kinds := map[string]bool{}
+	for _, ev := range events {
+		if ev.ID <= lastID {
+			t.Fatalf("event ids not ascending: %d after %d", ev.ID, lastID)
+		}
+		lastID = ev.ID
+		kinds[ev.Kind] = true
+	}
+	if !kinds["launch"] || !kinds["assistant"] {
+		t.Fatalf("event kinds: %v", kinds)
+	}
+	rest, err := svc.EventsSince(context.Background(), run.ID, lastID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 0 {
+		t.Fatalf("tail should be empty: %+v", rest)
+	}
+}
+
+func waitProcGone(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processAlive(pid) {
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	t.Fatalf("process %d survived", pid)
+}
+
+func processAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
+}

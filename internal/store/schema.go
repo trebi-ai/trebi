@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 14
+const SchemaVersion = 16
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -434,6 +434,20 @@ ALTER TABLE runs ADD COLUMN memory_hash TEXT NOT NULL DEFAULT '';
 ALTER TABLE runs ADD COLUMN outcome TEXT;
 ALTER TABLE runs ADD COLUMN outcome_note TEXT NOT NULL DEFAULT '';
 ALTER TABLE runs ADD COLUMN outcome_at TEXT;
+`,
+		// v15: subprocess runtime pid + attach kind for the CLI run runtime
+		// (2026-09-16 harness-subprocess-runtime). runtime_pid is the child
+		// process for boot reconcile; attach_kind is events for CLI runs.
+		`
+ALTER TABLE runs ADD COLUMN runtime_pid INTEGER;
+ALTER TABLE runs ADD COLUMN attach_kind TEXT;
+`,
+		// v16: keyed approvals. Wire permissions carry a vendor request id so
+		// concurrent requests on one run each get an answerable row (A.10);
+		// pane/hook approvals keep the empty key and one-pending-per-run rule.
+		`
+ALTER TABLE approvals ADD COLUMN permission_key TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_approvals_key ON approvals(run_id, permission_key);
 `,
 	}
 }

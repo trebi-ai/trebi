@@ -22,6 +22,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/runtime/native"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -39,6 +40,7 @@ type runCreateRequest struct {
 	Inputs          map[string]string `json:"inputs"`
 	DryRun          bool              `json:"dry_run"`
 	Harness         string            `json:"harness"`
+	Runtime         string            `json:"runtime,omitempty"` // cli|tui
 	IdempotencyKey  string            `json:"idempotency_key"`
 	conversationKey string
 }
@@ -308,6 +310,10 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 		lopts.Env = d.Env
 		lopts.Model, lopts.Effort = d.Model, d.Effort
 		lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = d.MaxDurationMS, d.IdleTimeoutMS, d.KeepAliveMS, d.NudgeMS
+		lopts.Runtime = spec.Runtime
+	}
+	if body.Runtime != "" {
+		lopts.Runtime = body.Runtime
 	}
 	if harness == "fake" || os.Getenv("TREBI_FAKE_HARNESS") != "" {
 		// Test/e2e harness: shell that emits the run-scoped completion sentinel.
@@ -545,6 +551,8 @@ func truncStr(s string, n int) string {
 // handleRunAttach streams terminal bytes over WebSocket (D2).
 // Protocol: client may send {"type":"input","data":"..."} or {"type":"take_control"}.
 // Server sends {"type":"screen","data":"..."}.
+// CLI-runtime runs stream normalized wire events instead
+// ({"type":"event","data":{...}} + periodic {"type":"status","data":{...}}).
 func (s *Server) handleRunAttach(w http.ResponseWriter, r *http.Request) {
 	run, err := s.runs.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -553,6 +561,10 @@ func (s *Server) handleRunAttach(w http.ResponseWriter, r *http.Request) {
 	}
 	if run.Harness == "native" || run.Runtime == "native" {
 		writeErr(w, http.StatusNotFound, "not_found", "native runs have no attach")
+		return
+	}
+	if run.Runtime == "cli" || (run.Attach != nil && run.Attach.Kind == "events") {
+		s.attachEventStream(w, r, run)
 		return
 	}
 	if run.TmuxSession == "" {
@@ -567,6 +579,121 @@ func (s *Server) handleRunAttach(w http.ResponseWriter, r *http.Request) {
 	done := make(chan struct{})
 	go s.attachInputPump(conn, run.TmuxSession, done)
 	s.attachScreenLoop(r.Context(), conn, run.TmuxSession, done)
+}
+
+// attachEventStream is the CLI-runtime attach: replay + tail of normalized
+// run events with a periodic status frame (Part H). No pane is opened.
+func (s *Server) attachEventStream(w http.ResponseWriter, r *http.Request, run *runs.Run) {
+	conn, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	ctx := r.Context()
+	done := make(chan struct{})
+	go s.attachEventInput(conn, run.ID, done)
+
+	// Seed with the tail of the log so the client is not empty-handed.
+	if text, _ := s.runLogText(ctx, run.ID); text != "" {
+		_ = conn.WriteJSON(map[string]any{"type": "event", "data": map[string]string{
+			"kind": "log", "text": strings.Join(lastLogLines(text, 40), "\n"),
+		}})
+	}
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	var lastID int64
+	var lastState runs.SessionState
+	var lastStatusSent time.Time
+	for {
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			events, err := s.runs.EventsSince(ctx, run.ID, lastID, 200)
+			if err != nil {
+				_ = conn.WriteJSON(map[string]any{"type": "error", "data": err.Error()})
+				return
+			}
+			for _, ev := range events {
+				lastID = ev.ID
+				if err := conn.WriteJSON(map[string]any{"type": "event", "data": ev}); err != nil {
+					return
+				}
+			}
+			cur, err := s.runs.Get(ctx, run.ID)
+			if err != nil {
+				_ = conn.WriteJSON(map[string]any{"type": "ended"})
+				return
+			}
+			// Periodic status frame: state, last output, in-flight tool.
+			if cur.SessionState != lastState || time.Since(lastStatusSent) >= 5*time.Second {
+				lastState = cur.SessionState
+				lastStatusSent = time.Now()
+				status := map[string]any{"state": string(cur.SessionState)}
+				if lastID > 0 {
+					if latest, lerr := s.runs.EventsSince(ctx, run.ID, lastID-1, 1); lerr == nil && len(latest) > 0 {
+						status["last_event_at"] = latest[0].At
+					}
+				}
+				if tool := s.lastToolName(ctx, run.ID); tool != "" {
+					status["tool"] = tool
+				}
+				_ = conn.WriteJSON(map[string]any{"type": "status", "data": status})
+			}
+			if cur.Status.IsTerminal() {
+				// One more sweep so the final result frame is delivered.
+				if events, err := s.runs.EventsSince(ctx, run.ID, lastID, 200); err == nil {
+					for _, ev := range events {
+						_ = conn.WriteJSON(map[string]any{"type": "event", "data": ev})
+					}
+				}
+				_ = conn.WriteJSON(map[string]any{"type": "ended"})
+				return
+			}
+		}
+	}
+}
+
+// attachEventInput accepts follow-up messages on an event attach; key/input
+// frames are ignored because there is no pane.
+func (s *Server) attachEventInput(conn *websocket.Conn, runID string, done chan<- struct{}) {
+	defer close(done)
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var m map[string]any
+		if json.Unmarshal(msg, &m) != nil {
+			continue
+		}
+		if fmt.Sprint(m["type"]) == "message" {
+			if err := s.runs.InjectMessage(context.Background(), runID, fmt.Sprint(m["data"])); err != nil {
+				_ = conn.WriteJSON(map[string]any{"type": "error", "data": err.Error()})
+			}
+		}
+	}
+}
+
+// lastToolName returns the most recent tool name from the run timeline.
+func (s *Server) lastToolName(ctx context.Context, runID string) string {
+	tl, err := s.runs.Timeline(ctx, runID)
+	if err != nil {
+		return ""
+	}
+	for i := len(tl.Events) - 1; i >= 0; i-- {
+		if tl.Events[i].Kind != "tool" {
+			continue
+		}
+		var d map[string]string
+		if json.Unmarshal(tl.Events[i].Detail, &d) == nil {
+			return d["name"]
+		}
+	}
+	return ""
 }
 
 // attachInputPump forwards client input messages into tmux. It closes done
@@ -636,6 +763,22 @@ func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 	if run.Harness == "native" || run.Runtime == "native" {
 		s.writeNativeTranscript(w, r, run)
 		return
+	}
+	// CLI runs prefer the live wire events (Part H), then fall back to the
+	// vendor session file (Claude/Codex jsonl), then to OpenCode serve.
+	if run.Runtime == "cli" {
+		if turns, err := s.runs.CLITurns(r.Context(), run.ID); err == nil && len(turns) > 0 {
+			writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
+			return
+		}
+		if run.Harness == tmux.OpenCode && run.SessionID != "" {
+			if raw, ok := cli.OpenCodeMessages(r.Context(), run.SessionID); ok {
+				if turns, err := tmux.ParseOpenCodeMessages(raw); err == nil {
+					writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
+					return
+				}
+			}
+		}
 	}
 	data, tool, ok := s.readTranscript(run)
 	if !ok {
@@ -934,6 +1077,9 @@ func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason r
 	lopts.Model, lopts.Effort = d.Model, d.Effort
 	lopts.IfRunning = d.IfRunning
 	lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = d.MaxDurationMS, d.IdleTimeoutMS, d.KeepAliveMS, d.NudgeMS
+	// A replay/retry must honor the document runtime (Part J): a job that says
+	// runtime: tui reopens the pane instead of silently flipping to the wire.
+	lopts.Runtime = j.Runtime
 	lopts.Memory = s.memoryLaunchFor(ctx, prev.Workspace, j)
 	return lopts, nil
 }
@@ -1022,10 +1168,10 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 		if prev.SessionID != "" {
 			run, err := s.runs.Resume(r.Context(), prev.ID)
 			if err == nil && run != nil {
-				// Inject failure note if session live
-				if run.TmuxSession != "" {
-					_ = s.runs.InjectMessage(r.Context(), run.ID, note) // resume already succeeded; note is best-effort
-				}
+				// Inject failure note if session live. CLI sessions take it on
+				// stdin via Session.Prompt; resume already succeeded, so the
+				// note is best-effort for both runtimes.
+				_ = s.runs.InjectMessage(r.Context(), run.ID, note)
 				writeJSON(w, http.StatusCreated, map[string]any{
 					"action": "resume", "run": run, "note": note,
 				})
@@ -1173,18 +1319,31 @@ func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := io.ReadAll(r.Body)
 	if runID != "" {
+		// Wire events are authoritative on the subprocess runtime (A.14,
+		// G.2): hooks append timeline points only, so a slow `Stop` hook can
+		// never flip a live turn to idle or stack approvals.
+		advisory := false
+		if run, err := s.runs.Get(r.Context(), runID); err == nil && run.Runtime == "cli" {
+			advisory = true
+		}
 		switch event {
 		case "waiting", "permission-request":
-			s.runs.SetSessionState(r.Context(), runID, runs.SessionWaiting, "hook")
-			if _, err := s.runs.OpenApproval(r.Context(), runID, hookQuestion(body)); err != nil {
-				s.log.Warn("open approval", "run", runID, "error", err)
+			if !advisory {
+				s.runs.SetSessionState(r.Context(), runID, runs.SessionWaiting, "hook")
+				if _, err := s.runs.OpenApproval(r.Context(), runID, hookQuestion(body)); err != nil {
+					s.log.Warn("open approval", "run", runID, "error", err)
+				}
 			}
 		case "running", "tool-start", "session-start":
-			s.runs.SetSessionState(r.Context(), runID, runs.SessionRunning, "hook")
+			if !advisory {
+				s.runs.SetSessionState(r.Context(), runID, runs.SessionRunning, "hook")
+			}
 		case "stop", "session-end", "idle":
-			s.runs.SetSessionState(r.Context(), runID, runs.SessionIdle, "hook")
+			if !advisory {
+				s.runs.SetSessionState(r.Context(), runID, runs.SessionIdle, "hook")
+			}
 		}
-		s.runs.AddEvent(r.Context(), runID, "hook:"+event, "agent-hook", map[string]string{"event": event})
+		s.runs.AddEvent(r.Context(), runID, "hook:"+event, "agent-hook", map[string]string{"event": event, "advisory": fmt.Sprint(advisory)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
