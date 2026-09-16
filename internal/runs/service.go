@@ -1249,7 +1249,9 @@ func (s *Service) StatusByJob(ctx context.Context) (last map[string]Status, live
 	return last, live, rows.Err()
 }
 
-// AddEvent appends a timeline point event (best-effort).
+// AddEvent appends a timeline point event (best-effort). Significant events
+// also ride the bus as run.event, so live views (transcript, timeline) refresh
+// as the run streams instead of waiting for the next run.updated.
 func (s *Service) AddEvent(ctx context.Context, runID, kind, source string, detail any) {
 	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
 	var d *string
@@ -1260,6 +1262,26 @@ func (s *Service) AddEvent(ctx context.Context, runID, kind, source string, deta
 	}
 	_, _ = s.st.DB().ExecContext(ctx, `INSERT INTO run_events (run_id, at, kind, source, detail_json)
 		VALUES (?,?,?,?,?)`, runID, nowStr, kind, source, d)
+	if !streamedRunEvent(kind, detail) {
+		return
+	}
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "run.event", Entity: "run", EntityID: runID,
+		Attrs: map[string]any{"run_id": runID, "kind": kind, "source": source},
+	}); err != nil {
+		s.log.Warn("run.event append", "run", runID, "error", err)
+	}
+}
+
+// streamedRunEvent reports whether a run event should wake live clients.
+// Assistant text deltas are a typing artifact the transcript and timeline
+// fold away, and session.state already carries its own bus topic.
+func streamedRunEvent(kind string, detail any) bool {
+	if kind == "session.state" {
+		return false
+	}
+	m, ok := detail.(map[string]string)
+	return !ok || m["delta"] != "true"
 }
 
 // markResumedPredecessor makes the predecessor of a resume terminal `resumed` (B17).

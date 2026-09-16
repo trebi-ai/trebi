@@ -14,6 +14,49 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
+// TestAddEventPublishesRunEvent pins the live-view wakeup: significant run
+// events ride the bus as run.event, while streamed assistant deltas and
+// session.state (which has its own topic) do not.
+func TestAddEventPublishesRunEvent(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.AddEvent(ctx, run.ID, "assistant", "wire", map[string]string{"text": "Hello.", "delta": "false"})
+	svc.AddEvent(ctx, run.ID, "assistant", "wire", map[string]string{"text": "Hel", "delta": "true"})
+	svc.AddEvent(ctx, run.ID, "tool", "wire", map[string]string{"id": "t1", "name": "Bash", "status": "started"})
+	svc.AddEvent(ctx, run.ID, "session.state", "wire", map[string]string{"state": "idle"})
+
+	events, err := st.ListBus(ctx, 0, []string{"run.event"}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("run.event frames: %d %+v", len(events), events)
+	}
+	for _, ev := range events {
+		if ev.Entity != "run" || ev.ID != run.ID {
+			t.Fatalf("frame addressing: %+v", ev)
+		}
+		var attrs map[string]any
+		if err := json.Unmarshal(ev.Attrs, &attrs); err != nil {
+			t.Fatal(err)
+		}
+		if attrs["run_id"] != run.ID {
+			t.Fatalf("attrs.run_id: %v", attrs)
+		}
+	}
+}
+
 // TestTimelineCoalescesAssistantDeltas pins the timeline view of streamed
 // assistant output: one row per message, carrying the final text (or the text
 // so far while still streaming), not one row per delta chunk.
