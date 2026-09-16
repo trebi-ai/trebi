@@ -1,9 +1,11 @@
 package runs_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,6 +143,35 @@ waitfix
 	}
 	if issues := runEventIssues(t, svc, run.ID, "memory.fix_requested"); !strings.Contains(issues, "unchanged this run") {
 		t.Fatalf("fix issues = %q", issues)
+	}
+}
+
+// TestMemoryGateLogsOpsRecords pins the Log-tab side of the gate: each retry
+// and the final failure write an ops record naming the run.
+func TestMemoryGateLogsOpsRecords(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	svc, _, root := memoryFixture(t)
+	script := fakeWaitFix() + `echo "$TREBI_RUN_COMPLETE"
+waitfix
+echo "$TREBI_RUN_COMPLETE"
+waitfix
+echo "$TREBI_RUN_COMPLETE"`
+	run := launchMemoryScript(t, svc, memoryLaunch(root), script)
+	assertRunComplete(t, run, runs.EndSentinel)
+
+	logs := buf.String()
+	if got := strings.Count(logs, "memory.fix_requested"); got != 2 {
+		t.Fatalf("fix_requested records: %d\n%s", got, logs)
+	}
+	if got := strings.Count(logs, "memory.invalid"); got != 1 {
+		t.Fatalf("memory.invalid records: %d\n%s", got, logs)
+	}
+	if !strings.Contains(logs, "id="+run.ID) {
+		t.Fatalf("records must name the run:\n%s", logs)
 	}
 }
 

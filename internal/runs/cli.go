@@ -661,9 +661,7 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 		if len(issues) > 0 {
 			if cr.memoryFix < maxMemoryFixes && !cr.oneShot {
 				cr.memoryFix++
-				s.AddEvent(ctx, runID, "memory.fix_requested", "wire", map[string]string{
-					"issues": strings.Join(issues, "\n"), "attempt": strconv.Itoa(cr.memoryFix),
-				})
+				s.requestMemoryFix(ctx, runID, "wire", cr.memoryFix, issues)
 				if err := cr.sess.Prompt(ctx, cli.Prompt{Text: cliFixMessage(issues), Kind: "memory_fix"}); err != nil {
 					s.recordMemoryInvalid(ctx, run, issues, "wire")
 					s.terminateCLI(ctx, runID, cr, StatusFailed, EndLaunch, tokens)

@@ -99,7 +99,7 @@ func TestSystemLogsRunFilter(t *testing.T) {
 		`time=2026-09-15T15:05:15-03:00 level=INFO msg=api.request source=http_server route=/v1/runs/01RUN status=200`,
 		`time=2026-09-15T15:05:16-03:00 level=INFO msg="run launched" source=runs id=01RUN tmux=trebi-1 harness=claude`,
 		`time=2026-09-15T15:05:17-03:00 level=INFO msg="run launched" source=runs id=01OTHER tmux=trebi-2 harness=codex`,
-		`time=2026-09-15T15:14:51-03:00 level=INFO msg="reaper finished run" source=reaper id=01RUN status=complete end_reason=sentinel`,
+		`time=2026-09-15T15:14:51-03:00 level=INFO msg="run finished" source=runs id=01RUN status=complete end_reason=sentinel`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(filepath.Join(logDir, "trebid.log"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestSystemLogsRunFilter(t *testing.T) {
 		if i == 0 && !strings.Contains(line, "run launched") {
 			t.Fatalf("launch line missing: %v", got)
 		}
-		if i == 1 && !strings.Contains(line, "reaper finished run") {
+		if i == 1 && !strings.Contains(line, "run finished") {
 			t.Fatalf("finish line missing: %v", got)
 		}
 		if !strings.Contains(line, "01RUN") || strings.Contains(line, "01OTHER") ||
@@ -126,11 +126,11 @@ func TestSystemLogsRunFilter(t *testing.T) {
 		}
 	}
 
-	code, resp, _ = doJSON(t, "GET", base+"/v1/system/logs?run=01RUN&grep=reaper", s.Token(), nil)
+	code, resp, _ = doJSON(t, "GET", base+"/v1/system/logs?run=01RUN&grep=finished", s.Token(), nil)
 	if code != 200 {
 		t.Fatalf("run+grep %d %v", code, resp)
 	}
-	if got = logLines(t, resp); len(got) != 1 || !strings.Contains(got[0], "reaper finished run") {
+	if got = logLines(t, resp); len(got) != 1 || !strings.Contains(got[0], "run finished") {
 		t.Fatalf("run+grep got %v", got)
 	}
 }

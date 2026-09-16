@@ -1,9 +1,11 @@
 package runs_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +15,45 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
+
+// TestTerminateLogsRunFinish pins the ops record that the run's Log tab shows:
+// every terminal transition writes one "run finished" line naming the run.
+func TestTerminateLogsRunFinish(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndSentinel, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Idempotent second call writes no second record.
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndSentinel, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	logs := buf.String()
+	if got := strings.Count(logs, "run finished"); got != 1 {
+		t.Fatalf("run finished records: %d\n%s", got, logs)
+	}
+	if !strings.Contains(logs, "id="+run.ID) ||
+		!strings.Contains(logs, "status=complete") ||
+		!strings.Contains(logs, "end_reason=sentinel") {
+		t.Fatalf("finish record fields:\n%s", logs)
+	}
+}
 
 // TestAddEventPublishesRunEvent pins the live-view wakeup: significant run
 // events ride the bus as run.event, while streamed assistant deltas and

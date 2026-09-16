@@ -788,6 +788,9 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 	if alreadyTerminal {
 		return nil
 	}
+	// One finish record per run, whatever runtime ended it (cli pump, native
+	// loop, reaper, or kill). The Log tab filters the daemon log by run id.
+	s.log.Info("run finished", "id", id, "status", string(status), "end_reason", string(end))
 	s.mu.Lock()
 	delete(s.sessions, id)
 	s.mu.Unlock()

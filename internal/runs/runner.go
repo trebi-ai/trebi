@@ -379,9 +379,7 @@ func (s *Service) driveFake(ctx context.Context, run *Run, opts LaunchOpts, stdo
 		}
 		attempts++
 		lastIssues = issues
-		s.AddEvent(ctx, run.ID, "memory.fix_requested", "fake", map[string]string{
-			"issues": strings.Join(issues, "\n"), "attempt": strconv.Itoa(attempts),
-		})
+		s.requestMemoryFix(ctx, run.ID, "fake", attempts, issues)
 		if _, werr := io.WriteString(stdin, fixMessage(issues, run.ID)+"\n"); werr != nil {
 			s.recordMemoryInvalid(ctx, run, issues, "fake")
 			return b.String(), true
@@ -1065,10 +1063,22 @@ func (s *Service) emitResumeExhausted(ctx context.Context, run *Run) {
 	}
 }
 
-// recordMemoryInvalid logs the failed gate: one run event plus one bus event
-// for the alerts consumer (first issue line rides the frame).
+// requestMemoryFix records one completion-gate retry: a run event for the
+// transcript/timeline plus an ops record so the run's Log tab shows the gate.
+func (s *Service) requestMemoryFix(ctx context.Context, runID, source string, attempt int, issues []string) {
+	joined := strings.Join(issues, "\n")
+	s.AddEvent(ctx, runID, "memory.fix_requested", source, map[string]string{
+		"issues": joined, "attempt": strconv.Itoa(attempt),
+	})
+	s.log.Warn("memory.fix_requested", "id", runID, "attempt", attempt, "issues", joined)
+}
+
+// recordMemoryInvalid logs the failed gate: one run event, one ops record, and
+// one bus event for the alerts consumer (first issue line rides the frame).
 func (s *Service) recordMemoryInvalid(ctx context.Context, run *Run, issues []string, source string) {
-	s.AddEvent(ctx, run.ID, "memory.invalid", source, map[string]string{"issues": strings.Join(issues, "\n")})
+	joined := strings.Join(issues, "\n")
+	s.AddEvent(ctx, run.ID, "memory.invalid", source, map[string]string{"issues": joined})
+	s.log.Warn("memory.invalid", "id", run.ID, "source", source, "issues", joined)
 	attrs := map[string]string{
 		"run_id": run.ID, "kind": run.Kind,
 		"workspace": run.Workspace, "job": run.Job,
@@ -1080,7 +1090,7 @@ func (s *Service) recordMemoryInvalid(ctx context.Context, run *Run, issues []st
 		Topic: "memory.invalid", Entity: "run", EntityID: run.ID, Action: "updated",
 		Attrs: attrs,
 	}); err != nil {
-		s.log.Warn("memory.invalid", "error", err)
+		s.log.Warn("memory.invalid append", "run", run.ID, "error", err)
 	}
 }
 

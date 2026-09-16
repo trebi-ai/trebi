@@ -316,9 +316,7 @@ func (r *Reaper) gateCompletion(ctx context.Context, run *Run, screen string, no
 	// The fix keeps the pane busy; reset the idle clock.
 	delete(r.idleSince, run.ID)
 	r.mu.Unlock()
-	r.svc.AddEvent(ctx, run.ID, "memory.fix_requested", "reaper", map[string]string{
-		"issues": strings.Join(issues, "\n"), "attempt": strconv.Itoa(attempts),
-	})
+	r.svc.requestMemoryFix(ctx, run.ID, "reaper", attempts, issues)
 	if err := tmux.Send(run.TmuxSession, fixMessage(issues, run.ID)); err != nil {
 		r.log.Warn("memory fix send", "run", run.ID, "error", err)
 		return
@@ -429,7 +427,7 @@ func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndRea
 	delete(r.memDone, run.ID)
 	delete(r.lastPane, run.ID)
 	r.mu.Unlock()
-	r.log.Info("reaper finished run", "id", run.ID, "status", status, "end_reason", end)
+	// Terminate records the finish ("run finished"); nothing to add here.
 }
 
 // checkCLI reads the CLI tracker instead of a pane (G.5): idle timeout is

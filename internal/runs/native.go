@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -267,9 +266,7 @@ func nativeMemoryGate(s *Service, run *Run, opts LaunchOpts) func(ctx context.Co
 			return ""
 		}
 		fixAttempts++
-		s.AddEvent(ctx, run.ID, "memory.fix_requested", "native", map[string]string{
-			"issues": strings.Join(issues, "\n"), "attempt": strconv.Itoa(fixAttempts),
-		})
+		s.requestMemoryFix(ctx, run.ID, "native", fixAttempts, issues)
 		return fixMessage(issues, run.ID)
 	}
 }
