@@ -97,6 +97,12 @@ var (
 	// ErrSentinelInMessage reports a message carrying the run's own completion
 	// sentinel. Only the agent may report that it finished.
 	ErrSentinelInMessage = errors.New("message must not contain the run completion sentinel")
+	// ErrNotTerminal reports Mark on a run that has not finished.
+	ErrNotTerminal = errors.New("run is still live")
+	// ErrSuperseded reports Mark on a run a resume replaced.
+	ErrSuperseded = errors.New("run was superseded by a resume")
+	// ErrBadOutcome reports an outcome other than complete|failed|skipped.
+	ErrBadOutcome = errors.New("outcome must be complete, failed, or skipped")
 )
 
 // New creates a runs service. A nil composer skips wake composition; a nil
@@ -340,7 +346,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 			COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
 			COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
 			trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
-			COALESCE(memory_hash,'')
+			COALESCE(memory_hash,''), outcome, COALESCE(outcome_note,''), outcome_at
 		FROM runs WHERE id = ?`, id)
 	return s.scanRun(row)
 }
@@ -406,7 +412,7 @@ func (o ListOpts) query() (string, []any) {
 		COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
 		COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
 		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
-		COALESCE(memory_hash,'')
+		COALESCE(memory_hash,''), outcome, COALESCE(outcome_note,''), outcome_at
 		FROM runs WHERE 1=1`
 	var args []any
 	if o.Workspace != "" {
@@ -433,7 +439,9 @@ func (o ListOpts) query() (string, []any) {
 		// Filter in memory after fetch of running
 		q += ` AND status = 'running'`
 	} else if o.Status != "" {
-		q += ` AND status = ?`
+		// The filter follows the effective status: a human outcome wins, so a
+		// marked-complete run is not listed under failed.
+		q += ` AND COALESCE(NULLIF(outcome,''), status) = ?`
 		args = append(args, o.Status)
 	}
 	if o.ConversationKey != "" {
@@ -752,6 +760,84 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 	return nil
 }
 
+// MarkOpts is the human outcome write of POST /v1/runs/{id}/mark. Clear drops
+// the outcome; otherwise Status must be complete, failed, or skipped.
+type MarkOpts struct {
+	ID     string
+	Status Status
+	Note   string
+	Clear  bool
+}
+
+// Mark sets or clears the human outcome over a terminal run. It never touches
+// status/end_reason: those stay the harness record, while display, job health,
+// the inbox, and the ok/fail stats read the outcome.
+func (s *Service) Mark(ctx context.Context, opts MarkOpts) (*Run, error) {
+	if !opts.Clear && !ValidOutcomeStatus(opts.Status) {
+		return nil, ErrBadOutcome
+	}
+	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+
+	// Lock order everywhere: LockBus, then open the tx (see store.AppendEntity).
+	s.st.LockBus()
+	defer s.st.UnlockBus()
+
+	var rev int64
+	var machine, jobName, wsID string
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		err := tx.QueryRow(`SELECT revision, status, job, workspace_id FROM runs WHERE id = ?`, opts.ID).
+			Scan(&rev, &machine, &jobName, &wsID)
+		if err != nil {
+			return err
+		}
+		switch Status(machine) {
+		case StatusRunning:
+			return ErrNotTerminal
+		case StatusResumed:
+			return ErrSuperseded
+		}
+		rev++
+		if opts.Clear {
+			_, err = tx.Exec(`UPDATE runs SET outcome=NULL, outcome_note='', outcome_at=NULL,
+				revision=?, updated_at=? WHERE id=?`, rev, nowStr, opts.ID)
+		} else {
+			_, err = tx.Exec(`UPDATE runs SET outcome=?, outcome_note=?, outcome_at=?,
+				revision=?, updated_at=? WHERE id=?`,
+				string(opts.Status), opts.Note, nowStr, rev, nowStr, opts.ID)
+		}
+		if err != nil {
+			return err
+		}
+		detail := map[string]any{"from": machine, "cleared": opts.Clear}
+		if !opts.Clear {
+			detail["to"] = string(opts.Status)
+			if opts.Note != "" {
+				detail["note"] = opts.Note
+			}
+		}
+		detailJSON, _ := json.Marshal(detail)
+		if _, err := tx.Exec(`INSERT INTO run_events (run_id, at, kind, source, detail_json)
+			VALUES (?, ?, 'run.marked', 'user', ?)`, opts.ID, nowStr, string(detailJSON)); err != nil {
+			return err
+		}
+		attrs := map[string]string{"status": machine, "job": jobName, "workspace": wsID}
+		if opts.Clear {
+			attrs["outcome"] = ""
+		} else {
+			attrs["outcome"] = string(opts.Status)
+		}
+		_, err = store.AppendInTx(tx, store.BusEvent{
+			Topic: "run.updated", Entity: "run", EntityID: opts.ID, Action: "updated",
+			Revision: rev, Attrs: attrs,
+		})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, opts.ID)
+}
+
 // Timeline returns segments + events for a run.
 func (s *Service) Timeline(ctx context.Context, id string) (*Timeline, error) {
 	tl := &Timeline{RunID: id}
@@ -923,9 +1009,11 @@ func (s *Service) Counts(ctx context.Context) (total, running int, err error) {
 }
 
 // StatusByJob returns the newest run status and live run ids per "workspace/job" lane.
+// A human outcome overrides the newest run's machine status, so a marked run
+// shows through in job health and last_status.
 func (s *Service) StatusByJob(ctx context.Context) (last map[string]Status, live map[string][]string, err error) {
 	rows, err := s.st.DB().QueryContext(ctx, `
-		SELECT workspace_id, job, id, status FROM runs WHERE kind='job' AND (
+		SELECT workspace_id, job, id, status, COALESCE(outcome,'') FROM runs WHERE kind='job' AND (
 			status='running' OR id IN (SELECT MAX(id) FROM runs WHERE kind='job' GROUP BY workspace_id, job)
 		)`)
 	if err != nil {
@@ -935,12 +1023,16 @@ func (s *Service) StatusByJob(ctx context.Context) (last map[string]Status, live
 	last = map[string]Status{}
 	live = map[string][]string{}
 	for rows.Next() {
-		var ws, jb, id, st string
-		if err := rows.Scan(&ws, &jb, &id, &st); err != nil {
+		var ws, jb, id, st, outcome string
+		if err := rows.Scan(&ws, &jb, &id, &st, &outcome); err != nil {
 			return nil, nil, err
 		}
 		key := ws + "/" + jb
-		last[key] = Status(st)
+		if outcome != "" {
+			last[key] = Status(outcome)
+		} else {
+			last[key] = Status(st)
+		}
 		if Status(st).IsLive() {
 			live[key] = append(live[key], id)
 		}
@@ -1082,7 +1174,8 @@ type StatsOpts struct {
 }
 
 // Stats is the §3.9 run report: the selected range, the month to date, and one
-// row per day of the range.
+// row per day of the range. ok/failed count the effective status, so a human
+// outcome wins over the machine record.
 type Stats struct {
 	Range  string      `json:"range"`
 	Totals StatsTotals `json:"totals"`
@@ -1192,9 +1285,11 @@ func dailyStats(rows []statsRow, from, now time.Time) []StatsDay {
 	return days
 }
 
-// statsRows reads the runs of the report window and prices each one.
+// statsRows reads the runs of the report window and prices each one. A human
+// outcome overrides the machine status here, so a marked run counts as its
+// verdict in the ok/fail totals and day buckets.
 func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time) ([]statsRow, error) {
-	q := `SELECT started_at, status, COALESCE(tokens_input,0), COALESCE(tokens_output,0),
+	q := `SELECT started_at, status, COALESCE(outcome,''), COALESCE(tokens_input,0), COALESCE(tokens_output,0),
 		COALESCE(tokens_cache_read,0), COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,'')
 		FROM runs WHERE started_at >= ?`
 	args := []any{from.Format(time.RFC3339)}
@@ -1214,18 +1309,22 @@ func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time)
 
 	var out []statsRow
 	for rows.Next() {
-		var started, status, model string
+		var started, status, outcome, model string
 		var in, outTok, cacheR, cacheC int64
-		if err := rows.Scan(&started, &status, &in, &outTok, &cacheR, &cacheC, &model); err != nil {
+		if err := rows.Scan(&started, &status, &outcome, &in, &outTok, &cacheR, &cacheC, &model); err != nil {
 			return nil, err
 		}
 		at, err := time.Parse(time.RFC3339, started)
 		if err != nil {
 			continue
 		}
+		effective := Status(status)
+		if outcome != "" {
+			effective = Status(outcome)
+		}
 		u := pricing.TokenUsage{Input: in, Output: outTok, CacheRead: cacheR, CacheCreation: cacheC, Model: model}
 		u.ApplyRates()
-		out = append(out, statsRow{at: at.UTC(), status: Status(status), usage: u})
+		out = append(out, statsRow{at: at.UTC(), status: effective, usage: u})
 	}
 	return out, rows.Err()
 }
@@ -1287,6 +1386,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev int64
 	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, workingDir, resumedFrom string
 	var prompt, ws, job, kind, status, memoryHash string
+	var outcomeStatus, outcomeNote, outcomeAt sql.NullString
 	err := row.Scan(
 		&r.ID, &ws, &job, &kind, &reason, &status, &endReason,
 		&prompt, &sess, &harness, &runtime, &tmux,
@@ -1294,7 +1394,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		&started, &ended, &maxD, &idle, &keep, &nudge,
 		&resumedFrom, &resumeAtt, &qid, &trace, &rev,
 		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
-		&memoryHash,
+		&memoryHash, &outcomeStatus, &outcomeNote, &outcomeAt,
 	)
 	if err != nil {
 		return nil, err
@@ -1321,6 +1421,12 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r.ConversationID = convID
 	r.WorkingDir = workingDir
 	r.MemoryHash = memoryHash
+	if outcomeStatus.Valid && outcomeStatus.String != "" {
+		r.Outcome = &Outcome{Status: Status(outcomeStatus.String), Note: outcomeNote.String}
+		if outcomeAt.Valid && outcomeAt.String != "" {
+			r.Outcome.At = store.ParseTS(outcomeAt.String)
+		}
+	}
 	r.StartedAt = store.ParseTS(started.String)
 	if ended.Valid {
 		t := store.ParseTS(ended.String)

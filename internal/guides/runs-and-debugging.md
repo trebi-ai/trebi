@@ -51,12 +51,15 @@ trebi runs message <id> "answer to the prompt"
 
 ## Recover
 
-`resume` continues the same session. `replay` starts a fresh run from the same prompt. `retry` picks the right one from the failure reason — prefer it after a failure.
+`resume` continues the same session. `replay` starts a fresh run from the same prompt. `retry` picks the right one from the failure reason — prefer it after a failure. `mark` overrides the outcome of a finished run without launching anything; the machine status stays in stats, while job health and the inbox read the outcome.
 
 ```bash
 trebi runs resume <id>
 trebi runs replay <id>
 trebi runs retry <id>
+trebi runs mark <id> success --note "digest was sent"
+trebi runs mark <id> failed
+trebi runs mark <id> --clear
 trebi runs kill <id> [id...]
 ```
 

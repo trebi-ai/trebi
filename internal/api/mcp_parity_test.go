@@ -215,6 +215,7 @@ var knownFields = []tools.DocField{ //nolint:gochecknoglobals // static probe li
 	{Name: "channel_type", Type: "string"}, {Name: "channel_ref", Type: "string"},
 	{Name: "content", Type: "string"}, {Name: "force", Type: "boolean"}, {Name: "at", Type: "string"},
 	{Name: "text", Type: "string"}, {Name: "body", Type: "string"}, {Name: "entry_id", Type: "string"},
+	{Name: "status", Type: "string"}, {Name: "note", Type: "string"},
 }
 
 // probeValue returns a value that differs from what the sample carries, so a

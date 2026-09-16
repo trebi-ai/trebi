@@ -2,6 +2,7 @@ package runs
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/dispatch"
@@ -142,6 +143,38 @@ type RunSummary struct {
 	CostUSD    float64   `json:"cost_usd"`
 }
 
+// Outcome is a human verdict over a terminal run's machine status. The
+// reaper's status/end_reason stay as recorded; display, job health, and the
+// inbox read the outcome instead.
+type Outcome struct {
+	Status Status    `json:"status"`
+	Note   string    `json:"note,omitempty"`
+	At     time.Time `json:"at"`
+}
+
+// ValidOutcomeStatus reports whether s may be set as a human outcome.
+func ValidOutcomeStatus(s Status) bool {
+	switch s {
+	case StatusComplete, StatusFailed, StatusSkipped:
+		return true
+	}
+	return false
+}
+
+// OutcomeStatus normalizes a human outcome word: "success" is the UI word for
+// complete, and complete|failed|skipped pass through. Unknown words return "".
+func OutcomeStatus(word string) Status {
+	switch strings.ToLower(strings.TrimSpace(word)) {
+	case "success", "complete":
+		return StatusComplete
+	case "failed":
+		return StatusFailed
+	case "skipped":
+		return StatusSkipped
+	}
+	return ""
+}
+
 // CostSummary — per-job cost display (D6 tier 1).
 type CostSummary struct {
 	MTDUSD    float64 `json:"mtd_usd"`
@@ -212,11 +245,21 @@ type Run struct {
 	Session           SessionSpec        `json:"session"`
 	ResumedFrom       string             `json:"resumed_from,omitempty"`
 	ResumeAttempts    int                `json:"resume_attempts,omitempty"`
+	Outcome           *Outcome           `json:"outcome,omitempty"`
 	QueueID           string             `json:"queue_id,omitempty"`
 	TraceID           string             `json:"trace_id"`
 	// MemoryHash is the launch-time MEMORY.md hash; empty when memory is off.
 	MemoryHash string `json:"memory_hash,omitempty"`
 	Revision   int64  `json:"revision"`
+}
+
+// EffectiveStatus is the human outcome when one is set, else the machine
+// status the reaper recorded.
+func (r *Run) EffectiveStatus() Status {
+	if r.Outcome != nil {
+		return r.Outcome.Status
+	}
+	return r.Status
 }
 
 // Timeline — two-layer segments + point events.

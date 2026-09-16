@@ -210,6 +210,40 @@ func TestConsumeRunFailed(t *testing.T) {
 	}
 }
 
+// TestConsumeRunMarkedCompleteResolves: a human marking a failed run complete
+// clears the run_failed item, same as a successful retry.
+func TestConsumeRunMarkedCompleteResolves(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "run.failed", Entity: "run", EntityID: "run1", Action: "updated",
+		Attrs: map[string]string{"end_reason": "idle_timeout", "status": "failed", "job": "demo", "workspace": "ws"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Consume(ctx)
+	items, err := svc.List(ctx, alerts.ListOpts{})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%v err=%v", items, err)
+	}
+	// The machine status stays failed; the outcome is what resolves the item.
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "run.updated", Entity: "run", EntityID: "run1", Action: "updated",
+		Attrs: map[string]string{"status": "failed", "outcome": "complete", "job": "demo", "workspace": "ws"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Consume(ctx)
+	got, err := svc.Get(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != alerts.InboxResolved {
+		t.Fatalf("status %s want resolved", got.Status)
+	}
+}
+
 func TestWaitingDwell(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)

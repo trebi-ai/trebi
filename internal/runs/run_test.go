@@ -84,6 +84,32 @@ func TestStatusHelpers(t *testing.T) {
 	}
 }
 
+// TestOutcomeStatus pins the human vocabulary: success is the UI word for
+// complete; running/resumed can never be an outcome.
+func TestOutcomeStatus(t *testing.T) {
+	t.Parallel()
+	cases := map[string]Status{
+		"success": StatusComplete, "Success": StatusComplete, "complete": StatusComplete,
+		"failed": StatusFailed, "skipped": StatusSkipped,
+		"running": "", "resumed": "", "": "", "bogus": "",
+	}
+	for word, want := range cases {
+		if got := OutcomeStatus(word); got != want {
+			t.Errorf("OutcomeStatus(%q)=%q want %q", word, got, want)
+		}
+	}
+	for _, s := range []Status{StatusComplete, StatusFailed, StatusSkipped} {
+		if !ValidOutcomeStatus(s) {
+			t.Errorf("ValidOutcomeStatus(%q)=false", s)
+		}
+	}
+	for _, s := range []Status{StatusRunning, StatusResumed, StatusExited, StatusTimedOut} {
+		if ValidOutcomeStatus(s) {
+			t.Errorf("ValidOutcomeStatus(%q)=true", s)
+		}
+	}
+}
+
 // declaredConstants parses run.go and returns the string values of all
 // constants declared with the given type name.
 func declaredConstants(t *testing.T, typeName string) []string {

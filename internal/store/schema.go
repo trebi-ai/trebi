@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 13
+const SchemaVersion = 14
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -426,6 +426,14 @@ CREATE INDEX idx_job_index_owner ON job_index(workspace_id, owner);
 		// it to the file at run close; '' = memory off for that run.
 		`
 ALTER TABLE runs ADD COLUMN memory_hash TEXT NOT NULL DEFAULT '';
+`,
+		// v14: human outcome over a terminal run (complete|failed|skipped).
+		// status/end_reason stay the machine record; the outcome drives
+		// display, job health, and the inbox.
+		`
+ALTER TABLE runs ADD COLUMN outcome TEXT;
+ALTER TABLE runs ADD COLUMN outcome_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN outcome_at TEXT;
 `,
 	}
 }

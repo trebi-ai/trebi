@@ -746,6 +746,25 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"resume": idPost("POST /v1/runs/{id}/resume", "id", "01ABC", request.BuildRunResume),
 			"replay": idPost("POST /v1/runs/{id}/replay", "id", "01ABC", request.BuildRunReplay),
 			"retry":  idPost("POST /v1/runs/{id}/retry", "id", "01ABC", request.BuildRunsRetry),
+			"mark": act("POST /v1/runs/{id}/mark", Input{"id": "01ABC", "status": "success", "note": "digest was sent"}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				status, err := in.str("status")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				note, err := in.str("note")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				clear, err := in.flag("clear")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildRunMark(id, status, note, clear), nil
+			}),
 			"message": act("POST /v1/runs/{id}/message", Input{"id": "01ABC", "text": "ship it"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("id", "text")
 				if err != nil {

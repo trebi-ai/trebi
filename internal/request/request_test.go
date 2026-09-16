@@ -367,6 +367,23 @@ func TestBuildRunsKill(t *testing.T) {
 	}
 }
 
+func TestBuildRunMark(t *testing.T) {
+	t.Parallel()
+	req := BuildRunMark("01ABC", "success", "digest was sent", false)
+	if req.Method != "POST" || req.Path != "/v1/runs/01ABC/mark" {
+		t.Fatalf("%+v", req)
+	}
+	body, _ := req.Body.(map[string]any)
+	if body["status"] != "success" || body["note"] != "digest was sent" || body["clear"] != nil {
+		t.Fatalf("body %+v", body)
+	}
+	req = BuildRunMark("01ABC", "", "", true)
+	body, _ = req.Body.(map[string]any)
+	if body["clear"] != true || body["status"] != nil || body["note"] != nil {
+		t.Fatalf("clear body %+v", body)
+	}
+}
+
 func TestBuildContractGapRequests(t *testing.T) {
 	t.Parallel()
 	req := BuildRunsRetry("01ABC")

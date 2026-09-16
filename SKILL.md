@@ -68,7 +68,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 |---|---|
 | `getting-started` | fresh install → workspace → first job → first run |
 | `jobs-and-scheduling` | JOB.md shape, cron/every/event triggers, pause, validate, job memory |
-| `runs-and-debugging` | show/timeline/transcript/logs, retry/resume/replay, attach, approvals |
+| `runs-and-debugging` | show/timeline/transcript/logs, retry/resume/replay/mark, attach, approvals |
 | `files` | job-scoped vs workspace files, scripts next to jobs, If-Match |
 | `assistant` | wake, say, conversations, memory |
 | `agents` | folder-scoped agents: create, owned jobs, wake, agent memory |

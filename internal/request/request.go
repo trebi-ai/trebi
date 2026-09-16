@@ -127,6 +127,25 @@ func BuildRunsRetry(id string) HTTPRequest {
 	}
 }
 
+// BuildRunMark builds POST /v1/runs/{id}/mark. clear drops the outcome;
+// otherwise status is success|complete|failed|skipped.
+func BuildRunMark(id, status, note string, clear bool) HTTPRequest {
+	body := map[string]any{}
+	if clear {
+		body["clear"] = true
+	} else {
+		body["status"] = status
+	}
+	if note != "" {
+		body["note"] = note
+	}
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/runs/" + url.PathEscape(id) + "/mark",
+		Body:   body,
+	}
+}
+
 // BuildRunMessage builds POST /v1/runs/{id}/message.
 func BuildRunMessage(id, text string) HTTPRequest {
 	return HTTPRequest{

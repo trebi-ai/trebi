@@ -246,10 +246,11 @@ func (s *Service) onRunFailed(ctx context.Context, ev store.StreamEvent, attrs m
 }
 
 func (s *Service) onRunUpdated(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
-	if attrs["status"] != "complete" {
+	// A retry that succeeded, or a human marking a failed run complete,
+	// clears the run_failed item for this job.
+	if attrs["status"] != "complete" && attrs["outcome"] != "complete" {
 		return
 	}
-	// Retry succeeded: clear a run_failed item for this job.
 	subj := "job/" + attrs["workspace"] + "/" + attrs["job"]
 	if attrs["workspace"] != "" && attrs["job"] != "" {
 		s.autoResolve(ctx, KindRunFailed, subj, "auto")

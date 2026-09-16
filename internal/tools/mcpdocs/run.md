@@ -10,7 +10,7 @@ A launch blocks until the queue accepts the run. Poll `show` for status changes.
 
 ### list
 List runs, newest first.
-- `status` (string, optional): filter by status, for example `running`.
+- `status` (string, optional): filter by effective status (a human outcome wins), for example `running`.
 - `job` (string, optional): filter by job name.
 - `workspace` (string, optional): filter by workspace id.
 - `kind` (string, optional): filter by run kind.
@@ -75,6 +75,15 @@ Replay one finished run from its first prompt.
 ### retry
 Retry one failed run from the point of failure.
 - `id` (string, required): run id.
+
+### mark
+Override the outcome of a finished run, or clear an override. The machine
+status and end reason stay as recorded; display, job health, and the inbox
+read the outcome. This starts nothing.
+- `id` (string, required): run id.
+- `status` (string, optional; required unless `clear` is true): `success` (same as `complete`), `failed`, or `skipped`.
+- `note` (string, optional): why the outcome changed.
+- `clear` (boolean, optional): drop the override and restore the machine status.
 
 ### message
 Send one message into a live run. The text must not contain the run completion

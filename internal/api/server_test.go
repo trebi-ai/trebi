@@ -161,6 +161,63 @@ func TestRunsLifecycle(t *testing.T) {
 	}
 }
 
+// TestRunMarkEndpoint covers POST /v1/runs/{id}/mark: success maps to
+// complete, the machine status stays, and clear drops the override.
+func TestRunMarkEndpoint(t *testing.T) {
+	s, base := startTestServer(t)
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "markable")
+	wsID := addWorkspace(t, base, s.Token(), wsDir, "mark-ws")
+
+	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/markable/run", s.Token(), map[string]any{
+		"workspace": wsID, "harness": "claude", "prompt_override": "hello TREBI_RUN_COMPLETE",
+	})
+	if code != 201 {
+		t.Fatalf("launch=%d %v", code, run)
+	}
+	id, _ := run["id"].(string)
+	if id == "" {
+		t.Fatalf("no run id: %v", run)
+	}
+	// Kill guarantees a terminal row for the mark.
+	if code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/kill", s.Token(), nil); code != 200 {
+		t.Fatalf("kill=%d %v", code, body)
+	}
+	code, machine, _ := doJSON(t, "GET", base+"/v1/runs/"+id, s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("get=%d %v", code, machine)
+	}
+	if machine["outcome"] != nil {
+		t.Fatalf("fresh run has outcome: %v", machine)
+	}
+
+	if code, _, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/mark", s.Token(), map[string]any{"status": "bogus"}); code != 400 {
+		t.Fatalf("bogus status=%d want 400", code)
+	}
+
+	code, marked, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/mark", s.Token(), map[string]any{
+		"status": "success", "note": "digest was sent",
+	})
+	if code != 200 {
+		t.Fatalf("mark=%d %v", code, marked)
+	}
+	if marked["status"] != machine["status"] {
+		t.Fatalf("mark changed machine status: %v -> %v", machine["status"], marked["status"])
+	}
+	outcome, _ := marked["outcome"].(map[string]any)
+	if outcome["status"] != "complete" || outcome["note"] != "digest was sent" {
+		t.Fatalf("outcome=%v", outcome)
+	}
+
+	code, cleared, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/mark", s.Token(), map[string]any{"clear": true})
+	if code != 200 {
+		t.Fatalf("clear=%d %v", code, cleared)
+	}
+	if cleared["outcome"] != nil {
+		t.Fatalf("outcome after clear: %v", cleared["outcome"])
+	}
+}
+
 func TestRulesTestAndQueueFire(t *testing.T) {
 	s, base := startTestServer(t)
 	client := &http.Client{Timeout: 5 * time.Second}

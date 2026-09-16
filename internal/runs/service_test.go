@@ -206,6 +206,153 @@ func TestCreateMarksPredecessorResumed(t *testing.T) {
 	}
 }
 
+// TestMarkOutcomeOverridesMachineStatus covers the human outcome: Mark sets the
+// verdict without touching status/end_reason, StatusByJob reads the outcome,
+// and Clear restores the machine record.
+func TestMarkOutcomeOverridesMachineStatus(t *testing.T) {
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Mark(ctx, runs.MarkOpts{ID: run.ID, Status: runs.StatusComplete}); !errors.Is(err, runs.ErrNotTerminal) {
+		t.Fatalf("mark live run err=%v want ErrNotTerminal", err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusFailed, runs.EndIdleTimeout, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Mark(ctx, runs.MarkOpts{ID: run.ID, Status: runs.StatusRunning}); !errors.Is(err, runs.ErrBadOutcome) {
+		t.Fatalf("mark running outcome err=%v want ErrBadOutcome", err)
+	}
+
+	marked, err := svc.Mark(ctx, runs.MarkOpts{ID: run.ID, Status: runs.StatusComplete, Note: "digest was sent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marked.Status != runs.StatusFailed || marked.EndReason != runs.EndIdleTimeout {
+		t.Fatalf("mark changed machine facts: %+v", marked)
+	}
+	if marked.Outcome == nil || marked.Outcome.Status != runs.StatusComplete || marked.Outcome.Note != "digest was sent" {
+		t.Fatalf("outcome=%+v", marked.Outcome)
+	}
+	if marked.EffectiveStatus() != runs.StatusComplete {
+		t.Fatalf("effective=%s", marked.EffectiveStatus())
+	}
+
+	// The list status filter follows the outcome: complete finds it, failed not.
+	complete, err := svc.List(ctx, runs.ListOpts{Status: string(runs.StatusComplete), Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(complete) != 1 || complete[0].ID != run.ID {
+		t.Fatalf("complete filter after mark: %+v", complete)
+	}
+	failed, err := svc.List(ctx, runs.ListOpts{Status: string(runs.StatusFailed), Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range failed {
+		if r.ID == run.ID {
+			t.Fatalf("marked run still matches the failed filter")
+		}
+	}
+
+	// The stats day buckets (Home chart) read the outcome too.
+	stats, err := svc.Stats(ctx, runs.StatsOpts{Range: "30d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Totals.OK != 1 || stats.Totals.Failed != 0 {
+		t.Fatalf("totals after mark: %+v", stats.Totals)
+	}
+	day := run.StartedAt.UTC().Format("2006-01-02")
+	for _, d := range stats.Days {
+		if d.Date == day && (d.OK != 1 || d.Failed != 0) {
+			t.Fatalf("day bucket after mark: %+v", d)
+		}
+	}
+
+	last, _, err := svc.StatusByJob(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last["ws/j"] != runs.StatusComplete {
+		t.Fatalf("StatusByJob=%s want complete", last["ws/j"])
+	}
+
+	tl, err := svc.Timeline(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markedEvent := false
+	for _, ev := range tl.Events {
+		if ev.Kind == "run.marked" {
+			markedEvent = true
+		}
+	}
+	if !markedEvent {
+		t.Fatalf("timeline has no run.marked event: %+v", tl.Events)
+	}
+
+	cleared, err := svc.Mark(ctx, runs.MarkOpts{ID: run.ID, Clear: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Outcome != nil {
+		t.Fatalf("outcome after clear=%+v", cleared.Outcome)
+	}
+	last, _, err = svc.StatusByJob(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last["ws/j"] != runs.StatusFailed {
+		t.Fatalf("StatusByJob after clear=%s want failed", last["ws/j"])
+	}
+	stats, err = svc.Stats(ctx, runs.StatsOpts{Range: "30d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Totals.OK != 0 || stats.Totals.Failed != 1 {
+		t.Fatalf("totals after clear: %+v", stats.Totals)
+	}
+}
+
+// TestMarkRejectsSupersededRun: a resumed predecessor is history, not a row a
+// human disposes of.
+func TestMarkRejectsSupersededRun(t *testing.T) {
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+
+	prev, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, prev.ID, runs.StatusFailed, runs.EndIdleTimeout, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws", Job: "j", Harness: "claude",
+		ResumedFrom: prev.ID, ResumeAttempts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Mark(ctx, runs.MarkOpts{ID: prev.ID, Status: runs.StatusComplete}); !errors.Is(err, runs.ErrSuperseded) {
+		t.Fatalf("mark superseded err=%v want ErrSuperseded", err)
+	}
+}
+
 // TestResumeCap errors when the chain hits MaxResumeAttempts.
 func TestResumeCap(t *testing.T) {
 	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))

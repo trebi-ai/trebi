@@ -129,6 +129,17 @@ func runsCommand() *cli.Command {
 				Action:    runRunsRetry,
 			},
 			{
+				Name:      "mark",
+				Usage:     "override the outcome of a finished run (success|failed|skipped)",
+				ArgsUsage: "<id> [success|failed|skipped]",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "note", Usage: "why the outcome changed"},
+					&cli.BoolFlag{Name: "clear", Usage: "drop the override and restore the machine status"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runRunsMark,
+			},
+			{
 				Name:      "approve",
 				Usage:     "decide an approval for a run",
 				ArgsUsage: "<id>",
@@ -318,6 +329,43 @@ func runRunsRetry(_ context.Context, c *cli.Command) error {
 		return nil
 	}
 	fmt.Fprintf(outWriter(c), "run %v status=%v\n", out["id"], out["status"])
+	return nil
+}
+
+func runRunsMark(_ context.Context, c *cli.Command) error {
+	args := c.Args().Slice()
+	if len(args) == 0 {
+		return fmt.Errorf("usage: trebi runs mark <id> success|failed|skipped")
+	}
+	id := args[0]
+	clear := c.Bool("clear")
+	status := ""
+	if len(args) > 1 {
+		if clear {
+			return fmt.Errorf("--clear takes no outcome argument")
+		}
+		status = args[1]
+	}
+	if status == "" && !clear {
+		return fmt.Errorf("usage: trebi runs mark <id> success|failed|skipped (or --clear)")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	req := request.BuildRunMark(id, status, c.String("note"), clear)
+	var out map[string]any
+	if err := client.DoHTTP(req, &out); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, out)
+	}
+	if outcome, ok := out["outcome"].(map[string]any); ok {
+		fmt.Fprintf(outWriter(c), "run %v status=%v outcome=%v\n", out["id"], out["status"], outcome["status"])
+		return nil
+	}
+	fmt.Fprintf(outWriter(c), "run %v status=%v outcome=cleared\n", out["id"], out["status"])
 	return nil
 }
 

@@ -55,6 +55,7 @@ func (s *Server) routeRuns(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runs/{id}/resume", s.handleRunResume)
 	mux.HandleFunc("POST /v1/runs/{id}/replay", s.handleRunReplay)
 	mux.HandleFunc("POST /v1/runs/{id}/retry", s.handleRunRetry)
+	mux.HandleFunc("POST /v1/runs/{id}/mark", s.handleRunMark)
 	mux.HandleFunc("POST /v1/runs/{id}/message", s.handleRunMessage)
 	mux.HandleFunc("POST /v1/runs/{id}/approve", s.handleRunApprove)
 	mux.HandleFunc("GET /v1/runs/{id}/attach", s.handleRunAttach)
@@ -1068,6 +1069,46 @@ func (s *Server) handleRunMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleRunMark(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Status string `json:"status"` // complete|failed|skipped (success accepted)
+		Note   string `json:"note"`
+		Clear  bool   `json:"clear"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	status := runs.OutcomeStatus(body.Status)
+	if !body.Clear && status == "" {
+		writeErr(w, http.StatusBadRequest, "validation",
+			"status must be success|complete|failed|skipped, or clear=true")
+		return
+	}
+	if body.Clear {
+		status = ""
+	}
+	run, err := s.runs.Mark(r.Context(), runs.MarkOpts{
+		ID: r.PathValue("id"), Status: status, Note: body.Note, Clear: body.Clear,
+	})
+	switch {
+	case err == nil:
+	case errors.Is(err, sql.ErrNoRows):
+		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	case errors.Is(err, runs.ErrBadOutcome):
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	case errors.Is(err, runs.ErrNotTerminal), errors.Is(err, runs.ErrSuperseded):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+		return
+	default:
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
 }
 
 func (s *Server) handleRunApprove(w http.ResponseWriter, r *http.Request) {
