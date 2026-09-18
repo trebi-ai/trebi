@@ -137,7 +137,7 @@ jobs:
             gh release view "$tag" --repo trebi-ai/trebi-ui --json tagName,assets --jq '{tagName, assets: [.assets[].name]}' || true
             exit 1
           fi
-          tar -xzf "$RUNNER_TEMP"/trebi-ui-*.tar.gz -C internal/ui/dist
+          tar -xzf "$RUNNER_TEMP/ui"/trebi-ui-*.tar.gz -C internal/ui/dist
           ui_version="$(jq -r '.ui_version' internal/ui/dist/manifest.json)"
           min_version="$(jq -r '.min_daemon_version' internal/ui/dist/manifest.json)"
           if [[ -z "$ui_version" || "$ui_version" == null ]]; then
