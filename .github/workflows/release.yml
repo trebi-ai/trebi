@@ -124,9 +124,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/ui" internal/ui/dist
-          if ! gh release download --repo trebi-ai/trebi-ui \
-            --pattern 'trebi-ui-*.tar.gz' --dir "$RUNNER_TEMP/ui"; then
+          tag="$(gh release list --repo trebi-ai/trebi-ui --limit 1 --json tagName --jq '.[0].tagName // ""')"
+          if [[ -z "$tag" ]]; then
             echo "::error::no trebi-ui release to embed; cut one before releasing trebi"
+            echo "repositories visible to the installation token:"
+            gh api /installation/repositories --jq '[.repositories[].full_name]' || true
+            exit 1
+          fi
+          if ! gh release download "$tag" --repo trebi-ai/trebi-ui \
+            --pattern 'trebi-ui-*.tar.gz' --dir "$RUNNER_TEMP/ui"; then
+            echo "::error::could not download the trebi-ui $tag tarball"
+            gh release view "$tag" --repo trebi-ai/trebi-ui --json tagName,assets --jq '{tagName, assets: [.assets[].name]}' || true
             exit 1
           fi
           tar -xzf "$RUNNER_TEMP"/trebi-ui-*.tar.gz -C internal/ui/dist
@@ -141,7 +149,7 @@ jobs:
             exit 1
           fi
           echo "ui_version=$ui_version" >>"$GITHUB_OUTPUT"
-          echo "embedding trebi-ui $ui_version (min daemon $min_version)"
+          echo "embedding trebi-ui $ui_version (min daemon $min_version) from $tag"
       - name: Build with the embedded UI
         env:
           GOOS: ${{ matrix.goos }}
