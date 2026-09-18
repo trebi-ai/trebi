@@ -5,6 +5,7 @@ name: release
 # one release run; the next push waits for it to finish, so its candidate
 # version is computed after the previous tag exists.
 on:
+  workflow_dispatch:
   push:
     branches: [main]
 
