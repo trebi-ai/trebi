@@ -6,8 +6,41 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/home"
 )
+
+// TestSystemVersionFields pins the release contract: version is always
+// present, ui_version only when a UI is embedded (Part C of the release
+// versioning plan).
+func TestSystemVersionFields(t *testing.T) {
+	oldVersion, oldUI := api.Version, api.UIVersion
+	t.Cleanup(func() { api.Version, api.UIVersion = oldVersion, oldUI })
+	api.Version, api.UIVersion = "0.2.1", ""
+
+	s, base := startTestServer(t)
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/system/health", s.Token(), nil)
+	if code != 200 {
+		t.Fatalf("health %d %v", code, body)
+	}
+	if body["version"] != "0.2.1" {
+		t.Fatalf("health version=%v", body["version"])
+	}
+	if _, ok := body["ui_version"]; ok {
+		t.Fatalf("plain build must omit ui_version: %v", body)
+	}
+
+	api.UIVersion = "0.5.3"
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/health", s.Token(), nil)
+	if code != 200 || body["ui_version"] != "0.5.3" {
+		t.Fatalf("health with ui %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/overview", s.Token(), nil)
+	if code != 200 || body["ui_version"] != "0.5.3" {
+		t.Fatalf("overview with ui %d %v", code, body)
+	}
+}
 
 func TestSystemUpdateStubHasSource(t *testing.T) {
 	s, base := startTestServer(t)

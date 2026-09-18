@@ -1,0 +1,7 @@
+{
+  "ui_version": "0.0.0-fixture",
+  "min_daemon_version": "0.2.0",
+  "dist_hash": "sha256:fixture",
+  "built_at": "2026-09-18T00:00:00Z",
+  "trebi_pin": "45d2a75c5998abf92cf7ed3a40db6377ce48c435"
+}

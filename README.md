@@ -21,8 +21,11 @@ trebi/
     api/               # /v1 HTTP + SSE + /mcp
     cli/               # urfave/cli commands
     guides/            # embedded workflow cheat sheets
+    ui/                # embedded SPA (build tag ui; dist is git-ignored)
   scripts/
     eval.py                    # uv: run/oracle/review + report/ls/why/compare
+    build.sh                   # dev build with a stamped version (+ --with-ui)
+    semver-ge.sh               # release compatibility rule
 ```
 
 ## Build & test
@@ -33,6 +36,33 @@ go test ./...
 go build -o ../build/trebi ./cmd/trebi
 ./../build/trebi --help
 ```
+
+`scripts/build.sh` wraps the build, stamps `internal/api.Version` from
+`git describe --tags --always --dirty`, and restarts the LaunchAgent when one
+is installed. Add `--with-ui` to build with the `ui` tag against a populated
+`internal/ui/dist` (see Releases).
+
+## Releases
+
+Tags are the version of record. `.github/workflows/check.yml` is the gate (test,
+lint, and the fixture-backed `-tags ui` build) and runs on PRs and non-main
+pushes. A push to `main` runs `.github/workflows/release.yml`, which calls the
+gate first and then the `version`, `plain`, `ui`, and `publish` jobs: it tags
+the next patch, builds Linux and macOS binaries (plain and `-ui`), and creates
+the GitHub release with a `SHA256SUMS` asset. The full scheme is
+`../docs/plans/2026-09-18-release-versioning.md`.
+
+- A plain binary reports `version` only. A `-ui` binary also reports
+  `ui_version` on `/v1/system/health` and `/v1/system/overview`; the field is
+  omitted when no SPA is embedded.
+- `-ui` releases embed the newest `trebi-ui` release. The `ui` job downloads it
+  with a GitHub App token from the `release` environment and fails when the
+  UI's `min_daemon_version` is above the candidate daemon version. The release
+  notes name the resolved UI version.
+- `scripts/semver-ge.sh` is the compatibility rule (strip `v`, compare
+  `major.minor.patch`, pass on a dev build) and `scripts/semver-ge.test.sh` is
+  its table test.
+
 
 ## Daemon (temp home)
 

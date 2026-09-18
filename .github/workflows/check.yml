@@ -1,8 +1,17 @@
 name: check
 
+# The gate. Runs on every push except main (main pushes run it inside
+# release.yml, so the release publishes only what passed here) and on every
+# PR, and is callable from release.yml so the definition lives once.
 on:
   push:
+    branches-ignore: [main]
   pull_request:
+  workflow_call:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -15,6 +24,8 @@ jobs:
           cache: true
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: semver-ge tests
+        run: bash scripts/semver-ge.test.sh
       - name: go test
         run: go test ./...
 
@@ -34,3 +45,23 @@ jobs:
         with:
           version: v2.13
           args: --new-from-merge-base=origin/main ./...
+
+  # The ui build tag embeds internal/ui/dist, which is git-ignored. The
+  # committed fixture makes this runnable on every push and on fork PRs with
+  # no secret and no network. See docs/plans/2026-09-18-release-versioning.md.
+  tagged-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Stage the fixture dist
+        run: |
+          mkdir -p internal/ui/dist
+          cp -R internal/ui/testdata/dist/. internal/ui/dist/
+      - name: go build -tags ui
+        run: go build -tags ui ./cmd/trebi
+      - name: go test -tags ui
+        run: go test -tags ui ./internal/ui/... ./internal/api/...

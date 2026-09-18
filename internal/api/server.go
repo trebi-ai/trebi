@@ -29,11 +29,15 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
+	"github.com/trebi-ai/trebi/internal/ui"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
-// Version is reported on health.
-const Version = "0.2.0"
+// Version is reported on health. Stamped at build time; "dev" in a plain build.
+var Version = "dev" //nolint:gochecknoglobals // -ldflags target, set once before main serves
+
+// UIVersion is the embedded SPA version, empty when no UI is embedded.
+var UIVersion = "" //nolint:gochecknoglobals // -ldflags target, set once before main serves
 
 // Server is the trebid HTTP API.
 type Server struct {
@@ -216,7 +220,12 @@ func (s *Server) Handler() http.Handler {
 	// auth-wrapped. MCP already passed authMiddleware; native is the daemon.
 	s.apiMux = mux
 	s.apiWrapped = s.auditMiddleware(noTraversalMiddleware(newConfirmGate().wrap(mux)))
-	return s.authMiddleware(s.apiWrapped)
+	apiHandler := s.authMiddleware(s.apiWrapped)
+	if fsys, ok := ui.FS(); ok {
+		// The SPA sits outside auth; every /v1 call still needs the bearer.
+		return ui.Handler(fsys, apiHandler)
+	}
+	return apiHandler
 }
 
 // ListenAndServe binds addr (e.g. 127.0.0.1:0) and serves HTTP.

@@ -24,6 +24,9 @@ profile.cov
 go.work
 go.work.sum
 
+# Embedded SPA (written by trebi-ui build:embed or the release workflow)
+internal/ui/dist/
+
 build/
 out/
 __pycache__/

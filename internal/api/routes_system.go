@@ -54,7 +54,7 @@ func (s *Server) routeSystem(mux *http.ServeMux) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	schema, _ := s.st.SchemaVersion()
 	running, _ := s.runs.RunningCount(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"status":         "ok",
 		"version":        Version,
 		"api":            "v1",
@@ -63,7 +63,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"drain_state":    map[string]any{"draining": s.isDraining(), "running_count": running},
 		"waiting_count":  s.runs.WaitingCount(),
 		"shadow":         s.shadow,
-	})
+	}
+	if UIVersion != "" {
+		body["ui_version"] = UIVersion
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleDrain(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +129,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	running, _ := s.runs.RunningCount(ctx)
 	schema, _ := s.st.SchemaVersion()
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"version":        Version,
 		"schema_version": schema,
 		"uptime_ms":      time.Since(s.startedAt).Milliseconds(),
@@ -137,7 +141,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"runs":           map[string]any{"running": running, "waiting": s.runs.WaitingCount()},
 		"inbox":          s.inboxCounts(ctx),
 		"next_due_at":    s.nextDueAt(ctx),
-	})
+	}
+	if UIVersion != "" {
+		body["ui_version"] = UIVersion
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // doctorSummary counts findings by severity.
