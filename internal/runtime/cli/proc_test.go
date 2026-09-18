@@ -12,16 +12,6 @@ import (
 	"time"
 )
 
-// startTestProc runs a shell script as a Proc and returns it.
-func startTestProc(t *testing.T, script string) *Proc {
-	t.Helper()
-	proc, err := StartProc(context.Background(), ProcOpts{Path: "sh", Args: []string{"-c", script}})
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	return proc
-}
-
 // TestGracefulClosePreservesFinalLine pins A.15: closing stdin lets the child
 // flush its last line before any signal.
 func TestGracefulClosePreservesFinalLine(t *testing.T) {
@@ -88,13 +78,24 @@ func TestFrameReassemblyPartialLines(t *testing.T) {
 	}
 }
 
-// TestGiantToolPayloadFitsFrame pins the 1 MiB frame budget.
+// TestGiantToolPayloadFitsFrame pins the 1 MiB frame budget. The payload
+// travels over stdin, not argv: Linux caps a single argv element at 128 KiB
+// (MAX_ARG_STRLEN), so `sh -c <giant script>` dies there with E2BIG.
 func TestGiantToolPayloadFitsFrame(t *testing.T) {
 	t.Parallel()
 	big := strings.Repeat("x", 300<<10)
-	script := fmt.Sprintf(`printf '{"type":"tool","name":"Bash","status":"completed","output":"%s"}\n'`, big)
-	proc := startTestProc(t, script)
+	frame := fmt.Sprintf(`{"type":"tool","name":"Bash","status":"completed","output":"%s"}`+"\n", big)
+	proc, err := StartProc(context.Background(), ProcOpts{Path: "sh", Args: []string{"-c", "cat"}})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
 	s := startWire(context.Background(), "fake", proc, fakeProtocol{})
+	if _, err := io.WriteString(proc.Stdin(), frame); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+	if err := proc.gracefulClose(3 * time.Second); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 	select {
 	case ev := <-s.Events():
 		if ev.Type != EventTool || ev.Tool == nil || len(ev.Tool.Output) != len(big) {
@@ -177,4 +178,14 @@ func TestRegistryDoesNotKillReusedPID(t *testing.T) {
 	if len(killed) != 0 || len(stale) != 1 {
 		t.Fatalf("killed=%v stale=%v", killed, stale)
 	}
+}
+
+// startTestProc runs a shell script as a Proc and returns it.
+func startTestProc(t *testing.T, script string) *Proc {
+	t.Helper()
+	proc, err := StartProc(context.Background(), ProcOpts{Path: "sh", Args: []string{"-c", script}})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	return proc
 }
