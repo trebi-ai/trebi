@@ -13,12 +13,20 @@ Default is dry-run: prints the plan and never writes. Pass --apply to execute.
   uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --job receipts --target-workspace ellis
   uv run scripts/migrate-jobi-to-trebi.py convert-memory path/to/MEMORY.md
   uv run scripts/migrate-jobi-to-trebi.py migrate --shadow --job receipts --target-workspace ellis
+  uv run scripts/migrate-jobi-to-trebi.py migrate --shadow --agent scout --target-workspace ellis
 
---job limits file rewrite and DB copy to one job. --target-workspace is the
-trebi destination (id, name, or path). Incremental --job --apply copies into
-the target and leaves ~/.jobi files untouched. Full rewrite-jobs --apply
-without --job still rewrites in place (cutover). rewrite-jobs converts jobi
-MEMORY.md (extra ## headings) to trebi v1; convert-memory does only that.
+--job limits file rewrite and DB copy to one job. --agent limits both to one
+agent and its jobs (requires --target-workspace); jobs land at
+agents/<name>/<job>. --target-workspace is the trebi destination (id, name, or
+path). Incremental --job/--agent --apply copies into the target and leaves
+~/.jobi files untouched. Full rewrite-jobs --apply without --job still rewrites
+in place (cutover). rewrite-jobs converts jobi MEMORY.md (extra ## headings)
+to trebi v1; convert-memory does only that.
+
+Schema v16 (store.SchemaVersion): runs gained inputs_json/memory_hash/outcome*/
+runtime_pid/attach_kind, and event_queue/events use connector, not integration.
+This script writes the columns that have a jobi source; the rest stay NULL and
+trebi's readers treat them as unset.
 
 --jobi-dir, --trebi-dir, --job and --target-workspace are accepted on either
 side of the subcommand. make-fixture takes only its output directory.
@@ -77,7 +85,10 @@ TABLE_MAP = {
 # Schema v11: run_segments.layer values agent→session, task→run.
 LAYER_MAP = {"agent": "session", "task": "run"}
 SECRET_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|AUTH)", re.I)
-EXPECTED_SCHEMA = 12
+# store.SchemaVersion at the time this script was last synced. A trebi.db older
+# than this is a pre-migration database: bump it with `trebi service migrate-db`
+# before applying DB phases (the script writes v16 columns).
+EXPECTED_SCHEMA = 16
 
 
 def default_jobi_dir() -> Path:
@@ -191,6 +202,16 @@ def _schedule_entry(item: str, top_when: Any) -> dict[str, Any]:
     return entry
 
 
+def _as_abs_working_dir(wd: str, src_dir: Path) -> Path:
+    """jobi resolved a relative working_dir against the job folder; trebi hands
+    the string to the harness as-is (cmd.Dir), so the daemon's cwd would win.
+    Resolve it the same way jobi did."""
+    p = Path(wd).expanduser()
+    if p.is_absolute():
+        return p
+    return (src_dir / p).resolve()
+
+
 def rewrite_frontmatter_inplace(
     data: Any, report: list[str], *, src_dir: Path | None = None
 ) -> None:
@@ -200,16 +221,28 @@ def rewrite_frontmatter_inplace(
     # A working_dir that points at the job's own old folder goes stale once the
     # folder moves. ResolvedWorkingDir falls back to the job dir, so dropping it
     # keeps the same meaning and follows the move. Paths to an external project
-    # are deliberate and stay.
+    # are deliberate and stay (absolute, since trebi resolves a relative path
+    # against the daemon cwd, not the job folder).
     wd = data.get("working_dir")
     if src_dir is not None and isinstance(wd, str) and wd.strip():
+        resolved: Path | None
         try:
-            same = Path(wd).expanduser().resolve() == src_dir.resolve()
+            resolved = _as_abs_working_dir(wd, src_dir)
         except OSError:
-            same = False
-        if same:
-            report.append("dropped self-referential working_dir: follows the job folder")
-            del data["working_dir"]
+            resolved = None
+        if resolved is not None:
+            try:
+                same = resolved == src_dir.resolve()
+            except OSError:
+                same = False
+            if same:
+                report.append("dropped self-referential working_dir: follows the job folder")
+                del data["working_dir"]
+            elif not Path(wd).expanduser().is_absolute():
+                data["working_dir"] = str(resolved)
+                report.append(
+                    f"working_dir {wd!r} → {resolved} (jobi resolved it vs. the job folder)"
+                )
 
     command = data.get("command")
     tool = data.get("tool")
@@ -998,14 +1031,34 @@ def load_workspaces_yaml(jobi_dir: Path) -> list[dict[str, Any]]:
     return out
 
 
-def nested_agent_dirs(ws_path: Path) -> list[Path]:
-    agents = ws_path / "agents"
-    if not agents.is_dir():
+def agent_dirs_in_workspace(ws_path: Path) -> list[Path]:
+    """Every directory holding an AGENT.md, wherever it sits (recursive).
+
+    A single agents/<name>/ level is the only layout trebi accepts; callers
+    report the rest. .git/node_modules/.trebi and nested workspaces are skipped
+    the same way discovery skips them.
+    """
+    if not ws_path.is_dir():
         return []
     out: list[Path] = []
-    for p in sorted(agents.iterdir()):
-        if p.is_dir() and ((p / "AGENT.md").exists() or (p / "TREBI.md").exists()):
-            out.append(p)
+    for root, dirs, files in os.walk(ws_path):
+        dirs[:] = [d for d in dirs if d not in {".git", "node_modules", ".trebi"}]
+        if "AGENT.md" in files:
+            out.append(Path(root))
+    return sorted(out)
+
+
+def agent_support_dirs(ws_path: Path) -> list[Path]:
+    """agent_dirs_in_workspace, but the canonical agents/<name>/ ones only."""
+    out: list[Path] = []
+    for d in agent_dirs_in_workspace(ws_path):
+        try:
+            rel = d.relative_to(ws_path)
+        except ValueError:
+            continue
+        parts = rel.parts
+        if len(parts) == 2 and parts[0] == "agents" and AGENT_NAME_RE.match(parts[1]):
+            out.append(d)
     return out
 
 
@@ -1042,6 +1095,15 @@ def job_file_name(path: Path) -> str:
     return path.stem
 
 
+def _path_has_segment(path: Path, spec: str) -> bool:
+    """True when spec is a whole path segment (or the file name). A substring
+    rule would match --job receipts against a my-receipts folder."""
+    for part in path.parts:
+        if part == spec:
+            return True
+    return path.name == spec
+
+
 def job_spec_matches(path: Path, spec: str, source_ws: Path | None) -> bool:
     spec = spec.strip()
     if not spec:
@@ -1056,16 +1118,42 @@ def job_spec_matches(path: Path, spec: str, source_ws: Path | None) -> bool:
     posix = path.as_posix()
     if posix.endswith("/" + spec) or posix.endswith("/" + spec + "/JOB.md"):
         return True
-    if spec in posix:
+    if _path_has_segment(path, spec):
         return True
     if source_ws:
         try:
-            rel = path.resolve().relative_to(source_ws.resolve()).as_posix()
-            if rel == spec or rel.endswith("/" + spec) or spec in rel:
+            rel = path.resolve().relative_to(source_ws.resolve())
+            if rel.as_posix() == spec or _path_has_segment(rel, spec):
                 return True
         except ValueError:
             pass
     return False
+
+
+def agent_spec_matches(path: Path, spec: str, source_ws: Path | None) -> bool:
+    """--agent selection: the file must live under agents/<name>/.
+
+    A bare spec (digest) matches any agent job folder of that name, but never
+    an unowned job in the same workspace (the substring rule in
+    job_spec_matches would have pulled agents/other and the root tree in).
+    """
+    spec = spec.strip().strip("/")
+    if not spec:
+        return True
+    parts: list[str]
+    if source_ws:
+        try:
+            parts = path.resolve().relative_to(source_ws.resolve()).parts
+        except ValueError:
+            parts = path.parts
+    else:
+        parts = path.parts
+    if len(parts) < 2 or parts[0] != "agents":
+        return False
+    if spec.lower() in (parts[1].lower(), parts[-2].lower(), job_file_name(path).lower()):
+        return True
+    rel = Path(*parts).as_posix()
+    return spec == rel or rel.endswith("/" + spec)
 
 
 @dataclass
@@ -1090,7 +1178,9 @@ def load_trebi_workspaces(trebi_dir: Path) -> list[TargetWorkspace]:
     return out
 
 
-def resolve_target_workspace(trebi_dir: Path, spec: str | None) -> TargetWorkspace | None:
+def resolve_target_workspace(
+    trebi_dir: Path, spec: str | None, jobi_dir: Path | None = None
+) -> TargetWorkspace | None:
     if not spec:
         return None
     spec = spec.strip()
@@ -1108,6 +1198,19 @@ def resolve_target_workspace(trebi_dir: Path, spec: str | None) -> TargetWorkspa
                 wid = str(data.get("id") or wid)
                 name = str(data.get("name") or name)
         return TargetWorkspace(id=wid, name=name, path=p.resolve(), source="path")
+    # A jobi workspace name is a valid target when its folder exists (the
+    # cutover target is usually the same tree the jobi registry points at).
+    for w in load_workspaces_yaml(jobi_dir or default_jobi_dir()):
+        if spec not in (str(w.get("name") or ""), str(w.get("path") or "")):
+            continue
+        wp = Path(str(w.get("path") or "")).expanduser()
+        if wp.is_dir():
+            return TargetWorkspace(
+                id=mint_ws_id(str(wp.resolve())),
+                name=str(w.get("name") or wp.name),
+                path=wp.resolve(),
+                source="jobi",
+            )
     # dry-run may point at a path that does not exist yet
     return TargetWorkspace(id=mint_ws_id(spec), name=Path(spec).name, path=p, source="pending-path")
 
@@ -1217,12 +1320,23 @@ def project_task_derivations(
     return counts
 
 
+def _job_file_agent(job_file: Any) -> str:
+    """The agents/<name> segment of a jobi job_file path, else ""."""
+    parts = [p for p in Path(str(job_file or "")).parts if p]
+    for i in range(len(parts) - 1):
+        if parts[i] == "agents":
+            return parts[i + 1].strip().lower()
+    return ""
+
+
 def _row_matches_agent(d: dict[str, Any], agent: str) -> bool:
     """True when a jobi row belongs to <agent> or to one of its jobs.
 
     jobi stamps a child job with parent_agent, and the agent's own wake with
-    kind='agent' and job_name=<agent>. workspace_path is the fallback for rows
-    written before parent_agent existed.
+    kind='agent' and job_name=<agent>. job_file's agents/<name> segment is the
+    fallback for rows written before parent_agent existed. workspace_path is
+    deliberately not a signal: sibling jobs in the same workspace (agents/*)
+    share it, and matching them would rewrite another agent's rows.
     """
     a = agent.strip().lower()
     if str(d.get("parent_agent") or "").strip().lower() == a:
@@ -1230,8 +1344,9 @@ def _row_matches_agent(d: dict[str, Any], agent: str) -> bool:
     name = str(d.get("job_name") or "").strip().lower()
     if name == a:
         return True
-    ws = str(d.get("workspace_path") or "")
-    return bool(ws) and Path(ws).name.lower() == a
+    if _job_file_agent(d.get("job_file")) == a:
+        return True
+    return False
 
 
 def _task_matches_job(d: dict[str, Any], spec: str) -> bool:
@@ -1243,6 +1358,54 @@ def _task_matches_job(d: dict[str, Any], spec: str) -> bool:
     if spec in jf or jf.endswith("/" + spec + "/JOB.md"):
         return True
     return Path(jf).parent.name == spec if jf else False
+
+
+def _agent_layout_issues(ws_path: Path) -> list[str]:
+    """trebi layout errors an agent tree would carry (job/discover.go validateAgent).
+
+    These are file-level checks over the jobi workspace, not rows: a migration
+    that ignores them lands trees the daemon will not index.
+    """
+    issues: list[str] = []
+    for agent_dir in agent_dirs_in_workspace(ws_path):
+        rel = agent_dir.relative_to(ws_path).as_posix()
+        where = f"{ws_path}/{rel}" if rel != "." else str(ws_path)
+        parts = rel.split("/")
+        if len(parts) >= 3:
+            issues.append(
+                f"nested agent root: put AGENT.md directly in agents/<name>/ ({where})"
+            )
+        elif not (len(parts) == 2 and AGENT_NAME_RE.match(parts[1])):
+            issues.append(
+                f"misplaced AGENT.md: expected <workspace>/agents/<name>/AGENT.md ({where})"
+            )
+        if (agent_dir / "SOUL.md").exists():
+            issues.append(f"SOUL.md beside AGENT.md is not accepted; merge manually ({where})")
+        if (agent_dir / "JOB.md").exists():
+            issues.append(
+                f"JOB.md next to AGENT.md is not indexed: move it into a subfolder ({where})"
+            )
+        issues.extend(_copied_agent_dir_issues(agent_dir, where))
+    return issues
+
+
+def _copied_agent_dir_issues(agent_dir: Path, where: str) -> list[str]:
+    """An agent dir holding trebi.yaml is a nested workspace root, which
+    discovery skips silently."""
+    if (agent_dir / "trebi.yaml").exists():
+        return [f"nested workspace root: remove trebi.yaml to keep {where} inside the parent"]
+    return []
+
+
+def agent_layout_issues(workspaces: list[Path]) -> list[str]:
+    out: list[str] = []
+    for ws in workspaces:
+        if not ws.is_dir():
+            continue
+        for issue in _agent_layout_issues(ws):
+            if issue not in out:
+                out.append(issue)
+    return out
 
 
 def plan_migrate(
@@ -1276,10 +1439,30 @@ def plan_migrate(
         except sqlite3.Error:
             plan.warnings.append("could not read trebi schema_migrations")
         tconn.close()
+    layout = agent_layout_issues(workspace_paths_from_jobi(jobi_dir))
+    if layout:
+        pf.counts["agent_layout_issues"] = len(layout)
+        for issue in layout[:12]:
+            pf.notes.append(f"layout: {issue}")
+        plan.warnings.append(
+            f"{len(layout)} agent layout issue(s); trebi will not index those files "
+            "(fix before final cutover)"
+        )
     if job:
         pf.notes.append(f"job filter: {job} — skip harness/bin/logs copy")
+    if agent:
+        pf.notes.append(f"agent filter: {agent} — rows and files land under agents/{agent}/")
     if mode == "final":
         pf.notes.append("final mode requires jobi daemon stopped (not checked in dry-run)")
+    else:
+        pf.notes.append(
+            "shadow mode: DB rows point at <trebi>/shadow-workspaces/<name>; "
+            "copy jobs there with `rewrite-jobs --mirror` then cut over (--final)"
+        )
+        plan.warnings.append(
+            "shadow registers empty shadow workspaces; job files stay in place until "
+            "rewrite-jobs --mirror or a --final cutover"
+        )
     if target:
         pf.notes.append(f"rows remap to workspace {target.id} ({target.name})")
     plan.phases.append(pf)
@@ -1293,10 +1476,9 @@ def plan_migrate(
             continue
         plan.workspace_map[path] = mint_ws_id(path)
         ws_phase.notes.append(f"{name}: {path} → {plan.workspace_map[path]}")
-        for nested in nested_agent_dirs(Path(path)):
-            nid = mint_ws_id(str(nested))
-            plan.workspace_map[str(nested)] = nid
-            ws_phase.notes.append(f"  nested {nested.name}: {nested} → {nid}")
+        # agents/<name>/ dirs are NOT registered: the parent walk discovers
+        # them (job.Discover) and a separate workspace row scanning the same
+        # subtree would index every agent job twice. They keep the parent id.
     if target:
         plan.workspace_map[str(target.path)] = target.id
         ws_phase.notes.append(f"target override: {target.name} → {target.id}")
@@ -1386,12 +1568,33 @@ def plan_migrate(
 # ── DB apply ───────────────────────────────────────────────────────────────
 
 
+def agent_canonical_job(name: str) -> str:
+    """Normalize a jobi agent job name to trebi's canonical shape.
+
+    jobi nests agent jobs as agents/<a>/jobs/<area>/<job>; trebi derives the
+    job name from the folder (job/discover.go) and the agent tree drops the
+    jobs/ level, so the same name must be agents/<a>/<job>. Deeper grouping
+    dirs collapse to the job folder, matching agent_rel_dest.
+    """
+    s = name.strip().strip("/")
+    if not s.startswith("agents/"):
+        return s
+    parts = s.split("/")
+    # drop every "jobs" segment: agents/<a>/jobs/<x>/<job> → agents/<a>/<job>
+    kept = [p for p in parts if p != "jobs"]
+    # ownership is agents/<a>/; keep only the job folder past it
+    if len(kept) > 3:
+        kept = kept[:2] + [kept[-1]]
+    return "/".join(kept)
+
+
 def run_job_name(d: dict[str, Any], agent: str | None) -> str:
     """runs.job for a migrated task.
 
     Job identity in trebi is the workspace-relative folder, so an agent-owned
-    job is agents/<name>/<job> (plan A.6/C.1). An agent's own wake keeps the
-    agent name: an agent does not own itself.
+    job is agents/<name>/<job> (A.6/C.1) and jobi's jobs/ nesting is dropped.
+    A jobi job_name already shaped agents/<a>/... is normalized the same way.
+    An agent's own wake keeps the agent name: an agent does not own itself.
 
     job_name is authoritative. job_file is history and can hold a path from an
     older layout (workflows/<name>.md, or a since-corrected spelling), so it is
@@ -1399,9 +1602,12 @@ def run_job_name(d: dict[str, Any], agent: str | None) -> str:
     """
     name = str(d.get("job_name") or "")
     if not agent:
-        return name
+        return agent_canonical_job(name)
     if (d.get("kind") or "") == "agent":
         return f"agents/{agent}"
+    if name.startswith("agents/"):
+        canon = agent_canonical_job(name)
+        return canon if canon.startswith(f"agents/{agent}/") else f"agents/{agent}/{canon}"
     folder = Path(name).name if name else Path(str(d.get("job_file") or "")).parent.name
     return f"agents/{agent}/{folder}" if folder else name
 
@@ -1639,6 +1845,12 @@ def queue_kind(d: dict, task_kind: dict[str, str]) -> str:
     return "job"
 
 
+def derive_trace_id(prefix: str) -> str:
+    """Deterministic trace for rows with no jobi source (queue rows carry no
+    trace; schema v1 event_queue.trace_id came later). Mirrors runs.trace_id."""
+    return hashlib.sha256((prefix + "trace").encode()).hexdigest()[:32]
+
+
 def apply_queue(
     jconn: sqlite3.Connection,
     tconn: sqlite3.Connection,
@@ -1664,6 +1876,16 @@ def apply_queue(
                 task_kind[str(tid)] = str(tkind)
     except sqlite3.Error:
         pass
+    # events.<id> backs event_queue.event_id. Reuse the row the connector
+    # already persisted for this (connector, raw) pair; missing stays NULL.
+    event_by_raw: dict[tuple[str, str], str] = {}
+    try:
+        for eid, conn_name, raw in jconn.execute(
+            "SELECT id, source, event_raw FROM events WHERE event_raw IS NOT NULL"
+        ):
+            event_by_raw.setdefault((str(conn_name), str(raw)), str(eid))
+    except sqlite3.Error:
+        pass
     n = 0
     for row in jconn.execute("SELECT * FROM event_queue"):
         d = dict(zip(cols, row))
@@ -1675,12 +1897,17 @@ def apply_queue(
             continue
         wid = workspace_id_for(d.get("workspace_path") or "", wmap, target_id)
         kind = queue_kind(d, task_kind)
+        event_id = None
+        raw = d.get("event_raw")
+        if raw is not None:
+            event_id = event_by_raw.get((str(d.get("source") or ""), str(raw)))
         tconn.execute(
             """INSERT OR REPLACE INTO event_queue (
-              id, connector, workspace_id, job, kind, on_index, conversation_key,
+              id, connector, workspace_id, job, kind, on_index, conversation_key, event_id,
               event_raw, capture_json, vars_json, prompt, status, block_reason, result,
-              attempts, next_attempt_at, claimed_at, run_id, error_message, created_at, updated_at, done_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              attempts, next_attempt_at, claimed_at, run_id, error_message, trace_id,
+              created_at, updated_at, done_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 d["id"],
                 d.get("source"),
@@ -1689,6 +1916,7 @@ def apply_queue(
                 kind,
                 d.get("on_index") or 0,
                 d.get("conversation_key") or "",
+                event_id,
                 d.get("event_raw"),
                 d.get("capture_json"),
                 d.get("vars_json"),
@@ -1701,6 +1929,7 @@ def apply_queue(
                 d.get("claimed_at"),
                 d.get("task_id"),
                 d.get("error_message"),
+                derive_trace_id(str(d["id"])),
                 d.get("created_at"),
                 d.get("updated_at"),
                 d.get("done_at"),
@@ -1778,7 +2007,8 @@ def apply_schedules(
         return 0
     job_ws: dict[str, str] = {}
     # schedule_anchors keys are bare job names, so resolve agent ownership
-    # through the tasks table.
+    # through the tasks table. Keys carry jobi's layout
+    # (agents/<a>/jobs/<job>), so match on the canon short name too.
     agent_jobs: set[str] = set()
     try:
         for jn, wp, jf, pa, kind in jconn.execute(
@@ -1786,13 +2016,23 @@ def apply_schedules(
             "WHERE job_name IS NOT NULL"
         ):
             if jn and jn not in job_ws:
-                job_ws[jn] = workspace_id_for(jf or wp or "", wmap, target_id)
+                canon = agent_canonical_job(str(jn))
+                wid = workspace_id_for(jf or wp or "", wmap, target_id)
+                job_ws[str(jn)] = wid
+                job_ws.setdefault(canon, wid)
             if agent_scope and jn and _row_matches_agent(
-                {"job_name": jn, "workspace_path": wp, "parent_agent": pa, "kind": kind},
+                {
+                    "job_name": jn,
+                    "workspace_path": wp,
+                    "job_file": jf,
+                    "parent_agent": pa,
+                    "kind": kind,
+                },
                 agent_scope,
             ):
                 agent_jobs.add(str(jn).lower())
                 agent_jobs.add(Path(str(jn)).name.lower())
+                agent_jobs.add(Path(agent_canonical_job(str(jn))).name.lower())
     except sqlite3.Error:
         pass
     n = 0
@@ -1805,12 +2045,19 @@ def apply_schedules(
                 idx = int(rest)
             except ValueError:
                 idx = 0
-        if job_filter and job != job_filter and job.lower() != job_filter.lower():
+        canon = agent_canonical_job(job)
+        if (
+            job_filter
+            and job.lower() != job_filter.lower()
+            and canon.lower() != job_filter.lower()
+            and Path(canon).name.lower() != job_filter.lower()
+        ):
             continue
-        if agent_scope and job.lower() not in agent_jobs:
+        if agent_scope and job.lower() not in agent_jobs and canon.lower() not in agent_jobs:
             continue
-        wid = target_id or job_ws.get(job) or "imported-orphans"
-        if agent:
+        wid = target_id or job_ws.get(job) or job_ws.get(canon) or "imported-orphans"
+        job = canon
+        if agent and not job.startswith(f"agents/{agent}/") and job != f"agents/{agent}":
             job = f"agents/{agent}/{job}"
         tconn.execute(
             """INSERT OR REPLACE INTO schedules (
@@ -1947,7 +2194,20 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
         else:
             for path, wid in plan.workspace_map.items():
                 name = Path(path).name
-                dest = path if mode == "final" else str(trebi / "shadow-workspaces" / name)
+                if mode == "final":
+                    dest = path
+                else:
+                    # A shadow workspace is a real directory with its own
+                    # trebi.yaml: the daemon indexes and schedules against it,
+                    # so a bare DB row pointing at a missing path would be
+                    # pruned as a nested scan or indexed as empty.
+                    shadow = trebi / "shadow-workspaces" / name
+                    shadow.mkdir(parents=True, exist_ok=True)
+                    ty = shadow / "trebi.yaml"
+                    if not ty.exists():
+                        ty.write_text(f"id: {wid}\nname: {name}\ngit_enabled: false\n")
+                        print(f"minted {ty}")
+                    dest = str(shadow)
                 tconn.execute(
                     "INSERT OR REPLACE INTO workspaces (id, name, path, git_enabled, orphaned, created_at, updated_at) "
                     "VALUES (?,?,?,0,0,?,?)",
@@ -2032,15 +2292,31 @@ def job_support_files(job_dir: Path) -> list[Path]:
 AGENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
+def _dest_is_agent_dir(dest: Path, target: TargetWorkspace | None) -> bool:
+    """True when dest already sits under <target>/agents/<name>/ (canonical
+    agent layout), so an operator file keeps its AGENT.md name there."""
+    if not target:
+        return False
+    try:
+        rel = dest.resolve().relative_to(target.path.resolve())
+    except ValueError:
+        return False
+    return len(rel.parts) >= 2 and rel.parts[0] == "agents" and bool(rel.parts[1])
+
+
 def operator_dest(target: TargetWorkspace | None, fallback: Path, agent: str | None) -> Path:
     """Where the jobi AGENT.md lands.
 
     Agent mode keeps it as AGENT.md at agents/<name>/ (the shipped layout;
     a nested operator). Without --agent it becomes the workspace assistant's
-    TREBI.md at the root, which was the pre-agents behaviour.
+    TREBI.md at the root, which was the pre-agents behaviour — unless the
+    computed destination is already agents/<name>/, which a plain copy of an
+    agent tree produces.
     """
     if agent and target:
         return target.path / "agents" / agent / "AGENT.md"
+    if _dest_is_agent_dir(fallback, target):
+        return fallback.with_name("AGENT.md")
     return fallback.with_name("TREBI.md")
 
 
@@ -2050,11 +2326,17 @@ def agent_rel_dest(rel: Path, agent: str) -> Path:
     trebi has no jobs/ level: a job owned by an agent lives at
     agents/<name>/<job>/JOB.md, and ownership is derived from that path
     (internal/job/discover.go). jobi nested them as jobs/<area>/<job>/, so the
-    intermediate folders are flattened to the job's own folder name.
+    intermediate folders are flattened to the job's own folder name. rel may
+    already start with agents/<name>/ (a plain copy of an agent tree); that
+    prefix is stripped before re-adding it, never doubled.
     """
     parts = list(rel.parts)
+    if len(parts) >= 2 and parts[0] == "agents":
+        parts = parts[2:]  # drop agents/<name>/; agent owns the result
     if parts and parts[0] == "jobs":
         parts = parts[1:]
+    if not parts:
+        return Path("agents") / agent
     # Keep only the job folder + filename; drop grouping dirs like finance/.
     if len(parts) > 2:
         parts = parts[-2:]
@@ -2074,6 +2356,14 @@ def dest_for_job(
                 rel = path.resolve().relative_to(source_ws.resolve())
                 if agent:
                     return target.path / agent_rel_dest(rel, agent)
+                # Agent trees keep trebi's canonical layout on a plain
+                # (unfiltered) copy too: the run rows say agents/<a>/<job>,
+                # so the files must land that way (jobi's jobs/ level is
+                # dropped). Nested workspaces are not copied by this mode.
+                if rel.parts and rel.parts[0] == "agents" and len(rel.parts) > 1:
+                    owner = rel.parts[1] if AGENT_NAME_RE.match(rel.parts[1]) else agent
+                    if owner:
+                        return target.path / agent_rel_dest(rel, owner)
                 # If the target is a nested agent dir of the source, strip that prefix.
                 try:
                     nested = target.path.resolve().relative_to(source_ws.resolve())
@@ -2088,6 +2378,20 @@ def dest_for_job(
                 pass
         return target.path / job_file_name(path) / path.name
     return path
+
+
+def _dest_has_same_text(dest: Path, text: str) -> bool:
+    try:
+        return dest.is_file() and dest.read_text(encoding="utf-8", errors="replace") == text
+    except OSError:
+        return False
+
+
+def _dest_has_same_bytes(dest: Path, src: Path) -> bool:
+    try:
+        return dest.is_file() and dest.read_bytes() == src.read_bytes()
+    except OSError:
+        return False
 
 
 def plan_support_file(
@@ -2106,8 +2410,25 @@ def plan_support_file(
         rel = src.name
     if convert_memory and src.name == "MEMORY.md":
         text = src.read_text(encoding="utf-8", errors="replace")
-        _new, notes, changed = convert_jobi_memory(text)
-        action = "convert-memory" if changed else "copy-support"
+        new_text, notes, changed = convert_jobi_memory(text)
+        payload = new_text if changed else text
+        if not changed and dest == src:
+            return (
+                {
+                    "path": str(src),
+                    "dest": str(dest),
+                    "action": "unchanged",
+                    "changed": False,
+                    "source_ws": str(ws),
+                },
+                [],
+            )
+        if _dest_has_same_text(dest, payload):
+            action = "unchanged"
+            changed = False
+            notes = []
+        else:
+            action = "convert-memory" if changed else "copy-support"
         detail = {
             "path": str(src),
             "dest": str(dest),
@@ -2120,15 +2441,51 @@ def plan_support_file(
         for n in notes:
             lines.append(f"    ! {n}")
         return detail, lines
+    action = "unchanged" if _dest_has_same_bytes(dest, src) else "copy-support"
     detail = {
         "path": str(src),
         "dest": str(dest),
-        "action": "copy-support",
+        "action": action,
         "changed": False,
         "source_ws": str(ws),
     }
-    lines.append(f"  + {rel} ({label} → {dest})")
+    lines.append(f"  + {rel} ({action if action == 'unchanged' else label} → {dest})")
     return detail, lines
+
+
+def merged_operator_text(
+    agent_path: Path,
+    *,
+    rewrite_sentinel: bool,
+    rewrite_memory_headings: bool,
+    agent_name: str | None,
+) -> tuple[str, list[str]]:
+    """The operator file for a jobi AGENT.md: frontmatter normalized, the
+    sibling SOUL.md body merged in as ## Soul, body as ## Instructions.
+    Shared by the dry-run plan and the apply path so they cannot drift."""
+    report: list[str] = []
+    agent_text = agent_path.read_text(encoding="utf-8", errors="replace")
+    new_agent, _ = rewrite_job_text(
+        agent_text, report,
+        rewrite_sentinel=rewrite_sentinel,
+        rewrite_memory_headings=rewrite_memory_headings,
+        src_dir=agent_path.parent,
+    )
+    soul = agent_path.parent / "SOUL.md"
+    soul_body = ""
+    if soul.exists():
+        soul_body = soul.read_text(encoding="utf-8", errors="replace")
+        _, _, soul_body = split_frontmatter(soul_body)
+    fm, _, body = split_frontmatter(new_agent)
+    data = load_fm_map(fm or "")
+    data = rewrite_frontmatter_map(data, report)
+    data.setdefault("memory", True)
+    if agent_name:
+        # C.2: frontmatter name: must equal the folder basename, so a stale
+        # jobi name is a validation error. The folder is identity.
+        data.pop("name", None)
+    merged_body = f"## Soul\n{soul_body.strip()}\n\n## Instructions\n{body.strip()}\n"
+    return dump_frontmatter(data, merged_body), report
 
 
 def plan_rewrite(
@@ -2152,9 +2509,27 @@ def plan_rewrite(
         matched = 0
         header_written = False
         for path in files:
-            if job and not job_spec_matches(path, job, ws):
+            if path.name == "JOB.md" and (path.parent / "AGENT.md").exists():
+                # trebi discovery refuses a JOB.md sibling of AGENT.md
+                # (discover.go job()); rewriting it would produce a file the
+                # daemon still will not index. The preflight reports it.
+                lines.append(
+                    f"SKIP {path.relative_to(ws)} (JOB.md beside AGENT.md is not indexed)"
+                )
+                continue
+            if path.name == "SOUL.md" and (path.parent / "AGENT.md").exists():
+                continue  # merged when the AGENT.md entry is planned
+            if agent:
+                # --agent is the ownership filter: only agents/<name>/ files in.
+                if not agent_spec_matches(path, agent, ws):
+                    continue
+                if path.name == "SOUL.md" and not agent_spec_matches(path.parent, agent, ws):
+                    continue
+            elif job and not job_spec_matches(path, job, ws):
                 continue
             if path.name == "SOUL.md" and job and job_file_name(path) != job:
+                continue
+            if path.name == "AGENT.md" and job and job_file_name(path) != job:
                 continue
             matched += 1
             if not header_written:
@@ -2163,31 +2538,29 @@ def plan_rewrite(
             report: list[str] = []
             text = path.read_text(encoding="utf-8", errors="replace")
             dest = dest_for_job(path, ws, target, incremental, agent)
-            if path.name == "SOUL.md":
-                op_dest = operator_dest(target, dest, agent)
-                details.append(
-                    {
-                        "path": str(path),
-                        "dest": str(op_dest),
-                        "action": f"merge-into-{op_dest.name}",
-                        "changed": True,
-                        "source_ws": str(ws),
-                    }
-                )
-                lines.append(f"  MERGE {path.relative_to(ws)} → {op_dest}")
-                continue
             if path.name == "AGENT.md":
                 op_dest = operator_dest(target, dest, agent)
+                merged, merge_report = merged_operator_text(
+                    path,
+                    rewrite_sentinel=rewrite_sentinel,
+                    rewrite_memory_headings=rewrite_memory_headings,
+                    agent_name=agent,
+                )
+                report.extend(merge_report)
+                same = _dest_has_same_text(op_dest, merged)
                 details.append(
                     {
                         "path": str(path),
                         "dest": str(op_dest),
-                        "action": f"merge-into-{op_dest.name}",
-                        "changed": True,
+                        "action": "merge-unchanged" if same else "merge",
+                        "changed": not same,
                         "source_ws": str(ws),
+                        "new_text": merged if not same else None,
                     }
                 )
-                lines.append(f"  MERGE {path.relative_to(ws)} → {op_dest}")
+                lines.append(
+                    f"  {' ' if same else '*'} MERGE {path.relative_to(ws)} → {op_dest}"
+                )
                 # The agent's own MEMORY.md sits beside AGENT.md at the root.
                 agent_dest_dir = op_dest.parent
                 for sup in agent_support_files(path.parent):
@@ -2199,14 +2572,13 @@ def plan_rewrite(
                     )
                     details.append(detail)
                     lines.extend(extra)
-                new_text, _changed = rewrite_job_text(
-                    text, report,
-                    rewrite_sentinel=rewrite_sentinel,
-                    rewrite_memory_headings=rewrite_memory_headings,
-                    src_dir=path.parent,
-                )
                 for r in report:
                     lines.append(f"    ! {r}")
+                continue
+            if path.name == "SOUL.md":
+                # SOUL.md without a sibling AGENT.md: nothing to merge into
+                # here; the rewrite path cannot invent an operator.
+                lines.append(f"  ! SOUL.md without AGENT.md, left in place ({path})")
                 continue
             new_text, changed = rewrite_job_text(
                 text, report,
@@ -2216,7 +2588,14 @@ def plan_rewrite(
             )
             action = "rewrite" if changed else "unchanged"
             if incremental and target:
-                action = f"copy→{dest}"
+                if dest == path or (dest.exists() and _dest_has_same_text(dest, new_text)):
+                    # Content already matches the destination: a second run
+                    # is a true no-op (report it, do not write).
+                    action = "unchanged"
+                    changed = False
+                    new_text = None
+                else:
+                    action = "copy"
             details.append(
                 {
                     "path": str(path),
@@ -2249,7 +2628,7 @@ def plan_rewrite(
                 lines.append(f"    ! {r}")
         if job and matched == 0:
             lines.append(f"workspace {ws}: no files matched --job {job}")
-        elif not job:
+        elif not agent and not job:
             pass
     return lines, details
 
@@ -2284,7 +2663,7 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
     target_spec = getattr(args, "target_workspace", None)
     if not target_spec and args.mirror:
         target_spec = str(trebi / "shadow-workspaces")
-    target = resolve_target_workspace(trebi, target_spec)
+    target = resolve_target_workspace(trebi, target_spec, jobi)
     # An explicit --target-workspace always means copy-to-target. Only a full
     # run with no target is an in-place cutover.
     incremental = bool(job or args.mirror or target_spec or agent)
@@ -2402,32 +2781,18 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
         if path.name == "SOUL.md":
             continue
         if path.name == "AGENT.md":
-            ws_root = path.parent
             soul = path.parent / "SOUL.md"
-            agent_text = path.read_text(encoding="utf-8", errors="replace")
-            report: list[str] = []
-            new_agent, _ = rewrite_job_text(
-                agent_text, report,
+            out, report = merged_operator_text(
+                path,
                 rewrite_sentinel=not args.no_sentinels,
                 rewrite_memory_headings=convert_memory,
-                src_dir=path.parent,
+                agent_name=agent,
             )
-            soul_body = ""
-            if soul.exists():
-                soul_body = soul.read_text(encoding="utf-8", errors="replace")
-                _, _, soul_body = split_frontmatter(soul_body)
-            fm, _, body = split_frontmatter(new_agent)
-            data = load_fm_map(fm or "")
-            data = rewrite_frontmatter_map(data, report)
-            data.setdefault("memory", True)
-            if dest.name == "AGENT.md":
-                # C.2: frontmatter name: must equal the folder basename, so a
-                # stale jobi name is a validation error. The folder is identity.
-                data.pop("name", None)
-            merged_body = f"## Soul\n{soul_body.strip()}\n\n## Instructions\n{body.strip()}\n"
-            out = dump_frontmatter(data, merged_body)
             if not dest.suffix:
                 dest = dest / "TREBI.md"
+            if _dest_has_same_text(dest, out):
+                print(f"unchanged {dest}")
+                continue
             if not incremental:
                 backup_file(backup, path)
                 if soul.exists():
@@ -2448,15 +2813,21 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             new_text, _notes, changed = convert_jobi_memory(text)
             if not changed and dest == path:
                 continue
+            payload = new_text if changed else text
+            if dest != path and _dest_has_same_text(dest, payload):
+                print(f"unchanged {dest}")
+                continue
             if not incremental:
                 backup_file(backup, path)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(new_text if changed else text, encoding="utf-8")
+            dest.write_text(payload, encoding="utf-8")
             print(f"{'converted' if changed else 'copied'} {dest}")
             continue
-        if d.get("action") == "copy-support":
+        if d.get("action") in ("copy-support", "unchanged"):
             # Byte-for-byte for scripts/templates. MEMORY.md is handled above.
             if dest == path:
+                continue
+            if dest.exists() and dest.read_bytes() == path.read_bytes():
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, dest)
@@ -2503,8 +2874,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"jobi workspaces.yaml entries: {len(ws)}")
     for w in ws:
         print(f"  - {w.get('name', '?')}: {w.get('path')}")
-        for nested in nested_agent_dirs(Path(w.get("path") or "")):
-            print(f"      nested agent: {nested.name} ({nested})")
+        wpath = Path(w.get("path") or "")
+        for nested in agent_support_dirs(wpath):
+            print(f"      agent: {nested.name} ({nested})")
+        for issue in _agent_layout_issues(wpath):
+            print(f"      layout issue: {issue}")
     registered = load_trebi_workspaces(trebi)
     print(f"trebi workspaces: {len(registered)}")
     for w in registered:
@@ -2555,7 +2929,7 @@ def cmd_migrate(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-    target = resolve_target_workspace(trebi, getattr(args, "target_workspace", None))
+    target = resolve_target_workspace(trebi, getattr(args, "target_workspace", None), jobi)
     if agent and not target:
         print("ERROR: --agent requires --target-workspace", file=sys.stderr)
         return 2
@@ -2578,6 +2952,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     trebi = Path(args.trebi_dir)
     jobi = Path(args.jobi_dir)
     job = getattr(args, "job", None)
+    agent = getattr(args, "agent", None)
     db = trebi / "trebi.db"
     print(f"verify against {db}")
     if not db.exists():
@@ -2586,23 +2961,58 @@ def cmd_verify(args: argparse.Namespace) -> int:
     tconn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     jconn = open_jobi_ro(jobi)
     try:
-        if job:
+        try:
+            ver = tconn.execute(
+                "SELECT COALESCE(MAX(version),0) FROM schema_migrations"
+            ).fetchone()[0]
+            print(f"schema_version: {ver} (script expects {EXPECTED_SCHEMA})")
+        except sqlite3.Error:
+            print(f"schema_version: unreadable (script expects {EXPECTED_SCHEMA})")
+        # Restrict the trebi side to the rows the command was scoped to: a full
+        # copy has every row, a --job/--agent copy only its slice. A target
+        # workspace remaps all filtered rows to itself, so the plain count is
+        # the right comparison there.
+        if agent:
+            runs = tconn.execute(
+                "SELECT COUNT(*) FROM runs WHERE job=? OR job LIKE ?",
+                (f"agents/{agent}", f"agents/{agent}/%"),
+            ).fetchone()[0]
+        elif job:
             runs = tconn.execute("SELECT COUNT(*) FROM runs WHERE job=?", (job,)).fetchone()[0]
         else:
             runs = tconn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
         if jconn:
-            proj = project_task_derivations(jconn, job)
+            proj = project_task_derivations(jconn, job, agent)
             want = proj["will_insert"]
             ok = runs == want
-            print(f"run conservation: trebi.runs={runs} jobi.will_insert={want} junk={proj['dropped_junk']} ok={ok}")
+            print(
+                f"run conservation: trebi.runs={runs} jobi.will_insert={want} "
+                f"junk={proj['dropped_junk']} filtered={proj['filtered_out']} ok={ok}"
+            )
         else:
             print(f"trebi.runs={runs} (no jobi.db to compare)")
-        for tbl in ("run_segments", "run_events", "event_queue", "schedules"):
+        for tbl in (
+            "run_segments",
+            "run_events",
+            "event_queue",
+            "schedules",
+            "dispatch_policy",
+            "connector_cursors",
+            "workspaces",
+            "job_index",
+        ):
             try:
                 n = tconn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
                 print(f"  {tbl}: {n}")
             except sqlite3.Error as e:
                 print(f"  {tbl}: error {e}")
+        # Trebi derives schedules from parsed job files at first index; a
+        # nonzero seed count with an empty job_index means the daemon has not
+        # indexed the workspace yet (expected right after a --job/--agent copy).
+        seeded = tconn.execute("SELECT COUNT(*) FROM schedules").fetchone()[0]
+        indexed = tconn.execute("SELECT COUNT(*) FROM job_index").fetchone()[0]
+        if seeded and not indexed:
+            print("  note: schedules seeded but job_index empty — start trebid to index")
     finally:
         tconn.close()
         if jconn:
@@ -2688,6 +3098,100 @@ def cmd_make_fixture(args: argparse.Namespace) -> int:
         "INSERT INTO schedule_anchors (key, anchor_time, interval) VALUES (?,?,?)",
         ("demo", "2026-01-01T00:00:00Z", "6h"),
     )
+    # Agent tree: agents/scout (the --agent target) and agents/other, both
+    # inside the same workspace, so scope tests can prove sibling rows stay out.
+    for agent in ("scout", "other"):
+        agent_dir = out / "ws" / "agents" / agent
+        job_dir = agent_dir / "jobs" / "digest"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (agent_dir / "AGENT.md").write_text(
+            "---\n"
+            "command: claude\n"
+            "tool: claude\n"
+            "memory: true\n"
+            "oversight: true\n"
+            "parent_agent: root\n"
+            "---\n"
+            f"You are {agent}. JOBI_TASK_COMPLETE\n"
+        )
+        (agent_dir / "SOUL.md").write_text("---\ntitle: Soul\n---\nBe curious.\n")
+        (agent_dir / "MEMORY.md").write_text(
+            "# Memory\n\n"
+            "Preamble fact.\n\n"
+            "## Context\nDurable stuff.\n\n"
+            "## Shipped\n- [2026-01-02] shipped one\n\n"
+            "## State\nCurrent state.\n\n"
+            "## Lessons\n- Learned a thing\n\n"
+            "## Log\n- [2026-01-04] did the thing\n"
+        )
+        (job_dir / "JOB.md").write_text(
+            "---\n"
+            "command: claude\n"
+            'schedule: "@every 6h (2026-01-01T00:00:00Z)"\n'
+            "---\n"
+            f"{agent} digest. JOBI_TASK_COMPLETE\n"
+        )
+        (job_dir / "MEMORY.md").write_text(
+            "[2026-01-05] legacy ledger line\nmore detail\n"
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, job_name, job_file, workspace_path, command, "
+            "status, kind, parent_agent, started_at, prompt_preview) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                f"01WAKE{agent.upper()}",
+                agent,
+                "",
+                str(out / "ws"),
+                "claude",
+                "complete",
+                "agent",
+                "",
+                "2026-01-01T00:00:00Z",
+                "wake",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, job_name, job_file, workspace_path, command, "
+            "status, kind, parent_agent, started_at, prompt_preview) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                f"02JOB{agent.upper()}",
+                f"agents/{agent}/jobs/digest",
+                str(job_dir / "JOB.md"),
+                str(out / "ws"),
+                "claude",
+                "complete",
+                "job",
+                agent,
+                "2026-01-02T00:00:00Z",
+                "digest",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO event_queue (id, source, workspace_path, job_name, "
+            "parent_agent, status, task_id, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                f"q-{agent}",
+                "whatsapp",
+                str(out / "ws"),
+                f"agents/{agent}/jobs/digest",
+                agent,
+                "done",
+                f"02JOB{agent.upper()}",
+                "2026-01-02T00:00:00Z",
+                "2026-01-02T00:00:00Z",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO schedule_anchors (key, anchor_time, interval) VALUES (?,?,?)",
+            (
+                f"agents/{agent}/jobs/digest",
+                "2026-01-01T00:00:00Z",
+                "6h",
+            ),
+        )
     conn.commit()
     conn.close()
     (out / "sources.yaml").write_text(
