@@ -201,16 +201,20 @@ func TestSave_RejectsInvalid(t *testing.T) {
 
 func TestAPIConfig_ListenAddr(t *testing.T) {
 	t.Parallel()
-	if got := (APIConfig{}).ListenAddr(); got != "127.0.0.1:0" {
+	port := func(n int) *int { return &n }
+	if got := (APIConfig{}).ListenAddr(); got != "127.0.0.1:7433" {
 		t.Fatalf("default: %q", got)
 	}
-	if got := (APIConfig{Host: "0.0.0.0"}).ListenAddr(); got != "0.0.0.0:0" {
+	if got := (APIConfig{Host: "0.0.0.0"}).ListenAddr(); got != "0.0.0.0:7433" {
 		t.Fatalf("host only: %q", got)
 	}
-	if got := (APIConfig{Host: "0.0.0.0", Port: 7433}).ListenAddr(); got != "0.0.0.0:7433" {
+	if got := (APIConfig{Host: "0.0.0.0", Port: port(0)}).ListenAddr(); got != "0.0.0.0:0" {
+		t.Fatalf("explicit ephemeral: %q", got)
+	}
+	if got := (APIConfig{Host: "0.0.0.0", Port: port(7433)}).ListenAddr(); got != "0.0.0.0:7433" {
 		t.Fatalf("host+port: %q", got)
 	}
-	if got := (APIConfig{Host: "::1", Port: 80}).ListenAddr(); got != "[::1]:80" {
+	if got := (APIConfig{Host: "::1", Port: port(80)}).ListenAddr(); got != "[::1]:80" {
 		t.Fatalf("ipv6: %q", got)
 	}
 }

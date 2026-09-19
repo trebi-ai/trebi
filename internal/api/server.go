@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -176,7 +177,17 @@ func checkWSOrigin(r *http.Request) bool {
 		return false
 	}
 	h := u.Hostname()
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	if h == "localhost" || h == "127.0.0.1" || h == "::1" {
+		return true
+	}
+	// Same-origin: the SPA served by this daemon passes even on a
+	// non-loopback bind (0.0.0.0 or a LAN/Tailscale address), so remote
+	// browsers can attach. Cross-site origins still fail.
+	reqHost := r.Host
+	if host, _, err := net.SplitHostPort(reqHost); err == nil {
+		reqHost = host
+	}
+	return strings.EqualFold(h, reqHost)
 }
 
 // Runs returns the runs service.
@@ -276,11 +287,9 @@ func (s *Server) WriteAPIJSON(listenAddr string) error {
 	}
 	port, _ := strconv.Atoi(portStr)
 	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
-		if ip.To4() != nil {
-			host = "127.0.0.1"
-		} else {
-			host = "::1"
-		}
+		// A wildcard bind is dual-stack; 127.0.0.1 is the canonical client
+		// URL (Go reports [::] for an IPv4 wildcard on macOS).
+		host = "127.0.0.1"
 	}
 	scheme := s.scheme
 	if scheme == "" {

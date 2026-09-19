@@ -904,6 +904,20 @@ func TestWriteAPIJSON_UnspecifiedHost(t *testing.T) {
 	if int(doc["port"].(float64)) != 64119 {
 		t.Fatalf("port=%v", doc["port"])
 	}
+	// A dual-stack wildcard reports [::] on macOS; the URL stays IPv4.
+	if err := s.WriteAPIJSON("[::]:64120"); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(filepath.Join(dir, "api.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["url"] != "http://127.0.0.1:64120" {
+		t.Fatalf("wildcard url=%v", doc["url"])
+	}
 }
 
 // dirRows counts folder entries in a file list response.

@@ -24,7 +24,7 @@ trebi/
     ui/                # embedded SPA (build tag ui; dist is git-ignored)
   scripts/
     eval.py                    # uv: run/oracle/review + report/ls/why/compare
-    build.sh                   # dev build with a stamped version (+ --with-ui)
+    build.sh                   # dev build with a stamped version (embeds the UI; --no-ui to skip)
     semver-ge.sh               # release compatibility rule
 ```
 
@@ -39,8 +39,13 @@ go build -o ../build/trebi ./cmd/trebi
 
 `scripts/build.sh` wraps the build, stamps `internal/api.Version` from
 `git describe --tags --always --dirty`, and restarts the LaunchAgent when one
-is installed. Add `--with-ui` to build with the `ui` tag against a populated
-`internal/ui/dist` (see Releases).
+is installed. It embeds the UI by default: it builds the sibling `../trebi-ui`
+working tree (override with `TREBI_UI_SRC`), copies its `apps/app/dist` into
+git-ignored `internal/ui/dist`, and builds with `-tags ui`. The UI version is
+stamped from that checkout's `git describe` too (e.g.
+`0.1.0-2-g5fd0d06-dirty`); `TREBI_UI_VERSION` overrides it, and the release
+job keeps its npm-stamped version. Pass `--no-ui` for a plain binary. Only the
+release workflow downloads a `trebi-ui` release tarball; local builds never do.
 
 ## Releases
 
@@ -69,7 +74,7 @@ the GitHub release with a `SHA256SUMS` asset. The full scheme is
 ```bash
 export TREBI_HOME=/tmp/trebi-dev
 ./build/trebi service migrate-db
-./build/trebi service daemon --listen 127.0.0.1:7433
+./build/trebi service daemon          # binds 127.0.0.1:7433 by default
 # other terminal
 ./build/trebi service status
 ./build/trebi runs list

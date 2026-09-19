@@ -38,10 +38,11 @@ type HarnessConfig struct {
 	Runtime string `yaml:"runtime,omitempty"`
 }
 
-// APIConfig is the HTTP bind for trebid. Default is loopback + ephemeral port.
+// APIConfig is the HTTP bind for trebid. Default is loopback + port 7433;
+// an explicit api.port of 0 asks for an ephemeral port.
 type APIConfig struct {
 	Host string `yaml:"host,omitempty"`
-	Port int    `yaml:"port,omitempty"`
+	Port *int   `yaml:"port,omitempty"`
 	TLS  APITLS `yaml:"tls,omitempty"`
 }
 
@@ -55,7 +56,7 @@ type APITLS struct {
 
 const (
 	DefaultAPIHost = "127.0.0.1"
-	DefaultAPIPort = 0
+	DefaultAPIPort = 7433
 )
 
 // HostOrDefault is 127.0.0.1 when host is unset.
@@ -67,9 +68,18 @@ func (a APIConfig) HostOrDefault() string {
 	return h
 }
 
+// PortOrDefault is 7433 when api.port is unset. An explicit 0 stays
+// ephemeral (the port is written to api.json after bind).
+func (a APIConfig) PortOrDefault() int {
+	if a.Port == nil {
+		return DefaultAPIPort
+	}
+	return *a.Port
+}
+
 // ListenAddr is host:port for net.Listen (IPv6 hosts are bracketed).
 func (a APIConfig) ListenAddr() string {
-	return net.JoinHostPort(a.HostOrDefault(), strconv.Itoa(a.Port))
+	return net.JoinHostPort(a.HostOrDefault(), strconv.Itoa(a.PortOrDefault()))
 }
 
 // TLSEnabled reports whether both cert and key paths are set.
@@ -626,7 +636,7 @@ defaults:
 
 # api:
 #   host: 127.0.0.1        # 0.0.0.0 or a LAN/Tailscale IP opens remote access
-#   port: 0                # 0 = ephemeral; written to api.json after bind
+#   port: 7433             # default; 0 = ephemeral; written to api.json after bind
 #   tls:
 #     cert: ""             # PEM cert; required with key for non-loopback HTTPS
 #     key: ""
@@ -814,7 +824,7 @@ func (c *Config) Validate() error {
 	if host != "" && !validAPIHost(host) {
 		ce.add("api.host", fmt.Sprintf("invalid host %q", c.API.Host))
 	}
-	if c.API.Port < 0 || c.API.Port > 65535 {
+	if c.API.Port != nil && (*c.API.Port < 0 || *c.API.Port > 65535) {
 		ce.add("api.port", "must be 0-65535 (0 = ephemeral)")
 	}
 	cert := strings.TrimSpace(c.API.TLS.Cert)

@@ -366,7 +366,7 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.add("defaults.session.nudge", cfg.Defaults.Session.Nudge, "")
 	l.add("defaults.session.if_running", cfg.Defaults.Session.IfRunning, "")
 	l.add("api.host", cfg.API.HostOrDefault(), DefaultAPIHost)
-	l.add("api.port", strconv.Itoa(cfg.API.Port), strconv.Itoa(DefaultAPIPort))
+	l.add("api.port", strconv.Itoa(cfg.API.PortOrDefault()), strconv.Itoa(DefaultAPIPort))
 	l.add("api.tls.cert", cfg.API.TLS.Cert, "")
 	l.add("api.tls.key", cfg.API.TLS.Key, "")
 	insecure := "false"
@@ -544,14 +544,14 @@ func (c *Config) setAPIKey(path, value string) (handled bool, err error) {
 		return true, nil
 	case "api.port":
 		if value == "" || value == "-" {
-			c.API.Port = 0
+			c.API.Port = nil
 			return true, nil
 		}
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || n < 0 || n > 65535 {
 			return true, fmt.Errorf("api.port: want integer 0-65535")
 		}
-		c.API.Port = n
+		c.API.Port = &n
 		return true, nil
 	case "api.tls.cert":
 		c.API.TLS.Cert = clearOrValue(value)
@@ -898,7 +898,7 @@ func pathKeyDescriptions() map[string]string {
 		"defaults.session.nudge":        "Idle delay before typing continue (default off; set e.g. 5m)",
 		"defaults.session.if_running":   "Overlap policy: skip|replace|coalesce|allow",
 		"api.host":                      "HTTP bind host (default 127.0.0.1; 0.0.0.0 opens LAN)",
-		"api.port":                      "HTTP bind port (default 0 = ephemeral; written to api.json)",
+		"api.port":                      "HTTP bind port (default 7433; 0 = ephemeral, written to api.json)",
 		"api.tls.cert":                  "PEM cert path; required with api.tls.key for non-loopback HTTPS",
 		"api.tls.key":                   "PEM key path; required with api.tls.cert",
 		"api.tls.insecure":              "Allow plaintext on a non-loopback bind (Tailscale/LAN); default false",
