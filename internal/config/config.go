@@ -28,6 +28,7 @@ type Config struct {
 	Files      FilesConfig      `yaml:"files,omitempty"`
 	Workspaces WorkspacesConfig `yaml:"workspaces,omitempty"`
 	Assistant  AssistantConfig  `yaml:"assistant,omitempty"`
+	Email      EmailConfig      `yaml:"email,omitempty"`
 }
 
 // HarnessConfig is the vendor run-runtime policy (plan 2026-09-16 Part J).
@@ -183,11 +184,12 @@ func (f FilesConfig) MaxBytesOrDefault() int64 {
 // {{body}} {{resume}} {{connector}} placeholders are rewritten to
 // "$TREBI_ALERT_*" so untrusted text is never interpolated into the shell string.
 type NotifyConfig struct {
-	Email        string `yaml:"email,omitempty"`
-	WhatsApp     string `yaml:"whatsapp,omitempty"`
-	Discord      string `yaml:"discord,omitempty"`
-	WaitingAfter string `yaml:"waiting_after,omitempty"` // empty → 5m; "0"/"off" disables
-	UsageWarnAt  int    `yaml:"usage_warn_at,omitempty"` // 0 → 80
+	Email         string `yaml:"email,omitempty"`
+	WhatsApp      string `yaml:"whatsapp,omitempty"`
+	Discord       string `yaml:"discord,omitempty"`
+	WaitingAfter  string `yaml:"waiting_after,omitempty"`  // empty → 5m; "0"/"off" disables
+	ApprovalAfter string `yaml:"approval_after,omitempty"` // empty → 5m; "0" mails at once; "off" never
+	UsageWarnAt   int    `yaml:"usage_warn_at,omitempty"`  // 0 → 80
 }
 
 // DefaultWaitingAfter is used when notify.waiting_after is unset.
@@ -205,6 +207,29 @@ func (n NotifyConfig) WaitingAfterDuration() (d time.Duration, ok bool) {
 	d, err := time.ParseDuration(s)
 	if err != nil || d <= 0 {
 		return DefaultWaitingAfter, true
+	}
+	return d, true
+}
+
+// DefaultApprovalAfter is used when notify.approval_after is unset.
+const DefaultApprovalAfter = 5 * time.Minute
+
+// ApprovalAfterDuration parses ApprovalAfter (plan M5). ok=false means the
+// approval escalation is off: tray only, no mail.
+func (n NotifyConfig) ApprovalAfterDuration() (d time.Duration, ok bool) {
+	s := strings.TrimSpace(n.ApprovalAfter)
+	if s == "" {
+		return DefaultApprovalAfter, true
+	}
+	if strings.EqualFold(s, "off") {
+		return 0, false
+	}
+	if s == "0" {
+		return 0, true
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d < 0 {
+		return DefaultApprovalAfter, true
 	}
 	return d, true
 }
@@ -654,6 +679,7 @@ tools:
 #   whatsapp: ""
 #   discord: ""
 #   waiting_after: 5m      # "0" or "off" disables the waiting escalation
+#   approval_after: 5m     # tray first, mail after; "0" mails at once; "off" never
 #   usage_warn_at: 80      # percent
 
 # files:
@@ -671,6 +697,15 @@ tools:
 #   context_tokens: 0        # 0 = no compaction
 #   system_extra: ""
 #   web_search: true         # anthropic server tool only; ignored for openai
+
+# email:                     # mail channel through the trebi-mail Worker
+#   worker: ""               # Worker URL; present enables the channel
+#   token: ""                # secret:<name> holding the shared Worker token
+#   domain: ""               # bare hostname the addresses live on
+#   operators: []            # alert recipients and default inbound allowlist
+#   poll_interval: 30s       # 5s to 10m
+#   require_dmarc: true
+#   from_name: Trebi
 `
 
 // Seed writes config.yaml with the documented defaults when it does not exist.
@@ -846,6 +881,7 @@ func (c *Config) Validate() error {
 
 	// notify.waiting_after: empty → default 5m; 0/off disables escalate
 	ce.checkNudge("notify.waiting_after", c.Notify.WaitingAfter)
+	ce.checkNudge("notify.approval_after", c.Notify.ApprovalAfter)
 
 	if c.Files.MaxBytes < 0 {
 		ce.add("files.max_bytes", "must be >= 0")
@@ -894,6 +930,7 @@ func (c *Config) Validate() error {
 	}
 
 	ce.checkAssistant(c.Assistant)
+	ce.checkEmail(*c)
 
 	if len(ce.Errors) == 0 {
 		return nil

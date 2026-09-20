@@ -88,7 +88,9 @@ type Frontmatter struct {
 	Allowlist        []string          `yaml:"allowlist"`
 	Inputs           any               `yaml:"inputs"`
 	Skills           any               `yaml:"skills"`
-	Notify           any               `yaml:"notify"`
+	// Notify selects alert channels for this job. Nil = unset (every
+	// channel); an empty list suppresses delivery for this job's alerts.
+	Notify []string `yaml:"notify"`
 }
 
 // SessionYAML — canonical keys; idle_timeout not timeout.
@@ -183,6 +185,9 @@ type Job struct {
 	ParseError       string
 	Hash             string
 	Description      string
+	// Notify selects alert channels for this job. Nil = unset (every
+	// channel); an empty list suppresses delivery for this job's alerts.
+	Notify []string
 }
 
 // MemoryConfig is the parsed memory frontmatter. Nil pointers mean unset;
@@ -451,6 +456,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Kind:             kindFromPath(filePath),
 		Hash:             hash,
 		Description:      fm.Description,
+		Notify:           fm.Notify,
 	}
 	return j, nil
 }

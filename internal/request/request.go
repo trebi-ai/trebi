@@ -743,6 +743,75 @@ func BuildWorkspaceRename(id, name string) HTTPRequest {
 	return BuildWorkspacePatch(id, &name, nil)
 }
 
+// BuildEmailStatusPath builds GET /v1/email/status.
+func BuildEmailStatusPath() string {
+	return "/v1/email/status"
+}
+
+// BuildEmailTest builds POST /v1/email/test (fixed message to the operators).
+func BuildEmailTest() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/email/test"}
+}
+
+// BuildWorkspaceEmailGetPath builds GET /v1/workspaces/{id}/email. The local
+// part is masked unless reveal is set.
+func BuildWorkspaceEmailGetPath(id string, reveal bool) string {
+	q := map[string]string{}
+	if reveal {
+		q["reveal"] = "1"
+	}
+	return withQuery("/v1/workspaces/"+url.PathEscape(id)+"/email", q)
+}
+
+// BuildWorkspaceEmailRotate builds POST /v1/workspaces/{id}/email/rotate.
+func BuildWorkspaceEmailRotate(id string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "POST",
+		Path: withQuery("/v1/workspaces/"+url.PathEscape(id)+"/email/rotate", confirmQ(confirm))}
+}
+
+// BuildEmailMessagesPath builds GET /v1/email/messages (the envelope log).
+// Empty filters match every row.
+func BuildEmailMessagesPath(direction, workspace, thread, cursor string, limit int) string {
+	q := map[string]string{
+		"direction": direction,
+		"workspace": workspace,
+		"thread":    thread,
+		"cursor":    cursor,
+	}
+	if limit > 0 {
+		q["limit"] = strconv.Itoa(limit)
+	}
+	return withQuery("/v1/email/messages", q)
+}
+
+// BuildEmailMessagePath builds GET /v1/email/messages/{id}.
+func BuildEmailMessagePath(id string) string {
+	return "/v1/email/messages/" + url.PathEscape(id)
+}
+
+// BuildEmailAttachmentPath builds GET /v1/email/messages/{id}/attachments/{aid}.
+func BuildEmailAttachmentPath(id, aid string) string {
+	return "/v1/email/messages/" + url.PathEscape(id) + "/attachments/" + url.PathEscape(aid)
+}
+
+// BuildEmailPoll builds POST /v1/email/poll (one pull outside the tick).
+func BuildEmailPoll() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/email/poll"}
+}
+
+// BuildEmailSend builds POST /v1/email/send (plan I.3): one explicit
+// message from the workspace address, or the agent subaddress when set.
+func BuildEmailSend(workspace, agent string, to []string, subject, text, inReplyTo string) HTTPRequest {
+	body := map[string]any{"workspace": workspace, "to": to, "subject": subject, "text": text}
+	if agent != "" {
+		body["agent"] = agent
+	}
+	if inReplyTo != "" {
+		body["in_reply_to"] = inReplyTo
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/email/send", Body: body}
+}
+
 // BuildWorkspaceMove builds POST /v1/workspaces/{id}/move.
 func BuildWorkspaceMove(id, path string, mkdir, dryRun, confirm bool) HTTPRequest {
 	body := map[string]any{"path": path}
@@ -1036,6 +1105,20 @@ func BuildSystemHealthPath() string {
 // BuildSystemDoctorPath builds GET /v1/system/doctor.
 func BuildSystemDoctorPath() string {
 	return "/v1/system/doctor"
+}
+
+// BuildSystemLicenseGetPath builds GET /v1/system/license.
+func BuildSystemLicenseGetPath() string {
+	return "/v1/system/license"
+}
+
+// BuildSystemLicenseInstall builds PUT /v1/system/license with the raw key.
+func BuildSystemLicenseInstall(raw string) HTTPRequest {
+	return HTTPRequest{
+		Method: "PUT",
+		Path:   "/v1/system/license",
+		Body:   map[string]string{"license": raw},
+	}
 }
 
 // BuildSystemLogsPath builds GET /v1/system/logs (last 200 daemon log lines).

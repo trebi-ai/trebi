@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -45,6 +46,8 @@ func (s *Server) routeSystem(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/system/guides", s.handleGuidesList)
 	mux.HandleFunc("GET /v1/system/guides/{topic}", s.handleGuideGet)
 	mux.HandleFunc("GET /v1/system/overview", s.handleOverview)
+	mux.HandleFunc("GET /v1/system/license", s.handleSystemLicenseGet)
+	mux.HandleFunc("PUT /v1/system/license", s.handleSystemLicensePut)
 	mux.HandleFunc("GET /v1/cloud/status", s.handleCloudStatus)
 	mux.HandleFunc("POST /v1/cloud/link", s.handleCloudLink)
 	mux.HandleFunc("DELETE /v1/cloud/link", s.handleCloudUnlink)
@@ -157,6 +160,28 @@ func (s *Server) doctorSummary() map[string]int {
 		}
 	}
 	return out
+}
+
+// handleSystemLicenseGet answers the license posture of this build.
+func (s *Server) handleSystemLicenseGet(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.lic.State())
+}
+
+// handleSystemLicensePut installs a license key. A free build answers 400:
+// the key has no verifier to satisfy here.
+func (s *Server) handleSystemLicensePut(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		License string `json:"license"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil || strings.TrimSpace(body.License) == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "license key required")
+		return
+	}
+	if err := s.lic.Install([]byte(body.License)); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.lic.State())
 }
 
 // harnessAuthTable maps each known harness to whether its auth is ok.
@@ -333,11 +358,66 @@ func (s *Server) doctorFindings() []map[string]any {
 	src = append(src, s.apiBindDoctor()...)
 	src = append(src, s.agentLayoutDoctor()...)
 	src = append(src, s.memoryDoctor()...)
+	src = append(src, s.emailDoctor()...)
 	src = append(src, harnessRuntimeDoctor(context.Background())...)
 	out := make([]map[string]any, 0, len(src))
 	for _, f := range src {
 		out = append(out, map[string]any{
 			"id": f.ID, "severity": f.Severity, "code": f.Code, "message": f.Message,
+		})
+	}
+	return out
+}
+
+// emailDoctor reports the email channel findings (plan 2026-09-19 Part K):
+// a misconfigured block, an unresolvable token, a permanently failed alert
+// send, a Worker unreachable for more than three polls, and a spool older
+// than one hour.
+func (s *Server) emailDoctor() []alerts.DoctorFinding {
+	cfg, err := config.Load()
+	if err != nil || cfg == nil {
+		return nil
+	}
+	var out []alerts.DoctorFinding
+	var ce *config.ConfigError
+	if err := cfg.Validate(); errors.As(err, &ce) {
+		for _, fe := range ce.Errors {
+			if fe.Field != "email" && !strings.HasPrefix(fe.Field, "email.") {
+				continue
+			}
+			out = append(out, alerts.DoctorFinding{
+				ID: "email-config:" + fe.Field, Severity: "error", Code: "email_config",
+				Message: fe.Field + ": " + fe.Msg,
+			})
+		}
+	}
+	if !cfg.Email.Enabled() {
+		return out
+	}
+	if _, err := cfg.Email.ResolveToken(); err != nil {
+		out = append(out, alerts.DoctorFinding{
+			ID: "email-token", Severity: "error", Code: "email_token",
+			Message: err.Error() + " (trebi secret set <name>)",
+		})
+	}
+	st := s.email.Status(context.Background())
+	if st.SendError != "" {
+		out = append(out, alerts.DoctorFinding{
+			ID: "email-send-failed", Severity: "error", Code: "email_send_failed",
+			Message: "last alert send failed: " + st.SendError,
+		})
+	}
+	if st.Failures > 3 {
+		out = append(out, alerts.DoctorFinding{
+			ID: "email-worker-unreachable", Severity: "error", Code: "email_worker_unreachable",
+			Message: fmt.Sprintf("Worker unreachable for %d polls: %s", st.Failures, st.LastError),
+		})
+	}
+	if st.WorkerHealth != nil && st.WorkerHealth.SpoolOldestAgeMS > int64(time.Hour/time.Millisecond) {
+		out = append(out, alerts.DoctorFinding{
+			ID: "email-spool-stalled", Severity: "warn", Code: "email_spool_stalled",
+			Message: fmt.Sprintf("spool holds mail %s old; trebid is not pulling",
+				time.Duration(st.WorkerHealth.SpoolOldestAgeMS)*time.Millisecond),
 		})
 	}
 	return out

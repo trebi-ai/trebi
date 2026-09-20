@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -82,25 +84,26 @@ type InboxAction struct {
 
 // InboxItem is the §3.12 wire struct.
 type InboxItem struct {
-	ID          string        `json:"id"`
-	Kind        InboxKind     `json:"kind"`
-	Status      InboxStatus   `json:"status"`
-	Subject     string        `json:"subject,omitempty"`
-	Title       string        `json:"title"`
-	Body        string        `json:"body,omitempty"`
-	Hint        string        `json:"hint,omitempty"`
-	Workspace   string        `json:"workspace,omitempty"`
-	Job         string        `json:"job,omitempty"`
-	RunID       string        `json:"run_id,omitempty"`
-	Connector   string        `json:"connector,omitempty"`
-	AlertKind   string        `json:"alert_kind,omitempty"`
-	EscalatesAt *time.Time    `json:"escalates_at,omitempty"`
-	Actions     []InboxAction `json:"actions"`
-	CreatedAt   time.Time     `json:"created_at"`
-	ResolvedAt  *time.Time    `json:"resolved_at,omitempty"`
-	TraceID     string        `json:"trace_id"`
-	Revision    int64         `json:"revision"`
-	UpdatedAt   time.Time     `json:"updated_at,omitempty"`
+	ID             string        `json:"id"`
+	Kind           InboxKind     `json:"kind"`
+	Status         InboxStatus   `json:"status"`
+	Subject        string        `json:"subject,omitempty"`
+	Title          string        `json:"title"`
+	Body           string        `json:"body,omitempty"`
+	Hint           string        `json:"hint,omitempty"`
+	Workspace      string        `json:"workspace,omitempty"`
+	Job            string        `json:"job,omitempty"`
+	RunID          string        `json:"run_id,omitempty"`
+	Connector      string        `json:"connector,omitempty"`
+	AlertKind      string        `json:"alert_kind,omitempty"`
+	EmailMessageID string        `json:"email_message_id,omitempty"`
+	EscalatesAt    *time.Time    `json:"escalates_at,omitempty"`
+	Actions        []InboxAction `json:"actions"`
+	CreatedAt      time.Time     `json:"created_at"`
+	ResolvedAt     *time.Time    `json:"resolved_at,omitempty"`
+	TraceID        string        `json:"trace_id"`
+	Revision       int64         `json:"revision"`
+	UpdatedAt      time.Time     `json:"updated_at,omitempty"`
 }
 
 // KindSpec is one row of the §7 registry.
@@ -127,6 +130,9 @@ type RaiseOpts struct {
 	TraceID     string
 	EndReason   string
 	SessionID   string
+	// EscalateAt arms the escalation sweep at this time instead of the
+	// immediate notify chain (plan M5). Zero leaves the item tray-only.
+	EscalateAt time.Time
 }
 
 // ListOpts filters inbox lists.
@@ -142,13 +148,27 @@ type Options struct {
 	TickInterval    time.Duration
 	WaitingAfter    time.Duration
 	WaitingDisabled bool
-	UsageWarnAt     int
-	Notify          []NotifyChannel
-	NotifyTimeout   time.Duration // per-channel exec timeout; default 5s
-	Shadow          bool          // consume bus / write inbox; skip outbound notify
-	Drain           bool          // same notify suppression as Shadow
-	Now             func() time.Time
-	Doctor          func() []DoctorFinding
+	// ApprovalAfter is how long an approval item sits in the tray before it
+	// mails (plan M5). Zero mails at once; ApprovalDisabled never mails.
+	ApprovalAfter    time.Duration
+	ApprovalDisabled bool
+	// ApprovalQuestion returns the pending approval's question for the item
+	// body, or "". Nil leaves the body empty.
+	ApprovalQuestion func(ctx context.Context, runID string) string
+	UsageWarnAt      int
+	Notify           []NotifyChannel
+	NotifyTimeout    time.Duration // per-channel exec timeout; default 5s
+	// Email is the native channel. It takes the email slot ahead of the
+	// shell chain; nil or an unconfigured service leaves it out.
+	Email *email.Service
+	// JobNotify resolves a job's notify: frontmatter. Nil means no alert
+	// carries a per-job filter. The return is nil (unset → every channel)
+	// or the channel-name allow-list; an empty list suppresses delivery.
+	JobNotify func(ctx context.Context, workspaceID, job string) []string
+	Shadow    bool // consume bus / write inbox; skip outbound notify
+	Drain     bool // same notify suppression as Shadow
+	Now       func() time.Time
+	Doctor    func() []DoctorFinding
 }
 
 // NotifyChannel is one named shell template in the notifier chain.
@@ -195,7 +215,7 @@ type scanner interface {
 const inboxCols = `id, kind, status, COALESCE(subject,''), COALESCE(title,''), COALESCE(body,''),
 	COALESCE(hint,''), COALESCE(run_id,''), COALESCE(workspace_id,''), COALESCE(job,''),
 	COALESCE(alert_kind,''), COALESCE(connector,''), COALESCE(actions,''), COALESCE(trace_id,''),
-	escalates_at, revision, created_at, updated_at, resolved_at`
+	COALESCE(email_message_id,''), escalates_at, revision, created_at, updated_at, resolved_at`
 
 // New creates an alerts service. opts may be zero.
 func New(st *store.Store, opts Options) *Service {
@@ -448,6 +468,15 @@ func (s *Service) insertItem(ctx context.Context, spec KindSpec, opts RaiseOpts)
 		s.log.Warn("bus append", "topic", "inbox.created", "error", err)
 	}
 	s.markRaised(opts)
+	// An escalation-marked item skips the immediate notify chain: it sits in
+	// the tray and the sweep mails it at EscalateAt (plan M5).
+	if !opts.EscalateAt.IsZero() {
+		esc := opts.EscalateAt.UTC().Format(time.RFC3339Nano)
+		if _, err := s.st.DB().ExecContext(ctx, `UPDATE inbox_items SET escalates_at=? WHERE id=?`, esc, id); err != nil {
+			s.log.Warn("escalate mark", "id", id, "error", err)
+		}
+		return id, nil
+	}
 	s.enqueueDeliver(ctx, opts, id)
 	return id, nil
 }
@@ -563,17 +592,18 @@ func runFailedActions(runID string) []InboxAction {
 
 func scanInbox(row scanner, includeBody bool) (*InboxItem, error) {
 	var it InboxItem
-	var sub, title, body, hint, runID, ws, job, ak, connector, acts, trace string
+	var sub, title, body, hint, runID, ws, job, ak, connector, acts, trace, emailMsgID string
 	var esc, resolved sql.NullString
 	var created, updated string
 	err := row.Scan(&it.ID, &it.Kind, &it.Status, &sub, &title, &body, &hint, &runID, &ws, &job,
-		&ak, &connector, &acts, &trace, &esc, &it.Revision, &created, &updated, &resolved)
+		&ak, &connector, &acts, &trace, &emailMsgID, &esc, &it.Revision, &created, &updated, &resolved)
 	if err != nil {
 		return nil, err
 	}
 	it.Subject, it.Title, it.Hint = sub, title, hint
 	it.RunID, it.Workspace, it.Job = runID, ws, job
 	it.AlertKind, it.Connector, it.TraceID = ak, connector, trace
+	it.EmailMessageID = emailMsgID
 	if includeBody {
 		it.Body = body
 	}
@@ -691,6 +721,36 @@ func (o RaiseOpts) notifyEnv(id string) []string {
 		env = append(env, k+"="+v)
 	}
 	return env
+}
+
+// emailSubject is the stable mail subject for this alert. The alert
+// subject key rides along, so a repeat alert of the same fault threads
+// with the previous one and two faults never share a thread.
+func (o RaiseOpts) emailSubject() string {
+	return "[trebi] " + o.Title + ": " + o.Subject
+}
+
+// emailText is the plain-text body of the alert mail.
+func (o RaiseOpts) emailText(id string) string {
+	var b strings.Builder
+	for _, line := range []string{o.Body, o.Hint} {
+		if line != "" {
+			b.WriteString(line)
+			b.WriteString("\n\n")
+		}
+	}
+	fmt.Fprintf(&b, "kind: %s\n", o.Kind)
+	if o.WorkspaceID != "" {
+		fmt.Fprintf(&b, "workspace: %s\n", o.WorkspaceID)
+	}
+	if o.JobName != "" {
+		fmt.Fprintf(&b, "job: %s\n", o.JobName)
+	}
+	if o.RunID != "" {
+		fmt.Fprintf(&b, "run: %s\n", o.RunID)
+	}
+	fmt.Fprintf(&b, "inbox: %s\n", id)
+	return b.String()
 }
 
 // setAll moves every item of one status, and optionally one kind, to status.

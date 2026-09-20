@@ -31,7 +31,7 @@ func TestMCPToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	want := []string{"agent", "assistant", "config", "connector", "conversation", "event", "file",
+	want := []string{"agent", "assistant", "config", "connector", "conversation", "email", "event", "file",
 		"harness", "inbox", "job", "queue", "run", "secret",
 		"skill", "system", "workspace"}
 	got := make([]string, 0, len(res.Tools))

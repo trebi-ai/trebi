@@ -16,12 +16,15 @@ type CodexDriver struct{}
 // Name implements Driver.
 func (CodexDriver) Name() string { return "codex" }
 
-// Start implements Driver.
+// Start implements Driver. The pre-assigned session id is trebi-minted, not
+// a vendor thread id: a start must open a new thread and adopt the id the
+// handshake reports.
 func (CodexDriver) Start(ctx context.Context, req StartRequest) (Session, error) {
+	req.SessionID = ""
 	return codexStart(ctx, req)
 }
 
-// Resume implements Driver.
+// Resume implements Driver: the session id is the stored vendor thread id.
 func (CodexDriver) Resume(ctx context.Context, req StartRequest) (Session, error) {
 	return codexStart(ctx, req)
 }

@@ -16,7 +16,7 @@ func TestAcquireDaemonLock_Conflict(t *testing.T) {
 		if err != nil {
 			os.Exit(2)
 		}
-		defer lock.Release()
+		defer func() { _ = lock.Release() }()
 		os.Stdout.Write([]byte("held\n"))
 		_ = os.Stdout.Sync()
 		time.Sleep(30 * time.Second)

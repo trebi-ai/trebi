@@ -1911,6 +1911,94 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			}),
 		},
 
+		"email": {
+			"status": act("GET /v1/email/status", Input{}, func(Input) (request.HTTPRequest, error) {
+				return mcpGet(request.BuildEmailStatusPath()), nil
+			}),
+			"test": act("POST /v1/email/test", Input{}, func(Input) (request.HTTPRequest, error) {
+				return request.BuildEmailTest(), nil
+			}),
+			// Plan I.3: recipients must be operators or on the workspace
+			// allowlist; the API answers 400 for anyone else.
+			"send": act("POST /v1/email/send",
+				Input{"workspace": "ws1", "agent": "research", "to": []any{"ops@example.com"},
+					"subject": "digest ready", "text": "The digest is ready.", "in_reply_to": "<out-1@x>"},
+				func(in Input) (request.HTTPRequest, error) {
+					v, err := in.reqStrs("workspace", "subject", "text")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					opt, err := in.strs("agent", "in_reply_to")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					to, err := in.strList("to")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					if len(to) == 0 {
+						return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "to")
+					}
+					return request.BuildEmailSend(v[0], opt[0], to, v[1], v[2], opt[1]), nil
+				}),
+			"workspace_address": act("GET /v1/workspaces/{id}/email", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+				ws, err := in.reqStr("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				reveal, err := in.flag("reveal")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildWorkspaceEmailGetPath(ws, reveal)), nil
+			}),
+			"workspace_rotate": confirmDel("POST /v1/workspaces/{id}/email/rotate", "workspace", "ws1", request.BuildWorkspaceEmailRotate),
+			"messages": act("GET /v1/email/messages", Input{"direction": "in"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("direction", "workspace", "thread", "cursor")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				limit, _, err := in.num("limit")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildEmailMessagesPath(v[0], v[1], v[2], v[3], limit)), nil
+			}),
+			"show": act("GET /v1/email/messages/{id}", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildEmailMessagePath(id)), nil
+			}),
+			// The bytes ride the reply as base64, never as raw text; the
+			// `trebi mcp serve` bridge writes them to `out` instead.
+			"attachment": func() Action {
+				e := act("GET /v1/email/messages/{id}/attachments/{aid}",
+					Input{"message": "01ABC", "attachment": "a1", "out": "./invoice.pdf"},
+					func(in Input) (request.HTTPRequest, error) {
+						v, err := in.reqStrs("message", "attachment")
+						if err != nil {
+							return request.HTTPRequest{}, err
+						}
+						return mcpGet(request.BuildEmailAttachmentPath(v[0], v[1])), nil
+					})
+				e.Transform = func(_ Input, _ int, body []byte) ([]byte, error) {
+					return json.Marshal(map[string]any{
+						"size":           len(body),
+						"content_base64": base64.StdEncoding.EncodeToString(body),
+					})
+				}
+				return e
+			}(),
+			"poll": act("POST /v1/email/poll", Input{}, func(Input) (request.HTTPRequest, error) {
+				return request.BuildEmailPoll(), nil
+			}),
+		},
+
 		"system": {
 			"health": act("GET /v1/system/health", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildSystemHealthPath()), nil
@@ -1972,6 +2060,16 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				return mcpGet(request.BuildSystemGuidePath(topic)), nil
+			}),
+			"license_show": act("GET /v1/system/license", Input{}, func(Input) (request.HTTPRequest, error) {
+				return mcpGet(request.BuildSystemLicenseGetPath()), nil
+			}),
+			"license_install": act("PUT /v1/system/license", Input{"license": "test-license-0000"}, func(in Input) (request.HTTPRequest, error) {
+				key, err := in.reqStr("license")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildSystemLicenseInstall(key), nil
 			}),
 		},
 	}

@@ -601,7 +601,7 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 		Drain:  drain,
 	})
 	// Share control-plane services so API and workers see the same state.
-	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Conversations, cp.Harness)
+	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Conversations, cp.Harness, cp.Email, cp.License)
 	srv.Skills().WithUserHome(harness.UserHome())
 
 	ctx, cancel := context.WithCancel(parent)

@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "seq": 7,
+  "id": "01J8Y7ZQ5W8K3N6P9R2T4V6X8Y",
+  "local_part": "ellis-x7k2qm4p",
+  "tag": "research",
+  "from": "fritz@example.com",
+  "to": [
+    "ellis-x7k2qm4p+research@mail.example.com"
+  ],
+  "cc": [],
+  "subject": "Weekly report",
+  "message_id": "<CAF0R1LYq2Mx@mail.example.com>",
+  "in_reply_to": "",
+  "references": [],
+  "date": "2026-09-19T09:15:00Z",
+  "text": "Please run the weekly report and send me the result.",
+  "html": "",
+  "attachments": [
+    {
+      "id": "01J8Y7ZR3A5B7C9D1E2F3G4H5J",
+      "name": "notes.txt",
+      "size": 128,
+      "type": "text/plain"
+    }
+  ],
+  "headers": {
+    "x-mailer": "ExampleMail 1.0"
+  },
+  "spf": "pass",
+  "dkim": "pass",
+  "dmarc": "pass",
+  "received_at": "2026-09-19T09:15:02Z"
+}

@@ -342,6 +342,9 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		// approvals
 		{Name: "approval.created", Bus: true, Log: true},
 		{Name: "approval.decided", Bus: true, Log: true},
+		// email
+		{Name: "email.sent", Bus: true, Log: true},
+		{Name: "email.received", Bus: true, Log: true},
 		// bus
 		{Name: "bus.pruned", Bus: false, Log: true},
 		{Name: "bus.slow_consumer", Bus: false, Log: true},

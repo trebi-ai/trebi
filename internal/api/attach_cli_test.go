@@ -227,7 +227,15 @@ func TestAgentHookAdvisoryOnCLI(t *testing.T) {
 	if got := svc.SessionState(runID); got != runs.SessionRunning {
 		t.Fatalf("hook stop flipped CLI state: %s", got)
 	}
-	// Hook waiting must not open an approval either.
+	// Hook waiting must not flip state on a CLI run, but it fills a missing
+	// waiting signal (G.2): one pending approval, deduped on repeat.
+	code, _ = do("POST", "/v1/agent-hook/waiting?run_id="+runID, map[string]any{"payload": `{"question":"?"}`})
+	if code != 200 {
+		t.Fatalf("hook %d", code)
+	}
+	if got := svc.SessionState(runID); got != runs.SessionRunning {
+		t.Fatalf("hook waiting flipped CLI state: %s", got)
+	}
 	code, _ = do("POST", "/v1/agent-hook/waiting?run_id="+runID, map[string]any{"payload": `{"question":"?"}`})
 	if code != 200 {
 		t.Fatalf("hook %d", code)
@@ -236,10 +244,14 @@ func TestAgentHookAdvisoryOnCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	n := 0
 	for _, a := range list {
 		if a.RunID == runID {
-			t.Fatalf("hook opened an approval on a CLI run: %+v", a)
+			n++
 		}
+	}
+	if n != 1 {
+		t.Fatalf("hook waiting approvals on CLI run: %d", n)
 	}
 	if code, _ := do("POST", "/v1/runs/"+runID+"/kill", nil); code != 200 {
 		t.Fatalf("kill %d", code)

@@ -14,10 +14,12 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -39,6 +41,9 @@ type Options struct {
 	TurnWatchInterval time.Duration
 	// AuthProbeInterval is how often blocked harnesses are re-probed (default 5m; tests 50ms).
 	AuthProbeInterval time.Duration
+	// EmailInterval overrides the inbound mail poll tick (default: the
+	// configured poll_interval, else 30s; tests 50ms).
+	EmailInterval time.Duration
 	// LoginMaxAge is the interactive login session lifetime (default 10m).
 	LoginMaxAge time.Duration
 }
@@ -56,6 +61,8 @@ type ControlPlane struct {
 	Alerts        *alerts.Service
 	Conversations *conversations.Service
 	Harness       *harness.Service
+	Email         *email.Service
+	License       *license.Service
 	Opts          Options
 
 	log   *slog.Logger
@@ -95,7 +102,9 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()
 	connector := connectors.New(st, ws, r, pol).WithUserHome(harness.UserHome())
-	return &ControlPlane{
+	lic := license.New(nil)
+	em := email.New(st, lic).WithConversations(conv)
+	c := &ControlPlane{
 		Store:         st,
 		Runs:          r,
 		Workspaces:    ws,
@@ -104,26 +113,47 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Connectors:    connector,
 		Policy:        pol,
 		Reaper:        runs.NewReaper(r),
-		Alerts:        newAlerts(st, opts, cfg),
 		Conversations: conv,
 		Harness:       harness.New(st, tmux.DefaultDriver{}, harness.Options{LoginMaxAge: opts.LoginMaxAge}),
+		Email:         em,
+		License:       lic,
 		Opts:          opts,
 		log:           slog.Default().With("source", "daemon"),
 		queue:         q,
 	}
+	approvalQuestion := func(ctx context.Context, runID string) string {
+		a, err := r.PendingApproval(ctx, runID)
+		if err != nil || a == nil {
+			return ""
+		}
+		return a.Prompt
+	}
+	c.Alerts = newAlerts(st, opts, cfg, em, c.jobNotify, approvalQuestion)
+	c.configureEmail(cfg)
+	return c
 }
 
-func newAlerts(st *store.Store, opts Options, cfg *config.Config) *alerts.Service {
+func newAlerts(st *store.Store, opts Options, cfg *config.Config, em *email.Service,
+	jobNotify func(context.Context, string, string) []string,
+	approvalQuestion func(context.Context, string) string) *alerts.Service {
 	aopts := alerts.Options{
-		TickInterval: opts.AlertsInterval,
-		Shadow:       opts.Shadow,
-		Doctor:       alerts.CollectDoctorFindings,
+		TickInterval:     opts.AlertsInterval,
+		Shadow:           opts.Shadow,
+		Doctor:           alerts.CollectDoctorFindings,
+		Email:            em,
+		JobNotify:        jobNotify,
+		ApprovalQuestion: approvalQuestion,
 	}
 	if cfg != nil {
 		if d, ok := cfg.Notify.WaitingAfterDuration(); ok {
 			aopts.WaitingAfter = d
 		} else {
 			aopts.WaitingDisabled = true
+		}
+		if d, on := cfg.Notify.ApprovalAfterDuration(); on {
+			aopts.ApprovalAfter = d
+		} else {
+			aopts.ApprovalDisabled = true
 		}
 		aopts.UsageWarnAt = cfg.Notify.UsageWarnPercent()
 		for _, ch := range cfg.Notify.Channels() {
@@ -160,6 +190,7 @@ func (c *ControlPlane) Start(parent context.Context) {
 	})
 	c.Runs.RecoverNative(ctx)
 	c.Runs.RecoverCLI(ctx)
+	c.syncEmailAddresses(ctx)
 
 	c.wg.Add(1)
 	go func() {
@@ -204,6 +235,10 @@ func (c *ControlPlane) Start(parent context.Context) {
 		c.turnWatch(ctx)
 	}()
 
+	// The inbound mail loop runs under shadow too: Run skips automatic
+	// polls there, and the manual poll route still works.
+	c.startEmail(ctx)
+
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
@@ -241,10 +276,69 @@ func (c *ControlPlane) Stop() {
 	c.wg.Wait()
 }
 
+// configureEmail maps the email config block onto the service. A block
+// with an unresolvable token or a bad poll interval leaves the channel
+// off; doctor reports the cause, the daemon still boots.
+func (c *ControlPlane) configureEmail(cfg *config.Config) {
+	if cfg == nil || !cfg.Email.Enabled() {
+		return
+	}
+	token, err := cfg.Email.ResolveToken()
+	if err != nil {
+		c.log.Warn("email token", "error", err)
+		return
+	}
+	interval, err := cfg.Email.PollIntervalDuration()
+	if err != nil {
+		c.log.Warn("email poll interval", "error", err)
+		return
+	}
+	c.Email.Configure(&email.Settings{
+		Worker:       cfg.Email.Worker,
+		Token:        token,
+		Domain:       cfg.Email.Domain,
+		Operators:    cfg.Email.Operators,
+		PollInterval: interval,
+		RequireDMARC: cfg.Email.DMARCRequired(),
+		FromName:     cfg.Email.FromSenderName(),
+	})
+}
+
+// syncEmailAddresses mints addresses for workspaces that lack one. With
+// the channel off it is a no-op.
+func (c *ControlPlane) syncEmailAddresses(ctx context.Context) {
+	if !c.Email.Configured() {
+		return
+	}
+	list, err := c.Workspaces.List(ctx)
+	if err != nil {
+		c.log.Warn("email sync list", "error", err)
+		return
+	}
+	refs := make([]email.WorkspaceRef, len(list))
+	for i, ws := range list {
+		refs[i] = email.WorkspaceRef{ID: ws.ID, Name: ws.Name}
+	}
+	if err := c.Email.SyncAddresses(ctx, refs); err != nil {
+		c.log.Warn("email sync", "error", err)
+	}
+}
+
 // draining reports the persisted drain flag. Shadow is a process-lifetime
 // mode (workers never start); drain is a runtime flag that undrain clears.
 func (c *ControlPlane) draining(_ context.Context) bool {
 	return c.Store.IsDraining()
+}
+
+// jobNotify resolves a job's notify: frontmatter for alert delivery. Nil
+// means unset (every channel); an empty list suppresses. An absent or
+// unparsable job never silences alerts.
+func (c *ControlPlane) jobNotify(ctx context.Context, workspaceID, job string) []string {
+	j, _ := c.findJob(ctx, workspaceID, job)
+	if j == nil {
+		return nil
+	}
+	return j.Notify
 }
 
 // findJob resolves a job by name in a workspace. It returns the parsed job

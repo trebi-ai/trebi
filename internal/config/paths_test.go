@@ -82,6 +82,9 @@ func TestSetPath_AllShowKeys(t *testing.T) {
 	cfg.applyDefaults()
 	ents := cfg.PathEntries(nil)
 	for _, e := range ents {
+		if e.Key == "notify.email" {
+			continue // mutually exclusive with the email block, which is also set here
+		}
 		sample := sampleSetValue(e.Key)
 		if err := cfg.SetPath(e.Key, sample); err != nil {
 			if strings.Contains(err.Error(), "read-only") {
@@ -350,6 +353,20 @@ func sampleSetValue(key string) string {
 		return "cli"
 	case key == "notify.email", key == "notify.whatsapp", key == "notify.discord":
 		return "echo trebi-notify-{{message}}"
+	case key == "email.worker":
+		return "https://trebi-mail.example.workers.dev"
+	case key == "email.token":
+		return "secret:trebi_mail"
+	case key == "email.domain":
+		return "mail.example.com"
+	case key == "email.operators":
+		return "ops@example.com"
+	case key == "email.poll_interval":
+		return "30s"
+	case key == "email.require_dmarc":
+		return "true"
+	case key == "email.from_name":
+		return "Trebi"
 	case key == "notify.waiting_after":
 		return "5m"
 	case key == "notify.usage_warn_at":

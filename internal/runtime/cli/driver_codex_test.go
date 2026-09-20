@@ -18,6 +18,7 @@ type codexPeer struct {
 	seen     chan map[string]any
 	approve  bool
 	closeOut func()
+	resumeID string // handshake resumes this thread id instead of starting
 
 	mu       sync.Mutex
 	hold     bool // turn/start stays active until the test completes it
@@ -44,7 +45,7 @@ func startCodexPeer(t *testing.T, approve bool, opts ...func(*codexPeer)) (*code
 	proto := &codexProtocol{
 		oneShot: false, model: "gpt-5", cwd: t.TempDir(),
 		approvalPolicy: "never", sandbox: "workspace-write",
-		waiters: map[int]chan map[string]any{},
+		resumeID: peer.resumeID, waiters: map[int]chan map[string]any{},
 	}
 	s := newTestWire("codex", proto, inW, outR, context.Background())
 	proto.setWriter(&wireWriter{s: s})
@@ -76,6 +77,9 @@ func (p *codexPeer) serve() {
 		case "thread/start":
 			p.reply(m["id"], map[string]any{"threadId": "thr_1"})
 			p.notify("thread/started", map[string]any{"thread": map[string]any{"id": "thr_1"}})
+		case "thread/resume":
+			params, _ := m["params"].(map[string]any)
+			p.reply(m["id"], map[string]any{"threadId": params["threadId"]})
 		case "turn/start":
 			p.reply(m["id"], map[string]any{"turnId": "turn_1"})
 			p.notify("turn/started", map[string]any{"turn": map[string]any{"id": "turn_1"}})
@@ -156,6 +160,25 @@ func TestCodexHandshakeAndTurn(t *testing.T) {
 		case <-timeout:
 			t.Fatalf("timeout: %+v", got)
 		}
+	}
+}
+
+// TestCodexResumeHandshake pins the start/resume split: a stored thread id
+// sends thread/resume; an empty one sends thread/start. A fresh run carries a
+// trebi-minted id that must never reach the wire as a resume handle.
+func TestCodexResumeHandshake(t *testing.T) {
+	t.Parallel()
+	peer, s, proto := startCodexPeer(t, false, func(p *codexPeer) { p.resumeID = "thr_9" })
+	defer s.procCloseForTest()
+	if proto.threadID != "thr_9" {
+		t.Fatalf("resumed thread id: %q", proto.threadID)
+	}
+	if s.ID() != "thr_9" {
+		t.Fatalf("session id: %q", s.ID())
+	}
+	methods := peerSentMethods(peer)
+	if !hasMethod(methods, "thread/resume") || hasMethod(methods, "thread/start") {
+		t.Fatalf("handshake methods: %v", methods)
 	}
 }
 
@@ -325,4 +348,29 @@ func TestCodexInterruptsWhenSteerUnsupported(t *testing.T) {
 		t.Fatalf("restart text: %+v", part)
 	}
 	peer.notify("turn/completed", map[string]any{"turn": map[string]any{"id": "turn_1", "status": "completed"}})
+}
+
+// peerSentMethods drains the frames the driver sent; a quiet gap ends the
+// collection (the handshake is synchronous, so the frames are already sent).
+func peerSentMethods(p *codexPeer) []string {
+	var methods []string
+	for {
+		select {
+		case m := <-p.seen:
+			if method, _ := m["method"].(string); method != "" {
+				methods = append(methods, method)
+			}
+		case <-time.After(200 * time.Millisecond):
+			return methods
+		}
+	}
+}
+
+func hasMethod(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }

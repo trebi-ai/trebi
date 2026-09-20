@@ -443,6 +443,41 @@ func (s *Service) messageByIdem(ctx context.Context, convID, key string) (Messag
 	return m, true, nil
 }
 
+// LastUserMessage returns the newest user message on one conversation,
+// or nil when it has none. Reply-by-mail reads the channel the exchange
+// began on (plan I.2).
+func (s *Service) LastUserMessage(ctx context.Context, conversationID string) (*Message, error) {
+	row := s.st.DB().QueryRowContext(ctx,
+		`SELECT `+msgCols+` FROM conversation_messages WHERE conversation_id=? AND role='user' ORDER BY id DESC LIMIT 1`,
+		conversationID)
+	m, err := scanMsg(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// LastAssistantTurn returns the run's newest assistant turn on one
+// conversation, or nil when the run produced none (plan I.2).
+func (s *Service) LastAssistantTurn(ctx context.Context, conversationID, runID string) (*Message, error) {
+	row := s.st.DB().QueryRowContext(ctx,
+		`SELECT `+msgCols+` FROM conversation_messages
+		WHERE conversation_id=? AND role='assistant' AND run_id=? AND turn_index IS NOT NULL
+		ORDER BY turn_index DESC LIMIT 1`,
+		conversationID, runID)
+	m, err := scanMsg(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 func scanMsg(row convScanner) (Message, error) {
 	var m Message
 	var turn sql.NullInt64

@@ -57,46 +57,6 @@ func (e AlreadyRunningError) Error() string {
 	return "daemon already running"
 }
 
-func alreadyRunningFrom(lockFile *os.File) error {
-	pid := readLockPID(lockFile)
-	addr := APIJSONURL()
-	return AlreadyRunningError{PID: pid, Addr: addr}
-}
-
-func writeLockPID(f *os.File, pid int) error {
-	if err := f.Truncate(0); err != nil {
-		return err
-	}
-	if _, err := f.Seek(0, 0); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(f, "%d\n", pid)
-	if err != nil {
-		return err
-	}
-	return f.Sync()
-}
-
-func readLockPID(f *os.File) int {
-	if f == nil {
-		return 0
-	}
-	if _, err := f.Seek(0, 0); err != nil {
-		return 0
-	}
-	buf := make([]byte, 64)
-	n, err := f.Read(buf)
-	if err != nil || n == 0 {
-		return 0
-	}
-	line := strings.TrimSpace(string(buf[:n]))
-	if i := strings.IndexByte(line, '\n'); i >= 0 {
-		line = line[:i]
-	}
-	pid, _ := strconv.Atoi(strings.TrimSpace(line))
-	return pid
-}
-
 // APIJSONURL returns the url field of api.json, or empty.
 func APIJSONURL() string {
 	b, err := os.ReadFile(APIJSONPath())
@@ -141,4 +101,44 @@ func probeAPIHealth(rawURL string) bool {
 	}
 	_ = resp.Body.Close()
 	return true
+}
+
+func alreadyRunningFrom(lockFile *os.File) error {
+	pid := readLockPID(lockFile)
+	addr := APIJSONURL()
+	return AlreadyRunningError{PID: pid, Addr: addr}
+}
+
+func writeLockPID(f *os.File, pid int) error {
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(f, "%d\n", pid)
+	if err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+func readLockPID(f *os.File) int {
+	if f == nil {
+		return 0
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return 0
+	}
+	buf := make([]byte, 64)
+	n, err := f.Read(buf)
+	if err != nil || n == 0 {
+		return 0
+	}
+	line := strings.TrimSpace(string(buf[:n]))
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(line))
+	return pid
 }

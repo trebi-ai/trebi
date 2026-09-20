@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -43,6 +45,8 @@ var consumeTopics = []string{
 	"harness.updated",
 	"harness.limit_exceeded",
 	"harness.limit_cleared",
+	"approval.created",
+	"approval.decided",
 }
 
 //nolint:gochecknoglobals // static table
@@ -104,9 +108,11 @@ func (s *Service) deliverLoop(ctx context.Context) {
 	}
 }
 
-// Tick consumes new bus events, raises dwelt waiting items, and syncs doctor.
+// Tick consumes new bus events, mails due escalations, raises dwelt waiting
+// items, and syncs doctor.
 func (s *Service) Tick(ctx context.Context) {
 	s.Consume(ctx)
+	s.sweepEscalations(ctx)
 	s.raiseDweltWaiting(ctx)
 	s.checkUsage(ctx)
 	if s.opts.Doctor != nil {
@@ -168,6 +174,10 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 	case "harness.limit_cleared":
 		name := firstNonEmpty(attrs["harness"], ev.ID)
 		s.autoResolve(ctx, KindLimitExceeded, "harness/"+name, "auto")
+	case "approval.created":
+		s.onApprovalCreated(ctx, ev, attrs)
+	case "approval.decided":
+		s.autoResolve(ctx, KindWaiting, "run/"+firstNonEmpty(attrs["run_id"], ev.ID), "auto")
 	}
 }
 
@@ -223,14 +233,30 @@ func (s *Service) raiseDweltWaiting(ctx context.Context) {
 	}
 	s.mu.Unlock()
 	for _, ep := range due {
-		_, err := s.Raise(ctx, RaiseOpts{
+		opts := RaiseOpts{
 			Kind: KindWaiting, RunID: ep.runID, WorkspaceID: ep.ws, JobName: ep.job,
 			TraceID: ep.trace, Title: "Agent waiting", Hint: "open attach",
-		})
-		if err != nil {
+		}
+		// A pending approval turns the wait into an answerable item: the
+		// captured question rides the body (D3) and the sweep mails it.
+		if q := s.approvalQuestion(ctx, ep.runID); q != "" {
+			opts.Body, opts.Hint = q, "Reply approve or deny by mail"
+			if !s.opts.ApprovalDisabled {
+				opts.EscalateAt = now.Add(s.opts.ApprovalAfter)
+			}
+		}
+		if _, err := s.Raise(ctx, opts); err != nil {
 			s.log.Warn("raise waiting", "run", ep.runID, "error", err)
 		}
 	}
+}
+
+// approvalQuestion returns the pending approval's question for runID, or "".
+func (s *Service) approvalQuestion(ctx context.Context, runID string) string {
+	if s.opts.ApprovalQuestion == nil {
+		return ""
+	}
+	return s.opts.ApprovalQuestion(ctx, runID)
 }
 
 func (s *Service) onRunFailed(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
@@ -327,6 +353,53 @@ func (s *Service) onLimitExceeded(ctx context.Context, ev store.StreamEvent, att
 	}
 }
 
+// onApprovalCreated puts the captured question on the run's waiting item
+// (D3): an already raised item gets the body and the mail deadline; a run
+// with no item yet gets its dwell clock started, so the dwelt raise carries
+// the question. The item itself stays the waiting kind; the UI joins it.
+func (s *Service) onApprovalCreated(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	runID := firstNonEmpty(attrs["run_id"], ev.ID)
+	if runID == "" {
+		return
+	}
+	question := s.approvalQuestion(ctx, runID)
+	if question == "" {
+		return
+	}
+	item, err := s.findActive(ctx, KindWaiting, "run/"+runID)
+	if err != nil {
+		s.log.Warn("approval attach lookup", "run", runID, "error", err)
+	}
+	if item != nil {
+		s.attachApproval(ctx, item, question)
+		return
+	}
+	s.noteWaiting(runID, attrs)
+}
+
+// attachApproval writes the question onto a raised waiting item and arms the
+// escalation sweep (plan M5): tray first, mail after the interval.
+func (s *Service) attachApproval(ctx context.Context, item *InboxItem, question string) {
+	esc := store.NullStr("")
+	if !s.opts.ApprovalDisabled {
+		esc = store.NullStr(s.opts.Now().Add(s.opts.ApprovalAfter).UTC().Format(time.RFC3339Nano))
+	}
+	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE inbox_items SET body=?, hint=?,
+			escalates_at=COALESCE(escalates_at, ?), revision=revision+1, updated_at=? WHERE id=?`,
+			question, "Reply approve or deny by mail", esc, nowStr, item.ID)
+		return err
+	}, store.BusEvent{
+		Topic: "inbox.updated", Entity: "inbox", EntityID: item.ID, Action: "updated",
+		TraceID: item.TraceID, Revision: item.Revision + 1,
+		Attrs: map[string]string{"kind": string(item.Kind), "status": string(item.Status)},
+	})
+	if err != nil {
+		s.log.Warn("approval attach", "id", item.ID, "error", err)
+	}
+}
+
 func (s *Service) checkUsage(ctx context.Context) {
 	rows, err := s.st.DB().QueryContext(ctx, `
 		SELECT name, usage_percent FROM harness_state
@@ -373,7 +446,7 @@ func (s *Service) saveCursor(seq int64) {
 }
 
 func (s *Service) enqueueDeliver(ctx context.Context, opts RaiseOpts, id string) {
-	if s.skipNotify() || len(s.opts.Notify) == 0 {
+	if s.skipNotify() || !s.anyChannel() {
 		return
 	}
 	if !s.running.Load() {
@@ -394,35 +467,125 @@ func (s *Service) skipNotify() bool {
 	return s.st.IsDraining()
 }
 
-// deliver tries channels in order and stops at the first success.
+// sweepEscalations mails approval items whose tray interval elapsed (plan
+// M5). Clearing escalates_at after the send is the durable mailed marker.
+func (s *Service) sweepEscalations(ctx context.Context) {
+	if s.skipNotify() {
+		return
+	}
+	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
+	rows, err := s.st.DB().QueryContext(ctx, `
+		SELECT `+inboxCols+` FROM inbox_items
+		WHERE status != 'resolved' AND escalates_at IS NOT NULL AND escalates_at <= ?`, nowStr)
+	if err != nil {
+		s.log.Warn("escalation sweep", "error", err)
+		return
+	}
+	defer rows.Close()
+	var due []InboxItem
+	for rows.Next() {
+		item, err := scanInbox(rows, true)
+		if err != nil {
+			s.log.Warn("escalation scan", "error", err)
+			return
+		}
+		due = append(due, *item)
+	}
+	if err := rows.Err(); err != nil {
+		s.log.Warn("escalation sweep", "error", err)
+		return
+	}
+	for _, item := range due {
+		if s.anyChannel() {
+			s.deliver(ctx, raiseOptsFromItem(item), item.ID)
+		}
+		if _, err := s.st.DB().ExecContext(ctx,
+			`UPDATE inbox_items SET escalates_at=NULL WHERE id=?`, item.ID); err != nil {
+			s.log.Warn("escalation clear", "id", item.ID, "error", err)
+		}
+	}
+}
+
+// emailOn reports whether the native channel is wired and configured.
+func (s *Service) emailOn() bool {
+	return s.opts.Email != nil && s.opts.Email.Configured()
+}
+
+func (s *Service) anyChannel() bool {
+	return s.emailOn() || len(s.opts.Notify) > 0
+}
+
+// deliver tries channels in order and stops at the first success. The
+// native email channel takes the email slot ahead of the shell chain; the
+// shell chain stays for WhatsApp, Discord, and anything without a Go
+// client. A job's notify: frontmatter selects or suppresses channels.
 func (s *Service) deliver(ctx context.Context, opts RaiseOpts, id string) {
+	allow := s.jobAllow(ctx, opts)
+	index := 0
+	if s.emailOn() && channelAllowed("email", allow) {
+		if s.deliverEmail(ctx, opts, id, index) {
+			return
+		}
+		index++
+	}
 	timeout := s.opts.NotifyTimeout
 	if timeout <= 0 {
 		timeout = defaultNotifyTimeout
 	}
-	for i, ch := range s.opts.Notify {
+	for _, ch := range s.opts.Notify {
+		if !channelAllowed(ch.Name, allow) {
+			continue
+		}
 		cctx, cancel := context.WithTimeout(ctx, timeout)
 		cmd := exec.CommandContext(cctx, "sh", "-c", expandNotify(ch.Command))
 		cmd.Env = opts.notifyEnv(id)
 		err := cmd.Run()
 		cancel()
-		status := "ok"
 		if err != nil {
-			status = err.Error()
-			s.log.Warn("alert.delivered", "channel", ch.Name, "index", i, "error", err)
+			s.log.Warn("alert.delivered", "channel", ch.Name, "index", index, "error", err)
 		}
-		if _, aerr := s.st.Append(ctx, store.BusEvent{
-			Topic: "alert.delivered", Entity: "alert", EntityID: id, Action: "updated",
-			Attrs: map[string]string{
-				"kind": string(opts.Kind), "channel": ch.Name,
-				"index": strconv.Itoa(i), "status": status,
-			},
-		}); aerr != nil {
-			s.log.Warn("bus append", "topic", "alert.delivered", "error", aerr)
-		}
+		s.appendDelivered(ctx, opts, id, ch.Name, index, statusOf(err), "")
 		if err == nil {
 			return
 		}
+		index++
+	}
+}
+
+// deliverEmail sends through the native channel and records the delivery.
+// It reports success, so the first-success chain stops here.
+func (s *Service) deliverEmail(ctx context.Context, opts RaiseOpts, id string, index int) bool {
+	msgID, err := s.opts.Email.SendAlert(ctx, id, opts.emailSubject(), opts.emailText(id))
+	if err != nil {
+		s.log.Warn("alert.delivered", "channel", "email", "index", index, "error", err)
+	}
+	s.appendDelivered(ctx, opts, id, "email", index, statusOf(err), msgID)
+	return err == nil
+}
+
+// jobAllow resolves the per-job notify filter. Nil means every channel;
+// an empty list suppresses delivery for that job. Alerts without a job
+// carry no filter.
+func (s *Service) jobAllow(ctx context.Context, opts RaiseOpts) []string {
+	if s.opts.JobNotify == nil || opts.WorkspaceID == "" || opts.JobName == "" {
+		return nil
+	}
+	return s.opts.JobNotify(ctx, opts.WorkspaceID, opts.JobName)
+}
+
+func (s *Service) appendDelivered(ctx context.Context, opts RaiseOpts, id, channel string, index int, status, msgID string) {
+	attrs := map[string]string{
+		"kind": string(opts.Kind), "channel": channel,
+		"index": strconv.Itoa(index), "status": status,
+	}
+	if msgID != "" {
+		attrs["message_id"] = msgID
+	}
+	if _, aerr := s.st.Append(ctx, store.BusEvent{
+		Topic: "alert.delivered", Entity: "alert", EntityID: id, Action: "updated",
+		Attrs: attrs,
+	}); aerr != nil {
+		s.log.Warn("bus append", "topic", "alert.delivered", "error", aerr)
 	}
 }
 
@@ -458,6 +621,103 @@ func (s *Service) upsertDoctor(ctx context.Context, f DoctorFinding) {
 	if err != nil {
 		s.log.Warn("doctor inbox", "id", f.ID, "error", err)
 	}
+}
+
+// EmailInboxItem records the low-severity item for one inbound-mail
+// event: a misrouted tag from a trusted sender, or a spoof suspect
+// (plan A.8, A.10). One open item per subject; a repeat bumps the
+// revision. The kind registry stays closed: kind is health, alert_kind
+// is "email".
+func (s *Service) EmailInboxItem(ctx context.Context, d email.RouteDecision, msg email.IngressMessage) (string, error) {
+	var subject, title, body, hint string
+	if d.Spoof() {
+		subject = "email/spoof/" + msg.From
+		title = "Unverified mail claims a trusted address"
+		body = "Mail from " + msg.From + " with subject \"" + sanitizeText(msg.Subject) +
+			"\" failed the DMARC check. The message was dropped."
+		hint = "The sender's mail server does not sign for this address. Check the DMARC setup of the sender."
+	} else {
+		subject = "email/misrouted/" + msg.Tag
+		title = "Email misrouted to +" + msg.Tag
+		body = "Mail from " + msg.From + " with subject \"" + sanitizeText(msg.Subject) +
+			"\" used a tag no agent in this workspace has. The message reached the assistant; the tag is kept."
+		hint = "Add an AGENT.md named " + msg.Tag + ", or tell the sender the correct tag."
+	}
+	item, err := s.findActiveBySubject(ctx, subject)
+	if err != nil {
+		return "", fmt.Errorf("email inbox lookup %s: %w", subject, err)
+	}
+	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
+	if item != nil {
+		if _, err := s.st.DB().ExecContext(ctx, `UPDATE inbox_items SET title=?, body=?, hint=?,
+			email_message_id=?, revision=revision+1, updated_at=? WHERE id=?`,
+			title, body, hint, msg.ID, nowStr, item.ID); err != nil {
+			return "", fmt.Errorf("email inbox update %s: %w", subject, err)
+		}
+		return item.ID, nil
+	}
+	id := ulid.Make().String()
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO inbox_items (
+			id, kind, status, subject, title, body, hint, workspace_id, alert_kind,
+			trace_id, email_message_id, revision, created_at, updated_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+			id, string(InboxHealth), string(InboxUnread), subject, title, body, hint,
+			store.NullStr(d.WorkspaceID), "email", store.NullStr(d.TraceID), msg.ID, nowStr, nowStr)
+		return err
+	}, store.BusEvent{
+		Topic: "inbox.created", Entity: "inbox", EntityID: id, Action: "created",
+		TraceID: d.TraceID,
+		Attrs:   map[string]string{"kind": string(InboxHealth), "status": "unread"},
+	})
+	if err != nil {
+		return "", fmt.Errorf("email inbox insert %s: %w", subject, err)
+	}
+	return id, nil
+}
+
+// AmbiguousReplyItem records the low-severity item for one approval reply
+// that named both decisions (plan Part P). The reply became a run message;
+// the approval still waits. One open item per sender; a repeat bumps the
+// revision. Kind is health, alert_kind is "email", like EmailInboxItem.
+func (s *Service) AmbiguousReplyItem(ctx context.Context, runID string, d email.RouteDecision, msg email.IngressMessage) (string, error) {
+	subject := "email/ambiguous/" + msg.From
+	title := "Approval reply names both decisions"
+	body := "Mail from " + msg.From + " with subject \"" + sanitizeText(msg.Subject) +
+		"\" named both approve and deny. The reply became a run message; the approval still waits."
+	hint := "Answer again with one decision word: approve or deny."
+	item, err := s.findActiveBySubject(ctx, subject)
+	if err != nil {
+		return "", fmt.Errorf("ambiguous inbox lookup %s: %w", subject, err)
+	}
+	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
+	if item != nil {
+		if _, err := s.st.DB().ExecContext(ctx, `UPDATE inbox_items SET title=?, body=?, hint=?,
+			email_message_id=?, revision=revision+1, updated_at=? WHERE id=?`,
+			title, body, hint, msg.ID, nowStr, item.ID); err != nil {
+			return "", fmt.Errorf("ambiguous inbox update %s: %w", subject, err)
+		}
+		return item.ID, nil
+	}
+	id := ulid.Make().String()
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO inbox_items (
+			id, kind, status, subject, title, body, hint, run_id, workspace_id, alert_kind,
+			trace_id, email_message_id, revision, created_at, updated_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+			id, string(InboxHealth), string(InboxUnread), subject, title, body, hint,
+			store.NullStr(runID), store.NullStr(d.WorkspaceID), "email",
+			store.NullStr(d.TraceID), msg.ID, nowStr, nowStr)
+		return err
+	}, store.BusEvent{
+		Topic: "inbox.created", Entity: "inbox", EntityID: id, Action: "created",
+		TraceID: d.TraceID,
+		Attrs:   map[string]string{"kind": string(InboxHealth), "status": "unread"},
+	})
+	if err != nil {
+		return "", fmt.Errorf("ambiguous inbox insert %s: %w", subject, err)
+	}
+	return id, nil
 }
 
 func (s *Service) findActiveBySubject(ctx context.Context, subject string) (*InboxItem, error) {
@@ -526,6 +786,29 @@ func CollectDoctorFindings() []DoctorFinding {
 		return []DoctorFinding{}
 	}
 	return findings
+}
+
+// raiseOptsFromItem rebuilds the delivery context one stored item carries.
+func raiseOptsFromItem(item InboxItem) RaiseOpts {
+	return RaiseOpts{
+		Kind: Kind(item.AlertKind), Subject: item.Subject, Title: item.Title,
+		Body: item.Body, Hint: item.Hint, RunID: item.RunID,
+		WorkspaceID: item.Workspace, JobName: item.Job, TraceID: item.TraceID,
+	}
+}
+
+func channelAllowed(name string, allow []string) bool {
+	if allow == nil {
+		return true
+	}
+	return slices.Contains(allow, name)
+}
+
+func statusOf(err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return "ok"
 }
 
 func attrMap(raw json.RawMessage) map[string]string {

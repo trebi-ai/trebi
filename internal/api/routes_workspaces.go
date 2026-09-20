@@ -94,6 +94,7 @@ func (s *Server) handleWorkspacesAdd(w http.ResponseWriter, r *http.Request) {
 		writeWorkspaceAddErr(w, err)
 		return
 	}
+	s.ensureWorkspaceEmail(r.Context(), ws.ID, ws.Name)
 	writeJSON(w, http.StatusCreated, ws)
 }
 
@@ -141,12 +142,17 @@ func (s *Server) handleAssistantGet(w http.ResponseWriter, r *http.Request) {
 		asst = cfg.Assistant
 	}
 	runtime, reason, auth := asst.Route(j.Runtime)
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"name": j.Name, "harness": j.Harness, "description": j.Description,
 		"memory": j.Memory, "path": path, "parse_error": j.ParseError, "hash": j.Hash,
 		"disabled": j.Disabled,
 		"runtime":  runtime, "model": asst.Model, "auth_status": auth, "runtime_reason": reason,
-	})
+	}
+	// The assistant owns the workspace base address; show it masked.
+	if addr, err := s.email.Masked(r.Context(), ws.ID); err == nil && addr.LocalPart != "" {
+		body["email_address"] = addr.Full()
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleAssistantPut(w http.ResponseWriter, r *http.Request) {

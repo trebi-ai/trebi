@@ -185,6 +185,7 @@ func mcpTestMux() *http.ServeMux {
 	s.routeConversations(mux)
 	s.routeEvents(mux)
 	s.routeFiles(mux)
+	s.routeEmail(mux)
 	s.routeHarness(mux)
 	s.routeInbox(mux)
 	s.routeConnectors(mux)
@@ -216,6 +217,9 @@ var knownFields = []tools.DocField{ //nolint:gochecknoglobals // static probe li
 	{Name: "content", Type: "string"}, {Name: "force", Type: "boolean"}, {Name: "at", Type: "string"},
 	{Name: "text", Type: "string"}, {Name: "body", Type: "string"}, {Name: "entry_id", Type: "string"},
 	{Name: "status", Type: "string"}, {Name: "note", Type: "string"},
+	{Name: "reveal", Type: "boolean"}, {Name: "license", Type: "string"},
+	{Name: "direction", Type: "string"}, {Name: "thread", Type: "string"},
+	{Name: "message", Type: "string"}, {Name: "attachment", Type: "string"}, {Name: "out", Type: "string"},
 }
 
 // probeValue returns a value that differs from what the sample carries, so a
@@ -379,7 +383,8 @@ func assertKnownFieldsDocumented(t *testing.T, tool, action string, entry tools.
 // before the call reaches the daemon. The builder never sees it, so the read
 // probe cannot find it here.
 func clientSideField(tool, action, name string) bool {
-	return tool == "secret" && action == "set" && name == "value_file"
+	return tool == "secret" && action == "set" && name == "value_file" ||
+		tool == "email" && action == "attachment" && name == "out"
 }
 
 // readsResponseField reports whether one field steers the response transform

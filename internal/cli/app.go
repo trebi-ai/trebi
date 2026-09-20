@@ -67,6 +67,8 @@ func NewApp() *cli.Command {
 			mcpCommand(),
 			queueCommand(),
 			rulesCommand(),
+			emailCommand(),
+			licenseCommand(),
 		},
 	}
 	sortCommands(app.Commands)

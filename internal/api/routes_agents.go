@@ -44,6 +44,9 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 		}
 		list = append(list, buildAgentPayload(row, owned[row.Name], false))
 	}
+	for i := range list {
+		s.setAgentEmail(r.Context(), &list[i], ws.ID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": list})
 }
 
@@ -63,8 +66,19 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := buildAgentPayload(row, ownedJobNames(rows)[row.Name], true)
+	s.setAgentEmail(r.Context(), &p, ws.ID)
 	setETagHash(w, p.Hash)
 	writeJSON(w, http.StatusOK, p)
+}
+
+// setAgentEmail fills the masked subaddress when the workspace has an
+// address. A channel error never fails the payload.
+func (s *Server) setAgentEmail(ctx context.Context, p *agentPayload, wsID string) {
+	addr, err := s.email.AgentAddress(ctx, wsID, p.Name)
+	if err != nil {
+		return
+	}
+	p.EmailAddress = addr
 }
 
 // handleAgentPut is the agent upsert. A new folder creates the agent and
@@ -245,6 +259,9 @@ type agentPayload struct {
 	Jobs        []string        `json:"jobs,omitempty"` // names, list/show only
 	Markdown    string          `json:"markdown,omitempty"`
 	MTime       string          `json:"mtime,omitempty"`
+	// EmailAddress is the agent's masked subaddress, set when the channel
+	// is live for the workspace.
+	EmailAddress string `json:"email_address,omitempty"`
 }
 
 // buildAgentPayload reads the AGENT.md once. withDocs adds markdown, mtime,
@@ -337,7 +354,9 @@ func ownedJobNames(rows []workspaces.JobRow) map[string][]string {
 }
 
 // agentNameRE bounds an agent short name: a lowercase slug, never a path.
-var agentNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+// The 24-character cap is the email tag budget (plan Part D): the name
+// becomes a subaddress, so it must fail here, not at the first send.
+var agentNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,23}$`)
 
 // seededAgentMarkdown is the default AGENT.md of a bare create. It names
 // {{agent_dir}} so the agent finds its ledger from the workspace root (C.3).

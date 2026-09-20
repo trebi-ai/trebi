@@ -109,6 +109,32 @@ func workspaceCommand() *cli.Command {
 				Action: runWorkspaceSet,
 			},
 			{
+				Name:  "email",
+				Usage: "workspace mail address",
+				Commands: []*cli.Command{
+					{
+						Name:      "show",
+						Usage:     "show the workspace address (masked unless --reveal)",
+						ArgsUsage: "[id|name]",
+						Flags: []cli.Flag{
+							&cli.BoolFlag{Name: "reveal", Usage: "print the full local part"},
+							&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+						},
+						Action: runWorkspaceEmailShow,
+					},
+					{
+						Name:      "rotate",
+						Usage:     "mint a new address token; the old address retires",
+						ArgsUsage: "[id|name]",
+						Flags: []cli.Flag{
+							&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+							&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "confirm the rotate"},
+						},
+						Action: runWorkspaceEmailRotate,
+					},
+				},
+			},
+			{
 				Name:      "unlink",
 				Usage:     "remove a client-side remote workspace link (does not delete the workspace; see workspace remove)",
 				ArgsUsage: "<id|name>",
@@ -285,6 +311,64 @@ func runWorkspaceSet(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "updated %s\n", id)
+	return nil
+}
+
+// workspaceEmailArg resolves the optional workspace argument: an explicit
+// id/name, else the flag/sticky context.
+func workspaceEmailArg(c *cli.Command) (string, error) {
+	if id := c.Args().Get(0); id != "" {
+		return id, nil
+	}
+	if id := workspaceFlag(c); id != "" {
+		return id, nil
+	}
+	return "", fmt.Errorf("workspace id/name required (or set sticky context: trebi workspace use)")
+}
+
+func runWorkspaceEmailShow(_ context.Context, c *cli.Command) error {
+	id, err := workspaceEmailArg(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.GetJSON(request.BuildWorkspaceEmailGetPath(id, c.Bool("reveal")), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	fmt.Fprintf(w, "Address: %s\n", mapStr(body, "address"))
+	fmt.Fprintf(w, "Masked:  %s\n", mapStr(body, "masked"))
+	fmt.Fprintf(w, "Created: %s\n", mapStr(body, "created_at"))
+	if r := mapStr(body, "rotated_at"); r != "" {
+		fmt.Fprintf(w, "Rotated: %s\n", r)
+	}
+	return nil
+}
+
+func runWorkspaceEmailRotate(_ context.Context, c *cli.Command) error {
+	id, err := workspaceEmailArg(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildWorkspaceEmailRotate(id, c.Bool("yes")), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	fmt.Fprintf(outWriter(c), "rotated: %s\n", mapStr(body, "address"))
 	return nil
 }
 

@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 16
+const SchemaVersion = 18
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -448,6 +448,50 @@ ALTER TABLE runs ADD COLUMN attach_kind TEXT;
 		`
 ALTER TABLE approvals ADD COLUMN permission_key TEXT NOT NULL DEFAULT '';
 CREATE INDEX idx_approvals_key ON approvals(run_id, permission_key);
+`,
+		// v17: email channel (plan 2026-09-19 Part G). email_addresses is the
+		// source of truth for every workspace address; email_messages is the
+		// envelope log, never bodies. inbox_items.email_message_id closes the
+		// alert loop: a reply resolves to the item by Message-ID.
+		`
+CREATE TABLE email_addresses (
+  workspace_id  TEXT PRIMARY KEY,
+  local_part    TEXT NOT NULL UNIQUE,
+  domain        TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  rotated_at    TEXT,
+  revision      INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE email_messages (
+  id               TEXT PRIMARY KEY,
+  direction        TEXT NOT NULL,
+  workspace_id     TEXT NOT NULL DEFAULT '',
+  agent            TEXT NOT NULL DEFAULT '',
+  message_id       TEXT NOT NULL DEFAULT '',
+  in_reply_to      TEXT NOT NULL DEFAULT '',
+  thread_root      TEXT NOT NULL DEFAULT '',
+  sender           TEXT NOT NULL DEFAULT '',
+  recipients       TEXT NOT NULL DEFAULT '',
+  subject          TEXT NOT NULL DEFAULT '',
+  dmarc            TEXT NOT NULL DEFAULT '',
+  disposition      TEXT NOT NULL,
+  inbox_id         TEXT,
+  run_id           TEXT,
+  conversation_id  TEXT,
+  attachments      TEXT NOT NULL DEFAULT '[]',
+  trace_id         TEXT NOT NULL DEFAULT '',
+  created_at       TEXT NOT NULL,
+  revision         INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX email_messages_message_id ON email_messages(message_id);
+CREATE INDEX email_messages_thread ON email_messages(thread_root, created_at);
+ALTER TABLE inbox_items ADD COLUMN email_message_id TEXT NOT NULL DEFAULT '';
+`,
+		// v18: reply-by-mail marker (plan 2026-09-19 Part I.2). covered_turn is
+		// the turn index one outbound reply already covered; the tick compares
+		// it to new turns, so a restart cannot resend or skip.
+		`
+ALTER TABLE email_messages ADD COLUMN covered_turn INTEGER;
 `,
 	}
 }

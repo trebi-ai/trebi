@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -203,9 +204,16 @@ func (b *mcpBridge) run(ctx context.Context, in io.Reader, out io.Writer) error 
 		if err != nil {
 			return err
 		}
+		outPath, msg := b.attachmentOut(msg)
 		reply, err := b.forward(ctx, msg)
 		if err != nil {
 			return err
+		}
+		if outPath != "" && len(reply) > 0 {
+			reply, err = b.writeFileReply(reply, outPath)
+			if err != nil {
+				return err
+			}
 		}
 		if len(reply) == 0 {
 			continue
@@ -252,6 +260,84 @@ func (b *mcpBridge) resolveValueFile(msg json.RawMessage) (json.RawMessage, erro
 	args, _ := params["arguments"].(map[string]any)
 	args["input"] = resolved
 	out, err := json.Marshal(full)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// attachmentOut pulls the client-side `out` field of email.attachment before
+// the call reaches the daemon, and returns the path plus the call without
+// it. The bridge writes the bytes to that path after the reply, so an
+// attachment never rides a transcript and the daemon never sees the path.
+func (b *mcpBridge) attachmentOut(msg json.RawMessage) (string, json.RawMessage) {
+	var frame struct {
+		Method string `json:"method"`
+		Params struct {
+			Name      string `json:"name"`
+			Arguments struct {
+				Action string         `json:"action"`
+				Input  map[string]any `json:"input"`
+			} `json:"arguments"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(msg, &frame); err != nil {
+		return "", msg
+	}
+	if frame.Method != "tools/call" || frame.Params.Name != "email" ||
+		frame.Params.Arguments.Action != "attachment" {
+		return "", msg
+	}
+	path, _ := frame.Params.Arguments.Input["out"].(string)
+	if path == "" {
+		return "", msg
+	}
+	var full map[string]any
+	if err := json.Unmarshal(msg, &full); err != nil {
+		return "", msg
+	}
+	params, _ := full["params"].(map[string]any)
+	args, _ := params["arguments"].(map[string]any)
+	input, _ := args["input"].(map[string]any)
+	delete(input, "out")
+	out, err := json.Marshal(full)
+	if err != nil {
+		return "", msg
+	}
+	return path, out
+}
+
+// writeFileReply decodes one email.attachment reply, writes the base64 bytes
+// to the local path, and replaces the reply with the path. An error reply
+// passes through unchanged.
+func (b *mcpBridge) writeFileReply(reply json.RawMessage, path string) (json.RawMessage, error) {
+	var res struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(reply, &res); err != nil || res.Result.IsError || len(res.Result.Content) == 0 {
+		return reply, nil
+	}
+	var payload struct {
+		Size          int    `json:"size"`
+		ContentBase64 string `json:"content_base64"`
+	}
+	if err := json.Unmarshal([]byte(res.Result.Content[0].Text), &payload); err != nil || payload.ContentBase64 == "" {
+		return reply, nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(payload.ContentBase64)
+	if err != nil {
+		return nil, fmt.Errorf("attachment %s: decode: %w", path, err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		return nil, fmt.Errorf("attachment %s: %w", path, err)
+	}
+	res.Result.Content[0].Text = fmt.Sprintf("wrote %s (%d bytes)", path, len(raw))
+	out, err := json.Marshal(res)
 	if err != nil {
 		return nil, err
 	}

@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	ChannelUI  = "ui"
-	ChannelCLI = "cli"
+	ChannelUI    = "ui"
+	ChannelCLI   = "cli"
+	ChannelEmail = "email"
 
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
@@ -73,7 +74,16 @@ type Message struct {
 	RunID          string    `json:"run_id,omitempty"`
 	TurnIndex      *int      `json:"turn_index,omitempty"`
 	IdempotencyKey string    `json:"idempotency_key,omitempty"`
+	Delivery       *Delivery `json:"delivery,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
+}
+
+// Delivery marks one assistant turn that also went out by mail (plan
+// 2026-09-19 I.2). Email fills it at read time; it is never stored.
+type Delivery struct {
+	Channel   string `json:"channel"`
+	MessageID string `json:"message_id"`
+	SentAt    string `json:"sent_at"`
 }
 
 // Pointer is a channel's active conversation.

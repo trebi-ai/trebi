@@ -104,6 +104,7 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 	if s.convErr(w, err, "conversation not found") {
 		return
 	}
+	s.email.Decorate(r.Context(), list)
 	resp := map[string]any{"messages": list}
 	if len(list) == limit {
 		resp["next_cursor"] = list[len(list)-1].ID

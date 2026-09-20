@@ -37,6 +37,9 @@ func (s *Server) routeConnectors(mux *http.ServeMux) {
 func (s *Server) handleConnectors(w http.ResponseWriter, r *http.Request) {
 	_ = s.connectors.Load() // refresh from disk; stale list is worse than a load error
 	list := s.connectors.List()
+	if row := s.email.ConnectorRow(); row != nil {
+		list = append(list, row) // the native email channel rides the list (plan K)
+	}
 	sort.Slice(list, func(i, j int) bool {
 		return fmt.Sprint(list[i]["name"]) < fmt.Sprint(list[j]["name"])
 	})
@@ -74,6 +77,14 @@ func (s *Server) handleConnectorsCreate(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleConnectorGet(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("name") == "email" {
+		if row := s.email.ConnectorRow(); row != nil {
+			writeJSON(w, http.StatusOK, row)
+			return
+		}
+		writeErr(w, http.StatusNotFound, "not_found", "email is not configured")
+		return
+	}
 	row, err := s.connectors.Get(r.PathValue("name"))
 	if err != nil {
 		if s.writeConnectorErr(w, err) {
@@ -143,7 +154,14 @@ func (s *Server) handleConnectorStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped"})
 }
 
+// handleConnectorRestart restarts a managed connector. The email row's
+// restart is a forced poll and nothing else: the native channel has no
+// process (plan K).
 func (s *Server) handleConnectorRestart(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("name") == "email" {
+		s.handleEmailPoll(w, r)
+		return
+	}
 	if err := s.connectors.Restart(r.Context(), r.PathValue("name")); err != nil {
 		if s.writeConnectorErr(w, err) {
 			return
@@ -183,6 +201,12 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConnectorLogs(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	// The native channel has no process, so it has no process log. Its
+	// activity is the email log (plan K).
+	if err := s.connectors.GuardReserved(name); err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
 	path := filepath.Join(home.ConnectorsLogDir(), name+".jsonl")
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -278,6 +302,8 @@ func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, connectors.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, connectors.ErrInherited):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, connectors.ErrReserved):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	default:
 		return false

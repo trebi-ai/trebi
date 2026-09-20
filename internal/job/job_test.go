@@ -2,6 +2,7 @@ package job_test
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -63,6 +64,35 @@ func TestParseCanonical(t *testing.T) {
 	}
 	if j.ParseError != "" {
 		t.Fatal(j.ParseError)
+	}
+}
+
+// TestParseNotify pins the nil-ness the alert filter keys on: nil = unset
+// (every channel), an empty list = suppress.
+func TestParseNotify(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		fm   string
+		want []string
+	}{
+		{"unset is nil", "", nil},
+		{"empty suppresses", "notify: []\n", []string{}},
+		{"list selects", "notify: [email, whatsapp]\n", []string{"email", "whatsapp"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			j, err := job.ParseBytes("/ws/demo/JOB.md", []byte("---\n"+tc.fm+"---\nBody\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (j.Notify == nil) != (tc.want == nil) {
+				t.Fatalf("notify = %#v, want %#v; nil-ness must survive", j.Notify, tc.want)
+			}
+			if !slices.Equal(j.Notify, tc.want) {
+				t.Fatalf("notify = %#v, want %#v", j.Notify, tc.want)
+			}
+		})
 	}
 }
 

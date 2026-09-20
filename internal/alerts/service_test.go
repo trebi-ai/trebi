@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -263,6 +268,172 @@ func TestWaitingDwell(t *testing.T) {
 	items, _ := svc.List(ctx, alerts.ListOpts{})
 	if len(items) != 1 {
 		t.Fatalf("want waiting item, got %d", len(items))
+	}
+}
+
+// TestWaitingApprovalEscalation pins the D3 and M5 path: a dwelt waiting
+// raise with a pending approval carries the question body, mails only after
+// the approval interval, and clears the deadline once mailed.
+func TestWaitingApprovalEscalation(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	svc, st := testSvc(t, alerts.Options{
+		WaitingAfter: 5 * time.Minute, ApprovalAfter: time.Minute,
+		Now:    func() time.Time { return now },
+		Notify: []alerts.NotifyChannel{{Name: "email", Command: "true"}},
+		ApprovalQuestion: func(context.Context, string) string {
+			return "Deploy to production?"
+		},
+	})
+	ctx := context.Background()
+	since := now.Add(-6 * time.Minute).Format(time.RFC3339Nano)
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "session.state",
+		Attrs: map[string]string{"run_id": "r1", "state": "waiting", "since": since},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(ctx)
+	items, _ := svc.List(ctx, alerts.ListOpts{})
+	if len(items) != 1 {
+		t.Fatalf("want waiting item, got %d", len(items))
+	}
+	got, err := svc.Get(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "Deploy to production?" || got.Hint != "Reply approve or deny by mail" {
+		t.Fatalf("item body/hint = %q / %q", got.Body, got.Hint)
+	}
+	if got.EscalatesAt == nil || !got.EscalatesAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("escalates_at = %v", got.EscalatesAt)
+	}
+	if events, _ := st.ListBus(ctx, 0, []string{"alert.delivered"}, 10); len(events) != 0 {
+		t.Fatalf("delivered before the interval: %v", events)
+	}
+
+	now = now.Add(2 * time.Minute)
+	svc.Tick(ctx)
+	events, _ := st.ListBus(ctx, 0, []string{"alert.delivered"}, 10)
+	if len(events) != 1 {
+		t.Fatalf("want one delivery, got %v", events)
+	}
+	got, err = svc.Get(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EscalatesAt != nil {
+		t.Fatalf("escalates_at not cleared: %v", got.EscalatesAt)
+	}
+}
+
+// TestApprovalCreatedNotesWaiting covers the advisory path: approval.created
+// without a session.state frame still starts the dwell clock, and the dwelt
+// raise carries the question.
+func TestApprovalCreatedNotesWaiting(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	svc, st := testSvc(t, alerts.Options{
+		WaitingAfter: 5 * time.Minute,
+		Now:          func() time.Time { return now },
+		ApprovalQuestion: func(context.Context, string) string {
+			return "Overwrite the nightly report?"
+		},
+	})
+	ctx := context.Background()
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "approval.created", Attrs: map[string]string{"run_id": "r1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(ctx)
+	if items, _ := svc.List(ctx, alerts.ListOpts{}); len(items) != 0 {
+		t.Fatalf("raised before dwell: %v", items)
+	}
+
+	now = now.Add(6 * time.Minute)
+	svc.Tick(ctx)
+	items, _ := svc.List(ctx, alerts.ListOpts{})
+	if len(items) != 1 {
+		t.Fatalf("want waiting item, got %d", len(items))
+	}
+	got, err := svc.Get(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AlertKind != "waiting" || got.Body != "Overwrite the nightly report?" {
+		t.Fatalf("item = %+v", got)
+	}
+}
+
+// TestApprovalCreatedAttachesRaisedItem covers the late question: the dwelt
+// item exists first, then approval.created writes the body and arms the mail.
+func TestApprovalCreatedAttachesRaisedItem(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	question := ""
+	svc, st := testSvc(t, alerts.Options{
+		WaitingAfter: 5 * time.Minute, ApprovalAfter: time.Minute,
+		Now:              func() time.Time { return now },
+		ApprovalQuestion: func(context.Context, string) string { return question },
+	})
+	ctx := context.Background()
+	since := now.Add(-6 * time.Minute).Format(time.RFC3339Nano)
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "session.state",
+		Attrs: map[string]string{"run_id": "r1", "state": "waiting", "since": since},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(ctx)
+	items, _ := svc.List(ctx, alerts.ListOpts{})
+	if len(items) != 1 {
+		t.Fatalf("want waiting item, got %d", len(items))
+	}
+
+	question = "Deploy to production?"
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "approval.created", Attrs: map[string]string{"run_id": "r1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(ctx)
+	got, err := svc.Get(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "Deploy to production?" {
+		t.Fatalf("body = %q", got.Body)
+	}
+	if got.EscalatesAt == nil {
+		t.Fatal("escalates_at not armed")
+	}
+}
+
+// TestApprovalDecidedResolvesWaiting pins the decided frame onto the waiting
+// subject, so a reply-by-mail decision drains the inbox item.
+func TestApprovalDecidedResolvesWaiting(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	id, err := svc.Raise(ctx, alerts.RaiseOpts{
+		Kind: alerts.KindWaiting, Subject: "run/r1", RunID: "r1", Title: "Agent waiting",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "approval.decided", Attrs: map[string]string{"run_id": "r1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(ctx)
+	got, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != alerts.InboxResolved {
+		t.Fatalf("status = %q", got.Status)
 	}
 }
 
@@ -621,6 +792,138 @@ func TestListAlertsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestNativeEmailFirstSuccess(t *testing.T) {
+	t.Parallel()
+	st := openAlertsStore(t)
+	w := &sendWorker{token: "test-token-0000"}
+	marker := filepath.Join(t.TempDir(), "marker")
+	svc := alerts.New(st, alerts.Options{
+		Email:  nativeEmail(t, st, w),
+		Notify: []alerts.NotifyChannel{{Name: "whatsapp", Command: "touch " + marker}},
+	})
+	ctx := context.Background()
+	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sends := w.sent()
+	if len(sends) != 1 {
+		t.Fatalf("native sends = %d, want 1", len(sends))
+	}
+	if want := "[trebi] wait: run/r1"; sends[0].Subject != want {
+		t.Errorf("subject = %q, want %q", sends[0].Subject, want)
+	}
+	if !strings.Contains(sends[0].Text, "inbox: "+id) {
+		t.Errorf("text = %q", sends[0].Text)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("shell channel ran after native success")
+	}
+	item, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.EmailMessageID != sends[0].MessageID {
+		t.Errorf("inbox email_message_id = %q, want %q", item.EmailMessageID, sends[0].MessageID)
+	}
+	events := delivered(t, st)
+	if len(events) != 1 {
+		t.Fatalf("alert.delivered rows = %d, want 1", len(events))
+	}
+	var attrs map[string]string
+	_ = json.Unmarshal(events[0].Attrs, &attrs)
+	if attrs["channel"] != "email" || attrs["index"] != "0" || attrs["status"] != "ok" ||
+		attrs["message_id"] != sends[0].MessageID {
+		t.Errorf("delivered attrs = %v", attrs)
+	}
+}
+
+func TestNativeEmailFallsBackToShell(t *testing.T) {
+	t.Parallel()
+	st := openAlertsStore(t)
+	w := &sendWorker{token: "test-token-0000", failAll: true}
+	marker := filepath.Join(t.TempDir(), "marker")
+	svc := alerts.New(st, alerts.Options{
+		Email:  nativeEmail(t, st, w),
+		Notify: []alerts.NotifyChannel{{Name: "whatsapp", Command: "touch " + marker}},
+	})
+	ctx := context.Background()
+	if _, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("shell fallback did not run")
+	}
+	events := delivered(t, st)
+	if len(events) != 2 {
+		t.Fatalf("alert.delivered rows = %d, want 2", len(events))
+	}
+	want := []struct{ channel, index string }{{"email", "0"}, {"whatsapp", "1"}}
+	for i, ev := range events {
+		var attrs map[string]string
+		_ = json.Unmarshal(ev.Attrs, &attrs)
+		if attrs["channel"] != want[i].channel || attrs["index"] != want[i].index {
+			t.Errorf("row %d attrs = %v", i, attrs)
+		}
+	}
+	var failAttrs map[string]string
+	_ = json.Unmarshal(events[0].Attrs, &failAttrs)
+	if failAttrs["status"] == "ok" {
+		t.Errorf("email status = %q; the failure must be named", failAttrs["status"])
+	}
+}
+
+func TestJobNotifySelectsChannels(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		allow []string
+		noJob bool
+		sends int
+		shell bool
+	}{
+		{name: "unset delivers everywhere", sends: 1},
+		{name: "empty suppresses", allow: []string{}, sends: 0},
+		{name: "email only", allow: []string{"email"}, sends: 1},
+		{name: "whatsapp only", allow: []string{"whatsapp"}, sends: 0, shell: true},
+		{name: "filter needs a job", allow: []string{"whatsapp"}, noJob: true, sends: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			st := openAlertsStore(t)
+			w := &sendWorker{token: "test-token-0000"}
+			marker := filepath.Join(t.TempDir(), "marker")
+			svc := alerts.New(st, alerts.Options{
+				Email:     nativeEmail(t, st, w),
+				Notify:    []alerts.NotifyChannel{{Name: "whatsapp", Command: "touch " + marker}},
+				JobNotify: func(context.Context, string, string) []string { return tc.allow },
+			})
+			opts := alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"}
+			if !tc.noJob {
+				opts.WorkspaceID, opts.JobName = "ws1", "deploy"
+			}
+			if _, err := svc.Raise(context.Background(), opts); err != nil {
+				t.Fatal(err)
+			}
+			if got := len(w.sent()); got != tc.sends {
+				t.Errorf("native sends = %d, want %d", got, tc.sends)
+			}
+			if _, err := os.Stat(marker); (err == nil) != tc.shell {
+				t.Errorf("shell channel ran = %v, want %v", err == nil, tc.shell)
+			}
+		})
+	}
+}
+
+func delivered(t *testing.T, st *store.Store) []store.StreamEvent {
+	t.Helper()
+	events, err := st.ListBus(context.Background(), 0, []string{"alert.delivered"}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return events
+}
+
 func waitInbox(t *testing.T, svc *alerts.Service, n int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -634,13 +937,68 @@ func waitInbox(t *testing.T, svc *alerts.Service, n int) {
 	t.Fatalf("inbox never reached %d", n)
 }
 
-func testSvc(t *testing.T, opts alerts.Options) (*alerts.Service, *store.Store) {
+// sendWorker is the smallest Worker the native channel tests need: it
+// records send bodies and can fail every send.
+type sendWorker struct {
+	mu      sync.Mutex
+	token   string
+	failAll bool
+	sends   []email.SendRequest
+}
+
+func (w *sendWorker) handler() http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+w.token {
+			rw.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		var req email.SendRequest
+		_ = json.Unmarshal(raw, &req)
+		w.mu.Lock()
+		w.sends = append(w.sends, req)
+		fail := w.failAll
+		w.mu.Unlock()
+		if fail {
+			rw.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(map[string]any{"message_id": req.MessageID})
+	})
+}
+
+func (w *sendWorker) sent() []email.SendRequest {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]email.SendRequest(nil), w.sends...)
+}
+
+func nativeEmail(t *testing.T, st *store.Store, w *sendWorker) *email.Service {
+	t.Helper()
+	srv := httptest.NewServer(w.handler())
+	t.Cleanup(srv.Close)
+	s := email.New(st, nil)
+	s.Configure(&email.Settings{
+		Worker: srv.URL, Token: w.token, Domain: "mail.example.com",
+		Operators: []string{"ops@example.com"}, FromName: "Trebi",
+	})
+	return s
+}
+
+func openAlertsStore(t *testing.T) *store.Store {
 	t.Helper()
 	st, err := store.OpenPath(filepath.Join(t.TempDir(), "a.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
+	return st
+}
+
+func testSvc(t *testing.T, opts alerts.Options) (*alerts.Service, *store.Store) {
+	t.Helper()
+	st := openAlertsStore(t)
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC) }
 	}

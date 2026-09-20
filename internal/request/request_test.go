@@ -1065,3 +1065,61 @@ func TestBuildSecretsListLimit(t *testing.T) {
 		t.Fatalf("no limit %s", p)
 	}
 }
+
+func TestBuildEmailRequests(t *testing.T) {
+	t.Parallel()
+	if p := BuildEmailStatusPath(); p != "/v1/email/status" {
+		t.Fatalf("status %s", p)
+	}
+	test := BuildEmailTest()
+	if test.Method != "POST" || test.Path != "/v1/email/test" {
+		t.Fatalf("test %+v", test)
+	}
+	rot := BuildWorkspaceEmailRotate("ws_1", true)
+	if rot.Method != "POST" || rot.Path != "/v1/workspaces/ws_1/email/rotate?confirm=1" {
+		t.Fatalf("rotate %+v", rot)
+	}
+	if bare := BuildWorkspaceEmailRotate("ws_1", false); bare.Path != "/v1/workspaces/ws_1/email/rotate" {
+		t.Fatalf("rotate unconfirmed %+v", bare)
+	}
+	show := BuildEmailMessagePath("01A")
+	if show != "/v1/email/messages/01A" {
+		t.Fatalf("show %s", show)
+	}
+	att := BuildEmailAttachmentPath("01A", "a1")
+	if att != "/v1/email/messages/01A/attachments/a1" {
+		t.Fatalf("attachment %s", att)
+	}
+	poll := BuildEmailPoll()
+	if poll.Method != "POST" || poll.Path != "/v1/email/poll" {
+		t.Fatalf("poll %+v", poll)
+	}
+}
+
+func TestBuildEmailMessagesQuery(t *testing.T) {
+	t.Parallel()
+	if p := BuildEmailMessagesPath("", "", "", "", 0); p != "/v1/email/messages" {
+		t.Fatalf("bare %s", p)
+	}
+	p := BuildEmailMessagesPath("in", "ws_1", "<a@x>", "01B", 25)
+	for _, want := range []string{
+		"direction=in", "workspace=ws_1", "thread=%3Ca%40x%3E", "cursor=01B", "limit=25",
+	} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("missing %q in %s", want, p)
+		}
+	}
+	if p := BuildEmailMessagesPath("", "", "", "", 0); strings.Contains(p, "limit=") {
+		t.Fatalf("limit must stay absent when zero: %s", p)
+	}
+}
+
+func TestBuildWorkspaceEmailReveal(t *testing.T) {
+	t.Parallel()
+	if p := BuildWorkspaceEmailGetPath("ws_1", false); p != "/v1/workspaces/ws_1/email" {
+		t.Fatalf("masked %s", p)
+	}
+	if p := BuildWorkspaceEmailGetPath("ws_1", true); p != "/v1/workspaces/ws_1/email?reveal=1" {
+		t.Fatalf("revealed %s", p)
+	}
+}

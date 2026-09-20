@@ -77,9 +77,17 @@ type Patch struct {
 
 // trebiYAML is the on-disk workspace config (B26).
 type trebiYAML struct {
-	ID         string `yaml:"id"`
-	Name       string `yaml:"name"`
-	GitEnabled bool   `yaml:"git_enabled"`
+	ID         string          `yaml:"id"`
+	Name       string          `yaml:"name"`
+	GitEnabled bool            `yaml:"git_enabled"`
+	Email      *trebiYAMLEmail `yaml:"email,omitempty" json:"email,omitempty"`
+}
+
+// trebiYAMLEmail carries the workspace's own email additions (plan F):
+// allowlist extends the operator list for inbound mail. Not a secret, so
+// it travels with the folder.
+type trebiYAMLEmail struct {
+	Allowlist []string `yaml:"allowlist,omitempty" json:"allowlist,omitempty"`
 }
 
 var (
@@ -837,6 +845,13 @@ func ensureTrebiYAML(dir, name string) (id, dispName string, git bool, err error
 
 func writeTrebiYAML(dir, id, name string, git bool) error {
 	y := trebiYAML{ID: id, Name: name, GitEnabled: git}
+	// Patch never edits the email block; carry it forward (plan F).
+	if data, err := os.ReadFile(filepath.Join(dir, "trebi.yaml")); err == nil {
+		var old trebiYAML
+		if yaml.Unmarshal(data, &old) == nil {
+			y.Email = old.Email
+		}
+	}
 	b, err := yaml.Marshal(&y)
 	if err != nil {
 		return err
@@ -848,6 +863,40 @@ func mintID() string {
 	var b [4]byte
 	_, _ = rand.Read(b[:])
 	return "ws_" + hex.EncodeToString(b[:])
+}
+
+// EmailAllowlist reads the workspace's own inbound allowlist extension from
+// trebi.yaml (plan F). Not a secret; it travels with the folder. A missing
+// file or block means no extension.
+func (s *Service) EmailAllowlist(ws *Workspace) []string {
+	if ws == nil {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(ws.Path, "trebi.yaml"))
+	if err != nil {
+		return nil
+	}
+	var y trebiYAML
+	if yaml.Unmarshal(data, &y) != nil || y.Email == nil {
+		return nil
+	}
+	return y.Email.Allowlist
+}
+
+// AgentTags lists the short names every indexed agent answers to in inbound
+// mail (plan A.6): a tag is live the moment AGENT.md exists.
+func (s *Service) AgentTags(ctx context.Context, workspaceID string) ([]string, error) {
+	rows, err := s.ListJobs(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, row := range rows {
+		if row.Kind == "agent" {
+			out = append(out, strings.TrimPrefix(row.Name, "agents/"))
+		}
+	}
+	return out, nil
 }
 
 func boolInt(v bool) int {
@@ -975,6 +1024,7 @@ func (s *Service) writeAgentWake(ctx context.Context, b *strings.Builder, ws *Wo
 	if msg != "" {
 		writeSection(b, "Current message", msg)
 	}
+	writeUntrusted(b, opts.Untrusted)
 }
 
 // writeWakeTail renders the chat-only sections of an assistant wake.
@@ -989,6 +1039,16 @@ func writeWakeTail(b *strings.Builder, opts runs.WakeOpts) {
 	if msg != "" {
 		writeSection(b, "Current message", msg)
 	}
+	writeUntrusted(b, opts.Untrusted)
+}
+
+// writeUntrusted renders the inbound-mail block (plan A.11). The fence is
+// data from an external party, never instructions.
+func writeUntrusted(b *strings.Builder, u *runs.UntrustedMessage) {
+	if u == nil {
+		return
+	}
+	writeSection(b, "Inbound email (untrusted data)", u.Fence())
 }
 
 func trebiBody(wsPath string) string {

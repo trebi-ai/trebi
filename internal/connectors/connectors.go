@@ -387,6 +387,24 @@ func (s *Service) Get(name string) (map[string]any, error) {
 	return nil, fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
 }
 
+// ErrReserved marks a connector name the daemon owns natively.
+var ErrReserved = errors.New("connector name is reserved")
+
+// reserved names belong to a native channel, not to a subprocess. The row
+// for one is synthesized by the API and is invisible to Get, so without
+// GuardReserved an Upsert would write a second row with the same name.
+var reserved = map[string]bool{"email": true} //nolint:gochecknoglobals // fixed set of native channel names, never mutated
+
+// GuardReserved refuses definition and lifecycle writes against a native
+// channel's name. The native channel still owns its event and cursor rows,
+// so InjectEvent and PutCursor do not call it.
+func (s *Service) GuardReserved(name string) error {
+	if reserved[name] {
+		return fmt.Errorf("%w: %q is the native email channel", ErrReserved, name)
+	}
+	return nil
+}
+
 // GuardMutate refuses writes against inherited MCP rows. Missing names pass
 // through so Start/Delete keep their existing missing-name behavior.
 func (s *Service) GuardMutate(name string) error {
@@ -449,6 +467,9 @@ func (s *Service) Save(defs map[string]Definition) error {
 
 // Upsert registers or updates a connector definition.
 func (s *Service) Upsert(ctx context.Context, d Definition) error {
+	if err := s.GuardReserved(d.Name); err != nil {
+		return err
+	}
 	if err := s.GuardMutate(d.Name); err != nil {
 		return err
 	}
@@ -472,6 +493,9 @@ func (s *Service) Upsert(ctx context.Context, d Definition) error {
 
 // Delete removes a connector.
 func (s *Service) Delete(ctx context.Context, name string) error {
+	if err := s.GuardReserved(name); err != nil {
+		return err
+	}
 	if err := s.GuardMutate(name); err != nil {
 		return err
 	}
@@ -568,6 +592,9 @@ func (s *Service) StartAll(ctx context.Context) {
 // Start launches one connector process. It reserves the s.procs slot
 // under s.mu (status "starting") so concurrent Starts launch one process.
 func (s *Service) Start(parent context.Context, name string) error {
+	if err := s.GuardReserved(name); err != nil {
+		return err
+	}
 	if err := s.GuardMutate(name); err != nil {
 		return err
 	}
@@ -667,6 +694,9 @@ func (s *Service) Start(parent context.Context, name string) error {
 
 // Stop kills a connector process.
 func (s *Service) Stop(name string) error {
+	if err := s.GuardReserved(name); err != nil {
+		return err
+	}
 	if err := s.GuardMutate(name); err != nil {
 		return err
 	}
@@ -689,6 +719,9 @@ func (s *Service) Stop(name string) error {
 
 // Restart stops then starts.
 func (s *Service) Restart(ctx context.Context, name string) error {
+	if err := s.GuardReserved(name); err != nil {
+		return err
+	}
 	if err := s.GuardMutate(name); err != nil {
 		return err
 	}

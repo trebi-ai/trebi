@@ -218,6 +218,23 @@ func (c *ControlPlane) turnWatchTick(ctx context.Context) {
 	}
 	for _, run := range list {
 		c.ingestRun(ctx, run)
+		c.replyIfExchangeEnded(ctx, run)
+	}
+}
+
+// replyIfExchangeEnded mails the run's answer when its exchange ended
+// (plan I.2): the session left running, or the run itself ended. It runs
+// after ingestRun stored new turns, so one reply covers them all.
+func (c *ControlPlane) replyIfExchangeEnded(ctx context.Context, run *runs.Run) {
+	if run.ConversationID == "" || c.Email == nil || c.Opts.Shadow || !c.Email.Configured() {
+		return
+	}
+	state := c.Runs.SessionState(run.ID)
+	if !run.Status.IsTerminal() && state != runs.SessionWaiting && state != runs.SessionIdle {
+		return
+	}
+	if err := c.Email.ReplyOnThread(ctx, run.ID, run.ConversationID); err != nil {
+		c.log.Warn("email reply", "run_id", run.ID, "error", err)
 	}
 }
 

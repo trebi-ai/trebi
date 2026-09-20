@@ -20,9 +20,11 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/schedule"
@@ -52,6 +54,8 @@ type Server struct {
 	conv       *conversations.Service
 	harness    *harness.Service
 	sched      *schedule.Service
+	email      *email.Service
+	lic        *license.Service
 
 	token     string
 	startedAt time.Time
@@ -91,6 +95,7 @@ func New(st *store.Store, opts Options) *Server {
 	r.SetMemoryResolver(ws)
 	q := dispatch.NewQueue(st)
 	pol := dispatch.NewPolicy()
+	lic := license.New(nil)
 	s := &Server{
 		st:         st,
 		runs:       r,
@@ -102,6 +107,8 @@ func New(st *store.Store, opts Options) *Server {
 		conv:       conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
 		harness:    harness.New(st, tmux.DefaultDriver{}, harness.Options{}),
 		sched:      schedule.New(st),
+		lic:        lic,
+		email:      email.New(st, lic),
 		token:      opts.Token,
 		startedAt:  time.Now().UTC(),
 		shadow:     opts.Shadow,
@@ -139,7 +146,7 @@ func New(st *store.Store, opts Options) *Server {
 }
 
 // BindControlPlane replaces core services with the daemon's shared instances.
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service) {
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
 		s.runs.SetNativeHooks(runs.NativeHooks{Dispatch: s})
@@ -164,6 +171,12 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	}
 	if harnessSvc != nil {
 		s.harness = harnessSvc
+	}
+	if emailSvc != nil {
+		s.email = emailSvc
+	}
+	if licSvc != nil {
+		s.lic = licSvc
 	}
 }
 
@@ -209,6 +222,12 @@ func (s *Server) Alerts() *alerts.Service { return s.alerts }
 // Skills returns the skills service.
 func (s *Server) Skills() *skills.Service { return s.skills }
 
+// Email returns the email channel service.
+func (s *Server) Email() *email.Service { return s.email }
+
+// License returns the license service.
+func (s *Server) License() *license.Service { return s.lic }
+
 // Handler returns the root mux.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -226,6 +245,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeConnectors(mux)
 	s.routeHarness(mux)
 	s.routeSettings(mux)
+	s.routeEmail(mux)
 	s.routeMCP(mux)
 	// Dispatch from catalog tools re-enters here, audit-wrapped but not
 	// auth-wrapped. MCP already passed authMiddleware; native is the daemon.

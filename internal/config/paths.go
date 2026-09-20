@@ -243,6 +243,9 @@ func (c *Config) SetPath(path, value string) error {
 	if handled, err := c.setAssistantKey(path, value); handled {
 		return err
 	}
+	if handled, err := c.setEmailKey(path, value); handled {
+		return err
+	}
 
 	// tools.<name>.…
 	parts := strings.Split(path, ".")
@@ -406,6 +409,23 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	}
 	l.add("workspaces.root", rootShow, DefaultWorkspacesRoot)
 	l.addAssistant(cfg)
+	l.addEmail(cfg)
+}
+
+// addEmail adds the email block rows.
+func (l *pathEntryList) addEmail(cfg *Config) {
+	e := cfg.Email
+	l.add("email.worker", e.Worker, "")
+	l.add("email.token", e.Token, "")
+	l.add("email.domain", e.Domain, "")
+	l.add("email.operators", joinCSV(e.Operators), "")
+	pi := strings.TrimSpace(e.PollInterval)
+	if pi == "" {
+		pi = DefaultEmailPollInterval.String()
+	}
+	l.add("email.poll_interval", pi, DefaultEmailPollInterval.String())
+	l.add("email.require_dmarc", strconv.FormatBool(e.DMARCRequired()), "true")
+	l.add("email.from_name", e.FromSenderName(), "Trebi")
 }
 
 func (l *pathEntryList) addAssistant(cfg *Config) {
@@ -653,6 +673,41 @@ func (c *Config) setWorkspacesKey(path, value string) (handled bool, err error) 
 		return false, nil
 	}
 	c.Workspaces.Root = value
+	return true, nil
+}
+
+// setEmailKey handles email.* keys; handled=false when path is not one.
+func (c *Config) setEmailKey(path, value string) (handled bool, err error) {
+	switch path {
+	case "email.worker":
+		c.Email.Worker = clearOrValue(value)
+	case "email.token":
+		c.Email.Token = clearOrValue(value)
+	case "email.domain":
+		c.Email.Domain = clearOrValue(value)
+	case "email.operators":
+		ops, err := parseStringSlice(value, true)
+		if err != nil {
+			return true, fmt.Errorf("email.operators: %w", err)
+		}
+		c.Email.Operators = ops
+	case "email.poll_interval":
+		return true, setDurationOrEmpty(&c.Email.PollInterval, value, path)
+	case "email.require_dmarc":
+		if value == "" || value == "-" {
+			c.Email.RequireDMARC = nil
+			return true, nil
+		}
+		b, err := parseBoolish(value)
+		if err != nil {
+			return true, fmt.Errorf("email.require_dmarc: %w", err)
+		}
+		c.Email.RequireDMARC = &b
+	case "email.from_name":
+		c.Email.FromName = clearOrValue(value)
+	default:
+		return false, nil
+	}
 	return true, nil
 }
 
@@ -927,6 +982,13 @@ func pathKeyDescriptions() map[string]string {
 		"assistant.web_search":          "Anthropic server web_search tool (ignored for openai)",
 		"assistant.limits.daily_tokens": "UTC-day token cap; 0 unlimited",
 		"assistant.limits.max_turns":    "Max tool turns per run; 0 uses the built-in 20",
+		"email.worker":                  "trebi-mail Worker URL; present enables the email channel",
+		"email.token":                   "secret:<name> holding the shared Worker token",
+		"email.domain":                  "Bare hostname the workspace addresses live on",
+		"email.operators":               "Comma-separated alert recipients and default inbound allowlist",
+		"email.poll_interval":           "Ingress poll period (default 30s; 5s to 10m)",
+		"email.require_dmarc":           "Reject inbound mail without a DMARC pass (default true)",
+		"email.from_name":               "Display name on outbound mail (default Trebi)",
 	}
 }
 

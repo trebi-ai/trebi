@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -197,5 +198,92 @@ func TestMCPServeLeavesOtherCallsAlone(t *testing.T) {
 		if string(out) != msg {
 			t.Fatalf("changed %s -> %s", msg, out)
 		}
+	}
+}
+
+// attachmentOut strips the client-side path before the daemon sees the call.
+func TestMCPBridgeAttachmentOut(t *testing.T) {
+	t.Parallel()
+	bridge := newMCPBridge(mcpTarget{})
+	msg := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"email","arguments":{"action":"attachment","input":{"message":"01A","attachment":"a1","out":"/tmp/x.pdf"}}}}`
+	path, stripped := bridge.attachmentOut([]byte(msg))
+	if path != "/tmp/x.pdf" {
+		t.Fatalf("path %q", path)
+	}
+	var got struct {
+		Params struct {
+			Arguments struct {
+				Input map[string]any `json:"input"`
+			} `json:"arguments"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(stripped, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Params.Arguments.Input["out"]; ok {
+		t.Fatal("out must not reach the daemon")
+	}
+	if got.Params.Arguments.Input["message"] != "01A" {
+		t.Fatalf("input mangled: %+v", got.Params.Arguments.Input)
+	}
+
+	// A call without out, and a non-attachment call, pass through unchanged.
+	for _, m := range []string{
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"email","arguments":{"action":"attachment","input":{"message":"01A","attachment":"a1"}}}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"email","arguments":{"action":"messages","input":{}}}}`,
+	} {
+		path, out := bridge.attachmentOut([]byte(m))
+		if path != "" || string(out) != m {
+			t.Fatalf("changed %s: path %q out %s", m, path, out)
+		}
+	}
+}
+
+// writeFileReply writes the bytes locally and answers with the path, so the
+// content never rides the client transcript. An error reply passes through.
+func TestMCPBridgeWriteFileReply(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "invoice.pdf")
+	payload, err := json.Marshal(map[string]any{"size": 4, "content_base64": base64.StdEncoding.EncodeToString([]byte("PDF1"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 6,
+		"result": map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": string(payload)}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := newMCPBridge(mcpTarget{})
+	out, err := bridge.writeFileReply(reply, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != "PDF1" {
+		t.Fatalf("file %q err %v", raw, err)
+	}
+	var res struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Result.Content[0].Text, "wrote "+path) {
+		t.Fatalf("reply text %q", res.Result.Content[0].Text)
+	}
+
+	errReply := []byte(`{"jsonrpc":"2.0","id":7,"result":{"isError":true,"content":[{"type":"text","text":"not_found"}]}}`)
+	out, err = bridge.writeFileReply(errReply, path)
+	if err != nil || string(out) != string(errReply) {
+		t.Fatalf("error reply changed: %s %v", out, err)
 	}
 }
