@@ -1,10 +1,9 @@
 name: tag
 
-# trebi-pro owns the version series but cannot always cut the tag here: a
-# GitHub App token is refused (403) when the run that asks was started by a
-# push that touched .github/workflows. The built-in GITHUB_TOKEN of this
-# repository carries the right unconditionally, so trebi-pro asks and this
-# workflow tags.
+# trebi-pro owns the version series but cannot cut the tag here. The REST ref
+# API refuses every integration token on this repository (403), while a git
+# push with the same token is accepted. So trebi-pro asks, and this workflow
+# pushes the tag with git.
 #
 # The payload names the version and the commit. The commit must already be on
 # main; this workflow never creates one.
@@ -19,9 +18,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Create the tag
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.client_payload.sha }}
+          fetch-depth: 0
+      - name: Push the tag
         env:
-          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ github.event.client_payload.version }}
           SHA: ${{ github.event.client_payload.sha }}
         run: |
@@ -31,10 +33,10 @@ jobs:
             *) echo "::error::bad version '$VERSION'" >&2; exit 1 ;;
           esac
           tag="v$VERSION"
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+          if git ls-remote --exit-code --tags origin "$tag" >/dev/null 2>&1; then
             echo "$tag exists"
             exit 0
           fi
-          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/$tag" -f sha="$SHA" >/dev/null
+          git tag "$tag" "$SHA"
+          git push origin "refs/tags/$tag"
           echo "tagged $tag at $SHA"
