@@ -1,9 +1,10 @@
 name: tag
 
-# trebi-pro owns the version series but cannot cut the tag here. The REST ref
-# API refuses every integration token on this repository (403), while a git
-# push with the same token is accepted. So trebi-pro asks, and this workflow
-# pushes the tag with git.
+# trebi-pro owns the version series but cannot cut the tag from its own run:
+# the Actions token of a run is an App installation token, and GitHub refuses
+# it a tag that points at a commit which changes .github/workflows. Only a
+# token with the `workflows` right is accepted. The trebi-releaser App carries
+# that right, so trebi-pro asks and this workflow pushes the tag with it.
 #
 # The payload names the version and the commit. The commit must already be on
 # main; this workflow never creates one.
@@ -15,13 +16,22 @@ jobs:
   tag:
     if: github.repository == 'trebi-ai/trebi'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    environment: release
     steps:
+      # The App token carries the `workflows` right; the Actions token cannot.
+      - name: Mint a tag token
+        id: app
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: "Iv23liHamBzMshOMTWIG"
+          private-key: ${{ secrets.GH_APP_SECRET }}
+          owner: trebi-ai
+          repositories: trebi
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.client_payload.sha }}
           fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
       - name: Push the tag
         env:
           VERSION: ${{ github.event.client_payload.version }}

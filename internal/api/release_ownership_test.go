@@ -50,7 +50,12 @@ func TestTagWorkflowAnswersTrebiPro(t *testing.T) {
 	if !strings.Contains(src, "types: [cut-tag]") {
 		t.Fatal("tag.yml must answer the cut-tag dispatch")
 	}
-	if !strings.Contains(src, "contents: write") {
-		t.Fatal("tag.yml needs contents: write to create the tag")
+	// The Actions token is refused a tag that points at a commit which
+	// changes .github/workflows. Only the App token carries that right.
+	if !strings.Contains(src, "create-github-app-token") {
+		t.Fatal("tag.yml must push with an App token")
+	}
+	if !strings.Contains(src, "token: ${{ steps.app.outputs.token }}") {
+		t.Fatal("checkout must use the App token, or the push uses the Actions token")
 	}
 }
