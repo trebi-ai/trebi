@@ -281,3 +281,5 @@ The plan's preflight reports agent-layout problems (AGENT.md outside `agents/<na
 - Canonical frontmatter only (`harness` — plain name or `{name, model, effort}` — plus `triggers`, `envset`, `env`, `session.idle_timeout`).
 - Bus topics and log event names share one registry (`internal/model/registry.go`).
 - Entity write + `event_log` append commit in one transaction (outbox).
+
+Releases are cut by the trebi-pro pipeline. This repository carries the tags and the release assets.
