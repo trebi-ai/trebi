@@ -17,4 +17,4 @@ jobs:
           SHA: ${{ inputs.sha }}
           TAG: ${{ inputs.tag }}
         run: |
-          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" && echo OK || echo REFUSED
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SHA" --draft --title "$TAG" --notes probe && echo OK || echo REFUSED
