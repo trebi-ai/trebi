@@ -638,8 +638,8 @@ func filterLogLines(lines []string, n int, level, grep string) []string {
 	return out
 }
 
-// handleSystemUpdate reads the latest trebi GitHub release and looks for a
-// trebi_* asset (the Pro binary). trebi-free_* assets are ignored.
+// handleSystemUpdate reads the latest trebi GitHub release and looks for the
+// trebi_* asset for this platform. trebi-pro publishes that release.
 func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 	body := map[string]any{
 		"current": Version, "latest": Version, "update_available": false, "source": "github",

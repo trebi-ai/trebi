@@ -1,11 +1,11 @@
 name: check
 
-# The gate. Runs on every push except main (main pushes run it inside
-# release.yml, so the release publishes only what passed here) and on every
-# PR, and is callable from release.yml so the definition lives once.
+# The gate. This repository does not release: trebi-pro tags the version and
+# creates the release on this repository (see ../CLAUDE.md). So the gate runs
+# on every push, main included, and a green run on main is what makes a
+# commit releasable.
 on:
   push:
-    branches-ignore: [main]
   pull_request:
   workflow_call:
 

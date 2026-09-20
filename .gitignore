@@ -28,6 +28,8 @@ go.work.sum
 internal/ui/dist/
 
 build/
+# a stray `go build` in the repository root
+/trebi
 out/
 __pycache__/
 *.pyc

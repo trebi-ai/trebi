@@ -1,0 +1,46 @@
+name: dispatch
+
+# This repository does not release. trebi-pro owns tags and releases, so a
+# green main here must tell trebi-pro to cut one. trebi-pro pins this
+# repository by tag, so it first tags the commit that passed, then bumps its
+# own pin and releases.
+#
+# The dispatch must be loud. A lost dispatch means a commit never ships, and
+# the only fallback is Dependabot's daily gomod scan, up to 24 hours late.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: dispatch
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    uses: ./.github/workflows/check.yml
+
+  dispatch:
+    needs: [gate]
+    if: github.repository == 'trebi-ai/trebi'
+    environment: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint a trebi-pro dispatch token
+        id: app
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: "Iv23liHamBzMshOMTWIG"
+          private-key: ${{ secrets.GH_APP_SECRET }}
+          owner: trebi-ai
+          repositories: trebi-pro
+      - name: Tell trebi-pro to release
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh api --method POST repos/trebi-ai/trebi-pro/dispatches --input - <<EOF
+          {"event_type":"core-commit","client_payload":{"sha":"${SHA}"}}
+          EOF
+          echo "dispatched core-commit for $SHA"

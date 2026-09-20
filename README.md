@@ -51,23 +51,23 @@ release workflow downloads a `trebi-ui` release tarball; local builds never do.
 
 ## Releases
 
-Tags are the version of record. `.github/workflows/check.yml` is the gate (test,
-lint, and the fixture-backed `-tags ui` build) and runs on PRs and non-main
-pushes. A push to `main` runs `.github/workflows/release.yml`, which calls the
-gate first and then the `version`, `plain`, `ui`, and `publish` jobs: it tags
-the next patch, builds Linux and macOS binaries (plain and `-ui`), and creates
-the GitHub release with a `SHA256SUMS-free` asset named `trebi-free_*`. The
-Pro pipeline then uploads `trebi_*` onto the same release. The full scheme is
+This repository does not release. `trebi-pro` owns the tags and the releases,
+and it creates them here, so the download URLs stay on the public repository.
+One binary ships, `trebi_*`, with `SHA256SUMS`. Pro features live in that same
+binary and a license unlocks them at run time. The full scheme is
 `../docs/plans/2026-09-18-release-versioning.md` plus
 `../docs/plans/2026-09-19-open-core-build.md`.
 
-- A plain binary reports `version` and `edition: free`. A `-ui` binary also reports
-  `ui_version` on `/v1/system/health` and `/v1/system/overview`; the field is
-  omitted when no SPA is embedded. `edition_version` is omitted on a free build.
-- `-ui` releases embed the newest `trebi-ui` release. The `ui` job downloads it
-  with a GitHub App token from the `release` environment and fails when the
-  UI's `min_daemon_version` is above the candidate daemon version. The release
-  notes name the resolved UI version.
+`.github/workflows/check.yml` is the gate (test, lint, and the fixture-backed
+`-tags ui` build) and runs on every push and PR, `main` included. A green
+`main` then runs `.github/workflows/dispatch.yml`, which tells `trebi-pro` to
+tag this commit and cut a release.
+
+- A binary reports `version` and its `edition`. It also reports `ui_version` on
+  `/v1/system/health` and `/v1/system/overview` when a SPA is embedded; the
+  field is omitted when none is. `edition_version` is omitted on a free build.
+- The `-tags ui` build stays for local use and for the gate's fixture build.
+  Only `trebi-pro` embeds a `trebi-ui` release into a shipped binary.
 - `scripts/semver-ge.sh` is the compatibility rule (strip `v`, compare
   `major.minor.patch`, pass on a dev build) and `scripts/semver-ge.test.sh` is
   its table test.
