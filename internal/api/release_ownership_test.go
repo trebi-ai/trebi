@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// This repository does not release. trebi-pro tags the version, creates the
-// release here, and uploads the one binary as trebi_* with SHA256SUMS.
-// A release.yml in this repository would tag against that owner.
+// This repository does not release. trebi-pro owns the version series and
+// creates the release here, uploading the one binary as trebi_* with
+// SHA256SUMS. A release.yml here would tag against that owner.
 func TestRepositoryDoesNotRelease(t *testing.T) {
 	t.Parallel()
 	if _, err := os.Stat(filepath.Join("..", "..", ".github", "workflows", "release.yml")); !os.IsNotExist(err) {
@@ -35,5 +35,22 @@ func TestMainIsGatedBeforeDispatch(t *testing.T) {
 	}
 	if !strings.Contains(src, "branches: [main]") {
 		t.Fatal("dispatch.yml must trigger on main")
+	}
+}
+
+// trebi-pro asks this repository to cut each release tag, because an App
+// token is refused when the asking run came from a workflow-touching push.
+func TestTagWorkflowAnswersTrebiPro(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "tag.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if !strings.Contains(src, "types: [cut-tag]") {
+		t.Fatal("tag.yml must answer the cut-tag dispatch")
+	}
+	if !strings.Contains(src, "contents: write") {
+		t.Fatal("tag.yml needs contents: write to create the tag")
 	}
 }

@@ -1,0 +1,40 @@
+name: tag
+
+# trebi-pro owns the version series but cannot always cut the tag here: a
+# GitHub App token is refused (403) when the run that asks was started by a
+# push that touched .github/workflows. The built-in GITHUB_TOKEN of this
+# repository carries the right unconditionally, so trebi-pro asks and this
+# workflow tags.
+#
+# The payload names the version and the commit. The commit must already be on
+# main; this workflow never creates one.
+on:
+  repository_dispatch:
+    types: [cut-tag]
+
+jobs:
+  tag:
+    if: github.repository == 'trebi-ai/trebi'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.client_payload.version }}
+          SHA: ${{ github.event.client_payload.sha }}
+        run: |
+          set -euo pipefail
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::bad version '$VERSION'" >&2; exit 1 ;;
+          esac
+          tag="v$VERSION"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "$tag exists"
+            exit 0
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$tag" -f sha="$SHA" >/dev/null
+          echo "tagged $tag at $SHA"
