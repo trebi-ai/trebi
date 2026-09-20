@@ -27,6 +27,12 @@ func TestSystemVersionFields(t *testing.T) {
 	if body["version"] != "0.2.1" {
 		t.Fatalf("health version=%v", body["version"])
 	}
+	if body["edition"] != "free" {
+		t.Fatalf("health edition=%v", body["edition"])
+	}
+	if _, ok := body["edition_version"]; ok {
+		t.Fatalf("free build must omit edition_version: %v", body)
+	}
 	if _, ok := body["ui_version"]; ok {
 		t.Fatalf("plain build must omit ui_version: %v", body)
 	}

@@ -263,7 +263,7 @@ func TestDoctorJSONOffline(t *testing.T) {
 	home.SetBase(dir)
 	t.Cleanup(func() { home.SetBase("") })
 	var buf bytes.Buffer
-	app := NewApp()
+	app := NewApp(Options{})
 	app.Writer = &buf
 	app.ErrWriter = &buf
 	prev := app.Before
@@ -482,10 +482,26 @@ func TestSecretListTableJSON(t *testing.T) {
 	}
 }
 
+func TestLicenseShowUnsupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"supported":false,"source":"none"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
+	out, err := runCLI(t, client, "license", "show")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "license: unsupported") {
+		t.Fatalf("%q", out)
+	}
+}
+
 func runCLI(t *testing.T, client *APIClient, args ...string) (string, error) {
 	t.Helper()
 	var buf bytes.Buffer
-	app := NewApp()
+	app := NewApp(Options{})
 	app.Writer = &buf
 	app.ErrWriter = &buf
 	prev := app.Before

@@ -28,6 +28,8 @@ jobs:
         run: bash scripts/semver-ge.test.sh
       - name: go test
         run: go test ./...
+      - name: go vet public packages
+        run: go vet ./app/... ./ext/...
 
   lint:
     runs-on: ubuntu-latest

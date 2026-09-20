@@ -8,7 +8,9 @@ This tree implements the contract in [docs/trebi/backend-0808.md](../docs/trebi/
 
 ```
 trebi/
-  cmd/trebi/           # single binary (CLI + daemon)
+  cmd/trebi/           # single binary (CLI + daemon): app.Main(ext.Set{})
+  app/                 # public entry point
+  ext/                 # public extension contract (wrapping editions)
   internal/
     model/             # enums, wire types, event registry
     store/             # SQLite schema + bus outbox
@@ -54,12 +56,14 @@ lint, and the fixture-backed `-tags ui` build) and runs on PRs and non-main
 pushes. A push to `main` runs `.github/workflows/release.yml`, which calls the
 gate first and then the `version`, `plain`, `ui`, and `publish` jobs: it tags
 the next patch, builds Linux and macOS binaries (plain and `-ui`), and creates
-the GitHub release with a `SHA256SUMS` asset. The full scheme is
-`../docs/plans/2026-09-18-release-versioning.md`.
+the GitHub release with a `SHA256SUMS-free` asset named `trebi-free_*`. The
+Pro pipeline then uploads `trebi_*` onto the same release. The full scheme is
+`../docs/plans/2026-09-18-release-versioning.md` plus
+`../docs/plans/2026-09-19-open-core-build.md`.
 
-- A plain binary reports `version` only. A `-ui` binary also reports
+- A plain binary reports `version` and `edition: free`. A `-ui` binary also reports
   `ui_version` on `/v1/system/health` and `/v1/system/overview`; the field is
-  omitted when no SPA is embedded.
+  omitted when no SPA is embedded. `edition_version` is omitted on a free build.
 - `-ui` releases embed the newest `trebi-ui` release. The `ui` job downloads it
   with a GitHub App token from the `release` environment and fails when the
   UI's `min_daemon_version` is above the candidate daemon version. The release

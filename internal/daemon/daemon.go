@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
@@ -46,6 +47,10 @@ type Options struct {
 	EmailInterval time.Duration
 	// LoginMaxAge is the interactive login session lifetime (default 10m).
 	LoginMaxAge time.Duration
+	Ext         ext.Set
+	// License is the process-wide service built in service daemon. Nil
+	// builds a new one from Ext.License so tests can omit it.
+	License *license.Service
 }
 
 // ControlPlane wires workers to services.
@@ -102,7 +107,10 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()
 	connector := connectors.New(st, ws, r, pol).WithUserHome(harness.UserHome())
-	lic := license.New(nil)
+	lic := opts.License
+	if lic == nil {
+		lic = license.New(opts.Ext.License)
+	}
 	em := email.New(st, lic).WithConversations(conv)
 	c := &ControlPlane{
 		Store:         st,

@@ -559,6 +559,11 @@ func startTestServerOpts(t *testing.T, opts api.Options) (*api.Server, string) {
 	if opts.Token == "" {
 		opts.Token = "test-token"
 	}
+	if opts.LookupLatest == nil {
+		opts.LookupLatest = func() (string, string, error) {
+			return api.Version, "", nil
+		}
+	}
 	s := api.New(st, opts)
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {

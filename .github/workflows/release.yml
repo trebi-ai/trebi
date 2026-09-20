@@ -4,6 +4,9 @@ name: release
 # reusable workflow), so only tested commits publish. A push to main starts
 # one release run; the next push waits for it to finish, so its candidate
 # version is computed after the previous tag exists.
+#
+# Asset names are ownership. This pipeline owns trebi-free_* and
+# SHA256SUMS-free. trebi-pro owns trebi_* and SHA256SUMS on the same release.
 on:
   workflow_dispatch:
   push:
@@ -77,11 +80,11 @@ jobs:
           fi
           go build \
             -ldflags "-X github.com/trebi-ai/trebi/internal/api.Version=$VERSION" \
-            -o "trebi-$GOOS-$GOARCH" ./cmd/trebi
+            -o "trebi-free_${VERSION}_${GOOS}_${GOARCH}" ./cmd/trebi
       - uses: actions/upload-artifact@v4
         with:
-          name: trebi-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: trebi-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: trebi-free-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: trebi-free_${{ needs.version.outputs.candidate }}_${{ matrix.goos }}_${{ matrix.goarch }}
           if-no-files-found: error
 
   # The only job that reaches into the private trebi-ui repository. It runs
@@ -164,16 +167,17 @@ jobs:
           fi
           go build -tags ui \
             -ldflags "-X github.com/trebi-ai/trebi/internal/api.Version=$VERSION -X github.com/trebi-ai/trebi/internal/api.UIVersion=$UI_VERSION" \
-            -o "trebi-ui-$GOOS-$GOARCH" ./cmd/trebi
+            -o "trebi-free-ui_${VERSION}_${GOOS}_${GOARCH}" ./cmd/trebi
       - uses: actions/upload-artifact@v4
         with:
-          name: trebi-ui-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: trebi-ui-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: trebi-free-ui-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: trebi-free-ui_${{ needs.version.outputs.candidate }}_${{ matrix.goos }}_${{ matrix.goarch }}
           if-no-files-found: error
 
   publish:
     needs: [version, plain, ui]
     if: github.repository == 'trebi-ai/trebi'
+    environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -189,8 +193,8 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum * >SHA256SUMS
-          cat SHA256SUMS
+          sha256sum * >SHA256SUMS-free
+          cat SHA256SUMS-free
       - name: Push the tag and create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -200,6 +204,26 @@ jobs:
           set -euo pipefail
           git tag "v$VERSION"
           git push origin "v$VERSION"
-          gh release create "v$VERSION" --verify-tag --title "v$VERSION" \
+          gh release create "v$VERSION" --verify-tag --latest=false --title "v$VERSION" \
             --generate-notes --notes "Embedded UI: trebi-ui $UI_VERSION" \
             dist/*
+      - name: Mint a trebi-pro dispatch token
+        id: dispatch
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: "Iv23liHamBzMshOMTWIG"
+          private-key: ${{ secrets.GH_APP_SECRET }}
+          owner: trebi-ai
+          repositories: trebi-pro
+      - name: Dispatch trebi-pro
+        if: steps.dispatch.outputs.token != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.dispatch.outputs.token }}
+          VERSION: ${{ needs.version.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          gh api --method POST repos/trebi-ai/trebi-pro/dispatches --input - <<EOF
+          {"event_type":"core-release","client_payload":{"tag":"v${VERSION}"}}
+          EOF

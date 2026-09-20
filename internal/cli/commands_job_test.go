@@ -51,7 +51,7 @@ func TestJobScheduleKey(t *testing.T) {
 
 func TestCommandsAlphabetical(t *testing.T) {
 	t.Parallel()
-	app := NewApp()
+	app := NewApp(Options{})
 	assertCommandsSorted(t, "trebi", app.Commands)
 }
 

@@ -36,7 +36,7 @@ func TestGuideListAndGet(t *testing.T) {
 
 func TestGuideCommandDrift(t *testing.T) {
 	t.Parallel()
-	app := NewApp()
+	app := NewApp(Options{})
 	files := guideSources(t)
 	var failed int
 	for _, f := range files {

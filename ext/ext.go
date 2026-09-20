@@ -12,8 +12,9 @@ import (
 // behaviour. Add a field only when a second implementation exists.
 type Set struct {
 	Edition        string          // "" → free; "pro" from trebi-pro
-	EditionVersion string          // trebi-pro release tag; "" on free
+	EditionVersion string          // trebi-pro short commit; "" on free
 	UI             fs.FS           // embedded SPA; nil → no UI served
+	UIVersion      string          // version of UI; "" when UI is nil
 	License        LicenseVerifier // nil → no license support
 }
 

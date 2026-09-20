@@ -9,8 +9,10 @@ Prefer types that own behavior. Prefer fewer, denser files. Prefer explicit wiri
 Trebi is one binary (`trebi`) that is both the daemon (`trebi service daemon`) and the CLI. The design contract is `../docs/trebi/`: read `backend-0808.md` first (objects, data model, API, event bus), then `backend.md` (runtime layer, scheduler, logging, CLI parity, cloudlink) and `backend-review-0809.md` (open action items). `backend-0808.md` supersedes `backend.md` §4.3 and §4.5.
 
 ```text
-cmd/trebi/           # thin main: cli.NewApp().Run(os.Args)
+cmd/trebi/           # thin main: app.Main(ext.Set{})
 cmd/trebi-eval/      # dev-only eval runner; built by scripts/eval.py, never shipped
+app/                 # public entry: Main(ext.Set); wrapping editions call this
+ext/                 # public contract for a wrapping edition (leaf; imports nothing here)
 internal/api/        # /v1 HTTP + SSE server + /mcp MCP adapter; one file per route area
 internal/cli/        # the trebi command surface; a thin API client
 internal/daemon/     # ControlPlane: background workers (queue, schedule, watch, prune)
@@ -43,6 +45,8 @@ cli ──▶ tools  ◀── api, runtime/native
 - `request` is a leaf: pure `/v1` request builders, no I/O. `cli`, `api`, and `tools` import it. It imports nothing from this repo.
 - `tools` is a leaf besides `request`: the catalog, docs, and in-process dispatcher seam. `/mcp`, the native loop, and `trebi mcp serve` (`value_file`) all call it. It does not import `api`.
 - `guides` is a leaf: embedded workflow markdown. Both `cli` (`trebi guide`, offline) and `api` (routes + MCP) import it. It imports nothing from this repo.
+- `ext` is a leaf like `request`: the extension contract a wrapping edition implements. Internal packages import it to consume a seam. A nil field is the free behaviour. This is the documented exception to "the consumer owns the interface" — the interface has to be public so `trebi-pro` can implement it.
+- `app` is the only other public package. It exports `Main`. Tests call `cli.NewApp` directly so they do not `os.Exit`.
 - Domain services never import `api`, `cli`, or `daemon`.
 - `store` imports no domain package.
 - `home` owns every `~/.trebi` path. Do not build paths with `filepath.Join(os.UserHomeDir(), ".trebi", …)` anywhere else.

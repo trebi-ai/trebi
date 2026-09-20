@@ -63,7 +63,7 @@ func TestStreamServiceLog_GrepOnly(t *testing.T) {
 
 func TestServiceCommandRegistration(t *testing.T) {
 	t.Parallel()
-	app := NewApp()
+	app := NewApp(Options{})
 	svc := findCmd(app.Commands, "service")
 	if svc == nil {
 		t.Fatal("service missing")

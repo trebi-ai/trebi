@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
@@ -76,6 +77,10 @@ type Server struct {
 	apiWrapped http.Handler
 	toolsReg   *tools.Registry
 	mcpHTTP    http.Handler
+
+	ext          ext.Set
+	lookupLatest func() (tag, url string, err error)
+	latest       latestCache
 }
 
 // Options for New.
@@ -85,6 +90,13 @@ type Options struct {
 	Drain          bool
 	FilesMaxBytes  int64  // 0 = files.DefaultMaxBytes
 	WorkspacesRoot string // pathless workspace create; empty refuses it
+	Ext            ext.Set
+	// License is the process-wide service built in service daemon. Nil
+	// builds a new one from Ext.License so tests can omit it.
+	License *license.Service
+	// LookupLatest overrides the GitHub release lookup used by
+	// /v1/system/update. Tests inject a stub so the suite never hits the network.
+	LookupLatest func() (tag, url string, err error)
 }
 
 // New builds an API server.
@@ -95,27 +107,32 @@ func New(st *store.Store, opts Options) *Server {
 	r.SetMemoryResolver(ws)
 	q := dispatch.NewQueue(st)
 	pol := dispatch.NewPolicy()
-	lic := license.New(nil)
+	lic := opts.License
+	if lic == nil {
+		lic = license.New(opts.Ext.License)
+	}
 	s := &Server{
-		st:         st,
-		runs:       r,
-		ws:         ws,
-		files:      fs,
-		alerts:     alerts.New(st, alerts.Options{}),
-		skills:     skills.New(st),
-		connectors: connectors.New(st, ws, r, pol),
-		conv:       conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
-		harness:    harness.New(st, tmux.DefaultDriver{}, harness.Options{}),
-		sched:      schedule.New(st),
-		lic:        lic,
-		email:      email.New(st, lic),
-		token:      opts.Token,
-		startedAt:  time.Now().UTC(),
-		shadow:     opts.Shadow,
-		drain:      opts.Drain || opts.Shadow,
-		done:       make(chan struct{}),
-		log:        slog.Default().With("source", "http_server"),
-		queue:      q,
+		st:           st,
+		runs:         r,
+		ws:           ws,
+		files:        fs,
+		alerts:       alerts.New(st, alerts.Options{}),
+		skills:       skills.New(st),
+		connectors:   connectors.New(st, ws, r, pol),
+		conv:         conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
+		harness:      harness.New(st, tmux.DefaultDriver{}, harness.Options{}),
+		sched:        schedule.New(st),
+		lic:          lic,
+		email:        email.New(st, lic),
+		token:        opts.Token,
+		startedAt:    time.Now().UTC(),
+		shadow:       opts.Shadow,
+		drain:        opts.Drain || opts.Shadow,
+		done:         make(chan struct{}),
+		log:          slog.Default().With("source", "http_server"),
+		queue:        q,
+		ext:          opts.Ext,
+		lookupLatest: opts.LookupLatest,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: checkWSOrigin,
 		},
@@ -252,8 +269,11 @@ func (s *Server) Handler() http.Handler {
 	s.apiMux = mux
 	s.apiWrapped = s.auditMiddleware(noTraversalMiddleware(newConfirmGate().wrap(mux)))
 	apiHandler := s.authMiddleware(s.apiWrapped)
-	if fsys, ok := ui.FS(); ok {
+	if s.ext.UI != nil {
 		// The SPA sits outside auth; every /v1 call still needs the bearer.
+		return ui.Handler(s.ext.UI, apiHandler)
+	}
+	if fsys, ok := ui.FS(); ok {
 		return ui.Handler(fsys, apiHandler)
 	}
 	return apiHandler
@@ -331,6 +351,20 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return s.httpServer.Shutdown(ctx)
+}
+
+func (s *Server) uiVersion() string {
+	if s.ext.UI != nil {
+		return s.ext.UIVersion
+	}
+	return UIVersion
+}
+
+func (s *Server) edition() string {
+	if s.ext.Edition != "" {
+		return s.ext.Edition
+	}
+	return "free"
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

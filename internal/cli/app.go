@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trebi-ai/trebi/ext"
+	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/platform"
 	"github.com/urfave/cli/v3"
@@ -20,12 +22,17 @@ import (
 
 const appStateKey = "trebi.cli.state"
 
+// Options is the process wiring a wrapping main can inject.
+type Options struct {
+	Ext ext.Set
+}
+
 // NewApp builds the root CLI.
-func NewApp() *cli.Command {
+func NewApp(opts Options) *cli.Command {
 	app := &cli.Command{
 		Name:    "trebi",
 		Usage:   "Trebi — LLM task runner (daemon + CLI)",
-		Version: "0.1.0",
+		Version: versionString(opts.Ext),
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "workspace",
@@ -38,7 +45,7 @@ func NewApp() *cli.Command {
 			if c.Root().Metadata == nil {
 				c.Root().Metadata = map[string]any{}
 			}
-			c.Root().Metadata[appStateKey] = newAppState(c.String("workspace"))
+			c.Root().Metadata[appStateKey] = newAppState(c.String("workspace"), opts.Ext)
 			return ctx, nil
 		},
 		Commands: []*cli.Command{
@@ -73,6 +80,14 @@ func NewApp() *cli.Command {
 	}
 	sortCommands(app.Commands)
 	return app
+}
+
+func versionString(set ext.Set) string {
+	v := api.Version
+	if set.Edition != "" {
+		return v + " (" + set.Edition + ")"
+	}
+	return v
 }
 
 // sortCommands orders help subcommands alphabetically at every nesting level.
@@ -110,9 +125,10 @@ type appState struct {
 	configErr      error
 	platform       *platform.Service
 	log            *slog.Logger
+	ext            ext.Set
 }
 
-func newAppState(workspaceHint string) *appState {
+func newAppState(workspaceHint string, extSet ext.Set) *appState {
 	workspaceHint = strings.TrimSpace(workspaceHint)
 	sticky, stickyErr := LoadStickyContext()
 	linked, linkedErr := LoadLinkedWorkspaces()
@@ -124,6 +140,7 @@ func newAppState(workspaceHint string) *appState {
 		linkedErr: linkedErr,
 		platform:  platform.NewService(""),
 		log:       slog.Default().With("source", "cli"),
+		ext:       extSet,
 	}
 	if stickyErr != nil {
 		state.clientErr = stickyErr
@@ -152,9 +169,9 @@ func appStateFor(c *cli.Command) *appState {
 		if state, ok := c.Root().Metadata[appStateKey].(*appState); ok && state != nil {
 			return state
 		}
-		return newAppState(c.String("workspace"))
+		return newAppState(c.String("workspace"), ext.Set{})
 	}
-	return newAppState("")
+	return newAppState("", ext.Set{})
 }
 
 func clientFor(c *cli.Command) (*APIClient, error) {

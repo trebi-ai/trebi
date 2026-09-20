@@ -28,6 +28,28 @@ func TestHasWithoutVerifier(t *testing.T) {
 	}
 }
 
+func TestHasNilVerifierTruthTable(t *testing.T) {
+	features := []Feature{FeatureEmail, FeatureRemoteAccess, FeatureHostedIngress, FeatureBackup}
+	s := newTestService(t, nil)
+	for _, f := range features {
+		if f.Enforced() {
+			t.Fatalf("%s is enforced in the release table; this test assumes all false", f)
+		}
+		if !s.Has(f) {
+			t.Errorf("unenforced %s: Has=false", f)
+		}
+	}
+	for _, f := range features {
+		t.Run(string(f)+"/enforced", func(t *testing.T) {
+			enforce(t, f, true)
+			svc := newTestService(t, nil)
+			if svc.Has(f) {
+				t.Errorf("enforced %s with nil verifier: Has=true", f)
+			}
+		})
+	}
+}
+
 func TestHasWithEntitlement(t *testing.T) {
 	enforce(t, FeatureEmail, true)
 	enforce(t, FeatureBackup, true)

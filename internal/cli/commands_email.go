@@ -328,6 +328,10 @@ func runLicenseShow(_ context.Context, c *cli.Command) error {
 	if c.Bool("json") {
 		return encodeJSON(c, body)
 	}
+	if mapStr(body, "supported") == "false" {
+		fmt.Fprintln(outWriter(c), "license: unsupported")
+		return nil
+	}
 	w := outWriter(c)
 	fmt.Fprintf(w, "Supported: %s\n", mapStr(body, "supported"))
 	fmt.Fprintf(w, "Source:    %s\n", mapStr(body, "source"))

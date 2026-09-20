@@ -224,7 +224,7 @@ func TestDoHTTPRawRoundTrip(t *testing.T) {
 
 func TestCommandRegistration(t *testing.T) {
 	t.Parallel()
-	app := NewApp()
+	app := NewApp(Options{})
 	names := map[string]bool{}
 	for _, c := range app.Commands {
 		names[c.Name] = true

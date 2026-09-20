@@ -60,6 +60,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	body := map[string]any{
 		"status":         "ok",
 		"version":        Version,
+		"edition":        s.edition(),
 		"api":            "v1",
 		"uptime_ms":      time.Since(s.startedAt).Milliseconds(),
 		"schema_version": schema,
@@ -67,8 +68,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"waiting_count":  s.runs.WaitingCount(),
 		"shadow":         s.shadow,
 	}
-	if UIVersion != "" {
-		body["ui_version"] = UIVersion
+	if s.ext.EditionVersion != "" {
+		body["edition_version"] = s.ext.EditionVersion
+	}
+	if uv := s.uiVersion(); uv != "" {
+		body["ui_version"] = uv
 	}
 	writeJSON(w, http.StatusOK, body)
 }
@@ -145,8 +149,8 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"inbox":          s.inboxCounts(ctx),
 		"next_due_at":    s.nextDueAt(ctx),
 	}
-	if UIVersion != "" {
-		body["ui_version"] = UIVersion
+	if uv := s.uiVersion(); uv != "" {
+		body["ui_version"] = uv
 	}
 	writeJSON(w, http.StatusOK, body)
 }
@@ -634,12 +638,24 @@ func filterLogLines(lines []string, n int, level, grep string) []string {
 	return out
 }
 
-// handleSystemUpdate is a stub: it does not consult a release feed.
-// source is empty until a real feed exists so the UI can show versions without a verdict.
+// handleSystemUpdate reads the latest trebi GitHub release and looks for a
+// trebi_* asset (the Pro binary). trebi-free_* assets are ignored.
 func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"current": Version, "latest": Version, "update_available": false, "source": "",
-	})
+	body := map[string]any{
+		"current": Version, "latest": Version, "update_available": false, "source": "github",
+	}
+	tag, url, err := s.latestRelease(r.Context())
+	if err != nil || tag == "" {
+		writeJSON(w, http.StatusOK, body)
+		return
+	}
+	latest := strings.TrimPrefix(tag, "v")
+	body["latest"] = latest
+	if url != "" && versionNewer(latest, Version) {
+		body["update_available"] = true
+		body["url"] = url
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleGuidesList(w http.ResponseWriter, r *http.Request) {
