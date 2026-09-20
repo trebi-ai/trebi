@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # A ref may point at a commit that changes .github/workflows, and
+      # creating one is refused without this.
+      workflows: write
     steps:
       - name: Create the tag
         env:
