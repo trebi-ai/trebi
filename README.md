@@ -58,10 +58,10 @@ binary and a license unlocks them at run time. The full scheme is
 `../docs/plans/2026-09-18-release-versioning.md` plus
 `../docs/plans/2026-09-19-open-core-build.md`.
 
-`.github/workflows/check.yml` is the gate (test, lint, and the fixture-backed
-`-tags ui` build) and runs on every push and PR, `main` included. A green
-`main` then runs `.github/workflows/dispatch.yml`, which tells `trebi-pro` to
-tag this commit and cut a release.
+`.github/workflows/check.yml` is the gate: test, lint, and the fixture-backed
+`-tags ui` build. It runs on PRs and on branch pushes. On `main` it runs
+inside `.github/workflows/dispatch.yml`, which then tells `trebi-pro` to tag
+that commit and cut a release.
 
 - A binary reports `version` and its `edition`. It also reports `ui_version` on
   `/v1/system/health` and `/v1/system/overview` when a SPA is embedded; the

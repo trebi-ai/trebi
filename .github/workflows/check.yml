@@ -1,11 +1,15 @@
 name: check
 
 # The gate. This repository does not release: trebi-pro tags the version and
-# creates the release on this repository (see ../CLAUDE.md). So the gate runs
-# on every push, main included, and a green run on main is what makes a
-# commit releasable.
+# creates the release on this repository (see ../CLAUDE.md).
+#
+# On main the gate runs inside dispatch.yml, which calls this workflow, so a
+# push to main is excluded here and does not run it twice. Tags are excluded
+# too: trebi-pro tags a commit this gate already passed.
 on:
   push:
+    branches-ignore: [main]
+    tags-ignore: ["**"]
   pull_request:
   workflow_call:
 
