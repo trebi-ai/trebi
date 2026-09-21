@@ -54,7 +54,35 @@ func NewNamedSession(name, cwd string) error {
 // Send pastes literal text into the active pane. Multi-line or large payloads
 // use load-buffer/paste-buffer (bracketed paste). Short single-line text uses
 // send-keys -l, with one paste-buffer retry on timeout or other failure.
+//
+// A trailing newline means "run it": Send pastes the rest of the payload and
+// then presses Enter. A newline left inside a bracketed paste never submits —
+// the shell keeps it in its edit buffer — so "export …\n" used to arrive typed
+// but unrun, which hung login and run launches.
 func Send(session, text string) error {
+	body, submit := splitSubmit(text)
+	if body != "" {
+		if err := sendLiteral(session, body); err != nil {
+			return err
+		}
+	}
+	if submit {
+		return SendKey(session, "enter")
+	}
+	return nil
+}
+
+// splitSubmit splits one payload into the literal text to paste and whether
+// the caller asked for it to run.
+func splitSubmit(text string) (body string, submit bool) {
+	if !strings.HasSuffix(text, "\n") {
+		return text, false
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(text, "\n"), "\r"), true
+}
+
+// sendLiteral routes one payload to the pane.
+func sendLiteral(session, text string) error {
 	const sendKeysSafeLimit = 4096
 	// Multi-line send-keys -l has hung against busy TUI panes; paste is safer
 	// and also avoids ARG_MAX for large cold-start prompts.
@@ -68,7 +96,6 @@ func Send(session, text string) error {
 		if err2 := sendViaBuffer(session, text); err2 != nil {
 			return fmt.Errorf("tmux send-keys: %w (paste retry: %v)", err, err2)
 		}
-		return nil
 	}
 	return nil
 }

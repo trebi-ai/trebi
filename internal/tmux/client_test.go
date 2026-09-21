@@ -1,7 +1,9 @@
 package tmux
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -138,6 +140,49 @@ func TestSendMultilineUsesPasteBuffer(t *testing.T) {
 		t.Fatalf("Send (multiline): %v", err)
 	}
 	assertNoTrebiSendBuffers(t)
+}
+
+// zshPath is the interactive shell TestSendTrailingNewlineRuns needs. zsh's
+// line editor asks the terminal for bracketed paste, which is the pane state
+// that swallows a pasted newline. Bash readline does not do this everywhere.
+const zshPath = "/bin/zsh"
+
+func TestSendTrailingNewlineRuns(t *testing.T) {
+	// Regression: a trailing newline used to ride inside the bracketed paste.
+	// tmux puts a pasted newline in a bracketed-paste pane's edit buffer
+	// without submitting it, so login and run launches sent "cmd\n" and the
+	// command stayed typed but unrun.
+	requireTmux(t)
+	if _, err := os.Stat(zshPath); err != nil {
+		t.Skipf("%s not installed — skipping", zshPath)
+	}
+	name, err := newSessionName()
+	if err != nil {
+		t.Fatalf("newSessionName: %v", err)
+	}
+	if _, err := run("new-session", "-d", "-s", name, "-c", t.TempDir(), zshPath+" -i"); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = KillSession(name)
+	})
+	if err := WaitForPrompt(name, "$ ", 5*time.Second); err != nil {
+		t.Fatalf("waiting for the zsh prompt: %v", err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "ran")
+	if err := Send(name, "touch "+marker+"\n"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	screen, _ := ReadScreen(name)
+	t.Fatalf("command sent with a trailing newline never ran; pane:\n%s", screen)
 }
 
 func TestRunTimeout(t *testing.T) {
