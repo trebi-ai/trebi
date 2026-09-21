@@ -15,7 +15,7 @@ on:
 jobs:
   tag:
     if: github.repository == 'trebi-ai/trebi'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     environment: release
     steps:
       # The App token carries the `workflows` right; the Actions token cannot.

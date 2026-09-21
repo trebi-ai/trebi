@@ -24,7 +24,7 @@ jobs:
     needs: [gate]
     if: github.repository == 'trebi-ai/trebi'
     environment: release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - name: Mint a trebi-pro dispatch token
         id: app

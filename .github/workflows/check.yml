@@ -19,13 +19,15 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          # The self-hosted runners keep the module cache on disk; uploading
+          # it as an Actions cache takes longer than the build.
+          cache: false
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
       - name: semver-ge tests
@@ -36,7 +38,7 @@ jobs:
         run: go vet ./app/... ./ext/...
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,7 +48,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          # The self-hosted runners keep the module cache on disk; uploading
+          # it as an Actions cache takes longer than the build.
+          cache: false
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.13
@@ -56,13 +60,15 @@ jobs:
   # committed fixture makes this runnable on every push and on fork PRs with
   # no secret and no network. See docs/plans/2026-09-18-release-versioning.md.
   tagged-build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          # The self-hosted runners keep the module cache on disk; uploading
+          # it as an Actions cache takes longer than the build.
+          cache: false
       - name: Stage the fixture dist
         run: |
           mkdir -p internal/ui/dist
