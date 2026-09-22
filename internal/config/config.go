@@ -709,7 +709,7 @@ tools:
 #   from_name: Trebi
 
 # cloud:                     # hosted account link (plan 2026-09-22)
-#   api_url: ""              # hosted endpoint (default https://api.trebi.ai)
+#   api_url: ""              # hosted endpoint (default https://staging-api.trebi.ai)
 #   enabled: true            # false keeps a linked device offline
 `
 

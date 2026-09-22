@@ -6,9 +6,11 @@ import (
 	"strings"
 )
 
-// DefaultCloudAPIURL is the hosted account endpoint. A staging operator
-// changes cloud.api_url and nothing else (plan 2026-09-22 Part J).
-const DefaultCloudAPIURL = "https://api.trebi.ai"
+// DefaultCloudAPIURL is the hosted account endpoint. Staging is the
+// default for now: production routes attach later and flip this. A
+// different deployment sets cloud.api_url and nothing else (plan 2026-09-22
+// Part J).
+const DefaultCloudAPIURL = "https://staging-api.trebi.ai"
 
 // CloudConfig is the hosted link block. It holds no token and no key: the
 // device id lives in the store and the private key lives in the secrets

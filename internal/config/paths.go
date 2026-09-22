@@ -1021,7 +1021,7 @@ func pathKeyDescriptions() map[string]string {
 		"email.poll_interval":           "Ingress poll period (default 30s; 5s to 10m)",
 		"email.require_dmarc":           "Reject inbound mail without a DMARC pass (default true)",
 		"email.from_name":               "Display name on outbound mail (default Trebi)",
-		"cloud.api_url":                 "Hosted account endpoint (default https://api.trebi.ai)",
+		"cloud.api_url":                 "Hosted account endpoint (default https://staging-api.trebi.ai)",
 		"cloud.enabled":                 "Dial the hosted workers; false keeps a linked device offline (default true)",
 	}
 }
