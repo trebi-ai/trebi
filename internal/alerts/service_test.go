@@ -978,11 +978,11 @@ func nativeEmail(t *testing.T, st *store.Store, w *sendWorker) *email.Service {
 	t.Helper()
 	srv := httptest.NewServer(w.handler())
 	t.Cleanup(srv.Close)
-	s := email.New(st, nil)
+	s := email.New(st)
 	s.Configure(&email.Settings{
 		Worker: srv.URL, Token: w.token, Domain: "mail.example.com",
 		Operators: []string{"ops@example.com"}, FromName: "Trebi",
-	})
+	}, email.NewClient(srv.URL, w.token))
 	return s
 }
 

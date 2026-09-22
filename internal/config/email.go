@@ -80,15 +80,34 @@ func (e EmailConfig) ResolveToken() (string, error) {
 
 // checkEmail validates the email block. It checks the token reference form,
 // not the stored secret; a missing secret is a doctor finding, not a config
-// error, so the daemon still boots.
+// error, so the daemon still boots. Without a Worker URL the block is
+// hosted mail tuning: the cloud link carries the mail, so domain and
+// operators are optional there (plan 2026-09-22 Part D).
 func (e *ConfigError) checkEmail(c Config) {
 	ec := c.Email
-	if !ec.Enabled() {
+	bearer := ec.Enabled()
+	if !bearer && !c.Cloud.Present() {
 		if emailBlockSet(ec) {
 			e.add("email.worker", "required when any email key is set")
 		}
 		return
 	}
+	if bearer {
+		e.checkEmailWorker(ec)
+	}
+	// The bearer path fixes the domain in config; the hosted path learns
+	// it from the address the cloud mints, so it is optional there.
+	e.checkEmailDomain(ec, bearer)
+	e.checkEmailOperators(ec.Operators, bearer)
+	e.checkEmailPollInterval(ec)
+	if c.Notify.Email != "" && (bearer || emailBlockSet(ec)) {
+		e.add("email", "notify.email and the email block cannot both be set; the native channel takes the email slot")
+	}
+}
+
+// checkEmailWorker validates the Worker URL and the token reference form,
+// not the stored secret: a missing secret is a doctor finding.
+func (e *ConfigError) checkEmailWorker(ec EmailConfig) {
 	if u, err := url.Parse(strings.TrimSpace(ec.Worker)); err != nil || u.Host == "" ||
 		(u.Scheme != "http" && u.Scheme != "https") {
 		e.add("email.worker", fmt.Sprintf("%q is not a parseable http(s) URL", ec.Worker))
@@ -97,19 +116,29 @@ func (e *ConfigError) checkEmail(c Config) {
 		strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ec.Token), EmailTokenPrefix)) == "" {
 		e.add("email.token", fmt.Sprintf("must be %s<name>", EmailTokenPrefix))
 	}
-	if dom := strings.TrimSpace(ec.Domain); dom == "" || strings.ContainsAny(dom, "/\\:@") {
-		e.add("email.domain", fmt.Sprintf("%q is not a bare hostname", ec.Domain))
+}
+
+func (e *ConfigError) checkEmailDomain(ec EmailConfig, required bool) {
+	dom := strings.TrimSpace(ec.Domain)
+	if dom == "" {
+		if required {
+			e.add("email.domain", fmt.Sprintf("%q is not a bare hostname", ec.Domain))
+		}
+		return
 	}
-	e.checkEmailOperators(ec.Operators)
-	e.checkEmailPollInterval(ec)
-	if c.Notify.Email != "" {
-		e.add("email", "notify.email and the email block cannot both be set; the native channel takes the email slot")
+	if strings.ContainsAny(dom, "/\\:@") {
+		e.add("email.domain", fmt.Sprintf("%q is not a bare hostname", ec.Domain))
 	}
 }
 
-func (e *ConfigError) checkEmailOperators(operators []string) {
+// checkEmailOperators validates the operator addresses. The bearer path
+// needs at least one; the hosted path may leave the list empty.
+func (e *ConfigError) checkEmailOperators(operators []string, required bool) {
 	if len(operators) == 0 {
-		e.add("email.operators", "at least one operator address is required")
+		if required {
+			e.add("email.operators", "at least one operator address is required")
+		}
+		return
 	}
 	for _, op := range operators {
 		if !strings.Contains(strings.TrimSpace(op), "@") {

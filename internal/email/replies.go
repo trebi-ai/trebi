@@ -119,14 +119,11 @@ FROM email_messages WHERE direction='in' AND thread_root=? ORDER BY id DESC LIMI
 // (plan I.2). A send failure marks the row send_failed; the next tick
 // retries, because only sent rows count as covering.
 func (s *Service) sendReply(ctx context.Context, conversationID, root, runID string, turn *conversations.Message, in replyInbound) error {
-	if err := s.gate(); err != nil {
-		return err
-	}
 	cfg, err := s.Settings()
 	if err != nil {
 		return err
 	}
-	client, err := s.Client()
+	tr, err := s.Transport()
 	if err != nil {
 		return err
 	}
@@ -163,7 +160,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		Text:      turn.Text + "\n\n--\ntrebi conversation " + conversationID,
 		MessageID: msgID, InReplyTo: in.messageID, References: refs,
 	}
-	if err := s.sendWithBackoff(ctx, client, req); err != nil {
+	if err := s.sendWithBackoff(ctx, tr, req); err != nil {
 		s.noteSendFailure(err)
 		if _, uerr := s.st.DB().ExecContext(ctx,
 			`UPDATE email_messages SET disposition='send_failed' WHERE id=?`, rowID); uerr != nil {

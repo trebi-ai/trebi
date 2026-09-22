@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/cloudlink"
 	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/guides"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -51,6 +53,7 @@ func (s *Server) routeSystem(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/cloud/status", s.handleCloudStatus)
 	mux.HandleFunc("POST /v1/cloud/link", s.handleCloudLink)
 	mux.HandleFunc("DELETE /v1/cloud/link", s.handleCloudUnlink)
+	mux.HandleFunc("GET /v1/cloud/addresses", s.handleCloudAddresses)
 	mux.HandleFunc("GET /v1/stream", s.handleStream)
 }
 
@@ -249,8 +252,11 @@ func (s *Server) nextDueAt(ctx context.Context) string {
 	return next
 }
 
-func (s *Server) handleCloudStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"linked": false, "status": "not_linked"})
+// handleCloudStatus reports the cached link state (plan 2026-09-22 Part
+// G). It never 404s: an unlinked daemon answers linked:false, which is
+// the answer rather than an error.
+func (s *Server) handleCloudStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.cloud.Status())
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -363,6 +369,7 @@ func (s *Server) doctorFindings() []map[string]any {
 	src = append(src, s.agentLayoutDoctor()...)
 	src = append(src, s.memoryDoctor()...)
 	src = append(src, s.emailDoctor()...)
+	src = append(src, s.cloudDoctor()...)
 	src = append(src, harnessRuntimeDoctor(context.Background())...)
 	out := make([]map[string]any, 0, len(src))
 	for _, f := range src {
@@ -422,6 +429,42 @@ func (s *Server) emailDoctor() []alerts.DoctorFinding {
 			ID: "email-spool-stalled", Severity: "warn", Code: "email_spool_stalled",
 			Message: fmt.Sprintf("spool holds mail %s old; trebid is not pulling",
 				time.Duration(st.WorkerHealth.SpoolOldestAgeMS)*time.Millisecond),
+		})
+	}
+	return out
+}
+
+// cloudDoctor reports the hosted link findings (plan 2026-09-22 Part D):
+// cloud block config errors, and both mail transports configured at once,
+// which leaves the Worker path running and needs the operator's eye.
+func (s *Server) cloudDoctor() []alerts.DoctorFinding {
+	var out []alerts.DoctorFinding
+	cfg, err := config.Load()
+	if err != nil || cfg == nil {
+		return nil
+	}
+	var ce *config.ConfigError
+	if err := cfg.Validate(); errors.As(err, &ce) {
+		for _, fe := range ce.Errors {
+			if fe.Field != "cloud" && !strings.HasPrefix(fe.Field, "cloud.") {
+				continue
+			}
+			out = append(out, alerts.DoctorFinding{
+				ID: "cloud-config:" + fe.Field, Severity: "error", Code: "cloud_config",
+				Message: fe.Field + ": " + fe.Msg,
+			})
+		}
+	}
+	if s.cloud == nil {
+		return out
+	}
+	ent := s.cloud.Entitlement()
+	bearer := cfg.Email.Enabled()
+	hosted := cfg.Cloud.Active() && ent.Linked && ent.Has(entitle.HostedIngress)
+	if bearer && hosted {
+		out = append(out, alerts.DoctorFinding{
+			ID: "cloud-email-conflict", Severity: "warn", Code: "email_cloud_conflict",
+			Message: "email.worker and a hosted cloud link are both set; the Worker transport wins. Remove one.",
 		})
 	}
 	return out
@@ -680,10 +723,106 @@ func (s *Server) handleGuideGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCloudLink mints the device keypair, registers it with the code
+// the account page showed, writes the link row, and starts the socket
+// (plan 2026-09-22 Part G). The code arrives with the display grouping
+// the account page renders, so it is normalized here.
 func (s *Server) handleCloudLink(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"linked": false, "status": "not_configured", "note": "cloudlink broker not configured"})
+	var body struct {
+		EnrollmentToken string `json:"enrollment_token"`
+		Name            string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "body is not JSON")
+		return
+	}
+	token := normalizeEnrollToken(body.EnrollmentToken)
+	if token == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "enrollment_token is required")
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		name, _ = os.Hostname()
+	}
+	st, err := s.cloud.Link(r.Context(), token, name)
+	switch {
+	case errors.Is(err, cloudlink.ErrAlreadyLinked):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case err != nil:
+		writeCloudErr(w, err)
+	default:
+		writeJSON(w, http.StatusOK, st)
+	}
 }
 
+// normalizeEnrollToken strips the display grouping the account page
+// shows (uppercase 4-character groups joined by "-") and keeps the code
+// itself.
+func normalizeEnrollToken(v string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(v)) {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// handleCloudUnlink stops the socket, drops the row and the key, and
+// leaves the device in the cloud: a local unlink must work offline and
+// the account page revokes (Part G). The confirm gate wraps it.
 func (s *Server) handleCloudUnlink(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"linked": false})
+	if err := s.cloud.Unlink(r.Context()); err != nil {
+		writeCloudErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.cloud.Status())
+}
+
+// handleCloudAddresses returns the hosted address rows, masked unless
+// reveal=1 (Part G). A reveal is an audit entry like the workspace email
+// reveal: the request log records who asked.
+func (s *Server) handleCloudAddresses(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.cloud.Addresses(r.Context())
+	if err != nil {
+		writeCloudErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, maskedBody(s, r, "addresses", "cloud.address_revealed", rows, cloudAddressPayload))
+}
+
+// cloudAddressPayload is the wire shape for one hosted address row
+// (trebi-ui cloudAddressSchema).
+func cloudAddressPayload(a cloudlink.Address, masked bool) map[string]any {
+	addr, local := a.Address, a.LocalPart
+	if masked {
+		local = maskLocalPart(local)
+		addr = maskAddress(a.Address)
+	}
+	return map[string]any{
+		"id":           a.ID,
+		"workspace_id": a.WorkspaceID,
+		"address":      addr,
+		"local_part":   local,
+		"created_at":   a.CreatedAt,
+		"masked":       masked,
+	}
+}
+
+// maskLocalPart hides the token and keeps the reading aid prefix.
+func maskLocalPart(lp string) string {
+	if len(lp) > 3 {
+		lp = lp[:3]
+	}
+	return lp + "********"
+}
+
+// maskAddress hides the token in local@domain and keeps the shape.
+func maskAddress(addr string) string {
+	local, domain, ok := strings.Cut(addr, "@")
+	if !ok {
+		return "********"
+	}
+	return maskLocalPart(local) + "@" + domain
 }

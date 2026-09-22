@@ -88,9 +88,12 @@ trebi service shutdown
 ## Cloud link
 
 ```bash
-trebi service cloud status --json
-trebi service cloud link
-trebi service cloud unlink --force
+trebi cloud status --json
+trebi cloud link --code ABCD-EFGH --name fritz-mbp
+trebi cloud unlink --force
+trebi cloud addresses --reveal
 ```
 
-`cloud unlink` is destructive: remote clients lose access. The broker is not configured yet, so `link` reports `not_configured`.
+The account page mints the code under "Link a device"; it expires in 10 minutes. `cloud link` prints the plan and the granted features. `cloud unlink` is destructive: remote clients lose access. It does not revoke the device in the cloud; the account page revokes.
+
+A linked daemon caches `plan` and `features` and serves them to the UI. The cloud is the source of truth, so the cache decides what the screen shows and never what the user gets. `degraded` in `cloud status` means the socket is down. `unauthorized` means the cloud revoked the device and the daemon stopped redialing.

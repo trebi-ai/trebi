@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "id": "01J8Y7ZQ5W8K3N6P9R2T4V6X8Y",
+  "method": "POST",
+  "path": "/stripe",
+  "content_type": "application/json",
+  "headers": {
+    "stripe-signature": "t=1726900000,v1=abc"
+  },
+  "body": "{\"id\":\"evt_test\"}",
+  "received_at": "2026-09-21T12:00:00Z"
+}

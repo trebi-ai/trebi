@@ -47,6 +47,37 @@ trebi rules fire --connector slack --job my-job --workspace reports --match "e.c
 
 `--event-file` is **local only**; remote: pass `event` in input. `rules test` only evaluates. `rules fire` evaluates and enqueues on a match.
 
+## Hosted webhooks
+
+A hosted webhook is a public URL the cloud receives and pushes over the link socket. Mint one per sender. The first path segment of the posted path becomes the event `label`, so one hook fans out to many jobs by path.
+
+```bash
+trebi hooks create --workspace reports --label deploy
+trebi hooks list
+trebi hooks delete <id>
+```
+
+`hooks create` prints the URL once. Handle it like a webhook secret: anyone holding it can post an event. `hooks delete` is destructive — ask first. `hooks list` masks the URLs; `--reveal` prints them and writes an audit entry.
+
+A job fires from one delivery. `event.headers` carries the sender signature allowlist, so `match` can verify the sender:
+
+```yaml
+triggers:
+  - event: webhook
+    match: event.path === "/deploy" && event.headers["x-github-event"] === "push"
+```
+
+`extract` pulls values out of the payload. It runs before `match` and rebinds `event` to its result, so a rule that extracts reads the extracted fields in `match`:
+
+```yaml
+triggers:
+  - event: webhook
+    extract: "({ ref: json(event.body).ref })"
+    match: event.ref === "refs/heads/main"
+```
+
+The payload is `hook_id`, `label`, `method`, `path`, `content_type`, `headers`, `body`, and `received_at`. `body` stays a string: call `json(event.body)` for a value. Delivery is at-least-once; a duplicate delivery id never fires twice.
+
 ## Durable trigger events
 
 ```bash

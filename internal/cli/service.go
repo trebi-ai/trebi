@@ -53,7 +53,6 @@ func serviceCommand() *cli.Command {
 			serviceDiagnosticsSubcommands(),
 			serviceDaemonSubcommands(),
 			serviceTokenSubcommands(),
-			serviceCloudSubcommands(),
 		),
 	}
 }
@@ -287,63 +286,150 @@ func serviceDaemonSubcommands() []*cli.Command {
 	}
 }
 
-// serviceCloudSubcommands returns the cloudlink command group.
-func serviceCloudSubcommands() []*cli.Command {
-	return []*cli.Command{
-		{
-			Name:  "cloud",
-			Usage: "cloudlink status and pairing",
-			Commands: []*cli.Command{
-				{
-					Name:  "status",
-					Usage: "show the cloud link state",
-					Flags: []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-					Action: func(_ context.Context, c *cli.Command) error {
-						client, err := clientFor(c)
-						if err != nil {
-							return err
-						}
-						var body map[string]any
-						if err := client.GetJSON(request.BuildCloudStatusPath(), &body); err != nil {
-							return err
-						}
-						return encodeJSON(c, body)
-					},
+// serviceCloudSubcommands returns the hosted link command group.
+func cloudCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "cloud",
+		Usage: "hosted account link, addresses, and status",
+		Commands: []*cli.Command{
+			{
+				Name:   "status",
+				Usage:  "show the cloud link state, plan, and socket",
+				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action: runCloudStatus,
+			},
+			{
+				Name:  "link",
+				Usage: "link this daemon to a Trebi cloud account",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "code", Required: true, Usage: "enrollment code from the account page"},
+					&cli.StringFlag{Name: "name", Usage: "device name (default: hostname)"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
-				{
-					Name:  "link",
-					Usage: "link this daemon to the cloud service",
-					Action: func(_ context.Context, c *cli.Command) error {
-						client, err := clientFor(c)
-						if err != nil {
-							return err
-						}
-						var body map[string]any
-						if err := client.DoHTTP(request.BuildCloudLink(), &body); err != nil {
-							return err
-						}
-						return encodeJSON(c, body)
-					},
+				Action: runCloudLink,
+			},
+			{
+				Name:   "unlink",
+				Usage:  "unlink this daemon from the cloud service",
+				Flags:  []cli.Flag{forceFlag("required; remote clients lose access")},
+				Action: runCloudUnlink,
+			},
+			{
+				Name:  "addresses",
+				Usage: "list the hosted mail addresses (masked)",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "reveal", Usage: "show full addresses and write an audit entry"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
-				{
-					Name:  "unlink",
-					Usage: "unlink this daemon from the cloud service",
-					Flags: []cli.Flag{forceFlag("required; remote clients lose access")},
-					Action: func(_ context.Context, c *cli.Command) error {
-						confirm, err := confirmed(c, "unlinks this daemon from the cloud; remote clients lose access")
-						if err != nil {
-							return err
-						}
-						client, err := clientFor(c)
-						if err != nil {
-							return err
-						}
-						return client.DoHTTP(request.BuildCloudUnlink(confirm), nil)
-					},
-				},
+				Action: runCloudAddresses,
 			},
 		},
 	}
+}
+
+func runCloudStatus(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.GetJSON(request.BuildCloudStatusPath(), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	linked, _ := body["linked"].(bool)
+	connected, _ := body["connected"].(bool)
+	linkState, socket := "not linked", "down"
+	if linked {
+		linkState = "linked"
+	}
+	if connected {
+		socket = "up"
+	}
+	fmt.Fprintf(w, "Link:      %s\n", linkState)
+	fmt.Fprintf(w, "Status:    %s\n", dash(mapStr(body, "status")))
+	fmt.Fprintf(w, "Account:   %s\n", dash(mapStr(body, "account_email")))
+	fmt.Fprintf(w, "Device:    %s\n", dash(mapStr(body, "device_name")))
+	fmt.Fprintf(w, "Plan:      %s\n", dash(mapStr(body, "plan")))
+	fmt.Fprintf(w, "Features:  %s\n", featureList(body))
+	fmt.Fprintf(w, "Socket:    %s\n", socket)
+	fmt.Fprintf(w, "Refreshed: %s\n", dash(mapStr(body, "refreshed_at")))
+	return nil
+}
+
+func runCloudLink(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildCloudLink(c.String("code"), c.String("name")), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	fmt.Fprintf(w, "Linked device %s.\n", dash(mapStr(body, "device_name")))
+	fmt.Fprintf(w, "Plan:      %s\n", dash(mapStr(body, "plan")))
+	fmt.Fprintf(w, "Features:  %s\n", featureList(body))
+	return nil
+}
+
+func runCloudUnlink(_ context.Context, c *cli.Command) error {
+	confirm, err := confirmed(c, "unlinks this daemon from the cloud; remote clients lose access")
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if err := client.DoHTTP(request.BuildCloudUnlink(confirm), nil); err != nil {
+		return err
+	}
+	fmt.Fprintln(outWriter(c), "Unlinked from the cloud.")
+	return nil
+}
+
+func runCloudAddresses(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		Addresses []map[string]any `json:"addresses"`
+	}
+	if err := client.GetJSON(request.BuildCloudAddressesPath(c.Bool("reveal")), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	tbl := newTable(outWriter(c), []string{"ID", "Workspace", "Address", "Created"})
+	for _, a := range body.Addresses {
+		tbl.AppendRow(table.Row{
+			mapStr(a, "id"), mapStr(a, "workspace_id"), mapStr(a, "address"), mapStr(a, "created_at"),
+		})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+// featureList renders the granted feature names of one status body.
+func featureList(body map[string]any) string {
+	items, _ := body["features"].([]any)
+	if len(items) == 0 {
+		return "-"
+	}
+	parts := make([]string, len(items))
+	for i, f := range items {
+		parts[i] = fmt.Sprint(f)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // serviceTokenSubcommands returns the token command group.
@@ -606,7 +692,7 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 		License: lic,
 	})
 	// Share control-plane services so API and workers see the same state.
-	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Conversations, cp.Harness, cp.Email, cp.License)
+	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Conversations, cp.Harness, cp.Email, cp.License, cp.Cloud, cp.Webhooks)
 	srv.Skills().WithUserHome(harness.UserHome())
 
 	ctx, cancel := context.WithCancel(parent)

@@ -495,7 +495,7 @@ func startEmailAPI(t *testing.T) *emailAPIServer {
 		Worker: ws.URL, Token: "test-token-0000", Domain: "mail.example.com",
 		Operators: []string{"ops@example.com"}, PollInterval: time.Minute,
 		RequireDMARC: true, FromName: "Trebi",
-	})
+	}, email.NewClient(ws.URL, "test-token-0000"))
 	s.Email().AttachIngress(email.NewIngress(s.Email(), connectors.New(st, nil, nil, nil), acts, time.Minute, false))
 	return &emailAPIServer{base: "http://" + addr, fw: fw, acts: acts, svc: s.Email()}
 }

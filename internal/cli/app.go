@@ -76,6 +76,8 @@ func NewApp(opts Options) *cli.Command {
 			rulesCommand(),
 			emailCommand(),
 			licenseCommand(),
+			cloudCommand(),
+			hooksCommand(),
 		},
 	}
 	sortCommands(app.Commands)

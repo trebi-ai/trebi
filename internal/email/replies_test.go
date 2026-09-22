@@ -11,8 +11,8 @@ import (
 // assistant turn; failed rows, other runs, and rows without a turn never do.
 func TestDecorateMarksSentTurns(t *testing.T) {
 	t.Parallel()
-	s := New(openEmailStore(t), nil)
-	s.Configure(testSettings("https://worker.example"))
+	s := New(openEmailStore(t))
+	configureTest(s, "https://worker.example")
 
 	turn := 2
 	other := 3

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -50,6 +51,8 @@ func NewClient(worker, token string) *Client {
 	}
 }
 
+var _ Transport = (*Client)(nil)
+
 // Pull reads spooled messages after seq, oldest first. It returns the
 // messages and the seq of the last one, which is the next after value.
 func (c *Client) Pull(ctx context.Context, after int64, limit int) ([]IngressMessage, int64, error) {
@@ -79,45 +82,53 @@ func (c *Client) Ack(ctx context.Context, through int64, known []string) error {
 }
 
 // Send posts one message and returns the accepted Message-ID.
-func (c *Client) Send(ctx context.Context, req SendRequest) (string, error) {
+func (c *Client) Send(ctx context.Context, req SendRequest) (SendResult, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return "", err
+		return SendResult{}, err
 	}
-	var out struct {
-		MessageID string `json:"message_id"`
-	}
+	var out SendResult
 	if err := c.call(ctx, http.MethodPost, "/v1/send", body, &out); err != nil {
-		return "", err
+		return SendResult{}, err
 	}
-	return out.MessageID, nil
+	return out, nil
 }
 
-// Attachment streams one attachment's bytes from the Worker store.
-func (c *Client) Attachment(ctx context.Context, messageID, attachmentID string) ([]byte, error) {
+// Attachment streams one attachment's bytes from the Worker store. The
+// key is "<messageID>/<attachmentID>"; the second result is the content
+// type the store recorded.
+func (c *Client) Attachment(ctx context.Context, key string) ([]byte, string, error) {
+	messageID, attachmentID, ok := strings.Cut(key, "/")
+	if !ok || messageID == "" || attachmentID == "" {
+		return nil, "", fmt.Errorf("mail worker attachment key %q: want messageID/attachmentID", key)
+	}
 	path := fmt.Sprintf("/v1/attachments/%s/%s", url.PathEscape(messageID), url.PathEscape(attachmentID))
 	req, err := c.request(ctx, http.MethodGet, path, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("mail worker attachment: %w", err)
+		return nil, "", fmt.Errorf("mail worker attachment: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, apiError(resp)
+		return nil, "", apiError(resp)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return nil, "", fmt.Errorf("mail worker attachment: %w", err)
+	}
+	return raw, resp.Header.Get("Content-Type"), nil
 }
 
 // Health reads the Worker fact sheet.
-func (c *Client) Health(ctx context.Context) (*Health, error) {
+func (c *Client) Health(ctx context.Context) (Health, error) {
 	var out Health
 	if err := c.call(ctx, http.MethodGet, "/v1/health", nil, &out); err != nil {
-		return nil, err
+		return Health{}, err
 	}
-	return &out, nil
+	return out, nil
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body []byte) (*http.Request, error) {

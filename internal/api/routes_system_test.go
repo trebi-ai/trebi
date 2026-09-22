@@ -1,14 +1,31 @@
 package api_test
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/api"
+	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/secrets"
 )
+
+// fakeCloud is the hosted worker under test: register plus the hosted
+// object mint/revoke calls, scripted. It never checks signatures.
+type fakeCloud struct {
+	mu         sync.Mutex
+	srv        *httptest.Server
+	registered string // last enrollment_token seen at register
+	nextAddr   string
+	nextHook   string
+	hookCalls  int
+}
 
 // TestSystemVersionFields pins the release contract: version is always
 // present, ui_version only when a UI is embedded (Part C of the release
@@ -174,6 +191,110 @@ func TestSystemLogsRunFilter(t *testing.T) {
 	}
 }
 
+// TestCloudStatusUnlinkedAnswers pins Part G: unlinked is 200 with
+// linked:false and the whole shape present, never a 404.
+func TestCloudStatusUnlinkedAnswers(t *testing.T) {
+	s, base := startTestServer(t)
+	code, body, _ := doJSON(t, "GET", base+"/v1/cloud/status", s.Token(), nil)
+	if code != http.StatusOK {
+		t.Fatalf("status %d %v", code, body)
+	}
+	if body["linked"] != false || body["status"] != "not_linked" {
+		t.Fatalf("unlinked shape: %v", body)
+	}
+	for _, k := range []string{"account_email", "device_name", "plan", "features", "connected", "refreshed_at"} {
+		if _, ok := body[k]; !ok {
+			t.Errorf("status is missing %q: %v", k, body)
+		}
+	}
+}
+
+// TestCloudLinkAddressesUnlink walks the link flow end to end against the
+// fake worker: the account page's grouped code registers, the cached
+// state serves the UI, addresses mask, and unlink clears the key.
+func TestCloudLinkAddressesUnlink(t *testing.T) {
+	s, base, _ := startAPI(t)
+	f := newFakeCloud(t)
+	s.Cloud().Configure(cloudlink.Settings{APIURL: f.srv.URL, Enabled: false})
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/cloud/link", s.Token(),
+		map[string]string{"enrollment_token": "ABCD-EFGH-0123", "name": "mbp"})
+	if code != http.StatusOK {
+		t.Fatalf("link %d %v", code, body)
+	}
+	if f.registered != "abcdefgh0123" {
+		t.Fatalf("register token = %q; display grouping must normalize", f.registered)
+	}
+	if body["linked"] != true || body["status"] != "linked" || body["device_name"] != "mbp" {
+		t.Fatalf("link shape: %v", body)
+	}
+
+	// A second link is a conflict; the caller unlinks first.
+	code, body, _ = doJSON(t, "POST", base+"/v1/cloud/link", s.Token(),
+		map[string]string{"enrollment_token": "ABCD-EFGH-0123"})
+	if code != http.StatusConflict || errCode(body) != "conflict" {
+		t.Fatalf("second link: %d %v", code, body)
+	}
+
+	// The minted hosted address serves masked, and reveal returns it full.
+	if _, err := s.Cloud().MintAddress(t.Context(), "ws_1"); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/addresses", s.Token(), nil)
+	if code != http.StatusOK {
+		t.Fatalf("addresses %d %v", code, body)
+	}
+	rows, _ := body["addresses"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("addresses: %v", body)
+	}
+	row, _ := rows[0].(map[string]any)
+	if row["masked"] != true || row["address"] == "a-abc123@mail.example.com" {
+		t.Fatalf("masked row: %v", row)
+	}
+	if row["workspace_id"] != "ws_1" || row["local_part"] == "" {
+		t.Fatalf("row shape: %v", row)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/addresses?reveal=1", s.Token(), nil)
+	if code != http.StatusOK {
+		t.Fatalf("reveal %d %v", code, body)
+	}
+	rows, _ = body["addresses"].([]any)
+	row, _ = rows[0].(map[string]any)
+	if row["masked"] != false || row["address"] != "a-abc123@mail.example.com" {
+		t.Fatalf("revealed row: %v", row)
+	}
+
+	// Unlink is confirm-gated (confirm_test covers the gate), drops the
+	// row, and deletes the device key from the secrets directory.
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/cloud/link?confirm=1", s.Token(), nil)
+	if code != http.StatusOK || body["linked"] != false {
+		t.Fatalf("unlink %d %v", code, body)
+	}
+	if _, err := secrets.Get("cloud_device_key"); err == nil {
+		t.Fatal("device key survived unlink")
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/status", s.Token(), nil)
+	if code != http.StatusOK || body["linked"] != false || body["status"] != "not_linked" {
+		t.Fatalf("status after unlink: %d %v", code, body)
+	}
+}
+
+// TestCloudLinkNeedsToken pins the validation contract: the code is
+// required and empty groups do not pass.
+func TestCloudLinkNeedsToken(t *testing.T) {
+	s, base, _ := startAPI(t)
+	f := newFakeCloud(t)
+	s.Cloud().Configure(cloudlink.Settings{APIURL: f.srv.URL, Enabled: false})
+	for _, token := range []string{"", "----"} {
+		code, body, _ := doJSON(t, "POST", base+"/v1/cloud/link", s.Token(),
+			map[string]string{"enrollment_token": token})
+		if code != http.StatusBadRequest || errCode(body) != "validation" {
+			t.Fatalf("token %q: %d %v", token, code, body)
+		}
+	}
+}
+
 func logLines(t *testing.T, body map[string]any) []string {
 	t.Helper()
 	raw, ok := body["lines"].([]any)
@@ -186,4 +307,42 @@ func logLines(t *testing.T, body map[string]any) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+func newFakeCloud(t *testing.T) *fakeCloud {
+	t.Helper()
+	f := &fakeCloud{nextAddr: "a-abc123", nextHook: "tok-1"}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/v1/devices":
+			var body struct {
+				EnrollmentToken string `json:"enrollment_token"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.registered = body.EnrollmentToken
+			_ = json.NewEncoder(w).Encode(map[string]string{"device_id": "01DEVICE0000000000000000AA"})
+		case r.Method == "POST" && r.URL.Path == "/v1/addresses":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"id": "01ADDR000000000000000000AA", "local_part": f.nextAddr,
+				"address": f.nextAddr + "@mail.example.com",
+			})
+		case r.Method == "POST" && r.URL.Path == "/v1/hooks":
+			f.hookCalls++
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"id": "01HOOK00000000000000000AA", "token": f.nextHook,
+				"url": "https://in.example.com/hook/" + f.nextHook,
+			})
+		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/v1/hooks/"):
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/v1/addresses/"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
 }

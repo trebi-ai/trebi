@@ -246,6 +246,9 @@ func (c *Config) SetPath(path, value string) error {
 	if handled, err := c.setEmailKey(path, value); handled {
 		return err
 	}
+	if handled, err := c.setCloudKey(path, value); handled {
+		return err
+	}
 
 	// tools.<name>.…
 	parts := strings.Split(path, ".")
@@ -410,6 +413,14 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.add("workspaces.root", rootShow, DefaultWorkspacesRoot)
 	l.addAssistant(cfg)
 	l.addEmail(cfg)
+	l.addCloud(cfg)
+}
+
+// addCloud adds the cloud block rows.
+func (l *pathEntryList) addCloud(cfg *Config) {
+	c := cfg.Cloud
+	l.add("cloud.api_url", c.APIURLOrDefault(), DefaultCloudAPIURL)
+	l.add("cloud.enabled", strconv.FormatBool(c.Active()), "true")
 }
 
 // addEmail adds the email block rows.
@@ -711,6 +722,27 @@ func (c *Config) setEmailKey(path, value string) (handled bool, err error) {
 	return true, nil
 }
 
+// setCloudKey handles cloud.* keys; handled=false when path is not one.
+func (c *Config) setCloudKey(path, value string) (handled bool, err error) {
+	switch path {
+	case "cloud.api_url":
+		c.Cloud.APIURL = clearOrValue(value)
+	case "cloud.enabled":
+		if value == "" || value == "-" {
+			c.Cloud.Enabled = nil
+			return true, nil
+		}
+		b, err := parseBoolish(value)
+		if err != nil {
+			return true, fmt.Errorf("cloud.enabled: %w", err)
+		}
+		c.Cloud.Enabled = &b
+	default:
+		return false, nil
+	}
+	return true, nil
+}
+
 // UnsetPath clears a dotted key. assistant.api_key also deletes the secret.
 func (c *Config) UnsetPath(path string) error {
 	if c == nil {
@@ -989,6 +1021,8 @@ func pathKeyDescriptions() map[string]string {
 		"email.poll_interval":           "Ingress poll period (default 30s; 5s to 10m)",
 		"email.require_dmarc":           "Reject inbound mail without a DMARC pass (default true)",
 		"email.from_name":               "Display name on outbound mail (default Trebi)",
+		"cloud.api_url":                 "Hosted account endpoint (default https://api.trebi.ai)",
+		"cloud.enabled":                 "Dial the hosted workers; false keeps a linked device offline (default true)",
 	}
 }
 

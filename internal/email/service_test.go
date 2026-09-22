@@ -1,25 +1,27 @@
 package email
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
-	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
-// Email is not enforced today, so Has is always true in-process and the
-// refusal path is covered by the license package tests.
+// The cloud plan gates hosted mail at transport selection, so the
+// service itself gates nothing; the refusal path is covered by the
+// transport-selection tests.
 func TestServiceUnconfigured(t *testing.T) {
 	t.Parallel()
-	s := New(openEmailStore(t), license.New(nil))
+	s := New(openEmailStore(t))
 
 	st := s.Status(t.Context())
 	if st.Configured || st.Entitlement != "ok" || st.WorkerHealth != nil {
@@ -35,8 +37,8 @@ func TestServiceUnconfigured(t *testing.T) {
 
 func TestEnsureRotateSync(t *testing.T) {
 	t.Parallel()
-	s := New(openEmailStore(t), nil)
-	s.Configure(testSettings("https://worker.example"))
+	s := New(openEmailStore(t))
+	configureTest(s, "https://worker.example")
 
 	a, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
 	if err != nil {
@@ -109,8 +111,8 @@ func TestStatusProbesWorker(t *testing.T) {
 	srv := httptest.NewServer(fw.handler())
 	t.Cleanup(srv.Close)
 
-	s := New(openEmailStore(t), nil)
-	s.Configure(testSettings(srv.URL))
+	s := New(openEmailStore(t))
+	configureTest(s, srv.URL)
 	s.SetPollState(PollState{Position: 41, LastPoll: "2026-09-19T09:00:00Z"})
 
 	st := s.Status(t.Context())
@@ -125,7 +127,7 @@ func TestStatusProbesWorker(t *testing.T) {
 	}
 
 	// A dead Worker is reported, not returned.
-	s.Configure(testSettings("http://127.0.0.1:1"))
+	configureTest(s, "http://127.0.0.1:1")
 	st = s.Status(t.Context())
 	if st.WorkerError == "" || st.WorkerHealth != nil {
 		t.Errorf("worker error = %q, health = %+v", st.WorkerError, st.WorkerHealth)
@@ -139,8 +141,8 @@ func TestTestSendsAndLogs(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st, nil)
-	s.Configure(testSettings(srv.URL))
+	s := New(st)
+	configureTest(s, srv.URL)
 
 	msgID, err := s.Test(t.Context())
 	if err != nil {
@@ -177,7 +179,7 @@ func TestTestSendsAndLogs(t *testing.T) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(dead.Close)
-	s.Configure(testSettings(dead.URL))
+	configureTest(s, dead.URL)
 	if _, err := s.Test(t.Context()); err == nil {
 		t.Error("send to a dead worker must fail")
 	}
@@ -195,8 +197,8 @@ func TestSendAlertThreadsAndRecovers(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st, nil)
-	s.Configure(testSettings(srv.URL))
+	s := New(st)
+	configureTest(s, srv.URL)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := st.DB().ExecContext(t.Context(),
@@ -291,8 +293,8 @@ func TestSendRecipientMatrix(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st, nil)
-	s.Configure(testSettings(srv.URL))
+	s := New(st)
+	configureTest(s, srv.URL)
 	if _, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs"); err != nil {
 		t.Fatal(err)
 	}
@@ -391,8 +393,8 @@ func TestSendAlertFromWorkspaceAddress(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st, nil)
-	s.Configure(testSettings(srv.URL))
+	s := New(st)
+	configureTest(s, srv.URL)
 	addr, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
 	if err != nil {
 		t.Fatal(err)
@@ -428,6 +430,162 @@ func TestSendAlertFromWorkspaceAddress(t *testing.T) {
 	}
 }
 
+// hostedTransport is the hosted mail transport under test: a scripted
+// mint plus inert send and fetch. It satisfies Transport and HostedMint
+// the way the daemon's cloudTransport does.
+type hostedTransport struct {
+	mu    sync.Mutex
+	mints []string
+	seen  []string
+}
+
+func (h *hostedTransport) Send(context.Context, SendRequest) (SendResult, error) {
+	return SendResult{}, nil
+}
+
+func (h *hostedTransport) Attachment(context.Context, string) ([]byte, string, error) {
+	return nil, "", nil
+}
+
+func (h *hostedTransport) Health(context.Context) (Health, error) {
+	return Health{Version: "hosted"}, nil
+}
+
+func (h *hostedTransport) MintAddress(context.Context, string) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.seen = append(h.seen, "mint")
+	if len(h.mints) == 0 {
+		return "", errors.New("no scripted mint left")
+	}
+	out := h.mints[0]
+	h.mints = h.mints[1:]
+	return out, nil
+}
+
+// TestEnsureRotateHosted pins Part D: the hosted transport mints in the
+// cloud, the row keeps the address the worker assigned, and a rotation
+// replaces it instead of minting a local token.
+func TestEnsureRotateHosted(t *testing.T) {
+	t.Parallel()
+	tr := &hostedTransport{mints: []string{"a-one@mail.example.com", "a-two@mail.example.com"}}
+	s := New(openEmailStore(t))
+	cfg := testSettings("") // no Worker: the hosted selection supplies the transport
+	s.Configure(cfg, tr)
+
+	a, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.LocalPart != "a-one" || a.Domain != "mail.example.com" {
+		t.Fatalf("hosted address = %+v", a)
+	}
+	if _, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs"); err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.seen) != 1 {
+		t.Fatalf("mints = %v; an existing address must not re-mint", tr.seen)
+	}
+
+	a2, err := s.Rotate(t.Context(), "ws_1", "Ellis Labs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a2.LocalPart != "a-two" || a2.Revision != 2 || a2.RotatedAt == "" {
+		t.Fatalf("rotated = %+v", a2)
+	}
+}
+
+// TestDeliverHostedRoutesLikePoll runs the poll test's body through the
+// hosted transport: one inbound path, two transports (plan 2026-09-22
+// Part L). The routing decisions must not move.
+func TestDeliverHostedRoutesLikePoll(t *testing.T) {
+	t.Parallel()
+	st := openEmailStore(t)
+	s := New(st)
+	cfg := testSettings("")
+	cfg.Domain = "" // the hosted transport learns its domain from the mint
+	s.Configure(cfg, &hostedTransport{mints: []string{"a-hosted1@mail.example.com"}})
+
+	addr, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := []IngressMessage{
+		{V: 1, ID: "h1", LocalPart: addr.LocalPart, Tag: "research", From: "any@example.net", Dmarc: "pass"},
+		{V: 1, ID: "h2", LocalPart: addr.LocalPart, From: "ops@example.com", Dmarc: "pass"},
+		{V: 1, ID: "h3", LocalPart: addr.LocalPart, Tag: "billing", From: "ops@example.com", Dmarc: "pass"},
+		{V: 1, ID: "h4", LocalPart: addr.LocalPart, Tag: "billing", From: "stranger@example.net", Dmarc: "pass"},
+		{V: 1, ID: "h5", LocalPart: addr.LocalPart, Tag: "research", From: "ops@example.com", Dmarc: "fail"},
+		{V: 1, ID: "h6", LocalPart: "nobody-t0k0n0", From: "ops@example.com", Dmarc: "pass"},
+	}
+	acts := &fakeActions{env: RouteEnv{Agents: []string{"research"}}}
+	conn := connectors.New(st, nil, nil, nil)
+	s.AttachIngress(NewIngress(s, conn, acts, time.Minute, false))
+
+	for _, msg := range msgs {
+		if err := s.Deliver(t.Context(), msg); err != nil {
+			t.Fatalf("deliver %s: %v", msg.ID, err)
+		}
+	}
+	if len(acts.wakes) != 1 || acts.wakes[0] != "research" {
+		t.Errorf("wakes = %v", acts.wakes)
+	}
+	if len(acts.asks) != 2 || strings.Contains(acts.asks[0], "Misrouted") ||
+		!strings.Contains(acts.asks[1], "Misrouted email for +billing") {
+		t.Errorf("asks = %q", acts.asks)
+	}
+	if len(acts.inbox) != 2 || acts.inbox[1] != ReasonDMARCSpoof {
+		t.Errorf("inbox = %q", acts.inbox)
+	}
+	for _, tc := range []struct {
+		id, disp, run, conv, inbox string
+	}{
+		{"h1", "routed", "run-1", "", ""},
+		{"h2", "routed", "", "conv-1", ""},
+		{"h3", "misrouted", "", "conv-2", "in-1"},
+		{"h4", "dropped", "", "", ""},
+		{"h5", "dropped", "", "", "in-2"},
+		{"h6", "dropped", "", "", ""},
+	} {
+		var disp, run, conv, inbox string
+		err := st.DB().QueryRowContext(t.Context(),
+			`SELECT disposition, COALESCE(run_id,''), COALESCE(conversation_id,''), COALESCE(inbox_id,'')
+			 FROM email_messages WHERE id=?`, tc.id).
+			Scan(&disp, &run, &conv, &inbox)
+		if err != nil {
+			t.Fatalf("row %s: %v", tc.id, err)
+		}
+		if disp != tc.disp || run != tc.run || conv != tc.conv || inbox != tc.inbox {
+			t.Errorf("%s = %s/%s/%s/%s; want %s/%s/%s/%s",
+				tc.id, disp, run, conv, inbox, tc.disp, tc.run, tc.conv, tc.inbox)
+		}
+	}
+	if n := busCount(t, st, "email.received"); n != 3 {
+		t.Errorf("email.received frames = %d, want 3", n)
+	}
+	var events int
+	if err := st.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM events WHERE connector='email'`).Scan(&events); err != nil || events != 3 {
+		t.Errorf("injected events = %d err %v, want 3", events, err)
+	}
+
+	// A redelivery after a reconnect routes nothing twice (the socket is
+	// at-least-once and the row id dedupes).
+	for _, msg := range msgs {
+		if err := s.Deliver(t.Context(), msg); err != nil {
+			t.Fatalf("redeliver %s: %v", msg.ID, err)
+		}
+	}
+	if len(acts.wakes) != 1 || len(acts.asks) != 2 || len(acts.inbox) != 2 {
+		t.Errorf("redelivery routed twice: wakes %d asks %d inbox %d",
+			len(acts.wakes), len(acts.asks), len(acts.inbox))
+	}
+	if n := busCount(t, st, "email.received"); n != 3 {
+		t.Errorf("email.received frames after redelivery = %d, want 3", n)
+	}
+}
+
 func envelope(t *testing.T, st *store.Store, messageID string) (inReplyTo, root, disposition string) {
 	t.Helper()
 	err := st.DB().QueryRowContext(t.Context(),
@@ -457,6 +615,12 @@ func openEmailStore(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return st
+}
+
+// configureTest installs the bearer transport against one Worker URL.
+func configureTest(s *Service, worker string) {
+	cfg := testSettings(worker)
+	s.Configure(cfg, NewClient(cfg.Worker, cfg.Token))
 }
 
 func testSettings(worker string) *Settings {

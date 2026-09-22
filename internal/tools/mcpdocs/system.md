@@ -40,13 +40,33 @@ firing until it starts again.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
 ### cloud_status
-Read the cloud link state. No input fields.
+Read the cloud link state: link state, account, device, plan, granted features, and socket state. An unlinked daemon answers `linked: false`; that is the answer, not an error. No input fields.
+
+### cloud_addresses
+List the hosted mail addresses of this device, one per workspace. The addresses are masked by default.
+- `reveal` (boolean, optional): return the full addresses and write an audit entry.
 
 ### cloud_link
-Link this daemon to the cloud service. No input fields.
+Link this daemon to a Trebi cloud account and show the plan and features on success. The account page mints the code under "Link a device"; it expires in 10 minutes. A daemon that is already linked answers `conflict`: run `cloud_unlink` first.
+- `enrollment_token` (string, required): the code from the account page. Hyphens and case are ignored.
+- `name` (string, optional): device name shown on the account page. Defaults to the hostname.
 
 ### cloud_unlink
-Unlink this daemon from the cloud service. Destructive. Remote clients lose access.
+Unlink this daemon from the cloud service. Destructive. Remote clients lose access. This does not revoke the device in the cloud; the account page revokes.
+- `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
+
+### hook_create
+Mint one hosted webhook and return its public URL once, in full. Post events to that URL with any subpath: the first path segment becomes the event label. Handle the URL like a secret: anyone holding it can post an event.
+- `workspace` (string, required): workspace id or name the hook belongs to.
+- `label` (string, required): short name for the hook, shown in listings.
+
+### hook_list
+List the hosted webhooks. URLs are masked by default because the token is the URL.
+- `reveal` (boolean, optional): return full URLs and write an audit entry.
+
+### hook_delete
+Revoke one hosted webhook. Destructive. Deliveries to its URL stop and its jobs stop firing.
+- `id` (string, required): hook id from `hook_list`.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
 ### bus_poll

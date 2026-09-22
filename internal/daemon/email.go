@@ -138,7 +138,9 @@ func (c *ControlPlane) AmbiguousReplyItem(ctx context.Context, runID string, d e
 	return c.Alerts.AmbiguousReplyItem(ctx, runID, d, msg)
 }
 
-// startEmail attaches the poll loop to the service and runs it. The loop
+// startEmail attaches the inbound pipeline to the service and runs it.
+// The poll loop pulls only on the bearer transport; the hosted transport
+// pushes into Service.Deliver through the cloudlink socket. The loop
 // itself skips automatic polls under shadow and drain; the manual poll
 // route shares this instance through the service.
 func (c *ControlPlane) startEmail(ctx context.Context) {

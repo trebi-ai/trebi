@@ -146,9 +146,9 @@ func TestClientSendAttachmentHealth(t *testing.T) {
 	t.Cleanup(srv.Close)
 	c := NewClient(srv.URL, fw.token)
 
-	id, err := c.Send(t.Context(), SendRequest{V: 1, From: "trebi@x", To: []string{"ops@x"}, MessageID: "<out-1@x>"})
-	if err != nil || id != "<out-1@x>" {
-		t.Fatalf("send = %q,%v", id, err)
+	res, err := c.Send(t.Context(), SendRequest{V: 1, From: "trebi@x", To: []string{"ops@x"}, MessageID: "<out-1@x>"})
+	if err != nil || res.MessageID != "<out-1@x>" {
+		t.Fatalf("send = %q,%v", res.MessageID, err)
 	}
 	var sent SendRequest
 	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
@@ -158,7 +158,7 @@ func TestClientSendAttachmentHealth(t *testing.T) {
 		t.Errorf("send body = %s", fw.lastSend)
 	}
 
-	b, err := c.Attachment(t.Context(), "<in-1@x>", "a1")
+	b, _, err := c.Attachment(t.Context(), "<in-1@x>/a1")
 	if err != nil || string(b) != "file-bytes" {
 		t.Fatalf("attachment = %q,%v", b, err)
 	}

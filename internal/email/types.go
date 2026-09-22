@@ -2,7 +2,10 @@
 // client, workspace addresses, and the envelope log (plan 2026-09-19).
 package email
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // ContractV is the wire version both shapes carry.
 const ContractV = 1
@@ -68,6 +71,28 @@ type SendRequest struct {
 	MessageID  string   `json:"message_id"`
 	InReplyTo  string   `json:"in_reply_to,omitempty"`
 	References []string `json:"references,omitempty"`
+}
+
+// SendResult is the accepted reply from one send.
+type SendResult struct {
+	MessageID string `json:"message_id"`
+}
+
+// Transport moves mail: one send, one attachment read, one health probe.
+// The bearer Worker client and the hosted cloudlink client both satisfy
+// it, and the two never run at once (plan 2026-09-22 Part D).
+type Transport interface {
+	Send(ctx context.Context, req SendRequest) (SendResult, error)
+	Attachment(ctx context.Context, key string) ([]byte, string, error)
+	Health(ctx context.Context) (Health, error)
+}
+
+// HostedMint mints one hosted address in the cloud and returns it as
+// local@domain. The hosted transport satisfies it; the bearer transport
+// mints locally with crypto/rand instead. A second mint for the same
+// workspace replaces the hosted address.
+type HostedMint interface {
+	MintAddress(ctx context.Context, workspaceID string) (string, error)
 }
 
 // Health is the Worker fact sheet. Spool depth and oldest-entry age are

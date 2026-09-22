@@ -354,6 +354,11 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "cloud.connected", Bus: true, Log: true},
 		{Name: "cloud.disconnected", Bus: true, Log: true},
 		{Name: "cloud.push_failed", Bus: false, Log: true},
+		{Name: "cloud.entitlement", Bus: true, Log: true},
+		// hosted webhooks
+		{Name: "hook.created", Bus: true, Log: true},
+		{Name: "hook.deleted", Bus: true, Log: true},
+		{Name: "hook.received", Bus: true, Log: true},
 	}
 }
 

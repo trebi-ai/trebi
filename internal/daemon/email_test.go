@@ -358,7 +358,7 @@ func startMailPlane(t *testing.T) *mailPlane {
 		Worker: wsSrv.URL, Token: "test-token-0000", Domain: "mail.example.com",
 		Operators: []string{"ops@example.com"}, PollInterval: time.Minute,
 		RequireDMARC: true, FromName: "Trebi",
-	})
+	}, email.NewClient(wsSrv.URL, "test-token-0000"))
 	addr, err := cp.Email.EnsureAddress(ctx, added.ID, "ellis")
 	if err != nil {
 		t.Fatal(err)

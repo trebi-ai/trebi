@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "type": "alert",
+  "cursor": "7",
+  "kind": "approval",
+  "summary": "Approve the weekly report?",
+  "message_id": "<01J8Y8A2C4E6G8H0J2K4M6N8P@mail.example.com>"
+}

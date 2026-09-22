@@ -186,6 +186,7 @@ func mcpTestMux() *http.ServeMux {
 	s.routeEvents(mux)
 	s.routeFiles(mux)
 	s.routeEmail(mux)
+	s.routeHooks(mux)
 	s.routeHarness(mux)
 	s.routeInbox(mux)
 	s.routeConnectors(mux)

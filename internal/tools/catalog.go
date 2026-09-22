@@ -2028,13 +2028,55 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"cloud_status": act("GET /v1/cloud/status", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildCloudStatusPath()), nil
 			}),
-			"cloud_link": act("POST /v1/cloud/link", Input{}, func(Input) (request.HTTPRequest, error) { return request.BuildCloudLink(), nil }),
+			"cloud_addresses": act("GET /v1/cloud/addresses", Input{}, func(in Input) (request.HTTPRequest, error) {
+				reveal, err := in.flag("reveal")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildCloudAddressesPath(reveal)), nil
+			}),
+			"cloud_link": act("POST /v1/cloud/link", Input{"enrollment_token": "abcd-efgh", "name": "fritz-mbp"}, func(in Input) (request.HTTPRequest, error) {
+				token, err := in.reqStr("enrollment_token")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				name, err := in.str("name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildCloudLink(token, name), nil
+			}),
 			"cloud_unlink": del("DELETE /v1/cloud/link", Input{"confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				confirm, err := in.flag("confirm")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildCloudUnlink(confirm), nil
+			}),
+			"hook_create": act("POST /v1/hooks", Input{"workspace": "ws1", "label": "deploy"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "label")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildHookCreate(v[0], v[1]), nil
+			}),
+			"hook_list": act("GET /v1/hooks", Input{}, func(in Input) (request.HTTPRequest, error) {
+				reveal, err := in.flag("reveal")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildHooksPath(reveal)), nil
+			}),
+			"hook_delete": del("DELETE /v1/hooks/{id}", Input{"id": "01ABC", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				confirm, err := in.flag("confirm")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildHookDelete(id, confirm), nil
 			}),
 			"bus_poll": func() Action {
 				e := act("GET /v1/stream", Input{}, func(in Input) (request.HTTPRequest, error) {

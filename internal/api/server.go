@@ -18,6 +18,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
@@ -34,6 +35,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/ui"
+	"github.com/trebi-ai/trebi/internal/webhooks"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -56,6 +58,8 @@ type Server struct {
 	harness    *harness.Service
 	sched      *schedule.Service
 	email      *email.Service
+	cloud      *cloudlink.Service
+	hooks      *webhooks.Service
 	lic        *license.Service
 
 	token     string
@@ -111,6 +115,8 @@ func New(st *store.Store, opts Options) *Server {
 	if lic == nil {
 		lic = license.New(opts.Ext.License)
 	}
+	conn := connectors.New(st, ws, r, pol)
+	cl := cloudlink.New(st)
 	s := &Server{
 		st:           st,
 		runs:         r,
@@ -118,12 +124,14 @@ func New(st *store.Store, opts Options) *Server {
 		files:        fs,
 		alerts:       alerts.New(st, alerts.Options{}),
 		skills:       skills.New(st),
-		connectors:   connectors.New(st, ws, r, pol),
+		connectors:   conn,
 		conv:         conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
 		harness:      harness.New(st, tmux.DefaultDriver{}, harness.Options{}),
 		sched:        schedule.New(st),
 		lic:          lic,
-		email:        email.New(st, lic),
+		email:        email.New(st),
+		cloud:        cl,
+		hooks:        webhooks.New(st, conn, cl),
 		token:        opts.Token,
 		startedAt:    time.Now().UTC(),
 		shadow:       opts.Shadow,
@@ -163,7 +171,7 @@ func New(st *store.Store, opts Options) *Server {
 }
 
 // BindControlPlane replaces core services with the daemon's shared instances.
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service) {
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service, cloudSvc *cloudlink.Service, hooksSvc *webhooks.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
 		s.runs.SetNativeHooks(runs.NativeHooks{Dispatch: s})
@@ -194,6 +202,12 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	}
 	if licSvc != nil {
 		s.lic = licSvc
+	}
+	if cloudSvc != nil {
+		s.cloud = cloudSvc
+	}
+	if hooksSvc != nil {
+		s.hooks = hooksSvc
 	}
 }
 
@@ -242,6 +256,12 @@ func (s *Server) Skills() *skills.Service { return s.skills }
 // Email returns the email channel service.
 func (s *Server) Email() *email.Service { return s.email }
 
+// Cloud returns the hosted link service.
+func (s *Server) Cloud() *cloudlink.Service { return s.cloud }
+
+// Hooks returns the hosted webhook service.
+func (s *Server) Hooks() *webhooks.Service { return s.hooks }
+
 // License returns the license service.
 func (s *Server) License() *license.Service { return s.lic }
 
@@ -263,6 +283,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeHarness(mux)
 	s.routeSettings(mux)
 	s.routeEmail(mux)
+	s.routeHooks(mux)
 	s.routeMCP(mux)
 	// Dispatch from catalog tools re-enters here, audit-wrapped but not
 	// auth-wrapped. MCP already passed authMiddleware; native is the daemon.
@@ -365,6 +386,21 @@ func (s *Server) edition() string {
 		return s.ext.Edition
 	}
 	return "free"
+}
+
+// maskedBody builds one masked list body (plan 2026-09-22 Part G): every
+// row passes through payload with the mask flag, and ?reveal=1 unmasks
+// all of them and records one audit entry.
+func maskedBody[T any](s *Server, r *http.Request, key, audit string, rows []T, payload func(T, bool) map[string]any) map[string]any {
+	masked := r.URL.Query().Get("reveal") != "1"
+	if !masked {
+		s.log.Info(audit, "count", len(rows))
+	}
+	items := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, payload(row, masked))
+	}
+	return map[string]any{key: items}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

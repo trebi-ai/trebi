@@ -11,6 +11,7 @@ import (
 
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
@@ -25,6 +26,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
+	"github.com/trebi-ai/trebi/internal/webhooks"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -67,6 +69,8 @@ type ControlPlane struct {
 	Conversations *conversations.Service
 	Harness       *harness.Service
 	Email         *email.Service
+	Cloud         *cloudlink.Service
+	Webhooks      *webhooks.Service
 	License       *license.Service
 	Opts          Options
 
@@ -111,7 +115,10 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	if lic == nil {
 		lic = license.New(opts.Ext.License)
 	}
-	em := email.New(st, lic).WithConversations(conv)
+	em := email.New(st).WithConversations(conv)
+	cl := cloudlink.New(st).WithMail(em)
+	hk := webhooks.New(st, connector, cl)
+	cl.WithWebhooks(hk)
 	c := &ControlPlane{
 		Store:         st,
 		Runs:          r,
@@ -124,11 +131,14 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Conversations: conv,
 		Harness:       harness.New(st, tmux.DefaultDriver{}, harness.Options{LoginMaxAge: opts.LoginMaxAge}),
 		Email:         em,
+		Cloud:         cl,
+		Webhooks:      hk,
 		License:       lic,
 		Opts:          opts,
 		log:           slog.Default().With("source", "daemon"),
 		queue:         q,
 	}
+	cl.WithOnChange(c.reselectEmail)
 	approvalQuestion := func(ctx context.Context, runID string) string {
 		a, err := r.PendingApproval(ctx, runID)
 		if err != nil || a == nil {
@@ -199,6 +209,10 @@ func (c *ControlPlane) Start(parent context.Context) {
 	c.Runs.RecoverNative(ctx)
 	c.Runs.RecoverCLI(ctx)
 	c.syncEmailAddresses(ctx)
+
+	// The cloud socket pushes hosted mail and webhooks. It dials out; the
+	// machine opens no port (plan 2026-09-22 Part N).
+	c.Cloud.Start(ctx)
 
 	c.wg.Add(1)
 	go func() {
@@ -274,6 +288,7 @@ func (c *ControlPlane) Stop() {
 	if c.cancel != nil {
 		c.cancel()
 	}
+	c.Cloud.Stop()
 	c.Reaper.Stop()
 	if c.Runs != nil {
 		c.Runs.CloseCLIRuns(context.Background())
@@ -284,32 +299,44 @@ func (c *ControlPlane) Stop() {
 	c.wg.Wait()
 }
 
-// configureEmail maps the email config block onto the service. A block
-// with an unresolvable token or a bad poll interval leaves the channel
-// off; doctor reports the cause, the daemon still boots.
+// configureEmail maps the email config block onto the service and picks
+// exactly one transport (plan 2026-09-22 Part D). A block with an
+// unresolvable token or a bad poll interval leaves the channel off;
+// doctor reports the cause, the daemon still boots. A Worker URL and a
+// hosted link at once is a config error that doctor reports and that
+// leaves the Worker path running.
 func (c *ControlPlane) configureEmail(cfg *config.Config) {
-	if cfg == nil || !cfg.Email.Enabled() {
-		return
-	}
-	token, err := cfg.Email.ResolveToken()
-	if err != nil {
-		c.log.Warn("email token", "error", err)
+	mode, _ := emailTransportMode(cfg, c.Cloud.Entitlement())
+	if mode == emailOff {
+		c.Email.Configure(nil, nil)
 		return
 	}
 	interval, err := cfg.Email.PollIntervalDuration()
 	if err != nil {
 		c.log.Warn("email poll interval", "error", err)
+		c.Email.Configure(nil, nil)
 		return
 	}
-	c.Email.Configure(&email.Settings{
-		Worker:       cfg.Email.Worker,
-		Token:        token,
+	settings := &email.Settings{
 		Domain:       cfg.Email.Domain,
 		Operators:    cfg.Email.Operators,
 		PollInterval: interval,
 		RequireDMARC: cfg.Email.DMARCRequired(),
 		FromName:     cfg.Email.FromSenderName(),
-	})
+	}
+	if mode == emailHosted {
+		c.Email.Configure(settings, cloudTransport{cl: c.Cloud})
+		return
+	}
+	token, err := cfg.Email.ResolveToken()
+	if err != nil {
+		c.log.Warn("email token", "error", err)
+		c.Email.Configure(nil, nil)
+		return
+	}
+	settings.Worker = cfg.Email.Worker
+	settings.Token = token
+	c.Email.Configure(settings, email.NewClient(cfg.Email.Worker, token))
 }
 
 // syncEmailAddresses mints addresses for workspaces that lack one. With
@@ -432,6 +459,13 @@ func (c *ControlPlane) busPrune(ctx context.Context) {
 			}
 			if _, err := c.Store.PruneIdempotent(ctx, 24*time.Hour); err != nil {
 				c.log.Warn("idempotency prune", "error", err)
+			}
+			// The ingress id ledger keeps one cloud_cursors row per acked
+			// frame; old entries go with the same seven-day retention.
+			if _, err := c.Store.DB().ExecContext(ctx,
+				`DELETE FROM cloud_cursors WHERE stream LIKE 'ingress:%' AND updated_at < ?`,
+				time.Now().UTC().Add(-7*24*time.Hour).Format(time.RFC3339)); err != nil {
+				c.log.Warn("ingress ledger prune", "error", err)
 			}
 		}
 	}

@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 18
+const SchemaVersion = 19
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -492,6 +492,40 @@ ALTER TABLE inbox_items ADD COLUMN email_message_id TEXT NOT NULL DEFAULT '';
 		// it to new turns, so a restart cannot resend or skip.
 		`
 ALTER TABLE email_messages ADD COLUMN covered_turn INTEGER;
+`,
+		// v19: cloud link (plan 2026-09-22 Part A). cloud_link holds the one
+		// device identity row; a missing row means unlinked and the private
+		// key never lands here (it lives in the secrets directory).
+		// cloud_addresses and cloud_hooks are the local registry rows for the
+		// hosted objects the worker mints. cloud_hooks.url holds the full
+		// public URL including the token: treat it as a weak credential.
+		`
+CREATE TABLE cloud_link (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  device_id       TEXT NOT NULL,
+  device_name     TEXT NOT NULL,
+  api_url         TEXT NOT NULL,
+  account_email   TEXT NOT NULL DEFAULT '',
+  plan            TEXT NOT NULL DEFAULT '',
+  features        TEXT NOT NULL DEFAULT '[]',
+  linked_at       TEXT NOT NULL,
+  refreshed_at    TEXT NOT NULL
+);
+CREATE TABLE cloud_addresses (
+  id              TEXT PRIMARY KEY,
+  workspace_id    TEXT NOT NULL,
+  address         TEXT NOT NULL,
+  local_part      TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  UNIQUE (workspace_id)
+);
+CREATE TABLE cloud_hooks (
+  id              TEXT PRIMARY KEY,
+  workspace_id    TEXT NOT NULL,
+  label           TEXT NOT NULL,
+  url             TEXT NOT NULL,
+  created_at      TEXT NOT NULL
+);
 `,
 	}
 }

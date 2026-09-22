@@ -1161,14 +1161,52 @@ func BuildCloudStatusPath() string {
 	return "/v1/cloud/status"
 }
 
-// BuildCloudLink builds POST /v1/cloud/link.
-func BuildCloudLink() HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: "/v1/cloud/link"}
+// BuildCloudAddressesPath builds GET /v1/cloud/addresses. The rows are
+// masked unless reveal is set.
+func BuildCloudAddressesPath(reveal bool) string {
+	q := map[string]string{}
+	if reveal {
+		q["reveal"] = "1"
+	}
+	return withQuery("/v1/cloud/addresses", q)
+}
+
+// BuildCloudLink builds POST /v1/cloud/link: exchange the enrollment code
+// from the account page for a device identity.
+func BuildCloudLink(enrollToken, name string) HTTPRequest {
+	body := map[string]any{"enrollment_token": enrollToken}
+	if name != "" {
+		body["name"] = name
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/cloud/link", Body: body}
 }
 
 // BuildCloudUnlink builds DELETE /v1/cloud/link.
 func BuildCloudUnlink(confirm bool) HTTPRequest {
 	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/cloud/link", confirmQ(confirm))}
+}
+
+// BuildHooksPath builds GET /v1/hooks. The URLs are masked unless reveal
+// is set: the token is the URL, so it is a weak credential.
+func BuildHooksPath(reveal bool) string {
+	q := map[string]string{}
+	if reveal {
+		q["reveal"] = "1"
+	}
+	return withQuery("/v1/hooks", q)
+}
+
+// BuildHookCreate builds POST /v1/hooks: mint one hosted webhook and get
+// its URL back once.
+func BuildHookCreate(workspace, label string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/hooks",
+		Body: map[string]any{"workspace_id": workspace, "label": label}}
+}
+
+// BuildHookDelete builds DELETE /v1/hooks/{id}.
+func BuildHookDelete(id string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE",
+		Path: withQuery("/v1/hooks/"+url.PathEscape(id), confirmQ(confirm))}
 }
 
 // BuildQueueRequeue builds POST /v1/queue/{id}/requeue.

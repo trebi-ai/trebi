@@ -1,0 +1,109 @@
+// Cloudlink orchestration (plan 2026-09-22): the hosted mail transport,
+// the exclusive transport selection, and the link-state refresh hook. The
+// daemon wires the cloudlink service; the service only decides.
+package daemon
+
+import (
+	"context"
+
+	"github.com/trebi-ai/trebi/internal/cloudlink"
+	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/email"
+	"github.com/trebi-ai/trebi/internal/entitle"
+)
+
+// cloudTransport is the hosted mail transport (Part D). It satisfies
+// email.Transport and email.HostedMint over the cloudlink service: send
+// and fetch are signed calls, and minting moves to the cloud.
+type cloudTransport struct{ cl *cloudlink.Service }
+
+var _ email.Transport = cloudTransport{}
+var _ email.HostedMint = cloudTransport{}
+
+func (t cloudTransport) Send(ctx context.Context, req email.SendRequest) (email.SendResult, error) {
+	return t.cl.Send(ctx, req)
+}
+
+func (t cloudTransport) Attachment(ctx context.Context, key string) ([]byte, string, error) {
+	return t.cl.Attachment(ctx, key)
+}
+
+// Health reports the transport facts. The hosted transport has no spool;
+// socket state lives in GET /v1/cloud/status.
+func (t cloudTransport) Health(context.Context) (email.Health, error) {
+	return email.Health{Version: "hosted"}, nil
+}
+
+// MintAddress mints one hosted address. A second mint for the same
+// workspace replaces it in the cloud.
+func (t cloudTransport) MintAddress(ctx context.Context, workspaceID string) (string, error) {
+	a, err := t.cl.MintAddress(ctx, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	return a.Address, nil
+}
+
+// emailMode names the one mail transport the channel runs on.
+type emailMode int
+
+const (
+	emailOff emailMode = iota
+	emailBearer
+	emailHosted
+)
+
+// emailTransportMode picks the single mail transport (Part D): a Worker
+// URL wins and keeps today's behaviour with its poll loop; a cloud link
+// with hosted_ingress takes the socket; anything else leaves the channel
+// off. Both configured reports the conflict and still returns emailBearer,
+// so case 1 keeps running while doctor says why.
+func emailTransportMode(cfg *config.Config, ent entitle.State) (emailMode, bool) {
+	bearer := cfg != nil && cfg.Email.Enabled()
+	hosted := cfg != nil && cfg.Cloud.Active() && ent.Linked && ent.Has(entitle.HostedIngress)
+	switch {
+	case bearer && hosted:
+		return emailBearer, true
+	case bearer:
+		return emailBearer, false
+	case hosted:
+		return emailHosted, false
+	default:
+		return emailOff, false
+	}
+}
+
+// configureCloud maps the cloud config block onto the link service. The
+// device id is in the store and the private key is in the secrets
+// directory; config holds only the endpoint and the offline switch.
+func (c *ControlPlane) configureCloud(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	c.Cloud.Configure(cloudlink.Settings{APIURL: cfg.Cloud.APIURLOrDefault(), Enabled: cfg.Cloud.Active()})
+}
+
+// EmailConflict reports that both mail transports are configured at once.
+// Doctor renders it; the bearer path keeps running (Part D).
+func (c *ControlPlane) EmailConflict() bool {
+	cfg, err := config.Load()
+	if err != nil {
+		return false
+	}
+	_, conflict := emailTransportMode(cfg, c.Cloud.Entitlement())
+	return conflict
+}
+
+// reselectEmail re-picks the mail transport after a link-state change:
+// Link, Unlink, and every entitlement write can flip hosted mail without
+// a restart.
+func (c *ControlPlane) reselectEmail(ctx context.Context) {
+	cfg, err := config.Load()
+	if err != nil {
+		c.log.Warn("cloud reconfigure", "error", err)
+		return
+	}
+	c.configureCloud(cfg)
+	c.configureEmail(cfg)
+	c.syncEmailAddresses(ctx)
+}

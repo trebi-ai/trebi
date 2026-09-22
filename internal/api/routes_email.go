@@ -12,6 +12,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/trebi-ai/trebi/internal/email"
+	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -28,7 +29,15 @@ func (s *Server) routeEmail(mux *http.ServeMux) {
 }
 
 func (s *Server) handleEmailStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.email.Status(r.Context()))
+	st := s.email.Status(r.Context())
+	// "ok | missing" answers why the channel is off. A cloud link whose
+	// plan lacks hosted_ingress is one reason (plan 2026-09-22 Part D).
+	if !st.Configured && s.cloud != nil {
+		if ent := s.cloud.Entitlement(); ent.Linked && !ent.Has(entitle.HostedIngress) {
+			st.Entitlement = "missing"
+		}
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
@@ -166,17 +175,15 @@ func (s *Server) handleEmailAttachment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "attachment not on this message")
 		return
 	}
-	client, err := s.email.Client()
+	body, remoteType, err := s.email.Attachment(r.Context(), m.MessageID+"/"+meta.ID)
 	if err != nil {
 		writeEmailErr(w, err)
 		return
 	}
-	body, err := client.Attachment(r.Context(), m.MessageID, meta.ID)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
 	ctype := meta.Type
+	if _, _, perr := mime.ParseMediaType(ctype); perr != nil {
+		ctype = remoteType
+	}
 	if _, _, perr := mime.ParseMediaType(ctype); perr != nil {
 		ctype = "application/octet-stream"
 	}
@@ -283,8 +290,6 @@ func emailAddressPayload(a email.Address, masked bool) map[string]any {
 // writeEmailErr maps the service sentinels to stable codes.
 func writeEmailErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, email.ErrEntitlement):
-		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", err.Error())
 	case errors.Is(err, email.ErrNotConfigured), errors.Is(err, email.ErrRecipient):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 	case errors.Is(err, sql.ErrNoRows):

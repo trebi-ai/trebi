@@ -89,5 +89,6 @@ func confirmCases(wsID string) []confirmCase {
 		{"skill", http.MethodDelete, "/v1/skills/tiny", "skill", "delete", map[string]any{"name": "tiny"}},
 		{"workspace file", http.MethodDelete, "/v1/workspaces/" + wsID + "/files/notes.txt", "file", "delete", map[string]any{"workspace": wsID, "path": "notes.txt"}},
 		{"cloud unlink", http.MethodDelete, "/v1/cloud/link", "system", "cloud_unlink", map[string]any{}},
+		{"hook delete", http.MethodDelete, "/v1/hooks/01HOOKDEL", "system", "hook_delete", map[string]any{"id": "01HOOKDEL"}},
 	}
 }

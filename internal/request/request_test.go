@@ -1000,6 +1000,12 @@ func TestBuildSystemAndCloudRequests(t *testing.T) {
 	if BuildCloudStatusPath() != "/v1/cloud/status" {
 		t.Fatal("cloud status")
 	}
+	if BuildCloudAddressesPath(false) != "/v1/cloud/addresses" || BuildCloudAddressesPath(true) != "/v1/cloud/addresses?reveal=1" {
+		t.Fatal("cloud addresses path")
+	}
+	if BuildHooksPath(true) != "/v1/hooks?reveal=1" {
+		t.Fatal("hooks path")
+	}
 	cases := []struct {
 		name string
 		req  HTTPRequest
@@ -1007,8 +1013,10 @@ func TestBuildSystemAndCloudRequests(t *testing.T) {
 	}{
 		{"drain", BuildSystemDrain(), "POST /v1/system/drain"},
 		{"undrain", BuildSystemUndrain(), "POST /v1/system/undrain"},
-		{"link", BuildCloudLink(), "POST /v1/cloud/link"},
+		{"link", BuildCloudLink("ABCD-EFGH", "mbp"), "POST /v1/cloud/link"},
 		{"unlink", BuildCloudUnlink(true), "DELETE /v1/cloud/link?confirm=1"},
+		{"hook create", BuildHookCreate("ws1", "deploy"), "POST /v1/hooks"},
+		{"hook delete", BuildHookDelete("01ABC", true), "DELETE /v1/hooks/01ABC?confirm=1"},
 		{"config get", BuildConfigGet(), "GET /v1/config"},
 	}
 	for _, tc := range cases {

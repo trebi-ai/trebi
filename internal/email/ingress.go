@@ -270,8 +270,9 @@ func (s *Service) AttachIngress(g *Ingress) {
 	s.mu.Unlock()
 }
 
-// ErrNoIngress reports that the daemon has not started the poll loop.
-var ErrNoIngress = errors.New("email poll loop not started")
+// ErrNoIngress reports that the daemon has not attached the inbound
+// pipeline to the service.
+var ErrNoIngress = errors.New("email inbound pipeline not started")
 
 // PollNow runs one poll cycle on the attached loop. The manual route
 // reaches the same instance the daemon runs; it passes drain by design.
@@ -286,7 +287,8 @@ func (s *Service) PollNow(ctx context.Context) (int, error) {
 }
 
 // Run polls until ctx is done. Shadow skips every automatic poll; drain
-// skips them too. Manual polls through PollOnce are never blocked.
+// skips them too. Manual polls through PollOnce are never blocked. The
+// hosted transport has no spool to pull: the socket pushes instead.
 func (g *Ingress) Run(ctx context.Context) {
 	t := time.NewTicker(g.iv)
 	defer t.Stop()
@@ -297,6 +299,9 @@ func (g *Ingress) Run(ctx context.Context) {
 		case <-t.C:
 			if g.shadow || !g.svc.Configured() || g.svc.Draining() {
 				continue
+			}
+			if _, err := g.svc.Client(); err != nil {
+				continue // hosted mail pushes; there is no spool to pull
 			}
 			if _, err := g.PollOnce(ctx); err != nil {
 				g.log.Warn("email.poll", "error", err)
@@ -310,10 +315,6 @@ func (g *Ingress) Run(ctx context.Context) {
 // passes drain by design. The position advances only after the batch is
 // durably recorded, never after a successful wake (plan H).
 func (g *Ingress) PollOnce(ctx context.Context) (int, error) {
-	// A gated build refuses to poll as well as to send (plan Q).
-	if err := g.svc.gate(); err != nil {
-		return 0, err
-	}
 	client, err := g.svc.Client()
 	if err != nil {
 		return 0, err
@@ -328,7 +329,7 @@ func (g *Ingress) PollOnce(ctx context.Context) (int, error) {
 	n := 0
 	var last int64
 	for _, msg := range msgs {
-		if err := g.route(ctx, msg); err != nil {
+		if err := g.deliver(ctx, msg); err != nil {
 			// Not durably recorded: stop here, ack through the last
 			// recorded seq, re-pull the rest on the next poll.
 			break
@@ -361,9 +362,25 @@ func (g *Ingress) PollOnce(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// route classifies, records, and dispatches one message. An error means
+// Deliver is the one inbound path for one message: resolve the address,
+// route, record the envelope, run the side effects, and emit the thin
+// frame. The hosted socket calls it and the bearer poll loop runs the
+// same deliver per pulled message (plan 2026-09-22 Part D). An error
+// means the envelope row is not durably recorded; a recorded message id
+// never routes twice.
+func (s *Service) Deliver(ctx context.Context, msg IngressMessage) error {
+	s.mu.RLock()
+	g := s.ingress
+	s.mu.RUnlock()
+	if g == nil {
+		return ErrNoIngress
+	}
+	return g.deliver(ctx, msg)
+}
+
+// deliver classifies, records, and dispatches one message. An error means
 // the envelope row is not durably recorded.
-func (g *Ingress) route(ctx context.Context, msg IngressMessage) error {
+func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 	wsID := ""
 	if wp, err := g.svc.WorkspaceByLocalPart(ctx, msg.LocalPart); err == nil {
 		wsID = wp

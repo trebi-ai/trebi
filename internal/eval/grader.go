@@ -387,8 +387,10 @@ func cliAliases(tool, action string) []string {
 			return []string{"status"}
 		case "guide", "guides":
 			return []string{"guide"}
-		case "cloud_status", "cloud_link", "cloud_unlink":
-			return []string{"service cloud " + strings.TrimPrefix(action, "cloud_")}
+		case "cloud_status", "cloud_link", "cloud_unlink", "cloud_addresses":
+			return []string{"cloud " + strings.TrimPrefix(action, "cloud_")}
+		case "hook_create", "hook_list", "hook_delete":
+			return []string{"hooks " + strings.TrimPrefix(action, "hook_")}
 		}
 	}
 	// A renamed action keeps its old CLI spelling as an alias.

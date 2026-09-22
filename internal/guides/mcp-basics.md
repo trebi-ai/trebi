@@ -44,7 +44,8 @@ CLI area names that differ from the tool name:
 | `service logs` / `drain` / `undrain` / `shutdown` | `system.logs` / `drain` / `undrain` / `shutdown` |
 | `service status` | `system.health` |
 | `service version` | `system.version` |
-| `service cloud status` / `link` / `unlink` | `system.cloud_status` / `cloud_link` / `cloud_unlink` |
+| `cloud status` / `link` / `unlink` / `addresses` | `system.cloud_status` / `cloud_link` / `cloud_unlink` / `cloud_addresses` |
+| `hooks create` / `list` / `delete` | `system.hook_create` / `hook_list` / `hook_delete` |
 | `harness auth status` / `login` / `logout` / `mode` / `cancel` | `harness.auth` / `login_start` / `logout` / `patch` / `login_cancel` |
 | `job/agent/assistant memory log add` / `log delete` | same tool: `memory_add` / `memory_delete` |
 

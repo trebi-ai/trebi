@@ -14,15 +14,11 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/trebi-ai/trebi/internal/conversations"
-	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // ErrNotConfigured means the email block is absent: nothing to act on.
 var ErrNotConfigured = errors.New("email is not configured")
-
-// ErrEntitlement means the build gates email and no license grants it.
-var ErrEntitlement = errors.New("email requires Trebi Pro; install a license with: trebi license install <key>")
 
 // ErrRecipient means one send recipient is neither an operator nor on the
 // workspace allowlist (plan I.3: an agent cannot mail a third party).
@@ -39,13 +35,14 @@ type WorkspaceRef struct {
 // Long-running work (the poll loop) belongs to the daemon, not here.
 type Service struct {
 	st    *store.Store
-	lic   *license.Service
 	convs *conversations.Service
 	log   *slog.Logger
 
 	mu          sync.RWMutex
 	settings    *Settings
-	client      *Client
+	transport   Transport
+	client      *Client // the bearer transport, when that is the one in use
+	hosted      HostedMint
 	state       PollState
 	ingress     *Ingress // set by the daemon; manual polls reach it
 	sendFailure string   // last permanent send failure; empty when healthy
@@ -60,12 +57,11 @@ type PollState struct {
 	Failures  int    `json:"failures"` // consecutive failed polls; 0 when the loop is healthy
 }
 
-// New builds the service. lic may be nil (treated as a build that gates
-// nothing). The gate is checked where the feature first acts, never here.
-func New(st *store.Store, lic *license.Service) *Service {
+// New builds the service. The cloud plan gates hosted mail at transport
+// selection, never here (plan 2026-09-22 Part C).
+func New(st *store.Store) *Service {
 	return &Service{
 		st:  st,
-		lic: lic,
 		log: slog.Default().With("source", "email"),
 	}
 }
@@ -77,18 +73,22 @@ func (s *Service) WithConversations(c *conversations.Service) *Service {
 	return s
 }
 
-// Configure installs the resolved settings and builds the Worker client.
-// Call it whenever the config reloads; nil clears the channel.
-func (s *Service) Configure(cfg *Settings) {
+// Configure installs the resolved settings and the transport that moves
+// mail: the bearer Worker client or the hosted cloudlink client. Call it
+// whenever the config reloads; nil clears the channel. A transport that
+// also satisfies HostedMint mints addresses in the cloud instead of
+// locally.
+func (s *Service) Configure(cfg *Settings, tr Transport) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if cfg == nil {
-		s.settings = nil
-		s.client = nil
+		s.settings, s.transport, s.client, s.hosted = nil, nil, nil, nil
 		return
 	}
 	s.settings = cfg
-	s.client = NewClient(cfg.Worker, cfg.Token)
+	s.transport = tr
+	s.client, _ = tr.(*Client)
+	s.hosted, _ = tr.(HostedMint)
 }
 
 // Configured reports whether the email block is present.
@@ -98,7 +98,8 @@ func (s *Service) Configured() bool {
 	return s.settings != nil
 }
 
-// Client returns the Worker client, or ErrNotConfigured.
+// Client returns the bearer Worker client, or ErrNotConfigured. Only the
+// bearer transport polls a spool; the hosted transport pushes.
 func (s *Service) Client() (*Client, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -106,6 +107,16 @@ func (s *Service) Client() (*Client, error) {
 		return nil, ErrNotConfigured
 	}
 	return s.client, nil
+}
+
+// Transport returns the mail transport, or ErrNotConfigured.
+func (s *Service) Transport() (Transport, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.transport == nil {
+		return nil, ErrNotConfigured
+	}
+	return s.transport, nil
 }
 
 // Settings copies the resolved settings, or ErrNotConfigured.
@@ -144,12 +155,14 @@ type Status struct {
 	SendError      string   `json:"send_error,omitempty"` // last permanent send failure
 }
 
-// Status collects settings, entitlement, address count, a live Worker
-// probe, and the poll loop facts. A Worker failure is reported, not
-// returned: the route answers 200 with worker_error set.
+// Status collects settings, entitlement, address count, a live transport
+// probe, and the poll loop facts. A probe failure is reported, not
+// returned: the route answers 200 with worker_error set. Entitlement is
+// "ok" here; the API reports "missing" when the channel is off because
+// the cloud plan lacks hosted_ingress (plan 2026-09-22 Part D).
 func (s *Service) Status(ctx context.Context) Status {
 	s.mu.RLock()
-	cfg, client, state, sendFailure := s.settings, s.client, s.state, s.sendFailure
+	cfg, tr, state, sendFailure := s.settings, s.transport, s.state, s.sendFailure
 	s.mu.RUnlock()
 
 	out := Status{
@@ -160,9 +173,6 @@ func (s *Service) Status(ctx context.Context) Status {
 		LastError:   state.LastError,
 		Failures:    state.Failures,
 		SendError:   sendFailure,
-	}
-	if err := s.gate(); err != nil {
-		out.Entitlement = "missing"
 	}
 	if cfg != nil {
 		out.Worker = cfg.Worker
@@ -176,12 +186,12 @@ func (s *Service) Status(ctx context.Context) Status {
 	} else {
 		s.log.ErrorContext(ctx, "email.address_count", "err", err.Error())
 	}
-	if client != nil && out.Entitlement == "ok" {
-		h, err := client.Health(ctx)
+	if tr != nil {
+		h, err := tr.Health(ctx)
 		if err != nil {
 			out.WorkerError = err.Error()
 		} else {
-			out.WorkerHealth = h
+			out.WorkerHealth = &h
 		}
 	}
 	return out
@@ -190,21 +200,22 @@ func (s *Service) Status(ctx context.Context) Status {
 // Test sends one fixed message to the operators and logs the envelope.
 // It is the "does the pipe work" action for the route and the CLI.
 func (s *Service) Test(ctx context.Context) (string, error) {
-	if err := s.gate(); err != nil {
-		return "", err
-	}
 	cfg, err := s.Settings()
 	if err != nil {
 		return "", err
 	}
-	client, err := s.Client()
+	tr, err := s.Transport()
 	if err != nil {
 		return "", err
 	}
-	msgID := MintMessageID(cfg.Domain)
+	domain, err := s.domain(ctx)
+	if err != nil {
+		return "", err
+	}
+	msgID := MintMessageID(domain)
 	req := SendRequest{
 		V:         ContractV,
-		From:      "trebi@" + cfg.Domain,
+		From:      "trebi@" + domain,
 		FromName:  cfg.FromName,
 		To:        cfg.Operators,
 		Subject:   "trebi email test",
@@ -212,7 +223,7 @@ func (s *Service) Test(ctx context.Context) (string, error) {
 		MessageID: msgID,
 	}
 	var sentErr error
-	if _, err := client.Send(ctx, req); err != nil {
+	if _, err := tr.Send(ctx, req); err != nil {
 		sentErr = err
 	}
 	rowID, err := s.logTestEnvelope(ctx, cfg, msgID, sentErr)
@@ -242,14 +253,11 @@ type SendOpts struct {
 // allowlist. The envelope row is written before the send, so the log
 // holds the attempt even if the process dies mid-send.
 func (s *Service) Send(ctx context.Context, opts SendOpts) (string, error) {
-	if err := s.gate(); err != nil {
-		return "", err
-	}
 	cfg, err := s.Settings()
 	if err != nil {
 		return "", err
 	}
-	client, err := s.Client()
+	tr, err := s.Transport()
 	if err != nil {
 		return "", err
 	}
@@ -289,7 +297,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		To: opts.To, Subject: opts.Subject, Text: opts.Text,
 		MessageID: msgID, InReplyTo: opts.InReplyTo, References: refs,
 	}
-	if err := s.sendWithBackoff(ctx, client, req); err != nil {
+	if err := s.sendWithBackoff(ctx, tr, req); err != nil {
 		s.noteSendFailure(err)
 		if _, uerr := s.st.DB().ExecContext(ctx,
 			`UPDATE email_messages SET disposition='send_failed' WHERE id=?`, rowID); uerr != nil {
@@ -308,14 +316,11 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 // the two. subject doubles as the thread key: a repeat alert with the same
 // subject carries In-Reply-To for the previous one.
 func (s *Service) SendAlert(ctx context.Context, inboxID, subject, text string) (string, error) {
-	if err := s.gate(); err != nil {
-		return "", err
-	}
 	cfg, err := s.Settings()
 	if err != nil {
 		return "", err
 	}
-	client, err := s.Client()
+	tr, err := s.Transport()
 	if err != nil {
 		return "", err
 	}
@@ -330,7 +335,11 @@ func (s *Service) SendAlert(ctx context.Context, inboxID, subject, text string) 
 	if err != nil {
 		return "", err
 	}
-	msgID := MintMessageID(cfg.Domain)
+	dom, err := s.domain(ctx)
+	if err != nil {
+		return "", err
+	}
+	msgID := MintMessageID(dom)
 	rowID := ulid.Make().String()
 	root, inReplyTo, refs := msgID, "", []string(nil)
 	if prev.messageID != "" {
@@ -360,11 +369,11 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		return "", err
 	}
 	req := SendRequest{
-		V: ContractV, From: s.alertFrom(ctx, workspaceID, cfg), FromName: cfg.FromName,
+		V: ContractV, From: s.alertFrom(ctx, workspaceID), FromName: cfg.FromName,
 		To: cfg.Operators, Subject: subject, Text: text,
 		MessageID: msgID, InReplyTo: inReplyTo, References: refs,
 	}
-	if err := s.sendWithBackoff(ctx, client, req); err != nil {
+	if err := s.sendWithBackoff(ctx, tr, req); err != nil {
 		s.noteSendFailure(err)
 		if _, uerr := s.st.DB().ExecContext(ctx,
 			`UPDATE email_messages SET disposition='send_failed' WHERE id=?`, rowID); uerr != nil {
@@ -419,7 +428,9 @@ func (s *Service) AgentAddress(ctx context.Context, workspaceID, agent string) (
 }
 
 // EnsureAddress mints the workspace address once. The local part is
-// <slug(name)>-<token>; the slug is frozen at first mint.
+// <slug(name)>-<token>; the slug is frozen at first mint. The hosted
+// transport mints in the cloud instead, and the row keeps the address the
+// worker assigned (plan 2026-09-22 Part D).
 func (s *Service) EnsureAddress(ctx context.Context, workspaceID, workspaceName string) (Address, error) {
 	if a, err := s.Address(ctx, workspaceID); err == nil {
 		return a, nil
@@ -429,15 +440,7 @@ func (s *Service) EnsureAddress(ctx context.Context, workspaceID, workspaceName 
 	now := time.Now().UTC().Format(time.RFC3339)
 	slug := slugify(workspaceName)
 	for range 5 {
-		token, err := mintToken()
-		if err != nil {
-			return Address{}, err
-		}
-		lp, err := localPart(slug, token, "")
-		if err != nil {
-			return Address{}, err
-		}
-		domain, err := s.domain()
+		lp, domain, hosted, err := s.mintCandidate(ctx, workspaceID, slug)
 		if err != nil {
 			return Address{}, err
 		}
@@ -448,7 +451,7 @@ VALUES (?,?,?,?) ON CONFLICT(workspace_id) DO NOTHING`,
 		if err == nil {
 			return s.Address(ctx, workspaceID)
 		}
-		if isUniqueViolation(err) {
+		if isUniqueViolation(err) && !hosted {
 			continue // local-part collision with another workspace; re-mint
 		}
 		return Address{}, fmt.Errorf("mint address for %s: %w", workspaceID, err)
@@ -457,33 +460,31 @@ VALUES (?,?,?,?) ON CONFLICT(workspace_id) DO NOTHING`,
 }
 
 // Rotate mints a new token for the workspace. The slug stays; the old
-// local part is retired from the Worker known set on the next ack.
+// local part is retired from the Worker known set on the next ack. The
+// hosted transport replaces the hosted address instead.
 func (s *Service) Rotate(ctx context.Context, workspaceID, workspaceName string) (Address, error) {
-	old, err := s.Address(ctx, workspaceID)
-	var slug string
-	switch {
-	case err == nil:
-		var splitErr error
-		slug, _, splitErr = splitLocalPart(old.LocalPart)
-		if splitErr != nil {
-			return Address{}, splitErr
-		}
-	case errors.Is(err, sql.ErrNoRows):
-		slug = slugify(workspaceName)
-	default:
-		return Address{}, err
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	domain, err := s.domain()
-	if err != nil {
-		return Address{}, err
-	}
-	for range 5 {
-		token, err := mintToken()
-		if err != nil {
+	s.mu.RLock()
+	hostedMode := s.hosted != nil
+	s.mu.RUnlock()
+	slug := ""
+	if !hostedMode {
+		old, err := s.Address(ctx, workspaceID)
+		switch {
+		case err == nil:
+			var splitErr error
+			slug, _, splitErr = splitLocalPart(old.LocalPart)
+			if splitErr != nil {
+				return Address{}, splitErr
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			slug = slugify(workspaceName)
+		default:
 			return Address{}, err
 		}
-		lp, err := localPart(slug, token, "")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for range 5 {
+		lp, domain, hosted, err := s.mintCandidate(ctx, workspaceID, slug)
 		if err != nil {
 			return Address{}, err
 		}
@@ -497,7 +498,7 @@ ON CONFLICT(workspace_id) DO UPDATE SET
 		if err == nil {
 			return s.Address(ctx, workspaceID)
 		}
-		if isUniqueViolation(err) {
+		if isUniqueViolation(err) && !hosted {
 			continue
 		}
 		return Address{}, fmt.Errorf("rotate address for %s: %w", workspaceID, err)
@@ -508,9 +509,6 @@ ON CONFLICT(workspace_id) DO UPDATE SET
 // SyncAddresses mints for every registered workspace that lacks one.
 // The daemon calls it when the channel is configured at start.
 func (s *Service) SyncAddresses(ctx context.Context, refs []WorkspaceRef) error {
-	if err := s.gate(); err != nil {
-		return err
-	}
 	if !s.Configured() {
 		return nil
 	}
@@ -520,6 +518,16 @@ func (s *Service) SyncAddresses(ctx context.Context, refs []WorkspaceRef) error 
 		}
 	}
 	return nil
+}
+
+// Attachment fetches one attachment's bytes and content type from the
+// transport. The key is "<messageID>/<attachmentID>".
+func (s *Service) Attachment(ctx context.Context, key string) ([]byte, string, error) {
+	tr, err := s.Transport()
+	if err != nil {
+		return nil, "", err
+	}
+	return tr.Attachment(ctx, key)
 }
 
 // KnownLocalParts lists stored bases for the Worker known-set filter.
@@ -699,7 +707,7 @@ func (s *Service) ConnectorRow() map[string]any {
 // reply reaches the spool and resolves by Message-ID (plan I.1). The bare
 // instance sender is the fallback for an alert with no workspace; mail to
 // it never comes back, because no address row owns that local part.
-func (s *Service) alertFrom(ctx context.Context, workspaceID string, cfg Settings) string {
+func (s *Service) alertFrom(ctx context.Context, workspaceID string) string {
 	if workspaceID != "" {
 		if addr, err := s.Address(ctx, workspaceID); err == nil {
 			return addr.Full()
@@ -707,15 +715,11 @@ func (s *Service) alertFrom(ctx context.Context, workspaceID string, cfg Setting
 			s.log.WarnContext(ctx, "alert from address", "workspace", workspaceID, "error", err)
 		}
 	}
-	return "trebi@" + cfg.Domain
-}
-
-// gate answers "is email allowed in this build" at the point of action.
-func (s *Service) gate() error {
-	if s.lic != nil && !s.lic.Has(license.FeatureEmail) {
-		return ErrEntitlement
+	dom, err := s.domain(ctx)
+	if err != nil {
+		return ""
 	}
-	return nil
+	return "trebi@" + dom
 }
 
 // checkRecipients applies the v1 trust dial (plan I.3): every recipient
@@ -765,10 +769,10 @@ const (
 // sendWithBackoff honours the Worker's retry_after_ms: up to three
 // attempts, each delayed by the asked time, capped. Any other error is
 // permanent for the caller.
-func (s *Service) sendWithBackoff(ctx context.Context, client *Client, req SendRequest) error {
+func (s *Service) sendWithBackoff(ctx context.Context, tr Transport, req SendRequest) error {
 	var re *RetryAfterError
 	for attempt := 0; ; attempt++ {
-		_, err := client.Send(ctx, req)
+		_, err := tr.Send(ctx, req)
 		if err == nil {
 			return nil
 		}
@@ -857,12 +861,57 @@ VALUES (?,?,?,?,?,?,?,?)`,
 	return rowID, nil
 }
 
-func (s *Service) domain() (string, error) {
+// mintCandidate produces one candidate local part and domain. The hosted
+// transport calls MintAddress on the cloud, where a second mint for one
+// workspace replaces the address; the bearer transport mints locally with
+// crypto/rand and the frozen slug. hosted reports which path ran.
+func (s *Service) mintCandidate(ctx context.Context, workspaceID, slug string) (string, string, bool, error) {
+	s.mu.RLock()
+	hosted := s.hosted
+	s.mu.RUnlock()
+	if hosted != nil {
+		full, err := hosted.MintAddress(ctx, workspaceID)
+		if err != nil {
+			return "", "", true, fmt.Errorf("mint hosted address for %s: %w", workspaceID, err)
+		}
+		lp, domain, ok := strings.Cut(full, "@")
+		if !ok || lp == "" || domain == "" {
+			return "", "", true, fmt.Errorf("mint hosted address for %s: unexpected address %q", workspaceID, full)
+		}
+		return lp, domain, true, nil
+	}
+	token, err := mintToken()
+	if err != nil {
+		return "", "", false, err
+	}
+	lp, err := localPart(slug, token, "")
+	if err != nil {
+		return "", "", false, err
+	}
+	domain, err := s.domain(ctx)
+	if err != nil {
+		return "", "", false, err
+	}
+	return lp, domain, false, nil
+}
+
+// domain returns the mail domain: the configured one, else the domain of
+// any stored address. The hosted transport learns its domain from the
+// address the worker mints, so the config block needs none.
+func (s *Service) domain(ctx context.Context) (string, error) {
 	cfg, err := s.Settings()
 	if err != nil {
 		return "", err
 	}
-	return cfg.Domain, nil
+	if cfg.Domain != "" {
+		return cfg.Domain, nil
+	}
+	var d string
+	if err := s.st.DB().QueryRowContext(ctx,
+		`SELECT domain FROM email_addresses WHERE domain <> '' LIMIT 1`).Scan(&d); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	return d, nil
 }
 
 func scanAddress(scan func(dest ...any) error) (Address, error) {

@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "type": "hello_ok",
+  "plan": "free",
+  "features": [
+    "watchdog"
+  ],
+  "heartbeat_interval": 60
+}

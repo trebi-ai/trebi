@@ -29,6 +29,7 @@ type Config struct {
 	Workspaces WorkspacesConfig `yaml:"workspaces,omitempty"`
 	Assistant  AssistantConfig  `yaml:"assistant,omitempty"`
 	Email      EmailConfig      `yaml:"email,omitempty"`
+	Cloud      CloudConfig      `yaml:"cloud,omitempty"`
 }
 
 // HarnessConfig is the vendor run-runtime policy (plan 2026-09-16 Part J).
@@ -706,6 +707,10 @@ tools:
 #   poll_interval: 30s       # 5s to 10m
 #   require_dmarc: true
 #   from_name: Trebi
+
+# cloud:                     # hosted account link (plan 2026-09-22)
+#   api_url: ""              # hosted endpoint (default https://api.trebi.ai)
+#   enabled: true            # false keeps a linked device offline
 `
 
 // Seed writes config.yaml with the documented defaults when it does not exist.
@@ -931,6 +936,7 @@ func (c *Config) Validate() error {
 
 	ce.checkAssistant(c.Assistant)
 	ce.checkEmail(*c)
+	ce.checkCloud(*c)
 
 	if len(ce.Errors) == 0 {
 		return nil

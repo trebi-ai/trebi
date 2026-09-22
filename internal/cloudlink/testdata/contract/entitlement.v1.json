@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "type": "entitlement",
+  "plan": "pro_cloud",
+  "features": [
+    "watchdog",
+    "remote_access",
+    "hosted_ingress",
+    "backup"
+  ]
+}

@@ -70,6 +70,9 @@ func newConfirmGate() *confirmGate {
 		"DELETE /v1/cloud/link": {-1, func(string, *http.Request) string {
 			return "unlinks this daemon from the cloud; remote clients lose access"
 		}},
+		"DELETE /v1/hooks/{id}": {2, func(n string, _ *http.Request) string {
+			return "revokes hook " + n + "; deliveries to its URL stop"
+		}},
 	}}
 }
 

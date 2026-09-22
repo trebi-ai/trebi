@@ -69,8 +69,8 @@ func (f *fakeActions) AmbiguousReplyItem(_ context.Context, _ string, _ RouteDec
 // DMARC gate first, then the tag split by sender trust.
 func TestRouteTruthTable(t *testing.T) {
 	t.Parallel()
-	s := New(openEmailStore(t), nil)
-	s.Configure(testSettings("https://worker.example"))
+	s := New(openEmailStore(t))
+	configureTest(s, "https://worker.example")
 	ops := RouteEnv{Agents: []string{"research"}, Allowlist: []string{"friend@example.com"}}
 
 	cases := []struct {
@@ -113,14 +113,14 @@ func TestRouteTruthTable(t *testing.T) {
 	// With the DMARC gate off, a fail still routes by tag.
 	cfg := testSettings("https://worker.example")
 	cfg.RequireDMARC = false
-	s.Configure(cfg)
+	s.Configure(cfg, NewClient(cfg.Worker, cfg.Token))
 	d := s.Route(IngressMessage{Tag: "research", From: "any@example.net", Dmarc: "fail"}, "ws_1", ops)
 	if d.Class != RouteAgent || d.Agent != "research" {
 		t.Errorf("dmarc off: got %+v", d)
 	}
 
 	// With no block, nothing routes.
-	fresh := New(openEmailStore(t), nil)
+	fresh := New(openEmailStore(t))
 	d = fresh.Route(IngressMessage{Tag: "research", From: "ops@example.com", Dmarc: "pass"}, "ws_1", ops)
 	if d.Class != RouteDropped || d.Reason != ReasonNotConfigured {
 		t.Errorf("unconfigured: got %+v", d)
@@ -200,8 +200,8 @@ func TestIngressPollOnceRoutesBatch(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st, nil)
-	s.Configure(testSettings(srv.URL))
+	s := New(st)
+	configureTest(s, srv.URL)
 	addr, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
 	if err != nil {
 		t.Fatal(err)
@@ -303,8 +303,8 @@ func TestIngressPollOnceRoutesBatch(t *testing.T) {
 func TestIngressUnhealthyAfterThree(t *testing.T) {
 	t.Parallel()
 	st := openEmailStore(t)
-	s := New(st, nil)
-	s.Configure(testSettings("http://127.0.0.1:1"))
+	s := New(st)
+	configureTest(s, "http://127.0.0.1:1")
 	g := NewIngress(s, connectors.New(st, nil, nil, nil), &fakeActions{}, time.Minute, false)
 
 	for i := 0; i < 3; i++ {
@@ -322,7 +322,7 @@ func TestIngressUnhealthyAfterThree(t *testing.T) {
 	fw := &fakeWorker{token: "test-token-0000", ackStatus: http.StatusNoContent}
 	srv := httptest.NewServer(fw.handler())
 	t.Cleanup(srv.Close)
-	s.Configure(testSettings(srv.URL))
+	configureTest(s, srv.URL)
 	if n, err := g.PollOnce(t.Context()); err != nil || n != 0 {
 		t.Fatalf("recover poll = %d, %v", n, err)
 	}
@@ -344,8 +344,8 @@ func TestIngressCursorFailureBlocksAck(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st, nil)
-	s.Configure(testSettings(srv.URL))
+	s := New(st)
+	configureTest(s, srv.URL)
 	addr, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
 	if err != nil {
 		t.Fatal(err)
