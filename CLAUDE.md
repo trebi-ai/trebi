@@ -22,6 +22,7 @@ internal/request/    # pure /v1 request builders (HTTPRequest); no I/O
 internal/tools/      # transport-neutral tool catalog (MCP + native + CLI)
 internal/store/      # SQLite open, migrations, event bus, event-name registry
 internal/<domain>/   # one service per object family (runs, workspaces, alerts, …)
+internal/cloudlink/  # published hosted-link wire fixtures; the daemon client is a separate plan
 internal/runtime/cli/  # subprocess run runtime: one wire driver per harness
 internal/tmux/       # harness policy + TUI runtime: one file per harness tool
 internal/tray/       # macOS menu bar (build-tagged)

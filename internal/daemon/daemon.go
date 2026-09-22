@@ -147,6 +147,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		return a.Prompt
 	}
 	c.Alerts = newAlerts(st, opts, cfg, em, c.jobNotify, approvalQuestion)
+	c.configureCloud(cfg)
 	c.configureEmail(cfg)
 	return c
 }
