@@ -3,8 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -45,8 +43,6 @@ func workspaceCommand() *cli.Command {
 					&cli.StringFlag{Name: "name", Usage: "display name (default: basename of path)"},
 					&cli.BoolFlag{Name: "mkdir", Aliases: []string{"create"}, Usage: "make the folder if missing; path optional with --name"},
 					&cli.StringFlag{Name: "url", Aliases: []string{"remote"}, Usage: "remote trebid base URL"},
-					&cli.StringFlag{Name: "token", Usage: "remote bearer token"},
-					&cli.BoolFlag{Name: "token-stdin", Usage: "read remote token from stdin"},
 					&cli.StringFlag{Name: "id", Usage: "existing remote workspace id to link (with --url)"},
 					&cli.BoolFlag{Name: "use", Usage: "set sticky context to this workspace after create"},
 					&cli.BoolFlag{Name: "skip-check", Usage: "skip remote health check"},
@@ -513,12 +509,8 @@ func workspaceAddLocal(c *cli.Command, path string) error {
 }
 
 func workspaceAddRemote(c *cli.Command, remoteURL string) error {
-	token, err := remoteAddToken(c)
-	if err != nil {
-		return err
-	}
 	remoteURL = strings.TrimRight(remoteURL, "/")
-	client := remoteClient(remoteURL, token)
+	client := remoteClient(remoteURL)
 	if !c.Bool("skip-check") {
 		var health map[string]any
 		if err := client.GetJSON(request.BuildSystemHealthPath(), &health); err != nil {
@@ -527,6 +519,7 @@ func workspaceAddRemote(c *cli.Command, remoteURL string) error {
 	}
 
 	var id, name, path string
+	var err error
 	switch {
 	case c.String("id") != "":
 		// Link existing remote workspace.
@@ -550,7 +543,7 @@ func workspaceAddRemote(c *cli.Command, remoteURL string) error {
 	if id == "" {
 		return fmt.Errorf("remote workspace id missing in response")
 	}
-	link := LinkedWorkspace{ID: id, Name: name, Path: path, URL: remoteURL, Token: token}
+	link := LinkedWorkspace{ID: id, Name: name, Path: path, URL: remoteURL}
 	if err := link.Save(); err != nil {
 		return err
 	}
@@ -562,22 +555,6 @@ func workspaceAddRemote(c *cli.Command, remoteURL string) error {
 	}
 	fmt.Fprintf(outWriter(c), "sticky context → %s (%s)\n", id, remoteURL)
 	return nil
-}
-
-// remoteAddToken reads the remote token from --token or stdin.
-func remoteAddToken(c *cli.Command) (string, error) {
-	token := c.String("token")
-	if c.Bool("token-stdin") {
-		line, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return "", fmt.Errorf("reading token from stdin: %w", err)
-		}
-		token = strings.TrimSpace(string(line))
-	}
-	if token == "" {
-		return "", fmt.Errorf("remote token required (--token or --token-stdin); on host: trebi service token show")
-	}
-	return token, nil
 }
 
 // registerRemoteWorkspace registers the path argument on the remote host.

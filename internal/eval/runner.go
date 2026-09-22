@@ -419,7 +419,6 @@ func (r *Runner) launchOpts(env *trialEnv, p Placeholders, t *Task, clientName, 
 		return opts, nil
 	}
 	opts.MCPURL = strings.TrimRight(env.apiURL, "/") + "/mcp"
-	opts.MCPToken = env.token
 	opts.Env = env.mcpEnviron(cfgHome)
 	return opts, nil
 }

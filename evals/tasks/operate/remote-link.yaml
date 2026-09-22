@@ -9,9 +9,9 @@ server_harness: codex
 seed: seeds/remote-peer.sh
 prompt: |
   A second trebi daemon is already running. In this working directory,
-  remote.url holds its API URL, remote.token its token, and
-  remote.workspace the id of the workspace on it. Link that workspace
-  here under the name "remote" and list its jobs.
+  remote.url holds its API URL and remote.workspace the id of the
+  workspace on it. Link that workspace here under the name "remote"
+  and list its jobs.
 checks:
   - name: linked entry
     cmd: trebi workspace list --json

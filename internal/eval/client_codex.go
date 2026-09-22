@@ -24,7 +24,7 @@ func (c *codexClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResul
 		return nil, err
 	}
 	if opts.Surface == surfaceMCP {
-		if err := writeCodexMCPConfig(opts.ConfigHome, opts.MCPURL, opts.MCPToken); err != nil {
+		if err := writeCodexMCPConfig(opts.ConfigHome, opts.MCPURL); err != nil {
 			return nil, err
 		}
 	}
@@ -60,12 +60,11 @@ func (c *codexClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResul
 	return res, nil
 }
 
-func writeCodexMCPConfig(dir, mcpURL, token string) error {
+func writeCodexMCPConfig(dir, mcpURL string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	mcp := fmt.Sprintf("[mcp_servers.trebi]\nurl = %q\nhttp_headers = { Authorization = %q }\n",
-		mcpURL, "Bearer "+token)
+	mcp := fmt.Sprintf("[mcp_servers.trebi]\nurl = %q\n", mcpURL)
 	body := mcp
 	if carried := carryCodexModelConfig(); carried != "" {
 		body = carried + "\n\n" + mcp

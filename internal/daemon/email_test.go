@@ -258,7 +258,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	}
 
 	// The delivery field: the messages route decorates the emailed turn.
-	apiSrv := api.New(p.st, api.Options{Token: "tok"})
+	apiSrv := api.New(p.st, api.Options{})
 	apiAddr, err := apiSrv.ListenAndServe("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

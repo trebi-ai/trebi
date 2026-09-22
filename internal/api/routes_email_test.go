@@ -130,7 +130,6 @@ func (e *emailAPIServer) do(t *testing.T, method, path string, body any) (int, m
 		r = bytes.NewReader(b)
 	}
 	req, _ := http.NewRequest(method, e.base+path, r)
-	req.Header.Set("Authorization", "Bearer tok")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -148,7 +147,6 @@ func (e *emailAPIServer) do(t *testing.T, method, path string, body any) (int, m
 func (e *emailAPIServer) getRaw(t *testing.T, path string) (int, http.Header, []byte) {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, e.base+path, nil)
-	req.Header.Set("Authorization", "Bearer tok")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -434,7 +432,7 @@ func TestEmailUnconfigured(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := api.New(st, api.Options{Token: "tok"})
+	s := api.New(st, api.Options{})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -444,7 +442,6 @@ func TestEmailUnconfigured(t *testing.T) {
 
 	do := func(method, path string) (int, map[string]any) {
 		req, _ := http.NewRequest(method, base+path, nil)
-		req.Header.Set("Authorization", "Bearer tok")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -479,7 +476,7 @@ func startEmailAPI(t *testing.T) *emailAPIServer {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := api.New(st, api.Options{Token: "tok"})
+	s := api.New(st, api.Options{})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

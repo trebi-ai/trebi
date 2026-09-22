@@ -22,13 +22,12 @@ import (
 
 // TestEventsJoinOutcomesFromQueue proves B15 read-time derivation.
 func TestEventsJoinOutcomesFromQueue(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	// rules/fire creates event + outcome + queue pending
 	payload := `{"connector":"src","workspace":"ws1","job":"demo","match":"true","event":{"n":1}}`
 	req, _ := http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(payload))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -44,7 +43,7 @@ func TestEventsJoinOutcomesFromQueue(t *testing.T) {
 	}
 
 	// GET event — outcomes with derived queued from pending queue
-	code, got, _ := doJSON(t, "GET", base+"/v1/events/"+eid, s.Token(), nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/events/"+eid, nil)
 	if code != 200 {
 		t.Fatalf("get event %d %v", code, got)
 	}
@@ -67,7 +66,7 @@ func TestEventsJoinOutcomesFromQueue(t *testing.T) {
 	_, _ = st.DB().Exec(`UPDATE event_queue SET status='done', result=?, done_at=?, updated_at=? WHERE id=?`,
 		string(dispatch.ResultCoalesced), now, now, qid)
 
-	code, got, _ = doJSON(t, "GET", base+"/v1/events/"+eid, s.Token(), nil)
+	code, got, _ = doJSON(t, "GET", base+"/v1/events/"+eid, nil)
 	if code != 200 {
 		t.Fatal(code)
 	}
@@ -78,7 +77,7 @@ func TestEventsJoinOutcomesFromQueue(t *testing.T) {
 	}
 
 	// List includes derived outcome
-	code, listBody, _ := doJSON(t, "GET", base+"/v1/events", s.Token(), nil)
+	code, listBody, _ := doJSON(t, "GET", base+"/v1/events", nil)
 	if code != 200 {
 		t.Fatal(code)
 	}
@@ -118,7 +117,7 @@ Do it.
 	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", s.Token(), map[string]string{
+	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", map[string]string{
 		"path": wsPath, "name": "dry-ws",
 	})
 	if code != 201 {
@@ -126,7 +125,7 @@ Do it.
 	}
 	wsID, _ := ws["id"].(string)
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/gated/run", s.Token(), map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/gated/run", map[string]any{
 		"workspace": wsID, "dry_run": true,
 	})
 	if code != 200 {
@@ -165,7 +164,7 @@ Skip.
 	}
 	_ = s.Workspaces().RebuildIndex(t.Context(), wsObj)
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/gated/run", s.Token(), map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/gated/run", map[string]any{
 		"workspace": wsID, "dry_run": true,
 	})
 	if code != 200 {
@@ -178,12 +177,12 @@ Skip.
 
 // TestJobMarkdownCreatePutGetPatch covers D1 job edit surface.
 func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
-	s, base, dir := startAPI(t)
+	_, base, dir := startAPI(t)
 	wsPath := filepath.Join(dir, "ws")
 	if err := os.MkdirAll(wsPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", s.Token(), map[string]string{
+	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", map[string]string{
 		"path": wsPath, "name": "edit-ws",
 	})
 	if code != 201 {
@@ -193,7 +192,7 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 
 	// Create with markdown field (not content)
 	md := "---\nharness: fake\ntitle: Hello\n---\n\nOriginal body.\n"
-	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", s.Token(), map[string]any{
+	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
 		"workspace": wsID, "name": "editme", "markdown": md,
 	})
 	if code != 201 {
@@ -205,7 +204,7 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	}
 
 	// GET returns markdown + mtime + hash
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/editme?workspace="+wsID, s.Token(), nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/editme?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get %d %v", code, got)
 	}
@@ -223,7 +222,6 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	// PUT without markdown must 400 (not wipe)
 	req, _ := http.NewRequest("PUT", base+"/v1/jobs/editme?workspace="+wsID,
 		bytes.NewBufferString(`{}`))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", hash)
 	resp, err := http.DefaultClient.Do(req)
@@ -244,7 +242,6 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	newMD := "---\nharness: fake\ntitle: Updated\n---\n\nNew body.\n"
 	req, _ = http.NewRequest("PUT", base+"/v1/jobs/editme?workspace="+wsID,
 		bytes.NewBufferString(`{"markdown":`+mustJSON(newMD)+`}`))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", hash)
 	resp, err = http.DefaultClient.Do(req)
@@ -262,14 +259,13 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	}
 
 	// PATCH harness + session.if_running
-	code, got, _ = doJSON(t, "GET", base+"/v1/jobs/editme?workspace="+wsID, s.Token(), nil)
+	code, got, _ = doJSON(t, "GET", base+"/v1/jobs/editme?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("reget %d %v", code, got)
 	}
 	hash, _ = got["hash"].(string)
 	req, _ = http.NewRequest("PATCH", base+"/v1/jobs/editme?workspace="+wsID,
 		bytes.NewBufferString(`{"harness":"claude","session":{"if_running":"coalesce"},"disabled":false}`))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", hash)
 	resp, err = http.DefaultClient.Do(req)
@@ -300,14 +296,14 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 
 // TestRetryPolicyByEndReason covers D7 dispatch.
 func TestRetryPolicyByEndReason(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "x")
 	pathY := writeJobFile(t, wsDir, "y")
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "retry-ws")
+	wsID := addWorkspace(t, base, wsDir, "retry-ws")
 
 	// Create completed fake run then force end_reason
-	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/x/run", s.Token(), map[string]any{
+	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/x/run", map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
 	})
 	if code != 201 {
@@ -319,7 +315,7 @@ func TestRetryPolicyByEndReason(t *testing.T) {
 
 	// auth → park
 	_, _ = st.DB().Exec(`UPDATE runs SET status='failed', end_reason='auth' WHERE id=?`, id)
-	code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/retry", s.Token(), nil)
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/retry", nil)
 	if code != 200 {
 		t.Fatalf("retry auth %d %v", code, body)
 	}
@@ -333,7 +329,7 @@ func TestRetryPolicyByEndReason(t *testing.T) {
 	}
 
 	// session_gone → fresh rerun (creates new run)
-	code, run2, _ := doJSON(t, "POST", base+"/v1/jobs/y/run", s.Token(), map[string]any{
+	code, run2, _ := doJSON(t, "POST", base+"/v1/jobs/y/run", map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "hi2",
 	})
 	if code != 201 {
@@ -341,7 +337,7 @@ func TestRetryPolicyByEndReason(t *testing.T) {
 	}
 	id2, _ := run2["id"].(string)
 	_, _ = st.DB().Exec(`UPDATE runs SET status='failed', end_reason='session_gone' WHERE id=?`, id2)
-	code, body, _ = doJSON(t, "POST", base+"/v1/runs/"+id2+"/retry", s.Token(), nil)
+	code, body, _ = doJSON(t, "POST", base+"/v1/runs/"+id2+"/retry", nil)
 	if code != 201 {
 		t.Fatalf("retry session_gone %d %v", code, body)
 	}
@@ -351,7 +347,7 @@ func TestRetryPolicyByEndReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = st.DB().Exec(`UPDATE runs SET status='failed', end_reason='session_gone' WHERE id=?`, id2)
-	code, body, _ = doJSON(t, "POST", base+"/v1/runs/"+id2+"/retry", s.Token(), nil)
+	code, body, _ = doJSON(t, "POST", base+"/v1/runs/"+id2+"/retry", nil)
 	if code != 404 || errCode(body) != "not_found" {
 		t.Fatalf("retry gone job: want 404 not_found got %d %v", code, body)
 	}
@@ -360,10 +356,10 @@ func TestRetryPolicyByEndReason(t *testing.T) {
 // TestDrainFlagPersistsAcrossRestart proves the launch gate honors the
 // persisted drain flag when in-memory drain is off (API restart survival).
 func TestDrainFlagPersistsAcrossRestart(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "dj")
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "drain-ws")
+	wsID := addWorkspace(t, base, wsDir, "drain-ws")
 
 	st := mustOpenStore(t, home.DBPath())
 	defer st.Close()
@@ -372,7 +368,7 @@ func TestDrainFlagPersistsAcrossRestart(t *testing.T) {
 	}
 
 	// Auto producer blocked by the persisted flag alone.
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/dj/run", s.Token(), map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/dj/run", map[string]any{
 		"workspace": wsID, "reason": "trigger",
 	})
 	if code != 503 || errCode(body) != "draining" {
@@ -380,7 +376,7 @@ func TestDrainFlagPersistsAcrossRestart(t *testing.T) {
 	}
 
 	// Manual carve-out still launches.
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/dj/run", s.Token(), map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/dj/run", map[string]any{
 		"workspace": wsID, "reason": "manual", "harness": "fake",
 	})
 	if code != 201 {
@@ -389,10 +385,10 @@ func TestDrainFlagPersistsAcrossRestart(t *testing.T) {
 }
 
 func TestWorkspaceRenameAtomicWithBus(t *testing.T) {
-	s, base, dir := startAPI(t)
+	_, base, dir := startAPI(t)
 	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "orig")
-	code, body, _ := doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID, s.Token(), map[string]any{"name": "renamed"})
+	wsID := addWorkspace(t, base, wsDir, "orig")
+	code, body, _ := doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID, map[string]any{"name": "renamed"})
 	if code != 200 {
 		t.Fatalf("%d %v", code, body)
 	}
@@ -430,7 +426,7 @@ func TestWorkspaceRenameAtomicWithBus(t *testing.T) {
 }
 
 func TestListRoutesCursorAndLimit(t *testing.T) {
-	s, base, dir := startAPI(t)
+	_, base, dir := startAPI(t)
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	defer st.Close()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -456,7 +452,7 @@ func TestListRoutesCursorAndLimit(t *testing.T) {
 
 	assertPage := func(path, key string) {
 		t.Helper()
-		code, body, _ := doJSON(t, "GET", base+path+"?limit=2", s.Token(), nil)
+		code, body, _ := doJSON(t, "GET", base+path+"?limit=2", nil)
 		if code != 200 {
 			t.Fatalf("%s %d %v", path, code, body)
 		}
@@ -468,11 +464,11 @@ func TestListRoutesCursorAndLimit(t *testing.T) {
 		if next == "" {
 			t.Fatalf("%s missing next_cursor", path)
 		}
-		code, body, _ = doJSON(t, "GET", base+path+"?limit=2&cursor="+next, s.Token(), nil)
+		code, body, _ = doJSON(t, "GET", base+path+"?limit=2&cursor="+next, nil)
 		if code != 200 {
 			t.Fatalf("%s page2 %d %v", path, code, body)
 		}
-		code, body, _ = doJSON(t, "GET", base+path+"?cursor=@@bad@@", s.Token(), nil)
+		code, body, _ = doJSON(t, "GET", base+path+"?cursor=@@bad@@", nil)
 		if code != 400 || errCode(body) != "validation" {
 			t.Fatalf("%s bad cursor %d %v", path, code, body)
 		}
@@ -481,11 +477,11 @@ func TestListRoutesCursorAndLimit(t *testing.T) {
 	assertPage("/v1/events", "events")
 	assertPage("/v1/queue", "items")
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/skills?limit=1", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/skills?limit=1", nil)
 	if code != 200 {
 		t.Fatalf("skills %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/approvals?cursor=@@bad@@", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/approvals?cursor=@@bad@@", nil)
 	if code != 400 || errCode(body) != "validation" {
 		t.Fatalf("approvals bad cursor %d %v", code, body)
 	}
@@ -503,7 +499,7 @@ func startAPI(t *testing.T) (*api.Server, string, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := api.New(st, api.Options{Token: "tok"})
+	s := api.New(st, api.Options{})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -512,7 +508,7 @@ func startAPI(t *testing.T) (*api.Server, string, string) {
 	return s, "http://" + addr, dir
 }
 
-func doJSON(t *testing.T, method, url, token string, body any) (int, map[string]any, http.Header) {
+func doJSON(t *testing.T, method, url string, body any) (int, map[string]any, http.Header) {
 	t.Helper()
 	var r io.Reader
 	if body != nil {
@@ -520,7 +516,6 @@ func doJSON(t *testing.T, method, url, token string, body any) (int, map[string]
 		r = bytes.NewReader(b)
 	}
 	req, _ := http.NewRequest(method, url, r)
-	req.Header.Set("Authorization", "Bearer "+token)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

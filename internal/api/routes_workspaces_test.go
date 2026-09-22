@@ -8,14 +8,14 @@ import (
 )
 
 func TestAssistantGetDisabled(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wsDir, "TREBI.md"),
 		[]byte("---\nharness: fake\ndisabled: true\n---\n\nHi.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "asst-ws")
-	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/assistant", s.Token(), nil)
+	wsID := addWorkspace(t, base, wsDir, "asst-ws")
+	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/assistant", nil)
 	if code != 200 {
 		t.Fatalf("%d %v", code, body)
 	}
@@ -27,7 +27,7 @@ func TestAssistantGetDisabled(t *testing.T) {
 		[]byte("---\nharness: fake\n---\n\nHi.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/assistant", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/assistant", nil)
 	if code != 200 {
 		t.Fatalf("enabled %d %v", code, body)
 	}
@@ -37,7 +37,7 @@ func TestAssistantGetDisabled(t *testing.T) {
 }
 
 func TestWorkspaceMove(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	parent := t.TempDir()
 	src := filepath.Join(parent, "src")
 	if err := os.MkdirAll(filepath.Join(src, "alpha"), 0o755); err != nil {
@@ -50,17 +50,17 @@ func TestWorkspaceMove(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "alpha", "run.sh"), []byte("echo "+src+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wsID := addWorkspace(t, base, s.Token(), src, "move-ws")
+	wsID := addWorkspace(t, base, src, "move-ws")
 	dest := filepath.Join(parent, "dest")
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/move", s.Token(), map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/move", map[string]any{
 		"path": dest, "dry_run": true,
 	})
 	if code != 400 || errCode(body) != "validation" {
 		t.Fatalf("unconfirmed dry-run %d %v", code, body)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/move?confirm=1", s.Token(), map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/move?confirm=1", map[string]any{
 		"path": dest, "dry_run": true,
 	})
 	if code != 200 {
@@ -73,7 +73,7 @@ func TestWorkspaceMove(t *testing.T) {
 		t.Fatal("dry-run moved src")
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/move?confirm=1", s.Token(), map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/move?confirm=1", map[string]any{
 		"path": dest,
 	})
 	if code != 200 {
@@ -97,7 +97,7 @@ func TestWorkspaceMove(t *testing.T) {
 		t.Fatalf("JOB.md still has old path: %s", got)
 	}
 
-	code, show, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID, s.Token(), nil)
+	code, show, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID, nil)
 	if code != 200 || show["path"] != dest {
 		t.Fatalf("show %d %v", code, show)
 	}

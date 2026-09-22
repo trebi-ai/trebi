@@ -41,7 +41,7 @@ func (c *claudeClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResu
 	}
 	args := claudeLaunchArgs(prompt, maxTurns, c.model)
 	if opts.Surface == surfaceMCP {
-		cfg, err := writeClaudeMCPConfig(opts.ConfigHome, opts.MCPURL, opts.MCPToken)
+		cfg, err := writeClaudeMCPConfig(opts.ConfigHome, opts.MCPURL)
 		if err != nil {
 			return nil, err
 		}
@@ -70,7 +70,7 @@ func (c *claudeClient) Launch(ctx context.Context, opts LaunchOpts) (*LaunchResu
 	return res, nil
 }
 
-func writeClaudeMCPConfig(dir, mcpURL, token string) (string, error) {
+func writeClaudeMCPConfig(dir, mcpURL string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -80,9 +80,6 @@ func writeClaudeMCPConfig(dir, mcpURL, token string) (string, error) {
 			"trebi": map[string]any{
 				"type": "http",
 				"url":  mcpURL,
-				"headers": map[string]string{
-					"Authorization": "Bearer " + token,
-				},
 			},
 		},
 	}

@@ -17,12 +17,11 @@ import (
 const busWait = 600 * time.Millisecond
 
 func TestWorkspaceCreateBootstrap(t *testing.T) {
-	s, base := startTestServer(t)
-	token := s.Token()
+	_, base := startTestServer(t)
 	parent := t.TempDir()
 	fresh := filepath.Join(parent, "fresh")
 
-	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", token, map[string]any{
+	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", map[string]any{
 		"path": fresh, "name": "fresh", "create": true,
 	})
 	if code != 201 {
@@ -32,18 +31,18 @@ func TestWorkspaceCreateBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, _, _ = doJSON(t, "POST", base+"/v1/workspaces", token, map[string]any{
+	code, _, _ = doJSON(t, "POST", base+"/v1/workspaces", map[string]any{
 		"path": fresh, "name": "fresh", "create": true,
 	})
 	if code != 201 {
 		t.Fatalf("idempotent %d", code)
 	}
-	frames := collectBus(t, base, token, "workspace.created", busWait)
+	frames := collectBus(t, base, "workspace.created", busWait)
 	if n := countTopic(frames, "workspace.created"); n != 1 {
 		t.Fatalf("workspace.created count=%d want 1", n)
 	}
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces", token, map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces", map[string]any{
 		"path": filepath.Join(fresh, "nested"), "name": "nested", "create": true,
 	})
 	if code != 409 || errCode(body) != "conflict" {
@@ -54,7 +53,7 @@ func TestWorkspaceCreateBootstrap(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces", token, map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces", map[string]any{
 		"path": filepath.Join(filePath, "sub"), "name": "bad", "create": true,
 	})
 	if code != 400 || errCode(body) != "validation" {
@@ -73,7 +72,7 @@ func TestWorkspacePathlessCreate(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	wsRoot := t.TempDir()
-	s := api.New(st, api.Options{Token: "test-token", WorkspacesRoot: wsRoot})
+	s := api.New(st, api.Options{WorkspacesRoot: wsRoot})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +80,7 @@ func TestWorkspacePathlessCreate(t *testing.T) {
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
 
-	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", s.Token(), map[string]any{
+	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", map[string]any{
 		"name": "reports", "create": true,
 	})
 	if code != 201 {
@@ -95,7 +94,7 @@ func TestWorkspacePathlessCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces", s.Token(), map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces", map[string]any{
 		"name": "nope", "create": false,
 	})
 	if code != 400 || errCode(body) != "validation" {
@@ -104,8 +103,8 @@ func TestWorkspacePathlessCreate(t *testing.T) {
 }
 
 func TestWorkspacePathlessMissingRoot(t *testing.T) {
-	s, base := startTestServer(t)
-	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces", s.Token(), map[string]any{
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces", map[string]any{
 		"name": "reports", "create": true,
 	})
 	if code != 400 || errCode(body) != "validation" {
@@ -117,16 +116,16 @@ func TestWorkspacePathlessMissingRoot(t *testing.T) {
 }
 
 func TestJobPurge(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "purge-ws")
-	createTestJob(t, base, s.Token(), wsID, "report")
-	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/render.py?workspace="+wsID, s.Token(), nil, []byte("print(1)\n"))
+	wsID := addWorkspace(t, base, wsDir, "purge-ws")
+	createTestJob(t, base, wsID, "report")
+	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/render.py?workspace="+wsID, nil, []byte("print(1)\n"))
 	if code != 201 {
 		t.Fatalf("put support %d", code)
 	}
 
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&purge=1&confirm=1", s.Token(), nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&purge=1&confirm=1", nil)
 	if code != 200 {
 		t.Fatalf("purge %d %v", code, body)
 	}
@@ -136,7 +135,7 @@ func TestJobPurge(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(wsDir, "report")); !os.IsNotExist(err) {
 		t.Fatalf("folder remains: %v", err)
 	}
-	frames := collectBus(t, base, s.Token(), "file.deleted", busWait)
+	frames := collectBus(t, base, "file.deleted", busWait)
 	found := false
 	for _, f := range frames {
 		attrs, _ := f["attrs"].(map[string]any)
@@ -150,17 +149,17 @@ func TestJobPurge(t *testing.T) {
 }
 
 func TestJobPurgeGuards(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "purge-g")
+	wsID := addWorkspace(t, base, wsDir, "purge-g")
 	md := []byte("---\nharness: fake\n---\n\nDo work.\n")
 
-	code, _, _ := doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/JOB.md", s.Token(), nil, md)
+	code, _, _ := doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/JOB.md", nil, md)
 	if code != 201 {
 		t.Fatalf("root JOB.md %d", code)
 	}
 	jobName := filepath.Base(wsDir)
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/"+jobName+"?workspace="+wsID+"&purge=1&confirm=1", s.Token(), nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/"+jobName+"?workspace="+wsID+"&purge=1&confirm=1", nil)
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("root purge %d %v", code, body)
 	}
@@ -168,15 +167,15 @@ func TestJobPurgeGuards(t *testing.T) {
 		t.Fatalf("root JOB.md removed: %v", err)
 	}
 
-	code, _, _ = doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/outer/JOB.md", s.Token(), nil, md)
+	code, _, _ = doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/outer/JOB.md", nil, md)
 	if code != 201 {
 		t.Fatalf("outer %d", code)
 	}
-	code, _, _ = doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/outer/inner/JOB.md", s.Token(), nil, md)
+	code, _, _ = doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/outer/inner/JOB.md", nil, md)
 	if code != 201 {
 		t.Fatalf("inner %d", code)
 	}
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/outer?workspace="+wsID+"&purge=1&confirm=1", s.Token(), nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/outer?workspace="+wsID+"&purge=1&confirm=1", nil)
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("nested purge %d %v", code, body)
 	}
@@ -186,17 +185,17 @@ func TestJobPurgeGuards(t *testing.T) {
 }
 
 func TestJobPurgeStaleIfMatch(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "purge-if")
-	createTestJob(t, base, s.Token(), wsID, "report")
-	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/a.py?workspace="+wsID, s.Token(), nil, []byte("x"))
+	wsID := addWorkspace(t, base, wsDir, "purge-if")
+	createTestJob(t, base, wsID, "report")
+	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/a.py?workspace="+wsID, nil, []byte("x"))
 	if code != 201 {
 		t.Fatalf("put %d", code)
 	}
 
 	reqHeaders := map[string]string{"If-Match": "deadbeef"}
-	code, body, _ := doRaw(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&purge=1&confirm=1", s.Token(), reqHeaders, nil)
+	code, body, _ := doRaw(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&purge=1&confirm=1", reqHeaders, nil)
 	if code != 412 || errCode(body) != "precondition_failed" {
 		t.Fatalf("stale %d %v", code, body)
 	}
@@ -206,15 +205,15 @@ func TestJobPurgeStaleIfMatch(t *testing.T) {
 }
 
 func TestJobDeleteFilesRemaining(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "remain-ws")
-	createTestJob(t, base, s.Token(), wsID, "report")
-	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/a.py?workspace="+wsID, s.Token(), nil, []byte("x"))
+	wsID := addWorkspace(t, base, wsDir, "remain-ws")
+	createTestJob(t, base, wsID, "report")
+	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/a.py?workspace="+wsID, nil, []byte("x"))
 	if code != 201 {
 		t.Fatalf("put %d", code)
 	}
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&confirm=1", s.Token(), nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&confirm=1", nil)
 	if code != 200 {
 		t.Fatalf("delete %d %v", code, body)
 	}
@@ -227,8 +226,8 @@ func TestJobDeleteFilesRemaining(t *testing.T) {
 }
 
 func TestSkillFiles(t *testing.T) {
-	s, base := startTestServer(t)
-	code, sk, _ := doJSON(t, "POST", base+"/v1/skills", s.Token(), map[string]any{
+	_, base := startTestServer(t)
+	code, sk, _ := doJSON(t, "POST", base+"/v1/skills", map[string]any{
 		"name": "bundle", "skill_md": "# Bundle\n\nSkill body.\n",
 	})
 	if code != 201 {
@@ -236,12 +235,12 @@ func TestSkillFiles(t *testing.T) {
 	}
 	oldHash, _ := sk["hash"].(string)
 
-	code, resp, _ := doRaw(t, "PUT", base+"/v1/skills/bundle/files/helper.py", s.Token(), nil, []byte("print(1)\n"))
+	code, resp, _ := doRaw(t, "PUT", base+"/v1/skills/bundle/files/helper.py", nil, []byte("print(1)\n"))
 	if code != 201 || resp["path"] != "helper.py" {
 		t.Fatalf("put %d %v", code, resp)
 	}
 
-	code, got, _ := doJSON(t, "GET", base+"/v1/skills/bundle", s.Token(), nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/skills/bundle", nil)
 	if code != 200 {
 		t.Fatalf("get skill %d %v", code, got)
 	}
@@ -253,19 +252,19 @@ func TestSkillFiles(t *testing.T) {
 		t.Fatalf("scripts %v", scripts)
 	}
 
-	code, body, _ := doRaw(t, "PUT", base+"/v1/skills/bundle/files/SKILL.md", s.Token(), nil, []byte("# no\n"))
+	code, body, _ := doRaw(t, "PUT", base+"/v1/skills/bundle/files/SKILL.md", nil, []byte("# no\n"))
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("SKILL.md put %d %v", code, body)
 	}
 	if !strings.Contains(errMsg(body), "trebi skill update") {
 		t.Fatalf("message: %s", errMsg(body))
 	}
-	code, _, _ = doRaw(t, "GET", base+"/v1/skills/bundle/files/SKILL.md", s.Token(), nil, nil)
+	code, _, _ = doRaw(t, "GET", base+"/v1/skills/bundle/files/SKILL.md", nil, nil)
 	if code != 200 {
 		t.Fatalf("SKILL.md get %d", code)
 	}
 
-	code, body, _ = doRaw(t, "PUT", base+"/v1/skills/bundle/files/%2e%2e%2fx", s.Token(), nil, []byte("x"))
+	code, body, _ = doRaw(t, "PUT", base+"/v1/skills/bundle/files/%2e%2e%2fx", nil, []byte("x"))
 	if code != 400 || errCode(body) != "validation" {
 		t.Fatalf("jail %d %v", code, body)
 	}
@@ -279,31 +278,31 @@ func TestSkillFiles(t *testing.T) {
 		t.Fatalf("projection: %q %v", data, err)
 	}
 
-	frames := collectBus(t, base, s.Token(), "skill.updated", busWait)
+	frames := collectBus(t, base, "skill.updated", busWait)
 	if len(frames) == 0 {
 		t.Fatal("no skill.updated")
 	}
 }
 
 func TestSkillFilesProvenanceDeny(t *testing.T) {
-	s, base := startTestServer(t)
-	code, _, _ := doJSON(t, "POST", base+"/v1/skills", s.Token(), map[string]any{
+	_, base := startTestServer(t)
+	code, _, _ := doJSON(t, "POST", base+"/v1/skills", map[string]any{
 		"name": "upstream", "skill_md": "# Up\n", "provenance": "git",
 	})
 	if code != 201 {
 		t.Fatalf("create %d", code)
 	}
-	code, body, _ := doRaw(t, "PUT", base+"/v1/skills/upstream/files/a.py", s.Token(), nil, []byte("x"))
+	code, body, _ := doRaw(t, "PUT", base+"/v1/skills/upstream/files/a.py", nil, []byte("x"))
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("git write %d %v", code, body)
 	}
 }
 
 func TestWorkspacePatchGitEnabled(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "settings")
-	code, body, _ := doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID, s.Token(), map[string]any{
+	wsID := addWorkspace(t, base, wsDir, "settings")
+	code, body, _ := doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID, map[string]any{
 		"git_enabled": true,
 	})
 	if code != 200 {

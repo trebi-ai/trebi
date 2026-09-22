@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
@@ -62,7 +61,6 @@ type Server struct {
 	hooks      *webhooks.Service
 	lic        *license.Service
 
-	token     string
 	startedAt time.Time
 	drain     bool
 	shadow    bool
@@ -89,7 +87,6 @@ type Server struct {
 
 // Options for New.
 type Options struct {
-	Token          string
 	Shadow         bool
 	Drain          bool
 	FilesMaxBytes  int64  // 0 = files.DefaultMaxBytes
@@ -132,7 +129,6 @@ func New(st *store.Store, opts Options) *Server {
 		email:        email.New(st),
 		cloud:        cl,
 		hooks:        webhooks.New(st, conn, cl),
-		token:        opts.Token,
 		startedAt:    time.Now().UTC(),
 		shadow:       opts.Shadow,
 		drain:        opts.Drain || opts.Shadow,
@@ -144,9 +140,6 @@ func New(st *store.Store, opts Options) *Server {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: checkWSOrigin,
 		},
-	}
-	if s.token == "" {
-		s.token = ulid.Make().String()
 	}
 	r.SetNativeHooks(runs.NativeHooks{
 		Lifetime: context.Background(),
@@ -240,9 +233,6 @@ func (s *Server) Runs() *runs.Service { return s.runs }
 // Workspaces returns the workspace service.
 func (s *Server) Workspaces() *workspaces.Service { return s.ws }
 
-// Token returns the bearer token.
-func (s *Server) Token() string { return s.token }
-
 // SetCLIDriver installs a subprocess driver override on the runs service
 // (tests; production uses the built-in per-harness drivers).
 func (s *Server) SetCLIDriver(d cli.Driver) { s.runs.SetCLIDriver(d) }
@@ -285,19 +275,18 @@ func (s *Server) Handler() http.Handler {
 	s.routeEmail(mux)
 	s.routeHooks(mux)
 	s.routeMCP(mux)
-	// Dispatch from catalog tools re-enters here, audit-wrapped but not
-	// auth-wrapped. MCP already passed authMiddleware; native is the daemon.
+	// Dispatch from catalog tools re-enters here, audit-wrapped and
+	// noTraversal-wrapped. MCP and native dispatch share that path.
 	s.apiMux = mux
 	s.apiWrapped = s.auditMiddleware(noTraversalMiddleware(newConfirmGate().wrap(mux)))
-	apiHandler := s.authMiddleware(s.apiWrapped)
 	if s.ext.UI != nil {
-		// The SPA sits outside auth; every /v1 call still needs the bearer.
-		return ui.Handler(s.ext.UI, apiHandler)
+		// The SPA sits beside the API on one mux.
+		return ui.Handler(s.ext.UI, s.apiWrapped)
 	}
 	if fsys, ok := ui.FS(); ok {
-		return ui.Handler(fsys, apiHandler)
+		return ui.Handler(fsys, s.apiWrapped)
 	}
-	return apiHandler
+	return s.apiWrapped
 }
 
 // ListenAndServe binds addr (e.g. 127.0.0.1:0) and serves HTTP.
@@ -337,7 +326,8 @@ func (s *Server) serve(addr, certFile, keyFile string) (actual string, err error
 	return actual, nil
 }
 
-// WriteAPIJSON writes token+port to api.json.
+// WriteAPIJSON writes the port and URL to api.json. Clients read it to find
+// a daemon that bound an ephemeral port.
 func (s *Server) WriteAPIJSON(listenAddr string) error {
 	if err := home.EnsureDirs(); err != nil {
 		return err
@@ -357,9 +347,8 @@ func (s *Server) WriteAPIJSON(listenAddr string) error {
 		scheme = "http"
 	}
 	doc := map[string]any{
-		"token": s.token,
-		"port":  port,
-		"url":   scheme + "://" + net.JoinHostPort(host, portStr),
+		"port": port,
+		"url":  scheme + "://" + net.JoinHostPort(host, portStr),
 	}
 	b, _ := json.MarshalIndent(doc, "", "  ")
 	return os.WriteFile(home.APIJSONPath(), b, 0o600)

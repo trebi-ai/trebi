@@ -12,11 +12,11 @@ import (
 // create seeds AGENT.md plus the memory ledger, and list/show/patch carry the
 // Part H payload fields.
 func TestAgentPutLifecycle(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-crud")
+	wsID := addWorkspace(t, base, wsDir, "agent-crud")
 
-	code, body, _ := doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", s.Token(), nil)
+	code, body, _ := doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
 	if code != 201 {
 		t.Fatalf("bare create: %d %v", code, body)
 	}
@@ -33,24 +33,24 @@ func TestAgentPutLifecycle(t *testing.T) {
 	}
 
 	// Full replace on the existing agent; empty body must not wipe it.
-	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", s.Token(), map[string]any{
+	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", map[string]any{
 		"content": "---\nharness: fake\nmemory: true\n---\n\nRun growth.\n",
 	})
 	if code != 200 {
 		t.Fatalf("full replace: %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", s.Token(), nil)
+	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
 	if code != 400 || errCode(body) != "validation" {
 		t.Fatalf("empty replace: %d %v want 400 validation", code, body)
 	}
 	for _, name := range []string{"Cmo", "bad_name", "-cmo"} {
-		code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/"+name, s.Token(), nil)
+		code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/"+name, nil)
 		if code != 400 || errCode(body) != "validation" {
 			t.Errorf("name %q: %d %v want 400 validation", name, code, body)
 		}
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents", nil)
 	if code != 200 {
 		t.Fatalf("list: %d %v", code, body)
 	}
@@ -66,7 +66,7 @@ func TestAgentPutLifecycle(t *testing.T) {
 		t.Fatalf("list row carries jobs before any owned job exists: %v", row)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
 	if code != 200 {
 		t.Fatalf("show: %d %v", code, body)
 	}
@@ -74,18 +74,18 @@ func TestAgentPutLifecycle(t *testing.T) {
 		t.Fatalf("show payload: %v", body)
 	}
 
-	code, body, _ = doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID+"/agents/cmo", s.Token(), map[string]any{
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID+"/agents/cmo", map[string]any{
 		"disabled": true,
 	})
 	if code != 200 || body["patched"] != true {
 		t.Fatalf("patch: %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
 	if code != 200 || body["disabled"] != true {
 		t.Fatalf("show after patch: %d %v", code, body)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/nope", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/nope", nil)
 	if code != 404 || errCode(body) != "not_found" {
 		t.Fatalf("unknown agent: %d %v", code, body)
 	}
@@ -95,18 +95,17 @@ func TestAgentPutLifecycle(t *testing.T) {
 // so the owned jobs stay on disk and keep the owner stamp; purge removes the
 // whole tree. Both need confirm.
 func TestAgentDeleteCoversPurgeAndChildren(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-del")
-	token := s.Token()
+	wsID := addWorkspace(t, base, wsDir, "agent-del")
 
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/agents/cmo", token, nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
 	if code != 400 || errCode(body) != "validation" || !strings.Contains(fmt.Sprint(body), "confirm_required") {
 		t.Fatalf("delete without confirm: %d %v", code, body)
 	}
 
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/agents/cmo?confirm=1", token, nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/agents/cmo?confirm=1", nil)
 	if code != 200 {
 		t.Fatalf("plain delete: %d %v", code, body)
 	}
@@ -117,7 +116,7 @@ func TestAgentDeleteCoversPurgeAndChildren(t *testing.T) {
 		t.Fatalf("owned job died with plain delete: %v", err)
 	}
 	// The duty job stays a duty: still listed, still owned, agent gone.
-	code, body, _ = doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID+"&owner=cmo", token, nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID+"&owner=cmo", nil)
 	if code != 200 {
 		t.Fatalf("owner list after delete: %d %v", code, body)
 	}
@@ -125,7 +124,7 @@ func TestAgentDeleteCoversPurgeAndChildren(t *testing.T) {
 	if len(jobs) != 1 || jobs[0].(map[string]any)["name"] != "agents/cmo/duty" {
 		t.Fatalf("orphaned owned job not listed: %v", body)
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents", token, nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents", nil)
 	if code != 200 {
 		t.Fatalf("agent list after delete: %d %v", code, body)
 	}
@@ -134,13 +133,13 @@ func TestAgentDeleteCoversPurgeAndChildren(t *testing.T) {
 	}
 
 	// Purge: recreate, then remove the whole tree.
-	code, _, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", token, map[string]any{
+	code, _, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", map[string]any{
 		"content": "---\nharness: fake\n---\n\nBack again.\n",
 	})
 	if code != 201 {
 		t.Fatalf("recreate: %d", code)
 	}
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/agents/cmo?confirm=1&purge=1", token, nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/agents/cmo?confirm=1&purge=1", nil)
 	if code != 200 || body["purged"] != true {
 		t.Fatalf("purge delete: %d %v", code, body)
 	}
@@ -155,37 +154,36 @@ func TestAgentDeleteCoversPurgeAndChildren(t *testing.T) {
 // TestAgentMemoryRoutes: the seeded file reads back, log entries append and
 // delete, and clear sits behind the confirm gate.
 func TestAgentMemoryRoutes(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-mem")
-	token := s.Token()
+	wsID := addWorkspace(t, base, wsDir, "agent-mem")
 	root := base + "/v1/workspaces/" + wsID + "/agents/cmo/memory"
 
-	code, body, _ := doJSON(t, "GET", root, token, nil)
+	code, body, _ := doJSON(t, "GET", root, nil)
 	if code != 200 || !strings.Contains(fmt.Sprint(body["content"]), "## Context") {
 		t.Fatalf("memory show: %d %v", code, body)
 	}
 
-	code, body, _ = doJSON(t, "POST", root+"/log", token, map[string]any{
+	code, body, _ = doJSON(t, "POST", root+"/log", map[string]any{
 		"at": "2026-09-12 09:00", "text": "learned the API",
 	})
 	if code != 201 {
 		t.Fatalf("memory log add: %d %v", code, body)
 	}
 	entryID := fmt.Sprint(body["id"])
-	code, body, _ = doJSON(t, "GET", root, token, nil)
+	code, body, _ = doJSON(t, "GET", root, nil)
 	if code != 200 {
 		t.Fatalf("memory show after add: %d %v", code, body)
 	}
 	if n := docEntries(t, body, "log"); n != 1 {
 		t.Fatalf("entry not appended: %d", n)
 	}
-	code, body, _ = doJSON(t, "DELETE", root+"/log/"+entryID, token, nil)
+	code, body, _ = doJSON(t, "DELETE", root+"/log/"+entryID, nil)
 	if code != 200 {
 		t.Fatalf("memory log delete: %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "GET", root, token, nil)
+	code, body, _ = doJSON(t, "GET", root, nil)
 	if code != 200 {
 		t.Fatalf("memory show after delete: %d %v", code, body)
 	}
@@ -193,15 +191,15 @@ func TestAgentMemoryRoutes(t *testing.T) {
 		t.Fatalf("entry survived delete: %d", n)
 	}
 
-	code, body, _ = doJSON(t, "DELETE", root, token, nil)
+	code, body, _ = doJSON(t, "DELETE", root, nil)
 	if code != 400 || !strings.Contains(fmt.Sprint(body), "confirm") {
 		t.Fatalf("memory clear without confirm: %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "DELETE", root+"?confirm=1", token, nil)
+	code, body, _ = doJSON(t, "DELETE", root+"?confirm=1", nil)
 	if code != 200 {
 		t.Fatalf("memory clear: %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "GET", root, token, nil)
+	code, body, _ = doJSON(t, "GET", root, nil)
 	if code != 200 || !strings.Contains(fmt.Sprint(body["content"]), "## Context") {
 		t.Fatalf("memory not reset to skeleton: %d %v", code, body)
 	}
@@ -210,13 +208,12 @@ func TestAgentMemoryRoutes(t *testing.T) {
 // TestAgentMDTypingCoversFileJail: the job-scoped file jail refuses AGENT.md
 // with the typed message; the workspace file plane may still write it.
 func TestAgentMDTypingCoversFileJail(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-jail")
-	token := s.Token()
+	wsID := addWorkspace(t, base, wsDir, "agent-jail")
 
-	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/alpha/files/AGENT.md?workspace="+wsID, token, map[string]any{
+	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/alpha/files/AGENT.md?workspace="+wsID, map[string]any{
 		"content": "---\n---\n\nSneak.\n",
 	})
 	if code != 409 || errCode(body) != "conflict" {
@@ -229,13 +226,13 @@ func TestAgentMDTypingCoversFileJail(t *testing.T) {
 		t.Fatal("job-scoped AGENT.md put leaked to disk")
 	}
 
-	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/agents/cmo/notes.md", token, map[string]any{
+	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/agents/cmo/notes.md", map[string]any{
 		"content": "plain file\n",
 	})
 	if code != 201 {
 		t.Fatalf("workspace-scoped plain file: %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/agents/cmo/AGENT.md", token, map[string]any{
+	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/agents/cmo/AGENT.md", map[string]any{
 		"content": "---\nharness: fake\n---\n\nVia the file plane.\n",
 	})
 	if code != 200 {
@@ -246,14 +243,13 @@ func TestAgentMDTypingCoversFileJail(t *testing.T) {
 // TestJobsOwnerFilter: owner=cmo and owner=agents/cmo both keep only the
 // children of that agent.
 func TestJobsOwnerFilter(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-owner")
-	token := s.Token()
+	wsID := addWorkspace(t, base, wsDir, "agent-owner")
 
 	for _, owner := range []string{"cmo", "agents/cmo"} {
-		code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID+"&owner="+owner, token, nil)
+		code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID+"&owner="+owner, nil)
 		if code != 200 {
 			t.Fatalf("owner=%s: %d %v", owner, code, body)
 		}
@@ -267,7 +263,7 @@ func TestJobsOwnerFilter(t *testing.T) {
 	}
 
 	// No filter: duties only, agent row never leaks into the jobs list.
-	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID, token, nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("plain list: %d %v", code, body)
 	}
@@ -285,13 +281,12 @@ func TestJobsOwnerFilter(t *testing.T) {
 // TestJobCreateUnderAgent: the agent field lands the file under the agent
 // folder, the wire name is the full relative path, and a missing agent 404s.
 func TestJobCreateUnderAgent(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-child")
-	token := s.Token()
+	wsID := addWorkspace(t, base, wsDir, "agent-child")
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs", token, map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
 		"workspace": wsID, "agent": "cmo", "name": "weekly-digest",
 		"prompt": "Write the digest.", "harness": "fake",
 	})
@@ -306,7 +301,7 @@ func TestJobCreateUnderAgent(t *testing.T) {
 	}
 
 	// The agent show groups it: job_count and jobs carry the child.
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", token, nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
 	if code != 200 {
 		t.Fatalf("agent show: %d %v", code, body)
 	}
@@ -318,7 +313,7 @@ func TestJobCreateUnderAgent(t *testing.T) {
 		t.Fatalf("jobs = %v", body["jobs"])
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs", token, map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs", map[string]any{
 		"workspace": wsID, "agent": "ghost", "name": "nope", "prompt": "x",
 	})
 	if code != 404 || errCode(body) != "not_found" || !strings.Contains(fmt.Sprint(body), "agent not found") {
@@ -329,16 +324,15 @@ func TestJobCreateUnderAgent(t *testing.T) {
 // TestAgentShowKeepsLayoutParseError: a JOB.md beside AGENT.md stamps a layout
 // error on the index row; show and list must keep it beside the live parse.
 func TestAgentShowKeepsLayoutParseError(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
 	if err := os.WriteFile(filepath.Join(wsDir, "agents", "cmo", "JOB.md"), []byte("---\ntitle: Stray\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-layout")
-	token := s.Token()
+	wsID := addWorkspace(t, base, wsDir, "agent-layout")
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", token, nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
 	if code != 200 {
 		t.Fatalf("show: %d %v", code, body)
 	}
@@ -346,7 +340,7 @@ func TestAgentShowKeepsLayoutParseError(t *testing.T) {
 		t.Fatalf("show parse_error = %q want layout error", pe)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents", token, nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents", nil)
 	if code != 200 {
 		t.Fatalf("list: %d %v", code, body)
 	}
@@ -362,16 +356,15 @@ func TestAgentShowKeepsLayoutParseError(t *testing.T) {
 // TestWakeDryRunComposesPreview: an operator dry run previews the composed
 // wake prompt, not the raw operator body.
 func TestWakeDryRunComposesPreview(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
 	if err := os.WriteFile(filepath.Join(wsDir, "TREBI.md"), []byte("---\nharness: fake\n---\n\nLook after the workspace.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "wake-dry")
-	token := s.Token()
+	wsID := addWorkspace(t, base, wsDir, "wake-dry")
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/cmo/wake", token, map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/cmo/wake", map[string]any{
 		"dry_run": true,
 	})
 	if code != 200 || body["dry_run"] != true {
@@ -382,7 +375,7 @@ func TestWakeDryRunComposesPreview(t *testing.T) {
 		t.Fatalf("agent dry run preview not composed: %q", preview)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/assistant/wake", token, map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/assistant/wake", map[string]any{
 		"dry_run": true,
 	})
 	if code != 200 || body["dry_run"] != true {
@@ -397,13 +390,12 @@ func TestWakeDryRunComposesPreview(t *testing.T) {
 // TestAgentWakeSugarRoute: POST /agents/{name}/wake pins the identity fields
 // and lands in the agent lane with a scoped prompt.
 func TestAgentWakeSugarRoute(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-wake")
-	token := s.Token()
+	wsID := addWorkspace(t, base, wsDir, "agent-wake")
 
-	code, run, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/cmo/wake", token, map[string]any{})
+	code, run, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/cmo/wake", map[string]any{})
 	if code != 201 {
 		t.Fatalf("wake: %d %v", code, run)
 	}
@@ -418,7 +410,7 @@ func TestAgentWakeSugarRoute(t *testing.T) {
 		t.Fatalf("wake preview leaks workspace jobs: %q", preview)
 	}
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/ghost/wake", token, map[string]any{})
+	code, body, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/ghost/wake", map[string]any{})
 	if code != 404 || errCode(body) != "not_found" {
 		t.Fatalf("wake unknown agent: %d %v", code, body)
 	}

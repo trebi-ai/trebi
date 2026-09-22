@@ -2,7 +2,7 @@
   {
     "role": "tool",
     "name": "Bash",
-    "content": "{\"command\": \"trebi workspace link remote --url http://127.0.0.1:9999 --token t\"}"
+    "content": "{\"command\": \"trebi workspace link remote --url http://127.0.0.1:9999\"}"
   },
   {
     "role": "tool",

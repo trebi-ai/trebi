@@ -127,7 +127,6 @@ type trialEnv struct {
 	workdir string
 	artDir  string
 	apiURL  string
-	token   string
 	bin     string
 	cmd     *exec.Cmd
 	parentW *os.File
@@ -162,7 +161,7 @@ func (e *trialEnv) placeholders(workspace string) Placeholders {
 // call trebi directly, so the trebi bin dir leads PATH.
 func (e *trialEnv) environ() []string {
 	env := os.Environ()
-	env = filterEnv(env, "TREBI_HOME", "TREBI_URL", "TREBI_TOKEN", "TREBI_WORKSPACE")
+	env = filterEnv(env, "TREBI_HOME", "TREBI_URL", "TREBI_WORKSPACE")
 	return append(env,
 		"TREBI_HOME="+e.home,
 		"PATH="+filepath.Dir(e.bin)+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -190,7 +189,7 @@ func (e *trialEnv) mcpEnviron(cfgHome string) []string {
 // clientHomeEnviron points the client at a scratch home, with no PATH set.
 func (e *trialEnv) clientHomeEnviron(cfgHome string) []string {
 	env := os.Environ()
-	env = filterEnv(env, "TREBI_HOME", "TREBI_URL", "TREBI_TOKEN", "TREBI_WORKSPACE", "PATH", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME")
+	env = filterEnv(env, "TREBI_HOME", "TREBI_URL", "TREBI_WORKSPACE", "PATH", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME")
 	return append(env,
 		"HOME="+cfgHome,
 		"CLAUDE_CONFIG_DIR="+cfgHome,
@@ -276,12 +275,10 @@ func (e *trialEnv) waitAPIJSON(ctx context.Context, d time.Duration) error {
 		data, err := os.ReadFile(path)
 		if err == nil {
 			var doc struct {
-				URL   string `json:"url"`
-				Token string `json:"token"`
+				URL string `json:"url"`
 			}
 			if json.Unmarshal(data, &doc) == nil && doc.URL != "" {
 				e.apiURL = doc.URL
-				e.token = doc.Token
 				return nil
 			}
 		}

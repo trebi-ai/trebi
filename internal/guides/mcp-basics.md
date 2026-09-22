@@ -6,9 +6,9 @@ description: Tool/action/input shape, docs actions, CLI-to-MCP translation, work
 
 # MCP entry point
 
-Trebi's control plane is also an MCP server at `/mcp` (Streamable HTTP, bearer auth). Sixteen tools (`run`, `job`, `workspace`, `assistant`, `agent`, `file`, `harness`, `connector`, `event`, `queue`, `inbox`, `conversation`, `skill`, `secret`, `config`, `system`). Each tool takes `{"action": "<name>", "input": {…}}`. Action `docs` returns the input field reference for that tool. Errors return the HTTP error envelope unchanged.
+Trebi's control plane is also an MCP server at `/mcp` (Streamable HTTP, no auth). Sixteen tools (`run`, `job`, `workspace`, `assistant`, `agent`, `file`, `harness`, `connector`, `event`, `queue`, `inbox`, `conversation`, `skill`, `secret`, `config`, `system`). Each tool takes `{"action": "<name>", "input": {…}}`. Action `docs` returns the input field reference for that tool. Errors return the HTTP error envelope unchanged.
 
-Connect with the URL and token from `~/.trebi/api.json` (`{"url", "token"}`).
+Connect with the URL from `~/.trebi/api.json` (`{"url"}`). The daemon serves its whole API without a credential; the bind address is the only gate.
 
 `trebi mcp` writes that config for you. It is **local only** and works with the daemon down:
 
@@ -19,7 +19,7 @@ trebi mcp install --client claude         # runs the add command
 trebi mcp serve                           # stdio bridge for a client without HTTP
 ```
 
-Every `mcp` command is **local only**. Clients: `claude`, `codex`, `opencode`, `cursor`, `vscode`, and `json` for the raw url and token. `install` covers `claude`, `codex`, and `opencode`.
+Every `mcp` command is **local only**. Clients: `claude`, `codex`, `opencode`, `cursor`, `vscode`, and `json` for the raw url. `install` covers `claude`, `codex`, and `opencode`.
 
 ## Translation rule
 

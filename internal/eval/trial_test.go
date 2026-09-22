@@ -66,7 +66,7 @@ func TestSeedClientHomeCodexPlusConfig(t *testing.T) {
 	if err := seedClientHome(dst, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeCodexMCPConfig(dst, "http://127.0.0.1:1/mcp", "tok"); err != nil {
+	if err := writeCodexMCPConfig(dst, "http://127.0.0.1:1/mcp"); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dst)
@@ -134,7 +134,7 @@ func TestWriteCodexMCPConfigCarriesModel(t *testing.T) {
 	}
 	t.Setenv("CODEX_HOME", outer)
 	dst := t.TempDir()
-	if err := writeCodexMCPConfig(dst, "http://127.0.0.1:1/mcp", "tok"); err != nil {
+	if err := writeCodexMCPConfig(dst, "http://127.0.0.1:1/mcp"); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(filepath.Join(dst, "config.toml"))
@@ -201,7 +201,7 @@ func TestExtractCodexModelConfig(t *testing.T) {
 func TestWriteCodexMCPConfigMissingReal(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	dst := t.TempDir()
-	if err := writeCodexMCPConfig(dst, "http://127.0.0.1:1/mcp", "tok"); err != nil {
+	if err := writeCodexMCPConfig(dst, "http://127.0.0.1:1/mcp"); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(filepath.Join(dst, "config.toml"))

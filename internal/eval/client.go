@@ -32,7 +32,6 @@ type LaunchOpts struct {
 	Transcript string // path to write raw + normalized JSON
 	Surface    string
 	MCPURL     string
-	MCPToken   string
 	ConfigHome string
 }
 

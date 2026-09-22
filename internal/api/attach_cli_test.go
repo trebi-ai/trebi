@@ -47,7 +47,7 @@ func TestRunAttachCLIEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := api.New(st, api.Options{Token: "tok"})
+	s := api.New(st, api.Options{})
 	s.SetCLIDriver(cli.FakeDriver{Script: `read -r line; echo '{"type":"assistant","text":"streamed hello"}'; sleep 30`})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
@@ -63,7 +63,6 @@ func TestRunAttachCLIEvents(t *testing.T) {
 			r = bytes.NewReader(b)
 		}
 		req, _ := http.NewRequest(method, base+path, r)
-		req.Header.Set("Authorization", "Bearer tok")
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
@@ -107,7 +106,7 @@ func TestRunAttachCLIEvents(t *testing.T) {
 	}
 
 	wsURL := "ws" + strings.TrimPrefix(base, "http") + "/v1/runs/" + runID + "/attach"
-	conn, wsResp, derr := websocket.DefaultDialer.Dial(wsURL, http.Header{"Authorization": {"Bearer tok"}})
+	conn, wsResp, derr := websocket.DefaultDialer.Dial(wsURL, nil)
 	if derr != nil {
 		body := ""
 		if wsResp != nil {
@@ -175,7 +174,7 @@ func TestAgentHookAdvisoryOnCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := api.New(st, api.Options{Token: "tok"})
+	s := api.New(st, api.Options{})
 	svc := s.Runs()
 	svc.SetCLIDriver(cli.FakeDriver{Script: `read -r line; sleep 30`})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
@@ -192,7 +191,6 @@ func TestAgentHookAdvisoryOnCLI(t *testing.T) {
 			r = bytes.NewReader(b)
 		}
 		req, _ := http.NewRequest(method, base+path, r)
-		req.Header.Set("Authorization", "Bearer tok")
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}

@@ -16,17 +16,15 @@ type StickyContext struct {
 	WorkspaceID string `yaml:"workspace_id" json:"workspace_id"`
 	Name        string `yaml:"name,omitempty" json:"name,omitempty"`
 	Path        string `yaml:"path,omitempty" json:"path,omitempty"`
-	URL         string `yaml:"url,omitempty" json:"url,omitempty"`     // empty = local daemon
-	Token       string `yaml:"token,omitempty" json:"token,omitempty"` // with URL only
+	URL         string `yaml:"url,omitempty" json:"url,omitempty"` // empty = local daemon
 }
 
 // LinkedWorkspace is a client-side pointer to a workspace on a remote daemon.
 type LinkedWorkspace struct {
-	ID    string `yaml:"id"`
-	Name  string `yaml:"name,omitempty"`
-	Path  string `yaml:"path,omitempty"`
-	URL   string `yaml:"url"`
-	Token string `yaml:"token"`
+	ID   string `yaml:"id"`
+	Name string `yaml:"name,omitempty"`
+	Path string `yaml:"path,omitempty"`
+	URL  string `yaml:"url"`
 }
 
 type linkedFile struct {
@@ -161,7 +159,6 @@ func (w LinkedWorkspace) Sticky() StickyContext {
 		Name:        w.Name,
 		Path:        w.Path,
 		URL:         w.URL,
-		Token:       w.Token,
 	}
 }
 

@@ -24,7 +24,7 @@ func TestReplayUsesCapturedTrigger(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "replay-ws")
+	wsID := addWorkspace(t, base, wsDir, "replay-ws")
 
 	prev, err := s.Runs().Create(context.Background(), runs.CreateOpts{
 		WorkspaceID: wsID, Job: "greeter", Harness: "fake",
@@ -39,7 +39,7 @@ func TestReplayUsesCapturedTrigger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+prev.ID+"/replay", s.Token(), nil)
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+prev.ID+"/replay", nil)
 	if code != 201 {
 		t.Fatalf("replay %d %v", code, body)
 	}
@@ -62,7 +62,7 @@ func TestReplayUsesCapturedTrigger(t *testing.T) {
 // TestRunExpandsJobDir: Run Now and dry-run fill {{job_dir}}/{{workspace_dir}}
 // the same way a schedule fire does, without requiring them as inputs.
 func TestRunExpandsJobDir(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	jobDir := filepath.Join(wsDir, "digest")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
@@ -72,9 +72,9 @@ func TestRunExpandsJobDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "jobdir-ws")
+	wsID := addWorkspace(t, base, wsDir, "jobdir-ws")
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/digest/run", s.Token(), map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/digest/run", map[string]any{
 		"workspace": wsID,
 		"dry_run":   true,
 		"inputs":    map[string]string{"who": "fritz"},
@@ -96,7 +96,7 @@ func TestRunExpandsJobDir(t *testing.T) {
 		t.Fatalf("builtin placeholders left literal: %q", got)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/digest/run", s.Token(), map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/digest/run", map[string]any{
 		"workspace": wsID,
 		"inputs":    map[string]string{"who": "fritz"},
 	})
@@ -117,7 +117,7 @@ func TestRetrySkipRerunsAssistant(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wsDir, "TREBI.md"), []byte("---\nharness: fake\n---\n\nYou are the assistant.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "assistant-retry")
+	wsID := addWorkspace(t, base, wsDir, "assistant-retry")
 
 	prev, err := s.Runs().Create(context.Background(), runs.CreateOpts{
 		WorkspaceID: wsID, Job: "assistant-retry", Kind: runs.KindAssistant,
@@ -131,7 +131,7 @@ func TestRetrySkipRerunsAssistant(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+prev.ID+"/retry", s.Token(), nil)
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+prev.ID+"/retry", nil)
 	if code != 201 {
 		t.Fatalf("retry skip assistant %d %v", code, body)
 	}
@@ -148,12 +148,12 @@ func TestRetrySkipRerunsAssistant(t *testing.T) {
 // scopes the prompt to the agent folder. The resolver is kind-strict, so a
 // kind=job launch cannot pick the agent row up.
 func TestAgentLaunchCanonical(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-launch")
+	wsID := addWorkspace(t, base, wsDir, "agent-launch")
 
-	code, run, _ := doJSON(t, "POST", base+"/v1/runs", s.Token(), map[string]any{
+	code, run, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{
 		"workspace": wsID, "kind": "agent", "job": "cmo",
 	})
 	if code != 201 {
@@ -177,7 +177,7 @@ func TestAgentLaunchCanonical(t *testing.T) {
 	}
 
 	// Kind-strict resolver: without kind=agent the name cmo is not a job.
-	code, body, _ := doJSON(t, "POST", base+"/v1/runs", s.Token(), map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{
 		"workspace": wsID, "job": "cmo",
 	})
 	if code != 404 || errCode(body) != "not_found" {
@@ -191,7 +191,7 @@ func TestAgentRetrySkipReruns(t *testing.T) {
 	s, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "agent-retry")
+	wsID := addWorkspace(t, base, wsDir, "agent-retry")
 
 	prev, err := s.Runs().Create(context.Background(), runs.CreateOpts{
 		WorkspaceID: wsID, Job: "agents/cmo", Kind: runs.KindAgent,
@@ -205,7 +205,7 @@ func TestAgentRetrySkipReruns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+prev.ID+"/retry", s.Token(), nil)
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+prev.ID+"/retry", nil)
 	if code != 201 {
 		t.Fatalf("retry skip agent %d %v", code, body)
 	}
@@ -226,21 +226,20 @@ func TestAgentRetrySkipReruns(t *testing.T) {
 // TestErrorEnvelopeShapeAndCodes covers D11: every error is
 // {"error":{"code","message"}} with a stable code vocabulary.
 func TestErrorEnvelopeShapeAndCodes(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	cases := []struct {
-		method, path, token string
-		wantStatus          int
-		wantCode            string
+		method, path string
+		wantStatus   int
+		wantCode     string
 	}{
-		{"GET", "/v1/runs/01NOPE", s.Token(), 404, "not_found"},
-		{"POST", "/v1/runs/01NOPE/kill", s.Token(), 404, "not_found"},
-		{"POST", "/v1/runs/01NOPE/resume", s.Token(), 404, "not_found"},
-		{"GET", "/v1/runs?cursor=not-a-ulid", s.Token(), 400, "validation"},
-		{"GET", "/v1/jobs/nope", s.Token(), 404, "not_found"},
-		{"GET", "/v1/system/health", "bad-token", 401, "unauthorized"},
+		{"GET", "/v1/runs/01NOPE", 404, "not_found"},
+		{"POST", "/v1/runs/01NOPE/kill", 404, "not_found"},
+		{"POST", "/v1/runs/01NOPE/resume", 404, "not_found"},
+		{"GET", "/v1/runs?cursor=not-a-ulid", 400, "validation"},
+		{"GET", "/v1/jobs/nope", 404, "not_found"},
 	}
 	for _, c := range cases {
-		code, body, _ := doJSON(t, c.method, base+c.path, c.token, nil)
+		code, body, _ := doJSON(t, c.method, base+c.path, nil)
 		if code != c.wantStatus {
 			t.Errorf("%s %s: status %d want %d (%v)", c.method, c.path, code, c.wantStatus, body)
 			continue
@@ -279,7 +278,7 @@ func TestRunsListCursorPaginationIsStable(t *testing.T) {
 		if cursor != "" {
 			url += "&cursor=" + cursor
 		}
-		code, body, _ := doJSON(t, "GET", url, s.Token(), nil)
+		code, body, _ := doJSON(t, "GET", url, nil)
 		if code != 200 {
 			t.Fatalf("list %d %v", code, body)
 		}
@@ -302,7 +301,7 @@ func TestRunsListCursorPaginationIsStable(t *testing.T) {
 		t.Fatalf("pagination covered %d runs, want %d", len(seen), total)
 	}
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/runs?cursor=@@bad@@", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/runs?cursor=@@bad@@", nil)
 	if code != 400 || errCode(body) != "validation" {
 		t.Fatalf("malformed cursor: %d %v", code, body)
 	}

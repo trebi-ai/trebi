@@ -208,8 +208,7 @@ func fetchHealth() Snapshot {
 		return Snapshot{Healthy: false, Message: "api.json missing"}
 	}
 	var doc struct {
-		URL   string `json:"url"`
-		Token string `json:"token"`
+		URL string `json:"url"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil || doc.URL == "" {
 		return Snapshot{Healthy: false, Message: "api.json invalid"}
@@ -217,9 +216,6 @@ func fetchHealth() Snapshot {
 	req, err := http.NewRequest(http.MethodGet, doc.URL+"/v1/system/health", nil)
 	if err != nil {
 		return Snapshot{Healthy: false, Message: err.Error()}
-	}
-	if doc.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+doc.Token)
 	}
 	client := &http.Client{Timeout: 1500 * time.Millisecond}
 	resp, err := client.Do(req)

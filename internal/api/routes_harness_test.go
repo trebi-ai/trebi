@@ -10,10 +10,9 @@ import (
 )
 
 func TestHarnessAuthGetMode(t *testing.T) {
-	s, base := startTestServer(t)
-	token := s.Token()
+	_, base := startTestServer(t)
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/harnesses/claude/auth", token, nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/harnesses/claude/auth", nil)
 	if code != 200 {
 		t.Fatalf("%d %v", code, body)
 	}
@@ -30,23 +29,23 @@ func TestHarnessAuthGetMode(t *testing.T) {
 		t.Fatalf("keychain_bound missing: %v", body)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/harnesses/nope/auth", token, nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/harnesses/nope/auth", nil)
 	if code != 404 {
 		t.Fatalf("unknown %d %v", code, body)
 	}
 }
 
 func TestHarnessAuthMarkGone(t *testing.T) {
-	s, base := startTestServer(t)
-	code, _, _ := doJSON(t, "POST", base+"/v1/harnesses/claude/auth", s.Token(), map[string]any{})
+	_, base := startTestServer(t)
+	code, _, _ := doJSON(t, "POST", base+"/v1/harnesses/claude/auth", map[string]any{})
 	if code != 404 && code != 405 {
 		t.Fatalf("POST /auth should be gone, got %d", code)
 	}
 }
 
 func TestHarnessListAuthFields(t *testing.T) {
-	s, base := startTestServer(t)
-	code, body, _ := doJSON(t, "GET", base+"/v1/harnesses", s.Token(), nil)
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "GET", base+"/v1/harnesses", nil)
 	if code != 200 {
 		t.Fatalf("%d %v", code, body)
 	}
@@ -63,8 +62,8 @@ func TestHarnessListAuthFields(t *testing.T) {
 }
 
 func TestHarnessLocalOnlyRefusal(t *testing.T) {
-	s, base := startTestServer(t)
-	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/cursor/login", s.Token(), map[string]any{})
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/cursor/login", map[string]any{})
 	if code != 422 {
 		t.Fatalf("want 422 got %d %v", code, body)
 	}
@@ -79,24 +78,24 @@ func TestHarnessLocalOnlyRefusal(t *testing.T) {
 }
 
 func TestHarnessLoginCodeNoSession(t *testing.T) {
-	s, base := startTestServer(t)
-	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/claude/login", s.Token(), map[string]any{"code": "ABCD"})
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/claude/login", map[string]any{"code": "ABCD"})
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("%d %v", code, body)
 	}
 }
 
 func TestHarnessLogoutSharedRequiresConfirm(t *testing.T) {
-	s, base := startTestServer(t)
-	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/claude/logout", s.Token(), map[string]any{})
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/claude/logout", map[string]any{})
 	if code != 400 || errCode(body) != "validation" {
 		t.Fatalf("%d %v", code, body)
 	}
 }
 
 func TestHarnessLoginToken(t *testing.T) {
-	s, base := startTestServer(t)
-	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/claude/login", s.Token(), map[string]any{
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/claude/login", map[string]any{
 		"token": "sk-test",
 	})
 	if code != 200 {
@@ -108,8 +107,8 @@ func TestHarnessLoginToken(t *testing.T) {
 }
 
 func TestHarnessPatchMode(t *testing.T) {
-	s, base := startTestServer(t)
-	code, body, _ := doJSON(t, "PATCH", base+"/v1/harnesses/claude", s.Token(), map[string]any{
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "PATCH", base+"/v1/harnesses/claude", map[string]any{
 		"auth_mode": "separate",
 	})
 	if code != 200 {
@@ -121,8 +120,8 @@ func TestHarnessPatchMode(t *testing.T) {
 }
 
 func TestHarnessPatchModeFakeNotPersisted(t *testing.T) {
-	s, base := startTestServer(t)
-	code, body, _ := doJSON(t, "PATCH", base+"/v1/harnesses/fake", s.Token(), map[string]any{
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "PATCH", base+"/v1/harnesses/fake", map[string]any{
 		"auth_mode": "separate",
 	})
 	if code != 422 || errCode(body) != "precondition_failed" {
@@ -131,8 +130,8 @@ func TestHarnessPatchModeFakeNotPersisted(t *testing.T) {
 }
 
 func TestHarnessEnsureFake(t *testing.T) {
-	s, base := startTestServer(t)
-	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/fake/ensure", s.Token(), nil)
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/fake/ensure", nil)
 	if code != 200 {
 		t.Fatalf("%d %v", code, body)
 	}
@@ -142,12 +141,12 @@ func TestHarnessEnsureFake(t *testing.T) {
 }
 
 func TestHarnessEnsureInstallError(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	dir := filepath.Join(home.Base(), "harness", "claude")
 	if err := os.MkdirAll(filepath.Join(dir, "trebi-settings.json"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/claude/ensure", s.Token(), nil)
+	code, body, _ := doJSON(t, "POST", base+"/v1/harnesses/claude/ensure", nil)
 	if code != 200 {
 		t.Fatalf("%d %v", code, body)
 	}

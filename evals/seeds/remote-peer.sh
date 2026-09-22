@@ -12,7 +12,6 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 URL=$(jq -r .url "$REMOTE_HOME/api.json")
-TOKEN=$(jq -r .token "$REMOTE_HOME/api.json")
 TREBI_HOME="$REMOTE_HOME" "$TREBI_BIN" workspace create --name other --mkdir --use "$EVAL_WORKDIR/remote-other"
 WS_ID=$(TREBI_HOME="$REMOTE_HOME" "$TREBI_BIN" workspace list --json | jq -r '.workspaces[] | select(.name == "other") | .id')
 cat > "$EVAL_WORKDIR/REMOTE.md" << 'EOF'
@@ -24,5 +23,4 @@ Say ping.
 EOF
 TREBI_HOME="$REMOTE_HOME" "$TREBI_BIN" job create --file "$EVAL_WORKDIR/REMOTE.md" ping
 printf '%s\n' "$URL" > "$EVAL_WORKDIR/remote.url"
-printf '%s\n' "$TOKEN" > "$EVAL_WORKDIR/remote.token"
 printf '%s\n' "$WS_ID" > "$EVAL_WORKDIR/remote.workspace"

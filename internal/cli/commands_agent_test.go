@@ -22,7 +22,7 @@ type agentTestServer struct {
 }
 
 func (a *agentTestServer) client() *APIClient {
-	return &APIClient{base: a.srv.URL, token: "t", httpClient: a.srv.Client()}
+	return &APIClient{base: a.srv.URL, httpClient: a.srv.Client()}
 }
 
 func (a *agentTestServer) last() request.HTTPRequest {

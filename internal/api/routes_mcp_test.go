@@ -19,13 +19,12 @@ type bearerTransport struct{ token string }
 
 func (tr bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
-	req.Header.Set("Authorization", "Bearer "+tr.token)
 	return http.DefaultTransport.RoundTrip(req)
 }
 
 func TestMCPToolsList(t *testing.T) {
-	s, base := startTestServer(t)
-	cs := mcpSession(t, base, s.Token())
+	_, base := startTestServer(t)
+	cs := mcpSession(t, base)
 
 	res, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
@@ -67,9 +66,8 @@ func TestMCPToolsList(t *testing.T) {
 }
 
 func TestMCPJobRoundTrip(t *testing.T) {
-	s, base := startTestServer(t)
-	token := s.Token()
-	cs := mcpSession(t, base, token)
+	_, base := startTestServer(t)
+	cs := mcpSession(t, base)
 
 	res, text := mcpCall(t, cs, "workspace", "create", map[string]any{
 		"path": t.TempDir(), "name": "mcp-jobs", "create": true,
@@ -88,7 +86,7 @@ func TestMCPJobRoundTrip(t *testing.T) {
 	}
 
 	// Plain HTTP sees the same job: one writer, two clients.
-	code, list, _ := doJSON(t, "GET", base+"/v1/jobs", token, nil)
+	code, list, _ := doJSON(t, "GET", base+"/v1/jobs", nil)
 	if code != http.StatusOK {
 		t.Fatalf("GET /v1/jobs: %d", code)
 	}
@@ -104,15 +102,15 @@ func TestMCPJobRoundTrip(t *testing.T) {
 	}
 
 	// The tool call rides the same bus as the HTTP path.
-	frames := collectBus(t, base, token, "job.created", busWait)
+	frames := collectBus(t, base, "job.created", busWait)
 	if countTopic(frames, "job.created") < 1 {
 		t.Fatalf("job.created not on the bus: %v", frames)
 	}
 }
 
 func TestMCPErrorMapping(t *testing.T) {
-	s, base := startTestServer(t)
-	cs := mcpSession(t, base, s.Token())
+	_, base := startTestServer(t)
+	cs := mcpSession(t, base)
 
 	res, text := mcpCall(t, cs, "run", "show", map[string]any{"id": "01MISSING"})
 	if !res.IsError {
@@ -140,15 +138,14 @@ func TestMCPErrorMapping(t *testing.T) {
 
 func TestNativeConfirmGate(t *testing.T) {
 	s, base := startTestServer(t)
-	token := s.Token()
-	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", token, map[string]any{
+	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", map[string]any{
 		"path": t.TempDir(), "name": "confirm-ws", "create": true,
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("workspace %d %v", code, ws)
 	}
 	wsID := fmt.Sprint(ws["id"])
-	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", token, map[string]any{
+	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
 		"workspace": wsID, "name": "keep-me",
 		"content": "---\nharness: fake\n---\n\nStay.\n",
 	})
@@ -162,29 +159,47 @@ func TestNativeConfirmGate(t *testing.T) {
 	if !strings.Contains(string(res.Body), "confirm_required") {
 		t.Fatalf("want confirm_required, got %s", res.Body)
 	}
-	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/keep-me?workspace="+wsID, token, nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/keep-me?workspace="+wsID, nil)
 	if code != http.StatusOK {
 		t.Fatalf("job deleted without confirm: %d %v", code, body)
 	}
 }
 
-func TestMCPRequiresAuth(t *testing.T) {
+// TestMCPOpenWithoutCredentials pins the open local endpoint: a plain POST
+// initializes a session with no credential at all.
+func TestMCPOpenWithoutCredentials(t *testing.T) {
 	_, base := startTestServer(t)
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`
-	resp, err := http.Post(base+"/mcp", "application/json", strings.NewReader(body))
+	req, _ := http.NewRequest("POST", base+"/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("POST /mcp without token: status %d; want 401", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /mcp without credentials: status %d; want 200", resp.StatusCode)
+	}
+	var out struct {
+		Result struct {
+			ProtocolVersion string `json:"protocolVersion"`
+			ServerInfo      struct {
+				Name string `json:"name"`
+			} `json:"serverInfo"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode initialize: %v", err)
+	}
+	if out.Result.ServerInfo.Name != "trebi" {
+		t.Fatalf("initialize result: %+v", out.Result)
 	}
 }
 
 func TestMCPFilePlane(t *testing.T) {
-	s, base := startTestServer(t)
-	token := s.Token()
-	cs := mcpSession(t, base, token)
+	_, base := startTestServer(t)
+	cs := mcpSession(t, base)
 
 	res, text := mcpCall(t, cs, "workspace", "create", map[string]any{
 		"path": t.TempDir(), "name": "mcp-files", "create": true,
@@ -219,8 +234,8 @@ func TestMCPFilePlane(t *testing.T) {
 }
 
 func TestMCPBusPoll(t *testing.T) {
-	s, base := startTestServer(t)
-	cs := mcpSession(t, base, s.Token())
+	_, base := startTestServer(t)
+	cs := mcpSession(t, base)
 
 	res, text := mcpCall(t, cs, "workspace", "create", map[string]any{
 		"path": t.TempDir(), "name": "mcp-poll", "create": true,
@@ -271,8 +286,8 @@ func TestMCPBusPoll(t *testing.T) {
 }
 
 func TestMCPDrainUndrain(t *testing.T) {
-	s, base := startTestServer(t)
-	cs := mcpSession(t, base, s.Token())
+	_, base := startTestServer(t)
+	cs := mcpSession(t, base)
 
 	drainState := func() bool {
 		res, text := mcpCall(t, cs, "system", "health", nil)
@@ -295,10 +310,9 @@ func TestMCPDrainUndrain(t *testing.T) {
 }
 
 func TestGuidesHTTP(t *testing.T) {
-	s, base := startTestServer(t)
-	token := s.Token()
+	_, base := startTestServer(t)
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/system/guides", token, nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/system/guides", nil)
 	if code != http.StatusOK {
 		t.Fatalf("list: %d %v", code, body)
 	}
@@ -307,7 +321,7 @@ func TestGuidesHTTP(t *testing.T) {
 		t.Fatalf("list items %d; want 11", len(items))
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/system/guides/getting-started", token, nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/guides/getting-started", nil)
 	if code != http.StatusOK {
 		t.Fatalf("get: %d %v", code, body)
 	}
@@ -315,7 +329,7 @@ func TestGuidesHTTP(t *testing.T) {
 		t.Fatalf("get body: %v", body)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/system/guides/no-such-topic", token, nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/guides/no-such-topic", nil)
 	if code != http.StatusNotFound {
 		t.Fatalf("unknown: %d", code)
 	}
@@ -325,8 +339,8 @@ func TestGuidesHTTP(t *testing.T) {
 }
 
 func TestMCPGuides(t *testing.T) {
-	s, base := startTestServer(t)
-	cs := mcpSession(t, base, s.Token())
+	_, base := startTestServer(t)
+	cs := mcpSession(t, base)
 
 	res, text := mcpCall(t, cs, "system", "guides", nil)
 	m := mcpOK(t, "system.guides", res, text)
@@ -356,8 +370,8 @@ func TestMCPGuides(t *testing.T) {
 }
 
 func TestMCPDocsAction(t *testing.T) {
-	s, base := startTestServer(t)
-	cs := mcpSession(t, base, s.Token())
+	_, base := startTestServer(t)
+	cs := mcpSession(t, base)
 	tools := []string{"assistant", "config", "conversation", "event", "file",
 		"harness", "inbox", "connector", "job", "queue", "run", "secret",
 		"skill", "system", "workspace"}
@@ -377,8 +391,8 @@ func TestMCPDocsAction(t *testing.T) {
 // surfaces as an error. It used to answer 307 with an empty body, which the
 // MCP layer reported as a successful write that never happened.
 func TestMCPTraversalIsError(t *testing.T) {
-	s, base := startTestServer(t)
-	cs := mcpSession(t, base, s.Token())
+	_, base := startTestServer(t)
+	cs := mcpSession(t, base)
 
 	res, text := mcpCall(t, cs, "workspace", "create", map[string]any{
 		"path": t.TempDir(), "name": "mcp-traversal", "create": true,
@@ -403,8 +417,8 @@ func TestMCPTraversalIsError(t *testing.T) {
 // without a path, matching `trebi workspace add --create --name`.
 func TestMCPWorkspacePathlessCreate(t *testing.T) {
 	root := t.TempDir()
-	s, base := startTestServerOpts(t, api.Options{WorkspacesRoot: root})
-	cs := mcpSession(t, base, s.Token())
+	_, base := startTestServerOpts(t, api.Options{WorkspacesRoot: root})
+	cs := mcpSession(t, base)
 
 	res, text := mcpCall(t, cs, "workspace", "create", map[string]any{
 		"name": "ops", "mkdir": true,
@@ -425,13 +439,12 @@ func TestMCPWorkspacePathlessCreate(t *testing.T) {
 }
 
 // mcpSession connects one SDK client to the test server's /mcp endpoint.
-func mcpSession(t *testing.T, base, token string) *mcp.ClientSession {
+func mcpSession(t *testing.T, base string) *mcp.ClientSession {
 	t.Helper()
 	cs, err := mcp.NewClient(&mcp.Implementation{Name: "mcp-test", Version: "1"}, nil).Connect(
 		context.Background(),
 		&mcp.StreamableClientTransport{
 			Endpoint:             base + "/mcp",
-			HTTPClient:           &http.Client{Transport: bearerTransport{token: token}},
 			DisableStandaloneSSE: true,
 		}, nil)
 	if err != nil {

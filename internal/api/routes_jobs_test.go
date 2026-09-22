@@ -12,15 +12,15 @@ import (
 )
 
 func TestJobsListByWorkspaceName(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	ops := t.TempDir()
 	staging := t.TempDir()
 	writeJobFile(t, ops, "report")
 	writeJobFile(t, staging, "report")
-	_ = addWorkspace(t, base, s.Token(), ops, "ops")
-	stID := addWorkspace(t, base, s.Token(), staging, "staging")
+	_ = addWorkspace(t, base, ops, "ops")
+	stID := addWorkspace(t, base, staging, "staging")
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace=staging", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace=staging", nil)
 	if code != 200 {
 		t.Fatalf("list by name %d %v", code, body)
 	}
@@ -37,15 +37,15 @@ func TestJobsListByWorkspaceName(t *testing.T) {
 // TestJobDeleteAmbiguousAcrossWorkspaces covers A4/B4: a duplicate job name
 // without ?workspace= must 400, never delete the first match.
 func TestJobDeleteAmbiguousAcrossWorkspaces(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	ws1 := t.TempDir()
 	ws2 := t.TempDir()
 	p1 := writeJobFile(t, ws1, "dup")
 	p2 := writeJobFile(t, ws2, "dup")
-	id1 := addWorkspace(t, base, s.Token(), ws1, "amb-a")
-	_ = addWorkspace(t, base, s.Token(), ws2, "amb-b")
+	id1 := addWorkspace(t, base, ws1, "amb-a")
+	_ = addWorkspace(t, base, ws2, "amb-b")
 
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/dup?confirm=1", s.Token(), nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/dup?confirm=1", nil)
 	if code != 400 || errCode(body) != "ambiguous" {
 		t.Fatalf("want 400 ambiguous, got %d %v", code, body)
 	}
@@ -56,7 +56,7 @@ func TestJobDeleteAmbiguousAcrossWorkspaces(t *testing.T) {
 		t.Fatalf("ws2 job removed on ambiguous delete: %v", err)
 	}
 
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/dup?workspace="+id1+"&confirm=1", s.Token(), nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/dup?workspace="+id1+"&confirm=1", nil)
 	if code != 200 {
 		t.Fatalf("scoped delete %d %v", code, body)
 	}
@@ -70,18 +70,18 @@ func TestJobDeleteAmbiguousAcrossWorkspaces(t *testing.T) {
 
 // TestJobIfMatchPrecondition covers B2/D1 on job PUT.
 func TestJobIfMatchPrecondition(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "ifm-ws")
+	wsID := addWorkspace(t, base, wsDir, "ifm-ws")
 
 	md := "---\nharness: fake\n---\n\nOriginal.\n"
-	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", s.Token(), map[string]any{
+	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
 		"workspace": wsID, "name": "editme", "markdown": md,
 	})
 	if code != 201 {
 		t.Fatalf("create %d %v", code, created)
 	}
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/editme?workspace="+wsID, s.Token(), nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/editme?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get %d %v", code, got)
 	}
@@ -91,7 +91,7 @@ func TestJobIfMatchPrecondition(t *testing.T) {
 	}
 
 	// Stale If-Match → 412 precondition_failed
-	code, body := doReq(t, "PUT", base+"/v1/jobs/editme?workspace="+wsID, s.Token(),
+	code, body := doReq(t, "PUT", base+"/v1/jobs/editme?workspace="+wsID,
 		map[string]string{"If-Match": "deadbeef"},
 		map[string]any{"markdown": "---\nharness: fake\n---\n\nStale write.\n"})
 	if code != 412 || errCode(body) != "precondition_failed" {
@@ -99,7 +99,7 @@ func TestJobIfMatchPrecondition(t *testing.T) {
 	}
 
 	// Fresh If-Match → 200
-	code, body = doReq(t, "PUT", base+"/v1/jobs/editme?workspace="+wsID, s.Token(),
+	code, body = doReq(t, "PUT", base+"/v1/jobs/editme?workspace="+wsID,
 		map[string]string{"If-Match": hash},
 		map[string]any{"markdown": "---\nharness: fake\n---\n\nFresh write.\n"})
 	if code != 200 {
@@ -107,7 +107,7 @@ func TestJobIfMatchPrecondition(t *testing.T) {
 	}
 
 	// Absent If-Match → proceed (D1)
-	code, body = doReq(t, "PUT", base+"/v1/jobs/editme?workspace="+wsID, s.Token(), nil,
+	code, body = doReq(t, "PUT", base+"/v1/jobs/editme?workspace="+wsID, nil,
 		map[string]any{"markdown": "---\nharness: fake\n---\n\nUnconditional.\n"})
 	if code != 200 {
 		t.Fatalf("absent put %d %v", code, body)
@@ -116,32 +116,32 @@ func TestJobIfMatchPrecondition(t *testing.T) {
 
 // TestJobPauseIfMatch covers If-Match on pause/unpause.
 func TestJobPauseIfMatch(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "pausable")
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "pause-ws")
+	wsID := addWorkspace(t, base, wsDir, "pause-ws")
 
 	// Stale If-Match → 412, file untouched.
-	code, body := doReq(t, "POST", base+"/v1/jobs/pausable/pause?workspace="+wsID, s.Token(),
+	code, body := doReq(t, "POST", base+"/v1/jobs/pausable/pause?workspace="+wsID,
 		map[string]string{"If-Match": "deadbeef"}, nil)
 	if code != 412 || errCode(body) != "precondition_failed" {
 		t.Fatalf("stale pause: want 412 precondition_failed got %d %v", code, body)
 	}
 
 	// Fresh If-Match → 200 and job disabled.
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/pausable?workspace="+wsID, s.Token(), nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/pausable?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get %d %v", code, got)
 	}
 	hash, _ := got["hash"].(string)
-	code, body = doReq(t, "POST", base+"/v1/jobs/pausable/pause?workspace="+wsID, s.Token(),
+	code, body = doReq(t, "POST", base+"/v1/jobs/pausable/pause?workspace="+wsID,
 		map[string]string{"If-Match": hash}, nil)
 	if code != 200 || body["disabled"] != true {
 		t.Fatalf("fresh pause: %d %v", code, body)
 	}
 
 	// Absent If-Match → unconditional unpause (D1).
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/pausable/unpause?workspace="+wsID, s.Token(), nil)
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/pausable/unpause?workspace="+wsID, nil)
 	if code != 200 || body["disabled"] != false {
 		t.Fatalf("unpause: %d %v", code, body)
 	}
@@ -149,12 +149,12 @@ func TestJobPauseIfMatch(t *testing.T) {
 
 // TestQueueCancelAndRequeue covers B6 status transitions over HTTP.
 func TestQueueCancelAndRequeue(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	fire := map[string]any{
 		"connector": "qtest", "workspace": "ws", "job": "j",
 		"match": "true", "event": map[string]any{"x": 1},
 	}
-	code, res, _ := doJSON(t, "POST", base+"/v1/rules/fire", s.Token(), fire)
+	code, res, _ := doJSON(t, "POST", base+"/v1/rules/fire", fire)
 	if code != 200 || res["outcome"] != "queued" {
 		t.Fatalf("fire %d %v", code, res)
 	}
@@ -163,26 +163,26 @@ func TestQueueCancelAndRequeue(t *testing.T) {
 		t.Fatalf("no queue_id: %v", res)
 	}
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/queue/"+qid+"/cancel", s.Token(), nil)
+	code, body, _ := doJSON(t, "POST", base+"/v1/queue/"+qid+"/cancel", nil)
 	if code != 200 || body["status"] != "done" || body["result"] != "skipped" {
 		t.Fatalf("cancel want done/skipped got %d %v", code, body)
 	}
 
 	// Requeue of a done row → 409 conflict
-	code, body, _ = doJSON(t, "POST", base+"/v1/queue/"+qid+"/requeue", s.Token(), nil)
+	code, body, _ = doJSON(t, "POST", base+"/v1/queue/"+qid+"/requeue", nil)
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("requeue done want 409 conflict got %d %v", code, body)
 	}
 
 	// Unknown id → 404
-	code, body, _ = doJSON(t, "POST", base+"/v1/queue/nope/cancel", s.Token(), nil)
+	code, body, _ = doJSON(t, "POST", base+"/v1/queue/nope/cancel", nil)
 	if code != 404 || errCode(body) != "not_found" {
 		t.Fatalf("cancel missing want 404 got %d %v", code, body)
 	}
 }
 
 // doReq is doJSON plus custom request headers (If-Match).
-func doReq(t *testing.T, method, url, token string, headers map[string]string, body any) (int, map[string]any) {
+func doReq(t *testing.T, method, url string, headers map[string]string, body any) (int, map[string]any) {
 	t.Helper()
 	var rd io.Reader
 	if body != nil {
@@ -190,7 +190,6 @@ func doReq(t *testing.T, method, url, token string, headers map[string]string, b
 		rd = bytes.NewReader(b)
 	}
 	req, _ := http.NewRequest(method, url, rd)
-	req.Header.Set("Authorization", "Bearer "+token)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -217,43 +216,43 @@ func errCode(m map[string]any) string {
 // A full replace and a patch both change frontmatter, so job_index must
 // follow. Without a rebuild, `job list` keeps reporting the old harness.
 func TestJobWriteRefreshesIndex(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "idx-ws")
-	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", s.Token(), map[string]any{
+	wsID := addWorkspace(t, base, wsDir, "idx-ws")
+	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
 		"workspace": wsID, "name": "sweep", "markdown": "---\nharness: claude\n---\n\nDo work.\n",
 	})
 	if code != 201 {
 		t.Fatalf("create %d %v", code, created)
 	}
-	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/sweep?workspace="+wsID, s.Token(), map[string]any{
+	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/sweep?workspace="+wsID, map[string]any{
 		"markdown": "---\nharness: codex\n---\n\nDo work.\n",
 	})
 	if code != 200 {
 		t.Fatalf("put %d %v", code, body)
 	}
-	if got := jobHarness(t, base, s.Token(), wsID, "sweep"); got != "codex" {
+	if got := jobHarness(t, base, wsID, "sweep"); got != "codex" {
 		t.Fatalf("after put harness = %q, want codex", got)
 	}
-	code, body, _ = doJSON(t, "PATCH", base+"/v1/jobs/sweep?workspace="+wsID, s.Token(), map[string]any{
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/jobs/sweep?workspace="+wsID, map[string]any{
 		"harness": "claude",
 	})
 	if code != 200 {
 		t.Fatalf("patch %d %v", code, body)
 	}
-	if got := jobHarness(t, base, s.Token(), wsID, "sweep"); got != "claude" {
+	if got := jobHarness(t, base, wsID, "sweep"); got != "claude" {
 		t.Fatalf("after patch harness = %q, want claude", got)
 	}
 }
 
 // TestJobGetReturnsIndexName: an agent-owned job's GET name is the
 func TestJobGetInputKeysFromJobMarkdownOnly(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "input-keys-ws")
+	wsID := addWorkspace(t, base, wsDir, "input-keys-ws")
 
 	md := "---\nharness: fake\n---\n\nEmail {{to}}. Template slots `{{PREHEADER}}`, `{{DATE_RANGE}}`.\n"
-	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", s.Token(), map[string]any{
+	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
 		"workspace": wsID, "name": "digest", "markdown": md,
 	})
 	if code != 201 {
@@ -267,7 +266,7 @@ func TestJobGetInputKeysFromJobMarkdownOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/digest?workspace="+wsID, s.Token(), nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/digest?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get %d %v", code, got)
 	}
@@ -280,12 +279,12 @@ func TestJobGetInputKeysFromJobMarkdownOnly(t *testing.T) {
 // workspace-relative path, the same key runs and list use — not the folder
 // basename ParseFile would return.
 func TestJobGetReturnsIndexName(t *testing.T) {
-	s, base, _ := startAPI(t)
+	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "job-get-index")
+	wsID := addWorkspace(t, base, wsDir, "job-get-index")
 	name := "agents/cmo/duty"
-	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fcmo%2Fduty?workspace="+wsID, s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fcmo%2Fduty?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get %d %v", code, body)
 	}
@@ -307,9 +306,9 @@ func writeJobFile(t *testing.T, wsDir, jobName string) string {
 	return path
 }
 
-func addWorkspace(t *testing.T, base, token, path, name string) string {
+func addWorkspace(t *testing.T, base, path, name string) string {
 	t.Helper()
-	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", token, map[string]any{"path": path, "name": name})
+	code, ws, _ := doJSON(t, "POST", base+"/v1/workspaces", map[string]any{"path": path, "name": name})
 	if code != 201 {
 		t.Fatalf("workspace add %d %v", code, ws)
 	}
@@ -320,9 +319,9 @@ func addWorkspace(t *testing.T, base, token, path, name string) string {
 	return id
 }
 
-func jobHarness(t *testing.T, base, token, wsID, name string) string {
+func jobHarness(t *testing.T, base, wsID, name string) string {
 	t.Helper()
-	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID, token, nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("list %d %v", code, body)
 	}

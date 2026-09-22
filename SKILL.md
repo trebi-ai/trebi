@@ -104,7 +104,7 @@ Every error is `{"error":{"code","message","details"}}` with a stable code:
 | `validation` | bad input. Run `trebi job validate` |
 | `draining` | the daemon is draining. Run `trebi service undrain` |
 | `precondition_failed` | stale `If-Match` on a document. Re-read, then write |
-| `unauthorized` | bad or missing token. Run `trebi service token show` |
+| `unauthorized` | the daemon refused the call. The local API is open, so this comes from a remote or hosted service |
 | `internal` | server fault. Read `trebi service logs --level error` |
 
 ## Rules for the agent

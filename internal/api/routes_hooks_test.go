@@ -21,7 +21,7 @@ func TestHooksLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/hooks", s.Token(),
+	code, body, _ := doJSON(t, "POST", base+"/v1/hooks",
 		map[string]string{"workspace_id": "ws_1", "label": "deploy"})
 	if code != http.StatusCreated {
 		t.Fatalf("create %d %v", code, body)
@@ -33,12 +33,12 @@ func TestHooksLifecycle(t *testing.T) {
 		t.Fatalf("row shape: %v", body)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/hooks", s.Token(), map[string]string{"label": "x"})
+	code, body, _ = doJSON(t, "POST", base+"/v1/hooks", map[string]string{"label": "x"})
 	if code != http.StatusBadRequest || errCode(body) != "validation" {
 		t.Fatalf("missing workspace: %d %v", code, body)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/hooks", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/hooks", nil)
 	if code != http.StatusOK {
 		t.Fatalf("list %d %v", code, body)
 	}
@@ -50,7 +50,7 @@ func TestHooksLifecycle(t *testing.T) {
 	if row["masked"] != true || row["url"] == "https://in.example.com/hook/tok-1" {
 		t.Fatalf("masked URL hides the token: %v", row)
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/hooks?reveal=1", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/hooks?reveal=1", nil)
 	if code != http.StatusOK {
 		t.Fatalf("reveal %d %v", code, body)
 	}
@@ -61,15 +61,15 @@ func TestHooksLifecycle(t *testing.T) {
 	}
 
 	id, _ := row["id"].(string)
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/hooks/"+id, s.Token(), nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/hooks/"+id, nil)
 	if code != http.StatusBadRequest || errCode(body) != "validation" {
 		t.Fatalf("unconfirmed delete: %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/hooks/"+id+"?confirm=1", s.Token(), nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/hooks/"+id+"?confirm=1", nil)
 	if code != http.StatusOK || body["deleted"] != true {
 		t.Fatalf("delete %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/hooks", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/hooks", nil)
 	rows, _ = body["hooks"].([]any)
 	if code != http.StatusOK || len(rows) != 0 {
 		t.Fatalf("row survived delete: %d %v", code, body)

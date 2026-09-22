@@ -14,9 +14,9 @@ func TestConversationSendQueuedAndInjected(t *testing.T) {
 	s, base := startTestServer(t)
 	wsDir := t.TempDir()
 	writeAssistant(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "chat-ws")
+	wsID := addWorkspace(t, base, wsDir, "chat-ws")
 
-	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", s.Token(), map[string]any{
+	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", map[string]any{
 		"workspace": wsID, "origin_channel": "cli",
 		"activate": map[string]any{"channel_type": "cli", "channel_ref": wsID},
 	})
@@ -25,7 +25,7 @@ func TestConversationSendQueuedAndInjected(t *testing.T) {
 	}
 	id, _ := conv["id"].(string)
 
-	code, sent, _ := doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", s.Token(), map[string]any{
+	code, sent, _ := doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", map[string]any{
 		"text": "hi", "channel_type": "cli", "channel_ref": wsID,
 	})
 	if code != 201 {
@@ -46,7 +46,7 @@ func TestConversationSendQueuedAndInjected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, inj, _ := doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", s.Token(), map[string]any{
+	code, inj, _ := doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", map[string]any{
 		"text": "again", "channel_type": "cli", "channel_ref": wsID,
 	})
 	if code != 201 || inj["delivery"] != "injected" {
@@ -56,7 +56,7 @@ func TestConversationSendQueuedAndInjected(t *testing.T) {
 		t.Fatalf("run_id %v want %s", inj["run_id"], live.ID)
 	}
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/conversations/"+id+"/messages?limit=10", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/conversations/"+id+"/messages?limit=10", nil)
 	if code != 200 {
 		t.Fatalf("messages %d %v", code, body)
 	}
@@ -65,7 +65,7 @@ func TestConversationSendQueuedAndInjected(t *testing.T) {
 		t.Fatalf("want >=2 messages %v", body)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/conversations/"+id+"/messages?cursor=@@bad@@", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/conversations/"+id+"/messages?cursor=@@bad@@", nil)
 	if code != 400 || errCode(body) != "validation" {
 		t.Fatalf("bad cursor %d %v", code, body)
 	}
@@ -75,8 +75,8 @@ func TestConversationInjectFallbackQueued(t *testing.T) {
 	s, base := startTestServer(t)
 	wsDir := t.TempDir()
 	writeAssistant(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "race-ws")
-	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", s.Token(), map[string]any{
+	wsID := addWorkspace(t, base, wsDir, "race-ws")
+	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", map[string]any{
 		"workspace": wsID, "origin_channel": "cli",
 	})
 	if code != 201 {
@@ -91,7 +91,7 @@ func TestConversationInjectFallbackQueued(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, sent, _ := doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", s.Token(), map[string]any{
+	code, sent, _ := doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", map[string]any{
 		"text": "hi", "channel_type": "cli", "channel_ref": wsID,
 	})
 	if code != 201 || sent["delivery"] != "queued" {
@@ -100,50 +100,50 @@ func TestConversationInjectFallbackQueued(t *testing.T) {
 }
 
 func TestConversationPatchConflictAndPointer(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "ptr-ws")
-	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", s.Token(), map[string]any{
+	wsID := addWorkspace(t, base, wsDir, "ptr-ws")
+	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", map[string]any{
 		"workspace": wsID, "origin_channel": "ui",
 	})
 	if code != 201 {
 		t.Fatalf("create %d %v", code, conv)
 	}
 	id, _ := conv["id"].(string)
-	code, body, _ := doJSON(t, "PATCH", base+"/v1/conversations/"+id, s.Token(), map[string]any{
+	code, body, _ := doJSON(t, "PATCH", base+"/v1/conversations/"+id, map[string]any{
 		"title": "n", "revision": 99,
 	})
 	if code != 412 || errCode(body) != "precondition_failed" {
 		t.Fatalf("conflict %d %v", code, body)
 	}
-	code, _, _ = doJSON(t, "PATCH", base+"/v1/conversations/"+id, s.Token(), map[string]any{
+	code, _, _ = doJSON(t, "PATCH", base+"/v1/conversations/"+id, map[string]any{
 		"title": "n", "revision": 1,
 	})
 	if code != 200 {
 		t.Fatalf("patch %d", code)
 	}
-	code, _, _ = doJSON(t, "PUT", base+"/v1/channel-pointers/ui/"+wsID, s.Token(), map[string]any{
+	code, _, _ = doJSON(t, "PUT", base+"/v1/channel-pointers/ui/"+wsID, map[string]any{
 		"conversation_id": id,
 	})
 	if code != 200 {
 		t.Fatalf("put pointer %d", code)
 	}
-	code, ptr, _ := doJSON(t, "GET", base+"/v1/channel-pointers/ui/"+wsID, s.Token(), nil)
+	code, ptr, _ := doJSON(t, "GET", base+"/v1/channel-pointers/ui/"+wsID, nil)
 	if code != 200 || ptr["conversation_id"] != id {
 		t.Fatalf("get pointer %d %v", code, ptr)
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/channel-pointers/ui/missing", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/channel-pointers/ui/missing", nil)
 	if code != 404 || errCode(body) != "not_found" {
 		t.Fatalf("missing pointer %d %v", code, body)
 	}
 }
 
 func TestConversationParallelSendsOneWake(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	writeAssistant(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "par-ws")
-	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", s.Token(), map[string]any{
+	wsID := addWorkspace(t, base, wsDir, "par-ws")
+	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", map[string]any{
 		"workspace": wsID, "origin_channel": "cli",
 	})
 	if code != 201 {
@@ -156,14 +156,14 @@ func TestConversationParallelSendsOneWake(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", s.Token(), map[string]any{
+			doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", map[string]any{
 				"text": "hi", "channel_type": "cli", "channel_ref": wsID,
 				"idempotency_key": ulid.Make().String(),
 			})
 		}()
 	}
 	wg.Wait()
-	code, body, _ := doJSON(t, "GET", base+"/v1/conversations/"+id+"/messages?limit=50", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/conversations/"+id+"/messages?limit=50", nil)
 	if code != 200 {
 		t.Fatalf("messages %d", code)
 	}
@@ -171,7 +171,7 @@ func TestConversationParallelSendsOneWake(t *testing.T) {
 	if len(msgs) != n {
 		t.Fatalf("messages %d want %d", len(msgs), n)
 	}
-	code, qbody, _ := doJSON(t, "GET", base+"/v1/queue?limit=50", s.Token(), nil)
+	code, qbody, _ := doJSON(t, "GET", base+"/v1/queue?limit=50", nil)
 	if code != 200 {
 		t.Fatalf("queue %d %v", code, qbody)
 	}
@@ -182,18 +182,18 @@ func TestConversationParallelSendsOneWake(t *testing.T) {
 }
 
 func TestWakeExtraPromptAndConversation(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	writeAssistant(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "wake-ws")
-	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", s.Token(), map[string]any{
+	wsID := addWorkspace(t, base, wsDir, "wake-ws")
+	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", map[string]any{
 		"workspace": wsID, "origin_channel": "cli",
 	})
 	if code != 201 {
 		t.Fatalf("create %d %v", code, conv)
 	}
 	id, _ := conv["id"].(string)
-	code, run, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/assistant/wake", s.Token(), map[string]any{
+	code, run, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/assistant/wake", map[string]any{
 		"extra_prompt": "focus on CI", "conversation_id": id,
 	})
 	if code != 201 {
@@ -208,7 +208,7 @@ func TestWakeExtraPromptAndConversation(t *testing.T) {
 }
 
 func TestConversationSendWhileDraining(t *testing.T) {
-	s, base, dir := startAPI(t)
+	_, base, dir := startAPI(t)
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	defer st.Close()
 	if err := st.SetFlag("drain", "1"); err != nil {
@@ -216,15 +216,15 @@ func TestConversationSendWhileDraining(t *testing.T) {
 	}
 	wsDir := t.TempDir()
 	writeAssistant(t, wsDir)
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "drain-ws")
-	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", s.Token(), map[string]any{
+	wsID := addWorkspace(t, base, wsDir, "drain-ws")
+	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", map[string]any{
 		"workspace": wsID, "origin_channel": "cli",
 	})
 	if code != 201 {
 		t.Fatalf("create %d %v", code, conv)
 	}
 	id, _ := conv["id"].(string)
-	code, sent, _ := doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", s.Token(), map[string]any{
+	code, sent, _ := doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", map[string]any{
 		"text": "hi", "channel_type": "cli", "channel_ref": wsID,
 	})
 	if code != 201 {

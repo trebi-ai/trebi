@@ -3,7 +3,6 @@ package api
 import (
 	"bufio"
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,22 +88,6 @@ func dotSegment(p string) (string, bool) {
 	return "", false
 }
 
-func (s *Server) authMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := r.Header.Get("Authorization")
-		token := strings.TrimPrefix(h, "Bearer ")
-		if token == "" && allowQueryToken(r) {
-			token = r.URL.Query().Get("token")
-		}
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) != 1 {
-			s.log.Warn("api.auth_failed", "remote", r.RemoteAddr, "path", r.URL.Path)
-			writeErr(w, http.StatusUnauthorized, "unauthorized", "invalid or missing bearer token")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func (s *Server) auditMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -139,22 +122,6 @@ func isPollRoute(r *http.Request) bool {
 		return true
 	}
 	return false
-}
-
-// allowQueryToken permits ?token= only where clients cannot set headers:
-// the SSE stream and WebSocket attach routes (run and harness login).
-func allowQueryToken(r *http.Request) bool {
-	if r.Method != http.MethodGet {
-		return false
-	}
-	if r.URL.Path == "/v1/stream" {
-		return true
-	}
-	if !strings.HasSuffix(r.URL.Path, "/attach") {
-		return false
-	}
-	return strings.HasPrefix(r.URL.Path, "/v1/runs/") ||
-		strings.HasPrefix(r.URL.Path, "/v1/harnesses/")
 }
 
 const (

@@ -100,10 +100,10 @@ func mcpErrorResult(code, message string) *mcp.CallToolResult {
 	return res
 }
 
-// Dispatch serves one built /v1 request through the audited, confirm-gated,
-// unauthenticated mux. Auth is skipped: every caller is responsible for
-// having established that the caller is the daemon owner. MCP inherits that
-// from authMiddleware on /mcp; the native loop is the daemon itself.
+// Dispatch serves one built /v1 request through the audited, confirm-gated mux.
+// The local API carries no auth, so there is nothing to skip: every caller is
+// already the daemon owner, whether it arrives over /mcp, over /v1, or from the
+// native tool loop inside the daemon.
 // Native passes actor=assistant and the run ID via tools.WithActor so
 // auditMiddleware can attribute the call.
 func (s *Server) Dispatch(ctx context.Context, built request.HTTPRequest) (int, []byte, error) {

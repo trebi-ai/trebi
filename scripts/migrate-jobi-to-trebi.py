@@ -884,7 +884,7 @@ def envsets_secret_key_names(jobi_dir: Path) -> list[str]:
 # trebi has no unix socket: the daemon is an HTTP server on a loopback port
 # (internal/api/server.go, net.Listen("tcp", ...)). Liveness is an advisory
 # flock on daemon.lock (internal/home/lock_unix.go), with api.json holding the
-# url + bearer token. An earlier guard here tested for a daemon.sock that this
+# url. An earlier guard here tested for a daemon.sock that this
 # codebase never creates, so it never fired.
 
 
@@ -914,7 +914,7 @@ def daemon_lock_held(trebi_dir: Path) -> tuple[bool, int | None]:
 
 
 def daemon_http_alive(trebi_dir: Path, timeout: float = 2.0) -> bool:
-    """Probe GET /v1/system/health with the api.json token. Catches a daemon
+    """Probe GET /v1/system/health at the api.json url. Catches a daemon
     started against this home from elsewhere, whose flock we cannot see."""
     api = trebi_dir / "api.json"
     if not api.exists():
@@ -924,18 +924,14 @@ def daemon_http_alive(trebi_dir: Path, timeout: float = 2.0) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     url = str(cfg.get("url") or "").rstrip("/")
-    token = str(cfg.get("token") or "")
     if not url:
         return False
     req = urllib.request.Request(  # noqa: S310 - loopback url from local api.json
-        f"{url}/v1/system/health", headers={"Authorization": f"Bearer {token}"}
+        f"{url}/v1/system/health"
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return 200 <= resp.status < 300
-    except urllib.error.HTTPError as e:
-        # 401/403 still proves something is listening and serving /v1.
-        return e.code in (401, 403)
     except (urllib.error.URLError, TimeoutError, socket.timeout, OSError):
         return False
 

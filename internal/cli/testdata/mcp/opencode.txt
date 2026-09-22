@@ -2,9 +2,6 @@
   "mcp": {
     "servers": {
       "trebi": {
-        "headers": {
-          "Authorization": "Bearer {env:TREBI_TOKEN}"
-        },
         "oauth": false,
         "type": "remote",
         "url": "http://127.0.0.1:7777/mcp"

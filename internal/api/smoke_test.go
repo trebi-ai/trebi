@@ -27,7 +27,7 @@ func TestPlatformSurface_NonStub(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := api.New(st, api.Options{Token: "tok"})
+	s := api.New(st, api.Options{})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +36,6 @@ func TestPlatformSurface_NonStub(t *testing.T) {
 	base := "http://" + addr
 	client := &http.Client{Timeout: 10 * time.Second}
 	auth := func(req *http.Request) {
-		req.Header.Set("Authorization", "Bearer tok")
 		req.Header.Set("Content-Type", "application/json")
 	}
 
@@ -146,12 +145,11 @@ func TestPlatformSurface_NonStub(t *testing.T) {
 }
 
 func TestDispatchRulesFireCreatesQueue(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	client := &http.Client{Timeout: 5 * time.Second}
 	// workspace + job with event trigger so fire can match — rules/fire enqueues directly
 	payload := `{"connector":"src","workspace":"ws","job":"j","match":"true","event":{"n":1}}`
 	req, _ := http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(payload))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -167,7 +165,6 @@ func TestDispatchRulesFireCreatesQueue(t *testing.T) {
 		t.Fatalf("expected durable event_id: %v", body)
 	}
 	req, _ = http.NewRequest("GET", base+"/v1/queue", nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +178,6 @@ func TestDispatchRulesFireCreatesQueue(t *testing.T) {
 	}
 	// Durable events must be non-empty after rules/fire
 	req, _ = http.NewRequest("GET", base+"/v1/events", nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp2, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)

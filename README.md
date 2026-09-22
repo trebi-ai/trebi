@@ -88,7 +88,7 @@ export TREBI_HOME=/tmp/trebi-dev
 
 ## MCP
 
-The daemon also serves Streamable HTTP MCP at `/mcp`, with the same bearer token as `/v1`. The daemon must be running.
+The daemon also serves Streamable HTTP MCP at `/mcp`. The daemon must be running.
 
 `trebi mcp` writes the client config for you:
 
@@ -99,27 +99,24 @@ trebi mcp install --client claude            # runs the add command
 trebi mcp serve                              # stdio bridge for a client without HTTP
 ```
 
-Clients: `claude`, `codex`, `opencode`, `cursor`, `vscode`, and `json` for the raw url and token. The sections below show the same blocks, filled in by hand:
+Clients: `claude`, `codex`, `opencode`, `cursor`, `vscode`, and `json` for the raw url. The sections below show the same blocks, filled in by hand.
 
 ```bash
 trebi service status --json          # confirms the API is up
 URL=$(jq -r .url ~/.trebi/api.json)/mcp
-TOKEN=$(trebi service token show)    # same value as ~/.trebi/api.json "token"
 ```
 
-Auth is `Authorization: Bearer <token>`. Trebi does not speak OAuth. Prefer env vars or `{env:…}` substitution over putting the token in a committed file.
+**There is no auth.** The daemon serves `/v1`, `/mcp`, and the SPA without a credential, so every client config is a url and nothing else. Bind the daemon to a network you trust — loopback, or an overlay such as Tailscale. Non-loopback listen still requires TLS or the explicit insecure flag (`api.tls.*`, B28).
 
 Tools take `{"action": "<name>", "input": {…}}`. Call `docs` on a tool for its fields, and `trebi guide mcp-basics` (or MCP `system.guide` with topic `mcp-basics`) for the CLI→MCP map. There is no sticky workspace over MCP: pass `workspace` in `input` on every workspace-scoped call.
 
 ### OpenCode
 
 ```bash
-opencode2 mcp add trebi --global \
-  --url "$URL" \
-  --header "Authorization=Bearer $TOKEN"
+opencode2 mcp add trebi --global --url "$URL"
 ```
 
-Drop `--global` for project-only. OpenCode defaults remote servers to OAuth; Trebi is header-only, so set `"oauth": false` on the server in `opencode.json(c)`:
+Drop `--global` for project-only. OpenCode defaults remote servers to OAuth; this daemon has none, so set `"oauth": false` on the server in `opencode.json(c)`:
 
 ```jsonc
 {
@@ -128,10 +125,7 @@ Drop `--global` for project-only. OpenCode defaults remote servers to OAuth; Tre
       "trebi": {
         "type": "remote",
         "url": "http://127.0.0.1:<port>/mcp",
-        "oauth": false,
-        "headers": {
-          "Authorization": "Bearer {env:TREBI_TOKEN}"
-        }
+        "oauth": false
       }
     }
   }
@@ -143,9 +137,7 @@ Then `opencode2 mcp list`. Do not run `opencode2 mcp auth trebi`.
 ### Claude Code
 
 ```bash
-claude mcp add --transport http trebi "$URL" \
-  --header "Authorization: Bearer $TOKEN" \
-  --scope user
+claude mcp add --transport http trebi "$URL" --scope user
 ```
 
 `--scope user` is all projects; omit it (or `--scope local`) for this project only; `--scope project` writes `.mcp.json`. Equivalent JSON (`~/.claude.json`, `.mcp.json`, or `~/.claude/mcp.json`):
@@ -155,10 +147,7 @@ claude mcp add --transport http trebi "$URL" \
   "mcpServers": {
     "trebi": {
       "type": "http",
-      "url": "http://127.0.0.1:<port>/mcp",
-      "headers": {
-        "Authorization": "Bearer ${TREBI_TOKEN}"
-      }
+      "url": "http://127.0.0.1:<port>/mcp"
     }
   }
 }
@@ -169,8 +158,7 @@ claude mcp add --transport http trebi "$URL" \
 ### Codex
 
 ```bash
-export TREBI_TOKEN="$TOKEN"
-codex mcp add trebi --url "$URL" --bearer-token-env-var TREBI_TOKEN
+codex mcp add trebi --url "$URL"
 ```
 
 Or in `~/.codex/config.toml` (shared with the ChatGPT desktop app and IDE extension):
@@ -178,7 +166,6 @@ Or in `~/.codex/config.toml` (shared with the ChatGPT desktop app and IDE extens
 ```toml
 [mcp_servers.trebi]
 url = "http://127.0.0.1:<port>/mcp"
-bearer_token_env_var = "TREBI_TOKEN"
 ```
 
 Do not run `codex mcp login trebi`.
@@ -191,10 +178,7 @@ Do not run `codex mcp login trebi`.
 {
   "mcpServers": {
     "trebi": {
-      "url": "http://127.0.0.1:<port>/mcp",
-      "headers": {
-        "Authorization": "Bearer ${env:TREBI_TOKEN}"
-      }
+      "url": "http://127.0.0.1:<port>/mcp"
     }
   }
 }
@@ -209,16 +193,13 @@ Do not run `codex mcp login trebi`.
   "servers": {
     "trebi": {
       "type": "http",
-      "url": "http://127.0.0.1:<port>/mcp",
-      "headers": {
-        "Authorization": "Bearer ${env:TREBI_TOKEN}"
-      }
+      "url": "http://127.0.0.1:<port>/mcp"
     }
   }
 }
 ```
 
-Or **MCP: Add Server** → HTTP, URL `$URL`, header `Authorization: Bearer $TOKEN`.
+Or **MCP: Add Server** → HTTP, URL `$URL`.
 
 ### Claude Desktop
 
@@ -229,10 +210,7 @@ Or **MCP: Add Server** → HTTP, URL `$URL`, header `Authorization: Bearer $TOKE
   "mcpServers": {
     "trebi": {
       "type": "http",
-      "url": "http://127.0.0.1:<port>/mcp",
-      "headers": {
-        "Authorization": "Bearer TOKEN"
-      }
+      "url": "http://127.0.0.1:<port>/mcp"
     }
   }
 }
@@ -248,9 +226,7 @@ If it only launches stdio servers, bridge with `mcp-remote`:
       "args": [
         "-y",
         "mcp-remote",
-        "http://127.0.0.1:<port>/mcp",
-        "--header",
-        "Authorization: Bearer TOKEN"
+        "http://127.0.0.1:<port>/mcp"
       ]
     }
   }

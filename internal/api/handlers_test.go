@@ -46,7 +46,7 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := api.New(st, api.Options{Token: "tok"})
+	s := api.New(st, api.Options{})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,6 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 			r = bytes.NewReader(b)
 		}
 		req, _ := http.NewRequest(method, base+path, r)
-		req.Header.Set("Authorization", "Bearer tok")
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
@@ -98,7 +97,6 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	// If-Match: * proceeds unconditionally when the file exists.
 	req, _ := http.NewRequest("PUT", base+"/v1/workspaces/"+wsID+"/assistant",
 		bytes.NewBufferString(`{"content":"---\nharness: fake\n---\n\nUpdated assistant body.\n"}`))
-	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", "*")
 	resp, err := client.Do(req)
@@ -154,7 +152,6 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 
 	// --- Connector logs (route returns SSE or JSON, not 404) ---
 	req, _ = http.NewRequest("GET", base+"/v1/connectors/gap-src/logs", nil)
-	req.Header.Set("Authorization", "Bearer tok")
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +194,7 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	// http.Hijacker). The fake run has a synthetic tmux name, so the server
 	// then sends an error/screen frame — never a 500 hijack failure.
 	wsURL := "ws" + strings.TrimPrefix(base, "http") + "/v1/runs/" + runID + "/attach"
-	conn, wsResp, derr := websocket.DefaultDialer.Dial(wsURL, http.Header{"Authorization": {"Bearer tok"}})
+	conn, wsResp, derr := websocket.DefaultDialer.Dial(wsURL, nil)
 	if derr != nil {
 		status, body := 0, ""
 		if wsResp != nil {

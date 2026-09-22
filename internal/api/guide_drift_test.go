@@ -137,7 +137,6 @@ var localOnlyPrefixes = []string{
 	"service uninstall",
 	"service daemon",
 	"service migrate-db",
-	"service token",
 	"config path",
 	"config validate",
 	"config bridge",

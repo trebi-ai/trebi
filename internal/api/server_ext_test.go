@@ -15,7 +15,7 @@ func TestInjectedUIAndEdition(t *testing.T) {
 	fsys := fstest.MapFS{
 		"index.html": &fstest.MapFile{Data: []byte("<html>injected-spa</html>")},
 	}
-	s, base := startTestServerOpts(t, api.Options{
+	_, base := startTestServerOpts(t, api.Options{
 		Ext: ext.Set{
 			Edition:        "pro",
 			EditionVersion: "abc123",
@@ -34,7 +34,7 @@ func TestInjectedUIAndEdition(t *testing.T) {
 		t.Fatalf("root: status=%d body=%q", resp.StatusCode, body)
 	}
 
-	code, health, _ := doJSON(t, "GET", base+"/v1/system/health", s.Token(), nil)
+	code, health, _ := doJSON(t, "GET", base+"/v1/system/health", nil)
 	if code != 200 {
 		t.Fatalf("health %d %v", code, health)
 	}
@@ -53,10 +53,10 @@ func TestInjectedUIVersionBeatsStamp(t *testing.T) {
 	fsys := fstest.MapFS{
 		"index.html": &fstest.MapFile{Data: []byte("<html>ok</html>")},
 	}
-	s, base := startTestServerOpts(t, api.Options{
+	_, base := startTestServerOpts(t, api.Options{
 		Ext: ext.Set{UI: fsys, UIVersion: "set-wins"},
 	})
-	code, health, _ := doJSON(t, "GET", base+"/v1/system/health", s.Token(), nil)
+	code, health, _ := doJSON(t, "GET", base+"/v1/system/health", nil)
 	if code != 200 || health["ui_version"] != "set-wins" {
 		t.Fatalf("health %d %v", code, health)
 	}
@@ -66,12 +66,12 @@ func TestSystemUpdateDetectsProAsset(t *testing.T) {
 	old := api.Version
 	t.Cleanup(func() { api.Version = old })
 	api.Version = "0.2.9"
-	s, base := startTestServerOpts(t, api.Options{
+	_, base := startTestServerOpts(t, api.Options{
 		LookupLatest: func() (string, string, error) {
 			return "v0.3.0", "https://example.com/trebi_0.3.0_darwin_arm64.tar.gz", nil
 		},
 	})
-	code, body, _ := doJSON(t, "GET", base+"/v1/system/update", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/system/update", nil)
 	if code != 200 {
 		t.Fatalf("%d %v", code, body)
 	}

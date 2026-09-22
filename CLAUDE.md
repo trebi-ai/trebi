@@ -297,7 +297,7 @@ func New(st *store.Store) *Service {
 - Route shape: plural nouns; non-CRUD actions are `POST /{resource}/{id}/{verb}`; sub-resources nest one level only.
 - Every response goes through `writeJSON` / `writeErr`. The error envelope is `{"error":{"code","message","details"}}` with a stable machine code (`not_found`, `conflict`, `ambiguous`, `validation`, `draining`, `precondition_failed`, `unauthorized`, `internal`). Never write a bare string body.
 - Handlers stay short. Pull request parsing and option building into small helpers in the same file (`runSpec`, `launchOpts`), not into a `helpers.go`.
-- **Cross-cutting concerns are middleware**, wrapped once in `Handler()`: bearer auth, then audit. A handler never checks the token itself.
+- **Cross-cutting concerns are middleware**, wrapped once in `Handler()`: traversal guard, confirm gate, then audit. The local API carries no auth at all (2026-09-22): the bind address and the network around it are the gate. A handler never checks a credential itself.
 - **File-backed documents** (`JOB.md`, `TREBI.md`, `MEMORY.md`): `PUT` replaces, `PATCH` patches, both through `ifMatchOK`. An absent `If-Match` proceeds; a stale one returns 412 `precondition_failed`.
 - **DB-backed objects** carry a monotonic `revision`, bumped on every write and carried on the bus frame.
 - **List routes** are cursor-paginated (`?limit=&cursor=`). ULIDs double as cursors; a malformed cursor is a 400, not a silent full scan.
@@ -328,7 +328,7 @@ The CLI is a thin API client. It holds no business logic and never touches the s
 - Command tree: one file per command *area*, named `commands_<area>.go`, registered in `NewApp()` in `app.go`. Tiny sibling commands may live in the larger sibling's file (`queue`+`events` in `commands_connector.go`, `alerts` in `commands_inbox.go`). Split subcommands into named groups (`jobManageSubcommands`) when a list grows past a screen; do not split into more files.
 - Startup context is built once in `Before` and stored as `appState` in `App.Metadata`. Actions read it through `appStateFor(c)` / `clientFor(c)` / `workspaceFor(c)`. Do not reload config, sticky context, or the API client inside an action.
 - Request building is pure and separately testable: `Build*` returns an `HTTPRequest{Method, Path, Body}`, and `client.DoHTTP` executes it. Test the shape without a daemon.
-- Client resolution order is fixed: linked remote workspace → remote sticky context → `TREBI_URL`/`TREBI_TOKEN` → local `~/.trebi/api.json`. Remote is workspace context, not a `--remote` flag.
+- Client resolution order is fixed: linked remote workspace → remote sticky context → `TREBI_URL` → local `~/.trebi/api.json`. Remote is workspace context, not a `--remote` flag.
 - Local-only commands (`service install|daemon`) fail fast when the sticky context is remote.
 - Every read command takes `--json` and passes the API payload through unchanged. Human output uses the shared `newTable`; do not hand-format columns.
 - The offline subset must work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate`, `guide`. Everything else fails with a clear "daemon not running" message.

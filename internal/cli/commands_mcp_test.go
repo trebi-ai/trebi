@@ -16,7 +16,7 @@ import (
 
 func TestMCPConfigBlocks(t *testing.T) {
 	t.Parallel()
-	target := mcpTarget{URL: "http://127.0.0.1:7777/mcp", Token: "tok-1"}
+	target := mcpTarget{URL: "http://127.0.0.1:7777/mcp"}
 	for _, client := range []string{"claude", "codex", "opencode", "cursor", "vscode", "json"} {
 		got, err := target.block(client)
 		if err != nil {
@@ -46,7 +46,7 @@ func TestMCPConfigBlocks(t *testing.T) {
 
 func TestMCPAddCommands(t *testing.T) {
 	t.Parallel()
-	target := mcpTarget{URL: "http://127.0.0.1:7777/mcp", Token: "tok-1"}
+	target := mcpTarget{URL: "http://127.0.0.1:7777/mcp"}
 	for _, client := range []string{"claude", "codex", "opencode"} {
 		argv, err := target.addCommand(client)
 		if err != nil || len(argv) < 4 {
@@ -72,14 +72,14 @@ func TestMCPServeRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	bridge := newMCPBridge(mcpTarget{URL: srv.URL + "/mcp", Token: "tok-1"})
+	bridge := newMCPBridge(mcpTarget{URL: srv.URL + "/mcp"})
 	var out strings.Builder
 	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	if err := bridge.run(context.Background(), in, &out); err != nil {
 		t.Fatal(err)
 	}
-	if gotAuth != "Bearer tok-1" {
-		t.Fatalf("token not forwarded: %q", gotAuth)
+	if gotAuth != "" {
+		t.Fatalf("the bridge must send no credential, got %q", gotAuth)
 	}
 	if bridge.session != "sess-1" {
 		t.Fatalf("session not kept: %q", bridge.session)
@@ -110,17 +110,17 @@ func TestMCPServeRetargetsOnPortChange(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	dead.Close()
 
-	bridge := newMCPBridge(mcpTarget{URL: dead.URL + "/mcp", Token: "old"})
+	bridge := newMCPBridge(mcpTarget{URL: dead.URL + "/mcp"})
 	bridge.session = "sess-old"
 	bridge.refresh = func() (mcpTarget, error) {
-		return mcpTarget{URL: live.URL + "/mcp", Token: "new"}, nil
+		return mcpTarget{URL: live.URL + "/mcp"}, nil
 	}
 	var out strings.Builder
 	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	if err := bridge.run(context.Background(), in, &out); err != nil {
 		t.Fatal(err)
 	}
-	if bridge.target.URL != live.URL+"/mcp" || bridge.target.Token != "new" {
+	if bridge.target.URL != live.URL+"/mcp" {
 		t.Fatalf("target not updated: %+v", bridge.target)
 	}
 	if bridge.session != "sess-new" {
@@ -136,10 +136,10 @@ func TestMCPServeDoesNotRetrySameEndpoint(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	dead.Close()
 	refreshes := 0
-	bridge := newMCPBridge(mcpTarget{URL: dead.URL + "/mcp", Token: "tok"})
+	bridge := newMCPBridge(mcpTarget{URL: dead.URL + "/mcp"})
 	bridge.refresh = func() (mcpTarget, error) {
 		refreshes++
-		return mcpTarget{URL: dead.URL + "/mcp", Token: "tok"}, nil
+		return mcpTarget{URL: dead.URL + "/mcp"}, nil
 	}
 	err := bridge.run(context.Background(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`), io.Discard)
 	if err == nil {

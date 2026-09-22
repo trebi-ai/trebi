@@ -15,13 +15,13 @@ func TestStickyAndLinkedWorkspace(t *testing.T) {
 
 	link := LinkedWorkspace{
 		ID: "ws1", Name: "ellis", Path: "/proj",
-		URL: "https://homelab:7433", Token: "tok",
+		URL: "https://homelab:7433",
 	}
 	if err := link.Save(); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := FindLinked("ellis")
-	if !ok || got.ID != "ws1" || got.Token != "tok" {
+	if !ok || got.ID != "ws1" {
 		t.Fatalf("%+v %v", got, ok)
 	}
 	sticky := link.Sticky()

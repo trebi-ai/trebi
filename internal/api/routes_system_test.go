@@ -35,9 +35,9 @@ func TestSystemVersionFields(t *testing.T) {
 	t.Cleanup(func() { api.Version, api.UIVersion = oldVersion, oldUI })
 	api.Version, api.UIVersion = "0.2.1", ""
 
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/system/health", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/system/health", nil)
 	if code != 200 {
 		t.Fatalf("health %d %v", code, body)
 	}
@@ -55,19 +55,19 @@ func TestSystemVersionFields(t *testing.T) {
 	}
 
 	api.UIVersion = "0.5.3"
-	code, body, _ = doJSON(t, "GET", base+"/v1/system/health", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/health", nil)
 	if code != 200 || body["ui_version"] != "0.5.3" {
 		t.Fatalf("health with ui %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/system/overview", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/overview", nil)
 	if code != 200 || body["ui_version"] != "0.5.3" {
 		t.Fatalf("overview with ui %d %v", code, body)
 	}
 }
 
 func TestSystemUpdateStubHasSource(t *testing.T) {
-	s, base := startTestServer(t)
-	code, body, _ := doJSON(t, "GET", base+"/v1/system/update", s.Token(), nil)
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "GET", base+"/v1/system/update", nil)
 	if code != 200 {
 		t.Fatalf("%d %v", code, body)
 	}
@@ -85,7 +85,7 @@ func TestSystemUpdateStubHasSource(t *testing.T) {
 }
 
 func TestSystemLogsFilters(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	logDir := filepath.Join(home.Base(), "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestSystemLogsFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/system/logs?lines=3", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/system/logs?lines=3", nil)
 	if code != 200 {
 		t.Fatalf("lines %d %v", code, body)
 	}
@@ -110,7 +110,7 @@ func TestSystemLogsFilters(t *testing.T) {
 		t.Fatalf("lines=3 got %d %v", len(got), got)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/system/logs?grep=hello", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/logs?grep=hello", nil)
 	if code != 200 {
 		t.Fatalf("grep %d %v", code, body)
 	}
@@ -119,7 +119,7 @@ func TestSystemLogsFilters(t *testing.T) {
 		t.Fatalf("grep hello got %d %v", len(got), got)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/system/logs?level=warn", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/logs?level=warn", nil)
 	if code != 200 {
 		t.Fatalf("level %d %v", code, body)
 	}
@@ -135,7 +135,7 @@ func TestSystemLogsFilters(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(logDir, "trebid.log"), []byte(many.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/system/logs?lines=500", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/logs?lines=500", nil)
 	if code != 200 {
 		t.Fatalf("cap %d %v", code, body)
 	}
@@ -146,7 +146,7 @@ func TestSystemLogsFilters(t *testing.T) {
 }
 
 func TestSystemLogsRunFilter(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	logDir := filepath.Join(home.Base(), "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func TestSystemLogsRunFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, resp, _ := doJSON(t, "GET", base+"/v1/system/logs?run=01RUN", s.Token(), nil)
+	code, resp, _ := doJSON(t, "GET", base+"/v1/system/logs?run=01RUN", nil)
 	if code != 200 {
 		t.Fatalf("run filter %d %v", code, resp)
 	}
@@ -182,7 +182,7 @@ func TestSystemLogsRunFilter(t *testing.T) {
 		}
 	}
 
-	code, resp, _ = doJSON(t, "GET", base+"/v1/system/logs?run=01RUN&grep=finished", s.Token(), nil)
+	code, resp, _ = doJSON(t, "GET", base+"/v1/system/logs?run=01RUN&grep=finished", nil)
 	if code != 200 {
 		t.Fatalf("run+grep %d %v", code, resp)
 	}
@@ -194,8 +194,8 @@ func TestSystemLogsRunFilter(t *testing.T) {
 // TestCloudStatusUnlinkedAnswers pins Part G: unlinked is 200 with
 // linked:false and the whole shape present, never a 404.
 func TestCloudStatusUnlinkedAnswers(t *testing.T) {
-	s, base := startTestServer(t)
-	code, body, _ := doJSON(t, "GET", base+"/v1/cloud/status", s.Token(), nil)
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "GET", base+"/v1/cloud/status", nil)
 	if code != http.StatusOK {
 		t.Fatalf("status %d %v", code, body)
 	}
@@ -217,7 +217,7 @@ func TestCloudLinkAddressesUnlink(t *testing.T) {
 	f := newFakeCloud(t)
 	s.Cloud().Configure(cloudlink.Settings{APIURL: f.srv.URL, Enabled: false})
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/cloud/link", s.Token(),
+	code, body, _ := doJSON(t, "POST", base+"/v1/cloud/link",
 		map[string]string{"enrollment_token": "ABCD-EFGH-0123", "name": "mbp"})
 	if code != http.StatusOK {
 		t.Fatalf("link %d %v", code, body)
@@ -230,7 +230,7 @@ func TestCloudLinkAddressesUnlink(t *testing.T) {
 	}
 
 	// A second link is a conflict; the caller unlinks first.
-	code, body, _ = doJSON(t, "POST", base+"/v1/cloud/link", s.Token(),
+	code, body, _ = doJSON(t, "POST", base+"/v1/cloud/link",
 		map[string]string{"enrollment_token": "ABCD-EFGH-0123"})
 	if code != http.StatusConflict || errCode(body) != "conflict" {
 		t.Fatalf("second link: %d %v", code, body)
@@ -240,7 +240,7 @@ func TestCloudLinkAddressesUnlink(t *testing.T) {
 	if _, err := s.Cloud().MintAddress(t.Context(), "ws_1"); err != nil {
 		t.Fatal(err)
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/addresses", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/addresses", nil)
 	if code != http.StatusOK {
 		t.Fatalf("addresses %d %v", code, body)
 	}
@@ -255,7 +255,7 @@ func TestCloudLinkAddressesUnlink(t *testing.T) {
 	if row["workspace_id"] != "ws_1" || row["local_part"] == "" {
 		t.Fatalf("row shape: %v", row)
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/addresses?reveal=1", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/addresses?reveal=1", nil)
 	if code != http.StatusOK {
 		t.Fatalf("reveal %d %v", code, body)
 	}
@@ -267,14 +267,14 @@ func TestCloudLinkAddressesUnlink(t *testing.T) {
 
 	// Unlink is confirm-gated (confirm_test covers the gate), drops the
 	// row, and deletes the device key from the secrets directory.
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/cloud/link?confirm=1", s.Token(), nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/cloud/link?confirm=1", nil)
 	if code != http.StatusOK || body["linked"] != false {
 		t.Fatalf("unlink %d %v", code, body)
 	}
 	if _, err := secrets.Get("cloud_device_key"); err == nil {
 		t.Fatal("device key survived unlink")
 	}
-	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/status", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/status", nil)
 	if code != http.StatusOK || body["linked"] != false || body["status"] != "not_linked" {
 		t.Fatalf("status after unlink: %d %v", code, body)
 	}
@@ -286,11 +286,11 @@ func TestCloudLinkNeedsToken(t *testing.T) {
 	s, base, _ := startAPI(t)
 	f := newFakeCloud(t)
 	s.Cloud().Configure(cloudlink.Settings{APIURL: f.srv.URL, Enabled: false})
-	for _, token := range []string{"", "----"} {
-		code, body, _ := doJSON(t, "POST", base+"/v1/cloud/link", s.Token(),
-			map[string]string{"enrollment_token": token})
-		if code != http.StatusBadRequest || errCode(body) != "validation" {
-			t.Fatalf("token %q: %d %v", token, code, body)
+	for _, code := range []string{"", "----"} {
+		status, body, _ := doJSON(t, "POST", base+"/v1/cloud/link",
+			map[string]string{"enrollment_token": code})
+		if status != http.StatusBadRequest || errCode(body) != "validation" {
+			t.Fatalf("enrollment code %q: %d %v", code, status, body)
 		}
 	}
 }

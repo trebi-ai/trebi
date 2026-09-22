@@ -7,11 +7,11 @@ import (
 )
 
 func TestDestructiveRoutesNeedConfirm(t *testing.T) {
-	s, base, _ := startAPI(t)
-	wsID := addWorkspace(t, base, s.Token(), t.TempDir(), "confirm-ws")
+	_, base, _ := startAPI(t)
+	wsID := addWorkspace(t, base, t.TempDir(), "confirm-ws")
 	for _, c := range confirmCases(wsID) {
 		t.Run(c.name, func(t *testing.T) {
-			code, body, _ := doJSON(t, c.method, base+c.path, s.Token(), nil)
+			code, body, _ := doJSON(t, c.method, base+c.path, nil)
 			if code != http.StatusBadRequest || errCode(body) != "validation" {
 				t.Fatalf("unconfirmed %s: got %d %v", c.path, code, body)
 			}
@@ -21,7 +21,7 @@ func TestDestructiveRoutesNeedConfirm(t *testing.T) {
 			}
 			// The gate must pass a confirmed call to the handler, whose own
 			// answer (200, 404, …) no longer carries confirm_required.
-			_, body, _ = doJSON(t, c.method, base+withConfirm(c.path), s.Token(), nil)
+			_, body, _ = doJSON(t, c.method, base+withConfirm(c.path), nil)
 			if _, gated := errDetails(body)["confirm_required"]; gated {
 				t.Fatalf("confirmed %s still refused: %v", c.path, body)
 			}
@@ -30,9 +30,9 @@ func TestDestructiveRoutesNeedConfirm(t *testing.T) {
 }
 
 func TestDestructiveMCPActionsPassConfirm(t *testing.T) {
-	s, base, _ := startAPI(t)
-	wsID := addWorkspace(t, base, s.Token(), t.TempDir(), "confirm-mcp")
-	cs := mcpSession(t, base, s.Token())
+	_, base, _ := startAPI(t)
+	wsID := addWorkspace(t, base, t.TempDir(), "confirm-mcp")
+	cs := mcpSession(t, base)
 	for _, c := range confirmCases(wsID) {
 		t.Run(c.name, func(t *testing.T) {
 			_, text := mcpCall(t, cs, c.tool, c.action, c.input)

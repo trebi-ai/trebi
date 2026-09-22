@@ -70,7 +70,7 @@ func TestServiceCommandRegistration(t *testing.T) {
 	}
 	for _, want := range []string{
 		"install", "uninstall", "start", "stop", "restart",
-		"status", "logs", "migrate-db", "daemon", "drain", "undrain", "token",
+		"status", "logs", "migrate-db", "daemon", "drain", "undrain",
 	} {
 		if findCmd(svc.Commands, want) == nil {
 			t.Fatalf("service missing %s", want)

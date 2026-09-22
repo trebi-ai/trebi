@@ -332,7 +332,7 @@ func TestStreamEventsTimeoutNotInherited(t *testing.T) {
 		flusher.Flush()
 		<-r.Context().Done()
 	})
-	client := &APIClient{base: srv.URL, token: "t", httpClient: &http.Client{Timeout: 30 * time.Millisecond}}
+	client := &APIClient{base: srv.URL, httpClient: &http.Client{Timeout: 30 * time.Millisecond}}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var got store.StreamEvent
@@ -407,7 +407,7 @@ func fakeStreamHandler(t *testing.T, h http.HandlerFunc) *httptest.Server {
 }
 
 func streamClient(srv *httptest.Server) *APIClient {
-	return &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
+	return &APIClient{base: srv.URL, httpClient: srv.Client()}
 }
 
 func frameJSON(seq int64, topic, entity, id, action string) string {

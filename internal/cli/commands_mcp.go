@@ -50,8 +50,7 @@ func mcpCommand() *cli.Command {
 
 // mcpTarget is the daemon endpoint an MCP client must reach.
 type mcpTarget struct {
-	URL   string
-	Token string
+	URL string
 }
 
 // mcpConn reads the local daemon endpoint. It is offline-capable: it reads
@@ -64,36 +63,33 @@ func mcpConn() (mcpTarget, error) {
 	if client.base == "" {
 		return mcpTarget{}, fmt.Errorf("api.json carries no url (is trebid running?)")
 	}
-	return mcpTarget{URL: client.base + "/mcp", Token: client.token}, nil
+	return mcpTarget{URL: client.base + "/mcp"}, nil
 }
 
 // block returns the config file text for one client.
 func (t mcpTarget) block(client string) (string, error) {
 	switch client {
 	case "codex":
-		return fmt.Sprintf("[mcp_servers.trebi]\nurl = %q\nbearer_token_env_var = \"TREBI_TOKEN\"\n", t.URL), nil
+		return fmt.Sprintf("[mcp_servers.trebi]\nurl = %q\n", t.URL), nil
 	case "claude":
 		return t.jsonBlock(map[string]any{"mcpServers": map[string]any{"trebi": map[string]any{
 			"type": "http", "url": t.URL,
-			"headers": map[string]any{"Authorization": "Bearer ${TREBI_TOKEN}"},
 		}}})
 	case "opencode":
+		// OpenCode defaults a remote server to OAuth; this daemon has none.
 		return t.jsonBlock(map[string]any{"mcp": map[string]any{"servers": map[string]any{"trebi": map[string]any{
 			"type": "remote", "url": t.URL, "oauth": false,
-			"headers": map[string]any{"Authorization": "Bearer {env:TREBI_TOKEN}"},
 		}}}})
 	case "cursor":
 		return t.jsonBlock(map[string]any{"mcpServers": map[string]any{"trebi": map[string]any{
-			"url":     t.URL,
-			"headers": map[string]any{"Authorization": "Bearer ${env:TREBI_TOKEN}"},
+			"url": t.URL,
 		}}})
 	case "vscode":
 		return t.jsonBlock(map[string]any{"servers": map[string]any{"trebi": map[string]any{
 			"type": "http", "url": t.URL,
-			"headers": map[string]any{"Authorization": "Bearer ${env:TREBI_TOKEN}"},
 		}}})
 	case "json", "":
-		return t.jsonBlock(map[string]any{"url": t.URL, "token": t.Token})
+		return t.jsonBlock(map[string]any{"url": t.URL})
 	}
 	return "", fmt.Errorf("unknown client %q; use claude, codex, opencode, cursor, vscode, or json", client)
 }
@@ -114,12 +110,11 @@ func (t mcpTarget) addCommand(client string) ([]string, error) {
 	switch client {
 	case "claude", "":
 		return []string{"claude", "mcp", "add", "--transport", "http", "trebi", t.URL,
-			"--header", "Authorization: Bearer " + t.Token, "--scope", "user"}, nil
+			"--scope", "user"}, nil
 	case "codex":
-		return []string{"codex", "mcp", "add", "trebi", "--url", t.URL, "--bearer-token-env-var", "TREBI_TOKEN"}, nil
+		return []string{"codex", "mcp", "add", "trebi", "--url", t.URL}, nil
 	case "opencode":
-		return []string{"opencode2", "mcp", "add", "trebi", "--global", "--url", t.URL,
-			"--header", "Authorization=Bearer " + t.Token}, nil
+		return []string{"opencode2", "mcp", "add", "trebi", "--global", "--url", t.URL}, nil
 	}
 	return nil, fmt.Errorf("client %q has no add command; use trebi mcp config --client %s", client, client)
 }
@@ -160,7 +155,6 @@ func runMCPInstall(_ context.Context, c *cli.Command) error {
 		return nil
 	}
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv is built from a fixed client table
-	cmd.Env = append(os.Environ(), "TREBI_TOKEN="+target.Token)
 	cmd.Stdout, cmd.Stderr = outWriter(c), os.Stderr
 	return cmd.Run()
 }
@@ -355,8 +349,8 @@ func (b *mcpBridge) forward(ctx context.Context, msg json.RawMessage) ([]byte, e
 	return b.post(ctx, msg)
 }
 
-// retarget reloads the daemon URL/token from api.json. It reports true only
-// when the endpoint actually moved, so a dead daemon is not retried in a loop.
+// retarget reloads the daemon URL from api.json. It reports true only when
+// the endpoint actually moved, so a dead daemon is not retried in a loop.
 func (b *mcpBridge) retarget() bool {
 	if b.refresh == nil {
 		return false
@@ -365,7 +359,7 @@ func (b *mcpBridge) retarget() bool {
 	if err != nil || next.URL == "" {
 		return false
 	}
-	if next.URL == b.target.URL && next.Token == b.target.Token {
+	if next.URL == b.target.URL {
 		return false
 	}
 	b.target = next
@@ -378,7 +372,6 @@ func (b *mcpBridge) post(ctx context.Context, msg json.RawMessage) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+b.target.Token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	if b.session != "" {

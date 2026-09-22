@@ -15,7 +15,7 @@ import (
 )
 
 func TestHandleRunLogJSONAndFollowSnapshot(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	id := "01TESTLOG0000000000000001"
 	dir := home.RunsLogDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -29,7 +29,7 @@ func TestHandleRunLogJSONAndFollowSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/runs/"+id+"/log", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/runs/"+id+"/log", nil)
 	if code != 200 {
 		t.Fatalf("json status %d %v", code, body)
 	}
@@ -47,7 +47,6 @@ func TestHandleRunLogJSONAndFollowSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -81,14 +80,13 @@ func TestHandleRunLogJSONAndFollowSnapshot(t *testing.T) {
 }
 
 func TestHandleRunLogFollowMissingIsSSENot404(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", base+"/v1/runs/01MISSING0000000000000001/log?follow=1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -105,14 +103,14 @@ func TestHandleRunLogFollowMissingIsSSENot404(t *testing.T) {
 		t.Fatalf("body %q", raw)
 	}
 
-	code, _, _ := doJSON(t, "GET", base+"/v1/runs/01MISSING0000000000000001/log", s.Token(), nil)
+	code, _, _ := doJSON(t, "GET", base+"/v1/runs/01MISSING0000000000000001/log", nil)
 	if code != 404 {
 		t.Fatalf("non-follow want 404 got %d", code)
 	}
 }
 
 func TestHandleRunLogBeforePage(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	id := "01TESTLOGPAGE000000000001"
 	dir := home.RunsLogDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -126,7 +124,7 @@ func TestHandleRunLogBeforePage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/runs/"+id+"/log?before=50&n=3", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/runs/"+id+"/log?before=50&n=3", nil)
 	if code != 200 {
 		t.Fatalf("status %d %v", code, body)
 	}

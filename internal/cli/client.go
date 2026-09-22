@@ -23,7 +23,6 @@ import (
 // APIClient talks to trebid over HTTP.
 type APIClient struct {
 	base       string
-	token      string
 	remote     bool // true when sticky/linked remote workspace is active
 	httpClient *http.Client
 }
@@ -39,7 +38,6 @@ func (c *APIClient) GetJSON(path string, out any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
@@ -81,7 +79,6 @@ func (c *APIClient) GetRaw(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -101,7 +98,6 @@ func (c *APIClient) StreamGET(path string, dst io.Writer) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
 	httpClient := c.httpClient
 	if httpClient == nil {
 		httpClient = &http.Client{}
@@ -202,12 +198,8 @@ func (c *APIClient) DialWS(path string) (*websocket.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	hdr := http.Header{}
-	if c.token != "" {
-		hdr.Set("Authorization", "Bearer "+c.token)
-	}
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	conn, resp, err := dialer.Dial(wsURL, hdr)
+	conn, resp, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		if resp != nil {
 			body, readErr := io.ReadAll(resp.Body)
@@ -339,7 +331,6 @@ func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
 	if payload != nil {
 		if contentType == "" {
 			contentType = "application/octet-stream"
@@ -369,7 +360,6 @@ func (c *APIClient) streamEvents(ctx context.Context, path string, skipCatchup b
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
 	httpClient := c.httpClient
 	if httpClient == nil {
 		httpClient = &http.Client{}
@@ -437,7 +427,6 @@ func (c *APIClient) doJSON(method, path string, body any, out any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -463,9 +452,8 @@ func apiJSONClient() (*APIClient, error) {
 		return nil, fmt.Errorf("reading api.json: %w (is trebid running?)", err)
 	}
 	var doc struct {
-		URL   string `json:"url"`
-		Token string `json:"token"`
-		Port  int    `json:"port"`
+		URL  string `json:"url"`
+		Port int    `json:"port"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, err
@@ -476,15 +464,13 @@ func apiJSONClient() (*APIClient, error) {
 	}
 	return &APIClient{
 		base:       base,
-		token:      doc.Token,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
 
-func remoteClient(url, token string) *APIClient {
+func remoteClient(url string) *APIClient {
 	return &APIClient{
 		base:       strings.TrimRight(url, "/"),
-		token:      token,
 		remote:     true,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}

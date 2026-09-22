@@ -148,14 +148,13 @@ func newAppState(workspaceHint string, extSet ext.Set) *appState {
 		state.clientErr = stickyErr
 	} else {
 		state.client, state.clientErr = loadAPIClientWithContext(
-			workspaceHint, sticky, linked, os.Getenv("TREBI_URL"), os.Getenv("TREBI_TOKEN"),
+			workspaceHint, sticky, linked, os.Getenv("TREBI_URL"),
 		)
 	}
-	url, token := os.Getenv("TREBI_URL"), os.Getenv("TREBI_TOKEN")
+	url := os.Getenv("TREBI_URL")
 	if url != "" {
 		state.localClient = &APIClient{
 			base:       strings.TrimRight(url, "/"),
-			token:      token,
 			httpClient: &http.Client{Timeout: 30 * time.Second},
 		}
 	} else {
@@ -250,22 +249,21 @@ func linkedFor(c *cli.Command) ([]LinkedWorkspace, error) {
 	return state.linked, state.linkedErr
 }
 
-func loadAPIClientWithContext(hint string, sticky *StickyContext, linked []LinkedWorkspace, url, token string) (*APIClient, error) {
+func loadAPIClientWithContext(hint string, sticky *StickyContext, linked []LinkedWorkspace, url string) (*APIClient, error) {
 	if link, found := findLinked(linked, hint); found && hint != "" {
-		return remoteClient(link.URL, link.Token), nil
+		return remoteClient(link.URL), nil
 	}
 	if sticky != nil && sticky.IsRemote() {
 		if hint == "" || hint == sticky.WorkspaceID || equalFoldName(hint, sticky.Name) {
-			return remoteClient(sticky.URL, sticky.Token), nil
+			return remoteClient(sticky.URL), nil
 		}
 		if link, found := findLinked(linked, hint); found {
-			return remoteClient(link.URL, link.Token), nil
+			return remoteClient(link.URL), nil
 		}
 	}
 	if url != "" {
 		return &APIClient{
 			base:       strings.TrimRight(url, "/"),
-			token:      token,
 			httpClient: &http.Client{Timeout: 30 * time.Second},
 		}, nil
 	}

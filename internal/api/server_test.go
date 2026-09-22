@@ -21,22 +21,10 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
-func TestHealthAndAuth(t *testing.T) {
-	s, base := startTestServer(t)
+func TestHealth(t *testing.T) {
+	_, base := startTestServer(t)
 
-	// no auth
 	resp, err := http.Get(base + "/v1/system/health")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status=%d", resp.StatusCode)
-	}
-
-	req, _ := http.NewRequest("GET", base+"/v1/system/health", nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
-	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,12 +40,12 @@ func TestHealthAndAuth(t *testing.T) {
 }
 
 func TestSystemOverview(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "demo")
-	addWorkspace(t, base, s.Token(), wsDir, "overview-ws")
+	addWorkspace(t, base, wsDir, "overview-ws")
 
-	status, body, _ := doJSON(t, "GET", base+"/v1/system/overview", s.Token(), nil)
+	status, body, _ := doJSON(t, "GET", base+"/v1/system/overview", nil)
 	if status != 200 {
 		t.Fatalf("status=%d body=%v", status, body)
 	}
@@ -76,16 +64,15 @@ func TestSystemOverview(t *testing.T) {
 }
 
 func TestRunsLifecycle(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	client := &http.Client{Timeout: 5 * time.Second}
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "demo")
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "life-ws")
+	wsID := addWorkspace(t, base, wsDir, "life-ws")
 
 	// create run
 	payload := `{"workspace":` + mustQuote(wsID) + `,"harness":"claude","prompt_override":"hello TREBI_RUN_COMPLETE"}`
 	req, _ := http.NewRequest("POST", base+"/v1/jobs/demo/run", bytes.NewBufferString(payload))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -109,7 +96,6 @@ func TestRunsLifecycle(t *testing.T) {
 
 	// get
 	req, _ = http.NewRequest("GET", base+"/v1/runs/"+id, nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +107,6 @@ func TestRunsLifecycle(t *testing.T) {
 
 	// timeline
 	req, _ = http.NewRequest("GET", base+"/v1/runs/"+id+"/timeline", nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +121,6 @@ func TestRunsLifecycle(t *testing.T) {
 
 	// kill
 	req, _ = http.NewRequest("POST", base+"/v1/runs/"+id+"/kill", nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +131,6 @@ func TestRunsLifecycle(t *testing.T) {
 	}
 
 	req, _ = http.NewRequest("GET", base+"/v1/runs/"+id, nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -164,12 +147,12 @@ func TestRunsLifecycle(t *testing.T) {
 // TestRunMarkEndpoint covers POST /v1/runs/{id}/mark: success maps to
 // complete, the machine status stays, and clear drops the override.
 func TestRunMarkEndpoint(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "markable")
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "mark-ws")
+	wsID := addWorkspace(t, base, wsDir, "mark-ws")
 
-	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/markable/run", s.Token(), map[string]any{
+	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/markable/run", map[string]any{
 		"workspace": wsID, "harness": "claude", "prompt_override": "hello TREBI_RUN_COMPLETE",
 	})
 	if code != 201 {
@@ -180,10 +163,10 @@ func TestRunMarkEndpoint(t *testing.T) {
 		t.Fatalf("no run id: %v", run)
 	}
 	// Kill guarantees a terminal row for the mark.
-	if code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/kill", s.Token(), nil); code != 200 {
+	if code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/kill", nil); code != 200 {
 		t.Fatalf("kill=%d %v", code, body)
 	}
-	code, machine, _ := doJSON(t, "GET", base+"/v1/runs/"+id, s.Token(), nil)
+	code, machine, _ := doJSON(t, "GET", base+"/v1/runs/"+id, nil)
 	if code != 200 {
 		t.Fatalf("get=%d %v", code, machine)
 	}
@@ -191,11 +174,11 @@ func TestRunMarkEndpoint(t *testing.T) {
 		t.Fatalf("fresh run has outcome: %v", machine)
 	}
 
-	if code, _, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/mark", s.Token(), map[string]any{"status": "bogus"}); code != 400 {
+	if code, _, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/mark", map[string]any{"status": "bogus"}); code != 400 {
 		t.Fatalf("bogus status=%d want 400", code)
 	}
 
-	code, marked, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/mark", s.Token(), map[string]any{
+	code, marked, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/mark", map[string]any{
 		"status": "success", "note": "digest was sent",
 	})
 	if code != 200 {
@@ -209,7 +192,7 @@ func TestRunMarkEndpoint(t *testing.T) {
 		t.Fatalf("outcome=%v", outcome)
 	}
 
-	code, cleared, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/mark", s.Token(), map[string]any{"clear": true})
+	code, cleared, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/mark", map[string]any{"clear": true})
 	if code != 200 {
 		t.Fatalf("clear=%d %v", code, cleared)
 	}
@@ -219,12 +202,11 @@ func TestRunMarkEndpoint(t *testing.T) {
 }
 
 func TestRulesTestAndQueueFire(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	body := `{"match":"event.n===1","event":{"n":1}}`
 	req, _ := http.NewRequest("POST", base+"/v1/rules/test", bytes.NewBufferString(body))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -239,7 +221,6 @@ func TestRulesTestAndQueueFire(t *testing.T) {
 
 	fire := `{"connector":"test","workspace":"ws","job":"j","match":"true","event":{"x":1}}`
 	req, _ = http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(fire))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = client.Do(req)
 	if err != nil {
@@ -252,7 +233,6 @@ func TestRulesTestAndQueueFire(t *testing.T) {
 	}
 
 	req, _ = http.NewRequest("GET", base+"/v1/queue?status=pending", nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -267,7 +247,7 @@ func TestRulesTestAndQueueFire(t *testing.T) {
 }
 
 func TestWorkspaceAndJobs(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	wsDir := t.TempDir()
@@ -282,7 +262,6 @@ func TestWorkspaceAndJobs(t *testing.T) {
 
 	payload := `{"path":` + mustQuote(wsDir) + `,"name":"testws"}`
 	req, _ := http.NewRequest("POST", base+"/v1/workspaces", bytes.NewBufferString(payload))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -304,7 +283,6 @@ func TestWorkspaceAndJobs(t *testing.T) {
 	}
 
 	req, _ = http.NewRequest("GET", base+"/v1/jobs", nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -329,7 +307,7 @@ func TestShadowAllowsManualBlocksTrigger(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := api.New(st, api.Options{Token: "t", Shadow: true})
+	s := api.New(st, api.Options{Shadow: true})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -338,12 +316,11 @@ func TestShadowAllowsManualBlocksTrigger(t *testing.T) {
 	base := "http://" + addr
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "j")
-	wsID := addWorkspace(t, base, "t", wsDir, "shadow-ws")
+	wsID := addWorkspace(t, base, wsDir, "shadow-ws")
 
 	// manual OK
 	req, _ := http.NewRequest("POST", base+"/v1/jobs/j/run", bytes.NewBufferString(
 		`{"workspace":`+mustQuote(wsID)+`,"reason":"manual","harness":"claude"}`))
-	req.Header.Set("Authorization", "Bearer t")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -356,7 +333,6 @@ func TestShadowAllowsManualBlocksTrigger(t *testing.T) {
 
 	// trigger blocked
 	req, _ = http.NewRequest("POST", base+"/v1/jobs/j/run", bytes.NewBufferString(`{"reason":"trigger"}`))
-	req.Header.Set("Authorization", "Bearer t")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -379,7 +355,6 @@ func TestInboxWiredFromAlerts(t *testing.T) {
 		t.Fatalf("%v %s", err, id)
 	}
 	req, _ := http.NewRequest("GET", base+"/v1/inbox", nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -394,13 +369,12 @@ func TestInboxWiredFromAlerts(t *testing.T) {
 }
 
 func TestRunsCreateFakeHarnessCompletes(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "demo")
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "fake-ws")
+	wsID := addWorkspace(t, base, wsDir, "fake-ws")
 	payload := `{"workspace":` + mustQuote(wsID) + `,"harness":"fake","prompt_override":"hi"}`
 	req, _ := http.NewRequest("POST", base+"/v1/jobs/demo/run", bytes.NewBufferString(payload))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -419,9 +393,8 @@ func TestRunsCreateFakeHarnessCompletes(t *testing.T) {
 }
 
 func TestCloudStub(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	req, _ := http.NewRequest("GET", base+"/v1/cloud/status", nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -435,12 +408,11 @@ func TestCloudStub(t *testing.T) {
 }
 
 func TestStreamStaysOpenAndDeliversLateEvent(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", base+"/v1/stream", nil)
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -454,7 +426,6 @@ func TestStreamStaysOpenAndDeliversLateEvent(t *testing.T) {
 	go func() {
 		time.Sleep(600 * time.Millisecond)
 		req2, _ := http.NewRequest("POST", base+"/v1/system/drain", nil)
-		req2.Header.Set("Authorization", "Bearer "+s.Token())
 		if r2, err := http.DefaultClient.Do(req2); err == nil {
 			r2.Body.Close()
 		}
@@ -470,10 +441,20 @@ func TestStreamStaysOpenAndDeliversLateEvent(t *testing.T) {
 	t.Fatalf("stream closed without late event: %v", sc.Err())
 }
 
-func TestAuthTokenRules(t *testing.T) {
+// TestOpenAPI pins the local-API contract: the daemon answers every route
+// without a credential. A stray Authorization header or ?token= is ignored, so
+// a client that still sends one is not refused. The bind address and the
+// network around it are the whole protection.
+func TestOpenAPI(t *testing.T) {
 	s, base := startTestServer(t)
 
-	// Wrong bearer token.
+	// No credential at all.
+	code, body, _ := doJSON(t, "GET", base+"/v1/system/health", nil)
+	if code != 200 {
+		t.Fatalf("health without a token: %d %v", code, body)
+	}
+
+	// A wrong bearer token is ignored, not refused.
 	req, _ := http.NewRequest("GET", base+"/v1/system/health", nil)
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	resp, err := http.DefaultClient.Do(req)
@@ -481,49 +462,49 @@ func TestAuthTokenRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("wrong token: status=%d", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Fatalf("health with a stray bearer: status=%d", resp.StatusCode)
 	}
 
-	// Query token on a non-stream route is rejected.
-	resp, err = http.Get(base + "/v1/system/health?token=" + s.Token())
+	// A stray query token is ignored on a plain route and on the stream.
+	resp, err = http.Get(base + "/v1/system/health?token=stale")
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("query token on health: status=%d", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Fatalf("health with a query token: status=%d", resp.StatusCode)
 	}
 
-	// Query token on /v1/stream is accepted.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, _ = http.NewRequestWithContext(ctx, "GET", base+"/v1/stream?token="+s.Token(), nil)
+	req, _ = http.NewRequestWithContext(ctx, "GET", base+"/v1/stream?token=stale", nil)
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	code := resp.StatusCode
+	code = resp.StatusCode
 	cancel()
 	resp.Body.Close()
 	if code != 200 {
-		t.Fatalf("query token on stream: status=%d", code)
+		t.Fatalf("stream: status=%d", code)
 	}
+	s.Shutdown(context.Background())
 }
 
 func TestJobRunEndpointLaunchesFakeHarness(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "demo")
-	addWorkspace(t, base, s.Token(), wsDir, "jobrun-ws")
+	addWorkspace(t, base, wsDir, "jobrun-ws")
 
 	// Unknown job → 404 through the A4 resolver, never a launch.
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/nope/run", s.Token(), nil)
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/nope/run", nil)
 	if code != 404 || errCode(body) != "not_found" {
 		t.Fatalf("unknown job: want 404 not_found got %d %v", code, body)
 	}
 
-	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/demo/run", s.Token(), nil)
+	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/demo/run", nil)
 	if code != 201 {
 		t.Fatalf("status=%d %v", code, run)
 	}
@@ -537,11 +518,10 @@ func TestJobRunEndpointLaunchesFakeHarness(t *testing.T) {
 
 func startTestServer(t *testing.T) (*api.Server, string) {
 	t.Helper()
-	return startTestServerOpts(t, api.Options{Token: "test-token"})
+	return startTestServerOpts(t, api.Options{})
 }
 
-// startTestServerOpts starts a server with caller-chosen options. Token is
-// filled in when empty so callers only set what they care about.
+// startTestServerOpts starts a server with caller-chosen options.
 func startTestServerOpts(t *testing.T, opts api.Options) (*api.Server, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -556,9 +536,6 @@ func startTestServerOpts(t *testing.T, opts api.Options) (*api.Server, string) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	if opts.Token == "" {
-		opts.Token = "test-token"
-	}
 	if opts.LookupLatest == nil {
 		opts.LookupLatest = func() (string, string, error) {
 			return api.Version, "", nil
@@ -580,20 +557,20 @@ func mustQuote(s string) string {
 
 // TestIdempotentLaunch covers A6.8: a repeated key returns the first run.
 func TestIdempotentLaunch(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "idem")
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "idem-ws")
+	wsID := addWorkspace(t, base, wsDir, "idem-ws")
 
 	launch := map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
 		"idempotency_key": "k1",
 	}
-	code, first, _ := doJSON(t, "POST", base+"/v1/jobs/idem/run", s.Token(), launch)
+	code, first, _ := doJSON(t, "POST", base+"/v1/jobs/idem/run", launch)
 	if code != 201 {
 		t.Fatalf("first launch: %d %v", code, first)
 	}
-	code, second, _ := doJSON(t, "POST", base+"/v1/jobs/idem/run", s.Token(), launch)
+	code, second, _ := doJSON(t, "POST", base+"/v1/jobs/idem/run", launch)
 	if code != 201 {
 		t.Fatalf("repeat launch: %d %v", code, second)
 	}
@@ -601,7 +578,7 @@ func TestIdempotentLaunch(t *testing.T) {
 		t.Fatalf("repeat launched a second run: %v vs %v", first["id"], second["id"])
 	}
 
-	code, third, _ := doJSON(t, "POST", base+"/v1/jobs/idem/run", s.Token(), map[string]any{
+	code, third, _ := doJSON(t, "POST", base+"/v1/jobs/idem/run", map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
 	})
 	if code != 201 || third["id"] == first["id"] {
@@ -611,7 +588,6 @@ func TestIdempotentLaunch(t *testing.T) {
 	// The Idempotency-Key header is the same contract as the body field.
 	req, _ := http.NewRequest("POST", base+"/v1/jobs/idem/run",
 		strings.NewReader(`{"workspace":"`+wsID+`","harness":"fake","prompt_override":"hi"}`))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "k1")
 	resp, err := http.DefaultClient.Do(req)
@@ -628,13 +604,13 @@ func TestIdempotentLaunch(t *testing.T) {
 
 // TestListFilters covers A6.5 on runs, jobs, and workspaces.
 func TestListFilters(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "alpha")
 	writeJobFile(t, wsDir, "beta")
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "filter-ws")
+	wsID := addWorkspace(t, base, wsDir, "filter-ws")
 
-	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/alpha/run", s.Token(), map[string]any{
+	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/alpha/run", map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "deploy the thing",
 	})
 	if code != 201 {
@@ -652,7 +628,7 @@ func TestListFilters(t *testing.T) {
 		{"?since=1h", 1},
 		{"?since=" + url.QueryEscape(time.Now().UTC().Add(time.Hour).Format(time.RFC3339)), 0},
 	} {
-		code, body, _ := doJSON(t, "GET", base+"/v1/runs"+tc.query, s.Token(), nil)
+		code, body, _ := doJSON(t, "GET", base+"/v1/runs"+tc.query, nil)
 		if code != 200 {
 			t.Fatalf("%s: %d %v", tc.query, code, body)
 		}
@@ -662,11 +638,11 @@ func TestListFilters(t *testing.T) {
 		}
 	}
 
-	if code, body, _ := doJSON(t, "GET", base+"/v1/runs?since=bogus", s.Token(), nil); code != 400 {
+	if code, body, _ := doJSON(t, "GET", base+"/v1/runs?since=bogus", nil); code != 400 {
 		t.Fatalf("bad since must be 400: %d %v", code, body)
 	}
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?q=alph", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?q=alph", nil)
 	jobs, _ := body["jobs"].([]any)
 	if code != 200 || len(jobs) != 1 {
 		t.Fatalf("job q filter: %d %v", code, body)
@@ -679,11 +655,11 @@ func TestListFilters(t *testing.T) {
 		t.Fatalf("job row must carry mtd_usd: %v", row)
 	}
 
-	if code, body, _ := doJSON(t, "GET", base+"/v1/jobs?active=maybe", s.Token(), nil); code != 400 {
+	if code, body, _ := doJSON(t, "GET", base+"/v1/jobs?active=maybe", nil); code != 400 {
 		t.Fatalf("bad active must be 400: %d %v", code, body)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces", nil)
 	list, _ := body["workspaces"].([]any)
 	if code != 200 || len(list) != 1 {
 		t.Fatalf("workspaces: %d %v", code, body)
@@ -696,9 +672,9 @@ func TestListFilters(t *testing.T) {
 
 // TestJobValidateText covers A6.7: check a definition without writing a job.
 func TestJobValidateText(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/validate", s.Token(), map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{
 		"prompt": "Run the sync.", "cron": "0 3 * * *", "harness": "codex",
 	})
 	if code != 200 || body["ok"] != true {
@@ -709,14 +685,14 @@ func TestJobValidateText(t *testing.T) {
 		t.Fatalf("composed front matter: %q", md)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/validate", s.Token(), map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{
 		"content": "---\nharness: [broken\n---\n\nhi\n",
 	})
 	if code != 200 || body["ok"] != false || body["error"] == "" {
 		t.Fatalf("bad yaml must report ok=false: %d %v", code, body)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/jobs", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/jobs", nil)
 	jobs, _ := body["jobs"].([]any)
 	if code != 200 || len(jobs) != 0 {
 		t.Fatalf("validate must write nothing: %d %v", code, body)
@@ -725,7 +701,7 @@ func TestJobValidateText(t *testing.T) {
 
 // TestFileTreeAndBase64 covers A6.9.
 func TestFileTreeAndBase64(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(wsDir, "reports", "q1"), 0o755); err != nil {
 		t.Fatal(err)
@@ -733,9 +709,9 @@ func TestFileTreeAndBase64(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wsDir, "reports", "q1", "a.md"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wsID := addWorkspace(t, base, s.Token(), wsDir, "tree-ws")
+	wsID := addWorkspace(t, base, wsDir, "tree-ws")
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/files", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/files", nil)
 	if code != 200 {
 		t.Fatalf("list: %d %v", code, body)
 	}
@@ -743,7 +719,7 @@ func TestFileTreeAndBase64(t *testing.T) {
 		t.Fatalf("plain list must carry no folders: %v", body)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/files?recursive=1", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/files?recursive=1", nil)
 	if code != 200 || dirRows(body) == 0 {
 		t.Fatalf("recursive list must carry folders: %d %v", code, body)
 	}
@@ -751,7 +727,6 @@ func TestFileTreeAndBase64(t *testing.T) {
 	png := []byte{0x89, 'P', 'N', 'G', 0x00, 0x01}
 	req, _ := http.NewRequest("PUT", base+"/v1/workspaces/"+wsID+"/files/img.png?encoding=base64",
 		strings.NewReader(base64.StdEncoding.EncodeToString(png)))
-	req.Header.Set("Authorization", "Bearer "+s.Token())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -765,20 +740,20 @@ func TestFileTreeAndBase64(t *testing.T) {
 		t.Fatalf("stored bytes: %v %v", got, err)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/files/img.png?encoding=base64", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/files/img.png?encoding=base64", nil)
 	if code != 200 || body["content"] != base64.StdEncoding.EncodeToString(png) {
 		t.Fatalf("base64 get: %d %v", code, body)
 	}
 }
 
 func TestSkillFromFolderSource(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte("# deploy\n\nOne.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/skills", s.Token(),
+	code, body, _ := doJSON(t, "POST", base+"/v1/skills",
 		map[string]any{"name": "deploy", "source": map[string]any{"kind": "folder", "path": src}})
 	if code != 201 {
 		t.Fatalf("create: %d %v", code, body)
@@ -788,7 +763,7 @@ func TestSkillFromFolderSource(t *testing.T) {
 		t.Fatalf("source not kept: %v", body)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/skills/deploy/refresh", s.Token(), nil)
+	code, body, _ = doJSON(t, "POST", base+"/v1/skills/deploy/refresh", nil)
 	if code != 200 || body["updated"] != false {
 		t.Fatalf("unchanged refresh: %d %v", code, body)
 	}
@@ -796,7 +771,7 @@ func TestSkillFromFolderSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte("# deploy\n\nTwo.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, body, _ = doJSON(t, "POST", base+"/v1/skills/deploy/refresh", s.Token(), nil)
+	code, body, _ = doJSON(t, "POST", base+"/v1/skills/deploy/refresh", nil)
 	if code != 200 || body["updated"] != true {
 		t.Fatalf("changed refresh: %d %v", code, body)
 	}
@@ -807,12 +782,12 @@ func TestSkillFromFolderSource(t *testing.T) {
 }
 
 func TestSkillWithoutSourceRefresh(t *testing.T) {
-	s, base := startTestServer(t)
-	if code, body, _ := doJSON(t, "POST", base+"/v1/skills", s.Token(),
+	_, base := startTestServer(t)
+	if code, body, _ := doJSON(t, "POST", base+"/v1/skills",
 		map[string]any{"name": "local-one", "skill_md": "# local\n"}); code != 201 {
 		t.Fatalf("create: %d %v", code, body)
 	}
-	code, body, _ := doJSON(t, "POST", base+"/v1/skills/local-one/refresh", s.Token(), nil)
+	code, body, _ := doJSON(t, "POST", base+"/v1/skills/local-one/refresh", nil)
 	if code != 200 || body["updated"] != false || body["note"] == nil {
 		t.Fatalf("refresh: %d %v", code, body)
 	}
@@ -830,7 +805,7 @@ func TestSkillInheritedListAndGuard(t *testing.T) {
 	}
 	s.Skills().WithUserHome(user)
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/skills", s.Token(), nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/skills", nil)
 	if code != 200 {
 		t.Fatalf("list: %d %v", code, body)
 	}
@@ -843,30 +818,30 @@ func TestSkillInheritedListAndGuard(t *testing.T) {
 		t.Fatalf("row %+v", row)
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/skills/sling", s.Token(), nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/skills/sling", nil)
 	if code != 200 || body["provenance"] != "inherited" {
 		t.Fatalf("get: %d %v", code, body)
 	}
 
-	code, body, _ = doJSON(t, "PUT", base+"/v1/skills/sling", s.Token(), map[string]any{"skill_md": "# no\n"})
+	code, body, _ = doJSON(t, "PUT", base+"/v1/skills/sling", map[string]any{"skill_md": "# no\n"})
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("put: %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/skills/sling?confirm=1", s.Token(), nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/skills/sling?confirm=1", nil)
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("delete: %d %v", code, body)
 	}
 }
 
 func TestBulkVerbs(t *testing.T) {
-	s, base := startTestServer(t)
+	_, base := startTestServer(t)
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/runs/kill", s.Token(), map[string]any{"ids": []string{}})
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs/kill", map[string]any{"ids": []string{}})
 	if code != 400 {
 		t.Fatalf("empty ids must be a validation error: %d %v", code, body)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/runs/kill", s.Token(),
+	code, body, _ = doJSON(t, "POST", base+"/v1/runs/kill",
 		map[string]any{"ids": []string{"01MISSINGA", "01MISSINGB"}})
 	if code != 200 {
 		t.Fatalf("bulk kill: %d %v", code, body)
@@ -876,7 +851,7 @@ func TestBulkVerbs(t *testing.T) {
 		t.Fatalf("both ids must fail on their own: %v", body)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/inbox/resolve-all", s.Token(), nil)
+	code, body, _ = doJSON(t, "POST", base+"/v1/inbox/resolve-all", nil)
 	if code != 200 || body["resolved"] == nil {
 		t.Fatalf("resolve-all: %d %v", code, body)
 	}
@@ -891,7 +866,7 @@ func TestWriteAPIJSON_UnspecifiedHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := api.New(st, api.Options{Token: "tok"})
+	s := api.New(st, api.Options{})
 	if err := s.WriteAPIJSON("0.0.0.0:64119"); err != nil {
 		t.Fatal(err)
 	}

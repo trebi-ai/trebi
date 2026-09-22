@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/api"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/daemon"
@@ -52,7 +51,6 @@ func serviceCommand() *cli.Command {
 			serviceLifecycleSubcommands(),
 			serviceDiagnosticsSubcommands(),
 			serviceDaemonSubcommands(),
-			serviceTokenSubcommands(),
 		),
 	}
 }
@@ -432,30 +430,6 @@ func featureList(body map[string]any) string {
 	return strings.Join(parts, ", ")
 }
 
-// serviceTokenSubcommands returns the token command group.
-func serviceTokenSubcommands() []*cli.Command {
-	return []*cli.Command{
-		{
-			Name:  "token",
-			Usage: "token management",
-			Commands: []*cli.Command{
-				{
-					Name:  "show",
-					Usage: "print current API token",
-					Action: func(_ context.Context, c *cli.Command) error {
-						client, err := clientFor(c)
-						if err != nil {
-							return err
-						}
-						fmt.Println(client.token)
-						return nil
-					},
-				},
-			},
-		},
-	}
-}
-
 func runServiceInstall(_ context.Context, c *cli.Command) error {
 	if err := appStateFor(c).errIfRemoteSticky(); err != nil {
 		return err
@@ -679,13 +653,11 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 
 	drainFlag, _, _ := st.GetFlag("drain")
 	shadow := c.Bool("shadow")
-	token := daemonToken()
 	drain := drainFlag == "1" || shadow
 	extSet := appStateFor(c).ext
 	lic := license.New(extSet.License)
 	cp := daemon.New(st, daemon.Options{Shadow: shadow, Drain: drain, Ext: extSet, License: lic})
 	srv := api.New(st, api.Options{
-		Token:   token,
 		Shadow:  shadow,
 		Drain:   drain,
 		Ext:     extSet,
@@ -777,20 +749,6 @@ func resolveDaemonBind(flag string) (daemonBind, error) {
 		scheme = "https"
 	}
 	return daemonBind{Addr: addr, Cert: cert, Key: key, Scheme: scheme}, nil
-}
-
-// daemonToken reuses the token from api.json when present, else mints one.
-func daemonToken() string {
-	token := ulid.Make().String()
-	if data, err := os.ReadFile(home.APIJSONPath()); err == nil {
-		var doc struct {
-			Token string `json:"token"`
-		}
-		if json.Unmarshal(data, &doc) == nil && doc.Token != "" {
-			token = doc.Token
-		}
-	}
-	return token
 }
 
 func (s *appState) appendBusEvent(st *store.Store, topic string) {

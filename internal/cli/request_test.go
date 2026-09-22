@@ -57,7 +57,7 @@ func TestFetchRunLogText(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
-	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
 	text, err := client.RunLogText("01ABC")
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestDoHTTPRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
 
 	// run dry_run + prompt
 	req := request.RunSpec{Job: "demo", Workspace: "ws", Prompt: "hi", DryRun: true}.Build()
@@ -167,7 +167,7 @@ func TestDoHTTPRawRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &APIClient{base: srv.URL, token: "t", httpClient: srv.Client()}
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
 
 	req := request.HTTPRequest{
 		Method:      "PUT",
@@ -433,7 +433,7 @@ func TestCommandRegistration(t *testing.T) {
 		}
 	}
 	add := findCmd(ws.Commands, "add")
-	if !hasFlag(add, "url") || !hasFlag(add, "token") || !hasFlag(add, "id") {
+	if !hasFlag(add, "url") || !hasFlag(add, "id") {
 		t.Fatal("workspace add missing remote flags")
 	}
 }
