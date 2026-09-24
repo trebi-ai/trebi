@@ -303,7 +303,7 @@ func chatLine(c *cli.Command, client *APIClient, wsID string, convID *string, li
 		return false, nil
 	case line == "/new":
 		var out map[string]any
-		if err := client.DoHTTP(request.BuildConversationCreate(wsID, "", "cli", "cli", wsID), &out); err != nil {
+		if err := client.DoHTTP(request.BuildConversationCreate(wsID, "", "cli", "cli", wsID, ""), &out); err != nil {
 			return false, err
 		}
 		*convID = mapStr(out, "id")

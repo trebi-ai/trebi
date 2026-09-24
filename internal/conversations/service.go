@@ -18,9 +18,11 @@ import (
 )
 
 const (
-	ChannelUI    = "ui"
-	ChannelCLI   = "cli"
-	ChannelEmail = "email"
+	ChannelUI        = "ui"
+	ChannelCLI       = "cli"
+	ChannelEmail     = "email"
+	ChannelAssistant = "assistant"
+	ChannelAgent     = "agent"
 
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
@@ -34,10 +36,11 @@ const (
 )
 
 var (
-	ErrNotFound    = errors.New("not found")
-	ErrConflict    = errors.New("conflict")
-	ErrValidation  = errors.New("validation")
-	errNoAssistant = errors.New("no assistant in workspace")
+	ErrNotFound         = errors.New("not found")
+	ErrConflict         = errors.New("conflict")
+	ErrValidation       = errors.New("validation")
+	ErrOperatorConflict = fmt.Errorf("%w: channel belongs to a different operator", ErrConflict)
+	errNoAssistant      = errors.New("no assistant in workspace")
 )
 
 // Conversation is the §3.11 wire struct plus workspace/key for the lane.
@@ -47,6 +50,7 @@ type Conversation struct {
 	Key            string                `json:"key"`
 	Title          string                `json:"title"`
 	OriginChannel  string                `json:"origin_channel"`
+	Operator       string                `json:"operator,omitempty"`
 	Summary        string                `json:"summary,omitempty"`
 	CreatedAt      time.Time             `json:"created_at"`
 	UpdatedAt      time.Time             `json:"updated_at"`
@@ -103,6 +107,7 @@ type Activate struct {
 // CreateOpts is POST /v1/conversations.
 type CreateOpts struct {
 	Workspace     string
+	Operator      string
 	Title         string
 	OriginChannel string
 	Activate      *Activate
@@ -118,6 +123,7 @@ type PatchOpts struct {
 // ListOpts filters conversation lists.
 type ListOpts struct {
 	Workspace string
+	Operator  string
 	Channel   string
 	Limit     int
 	Cursor    string
@@ -149,6 +155,7 @@ type SendResult struct {
 // or creates the channel conversation, so a client sends no pointer calls.
 type AskOpts struct {
 	Workspace      string
+	Operator       string // '' = assistant; agents/<id> = agent
 	Text           string
 	ChannelType    string // defaults to cli
 	ChannelRef     string // defaults to the workspace id
@@ -172,7 +179,7 @@ type IncomingTurn struct {
 }
 
 const convCols = `id, workspace_id, COALESCE(key,''), COALESCE(title,''), COALESCE(origin_channel,''),
-	COALESCE(summary,''), created_at, updated_at, last_activity_at, revision`
+	COALESCE(summary,''), COALESCE(operator,''), created_at, updated_at, last_activity_at, revision`
 
 // Service owns conversations, messages, and channel pointers.
 type Service struct {
@@ -221,6 +228,10 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]Conversation, erro
 		q += ` AND (origin_channel=? OR EXISTS (
 			SELECT 1 FROM conversation_channels ch WHERE ch.conversation_id=conversations.id AND ch.channel_type=?))`
 		args = append(args, opts.Channel, opts.Channel)
+	}
+	if opts.Operator != "" {
+		q += ` AND operator=?`
+		args = append(args, opts.Operator)
 	}
 	if opts.Cursor != "" {
 		q += ` AND id < ?`
@@ -282,9 +293,10 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Conversation, e
 	key := ulid.Make().String()
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`INSERT INTO conversations
-			(id, workspace_id, key, title, origin_channel, summary, created_at, updated_at, last_activity_at, revision)
-			VALUES (?,?,?,?,?,'',?,?,?,1)`,
-			id, opts.Workspace, key, store.NullStr(opts.Title), opts.OriginChannel, nowStr, nowStr, nowStr); err != nil {
+				(id, workspace_id, key, title, origin_channel, summary, operator, created_at, updated_at, last_activity_at, revision)
+			VALUES (?,?,?,?,?,'',?,?,?,?,1)`,
+			id, opts.Workspace, key, store.NullStr(opts.Title), opts.OriginChannel,
+			opts.Operator, nowStr, nowStr, nowStr); err != nil {
 			return err
 		}
 		if opts.Activate == nil {
@@ -421,6 +433,20 @@ func (s *Service) IDByKey(ctx context.Context, workspaceID, key string) (string,
 	return id, err
 }
 
+// GetByKey resolves one workspace-lane conversation.
+func (s *Service) GetByKey(ctx context.Context, workspaceID, key string) (*Conversation, error) {
+	row := s.st.DB().QueryRowContext(ctx, `SELECT `+convCols+` FROM conversations WHERE workspace_id=? AND key=?`,
+		workspaceID, key)
+	c, err := scanConv(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
 // Recap is summary plus the last n messages, for wake composition and switch.
 func (s *Service) Recap(ctx context.Context, id string, n int) string {
 	conv, err := s.Get(ctx, id)
@@ -511,7 +537,7 @@ func scanConv(row convScanner) (Conversation, error) {
 	var c Conversation
 	var created, updated string
 	var last sql.NullString
-	err := row.Scan(&c.ID, &c.Workspace, &c.Key, &c.Title, &c.OriginChannel, &c.Summary,
+	err := row.Scan(&c.ID, &c.Workspace, &c.Key, &c.Title, &c.OriginChannel, &c.Summary, &c.Operator,
 		&created, &updated, &last, &c.Revision)
 	if err != nil {
 		return c, err

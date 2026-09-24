@@ -172,7 +172,7 @@ func runJobList(_ context.Context, c *cli.Command) error {
 		return runListAssistants(c, client)
 	}
 	if kind == "agent" {
-		return runListAgents(c, client, "jobs")
+		return runListAgents(c, client, "jobs", c.Bool("all"))
 	}
 	active := ""
 	if c.IsSet("active") {

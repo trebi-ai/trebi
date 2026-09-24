@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"strings"
 	"time"
@@ -155,7 +156,8 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
 		return
 	}
-	d := j.LaunchDefaults()
+	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.Job)
+	d := j.LaunchDefaultsWithKit(kit)
 	ifRunning := d.IfRunning
 	if ifRunning == "" {
 		ifRunning = "skip"
@@ -175,7 +177,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			WorkspaceID:     item.WorkspaceID,
 			Job:             item.Job,
 			Kind:            item.Kind,
-			Reason:          runs.ReasonTrigger,
+			Reason:          runsReasonFor(item),
 			Harness:         harness,
 			PromptPreview:   trunc(prompt, 200),
 			QueueID:         item.ID,
@@ -193,6 +195,8 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		Prompt:    prompt,
 		Wake:      wake,
 		Memory:    c.memoryLaunch(ctx, item.WorkspaceID, j),
+		Kit:       kit,
+		JobSkills: j.Skills,
 		IfRunning: ifRunning,
 		Env:       d.Env,
 		Model:     d.Model,
@@ -234,6 +238,13 @@ func (c *ControlPlane) dispatchResume(ctx context.Context, item *dispatch.QueueI
 	}
 }
 
+func runsReasonFor(item *dispatch.QueueItem) runs.RunReason {
+	if item.Connector == "escalation" {
+		return runs.ReasonEscalation
+	}
+	return runs.ReasonTrigger
+}
+
 func (c *ControlPlane) failOrRetry(ctx context.Context, item *dispatch.QueueItem, err error, run *runs.Run) {
 	if run != nil && run.Status == runs.StatusFailed {
 		switch run.EndReason {
@@ -246,6 +257,12 @@ func (c *ControlPlane) failOrRetry(ctx context.Context, item *dispatch.QueueItem
 		}
 	}
 	if err != nil && item.Attempts < dispatch.MaxAttempts {
+		if errors.Is(err, runs.ErrBudgetExceeded) {
+			if merr := c.queue.MarkDone(ctx, item.ID, dispatch.ResultSkipped, ""); merr != nil {
+				c.log.Warn("queue mark skipped", "queue_id", item.ID, "error", merr)
+			}
+			return
+		}
 		if rerr := c.queue.Requeue(ctx, item.ID); rerr != nil {
 			c.log.Warn("queue requeue", "queue_id", item.ID, "error", rerr)
 		}

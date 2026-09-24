@@ -40,12 +40,13 @@ type Workspace struct {
 
 // Service owns workspace registry rows.
 type Service struct {
-	st   *store.Store
-	root string // workspaces.root; empty refuses pathless create
-	log  *slog.Logger
-	mu   sync.Mutex
-	fp   map[string]string
-	jobs map[string][]*job.Job
+	st            *store.Store
+	root          string // workspaces.root; empty refuses pathless create
+	log           *slog.Logger
+	mu            sync.Mutex
+	fp            map[string]string
+	jobs          map[string][]*job.Job
+	budgetAlerter BudgetAlerter
 }
 
 // New creates a workspace service.
@@ -678,39 +679,43 @@ func (s *Service) existingIndexRows(ctx context.Context, wsID string) (map[strin
 
 // writeIndexDiff upserts changed rows and deletes stale ones in one tx.
 func (s *Service) writeIndexDiff(ctx context.Context, wsID string, existing, desired map[string]indexRow) error {
-	now := time.Now().UTC().Format(time.RFC3339)
 	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		for name, want := range desired {
-			if have, ok := existing[name]; ok && have == want {
-				continue // unchanged: no row churn
-			}
-			active := 0
-			if want.active {
-				active = 1
-			}
-			var pe *string
-			if want.parseError != "" {
-				pe = &want.parseError
-			}
-			if _, err := tx.Exec(`INSERT INTO job_index (workspace_id, name, path, kind, active, harness, hash, parse_error, owner, updated_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?)
-				ON CONFLICT(workspace_id, name) DO UPDATE SET
-					path=excluded.path, kind=excluded.kind, active=excluded.active,
-					harness=excluded.harness, hash=excluded.hash,
-					parse_error=excluded.parse_error, owner=excluded.owner, updated_at=excluded.updated_at`,
-				wsID, name, want.path, want.kind, active, want.harness, want.hash, pe, want.owner, now); err != nil {
+		return writeIndexDiffTx(ctx, tx, wsID, existing, desired)
+	})
+}
+
+func writeIndexDiffTx(ctx context.Context, tx *sql.Tx, wsID string, existing, desired map[string]indexRow) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	for name, want := range desired {
+		if have, ok := existing[name]; ok && have == want {
+			continue // unchanged: no row churn
+		}
+		active := 0
+		if want.active {
+			active = 1
+		}
+		var pe *string
+		if want.parseError != "" {
+			pe = &want.parseError
+		}
+		if _, err := tx.Exec(`INSERT INTO job_index (workspace_id, name, path, kind, active, harness, hash, parse_error, owner, updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(workspace_id, name) DO UPDATE SET
+				path=excluded.path, kind=excluded.kind, active=excluded.active,
+				harness=excluded.harness, hash=excluded.hash,
+				parse_error=excluded.parse_error, owner=excluded.owner, updated_at=excluded.updated_at`,
+			wsID, name, want.path, want.kind, active, want.harness, want.hash, pe, want.owner, now); err != nil {
+			return err
+		}
+	}
+	for name := range existing {
+		if _, ok := desired[name]; !ok {
+			if _, err := tx.Exec(`DELETE FROM job_index WHERE workspace_id=? AND name=?`, wsID, name); err != nil {
 				return err
 			}
 		}
-		for name := range existing {
-			if _, ok := desired[name]; !ok {
-				if _, err := tx.Exec(`DELETE FROM job_index WHERE workspace_id=? AND name=?`, wsID, name); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // emitIndexDiff appends bus events for index changes (best-effort).
@@ -883,22 +888,6 @@ func (s *Service) EmailAllowlist(ws *Workspace) []string {
 	return y.Email.Allowlist
 }
 
-// AgentTags lists the short names every indexed agent answers to in inbound
-// mail (plan A.6): a tag is live the moment AGENT.md exists.
-func (s *Service) AgentTags(ctx context.Context, workspaceID string) ([]string, error) {
-	rows, err := s.ListJobs(ctx, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, row := range rows {
-		if row.Kind == "agent" {
-			out = append(out, strings.TrimPrefix(row.Name, "agents/"))
-		}
-	}
-	return out, nil
-}
-
 func boolInt(v bool) int {
 	if v {
 		return 1
@@ -985,9 +974,9 @@ func (s *Service) writeAssistantWake(ctx context.Context, b *strings.Builder, ws
 	writeWakeTail(b, opts)
 }
 
-// writeAgentWake renders the F.2 sections: instructions, owned jobs, the
-// agent's own memory, then the triggering message. No recap: an agent has no
-// chat. {{agent_jobs}} moves the jobs block inline.
+// writeAgentWake renders the agent sections: instructions, owned jobs, and
+// the agent's own memory, then the conversation tail (recap, current message,
+// and untrusted block). {{agent_jobs}} moves the jobs block inline.
 func (s *Service) writeAgentWake(ctx context.Context, b *strings.Builder, ws *Workspace, scope runs.WakeScope, opts runs.WakeOpts) {
 	rows, _ := s.ListJobs(ctx, scope.WorkspaceID)
 	var agent *JobRow
@@ -1014,17 +1003,18 @@ func (s *Service) writeAgentWake(ctx context.Context, b *strings.Builder, ws *Wo
 		b.Reset()
 		writeSection(b, "Instructions", strings.ReplaceAll(body, "{{agent_jobs}}", jobs))
 	}
+	short := strings.TrimPrefix(scope.Name, "agents/")
+	writeSection(b, "What you can do", strings.Join([]string{
+		"- You can read the whole workspace.",
+		"- You can create and change jobs only under agents/" + short + "/. Use `trebi job create <name> --agent " + short + "` or the MCP `job` tool.",
+		"- When a human asks for repeated work, propose a job in the conversation. Create it after the human agrees.",
+		"- You cannot change your own `email.accept`, `kit`, or `budget`.",
+		"- To pass a problem up, use `agent escalate`.",
+	}, "\n"))
 	if m := wakeMemory(opts.Memory); m != "" {
 		writeSection(b, "Memory", m)
 	}
-	msg := strings.TrimSpace(opts.Message)
-	if msg == "" {
-		msg = strings.TrimSpace(opts.ExtraPrompt)
-	}
-	if msg != "" {
-		writeSection(b, "Current message", msg)
-	}
-	writeUntrusted(b, opts.Untrusted)
+	writeWakeTail(b, opts)
 }
 
 // writeWakeTail renders the chat-only sections of an assistant wake.
@@ -1099,21 +1089,83 @@ func (s *Service) unownedIndex(ctx context.Context, wsID string) string {
 	return linesBlock(b.String())
 }
 
-// agentRollup lists one line per agent with its child count (F.1).
+// agentRollup lists one agent line with children, last run, and open work
+// (G.1). It uses direct rollup queries because alerts/conversations cannot be
+// imported by workspaces without a dependency cycle.
 func (s *Service) agentRollup(ctx context.Context, wsID string) string {
 	rows, _ := s.ListJobs(ctx, wsID)
-	children := map[string]int{}
+	agents := make([]JobRow, 0, len(rows))
 	for _, row := range rows {
-		if row.Owner != "" {
-			children[row.Owner]++
+		if row.Kind == "agent" {
+			agents = append(agents, row)
 		}
 	}
-	var b strings.Builder
-	for _, row := range rows {
-		if row.Kind != "agent" {
-			continue
+	children := make(map[string]int, len(agents))
+	status := make(map[string]string, len(agents))
+	conversations := make(map[string]int, len(agents))
+	items := make(map[string]int, len(agents))
+
+	rows2, err := s.st.DB().QueryContext(ctx, `SELECT owner, COUNT(*) FROM job_index
+		WHERE workspace_id=? AND owner!='' GROUP BY owner`, wsID)
+	if err == nil {
+		for rows2.Next() {
+			var owner string
+			var count int
+			if rows2.Scan(&owner, &count) == nil {
+				children[owner] = count
+			}
 		}
-		fmt.Fprintf(&b, "%s children=%d\n", portfolioLine(row), children[row.Name])
+		rows2.Close()
+	}
+
+	runRows, err := s.st.DB().QueryContext(ctx, `SELECT lane, value FROM (
+			SELECT CASE WHEN j.kind='agent' THEN r.job ELSE substr(r.job,1,instr(r.job||'/','/')-1) END lane,
+			       COALESCE(r.outcome,r.status) value,
+			       row_number() OVER (PARTITION BY CASE WHEN j.kind='agent' THEN r.job ELSE substr(r.job,1,instr(r.job||'/','/')-1) END ORDER BY r.id DESC) rn
+			FROM runs r
+			JOIN job_index j ON j.workspace_id=r.workspace_id AND j.name=r.job
+			WHERE r.workspace_id=?
+		) WHERE rn=1`, wsID)
+	if err == nil {
+		for runRows.Next() {
+			var lane, value string
+			if runRows.Scan(&lane, &value) == nil {
+				status[lane] = value
+			}
+		}
+		runRows.Close()
+	}
+
+	convRows, err := s.st.DB().QueryContext(ctx, `SELECT operator, COUNT(*) FROM conversations
+		WHERE workspace_id=? AND operator!='' GROUP BY operator`, wsID)
+	if err == nil {
+		for convRows.Next() {
+			var owner string
+			var count int
+			if convRows.Scan(&owner, &count) == nil {
+				conversations[owner] = count
+			}
+		}
+		convRows.Close()
+	}
+
+	itemRows, err := s.st.DB().QueryContext(ctx, `SELECT CASE WHEN job IN (SELECT name FROM job_index WHERE workspace_id=? AND kind='agent') THEN job ELSE substr(job,1,instr(job||'/','/')-1) END, COUNT(*)
+		FROM inbox_items WHERE workspace_id=? AND status!='resolved' GROUP BY 1`, wsID, wsID)
+	if err == nil {
+		for itemRows.Next() {
+			var owner string
+			var count int
+			if itemRows.Scan(&owner, &count) == nil {
+				items[owner] = count
+			}
+		}
+		itemRows.Close()
+	}
+
+	var b strings.Builder
+	for _, row := range agents {
+		fmt.Fprintf(&b, "%s children=%d last_status=%s conversations=%d open_items=%d\n",
+			portfolioLine(row), children[row.Name], status[row.Name], conversations[row.Name], items[row.Name])
 	}
 	return linesBlock(b.String())
 }

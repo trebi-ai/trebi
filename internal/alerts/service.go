@@ -32,19 +32,23 @@ const (
 	KindUsageWarning       Kind = "usage_warning"
 	KindConnectorUnhealthy Kind = "connector_unhealthy"
 	KindRunFailed          Kind = "run_failed"
+	KindAgentEscalation    Kind = "agent_escalation"
+	KindBudgetExceeded     Kind = "budget_exceeded"
 	KindMemoryInvalid      Kind = "memory_invalid"
 	KindResumeExhausted    Kind = "resume_exhausted"
 	KindMachineDown        Kind = "machine_down"
+	KindAgentProposal      Kind = "agent_proposal"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
 type InboxKind string
 
 const (
-	InboxApproval InboxKind = "approval"
-	InboxFailure  InboxKind = "failure"
-	InboxHealth   InboxKind = "health"
-	InboxWatchdog InboxKind = "watchdog"
+	InboxApproval   InboxKind = "approval"
+	InboxFailure    InboxKind = "failure"
+	InboxHealth     InboxKind = "health"
+	InboxWatchdog   InboxKind = "watchdog"
+	InboxEscalation InboxKind = "escalation"
 )
 
 // InboxStatus is the durable read/resolved state.
@@ -73,6 +77,7 @@ const (
 	ActionRetry       = "retry"
 	ActionReAuth      = "re_auth"
 	ActionFix         = "fix"
+	ActionReview      = "review"
 )
 
 // InboxAction is one executable action on an inbox item (§3.12).
@@ -97,6 +102,7 @@ type InboxItem struct {
 	Connector      string        `json:"connector,omitempty"`
 	AlertKind      string        `json:"alert_kind,omitempty"`
 	EmailMessageID string        `json:"email_message_id,omitempty"`
+	ProposalID     string        `json:"proposal_id,omitempty"`
 	EscalatesAt    *time.Time    `json:"escalates_at,omitempty"`
 	Actions        []InboxAction `json:"actions"`
 	CreatedAt      time.Time     `json:"created_at"`
@@ -137,10 +143,11 @@ type RaiseOpts struct {
 
 // ListOpts filters inbox lists.
 type ListOpts struct {
-	Status string
-	Kind   string
-	Limit  int
-	Cursor string
+	Workspace string
+	Status    string
+	Kind      string
+	Limit     int
+	Cursor    string
 }
 
 // Options configures the consumer and notifier.
@@ -155,9 +162,11 @@ type Options struct {
 	// ApprovalQuestion returns the pending approval's question for the item
 	// body, or "". Nil leaves the body empty.
 	ApprovalQuestion func(ctx context.Context, runID string) string
-	UsageWarnAt      int
-	Notify           []NotifyChannel
-	NotifyTimeout    time.Duration // per-channel exec timeout; default 5s
+	// ProposalContent returns reviewed/proposed content for a proposal email.
+	ProposalContent func(ctx context.Context, id string) (base, proposed string, ok bool)
+	UsageWarnAt     int
+	Notify          []NotifyChannel
+	NotifyTimeout   time.Duration // per-channel exec timeout; default 5s
 	// Email is the native channel. It takes the email slot ahead of the
 	// shell chain; nil or an unconfigured service leaves it out.
 	Email *email.Service
@@ -196,8 +205,27 @@ type Service struct {
 	digest     map[string]int
 	waiting    map[string]waitingEp
 
-	deliverCh chan deliverJob
-	running   atomic.Bool
+	deliverCh     chan deliverJob
+	running       atomic.Bool
+	failureRouter FailureRouter
+}
+
+// FailureRouter lets the owner of a job take a failure before the inbox.
+type FailureRouter interface {
+	RouteFailure(ctx context.Context, f RunFailure) (handled bool, err error)
+}
+
+type RunFailure struct {
+	RunID, WorkspaceID, Job, Owner, EndReason string
+}
+
+func (s *Service) SetFailureRouter(r FailureRouter) { s.failureRouter = r }
+
+// SetDoctor wires the doctor snapshot provider to this service's store.
+func (s *Service) SetDoctor(fn func() []DoctorFinding) { s.opts.Doctor = fn }
+
+func (s *Service) SetProposalContent(fn func(ctx context.Context, id string) (string, string, bool)) {
+	s.opts.ProposalContent = fn
 }
 
 type waitingEp struct {
@@ -286,6 +314,10 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]InboxItem, error) 
 	if opts.Status != "" {
 		q += ` AND status=?`
 		args = append(args, opts.Status)
+	}
+	if opts.Workspace != "" {
+		q += ` AND workspace_id=?`
+		args = append(args, opts.Workspace)
 	}
 	if opts.Kind != "" {
 		q += ` AND kind=?`
@@ -560,6 +592,13 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 			Cooldown:   time.Hour,
 			EndReasons: []string{"idle_timeout", "max_duration", "failed", "session_gone", "launch"},
 		},
+		KindAgentEscalation: {
+			Kind: KindAgentEscalation, Severity: SeverityAttention, InboxKind: InboxEscalation,
+		},
+		KindBudgetExceeded: {
+			Kind: KindBudgetExceeded, Severity: SeverityAttention, InboxKind: InboxHealth,
+			Cooldown: 720 * time.Hour,
+		},
 		KindMemoryInvalid: {
 			Kind: KindMemoryInvalid, Severity: SeverityAttention, InboxKind: InboxHealth,
 			Cooldown: 24 * time.Hour,
@@ -569,6 +608,9 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		},
 		KindMachineDown: {
 			Kind: KindMachineDown, Severity: SeverityCritical, InboxKind: InboxWatchdog,
+		},
+		KindAgentProposal: {
+			Kind: KindAgentProposal, Severity: SeverityAttention, InboxKind: InboxApproval,
 		},
 	}
 }
@@ -604,6 +646,9 @@ func scanInbox(row scanner, includeBody bool) (*InboxItem, error) {
 	it.RunID, it.Workspace, it.Job = runID, ws, job
 	it.AlertKind, it.Connector, it.TraceID = ak, connector, trace
 	it.EmailMessageID = emailMsgID
+	if strings.HasPrefix(sub, "proposal/") {
+		it.ProposalID = strings.TrimPrefix(sub, "proposal/")
+	}
 	if includeBody {
 		it.Body = body
 	}
@@ -647,6 +692,10 @@ func (o RaiseOpts) defaultSubject() string {
 		return "connector/" + o.Connector
 	case KindRunFailed:
 		return "job/" + o.WorkspaceID + "/" + o.JobName
+	case KindAgentEscalation:
+		return "agent/" + o.WorkspaceID + "/" + o.JobName
+	case KindBudgetExceeded:
+		return "budget/" + o.WorkspaceID + "/" + o.JobName
 	case KindMemoryInvalid:
 		return "memory/" + o.WorkspaceID + "/" + o.JobName
 	case KindResumeExhausted:
@@ -699,6 +748,11 @@ func (o RaiseOpts) defaultActions() []InboxAction {
 			return []InboxAction{}
 		}
 		return []InboxAction{{Kind: ActionReAuth, Route: "/v1/harnesses/" + name + "/login", Label: "Re-auth"}}
+	case KindAgentProposal:
+		if o.Subject == "" {
+			return []InboxAction{}
+		}
+		return []InboxAction{{Kind: ActionReview, Route: "/inbox?proposal=" + strings.TrimPrefix(o.Subject, "proposal/"), Label: "Review"}}
 	}
 	return []InboxAction{}
 }

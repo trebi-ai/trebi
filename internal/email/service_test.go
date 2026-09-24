@@ -519,7 +519,7 @@ func TestDeliverHostedRoutesLikePoll(t *testing.T) {
 		{V: 1, ID: "h5", LocalPart: addr.LocalPart, Tag: "research", From: "ops@example.com", Dmarc: "fail"},
 		{V: 1, ID: "h6", LocalPart: "nobody-t0k0n0", From: "ops@example.com", Dmarc: "pass"},
 	}
-	acts := &fakeActions{env: RouteEnv{Agents: []string{"research"}}}
+	acts := &fakeActions{env: testRouteEnv()}
 	conn := connectors.New(st, nil, nil, nil)
 	s.AttachIngress(NewIngress(s, conn, acts, time.Minute, false))
 
@@ -528,11 +528,8 @@ func TestDeliverHostedRoutesLikePoll(t *testing.T) {
 			t.Fatalf("deliver %s: %v", msg.ID, err)
 		}
 	}
-	if len(acts.wakes) != 1 || acts.wakes[0] != "research" {
-		t.Errorf("wakes = %v", acts.wakes)
-	}
-	if len(acts.asks) != 2 || strings.Contains(acts.asks[0], "Misrouted") ||
-		!strings.Contains(acts.asks[1], "Misrouted email for +billing") {
+	if len(acts.asks) != 3 || strings.Contains(acts.asks[0], "Misrouted") ||
+		!strings.Contains(acts.asks[2], "Misrouted email for +billing") {
 		t.Errorf("asks = %q", acts.asks)
 	}
 	if len(acts.inbox) != 2 || acts.inbox[1] != ReasonDMARCSpoof {
@@ -541,9 +538,9 @@ func TestDeliverHostedRoutesLikePoll(t *testing.T) {
 	for _, tc := range []struct {
 		id, disp, run, conv, inbox string
 	}{
-		{"h1", "routed", "run-1", "", ""},
-		{"h2", "routed", "", "conv-1", ""},
-		{"h3", "misrouted", "", "conv-2", "in-1"},
+		{"h1", "routed", "", "conv-1", ""},
+		{"h2", "routed", "", "conv-2", ""},
+		{"h3", "misrouted", "", "conv-3", "in-1"},
 		{"h4", "dropped", "", "", ""},
 		{"h5", "dropped", "", "", "in-2"},
 		{"h6", "dropped", "", "", ""},
@@ -577,9 +574,9 @@ func TestDeliverHostedRoutesLikePoll(t *testing.T) {
 			t.Fatalf("redeliver %s: %v", msg.ID, err)
 		}
 	}
-	if len(acts.wakes) != 1 || len(acts.asks) != 2 || len(acts.inbox) != 2 {
-		t.Errorf("redelivery routed twice: wakes %d asks %d inbox %d",
-			len(acts.wakes), len(acts.asks), len(acts.inbox))
+	if len(acts.asks) != 3 || len(acts.inbox) != 2 {
+		t.Errorf("redelivery routed twice: asks %d inbox %d",
+			len(acts.asks), len(acts.inbox))
 	}
 	if n := busCount(t, st, "email.received"); n != 3 {
 		t.Errorf("email.received frames after redelivery = %d, want 3", n)

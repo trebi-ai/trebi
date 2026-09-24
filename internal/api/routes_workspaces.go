@@ -156,6 +156,9 @@ func (s *Server) handleAssistantGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAssistantPut(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
 	wsID := r.PathValue("id")
 	ws, err := s.ws.Get(r.Context(), wsID)
 	if err != nil {
@@ -184,6 +187,9 @@ func (s *Server) handleAssistantPut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAssistantPatch(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
 	// patch disabled flag on TREBI.md
 	wsID := r.PathValue("id")
 	ws, err := s.ws.Get(r.Context(), wsID)
@@ -226,6 +232,10 @@ func (s *Server) handleAssistantDelete(w http.ResponseWriter, r *http.Request) {
 // resolves or creates the channel conversation, so a client needs no pointer
 // calls of its own.
 func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
+	if scope, ok := scopeFrom(r.Context()); ok && scope.workspaceID != r.PathValue("id") {
+		writeForbidden(w, "agent may message only its own workspace assistant")
+		return
+	}
 	var body struct {
 		Text           string `json:"text"`
 		ChannelType    string `json:"channel_type"`
@@ -273,6 +283,9 @@ func (s *Server) handleAssistantWake(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
 	var body struct {
 		Name       *string `json:"name"`
 		GitEnabled *bool   `json:"git_enabled"`

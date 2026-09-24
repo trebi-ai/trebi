@@ -17,6 +17,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -47,6 +48,8 @@ var consumeTopics = []string{
 	"harness.limit_cleared",
 	"approval.created",
 	"approval.decided",
+	"proposal.created",
+	"proposal.decided",
 }
 
 //nolint:gochecknoglobals // static table
@@ -138,6 +141,50 @@ func (s *Service) Consume(ctx context.Context) {
 	}
 }
 
+func (s *Service) onProposalCreated(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	id := firstNonEmpty(attrs["proposal_id"], ev.ID)
+	if id == "" {
+		return
+	}
+	agent := strings.TrimPrefix(attrs["agent"], "agents/")
+	title := attrs["agent"]
+	if agent != "" {
+		title = agent
+	}
+	body := attrs["note"]
+	var keys []string
+	if raw := attrs["protected_keys"]; raw != "" {
+		var parsed []string
+		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+			keys = parsed
+		}
+	}
+	stats := fmt.Sprintf("+%s −%s lines", func() string {
+		if attrs["added"] != "" {
+			return attrs["added"]
+		}
+		return "0"
+	}(), func() string {
+		if attrs["removed"] != "" {
+			return attrs["removed"]
+		}
+		return "0"
+	}())
+	if len(keys) > 0 {
+		stats += "; protected: " + strings.Join(keys, ", ")
+	}
+	body = strings.TrimSpace(strings.Join([]string{body, stats}, "\n"))
+	_, err := s.Raise(ctx, RaiseOpts{
+		Kind: KindAgentProposal, Subject: "proposal/" + id, WorkspaceID: attrs["workspace"],
+		JobName: attrs["agent"], RunID: attrs["run_id"], TraceID: ev.TraceID,
+		Title: title + " proposes an AGENT.md change", Body: body,
+		Hint: "Review the diff and approve or deny. Reply approve or deny by mail.",
+	})
+	if err != nil {
+		s.log.Warn("raise proposal", "proposal", id, "error", err)
+	}
+}
+
 // SyncDoctor upserts health inbox items for findings and auto-resolves stale ones.
 func (s *Service) SyncDoctor(ctx context.Context, findings []DoctorFinding) {
 	want := map[string]struct{}{}
@@ -178,7 +225,17 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.onApprovalCreated(ctx, ev, attrs)
 	case "approval.decided":
 		s.autoResolve(ctx, KindWaiting, "run/"+firstNonEmpty(attrs["run_id"], ev.ID), "auto")
+	case "proposal.created":
+		s.onProposalCreated(ctx, ev, attrs)
+	case "proposal.decided":
+		s.autoResolve(ctx, KindAgentProposal, "proposal/"+firstNonEmpty(attrs["proposal_id"], ev.ID), attrs["decision"])
 	}
+}
+
+// HandleEvent is a test-friendly seam for a single already-read bus frame.
+// Production consumers use Consume and the persisted cursor.
+func (s *Service) HandleEvent(ctx context.Context, ev store.StreamEvent) {
+	s.handleEvent(ctx, ev)
 }
 
 func (s *Service) onSessionState(ctx context.Context, attrs map[string]string) {
@@ -260,6 +317,18 @@ func (s *Service) approvalQuestion(ctx context.Context, runID string) string {
 }
 
 func (s *Service) onRunFailed(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	if attrs["owner"] != "" && attrs["kind"] == "job" && s.failureRouter != nil {
+		handled, err := s.failureRouter.RouteFailure(ctx, RunFailure{
+			RunID: ev.ID, WorkspaceID: attrs["workspace"], Job: attrs["job"],
+			Owner: attrs["owner"], EndReason: attrs["end_reason"],
+		})
+		if err != nil {
+			s.log.Warn("failure route", "run", ev.ID, "error", err)
+		}
+		if handled {
+			return
+		}
+	}
 	_, err := s.Raise(ctx, RaiseOpts{
 		Kind: KindRunFailed, RunID: ev.ID, WorkspaceID: attrs["workspace"],
 		JobName: attrs["job"], EndReason: attrs["end_reason"], TraceID: ev.TraceID,
@@ -555,7 +624,13 @@ func (s *Service) deliver(ctx context.Context, opts RaiseOpts, id string) {
 // deliverEmail sends through the native channel and records the delivery.
 // It reports success, so the first-success chain stops here.
 func (s *Service) deliverEmail(ctx context.Context, opts RaiseOpts, id string, index int) bool {
-	msgID, err := s.opts.Email.SendAlert(ctx, id, opts.emailSubject(), opts.emailText(id))
+	text := opts.emailText(id)
+	if opts.Kind == KindAgentProposal && s.opts.ProposalContent != nil && strings.HasPrefix(opts.Subject, "proposal/") {
+		if base, proposed, ok := s.opts.ProposalContent(ctx, strings.TrimPrefix(opts.Subject, "proposal/")); ok {
+			text = proposals.TruncateDiff(proposals.UnifiedDiff(base, proposed), 200) + "\n\n" + text
+		}
+	}
+	msgID, err := s.opts.Email.SendAlert(ctx, id, opts.emailSubject(), text)
 	if err != nil {
 		s.log.Warn("alert.delivered", "channel", "email", "index", index, "error", err)
 	}
@@ -639,9 +714,8 @@ func (s *Service) EmailInboxItem(ctx context.Context, d email.RouteDecision, msg
 	} else {
 		subject = "email/misrouted/" + msg.Tag
 		title = "Email misrouted to +" + msg.Tag
-		body = "Mail from " + msg.From + " with subject \"" + sanitizeText(msg.Subject) +
-			"\" used a tag no agent in this workspace has. The message reached the assistant; the tag is kept."
-		hint = "Add an AGENT.md named " + msg.Tag + ", or tell the sender the correct tag."
+		body = "Mail to +" + msg.Tag + " was not delivered. No agent has this ID, or its email.accept list is empty."
+		hint = "Create the agent, or add the sender to email.accept."
 	}
 	item, err := s.findActiveBySubject(ctx, subject)
 	if err != nil {
@@ -756,10 +830,23 @@ func (s *Service) resolveStaleDoctor(ctx context.Context, want map[string]struct
 	}
 }
 
-// CollectDoctorFindings is the system doctor snapshot (also used by the API).
-func CollectDoctorFindings() []DoctorFinding {
+// CollectDoctorFindings is the system doctor snapshot from the live store.
+func (s *Service) CollectDoctorFindings() []DoctorFinding {
+	return collectDoctorFindings(s.st)
+}
+
+// collectDoctorFindings is the store-injected implementation so doctor never
+// has to race the daemon with a second migration-capable connection.
+func collectDoctorFindings(st *store.Store) []DoctorFinding {
 	var findings []DoctorFinding
-	if _, err := os.Stat(home.DBPath()); err != nil {
+	if st == nil {
+		findings = append(findings, DoctorFinding{
+			ID: "db-missing", Severity: "error", Code: "db_missing",
+			Message: "trebi.db unavailable",
+		})
+		return findings
+	}
+	if _, err := os.Stat(st.Path()); err != nil {
 		findings = append(findings, DoctorFinding{
 			ID: "db-missing", Severity: "error", Code: "db_missing",
 			Message: "trebi.db missing — run trebi service migrate-db",
@@ -782,6 +869,7 @@ func CollectDoctorFindings() []DoctorFinding {
 			Message: fmt.Sprintf("harness home for %s not created yet (will appear on first launch)", h.Name),
 		})
 	}
+	findings = append(findings, CollectAgentDoctorFindings(st)...)
 	if findings == nil {
 		return []DoctorFinding{}
 	}

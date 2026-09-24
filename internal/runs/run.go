@@ -69,11 +69,13 @@ const (
 type RunReason string
 
 const (
-	ReasonManual   RunReason = "manual"
-	ReasonSchedule RunReason = "schedule"
-	ReasonTrigger  RunReason = "trigger"
-	ReasonResume   RunReason = "resume"
-	ReasonReplay   RunReason = "replay"
+	ReasonManual     RunReason = "manual"
+	ReasonSchedule   RunReason = "schedule"
+	ReasonTrigger    RunReason = "trigger"
+	ReasonResume     RunReason = "resume"
+	ReasonReplay     RunReason = "replay"
+	ReasonEscalation RunReason = "escalation"
+	ReasonReport     RunReason = "report"
 )
 
 // Kind for runs: job | assistant (B27). Declared in dispatch, the lowest

@@ -13,6 +13,9 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/entitle"
+	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/request"
+	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -80,16 +83,53 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	var recipientRule *email.AcceptRule
+	if actor, ok := tools.ActorFrom(r.Context()); ok && actor.Kind == "agent" {
+		if actor.WorkspaceID != ws.ID {
+			writeForbidden(w, "agent may send only from its own workspace")
+			return
+		}
+		caller := request.AgentIndexName(strings.TrimPrefix(actor.Job, "agents/"))
+		if body.Agent != "" && request.AgentIndexName(body.Agent) != caller {
+			writeForbidden(w, "agent may send only as itself")
+			return
+		}
+		body.Agent = strings.TrimPrefix(caller, "agents/")
+		if env, err := s.email.RouteEnvFor(r.Context(), ws.ID); err == nil {
+			rule := env.Agents[body.Agent]
+			recipientRule = &rule
+		}
+	} else if actor, ok := tools.ActorFrom(r.Context()); ok && actor.Kind == "assistant" {
+		if actor.WorkspaceID != ws.ID {
+			writeForbidden(w, "assistant may send only from its own workspace")
+			return
+		}
+		if env, err := s.email.RouteEnvFor(r.Context(), ws.ID); err == nil {
+			rule := env.Assistant
+			recipientRule = &rule
+		}
+	}
 	if s.email.Configured() {
 		if _, err := s.email.EnsureAddress(r.Context(), ws.ID, ws.Name); err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
 	}
-	msgID, err := s.email.Send(r.Context(), email.SendOpts{
+	opts := email.SendOpts{
 		WorkspaceID: ws.ID, Agent: body.Agent, To: body.To,
-		Subject: body.Subject, Text: body.Text, InReplyTo: body.InReplyTo,
-	})
+		Subject: body.Subject, Text: body.Text, InReplyTo: body.InReplyTo, Recipients: recipientRule,
+	}
+	if actor, ok := tools.ActorFrom(r.Context()); ok {
+		opts.RunID = actor.RunID
+	}
+	if body.Agent != "" {
+		if row, err := s.findAgentRow(r.Context(), ws.ID, body.Agent); err == nil {
+			if parsed, err := job.ParseFile(row.Path); err == nil && parsed != nil && parsed.Title != "" {
+				opts.FromName = parsed.Title
+			}
+		}
+	}
+	msgID, err := s.email.Send(r.Context(), opts)
 	if err != nil {
 		writeEmailErr(w, err)
 		return

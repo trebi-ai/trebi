@@ -279,7 +279,7 @@ func (s *Server) filesGet(scope fileScope, w http.ResponseWriter, r *http.Reques
 
 func (s *Server) filesPut(scope fileScope, w http.ResponseWriter, r *http.Request) {
 	rel := r.PathValue("path")
-	if !s.allowFileMutation(w, scope, rel) {
+	if !s.allowFileMutation(w, r, scope, rel) {
 		return
 	}
 	data, ok := s.readFileBody(w, r)
@@ -293,6 +293,10 @@ func (s *Server) filesPut(scope fileScope, w http.ResponseWriter, r *http.Reques
 			return
 		}
 		data = decoded
+	}
+	if scope.ws != nil && s.agentOwnAgentMarkdown(r, scope.ws.ID, scope.wsRel(rel)) {
+		s.proposeAgentMarkdown(scope.ws, scope.wsRel(rel), data, w, r)
+		return
 	}
 	info, created, err := s.files.Write(r.Context(), scope.root, rel, data, ifMatchHeader(r))
 	if err != nil {
@@ -312,7 +316,11 @@ func (s *Server) filesPut(scope fileScope, w http.ResponseWriter, r *http.Reques
 
 func (s *Server) filesDelete(scope fileScope, w http.ResponseWriter, r *http.Request) {
 	rel := r.PathValue("path")
-	if !s.allowFileMutation(w, scope, rel) {
+	if scope.ws != nil && s.agentOwnAgentMarkdown(r, scope.ws.ID, scope.wsRel(rel)) {
+		writeForbidden(w, "AGENT.md delete requires a human")
+		return
+	}
+	if !s.allowFileMutation(w, r, scope, rel) {
 		return
 	}
 	if err := s.files.Delete(r.Context(), scope.root, rel, ifMatchHeader(r)); err != nil {
@@ -329,10 +337,21 @@ func (s *Server) filesDelete(scope fileScope, w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": rel})
 }
 
-func (s *Server) allowFileMutation(w http.ResponseWriter, scope fileScope, rel string) bool {
+func (s *Server) allowFileMutation(w http.ResponseWriter, r *http.Request, scope fileScope, rel string) bool {
+	if scope.ws != nil {
+		if agent, ok := scopeFrom(r.Context()); ok && !agent.canWritePath(scope.ws.ID, scope.wsRel(rel)) {
+			writeForbidden(w, "agent may write only under "+agent.agent+"/")
+			return false
+		}
+	}
 	if scope.denySkillMD && strings.EqualFold(filepath.Base(rel), "skill.md") {
 		writeErr(w, http.StatusConflict, "conflict", "use PUT /v1/skills/{name} (trebi skill update) for SKILL.md")
 		return false
+	}
+	// An agent's proposal path is resolved by the files handler. Bypass the
+	// job-scoped typed-document guard only for its own AGENT.md.
+	if scope.ws != nil && s.agentOwnAgentMarkdown(r, scope.ws.ID, scope.wsRel(rel)) {
+		return true
 	}
 	if !scope.denyDocs {
 		return true

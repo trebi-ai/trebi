@@ -37,6 +37,13 @@ func newConfirmGate() *confirmGate {
 			}
 			return "deletes the JOB.md of " + n + "; other files in the job folder and run rows stay"
 		}},
+		"DELETE /v1/jobs/": {-1, func(_ string, r *http.Request) string {
+			name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/jobs/"), "/")
+			if r.URL.Query().Get("purge") == "1" {
+				return "deletes job " + name + " and its whole folder; run rows stay"
+			}
+			return "deletes the JOB.md of " + name + "; other files in the job folder and run rows stay"
+		}},
 		"DELETE /v1/jobs/{name}/memory": {2, func(n string, _ *http.Request) string {
 			return "erases the memory file of job " + n
 		}},

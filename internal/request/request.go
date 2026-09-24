@@ -614,15 +614,56 @@ func AgentIndexName(short string) string {
 	return "agents/" + short
 }
 
+// BuildProposalGet builds GET /v1/proposals/{id}.
+func BuildProposalGet(id string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/proposals/" + url.PathEscape(id)}
+}
+
 // BuildAgentListPath builds GET /v1/workspaces/{id}/agents.
 func BuildAgentListPath(workspaceID string) string {
 	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/agents"
+}
+
+// BuildAgentListAllPath builds GET /v1/agents across workspaces.
+func BuildAgentListAllPath(workspaceFilter string) string {
+	return withQuery("/v1/agents", map[string]string{"workspace": workspaceFilter})
 }
 
 // BuildAgentGetPath builds GET /v1/workspaces/{id}/agents/{name}. name is the
 // short name.
 func BuildAgentGetPath(workspaceID, name string) string {
 	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/agents/" + url.PathEscape(name)
+}
+
+// BuildAgentRename builds POST /v1/workspaces/{id}/agents/{name}/rename.
+func BuildAgentRename(workspaceID, from, to string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   BuildAgentGetPath(workspaceID, from) + "/rename",
+		Body:   map[string]string{"to": to},
+	}
+}
+
+// BuildAgentAsk builds POST /v1/workspaces/{id}/agents/{name}/ask.
+func BuildAgentAsk(workspaceID, name, text string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   BuildAgentGetPath(workspaceID, name) + "/ask",
+		Body:   map[string]string{"text": text},
+	}
+}
+
+// BuildAgentEscalate builds POST /v1/workspaces/{id}/agents/{name}/escalate.
+func BuildAgentEscalate(workspaceID, name, to, reason, runID string) HTTPRequest {
+	body := map[string]string{"to": to, "reason": reason}
+	if runID != "" {
+		body["run_id"] = runID
+	}
+	return HTTPRequest{
+		Method: "POST",
+		Path:   BuildAgentGetPath(workspaceID, name) + "/escalate",
+		Body:   body,
+	}
 }
 
 // AgentSpec is the PUT /v1/workspaces/{id}/agents/{name} create body. Give
@@ -640,6 +681,10 @@ type AgentSpec struct {
 	Event       string
 	Match       string
 	Extract     string
+	Title       string
+	EmailAccept []string
+	Template    string
+	Inputs      map[string]string
 }
 
 // Build renders the spec as PUT /v1/workspaces/{id}/agents/{name} (upsert).
@@ -652,6 +697,17 @@ func (a AgentSpec) Build() HTTPRequest {
 		if v != "" {
 			body[k] = v
 		}
+	}
+	for k, v := range map[string]string{"title": a.Title, "template": a.Template} {
+		if v != "" {
+			body[k] = v
+		}
+	}
+	if len(a.EmailAccept) > 0 {
+		body["email_accept"] = a.EmailAccept
+	}
+	if len(a.Inputs) > 0 {
+		body["inputs"] = a.Inputs
 	}
 	if a.Event != "" {
 		on := map[string]any{"event": a.Event}
@@ -1011,8 +1067,8 @@ func BuildEventsRetrigger(id string) HTTPRequest {
 }
 
 // BuildConversationsListPath builds GET /v1/conversations?workspace=&channel=&cursor=&limit=.
-func BuildConversationsListPath(workspace, channel, cursor string, limit int) string {
-	kv := map[string]string{"workspace": workspace, "channel": channel, "cursor": cursor}
+func BuildConversationsListPath(workspace, channel, operator, cursor string, limit int) string {
+	kv := map[string]string{"workspace": workspace, "channel": channel, "operator": operator, "cursor": cursor}
 	if limit > 0 {
 		kv["limit"] = strconv.Itoa(limit)
 	}
@@ -1025,7 +1081,7 @@ func BuildConversationGet(id string) HTTPRequest {
 }
 
 // BuildConversationCreate builds POST /v1/conversations.
-func BuildConversationCreate(workspace, title, originChannel, channelType, channelRef string) HTTPRequest {
+func BuildConversationCreate(workspace, title, originChannel, channelType, channelRef, operator string) HTTPRequest {
 	body := map[string]any{"workspace": workspace, "origin_channel": originChannel}
 	if title != "" {
 		body["title"] = title
@@ -1033,7 +1089,16 @@ func BuildConversationCreate(workspace, title, originChannel, channelType, chann
 	if channelType != "" && channelRef != "" {
 		body["activate"] = map[string]any{"channel_type": channelType, "channel_ref": channelRef}
 	}
+	if operator != "" {
+		body["operator"] = operator
+	}
 	return HTTPRequest{Method: "POST", Path: "/v1/conversations", Body: body}
+}
+
+// BuildAgentConversationsPath builds the filtered agent conversation list.
+func BuildAgentConversationsPath(workspace, agent string) string {
+	return "/v1/workspaces/" + url.PathEscape(workspace) + "/agents/" +
+		url.PathEscape(agent) + "/conversations"
 }
 
 // BuildConversationPatch builds PATCH /v1/conversations/{id}.

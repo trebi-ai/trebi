@@ -106,14 +106,23 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	)
 	if n := p.poll(t, []email.IngressMessage{{
 		V: 1, Seq: 1, ID: u1, LocalPart: p.local, Tag: "research",
-		From: "any@example.net", Dmarc: "pass", MessageID: "<wake@x>",
+		From: "alice@example.com", Dmarc: "pass", MessageID: "<wake@x>",
 		Subject: "dig the news", Text: "Run the research pass.",
 	}}); n != 1 {
 		t.Fatalf("pulled %d, want 1", n)
 	}
-	agentRuns, err := p.cp.Runs.List(ctx, runs.ListOpts{Workspace: p.wsID, Kind: string(runs.KindAgent)})
-	if err != nil {
-		t.Fatal(err)
+	var agentRuns []*runs.Run
+	var err error
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		agentRuns, err = p.cp.Runs.List(ctx, runs.ListOpts{Workspace: p.wsID, Kind: string(runs.KindAgent)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(agentRuns) == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if len(agentRuns) != 1 || agentRuns[0].Job != "agents/research" {
 		t.Fatalf("agent runs = %+v", agentRuns)
@@ -123,8 +132,15 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env1.Disposition != "routed" || env1.Agent != "research" || env1.RunID != run.ID {
+	if env1.Disposition != "routed" || env1.Agent != "research" || env1.ConversationID == "" {
 		t.Fatalf("wake envelope = %+v", env1)
+	}
+	agentConv, err := p.cp.Conversations.Get(ctx, env1.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agentConv.Operator != "agents/research" || agentConv.OriginChannel != conversations.ChannelEmail {
+		t.Fatalf("agent conversation = %+v", agentConv)
 	}
 	if p.fw.acks != 1 {
 		t.Fatalf("acks = %d, want 1", p.fw.acks)
@@ -146,6 +162,16 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	alertMsgID, err := p.cp.Email.SendAlert(ctx, inbox, "[trebi] approval requested", "Reply approve or deny.")
 	if err != nil {
 		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		var linked string
+		if err := p.st.DB().QueryRowContext(ctx, `SELECT email_message_id FROM inbox_items WHERE id=?`, inbox).Scan(&linked); err != nil {
+			t.Fatal(err)
+		}
+		if linked == alertMsgID {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if n := p.poll(t, []email.IngressMessage{{
 		V: 1, Seq: 2, ID: u2, LocalPart: p.local,
@@ -197,14 +223,14 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	sendsBefore := len(p.fw.sends)
-	if err := p.cp.Email.ReplyOnThread(ctx, run.ID, convID); err != nil {
+	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{RunID: run.ID, ConversationID: convID}); err != nil {
 		t.Fatal(err)
 	}
 	if len(p.fw.sends) != sendsBefore+1 {
 		t.Fatalf("sends = %d, want %d", len(p.fw.sends), sendsBefore+1)
 	}
 	// A repeat covers the same turn: no second mail for one exchange.
-	if err := p.cp.Email.ReplyOnThread(ctx, run.ID, convID); err != nil {
+	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{RunID: run.ID, ConversationID: convID}); err != nil {
 		t.Fatal(err)
 	}
 	if len(p.fw.sends) != sendsBefore+1 {
@@ -322,7 +348,7 @@ func startMailPlane(t *testing.T) *mailPlane {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(agentPath, "AGENT.md"),
-		[]byte("---\nharness: fake\n---\n\nResearch things.\n"), 0o644); err != nil {
+		[]byte("---\nharness: fake\nemail:\n  accept:\n    - alice@example.com\n---\n\nResearch things.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -339,9 +365,9 @@ func startMailPlane(t *testing.T) *mailPlane {
 	// Shadow keeps every producer quiet; a minute keeps every ticker slow.
 	// The test drives the poller by hand.
 	cp := daemon.New(st, daemon.Options{
-		Shadow:            true,
+		Shadow:            false,
 		ScheduleInterval:  time.Minute,
-		QueueInterval:     time.Minute,
+		QueueInterval:     50 * time.Millisecond,
 		AlertsInterval:    time.Minute,
 		TurnWatchInterval: time.Minute,
 		EmailInterval:     time.Minute,

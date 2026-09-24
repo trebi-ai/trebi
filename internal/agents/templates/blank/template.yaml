@@ -1,0 +1,5 @@
+id: blank
+title: Blank agent
+description: Start from an empty instruction body.
+icon: plus
+jobs: []

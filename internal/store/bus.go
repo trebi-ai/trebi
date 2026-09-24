@@ -233,9 +233,13 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		// agent (folder-scoped operator, AGENT.md)
 		{Name: "agent.created", Bus: true, Log: true},
 		{Name: "agent.updated", Bus: true, Log: true},
+		{Name: "agent.renamed", Bus: true, Log: true},
 		{Name: "agent.deleted", Bus: true, Log: true},
 		{Name: "agent.woken", Bus: false, Log: true},
+		{Name: "agent.escalated", Bus: true, Log: true},
 		{Name: "agent.parse_failed", Bus: false, Log: true},
+		{Name: "proposal.created", Bus: true, Log: true},
+		{Name: "proposal.decided", Bus: true, Log: true},
 		// job
 		{Name: "job.created", Bus: true, Log: true},
 		{Name: "job.updated", Bus: true, Log: true},

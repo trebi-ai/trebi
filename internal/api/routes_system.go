@@ -362,7 +362,7 @@ func (s *Server) handleDoctorFix(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) doctorFindings() []map[string]any {
-	src := alerts.CollectDoctorFindings()
+	src := s.alerts.CollectDoctorFindings()
 	src = append(src, s.nativeAssistantDoctor()...)
 	src = append(src, s.apiBindDoctor()...)
 	src = append(src, s.agentLayoutDoctor()...)

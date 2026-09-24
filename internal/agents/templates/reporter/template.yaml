@@ -1,0 +1,5 @@
+id: reporter
+title: Reporter
+description: Produce a scheduled status digest.
+icon: newspaper
+jobs: [daily-digest]

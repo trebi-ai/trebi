@@ -34,6 +34,12 @@ func (s *Server) routeJobs(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/jobs/validate", s.handleJobValidateText)
 	mux.HandleFunc("POST /v1/jobs/{name}/validate", s.handleJobValidate)
 	mux.HandleFunc("GET /v1/schedules", s.handleSchedules)
+
+	// Owned-job paths have an agents/<id>/<job> wire name. Go's single-segment
+	// job wildcard cannot match embedded slashes and a more specific wildcard
+	// would conflict with the job-files wildcard, so the nested subtree gets
+	// one dispatcher that presents the same resolved name to existing handlers.
+	mux.HandleFunc("/v1/jobs/", s.handleJobsSubtree)
 }
 
 func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +65,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "active must be true or false")
 		return
 	}
+	kits, _ := s.agentKits(r.Context(), wsID)
 	enrich := s.jobEnrichment(r.Context(), wsID)
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
@@ -84,6 +91,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 			"triggers": []string{},
 		}
 		enrich(key, row.Path, item)
+		item["kit_source"] = s.kitSourceFrom(kits, row)
 		out = append(out, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": out})
@@ -184,8 +192,68 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"parse_error": j.ParseError, "prompt": j.Prompt,
 		"input_keys": job.DiscoverInputKeys(j.Prompt),
 		"triggers":   j.Triggers, "session": j.Session, "env_set": j.Envset,
-		"markdown": string(doc.Data), "mtime": doc.MTime,
+		"kit_source": s.kitSource(r.Context(), row),
+		"markdown":   string(doc.Data), "mtime": doc.MTime,
 	})
+}
+
+// agentKits parses all agent kit definitions once for a workspace request.
+func (s *Server) agentKits(ctx context.Context, wsID string) (map[string]*job.KitYAML, error) {
+	rows, err := s.ws.ListJobs(ctx, wsID)
+	if err != nil {
+		return map[string]*job.KitYAML{}, err
+	}
+	out := make(map[string]*job.KitYAML, len(rows))
+	for _, row := range rows {
+		if row.Kind != "agent" {
+			continue
+		}
+		if parsed, err := job.ParseFile(row.Path); err == nil && parsed != nil {
+			out[row.Name] = parsed.Kit
+		}
+	}
+	return out, nil
+}
+
+// kitSource marks kit values inherited from an owner agent. A job-level
+// envset or env entry wins and is labeled "job".
+func (s *Server) kitSource(ctx context.Context, row workspaces.JobRow) map[string]string {
+	kits, _ := s.agentKits(ctx, row.WorkspaceID)
+	return s.kitSourceFrom(kits, row)
+}
+
+func (s *Server) kitSourceFrom(kits map[string]*job.KitYAML, row workspaces.JobRow) map[string]string {
+	out := map[string]string{}
+	if row.Owner == "" {
+		return out
+	}
+	kit := kits[row.Owner]
+	if kit == nil {
+		return out
+	}
+	if kit.Envset != "" {
+		out["envset"] = "agent"
+	}
+	if len(kit.Env) > 0 {
+		out["env"] = "agent"
+	}
+	if len(kit.Skills) > 0 {
+		out["skills"] = "agent"
+	}
+	if len(kit.MCP) > 0 {
+		out["mcp"] = "agent"
+	}
+	if row.Name != "" {
+		if parsed, err := job.ParseFile(row.Path); err == nil && parsed != nil {
+			if parsed.Envset != "" {
+				out["envset"] = "job"
+			}
+			if len(parsed.Env) > 0 {
+				out["env"] = "job"
+			}
+		}
+	}
+	return out
 }
 
 func (s *Server) handleJobRun(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +271,9 @@ func (s *Server) handleJobUnpause(w http.ResponseWriter, r *http.Request) {
 func (s *Server) setJobDisabled(w http.ResponseWriter, r *http.Request, disabled bool) {
 	row, ok := s.resolveJob(w, r, r.PathValue("name"))
 	if !ok {
+		return
+	}
+	if !s.requireAgentJobScope(w, r, row) {
 		return
 	}
 	ws, rel, ok := s.jobFileLoc(w, r, row)
@@ -569,6 +640,18 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "name required")
 		return
 	}
+	if scope, agent := scopeFrom(r.Context()); agent {
+		if scope.workspaceID != ws.ID {
+			writeForbidden(w, "agent may create only in its own workspace")
+			return
+		}
+		short := strings.TrimPrefix(scope.agent, "agents/")
+		if body.Agent != "" && request.AgentIndexName(body.Agent) != scope.agent {
+			writeForbidden(w, "agent may create only jobs owned by "+scope.agent)
+			return
+		}
+		body.Agent = short
+	}
 	md, err := body.markdown()
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
@@ -636,6 +719,9 @@ func (s *Server) handleJobPut(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.requireAgentJobScope(w, r, row) {
+		return
+	}
 	ws, rel, ok := s.jobFileLoc(w, r, row)
 	if !ok {
 		return
@@ -669,6 +755,9 @@ func (s *Server) handleJobPatch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.requireAgentJobScope(w, r, row) {
+		return
+	}
 	ws, rel, ok := s.jobFileLoc(w, r, row)
 	if !ok {
 		return
@@ -690,6 +779,9 @@ func (s *Server) handleJobDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	row, ok := s.resolveJob(w, r, name)
 	if !ok {
+		return
+	}
+	if !s.requireAgentJobScope(w, r, row) {
 		return
 	}
 	ws, rel, ok := s.jobFileLoc(w, r, row)
@@ -775,5 +867,119 @@ func (s *Server) countFiles(ctx context.Context, root string) (int, error) {
 			return n, nil
 		}
 		after = next
+	}
+}
+
+// handleOwnedJobs dispatches the nested agents/<id>/<job> wire shape. The
+// helper restores the generic handler's `name` and, for files, `path` values.
+func (s *Server) handleJobsSubtree(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/jobs/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 1 && parts[0] != "" && parts[0] != "agents" {
+		r.SetPathValue("name", parts[0])
+		switch r.Method {
+		case http.MethodGet:
+			s.handleJobGet(w, r)
+		case http.MethodPut:
+			s.handleJobPut(w, r)
+		case http.MethodPatch:
+			s.handleJobPatch(w, r)
+		case http.MethodDelete:
+			s.handleJobDelete(w, r)
+		default:
+			writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
+		}
+		return
+	}
+	if len(parts) < 3 || parts[0] != "agents" || parts[1] == "" || parts[2] == "" {
+		writeErr(w, http.StatusNotFound, "not_found", "job not found")
+		return
+	}
+	owner, child := parts[1], parts[2]
+	if strings.Contains(owner, "..") || strings.Contains(child, "..") {
+		writeErr(w, http.StatusBadRequest, "validation", "invalid owned-job path")
+		return
+	}
+	r.SetPathValue("name", "agents/"+owner+"/"+child)
+	tail := "/" + strings.Join(parts[3:], "/")
+	if len(parts) == 3 {
+		tail = "/"
+	}
+	if len(parts) >= 4 && parts[3] == "files" {
+		if len(parts) == 4 && r.Method == http.MethodGet {
+			r.SetPathValue("path", "")
+			s.handleJobFilesList(w, r)
+			return
+		}
+		if len(parts) > 4 {
+			r.SetPathValue("path", strings.Join(parts[4:], "/"))
+			switch r.Method {
+			case http.MethodGet:
+				s.handleJobFilesGet(w, r)
+			case http.MethodPut:
+				s.handleJobFilesPut(w, r)
+			case http.MethodDelete:
+				s.handleJobFilesDelete(w, r)
+			default:
+				writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
+			}
+			return
+		}
+	}
+	switch r.Method + " " + tail {
+	case "GET /":
+		s.handleJobGet(w, r)
+	case "PUT /":
+		s.handleJobPut(w, r)
+	case "PATCH /":
+		s.handleJobPatch(w, r)
+	case "DELETE /":
+		s.handleJobDelete(w, r)
+	case "POST /run", "POST /pause", "POST /unpause", "POST /validate":
+		s.handleJobRunForTail(w, r, tail)
+	case "GET /memory":
+		s.handleMemoryGet(w, r, memoryJob)
+	case "PUT /memory":
+		s.handleMemoryPut(w, r, memoryJob)
+	case "DELETE /memory":
+		s.handleMemoryReset(w, r, memoryJob)
+	case "POST /memory/validate":
+		s.handleMemoryValidate(w, r, memoryJob)
+	case "POST /memory/migrate":
+		s.handleMemoryMigrate(w, r, memoryJob)
+	case "PUT /memory/context":
+		s.handleMemorySectionPut(w, r, memoryJob, "context")
+	case "PUT /memory/state":
+		s.handleMemorySectionPut(w, r, memoryJob, "state")
+	case "POST /memory/lessons":
+		s.handleMemoryEntryPost(w, r, memoryJob, "lessons")
+	case "POST /memory/log":
+		s.handleMemoryEntryPost(w, r, memoryJob, "log")
+	default:
+		switch {
+		case r.Method == http.MethodDelete && strings.HasPrefix(tail, "/memory/lessons/"):
+			r.SetPathValue("eid", parts[len(parts)-1])
+			s.handleMemoryEntryDelete(w, r, memoryJob, "lessons")
+		case r.Method == http.MethodDelete && strings.HasPrefix(tail, "/memory/log/"):
+			r.SetPathValue("eid", parts[len(parts)-1])
+			s.handleMemoryEntryDelete(w, r, memoryJob, "log")
+		default:
+			writeErr(w, http.StatusNotFound, "not_found", "job route not found")
+		}
+	}
+}
+
+func (s *Server) handleJobRunForTail(w http.ResponseWriter, r *http.Request, tail string) {
+	switch tail {
+	case "/run":
+		s.handleJobRun(w, r)
+	case "/pause":
+		s.handleJobPause(w, r)
+	case "/unpause":
+		s.handleJobUnpause(w, r)
+	case "/validate":
+		s.handleJobValidate(w, r)
+	default:
+		writeErr(w, http.StatusNotFound, "not_found", "job route not found")
 	}
 }

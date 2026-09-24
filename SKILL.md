@@ -85,7 +85,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `runs-and-debugging` | show/timeline/transcript/logs, retry/resume/replay/mark, attach, approvals |
 | `files` | job-scoped vs workspace files, scripts next to jobs, If-Match |
 | `assistant` | wake, say, conversations, memory |
-| `agents` | folder-scoped agents: create, owned jobs, wake, agent memory |
+| `agents` | folder-scoped agents: identity, rename, email accept, owned jobs, wake, conversations, agent memory |
 | `connectors-and-rules` | create/connect connectors, rules test/fire, event triggers, queue |
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed |
 | `observability` | bus, service logs, doctor, stats |
@@ -118,6 +118,8 @@ Every error is `{"error":{"code","message","details"}}` with a stable code:
 - If a trebi command fails with "Confirm with the user first", stop. That refusal is the confirmation gate. Report the consequence to the user and wait. Do not retry with `--force` in the same turn.
 - Never show a secret value you did not have to read. Always prefer the form that keeps it out of your transcript: on the CLI pass the path, `trebi secret set --from-file ./key.txt NAME`; on the catalog pass `value_file`, which is resolved before dispatch. If you only have the value in context, pass `value` once and never show it again: no second `cat`, not in the final message, not in a job prompt or a file. Do not stop the task over this — store the secret and carry on. Reference a stored secret from a job by its **name**; the daemon resolves it at launch. A secret name is not a secret.
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.
+- Agent runs carry `TREBI_RUN_TOKEN`; keep it in the environment for `trebi` and `trebi mcp serve` calls. It scopes an agent to its folder, owned jobs, and own memory. `email.accept`, `kit`, and `budget` are human-only. If a write returns `forbidden`, ask the human instead of changing owners or protected keys.
+- To hand a problem up, use `agent escalate` (`to=assistant` or `to=operator`) with the concrete blocker and what you tried. A failed owned job first wakes its owner with `reason=escalation`; the fourth failure in 24 hours goes to the operator inbox.
 - Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
 - `trebi bus --limit N` dumps up to N frames and exits. `connector logs` returns at once; `-f` follows and blocks. `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.
 - `-w` / `--workspace` accepts name or id and can go before the verb or after the job name.

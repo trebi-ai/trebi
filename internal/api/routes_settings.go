@@ -167,6 +167,9 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
 	name := r.PathValue("name")
 	var body struct {
 		Value string `json:"value"`
@@ -186,6 +189,9 @@ func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
 	name := r.PathValue("name")
 	if err := secrets.Delete(name); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -226,6 +232,9 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())

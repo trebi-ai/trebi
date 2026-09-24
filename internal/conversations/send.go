@@ -65,7 +65,7 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 	if opts.ChannelRef == "" {
 		opts.ChannelRef = opts.Workspace
 	}
-	convID, err := s.EnsureForChannel(ctx, opts.Workspace, opts.ChannelType, opts.ChannelRef)
+	convID, err := s.EnsureForChannel(ctx, opts.Workspace, opts.Operator, opts.ChannelType, opts.ChannelRef)
 	if err != nil {
 		return nil, err
 	}
@@ -90,16 +90,24 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 
 // EnsureForChannel returns the conversation the channel points at, creating one
 // when the pointer is absent.
-func (s *Service) EnsureForChannel(ctx context.Context, workspace, channelType, channelRef string) (string, error) {
+func (s *Service) EnsureForChannel(ctx context.Context, workspace, operator, channelType, channelRef string) (string, error) {
 	p, err := s.GetPointer(ctx, channelType, channelRef)
 	if err == nil && p.ConversationID != "" {
-		return p.ConversationID, nil
+		conv, err := s.Get(ctx, p.ConversationID)
+		if err != nil {
+			return "", err
+		}
+		if conv.Operator != operator {
+			return "", ErrOperatorConflict
+		}
+		return conv.ID, nil
 	}
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return "", err
 	}
 	conv, err := s.Create(ctx, CreateOpts{
 		Workspace:     workspace,
+		Operator:      operator,
 		OriginChannel: channelType,
 		Activate:      &Activate{ChannelType: channelType, ChannelRef: channelRef},
 	})
@@ -302,7 +310,11 @@ func (s *Service) liveRun(ctx context.Context, conv *Conversation) *runs.Run {
 	if s.runs == nil {
 		return nil
 	}
-	live, err := s.runs.FindLive(ctx, conv.Workspace, runs.KindAssistant, conv.Key)
+	kind := runs.KindAssistant
+	if conv.Operator != "" {
+		kind = runs.KindAgent
+	}
+	live, err := s.runs.FindLive(ctx, conv.Workspace, kind, conv.Key)
 	if err != nil {
 		return nil
 	}
@@ -317,13 +329,17 @@ func (s *Service) enqueueWake(ctx context.Context, conv *Conversation, text stri
 	if err != nil {
 		return "", err
 	}
+	kind := runs.KindAssistant
+	if conv.Operator != "" {
+		jobName, kind = conv.Operator, runs.KindAgent
+	}
 	// The raw text rides the queue; dispatch composes the wake with a fresh
 	// recap (Part F.3). item.Prompt is the wake message.
 	item := &dispatch.QueueItem{
-		Connector:       "assistant",
+		Connector:       "conversation",
 		WorkspaceID:     conv.Workspace,
 		Job:             jobName,
-		Kind:            runs.KindAssistant,
+		Kind:            kind,
 		ConversationKey: conv.Key,
 		Prompt:          text,
 		Status:          dispatch.QueuePending,

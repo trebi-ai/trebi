@@ -24,6 +24,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/runtime/native"
 	"github.com/trebi-ai/trebi/internal/tmux"
+	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -180,13 +181,26 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		s.handleRunsDryRun(w, r, body.Workspace, body.Job, body.Kind, reason, harness, prompt, body.Inputs)
 		return
 	}
+	var budgetWarning string
+	if reason == runs.ReasonManual && r.Header.Get(tools.HeaderRunToken) == "" && s.ws != nil {
+		if ok, blockingReason, err := s.ws.Allow(r.Context(), body.Workspace, body.Job, body.Kind); err == nil && !ok {
+			budgetWarning = blockingReason
+		}
+	}
 
 	// One launch path: CreateAndLaunch (real tmux when binary present; harness=fake for CI).
-	lopts := launchOpts(body, reason, harness, prompt, spec)
+	kit := s.ws.OwnerKit(r.Context(), body.Workspace, body.Job)
+	lopts := launchOpts(body, reason, harness, prompt, spec, kit)
+	lopts.JobSkills = spec.Skills
 	lopts.Wake = wake
 	lopts.Memory = mem
+	lopts.Kit = kit
 	run, _, err := s.runs.CreateAndLaunch(r.Context(), lopts)
 	if err != nil {
+		if errors.Is(err, runs.ErrBudgetExceeded) {
+			writeErr(w, http.StatusConflict, "conflict", err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
@@ -205,6 +219,12 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		if waited, werr := s.runs.WaitFor(r.Context(), run.ID, wait); werr == nil {
 			run = waited
 		}
+	}
+	if budgetWarning != "" {
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"run": run, "warning": budgetWarning,
+		})
+		return
 	}
 	writeJSON(w, http.StatusCreated, run)
 }
@@ -286,7 +306,7 @@ func (s *Server) expandLaunchPrompt(ctx context.Context, wsID string, spec *job.
 
 // launchOpts builds the launch options: cwd and session knobs from the spec,
 // plus the fake harness override for tests/e2e.
-func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt string, spec *job.Job) runs.LaunchOpts {
+func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt string, spec *job.Job, kit *job.KitYAML) runs.LaunchOpts {
 	lopts := runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID:     body.Workspace,
@@ -303,7 +323,7 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 	}
 	if spec != nil {
 		// Agents resolve to the workspace root unless working_dir: is set (G.5).
-		d := spec.LaunchDefaults()
+		d := spec.LaunchDefaultsWithKit(kit)
 		lopts.WorkingDir = d.WorkingDir
 		lopts.IfRunning = d.IfRunning
 		lopts.Env = d.Env
@@ -391,6 +411,13 @@ func (s *Server) createRunFromJob(w http.ResponseWriter, r *http.Request, name s
 	if r.URL.Query().Get("dry_run") == "true" {
 		body.DryRun = true
 	}
+	row, ok := s.resolveJob(w, r, name)
+	if !ok {
+		return
+	}
+	if !s.requireAgentJobScope(w, r, row) {
+		return
+	}
 	s.createRun(w, r, body)
 }
 
@@ -426,6 +453,9 @@ func (s *Server) handleRunsKill(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRunKill(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAgentRunScope(w, r, r.PathValue("id")) {
+		return
+	}
 	if err := s.runs.Kill(r.Context(), r.PathValue("id")); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeErr(w, http.StatusNotFound, "not_found", "run not found")
@@ -1009,6 +1039,9 @@ func writeSSELogLines(w http.ResponseWriter, flush func(), lines []string) {
 }
 
 func (s *Server) handleRunResume(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAgentRunScope(w, r, r.PathValue("id")) {
+		return
+	}
 	run, err := s.runs.Resume(r.Context(), r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1070,7 +1103,8 @@ func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason r
 		},
 		Prompt: prompt,
 	}
-	d := j.LaunchDefaults()
+	kit := s.ws.OwnerKit(ctx, prev.Workspace, prev.Job)
+	d := j.LaunchDefaultsWithKit(kit)
 	lopts.WorkingDir = d.WorkingDir
 	lopts.Env = d.Env
 	lopts.Model, lopts.Effort = d.Model, d.Effort
@@ -1080,6 +1114,8 @@ func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason r
 	// runtime: tui reopens the pane instead of silently flipping to the wire.
 	lopts.Runtime = j.Runtime
 	lopts.Memory = s.memoryLaunchFor(ctx, prev.Workspace, j)
+	lopts.Kit = kit
+	lopts.JobSkills = j.Skills
 	return lopts, nil
 }
 
@@ -1096,6 +1132,9 @@ func (s *Server) memoryLaunchFor(ctx context.Context, wsID string, spec *job.Job
 }
 
 func (s *Server) handleRunReplay(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAgentRunScope(w, r, r.PathValue("id")) {
+		return
+	}
 	prev, err := s.runs.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")
@@ -1117,6 +1156,9 @@ func (s *Server) handleRunReplay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAgentRunScope(w, r, r.PathValue("id")) {
+		return
+	}
 	// D7: policy dispatch on end_reason.
 	// - agent/logic failures → resume with failure note
 	// - auth/limit → park (blocked resume intent)
@@ -1208,6 +1250,9 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRunMessage(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAgentRunScope(w, r, r.PathValue("id")) {
+		return
+	}
 	var body struct {
 		Text string `json:"text"`
 	}
@@ -1223,6 +1268,9 @@ func (s *Server) handleRunMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRunMark(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAgentRunScope(w, r, r.PathValue("id")) {
+		return
+	}
 	var body struct {
 		Status string `json:"status"` // complete|failed|skipped (success accepted)
 		Note   string `json:"note"`
@@ -1319,6 +1367,10 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
 	event := r.PathValue("event")
 	runID := r.Header.Get("X-Trebi-Run-Id")
+	if actor, ok := tools.ActorFrom(r.Context()); ok && actor.RunID != "" && actor.RunID != runID {
+		writeForbidden(w, "run token may post only its own hook")
+		return
+	}
 	if runID == "" {
 		runID = r.URL.Query().Get("run_id")
 	}

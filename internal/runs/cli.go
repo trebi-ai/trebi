@@ -266,7 +266,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		Harness:       agentwire.Harness(tool.Name()),
 		Binary:        bin,
 		WorkingDir:    opts.WorkingDir,
-		Env:           mergeCLIEnv(tool.Name(), opts.Env, plan.Env, run.ID, tool.Name()),
+		Env:           mergeCLIEnv(tool.Name(), opts.Env, plan.Env, run.ID, opts.CreateOpts.ActorToken, tool.Name()),
 		SessionID:     opts.SessionID,
 		Model:         opts.Model,
 		Effort:        opts.Effort,
@@ -438,7 +438,7 @@ func hasCommandFlag(command, flag string) bool {
 
 // mergeCLIEnv mirrors paneEnvExport precedence: secret env < job env < plan
 // env, plus the run identity and the pinned bin dir on PATH.
-func mergeCLIEnv(toolName string, optEnv, planEnv map[string]string, runID, tool string) map[string]string {
+func mergeCLIEnv(toolName string, optEnv, planEnv map[string]string, runID, token, tool string) map[string]string {
 	merged := map[string]string{}
 	if env, err := harness.LoadSecretEnv(toolName); err == nil {
 		for k, v := range env {
@@ -452,6 +452,7 @@ func mergeCLIEnv(toolName string, optEnv, planEnv map[string]string, runID, tool
 		merged[k] = v
 	}
 	merged["TREBI_RUN_ID"] = runID
+	merged["TREBI_RUN_TOKEN"] = token
 	merged["TREBI_HOOK_TOOL"] = tool
 	binCurrent := filepath.Join(config.BinDir(), toolName, "current")
 	if st, err := os.Stat(binCurrent); err == nil && st.IsDir() {
@@ -921,6 +922,7 @@ func (s *Service) stopCLIRun(runID string, cr *cliRun) {
 // teardownRuntime stops whichever runtime owns the run, without terminating
 // it. The caller writes the terminal row.
 func (s *Service) teardownRuntime(ctx context.Context, run *Run) {
+	removeRunEnvFile(run)
 	s.cancelNative(run.ID)
 	if cr := s.cliRunFor(run.ID); cr != nil {
 		s.stopCLIRun(run.ID, cr)

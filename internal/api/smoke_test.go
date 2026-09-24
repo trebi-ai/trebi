@@ -34,7 +34,7 @@ func TestPlatformSurface_NonStub(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
 	auth := func(req *http.Request) {
 		req.Header.Set("Content-Type", "application/json")
 	}

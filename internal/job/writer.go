@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -43,6 +44,12 @@ func SetDisabled(path string, disabled bool) error {
 		val = "true"
 	}
 	return setScalarField(path, "disabled", val)
+}
+
+// SetName writes the optional identity `name:` field. Callers own the
+// file/folder consistency check.
+func SetName(path, name string) error {
+	return setScalarField(path, "name", strconv.Quote(name))
 }
 
 // patchScalars are the top-level frontmatter fields a patch may set.
@@ -446,11 +453,13 @@ func setInSessionBlock(fmLines []string, sessIdx int, key, entry string) []strin
 // other field.
 type Spec struct {
 	Content     string
+	Title       string
 	Prompt      string
 	Harness     string
 	Model       string
 	Effort      string
 	Description string
+	EmailAccept []string
 	Cron        string
 	Every       string
 	// On is one event trigger: the connector name plus its optional gates.
@@ -475,8 +484,10 @@ func (s Spec) Render() (string, error) {
 		return "", errors.New("prompt or content is required")
 	}
 	fm := Frontmatter{
+		Title:       s.Title,
 		Harness:     HarnessSpec{Name: s.Harness, Model: s.Model, Effort: s.Effort},
 		Description: s.Description,
+		Email:       emailSpec(s.EmailAccept),
 		Session:     s.Session,
 		Env:         s.Env,
 		Triggers:    s.triggers(),
@@ -489,6 +500,13 @@ func (s Spec) Render() (string, error) {
 		return "", err
 	}
 	return "---\n" + string(block) + "---\n\n" + strings.TrimSpace(s.Prompt) + "\n", nil
+}
+
+func emailSpec(accept []string) *EmailYAML {
+	if accept == nil {
+		return nil
+	}
+	return &EmailYAML{Accept: accept}
 }
 
 func (s Spec) triggers() []TriggerYAML {

@@ -81,7 +81,7 @@ func TestLaunchOptsWorkingDirCoversG5(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lopts := launchOpts(runCreateRequest{Kind: runs.KindAgent, Job: "agents/cmo"}, runs.ReasonManual, "", "", spec)
+	lopts := launchOpts(runCreateRequest{Kind: runs.KindAgent, Job: "agents/cmo"}, runs.ReasonManual, "", "", spec, nil)
 	if lopts.WorkingDir != wsDir {
 		t.Fatalf("agent cwd=%q want workspace root %q", lopts.WorkingDir, wsDir)
 	}

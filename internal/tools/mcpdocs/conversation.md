@@ -10,8 +10,14 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 List conversations.
 - `workspace` (string, optional): filter by workspace id.
 - `channel` (string, optional): filter by channel reference.
+- `operator` (string, optional): filter by operator; empty is the assistant, `agents/<id>` is an agent.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.
+
+### agent_list
+List one agent's conversations.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name.
 
 ### show
 Read one conversation.
@@ -30,6 +36,7 @@ Create one conversation.
 - `origin_channel` (string, optional): originating channel reference. Defaults to `mcp`.
 - `channel_type` (string, optional, with `channel_ref`): channel type. Both together activate the conversation on that channel.
 - `channel_ref` (string, optional, with `channel_type`): channel reference.
+- `operator` (string, optional): target operator; short agent id or `agents/<id>`. Empty is the assistant.
 
 ### patch
 Change one conversation.

@@ -22,6 +22,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/license"
+	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -69,6 +70,7 @@ type ControlPlane struct {
 	Conversations *conversations.Service
 	Harness       *harness.Service
 	Email         *email.Service
+	Proposals     *proposals.Service
 	Cloud         *cloudlink.Service
 	Webhooks      *webhooks.Service
 	License       *license.Service
@@ -107,6 +109,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	fs := files.New(maxBytes)
 	r := runs.New(st, ws, fs)
 	r.SetMemoryResolver(ws)
+	r.SetBudgetGate(ws)
 	q := dispatch.NewQueue(st)
 	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()
@@ -119,11 +122,13 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	cl := cloudlink.New(st).WithMail(em)
 	hk := webhooks.New(st, connector, cl)
 	cl.WithWebhooks(hk)
+	proposalSvc := proposals.NewService(st, fs, ws, st, r)
 	c := &ControlPlane{
 		Store:         st,
 		Runs:          r,
 		Workspaces:    ws,
 		Files:         fs,
+		Proposals:     proposalSvc,
 		Schedule:      schedule.New(st),
 		Connectors:    connector,
 		Policy:        pol,
@@ -147,6 +152,16 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		return a.Prompt
 	}
 	c.Alerts = newAlerts(st, opts, cfg, em, c.jobNotify, approvalQuestion)
+	c.Alerts.SetDoctor(c.Alerts.CollectDoctorFindings)
+	c.Alerts.SetProposalContent(func(ctx context.Context, id string) (string, string, bool) {
+		p, err := c.Proposals.Get(ctx, id)
+		if err != nil {
+			return "", "", false
+		}
+		return p.BaseContent, p.Proposed, true
+	})
+	c.Alerts.SetFailureRouter(c)
+	ws.SetBudgetAlerter(c)
 	c.configureCloud(cfg)
 	c.configureEmail(cfg)
 	return c
@@ -158,7 +173,6 @@ func newAlerts(st *store.Store, opts Options, cfg *config.Config, em *email.Serv
 	aopts := alerts.Options{
 		TickInterval:     opts.AlertsInterval,
 		Shadow:           opts.Shadow,
-		Doctor:           alerts.CollectDoctorFindings,
 		Email:            em,
 		JobNotify:        jobNotify,
 		ApprovalQuestion: approvalQuestion,

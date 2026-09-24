@@ -4,6 +4,7 @@
 package email
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/proposals"
 )
 
 // replyHops caps how deep one reply walks the References chain (plan I.1).
@@ -25,9 +27,11 @@ const replyHops = 8
 // still goes to the assistant lane.
 type replyTarget struct {
 	conversationID string
+	operator       string
 	runID          string
 	inboxID        string
 	alertKind      string
+	proposalID     string
 	resolved       bool
 	isItem         bool
 }
@@ -40,19 +44,26 @@ type replyInbound struct {
 	messageID   string
 }
 
+type ReplyOpts struct {
+	RunID          string
+	ConversationID string
+	Agent          string // short id; '' = workspace address
+	FromName       string // agent title; '' = Settings.FromName
+}
+
 // ReplyOnThread mails the run's last assistant turn on the mail thread
 // that started the exchange (plan I.2). One outbound mail per exchange:
 // covered_turn makes the send restart-safe. Missing wiring, thread, or
 // turn is a silent no-op.
-func (s *Service) ReplyOnThread(ctx context.Context, runID, conversationID string) error {
+func (s *Service) ReplyOnThread(ctx context.Context, opts ReplyOpts) error {
 	if s.convs == nil {
 		return nil
 	}
-	root, ok, err := s.replyThreadRoot(ctx, conversationID)
+	root, ok, err := s.replyThreadRoot(ctx, opts.ConversationID)
 	if err != nil || !ok {
 		return err
 	}
-	turn, covered, err := s.replyDueTurn(ctx, conversationID, runID)
+	turn, covered, err := s.replyDueTurn(ctx, opts.ConversationID, opts.RunID)
 	if err != nil || turn == nil || *turn.TurnIndex <= covered {
 		return err
 	}
@@ -60,7 +71,7 @@ func (s *Service) ReplyOnThread(ctx context.Context, runID, conversationID strin
 	if err != nil || !ok {
 		return err
 	}
-	return s.sendReply(ctx, conversationID, root, runID, turn, in)
+	return s.sendReply(ctx, opts, root, turn, in)
 }
 
 // replyThreadRoot finds the thread the exchange began on: the newest
@@ -118,7 +129,7 @@ FROM email_messages WHERE direction='in' AND thread_root=? ORDER BY id DESC LIMI
 // sendReply writes the envelope, then mails the turn text on the thread
 // (plan I.2). A send failure marks the row send_failed; the next tick
 // retries, because only sent rows count as covering.
-func (s *Service) sendReply(ctx context.Context, conversationID, root, runID string, turn *conversations.Message, in replyInbound) error {
+func (s *Service) sendReply(ctx context.Context, opts ReplyOpts, root string, turn *conversations.Message, in replyInbound) error {
 	cfg, err := s.Settings()
 	if err != nil {
 		return err
@@ -144,20 +155,28 @@ func (s *Service) sendReply(ctx context.Context, conversationID, root, runID str
 	if in.messageID != "" && in.messageID != root {
 		refs = append(refs, in.messageID)
 	}
+	from := addr.Full()
+	if opts.Agent != "" {
+		tagged, err := tagAddress(addr, opts.Agent)
+		if err != nil {
+			return err
+		}
+		from = tagged + "@" + addr.Domain
+	}
 	if _, err := s.st.DB().ExecContext(ctx, `
 INSERT INTO email_messages
-  (id, direction, workspace_id, message_id, in_reply_to, thread_root, recipients,
+  (id, direction, workspace_id, agent, message_id, in_reply_to, thread_root, recipients,
    subject, disposition, conversation_id, run_id, covered_turn, created_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		rowID, "out", in.workspaceID, msgID, in.messageID, root, in.sender,
-		subject, "sent", conversationID, runID, *turn.TurnIndex,
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		rowID, "out", in.workspaceID, opts.Agent, msgID, in.messageID, root, in.sender,
+		subject, "sent", opts.ConversationID, opts.RunID, *turn.TurnIndex,
 		time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("reply envelope: %w", err)
 	}
 	req := SendRequest{
-		V: ContractV, From: addr.Full(), FromName: cfg.FromName,
+		V: ContractV, From: from, FromName: cmp.Or(opts.FromName, cfg.FromName),
 		To: []string{in.sender}, Subject: subject,
-		Text:      turn.Text + "\n\n--\ntrebi conversation " + conversationID,
+		Text:      turn.Text + "\n\n--\ntrebi conversation " + opts.ConversationID,
 		MessageID: msgID, InReplyTo: in.messageID, References: refs,
 	}
 	if err := s.sendWithBackoff(ctx, tr, req); err != nil {
@@ -200,10 +219,10 @@ func (s *Service) resolveReply(ctx context.Context, msg IngressMessage) (*replyT
 
 // itemByMessageID finds the inbox item one outbound message id answered.
 func (s *Service) itemByMessageID(ctx context.Context, messageID string) (*replyTarget, error) {
-	var id, runID, kind, status string
+	var id, runID, kind, status, subject string
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT id, COALESCE(run_id,''), COALESCE(alert_kind,''), status FROM inbox_items WHERE email_message_id=?`,
-		messageID).Scan(&id, &runID, &kind, &status)
+		`SELECT id, COALESCE(run_id,''), COALESCE(alert_kind,''), status, COALESCE(subject,'') FROM inbox_items WHERE email_message_id=?`,
+		messageID).Scan(&id, &runID, &kind, &status, &subject)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -211,17 +230,28 @@ func (s *Service) itemByMessageID(ctx context.Context, messageID string) (*reply
 		return nil, fmt.Errorf("reply item %s: %w", messageID, err)
 	}
 	return &replyTarget{inboxID: id, runID: runID, alertKind: kind,
-		resolved: status == "resolved", isItem: true}, nil
+		proposalID: proposalIDFromSubject(subject), resolved: status == "resolved", isItem: true}, nil
+}
+
+// proposalIDFromSubject extracts the derived proposal link from an alert subject.
+func proposalIDFromSubject(subject string) string {
+	if id, ok := strings.CutPrefix(subject, "proposal/"); ok {
+		return id
+	}
+	return ""
 }
 
 // rowByMessageID finds the envelope row one message id names; a row with
 // no link is not a target.
 func (s *Service) rowByMessageID(ctx context.Context, messageID string) (*replyTarget, error) {
-	var runID, convID, inboxID string
+	var runID, convID, inboxID, operator string
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT COALESCE(run_id,''), COALESCE(conversation_id,''), COALESCE(inbox_id,'')
-		 FROM email_messages WHERE message_id=? ORDER BY id DESC LIMIT 1`,
-		messageID).Scan(&runID, &convID, &inboxID)
+		`SELECT COALESCE(em.run_id,''), COALESCE(em.conversation_id,''), COALESCE(em.inbox_id,''),
+			COALESCE(c.operator,'')
+		 FROM email_messages em
+		 LEFT JOIN conversations c ON c.id = em.conversation_id
+		 WHERE em.message_id=? ORDER BY em.id DESC LIMIT 1`,
+		messageID).Scan(&runID, &convID, &inboxID, &operator)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -231,7 +261,20 @@ func (s *Service) rowByMessageID(ctx context.Context, messageID string) (*replyT
 	if runID == "" && convID == "" && inboxID == "" {
 		return nil, nil
 	}
-	return &replyTarget{conversationID: convID, runID: runID, inboxID: inboxID}, nil
+	if inboxID != "" {
+		var runID, alertKind, status, subject string
+		err := s.st.DB().QueryRowContext(ctx,
+			`SELECT COALESCE(run_id,''), COALESCE(alert_kind,''), status, COALESCE(subject,'') FROM inbox_items WHERE id=?`,
+			inboxID).Scan(&runID, &alertKind, &status, &subject)
+		if err == nil {
+			return &replyTarget{inboxID: inboxID, runID: runID, alertKind: alertKind,
+				proposalID: proposalIDFromSubject(subject), resolved: status == "resolved", isItem: true}, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+	return &replyTarget{conversationID: convID, operator: operator, runID: runID, inboxID: inboxID}, nil
 }
 
 // dispatchReply tries the reply path before the class dispatch (plan
@@ -252,6 +295,32 @@ func (g *Ingress) dispatchReply(ctx context.Context, msg IngressMessage, d Route
 	if t == nil {
 		return false
 	}
+	if !t.isItem && t.conversationID != "" {
+		env, err := g.act.RouteEnvFor(ctx, d.WorkspaceID)
+		if err != nil {
+			g.log.Warn("email.reply env", "id", msg.ID, "error", err)
+			return true
+		}
+		cfg, err := g.svc.Settings()
+		if err != nil {
+			g.log.Warn("email.reply settings", "id", msg.ID, "error", err)
+			return true
+		}
+		rule := env.Assistant
+		if short, isAgent := strings.CutPrefix(t.operator, "agents/"); isAgent {
+			found, ok := env.Agents[short]
+			if !ok {
+				// A deleted or renamed agent closes its tag.
+				g.log.Warn("email.reply closed tag", "id", msg.ID, "operator", t.operator, "sender", msg.From)
+				return true
+			}
+			rule = found
+		}
+		if !rule.Accepts(msg.From, cfg.Operators, env.Allowlist) {
+			g.log.Warn("email.reply rejected", "id", msg.ID, "operator", t.operator, "sender", msg.From)
+			return true
+		}
+	}
 	g.log.Info("email.reply", "id", msg.ID, "item", t.isItem, "run", t.runID, "conversation", t.conversationID)
 	g.applyReply(ctx, msg, d, t)
 	return true
@@ -260,7 +329,7 @@ func (g *Ingress) dispatchReply(ctx context.Context, msg IngressMessage, d Route
 // applyReply acts on one resolved target (plan I.1, Part P). Failures
 // log; the envelope row is already durable.
 func (g *Ingress) applyReply(ctx context.Context, msg IngressMessage, d RouteDecision, t *replyTarget) {
-	if t.isItem {
+	if t.isItem || t.inboxID != "" {
 		g.applyItemReply(ctx, msg, d, t)
 		return
 	}
@@ -279,11 +348,32 @@ func (g *Ingress) applyItemReply(ctx context.Context, msg IngressMessage, d Rout
 	switch {
 	case t.resolved:
 		g.askReply(ctx, msg, d, t)
+	case t.proposalID != "":
+		g.decideProposalReply(ctx, msg, d, t)
 	case t.alertKind == "waiting" && t.runID != "":
 		g.decideReply(ctx, msg, d, t)
 	default:
 		g.askReply(ctx, msg, d, t)
 	}
+}
+
+// decideProposalReply applies an emailed AGENT.md proposal decision.
+func (g *Ingress) decideProposalReply(ctx context.Context, msg IngressMessage, d RouteDecision, t *replyTarget) {
+	decision, ambiguous := parseDecision(msg.Text)
+	if ambiguous || decision == "" {
+		g.askReply(ctx, msg, d, t)
+		return
+	}
+	if err := g.act.DecideProposal(ctx, t.proposalID, decision == "allow", "email:"+msg.From); err != nil {
+		g.log.Warn("email.reply proposal", "proposal", t.proposalID, "id", msg.ID, "error", err)
+		if errors.Is(err, proposals.ErrStale) {
+			_, _ = g.act.Ask(ctx, d, msg, "", "AGENT.md changed after this proposal. Nothing was applied.")
+		}
+	}
+	if err := g.act.ResolveInbox(ctx, t.inboxID); err != nil {
+		g.log.Warn("email.reply resolve proposal item", "inbox", t.inboxID, "error", err)
+	}
+	g.svc.LinkInbound(ctx, msg.ID, t.runID, "", t.inboxID)
 }
 
 // decideReply reads the decision word and applies it to the pending
@@ -325,7 +415,7 @@ func (g *Ingress) runReply(ctx context.Context, msg IngressMessage, runID, inbox
 // askReply replays one reply as an assistant message (plan J: a reply on
 // a resolved item never repeats the action).
 func (g *Ingress) askReply(ctx context.Context, msg IngressMessage, d RouteDecision, t *replyTarget) {
-	convID, err := g.act.Ask(ctx, d, msg, assistantText(msg, untrustedFor(msg), false))
+	convID, err := g.act.Ask(ctx, d, msg, "", inboundText(msg, untrustedFor(msg), false))
 	if err != nil {
 		g.log.Warn("email.reply ask", "id", msg.ID, "error", err)
 	}

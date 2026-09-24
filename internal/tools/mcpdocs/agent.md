@@ -24,13 +24,20 @@ harness that the `harness` tool `list` action reports with `auth_ok: true`.
 ## Actions
 
 ### list
-List the agents of one workspace. Each row carries `job_count` and `jobs`, the owned job names.
-- `workspace` (string, required): workspace id.
+List agents across every workspace; filter with `workspace`. Each row carries `job_count`, `jobs`, status, cost, and open work counts.
+- `workspace` (string, optional): workspace id or name filter.
 
 ### show
 Read one agent. The response carries `name`, `index_name`, the document fields, `memory`, `disabled`, `job_count`, and `jobs`.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
+
+### proposal_status
+Read the status of one AGENT.md change proposal. An agent can check only its own proposal; deciding is human-only.
+- `proposal_id` (string, required): proposal id from the `202` write response.
+
+### templates
+List the embedded agent onboarding templates and their required inputs.
 
 ### create
 Create one agent. Give `prompt` and the daemon composes the document, or give `content` for full control. With neither, the daemon seeds a default document and a memory ledger.
@@ -47,14 +54,14 @@ Create one agent. Give `prompt` and the daemon composes the document, or give `c
 - `extract` (string, optional): event extract expression, with `event`.
 
 ### set
-Replace the document of one agent.
+Replace the document of one agent. For an agent run writing its own document, this returns a pending human proposal instead of writing.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
 - `content` (string, required): full AGENT.md text. An empty body on an existing agent returns `validation`.
 - `if_match` (string, optional): current hash from `show`; a stale value returns 412.
 
 ### patch
-Change front matter fields of one agent. Give at least one field. An unknown field returns `validation`.
+Change front matter fields of one agent. For an agent run patching itself, the rendered result becomes a pending human proposal. Give at least one field. An unknown field returns `validation`.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
 - `disabled` (boolean, optional): stop or restart automatic scheduling.
@@ -74,6 +81,26 @@ Remove one agent. Destructive. Without `purge` it removes `AGENT.md` only; the o
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 - `purge` (boolean, optional): remove the whole agent folder with the owned jobs.
 - `if_match` (string, optional): current hash from `show`; a stale value returns 412.
+
+### rename
+Move `agents/<name>` to `agents/<to>` and rewrite stored run, queue, schedule, conversation, and email references in one transaction. A live agent or owned-job run returns `conflict`; so does an existing target.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): current agent short name.
+- `to` (string, required): new agent short name; lowercase letters, digits, and hyphens, up to 24 characters.
+
+### ask
+Send one assistant message to an agent conversation. It injects into a live run or queues a fresh wake.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name.
+- `text` (string, required): message text.
+
+### escalate
+Escalate an agent problem to the operator inbox or the assistant conversation.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name.
+- `to` (string, required): `operator` or `assistant`.
+- `reason` (string, required): the problem and what the agent already tried.
+- `run_id` (string, optional): the failed or blocked run this escalation is about.
 
 ### wake
 Start one agent session. The daemon composes the prompt from the agent instructions, the owned jobs, and the agent memory.

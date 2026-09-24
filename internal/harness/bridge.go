@@ -365,8 +365,7 @@ func applyMCPClaude(inherit bool, userHome, harnessDir string, force bool) error
 	harnessMCP := filepath.Join(harnessDir, "mcp.json")
 	if !inherit {
 		_ = removeTrebiSymlink(harnessMCP) // leftover symlink is harmless if inherit is off
-		// leave harness .claude.json mcpServers as-is (v1)
-		return nil
+		return ensureClaudeTrebiMCP(harnessDir)
 	}
 	var linkErr error
 	if pathExists(userMCP) {
@@ -379,7 +378,38 @@ func applyMCPClaude(inherit bool, userHome, harnessDir string, force bool) error
 	if err := mergeMCPServers(userClaudeJSON, filepath.Join(harnessDir, ".claude.json")); err != nil {
 		return errors.Join(linkErr, err)
 	}
-	return linkErr
+	return errors.Join(linkErr, ensureClaudeTrebiMCP(harnessDir))
+}
+
+// ensureClaudeTrebiMCP replaces or installs the trebi MCP entry with the
+// stdio bridge. HTTP entries inherited from a user config have no run token,
+// so Claude calls would be mistaken for human traffic.
+func ensureClaudeTrebiMCP(harnessDir string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve trebi executable: %w", err)
+	}
+	path := filepath.Join(harnessDir, ".claude.json")
+	m := map[string]any{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &m)
+	}
+	if m == nil {
+		m = map[string]any{}
+	}
+	servers, _ := m["mcpServers"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+	}
+	servers["trebi"] = map[string]any{
+		"type": "stdio", "command": exe, "args": []string{"mcp", "serve"},
+	}
+	m["mcpServers"] = servers
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return WriteFileIfChanged(path, append(b, '\n'), 0600)
 }
 
 func mergeMCPServers(userClaudeJSON, harnessClaudeJSON string) error {

@@ -136,6 +136,9 @@ func TestMCPDocsDocumentConfirmOnGatedActions(t *testing.T) {
 // dump mode of GET /v1/stream is covered by system.bus_poll; only its
 // follow mode (a query parameter, not a pattern) stays out.
 var mcpExcluded = map[string]string{
+	"GET /v1/workspaces/{id}/agents":                        "superseded by cross-workspace GET /v1/agents",
+	"GET /v1/proposals":                                     "proposal review is a human UI/CLI workflow",
+	"POST /v1/proposals/{id}/decide":                        "decisions are human-only and blocked from MCP",
 	"GET /v1/runs/{id}/attach":                              "WebSocket terminal",
 	"GET /v1/harnesses/{name}/login/attach":                 "WebSocket login TUI",
 	"POST /v1/agent-hook/{event}":                           "internal harness hook, not a client operation",
@@ -193,6 +196,7 @@ func mcpTestMux() *http.ServeMux {
 	s.routeJobs(mux)
 	s.routeMemory(mux)
 	s.routeQueue(mux)
+	s.routeProposals(mux)
 	s.routeRuns(mux)
 	s.routeSettings(mux)
 	s.routeSystem(mux)

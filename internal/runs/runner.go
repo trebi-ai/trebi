@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -89,6 +91,10 @@ type LaunchOpts struct {
 	Wake *WakeOpts
 	// Memory is the MEMORY.md seam; nil = memory off.
 	Memory *MemoryLaunch
+	// Kit is the owning agent's reusable run kit.
+	Kit *job.KitYAML
+	// JobSkills is the job's own preferred skill list.
+	JobSkills []string
 	// Command override (bare harness name or full argv string). Empty → harness name.
 	Command string
 	// ResumeSessionID warm-resumes that session.
@@ -146,6 +152,29 @@ func (o *LaunchOpts) applyResumePlan(plan *tmux.LaunchPlan) {
 // The second return is the if_running outcome: "" (no live run) | skip | coalesce | replace | allow.
 // On skip/coalesce the returned run is the skipped row / the live run — no launch happens.
 func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, string, error) {
+	// Decide human status before minting a token: a token identifies the run
+	// process, not the human who launched it.
+	humanManual := opts.CreateOpts.ActorToken == "" && opts.Reason == ReasonManual
+	// Mint before Create so every runtime branch can pass the plaintext to
+	// the process environment; the persisted row gets only the hash.
+	if opts.CreateOpts.ActorToken == "" {
+		token, _, err := mintActorToken()
+		if err != nil {
+			return nil, "", err
+		}
+		opts.CreateOpts.ActorToken = token
+	}
+	// A human manual wake has no actor token and is deliberately allowed over
+	// budget; the gate still gives automated launches and agent calls a vote.
+	if s.budgetGate != nil && !humanManual {
+		ok, reason, err := s.budgetGate.Allow(ctx, opts.WorkspaceID, opts.Job, opts.Kind)
+		if err != nil {
+			return nil, "", err
+		}
+		if !ok {
+			return nil, "", fmt.Errorf("%w: %s", ErrBudgetExceeded, reason)
+		}
+	}
 	if opts.IfRunning == "" {
 		opts.IfRunning = "skip"
 	}
@@ -214,6 +243,7 @@ func (s *Service) applyWakePrompt(ctx context.Context, opts *LaunchOpts) {
 	if opts.Prompt != "" || opts.Wake == nil {
 		return
 	}
+	hint := combinedSkillHint(opts.Kit, opts.JobSkills)
 	if opts.Kind != KindJob && opts.Kind != "" && s.composer != nil {
 		wake := *opts.Wake
 		wake.Memory = opts.Memory
@@ -223,11 +253,14 @@ func (s *Service) applyWakePrompt(ctx context.Context, opts *LaunchOpts) {
 		if err != nil {
 			s.log.Warn("wake compose failed; using raw body", "job", opts.Job, "err", err)
 		} else if strings.TrimSpace(composed) != "" {
-			opts.Prompt = composed
+			opts.Prompt = strings.TrimSpace(composed + "\n\n" + hint)
 			return
 		}
 	}
 	opts.Prompt = joinExtra(opts.Wake.Body, opts.Wake.ExtraPrompt)
+	if hint != "" {
+		opts.Prompt = strings.TrimSpace(opts.Prompt + "\n\n" + hint)
+	}
 }
 
 // prepMemory seeds, migrates, hashes, and injects MEMORY.md for one launch
@@ -439,8 +472,12 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 		"harness": tool.Name(), "session_id": opts.SessionID, "tmux": wsRef, "mode": "tmux",
 	})
 
-	envExport := paneEnvExport(run.ID, tool.Name(), opts.Env, plan.Env)
-	if err := tmux.Send(wsRef, envExport+"\n"); err != nil {
+	sourceLine, envPath, err := paneEnvFile(run.WorkingDir, run.ID, opts.CreateOpts.ActorToken, tool.Name(), opts.Env, plan.Env)
+	if err != nil {
+		return s.failLaunch(ctx, run, wsRef, err)
+	}
+	if err := tmux.Send(wsRef, sourceLine+"\n"); err != nil {
+		_ = os.Remove(envPath)
 		return s.failLaunch(ctx, run, wsRef, err)
 	}
 	if err := tmux.Send(wsRef, command+"\n"); err != nil {
@@ -904,31 +941,49 @@ func sessionTitle(jobName string) string {
 	return title + " - " + time.Now().Format("01-02 15:04")
 }
 
-// paneEnvExport builds the export line typed into the pane. It prepends the
-// pinned bin dir to PATH when the harness has one.
-func paneEnvExport(runID, toolName string, optEnv, planEnv map[string]string) string {
-	envExport := fmt.Sprintf("export TREBI_RUN_ID=%s TREBI_HOOK_TOOL=%s", runID, toolName)
-	binCurrent := filepath.Join(config.BinDir(), toolName, "current")
-	if st, err := os.Stat(binCurrent); err == nil && st.IsDir() {
-		envExport = fmt.Sprintf("export PATH=%s:$PATH TREBI_RUN_ID=%s TREBI_HOOK_TOOL=%s",
-			shellQuote(binCurrent), runID, toolName)
+// paneEnvFile writes launch secrets to a 0600 file and returns one source
+// line. The line removes the file after sourcing, so values do not remain in
+// shell history or pane scrollback.
+func paneEnvFile(runDir, runID, token, toolName string, optEnv, planEnv map[string]string) (string, string, error) {
+	if runDir == "" {
+		runDir = "."
 	}
-	merged := map[string]string{}
-	if env, err := harness.LoadSecretEnv(toolName); err == nil {
-		for k, v := range env {
-			merged[k] = v
-		}
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		return "", "", err
+	}
+	path := filepath.Join(runDir, ".trebi-env-"+runID+".sh")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+	env := map[string]string{
+		"TREBI_RUN_ID": runID, "TREBI_RUN_TOKEN": token, "TREBI_HOOK_TOOL": toolName,
 	}
 	for k, v := range optEnv {
-		merged[k] = v
+		env[k] = v
 	}
 	for k, v := range planEnv {
-		merged[k] = v
+		env[k] = v
 	}
-	if extra := buildEnvExport(merged); extra != "" {
-		envExport += " " + extra
+	binCurrent := filepath.Join(config.BinDir(), toolName, "current")
+	if st, err := os.Stat(binCurrent); err == nil && st.IsDir() {
+		env["PATH"] = binCurrent + ":" + os.Getenv("PATH")
 	}
-	return envExport
+	if env, err := harness.LoadSecretEnv(toolName); err == nil {
+		for k, v := range env {
+			env[k] = v
+		}
+	}
+	var b strings.Builder
+	for _, k := range slices.Sorted(maps.Keys(env)) {
+		fmt.Fprintf(&b, "export %s=%s\n", k, shellQuote(env[k]))
+	}
+	if _, err := f.WriteString(b.String()); err != nil {
+		_ = os.Remove(path)
+		return "", "", err
+	}
+	return " . " + shellQuote(path) + " && rm -f " + shellQuote(path), path, nil
 }
 
 func sendPrompt(session, prompt, harness string) error {
@@ -950,6 +1005,13 @@ func sendPrompt(session, prompt, harness string) error {
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
+func removeRunEnvFile(run *Run) {
+	if run == nil || run.WorkingDir == "" || run.ID == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(run.WorkingDir, ".trebi-env-"+run.ID+".sh"))
 }
 
 func buildEnvExport(env map[string]string) string {
@@ -1225,4 +1287,39 @@ func (s *Service) overlapCoalesce(ctx context.Context, opts *LaunchOpts, existin
 	}); err != nil {
 		s.log.Warn("coalesce bus append", "run", existing.ID, "error", err)
 	}
+}
+
+// kitPromptHint is v1's portable skills/MCP inheritance hint. Real per-run
+// harness projection requires a per-run harness home.
+func kitPromptHint(kit *job.KitYAML) string {
+	if kit == nil || (len(kit.Skills) == 0 && len(kit.MCP) == 0) {
+		return ""
+	}
+	var lines []string
+	if len(kit.Skills) > 0 {
+		lines = append(lines, "Preferred skills: "+strings.Join(kit.Skills, ", "))
+	}
+	if len(kit.MCP) > 0 {
+		lines = append(lines, "Preferred MCP servers: "+strings.Join(kit.MCP, ", "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func combinedSkillHint(kit *job.KitYAML, jobSkills []string) string {
+	if kit == nil {
+		kit = &job.KitYAML{}
+	}
+	seen := map[string]bool{}
+	skills := make([]string, 0, len(jobSkills)+len(kit.Skills))
+	for _, source := range [][]string{jobSkills, kit.Skills} {
+		for _, skill := range source {
+			key := strings.ToLower(skill)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			skills = append(skills, skill)
+		}
+	}
+	return kitPromptHint(&job.KitYAML{Skills: skills, MCP: kit.MCP})
 }

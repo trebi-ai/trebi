@@ -124,9 +124,10 @@ func TestComposeAgentWake(t *testing.T) {
 				"# Your jobs", "- agents/cmo/duty kind=job harness=claude active",
 				"# Memory", "## Context", "Durable facts about the workspace.",
 				"- [2026-09-02 08:00] Ran the weekly digest.",
+				"# Conversation recap", "leak",
 				"# Current message", "check ads",
 			},
-			notWant: []string{"# Conversation recap", "# Agents", "Workspace jobs", "- alpha kind=job"},
+			notWant: []string{"# Agents", "Workspace jobs", "- alpha kind=job"},
 		},
 		{
 			name: "body override still expands vars",

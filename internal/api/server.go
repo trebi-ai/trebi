@@ -17,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/ext"
+	"github.com/trebi-ai/trebi/internal/agents"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/connectors"
@@ -27,6 +28,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/license"
+	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
@@ -60,6 +62,8 @@ type Server struct {
 	cloud      *cloudlink.Service
 	hooks      *webhooks.Service
 	lic        *license.Service
+	templates  *agents.Catalog
+	proposals  *proposals.Service
 
 	startedAt time.Time
 	drain     bool
@@ -106,6 +110,7 @@ func New(st *store.Store, opts Options) *Server {
 	fs := files.New(opts.FilesMaxBytes)
 	r := runs.New(st, ws, fs)
 	r.SetMemoryResolver(ws)
+	r.SetBudgetGate(ws)
 	q := dispatch.NewQueue(st)
 	pol := dispatch.NewPolicy()
 	lic := opts.License
@@ -127,6 +132,8 @@ func New(st *store.Store, opts Options) *Server {
 		sched:        schedule.New(st),
 		lic:          lic,
 		email:        email.New(st),
+		templates:    agents.NewCatalog(),
+		proposals:    proposals.NewService(st, fs, ws, st, r),
 		cloud:        cl,
 		hooks:        webhooks.New(st, conn, cl),
 		startedAt:    time.Now().UTC(),
@@ -195,6 +202,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	}
 	if licSvc != nil {
 		s.lic = licSvc
+	}
+	if runsSvc != nil && ws != nil && filesSvc != nil {
+		s.proposals = proposals.NewService(s.st, s.files, s.ws, s.st, s.runs)
 	}
 	if cloudSvc != nil {
 		s.cloud = cloudSvc
@@ -265,6 +275,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeFiles(mux)
 	s.routeJobs(mux)
 	s.routeRuns(mux)
+	s.routeProposals(mux)
 	s.routeQueue(mux)
 	s.routeEvents(mux)
 	s.routeInbox(mux)
@@ -278,7 +289,7 @@ func (s *Server) Handler() http.Handler {
 	// Dispatch from catalog tools re-enters here, audit-wrapped and
 	// noTraversal-wrapped. MCP and native dispatch share that path.
 	s.apiMux = mux
-	s.apiWrapped = s.auditMiddleware(noTraversalMiddleware(newConfirmGate().wrap(mux)))
+	s.apiWrapped = s.actorMiddleware(s.auditMiddleware(noTraversalMiddleware(newScopeGate(mux).wrap(newConfirmGate().wrap(mux)))))
 	if s.ext.UI != nil {
 		// The SPA sits beside the API on one mux.
 		return ui.Handler(s.ext.UI, s.apiWrapped)

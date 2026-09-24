@@ -49,6 +49,7 @@ func conversationCommand() *cli.Command {
 				Usage:   "create a conversation and point the cli channel at it",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "title", Usage: "optional title"},
+					&cli.StringFlag{Name: "agent", Usage: "target an agent (short id)"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runConversationNew,
@@ -81,7 +82,8 @@ func runConversationList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	ws, _ := resolveWorkspaceID(c, client)
-	path := request.BuildConversationsListPath(ws, c.String("channel"), c.String("cursor"), c.Int("limit"))
+	path := request.BuildConversationsListPath(ws, c.String("channel"),
+		request.AgentIndexName(c.String("agent")), c.String("cursor"), c.Int("limit"))
 	var body struct {
 		Conversations []map[string]any `json:"conversations"`
 		NextCursor    string           `json:"next_cursor"`
@@ -163,7 +165,8 @@ func runConversationNew(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var out map[string]any
-	if err := client.DoHTTP(request.BuildConversationCreate(wsID, c.String("title"), "cli", "cli", wsID), &out); err != nil {
+	if err := client.DoHTTP(request.BuildConversationCreate(wsID, c.String("title"), "cli", "cli", wsID,
+		request.AgentIndexName(c.String("agent"))), &out); err != nil {
 		return err
 	}
 	if c.Bool("json") {

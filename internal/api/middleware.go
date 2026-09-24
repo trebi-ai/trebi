@@ -105,6 +105,24 @@ func (s *Server) auditMiddleware(next http.Handler) http.Handler {
 			"duration_ms", time.Since(start).Milliseconds(),
 			"actor", r.Header.Get(tools.HeaderActor),
 			"run_id", r.Header.Get(tools.HeaderRunID),
+			"actor_kind", func() string {
+				if a, ok := tools.ActorFrom(r.Context()); ok {
+					return a.Kind
+				}
+				return "human"
+			}(),
+			"actor_job", func() string {
+				if a, ok := tools.ActorFrom(r.Context()); ok {
+					return a.Job
+				}
+				return ""
+			}(),
+			"actor_run_id", func() string {
+				if a, ok := tools.ActorFrom(r.Context()); ok {
+					return a.RunID
+				}
+				return ""
+			}(),
 		)
 	})
 }

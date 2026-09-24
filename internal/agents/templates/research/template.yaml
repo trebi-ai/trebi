@@ -1,0 +1,9 @@
+id: research
+title: Research
+description: Track competitors and prepare a weekly brief.
+icon: search
+inputs:
+  - key: competitors
+    label: Competitors or topics
+    required: false
+jobs: [weekly-brief]

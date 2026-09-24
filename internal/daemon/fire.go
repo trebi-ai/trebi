@@ -58,12 +58,63 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 	if j.Disabled {
 		return
 	}
+	if r.Idx == -1 {
+		since := time.Now().UTC().AddDate(0, 0, -7)
+		if r.LastFiredAt != "" {
+			if parsed, err := time.Parse(time.RFC3339, r.LastFiredAt); err == nil {
+				since = parsed
+			}
+		}
+		block, err := c.Workspaces.ReportBlock(ctx, r.WorkspaceID, r.Job, since)
+		if err != nil {
+			c.log.Warn("report block", "job", r.Job, "error", err)
+			return
+		}
+		prompt, gateSkip := c.evalWhenGate(ctx, j, r, path)
+		_ = prompt
+		if gateSkip {
+			return
+		}
+		convID, convKey := "", ""
+		if c.Conversations != nil {
+			if id, err := c.Conversations.EnsureForChannel(ctx, r.WorkspaceID, r.Job,
+				"email", "report:"+r.Job); err == nil {
+				if conv, err := c.Conversations.Get(ctx, id); err == nil {
+					convID, convKey = conv.ID, conv.Key
+				}
+			}
+		}
+		kit := c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.Job)
+		d := j.LaunchDefaultsWithKit(kit)
+		cwd := d.WorkingDir
+		if cwd == "" {
+			cwd = dirOf(path)
+		}
+		_, _, err = c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
+			CreateOpts: runs.CreateOpts{
+				WorkspaceID: r.WorkspaceID, Job: r.Job, Kind: j.Kind,
+				Reason: runs.ReasonReport, Harness: j.ResolvedHarness(),
+				ConversationID: convID, ConversationKey: convKey,
+				MaxDurationMS: d.MaxDurationMS, IdleTimeoutMS: d.IdleTimeoutMS,
+				KeepAliveMS: d.KeepAliveMS, NudgeMS: d.NudgeMS,
+				WorkingDir: cwd, Runtime: j.Runtime,
+			},
+			Wake: &runs.WakeOpts{Message: block}, Memory: c.memoryLaunch(ctx, r.WorkspaceID, j), Kit: kit, JobSkills: j.Skills,
+			IfRunning: d.IfRunning, Env: d.Env, Model: d.Model, Effort: d.Effort,
+		})
+		if err != nil {
+			c.log.Warn("report fire", "job", r.Job, "error", err)
+		}
+		c.markFired(ctx, r)
+		return
+	}
 	prompt, gateSkip := c.evalWhenGate(ctx, j, r, path)
 	if gateSkip {
 		return
 	}
 	harness := j.ResolvedHarness()
-	d := j.LaunchDefaults()
+	kit := c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.Job)
+	d := j.LaunchDefaultsWithKit(kit)
 	cwd := d.WorkingDir
 	if cwd == "" {
 		cwd = dirOf(path)
@@ -93,6 +144,8 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		Prompt:    prompt,
 		Wake:      wake,
 		Memory:    c.memoryLaunch(ctx, r.WorkspaceID, j),
+		Kit:       kit,
+		JobSkills: j.Skills,
 		IfRunning: d.IfRunning,
 		Env:       d.Env,
 		Model:     d.Model,

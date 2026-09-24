@@ -447,9 +447,19 @@ func (in Input) agentSpec() (request.AgentSpec, error) {
 	if err != nil {
 		return request.AgentSpec{}, err
 	}
+	m, err := in.strs("title", "template")
+	if err != nil {
+		return request.AgentSpec{}, err
+	}
+	var accept []string
+	if raw, _ := in.str("accept"); raw != "" {
+		accept = strings.Split(raw, ",")
+	}
+	inputs, _ := in["inputs"].(map[string]string)
 	return request.AgentSpec{
 		Name: v[0], Workspace: v[1], Content: v[2], Prompt: v[3], Harness: v[4], Description: v[5],
 		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4],
+		Title: m[0], Template: m[1], EmailAccept: accept, Inputs: inputs,
 	}, nil
 }
 
@@ -1289,12 +1299,15 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 		},
 
 		"agent": {
-			"list": act("GET /v1/workspaces/{id}/agents", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
-				ws, err := in.reqStr("workspace")
+			"list": act("GET /v1/agents", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+				ws, err := in.str("workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildAgentListPath(ws)), nil
+				return mcpGet(request.BuildAgentListAllPath(ws)), nil
+			}),
+			"templates": act("GET /v1/agent-templates", Input{}, func(in Input) (request.HTTPRequest, error) {
+				return mcpGet("/v1/agent-templates"), nil
 			}),
 			"show": act("GET /v1/workspaces/{id}/agents/{name}", Input{"workspace": "ws1", "name": "cmo"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("workspace", "name")
@@ -1340,6 +1353,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildAgentPatch(v[0], v[1], patch, ifMatch), nil
 			}),
+			"proposal_status": getReq("GET /v1/proposals/{id}", "proposal_id", "prop_01ABC", request.BuildProposalGet),
 			"delete": del("DELETE /v1/workspaces/{id}/agents/{name}", Input{"workspace": "ws1", "name": "cmo", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("workspace", "name")
 				if err != nil {
@@ -1358,6 +1372,31 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildAgentDelete(v[0], v[1], ifMatch, purge, confirm), nil
+			}),
+			"rename": act("POST /v1/workspaces/{id}/agents/{name}/rename", Input{"workspace": "ws1", "name": "cmo", "to": "growth"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name", "to")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentRename(v[0], v[1], v[2]), nil
+			}),
+			"ask": act("POST /v1/workspaces/{id}/agents/{name}/ask", Input{"workspace": "ws1", "name": "cmo", "text": "What changed today?"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name", "text")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentAsk(v[0], v[1], v[2]), nil
+			}),
+			"escalate": act("POST /v1/workspaces/{id}/agents/{name}/escalate", Input{"workspace": "ws1", "name": "cmo", "to": "assistant", "reason": "missing credentials"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name", "to", "reason")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				runID, err := in.str("run_id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentEscalate(v[0], v[1], v[2], v[3], runID), nil
 			}),
 			"wake": act("POST /v1/workspaces/{id}/agents/{name}/wake", Input{"workspace": "ws1", "name": "cmo"}, func(in Input) (request.HTTPRequest, error) {
 				spec, err := in.runSpec()
@@ -1728,7 +1767,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 
 		"conversation": {
 			"list": act("GET /v1/conversations", Input{}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("workspace", "channel", "cursor")
+				v, err := in.strs("workspace", "channel", "operator", "cursor")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -1736,7 +1775,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildConversationsListPath(v[0], v[1], v[2], limit)), nil
+				return mcpGet(request.BuildConversationsListPath(v[0], v[1], v[2], v[3], limit)), nil
 			}),
 			"show": getReq("GET /v1/conversations/{id}", "id", "01ABC", request.BuildConversationGet),
 			"messages": act("GET /v1/conversations/{id}/messages", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
@@ -1754,15 +1793,22 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				Input{"workspace": "ws1", "title": "sync check"},
 				[]Input{{"workspace": "ws1", "channel_type": "cli", "channel_ref": "fritz"}},
 				func(in Input) (request.HTTPRequest, error) {
-					v, err := in.head("workspace", "title", "origin_channel", "channel_type", "channel_ref")
+					v, err := in.head("workspace", "title", "origin_channel", "channel_type", "channel_ref", "operator")
 					if err != nil {
 						return request.HTTPRequest{}, err
 					}
 					if v[2] == "" {
 						v[2] = "mcp" // the service rejects an empty origin channel
 					}
-					return request.BuildConversationCreate(v[0], v[1], v[2], v[3], v[4]), nil
+					return request.BuildConversationCreate(v[0], v[1], v[2], v[3], v[4], v[5]), nil
 				}),
+			"agent_list": act("GET /v1/workspaces/{id}/agents/{name}/conversations", Input{"workspace": "ws1", "name": "cmo"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildAgentConversationsPath(v[0], v[1])), nil
+			}),
 			"patch": act("PATCH /v1/conversations/{id}", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
 				if err != nil {

@@ -18,7 +18,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -78,14 +78,9 @@ func (a *emailAPIActions) RouteEnvFor(context.Context, string) (email.RouteEnv, 
 	return a.env, nil
 }
 
-func (a *emailAPIActions) Ask(_ context.Context, _ email.RouteDecision, _ email.IngressMessage, _ string) (string, error) {
+func (a *emailAPIActions) Ask(_ context.Context, _ email.RouteDecision, _ email.IngressMessage, _ string, text string) (string, error) {
 	a.asks++
 	return fmt.Sprintf("conv-%d", a.asks), nil
-}
-
-func (a *emailAPIActions) WakeAgent(context.Context, email.RouteDecision, email.IngressMessage, *runs.UntrustedMessage) (string, error) {
-	a.wakes++
-	return fmt.Sprintf("run-%d", a.wakes), nil
 }
 
 func (a *emailAPIActions) InboxItem(context.Context, email.RouteDecision, email.IngressMessage) (string, error) {
@@ -97,6 +92,8 @@ func (a *emailAPIActions) DecideApproval(context.Context, string, string) (bool,
 	a.decisions++
 	return true, nil
 }
+
+func (a *emailAPIActions) DecideProposal(context.Context, string, bool, string) error { return nil }
 
 func (a *emailAPIActions) RunMessage(context.Context, string, string) error {
 	a.messages++
@@ -174,7 +171,7 @@ func TestEmailRoutes(t *testing.T) {
 		u3 = "01ARZ3NDEKTSV4RRFFQ69G5FA3"
 	)
 	e.fw.pulled = []email.IngressMessage{
-		{V: 1, Seq: 1, ID: u1, LocalPart: addr, Tag: "research", From: "any@example.net",
+		{V: 1, Seq: 1, ID: u1, LocalPart: addr, Tag: "research", From: "ops@example.com",
 			Dmarc: "pass", MessageID: "<u1@x>", Subject: "run the digest",
 			Attachments: []email.Attachment{{ID: "a1", Name: "invoice.pdf", Size: 4, Type: "application/pdf"}}},
 		{V: 1, Seq: 2, ID: u2, LocalPart: addr, From: "ops@example.com", Dmarc: "pass", MessageID: "<u2@x>"},
@@ -185,7 +182,7 @@ func TestEmailRoutes(t *testing.T) {
 	if code, m := e.do(t, http.MethodPost, "/v1/email/poll", nil); code != 200 || m["pulled"] != float64(3) {
 		t.Fatalf("poll %d %v", code, m)
 	}
-	if e.acts.wakes != 1 || e.acts.asks != 1 || e.acts.inbox != 0 {
+	if e.acts.asks != 2 || e.acts.inbox != 0 {
 		t.Fatalf("side effects: wakes %d asks %d inbox %d", e.acts.wakes, e.acts.asks, e.acts.inbox)
 	}
 
@@ -220,7 +217,7 @@ func TestEmailRoutes(t *testing.T) {
 
 	// One envelope with verdicts and links; a miss is a 404.
 	code, m = e.do(t, http.MethodGet, "/v1/email/messages/"+u1, nil)
-	if code != 200 || m["disposition"] != "routed" || m["agent"] != "research" || m["run_id"] != "run-1" {
+	if code != 200 || m["disposition"] != "routed" || m["agent"] != "research" || m["conversation_id"] != "conv-1" {
 		t.Fatalf("show: %d %v", code, m)
 	}
 	if atts := m["attachments"].([]any); len(atts) != 1 || atts[0].(map[string]any)["id"] != "a1" {
@@ -487,7 +484,10 @@ func startEmailAPI(t *testing.T) *emailAPIServer {
 	ws := httptest.NewServer(fw.handler())
 	t.Cleanup(ws.Close)
 
-	acts := &emailAPIActions{env: email.RouteEnv{Agents: []string{"research"}}}
+	acts := &emailAPIActions{env: email.RouteEnv{
+		Agents:    map[string]email.AcceptRule{"research": email.NewAcceptRule([]job.AcceptEntry{{Address: "ops@example.com"}})},
+		Assistant: email.NewAcceptRule([]job.AcceptEntry{{Address: "ops@example.com"}}),
+	}}
 	s.Email().Configure(&email.Settings{
 		Worker: ws.URL, Token: "test-token-0000", Domain: "mail.example.com",
 		Operators: []string{"ops@example.com"}, PollInterval: time.Minute,

@@ -4,6 +4,7 @@ package schedule
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -26,17 +27,18 @@ func New(st *store.Store) *Service {
 // Unchanged (workspace, job, idx, spec, timezone) rows keep next_due_at and
 // last_fired_at so a periodic index rebuild cannot push @every into the future.
 func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *job.Job, cutoverStartedAt time.Time) error {
+	report, hasReport := reportSpec(j)
 	if !j.Disabled {
 		existing, err := loadRowsDB(ctx, s.st.DB(), workspaceID, j.Name)
 		if err != nil {
 			return err
 		}
-		if scheduleSpecUnchanged(existing, j) {
+		if scheduleSpecUnchanged(existing, j) && (!hasReport || reportUnchanged(existing, report)) {
 			return nil
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		if j.Disabled {
 			_, err := tx.Exec(`DELETE FROM schedules WHERE workspace_id=? AND job=?`, workspaceID, j.Name)
 			return err
@@ -96,6 +98,9 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 			}
 		}
 		for idx := range existing {
+			if idx == -1 && hasReport {
+				continue
+			}
 			if keep[idx] {
 				continue
 			}
@@ -105,6 +110,61 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 			}
 		}
 		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if hasReport && !j.Disabled {
+		return s.upsertReport(ctx, workspaceID, j.Name, report)
+	}
+	return nil
+}
+
+func reportSpec(j *job.Job) (string, bool) {
+	if j == nil || j.Report == nil {
+		return "", false
+	}
+	if j.Report.Cron != "" {
+		return j.Report.Cron, true
+	}
+	if j.Report.Every != "" {
+		return "@every " + j.Report.Every, true
+	}
+	return "", false
+}
+
+func reportUnchanged(rows map[int]Row, spec string) bool {
+	old, ok := rows[-1]
+	return ok && old.Spec == spec
+}
+
+func (s *Service) upsertReport(ctx context.Context, workspaceID, jobName, spec string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		next := nextDue(spec, time.Time{}, "UTC")
+		var nextStr *string
+		if !next.IsZero() {
+			value := next.UTC().Format(time.RFC3339)
+			nextStr = &value
+		}
+		var oldSpec string
+		err := tx.QueryRow(`SELECT spec FROM schedules WHERE workspace_id=? AND job=? AND idx=-1`,
+			workspaceID, jobName).Scan(&oldSpec)
+		switch {
+		case err == nil:
+			if oldSpec == spec {
+				return nil
+			}
+			_, err = tx.Exec(`UPDATE schedules SET spec=?, next_due_at=?, last_fired_at=NULL, updated_at=?
+				WHERE workspace_id=? AND job=? AND idx=-1`, spec, nextStr, now, workspaceID, jobName)
+			return err
+		case errors.Is(err, sql.ErrNoRows):
+			_, err = tx.Exec(`INSERT INTO schedules (workspace_id, job, idx, spec, timezone, catch_up, next_due_at, updated_at)
+				VALUES (?,?,-1,?,'UTC',1,?,?)`, workspaceID, jobName, spec, nextStr, now)
+			return err
+		default:
+			return err
+		}
 	})
 }
 

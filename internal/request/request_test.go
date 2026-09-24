@@ -490,11 +490,11 @@ func TestRunSpecBuildWake(t *testing.T) {
 }
 func TestBuildConversationChatRequests(t *testing.T) {
 	t.Parallel()
-	path := BuildConversationsListPath("ws1", "cli", "01C", 10)
+	path := BuildConversationsListPath("ws1", "cli", "", "01C", 10)
 	if !strings.Contains(path, "workspace=ws1") || !strings.Contains(path, "channel=cli") {
 		t.Fatalf("list %s", path)
 	}
-	req := BuildConversationCreate("ws1", "t", "cli", "cli", "ws1")
+	req := BuildConversationCreate("ws1", "t", "cli", "cli", "ws1", "")
 	if req.Method != "POST" || req.Path != "/v1/conversations" {
 		t.Fatalf("create %+v", req)
 	}

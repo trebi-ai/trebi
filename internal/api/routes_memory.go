@@ -268,6 +268,9 @@ func (s *Server) handleMemoryPut(w http.ResponseWriter, r *http.Request, scope m
 		writeResolveErr(w, err, "job")
 		return
 	}
+	if !s.requireAgentMemoryScope(w, r, tgt) {
+		return
+	}
 	if r.URL.Query().Get("force") != "1" {
 		if issues := memory.Validate([]byte(body.Content), tgt.opt); len(issues) > 0 {
 			writeErrDetails(w, http.StatusUnprocessableEntity, "validation",
@@ -288,6 +291,9 @@ func (s *Server) handleMemoryReset(w http.ResponseWriter, r *http.Request, scope
 	tgt, err := s.memoryTarget(r, scope)
 	if err != nil {
 		writeResolveErr(w, err, "job")
+		return
+	}
+	if !s.requireAgentMemoryScope(w, r, tgt) {
 		return
 	}
 	info, ok := s.memoryWrite(w, r, tgt, memory.Skeleton())
@@ -375,6 +381,9 @@ func (s *Server) handleMemorySectionPut(w http.ResponseWriter, r *http.Request, 
 		writeResolveErr(w, err, "job")
 		return
 	}
+	if !s.requireAgentMemoryScope(w, r, tgt) {
+		return
+	}
 	doc, migrated, err := s.memoryDoc(r.Context(), tgt)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -422,6 +431,9 @@ func (s *Server) handleMemoryEntryPost(w http.ResponseWriter, r *http.Request, s
 		writeResolveErr(w, err, "job")
 		return
 	}
+	if !s.requireAgentMemoryScope(w, r, tgt) {
+		return
+	}
 	doc, migrated, err := s.memoryDoc(r.Context(), tgt)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -458,6 +470,9 @@ func (s *Server) handleMemoryEntryDelete(w http.ResponseWriter, r *http.Request,
 	tgt, err := s.memoryTarget(r, scope)
 	if err != nil {
 		writeResolveErr(w, err, "job")
+		return
+	}
+	if !s.requireAgentMemoryScope(w, r, tgt) {
 		return
 	}
 	doc, migrated, err := s.memoryDoc(r.Context(), tgt)

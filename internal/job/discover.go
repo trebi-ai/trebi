@@ -227,6 +227,28 @@ func (dv *discovery) agent(path string) *Job {
 
 var agentNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
+// ValidateAgent checks that parsed AGENT.md content is valid for one agent
+// folder. Proposal approval reuses discovery's rules so an agent cannot
+// propose content that changes its kind or violates its naming contract.
+func ValidateAgent(j *Job, id string) error {
+	if j == nil {
+		return fmt.Errorf("agent %q did not parse", id)
+	}
+	if j.Kind != "agent" {
+		j.Kind = "agent"
+	}
+	if !agentNameRe.MatchString(id) {
+		return fmt.Errorf("agent id %q must match [a-z0-9][a-z0-9-]*", id)
+	}
+	if j.Name != "" && j.Name != id {
+		return fmt.Errorf("agent name %q must equal folder name %q", j.Name, id)
+	}
+	if j.ParseError != "" {
+		return fmt.Errorf("%s", j.ParseError)
+	}
+	return nil
+}
+
 // validateAgent applies the C.2 layout rules, appending to ParseError.
 func (dv *discovery) validateAgent(j *Job, rel, dir string) {
 	parts := strings.Split(filepath.ToSlash(rel), "/")

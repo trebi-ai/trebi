@@ -25,7 +25,8 @@ import (
 // RouteEnv is what the router must know about one workspace: the tags its
 // agents answer to and its own allowlist extension (plan F).
 type RouteEnv struct {
-	Agents    []string
+	Agents    map[string]AcceptRule // short id → rule
+	Assistant AcceptRule
 	Allowlist []string
 }
 
@@ -46,6 +47,7 @@ const (
 	ReasonDMARCSpoof    = "dmarc_fail_spoof"
 	ReasonUnknownTag    = "unknown_tag_untrusted"
 	ReasonNotConfigured = "not_configured"
+	ReasonNotAccepted   = "not_accepted"
 )
 
 // RouteDecision is the verdict for one inbound message.
@@ -57,6 +59,7 @@ type RouteDecision struct {
 	DMARC       string
 	TraceID     string
 	Reason      string
+	Accepted    bool
 }
 
 // Disposition is the email_messages spelling of the verdict (plan G).
@@ -81,11 +84,10 @@ func (d RouteDecision) Spoof() bool { return d.Reason == ReasonDMARCSpoof }
 type Actions interface {
 	// RouteEnvFor returns one workspace's agent tags and allowlist.
 	RouteEnvFor(ctx context.Context, workspaceID string) (RouteEnv, error)
-	// Ask delivers one message to the assistant lane; returns the
+	// Ask delivers one message to the operator's conversation; operator is
+	// empty for the assistant and agents/<id> for an agent. It returns the
 	// conversation id.
-	Ask(ctx context.Context, d RouteDecision, msg IngressMessage, text string) (string, error)
-	// WakeAgent wakes one agent with the untrusted block; returns the run id.
-	WakeAgent(ctx context.Context, d RouteDecision, msg IngressMessage, u *runs.UntrustedMessage) (string, error)
+	Ask(ctx context.Context, d RouteDecision, msg IngressMessage, operator, text string) (string, error)
 	// InboxItem records the low-severity item; returns the inbox item id.
 	InboxItem(ctx context.Context, d RouteDecision, msg IngressMessage) (string, error)
 	// DecideApproval applies one reply decision to the run's pending
@@ -93,6 +95,8 @@ type Actions interface {
 	DecideApproval(ctx context.Context, runID, decision string) (applied bool, err error)
 	// RunMessage injects one operator reply into a live run.
 	RunMessage(ctx context.Context, runID, text string) error
+	// DecideProposal applies one emailed AGENT.md proposal decision.
+	DecideProposal(ctx context.Context, id string, allow bool, by string) error
 	// ResolveInbox marks one inbox item resolved.
 	ResolveInbox(ctx context.Context, inboxID string) error
 	// AmbiguousReplyItem records the item for one approval reply that named
@@ -130,11 +134,18 @@ func (s *Service) Route(msg IngressMessage, wsID string, env RouteEnv) RouteDeci
 		}
 		return d
 	}
+	rule, known := env.Agents[msg.Tag]
 	switch {
-	case msg.Tag != "" && slices.Contains(env.Agents, msg.Tag):
-		d.Class, d.Agent = RouteAgent, msg.Tag
+	case msg.Tag == "" && env.Assistant.Accepts(msg.From, cfg.Operators, env.Allowlist):
+		d.Class, d.Accepted = RouteAssistant, true
 	case msg.Tag == "":
-		d.Class = RouteAssistant
+		d.Class, d.Reason = RouteDropped, ReasonNotAccepted
+	case known && !rule.Empty() && rule.Accepts(msg.From, cfg.Operators, env.Allowlist):
+		d.Class, d.Agent, d.Accepted = RouteAgent, msg.Tag, true
+	case known && d.Trusted:
+		d.Class, d.Reason = RouteMisrouted, ReasonNotAccepted
+	case known:
+		d.Class, d.Reason = RouteDropped, ReasonNotAccepted
 	case d.Trusted:
 		d.Class = RouteMisrouted
 	default:
@@ -424,13 +435,13 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 func (g *Ingress) dispatch(ctx context.Context, msg IngressMessage, d RouteDecision, u *runs.UntrustedMessage) {
 	switch d.Class {
 	case RouteAgent:
-		runID, err := g.act.WakeAgent(ctx, d, msg, u)
+		convID, err := g.act.Ask(ctx, d, msg, "agents/"+d.Agent, inboundText(msg, u, false))
 		if err != nil {
-			g.log.Warn("email.wake", "agent", d.Agent, "id", msg.ID, "error", err)
+			g.log.Warn("email.ask", "agent", d.Agent, "id", msg.ID, "error", err)
 		}
-		g.svc.LinkInbound(ctx, msg.ID, runID, "", "")
+		g.svc.LinkInbound(ctx, msg.ID, "", convID, "")
 	case RouteAssistant, RouteMisrouted:
-		convID, err := g.act.Ask(ctx, d, msg, assistantText(msg, u, d.Class == RouteMisrouted))
+		convID, err := g.act.Ask(ctx, d, msg, "", inboundText(msg, u, d.Class == RouteMisrouted))
 		if err != nil {
 			g.log.Warn("email.ask", "id", msg.ID, "error", err)
 		}
@@ -496,7 +507,8 @@ func addrListed(list []string, addr string) bool {
 
 // untrustedFor maps one inbound message to the wake fence block (A.11).
 func untrustedFor(msg IngressMessage) *runs.UntrustedMessage {
-	u := &runs.UntrustedMessage{RowID: msg.ID, From: msg.From, Subject: msg.Subject, Body: msg.Text}
+	u := &runs.UntrustedMessage{RowID: msg.ID, MessageID: msg.MessageID, From: msg.From,
+		Subject: msg.Subject, Body: msg.Text}
 	for _, a := range msg.Attachments {
 		u.Attachments = append(u.Attachments, runs.UntrustedAttachment{
 			ID: a.ID, Name: a.Name, Size: a.Size, Type: a.Type,
@@ -505,9 +517,9 @@ func untrustedFor(msg IngressMessage) *runs.UntrustedMessage {
 	return u
 }
 
-// assistantText composes the assistant-lane message: the misrouted mark
+// inboundText composes the conversation message: the misrouted mark
 // when set, a header line, and the untrusted fence (A.8, A.13).
-func assistantText(msg IngressMessage, u *runs.UntrustedMessage, misrouted bool) string {
+func inboundText(msg IngressMessage, u *runs.UntrustedMessage, misrouted bool) string {
 	var b strings.Builder
 	if misrouted {
 		b.WriteString("Misrouted email for +" + msg.Tag +

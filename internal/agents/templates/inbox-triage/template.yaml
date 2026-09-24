@@ -1,0 +1,5 @@
+id: inbox-triage
+title: Inbox triage
+description: Classify inbound mail and prepare draft replies.
+icon: inbox
+jobs: []

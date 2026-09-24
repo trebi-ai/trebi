@@ -12,6 +12,7 @@ import (
 
 func (s *Server) routeConversations(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/conversations", s.handleConversations)
+	mux.HandleFunc("GET /v1/workspaces/{id}/agents/{name}/conversations", s.handleAgentConversations)
 	mux.HandleFunc("POST /v1/conversations", s.handleConversationCreate)
 	mux.HandleFunc("GET /v1/conversations/{id}", s.handleConversationGet)
 	mux.HandleFunc("PATCH /v1/conversations/{id}", s.handleConversationPatch)
@@ -30,6 +31,7 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 	list, err := s.conv.List(r.Context(), conversations.ListOpts{
 		Workspace: q.Get("workspace"),
 		Channel:   q.Get("channel"),
+		Operator:  q.Get("operator"),
 		Limit:     parseLimit(r),
 		Cursor:    cursor,
 	})
@@ -55,6 +57,7 @@ func (s *Server) handleConversationGet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Workspace     string                  `json:"workspace"`
+		Operator      string                  `json:"operator"`
 		Title         string                  `json:"title"`
 		OriginChannel string                  `json:"origin_channel"`
 		Activate      *conversations.Activate `json:"activate"`
@@ -63,14 +66,53 @@ func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
+	operator := body.Operator
+	if operator != "" {
+		short := strings.TrimPrefix(operator, "agents/")
+		row, err := s.findAgentRow(r.Context(), body.Workspace, short)
+		if err != nil {
+			writeResolveErr(w, err, "agent")
+			return
+		}
+		operator = row.Name
+	}
 	c, err := s.conv.Create(r.Context(), conversations.CreateOpts{
 		Workspace: body.Workspace, Title: body.Title,
-		OriginChannel: body.OriginChannel, Activate: body.Activate,
+		Operator: operator, OriginChannel: body.OriginChannel, Activate: body.Activate,
 	})
 	if s.convErr(w, err, "workspace not found") {
 		return
 	}
 	writeJSON(w, http.StatusCreated, c)
+}
+
+func (s *Server) handleAgentConversations(w http.ResponseWriter, r *http.Request) {
+	ws, ok := s.workspaceByID(w, r)
+	if !ok {
+		return
+	}
+	row, err := s.findAgentRow(r.Context(), ws.ID, r.PathValue("name"))
+	if err != nil {
+		writeResolveErr(w, err, "agent")
+		return
+	}
+	cursor, ok := parseULIDCursor(w, r, "conversation")
+	if !ok {
+		return
+	}
+	list, err := s.conv.List(r.Context(), conversations.ListOpts{
+		Workspace: ws.ID, Operator: row.Name,
+		Limit: parseLimit(r), Cursor: cursor,
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	resp := map[string]any{"conversations": list}
+	if len(list) == parseLimit(r) {
+		resp["next_cursor"] = list[len(list)-1].ID
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleConversationPatch(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +155,13 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleConversationSend(w http.ResponseWriter, r *http.Request) {
+	if scope, ok := scopeFrom(r.Context()); ok {
+		c, err := s.conv.Get(r.Context(), r.PathValue("id"))
+		if err != nil || c.Workspace != scope.workspaceID || c.Operator != scope.agent {
+			writeForbidden(w, "agent may send only on its own conversation")
+			return
+		}
+	}
 	var body struct {
 		Text           string `json:"text"`
 		ChannelType    string `json:"channel_type"`
@@ -166,6 +215,8 @@ func (s *Server) convErr(w http.ResponseWriter, err error, notFoundMsg string) b
 		return false
 	case errors.Is(err, conversations.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", notFoundMsg)
+	case errors.Is(err, conversations.ErrOperatorConflict):
+		writeErr(w, http.StatusConflict, "conflict", "channel belongs to a different operator")
 	case errors.Is(err, conversations.ErrConflict):
 		// A stale revision reads like every other document: 412.
 		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", "revision conflict")

@@ -140,6 +140,9 @@ func (s *Server) Dispatch(ctx context.Context, built request.HTTPRequest) (int, 
 	if a, ok := tools.ActorFrom(ctx); ok {
 		req.Header.Set(tools.HeaderActor, a.Name)
 		req.Header.Set(tools.HeaderRunID, a.RunID)
+		if a.Token != "" {
+			req.Header.Set(tools.HeaderRunToken, a.Token)
+		}
 	}
 	rec := &mcpRecorder{header: http.Header{}}
 	s.apiWrapped.ServeHTTP(rec, req)

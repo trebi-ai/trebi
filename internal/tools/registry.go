@@ -214,8 +214,12 @@ type actorKey struct{}
 // Actor is the identity marker native attaches so the audit log can
 // attribute a catalog call to the run that made it.
 type Actor struct {
-	Name  string
-	RunID string
+	Name        string
+	RunID       string
+	Kind        string
+	Job         string
+	WorkspaceID string
+	Token       string // context-local; never persisted or logged
 }
 
 // WithActor stores the native-loop identity on ctx.
@@ -232,8 +236,9 @@ func ActorFrom(ctx context.Context) (Actor, bool) {
 // HeaderActor and HeaderRunID are the internal headers Dispatch sets from
 // ActorFrom so auditMiddleware can log them.
 const (
-	HeaderActor = "X-Trebi-Actor"
-	HeaderRunID = "X-Trebi-Run-Id"
+	HeaderActor    = "X-Trebi-Actor"
+	HeaderRunID    = "X-Trebi-Run-Id"
+	HeaderRunToken = "X-Trebi-Run-Token"
 )
 
 // ResolveValueFile replaces a secret value_file field with the file contents

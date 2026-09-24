@@ -1,6 +1,7 @@
 package email
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -240,12 +241,17 @@ func (s *Service) Test(ctx context.Context) (string, error) {
 // SendOpts is POST /v1/email/send (plan I.3): one explicit message from
 // the workspace address, or the agent subaddress when Agent is set.
 type SendOpts struct {
-	WorkspaceID string
-	Agent       string
-	To          []string
-	Subject     string
-	Text        string
-	InReplyTo   string
+	WorkspaceID    string
+	Agent          string
+	To             []string
+	Subject        string
+	Text           string
+	InReplyTo      string
+	RunID          string
+	ConversationID string
+	FromName       string
+	Recipients     *AcceptRule
+	Purpose        string
 }
 
 // Send mails one explicit message and returns the minted Message-ID
@@ -283,17 +289,18 @@ func (s *Service) Send(ctx context.Context, opts SendOpts) (string, error) {
 	}
 	rowID := ulid.Make().String()
 	if _, err := s.st.DB().ExecContext(ctx, `
-INSERT INTO email_messages
+ INSERT INTO email_messages
   (id, direction, workspace_id, agent, message_id, in_reply_to, thread_root, recipients,
-   subject, disposition, created_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+   subject, disposition, conversation_id, run_id, purpose, created_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rowID, "out", opts.WorkspaceID, opts.Agent, msgID,
 		opts.InReplyTo, root,
-		strings.Join(opts.To, ","), opts.Subject, "sent", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		strings.Join(opts.To, ","), opts.Subject, "sent", store.NullStr(opts.ConversationID), store.NullStr(opts.RunID), opts.Purpose,
+		time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return "", fmt.Errorf("send envelope: %w", err)
 	}
 	req := SendRequest{
-		V: ContractV, From: from, FromName: cfg.FromName,
+		V: ContractV, From: from, FromName: cmp.Or(opts.FromName, cfg.FromName),
 		To: opts.To, Subject: opts.Subject, Text: opts.Text,
 		MessageID: msgID, InReplyTo: opts.InReplyTo, References: refs,
 	}
@@ -722,10 +729,28 @@ func (s *Service) alertFrom(ctx context.Context, workspaceID string) string {
 	return "trebi@" + dom
 }
 
+// RouteEnvFor exposes the resolved routing rules for explicit sends. It is
+// available only when ingress actions are bound; a missing binding closes the
+// agent and assistant rules.
+func (s *Service) RouteEnvFor(ctx context.Context, workspaceID string) (RouteEnv, error) {
+	if s.ingress == nil {
+		return RouteEnv{}, ErrNotConfigured
+	}
+	return s.ingress.act.RouteEnvFor(ctx, workspaceID)
+}
+
 // checkRecipients applies the v1 trust dial (plan I.3): every recipient
 // must be an operator or on the workspace allowlist. The allowlist comes
 // from the routing environment; without an ingress only operators pass.
 func (s *Service) checkRecipients(ctx context.Context, cfg Settings, opts SendOpts) error {
+	if opts.Recipients != nil {
+		for _, to := range opts.To {
+			if !opts.Recipients.Accepts(to, cfg.Operators, s.workspaceAllowlist(ctx, opts.WorkspaceID)) {
+				return fmt.Errorf("%w: %s", ErrRecipient, to)
+			}
+		}
+		return nil
+	}
 	allowed := map[string]bool{}
 	for _, o := range append([]string(nil), cfg.Operators...) {
 		allowed[strings.ToLower(strings.TrimSpace(o))] = true
@@ -743,6 +768,17 @@ func (s *Service) checkRecipients(ctx context.Context, cfg Settings, opts SendOp
 		}
 	}
 	return nil
+}
+
+func (s *Service) workspaceAllowlist(ctx context.Context, workspaceID string) []string {
+	if s.ingress == nil {
+		return nil
+	}
+	env, err := s.ingress.act.RouteEnvFor(ctx, workspaceID)
+	if err != nil {
+		return nil
+	}
+	return env.Allowlist
 }
 
 // threadOnto resolves the thread an explicit reply joins: the root of the

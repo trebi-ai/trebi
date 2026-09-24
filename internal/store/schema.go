@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 19
+const SchemaVersion = 22
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -526,6 +526,43 @@ CREATE TABLE cloud_hooks (
   url             TEXT NOT NULL,
   created_at      TEXT NOT NULL
 );
+`,
+		// v20: conversation operator (2026-09-24 plan D.3). Empty is the
+		// workspace assistant; agents/<id> is one agent operator.
+		`
+ALTER TABLE conversations ADD COLUMN operator TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_conv_operator ON conversations(workspace_id, operator, last_activity_at);
+`,
+		// v21: run actor token (2026-09-24 plan E.1). Only the SHA-256 hash is
+		// stored; the plaintext lives in the run process environment.
+		`
+ALTER TABLE runs ADD COLUMN actor_token_hash TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_runs_actor_token ON runs(actor_token_hash) WHERE actor_token_hash != '';
+`,
+		// v22: human-approved AGENT.md changes. A proposal captures both the
+		// proposed bytes and the bytes it was reviewed against; approval uses
+		// If-Match so a silently changed file can never be overwritten. The
+		// email purpose supports restart-safe report threading/dedupe.
+		`
+CREATE TABLE agent_proposals (
+  id             TEXT PRIMARY KEY,
+  workspace_id   TEXT NOT NULL,
+  agent          TEXT NOT NULL,
+  run_id         TEXT NOT NULL DEFAULT '',
+  rel_path       TEXT NOT NULL,
+  base_hash      TEXT NOT NULL,
+  base_content   TEXT NOT NULL,
+  proposed       TEXT NOT NULL,
+  note           TEXT NOT NULL DEFAULT '',
+  protected_keys TEXT NOT NULL DEFAULT '[]',
+  status         TEXT NOT NULL DEFAULT 'pending',
+  decided_by     TEXT NOT NULL DEFAULT '',
+  created_at     TEXT NOT NULL,
+  decided_at     TEXT,
+  revision       INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX idx_agent_proposals_pending ON agent_proposals(workspace_id, agent, status);
+ALTER TABLE email_messages ADD COLUMN purpose TEXT NOT NULL DEFAULT '';
 `,
 	}
 }

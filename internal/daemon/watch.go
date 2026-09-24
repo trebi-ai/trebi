@@ -10,6 +10,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/tmux"
@@ -233,9 +234,20 @@ func (c *ControlPlane) replyIfExchangeEnded(ctx context.Context, run *runs.Run) 
 	if !run.Status.IsTerminal() && state != runs.SessionWaiting && state != runs.SessionIdle {
 		return
 	}
-	if err := c.Email.ReplyOnThread(ctx, run.ID, run.ConversationID); err != nil {
+	opts := email.ReplyOpts{RunID: run.ID, ConversationID: run.ConversationID}
+	if conv, err := c.Conversations.Get(ctx, run.ConversationID); err == nil && conv.Operator != "" {
+		short := strings.TrimPrefix(conv.Operator, "agents/")
+		if j, _ := c.findJobKind(ctx, run.Workspace, conv.Operator, runs.KindAgent); j != nil {
+			opts.FromName = j.Title
+		}
+		if short != "" {
+			opts.Agent = short
+		}
+	}
+	if err := c.Email.ReplyOnThread(ctx, opts); err != nil {
 		c.log.Warn("email reply", "run_id", run.ID, "error", err)
 	}
+	c.sendReportIfDue(ctx, run)
 }
 
 type transcriptCursor struct {

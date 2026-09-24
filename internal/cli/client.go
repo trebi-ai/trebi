@@ -340,6 +340,9 @@ func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
 	if r.IfMatch != "" {
 		req.Header.Set("If-Match", r.IfMatch)
 	}
+	if token := os.Getenv("TREBI_RUN_TOKEN"); token != "" {
+		req.Header.Set("X-Trebi-Run-Token", token)
+	}
 	resp, err := c.httpFor(method, r.Path).Do(req)
 	if err != nil {
 		return err

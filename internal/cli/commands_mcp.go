@@ -384,6 +384,9 @@ func (b *mcpBridge) post(ctx context.Context, msg json.RawMessage) ([]byte, erro
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if token := os.Getenv("TREBI_RUN_TOKEN"); token != "" {
+		req.Header.Set("X-Trebi-Run-Token", token)
+	}
 	if b.session != "" {
 		req.Header.Set("Mcp-Session-Id", b.session)
 	}

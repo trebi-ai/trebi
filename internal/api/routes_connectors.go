@@ -97,6 +97,9 @@ func (s *Server) handleConnectorGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConnectorPut(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
 	var d connectors.Definition
 	if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
@@ -122,6 +125,9 @@ func (s *Server) handleConnectorPut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConnectorDelete(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
 	if err := s.connectors.Delete(r.Context(), r.PathValue("name")); err != nil {
 		if s.writeConnectorErr(w, err) {
 			return

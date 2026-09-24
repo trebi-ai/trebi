@@ -33,6 +33,9 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleQueueRequeue(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAgentQueueScope(w, r, r.PathValue("id")) {
+		return
+	}
 	id := r.PathValue("id")
 	if err := s.queue.Requeue(r.Context(), id); err != nil {
 		writeQueueErr(w, err)
@@ -42,6 +45,9 @@ func (s *Server) handleQueueRequeue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleQueueCancel(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAgentQueueScope(w, r, r.PathValue("id")) {
+		return
+	}
 	id := r.PathValue("id")
 	if err := s.queue.Cancel(r.Context(), id); err != nil {
 		writeQueueErr(w, err)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/request"
@@ -34,6 +35,7 @@ func agentManageSubcommands() []*cli.Command {
 			Usage: "list agents (all workspaces, or --workspace)",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				&cli.BoolFlag{Name: "all", Usage: "list agents across every workspace"},
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 			},
 			Action: func(_ context.Context, c *cli.Command) error {
@@ -41,7 +43,7 @@ func agentManageSubcommands() []*cli.Command {
 				if err != nil {
 					return err
 				}
-				return runListAgents(c, client, "agents")
+				return runListAgents(c, client, "agents", c.Bool("all"))
 			},
 		},
 		{
@@ -57,9 +59,19 @@ func agentManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "every", Usage: "interval trigger, for example 15m"},
 				&cli.StringFlag{Name: "on", Usage: "event trigger: the connector name"},
 				&cli.StringFlag{Name: "match", Usage: "event match expression, with --on"},
+				&cli.StringFlag{Name: "title", Usage: "display name"},
+				&cli.StringFlag{Name: "accept", Usage: "comma-separated email.accept entries"},
+				&cli.StringFlag{Name: "template", Usage: "embedded agent template id"},
+				&cli.StringSliceFlag{Name: "input", Usage: "KEY=VALUE template input (repeatable)"},
 				&cli.StringFlag{Name: "file", Usage: "AGENT.md path (full control)"},
 			},
 			Action: runAgentCreate,
+		},
+		{
+			Name:   "templates",
+			Usage:  "list embedded agent templates",
+			Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+			Action: runAgentTemplates,
 		},
 		{
 			Name:      "show",
@@ -104,6 +116,15 @@ func agentManageSubcommands() []*cli.Command {
 				ifMatchFlag(),
 			},
 			Action: runAgentDelete,
+		},
+		{
+			Name:      "rename",
+			ArgsUsage: "<id> <new-id>",
+			Usage:     "rename an agent folder and rewrite stored references",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+			},
+			Action: runAgentRename,
 		},
 	}
 }
@@ -176,6 +197,13 @@ func runAgentCreate(_ context.Context, c *cli.Command) error {
 		Prompt: c.String("prompt"), Harness: c.String("harness"), Description: c.String("description"),
 		Cron: c.String("cron"), Every: c.String("every"),
 		Event: c.String("on"), Match: c.String("match"),
+		Title: c.String("title"), Template: c.String("template"),
+	}
+	if raw := c.String("accept"); raw != "" {
+		spec.EmailAccept = strings.Split(raw, ",")
+	}
+	if inputs, err := parseKeyValues(c.StringSlice("input")); err == nil {
+		spec.Inputs = inputs
 	}
 	if c.String("file") != "" || stdinPiped() {
 		read, err := readFileOrStdin(c.String("file"))
@@ -205,6 +233,37 @@ func runAgentShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	return encodeJSON(c, body)
+}
+
+func runAgentTemplates(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		Templates []map[string]any `json:"templates"`
+	}
+	if err := client.GetJSON("/v1/agent-templates", &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	tbl := newTable(w, []string{"ID", "Title", "Jobs"})
+	for _, t := range body.Templates {
+		jobs := ""
+		if raw, ok := t["jobs"].([]any); ok {
+			parts := make([]string, 0, len(raw))
+			for _, v := range raw {
+				parts = append(parts, fmt.Sprint(v))
+			}
+			jobs = strings.Join(parts, ", ")
+		}
+		tbl.AppendRow(table.Row{mapStr(t, "id"), mapStr(t, "title"), jobs})
+	}
+	renderTable(tbl)
+	return nil
 }
 
 func runAgentSet(_ context.Context, c *cli.Command) error {
@@ -301,9 +360,38 @@ func runAgentWake(ctx context.Context, c *cli.Command) error {
 	return launchAndMaybeAttach(ctx, c, client, request.RunSpec{Job: name, Workspace: wsID}, "agent", request.RunSpec.BuildAgentWake)
 }
 
+func runAgentRename(_ context.Context, c *cli.Command) error {
+	args := c.Args().Slice()
+	if len(args) != 2 {
+		return fmt.Errorf("usage: trebi agent rename <id> <new-id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(request.BuildAgentRename(wsID, args[0], args[1]), nil)
+}
+
 // agentRows collects the agents of every workspace, or of the one the want
 // filter picks. An unreachable workspace does not hide the rest.
-func agentRows(client *APIClient, want string) ([]map[string]any, error) {
+func agentRows(client *APIClient, want string, all bool) ([]map[string]any, error) {
+	if all {
+		var all struct {
+			Agents []map[string]any `json:"agents"`
+		}
+		if err := client.GetJSON(request.BuildAgentListAllPath(""), &all); err == nil {
+			for _, a := range all.Agents {
+				a["kind"] = "agent"
+				a["workspace"] = mapStr(a, "workspace_id")
+			}
+			return all.Agents, nil
+		}
+		// Fall through to per-workspace aggregation for older daemons.
+	}
 	var wss struct {
 		Workspaces []map[string]any `json:"workspaces"`
 	}
@@ -334,9 +422,9 @@ func agentRows(client *APIClient, want string) ([]map[string]any, error) {
 // runListAgents lists the agents of every workspace, or of the one the
 // workspace flag picks. jsonKey names the envelope: "agents" for
 // `trebi agent list`, "jobs" for `job list --kind agent`.
-func runListAgents(c *cli.Command, client *APIClient, jsonKey string) error {
+func runListAgents(c *cli.Command, client *APIClient, jsonKey string, all bool) error {
 	w := outWriter(c)
-	rows, err := agentRows(client, workspaceFlag(c))
+	rows, err := agentRows(client, workspaceFlag(c), all)
 	if err != nil {
 		return err
 	}

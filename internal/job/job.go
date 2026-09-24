@@ -9,9 +9,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -88,6 +90,10 @@ type Frontmatter struct {
 	Allowlist        []string          `yaml:"allowlist"`
 	Inputs           any               `yaml:"inputs"`
 	Skills           any               `yaml:"skills"`
+	Email            *EmailYAML        `yaml:"email,omitempty"`
+	Kit              *KitYAML          `yaml:"kit,omitempty"`
+	Budget           *BudgetYAML       `yaml:"budget,omitempty"`
+	Report           *ReportYAML       `yaml:"report,omitempty"`
 	// Notify selects alert channels for this job. Nil = unset (every
 	// channel); an empty list suppresses delivery for this job's alerts.
 	Notify []string `yaml:"notify"`
@@ -179,15 +185,64 @@ type Job struct {
 	Disabled         bool
 	FollowupPrompt   string
 	AssistantContext bool
+	Skills           []string
 	Prompt           string
 	Kind             string // job | assistant | agent
 	Owner            string // owning agent index name (agents/<name>) for jobs under an agent folder
+	EmailAccept      []string
+	AcceptSet        bool
+	Accept           []AcceptEntry
+	Kit              *KitYAML
+	Budget           *BudgetYAML
+	Report           *ReportYAML
 	ParseError       string
 	Hash             string
 	Description      string
 	// Notify selects alert channels for this job. Nil = unset (every
 	// channel); an empty list suppresses delivery for this job's alerts.
 	Notify []string
+}
+
+// ProtectedChange reports identity, trust, and spend keys changed from this
+// parsed document to next. AGENT.md proposals mark these keys for the human
+// reviewer; API scope checks use the same source of truth.
+func (j *Job) ProtectedChange(next *Job) []string {
+	if j == nil || next == nil {
+		return nil
+	}
+	var out []string
+	if !equalStrings(j.EmailAccept, next.EmailAccept) {
+		out = append(out, "email.accept")
+	}
+	if !reflect.DeepEqual(j.Kit, next.Kit) {
+		out = append(out, "kit")
+	}
+	if !equalBudget(j.Budget, next.Budget) {
+		out = append(out, "budget")
+	}
+	if !reflect.DeepEqual(j.Report, next.Report) {
+		out = append(out, "report")
+	}
+	return out
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalBudget(a, b *BudgetYAML) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // MemoryConfig is the parsed memory frontmatter. Nil pointers mean unset;
@@ -355,6 +410,34 @@ func (j *Job) LaunchDefaults() LaunchDefaults {
 	}
 }
 
+// LaunchDefaultsWithKit returns launch defaults with the owning agent's kit
+// merged under this job's own keys. Job envset replaces the agent envset;
+// individual job env values win after both sets have been applied.
+func (j *Job) LaunchDefaultsWithKit(kit *KitYAML) LaunchDefaults {
+	if j == nil || kit == nil {
+		return j.LaunchDefaults()
+	}
+	merged := *j
+	merged.Envset = kit.Envset
+	merged.Env = maps.Clone(kit.Env)
+	if j.Envset != "" {
+		merged.Envset = j.Envset
+	}
+	if j.Envset != "" || len(j.Env) > 0 {
+		// ResolvedEnv starts from the effective envset and applies Env.
+		merged.Env = maps.Clone(j.Env)
+		for k, v := range kit.Env {
+			if _, exists := merged.Env[k]; !exists {
+				if merged.Env == nil {
+					merged.Env = map[string]string{}
+				}
+				merged.Env[k] = v
+			}
+		}
+	}
+	return merged.LaunchDefaults()
+}
+
 // Trigger is a normalized trigger entry with family index.
 type Trigger struct {
 	Family  string // cron | every | event
@@ -412,6 +495,11 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		return parseFail(filePath, hash, fmt.Errorf("agent name %q must equal folder name %q", fm.Name, filepath.Base(filepath.Dir(filePath))))
 	}
 
+	accept, rawAccept, acceptSet, err := normalizeOperatorKeys(filePath, &fm)
+	if err != nil {
+		return parseFail(filePath, hash, err)
+	}
+
 	memCfg, err := resolveMemory(fm.Memory)
 	if err != nil {
 		return parseFail(filePath, hash, fmt.Errorf("memory: %w", err))
@@ -452,8 +540,15 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Disabled:         fm.Disabled,
 		FollowupPrompt:   fm.FollowupPrompt,
 		AssistantContext: fm.AssistantContext,
+		Skills:           stringList(fm.Skills),
 		Prompt:           string(bytes.TrimSpace(body)),
 		Kind:             kindFromPath(filePath),
+		EmailAccept:      rawAccept,
+		AcceptSet:        acceptSet,
+		Accept:           accept,
+		Kit:              fm.Kit,
+		Budget:           fm.Budget,
+		Report:           fm.Report,
 		Hash:             hash,
 		Description:      fm.Description,
 		Notify:           fm.Notify,
@@ -804,4 +899,36 @@ func memoryInt(key string, v any) (int, error) {
 	default:
 		return 0, fmt.Errorf("%s: expected int, got %T", key, v)
 	}
+}
+
+// stringList normalizes YAML scalar-or-list fields used by legacy frontmatter.
+func stringList(raw any) []string {
+	switch value := raw.(type) {
+	case []string:
+		return value
+	case []any:
+		out := make([]string, 0, len(value))
+		for _, item := range value {
+			switch v := item.(type) {
+			case string:
+				if trimmed := strings.TrimSpace(v); trimmed != "" {
+					out = append(out, trimmed)
+				}
+			case fmt.Stringer:
+				if trimmed := strings.TrimSpace(v.String()); trimmed != "" {
+					out = append(out, trimmed)
+				}
+			default:
+				if text := strings.TrimSpace(fmt.Sprint(v)); text != "" && text != "<nil>" {
+					out = append(out, text)
+				}
+			}
+		}
+		return out
+	case string:
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return []string{trimmed}
+		}
+	}
+	return nil
 }
