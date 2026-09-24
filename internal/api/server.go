@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
@@ -27,7 +28,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -235,7 +235,7 @@ func (s *Server) Workspaces() *workspaces.Service { return s.ws }
 
 // SetCLIDriver installs a subprocess driver override on the runs service
 // (tests; production uses the built-in per-harness drivers).
-func (s *Server) SetCLIDriver(d cli.Driver) { s.runs.SetCLIDriver(d) }
+func (s *Server) SetCLIDriver(d agentwire.Driver) { s.runs.SetCLIDriver(d) }
 
 // Alerts returns the alert service (tests).
 func (s *Server) Alerts() *alerts.Service { return s.alerts }

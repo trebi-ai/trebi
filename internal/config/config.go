@@ -303,14 +303,15 @@ type ToolsConfig struct {
 	// Fallback when pin is missing or ensure fails: "require" (fail) or "path" (PATH).
 	Fallback string `yaml:"fallback,omitempty"`
 	// Bridge is the global inheritance policy for harness resources.
-	Bridge   *BridgeConfig `yaml:"bridge,omitempty"`
-	Claude   *ToolPin      `yaml:"claude,omitempty"`
-	Grok     *ToolPin      `yaml:"grok,omitempty"`
-	Codex    *ToolPin      `yaml:"codex,omitempty"`
-	OpenCode *ToolPin      `yaml:"opencode,omitempty"`
-	Copilot  *ToolPin      `yaml:"copilot,omitempty"`
-	Cursor   *ToolPin      `yaml:"cursor,omitempty"`
-	Pi       *ToolPin      `yaml:"pi,omitempty"`
+	Bridge    *BridgeConfig `yaml:"bridge,omitempty"`
+	Claude    *ToolPin      `yaml:"claude,omitempty"`
+	Grok      *ToolPin      `yaml:"grok,omitempty"`
+	Codex     *ToolPin      `yaml:"codex,omitempty"`
+	OpenCode  *ToolPin      `yaml:"opencode,omitempty"`
+	OpenCode2 *ToolPin      `yaml:"opencode2,omitempty"`
+	Copilot   *ToolPin      `yaml:"copilot,omitempty"`
+	Cursor    *ToolPin      `yaml:"cursor,omitempty"`
+	Pi        *ToolPin      `yaml:"pi,omitempty"`
 	// Extra allows future tools without schema churn.
 	extra map[string]*ToolPin `yaml:"-"`
 }
@@ -401,7 +402,7 @@ func HarnessEffortLevels(tool string) []string {
 		return []string{"low", "medium", "high", "xhigh", "max"}
 	case "pi":
 		return []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
-	case "opencode":
+	case "opencode", "opencode2":
 		return nil // variant name, model-specific
 	case "cursor", "gemini", "fake":
 		return []string{}
@@ -412,13 +413,13 @@ func HarnessEffortLevels(tool string) []string {
 // HarnessEffortFreeText reports whether tool's effort is a free-form variant
 // name (opencode) rather than a fixed level list.
 func HarnessEffortFreeText(tool string) bool {
-	return tool == "opencode"
+	return tool == "opencode" || tool == "opencode2"
 }
 
 // HarnessSupportsModel reports whether tool takes a --model launch flag.
 func HarnessSupportsModel(tool string) bool {
 	switch tool {
-	case "claude", "grok", "codex", "opencode", "copilot", "cursor", "pi", "gemini":
+	case "claude", "grok", "codex", "opencode", "opencode2", "copilot", "cursor", "pi", "gemini":
 		return true
 	}
 	return false
@@ -446,7 +447,7 @@ func ValidEnvKey(s string) bool {
 // registered harness except gemini and fake. Kept as this list because
 // config cannot import tmux; TestFirstClassToolsMatchesAllToolsFilter pins it.
 func FirstClassTools() []string {
-	return []string{"claude", "grok", "codex", "opencode", "copilot", "cursor", "pi"}
+	return []string{"claude", "grok", "codex", "opencode", "opencode2", "copilot", "cursor", "pi"}
 }
 
 // IsFirstClass reports whether name has a dedicated tools.<name> field in config.yaml.
@@ -474,6 +475,9 @@ func KnownBridgeResources() map[string][]string {
 			"config_prefs", "skills", "prompts", "mcp",
 		},
 		"opencode": {
+			"plugins", "config", "skills",
+		},
+		"opencode2": {
 			"plugins", "config", "skills",
 		},
 		"copilot": {
@@ -514,6 +518,8 @@ func (tc *ToolsConfig) Pin(name string) *ToolPin {
 		return tc.Codex
 	case "opencode":
 		return tc.OpenCode
+	case "opencode2":
+		return tc.OpenCode2
 	case "copilot":
 		return tc.Copilot
 	case "cursor":
@@ -541,6 +547,8 @@ func (tc *ToolsConfig) SetPin(name string, pin *ToolPin) {
 		tc.Codex = pin
 	case "opencode":
 		tc.OpenCode = pin
+	case "opencode2":
+		tc.OpenCode2 = pin
 	case "copilot":
 		tc.Copilot = pin
 	case "cursor":
@@ -901,7 +909,7 @@ func (c *Config) Validate() error {
 	if rt := strings.ToLower(strings.TrimSpace(c.Harness.Runtime)); rt != "" && rt != "cli" && rt != "tui" {
 		ce.add("harness.runtime", fmt.Sprintf("%q not in [cli, tui]", c.Harness.Runtime))
 	}
-	for _, tool := range []string{"claude", "grok", "codex", "opencode", "copilot", "cursor", "pi"} {
+	for _, tool := range []string{"claude", "grok", "codex", "opencode", "opencode2", "copilot", "cursor", "pi"} {
 		pin := c.Tools.Pin(tool)
 		if pin == nil {
 			continue

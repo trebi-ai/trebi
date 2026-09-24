@@ -22,7 +22,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/runtime/native"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -772,7 +771,7 @@ func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if run.Harness == tmux.OpenCode && run.SessionID != "" {
-			if raw, ok := cli.OpenCodeMessages(r.Context(), run.SessionID); ok {
+			if raw, ok := s.runs.OpenCodeMessages(r.Context(), run.SessionID); ok {
 				if turns, err := tmux.ParseOpenCodeMessages(raw); err == nil {
 					writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
 					return

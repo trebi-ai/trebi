@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Records real Claude Code stream-json NDJSON sessions into
-// ../../internal/runtime/cli/testdata/claude/<sdk>-<cli>/.
+// ../../agent-wire/testdata/claude/<sdk>-<cli>/ (the wire, and its fixtures,
+// live in github.com/trebi-ai/agent-wire).
 //
 // Dev/CI only: needs the operator's `claude` on PATH and a shared login. The
 // script never reads or copies tokens; it spawns the CLI exactly like the Go
@@ -23,7 +24,7 @@ import { homedir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const home = homedir();
-const outRoot = join(here, "..", "..", "internal", "runtime", "cli", "testdata", "claude");
+const outRoot = join(here, "..", "..", "agent-wire", "testdata", "claude");
 
 const sdkVersion = JSON.parse(
   execFileSync("node", ["-p", "JSON.stringify(require('./package.json'))"], { cwd: here }).toString()

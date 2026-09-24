@@ -38,7 +38,11 @@ func (t codexTool) PrepareLaunch(command string) LaunchPlan {
 	t.tool = Codex
 	// Do not set CODEX_HOME: a fresh harness tree cold-starts Codex plugin
 	// sync and misses WaitReady. Notify is injected via -c; auth stays in
-	// the user ~/.codex. Bridges remain dormant until login isolation.
+	// the user ~/.codex. Every codex bridge is therefore dormant until login
+	// isolation: Codex reads only ~/.codex, so the harness tree's skills,
+	// prompts, mcp.json and config.toml prefs are written and never read.
+	// They stay in the catalog because DiscoverSkills scans the user-side
+	// .codex/skills entry and the bridge policy reports on all four.
 	_, _ = t.prepare()
 	return LaunchPlan{Command: cmd, Env: nil}
 }

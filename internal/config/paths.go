@@ -89,7 +89,7 @@ func ResourceDefaultInherit(tool, key string) bool {
 	switch tool + "/" + key {
 	case "claude/keybindings", "claude/status_line",
 		"grok/marketplace",
-		"opencode/config":
+		"opencode/config", "opencode2/config":
 		return false
 	}
 	// Known keys default true; unknown false.

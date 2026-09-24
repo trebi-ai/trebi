@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/llm"
 	"github.com/trebi-ai/trebi/internal/pricing"
-	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
@@ -130,10 +130,11 @@ type Service struct {
 	composer  WakeComposer
 	memRes    MemoryResolver
 
-	// Subprocess runtime (Part D). cliDriver is a test override; cliReg is
-	// the live session + pid ledger; cliRuns is the pump-owned state.
-	cliReg    *cli.Registry
-	cliDriver cli.Driver
+	// Subprocess runtime (Part D). rt is the shared agentwire runtime (its
+	// own session + pid ledger); cliDriver is a test override; cliRuns is the
+	// pump-owned state.
+	rt        *agentwire.Runtime
+	cliDriver agentwire.Driver
 	cliRuns   map[string]*cliRun
 }
 

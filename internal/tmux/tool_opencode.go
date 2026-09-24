@@ -13,12 +13,18 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 )
 
-type opencodeTool struct{ harnessHome }
+// opencodeTool is the policy of the OpenCode family: 1.x and the 2.x beta are
+// the same terminal application, so one struct carries both. name is the
+// harness (OpenCode or OpenCode2) and the vendor binary.
+type opencodeTool struct {
+	harnessHome
+	name string
+}
 
-func (opencodeTool) Name() string { return OpenCode }
+func (t opencodeTool) Name() string { return t.name }
 
-func (opencodeTool) Match(command string) bool {
-	return binaryMatch(command, OpenCode)
+func (t opencodeTool) Match(command string) bool {
+	return binaryMatch(command, t.name)
 }
 
 func (t opencodeTool) PrepareLaunch(command string) LaunchPlan {
@@ -117,14 +123,39 @@ func ParseOpenCodeMessages(data []byte) ([]Turn, error) {
 	return turns, nil
 }
 
-func (opencodeTool) Lifecycle() LifecycleAdapter { return opencodeLifecycle{} }
+// Lifecycle: the session-id plugin is written against the 1.x plugin API.
+// The 2.x builds tested on 2026-09-22 never load a plugin declared in an
+// injected config dir, so opencode2 runs screen-only (EventMode default)
+// until the V2 plugin API is proven. The cli wire carries the id anyway.
+func (t opencodeTool) Lifecycle() LifecycleAdapter {
+	if t.name == OpenCode2 {
+		return nil
+	}
+	return opencodeLifecycle{}
+}
 
 func (t opencodeTool) launchEnv() map[string]string {
-	t.tool = OpenCode
+	t.tool = t.name
 	_, dir := t.prepare()
+	if t.name == OpenCode2 {
+		// V2 reads the operator's own config directories. The 1.x variables are
+		// not honored in the builds tested on 2026-09-22: `debug config` lists
+		// only the global directories, and a plugin declared in an injected
+		// directory never loads. So the trebi home stays out of a V2 launch and
+		// the bridge assets written under it do not reach V2 — the operator's
+		// own skills and config do. Re-check when the V2 config surface settles.
+		return nil
+	}
 	cfgPath := filepath.Join(dir, "opencode.json")
 	return map[string]string{
-		// Merge plugin with user config; does not relocate auth (XDG data).
+		// OPENCODE_CONFIG_DIR adds the trebi home as a config directory, so
+		// OpenCode scans the skills and plugins the bridge injects there and
+		// reads opencode.json from it. It adds to the user's config: the real
+		// XDG config dir stays in the list. It does not move auth — auth.json
+		// lives under XDG data (Global.Path.data), which trebi leaves alone.
+		"OPENCODE_CONFIG_DIR": dir,
+		// Kept for OpenCode builds without OPENCODE_CONFIG_DIR: the same file
+		// then merges as an explicit config.
 		"OPENCODE_CONFIG": cfgPath,
 	}
 }

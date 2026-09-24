@@ -33,15 +33,16 @@ func TestAuthCapsMatrix(t *testing.T) {
 		relay, token, fragile, attach, expiry bool
 		localCmd                              string
 	}{
-		Claude:   {relay: true, token: true, expiry: true, localCmd: "claude auth login"},
-		Codex:    {relay: true, token: true, expiry: true, localCmd: "codex login --device-auth"},
-		Grok:     {relay: true, token: true, expiry: true, localCmd: "grok login --device-auth"},
-		Gemini:   {relay: true, token: true, fragile: true, expiry: true, localCmd: "gemini  (NO_BROWSER=1)"},
-		OpenCode: {relay: true, token: true, localCmd: "opencode auth login"},
-		Copilot:  {relay: true, token: true, attach: true},
-		Cursor:   {token: true, localCmd: "cursor-agent login"},
-		Pi:       {relay: true, token: true, attach: true},
-		Fake:     {relay: true, localCmd: "fake login"},
+		Claude:    {relay: true, token: true, expiry: true, localCmd: "claude auth login"},
+		Codex:     {relay: true, token: true, expiry: true, localCmd: "codex login --device-auth"},
+		Grok:      {relay: true, token: true, expiry: true, localCmd: "grok login --device-auth"},
+		Gemini:    {relay: true, token: true, fragile: true, expiry: true, localCmd: "gemini  (NO_BROWSER=1)"},
+		OpenCode:  {relay: true, token: true, localCmd: "opencode auth login"},
+		OpenCode2: {relay: true, token: true, localCmd: "opencode2 auth login"},
+		Copilot:   {relay: true, token: true, attach: true},
+		Cursor:    {token: true, localCmd: "cursor-agent login"},
+		Pi:        {relay: true, token: true, attach: true},
+		Fake:      {relay: true, localCmd: "fake login"},
 	}
 	for _, tool := range AllTools() {
 		caps := tool.AuthCapabilities()
@@ -63,7 +64,7 @@ func TestAuthCapsMatrix(t *testing.T) {
 				t.Errorf("%s relay without login args", tool.Name())
 			}
 		}
-		if w.token && len(caps.TokenEnvKeys) == 0 && tool.Name() != OpenCode {
+		if w.token && len(caps.TokenEnvKeys) == 0 && tool.Name() != OpenCode && tool.Name() != OpenCode2 {
 			t.Errorf("%s token without env keys", tool.Name())
 		}
 		if w.localCmd != "" && caps.LocalCmd != w.localCmd {

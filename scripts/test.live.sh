@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Live tier for the harness subprocess runtime (docs/plans/2026-09-16-harness-subprocess-runtime.md, Part L.2).
+# Live tier for the harness subprocess runtime (docs/plans/2026-09-22-agentwire-harness-library.md, Part J).
+#
+# The wire moved to the library: the live tests now live in
+# github.com/trebi-ai/agent-wire/live and this script drives them from the
+# trebi checkout. The library owns the fixtures, the protocol coverage and the
+# vendor quirks; trebi keeps only its own policy tests.
 #
 # Runs the REAL vendor CLIs against the operator's existing shared login:
 # auth is asserted before any prompt is sent, nothing logs in or out, and
@@ -11,16 +16,16 @@
 #   scripts/test.live.sh --run TestLiveClaudePermission claude
 #
 # Env:
-#   TREBI_LIVE_SKIP_NOAUTH=1   downgrade auth failures to skips (mixed machines)
+#   AGENTWIRE_LIVE_SKIP_NOAUTH=1   downgrade auth failures to skips (mixed machines)
 #
-# The tests set a temp TREBI_HOME themselves; the shared login still resolves
+# The tests set a temp home themselves; the shared login still resolves
 # through the user home / Keychain.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
-pkg=internal/runtime/cli
+pkg=github.com/trebi-ai/agent-wire/live
 go_timeout=20m
 run_re=""
 dry_run=0
@@ -29,7 +34,7 @@ skip_noauth=0
 named=()
 extra=()
 
-known=(claude codex opencode cursor pi)
+known=(claude codex opencode cursor pi copilot gemini)
 
 binary_for() {
   case "$1" in
@@ -42,9 +47,9 @@ usage() {
   cat <<'EOF'
 usage: scripts/test.live.sh [flags] [harness ...]
 
-Runs the live tier (go test -tags live_cli) against installed vendor CLIs
-using your existing shared login. With no harness names, runs every
-installed harness among: claude codex opencode cursor pi.
+Runs the library live tier (go test -tags live ./live/...) against installed
+vendor CLIs using your existing shared login. With no harness names, runs every
+installed harness among: claude codex opencode cursor pi copilot gemini.
 Note: an installed-but-unauthenticated harness fails unless --skip-noauth.
 
 flags:
@@ -70,15 +75,6 @@ while [[ $# -gt 0 ]]; do
     *)             named+=("$1"); shift ;;
   esac
 done
-
-if [[ ! -d "$pkg" ]]; then
-  echo "error: $pkg does not exist yet (phase 0 of the plan); nothing to test" >&2
-  exit 1
-fi
-if ! compgen -G "$pkg/live_*_test.go" >/dev/null; then
-  echo "error: no $pkg/live_*_test.go yet; the live tier (Part L.2) is not implemented" >&2
-  exit 1
-fi
 
 harnesses=()
 if [[ ${#named[@]} -gt 0 ]]; then
@@ -120,13 +116,14 @@ if [[ $assume_yes -eq 0 && -t 0 ]]; then
   esac
 fi
 
-TREBI_LIVE_HARNESSES="$(IFS=,; echo "${harnesses[*]}")"
-export TREBI_LIVE_HARNESSES
+# The library's live tier reads one comma-separated variable.
+AGENTWIRE_LIVE="$(IFS=,; echo "${harnesses[*]}")"
+export AGENTWIRE_LIVE
 if [[ $skip_noauth -eq 1 ]]; then
-  export TREBI_LIVE_SKIP_NOAUTH=1
+  export AGENTWIRE_LIVE_SKIP_NOAUTH=1
 fi
 
-args=(go test -tags live_cli -count=1 -timeout "$go_timeout" -v "./$pkg/...")
+args=(go test -tags live -count=1 -timeout "$go_timeout" -v "$pkg")
 if [[ -n "$run_re" ]]; then
   args+=(-run "$run_re")
 fi

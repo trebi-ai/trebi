@@ -25,7 +25,7 @@ type DiscoveredSkill struct {
 	Injected  bool          `json:"injected"`
 }
 
-var skillScanTools = []string{"claude", "grok", "codex", "opencode", "cursor", "pi"}
+var skillScanTools = []string{"claude", "grok", "codex", "opencode", "opencode2", "cursor", "pi"}
 
 const agentsSkillsRel = ".agents/skills"
 

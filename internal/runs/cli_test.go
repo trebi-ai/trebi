@@ -9,18 +9,18 @@ import (
 	"testing"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // cliFixture builds a runs service with the fake subprocess driver injected
 // and a fake `claude` binary on PATH so resolveCommand/commandUnavailable
 // take the vendor path without touching a real vendor CLI.
-func cliFixture(t *testing.T, drv cli.Driver) (*runs.Service, *store.Store, string) {
+func cliFixture(t *testing.T, drv agentwire.Driver) (*runs.Service, *store.Store, string) {
 	t.Helper()
 	dir := t.TempDir()
 	home.SetBase(dir)
@@ -95,7 +95,7 @@ func waitTerminal(t *testing.T, svc *runs.Service, runID string) *runs.Run {
 // TestCLIJobCompletesWithoutTmux is the phase-0 acceptance bar: a job
 // completes through the subprocess runtime with no tmux session.
 func TestCLIJobCompletesWithoutTmux(t *testing.T) {
-	svc, _, _ := cliFixture(t, cli.FakeDriver{})
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{})
 	run := launchCLIJob(t, svc)
 
 	if run.Runtime != "cli" {
@@ -121,7 +121,7 @@ func TestCLIJobCompletesWithoutTmux(t *testing.T) {
 
 // TestCLIFailingResultClassifies pulls a limit result through the whole path.
 func TestCLIFailingResultClassifies(t *testing.T) {
-	svc, st, _ := cliFixture(t, cli.FakeDriver{
+	svc, st, _ := cliFixture(t, agentwire.FakeDriver{
 		Script: `read -r line; echo '{"type":"result","subtype":"error_during_execution","is_error":true,"text":"You have hit your session limit","end_reason":"limit"}'`,
 	})
 	run := launchCLIJob(t, svc)
@@ -140,7 +140,7 @@ func TestCLIFailingResultClassifies(t *testing.T) {
 
 // TestCLIKillTreeKillsChild pins process-group kill through the service.
 func TestCLIKillTreeKillsChild(t *testing.T) {
-	svc, _, _ := cliFixture(t, cli.FakeDriver{Script: `sleep 60`})
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{Script: `sleep 60`})
 	run := launchCLIJob(t, svc)
 	deadline := time.Now().Add(5 * time.Second)
 	for run.RuntimePID == 0 && time.Now().Before(deadline) {
@@ -168,7 +168,7 @@ func TestCLIKillTreeKillsChild(t *testing.T) {
 // TestCLILogStreamsBeforeTerminate pins the streaming run log (Part H): the
 // assistant text exists while the process is still alive.
 func TestCLILogStreamsBeforeTerminate(t *testing.T) {
-	svc, _, _ := cliFixture(t, cli.FakeDriver{
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
 		Script: `read -r line; echo '{"type":"assistant","text":"working on it"}'; sleep 60`,
 	})
 	run := launchCLIJob(t, svc)
@@ -187,7 +187,7 @@ func TestCLILogStreamsBeforeTerminate(t *testing.T) {
 // TestCLIApprovalRoundtrip maps a wire permission to the approval inbox and
 // forwards the decision back to the session.
 func TestCLIApprovalRoundtrip(t *testing.T) {
-	svc, _, _ := cliFixture(t, cli.FakeDriver{
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
 		Script: `read -r line
 echo '{"type":"permission","id":"p1","tool":"Bash","question":"Allow Bash?"}'
 read -r decision
@@ -234,7 +234,7 @@ func TestCLIMemoryFixCycle(t *testing.T) {
 	if err := os.WriteFile(fixed, append(memory.Skeleton(), []byte("- [2026-01-01 00:00] ran\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	svc, _, _ := cliFixture(t, cli.FakeDriver{
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
 		Script: `read -r line
 echo '{"type":"result","subtype":"success"}'
 read -r fix
@@ -261,7 +261,7 @@ echo '{"type":"result","subtype":"success"}'`,
 // TestCLIRecoverMarksSessionGone simulates a daemon restart: the ledger child
 // is killed and the live row reconciles to session_gone.
 func TestCLIRecoverMarksSessionGone(t *testing.T) {
-	svc, st, _ := cliFixture(t, cli.FakeDriver{Script: `sleep 60`})
+	svc, st, _ := cliFixture(t, agentwire.FakeDriver{Script: `sleep 60`})
 	run := launchCLIJob(t, svc)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -293,7 +293,7 @@ func TestCLIRecoverMarksSessionGone(t *testing.T) {
 // TestCLIConcurrentApprovals pins the keyed approval path (A.10): two wire
 // permissions each open their own row, and each decision reaches the session.
 func TestCLIConcurrentApprovals(t *testing.T) {
-	svc, _, _ := cliFixture(t, cli.FakeDriver{
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
 		Script: `read -r line
 echo '{"type":"permission","id":"p1","tool":"Bash","question":"first?"}'
 echo '{"type":"permission","id":"p2","tool":"Bash","question":"second?"}'
@@ -353,7 +353,7 @@ echo '{"type":"result","subtype":"success"}'`,
 // TestCLITurnsPrefersWireEvents pins the Part H transcript order: the turn
 // list is rebuilt from run_events, not the vendor file.
 func TestCLITurnsPrefersWireEvents(t *testing.T) {
-	svc, _, _ := cliFixture(t, cli.FakeDriver{
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
 		Script: `read -r line
 echo '{"type":"assistant","text":"hello from wire"}'
 echo '{"type":"tool","id":"t1","name":"Bash","status":"completed","output":"ok"}'
@@ -387,7 +387,7 @@ echo '{"type":"result","subtype":"success"}'`,
 // input, the completion stamps the turn, and a call that never closes keeps
 // its start time instead of a zero timestamp.
 func TestCLITurnsMatchesToolResultByID(t *testing.T) {
-	svc, _, _ := cliFixture(t, cli.FakeDriver{
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
 		Script: `read -r line
 echo '{"type":"tool","id":"t1","name":"Bash","status":"started","input":"{}"}'
 echo '{"type":"tool","id":"t1","name":"","status":"completed","output":"ok"}'
@@ -431,7 +431,7 @@ echo '{"type":"result","subtype":"success"}'`,
 // TestCLIEventsSince covers the attach cursor: events replay from id 0 and
 // resume after the last seen id.
 func TestCLIEventsSince(t *testing.T) {
-	svc, _, _ := cliFixture(t, cli.FakeDriver{
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
 		Script: `read -r line; echo '{"type":"assistant","text":"hi"}'; echo '{"type":"result","subtype":"success"}'`,
 	})
 	run := launchCLIJob(t, svc)

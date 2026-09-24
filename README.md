@@ -99,7 +99,7 @@ trebi mcp install --client claude            # runs the add command
 trebi mcp serve                              # stdio bridge for a client without HTTP
 ```
 
-Clients: `claude`, `codex`, `opencode`, `cursor`, `vscode`, and `json` for the raw url. The sections below show the same blocks, filled in by hand.
+Clients: `claude`, `codex`, `opencode`, `opencode2`, `cursor`, `vscode`, and `json` for the raw url. The sections below show the same blocks, filled in by hand.
 
 ```bash
 trebi service status --json          # confirms the API is up
@@ -113,10 +113,11 @@ Tools take `{"action": "<name>", "input": {…}}`. Call `docs` on a tool for its
 ### OpenCode
 
 ```bash
-opencode2 mcp add trebi --global --url "$URL"
+trebi mcp config --client opencode  --command   # opencode mcp add trebi --url "$URL"
+trebi mcp config --client opencode2 --command   # opencode2 mcp add trebi --url "$URL"
 ```
 
-Drop `--global` for project-only. OpenCode defaults remote servers to OAuth; this daemon has none, so set `"oauth": false` on the server in `opencode.json(c)`:
+Neither binary has a `--global` flag: `mcp add` writes `./opencode.json` in the current directory, so add the printed block to `~/.config/opencode/opencode.json` for a user-wide server. `--client opencode` prints the 1.x shape (`mcp.trebi`); `--client opencode2` prints the 2.x shape (`mcp.servers.trebi`), which is what the beta writes itself. OpenCode defaults remote servers to OAuth; this daemon has none, so both set `"oauth": false`:
 
 ```jsonc
 {

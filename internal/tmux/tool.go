@@ -17,14 +17,15 @@ import (
 
 // Supported harness names (binary / Detect identity).
 const (
-	Claude   = "claude"
-	Codex    = "codex"
-	Copilot  = "copilot"
-	Cursor   = "cursor" // CLI binary is typically "cursor-agent"
-	Gemini   = "gemini"
-	OpenCode = "opencode"
-	Grok     = "grok"
-	Pi       = "pi"
+	Claude    = "claude"
+	Codex     = "codex"
+	Copilot   = "copilot"
+	Cursor    = "cursor" // CLI binary is typically "cursor-agent"
+	Gemini    = "gemini"
+	OpenCode  = "opencode"
+	OpenCode2 = "opencode2"
+	Grok      = "grok"
+	Pi        = "pi"
 	// Fake is the eval stand-in harness (cmd/fake). It is off the default
 	// harness list, so only a job or login that names it reaches it.
 	Fake = "fake"
@@ -134,7 +135,11 @@ func AllTools() []Tool {
 	return []Tool{
 		claudeTool{harnessHome{tool: Claude}},
 		grokTool{harnessHome{tool: Grok}},
-		opencodeTool{harnessHome{tool: OpenCode}},
+		// OpenCode 2.x is the same terminal application as 1.x: one policy,
+		// two names. It is matched first so a path that contains "opencode2"
+		// cannot fall through to the 1.x entry.
+		opencodeTool{harnessHome: harnessHome{tool: OpenCode2}, name: OpenCode2},
+		opencodeTool{harnessHome: harnessHome{tool: OpenCode}, name: OpenCode},
 		cursorTool{harnessHome{tool: Cursor}},
 		codexTool{harnessHome{tool: Codex}},
 		copilotTool{},

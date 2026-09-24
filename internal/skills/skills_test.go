@@ -45,13 +45,22 @@ func TestSkillCRUDAndProjection(t *testing.T) {
 		t.Fatalf("%v %v", got, err)
 	}
 
-	_, err = svc.Update(ctx, "demo-skill", "# Demo v2\n", got.Hash, map[string]bool{"claude": true})
+	_, err = svc.Update(ctx, "demo-skill", "# Demo v2\n", got.Hash, map[string]bool{"claude": true, "cursor": true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(home.HarnessDir("claude"), "skills", "demo-skill")
 	if _, err := os.Lstat(link); err != nil {
 		t.Fatalf("projection missing: %v", err)
+	}
+	// Cursor reads skills-cursor, not skills (bridge catalog), so the
+	// projection must land there and nowhere else.
+	cursor := filepath.Join(home.HarnessDir("cursor"), "skills-cursor", "demo-skill")
+	if _, err := os.Lstat(cursor); err != nil {
+		t.Fatalf("cursor projection missing: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(home.HarnessDir("cursor"), "skills")); err == nil {
+		t.Fatal("cursor projection landed in the path the harness never reads")
 	}
 
 	proj, err := skills.ProjectForRun([]string{"demo-skill"}, nil)

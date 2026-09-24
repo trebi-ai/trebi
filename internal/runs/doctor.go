@@ -1,4 +1,4 @@
-package cli
+package runs
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
 )
 
@@ -42,6 +43,7 @@ var runtimeTools = []runtimeTool{
 	{"claude", "claude", []string{"--output-format", "--permission-prompt-tool"}, "https://status.anthropic.com"},
 	{"codex", "codex", []string{"app-server"}, "https://status.openai.com"},
 	{"opencode", "opencode", []string{"serve"}, ""},
+	{"opencode2", "opencode2", []string{"serve"}, ""},
 	{"pi", "pi", []string{"rpc"}, ""},
 	{"copilot", "copilot", []string{"--acp"}, ""},
 	{"cursor", "cursor-agent", []string{"acp"}, ""},
@@ -65,11 +67,11 @@ func doctorProbeKey() string {
 	return os.Getenv("PATH") + "\x00" + os.Getenv("TREBI_HOME")
 }
 
-// DoctorFindings reports per-harness runtime posture (Part J): runtime kind,
-// binary pin + version, flag probe, and the entitlement posture line. No cost
-// probe and no pricing assumptions. Probes run in parallel and the result is
-// cached briefly so doctor stays responsive.
-func DoctorFindings(ctx context.Context) []Finding {
+// HarnessFindings reports per-harness runtime posture (Part J): runtime kind,
+// binary pin + version, protocol-flag probe, and the entitlement posture line.
+// No cost probe and no pricing assumptions. Probes run in parallel and the
+// result is cached briefly so doctor stays responsive.
+func (s *Service) HarnessFindings(ctx context.Context) []Finding {
 	key := doctorProbeKey()
 	doctorCache.mu.Lock()
 	if doctorCache.key == key && time.Since(doctorCache.at) < doctorCacheTTL && doctorCache.findings != nil {
@@ -88,7 +90,7 @@ func DoctorFindings(ctx context.Context) []Finding {
 		go func() {
 			defer wg.Done()
 			killSwitch := cfg != nil && strings.EqualFold(cfg.HarnessRuntimeFor(runtimeTools[i].name), "tui")
-			results[i] = collectToolFindings(ctx, runtimeTools[i], killSwitch)
+			results[i] = s.collectToolFindings(ctx, runtimeTools[i], killSwitch)
 		}()
 	}
 	wg.Wait()
@@ -104,8 +106,10 @@ func DoctorFindings(ctx context.Context) []Finding {
 	return append([]Finding(nil), out...)
 }
 
-// collectToolFindings probes one harness.
-func collectToolFindings(ctx context.Context, tool runtimeTool, killSwitch bool) []Finding {
+// collectToolFindings probes one harness. The library owns the binary, version
+// and login probes; trebi owns the kill switch, the required-flag list and the
+// wording.
+func (s *Service) collectToolFindings(ctx context.Context, tool runtimeTool, killSwitch bool) []Finding {
 	bin := installedBinary(tool.name, tool.bin)
 	if bin == "" {
 		return nil
@@ -116,25 +120,33 @@ func collectToolFindings(ctx context.Context, tool runtimeTool, killSwitch bool)
 			Message: fmt.Sprintf("%s: harness.runtime is tui (incident kill switch); every vendor run opens a pane until it is cleared", tool.name),
 		}}
 	}
-	version := probeVersion(ctx, bin)
-	driver, ok := DriverFor(tool.name)
+	rt := s.agentwireRuntime()
+	driver, ok := rt.Driver(agentwire.Harness(tool.name))
 	if !ok {
 		// No proven wire: the pane is the only runtime. Say so (Part J).
 		msg := fmt.Sprintf("%s: runtime tui only (no proven subprocess wire); runs open a tmux pane", tool.name)
-		if version != "" {
+		if version := rt.Version(ctx, bin); version != "" {
 			msg += ", " + version
 		}
 		return []Finding{{
 			ID: "harness-runtime-" + tool.name, Severity: "info", Code: "harness_runtime_tui_only", Message: msg,
 		}}
 	}
+	// Detect owns the binary, version-floor and login probes. The pin is what
+	// actually runs, so its own version wins when Detect probed another path.
+	det, _ := rt.Detect(ctx, agentwire.Harness(tool.name))
+	version := det.Version
+	if det.Path != bin {
+		version = rt.Version(ctx, bin)
+	}
 	probe := "flag not found"
 	if len(tool.flags) == 0 {
 		probe = ""
 	} else {
+		help := rt.HelpText(ctx, bin)
 		missing := []string{}
 		for _, f := range tool.flags {
-			if !probeFlag(ctx, bin, f) {
+			if !strings.Contains(help, f) {
 				missing = append(missing, f)
 			}
 		}
@@ -245,33 +257,4 @@ func statExecutable(path string) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-// probeVersion runs `<bin> --version` with a short deadline.
-func probeVersion(ctx context.Context, bin string) string {
-	out, err := runProbe(ctx, bin, "--version")
-	if err != nil {
-		return ""
-	}
-	line := strings.TrimSpace(string(out))
-	if i := strings.IndexByte(line, '\n'); i > 0 {
-		line = line[:i]
-	}
-	if len(line) > 80 {
-		line = line[:80]
-	}
-	return line
-}
-
-// probeFlag greps `<bin> --help` for the protocol flag (fail-closed signal:
-// a missing flag gets a doctor line, not a silent TUI fallback).
-func probeFlag(ctx context.Context, bin, flag string) bool {
-	out, _ := runProbe(ctx, bin, "--help")
-	return strings.Contains(string(out), flag)
-}
-
-func runProbe(ctx context.Context, bin string, args ...string) ([]byte, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	return exec.CommandContext(probeCtx, bin, args...).CombinedOutput()
 }

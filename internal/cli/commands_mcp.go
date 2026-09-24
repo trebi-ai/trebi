@@ -25,7 +25,7 @@ func mcpCommand() *cli.Command {
 				Name:  "config",
 				Usage: "print the config block for one client",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "client", Value: "json", Usage: "claude, codex, opencode, cursor, vscode, or json"},
+					&cli.StringFlag{Name: "client", Value: "json", Usage: "claude, codex, opencode, opencode2, cursor, vscode, or json"},
 					&cli.BoolFlag{Name: "command", Usage: "print the add command instead of the config file block"},
 				},
 				Action: runMCPConfig,
@@ -34,7 +34,7 @@ func mcpCommand() *cli.Command {
 				Name:  "install",
 				Usage: "run the add command of one client",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "client", Value: "claude", Usage: "claude, codex, or opencode"},
+					&cli.StringFlag{Name: "client", Value: "claude", Usage: "claude, codex, opencode, or opencode2"},
 					&cli.BoolFlag{Name: "dry-run", Usage: "print the command without running it"},
 				},
 				Action: runMCPInstall,
@@ -76,7 +76,15 @@ func (t mcpTarget) block(client string) (string, error) {
 			"type": "http", "url": t.URL,
 		}}})
 	case "opencode":
-		// OpenCode defaults a remote server to OAuth; this daemon has none.
+		// OpenCode 1.x keys MCP servers by name under "mcp" (McpRemoteConfig),
+		// not under a "servers" map. A remote server defaults to OAuth
+		// auto-detection; this daemon has none.
+		return t.jsonBlock(map[string]any{"mcp": map[string]any{"trebi": map[string]any{
+			"type": "remote", "url": t.URL, "oauth": false,
+		}}})
+	case "opencode2":
+		// The 2.x beta writes "mcp.servers.<name>" (its own `mcp add` output)
+		// and reads both shapes. Match what it writes.
 		return t.jsonBlock(map[string]any{"mcp": map[string]any{"servers": map[string]any{"trebi": map[string]any{
 			"type": "remote", "url": t.URL, "oauth": false,
 		}}}})
@@ -91,7 +99,7 @@ func (t mcpTarget) block(client string) (string, error) {
 	case "json", "":
 		return t.jsonBlock(map[string]any{"url": t.URL})
 	}
-	return "", fmt.Errorf("unknown client %q; use claude, codex, opencode, cursor, vscode, or json", client)
+	return "", fmt.Errorf("unknown client %q; use claude, codex, opencode, opencode2, cursor, vscode, or json", client)
 }
 
 func (t mcpTarget) jsonBlock(v any) (string, error) {
@@ -113,8 +121,10 @@ func (t mcpTarget) addCommand(client string) ([]string, error) {
 			"--scope", "user"}, nil
 	case "codex":
 		return []string{"codex", "mcp", "add", "trebi", "--url", t.URL}, nil
-	case "opencode":
-		return []string{"opencode2", "mcp", "add", "trebi", "--global", "--url", t.URL}, nil
+	case "opencode", "opencode2":
+		// Non-interactive `mcp add` writes the global config
+		// (XDG_CONFIG_HOME/opencode/opencode.json); there is no --global flag.
+		return []string{client, "mcp", "add", "trebi", "--url", t.URL}, nil
 	}
 	return nil, fmt.Errorf("client %q has no add command; use trebi mcp config --client %s", client, client)
 }

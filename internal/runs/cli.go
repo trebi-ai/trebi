@@ -12,13 +12,17 @@ import (
 	"sync"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/pricing"
-	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
+
+// apiVersion mirrors internal/api.Version (the -ldflags target); runs cannot
+// import api.
+const apiVersion = "dev"
 
 // cliLaunchGrace keeps the reaper from reading the launch window (row
 // inserted, session not yet registered) as a gone session.
@@ -26,9 +30,9 @@ const cliLaunchGrace = 5 * time.Second
 
 // cliRun is the per-run subprocess runtime state owned by the event pump.
 type cliRun struct {
-	sess      cli.Session
-	tracker   *cli.Tracker
-	result    *cli.Result
+	sess      agentwire.Session
+	tracker   *agentwire.Tracker
+	result    *agentwire.Result
 	memoryFix int
 	oneShot   bool
 
@@ -97,39 +101,56 @@ func (cr *cliRun) stalledNow() bool {
 
 // SetCLIDriver installs a subprocess driver override (tests). Nil restores
 // the built-in per-harness drivers.
-func (s *Service) SetCLIDriver(d cli.Driver) {
+func (s *Service) SetCLIDriver(d agentwire.Driver) {
 	s.mu.Lock()
 	s.cliDriver = d
+	rt := s.rt
 	s.mu.Unlock()
+	// The runtime, when it already exists, must see the override too: a nil
+	// restores the built-in driver for every harness.
+	if rt != nil {
+		for _, h := range agentwire.Harnesses() {
+			rt.SetDriver(h, d)
+		}
+	}
+}
+
+// agentwireRuntime lazily builds the shared subprocess runtime so TREBI_HOME
+// set after runs.New (tests) still lands the ledger under the right home.
+func (s *Service) agentwireRuntime() *agentwire.Runtime {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rt == nil {
+		rt := agentwire.New(agentwire.Options{
+			ClientName:           "trebi",
+			ClientVersion:        apiVersion,
+			LedgerPath:           filepath.Join(home.RunsDir(), "agent-procs.json"),
+			Logger:               s.log,
+			FingerprintIgnoreEnv: []string{"TREBI_RUN_ID", "TREBI_HOOK_TOOL", "TREBI_MEMORY_PATH"},
+		})
+		if s.cliDriver != nil {
+			for _, h := range agentwire.Harnesses() {
+				rt.SetDriver(h, s.cliDriver)
+			}
+		}
+		s.rt = rt
+	}
+	return s.rt
 }
 
 // cliDriverFor resolves the driver for a harness: the test override wins.
-func (s *Service) cliDriverFor(tool string) cli.Driver {
+func (s *Service) cliDriverFor(tool string) agentwire.Driver {
 	s.mu.RLock()
 	override := s.cliDriver
 	s.mu.RUnlock()
 	if override != nil {
 		return override
 	}
-	d, ok := cli.DriverFor(tool)
+	d, ok := s.agentwireRuntime().Driver(agentwire.Harness(tool))
 	if !ok {
 		return nil
 	}
 	return d
-}
-
-// cliRegistry lazily builds the process registry so TREBI_HOME set after
-// runs.New (tests) still lands the ledger under the right home.
-func (s *Service) cliRegistry() *cli.Registry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cliReg == nil {
-		s.cliReg = cli.NewRegistry(filepath.Join(home.RunsDir(), "cli-procs.json"))
-		// Daemon-owned `opencode serve` helpers get their own ledger so a
-		// crashed daemon reaps them even after their run rows are gone (E.3).
-		cli.SetOpenCodeLedger(cli.NewRegistry(filepath.Join(home.RunsDir(), "opencode-servers.json")))
-	}
-	return s.cliReg
 }
 
 func (s *Service) registerCLIRun(id string, cr *cliRun) {
@@ -192,9 +213,15 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	if drv == nil {
 		return s.launchTmux(ctx, opts)
 	}
+	// Session identity belongs to the launch plan. A harness that assigns its
+	// own session id (the OpenCode family) leaves plan.SessionID empty, and
+	// the wire reads a set id as an attach to an existing session — a fresh
+	// run must not carry the UUID trebi minted for the pane path. The vendor
+	// id then arrives on the wire and fills the run row (setRunSessionID).
+	opts.SessionID = plan.SessionID
 
 	// Auth first: no child when the operator login is missing (Part F.2).
-	if _, isFake := drv.(cli.FakeDriver); !isFake {
+	if _, isFake := drv.(agentwire.FakeDriver); !isFake {
 		// The probe spawns a vendor process; a canceled HTTP request must not
 		// be recorded as an auth failure.
 		probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -234,35 +261,44 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	if body == "" {
 		body = opts.PromptPreview
 	}
-	req := cli.StartRequest{
-		RunID:          run.ID,
-		Tool:           tool.Name(),
-		BaseCommand:    plan.Command,
-		WorkingDir:     opts.WorkingDir,
-		Env:            mergeCLIEnv(tool.Name(), opts.Env, plan.Env, run.ID, tool.Name()),
-		SessionID:      opts.SessionID,
-		Model:          opts.Model,
-		Effort:         opts.Effort,
-		Persistent:     !oneShot,
-		OneShot:        oneShot,
-		OneShotPrompt:  body,
-		PermissionMode: cliPermissionMode(tool.Name(), command),
-		LogPath:        filepath.Join(home.RunsLogDir(), run.ID+".log"),
+	bin, extra := cliExtraArgs(tool.Name(), plan.Command)
+	req := agentwire.StartRequest{
+		Harness:       agentwire.Harness(tool.Name()),
+		Binary:        bin,
+		WorkingDir:    opts.WorkingDir,
+		Env:           mergeCLIEnv(tool.Name(), opts.Env, plan.Env, run.ID, tool.Name()),
+		SessionID:     opts.SessionID,
+		Model:         opts.Model,
+		Effort:        opts.Effort,
+		Permissions:   cliPermissionPolicy(tool.Name(), command),
+		OneShot:       oneShot,
+		OneShotPrompt: body,
+		ExtraArgs:     extra,
+		LogPath:       filepath.Join(home.RunsLogDir(), run.ID+".log"),
 	}
+	// Home is deliberately unset: the tmux policy already renders the harness
+	// home into plan.Env (CLAUDE_CONFIG_DIR, OPENCODE_CONFIG, PI_*, the cursor
+	// vars) including the shared-auth mode, and a second source of truth would
+	// let the two disagree.
 	if opts.Memory != nil {
 		req.Env["TREBI_MEMORY_PATH"] = filepath.Join(opts.Memory.Root, opts.Memory.Rel)
 	}
-	var sess cli.Session
+	// Spawn is not tied to the HTTP request: a canceled request must not kill
+	// a child that is still handshaking.
+	startCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+	defer cancel()
+	rt := s.agentwireRuntime()
+	var sess agentwire.Session
 	if resuming {
-		sess, err = drv.Resume(ctx, req)
+		sess, err = rt.Resume(startCtx, req)
 	} else {
-		sess, err = drv.Start(ctx, req)
+		sess, err = rt.Start(startCtx, req)
 	}
 	if err != nil {
 		// A driver that cannot resume must fail loudly (Part F): callers
 		// surface ErrResumeUnsupported instead of a fake pane or a silent
 		// failed row.
-		if resuming && errors.Is(err, cli.ErrResumeUnsupported) {
+		if resuming && errors.Is(err, agentwire.ErrResumeUnsupported) {
 			return nil, err
 		}
 		s.appendRunLog(run.ID, "cli launch failed: "+err.Error())
@@ -271,16 +307,16 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		got, _ := s.Get(ctx, run.ID)
 		return got, nil
 	}
-	cr := &cliRun{sess: sess, tracker: cli.NewTracker(), oneShot: oneShot}
+	// The library tracks its own sessions in the ledger; no registry Add here.
+	cr := &cliRun{sess: sess, tracker: agentwire.NewTracker(), oneShot: oneShot}
 	s.registerCLIRun(run.ID, cr)
-	s.cliRegistry().Add(run.ID, sess)
 	s.setRunPid(ctx, run.ID, sess.PID())
 	s.AddEvent(ctx, run.ID, "proc", "proc", map[string]string{"pid": strconv.Itoa(sess.PID())})
 
 	go s.pumpCLI(run.ID, opts, cr)
 
 	if !oneShot {
-		if err := sess.Prompt(ctx, cli.Prompt{Text: body, Kind: kindOrDefault(opts.Kind)}); err != nil {
+		if err := sess.Prompt(ctx, agentwire.Prompt{Text: body, Kind: kindOrDefault(opts.Kind)}); err != nil {
 			s.appendRunLog(run.ID, "prompt write failed: "+err.Error())
 			s.Terminate(ctx, run.ID, StatusFailed, EndLaunch, nil)
 			s.unregisterCLIRun(run.ID)
@@ -317,19 +353,78 @@ func kindOrDefault(kind string) string {
 	return kind
 }
 
-// cliPermissionMode resolves the vendor permission mode from the launch
-// command flags. The operator's configured default is deliberately inherited:
-// the control channel answers can_use_tool (A.10), and forcing `default` would
+// cliExtraArgs splits the prepared pane command into the pinned binary and the
+// flags the library does not build. Session identity, model, effort and
+// permission flags are dropped: the typed request owns them. The trebi hooks
+// stay, except the Codex notify helper, which is a screen hook the wire does
+// not need (A.14).
+func cliExtraArgs(tool, command string) (string, []string) {
+	argv := agentwire.SplitArgs(command)
+	if len(argv) == 0 {
+		return "", nil
+	}
+	bin, rest := argv[0], argv[1:]
+	var out []string
+	for i := 0; i < len(rest); i++ {
+		arg := rest[i]
+		name, value, hasValue := strings.Cut(arg, "=")
+		take := func() string {
+			if hasValue {
+				return value
+			}
+			if i+1 < len(rest) {
+				i++
+				return rest[i]
+			}
+			return ""
+		}
+		switch {
+		case tool == tmux.Claude && (name == "--session-id" || name == "--resume" || name == "--model" || name == "--effort" || name == "--permission-mode"):
+			take()
+		case tool == tmux.Claude && name == "--dangerously-skip-permissions":
+			// the permission policy carries it
+		case tool == tmux.Claude:
+			out = append(out, arg)
+			if !hasValue && claudeValueFlag(name) {
+				out = append(out, take())
+			}
+		case tool == tmux.Codex && name == "-c":
+			v := take()
+			if !strings.HasPrefix(v, "notify=") && !strings.HasPrefix(v, "model_reasoning_effort=") {
+				out = append(out, arg, v)
+			}
+		case name == "--model" || name == "--effort" || name == "--variant":
+			take()
+		default:
+			out = append(out, arg)
+		}
+	}
+	return bin, out
+}
+
+// claudeValueFlag reports the Claude flags trebi injects that take a separate
+// value, so the value is not mistaken for the next flag.
+func claudeValueFlag(name string) bool {
+	return name == "--settings"
+}
+
+// cliPermissionPolicy maps the launch command flags onto the library policy.
+// The mapping is today's behavior, no more: Claude with
+// --dangerously-skip-permissions runs unattended, Codex runs with
+// approvalPolicy never, and every other harness asks trebi. Claude without the
+// flag inherits the operator's own mode: trebi must not force `default` and
 // add approval gates the interactive CLI would not show.
-func cliPermissionMode(tool, command string) string {
+func cliPermissionPolicy(tool, command string) agentwire.PermissionPolicy {
 	switch tool {
 	case tmux.Claude:
 		if hasCommandFlag(command, "--dangerously-skip-permissions") {
-			return "bypassPermissions"
+			return agentwire.PermissionPolicy{Mode: agentwire.PermissionAuto}
 		}
-		return ""
+		return agentwire.PermissionPolicy{Mode: agentwire.PermissionInherit}
+	case tmux.Codex:
+		return agentwire.PermissionPolicy{Mode: agentwire.PermissionAuto}
 	}
-	return ""
+	return agentwire.PermissionPolicy{}
 }
 
 func hasCommandFlag(command, flag string) bool {
@@ -396,23 +491,23 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 	ctx := context.Background()
 	defer s.unregisterCLIRun(runID)
 	sawResult := false
-	var lastErr *cli.Event
+	var lastErr *agentwire.Event
 	for ev := range cr.sess.Events() {
 		snap := cr.tracker.Observe(ev)
 		s.logCLIEvent(runID, ev)
 		switch ev.Type {
-		case cli.EventInit:
+		case agentwire.EventInit:
 			if ev.SessionID != "" {
 				s.setRunSessionID(ctx, runID, ev.SessionID)
 			}
 			s.AddEvent(ctx, runID, "session.init", "wire", map[string]string{"session_id": ev.SessionID})
-		case cli.EventAssistant:
+		case agentwire.EventAssistant:
 			s.AddEvent(ctx, runID, "assistant", "wire", map[string]string{
 				"text": trunc(ev.Text, 2000), "delta": strconv.FormatBool(ev.Delta),
 			})
-		case cli.EventUser:
+		case agentwire.EventUser:
 			s.AddEvent(ctx, runID, "user", "wire", map[string]string{"text": trunc(ev.Text, 2000)})
-		case cli.EventUsage:
+		case agentwire.EventUsage:
 			if ev.Usage != nil {
 				s.AddEvent(ctx, runID, "usage", "wire", map[string]string{
 					"input":          strconv.FormatInt(ev.Usage.Input, 10),
@@ -423,20 +518,22 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 					"model":          ev.Usage.Model,
 				})
 			}
-		case cli.EventTool:
+		case agentwire.EventTool:
 			s.addCLIToolEvent(ctx, runID, ev)
-		case cli.EventPermission:
+		case agentwire.EventPermission:
 			s.handleCLIPermission(ctx, runID, cr, ev)
-		case cli.EventError:
+		case agentwire.EventError:
 			e := ev
 			lastErr = &e
-			s.AddEvent(ctx, runID, "error", "wire", map[string]string{
-				"message": trunc(ev.Error, 1000), "hint": ev.Hint, "class": ev.EndReason,
-			})
-		case cli.EventResult:
+			detail := map[string]string{"message": trunc(ev.Error, 1000), "class": ev.EndReason}
+			if h := hintFor(agentwire.FailureClass(ev.EndReason), ev.Code); h != "" {
+				detail["hint"] = h
+			}
+			s.AddEvent(ctx, runID, "error", "wire", detail)
+		case agentwire.EventResult:
 			sawResult = true
 			s.finishCLIResult(ctx, runID, opts, cr, ev)
-		case cli.EventExit:
+		case agentwire.EventExit:
 			if run, err := s.Get(ctx, runID); err == nil && !run.Status.IsTerminal() && !sawResult {
 				e := ev
 				if lastErr == nil && e.Error != "" {
@@ -449,13 +546,13 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 	s.afterCLIExit(ctx, runID, opts, cr, sawResult, lastErr)
 }
 
-func (s *Service) logCLIEvent(runID string, ev cli.Event) {
+func (s *Service) logCLIEvent(runID string, ev agentwire.Event) {
 	switch ev.Type {
-	case cli.EventAssistant:
+	case agentwire.EventAssistant:
 		if ev.Text != "" && !ev.Delta {
 			s.appendRunLog(runID, ev.Text)
 		}
-	case cli.EventTool:
+	case agentwire.EventTool:
 		if ev.Tool != nil {
 			line := "tool " + ev.Tool.Name + " " + ev.Tool.Status
 			if ev.Tool.Output != "" {
@@ -463,21 +560,21 @@ func (s *Service) logCLIEvent(runID string, ev cli.Event) {
 			}
 			s.appendRunLog(runID, line)
 		}
-	case cli.EventResult:
+	case agentwire.EventResult:
 		if ev.Result != nil {
 			s.appendRunLog(runID, fmt.Sprintf("result subtype=%s is_error=%v", ev.Result.Subtype, ev.Result.IsError))
 		}
-	case cli.EventUsage:
+	case agentwire.EventUsage:
 		if ev.Usage != nil {
 			s.appendRunLog(runID, fmt.Sprintf("usage input=%d output=%d cache_read=%d cache_creation=%d cost_usd=%.4f",
 				ev.Usage.Input, ev.Usage.Output, ev.Usage.CacheRead, ev.Usage.CacheCreation, ev.Usage.CostUSD))
 		}
-	case cli.EventError:
+	case agentwire.EventError:
 		s.appendRunLog(runID, "error: "+ev.Error)
 	}
 }
 
-func (s *Service) addCLIToolEvent(ctx context.Context, runID string, ev cli.Event) {
+func (s *Service) addCLIToolEvent(ctx context.Context, runID string, ev agentwire.Event) {
 	if ev.Tool == nil {
 		return
 	}
@@ -576,7 +673,13 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, erro
 	return turns, nil
 }
 
-func (s *Service) handleCLIPermission(ctx context.Context, runID string, cr *cliRun, ev cli.Event) {
+// OpenCodeMessages returns the raw vendor message list for an OpenCode session
+// (transcript fallback). ok is false when no shared server serves that session.
+func (s *Service) OpenCodeMessages(ctx context.Context, sessionID string) ([]byte, bool) {
+	return s.agentwireRuntime().OpenCodeMessages(ctx, sessionID)
+}
+
+func (s *Service) handleCLIPermission(ctx context.Context, runID string, cr *cliRun, ev agentwire.Event) {
 	q := "permission requested"
 	permID, tool := "", ""
 	if ev.Permission != nil {
@@ -591,12 +694,10 @@ func (s *Service) handleCLIPermission(ctx context.Context, runID string, cr *cli
 		s.log.Warn("open approval", "run", runID, "error", err)
 		// A wire permission must never sit unanswered (A.10): deny explicitly
 		// when the approval cannot be recorded.
-		if answerer, ok := cr.sess.(cli.Answerer); ok {
-			if aerr := answerer.AnswerPermission(ctx, permID, cli.Decision{
-				Allow: false, Message: "trebi could not record the approval",
-			}); aerr != nil {
-				s.log.Warn("deny unrecorded permission", "run", runID, "error", aerr)
-			}
+		if aerr := cr.sess.AnswerPermission(ctx, permID, agentwire.Decision{
+			Allow: false, Message: "trebi could not record the approval",
+		}); aerr != nil {
+			s.log.Warn("deny unrecorded permission", "run", runID, "error", aerr)
 		}
 		snap := cr.tracker.PermissionDecided(permID)
 		s.applyCLIState(ctx, runID, cr, snap)
@@ -608,13 +709,13 @@ func (s *Service) handleCLIPermission(ctx context.Context, runID string, cr *cli
 
 // applyCLIState maps the tracker snapshot to session state and emits the
 // stall observation (never a killer; max duration is the backstop).
-func (s *Service) applyCLIState(ctx context.Context, runID string, cr *cliRun, snap cli.Snapshot) {
+func (s *Service) applyCLIState(ctx context.Context, runID string, cr *cliRun, snap agentwire.Snapshot) {
 	switch snap.State {
-	case cli.StatusRunning:
+	case agentwire.StatusRunning:
 		s.SetSessionState(ctx, runID, SessionRunning, "wire")
-	case cli.StatusWaiting:
+	case agentwire.StatusWaiting:
 		s.SetSessionState(ctx, runID, SessionWaiting, "wire")
-	case cli.StatusIdle:
+	case agentwire.StatusIdle:
 		s.SetSessionState(ctx, runID, SessionIdle, "wire")
 	}
 	if snap.Stalled && !cr.stalledNow() {
@@ -630,13 +731,13 @@ func (s *Service) applyCLIState(ctx context.Context, runID string, cr *cliRun, s
 
 // finishCLIResult handles one terminal turn frame: error classification,
 // memory gate, keep-alive, or completion.
-func (s *Service) finishCLIResult(ctx context.Context, runID string, opts LaunchOpts, cr *cliRun, ev cli.Event) {
+func (s *Service) finishCLIResult(ctx context.Context, runID string, opts LaunchOpts, cr *cliRun, ev agentwire.Event) {
 	if cr.isTerminal() {
 		return
 	}
 	res := ev.Result
 	if res == nil {
-		res = &cli.Result{Subtype: "success"}
+		res = &agentwire.Result{Subtype: "success"}
 	}
 	cr.result = res
 	if res.SessionID != "" {
@@ -662,7 +763,7 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 			if cr.memoryFix < maxMemoryFixes && !cr.oneShot {
 				cr.memoryFix++
 				s.requestMemoryFix(ctx, runID, "wire", cr.memoryFix, issues)
-				if err := cr.sess.Prompt(ctx, cli.Prompt{Text: cliFixMessage(issues), Kind: "memory_fix"}); err != nil {
+				if err := cr.sess.Prompt(ctx, agentwire.Prompt{Text: cliFixMessage(issues), Kind: "memory_fix"}); err != nil {
 					s.recordMemoryInvalid(ctx, run, issues, "wire")
 					s.terminateCLI(ctx, runID, cr, StatusFailed, EndLaunch, tokens)
 					return
@@ -686,18 +787,18 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 }
 
 // failCLIResult classifies an error result into an end reason and hint.
-func (s *Service) failCLIResult(ctx context.Context, runID string, opts LaunchOpts, cr *cliRun, res *cli.Result, tokens *pricing.TokenUsage) {
-	class := cli.Classification{Class: cli.FailureClass(res.EndReason)}
-	if class.Class == "" || class.Class == cli.FailUnknown {
-		class = cli.ClassifyResult(res)
+func (s *Service) failCLIResult(ctx context.Context, runID string, opts LaunchOpts, cr *cliRun, res *agentwire.Result, tokens *pricing.TokenUsage) {
+	class := agentwire.Classification{Class: agentwire.FailureClass(res.EndReason)}
+	if class.Class == "" || class.Class == agentwire.FailUnknown {
+		class = agentwire.ClassifyResult(res)
 	}
 	msg := res.Text
 	if msg == "" {
 		msg = res.Subtype
 	}
 	detail := map[string]string{"message": trunc(msg, 1000), "class": string(class.Class)}
-	if class.Hint != "" {
-		detail["hint"] = class.Hint
+	if h := hintFor(class.Class, class.Code); h != "" {
+		detail["hint"] = h
 	}
 	s.AddEvent(ctx, runID, "error", "wire", detail)
 	s.appendRunLog(runID, "run failed: "+msg)
@@ -713,18 +814,18 @@ func (s *Service) failCLIResult(ctx context.Context, runID string, opts LaunchOp
 
 // endReasonFor maps a CLI failure class to the runs vocabulary.
 func endReasonFor(class string) EndReason {
-	switch cli.FailureClass(class) {
-	case cli.FailAuth, cli.FailEntitlement:
+	switch agentwire.FailureClass(class) {
+	case agentwire.FailAuth, agentwire.FailEntitlement:
 		return EndAuth
-	case cli.FailLimit:
+	case agentwire.FailLimit:
 		return EndLimit
-	case cli.FailProtocol:
+	case agentwire.FailProtocol:
 		return EndLaunch
 	}
 	return EndFailed
 }
 
-func tokenUsage(res *cli.Result, opts LaunchOpts) *pricing.TokenUsage {
+func tokenUsage(res *agentwire.Result, opts LaunchOpts) *pricing.TokenUsage {
 	if res == nil {
 		return nil
 	}
@@ -751,13 +852,11 @@ func (s *Service) terminateCLI(ctx context.Context, runID string, cr *cliRun, st
 	}
 	go func() {
 		_ = cr.sess.Close(context.Background())
-		s.cliRegistry().Remove(runID)
 	}()
 }
 
 // afterCLIExit reconciles a process that ended without a result.
-func (s *Service) afterCLIExit(ctx context.Context, runID string, opts LaunchOpts, cr *cliRun, sawResult bool, lastErr *cli.Event) {
-	s.cliRegistry().Remove(runID)
+func (s *Service) afterCLIExit(ctx context.Context, runID string, opts LaunchOpts, cr *cliRun, sawResult bool, lastErr *agentwire.Event) {
 	run, err := s.Get(ctx, runID)
 	if err != nil || run.Status.IsTerminal() {
 		return
@@ -778,24 +877,25 @@ func (s *Service) afterCLIExit(ctx context.Context, runID string, opts LaunchOpt
 		}
 		return
 	}
-	class, msg, hint := "", "", ""
+	class, msg, code := "", "", ""
 	if lastErr != nil {
-		class, msg, hint = lastErr.EndReason, lastErr.Error, lastErr.Hint
+		class, msg, code = lastErr.EndReason, lastErr.Error, lastErr.Code
 	}
 	if msg == "" {
 		msg = "session ended before a result"
-		class = string(cli.FailProtocol)
+		class = string(agentwire.FailProtocol)
 	}
-	if class == "" || class == string(cli.FailUnknown) {
-		c := cli.ClassifyError(msg, 0)
-		class, hint = string(c.Class), c.Hint
+	if class == "" || class == string(agentwire.FailUnknown) {
+		c := agentwire.ClassifyError(msg, 0)
+		class, code = string(c.Class), c.Code
 	}
-	if hint == "" {
-		hint = cli.ClassifyError(msg, 0).Hint
+	detail := map[string]string{
+		"message": trunc(msg, 1000), "class": class,
 	}
-	s.AddEvent(ctx, runID, "error", "proc", map[string]string{
-		"message": trunc(msg, 1000), "class": class, "hint": hint,
-	})
+	if h := hintFor(agentwire.FailureClass(class), code); h != "" {
+		detail["hint"] = h
+	}
+	s.AddEvent(ctx, runID, "error", "proc", detail)
 	s.appendRunLog(runID, "session ended: "+msg)
 	end := endReasonFor(class)
 	if end == EndAuth {
@@ -858,19 +958,16 @@ func (s *Service) RecoverCLI(ctx context.Context) {
 			s.log.Info("cli run recovered", "id", run.ID, "end_reason", EndSessionGone)
 		}
 	}
-	killed, _ := s.cliRegistry().Reconcile()
-	for _, id := range killed {
-		s.log.Warn("recovered leftover cli process", "run", id)
-	}
-	for _, id := range cli.ReconcileOpenCodeServers() {
-		s.log.Warn("recovered leftover opencode serve", "server", id)
+	// The library logs every killed process itself; one reconcile pass covers
+	// both run children and the shared `opencode serve` helpers (E.3).
+	if err := s.agentwireRuntime().Reconcile(); err != nil {
+		s.log.Warn("reconcile agent processes", "error", err)
 	}
 }
 
 // CloseCLIRuns gracefully closes every live CLI session on daemon shutdown.
 func (s *Service) CloseCLIRuns(ctx context.Context) {
-	s.cliRegistry().CloseAll(ctx)
-	cli.ShutdownOpenCodeServers()
+	_ = s.agentwireRuntime().Close(ctx)
 }
 
 // onApprovalDecided forwards an operator decision to a live CLI session.
@@ -885,14 +982,12 @@ func (s *Service) onApprovalDecided(ctx context.Context, runID, key, decision st
 	if id == "" {
 		id = cr.tracker.OldestApprovalID()
 	}
-	if answerer, ok := cr.sess.(cli.Answerer); ok {
-		d := cli.Decision{Allow: decision == "allow"}
-		if decision != "allow" {
-			d.Message = "denied by operator"
-		}
-		if err := answerer.AnswerPermission(ctx, id, d); err != nil {
-			s.log.Warn("answer permission", "run", runID, "permission", id, "error", err)
-		}
+	d := agentwire.Decision{Allow: decision == "allow"}
+	if decision != "allow" {
+		d.Message = "denied by operator"
+	}
+	if err := cr.sess.AnswerPermission(ctx, id, d); err != nil {
+		s.log.Warn("answer permission", "run", runID, "permission", id, "error", err)
 	}
 	snap := cr.tracker.PermissionDecided(id)
 	s.applyCLIState(ctx, runID, cr, snap)

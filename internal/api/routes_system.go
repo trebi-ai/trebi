@@ -22,7 +22,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/memory"
-	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -370,7 +369,7 @@ func (s *Server) doctorFindings() []map[string]any {
 	src = append(src, s.memoryDoctor()...)
 	src = append(src, s.emailDoctor()...)
 	src = append(src, s.cloudDoctor()...)
-	src = append(src, harnessRuntimeDoctor(context.Background())...)
+	src = append(src, s.harnessRuntimeDoctor(context.Background())...)
 	out := make([]map[string]any, 0, len(src))
 	for _, f := range src {
 		out = append(out, map[string]any{
@@ -471,8 +470,8 @@ func (s *Server) cloudDoctor() []alerts.DoctorFinding {
 }
 
 // harnessRuntimeDoctor maps the subprocess-runtime posture findings (Part J).
-func harnessRuntimeDoctor(ctx context.Context) []alerts.DoctorFinding {
-	findings := cli.DoctorFindings(ctx)
+func (s *Server) harnessRuntimeDoctor(ctx context.Context) []alerts.DoctorFinding {
+	findings := s.runs.HarnessFindings(ctx)
 	out := make([]alerts.DoctorFinding, 0, len(findings))
 	for _, f := range findings {
 		out = append(out, alerts.DoctorFinding{

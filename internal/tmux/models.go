@@ -51,7 +51,7 @@ const modelListTimeout = 6 * time.Second
 // stay free-text: a hardcoded catalog would rot in a week.
 func modelListArgs(name string) ([]string, bool) {
 	switch name {
-	case Grok, OpenCode, Cursor:
+	case Grok, OpenCode, OpenCode2, Cursor:
 		return []string{"models"}, true
 	case Pi:
 		return []string{"--list-models"}, true
@@ -151,6 +151,42 @@ func parseOpencodeConfigModel(out string) string {
 	return strings.TrimSpace(cfg.Model)
 }
 
+// opencode2ConfigDefault reads the model a V2 run uses when trebi passes no
+// pin. The file is the operator's own config: V2 ignores the trebi config
+// directory. V1 stores a "provider/model" string, V2 stores
+// {providerID, model}.
+func opencode2ConfigDefault() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "opencode.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Model json.RawMessage `json:"model"`
+	}
+	if json.Unmarshal(data, &cfg) != nil || len(cfg.Model) == 0 {
+		return ""
+	}
+	var pinned string
+	if json.Unmarshal(cfg.Model, &pinned) == nil {
+		return strings.TrimSpace(pinned)
+	}
+	var ref struct {
+		ProviderID string `json:"providerID"`
+		Model      string `json:"model"`
+	}
+	if json.Unmarshal(cfg.Model, &ref) != nil || ref.Model == "" {
+		return ""
+	}
+	if ref.ProviderID == "" {
+		return ref.Model
+	}
+	return ref.ProviderID + "/" + ref.Model
+}
+
 // harnessConfigDefault reads the default model from the config a harness run
 // sees. Read-only, and "" when no config names one.
 func harnessConfigDefault(name string) string {
@@ -171,6 +207,9 @@ func harnessConfigDefault(name string) string {
 		return tomlStringField(filepath.Join(config.HarnessDir(Grok), "config.toml"), "models", "default")
 	case OpenCode:
 		return jsonStringField(filepath.Join(config.HarnessDir(OpenCode), "opencode.json"), "model")
+	case OpenCode2:
+		// V2 reads the operator's own config, not the trebi harness home.
+		return opencode2ConfigDefault()
 	case Cursor:
 		return cursorConfigDefault()
 	case Pi:
@@ -321,7 +360,7 @@ func parseModels(name, out string) []ModelInfo {
 		return parseGrokModels(out)
 	case Cursor:
 		return parseCursorModels(out)
-	case OpenCode:
+	case OpenCode, OpenCode2:
 		return parseOpencodeModels(out)
 	case Pi:
 		return parsePiModels(out)

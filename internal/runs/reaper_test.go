@@ -8,27 +8,33 @@ import (
 	"testing"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
-// stubCLISession is a minimal cli.Session for reaper tests.
+// stubCLISession is a minimal agentwire.Session for reaper tests.
 type stubCLISession struct {
-	events chan cli.Event
+	events chan agentwire.Event
 	done   chan struct{}
 }
 
 func newStubCLISession() *stubCLISession {
-	return &stubCLISession{events: make(chan cli.Event), done: make(chan struct{})}
+	return &stubCLISession{events: make(chan agentwire.Event), done: make(chan struct{})}
 }
 
-func (s *stubCLISession) Provider() string                         { return "stub" }
-func (s *stubCLISession) ID() string                               { return "stub" }
-func (s *stubCLISession) PID() int                                 { return 1 }
-func (s *stubCLISession) Prompt(context.Context, cli.Prompt) error { return nil }
-func (s *stubCLISession) Interrupt(context.Context) error          { return nil }
-func (s *stubCLISession) Events() <-chan cli.Event                 { return s.events }
+func (s *stubCLISession) Provider() string                               { return "stub" }
+func (s *stubCLISession) ID() string                                     { return "stub" }
+func (s *stubCLISession) PID() int                                       { return 1 }
+func (s *stubCLISession) Prompt(context.Context, agentwire.Prompt) error { return nil }
+func (s *stubCLISession) Interrupt(context.Context) error                { return nil }
+func (s *stubCLISession) InterruptTurn(context.Context) error            { return nil }
+func (s *stubCLISession) AnswerPermission(context.Context, string, agentwire.Decision) error {
+	return nil
+}
+func (s *stubCLISession) Done() <-chan struct{}          { return s.done }
+func (s *stubCLISession) Err() error                     { return nil }
+func (s *stubCLISession) Events() <-chan agentwire.Event { return s.events }
 func (s *stubCLISession) Close(context.Context) error {
 	select {
 	case <-s.done:
@@ -59,8 +65,8 @@ func cliReaperFixture(t *testing.T, opts CreateOpts) (*Service, *Run, *cliRun) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cr := &cliRun{sess: newStubCLISession(), tracker: cli.NewTracker()}
-	cr.tracker.Observe(cli.Event{Type: cli.EventResult, Result: &cli.Result{Subtype: "success"}})
+	cr := &cliRun{sess: newStubCLISession(), tracker: agentwire.NewTracker()}
+	cr.tracker.Observe(agentwire.Event{Type: agentwire.EventResult, Result: &agentwire.Result{Subtype: "success"}})
 	svc.registerCLIRun(run.ID, cr)
 	return svc, run, cr
 }

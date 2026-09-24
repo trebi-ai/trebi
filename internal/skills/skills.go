@@ -343,7 +343,7 @@ func (s *Service) skillFromDiscovered(ds harness.DiscoveredSkill, includeMD bool
 		updated = st.ModTime().UTC()
 	}
 	harnesses := map[string]bool{}
-	for _, h := range []string{"claude", "grok", "codex", "opencode", "gemini", "cursor", "pi"} {
+	for _, h := range []string{"claude", "grok", "codex", "opencode", "opencode2", "gemini", "cursor", "pi"} {
 		harnesses[h] = false
 	}
 	for _, h := range ds.Harnesses {
@@ -524,10 +524,23 @@ func parseRequires(md string) []SkillRequirement {
 	return out
 }
 
+// harnessSkillsDir returns the harness-relative skills directory for one
+// harness. The bridge catalog owns the name: Cursor reads skills-cursor, every
+// other harness reads skills. A harness with no catalog entry falls back to
+// skills.
+func harnessSkillsDir(h string) string {
+	for _, def := range harness.Catalog(h) {
+		if def.Key == "skills" && def.HarnessRel != "" {
+			return def.HarnessRel
+		}
+	}
+	return "skills"
+}
+
 func projectionState(name string) map[string]bool {
 	out := map[string]bool{}
-	for _, h := range []string{"claude", "grok", "codex", "opencode", "gemini", "cursor", "pi"} {
-		link := filepath.Join(home.HarnessDir(h), "skills", name)
+	for _, h := range []string{"claude", "grok", "codex", "opencode", "opencode2", "gemini", "cursor", "pi"} {
+		link := filepath.Join(home.HarnessDir(h), harnessSkillsDir(h), name)
 		if _, err := os.Lstat(link); err == nil {
 			out[h] = true
 		} else {
@@ -540,7 +553,7 @@ func projectionState(name string) map[string]bool {
 func applyProjection(name string, harnesses map[string]bool) error {
 	src := filepath.Join(home.SkillsDir(), name)
 	for h, on := range harnesses {
-		dstDir := filepath.Join(home.HarnessDir(h), "skills")
+		dstDir := filepath.Join(home.HarnessDir(h), harnessSkillsDir(h))
 		dst := filepath.Join(dstDir, name)
 		if on {
 			_ = os.MkdirAll(dstDir, 0o755)

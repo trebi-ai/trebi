@@ -5,14 +5,14 @@ import (
 	"path/filepath"
 	"testing"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // TestWantsCLI pins the runtime selection (Part F/J).
 func TestWantsCLI(t *testing.T) {
-	svc := &Service{cliDriver: cli.FakeDriver{}}
+	svc := &Service{cliDriver: agentwire.FakeDriver{}}
 	claude, _ := tmux.ByName("claude")
 	if !svc.wantsCLI(claude, LaunchOpts{}) {
 		t.Fatal("default runtime must be cli")
@@ -51,7 +51,7 @@ func TestWantsCLIFileRuntime(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	svc := &Service{cliDriver: cli.FakeDriver{}}
+	svc := &Service{cliDriver: agentwire.FakeDriver{}}
 	claude, _ := tmux.ByName("claude")
 	codex, _ := tmux.ByName("codex")
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/oklog/ulid/v2"
+	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/harness"
@@ -23,7 +24,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/pricing"
-	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
@@ -511,7 +511,7 @@ func (s *Service) FailBeforeLaunch(ctx context.Context, opts LaunchOpts, end End
 	// Record the runtime the launch would have used, so a blocked auth/limit
 	// row shows the subprocess posture rather than a pane it never opened.
 	if opts.Runtime == "" {
-		if _, ok := cli.DriverFor(opts.Harness); ok || s.cliDriverFor(opts.Harness) != nil {
+		if s.cliDriverFor(opts.Harness) != nil {
 			opts.Runtime = "cli"
 		}
 	}
@@ -730,7 +730,7 @@ func (s *Service) InjectMessage(ctx context.Context, runID, text string) error {
 	}
 	// Subprocess sessions take the follow-up on stdin, never a pane paste.
 	if cr := s.cliRunFor(runID); cr != nil {
-		if err := cr.sess.Prompt(ctx, cli.Prompt{Text: text, Kind: "followup"}); err != nil {
+		if err := cr.sess.Prompt(ctx, agentwire.Prompt{Text: text, Kind: "followup"}); err != nil {
 			return err
 		}
 		cr.tracker.PromptWritten()
@@ -1208,7 +1208,7 @@ func (s *Service) overlapCoalesce(ctx context.Context, opts *LaunchOpts, existin
 	if existing.Harness == nativeHarness {
 		_ = s.injectNative(existing.ID, text)
 	} else if cr := s.cliRunFor(existing.ID); cr != nil {
-		if err := cr.sess.Prompt(ctx, cli.Prompt{Text: text, Kind: "coalesce"}); err == nil {
+		if err := cr.sess.Prompt(ctx, agentwire.Prompt{Text: text, Kind: "coalesce"}); err == nil {
 			cr.tracker.PromptWritten()
 			s.SetSessionState(ctx, existing.ID, SessionRunning, "wire")
 		}

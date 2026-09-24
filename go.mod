@@ -16,6 +16,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/openai/openai-go/v3 v3.61.0
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/trebi-ai/agent-wire v0.2.1
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
@@ -33,6 +34,7 @@ require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
+	github.com/kr/pretty v0.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
@@ -52,6 +54,7 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
+	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect
 	gopkg.in/yaml.v2 v2.3.0 // indirect
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

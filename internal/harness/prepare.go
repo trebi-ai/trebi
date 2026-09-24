@@ -175,7 +175,7 @@ type Info struct {
 func Names() []string {
 	// "fake" is the eval stand-in (cmd/fake); it ships so login and logout
 	// have a harness to exercise without a vendor account.
-	return []string{"claude", "grok", "codex", "opencode", "gemini", "cursor", "copilot", "pi", "fake"}
+	return []string{"claude", "grok", "codex", "opencode", "opencode2", "gemini", "cursor", "copilot", "pi", "fake"}
 }
 
 // List returns harness status under TREBI_HOME.

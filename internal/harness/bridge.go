@@ -133,7 +133,7 @@ func BridgeStatusRoots(tool string, cfg *config.Config, roots Roots) []BridgeSta
 	if tool != "" {
 		tools = []string{tool}
 	} else {
-		tools = []string{"claude", "grok", "codex", "opencode", "cursor", "pi"}
+		tools = []string{"claude", "grok", "codex", "opencode", "opencode2", "cursor", "pi"}
 	}
 	roots = roots.withDefaults()
 	var rows []BridgeStatusRow
@@ -179,7 +179,7 @@ func Catalog(tool string) []ResourceDef {
 		return grokCatalog()
 	case "codex":
 		return codexCatalog()
-	case "opencode":
+	case "opencode", "opencode2":
 		return opencodeCatalog()
 	case "copilot":
 		return copilotCatalog()

@@ -177,6 +177,8 @@ func credFileHarness(path string) string {
 			return "pi"
 		case "opencode":
 			return "opencode"
+		case "opencode2":
+			return "opencode2"
 		}
 	}
 	return ""

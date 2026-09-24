@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -48,7 +48,7 @@ func TestRunAttachCLIEvents(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	s := api.New(st, api.Options{})
-	s.SetCLIDriver(cli.FakeDriver{Script: `read -r line; echo '{"type":"assistant","text":"streamed hello"}'; sleep 30`})
+	s.SetCLIDriver(agentwire.FakeDriver{Script: `read -r line; echo '{"type":"assistant","text":"streamed hello"}'; sleep 30`})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestAgentHookAdvisoryOnCLI(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	s := api.New(st, api.Options{})
 	svc := s.Runs()
-	svc.SetCLIDriver(cli.FakeDriver{Script: `read -r line; sleep 30`})
+	svc.SetCLIDriver(agentwire.FakeDriver{Script: `read -r line; sleep 30`})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

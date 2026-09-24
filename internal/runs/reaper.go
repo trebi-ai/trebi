@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/harness"
-	"github.com/trebi-ai/trebi/internal/runtime/cli"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
@@ -454,11 +454,11 @@ func (r *Reaper) checkCLI(ctx context.Context, run *Run, now time.Time) (finishe
 	}
 	snap := cr.tracker.Snapshot()
 	switch snap.State {
-	case cli.StatusWaiting:
+	case agentwire.StatusWaiting:
 		r.svc.SetSessionState(ctx, run.ID, SessionWaiting, "wire")
-	case cli.StatusRunning:
+	case agentwire.StatusRunning:
 		r.svc.SetSessionState(ctx, run.ID, SessionRunning, "wire")
-	case cli.StatusIdle:
+	case agentwire.StatusIdle:
 		r.svc.SetSessionState(ctx, run.ID, SessionIdle, "wire")
 	}
 	if snap.Stalled && !cr.stalledNow() {
@@ -473,7 +473,7 @@ func (r *Reaper) checkCLI(ctx context.Context, run *Run, now time.Time) (finishe
 
 	// Keep-alive: a result landed and the session lingers. The clock starts
 	// at the first idle sweep after the result.
-	if run.Session.KeepAliveMS > 0 && snap.LastResult != nil && snap.State == cli.StatusIdle {
+	if run.Session.KeepAliveMS > 0 && snap.LastResult != nil && snap.State == agentwire.StatusIdle {
 		if cr.keepAliveExpired(run.Session.KeepAliveMS, now) {
 			r.finish(ctx, run, StatusComplete, EndKeepAlive)
 			return true, false
@@ -486,7 +486,7 @@ func (r *Reaper) checkCLI(ctx context.Context, run *Run, now time.Time) (finishe
 	// Idle timeout: only a genuinely idle session (no turn, no approval); in
 	// flight tools block it. A keep-alive window supersedes it.
 	keepAlive := run.Session.KeepAliveMS > 0 && snap.LastResult != nil
-	if run.Session.IdleTimeoutMS > 0 && snap.State == cli.StatusIdle && !keepAlive {
+	if run.Session.IdleTimeoutMS > 0 && snap.State == agentwire.StatusIdle && !keepAlive {
 		key := "cli-idle:" + run.ID
 		r.mu.Lock()
 		since, ok := r.idleSince[key]

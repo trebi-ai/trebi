@@ -62,7 +62,7 @@ trebi hooks list
 
 `hooks create` prints the public URL once. Handle it like a webhook secret: anyone holding it can post an event. A job fires on a delivery with `on: [{event: webhook, match: …}]`; the event carries `path`, `headers`, `body` as a string, and the delivery facts. Delete a hook with `trebi hooks delete <id>`.
 
-Vendor runs (`claude`, `codex`, `opencode`, `pi`, `copilot`, `cursor`) spawn the installed CLI as a subprocess and speak its structured protocol by default — no tmux pane, no prompt pasting. `runtime: tui` in `JOB.md` / `TREBI.md` / `AGENT.md` opts that run back into a pane; `trebi config set harness.runtime tui` is the incident-only global kill switch. A CLI run that fails closed leaves a doctor hint; relaunch or resume with `runtime: tui` — there is no silent fallback. `trebi runs attach` on a CLI run prints the event stream; `trebi runs logs -f` always works.
+Vendor runs (`claude`, `codex`, `opencode`, `opencode2`, `pi`, `copilot`, `cursor`) spawn the installed CLI as a subprocess and speak its structured protocol by default — no tmux pane, no prompt pasting. `runtime: tui` in `JOB.md` / `TREBI.md` / `AGENT.md` opts that run back into a pane; `trebi config set harness.runtime tui` is the incident-only global kill switch. A CLI run that fails closed leaves a doctor hint; relaunch or resume with `runtime: tui` — there is no silent fallback. `trebi runs attach` on a CLI run prints the event stream; `trebi runs logs -f` always works.
 
 ## Global rules
 

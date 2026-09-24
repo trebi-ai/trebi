@@ -1,7 +1,8 @@
 # Claude fixture generator (dev/CI only)
 
 Records real `claude` stream-json NDJSON sessions into
-`internal/runtime/cli/testdata/claude/<sdk>-<cli>/` so the Go driver is tested
+`agent-wire/testdata/claude/<sdk>-<cli>/` (the sibling
+`github.com/trebi-ai/agent-wire` checkout) so the Go driver is tested
 against actual wire frames, not invented ones (plan Part L.1).
 
 - `generate.mjs` spawns the operator's `claude` exactly like the Go driver

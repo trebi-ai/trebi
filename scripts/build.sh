@@ -17,9 +17,10 @@ done
 
 mkdir -p build
 
-# Live-tier compile gate (docs/plans/2026-09-16-harness-subprocess-runtime.md
-# Part L.1): build-tagged live tests must keep compiling even when not run.
-go test -tags live_cli -run '^$' ./internal/runtime/cli/...
+# Live-tier compile gate (docs/plans/2026-09-22-agentwire-harness-library.md
+# Part J): the wire moved to github.com/trebi-ai/agent-wire, so the
+# build-tagged live tier lives there and must keep compiling even when not run.
+go test -tags live -run '^$' github.com/trebi-ai/agent-wire/live
 
 # Version is a git fact: a tag when one is reachable, a short SHA otherwise.
 # The leading v is stripped so health reports the same shape the release

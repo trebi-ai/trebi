@@ -17,7 +17,7 @@ import (
 func TestMCPConfigBlocks(t *testing.T) {
 	t.Parallel()
 	target := mcpTarget{URL: "http://127.0.0.1:7777/mcp"}
-	for _, client := range []string{"claude", "codex", "opencode", "cursor", "vscode", "json"} {
+	for _, client := range []string{"claude", "codex", "opencode", "opencode2", "cursor", "vscode", "json"} {
 		got, err := target.block(client)
 		if err != nil {
 			t.Fatalf("%s: %v", client, err)
@@ -47,13 +47,18 @@ func TestMCPConfigBlocks(t *testing.T) {
 func TestMCPAddCommands(t *testing.T) {
 	t.Parallel()
 	target := mcpTarget{URL: "http://127.0.0.1:7777/mcp"}
-	for _, client := range []string{"claude", "codex", "opencode"} {
+	for _, client := range []string{"claude", "codex", "opencode", "opencode2"} {
 		argv, err := target.addCommand(client)
 		if err != nil || len(argv) < 4 {
 			t.Fatalf("%s: %v %v", client, argv, err)
 		}
 		if !strings.Contains(strings.Join(argv, " "), target.URL) {
 			t.Errorf("%s command omits the url: %v", client, argv)
+		}
+		// The client binary is named after the client; a typo here installs
+		// nothing and reports "command not found".
+		if argv[0] != client {
+			t.Errorf("%s command runs %q, want the %s binary", client, argv[0], client)
 		}
 	}
 	if _, err := target.addCommand("vscode"); err == nil {

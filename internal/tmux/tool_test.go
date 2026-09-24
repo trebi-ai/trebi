@@ -275,7 +275,7 @@ func TestPrepareLaunch_PassThrough(t *testing.T) {
 			t.Errorf("%s: command mutated: %q", name, plan.Command)
 		}
 	}
-	// OpenCode keeps command, adds OPENCODE_CONFIG env.
+	// OpenCode keeps command, adds OPENCODE_CONFIG and OPENCODE_CONFIG_DIR env.
 	home.SetBase(t.TempDir())
 	defer home.SetBase("")
 	tool, _ := ByName(OpenCode)
@@ -288,6 +288,11 @@ func TestPrepareLaunch_PassThrough(t *testing.T) {
 	}
 	if plan.Env["OPENCODE_CONFIG"] == "" {
 		t.Error("opencode: expected OPENCODE_CONFIG env")
+	}
+	// The config dir is what makes OpenCode scan the bridged skills and
+	// plugins; the merged config file alone is not a directory.
+	if dir := plan.Env["OPENCODE_CONFIG_DIR"]; dir != config.HarnessDir(OpenCode) {
+		t.Errorf("opencode: OPENCODE_CONFIG_DIR=%q want harness home %q", dir, config.HarnessDir(OpenCode))
 	}
 }
 

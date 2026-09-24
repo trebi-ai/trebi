@@ -148,7 +148,8 @@ func vendorLoginArgsFor(tool, mode, goos string) (args []string, env []string) {
 	case Codex:
 		args = []string{"login", "--device-auth"}
 		env = []string{"CODEX_HOME=" + config.HarnessDir(Codex)}
-	case OpenCode:
+	case OpenCode, OpenCode2:
+		// V2 keeps credentials in the same XDG data store as 1.x.
 		args = []string{"auth", "login"}
 	case Gemini:
 		args = []string{}
@@ -173,7 +174,7 @@ func vendorLogoutArgs(tool string) ([]string, bool) {
 		return []string{"auth", "logout"}, true
 	case Codex:
 		return []string{"logout"}, true
-	case OpenCode:
+	case OpenCode, OpenCode2:
 		return []string{"auth", "logout"}, true
 	case Cursor:
 		return []string{"logout"}, true
@@ -547,19 +548,21 @@ func (grokTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	return st
 }
 
-func (opencodeTool) AuthCapabilities() harness.AuthCaps {
+func (t opencodeTool) AuthCapabilities() harness.AuthCaps {
 	return harness.AuthCaps{
 		LoginModes: []string{harness.LoginRelay, harness.LoginToken},
-		LocalCmd:   "opencode auth login",
+		LocalCmd:   t.name + " auth login",
 		CredFile:   filepath.Join(harness.UserHome(), ".local", "share", "opencode", "auth.json"),
 	}
 }
 
-func (opencodeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
-	st := authBase(OpenCode)
-	_ = EnsureSharedAuth(OpenCode, st.Mode)
+// ProbeAuth: 1.x and 2.x share the credential store under XDG data, and both
+// answer `auth list` from it.
+func (t opencodeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
+	st := authBase(t.name)
+	_ = EnsureSharedAuth(t.name, st.Mode)
 	authPath := filepath.Join(harness.UserHome(), ".local", "share", "opencode", "auth.json")
-	bin := lookPathTool(OpenCode)
+	bin := lookPathTool(t.name)
 	if bin != "" {
 		out, err := runVendor(ctx, bin, []string{"auth", "list"}, nil)
 		if err == nil && len(strings.TrimSpace(out)) > 0 &&
@@ -572,7 +575,7 @@ func (opencodeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 		return unknownFile(st, "auth.json present; auth list unconfirmed")
 	}
 	st.Status = harness.AuthMissing
-	st.Hint = loginHint(OpenCode)
+	st.Hint = loginHint(t.name)
 	return st
 }
 
