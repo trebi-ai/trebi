@@ -72,7 +72,8 @@ var patchSessionFields = map[string]string{ //nolint:gochecknoglobals // static 
 
 // MergePatchFrontmatter applies a JSON-merge-patch of known scalar frontmatter fields.
 // Supports: disabled, harness, title, envset, description, working_dir,
-// followup_prompt, and session.* scalars. A nested "session" map is flattened
+// followup_prompt, and session.* scalars; envset also accepts a list of
+// names (plan H.3). A nested "session" map is flattened
 // to session.idle_timeout etc. via line rewrite. An unknown key is an error:
 // a silent success would tell the caller a change landed when it did not.
 func MergePatchFrontmatter(path string, patch map[string]any) error {
@@ -157,12 +158,32 @@ func applyDisabledPatch(path string, patch map[string]any) error {
 func applyScalarPatch(path string, patch map[string]any) error {
 	for _, k := range patchScalars {
 		if v, ok := patch[k]; ok && v != nil {
-			if err := setScalarField(path, k, fmt.Sprint(v)); err != nil {
+			if err := setScalarField(path, k, patchFieldText(k, v)); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// patchFieldText renders one patch value as frontmatter text. envset accepts
+// a name or a list of names (plan H.3); a list renders as a YAML flow
+// sequence. Every other field is a plain scalar.
+func patchFieldText(key string, v any) string {
+	switch v.(type) {
+	case []string, []any:
+		if key == "envset" {
+			names := stringList(v)
+			if len(names) > 1 {
+				return "[" + strings.Join(names, ", ") + "]"
+			}
+			if len(names) == 1 {
+				return names[0]
+			}
+			return "[]"
+		}
+	}
+	return fmt.Sprint(v)
 }
 
 // applySessionPatch writes session.* keys under the session: block.

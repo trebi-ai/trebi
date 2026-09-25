@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -114,6 +117,8 @@ func (a *emailAPIActions) AmbiguousReplyItem(context.Context, string, email.Rout
 // Worker, driven as an HTTP client.
 type emailAPIServer struct {
 	base string
+	dir  string
+	api  *api.Server
 	fw   *emailWorkerFake
 	acts *emailAPIActions
 	svc  *email.Service
@@ -460,6 +465,158 @@ func TestEmailUnconfigured(t *testing.T) {
 	}
 }
 
+// syncLogBuf is a race-safe sink for the daemon's slog default output.
+type syncLogBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncLogBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncLogBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// newEmailWorkspace creates one workspace with a live assistant file.
+func newEmailWorkspace(t *testing.T, e *emailAPIServer, name string) string {
+	t.Helper()
+	wsPath := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(wsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsPath, "TREBI.md"),
+		[]byte("---\nharness: fake\n---\n\nAssistant.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, body := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": name})
+	if code != 201 {
+		t.Fatalf("workspace %s: %d %v", name, code, body)
+	}
+	id, _ := body["id"].(string)
+	return id
+}
+
+// TestAgentEmailReveal: the agent subaddress serves masked by default and
+// full on reveal (plan 2026-09-24 B.3), the reveal rides the same audited
+// request log as the workspace reveal, an unknown agent is a 404, and a
+// scoped agent run is rejected before the mask moves.
+func TestAgentEmailReveal(t *testing.T) {
+	sink := &syncLogBuf{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(sink, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	e := startEmailAPI(t)
+	wsID := newEmailWorkspace(t, e, "ellis")
+	code, body, _ := doJSON(t, "PUT", e.base+"/v1/workspaces/"+wsID+"/agents/research", nil)
+	if code != 201 {
+		t.Fatalf("agent create: %d %v", code, body)
+	}
+
+	// Masked by default: the token is hidden, the tag stays readable.
+	code, m := e.do(t, http.MethodGet, "/v1/workspaces/"+wsID+"/agents/research/email", nil)
+	if code != 200 || m["masked"] != true {
+		t.Fatalf("masked: %d %v", code, m)
+	}
+	if lp, _ := m["local_part"].(string); !strings.Contains(lp, "********") || !strings.HasSuffix(lp, "+research") {
+		t.Fatalf("masked local part %q", lp)
+	}
+	if addr, _ := m["address"].(string); !strings.HasSuffix(addr, "@mail.example.com") || !strings.Contains(addr, "********") {
+		t.Fatalf("masked address %q", addr)
+	}
+
+	// Reveal returns the full subaddress and writes the audit entry the
+	// workspace reveal writes: one api.request line through the same
+	// audited mux.
+	code, raw, derr := e.api.Dispatch(t.Context(), request.HTTPRequest{
+		Method: http.MethodGet,
+		Path:   "/v1/workspaces/" + wsID + "/agents/research/email?reveal=1",
+	})
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	var revealed map[string]any
+	if err := json.Unmarshal(raw, &revealed); err != nil {
+		t.Fatal(err)
+	}
+	if code != http.StatusOK || revealed["masked"] != false {
+		t.Fatalf("revealed: %d %v", code, revealed)
+	}
+	if addr, _ := revealed["address"].(string); !strings.HasSuffix(addr, "+research@mail.example.com") || strings.Contains(addr, "********") {
+		t.Fatalf("full address %q", addr)
+	}
+	out := sink.String()
+	if !strings.Contains(out, "api.request") || !strings.Contains(out, "/agents/research/email") {
+		t.Fatalf("reveal audit entry missing: %s", out)
+	}
+
+	// An unknown agent is a 404, not a made-up address.
+	if code, m = e.do(t, http.MethodGet, "/v1/workspaces/"+wsID+"/agents/nope/email", nil); code != 404 || errCode(m) != "not_found" {
+		t.Fatalf("unknown agent: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodGet, "/v1/workspaces/ws-nope/agents/research/email", nil); code != 404 {
+		t.Fatalf("unknown workspace: %d %v", code, m)
+	}
+
+	// A scoped agent run is rejected before any address is read.
+	st := mustOpenStore(t, filepath.Join(e.dir, "trebi.db"))
+	token := "agent-token-0000000000000000000000"
+	insertAgentCaller(t, st, wsID, "research", token, "running")
+	for _, path := range []string{
+		"/v1/workspaces/" + wsID + "/agents/research/email",
+		"/v1/workspaces/" + wsID + "/agents/research/email?reveal=1",
+	} {
+		if code, m := doScoped(t, http.MethodGet, e.base+path, token, nil); code != http.StatusForbidden || errCode(m) != "forbidden" {
+			t.Fatalf("scoped agent %s: %d %v", path, code, m)
+		}
+	}
+}
+
+// TestEmailMessagesWorkspaceFilter: the envelope log takes the workspace
+// parameter by name or id (plan 2026-09-24 A.3).
+func TestEmailMessagesWorkspaceFilter(t *testing.T) {
+	e := startEmailAPI(t)
+	wsA := newEmailWorkspace(t, e, "ellis")
+	wsB := newEmailWorkspace(t, e, "orbit")
+
+	send := func(ws string) {
+		t.Helper()
+		code, m := e.do(t, http.MethodPost, "/v1/email/send", map[string]any{
+			"workspace": ws, "to": []string{"ops@example.com"},
+			"subject": "digest", "text": "The digest is ready.",
+		})
+		if code != 200 || m["sent"] != true {
+			t.Fatalf("send %s: %d %v", ws, code, m)
+		}
+	}
+	send(wsA)
+	send(wsB)
+
+	code, m := e.do(t, http.MethodGet, "/v1/email/messages", nil)
+	if code != 200 || len(m["messages"].([]any)) != 2 {
+		t.Fatalf("unfiltered: %d %v", code, m)
+	}
+	// By name and by id, the filter scopes to one workspace.
+	for _, ws := range []string{"ellis", wsA} {
+		code, m = e.do(t, http.MethodGet, "/v1/email/messages?workspace="+ws, nil)
+		if code != 200 || len(m["messages"].([]any)) != 1 {
+			t.Fatalf("filter %s: %d %v", ws, code, m)
+		}
+		if row := m["messages"].([]any)[0].(map[string]any); row["workspace_id"] != wsA {
+			t.Fatalf("filter %s row: %v", ws, row)
+		}
+	}
+	if code, m = e.do(t, http.MethodGet, "/v1/email/messages?workspace=zzz", nil); code != 200 || len(m["messages"].([]any)) != 0 {
+		t.Fatalf("unknown workspace filter: %d %v", code, m)
+	}
+}
+
 func startEmailAPI(t *testing.T) *emailAPIServer {
 	t.Helper()
 	dir := t.TempDir()
@@ -494,7 +651,7 @@ func startEmailAPI(t *testing.T) *emailAPIServer {
 		RequireDMARC: true, FromName: "Trebi",
 	}, email.NewClient(ws.URL, "test-token-0000"))
 	s.Email().AttachIngress(email.NewIngress(s.Email(), connectors.New(st, nil, nil, nil), acts, time.Minute, false))
-	return &emailAPIServer{base: "http://" + addr, fw: fw, acts: acts, svc: s.Email()}
+	return &emailAPIServer{base: "http://" + addr, dir: dir, api: s, fw: fw, acts: acts, svc: s.Email()}
 }
 
 func writeEmailJSON(w http.ResponseWriter, v any) {

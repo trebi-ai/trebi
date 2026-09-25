@@ -98,7 +98,7 @@ field returns `validation`; it is never a silent success.
 - `title` (string, optional): display title.
 - `description` (string, optional): description text.
 - `working_dir` (string, optional): run directory.
-- `envset` (string, optional): named environment set.
+- `envset` (string or list, optional): environment set name, or a list of names applied in order.
 - `followup_prompt` (string, optional): prompt sent after the run.
 - `session` (object, optional): session fields `max_duration`, `idle_timeout`, `keep_alive`, `nudge`, `resumable`, `if_running`.
 - `workspace` (string, optional): workspace id.

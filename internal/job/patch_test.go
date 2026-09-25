@@ -3,6 +3,7 @@ package job_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -52,5 +53,54 @@ func TestMergePatchFrontmatter(t *testing.T) {
 	}
 	if j.Harness != "claude" || !j.Disabled || j.Session.IfRunning != "replace" {
 		t.Fatalf("%+v", j)
+	}
+}
+
+func TestMergePatchFrontmatterEnvsetList(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "JOB.md")
+	src := "---\nharness: fake\n---\n\nBody.\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := job.MergePatchFrontmatter(path, map[string]any{"envset": []any{"one", "two"}}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "envset: [one, two]") {
+		t.Fatalf("list patch: %s", data)
+	}
+	j, err := job.ParseFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual([]string(j.Envset), []string{"one", "two"}) {
+		t.Fatalf("parsed envset = %v", j.Envset)
+	}
+
+	// A single name keeps the plain scalar form.
+	if err := job.MergePatchFrontmatter(path, map[string]any{"envset": "solo"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if !strings.Contains(string(data), "envset: solo\n") {
+		t.Fatalf("scalar patch: %s", data)
+	}
+	if j, err = job.ParseFile(path); err != nil || j.Envset.First() != "solo" {
+		t.Fatalf("scalar patch parse = %v / %v", j.Envset, err)
+	}
+
+	// An empty list clears the field.
+	if err := job.MergePatchFrontmatter(path, map[string]any{"envset": []any{}}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if !strings.Contains(string(data), "envset: []") {
+		t.Fatalf("empty patch: %s", data)
+	}
+	if j, err = job.ParseFile(path); err != nil || len(j.Envset) != 0 {
+		t.Fatalf("empty patch parse = %v / %v", j.Envset, err)
 	}
 }

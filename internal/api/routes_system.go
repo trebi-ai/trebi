@@ -563,7 +563,7 @@ func (s *Server) memoryDoctor() []alerts.DoctorFinding {
 
 // memoryAlertDoctor counts memory_invalid alerts raised in the last 7 days.
 func (s *Server) memoryAlertDoctor() []alerts.DoctorFinding {
-	events, err := s.alerts.ListAlerts(context.Background(), time.Now().Add(-7*24*time.Hour), 200)
+	events, err := s.alerts.ListAlerts(context.Background(), time.Now().Add(-7*24*time.Hour), 200, "")
 	if err != nil {
 		return nil
 	}

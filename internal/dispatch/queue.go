@@ -329,26 +329,39 @@ func (q *Queue) ReclaimStale(ctx context.Context, d time.Duration) (int64, error
 	return n, nil
 }
 
-// List returns queue rows with optional status filter and ULID cursor.
-func (q *Queue) List(ctx context.Context, status, cursor string, limit int) ([]QueueItem, error) {
-	if limit <= 0 {
-		limit = 50
+// ListOpts filters event_queue lists.
+type ListOpts struct {
+	Status    string
+	Workspace string
+	Cursor    string
+	Limit     int
+}
+
+// List returns queue rows newest-first. A set Workspace keeps rows of that
+// workspace plus global rows (empty workspace_id).
+func (q *Queue) List(ctx context.Context, opts ListOpts) ([]QueueItem, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 50
 	}
 	query := `SELECT id, connector, workspace_id, job, kind, on_index, conversation_key,
 		COALESCE(event_id,''), COALESCE(event_raw,''), status, COALESCE(block_reason,''),
 		COALESCE(prompt,''), COALESCE(trace_id,''), COALESCE(run_id,''), created_at
 		FROM event_queue WHERE 1=1`
 	var args []any
-	if status != "" {
+	if opts.Status != "" {
 		query += ` AND status=?`
-		args = append(args, status)
+		args = append(args, opts.Status)
 	}
-	if cursor != "" {
+	if opts.Workspace != "" {
+		query += ` AND (workspace_id = ? OR workspace_id = '' OR workspace_id IS NULL)`
+		args = append(args, opts.Workspace)
+	}
+	if opts.Cursor != "" {
 		query += ` AND id < ?`
-		args = append(args, cursor)
+		args = append(args, opts.Cursor)
 	}
 	query += ` ORDER BY id DESC LIMIT ?` // ULID order == chronological; created_at text is not
-	args = append(args, limit)
+	args = append(args, opts.Limit)
 	rows, err := q.st.DB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

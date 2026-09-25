@@ -28,7 +28,8 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	limit := parseLimit(r)
 	items, err := s.alerts.List(r.Context(), alerts.ListOpts{
-		Status: q.Get("status"), Kind: q.Get("kind"), Limit: limit, Cursor: cursor,
+		Status: q.Get("status"), Kind: q.Get("kind"), Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
+		Limit: limit, Cursor: cursor,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -63,7 +64,7 @@ func (s *Server) handleInboxRead(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleInboxReadAll(w http.ResponseWriter, r *http.Request) {
-	n, err := s.alerts.ReadAll(r.Context())
+	n, err := s.alerts.ReadAll(r.Context(), s.workspaceID(r.Context(), r.URL.Query().Get("workspace")))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -75,9 +76,10 @@ func (s *Server) handleInboxResolve(w http.ResponseWriter, r *http.Request) {
 	s.setInboxStatus(w, r, r.PathValue("id"), alerts.InboxResolved, "manual")
 }
 
-// handleInboxResolveAll resolves every open item. ?kind= narrows it to one kind.
+// handleInboxResolveAll resolves every open item. ?kind= narrows it to one
+// kind; ?workspace= narrows it to one workspace plus global rows.
 func (s *Server) handleInboxResolveAll(w http.ResponseWriter, r *http.Request) {
-	n, err := s.alerts.ResolveAll(r.Context(), r.URL.Query().Get("kind"))
+	n, err := s.alerts.ResolveAll(r.Context(), r.URL.Query().Get("kind"), s.workspaceID(r.Context(), r.URL.Query().Get("workspace")))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -112,7 +114,7 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 		since = t
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	events, err := s.alerts.ListAlerts(r.Context(), since, limit)
+	events, err := s.alerts.ListAlerts(r.Context(), since, limit, s.workspaceID(r.Context(), r.URL.Query().Get("workspace")))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return

@@ -1352,6 +1352,7 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := s.runs.ListApprovals(r.Context(), runs.ApprovalListOpts{
 		Limit: limit, Cursor: cursor, State: state,
+		Workspace: s.workspaceID(r.Context(), r.URL.Query().Get("workspace")),
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())

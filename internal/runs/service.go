@@ -470,6 +470,9 @@ type ApprovalListOpts struct {
 	Limit  int
 	Cursor string
 	State  string // pending|decided; empty returns both
+	// Workspace filters by the owning run's workspace; global rows (empty
+	// workspace_id) stay visible.
+	Workspace string
 }
 
 // ListOpts filters for List.
@@ -802,6 +805,12 @@ func (s *Service) ListApprovals(ctx context.Context, opts ApprovalListOpts) ([]A
 	if opts.State != "" {
 		q += ` AND status=?`
 		args = append(args, opts.State)
+	}
+	if opts.Workspace != "" {
+		// Approvals carry no workspace; they ride the owning run's.
+		q += ` AND EXISTS (SELECT 1 FROM runs r WHERE r.id = approvals.run_id
+			AND (r.workspace_id = ? OR r.workspace_id = '' OR r.workspace_id IS NULL))`
+		args = append(args, opts.Workspace)
 	}
 	if opts.Cursor != "" {
 		q += ` AND id < ?`

@@ -316,7 +316,7 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]InboxItem, error) 
 		args = append(args, opts.Status)
 	}
 	if opts.Workspace != "" {
-		q += ` AND workspace_id=?`
+		q += ` AND (workspace_id = ? OR workspace_id = '' OR workspace_id IS NULL)`
 		args = append(args, opts.Workspace)
 	}
 	if opts.Kind != "" {
@@ -391,26 +391,29 @@ func (s *Service) SetStatus(ctx context.Context, id string, status InboxStatus, 
 	return nil
 }
 
-// ReadAll marks every unread item read.
-func (s *Service) ReadAll(ctx context.Context) (int64, error) {
-	return s.setAll(ctx, "unread", InboxRead, "")
+// ReadAll marks every unread item read. A set workspace scopes the update to
+// that workspace plus global rows; empty covers everything.
+func (s *Service) ReadAll(ctx context.Context, workspace string) (int64, error) {
+	return s.setAll(ctx, "unread", InboxRead, "", workspace)
 }
 
 // ResolveAll resolves every open item. An empty kind covers every kind.
-func (s *Service) ResolveAll(ctx context.Context, kind string) (int64, error) {
-	return s.setAll(ctx, "", InboxResolved, kind)
+func (s *Service) ResolveAll(ctx context.Context, kind, workspace string) (int64, error) {
+	return s.setAll(ctx, "", InboxResolved, kind, workspace)
 }
 
 // ListAlerts returns alert.* bus rows, newest first, optionally since.
-func (s *Service) ListAlerts(ctx context.Context, since time.Time, limit int) ([]store.StreamEvent, error) {
+// A set workspace keeps rows tagged with it plus untagged (global) rows.
+func (s *Service) ListAlerts(ctx context.Context, since time.Time, limit int, workspace string) ([]store.StreamEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	return s.st.ListBusWith(ctx, store.ListBusOpts{
-		Topics: []string{"alert"},
-		Limit:  limit,
-		Since:  since,
-		Desc:   true,
+		Topics:    []string{"alert"},
+		Limit:     limit,
+		Since:     since,
+		Desc:      true,
+		Workspace: workspace,
 	})
 }
 
@@ -424,6 +427,15 @@ func (s *Service) ResolveSubject(ctx context.Context, subject, how string) error
 }
 func (s *Service) cooldownKey(opts RaiseOpts) string {
 	return string(opts.Kind) + "|" + opts.Subject
+}
+
+// alertAttrs copies attrs and tags the alert's workspace when set. A global
+// alert carries no attr, so json_extract filters treat it as global (A.1).
+func alertAttrs(opts RaiseOpts, attrs map[string]string) map[string]string {
+	if opts.WorkspaceID != "" {
+		attrs["workspace"] = opts.WorkspaceID
+	}
+	return attrs
 }
 
 func (s *Service) inCooldown(spec KindSpec, opts RaiseOpts) bool {
@@ -447,9 +459,9 @@ func (s *Service) suppress(ctx context.Context, opts RaiseOpts, reason string) e
 	_, err := s.st.Append(ctx, store.BusEvent{
 		Topic: "alert.suppressed", Entity: "alert", EntityID: opts.Subject, Action: "suppressed",
 		TraceID: opts.TraceID,
-		Attrs: map[string]string{
+		Attrs: alertAttrs(opts, map[string]string{
 			"kind": string(opts.Kind), "subject": opts.Subject, "reason": reason,
-		},
+		}),
 	})
 	return err
 }
@@ -485,9 +497,9 @@ func (s *Service) insertItem(ctx context.Context, spec KindSpec, opts RaiseOpts)
 	}, store.BusEvent{
 		Topic: "alert.raised", Entity: "alert", EntityID: id, Action: "created",
 		TraceID: opts.TraceID, Revision: 1,
-		Attrs: map[string]string{
+		Attrs: alertAttrs(opts, map[string]string{
 			"kind": string(opts.Kind), "subject": opts.Subject, "message": opts.Title, "hint": opts.Hint,
-		},
+		}),
 	})
 	if err != nil {
 		return "", err
@@ -808,8 +820,9 @@ func (o RaiseOpts) emailText(id string) string {
 }
 
 // setAll moves every item of one status, and optionally one kind, to status.
-// An empty from covers unread and read alike.
-func (s *Service) setAll(ctx context.Context, from string, to InboxStatus, kind string) (int64, error) {
+// An empty from covers unread and read alike. A set workspace scopes the
+// update to that workspace plus global rows; empty covers everything.
+func (s *Service) setAll(ctx context.Context, from string, to InboxStatus, kind, workspace string) (int64, error) {
 	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
 	q := `UPDATE inbox_items SET status=?, updated_at=?, revision=revision+1 WHERE status<>?`
 	args := []any{string(to), nowStr, string(to)}
@@ -820,6 +833,10 @@ func (s *Service) setAll(ctx context.Context, from string, to InboxStatus, kind 
 	if kind != "" {
 		q += ` AND kind=?`
 		args = append(args, kind)
+	}
+	if workspace != "" {
+		q += ` AND (workspace_id = ? OR workspace_id = '' OR workspace_id IS NULL)`
+		args = append(args, workspace)
 	}
 	var n int64
 	s.st.LockBus()

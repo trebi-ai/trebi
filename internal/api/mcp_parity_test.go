@@ -136,6 +136,8 @@ func TestMCPDocsDocumentConfirmOnGatedActions(t *testing.T) {
 // dump mode of GET /v1/stream is covered by system.bus_poll; only its
 // follow mode (a query parameter, not a pattern) stays out.
 var mcpExcluded = map[string]string{
+	"GET /v1/envsets": "envset names are a UI form-option list; the agent payload carries the chosen names",
+	"GET /v1/workspaces/{id}/agents/{name}/email":           "address reveal is a UI copy affordance; the agent payload carries the masked form",
 	"GET /v1/workspaces/{id}/agents":                        "superseded by cross-workspace GET /v1/agents",
 	"GET /v1/proposals":                                     "proposal review is a human UI/CLI workflow",
 	"POST /v1/proposals/{id}/decide":                        "decisions are human-only and blocked from MCP",

@@ -103,7 +103,14 @@ func TestMoveRelocateRewritesFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(jobs) != 1 || !strings.HasPrefix(jobs[0].Path, dest) {
+	// The seeded TREBI.md also moves and lands in the index.
+	var jobRow *workspaces.JobRow
+	for i := range jobs {
+		if jobs[i].Kind == "job" {
+			jobRow = &jobs[i]
+		}
+	}
+	if jobRow == nil || !strings.HasPrefix(jobRow.Path, dest) {
 		t.Fatalf("job_index path %v", jobs)
 	}
 }

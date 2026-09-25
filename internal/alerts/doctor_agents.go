@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/skills"
@@ -54,6 +55,12 @@ func agentKitFindings(st *store.Store) []DoctorFinding {
 			servers[server.Name] = true
 		}
 	}
+	envsets := map[string]bool{}
+	if defined, err := config.LoadEnvSets(); err == nil {
+		for name := range defined.Sets {
+			envsets[name] = true
+		}
+	}
 
 	var findings []DoctorFinding
 	for rows.Next() {
@@ -84,6 +91,16 @@ func agentKitFindings(st *store.Store) []DoctorFinding {
 				ID:       "agent-mcp-" + wsID + "-" + short + "-" + server,
 				Severity: "warn", Code: "agent_mcp_missing",
 				Message: fmt.Sprintf("agent %s references missing MCP server %s", short, server),
+			})
+		}
+		for _, envset := range parsed.Kit.Envset {
+			if envsets[envset] {
+				continue
+			}
+			findings = append(findings, DoctorFinding{
+				ID:       "agent-envset-" + wsID + "-" + short + "-" + envset,
+				Severity: "warn", Code: "agent_envset_missing",
+				Message: fmt.Sprintf("agent %s references missing envset %s", short, envset),
 			})
 		}
 	}

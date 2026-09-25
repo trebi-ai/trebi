@@ -62,7 +62,7 @@ func TestEnqueueClaimDone(t *testing.T) {
 	if err := q.MarkDone(ctx, item.ID, dispatch.ResultLaunched, "run1"); err != nil {
 		t.Fatal(err)
 	}
-	list, err := q.List(ctx, "done", "", 10)
+	list, err := q.List(ctx, dispatch.ListOpts{Status: "done", Limit: 10})
 	if err != nil || len(list) != 1 {
 		t.Fatalf("list=%v err=%v", list, err)
 	}

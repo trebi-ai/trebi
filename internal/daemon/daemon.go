@@ -224,6 +224,7 @@ func (c *ControlPlane) Start(parent context.Context) {
 	c.Runs.RecoverNative(ctx)
 	c.Runs.RecoverCLI(ctx)
 	c.syncEmailAddresses(ctx)
+	c.seedAssistants(ctx)
 
 	// The cloud socket pushes hosted mail and webhooks. It dials out; the
 	// machine opens no port (plan 2026-09-22 Part N).
@@ -371,6 +372,33 @@ func (c *ControlPlane) syncEmailAddresses(ctx context.Context) {
 	}
 	if err := c.Email.SyncAddresses(ctx, refs); err != nil {
 		c.log.Warn("email sync", "error", err)
+	}
+}
+
+// seedAssistants offers the default TREBI.md once per workspace. For each
+// workspace with assistant_seeded = 0 it writes the template when the file
+// is missing, rebuilds the index, and sets the flag. The flag is set even
+// when the file exists, so a later manual delete stays deleted.
+func (c *ControlPlane) seedAssistants(ctx context.Context) {
+	if c.Workspaces == nil {
+		return
+	}
+	list, err := c.Workspaces.UnseededWorkspaces(ctx)
+	if err != nil {
+		c.log.Warn("assistant backfill list", "error", err)
+		return
+	}
+	for _, ws := range list {
+		if ws.Orphaned {
+			continue
+		}
+		c.Workspaces.SeedAssistantFile(ws.Path)
+		if err := c.Workspaces.RebuildIndex(ctx, &ws); err != nil {
+			c.log.Warn("assistant backfill index", "workspace", ws.ID, "error", err)
+		}
+		if err := c.Workspaces.MarkAssistantSeeded(ctx, ws.ID); err != nil {
+			c.log.Warn("assistant backfill flag", "workspace", ws.ID, "error", err)
+		}
 	}
 }
 

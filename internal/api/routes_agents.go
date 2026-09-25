@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -201,7 +202,7 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 		}
 		list = append(list, buildAgentPayload(row, owned[row.Name], false))
 	}
-	s.setAgentListMetadata(r.Context(), ws.ID, list)
+	s.setAgentListMetadata(r.Context(), ws.ID, list, true)
 	writeJSON(w, http.StatusOK, map[string]any{"agents": list})
 }
 
@@ -238,7 +239,7 @@ func (s *Server) handleAgentsListAll(w http.ResponseWriter, r *http.Request) {
 			}
 			list = append(list, buildAgentPayload(row, owned[row.Name], false))
 		}
-		s.setAgentListMetadata(r.Context(), all[i].ID, list[base:])
+		s.setAgentListMetadata(r.Context(), all[i].ID, list[base:], true)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": list})
 }
@@ -259,7 +260,7 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := buildAgentPayload(row, ownedJobNames(rows)[row.Name], true)
-	s.setAgentListMetadata(r.Context(), ws.ID, []agentPayload{p})
+	s.setAgentListMetadata(r.Context(), ws.ID, []agentPayload{p}, false)
 	setETagHash(w, p.Hash)
 	writeJSON(w, http.StatusOK, p)
 }
@@ -632,11 +633,26 @@ type agentPayload struct {
 	Memory            bool             `json:"memory"`
 	Triggers          []job.Trigger    `json:"triggers"`
 	Session           job.SessionYAML  `json:"session"`
-	EnvSet            string           `json:"env_set"`
-	JobCount          int              `json:"job_count"`
-	Jobs              []string         `json:"jobs,omitempty"` // names, list/show only
-	Markdown          string           `json:"markdown,omitempty"`
-	MTime             string           `json:"mtime,omitempty"`
+	// EnvSets is the frontmatter envset list, in file order. EnvSet below
+	// is its first value, kept for one release so the pinned UI keeps
+	// working; drop it once the UI reads env_sets (plan 2026-09-24 H.3).
+	EnvSets  []string `json:"env_sets"`
+	EnvSet   string   `json:"env_set"`
+	JobCount int      `json:"job_count"`
+	Jobs     []string `json:"jobs,omitempty"` // names, list/show only
+	// RecentRuns backs the card sparkline: the last 20 runs of this
+	// agent, oldest first. The list path fills it; the single GET
+	// leaves it empty.
+	RecentRuns []recentRun `json:"recent_runs"`
+	// Runs7d and Ok7d count this agent's runs started in the last 7
+	// days among the runs the list walk loaded. The walk is one
+	// maxListLimit query for the whole workspace, so a workspace busier
+	// than the cap undercounts the window: the numbers are a floor, not
+	// an exact 7-day total.
+	Runs7d   int    `json:"runs_7d"`
+	Ok7d     int    `json:"ok_7d"`
+	Markdown string `json:"markdown,omitempty"`
+	MTime    string `json:"mtime,omitempty"`
 	// EmailAddress is the agent's masked subaddress, set when the channel
 	// is live for the workspace.
 	EmailAddress string `json:"email_address,omitempty"`
@@ -648,6 +664,17 @@ type agentBudget struct {
 	State      string  `json:"state"`
 }
 
+// recentRun is one sparkline bar (plan 2026-09-24 G.1): the run identity,
+// its machine status, and when it started.
+type recentRun struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	StartedAt string `json:"started_at"`
+}
+
+// recentRunCap bounds the sparkline: the last 20 runs per agent.
+const recentRunCap = 20
+
 // buildAgentPayload reads the AGENT.md once. withDocs adds markdown, mtime,
 // and the full-content hash; the list shape uses the index hash.
 func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agentPayload {
@@ -656,6 +683,7 @@ func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agen
 		WorkspaceID: row.WorkspaceID, Path: row.Path,
 		Harness: row.Harness, Active: row.Active, Hash: row.Hash,
 		Triggers: []job.Trigger{}, JobCount: len(jobs), Jobs: jobs,
+		EnvSets: []string{},
 	}
 	var j *job.Job
 	if withDocs {
@@ -707,7 +735,10 @@ func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agen
 		p.Memory = j.Memory
 		p.Triggers = j.Triggers
 		p.Session = j.Session
-		p.EnvSet = j.Envset
+		// env_set carries the first value for one release (H.3); the
+		// list is the wire shape going forward.
+		p.EnvSets = j.Envset.List()
+		p.EnvSet = j.Envset.First()
 	}
 	if !withDocs && p.Triggers == nil {
 		p.Triggers = []job.Trigger{}
@@ -807,7 +838,9 @@ func (s *Server) seedAgentMemory(ctx context.Context, ws *workspaces.Workspace, 
 
 // setAgentListMetadata fills one workspace's agent page rollup in batch:
 // recent runs, schedules, conversations, inbox items, and priced MTD cost.
-func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, list []agentPayload) {
+// withRuns adds the sparkline fields (G.1); the single-agent GET passes
+// false and leaves them empty.
+func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, list []agentPayload, withRuns bool) {
 	if len(list) == 0 {
 		return
 	}
@@ -864,10 +897,29 @@ func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, list []a
 	recent, _ := s.runs.List(ctx, runs.ListOpts{Workspace: wsID, Limit: maxListLimit})
 	live := map[string]bool{}
 	last := map[string]runs.RunSummary{}
+	tail := map[string][]recentRun{} // per owner, newest first, capped
+	runs7 := map[string]int{}
+	ok7 := map[string]int{}
+	window := time.Now().Add(-7 * 24 * time.Hour)
 	for _, run := range recent {
 		owner := ownerForLane(run.Job, byOwner)
 		if owner == "" {
 			continue
+		}
+		if withRuns {
+			if n := len(tail[owner]); n < recentRunCap {
+				tail[owner] = append(tail[owner], recentRun{
+					ID:        run.ID,
+					Status:    string(run.Status),
+					StartedAt: run.StartedAt.UTC().Format(time.RFC3339Nano),
+				})
+			}
+			if !run.StartedAt.Before(window) {
+				runs7[owner]++
+				if run.Status == runs.StatusComplete {
+					ok7[owner]++
+				}
+			}
 		}
 		if run.Status.IsLive() {
 			live[owner] = true
@@ -884,6 +936,16 @@ func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, list []a
 		if summary, ok := last[owner]; ok {
 			summary := summary
 			list[i].LastRun = &summary
+		}
+		if withRuns {
+			rr := tail[owner]
+			slices.Reverse(rr)
+			if rr == nil {
+				rr = []recentRun{}
+			}
+			list[i].RecentRuns = rr
+			list[i].Runs7d = runs7[owner]
+			list[i].Ok7d = ok7[owner]
 		}
 		switch {
 		case list[i].Disabled:

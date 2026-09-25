@@ -649,10 +649,10 @@ func (s *Service) jobAllow(ctx context.Context, opts RaiseOpts) []string {
 }
 
 func (s *Service) appendDelivered(ctx context.Context, opts RaiseOpts, id, channel string, index int, status, msgID string) {
-	attrs := map[string]string{
+	attrs := alertAttrs(opts, map[string]string{
 		"kind": string(opts.Kind), "channel": channel,
 		"index": strconv.Itoa(index), "status": status,
-	}
+	})
 	if msgID != "" {
 		attrs["message_id"] = msgID
 	}

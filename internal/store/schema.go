@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 22
+const SchemaVersion = 23
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -563,6 +563,12 @@ CREATE TABLE agent_proposals (
 );
 CREATE INDEX idx_agent_proposals_pending ON agent_proposals(workspace_id, agent, status);
 ALTER TABLE email_messages ADD COLUMN purpose TEXT NOT NULL DEFAULT '';
+`,
+		// v23: one-time assistant seed flag. Marks workspaces already offered
+		// the default TREBI.md, so a deliberately deleted assistant never
+		// comes back on daemon start (2026-09-24 plan K.3).
+		`
+ALTER TABLE workspaces ADD COLUMN assistant_seeded INTEGER NOT NULL DEFAULT 0;
 `,
 	}
 }

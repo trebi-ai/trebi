@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/agents"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/job"
@@ -174,7 +175,7 @@ func (s *Server) handleAssistantPut(w http.ResponseWriter, r *http.Request) {
 	}
 	path := filepath.Join(ws.Path, "TREBI.md")
 	if body.Content == "" {
-		body.Content = "---\n---\n\nYou are the workspace assistant.\n# Escape hatch: runtime: tui\n"
+		body.Content = agents.AssistantTemplate
 	}
 	info, _, err := s.files.Write(r.Context(), ws.Path, "TREBI.md", []byte(body.Content), ifMatchHeader(r))
 	if err != nil {

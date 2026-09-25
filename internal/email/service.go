@@ -420,18 +420,42 @@ func (s *Service) Masked(ctx context.Context, workspaceID string) (Address, erro
 // AgentAddress returns the agent's masked subaddress, or "" when the
 // workspace has no address yet.
 func (s *Service) AgentAddress(ctx context.Context, workspaceID, agent string) (string, error) {
-	a, err := s.Address(ctx, workspaceID)
+	a, err := s.AgentAddressMasked(ctx, workspaceID, agent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	full, err := tagAddress(a, agent)
+	return a.Full(), nil
+}
+
+// AgentAddressFull returns the agent's subaddress with the token visible,
+// as a full Address row so one payload builder serves the masked and
+// reveal shapes (plan 2026-09-24 B.3). sql.ErrNoRows when the workspace
+// has no address yet.
+func (s *Service) AgentAddressFull(ctx context.Context, workspaceID, agent string) (Address, error) {
+	a, err := s.Address(ctx, workspaceID)
 	if err != nil {
-		return "", err
+		return Address{}, err
 	}
-	return maskLocalPart(full) + "@" + a.Domain, nil
+	lp, err := tagAddress(a, agent)
+	if err != nil {
+		return Address{}, err
+	}
+	a.LocalPart = lp
+	return a, nil
+}
+
+// AgentAddressMasked is the reveal-safe view of AgentAddressFull: the tag
+// stays readable and the token is hidden.
+func (s *Service) AgentAddressMasked(ctx context.Context, workspaceID, agent string) (Address, error) {
+	a, err := s.AgentAddressFull(ctx, workspaceID, agent)
+	if err != nil {
+		return Address{}, err
+	}
+	a.LocalPart = maskLocalPart(a.LocalPart)
+	return a, nil
 }
 
 // EnsureAddress mints the workspace address once. The local part is

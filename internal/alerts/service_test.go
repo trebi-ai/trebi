@@ -453,7 +453,7 @@ func TestSetStatusAndReadAll(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 	id2, _ := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindLimitExceeded, Harness: "grok", Title: "limit"})
-	n, err := svc.ReadAll(ctx)
+	n, err := svc.ReadAll(ctx, "")
 	if err != nil || n < 1 {
 		t.Fatalf("read-all %d %v", n, err)
 	}
@@ -477,7 +477,7 @@ func TestResolveAllByKind(t *testing.T) {
 	health, _ := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindAuthMissing, Harness: "claude", Title: "Auth missing"})
 	down, _ := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindMachineDown, Title: "machine down"})
 
-	n, err := svc.ResolveAll(ctx, string(alerts.InboxHealth))
+	n, err := svc.ResolveAll(ctx, string(alerts.InboxHealth), "")
 	if err != nil || n != 1 {
 		t.Fatalf("kind resolve %d %v", n, err)
 	}
@@ -490,10 +490,10 @@ func TestResolveAllByKind(t *testing.T) {
 		t.Fatal("other kind must stay open")
 	}
 
-	if n, err = svc.ResolveAll(ctx, ""); err != nil || n != 1 {
+	if n, err = svc.ResolveAll(ctx, "", ""); err != nil || n != 1 {
 		t.Fatalf("resolve rest %d %v", n, err)
 	}
-	if n, err = svc.ResolveAll(ctx, ""); err != nil || n != 0 {
+	if n, err = svc.ResolveAll(ctx, "", ""); err != nil || n != 0 {
 		t.Fatalf("second call must be a no-op: %d %v", n, err)
 	}
 }
@@ -772,7 +772,7 @@ func TestListAlertsNewestFirst(t *testing.T) {
 	if err != nil || len(all) != 5 {
 		t.Fatalf("raised %d %v", len(all), err)
 	}
-	got, err := svc.ListAlerts(ctx, time.Time{}, 2)
+	got, err := svc.ListAlerts(ctx, time.Time{}, 2, "")
 	if err != nil || len(got) != 2 {
 		t.Fatalf("list %d %v", len(got), err)
 	}
@@ -783,7 +783,7 @@ func TestListAlertsNewestFirst(t *testing.T) {
 		t.Fatalf("limit kept oldest: got %d,%d want %d,%d", got[0].Seq, got[1].Seq, all[4].Seq, all[3].Seq)
 	}
 	since := all[2].TS
-	filtered, err := svc.ListAlerts(ctx, since, 2)
+	filtered, err := svc.ListAlerts(ctx, since, 2, "")
 	if err != nil || len(filtered) != 2 {
 		t.Fatalf("since %d %v", len(filtered), err)
 	}

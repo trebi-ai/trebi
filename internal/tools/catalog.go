@@ -2165,6 +2165,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 
 // jobPatchFields are the flat fields job.patch accepts. They mirror the keys
 // job.MergePatchFrontmatter honors; an unknown key is a validation error.
+// envset takes one name or a list of names (plan H.3).
 var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
 	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "envset", "followup_prompt", "session",
 }

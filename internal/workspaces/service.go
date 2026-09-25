@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/agents"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -140,6 +141,7 @@ func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error)
 	if err != nil {
 		return nil, err
 	}
+	s.SeedAssistantFile(abs)
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339)
 
@@ -153,8 +155,8 @@ func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error)
 		// Same path: idempotent no-op, no insert or event.
 	case scanErr == sql.ErrNoRows:
 		_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-			_, err := tx.Exec(`INSERT INTO workspaces (id, name, path, git_enabled, created_at, updated_at)
-				VALUES (?,?,?,?,?,?)`,
+			_, err := tx.Exec(`INSERT INTO workspaces (id, name, path, git_enabled, assistant_seeded, created_at, updated_at)
+				VALUES (?,?,?,?,1,?,?)`,
 				id, dispName, abs, boolInt(gitEn), nowStr, nowStr)
 			return err
 		}, store.BusEvent{
@@ -172,6 +174,48 @@ func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error)
 		return ws, err // still registered
 	}
 	return ws, nil
+}
+
+// seedAssistant writes the default TREBI.md when the workspace folder has
+// none. A failure logs a warning and does not fail the add, the same as
+// ensureWorkspaceEmail.
+func (s *Service) SeedAssistantFile(abs string) {
+	path := filepath.Join(abs, "TREBI.md")
+	if _, err := os.Stat(path); err == nil {
+		return
+	} else if !os.IsNotExist(err) {
+		s.log.Warn("assistant seed", "path", path, "error", err)
+		return
+	}
+	if err := os.WriteFile(path, []byte(agents.AssistantTemplate), 0o644); err != nil {
+		s.log.Warn("assistant seed", "path", path, "error", err)
+	}
+}
+
+// UnseededWorkspaces returns workspaces that were never offered the default
+// assistant (assistant_seeded = 0), oldest first by name.
+func (s *Service) UnseededWorkspaces(ctx context.Context) ([]Workspace, error) {
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT `+workspaceCols+` FROM workspaces WHERE assistant_seeded = 0 ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Workspace
+	for rows.Next() {
+		w, err := scanWorkspace(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// MarkAssistantSeeded sets assistant_seeded = 1 for one workspace.
+func (s *Service) MarkAssistantSeeded(ctx context.Context, id string) error {
+	_, err := s.st.DB().ExecContext(ctx, `UPDATE workspaces SET assistant_seeded = 1 WHERE id = ?`, id)
+	return err
 }
 
 func validateWorkspaceName(name string) error {
@@ -503,7 +547,15 @@ func (s *Service) RebuildIndexJobs(ctx context.Context, ws *Workspace) ([]*job.J
 		jobs = append(jobs, j)
 	}
 	if disc.Assistant != nil {
-		desired[disc.Assistant.Name] = rowFromJob(disc.Assistant, "assistant")
+		// A root JOB.md and the root TREBI.md both derive the workspace
+		// folder name. Keep both rows: the assistant falls back to a
+		// fixed name when the derived one is taken.
+		name := disc.Assistant.Name
+		if _, clash := desired[name]; clash {
+			name = "assistant"
+			disc.Assistant.Name = name
+		}
+		desired[name] = rowFromJob(disc.Assistant, "assistant")
 		jobs = append(jobs, disc.Assistant)
 	}
 	for _, j := range disc.Agents {

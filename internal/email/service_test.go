@@ -2,6 +2,7 @@ package email
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -101,6 +102,26 @@ func TestEnsureRotateSync(t *testing.T) {
 	}
 	if _, err := s.AgentAddress(t.Context(), "ws_9", "research"); err != nil || agent == "" {
 		t.Errorf("agent address on unknown workspace = %q,%v", agent, err)
+	}
+
+	// The full and masked Address rows feed the reveal payload (plan
+	// 2026-09-24 B.3): the token comes back only in full.
+	full, err := s.AgentAddressFull(t.Context(), "ws_1", "research")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(full.LocalPart, "ellis-labs-") || !strings.HasSuffix(full.LocalPart, "+research") {
+		t.Errorf("agent full = %+v", full)
+	}
+	if strings.Contains(full.LocalPart, "********") {
+		t.Errorf("agent full must carry the token: %q", full.LocalPart)
+	}
+	masked, err := s.AgentAddressMasked(t.Context(), "ws_1", "research")
+	if err != nil || masked.LocalPart != "ellis-labs-********+research" {
+		t.Errorf("agent masked = %+v,%v", masked, err)
+	}
+	if _, err := s.AgentAddressFull(t.Context(), "ws_9", "research"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("agent full on unknown workspace = %v", err)
 	}
 }
 

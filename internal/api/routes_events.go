@@ -33,8 +33,10 @@ func (s *Server) routeEvents(mux *http.ServeMux) {
 }
 
 // enrichEventOutcomes loads event_outcomes for eventIDs and derives wire outcome
-// from queue status when a queue_id is present (B15/B18).
-func (s *Server) enrichEventOutcomes(ctx context.Context, eventIDs []string) map[string][]map[string]any {
+// from queue status when a queue_id is present (B15/B18). A set workspace drops
+// outcomes of other workspaces; a set outcome drops other outcomes, so listed
+// rows carry the filtered value only.
+func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome string, eventIDs []string) map[string][]map[string]any {
 	out := make(map[string][]map[string]any, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return out
@@ -55,6 +57,12 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, eventIDs []string) map
 	for rows.Next() {
 		var r raw
 		if rows.Scan(&r.eid, &r.ws, &r.job, &r.idx, &r.outcome, &r.detail, &r.qid) == nil {
+			if workspace != "" && r.ws != workspace {
+				continue
+			}
+			if outcome != "" && r.outcome != outcome {
+				continue
+			}
 			raws = append(raws, r)
 		}
 	}
@@ -148,6 +156,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "since: "+err.Error())
 		return
 	}
+	workspace := s.workspaceID(r.Context(), r.URL.Query().Get("workspace"))
+	outcome := r.URL.Query().Get("outcome")
 	q := `SELECT id, connector, received_at, COALESCE(summary,''), COALESCE(trace_id,''), COALESCE(raw_json,'')
 		FROM events WHERE 1=1`
 	args := []any{}
@@ -162,6 +172,20 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if since != "" {
 		q += ` AND received_at >= ?`
 		args = append(args, since)
+	}
+	// Workspace/outcome ride event_outcomes: an event with no outcome row is
+	// global and shows only when no workspace is set (A.3.2).
+	if workspace != "" || outcome != "" {
+		var conds []string
+		if workspace != "" {
+			conds = append(conds, "o.workspace_id = ?")
+			args = append(args, workspace)
+		}
+		if outcome != "" {
+			conds = append(conds, "o.outcome = ?")
+			args = append(args, outcome)
+		}
+		q += ` AND EXISTS (SELECT 1 FROM event_outcomes o WHERE o.event_id = events.id AND ` + strings.Join(conds, " AND ") + `)`
 	}
 	if text := strings.TrimSpace(r.URL.Query().Get("q")); text != "" {
 		like := "%" + strings.ToLower(text) + "%"
@@ -186,7 +210,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Enrich queue results with result column for done rows
-	outcomesByEvent := s.enrichEventOutcomes(r.Context(), ids)
+	outcomesByEvent := s.enrichEventOutcomes(r.Context(), workspace, outcome, ids)
 	// Patch done outcomes with actual result from queue
 	s.patchDoneResults(r.Context(), outcomesByEvent)
 
@@ -386,7 +410,7 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "event not found")
 		return
 	}
-	outcomesBy := s.enrichEventOutcomes(r.Context(), []string{id})
+	outcomesBy := s.enrichEventOutcomes(r.Context(), "", "", []string{id})
 	s.patchDoneResults(r.Context(), outcomesBy)
 	outs := outcomesBy[id]
 	if outs == nil {

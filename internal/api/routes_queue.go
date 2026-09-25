@@ -20,7 +20,13 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := parseLimit(r)
-	items, err := s.queue.List(r.Context(), r.URL.Query().Get("status"), cursor, limit)
+	q := r.URL.Query()
+	items, err := s.queue.List(r.Context(), dispatch.ListOpts{
+		Status:    q.Get("status"),
+		Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
+		Cursor:    cursor,
+		Limit:     limit,
+	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return

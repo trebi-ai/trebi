@@ -88,13 +88,15 @@ func (s *Store) AppendEntity(ctx context.Context, write func(tx *sql.Tx) error, 
 
 // ListBusOpts filters and orders event_log rows for ListBusWith.
 // After/Topics/Limit match ListBus. Since and Desc are extra; Desc must stay
-// off on the consumer cursor path (Consume reads oldest-first).
+// off on the consumer cursor path (Consume reads oldest-first). A set
+// Workspace keeps rows tagged with it plus untagged (global) rows.
 type ListBusOpts struct {
-	After  int64
-	Topics []string
-	Limit  int
-	Since  time.Time // inclusive; zero = no lower bound
-	Desc   bool      // newest first; default oldest first
+	After     int64
+	Topics    []string
+	Limit     int
+	Since     time.Time // inclusive; zero = no lower bound
+	Desc      bool      // newest first; default oldest first
+	Workspace string    // matches attrs_json $.workspace; missing attr = global
 }
 
 // ListBus returns events with seq > after, optional topic filter (prefix match on families), oldest first.
@@ -128,6 +130,11 @@ func (s *Store) ListBusWith(ctx context.Context, opts ListBusOpts) ([]StreamEven
 	if !opts.Since.IsZero() {
 		q += " AND ts >= ?"
 		args = append(args, opts.Since.UTC().Format("2006-01-02T15:04:05.000000Z"))
+	}
+	if opts.Workspace != "" {
+		// Rows without the attr are global and stay visible (A.1).
+		q += ` AND (json_extract(attrs_json, '$.workspace') = ? OR json_extract(attrs_json, '$.workspace') IS NULL)`
+		args = append(args, opts.Workspace)
 	}
 	if opts.Desc {
 		q += " ORDER BY seq DESC LIMIT ?"

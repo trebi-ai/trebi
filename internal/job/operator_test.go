@@ -74,7 +74,7 @@ func TestLaunchDefaultsWithKit(t *testing.T) {
 		t.Fatal(err)
 	}
 	kit := &KitYAML{
-		Envset: "agents",
+		Envset: EnvsetList{"agents"},
 		Env:    map[string]string{"REGION": "eu", "AGENT_ONLY": "1"},
 		Skills: []string{"research"},
 		MCP:    []string{"notion"},

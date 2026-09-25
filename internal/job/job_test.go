@@ -41,7 +41,7 @@ func TestParseCanonical(t *testing.T) {
 	if j.Name != "demo" {
 		t.Fatalf("name=%s", j.Name)
 	}
-	if j.Harness != "claude" || j.Envset != "claude-zai" {
+	if j.Harness != "claude" || j.Envset.First() != "claude-zai" || len(j.Envset) != 1 {
 		t.Fatalf("harness/envset: %s / %s", j.Harness, j.Envset)
 	}
 	if j.Session.IdleTimeout != "30m" {

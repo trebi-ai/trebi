@@ -29,6 +29,7 @@ func (s *Server) routeEmail(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/email/poll", s.handleEmailPoll)
 	mux.HandleFunc("GET /v1/workspaces/{id}/email", s.handleWorkspaceEmail)
 	mux.HandleFunc("POST /v1/workspaces/{id}/email/rotate", s.handleWorkspaceEmailRotate)
+	mux.HandleFunc("GET /v1/workspaces/{id}/agents/{name}/email", s.handleAgentEmail)
 }
 
 func (s *Server) handleEmailStatus(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +144,7 @@ func (s *Server) handleEmailMessages(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	opts := email.MessageListOpts{
 		Direction: q.Get("direction"),
-		Workspace: q.Get("workspace"),
+		Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
 		Thread:    q.Get("thread"),
 		Limit:     parseLimit(r),
 		Cursor:    q.Get("cursor"),
@@ -298,6 +299,49 @@ func (s *Server) handleWorkspaceEmailRotate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, emailAddressPayload(a, false))
+}
+
+// handleAgentEmail returns the agent subaddress (plan 2026-09-24 B.3):
+// masked unless reveal=1, full on reveal. The UI copies from here, so the
+// daemon stays the one owner of the address format. The reveal rides the
+// same audited request log as the workspace reveal, and a scoped agent run
+// is rejected: a run token may not lift the mask.
+func (s *Server) handleAgentEmail(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
+	ws, ok := s.emailWorkspace(w, r)
+	if !ok {
+		return
+	}
+	if !s.email.Configured() {
+		writeErr(w, http.StatusNotFound, "not_found", "email is not configured")
+		return
+	}
+	row, err := s.findAgentRow(r.Context(), ws.ID, r.PathValue("name"))
+	if err != nil {
+		writeResolveErr(w, err, "agent")
+		return
+	}
+	name := strings.TrimPrefix(row.Name, "agents/")
+	// Lazy mint, as the workspace reveal: a workspace added before the
+	// block existed still answers.
+	if _, err := s.email.EnsureAddress(r.Context(), ws.ID, ws.Name); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	var a email.Address
+	reveal := r.URL.Query().Get("reveal") == "1"
+	if reveal {
+		a, err = s.email.AgentAddressFull(r.Context(), ws.ID, name)
+	} else {
+		a, err = s.email.AgentAddressMasked(r.Context(), ws.ID, name)
+	}
+	if err != nil {
+		writeEmailErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, emailAddressPayload(a, !reveal))
 }
 
 // emailWorkspace resolves the {id} path value (id or name) to a workspace.

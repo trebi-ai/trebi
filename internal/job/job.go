@@ -78,7 +78,7 @@ type Frontmatter struct {
 	Runtime          string            `yaml:"runtime"`
 	Title            string            `yaml:"title"`
 	Memory           any               `yaml:"memory"`
-	Envset           string            `yaml:"envset"`
+	Envset           EnvsetList        `yaml:"envset"`
 	Env              map[string]string `yaml:"env"` // inline env map (new); never auto-written by migration
 	Session          SessionYAML       `yaml:"session"`
 	Triggers         []TriggerYAML     `yaml:"triggers"`
@@ -178,7 +178,7 @@ type Job struct {
 	Title            string
 	Memory           bool
 	MemoryOpts       MemoryConfig
-	Envset           string
+	Envset           EnvsetList
 	Env              map[string]string
 	Session          SessionYAML
 	Triggers         []Trigger
@@ -348,15 +348,17 @@ func (j *Job) ResolvedHarnessEnv() map[string]string {
 	return nil
 }
 
-// ResolvedEnv merges envset: then inline env:. Missing envset is ignored.
+// ResolvedEnv merges the envset names in list order, then inline env:. A
+// later set wins on a key conflict, and inline env: wins over every set. A
+// name that is not defined is ignored.
 func (j *Job) ResolvedEnv() map[string]string {
 	if j == nil {
 		return nil
 	}
 	env := map[string]string{}
-	if j.Envset != "" {
-		if sets, err := config.LoadEnvSets(); err == nil {
-			if kv, ok := sets.Get(j.Envset); ok {
+	if sets, err := config.LoadEnvSets(); err == nil {
+		for _, name := range j.Envset {
+			if kv, ok := sets.Get(name); ok {
 				for k, v := range kv {
 					env[k] = v
 				}
@@ -373,7 +375,7 @@ func (j *Job) ResolvedEnv() map[string]string {
 }
 
 // LaunchEnv is the harness-process environment: tools.<harness>.env first,
-// then the job envset + inline env (job wins), with secret-name values
+// then the job envset list + inline env (inline wins), with secret-name values
 // expanded. A missing secret is left as the literal name and logged as
 // secret.referenced_missing.
 func (j *Job) LaunchEnv() map[string]string {
@@ -411,8 +413,9 @@ func (j *Job) LaunchDefaults() LaunchDefaults {
 }
 
 // LaunchDefaultsWithKit returns launch defaults with the owning agent's kit
-// merged under this job's own keys. Job envset replaces the agent envset;
-// individual job env values win after both sets have been applied.
+// merged under this job's own keys. A job envset list replaces the agent
+// envset list as a whole; individual job env values win after both env
+// value maps have been applied.
 func (j *Job) LaunchDefaultsWithKit(kit *KitYAML) LaunchDefaults {
 	if j == nil || kit == nil {
 		return j.LaunchDefaults()
@@ -420,11 +423,11 @@ func (j *Job) LaunchDefaultsWithKit(kit *KitYAML) LaunchDefaults {
 	merged := *j
 	merged.Envset = kit.Envset
 	merged.Env = maps.Clone(kit.Env)
-	if j.Envset != "" {
+	if len(j.Envset) > 0 {
 		merged.Envset = j.Envset
 	}
-	if j.Envset != "" || len(j.Env) > 0 {
-		// ResolvedEnv starts from the effective envset and applies Env.
+	if len(j.Envset) > 0 || len(j.Env) > 0 {
+		// ResolvedEnv starts from the effective envset list and applies Env.
 		merged.Env = maps.Clone(j.Env)
 		for k, v := range kit.Env {
 			if _, exists := merged.Env[k]; !exists {

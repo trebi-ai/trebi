@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/trebi-ai/trebi/internal/runs"
 )
 
 // TestAgentPutLifecycle covers the H collection: PUT is the upsert, a bare
@@ -425,4 +428,153 @@ func docEntries(t *testing.T, body map[string]any, section string) int {
 	}
 	list, _ := doc[section].([]any)
 	return len(list)
+}
+
+// TestAgentListRecentRuns: the list path fills recent_runs (last 20,
+// oldest first) and the 7-day counts from the same run walk, and the
+// single GET leaves the list-only fields empty (plan 2026-09-24 G.1).
+func TestAgentListRecentRuns(t *testing.T) {
+	s, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	for path, md := range map[string]string{
+		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):  "---\nharness: fake\n---\n\nRun growth.\n",
+		filepath.Join(wsDir, "agents", "beta", "AGENT.md"): "---\nharness: fake\n---\n\nBeta.\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wsID := addWorkspace(t, base, wsDir, "agent-runs")
+
+	// Spaced ids keep the newest-first list order deterministic: ULIDs
+	// minted in the same millisecond order by entropy, not by time.
+	mk := func(agent, status string, end runs.EndReason) string {
+		t.Helper()
+		run, err := s.Runs().Create(t.Context(), runs.CreateOpts{
+			WorkspaceID: wsID, Job: "agents/" + agent, Kind: runs.KindAgent, Harness: "fake",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != "" {
+			if err := s.Runs().Terminate(t.Context(), run.ID, runs.Status(status), end, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		time.Sleep(3 * time.Millisecond)
+		return run.ID
+	}
+	c1 := mk("cmo", "complete", runs.EndResult)
+	c2 := mk("cmo", "failed", runs.EndFailed)
+	c3 := mk("cmo", "", runs.EndSentinel) // stays running
+	b1 := mk("beta", "complete", runs.EndResult)
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents", nil)
+	if code != 200 {
+		t.Fatalf("list: %d %v", code, body)
+	}
+	rows := map[string]map[string]any{}
+	for _, it := range body["agents"].([]any) {
+		row := it.(map[string]any)
+		rows[row["name"].(string)] = row
+	}
+	cmo := rows["cmo"]
+	got := cmo["recent_runs"].([]any)
+	if len(got) != 3 {
+		t.Fatalf("cmo recent_runs: %v", cmo["recent_runs"])
+	}
+	wantIDs := []string{c1, c2, c3} // oldest first
+	for i, bar := range got {
+		entry := bar.(map[string]any)
+		if entry["id"] != wantIDs[i] {
+			t.Fatalf("recent_runs order: %v", got)
+		}
+		if s, _ := entry["status"].(string); s == "" {
+			t.Fatalf("recent_runs status missing: %v", entry)
+		}
+		if s, _ := entry["started_at"].(string); s == "" {
+			t.Fatalf("recent_runs started_at missing: %v", entry)
+		}
+	}
+	if got[0].(map[string]any)["status"] != "complete" || got[2].(map[string]any)["status"] != "running" {
+		t.Fatalf("recent_runs statuses: %v", got)
+	}
+	if cmo["runs_7d"] != float64(3) || cmo["ok_7d"] != float64(1) {
+		t.Fatalf("cmo 7d counts: runs_7d=%v ok_7d=%v", cmo["runs_7d"], cmo["ok_7d"])
+	}
+	beta := rows["beta"]
+	if bars := beta["recent_runs"].([]any); len(bars) != 1 || bars[0].(map[string]any)["id"] != b1 {
+		t.Fatalf("beta recent_runs: %v", beta["recent_runs"])
+	}
+	if beta["runs_7d"] != float64(1) || beta["ok_7d"] != float64(1) {
+		t.Fatalf("beta 7d counts: runs_7d=%v ok_7d=%v", beta["runs_7d"], beta["ok_7d"])
+	}
+
+	// The single-agent GET leaves the list-only fields empty.
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
+	if code != 200 || body["recent_runs"] != nil || body["runs_7d"] != float64(0) || body["ok_7d"] != float64(0) {
+		t.Fatalf("show must leave run fields empty: %d %v %v", code, body["recent_runs"], body["runs_7d"])
+	}
+}
+
+// TestAgentPayloadEnvSets: the agent payloads carry the frontmatter envset
+// list as env_sets and keep env_set as the first value for one release
+// (plan 2026-09-24 H.3).
+func TestAgentPayloadEnvSets(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, wsDir, "agent-envsets")
+
+	put := func(content string) {
+		t.Helper()
+		code, body, _ := doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", map[string]any{
+			"content": content,
+		})
+		if code != 201 && code != 200 {
+			t.Fatalf("put: %d %v", code, body)
+		}
+	}
+	check := func(stage string, body map[string]any, wantSets []string, wantSet string) {
+		t.Helper()
+		sets, _ := body["env_sets"].([]any)
+		if len(sets) != len(wantSets) {
+			t.Fatalf("%s env_sets: %v", stage, body["env_sets"])
+		}
+		for i, w := range wantSets {
+			if sets[i] != w {
+				t.Fatalf("%s env_sets: %v", stage, sets)
+			}
+		}
+		if body["env_set"] != wantSet {
+			t.Fatalf("%s env_set: %v want %q", stage, body["env_set"], wantSet)
+		}
+	}
+
+	put("---\nharness: fake\nenvset:\n  - ship\n  - watch\n---\n\nRun.\n")
+	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
+	if code != 200 {
+		t.Fatalf("show: %d %v", code, body)
+	}
+	check("show", body, []string{"ship", "watch"}, "ship")
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents", nil)
+	if code != 200 {
+		t.Fatalf("list: %d %v", code, body)
+	}
+	items := body["agents"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("list items %d want 1: %v", len(items), body)
+	}
+	check("list", items[0].(map[string]any), []string{"ship", "watch"}, "ship")
+
+	put("---\nharness: fake\nenvset: only\n---\n\nRun.\n")
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
+	check("scalar", body, []string{"only"}, "only")
+
+	put("---\nharness: fake\n---\n\nRun.\n")
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
+	check("absent", body, nil, "")
 }

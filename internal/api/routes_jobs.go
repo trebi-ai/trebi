@@ -191,7 +191,10 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"active": !j.Disabled, "hash": doc.Hash,
 		"parse_error": j.ParseError, "prompt": j.Prompt,
 		"input_keys": job.DiscoverInputKeys(j.Prompt),
-		"triggers":   j.Triggers, "session": j.Session, "env_set": j.Envset,
+		// Transitional (plan H.3): env_sets is the list form; env_set carries
+		// the first name for one release so the pinned UI keeps working.
+		"env_sets": j.Envset.List(), "env_set": j.Envset.First(),
+		"triggers": j.Triggers, "session": j.Session,
 		"kit_source": s.kitSource(r.Context(), row),
 		"markdown":   string(doc.Data), "mtime": doc.MTime,
 	})
@@ -231,7 +234,7 @@ func (s *Server) kitSourceFrom(kits map[string]*job.KitYAML, row workspaces.JobR
 	if kit == nil {
 		return out
 	}
-	if kit.Envset != "" {
+	if len(kit.Envset) > 0 {
 		out["envset"] = "agent"
 	}
 	if len(kit.Env) > 0 {
@@ -245,7 +248,7 @@ func (s *Server) kitSourceFrom(kits map[string]*job.KitYAML, row workspaces.JobR
 	}
 	if row.Name != "" {
 		if parsed, err := job.ParseFile(row.Path); err == nil && parsed != nil {
-			if parsed.Envset != "" {
+			if len(parsed.Envset) > 0 {
 				out["envset"] = "job"
 			}
 			if len(parsed.Env) > 0 {
