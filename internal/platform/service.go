@@ -12,7 +12,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 )
 
-// LaunchAgent label and plist name (frontend.md: ai.trebi.daemon).
+// LaunchAgent label and plist name (ai.trebi.daemon).
 const (
 	DaemonLabel     = "ai.trebi.daemon"
 	DaemonPlistName = "ai.trebi.daemon.plist"

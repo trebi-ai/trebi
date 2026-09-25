@@ -13,8 +13,8 @@ import (
 
 const benchJobMD = "---\nharness: claude\ntriggers:\n  - cron: \"0 9 * * *\"\n---\n\nDo the task.\n"
 
-// BenchmarkRebuildAll walks a 50-job tree plus a few thousand non-job files.
-// Recorded in docs/trebi/simplify-review-0913.md §12 (GATE-02).
+// BenchmarkRebuildAll runs one index rebuild over 50 jobs and 3000 non-job files.
+// Baseline (Apple M1 Max, 2026-09-13): 8.0 ms/op, 2.46 MB/op, 23800 allocs/op.
 func BenchmarkRebuildAll(b *testing.B) {
 	dir := b.TempDir()
 	home.SetBase(dir)

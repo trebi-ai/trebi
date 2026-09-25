@@ -930,7 +930,7 @@ func expandNotify(cmd string) string {
 }
 
 // sanitizeText strips shell-metacharacters and control chars from alert text
-// at raise time (backend.md message hygiene).
+// at raise time (runtime.md §6.5).
 func sanitizeText(s string) string {
 	if s == "" {
 		return s

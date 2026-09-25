@@ -6,7 +6,7 @@ Prefer types that own behavior. Prefer fewer, denser files. Prefer explicit wiri
 
 ## Repository structure
 
-Trebi is one binary (`trebi`) that is both the daemon (`trebi service daemon`) and the CLI. The design contract is `../docs/trebi/`: read `backend-0808.md` first (objects, data model, API, event bus), then `backend.md` (runtime layer, scheduler, logging, CLI parity, cloudlink) and `backend-review-0809.md` (open action items). `backend-0808.md` supersedes `backend.md` §4.3 and §4.5.
+Trebi is one binary (`trebi`) that is both the daemon (`trebi service daemon`) and the CLI. The design contract is `../docs/trebi/`: read `backend-0808.md` first (objects, data model, API, event bus), then `runtime.md` (runtimes, scheduler, logging, alerts, CLI parity). Known defects are in `backlog.md`. The paid line is in `pricing.md`.
 
 ```text
 cmd/trebi/           # thin main: app.Main(ext.Set{})
