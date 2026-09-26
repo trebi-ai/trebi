@@ -322,9 +322,9 @@ type HarnessOption struct {
 	Native    bool          `json:"native"`
 }
 
-// HarnessOptions probes native and every agent-wire harness except the
-// fake test driver. Native comes first (plan F.1). The CLI probes run in
-// parallel under one 3 s deadline, so a cold picker still answers fast
+// HarnessOptions probes native, the fake driver, and every agent-wire CLI
+// harness. Native comes first (plan F.1). The CLI probes run in parallel
+// under one 3 s deadline, so a cold picker still answers fast
 // (plan 2026-09-26 H).
 func (r *Resolver) HarnessOptions(ctx context.Context) []HarnessOption {
 	// Native answers through its registered driver: the credentials come
@@ -355,7 +355,7 @@ func (r *Resolver) HarnessOptions(ctx context.Context) []HarnessOption {
 
 	var ks []agentwire.Harness
 	for _, k := range agentwire.Harnesses() {
-		if k != agentwire.Fake && k != agentwire.Native {
+		if k != agentwire.Native {
 			ks = append(ks, k)
 		}
 	}
@@ -397,6 +397,8 @@ func (r *Resolver) HarnessOptions(ctx context.Context) []HarnessOption {
 // harnessStatusOf maps one detection onto the picker posture.
 func harnessStatusOf(d agentwire.Detection) HarnessStatus {
 	switch {
+	case d.Ready:
+		return HarnessReady
 	case d.Path == "":
 		return HarnessNotInstalled
 	case !d.Supported:
