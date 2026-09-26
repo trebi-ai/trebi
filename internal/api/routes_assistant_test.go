@@ -61,8 +61,8 @@ func TestAssistantDefaultsRoutes(t *testing.T) {
 	for _, h := range harnesses {
 		names[fmt.Sprint(h.(map[string]any)["name"])] = true
 	}
-	if !names["native"] || names["fake"] {
-		t.Fatalf("harness list must carry native and drop fake: %v", names)
+	if !names["native"] || !names["fake"] {
+		t.Fatalf("harness list must carry native and fake: %v", names)
 	}
 
 	// PUT writes the defaults; an unknown skill is a 400.
