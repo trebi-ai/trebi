@@ -19,86 +19,16 @@ func (s *Server) routeMCP(mux *http.ServeMux) {
 	mux.Handle("/mcp", s.mcpHTTP)
 }
 
-// newMCPHandler builds the MCP server (one tool per catalog key) wrapped in
-// the stateless streamable HTTP handler.
+// newMCPHandler builds the stateless streamable HTTP handler over the
+// registry's MCP server (shared with the native harness).
 func (s *Server) newMCPHandler() http.Handler {
-	srv := mcp.NewServer(&mcp.Implementation{Name: "trebi", Version: Version}, &mcp.ServerOptions{
-		Instructions: tools.Instructions,
-	})
-	for _, def := range s.toolsReg.Tools() {
-		srv.AddTool(mcpToolDef(def), s.mcpToolHandler(def.Name))
-	}
+	srv := s.toolsReg.MCPServer(&mcp.Implementation{Name: "trebi", Version: Version})
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{
 		Stateless:    true,
 		JSONResponse: true,
 	})
 }
 
-// mcpToolDef builds one tool: an exact action enum plus one loose input
-// object, so the schema stays tiny and the enum stays in sync with the
-// catalog.
-func mcpToolDef(def tools.ToolDef) *mcp.Tool {
-	hint := def.Destructive
-	closed := false
-	return &mcp.Tool{
-		Name:        def.Name,
-		Description: def.Description,
-		InputSchema: def.Schema,
-		Annotations: &mcp.ToolAnnotations{
-			Title:           "trebi " + def.Name,
-			DestructiveHint: &hint,
-			IdempotentHint:  false,
-			OpenWorldHint:   &closed,
-		},
-	}
-}
-
-// mcpToolHandler adapts one catalog tool into an MCP ToolHandler.
-func (s *Server) mcpToolHandler(tool string) mcp.ToolHandler {
-	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		var args struct {
-			Action string      `json:"action"`
-			Input  tools.Input `json:"input"`
-		}
-		if len(req.Params.Arguments) > 0 {
-			if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
-				return mcpErrorResult("validation", "decode arguments: "+err.Error()), nil
-			}
-		}
-		res := s.toolsReg.Call(ctx, tool, args.Action, args.Input)
-		if res.Err != nil {
-			return mcpErrorResult("internal", "dispatch: "+res.Err.Error()), nil
-		}
-		// A 3xx carries no body. Returning it as success would report an
-		// empty result for a write that never happened.
-		if res.Status >= 300 && res.Status < 400 {
-			return mcpErrorResult("internal", fmt.Sprintf("unexpected redirect (%d)", res.Status)), nil
-		}
-		out := mcpTextResult(res.Body)
-		if res.Status >= 400 {
-			out.IsError = true
-		}
-		return out, nil
-	}
-}
-
-// mcpTextResult wraps one body as the tool response content.
-func mcpTextResult(body []byte) *mcp.CallToolResult {
-	return &mcp.CallToolResult{
-		Content: []mcpContent{&mcp.TextContent{Text: string(body)}},
-	}
-}
-
-// mcpContent aliases the SDK content interface for shorter result literals.
-type mcpContent = mcp.Content
-
-// mcpErrorResult builds an IsError result carrying a trebi-style envelope.
-func mcpErrorResult(code, message string) *mcp.CallToolResult {
-	body, _ := json.Marshal(ErrorBody{Error: APIError{Code: code, Message: message}})
-	res := mcpTextResult(body)
-	res.IsError = true
-	return res
-}
 
 // Dispatch serves one built /v1 request through the audited, confirm-gated mux.
 // The local API carries no auth, so there is nothing to skip: every caller is

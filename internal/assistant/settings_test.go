@@ -142,21 +142,88 @@ func TestNativeDetectReportsKeyState(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	driver := assistant.NewNativeDriver(cfg, assistant.NewStore(st), nil, 0, nil)
+	rt := agentwire.New(agentwire.Options{ClientName: "trebi-test"})
+	assistant.RegisterNativeDriver(rt, func() config.NativeConfig { return cfg }, nil, assistant.NewStore(st), 0, nil)
 
-	d, err := driver.Detect(context.Background(), "native")
+	d, err := rt.Detect(context.Background(), agentwire.Native)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Supported || d.Auth != agentwire.AuthMissing {
+	if d.Auth != agentwire.AuthMissing || d.Ready {
 		t.Fatalf("missing key detection %+v", d)
 	}
 	t.Setenv("TREBI_TEST_NATIVE_KEY", "sk-test")
-	d, err = driver.Detect(context.Background(), "native")
+	d, err = rt.Detect(context.Background(), agentwire.Native)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !d.Supported || d.Auth != agentwire.AuthOK {
+	if !d.Supported || d.Auth != agentwire.AuthOK || !d.Ready {
 		t.Fatalf("key present detection %+v", d)
 	}
+}
+
+// --- plan 2026-09-26 F: the harness picker reports a status ---
+
+// stubDetector answers Detect from a fixed table.
+type stubDetector struct{ dets map[agentwire.Harness]agentwire.Detection }
+
+func (s stubDetector) Detect(_ context.Context, h agentwire.Harness) (agentwire.Detection, error) {
+	if d, ok := s.dets[h]; ok {
+		return d, nil
+	}
+	return agentwire.Detection{Harness: h}, nil
+}
+
+// statusOf finds the picker entry of one harness.
+func statusOf(t *testing.T, opts []assistant.HarnessOption, name string) assistant.HarnessStatus {
+	t.Helper()
+	for _, o := range opts {
+		if o.Name == name {
+			return o.Status
+		}
+	}
+	t.Fatalf("no option for %q in %+v", name, opts)
+	return ""
+}
+
+func TestHarnessOptionsStatuses(t *testing.T) {
+	t.Run("native unconfigured is not_configured", func(t *testing.T) {
+		res := assistant.NewResolver(nil, nil, stubDetector{}, nil, assistant.ResolverTiming{})
+		opts := res.HarnessOptions(context.Background())
+		if got := statusOf(t, opts, "native"); got != assistant.HarnessNotConfigured {
+			t.Fatalf("native status = %q, want not_configured", got)
+		}
+	})
+	t.Run("native with model and key is ready", func(t *testing.T) {
+		t.Setenv("TREBI_TEST_NATIVE_KEY", "sk-test")
+		native := config.NativeConfig{Model: "claude-sonnet-5", APIKeyEnv: "TREBI_TEST_NATIVE_KEY"}
+		res := assistant.NewResolver(nil, nil, stubDetector{}, func() config.NativeConfig { return native }, assistant.ResolverTiming{})
+		opts := res.HarnessOptions(context.Background())
+		if got := statusOf(t, opts, "native"); got != assistant.HarnessReady {
+			t.Fatalf("native status = %q, want ready", got)
+		}
+	})
+	t.Run("cli statuses", func(t *testing.T) {
+		rt := stubDetector{dets: map[agentwire.Harness]agentwire.Detection{
+			agentwire.Claude: {Harness: agentwire.Claude, Supported: true, Path: "/usr/bin/claude", Auth: agentwire.AuthOK, Version: "2.1.0"},
+			agentwire.Codex:  {Harness: agentwire.Codex, Supported: true, Path: "/usr/bin/codex", Auth: agentwire.AuthMissing},
+			agentwire.Pi:     {Harness: agentwire.Pi, Supported: false, Path: "/usr/bin/pi", Detail: "pi 0.9 is below the supported floor 1.0"},
+			agentwire.OpenCode: {
+				Harness: agentwire.OpenCode, Detail: "opencode is not installed",
+			},
+		}}
+		res := assistant.NewResolver(nil, nil, rt, nil, assistant.ResolverTiming{})
+		opts := res.HarnessOptions(context.Background())
+		cases := map[string]assistant.HarnessStatus{
+			"claude":   assistant.HarnessReady,
+			"codex":    assistant.HarnessLoginRequired,
+			"pi":       assistant.HarnessUnsupported,
+			"opencode": assistant.HarnessNotInstalled,
+		}
+		for name, want := range cases {
+			if got := statusOf(t, opts, name); got != want {
+				t.Fatalf("%s status = %q, want %q", name, got, want)
+			}
+		}
+	})
 }

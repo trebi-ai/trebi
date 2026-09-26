@@ -90,16 +90,45 @@ func (s *Server) handleAssistantDefaultsPut(w http.ResponseWriter, r *http.Reque
 	cfg.Assistant.Mode = strings.TrimSpace(in.Mode)
 	cfg.Assistant.Skills = in.Skills
 	cfg.Assistant.Context = in.Context
+	if in.Native != nil {
+		if err := applyNativeSettings(&cfg.Assistant, in.Native); err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
+	}
 	if err := cfg.Save(); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	s.appendBus(r.Context(), store.BusEvent{Topic: "config.updated", Action: "updated"})
+	s.kickDoctor()
 	settings, _ := s.asstResolve.Defaults(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"settings":  settings,
 		"harnesses": s.asstResolve.HarnessOptions(r.Context()),
 	})
+}
+
+// applyNativeSettings writes the provider block of a Defaults PUT into the
+// config (plan 2026-09-26 G). A non-empty key goes to the pending-key slot;
+// Save moves it into the secrets store and never into YAML.
+func applyNativeSettings(a *config.AssistantConfig, in *assistant.NativeSettings) error {
+	switch f := strings.TrimSpace(in.APIFormat); f {
+	case "", "anthropic", "openai":
+		a.Native.APIFormat = f
+	default:
+		return fmt.Errorf("native.api_format %q not in [anthropic, openai]", in.APIFormat)
+	}
+	a.Native.BaseURL = strings.TrimSpace(in.BaseURL)
+	a.Native.APIKeyEnv = strings.TrimSpace(in.APIKeyEnv)
+	a.Native.Headers = in.Headers
+	a.Native.WebSearch = in.WebSearch
+	a.Native.MaxTokens = in.MaxTokens
+	a.Native.ContextTokens = in.ContextTokens
+	if key := strings.TrimSpace(in.APIKey); key != "" {
+		a.SetPendingKey(key)
+	}
+	return nil
 }
 
 // validateAssistantSettings checks mode, harness, effort, and that every
@@ -172,9 +201,16 @@ func (s *Server) handleWorkspaceAssistantPut(w http.ResponseWriter, r *http.Requ
 	}
 	var body struct {
 		Override *assistant.Override `json:"override"`
+		// Native is rejected: the provider is a Defaults-scope setting
+		// (plan 2026-09-26 G).
+		Native any `json:"native"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Override == nil {
 		writeErr(w, http.StatusBadRequest, "validation", "body must carry an assistant override object")
+		return
+	}
+	if body.Native != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "native provider is set in Defaults only")
 		return
 	}
 	hash, err := s.ws.SetAssistantOverride(r.Context(), ws.ID, *body.Override, ifMatchHeader(r))

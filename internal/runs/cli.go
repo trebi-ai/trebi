@@ -993,3 +993,9 @@ func (s *Service) onApprovalDecided(ctx context.Context, runID, key, decision st
 	snap := cr.tracker.PermissionDecided(id)
 	s.applyCLIState(ctx, runID, cr, snap)
 }
+
+// AgentwireRuntime exposes the shared subprocess runtime for callers that
+// must reach library-level state, such as the detect cache.
+func (s *Service) AgentwireRuntime() *agentwire.Runtime {
+	return s.agentwireRuntime()
+}

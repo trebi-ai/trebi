@@ -198,6 +198,26 @@ func (a AssistantConfig) SkillsOrDefault() []string {
 	return []string{"trebi"}
 }
 
+// SetPendingKey stages an assistant API key. The next Save writes it into
+// the secrets store and never into YAML (plan 2026-09-26 G).
+func (a *AssistantConfig) SetPendingKey(key string) {
+	if a == nil {
+		return
+	}
+	a.pendingKey = strings.TrimSpace(key)
+	a.clearSecret = false
+}
+
+// ClearKey stages the removal of the stored assistant API key. The next
+// Save deletes the secret.
+func (a *AssistantConfig) ClearKey() {
+	if a == nil {
+		return
+	}
+	a.clearSecret = true
+	a.pendingKey = ""
+}
+
 // flushKey moves a pending key into the secrets store and clears secret
 // state. It runs inside Save, before the YAML marshal.
 func (a *AssistantConfig) flushKey() error {

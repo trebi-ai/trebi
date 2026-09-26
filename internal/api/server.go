@@ -78,6 +78,13 @@ type Server struct {
 	log       *slog.Logger
 	queue     *dispatch.Queue
 
+	// The doctor summary cache. A background refresher computes it every
+	// minute and on a config change; the request path only reads it
+	// (plan 2026-09-26 H).
+	doctorMu      sync.Mutex
+	doctorCached map[string]int
+	doctorKick    chan struct{}
+
 	// The assistant session stack. New builds a standalone default;
 	// BindAssistant swaps in the daemon's shared instances.
 	asst        *assistant.Manager
@@ -171,9 +178,17 @@ func New(st *store.Store, opts Options) *Server {
 // daemon's shared instances.
 func (s *Server) buildAssistantStack(filesMaxBytes int64) {
 	cfg, _ := config.Load()
-	native := config.NativeConfig{}
-	if cfg != nil {
-		native = cfg.Assistant.Native
+	// The provider config is read live, so a save lands without a restart
+	// (plan 2026-09-26 G). The model is the top-level assistant.model; the
+	// nested native.model is a deprecated alias.
+	nativeFn := func() config.NativeConfig {
+		cur, err := config.Load()
+		if err != nil || cur == nil {
+			return config.NativeConfig{}
+		}
+		n := cur.Assistant.Native
+		n.Model = cur.Assistant.Model
+		return n
 	}
 	s.asstStore = assistant.NewStore(s.st)
 	rt := agentwire.New(agentwire.Options{
@@ -182,8 +197,7 @@ func (s *Server) buildAssistantStack(filesMaxBytes int64) {
 		LedgerPath:    filepath.Join(home.RunsDir(), "agent-procs.json"),
 		Logger:        s.log,
 	})
-	nativeDriver := assistant.NewNativeDriver(native, s.asstStore, s, filesMaxBytes, s.log)
-	router := assistant.NewHarnessRouter(rt, nativeDriver)
+	assistant.RegisterNativeDriver(rt, nativeFn, s, s.asstStore, filesMaxBytes, s.log)
 	timing := assistant.ResolverTiming{}
 	if cfg != nil {
 		timing = assistant.ResolverTiming{
@@ -192,14 +206,14 @@ func (s *Server) buildAssistantStack(filesMaxBytes int64) {
 			MaxLive:           cfg.Assistant.MaxLiveOrDefault(),
 		}
 	}
-	res := assistant.NewResolver(freshConfigSource{}, s.ws, rt, native, timing)
+	res := assistant.NewResolver(freshConfigSource{}, s.ws, rt, nativeFn, timing)
 	s.asstResolve = res
 	s.asstDoctor = &assistant.Doctor{Res: res, Workspaces: s.assistantWorkspaces}
 	exe, err := os.Executable()
 	if err != nil {
 		exe = ""
 	}
-	s.asst = assistant.NewManager(router, s.asstStore, s.conv, res, s.ws, wsMemory{s.ws}, nil,
+	s.asst = assistant.NewManager(rt, s.asstStore, s.conv, res, s.ws, wsMemory{s.ws}, nil,
 		assistant.Options{
 			MCPURL:       s.mcpURLGuess(),
 			TrebiExe:     exe,
@@ -455,6 +469,7 @@ func (s *Server) serve(addr, certFile, keyFile string) (actual string, err error
 	if s.asst != nil {
 		s.asst.SetMCPURL(s.boundMCPURL())
 	}
+	s.startDoctorRefresher()
 	// Serve exits when Shutdown closes the listener; Server owns that lifetime.
 	go func() {
 		var err error

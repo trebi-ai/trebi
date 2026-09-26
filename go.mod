@@ -17,7 +17,7 @@ require (
 	github.com/openai/openai-go/v3 v3.61.0
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/trebi-ai/agent-wire v0.2.1
+	github.com/trebi-ai/agent-wire v0.3.0
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -48,6 +48,9 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/trebi-ai/agent-wire/native v0.2.2
+	github.com/trebi-ai/agent-wire/native/provider/anthropic v0.2.2
+	github.com/trebi-ai/agent-wire/native/provider/openai v0.2.2
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect

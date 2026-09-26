@@ -8,9 +8,14 @@ import (
 	"time"
 
 	"github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/store"
 )
+
+// nativePrefix names the vendor id of a native session: the resume target is
+// the message log stored under conv-<conversation id>.
+const nativePrefix = "conv-"
 
 // session is one live assistant conversation: its agent process, its pump,
 // its permissions, and its delta buffer (plan 2026-09-26 D.6).
@@ -41,8 +46,6 @@ type session struct {
 	deltaTurn    int
 	lastPrompt   string // full text of the prompt the session recorded
 	lastChannel  string // channel_type of that prompt
-	lastDisplay  string // draft without the context blocks
-	lastContext  []string
 	headless     bool
 	pendingRecap string
 }
@@ -103,6 +106,9 @@ func (m *Manager) startSession(ctx context.Context, conv *conversations.Conversa
 		req.Permissions.AllowTools = []string{"mcp__trebi__*"}
 	}
 	if harness == HarnessNative {
+		// Native runs in-process: no run token, no MCP URL injection. The
+		// trebi tool catalog reaches the loop through the driver's
+		// ToolSetFuncs (plan 2026-09-26 I.7).
 		req.SessionID = nativePrefix + conv.ID
 	} else {
 		req.Env["TREBI_RUN_TOKEN"] = token
@@ -540,6 +546,40 @@ func (s *session) appendSystemEvent(text string) {
 	}
 	s.m.broadcast(s.convID, e)
 	_ = s.m.conv.AppendSystem(s.ctx, s.convID, text)
+}
+
+// appendUserEvent records the prompt as a `user` event before the harness
+// sees it (plan 2026-09-26 A). The drawer builds its transcript from events,
+// so the prompt reaches it only through this event.
+func (s *session) appendUserEvent(turn int, in wire.PromptInput) {
+	e := Event{
+		Type:    "user",
+		Turn:    turn,
+		At:      time.Now().UTC(),
+		Text:    displayOf(in),
+		Prompt:  in.Text,
+		Context: in.Context,
+		Channel: in.ChannelType,
+	}
+	if seq, err := s.m.store.AppendEvent(s.ctx, s.convID, e); err == nil {
+		e.Seq = seq
+	}
+	s.m.broadcast(s.convID, e)
+}
+
+// appendSendError records a daemon-side send failure as an `error` event. The
+// `user` event stays, so the prompt still shows.
+func (s *session) appendSendError(text string) {
+	e := Event{
+		Type:  "error",
+		Turn:  s.currentTurn(),
+		At:    time.Now().UTC(),
+		Error: &Error{Class: "send", Message: text},
+	}
+	if seq, err := s.m.store.AppendEvent(s.ctx, s.convID, e); err == nil {
+		e.Seq = seq
+	}
+	s.m.broadcast(s.convID, e)
 }
 
 // resetIdleTimer arms the idle close timer (plan A.3).

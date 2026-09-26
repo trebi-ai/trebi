@@ -3,6 +3,7 @@ package assistant
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/trebi-ai/agent-wire"
@@ -22,11 +23,12 @@ const (
 // leaf package so the workspaces service can use them without an import
 // cycle (plan 2026-09-26 Part B).
 type (
-	Settings      = wire.Settings
-	Override      = wire.Override
-	Effective     = wire.Effective
-	Health        = wire.Health
-	WorkspaceInfo = wire.WorkspaceInfo
+	Settings       = wire.Settings
+	Override       = wire.Override
+	Effective      = wire.Effective
+	Health         = wire.Health
+	WorkspaceInfo  = wire.WorkspaceInfo
+	NativeSettings = wire.NativeSettings
 )
 
 // OverrideStore reads and writes the workspace assistant override. It is
@@ -71,6 +73,24 @@ func SettingsFromConfig(cfg *config.Config) Settings {
 		Skills:   a.SkillsOrDefault(),
 		Context:  a.Context,
 		Accept:   []string{"operators", "allowlist"},
+		Native:   nativeSettingsOf(a.Native),
+	}
+}
+
+// nativeSettingsOf renders the read-only provider view. The key itself never
+// leaves the process (plan 2026-09-26 G).
+func nativeSettingsOf(n config.NativeConfig) *NativeSettings {
+	src := n.KeySourceName()
+	return &NativeSettings{
+		APIFormat:     n.APIFormat,
+		BaseURL:       n.BaseURL,
+		APIKeyEnv:     n.APIKeyEnv,
+		APIKeyPresent: src != "" && src != config.KeySourceNone,
+		APIKeySource:  src,
+		Headers:       n.Headers,
+		WebSearch:     n.WebSearch,
+		MaxTokens:     n.MaxTokens,
+		ContextTokens: n.ContextTokens,
 	}
 }
 
@@ -90,16 +110,18 @@ type ResolverTiming struct {
 
 // Resolver merges the global defaults and the workspace override.
 type Resolver struct {
-	cfg    ConfigSource
-	ws     OverrideStore
-	rt     Detector
-	native config.NativeConfig
-	timing ResolverTiming
+	cfg      ConfigSource
+	ws       OverrideStore
+	rt       Detector
+	nativeFn func() config.NativeConfig
+	timing   ResolverTiming
 }
 
 // NewResolver builds a resolver over config defaults, the workspace override
-// store, and the harness detector.
-func NewResolver(cfg ConfigSource, ws OverrideStore, rt Detector, native config.NativeConfig, timing ResolverTiming) *Resolver {
+// store, and the harness detector. nativeFn supplies the native provider
+// config on every read, so a saved provider change lands without a restart
+// (plan 2026-09-26 G).
+func NewResolver(cfg ConfigSource, ws OverrideStore, rt Detector, nativeFn func() config.NativeConfig, timing ResolverTiming) *Resolver {
 	if timing.IdleClose <= 0 {
 		timing.IdleClose = DefaultIdleClose
 	}
@@ -109,8 +131,14 @@ func NewResolver(cfg ConfigSource, ws OverrideStore, rt Detector, native config.
 	if timing.MaxLive <= 0 {
 		timing.MaxLive = DefaultMaxLive
 	}
-	return &Resolver{cfg: cfg, ws: ws, rt: rt, native: native, timing: timing}
+	if nativeFn == nil {
+		nativeFn = func() config.NativeConfig { return config.NativeConfig{} }
+	}
+	return &Resolver{cfg: cfg, ws: ws, rt: rt, nativeFn: nativeFn, timing: timing}
 }
+
+// nativeConfig returns the current native provider config.
+func (r *Resolver) nativeConfig() config.NativeConfig { return r.nativeFn() }
 
 // Timing exposes the process timers.
 func (r *Resolver) Timing() ResolverTiming { return r.timing }
@@ -199,6 +227,9 @@ func (r *Resolver) Effective(ctx context.Context, workspaceID string) (Effective
 		}
 	}
 	resolved, health := r.resolveHarness(ctx, eff)
+	// The provider block is Defaults scope only (plan 2026-09-26 G): a
+	// workspace view never carries it.
+	eff.Native = nil
 	return Effective{Settings: eff, Source: source, Resolved: resolved, Health: health}, nil
 }
 
@@ -218,8 +249,9 @@ func (r *Resolver) resolve(ctx context.Context, eff Settings) string {
 			return string(k)
 		}
 	}
-	if strings.TrimSpace(r.native.Model) != "" {
-		if _, _, err := r.native.ResolveKey(); err == nil {
+	native := r.nativeConfig()
+	if strings.TrimSpace(native.Model) != "" {
+		if _, _, err := native.ResolveKey(); err == nil {
 			return HarnessNative
 		}
 	}
@@ -232,8 +264,9 @@ func (r *Resolver) resolveHarness(ctx context.Context, eff Settings) (string, He
 		return "", Health{Available: false, Auth: "unknown", Detail: "no supported harness and no native model/key"}
 	}
 	if resolved == HarnessNative {
-		_, _, keyErr := r.native.ResolveKey()
-		model := strings.TrimSpace(r.native.Model)
+		native := r.nativeConfig()
+		_, _, keyErr := native.ResolveKey()
+		model := strings.TrimSpace(native.Model)
 		ok := model != "" && keyErr == nil
 		auth := "ok"
 		detail := ""
@@ -264,55 +297,115 @@ func firstToken(s string) string {
 	return s
 }
 
+// HarnessStatus is the actionable posture of one harness option
+// (plan 2026-09-26 F). `available` told the UI only installed or not; native
+// is always installed, so an unconfigured native harness read as broken.
+type HarnessStatus string
+
+const (
+	HarnessReady         HarnessStatus = "ready"
+	HarnessNotInstalled  HarnessStatus = "not_installed"
+	HarnessNotConfigured HarnessStatus = "not_configured"
+	HarnessLoginRequired HarnessStatus = "login_required"
+	HarnessUnsupported   HarnessStatus = "unsupported" // below the version floor, or no wire
+)
+
 // HarnessOption is one entry of the harness picker (plan F.1).
 type HarnessOption struct {
-	Name      string `json:"name"`
-	Label     string `json:"label"`
-	Available bool   `json:"available"`
-	Auth      string `json:"auth"` // ok|missing|unknown
-	Detail    string `json:"detail,omitempty"`
-	Version   string `json:"version,omitempty"`
-	Native    bool   `json:"native"`
+	Name      string        `json:"name"`
+	Label     string        `json:"label"`
+	Available bool          `json:"available"`
+	Status    HarnessStatus `json:"status"`
+	Auth      string        `json:"auth"` // ok|missing|unknown
+	Detail    string        `json:"detail,omitempty"`
+	Version   string        `json:"version,omitempty"`
+	Native    bool          `json:"native"`
 }
 
 // HarnessOptions probes native and every agent-wire harness except the
-// fake test driver. Native comes first (plan F.1).
+// fake test driver. Native comes first (plan F.1). The CLI probes run in
+// parallel under one 3 s deadline, so a cold picker still answers fast
+// (plan 2026-09-26 H).
 func (r *Resolver) HarnessOptions(ctx context.Context) []HarnessOption {
-	out := []HarnessOption{{
-		Name: HarnessNative, Label: "Native", Native: true,
-		Auth: "unknown",
-	}}
-	model := strings.TrimSpace(r.native.Model)
-	keyErr := error(nil)
-	if model != "" {
-		_, _, keyErr = r.native.ResolveKey()
+	// Native answers through its registered driver: the credentials come
+	// from the live config (plan 2026-09-26 I.7). The model rides the
+	// top-level assistant.model; the nested native.model is a deprecated
+	// alias.
+	nativeOpt := HarnessOption{Name: HarnessNative, Label: "Native", Native: true, Auth: "unknown"}
+	model := strings.TrimSpace(r.nativeConfig().Model)
+	if d, err := r.rt.Detect(ctx, agentwire.Native); err != nil {
+		nativeOpt.Status = HarnessNotConfigured
+		nativeOpt.Detail = err.Error()
+	} else {
+		nativeOpt.Available = d.Supported
+		nativeOpt.Auth = string(d.Auth)
+		switch {
+		case model == "":
+			nativeOpt.Status = HarnessNotConfigured
+			nativeOpt.Detail = "assistant.model is not set"
+		case d.Auth == "missing":
+			nativeOpt.Status = HarnessNotConfigured
+			nativeOpt.Detail = d.Detail
+		default:
+			nativeOpt.Status = HarnessReady
+			nativeOpt.Version = model
+		}
 	}
-	out[0].Available = model != "" && keyErr == nil
-	switch {
-	case model == "":
-		out[0].Auth = "missing"
-		out[0].Detail = "assistant.native.model is not set"
-	case keyErr != nil:
-		out[0].Auth = "missing"
-		out[0].Detail = "no API key: set one in Settings or assistant.native.api_key_env"
-	default:
-		out[0].Auth = "ok"
-		out[0].Version = model
-	}
+	out := []HarnessOption{nativeOpt}
+
+	var ks []agentwire.Harness
 	for _, k := range agentwire.Harnesses() {
-		if k == agentwire.Fake {
+		if k != agentwire.Fake && k != agentwire.Native {
+			ks = append(ks, k)
+		}
+	}
+	dets := make([]agentwire.Detection, len(ks))
+	errs := make([]error, len(ks))
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for i := range ks {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dets[i], errs[i] = r.rt.Detect(probeCtx, ks[i])
+		}()
+	}
+	wg.Wait()
+	for i := range ks {
+		opt := HarnessOption{Name: string(ks[i]), Label: harnessLabel(string(ks[i])), Auth: "unknown"}
+		if err := errs[i]; err != nil {
+			// The probe never answered: report unknown rather than claim
+			// the harness is missing (plan 2026-09-26 H).
+			opt.Detail = err.Error()
+			opt.Status = HarnessUnsupported
+			out = append(out, opt)
 			continue
 		}
-		opt := HarnessOption{Name: string(k), Label: harnessLabel(string(k)), Auth: "unknown"}
-		if d, err := r.rt.Detect(ctx, k); err == nil {
-			opt.Available = d.Supported
-			opt.Auth = string(d.Auth)
-			opt.Detail = d.Detail
-			opt.Version = d.Version
-		}
+		d := dets[i]
+		opt.Available = d.Supported
+		opt.Auth = string(d.Auth)
+		opt.Detail = d.Detail
+		opt.Version = d.Version
+		opt.Status = harnessStatusOf(d)
 		out = append(out, opt)
 	}
 	return out
+}
+
+// harnessStatusOf maps one detection onto the picker posture.
+func harnessStatusOf(d agentwire.Detection) HarnessStatus {
+	switch {
+	case d.Path == "":
+		return HarnessNotInstalled
+	case !d.Supported:
+		return HarnessUnsupported
+	case d.Auth == "missing":
+		return HarnessLoginRequired
+	default:
+		return HarnessReady
+	}
 }
 
 // harnessLabel renders the picker label of one harness name.

@@ -195,20 +195,21 @@ func (m *Manager) prompt(ctx context.Context, convID string, in wire.PromptInput
 		text = s.pendingRecap + text
 		s.pendingRecap = ""
 	}
+	// Record the prompt before the send: an early harness echo must pass the
+	// drop filter in the pump, and the user event must precede every event of
+	// this turn (plan 2026-09-26 A).
+	s.lastPrompt = in.Text
+	s.lastChannel = in.ChannelType
+	s.headless = in.Headless
 	s.mu.Unlock()
+	s.appendUserEvent(rec.Prompts+1, in)
 
 	perr := s.sess.Prompt(ctx, agentwire.Prompt{Text: text, Kind: "assistant"})
 	if perr != nil {
+		s.appendSendError(fmt.Sprintf("could not send the prompt: %v", perr))
 		_, _ = m.store.Update(ctx, convID, func(r *Record) { r.Status = previous })
 		return wire.PromptResult{}, fmt.Errorf("could not send the prompt: %w", perr)
 	}
-	s.mu.Lock()
-	s.lastPrompt = in.Text
-	s.lastDisplay = displayOf(in)
-	s.lastChannel = in.ChannelType
-	s.lastContext = in.Context
-	s.headless = in.Headless
-	s.mu.Unlock()
 
 	// Reset the idle timer (plan D.4 step 7).
 	s.resetIdleTimer()

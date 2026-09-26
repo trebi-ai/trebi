@@ -234,15 +234,25 @@ func New(st *store.Store, opts Options) *ControlPlane {
 // resolver, agent-wire runtime with the native driver, and the manager. The
 // conversations service prompts through the manager.
 func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service, conv *conversations.Service, maxFileBytes int64) {
-	native := config.NativeConfig{}
 	timing := assistant.ResolverTiming{}
 	if cfg != nil {
-		native = cfg.Assistant.Native
 		timing = assistant.ResolverTiming{
 			IdleClose:         cfg.Assistant.IdleCloseDuration(),
 			PermissionTimeout: cfg.Assistant.PermissionTimeoutDuration(),
 			MaxLive:           cfg.Assistant.MaxLiveOrDefault(),
 		}
+	}
+	// The provider config is read live, so a save lands without a restart
+	// (plan 2026-09-26 G). The model is the top-level assistant.model; the
+	// nested native.model is a deprecated alias.
+	nativeFn := func() config.NativeConfig {
+		cur, err := config.Load()
+		if err != nil || cur == nil {
+			return config.NativeConfig{}
+		}
+		n := cur.Assistant.Native
+		n.Model = cur.Assistant.Model
+		return n
 	}
 	c.asstDisp = &toolDispatcher{}
 	c.asstStore = assistant.NewStore(c.Store)
@@ -251,9 +261,8 @@ func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service
 		LedgerPath: filepath.Join(home.RunsDir(), "agent-procs.json"),
 		Logger:     c.log,
 	})
-	nativeDriver := assistant.NewNativeDriver(native, c.asstStore, c.asstDisp, maxFileBytes, c.log)
-	router := assistant.NewHarnessRouter(c.asstRT, nativeDriver)
-	c.asstResolve = assistant.NewResolver(freshConfigSource{}, ws, c.asstRT, native, timing)
+	assistant.RegisterNativeDriver(c.asstRT, nativeFn, c.asstDisp, c.asstStore, maxFileBytes, c.log)
+	c.asstResolve = assistant.NewResolver(freshConfigSource{}, ws, c.asstRT, nativeFn, timing)
 	c.asstDoctor = &assistant.Doctor{Res: c.asstResolve, Workspaces: func(ctx context.Context) ([]assistant.WorkspaceInfo, error) {
 		list, err := ws.List(ctx)
 		if err != nil {
@@ -269,7 +278,7 @@ func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service
 	if err != nil {
 		exe = ""
 	}
-	c.asst = assistant.NewManager(router, c.asstStore, conv, c.asstResolve, ws, wsMemory{ws}, c,
+	c.asst = assistant.NewManager(c.asstRT, c.asstStore, conv, c.asstResolve, ws, wsMemory{ws}, c,
 		assistant.Options{
 			MCPURL:       "http://127.0.0.1:" + c.mcpPort(cfg) + "/mcp",
 			TrebiExe:     exe,

@@ -316,6 +316,7 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.appendBus(r.Context(), store.BusEvent{Topic: "config.updated", Action: "updated"})
+	s.kickDoctor()
 	m, _ := loadConfigMap()
 	redactAssistantConfig(m)
 	writeJSON(w, http.StatusOK, map[string]any{"config": m, "entries": configEntries()})

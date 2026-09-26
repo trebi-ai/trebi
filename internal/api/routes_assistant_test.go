@@ -444,3 +444,75 @@ func TestRunsListRejectsAssistantKind(t *testing.T) {
 		t.Fatalf("runs kind=assistant %d %v", code, body)
 	}
 }
+
+// TestAssistantNativeProviderRoundTrip covers plan 2026-09-26 G: a PUT with
+// a native block is stored, a GET returns it with the key masked and the
+// source named, and the picker flips to ready without a restart.
+func TestAssistantNativeProviderRoundTrip(t *testing.T) {
+	t.Setenv("TREBI_TEST_NATIVE_KEY", "sk-live-123")
+	_, base := startTestServer(t)
+
+	code, body, _ := doJSON(t, "PUT", base+"/v1/assistant", map[string]any{
+		"harness": "native",
+		"model":   "claude-sonnet-5",
+		"native": map[string]any{
+			"api_format": "anthropic",
+			"base_url":   "http://127.0.0.1:9",
+			"api_key":    "sk-live-123",
+			"api_key_env": "TREBI_TEST_NATIVE_KEY",
+			"max_tokens": 2048,
+		},
+	})
+	if code != 200 {
+		t.Fatalf("put defaults %d %v", code, body)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/assistant", nil)
+	if code != 200 {
+		t.Fatalf("get defaults %d %v", code, body)
+	}
+	native, _ := settings2(t, body)["native"].(map[string]any)
+	if native == nil {
+		t.Fatalf("no native block in %v", body)
+	}
+	if native["api_format"] != "anthropic" || native["base_url"] != "http://127.0.0.1:9" {
+		t.Fatalf("native block lost fields: %v", native)
+	}
+	if native["api_key_present"] != true {
+		t.Fatalf("api_key_present = %v", native["api_key_present"])
+	}
+	if native["api_key_source"] == "" || native["api_key_source"] == "none" {
+		t.Fatalf("api_key_source = %v", native["api_key_source"])
+	}
+	if v, leaks := native["api_key"]; leaks && v != nil && v != "" {
+		t.Fatalf("api_key must be absent or empty, got %v", v)
+	}
+
+	// The picker reads the live config: native is ready now.
+	harnesses, _ := body["harnesses"].([]any)
+	status := ""
+	for _, h := range harnesses {
+		m := h.(map[string]any)
+		if m["name"] == "native" {
+			status = fmt.Sprint(m["status"])
+		}
+	}
+	if status != "ready" {
+		t.Fatalf("native status = %q, want ready", status)
+	}
+}
+
+// TestWorkspaceAssistantPutRejectsNative pins the Defaults-only rule.
+func TestWorkspaceAssistantPutRejectsNative(t *testing.T) {
+	_, base := startTestServer(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, wsDir, "native-ws")
+
+	code, body, _ := doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/assistant", map[string]any{
+		"override": map[string]any{"harness": "fake"},
+		"native":   map[string]any{"api_format": "anthropic"},
+	})
+	if code != 400 || !strings.Contains(fmt.Sprint(body["error"]), "Defaults only") {
+		t.Fatalf("native in workspace scope = %d %v", code, body)
+	}
+}

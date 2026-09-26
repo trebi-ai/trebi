@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -163,7 +164,15 @@ func (s *Server) handleHarnessLogout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
+	s.invalidateDetect(name)
 	writeJSON(w, http.StatusOK, authWire(st, s.harness.Caps(name)))
+}
+
+// invalidateDetect drops the cached login probe of one harness after a login
+// or a logout, so the next picker or overview read sees the new state
+// (plan 2026-09-26 H).
+func (s *Server) invalidateDetect(name string) {
+	s.runs.AgentwireRuntime().InvalidateDetect(agentwire.Harness(name))
 }
 
 func (s *Server) handleHarnessLoginPost(w http.ResponseWriter, r *http.Request) {
@@ -186,6 +195,7 @@ func (s *Server) handleHarnessLoginPost(w http.ResponseWriter, r *http.Request) 
 			writeErr(w, http.StatusBadRequest, "validation", err.Error())
 			return
 		}
+		s.invalidateDetect(name)
 		writeJSON(w, http.StatusOK, authWire(st, s.harness.Caps(name)))
 	case body.Code != "":
 		sess, err := s.harness.SubmitCode(r.Context(), name, body.Code)

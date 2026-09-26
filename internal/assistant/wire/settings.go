@@ -89,6 +89,27 @@ type Settings struct {
 	Context  string        `json:"context"`
 	Accept   []string      `json:"email_accept"`
 	Triggers []job.Trigger `json:"triggers,omitempty"`
+	// Native is the provider block of the Defaults scope only. A workspace
+	// view never fills it and a workspace PUT must reject it
+	// (plan 2026-09-26 G).
+	Native *NativeSettings `json:"native,omitempty"`
+}
+
+// NativeSettings is the native provider configuration. The model lives in
+// Settings.Model. APIKey is write-only: the API accepts it and never
+// returns it. APIKeyPresent and APIKeySource are read-only
+// (plan 2026-09-26 G).
+type NativeSettings struct {
+	APIFormat     string            `json:"api_format"`              // anthropic | openai
+	BaseURL       string            `json:"base_url,omitempty"`      //
+	APIKey        string            `json:"api_key,omitempty"`       // write-only; never returned
+	APIKeyEnv     string            `json:"api_key_env,omitempty"`   // env var that holds the key
+	APIKeyPresent bool              `json:"api_key_present"`         // read-only
+	APIKeySource  string            `json:"api_key_source"`          // read-only: secret | env:<NAME> | none
+	Headers       map[string]string `json:"headers,omitempty"`       //
+	WebSearch     *bool             `json:"web_search,omitempty"`    // nil keeps the daemon default (true)
+	MaxTokens     int               `json:"max_tokens,omitempty"`    //
+	ContextTokens int               `json:"context_tokens,omitempty"` //
 }
 
 // Override is the trebi.yaml assistant block. A nil field means "inherit"

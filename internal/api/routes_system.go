@@ -144,7 +144,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"uptime_ms":      time.Since(s.startedAt).Milliseconds(),
 		"drain_state":    map[string]any{"draining": s.isDraining(), "running_count": running},
 		"shadow":         s.shadow,
-		"doctor":         s.doctorSummary(),
+		"doctor":         s.cachedDoctorSummary(),
 		"harnesses":      s.harnessAuthTable(ctx),
 		"workspaces":     s.workspaceCount(ctx),
 		"runs":           map[string]any{"running": running, "waiting": s.runs.WaitingCount()},
@@ -155,6 +155,74 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		body["ui_version"] = uv
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// startDoctorRefresher computes the doctor summary once, then refreshes it
+// every minute and on every config change. The request path never spawns a
+// probe process (plan 2026-09-26 H).
+func (s *Server) startDoctorRefresher() {
+	s.doctorMu.Lock()
+	if s.doctorKick == nil {
+		s.doctorKick = make(chan struct{}, 1)
+	}
+	s.doctorMu.Unlock()
+	s.refreshDoctor()
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-s.done:
+				return
+			case <-t.C:
+				s.refreshDoctor()
+			case <-s.doctorKick:
+				s.refreshDoctor()
+			}
+		}
+	}()
+}
+
+// refreshDoctor runs one doctor round into the cache.
+func (s *Server) refreshDoctor() {
+	summary := s.doctorSummary()
+	s.doctorMu.Lock()
+	s.doctorCached = summary
+	s.doctorMu.Unlock()
+}
+
+// kickDoctor asks the refresher for one fresh round. It never blocks.
+func (s *Server) kickDoctor() {
+	s.doctorMu.Lock()
+	kick := s.doctorKick
+	s.doctorMu.Unlock()
+	if kick == nil {
+		return
+	}
+	select {
+	case kick <- struct{}{}:
+	default:
+	}
+}
+
+// cachedDoctorSummary serves the background value. Before the refresher runs
+// (a handler test, or a request before serve), it computes once, exactly as
+// the old request-path behavior did.
+func (s *Server) cachedDoctorSummary() map[string]int {
+	s.doctorMu.Lock()
+	cached := s.doctorCached
+	s.doctorMu.Unlock()
+	if cached == nil {
+		s.refreshDoctor()
+		s.doctorMu.Lock()
+		cached = s.doctorCached
+		s.doctorMu.Unlock()
+	}
+	out := make(map[string]int, len(cached))
+	for k, v := range cached {
+		out[k] = v
+	}
+	return out
 }
 
 // doctorSummary counts findings by severity.

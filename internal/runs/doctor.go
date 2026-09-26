@@ -14,6 +14,7 @@ import (
 	"time"
 
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/flight"
 	config "github.com/trebi-ai/trebi/internal/config"
 )
 
@@ -59,6 +60,8 @@ var doctorCache struct {
 	key      string
 	at       time.Time
 	findings []Finding
+	// flt collapses concurrent misses into one probe round.
+	flt flight.Group[string, []Finding]
 }
 
 // doctorProbeKey invalidates the cache when the environment under test (PATH,
@@ -81,6 +84,35 @@ func (s *Service) HarnessFindings(ctx context.Context) []Finding {
 	}
 	doctorCache.mu.Unlock()
 
+	// One probe round at a time: concurrent misses share the result instead
+	// of stacking vendor process spawns (plan 2026-09-26 H).
+	out, err := doctorCache.flt.Do(key, func() ([]Finding, error) {
+		doctorCache.mu.Lock()
+		if doctorCache.key == key && time.Since(doctorCache.at) < doctorCacheTTL && doctorCache.findings != nil {
+			cached := append([]Finding(nil), doctorCache.findings...)
+			doctorCache.mu.Unlock()
+			return cached, nil
+		}
+		doctorCache.mu.Unlock()
+		findings, err := s.probeHarnessFindings(ctx)
+		if err != nil {
+			return nil, err
+		}
+		doctorCache.mu.Lock()
+		doctorCache.key = key
+		doctorCache.at = time.Now()
+		doctorCache.findings = findings
+		doctorCache.mu.Unlock()
+		return findings, nil
+	})
+	if err != nil {
+		return nil
+	}
+	return append([]Finding(nil), out...)
+}
+
+// probeHarnessFindings runs one parallel probe round over every tool.
+func (s *Service) probeHarnessFindings(ctx context.Context) ([]Finding, error) {
 	cfg, _ := config.Load()
 	results := make([][]Finding, len(runtimeTools))
 	var wg sync.WaitGroup
@@ -98,12 +130,7 @@ func (s *Service) HarnessFindings(ctx context.Context) []Finding {
 	for _, r := range results {
 		out = append(out, r...)
 	}
-	doctorCache.mu.Lock()
-	doctorCache.key = key
-	doctorCache.at = time.Now()
-	doctorCache.findings = out
-	doctorCache.mu.Unlock()
-	return append([]Finding(nil), out...)
+	return out, nil
 }
 
 // collectToolFindings probes one harness. The library owns the binary, version

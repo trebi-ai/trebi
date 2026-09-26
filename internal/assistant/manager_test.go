@@ -122,10 +122,11 @@ func newEnv(t *testing.T, timing assistant.ResolverTiming) *testEnv {
 	// process that stays live across turns, so the fixture loops per line.
 	rt.SetDriver(agentwire.Fake, agentwire.FakeDriver{Script: fakeLoopScript})
 	resolver := assistant.NewResolver(
-		assistant.DefaultsFromConfig(cfg), wsSvc, rt, cfg.Assistant.Native, timing)
+		assistant.DefaultsFromConfig(cfg), wsSvc, rt,
+		func() config.NativeConfig { return cfg.Assistant.Native }, timing)
 
-	router := assistant.NewHarnessRouter(rt, assistant.NewNativeDriver(cfg.Assistant.Native, assistant.NewStore(st), nil, 0, nil))
-	crt := &countingRT{inner: router}
+	assistant.RegisterNativeDriver(rt, func() config.NativeConfig { return cfg.Assistant.Native }, nil, assistant.NewStore(st), 0, nil)
+	crt := &countingRT{inner: rt}
 
 	convSvc := conversations.New(st)
 	inbox := &fakeInbox{}
@@ -365,8 +366,6 @@ func wireOverride(harness string) assistant.Override {
 	return assistant.Override{Harness: &h}
 }
 
-func assistantResolverTimingZero() assistant.ResolverTiming { return assistant.ResolverTiming{} }
-
 func promptInput(text string) assistant.PromptInput {
 	return assistant.PromptInput{Text: text, ChannelType: conversations.ChannelUI, ChannelRef: "ui-1"}
 }
@@ -382,3 +381,160 @@ if [ "$first" = 1 ]; then first=0; echo '{"type":"init","session_id":"fake-vendo
 echo '{"type":"assistant","text":"Working"}'
 echo '{"type":"result","subtype":"success"}'
 done`
+
+// --- plan 2026-09-26 A: the prompt becomes a `user` event ---
+
+// countUserEvents returns the stored `user` events of one conversation.
+func countUserEvents(t *testing.T, env *testEnv, convID string) []assistant.Event {
+	t.Helper()
+	events, err := env.mgr.Events(context.Background(), convID, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []assistant.Event
+	for _, e := range events {
+		if e.Type == "user" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestPromptWritesUserEvent(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	ctx := context.Background()
+	convID := env.conversation(t)
+
+	if _, err := env.mgr.Prompt(ctx, convID, assistant.PromptInput{
+		Text: "how many jobs active?", ChannelType: conversations.ChannelUI,
+		ChannelRef: "ui-1", Context: []string{"jobs:active"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, "first turn end", func() bool {
+		rec, err := env.mgr.Session(ctx, convID)
+		return err == nil && rec.Status == assistant.StatusIdle && rec.Turn >= 1
+	})
+
+	events, err := env.mgr.Events(ctx, convID, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := -1
+	for i, e := range events {
+		if e.Type == "user" {
+			user = i
+			break
+		}
+	}
+	if user < 0 {
+		t.Fatalf("no user event among %d events", len(events))
+	}
+	e := events[user]
+	if e.Text != "how many jobs active?" || e.Prompt != "how many jobs active?" {
+		t.Fatalf("user event text=%q prompt=%q", e.Text, e.Prompt)
+	}
+	if len(e.Context) != 1 || e.Context[0] != "jobs:active" {
+		t.Fatalf("user event context=%v", e.Context)
+	}
+	if e.Channel != conversations.ChannelUI {
+		t.Fatalf("user event channel=%q", e.Channel)
+	}
+	if e.Turn != 1 {
+		t.Fatalf("user event turn=%d, want 1", e.Turn)
+	}
+	for _, h := range events[user+1:] {
+		if h.Turn == 1 && h.Seq <= e.Seq {
+			t.Fatalf("harness event of turn 1 has seq %d before the user event seq %d", h.Seq, e.Seq)
+		}
+	}
+}
+
+func TestDuplicatePromptWritesOneUserEvent(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	ctx := context.Background()
+	convID := env.conversation(t)
+
+	in := assistant.PromptInput{Text: "once", ChannelType: conversations.ChannelUI,
+		ChannelRef: "ui-1", IdempotencyKey: "k1"}
+	if _, err := env.mgr.Prompt(ctx, convID, in); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, "first turn end", func() bool {
+		rec, err := env.mgr.Session(ctx, convID)
+		return err == nil && rec.Status == assistant.StatusIdle
+	})
+	res, err := env.mgr.Prompt(ctx, convID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Duplicate {
+		t.Fatalf("resend must be a duplicate, got %+v", res)
+	}
+	if users := countUserEvents(t, env, convID); len(users) != 1 {
+		t.Fatalf("user events=%d, want 1", len(users))
+	}
+}
+
+// failDriver starts sessions whose Prompt always fails (plan 2026-09-26 A).
+type failDriver struct{}
+
+func (failDriver) Name() string { return string(agentwire.Fake) }
+
+func (failDriver) Start(context.Context, agentwire.StartRequest) (agentwire.Session, error) {
+	return failSession{}, nil
+}
+
+func (failDriver) Resume(context.Context, agentwire.StartRequest) (agentwire.Session, error) {
+	return failSession{}, nil
+}
+
+type failSession struct{}
+
+func (failSession) Provider() string               { return string(agentwire.Fake) }
+func (failSession) ID() string                     { return "fail-1" }
+func (failSession) PID() int                       { return 0 }
+func (failSession) Prompt(context.Context, agentwire.Prompt) error {
+	return errors.New("pipe broken")
+}
+func (failSession) Interrupt(context.Context) error  { return nil }
+func (failSession) AnswerPermission(context.Context, string, agentwire.Decision) error { return nil }
+func (failSession) InterruptTurn(context.Context) error { return nil }
+func (failSession) Done() <-chan struct{}            { return make(chan struct{}) }
+func (failSession) Err() error                       { return nil }
+func (failSession) Close(context.Context) error      { return nil }
+func (failSession) Events() <-chan agentwire.Event   { return make(chan agentwire.Event) }
+
+func TestSendFailureKeepsUserEventAndAddsError(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	env.runtime.SetDriver(agentwire.Fake, failDriver{})
+	ctx := context.Background()
+	convID := env.conversation(t)
+
+	if _, err := env.mgr.Prompt(ctx, convID, promptInput("hi")); err == nil {
+		t.Fatal("expected the send to fail")
+	}
+	events, err := env.mgr.Events(ctx, convID, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var users, errs []assistant.Event
+	for _, e := range events {
+		switch e.Type {
+		case "user":
+			users = append(users, e)
+		case "error":
+			errs = append(errs, e)
+		}
+	}
+	if len(users) != 1 {
+		t.Fatalf("user events=%d, want 1", len(users))
+	}
+	if len(errs) != 1 {
+		t.Fatalf("error events=%d, want 1", len(errs))
+	}
+	if errs[0].Error == nil || errs[0].Error.Class != "send" ||
+		!strings.Contains(errs[0].Error.Message, "could not send the prompt") {
+		t.Fatalf("error event=%+v", errs[0])
+	}
+}
