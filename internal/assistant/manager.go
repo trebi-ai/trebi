@@ -269,6 +269,15 @@ func (m *Manager) openSession(ctx context.Context, conv *conversations.Conversat
 		}
 		rec, _ = m.store.Get(ctx, conv.ID)
 	}
+	// An empty pin inherits the resolved harness: write the resolution back,
+	// so the session row and the drawer picker show what actually runs
+	// (plan 2026-09-26 F.2; the API create writes mode-only pins).
+	if fixed && rec.Harness != harness {
+		if _, err := m.store.Update(ctx, conv.ID, func(r *Record) { r.Harness = harness }); err != nil {
+			return nil, err
+		}
+		rec.Harness = harness
+	}
 	return m.startSession(ctx, conv, eff, harness, mode, rec.VendorID, in.Headless)
 }
 

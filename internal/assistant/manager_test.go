@@ -538,3 +538,30 @@ func TestSendFailureKeepsUserEventAndAddsError(t *testing.T) {
 		t.Fatalf("error event=%+v", errs[0])
 	}
 }
+
+// The API create writes a mode-only pin row with an empty harness. The first
+// prompt must inherit the resolved harness and write it back, so the session
+// row and the drawer picker show what actually runs (plan 2026-09-26 F.2).
+func TestEmptyHarnessPinInheritsResolved(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	ctx := context.Background()
+	convID := env.conversation(t)
+	asstStore := assistant.NewStore(env.st)
+	if err := asstStore.Create(ctx, assistant.Record{
+		ConversationID: convID, WorkspaceID: env.workspaceID(t),
+		Mode:   assistant.ModeAutoEdit,
+		Status: assistant.StatusClosed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.mgr.Prompt(ctx, convID, promptInput("hello")); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := asstStore.Get(ctx, convID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Harness != "fake" {
+		t.Fatalf("session harness = %q, want the resolved fake", rec.Harness)
+	}
+}
