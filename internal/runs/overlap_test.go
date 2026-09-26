@@ -120,54 +120,6 @@ func TestIfRunningCoalesce(t *testing.T) {
 	}
 }
 
-func TestIfRunningSkipAllowsNewAssistantConversation(t *testing.T) {
-	svc, ctx := openRuns(t)
-	live, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "nightly", Kind: runs.KindAssistant, Harness: "fake",
-		ConversationKey: "conv-a", TmuxSession: "trebi-live-a",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	r2, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
-		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "nightly", Kind: runs.KindAssistant, Harness: "fake",
-			ConversationKey: "conv-b", Reason: runs.ReasonTrigger, PromptPreview: "hi",
-		},
-		Prompt: "hi", IfRunning: "skip",
-		FakeCommand: []string{"sh", "-c", `echo "$TREBI_RUN_COMPLETE"`},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome != "" {
-		t.Fatalf("new conversation should launch, outcome=%s", outcome)
-	}
-	if r2.ID == live.ID || r2.Status == runs.StatusSkipped {
-		t.Fatalf("new conversation skipped: id=%s status=%s", r2.ID, r2.Status)
-	}
-	got, _ := svc.Get(ctx, live.ID)
-	if got.Status != runs.StatusRunning {
-		t.Fatalf("original conversation should stay live: %s", got.Status)
-	}
-
-	r3, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
-		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "nightly", Kind: runs.KindAssistant, Harness: "fake",
-			ConversationKey: "conv-a", Reason: runs.ReasonTrigger, PromptPreview: "again",
-		},
-		Prompt: "again", IfRunning: "skip",
-		FakeCommand: []string{"sh", "-c", `echo "$TREBI_RUN_COMPLETE"`},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome != "skip" || r3.Status != runs.StatusSkipped {
-		t.Fatalf("same conversation should skip: outcome=%s status=%s", outcome, r3.Status)
-	}
-}
-
 func TestIfRunningAllow(t *testing.T) {
 	svc, ctx := openRuns(t)
 	_, err := svc.Create(ctx, runs.CreateOpts{

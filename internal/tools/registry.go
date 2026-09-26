@@ -214,12 +214,14 @@ type actorKey struct{}
 // Actor is the identity marker native attaches so the audit log can
 // attribute a catalog call to the run that made it.
 type Actor struct {
-	Name        string
-	RunID       string
-	Kind        string
-	Job         string
-	WorkspaceID string
-	Token       string // context-local; never persisted or logged
+	Name  string
+	RunID string
+	Kind  string
+	Job   string
+	// Conversation pins an assistant actor to its session conversation.
+	Conversation string
+	WorkspaceID  string
+	Token        string // context-local; never persisted or logged
 }
 
 // WithActor stores the native-loop identity on ctx.

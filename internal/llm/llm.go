@@ -80,12 +80,12 @@ type Response struct {
 }
 
 // New picks an adapter from api_format. Anything other than anthropic uses OpenAI.
-func New(cfg config.AssistantConfig) (Provider, error) {
+func New(cfg config.NativeConfig) (Provider, error) {
 	return NewWithHTTP(cfg, nil)
 }
 
 // NewWithHTTP is New with an optional client (tests).
-func NewWithHTTP(cfg config.AssistantConfig, hc *http.Client) (Provider, error) {
+func NewWithHTTP(cfg config.NativeConfig, hc *http.Client) (Provider, error) {
 	key, _, err := cfg.ResolveKey()
 	if err != nil {
 		return nil, err

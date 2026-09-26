@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 23
+const SchemaVersion = 24
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -569,6 +569,51 @@ ALTER TABLE email_messages ADD COLUMN purpose TEXT NOT NULL DEFAULT '';
 		// comes back on daemon start (2026-09-24 plan K.3).
 		`
 ALTER TABLE workspaces ADD COLUMN assistant_seeded INTEGER NOT NULL DEFAULT 0;
+`,
+		// v24: assistant sessions (plan 2026-09-26 Parts B-C). The assistant
+		// is no longer a job or a run. assistant_sessions holds the runtime
+		// state of one assistant conversation; conversation_events is its
+		// replayable transcript. The clean cutoff deletes the kind=assistant
+		// job rows, queue items, and runs, and drops the seed flag and the
+		// native usage table it replaces.
+		`
+CREATE TABLE assistant_sessions (
+  conversation_id  TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+  workspace_id     TEXT NOT NULL,
+  harness          TEXT NOT NULL,
+  model            TEXT NOT NULL DEFAULT '',
+  effort           TEXT NOT NULL DEFAULT '',
+  mode             TEXT NOT NULL,
+  vendor_id        TEXT NOT NULL DEFAULT '',
+  status           TEXT NOT NULL,
+  error            TEXT NOT NULL DEFAULT '',
+  turn             INTEGER NOT NULL DEFAULT 0,
+  prompts          INTEGER NOT NULL DEFAULT 0,
+  tokens_in        INTEGER NOT NULL DEFAULT 0,
+  tokens_out       INTEGER NOT NULL DEFAULT 0,
+  tokens_cached    INTEGER NOT NULL DEFAULT 0,
+  cost_usd         REAL NOT NULL DEFAULT 0,
+  actor_token_hash TEXT NOT NULL DEFAULT '',
+  last_message     TEXT NOT NULL DEFAULT '',
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+CREATE INDEX idx_assistant_sessions_ws ON assistant_sessions(workspace_id, updated_at);
+CREATE INDEX idx_assistant_sessions_token ON assistant_sessions(actor_token_hash);
+CREATE TABLE conversation_events (
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  seq             INTEGER NOT NULL,
+  turn            INTEGER NOT NULL DEFAULT 0,
+  type            TEXT NOT NULL,
+  body            TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, seq)
+);
+DELETE FROM job_index WHERE kind = 'assistant';
+DELETE FROM event_queue WHERE kind = 'assistant' AND status IN ('pending','claimed');
+DELETE FROM runs WHERE kind = 'assistant';
+DROP TABLE assistant_usage;
+ALTER TABLE workspaces DROP COLUMN assistant_seeded;
 `,
 	}
 }

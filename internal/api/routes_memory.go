@@ -133,17 +133,8 @@ func (s *Server) memoryTarget(r *http.Request, scope memoryScope) (*memoryTarget
 		if err != nil {
 			return nil, err
 		}
-		// The assistant row when present; otherwise the TREBI.md sibling.
-		dir := ws.Path
-		if rows, err := s.ws.ListJobs(r.Context(), wsID); err == nil {
-			for _, row := range rows {
-				if row.Kind == "assistant" {
-					dir = filepath.Dir(row.Path)
-					break
-				}
-			}
-		}
-		return s.newMemoryTarget(ws, dir, job.MemoryConfig{}.Resolve(def))
+		// The assistant ledger sits at the workspace root.
+		return s.newMemoryTarget(ws, ws.Path, job.MemoryConfig{}.Resolve(def))
 	case memoryAgent:
 		row, err := s.findAgentRow(r.Context(), r.PathValue("id"), r.PathValue("name"))
 		if err != nil {

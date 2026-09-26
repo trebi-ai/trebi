@@ -384,24 +384,26 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatal("config show missing --yaml/--tree")
 	}
 	asst := findCmd(app.Commands, "assistant")
-	for _, want := range []string{"show", "wake", "history", "say", "chat"} {
+	for _, want := range []string{"show", "set", "say", "chat", "sessions", "close", "interrupt", "preview"} {
 		if findCmd(asst.Commands, want) == nil {
 			t.Fatalf("assistant missing %s", want)
 		}
 	}
+	for _, gone := range []string{"wake", "history", "patch", "delete"} {
+		if findCmd(asst.Commands, gone) != nil {
+			t.Fatalf("assistant must no longer have %s", gone)
+		}
+	}
 	conv := findCmd(app.Commands, "conversation")
-	for _, want := range []string{"list", "show", "messages", "new", "switch"} {
+	for _, want := range []string{"list", "show", "messages", "new", "switch", "delete"} {
 		if findCmd(conv.Commands, want) == nil {
 			t.Fatalf("conversation missing %s", want)
 		}
 	}
-	if !hasFlag(findCmd(asst.Commands, "wake"), "attach") {
-		t.Fatal("assistant wake missing --attach")
-	}
-	hist := findCmd(asst.Commands, "history")
-	for _, f := range []string{"status", "job", "harness", "model", "conversation", "limit", "json"} {
-		if !hasFlag(hist, f) {
-			t.Fatalf("assistant history missing flag %s", f)
+	setCmd := findCmd(asst.Commands, "set")
+	for _, f := range []string{"harness", "model", "effort", "envset", "mode", "skill", "context-file", "disabled", "unset", "defaults", "workspace"} {
+		if !hasFlag(setCmd, f) {
+			t.Fatalf("assistant set missing flag %s", f)
 		}
 	}
 	if findCmd(app.Commands, "remote") != nil {

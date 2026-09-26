@@ -4,11 +4,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +21,9 @@ import (
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/agents"
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
+	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
@@ -73,6 +77,13 @@ type Server struct {
 	doneOnce  sync.Once
 	log       *slog.Logger
 	queue     *dispatch.Queue
+
+	// The assistant session stack. New builds a standalone default;
+	// BindAssistant swaps in the daemon's shared instances.
+	asst        *assistant.Manager
+	asstStore   *assistant.Store
+	asstResolve *assistant.Resolver
+	asstDoctor  *assistant.Doctor
 
 	upgrader   websocket.Upgrader
 	httpServer *http.Server
@@ -148,33 +159,144 @@ func New(st *store.Store, opts Options) *Server {
 			CheckOrigin: checkWSOrigin,
 		},
 	}
-	r.SetNativeHooks(runs.NativeHooks{
-		Lifetime: context.Background(),
-		Ingest: func(ctx context.Context, runID, convID string, texts []string) error {
-			turns := make([]conversations.IncomingTurn, len(texts))
-			now := time.Now()
-			for i, t := range texts {
-				turns[i] = conversations.IncomingTurn{Role: conversations.RoleAssistant, Text: t, At: now}
-			}
-			_, err := s.conv.IngestAssistantTurns(ctx, runID, convID, turns)
-			return err
-		},
-		Recap: func(ctx context.Context, convID, text string) error {
-			return s.conv.AppendSystem(ctx, convID, text)
-		},
-		Dispatch: s,
-	})
 	_ = s.connectors.Load()
 	s.toolsReg = tools.NewRegistry(s)
+	s.buildAssistantStack(opts.FilesMaxBytes)
 	s.mcpHTTP = s.newMCPHandler()
 	return s
+}
+
+// buildAssistantStack wires the default assistant session manager over this
+// server's own services (plan F). BindAssistant replaces every part with the
+// daemon's shared instances.
+func (s *Server) buildAssistantStack(filesMaxBytes int64) {
+	cfg, _ := config.Load()
+	native := config.NativeConfig{}
+	if cfg != nil {
+		native = cfg.Assistant.Native
+	}
+	s.asstStore = assistant.NewStore(s.st)
+	rt := agentwire.New(agentwire.Options{
+		ClientName:    "trebi",
+		ClientVersion: Version,
+		LedgerPath:    filepath.Join(home.RunsDir(), "agent-procs.json"),
+		Logger:        s.log,
+	})
+	nativeDriver := assistant.NewNativeDriver(native, s.asstStore, s, filesMaxBytes, s.log)
+	router := assistant.NewHarnessRouter(rt, nativeDriver)
+	timing := assistant.ResolverTiming{}
+	if cfg != nil {
+		timing = assistant.ResolverTiming{
+			IdleClose:         cfg.Assistant.IdleCloseDuration(),
+			PermissionTimeout: cfg.Assistant.PermissionTimeoutDuration(),
+			MaxLive:           cfg.Assistant.MaxLiveOrDefault(),
+		}
+	}
+	res := assistant.NewResolver(freshConfigSource{}, s.ws, rt, native, timing)
+	s.asstResolve = res
+	s.asstDoctor = &assistant.Doctor{Res: res, Workspaces: s.assistantWorkspaces}
+	exe, err := os.Executable()
+	if err != nil {
+		exe = ""
+	}
+	s.asst = assistant.NewManager(router, s.asstStore, s.conv, res, s.ws, wsMemory{s.ws}, nil,
+		assistant.Options{
+			MCPURL:       s.mcpURLGuess(),
+			TrebiExe:     exe,
+			SkillsDir:    home.SkillsDir(),
+			MaxFileBytes: filesMaxBytes,
+			Log:          s.log,
+		})
+	s.conv.WithAssistant(s.asst)
+}
+
+// freshConfigSource re-reads config.yaml per call, so settings writes land
+// in the resolver defaults without a restart.
+type freshConfigSource struct{}
+
+func (freshConfigSource) AssistantDefaults() assistant.Settings {
+	c, err := config.Load()
+	if err != nil || c == nil {
+		return assistant.Settings{Accept: []string{"operators", "allowlist"}}
+	}
+	return assistant.SettingsFromConfig(c)
+}
+
+// wsMemory adapts the workspace memory render to the manager seam.
+type wsMemory struct{ ws *workspaces.Service }
+
+func (a wsMemory) Render(ctx context.Context, workspaceID string) (string, error) {
+	return a.ws.AssistantMemory(ctx, workspaceID)
+}
+
+// assistantWorkspaces adapts the workspace list for the doctor.
+func (s *Server) assistantWorkspaces(ctx context.Context) ([]assistant.WorkspaceInfo, error) {
+	list, err := s.ws.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]assistant.WorkspaceInfo, 0, len(list))
+	for _, ws := range list {
+		out = append(out, assistant.WorkspaceInfo{ID: ws.ID, Name: ws.Name, Path: ws.Path})
+	}
+	return out, nil
+}
+
+// mcpURLGuess renders the /mcp endpoint from config before the listener is
+// bound. serve() replaces it with the bound address.
+func (s *Server) mcpURLGuess() string {
+	port := 7433
+	if cfg, err := config.Load(); err == nil && cfg != nil {
+		if _, p, err := net.SplitHostPort(cfg.API.ListenAddr()); err == nil {
+			if v, err := strconv.Atoi(p); err == nil {
+				port = v
+			}
+		}
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
+}
+
+// AssistantSource is the daemon-built assistant stack the server binds.
+type AssistantSource interface {
+	Assistant() *assistant.Manager
+	AssistantStore() *assistant.Store
+	AssistantResolver() *assistant.Resolver
+	AssistantDoctor() *assistant.Doctor
+}
+
+// BindAssistant replaces the default assistant stack with the daemon's
+// shared instances, so /v1, /mcp, and the workers drive one set of sessions.
+func (s *Server) BindAssistant(src AssistantSource) {
+	if src == nil {
+		return
+	}
+	if m := src.Assistant(); m != nil {
+		s.asst = m
+	}
+	if st := src.AssistantStore(); st != nil {
+		s.asstStore = st
+	}
+	if res := src.AssistantResolver(); res != nil {
+		s.asstResolve = res
+	}
+	if doc := src.AssistantDoctor(); doc != nil {
+		s.asstDoctor = doc
+	}
+	if s.conv != nil && s.asst != nil {
+		s.conv.WithAssistant(s.asst)
+	}
+	if d, ok := src.(interface{ SetToolDispatcher(tools.Dispatcher) }); ok {
+		d.SetToolDispatcher(s)
+	}
+	if l := s.listener; l != nil {
+		s.asst.SetMCPURL(s.boundMCPURL())
+	}
 }
 
 // BindControlPlane replaces core services with the daemon's shared instances.
 func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service, cloudSvc *cloudlink.Service, hooksSvc *webhooks.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
-		s.runs.SetNativeHooks(runs.NativeHooks{Dispatch: s})
 	}
 	if ws != nil {
 		s.ws = ws
@@ -253,6 +375,12 @@ func (s *Server) Alerts() *alerts.Service { return s.alerts }
 // Skills returns the skills service.
 func (s *Server) Skills() *skills.Service { return s.skills }
 
+// Assistant returns the session manager.
+func (s *Server) Assistant() *assistant.Manager { return s.asst }
+
+// AssistantStore returns the assistant session store.
+func (s *Server) AssistantStore() *assistant.Store { return s.asstStore }
+
 // Email returns the email channel service.
 func (s *Server) Email() *email.Service { return s.email }
 
@@ -270,6 +398,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.routeSystem(mux)
 	s.routeWorkspaces(mux)
+	s.routeAssistant(mux)
 	s.routeAgents(mux)
 	s.routeMemory(mux)
 	s.routeFiles(mux)
@@ -322,6 +451,10 @@ func (s *Server) serve(addr, certFile, keyFile string) (actual string, err error
 		s.scheme = "https"
 	}
 	actual = ln.Addr().String()
+	// Sessions started from now on inject the bound /mcp URL.
+	if s.asst != nil {
+		s.asst.SetMCPURL(s.boundMCPURL())
+	}
 	// Serve exits when Shutdown closes the listener; Server owns that lifetime.
 	go func() {
 		var err error
@@ -365,9 +498,31 @@ func (s *Server) WriteAPIJSON(listenAddr string) error {
 	return os.WriteFile(home.APIJSONPath(), b, 0o600)
 }
 
+// boundMCPURL renders the /mcp endpoint on the bound listener.
+func (s *Server) boundMCPURL() string {
+	if s.listener == nil {
+		return s.mcpURLGuess()
+	}
+	host, port, err := net.SplitHostPort(s.listener.Addr().String())
+	if err != nil {
+		return s.mcpURLGuess()
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		host = "127.0.0.1"
+	}
+	scheme := s.scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port) + "/mcp"
+}
+
 // Shutdown stops the HTTP server and closes open streams.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.doneOnce.Do(func() { close(s.done) })
+	if s.asst != nil {
+		_ = s.asst.Shutdown(ctx)
+	}
 	if s.httpServer == nil {
 		return nil
 	}

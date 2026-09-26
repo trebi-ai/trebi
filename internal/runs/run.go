@@ -78,12 +78,11 @@ const (
 	ReasonReport     RunReason = "report"
 )
 
-// Kind for runs: job | assistant (B27). Declared in dispatch, the lowest
+// Kind for runs: job | agent. Declared in dispatch, the lowest
 // consumer, so event_queue.kind and runs.kind share one spelling.
 const (
-	KindJob       = dispatch.KindJob
-	KindAssistant = dispatch.KindAssistant
-	KindAgent     = dispatch.KindAgent
+	KindJob   = dispatch.KindJob
+	KindAgent = dispatch.KindAgent
 )
 
 // JobDisplayStatus — derived for lists (not run Status).

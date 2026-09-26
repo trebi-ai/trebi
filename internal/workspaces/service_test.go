@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/trebi-ai/trebi/internal/agents"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -93,15 +92,15 @@ func TestRebuildIndexEmitsDiffEvents(t *testing.T) {
 		t.Fatalf("topics=%v want [job.created:gamma]", topics)
 	}
 
-	// New assistant file: assistant.updated.
+	// TREBI.md is no longer indexed: no new events, no assistant rows.
 	seq = mustSeq(t, st)
 	writeFile(t, filepath.Join(root, "TREBI.md"), "---\nharness: claude\n---\n\nAssist.\n")
 	if err := svc.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
 	topics = busTopics(t, st, seq)
-	if len(topics) != 1 || !strings.HasPrefix(topics[0], "assistant.updated:") {
-		t.Fatalf("topics=%v want [assistant.updated:*]", topics)
+	if len(topics) != 0 {
+		t.Fatalf("topics=%v want none", topics)
 	}
 }
 
@@ -245,9 +244,8 @@ func TestRebuildIndexDisabledAgentInactive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// AddWith seeds TREBI.md, so the index also holds one active assistant row.
-	if len(rows) != 2 {
-		t.Fatalf("rows=%v want agent plus seeded assistant", rows)
+	if len(rows) != 1 {
+		t.Fatalf("rows=%v want the agent row only", rows)
 	}
 	for _, r := range rows {
 		if r.Kind != "agent" {
@@ -609,117 +607,4 @@ func mustSeq(t *testing.T, st *store.Store) int64 {
 		return 0
 	}
 	return v.Int64
-}
-
-func TestAddWithSeedsAssistant(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	st := openTest(t)
-	svc := workspaces.New(st)
-
-	ws, err := svc.Add(ctx, t.TempDir(), "demo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(filepath.Join(ws.Path, "TREBI.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != agents.AssistantTemplate {
-		t.Fatalf("seeded file differs from template:\n%q", string(got))
-	}
-	// A fresh add is already marked seeded: the backfill skips it.
-	unseeded, err := svc.UnseededWorkspaces(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(unseeded) != 0 {
-		t.Fatalf("unseeded=%v want empty", unseeded)
-	}
-}
-
-func TestAddWithKeepsExistingAssistant(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	st := openTest(t)
-	svc := workspaces.New(st)
-
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "TREBI.md"), "---\ntitle: Mine\n---\n\nCustom text.\n")
-	ws, err := svc.Add(ctx, dir, "demo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(filepath.Join(ws.Path, "TREBI.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "---\ntitle: Mine\n---\n\nCustom text.\n" {
-		t.Fatalf("existing assistant overwritten: %q", string(got))
-	}
-}
-
-func TestAssistantBackfillSeedsOnce(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	st := openTest(t)
-	svc := workspaces.New(st)
-
-	dir := t.TempDir()
-	ws, err := svc.Add(ctx, dir, "demo")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Simulate a legacy row: never offered the assistant, file deleted.
-	if _, err := st.DB().ExecContext(ctx,
-		`UPDATE workspaces SET assistant_seeded = 0 WHERE id = ?`, ws.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(ws.Path, "TREBI.md")); err != nil {
-		t.Fatal(err)
-	}
-
-	seedBackfill(t, ctx, svc)
-
-	got, err := os.ReadFile(filepath.Join(ws.Path, "TREBI.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != agents.AssistantTemplate {
-		t.Fatalf("backfill wrote wrong content: %q", string(got))
-	}
-
-	// The user deletes the assistant on purpose. A second backfill pass
-	// must not bring it back: the flag stays set.
-	if err := os.Remove(filepath.Join(ws.Path, "TREBI.md")); err != nil {
-		t.Fatal(err)
-	}
-	seedBackfill(t, ctx, svc)
-	if _, err := os.Stat(filepath.Join(ws.Path, "TREBI.md")); !os.IsNotExist(err) {
-		t.Fatalf("deleted assistant rewritten (stat err %v)", err)
-	}
-}
-
-// seedBackfill mirrors ControlPlane.seedAssistants over the exported
-// workspaces surface.
-func seedBackfill(t *testing.T, ctx context.Context, svc *workspaces.Service) {
-	t.Helper()
-	list, err := svc.UnseededWorkspaces(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range list {
-		ws := list[i]
-		if ws.Orphaned {
-			continue
-		}
-		svc.SeedAssistantFile(ws.Path)
-		if err := svc.RebuildIndex(ctx, &ws); err != nil {
-			t.Fatal(err)
-		}
-		if err := svc.MarkAssistantSeeded(ctx, ws.ID); err != nil {
-			t.Fatal(err)
-		}
-	}
 }

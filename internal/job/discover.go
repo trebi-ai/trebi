@@ -47,10 +47,6 @@ func Discover(workspacePath string, otherWorkspaceRoots ...string) (Discovery, e
 			if j := dv.job(path); j != nil {
 				disc.Jobs = append(disc.Jobs, j)
 			}
-		case strings.EqualFold(base, "TREBI.md") && filepath.Dir(path) == workspacePath:
-			if j := dv.assistant(path); j != nil {
-				disc.Assistant = j
-			}
 		case strings.EqualFold(base, "AGENT.md"):
 			if j := dv.agent(path); j != nil {
 				disc.Agents = append(disc.Agents, j)
@@ -118,8 +114,6 @@ func DiscoverPath(workspacePath, filePath string, otherWorkspaceRoots ...string)
 	switch {
 	case strings.EqualFold(base, "JOB.md"):
 		return dv.job(filePath), nil
-	case strings.EqualFold(base, "TREBI.md") && filepath.Dir(filePath) == workspacePath:
-		return dv.assistant(filePath), nil
 	case strings.EqualFold(base, "AGENT.md"):
 		return dv.agent(filePath), nil
 	}
@@ -181,19 +175,6 @@ func (dv *discovery) job(path string) *Job {
 	}
 	j.Prompt = SubstituteJobVars(j.Prompt, j.Dir, dv.workspacePath)
 	j.FollowupPrompt = SubstituteJobVars(j.FollowupPrompt, j.Dir, dv.workspacePath)
-	return j
-}
-
-// assistant parses the root TREBI.md.
-func (dv *discovery) assistant(path string) *Job {
-	j, parseErr := ParseFile(path)
-	if j == nil {
-		return nil
-	}
-	j.WorkspacePath = dv.workspacePath
-	if parseErr != nil && j.ParseError == "" {
-		j.ParseError = parseErr.Error()
-	}
 	return j
 }
 

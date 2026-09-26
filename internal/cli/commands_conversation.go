@@ -72,6 +72,13 @@ func conversationCommand() *cli.Command {
 				},
 				Action: runConversationPatch,
 			},
+			{
+				Name:      "delete",
+				Usage:     "delete a conversation with its messages (closes the assistant session)",
+				ArgsUsage: "<id>",
+				Flags:     []cli.Flag{forceFlag("required; deletes the conversation with its messages and events")},
+				Action:    runConversationDelete,
+			},
 		},
 	}
 }
@@ -215,4 +222,19 @@ func runConversationPatch(_ context.Context, c *cli.Command) error {
 	}
 	fmt.Fprintf(outWriter(c), "conversation %s\n", mapStr(out, "id"))
 	return nil
+}
+
+func runConversationDelete(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi conversation delete <id>")
+	}
+	if _, err := confirmed(c, "deletes conversation "+id+" with its messages"); err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(request.BuildConversationDelete(id, true), nil)
 }

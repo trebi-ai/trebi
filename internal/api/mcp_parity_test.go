@@ -136,7 +136,13 @@ func TestMCPDocsDocumentConfirmOnGatedActions(t *testing.T) {
 // dump mode of GET /v1/stream is covered by system.bus_poll; only its
 // follow mode (a query parameter, not a pattern) stays out.
 var mcpExcluded = map[string]string{
-	"GET /v1/envsets": "envset names are a UI form-option list; the agent payload carries the chosen names",
+	// Session-only controls: a session rides one conversation; the chat
+	// tools cover send and events (plan G.2).
+	"POST /v1/conversations/{id}/close":                     "the CLI chat and the drawer close their own session",
+	"POST /v1/conversations/{id}/permissions/{pid}":         "permission answers go through the drawer or the chat prompt",
+	"POST /v1/conversations/{id}/mode":                      "the mode picker lives in the drawer",
+	"POST /v1/conversations/{id}/revert":                    "revert runs from the drawer diff card",
+	"GET /v1/envsets":                                       "envset names are a UI form-option list; the agent payload carries the chosen names",
 	"GET /v1/workspaces/{id}/agents/{name}/email":           "address reveal is a UI copy affordance; the agent payload carries the masked form",
 	"GET /v1/workspaces/{id}/agents":                        "superseded by cross-workspace GET /v1/agents",
 	"GET /v1/proposals":                                     "proposal review is a human UI/CLI workflow",
@@ -187,6 +193,7 @@ func mcpTestMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	s := &Server{}
 	s.routeAgents(mux)
+	s.routeAssistant(mux)
 	s.routeConversations(mux)
 	s.routeEvents(mux)
 	s.routeFiles(mux)

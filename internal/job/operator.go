@@ -42,10 +42,6 @@ type AcceptEntry struct {
 	Domain  string
 }
 
-// DefaultAssistantAccept preserves the behavior of a TREBI.md without an
-// email block. Agents do not get this default: an absent list is closed.
-var DefaultAssistantAccept = []AcceptEntry{{Keyword: "operators"}, {Keyword: "allowlist"}}
-
 // ParseAccept validates and normalizes an email.accept list. Wildcards are
 // intentionally not supported (plan A.5).
 func ParseAccept(lines []string) ([]AcceptEntry, error) {
@@ -111,9 +107,6 @@ func normalizeOperatorKeys(path string, fm *Frontmatter) (accept []AcceptEntry, 
 	if kind == "job" && (fm.Email != nil || fm.Kit != nil || fm.Budget != nil || fm.Report != nil) {
 		return nil, nil, false, fmt.Errorf("operator keys email, kit, budget, and report are not allowed in JOB.md")
 	}
-	if kind == "assistant" && (fm.Kit != nil || fm.Budget != nil || fm.Report != nil) {
-		return nil, nil, false, fmt.Errorf("kit, budget, and report are agent keys and are not allowed in TREBI.md")
-	}
 	if fm.Budget != nil {
 		if fm.Budget.MonthlyUSD <= 0 {
 			return nil, nil, false, fmt.Errorf("budget.monthly_usd must be greater than zero")
@@ -134,9 +127,6 @@ func normalizeOperatorKeys(path string, fm *Frontmatter) (accept []AcceptEntry, 
 		}
 	}
 	if fm.Email == nil {
-		if kind == "assistant" {
-			return DefaultAssistantAccept, nil, false, nil
-		}
 		return nil, nil, false, nil
 	}
 	accept, err = ParseAccept(fm.Email.Accept)

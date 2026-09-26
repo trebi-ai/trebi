@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -38,6 +39,49 @@ type pathEntryList struct {
 func PathKeyDescription(key string) string {
 	if d, ok := pathKeyDescriptions()[key]; ok {
 		return d
+	}
+	if strings.HasPrefix(key, "assistant.") {
+		switch key {
+		case "assistant.harness":
+			return "Harness for new sessions: empty = auto, native, or an agent-wire harness name"
+		case "assistant.model":
+			return "Model passed to the harness (empty = harness default)"
+		case "assistant.effort":
+			return "Reasoning effort: low|medium|high (empty = harness default)"
+		case "assistant.envset":
+			return "Env set for CLI harnesses (for example claude-zai)"
+		case "assistant.mode":
+			return "Permission mode: ask|auto_edit|auto"
+		case "assistant.idle_close":
+			return "Close an idle session process after this (for example 15m)"
+		case "assistant.permission_timeout":
+			return "Deny a headless permission after this (for example 10m)"
+		case "assistant.max_live":
+			return "Live agent processes across all workspaces"
+		case "assistant.native.model":
+			return "Native loop model (empty = native off)"
+		case "assistant.native.api_format":
+			return "Native API format: openai | anthropic"
+		case "assistant.native.base_url":
+			return "Native API origin (empty = api.openai.com / api.anthropic.com, no /v1)"
+		case "assistant.native.api_key_env":
+			return "Env var holding the native API key, preferred over the stored secret"
+		case "assistant.native.max_tokens":
+			return "Native per-response token cap (8192 when unset)"
+		case "assistant.native.context_tokens":
+			return "Native context window for compaction (0 = no compaction)"
+		case "assistant.native.web_search":
+			return "Anthropic server web search tool (openai ignores it)"
+		case "assistant.native.limits.daily_tokens":
+			return "Native daily token cap (0 = unlimited)"
+		case "assistant.native.limits.max_turns":
+			return "Native tool-loop turn cap (0 = loop default)"
+		case "assistant.native.api_key_source":
+			return "Live native key source label (read-only)"
+		}
+		if key == "assistant.api_key" {
+			return "Stored native API key secret (write-only)"
+		}
 	}
 	// tools.<name>.…
 	parts := strings.Split(key, ".")
@@ -441,34 +485,39 @@ func (l *pathEntryList) addEmail(cfg *Config) {
 
 func (l *pathEntryList) addAssistant(cfg *Config) {
 	a := cfg.Assistant
+	l.add("assistant.harness", a.Harness, "")
 	l.add("assistant.model", a.Model, "")
-	format := a.APIFormat
-	if format == "" {
-		format = "openai"
-	}
-	l.add("assistant.api_format", format, "openai")
-	base := strings.TrimSpace(a.BaseURL)
+	l.add("assistant.effort", a.Effort, "")
+	l.add("assistant.envset", a.Envset, "")
+	l.add("assistant.mode", a.ModeOrDefault(), DefaultAssistantMode)
+	l.add("assistant.idle_close", a.IdleCloseDuration().String(), DefaultAssistantIdleClose.String())
+	l.add("assistant.permission_timeout", a.PermissionTimeoutDuration().String(), DefaultAssistantPermissionTimeout.String())
+	l.add("assistant.max_live", strconv.Itoa(a.MaxLiveOrDefault()), strconv.Itoa(DefaultAssistantMaxLive))
+	n := a.Native
+	l.add("assistant.native.model", n.Model, "")
+	format := n.Format()
+	l.add("assistant.native.api_format", format, "openai")
+	base := strings.TrimSpace(n.BaseURL)
 	if base == "" {
-		base = a.DefaultBaseURL()
+		base = n.DefaultBaseURL()
 	}
-	l.add("assistant.base_url", base, a.DefaultBaseURL())
+	l.add("assistant.native.base_url", base, n.DefaultBaseURL())
 	keyVal := "-"
 	if a.APIKeyPresent || strings.TrimSpace(a.pendingKey) != "" {
 		keyVal = "********"
 	}
 	l.add("assistant.api_key", keyVal, "")
-	l.add("assistant.api_key_env", a.APIKeyEnv, "")
-	l.add("assistant.api_key_source", a.KeySourceName(), KeySourceNone)
-	l.add("assistant.max_tokens", strconv.Itoa(a.MaxTokensOrDefault()), strconv.Itoa(DefaultAssistantMaxTokens))
-	l.add("assistant.context_tokens", strconv.Itoa(a.ContextTokens), "0")
-	l.add("assistant.system_extra", a.SystemExtra, "")
+	l.add("assistant.native.api_key_env", n.APIKeyEnv, "")
+	l.add("assistant.native.api_key_source", n.KeySourceName(), KeySourceNone)
+	l.add("assistant.native.max_tokens", strconv.Itoa(n.MaxTokensOrDefault()), strconv.Itoa(DefaultAssistantMaxTokens))
+	l.add("assistant.native.context_tokens", strconv.Itoa(n.ContextTokens), "0")
 	ws := "true"
-	if a.WebSearch != nil && !*a.WebSearch {
+	if n.WebSearch != nil && !*n.WebSearch {
 		ws = "false"
 	}
-	l.add("assistant.web_search", ws, "true")
-	l.add("assistant.limits.daily_tokens", strconv.Itoa(a.Limits.DailyTokens), "0")
-	l.add("assistant.limits.max_turns", strconv.Itoa(a.Limits.MaxTurns), "0")
+	l.add("assistant.native.web_search", ws, "true")
+	l.add("assistant.native.limits.daily_tokens", strconv.Itoa(n.Limits.DailyTokens), "0")
+	l.add("assistant.native.limits.max_turns", strconv.Itoa(n.Limits.MaxTurns), "0")
 }
 
 // addGlobalBridge adds the tools.bridge rows.
@@ -751,8 +800,8 @@ func (c *Config) UnsetPath(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "assistant.api_key" {
 		c.Assistant.pendingKey = ""
-		c.Assistant.APIKey = ""
 		c.Assistant.APIKeyPresent = false
+		c.Assistant.Native.APIKeyPresent = false
 		c.Assistant.clearSecret = true
 		return nil
 	}
@@ -760,64 +809,115 @@ func (c *Config) UnsetPath(path string) error {
 }
 
 func (c *Config) setAssistantKey(path, value string) (handled bool, err error) {
+	n := &c.Assistant.Native
 	switch path {
+	case "assistant.harness":
+		v := strings.TrimSpace(value)
+		if v != "" && !knownHarness(v) {
+			return true, fmt.Errorf("assistant.harness: %q is not a known harness", value)
+		}
+		c.Assistant.Harness = v
 	case "assistant.model":
 		c.Assistant.Model = clearOrValue(value)
-	case "assistant.api_format":
-		v := strings.ToLower(strings.TrimSpace(value))
-		if v != "" && v != "openai" && v != "anthropic" {
-			return true, fmt.Errorf("assistant.api_format: %q not in [openai, anthropic]", value)
+	case "assistant.effort":
+		v := strings.TrimSpace(value)
+		switch v {
+		case "", "low", "medium", "high":
+		default:
+			return true, fmt.Errorf("assistant.effort: %q not in [low, medium, high]", value)
 		}
-		c.Assistant.APIFormat = v
-	case "assistant.base_url":
-		c.Assistant.BaseURL = clearOrValue(value)
+		c.Assistant.Effort = v
+	case "assistant.envset":
+		c.Assistant.Envset = clearOrValue(value)
+	case "assistant.mode":
+		v := strings.TrimSpace(value)
+		switch v {
+		case "", "ask", "auto_edit", "auto":
+		default:
+			return true, fmt.Errorf("assistant.mode: %q not in [ask, auto_edit, auto]", value)
+		}
+		c.Assistant.Mode = v
+	case "assistant.idle_close":
+		v := strings.TrimSpace(value)
+		if v != "" {
+			if _, err := time.ParseDuration(v); err != nil {
+				return true, fmt.Errorf("assistant.idle_close: want a duration, for example 15m")
+			}
+		}
+		c.Assistant.IdleClose = v
+	case "assistant.permission_timeout":
+		v := strings.TrimSpace(value)
+		if v != "" {
+			if _, err := time.ParseDuration(v); err != nil {
+				return true, fmt.Errorf("assistant.permission_timeout: want a duration, for example 10m")
+			}
+		}
+		c.Assistant.PermissionTimeout = v
+	case "assistant.max_live":
+		v := strings.TrimSpace(value)
+		if v == "" {
+			c.Assistant.MaxLive = 0
+			return true, nil
+		}
+		nLive, err := strconv.Atoi(v)
+		if err != nil || nLive < 0 {
+			return true, fmt.Errorf("assistant.max_live: want integer >= 0")
+		}
+		c.Assistant.MaxLive = nLive
 	case "assistant.api_key":
 		if value == "" || value == "-" {
 			return true, c.UnsetPath(path)
 		}
 		c.Assistant.pendingKey = value
-		c.Assistant.APIKey = ""
 		c.Assistant.clearSecret = false
-	case "assistant.api_key_env":
-		c.Assistant.APIKeyEnv = clearOrValue(value)
+	case "assistant.native.model":
+		n.Model = clearOrValue(value)
+	case "assistant.native.api_format":
+		v := strings.ToLower(strings.TrimSpace(value))
+		if v != "" && v != "openai" && v != "anthropic" {
+			return true, fmt.Errorf("assistant.native.api_format: %q not in [openai, anthropic]", value)
+		}
+		n.APIFormat = v
+	case "assistant.native.base_url":
+		n.BaseURL = clearOrValue(value)
+	case "assistant.native.api_key_env":
+		n.APIKeyEnv = clearOrValue(value)
 		// A later env pin replaces a stored secret so precedence can fall back.
 		c.Assistant.clearSecret = true
-		c.Assistant.APIKeyPresent = false
+		n.APIKeyPresent = false
 		c.Assistant.pendingKey = ""
-	case "assistant.api_key_source":
-		return true, fmt.Errorf("assistant.api_key_source: read-only")
-	case "assistant.max_tokens":
-		n, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil || n < 0 {
-			return true, fmt.Errorf("assistant.max_tokens: want integer > 0")
+	case "assistant.native.api_key_source":
+		return true, fmt.Errorf("assistant.native.api_key_source: read-only")
+	case "assistant.native.max_tokens":
+		num, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || num < 0 {
+			return true, fmt.Errorf("assistant.native.max_tokens: want integer > 0")
 		}
-		c.Assistant.MaxTokens = n
-	case "assistant.context_tokens":
-		n, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil || n < 0 {
-			return true, fmt.Errorf("assistant.context_tokens: want integer >= 0")
+		n.MaxTokens = num
+	case "assistant.native.context_tokens":
+		num, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || num < 0 {
+			return true, fmt.Errorf("assistant.native.context_tokens: want integer >= 0")
 		}
-		c.Assistant.ContextTokens = n
-	case "assistant.system_extra":
-		c.Assistant.SystemExtra = clearOrValue(value)
-	case "assistant.web_search":
+		n.ContextTokens = num
+	case "assistant.native.web_search":
 		b, err := parseBoolish(value)
 		if err != nil {
-			return true, fmt.Errorf("assistant.web_search: %w", err)
+			return true, fmt.Errorf("assistant.native.web_search: %w", err)
 		}
-		c.Assistant.WebSearch = &b
-	case "assistant.limits.daily_tokens":
-		n, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil || n < 0 {
-			return true, fmt.Errorf("assistant.limits.daily_tokens: want integer >= 0")
+		n.WebSearch = &b
+	case "assistant.native.limits.daily_tokens":
+		num, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || num < 0 {
+			return true, fmt.Errorf("assistant.native.limits.daily_tokens: want integer >= 0")
 		}
-		c.Assistant.Limits.DailyTokens = n
-	case "assistant.limits.max_turns":
-		n, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil || n < 0 {
-			return true, fmt.Errorf("assistant.limits.max_turns: want integer >= 0")
+		n.Limits.DailyTokens = num
+	case "assistant.native.limits.max_turns":
+		num, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || num < 0 {
+			return true, fmt.Errorf("assistant.native.limits.max_turns: want integer >= 0")
 		}
-		c.Assistant.Limits.MaxTurns = n
+		n.Limits.MaxTurns = num
 	default:
 		return false, nil
 	}

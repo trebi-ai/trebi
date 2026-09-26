@@ -247,8 +247,7 @@ func TestWakeComposeShapesPrompt(t *testing.T) {
 		name string
 		kind string
 	}{
-		{"assistant", runs.KindAssistant},
-		{"agent", "agent"},
+		{"agent", runs.KindAgent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -290,12 +289,12 @@ func TestWakeFallbacks(t *testing.T) {
 		prompt   string
 		want     string
 	}{
-		{name: "nil composer", kind: runs.KindAssistant, want: "body\nextra"},
-		{name: "composer error", composer: &stubComposer{err: errors.New("boom")}, kind: runs.KindAssistant, want: "body\nextra"},
-		{name: "composer empty", composer: &stubComposer{text: "  "}, kind: runs.KindAssistant, want: "body\nextra"},
+		{name: "nil composer", kind: runs.KindAgent, want: "body\nextra"},
+		{name: "composer error", composer: &stubComposer{err: errors.New("boom")}, kind: runs.KindAgent, want: "body\nextra"},
+		{name: "composer empty", composer: &stubComposer{text: "  "}, kind: runs.KindAgent, want: "body\nextra"},
 		{name: "job kind skips composer", composer: &stubComposer{text: "X"}, kind: runs.KindJob, want: "body\nextra"},
 		{name: "empty kind skips composer", composer: &stubComposer{text: "X"}, kind: "", want: "body\nextra"},
-		{name: "no extra prompt", kind: runs.KindAssistant, want: "body\n"},
+		{name: "no extra prompt", kind: runs.KindAgent, want: "body\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -335,7 +334,7 @@ func TestWakePromptWins(t *testing.T) {
 	}
 	defer st.Close()
 	c := &stubComposer{text: "COMPOSED"}
-	lopts := wakeLaunchOpts(t, runs.KindAssistant, "demo", &runs.WakeOpts{Body: "body"})
+	lopts := wakeLaunchOpts(t, runs.KindAgent, "demo", &runs.WakeOpts{Body: "body"})
 	lopts.Prompt = "explicit"
 	run, _, err := runs.New(st, c, nil).CreateAndLaunch(context.Background(), lopts)
 	if err != nil {

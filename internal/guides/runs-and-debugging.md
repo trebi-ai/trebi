@@ -14,7 +14,7 @@ A run is one launch of a job. `job run` returns when the session exists. To wait
 trebi runs list --json
 trebi runs list --workspace staging --job report --json
 trebi runs list --status running --job my-job --limit 50 --json
-trebi runs list --harness claude --kind assistant --json
+trebi runs list --harness claude --kind agent --json
 trebi runs list --since 24h --end-reason failed --json
 trebi runs list --search deploy --json
 trebi runs show <id> --json
@@ -37,7 +37,7 @@ trebi runs list --job my-job --limit 1 --json
 
 `--wait` long-polls until the run ends, up to 120000 ms. The response is the final run row. A longer run needs a second call.
 
-For the assistant, poll `trebi conversation messages <id> --json` the same way. See `trebi guide assistant`.
+The assistant has no runs. Use `trebi assistant sessions` to find its conversations, then poll `trebi conversation messages <id> --json`. See `trebi guide assistant`.
 
 ```bash
 trebi runs attach <id>

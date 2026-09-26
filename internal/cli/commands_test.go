@@ -117,24 +117,16 @@ func TestRunsMessageJoinAndError(t *testing.T) {
 
 func TestJobListKind(t *testing.T) {
 
-	var jobsHits, wsHits, asstHits atomic.Int32
+	var jobsHits, wsHits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/v1/jobs":
 			jobsHits.Add(1)
-			_, _ = w.Write([]byte(`{"jobs":[{"name":"demo","kind":"job","workspace_id":"ws1","harness":"claude","active":true},{"name":"asst","kind":"assistant","workspace_id":"ws1"}]}`))
+			_, _ = w.Write([]byte(`{"jobs":[{"name":"demo","kind":"job","workspace_id":"ws1","harness":"claude","active":true},{"name":"agents/cmo","kind":"agent","workspace_id":"ws1"}]}`))
 		case r.URL.Path == "/v1/workspaces":
 			wsHits.Add(1)
 			_, _ = w.Write([]byte(`{"workspaces":[{"id":"ws1","name":"one"},{"id":"ws2","name":"two"}]}`))
-		case strings.HasSuffix(r.URL.Path, "/assistant"):
-			asstHits.Add(1)
-			id := strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, "/assistant"), "/v1/workspaces/")
-			if id == "ws2" {
-				http.Error(w, "down", 500)
-				return
-			}
-			_, _ = w.Write([]byte(`{"name":"buddy","harness":"claude","active":true}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -146,8 +138,8 @@ func TestJobListKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "asst") {
-		t.Fatalf("default kind=job leaked assistant: %q", out)
+	if strings.Contains(out, "agents/cmo") {
+		t.Fatalf("default kind=job leaked agent rows: %q", out)
 	}
 	if strings.Contains(out, "KIND") {
 		t.Fatalf("kind column present for default: %q", out)
@@ -166,37 +158,12 @@ func TestJobListKind(t *testing.T) {
 		t.Fatalf("kind column missing for --kind all: %q", out)
 	}
 
-	jobsHits.Store(0)
-	out, err = runCLI(t, client, "job", "list", "--kind", "assistant", "--json")
-	if err != nil {
-		t.Fatal(err)
+	if _, err = runCLI(t, client, "job", "list", "--kind", "assistant"); err == nil {
+		t.Fatal("assistant must no longer be a job list kind")
 	}
-	if jobsHits.Load() != 0 {
-		t.Fatal("--kind assistant must not hit /v1/jobs")
-	}
-	if wsHits.Load() == 0 || asstHits.Load() == 0 {
-		t.Fatal("--kind assistant should fan out workspaces")
-	}
-	var env struct {
-		Jobs []map[string]any `json:"jobs"`
-	}
-	if err := json.NewDecoder(strings.NewReader(out)).Decode(&env); err != nil {
-		t.Fatalf("json %v %q", err, out)
-	}
-	if len(env.Jobs) != 1 {
-		t.Fatalf("jobs envelope %q", out)
-	}
-	if !strings.Contains(out, "1 workspace(s) unreachable") {
-		t.Fatalf("skip count missing: %q", out)
-	}
-
 	_, err = runCLI(t, client, "job", "list", "--kind", "bogus")
 	if err == nil {
 		t.Fatal("bogus kind")
-	}
-	_, err = runCLI(t, client, "job", "list", "--kind", "assistant", "--schedule")
-	if err == nil || !strings.Contains(err.Error(), "--schedule") {
-		t.Fatalf("schedule+assistant: %v", err)
 	}
 }
 

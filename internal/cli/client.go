@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -124,6 +125,61 @@ const streamScannerMax = 1 << 20 // 1 MiB; attrs are small, but one malformed fr
 // The HTTP client is cloned with Timeout=0 so the default 30s timeout cannot kill the tail.
 func (c *APIClient) StreamEvents(ctx context.Context, path string, fn func(store.StreamEvent) error) error {
 	return c.streamEvents(ctx, path, false, fn)
+}
+
+// StreamConversationEvents follows one conversation event stream (SSE). Each
+// frame carries one assistant.Event body; ping comments are skipped. Frames
+// with no data line are dropped.
+func (c *APIClient) StreamConversationEvents(ctx context.Context, path string, fn func(assistant.Event) error) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	httpClient := c.httpClient
+	if httpClient == nil {
+		httpClient = &http.Client{}
+	}
+	streamClient := *httpClient
+	streamClient.Timeout = 0
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("GET %s: %s: %s", path, resp.Status, raw)
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 256*1024), streamScannerMax)
+	var data []string
+	flush := func() error {
+		if len(data) == 0 {
+			return nil
+		}
+		payload := strings.Join(data, "\n")
+		data = data[:0]
+		var ev assistant.Event
+		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+			return fmt.Errorf("decode assistant event: %w", err)
+		}
+		return fn(ev)
+	}
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case line == "" || strings.HasPrefix(line, ":"):
+			if err := flush(); err != nil {
+				return err
+			}
+		case strings.HasPrefix(line, "data:"):
+			data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return flush()
 }
 
 // DoHTTP executes a pure request.HTTPRequest against this client.

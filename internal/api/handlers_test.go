@@ -86,31 +86,44 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 		t.Fatal("no workspace id")
 	}
 
-	// --- Assistant PUT (real file write) — D1 If-Match optional ---
+	// --- Assistant settings PUT (trebi.yaml) — D1 If-Match optional ---
 	// A request without If-Match proceeds (D1: absent header = unconditional).
-	code, _ = do("PUT", "/v1/workspaces/"+wsID+"/assistant", map[string]string{
-		"content": "---\nharness: fake\n---\n\nNo match.\n",
+	code, body2 := do("PUT", "/v1/workspaces/"+wsID+"/assistant", map[string]any{
+		"override": map[string]any{"harness": strPtrOf("fake")},
 	})
 	if code != 200 {
-		t.Fatalf("assistant put without If-Match want 200 got %d", code)
+		t.Fatalf("assistant put without If-Match want 200 got %d %v", code, body2)
 	}
-	// If-Match: * proceeds unconditionally when the file exists.
-	req, _ := http.NewRequest("PUT", base+"/v1/workspaces/"+wsID+"/assistant",
-		bytes.NewBufferString(`{"content":"---\nharness: fake\n---\n\nUpdated assistant body.\n"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("If-Match", "*")
-	resp, err := client.Do(req)
+	hash1, _ := body2["hash"].(string)
+	// A stale If-Match is 412.
+	req2, _ := http.NewRequest("PUT", base+"/v1/workspaces/"+wsID+"/assistant",
+		bytes.NewBufferString(`{"override":{"name":"ellis"}}`))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("If-Match", "stale")
+	resp2, err := client.Do(req2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	code = resp.StatusCode
-	resp.Body.Close()
-	if code != 200 {
-		t.Fatalf("assistant put with If-Match * %d", code)
+	resp2.Body.Close()
+	if resp2.StatusCode != 412 {
+		t.Fatalf("assistant put with stale If-Match %d", resp2.StatusCode)
 	}
-	data, err := os.ReadFile(filepath.Join(wsPath, "TREBI.md"))
-	if err != nil || !strings.Contains(string(data), "Updated assistant body") {
-		t.Fatalf("TREBI.md not updated: %v %s", err, data)
+	// The current hash writes.
+	req3, _ := http.NewRequest("PUT", base+"/v1/workspaces/"+wsID+"/assistant",
+		bytes.NewBufferString(`{"override":{"name":"ellis"}}`))
+	req3.Header.Set("Content-Type", "application/json")
+	req3.Header.Set("If-Match", hash1)
+	resp3, err := client.Do(req3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != 200 {
+		t.Fatalf("assistant put with If-Match %d", resp3.StatusCode)
+	}
+	data, err := os.ReadFile(filepath.Join(wsPath, "trebi.yaml"))
+	if err != nil || !strings.Contains(string(data), "ellis") {
+		t.Fatalf("trebi.yaml not updated: %v %s", err, data)
 	}
 
 	// --- Memory log entries ---
@@ -151,15 +164,15 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	}
 
 	// --- Connector logs (route returns SSE or JSON, not 404) ---
-	req, _ = http.NewRequest("GET", base+"/v1/connectors/gap-src/logs", nil)
-	resp, err = client.Do(req)
+	req4, _ := http.NewRequest("GET", base+"/v1/connectors/gap-src/logs", nil)
+	resp4, err := client.Do(req4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ct := resp.Header.Get("Content-Type")
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("logs status %d", resp.StatusCode)
+	ct := resp4.Header.Get("Content-Type")
+	resp4.Body.Close()
+	if resp4.StatusCode != 200 {
+		t.Fatalf("logs status %d", resp4.StatusCode)
 	}
 	if !strings.Contains(ct, "event-stream") && !strings.Contains(ct, "json") {
 		t.Fatalf("logs content-type %q", ct)
@@ -216,3 +229,5 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 		t.Fatalf("attach frame not typed JSON: %s", msg)
 	}
 }
+
+func strPtrOf(s string) *string { return &s }

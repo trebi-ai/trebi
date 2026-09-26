@@ -378,16 +378,6 @@ func TestWakeDryRunComposesPreview(t *testing.T) {
 		t.Fatalf("agent dry run preview not composed: %q", preview)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/assistant/wake", map[string]any{
-		"dry_run": true,
-	})
-	if code != 200 || body["dry_run"] != true {
-		t.Fatalf("assistant dry run: %d %v", code, body)
-	}
-	preview, _ = body["prompt_preview"].(string)
-	if !strings.Contains(preview, "# Agents") || !strings.Contains(preview, "cmo") {
-		t.Fatalf("assistant dry run preview not composed: %q", preview)
-	}
 }
 
 // TestAgentWakeSugarRoute: POST /agents/{name}/wake pins the identity fields

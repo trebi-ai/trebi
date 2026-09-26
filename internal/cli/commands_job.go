@@ -2,10 +2,7 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"strconv"
 	"strings"
 
@@ -79,7 +76,7 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				&cli.BoolFlag{Name: "detailed", Aliases: []string{"d"}, Usage: "extra columns (path, status)"},
 				&cli.BoolFlag{Name: "schedule", Usage: "add SPEC, TIMEZONE, NEXT, LAST columns"},
-				&cli.StringFlag{Name: "kind", Value: "job", Usage: "job|assistant|agent|all (default job)"},
+				&cli.StringFlag{Name: "kind", Value: "job", Usage: "job|agent|all (default job)"},
 				&cli.StringFlag{Name: "search", Usage: "substring match on job name"},
 				&cli.StringFlag{Name: "harness", Usage: "harness filter (claude, codex, …)"},
 				&cli.BoolFlag{Name: "active", Usage: "keep only active (or, with --active=false, paused) jobs"},
@@ -161,15 +158,9 @@ func runJobList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if kind == "assistant" && c.Bool("schedule") {
-		return fmt.Errorf("--schedule is not valid with --kind assistant (assistants have no triggers)")
-	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
-	}
-	if kind == "assistant" {
-		return runListAssistants(c, client)
 	}
 	if kind == "agent" {
 		return runListAgents(c, client, "jobs", c.Bool("all"))
@@ -549,67 +540,6 @@ func runJobTail(_ context.Context, c *cli.Command) error {
 	fmt.Fprint(outWriter(c), out)
 	if len(out) > 0 && !strings.HasSuffix(out, "\n") {
 		fmt.Fprintln(outWriter(c))
-	}
-	return nil
-}
-
-// runListAssistants lists the singleton assistant of each workspace.
-func runListAssistants(c *cli.Command, client *APIClient) error {
-	w := outWriter(c)
-	var wss struct {
-		Workspaces []map[string]any `json:"workspaces"`
-	}
-	if err := client.GetJSON(request.BuildWorkspacesListPath(0), &wss); err != nil {
-		return err
-	}
-	var rows []map[string]any
-	skipped := 0
-	for _, ws := range wss.Workspaces {
-		id := mapStr(ws, "id")
-		var a map[string]any
-		if err := client.GetJSON(request.BuildAssistantGetPath(id), &a); err != nil {
-			skipped++
-			continue
-		}
-		rows = append(rows, map[string]any{
-			"kind": "assistant", "name": mapStr(a, "name", "nickname", "title"),
-			"workspace_id": id, "workspace": mapStr(ws, "name"),
-			"harness": mapStr(a, "harness"), "path": mapStr(a, "path"),
-			"active": mapStr(a, "active"), "status": mapStr(a, "status"),
-		})
-	}
-	if c.Bool("json") {
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(map[string]any{"jobs": rows}); err != nil {
-			return err
-		}
-	} else {
-		headers := []string{"Name", "Workspace", "Harness", "Active"}
-		if c.Bool("detailed") {
-			headers = append(headers, "Status", "Path")
-		}
-		tbl := newTable(w, headers)
-		for _, j := range rows {
-			r := table.Row{
-				dash(mapStr(j, "name")),
-				mapStr(j, "workspace", "workspace_id"),
-				dash(mapStr(j, "harness")),
-				colorStatus(w, mapStr(j, "active")),
-			}
-			if c.Bool("detailed") {
-				r = append(r, dash(mapStr(j, "status")), dash(mapStr(j, "path")))
-			}
-			tbl.AppendRow(r)
-		}
-		renderTable(tbl)
-	}
-	if skipped > 0 {
-		var ew io.Writer = os.Stderr
-		if c.Root().ErrWriter != nil {
-			ew = c.Root().ErrWriter
-		}
-		fmt.Fprintf(ew, "%d workspace(s) unreachable\n", skipped)
 	}
 	return nil
 }

@@ -334,7 +334,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 // cliOneShot reports the narrow one-shot fast path (A.7): a job run with no
 // memory gate, no idle timeout, no keep-alive, and no follow-up surface.
 func cliOneShot(opts LaunchOpts) bool {
-	if opts.Kind == KindAssistant || opts.Kind == KindAgent {
+	if opts.Kind == KindAgent {
 		return false
 	}
 	if opts.Memory != nil || opts.ResumeSessionID != "" {
@@ -923,7 +923,6 @@ func (s *Service) stopCLIRun(runID string, cr *cliRun) {
 // it. The caller writes the terminal row.
 func (s *Service) teardownRuntime(ctx context.Context, run *Run) {
 	removeRunEnvFile(run)
-	s.cancelNative(run.ID)
 	if cr := s.cliRunFor(run.ID); cr != nil {
 		s.stopCLIRun(run.ID, cr)
 	}

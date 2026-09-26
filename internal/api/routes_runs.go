@@ -22,7 +22,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/runtime/native"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -85,6 +84,14 @@ func (s *Server) handleRunsList(w http.ResponseWriter, r *http.Request) {
 	until, err := parseTimeFilter(q.Get("until"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", "until: "+err.Error())
+		return
+	}
+	switch q.Get("kind") {
+	case "", runs.KindJob, runs.KindAgent:
+	default:
+		// The assistant is a session, not a run (plan F.3).
+		writeErr(w, http.StatusBadRequest, "validation",
+			fmt.Sprintf("unknown kind %q: runs are job or agent; assistant sessions live on conversations", q.Get("kind")))
 		return
 	}
 	list, err := s.runs.List(r.Context(), runs.ListOpts{
@@ -204,9 +211,6 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	if body.Kind == runs.KindAssistant {
-		s.log.Info("assistant.woken", "reason", string(reason), "channel", "")
-	}
 	if body.Kind == runs.KindAgent {
 		s.log.Info("agent.woken", "reason", string(reason), "agent", body.Job)
 	}
@@ -263,9 +267,6 @@ func (s *Server) isDraining() bool {
 // resolveRunRow is the A4 resolver: unknown job gives 404, a duplicate name
 // without a workspace gives 400 (mapped by writeResolveErr).
 func (s *Server) resolveRunRow(ctx context.Context, body runCreateRequest) (workspaces.JobRow, error) {
-	if body.Kind == runs.KindAssistant {
-		return s.findAssistantRow(ctx, body.Workspace)
-	}
 	if body.Kind == runs.KindAgent {
 		return s.findAgentRow(ctx, body.Workspace, body.Job)
 	}
@@ -365,7 +366,7 @@ func (s *Server) launchPrompt(ctx context.Context, body runCreateRequest, base s
 	if body.PromptOverride != "" {
 		return body.PromptOverride, nil
 	}
-	operator := body.Kind == runs.KindAssistant || body.Kind == runs.KindAgent
+	operator := body.Kind == runs.KindAgent
 	if !operator || s.ws == nil {
 		if body.ExtraPrompt != "" {
 			return request.AppendExtraPrompt(base, body.ExtraPrompt), nil
@@ -789,10 +790,6 @@ func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")
 		return
 	}
-	if run.Harness == "native" || run.Runtime == "native" {
-		s.writeNativeTranscript(w, r, run)
-		return
-	}
 	// CLI runs prefer the live wire events (Part H), then fall back to the
 	// vendor session file (Claude/Codex jsonl), then to OpenCode serve.
 	if run.Runtime == "cli" {
@@ -849,26 +846,6 @@ func (s *Server) readTranscript(run *runs.Run) ([]byte, tmux.Tool, bool) {
 		return nil, nil, false
 	}
 	return data, tool, true
-}
-
-func (s *Server) writeNativeTranscript(w http.ResponseWriter, r *http.Request, run *runs.Run) {
-	path := native.TranscriptPath(run.ID)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "no transcript")
-		return
-	}
-	if r.URL.Query().Get("raw") == "1" {
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		_, _ = w.Write(data)
-		return
-	}
-	turns, err := native.ReadTurns(path)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
 }
 
 const (
@@ -1061,9 +1038,6 @@ func (s *Server) handleRunResume(w http.ResponseWriter, r *http.Request) {
 // runs are TREBI.md (kind=assistant); agent runs are AGENT.md; findJobRow
 // only returns JOB.md rows.
 func (s *Server) jobFileForRun(ctx context.Context, prev *runs.Run) (workspaces.JobRow, error) {
-	if prev.Kind == runs.KindAssistant {
-		return s.findAssistantRow(ctx, prev.Workspace)
-	}
 	if prev.Kind == runs.KindAgent {
 		return s.findAgentRow(ctx, prev.Workspace, prev.Job)
 	}

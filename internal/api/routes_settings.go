@@ -346,10 +346,10 @@ func redactAssistantConfig(m map[string]any) {
 	if err != nil {
 		return
 	}
-	if cfg.Assistant.APIKeyPresent {
+	if cfg.Assistant.Native.APIKeyPresent {
 		asst["api_key"] = "********"
 	}
-	asst["api_key_source"] = cfg.Assistant.KeySourceName()
+	asst["api_key_source"] = cfg.Assistant.Native.KeySourceName()
 }
 
 // configScalar renders one JSON scalar as the text SetPath parses. An object

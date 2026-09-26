@@ -13,6 +13,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -96,7 +97,7 @@ func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
 // composition (C8): the three definition files, ledgers, workspace config.
 func indexRelevantFile(path string) bool {
 	switch strings.ToLower(filepath.Base(path)) {
-	case "job.md", "trebi.md", "agent.md", "memory.md", "trebi.yaml":
+	case "job.md", "agent.md", "memory.md", "trebi.yaml":
 		return true
 	}
 	return false
@@ -163,6 +164,7 @@ func (c *ControlPlane) rebuildPath(ctx context.Context, path string) {
 			}
 			if base == "trebi.yaml" {
 				c.recomputeFromIndex(ctx, ws)
+				c.emitAssistantSettings(ctx, ws)
 			} else {
 				j, err := c.Workspaces.RebuildIndexPath(ctx, ws, path)
 				if err == nil && j != nil {
@@ -334,4 +336,24 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 		turnCount: from + len(turns),
 	}
 	c.turnMu.Unlock()
+}
+
+// emitAssistantSettings publishes assistant.settings.updated for an edited
+// trebi.yaml. The API settings write emits its own event; the hash the
+// write recorded is skipped, so a manual edit is the only source here.
+func (c *ControlPlane) emitAssistantSettings(ctx context.Context, ws *workspaces.Workspace) {
+	if c.asstResolve == nil || c.Conversations == nil {
+		return
+	}
+	_, hash, err := c.Workspaces.AssistantOverride(ctx, ws.ID)
+	if err != nil {
+		return
+	}
+	if !c.Workspaces.AssistantSettingsChanged(ctx, ws.ID, hash) {
+		return
+	}
+	_, _ = c.Store.Append(ctx, store.BusEvent{
+		Topic: "assistant.settings.updated", Entity: "workspace", EntityID: ws.ID, Action: "updated",
+		Attrs: map[string]string{"workspace": ws.ID},
+	})
 }

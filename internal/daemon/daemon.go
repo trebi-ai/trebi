@@ -3,14 +3,19 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
@@ -23,10 +28,12 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/proposals"
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
+	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/webhooks"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -76,6 +83,16 @@ type ControlPlane struct {
 	License       *license.Service
 	Opts          Options
 
+	// The assistant session stack (plan D). The API server binds these
+	// through BindAssistant, so /v1 and the workers drive one set of
+	// sessions.
+	asst        *assistant.Manager
+	asstStore   *assistant.Store
+	asstResolve *assistant.Resolver
+	asstDoctor  *assistant.Doctor
+	asstRT      *agentwire.Runtime
+	asstDisp    *toolDispatcher
+
 	log   *slog.Logger
 	queue *dispatch.Queue
 
@@ -89,6 +106,51 @@ type ControlPlane struct {
 	jobCache   map[string]parsedJob
 
 	tickCfg *config.Config
+}
+
+// Assistant is the shared session manager.
+func (c *ControlPlane) Assistant() *assistant.Manager { return c.asst }
+
+// AssistantStore is the session and event store.
+func (c *ControlPlane) AssistantStore() *assistant.Store { return c.asstStore }
+
+// AssistantResolver merges settings defaults and workspace overrides.
+func (c *ControlPlane) AssistantResolver() *assistant.Resolver { return c.asstResolve }
+
+// AssistantDoctor reports assistant findings.
+func (c *ControlPlane) AssistantDoctor() *assistant.Doctor { return c.asstDoctor }
+
+// AssistantRuntime exposes the agent-wire runtime; tests inject the fake
+// driver through SetDriver.
+func (c *ControlPlane) AssistantRuntime() *agentwire.Runtime { return c.asstRT }
+
+// SetToolDispatcher points the native session driver at the API server, so
+// its tool calls reach the same /v1 surface.
+func (c *ControlPlane) SetToolDispatcher(d tools.Dispatcher) {
+	c.asstDisp.set(d)
+}
+
+// toolDispatcher is the late-bound dispatcher for the native loop. The
+// daemon builds the sessions before the HTTP server exists.
+type toolDispatcher struct {
+	mu sync.Mutex
+	d  tools.Dispatcher
+}
+
+func (t *toolDispatcher) set(d tools.Dispatcher) {
+	t.mu.Lock()
+	t.d = d
+	t.mu.Unlock()
+}
+
+func (t *toolDispatcher) Dispatch(ctx context.Context, req request.HTTPRequest) (int, []byte, error) {
+	t.mu.Lock()
+	d := t.d
+	t.mu.Unlock()
+	if d == nil {
+		return 0, nil, errors.New("no dispatcher bound")
+	}
+	return d.Dispatch(ctx, req)
 }
 
 type parsedJob struct {
@@ -162,9 +224,90 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	})
 	c.Alerts.SetFailureRouter(c)
 	ws.SetBudgetAlerter(c)
+	c.buildAssistant(cfg, ws, conv, maxBytes)
 	c.configureCloud(cfg)
 	c.configureEmail(cfg)
 	return c
+}
+
+// buildAssistant wires the assistant session stack (plan D): store,
+// resolver, agent-wire runtime with the native driver, and the manager. The
+// conversations service prompts through the manager.
+func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service, conv *conversations.Service, maxFileBytes int64) {
+	native := config.NativeConfig{}
+	timing := assistant.ResolverTiming{}
+	if cfg != nil {
+		native = cfg.Assistant.Native
+		timing = assistant.ResolverTiming{
+			IdleClose:         cfg.Assistant.IdleCloseDuration(),
+			PermissionTimeout: cfg.Assistant.PermissionTimeoutDuration(),
+			MaxLive:           cfg.Assistant.MaxLiveOrDefault(),
+		}
+	}
+	c.asstDisp = &toolDispatcher{}
+	c.asstStore = assistant.NewStore(c.Store)
+	c.asstRT = agentwire.New(agentwire.Options{
+		ClientName: "trebi",
+		LedgerPath: filepath.Join(home.RunsDir(), "agent-procs.json"),
+		Logger:     c.log,
+	})
+	nativeDriver := assistant.NewNativeDriver(native, c.asstStore, c.asstDisp, maxFileBytes, c.log)
+	router := assistant.NewHarnessRouter(c.asstRT, nativeDriver)
+	c.asstResolve = assistant.NewResolver(freshConfigSource{}, ws, c.asstRT, native, timing)
+	c.asstDoctor = &assistant.Doctor{Res: c.asstResolve, Workspaces: func(ctx context.Context) ([]assistant.WorkspaceInfo, error) {
+		list, err := ws.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]assistant.WorkspaceInfo, 0, len(list))
+		for _, w := range list {
+			out = append(out, assistant.WorkspaceInfo{ID: w.ID, Name: w.Name, Path: w.Path})
+		}
+		return out, nil
+	}}
+	exe, err := os.Executable()
+	if err != nil {
+		exe = ""
+	}
+	c.asst = assistant.NewManager(router, c.asstStore, conv, c.asstResolve, ws, wsMemory{ws}, c,
+		assistant.Options{
+			MCPURL:       "http://127.0.0.1:" + c.mcpPort(cfg) + "/mcp",
+			TrebiExe:     exe,
+			SkillsDir:    home.SkillsDir(),
+			MaxFileBytes: maxFileBytes,
+			Log:          c.log,
+		})
+	conv.WithAssistant(c.asst)
+	c.asst.OnTurnEnd(c.onAssistantTurnEnd)
+}
+
+// mcpPort renders the configured API port for the MCP URL.
+func (c *ControlPlane) mcpPort(cfg *config.Config) string {
+	if cfg != nil {
+		if _, p, err := net.SplitHostPort(cfg.API.ListenAddr()); err == nil {
+			return p
+		}
+	}
+	return "7433"
+}
+
+// freshConfigSource re-reads config.yaml per call, so settings writes land
+// in the resolver defaults without a restart.
+type freshConfigSource struct{}
+
+func (freshConfigSource) AssistantDefaults() assistant.Settings {
+	c, err := config.Load()
+	if err != nil || c == nil {
+		return assistant.Settings{Accept: []string{"operators", "allowlist"}}
+	}
+	return assistant.SettingsFromConfig(c)
+}
+
+// wsMemory adapts the workspace memory render to the manager seam.
+type wsMemory struct{ ws *workspaces.Service }
+
+func (a wsMemory) Render(ctx context.Context, workspaceID string) (string, error) {
+	return a.ws.AssistantMemory(ctx, workspaceID)
 }
 
 func newAlerts(st *store.Store, opts Options, cfg *config.Config, em *email.Service,
@@ -200,31 +343,16 @@ func newAlerts(st *store.Store, opts Options, cfg *config.Config, em *email.Serv
 func (c *ControlPlane) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	c.cancel = cancel
-	c.Runs.SetNativeHooks(runs.NativeHooks{
-		Lifetime: ctx,
-		Ingest: func(ctx context.Context, runID, convID string, texts []string) error {
-			if c.Conversations == nil {
-				return nil
-			}
-			turns := make([]conversations.IncomingTurn, len(texts))
-			now := time.Now()
-			for i, t := range texts {
-				turns[i] = conversations.IncomingTurn{Role: conversations.RoleAssistant, Text: t, At: now}
-			}
-			_, err := c.Conversations.IngestAssistantTurns(ctx, runID, convID, turns)
-			return err
-		},
-		Recap: func(ctx context.Context, convID, text string) error {
-			if c.Conversations == nil {
-				return nil
-			}
-			return c.Conversations.AppendSystem(ctx, convID, text)
-		},
-	})
-	c.Runs.RecoverNative(ctx)
 	c.Runs.RecoverCLI(ctx)
 	c.syncEmailAddresses(ctx)
-	c.seedAssistants(ctx)
+
+	// No assistant process survives a restart; rows left running or
+	// waiting are closed (plan C.2).
+	if n, err := c.asstStore.CloseStale(ctx); err != nil {
+		c.log.Warn("assistant close stale", "error", err)
+	} else if n > 0 {
+		c.log.Info("assistant close stale", "count", n)
+	}
 
 	// The cloud socket pushes hosted mail and webhooks. It dials out; the
 	// machine opens no port (plan 2026-09-22 Part N).
@@ -372,33 +500,6 @@ func (c *ControlPlane) syncEmailAddresses(ctx context.Context) {
 	}
 	if err := c.Email.SyncAddresses(ctx, refs); err != nil {
 		c.log.Warn("email sync", "error", err)
-	}
-}
-
-// seedAssistants offers the default TREBI.md once per workspace. For each
-// workspace with assistant_seeded = 0 it writes the template when the file
-// is missing, rebuilds the index, and sets the flag. The flag is set even
-// when the file exists, so a later manual delete stays deleted.
-func (c *ControlPlane) seedAssistants(ctx context.Context) {
-	if c.Workspaces == nil {
-		return
-	}
-	list, err := c.Workspaces.UnseededWorkspaces(ctx)
-	if err != nil {
-		c.log.Warn("assistant backfill list", "error", err)
-		return
-	}
-	for _, ws := range list {
-		if ws.Orphaned {
-			continue
-		}
-		c.Workspaces.SeedAssistantFile(ws.Path)
-		if err := c.Workspaces.RebuildIndex(ctx, &ws); err != nil {
-			c.log.Warn("assistant backfill index", "workspace", ws.ID, "error", err)
-		}
-		if err := c.Workspaces.MarkAssistantSeeded(ctx, ws.ID); err != nil {
-			c.log.Warn("assistant backfill flag", "workspace", ws.ID, "error", err)
-		}
 	}
 }
 

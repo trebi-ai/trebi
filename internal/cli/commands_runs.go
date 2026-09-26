@@ -25,7 +25,7 @@ func runsCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "status", Aliases: []string{"s"}, Usage: "status filter (running, complete, idle, waiting, …)"},
 					&cli.StringFlag{Name: "job", Usage: "job name filter"},
-					&cli.StringFlag{Name: "kind", Usage: "kind filter (job|assistant|agent)"},
+					&cli.StringFlag{Name: "kind", Usage: "kind filter (job|agent)"},
 					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name filter"},
 					&cli.StringFlag{Name: "harness", Usage: "harness filter (claude, grok, cursor, …)"},
 					&cli.StringFlag{Name: "model", Aliases: []string{"m"}, Usage: "model filter (tokens_model exact match)"},
@@ -618,9 +618,9 @@ func runLaunch(ctx context.Context, c *cli.Command) error {
 	return launchAndMaybeAttach(ctx, c, client, spec, "", request.RunSpec.Build)
 }
 
-// launchAndMaybeAttach is the shared job-run / agent-wake / assistant-wake
-// tail: fill RunSpec from flags, POST, print the id, optionally attach.
-// --json is a job-only flag; agent/assistant wake never define it.
+// launchAndMaybeAttach is the shared job-run / agent-wake launch tail: fill
+// RunSpec from flags, POST, print the id, optionally attach.
+// --json is a job-only flag; agent wake never defines it.
 func launchAndMaybeAttach(ctx context.Context, c *cli.Command, client *APIClient, spec request.RunSpec, kind string, build func(request.RunSpec) request.HTTPRequest) error {
 	inputs, err := parseKeyValues(c.StringSlice("input"))
 	if err != nil {

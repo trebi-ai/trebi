@@ -697,15 +697,24 @@ tools:
 # workspaces:
 #   root: ~/trebi          # pathless workspace add --create --name lands here
 
-# assistant:                 # in-process workspace assistant (API key only)
-#   model: ""                # empty = native off; set a model to enable
-#   api_format: openai       # openai | anthropic
-#   base_url: ""             # default api.openai.com / api.anthropic.com (no /v1)
-#   api_key_env: ""          # prefer this over api_key
-#   max_tokens: 8192
-#   context_tokens: 0        # 0 = no compaction
-#   system_extra: ""
-#   web_search: true         # anthropic server tool only; ignored for openai
+# assistant:                 # workspace assistant settings (Part B)
+#   harness: ""              # "" = auto; native or an agent-wire harness (claude, codex, ...)
+#   model: ""                # passed to the harness; empty = harness default
+#   effort: ""               # low | medium | high
+#   envset: ""               # env set for CLI harnesses (for example claude-zai)
+#   mode: auto_edit          # ask | auto_edit | auto
+#   skills: [trebi]          # skill names under ~/.trebi/skills
+#   idle_close: 15m          # close an idle session process after this
+#   permission_timeout: 10m  # deny a headless permission after this
+#   max_live: 4              # live agent processes across all workspaces
+#   native:                  # the in-process loop (no installed CLI)
+#     api_format: openai     # openai | anthropic
+#     model: ""
+#     base_url: ""           # default api.openai.com / api.anthropic.com (no /v1)
+#     api_key_env: ""        # prefer this over the stored api_key secret
+#     max_tokens: 8192
+#     context_tokens: 0      # 0 = no compaction
+#     web_search: true       # anthropic server tool only; ignored for openai
 
 # email:                     # mail channel through the trebi-mail Worker
 #   worker: ""               # Worker URL; present enables the channel
@@ -758,13 +767,19 @@ func (c *Config) Save() error {
 	return os.WriteFile(ConfigPath(), data, 0644)
 }
 
-// migrateAssistantKey moves a YAML api_key into the secrets store.
+// migrateAssistantKey drains a legacy flat api_key into the secrets store and
+// mirrors the present flag onto the native block.
 func (c *Config) migrateAssistantKey() error {
-	if strings.TrimSpace(c.Assistant.APIKey) == "" {
+	if strings.TrimSpace(c.Assistant.APIKey) != "" {
+		c.Assistant.pendingKey = c.Assistant.APIKey
+		c.Assistant.APIKey = ""
+	}
+	if c.Assistant.APIKeyPresent {
+		c.Assistant.Native.APIKeyPresent = true
+	}
+	if strings.TrimSpace(c.Assistant.pendingKey) == "" {
 		return nil
 	}
-	c.Assistant.pendingKey = c.Assistant.APIKey
-	c.Assistant.APIKey = ""
 	return c.Save()
 }
 

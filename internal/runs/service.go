@@ -15,10 +15,8 @@ import (
 	"github.com/oklog/ulid/v2"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/files"
-	"github.com/trebi-ai/trebi/internal/llm"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tools"
 )
 
 // WakeOpts is the material one caller supplies for a composed wake prompt:
@@ -123,14 +121,9 @@ type Service struct {
 
 	mu         sync.RWMutex
 	sessions   map[string]sessionSnap // run_id → state
-	native     map[string]*nativeHandle
 	launching  map[string]bool
 	pending    map[string]pendingPrompt
 	life       context.Context
-	ingest     func(ctx context.Context, runID, convID string, texts []string) error
-	recap      func(ctx context.Context, convID, text string) error
-	prov       llm.Provider // test seam; nil → llm.New from config
-	dispatch   tools.Dispatcher
 	composer   WakeComposer
 	memRes     MemoryResolver
 	budgetGate BudgetGate
@@ -141,11 +134,6 @@ type Service struct {
 	rt        *agentwire.Runtime
 	cliDriver agentwire.Driver
 	cliRuns   map[string]*cliRun
-}
-
-type nativeHandle struct {
-	cancel context.CancelFunc
-	inbox  chan string
 }
 
 type sessionSnap struct {
@@ -184,7 +172,6 @@ func New(st *store.Store, composer WakeComposer, fs *files.Service) *Service {
 	return &Service{
 		st: st, log: slog.Default().With("source", "runs"), fs: fs,
 		sessions:  make(map[string]sessionSnap),
-		native:    make(map[string]*nativeHandle),
 		launching: make(map[string]bool),
 		pending:   make(map[string]pendingPrompt),
 		cliRuns:   make(map[string]*cliRun),
@@ -231,34 +218,6 @@ func (s *Service) takePendingPrompt(id string) (pendingPrompt, bool) {
 // the workspaces service at their runs.New call sites.
 func (s *Service) SetMemoryResolver(r MemoryResolver) {
 	s.memRes = r
-}
-
-// NativeHooks wires the in-process assistant loop.
-type NativeHooks struct {
-	Lifetime context.Context
-	Ingest   func(ctx context.Context, runID, convID string, texts []string) error
-	Recap    func(ctx context.Context, convID, text string) error
-	Provider llm.Provider
-	Dispatch tools.Dispatcher
-}
-
-// SetNativeHooks installs native-assistant dependencies. Nil fields are left as-is.
-func (s *Service) SetNativeHooks(h NativeHooks) {
-	if h.Lifetime != nil {
-		s.life = h.Lifetime
-	}
-	if h.Ingest != nil {
-		s.ingest = h.Ingest
-	}
-	if h.Recap != nil {
-		s.recap = h.Recap
-	}
-	if h.Provider != nil {
-		s.prov = h.Provider
-	}
-	if h.Dispatch != nil {
-		s.dispatch = h.Dispatch
-	}
 }
 
 // CreateOpts for launching a run.
@@ -1448,8 +1407,6 @@ func newRun(id string, now time.Time, opts CreateOpts) *Run {
 	}
 	if opts.TmuxSession != "" {
 		run.Attach = &AttachInfo{Kind: "tmux", Tmux: opts.TmuxSession}
-	} else if opts.Runtime == "native" {
-		run.Attach = &AttachInfo{Kind: "none"}
 	}
 	return run
 }

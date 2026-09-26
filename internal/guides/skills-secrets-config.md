@@ -99,9 +99,9 @@ trebi config set api.port 7433
 trebi config set api.tls.insecure true
 trebi config set api.tls.cert /path/cert.pem
 trebi config set api.tls.key /path/key.pem
-trebi config set assistant.model claude-sonnet-4-5
-trebi config set assistant.api_format anthropic
-trebi config set assistant.api_key_env ANTHROPIC_API_KEY
+trebi config set assistant.native.model claude-sonnet-4-5
+trebi config set assistant.native.api_format anthropic
+trebi config set assistant.native.api_key_env ANTHROPIC_API_KEY
 trebi config unset assistant.api_key
 ```
 

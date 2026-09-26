@@ -40,15 +40,6 @@ func TestOperatorFrontmatterByDocument(t *testing.T) {
 		t.Fatalf("operator payload = %+v/%+v/%+v", j.Kit, j.Budget, j.Report)
 	}
 
-	assistant := "---\n---\n\nAssistant.\n"
-	j, err = ParseBytes("/ws/TREBI.md", []byte(assistant))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if j.AcceptSet || !reflect.DeepEqual(j.Accept, []AcceptEntry{DefaultAssistantAccept[0], DefaultAssistantAccept[1]}) {
-		t.Fatalf("assistant accept default: set=%v %+v", j.AcceptSet, j.Accept)
-	}
-
 	for name, doc := range map[string]string{
 		"job email":     "---\nemail:\n  accept: [operators]\n---\n\nNo.\n",
 		"job kit":       "---\nkit:\n  skills: [x]\n---\n\nNo.\n",

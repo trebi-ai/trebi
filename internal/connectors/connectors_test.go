@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -453,12 +455,15 @@ func TestConnectors_InjectEventMatchesAssistant(t *testing.T) {
 	if err := os.MkdirAll(wsPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	trebiMD := "---\nname: aide\nharness: fake\ntriggers:\n  - event: src\n    match: \"true\"\n---\n\nHelp.\n"
-	if err := os.WriteFile(filepath.Join(wsPath, "TREBI.md"), []byte(trebiMD), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	w, err := ws.Add(ctx, wsPath, "aide-ws")
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Assistant triggers live in the trebi.yaml assistant block (plan E).
+	ov := wire.Override{Triggers: []job.Trigger{{
+		Family: "event", Event: "src", Match: "true",
+	}}}
+	if _, err := ws.SetAssistantOverride(ctx, w.ID, ov, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := ws.RebuildIndex(ctx, w); err != nil {
@@ -471,7 +476,7 @@ func TestConnectors_InjectEventMatchesAssistant(t *testing.T) {
 	}
 
 	var kind string
-	err = st.DB().QueryRow(`SELECT kind FROM event_queue WHERE job='aide'`).Scan(&kind)
+	err = st.DB().QueryRow(`SELECT kind FROM event_queue WHERE kind='assistant'`).Scan(&kind)
 	if err != nil {
 		t.Fatal("expected queue row for the assistant on: trigger")
 	}

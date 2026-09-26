@@ -1131,54 +1131,53 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 		},
 
 		"assistant": {
-			"show": act("GET /v1/workspaces/{id}/assistant", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+			"show": Action{
+				Routes:  []string{"GET /v1/workspaces/{id}/assistant", "GET /v1/assistant"},
+				Sample:  Input{"workspace": "ws1"},
+				Samples: []Input{{}},
+				Build: func(in Input) (request.HTTPRequest, error) {
+					ws, err := in.str("workspace")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					if ws == "" {
+						return mcpGet("/v1/assistant"), nil
+					}
+					return mcpGet(request.BuildAssistantGetPath(ws)), nil
+				},
+			},
+			"set": Action{
+				Routes:  []string{"PUT /v1/workspaces/{id}/assistant", "PUT /v1/assistant"},
+				Sample:  Input{"workspace": "ws1", "harness": "codex", "mode": "auto_edit"},
+				Samples: []Input{{"harness": "claude", "model": "claude-sonnet-5", "mode": "ask"}},
+				Build: func(in Input) (request.HTTPRequest, error) {
+					ws, err := in.str("workspace")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					ifMatch, err := in.str("if_match")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					override, err := assistantOverrideFields(in)
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					if ws != "" {
+						return request.BuildAssistantSettingsPut(ws, override, ifMatch), nil
+					}
+					if len(override) == 0 {
+						return request.HTTPRequest{}, fmt.Errorf("give at least one settings field")
+					}
+					return request.BuildAssistantDefaultsPut(override), nil
+				},
+			},
+			"preview": act("GET /v1/workspaces/{id}/assistant/preview", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 				ws, err := in.reqStr("workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildAssistantGetPath(ws)), nil
-			}),
-			"set": act("PUT /v1/workspaces/{id}/assistant", Input{"workspace": "ws1", "content": "# TREBI\n"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("workspace", "content", "if_match")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				if v[1] == "" {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "content")
-				}
-				return request.BuildAssistantPut(v[0], v[1], v[2]), nil
-			}),
-			"patch": act("PATCH /v1/workspaces/{id}/assistant", Input{"workspace": "ws1", "disabled": false}, func(in Input) (request.HTTPRequest, error) {
-				ws, err := in.reqStr("workspace")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				disabled, err := in.optBool("disabled")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				ifMatch, err := in.str("if_match")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAssistantPatch(ws, disabled, ifMatch), nil
-			}),
-			"delete": del("DELETE /v1/workspaces/{id}/assistant", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("workspace", "if_match")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAssistantDelete(v[0], v[1]), nil
-			}),
-			"wake": act("POST /v1/workspaces/{id}/assistant/wake", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
-				spec, err := in.runSpec()
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				if spec.Workspace == "" {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
-				}
-				return spec.BuildWake(), nil
+				return mcpGet(request.BuildAssistantPreviewPath(ws)), nil
 			}),
 			"say": act("POST /v1/workspaces/{id}/assistant/messages", Input{"workspace": "ws1", "text": "status?"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("workspace", "text")
@@ -1838,6 +1837,24 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildConversationSend(v[0], v[1], v[2], v[3], v[4]), nil
 			}),
+			"events": act("GET /v1/conversations/{id}/events", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				after, _, err := in.num("after")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				limit, _, err := in.num("limit")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				// follow=1 blocks forever; only the paged replay is exposed.
+				return mcpGet(request.BuildConversationEventsPath(id, int64(after), limit, false)), nil
+			}),
+			"interrupt": idPost("POST /v1/conversations/{id}/interrupt", "id", "01ABC", request.BuildConversationInterrupt),
+			"delete":    confirmDel("DELETE /v1/conversations/{id}", "id", "01ABC", request.BuildConversationDelete),
 			"pointer_show": act("GET /v1/channel-pointers/{type}/{ref}", Input{"channel_type": "cli", "channel_ref": "fritz"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("channel_type", "channel_ref")
 				if err != nil {
@@ -2168,6 +2185,26 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 // envset takes one name or a list of names (plan H.3).
 var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
 	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "envset", "followup_prompt", "session",
+}
+
+// assistantSetFields are the flat fields assistant.set accepts. They mirror
+// the assistant.Override keys; email and triggers stay YAML-only in
+// trebi.yaml for now.
+var assistantSetFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
+	"name", "harness", "model", "effort", "envset", "mode", "skills", "context", "disabled",
+}
+
+// assistantOverrideFields reads the assistant.set body: an explicit override
+// object wins, otherwise the flat settings fields are picked.
+func assistantOverrideFields(in Input) (map[string]any, error) {
+	override, err := in.obj("override")
+	if err != nil {
+		return nil, err
+	}
+	if override != nil {
+		return override, nil
+	}
+	return in.pick(assistantSetFields...), nil
 }
 
 // jobPauseAction adapts the shared pause/unpause builder.

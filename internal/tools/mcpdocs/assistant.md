@@ -1,56 +1,38 @@
 # assistant
 
-Assistant operations: configure and drive the workspace assistant.
+Assistant operations: configure the assistant and drive its chat sessions.
 
 Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error envelope `{"error":{"code","message"}}` unchanged, with `isError: true`.
 
-The assistant document `TREBI.md` carries YAML front matter. The `harness` field
-names the agent tool that answers; it defaults to the daemon `defaults.command`.
-Set it only to a harness that the `harness` tool `list` action reports with
-`auth_ok: true`. A reply on a harness that cannot log in never arrives: the run
-ends with `session_gone`. Rewriting the document with a different harness does
-not fix a missing credential.
+The assistant keeps one agent session per conversation. Global defaults live in the daemon config; a workspace may override any field in its `trebi.yaml`. An absent workspace field inherits the default. `show` with no `workspace` reads the defaults.
 
 ## Actions
 
 ### show
-Read the assistant configuration of one workspace.
-- `workspace` (string, required): workspace id.
+Read the assistant settings. With `workspace`, the response carries the effective settings, their sources, the override object, and the `trebi.yaml` hash. Without it, the response carries the global defaults and the available harnesses.
+- `workspace` (string, optional): workspace id. Omit it for the global defaults.
 
 ### set
-Replace the assistant instructions.
-- `workspace` (string, required): workspace id.
-- `content` (string, required): full instruction text.
-- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+Write one settings layer. With `workspace`, the input fields become the workspace override and unknown fields are a validation error. Without it, the fields update the global defaults.
+- `workspace` (string, optional): workspace id. Omit it to write the defaults.
+- `override` (object, optional): a full override object; it replaces the flat fields.
+- `name` (string, optional): assistant nickname; the UI and the mail From name use it. Workspace scope only.
+- `harness` (string, optional): `native`, an agent CLI harness name, or empty for auto.
+- `model` (string, optional): model for the harness; empty means the harness default.
+- `effort` (string, optional): `low`, `medium`, or `high`.
+- `envset` (string, optional): env set for CLI harnesses.
+- `mode` (string, optional): permission mode: `ask`, `auto_edit`, or `auto`.
+- `skills` (array of string, optional): skill names under the skills home.
+- `context` (string, optional): the context prompt text.
+- `disabled` (boolean, optional): disable the assistant in this workspace.
+- `if_match` (string, optional, with `workspace`): current `trebi.yaml` hash from `show`; a stale value returns 412.
 
-### patch
-Change fields of the assistant configuration.
+### preview
+Return the composed instructions of a new assistant session: role, workspace, the effective context, and memory.
 - `workspace` (string, required): workspace id.
-- `disabled` (boolean, optional): enable or disable the assistant.
-- `if_match` (string, optional): current revision; a stale value returns 412.
-
-### delete
-Remove the assistant configuration. Destructive.
-- `workspace` (string, required): workspace id.
-- `if_match` (string, optional): current revision; a stale value returns 412.
-
-### wake
-Start one assistant session.
-- `workspace` (string, required): workspace id.
-- `prompt` (string, optional): full prompt override; it replaces the composed wake prompt.
-- `dry_run` (boolean, optional): validate only; do not start.
-- `inputs` (object, optional): values for `{{placeholder}}` fields in TREBI.md.
-- `harness` (string, optional): override the harness for this run.
-- `kind` (string, optional): run kind; the daemon pins `assistant`.
-- `reason` (string, optional): launch reason; defaults to `manual`.
-- `conversation_id` (string, optional): attach the run to one conversation.
-- `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first run.
-- `extra_prompt` (string, optional): append text to the assistant prompt.
-- `wait_ms` (number, optional): long-poll until the run ends, up to 120000 ms. The response is the final run row.
 
 ### say
-Send one message to the workspace assistant. The daemon resolves or creates the
-channel conversation, so no pointer call is needed first.
+Send one message to the workspace assistant. The daemon resolves or creates the channel conversation and prompts the session, so no pointer call is needed first.
 - `workspace` (string, required): workspace id.
 - `text` (string, required): message text.
 - `channel_type` (string, optional): channel kind; defaults to `cli`.

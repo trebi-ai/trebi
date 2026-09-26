@@ -3,110 +3,53 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/request"
-	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/urfave/cli/v3"
 )
+
+// assistantSetFields are the settings fields `assistant set` can write or
+// unset. They mirror assistant.Override; email and triggers stay YAML-only in
+// trebi.yaml for now.
+var assistantSetFields = []string{"harness", "model", "effort", "envset", "mode", "skills", "context", "disabled"}
 
 func assistantCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "assistant",
-		Usage: "workspace assistant (singleton TREBI.md)",
+		Usage: "workspace assistant sessions and settings",
 		Commands: []*cli.Command{
 			{
 				Name:  "show",
-				Usage: "show assistant for current/default workspace",
-				Action: func(_ context.Context, c *cli.Command) error {
-					client, err := clientFor(c)
-					if err != nil {
-						return err
-					}
-					id, err := resolveWorkspaceID(c, client)
-					if err != nil {
-						return err
-					}
-					var body map[string]any
-					if err := client.GetJSON(request.BuildAssistantGetPath(id), &body); err != nil {
-						return err
-					}
-					return encodeJSON(c, body)
+				Usage: "show effective assistant settings (add --defaults for the global defaults)",
+				Flags: []cli.Flag{
+					assistantWorkspaceFlag(),
+					&cli.BoolFlag{Name: "defaults", Usage: "show the global defaults and the harness list"},
 				},
+				Action: runAssistantShow,
 			},
 			{
 				Name:  "set",
-				Usage: "replace TREBI.md (--file or stdin)",
-				Flags: []cli.Flag{&cli.StringFlag{Name: "file", Usage: "path to TREBI.md"}, ifMatchFlag()},
-				Action: func(_ context.Context, c *cli.Command) error {
-					content, err := readFileOrStdin(c.String("file"))
-					if err != nil {
-						return err
-					}
-					client, err := clientFor(c)
-					if err != nil {
-						return err
-					}
-					id, err := resolveWorkspaceID(c, client)
-					if err != nil {
-						return err
-					}
-					return client.DoHTTP(request.BuildAssistantPut(id, content, c.String("if-match")), nil)
-				},
-			},
-			{
-				Name:    "delete",
-				Aliases: []string{"remove"},
-				Usage:   "delete TREBI.md of the current workspace",
-				Flags:   []cli.Flag{forceFlag("required; deletes the assistant definition"), ifMatchFlag()},
-				Action: func(_ context.Context, c *cli.Command) error {
-					if _, err := confirmed(c, "deletes the workspace assistant definition"); err != nil {
-						return err
-					}
-					client, err := clientFor(c)
-					if err != nil {
-						return err
-					}
-					id, err := resolveWorkspaceID(c, client)
-					if err != nil {
-						return err
-					}
-					return client.DoHTTP(request.BuildAssistantDelete(id, c.String("if-match")), nil)
-				},
-			},
-			{
-				Name:  "patch",
-				Usage: "enable or disable the workspace assistant",
-				Flags: []cli.Flag{
-					&cli.BoolFlag{Name: "disabled", Usage: "disable the assistant (--disabled=false enables it)"},
-					ifMatchFlag(),
-				},
-				Action: runAssistantPatch,
-			},
-			{
-				Name:  "wake",
-				Usage: "run the workspace assistant (TREBI.md → kind=assistant run)",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "extra-prompt", Aliases: []string{"e"}, Usage: "append text to the assistant prompt (server-side)"},
-					&cli.StringFlag{Name: "prompt", Usage: "replace the assistant prompt"},
-					&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "KEY=VALUE placeholder (repeatable)"},
-					&cli.StringFlag{Name: "harness", Usage: "override the harness"},
-					&cli.StringFlag{Name: "conversation", Usage: "attach the run to a conversation id"},
-					&cli.BoolFlag{Name: "test", Usage: "dry_run: evaluate gates, print plan, do not launch"},
-					&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (tmux local or WebSocket remote)"},
-					&cli.IntFlag{Name: "wait", Usage: "wait milliseconds for the run to end (max 120000)"},
-				},
-				Action: runAssistantWake,
+				Usage: "write assistant settings (one field per flag; --unset removes a workspace override)",
+				Flags: append(assistantSetFlags(),
+					assistantWorkspaceFlag(),
+					&cli.BoolFlag{Name: "defaults", Usage: "write the global defaults instead of the workspace override"},
+				),
+				Action: runAssistantSet,
 			},
 			{
 				Name:      "say",
 				Usage:     "send a chat message to the workspace assistant",
 				ArgsUsage: "<message>",
 				Flags: []cli.Flag{
+					assistantWorkspaceFlag(),
 					&cli.IntFlag{Name: "wait", Usage: "wait milliseconds for the reply (max 120000)"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
@@ -114,26 +57,60 @@ func assistantCommand() *cli.Command {
 			},
 			{
 				Name:   "chat",
-				Usage:  "interactive assistant chat (POST + SSE refetch)",
+				Usage:  "interactive assistant chat with streamed replies",
+				Flags:  []cli.Flag{assistantWorkspaceFlag()},
 				Action: runAssistantChat,
 			},
-			memorySubcommands(assistantMemoryOwner()),
 			{
-				Name:  "history",
-				Usage: "list assistant runs (shortcut for runs list --kind assistant)",
+				Name:  "sessions",
+				Usage: "list assistant conversations with status and harness",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "status", Aliases: []string{"s"}, Usage: "status filter"},
-					&cli.StringFlag{Name: "job", Usage: "assistant/job name filter"},
-					&cli.StringFlag{Name: "harness", Usage: "harness filter"},
-					&cli.StringFlag{Name: "model", Aliases: []string{"m"}, Usage: "model filter"},
-					&cli.StringFlag{Name: "conversation", Usage: "substring match on conversation_key (client-side)"},
-					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (run id)"},
-					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 20, Usage: "max rows"},
+					assistantWorkspaceFlag(),
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
-				Action: runAssistantHistory,
+				Action: runAssistantSessions,
 			},
+			{
+				Name:      "close",
+				Usage:     "close the assistant process of a conversation (the conversation stays)",
+				ArgsUsage: "<conversation id>",
+				Action:    runAssistantClose,
+			},
+			{
+				Name:      "interrupt",
+				Usage:     "interrupt the running assistant turn of a conversation",
+				ArgsUsage: "<conversation id>",
+				Action:    runAssistantInterrupt,
+			},
+			{
+				Name:  "preview",
+				Usage: "print the composed instructions of a new assistant session",
+				Flags: []cli.Flag{
+					assistantWorkspaceFlag(),
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runAssistantPreview,
+			},
+			memorySubcommands(assistantMemoryOwner()),
 		},
+	}
+}
+
+func assistantWorkspaceFlag() cli.Flag {
+	return &cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"}
+}
+
+func assistantSetFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "harness", Usage: "harness name; empty means auto"},
+		&cli.StringFlag{Name: "model", Usage: "model for the harness"},
+		&cli.StringFlag{Name: "effort", Usage: "effort: low|medium|high"},
+		&cli.StringFlag{Name: "envset", Usage: "env set for CLI harnesses"},
+		&cli.StringFlag{Name: "mode", Usage: "permission mode: ask|auto_edit|auto"},
+		&cli.StringSliceFlag{Name: "skill", Usage: "skill name (repeatable)"},
+		&cli.StringFlag{Name: "context-file", Usage: "file with the context prompt text"},
+		&cli.BoolFlag{Name: "disabled", Usage: "disable the assistant (--disabled=false enables it)"},
+		&cli.StringSliceFlag{Name: "unset", Usage: "field to remove: " + strings.Join(assistantSetFields, "|")},
 	}
 }
 
@@ -155,90 +132,147 @@ func assistantMemoryOwner() memoryOwner {
 	}
 }
 
-func runAssistantPatch(_ context.Context, c *cli.Command) error {
-	if !c.IsSet("disabled") {
-		return fmt.Errorf("--disabled required")
-	}
+func runAssistantShow(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	id, err := resolveWorkspaceID(c, client)
-	if err != nil {
-		return err
-	}
-	disabled := c.Bool("disabled")
-	return client.DoHTTP(request.BuildAssistantPatch(id, &disabled, c.String("if-match")), nil)
-}
-
-func runAssistantWake(ctx context.Context, c *cli.Command) error {
-	client, err := clientFor(c)
-	if err != nil {
-		return err
+	if c.Bool("defaults") {
+		var body map[string]any
+		if err := client.DoHTTP(request.BuildAssistantDefaultsGet(), &body); err != nil {
+			return err
+		}
+		return encodeJSON(c, body)
 	}
 	wsID, err := resolveWorkspaceID(c, client)
 	if err != nil {
 		return err
 	}
-	return launchAndMaybeAttach(ctx, c, client, request.RunSpec{Workspace: wsID}, "assistant", request.RunSpec.BuildWake)
+	var body map[string]any
+	if err := client.GetJSON(request.BuildAssistantGetPath(wsID), &body); err != nil {
+		return err
+	}
+	return encodeJSON(c, body)
 }
 
-func runAssistantHistory(_ context.Context, c *cli.Command) error {
+// runAssistantSet writes one settings layer. Defaults scope reads the current
+// settings, applies the flags, and PUTs the object back. Workspace scope
+// applies the flags to the override object and PUTs it with the hash the read
+// returned, so a concurrent edit fails with 412 instead of being lost.
+func runAssistantSet(_ context.Context, c *cli.Command) error {
+	changes, unset, err := assistantSetChanges(c)
+	if err != nil {
+		return err
+	}
+	if len(changes) == 0 && len(unset) == 0 {
+		return fmt.Errorf("give at least one of --harness --model --effort --envset --mode --skill --context-file --disabled --unset")
+	}
+	if c.Bool("defaults") {
+		// The global layer has no disabled key; only a workspace can
+		// disable the assistant.
+		if _, ok := changes["disabled"]; ok {
+			return fmt.Errorf("--disabled is a workspace override; it has no --defaults form")
+		}
+		for _, f := range unset {
+			if f == "disabled" {
+				return fmt.Errorf("--unset disabled is a workspace override; it has no --defaults form")
+			}
+		}
+	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	ws := workspaceFor(c)
-	q := request.RunsQuery{
-		Status: c.String("status"), Job: c.String("job"), Workspace: ws, Kind: "assistant",
-		Cursor: c.String("cursor"), Harness: c.String("harness"), Model: c.String("model"),
-		Limit: c.Int("limit"),
+	if c.Bool("defaults") {
+		return assistantSetDefaults(c, client, changes, unset)
 	}
-	conv := c.String("conversation")
-	if conv != "" && q.Limit > 0 {
-		// The substring match runs client-side, so over-fetch before filtering.
-		q.Limit *= 5
-	}
-	path := q.Path()
-	var body struct {
-		Runs       []map[string]any `json:"runs"`
-		NextCursor string           `json:"next_cursor"`
-	}
-	if err := client.GetJSON(path, &body); err != nil {
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
 		return err
 	}
-	if conv != "" {
-		filtered := body.Runs[:0]
-		for _, r := range body.Runs {
-			if request.MatchConversation(mapStr(r, "conversation_key"), conv) {
-				filtered = append(filtered, r)
-			}
-		}
-		body.Runs = filtered
-		limit := c.Int("limit")
-		if limit > 0 && len(body.Runs) > limit {
-			body.Runs = body.Runs[:limit]
+	return assistantSetWorkspace(client, wsID, changes, unset)
+}
+
+func assistantSetChanges(c *cli.Command) (changes map[string]any, unset []string, err error) {
+	changes = map[string]any{}
+	for _, f := range []string{"harness", "model", "effort", "envset", "mode"} {
+		if c.IsSet(f) {
+			changes[f] = c.String(f)
 		}
 	}
-	if c.Bool("json") {
-		return encodeJSON(c, body)
+	if c.IsSet("skill") {
+		changes["skills"] = c.StringSlice("skill")
 	}
-	w := outWriter(c)
-	tbl := newTable(w, []string{"ID", "Job", "Kind", "Status", "Harness", "Started", "Reason", "Conversation"})
-	for _, r := range body.Runs {
-		tbl.AppendRow(table.Row{
-			mapStr(r, "id"),
-			mapStr(r, "job"),
-			dash(mapStr(r, "kind")),
-			colorStatus(w, mapStr(r, "status")),
-			dash(mapStr(r, "harness")),
-			dash(mapStr(r, "started_at")),
-			dash(mapStr(r, "reason")),
-			dash(mapStr(r, "conversation_key")),
-		})
+	if c.IsSet("context-file") {
+		text, err := readFileOrStdin(c.String("context-file"))
+		if err != nil {
+			return nil, nil, err
+		}
+		changes["context"] = text
 	}
-	renderTable(tbl)
-	return nil
+	if c.IsSet("disabled") {
+		changes["disabled"] = c.Bool("disabled")
+	}
+	unset = c.StringSlice("unset")
+	known := map[string]bool{}
+	for _, f := range assistantSetFields {
+		known[f] = true
+	}
+	for _, f := range unset {
+		if !known[f] {
+			return nil, nil, fmt.Errorf("unknown --unset field %q (want %s)", f, strings.Join(assistantSetFields, "|"))
+		}
+		if _, clash := changes[f]; clash {
+			return nil, nil, fmt.Errorf("--unset %s conflicts with the flag that sets it", f)
+		}
+	}
+	return changes, unset, nil
+}
+
+// assistantSetDefaults resets an unset field to its empty value: the daemon
+// then behaves as if config.yaml never carried it.
+func assistantSetDefaults(c *cli.Command, client *APIClient, changes map[string]any, unset []string) error {
+	var body struct {
+		Settings map[string]any `json:"settings"`
+	}
+	if err := client.DoHTTP(request.BuildAssistantDefaultsGet(), &body); err != nil {
+		return err
+	}
+	if body.Settings == nil {
+		body.Settings = map[string]any{}
+	}
+	for _, f := range unset {
+		switch f {
+		case "skills":
+			body.Settings[f] = []string{}
+		default:
+			body.Settings[f] = ""
+		}
+	}
+	for f, v := range changes {
+		body.Settings[f] = v
+	}
+	return client.DoHTTP(request.BuildAssistantDefaultsPut(body.Settings), nil)
+}
+
+func assistantSetWorkspace(client *APIClient, wsID string, changes map[string]any, unset []string) error {
+	var body struct {
+		Override map[string]any `json:"override"`
+		Hash     string         `json:"hash"`
+	}
+	if err := client.GetJSON(request.BuildAssistantGetPath(wsID), &body); err != nil {
+		return err
+	}
+	if body.Override == nil {
+		body.Override = map[string]any{}
+	}
+	for _, f := range unset {
+		delete(body.Override, f)
+	}
+	for f, v := range changes {
+		body.Override[f] = v
+	}
+	return client.DoHTTP(request.BuildAssistantSettingsPut(wsID, body.Override, body.Hash), nil)
 }
 
 func runAssistantSay(_ context.Context, c *cli.Command) error {
@@ -275,17 +309,26 @@ func runAssistantChat(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	return assistantChatLoop(c, client, wsID, os.Stdin)
+}
+
+// assistantChatLoop is the interactive chat: one line per turn, replies
+// streamed from the conversation event stream.
+func assistantChatLoop(c *cli.Command, client *APIClient, wsID string, in io.Reader) error {
 	convID := client.CLIConversation(wsID)
+	reader := bufio.NewReader(in)
 	w := outWriter(c)
 	fmt.Fprintf(w, "conversation %s  (/new /switch <id> /quit)\n", dash(convID))
-	sc := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Fprint(w, "> ")
-		if !sc.Scan() {
-			return sc.Err()
+		line, err := reader.ReadString('\n')
+		if err != nil && line == "" {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
 		}
-		line := strings.TrimSpace(sc.Text())
-		next, err := chatLine(c, client, wsID, &convID, line)
+		next, err := chatLine(c, client, wsID, &convID, strings.TrimSpace(line), reader)
 		if err != nil {
 			return err
 		}
@@ -295,7 +338,7 @@ func runAssistantChat(_ context.Context, c *cli.Command) error {
 	}
 }
 
-func chatLine(c *cli.Command, client *APIClient, wsID string, convID *string, line string) (bool, error) {
+func chatLine(c *cli.Command, client *APIClient, wsID string, convID *string, line string, in *bufio.Reader) (bool, error) {
 	switch {
 	case line == "":
 		return true, nil
@@ -332,53 +375,248 @@ func chatLine(c *cli.Command, client *APIClient, wsID string, convID *string, li
 		if *convID == "" {
 			*convID = mapStr(out, "conversation_id")
 		}
-		fmt.Fprintf(outWriter(c), "… %s\n", mapStr(out, "delivery"))
-		return true, waitAssistantReply(c, client, *convID)
+		return true, followAssistantTurn(c, client, *convID, in)
 	}
 }
 
-func waitAssistantReply(c *cli.Command, client *APIClient, convID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+// followAssistantTurn streams the conversation events until the turn ends.
+// Text prints as it arrives; tool calls print as one line each; permission
+// requests are answered from stdin.
+func followAssistantTurn(c *cli.Command, client *APIClient, convID string, in *bufio.Reader) error {
+	w := outWriter(c)
+	after := lastEventSeq(client, convID)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	seen := client.MessageIDSet(convID)
-	err := client.StreamEvents(ctx, request.BuildStreamPath("conversation.updated,session.state", "0"), func(ev store.StreamEvent) error {
-		if ev.Topic == "session.state" {
-			fmt.Fprint(outWriter(c), "thinking…\r")
-			return nil
-		}
-		if ev.Topic != "conversation.updated" || ev.ID != convID {
-			return nil
-		}
-		if printNewAssistant(c, client, convID, seen) {
-			cancel()
-		}
-		return nil
-	})
-	if err != nil && ctx.Err() == nil {
+	var printed string
+	stream := func() error {
+		return client.StreamConversationEvents(ctx,
+			request.BuildConversationEventsPath(convID, after, 0, true),
+			func(ev assistant.Event) error {
+				switch ev.Type {
+				case "user":
+					printed = ""
+				case "assistant":
+					text := ev.Text
+					switch {
+					case ev.Delta:
+						fmt.Fprint(w, text)
+						printed += text
+					case strings.HasPrefix(text, printed):
+						fmt.Fprint(w, text[len(printed):])
+						printed = text
+					default:
+						if printed != "" {
+							fmt.Fprint(w, "\n")
+						}
+						fmt.Fprint(w, text)
+						printed = text
+					}
+				case "tool":
+					if ev.Tool == nil {
+						return nil
+					}
+					switch ev.Tool.Status {
+					case "started":
+						fmt.Fprintf(w, "\n→ %s\n", assistantToolLabel(ev.Tool))
+					case "failed":
+						fmt.Fprintln(w, "  failed")
+					}
+				case "permission":
+					if ev.Perm != nil {
+						if err := answerAssistantPermission(c, client, convID, ev.Perm, in); err != nil {
+							return err
+						}
+					}
+				case "error":
+					if ev.Error != nil {
+						fmt.Fprintf(w, "\nerror: %s\n", ev.Error.Message)
+					}
+					cancel()
+				case "result", "exit":
+					cancel()
+				}
+				return nil
+			})
+	}
+	err := stream()
+	if errors.Is(err, context.Canceled) {
+		err = nil
+	}
+	if err != nil {
 		return err
+	}
+	if printed != "" {
+		fmt.Fprintln(w)
 	}
 	return nil
 }
 
-func printNewAssistant(c *cli.Command, client *APIClient, convID string, seen map[string]struct{}) bool {
+// lastEventSeq pages the stored transcript to the seq a follow resumes from.
+func lastEventSeq(client *APIClient, convID string) int64 {
+	after := int64(0)
+	for page := 0; page < 200; page++ {
+		var body struct {
+			Events    []assistant.Event `json:"events"`
+			NextAfter *int64            `json:"next_after"`
+		}
+		path := request.BuildConversationEventsPath(convID, after, 500, false)
+		if err := client.GetJSON(path, &body); err != nil {
+			return after
+		}
+		if len(body.Events) > 0 {
+			after = body.Events[len(body.Events)-1].Seq
+		}
+		if body.NextAfter == nil || *body.NextAfter <= after {
+			return after
+		}
+		after = *body.NextAfter
+	}
+	return after
+}
+
+// assistantToolLabel renders one tool call as `trebi.<tool> <action>`.
+func assistantToolLabel(t *assistant.Tool) string {
+	short := strings.TrimPrefix(t.Name, "mcp__trebi__")
+	var action string
+	if t.Input != "" {
+		var m map[string]any
+		if json.Unmarshal([]byte(t.Input), &m) == nil {
+			action, _ = m["action"].(string)
+		}
+	}
+	switch {
+	case action != "":
+		return "trebi." + short + " " + action
+	case short != t.Name:
+		return "trebi." + short
+	default:
+		return t.Name
+	}
+}
+
+// answerAssistantPermission prompts once per open permission and posts the
+// decision. An empty line or an unknown answer denies.
+func answerAssistantPermission(c *cli.Command, client *APIClient, convID string, p *assistant.Permission, in *bufio.Reader) error {
+	w := outWriter(c)
+	fmt.Fprintf(w, "\npermission needed: %s\n", p.Tool)
+	if p.Question != "" {
+		fmt.Fprintln(w, p.Question)
+	}
+	fmt.Fprint(w, "[y]es once / [a]lways / [n]o: ")
+	for {
+		line, err := in.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				line = "n\n"
+			} else {
+				return err
+			}
+		}
+		decision := ""
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes":
+			decision = "allow_once"
+		case "a", "always":
+			decision = "allow_session"
+		default:
+			decision = "deny"
+		}
+		return client.DoHTTP(request.BuildConversationPermission(convID, p.ID, decision, ""), nil)
+	}
+}
+
+func runAssistantSessions(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	path := request.BuildConversationsListPath(wsID, "", "", "", 200)
 	var body struct {
-		Messages []map[string]any `json:"messages"`
+		Conversations []map[string]any `json:"conversations"`
 	}
-	if err := client.GetJSON(request.BuildConversationMessagesPath(convID, "", 200), &body); err != nil {
-		return false
+	if err := client.GetJSON(path, &body); err != nil {
+		return err
 	}
-	printed := false
-	for _, m := range body.Messages {
-		id := mapStr(m, "id")
-		if _, ok := seen[id]; ok {
-			continue
+	sessions := make([]map[string]any, 0, len(body.Conversations))
+	for _, conv := range body.Conversations {
+		if s, ok := conv["session"].(map[string]any); ok && s != nil {
+			sessions = append(sessions, conv)
 		}
-		seen[id] = struct{}{}
-		if mapStr(m, "role") != "assistant" {
-			continue
-		}
-		fmt.Fprintf(outWriter(c), "assistant: %s\n", mapStr(m, "text"))
-		printed = true
 	}
-	return printed
+	if c.Bool("json") {
+		return encodeJSON(c, map[string]any{"conversations": sessions})
+	}
+	w := outWriter(c)
+	tbl := newTable(w, []string{"ID", "Status", "Harness", "Turn", "Last message", "Updated"})
+	for _, conv := range sessions {
+		session := conv["session"].(map[string]any)
+		tbl.AppendRow(table.Row{
+			mapStr(conv, "id"),
+			colorStatus(w, mapStr(session, "status")),
+			dash(mapStr(session, "harness")),
+			mapAnyInt(session["turn"]),
+			dash(mapStr(session, "last_message")),
+			dash(mapStr(session, "updated_at")),
+		})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func mapAnyInt(v any) string {
+	n, ok := v.(float64)
+	if !ok {
+		return "0"
+	}
+	return fmt.Sprintf("%d", int(n))
+}
+
+func runAssistantClose(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi assistant close <conversation id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(request.BuildConversationClose(id), nil)
+}
+
+func runAssistantInterrupt(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi assistant interrupt <conversation id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(request.BuildConversationInterrupt(id), nil)
+}
+
+func runAssistantPreview(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		Instructions string `json:"instructions"`
+	}
+	if err := client.GetJSON(request.BuildAssistantPreviewPath(wsID), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	fmt.Fprintln(outWriter(c), body.Instructions)
+	return nil
 }

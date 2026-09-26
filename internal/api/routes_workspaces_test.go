@@ -7,32 +7,37 @@ import (
 	"testing"
 )
 
+// TestAssistantGetDisabled: the disabled flag is a settings field; the
+// effective view reports it (plan F.1).
 func TestAssistantGetDisabled(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(wsDir, "TREBI.md"),
-		[]byte("---\nharness: fake\ndisabled: true\n---\n\nHi.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	wsID := addWorkspace(t, base, wsDir, "asst-ws")
-	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/assistant", nil)
-	if code != 200 {
-		t.Fatalf("%d %v", code, body)
-	}
-	if body["disabled"] != true {
-		t.Fatalf("disabled=%v want true in %v", body["disabled"], body)
-	}
 
-	if err := os.WriteFile(filepath.Join(wsDir, "TREBI.md"),
-		[]byte("---\nharness: fake\n---\n\nHi.\n"), 0o644); err != nil {
-		t.Fatal(err)
+	code, body, _ := doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/assistant",
+		map[string]any{"override": map[string]any{"disabled": true}})
+	if code != 200 {
+		t.Fatalf("put %d %v", code, body)
 	}
 	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/assistant", nil)
 	if code != 200 {
-		t.Fatalf("enabled %d %v", code, body)
+		t.Fatalf("%d %v", code, body)
 	}
-	if body["disabled"] != false {
-		t.Fatalf("disabled=%v want false in %v", body["disabled"], body)
+	eff := body["effective"].(map[string]any)
+	if eff["disabled"] != true {
+		t.Fatalf("disabled=%v want true in %v", eff["disabled"], eff)
+	}
+
+	// Resetting the override inherits the default: enabled.
+	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/assistant",
+		map[string]any{"override": map[string]any{}})
+	if code != 200 {
+		t.Fatalf("reset %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/assistant", nil)
+	eff = body["effective"].(map[string]any)
+	if eff["disabled"] != false {
+		t.Fatalf("disabled=%v want false in %v", eff["disabled"], eff)
 	}
 }
 

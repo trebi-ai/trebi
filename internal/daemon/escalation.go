@@ -12,7 +12,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/runtime/native"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
@@ -77,14 +76,6 @@ func (c *ControlPlane) transcriptTail(ctx context.Context, runID string, n int) 
 	}
 	var turns []tmux.Turn
 	switch {
-	case run.Harness == "native" || run.Runtime == "native":
-		raw, err := native.ReadTurns(native.TranscriptPath(run.ID))
-		if err != nil {
-			return ""
-		}
-		for _, turn := range raw {
-			turns = append(turns, tmux.Turn{Role: turn.Role, Text: turn.Text})
-		}
 	case run.Runtime == "cli":
 		turns, err = c.Runs.CLITurns(ctx, run.ID)
 		if err != nil {

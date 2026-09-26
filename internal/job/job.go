@@ -73,27 +73,26 @@ func (h HarnessSpec) MarshalYAML() (any, error) {
 
 // Frontmatter is the canonical YAML block.
 type Frontmatter struct {
-	WorkingDir       string            `yaml:"working_dir"`
-	Harness          HarnessSpec       `yaml:"harness"`
-	Runtime          string            `yaml:"runtime"`
-	Title            string            `yaml:"title"`
-	Memory           any               `yaml:"memory"`
-	Envset           EnvsetList        `yaml:"envset"`
-	Env              map[string]string `yaml:"env"` // inline env map (new); never auto-written by migration
-	Session          SessionYAML       `yaml:"session"`
-	Triggers         []TriggerYAML     `yaml:"triggers"`
-	Disabled         bool              `yaml:"disabled"`
-	FollowupPrompt   string            `yaml:"followup_prompt"`
-	AssistantContext bool              `yaml:"assistant_context"`
-	Name             string            `yaml:"name"` // verified then ignored for JOB.md identity
-	Description      string            `yaml:"description"`
-	Allowlist        []string          `yaml:"allowlist"`
-	Inputs           any               `yaml:"inputs"`
-	Skills           any               `yaml:"skills"`
-	Email            *EmailYAML        `yaml:"email,omitempty"`
-	Kit              *KitYAML          `yaml:"kit,omitempty"`
-	Budget           *BudgetYAML       `yaml:"budget,omitempty"`
-	Report           *ReportYAML       `yaml:"report,omitempty"`
+	WorkingDir     string            `yaml:"working_dir"`
+	Harness        HarnessSpec       `yaml:"harness"`
+	Runtime        string            `yaml:"runtime"`
+	Title          string            `yaml:"title"`
+	Memory         any               `yaml:"memory"`
+	Envset         EnvsetList        `yaml:"envset"`
+	Env            map[string]string `yaml:"env"` // inline env map (new); never auto-written by migration
+	Session        SessionYAML       `yaml:"session"`
+	Triggers       []TriggerYAML     `yaml:"triggers"`
+	Disabled       bool              `yaml:"disabled"`
+	FollowupPrompt string            `yaml:"followup_prompt"`
+	Name           string            `yaml:"name"` // verified then ignored for JOB.md identity
+	Description    string            `yaml:"description"`
+	Allowlist      []string          `yaml:"allowlist"`
+	Inputs         any               `yaml:"inputs"`
+	Skills         any               `yaml:"skills"`
+	Email          *EmailYAML        `yaml:"email,omitempty"`
+	Kit            *KitYAML          `yaml:"kit,omitempty"`
+	Budget         *BudgetYAML       `yaml:"budget,omitempty"`
+	Report         *ReportYAML       `yaml:"report,omitempty"`
 	// Notify selects alert channels for this job. Nil = unset (every
 	// channel); an empty list suppresses delivery for this job's alerts.
 	Notify []string `yaml:"notify"`
@@ -172,32 +171,31 @@ type Job struct {
 	Harness       string
 	// Model and Effort are job-level overrides of the harness default. Empty
 	// falls through to tools.<harness>.model|effort in config.yaml.
-	Model            string
-	Effort           string
-	Runtime          string
-	Title            string
-	Memory           bool
-	MemoryOpts       MemoryConfig
-	Envset           EnvsetList
-	Env              map[string]string
-	Session          SessionYAML
-	Triggers         []Trigger
-	Disabled         bool
-	FollowupPrompt   string
-	AssistantContext bool
-	Skills           []string
-	Prompt           string
-	Kind             string // job | assistant | agent
-	Owner            string // owning agent index name (agents/<name>) for jobs under an agent folder
-	EmailAccept      []string
-	AcceptSet        bool
-	Accept           []AcceptEntry
-	Kit              *KitYAML
-	Budget           *BudgetYAML
-	Report           *ReportYAML
-	ParseError       string
-	Hash             string
-	Description      string
+	Model          string
+	Effort         string
+	Runtime        string
+	Title          string
+	Memory         bool
+	MemoryOpts     MemoryConfig
+	Envset         EnvsetList
+	Env            map[string]string
+	Session        SessionYAML
+	Triggers       []Trigger
+	Disabled       bool
+	FollowupPrompt string
+	Skills         []string
+	Prompt         string
+	Kind           string // job | assistant | agent
+	Owner          string // owning agent index name (agents/<name>) for jobs under an agent folder
+	EmailAccept    []string
+	AcceptSet      bool
+	Accept         []AcceptEntry
+	Kit            *KitYAML
+	Budget         *BudgetYAML
+	Report         *ReportYAML
+	ParseError     string
+	Hash           string
+	Description    string
 	// Notify selects alert channels for this job. Nil = unset (every
 	// channel); an empty list suppresses delivery for this job's alerts.
 	Notify []string
@@ -507,8 +505,8 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	if err != nil {
 		return parseFail(filePath, hash, fmt.Errorf("memory: %w", err))
 	}
-	// Agents and the assistant default to memory on (C.3); jobs stay opt-in.
-	if fm.Memory == nil && (isAgentFile(filePath) || isAssistantFile(filePath)) {
+	// Agents default to memory on (C.3); jobs stay opt-in.
+	if fm.Memory == nil && isAgentFile(filePath) {
 		memCfg.Enabled = true
 	}
 
@@ -520,41 +518,37 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	// A name: mismatch with the path-derived name is soft (migration reports
 	// it); parse keeps the path-derived name for jobs.
 	name := deriveName(filePath)
-	if isAssistantFile(filePath) && fm.Name != "" {
-		name = fm.Name
-	}
 
 	j := &Job{
-		Name:             name,
-		FilePath:         filePath,
-		Dir:              filepath.Dir(filePath),
-		WorkingDir:       fm.WorkingDir,
-		Harness:          fm.Harness.Name,
-		Model:            fm.Harness.Model,
-		Effort:           fm.Harness.Effort,
-		Runtime:          fm.Runtime,
-		Title:            fm.Title,
-		Memory:           memCfg.Enabled,
-		MemoryOpts:       memCfg,
-		Envset:           fm.Envset,
-		Env:              fm.Env,
-		Session:          fm.Session,
-		Triggers:         triggers,
-		Disabled:         fm.Disabled,
-		FollowupPrompt:   fm.FollowupPrompt,
-		AssistantContext: fm.AssistantContext,
-		Skills:           stringList(fm.Skills),
-		Prompt:           string(bytes.TrimSpace(body)),
-		Kind:             kindFromPath(filePath),
-		EmailAccept:      rawAccept,
-		AcceptSet:        acceptSet,
-		Accept:           accept,
-		Kit:              fm.Kit,
-		Budget:           fm.Budget,
-		Report:           fm.Report,
-		Hash:             hash,
-		Description:      fm.Description,
-		Notify:           fm.Notify,
+		Name:           name,
+		FilePath:       filePath,
+		Dir:            filepath.Dir(filePath),
+		WorkingDir:     fm.WorkingDir,
+		Harness:        fm.Harness.Name,
+		Model:          fm.Harness.Model,
+		Effort:         fm.Harness.Effort,
+		Runtime:        fm.Runtime,
+		Title:          fm.Title,
+		Memory:         memCfg.Enabled,
+		MemoryOpts:     memCfg,
+		Envset:         fm.Envset,
+		Env:            fm.Env,
+		Session:        fm.Session,
+		Triggers:       triggers,
+		Disabled:       fm.Disabled,
+		FollowupPrompt: fm.FollowupPrompt,
+		Skills:         stringList(fm.Skills),
+		Prompt:         string(bytes.TrimSpace(body)),
+		Kind:           kindFromPath(filePath),
+		EmailAccept:    rawAccept,
+		AcceptSet:      acceptSet,
+		Accept:         accept,
+		Kit:            fm.Kit,
+		Budget:         fm.Budget,
+		Report:         fm.Report,
+		Hash:           hash,
+		Description:    fm.Description,
+		Notify:         fm.Notify,
 	}
 	return j, nil
 }
@@ -702,8 +696,6 @@ func deriveName(filePath string) string {
 	switch strings.ToLower(base) {
 	case "job.md":
 		return dir
-	case "trebi.md":
-		return dir // default; frontmatter name: overrides for assistants
 	case "agent.md":
 		return dir // discover rewrites to agents/<name>
 	default:
@@ -711,14 +703,8 @@ func deriveName(filePath string) string {
 	}
 }
 
-func isAssistantFile(path string) bool {
-	return strings.EqualFold(filepath.Base(path), "TREBI.md")
-}
-
 func kindFromPath(path string) string {
 	switch strings.ToLower(filepath.Base(path)) {
-	case "trebi.md":
-		return "assistant"
 	case "agent.md":
 		return "agent"
 	default:

@@ -900,6 +900,12 @@ func (s *Service) triggersFor(ctx context.Context, connector string) []cachedTri
 	if err != nil {
 		return nil
 	}
+	// Assistant triggers come from the trebi.yaml assistant block, not the
+	// job index (plan E).
+	var assistant []workspaces.AssistantTriggerRow
+	if s.ws != nil {
+		assistant, _ = s.ws.AssistantTriggerRows(ctx)
+	}
 	var b strings.Builder
 	for _, row := range jobs {
 		if !row.Active {
@@ -910,6 +916,12 @@ func (s *Service) triggersFor(ctx context.Context, connector string) []cachedTri
 		b.WriteString(row.Name)
 		b.WriteByte('@')
 		b.WriteString(row.Hash)
+		b.WriteByte(';')
+	}
+	for _, at := range assistant {
+		b.WriteString(at.WorkspaceID)
+		b.WriteString("/assistant@")
+		b.WriteString(at.Hash)
 		b.WriteByte(';')
 	}
 	fp := b.String()
@@ -929,6 +941,19 @@ func (s *Service) triggersFor(ctx context.Context, connector string) []cachedTri
 		}
 		for _, tr := range j.Triggers {
 			if tr.Family != "event" || tr.Disabled || tr.Event == "" {
+				continue
+			}
+			by[tr.Event] = append(by[tr.Event], cachedTrig{row: row, j: j, tr: tr})
+		}
+	}
+	for _, at := range assistant {
+		row := workspaces.JobRow{
+			WorkspaceID: at.WorkspaceID, Name: "assistant",
+			Kind: dispatch.KindAssistant, Active: true, Hash: at.Hash,
+		}
+		j := &job.Job{Name: "assistant"}
+		for _, tr := range at.Triggers {
+			if tr.Family != "event" && tr.Event == "" {
 				continue
 			}
 			by[tr.Event] = append(by[tr.Event], cachedTrig{row: row, j: j, tr: tr})

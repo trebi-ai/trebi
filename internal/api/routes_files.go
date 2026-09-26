@@ -369,8 +369,6 @@ func typedDocMessage(rel string) string {
 		return "use PUT /v1/jobs/{name} (trebi job) for JOB.md"
 	case "memory.md":
 		return "use the memory routes (trebi job memory) for MEMORY.md"
-	case "trebi.md":
-		return "use the assistant routes (trebi assistant) for TREBI.md"
 	case "agent.md":
 		return "use the agent routes (trebi agent) for AGENT.md"
 	}

@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/trebi-ai/trebi/internal/agents"
+	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -32,7 +32,7 @@ type Workspace struct {
 	CreatedAt  time.Time `json:"created_at"`
 	Watching   bool      `json:"watching"`
 	Orphaned   bool      `json:"orphaned,omitempty"`
-	Assistant  *string   `json:"assistant,omitempty"` // nickname if TREBI.md present
+	Assistant  *string   `json:"assistant,omitempty"` // nickname from trebi.yaml assistant.name
 	Revision   int64     `json:"revision"`
 	// JobCount and RunningCount are filled by list reads only.
 	JobCount     int `json:"job_count"`
@@ -48,6 +48,9 @@ type Service struct {
 	fp            map[string]string
 	jobs          map[string][]*job.Job
 	budgetAlerter BudgetAlerter
+
+	asstMu     sync.Mutex
+	asstWrites map[string]string // workspace id -> trebi.yaml hash of the last API write
 }
 
 // New creates a workspace service.
@@ -83,6 +86,7 @@ type trebiYAML struct {
 	Name       string          `yaml:"name"`
 	GitEnabled bool            `yaml:"git_enabled"`
 	Email      *trebiYAMLEmail `yaml:"email,omitempty" json:"email,omitempty"`
+	Assistant  *wire.Override  `yaml:"assistant,omitempty" json:"assistant,omitempty"`
 }
 
 // trebiYAMLEmail carries the workspace's own email additions (plan F):
@@ -141,7 +145,6 @@ func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error)
 	if err != nil {
 		return nil, err
 	}
-	s.SeedAssistantFile(abs)
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339)
 
@@ -155,8 +158,8 @@ func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error)
 		// Same path: idempotent no-op, no insert or event.
 	case scanErr == sql.ErrNoRows:
 		_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-			_, err := tx.Exec(`INSERT INTO workspaces (id, name, path, git_enabled, assistant_seeded, created_at, updated_at)
-				VALUES (?,?,?,?,1,?,?)`,
+			_, err := tx.Exec(`INSERT INTO workspaces (id, name, path, git_enabled, created_at, updated_at)
+				VALUES (?,?,?,?,?,?)`,
 				id, dispName, abs, boolInt(gitEn), nowStr, nowStr)
 			return err
 		}, store.BusEvent{
@@ -174,48 +177,6 @@ func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error)
 		return ws, err // still registered
 	}
 	return ws, nil
-}
-
-// seedAssistant writes the default TREBI.md when the workspace folder has
-// none. A failure logs a warning and does not fail the add, the same as
-// ensureWorkspaceEmail.
-func (s *Service) SeedAssistantFile(abs string) {
-	path := filepath.Join(abs, "TREBI.md")
-	if _, err := os.Stat(path); err == nil {
-		return
-	} else if !os.IsNotExist(err) {
-		s.log.Warn("assistant seed", "path", path, "error", err)
-		return
-	}
-	if err := os.WriteFile(path, []byte(agents.AssistantTemplate), 0o644); err != nil {
-		s.log.Warn("assistant seed", "path", path, "error", err)
-	}
-}
-
-// UnseededWorkspaces returns workspaces that were never offered the default
-// assistant (assistant_seeded = 0), oldest first by name.
-func (s *Service) UnseededWorkspaces(ctx context.Context) ([]Workspace, error) {
-	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT `+workspaceCols+` FROM workspaces WHERE assistant_seeded = 0 ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Workspace
-	for rows.Next() {
-		w, err := scanWorkspace(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, w)
-	}
-	return out, rows.Err()
-}
-
-// MarkAssistantSeeded sets assistant_seeded = 1 for one workspace.
-func (s *Service) MarkAssistantSeeded(ctx context.Context, id string) error {
-	_, err := s.st.DB().ExecContext(ctx, `UPDATE workspaces SET assistant_seeded = 1 WHERE id = ?`, id)
-	return err
 }
 
 func validateWorkspaceName(name string) error {
@@ -392,42 +353,20 @@ func scanWorkspace(sc interface{ Scan(...any) error }) (Workspace, error) {
 }
 
 func (s *Service) decorateWorkspaces(ctx context.Context, list []Workspace) ([]Workspace, error) {
-	asst, err := s.assistantNicknames(ctx)
-	if err != nil {
-		return nil, err
-	}
 	counts, err := s.jobCounts(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for i := range list {
 		list[i].JobCount = counts[list[i].ID]
-		if n, ok := asst[list[i].ID]; ok {
-			name := n
-			if name == "" {
-				name = list[i].Name
-			}
-			list[i].Assistant = &name
+		ov, _, oerr := s.AssistantOverride(ctx, list[i].ID)
+		if oerr != nil || ov.Name == nil || *ov.Name == "" {
+			continue
 		}
+		name := *ov.Name
+		list[i].Assistant = &name
 	}
 	return list, nil
-}
-
-func (s *Service) assistantNicknames(ctx context.Context) (map[string]string, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT workspace_id, name FROM job_index WHERE kind='assistant'`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var id, name string
-		if err := rows.Scan(&id, &name); err != nil {
-			return nil, err
-		}
-		out[id] = name
-	}
-	return out, rows.Err()
 }
 
 // List returns all workspaces.
@@ -502,7 +441,7 @@ type indexRow struct {
 func rowFromJob(j *job.Job, kind string) indexRow {
 	return indexRow{
 		name: j.Name, path: j.FilePath, kind: kind, harness: j.Harness,
-		hash: j.Hash, parseError: j.ParseError, active: kind == "assistant" || !j.Disabled,
+		hash: j.Hash, parseError: j.ParseError, active: !j.Disabled,
 		owner: j.Owner,
 	}
 }
@@ -541,22 +480,10 @@ func (s *Service) RebuildIndexJobs(ctx context.Context, ws *Workspace) ([]*job.J
 		return nil, err
 	}
 	desired := map[string]indexRow{}
-	jobs := make([]*job.Job, 0, len(disc.Jobs)+len(disc.Agents)+1)
+	jobs := make([]*job.Job, 0, len(disc.Jobs)+len(disc.Agents))
 	for _, j := range disc.Jobs {
 		desired[j.Name] = rowFromJob(j, "job")
 		jobs = append(jobs, j)
-	}
-	if disc.Assistant != nil {
-		// A root JOB.md and the root TREBI.md both derive the workspace
-		// folder name. Keep both rows: the assistant falls back to a
-		// fixed name when the derived one is taken.
-		name := disc.Assistant.Name
-		if _, clash := desired[name]; clash {
-			name = "assistant"
-			disc.Assistant.Name = name
-		}
-		desired[name] = rowFromJob(disc.Assistant, "assistant")
-		jobs = append(jobs, disc.Assistant)
 	}
 	for _, j := range disc.Agents {
 		desired[j.Name] = rowFromJob(j, "agent")
@@ -599,10 +526,7 @@ func (s *Service) RebuildIndexPath(ctx context.Context, ws *Workspace, path stri
 		}
 	} else {
 		kind := "job"
-		switch strings.ToLower(filepath.Base(path)) {
-		case "trebi.md":
-			kind = "assistant"
-		case "agent.md":
+		if strings.EqualFold(filepath.Base(path), "agent.md") {
 			kind = "agent"
 		}
 		desired[j.Name] = rowFromJob(j, kind)
@@ -791,15 +715,6 @@ func (s *Service) emitIndexDiff(ctx context.Context, wsID string, existing, desi
 	}
 	for name, want := range desired {
 		have, ok := existing[name]
-		if want.kind == "assistant" {
-			if !ok || have.hash != want.hash {
-				emit(store.BusEvent{
-					Topic: "assistant.updated", Entity: "assistant", EntityID: name, Action: "updated",
-					Attrs: map[string]string{"workspace": wsID, "name": name},
-				})
-			}
-			continue
-		}
 		if want.kind == "agent" {
 			switch {
 			case !ok:
@@ -818,13 +733,6 @@ func (s *Service) emitIndexDiff(ctx context.Context, wsID string, existing, desi
 	}
 	for name, have := range existing {
 		if _, ok := desired[name]; ok {
-			continue
-		}
-		if have.kind == "assistant" {
-			emit(store.BusEvent{
-				Topic: "assistant.updated", Entity: "assistant", EntityID: name, Action: "updated",
-				Attrs: map[string]string{"workspace": wsID, "name": name},
-			})
 			continue
 		}
 		if have.kind == "agent" {
@@ -902,11 +810,12 @@ func ensureTrebiYAML(dir, name string) (id, dispName string, git bool, err error
 
 func writeTrebiYAML(dir, id, name string, git bool) error {
 	y := trebiYAML{ID: id, Name: name, GitEnabled: git}
-	// Patch never edits the email block; carry it forward (plan F).
+	// Patch never edits the email or assistant blocks; carry them forward.
 	if data, err := os.ReadFile(filepath.Join(dir, "trebi.yaml")); err == nil {
 		var old trebiYAML
 		if yaml.Unmarshal(data, &old) == nil {
 			y.Email = old.Email
+			y.Assistant = old.Assistant
 		}
 	}
 	b, err := yaml.Marshal(&y)
@@ -953,20 +862,19 @@ const (
 	truncMark    = "\n…[truncated]"
 )
 
-// ComposeWakePrompt builds the operator wake prompt (B27, Part F): the
-// assistant sees the workspace portfolio; an agent sees only its own folder.
+// ComposeWakePrompt builds the agent wake prompt (B27, Part F). The
+// assistant is a session now, so only agent launches compose a wake.
 // It satisfies runs.WakeComposer — the one launch-path seam.
 func (s *Service) ComposeWakePrompt(ctx context.Context, scope runs.WakeScope, opts runs.WakeOpts) (string, error) {
+	if scope.Kind != "agent" {
+		return "", fmt.Errorf("wake compose is agent-only; the assistant is a session")
+	}
 	ws, err := s.Get(ctx, scope.WorkspaceID)
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
-	if scope.Kind == "agent" {
-		s.writeAgentWake(ctx, &b, ws, scope, opts)
-	} else {
-		s.writeAssistantWake(ctx, &b, ws, opts)
-	}
+	s.writeAgentWake(ctx, &b, ws, scope, opts)
 	return strings.TrimSpace(b.String()), nil
 }
 
@@ -996,34 +904,15 @@ func (s *Service) MemoryLaunchFor(ctx context.Context, run *runs.Run) *runs.Memo
 }
 
 // rowMatchesKind applies the kind-strict name match the launch finders use:
-// exact name for jobs, short or index name for agents, any row for the
-// assistant.
+// exact name for jobs, short or index name for agents.
 func rowMatchesKind(row JobRow, kind, name string) bool {
 	switch kind {
-	case runs.KindAssistant:
-		return row.Kind == runs.KindAssistant
 	case runs.KindAgent:
 		return row.Kind == runs.KindAgent &&
 			(row.Name == name || strings.TrimPrefix(row.Name, "agents/") == name)
 	default:
 		return row.Kind == runs.KindJob && row.Name == name
 	}
-}
-
-// writeAssistantWake renders the B27 sections: instructions, unowned jobs,
-// the agent rollup, memory, then the conversation tail.
-func (s *Service) writeAssistantWake(ctx context.Context, b *strings.Builder, ws *Workspace, opts runs.WakeOpts) {
-	body := opts.Body
-	if strings.TrimSpace(body) == "" {
-		body = trebiBody(ws.Path)
-	}
-	writeSection(b, "Instructions", body)
-	writeSection(b, "Workspace jobs", capSection(s.unownedIndex(ctx, ws.ID), wakeIndexCap))
-	writeSection(b, "Agents", capSection(s.agentRollup(ctx, ws.ID), wakeIndexCap))
-	if m := wakeMemory(opts.Memory); m != "" {
-		writeSection(b, "Memory", m)
-	}
-	writeWakeTail(b, opts)
 }
 
 // writeAgentWake renders the agent sections: instructions, owned jobs, and
@@ -1091,14 +980,6 @@ func writeUntrusted(b *strings.Builder, u *runs.UntrustedMessage) {
 		return
 	}
 	writeSection(b, "Inbound email (untrusted data)", u.Fence())
-}
-
-func trebiBody(wsPath string) string {
-	j, err := job.ParseFile(filepath.Join(wsPath, "TREBI.md"))
-	if err != nil || j == nil || strings.TrimSpace(j.Prompt) == "" {
-		return "(none)"
-	}
-	return strings.TrimSpace(j.Prompt)
 }
 
 // wakeMemory renders the Memory wake section from the launch seam. A missing

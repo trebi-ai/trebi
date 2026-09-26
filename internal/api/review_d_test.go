@@ -109,40 +109,6 @@ func TestRunExpandsJobDir(t *testing.T) {
 	}
 }
 
-// TestRetrySkipRerunsAssistant: a skipped assistant wake has no session.
-// Retry must rebuild from TREBI.md (not JOB.md) and launch a fresh run.
-func TestRetrySkipRerunsAssistant(t *testing.T) {
-	s, base, _ := startAPI(t)
-	wsDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(wsDir, "TREBI.md"), []byte("---\nharness: fake\n---\n\nYou are the assistant.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	wsID := addWorkspace(t, base, wsDir, "assistant-retry")
-
-	prev, err := s.Runs().Create(context.Background(), runs.CreateOpts{
-		WorkspaceID: wsID, Job: "assistant-retry", Kind: runs.KindAssistant,
-		Harness: "fake", Reason: runs.ReasonTrigger,
-		PromptPreview: "skipped wake",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Runs().Terminate(context.Background(), prev.ID, runs.StatusSkipped, runs.EndSkip, nil); err != nil {
-		t.Fatal(err)
-	}
-
-	code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+prev.ID+"/retry", nil)
-	if code != 201 {
-		t.Fatalf("retry skip assistant %d %v", code, body)
-	}
-	if fmt.Sprint(body["kind"]) != "assistant" {
-		t.Fatalf("kind=%v want assistant", body["kind"])
-	}
-	if fmt.Sprint(body["id"]) == prev.ID {
-		t.Fatal("retry skip reused the skipped row")
-	}
-}
-
 // TestAgentLaunchCanonical covers G.2: POST /v1/runs {kind:agent, job:cmo} is
 // the canonical launch. The run carries the index name; the wake composer
 // scopes the prompt to the agent folder. The resolver is kind-strict, so a

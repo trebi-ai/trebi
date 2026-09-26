@@ -83,9 +83,6 @@ func TestCLIOneShotNarrow(t *testing.T) {
 	if cliOneShot(LaunchOpts{CreateOpts: CreateOpts{Kind: KindJob, IdleTimeoutMS: 1000}}) {
 		t.Fatal("idle timeout disqualifies one-shot")
 	}
-	if cliOneShot(LaunchOpts{CreateOpts: CreateOpts{Kind: KindAssistant}}) {
-		t.Fatal("assistant must be persistent")
-	}
 	if cliOneShot(LaunchOpts{CreateOpts: CreateOpts{Kind: KindJob, KeepAliveMS: 1000}}) {
 		t.Fatal("keep-alive disqualifies one-shot")
 	}

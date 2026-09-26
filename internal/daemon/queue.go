@@ -123,6 +123,12 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	if kind == "" {
 		kind = "job"
 	}
+	if kind == dispatch.KindAssistant {
+		// The assistant is a session; the lane prompts the manager and
+		// marks the item done on the result (plan E).
+		c.dispatchAssistant(ctx, item)
+		return
+	}
 	j, path := c.findJobKind(ctx, l.ws, l.job, kind)
 	if j == nil {
 		_ = c.queue.MarkBlocked(ctx, item.ID, dispatch.BlockJobMissing)
@@ -218,9 +224,6 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	if merr := c.queue.MarkDone(ctx, item.ID, queueResult(outcome, run), run.ID); merr != nil {
 		c.log.Warn("queue mark done", "queue_id", item.ID, "error", merr)
 	}
-	if item.Kind == runs.KindAssistant {
-		c.log.Info("assistant.woken", "reason", string(runs.ReasonTrigger), "channel", "")
-	}
 	if item.Kind == runs.KindAgent {
 		c.log.Info("agent.woken", "reason", string(runs.ReasonTrigger), "agent", item.Job)
 	}
@@ -284,20 +287,8 @@ func (c *ControlPlane) conversationID(ctx context.Context, workspaceID, key stri
 	return id
 }
 
-// blockedFor is the queue auth gate. Native assistants probe the API key, not the vendor stamp.
-func (c *ControlPlane) blockedFor(ctx context.Context, kind, harness string) dispatch.BlockReason {
-	if kind == runs.KindAssistant {
-		cfg := c.tickCfg
-		if cfg == nil {
-			cfg, _ = config.Load()
-		}
-		if cfg != nil && strings.TrimSpace(cfg.Assistant.Model) != "" {
-			if cfg.Assistant.Enabled() {
-				return ""
-			}
-			return dispatch.BlockAuthMissing
-		}
-	}
+// blockedFor is the queue auth gate.
+func (c *ControlPlane) blockedFor(ctx context.Context, _, harness string) dispatch.BlockReason {
 	return c.harnessBlocked(ctx, harness)
 }
 

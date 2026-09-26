@@ -17,9 +17,6 @@ checks:
   - name: the agent wake lists the child job
     cmd: trebi agent wake cmo --test
     jq: '.prompt_preview | contains("# Your jobs") and contains("weekly-digest")'
-  - name: the assistant rollup carries the agent
-    cmd: trebi assistant wake --test
-    jq: '.prompt_preview | contains("# Agents") and contains("cmo")'
 judge:
   model: claude-sonnet-5
   dimensions:

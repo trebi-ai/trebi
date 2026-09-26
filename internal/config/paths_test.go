@@ -407,13 +407,23 @@ func sampleSetValue(key string) string {
 		return "true"
 	case strings.Contains(key, ".bridge.resources."):
 		return "inherit"
-	case key == "assistant.api_format":
+	case key == "assistant.harness":
+		return "native"
+	case key == "assistant.native.api_format":
 		return "openai"
-	case key == "assistant.max_tokens":
+	case key == "assistant.mode":
+		return "auto_edit"
+	case key == "assistant.effort":
+		return "high"
+	case key == "assistant.idle_close":
+		return "15m"
+	case key == "assistant.permission_timeout":
+		return "10m"
+	case key == "assistant.max_live", key == "assistant.native.max_tokens":
 		return "8192"
-	case key == "assistant.context_tokens", key == "assistant.limits.daily_tokens", key == "assistant.limits.max_turns":
+	case key == "assistant.native.context_tokens", key == "assistant.native.limits.daily_tokens", key == "assistant.native.limits.max_turns":
 		return "0"
-	case key == "assistant.web_search":
+	case key == "assistant.native.web_search":
 		return "true"
 	case key == "assistant.api_key":
 		return "sk-test"

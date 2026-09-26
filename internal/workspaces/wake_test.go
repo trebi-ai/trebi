@@ -31,75 +31,6 @@ Watching CI.
 - [2026-09-02 08:00] Ran the weekly digest.
 `
 
-func TestComposeAssistantWake(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name    string
-		files   map[string]string
-		opts    runs.WakeOpts
-		want    []string
-		notWant []string
-	}{
-		{
-			name:    "empty workspace",
-			files:   map[string]string{"TREBI.md": "---\nharness: claude\n---\n\nYou are the assistant.\n"},
-			want:    []string{"# Instructions", "You are the assistant.", "# Workspace jobs", "(none)", "# Agents", "(none)"},
-			notWant: []string{"# Memory"},
-		},
-		{
-			name: "portfolio split",
-			files: map[string]string{
-				"TREBI.md":               "---\nharness: claude\n---\n\nRun the workspace.\n",
-				"alpha/JOB.md":           jobMD,
-				"agents/cmo/AGENT.md":    "---\nharness: codex\n---\n\nLead growth.\n",
-				"agents/cmo/duty/JOB.md": jobMD,
-				"MEMORY.md":              memoryMD,
-			},
-			opts: runs.WakeOpts{Recap: "user: hi", Message: "focus on CI", Memory: wakeMemoryLaunch("", "MEMORY.md")},
-			want: []string{
-				"# Instructions", "Run the workspace.",
-				"# Workspace jobs", "- alpha kind=job harness=claude active",
-				"# Agents", "- agents/cmo kind=agent harness=codex active children=1",
-				"# Memory", "## Context", "Durable facts about the workspace.",
-				"## State", "Watching CI.",
-				"- [2026-09-01 09:00] Prune stale branches weekly.",
-				"- [2026-09-02 08:00] Ran the weekly digest.",
-				"# Conversation recap", "user: hi",
-				"# Current message", "focus on CI",
-			},
-			notWant: []string{"kind=assistant", "- agents/cmo/duty kind=job"},
-		},
-		{
-			name:  "memory file missing renders placeholders",
-			files: map[string]string{"TREBI.md": "---\nharness: claude\n---\n\nRun.\n"},
-			opts:  runs.WakeOpts{Memory: wakeMemoryLaunch("", "MEMORY.md")},
-			want:  []string{"# Memory", "## Context", "(empty)", "## Log"},
-		},
-		{
-			name:    "body override",
-			files:   map[string]string{"TREBI.md": "---\nharness: claude\n---\n\nFile body.\n"},
-			opts:    runs.WakeOpts{Body: "Expanded body."},
-			want:    []string{"# Instructions", "Expanded body."},
-			notWant: []string{"File body.", "# Memory"},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			svc, wsID, wsPath := wakeFixture(t, tc.files)
-			if tc.opts.Memory != nil {
-				tc.opts.Memory.Root = wsPath
-			}
-			got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{WorkspaceID: wsID, Kind: runs.KindAssistant}, tc.opts)
-			if err != nil {
-				t.Fatal(err)
-			}
-			assertWake(t, got, tc.want, tc.notWant)
-			assertSectionOrder(t, got, "# Instructions", "# Workspace jobs", "# Agents", "# Memory")
-		})
-	}
-}
-
 func TestComposeAgentWake(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -171,20 +102,20 @@ func TestComposeAgentWake(t *testing.T) {
 
 func TestComposeWakeTruncatesHugeIndex(t *testing.T) {
 	t.Parallel()
-	files := map[string]string{"TREBI.md": "---\nharness: claude\n---\n\nX.\n"}
+	files := map[string]string{"agents/cmo/AGENT.md": "---\n---\n\nLead.\n"}
 	for i := 0; i < 250; i++ {
-		files[fmt.Sprintf("job%03d/JOB.md", i)] = jobMD
+		files[fmt.Sprintf("agents/cmo/duty%03d/JOB.md", i)] = jobMD
 	}
 	svc, wsID, _ := wakeFixture(t, files)
-	got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{WorkspaceID: wsID, Kind: runs.KindAssistant}, runs.WakeOpts{})
+	got, err := svc.ComposeWakePrompt(context.Background(),
+		runs.WakeScope{WorkspaceID: wsID, Kind: runs.KindAgent, Name: "agents/cmo"}, runs.WakeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, "# Workspace jobs") || !strings.Contains(got, "…[truncated]") {
+	if !strings.Contains(got, "# Your jobs") || !strings.Contains(got, "…[truncated]") {
 		t.Fatalf("index not truncated:\n%.200s…", got)
 	}
 }
-
 func assertWake(t *testing.T, got string, want, notWant []string) {
 	t.Helper()
 	for _, w := range want {

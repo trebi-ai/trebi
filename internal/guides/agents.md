@@ -8,7 +8,7 @@ description: Create an agent, give it jobs, wake it, and manage its memory.
 
 An agent owns the folder `agents/<name>/` inside a workspace. The document `AGENT.md` holds YAML front matter and the instruction text. `title:` is the human-facing display name; the folder name remains the one identifier. A wake starts one session on the agent. The daemon composes the prompt from the agent instructions, the owned jobs, and the agent memory. Workspace jobs stay out of the index rollup.
 
-The assistant is the workspace singleton (`trebi guide assistant`). An agent is narrower: it sees its folder only. Keep one agent per duty, for example `cmo` for growth reports. The name uses lowercase letters, digits, and hyphens. It starts with a letter or a digit. The index name is `agents/<name>`; runs and schedules key on it. The hidden `trebi agent-hook` command is a harness lifecycle hook. It shares only the word.
+The assistant is the workspace chat agent, not an agent (`trebi guide assistant`). An agent is narrower: it sees its folder only. Keep one agent per duty, for example `cmo` for growth reports. The name uses lowercase letters, digits, and hyphens. It starts with a letter or a digit. The index name is `agents/<name>`; runs and schedules key on it. The hidden `trebi agent-hook` command is a harness lifecycle hook. It shares only the word.
 
 ## Create an agent
 
@@ -33,7 +33,7 @@ email:
     - "@acme.com"      # exact domain
 ```
 
-`TREBI.md` may use the same `email.accept` key. If it is absent, the assistant keeps the traditional `operators` plus `allowlist` rule.
+The assistant has the same `email.accept` key in the `assistant:` block of the workspace `trebi.yaml`. If it is absent, the assistant keeps the `operators` plus `allowlist` rule.
 
 ## Rename identity
 

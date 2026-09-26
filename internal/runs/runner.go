@@ -205,11 +205,6 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 		run, err := s.launchFake(ctx, opts)
 		return run, outcome, err
 	}
-	if s.wantsNative(opts) {
-		run, err := s.launchNative(ctx, opts)
-		return run, outcome, err
-	}
-
 	command := opts.Command
 	if command == "" {
 		command = opts.Harness
@@ -294,8 +289,8 @@ func (s *Service) prepMemory(ctx context.Context, opts *LaunchOpts) {
 		}
 	}
 	opts.MemoryHash = memory.Hash(data)
-	if opts.Kind == KindAssistant || opts.Kind == KindAgent {
-		return // operators get memory through the wake composer
+	if opts.Kind == KindAgent {
+		return // agents get memory through the wake composer
 	}
 	doc, _ := memory.Parse(data)
 	opts.Prompt = memory.Render(doc, mem.Opt) + "\n\n" + memory.Protocol(mem.Opt) + "\n\n" + opts.Prompt
@@ -758,13 +753,6 @@ func (s *Service) InjectMessage(ctx context.Context, runID, text string) error {
 	if run.Status != StatusRunning {
 		return fmt.Errorf("%w: %s", ErrNotRunning, runID)
 	}
-	if run.Harness == nativeHarness {
-		if !s.injectNative(runID, text) {
-			return fmt.Errorf("native inbox full")
-		}
-		s.AddEvent(ctx, runID, "message", "api", map[string]string{"bytes": fmt.Sprint(len(text)), "delivery": "injected"})
-		return nil
-	}
 	// Subprocess sessions take the follow-up on stdin, never a pane paste.
 	if cr := s.cliRunFor(runID); cr != nil {
 		if err := cr.sess.Prompt(ctx, agentwire.Prompt{Text: text, Kind: "followup"}); err != nil {
@@ -1192,11 +1180,6 @@ func (s *Service) applyIfRunning(ctx context.Context, opts *LaunchOpts) (string,
 		Status:    string(StatusRunning),
 		Limit:     20,
 	}
-	// Assistant overlap is per conversation: a new thread is a new run.
-	// Cron/event jobs stay job-wide (one live copy of the same JOB.md).
-	if opts.Kind == KindAssistant && opts.ConversationKey != "" {
-		listOpts.ConversationKey = opts.ConversationKey
-	}
 	live, err := s.List(ctx, listOpts)
 	if err != nil {
 		return "", nil, err
@@ -1267,9 +1250,7 @@ func (s *Service) overlapCoalesce(ctx context.Context, opts *LaunchOpts, existin
 	if text == "" {
 		text = "(coalesced event)"
 	}
-	if existing.Harness == nativeHarness {
-		_ = s.injectNative(existing.ID, text)
-	} else if cr := s.cliRunFor(existing.ID); cr != nil {
+	if cr := s.cliRunFor(existing.ID); cr != nil {
 		if err := cr.sess.Prompt(ctx, agentwire.Prompt{Text: text, Kind: "coalesce"}); err == nil {
 			cr.tracker.PromptWritten()
 			s.SetSessionState(ctx, existing.ID, SessionRunning, "wire")

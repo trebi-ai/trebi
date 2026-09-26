@@ -21,7 +21,7 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | job | a `JOB.md` file: YAML frontmatter (harness, triggers, session) plus a prompt body |
 | file | any path inside a workspace (scripts, templates, eval files). Raw bytes; no job semantics. Job-scoped via `trebi job file`; workspace-wide via `trebi file` |
 | run | one launch of a job in a harness session (subprocess by default; tmux when `runtime: tui`) |
-| assistant | the singleton `TREBI.md` job of a workspace, kind=assistant |
+| assistant | the workspace chat agent; one live session per conversation, settings in config and `trebi.yaml` |
 | agent | a folder-scoped `AGENT.md` at `agents/<name>/`; owns the jobs inside that folder, kind=agent |
 | conversation | a chat thread with the assistant; the CLI/UI are channels onto it |
 | connector | an external event producer (a `stream`, `cli`, or `mcp` command) |
@@ -48,7 +48,7 @@ If the daemon is down: `trebi service start`. If it was never installed: `trebi 
 
 Only these work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate|path|show|set|unset`, `guide`, `mcp config|install`, `memory validate|skeleton`, and `workspace list|current|use|unlink`. Everything else fails with a clear message.
 
-Native assistant (no vendor CLI): `trebi config set assistant.model claude-sonnet-4-5` and `trebi config set assistant.api_key_env ANTHROPIC_API_KEY`. API key only; `runtime: tui` in TREBI.md is the tmux escape hatch.
+Native assistant (no vendor CLI): `trebi config set assistant.native.model claude-sonnet-4-5` and `trebi config set assistant.native.api_key_env ANTHROPIC_API_KEY`. API key only.
 
 ## Cloud link and hosted webhooks
 
@@ -62,13 +62,13 @@ trebi hooks list
 
 `hooks create` prints the public URL once. Handle it like a webhook secret: anyone holding it can post an event. A job fires on a delivery with `on: [{event: webhook, match: …}]`; the event carries `path`, `headers`, `body` as a string, and the delivery facts. Delete a hook with `trebi hooks delete <id>`.
 
-Vendor runs (`claude`, `codex`, `opencode`, `opencode2`, `pi`, `copilot`, `cursor`) spawn the installed CLI as a subprocess and speak its structured protocol by default — no tmux pane, no prompt pasting. `runtime: tui` in `JOB.md` / `TREBI.md` / `AGENT.md` opts that run back into a pane; `trebi config set harness.runtime tui` is the incident-only global kill switch. A CLI run that fails closed leaves a doctor hint; relaunch or resume with `runtime: tui` — there is no silent fallback. `trebi runs attach` on a CLI run prints the event stream; `trebi runs logs -f` always works.
+Vendor runs (`claude`, `codex`, `opencode`, `opencode2`, `pi`, `copilot`, `cursor`) spawn the installed CLI as a subprocess and speak its structured protocol by default — no tmux pane, no prompt pasting. `runtime: tui` in `JOB.md` / `AGENT.md` opts that run back into a pane; `trebi config set harness.runtime tui` is the incident-only global kill switch. A CLI run that fails closed leaves a doctor hint; relaunch or resume with `runtime: tui` — there is no silent fallback. `trebi runs attach` on a CLI run prints the event stream; `trebi runs logs -f` always works.
 
 ## Global rules
 
 - `--workspace` / `-w` (or `$TREBI_WORKSPACE`) selects the workspace by **name or id**. Flags can go before or after the name: `trebi -w staging job run report`, `trebi job run --workspace staging report`, and `trebi job run report -w staging` are equivalent.
 - Without `-w`, trebi uses the sticky context from `trebi workspace use`. On `not_found` after `-w <name>`, run `trebi workspace list --json` and retry with the `id`.
-- List / show / status / current commands take `--json`. `runs show`, `job show`, `skill show`, and `assistant show` already print JSON; `--json` is accepted and is a no-op. `job validate --json` emits the validate body. Mutating commands (`create`, `set`, `patch`) and `assistant say` / `wake` often do not. On `flag provided but not defined: -json`, drop `--json` once; do not retry it.
+- List / show / status / current commands take `--json`. `runs show`, `job show`, `skill show`, and `assistant show` already print JSON; `--json` is accepted and is a no-op. `job validate --json` emits the validate body. Mutating commands (`create`, `set`, `patch`) and `assistant say` often do not. On `flag provided but not defined: -json`, drop `--json` once; do not retry it.
 - Use `--json` and pipe to `jq` when you parse output. Never parse the human tables.
 - List commands paginate with `--limit` and `--cursor`. The cursor is the id of the last row. `trebi service logs` is not a list command: it uses `--lines` / `-n` and `--grep`, not `--limit`.
 - Times are RFC3339 UTC. Durations end in `_ms`. Keys are snake_case.
@@ -84,7 +84,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `jobs-and-scheduling` | JOB.md shape, cron/every/event triggers, pause, validate, job memory |
 | `runs-and-debugging` | show/timeline/transcript/logs, retry/resume/replay/mark, attach, approvals |
 | `files` | job-scoped vs workspace files, scripts next to jobs, If-Match |
-| `assistant` | wake, say, conversations, memory |
+| `assistant` | settings layers, chat and sessions, conversations, memory |
 | `agents` | folder-scoped agents: identity, rename, email accept, owned jobs, wake, conversations, agent memory |
 | `connectors-and-rules` | create/connect connectors, rules test/fire, event triggers, queue |
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed |

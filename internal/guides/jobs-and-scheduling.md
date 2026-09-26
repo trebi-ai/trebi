@@ -70,9 +70,9 @@ trebi job validate my-job --workspace reports --json
 it over hand-written YAML. `--validate` checks the definition and writes
 nothing. `--file` is **local only** (reads a path); remote: pass `content`.
 Always `validate` after you write a `JOB.md` yourself. `--kind` picks `job`
-(default), `assistant`, `agent`, or `all`; the `agent` and `assistant` kinds
-list every workspace. Folder-scoped agents and the `--agent` owner field:
-`trebi guide agents`.
+(default), `agent`, or `all`; the `agent` kind lists every workspace. The
+assistant is not a job; `trebi assistant sessions` lists its conversations.
+Folder-scoped agents and the `--agent` owner field: `trebi guide agents`.
 
 ## Launch
 
@@ -82,7 +82,7 @@ trebi job run my-job --workspace reports --test --json
 trebi job run my-job --workspace reports --extra-prompt "extra prompt" --json
 ```
 
-`--test` is only on `job run` (and `assistant wake --test`). Do not expect it on `rules fire` or `assistant say`. Use `--test` before the first real launch **only if this session created or edited that JOB.md**.
+`--test` is only on `job run`. Do not expect it on `rules fire` or `assistant say`. Use `--test` before the first real launch **only if this session created or edited that JOB.md**.
 
 ```bash
 trebi job run my-job --workspace reports --attach

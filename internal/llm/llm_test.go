@@ -69,7 +69,7 @@ func TestOpenAITextAndToolAnd401(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("LLM_TEST_KEY", "sk-test")
-	cfg := config.AssistantConfig{Model: "gpt-4", APIFormat: "openai", BaseURL: srv.URL, APIKeyEnv: "LLM_TEST_KEY"}
+	cfg := config.NativeConfig{Model: "gpt-4", APIFormat: "openai", BaseURL: srv.URL, APIKeyEnv: "LLM_TEST_KEY"}
 	p, err := NewWithHTTP(cfg, srv.Client())
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestAnthropicTextAndToolAnd401(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("LLM_TEST_KEY", "sk-ant")
-	cfg := config.AssistantConfig{Model: "claude-sonnet-4-5", APIFormat: "anthropic", BaseURL: srv.URL, APIKeyEnv: "LLM_TEST_KEY"}
+	cfg := config.NativeConfig{Model: "claude-sonnet-4-5", APIFormat: "anthropic", BaseURL: srv.URL, APIKeyEnv: "LLM_TEST_KEY"}
 	p, err := NewWithHTTP(cfg, srv.Client())
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestStopUnknown(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("LLM_TEST_KEY", "k")
-	cfg := config.AssistantConfig{Model: "gpt-4", BaseURL: srv.URL, APIKeyEnv: "LLM_TEST_KEY"}
+	cfg := config.NativeConfig{Model: "gpt-4", BaseURL: srv.URL, APIKeyEnv: "LLM_TEST_KEY"}
 	p, err := NewWithHTTP(cfg, srv.Client())
 	if err != nil {
 		t.Fatal(err)

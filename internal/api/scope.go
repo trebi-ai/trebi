@@ -145,6 +145,20 @@ func writeForbidden(w http.ResponseWriter, msg string) {
 	writeErr(w, http.StatusForbidden, "forbidden", msg)
 }
 
+// assistantScoped rejects an assistant session actor whose token belongs to
+// another workspace. Humans and agents pass; the handler owns the rest.
+func (s *Server) assistantScoped(w http.ResponseWriter, r *http.Request, workspaceID string) bool {
+	a, ok := tools.ActorFrom(r.Context())
+	if !ok || a.Kind != "assistant" {
+		return true
+	}
+	if a.WorkspaceID == workspaceID {
+		return true
+	}
+	writeForbidden(w, "assistant may act only on its own workspace")
+	return false
+}
+
 func rejectAnyAgentScope(w http.ResponseWriter, r *http.Request) bool {
 	if _, ok := scopeFrom(r.Context()); ok {
 		writeForbidden(w, "agent callers may not change this resource")

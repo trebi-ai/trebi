@@ -363,7 +363,7 @@ func (s *Server) handleDoctorFix(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) doctorFindings() []map[string]any {
 	src := s.alerts.CollectDoctorFindings()
-	src = append(src, s.nativeAssistantDoctor()...)
+	src = append(src, s.assistantDoctor()...)
 	src = append(src, s.apiBindDoctor()...)
 	src = append(src, s.agentLayoutDoctor()...)
 	src = append(src, s.memoryDoctor()...)
@@ -588,26 +588,17 @@ func (s *Server) memoryAlertDoctor() []alerts.DoctorFinding {
 	}}
 }
 
-func (s *Server) nativeAssistantDoctor() []alerts.DoctorFinding {
-	cfg, err := config.Load()
-	if err != nil || cfg == nil || !cfg.Assistant.Enabled() {
+// assistantDoctor adapts the session manager's doctor findings.
+func (s *Server) assistantDoctor() []alerts.DoctorFinding {
+	if s.asstDoctor == nil {
 		return nil
 	}
-	list, err := s.ws.List(context.Background())
-	if err != nil {
-		return nil
-	}
-	var out []alerts.DoctorFinding
-	for _, ws := range list {
-		j, err := job.ParseFile(filepath.Join(ws.Path, "TREBI.md"))
-		if err != nil || j == nil || strings.TrimSpace(j.Harness) == "" {
-			continue
-		}
+	findings := s.asstDoctor.Findings(context.Background())
+	out := make([]alerts.DoctorFinding, 0, len(findings))
+	for _, f := range findings {
 		out = append(out, alerts.DoctorFinding{
-			ID: "assistant-harness-" + ws.ID, Severity: "info", Code: "assistant_harness_ignored",
-			Message: "TREBI.md harness: no longer selects the assistant runtime (it still pins job runs). Native is on via assistant.model; escape hatch is runtime: tui.",
+			ID: f.ID, Severity: f.Severity, Code: f.Code, Message: f.Message,
 		})
-		break
 	}
 	return out
 }

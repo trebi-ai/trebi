@@ -30,6 +30,14 @@ type Sink struct {
 	// Gate validates memory at the completion point. A non-empty return is a
 	// fix message the loop appends as the next user message; empty = pass.
 	Gate func(ctx context.Context) string
+
+	// Streaming hooks for a session driver (plan 2026-09-26 D.11). Nil
+	// fields are skipped by Run and Session alike.
+	AssistantText func(text string)
+	Usage         func(u llm.Usage)
+	// ToolEvent reports one tool call: phase is started|completed; Output is
+	// set on completed.
+	ToolEvent func(phase string, c llm.ToolCall, output string)
 }
 
 // RunOpts is one native assistant execution.

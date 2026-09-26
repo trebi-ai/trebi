@@ -5,8 +5,10 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -233,5 +235,46 @@ func testSvc(t *testing.T) *conversations.Service {
 	t.Cleanup(func() { _ = st.Close() })
 	r := runs.New(st, nil, nil)
 	q := dispatch.NewQueue(st)
-	return conversations.New(st).WithRuns(r).WithQueue(q)
+	svc := conversations.New(st).WithRuns(r).WithQueue(q)
+	// Sends with no operator route to the assistant. The stub stores the
+	// user row and reports it, which is all the send path needs here.
+	svc.WithAssistant(stubPrompter{svc: svc})
+	return svc
+}
+
+// stubPrompter satisfies the assistant seam: it stores the user row and
+// reports it, so send-path tests exercise routing without a session.
+type stubPrompter struct {
+	svc *conversations.Service
+}
+
+func (p stubPrompter) Prompt(ctx context.Context, convID string, in wire.PromptInput) (wire.PromptResult, error) {
+	msg, _, err := p.svc.AppendUser(ctx, convID, conversations.UserTurn{
+		Text: in.Text, ChannelType: in.ChannelType, ChannelRef: in.ChannelRef,
+		IdempotencyKey: in.IdempotencyKey,
+	})
+	if err != nil {
+		return wire.PromptResult{}, err
+	}
+	return wire.PromptResult{Message: wireFromConv(msg)}, nil
+}
+
+func (p stubPrompter) Ask(ctx context.Context, convID string, in wire.PromptInput, _ time.Duration) (wire.AskResult, error) {
+	return p.ask(ctx, convID, in)
+}
+
+func (p stubPrompter) ask(ctx context.Context, convID string, in wire.PromptInput) (wire.AskResult, error) {
+	msg, _, err := p.svc.AppendUser(ctx, convID, conversations.UserTurn{
+		Text: in.Text, ChannelType: in.ChannelType, ChannelRef: in.ChannelRef,
+		IdempotencyKey: in.IdempotencyKey,
+	})
+	if err != nil {
+		return wire.AskResult{}, err
+	}
+	return wire.AskResult{Message: wireFromConv(msg)}, nil
+}
+
+func wireFromConv(m conversations.Message) wire.Message {
+	return wire.Message{ID: m.ID, ConversationID: m.ConversationID, Role: m.Role,
+		ChannelType: m.ChannelType, ChannelRef: m.ChannelRef, Text: m.Text, CreatedAt: m.CreatedAt}
 }

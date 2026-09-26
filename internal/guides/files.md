@@ -8,7 +8,7 @@ description: Job-scoped vs workspace files, scripts next to jobs, If-Match.
 
 Supporting files for a job (scripts, templates, fixtures) go next to it. Use `trebi job file` — the default. Paths are job-relative (`render.py`, not `report/render.py`). A wrong prefix cannot touch a sibling job.
 
-`JOB.md` / `MEMORY.md` / `TREBI.md` writes on this command 409: edit those with `trebi job` and `trebi job memory`.
+`JOB.md` / `MEMORY.md` writes on this command 409: edit those with `trebi job` and `trebi job memory`.
 
 ## Job-scoped files
 
@@ -35,7 +35,7 @@ trebi job file get <job> render.py
 
 ## Workspace-level files
 
-`trebi file` is for assets shared across jobs (`templates/`, `lib/`) or assistant support files. Same If-Match / size-cap rules. `JOB.md` / `TREBI.md` / `MEMORY.md` are allowed there — the index rebuilds the same way as an editor save. `trebi.yaml` and `.git/**` are denied.
+`trebi file` is for assets shared across jobs (`templates/`, `lib/`) or assistant support files. Same If-Match / size-cap rules. `JOB.md` / `MEMORY.md` are allowed there — the index rebuilds the same way as an editor save. `trebi.yaml` and `.git/**` are denied.
 
 ```bash
 trebi file list --json --limit 100

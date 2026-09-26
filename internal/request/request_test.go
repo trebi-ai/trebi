@@ -470,24 +470,79 @@ func TestBuildInboxAndAlerts(t *testing.T) {
 	}
 }
 
-func TestRunSpecBuildWake(t *testing.T) {
+func TestAssistantSettingsBuilders(t *testing.T) {
 	t.Parallel()
-	req := RunSpec{
-		Workspace: "ws1", ExtraPrompt: "hello", Harness: "codex",
-		ConversationID: "01C", Inputs: map[string]string{"env": "prod"}, DryRun: true,
-	}.BuildWake()
-	if req.Method != "POST" || req.Path != "/v1/workspaces/ws1/assistant/wake" {
-		t.Fatalf("%+v", req)
+	get := BuildAssistantDefaultsGet()
+	if get.Method != "GET" || get.Path != "/v1/assistant" {
+		t.Fatalf("defaults get %+v", get)
 	}
-	body, _ := req.Body.(map[string]any)
-	if body["extra_prompt"] != "hello" || body["dry_run"] != true ||
-		body["harness"] != "codex" || body["conversation_id"] != "01C" {
-		t.Fatalf("wake body %+v", body)
+	put := BuildAssistantDefaultsPut(map[string]any{"harness": "codex", "mode": "auto_edit"})
+	if put.Method != "PUT" || put.Path != "/v1/assistant" {
+		t.Fatalf("defaults put %+v", put)
 	}
-	if inputs, _ := body["inputs"].(map[string]string); inputs["env"] != "prod" {
-		t.Fatalf("wake inputs %+v", body)
+	body, _ := put.Body.(map[string]any)
+	if body["harness"] != "codex" || body["mode"] != "auto_edit" {
+		t.Fatalf("defaults body %+v", body)
+	}
+	wput := BuildAssistantSettingsPut("ws1", map[string]any{"harness": "codex"}, "h3")
+	if wput.Method != "PUT" || wput.Path != "/v1/workspaces/ws1/assistant" || wput.IfMatch != "h3" {
+		t.Fatalf("override put %+v", wput)
+	}
+	wbody, _ := wput.Body.(map[string]any)
+	ov, _ := wbody["override"].(map[string]any)
+	if ov["harness"] != "codex" {
+		t.Fatalf("override body %+v", wbody)
+	}
+	if p := BuildAssistantPreviewPath("ws1"); p != "/v1/workspaces/ws1/assistant/preview" {
+		t.Fatalf("preview %s", p)
 	}
 }
+
+func TestConversationSessionBuilders(t *testing.T) {
+	t.Parallel()
+	del := BuildConversationDelete("01C", true)
+	if del.Method != "DELETE" || del.Path != "/v1/conversations/01C?confirm=1" {
+		t.Fatalf("delete %+v", del)
+	}
+	ev := BuildConversationEventsPath("01C", 7, 100, false)
+	if ev != "/v1/conversations/01C/events?after=7&limit=100" {
+		t.Fatalf("events %s", ev)
+	}
+	follow := BuildConversationEventsPath("01C", 0, 0, true)
+	if follow != "/v1/conversations/01C/events?follow=1" {
+		t.Fatalf("follow %s", follow)
+	}
+	interrupt := BuildConversationInterrupt("01C")
+	if interrupt.Method != "POST" || interrupt.Path != "/v1/conversations/01C/interrupt" {
+		t.Fatalf("interrupt %+v", interrupt)
+	}
+	closeReq := BuildConversationClose("01C")
+	if closeReq.Method != "POST" || closeReq.Path != "/v1/conversations/01C/close" {
+		t.Fatalf("close %+v", closeReq)
+	}
+	perm := BuildConversationPermission("01C", "p1", "allow_once", "")
+	if perm.Method != "POST" || perm.Path != "/v1/conversations/01C/permissions/p1" {
+		t.Fatalf("permission %+v", perm)
+	}
+	if b, _ := perm.Body.(map[string]any); b["decision"] != "allow_once" || len(b) != 1 {
+		t.Fatalf("permission body %+v", perm.Body)
+	}
+	if msg := BuildConversationPermission("01C", "p1", "deny", "no"); msg.Body.(map[string]any)["message"] != "no" {
+		t.Fatalf("permission message %+v", msg.Body)
+	}
+	mode := BuildConversationMode("01C", "ask")
+	if mode.Method != "POST" || mode.Path != "/v1/conversations/01C/mode" {
+		t.Fatalf("mode %+v", mode)
+	}
+	revert := BuildConversationRevert("01C", 3, "a/b.txt")
+	if revert.Method != "POST" || revert.Path != "/v1/conversations/01C/revert" {
+		t.Fatalf("revert %+v", revert)
+	}
+	if b, _ := revert.Body.(map[string]any); b["turn"] != 3 || b["path"] != "a/b.txt" {
+		t.Fatalf("revert body %+v", revert.Body)
+	}
+}
+
 func TestBuildConversationChatRequests(t *testing.T) {
 	t.Parallel()
 	path := BuildConversationsListPath("ws1", "cli", "", "01C", 10)
@@ -704,7 +759,6 @@ func TestKeepJobKind(t *testing.T) {
 	t.Parallel()
 	rows := []map[string]any{
 		{"kind": "job", "name": "a"},
-		{"kind": "assistant", "name": "b"},
 		{"kind": "agent", "name": "agents/cmo"},
 		{"kind": "", "name": "c"},
 	}
@@ -712,17 +766,16 @@ func TestKeepJobKind(t *testing.T) {
 	if len(jobs) != 2 || jobs[0]["name"] != "a" {
 		t.Fatalf("%v", jobs)
 	}
-	as := FilterJobsByKindFlag(rows, "assistant")
-	if len(as) != 1 || as[0]["name"] != "b" {
-		t.Fatalf("%v", as)
-	}
 	ag := FilterJobsByKindFlag(rows, "agent")
 	if len(ag) != 1 || ag[0]["name"] != "agents/cmo" {
 		t.Fatalf("%v", ag)
 	}
 	all := FilterJobsByKindFlag(rows, "all")
-	if len(all) != 4 {
+	if len(all) != 3 {
 		t.Fatalf("%v", all)
+	}
+	if _, err := ParseJobListKind("assistant"); err == nil {
+		t.Fatal("assistant must no longer be a job list kind")
 	}
 }
 
@@ -873,30 +926,6 @@ func TestBuildWorkspaceAndAssistantRequests(t *testing.T) {
 	if p := BuildAssistantMemoryGetPath("ws1"); p != "/v1/workspaces/ws1/assistant/memory" {
 		t.Fatalf("asst mem %s", p)
 	}
-	put := BuildAssistantPut("ws1", "# hi\n", "h3")
-	if put.Method != "PUT" || put.Path != "/v1/workspaces/ws1/assistant" || put.IfMatch != "h3" {
-		t.Fatalf("%+v", put)
-	}
-	m, _ := put.Body.(map[string]string)
-	if m["content"] != "# hi\n" {
-		t.Fatalf("%v", m)
-	}
-	no := false
-	patch := BuildAssistantPatch("ws1", &no, "e1")
-	if patch.Method != "PATCH" || patch.IfMatch != "e1" {
-		t.Fatalf("%+v", patch)
-	}
-	pm, _ := patch.Body.(map[string]any)
-	if d, _ := pm["disabled"].(*bool); d == nil || *d != false {
-		t.Fatalf("%v", pm)
-	}
-	if patch := BuildAssistantPatch("ws1", nil, ""); patch.IfMatch != "" {
-		t.Fatalf("%+v", patch)
-	}
-	del := BuildAssistantDelete("ws1", "e2")
-	if del.Method != "DELETE" || del.Path != "/v1/workspaces/ws1/assistant" || del.IfMatch != "e2" {
-		t.Fatalf("%+v", del)
-	}
 }
 
 func TestBuildHarnessConnectorQueueRequests(t *testing.T) {
@@ -1031,16 +1060,16 @@ func TestBuildSystemAndCloudRequests(t *testing.T) {
 func TestIfMatchOnDocumentWrites(t *testing.T) {
 	t.Parallel()
 	cases := map[string]HTTPRequest{
-		"job put":           BuildJobPutMarkdown("demo", "ws1", "# job", "h"),
-		"job delete":        BuildJobDelete("demo", "ws1", "h", false, true),
-		"job pause":         BuildJobPause("demo", "ws1", "h", true),
-		"job unpause":       BuildJobPause("demo", "ws1", "h", false),
-		"job memory put":    BuildJobMemoryPut("demo", "ws1", "m", "h", false),
-		"job memory clear":  BuildJobMemoryClear("demo", "ws1", "h", true),
-		"assistant put":     BuildAssistantPut("ws1", "# t", "h"),
-		"assistant mem put": BuildAssistantMemoryPut("ws1", "m", "h", false),
-		"assistant mem clr": BuildAssistantMemoryClear("ws1", "h", true),
-		"skill put":         BuildSkillPut("demo", "# s", nil, "h"),
+		"job put":                BuildJobPutMarkdown("demo", "ws1", "# job", "h"),
+		"job delete":             BuildJobDelete("demo", "ws1", "h", false, true),
+		"job pause":              BuildJobPause("demo", "ws1", "h", true),
+		"job unpause":            BuildJobPause("demo", "ws1", "h", false),
+		"job memory put":         BuildJobMemoryPut("demo", "ws1", "m", "h", false),
+		"job memory clear":       BuildJobMemoryClear("demo", "ws1", "h", true),
+		"assistant override put": BuildAssistantSettingsPut("ws1", map[string]any{"mode": "ask"}, "h"),
+		"assistant mem put":      BuildAssistantMemoryPut("ws1", "m", "h", false),
+		"assistant mem clr":      BuildAssistantMemoryClear("ws1", "h", true),
+		"skill put":              BuildSkillPut("demo", "# s", nil, "h"),
 	}
 	for name, req := range cases {
 		if req.IfMatch != "h" {

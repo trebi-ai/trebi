@@ -7,15 +7,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/trebi-ai/trebi/internal/agents"
-	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/conversations"
-	"github.com/trebi-ai/trebi/internal/job"
-	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -26,11 +20,6 @@ func (s *Server) routeWorkspaces(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /v1/workspaces/{id}", s.handleWorkspacePatch)
 	mux.HandleFunc("POST /v1/workspaces/{id}/move", s.handleWorkspaceMove)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.handleWorkspaceDelete)
-	mux.HandleFunc("GET /v1/workspaces/{id}/assistant", s.handleAssistantGet)
-	mux.HandleFunc("PUT /v1/workspaces/{id}/assistant", s.handleAssistantPut)
-	mux.HandleFunc("PATCH /v1/workspaces/{id}/assistant", s.handleAssistantPatch)
-	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant", s.handleAssistantDelete)
-	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/wake", s.handleAssistantWake)
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/messages", s.handleAssistantAsk)
 }
 
@@ -122,119 +111,15 @@ func (s *Server) handleWorkspaceGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ws)
 }
 
-func (s *Server) handleAssistantGet(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
-	if !ok {
-		return
-	}
-	path := filepath.Join(ws.Path, "TREBI.md")
-	j, err := job.ParseFile(path)
-	if err != nil && j == nil {
-		writeErr(w, http.StatusNotFound, "not_found", "no assistant")
-		return
-	}
-	if j == nil {
-		writeErr(w, http.StatusNotFound, "not_found", "no assistant")
-		return
-	}
-	cfg, _ := config.Load()
-	var asst config.AssistantConfig
-	if cfg != nil {
-		asst = cfg.Assistant
-	}
-	runtime, reason, auth := asst.Route(j.Runtime)
-	body := map[string]any{
-		"name": j.Name, "harness": j.Harness, "description": j.Description,
-		"memory": j.Memory, "path": path, "parse_error": j.ParseError, "hash": j.Hash,
-		"disabled": j.Disabled,
-		"runtime":  runtime, "model": asst.Model, "auth_status": auth, "runtime_reason": reason,
-	}
-	// The assistant owns the workspace base address; show it masked.
-	if addr, err := s.email.Masked(r.Context(), ws.ID); err == nil && addr.LocalPart != "" {
-		body["email_address"] = addr.Full()
-	}
-	writeJSON(w, http.StatusOK, body)
-}
-
-func (s *Server) handleAssistantPut(w http.ResponseWriter, r *http.Request) {
-	if rejectAnyAgentScope(w, r) {
-		return
-	}
-	wsID := r.PathValue("id")
-	ws, err := s.ws.Get(r.Context(), wsID)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-		return
-	}
-	var body struct {
-		Content string `json:"content"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	path := filepath.Join(ws.Path, "TREBI.md")
-	if body.Content == "" {
-		body.Content = agents.AssistantTemplate
-	}
-	info, _, err := s.files.Write(r.Context(), ws.Path, "TREBI.md", []byte(body.Content), ifMatchHeader(r))
-	if err != nil {
-		writeFilesErr(w, err)
-		return
-	}
-	_ = s.ws.RebuildIndex(r.Context(), ws)
-	setETagHash(w, info.Hash)
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "hash": info.Hash})
-}
-
-func (s *Server) handleAssistantPatch(w http.ResponseWriter, r *http.Request) {
-	if rejectAnyAgentScope(w, r) {
-		return
-	}
-	// patch disabled flag on TREBI.md
-	wsID := r.PathValue("id")
-	ws, err := s.ws.Get(r.Context(), wsID)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-		return
-	}
-	var body struct {
-		Disabled *bool `json:"disabled"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	path := filepath.Join(ws.Path, "TREBI.md")
-	if !s.requireIfMatch(w, r, ws.Path, "TREBI.md") {
-		return
-	}
-	if body.Disabled != nil {
-		_ = job.SetDisabled(path, *body.Disabled)
-	}
-	setETagHash(w, s.fileHash(r.Context(), ws.Path, "TREBI.md"))
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "patched": true})
-}
-
-func (s *Server) handleAssistantDelete(w http.ResponseWriter, r *http.Request) {
-	wsID := r.PathValue("id")
-	ws, err := s.ws.Get(r.Context(), wsID)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-		return
-	}
-	path := filepath.Join(ws.Path, "TREBI.md")
-	if !s.requireIfMatch(w, r, ws.Path, "TREBI.md") {
-		return
-	}
-	_ = os.Remove(path)
-	_ = s.ws.RebuildIndex(r.Context(), ws)
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": path})
-}
-
 // handleAssistantAsk sends one message to the workspace assistant. The daemon
 // resolves or creates the channel conversation, so a client needs no pointer
 // calls of its own.
 func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 	if scope, ok := scopeFrom(r.Context()); ok && scope.workspaceID != r.PathValue("id") {
 		writeForbidden(w, "agent may message only its own workspace assistant")
+		return
+	}
+	if !s.assistantScoped(w, r, r.PathValue("id")) {
 		return
 	}
 	var body struct {
@@ -259,28 +144,6 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, out)
-}
-
-func (s *Server) handleAssistantWake(w http.ResponseWriter, r *http.Request) {
-	wsID := r.PathValue("id")
-	var body runCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	row, err := s.findAssistantRow(r.Context(), wsID)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "no assistant in workspace")
-		return
-	}
-	// Assistant lane: keep client prompt_override/inputs, pin identity fields.
-	body.Job = row.Name
-	body.Workspace = wsID
-	body.Kind = "assistant"
-	if body.Reason == "" {
-		body.Reason = string(runs.ReasonManual)
-	}
-	s.createRun(w, r, body)
 }
 
 func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {

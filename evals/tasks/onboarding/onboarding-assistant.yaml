@@ -10,12 +10,13 @@ prompt: |
   Create a workspace named "ops" if needed. Set up the assistant for it and
   ask it what this workspace is for. Show me what it said.
 checks:
-  - name: TREBI.md at root
-    file_exists: "{workspace}/TREBI.md"
-  - name: assistant run recorded
-    cmd: trebi runs list --kind assistant --json
-    jq: '.runs | length >= 1'
-  # If this fails while the run ends complete, the reply path is broken.
+  - name: workspace assistant configured
+    cmd: trebi assistant show --workspace ops
+    jq: '.effective.harness != null or .effective.resolved_harness != null'
+  - name: assistant session recorded
+    cmd: trebi assistant sessions --workspace ops --json
+    jq: '(.conversations // []) | length >= 1'
+  # If this fails while the session ends idle, the reply path is broken.
   - name: assistant replied
     snapshot_jq: '[.conversations[]?.messages[]? | select(.role == "assistant")] | length >= 1'
 judge:

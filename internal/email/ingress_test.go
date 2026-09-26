@@ -34,15 +34,15 @@ func testRouteEnv() RouteEnv {
 
 // fakeActions records every routing side effect the ingress loop causes.
 type fakeActions struct {
-	env       RouteEnv
-	wakes     []string // agent names, in wake order
-	asks      []string // assistant texts, in ask order
-	inbox     []string // drop or misroute reasons, in item order
-	decisions []string // approval decisions, in decide order
+	env               RouteEnv
+	wakes             []string // agent names, in wake order
+	asks              []string // assistant texts, in ask order
+	inbox             []string // drop or misroute reasons, in item order
+	decisions         []string // approval decisions, in decide order
 	proposalDecisions []string // proposal decisions, in decide order
-	messages  []string // run message texts, in inject order
-	resolves  []string // inbox ids one reply decided
-	ambiguous int      // replies that named both decisions
+	messages          []string // run message texts, in inject order
+	resolves          []string // inbox ids one reply decided
+	ambiguous         int      // replies that named both decisions
 }
 
 func (f *fakeActions) RouteEnvFor(_ context.Context, _ string) (RouteEnv, error) {

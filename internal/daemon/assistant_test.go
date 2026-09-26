@@ -1,0 +1,194 @@
+package daemon_test
+
+// Assistant session wiring in the daemon (plan 2026-09-26 K.1): a trigger
+// item prompts the session through the queue lane, drain holds assistant
+// items, and the turn end hook fires per turn.
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/trebi-ai/trebi/internal/assistant"
+	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/daemon"
+	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/store"
+)
+
+func TestTriggerItemPromptsAssistantSession(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cp := daemon.New(st, daemon.Options{QueueInterval: 20 * time.Millisecond})
+	ctx := context.Background()
+
+	wsPath := filepath.Join(dir, "ws")
+	if err := os.MkdirAll(wsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := cp.Workspaces.Add(ctx, wsPath, "trig-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pin the fake harness: the driver below serves it.
+	fake := "fake"
+	if _, err := cp.Workspaces.SetAssistantOverride(ctx, ws.ID,
+		assistant.Override{Harness: &fake}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	turns := make(chan string, 4)
+	cp.Assistant().OnTurnEnd(func(ctx context.Context, te assistant.TurnEnd) {
+		turns <- te.Reply.Text
+	})
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+
+	q := dispatch.NewQueue(st)
+	item := &dispatch.QueueItem{
+		Connector:       "test-conn",
+		WorkspaceID:     ws.ID,
+		Job:             "assistant",
+		Kind:            dispatch.KindAssistant,
+		EventID:         "evt-1",
+		ConversationKey: "k1",
+		Prompt:          "Summarize the trigger",
+		Status:          dispatch.QueuePending,
+	}
+	if err := q.Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+
+	// The lane creates the channel conversation, prompts the session, and
+	// marks the item done.
+	deadline := time.Now().Add(8 * time.Second)
+	var convID string
+	for time.Now().Before(deadline) && convID == "" {
+		rows, err := q.List(ctx, dispatch.ListOpts{Workspace: ws.ID})
+		if err == nil {
+			for _, row := range rows {
+				if row.ID == item.ID && row.Status == dispatch.QueueDone {
+					p, err := cp.Conversations.GetPointer(ctx, "test-conn", "k1")
+					if err == nil {
+						convID = p.ConversationID
+					}
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if convID == "" {
+		t.Fatal("assistant item never completed into a conversation")
+	}
+
+	waitForStatus(t, cp, convID, 5*time.Second, assistant.StatusIdle, assistant.StatusClosed)
+	msgs, _ := cp.Conversations.ListMessages(ctx, convID, conversations.MessageListOpts{Limit: 20})
+	var replied bool
+	for _, m := range msgs {
+		if m.Role == conversations.RoleAssistant && m.Text == "working" {
+			replied = true
+		}
+	}
+	if !replied {
+		t.Fatalf("no assistant reply: %+v", msgs)
+	}
+
+	// The turn end hook fired with the reply (the email reply rides it).
+	select {
+	case text := <-turns:
+		if text != "working" {
+			t.Fatalf("turn end reply %q", text)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn end hook never fired")
+	}
+}
+
+func waitForStatus(t *testing.T, cp *daemon.ControlPlane, convID string, d time.Duration, statuses ...string) {
+	t.Helper()
+	want := map[string]bool{}
+	for _, s := range statuses {
+		want[s] = true
+	}
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		rec, err := cp.AssistantStore().Get(context.Background(), convID)
+		if err == nil && want[rec.Status] {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("session never reached %v", statuses)
+}
+
+// TestDrainHoldsAssistantItems: the drain flag holds queued assistant items
+// like every other kind (plan E).
+func TestDrainHoldsAssistantItems(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SetFlag("drain", "1"); err != nil {
+		t.Fatal(err)
+	}
+
+	cp := daemon.New(st, daemon.Options{QueueInterval: 20 * time.Millisecond})
+	ctx := context.Background()
+	wsPath := filepath.Join(dir, "ws")
+	if err := os.MkdirAll(wsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := cp.Workspaces.Add(ctx, wsPath, "drain-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fired atomic.Int64
+	cp.Assistant().OnTurnEnd(func(context.Context, assistant.TurnEnd) { fired.Add(1) })
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+
+	q := dispatch.NewQueue(st)
+	item := &dispatch.QueueItem{
+		Connector: "test-conn", WorkspaceID: ws.ID, Job: "assistant",
+		Kind: dispatch.KindAssistant, EventID: "evt-drain",
+		Status: dispatch.QueuePending,
+	}
+	if err := q.Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	rows, _ := q.List(ctx, dispatch.ListOpts{Workspace: ws.ID})
+	for _, row := range rows {
+		if row.ID == item.ID && row.Status != dispatch.QueuePending {
+			t.Fatalf("drained process picked up the item: %s", row.Status)
+		}
+	}
+	if fired.Load() != 0 {
+		t.Fatal("turn end fired under drain")
+	}
+}

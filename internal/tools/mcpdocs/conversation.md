@@ -53,6 +53,21 @@ Send one message in a conversation.
 - `channel_ref` (string, optional): channel reference.
 - `idempotency_key` (string, optional): deduplication key for retries.
 
+### events
+Read the stored event transcript of one assistant conversation. Each event carries `seq`, `type`, `turn`, and the payload of its type (`text`, `tool`, `permission`, `answer`, `usage`, `result`, `error`). Pass the last `seq` as `after` on the next read to get only newer events.
+- `id` (string, required): conversation id.
+- `after` (number, optional): last seq seen; the reply holds events after it.
+- `limit` (number, optional): page size; the daemon caps it.
+
+### interrupt
+Interrupt the running turn of an assistant conversation. The call returns 409 `conflict` when no turn is running.
+- `id` (string, required): conversation id.
+
+### delete
+Delete one conversation with its messages, events, and assistant session row; it closes the session process first. Destructive.
+- `id` (string, required): conversation id.
+- `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
+
 ### pointer_show
 Read the conversation pointer of one channel.
 - `channel_type` (string, required): channel type.

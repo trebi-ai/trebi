@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -143,10 +144,13 @@ type SendOpts struct {
 	IdempotencyKey string
 }
 
-// SendResult is the send-path response.
+// SendResult is the send-path response. An assistant send reports
+// delivery "prompted" and the session status; an agent send keeps run and
+// queue ids.
 type SendResult struct {
 	Message  Message `json:"message"`
 	Delivery string  `json:"delivery"`
+	Status   string  `json:"status,omitempty"`
 	RunID    string  `json:"run_id,omitempty"`
 	QueueID  string  `json:"queue_id,omitempty"`
 }
@@ -160,6 +164,7 @@ type AskOpts struct {
 	ChannelType    string // defaults to cli
 	ChannelRef     string // defaults to the workspace id
 	IdempotencyKey string
+	Headless       bool          // email, trigger, escalation: timeout denies permissions
 	Wait           time.Duration // 0 returns as soon as the message is queued
 }
 
@@ -169,6 +174,15 @@ type AskResult struct {
 	SendResult
 	ConversationID string    `json:"conversation_id"`
 	Replies        []Message `json:"replies,omitempty"`
+}
+
+// UserTurn is one stored user row. Text is the full prompt; the drawer
+// reads the draft from the assistant events instead.
+type UserTurn struct {
+	Text           string
+	ChannelType    string
+	ChannelRef     string
+	IdempotencyKey string
 }
 
 // IncomingTurn is one parsed transcript turn for the watcher to persist.
@@ -181,13 +195,22 @@ type IncomingTurn struct {
 const convCols = `id, workspace_id, COALESCE(key,''), COALESCE(title,''), COALESCE(origin_channel,''),
 	COALESCE(summary,''), COALESCE(operator,''), created_at, updated_at, last_activity_at, revision`
 
+// assistantPrompter is the session-manager seam for operator="" sends
+// (plan 2026-09-26 Part E). *assistant.Manager satisfies it. The types live
+// in the wire leaf package, so neither side imports the other.
+type assistantPrompter interface {
+	Prompt(ctx context.Context, convID string, in wire.PromptInput) (wire.PromptResult, error)
+	Ask(ctx context.Context, convID string, in wire.PromptInput, wait time.Duration) (wire.AskResult, error)
+}
+
 // Service owns conversations, messages, and channel pointers.
 type Service struct {
-	st    *store.Store
-	log   *slog.Logger
-	runs  *runs.Service
-	queue *dispatch.Queue
-	ws    *workspaces.Service
+	st        *store.Store
+	log       *slog.Logger
+	runs      *runs.Service
+	queue     *dispatch.Queue
+	ws        *workspaces.Service
+	assistant assistantPrompter
 }
 
 // New builds a conversations service. Bind runs/queue/workspaces before Send.
@@ -207,9 +230,15 @@ func (s *Service) WithQueue(q *dispatch.Queue) *Service {
 	return s
 }
 
-// WithWorkspaces injects the workspace service (assistant job + wake compose).
+// WithWorkspaces injects the workspace service (agent wake compose).
 func (s *Service) WithWorkspaces(ws *workspaces.Service) *Service {
 	s.ws = ws
+	return s
+}
+
+// WithAssistant injects the session manager used by operator="" sends.
+func (s *Service) WithAssistant(p assistantPrompter) *Service {
+	s.assistant = p
 	return s
 }
 

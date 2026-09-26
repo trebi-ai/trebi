@@ -59,16 +59,6 @@ func (r RunSpec) BuildRunsCreate() HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: withQuery("/v1/runs", waitQ(r.WaitMS)), Body: body}
 }
 
-// BuildWake renders the spec as POST /v1/workspaces/{id}/assistant/wake. The
-// daemon pins job, kind, and workspace; the rest of the spec passes through.
-func (r RunSpec) BuildWake() HTTPRequest {
-	return HTTPRequest{
-		Method: "POST",
-		Path:   withQuery("/v1/workspaces/"+url.PathEscape(r.Workspace)+"/assistant/wake", waitQ(r.WaitMS)),
-		Body:   r.body(),
-	}
-}
-
 // BuildAgentWake renders the spec as POST /v1/workspaces/{id}/agents/{name}/wake.
 // Job carries the agent short name; the daemon pins job, kind, and workspace.
 func (r RunSpec) BuildAgentWake() HTTPRequest {
@@ -574,35 +564,33 @@ func BuildAssistantGetPath(workspaceID string) string {
 	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant"
 }
 
-// BuildAssistantPut builds PUT /v1/workspaces/{id}/assistant with TREBI.md content.
-// Empty content lets the server write its default template.
-func BuildAssistantPut(workspaceID, content, ifMatch string) HTTPRequest {
+// BuildAssistantDefaultsGet builds GET /v1/assistant: the global settings
+// plus the harness option list.
+func BuildAssistantDefaultsGet() HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/assistant"}
+}
+
+// BuildAssistantDefaultsPut builds PUT /v1/assistant with a settings object.
+// Only the fields the caller changed need to be present.
+func BuildAssistantDefaultsPut(settings map[string]any) HTTPRequest {
+	return HTTPRequest{Method: "PUT", Path: "/v1/assistant", Body: settings}
+}
+
+// BuildAssistantSettingsPut builds PUT /v1/workspaces/{id}/assistant with a
+// workspace override object. A stale ifMatch is 412 precondition_failed.
+func BuildAssistantSettingsPut(workspaceID string, override map[string]any, ifMatch string) HTTPRequest {
 	return HTTPRequest{
 		Method:  "PUT",
-		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant",
-		Body:    map[string]string{"content": content},
+		Path:    BuildAssistantGetPath(workspaceID),
+		Body:    map[string]any{"override": override},
 		IfMatch: ifMatch,
 	}
 }
 
-// BuildAssistantPatch builds PATCH /v1/workspaces/{id}/assistant (disabled flag).
-// disabled nil leaves the flag alone.
-func BuildAssistantPatch(workspaceID string, disabled *bool, ifMatch string) HTTPRequest {
-	return HTTPRequest{
-		Method:  "PATCH",
-		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant",
-		Body:    map[string]any{"disabled": disabled},
-		IfMatch: ifMatch,
-	}
-}
-
-// BuildAssistantDelete builds DELETE /v1/workspaces/{id}/assistant.
-func BuildAssistantDelete(workspaceID, ifMatch string) HTTPRequest {
-	return HTTPRequest{
-		Method:  "DELETE",
-		Path:    "/v1/workspaces/" + url.PathEscape(workspaceID) + "/assistant",
-		IfMatch: ifMatch,
-	}
+// BuildAssistantPreviewPath builds GET /v1/workspaces/{id}/assistant/preview:
+// the composed instructions of a new session.
+func BuildAssistantPreviewPath(workspaceID string) string {
+	return BuildAssistantGetPath(workspaceID) + "/preview"
 }
 
 // AgentIndexName maps an agent short name to its index name: cmo → agents/cmo.
@@ -1132,6 +1120,78 @@ func BuildConversationSend(id, text, channelType, channelRef, idempotencyKey str
 		Method: "POST",
 		Path:   "/v1/conversations/" + url.PathEscape(id) + "/messages",
 		Body:   body,
+	}
+}
+
+// BuildConversationDelete builds DELETE /v1/conversations/{id}. It closes the
+// assistant process and deletes the conversation with its messages, events,
+// and session row. confirm rides the shared destructive gate.
+func BuildConversationDelete(id string, confirm bool) HTTPRequest {
+	return HTTPRequest{
+		Method: "DELETE",
+		Path:   withQuery("/v1/conversations/"+url.PathEscape(id), confirmQ(confirm)),
+	}
+}
+
+// BuildConversationEventsPath builds GET /v1/conversations/{id}/events.
+// after is the last seq seen; follow=1 streams live events as SSE and must
+// not be used by a one-shot caller.
+func BuildConversationEventsPath(id string, after int64, limit int, follow bool) string {
+	q := map[string]string{}
+	if after > 0 {
+		q["after"] = strconv.FormatInt(after, 10)
+	}
+	if limit > 0 {
+		q["limit"] = strconv.Itoa(limit)
+	}
+	if follow {
+		q["follow"] = "1"
+	}
+	return withQuery("/v1/conversations/"+url.PathEscape(id)+"/events", q)
+}
+
+// BuildConversationInterrupt builds POST /v1/conversations/{id}/interrupt.
+func BuildConversationInterrupt(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/conversations/" + url.PathEscape(id) + "/interrupt"}
+}
+
+// BuildConversationClose builds POST /v1/conversations/{id}/close. The
+// conversation stays; the process goes.
+func BuildConversationClose(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/conversations/" + url.PathEscape(id) + "/close"}
+}
+
+// BuildConversationPermission builds POST /v1/conversations/{id}/permissions/{pid}.
+// decision is allow_once|allow_session|deny.
+func BuildConversationPermission(id, permissionID, decision, message string) HTTPRequest {
+	body := map[string]any{"decision": decision}
+	if message != "" {
+		body["message"] = message
+	}
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/conversations/" + url.PathEscape(id) + "/permissions/" + url.PathEscape(permissionID),
+		Body:   body,
+	}
+}
+
+// BuildConversationMode builds POST /v1/conversations/{id}/mode. It applies
+// at the next process start.
+func BuildConversationMode(id, mode string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/conversations/" + url.PathEscape(id) + "/mode",
+		Body:   map[string]string{"mode": mode},
+	}
+}
+
+// BuildConversationRevert builds POST /v1/conversations/{id}/revert for one
+// pre-edit snapshot file.
+func BuildConversationRevert(id string, turn int, path string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/conversations/" + url.PathEscape(id) + "/revert",
+		Body:   map[string]any{"turn": turn, "path": path},
 	}
 }
 
@@ -1871,7 +1931,7 @@ func BuildConfigBridgeSet(tool, resource, mode string) (HTTPRequest, error) {
 	return BuildConfigSet(key, norm), nil
 }
 
-// FilterJobsByKindFlag keeps rows matching --kind (job|assistant|agent|all).
+// FilterJobsByKindFlag keeps rows matching --kind (job|agent|all).
 func FilterJobsByKindFlag(rows []map[string]any, kind string) []map[string]any {
 	out := make([]map[string]any, 0, len(rows))
 	for _, j := range rows {
@@ -1883,15 +1943,17 @@ func FilterJobsByKindFlag(rows []map[string]any, kind string) []map[string]any {
 	return out
 }
 
-// ParseJobListKind validates a --kind flag value (job|assistant|agent|all).
+// ParseJobListKind validates a --kind flag value (job|agent|all). The
+// assistant is not a job kind; its sessions list lives under `trebi
+// assistant sessions`.
 func ParseJobListKind(s string) (string, error) {
 	switch strings.TrimSpace(s) {
 	case "", "job":
 		return "job", nil
-	case "assistant", "agent", "all":
+	case "agent", "all":
 		return s, nil
 	default:
-		return "", fmt.Errorf("invalid --kind %q (want job|assistant|agent|all)", s)
+		return "", fmt.Errorf("invalid --kind %q (want job|agent|all)", s)
 	}
 }
 
@@ -1899,8 +1961,6 @@ func keepJobKind(want, rowKind string) bool {
 	switch want {
 	case "all":
 		return true
-	case "assistant":
-		return rowKind == "assistant"
 	case "agent":
 		return rowKind == "agent"
 	default:

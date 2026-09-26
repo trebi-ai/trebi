@@ -2,14 +2,15 @@ package workspaces
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/job"
 )
 
-// AcceptRules returns the resolved inbound-mail gates from the files. Mail
-// volume is low and the files are the source of truth, so there is no cache.
+// AcceptRules returns the resolved inbound-mail gates. Agents read AGENT.md;
+// the assistant reads the trebi.yaml override with the operators-plus-
+// allowlist default (plan 2026-09-26 B.2).
 func (s *Service) AcceptRules(ctx context.Context, workspaceID string) (agents map[string][]job.AcceptEntry, assistant []job.AcceptEntry, err error) {
 	ws, err := s.Get(ctx, workspaceID)
 	if err != nil {
@@ -38,14 +39,17 @@ func (s *Service) AcceptRules(ctx context.Context, workspaceID string) (agents m
 		}
 		agents[trimAgentPrefix(row.Name)] = entries
 	}
-	assistantPath := filepath.Join(ws.Path, "TREBI.md")
-	assistant = job.DefaultAssistantAccept
-	if j, perr := job.ParseFile(assistantPath); j != nil && perr == nil {
-		if j.Accept != nil {
-			assistant = j.Accept
-		} else if entries, perr := job.ParseAccept(j.EmailAccept); perr == nil && len(entries) > 0 {
-			assistant = entries
-		}
+	ov, _, oerr := s.AssistantOverride(ctx, ws.ID)
+	if oerr != nil {
+		return agents, nil, oerr
+	}
+	accept := wire.DefaultAccept
+	if ov.Email != nil && len(ov.Email.Accept) > 0 {
+		accept = ov.Email.Accept
+	}
+	assistant, perr := job.ParseAccept(accept)
+	if perr != nil {
+		return agents, nil, perr
 	}
 	return agents, assistant, nil
 }

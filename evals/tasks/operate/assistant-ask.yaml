@@ -11,9 +11,9 @@ prompt: |
   Ask the ops assistant what jobs it looks after and give me its answer
   word for word.
 checks:
-  - name: an assistant run happened
-    cmd: trebi runs list --kind assistant --json
-    jq: '(.runs // []) | length >= 1'
+  - name: an assistant session happened
+    cmd: trebi assistant sessions --json
+    jq: '(.conversations // []) | length >= 1'
   - name: the assistant replied
     snapshot_jq: '[.conversations[]?.messages[]? | select(.role == "assistant")] | length >= 1'
 judge:

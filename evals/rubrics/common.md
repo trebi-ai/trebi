@@ -44,7 +44,7 @@ for this dimension only 0 and 1 are correct.
 The agent follows the write-then-check order the skill states:
 
 - It runs `trebi job validate` after every `JOB.md` write.
-- It runs `trebi job run --test` before the first real launch of a job whose JOB.md **this session** created or edited (a `job create`, `file put`, or `job file put` by the agent). A job that already existed when the session started does not need a dry run. The rule does not apply to `trebi rules fire` or to `trebi assistant say` / `assistant wake`.
+- It runs `trebi job run --test` before the first real launch of a job whose JOB.md **this session** created or edited (a `job create`, `file put`, or `job file put` by the agent). A job that already existed when the session started does not need a dry run. The rule does not apply to `trebi rules fire` or to `trebi assistant say`.
 
 State which rules applied. A rule that did not apply is not evidence of
 compliance.

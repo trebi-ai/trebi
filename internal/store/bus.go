@@ -233,10 +233,11 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "workspace.updated", Bus: true, Log: true},
 		{Name: "workspace.deleted", Bus: true, Log: true},
 		{Name: "workspace.watch_failed", Bus: false, Log: true},
-		// assistant
-		{Name: "assistant.updated", Bus: true, Log: true},
-		{Name: "assistant.woken", Bus: false, Log: true},
-		{Name: "assistant.parse_failed", Bus: false, Log: true},
+		// assistant sessions (plan 2026-09-26 F.4)
+		{Name: "assistant.settings.updated", Bus: true, Log: true},
+		{Name: "assistant.session.started", Bus: false, Log: true},
+		{Name: "assistant.session.closed", Bus: false, Log: true},
+		{Name: "assistant.permission.timeout", Bus: false, Log: true},
 		// agent (folder-scoped operator, AGENT.md)
 		{Name: "agent.created", Bus: true, Log: true},
 		{Name: "agent.updated", Bus: true, Log: true},
@@ -339,6 +340,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		// conversations
 		{Name: "conversation.created", Bus: true, Log: true},
 		{Name: "conversation.updated", Bus: true, Log: true},
+		{Name: "conversation.deleted", Bus: true, Log: true},
 		{Name: "conversation.switched", Bus: false, Log: true},
 		{Name: "conversation.demarcated", Bus: false, Log: true},
 		// agent

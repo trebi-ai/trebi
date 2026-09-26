@@ -38,9 +38,9 @@ func (c *ControlPlane) RouteEnvFor(ctx context.Context, workspaceID string) (ema
 }
 
 // Ask delivers assistant mail into the channel conversation (plan A.13).
-// Send injects into a live run or enqueues a wake, so no launch happens
-// here. The thread root is the channel ref: one conversation per mail
-// thread, bound by the channel pointer.
+// An assistant ask prompts the session manager through Conversations.Ask;
+// an agent ask still injects or enqueues. The thread root is the channel
+// ref: one conversation per mail thread, bound by the channel pointer.
 func (c *ControlPlane) Ask(ctx context.Context, d email.RouteDecision, msg email.IngressMessage, operator, text string) (string, error) {
 	res, err := c.Conversations.Ask(ctx, conversations.AskOpts{
 		Workspace:      d.WorkspaceID,
@@ -49,6 +49,7 @@ func (c *ControlPlane) Ask(ctx context.Context, d email.RouteDecision, msg email
 		ChannelType:    conversations.ChannelEmail,
 		ChannelRef:     email.ThreadRoot(msg),
 		IdempotencyKey: msg.ID,
+		Headless:       operator == "",
 	})
 	if err != nil {
 		return "", err

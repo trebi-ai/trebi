@@ -1,40 +1,56 @@
 ---
 topic: assistant
 title: Assistant, conversations, and memory
-description: Wake, say, conversations, and the assistant memory ledger.
+description: Assistant settings, chat sessions, conversations, and the memory ledger.
 ---
 
 # Assistant, conversations, and memory
 
-The assistant is the workspace singleton driven by `TREBI.md`. When `assistant.model` is set and an API key resolves, the daemon runs it in-process (`harness=native`) — no vendor CLI, no tmux pane, no attach. `runtime: tui` in TREBI.md is the escape hatch back to the old harness. Native is API-key only (`assistant.api_key` / `assistant.api_key_env`).
+The assistant is a chat agent for one workspace. It keeps one live agent session per conversation and closes the process when the conversation is idle. The assistant is not a job and has no runs.
 
-## Drive the assistant
+## Settings
 
-Pass `--workspace` on the root (`trebi --workspace reports assistant …`) or use sticky context (`workspace use`, **local only**).
+Settings live in two layers. The global defaults are in `~/.trebi/config.yaml` under `assistant:`. Each workspace can override fields in `<workspace>/trebi.yaml` under `assistant:`. An absent key inherits the default.
 
 ```bash
-trebi --workspace reports assistant show
-trebi --workspace reports assistant wake
-trebi --workspace reports assistant wake --test
-trebi --workspace reports assistant wake --extra-prompt "focus on the CI failures"
-trebi --workspace reports assistant say "what is blocked?"
-trebi --workspace reports assistant say "what is blocked?" --wait 60000 --json
+trebi assistant show --workspace reports
+trebi assistant show --defaults
+trebi assistant set --workspace reports --harness codex --mode auto_edit
+trebi assistant set --defaults --skill trebi --skill sling
+trebi assistant set --workspace reports --unset harness
+trebi assistant preview --workspace reports
 ```
 
-`assistant say` prints `delivery=injected|queued`. The daemon resolves or creates the conversation, so no pointer call is needed first. `--wait` long-polls for the reply, up to 120000 ms; `replies` carries what arrived. `--test` evaluates gates only (same rule as `job run --test`).
+`harness` picks `native` or an installed CLI harness; empty means auto. `mode` is `ask`, `auto_edit`, or `auto`. `context-file` points at a file with the workspace context prompt. `--unset` removes a workspace override, so the field inherits again.
+
+`preview` prints the instructions a new session gets: role, workspace, context, and memory.
+
+## Chat
+
+`say` sends one message and returns. `chat` is interactive: replies stream as they form, tool calls print as one line each, and permission requests ask for `y` (allow once), `a` (allow for the session), or `n` (deny).
 
 ```bash
-trebi --workspace reports assistant wake --attach
+trebi --workspace reports assistant say "what is blocked?"
+trebi --workspace reports assistant say "what is blocked?" --wait 60000 --json
 trebi assistant chat
 ```
 
-`assistant chat` and `--attach` are **local only**; remote: `assistant.say` plus `conversation.messages`. Never attach from an agent session.
+`chat` is **local only**; remote: `assistant.say` plus `conversation.messages`. Never drive chat from an agent session; use `agent escalate` instead.
+
+## Sessions
+
+Each conversation has a session status: `starting`, `running`, `waiting`, `idle`, `closed`, or `error`.
 
 ```bash
-trebi assistant history --limit 20 --json
+trebi conversation list --json
+trebi assistant interrupt <conversation id>
+trebi assistant close <conversation id>
+trebi conversation delete <conversation id>
 ```
 
-`assistant history` is **local only**; remote: `conversation list` / `conversation messages`.
+`close` is **local only**; remote: `conversation.interrupt` then let the idle close reap the process.
+
+`sessions` is **local only**: it lists the assistant conversations of a workspace. `interrupt` stops the running turn. `close` is **local only**: it closes the process; the next prompt starts it again with the earlier context. `conversation delete` removes the conversation with its messages. Do not `runs kill` to stop an assistant; that is a job action.
 
 ## Conversations
 
@@ -50,11 +66,9 @@ trebi conversation switch <id>
 
 `conversation switch` is **local only** (sticky CLI pointer); remote: pass `channel_ref` on `assistant.say`, or `pointer_set`.
 
-Use `assistant say --wait`, or poll `conversation messages`, until the assistant replies. Do not `runs kill` a live assistant session to re-prompt.
-
 ## Assistant memory
 
-The assistant keeps a structured `MEMORY.md` at the workspace root. It holds four sections in a fixed order: Context, State, Lessons, Log. It uses the config defaults only; it reads no frontmatter.
+The assistant keeps a structured `MEMORY.md` at the workspace root. It holds four sections in a fixed order: Context, State, Lessons, Log. The assistant reads the memory at every process start.
 
 ```bash
 trebi --workspace reports assistant memory show --json

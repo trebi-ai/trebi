@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -68,6 +69,24 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 	convID, err := s.EnsureForChannel(ctx, opts.Workspace, opts.Operator, opts.ChannelType, opts.ChannelRef)
 	if err != nil {
 		return nil, err
+	}
+	if opts.Operator == "" {
+		// The workspace assistant is a session (plan 2026-09-26 Part E).
+		if s.assistant == nil {
+			return nil, fmt.Errorf("%w: assistant session manager is not bound", ErrValidation)
+		}
+		res, err := s.assistant.Ask(ctx, convID, wire.PromptInput{
+			Text: opts.Text, ChannelType: opts.ChannelType, ChannelRef: opts.ChannelRef,
+			IdempotencyKey: opts.IdempotencyKey, Headless: opts.Headless,
+		}, opts.Wait)
+		if err != nil {
+			return nil, err
+		}
+		return &AskResult{
+			SendResult:     SendResult{Message: convFromWire(res.Message), Delivery: "prompted", Status: res.Status},
+			ConversationID: convID,
+			Replies:        convFromWireAll(res.Replies),
+		}, nil
 	}
 	before, err := s.lastMessageID(ctx, convID)
 	if err != nil {
@@ -171,6 +190,24 @@ func (s *Service) Send(ctx context.Context, convID string, opts SendOpts) (*Send
 			return &SendResult{Message: existing}, nil
 		}
 	}
+	if conv.Operator == "" {
+		// The workspace assistant is a session (plan 2026-09-26 Part E).
+		if s.assistant == nil {
+			return nil, fmt.Errorf("%w: assistant session manager is not bound", ErrValidation)
+		}
+		res, err := s.assistant.Prompt(ctx, convID, wire.PromptInput{
+			Text: opts.Text, ChannelType: opts.ChannelType, ChannelRef: opts.ChannelRef,
+			IdempotencyKey: opts.IdempotencyKey,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if res.Duplicate {
+			return &SendResult{Message: convFromWire(res.Message)}, nil
+		}
+		s.maybeAutoTitle(ctx, convID)
+		return &SendResult{Message: convFromWire(res.Message), Delivery: "prompted", Status: res.Status}, nil
+	}
 	msg, err := s.insertUserMessage(ctx, conv, opts, text)
 	if err != nil {
 		if uniqueViolation(err) && opts.IdempotencyKey != "" {
@@ -186,6 +223,154 @@ func (s *Service) Send(ctx context.Context, convID string, opts SendOpts) (*Send
 		return nil, err
 	}
 	return &SendResult{Message: msg, Delivery: delivery, RunID: runID, QueueID: queueID}, nil
+}
+
+// AppendUser stores one user row for the assistant session manager. The
+// bool reports a duplicate idempotency key (plan 2026-09-26 D.2).
+func (s *Service) AppendUser(ctx context.Context, convID string, in UserTurn) (Message, bool, error) {
+	conv, err := s.Get(ctx, convID)
+	if err != nil {
+		return Message{}, false, err
+	}
+	if in.IdempotencyKey != "" {
+		if existing, ok, err := s.messageByIdem(ctx, convID, in.IdempotencyKey); err != nil {
+			return Message{}, false, err
+		} else if ok {
+			return existing, true, nil
+		}
+	}
+	msg, err := s.insertUserMessage(ctx, conv, SendOpts{
+		Text: in.Text, ChannelType: in.ChannelType,
+		ChannelRef: in.ChannelRef, IdempotencyKey: in.IdempotencyKey,
+	}, in.Text)
+	if err != nil {
+		if uniqueViolation(err) && in.IdempotencyKey != "" {
+			existing, ok, gerr := s.messageByIdem(ctx, convID, in.IdempotencyKey)
+			if gerr == nil && ok {
+				return existing, true, nil
+			}
+		}
+		return Message{}, false, err
+	}
+	s.maybeAutoTitle(ctx, convID)
+	return msg, false, nil
+}
+
+// AppendAssistant stores one assistant reply row of a session turn
+// (plan 2026-09-26 D.6).
+func (s *Service) AppendAssistant(ctx context.Context, convID string, turn int, text string) (Message, error) {
+	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+	id := ulid.Make().String()
+	_, err := s.st.DB().ExecContext(ctx, `INSERT INTO conversation_messages
+		(id, conversation_id, role, text, turn_index, created_at)
+		VALUES (?,?,?,?,?,?)
+		ON CONFLICT DO NOTHING`,
+		id, convID, RoleAssistant, text, turn, nowStr)
+	if err != nil {
+		return Message{}, err
+	}
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE conversations SET last_activity_at=?, updated_at=?, revision=revision+1 WHERE id=?`,
+			nowStr, nowStr, convID)
+		return err
+	}, store.BusEvent{
+		Topic: "conversation.updated", Entity: "conversation", EntityID: convID, Action: "updated",
+	})
+	if err != nil {
+		return Message{}, err
+	}
+	return s.messageByID(ctx, id)
+}
+
+// LastAssistantRow returns the newest assistant row up to turn.
+func (s *Service) LastAssistantRow(ctx context.Context, convID string, turn int) (Message, error) {
+	row := s.st.DB().QueryRowContext(ctx, `SELECT `+msgCols+`
+		FROM conversation_messages
+		WHERE conversation_id=? AND role=? AND turn_index IS NOT NULL AND turn_index <= ?
+		ORDER BY id DESC LIMIT 1`, convID, RoleAssistant, turn)
+	m, err := scanMsg(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Message{}, ErrNotFound
+	}
+	return m, err
+}
+
+// MessagesAfter returns messages newer than afterID, ascending.
+func (s *Service) MessagesAfter(ctx context.Context, convID, afterID string, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT `+msgCols+`
+		FROM conversation_messages
+		WHERE conversation_id=? AND id > ? ORDER BY id LIMIT ?`, convID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Message{}
+	for rows.Next() {
+		m, err := scanMsg(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// messageByID reads one row.
+func (s *Service) messageByID(ctx context.Context, id string) (Message, error) {
+	row := s.st.DB().QueryRowContext(ctx, `SELECT `+msgCols+` FROM conversation_messages WHERE id=?`, id)
+	m, err := scanMsg(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Message{}, ErrNotFound
+	}
+	return m, err
+}
+
+// Delete removes one conversation, its messages, and its channels
+// (plan 2026-09-26 F.2). The caller removes the session and event rows.
+func (s *Service) Delete(ctx context.Context, convID string) error {
+	conv, err := s.Get(ctx, convID)
+	if err != nil {
+		return err
+	}
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM conversation_messages WHERE conversation_id=?`, convID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM conversation_channels WHERE conversation_id=?`, convID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM channel_pointers WHERE conversation_id=?`, convID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`DELETE FROM conversations WHERE id=?`, convID)
+		return err
+	}, store.BusEvent{
+		Topic: "conversation.deleted", Entity: "conversation", EntityID: convID,
+		Action: "deleted", Attrs: map[string]string{"workspace": conv.Workspace},
+	})
+	return err
+}
+
+func convFromWire(m wire.Message) Message {
+	return Message{
+		ID: m.ID, ConversationID: m.ConversationID, Role: m.Role,
+		ChannelType: m.ChannelType, ChannelRef: m.ChannelRef, Text: m.Text,
+		TurnIndex: m.TurnIndex, IdempotencyKey: m.IdempotencyKey, CreatedAt: m.CreatedAt,
+	}
+}
+
+func convFromWireAll(in []wire.Message) []Message {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Message, 0, len(in))
+	for _, m := range in {
+		out = append(out, convFromWire(m))
+	}
+	return out
 }
 
 // IngestAssistantTurns persists new assistant turns. Unique (run_id, turn_index) is idempotent.
@@ -310,11 +495,7 @@ func (s *Service) liveRun(ctx context.Context, conv *Conversation) *runs.Run {
 	if s.runs == nil {
 		return nil
 	}
-	kind := runs.KindAssistant
-	if conv.Operator != "" {
-		kind = runs.KindAgent
-	}
-	live, err := s.runs.FindLive(ctx, conv.Workspace, kind, conv.Key)
+	live, err := s.runs.FindLive(ctx, conv.Workspace, runs.KindAgent, conv.Key)
 	if err != nil {
 		return nil
 	}
@@ -325,14 +506,8 @@ func (s *Service) enqueueWake(ctx context.Context, conv *Conversation, text stri
 	if s.queue == nil {
 		return "", fmt.Errorf("%w: queue not bound", ErrValidation)
 	}
-	jobName, err := s.assistantJob(ctx, conv.Workspace)
-	if err != nil {
-		return "", err
-	}
-	kind := runs.KindAssistant
-	if conv.Operator != "" {
-		jobName, kind = conv.Operator, runs.KindAgent
-	}
+	jobName := conv.Operator
+	kind := runs.KindAgent
 	// The raw text rides the queue; dispatch composes the wake with a fresh
 	// recap (Part F.3). item.Prompt is the wake message.
 	item := &dispatch.QueueItem{
@@ -348,22 +523,6 @@ func (s *Service) enqueueWake(ctx context.Context, conv *Conversation, text stri
 		return "", err
 	}
 	return item.ID, nil
-}
-
-func (s *Service) assistantJob(ctx context.Context, wsID string) (string, error) {
-	if s.ws == nil {
-		return "", fmt.Errorf("%w: %v", ErrValidation, errNoAssistant)
-	}
-	jobs, err := s.ws.ListJobs(ctx, wsID)
-	if err != nil {
-		return "", err
-	}
-	for _, row := range jobs {
-		if row.Kind == "assistant" {
-			return row.Name, nil
-		}
-	}
-	return "", fmt.Errorf("%w: %v", ErrNotFound, errNoAssistant)
 }
 
 func (s *Service) insertAssistantTurn(ctx context.Context, convID, runID string, turnIndex int, text string) (bool, error) {
