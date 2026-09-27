@@ -315,13 +315,16 @@ func TestBuildConnectorCatalogPaths(t *testing.T) {
 
 func TestBuildConnectorInstall(t *testing.T) {
 	t.Parallel()
-	req := BuildConnectorInstall("official", "ai.adtest/adtest-mcp", "1.1.0", "adtest", 0, -1, map[string]string{"ADTEST_API_KEY": "k"})
+	req := ConnectorInstall{
+		Registry: "official", Name: "ai.adtest/adtest-mcp", Version: "1.1.0", As: "adtest",
+		Package: 0, Remote: -1, Env: map[string]string{"ADTEST_API_KEY": "k"}, OverwriteSecrets: true,
+	}.Build()
 	if req.Method != "POST" || req.Path != "/v1/connectors/install" {
 		t.Fatalf("%+v", req)
 	}
 	b, _ := json.Marshal(req.Body)
 	s := string(b)
-	for _, want := range []string{`"registry":"official"`, `"name":"ai.adtest/adtest-mcp"`, `"version":"1.1.0"`, `"as":"adtest"`, `"package":0`, `"env":{"ADTEST_API_KEY":"k"}`} {
+	for _, want := range []string{`"registry":"official"`, `"name":"ai.adtest/adtest-mcp"`, `"version":"1.1.0"`, `"as":"adtest"`, `"package":0`, `"env":{"ADTEST_API_KEY":"k"}`, `"overwrite_secrets":true`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("body %s missing %s", s, want)
 		}
@@ -329,9 +332,9 @@ func TestBuildConnectorInstall(t *testing.T) {
 	if strings.Contains(s, `"remote"`) {
 		t.Fatalf("remote -1 must be omitted: %s", s)
 	}
-	b, _ = json.Marshal(BuildConnectorInstall("", "m", "", "", -1, 1, nil).Body)
+	b, _ = json.Marshal(ConnectorInstall{Name: "m", Package: -1, Remote: 1}.Build().Body)
 	s = string(b)
-	if !strings.Contains(s, `"remote":1`) || strings.Contains(s, `"package"`) || strings.Contains(s, `"env"`) {
+	if !strings.Contains(s, `"remote":1`) || strings.Contains(s, `"package"`) || strings.Contains(s, `"env"`) || strings.Contains(s, "overwrite") {
 		t.Fatalf("remote body: %s", s)
 	}
 }

@@ -1928,24 +1928,35 @@ func BuildConnectorCatalogEntryPath(registry, name, version string) string {
 	})
 }
 
-// BuildConnectorInstall builds POST /v1/connectors/install. Package and
+// ConnectorInstall is the POST /v1/connectors/install body. Package and
 // Remote are indices into the entry; -1 omits one.
-func BuildConnectorInstall(registry, name, version, as string, pkg, remote int, env map[string]string) HTTPRequest {
-	body := map[string]any{"registry": registry, "name": name}
-	if version != "" {
-		body["version"] = version
+type ConnectorInstall struct {
+	Registry, Name, Version, As string
+	Package, Remote             int
+	Env                         map[string]string
+	OverwriteSecrets            bool
+}
+
+// Build returns the install request.
+func (i ConnectorInstall) Build() HTTPRequest {
+	body := map[string]any{"registry": i.Registry, "name": i.Name}
+	if i.Version != "" {
+		body["version"] = i.Version
 	}
-	if as != "" {
-		body["as"] = as
+	if i.As != "" {
+		body["as"] = i.As
 	}
-	if pkg >= 0 {
-		body["package"] = pkg
+	if i.Package >= 0 {
+		body["package"] = i.Package
 	}
-	if remote >= 0 {
-		body["remote"] = remote
+	if i.Remote >= 0 {
+		body["remote"] = i.Remote
 	}
-	if len(env) > 0 {
-		body["env"] = env
+	if len(i.Env) > 0 {
+		body["env"] = i.Env
+	}
+	if i.OverwriteSecrets {
+		body["overwrite_secrets"] = true
 	}
 	return HTTPRequest{Method: "POST", Path: "/v1/connectors/install", Body: body}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -57,7 +58,8 @@ func connectorCommand() *cli.Command {
 					&cli.StringFlag{Name: "as", Usage: "connector name (default: derived from the server name)"},
 					&cli.IntFlag{Name: "package", Value: -1, Usage: "package index to install"},
 					&cli.IntFlag{Name: "remote", Value: -1, Usage: "remote index to install"},
-					&cli.StringSliceFlag{Name: "env", Aliases: []string{"e"}, Usage: "VAR=VALUE (repeatable)"},
+					&cli.StringSliceFlag{Name: "env", Aliases: []string{"e"}, Usage: "NAME=VALUE for an env, header, argument, or variable input (repeatable); secret:NAME keeps a reference"},
+					&cli.BoolFlag{Name: "overwrite-secrets", Usage: "replace a stored secret that has a different value"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runConnectorInstall,
@@ -413,6 +415,19 @@ func runConnectorSearch(_ context.Context, c *cli.Command) error {
 		})
 	}
 	renderTable(tbl)
+	errs, _ := body["registry_errors"].([]any)
+	if len(errs) == 0 {
+		return nil
+	}
+	var ew io.Writer = os.Stderr
+	if c.Root().ErrWriter != nil {
+		ew = c.Root().ErrWriter
+	}
+	for _, raw := range errs {
+		if m, ok := raw.(map[string]any); ok {
+			fmt.Fprintf(ew, "warning: registry %s failed: %s\n", mapStr(m, "registry"), mapStr(m, "error"))
+		}
+	}
 	return nil
 }
 
@@ -429,8 +444,11 @@ func runConnectorInstall(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	req := request.BuildConnectorInstall(c.String("registry"), name, c.String("version"),
-		c.String("as"), c.Int("package"), c.Int("remote"), env)
+	req := request.ConnectorInstall{
+		Registry: c.String("registry"), Name: name, Version: c.String("version"), As: c.String("as"),
+		Package: c.Int("package"), Remote: c.Int("remote"), Env: env,
+		OverwriteSecrets: c.Bool("overwrite-secrets"),
+	}.Build()
 	var body map[string]any
 	if err := client.DoHTTP(req, &body); err != nil {
 		return err
