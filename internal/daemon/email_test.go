@@ -27,10 +27,11 @@ import (
 // mailWorkerFake serves the trebi-mail contract the poller drives: ingress
 // with a live cursor, acks, sends, and health.
 type mailWorkerFake struct {
-	token string
-	batch []email.IngressMessage
-	sends []email.SendRequest
-	acks  int
+	token     string
+	batch     []email.IngressMessage
+	sends     []email.SendRequest
+	acks      int
+	failSends bool
 }
 
 func (f *mailWorkerFake) serve(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +60,10 @@ func (f *mailWorkerFake) serve(w http.ResponseWriter, r *http.Request) {
 		var req email.SendRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		f.sends = append(f.sends, req)
+		if f.failSends {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		writeMailJSON(w, map[string]any{"message_id": req.MessageID})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/health":
 		writeMailJSON(w, map[string]any{"ok": true})
@@ -403,6 +408,80 @@ func startMailPlane(t *testing.T) *mailPlane {
 func writeMailJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// TestUnsentReplyRowsDoNotCoverTheTurn proves the restart safety of the
+// reply path: only a `sent` row covers a turn, so a failed send retries,
+// and a row left `sending` by a crash does not suppress the next mail.
+func TestUnsentReplyRowsDoNotCoverTheTurn(t *testing.T) {
+	p := startMailPlane(t)
+	ctx := t.Context()
+	const u = "01ARZ3NDEKTSV4RRFFQ69G5FA8"
+
+	// The send fails: the envelope records send_failed and covers nothing.
+	p.fw.failSends = true
+	if n := p.poll(t, []email.IngressMessage{{
+		V: 1, Seq: 1, ID: u, LocalPart: p.local,
+		From: "ops@example.com", Dmarc: "pass", MessageID: "<retry@x>",
+		Subject: "hello", Text: "Say hi.",
+	}}); n != 1 {
+		t.Fatalf("pulled %d, want 1", n)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	var convID, disposition string
+	for time.Now().Before(deadline) {
+		err := p.st.DB().QueryRowContext(ctx, `
+SELECT conversation_id, disposition FROM email_messages
+WHERE direction='out' ORDER BY id DESC LIMIT 1`).Scan(&convID, &disposition)
+		if err == nil && disposition == "send_failed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if disposition != "send_failed" {
+		t.Fatalf("disposition = %q, want send_failed", disposition)
+	}
+
+	// The transport recovers: the same turn goes out on the next call.
+	p.fw.failSends = false
+	sends := len(p.fw.sends)
+	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.fw.sends) != sends+1 {
+		t.Fatalf("a send_failed row covered the turn: %d sends", len(p.fw.sends))
+	}
+	var covered sql.NullInt64
+	if err := p.st.DB().QueryRowContext(ctx, `
+SELECT disposition, covered_turn FROM email_messages
+WHERE direction='out' ORDER BY id DESC LIMIT 1`).Scan(&disposition, &covered); err != nil {
+		t.Fatal(err)
+	}
+	if disposition != "sent" || !covered.Valid {
+		t.Fatalf("retry row = %q covered=%v", disposition, covered)
+	}
+
+	// A crash between the envelope insert and the sent mark leaves
+	// `sending`, which covers nothing: the next call mails the turn again.
+	if _, err := p.st.DB().ExecContext(ctx,
+		`UPDATE email_messages SET disposition='sending' WHERE direction='out'`); err != nil {
+		t.Fatal(err)
+	}
+	sends = len(p.fw.sends)
+	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.fw.sends) != sends+1 {
+		t.Fatalf("a sending row covered the turn: %d sends", len(p.fw.sends))
+	}
+
+	// Now the row is sent: one mail per exchange.
+	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.fw.sends) != sends+1 {
+		t.Fatalf("a second reply went out for one exchange: %d sends", len(p.fw.sends))
+	}
 }
 
 // TestAssistantTurnMailsReplyOnThread proves the phase-0 fix end to end:
