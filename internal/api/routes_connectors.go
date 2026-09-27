@@ -125,6 +125,9 @@ func rowHasProvenance(row map[string]any, want string) bool {
 }
 
 func (s *Server) handleConnectorsCreate(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
 	var d connectors.Definition
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()

@@ -299,6 +299,26 @@ func TestConnectorSetSendsActionsMerge(t *testing.T) {
 	}
 }
 
+func TestConnectorSetEmptyCwdClears(t *testing.T) {
+	var patchBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "PATCH" {
+			b, _ := io.ReadAll(r.Body)
+			patchBody = string(b)
+		}
+		_, _ = w.Write([]byte(`{"name":"api","cwd":"/old"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+	if _, err := runCLI(t, client, "connector", "set", "api", "--cwd", ""); err != nil {
+		t.Fatal(err)
+	}
+	if patchBody != `{"cwd":""}` {
+		t.Fatalf("patch body %s", patchBody)
+	}
+}
+
 func TestWorkspaceRemoveClearsSticky(t *testing.T) {
 	dir := t.TempDir()
 	home.SetBase(dir)
@@ -863,5 +883,49 @@ func TestWorkspaceMoveHitsPostRoute(t *testing.T) {
 	}
 	if !strings.Contains(gotQuery, "confirm=1") || !strings.Contains(gotBody, `"dry_run":true`) {
 		t.Fatalf("dry-run query=%s body=%s", gotQuery, gotBody)
+	}
+}
+
+func TestConnectorEntryAndSearchCursor(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.RequestURI())
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/connectors/catalog/entry":
+			_, _ = w.Write([]byte(`{"registry":"official","name":"acme/weather","version":"1.2.0",
+				"packages":[{"identifier":"@acme/weather"}],"remotes":[{"url":"https://w.example/mcp"}],
+				"package_inputs":[[{"name":"WEATHER_API_KEY","kind":"env","required":true}]],"remote_inputs":[[]]}`))
+		case "/v1/connectors/catalog":
+			_, _ = w.Write([]byte(`{"entries":[{"registry":"official","name":"acme/weather"}],"next_cursor":"p2"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "connector", "entry", "acme/weather", "--registry", "official", "--version", "1.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"@acme/weather", "WEATHER_API_KEY*", "https://w.example/mcp"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("entry output missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(paths[0], "name=acme%2Fweather") || !strings.Contains(paths[0], "version=1.2.0") || !strings.Contains(paths[0], "registry=official") {
+		t.Fatalf("entry path %s", paths[0])
+	}
+
+	out, err = runCLI(t, client, "connector", "search", "weather", "--cursor", "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(paths[1], "cursor=p1") {
+		t.Fatalf("search path %s", paths[1])
+	}
+	if !strings.Contains(out, "more: --cursor p2") {
+		t.Fatalf("search output:\n%s", out)
 	}
 }

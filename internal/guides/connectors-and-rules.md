@@ -41,12 +41,14 @@ Install an MCP server from a registry. `search` reads every registry in `connect
 
 ```bash
 trebi connector search postgres --registry official --limit 20
+trebi connector search postgres --cursor <next_cursor>
+trebi connector entry acme/weather --registry official --version 1.2.0
 trebi connector install io.github.modelcontextprotocol/server-github --as github --env GITHUB_PERSONAL_ACCESS_TOKEN=secret:github_pat
 trebi connector install acme/weather --package 0 --env WEATHER_API_KEY=secret:weather
 trebi connector install acme/weather --remote 0
 ```
 
-`--env NAME=VALUE` fills an input of the entry: an env variable, a header, an argument, or a `{name}` URL or header variable. The MCP action `connector.catalog_entry` lists the inputs; the CLI has no command for it yet. `--env VAR=secret:NAME` keeps the reference and writes no secret. A plain value for a secret input becomes the secret `<connector>_<VAR>`. A secret that exists with a different value makes the install fail with `conflict`; pass `--overwrite-secrets` to replace it. `connector remove` deletes the secrets the install created, unless another connector refers to them. `--package` and `--remote` select one entry of the server; give one, not both (default: the first package, else the first remote that speaks `streamable-http` or `sse`). An entry that contributes a skill writes it under `~/.trebi/skills/<name>/` with provenance `connector`; `connector remove` deletes it again. An install runs third-party code on this machine, so ask the user before you install.
+`--env NAME=VALUE` fills an input of the entry: an env variable, a header, an argument, or a `{name}` URL or header variable. `connector entry` (MCP `connector.catalog_entry`) lists the packages, the remotes, and the inputs of each; a `*` marks a required input. `search` prints `more: --cursor X` on stderr when a next page exists. `--env VAR=secret:NAME` keeps the reference and writes no secret. A plain value for a secret input becomes the secret `<connector>_<VAR>`. A secret that exists with a different value makes the install fail with `conflict`; pass `--overwrite-secrets` to replace it. `connector remove` deletes the secrets the install created, unless another connector refers to them. `--package` and `--remote` select one entry of the server; give one, not both (default: the first package, else the first remote that speaks `streamable-http` or `sse`). An entry that contributes a skill writes it under `~/.trebi/skills/<name>/` with provenance `connector`; `connector remove` deletes it again. An install runs third-party code on this machine, so ask the user before you install.
 
 ## Cursors
 

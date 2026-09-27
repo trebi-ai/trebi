@@ -287,7 +287,7 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatal("harness auth mark should be gone")
 	}
 	connector := findCmd(app.Commands, "connector")
-	for _, want := range []string{"list", "show", "search", "install", "set", "apply", "remove", "restart", "logs", "test", "connect", "disconnect", "cursor"} {
+	for _, want := range []string{"list", "show", "search", "entry", "install", "set", "apply", "remove", "restart", "logs", "test", "connect", "disconnect", "cursor"} {
 		if findCmd(connector.Commands, want) == nil {
 			t.Fatalf("connector missing %s", want)
 		}

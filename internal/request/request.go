@@ -1847,7 +1847,7 @@ func BuildConnectorReplace(name string, def map[string]any) HTTPRequest {
 type ConnectorPatch struct {
 	Name         string
 	Env          map[string]string
-	Cwd          string
+	Cwd          *string // nil leaves it; "" clears it
 	Actions      json.RawMessage
 	ActionsMerge json.RawMessage
 	Events       json.RawMessage
@@ -1860,8 +1860,8 @@ func (i ConnectorPatch) Build() HTTPRequest {
 	if i.Env != nil {
 		body["env"] = i.Env
 	}
-	if i.Cwd != "" {
-		body["cwd"] = i.Cwd
+	if i.Cwd != nil {
+		body["cwd"] = *i.Cwd
 	}
 	if i.Actions != nil {
 		body["actions"] = json.RawMessage(i.Actions)

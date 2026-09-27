@@ -113,12 +113,12 @@ the body is the new definition, and anything absent is gone.
 
 ### set
 Update one connector (`PATCH`). Each key given replaces that part of the
-definition; keys left out stay. `env` merges into the stored map. Send `null`
+definition; keys left out stay. `env` replaces the stored map. Send `null`
 for `actions`, `events`, or `channel` to remove that block. A rename is not
 possible; use `create` and `delete`.
 - `name` (string, required): connector name.
-- `cwd` (string, optional): working directory for the events and channel commands, not for an MCP server.
-- `env` (object, optional): string-to-string environment map; merges.
+- `cwd` (string, optional): working directory for the events and channel commands, not for an MCP server. An empty string clears it.
+- `env` (object, optional): string-to-string environment map; replaces the stored map. To keep a stored value, send it back as `***`, as `show` returns it.
 - `events` (object, optional): whole events block, same shape as in `create`
   (`{"command": "fetch-mail.sh", "poll_ms": 900000}`), or `null` to remove it.
 - `actions` (object, optional): whole actions block

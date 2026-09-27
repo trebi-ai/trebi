@@ -93,6 +93,18 @@ func TestConnectorsCreateReplacePatchDelete(t *testing.T) {
 	if strings.Join(caps, ",") != "actions,events,channel" {
 		t.Fatalf("capabilities %v", caps)
 	}
+	// An unknown key in a patch block is a validation error, not a silent drop.
+	for field, p := range map[string]connectors.Patch{
+		"events":  {Events: []byte(`{"command":"x","formt":"json"}`)},
+		"actions": {Actions: []byte(`{"cli":{"commands":["a"]},"mpc":{}}`)},
+		"channel": {Channel: []byte(`{"ref":"chat","send":"s","typo":1}`)},
+	} {
+		var ve *connectors.ValidationError
+		err := svc.Patch(ctx, "feed", p)
+		if !errors.As(err, &ve) || ve.Fields[0].Field != field {
+			t.Fatalf("%s: unknown key err = %v", field, err)
+		}
+	}
 	if err := svc.Patch(ctx, "feed", connectors.Patch{Actions: []byte("null")}); err != nil {
 		t.Fatal(err)
 	}

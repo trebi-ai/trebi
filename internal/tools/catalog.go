@@ -1739,12 +1739,12 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if env != nil {
 					patch.Env = env
 				}
-				cwd, err := in.str("cwd")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				if cwd != "" {
-					patch.Cwd = cwd
+				if _, ok := in["cwd"]; ok {
+					cwd, err := in.str("cwd")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					patch.Cwd = &cwd
 				}
 				actions, err := in.block("actions")
 				if err != nil {

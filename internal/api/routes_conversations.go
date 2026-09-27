@@ -209,20 +209,27 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) handleConversationSend(w http.ResponseWriter, r *http.Request) {
+// conversationOwned rejects an agent caller on a conversation it does not
+// operate, and an assistant caller on another workspace. It reports true
+// when the handler may go on.
+func (s *Server) conversationOwned(w http.ResponseWriter, r *http.Request) bool {
 	if scope, ok := scopeFrom(r.Context()); ok {
 		c, err := s.conv.Get(r.Context(), r.PathValue("id"))
 		if err != nil || c.Workspace != scope.workspaceID || c.Operator != scope.agent {
-			writeForbidden(w, "agent may send only on its own conversation")
-			return
+			writeForbidden(w, "agent may act only on its own conversation")
+			return false
 		}
-	} else {
-		// An assistant token sends only on its own conversation.
-		if c, err := s.conv.Get(r.Context(), r.PathValue("id")); err == nil {
-			if !s.assistantScoped(w, r, c.Workspace) {
-				return
-			}
-		}
+		return true
+	}
+	if c, err := s.conv.Get(r.Context(), r.PathValue("id")); err == nil {
+		return s.assistantScoped(w, r, c.Workspace)
+	}
+	return true
+}
+
+func (s *Server) handleConversationSend(w http.ResponseWriter, r *http.Request) {
+	if !s.conversationOwned(w, r) {
+		return
 	}
 	var body struct {
 		Text           string `json:"text"`
@@ -303,6 +310,9 @@ func (s *Server) handleConversationOutbox(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusServiceUnavailable, "internal", "channels service is not available")
 		return
 	}
+	if !s.conversationOwned(w, r) {
+		return
+	}
 	if _, err := s.conv.Get(r.Context(), r.PathValue("id")); s.convErr(w, err, "conversation not found") {
 		return
 	}
@@ -319,6 +329,9 @@ func (s *Server) handleConversationOutbox(w http.ResponseWriter, r *http.Request
 func (s *Server) handleConversationOutboxRetry(w http.ResponseWriter, r *http.Request) {
 	if s.channels == nil {
 		writeErr(w, http.StatusServiceUnavailable, "internal", "channels service is not available")
+		return
+	}
+	if !s.conversationOwned(w, r) {
 		return
 	}
 	row, err := s.channels.RetryOutbox(r.Context(), r.PathValue("id"), r.PathValue("row"))

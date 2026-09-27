@@ -43,10 +43,22 @@ func connectorCommand() *cli.Command {
 				ArgsUsage: "<query>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "registry", Usage: "registry name (default: every configured registry)"},
+					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (next_cursor of the previous page)"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 30, Usage: "max rows"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runConnectorSearch,
+			},
+			{
+				Name:      "entry",
+				Usage:     "show one registry server: packages, remotes, and their inputs",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "registry", Usage: "registry name"},
+					&cli.StringFlag{Name: "version", Usage: "server version (default: latest)"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runConnectorEntry,
 			},
 			{
 				Name:      "install",
@@ -123,7 +135,7 @@ func connectorCommand() *cli.Command {
 			},
 			{
 				Name:      "disconnect",
-				Usage:     "halt the listening process (alias: stop)",
+				Usage:     "halt the listening process (inverse of connect)",
 				ArgsUsage: "<name>",
 				Action:    runConnectorDisconnect,
 			},
@@ -391,7 +403,7 @@ func runConnectorSearch(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := request.BuildConnectorCatalogPath(c.Args().Get(0), c.String("registry"), "", c.Int("limit"))
+	path := request.BuildConnectorCatalogPath(c.Args().Get(0), c.String("registry"), c.String("cursor"), c.Int("limit"))
 	var body map[string]any
 	if err := client.GetJSON(path, &body); err != nil {
 		return err
@@ -415,20 +427,80 @@ func runConnectorSearch(_ context.Context, c *cli.Command) error {
 		})
 	}
 	renderTable(tbl)
-	errs, _ := body["registry_errors"].([]any)
-	if len(errs) == 0 {
-		return nil
-	}
 	var ew io.Writer = os.Stderr
 	if c.Root().ErrWriter != nil {
 		ew = c.Root().ErrWriter
 	}
+	if next := mapStr(body, "next_cursor"); next != "" {
+		fmt.Fprintf(ew, "more: --cursor %s\n", next)
+	}
+	errs, _ := body["registry_errors"].([]any)
 	for _, raw := range errs {
 		if m, ok := raw.(map[string]any); ok {
 			fmt.Fprintf(ew, "warning: registry %s failed: %s\n", mapStr(m, "registry"), mapStr(m, "error"))
 		}
 	}
 	return nil
+}
+
+func runConnectorEntry(_ context.Context, c *cli.Command) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("usage: trebi connector entry <name> [--registry R] [--version V]")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.GetJSON(request.BuildConnectorCatalogEntryPath(c.String("registry"), name, c.String("version")), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	fmt.Fprintf(w, "%s %s (registry %s)\n", mapStr(body, "name"), dash(mapStr(body, "version")), dash(mapStr(body, "registry")))
+	if d := mapStr(body, "description"); d != "" {
+		fmt.Fprintln(w, d)
+	}
+	tbl := newTable(w, []string{"Target", "Index", "Source", "Inputs"})
+	addRows := func(kind, listKey, inputsKey, sourceKey string) {
+		list, _ := body[listKey].([]any)
+		inputs, _ := body[inputsKey].([]any)
+		for i, raw := range list {
+			m, _ := raw.(map[string]any)
+			var specs []any
+			if i < len(inputs) {
+				specs, _ = inputs[i].([]any)
+			}
+			tbl.AppendRow(table.Row{kind, i, dash(mapStr(m, sourceKey)), dash(entryInputs(specs))})
+		}
+	}
+	addRows("package", "packages", "package_inputs", "identifier")
+	addRows("remote", "remotes", "remote_inputs", "url")
+	renderTable(tbl)
+	return nil
+}
+
+// entryInputs lists input names; a trailing * marks a required input.
+func entryInputs(specs []any) string {
+	names := make([]string, 0, len(specs))
+	for _, raw := range specs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		n := mapStr(m, "name")
+		if n == "" {
+			n = mapStr(m, "kind")
+		}
+		if req, _ := m["required"].(bool); req {
+			n += "*"
+		}
+		names = append(names, n)
+	}
+	return strings.Join(names, ", ")
 }
 
 func runConnectorInstall(_ context.Context, c *cli.Command) error {
@@ -489,7 +561,8 @@ func runConnectorSet(_ context.Context, c *cli.Command) error {
 		touched = true
 	}
 	if c.IsSet("cwd") {
-		patch.Cwd = c.String("cwd")
+		cwd := c.String("cwd")
+		patch.Cwd = &cwd
 		touched = true
 	}
 
@@ -625,8 +698,8 @@ func runConnectorSet(_ context.Context, c *cli.Command) error {
 		if patch.Env != nil {
 			def["env"] = patch.Env
 		}
-		if patch.Cwd != "" {
-			def["cwd"] = patch.Cwd
+		if patch.Cwd != nil && *patch.Cwd != "" {
+			def["cwd"] = *patch.Cwd
 		}
 		// On a new connector the merge maps are the whole actions block.
 		for key, raw := range map[string]json.RawMessage{

@@ -408,13 +408,14 @@ func (s *Service) Patch(ctx context.Context, name string, p Patch) error {
 	return nil
 }
 
-// decodeBlock parses a patch block. A JSON null removes the block.
+// decodeBlock parses a patch block and refuses unknown keys. A JSON null
+// removes the block.
 func decodeBlock[T any](raw json.RawMessage) (*T, error) {
 	if isNull(raw) {
 		return nil, nil
 	}
 	var out T
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := decodeStrict(raw, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

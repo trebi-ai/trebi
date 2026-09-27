@@ -227,6 +227,16 @@ func TestConversationOutboxRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// An agent that does not operate the conversation cannot read or retry.
+	agentToken := "outbox-agent-token-0000000000000000"
+	insertAgentCaller(t, st, wsID, "cmo", agentToken, "running")
+	if code, body := doScoped(t, "GET", base+"/v1/conversations/"+convID+"/outbox", agentToken, nil); code != 403 {
+		t.Fatalf("agent outbox read = %d %v, want 403", code, body)
+	}
+	if code, body := doScoped(t, "POST", base+"/v1/conversations/"+convID+"/outbox/01ROW1/retry", agentToken, nil); code != 403 {
+		t.Fatalf("agent outbox retry = %d %v, want 403", code, body)
+	}
+
 	code, body, _ = doJSON(t, "GET", base+"/v1/conversations/"+convID+"/outbox", nil)
 	if code != 200 {
 		t.Fatalf("outbox read %d %v", code, body)

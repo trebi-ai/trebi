@@ -268,8 +268,9 @@ func TestBuildConnectorRestart(t *testing.T) {
 
 func TestConnectorPatchBuild(t *testing.T) {
 	t.Parallel()
+	cwd := "/tmp"
 	req := ConnectorPatch{
-		Name: "echo", Cwd: "/tmp", Env: map[string]string{"A": "1"},
+		Name: "echo", Cwd: &cwd, Env: map[string]string{"A": "1"},
 		Events:       json.RawMessage(`{"command":"echo hi","format":"json"}`),
 		ActionsMerge: json.RawMessage(`{"mcp":{"url":"https://a"}}`),
 	}.Build()
@@ -291,6 +292,14 @@ func TestConnectorPatchBuild(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"events":null`) {
 		t.Fatalf("null must survive as a removal: %s", b)
+	}
+	if strings.Contains(string(b), "cwd") {
+		t.Fatalf("nil cwd must be omitted: %s", b)
+	}
+	empty := ""
+	b, _ = json.Marshal(ConnectorPatch{Name: "echo", Cwd: &empty}.Build().Body)
+	if !strings.Contains(string(b), `"cwd":""`) {
+		t.Fatalf("empty cwd must clear: %s", b)
 	}
 }
 
