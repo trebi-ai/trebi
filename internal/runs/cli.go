@@ -204,14 +204,14 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		opts.WorkingDir, _ = os.Getwd()
 	}
 	tool := detectTool(command, &opts)
+	drv := s.cliDriverFor(tool.Name())
+	if drv == nil {
+		return s.launchTmux(ctx, opts)
+	}
 	resuming := opts.ResumeSessionID != ""
 	plan, err := preparePlan(tool, command, &opts)
 	if err != nil {
 		return nil, err
-	}
-	drv := s.cliDriverFor(tool.Name())
-	if drv == nil {
-		return s.launchTmux(ctx, opts)
 	}
 	// Session identity belongs to the launch plan. A harness that assigns its
 	// own session id (the OpenCode family) leaves plan.SessionID empty, and

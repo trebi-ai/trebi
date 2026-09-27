@@ -356,6 +356,11 @@ func (c *ControlPlane) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	c.cancel = cancel
 	c.Runs.RecoverCLI(ctx)
+	if n, err := c.Runs.RemoveStaleRunFiles(ctx); err != nil {
+		c.log.Warn("remove stale run files", "err", err)
+	} else if n > 0 {
+		c.log.Info("remove stale run files", "count", n)
+	}
 	c.syncEmailAddresses(ctx)
 
 	// No assistant process survives a restart; rows left running or

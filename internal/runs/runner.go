@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -995,7 +996,49 @@ func injectMCPPlan(tool tmux.Tool, plan *tmux.LaunchPlan, opts *LaunchOpts) erro
 	if !ok {
 		return fmt.Errorf("%w: %s cannot take an injected MCP server", ErrActionsUnsupported, tool.Name())
 	}
-	return inj.InjectMCP(plan, servers, opts.WorkingDir)
+	// The private files carry the run id, so the id exists before Create.
+	if opts.CreateOpts.ID == "" {
+		opts.CreateOpts.ID = ulid.Make().String()
+	}
+	return inj.InjectMCP(plan, servers, runFiles(opts.CreateOpts.ID))
+}
+
+// runFiles names the private files of one run. They sit next to the run
+// log, never in the job directory.
+func runFiles(runID string) tmux.RunFiles {
+	return tmux.RunFiles{Dir: home.RunsLogDir(), RunID: runID}
+}
+
+// RemoveStaleRunFiles removes the private files of runs that are terminal
+// or unknown. The daemon calls it at start, after a crash could leave them.
+func (s *Service) RemoveStaleRunFiles(ctx context.Context) (int, error) {
+	entries, err := os.ReadDir(home.RunsLogDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	removed := 0
+	for _, e := range entries {
+		id, _, ok := strings.Cut(e.Name(), "-")
+		if !ok || e.IsDir() || len(id) != ulid.EncodedSize {
+			continue
+		}
+		var status string
+		err := s.st.DB().QueryRowContext(ctx, `SELECT status FROM runs WHERE id=?`, id).Scan(&status)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return removed, err
+		}
+		if err == nil && !Status(status).IsTerminal() {
+			continue
+		}
+		if err := os.Remove(filepath.Join(home.RunsLogDir(), e.Name())); err != nil && !os.IsNotExist(err) {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 // sessionTitle labels the tmux session with the job name and time.

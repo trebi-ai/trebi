@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -63,7 +64,37 @@ type LaunchPlan struct {
 // MCPInjector is implemented by tools whose pane launch can take extra MCP
 // servers. A tool without it cannot serve a connector action (decision 8).
 type MCPInjector interface {
-	InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, runDir string) error
+	InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, files RunFiles) error
+}
+
+// RunFiles names the private files of one run. They live outside the job
+// directory, and the runner removes them at run end.
+type RunFiles struct {
+	Dir   string // home.RunsLogDir()
+	RunID string
+}
+
+// Path returns Dir/<RunID>-<suffix>.
+func (f RunFiles) Path(suffix string) string {
+	return filepath.Join(f.Dir, f.RunID+"-"+suffix)
+}
+
+// Remove deletes every private file of the run.
+func (f RunFiles) Remove() error {
+	if f.Dir == "" || f.RunID == "" {
+		return nil
+	}
+	paths, err := filepath.Glob(filepath.Join(f.Dir, f.RunID+"-*"))
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, p := range paths {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ShellQuote quotes one argument for the shell command line that the pane

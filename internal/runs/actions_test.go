@@ -1,12 +1,15 @@
 package runs
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
@@ -123,45 +126,119 @@ func TestSupportsActionsMatrix(t *testing.T) {
 }
 
 // TestClaudeInjectMCPWritesTightConfig proves the pane claude launch writes
-// an mcp-config file mode 0600 and names it on the command line.
+// a private mcp-config file mode 0600, names it on the command line, and
+// never overwrites a file.
 func TestClaudeInjectMCPWritesTightConfig(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	files := tmux.RunFiles{Dir: t.TempDir(), RunID: "01JABCDEFGHJKMNPQRSTVWXYZ0"}
 	plan := &tmux.LaunchPlan{Command: "claude"}
 	servers := []agentwire.MCPServer{{Name: "gh", Command: "npx", Args: []string{"-y", "gh"}}}
-	if err := tmux.Detect("claude").(tmux.MCPInjector).InjectMCP(plan, servers, dir); err != nil {
+	inj := tmux.Detect("claude").(tmux.MCPInjector)
+	if err := inj.InjectMCP(plan, servers, files); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(plan.Command, "--mcp-config") {
+	path := files.Path("mcp.json")
+	if !strings.Contains(plan.Command, "--mcp-config") || !strings.Contains(plan.Command, path) {
 		t.Fatalf("command = %q", plan.Command)
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found string
-	for _, e := range entries {
-		if strings.Contains(e.Name(), "mcp") {
-			found = filepath.Join(dir, e.Name())
-		}
-	}
-	if found == "" {
-		t.Fatalf("no mcp config in %v", entries)
-	}
-	st, err := os.Stat(found)
+	st, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if st.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v; want 0600", st.Mode().Perm())
 	}
-	body, err := os.ReadFile(found)
+	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(body), `"gh"`) || !strings.Contains(string(body), "npx") {
 		t.Fatalf("config = %s", body)
 	}
+	if err := inj.InjectMCP(&tmux.LaunchPlan{Command: "claude"}, servers, files); err == nil {
+		t.Fatal("second inject overwrote the file")
+	}
+}
+
+// TestPaneClaudeMCPConfigLeavesJobDir proves a pane claude launch with an MCP
+// action writes nothing under the working directory, and the run end removes
+// the private file.
+func TestPaneClaudeMCPConfigLeavesJobDir(t *testing.T) {
+	svc, ctx := paneStack(t)
+	wd := t.TempDir()
+	opts := LaunchOpts{Actions: []ConnectorAction{{
+		Name: "gh",
+		MCP:  &agentwire.MCPServer{Name: "gh", Command: "npx", Env: map[string]string{"TOKEN": "tok"}},
+	}}}
+	opts.WorkingDir = wd
+	if _, err := preparePlan(tmux.Detect("claude"), "claude", &opts); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(wd); len(entries) != 0 {
+		t.Fatalf("working dir holds %v", entries)
+	}
+	id := opts.CreateOpts.ID
+	path := runFiles(id).Path("mcp.json")
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("private file %s: %v %v", path, st, err)
+	}
+	run, err := svc.Create(ctx, opts.CreateOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ID != id {
+		t.Fatalf("run id %s; want the preset %s", run.ID, id)
+	}
+	if err := svc.Terminate(ctx, id, StatusExited, EndKill, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("file survived the run end: %v", err)
+	}
+}
+
+// TestRemoveStaleRunFiles proves the start sweep removes the private files
+// of unknown and terminal runs and keeps those of a live run.
+func TestRemoveStaleRunFiles(t *testing.T) {
+	svc, ctx := paneStack(t)
+	live, err := svc.Create(ctx, CreateOpts{Job: "live"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home.RunsLogDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	keep := runFiles(live.ID).Path("mcp.json")
+	gone := runFiles("01JABCDEFGHJKMNPQRSTVWXYZ0").Path("mcp.json")
+	for _, p := range []string{keep, gone} {
+		if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := svc.RemoveStaleRunFiles(ctx); err != nil || n != 1 {
+		t.Fatalf("removed %d: %v", n, err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("live run file removed: %v", err)
+	}
+	if _, err := os.Stat(gone); !os.IsNotExist(err) {
+		t.Fatalf("stale file kept: %v", err)
+	}
+}
+
+// paneStack opens a runs service over a fresh home.
+func paneStack(t *testing.T) (*Service, context.Context) {
+	t.Helper()
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return New(st, nil, nil), context.Background()
 }
 
 // TestPaneEnvFileHidesActionEnvFromArgv proves the pane env file carries the

@@ -35,7 +35,7 @@ func (t opencodeTool) PrepareLaunch(command string) LaunchPlan {
 
 // InjectMCP sets OPENCODE_CONFIG_CONTENT to the fragment that carries the
 // injected servers. OpenCode merges it with the user's own config.
-func (t opencodeTool) InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, runDir string) error {
+func (t opencodeTool) InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, _ RunFiles) error {
 	content, err := agentwire.OpenCodeConfigContent(servers)
 	if err != nil {
 		return err

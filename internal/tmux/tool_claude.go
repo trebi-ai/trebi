@@ -32,17 +32,31 @@ func (t claudeTool) PrepareLaunch(command string) LaunchPlan {
 	return planWithSession(cmd, sid, t.launchEnv())
 }
 
-// InjectMCP writes the run's mcp.json (mode 0600) and points the launch at it.
-func (t claudeTool) InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, runDir string) error {
-	if runDir == "" {
-		return fmt.Errorf("claude mcp injection: no run directory")
+// InjectMCP writes the run's private mcp.json (mode 0600) and points the
+// launch at it. The file holds expanded secrets, so it never goes into the
+// job directory.
+func (t claudeTool) InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, files RunFiles) error {
+	if files.Dir == "" || files.RunID == "" {
+		return fmt.Errorf("claude mcp injection: no run files")
 	}
 	b, err := json.Marshal(map[string]any{"mcpServers": agentwire.ClaudeMCPConfig(servers)})
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(runDir, "mcp.json")
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	if err := os.MkdirAll(files.Dir, 0o700); err != nil {
+		return fmt.Errorf("run files dir: %w", err)
+	}
+	path := files.Path("mcp.json")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("write mcp.json: %w", err)
+	}
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path) // a partial config must not reach the launch
+		return fmt.Errorf("write mcp.json: %w", err)
+	}
+	if err := f.Close(); err != nil {
 		return fmt.Errorf("write mcp.json: %w", err)
 	}
 	plan.Command = AppendFlags(plan.Command, []string{"--mcp-config", ShellQuote(path)})

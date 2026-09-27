@@ -49,7 +49,7 @@ func (t codexTool) PrepareLaunch(command string) LaunchPlan {
 }
 
 // InjectMCP appends the `-c mcp_servers.…` overrides, quoted for the shell.
-func (t codexTool) InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, runDir string) error {
+func (t codexTool) InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, _ RunFiles) error {
 	args := agentwire.CodexMCPArgs(servers)
 	quoted := make([]string, len(args))
 	for i, a := range args {

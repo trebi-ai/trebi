@@ -223,6 +223,9 @@ func (s *Service) SetMemoryResolver(r MemoryResolver) {
 
 // CreateOpts for launching a run.
 type CreateOpts struct {
+	// ID is the run id minted before Create, when the launch plan needs it
+	// (private run files). Empty mints a new ULID.
+	ID              string
 	WorkspaceID     string
 	Job             string
 	Kind            string
@@ -321,7 +324,10 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Run, error) {
 		}, nil
 	}
 
-	id := ulid.Make().String()
+	id := opts.ID
+	if id == "" {
+		id = ulid.Make().String()
+	}
 	if opts.ActorToken == "" {
 		token, hash, err := mintActorToken()
 		if err != nil {
@@ -870,6 +876,9 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 	})
 	if err != nil {
 		return err
+	}
+	if err := runFiles(id).Remove(); err != nil {
+		s.log.Warn("remove run files", "id", id, "err", err)
 	}
 	if alreadyTerminal {
 		return nil
