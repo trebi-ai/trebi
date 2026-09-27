@@ -10,7 +10,7 @@ import (
 )
 
 // TestRootServesUI proves a ui-tagged build serves the embedded fixture
-// outside auth while the API keeps requiring the bearer.
+// and still routes /v1 to the API. The local API has no auth (2026-09-22).
 func TestRootServesUI(t *testing.T) {
 	_, base := startTestServer(t)
 
@@ -32,7 +32,7 @@ func TestRootServesUI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer api.Body.Close()
-	if api.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("api without a token: status=%d", api.StatusCode)
+	if api.StatusCode != http.StatusOK || !strings.HasPrefix(api.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("api: status=%d content-type=%q", api.StatusCode, api.Header.Get("Content-Type"))
 	}
 }

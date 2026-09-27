@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/conversations"
@@ -131,6 +132,8 @@ func (p *mailPlane) poll(t *testing.T, batch []email.IngressMessage) int {
 // thread.
 func TestEmailPollerWakeApproveReply(t *testing.T) {
 	p := startMailPlane(t)
+	// Leg 3 injects the answer by hand, so the assistant session stays silent.
+	t.Setenv(agentwire.FakeScriptEnv, "cat >/dev/null")
 	ctx := t.Context()
 
 	// Leg 1: tagged mail wakes the research agent. The run row exists when
@@ -372,6 +375,12 @@ func startMailPlane(t *testing.T) *mailPlane {
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
 	t.Setenv("TREBI_FAKE_HARNESS", "1")
+	// The stock fake exits after its result, so one turn fires the turn-end
+	// hook twice and races the tests. This script stays alive like a real CLI.
+	t.Setenv(agentwire.FakeScriptEnv, `while IFS= read -r line; do
+echo '{"type":"assistant","text":"working"}'
+echo '{"type":"result","subtype":"success","text":"done"}'
+done`)
 	t.Cleanup(func() { home.SetBase("") })
 
 	// One workspace with a workspace doc and one agent under agents/.
@@ -412,6 +421,18 @@ func startMailPlane(t *testing.T) *mailPlane {
 	ctx := context.Background()
 	added, err := cp.Workspaces.Add(ctx, wsPath, "ellis")
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Pin the assistant harness, so auto does not probe the CLIs on PATH.
+	// Append keeps the id that Add wrote.
+	yml, err := os.OpenFile(filepath.Join(wsPath, "trebi.yaml"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := yml.WriteString("assistant:\n  harness: fake\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := yml.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := cp.Workspaces.RebuildIndex(ctx, added); err != nil {

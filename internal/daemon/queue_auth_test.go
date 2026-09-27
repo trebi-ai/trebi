@@ -50,6 +50,10 @@ func TestQueueDrain_AuthMissingBlocks(t *testing.T) {
 	}
 
 	cp := daemon.New(st, daemon.Options{QueueInterval: 50 * time.Millisecond})
+	// The stub keeps the startup probe off the host CLI. A slow real probe
+	// can stamp missing after the recovery stamp below.
+	stub := &probeStub{status: harness.AuthStatus{Tool: "claude", Status: harness.AuthMissing}}
+	cp.Harness = harness.New(st, stub, harness.Options{})
 	ctx := context.Background()
 	ws, err := cp.Workspaces.Add(ctx, wsPath, "auth-ws")
 	if err != nil {
@@ -84,6 +88,9 @@ func TestQueueDrain_AuthMissingBlocks(t *testing.T) {
 		t.Fatalf("status=%s block_reason=%s want blocked/auth_missing", status, br)
 	}
 
+	stub.mu.Lock()
+	stub.status.Status = harness.AuthOK
+	stub.mu.Unlock()
 	if _, err := harness.New(st, nil, harness.Options{}).Stamp(ctx, harness.AuthStatus{Tool: "claude", Status: harness.AuthOK}, harness.SourceProbe); err != nil {
 		t.Fatal(err)
 	}

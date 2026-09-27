@@ -152,6 +152,7 @@ func TestAgentEscalationRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	wsID := addWorkspace(t, base, wsDir, "escalation-ws")
+	writeFakeHarness(t, wsDir)
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	live := "escalate-token-0000000000000000000"
 	insertAgentCaller(t, st, wsID, "cmo", live, "running")
