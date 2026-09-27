@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -164,6 +165,111 @@ func TestReplyOnTurnRunAndSession(t *testing.T) {
 	}
 }
 
+// TestReplyOnTurnJoinsTextAfterUser: every text block of the turn after the
+// last user message goes out in order. A turn with no text sends nothing and
+// never repeats an older answer.
+func TestReplyOnTurnJoinsTextAfterUser(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.addChannel("telegram", "true")
+	ctx := context.Background()
+
+	convID := f.conv("ws1")
+	f.userMsg(convID, "telegram", "chat1", "first question")
+	f.assistantMsg(convID, "", "old answer")
+	f.userMsg(convID, "telegram", "chat1", "second question")
+	f.sessionMsg(convID, 2, "Let me check.")
+	f.sessionMsg(convID, 2, "Final answer.")
+	if err := f.svc.ReplyOnTurn(ctx, convID, ""); err != nil {
+		t.Fatal(err)
+	}
+	row := f.onlyOutbox(ctx, convID)
+	if row.Text != "Let me check.\n\nFinal answer." {
+		t.Fatalf("reply text = %q", row.Text)
+	}
+
+	// A tool-only turn writes no text: no row, and no old answer.
+	toolOnly := f.conv("ws1")
+	f.userMsg(toolOnly, "telegram", "chat2", "first")
+	f.assistantMsg(toolOnly, "", "answer one")
+	f.userMsg(toolOnly, "telegram", "chat2", "run the tool")
+	if err := f.svc.ReplyOnTurn(ctx, toolOnly, ""); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := f.svc.ListOutbox(ctx, toolOnly); len(rows) != 0 {
+		t.Fatalf("tool-only turn got %+v", rows)
+	}
+}
+
+// TestReplyOnTurnSkipsNoAddress: a user row with no channel ref, or with a
+// trigger ref, gets no reply row.
+func TestReplyOnTurnSkipsNoAddress(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.addChannel("telegram", "true")
+	ctx := context.Background()
+	for _, ref := range []string{"", "trigger:telegram"} {
+		convID := f.conv("ws1")
+		f.userMsg(convID, "telegram", ref, "event")
+		f.assistantMsg(convID, "", "reply")
+		if err := f.svc.ReplyOnTurn(ctx, convID, ""); err != nil {
+			t.Fatal(err)
+		}
+		if rows, _ := f.svc.ListOutbox(ctx, convID); len(rows) != 0 {
+			t.Fatalf("ref %q got %+v", ref, rows)
+		}
+	}
+}
+
+// TestOutboxFrames: a new row and each backoff retry emit channel.queued
+// with the row id; a duplicate write emits nothing.
+func TestOutboxFrames(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.addChannel("telegram", "exit 1")
+	ctx := context.Background()
+
+	convID := f.conv("ws1")
+	f.userMsg(convID, "telegram", "chat1", "hello")
+	f.assistantMsg(convID, "r1", "reply")
+	for range 2 {
+		if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	row := f.onlyOutbox(ctx, convID)
+	if n := f.frames("channel.queued", row.ID); n != 1 {
+		t.Fatalf("queued frames after insert = %d, want 1", n)
+	}
+	if err := f.svc.SendDue(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.frames("channel.queued", row.ID); n != 2 {
+		t.Fatalf("queued frames after retry = %d, want 2", n)
+	}
+}
+
+// TestSendDueStopsOnCancel: a cancelled context sends no row.
+func TestSendDueStopsOnCancel(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.addChannel("telegram", "true")
+	convID := f.conv("ws1")
+	f.userMsg(convID, "telegram", "chat1", "hello")
+	f.assistantMsg(convID, "r1", "reply")
+	if err := f.svc.ReplyOnTurn(context.Background(), convID, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := f.svc.SendDue(ctx, time.Now()); err == nil {
+		t.Fatal("SendDue on a cancelled context must return the error")
+	}
+	if row := f.onlyOutbox(context.Background(), convID); row.Status != channels.StatusPending || row.Attempts != 0 {
+		t.Fatalf("row changed after cancel: %+v", row)
+	}
+}
+
 // TestSendDueStdinEnvAndSuccess: the reply text goes on stdin, the channel env
 // is set, and the connector cwd applies.
 func TestSendDueStdinEnvAndSuccess(t *testing.T) {
@@ -173,7 +279,7 @@ func TestSendDueStdinEnvAndSuccess(t *testing.T) {
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	f.addChannel("telegram", `cat > body.txt && printf '%s|%s' "$TREBI_CHANNEL_REF" "$TREBI_CONVERSATION_ID" > env.txt`)
+	f.addChannel("telegram", `cat > body.txt && printf '%s|%s|%s' "$TREBI_CHANNEL_REF" "$TREBI_CONVERSATION_ID" "$TREBI_MESSAGE_ID" > env.txt`)
 	f.defs.cwds["telegram"] = cwd
 	f.defs.envs["telegram"] = map[string]string{"EXTRA": "x"}
 	ctx := context.Background()
@@ -199,16 +305,16 @@ func TestSendDueStdinEnvAndSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("env: %v", err)
 	}
-	if want := "chat1|" + convID; string(env) != want {
-		t.Fatalf("env = %q, want %q", env, want)
-	}
 	rows, _ := f.svc.ListOutbox(ctx, convID)
 	if len(rows) != 1 || rows[0].Status != channels.StatusSent || rows[0].SentAt == "" {
 		t.Fatalf("sent row %+v", rows)
 	}
+	if want := "chat1|" + convID + "|" + rows[0].ID; string(env) != want {
+		t.Fatalf("env = %q, want %q", env, want)
+	}
 }
 
-// TestSendDueRetryBackoff: a failed send backs off 5s << attempts.
+// TestSendDueRetryBackoff: a failed send backs off 5s << (attempts-1).
 func TestSendDueRetryBackoff(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -229,26 +335,26 @@ func TestSendDueRetryBackoff(t *testing.T) {
 	if row.Attempts != 1 || row.Status != channels.StatusPending {
 		t.Fatalf("after first failure %+v", row)
 	}
-	wantNext := t0.Add(10 * time.Second).UTC().Format(time.RFC3339)
+	wantNext := t0.Add(5 * time.Second).UTC().Format(time.RFC3339)
 	if row.NextAttemptAt != wantNext {
 		t.Fatalf("next = %q, want %q", row.NextAttemptAt, wantNext)
 	}
 	// Before the due time the row stays.
-	if err := f.svc.SendDue(ctx, t0.Add(5*time.Second)); err != nil {
+	if err := f.svc.SendDue(ctx, t0.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if row = f.onlyOutbox(ctx, convID); row.Attempts != 1 {
 		t.Fatalf("not-due row advanced: %+v", row)
 	}
 	// At the due time the second attempt runs.
-	if err := f.svc.SendDue(ctx, t0.Add(10*time.Second)); err != nil {
+	if err := f.svc.SendDue(ctx, t0.Add(5*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	row = f.onlyOutbox(ctx, convID)
 	if row.Attempts != 2 {
 		t.Fatalf("second attempt %+v", row)
 	}
-	wantNext = t0.Add(30 * time.Second).UTC().Format(time.RFC3339)
+	wantNext = t0.Add(15 * time.Second).UTC().Format(time.RFC3339)
 	if row.NextAttemptAt != wantNext {
 		t.Fatalf("second next = %q, want %q", row.NextAttemptAt, wantNext)
 	}
@@ -289,20 +395,42 @@ func TestSendDueFailsAfterFiveWithInbox(t *testing.T) {
 	if err := json.Unmarshal(frames[0].Attrs, &attrs); err != nil {
 		t.Fatal(err)
 	}
-	if attrs["connector"] != "telegram" || attrs["conversation_id"] != convID {
+	if attrs["connector"] != "telegram" || attrs["conversation_id"] != convID || attrs["row_id"] != row.ID {
 		t.Fatalf("attrs %+v", attrs)
 	}
 
 	alertSvc := alerts.New(f.st, alerts.Options{})
 	alertSvc.HandleEvent(ctx, frames[0])
-	var count int
-	if err := f.st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items
-		WHERE alert_kind='channel_send_failed' AND subject=?`, "conversation/"+convID).Scan(&count); err != nil {
+	if n := f.openItems("outbox/" + row.ID); n != 1 {
+		t.Fatalf("inbox items = %d, want 1", n)
+	}
+
+	// A manual retry that sends resolves the item.
+	f.addChannel("telegram", "true")
+	if _, err := f.svc.RetryOutbox(ctx, convID, row.ID); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("inbox items = %d, want 1", count)
+	if err := f.svc.SendDue(ctx, time.Now().Add(6*time.Hour)); err != nil {
+		t.Fatal(err)
 	}
+	sent, err := f.st.ListBusWith(ctx, store.ListBusOpts{Topics: []string{"channel.sent"}, Limit: 10})
+	if err != nil || len(sent) != 1 {
+		t.Fatalf("channel.sent frames = %d, %v", len(sent), err)
+	}
+	alertSvc.HandleEvent(ctx, sent[0])
+	if n := f.openItems("outbox/" + row.ID); n != 0 {
+		t.Fatalf("open inbox items after send = %d, want 0", n)
+	}
+}
+
+func (f *fixture) openItems(subject string) int {
+	f.t.Helper()
+	var n int
+	if err := f.st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items
+		WHERE alert_kind='channel_send_failed' AND subject=? AND status!='resolved'`, subject).Scan(&n); err != nil {
+		f.t.Fatal(err)
+	}
+	return n
 }
 
 // TestRetryOutbox: a failed row goes back to pending with attempts = 0.
@@ -352,7 +480,9 @@ func TestAckRunsOnce(t *testing.T) {
 	if _, err := f.convs.EnsureForChannel(ctx, "ws1", "", "telegram", "chat1"); err != nil {
 		t.Fatal(err)
 	}
-	item := dispatch.QueueItem{Connector: "telegram", WorkspaceID: "ws1", ConversationKey: "chat1"}
+	// The key is a thread id; the ack goes to the event's channel ref.
+	evID := f.event("telegram", "chat1")
+	item := dispatch.QueueItem{Connector: "telegram", WorkspaceID: "ws1", ConversationKey: "thread9", EventID: evID}
 	if err := f.svc.Ack(ctx, item); err != nil {
 		t.Fatal(err)
 	}
@@ -426,6 +556,81 @@ func TestPulseTypingStartsAndStops(t *testing.T) {
 	}
 }
 
+// busyTurns is a LiveTurns fake.
+type busyTurns struct {
+	mu   sync.Mutex
+	busy map[string]bool
+}
+
+func (b *busyTurns) Busy(_ context.Context, convID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.busy[convID]
+}
+
+func (b *busyTurns) set(convID string, v bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.busy[convID] = v
+}
+
+// TestPulseTypingStopsAtMax: typing stops at typing_max and stays stopped
+// while the turn is busy. A conversation that waits is not busy, and the
+// next busy turn starts typing again.
+func TestPulseTypingStopsAtMax(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	turns := &busyTurns{busy: map[string]bool{}}
+	f.svc.WithLiveTurns(turns)
+	f.defs.channels["telegram"] = connectors.Channel{Ref: "id", Send: "true",
+		Typing:         `date +%s%N >> typing.txt`,
+		TypingInterval: connectors.Duration(8 * time.Second),
+		TypingMax:      connectors.Duration(20 * time.Second),
+	}
+	f.defs.cwds["telegram"] = f.dir
+	ctx := context.Background()
+
+	convID := f.conv("ws1")
+	f.userMsg(convID, "telegram", "chat1", "hello")
+	f.setSessionStatus(convID, "running")
+
+	// A live session that is not busy gets no typing.
+	t0 := time.Now()
+	if err := f.svc.PulseTyping(ctx, t0); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.lines("typing.txt"); n != 0 {
+		t.Fatalf("typing lines while not busy = %d, want 0", n)
+	}
+	turns.set(convID, true)
+	steps := []struct {
+		at   time.Duration
+		want int
+	}{
+		{0, 1}, {10 * time.Second, 2}, {20 * time.Second, 2}, {30 * time.Second, 2}, {60 * time.Second, 2},
+	}
+	for _, st := range steps {
+		if err := f.svc.PulseTyping(ctx, t0.Add(st.at)); err != nil {
+			t.Fatal(err)
+		}
+		if n := f.lines("typing.txt"); n != st.want {
+			t.Fatalf("at %s typing lines = %d, want %d", st.at, n, st.want)
+		}
+	}
+	// The turn waits, then a new turn starts: typing runs again.
+	turns.set(convID, false)
+	if err := f.svc.PulseTyping(ctx, t0.Add(61*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	turns.set(convID, true)
+	if err := f.svc.PulseTyping(ctx, t0.Add(62*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.lines("typing.txt"); n != 3 {
+		t.Fatalf("typing lines after a new turn = %d, want 3", n)
+	}
+}
+
 // TestPointersPerWorkspace: the same connector ref in two workspaces gives
 // two conversations.
 func TestPointersPerWorkspace(t *testing.T) {
@@ -451,6 +656,50 @@ func TestPointersPerWorkspace(t *testing.T) {
 	if err != nil || pb.ConversationID != b {
 		t.Fatalf("ws2 pointer %+v %v", pb, err)
 	}
+}
+
+// event inserts one events row with a channel ref and returns its id.
+func (f *fixture) event(connector, channelRef string) string {
+	f.t.Helper()
+	id := ulid.Make().String()
+	if _, err := f.st.DB().Exec(`INSERT INTO events
+		(id, connector, received_at, summary, raw_json, trace_id, channel_ref)
+		VALUES (?,?,?,?,?,?,?)`,
+		id, connector, time.Now().UTC().Format(time.RFC3339Nano), "", "{}", "tr", channelRef); err != nil {
+		f.t.Fatal(err)
+	}
+	return id
+}
+
+// sessionMsg inserts one assistant session row (run_id NULL) of one turn.
+func (f *fixture) sessionMsg(convID string, turn int, text string) {
+	f.t.Helper()
+	if _, err := f.st.DB().Exec(`INSERT INTO conversation_messages
+		(id, conversation_id, role, text, turn_index, created_at) VALUES (?,?,?,?,?,?)`,
+		ulid.Make().String(), convID, "assistant", text, turn,
+		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// frames counts the bus frames of one topic for one outbox row.
+func (f *fixture) frames(topic, rowID string) int {
+	f.t.Helper()
+	got, err := f.st.ListBusWith(context.Background(), store.ListBusOpts{Topics: []string{topic}, Limit: 100})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	n := 0
+	for _, fr := range got {
+		var attrs map[string]string
+		if err := json.Unmarshal(fr.Attrs, &attrs); err != nil {
+			f.t.Fatal(err)
+		}
+		if attrs["row_id"] == rowID {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fixture) onlyOutbox(ctx context.Context, convID string) channels.OutboxRow {

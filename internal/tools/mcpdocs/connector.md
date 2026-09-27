@@ -93,6 +93,13 @@ connector with none is a bare definition.
   (`ref`, `send` required; `typing`, `typing_interval_ms`, `typing_max_ms`, `ack`),
   plus `env` and `cwd`.
 
+Channel `send` gets the reply text on stdin and `TREBI_CHANNEL_REF`,
+`TREBI_CONVERSATION_ID`, and `TREBI_MESSAGE_ID` in its env. The reply goes to
+the event's channel ref, not to the extracted `conversation_key`. Delivery is
+at least once: after a crash the daemon can run `send` again for the same
+reply. `TREBI_MESSAGE_ID` is the outbox row id and stays the same on each
+retry, so `send` can use it to drop a repeat.
+
 Mutations (`create`, `replace`, `set`, `delete`, `connect`, `disconnect`,
 `restart`, `test`, `cursor_set`, `install`) on an inherited row return `conflict`.
 

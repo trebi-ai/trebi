@@ -222,6 +222,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		log:           slog.Default().With("source", "daemon"),
 		queue:         q,
 	}
+	ch.WithLiveTurns(c)
 	cl.WithOnChange(c.reselectEmail)
 	approvalQuestion := func(ctx context.Context, runID string) string {
 		a, err := r.PendingApproval(ctx, runID)

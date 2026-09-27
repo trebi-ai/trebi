@@ -371,3 +371,41 @@ func TestAutoTitleOnFirstUserMessage(t *testing.T) {
 		t.Fatalf("multiline title = %q", got.Title)
 	}
 }
+
+// TestReplyTextJoinsTurnBlocks: the session text blocks after the user row
+// join in id order; the last row is the key. No text after the user row is
+// not ok, so an older answer never goes out again.
+func TestReplyTextJoinsTurnBlocks(t *testing.T) {
+	t.Parallel()
+	svc := testSvc(t)
+	ctx := context.Background()
+	c, err := svc.Create(ctx, conversations.CreateOpts{Workspace: "ws", OriginChannel: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := svc.AppendUser(ctx, c.ID, conversations.UserTurn{Text: "q1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AppendAssistant(ctx, c.ID, 1, "Let me check."); err != nil {
+		t.Fatal(err)
+	}
+	last, err := svc.AppendAssistant(ctx, c.ID, 1, "Final answer.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, text, ok, err := svc.ReplyText(ctx, c.ID, "", first.ID)
+	if err != nil || !ok {
+		t.Fatalf("ReplyText ok=%v err=%v", ok, err)
+	}
+	if text != "Let me check.\n\nFinal answer." || msg.ID != last.ID {
+		t.Fatalf("text %q msg %s want %s", text, msg.ID, last.ID)
+	}
+	second, _, err := svc.AppendUser(ctx, c.ID, conversations.UserTurn{Text: "q2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, err := svc.ReplyText(ctx, c.ID, "", second.ID); err != nil || ok {
+		t.Fatalf("tool-only turn ok=%v err=%v", ok, err)
+	}
+}

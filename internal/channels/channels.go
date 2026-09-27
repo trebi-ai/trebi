@@ -4,6 +4,7 @@
 package channels
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -27,6 +28,13 @@ var ErrNotFound = errors.New("outbox row not found")
 
 // ErrNotFailed is a retry of a row that did not fail.
 var ErrNotFailed = errors.New("outbox row is not failed")
+
+// errNoChange stops a write transaction that changed no row, so no frame goes out.
+var errNoChange = errors.New("outbox row unchanged")
+
+// triggerRefPrefix marks the channel ref of an assistant item with no
+// channel address. Such a conversation gets no reply.
+const triggerRefPrefix = "trigger:"
 
 // Outbox statuses.
 const (
@@ -75,22 +83,32 @@ type OutboxRow struct {
 	SentAt         string    `json:"sent_at,omitempty"`
 }
 
+// LiveTurns tells which conversations have a live turn. The channels
+// package owns it.
+type LiveTurns interface {
+	// Busy is true while the conversation has a turn that is thinking or acting.
+	Busy(ctx context.Context, convID string) bool
+}
+
 // Service sends channel replies for one store.
 type Service struct {
 	st    *store.Store
 	conn  Definitions
 	convs *conversations.Service
+	turns LiveTurns
 	log   *slog.Logger
 
 	mu     sync.Mutex
 	typing map[string]*typingState
 }
 
-// typingState tracks one live conversation's typing pulse.
+// typingState tracks one live conversation's typing pulse. expired stays
+// set after typing_max until the conversation stops being busy.
 type typingState struct {
 	startedAt time.Time
 	lastSent  time.Time
 	failures  int
+	expired   bool
 }
 
 // New creates a channels service.
@@ -102,10 +120,18 @@ func New(st *store.Store, conn Definitions, convs *conversations.Service) *Servi
 	}
 }
 
+// WithLiveTurns sets the busy check that the typing pulse uses. Without it,
+// every conversation with a live session or run counts as busy.
+func (s *Service) WithLiveTurns(t LiveTurns) *Service {
+	s.turns = t
+	return s
+}
+
 // ReplyOnTurn writes one pending outbox row for the assistant turn of a
 // conversation when the exchange began on a connector channel. For a run the
-// turn carries runID; for the assistant session runID is empty. The message
-// id is the row key, so one turn never sends twice.
+// turn carries runID; for the assistant session runID is empty. The reply is
+// the text written after the last user message. The id of the last text row
+// is the row key, so one turn never sends twice.
 func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string) error {
 	if s.convs == nil || s.conn == nil || conversationID == "" {
 		return nil
@@ -114,31 +140,48 @@ func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string)
 	if err != nil || user == nil {
 		return err
 	}
+	if user.ChannelRef == "" || strings.HasPrefix(user.ChannelRef, triggerRefPrefix) {
+		return nil
+	}
 	if _, _, ok := s.conn.Channel(user.ChannelType); !ok {
 		return nil
 	}
-	turn, err := s.convs.LastAssistantTurn(ctx, conversationID, runID)
-	if err != nil || turn == nil {
+	last, text, ok, err := s.convs.ReplyText(ctx, conversationID, runID, user.ID)
+	if err != nil || !ok {
 		return err
 	}
 	conv, err := s.convs.Get(ctx, conversationID)
 	if err != nil {
 		return err
 	}
-	_, err = s.st.DB().ExecContext(ctx, `
+	rowID := ulid.Make().String()
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
 INSERT INTO channel_outbox
   (id, connector, workspace_id, conversation_id, channel_ref, message_id, run_id, text, status, attempts, created_at)
 VALUES (?,?,?,?,?,?,?,?,?,0,?)
 ON CONFLICT (message_id) DO NOTHING`,
-		ulid.Make().String(), user.ChannelType, conv.Workspace, conversationID,
-		user.ChannelRef, turn.ID, store.NullStr(runID), turn.Text, StatusPending,
-		time.Now().UTC().Format(time.RFC3339Nano))
+			rowID, user.ChannelType, conv.Workspace, conversationID,
+			user.ChannelRef, last.ID, store.NullStr(runID), text, StatusPending,
+			time.Now().UTC().Format(time.RFC3339Nano))
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return errNoChange
+		}
+		return nil
+	}, queuedEvent(OutboxRow{ID: rowID, Connector: user.ChannelType, ConversationID: conversationID}))
+	if errors.Is(err, errNoChange) {
+		return nil
+	}
 	return err
 }
 
 // SendDue sends the pending rows whose next attempt is due. A success marks
 // the row sent; a failure backs off; five attempts fail the row and emit
-// channel.send_failed.
+// channel.send_failed. Delivery is at least once: a crash after the send
+// and before the mark sends the row again.
 func (s *Service) SendDue(ctx context.Context, now time.Time) error {
 	if s.conn == nil {
 		return nil
@@ -148,6 +191,9 @@ func (s *Service) SendDue(ctx context.Context, now time.Time) error {
 		return err
 	}
 	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		s.sendRow(ctx, row, now)
 	}
 	return nil
@@ -163,35 +209,45 @@ func (s *Service) Ack(ctx context.Context, item dispatch.QueueItem) error {
 	if !ok || strings.TrimSpace(ch.Ack) == "" {
 		return nil
 	}
+	sourceID, channelRef := "", ""
+	if item.EventID != "" {
+		// A missing event row leaves both values empty.
+		_ = s.st.DB().QueryRowContext(ctx,
+			`SELECT COALESCE(source_id,''), COALESCE(channel_ref,'') FROM events WHERE id=?`,
+			item.EventID).Scan(&sourceID, &channelRef)
+	}
+	pointerRef := cmp.Or(channelRef, item.ConversationKey)
 	convID := ""
-	if s.convs != nil && item.WorkspaceID != "" && item.ConversationKey != "" {
-		if p, err := s.convs.GetPointer(ctx, item.WorkspaceID, item.Connector, item.ConversationKey); err == nil {
+	if s.convs != nil && item.WorkspaceID != "" && pointerRef != "" {
+		if p, err := s.convs.GetPointer(ctx, item.WorkspaceID, item.Connector, pointerRef); err == nil {
 			convID = p.ConversationID
 		}
 	}
-	sourceID := ""
-	if item.EventID != "" {
-		_ = s.st.DB().QueryRowContext(ctx,
-			`SELECT COALESCE(source_id,'') FROM events WHERE id=?`, item.EventID).Scan(&sourceID)
-	}
 	err := s.runCommand(ctx, s.conn.Cwd(item.Connector), env, ch.Ack, "",
-		channelEnv(convID, item.ConversationKey, item.EventID, sourceID), ackTimeout)
+		channelEnv(convID, channelRef, item.EventID, sourceID), ackTimeout)
 	if err != nil {
 		s.log.WarnContext(ctx, "channel ack", "connector", item.Connector, "error", err.Error())
 	}
 	return err
 }
 
-// PulseTyping runs the typing command of every live conversation at the
-// channel's typing interval, until the turn ends or typing_max passes.
+// PulseTyping runs the typing command of every busy conversation at the
+// channel's typing interval, until the turn stops or typing_max passes.
+// After typing_max the conversation stays silent until it is no longer busy.
 // Failures are logged at the first and at each tenth in a row.
 func (s *Service) PulseTyping(ctx context.Context, now time.Time) error {
 	if s.conn == nil || s.convs == nil {
 		return nil
 	}
-	ids, err := s.liveConversations(ctx)
+	candidates, err := s.liveConversations(ctx)
 	if err != nil {
 		return err
+	}
+	ids := candidates[:0]
+	for _, id := range candidates {
+		if s.turns == nil || s.turns.Busy(ctx, id) {
+			ids = append(ids, id)
+		}
 	}
 	live := make(map[string]bool, len(ids))
 	for _, id := range ids {
@@ -235,15 +291,24 @@ FROM channel_outbox WHERE conversation_id=? ORDER BY id DESC`, conversationID)
 // RetryOutbox sets one failed row of a conversation back to pending with
 // attempts = 0, so the next send worker tick retries it now.
 func (s *Service) RetryOutbox(ctx context.Context, conversationID, rowID string) (*OutboxRow, error) {
-	res, err := s.st.DB().ExecContext(ctx, `
+	var connector string
+	_ = s.st.DB().QueryRowContext(ctx, // a missing row fails the update below
+		`SELECT connector FROM channel_outbox WHERE id=?`, rowID).Scan(&connector)
+	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
 UPDATE channel_outbox
 SET status=?, attempts=0, next_attempt_at=NULL, error_message=NULL
 WHERE id=? AND conversation_id=? AND status=?`,
-		StatusPending, rowID, conversationID, StatusFailed)
-	if err != nil {
-		return nil, err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
+			StatusPending, rowID, conversationID, StatusFailed)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return errNoChange
+		}
+		return nil
+	}, queuedEvent(OutboxRow{ID: rowID, Connector: connector, ConversationID: conversationID}))
+	if errors.Is(err, errNoChange) {
 		var status string
 		err := s.st.DB().QueryRowContext(ctx,
 			`SELECT status FROM channel_outbox WHERE id=? AND conversation_id=?`,
@@ -255,6 +320,9 @@ WHERE id=? AND conversation_id=? AND status=?`,
 			return nil, err
 		}
 		return nil, ErrNotFailed
+	}
+	if err != nil {
+		return nil, err
 	}
 	row, err := s.outboxRow(ctx, rowID)
 	if err != nil {
@@ -302,8 +370,9 @@ func (s *Service) sendRow(ctx context.Context, row OutboxRow, now time.Time) {
 		s.markFailed(ctx, row, "connector has no channel")
 		return
 	}
-	err := s.runCommand(ctx, s.conn.Cwd(row.Connector), env, ch.Send, row.Text,
-		channelEnv(row.ConversationID, row.ChannelRef, "", ""), sendTimeout)
+	extra := channelEnv(row.ConversationID, row.ChannelRef, "", "")
+	extra["TREBI_MESSAGE_ID"] = row.ID
+	err := s.runCommand(ctx, s.conn.Cwd(row.Connector), env, ch.Send, row.Text, extra, sendTimeout)
 	if err == nil {
 		s.markSent(ctx, row, now)
 		return
@@ -312,9 +381,17 @@ func (s *Service) sendRow(ctx context.Context, row OutboxRow, now time.Time) {
 }
 
 func (s *Service) markSent(ctx context.Context, row OutboxRow, now time.Time) {
-	if _, err := s.st.DB().ExecContext(ctx,
-		`UPDATE channel_outbox SET status=?, sent_at=? WHERE id=?`,
-		StatusSent, now.UTC().Format(time.RFC3339Nano), row.ID); err != nil {
+	if _, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE channel_outbox SET status=?, sent_at=? WHERE id=?`,
+			StatusSent, now.UTC().Format(time.RFC3339Nano), row.ID)
+		return err
+	}, store.BusEvent{
+		Topic: "channel.sent", Entity: "conversation", EntityID: row.ConversationID,
+		Attrs: map[string]string{
+			"connector": row.Connector, "conversation_id": row.ConversationID, "row_id": row.ID,
+		},
+	}); err != nil {
 		s.log.ErrorContext(ctx, "channel sent mark", "row", row.ID, "error", err.Error())
 		return
 	}
@@ -328,13 +405,16 @@ func (s *Service) retryRow(ctx context.Context, row OutboxRow, now time.Time, ca
 		s.markFailed(ctx, row, cause.Error())
 		return
 	}
-	backoff := baseBackoff << attempts
+	backoff := baseBackoff << (attempts - 1)
 	if backoff > maxBackoff || backoff <= 0 {
 		backoff = maxBackoff
 	}
-	if _, err := s.st.DB().ExecContext(ctx, `
+	if _, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
 UPDATE channel_outbox SET attempts=?, next_attempt_at=?, error_message=? WHERE id=?`,
-		attempts, now.Add(backoff).UTC().Format(time.RFC3339), cause.Error(), row.ID); err != nil {
+			attempts, now.Add(backoff).UTC().Format(time.RFC3339), cause.Error(), row.ID)
+		return err
+	}, queuedEvent(row)); err != nil {
 		s.log.ErrorContext(ctx, "channel retry mark", "row", row.ID, "error", err.Error())
 	}
 }
@@ -348,7 +428,8 @@ UPDATE channel_outbox SET status=?, attempts=?, error_message=? WHERE id=?`,
 	}, store.BusEvent{
 		Topic: "channel.send_failed", Entity: "conversation", EntityID: row.ConversationID,
 		Attrs: map[string]string{
-			"connector": row.Connector, "conversation_id": row.ConversationID, "error": message,
+			"connector": row.Connector, "conversation_id": row.ConversationID,
+			"row_id": row.ID, "error": message,
 		},
 	})
 	if err != nil {
@@ -377,8 +458,8 @@ func (s *Service) pulseOne(ctx context.Context, conversationID string, now time.
 		st = &typingState{startedAt: now}
 		s.typing[conversationID] = st
 	}
-	if maximum > 0 && now.Sub(st.startedAt) >= maximum {
-		delete(s.typing, conversationID)
+	if st.expired || (maximum > 0 && now.Sub(st.startedAt) >= maximum) {
+		st.expired = true
 		s.mu.Unlock()
 		return
 	}
@@ -404,8 +485,8 @@ func (s *Service) pulseOne(ctx context.Context, conversationID string, now time.
 	s.mu.Unlock()
 }
 
-// liveConversations lists conversations with a live assistant turn or a
-// running agent run.
+// liveConversations lists conversations with a live assistant session or a
+// running agent run. LiveTurns then keeps the busy ones.
 func (s *Service) liveConversations(ctx context.Context) ([]string, error) {
 	rows, err := s.st.DB().QueryContext(ctx, `
 SELECT DISTINCT conversation_id FROM assistant_sessions WHERE status IN ('starting','running','waiting')
@@ -463,6 +544,16 @@ func channelEnv(conversationID, channelRef, eventID, sourceID string) map[string
 		env["TREBI_SOURCE_ID"] = sourceID
 	}
 	return env
+}
+
+// queuedEvent is the channel.queued frame of a row that waits for a send.
+func queuedEvent(row OutboxRow) store.BusEvent {
+	return store.BusEvent{
+		Topic: "channel.queued", Entity: "conversation", EntityID: row.ConversationID,
+		Attrs: map[string]string{
+			"connector": row.Connector, "conversation_id": row.ConversationID, "row_id": row.ID,
+		},
+	}
 }
 
 type outboxScanner interface {

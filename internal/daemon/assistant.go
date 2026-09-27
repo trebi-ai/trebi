@@ -146,6 +146,7 @@ func (c *ControlPlane) dispatchAssistant(ctx context.Context, item *dispatch.Que
 	c.recordPolicy(ctx, item)
 	if err := c.queue.MarkDone(ctx, item.ID, dispatch.ResultLaunched, ""); err != nil {
 		c.log.Warn("queue mark done", "queue_id", item.ID, "error", err)
+		return
 	}
 	c.ackChannel(ctx, item, dispatch.ResultLaunched)
 }
