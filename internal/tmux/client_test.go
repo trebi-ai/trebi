@@ -166,7 +166,8 @@ func TestSendTrailingNewlineRuns(t *testing.T) {
 	t.Cleanup(func() {
 		_ = KillSession(name)
 	})
-	if err := WaitForPrompt(name, "$ ", 5*time.Second); err != nil {
+	// A loaded `go test ./...` can hold zsh start and the command past 5s.
+	if err := WaitForPrompt(name, "$ ", 30*time.Second); err != nil {
 		t.Fatalf("waiting for the zsh prompt: %v", err)
 	}
 
@@ -174,7 +175,7 @@ func TestSendTrailingNewlineRuns(t *testing.T) {
 	if err := Send(name, "touch "+marker+"\n"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(marker); err == nil {
 			return

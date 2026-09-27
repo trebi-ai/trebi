@@ -34,6 +34,11 @@ jobs:
         run: bash scripts/semver-ge.test.sh
       - name: go test
         run: go test ./...
+      # These packages start goroutines of their own. About 90 s on an M-series Mac.
+      - name: go test -race
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./internal/connectors ./internal/channels ./internal/dispatch ./internal/daemon
       - name: go vet public packages
         run: go vet ./app/... ./ext/...
 
