@@ -35,7 +35,7 @@ func (s *Service) InjectEvent(ctx context.Context, name string, event any) (stri
 		payload:    event,
 	}
 	s.fillEventMeta(&rec, name)
-	inserted, err := s.recordEvent(ctx, name, rec)
+	inserted, err := s.recordEvent(ctx, name, rec, recordOpts{})
 	if err != nil {
 		return "", err
 	}
@@ -46,7 +46,8 @@ func (s *Service) InjectEvent(ctx context.Context, name string, event any) (stri
 }
 
 // InjectNative records one event from a native connector (email, webhook).
-// The caller supplies the identity fields the connector knows natively.
+// The caller supplies the identity fields the connector knows natively. The
+// native service owns its position row, so this never writes it.
 func (s *Service) InjectNative(ctx context.Context, name string, payload any, meta NativeMeta) (string, error) {
 	raw, _ := json.Marshal(payload)
 	rec := eventRecord{
@@ -59,7 +60,7 @@ func (s *Service) InjectNative(ctx context.Context, name string, payload any, me
 		identity:   meta.Identity,
 		channelRef: meta.ChannelRef,
 	}
-	inserted, err := s.recordEvent(ctx, name, rec)
+	inserted, err := s.recordEvent(ctx, name, rec, recordOpts{})
 	if err != nil {
 		return "", err
 	}
@@ -113,7 +114,7 @@ func (s *Service) ingest(ctx context.Context, name string, d Definition, line st
 		catchUp:    catchUp,
 	}
 	s.fillEventMeta(&rec, name)
-	inserted, err := s.recordEvent(ctx, name, rec)
+	inserted, err := s.recordEvent(ctx, name, rec, recordOpts{advancePosition: true})
 	if err != nil {
 		if p != nil {
 			p.addParseError()
@@ -133,9 +134,17 @@ func (s *Service) ingest(ctx context.Context, name string, d Definition, line st
 	s.dispatchEvent(ctx, name, rec)
 }
 
-// recordEvent stores one durable events row. When the row is new and carries
-// a source id, the connector cursor moves in the same transaction.
-func (s *Service) recordEvent(ctx context.Context, name string, rec eventRecord) (inserted bool, err error) {
+// recordOpts selects the side effects of recordEvent.
+type recordOpts struct {
+	// advancePosition moves connector_cursors to the new source id. Only
+	// the supervisor ingest sets it; synthetic and native events do not.
+	advancePosition bool
+}
+
+// recordEvent stores one durable events row. When the row is new, carries a
+// source id, and opts.advancePosition is set, the connector cursor moves in
+// the same transaction.
+func (s *Service) recordEvent(ctx context.Context, name string, rec eventRecord, opts recordOpts) (inserted bool, err error) {
 	summary := rec.raw
 	if len(summary) > 200 {
 		summary = summary[:200]
@@ -156,7 +165,7 @@ func (s *Service) recordEvent(ctx context.Context, name string, rec eventRecord)
 		if !inserted {
 			return nil
 		}
-		if rec.sourceID != "" {
+		if opts.advancePosition && rec.sourceID != "" {
 			now := time.Now().UTC().Format(time.RFC3339)
 			if _, err := tx.Exec(`INSERT INTO connector_cursors (name, last_event_id, updated_at)
 				VALUES (?,?,?)

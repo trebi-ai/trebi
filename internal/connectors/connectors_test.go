@@ -903,17 +903,27 @@ func TestConnectorsDedup(t *testing.T) {
 	if queue != 1 {
 		t.Fatalf("queue rows %d want 1", queue)
 	}
+	// A native event never moves the position (decision 2).
 	cur, _ := svc.GetCursor(ctx, "src")
-	if cur.LastEventID != "evt-1" {
-		t.Fatalf("cursor %q want evt-1", cur.LastEventID)
+	if cur.LastEventID != "" {
+		t.Fatalf("native event moved the cursor to %q", cur.LastEventID)
 	}
-	// A new source id moves the cursor.
-	if _, err := svc.InjectNative(ctx, "src", map[string]any{"n": 2}, connectors.NativeMeta{SourceID: "evt-2"}); err != nil {
+}
+
+// TestConnectorsInjectNativeKeepsEmailPosition proves an email event leaves
+// the ingress position row of the email service alone.
+func TestConnectorsInjectNativeKeepsEmailPosition(t *testing.T) {
+	st, _, svc := openStack(t)
+	ctx := context.Background()
+	if _, err := st.DB().Exec(`INSERT INTO connector_cursors (name, last_event_id, updated_at) VALUES ('email','42','2026-09-27T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	cur, _ = svc.GetCursor(ctx, "src")
-	if cur.LastEventID != "evt-2" {
-		t.Fatalf("cursor %q want evt-2", cur.LastEventID)
+	if _, err := svc.InjectNative(ctx, "email", map[string]any{"subject": "hi"}, connectors.NativeMeta{SourceID: "<id@x>"}); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := svc.GetCursor(ctx, "email")
+	if cur.LastEventID != "42" {
+		t.Fatalf("email position = %q; want 42", cur.LastEventID)
 	}
 }
 
