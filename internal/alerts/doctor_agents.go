@@ -146,7 +146,11 @@ func connectorFindings(wsID, short, name string, parsed *job.Job, defs map[strin
 				short, effectiveHarness(parsed), effectiveRuntime(parsed, effectiveHarness(parsed)), name),
 		})
 	}
-	for _, command := range d.Actions.CLI.Commands {
+	cli := d.Actions.CLI
+	if cli == nil {
+		return out
+	}
+	for _, command := range cli.Commands {
 		bin := strings.Fields(command)
 		if len(bin) == 0 {
 			continue

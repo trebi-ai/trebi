@@ -98,33 +98,8 @@ func TestInsideAgentFolder(t *testing.T) {
 // TestConnectorKitFindings covers the F.5 doctor checks: an inherited name, a
 // connector with no actions block, and a CLI command that is not on PATH.
 func TestConnectorKitFindings(t *testing.T) {
-	home.SetBase(t.TempDir())
-	t.Cleanup(func() { home.SetBase("") })
-	if err := os.WriteFile(filepath.Join(home.Base(), "connectors.yaml"), []byte(
-		"actions-only:\n  actions:\n    cli:\n      commands: [trebi-definitely-missing-command]\n"+
-			"events-only:\n  events:\n    command: true\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	agentDir := filepath.Join(dir, "agents", "research")
-	if err := os.MkdirAll(agentDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\nkit:\n  connectors: [actions-only, events-only, ghost]\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.DB().Exec(`INSERT INTO job_index (workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
-		t.Fatal(err)
-	}
+	st := kitStore(t, "actions-only:\n  actions:\n    cli:\n      commands: [trebi-definitely-missing-command]\n"+
+		"events-only:\n  events:\n    command: true\n", "actions-only, events-only, ghost")
 	findings := agentKitFindings(st)
 	codes := map[string]bool{}
 	for _, finding := range findings {
@@ -135,4 +110,46 @@ func TestConnectorKitFindings(t *testing.T) {
 			t.Fatalf("missing %s in %+v", want, findings)
 		}
 	}
+}
+
+// TestConnectorKitFindingsMCPOnly proves a kit that names an MCP-only
+// connector does not panic and gives no command finding.
+func TestConnectorKitFindingsMCPOnly(t *testing.T) {
+	st := kitStore(t, "gh:\n  actions:\n    mcp:\n      command: npx\n", "gh")
+	for _, finding := range agentKitFindings(st) {
+		if finding.Code == "connector_command_missing" {
+			t.Fatalf("unexpected finding %+v", finding)
+		}
+	}
+}
+
+// kitStore writes connectors.yaml and one agent whose kit names connectors.
+func kitStore(t *testing.T, connectorsYAML, kitConnectors string) *store.Store {
+	t.Helper()
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	if err := os.WriteFile(filepath.Join(home.Base(), "connectors.yaml"), []byte(connectorsYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "agents", "research")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\nkit:\n  connectors: [" + kitConnectors + "]\n---\n\nRun.\n"
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO job_index (workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
+		t.Fatal(err)
+	}
+	return st
 }
