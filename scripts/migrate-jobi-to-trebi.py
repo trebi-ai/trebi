@@ -89,6 +89,10 @@ TABLE_MAP = {
 # Schema v11: run_segments.layer values agent→session, task→run.
 LAYER_MAP = {"agent": "session", "task": "run"}
 SECRET_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|AUTH)", re.I)
+# Mirrors internal/connectors/definition.go (nameRE, envKeyRE, reserved).
+CONNECTOR_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+CONNECTOR_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+RESERVED_CONNECTORS = {"email", "webhook", "trebi"}
 # store.SchemaVersion at the time this script was last synced. A trebi.db older
 # than this is a pre-migration database: bump it with `trebi service migrate-db`
 # before applying DB phases. v17-v25 add only tables and defaulted columns the
@@ -859,6 +863,37 @@ def convert_source_entry(name: str, src: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def connector_problems(name: str, conv: dict[str, Any]) -> list[str]:
+    """Return the reasons why trebi refuses this definition. One invalid
+    connector makes the whole connectors.yaml fail to load."""
+    problems: list[str] = []
+    if not CONNECTOR_NAME_RE.match(name):
+        problems.append(f"name must match {CONNECTOR_NAME_RE.pattern}")
+    if name in RESERVED_CONNECTORS:
+        problems.append("name is reserved")
+    for k in (conv.get("env") or {}):
+        if not CONNECTOR_ENV_KEY_RE.match(str(k)):
+            problems.append(f"env key {k!r} must match {CONNECTOR_ENV_KEY_RE.pattern}")
+    ev = conv.get("events")
+    if not ev:
+        problems.append("no command, so no events block")
+        return problems
+    if ev.get("format", "line") not in ("json", "line"):
+        problems.append("format must be json or line")
+    if ev.get("restart", "on-failure") not in ("always", "on-failure", "never"):
+        problems.append("restart must be always, on-failure, or never")
+    if ev.get("format") != "json":
+        for key in ("id", "ts", "catchup"):
+            if key in ev:
+                problems.append(f"events.{key} needs format: json")
+    if "catchup" in ev:
+        if "id" not in ev:
+            problems.append("events.catchup needs events.id")
+        if "poll" in ev:
+            problems.append("events.catchup cannot be combined with poll")
+    return problems
+
+
 def convert_sources_yaml(raw_text: str) -> tuple[Any, list[str]]:
     """Convert jobi sources.yaml into the trebi connectors.yaml map form."""
     notes: list[str] = []
@@ -885,8 +920,10 @@ def convert_sources_yaml(raw_text: str) -> tuple[Any, list[str]]:
         if item.get("type") or item.get("facets"):
             dropped_facets += 1
         conv = convert_source_entry(name, item)
-        if "events" not in conv:
-            notes.append(f"source {name}: empty command after conversion; kept as a bare definition")
+        problems = connector_problems(name, conv)
+        if problems:
+            notes.append(f"skipped source {name}: " + "; ".join(problems))
+            continue
         converted[name] = conv
     if dropped_facets:
         notes.append(
