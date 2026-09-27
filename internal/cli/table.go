@@ -275,7 +275,7 @@ func colorStatus(out io.Writer, s string) string {
 		return text.FgRed.Sprint(s)
 	case "exited", "stopped", "blocked":
 		return text.FgYellow.Sprint(s)
-	case "skipped", "unknown", "debounced", "rate_limited":
+	case "skipped", "unknown":
 		return text.FgHiBlack.Sprint(s)
 	case "waiting":
 		return text.FgYellow.Sprint(s)
