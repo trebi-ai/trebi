@@ -965,6 +965,41 @@ func TestConnectorsCatchup(t *testing.T) {
 		t.Fatalf("first replayed %q want 4", first)
 	}
 
+	// The buffer cap kills the command and keeps the rows it already read.
+	capped := connectors.Definition{
+		Name: "feed4",
+		Events: &connectors.Events{
+			Command: "sleep 30",
+			Format:  "json",
+			ID:      "id",
+			Catchup: &connectors.Catchup{
+				Command:   `i=0; while [ $i -lt 50 ]; do i=$((i+1)); echo "{\"id\":\"c$i\"}"; sleep 0.05; done`,
+				MaxEvents: 3,
+			},
+		},
+	}
+	if err := svc.Create(ctx, capped); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.PutCursor(ctx, "feed4", "c1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(ctx, "feed4"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Stop("feed4") })
+	waitUntil(t, 5*time.Second, func() bool {
+		cur, _ := svc.GetCursor(ctx, "feed4")
+		return cur.LastEventID == "c3"
+	}, "capped catch-up did not finish")
+	var cappedRows int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE connector='feed4'`).Scan(&cappedRows); err != nil {
+		t.Fatal(err)
+	}
+	if cappedRows != 2 {
+		t.Fatalf("cap replayed %d rows want 2 (c2, c3)", cappedRows)
+	}
+
 	// An empty connector cursor skips without running the command.
 	empty := connectors.Definition{
 		Name: "feed3",
