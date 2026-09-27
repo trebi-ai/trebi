@@ -42,6 +42,10 @@ var (
 	ErrNoEvents = errors.New("connector has no events block")
 	// ErrLoadFailed is a write while connectors.yaml does not load.
 	ErrLoadFailed = errors.New("connectors.yaml did not load")
+	// ErrDuplicate is an injected event whose source id is already stored.
+	ErrDuplicate = errors.New("event source id already recorded")
+	// ErrEventNotFound is a redispatch of a missing events row.
+	ErrEventNotFound = errors.New("event not found")
 )
 
 // AmbiguousError is a connector name that matches more than one row.

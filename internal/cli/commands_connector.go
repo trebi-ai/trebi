@@ -1073,7 +1073,7 @@ func eventsCommand() *cli.Command {
 			},
 			{
 				Name:      "retrigger",
-				Usage:     "re-inject a stored event into its connector",
+				Usage:     "match a stored event against the current triggers again",
 				ArgsUsage: "<id>",
 				Action:    runEventsRetrigger,
 			},

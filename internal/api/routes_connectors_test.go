@@ -41,6 +41,41 @@ func TestConnectorRoutes(t *testing.T) {
 		t.Fatalf("duplicate create = %d %v", code, body)
 	}
 
+	// A test event with a stored source id is a conflict, not a silent drop.
+	if code, body := do("POST", "/v1/connectors/feed/test", map[string]any{"event": map[string]any{"id": "t1"}}); code != http.StatusOK {
+		t.Fatalf("test event = %d %v", code, body)
+	}
+	if code, body := do("POST", "/v1/connectors/feed/test", map[string]any{"event": map[string]any{"id": "t1"}}); code != http.StatusConflict || errCode(body) != "conflict" {
+		t.Fatalf("duplicate test event = %d %v", code, body)
+	}
+	// Retrigger reuses the stored row, so the duplicate source id is no bar.
+	code, list := do("GET", "/v1/events?connector=feed", nil)
+	events, _ := list["events"].([]any)
+	if code != http.StatusOK || len(events) != 1 {
+		t.Fatalf("events = %d %v", code, list)
+	}
+	eventID, _ := events[0].(map[string]any)["id"].(string)
+	// The catch_up filter binds an int.
+	for q, want := range map[string]int{"0": 1, "1": 0} {
+		code, list := do("GET", "/v1/events?connector=feed&catch_up="+q, nil)
+		if got, _ := list["events"].([]any); code != http.StatusOK || len(got) != want {
+			t.Fatalf("catch_up=%s = %d %v; want %d rows", q, code, list, want)
+		}
+	}
+	if code, _ := do("GET", "/v1/events?catch_up=yes", nil); code != http.StatusBadRequest {
+		t.Fatalf("catch_up=yes = %d; want 400", code)
+	}
+	if code, body := do("POST", "/v1/events/"+eventID+"/retrigger", nil); code != http.StatusOK {
+		t.Fatalf("retrigger = %d %v", code, body)
+	}
+	if code, body := do("POST", "/v1/events/missing/retrigger", nil); code != http.StatusNotFound {
+		t.Fatalf("retrigger missing = %d %v", code, body)
+	}
+	// An unknown key inside a PATCH block fails the strict decode.
+	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"events": map[string]any{"command": "x", "formt": "json"}}); code != http.StatusBadRequest || errCode(body) != "validation" {
+		t.Fatalf("patch block unknown key = %d %v", code, body)
+	}
+
 	// An unknown top-level key fails the strict decode.
 	bad := map[string]any{"name": "feed2", "nonsense": true}
 	if code, body := do("POST", "/v1/connectors", bad); code != http.StatusBadRequest || errCode(body) != "validation" {

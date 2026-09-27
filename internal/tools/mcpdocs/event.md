@@ -21,7 +21,7 @@ Read one event.
 - `id` (string, required): event id.
 
 ### retrigger
-Run the rule pipeline again for one event.
+Run the rule pipeline again for one stored event. It writes no new event row, so it works for every connector, `email` and `webhook` included, and the event id stays the same. Each trigger outcome points at the new queue row.
 - `id` (string, required): event id.
 
 ### rules_test

@@ -50,6 +50,7 @@ type Hook struct {
 type HostedHooks interface {
 	MintHook(ctx context.Context, label string) (cloudlink.Hook, error)
 	DeleteHook(ctx context.Context, id string) error
+	Status() cloudlink.Status
 }
 
 // Service is the webhook object family plus the ingress sink.
@@ -201,19 +202,31 @@ func (s *Service) claim(ctx context.Context, id string) (bool, error) {
 }
 
 // ConnectorRow is the synthetic connectors-list row for the webhook
-// connector (plan J). It reports the count of cloud hooks and carries the
-// events capability only.
+// connector (plan J). It carries the events capability only. The status is
+// listening only while the cloud link socket is up. The counters come from
+// the events table over the last 24 hours; duplicates drop at the claim and
+// are not counted.
 func (s *Service) ConnectorRow() map[string]any {
-	var count int64
-	_ = s.st.DB().QueryRow(`SELECT COUNT(*) FROM cloud_hooks`).Scan(&count)
+	// Both counts are best effort: a failed read renders zero.
+	var hooks, events int64
+	_ = s.st.DB().QueryRow(`SELECT COUNT(*) FROM cloud_hooks`).Scan(&hooks)
+	since := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	_ = s.st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE connector='webhook' AND received_at >= ?`, since).Scan(&events)
+	status := "stopped"
+	if s.hosted.Status().Connected {
+		status = "listening"
+	}
+	s.mu.Lock()
+	drops := s.drops
+	s.mu.Unlock()
 	return map[string]any{
 		"id": "webhook", "name": "webhook",
 		"provenance": "native", "managed": false,
 		"capabilities": []string{"events"},
 		"events": map[string]any{
-			"status":   "listening",
-			"metrics":  map[string]any{"hooks": count},
-			"counters": map[string]any{"events": 0, "duplicates": 0, "parse_errors": 0},
+			"status":   status,
+			"metrics":  map[string]any{"hooks": hooks, "dropped": drops},
+			"counters": map[string]any{"events": events, "duplicates": int64(0), "parse_errors": int64(0)},
 		},
 	}
 }

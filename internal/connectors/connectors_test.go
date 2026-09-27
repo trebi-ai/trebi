@@ -783,9 +783,12 @@ func TestConnectorsInjectEventMatchesAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ov := wire.Override{Triggers: []job.Trigger{{
-		Family: "event", Event: "src", Match: "true",
-	}}}
+	// A disabled trigger and a cron trigger never fire on an event.
+	ov := wire.Override{Triggers: []job.Trigger{
+		{Family: "event", Event: "src", Match: "true"},
+		{Family: "event", Event: "src", Match: "true", Disabled: true, Index: 1},
+		{Family: "cron", Cron: "0 * * * *", Index: 2},
+	}}
 	if _, err := ws.SetAssistantOverride(ctx, w.ID, ov, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -804,6 +807,10 @@ func TestConnectorsInjectEventMatchesAssistant(t *testing.T) {
 	}
 	if kind != "assistant" {
 		t.Fatalf("queue kind=%s want assistant", kind)
+	}
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE kind='assistant'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("assistant queue rows = %d (%v); want 1", n, err)
 	}
 }
 
@@ -904,6 +911,51 @@ func TestConnectorsAllowlistIdentity(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("open connector queue rows=%d want 1", n)
+	}
+}
+
+// TestConnectorsAllowlistEmailCase proves the email identity compares
+// without case, while a managed connector compares exactly.
+func TestConnectorsAllowlistEmailCase(t *testing.T) {
+	st, ws, svc := openStack(t)
+	ctx := context.Background()
+	wsPath := filepath.Join(home.Base(), "ws")
+	for job, event := range map[string]string{"mail": "email", "chat": "src"} {
+		dir := filepath.Join(wsPath, job)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		md := "---\nharness: fake\ntriggers:\n  - event: " + event + "\n    match: \"true\"\n    allowlist: [\"Ops@Example.com\"]\n---\n\nRun.\n"
+		if err := os.WriteFile(filepath.Join(dir, "JOB.md"), []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := ws.Add(ctx, wsPath, "case-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	def := eventsDef("src", "true")
+	def.Events.Identity = "sender"
+	if err := svc.Create(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.InjectNative(ctx, "email", map[string]any{"subject": "hi"}, connectors.NativeMeta{SourceID: "<1@x>", Identity: "ops@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.InjectEvent(ctx, "src", map[string]any{"sender": "ops@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	for job, want := range map[string]int{"mail": 1, "chat": 0} {
+		var n int
+		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job=?`, job).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != want {
+			t.Fatalf("%s queue rows = %d; want %d", job, n, want)
+		}
 	}
 }
 
@@ -1035,6 +1087,86 @@ func TestConnectorsDedup(t *testing.T) {
 	cur, _ := svc.GetCursor(ctx, "src")
 	if cur.LastEventID != "" {
 		t.Fatalf("native event moved the cursor to %q", cur.LastEventID)
+	}
+}
+
+// TestConnectorsRedispatch proves a retrigger reuses the stored row: it
+// works for a native connector and for a source id that is already stored,
+// and it writes no new events row. A synthetic duplicate is ErrDuplicate.
+func TestConnectorsRedispatch(t *testing.T) {
+	st, ws, svc := openStack(t)
+	ctx := context.Background()
+
+	wsPath := filepath.Join(home.Base(), "ws")
+	for _, name := range []string{"hook", "feed"} {
+		dir := filepath.Join(wsPath, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		md := "---\nharness: fake\ntriggers:\n  - event: " + map[string]string{"hook": "webhook", "feed": "src"}[name] +
+			"\n    match: \"event.n == 7\"\n---\n\nRun.\n"
+		if err := os.WriteFile(filepath.Join(dir, "JOB.md"), []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := ws.Add(ctx, wsPath, "redispatch-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	count := func(q string, args ...any) int {
+		t.Helper()
+		var n int
+		if err := st.DB().QueryRow(q, args...).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	nativeID, err := svc.InjectNative(ctx, "webhook", map[string]any{"n": 7}, connectors.NativeMeta{SourceID: "f1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Redispatch(ctx, nativeID); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job='hook' AND event_id=?`, nativeID); n != 2 {
+		t.Fatalf("native queue rows = %d; want 2", n)
+	}
+	if n := count(`SELECT COUNT(*) FROM events WHERE connector='webhook'`); n != 1 {
+		t.Fatalf("native events rows = %d; want 1", n)
+	}
+	// The outcome points at the newest queue row.
+	var qid string
+	if err := st.DB().QueryRow(`SELECT queue_id FROM event_outcomes WHERE event_id=?`, nativeID).Scan(&qid); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE id=? AND id=(SELECT MAX(id) FROM event_queue WHERE event_id=?)`, qid, nativeID); n != 1 {
+		t.Fatalf("outcome queue id %s is not the newest", qid)
+	}
+
+	def := eventsDef("src", "true")
+	def.Events.ID = "id"
+	if err := svc.Create(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	id, err := svc.InjectEvent(ctx, "src", map[string]any{"id": "a", "n": 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.InjectEvent(ctx, "src", map[string]any{"id": "a", "n": 7}); !errors.Is(err, connectors.ErrDuplicate) {
+		t.Fatalf("second inject err = %v; want ErrDuplicate", err)
+	}
+	if err := svc.Redispatch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job='feed'`); n != 2 {
+		t.Fatalf("feed queue rows = %d; want 2", n)
+	}
+	if err := svc.Redispatch(ctx, "missing"); !errors.Is(err, connectors.ErrEventNotFound) {
+		t.Fatalf("missing err = %v", err)
 	}
 }
 

@@ -152,7 +152,7 @@ Restart one connector process.
 - `name` (string, required): connector name.
 
 ### test
-Send one test event through a connector.
+Send one test event through a connector. An event whose declared `id` value is already stored returns `conflict`; change the id.
 - `name` (string, required): connector name.
 - `event` (any, optional): event payload.
 

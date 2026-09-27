@@ -31,6 +31,8 @@ trebi connector remove slack
 
 `trebi connector set <name>` sends a `PATCH`: a flag replaces that part of the definition and the stored blocks stay. An `--mcp-*` or `--cli-*` flag changes only that field of the actions block. `connector show` prints each literal env value and MCP header as `***`; a `secret:NAME` reference stays visible. `trebi connector set slack --no-events` removes the events block. `trebi connector apply --file ./slack.yaml` writes a whole definition with `PUT`, for an import.
 
+A trigger `allowlist` checks only the value at the connector `--identity` path. A connector with no identity fails every allowlist. The `email` connector compares the sender address without case. Every other connector compares the value exactly.
+
 A job or agent receives connector actions through `connectors:` (or the agent `kit: connectors`). A job list that is not empty replaces the kit list. `kit.mcp` is gone: trebi ignores it and doctor reports `kit_mcp_removed`; move the names to `kit.connectors`. A run with an MCP action needs a supported harness and runtime: claude, codex, and opencode on either runtime, and the ACP harnesses (copilot, cursor, gemini) on the CLI runtime. The CLI runtime asks the installed harness if it can take MCP servers; pi cannot. An unsupported pair fails the launch with `validation`, and doctor reports `kit_actions_unsupported` first. A resumed run keeps the actions of the run it resumes. Codex gets MCP secrets through the environment, never on the command line. For opencode, the injected servers merge into the `OPENCODE_CONFIG_CONTENT` of the job; an injected server wins on a name clash. The connector `cwd` does not apply to an MCP server.
 
 `connector logs` (and `--follow`) blocks — **local only**; remote: poll `connector.logs`. `connector remove` is destructive — ask first.
@@ -109,7 +111,7 @@ trebi event list --limit 50 --json
 trebi event retrigger <id>
 ```
 
-`events retrigger` re-injects a stored event.
+`event retrigger` matches a stored event against the current triggers again. It writes no new event row and works for every connector, `email` and `webhook` included.
 
 ## Queue
 

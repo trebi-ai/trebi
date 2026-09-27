@@ -429,7 +429,7 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 	}
 	if _, err := g.conn.InjectNative(ctx, cursorName, msg, connectors.NativeMeta{
 		SourceID:   msg.ID,
-		Identity:   msg.From,
+		Identity:   strings.ToLower(strings.TrimSpace(msg.From)),
 		ChannelRef: ThreadRoot(msg),
 	}); err != nil {
 		g.log.Warn("email.inject", "id", msg.ID, "error", err)

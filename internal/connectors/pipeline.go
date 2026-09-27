@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -14,8 +16,9 @@ import (
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
-// InjectEvent handles a synthetic event (`connector test`, retrigger, rules
-// fire) through the same ingest path. It refuses a reserved name.
+// InjectEvent handles a synthetic event (`connector test`) through the same
+// ingest path. It refuses a reserved name. A source id that is already
+// stored returns ErrDuplicate.
 func (s *Service) InjectEvent(ctx context.Context, name string, event any) (string, error) {
 	if err := s.GuardReserved(name); err != nil {
 		return "", err
@@ -39,10 +42,49 @@ func (s *Service) InjectEvent(ctx context.Context, name string, event any) (stri
 	if err != nil {
 		return "", err
 	}
-	if inserted {
-		s.dispatchEvent(ctx, name, rec)
+	if !inserted {
+		return "", fmt.Errorf("%w: %q", ErrDuplicate, rec.sourceID)
 	}
+	s.dispatchEvent(ctx, name, rec)
 	return rec.id, nil
+}
+
+// Redispatch matches one stored event against the current triggers again.
+// It writes no new events row, so it works for every connector, native ones
+// included, and for an event whose source id is already stored.
+func (s *Service) Redispatch(ctx context.Context, eventID string) error {
+	var rec eventRecord
+	var name string
+	var sourceID, identity, channelRef sql.NullString
+	var catchUp int
+	err := s.st.DB().QueryRowContext(ctx, `SELECT connector, COALESCE(raw_json,''), COALESCE(trace_id,''),
+		source_id, identity, channel_ref, catch_up FROM events WHERE id=?`, eventID).
+		Scan(&name, &rec.raw, &rec.trace, &sourceID, &identity, &channelRef, &catchUp)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %s", ErrEventNotFound, eventID)
+	}
+	if err != nil {
+		return err
+	}
+	rec.id = eventID
+	rec.receivedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	rec.sourceID, rec.identity, rec.channelRef = sourceID.String, identity.String, channelRef.String
+	rec.catchUp = catchUp != 0
+	rec.payload = decodeStored(rec.raw)
+	s.dispatchEvent(ctx, name, rec)
+	return nil
+}
+
+// decodeStored decodes a stored raw_json value with numbers kept exact. A
+// value that is not JSON stays a string.
+func decodeStored(raw string) any {
+	var v any
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return raw
+	}
+	return v
 }
 
 // InjectNative records one event from a native connector (email, webhook).
@@ -264,7 +306,7 @@ func (s *Service) triggersFor(ctx context.Context, connector string) []cachedTri
 		}
 		j := &job.Job{Name: "assistant"}
 		for _, tr := range at.Triggers {
-			if tr.Family != "event" && tr.Event == "" {
+			if tr.Family != "event" || tr.Disabled || tr.Event == "" {
 				continue
 			}
 			by[tr.Event] = append(by[tr.Event], cachedTrig{row: row, j: j, tr: tr})
@@ -283,7 +325,7 @@ func (s *Service) dispatchTrigger(ctx context.Context, name string, ev eventReco
 	}
 	// Ingress allowlist (security layer 1): the declared identity is the only
 	// field checked. A connector with no identity fails every allowlist.
-	if len(tr.Allowlist) > 0 && !allowlistPasses(tr.Allowlist, ev.identity) {
+	if len(tr.Allowlist) > 0 && !allowlistPasses(tr.Allowlist, ev.identity, name == "email") {
 		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeBlocked), "", ev.receivedAt)
 		return
 	}
@@ -320,7 +362,8 @@ func (s *Service) dispatchTrigger(ctx context.Context, name string, ev eventReco
 	s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeQueued), item.ID, ev.receivedAt)
 }
 
-// insertOutcome records one event_outcomes row (best-effort, logged on error).
+// insertOutcome records one event_outcomes row (best-effort, logged on
+// error). A redispatch replaces the earlier outcome of the same trigger.
 func (s *Service) insertOutcome(ctx context.Context, eid, wsID, jobName string, onIndex int, outcome, queueID, now string) {
 	var qid any
 	if queueID != "" {
@@ -329,19 +372,24 @@ func (s *Service) insertOutcome(ctx context.Context, eid, wsID, jobName string, 
 	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO event_outcomes
 		(event_id, workspace_id, job, on_index, outcome, queue_id, created_at)
 		VALUES (?,?,?,?,?,?,?)
-		ON CONFLICT (event_id, workspace_id, job, on_index) DO NOTHING`, eid, wsID, jobName, onIndex, outcome, qid, now); err != nil {
+		ON CONFLICT (event_id, workspace_id, job, on_index) DO UPDATE SET
+			outcome=excluded.outcome, queue_id=excluded.queue_id, error_message=NULL, created_at=excluded.created_at`, eid, wsID, jobName, onIndex, outcome, qid, now); err != nil {
 		s.log.Warn("event outcome insert", "job", jobName, "outcome", outcome, "error", err)
 	}
 }
 
 // allowlistPasses compares the declared identity with the entries; the gate
 // denies when no entry matches, and a connector with no identity is closed.
-func allowlistPasses(allow []string, identity string) bool {
+// An email address compares without case; every other identity is exact.
+func allowlistPasses(allow []string, identity string, fold bool) bool {
 	if identity == "" {
 		return false
 	}
 	for _, a := range allow {
-		if a != "" && a == identity {
+		if a == "" {
+			continue
+		}
+		if a == identity || (fold && strings.EqualFold(strings.TrimSpace(a), identity)) {
 			return true
 		}
 	}

@@ -18,8 +18,11 @@ import (
 
 // fakeHosted records the signed mint/revoke side.
 type fakeHosted struct {
-	deleted []string
+	deleted   []string
+	connected bool
 }
+
+func (f *fakeHosted) Status() cloudlink.Status { return cloudlink.Status{Connected: f.connected} }
 
 func (f *fakeHosted) MintHook(_ context.Context, label string) (cloudlink.Hook, error) {
 	return cloudlink.Hook{
@@ -306,4 +309,37 @@ func jobStack(t *testing.T) (*store.Store, *connectors.Service) {
 		t.Fatal(err)
 	}
 	return st, conn
+}
+
+// TestConnectorRowCountsAndStatus proves the row counts webhook events of the
+// last 24 hours and reports listening only while the link is up.
+func TestConnectorRowCountsAndStatus(t *testing.T) {
+	st, conn := jobStack(t)
+	hosted := &fakeHosted{}
+	svc := New(st, conn, hosted)
+	ctx := context.Background()
+	for _, id := range []string{"01J8YINGRESS000000000000001", "01J8YINGRESS000000000000002"} {
+		if err := svc.Deliver(ctx, testFrame(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A redelivery drops at the claim and adds nothing.
+	if err := svc.Deliver(ctx, testFrame("01J8YINGRESS000000000000001")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`UPDATE events SET received_at='2020-01-01T00:00:00Z' WHERE source_id='01J8YINGRESS000000000000002'`); err != nil {
+		t.Fatal(err)
+	}
+	events := func(row map[string]any) map[string]any { return row["events"].(map[string]any) }
+	row := svc.ConnectorRow()
+	if got := events(row)["counters"].(map[string]any)["events"]; got != int64(1) {
+		t.Fatalf("events counter = %v; want 1", got)
+	}
+	if events(row)["status"] != "stopped" {
+		t.Fatalf("status without a link = %v", events(row)["status"])
+	}
+	hosted.connected = true
+	if got := events(svc.ConnectorRow())["status"]; got != "listening" {
+		t.Fatalf("status with a link = %v", got)
+	}
 }

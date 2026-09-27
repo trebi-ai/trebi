@@ -357,6 +357,10 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err := s.connectors.InjectEvent(r.Context(), name, body.Event)
 	if err != nil {
+		if errors.Is(err, connectors.ErrDuplicate) {
+			writeErr(w, http.StatusConflict, "conflict", err.Error()+"; change the id field of the test event")
+			return
+		}
 		if s.writeConnectorErr(w, err) {
 			return
 		}

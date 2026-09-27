@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
-	"strings"
-
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 )
 
@@ -193,7 +195,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	if catchUp != "" {
 		q += ` AND catch_up = ?`
-		args = append(args, catchUp)
+		n, _ := strconv.Atoi(catchUp) // checked above: 0 or 1
+		args = append(args, n)
 	}
 	// Workspace/outcome ride event_outcomes: an event with no outcome row is
 	// global and shows only when no workspace is set (A.3.2).
@@ -450,17 +453,11 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleEventRetrigger(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var connector, raw string
-	err := s.st.DB().QueryRowContext(r.Context(), `SELECT connector, COALESCE(raw_json,'') FROM events WHERE id=?`, id).
-		Scan(&connector, &raw)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "event not found")
-		return
-	}
-	var event any
-	_ = json.Unmarshal([]byte(raw), &event) // retrigger still fires with a raw string if json is corrupt
-	_, err = s.connectors.InjectEvent(r.Context(), connector, event)
-	if err != nil {
+	if err := s.connectors.Redispatch(r.Context(), id); err != nil {
+		if errors.Is(err, connectors.ErrEventNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found", "event not found")
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
