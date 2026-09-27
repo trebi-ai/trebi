@@ -106,13 +106,15 @@ type eventRecord struct {
 }
 
 // Patch is a block-level update: a present block replaces that block and an
-// explicit null removes it.
+// explicit null removes it. A masked value ("***") keeps the stored value.
 type Patch struct {
 	Env     *map[string]string `json:"env"`
 	Cwd     *string            `json:"cwd"`
 	Actions json.RawMessage    `json:"actions"`
 	Events  json.RawMessage    `json:"events"`
 	Channel json.RawMessage    `json:"channel"`
+	// ActionsMerge edits actions field by field after the block values.
+	ActionsMerge json.RawMessage `json:"actions_merge"`
 }
 
 // New creates a connectors service.
@@ -211,7 +213,8 @@ func (s *Service) checkLoaded() error {
 	return nil
 }
 
-// Save writes defs back to connectors.yaml with a temp-and-rename write.
+// Save writes defs back to connectors.yaml with a temp-and-rename write. The
+// file has mode 0600, because it can hold literal tokens.
 func (s *Service) Save(defs map[string]Definition) error {
 	if err := home.EnsureDirs(); err != nil {
 		return err
@@ -221,12 +224,22 @@ func (s *Service) Save(defs map[string]Definition) error {
 		return err
 	}
 	path := home.ConnectorsPath()
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
+	f, err := os.CreateTemp(filepath.Dir(path), ".connectors-*.yaml")
+	if err != nil {
+		return fmt.Errorf("save connectors: %w", err)
+	}
+	tmp := f.Name()
+	_, werr := f.Write(b)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("save connectors: %w", werr)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		return err
+		_ = os.Remove(tmp)
+		return fmt.Errorf("save connectors: %w", err)
 	}
 	s.mu.Lock()
 	s.defs = defs
@@ -286,7 +299,7 @@ func (s *Service) Create(ctx context.Context, d Definition) error {
 }
 
 // Replace writes the whole definition of a connector, creating it when
-// missing.
+// missing. A masked value ("***") keeps the stored value.
 func (s *Service) Replace(ctx context.Context, d Definition) error {
 	if err := s.checkLoaded(); err != nil {
 		return err
@@ -297,12 +310,15 @@ func (s *Service) Replace(ctx context.Context, d Definition) error {
 	if err := s.GuardMutate(d.Name); err != nil {
 		return err
 	}
+	defs := s.snapshotDefs()
+	old, existed := defs[d.Name]
+	if err := d.keepMasked(old); err != nil {
+		return err
+	}
 	if err := d.Validate(); err != nil {
 		return err
 	}
 	d = d.withDefaults()
-	defs := s.snapshotDefs()
-	old, existed := defs[d.Name]
 	defs[d.Name] = d
 	if err := s.Save(defs); err != nil {
 		return err
@@ -360,6 +376,20 @@ func (s *Service) Patch(ctx context.Context, name string, p Patch) error {
 		}
 		d.Channel = block
 	}
+	if len(p.ActionsMerge) > 0 {
+		var m actionsMerge
+		if err := decodeStrict(p.ActionsMerge, &m); err != nil {
+			return &ValidationError{Name: name, Fields: []FieldError{{Field: "actions_merge", Message: err.Error()}}}
+		}
+		block, err := m.apply(name, d.Actions)
+		if err != nil {
+			return err
+		}
+		d.Actions = block
+	}
+	if err := d.keepMasked(old); err != nil {
+		return err
+	}
 	if err := d.Validate(); err != nil {
 		return err
 	}
@@ -375,7 +405,7 @@ func (s *Service) Patch(ctx context.Context, name string, p Patch) error {
 
 // decodeBlock parses a patch block. A JSON null removes the block.
 func decodeBlock[T any](raw json.RawMessage) (*T, error) {
-	if string(bytesTrimSpace(raw)) == "null" {
+	if isNull(raw) {
 		return nil, nil
 	}
 	var out T
@@ -383,10 +413,6 @@ func decodeBlock[T any](raw json.RawMessage) (*T, error) {
 		return nil, err
 	}
 	return &out, nil
-}
-
-func bytesTrimSpace(b []byte) []byte {
-	return []byte(strings.TrimSpace(string(b)))
 }
 
 // maybeRestart restarts a running supervisor when the events or env blocks
@@ -515,17 +541,13 @@ func (s *Service) eventMeta() (map[string]Cursor, map[string]string) {
 
 // managedRow builds the wire row of a managed definition.
 func (s *Service) managedRow(name string, d Definition, p *proc, cur Cursor, lastEventAt string) map[string]any {
-	env := d.Env
-	if env == nil {
-		env = map[string]string{}
-	}
 	row := map[string]any{
 		"id":           name,
 		"name":         name,
 		"provenance":   "managed",
 		"managed":      true,
 		"capabilities": d.Capabilities(),
-		"env":          env,
+		"env":          maskValues(d.Env),
 		"cwd":          d.Cwd,
 		"source":       d.Source,
 	}
@@ -542,16 +564,16 @@ func (s *Service) managedRow(name string, d Definition, p *proc, cur Cursor, las
 }
 
 // actionsRow renders the actions block; missing CLI commands are computed on
-// read and MCP header values are masked unless they are secret references.
+// read, and MCP env and header values are masked (see maskValues).
 func (s *Service) actionsRow(a *Actions) map[string]any {
 	row := map[string]any{"mcp": nil, "cli": nil}
 	if a.MCP != nil {
 		m := map[string]any{
 			"command": a.MCP.Command,
 			"args":    orEmptySlice(a.MCP.Args),
-			"env":     orEmptyMap(a.MCP.Env),
+			"env":     maskValues(a.MCP.Env),
 			"url":     a.MCP.URL,
-			"headers": maskHeaders(a.MCP.Headers),
+			"headers": maskValues(a.MCP.Headers),
 		}
 		row["mcp"] = m
 	}
@@ -571,31 +593,9 @@ func (s *Service) actionsRow(a *Actions) map[string]any {
 	return row
 }
 
-func maskHeaders(in map[string]string) map[string]string {
-	if in == nil {
-		return map[string]string{}
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		if strings.HasPrefix(v, "secret:") {
-			out[k] = v
-			continue
-		}
-		out[k] = "***"
-	}
-	return out
-}
-
 func orEmptySlice(in []string) []string {
 	if in == nil {
 		return []string{}
-	}
-	return in
-}
-
-func orEmptyMap(in map[string]string) map[string]string {
-	if in == nil {
-		return map[string]string{}
 	}
 	return in
 }

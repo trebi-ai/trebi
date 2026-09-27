@@ -277,6 +277,28 @@ func TestConnectorCursorBodies(t *testing.T) {
 	}
 }
 
+// TestConnectorSetSendsActionsMerge proves set sends only the flags given, so
+// the masked headers of the GET row never go back to the daemon.
+func TestConnectorSetSendsActionsMerge(t *testing.T) {
+	var patchBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "PATCH" {
+			b, _ := io.ReadAll(r.Body)
+			patchBody = string(b)
+		}
+		_, _ = w.Write([]byte(`{"name":"api","actions":{"mcp":{"url":"https://a","headers":{"X-Key":"***"}},"cli":null}}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+	if _, err := runCLI(t, client, "connector", "set", "api", "--mcp-url", "https://b"); err != nil {
+		t.Fatal(err)
+	}
+	if patchBody != `{"actions_merge":{"mcp":{"url":"https://b"}}}` {
+		t.Fatalf("patch body %s", patchBody)
+	}
+}
+
 func TestWorkspaceRemoveClearsSticky(t *testing.T) {
 	dir := t.TempDir()
 	home.SetBase(dir)

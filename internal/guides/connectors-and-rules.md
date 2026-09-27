@@ -29,7 +29,7 @@ trebi connector logs slack
 trebi connector remove slack
 ```
 
-`trebi connector set <name>` sends a `PATCH`: a flag replaces that part of the definition and the stored blocks stay. `trebi connector set slack --no-events` removes the events block. `trebi connector apply --file ./slack.yaml` writes a whole definition with `PUT`, for an import.
+`trebi connector set <name>` sends a `PATCH`: a flag replaces that part of the definition and the stored blocks stay. An `--mcp-*` or `--cli-*` flag changes only that field of the actions block. `connector show` prints each literal env value and MCP header as `***`; a `secret:NAME` reference stays visible. `trebi connector set slack --no-events` removes the events block. `trebi connector apply --file ./slack.yaml` writes a whole definition with `PUT`, for an import.
 
 A job or agent receives connector actions through `connectors:` (or the agent `kit: connectors`). A run with an MCP action needs a supported harness and runtime: claude, codex, and opencode on either runtime, and the ACP harnesses (copilot, cursor, gemini) on the CLI runtime. An unsupported pair fails the launch with `validation`.
 

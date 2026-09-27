@@ -1746,6 +1746,13 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if actions != nil {
 					patch.Actions = actions
 				}
+				merge, err := in.block("actions_merge")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if merge != nil {
+					patch.ActionsMerge = merge
+				}
 				events, err := in.block("events")
 				if err != nil {
 					return request.HTTPRequest{}, err

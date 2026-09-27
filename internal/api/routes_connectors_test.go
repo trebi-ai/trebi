@@ -65,7 +65,7 @@ func TestConnectorRoutes(t *testing.T) {
 	}
 	row := getConnector(t, do, "feed")
 	env, _ := row["env"].(map[string]any)
-	if _, kept := env["MODE"]; kept || env["EXTRA"] != "1" {
+	if _, kept := env["MODE"]; kept || env["EXTRA"] != "***" {
 		t.Fatalf("patch env = %v; want a whole-block replace", env)
 	}
 	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"nope": 1}); code != http.StatusBadRequest || errCode(body) != "validation" {
@@ -106,6 +106,50 @@ func TestConnectorRoutes(t *testing.T) {
 	}
 	if code, body := do("GET", "/v1/connectors/ghost", nil); code != http.StatusNotFound || errCode(body) != "not_found" {
 		t.Fatalf("get unknown = %d %v", code, body)
+	}
+}
+
+// TestConnectorHeaderMaskRoundTrip proves the masked GET row can go back on
+// PATCH actions_merge and on PUT without a loss of the stored header.
+func TestConnectorHeaderMaskRoundTrip(t *testing.T) {
+	do := startConnectorAPI(t, "")
+	def := map[string]any{"name": "api", "actions": map[string]any{"mcp": map[string]any{
+		"url": "https://mcp.example.com", "headers": map[string]string{"X-Key": "abc"},
+	}}}
+	if code, body := do("POST", "/v1/connectors", def); code != http.StatusCreated {
+		t.Fatalf("create = %d %v", code, body)
+	}
+	stored := func() string {
+		t.Helper()
+		b, err := os.ReadFile(home.ConnectorsPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	mcp := getConnector(t, do, "api")["actions"].(map[string]any)["mcp"].(map[string]any)
+	if mcp["headers"].(map[string]any)["X-Key"] != "***" {
+		t.Fatalf("GET headers = %v", mcp["headers"])
+	}
+	merge := map[string]any{"actions_merge": map[string]any{"mcp": map[string]any{"url": "https://mcp2.example.com"}}}
+	if code, body := do("PATCH", "/v1/connectors/api", merge); code != http.StatusOK {
+		t.Fatalf("merge = %d %v", code, body)
+	}
+	if !strings.Contains(stored(), "X-Key: abc") || !strings.Contains(stored(), "mcp2.example.com") {
+		t.Fatalf("merge lost the header:\n%s", stored())
+	}
+	put := map[string]any{"actions": map[string]any{"mcp": map[string]any{
+		"url": "https://mcp.example.com", "headers": map[string]string{"X-Key": "***"},
+	}}}
+	if code, body := do("PUT", "/v1/connectors/api", put); code != http.StatusOK {
+		t.Fatalf("put = %d %v", code, body)
+	}
+	if !strings.Contains(stored(), "X-Key: abc") {
+		t.Fatalf("put lost the header:\n%s", stored())
+	}
+	put["actions"].(map[string]any)["mcp"].(map[string]any)["headers"] = map[string]string{"New": "***"}
+	if code, body := do("PUT", "/v1/connectors/api", put); code != http.StatusBadRequest || errCode(body) != "validation" {
+		t.Fatalf("mask without value = %d %v", code, body)
 	}
 }
 

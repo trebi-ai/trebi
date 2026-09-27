@@ -1842,14 +1842,16 @@ func BuildConnectorReplace(name string, def map[string]any) HTTPRequest {
 
 // ConnectorPatch is the PATCH /v1/connectors/{name} body. A present block
 // replaces that block; a nil block leaves it untouched and raw "null"
-// removes it.
+// removes it. ActionsMerge is {"mcp":{...}|null,"cli":{...}|null}: the
+// daemon merges each field given into the stored sub-block.
 type ConnectorPatch struct {
-	Name    string
-	Env     map[string]string
-	Cwd     string
-	Actions json.RawMessage
-	Events  json.RawMessage
-	Channel json.RawMessage
+	Name         string
+	Env          map[string]string
+	Cwd          string
+	Actions      json.RawMessage
+	ActionsMerge json.RawMessage
+	Events       json.RawMessage
+	Channel      json.RawMessage
 }
 
 // Build renders the patch as PATCH /v1/connectors/{name}.
@@ -1863,6 +1865,9 @@ func (i ConnectorPatch) Build() HTTPRequest {
 	}
 	if i.Actions != nil {
 		body["actions"] = json.RawMessage(i.Actions)
+	}
+	if i.ActionsMerge != nil {
+		body["actions_merge"] = json.RawMessage(i.ActionsMerge)
 	}
 	if i.Events != nil {
 		body["events"] = json.RawMessage(i.Events)

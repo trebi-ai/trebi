@@ -270,14 +270,15 @@ func TestConnectorPatchBuild(t *testing.T) {
 	t.Parallel()
 	req := ConnectorPatch{
 		Name: "echo", Cwd: "/tmp", Env: map[string]string{"A": "1"},
-		Events: json.RawMessage(`{"command":"echo hi","format":"json"}`),
+		Events:       json.RawMessage(`{"command":"echo hi","format":"json"}`),
+		ActionsMerge: json.RawMessage(`{"mcp":{"url":"https://a"}}`),
 	}.Build()
 	if req.Method != "PATCH" || req.Path != "/v1/connectors/echo" {
 		t.Fatalf("%+v", req)
 	}
 	b, _ := json.Marshal(req.Body)
 	s := string(b)
-	for _, want := range []string{`"cwd":"/tmp"`, `"env":{"A":"1"}`, `"events":{"command":"echo hi","format":"json"}`} {
+	for _, want := range []string{`"cwd":"/tmp"`, `"env":{"A":"1"}`, `"events":{"command":"echo hi","format":"json"}`, `"actions_merge":{"mcp":{"url":"https://a"}}`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %s in %s", want, s)
 		}

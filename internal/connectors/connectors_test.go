@@ -69,8 +69,11 @@ func TestConnectorsCreateReplacePatchDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	row, _ = svc.Get("feed")
-	if row["cwd"] != "/tmp" || row["env"].(map[string]string)["FEED"] != "https://example.com/x" {
+	if row["cwd"] != "/tmp" || row["env"].(map[string]string)["FEED"] != "***" {
 		t.Fatalf("patch env/cwd %v", row)
+	}
+	if d, _ := svc.Definition("feed"); d.Env["FEED"] != "https://example.com/x" {
+		t.Fatalf("stored env %v", d.Env)
 	}
 	if ev := row["events"].(map[string]any); ev["command"] != "rss-fetch v3" || ev["id"] != "guid" {
 		t.Fatalf("patch events %v", ev)
@@ -157,8 +160,8 @@ func TestConnectorsRewritePathPrefix(t *testing.T) {
 	if got["cwd"] != newDir {
 		t.Fatalf("cwd %v", got["cwd"])
 	}
-	if got["env"].(map[string]string)["ROOT"] != newDir+"/data" {
-		t.Fatalf("env %v", got["env"])
+	if d, _ := svc.Definition("whatsapp"); d.Env["ROOT"] != newDir+"/data" {
+		t.Fatalf("env %v", d.Env)
 	}
 	ev := got["events"].(map[string]any)
 	if ev["command"] != "whatsapp-cli listen --dir "+newDir {
@@ -307,6 +310,118 @@ func TestConnectorsFailedLoadBlocksWrites(t *testing.T) {
 	}
 	if err := svc.Create(ctx, def); err != nil {
 		t.Fatalf("create after fix: %v", err)
+	}
+}
+
+// TestConnectorsMaskedValuesRoundTrip proves a masked value that comes back on
+// a write keeps the stored value, and that GET hides every literal.
+func TestConnectorsMaskedValuesRoundTrip(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	d := connectors.Definition{
+		Name: "api",
+		Env:  map[string]string{"TOKEN": "t0k", "REF": "secret:api_TOKEN"},
+		Actions: &connectors.Actions{MCP: &connectors.MCPAction{
+			URL:     "https://mcp.example.com",
+			Headers: map[string]string{"X-Key": "abc", "Authorization": "Bearer secret:api_KEY"},
+		}},
+	}
+	if err := svc.Create(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(home.ConnectorsPath()); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("file mode %v %v", fi.Mode(), err)
+	}
+	row, _ := svc.Get("api")
+	if env := row["env"].(map[string]string); env["TOKEN"] != "***" || env["REF"] != "secret:api_TOKEN" {
+		t.Fatalf("env %v", env)
+	}
+	hdr := row["actions"].(map[string]any)["mcp"].(map[string]any)["headers"].(map[string]string)
+	if hdr["X-Key"] != "***" || hdr["Authorization"] != "Bearer secret:api_KEY" {
+		t.Fatalf("headers %v", hdr)
+	}
+
+	// A merge that does not name the headers keeps them.
+	if err := svc.Patch(ctx, "api", connectors.Patch{ActionsMerge: []byte(`{"mcp":{"url":"https://mcp2.example.com"}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.Definition("api")
+	if got.Actions.MCP.URL != "https://mcp2.example.com" || got.Actions.MCP.Headers["X-Key"] != "abc" {
+		t.Fatalf("merge %+v", got.Actions.MCP)
+	}
+
+	// A whole-block PATCH and a PUT that send the mask back keep "abc".
+	if err := svc.Patch(ctx, "api", connectors.Patch{ActionsMerge: []byte(`{"mcp":{"headers":{"X-Key":"***","Y":"1"}}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	put := d
+	put.Env = map[string]string{"TOKEN": "***"}
+	put.Actions = &connectors.Actions{MCP: &connectors.MCPAction{URL: "https://mcp.example.com", Headers: map[string]string{"X-Key": "***"}}}
+	if err := svc.Replace(ctx, put); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = svc.Definition("api")
+	if got.Actions.MCP.Headers["X-Key"] != "abc" || got.Env["TOKEN"] != "t0k" {
+		t.Fatalf("put %+v %v", got.Actions.MCP, got.Env)
+	}
+
+	// A mask with no stored value is a validation error.
+	put.Env = map[string]string{"NEW": "***"}
+	if err := svc.Replace(ctx, put); !errors.Is(err, connectors.ErrInvalid) {
+		t.Fatalf("new mask: %v", err)
+	}
+}
+
+// TestConnectorsActionsMerge proves the field merge, the transport switch,
+// and sub-block removal.
+func TestConnectorsActionsMerge(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	d := connectors.Definition{
+		Name: "gh",
+		Actions: &connectors.Actions{
+			MCP: &connectors.MCPAction{URL: "https://mcp.example.com", Headers: map[string]string{"X-Key": "abc"}},
+			CLI: &connectors.CLIAction{Commands: []string{"gh"}, Skill: "gh"},
+		},
+	}
+	if err := svc.Create(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	merge := func(body string) error {
+		return svc.Patch(ctx, "gh", connectors.Patch{ActionsMerge: []byte(body)})
+	}
+	if err := merge(`{"mcp":{"command":"npx","args":["-v"]}}`); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.Definition("gh")
+	if m := got.Actions.MCP; m.Command != "npx" || m.URL != "" || m.Headers != nil || len(m.Args) != 1 {
+		t.Fatalf("command switch %+v", m)
+	}
+	if c := got.Actions.CLI; c == nil || c.Skill != "gh" {
+		t.Fatalf("cli touched %+v", c)
+	}
+	if err := merge(`{"mcp":{"env":{"A":"1"}}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(`{"mcp":{"url":"https://x.example.com"}}`); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = svc.Definition("gh")
+	if m := got.Actions.MCP; m.Command != "" || m.Args != nil || m.Env != nil || m.URL != "https://x.example.com" {
+		t.Fatalf("url switch %+v", m)
+	}
+	if err := merge(`{"mcp":{"bogus":1}}`); !errors.Is(err, connectors.ErrInvalid) {
+		t.Fatalf("unknown field: %v", err)
+	}
+	if err := merge(`{"mcp":null}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(`{"cli":null}`); !errors.Is(err, connectors.ErrInvalid) {
+		t.Fatalf("empty connector: %v", err)
+	}
+	got, _ = svc.Definition("gh")
+	if got.Actions == nil || got.Actions.MCP != nil || got.Actions.CLI == nil {
+		t.Fatalf("remove mcp %+v", got.Actions)
 	}
 }
 

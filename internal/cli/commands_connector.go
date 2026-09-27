@@ -528,9 +528,11 @@ func runConnectorSet(_ context.Context, c *cli.Command) error {
 		patch.Actions = json.RawMessage("null")
 		touched = true
 	case actionsFlagsSet(c):
-		acts := existingBlock(row, "actions")
+		// The daemon merges only the fields given, so masked values and
+		// unnamed fields keep their stored values.
+		merge := map[string]any{}
 		if mcpFlagsSet(c) {
-			mcp := existingBlock(acts, "mcp")
+			mcp := map[string]any{}
 			if c.IsSet("mcp-command") {
 				mcp["command"] = c.String("mcp-command")
 			}
@@ -554,23 +556,23 @@ func runConnectorSet(_ context.Context, c *cli.Command) error {
 				}
 				mcp["headers"] = headers
 			}
-			acts["mcp"] = mcp
+			merge["mcp"] = mcp
 		}
 		if c.IsSet("cli-command") || c.IsSet("skill") {
-			cli := existingBlock(acts, "cli")
+			cli := map[string]any{}
 			if c.IsSet("cli-command") {
 				cli["commands"] = c.StringSlice("cli-command")
 			}
 			if c.IsSet("skill") {
 				cli["skill"] = c.String("skill")
 			}
-			acts["cli"] = cli
+			merge["cli"] = cli
 		}
-		raw, err := json.Marshal(acts)
+		raw, err := json.Marshal(merge)
 		if err != nil {
 			return err
 		}
-		patch.Actions = raw
+		patch.ActionsMerge = raw
 		touched = true
 	}
 
@@ -608,8 +610,9 @@ func runConnectorSet(_ context.Context, c *cli.Command) error {
 		if patch.Cwd != "" {
 			def["cwd"] = patch.Cwd
 		}
+		// On a new connector the merge maps are the whole actions block.
 		for key, raw := range map[string]json.RawMessage{
-			"actions": patch.Actions, "events": patch.Events, "channel": patch.Channel,
+			"actions": patch.ActionsMerge, "events": patch.Events, "channel": patch.Channel,
 		} {
 			if raw == nil || string(raw) == "null" {
 				continue

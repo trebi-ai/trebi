@@ -18,6 +18,9 @@ no status.
 When `connectors.yaml` does not load, the reply carries `load_error` with the
 parse error. The daemon then refuses every connector write with `conflict`
 until the file loads again. Fix the file by hand.
+A row shows each literal value of `env`, `actions.mcp.env`, and
+`actions.mcp.headers` as `***`. A value that holds a `secret:NAME` reference
+stays visible. A write that sends `***` back keeps the stored value.
 - `limit` (number, optional): page size.
 - `capability` (string, optional): keep rows with `actions`, `events`, or `channel`.
 - `provenance` (string, optional): keep rows with `native`, `managed`, or `inherited`.
@@ -92,6 +95,12 @@ possible; use `create` and `delete`.
   (`{"command": "fetch-mail.sh", "poll_ms": 900000}`), or `null` to remove it.
 - `actions` (object, optional): whole actions block
   (`{"mcp": {"command": "npx", "args": ["-y", "server"]}}`), or `null`.
+- `actions_merge` (object, optional): field edits to the actions block, applied
+  after `actions`: `{"mcp": {...}|null, "cli": {...}|null}`. An absent key
+  stays, `null` removes that sub-block, and each field given replaces the stored
+  field. A new `command` clears `url` and `headers`. A new `url` clears
+  `command`, `args`, and `env`. Use it to change one field, for example
+  `{"mcp": {"args": ["-v"]}}`.
 - `channel` (object, optional): whole channel block
   (`{"ref": "chat-1", "send": "..." }`), or `null`.
 A connector with an `events` block runs a supervisor; changing `events` while it
