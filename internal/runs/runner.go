@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -258,10 +259,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 // support matrix (decision 8) before a run row exists. The job list replaces
 // the kit list when it is not empty.
 func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
-	names := opts.JobConnectors
-	if len(names) == 0 && opts.Kit != nil {
-		names = opts.Kit.Connectors
-	}
+	names := connectorNames(opts.JobConnectors, opts.Kit)
 	if len(names) == 0 {
 		return nil
 	}
@@ -273,9 +271,7 @@ func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 		return fmt.Errorf("%w: %s", ErrActionsInvalid, err)
 	}
 	opts.Actions = actions
-	if !hasMCP(actions) {
-		return nil
-	}
+	opts.Connectors = names
 	command := opts.Command
 	if command == "" {
 		command = opts.Harness
@@ -284,10 +280,7 @@ func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 		command = "claude"
 	}
 	tool := tmux.Detect(command)
-	if !supportsActions(tool, s.wantsCLI(tool, *opts)) {
-		return fmt.Errorf("%w: %s on the %s runtime", ErrActionsUnsupported, tool.Name(), runRuntimeName(s, tool, *opts))
-	}
-	return nil
+	return s.ActionsSupported(ctx, tool.Name(), runRuntimeName(s, tool, *opts), hasMCP(actions))
 }
 
 // runRuntimeName names the runtime a launch will use, for error messages.
@@ -512,6 +505,9 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	resuming := opts.ResumeSessionID != ""
 	plan, err := preparePlan(tool, command, &opts)
 	if err != nil {
+		return nil, err
+	}
+	if err := injectMCPPlan(tool, &plan, &opts); err != nil {
 		return nil, err
 	}
 	command = plan.Command
@@ -925,9 +921,23 @@ func (s *Service) Resume(ctx context.Context, fromID string) (*Run, error) {
 		ResumeSessionID: prev.SessionID,
 		Prompt:          "Continue from where you left off.",
 		IfRunning:       "allow",
+		// Resolve the names again: the run gets the current definitions
+		// and fresh secrets.
+		JobConnectors: s.runConnectors(ctx, fromID),
 	}
 	run, _, err := s.CreateAndLaunch(ctx, opts)
 	return run, err
+}
+
+// runConnectors reads the connector names a run launched with.
+func (s *Service) runConnectors(ctx context.Context, runID string) []string {
+	var raw sql.NullString
+	if err := s.st.DB().QueryRowContext(ctx, `SELECT connectors_json FROM runs WHERE id = ?`, runID).Scan(&raw); err != nil || !raw.Valid {
+		return nil
+	}
+	var names []string
+	_ = json.Unmarshal([]byte(raw.String), &names) // a bad row resumes without actions
+	return names
 }
 
 // commandUnavailable reports a bare command whose binary is not on PATH.
@@ -984,14 +994,13 @@ func preparePlan(tool tmux.Tool, command string, opts *LaunchOpts) (tmux.LaunchP
 	if plan.SessionID != "" {
 		opts.SessionID = plan.SessionID
 	}
-	if err := injectMCPPlan(tool, &plan, opts); err != nil {
-		return plan, err
-	}
 	return plan, nil
 }
 
-// injectMCPPlan hands the MCP actions to a pane tool. A tool without the
-// injector cannot reach this point: resolveActions already refused the launch.
+// injectMCPPlan hands the MCP actions to a pane tool, for a launch and for a
+// resume. The CLI runtime never calls it: agent-wire takes the servers from
+// StartRequest.MCPServers. A tool without the injector cannot reach this
+// point: resolveActions already refused the launch.
 func injectMCPPlan(tool tmux.Tool, plan *tmux.LaunchPlan, opts *LaunchOpts) error {
 	servers := mcpServers(opts.Actions)
 	if len(servers) == 0 {
@@ -1001,11 +1010,25 @@ func injectMCPPlan(tool tmux.Tool, plan *tmux.LaunchPlan, opts *LaunchOpts) erro
 	if !ok {
 		return fmt.Errorf("%w: %s cannot take an injected MCP server", ErrActionsUnsupported, tool.Name())
 	}
+	// The injector sees the job env, so it can merge into a value there
+	// (OPENCODE_CONFIG_CONTENT) or refuse a conflict (codex).
+	for k, v := range opts.Env {
+		if _, ok := plan.Env[k]; ok {
+			continue
+		}
+		if plan.Env == nil {
+			plan.Env = map[string]string{}
+		}
+		plan.Env[k] = v
+	}
 	// The private files carry the run id, so the id exists before Create.
 	if opts.CreateOpts.ID == "" {
 		opts.CreateOpts.ID = ulid.Make().String()
 	}
-	return inj.InjectMCP(plan, servers, runFiles(opts.CreateOpts.ID))
+	if err := inj.InjectMCP(plan, servers, runFiles(opts.ID)); err != nil {
+		return fmt.Errorf("%w: %s", ErrActionsInvalid, err)
+	}
+	return nil
 }
 
 // runFiles names the private files of one run. They sit next to the run

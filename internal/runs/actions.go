@@ -6,9 +6,11 @@ package runs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
@@ -107,17 +109,62 @@ func hasMCP(actions []ConnectorAction) bool {
 	return false
 }
 
-// supportsActions is the support matrix of decision 8. CLI actions (env plus
-// skill) work everywhere; only MCP actions are gated. The pane answer is the
-// MCPInjector test, so the launch path can not disagree with this check.
-func supportsActions(tool tmux.Tool, cli bool) bool {
-	if cli {
-		switch tool.Name() {
-		case tmux.Claude, tmux.Codex, tmux.OpenCode, tmux.Copilot, tmux.Cursor, tmux.Gemini:
-			return true
-		}
-		return false
+// ActionsSupported checks decision 8 for one harness on one runtime. CLI
+// actions (env plus skill) work everywhere; only MCP actions are gated. The
+// CLI runtime asks agent-wire how the harness takes MCP servers. The pane
+// runtime needs the tool's MCPInjector, so the launch path can not disagree
+// with this check.
+func (s *Service) ActionsSupported(ctx context.Context, harness, runtime string, hasMCP bool) error {
+	if !hasMCP {
+		return nil
 	}
-	_, ok := tool.(tmux.MCPInjector)
-	return ok
+	tool := tmux.Detect(harness)
+	if runtime == "cli" {
+		// pi takes MCP servers only in a per-run home, which trebi does not
+		// give it (Part M).
+		if tool.Name() != tmux.Pi {
+			det, err := s.agentwireRuntime().Detect(ctx, agentwire.Harness(tool.Name()))
+			if err == nil && det.Features.MCPInject != "" && det.Features.MCPInject != agentwire.MCPNone {
+				return nil
+			}
+		}
+	} else if _, ok := tool.(tmux.MCPInjector); ok {
+		return nil
+	}
+	return fmt.Errorf("%w: %s on the %s runtime", ErrActionsUnsupported, harness, runtime)
+}
+
+// KitSource finds the kit of the agent that owns a job. *workspaces.Service
+// satisfies it.
+type KitSource interface {
+	OwnerKit(ctx context.Context, workspaceID, name string) *job.KitYAML
+}
+
+// SetKitSource wires the owner kit lookup for EffectiveActions.
+func (s *Service) SetKitSource(k KitSource) {
+	s.kits = k
+}
+
+// EffectiveActions returns the connector names, harness, and runtime that a
+// launch of this job uses. j.Name is the job index name.
+func (s *Service) EffectiveActions(ctx context.Context, ws string, j job.Job) (names []string, harness, runtime string, err error) {
+	var kit *job.KitYAML
+	if s.kits != nil {
+		kit = s.kits.OwnerKit(ctx, ws, j.Name)
+	}
+	harness = j.ResolvedHarness()
+	runtime = "tui"
+	if s.wantsCLI(tmux.Detect(harness), LaunchOpts{CreateOpts: CreateOpts{Runtime: j.Runtime}}) {
+		runtime = "cli"
+	}
+	return connectorNames(j.Connectors, kit), harness, runtime, nil
+}
+
+// connectorNames is the connector list of a launch: the job list replaces
+// the kit list when it is not empty.
+func connectorNames(jobList []string, kit *job.KitYAML) []string {
+	if len(jobList) == 0 && kit != nil {
+		return kit.Connectors
+	}
+	return jobList
 }

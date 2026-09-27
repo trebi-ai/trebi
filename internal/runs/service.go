@@ -128,6 +128,7 @@ type Service struct {
 	memRes     MemoryResolver
 	budgetGate BudgetGate
 	actions    ActionResolver
+	kits       KitSource
 
 	// Subprocess runtime (Part D). rt is the shared agentwire runtime (its
 	// own session + pid ledger); cliDriver is a test override; cliRuns is the
@@ -250,6 +251,9 @@ type CreateOpts struct {
 	NudgeMS        int64
 	ResumedFrom    string
 	ResumeAttempts int
+	// Connectors are the connector names the launch resolved. A resume
+	// resolves them again.
+	Connectors []string
 	// MemoryHash is the launch-time MEMORY.md hash; empty when memory is off.
 	MemoryHash string
 	// Prompt is the final prompt submitted to the harness (memory injected,
@@ -1440,6 +1444,12 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 	if opts.QueueID != "" {
 		queueID = &opts.QueueID
 	}
+	var connectorsJSON *string
+	if len(opts.Connectors) > 0 {
+		b, _ := json.Marshal(opts.Connectors)
+		s := string(b)
+		connectorsJSON = &s
+	}
 
 	_, err := tx.Exec(`INSERT INTO runs (
 		id, workspace_id, job, kind, reason, status, prompt_preview, inputs_json,
@@ -1447,14 +1457,16 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		conversation_key, conversation_id, working_dir, session_id, runtime, harness, tmux_session,
 		attach_kind, runtime_pid, actor_token_hash,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
-		resumed_from, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		resumed_from, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at,
+		connectors_json
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.Job, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON,
 		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.TmuxSession),
 		store.NullStr(attachKindFor(opts)), nil, opts.ActorTokenHash,
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
 		store.NullStr(opts.ResumedFrom), opts.ResumeAttempts, queueID, opts.TraceID, opts.MemoryHash, 1, nowStr,
+		connectorsJSON,
 	)
 	if err != nil {
 		return err

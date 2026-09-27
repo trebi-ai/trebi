@@ -49,7 +49,24 @@ func (t codexTool) PrepareLaunch(command string) LaunchPlan {
 }
 
 // InjectMCP appends the `-c mcp_servers.…` overrides, quoted for the shell.
+// The flags name env vars only. The secret values go into plan.Env, which
+// the runner writes to the 0600 env file, not to the command line.
 func (t codexTool) InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, _ RunFiles) error {
+	env, err := agentwire.CodexMCPEnv(servers)
+	if err != nil {
+		return err
+	}
+	for k, v := range env {
+		if prev, ok := plan.Env[k]; ok && prev != v {
+			return fmt.Errorf("codex MCP env %s conflicts with the launch env", k)
+		}
+	}
+	if len(env) > 0 && plan.Env == nil {
+		plan.Env = map[string]string{}
+	}
+	for k, v := range env {
+		plan.Env[k] = v
+	}
 	args := agentwire.CodexMCPArgs(servers)
 	quoted := make([]string, len(args))
 	for i, a := range args {

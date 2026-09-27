@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 27
+const SchemaVersion = 28
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -691,6 +691,12 @@ CREATE TABLE channel_outbox (
 );
 CREATE UNIQUE INDEX idx_channel_outbox_message ON channel_outbox(message_id);
 CREATE INDEX idx_channel_outbox_due ON channel_outbox(status, next_attempt_at);
+`,
+		// v28: a run keeps the connector names its launch resolved, so a
+		// resume gives the agent the same actions (plan 2026-09-27 review
+		// fixes P1-20).
+		`
+ALTER TABLE runs ADD COLUMN connectors_json TEXT;
 `,
 	}
 }

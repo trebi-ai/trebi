@@ -5,7 +5,6 @@ go 1.26.1
 require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/adrg/frontmatter v0.2.0
-	github.com/anthropics/anthropic-sdk-go v1.75.0
 	github.com/caseymrm/menuet v1.0.3
 	github.com/dop251/goja v0.0.0-20260806115107-493f22071ef6
 	github.com/fsnotify/fsnotify v1.9.0
@@ -14,17 +13,20 @@ require (
 	github.com/jedib0t/go-pretty/v6 v6.7.10
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/oklog/ulid/v2 v2.1.1
-	github.com/openai/openai-go/v3 v3.66.0
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/trebi-ai/agent-wire v0.3.1
+	github.com/trebi-ai/agent-wire v0.3.2
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
 )
 
-require github.com/coder/websocket v1.8.15 // indirect
+require (
+	github.com/anthropics/anthropic-sdk-go v1.75.0 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
+	github.com/openai/openai-go/v3 v3.66.0 // indirect
+)
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect

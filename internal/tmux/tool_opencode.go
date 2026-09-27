@@ -34,7 +34,9 @@ func (t opencodeTool) PrepareLaunch(command string) LaunchPlan {
 }
 
 // InjectMCP sets OPENCODE_CONFIG_CONTENT to the fragment that carries the
-// injected servers. OpenCode merges it with the user's own config.
+// injected servers. OpenCode merges it with the user's own config. A value
+// already in plan.Env (the job env) keeps its keys; the injected servers go
+// into its "mcp" object.
 func (t opencodeTool) InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, _ RunFiles) error {
 	content, err := agentwire.OpenCodeConfigContent(servers)
 	if err != nil {
@@ -42,6 +44,12 @@ func (t opencodeTool) InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer,
 	}
 	if plan.Env == nil {
 		plan.Env = map[string]string{}
+	}
+	if existing := strings.TrimSpace(plan.Env["OPENCODE_CONFIG_CONTENT"]); existing != "" {
+		content, err = mergeOpenCodeMCP(existing, content)
+		if err != nil {
+			return err
+		}
 	}
 	plan.Env["OPENCODE_CONFIG_CONTENT"] = content
 	return nil
@@ -237,4 +245,36 @@ func (opencodeLifecycle) materialize(dir string) error {
 		return err
 	}
 	return harness.WriteSchemaStamp(dir)
+}
+
+// mergeOpenCodeMCP adds the "mcp" object of fragment to the config in base.
+// An injected server replaces a server of the same name.
+func mergeOpenCodeMCP(base, fragment string) (string, error) {
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(base), &cfg); err != nil || cfg == nil {
+		return "", fmt.Errorf("OPENCODE_CONFIG_CONTENT in the job env is not a JSON object")
+	}
+	mcp := map[string]any{}
+	if v, ok := cfg["mcp"]; ok && v != nil {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("OPENCODE_CONFIG_CONTENT in the job env: mcp is not a JSON object")
+		}
+		mcp = m
+	}
+	var frag struct {
+		MCP map[string]any `json:"mcp"`
+	}
+	if err := json.Unmarshal([]byte(fragment), &frag); err != nil {
+		return "", err
+	}
+	for name, entry := range frag.MCP {
+		mcp[name] = entry
+	}
+	cfg["mcp"] = mcp
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }

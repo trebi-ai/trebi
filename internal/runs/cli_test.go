@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -483,4 +484,120 @@ func processAlive(pid int) bool {
 		return false
 	}
 	return p.Signal(syscall.Signal(0)) == nil
+}
+
+// captureDriver runs the fake driver and keeps every StartRequest.
+type captureDriver struct {
+	agentwire.FakeDriver
+	mu   sync.Mutex
+	reqs []agentwire.StartRequest
+}
+
+func (d *captureDriver) Start(ctx context.Context, req agentwire.StartRequest) (agentwire.Session, error) {
+	d.record(req)
+	return d.FakeDriver.Start(ctx, req)
+}
+
+func (d *captureDriver) Resume(ctx context.Context, req agentwire.StartRequest) (agentwire.Session, error) {
+	d.record(req)
+	return d.FakeDriver.Resume(ctx, req)
+}
+
+func (d *captureDriver) record(req agentwire.StartRequest) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.reqs = append(d.reqs, req)
+}
+
+func (d *captureDriver) last(t *testing.T) agentwire.StartRequest {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.reqs) == 0 {
+		t.Fatal("no start request")
+	}
+	return d.reqs[len(d.reqs)-1]
+}
+
+// mcpResolver gives every name one stdio MCP server.
+type mcpResolver struct{}
+
+func (mcpResolver) ResolveActions(_ context.Context, names []string) ([]runs.ConnectorAction, error) {
+	out := make([]runs.ConnectorAction, 0, len(names))
+	for _, n := range names {
+		out = append(out, runs.ConnectorAction{Name: n, MCP: &agentwire.MCPServer{
+			Name: n, Command: "npx", Env: map[string]string{"TOKEN": "secret-" + n},
+		}})
+	}
+	return out, nil
+}
+
+// TestCLIMCPActionNotInjectedTwice proves the CLI runtime passes MCP actions
+// only through StartRequest.MCPServers (P1-19): gemini is not refused, and
+// no harness gets the pane flags too.
+func TestCLIMCPActionNotInjectedTwice(t *testing.T) {
+	drv := &captureDriver{}
+	svc, _, _ := cliFixture(t, drv)
+	svc.WithActions(mcpResolver{})
+	fakeBinaries(t, "gemini", "claude")
+	for _, h := range []string{"gemini", "claude"} {
+		run := launchCLIJob(t, svc, func(o *runs.LaunchOpts) {
+			o.Harness = h
+			o.JobConnectors = []string{"gh"}
+		})
+		if run.Runtime != "cli" {
+			t.Fatalf("%s runtime = %q", h, run.Runtime)
+		}
+		req := drv.last(t)
+		if len(req.MCPServers) != 1 || req.MCPServers[0].Name != "gh" {
+			t.Fatalf("%s servers = %+v", h, req.MCPServers)
+		}
+		if strings.Contains(strings.Join(req.ExtraArgs, " "), "--mcp-config") {
+			t.Fatalf("%s extra args = %v", h, req.ExtraArgs)
+		}
+		waitTerminal(t, svc, run.ID)
+	}
+}
+
+// TestResumeKeepsConnectors proves a resume resolves the connector names of
+// the run it resumes (P1-20).
+func TestResumeKeepsConnectors(t *testing.T) {
+	drv := &captureDriver{}
+	svc, _, _ := cliFixture(t, drv)
+	svc.WithActions(mcpResolver{})
+	fakeBinaries(t, "claude")
+	ctx := context.Background()
+	prev, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws", Job: "demo", Harness: "claude", Runtime: "cli",
+		SessionID: "sess-1", Connectors: []string{"gh"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, prev.ID, runs.StatusFailed, runs.EndLaunch, nil); err != nil {
+		t.Fatal(err)
+	}
+	run, err := svc.Resume(ctx, prev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := drv.last(t)
+	if len(req.MCPServers) != 1 || req.MCPServers[0].Name != "gh" {
+		t.Fatalf("resume servers = %+v", req.MCPServers)
+	}
+	waitTerminal(t, svc, run.ID)
+}
+
+// fakeBinaries puts no-op vendor binaries on PATH.
+func fakeBinaries(t *testing.T, names ...string) {
+	t.Helper()
+	bin := t.TempDir()
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(bin, n), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ANTHROPIC_API_KEY", "test")
+	t.Setenv("GEMINI_API_KEY", "test")
 }

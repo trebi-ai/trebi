@@ -2,6 +2,8 @@ package runs
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,31 +98,39 @@ func TestConnectorHintLines(t *testing.T) {
 	}
 }
 
-// TestSupportsActionsMatrix proves decision 8: every CLI harness takes CLI
-// actions, and only an MCPInjector tool takes an MCP action in the pane.
-func TestSupportsActionsMatrix(t *testing.T) {
-	t.Parallel()
-	// The gate only sees a launch that carries an MCP action (the caller
-	// returns early for CLI-only actions). These six harnesses take one.
-	for _, name := range []string{"claude", "codex", "opencode", "copilot", "cursor", "gemini"} {
-		if !supportsActions(tmux.Detect(name), true) {
-			t.Errorf("%s: cli runtime takes MCP actions", name)
+// TestActionsSupportedMatrix proves decision 8: every harness takes CLI
+// actions, the CLI runtime takes MCP actions where agent-wire injects them,
+// and the pane runtime needs an MCPInjector tool.
+func TestActionsSupportedMatrix(t *testing.T) {
+	svc, ctx := paneStack(t)
+	// No vendor binary on PATH: Detect then reports only the static features.
+	t.Setenv("PATH", t.TempDir())
+	for _, name := range []string{"claude", "pi", "grok", "gemini"} {
+		for _, rt := range []string{"cli", "tui"} {
+			if err := svc.ActionsSupported(ctx, name, rt, false); err != nil {
+				t.Errorf("%s %s: CLI actions: %v", name, rt, err)
+			}
 		}
 	}
-	// pi has no MCP seam and grok has no driver (decision 8).
+	for _, name := range []string{"claude", "codex", "opencode", "copilot", "cursor", "gemini"} {
+		if err := svc.ActionsSupported(ctx, name, "cli", true); err != nil {
+			t.Errorf("%s: cli runtime takes MCP actions: %v", name, err)
+		}
+	}
+	// pi needs a per-run home and grok has no MCP seam (decision 8).
 	for _, name := range []string{"pi", "grok"} {
-		if supportsActions(tmux.Detect(name), true) || supportsActions(tmux.Detect(name), false) {
+		if svc.ActionsSupported(ctx, name, "cli", true) == nil || svc.ActionsSupported(ctx, name, "tui", true) == nil {
 			t.Errorf("%s: no runtime takes MCP actions", name)
 		}
 	}
 	for _, name := range []string{"pi", "cursor", "grok", "gemini", "copilot"} {
-		if supportsActions(tmux.Detect(name), false) {
-			t.Errorf("%s: pane runtime takes no MCP action", name)
+		if err := svc.ActionsSupported(ctx, name, "tui", true); !errors.Is(err, ErrActionsUnsupported) {
+			t.Errorf("%s: pane runtime takes no MCP action: %v", name, err)
 		}
 	}
 	for _, name := range []string{"claude", "codex", "opencode"} {
-		if !supportsActions(tmux.Detect(name), false) {
-			t.Errorf("%s: pane runtime takes MCP actions", name)
+		if err := svc.ActionsSupported(ctx, name, "tui", true); err != nil {
+			t.Errorf("%s: pane runtime takes MCP actions: %v", name, err)
 		}
 	}
 }
@@ -171,7 +181,12 @@ func TestPaneClaudeMCPConfigLeavesJobDir(t *testing.T) {
 		MCP:  &agentwire.MCPServer{Name: "gh", Command: "npx", Env: map[string]string{"TOKEN": "tok"}},
 	}}}
 	opts.WorkingDir = wd
-	if _, err := preparePlan(tmux.Detect("claude"), "claude", &opts); err != nil {
+	tool := tmux.Detect("claude")
+	plan, err := preparePlan(tool, "claude", &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := injectMCPPlan(tool, &plan, &opts); err != nil {
 		t.Fatal(err)
 	}
 	if entries, _ := os.ReadDir(wd); len(entries) != 0 {
@@ -268,5 +283,110 @@ func TestPaneEnvFileHidesActionEnvFromArgv(t *testing.T) {
 	}
 	if !strings.Contains(text, "EXTRA") {
 		t.Fatalf("env file drops the launch env: %s", text)
+	}
+}
+
+// TestPaneResumeInjectsMCP proves the pane resume plan gets the MCP config
+// like a fresh launch (P1-20).
+func TestPaneResumeInjectsMCP(t *testing.T) {
+	paneStack(t)
+	opts := LaunchOpts{ResumeSessionID: "sess-1", Actions: []ConnectorAction{{
+		Name: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx"},
+	}}}
+	tool := tmux.Detect("claude")
+	plan, err := preparePlan(tool, "claude", &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := injectMCPPlan(tool, &plan, &opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.Command, "--resume") || !strings.Contains(plan.Command, "--mcp-config") {
+		t.Fatalf("resume command = %q", plan.Command)
+	}
+}
+
+// TestPaneCodexSecretsOffCommandLine proves the codex pane command names env
+// vars only; the values go to the 0600 env file (P1-21).
+func TestPaneCodexSecretsOffCommandLine(t *testing.T) {
+	paneStack(t)
+	opts := LaunchOpts{Actions: []ConnectorAction{
+		{Name: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx", Env: map[string]string{"GH_TOKEN": "s3cret-env"}}},
+		{Name: "api", MCP: &agentwire.MCPServer{Name: "api", URL: "https://x.test/mcp", Headers: map[string]string{"Authorization": "Bearer s3cret-hdr"}}},
+	}}
+	tool := tmux.Detect("codex")
+	plan, err := preparePlan(tool, "codex", &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := injectMCPPlan(tool, &plan, &opts); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plan.Command, "s3cret") {
+		t.Fatalf("secret on the command line: %q", plan.Command)
+	}
+	if !strings.Contains(plan.Command, "env_vars") || !strings.Contains(plan.Command, "env_http_headers") {
+		t.Fatalf("command = %q", plan.Command)
+	}
+	_, path, err := paneEnvFile(t.TempDir(), "01RUN", "tok", "codex", nil, nil, plan.Env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "s3cret-env") || !strings.Contains(string(body), "s3cret-hdr") {
+		t.Fatalf("env file = %s", body)
+	}
+
+	// A job env value that differs from the MCP env is a conflict.
+	opts.Env = map[string]string{"GH_TOKEN": "other"}
+	plan, err = preparePlan(tool, "codex", &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := injectMCPPlan(tool, &plan, &opts); !errors.Is(err, ErrActionsInvalid) {
+		t.Fatalf("conflict err = %v", err)
+	}
+}
+
+// TestPaneOpenCodeMergesJobConfig proves the injected servers merge into an
+// OPENCODE_CONFIG_CONTENT from the job env, and a value that is not a JSON
+// object is refused (P1-22).
+func TestPaneOpenCodeMergesJobConfig(t *testing.T) {
+	paneStack(t)
+	opts := LaunchOpts{
+		Env: map[string]string{"OPENCODE_CONFIG_CONTENT": `{"theme":"dark","mcp":{"mine":{"type":"remote","url":"https://m.test"}}}`},
+		Actions: []ConnectorAction{{
+			Name: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx"},
+		}},
+	}
+	tool := tmux.Detect("opencode")
+	plan, err := preparePlan(tool, "opencode", &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := injectMCPPlan(tool, &plan, &opts); err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Theme string                    `json:"theme"`
+		MCP   map[string]map[string]any `json:"mcp"`
+	}
+	if err := json.Unmarshal([]byte(plan.Env["OPENCODE_CONFIG_CONTENT"]), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Theme != "dark" || cfg.MCP["mine"] == nil || cfg.MCP["gh"] == nil {
+		t.Fatalf("config = %+v", cfg)
+	}
+
+	opts.Env = map[string]string{"OPENCODE_CONFIG_CONTENT": `["not","an","object"]`}
+	plan, err = preparePlan(tool, "opencode", &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := injectMCPPlan(tool, &plan, &opts); !errors.Is(err, ErrActionsInvalid) {
+		t.Fatalf("bad config err = %v", err)
 	}
 }
