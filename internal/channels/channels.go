@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/procgroup"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -43,6 +43,8 @@ const (
 	maxAttempts   = 5
 	baseBackoff   = 5 * time.Second
 	maxBackoff    = 5 * time.Minute
+	// commandOutputMax caps the output kept for an error message.
+	commandOutputMax = 64 * 1024
 )
 
 // Definitions is the channel view of the connectors service. The channels
@@ -433,19 +435,15 @@ func (s *Service) runCommand(ctx context.Context, cwd string, env map[string]str
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, "sh", "-c", cmdline)
-	if cwd != "" {
-		cmd.Dir = cwd
-	}
-	cmd.Env = os.Environ()
+	cmdEnv := os.Environ()
 	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+		cmdEnv = append(cmdEnv, k+"="+v)
 	}
 	for k, v := range extra {
-		cmd.Env = append(cmd.Env, k+"="+v)
+		cmdEnv = append(cmdEnv, k+"="+v)
 	}
-	cmd.Stdin = strings.NewReader(stdin)
-	out, err := cmd.CombinedOutput()
+	out, err := procgroup.Command{Script: cmdline, Dir: cwd, Env: cmdEnv, Stdin: strings.NewReader(stdin)}.
+		Run(cctx, commandOutputMax)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
