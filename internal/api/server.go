@@ -71,7 +71,9 @@ type Server struct {
 	lic        *license.Service
 	templates  *agents.Catalog
 	proposals  *proposals.Service
-	registry   *registry.Service
+	registry     *registry.Service
+	catalogRegs  []config.Registry
+	catalogRegMu sync.Mutex
 
 	startedAt time.Time
 	drain     bool
@@ -146,12 +148,14 @@ func New(st *store.Store, opts Options) *Server {
 	conn := connectors.New(st, ws, sk)
 	cl := cloudlink.New(st)
 	reg := opts.Registry
+	var catalogRegs []config.Registry
 	if reg == nil {
 		regsCfg, err := config.Load()
 		var regs []config.Registry
 		if err == nil {
 			regs = regsCfg.Connectors.Registries
 		}
+		catalogRegs = regs
 		reg = registry.New(registry.Config{Registries: regs, Log: slog.Default().With("source", "registry")})
 	}
 	s := &Server{
@@ -169,7 +173,8 @@ func New(st *store.Store, opts Options) *Server {
 		email:        email.New(st),
 		templates:    agents.NewCatalog(),
 		proposals:    proposals.NewService(st, fs, ws, st, r),
-		registry:     reg,
+		registry:      reg,
+		catalogRegs:   catalogRegs,
 		cloud:        cl,
 		hooks:        webhooks.New(st, conn, cl),
 		startedAt:    time.Now().UTC(),

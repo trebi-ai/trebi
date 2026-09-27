@@ -189,6 +189,7 @@ func (g *Grader) collectSnapshot(ctx context.Context) error {
 	g.addDump(ctx, snap, "jobs", "job", "list", "--json")
 	g.addDump(ctx, snap, "runs", "runs", "list", "--json", "--limit", "50")
 	g.addDump(ctx, snap, "queue", "queue", "--json")
+	g.addDump(ctx, snap, "connectors", "connector", "list", "--json")
 	g.addDump(ctx, snap, "inbox", "inbox", "list", "--json")
 	g.addDump(ctx, snap, "config", "config", "show", "--json")
 	g.addDump(ctx, snap, "secrets", "secret", "list", "--json")
@@ -227,6 +228,18 @@ func (g *Grader) conversations(ctx context.Context) []map[string]any {
 		}
 		if json.Unmarshal(msgs, &body) == nil {
 			conv["messages"] = body.Messages
+		}
+		// The channel outbox rides the same row, so a task can grade a
+		// reply that left the daemon (plan G.3).
+		out, err := g.env.trebi(ctx, "conversation", "outbox", id, "--json")
+		if err != nil {
+			continue
+		}
+		var box struct {
+			Outbox []map[string]any `json:"outbox"`
+		}
+		if json.Unmarshal(out, &box) == nil {
+			conv["outbox"] = box.Outbox
 		}
 	}
 	return list.Conversations

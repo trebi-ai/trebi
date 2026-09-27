@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/registry"
@@ -504,7 +505,7 @@ func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
 // registry it merges the pages of every registry in order.
 func (s *Server) handleConnectorsCatalog(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	entries, next, err := s.registry.Search(r.Context(), registry.SearchOpts{
+	entries, next, err := s.catalogRegistry().Search(r.Context(), registry.SearchOpts{
 		Query:    q.Get("q"),
 		Registry: q.Get("registry"),
 		Cursor:   q.Get("cursor"),
@@ -533,7 +534,7 @@ func (s *Server) handleConnectorCatalogEntry(w http.ResponseWriter, r *http.Requ
 		writeErr(w, http.StatusBadRequest, "validation", "name required")
 		return
 	}
-	entry, err := s.registry.Get(r.Context(), q.Get("registry"), name, q.Get("version"))
+	entry, err := s.catalogRegistry().Get(r.Context(), q.Get("registry"), name, q.Get("version"))
 	if err != nil {
 		s.writeRegistryErr(w, err)
 		return
@@ -569,7 +570,7 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, "validation", "name required")
 		return
 	}
-	entry, err := s.registry.Get(r.Context(), body.Registry, body.Name, body.Version)
+	entry, err := s.catalogRegistry().Get(r.Context(), body.Registry, body.Name, body.Version)
 	if err != nil {
 		s.writeRegistryErr(w, err)
 		return
@@ -748,4 +749,39 @@ func writeRegistrySecrets(writes []registry.SecretWrite) (func(), error) {
 		written = i + 1
 	}
 	return restore, nil
+}
+
+// catalogRegistry returns the registry client for the current config. A
+// change to connectors.registries takes effect on the next read, so a local
+// registry can start after the daemon does (plan H.1).
+func (s *Server) catalogRegistry() *registry.Service {
+	if s.catalogRegs == nil {
+		return s.registry // a test override, or a config that failed to load
+	}
+	s.catalogRegMu.Lock()
+	defer s.catalogRegMu.Unlock()
+	cfg, err := config.Load()
+	if err != nil {
+		return s.registry
+	}
+	regs := cfg.Connectors.Registries
+	if sameRegistries(regs, s.catalogRegs) {
+		return s.registry
+	}
+	s.catalogRegs = regs
+	s.registry = registry.New(registry.Config{Registries: regs, Log: s.log.With("source", "registry")})
+	return s.registry
+}
+
+// sameRegistries reports whether two registry lists hold the same pairs.
+func sameRegistries(a, b []config.Registry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -101,6 +101,7 @@ field returns `validation`; it is never a silent success.
 - `envset` (string or list, optional): environment set name, or a list of names applied in order.
 - `followup_prompt` (string, optional): prompt sent after the run.
 - `session` (object, optional): session fields `max_duration`, `idle_timeout`, `keep_alive`, `nudge`, `resumable`, `if_running`.
+- `kit` (object, optional): kit fields `envset`, `env`, `skills`, and `connectors` (connector names that carry an `actions` block).
 - `workspace` (string, optional): workspace id.
 - `if_match` (string, optional): current revision; a stale value returns 412.
 

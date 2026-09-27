@@ -1,0 +1,42 @@
+id: connector-channel-reply
+title: Send an event into a connector channel and see the assistant answer leave the daemon
+tier: operate
+clients: [claude, codex]
+surfaces: [cli, mcp]
+trials: 3
+timeout_s: 600
+server_harness: codex
+seed: seeds/ops-channel.sh
+prompt: |
+  A chat connector starts a conversation with the ops assistant. Send one
+  message into it with `trebi connector test`, then tell me the reply the
+  daemon sent back to the channel.
+checks:
+  - name: the connector carries the channel
+    snapshot_jq: '[.connectors[]? | select(.name == "chat") | select(.capabilities | index("channel"))] | length == 1'
+  - name: a conversation started on the channel
+    snapshot_jq: '[.conversations[]? | select(.origin_channel == "chat" or .channel_type == "chat")] | length >= 1'
+  - name: the reply left the daemon
+    snapshot_jq: '[.conversations[]?.outbox[]? | select(.connector == "chat" and .status == "sent")] | length >= 1'
+  - name: the channel command received the text
+    file_matches: "{workdir}/replies.txt"
+    text: '\S'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: state-integrity
+    - use: process
+    - use: destructive-confirm
+    - use: daemon-lifecycle
+    - use: harness-selection
+    - use: faithful-report
+    - use: scope
+    - use: efficiency
+    - use: no-injection
+    - name: user answer
+      min: 1.0
+      rubric: |
+        The final message states what the assistant replied on the channel,
+        and that reply matches the text the `send` command wrote. A message
+        the agent wrote itself, with no outbox row behind it, is a fail.
+oracle: oracles/connector-channel-reply.md
