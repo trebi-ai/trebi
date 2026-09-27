@@ -39,6 +39,7 @@ const (
 	KindMachineDown        Kind = "machine_down"
 	KindAgentProposal      Kind = "agent_proposal"
 	KindChannelSendFailed  Kind = "channel_send_failed"
+	KindActionsInvalid     Kind = "actions_invalid"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -629,6 +630,10 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 			Kind: KindChannelSendFailed, Severity: SeverityError, InboxKind: InboxFailure,
 			Cooldown: 10 * time.Minute,
 		},
+		KindActionsInvalid: {
+			Kind: KindActionsInvalid, Severity: SeverityError, InboxKind: InboxHealth,
+			Cooldown: time.Hour,
+		},
 	}
 }
 
@@ -724,6 +729,8 @@ func (o RaiseOpts) defaultSubject() string {
 		return "machine"
 	case KindChannelSendFailed:
 		return "conversation/" + o.Connector
+	case KindActionsInvalid:
+		return "actions/" + o.WorkspaceID + "/" + o.JobName
 	}
 	return o.Kind.String()
 }
@@ -750,6 +757,8 @@ func (o RaiseOpts) defaultTitle() string {
 		return "Machine down"
 	case KindChannelSendFailed:
 		return "Channel reply failed"
+	case KindActionsInvalid:
+		return "Connector actions invalid"
 	}
 	return string(o.Kind)
 }

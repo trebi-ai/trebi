@@ -205,11 +205,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	lopts.Kit = kit
 	run, _, err := s.runs.CreateAndLaunch(r.Context(), lopts)
 	if err != nil {
-		if errors.Is(err, runs.ErrBudgetExceeded) {
-			writeErr(w, http.StatusConflict, "conflict", err.Error())
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		writeLaunchErr(w, err)
 		return
 	}
 	if body.Kind == runs.KindAgent {
@@ -1125,10 +1121,22 @@ func (s *Server) handleRunReplay(w http.ResponseWriter, r *http.Request) {
 	}
 	run, _, err := s.runs.CreateAndLaunch(r.Context(), lopts)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		writeLaunchErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, run)
+}
+
+// writeLaunchErr maps a CreateAndLaunch error to its status and code.
+func writeLaunchErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, runs.ErrBudgetExceeded):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, runs.ErrActionsInvalid) || errors.Is(err, runs.ErrActionsUnsupported):
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	default:
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	}
 }
 
 func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
@@ -1218,7 +1226,7 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 		lopts.PromptPreview = lopts.Prompt
 		run, _, err := s.runs.CreateAndLaunch(r.Context(), lopts)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			writeLaunchErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{"action": "rerun_with_note", "run": run})

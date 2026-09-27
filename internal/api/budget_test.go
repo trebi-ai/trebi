@@ -1,9 +1,11 @@
 package api_test
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,5 +58,32 @@ func TestHumanManualRunAllowedOverBudgetWithWarning(t *testing.T) {
 	}
 	if _, ok := body["run"].(map[string]any); !ok {
 		t.Fatalf("run missing from envelope: %v", body)
+	}
+}
+
+// TestRunActionErrorIsValidation proves an action error on launch maps to
+// 400 validation, not 500 (P1-15).
+func TestRunActionErrorIsValidation(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	jobDir := filepath.Join(wsDir, "acts")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"),
+		[]byte("---\nharness: claude\nconnectors: [ghost]\n---\n\nGo.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wsID := addWorkspace(t, base, wsDir, "acts-ws")
+	t.Setenv("TREBI_FAKE_HARNESS", "")
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{
+		"workspace": wsID, "job": "acts", "kind": "job", "reason": "manual",
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("launch: %d %v, want 400", code, body)
+	}
+	e, _ := body["error"].(map[string]any)
+	if e == nil || e["code"] != "validation" || !strings.Contains(fmt.Sprint(e["message"]), "connector actions invalid") {
+		t.Fatalf("error=%v, want the action error as validation", body["error"])
 	}
 }

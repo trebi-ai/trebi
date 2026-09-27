@@ -6,3 +6,10 @@ func (p *Policy) WindowLen(key string) int {
 	defer p.mu.Unlock()
 	return len(p.window[key])
 }
+
+// Keys is a test hook: the number of keys the policy holds.
+func (p *Policy) Keys() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.lastFired)
+}

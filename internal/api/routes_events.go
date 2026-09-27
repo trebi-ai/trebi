@@ -549,6 +549,10 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 		Status:      dispatch.QueuePending,
 		TraceID:     trace,
 	}
+	// Same rule as the connector pipeline: the extract names the lane.
+	if ck := res.Vars["conversation_key"]; ck != "" {
+		item.ConversationKey = ck
+	}
 	if err := s.queue.Enqueue(r.Context(), item); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return

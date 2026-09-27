@@ -477,3 +477,60 @@ func TestControlPlane_StopEndsConnectorGroups(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestScheduleActionErrorOpensOneInboxItem proves a schedule fire that fails
+// on its connector actions writes no failed run and opens one inbox item per
+// job per hour (P1-15).
+func TestScheduleActionErrorOpensOneInboxItem(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Setenv("TREBI_FAKE_HARNESS", "")
+	_ = os.Unsetenv("TREBI_FAKE_HARNESS")
+	t.Cleanup(func() { home.SetBase("") })
+
+	wsPath := filepath.Join(dir, "ws")
+	jobDir := filepath.Join(wsPath, "acts")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jobMD := "---\nharness: claude\nconnectors: [ghost]\ntriggers:\n  - every: 1h\n---\n\nGo.\n"
+	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(jobMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cp := daemon.New(st, daemon.Options{})
+	ctx := context.Background()
+	ws, err := cp.Workspaces.Add(ctx, wsPath, "acts-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = cp.Workspaces.RebuildIndex(ctx, ws)
+	j, err := job.ParseFile(filepath.Join(jobDir, "JOB.md"))
+	if err != nil || j == nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := cp.Schedule.RecomputeFromJob(ctx, ws.ID, j, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		past := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+		if _, err := st.DB().Exec(`UPDATE schedules SET next_due_at=? WHERE workspace_id=? AND job=?`, past, ws.ID, j.Name); err != nil {
+			t.Fatal(err)
+		}
+		cp.FireDue(ctx)
+	}
+	var runsN, items int
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job=?`, j.Name).Scan(&runsN)
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE alert_kind='actions_invalid' AND job=?`, j.Name).Scan(&items)
+	if runsN != 0 {
+		t.Fatalf("runs=%d, want 0: an action error writes no failed run", runsN)
+	}
+	if items != 1 {
+		t.Fatalf("inbox items=%d, want 1", items)
+	}
+}

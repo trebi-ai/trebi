@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -105,6 +107,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		})
 		if err != nil {
 			c.log.Warn("report fire", "job", r.Job, "error", err)
+			c.raiseActionsFault(ctx, r, err)
 		}
 		c.markFired(ctx, r)
 		return
@@ -171,6 +174,10 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 	run, _, err := c.Runs.CreateAndLaunch(ctx, lopts)
 	if err != nil {
 		c.log.Warn("schedule fire", "job", r.Job, "error", err)
+		if c.raiseActionsFault(ctx, r, err) {
+			c.markFired(ctx, r)
+			return
+		}
 		if run == nil {
 			if _, ferr := c.Runs.FailBeforeLaunch(ctx, lopts, runs.EndLaunch, map[string]string{
 				"message": err.Error(),
@@ -180,6 +187,29 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		}
 	}
 	c.markFired(ctx, r)
+}
+
+// raiseActionsFault opens one inbox item for a schedule fire that fails on
+// its connector actions, in place of a failed run row. The alert cooldown
+// keeps it to one item per job per hour. It reports whether err was an
+// action error.
+func (c *ControlPlane) raiseActionsFault(ctx context.Context, r schedule.Row, err error) bool {
+	if !errors.Is(err, runs.ErrActionsInvalid) && !errors.Is(err, runs.ErrActionsUnsupported) {
+		return false
+	}
+	if c.Alerts == nil {
+		return true
+	}
+	if _, aerr := c.Alerts.Raise(ctx, alerts.RaiseOpts{
+		Kind:        alerts.KindActionsInvalid,
+		WorkspaceID: r.WorkspaceID,
+		JobName:     r.Job,
+		Body:        err.Error(),
+		Hint:        "Fix the connectors list of the job, then run trebi doctor.",
+	}); aerr != nil {
+		c.log.Warn("actions fault alert", "job", r.Job, "error", aerr)
+	}
+	return true
 }
 
 func (c *ControlPlane) markFired(ctx context.Context, r schedule.Row) {

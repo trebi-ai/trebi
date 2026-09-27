@@ -143,8 +143,8 @@ func TestClaimNextExactlyOnceUnderConcurrency(t *testing.T) {
 	if err := st.DB().QueryRowContext(ctx, `SELECT attempts FROM event_queue WHERE id=?`, item.ID).Scan(&attempts); err != nil {
 		t.Fatal(err)
 	}
-	if attempts != 1 {
-		t.Fatalf("attempts=%d, want 1", attempts)
+	if attempts != 0 {
+		t.Fatalf("attempts=%d, want 0: a claim is not an attempt", attempts)
 	}
 }
 
@@ -207,6 +207,9 @@ func TestRequeueAndCancel(t *testing.T) {
 	if it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, ""); err != nil || it == nil || it.ID != b.ID {
 		t.Fatalf("it=%v err=%v", it, err)
 	}
+	if n, err := q.MarkAttempt(ctx, b.ID); err != nil || n != 1 {
+		t.Fatalf("MarkAttempt=%d err=%v, want 1", n, err)
+	}
 	if err := q.MarkBlocked(ctx, b.ID, dispatch.BlockAuthMissing); err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +237,113 @@ func TestRequeueAndCancel(t *testing.T) {
 	}
 	if status, _, _, _ := rowState(b.ID); status != "pending" {
 		t.Fatalf("status=%s, want pending", status)
+	}
+}
+
+// TestWaitIsNotAnAttempt proves the wait path of decision 3: Defer keeps
+// attempts, rounds the due time up, and MarkDone clears the wait reason.
+// List shows attempts, next_attempt_at, and error_message.
+func TestWaitIsNotAnAttempt(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+	ctx := context.Background()
+	q := dispatch.NewQueue(st)
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
+	if err := q.Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	until := time.Date(2030, 1, 1, 0, 0, 5, 200_000_000, time.UTC)
+	for i := 0; i < 8; i++ {
+		if _, err := st.DB().ExecContext(ctx, `UPDATE event_queue SET next_attempt_at=NULL WHERE id=?`, item.ID); err != nil {
+			t.Fatal(err)
+		}
+		if it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, ""); err != nil || it == nil {
+			t.Fatalf("claim %d: it=%v err=%v", i, it, err)
+		}
+		if err := q.Defer(ctx, item.ID, until, dispatch.DeferPolicy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := q.List(ctx, dispatch.ListOpts{})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list=%v err=%v", list, err)
+	}
+	got := list[0]
+	if got.Attempts != 0 || got.ErrorMessage != "policy" || got.NextAttemptAt == nil {
+		t.Fatalf("attempts=%d error=%q next=%v, want 0 policy set", got.Attempts, got.ErrorMessage, got.NextAttemptAt)
+	}
+	if want := until.Truncate(time.Second).Add(time.Second); !got.NextAttemptAt.Equal(want) {
+		t.Fatalf("next_attempt_at=%s, want %s", got.NextAttemptAt, want)
+	}
+	if err := q.MarkDone(ctx, item.ID, dispatch.ResultLaunched, "run1"); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = q.List(ctx, dispatch.ListOpts{})
+	if list[0].ErrorMessage != "" {
+		t.Fatalf("error_message=%q after done, want empty", list[0].ErrorMessage)
+	}
+}
+
+// TestMarkDeadKeepsMessage proves a final error ends the row as dead with
+// its message.
+func TestMarkDeadKeepsMessage(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+	ctx := context.Background()
+	q := dispatch.NewQueue(st)
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
+	if err := q.Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.MarkDead(ctx, item.ID, "actions invalid: ghost"); err != nil {
+		t.Fatal(err)
+	}
+	var status, result, msg string
+	if err := st.DB().QueryRowContext(ctx, `SELECT status, result, error_message FROM event_queue WHERE id=?`, item.ID).
+		Scan(&status, &result, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if status != "done" || result != "dead" || msg != "actions invalid: ghost" {
+		t.Fatalf("status=%s result=%s msg=%q", status, result, msg)
+	}
+	if err := q.MarkDead(ctx, "missing", "x"); err == nil {
+		t.Fatal("MarkDead of missing row must fail")
+	}
+}
+
+// TestConversationLaneClaimsHead proves FIFO inside a conversation lane: a
+// head row in backoff holds the rows behind it. A lane without a key does
+// not wait.
+func TestConversationLaneClaimsHead(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+	ctx := context.Background()
+	q := dispatch.NewQueue(st)
+	enqueue := func(conv string) *dispatch.QueueItem {
+		it := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", ConversationKey: conv, EventRaw: "{}"}
+		if err := q.Enqueue(ctx, it); err != nil {
+			t.Fatal(err)
+		}
+		return it
+	}
+	for _, conv := range []string{"chat", ""} {
+		head, next := enqueue(conv), enqueue(conv)
+		if it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, conv); err != nil || it == nil || it.ID != head.ID {
+			t.Fatalf("conv=%q first claim=%v err=%v", conv, it, err)
+		}
+		if err := q.Defer(ctx, head.ID, time.Now().Add(time.Hour), dispatch.DeferRetry); err != nil {
+			t.Fatal(err)
+		}
+		it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, conv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if conv != "" && it != nil {
+			t.Fatalf("conv lane claimed %s behind a head row in backoff", it.ID)
+		}
+		if conv == "" && (it == nil || it.ID != next.ID) {
+			t.Fatalf("unkeyed lane claim=%v, want %s", it, next.ID)
+		}
 	}
 }
 
