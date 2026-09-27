@@ -66,6 +66,7 @@ type Service struct {
 	procs    map[string]*proc
 	defs     map[string]Definition
 	loadErr  error           // set by a failed Load; blocks writes
+	writeMu  sync.Mutex      // held across read, check, and save of a write
 	runCtx   context.Context // process lifetime; not the caller's (HTTP) context
 	userHome string          // empty: skip MCP discovery (tests)
 	wg       sync.WaitGroup
@@ -213,9 +214,10 @@ func (s *Service) checkLoaded() error {
 	return nil
 }
 
-// Save writes defs back to connectors.yaml with a temp-and-rename write. The
-// file has mode 0600, because it can hold literal tokens.
-func (s *Service) Save(defs map[string]Definition) error {
+// save writes defs back to connectors.yaml with a temp-and-rename write. The
+// file has mode 0600, because it can hold literal tokens. The caller holds
+// writeMu.
+func (s *Service) save(defs map[string]Definition) error {
 	if err := home.EnsureDirs(); err != nil {
 		return err
 	}
@@ -247,17 +249,14 @@ func (s *Service) Save(defs map[string]Definition) error {
 	return nil
 }
 
-// snapshotDefs returns a copy of the definitions map.
+// snapshotDefs returns a deep copy of the definitions, so a caller can change
+// it without a change to the live set.
 func (s *Service) snapshotDefs() map[string]Definition {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return copyDefs(s.defs)
-}
-
-func copyDefs(in map[string]Definition) map[string]Definition {
-	out := make(map[string]Definition, len(in))
-	for k, v := range in {
-		out[k] = v
+	out := make(map[string]Definition, len(s.defs))
+	for k, v := range s.defs {
+		out[k] = v.clone()
 	}
 	return out
 }
@@ -286,12 +285,14 @@ func (s *Service) Create(ctx context.Context, d Definition) error {
 		return err
 	}
 	d = d.withDefaults()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	defs := s.snapshotDefs()
 	if _, ok := defs[d.Name]; ok {
 		return fmt.Errorf("%w: %q", ErrExists, d.Name)
 	}
 	defs[d.Name] = d
-	if err := s.Save(defs); err != nil {
+	if err := s.save(defs); err != nil {
 		return err
 	}
 	s.emitWrite(ctx, "connector.created", d)
@@ -310,6 +311,8 @@ func (s *Service) Replace(ctx context.Context, d Definition) error {
 	if err := s.GuardMutate(d.Name); err != nil {
 		return err
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	defs := s.snapshotDefs()
 	old, existed := defs[d.Name]
 	if err := d.keepMasked(old); err != nil {
@@ -320,7 +323,7 @@ func (s *Service) Replace(ctx context.Context, d Definition) error {
 	}
 	d = d.withDefaults()
 	defs[d.Name] = d
-	if err := s.Save(defs); err != nil {
+	if err := s.save(defs); err != nil {
 		return err
 	}
 	topic := "connector.updated"
@@ -343,12 +346,14 @@ func (s *Service) Patch(ctx context.Context, name string, p Patch) error {
 	if err := s.GuardMutate(name); err != nil {
 		return err
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	defs := s.snapshotDefs()
 	old, ok := defs[name]
 	if !ok {
 		return fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
 	}
-	d := old
+	d := old.clone()
 	if p.Env != nil {
 		d.Env = *p.Env
 	}
@@ -395,7 +400,7 @@ func (s *Service) Patch(ctx context.Context, name string, p Patch) error {
 	}
 	d = d.withDefaults()
 	defs[name] = d
-	if err := s.Save(defs); err != nil {
+	if err := s.save(defs); err != nil {
 		return err
 	}
 	s.emitWrite(ctx, "connector.updated", d)
@@ -444,12 +449,14 @@ func (s *Service) Delete(ctx context.Context, name string) error {
 		return err
 	}
 	_ = s.Stop(name) // already-stopped is fine; delete proceeds either way
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	defs := s.snapshotDefs()
 	if _, ok := defs[name]; !ok {
 		return fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
 	}
 	delete(defs, name)
-	if err := s.Save(defs); err != nil {
+	if err := s.save(defs); err != nil {
 		return err
 	}
 	s.deleteContributedSkills(ctx, name)
@@ -811,6 +818,8 @@ func (s *Service) RewritePathPrefix(old, new string, dryRun bool) ([]string, err
 	if s == nil || strings.TrimSpace(old) == "" || old == new {
 		return nil, nil
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if err := s.Load(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrLoadFailed, err)
 	}
@@ -883,7 +892,7 @@ func (s *Service) RewritePathPrefix(old, new string, dryRun bool) ([]string, err
 	if dryRun || len(names) == 0 {
 		return names, nil
 	}
-	return names, s.Save(defs)
+	return names, s.save(defs)
 }
 
 // Cursor is one connector_cursors row.

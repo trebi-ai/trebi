@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,6 +113,44 @@ type Definition struct {
 	Events  *Events           `yaml:"events,omitempty" json:"events,omitempty"`
 	Channel *Channel          `yaml:"channel,omitempty" json:"channel,omitempty"`
 	Source  *Source           `yaml:"source,omitempty" json:"source,omitempty"`
+}
+
+// clone returns a deep copy: every pointer block, map, and slice is new.
+func (d Definition) clone() Definition {
+	d.Env = maps.Clone(d.Env)
+	if d.Actions != nil {
+		a := *d.Actions
+		if a.MCP != nil {
+			m := *a.MCP
+			m.Args = slices.Clone(m.Args)
+			m.Env = maps.Clone(m.Env)
+			m.Headers = maps.Clone(m.Headers)
+			a.MCP = &m
+		}
+		if a.CLI != nil {
+			c := *a.CLI
+			c.Commands = slices.Clone(c.Commands)
+			a.CLI = &c
+		}
+		d.Actions = &a
+	}
+	if d.Events != nil {
+		e := *d.Events
+		if e.Catchup != nil {
+			c := *e.Catchup
+			e.Catchup = &c
+		}
+		d.Events = &e
+	}
+	if d.Channel != nil {
+		c := *d.Channel
+		d.Channel = &c
+	}
+	if d.Source != nil {
+		src := *d.Source
+		d.Source = &src
+	}
+	return d
 }
 
 // Actions is the "the agent can act on the system" capability.

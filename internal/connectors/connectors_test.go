@@ -1287,3 +1287,96 @@ func countEvents(t *testing.T, st *store.Store) int {
 	}
 	return n
 }
+
+// TestConnectorsConcurrentWrites proves writes are serialized: two creates of
+// one name give one ErrExists, and parallel patches keep every edit.
+func TestConnectorsConcurrentWrites(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() { errs <- svc.Create(ctx, eventsDef("dup", "true")) }()
+	}
+	var exists int
+	for range 2 {
+		if err := <-errs; errors.Is(err, connectors.ErrExists) {
+			exists++
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if exists != 1 {
+		t.Fatalf("ErrExists count %d, want 1", exists)
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			env := map[string]string{"K": "v"}
+			cwd := "/tmp/c"
+			p := connectors.Patch{Env: &env}
+			if i%2 == 1 {
+				p = connectors.Patch{Cwd: &cwd}
+			}
+			if err := svc.Patch(ctx, "dup", p); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	d, _ := svc.Definition("dup")
+	if d.Env["K"] != "v" || d.Cwd != "/tmp/c" {
+		t.Fatalf("lost an edit: env %v cwd %q", d.Env, d.Cwd)
+	}
+}
+
+// TestConnectorsRewriteDryRunKeepsLiveBlocks proves a dry run does not change
+// the pointer blocks of the live definitions.
+func TestConnectorsRewriteDryRunKeepsLiveBlocks(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	d := connectors.Definition{
+		Name:    "dry",
+		Actions: &connectors.Actions{MCP: &connectors.MCPAction{Command: "/old/bin/mcp", Args: []string{"/old/a"}}},
+		Events:  &connectors.Events{Command: "/old/bin/listen", Format: "json"},
+		Channel: &connectors.Channel{Ref: "id", Send: "/old/bin/send"},
+	}
+	if err := svc.Create(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	names, err := svc.RewritePathPrefix("/old", "/new", true)
+	if err != nil || len(names) != 1 {
+		t.Fatalf("names %v err %v", names, err)
+	}
+	got, _ := svc.Definition("dry")
+	if got.Events.Command != "/old/bin/listen" || got.Channel.Send != "/old/bin/send" ||
+		got.Actions.MCP.Command != "/old/bin/mcp" || got.Actions.MCP.Args[0] != "/old/a" {
+		t.Fatalf("dry run changed the live definition: %+v %+v %+v", got.Events, got.Channel, got.Actions.MCP)
+	}
+}
+
+// TestConnectorsCwdChangeRestarts proves a cwd edit restarts a live
+// connector.
+func TestConnectorsCwdChangeRestarts(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	if err := svc.Create(ctx, eventsDef("wd", "sleep 30")); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(ctx, "wd"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Stop("wd") })
+	waitStatus(t, svc, "wd", "listening")
+	cwd := t.TempDir()
+	if err := svc.Patch(ctx, "wd", connectors.Patch{Cwd: &cwd}); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := svc.Get("wd")
+	if n := row["events"].(map[string]any)["restarts"]; n != 1 {
+		t.Fatalf("restarts %v, want 1", n)
+	}
+}
