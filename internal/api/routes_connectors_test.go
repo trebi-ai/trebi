@@ -139,6 +139,12 @@ func TestConnectorRoutes(t *testing.T) {
 	if code, _ := do("DELETE", "/v1/connectors/email", nil); code == http.StatusOK {
 		t.Fatal("email is reserved; delete must not succeed")
 	}
+	// Native connectors have no process log.
+	for _, name := range []string{"email", "webhook"} {
+		if code, body := do("GET", "/v1/connectors/"+name+"/logs", nil); code != http.StatusNotFound {
+			t.Fatalf("%s logs = %d %v; want 404", name, code, body)
+		}
+	}
 	if code, body := do("GET", "/v1/connectors/ghost", nil); code != http.StatusNotFound || errCode(body) != "not_found" {
 		t.Fatalf("get unknown = %d %v", code, body)
 	}
