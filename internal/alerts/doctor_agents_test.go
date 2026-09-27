@@ -165,3 +165,36 @@ func kitStore(t *testing.T, connectorsYAML, kitConnectors string) *store.Store {
 	}
 	return st
 }
+
+// TestChannelOperatorConflictFinding: an agent and the workspace assistant
+// that both trigger on one channel connector give one finding; a connector
+// without a channel gives none.
+func TestChannelOperatorConflictFinding(t *testing.T) {
+	st := kitStore(t, "chat:\n  events:\n    command: cat\n    format: json\n  channel:\n    ref: chat_id\n    send: cat\n"+
+		"feed:\n  events:\n    command: cat\n", "")
+	var dir string
+	if err := st.DB().QueryRow(`SELECT path FROM workspaces WHERE id='ws'`).Scan(&dir); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\ntriggers:\n  - event: chat\n  - event: feed\n---\n\nRun.\n"
+	if err := os.WriteFile(filepath.Join(dir, "agents", "research", "AGENT.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	yml := "assistant:\n  triggers:\n    - event: chat\n    - event: feed\n"
+	if err := os.WriteFile(filepath.Join(dir, "trebi.yaml"), []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var found []DoctorFinding
+	for _, f := range agentKitFindings(st) {
+		if f.Code == "channel_operator_conflict" {
+			found = append(found, f)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("conflict findings = %+v", found)
+	}
+	if found[0].ID != "channel-operator-conflict-ws-chat" ||
+		!strings.Contains(found[0].Message, "agents/research") || !strings.Contains(found[0].Message, "assistant") {
+		t.Fatalf("finding = %+v", found[0])
+	}
+}
