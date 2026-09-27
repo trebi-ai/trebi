@@ -248,8 +248,9 @@ var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // reserved names belong to a native channel, not to a subprocess. The row
 // for one is synthesized by its service and is invisible to Get, so without
-// GuardReserved a write would shadow it.
-var reserved = map[string]bool{"email": true, "webhook": true} //nolint:gochecknoglobals // fixed set of native names, never mutated
+// GuardReserved a write would shadow it. "trebi" is the MCP server name of
+// the harness bridge.
+var reserved = map[string]bool{"email": true, "webhook": true, "trebi": true} //nolint:gochecknoglobals // fixed set of native names, never mutated
 
 // Format and restart enums.
 const (

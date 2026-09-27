@@ -23,6 +23,7 @@ func TestDefinitionValidate(t *testing.T) {
 		{"bad name", connectors.Definition{Name: "A_b", Events: &connectors.Events{Command: "x"}}, []string{"name"}},
 		{"reserved email", connectors.Definition{Name: "email", Events: &connectors.Events{Command: "x"}}, []string{"name"}},
 		{"reserved webhook", connectors.Definition{Name: "webhook", Events: &connectors.Events{Command: "x"}}, []string{"name"}},
+		{"reserved trebi", connectors.Definition{Name: "trebi", Actions: &connectors.Actions{MCP: &connectors.MCPAction{Command: "x"}}}, []string{"name"}},
 		{"actions empty", connectors.Definition{Name: "a", Actions: &connectors.Actions{}}, []string{"actions"}},
 		{"mcp both", connectors.Definition{Name: "a", Actions: &connectors.Actions{MCP: &connectors.MCPAction{Command: "npx", URL: "http://x"}}}, []string{"actions.mcp"}},
 		{"mcp neither", connectors.Definition{Name: "a", Actions: &connectors.Actions{MCP: &connectors.MCPAction{}}}, []string{"actions.mcp"}},

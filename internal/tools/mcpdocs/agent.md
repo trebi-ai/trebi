@@ -70,9 +70,10 @@ Change front matter fields of one agent. For an agent run patching itself, the r
 - `description` (string, optional): description text.
 - `working_dir` (string, optional): run directory.
 - `envset` (string or list, optional): environment set name, or a list of names applied in order.
+- `connectors` (list, optional): connector names for the agent's own runs. A list that is not empty replaces the kit list; `[]` clears it.
 - `followup_prompt` (string, optional): prompt sent after the run.
 - `session` (object, optional): session fields `max_duration`, `idle_timeout`, `keep_alive`, `nudge`, `resumable`, `if_running`.
-- `kit` (object, optional): the agent kit whose parts every owned run inherits: `envset`, `env`, `skills`, and `connectors` (connector names that carry an `actions` block).
+- `kit` (object, optional): the agent kit whose parts every owned run inherits: `envset`, `env`, `skills`, and `connectors` (connector names that carry an `actions` block). Only an agent run that patches itself can send `kit`; the result is a proposal. A direct patch returns `validation`; use `set` to change the kit.
 - `if_match` (string, optional): current hash from `show`; a stale value returns 412.
 
 ### delete

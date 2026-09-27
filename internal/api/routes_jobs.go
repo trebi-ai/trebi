@@ -219,7 +219,7 @@ func (s *Server) agentKits(ctx context.Context, wsID string) (map[string]*job.Ki
 }
 
 // kitSource marks kit values inherited from an owner agent. A job-level
-// envset or env entry wins and is labeled "job".
+// envset, env, skills, or connectors entry wins and is labeled "job".
 func (s *Server) kitSource(ctx context.Context, row workspaces.JobRow) map[string]string {
 	kits, _ := s.agentKits(ctx, row.WorkspaceID)
 	return s.kitSourceFrom(kits, row)
@@ -253,6 +253,12 @@ func (s *Server) kitSourceFrom(kits map[string]*job.KitYAML, row workspaces.JobR
 			}
 			if len(parsed.Env) > 0 {
 				out["env"] = "job"
+			}
+			if len(parsed.Skills) > 0 {
+				out["skills"] = "job"
+			}
+			if len(parsed.Connectors) > 0 {
+				out["connectors"] = "job"
 			}
 		}
 	}

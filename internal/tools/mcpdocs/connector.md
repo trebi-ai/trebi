@@ -91,7 +91,8 @@ connector with none is a bare definition.
   `ts`, `identity`, `catchup{command,max_events,timeout_ms}`), `actions`
   (`mcp{command,args,env,url,headers}` and/or `cli{commands,skill}`), `channel`
   (`ref`, `send` required; `typing`, `typing_interval_ms`, `typing_max_ms`, `ack`),
-  plus `env` and `cwd`.
+  plus `env` and `cwd`. `cwd` applies to the events command and the channel
+  commands. It does not apply to an MCP server.
 
 Mutations (`create`, `replace`, `set`, `delete`, `connect`, `disconnect`,
 `restart`, `test`, `cursor_set`, `install`) on an inherited row return `conflict`.
@@ -109,7 +110,7 @@ definition; keys left out stay. `env` merges into the stored map. Send `null`
 for `actions`, `events`, or `channel` to remove that block. A rename is not
 possible; use `create` and `delete`.
 - `name` (string, required): connector name.
-- `cwd` (string, optional): working directory.
+- `cwd` (string, optional): working directory for the events and channel commands, not for an MCP server.
 - `env` (object, optional): string-to-string environment map; merges.
 - `events` (object, optional): whole events block, same shape as in `create`
   (`{"command": "fetch-mail.sh", "poll_ms": 900000}`), or `null` to remove it.

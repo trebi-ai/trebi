@@ -55,7 +55,7 @@ func SetName(path, name string) error {
 // patchScalars are the top-level frontmatter fields a patch may set.
 // harness, model, and effort are handled together by applyHarnessPatch because
 // they share one YAML node that can be a scalar or a map.
-var patchScalars = []string{"title", "envset", "description", "working_dir", "followup_prompt"} //nolint:gochecknoglobals // static field list, never mutated
+var patchScalars = []string{"title", "envset", "connectors", "description", "working_dir", "followup_prompt"} //nolint:gochecknoglobals // static field list, never mutated
 
 // patchHarnessFields are keys of the nested harness: node.
 var patchHarnessFields = map[string]bool{"harness": true, "model": true, "effort": true} //nolint:gochecknoglobals // static key set, never mutated
@@ -71,9 +71,9 @@ var patchSessionFields = map[string]string{ //nolint:gochecknoglobals // static 
 }
 
 // MergePatchFrontmatter applies a JSON-merge-patch of known scalar frontmatter fields.
-// Supports: disabled, harness, title, envset, description, working_dir,
-// followup_prompt, and session.* scalars; envset also accepts a list of
-// names (plan H.3). A nested "session" map is flattened
+// Supports: disabled, harness, title, envset, connectors, description,
+// working_dir, followup_prompt, and session.* scalars; envset also accepts a
+// list of names (plan H.3), and connectors is always a list. A nested "session" map is flattened
 // to session.idle_timeout etc. via line rewrite. An unknown key is an error:
 // a silent success would tell the caller a change landed when it did not.
 func MergePatchFrontmatter(path string, patch map[string]any) error {
@@ -157,19 +157,33 @@ func applyDisabledPatch(path string, patch map[string]any) error {
 // applyScalarPatch writes the known top-level scalar fields present in patch.
 func applyScalarPatch(path string, patch map[string]any) error {
 	for _, k := range patchScalars {
-		if v, ok := patch[k]; ok && v != nil {
-			if err := setScalarField(path, k, patchFieldText(k, v)); err != nil {
-				return err
-			}
+		v, ok := patch[k]
+		if !ok || v == nil {
+			continue
+		}
+		set := setScalarField
+		if patchListFields[k] {
+			set = setTopLevelField
+		}
+		if err := set(path, k, patchFieldText(k, v)); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
+// patchListFields can hold a list. A patch replaces only the top-level key,
+// with its block items, so kit.connectors stays.
+var patchListFields = map[string]bool{"envset": true, "connectors": true} //nolint:gochecknoglobals // static key set, never mutated
+
 // patchFieldText renders one patch value as frontmatter text. envset accepts
 // a name or a list of names (plan H.3); a list renders as a YAML flow
-// sequence. Every other field is a plain scalar.
+// sequence. connectors is always a flow sequence. Every other field is a
+// plain scalar.
 func patchFieldText(key string, v any) string {
+	if key == "connectors" {
+		return "[" + strings.Join(stringList(v), ", ") + "]"
+	}
 	switch v.(type) {
 	case []string, []any:
 		if key == "envset" {
@@ -405,6 +419,45 @@ func setFieldInBlock(fm []string, key, value string) []string {
 			fm[i] = indent + key + ": " + value
 			return fm
 		}
+	}
+	return append(fm, key+": "+value)
+}
+
+// setTopLevelField sets a top-level key and drops the block items under it.
+func setTopLevelField(path, key, value string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	fmStart, fmEnd, err := locateFrontmatter(data)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	var fmLines []string
+	if fm := strings.TrimRight(string(data[fmStart:fmEnd]), "\n"); fm != "" {
+		fmLines = strings.Split(fm, "\n")
+	}
+	newLines := setTopLevelInBlock(fmLines, key, value)
+	out := make([]byte, 0, len(data)+64)
+	out = append(out, data[:fmStart]...)
+	out = append(out, strings.Join(newLines, "\n")+"\n"...)
+	out = append(out, data[fmEnd:]...)
+	return WriteAtomic(path, out)
+}
+
+func setTopLevelInBlock(fm []string, key, value string) []string {
+	prefix := key + ":"
+	for i, line := range fm {
+		if !strings.HasPrefix(line, prefix) || (len(line) > len(prefix) && line[len(prefix)] != ' ') {
+			continue
+		}
+		end := i + 1
+		for end < len(fm) && (fm[end] == "" || fm[end][0] == ' ' || fm[end][0] == '\t' || fm[end][0] == '-') {
+			end++
+		}
+		out := append([]string{}, fm[:i]...)
+		out = append(out, key+": "+value)
+		return append(out, fm[end:]...)
 	}
 	return append(fm, key+": "+value)
 }

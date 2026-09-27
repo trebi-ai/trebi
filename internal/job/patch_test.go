@@ -104,3 +104,38 @@ func TestMergePatchFrontmatterEnvsetList(t *testing.T) {
 		t.Fatalf("empty patch parse = %v / %v", j.Envset, err)
 	}
 }
+
+func TestMergePatchFrontmatterConnectors(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "AGENT.md")
+	src := "---\nharness: fake\nkit:\n  connectors: [kitone]\nconnectors:\n  - old\n  - older\ntitle: T\n---\n\nBody.\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"connectors": []any{"github", "slack"}}); err != nil {
+		t.Fatal(err)
+	}
+	j, err := job.ParseFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(j.Connectors, []string{"github", "slack"}) {
+		t.Fatalf("connectors = %v", j.Connectors)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "  connectors: [kitone]\n") || strings.Contains(string(data), "old") {
+		t.Fatalf("patch touched the kit list or kept old items: %s", data)
+	}
+	if j.Title != "T" {
+		t.Fatalf("title = %q", j.Title)
+	}
+
+	// An empty list clears the job list, so the kit list applies.
+	if err := job.MergePatchFrontmatter(path, map[string]any{"connectors": []any{}}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if !strings.Contains(string(data), "\nconnectors: []\n") {
+		t.Fatalf("clear: %s", data)
+	}
+}

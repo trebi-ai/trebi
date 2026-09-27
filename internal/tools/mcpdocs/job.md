@@ -99,9 +99,9 @@ field returns `validation`; it is never a silent success.
 - `description` (string, optional): description text.
 - `working_dir` (string, optional): run directory.
 - `envset` (string or list, optional): environment set name, or a list of names applied in order.
+- `connectors` (list, optional): connector names that carry an `actions` block. A list that is not empty replaces the kit list; `[]` clears it. `kit` is not a patch field; the owner agent holds the kit.
 - `followup_prompt` (string, optional): prompt sent after the run.
 - `session` (object, optional): session fields `max_duration`, `idle_timeout`, `keep_alive`, `nudge`, `resumable`, `if_running`.
-- `kit` (object, optional): kit fields `envset`, `env`, `skills`, and `connectors` (connector names that carry an `actions` block).
 - `workspace` (string, optional): workspace id.
 - `if_match` (string, optional): current revision; a stale value returns 412.
 

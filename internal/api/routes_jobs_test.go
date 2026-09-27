@@ -390,3 +390,33 @@ func jobHarness(t *testing.T, base, wsID, name string) string {
 	t.Fatalf("job %s not listed: %v", name, body)
 	return ""
 }
+
+// TestJobKitSourceJobOverride proves a job's own skills and connectors list
+// is labeled "job" next to the owner kit (P1-26).
+func TestJobKitSourceJobOverride(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	files := map[string]string{
+		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):       "---\nharness: fake\nkit:\n  skills: [a]\n  connectors: [c]\n  envset: [e]\n---\n\nRun growth.\n",
+		filepath.Join(wsDir, "agents", "cmo", "duty", "JOB.md"): "---\nharness: fake\nskills: [b]\nconnectors: [d]\n---\n\nDo the duty.\n",
+	}
+	for path, md := range files {
+		if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wsID := addWorkspace(t, base, wsDir, "kit-source")
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID+"&owner=cmo", nil)
+	if code != 200 {
+		t.Fatalf("list: %d %v", code, body)
+	}
+	jobs, _ := body["jobs"].([]any)
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %v", body)
+	}
+	src, _ := jobs[0].(map[string]any)["kit_source"].(map[string]any)
+	if src["skills"] != "job" || src["connectors"] != "job" || src["envset"] != "agent" {
+		t.Fatalf("kit_source = %v", src)
+	}
+}

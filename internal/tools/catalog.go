@@ -1360,9 +1360,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				patch := in.pick(jobPatchFields...)
+				patch := in.pick(agentPatchFields...)
 				if len(patch) == 0 {
-					return request.HTTPRequest{}, fmt.Errorf("give at least one of %s", strings.Join(jobPatchFields, ", "))
+					return request.HTTPRequest{}, fmt.Errorf("give at least one of %s", strings.Join(agentPatchFields, ", "))
 				}
 				ifMatch, err := in.str("if_match")
 				if err != nil {
@@ -2339,10 +2339,14 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 
 // jobPatchFields are the flat fields job.patch accepts. They mirror the keys
 // job.MergePatchFrontmatter honors; an unknown key is a validation error.
-// envset takes one name or a list of names (plan H.3).
+// envset takes one name or a list of names (plan H.3). connectors is a list.
 var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
-	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "envset", "followup_prompt", "session", "kit",
+	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "envset", "connectors", "followup_prompt", "session",
 }
+
+// agentPatchFields add kit, which only an agent self-patch accepts: the
+// daemon renders it into a proposal.
+var agentPatchFields = append(append([]string{}, jobPatchFields...), "kit") //nolint:gochecknoglobals // static field list, never mutated
 
 // assistantSetFields are the flat fields assistant.set accepts. They mirror
 // the assistant.Override keys; email and triggers stay YAML-only in
