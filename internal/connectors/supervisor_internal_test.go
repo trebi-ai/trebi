@@ -389,3 +389,45 @@ func TestPollTicksIngestEachBatch(t *testing.T) {
 		t.Fatalf("cursor = %+v err = %v", cur, err)
 	}
 }
+
+func TestParseEventTime(t *testing.T) {
+	t.Parallel()
+	cases := map[string]time.Time{
+		"2026-09-27T10:00:00Z":     time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC),
+		"2026-09-27T10:00:00.25Z":  time.Date(2026, 9, 27, 10, 0, 0, 250_000_000, time.UTC),
+		"1727380000":               time.Unix(1727380000, 0).UTC(),
+		"1727380000.123456":        time.Unix(1727380000, 123_456_000).UTC(),
+		"1727380000.5":             time.Unix(1727380000, 500_000_000).UTC(),
+		"1727380000123":            time.UnixMilli(1727380000123).UTC(),
+		"1727380000123.5":          time.UnixMilli(1727380000123).Add(500 * time.Microsecond).UTC(),
+		"1727380000.1234567891234": time.Unix(1727380000, 123_456_789).UTC(),
+		"abc":                      {},
+		"1727380000.x":             {},
+		"1727380000.-5":            {},
+		"":                         {},
+	}
+	for raw, want := range cases {
+		if got := parseEventTime(raw); !got.Equal(want) {
+			t.Errorf("parseEventTime(%q) = %v; want %v", raw, got, want)
+		}
+	}
+}
+
+// TestParseDefinitionDataLine proves the strict-decode error names the
+// connector and the line in the file.
+func TestParseDefinitionDataLine(t *testing.T) {
+	t.Parallel()
+	data := "feed:\n  events:\n    command: echo\n\nmail:\n  events:\n    command: x\n    formt: json\n"
+	_, err := parseDefinitionData([]byte(data))
+	if err == nil || !strings.Contains(err.Error(), `connector "mail": line 8: field formt not found`) {
+		t.Fatalf("err = %v", err)
+	}
+	defs, err := parseDefinitionData([]byte(""))
+	if err != nil || len(defs) != 0 {
+		t.Fatalf("empty file: %v %v", defs, err)
+	}
+	defs, err = parseDefinitionData([]byte("feed:\n  events: {command: echo}\n"))
+	if err != nil || defs["feed"].Name != "feed" || defs["feed"].Events.Command != "echo" {
+		t.Fatalf("valid file: %v %v", defs, err)
+	}
+}

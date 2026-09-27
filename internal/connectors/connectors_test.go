@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -724,6 +725,34 @@ func TestConnectorsNonZeroExitCrashes(t *testing.T) {
 	if le := row["events"].(map[string]any)["last_err"].(string); le == "" {
 		t.Fatalf("want non-empty last_err: %v", row)
 	}
+}
+
+// TestConnectorsCountersPerOutcome proves the events counter counts only
+// inserted rows. A duplicate and a parse error have their own counters.
+func TestConnectorsCountersPerOutcome(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	d := connectors.Definition{
+		Name: "count",
+		Events: &connectors.Events{
+			Command: `printf '{"id":"a"}\n{"id":"a"}\nnot json\n{"id":"b"}\n'; sleep 30`,
+			Format:  "json", ID: "id", Restart: connectors.RestartNever,
+		},
+	}
+	if err := svc.Create(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(ctx, "count"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Stop("count") })
+	want := map[string]any{"events": int64(2), "duplicates": int64(1), "parse_errors": int64(1)}
+	var got map[string]any
+	waitUntil(t, 5*time.Second, func() bool {
+		row, _ := svc.Get("count")
+		got, _ = row["events"].(map[string]any)["counters"].(map[string]any)
+		return reflect.DeepEqual(got, want)
+	}, "counters")
 }
 
 // TestConnectorsInjectEventMatchesJob enqueues via the ingest path when a

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -135,12 +136,6 @@ func (p *proc) markStarted(at time.Time) {
 	p.mu.Unlock()
 }
 
-func (p *proc) addEvent() {
-	p.mu.Lock()
-	p.events++
-	p.mu.Unlock()
-}
-
 func (p *proc) addDuplicate() {
 	p.mu.Lock()
 	p.duplicates++
@@ -159,8 +154,11 @@ func (p *proc) addRestart() {
 	p.mu.Unlock()
 }
 
+// markEvent counts one inserted event and stamps its time. Duplicates and
+// parse errors have their own counters.
 func (p *proc) markEvent(at time.Time) {
 	p.mu.Lock()
+	p.events++
 	p.lastEventAt = at
 	p.mu.Unlock()
 }
@@ -446,8 +444,8 @@ func backoffDelay(attempt int) time.Duration {
 func (s *Service) runLive(ctx context.Context, name string, d Definition, p *proc) (healthy bool, err error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cur, _ := s.GetCursor(ctx, name)
-	cmd, stdout, stderr, err := s.startCommand(runCtx, d, d.Events.Command, map[string]string{"TREBI_LAST_EVENT_ID": cur.LastEventID})
+	pos, _ := s.GetCursor(ctx, name)
+	cmd, stdout, stderr, err := s.startCommand(runCtx, d, d.Events.Command, map[string]string{"TREBI_LAST_EVENT_ID": pos.LastEventID})
 	if err != nil {
 		return false, err
 	}
@@ -510,8 +508,8 @@ func (s *Service) runPoll(ctx context.Context, name string, d Definition, p *pro
 
 // runOnce runs the poll command to completion and ingests its output.
 func (s *Service) runOnce(ctx context.Context, name string, d Definition, p *proc) error {
-	cur, _ := s.GetCursor(ctx, name)
-	cmd, stdout, stderr, err := s.startCommand(ctx, d, d.Events.Command, map[string]string{"TREBI_LAST_EVENT_ID": cur.LastEventID})
+	pos, _ := s.GetCursor(ctx, name)
+	cmd, stdout, stderr, err := s.startCommand(ctx, d, d.Events.Command, map[string]string{"TREBI_LAST_EVENT_ID": pos.LastEventID})
 	if err != nil {
 		return err
 	}
@@ -545,7 +543,6 @@ func (s *Service) scanInto(ctx context.Context, name string, d Definition, stdou
 	for sc.Scan() {
 		line := sc.Text()
 		appendConnectorLog(name, "stdout", line)
-		p.addEvent()
 		s.ingest(ctx, name, d, line, catchUp)
 	}
 	scanErr := sc.Err()
@@ -583,15 +580,15 @@ func (s *Service) goStderr(name string, r io.Reader) {
 // cap, a sort by ts when set, and a skip when the cursor is not in the
 // output.
 func (s *Service) runCatchup(ctx context.Context, name string, d Definition, p *proc) {
-	cur, _ := s.GetCursor(ctx, name)
-	if cur.LastEventID == "" {
+	pos, _ := s.GetCursor(ctx, name)
+	if pos.LastEventID == "" {
 		s.skipCatchup(name, p, "no_position", "catchup skipped: no connector cursor")
 		return
 	}
 	s.emitCatchup(name, "connector.catchup.started", nil)
 	cctx, cancel := context.WithTimeout(ctx, d.Events.Catchup.Timeout.Std())
 	defer cancel()
-	cmd, stdout, stderr, err := s.startCommand(cctx, d, d.Events.Catchup.Command, map[string]string{"TREBI_LAST_EVENT_ID": cur.LastEventID})
+	cmd, stdout, stderr, err := s.startCommand(cctx, d, d.Events.Catchup.Command, map[string]string{"TREBI_LAST_EVENT_ID": pos.LastEventID})
 	if err != nil {
 		s.log.Warn("connector.catchup.started", "connector", name, "error", err)
 		s.skipCatchup(name, p, "error", "catchup failed to start: "+err.Error())
@@ -652,7 +649,7 @@ func (s *Service) runCatchup(ctx context.Context, name string, d Definition, p *
 	}
 	cut := -1
 	for i := len(items) - 1; i >= 0; i-- {
-		if items[i].id == cur.LastEventID && items[i].id != "" {
+		if items[i].id == pos.LastEventID && items[i].id != "" {
 			cut = i
 			break
 		}
@@ -676,7 +673,8 @@ func (s *Service) skipCatchup(name string, p *proc, reason, logLine string) {
 	s.emitCatchup(name, "connector.catchup.skipped", map[string]string{"reason": reason})
 }
 
-// parseEventTime reads RFC3339, epoch seconds, or epoch milliseconds.
+// parseEventTime reads RFC3339, epoch seconds, or epoch milliseconds. Epoch
+// values can have a fraction, such as the Slack ts "1727380000.123456".
 func parseEventTime(raw string) time.Time {
 	if t, err := time.Parse(time.RFC3339, raw); err == nil {
 		return t
@@ -684,13 +682,30 @@ func parseEventTime(raw string) time.Time {
 	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
 		return t
 	}
-	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
-		if n > 1e12 { // epoch milliseconds
-			return time.UnixMilli(n).UTC()
-		}
-		return time.Unix(n, 0).UTC()
+	whole, frac, _ := strings.Cut(raw, ".")
+	n, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil || n < 0 {
+		return time.Time{}
 	}
-	return time.Time{}
+	unit := int64(time.Second)
+	if n > 1e12 { // epoch milliseconds
+		unit = int64(time.Millisecond)
+	}
+	var sub int64
+	if frac != "" {
+		if len(frac) > 9 {
+			frac = frac[:9]
+		}
+		f, err := strconv.ParseInt(frac, 10, 64)
+		if err != nil || f < 0 || strings.ContainsAny(frac, "+-") {
+			return time.Time{}
+		}
+		for i := len(frac); i < 9; i++ {
+			f *= 10
+		}
+		sub = f * unit / int64(time.Second)
+	}
+	return time.Unix(0, n*unit+sub).UTC()
 }
 
 func truncate(line string, n int) string {

@@ -519,7 +519,7 @@ func (s *Service) deleteContributedSkills(ctx context.Context, name string) {
 // MCP servers. One row shape covers managed, inherited, and native rows.
 func (s *Service) List() []map[string]any {
 	defs := s.snapshotDefs()
-	cursors, lastEvents := s.eventMeta()
+	positions, lastEvents := s.eventMeta()
 	s.mu.Lock()
 	procs := make(map[string]*proc, len(s.procs))
 	for name, p := range s.procs {
@@ -531,7 +531,7 @@ func (s *Service) List() []map[string]any {
 	fpIndex := map[string]int{}
 	for _, name := range sortedNames(defs) {
 		d := defs[name]
-		row := s.managedRow(name, d, procs[name], cursors[name], lastEvents[name])
+		row := s.managedRow(name, d, procs[name], positions[name], lastEvents[name])
 		if d.Actions != nil && d.Actions.MCP != nil {
 			if fp := d.Actions.MCP.fingerprint(); fp != "" {
 				fpIndex[fp] = len(out)
@@ -544,16 +544,16 @@ func (s *Service) List() []map[string]any {
 
 // eventMeta reads every connector cursor and last event time in two queries.
 func (s *Service) eventMeta() (map[string]Cursor, map[string]string) {
-	cursors := map[string]Cursor{}
+	positions := map[string]Cursor{}
 	lastEvents := map[string]string{}
 	if s.st == nil {
-		return cursors, lastEvents
+		return positions, lastEvents
 	}
 	if rows, err := s.st.DB().Query(`SELECT name, last_event_id, updated_at FROM connector_cursors`); err == nil {
 		for rows.Next() {
 			var c Cursor
 			if rows.Scan(&c.Name, &c.LastEventID, &c.UpdatedAt) == nil {
-				cursors[c.Name] = c
+				positions[c.Name] = c
 			}
 		}
 		rows.Close()
@@ -567,11 +567,11 @@ func (s *Service) eventMeta() (map[string]Cursor, map[string]string) {
 		}
 		rows.Close()
 	}
-	return cursors, lastEvents
+	return positions, lastEvents
 }
 
 // managedRow builds the wire row of a managed definition.
-func (s *Service) managedRow(name string, d Definition, p *proc, cur Cursor, lastEventAt string) map[string]any {
+func (s *Service) managedRow(name string, d Definition, p *proc, pos Cursor, lastEventAt string) map[string]any {
 	row := map[string]any{
 		"id":           name,
 		"name":         name,
@@ -586,7 +586,7 @@ func (s *Service) managedRow(name string, d Definition, p *proc, cur Cursor, las
 		row["actions"] = s.actionsRow(d.Actions)
 	}
 	if d.Events != nil {
-		row["events"] = eventsRow(*d.Events, p, cur, lastEventAt)
+		row["events"] = eventsRow(*d.Events, p, pos, lastEventAt)
 	}
 	if d.Channel != nil {
 		row["channel"] = channelRow(*d.Channel)
@@ -632,7 +632,7 @@ func orEmptySlice(in []string) []string {
 }
 
 // eventsRow renders the events block plus its live state.
-func eventsRow(e Events, p *proc, cur Cursor, lastEventAt string) map[string]any {
+func eventsRow(e Events, p *proc, pos Cursor, lastEventAt string) map[string]any {
 	row := map[string]any{
 		"command":       e.Command,
 		"format":        e.Format,
@@ -643,7 +643,7 @@ func eventsRow(e Events, p *proc, cur Cursor, lastEventAt string) map[string]any
 		"status":        "stopped",
 		"restarts":      0,
 		"last_err":      "",
-		"last_event_id": cur.LastEventID,
+		"last_event_id": pos.LastEventID,
 		"last_event_at": lastEventAt,
 		"counters":      map[string]any{"events": int64(0), "duplicates": int64(0), "parse_errors": int64(0)},
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"regexp"
 	"slices"
@@ -461,11 +462,14 @@ func (d Definition) withDefaults() Definition {
 // returns nil for a line that is not valid json.
 func (e Events) decode(line string) any {
 	if e.Format == FormatJSON {
+		// UseNumber keeps a large id exact for the id and identity paths.
 		var m any
-		if err := json.Unmarshal([]byte(line), &m); err == nil {
-			return m
+		dec := json.NewDecoder(strings.NewReader(line))
+		dec.UseNumber()
+		if err := dec.Decode(&m); err != nil || dec.More() {
+			return nil
 		}
-		return nil
+		return m
 	}
 	return map[string]any{"line": line}
 }
@@ -549,24 +553,41 @@ func identityString(v any) string {
 }
 
 // parseDefinitionData decodes strict YAML/JSON data into named definitions.
-// Unknown keys fail with the connector name and the key.
+// An unknown key fails with the connector name and its line in the file.
 func parseDefinitionData(data []byte) (map[string]Definition, error) {
-	var nodes map[string]yaml.Node
-	if err := yaml.Unmarshal(data, &nodes); err != nil {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	out := make(map[string]Definition, len(nodes))
-	for name, node := range nodes {
-		var d Definition
-		b, err := yaml.Marshal(&node)
-		if err != nil {
-			return nil, fmt.Errorf("connector %q: %w", name, err)
+	out := map[string]Definition{}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	err := dec.Decode(&out)
+	var te *yaml.TypeError
+	switch {
+	case err == nil, errors.Is(err, io.EOF):
+	case errors.As(err, &te) && len(doc.Content) == 1 && doc.Content[0].Kind == yaml.MappingNode:
+		// The whole-file decode keeps the file line; the top-level keys
+		// name the connector that holds it.
+		keys := doc.Content[0].Content
+		msgs := make([]string, 0, len(te.Errors))
+		for _, msg := range te.Errors {
+			var line int
+			if _, scanErr := fmt.Sscanf(msg, "line %d:", &line); scanErr == nil {
+				for k := len(keys) - 2; k >= 0; k -= 2 {
+					if keys[k].Line <= line {
+						msg = fmt.Sprintf("connector %q: %s", keys[k].Value, msg)
+						break
+					}
+				}
+			}
+			msgs = append(msgs, msg)
 		}
-		dec := yaml.NewDecoder(bytes.NewReader(b))
-		dec.KnownFields(true)
-		if err := dec.Decode(&d); err != nil {
-			return nil, fmt.Errorf("connector %q: %w", name, err)
-		}
+		return nil, errors.New(strings.Join(msgs, "; "))
+	default:
+		return nil, err
+	}
+	for name, d := range out {
 		d.Name = name
 		out[name] = d
 	}

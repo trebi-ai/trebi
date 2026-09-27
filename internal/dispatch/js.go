@@ -48,7 +48,7 @@ func EvalMatch(ctx context.Context, match, extract string, event any) EvalResult
 }
 
 func evalMatchOn(vm *goja.Runtime, match, extract string, event any) EvalResult {
-	if err := vm.Set("event", event); err != nil {
+	if err := vm.Set("event", jsValue(event)); err != nil {
 		return EvalResult{Error: fmt.Sprintf("bind event: %v", err)}
 	}
 	if err := vm.Set("json", func(s string) any {
@@ -100,6 +100,35 @@ func runMatch(vm *goja.Runtime, match string) (bool, error) {
 		return false, nil
 	}
 	return truthy(v.Export()), nil
+}
+
+// jsValue copies a decoded JSON value with each json.Number as a JS number:
+// int64 when the value is an integer, else float64. goja sees a json.Number
+// as a string. The copy leaves the caller's value as it is.
+func jsValue(v any) any {
+	switch x := v.(type) {
+	case json.Number:
+		if i, err := x.Int64(); err == nil {
+			return i
+		}
+		if f, err := x.Float64(); err == nil {
+			return f
+		}
+		return x.String()
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			out[k] = jsValue(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, val := range x {
+			out[i] = jsValue(val)
+		}
+		return out
+	}
+	return v
 }
 
 func truthy(v any) bool {

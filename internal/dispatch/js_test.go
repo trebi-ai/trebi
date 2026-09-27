@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/dispatch"
@@ -54,5 +55,29 @@ func TestEvalMatchRequired(t *testing.T) {
 	r := dispatch.EvalMatch(context.Background(), "", "", nil)
 	if r.Error == "" {
 		t.Fatal("match required")
+	}
+}
+
+// TestEvalMatchJSONNumber proves a payload decoded with UseNumber reads as
+// JS numbers. JS itself rounds an integer above 2^53.
+func TestEvalMatchJSONNumber(t *testing.T) {
+	t.Parallel()
+	ev := map[string]any{
+		"n":     json.Number("7"),
+		"ratio": json.Number("0.5"),
+		"list":  []any{json.Number("1")},
+		"id":    json.Number("1234567890123456789"),
+	}
+	for _, m := range []string{"event.n === 7", "event.n + 1 === 8", "event.ratio === 0.5", "event.list[0] === 1", "typeof event.id === 'number'"} {
+		if r := dispatch.EvalMatch(context.Background(), m, "", ev); r.Error != "" || !r.Matched {
+			t.Fatalf("%s: %+v", m, r)
+		}
+	}
+	r := dispatch.EvalMatch(context.Background(), "true", "({n: event.n})", ev)
+	if r.Vars["n"] != "7" {
+		t.Fatalf("vars = %v", r.Vars)
+	}
+	if _, ok := ev["n"].(json.Number); !ok {
+		t.Fatal("EvalMatch changed the caller's payload")
 	}
 }
