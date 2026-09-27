@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/config"
@@ -42,25 +43,41 @@ var (
 	ErrUnsupportedPackage = errors.New("unsupported package")
 	// ErrUnsupportedRemote is a remote whose transport this client cannot use.
 	ErrUnsupportedRemote = errors.New("unsupported remote")
-	// ErrMissingEnv is a required environment variable with no value.
-	ErrMissingEnv = errors.New("missing required environment variable")
+	// ErrMissingInput is a required input with no value.
+	ErrMissingInput = errors.New("missing required input")
+	// ErrUnusedInput is a caller value that no input of the chosen source uses.
+	ErrUnusedInput = errors.New("unused input")
+	// ErrInvalidInput is a caller value that the chosen source cannot use.
+	ErrInvalidInput = errors.New("invalid input")
 	// ErrInvalidEntry is registry data that fails a local safety check.
 	ErrInvalidEntry = errors.New("invalid registry entry")
 )
 
+// apiPrefixes are the registry API versions, newest first. A registry that
+// returns 404 for the first gets the second.
+var apiPrefixes = [...]string{"/v0.1", "/v0"}
+
 // Config configures the client. A zero Config uses the official registry, a
-// 10 s HTTP client, and the default logger.
+// 10 s HTTP client, SafeClient for skill fetches, and the default logger.
 type Config struct {
 	Registries []config.Registry
 	HTTP       *http.Client
-	Log        *slog.Logger
+	// SkillHTTP fetches contributed skills. Nil is SafeClient. Tests set it
+	// to reach a loopback server.
+	SkillHTTP *http.Client
+	Log       *slog.Logger
 }
 
-// Service talks to one or more MCP registries.
+// Service talks to one or more MCP registries. Build it with New; it is safe
+// for concurrent use.
 type Service struct {
 	Registries []config.Registry
 	HTTP       *http.Client
 	Log        *slog.Logger
+
+	skillHTTP *http.Client
+	mu        sync.Mutex
+	prefix    map[string]string // registry URL → API prefix that answered
 }
 
 // New builds a registry client.
@@ -77,7 +94,11 @@ func New(cfg Config) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{Registries: regs, HTTP: hc, Log: log}
+	skill := cfg.SkillHTTP
+	if skill == nil {
+		skill = SafeClient(requestTimeout)
+	}
+	return &Service{Registries: regs, HTTP: hc, Log: log, skillHTTP: skill, prefix: map[string]string{}}
 }
 
 // SearchOpts is one catalog search. An empty Registry queries every
@@ -96,36 +117,70 @@ type Entry struct {
 	Meta     map[string]any // the response-level _meta
 }
 
-// Search returns the merged pages of the selected registries. The returned
-// next cursor encodes one cursor per registry that has more.
-func (s *Service) Search(ctx context.Context, o SearchOpts) ([]Entry, string, error) {
+// SearchResult is one merged catalog page. Errors lists each registry that
+// failed while the others answered.
+type SearchResult struct {
+	Entries []Entry
+	Next    string
+	Errors  []RegistryError
+}
+
+// RegistryError is one registry that failed in a merged search.
+type RegistryError struct {
+	Registry string `json:"registry"`
+	Error    string `json:"error"`
+}
+
+// Search returns the merged pages of the selected registries. The next cursor
+// encodes one cursor per registry that has more. A continuation skips each
+// registry that has no key in the cursor. One failing registry does not fail
+// the search; it fails only when every selected registry fails.
+func (s *Service) Search(ctx context.Context, o SearchOpts) (SearchResult, error) {
 	regs, err := s.selectRegistries(o.Registry)
 	if err != nil {
-		return nil, "", err
+		return SearchResult{}, err
 	}
-	cursors, asJSON := decodeCursor(o.Cursor)
-	var entries []Entry
+	positions, asJSON := decodeCursor(o.Cursor)
+	var res SearchResult
 	next := map[string]string{}
+	var firstErr error
+	queried := 0
 	for _, reg := range regs {
-		cur := ""
+		pos := ""
 		switch {
-		case asJSON:
-			cur = cursors[reg.Name]
-		case o.Registry != "":
-			cur = o.Cursor // a bare cursor applies to the named registry
+		case asJSON && o.Cursor != "":
+			p, ok := positions[reg.Name]
+			if !ok {
+				continue // this registry has no more pages
+			}
+			pos = p
+		case !asJSON && o.Registry != "":
+			pos = o.Cursor // a bare cursor applies to the named registry
 		}
-		page, err := s.listPage(ctx, reg, o.Query, o.Limit, cur)
+		queried++
+		page, err := s.listPage(ctx, reg, o.Query, o.Limit, pos)
 		if err != nil {
-			return nil, "", err
+			if firstErr == nil {
+				firstErr = err
+			}
+			res.Errors = append(res.Errors, RegistryError{Registry: reg.Name, Error: err.Error()})
+			if pos != "" {
+				next[reg.Name] = pos // retry the same page next time
+			}
+			continue
 		}
 		for _, it := range page.Servers {
-			entries = append(entries, Entry{Registry: reg.Name, Server: it.Server, Meta: it.Meta})
+			res.Entries = append(res.Entries, Entry{Registry: reg.Name, Server: it.Server, Meta: it.Meta})
 		}
 		if page.Metadata.NextCursor != "" {
 			next[reg.Name] = page.Metadata.NextCursor
 		}
 	}
-	return entries, encodeCursor(next), nil
+	if queried > 0 && len(res.Errors) == queried {
+		return SearchResult{}, firstErr
+	}
+	res.Next = encodeCursor(next)
+	return res, nil
 }
 
 // Get reads one server version. An empty registry uses the default; an empty
@@ -142,12 +197,22 @@ func (s *Service) Get(ctx context.Context, registryName, name, version string) (
 	if v == "" {
 		v = "latest"
 	}
-	path := "/v0.1/servers/" + url.PathEscape(name) + "/versions/" + url.PathEscape(v)
+	path := "/servers/" + url.PathEscape(name) + "/versions/" + url.PathEscape(v)
 	var out getResponse
 	if err := s.getJSON(ctx, reg, path, nil, &out); err != nil {
 		return Entry{}, err
 	}
 	return Entry{Registry: reg.Name, Server: out.Server, Meta: out.Meta}, nil
+}
+
+// FetchSkill reads the SKILL.md body of a contributed skill through the skill
+// client, which is SafeClient unless a test replaces it.
+func (s *Service) FetchSkill(ctx context.Context, raw string) (string, error) {
+	body, err := readCapped(ctx, s.skillHTTP, raw, maxSkillBody)
+	if err != nil {
+		return "", fmt.Errorf("skill url: %w", err)
+	}
+	return string(body), nil
 }
 
 // selectRegistries returns the named registry, or every registry in order.
@@ -200,14 +265,43 @@ func (s *Service) listPage(ctx context.Context, reg config.Registry, query strin
 		q.Set("limit", strconv.Itoa(limit))
 	}
 	var out listResponse
-	if err := s.getJSON(ctx, reg, "/v0.1/servers", q, &out); err != nil {
+	if err := s.getJSON(ctx, reg, "/servers", q, &out); err != nil {
 		return out, err
 	}
 	return out, nil
 }
 
-// getJSON runs one GET against a registry and decodes the reply.
+// getJSON runs one GET against a registry and decodes the reply. The path has
+// no API version. The first call tries /v0.1, then /v0 on a 404, and keeps
+// the version that answered for the next calls.
 func (s *Service) getJSON(ctx context.Context, reg config.Registry, path string, q url.Values, out any) error {
+	s.mu.Lock()
+	known, ok := s.prefix[reg.URL]
+	s.mu.Unlock()
+	if ok {
+		return s.fetchJSON(ctx, reg, known+path, q, out)
+	}
+	var firstErr error
+	for _, p := range apiPrefixes {
+		err := s.fetchJSON(ctx, reg, p+path, q, out)
+		if err == nil {
+			s.mu.Lock()
+			s.prefix[reg.URL] = p
+			s.mu.Unlock()
+			return nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		if !errors.Is(err, ErrNotFound) {
+			break
+		}
+	}
+	return firstErr
+}
+
+// fetchJSON runs one GET on one full API path.
+func (s *Service) fetchJSON(ctx context.Context, reg config.Registry, path string, q url.Values, out any) error {
 	endpoint := strings.TrimRight(reg.URL, "/") + path
 	if len(q) > 0 {
 		endpoint += "?" + q.Encode()
@@ -313,11 +407,13 @@ type Repository struct {
 	ID     string `json:"id,omitempty"`
 }
 
-// Remote is one remote transport. Headers is the registry's KeyValueInput list.
+// Remote is one remote transport. Headers is the registry's KeyValueInput
+// list; Variables fill {placeholders} in the URL.
 type Remote struct {
-	Type    string     `json:"type"`
-	URL     string     `json:"url"`
-	Headers []KeyValue `json:"headers,omitempty"`
+	Type      string           `json:"type"`
+	URL       string           `json:"url"`
+	Headers   []KeyValue       `json:"headers,omitempty"`
+	Variables map[string]Input `json:"variables,omitempty"`
 }
 
 // Package is one package entry.
@@ -328,6 +424,7 @@ type Package struct {
 	Version              string     `json:"version"`
 	RuntimeHint          string     `json:"runtimeHint"`
 	Transport            *Transport `json:"transport"`
+	RuntimeArguments     []Argument `json:"runtimeArguments,omitempty"`
 	PackageArguments     []Argument `json:"packageArguments"`
 	EnvironmentVariables []KeyValue `json:"environmentVariables"`
 }
@@ -337,20 +434,32 @@ type Transport struct {
 	Type string `json:"type"`
 }
 
-// Argument is one package argument: positional or named.
+// Input is the registry Input shape. An env variable, a header, an argument,
+// and a template variable all embed it. Value may hold {name} placeholders
+// that Variables fill.
+type Input struct {
+	Value       string           `json:"value"`
+	Default     string           `json:"default,omitempty"`
+	Description string           `json:"description"`
+	Format      string           `json:"format"`
+	Placeholder string           `json:"placeholder,omitempty"`
+	Choices     []string         `json:"choices,omitempty"`
+	IsRequired  bool             `json:"isRequired"`
+	IsSecret    bool             `json:"isSecret"`
+	Variables   map[string]Input `json:"variables,omitempty"`
+}
+
+// Argument is one package or runtime argument: positional or named.
 type Argument struct {
-	Type      string `json:"type"` // positional | named
-	Name      string `json:"name"` // named
-	Value     string `json:"value"`
-	ValueHint string `json:"valueHint"`
+	Type       string `json:"type"` // positional | named
+	Name       string `json:"name"` // named
+	ValueHint  string `json:"valueHint"`
+	IsRepeated bool   `json:"isRepeated,omitempty"`
+	Input
 }
 
 // KeyValue is one environment variable or header input.
 type KeyValue struct {
-	Name        string `json:"name"`
-	Value       string `json:"value"`
-	Description string `json:"description"`
-	Format      string `json:"format"`
-	IsRequired  bool   `json:"isRequired"`
-	IsSecret    bool   `json:"isSecret"`
+	Name string `json:"name"`
+	Input
 }

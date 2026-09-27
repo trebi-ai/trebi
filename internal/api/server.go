@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -54,26 +55,27 @@ var UIVersion = "" //nolint:gochecknoglobals // -ldflags target, set once before
 
 // Server is the trebid HTTP API.
 type Server struct {
-	st           *store.Store
-	runs         *runs.Service
-	ws           *workspaces.Service
-	files        *files.Service
-	alerts       *alerts.Service
-	skills       *skills.Service
-	connectors   *connectors.Service
-	conv         *conversations.Service
-	channels     *channels.Service
-	harness      *harness.Service
-	sched        *schedule.Service
-	email        *email.Service
-	cloud        *cloudlink.Service
-	hooks        *webhooks.Service
-	lic          *license.Service
-	templates    *agents.Catalog
-	proposals    *proposals.Service
-	registry     *registry.Service
-	catalogRegs  []config.Registry
-	catalogRegMu sync.Mutex
+	st         *store.Store
+	runs       *runs.Service
+	ws         *workspaces.Service
+	files      *files.Service
+	alerts     *alerts.Service
+	skills     *skills.Service
+	connectors *connectors.Service
+	conv       *conversations.Service
+	channels   *channels.Service
+	harness    *harness.Service
+	sched      *schedule.Service
+	email      *email.Service
+	cloud      *cloudlink.Service
+	hooks      *webhooks.Service
+	lic        *license.Service
+	templates  *agents.Catalog
+	proposals  *proposals.Service
+	// catalog is the registry client. catalogRegistry swaps it when the
+	// configured list changes; catalogFixed (a test override) keeps it.
+	catalog      atomic.Pointer[registry.Service]
+	catalogFixed bool
 
 	startedAt time.Time
 	drain     bool
@@ -148,14 +150,11 @@ func New(st *store.Store, opts Options) *Server {
 	conn := connectors.New(st, ws, sk)
 	cl := cloudlink.New(st)
 	reg := opts.Registry
-	var catalogRegs []config.Registry
 	if reg == nil {
-		regsCfg, err := config.Load()
 		var regs []config.Registry
-		if err == nil {
-			regs = regsCfg.Connectors.Registries
+		if cfg, err := config.Load(); err == nil {
+			regs = cfg.Connectors.Registries
 		}
-		catalogRegs = regs
 		reg = registry.New(registry.Config{Registries: regs, Log: slog.Default().With("source", "registry")})
 	}
 	s := &Server{
@@ -173,8 +172,7 @@ func New(st *store.Store, opts Options) *Server {
 		email:        email.New(st),
 		templates:    agents.NewCatalog(),
 		proposals:    proposals.NewService(st, fs, ws, st, r),
-		registry:     reg,
-		catalogRegs:  catalogRegs,
+		catalogFixed: opts.Registry != nil,
 		cloud:        cl,
 		hooks:        webhooks.New(st, conn, cl),
 		startedAt:    time.Now().UTC(),
@@ -189,6 +187,7 @@ func New(st *store.Store, opts Options) *Server {
 			CheckOrigin: checkWSOrigin,
 		},
 	}
+	s.catalog.Store(reg)
 	_ = s.connectors.Load() // the service keeps the error; the list route and the daemon report it
 	s.channels = channels.New(st, s.connectors, s.conv)
 	s.toolsReg = tools.NewRegistry(s)

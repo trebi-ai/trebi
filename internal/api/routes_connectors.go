@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -507,10 +508,13 @@ func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
 }
 
 // handleConnectorsCatalog searches the configured MCP registries. With no
-// registry it merges the pages of every registry in order.
+// registry it merges the pages of every registry in order. The reply lists
+// the configured registries, and each registry that failed while the others
+// answered.
 func (s *Server) handleConnectorsCatalog(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	entries, next, err := s.catalogRegistry().Search(r.Context(), registry.SearchOpts{
+	cat := s.catalogRegistry()
+	res, err := cat.Search(r.Context(), registry.SearchOpts{
 		Query:    q.Get("q"),
 		Registry: q.Get("registry"),
 		Cursor:   q.Get("cursor"),
@@ -520,18 +524,22 @@ func (s *Server) handleConnectorsCatalog(w http.ResponseWriter, r *http.Request)
 		s.writeRegistryErr(w, err)
 		return
 	}
-	list := make([]map[string]any, 0, len(entries))
-	for _, e := range entries {
+	list := make([]map[string]any, 0, len(res.Entries))
+	for _, e := range res.Entries {
 		list = append(list, catalogEntryRow(e))
 	}
-	resp := map[string]any{"entries": list}
-	if next != "" {
-		resp["next_cursor"] = next
+	resp := map[string]any{"entries": list, "registries": cat.Registries}
+	if res.Next != "" {
+		resp["next_cursor"] = res.Next
+	}
+	if len(res.Errors) > 0 {
+		resp["registry_errors"] = res.Errors
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleConnectorCatalogEntry reads one server entry and its env variables.
+// handleConnectorCatalogEntry reads one server entry, its env variables, and
+// the inputs of each package and remote.
 func (s *Server) handleConnectorCatalogEntry(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	name := strings.TrimSpace(q.Get("name"))
@@ -546,25 +554,27 @@ func (s *Server) handleConnectorCatalogEntry(w http.ResponseWriter, r *http.Requ
 	}
 	row := catalogEntryRow(entry)
 	row["env"] = catalogEnvFlags(entry.Server)
+	row["package_inputs"], row["remote_inputs"] = entry.Inputs()
 	writeJSON(w, http.StatusOK, row)
 }
 
 // handleConnectorInstall installs one registry entry as a connector. Registry
 // data is untrusted: it validates the definition and the skill name first,
-// then writes the entry secrets, then creates the connector. A create failure
-// restores the secrets.
+// then checks the secrets, writes them, and creates the connector. A later
+// failure removes the connector and restores the secrets.
 func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
 	var body struct {
-		Registry string            `json:"registry"`
-		Name     string            `json:"name"`
-		Version  string            `json:"version"`
-		As       string            `json:"as"`
-		Package  *int              `json:"package"`
-		Remote   *int              `json:"remote"`
-		Env      map[string]string `json:"env"`
+		Registry         string            `json:"registry"`
+		Name             string            `json:"name"`
+		Version          string            `json:"version"`
+		As               string            `json:"as"`
+		Package          *int              `json:"package"`
+		Remote           *int              `json:"remote"`
+		Env              map[string]string `json:"env"`
+		OverwriteSecrets bool              `json:"overwrite_secrets"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -576,7 +586,12 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, "validation", "name required")
 		return
 	}
-	entry, err := s.catalogRegistry().Get(r.Context(), body.Registry, body.Name, body.Version)
+	if body.Package != nil && body.Remote != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "give package or remote, not both")
+		return
+	}
+	cat := s.catalogRegistry()
+	entry, err := cat.Get(r.Context(), body.Registry, body.Name, body.Version)
 	if err != nil {
 		s.writeRegistryErr(w, err)
 		return
@@ -591,12 +606,6 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		s.writeRegistryErr(w, err)
 		return
 	}
-	if err := def.Validate(); err != nil {
-		if !s.writeConnectorErr(w, err) {
-			writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		}
-		return
-	}
 	sk, hasSkill := entry.Skill()
 	if hasSkill {
 		if err := skills.CheckName(sk.Name); err != nil {
@@ -604,14 +613,29 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	restore, err := writeRegistrySecrets(secretWrites)
+	sw, err := newSecretWrites(secretWrites, body.OverwriteSecrets)
 	if err != nil {
-		restore()
+		if errors.Is(err, errSecretConflict) {
+			writeErr(w, http.StatusConflict, "conflict", err.Error()+"; send overwrite_secrets to replace it")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	def.Source.Secrets = sw.created()
+	if err := def.Validate(); err != nil {
+		if !s.writeConnectorErr(w, err) {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		}
+		return
+	}
+	if err := sw.write(); err != nil {
+		sw.restore(s.log)
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	if err := s.connectors.Create(r.Context(), def); err != nil {
-		restore()
+		sw.restore(s.log)
 		if s.writeConnectorErr(w, err) {
 			return
 		}
@@ -625,18 +649,20 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 	if hasSkill {
 		// The entry contributes a skill (Part H.4). Fetch its body, write it
 		// with connector provenance, and point the CLI action at it.
-		md, ferr := fetchRegistrySkill(r.Context(), sk.URL)
-		if ferr != nil {
-			s.connectors.Delete(r.Context(), def.Name)
-			restore()
-			writeErr(w, http.StatusBadGateway, "internal", ferr.Error())
-			return
-		}
-		written, serr := s.skills.AddConnectorSkill(r.Context(), sk.Name, md, def.Name)
+		written, serr := s.installSkill(r.Context(), cat, sk, def.Name)
 		if serr != nil {
-			s.connectors.Delete(r.Context(), def.Name)
-			restore()
-			writeErr(w, http.StatusInternalServerError, "internal", serr.Error())
+			if derr := s.connectors.Delete(r.Context(), def.Name); derr != nil {
+				s.log.Error("connector install rollback", "connector", def.Name, "err", derr)
+			}
+			sw.restore(s.log)
+			switch {
+			case errors.Is(serr, skills.ErrExists):
+				writeErr(w, http.StatusConflict, "conflict", serr.Error())
+			case errors.Is(serr, errSkillFetch):
+				writeErr(w, http.StatusBadGateway, "upstream", serr.Error())
+			default:
+				writeErr(w, http.StatusInternalServerError, "internal", serr.Error())
+			}
 			return
 		}
 		row["skill"] = map[string]any{"name": written.Name, "from_connector": def.Name}
@@ -644,31 +670,16 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, row)
 }
 
-// fetchRegistrySkill reads the SKILL.md body of a contributed skill. It caps
-// the body so a bad URL cannot exhaust memory.
-func fetchRegistrySkill(ctx context.Context, raw string) (string, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("skill url %q is invalid", raw)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+// errSkillFetch marks a contributed skill that could not be read.
+var errSkillFetch = errors.New("fetch contributed skill")
+
+// installSkill fetches a contributed skill and writes it for the connector.
+func (s *Server) installSkill(ctx context.Context, cat *registry.Service, sk *registry.Skill, connector string) (*skills.Skill, error) {
+	md, err := cat.FetchSkill(ctx, sk.URL)
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("%w: %v", errSkillFetch, err)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("skill url %s: status %d", u.String(), resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", err
-	}
-	return string(body), nil
+	return s.skills.AddConnectorSkill(ctx, sk.Name, md, connector)
 }
 
 // catalogEntryRow is the search/list view of one registry entry.
@@ -729,79 +740,120 @@ func (s *Server) writeRegistryErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, registry.ErrUnsupportedPackage),
 		errors.Is(err, registry.ErrUnsupportedRemote),
-		errors.Is(err, registry.ErrMissingEnv),
-		errors.Is(err, registry.ErrInvalidEntry):
+		errors.Is(err, registry.ErrMissingInput),
+		errors.Is(err, registry.ErrUnusedInput),
+		errors.Is(err, registry.ErrInvalidInput),
+		errors.Is(err, registry.ErrInvalidEntry),
+		errors.Is(err, registry.ErrUnsafeURL):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 	default:
 		writeErr(w, http.StatusBadGateway, "upstream", err.Error())
 	}
 }
 
-// writeRegistrySecrets stores each secret and returns a restore function. The
-// restore puts back a prior value, or deletes a secret that did not exist, so
-// a failed install leaves the store as it was.
-func writeRegistrySecrets(writes []registry.SecretWrite) (func(), error) {
-	type prior struct {
-		value   string
-		existed bool
-	}
-	prev := make([]prior, 0, len(writes))
-	written := 0
-	restore := func() {
-		for i := written - 1; i >= 0; i-- {
-			if prev[i].existed {
-				_ = secrets.Set(writes[i].Name, prev[i].value)
-				continue
+// errSecretConflict is an install secret that exists with another value.
+var errSecretConflict = errors.New("secret exists with a different value")
+
+// secretWrites is the secret part of one install. It knows the prior value of
+// each name, so a failed install can put the store back as it was.
+type secretWrites struct {
+	writes []registry.SecretWrite
+	prior  []*string // nil: the secret did not exist
+	done   int
+}
+
+// newSecretWrites reads the prior values. A secret that exists with the same
+// value needs no write. One with a different value is errSecretConflict,
+// unless overwrite is set.
+func newSecretWrites(writes []registry.SecretWrite, overwrite bool) (*secretWrites, error) {
+	sw := &secretWrites{}
+	for _, w := range writes {
+		cur, err := secrets.Get(w.Name)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return nil, err
 			}
-			_ = secrets.Delete(writes[i].Name)
+			sw.writes = append(sw.writes, w)
+			sw.prior = append(sw.prior, nil)
+			continue
+		}
+		if string(cur) == w.Value {
+			continue
+		}
+		if !overwrite {
+			return nil, fmt.Errorf("%w: %s", errSecretConflict, w.Name)
+		}
+		v := string(cur)
+		sw.writes = append(sw.writes, w)
+		sw.prior = append(sw.prior, &v)
+	}
+	return sw, nil
+}
+
+// created lists the names that did not exist before the install. The
+// connector owns them, and its delete removes them.
+func (sw *secretWrites) created() []string {
+	var out []string
+	for i, w := range sw.writes {
+		if sw.prior[i] == nil {
+			out = append(out, w.Name)
 		}
 	}
-	for i, w := range writes {
-		p := prior{}
-		if cur, err := secrets.Get(w.Name); err == nil {
-			p.value, p.existed = string(cur), true
-		}
-		prev = append(prev, p)
+	return out
+}
+
+// write stores each secret in order.
+func (sw *secretWrites) write() error {
+	for _, w := range sw.writes {
 		if err := secrets.Set(w.Name, w.Value); err != nil {
-			written = i
-			return restore, err
+			return err
 		}
-		written = i + 1
+		sw.done++
 	}
-	return restore, nil
+	return nil
+}
+
+// restore puts back each prior value, or deletes a secret that did not
+// exist. It also covers a write that failed half way.
+func (sw *secretWrites) restore(log *slog.Logger) {
+	n := min(sw.done+1, len(sw.writes))
+	for i := n - 1; i >= 0; i-- {
+		name := sw.writes[i].Name
+		var err error
+		if p := sw.prior[i]; p != nil {
+			err = secrets.Set(name, *p)
+		} else {
+			err = secrets.Delete(name)
+		}
+		if err != nil {
+			log.Error("restore install secret", "secret", name, "err", err)
+		}
+	}
 }
 
 // catalogRegistry returns the registry client for the current config. A
 // change to connectors.registries takes effect on the next read, so a local
-// registry can start after the daemon does (plan H.1).
+// registry can start after the daemon does (plan H.1). The client is swapped
+// atomically, so a request never reads a half-built client.
 func (s *Server) catalogRegistry() *registry.Service {
-	if s.catalogRegs == nil {
-		return s.registry // a test override, or a config that failed to load
+	cur := s.catalog.Load()
+	if s.catalogFixed {
+		return cur
 	}
-	s.catalogRegMu.Lock()
-	defer s.catalogRegMu.Unlock()
 	cfg, err := config.Load()
 	if err != nil {
-		return s.registry
+		return cur // keep the last good client
 	}
 	regs := cfg.Connectors.Registries
-	if sameRegistries(regs, s.catalogRegs) {
-		return s.registry
+	if len(regs) == 0 {
+		regs = config.DefaultRegistries()
 	}
-	s.catalogRegs = regs
-	s.registry = registry.New(registry.Config{Registries: regs, Log: s.log.With("source", "registry")})
-	return s.registry
-}
-
-// sameRegistries reports whether two registry lists hold the same pairs.
-func sameRegistries(a, b []config.Registry) bool {
-	if len(a) != len(b) {
-		return false
+	if slices.Equal(regs, cur.Registries) {
+		return cur
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
+	next := registry.New(registry.Config{Registries: regs, Log: s.log.With("source", "registry")})
+	if s.catalog.CompareAndSwap(cur, next) {
+		return next
 	}
-	return true
+	return s.catalog.Load()
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/secrets"
 	"gopkg.in/yaml.v3"
 )
 
@@ -175,9 +176,28 @@ type Channel struct {
 
 // Source records where a registry install came from.
 type Source struct {
-	Registry string `yaml:"registry" json:"registry"`
-	Name     string `yaml:"name" json:"name"`
-	Version  string `yaml:"version" json:"version"`
+	Registry string   `yaml:"registry" json:"registry"`
+	Name     string   `yaml:"name" json:"name"`
+	Version  string   `yaml:"version" json:"version"`
+	Secrets  []string `yaml:"secrets,omitempty" json:"secrets,omitempty"` // names this install wrote
+}
+
+// refersToSecret reports whether an env value or MCP header of d names the
+// secret. A value resolves as a secret by its secret: reference or by its
+// bare name (secrets.ExpandRefs).
+func (d Definition) refersToSecret(name string) bool {
+	values := []map[string]string{d.Env}
+	if d.Actions != nil && d.Actions.MCP != nil {
+		values = append(values, d.Actions.MCP.Env, d.Actions.MCP.Headers)
+	}
+	for _, m := range values {
+		for _, v := range m {
+			if v == name || v == "secret:"+name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Connector name rules: lowercase, digits, dashes, at most 40 characters.
@@ -257,6 +277,13 @@ func (d Definition) Validate() error {
 		if c := d.Actions.CLI; c != nil {
 			if len(c.Commands) == 0 {
 				add("actions.cli.commands", "needs at least one entry")
+			}
+		}
+	}
+	if d.Source != nil {
+		for _, n := range d.Source.Secrets {
+			if err := secrets.CheckName(n); err != nil {
+				add("source.secrets", err.Error())
 			}
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/config"
@@ -88,10 +89,11 @@ func TestSearchMergesRegistries(t *testing.T) {
 	srv := fixtureServer(t, nil)
 	svc := testService(t, srv)
 
-	entries, next, err := svc.Search(context.Background(), SearchOpts{Query: "ops"})
+	res, err := svc.Search(context.Background(), SearchOpts{Query: "ops"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	entries, next := res.Entries, res.Next
 	if len(entries) != 4 {
 		t.Fatalf("entries = %d, want 4", len(entries))
 	}
@@ -115,7 +117,7 @@ func TestSearchPassesQueryParams(t *testing.T) {
 	srv := fixtureServer(t, rec)
 	svc := New(Config{Registries: []config.Registry{{Name: "official", URL: srv.URL}}})
 
-	if _, _, err := svc.Search(context.Background(), SearchOpts{Query: "github", Registry: "official", Limit: 500}); err != nil {
+	if _, err := svc.Search(context.Background(), SearchOpts{Query: "github", Registry: "official", Limit: 500}); err != nil {
 		t.Fatal(err)
 	}
 	if rec.lastQuery.Get("search") != "github" {
@@ -126,7 +128,7 @@ func TestSearchPassesQueryParams(t *testing.T) {
 	}
 
 	// A bare cursor applies to the one named registry.
-	if _, _, err := svc.Search(context.Background(), SearchOpts{Registry: "official", Cursor: "CUR2", Limit: 5}); err != nil {
+	if _, err := svc.Search(context.Background(), SearchOpts{Registry: "official", Cursor: "CUR2", Limit: 5}); err != nil {
 		t.Fatal(err)
 	}
 	if rec.lastQuery.Get("cursor") != "CUR2" || rec.lastQuery.Get("limit") != "5" {
@@ -137,7 +139,7 @@ func TestSearchPassesQueryParams(t *testing.T) {
 func TestSearchUnknownRegistry(t *testing.T) {
 	srv := fixtureServer(t, nil)
 	svc := testService(t, srv)
-	_, _, err := svc.Search(context.Background(), SearchOpts{Registry: "nope"})
+	_, err := svc.Search(context.Background(), SearchOpts{Registry: "nope"})
 	if !errors.Is(err, ErrUnknownRegistry) {
 		t.Fatalf("err = %v", err)
 	}
@@ -188,5 +190,103 @@ func TestGetUnknownRegistry(t *testing.T) {
 	_, err := svc.Get(context.Background(), "nope", "ai.adtest/adtest-mcp", "1.1.0")
 	if !errors.Is(err, ErrUnknownRegistry) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// countingServer serves list.json and counts the list requests.
+func countingServer(t *testing.T, status int) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n.Add(1)
+		if status != http.StatusOK {
+			http.Error(w, "down", status)
+			return
+		}
+		serveFixture(t, w, "list.json")
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &n
+}
+
+// TestSearchSkipsRegistryWithoutPosition proves a continuation reads only
+// the registries that still have a key in the merged cursor.
+func TestSearchSkipsRegistryWithoutPosition(t *testing.T) {
+	a, aN := countingServer(t, http.StatusOK)
+	b, bN := countingServer(t, http.StatusOK)
+	svc := New(Config{Registries: []config.Registry{{Name: "a", URL: a.URL}, {Name: "b", URL: b.URL}}})
+	res, err := svc.Search(context.Background(), SearchOpts{Cursor: `{"a":"CUR2"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aN.Load() != 1 || bN.Load() != 0 {
+		t.Fatalf("requests a=%d b=%d", aN.Load(), bN.Load())
+	}
+	for _, e := range res.Entries {
+		if e.Registry != "a" {
+			t.Fatalf("entry from %s", e.Registry)
+		}
+	}
+}
+
+// TestSearchPartialFailure proves one failing registry adds a registry error
+// and the others still answer; all failing is an error.
+func TestSearchPartialFailure(t *testing.T) {
+	good, _ := countingServer(t, http.StatusOK)
+	bad, _ := countingServer(t, http.StatusInternalServerError)
+	svc := New(Config{Registries: []config.Registry{{Name: "good", URL: good.URL}, {Name: "bad", URL: bad.URL}}})
+	res, err := svc.Search(context.Background(), SearchOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Entries) == 0 || len(res.Errors) != 1 || res.Errors[0].Registry != "bad" || res.Errors[0].Error == "" {
+		t.Fatalf("res = %+v", res)
+	}
+	if _, err := svc.Search(context.Background(), SearchOpts{Registry: "bad"}); err == nil {
+		t.Fatal("a search where every registry fails must fail")
+	}
+}
+
+// TestAPIVersionFallback proves a registry that has only /v0 answers, and
+// that the client keeps /v0 for that registry after the first call.
+func TestAPIVersionFallback(t *testing.T) {
+	var v01 atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0.1/", func(w http.ResponseWriter, r *http.Request) {
+		v01.Add(1)
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/v0/servers", func(w http.ResponseWriter, _ *http.Request) { serveFixture(t, w, "list.json") })
+	mux.HandleFunc("/v0/servers/", func(w http.ResponseWriter, _ *http.Request) { serveFixture(t, w, "get-adtest.json") })
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	svc := New(Config{Registries: []config.Registry{{Name: "old", URL: srv.URL}}})
+	res, err := svc.Search(context.Background(), SearchOpts{})
+	if err != nil || len(res.Entries) == 0 {
+		t.Fatalf("search: %v %+v", err, res)
+	}
+	if _, err := svc.Get(context.Background(), "old", "ai.adtest/adtest-mcp", "1.1.0"); err != nil {
+		t.Fatal(err)
+	}
+	if v01.Load() != 1 {
+		t.Fatalf("/v0.1 requests = %d, want 1", v01.Load())
+	}
+}
+
+func TestFetchSkillCapsBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		size := maxSkillBody
+		if r.URL.Path == "/big" {
+			size++
+		}
+		_, _ = w.Write([]byte(strings.Repeat("x", size)))
+	}))
+	t.Cleanup(srv.Close)
+	svc := New(Config{SkillHTTP: srv.Client()})
+	if body, err := svc.FetchSkill(context.Background(), srv.URL+"/ok"); err != nil || len(body) != maxSkillBody {
+		t.Fatalf("ok: len %d err %v", len(body), err)
+	}
+	if _, err := svc.FetchSkill(context.Background(), srv.URL+"/big"); err == nil {
+		t.Fatal("a body over the cap must be an error")
 	}
 }
