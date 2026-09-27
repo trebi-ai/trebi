@@ -4,10 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -423,4 +426,54 @@ func TestControlPlane_ShadowStillConsumesAlerts(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("shadow alerts worker did not consume")
+}
+
+// TestControlPlane_StopEndsConnectorGroups proves Stop waits for the
+// connector supervisors and that no child of a connector outlives it.
+func TestControlPlane_StopEndsConnectorGroups(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cp := daemon.New(st, daemon.Options{})
+	pidFile := filepath.Join(dir, "pid")
+	d := connectors.Definition{Name: "hold", Events: &connectors.Events{
+		Command: "echo $$ > " + pidFile + "; sleep 30 | cat", Format: "json",
+	}}
+	if err := cp.Connectors.Create(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	cp.Start(context.Background())
+
+	var pid int
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && pid == 0 {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if pid == 0 {
+		t.Fatal("the connector did not start")
+	}
+	start := time.Now()
+	cp.Stop()
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("Stop took %v", d)
+	}
+	// The group is gone once every member is reaped; allow a short delay.
+	deadline = time.Now().Add(3 * time.Second)
+	for syscall.Kill(-pid, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("a connector child outlived Stop")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

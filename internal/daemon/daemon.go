@@ -456,6 +456,9 @@ func (c *ControlPlane) Start(parent context.Context) {
 	}
 }
 
+// connectorStopWait bounds the wait for connector supervisors at shutdown.
+const connectorStopWait = 10 * time.Second
+
 // Stop cancels workers and waits.
 func (c *ControlPlane) Stop() {
 	if c.cancel != nil {
@@ -468,6 +471,14 @@ func (c *ControlPlane) Stop() {
 	}
 	if c.Harness != nil {
 		c.Harness.StopLoginWatchers()
+	}
+	if c.Connectors != nil {
+		c.Connectors.StopAll()
+		ctx, cancel := context.WithTimeout(context.Background(), connectorStopWait)
+		if err := c.Connectors.Wait(ctx); err != nil {
+			c.log.Warn("connectors stop", "err", err)
+		}
+		cancel()
 	}
 	c.wg.Wait()
 }
