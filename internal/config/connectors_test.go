@@ -77,3 +77,39 @@ connectors:
 		t.Fatal("expected missing url error")
 	}
 }
+
+// TestConnectorsRegistriesURLScheme proves a registry URL must be http or
+// https with a host.
+func TestConnectorsRegistriesURLScheme(t *testing.T) {
+	for _, u := range []string{"file:///etc/passwd", "registry.example", "https://", "ftp://r.example"} {
+		dir := withTempBase(t)
+		yaml := "connectors:\n  registries:\n    - { name: r, url: \"" + u + "\" }\n"
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(); err == nil {
+			t.Fatalf("%s: expected url error", u)
+		}
+	}
+}
+
+// TestParseRegistries proves the list form splits on ";" when present, so a
+// URL may hold a comma, and that the rendered row reads back.
+func TestParseRegistries(t *testing.T) {
+	regs, err := parseRegistries("a=https://a.example/x?k=1,2; b=https://b.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Registry{{Name: "a", URL: "https://a.example/x?k=1,2"}, {Name: "b", URL: "https://b.example"}}
+	if len(regs) != 2 || regs[0] != want[0] || regs[1] != want[1] {
+		t.Fatalf("regs = %+v", regs)
+	}
+	regs, err = parseRegistries("a=https://a.example,b=https://b.example")
+	if err != nil || len(regs) != 2 || regs[1].Name != "b" {
+		t.Fatalf("comma form: %+v %v", regs, err)
+	}
+	back, err := parseRegistries(renderRegistries(want))
+	if err != nil || len(back) != 2 || back[0] != want[0] || back[1] != want[1] {
+		t.Fatalf("round trip: %+v %v", back, err)
+	}
+}
