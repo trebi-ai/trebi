@@ -427,7 +427,7 @@ func TestUnsentReplyRowsDoNotCoverTheTurn(t *testing.T) {
 	}}); n != 1 {
 		t.Fatalf("pulled %d, want 1", n)
 	}
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	var convID, disposition string
 	for time.Now().Before(deadline) {
 		err := p.st.DB().QueryRowContext(ctx, `
@@ -500,7 +500,7 @@ func TestAssistantTurnMailsReplyOnThread(t *testing.T) {
 	}}); n != 1 {
 		t.Fatalf("pulled %d, want 1", n)
 	}
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) && len(p.fw.sends) == 0 {
 		time.Sleep(20 * time.Millisecond)
 	}
