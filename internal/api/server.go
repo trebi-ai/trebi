@@ -54,23 +54,23 @@ var UIVersion = "" //nolint:gochecknoglobals // -ldflags target, set once before
 
 // Server is the trebid HTTP API.
 type Server struct {
-	st         *store.Store
-	runs       *runs.Service
-	ws         *workspaces.Service
-	files      *files.Service
-	alerts     *alerts.Service
-	skills     *skills.Service
-	connectors *connectors.Service
-	conv       *conversations.Service
-	channels   *channels.Service
-	harness    *harness.Service
-	sched      *schedule.Service
-	email      *email.Service
-	cloud      *cloudlink.Service
-	hooks      *webhooks.Service
-	lic        *license.Service
-	templates  *agents.Catalog
-	proposals  *proposals.Service
+	st           *store.Store
+	runs         *runs.Service
+	ws           *workspaces.Service
+	files        *files.Service
+	alerts       *alerts.Service
+	skills       *skills.Service
+	connectors   *connectors.Service
+	conv         *conversations.Service
+	channels     *channels.Service
+	harness      *harness.Service
+	sched        *schedule.Service
+	email        *email.Service
+	cloud        *cloudlink.Service
+	hooks        *webhooks.Service
+	lic          *license.Service
+	templates    *agents.Catalog
+	proposals    *proposals.Service
 	registry     *registry.Service
 	catalogRegs  []config.Registry
 	catalogRegMu sync.Mutex
@@ -173,8 +173,8 @@ func New(st *store.Store, opts Options) *Server {
 		email:        email.New(st),
 		templates:    agents.NewCatalog(),
 		proposals:    proposals.NewService(st, fs, ws, st, r),
-		registry:      reg,
-		catalogRegs:   catalogRegs,
+		registry:     reg,
+		catalogRegs:  catalogRegs,
 		cloud:        cl,
 		hooks:        webhooks.New(st, conn, cl),
 		startedAt:    time.Now().UTC(),

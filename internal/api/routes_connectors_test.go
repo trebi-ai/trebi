@@ -1,0 +1,217 @@
+package api_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/trebi-ai/trebi/internal/api"
+	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/store"
+)
+
+// TestConnectorRoutes covers the write surface of Part E: create conflict,
+// replace, patch removal, strict decode, and the lifecycle guard on a
+// connector without an events block.
+func TestConnectorRoutes(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s := api.New(st, api.Options{})
+	addr, err := s.ListenAndServe("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
+	base := "http://" + addr
+	client := &http.Client{Timeout: 10 * time.Second}
+	do := func(method, path string, body any) (int, map[string]any) {
+		t.Helper()
+		var r io.Reader
+		if body != nil {
+			b, _ := json.Marshal(body)
+			r = bytes.NewReader(b)
+		}
+		req, _ := http.NewRequest(method, base+path, r)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		var m map[string]any
+		_ = json.Unmarshal(raw, &m)
+		return resp.StatusCode, m
+	}
+
+	def := map[string]any{
+		"name": "feed",
+		"events": map[string]any{
+			"command": "echo one",
+			"format":  "json",
+			"id":      "id",
+		},
+		"env": map[string]string{"MODE": "ro"},
+	}
+	if code, body := do("POST", "/v1/connectors", def); code != http.StatusCreated {
+		t.Fatalf("create = %d %v", code, body)
+	}
+
+	// A second create of the same name is a conflict.
+	if code, body := do("POST", "/v1/connectors", def); code != http.StatusConflict || errCode(body) != "conflict" {
+		t.Fatalf("duplicate create = %d %v", code, body)
+	}
+
+	// An unknown top-level key fails the strict decode.
+	bad := map[string]any{"name": "feed2", "nonsense": true}
+	if code, body := do("POST", "/v1/connectors", bad); code != http.StatusBadRequest || errCode(body) != "validation" {
+		t.Fatalf("unknown field = %d %v", code, body)
+	}
+
+	// A replace swaps the whole definition.
+	replaced := map[string]any{
+		"events": map[string]any{"command": "echo two", "format": "json", "id": "id"},
+		"env":    map[string]string{"MODE": "rw"},
+	}
+	if code, body := do("PUT", "/v1/connectors/feed", replaced); code != http.StatusOK {
+		t.Fatalf("replace = %d %v", code, body)
+	}
+	if row := getConnector(t, do, "feed"); row["env"] == nil {
+		t.Fatalf("replace dropped env: %v", row)
+	}
+
+	// A patch replaces a whole block, and a JSON null removes it.
+	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"env": map[string]string{"EXTRA": "1"}}); code != http.StatusOK {
+		t.Fatalf("patch = %d %v", code, body)
+	}
+	row := getConnector(t, do, "feed")
+	env, _ := row["env"].(map[string]any)
+	if _, kept := env["MODE"]; kept || env["EXTRA"] != "1" {
+		t.Fatalf("patch env = %v; want a whole-block replace", env)
+	}
+	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"nope": 1}); code != http.StatusBadRequest || errCode(body) != "validation" {
+		t.Fatalf("patch unknown field = %d %v", code, body)
+	}
+	// Null removal has to leave a valid definition, so the same patch adds
+	// the action block that replaces events.
+	swap := map[string]any{
+		"events":  nil,
+		"actions": map[string]any{"mcp": map[string]any{"command": "npx -y demo"}},
+	}
+	if code, body := do("PATCH", "/v1/connectors/feed", swap); code != http.StatusOK {
+		t.Fatalf("patch null events = %d %v", code, body)
+	}
+	row = getConnector(t, do, "feed")
+	if row["events"] != nil {
+		t.Fatalf("null events kept the block: %v", row["events"])
+	}
+	if acts, _ := row["actions"].(map[string]any); acts == nil {
+		t.Fatalf("patch dropped actions: %v", row)
+	}
+
+	// A connector without events refuses the lifecycle routes with 409.
+	cliOnly := map[string]any{"name": "cli-only", "actions": map[string]any{"mcp": map[string]any{"command": "npx"}}}
+	if code, body := do("POST", "/v1/connectors", cliOnly); code != http.StatusCreated {
+		t.Fatalf("create cli-only = %d %v", code, body)
+	}
+	if code, body := do("POST", "/v1/connectors/cli-only/connect", nil); code != http.StatusConflict || errCode(body) != "validation" {
+		t.Fatalf("connect without events = %d %v", code, body)
+	}
+	if code, body := do("POST", "/v1/connectors/cli-only/restart", nil); code != http.StatusConflict {
+		t.Fatalf("restart without events = %d %v", code, body)
+	}
+
+	// Reserved and unknown names answer from the guard.
+	if code, _ := do("DELETE", "/v1/connectors/email", nil); code == http.StatusOK {
+		t.Fatal("email is reserved; delete must not succeed")
+	}
+	if code, body := do("GET", "/v1/connectors/ghost", nil); code != http.StatusNotFound || errCode(body) != "not_found" {
+		t.Fatalf("get unknown = %d %v", code, body)
+	}
+}
+
+// TestConnectorPatchKeepsCursor proves a patch restarts the supervisor but
+// leaves the cursor row alone.
+func TestConnectorPatchKeepsEvents(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s := api.New(st, api.Options{})
+	addr, err := s.ListenAndServe("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
+	base := "http://" + addr
+	client := &http.Client{Timeout: 10 * time.Second}
+	do := func(method, path string, body any) (int, map[string]any) {
+		t.Helper()
+		var r io.Reader
+		if body != nil {
+			b, _ := json.Marshal(body)
+			r = bytes.NewReader(b)
+		}
+		req, _ := http.NewRequest(method, base+path, r)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		var m map[string]any
+		_ = json.Unmarshal(raw, &m)
+		return resp.StatusCode, m
+	}
+
+	def := map[string]any{"name": "keep", "events": map[string]any{"command": "sleep 30", "format": "json", "id": "id"}}
+	if code, body := do("POST", "/v1/connectors", def); code != http.StatusCreated {
+		t.Fatalf("create = %d %v", code, body)
+	}
+	if code, body := do("PUT", "/v1/connectors/keep/cursor", map[string]string{"last_event_id": "ev-7"}); code != http.StatusOK {
+		t.Fatalf("cursor put = %d %v", code, body)
+	}
+	if code, body := do("PATCH", "/v1/connectors/keep", map[string]any{"env": map[string]string{"A": "1"}}); code != http.StatusOK {
+		t.Fatalf("patch = %d %v", code, body)
+	}
+	code, cur := do("GET", "/v1/connectors/keep/cursor", nil)
+	if code != http.StatusOK {
+		t.Fatalf("cursor get = %d %v", code, cur)
+	}
+	if cur["last_event_id"] != "ev-7" {
+		t.Fatalf("patch moved the cursor: %v", cur)
+	}
+}
+
+// getConnector reads one connector row and fails the test on a bad status.
+func getConnector(t *testing.T, do func(string, string, any) (int, map[string]any), name string) map[string]any {
+	t.Helper()
+	code, row := do("GET", "/v1/connectors/"+name, nil)
+	if code != http.StatusOK {
+		t.Fatalf("get %s = %d %v", name, code, row)
+	}
+	return row
+}

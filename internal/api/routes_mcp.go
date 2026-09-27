@@ -29,7 +29,6 @@ func (s *Server) newMCPHandler() http.Handler {
 	})
 }
 
-
 // Dispatch serves one built /v1 request through the audited, confirm-gated mux.
 // The local API carries no auth, so there is nothing to skip: every caller is
 // already the daemon owner, whether it arrives over /mcp, over /v1, or from the
