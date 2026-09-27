@@ -63,10 +63,12 @@ func (s *Service) ResolveActions(ctx context.Context, names []string) ([]runs.Co
 				if s.sk == nil {
 					return nil, fmt.Errorf("connector %q skill %q: skills service unavailable", name, c.Skill)
 				}
-				if _, err := s.sk.Get(ctx, c.Skill, false); err != nil {
+				sk, err := s.sk.Get(ctx, c.Skill, false)
+				if err != nil {
 					return nil, fmt.Errorf("connector %q skill %q: %w", name, c.Skill, err)
 				}
-				act.SkillDir = s.sk.Dir(c.Skill)
+				// Path is the managed folder or the user-home folder.
+				act.SkillDir = sk.Path
 			}
 		}
 		out = append(out, act)

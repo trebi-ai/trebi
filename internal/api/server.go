@@ -141,6 +141,7 @@ func New(st *store.Store, opts Options) *Server {
 	r := runs.New(st, ws, fs)
 	r.SetMemoryResolver(ws)
 	r.SetBudgetGate(ws)
+	r.SetKitSource(ws)
 	q := dispatch.NewQueue(st)
 	lic := opts.License
 	if lic == nil {
@@ -162,7 +163,7 @@ func New(st *store.Store, opts Options) *Server {
 		runs:         r,
 		ws:           ws,
 		files:        fs,
-		alerts:       alerts.New(st, alerts.Options{}),
+		alerts:       alerts.New(st, alerts.Options{Actions: r}),
 		skills:       sk,
 		connectors:   conn,
 		conv:         conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),

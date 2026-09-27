@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/mail"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // EmailYAML is the inbound-mail gate shared by agents and the workspace
@@ -134,4 +136,38 @@ func normalizeOperatorKeys(path string, fm *Frontmatter) (accept []AcceptEntry, 
 		return nil, fm.Email.Accept, true, err
 	}
 	return accept, fm.Email.Accept, true, nil
+}
+
+// legacyKitMCP returns the names of an old kit.mcp list in the raw
+// frontmatter. The decode is not strict, so the doctor reports the list
+// (kit_mcp_removed) instead of a silent drop.
+func legacyKitMCP(data []byte) []string {
+	block, ok := extractFM(data)
+	if !ok {
+		return nil
+	}
+	var raw struct {
+		Kit struct {
+			MCP any `yaml:"mcp"`
+		} `yaml:"kit"`
+	}
+	if err := yaml.Unmarshal(block, &raw); err != nil || raw.Kit.MCP == nil {
+		return nil
+	}
+	items, ok := raw.Kit.MCP.([]any)
+	if !ok {
+		items = []any{raw.Kit.MCP}
+	}
+	names := []string{}
+	for _, it := range items {
+		switch v := it.(type) {
+		case string:
+			names = append(names, v)
+		case map[string]any:
+			if n, ok := v["name"].(string); ok {
+				names = append(names, n)
+			}
+		}
+	}
+	return names
 }

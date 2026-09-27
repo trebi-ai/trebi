@@ -180,6 +180,8 @@ type Options struct {
 	Drain     bool // same notify suppression as Shadow
 	Now       func() time.Time
 	Doctor    func() []DoctorFinding
+	// Actions checks connector actions in the doctor. Nil skips the check.
+	Actions ActionsChecker
 }
 
 // NotifyChannel is one named shell template in the notifier chain.

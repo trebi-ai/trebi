@@ -280,6 +280,21 @@ def rewrite_frontmatter_inplace(
             report.append(f"dropped dead key {dead}: ownership is the folder")
             del data[dead]
 
+    # kit.mcp became kit.connectors (connectors plan 2026-09-27). Trebi
+    # ignores kit.mcp, so the names move to connectors.
+    kit = data.get("kit")
+    if isinstance(kit, dict) and "mcp" in kit:
+        old = kit.pop("mcp")
+        names = old if isinstance(old, list) else [old]
+        conns = kit.get("connectors")
+        merged = list(conns) if isinstance(conns, list) else []
+        for n in names:
+            if isinstance(n, str) and n and n not in merged:
+                merged.append(n)
+        if merged:
+            kit["connectors"] = merged
+        report.append(f"kit.mcp {names!r} → kit.connectors {merged!r}")
+
     if "memory" in data and isinstance(data["memory"], str) and data["memory"].strip():
         data["memory"] = True
 

@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -1378,5 +1379,34 @@ func TestConnectorsCwdChangeRestarts(t *testing.T) {
 	row, _ := svc.Get("wd")
 	if n := row["events"].(map[string]any)["restarts"]; n != 1 {
 		t.Fatalf("restarts %v, want 1", n)
+	}
+}
+
+// TestResolveActionsUserHomeSkill proves a connector skill found in the user
+// home projects from that folder, not from a missing managed folder (P1-23).
+func TestResolveActionsUserHomeSkill(t *testing.T) {
+	st, ws, _ := openStack(t)
+	user := t.TempDir()
+	skillDir := filepath.Join(user, ".agents", "skills", "pg")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: pg\ndescription: d\n---\nBody.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := connectors.New(st, ws, skills.New(st).WithUserHome(user))
+	ctx := context.Background()
+	if err := svc.Create(ctx, connectors.Definition{
+		Name:    "psql",
+		Actions: &connectors.Actions{CLI: &connectors.CLIAction{Commands: []string{"psql"}, Skill: "pg"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	acts, err := svc.ResolveActions(ctx, []string{"psql"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acts) != 1 || acts[0].SkillDir != skillDir {
+		t.Fatalf("actions = %+v; want skill dir %s", acts, skillDir)
 	}
 }

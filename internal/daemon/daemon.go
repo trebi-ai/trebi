@@ -181,6 +181,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	r := runs.New(st, ws, fs)
 	r.SetMemoryResolver(ws)
 	r.SetBudgetGate(ws)
+	r.SetKitSource(ws)
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -230,7 +231,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		}
 		return a.Prompt
 	}
-	c.Alerts = newAlerts(st, opts, cfg, em, c.jobNotify, approvalQuestion)
+	c.Alerts = newAlerts(st, opts, cfg, em, r, c.jobNotify, approvalQuestion)
 	c.Alerts.SetDoctor(c.Alerts.CollectDoctorFindings)
 	c.Alerts.SetProposalContent(func(ctx context.Context, id string) (string, string, bool) {
 		p, err := c.Proposals.Get(ctx, id)
@@ -328,13 +329,14 @@ func (a wsMemory) Render(ctx context.Context, workspaceID string) (string, error
 	return a.ws.AssistantMemory(ctx, workspaceID)
 }
 
-func newAlerts(st *store.Store, opts Options, cfg *config.Config, em *email.Service,
+func newAlerts(st *store.Store, opts Options, cfg *config.Config, em *email.Service, actions alerts.ActionsChecker,
 	jobNotify func(context.Context, string, string) []string,
 	approvalQuestion func(context.Context, string) string) *alerts.Service {
 	aopts := alerts.Options{
 		TickInterval:     opts.AlertsInterval,
 		Shadow:           opts.Shadow,
 		Email:            em,
+		Actions:          actions,
 		JobNotify:        jobNotify,
 		ApprovalQuestion: approvalQuestion,
 	}

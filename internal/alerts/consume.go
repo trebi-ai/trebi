@@ -846,12 +846,12 @@ func (s *Service) resolveStaleDoctor(ctx context.Context, want map[string]struct
 
 // CollectDoctorFindings is the system doctor snapshot from the live store.
 func (s *Service) CollectDoctorFindings() []DoctorFinding {
-	return collectDoctorFindings(s.st)
+	return collectDoctorFindings(s.st, s.opts.Actions)
 }
 
 // collectDoctorFindings is the store-injected implementation so doctor never
 // has to race the daemon with a second migration-capable connection.
-func collectDoctorFindings(st *store.Store) []DoctorFinding {
+func collectDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	var findings []DoctorFinding
 	if st == nil {
 		findings = append(findings, DoctorFinding{
@@ -883,7 +883,7 @@ func collectDoctorFindings(st *store.Store) []DoctorFinding {
 			Message: fmt.Sprintf("harness home for %s not created yet (will appear on first launch)", h.Name),
 		})
 	}
-	findings = append(findings, CollectAgentDoctorFindings(st)...)
+	findings = append(findings, CollectAgentDoctorFindings(st, actions)...)
 	if findings == nil {
 		return []DoctorFinding{}
 	}

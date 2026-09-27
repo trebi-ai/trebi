@@ -193,11 +193,13 @@ type Job struct {
 	AcceptSet      bool
 	Accept         []AcceptEntry
 	Kit            *KitYAML
-	Budget         *BudgetYAML
-	Report         *ReportYAML
-	ParseError     string
-	Hash           string
-	Description    string
+	// LegacyKitMCP lists an old kit.mcp list; nil when the file has none.
+	LegacyKitMCP []string
+	Budget       *BudgetYAML
+	Report       *ReportYAML
+	ParseError   string
+	Hash         string
+	Description  string
 	// Notify selects alert channels for this job. Nil = unset (every
 	// channel); an empty list suppresses delivery for this job's alerts.
 	Notify []string
@@ -547,6 +549,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		AcceptSet:      acceptSet,
 		Accept:         accept,
 		Kit:            fm.Kit,
+		LegacyKitMCP:   legacyKitMCP(data),
 		Budget:         fm.Budget,
 		Report:         fm.Report,
 		Hash:           hash,
