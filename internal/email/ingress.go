@@ -102,6 +102,8 @@ type Actions interface {
 	// AmbiguousReplyItem records the item for one approval reply that named
 	// both decisions; returns the inbox item id.
 	AmbiguousReplyItem(ctx context.Context, runID string, d RouteDecision, msg IngressMessage) (string, error)
+	// AssistantName returns the workspace assistant title, or "".
+	AssistantName(ctx context.Context, workspaceID string) string
 }
 
 // Draining reports whether the daemon is draining; the loop skips
@@ -310,6 +312,9 @@ func (g *Ingress) Run(ctx context.Context) {
 		case <-t.C:
 			if g.shadow || !g.svc.Configured() || g.svc.Draining() {
 				continue
+			}
+			if err := g.svc.RetryDue(ctx, time.Now()); err != nil {
+				g.log.Warn("email.reply retry", "error", err)
 			}
 			if _, err := g.svc.Client(); err != nil {
 				continue // hosted mail pushes; there is no spool to pull

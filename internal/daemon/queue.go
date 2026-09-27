@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -199,13 +200,13 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	coalesceText := prompt
 	convID := c.conversationID(ctx, item.WorkspaceID, item.ConversationKey)
 	convKey := item.ConversationKey
-	if id, key := c.channelConversation(ctx, item); id != "" {
+	if id, key, ref := c.channelConversation(ctx, item); id != "" {
 		// An agent item from a connector channel binds its conversation
 		// through the channel pointer, not the lane key (plan G.2). The
 		// inbound text becomes the channel-typed user turn, so the reply
 		// has a way back (plan G.3).
 		convID, convKey = id, key
-		c.noteChannelUser(ctx, item, id, prompt)
+		c.noteChannelUser(ctx, item, id, ref, prompt)
 	}
 	var wake *runs.WakeOpts
 	if kind != runs.KindJob {
@@ -301,8 +302,9 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	}
 	if merr := c.queue.MarkDone(ctx, item.ID, result, run.ID); merr != nil {
 		c.log.Warn("queue mark done", "queue_id", item.ID, "error", merr)
+	} else {
+		c.ackChannel(ctx, item, result)
 	}
-	c.ackChannel(ctx, item, result)
 	if item.Kind == runs.KindAgent {
 		c.log.Info("agent.woken", "reason", string(runs.ReasonTrigger), "agent", item.Job)
 	}
@@ -401,34 +403,67 @@ func (c *ControlPlane) conversationID(ctx context.Context, workspaceID, key stri
 
 // channelConversation resolves the conversation of an agent item that came
 // from a connector channel (plan G.2). It returns the conversation id and
-// key; an empty id means the item is not a channel item.
-func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.QueueItem) (string, string) {
+// key, and the channel ref of the event for the reply; an empty id means the
+// item is not a channel item.
+func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.QueueItem) (convID, key, ref string) {
 	if item.Kind != runs.KindAgent || item.Connector == "" || item.ConversationKey == "" {
-		return "", ""
+		return "", "", ""
 	}
 	if c.Connectors == nil || c.Conversations == nil {
-		return "", ""
+		return "", "", ""
 	}
 	if _, _, ok := c.Connectors.Channel(item.Connector); !ok {
-		return "", ""
+		return "", "", ""
 	}
-	convID, err := c.Conversations.EnsureForChannel(ctx,
-		item.WorkspaceID, item.Job, item.Connector, item.ConversationKey)
+	ref = c.eventChannelRef(ctx, item.EventID)
+	pointer := cmp.Or(ref, item.ConversationKey)
+	convID, err := c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, item.Job, item.Connector, pointer)
 	if err != nil || convID == "" {
-		return "", ""
+		c.noteOperatorConflict(ctx, err, item, item.Connector, pointer, item.Job)
+		return "", "", ""
 	}
 	conv, err := c.Conversations.Get(ctx, convID)
 	if err != nil {
-		return convID, ""
+		return convID, "", ref
 	}
-	return conv.ID, conv.Key
+	return conv.ID, conv.Key, ref
+}
+
+// eventChannelRef reads the channel ref of the event behind a queue item.
+// The conversation key is only the lane key; the reply goes to this ref.
+func (c *ControlPlane) eventChannelRef(ctx context.Context, eventID string) string {
+	if eventID == "" {
+		return ""
+	}
+	var ref string
+	// A missing event row means no channel address.
+	_ = c.Store.DB().QueryRowContext(ctx,
+		`SELECT COALESCE(channel_ref,'') FROM events WHERE id=?`, eventID).Scan(&ref)
+	return ref
+}
+
+// noteOperatorConflict logs a channel that already belongs to another
+// operator. The doctor reports the trigger setup that causes it.
+func (c *ControlPlane) noteOperatorConflict(ctx context.Context, err error, item *dispatch.QueueItem, channelType, ref, operator string) {
+	if !errors.Is(err, conversations.ErrOperatorConflict) {
+		return
+	}
+	current := ""
+	if p, perr := c.Conversations.GetPointer(ctx, item.WorkspaceID, channelType, ref); perr == nil {
+		if conv, gerr := c.Conversations.Get(ctx, p.ConversationID); gerr == nil {
+			current = conv.Operator
+		}
+	}
+	c.log.WarnContext(ctx, "channel operator conflict", "connector", channelType, "ref", ref,
+		"operator", operator, "current_operator", current, "queue_id", item.ID)
 }
 
 // noteChannelUser stores the inbound event text as the channel-typed user
-// turn of an agent item. The row carries the channel, so the reply path can
-// send the answer back (plan G.3). The event id is the idempotency key, so a
-// retry writes nothing.
-func (c *ControlPlane) noteChannelUser(ctx context.Context, item *dispatch.QueueItem, convID, text string) {
+// turn of an agent item. The row carries the channel and the event's channel
+// ref, so the reply path can send the answer back (plan G.3). An empty ref
+// gets no reply. The event id is the idempotency key, so a retry writes
+// nothing.
+func (c *ControlPlane) noteChannelUser(ctx context.Context, item *dispatch.QueueItem, convID, ref, text string) {
 	if c.Conversations == nil || convID == "" {
 		return
 	}
@@ -438,7 +473,7 @@ func (c *ControlPlane) noteChannelUser(ctx context.Context, item *dispatch.Queue
 	if _, _, err := c.Conversations.AppendUser(ctx, convID, conversations.UserTurn{
 		Text:           text,
 		ChannelType:    item.Connector,
-		ChannelRef:     item.ConversationKey,
+		ChannelRef:     ref,
 		IdempotencyKey: item.EventID,
 	}); err != nil {
 		c.log.Warn("channel user turn", "queue_id", item.ID, "error", err)
@@ -446,7 +481,8 @@ func (c *ControlPlane) noteChannelUser(ctx context.Context, item *dispatch.Queue
 }
 
 // ackChannel runs the connector's ack command once for a finished queue item
-// (plan G.3). A failure is logged and changes nothing else.
+// (plan G.3) in the background, so a slow ack does not hold the queue. A
+// failure is logged and changes nothing else. Stop waits for it.
 func (c *ControlPlane) ackChannel(ctx context.Context, item *dispatch.QueueItem, result dispatch.QueueResult) {
 	if c.Channels == nil {
 		return
@@ -456,9 +492,38 @@ func (c *ControlPlane) ackChannel(ctx context.Context, item *dispatch.QueueItem,
 	default:
 		return
 	}
-	if err := c.Channels.Ack(ctx, *item); err != nil {
-		c.log.Warn("channel ack", "queue_id", item.ID, "error", err)
+	it := *item
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		if err := c.Channels.Ack(ctx, it); err != nil {
+			c.log.Warn("channel ack", "queue_id", it.ID, "error", err)
+		}
+	}()
+}
+
+// Busy implements channels.LiveTurns: an assistant turn is in flight, or a
+// running run of the conversation is not waiting and not idle.
+func (c *ControlPlane) Busy(ctx context.Context, convID string) bool {
+	if c.asst != nil && c.asst.TurnActive(ctx, convID) {
+		return true
 	}
+	rows, err := c.Store.DB().QueryContext(ctx,
+		`SELECT id FROM runs WHERE conversation_id=? AND status='running'`, convID)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) != nil {
+			continue
+		}
+		if state := c.Runs.SessionState(id); state != runs.SessionWaiting && state != runs.SessionIdle {
+			return true
+		}
+	}
+	return false
 }
 
 // blockedFor is the queue auth gate.
@@ -564,18 +629,26 @@ func (c *ControlPlane) assistantTurnActive(ctx context.Context, item *dispatch.Q
 }
 
 // assistantConversation resolves the conversation of one assistant item:
-// the channel pointer of the item connector and conversation key. An item
-// with no key shares one trigger conversation per channel.
+// the channel pointer of the item connector and the event's channel ref.
+// An event with no channel ref points by the conversation key and gets no
+// reply ref. An item with neither shares one trigger conversation per
+// channel, and its trigger ref gets no reply either.
 func (c *ControlPlane) assistantConversation(ctx context.Context, item *dispatch.QueueItem) (convID, channelType, ref string, err error) {
-	channelType = item.Connector
-	if channelType == "" {
-		channelType = conversations.ChannelAssistant
+	channelType = cmp.Or(item.Connector, conversations.ChannelAssistant)
+	ref = c.eventChannelRef(ctx, item.EventID)
+	pointer := ref
+	switch {
+	case ref != "":
+	case item.ConversationKey != "":
+		pointer = item.ConversationKey
+	default:
+		pointer = "trigger:" + channelType
+		ref = pointer
 	}
-	ref = item.ConversationKey
-	if ref == "" {
-		ref = "trigger:" + channelType
+	convID, err = c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, "", channelType, pointer)
+	if err != nil {
+		c.noteOperatorConflict(ctx, err, item, channelType, pointer, "")
 	}
-	convID, err = c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, "", channelType, ref)
 	return convID, channelType, ref, err
 }
 

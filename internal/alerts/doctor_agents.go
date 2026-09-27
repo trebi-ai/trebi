@@ -5,18 +5,22 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
+	"gopkg.in/yaml.v3"
 )
 
 // ActionsChecker is the launch view of a job's connector actions.
@@ -81,6 +85,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		}
 	}
 
+	ops := channelOperators{}
 	for rows.Next() {
 		var wsID, name, path, kind string
 		if err := rows.Scan(&wsID, &name, &path, &kind); err != nil {
@@ -89,6 +94,9 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		parsed, err := job.ParseFile(path)
 		if err != nil || parsed == nil {
 			continue
+		}
+		if kind == "agent" {
+			ops.add(wsID, name, parsed.Triggers, defs, false)
 		}
 		short := strings.TrimPrefix(name, "agents/")
 		findings = append(findings, kitRefFindings(wsID, short, parsed, skillNames, envsets)...)
@@ -99,7 +107,78 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		}
 	}
 	_ = rows.Err()
-	return findings
+	ops.addAssistants(db, defs)
+	return append(findings, ops.findings()...)
+}
+
+// channelOperators maps workspace -> channel connector -> operators whose
+// event triggers name it. A channel pointer has no operator in its key, so
+// two operators on one channel conflict at run time.
+type channelOperators map[string]map[string]map[string]bool
+
+// add records the operator of each enabled event trigger on a channel
+// connector. An assistant trigger with no family is an event trigger.
+func (c channelOperators) add(wsID, operator string, triggers []job.Trigger, defs map[string]connectors.Definition, assistant bool) {
+	for _, tr := range triggers {
+		event := tr.Family == "event" || (assistant && tr.Family == "")
+		if tr.Disabled || !event || defs[tr.Event].Channel == nil {
+			continue
+		}
+		if c[wsID] == nil {
+			c[wsID] = map[string]map[string]bool{}
+		}
+		if c[wsID][tr.Event] == nil {
+			c[wsID][tr.Event] = map[string]bool{}
+		}
+		c[wsID][tr.Event][operator] = true
+	}
+}
+
+// addAssistants records the event triggers of each workspace assistant.
+func (c channelOperators) addAssistants(db *sql.DB, defs map[string]connectors.Definition) {
+	rows, err := db.Query(`SELECT id, path FROM workspaces WHERE orphaned=0`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var wsID, path string
+		if err := rows.Scan(&wsID, &path); err != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(path, "trebi.yaml"))
+		if err != nil {
+			continue
+		}
+		var y struct {
+			Assistant *wire.Override `yaml:"assistant"`
+		}
+		if yaml.Unmarshal(data, &y) != nil || y.Assistant == nil {
+			continue
+		}
+		c.add(wsID, "assistant", y.Assistant.Triggers, defs, true)
+	}
+}
+
+// findings returns one channel_operator_conflict finding per workspace
+// channel that more than one operator names.
+func (c channelOperators) findings() []DoctorFinding {
+	var out []DoctorFinding
+	for _, wsID := range slices.Sorted(maps.Keys(c)) {
+		for _, connector := range slices.Sorted(maps.Keys(c[wsID])) {
+			names := slices.Sorted(maps.Keys(c[wsID][connector]))
+			if len(names) < 2 {
+				continue
+			}
+			out = append(out, DoctorFinding{
+				ID:       "channel-operator-conflict-" + wsID + "-" + connector,
+				Severity: "warn", Code: "channel_operator_conflict",
+				Message: fmt.Sprintf("channel connector %s has triggers for more than one operator (%s); one chat belongs to one operator only",
+					connector, strings.Join(names, ", ")),
+			})
+		}
+	}
+	return out
 }
 
 // kitRefFindings reports the kit skills and envsets that do not exist, and a

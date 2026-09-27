@@ -231,6 +231,10 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.autoResolve(ctx, KindAgentProposal, "proposal/"+firstNonEmpty(attrs["proposal_id"], ev.ID), attrs["decision"])
 	case "channel.send_failed":
 		s.onChannelSendFailed(ctx, ev, attrs)
+	case "channel.sent":
+		if attrs["row_id"] != "" {
+			s.autoResolve(ctx, KindChannelSendFailed, "outbox/"+attrs["row_id"], "auto")
+		}
 	}
 }
 
@@ -389,11 +393,17 @@ func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent
 	}
 }
 
+// onChannelSendFailed raises one item per outbox row, so two failed replies
+// of one conversation stay two items.
 func (s *Service) onChannelSendFailed(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
 	convID := firstNonEmpty(attrs["conversation_id"], ev.ID)
+	subject := "conversation/" + convID
+	if attrs["row_id"] != "" {
+		subject = "outbox/" + attrs["row_id"]
+	}
 	_, err := s.Raise(ctx, RaiseOpts{
 		Kind: KindChannelSendFailed, Connector: attrs["connector"],
-		Subject: "conversation/" + convID, TraceID: ev.TraceID,
+		Subject: subject, TraceID: ev.TraceID,
 		Title: "Channel reply failed", Body: attrs["error"],
 	})
 	if err != nil {

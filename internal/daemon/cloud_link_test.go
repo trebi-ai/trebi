@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/daemon"
@@ -23,9 +24,12 @@ func TestControlPlane_CloudLinkUsesBootConfig(t *testing.T) {
 	t.Setenv("TREBI_HOME", dir)
 	t.Cleanup(func() { home.SetBase("") })
 
+	var mu sync.Mutex // guards path; the handler runs on a server goroutine
 	var path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		path = r.URL.Path
+		mu.Unlock()
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(`{"device_id":"01m3a1b2c3d4e5f6g7h8j9k0m1"}`))
 	}))
@@ -45,7 +49,10 @@ func TestControlPlane_CloudLinkUsesBootConfig(t *testing.T) {
 	if _, err := cp.Cloud.Link(context.Background(), "01m3code", "laptop"); err != nil {
 		t.Fatalf("Link: %v", err)
 	}
-	if path != "/v1/devices" {
-		t.Fatalf("register path = %q; want /v1/devices", path)
+	mu.Lock()
+	got := path
+	mu.Unlock()
+	if got != "/v1/devices" {
+		t.Fatalf("register path = %q; want /v1/devices", got)
 	}
 }

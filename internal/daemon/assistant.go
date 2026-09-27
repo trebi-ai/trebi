@@ -69,10 +69,7 @@ func (c *ControlPlane) onAssistantTurnEnd(ctx context.Context, te assistant.Turn
 	if conv == nil || te.Channel != conversations.ChannelEmail {
 		return
 	}
-	opts := email.ReplyOpts{ConversationID: te.ConversationID}
-	if ws, err := c.Workspaces.Get(ctx, conv.Workspace); err == nil && ws != nil && ws.Assistant != nil {
-		opts.FromName = *ws.Assistant
-	}
+	opts := email.ReplyOpts{ConversationID: te.ConversationID, FromName: c.AssistantName(ctx, conv.Workspace)}
 	if err := c.Email.ReplyOnThread(ctx, opts); err != nil {
 		c.log.Warn("assistant email reply", "conversation", te.ConversationID, "error", err)
 	}
@@ -146,6 +143,7 @@ func (c *ControlPlane) dispatchAssistant(ctx context.Context, item *dispatch.Que
 	c.recordPolicy(ctx, item)
 	if err := c.queue.MarkDone(ctx, item.ID, dispatch.ResultLaunched, ""); err != nil {
 		c.log.Warn("queue mark done", "queue_id", item.ID, "error", err)
+		return
 	}
 	c.ackChannel(ctx, item, dispatch.ResultLaunched)
 }

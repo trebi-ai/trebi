@@ -338,7 +338,8 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "conversation.switched", Bus: false, Log: true},
 		{Name: "conversation.demarcated", Bus: false, Log: true},
 		// channel replies (plan 2026-09-27 G)
-		{Name: "channel.sent", Bus: false, Log: true},
+		{Name: "channel.queued", Bus: true, Log: true},
+		{Name: "channel.sent", Bus: true, Log: true},
 		{Name: "channel.send_failed", Bus: true, Log: true},
 		// agent
 		{Name: "session.state", Bus: true, Log: true},

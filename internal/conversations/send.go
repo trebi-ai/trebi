@@ -641,15 +641,51 @@ func (s *Service) LastUserMessage(ctx context.Context, conversationID string) (*
 	return &m, nil
 }
 
-// LastAssistantTurn returns the run's newest assistant turn on one
-// conversation, or the newest assistant_session turn when runID is empty
-// (plan I.2).
+// ReplyText returns the assistant text written after userMsgID in one
+// conversation, joined in id order. runID picks the run rows; an empty runID
+// picks the assistant session rows. msg is the last assistant row: its id
+// keys the channel outbox and its turn index is the email covered_turn.
+// ok is false when no text follows the user message.
+func (s *Service) ReplyText(ctx context.Context, convID, runID, userMsgID string) (msg Message, text string, ok bool, err error) {
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT `+msgCols+` FROM conversation_messages
+		WHERE conversation_id=? AND role='assistant' AND (run_id = ? OR (? = '' AND run_id IS NULL))
+		AND turn_index IS NOT NULL AND id > ?
+		ORDER BY id`,
+		convID, runID, runID, userMsgID)
+	if err != nil {
+		return Message{}, "", false, err
+	}
+	defer rows.Close()
+	var parts []string
+	for rows.Next() {
+		m, err := scanMsg(rows)
+		if err != nil {
+			return Message{}, "", false, err
+		}
+		if strings.TrimSpace(m.Text) == "" {
+			continue
+		}
+		parts = append(parts, m.Text)
+		msg = m
+	}
+	if err := rows.Err(); err != nil {
+		return Message{}, "", false, err
+	}
+	if len(parts) == 0 {
+		return Message{}, "", false, nil
+	}
+	return msg, strings.Join(parts, "\n\n"), true, nil
+}
+
+// LastAssistantTurn returns the run's newest assistant row on one
+// conversation, or the newest assistant session row when runID is empty.
 func (s *Service) LastAssistantTurn(ctx context.Context, conversationID, runID string) (*Message, error) {
 	row := s.st.DB().QueryRowContext(ctx,
 		`SELECT `+msgCols+` FROM conversation_messages
 		WHERE conversation_id=? AND role='assistant' AND (run_id = ? OR (? = '' AND run_id IS NULL))
 		AND turn_index IS NOT NULL
-		ORDER BY turn_index DESC LIMIT 1`,
+		ORDER BY turn_index DESC, id DESC LIMIT 1`,
 		conversationID, runID, runID)
 	m, err := scanMsg(row)
 	if errors.Is(err, sql.ErrNoRows) {

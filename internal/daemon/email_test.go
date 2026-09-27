@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,11 +29,38 @@ import (
 // mailWorkerFake serves the trebi-mail contract the poller drives: ingress
 // with a live cursor, acks, sends, and health.
 type mailWorkerFake struct {
-	token     string
+	token string
+
+	mu        sync.Mutex // guards the fields below; the handler runs on server goroutines
 	batch     []email.IngressMessage
 	sends     []email.SendRequest
 	acks      int
 	failSends bool
+}
+
+func (f *mailWorkerFake) setBatch(b []email.IngressMessage) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.batch = b
+}
+
+func (f *mailWorkerFake) setFailSends(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failSends = v
+}
+
+func (f *mailWorkerFake) ackCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.acks
+}
+
+// sent returns a copy of the send requests so far.
+func (f *mailWorkerFake) sent() []email.SendRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]email.SendRequest(nil), f.sends...)
 }
 
 func (f *mailWorkerFake) serve(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +68,8 @@ func (f *mailWorkerFake) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/ingress":
 		after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
@@ -86,7 +117,7 @@ type mailPlane struct {
 // poll swaps the batch and runs one poll to completion.
 func (p *mailPlane) poll(t *testing.T, batch []email.IngressMessage) int {
 	t.Helper()
-	p.fw.batch = batch
+	p.fw.setBatch(batch)
 	n, err := p.cp.Email.PollNow(t.Context())
 	if err != nil {
 		t.Fatalf("poll: %v", err)
@@ -147,8 +178,8 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	if agentConv.Operator != "agents/research" || agentConv.OriginChannel != conversations.ChannelEmail {
 		t.Fatalf("agent conversation = %+v", agentConv)
 	}
-	if p.fw.acks != 1 {
-		t.Fatalf("acks = %d, want 1", p.fw.acks)
+	if p.fw.ackCount() != 1 {
+		t.Fatalf("acks = %d, want 1", p.fw.ackCount())
 	}
 
 	// Leg 2: the run asks for approval; the alert mail goes out; the
@@ -227,21 +258,22 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	sendsBefore := len(p.fw.sends)
+	sendsBefore := len(p.fw.sent())
 	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{RunID: run.ID, ConversationID: convID}); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.fw.sends) != sendsBefore+1 {
-		t.Fatalf("sends = %d, want %d", len(p.fw.sends), sendsBefore+1)
+	if len(p.fw.sent()) != sendsBefore+1 {
+		t.Fatalf("sends = %d, want %d", len(p.fw.sent()), sendsBefore+1)
 	}
 	// A repeat covers the same turn: no second mail for one exchange.
 	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{RunID: run.ID, ConversationID: convID}); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.fw.sends) != sendsBefore+1 {
-		t.Fatalf("second reply sent again: %d sends", len(p.fw.sends))
+	if len(p.fw.sent()) != sendsBefore+1 {
+		t.Fatalf("second reply sent again: %d sends", len(p.fw.sent()))
 	}
-	last := p.fw.sends[len(p.fw.sends)-1]
+	sent := p.fw.sent()
+	last := sent[len(sent)-1]
 	if len(last.To) != 1 || last.To[0] != "ops@example.com" {
 		t.Fatalf("reply to = %v", last.To)
 	}
@@ -419,7 +451,7 @@ func TestUnsentReplyRowsDoNotCoverTheTurn(t *testing.T) {
 	const u = "01ARZ3NDEKTSV4RRFFQ69G5FA8"
 
 	// The send fails: the envelope records send_failed and covers nothing.
-	p.fw.failSends = true
+	p.fw.setFailSends(true)
 	if n := p.poll(t, []email.IngressMessage{{
 		V: 1, Seq: 1, ID: u, LocalPart: p.local,
 		From: "ops@example.com", Dmarc: "pass", MessageID: "<retry@x>",
@@ -443,13 +475,13 @@ WHERE direction='out' ORDER BY id DESC LIMIT 1`).Scan(&convID, &disposition)
 	}
 
 	// The transport recovers: the same turn goes out on the next call.
-	p.fw.failSends = false
-	sends := len(p.fw.sends)
+	p.fw.setFailSends(false)
+	sends := len(p.fw.sent())
 	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.fw.sends) != sends+1 {
-		t.Fatalf("a send_failed row covered the turn: %d sends", len(p.fw.sends))
+	if len(p.fw.sent()) != sends+1 {
+		t.Fatalf("a send_failed row covered the turn: %d sends", len(p.fw.sent()))
 	}
 	var covered sql.NullInt64
 	if err := p.st.DB().QueryRowContext(ctx, `
@@ -467,20 +499,20 @@ WHERE direction='out' ORDER BY id DESC LIMIT 1`).Scan(&disposition, &covered); e
 		`UPDATE email_messages SET disposition='sending' WHERE direction='out'`); err != nil {
 		t.Fatal(err)
 	}
-	sends = len(p.fw.sends)
+	sends = len(p.fw.sent())
 	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.fw.sends) != sends+1 {
-		t.Fatalf("a sending row covered the turn: %d sends", len(p.fw.sends))
+	if len(p.fw.sent()) != sends+1 {
+		t.Fatalf("a sending row covered the turn: %d sends", len(p.fw.sent()))
 	}
 
 	// Now the row is sent: one mail per exchange.
 	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.fw.sends) != sends+1 {
-		t.Fatalf("a second reply went out for one exchange: %d sends", len(p.fw.sends))
+	if len(p.fw.sent()) != sends+1 {
+		t.Fatalf("a second reply went out for one exchange: %d sends", len(p.fw.sent()))
 	}
 }
 
@@ -500,19 +532,25 @@ func TestAssistantTurnMailsReplyOnThread(t *testing.T) {
 	}}); n != 1 {
 		t.Fatalf("pulled %d, want 1", n)
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) && len(p.fw.sends) == 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if len(p.fw.sends) == 0 {
-		t.Fatal("assistant turn sent no reply mail")
-	}
+	// The sent mark follows the transport answer, so wait for the final
+	// disposition, not only for the send.
 	var convID, disposition, runID string
 	var covered sql.NullInt64
-	if err := p.st.DB().QueryRowContext(ctx, `
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		err := p.st.DB().QueryRowContext(ctx, `
 SELECT conversation_id, disposition, COALESCE(run_id,''), covered_turn
-FROM email_messages WHERE direction='out'`).Scan(&convID, &disposition, &runID, &covered); err != nil {
-		t.Fatal(err)
+FROM email_messages WHERE direction='out'`).Scan(&convID, &disposition, &runID, &covered)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			t.Fatal(err)
+		}
+		if disposition == "sent" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(p.fw.sent()) == 0 {
+		t.Fatal("assistant turn sent no reply mail")
 	}
 	if disposition != "sent" {
 		t.Fatalf("disposition = %q, want sent", disposition)
@@ -523,7 +561,8 @@ FROM email_messages WHERE direction='out'`).Scan(&convID, &disposition, &runID, 
 	if !covered.Valid {
 		t.Fatal("covered_turn must be set once the reply is sent")
 	}
-	last := p.fw.sends[len(p.fw.sends)-1]
+	sent := p.fw.sent()
+	last := sent[len(sent)-1]
 	if last.To[0] != "ops@example.com" || !strings.Contains(last.Text, "--\ntrebi conversation "+convID) {
 		t.Fatalf("reply mail = %+v", last)
 	}
@@ -531,7 +570,105 @@ FROM email_messages WHERE direction='out'`).Scan(&convID, &disposition, &runID, 
 	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.fw.sends) != 1 {
-		t.Fatalf("assistant reply sent %d times; want 1", len(p.fw.sends))
+	if len(p.fw.sent()) != 1 {
+		t.Fatalf("assistant reply sent %d times; want 1", len(p.fw.sent()))
 	}
+}
+
+// TestRetryDueResendsAssistantReply covers P1-31: a failed assistant reply
+// goes out again after the wait, a stale `sending` row counts as failed, and
+// one turn gets at most five envelopes.
+func TestRetryDueResendsAssistantReply(t *testing.T) {
+	p := startMailPlane(t)
+	ctx := t.Context()
+
+	// Thread one: the turn-end send fails.
+	p.fw.setFailSends(true)
+	p.poll(t, []email.IngressMessage{{
+		V: 1, Seq: 1, ID: "01ARZ3NDEKTSV4RRFFQ69G5FB1", LocalPart: p.local,
+		From: "ops@example.com", Dmarc: "pass", MessageID: "<r1@x>",
+		Subject: "one", Text: "Say hi.",
+	}})
+	convA := p.waitOut(t, "<r1@x>", "send_failed")
+	sends := len(p.fw.sent())
+
+	// Inside the wait nothing goes out.
+	if err := p.cp.Email.RetryDue(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.fw.sent()) != sends {
+		t.Fatal("retry sent inside the wait")
+	}
+	// Each due retry adds one envelope, up to five for the turn.
+	for i := 1; i <= 6; i++ {
+		if err := p.cp.Email.RetryDue(ctx, time.Now().Add(time.Duration(i)*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := p.outRows(t, convA); n != 5 {
+		t.Fatalf("envelopes = %d, want 5", n)
+	}
+
+	// Thread two: a crash leaves `sending`. It waits 2m, then it goes out.
+	p.fw.setFailSends(false)
+	p.poll(t, []email.IngressMessage{{
+		V: 1, Seq: 2, ID: "01ARZ3NDEKTSV4RRFFQ69G5FB2", LocalPart: p.local,
+		From: "ops@example.com", Dmarc: "pass", MessageID: "<r2@x>",
+		Subject: "two", Text: "Say hi again.",
+	}})
+	convB := p.waitOut(t, "<r2@x>", "sent")
+	if _, err := p.st.DB().ExecContext(ctx,
+		`UPDATE email_messages SET disposition='sending' WHERE direction='out' AND conversation_id=?`, convB); err != nil {
+		t.Fatal(err)
+	}
+	sends = len(p.fw.sent())
+	if err := p.cp.Email.RetryDue(ctx, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.fw.sent()) != sends {
+		t.Fatal("a fresh sending row was retried")
+	}
+	if err := p.cp.Email.RetryDue(ctx, time.Now().Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.fw.sent()) != sends+1 {
+		t.Fatalf("stale sending row: %d sends, want %d", len(p.fw.sent()), sends+1)
+	}
+	var sent int
+	if err := p.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM email_messages
+		WHERE direction='out' AND conversation_id=? AND disposition='sent'`, convB).Scan(&sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent != 1 {
+		t.Fatalf("sent rows = %d, want 1", sent)
+	}
+}
+
+// waitOut waits for the outbound reply on the thread rooted at root to
+// reach disposition and returns its conversation id.
+func (p *mailPlane) waitOut(t *testing.T, root, disposition string) string {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		var convID string
+		err := p.st.DB().QueryRowContext(t.Context(), `
+SELECT conversation_id FROM email_messages
+WHERE direction='out' AND thread_root=? AND disposition=? LIMIT 1`, root, disposition).Scan(&convID)
+		if err == nil {
+			return convID
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no %s reply on thread %s", disposition, root)
+	return ""
+}
+
+func (p *mailPlane) outRows(t *testing.T, convID string) int {
+	t.Helper()
+	var n int
+	if err := p.st.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM email_messages WHERE direction='out' AND conversation_id=?`, convID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

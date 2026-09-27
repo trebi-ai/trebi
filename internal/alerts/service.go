@@ -730,7 +730,7 @@ func (o RaiseOpts) defaultSubject() string {
 	case KindMachineDown:
 		return "machine"
 	case KindChannelSendFailed:
-		return "conversation/" + o.Connector
+		return "channel/" + o.Connector
 	case KindActionsInvalid:
 		return "actions/" + o.WorkspaceID + "/" + o.JobName
 	}

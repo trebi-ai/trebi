@@ -17,7 +17,8 @@ import (
 // TestAgentChannelItemQueuesReply proves the inbound side of a connector
 // channel for an agent lane (plan G.2, G.3): the dispatched item writes a
 // channel-typed user turn into the conversation the channel points at, and
-// the turn that follows it becomes one pending outbox row.
+// the turn that follows it becomes one pending outbox row. The extract sets
+// a thread key; the reply still goes to the event's channel ref (P1-29).
 func TestAgentChannelItemQueuesReply(t *testing.T) {
 	dir := t.TempDir()
 	home.SetBase(dir)
@@ -60,12 +61,17 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := st.DB().ExecContext(ctx, `INSERT INTO events
+		(id, connector, received_at, summary, raw_json, trace_id, channel_ref) VALUES (?,?,?,?,?,?,?)`,
+		"evt-1", "chat", time.Now().UTC().Format(time.RFC3339Nano), "", "{}", "tr", "u1"); err != nil {
+		t.Fatal(err)
+	}
 	item := &dispatch.QueueItem{
 		Connector:       "chat",
 		WorkspaceID:     ws.ID,
 		Job:             "agents/ops",
 		Kind:            "agent",
-		ConversationKey: "u1",
+		ConversationKey: "thread-7",
 		EventID:         "evt-1",
 		EventRaw:        `{"chat_id":"u1","text":"status?"}`,
 		Prompt:          "status?",
