@@ -101,6 +101,15 @@ func (c *ControlPlane) AmbiguousReplyItem(ctx context.Context, runID string, d e
 	return c.Alerts.AmbiguousReplyItem(ctx, runID, d, msg)
 }
 
+// AssistantName returns the workspace assistant title for the reply From name.
+func (c *ControlPlane) AssistantName(ctx context.Context, workspaceID string) string {
+	ws, err := c.Workspaces.Get(ctx, workspaceID)
+	if err != nil || ws == nil || ws.Assistant == nil {
+		return ""
+	}
+	return *ws.Assistant
+}
+
 // startEmail attaches the inbound pipeline to the service and runs it.
 // The poll loop pulls only on the bearer transport; the hosted transport
 // pushes into Service.Deliver through the cloudlink socket. The loop

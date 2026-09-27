@@ -88,6 +88,8 @@ func (f *fakeActions) AmbiguousReplyItem(_ context.Context, _ string, _ RouteDec
 	return "amb-" + strconv.Itoa(f.ambiguous), nil
 }
 
+func (f *fakeActions) AssistantName(context.Context, string) string { return "" }
+
 // TestRouteTruthTable walks the routing table of plan A.8 and A.10: the
 // DMARC gate first, then the tag split by sender trust.
 func TestRouteTruthTable(t *testing.T) {

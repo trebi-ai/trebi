@@ -113,6 +113,8 @@ func (a *emailAPIActions) AmbiguousReplyItem(context.Context, string, email.Rout
 	return fmt.Sprintf("amb-%d", a.ambiguous), nil
 }
 
+func (a *emailAPIActions) AssistantName(context.Context, string) string { return "" }
+
 // emailAPIServer is one daemon with the email channel live against a fake
 // Worker, driven as an HTTP client.
 type emailAPIServer struct {

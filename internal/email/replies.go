@@ -17,6 +17,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/proposals"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // replyHops caps how deep one reply walks the References chain (plan I.1).
@@ -51,62 +52,66 @@ type ReplyOpts struct {
 	FromName       string // agent title; '' = Settings.FromName
 }
 
-// ReplyOnThread mails the run's last assistant turn on the mail thread
-// that started the exchange (plan I.2). One outbound mail per exchange:
-// covered_turn makes the send restart-safe. Missing wiring, thread, or
-// turn is a silent no-op.
+// ReplyOnThread mails the assistant text written after the last user
+// message on the mail thread that started the exchange (plan I.2). One
+// outbound mail per exchange: covered_turn makes the send restart-safe.
+// Missing wiring, thread, or text is a silent no-op.
 func (s *Service) ReplyOnThread(ctx context.Context, opts ReplyOpts) error {
+	return s.replyOnThread(ctx, opts, -1)
+}
+
+// replyOnThread is ReplyOnThread. A turn of 0 or more sends only when the
+// due turn is that turn, so a retry never sends a newer turn that its own
+// hook still sends.
+func (s *Service) replyOnThread(ctx context.Context, opts ReplyOpts, turn int) error {
 	if s.convs == nil {
 		return nil
 	}
-	root, ok, err := s.replyThreadRoot(ctx, opts.ConversationID)
-	if err != nil || !ok {
+	user, err := s.convs.LastUserMessage(ctx, opts.ConversationID)
+	if err != nil || user == nil || user.ChannelType != conversations.ChannelEmail {
 		return err
 	}
-	turn, covered, err := s.replyDueTurn(ctx, opts.ConversationID, opts.RunID)
-	if err != nil || turn == nil || *turn.TurnIndex <= covered {
+	// The channel ref of an email user row is the thread root (A.13).
+	root := user.ChannelRef
+	due, err := s.replyDueTurn(ctx, opts.ConversationID, opts.RunID, user.ID)
+	if err != nil || due == nil {
 		return err
+	}
+	if turn >= 0 && due.turn != turn {
+		return nil
 	}
 	in, ok, err := s.replyInboundOn(ctx, root)
 	if err != nil || !ok {
 		return err
 	}
-	return s.sendReply(ctx, opts, root, turn, in)
+	return s.sendReply(ctx, opts, root, due, in)
 }
 
-// replyThreadRoot finds the thread the exchange began on: the newest
-// user message must have arrived by email, and its channel ref is the
-// thread root (A.13).
-func (s *Service) replyThreadRoot(ctx context.Context, conversationID string) (string, bool, error) {
-	m, err := s.convs.LastUserMessage(ctx, conversationID)
-	if err != nil || m == nil {
-		return "", false, err
-	}
-	if m.ChannelType != conversations.ChannelEmail {
-		return "", false, nil
-	}
-	return m.ChannelRef, true, nil
+// dueReply is the assistant text one reply mail carries and the turn it covers.
+type dueReply struct {
+	text string
+	turn int
 }
 
-// replyDueTurn reports the run's newest assistant turn and the turn one
-// delivered reply already covered. Only sent rows cover: a failed send
-// never reached the operator (plan I.2).
-func (s *Service) replyDueTurn(ctx context.Context, conversationID, runID string) (*conversations.Message, int, error) {
-	turn, err := s.convs.LastAssistantTurn(ctx, conversationID, runID)
-	if err != nil || turn == nil {
-		return nil, 0, err
+// replyDueTurn returns the text written after the user row userMsgID, or
+// nil when there is none or a delivered reply already covers its turn. Only
+// sent rows cover: a failed send never reached the operator (plan I.2).
+func (s *Service) replyDueTurn(ctx context.Context, conversationID, runID, userMsgID string) (*dueReply, error) {
+	last, text, ok, err := s.convs.ReplyText(ctx, conversationID, runID, userMsgID)
+	if err != nil || !ok || last.TurnIndex == nil {
+		return nil, err
 	}
 	var covered sql.NullInt64
 	if err := s.st.DB().QueryRowContext(ctx, `
 SELECT MAX(covered_turn) FROM email_messages
 WHERE direction='out' AND disposition='sent' AND conversation_id=? AND COALESCE(run_id,'')=?`,
 		conversationID, runID).Scan(&covered); err != nil {
-		return nil, 0, fmt.Errorf("reply covered %s/%s: %w", conversationID, runID, err)
+		return nil, fmt.Errorf("reply covered %s/%s: %w", conversationID, runID, err)
 	}
-	if covered.Valid {
-		return turn, int(covered.Int64), nil
+	if covered.Valid && int(covered.Int64) >= *last.TurnIndex {
+		return nil, nil
 	}
-	return turn, -1, nil
+	return &dueReply{text: text, turn: *last.TurnIndex}, nil
 }
 
 // replyInboundOn finds the newest inbound mail on one thread; the reply
@@ -129,7 +134,7 @@ FROM email_messages WHERE direction='in' AND thread_root=? ORDER BY id DESC LIMI
 // sendReply writes the envelope, then mails the turn text on the thread
 // (plan I.2). A send failure marks the row send_failed; the next tick
 // retries, because only sent rows count as covering.
-func (s *Service) sendReply(ctx context.Context, opts ReplyOpts, root string, turn *conversations.Message, in replyInbound) error {
+func (s *Service) sendReply(ctx context.Context, opts ReplyOpts, root string, due *dueReply, in replyInbound) error {
 	cfg, err := s.Settings()
 	if err != nil {
 		return err
@@ -169,14 +174,14 @@ INSERT INTO email_messages
    subject, disposition, conversation_id, run_id, covered_turn, created_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rowID, "out", in.workspaceID, opts.Agent, msgID, in.messageID, root, in.sender,
-		subject, "sending", opts.ConversationID, opts.RunID, *turn.TurnIndex,
+		subject, "sending", opts.ConversationID, opts.RunID, due.turn,
 		time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("reply envelope: %w", err)
 	}
 	req := SendRequest{
 		V: ContractV, From: from, FromName: cmp.Or(opts.FromName, cfg.FromName),
 		To: []string{in.sender}, Subject: subject,
-		Text:      turn.Text + "\n\n--\ntrebi conversation " + opts.ConversationID,
+		Text:      due.text + "\n\n--\ntrebi conversation " + opts.ConversationID,
 		MessageID: msgID, InReplyTo: in.messageID, References: refs,
 	}
 	if err := s.sendWithBackoff(ctx, tr, req); err != nil {
@@ -196,6 +201,78 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 	}
 	s.noteSendFailure(nil)
 	s.appendSent(ctx, rowID, msgID)
+	return nil
+}
+
+// Assistant reply retry bounds (plan 2026-09-27 P1-31).
+const (
+	replyRetryAttempts = 5
+	replyStaleSending  = 2 * time.Minute
+	replyRetryBase     = maxSendBackoff
+	replyRetryMax      = 10 * time.Minute
+)
+
+// RetryDue sends again each assistant reply whose last envelope is
+// send_failed, or is sending and older than 2m. Each turn gets at most five
+// envelopes, and the wait doubles from 30s after each one. Run replies are
+// out of scope: the run watcher retries them.
+func (s *Service) RetryDue(ctx context.Context, now time.Time) error {
+	if s.convs == nil {
+		return nil
+	}
+	// A crash between the envelope insert and the result leaves 'sending'.
+	stale := now.Add(-replyStaleSending).UTC().Format(time.RFC3339)
+	if _, err := s.st.DB().ExecContext(ctx, `
+UPDATE email_messages SET disposition='send_failed'
+WHERE direction='out' AND disposition='sending' AND covered_turn IS NOT NULL
+  AND COALESCE(run_id,'')='' AND created_at < ?`, stale); err != nil {
+		return fmt.Errorf("reply stale mark: %w", err)
+	}
+	rows, err := s.st.DB().QueryContext(ctx, `
+SELECT conversation_id, workspace_id, covered_turn, COUNT(*), MAX(created_at)
+FROM email_messages
+WHERE direction='out' AND covered_turn IS NOT NULL AND COALESCE(run_id,'')=''
+  AND conversation_id IS NOT NULL
+GROUP BY conversation_id, workspace_id, covered_turn
+HAVING SUM(CASE WHEN disposition='send_failed' THEN 0 ELSE 1 END) = 0 AND COUNT(*) < ?`,
+		replyRetryAttempts)
+	if err != nil {
+		return fmt.Errorf("reply retry rows: %w", err)
+	}
+	type failedReply struct {
+		convID, workspaceID, last string
+		turn, attempts            int
+	}
+	var due []failedReply
+	for rows.Next() {
+		var r failedReply
+		if err := rows.Scan(&r.convID, &r.workspaceID, &r.turn, &r.attempts, &r.last); err != nil {
+			_ = rows.Close() // the scan error is the one to report
+			return err
+		}
+		wait := min(replyRetryBase<<(r.attempts-1), replyRetryMax)
+		if now.Sub(store.ParseTS(r.last)) >= wait {
+			due = append(due, r)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	g := s.ingress
+	s.mu.RUnlock()
+	for _, r := range due {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		opts := ReplyOpts{ConversationID: r.convID}
+		if g != nil {
+			opts.FromName = g.act.AssistantName(ctx, r.workspaceID)
+		}
+		if err := s.replyOnThread(ctx, opts, r.turn); err != nil {
+			s.log.WarnContext(ctx, "email.reply retry", "conversation", r.convID, "turn", r.turn, "error", err)
+		}
+	}
 	return nil
 }
 

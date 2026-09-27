@@ -69,10 +69,7 @@ func (c *ControlPlane) onAssistantTurnEnd(ctx context.Context, te assistant.Turn
 	if conv == nil || te.Channel != conversations.ChannelEmail {
 		return
 	}
-	opts := email.ReplyOpts{ConversationID: te.ConversationID}
-	if ws, err := c.Workspaces.Get(ctx, conv.Workspace); err == nil && ws != nil && ws.Assistant != nil {
-		opts.FromName = *ws.Assistant
-	}
+	opts := email.ReplyOpts{ConversationID: te.ConversationID, FromName: c.AssistantName(ctx, conv.Workspace)}
 	if err := c.Email.ReplyOnThread(ctx, opts); err != nil {
 		c.log.Warn("assistant email reply", "conversation", te.ConversationID, "error", err)
 	}
