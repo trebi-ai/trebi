@@ -1,13 +1,16 @@
 package api_test
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/config"
@@ -109,6 +112,23 @@ func hostileEntry(base, envName, skillName string) string {
 }`
 }
 
+// remoteAuthEntry is a remote whose Authorization header takes a secret
+// variable.
+const remoteAuthEntry = `{
+  "server": {
+    "name": "acme/remote-auth",
+    "version": "1.0.0",
+    "remotes": [{
+      "type": "streamable-http",
+      "url": "https://mcp.acme.example/{tenant}/mcp",
+      "variables": {"tenant": {"isRequired": true}},
+      "headers": [{"name": "Authorization", "value": "Bearer {api_key}",
+        "variables": {"api_key": {"isRequired": true, "isSecret": true}}}]
+    }]
+  },
+  "_meta": {}
+}`
+
 const contributedSkillMD = `---
 name: contributed
 description: Drive the contributed service.
@@ -143,6 +163,8 @@ func newFixtureRegistry(t *testing.T) *httptest.Server {
 			writeFixtureJSON(w, hostileEntry("http://"+r.Host, "../../x", "hostile"))
 		case "acme/hostile-skill":
 			writeFixtureJSON(w, hostileEntry("http://"+r.Host, "TOKEN", "../y"))
+		case "acme/remote-auth":
+			writeFixtureJSON(w, remoteAuthEntry)
 		default:
 			http.NotFound(w, r)
 		}
@@ -158,8 +180,21 @@ func writeFixtureJSON(w http.ResponseWriter, body string) {
 }
 
 // startCatalogAPI builds a daemon whose registry client points at the fixture
-// server, and returns the base URL.
+// server, and returns the base URL. Its skill client may reach the loopback
+// fixture.
 func startCatalogAPI(t *testing.T) string {
+	t.Helper()
+	return startCatalogAPIWith(t, func(fixture string) registry.Config {
+		return registry.Config{
+			Registries: []config.Registry{{Name: "official", URL: fixture}},
+			SkillHTTP:  &http.Client{Timeout: 5 * time.Second},
+		}
+	})
+}
+
+// startCatalogAPIWith builds the daemon with the registry config that cfg
+// returns for the fixture server URL.
+func startCatalogAPIWith(t *testing.T, cfg func(fixture string) registry.Config) string {
 	t.Helper()
 	dir := t.TempDir()
 	home.SetBase(dir)
@@ -171,9 +206,7 @@ func startCatalogAPI(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	reg := registry.New(registry.Config{Registries: []config.Registry{
-		{Name: "official", URL: newFixtureRegistry(t).URL},
-	}})
+	reg := registry.New(cfg(newFixtureRegistry(t).URL))
 	s := api.New(st, api.Options{Registry: reg})
 	addr, err := s.ListenAndServe("127.0.0.1:0")
 	if err != nil {
@@ -271,7 +304,7 @@ func TestConnectorsInstallSecretRollback(t *testing.T) {
 
 	code, body, _ = doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{
 		"registry": "official", "name": "ai.adtest/adtest-mcp", "as": "adtest",
-		"package": 0, "env": map[string]any{"ADTEST_API_KEY": "new"},
+		"package": 0, "env": map[string]any{"ADTEST_API_KEY": "new"}, "overwrite_secrets": true,
 	})
 	if code != 409 {
 		t.Fatalf("status %d %v", code, body)
@@ -434,5 +467,266 @@ func TestConnectorsInstallRefusesUnsafeNames(t *testing.T) {
 	}
 	if _, err := os.Stat(home.ConnectorsPath()); !os.IsNotExist(err) {
 		t.Fatalf("connectors.yaml written: %v", err)
+	}
+}
+
+// TestConnectorsInstallSecretReference proves a secret: value is stored as
+// a reference, with no new secret and no owned secret (P1-32).
+func TestConnectorsInstallSecretReference(t *testing.T) {
+	base := startCatalogAPI(t)
+	code, body, _ := doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{
+		"registry": "official", "name": "ai.adtest/adtest-mcp", "as": "adtest",
+		"package": 0, "env": map[string]any{"ADTEST_API_KEY": "secret:shared_key"},
+	})
+	if code != 201 {
+		t.Fatalf("status %d %v", code, body)
+	}
+	mcp := body["actions"].(map[string]any)["mcp"].(map[string]any)
+	if mcp["env"].(map[string]any)["ADTEST_API_KEY"] != "secret:shared_key" {
+		t.Fatalf("env = %v", mcp["env"])
+	}
+	if names, _ := secrets.List(); len(names) != 0 {
+		t.Fatalf("secrets = %v", names)
+	}
+	if src, _ := body["source"].(map[string]any); src["secrets"] != nil {
+		t.Fatalf("source = %v", src)
+	}
+}
+
+// TestConnectorsInstallSecretConflict proves a stored secret with another
+// value is a conflict unless the body sets overwrite_secrets, and that the
+// same value needs no write.
+func TestConnectorsInstallSecretConflict(t *testing.T) {
+	base := startCatalogAPI(t)
+	if err := secrets.Set("adtest_ADTEST_API_KEY", "old"); err != nil {
+		t.Fatal(err)
+	}
+	install := func(value string, overwrite bool) (int, map[string]any) {
+		code, body, _ := doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{
+			"registry": "official", "name": "ai.adtest/adtest-mcp", "as": "adtest",
+			"package": 0, "env": map[string]any{"ADTEST_API_KEY": value}, "overwrite_secrets": overwrite,
+		})
+		return code, body
+	}
+	if code, body := install("new", false); code != 409 || errCode(body) != "conflict" {
+		t.Fatalf("status %d %v", code, body)
+	}
+	if v, _ := secrets.Get("adtest_ADTEST_API_KEY"); string(v) != "old" {
+		t.Fatalf("secret = %q", v)
+	}
+	code, body := install("new", true)
+	if code != 201 {
+		t.Fatalf("status %d %v", code, body)
+	}
+	if v, _ := secrets.Get("adtest_ADTEST_API_KEY"); string(v) != "new" {
+		t.Fatalf("secret = %q", v)
+	}
+	// The secret existed before, so the connector does not own it.
+	if src, _ := body["source"].(map[string]any); src["secrets"] != nil {
+		t.Fatalf("source = %v", src)
+	}
+	if code, _, _ := doJSON(t, "DELETE", base+"/v1/connectors/adtest?confirm=1", nil); code != 200 && code != 204 {
+		t.Fatalf("delete %d", code)
+	}
+	if _, err := secrets.Get("adtest_ADTEST_API_KEY"); err != nil {
+		t.Fatal("a secret the install did not create must survive the delete")
+	}
+	if code, body := install("new", false); code != 201 {
+		t.Fatalf("same value: status %d %v", code, body)
+	}
+}
+
+// TestConnectorsDeleteRemovesOwnedSecrets proves a connector delete removes
+// the secrets its install wrote, unless another connector refers to one.
+func TestConnectorsDeleteRemovesOwnedSecrets(t *testing.T) {
+	base := startCatalogAPI(t)
+	install := func() {
+		t.Helper()
+		code, body, _ := doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{
+			"registry": "official", "name": "ai.adtest/adtest-mcp", "as": "adtest",
+			"package": 0, "env": map[string]any{"ADTEST_API_KEY": "key-1"},
+		})
+		if code != 201 {
+			t.Fatalf("status %d %v", code, body)
+		}
+		src, _ := body["source"].(map[string]any)
+		if got, _ := src["secrets"].([]any); len(got) != 1 || got[0] != "adtest_ADTEST_API_KEY" {
+			t.Fatalf("source = %v", src)
+		}
+	}
+	install()
+	if code, _, _ := doJSON(t, "DELETE", base+"/v1/connectors/adtest?confirm=1", nil); code != 200 && code != 204 {
+		t.Fatalf("delete %d", code)
+	}
+	if _, err := secrets.Get("adtest_ADTEST_API_KEY"); err == nil {
+		t.Fatal("the owned secret must be removed")
+	}
+
+	install()
+	code, body, _ := doJSON(t, "POST", base+"/v1/connectors", map[string]any{
+		"name": "other", "actions": map[string]any{"mcp": map[string]any{
+			"command": "npx", "env": map[string]any{"KEY": "secret:adtest_ADTEST_API_KEY"},
+		}},
+	})
+	if code != 201 {
+		t.Fatalf("other %d %v", code, body)
+	}
+	if code, _, _ := doJSON(t, "DELETE", base+"/v1/connectors/adtest?confirm=1", nil); code != 200 && code != 204 {
+		t.Fatalf("delete %d", code)
+	}
+	if _, err := secrets.Get("adtest_ADTEST_API_KEY"); err != nil {
+		t.Fatal("a secret another connector refers to must survive")
+	}
+}
+
+func TestConnectorsInstallPackageAndRemote(t *testing.T) {
+	base := startCatalogAPI(t)
+	code, body, _ := doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{
+		"registry": "official", "name": "ai.adtest/adtest-mcp", "package": 0, "remote": 0,
+	})
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("status %d %v", code, body)
+	}
+}
+
+// TestConnectorsInstallRemoteInputs proves a remote install fills its URL
+// variable and its secret header from env (P1-33).
+func TestConnectorsInstallRemoteInputs(t *testing.T) {
+	base := startCatalogAPI(t)
+	code, body, _ := doJSON(t, "GET", base+"/v1/connectors/catalog/entry?registry=official&name=acme%2Fremote-auth", nil)
+	if code != 200 {
+		t.Fatalf("entry %d %v", code, body)
+	}
+	remotes, _ := body["remote_inputs"].([]any)
+	if len(remotes) != 1 || len(remotes[0].([]any)) != 2 {
+		t.Fatalf("remote_inputs = %v", body["remote_inputs"])
+	}
+	if pk, _ := body["package_inputs"].([]any); len(pk) != 0 {
+		t.Fatalf("package_inputs = %v", body["package_inputs"])
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{
+		"registry": "official", "name": "acme/remote-auth", "as": "remote",
+		"env": map[string]any{"tenant": "t1", "api_key": "k-1"},
+	})
+	if code != 201 {
+		t.Fatalf("status %d %v", code, body)
+	}
+	mcp := body["actions"].(map[string]any)["mcp"].(map[string]any)
+	if mcp["url"] != "https://mcp.acme.example/t1/mcp" {
+		t.Fatalf("mcp = %v", mcp)
+	}
+	if mcp["headers"].(map[string]any)["Authorization"] != "secret:remote_Authorization" {
+		t.Fatalf("headers = %v", mcp["headers"])
+	}
+	if v, err := secrets.Get("remote_Authorization"); err != nil || string(v) != "Bearer k-1" {
+		t.Fatalf("secret = %q err %v", v, err)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{
+		"registry": "official", "name": "acme/remote-auth", "as": "remote2",
+		"env": map[string]any{"tenant": "t1", "api_key": "k", "bogus": "x"},
+	})
+	if code != 400 || !strings.Contains(fmt.Sprint(body), "bogus") {
+		t.Fatalf("unused input: status %d %v", code, body)
+	}
+}
+
+// TestConnectorsInstallRefusesUnsafeSkillURL proves the default skill client
+// refuses an http URL, and the install leaves nothing behind (P1-35).
+func TestConnectorsInstallRefusesUnsafeSkillURL(t *testing.T) {
+	base := startCatalogAPIWith(t, func(fixture string) registry.Config {
+		return registry.Config{Registries: []config.Registry{{Name: "official", URL: fixture}}}
+	})
+	code, body, _ := doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{
+		"registry": "official", "name": "acme/contributed", "as": "contributed", "package": 0,
+	})
+	if code != 502 || !strings.Contains(fmt.Sprint(body), "https required") {
+		t.Fatalf("status %d %v", code, body)
+	}
+	if code, _, _ := doJSON(t, "GET", base+"/v1/connectors/contributed", nil); code != 404 {
+		t.Fatalf("connector survives the failed install: %d", code)
+	}
+}
+
+func TestConnectorsInstallSkillExists(t *testing.T) {
+	base := startCatalogAPI(t)
+	if err := os.MkdirAll(filepath.Join(home.SkillsDir(), "contributed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ := doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{
+		"registry": "official", "name": "acme/contributed", "as": "contributed", "package": 0,
+	})
+	if code != 409 || errCode(body) != "conflict" {
+		t.Fatalf("status %d %v", code, body)
+	}
+	if code, _, _ := doJSON(t, "GET", base+"/v1/connectors/contributed", nil); code != 404 {
+		t.Fatalf("connector survives the failed install: %d", code)
+	}
+}
+
+// TestConnectorsCatalogPartialFailure proves the reply lists the configured
+// registries and reports a failing one while the others answer (P1-37).
+func TestConnectorsCatalogPartialFailure(t *testing.T) {
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(down.Close)
+	base := startCatalogAPIWith(t, func(fixture string) registry.Config {
+		return registry.Config{Registries: []config.Registry{
+			{Name: "official", URL: fixture}, {Name: "down", URL: down.URL},
+		}}
+	})
+	code, body, _ := doJSON(t, "GET", base+"/v1/connectors/catalog", nil)
+	if code != 200 {
+		t.Fatalf("status %d %v", code, body)
+	}
+	if entries, _ := body["entries"].([]any); len(entries) != 1 {
+		t.Fatalf("entries = %v", body["entries"])
+	}
+	regs, _ := body["registries"].([]any)
+	if len(regs) != 2 || regs[1].(map[string]any)["name"] != "down" {
+		t.Fatalf("registries = %v", body["registries"])
+	}
+	errs, _ := body["registry_errors"].([]any)
+	if len(errs) != 1 || errs[0].(map[string]any)["registry"] != "down" || errs[0].(map[string]any)["error"] == "" {
+		t.Fatalf("registry_errors = %v", body["registry_errors"])
+	}
+}
+
+// TestConnectorsCatalogFollowsConfig proves the catalog client follows a
+// config change while requests run. Run it with -race.
+func TestConnectorsCatalogFollowsConfig(t *testing.T) {
+	_, base, dir := startAPI(t)
+	fixture := newFixtureRegistry(t).URL
+	write := func(name string) {
+		yaml := "connectors:\n  registries:\n    - { name: " + name + ", url: " + fixture + " }\n"
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("one")
+	var wg sync.WaitGroup
+	for i := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 5 {
+				resp, err := http.Get(base + "/v1/connectors/catalog")
+				if err == nil {
+					resp.Body.Close()
+				}
+			}
+		}()
+		if i%2 == 0 {
+			write("two")
+		} else {
+			write("one")
+		}
+	}
+	wg.Wait()
+	write("final")
+	code, body, _ := doJSON(t, "GET", base+"/v1/connectors/catalog", nil)
+	regs, _ := body["registries"].([]any)
+	if code != 200 || len(regs) != 1 || regs[0].(map[string]any)["name"] != "final" {
+		t.Fatalf("status %d registries %v", code, body["registries"])
 	}
 }

@@ -77,6 +77,9 @@ type Service struct {
 // ErrPrecondition is If-Match / hash mismatch.
 var ErrPrecondition = errors.New("precondition failed")
 
+// ErrExists is a create for a skill name that is already on disk.
+var ErrExists = errors.New("skill already exists")
+
 // ErrInherited is a mutation against a read-only discovered user skill.
 var ErrInherited = errors.New("inherited from user skill dir")
 
@@ -145,6 +148,12 @@ func (s *Service) Get(ctx context.Context, name string, includeMD bool) (*Skill,
 
 // Create writes a new skill folder.
 func (s *Service) Create(ctx context.Context, name, skillMD string, prov Provenance) (*Skill, error) {
+	return s.create(ctx, name, skillMD, prov, "", "")
+}
+
+// create writes the skill folder and its index row. A source kind and ref go
+// into the same INSERT, so no reader sees the row without them.
+func (s *Service) create(ctx context.Context, name, skillMD string, prov Provenance, sourceKind, sourceRef string) (*Skill, error) {
 	if err := CheckName(name); err != nil {
 		return nil, err
 	}
@@ -156,7 +165,7 @@ func (s *Service) Create(ctx context.Context, name, skillMD string, prov Provena
 	}
 	dir := filepath.Join(home.SkillsDir(), name)
 	if _, err := os.Stat(dir); err == nil {
-		return nil, fmt.Errorf("skill %q already exists", name)
+		return nil, fmt.Errorf("%w: %q", ErrExists, name)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -170,8 +179,8 @@ func (s *Service) Create(ctx context.Context, name, skillMD string, prov Provena
 	now := time.Now().UTC().Format(time.RFC3339)
 	hash := hashDir(dir)
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT INTO skill_index (name, provenance, path, hash, used_30d, updated_at)
-			VALUES (?,?,?,?,0,?)`, name, string(prov), dir, hash, now)
+		_, err := tx.Exec(`INSERT INTO skill_index (name, provenance, path, hash, used_30d, updated_at, source_kind, source_ref)
+			VALUES (?,?,?,?,0,?,?,?)`, name, string(prov), dir, hash, now, store.NullStr(sourceKind), store.NullStr(sourceRef))
 		return err
 	}, store.BusEvent{
 		Topic: "skill.created", Entity: "skill", EntityID: name, Action: "created",
@@ -302,14 +311,7 @@ func (s *Service) AddConnectorSkill(ctx context.Context, name, skillMD, connecto
 	if connector == "" {
 		return nil, fmt.Errorf("connector required")
 	}
-	if _, err := s.Create(ctx, name, skillMD, ProvenanceConnector); err != nil {
-		return nil, err
-	}
-	if _, err := s.st.DB().ExecContext(ctx,
-		`UPDATE skill_index SET source_kind='connector', source_ref=? WHERE name=?`, connector, name); err != nil {
-		return nil, err
-	}
-	return s.Get(ctx, name, true)
+	return s.create(ctx, name, skillMD, ProvenanceConnector, "connector", connector)
 }
 
 // RemoveConnectorSkills removes the skills one connector contributed. It
@@ -723,7 +725,7 @@ func (s *Service) CreateFromSource(ctx context.Context, name string, src Source)
 	}
 	dir := filepath.Join(home.SkillsDir(), name)
 	if _, err := os.Stat(dir); err == nil {
-		return nil, fmt.Errorf("skill %q already exists", name)
+		return nil, fmt.Errorf("%w: %q", ErrExists, name)
 	}
 	if err := src.fetch(ctx, dir); err != nil {
 		return nil, err

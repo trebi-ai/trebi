@@ -355,6 +355,8 @@ func sampleSetValue(key string) string {
 		return "echo trebi-notify-{{message}}"
 	case key == "email.worker":
 		return "https://trebi-mail.example.workers.dev"
+	case key == "connectors.registries":
+		return "internal=https://mcp.internal.example"
 	case key == "cloud.api_url":
 		return "https://staging-api.trebi.ai"
 	case key == "cloud.enabled":

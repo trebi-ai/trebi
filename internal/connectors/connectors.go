@@ -452,7 +452,8 @@ func (s *Service) Delete(ctx context.Context, name string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	defs := s.snapshotDefs()
-	if _, ok := defs[name]; !ok {
+	d, ok := defs[name]
+	if !ok {
 		return fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
 	}
 	delete(defs, name)
@@ -460,12 +461,37 @@ func (s *Service) Delete(ctx context.Context, name string) error {
 		return err
 	}
 	s.deleteContributedSkills(ctx, name)
+	s.deleteOwnedSecrets(d, defs)
 	if _, err := s.st.Append(ctx, store.BusEvent{
 		Topic: "connector.deleted", Entity: "connector", EntityID: name, Action: "deleted",
 	}); err != nil {
 		s.log.Warn("bus append", "topic", "connector.deleted", "error", err)
 	}
 	return nil
+}
+
+// deleteOwnedSecrets removes the secrets that the registry install of d wrote,
+// when no remaining connector refers to them. A failure is logged and does not
+// undo the connector delete.
+func (s *Service) deleteOwnedSecrets(d Definition, remaining map[string]Definition) {
+	if d.Source == nil {
+		return
+	}
+	for _, n := range d.Source.Secrets {
+		used := false
+		for _, other := range remaining {
+			if other.refersToSecret(n) {
+				used = true
+				break
+			}
+		}
+		if used {
+			continue
+		}
+		if err := secrets.Delete(n); err != nil {
+			s.log.Warn("delete owned secret", "connector", d.Name, "secret", n, "error", err)
+		}
+	}
 }
 
 // deleteContributedSkills removes the skills this connector installed

@@ -32,16 +32,22 @@ Read one connector by name or `id`. Duplicate names return `ambiguous`; use `id`
 ### search
 Search the configured MCP registries for installable servers. With no
 `registry` the action reads every configured registry in order and merges the
-pages. The reply carries `entries` and, when more exist, `next_cursor`.
+pages. The reply carries `entries`, `registries` (the configured list as
+`[{name, url}]`) and, when more exist, `next_cursor`. A registry that fails
+does not fail the search: the reply lists it in
+`registry_errors: [{registry, error}]` and the other registries still answer.
+The search fails only when every registry fails.
 - `q` (string, optional): substring match on the server name.
 - `registry` (string, optional): one configured registry name; empty reads all.
 - `limit` (number, optional): page size per registry.
 - `cursor` (string, optional): opaque cursor from a prior page (`next_cursor`).
 
 ### catalog_entry
-Read one server entry and its declared environment variables. Each variable
-carries `required` and `secret` flags, so a caller knows what to pass to
-`install`.
+Read one server entry and the inputs that `install` accepts.
+`package_inputs[i]` and `remote_inputs[i]` list the inputs of package `i` and
+remote `i` as `{name, kind, description, format, default, choices, required,
+secret}`. `kind` is `env`, `header`, `argument`, or `variable`. The `name` is
+the key to pass in the install `env`.
 - `name` (string, required): server name, for example `ai.adtest/adtest-mcp`.
 - `registry` (string, optional): registry name.
 - `version` (string, optional): server version; empty asks for the latest.
@@ -49,18 +55,32 @@ carries `required` and `secret` flags, so a caller knows what to pass to
 ### install
 Install one registry server as a connector with an `actions.mcp` block and a
 `source` block. **This runs third-party code on this machine** (through npx,
-uvx, or docker) when a run uses the connector. A variable the entry marks
-`isSecret` is written to the secret store and referenced as
-`secret:<connector>_<VAR>`. A required variable with no value returns
-`validation` and names the missing variables. A connector name that already
-exists returns `conflict`.
+uvx, docker, or the entry `runtimeHint`) when a run uses the connector. A
+package must use the `stdio` transport. A remote URL must be `https` and must
+not name a loopback, link-local, or private address.
+
+`env` fills the inputs that `catalog_entry` lists: env variables, headers,
+arguments, and `{name}` template variables. A value `secret:NAME` is kept as a
+reference and writes no secret. A value for a secret input becomes the secret
+`<connector>_<VAR>` (for a header, the whole rendered header value) and the
+definition refers to it as `secret:<connector>_<VAR>`. A key that no input uses
+returns `validation`; for a package, a key that is a valid env name is added to
+the env instead. A required input with no value returns `validation` and names
+the missing inputs.
+
+A secret that exists with a different value returns `conflict` unless
+`overwrite_secrets` is true. `source.secrets` lists the secrets that the
+install created. `delete` removes them when no other connector refers to them.
+A connector name or a contributed skill that already exists returns
+`conflict`. A failed install removes what it wrote.
 - `name` (string, required): server name.
 - `registry` (string, optional): registry name.
 - `version` (string, optional): server version; empty uses the latest.
 - `as` (string, optional): connector name; empty derives one from the server name.
-- `package` (number, optional): package index to install; this wins over `remote`.
-- `remote` (number, optional): remote index to install when no package is chosen.
-- `env` (object, optional): variable values as `{VAR: value}`; a value for a secret variable becomes a secret.
+- `package` (number, optional): package index to install.
+- `remote` (number, optional): remote index to install. Give `package` or `remote`, not both (`validation`). With neither, the install uses the first package, else the first remote.
+- `env` (object, optional): input values as `{NAME: value}`.
+- `overwrite_secrets` (boolean, optional): replace a stored secret that has a different value.
 
 ### create
 Create one connector from a definition object. Each block is optional; a

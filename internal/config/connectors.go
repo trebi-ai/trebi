@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -26,7 +27,8 @@ func DefaultRegistries() []Registry {
 }
 
 // checkConnectors validates the registry list: every entry needs a name and
-// a URL, and the names are unique so a lookup by name is unambiguous.
+// an http or https URL, and the names are unique so a lookup by name is
+// unambiguous.
 func (e *ConfigError) checkConnectors(c Config) {
 	seen := map[string]bool{}
 	for i, r := range c.Connectors.Registries {
@@ -40,8 +42,14 @@ func (e *ConfigError) checkConnectors(c Config) {
 		default:
 			seen[name] = true
 		}
-		if strings.TrimSpace(r.URL) == "" {
+		raw := strings.TrimSpace(r.URL)
+		if raw == "" {
 			e.add(field+".url", "url required")
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			e.add(field+".url", fmt.Sprintf("url %q must be http or https with a host", raw))
 		}
 	}
 }
@@ -52,7 +60,8 @@ func (l *pathEntryList) addConnectors(cfg *Config) {
 }
 
 // setConnectorsKey implements SetPath for connectors.registries. The value is
-// a JSON array, or a comma-separated "name=url" list. An empty value restores
+// a JSON array, or a "name=url" list split on ";" (or on "," when the value
+// has no ";"). An empty value restores
 // the built-in default.
 func (c *Config) setConnectorsKey(path, value string) (bool, error) {
 	if path != "connectors.registries" {
@@ -71,7 +80,8 @@ func (c *Config) setConnectorsKey(path, value string) (bool, error) {
 	return true, nil
 }
 
-// parseRegistries reads a JSON array of {name,url}, or a CSV "name=url" list.
+// parseRegistries reads a JSON array of {name,url}, or a "name=url" list. A
+// ";" separator lets a URL hold a comma.
 func parseRegistries(value string) ([]Registry, error) {
 	if strings.HasPrefix(strings.TrimSpace(value), "[") {
 		var regs []Registry
@@ -80,8 +90,12 @@ func parseRegistries(value string) ([]Registry, error) {
 		}
 		return regs, nil
 	}
+	sep := ","
+	if strings.Contains(value, ";") {
+		sep = ";"
+	}
 	var out []Registry
-	for _, part := range strings.Split(value, ",") {
+	for _, part := range strings.Split(value, sep) {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
@@ -95,11 +109,12 @@ func parseRegistries(value string) ([]Registry, error) {
 	return out, nil
 }
 
-// renderRegistries renders the list as one "name=url" CSV row.
+// renderRegistries renders the list as one "name=url" row split on ";", so
+// parseRegistries reads it back.
 func renderRegistries(regs []Registry) string {
 	parts := make([]string, 0, len(regs))
 	for _, r := range regs {
 		parts = append(parts, r.Name+"="+r.URL)
 	}
-	return strings.Join(parts, ",")
+	return strings.Join(parts, ";")
 }

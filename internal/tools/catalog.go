@@ -1663,7 +1663,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				"version":  "1.1.0",
 				"as":       "adtest",
 				"package":  float64(0),
-				"env":      map[string]any{"ADTEST_API_KEY": "k"},
+				"env":      map[string]any{"ADTEST_API_KEY": "secret:adtest_key"},
 			}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "registry", "version", "as")
 				if err != nil {
@@ -1687,7 +1687,14 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildConnectorInstall(v[1], v[0], v[2], v[3], pkg, remote, env), nil
+				overwrite, err := in.flag("overwrite_secrets")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.ConnectorInstall{
+					Registry: v[1], Name: v[0], Version: v[2], As: v[3],
+					Package: pkg, Remote: remote, Env: env, OverwriteSecrets: overwrite,
+				}.Build(), nil
 			}),
 			"create": act("POST /v1/connectors", Input{"definition": map[string]any{
 				"events": map[string]any{"command": "fetch-mail.sh", "format": "line"},
