@@ -1,0 +1,23 @@
+{
+  "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-08/server.schema.json",
+    "name": "acme/docker",
+    "description": "Docker MCP server.",
+    "version": "1.0.0",
+    "packages": [
+      {
+        "registryType": "oci",
+        "registryBaseUrl": "https://docker.io",
+        "identifier": "acme/mcp",
+        "version": "1.0.0",
+        "runtimeHint": "docker",
+        "transport": {"type": "stdio"},
+        "environmentVariables": [
+          {"name": "TOKEN", "isRequired": true, "isSecret": true},
+          {"name": "DEBUG", "format": "boolean"}
+        ]
+      }
+    ]
+  },
+  "_meta": {}
+}

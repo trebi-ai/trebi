@@ -1631,6 +1631,64 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				return mcpGet(request.BuildConnectorsListPath(limit, capability, provenance)), nil
 			}),
 			"show": idGet("GET /v1/connectors/{name}", "name", "mail", request.BuildConnectorGetPath),
+			"search": act("GET /v1/connectors/catalog", Input{"q": "github", "registry": "official", "limit": float64(30), "cursor": "CUR1"}, func(in Input) (request.HTTPRequest, error) {
+				query, err := in.str("q")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				registryName, err := in.str("registry")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				cursor, err := in.str("cursor")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				limit, _, err := in.num("limit")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildConnectorCatalogPath(query, registryName, cursor, limit)), nil
+			}),
+			"catalog_entry": act("GET /v1/connectors/catalog/entry", Input{"registry": "official", "name": "acme/tool", "version": "1.0.0"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "registry", "version")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildConnectorCatalogEntryPath(v[1], v[0], v[2])), nil
+			}),
+			"install": act("POST /v1/connectors/install", Input{
+				"registry": "official",
+				"name":     "ai.adtest/adtest-mcp",
+				"version":  "1.1.0",
+				"as":       "adtest",
+				"package":  float64(0),
+				"env":      map[string]any{"ADTEST_API_KEY": "k"},
+			}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "registry", "version", "as")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				pkg, pkgOK, err := in.num("package")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if !pkgOK {
+					pkg = -1
+				}
+				remote, remoteOK, err := in.num("remote")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if !remoteOK {
+					remote = -1
+				}
+				env, err := in.strMap("env")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildConnectorInstall(v[1], v[0], v[2], v[3], pkg, remote, env), nil
+			}),
 			"create": act("POST /v1/connectors", Input{"definition": map[string]any{
 				"events": map[string]any{"command": "fetch-mail.sh", "format": "line"},
 			}}, func(in Input) (request.HTTPRequest, error) {

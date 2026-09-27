@@ -293,6 +293,9 @@ func (c *Config) SetPath(path, value string) error {
 	if handled, err := c.setCloudKey(path, value); handled {
 		return err
 	}
+	if handled, err := c.setConnectorsKey(path, value); handled {
+		return err
+	}
 
 	// tools.<name>.…
 	parts := strings.Split(path, ".")
@@ -458,6 +461,7 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.addAssistant(cfg)
 	l.addEmail(cfg)
 	l.addCloud(cfg)
+	l.addConnectors(cfg)
 }
 
 // addCloud adds the cloud block rows.
@@ -1123,6 +1127,7 @@ func pathKeyDescriptions() map[string]string {
 		"email.from_name":               "Display name on outbound mail (default Trebi)",
 		"cloud.api_url":                 "Hosted account endpoint (default https://staging-api.trebi.ai)",
 		"cloud.enabled":                 "Dial the hosted workers; false keeps a linked device offline (default true)",
+		"connectors.registries":         "MCP registries the connector catalog reads, as name=url pairs",
 	}
 }
 

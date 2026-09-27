@@ -34,6 +34,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/proposals"
+	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
@@ -70,6 +71,7 @@ type Server struct {
 	lic        *license.Service
 	templates  *agents.Catalog
 	proposals  *proposals.Service
+	registry   *registry.Service
 
 	startedAt time.Time
 	drain     bool
@@ -123,6 +125,9 @@ type Options struct {
 	// LookupLatest overrides the GitHub release lookup used by
 	// /v1/system/update. Tests inject a stub so the suite never hits the network.
 	LookupLatest func() (tag, url string, err error)
+	// Registry overrides the MCP registry client used by the connector
+	// catalog. Nil builds one from config.
+	Registry *registry.Service
 }
 
 // New builds an API server.
@@ -140,6 +145,15 @@ func New(st *store.Store, opts Options) *Server {
 	sk := skills.New(st)
 	conn := connectors.New(st, ws, sk)
 	cl := cloudlink.New(st)
+	reg := opts.Registry
+	if reg == nil {
+		regsCfg, err := config.Load()
+		var regs []config.Registry
+		if err == nil {
+			regs = regsCfg.Connectors.Registries
+		}
+		reg = registry.New(registry.Config{Registries: regs, Log: slog.Default().With("source", "registry")})
+	}
 	s := &Server{
 		st:           st,
 		runs:         r,
@@ -155,6 +169,7 @@ func New(st *store.Store, opts Options) *Server {
 		email:        email.New(st),
 		templates:    agents.NewCatalog(),
 		proposals:    proposals.NewService(st, fs, ws, st, r),
+		registry:     reg,
 		cloud:        cl,
 		hooks:        webhooks.New(st, conn, cl),
 		startedAt:    time.Now().UTC(),

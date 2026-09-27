@@ -37,6 +37,32 @@ func connectorCommand() *cli.Command {
 				Action:    runConnectorShow,
 			},
 			{
+				Name:      "search",
+				Usage:     "search MCP registries for installable servers",
+				ArgsUsage: "<query>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "registry", Usage: "registry name (default: every configured registry)"},
+					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 30, Usage: "max rows"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runConnectorSearch,
+			},
+			{
+				Name:      "install",
+				Usage:     "install a registry server as a connector",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "registry", Usage: "registry name"},
+					&cli.StringFlag{Name: "version", Usage: "server version (default: latest)"},
+					&cli.StringFlag{Name: "as", Usage: "connector name (default: derived from the server name)"},
+					&cli.IntFlag{Name: "package", Value: -1, Usage: "package index to install"},
+					&cli.IntFlag{Name: "remote", Value: -1, Usage: "remote index to install"},
+					&cli.StringSliceFlag{Name: "env", Aliases: []string{"e"}, Usage: "VAR=VALUE (repeatable)"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runConnectorInstall,
+			},
+			{
 				Name:      "set",
 				Usage:     "create or update a connector (PATCH; flags overlay the stored definition)",
 				ArgsUsage: "<name>",
@@ -355,6 +381,64 @@ func runConnectorShow(_ context.Context, c *cli.Command) error {
 	return encodeJSON(c, body)
 }
 
+func runConnectorSearch(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	path := request.BuildConnectorCatalogPath(c.Args().Get(0), c.String("registry"), "", c.Int("limit"))
+	var body map[string]any
+	if err := client.GetJSON(path, &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	entries, _ := body["entries"].([]any)
+	tbl := newTable(w, []string{"Registry", "Name", "Version", "Description"})
+	for _, raw := range entries {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		tbl.AppendRow(table.Row{
+			dash(mapStr(m, "registry")),
+			mapStr(m, "name"),
+			dash(mapStr(m, "version")),
+			dash(mapStr(m, "description")),
+		})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runConnectorInstall(_ context.Context, c *cli.Command) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("usage: trebi connector install <name> [flags]")
+	}
+	env, err := parseKeyValues(c.StringSlice("env"))
+	if err != nil {
+		return fmt.Errorf("env %w", err)
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	req := request.BuildConnectorInstall(c.String("registry"), name, c.String("version"),
+		c.String("as"), c.Int("package"), c.Int("remote"), env)
+	var body map[string]any
+	if err := client.DoHTTP(req, &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	fmt.Fprintf(outWriter(c), "connector %s installed\n", dash(mapStr(body, "name")))
+	return nil
+}
+
 func runConnectorSet(_ context.Context, c *cli.Command) error {
 	if c.NArg() < 1 {
 		return fmt.Errorf("usage: trebi connector set <name> [flags]")
@@ -510,6 +594,30 @@ func runConnectorSet(_ context.Context, c *cli.Command) error {
 
 	if !touched {
 		return fmt.Errorf("no fields given; pass flags or --no-events/--no-actions/--no-channel")
+	}
+	if len(row) == 0 {
+		// An unknown name means create: set is the one writer a first use
+		// reaches, and the file holds no stored blocks to overlay.
+		def := map[string]any{"name": name}
+		if patch.Env != nil {
+			def["env"] = patch.Env
+		}
+		if patch.Cwd != "" {
+			def["cwd"] = patch.Cwd
+		}
+		for key, raw := range map[string]json.RawMessage{
+			"actions": patch.Actions, "events": patch.Events, "channel": patch.Channel,
+		} {
+			if raw == nil || string(raw) == "null" {
+				continue
+			}
+			def[key] = raw
+		}
+		if err := client.DoHTTP(request.BuildConnectorCreate(def), nil); err != nil {
+			return err
+		}
+		fmt.Fprintf(outWriter(c), "connector %s created\n", name)
+		return nil
 	}
 	if err := client.DoHTTP(patch.Build(), nil); err != nil {
 		return err

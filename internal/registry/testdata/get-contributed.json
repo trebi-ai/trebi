@@ -1,0 +1,44 @@
+{
+  "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-08/server.schema.json",
+    "name": "acme/contributed",
+    "description": "Server that contributes a Trebi channel and skill.",
+    "version": "1.0.0",
+    "packages": [
+      {
+        "registryType": "npm",
+        "identifier": "contributed-mcp",
+        "version": "1.0.0",
+        "runtimeHint": "npx",
+        "transport": {
+          "type": "stdio"
+        }
+      }
+    ],
+    "_meta": {
+      "ai.trebi/connector": {
+        "events": {
+          "command": "contributed listen",
+          "format": "json",
+          "id": "id"
+        },
+        "channel": {
+          "ref": "d.chat",
+          "send": "contributed send"
+        },
+        "skill": {
+          "name": "contributed",
+          "url": "https://example.com/contributed-skill.tar.gz"
+        },
+        "actions": {
+          "cli": {
+            "commands": [
+              "contributed-cli"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "_meta": {}
+}

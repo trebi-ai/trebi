@@ -293,6 +293,48 @@ func TestConnectorPatchBuild(t *testing.T) {
 	}
 }
 
+func TestBuildConnectorCatalogPaths(t *testing.T) {
+	t.Parallel()
+	path := BuildConnectorCatalogPath("ops", "official", "CUR1", 25)
+	for _, want := range []string{"/v1/connectors/catalog?", "q=ops", "registry=official", "cursor=CUR1", "limit=25"} {
+		if !strings.Contains(path, want) {
+			t.Fatalf("path %q missing %q", path, want)
+		}
+	}
+	if BuildConnectorCatalogPath("", "", "", 0) != "/v1/connectors/catalog" {
+		t.Fatalf("empty path = %q", BuildConnectorCatalogPath("", "", "", 0))
+	}
+	entry := BuildConnectorCatalogEntryPath("official", "acme/tool", "1.0.0")
+	for _, want := range []string{"/v1/connectors/catalog/entry?", "name=acme%2Ftool", "version=1.0.0", "registry=official"} {
+		if !strings.Contains(entry, want) {
+			t.Fatalf("entry path %q missing %q", entry, want)
+		}
+	}
+}
+
+func TestBuildConnectorInstall(t *testing.T) {
+	t.Parallel()
+	req := BuildConnectorInstall("official", "ai.adtest/adtest-mcp", "1.1.0", "adtest", 0, -1, map[string]string{"ADTEST_API_KEY": "k"})
+	if req.Method != "POST" || req.Path != "/v1/connectors/install" {
+		t.Fatalf("%+v", req)
+	}
+	b, _ := json.Marshal(req.Body)
+	s := string(b)
+	for _, want := range []string{`"registry":"official"`, `"name":"ai.adtest/adtest-mcp"`, `"version":"1.1.0"`, `"as":"adtest"`, `"package":0`, `"env":{"ADTEST_API_KEY":"k"}`} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("body %s missing %s", s, want)
+		}
+	}
+	if strings.Contains(s, `"remote"`) {
+		t.Fatalf("remote -1 must be omitted: %s", s)
+	}
+	b, _ = json.Marshal(BuildConnectorInstall("", "m", "", "", -1, 1, nil).Body)
+	s = string(b)
+	if !strings.Contains(s, `"remote":1`) || strings.Contains(s, `"package"`) || strings.Contains(s, `"env"`) {
+		t.Fatalf("remote body: %s", s)
+	}
+}
+
 func TestBuildConnectorReplace(t *testing.T) {
 	t.Parallel()
 	req := BuildConnectorReplace("echo", map[string]any{"events": map[string]any{"command": "echo hi"}})

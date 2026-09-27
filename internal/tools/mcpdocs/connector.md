@@ -1,6 +1,7 @@
 # connector
 
-Connector operations: manage event connectors and their cursors.
+Connector operations: manage event connectors and their cursors, and search or
+install MCP registry servers.
 
 Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error envelope `{"error":{"code","message"}}` unchanged, with `isError: true`.
 
@@ -22,6 +23,39 @@ no status.
 Read one connector by name or `id`. Duplicate names return `ambiguous`; use `id`.
 - `name` (string, required): connector name or id.
 
+### search
+Search the configured MCP registries for installable servers. With no
+`registry` the action reads every configured registry in order and merges the
+pages. The reply carries `entries` and, when more exist, `next_cursor`.
+- `q` (string, optional): substring match on the server name.
+- `registry` (string, optional): one configured registry name; empty reads all.
+- `limit` (number, optional): page size per registry.
+- `cursor` (string, optional): opaque cursor from a prior page (`next_cursor`).
+
+### catalog_entry
+Read one server entry and its declared environment variables. Each variable
+carries `required` and `secret` flags, so a caller knows what to pass to
+`install`.
+- `name` (string, required): server name, for example `ai.adtest/adtest-mcp`.
+- `registry` (string, optional): registry name.
+- `version` (string, optional): server version; empty asks for the latest.
+
+### install
+Install one registry server as a connector with an `actions.mcp` block and a
+`source` block. **This runs third-party code on this machine** (through npx,
+uvx, or docker) when a run uses the connector. A variable the entry marks
+`isSecret` is written to the secret store and referenced as
+`secret:<connector>_<VAR>`. A required variable with no value returns
+`validation` and names the missing variables. A connector name that already
+exists returns `conflict`.
+- `name` (string, required): server name.
+- `registry` (string, optional): registry name.
+- `version` (string, optional): server version; empty uses the latest.
+- `as` (string, optional): connector name; empty derives one from the server name.
+- `package` (number, optional): package index to install; this wins over `remote`.
+- `remote` (number, optional): remote index to install when no package is chosen.
+- `env` (object, optional): variable values as `{VAR: value}`; a value for a secret variable becomes a secret.
+
 ### create
 Create one connector from a definition object. Each block is optional; a
 connector with none is a bare definition.
@@ -34,7 +68,7 @@ connector with none is a bare definition.
   plus `env` and `cwd`.
 
 Mutations (`create`, `replace`, `set`, `delete`, `connect`, `disconnect`,
-`restart`, `test`, `cursor_set`) on an inherited row return `conflict`.
+`restart`, `test`, `cursor_set`, `install`) on an inherited row return `conflict`.
 
 ### replace
 Replace the whole definition of one connector (`PUT`). Use it for an import:

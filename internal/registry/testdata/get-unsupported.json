@@ -1,0 +1,18 @@
+{
+  "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-08/server.schema.json",
+    "name": "acme/cargo",
+    "description": "Cargo MCP server.",
+    "version": "1.0.0",
+    "packages": [
+      {
+        "registryType": "cargo",
+        "registryBaseUrl": "https://crates.io",
+        "identifier": "acme-mcp",
+        "version": "1.0.0",
+        "transport": {"type": "stdio"}
+      }
+    ]
+  },
+  "_meta": {}
+}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -259,6 +260,9 @@ func (s *Service) loadSkill(ctx context.Context, name string, includeMD bool) (*
 	}
 	if srcKind.String != "" {
 		sk.Source = &Source{Kind: srcKind.String}
+		if srcKind.String == "connector" {
+			sk.FromConnector = srcRef.String
+		}
 		if srcKind.String == "git" {
 			sk.Source.URL = srcRef.String
 		} else {
@@ -274,6 +278,61 @@ func (s *Service) loadSkill(ctx context.Context, name string, includeMD bool) (*
 		ON CONFLICT(name) DO UPDATE SET hash=excluded.hash, path=excluded.path, updated_at=excluded.updated_at`,
 		name, string(sk.Provenance), dir, hash, used, now)
 	return sk, nil
+}
+
+// AddConnectorSkill writes one skill a connector install contributed. The
+// skill carries ProvenanceConnector and the connector name as its source, so
+// the connector owns its lifetime (Part H.4).
+func (s *Service) AddConnectorSkill(ctx context.Context, name, skillMD, connector string) (*Skill, error) {
+	if connector == "" {
+		return nil, fmt.Errorf("connector required")
+	}
+	if _, err := s.Create(ctx, name, skillMD, ProvenanceConnector); err != nil {
+		return nil, err
+	}
+	if _, err := s.st.DB().ExecContext(ctx,
+		`UPDATE skill_index SET source_kind='connector', source_ref=? WHERE name=?`, connector, name); err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, name, true)
+}
+
+// RemoveConnectorSkills removes the skills one connector contributed. It
+// returns the names it removed.
+func (s *Service) RemoveConnectorSkills(ctx context.Context, connector string) ([]string, error) {
+	if connector == "" {
+		return nil, nil
+	}
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT name FROM skill_index WHERE provenance=? AND source_ref=?`,
+		string(ProvenanceConnector), connector)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err == nil {
+			names = append(names, name)
+		}
+	}
+	rows.Close()
+	sort.Strings(names)
+	for _, name := range names {
+		dir := filepath.Join(home.SkillsDir(), name)
+		if err := os.RemoveAll(dir); err != nil {
+			return names, err
+		}
+		if _, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+			_, err := tx.Exec(`DELETE FROM skill_index WHERE name=?`, name)
+			return err
+		}, store.BusEvent{
+			Topic: "skill.deleted", Entity: "skill", EntityID: name, Action: "deleted",
+		}); err != nil {
+			return names, err
+		}
+	}
+	return names, nil
 }
 
 // GuardMutate refuses writes against inherited user-home skills.

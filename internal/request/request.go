@@ -1907,6 +1907,44 @@ func BuildConnectorLogsPath(name string, follow bool) string {
 	return withQuery("/v1/connectors/"+url.PathEscape(name)+"/logs", kv)
 }
 
+// BuildConnectorCatalogPath builds GET /v1/connectors/catalog.
+func BuildConnectorCatalogPath(q, registry, cursor string, limit int) string {
+	kv := map[string]string{"q": q, "registry": registry, "cursor": cursor}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return withQuery("/v1/connectors/catalog", kv)
+}
+
+// BuildConnectorCatalogEntryPath builds GET /v1/connectors/catalog/entry.
+func BuildConnectorCatalogEntryPath(registry, name, version string) string {
+	return withQuery("/v1/connectors/catalog/entry", map[string]string{
+		"registry": registry, "name": name, "version": version,
+	})
+}
+
+// BuildConnectorInstall builds POST /v1/connectors/install. Package and
+// Remote are indices into the entry; -1 omits one.
+func BuildConnectorInstall(registry, name, version, as string, pkg, remote int, env map[string]string) HTTPRequest {
+	body := map[string]any{"registry": registry, "name": name}
+	if version != "" {
+		body["version"] = version
+	}
+	if as != "" {
+		body["as"] = as
+	}
+	if pkg >= 0 {
+		body["package"] = pkg
+	}
+	if remote >= 0 {
+		body["remote"] = remote
+	}
+	if len(env) > 0 {
+		body["env"] = env
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors/install", Body: body}
+}
+
 // BuildConfigGet builds GET /v1/config.
 func BuildConfigGet() HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/config"}

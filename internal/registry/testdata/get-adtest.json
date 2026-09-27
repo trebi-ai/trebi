@@ -1,0 +1,26 @@
+{
+  "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-08/server.schema.json",
+    "name": "ai.adtest/adtest-mcp",
+    "description": "Ad testing MCP server.",
+    "title": "Adtest",
+    "version": "1.1.0",
+    "packages": [
+      {
+        "registryType": "npm",
+        "registryBaseUrl": "https://registry.npmjs.org",
+        "identifier": "adtest-mcp",
+        "version": "1.1.0",
+        "runtimeHint": "npx",
+        "transport": {"type": "stdio"},
+        "environmentVariables": [
+          {"name": "ADTEST_API_KEY", "description": "Ad test API key", "format": "string", "isRequired": true, "isSecret": true},
+          {"name": "ADTEST_API_BASE", "description": "API base URL", "format": "string"},
+          {"name": "ADTEST_POLL_TIMEOUT_MS", "description": "Poll timeout in ms", "format": "number"}
+        ]
+      }
+    ],
+    "repository": {"url": "https://github.com/adtest/adtest-mcp", "source": "github"}
+  },
+  "_meta": {}
+}

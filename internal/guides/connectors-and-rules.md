@@ -33,6 +33,19 @@ A job or agent receives connector actions through `connectors:` (or the agent `k
 
 `connector logs` (and `--follow`) blocks — **local only**; remote: poll `connector.logs`. `connector remove` is destructive — ask first.
 
+## Registry
+
+Install an MCP server from a registry. `search` reads every registry in `connectors.registries`; the default holds the official MCP Registry only.
+
+```bash
+trebi connector search postgres --registry official --limit 20
+trebi connector install io.github.modelcontextprotocol/server-github --as github --env GITHUB_PERSONAL_ACCESS_TOKEN=secret:github_pat
+trebi connector install acme/weather --package 0 --env WEATHER_API_KEY=secret:weather
+trebi connector install acme/weather --remote 0
+```
+
+`install` writes the variables the entry marks as secret, then creates the connector with a `source` block. `--package` and `--remote` select one entry of the server (default: the first package, else the first remote that speaks `streamable-http` or `sse`). An entry that contributes a skill writes it under `~/.trebi/skills/<name>/` with provenance `connector`; `connector remove` deletes it again. An install runs third-party code on this machine, so ask the user before you install.
+
 ## Cursors
 
 Cursors track how far a connector has consumed.

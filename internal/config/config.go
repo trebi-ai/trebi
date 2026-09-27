@@ -30,6 +30,7 @@ type Config struct {
 	Assistant  AssistantConfig  `yaml:"assistant,omitempty"`
 	Email      EmailConfig      `yaml:"email,omitempty"`
 	Cloud      CloudConfig      `yaml:"cloud,omitempty"`
+	Connectors ConnectorsConfig `yaml:"connectors,omitempty"`
 }
 
 // HarnessConfig is the vendor run-runtime policy (plan 2026-09-16 Part J).
@@ -728,6 +729,10 @@ tools:
 # cloud:                     # hosted account link (plan 2026-09-22)
 #   api_url: ""              # hosted endpoint (default https://staging-api.trebi.ai)
 #   enabled: true            # false keeps a linked device offline
+
+# connectors:
+#   registries:              # MCP registries the catalog reads, in order
+#     - { name: official, url: https://registry.modelcontextprotocol.io }
 `
 
 // Seed writes config.yaml with the documented defaults when it does not exist.
@@ -960,6 +965,7 @@ func (c *Config) Validate() error {
 	ce.checkAssistant(c.Assistant)
 	ce.checkEmail(*c)
 	ce.checkCloud(*c)
+	ce.checkConnectors(*c)
 
 	if len(ce.Errors) == 0 {
 		return nil
@@ -976,6 +982,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Tools.Fallback == "" {
 		c.Tools.Fallback = "path"
+	}
+	if len(c.Connectors.Registries) == 0 {
+		c.Connectors.Registries = DefaultRegistries()
 	}
 }
 

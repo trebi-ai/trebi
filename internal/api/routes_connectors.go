@@ -2,24 +2,32 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/registry"
+	"github.com/trebi-ai/trebi/internal/secrets"
 )
 
 //nolint:dupl // route tables stay explicit and colocated with area handlers.
 func (s *Server) routeConnectors(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/connectors", s.handleConnectors)
 	mux.HandleFunc("POST /v1/connectors", s.handleConnectorsCreate)
+	mux.HandleFunc("GET /v1/connectors/catalog", s.handleConnectorsCatalog)
+	mux.HandleFunc("GET /v1/connectors/catalog/entry", s.handleConnectorCatalogEntry)
+	mux.HandleFunc("POST /v1/connectors/install", s.handleConnectorInstall)
 	mux.HandleFunc("GET /v1/connectors/{name}", s.handleConnectorGet)
 	mux.HandleFunc("PUT /v1/connectors/{name}", s.handleConnectorPut)
 	mux.HandleFunc("PATCH /v1/connectors/{name}", s.handleConnectorPatch)
@@ -490,4 +498,254 @@ func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	return true
+}
+
+// handleConnectorsCatalog searches the configured MCP registries. With no
+// registry it merges the pages of every registry in order.
+func (s *Server) handleConnectorsCatalog(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	entries, next, err := s.registry.Search(r.Context(), registry.SearchOpts{
+		Query:    q.Get("q"),
+		Registry: q.Get("registry"),
+		Cursor:   q.Get("cursor"),
+		Limit:    parseLimit(r),
+	})
+	if err != nil {
+		s.writeRegistryErr(w, err)
+		return
+	}
+	list := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		list = append(list, catalogEntryRow(e))
+	}
+	resp := map[string]any{"entries": list}
+	if next != "" {
+		resp["next_cursor"] = next
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleConnectorCatalogEntry reads one server entry and its env variables.
+func (s *Server) handleConnectorCatalogEntry(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	name := strings.TrimSpace(q.Get("name"))
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "name required")
+		return
+	}
+	entry, err := s.registry.Get(r.Context(), q.Get("registry"), name, q.Get("version"))
+	if err != nil {
+		s.writeRegistryErr(w, err)
+		return
+	}
+	row := catalogEntryRow(entry)
+	row["env"] = catalogEnvFlags(entry.Server)
+	writeJSON(w, http.StatusOK, row)
+}
+
+// handleConnectorInstall installs one registry entry as a connector. It
+// writes the entry secrets first, then creates the connector; a create
+// failure restores the secrets.
+func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
+	var body struct {
+		Registry string            `json:"registry"`
+		Name     string            `json:"name"`
+		Version  string            `json:"version"`
+		As       string            `json:"as"`
+		Package  *int              `json:"package"`
+		Remote   *int              `json:"remote"`
+		Env      map[string]string `json:"env"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "name required")
+		return
+	}
+	entry, err := s.registry.Get(r.Context(), body.Registry, body.Name, body.Version)
+	if err != nil {
+		s.writeRegistryErr(w, err)
+		return
+	}
+	def, secretWrites, err := entry.Definition(registry.InstallOpts{
+		Name:    body.As,
+		Package: indexOr(body.Package),
+		Remote:  indexOr(body.Remote),
+		Env:     body.Env,
+	})
+	if err != nil {
+		s.writeRegistryErr(w, err)
+		return
+	}
+	restore, err := writeRegistrySecrets(secretWrites)
+	if err != nil {
+		restore()
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if err := s.connectors.Create(r.Context(), def); err != nil {
+		restore()
+		if s.writeConnectorErr(w, err) {
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	row, err := s.connectors.Get(def.Name)
+	if err != nil {
+		row = map[string]any{"name": def.Name}
+	}
+	if sk, ok := entry.Skill(); ok {
+		// The entry contributes a skill (Part H.4). Fetch its body, write it
+		// with connector provenance, and point the CLI action at it.
+		md, ferr := fetchRegistrySkill(r.Context(), sk.URL)
+		if ferr != nil {
+			s.connectors.Delete(r.Context(), def.Name)
+			restore()
+			writeErr(w, http.StatusBadGateway, "internal", ferr.Error())
+			return
+		}
+		written, serr := s.skills.AddConnectorSkill(r.Context(), sk.Name, md, def.Name)
+		if serr != nil {
+			s.connectors.Delete(r.Context(), def.Name)
+			restore()
+			writeErr(w, http.StatusInternalServerError, "internal", serr.Error())
+			return
+		}
+		row["skill"] = map[string]any{"name": written.Name, "from_connector": def.Name}
+	}
+	writeJSON(w, http.StatusCreated, row)
+}
+
+// fetchRegistrySkill reads the SKILL.md body of a contributed skill. It caps
+// the body so a bad URL cannot exhaust memory.
+func fetchRegistrySkill(ctx context.Context, raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("skill url %q is invalid", raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("skill url %s: status %d", u.String(), resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+// catalogEntryRow is the search/list view of one registry entry.
+func catalogEntryRow(e registry.Entry) map[string]any {
+	row := map[string]any{
+		"registry": e.Registry,
+		"name":     e.Server.Name,
+		"version":  e.Server.Version,
+	}
+	if e.Server.Title != "" {
+		row["title"] = e.Server.Title
+	}
+	if e.Server.Description != "" {
+		row["description"] = e.Server.Description
+	}
+	row["packages"] = e.Server.Packages
+	row["remotes"] = e.Server.Remotes
+	return row
+}
+
+// catalogEnvFlags lists the declared env variables with their required and
+// secret flags, deduplicated across packages.
+func catalogEnvFlags(s registry.ServerJSON) []map[string]any {
+	seen := map[string]bool{}
+	out := []map[string]any{}
+	for _, p := range s.Packages {
+		for _, v := range p.EnvironmentVariables {
+			if v.Name == "" || seen[v.Name] {
+				continue
+			}
+			seen[v.Name] = true
+			out = append(out, map[string]any{
+				"name":        v.Name,
+				"description": v.Description,
+				"format":      v.Format,
+				"required":    v.IsRequired,
+				"secret":      v.IsSecret,
+			})
+		}
+	}
+	return out
+}
+
+// indexOr maps an optional JSON index to the -1 sentinel InstallOpts uses.
+func indexOr(v *int) int {
+	if v == nil {
+		return -1
+	}
+	return *v
+}
+
+// writeRegistryErr maps a registry client error to a status code.
+func (s *Server) writeRegistryErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, registry.ErrUnknownRegistry):
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	case errors.Is(err, registry.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, registry.ErrUnsupportedPackage),
+		errors.Is(err, registry.ErrUnsupportedRemote),
+		errors.Is(err, registry.ErrMissingEnv):
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	default:
+		writeErr(w, http.StatusBadGateway, "upstream", err.Error())
+	}
+}
+
+// writeRegistrySecrets stores each secret and returns a restore function. The
+// restore puts back a prior value, or deletes a secret that did not exist, so
+// a failed install leaves the store as it was.
+func writeRegistrySecrets(writes []registry.SecretWrite) (func(), error) {
+	type prior struct {
+		value   string
+		existed bool
+	}
+	prev := make([]prior, 0, len(writes))
+	written := 0
+	restore := func() {
+		for i := written - 1; i >= 0; i-- {
+			if prev[i].existed {
+				_ = secrets.Set(writes[i].Name, prev[i].value)
+				continue
+			}
+			_ = secrets.Delete(writes[i].Name)
+		}
+	}
+	for i, w := range writes {
+		p := prior{}
+		if cur, err := secrets.Get(w.Name); err == nil {
+			p.value, p.existed = string(cur), true
+		}
+		prev = append(prev, p)
+		if err := secrets.Set(w.Name, w.Value); err != nil {
+			written = i
+			return restore, err
+		}
+		written = i + 1
+	}
+	return restore, nil
 }

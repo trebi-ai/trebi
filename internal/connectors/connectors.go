@@ -401,23 +401,19 @@ func (s *Service) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
-// deleteContributedSkills removes skills this connector installed. It is a
-// no-op until the registry install writes them (Part H.4).
+// deleteContributedSkills removes the skills this connector installed
+// (Part H.4). A failure is logged and does not undo the connector delete.
 func (s *Service) deleteContributedSkills(ctx context.Context, name string) {
 	if s.sk == nil {
 		return
 	}
-	list, err := s.sk.List(ctx)
+	removed, err := s.sk.RemoveConnectorSkills(ctx, name)
 	if err != nil {
-		s.log.Warn("list skills for connector delete", "connector", name, "error", err)
+		s.log.Warn("delete contributed skills", "connector", name, "error", err)
 		return
 	}
-	for _, sk := range list {
-		if sk.FromConnector == name {
-			if err := s.sk.Delete(ctx, sk.Name); err != nil {
-				s.log.Warn("delete contributed skill", "skill", sk.Name, "connector", name, "error", err)
-			}
-		}
+	if len(removed) > 0 {
+		s.log.Info("connector skills removed", "connector", name, "skills", strings.Join(removed, ","))
 	}
 }
 
