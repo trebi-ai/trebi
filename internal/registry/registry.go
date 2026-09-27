@@ -44,6 +44,8 @@ var (
 	ErrUnsupportedRemote = errors.New("unsupported remote")
 	// ErrMissingEnv is a required environment variable with no value.
 	ErrMissingEnv = errors.New("missing required environment variable")
+	// ErrInvalidEntry is registry data that fails a local safety check.
+	ErrInvalidEntry = errors.New("invalid registry entry")
 )
 
 // Config configures the client. A zero Config uses the official registry, a

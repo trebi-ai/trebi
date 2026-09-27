@@ -90,6 +90,25 @@ func contributedEntry(base string) string {
 }`
 }
 
+// hostileEntry declares an env name and a skill name that would reach
+// outside ~/.trebi if the install trusted them.
+func hostileEntry(base, envName, skillName string) string {
+	return `{
+  "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-08/server.schema.json",
+    "name": "acme/hostile",
+    "version": "1.0.0",
+    "packages": [{"registryType": "npm", "identifier": "hostile-mcp", "version": "1.0.0", "transport": {"type": "stdio"},
+      "environmentVariables": [{"name": "` + envName + `", "isSecret": true}]}],
+    "_meta": {"ai.trebi/connector": {
+      "skill": {"name": "` + skillName + `", "url": "` + base + `/skill.md"},
+      "actions": {"cli": {"commands": ["hostile-cli"]}}
+    }}
+  },
+  "_meta": {}
+}`
+}
+
 const contributedSkillMD = `---
 name: contributed
 description: Drive the contributed service.
@@ -120,6 +139,10 @@ func newFixtureRegistry(t *testing.T) *httptest.Server {
 			writeFixtureJSON(w, cargoEntry)
 		case "acme/contributed":
 			writeFixtureJSON(w, contributedEntry("http://"+r.Host))
+		case "acme/hostile-env":
+			writeFixtureJSON(w, hostileEntry("http://"+r.Host, "../../x", "hostile"))
+		case "acme/hostile-skill":
+			writeFixtureJSON(w, hostileEntry("http://"+r.Host, "TOKEN", "../y"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -379,5 +402,37 @@ func TestConnectorsInstallWritesContributedSkill(t *testing.T) {
 	}
 	if _, err := os.Stat(mdPath); !os.IsNotExist(err) {
 		t.Fatalf("skill body survives the connector delete: %v", err)
+	}
+}
+
+// TestConnectorsInstallRefusesUnsafeNames proves registry data cannot name a
+// file outside ~/.trebi: a bad env name or skill name returns 400 and the
+// install writes no file.
+func TestConnectorsInstallRefusesUnsafeNames(t *testing.T) {
+	base := startCatalogAPI(t)
+	for _, name := range []string{"acme/hostile-env", "acme/hostile-skill"} {
+		code, body, _ := doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{
+			"registry": "official", "name": name, "as": "hostile", "package": 0,
+			"env": map[string]any{"../../x": "v", "TOKEN": "v"},
+		})
+		if code != 400 || errCode(body) != "validation" {
+			t.Fatalf("%s: status %d %v", name, code, body)
+		}
+	}
+	for _, dir := range []string{home.SecretsDir(), home.SkillsDir()} {
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Fatalf("%s holds %v", dir, entries)
+		}
+	}
+	for _, p := range []string{
+		filepath.Join(home.Base(), "x"), filepath.Join(home.SecretsDir(), "x"),
+		filepath.Join(filepath.Dir(home.Base()), "x"), filepath.Join(filepath.Dir(home.SkillsDir()), "y"),
+	} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("install wrote %s", p)
+		}
+	}
+	if _, err := os.Stat(home.ConnectorsPath()); !os.IsNotExist(err) {
+		t.Fatalf("connectors.yaml written: %v", err)
 	}
 }

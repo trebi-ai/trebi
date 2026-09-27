@@ -183,6 +183,9 @@ type Source struct {
 // Connector name rules: lowercase, digits, dashes, at most 40 characters.
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 
+// envKeyRE is an environment variable name.
+var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // reserved names belong to a native channel, not to a subprocess. The row
 // for one is synthesized by its service and is invisible to Get, so without
 // GuardReserved a write would shadow it.
@@ -223,6 +226,11 @@ func (d Definition) Validate() error {
 	if d.Actions == nil && d.Events == nil && d.Channel == nil {
 		add("", "at least one of actions, events, channel is required")
 	}
+	for k := range d.Env {
+		if !envKeyRE.MatchString(k) {
+			add("env", fmt.Sprintf("key %q must match %s", k, envKeyRE))
+		}
+	}
 	if d.Actions != nil {
 		if d.Actions.MCP == nil && d.Actions.CLI == nil {
 			add("actions", "at least one of mcp, cli is required")
@@ -239,6 +247,11 @@ func (d Definition) Validate() error {
 			}
 			if m.Command == "" && len(m.Args) > 0 {
 				add("actions.mcp.args", "needs command")
+			}
+			for k := range m.Env {
+				if !envKeyRE.MatchString(k) {
+					add("actions.mcp.env", fmt.Sprintf("key %q must match %s", k, envKeyRE))
+				}
 			}
 		}
 		if c := d.Actions.CLI; c != nil {

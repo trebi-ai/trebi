@@ -173,6 +173,10 @@ func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
+	if err := secrets.CheckName(name); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
 	var body struct {
 		Value string `json:"value"`
 	}
@@ -195,6 +199,10 @@ func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
+	if err := secrets.CheckName(name); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
 	if err := secrets.Delete(name); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return

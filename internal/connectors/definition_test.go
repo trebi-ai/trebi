@@ -45,6 +45,8 @@ func TestDefinitionValidate(t *testing.T) {
 		{"channel needs ref", connectors.Definition{Name: "a", Events: validEvents, Channel: &connectors.Channel{Send: "s"}}, []string{"channel.ref"}},
 		{"channel needs send", connectors.Definition{Name: "a", Events: validEvents, Channel: &connectors.Channel{Ref: "r"}}, []string{"channel.send"}},
 		{"typing interval short", connectors.Definition{Name: "a", Events: validEvents, Channel: &connectors.Channel{Ref: "r", Send: "s", TypingInterval: connectors.Duration(500 * time.Millisecond)}}, []string{"channel.typing_interval"}},
+		{"env bad key", connectors.Definition{Name: "a", Env: map[string]string{"../x": "v"}, Events: &connectors.Events{Command: "x"}}, []string{"env"}},
+		{"mcp env bad key", connectors.Definition{Name: "a", Actions: &connectors.Actions{MCP: &connectors.MCPAction{Command: "npx", Env: map[string]string{"A-B": "v"}}}}, []string{"actions.mcp.env"}},
 		{"channel valid", connectors.Definition{Name: "a", Events: validEvents, Channel: &connectors.Channel{Ref: "r", Send: "s", Typing: "t", Ack: "a"}}, nil},
 	}
 	for _, tc := range cases {

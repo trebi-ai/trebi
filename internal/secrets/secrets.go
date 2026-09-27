@@ -2,10 +2,12 @@
 package secrets
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/home"
@@ -19,8 +21,25 @@ func (s Secret) LogValue() slog.Value {
 	return slog.StringValue("[secret]")
 }
 
+// A secret name is one file name: no separator, and no leading dot.
+var nameRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
+
+// ErrBadName is a secret name that cannot be a plain file name.
+var ErrBadName = errors.New("secret name must match " + nameRE.String())
+
+// CheckName refuses a name that could reach outside the secrets directory.
+func CheckName(name string) error {
+	if !nameRE.MatchString(name) {
+		return fmt.Errorf("%w: %q", ErrBadName, name)
+	}
+	return nil
+}
+
 // Set writes a secret file 0600.
 func Set(name, value string) error {
+	if err := CheckName(name); err != nil {
+		return err
+	}
 	if err := home.EnsureDirs(); err != nil {
 		return err
 	}
@@ -30,6 +49,9 @@ func Set(name, value string) error {
 
 // Delete removes a secret.
 func Delete(name string) error {
+	if err := CheckName(name); err != nil {
+		return err
+	}
 	path := filepath.Join(home.SecretsDir(), name)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
@@ -57,6 +79,9 @@ func List() ([]string, error) {
 
 // Get reads a secret value (for internal resolution only).
 func Get(name string) (Secret, error) {
+	if err := CheckName(name); err != nil {
+		return "", err
+	}
 	b, err := os.ReadFile(filepath.Join(home.SecretsDir(), name))
 	if err != nil {
 		return "", fmt.Errorf("secret %s: %w", name, err)

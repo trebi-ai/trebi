@@ -20,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/secrets"
+	"github.com/trebi-ai/trebi/internal/skills"
 )
 
 //nolint:dupl // route tables stay explicit and colocated with area handlers.
@@ -548,9 +549,10 @@ func (s *Server) handleConnectorCatalogEntry(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, row)
 }
 
-// handleConnectorInstall installs one registry entry as a connector. It
-// writes the entry secrets first, then creates the connector; a create
-// failure restores the secrets.
+// handleConnectorInstall installs one registry entry as a connector. Registry
+// data is untrusted: it validates the definition and the skill name first,
+// then writes the entry secrets, then creates the connector. A create failure
+// restores the secrets.
 func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
@@ -589,6 +591,19 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		s.writeRegistryErr(w, err)
 		return
 	}
+	if err := def.Validate(); err != nil {
+		if !s.writeConnectorErr(w, err) {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		}
+		return
+	}
+	sk, hasSkill := entry.Skill()
+	if hasSkill {
+		if err := skills.CheckName(sk.Name); err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
+	}
 	restore, err := writeRegistrySecrets(secretWrites)
 	if err != nil {
 		restore()
@@ -607,7 +622,7 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		row = map[string]any{"name": def.Name}
 	}
-	if sk, ok := entry.Skill(); ok {
+	if hasSkill {
 		// The entry contributes a skill (Part H.4). Fetch its body, write it
 		// with connector provenance, and point the CLI action at it.
 		md, ferr := fetchRegistrySkill(r.Context(), sk.URL)
@@ -714,7 +729,8 @@ func (s *Server) writeRegistryErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, registry.ErrUnsupportedPackage),
 		errors.Is(err, registry.ErrUnsupportedRemote),
-		errors.Is(err, registry.ErrMissingEnv):
+		errors.Is(err, registry.ErrMissingEnv),
+		errors.Is(err, registry.ErrInvalidEntry):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 	default:
 		writeErr(w, http.StatusBadGateway, "upstream", err.Error())

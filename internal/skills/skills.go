@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -79,6 +80,20 @@ var ErrPrecondition = errors.New("precondition failed")
 // ErrInherited is a mutation against a read-only discovered user skill.
 var ErrInherited = errors.New("inherited from user skill dir")
 
+// A skill name is one directory name under ~/.trebi/skills.
+var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+// ErrBadName is a skill name that cannot be a plain directory name.
+var ErrBadName = errors.New("skill name must match " + nameRE.String())
+
+// CheckName refuses a name that could reach outside the skills directory.
+func CheckName(name string) error {
+	if !nameRE.MatchString(name) {
+		return fmt.Errorf("%w: %q", ErrBadName, name)
+	}
+	return nil
+}
+
 // New creates a skills service.
 func New(st *store.Store) *Service { return &Service{st: st} }
 
@@ -130,8 +145,8 @@ func (s *Service) Get(ctx context.Context, name string, includeMD bool) (*Skill,
 
 // Create writes a new skill folder.
 func (s *Service) Create(ctx context.Context, name, skillMD string, prov Provenance) (*Skill, error) {
-	if name == "" {
-		return nil, fmt.Errorf("name required")
+	if err := CheckName(name); err != nil {
+		return nil, err
 	}
 	if prov == "" {
 		prov = ProvenanceLocal
@@ -319,9 +334,11 @@ func (s *Service) RemoveConnectorSkills(ctx context.Context, connector string) (
 	rows.Close()
 	sort.Strings(names)
 	for _, name := range names {
-		dir := filepath.Join(home.SkillsDir(), name)
-		if err := os.RemoveAll(dir); err != nil {
-			return names, err
+		// A row from before the name check must not reach RemoveAll.
+		if CheckName(name) == nil {
+			if err := os.RemoveAll(filepath.Join(home.SkillsDir(), name)); err != nil {
+				return names, err
+			}
 		}
 		if _, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 			_, err := tx.Exec(`DELETE FROM skill_index WHERE name=?`, name)
@@ -701,8 +718,8 @@ func (src Source) fetchInto(ctx context.Context, tmp string) error {
 
 // CreateFromSource installs one skill from a git remote or a folder.
 func (s *Service) CreateFromSource(ctx context.Context, name string, src Source) (*Skill, error) {
-	if name == "" {
-		return nil, fmt.Errorf("name required")
+	if err := CheckName(name); err != nil {
+		return nil, err
 	}
 	dir := filepath.Join(home.SkillsDir(), name)
 	if _, err := os.Stat(dir); err == nil {

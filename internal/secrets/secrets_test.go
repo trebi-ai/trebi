@@ -1,6 +1,7 @@
 package secrets_test
 
 import (
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -69,5 +70,31 @@ func TestExpandRefs(t *testing.T) {
 	}
 	if len(missing) != 1 || missing[0] != "no-such-secret" {
 		t.Fatalf("missing %v", missing)
+	}
+}
+
+// TestSecretCheckName proves a name that could leave the secrets directory is
+// refused by every file operation.
+func TestSecretCheckName(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	for _, good := range []string{"api-key", "assistant.api_key", "docker-mcp_TOKEN", "GH_TOKEN"} {
+		if err := secrets.CheckName(good); err != nil {
+			t.Errorf("%q: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"", "../x", "a/b", ".hidden", "..", "x_../../y"} {
+		if err := secrets.CheckName(bad); !errors.Is(err, secrets.ErrBadName) {
+			t.Errorf("%q passed", bad)
+		}
+		if err := secrets.Set(bad, "v"); !errors.Is(err, secrets.ErrBadName) {
+			t.Errorf("set %q: %v", bad, err)
+		}
+		if _, err := secrets.Get(bad); !errors.Is(err, secrets.ErrBadName) {
+			t.Errorf("get %q: %v", bad, err)
+		}
+		if err := secrets.Delete(bad); !errors.Is(err, secrets.ErrBadName) {
+			t.Errorf("delete %q: %v", bad, err)
+		}
 	}
 }

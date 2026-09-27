@@ -209,7 +209,10 @@ func (e Entry) packageAction(p Package, connectorName string, given map[string]s
 	default:
 		return nil, nil, fmt.Errorf("%w: registryType %q", ErrUnsupportedPackage, p.RegistryType)
 	}
-	env, writes, missing := e.resolveEnv(p.EnvironmentVariables, connectorName, given)
+	env, writes, missing, err := e.resolveEnv(p.EnvironmentVariables, connectorName, given)
+	if err != nil {
+		return nil, nil, err
+	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		return nil, nil, fmt.Errorf("%w: %s", ErrMissingEnv, strings.Join(missing, ", "))
@@ -237,8 +240,10 @@ func (e Entry) remoteAction(r Remote) *connectors.MCPAction {
 
 // resolveEnv builds the MCP env map, the secret writes, and the list of
 // required variables with no value. A caller value wins over the registry
-// default. Undeclared caller values are written literally.
-func (e Entry) resolveEnv(declared []KeyValue, connectorName string, given map[string]string) (map[string]string, []SecretWrite, []string) {
+// default. Undeclared caller values are written literally. A declared name
+// that is not an env name is ErrInvalidEntry: it becomes part of a secret
+// file name.
+func (e Entry) resolveEnv(declared []KeyValue, connectorName string, given map[string]string) (map[string]string, []SecretWrite, []string, error) {
 	env := map[string]string{}
 	var writes []SecretWrite
 	var missing []string
@@ -247,6 +252,9 @@ func (e Entry) resolveEnv(declared []KeyValue, connectorName string, given map[s
 		name := strings.TrimSpace(v.Name)
 		if name == "" {
 			continue
+		}
+		if !envNameRE.MatchString(name) {
+			return nil, nil, nil, fmt.Errorf("%w: env name %q must match %s", ErrInvalidEntry, name, envNameRE)
 		}
 		seen[name] = true
 		value := ""
@@ -277,8 +285,10 @@ func (e Entry) resolveEnv(declared []KeyValue, connectorName string, given map[s
 	if len(env) == 0 {
 		env = nil
 	}
-	return env, writes, missing
+	return env, writes, missing, nil
 }
+
+var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // argumentTokens renders package arguments for a command line. A positional
 // argument is its value; a named argument is name=value or a bare name.
