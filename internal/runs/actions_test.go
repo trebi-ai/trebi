@@ -192,7 +192,7 @@ func TestPaneClaudeMCPConfigLeavesJobDir(t *testing.T) {
 	if entries, _ := os.ReadDir(wd); len(entries) != 0 {
 		t.Fatalf("working dir holds %v", entries)
 	}
-	id := opts.CreateOpts.ID
+	id := opts.ID
 	path := runFiles(id).Path("mcp.json")
 	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
 		t.Fatalf("private file %s: %v %v", path, st, err)

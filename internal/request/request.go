@@ -1867,7 +1867,7 @@ func (i ConnectorPatch) Build() HTTPRequest {
 		body["actions"] = json.RawMessage(i.Actions)
 	}
 	if i.ActionsMerge != nil {
-		body["actions_merge"] = json.RawMessage(i.ActionsMerge)
+		body["actions_merge"] = i.ActionsMerge
 	}
 	if i.Events != nil {
 		body["events"] = json.RawMessage(i.Events)

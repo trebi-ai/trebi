@@ -1022,8 +1022,8 @@ func injectMCPPlan(tool tmux.Tool, plan *tmux.LaunchPlan, opts *LaunchOpts) erro
 		plan.Env[k] = v
 	}
 	// The private files carry the run id, so the id exists before Create.
-	if opts.CreateOpts.ID == "" {
-		opts.CreateOpts.ID = ulid.Make().String()
+	if opts.ID == "" {
+		opts.ID = ulid.Make().String()
 	}
 	if err := inj.InjectMCP(plan, servers, runFiles(opts.ID)); err != nil {
 		return fmt.Errorf("%w: %s", ErrActionsInvalid, err)

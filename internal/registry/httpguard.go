@@ -20,7 +20,7 @@ var ErrUnsafeURL = errors.New("unsafe registry url")
 
 // cgnat is the shared address space of RFC 6598. netip does not mark it as
 // private.
-var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+var cgnat = netip.MustParsePrefix("100.64.0.0/10") //nolint:gochecknoglobals // constant prefix, never mutated
 
 // SafeClient refuses non-https URLs, loopback, link-local, and private addresses, including after a redirect.
 func SafeClient(timeout time.Duration) *http.Client {

@@ -55,7 +55,7 @@ var (
 
 // apiPrefixes are the registry API versions, newest first. A registry that
 // returns 404 for the first gets the second.
-var apiPrefixes = [...]string{"/v0.1", "/v0"}
+var apiPrefixes = [...]string{"/v0.1", "/v0"} //nolint:gochecknoglobals // constant list, never mutated
 
 // Config configures the client. A zero Config uses the official registry, a
 // 10 s HTTP client, SafeClient for skill fetches, and the default logger.
