@@ -15,7 +15,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/trebi-ai/agent-wire v0.3.2
+	github.com/trebi-ai/agent-wire v0.4.0
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
