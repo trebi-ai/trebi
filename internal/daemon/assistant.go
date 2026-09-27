@@ -109,15 +109,7 @@ func (c *ControlPlane) dispatchAssistant(ctx context.Context, item *dispatch.Que
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
 		return
 	}
-	channelType := item.Connector
-	if channelType == "" {
-		channelType = conversations.ChannelAssistant
-	}
-	ref := item.ConversationKey
-	if ref == "" {
-		ref = "trigger:" + item.Connector
-	}
-	convID, err := c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, "", channelType, ref)
+	convID, channelType, ref, err := c.assistantConversation(ctx, item)
 	if err != nil {
 		c.failOrRetry(ctx, item, err, nil)
 		return
@@ -137,6 +129,9 @@ func (c *ControlPlane) dispatchAssistant(ctx context.Context, item *dispatch.Que
 			}
 		}
 	}
+	if !c.markAttempt(ctx, item) {
+		return
+	}
 	if _, err := c.asst.Ask(ctx, convID, assistant.PromptInput{
 		Text:           text,
 		ChannelType:    channelType,
@@ -148,6 +143,7 @@ func (c *ControlPlane) dispatchAssistant(ctx context.Context, item *dispatch.Que
 		c.failOrRetry(ctx, item, err, nil)
 		return
 	}
+	c.recordPolicy(ctx, item)
 	if err := c.queue.MarkDone(ctx, item.ID, dispatch.ResultLaunched, ""); err != nil {
 		c.log.Warn("queue mark done", "queue_id", item.ID, "error", err)
 	}

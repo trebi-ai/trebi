@@ -38,7 +38,7 @@ func (c *ControlPlane) queueWorker(ctx context.Context) {
 				continue
 			}
 			if c.Policy != nil {
-				c.Policy.PruneIdle(time.Now(), 24*time.Hour)
+				c.Policy.PruneIdle(c.now())
 			}
 			c.drainQueue(ctx)
 		}
@@ -125,12 +125,25 @@ func (c *ControlPlane) releaseAuthBlocks(ctx context.Context) {
 	}
 }
 
-// queueLanes returns distinct lanes with pending rows.
+// now is the queue and policy clock.
+func (c *ControlPlane) now() time.Time {
+	if c.Opts.Now != nil {
+		return c.Opts.Now()
+	}
+	return time.Now()
+}
+
+// queueLanes returns distinct lanes with due pending rows. A conversation
+// lane counts only when its head row is due (FIFO inside a conversation).
 func (c *ControlPlane) queueLanes(ctx context.Context) []lane {
-	due := time.Now().UTC().Format(time.RFC3339)
+	due := c.now().UTC().Format(time.RFC3339)
 	rows, err := c.Store.DB().QueryContext(ctx, `
-		SELECT DISTINCT workspace_id, job, kind, conversation_key FROM event_queue
-		WHERE status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) LIMIT 50`, due)
+		SELECT DISTINCT workspace_id, job, kind, conversation_key FROM event_queue q
+		WHERE status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+		AND (conversation_key = '' OR id = (SELECT MIN(h.id) FROM event_queue h
+			WHERE h.status='pending' AND h.workspace_id=q.workspace_id AND h.job=q.job
+			AND h.kind=q.kind AND h.conversation_key=q.conversation_key))
+		LIMIT 50`, due)
 	if err != nil {
 		c.log.Warn("queue lane query", "error", err)
 		return nil
@@ -165,7 +178,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		// The assistant takes one turn at a time per conversation (plan E.4):
 		// the next item waits until the live turn ends.
 		if c.assistantTurnActive(ctx, item) {
-			_ = c.queue.Defer(ctx, item.ID, time.Now().Add(2*time.Second), "turn_active")
+			_ = c.queue.Defer(ctx, item.ID, c.now().Add(2*time.Second), dispatch.DeferTurn)
 			return
 		}
 		// The assistant is a session; the lane prompts the manager and
@@ -178,15 +191,12 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		_ = c.queue.MarkBlocked(ctx, item.ID, dispatch.BlockJobMissing)
 		return
 	}
-	if item.Attempts > dispatch.MaxAttempts {
-		_ = c.queue.MarkDone(ctx, item.ID, dispatch.ResultDead, "")
-		return
-	}
 	if item.ResumeOf != "" {
 		c.dispatchResume(ctx, item)
 		return
 	}
 	prompt := queuePrompt(item, j)
+	coalesceText := prompt
 	convID := c.conversationID(ctx, item.WorkspaceID, item.ConversationKey)
 	convKey := item.ConversationKey
 	if id, key := c.channelConversation(ctx, item); id != "" {
@@ -209,10 +219,14 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			wake.Recap = c.Conversations.Recap(ctx, convID, wakeRecapN)
 		}
 		prompt = ""
+		coalesceText = wake.Message
 	}
 	harness := j.ResolvedHarness()
 	if reason := c.blockedFor(ctx, kind, harness); reason != "" {
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
+		return
+	}
+	if !c.markAttempt(ctx, item) {
 		return
 	}
 	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.Job)
@@ -257,11 +271,12 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			WorkingDir:      cwd,
 			Runtime:         j.Runtime,
 		},
-		Prompt:    prompt,
-		Wake:      wake,
-		Memory:    c.memoryLaunch(ctx, item.WorkspaceID, j),
-		Kit:       kit,
-		JobSkills: j.Skills, JobConnectors: j.Connectors,
+		Prompt:       prompt,
+		CoalesceText: coalesceText,
+		Wake:         wake,
+		Memory:       c.memoryLaunch(ctx, item.WorkspaceID, j),
+		Kit:          kit,
+		JobSkills:    j.Skills, JobConnectors: j.Connectors,
 		IfRunning: ifRunning,
 		Env:       d.Env,
 		Model:     d.Model,
@@ -280,10 +295,10 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
 		return
 	}
-	if outcome != "skip" && outcome != "coalesce" {
+	result := queueResult(outcome, run)
+	if result == dispatch.ResultLaunched || result == dispatch.ResultCoalesced {
 		c.recordPolicy(ctx, item)
 	}
-	result := queueResult(outcome, run)
 	if merr := c.queue.MarkDone(ctx, item.ID, result, run.ID); merr != nil {
 		c.log.Warn("queue mark done", "queue_id", item.ID, "error", merr)
 	}
@@ -293,7 +308,28 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	}
 }
 
+// markAttempt counts one launch attempt just before the launch. It marks
+// the row dead and returns false when the row has no attempts left.
+func (c *ControlPlane) markAttempt(ctx context.Context, item *dispatch.QueueItem) bool {
+	n, err := c.queue.MarkAttempt(ctx, item.ID)
+	if err != nil {
+		c.log.Warn("queue mark attempt", "queue_id", item.ID, "error", err)
+		return false
+	}
+	item.Attempts = n
+	if n > dispatch.MaxAttempts {
+		if merr := c.queue.MarkDone(ctx, item.ID, dispatch.ResultDead, ""); merr != nil {
+			c.log.Warn("queue mark dead", "queue_id", item.ID, "error", merr)
+		}
+		return false
+	}
+	return true
+}
+
 func (c *ControlPlane) dispatchResume(ctx context.Context, item *dispatch.QueueItem) {
+	if !c.markAttempt(ctx, item) {
+		return
+	}
 	run, err := c.Runs.Resume(ctx, item.ResumeOf)
 	if err != nil || run == nil {
 		c.log.Warn("queue resume", "job", item.Job, "queue_id", item.ID, "error", err)
@@ -323,6 +359,13 @@ func (c *ControlPlane) failOrRetry(ctx context.Context, item *dispatch.QueueItem
 			return
 		}
 	}
+	// An action error is a config fault: a retry sends the same launch.
+	if errors.Is(err, runs.ErrActionsInvalid) || errors.Is(err, runs.ErrActionsUnsupported) {
+		if merr := c.queue.MarkDead(ctx, item.ID, err.Error()); merr != nil {
+			c.log.Warn("queue mark dead", "queue_id", item.ID, "error", merr)
+		}
+		return
+	}
 	if err != nil && item.Attempts < dispatch.MaxAttempts {
 		if errors.Is(err, runs.ErrBudgetExceeded) {
 			if merr := c.queue.MarkDone(ctx, item.ID, dispatch.ResultSkipped, ""); merr != nil {
@@ -335,7 +378,7 @@ func (c *ControlPlane) failOrRetry(ctx context.Context, item *dispatch.QueueItem
 		if backoff > 5*time.Minute {
 			backoff = 5 * time.Minute
 		}
-		if rerr := c.queue.Defer(ctx, item.ID, time.Now().Add(backoff), "retry"); rerr != nil {
+		if rerr := c.queue.Defer(ctx, item.ID, c.now().Add(backoff), dispatch.DeferRetry); rerr != nil {
 			c.log.Warn("queue defer", "queue_id", item.ID, "error", rerr)
 		}
 		return
@@ -497,11 +540,11 @@ func (c *ControlPlane) policyDefer(ctx context.Context, item *dispatch.QueueItem
 	if key == "" {
 		return false
 	}
-	until := c.Policy.NextAllowed(key, debounce, rate, time.Now())
+	until := c.Policy.NextAllowed(key, debounce, rate, c.now())
 	if until.IsZero() {
 		return false
 	}
-	if err := c.queue.Defer(ctx, item.ID, until, "policy"); err != nil {
+	if err := c.queue.Defer(ctx, item.ID, until, dispatch.DeferPolicy); err != nil {
 		c.log.Warn("queue policy defer", "queue_id", item.ID, "error", err)
 	}
 	return true
@@ -513,19 +556,27 @@ func (c *ControlPlane) assistantTurnActive(ctx context.Context, item *dispatch.Q
 	if c.asst == nil || c.Conversations == nil {
 		return false
 	}
-	channelType := item.Connector
-	if channelType == "" {
-		channelType = conversations.ChannelAssistant
-	}
-	ref := item.ConversationKey
-	if ref == "" {
-		ref = "trigger:" + channelType
-	}
-	convID, err := c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, "", channelType, ref)
+	convID, _, _, err := c.assistantConversation(ctx, item)
 	if err != nil || convID == "" {
 		return false
 	}
 	return c.asst.TurnActive(ctx, convID)
+}
+
+// assistantConversation resolves the conversation of one assistant item:
+// the channel pointer of the item connector and conversation key. An item
+// with no key shares one trigger conversation per channel.
+func (c *ControlPlane) assistantConversation(ctx context.Context, item *dispatch.QueueItem) (convID, channelType, ref string, err error) {
+	channelType = item.Connector
+	if channelType == "" {
+		channelType = conversations.ChannelAssistant
+	}
+	ref = item.ConversationKey
+	if ref == "" {
+		ref = "trigger:" + channelType
+	}
+	convID, err = c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, "", channelType, ref)
+	return convID, channelType, ref, err
 }
 
 // recordPolicy notes one fire for the trigger's rate limit.
@@ -533,16 +584,21 @@ func (c *ControlPlane) recordPolicy(ctx context.Context, item *dispatch.QueueIte
 	if c.Policy == nil {
 		return
 	}
-	_, rate, key := c.itemPolicy(ctx, item)
+	debounce, rate, key := c.itemPolicy(ctx, item)
 	if key != "" {
-		c.Policy.Record(key, rate, time.Now())
+		c.Policy.Record(key, debounce, rate, c.now())
 	}
 }
 
 // itemPolicy returns the debounce, rate limit, and claim key of the trigger
 // behind one queue item. The key matches TriggerRows: workspace, job, trigger
-// index, conversation key.
+// index, conversation key. A resume item, or an item whose connector is not
+// the event of the trigger at OnIndex (escalation, conversation wake), has
+// no policy.
 func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem) (time.Duration, *dispatch.RateLimit, string) {
+	if item.ResumeOf != "" {
+		return 0, nil, ""
+	}
 	key := item.WorkspaceID + "/" + item.Job + "/" + strconv.Itoa(item.OnIndex) + "/" + item.ConversationKey
 	if item.Kind == dispatch.KindAssistant {
 		rows, err := c.Workspaces.AssistantTriggerRows(ctx)
@@ -554,7 +610,8 @@ func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem)
 				continue
 			}
 			for _, tr := range at.Triggers {
-				if tr.Index == item.OnIndex && tr.Family == "event" && tr.Event != "" {
+				// The pipeline takes an assistant trigger with no family.
+				if tr.Index == item.OnIndex && (tr.Family == "" || tr.Family == "event") && tr.Event == item.Connector {
 					return tr.Debounce, dispatch.ParseRateLimit(tr.RateLimit), key
 				}
 			}
@@ -566,7 +623,7 @@ func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem)
 		return 0, nil, ""
 	}
 	for _, tr := range j.Triggers {
-		if tr.Index == item.OnIndex && tr.Family == "event" && tr.Event != "" {
+		if tr.Index == item.OnIndex && tr.Family == "event" && tr.Event == item.Connector {
 			return tr.Debounce, dispatch.ParseRateLimit(tr.RateLimit), key
 		}
 	}

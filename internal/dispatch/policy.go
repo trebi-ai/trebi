@@ -19,6 +19,9 @@ type Policy struct {
 	mu        sync.Mutex
 	lastFired map[string]time.Time
 	window    map[string][]time.Time
+	// expires is the time after which a key has no effect: the debounce
+	// has passed and the rate window holds no entries.
+	expires map[string]time.Time
 }
 
 // NewPolicy creates empty policy state.
@@ -26,6 +29,7 @@ func NewPolicy() *Policy {
 	return &Policy{
 		lastFired: make(map[string]time.Time),
 		window:    make(map[string][]time.Time),
+		expires:   make(map[string]time.Time),
 	}
 }
 
@@ -59,10 +63,17 @@ func (p *Policy) NextAllowed(key string, debounce time.Duration, rate *RateLimit
 }
 
 // Record marks a successful fire.
-func (p *Policy) Record(key string, rate *RateLimit, now time.Time) {
+func (p *Policy) Record(key string, debounce time.Duration, rate *RateLimit, now time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.recordLocked(key, rate, now)
+	hold := debounce
+	if rate != nil && rate.Per > hold {
+		hold = rate.Per
+	}
+	if exp := now.Add(hold); exp.After(p.expires[key]) {
+		p.expires[key] = exp
+	}
 }
 
 // pruneWindow drops fires at or before cut.
@@ -85,18 +96,16 @@ func (p *Policy) recordLocked(key string, rate *RateLimit, now time.Time) {
 	}
 }
 
-// PruneIdle drops keys whose last fire is older than idle.
-func (p *Policy) PruneIdle(now time.Time, idle time.Duration) {
-	if idle <= 0 {
-		return
-	}
+// PruneIdle drops keys whose debounce has passed and whose rate window
+// holds no entries.
+func (p *Policy) PruneIdle(now time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	cut := now.Add(-idle)
-	for k, last := range p.lastFired {
-		if last.Before(cut) {
+	for k := range p.lastFired {
+		if !now.Before(p.expires[k]) {
 			delete(p.lastFired, k)
 			delete(p.window, k)
+			delete(p.expires, k)
 		}
 	}
 }

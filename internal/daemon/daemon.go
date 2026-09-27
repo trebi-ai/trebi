@@ -61,7 +61,10 @@ type Options struct {
 	ChannelInterval time.Duration
 	// LoginMaxAge is the interactive login session lifetime (default 10m).
 	LoginMaxAge time.Duration
-	Ext         ext.Set
+	// Now is the queue and trigger policy clock (default time.Now). Tests
+	// replace it to pass rate windows without a real wait.
+	Now func() time.Time
+	Ext ext.Set
 	// License is the process-wide service built in service daemon. Nil
 	// builds a new one from Ext.License so tests can omit it.
 	License *license.Service
@@ -178,7 +181,10 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	r := runs.New(st, ws, fs)
 	r.SetMemoryResolver(ws)
 	r.SetBudgetGate(ws)
-	q := dispatch.NewQueue(st)
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	q := dispatch.NewQueueWithClock(st, opts.Now)
 	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()
 	sk := skills.New(st)
