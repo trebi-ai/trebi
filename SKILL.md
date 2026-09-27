@@ -86,7 +86,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `files` | job-scoped vs workspace files, scripts next to jobs, If-Match |
 | `assistant` | settings layers, chat and sessions, conversations, memory |
 | `agents` | folder-scoped agents: identity, rename, email accept, owned jobs, wake, conversations, agent memory |
-| `connectors-and-rules` | create/connect connectors, rules test/fire, event triggers, queue |
+| `connectors-and-rules` | create/connect connectors, registry search/entry/install, the job `connectors:` key (MCP and CLI actions for a run), rules test/fire, event triggers, queue |
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed |
 | `observability` | bus, service logs, doctor, stats |
 | `skills-secrets-config` | stored skills, secrets, config keys, harness auth |

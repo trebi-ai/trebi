@@ -12,9 +12,13 @@ List connectors. Includes managed rows from `connectors.yaml` and read-only
 **inherited** MCP servers discovered from user harness config. Inherited rows
 carry `provenance: inherited`, `managed: false`, `origins[]` (tool, path, key),
 and `injected` (whether a trebi session of that harness will load them).
-A running row carries `status`, `pid`, `restarts`, and `last_error` from its
-supervisor. A row whose definition has no `events` block has no supervisor and
-no status.
+A row with an `events` block carries the live state of its supervisor under
+`events`: `status`, `pid`, `restarts`, `last_err`, `started_at`,
+`last_event_id`, `last_event_at`, `counters{events,duplicates,parse_errors}`,
+and `last_catchup`. `status` is `stopped`, `starting`, `listening`, `polling`,
+`backoff` (the supervisor waits to start the command again), or `crashed` (the
+command failed and the supervisor stopped). A row with no `events` block has no
+supervisor and no status.
 When `connectors.yaml` does not load, the reply carries `load_error` with the
 parse error. The daemon then refuses every connector write with `conflict`
 until the file loads again. Fix the file by hand.
@@ -83,8 +87,12 @@ A connector name or a contributed skill that already exists returns
 - `overwrite_secrets` (boolean, optional): replace a stored secret that has a different value.
 
 ### create
-Create one connector from a definition object. Each block is optional; a
-connector with none is a bare definition.
+Create one connector from a definition object. Each block is optional, but
+the definition needs at least one of `actions`, `events`, and `channel`. The
+name matches `^[a-z0-9][a-z0-9-]{0,39}$`; `email`, `webhook`, and `trebi` are
+reserved. `catchup` needs `format: json` and `id`, and it cannot be combined
+with `poll_ms`. `poll_ms` is at least 10000. A `channel` needs an `events` block
+with `format: json`, and `ref` is a dotted path into the event.
 - `definition` (object, required): a definition such as
   `{"name": "mail", "events": {"command": "fetch-mail.sh", "format": "line"}}`.
   Blocks: `events` (`command` required; `format`, `restart`, `poll_ms`, `id`,
@@ -130,14 +138,19 @@ possible; use `create` and `delete`.
   `command`, `args`, and `env`. Use it to change one field, for example
   `{"mcp": {"args": ["-v"]}}`.
 - `channel` (object, optional): whole channel block
-  (`{"ref": "chat-1", "send": "..." }`), or `null`.
-A connector with an `events` block runs a supervisor; changing `events` while it
-runs restarts it, and changing only `actions` does not.
+  (`{"ref": "chat_id", "send": "..." }`), or `null`.
+A connector with an `events` block runs a supervisor; changing `events`,
+`env`, or `cwd` while it runs restarts it, and changing only `actions` does not. A block
+with an unknown key returns `validation`.
 
 ### delete
 Remove one connector and stop its event stream. Destructive.
 - `name` (string, required): connector name.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
+
+`connect`, `disconnect`, `restart`, `test`, `logs`, and the `cursor_*` actions
+need an `events` block. On a connector without one they return HTTP 409 with
+the code `validation`.
 
 ### connect
 Start one connector process.

@@ -17,9 +17,10 @@ When `connectors.yaml` does not load, `trebi connector list` prints the error an
 ```bash
 trebi connector list --capability events --json
 trebi connector set slack --events-command 'slack-stream --follow' --format json --cwd /opt/slack --restart on-failure
-trebi connector set slack --poll 15m --events-command 'slack-fetch --since $TREBI_LAST_EVENT_ID' --catchup-command 'slack-fetch --since $TREBI_LAST_EVENT_ID' --id ts --identity user
+trebi connector set slack --catchup-command 'slack-fetch --since $TREBI_LAST_EVENT_ID' --id ts --identity user
+trebi connector set feed --poll 15m --events-command 'feed-fetch --since $TREBI_LAST_EVENT_ID' --format json --id id
 trebi connector set notion --mcp-command npx --mcp-arg=-y --mcp-arg @notionhq/notion-mcp-server
-trebi connector set mail --channel-ref '{{ chat_id }}' --send send-mail.sh --typing typing-mail.sh --ack ack-mail.sh
+trebi connector set chat --events-command 'chat-stream --follow' --format json --channel-ref chat_id --send send-chat.sh --typing typing-chat.sh --ack ack-chat.sh
 trebi connector show slack
 trebi connector test slack
 trebi connector connect slack
@@ -29,7 +30,7 @@ trebi connector logs slack
 trebi connector remove slack
 ```
 
-`trebi connector set <name>` sends a `PATCH`: a flag replaces that part of the definition and the stored blocks stay. An `--mcp-*` or `--cli-*` flag changes only that field of the actions block. `connector show` prints each literal env value and MCP header as `***`; a `secret:NAME` reference stays visible. `trebi connector set slack --no-events` removes the events block. `trebi connector apply --file ./slack.yaml` writes a whole definition with `PUT`, for an import.
+`trebi connector set <name>` sends a `PATCH`: a flag replaces that part of the definition and the stored blocks stay. An `--mcp-*` or `--cli-*` flag changes only that field of the actions block. `connector show` prints each literal env value and MCP header as `***`; a `secret:NAME` reference stays visible. `trebi connector set slack --no-events` removes the events block. A connector name matches `^[a-z0-9][a-z0-9-]{0,39}$`; `email`, `webhook`, and `trebi` are reserved. Catch-up needs `--format json` and `--id`, and it cannot be combined with `--poll`. `--poll` is at least `10s`. A channel needs an events block with `--format json`, and `--channel-ref` is a dotted path into the event. `trebi connector apply --file ./slack.yaml` writes a whole definition with `PUT`, for an import.
 
 A trigger `allowlist` checks only the value at the connector `--identity` path. A connector with no identity fails every allowlist. The `email` connector compares the sender address without case. Every other connector compares the value exactly.
 

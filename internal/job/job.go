@@ -452,8 +452,7 @@ type Trigger struct {
 	Match   string
 	Extract string
 	// Allowlist is the ingress gate (security layer 1), checked before match.
-	// Entry "key:value" (key an identity key) matches only that event field;
-	// a bare "value" matches ANY identity field (flat OR).
+	// Each entry is compared with the value at the connector events.identity path.
 	Allowlist []string
 	Debounce  time.Duration
 	RateLimit string
