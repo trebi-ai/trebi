@@ -5,7 +5,7 @@ go 1.26.1
 require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/adrg/frontmatter v0.2.0
-	github.com/anthropics/anthropic-sdk-go v1.72.0
+	github.com/anthropics/anthropic-sdk-go v1.75.0
 	github.com/caseymrm/menuet v1.0.3
 	github.com/dop251/goja v0.0.0-20260806115107-493f22071ef6
 	github.com/fsnotify/fsnotify v1.9.0
@@ -14,15 +14,17 @@ require (
 	github.com/jedib0t/go-pretty/v6 v6.7.10
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/oklog/ulid/v2 v2.1.1
-	github.com/openai/openai-go/v3 v3.61.0
+	github.com/openai/openai-go/v3 v3.66.0
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/trebi-ai/agent-wire v0.3.0
+	github.com/trebi-ai/agent-wire v0.3.1
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
 )
+
+require github.com/coder/websocket v1.8.15 // indirect
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
@@ -48,7 +50,7 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/trebi-ai/agent-wire/native v0.2.2
+	github.com/trebi-ai/agent-wire/native v0.2.3
 	github.com/trebi-ai/agent-wire/native/provider/anthropic v0.2.2
 	github.com/trebi-ai/agent-wire/native/provider/openai v0.2.2
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
@@ -56,7 +58,7 @@ require (
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect
 	gopkg.in/yaml.v2 v2.3.0 // indirect
