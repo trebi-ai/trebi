@@ -76,6 +76,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
 PY
 nohup python3 "$REG/server.py" "$PORT" "$REG" > "$EVAL_WORKDIR/registry.log" 2>&1 &
+# The trial teardown sends SIGTERM to each <workdir>/*.pid.
+echo $! > "$EVAL_WORKDIR/registry.pid"
 for _ in $(seq 1 40); do
   curl -fsS "http://127.0.0.1:$PORT/v0.1/servers" > /dev/null 2>&1 && break
   sleep 0.25

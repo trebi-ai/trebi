@@ -289,7 +289,13 @@ func (e *trialEnv) waitAPIJSON(ctx context.Context, d time.Duration) error {
 func (e *trialEnv) stop(ctx context.Context) {
 	e.closeParentPipe()
 	e.killTrialTmux()
-	if b, err := os.ReadFile(filepath.Join(e.workdir, "remote.pid")); err == nil {
+	// A seed that starts a helper process writes its PID to <workdir>/<name>.pid.
+	pidFiles, _ := filepath.Glob(filepath.Join(e.workdir, "*.pid"))
+	for _, f := range pidFiles {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
 		var pid int
 		if _, err := fmt.Sscanf(string(b), "%d", &pid); err == nil && pid > 0 {
 			_ = syscall.Kill(pid, syscall.SIGTERM)

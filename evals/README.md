@@ -35,6 +35,10 @@ evals/rubrics/common.md        # guardrails + efficiency
 
 A task without a green oracle is a broken task, not a hard task.
 
+A seed that starts a helper process (a fixture registry, a remote peer) writes its PID to `$EVAL_WORKDIR/<name>.pid`. The trial teardown sends `SIGTERM` to each `*.pid` in the work directory, so a helper never outlives its trial.
+
+`connector-cursor` sets the connector position to event 1 with `connector cursor set`. It does not reset the position. Catch-up replays only the rows after a stored position, and an empty position skips catch-up. A reset gives nothing to replay, so the task cannot check a replay after it.
+
 ## Checks
 
 A check is one key in a task's `checks` list:
