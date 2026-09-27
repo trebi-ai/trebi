@@ -415,23 +415,16 @@ func decodeBlock[T any](raw json.RawMessage) (*T, error) {
 	return &out, nil
 }
 
-// maybeRestart restarts a running supervisor when the events or env blocks
+// maybeRestart restarts a live supervisor when the events, env, or cwd
 // changed. An actions-only change does not restart it.
 func (s *Service) maybeRestart(ctx context.Context, old, next Definition, existed bool) {
 	if !existed {
 		return
 	}
-	if reflect.DeepEqual(old.Events, next.Events) && reflect.DeepEqual(old.Env, next.Env) {
+	if reflect.DeepEqual(old.Events, next.Events) && reflect.DeepEqual(old.Env, next.Env) && old.Cwd == next.Cwd {
 		return
 	}
-	s.mu.Lock()
-	p, running := s.procs[next.Name]
-	s.mu.Unlock()
-	if !running {
-		return
-	}
-	switch p.getStatus() {
-	case "stopped", "crashed":
+	if p := s.procByName(next.Name); p == nil || !p.alive() {
 		return
 	}
 	if err := s.Restart(ctx, next.Name); err != nil {

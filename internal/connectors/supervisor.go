@@ -3,6 +3,7 @@ package connectors
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,8 +11,11 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/procgroup"
 	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -33,7 +37,10 @@ const (
 	unhealthyExits = 4
 	backoffBase    = time.Second
 	backoffCap     = 60 * time.Second
+	maxLine        = 1024 * 1024
 	pollTimeoutCap = 10 * time.Minute
+	// stopWait bounds the wait of Stop for the supervisor goroutine.
+	stopWait = 10 * time.Second
 )
 
 // catchupResult is the last catch-up outcome, kept for the wire row.
@@ -46,6 +53,7 @@ type catchupResult struct {
 // proc is the live state of one connector supervisor.
 type proc struct {
 	cancel context.CancelFunc
+	done   chan struct{} // closed when supervise returns
 	mu     sync.Mutex
 	cmd    *exec.Cmd
 
@@ -76,10 +84,14 @@ type procSnapshot struct {
 	lastCatchup *catchupResult
 }
 
-func (p *proc) getStatus() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.status
+// alive reports whether the supervisor goroutine still runs.
+func (p *proc) alive() bool {
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
 }
 
 func (p *proc) setStatus(st string) {
@@ -114,9 +126,7 @@ func (p *proc) kill() {
 	p.mu.Lock()
 	cmd := p.cmd
 	p.mu.Unlock()
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill() // process may have already exited
-	}
+	_ = procgroup.Kill(cmd, syscall.SIGKILL) // the group may have exited
 }
 
 func (p *proc) markStarted(at time.Time) {
@@ -210,9 +220,35 @@ func (p *proc) snapshot() procSnapshot {
 	return snap
 }
 
-// Wait joins every supervisor goroutine. It must be called after the context
-// handed to StartAll is cancelled.
-func (s *Service) Wait() { s.wg.Wait() }
+// Wait joins every supervisor goroutine, or returns ctx.Err() when ctx ends
+// first. Call it after StopAll or after the StartAll context is cancelled.
+func (s *Service) Wait(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() { // ends when the supervisors end
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// StopAll cancels every supervisor and kills its process group.
+func (s *Service) StopAll() {
+	s.mu.Lock()
+	procs := make([]*proc, 0, len(s.procs))
+	for _, p := range s.procs {
+		procs = append(procs, p)
+	}
+	s.mu.Unlock()
+	for _, p := range procs {
+		p.cancel()
+		p.kill()
+	}
+}
 
 // StartAll starts every definition with an events block.
 func (s *Service) StartAll(ctx context.Context) {
@@ -257,15 +293,16 @@ func (s *Service) Start(parent context.Context, name string) error {
 	if runCtx == nil {
 		runCtx = context.Background()
 	}
-	if p, ok := s.procs[name]; ok {
-		switch p.getStatus() {
-		case statusListening, statusStarting, statusBackoff, statusPolling:
+	p := &proc{status: statusStarting, done: make(chan struct{})}
+	if old, ok := s.procs[name]; ok {
+		if old.alive() {
 			s.mu.Unlock()
 			return nil // already live
 		}
+		p.restarts = old.snapshot().restarts
 	}
 	ctx, cancel := context.WithCancel(runCtx)
-	p := &proc{cancel: cancel, status: statusStarting}
+	p.cancel = cancel
 	s.procs[name] = p
 	s.mu.Unlock()
 
@@ -274,7 +311,8 @@ func (s *Service) Start(parent context.Context, name string) error {
 	return nil
 }
 
-// Stop kills a connector supervisor and its process.
+// Stop kills a connector supervisor and its process group, and waits for the
+// supervisor to end.
 func (s *Service) Stop(name string) error {
 	if err := s.GuardReserved(name); err != nil {
 		return err
@@ -290,6 +328,11 @@ func (s *Service) Stop(name string) error {
 	}
 	p.cancel()
 	p.kill()
+	select {
+	case <-p.done:
+	case <-time.After(stopWait):
+		s.log.Warn("connector.stopped", "connector", name, "error", "supervisor did not end")
+	}
 	p.setStatus(statusStopped)
 	s.log.Info("connector.stopped", "connector", name)
 	return nil
@@ -304,38 +347,45 @@ func (s *Service) Restart(ctx context.Context, name string) error {
 		return err
 	}
 	_ = s.Stop(name) // not-running is the desired start state
-	s.mu.Lock()
-	p, ok := s.procs[name]
-	s.mu.Unlock()
-	if ok {
+	if err := s.Start(ctx, name); err != nil {
+		return err
+	}
+	if p := s.procByName(name); p != nil {
 		p.addRestart()
 	}
-	return s.Start(ctx, name)
+	return nil
 }
 
-// supervise owns one connector's process lifetime: catch-up once, then the
-// live or poll loop with the restart policy.
+// supervise owns one connector's process lifetime: catch-up before each
+// live start, then the live or poll loop with the restart policy.
 func (s *Service) supervise(ctx context.Context, name string, d Definition, p *proc) {
 	defer s.wg.Done()
+	defer close(p.done)
 	// The proc stays in s.procs after the supervisor ends so the row keeps
 	// its terminal status, counters, and last_err.
 	defer p.markStopped()
 	s.log.Info("connector.started", "connector", name)
-	if d.Events.Catchup != nil {
-		s.runCatchup(ctx, name, d, p)
-	}
-	if ctx.Err() != nil {
-		return
-	}
 	if d.Events.Poll > 0 {
+		if d.Events.Catchup != nil {
+			s.runCatchup(ctx, name, d, p)
+		}
 		s.runPoll(ctx, name, d, p)
 		return
 	}
 	attempt := 0
 	for {
-		err := s.runLive(ctx, name, d, p)
+		if d.Events.Catchup != nil {
+			s.runCatchup(ctx, name, d, p)
+		}
 		if ctx.Err() != nil {
 			return
+		}
+		healthy, err := s.runLive(ctx, name, d, p)
+		if ctx.Err() != nil {
+			return
+		}
+		if healthy {
+			attempt = 0
 		}
 		failed := err != nil
 		if failed {
@@ -391,19 +441,35 @@ func backoffDelay(attempt int) time.Duration {
 }
 
 // runLive runs the events command and ingests each stdout line until it
-// exits. A non-zero exit is returned as an error.
-func (s *Service) runLive(ctx context.Context, name string, d Definition, p *proc) error {
+// exits. A non-zero exit is returned as an error. healthy reports that the
+// run lasted the health window.
+func (s *Service) runLive(ctx context.Context, name string, d Definition, p *proc) (healthy bool, err error) {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	cur, _ := s.GetCursor(ctx, name)
-	cmd, stdout, stderr, err := s.startCommand(ctx, d, d.Events.Command, map[string]string{"TREBI_LAST_EVENT_ID": cur.LastEventID})
+	cmd, stdout, stderr, err := s.startCommand(runCtx, d, d.Events.Command, map[string]string{"TREBI_LAST_EVENT_ID": cur.LastEventID})
 	if err != nil {
-		return err
+		return false, err
 	}
 	p.setCmd(cmd)
 	p.setStatus(statusListening)
 	p.markStarted(s.now())
-	go s.readStderr(name, stderr)
-	go s.recoveryTimer(ctx, name, p)
-	return s.scanInto(ctx, name, d, stdout, cmd, p, false)
+	s.goStderr(name, stderr)
+	var ok atomic.Bool
+	s.wg.Add(1)
+	go func() { // ends with the run
+		defer s.wg.Done()
+		if s.sleep(runCtx, unhealthyWindow) {
+			return
+		}
+		ok.Store(true)
+		if p.clearUnhealthy() {
+			s.emitRecovered(name)
+		}
+	}()
+	err = s.scanInto(ctx, name, d, stdout, cmd, p, false)
+	cancel()
+	return ok.Load(), err
 }
 
 // runPoll runs the events command to completion on each interval.
@@ -426,12 +492,12 @@ func (s *Service) runPoll(ctx context.Context, name string, d Definition, p *pro
 		}
 		if err != nil {
 			p.markCrashed(err.Error())
+			p.setStatus(statusBackoff) // crashed means the supervisor ended
 			s.log.Info("connector.exit", "connector", name, "error", err.Error())
 			if p.recordExit(s.now()) {
 				s.emitUnhealthy(name, statusCrashed)
 			}
 		} else {
-			p.setStatus(statusPolling)
 			if p.clearUnhealthy() {
 				s.emitRecovered(name)
 			}
@@ -450,30 +516,12 @@ func (s *Service) runOnce(ctx context.Context, name string, d Definition, p *pro
 		return err
 	}
 	p.setCmd(cmd)
-	go s.readStderr(name, stderr)
+	s.goStderr(name, stderr)
 	return s.scanInto(ctx, name, d, stdout, cmd, p, false)
-}
-
-// recoveryTimer emits connector.recovered after five minutes of healthy run
-// time, when the connector was unhealthy.
-func (s *Service) recoveryTimer(ctx context.Context, name string, p *proc) {
-	t := time.NewTimer(unhealthyWindow)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-	case <-t.C:
-		if p.clearUnhealthy() {
-			s.emitRecovered(name)
-		}
-	}
 }
 
 // startCommand launches sh -c cmdline with the connector env and extra vars.
 func (s *Service) startCommand(ctx context.Context, d Definition, cmdline string, extra map[string]string) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", cmdline)
-	if d.Cwd != "" {
-		cmd.Dir = d.Cwd
-	}
 	env := os.Environ()
 	resolved, missing := secrets.ExpandRefs(d.Env)
 	for _, secName := range missing {
@@ -485,25 +533,15 @@ func (s *Service) startCommand(ctx context.Context, d Definition, cmdline string
 	for k, v := range extra {
 		env = append(env, k+"="+v)
 	}
-	cmd.Env = env
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, nil, nil, err
-	}
-	return cmd, stdout, stderr, nil
+	return procgroup.Command{Script: cmdline, Dir: d.Cwd, Env: env}.Start(ctx)
 }
 
-// scanInto ingests every stdout line, then waits for the command.
+// scanInto ingests every stdout line, then waits for the command. A scan
+// error kills the process group first, so the child cannot block on a full
+// pipe.
 func (s *Service) scanInto(ctx context.Context, name string, d Definition, stdout io.Reader, cmd *exec.Cmd, p *proc, catchUp bool) error {
 	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), maxLine)
 	for sc.Scan() {
 		line := sc.Text()
 		appendConnectorLog(name, "stdout", line)
@@ -511,6 +549,13 @@ func (s *Service) scanInto(ctx context.Context, name string, d Definition, stdou
 		s.ingest(ctx, name, d, line, catchUp)
 	}
 	scanErr := sc.Err()
+	if scanErr != nil {
+		if errors.Is(scanErr, bufio.ErrTooLong) {
+			p.addParseError()
+			s.log.Warn("connector.parse_error", "connector", name, "reason", "line_too_long")
+		}
+		_ = procgroup.Kill(cmd, syscall.SIGKILL) // the group may have exited
+	}
 	waitErr := cmd.Wait()
 	if scanErr != nil {
 		return scanErr
@@ -518,12 +563,19 @@ func (s *Service) scanInto(ctx context.Context, name string, d Definition, stdou
 	return waitErr
 }
 
-func (s *Service) readStderr(name string, r io.Reader) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		appendConnectorLog(name, "stderr", sc.Text())
-	}
+// goStderr copies stderr to the connector log in a goroutine that s.wg
+// tracks. It ends at EOF, when the process group exits.
+func (s *Service) goStderr(name string, r io.Reader) {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 64*1024), maxLine)
+		for sc.Scan() {
+			appendConnectorLog(name, "stderr", sc.Text())
+		}
+		_, _ = io.Copy(io.Discard, r) // drain after a long line; EOF or close ends it
+	}()
 }
 
 // runCatchup replays events the connector emitted while the daemon was down.
@@ -545,22 +597,24 @@ func (s *Service) runCatchup(ctx context.Context, name string, d Definition, p *
 		s.skipCatchup(name, p, "error", "catchup failed to start: "+err.Error())
 		return
 	}
-	go s.readStderr(name, stderr)
+	s.goStderr(name, stderr)
 	max := d.Events.Catchup.MaxEvents
 	if max <= 0 {
 		max = defaultMaxEvents
 	}
 	var lines []string
 	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), maxLine)
+	capped := false
 	for sc.Scan() {
 		if len(lines) >= max {
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill() // buffer cap reached
-			}
+			capped = true
 			break
 		}
 		lines = append(lines, sc.Text())
+	}
+	if capped || sc.Err() != nil {
+		_ = procgroup.Kill(cmd, syscall.SIGKILL) // stop the writer before Wait
 	}
 	_ = cmd.Wait() // exit code is irrelevant; the buffer is the result
 
