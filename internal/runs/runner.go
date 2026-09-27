@@ -87,6 +87,9 @@ type LaunchOpts struct {
 	CreateOpts
 	// Prompt full body (not just preview).
 	Prompt string
+	// CoalesceText is the text a coalesce delivers to the live run. An
+	// operator launch has no Prompt yet at that point.
+	CoalesceText string
 	// Wake asks the composer to build the prompt for an operator launch
 	// (Kind assistant|agent). Ignored when Prompt is set.
 	Wake *WakeOpts
@@ -181,6 +184,13 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 			return nil, "", fmt.Errorf("%w: %s", ErrBudgetExceeded, reason)
 		}
 	}
+	// Actions resolve before the overlap policy: a launch that then fails
+	// must not replace a live run.
+	if !opts.wantsFake() {
+		if err := s.resolveActions(ctx, &opts); err != nil {
+			return nil, "", err
+		}
+	}
 	if opts.IfRunning == "" {
 		opts.IfRunning = "skip"
 	}
@@ -199,11 +209,6 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 
 	if opts.SessionID == "" && opts.ResumeSessionID == "" {
 		opts.SessionID = uuid.NewString()
-	}
-	if !opts.wantsFake() {
-		if err := s.resolveActions(ctx, &opts); err != nil {
-			return nil, "", err
-		}
 	}
 	s.prepMemory(ctx, &opts)
 	s.applyWakePrompt(ctx, &opts)
@@ -1301,23 +1306,18 @@ func (s *Service) applyIfRunning(ctx context.Context, opts *LaunchOpts) (string,
 		policy = "skip"
 	}
 
-	listOpts := ListOpts{
-		Workspace: opts.WorkspaceID,
-		Job:       opts.Job,
-		Status:    string(StatusRunning),
-		Limit:     20,
-	}
-	all, err := s.List(ctx, listOpts)
-	if err != nil {
-		return "", nil, err
-	}
 	// Overlap is per conversation (plan E.3): an empty key matches only runs
 	// with an empty key, so one busy chat does not block another.
-	live := make([]*Run, 0, len(all))
-	for _, r := range all {
-		if r.ConversationKey == opts.ConversationKey {
-			live = append(live, r)
-		}
+	live, err := s.List(ctx, ListOpts{
+		Workspace:            opts.WorkspaceID,
+		Job:                  opts.Job,
+		Status:               string(StatusRunning),
+		ConversationKey:      opts.ConversationKey,
+		ConversationKeyExact: true,
+		Limit:                20,
+	})
+	if err != nil {
+		return "", nil, err
 	}
 	if len(live) == 0 {
 		return "", nil, nil
@@ -1378,7 +1378,10 @@ func (s *Service) overlapReplace(ctx context.Context, live []*Run) {
 
 // overlapCoalesce types the new prompt into the live run's pane.
 func (s *Service) overlapCoalesce(ctx context.Context, opts *LaunchOpts, existing *Run) {
-	text := opts.Prompt
+	text := opts.CoalesceText
+	if text == "" {
+		text = opts.Prompt
+	}
 	if text == "" {
 		text = opts.PromptPreview
 	}

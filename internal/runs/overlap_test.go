@@ -2,6 +2,8 @@ package runs_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -240,5 +242,83 @@ func TestIfRunningEmptyKeyMatchesOnlyUnkeyed(t *testing.T) {
 	}
 	if outcome != "" || r2.Status == runs.StatusSkipped {
 		t.Fatalf("outcome=%q status=%s; a keyed live run must not block an unkeyed launch", outcome, r2.Status)
+	}
+}
+
+// TestCoalesceFindsKeyedRunPastTwentyLive proves the overlap filter runs in
+// SQL (P1-17) and the coalesce sends the message text (P1-13): the keyed run
+// is older than 25 unkeyed live runs and still takes the text.
+func TestCoalesceFindsKeyedRunPastTwentyLive(t *testing.T) {
+	svc, ctx := openRuns(t)
+	chat, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws", Job: "busy", Harness: "fake", Reason: runs.ReasonManual,
+		ConversationKey: "chat-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 25; i++ {
+		if _, err := svc.Create(ctx, runs.CreateOpts{
+			WorkspaceID: "ws", Job: "busy", Harness: "fake", Reason: runs.ReasonManual,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "busy", Harness: "fake", Reason: runs.ReasonTrigger,
+			ConversationKey: "chat-1",
+		},
+		Wake:         &runs.WakeOpts{Message: "second message"},
+		CoalesceText: "second message",
+		IfRunning:    "coalesce",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "coalesce" || got.ID != chat.ID {
+		t.Fatalf("outcome=%q id=%s, want coalesce on %s", outcome, got.ID, chat.ID)
+	}
+	tl, err := svc.Timeline(ctx, chat.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	for _, e := range tl.Events {
+		if e.Kind == "coalesce" {
+			var d map[string]string
+			_ = json.Unmarshal(e.Detail, &d)
+			text = d["prompt_preview"]
+		}
+	}
+	if text != "second message" {
+		t.Fatalf("coalesce text=%q, want the message", text)
+	}
+}
+
+// TestActionErrorKeepsLiveRun proves actions resolve before the overlap
+// policy (P1-15): a launch that fails on its actions does not replace the
+// live run.
+func TestActionErrorKeepsLiveRun(t *testing.T) {
+	svc, ctx := openRuns(t)
+	t.Setenv("TREBI_FAKE_HARNESS", "")
+	live, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws", Job: "acts", Harness: "claude", Reason: runs.ReasonManual,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "acts", Harness: "claude", Reason: runs.ReasonTrigger,
+		},
+		Prompt: "x", IfRunning: "replace", JobConnectors: []string{"ghost"},
+	})
+	if !errors.Is(err, runs.ErrActionsInvalid) {
+		t.Fatalf("err=%v, want ErrActionsInvalid", err)
+	}
+	got, _ := svc.Get(ctx, live.ID)
+	if got.Status != runs.StatusRunning {
+		t.Fatalf("live status=%s end=%s, want running", got.Status, got.EndReason)
 	}
 }

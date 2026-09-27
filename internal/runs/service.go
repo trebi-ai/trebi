@@ -452,6 +452,9 @@ type ListOpts struct {
 	// Model matches tokens_model (exact, case-insensitive).
 	Model           string
 	ConversationKey string
+	// ConversationKeyExact matches ConversationKey as is: an empty key
+	// matches only runs with no key.
+	ConversationKeyExact bool
 	// Conversation matches conversation_id.
 	Conversation string
 	EndReason    string
@@ -513,7 +516,10 @@ func (o ListOpts) query() (string, []any) {
 		q += ` AND COALESCE(NULLIF(outcome,''), status) = ?`
 		args = append(args, o.Status)
 	}
-	if o.ConversationKey != "" {
+	if o.ConversationKeyExact {
+		q += ` AND COALESCE(conversation_key,'') = ?`
+		args = append(args, o.ConversationKey)
+	} else if o.ConversationKey != "" {
 		q += ` AND conversation_key = ?`
 		args = append(args, o.ConversationKey)
 	}
