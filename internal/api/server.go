@@ -189,7 +189,7 @@ func New(st *store.Store, opts Options) *Server {
 			CheckOrigin: checkWSOrigin,
 		},
 	}
-	_ = s.connectors.Load()
+	_ = s.connectors.Load() // the service keeps the error; the list route and the daemon report it
 	s.channels = channels.New(st, s.connectors, s.conv)
 	s.toolsReg = tools.NewRegistry(s)
 	s.buildAssistantStack(opts.FilesMaxBytes)

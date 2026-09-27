@@ -3,9 +3,12 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,45 +21,7 @@ import (
 // replace, patch removal, strict decode, and the lifecycle guard on a
 // connector without an events block.
 func TestConnectorRoutes(t *testing.T) {
-	dir := t.TempDir()
-	home.SetBase(dir)
-	t.Setenv("TREBI_HOME", dir)
-	t.Cleanup(func() { home.SetBase("") })
-
-	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	s := api.New(st, api.Options{})
-	addr, err := s.ListenAndServe("127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
-	base := "http://" + addr
-	client := &http.Client{Timeout: 10 * time.Second}
-	do := func(method, path string, body any) (int, map[string]any) {
-		t.Helper()
-		var r io.Reader
-		if body != nil {
-			b, _ := json.Marshal(body)
-			r = bytes.NewReader(b)
-		}
-		req, _ := http.NewRequest(method, base+path, r)
-		if body != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		raw, _ := io.ReadAll(resp.Body)
-		var m map[string]any
-		_ = json.Unmarshal(raw, &m)
-		return resp.StatusCode, m
-	}
+	do := startConnectorAPI(t, "")
 
 	def := map[string]any{
 		"name": "feed",
@@ -147,11 +112,62 @@ func TestConnectorRoutes(t *testing.T) {
 // TestConnectorPatchKeepsCursor proves a patch restarts the supervisor but
 // leaves the cursor row alone.
 func TestConnectorPatchKeepsEvents(t *testing.T) {
+	do := startConnectorAPI(t, "")
+
+	def := map[string]any{"name": "keep", "events": map[string]any{"command": "sleep 30", "format": "json", "id": "id"}}
+	if code, body := do("POST", "/v1/connectors", def); code != http.StatusCreated {
+		t.Fatalf("create = %d %v", code, body)
+	}
+	if code, body := do("PUT", "/v1/connectors/keep/cursor", map[string]string{"last_event_id": "ev-7"}); code != http.StatusOK {
+		t.Fatalf("cursor put = %d %v", code, body)
+	}
+	if code, body := do("PATCH", "/v1/connectors/keep", map[string]any{"env": map[string]string{"A": "1"}}); code != http.StatusOK {
+		t.Fatalf("patch = %d %v", code, body)
+	}
+	code, cur := do("GET", "/v1/connectors/keep/cursor", nil)
+	if code != http.StatusOK {
+		t.Fatalf("cursor get = %d %v", code, cur)
+	}
+	if cur["last_event_id"] != "ev-7" {
+		t.Fatalf("patch moved the cursor: %v", cur)
+	}
+}
+
+// TestConnectorWriteAfterFailedLoad proves a connectors.yaml that does not
+// load blocks every write: the file stays as the user left it.
+func TestConnectorWriteAfterFailedLoad(t *testing.T) {
+	body := "mail:\n  type: stream\n  events: {command: x}\n"
+	do := startConnectorAPI(t, body)
+	def := map[string]any{"name": "feed", "events": map[string]any{"command": "echo"}}
+	if code, resp := do("POST", "/v1/connectors", def); code != http.StatusConflict || errCode(resp) != "conflict" {
+		t.Fatalf("create after failed load = %d %v", code, resp)
+	}
+	if code, resp := do("DELETE", "/v1/connectors/mail?confirm=1", nil); code != http.StatusConflict {
+		t.Fatalf("delete after failed load = %d %v", code, resp)
+	}
+	got, err := os.ReadFile(home.ConnectorsPath())
+	if err != nil || string(got) != body {
+		t.Fatalf("file changed: %q %v", got, err)
+	}
+	code, list := do("GET", "/v1/connectors", nil)
+	if code != http.StatusOK || !strings.Contains(fmt.Sprint(list["load_error"]), "type") {
+		t.Fatalf("list load_error = %d %v", code, list)
+	}
+}
+
+// startConnectorAPI serves the API over a fresh home. A non-empty
+// connectorsYAML is written before the server starts.
+func startConnectorAPI(t *testing.T, connectorsYAML string) func(method, path string, body any) (int, map[string]any) {
+	t.Helper()
 	dir := t.TempDir()
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
 	t.Cleanup(func() { home.SetBase("") })
-
+	if connectorsYAML != "" {
+		if err := os.WriteFile(home.ConnectorsPath(), []byte(connectorsYAML), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +181,7 @@ func TestConnectorPatchKeepsEvents(t *testing.T) {
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
 	client := &http.Client{Timeout: 10 * time.Second}
-	do := func(method, path string, body any) (int, map[string]any) {
+	return func(method, path string, body any) (int, map[string]any) {
 		t.Helper()
 		var r io.Reader
 		if body != nil {
@@ -185,24 +201,6 @@ func TestConnectorPatchKeepsEvents(t *testing.T) {
 		var m map[string]any
 		_ = json.Unmarshal(raw, &m)
 		return resp.StatusCode, m
-	}
-
-	def := map[string]any{"name": "keep", "events": map[string]any{"command": "sleep 30", "format": "json", "id": "id"}}
-	if code, body := do("POST", "/v1/connectors", def); code != http.StatusCreated {
-		t.Fatalf("create = %d %v", code, body)
-	}
-	if code, body := do("PUT", "/v1/connectors/keep/cursor", map[string]string{"last_event_id": "ev-7"}); code != http.StatusOK {
-		t.Fatalf("cursor put = %d %v", code, body)
-	}
-	if code, body := do("PATCH", "/v1/connectors/keep", map[string]any{"env": map[string]string{"A": "1"}}); code != http.StatusOK {
-		t.Fatalf("patch = %d %v", code, body)
-	}
-	code, cur := do("GET", "/v1/connectors/keep/cursor", nil)
-	if code != http.StatusOK {
-		t.Fatalf("cursor get = %d %v", code, cur)
-	}
-	if cur["last_event_id"] != "ev-7" {
-		t.Fatalf("patch moved the cursor: %v", cur)
 	}
 }
 

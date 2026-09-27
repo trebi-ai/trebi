@@ -279,6 +279,9 @@ func runConnectorList(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
+	if loadErr, ok := body["load_error"].(string); ok && loadErr != "" {
+		fmt.Fprintf(w, "connectors.yaml does not load; writes are refused until you fix it:\n  %s\n\n", loadErr)
+	}
 	if list, ok := body["connectors"].([]any); ok {
 		tbl := newTable(w, []string{"Name", "Capabilities", "Provenance", "Status", "Detail"})
 		for _, raw := range list {

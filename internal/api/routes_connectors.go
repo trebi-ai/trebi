@@ -53,7 +53,7 @@ func (s *Server) handleConnectors(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "provenance must be managed, inherited, or native")
 		return
 	}
-	_ = s.connectors.Load() // refresh from disk; stale list is worse than a load error
+	_ = s.connectors.Load() // refresh from disk; a failed load shows as load_error
 	list := s.connectors.List()
 	if row := s.email.ConnectorRow(); row != nil {
 		list = append(list, row) // the native email channel rides the list
@@ -83,6 +83,9 @@ func (s *Server) handleConnectors(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"connectors": list}
 	if truncated {
 		resp["truncated"] = true
+	}
+	if err := s.connectors.LoadErr(); err != nil {
+		resp["load_error"] = err.Error()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -487,7 +490,8 @@ func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 	case errors.Is(err, connectors.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
-	case errors.Is(err, connectors.ErrExists):
+	case errors.Is(err, connectors.ErrExists),
+		errors.Is(err, connectors.ErrLoadFailed):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, connectors.ErrNoEvents):
 		writeErr(w, http.StatusConflict, "validation", err.Error())

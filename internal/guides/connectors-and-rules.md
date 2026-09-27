@@ -10,6 +10,8 @@ A connector is one external system. It can give **actions** to an agent run (an 
 
 `trebi connector list` also shows **inherited** MCP servers discovered from the user harness configs the bridge injects (`~/.claude.json` / `~/.claude/mcp.json`, `~/.codex/mcp.json`, `~/.cursor/mcp.json`, `~/.pi/agent/mcp.json`). Those rows are read-only: connect, edit, and delete are refused. Edit the origin file instead. Managed rows are the ones in `connectors.yaml`.
 
+When `connectors.yaml` does not load, `trebi connector list` prints the error and `trebi doctor` reports `connectors_file_invalid`. Every connector write then returns `conflict`, so a write cannot erase the file. Fix the file by hand.
+
 ## Connectors
 
 ```bash

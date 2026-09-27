@@ -123,6 +123,18 @@ func TestConnectorKitFindingsMCPOnly(t *testing.T) {
 	}
 }
 
+// TestConnectorsFileInvalidFinding proves the doctor reports a
+// connectors.yaml that does not load.
+func TestConnectorsFileInvalidFinding(t *testing.T) {
+	st := kitStore(t, "mail:\n  type: stream\n", "mail")
+	for _, finding := range agentKitFindings(st) {
+		if finding.Code == "connectors_file_invalid" && strings.Contains(finding.Message, "type") {
+			return
+		}
+	}
+	t.Fatal("no connectors_file_invalid finding")
+}
+
 // kitStore writes connectors.yaml and one agent whose kit names connectors.
 func kitStore(t *testing.T, connectorsYAML, kitConnectors string) *store.Store {
 	t.Helper()

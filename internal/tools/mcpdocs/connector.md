@@ -15,6 +15,9 @@ and `injected` (whether a trebi session of that harness will load them).
 A running row carries `status`, `pid`, `restarts`, and `last_error` from its
 supervisor. A row whose definition has no `events` block has no supervisor and
 no status.
+When `connectors.yaml` does not load, the reply carries `load_error` with the
+parse error. The daemon then refuses every connector write with `conflict`
+until the file loads again. Fix the file by hand.
 - `limit` (number, optional): page size.
 - `capability` (string, optional): keep rows with `actions`, `events`, or `channel`.
 - `provenance` (string, optional): keep rows with `native`, `managed`, or `inherited`.

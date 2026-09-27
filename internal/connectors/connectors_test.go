@@ -270,6 +270,46 @@ func TestConnectorsStrictLoadRefusesOldKeys(t *testing.T) {
 	}
 }
 
+// TestConnectorsFailedLoadBlocksWrites proves a failed load keeps the error
+// and refuses every write until a load succeeds.
+func TestConnectorsFailedLoadBlocksWrites(t *testing.T) {
+	body := "mail:\n  type: stream\n  events: {command: x}\n"
+	svc, teardown := stackWithFile(t, body)
+	defer teardown()
+	ctx := context.Background()
+	if err := svc.Load(); err == nil {
+		t.Fatal("load passed")
+	}
+	if svc.LoadErr() == nil {
+		t.Fatal("LoadErr is nil after a failed load")
+	}
+	def := eventsDef("feed", "echo")
+	env := map[string]string{"A": "1"}
+	for name, write := range map[string]func() error{
+		"create":  func() error { return svc.Create(ctx, def) },
+		"replace": func() error { return svc.Replace(ctx, def) },
+		"patch":   func() error { return svc.Patch(ctx, "mail", connectors.Patch{Env: &env}) },
+		"delete":  func() error { return svc.Delete(ctx, "mail") },
+		"rewrite": func() error { _, err := svc.RewritePathPrefix("/a", "/b", false); return err },
+	} {
+		if err := write(); !errors.Is(err, connectors.ErrLoadFailed) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if got, _ := os.ReadFile(home.ConnectorsPath()); string(got) != body {
+		t.Fatalf("file changed: %q", got)
+	}
+	if err := os.WriteFile(home.ConnectorsPath(), []byte("mail:\n  events: {command: x}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Load(); err != nil || svc.LoadErr() != nil {
+		t.Fatalf("load after fix: %v %v", err, svc.LoadErr())
+	}
+	if err := svc.Create(ctx, def); err != nil {
+		t.Fatalf("create after fix: %v", err)
+	}
+}
+
 func TestConnectorsInheritedUnionAndGuard(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()

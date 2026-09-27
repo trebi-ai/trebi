@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/harness"
-	"github.com/trebi-ai/trebi/internal/home"
 	"gopkg.in/yaml.v3"
 )
 
@@ -508,22 +506,5 @@ func sortedNames(defs map[string]Definition) []string {
 // missing file is an empty set. The doctor uses it to check kit names before
 // a connector ever runs.
 func LoadDefinitions() (map[string]Definition, error) {
-	data, err := os.ReadFile(home.ConnectorsPath())
-	if os.IsNotExist(err) {
-		return map[string]Definition{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defs, err := parseDefinitionData(data)
-	if err != nil {
-		return nil, err
-	}
-	for name, d := range defs {
-		if err := d.Validate(); err != nil {
-			return nil, err
-		}
-		defs[name] = d.withDefaults()
-	}
-	return defs, nil
+	return readDefinitions()
 }

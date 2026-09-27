@@ -390,7 +390,9 @@ func (c *ControlPlane) Start(parent context.Context) {
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
-			_ = c.Connectors.Load()
+			if err := c.Connectors.Load(); err != nil {
+				c.log.Error("connectors load", "path", home.ConnectorsPath(), "err", err)
+			}
 			c.Connectors.StartAll(ctx)
 			<-ctx.Done()
 		}()

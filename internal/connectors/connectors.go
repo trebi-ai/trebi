@@ -40,6 +40,8 @@ var (
 	ErrExists = errors.New("connector already exists")
 	// ErrNoEvents is a lifecycle action on a connector with no events block.
 	ErrNoEvents = errors.New("connector has no events block")
+	// ErrLoadFailed is a write while connectors.yaml does not load.
+	ErrLoadFailed = errors.New("connectors.yaml did not load")
 )
 
 // AmbiguousError is a connector name that matches more than one row.
@@ -63,6 +65,7 @@ type Service struct {
 	mu       sync.Mutex
 	procs    map[string]*proc
 	defs     map[string]Definition
+	loadErr  error           // set by a failed Load; blocks writes
 	runCtx   context.Context // process lifetime; not the caller's (HTTP) context
 	userHome string          // empty: skip MCP discovery (tests)
 	wg       sync.WaitGroup
@@ -154,31 +157,57 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 
 // Load reads connectors.yaml into memory. The file is strict: an unknown
 // key, including the old top-level type, facets, command, and format, fails
-// the load with the file path, the connector name, and the key.
+// the load with the file path, the connector name, and the key. A failed load
+// keeps the last good definitions and blocks writes until a load succeeds.
 func (s *Service) Load() error {
-	data, err := os.ReadFile(home.ConnectorsPath())
+	defs, err := readDefinitions()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadErr = err
+	if err != nil {
+		return err
+	}
+	s.defs = defs
+	return nil
+}
+
+// readDefinitions reads and validates connectors.yaml. A missing file is an
+// empty set.
+func readDefinitions() (map[string]Definition, error) {
+	path := home.ConnectorsPath()
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			s.mu.Lock()
-			s.defs = map[string]Definition{}
-			s.mu.Unlock()
-			return nil
+			return map[string]Definition{}, nil
 		}
-		return err
+		return nil, err
 	}
 	defs, err := parseDefinitionData(data)
 	if err != nil {
-		return fmt.Errorf("%s: %w", home.ConnectorsPath(), err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	for name, d := range defs {
 		if err := d.Validate(); err != nil {
-			return fmt.Errorf("%s: %w", home.ConnectorsPath(), err)
+			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		defs[name] = d.withDefaults()
 	}
+	return defs, nil
+}
+
+// LoadErr returns the error of the last failed Load, or nil.
+func (s *Service) LoadErr() error {
 	s.mu.Lock()
-	s.defs = defs
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	return s.loadErr
+}
+
+// checkLoaded refuses a write while connectors.yaml does not load, so a
+// write cannot replace the file with a partial set.
+func (s *Service) checkLoaded() error {
+	if err := s.LoadErr(); err != nil {
+		return fmt.Errorf("%w: %v", ErrLoadFailed, err)
+	}
 	return nil
 }
 
@@ -234,6 +263,9 @@ func (s *Service) emitWrite(ctx context.Context, topic string, d Definition) {
 
 // Create registers a new connector definition. An existing name is ErrExists.
 func (s *Service) Create(ctx context.Context, d Definition) error {
+	if err := s.checkLoaded(); err != nil {
+		return err
+	}
 	if err := s.GuardReserved(d.Name); err != nil {
 		return err
 	}
@@ -256,6 +288,9 @@ func (s *Service) Create(ctx context.Context, d Definition) error {
 // Replace writes the whole definition of a connector, creating it when
 // missing.
 func (s *Service) Replace(ctx context.Context, d Definition) error {
+	if err := s.checkLoaded(); err != nil {
+		return err
+	}
 	if err := s.GuardReserved(d.Name); err != nil {
 		return err
 	}
@@ -283,6 +318,9 @@ func (s *Service) Replace(ctx context.Context, d Definition) error {
 
 // Patch applies a block-level update to an existing connector.
 func (s *Service) Patch(ctx context.Context, name string, p Patch) error {
+	if err := s.checkLoaded(); err != nil {
+		return err
+	}
 	if err := s.GuardReserved(name); err != nil {
 		return err
 	}
@@ -377,6 +415,9 @@ func (s *Service) maybeRestart(ctx context.Context, old, next Definition, existe
 
 // Delete removes a connector definition and stops its process.
 func (s *Service) Delete(ctx context.Context, name string) error {
+	if err := s.checkLoaded(); err != nil {
+		return err
+	}
 	if err := s.GuardReserved(name); err != nil {
 		return err
 	}
@@ -778,7 +819,7 @@ func (s *Service) RewritePathPrefix(old, new string, dryRun bool) ([]string, err
 		return nil, nil
 	}
 	if err := s.Load(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrLoadFailed, err)
 	}
 	defs := s.snapshotDefs()
 	var names []string

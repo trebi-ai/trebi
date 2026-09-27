@@ -38,10 +38,18 @@ func CollectAgentDoctorFindings(st *store.Store) []DoctorFinding {
 }
 
 func agentKitFindings(st *store.Store) []DoctorFinding {
+	var findings []DoctorFinding
+	defs, err := connectors.LoadDefinitions()
+	if err != nil {
+		findings = append(findings, DoctorFinding{
+			ID: "connectors-file-invalid", Severity: "error", Code: "connectors_file_invalid",
+			Message: fmt.Sprintf("connectors.yaml does not load; connector writes are refused: %v", err),
+		})
+	}
 	db := st.DB()
 	rows, err := db.Query(`SELECT workspace_id, name, path, kind FROM job_index`)
 	if err != nil {
-		return nil
+		return findings
 	}
 	defer rows.Close()
 
@@ -51,7 +59,6 @@ func agentKitFindings(st *store.Store) []DoctorFinding {
 			skillNames[skill.Name] = true
 		}
 	}
-	defs, _ := connectors.LoadDefinitions()
 	inherited := map[string]bool{}
 	if userHome, err := os.UserHomeDir(); err == nil {
 		for _, server := range harness.DiscoverMCP(userHome, nil) {
@@ -65,7 +72,6 @@ func agentKitFindings(st *store.Store) []DoctorFinding {
 		}
 	}
 
-	var findings []DoctorFinding
 	for rows.Next() {
 		var wsID, name, path, kind string
 		if err := rows.Scan(&wsID, &name, &path, &kind); err != nil {
