@@ -75,13 +75,13 @@ func (s *Server) handleAssistantDefaultsPut(w http.ResponseWriter, r *http.Reque
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	if err := s.validateAssistantSettings(r.Context(), in); err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
 	cfg, err := config.Load()
 	if err != nil || cfg == nil {
 		writeErr(w, http.StatusInternalServerError, "internal", "config unavailable")
+		return
+	}
+	if err := s.validateAssistantSettings(r.Context(), in, cfg.Assistant.SkillsOrDefault()); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
 	cfg.Assistant.Harness = strings.TrimSpace(in.Harness)
@@ -182,8 +182,9 @@ func (s *Server) handleAssistantNativeTest(w http.ResponseWriter, r *http.Reques
 }
 
 // validateAssistantSettings checks mode, harness, effort, and that every
-// skill exists (plan F.1).
-func (s *Server) validateAssistantSettings(ctx context.Context, in assistant.Settings) error {
+// added skill exists (plan F.1). Skills in current stay valid, so a
+// read-modify-write of the defaults never fails on an unchanged list.
+func (s *Server) validateAssistantSettings(ctx context.Context, in assistant.Settings, current []string) error {
 	if m := strings.TrimSpace(in.Mode); m != "" && m != assistant.ModeAsk &&
 		m != assistant.ModeAutoEdit && m != assistant.ModeAuto {
 		return fmt.Errorf("mode %q not in [ask, auto_edit, auto]", in.Mode)
@@ -204,6 +205,9 @@ func (s *Server) validateAssistantSettings(ctx context.Context, in assistant.Set
 		return err
 	}
 	known := map[string]bool{}
+	for _, name := range current {
+		known[name] = true
+	}
 	for _, sk := range list {
 		known[sk.Name] = true
 	}

@@ -74,6 +74,13 @@ func TestAssistantDefaultsRoutes(t *testing.T) {
 	if code != 400 || errCode(body) != "validation" {
 		t.Fatalf("unknown skill %d %v", code, body)
 	}
+	// The unchanged default list passes, even with no trebi skill installed.
+	code, body, _ = doJSON(t, "PUT", base+"/v1/assistant", map[string]any{
+		"harness": "fake", "mode": "ask", "skills": []string{"trebi"},
+	})
+	if code != 200 {
+		t.Fatalf("default skills %d %v", code, body)
+	}
 	code, body, _ = doJSON(t, "PUT", base+"/v1/assistant", map[string]any{
 		"harness": "fake", "mode": "ask", "effort": "low", "context": "Be brief.",
 	})
