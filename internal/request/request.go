@@ -4,6 +4,7 @@
 package request
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -1195,11 +1196,26 @@ func BuildConversationRevert(id string, turn int, path string) HTTPRequest {
 	}
 }
 
-// BuildPointerGet builds GET /v1/channel-pointers/{type}/{ref}.
-func BuildPointerGet(channelType, channelRef string) HTTPRequest {
+// BuildConversationOutboxPath builds GET /v1/conversations/{id}/outbox.
+func BuildConversationOutboxPath(id string) string {
+	return "/v1/conversations/" + url.PathEscape(id) + "/outbox"
+}
+
+// BuildConversationOutboxRetry builds POST /v1/conversations/{id}/outbox/{row}/retry.
+func BuildConversationOutboxRetry(id, row string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/conversations/" + url.PathEscape(id) + "/outbox/" + url.PathEscape(row) + "/retry",
+	}
+}
+
+// BuildPointerGet builds GET /v1/channel-pointers/{type}/{ref}?workspace=.
+// Pointers are workspace-scoped, so the caller names the workspace.
+func BuildPointerGet(channelType, channelRef, workspace string) HTTPRequest {
 	return HTTPRequest{
 		Method: "GET",
-		Path:   "/v1/channel-pointers/" + url.PathEscape(channelType) + "/" + url.PathEscape(channelRef),
+		Path: withQuery("/v1/channel-pointers/"+url.PathEscape(channelType)+"/"+url.PathEscape(channelRef),
+			map[string]string{"workspace": workspace}),
 	}
 }
 
@@ -1373,9 +1389,13 @@ func BuildSkillsListPath(limit int) string {
 	return listQuery("/v1/skills", "", limit)
 }
 
-// BuildConnectorsListPath builds GET /v1/connectors?limit=.
-func BuildConnectorsListPath(limit int) string {
-	return listQuery("/v1/connectors", "", limit)
+// BuildConnectorsListPath builds GET /v1/connectors with optional filters.
+func BuildConnectorsListPath(limit int, capability, provenance string) string {
+	kv := map[string]string{"capability": capability, "provenance": provenance}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return withQuery("/v1/connectors", kv)
 }
 
 // BuildInboxListPath builds GET /v1/inbox query from list flags.
@@ -1810,11 +1830,50 @@ func BuildConnectorRestart(name string) HTTPRequest {
 	}
 }
 
-// BuildConnectorStop builds POST /v1/connectors/{name}/stop.
-func BuildConnectorStop(name string) HTTPRequest {
+// BuildConnectorReplace builds PUT /v1/connectors/{name} with the whole
+// definition. The daemon sets the name from the path over the body.
+func BuildConnectorReplace(name string, def map[string]any) HTTPRequest {
 	return HTTPRequest{
-		Method: "POST",
-		Path:   "/v1/connectors/" + url.PathEscape(name) + "/stop",
+		Method: "PUT",
+		Path:   "/v1/connectors/" + url.PathEscape(name),
+		Body:   def,
+	}
+}
+
+// ConnectorPatch is the PATCH /v1/connectors/{name} body. A present block
+// replaces that block; a nil block leaves it untouched and raw "null"
+// removes it.
+type ConnectorPatch struct {
+	Name    string
+	Env     map[string]string
+	Cwd     string
+	Actions json.RawMessage
+	Events  json.RawMessage
+	Channel json.RawMessage
+}
+
+// Build renders the patch as PATCH /v1/connectors/{name}.
+func (i ConnectorPatch) Build() HTTPRequest {
+	body := map[string]any{}
+	if i.Env != nil {
+		body["env"] = i.Env
+	}
+	if i.Cwd != "" {
+		body["cwd"] = i.Cwd
+	}
+	if i.Actions != nil {
+		body["actions"] = json.RawMessage(i.Actions)
+	}
+	if i.Events != nil {
+		body["events"] = json.RawMessage(i.Events)
+	}
+	if i.Channel != nil {
+		body["channel"] = json.RawMessage(i.Channel)
+	}
+	return HTTPRequest{
+		Method: "PATCH",
+		Path:   "/v1/connectors/" + url.PathEscape(i.Name),
+		Body:   body,
 	}
 }
 
@@ -1823,44 +1882,6 @@ func BuildConnectorDelete(name string, confirm bool) HTTPRequest {
 	return HTTPRequest{
 		Method: "DELETE",
 		Path:   withQuery("/v1/connectors/"+url.PathEscape(name), confirmQ(confirm)),
-	}
-}
-
-// ConnectorSpec is the PUT /v1/connectors/{name} body. Empty fields are
-// omitted, and the daemon keeps the current value: PUT is an upsert-merge.
-type ConnectorSpec struct {
-	Name    string
-	Command string
-	Format  string // json|line
-	Type    string // stream|cli|mcp
-	Cwd     string
-	Env     map[string]string
-	Facets  []string
-}
-
-// Build renders the spec as PUT /v1/connectors/{name}.
-func (i ConnectorSpec) Build() HTTPRequest {
-	body := map[string]any{"name": i.Name}
-	for k, v := range map[string]string{
-		"command": i.Command,
-		"format":  i.Format,
-		"type":    i.Type,
-		"cwd":     i.Cwd,
-	} {
-		if v != "" {
-			body[k] = v
-		}
-	}
-	if len(i.Env) > 0 {
-		body["env"] = i.Env
-	}
-	if len(i.Facets) > 0 {
-		body["facets"] = i.Facets
-	}
-	return HTTPRequest{
-		Method: "PUT",
-		Path:   "/v1/connectors/" + url.PathEscape(i.Name),
-		Body:   body,
 	}
 }
 

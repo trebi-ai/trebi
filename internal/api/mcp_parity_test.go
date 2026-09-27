@@ -138,6 +138,7 @@ func TestMCPDocsDocumentConfirmOnGatedActions(t *testing.T) {
 var mcpExcluded = map[string]string{
 	// Session-only controls: a session rides one conversation; the chat
 	// tools cover send and events (plan G.2).
+	"POST /v1/assistant/native/test":                        "the Test connection button is a settings-page affordance; it writes nothing",
 	"POST /v1/conversations/{id}/close":                     "the CLI chat and the drawer close their own session",
 	"POST /v1/conversations/{id}/permissions/{pid}":         "permission answers go through the drawer or the chat prompt",
 	"POST /v1/conversations/{id}/mode":                      "the mode picker lives in the drawer",
@@ -150,7 +151,6 @@ var mcpExcluded = map[string]string{
 	"GET /v1/runs/{id}/attach":                              "WebSocket terminal",
 	"GET /v1/harnesses/{name}/login/attach":                 "WebSocket login TUI",
 	"POST /v1/agent-hook/{event}":                           "internal harness hook, not a client operation",
-	"POST /v1/connectors/{name}/stop":                       "alias of disconnect (same handler)",
 	"POST /v1/skills/{name}/update":                         "alias of refresh (same handler)",
 	"POST /v1/jobs/{name}/memory/migrate":                   "repair path; the daemon migrates legacy files at launch",
 	"POST /v1/workspaces/{id}/agents/{name}/memory/migrate": "repair path; the daemon migrates legacy files at launch",
@@ -218,7 +218,7 @@ func mcpTestMux() *http.ServeMux {
 var knownFields = []tools.DocField{ //nolint:gochecknoglobals // static probe list, never mutated
 	{Name: "if_match", Type: "string"}, {Name: "limit", Type: "number"}, {Name: "cursor", Type: "string"},
 	{Name: "max_bytes", Type: "number"}, {Name: "lines", Type: "number"}, {Name: "encoding", Type: "string"},
-	{Name: "harnesses", Type: "object"}, {Name: "facets", Type: "array"}, {Name: "inputs", Type: "object"},
+	{Name: "harnesses", Type: "object"}, {Name: "definition", Type: "object"}, {Name: "inputs", Type: "object"},
 	{Name: "harness", Type: "string"}, {Name: "kind", Type: "string"}, {Name: "reason", Type: "string"},
 	{Name: "conversation_id", Type: "string"}, {Name: "idempotency_key", Type: "string"},
 	{Name: "extra_prompt", Type: "string"}, {Name: "prompt", Type: "string"}, {Name: "dry_run", Type: "boolean"},
@@ -226,6 +226,8 @@ var knownFields = []tools.DocField{ //nolint:gochecknoglobals // static probe li
 	{Name: "summary", Type: "string"}, {Name: "revision", Type: "number"}, {Name: "stat", Type: "boolean"},
 	{Name: "raw", Type: "boolean"}, {Name: "prefix", Type: "string"}, {Name: "env", Type: "object"},
 	{Name: "cwd", Type: "string"}, {Name: "format", Type: "string"}, {Name: "date", Type: "string"},
+	{Name: "capability", Type: "string"}, {Name: "provenance", Type: "string"},
+	{Name: "actions", Type: "object"}, {Name: "events", Type: "object"}, {Name: "channel", Type: "object"},
 	{Name: "wait_ms", Type: "number"}, {Name: "state", Type: "string"}, {Name: "approval_id", Type: "string"},
 	{Name: "channel_type", Type: "string"}, {Name: "channel_ref", Type: "string"},
 	{Name: "content", Type: "string"}, {Name: "force", Type: "boolean"}, {Name: "at", Type: "string"},

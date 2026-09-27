@@ -266,7 +266,9 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		Harness:       agentwire.Harness(tool.Name()),
 		Binary:        bin,
 		WorkingDir:    opts.WorkingDir,
-		Env:           mergeCLIEnv(tool.Name(), opts.Env, plan.Env, run.ID, opts.CreateOpts.ActorToken, tool.Name()),
+		Env:           mergeCLIEnv(tool.Name(), actionEnv(opts.Actions), opts.Env, plan.Env, run.ID, opts.CreateOpts.ActorToken, tool.Name()),
+		MCPServers:    mcpServers(opts.Actions),
+		Skills:        actionSkills(opts.Actions),
 		SessionID:     opts.SessionID,
 		Model:         opts.Model,
 		Effort:        opts.Effort,
@@ -436,14 +438,17 @@ func hasCommandFlag(command, flag string) bool {
 	return false
 }
 
-// mergeCLIEnv mirrors paneEnvExport precedence: secret env < job env < plan
-// env, plus the run identity and the pinned bin dir on PATH.
-func mergeCLIEnv(toolName string, optEnv, planEnv map[string]string, runID, token, tool string) map[string]string {
+// mergeCLIEnv mirrors paneEnvFile precedence: secret env < action env < job
+// env < plan env, plus the run identity and the pinned bin dir on PATH.
+func mergeCLIEnv(toolName string, actEnv, optEnv, planEnv map[string]string, runID, token, tool string) map[string]string {
 	merged := map[string]string{}
 	if env, err := harness.LoadSecretEnv(toolName); err == nil {
 		for k, v := range env {
 			merged[k] = v
 		}
+	}
+	for k, v := range actEnv {
+		merged[k] = v
 	}
 	for k, v := range optEnv {
 		merged[k] = v

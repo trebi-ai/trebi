@@ -715,12 +715,7 @@ func (s *Service) ConnectorRow() map[string]any {
 	s.mu.RUnlock()
 	status := "listening"
 	if state.Failures > 0 {
-		status = "error"
-	}
-	row := map[string]any{
-		"id": "email", "name": "email", "type": "native",
-		"facets": []string{"email"}, "status": status,
-		"provenance": "native", "managed": false,
+		status = "crashed"
 	}
 	metrics := map[string]any{"position": state.Position, "failures": state.Failures}
 	if state.LastPoll != "" {
@@ -729,8 +724,15 @@ func (s *Service) ConnectorRow() map[string]any {
 	if state.LastError != "" {
 		metrics["last_error"] = state.LastError
 	}
-	row["metrics"] = metrics
-	return row
+	return map[string]any{
+		"id": "email", "name": "email",
+		"provenance": "native", "managed": false,
+		"capabilities": []string{"events", "channel"},
+		"events": map[string]any{
+			"status":  status,
+			"metrics": metrics,
+		},
+	}
 }
 
 // alertFrom picks the sender for one alert. A workspace address makes the

@@ -96,20 +96,43 @@ type Settings struct {
 }
 
 // NativeSettings is the native provider configuration. The model lives in
-// Settings.Model. APIKey is write-only: the API accepts it and never
-// returns it. APIKeyPresent and APIKeySource are read-only
-// (plan 2026-09-26 G).
+// the block: once native is configured it survives harness switches, and
+// an empty model falls back to Settings.Model. APIKey is write-only: the
+// API accepts it and never returns it. APIKeyPresent and APIKeySource are
+// read-only (plan 2026-09-26 G).
 type NativeSettings struct {
-	APIFormat     string            `json:"api_format"`              // anthropic | openai
-	BaseURL       string            `json:"base_url,omitempty"`      //
-	APIKey        string            `json:"api_key,omitempty"`       // write-only; never returned
-	APIKeyEnv     string            `json:"api_key_env,omitempty"`   // env var that holds the key
-	APIKeyPresent bool              `json:"api_key_present"`         // read-only
-	APIKeySource  string            `json:"api_key_source"`          // read-only: secret | env:<NAME> | none
-	Headers       map[string]string `json:"headers,omitempty"`       //
-	WebSearch     *bool             `json:"web_search,omitempty"`    // nil keeps the daemon default (true)
-	MaxTokens     int               `json:"max_tokens,omitempty"`    //
+	Model         string            `json:"model,omitempty"`          // empty inherits Settings.Model
+	APIFormat     string            `json:"api_format"`               // anthropic | openai
+	BaseURL       string            `json:"base_url,omitempty"`       //
+	APIKey        string            `json:"api_key,omitempty"`        // write-only; never returned
+	APIKeyEnv     string            `json:"api_key_env,omitempty"`    // read-only on /v1; set in config.yaml
+	APIKeyPresent bool              `json:"api_key_present"`          // read-only
+	APIKeySource  string            `json:"api_key_source"`           // read-only: secret | env:<NAME> | none
+	Headers       map[string]string `json:"headers,omitempty"`        //
+	WebSearch     *bool             `json:"web_search,omitempty"`     // nil keeps the daemon default (true)
+	MaxTokens     int               `json:"max_tokens,omitempty"`     //
 	ContextTokens int               `json:"context_tokens,omitempty"` //
+}
+
+// NativeTestRequest is the body of POST /v1/assistant/native/test: the
+// unsaved native form values (plan 2026-09-26 B).
+type NativeTestRequest struct {
+	Model  string         `json:"model"`
+	Native NativeSettings `json:"native"`
+}
+
+// NativeTestResult is one provider test. Error is verbatim provider text.
+// The key value never appears in any field.
+type NativeTestResult struct {
+	OK           bool   `json:"ok"`
+	Model        string `json:"model"`
+	LatencyMS    int64  `json:"latency_ms"`
+	Reply        string `json:"reply,omitempty"`
+	KeySource    string `json:"key_source"`
+	InputTokens  int    `json:"input_tokens,omitempty"`
+	OutputTokens int    `json:"output_tokens,omitempty"`
+	Code         string `json:"code,omitempty"` // no_model | no_key | timeout | provider
+	Error        string `json:"error,omitempty"`
 }
 
 // Override is the trebi.yaml assistant block. A nil field means "inherit"

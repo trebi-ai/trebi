@@ -16,6 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/assistant"
+	"github.com/trebi-ai/trebi/internal/channels"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
@@ -31,6 +32,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
@@ -55,6 +57,8 @@ type Options struct {
 	// EmailInterval overrides the inbound mail poll tick (default: the
 	// configured poll_interval, else 30s; tests 50ms).
 	EmailInterval time.Duration
+	// ChannelInterval overrides the channel outbox and typing tick (default 1s).
+	ChannelInterval time.Duration
 	// LoginMaxAge is the interactive login session lifetime (default 10m).
 	LoginMaxAge time.Duration
 	Ext         ext.Set
@@ -69,12 +73,14 @@ type ControlPlane struct {
 	Runs          *runs.Service
 	Workspaces    *workspaces.Service
 	Files         *files.Service
+	Skills        *skills.Service
 	Schedule      *schedule.Service
 	Connectors    *connectors.Service
 	Policy        *dispatch.Policy
 	Reaper        *runs.Reaper
 	Alerts        *alerts.Service
 	Conversations *conversations.Service
+	Channels      *channels.Service
 	Harness       *harness.Service
 	Email         *email.Service
 	Proposals     *proposals.Service
@@ -175,12 +181,15 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	q := dispatch.NewQueue(st)
 	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()
-	connector := connectors.New(st, ws, r, pol).WithUserHome(harness.UserHome())
+	sk := skills.New(st)
+	connector := connectors.New(st, ws, sk).WithUserHome(harness.UserHome())
+	r.WithActions(connector)
 	lic := opts.License
 	if lic == nil {
 		lic = license.New(opts.Ext.License)
 	}
 	em := email.New(st).WithConversations(conv)
+	ch := channels.New(st, connector, conv)
 	cl := cloudlink.New(st).WithMail(em)
 	hk := webhooks.New(st, connector, cl)
 	cl.WithWebhooks(hk)
@@ -191,11 +200,13 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Workspaces:    ws,
 		Files:         fs,
 		Proposals:     proposalSvc,
+		Skills:        sk,
 		Schedule:      schedule.New(st),
 		Connectors:    connector,
 		Policy:        pol,
 		Reaper:        runs.NewReaper(r),
 		Conversations: conv,
+		Channels:      ch,
 		Harness:       harness.New(st, tmux.DefaultDriver{}, harness.Options{LoginMaxAge: opts.LoginMaxAge}),
 		Email:         em,
 		Cloud:         cl,
@@ -243,17 +254,9 @@ func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service
 		}
 	}
 	// The provider config is read live, so a save lands without a restart
-	// (plan 2026-09-26 G). The model is the top-level assistant.model; the
-	// nested native.model is a deprecated alias.
-	nativeFn := func() config.NativeConfig {
-		cur, err := config.Load()
-		if err != nil || cur == nil {
-			return config.NativeConfig{}
-		}
-		n := cur.Assistant.Native
-		n.Model = cur.Assistant.Model
-		return n
-	}
+	// (plan 2026-09-26 G). LiveNativeConfig merges the native model with the
+	// assistant.model fallback.
+	nativeFn := assistant.LiveNativeConfig
 	c.asstDisp = &toolDispatcher{}
 	c.asstStore = assistant.NewStore(c.Store)
 	c.asstRT = agentwire.New(agentwire.Options{
@@ -425,6 +428,16 @@ func (c *ControlPlane) Start(parent context.Context) {
 		defer c.wg.Done()
 		c.busPrune(ctx)
 	}()
+
+	// The channel worker sends pending replies and pulses typing. It skips
+	// its tick under shadow and drain (plan G.3).
+	if c.Channels != nil {
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.channelWorker(ctx)
+		}()
+	}
 
 	if c.Harness != nil {
 		c.Harness.ReapOrphanLogins()

@@ -53,7 +53,7 @@ trebi agent create research --workspace reports --template research \
   --title "Research" --accept operators --input competitors="acme,beta"
 ```
 
-`AGENT.md kit:` carries reusable `envset` (a name or a list of names), `env`, `skills`, and `mcp` values. Owned jobs inherit it; their own `envset`/`env` wins. v1 treats skills and MCP as prompt hints and doctor checks rather than per-run harness isolation.
+`AGENT.md kit:` carries reusable `envset` (a name or a list of names), `env`, `skills`, and `connectors` values. Owned jobs inherit it; their own `envset`/`env`/`connectors` wins. `skills` stays a prompt hint and a doctor check; `connectors` names managed connectors whose actions are injected into each run (see `trebi guide connectors-and-rules`).
 
 Optional budget and report keys are off by default:
 

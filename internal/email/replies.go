@@ -99,7 +99,7 @@ func (s *Service) replyDueTurn(ctx context.Context, conversationID, runID string
 	var covered sql.NullInt64
 	if err := s.st.DB().QueryRowContext(ctx, `
 SELECT MAX(covered_turn) FROM email_messages
-WHERE direction='out' AND disposition='sent' AND conversation_id=? AND run_id=?`,
+WHERE direction='out' AND disposition='sent' AND conversation_id=? AND COALESCE(run_id,'')=?`,
 		conversationID, runID).Scan(&covered); err != nil {
 		return nil, 0, fmt.Errorf("reply covered %s/%s: %w", conversationID, runID, err)
 	}
@@ -169,7 +169,7 @@ INSERT INTO email_messages
    subject, disposition, conversation_id, run_id, covered_turn, created_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rowID, "out", in.workspaceID, opts.Agent, msgID, in.messageID, root, in.sender,
-		subject, "sent", opts.ConversationID, opts.RunID, *turn.TurnIndex,
+		subject, "sending", opts.ConversationID, opts.RunID, *turn.TurnIndex,
 		time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("reply envelope: %w", err)
 	}
@@ -186,6 +186,13 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			s.log.ErrorContext(ctx, "email send_failed mark", "row", rowID, "error", uerr.Error())
 		}
 		return err
+	}
+	// The row covers the turn only after the mail left the spool. A crash
+	// between the insert and this update leaves 'sending', which does not
+	// cover, so the next tick sends again.
+	if _, err := s.st.DB().ExecContext(ctx,
+		`UPDATE email_messages SET disposition='sent' WHERE id=?`, rowID); err != nil {
+		return fmt.Errorf("reply sent mark: %w", err)
 	}
 	s.noteSendFailure(nil)
 	s.appendSent(ctx, rowID, msgID)

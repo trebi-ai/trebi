@@ -11,9 +11,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/connectors"
-	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -277,8 +275,7 @@ func openStack(t *testing.T) (*store.Store, *connectors.Service) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	ws := workspaces.New(st)
-	r := runs.New(st, nil, nil)
-	return st, connectors.New(st, ws, r, dispatch.NewPolicy())
+	return st, connectors.New(st, ws, nil)
 }
 
 // jobStack indexes one workspace with a webhook job whose match reads

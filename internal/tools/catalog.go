@@ -158,6 +158,24 @@ func (in Input) obj(key string) (map[string]any, error) {
 	return m, nil
 }
 
+// block reads one object field as raw JSON: nil when the field is absent,
+// and "null" when the caller sends an explicit null (a PATCH removes the
+// block).
+func (in Input) block(key string) (json.RawMessage, error) {
+	v, ok := in[key]
+	if !ok {
+		return nil, nil
+	}
+	if v == nil {
+		return json.RawMessage("null"), nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("input field %q: %w", key, err)
+	}
+	return b, nil
+}
+
 // strMap reads one string-to-string object field: nil when the field is absent.
 func (in Input) strMap(key string) (map[string]string, error) {
 	m, err := in.obj(key)
@@ -1602,10 +1620,20 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildConnectorsListPath(limit)), nil
+				capability, err := in.str("capability")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				provenance, err := in.str("provenance")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildConnectorsListPath(limit, capability, provenance)), nil
 			}),
 			"show": idGet("GET /v1/connectors/{name}", "name", "mail", request.BuildConnectorGetPath),
-			"create": act("POST /v1/connectors", Input{"definition": map[string]any{"name": "mail", "command": "fetch-mail.sh"}}, func(in Input) (request.HTTPRequest, error) {
+			"create": act("POST /v1/connectors", Input{"definition": map[string]any{
+				"events": map[string]any{"command": "fetch-mail.sh", "format": "line"},
+			}}, func(in Input) (request.HTTPRequest, error) {
 				def, err := in.obj("definition")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1615,23 +1643,66 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildConnectorCreate(def), nil
 			}),
-			"set": act("PUT /v1/connectors/{name}", Input{"name": "mail", "command": "fetch-mail.sh"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "command", "format", "type", "cwd")
+			"replace": act("PUT /v1/connectors/{name}", Input{"name": "mail", "definition": map[string]any{
+				"events": map[string]any{"command": "fetch-mail.sh", "format": "line"},
+			}}, func(in Input) (request.HTTPRequest, error) {
+				name, err := in.reqStr("name")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
+				def, err := in.obj("definition")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if def == nil {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "definition")
+				}
+				return request.BuildConnectorReplace(name, def), nil
+			}),
+			"set": act("PATCH /v1/connectors/{name}", Input{"name": "mail", "events": map[string]any{
+				"command": "fetch-mail.sh", "format": "line",
+			}}, func(in Input) (request.HTTPRequest, error) {
+				name, err := in.reqStr("name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				patch := request.ConnectorPatch{Name: name}
 				env, err := in.strMap("env")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				facets, err := in.strList("facets")
+				if env != nil {
+					patch.Env = env
+				}
+				cwd, err := in.str("cwd")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.ConnectorSpec{
-					Name: v[0], Command: v[1], Format: v[2], Type: v[3], Cwd: v[4],
-					Env: env, Facets: facets,
-				}.Build(), nil
+				if cwd != "" {
+					patch.Cwd = cwd
+				}
+				actions, err := in.block("actions")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if actions != nil {
+					patch.Actions = actions
+				}
+				events, err := in.block("events")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if events != nil {
+					patch.Events = events
+				}
+				channel, err := in.block("channel")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if channel != nil {
+					patch.Channel = channel
+				}
+				return patch.Build(), nil
 			}),
 			"delete":     confirmDel("DELETE /v1/connectors/{name}", "name", "mail", request.BuildConnectorDelete),
 			"connect":    idPost("POST /v1/connectors/{name}/connect", "name", "mail", request.BuildConnectorConnect),
@@ -1855,12 +1926,26 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			}),
 			"interrupt": idPost("POST /v1/conversations/{id}/interrupt", "id", "01ABC", request.BuildConversationInterrupt),
 			"delete":    confirmDel("DELETE /v1/conversations/{id}", "id", "01ABC", request.BuildConversationDelete),
-			"pointer_show": act("GET /v1/channel-pointers/{type}/{ref}", Input{"channel_type": "cli", "channel_ref": "fritz"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("channel_type", "channel_ref")
+			"outbox": act("GET /v1/conversations/{id}/outbox", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildPointerGet(v[0], v[1]), nil
+				return mcpGet(request.BuildConversationOutboxPath(id)), nil
+			}),
+			"outbox_retry": act("POST /v1/conversations/{id}/outbox/{row}/retry", Input{"id": "01ABC", "row": "01ROW"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("id", "row")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildConversationOutboxRetry(v[0], v[1]), nil
+			}),
+			"pointer_show": act("GET /v1/channel-pointers/{type}/{ref}", Input{"channel_type": "cli", "channel_ref": "fritz", "workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("channel_type", "channel_ref", "workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildPointerGet(v[0], v[1], v[2]), nil
 			}),
 			"pointer_set": act("PUT /v1/channel-pointers/{type}/{ref}", Input{"channel_type": "cli", "channel_ref": "fritz", "conversation_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("channel_type", "channel_ref", "conversation_id")

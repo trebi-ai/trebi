@@ -274,10 +274,13 @@ func TestEmailRoutes(t *testing.T) {
 			row = c.(map[string]any)
 		}
 	}
-	if row == nil || row["type"] != "native" || row["status"] != "listening" {
+	if row == nil || row["provenance"] != "native" || row["managed"] != false {
 		t.Fatalf("email row: %v", row)
 	}
-	if code, m := e.do(t, http.MethodGet, "/v1/connectors/email", nil); code != 200 || m["type"] != "native" {
+	if ev, ok := row["events"].(map[string]any); !ok || ev["status"] != "listening" {
+		t.Fatalf("email row events: %v", row)
+	}
+	if code, m := e.do(t, http.MethodGet, "/v1/connectors/email", nil); code != 200 || m["provenance"] != "native" {
 		t.Fatalf("connector get: %d %v", code, m)
 	}
 	if code, m := e.do(t, http.MethodPost, "/v1/connectors/email/restart", nil); code != 200 || m["pulled"] != float64(3) {
@@ -285,7 +288,7 @@ func TestEmailRoutes(t *testing.T) {
 	}
 	// The process verbs have no process to act on: the row survives them.
 	_, _ = e.do(t, http.MethodPost, "/v1/connectors/email/disconnect", nil)
-	if code, m := e.do(t, http.MethodGet, "/v1/connectors/email", nil); code != 200 || m["status"] != "listening" {
+	if code, m := e.do(t, http.MethodGet, "/v1/connectors/email", nil); code != 200 || m["provenance"] != "native" {
 		t.Fatalf("row after disconnect: %d %v", code, m)
 	}
 }
@@ -650,7 +653,7 @@ func startEmailAPI(t *testing.T) *emailAPIServer {
 		Operators: []string{"ops@example.com"}, PollInterval: time.Minute,
 		RequireDMARC: true, FromName: "Trebi",
 	}, email.NewClient(ws.URL, "test-token-0000"))
-	s.Email().AttachIngress(email.NewIngress(s.Email(), connectors.New(st, nil, nil, nil), acts, time.Minute, false))
+	s.Email().AttachIngress(email.NewIngress(s.Email(), connectors.New(st, nil, nil), acts, time.Minute, false))
 	return &emailAPIServer{base: "http://" + addr, dir: dir, api: s, fw: fw, acts: acts, svc: s.Email()}
 }
 

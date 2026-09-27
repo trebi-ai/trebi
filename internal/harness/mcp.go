@@ -170,10 +170,17 @@ func unionMCPDecls(decls []mcpDecl, cfg *config.Config) []MCPServer {
 }
 
 func mcpFingerprint(d mcpDecl) string {
-	if d.transport == "http" || d.rawURL != "" {
-		return "http:" + canonicalMCPURL(d.rawURL)
+	return MCPFingerprint(d.transport, d.command, d.args, d.rawURL)
+}
+
+// MCPFingerprint identifies one MCP server by its transport and target. The
+// connectors service reuses it so a managed server and a discovered one
+// fingerprint the same way.
+func MCPFingerprint(transport, command string, args []string, url string) string {
+	if transport == "http" || url != "" {
+		return "http:" + canonicalMCPURL(url)
 	}
-	parts := append([]string{d.command}, stripAgentArgs(d.args)...)
+	parts := append([]string{command}, stripAgentArgs(args)...)
 	return "stdio:" + strings.Join(parts, " ")
 }
 

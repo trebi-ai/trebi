@@ -127,6 +127,7 @@ type Service struct {
 	composer   WakeComposer
 	memRes     MemoryResolver
 	budgetGate BudgetGate
+	actions    ActionResolver
 
 	// Subprocess runtime (Part D). rt is the shared agentwire runtime (its
 	// own session + pid ledger); cliDriver is a test override; cliRuns is the

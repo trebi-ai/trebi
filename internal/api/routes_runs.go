@@ -199,6 +199,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	kit := s.ws.OwnerKit(r.Context(), body.Workspace, body.Job)
 	lopts := launchOpts(body, reason, harness, prompt, spec, kit)
 	lopts.JobSkills = spec.Skills
+	lopts.JobConnectors = spec.Connectors
 	lopts.Wake = wake
 	lopts.Memory = mem
 	lopts.Kit = kit
@@ -1090,6 +1091,7 @@ func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason r
 	lopts.Memory = s.memoryLaunchFor(ctx, prev.Workspace, j)
 	lopts.Kit = kit
 	lopts.JobSkills = j.Skills
+	lopts.JobConnectors = j.Connectors
 	return lopts, nil
 }
 

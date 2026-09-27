@@ -16,7 +16,7 @@ func TestMigrationV24FromV23(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := applyThrough(db, len(migrations())-1); err != nil {
+	if err := applyThrough(db, 23); err != nil {
 		t.Fatalf("v23 setup: %v", err)
 	}
 	seed := []string{

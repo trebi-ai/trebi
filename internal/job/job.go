@@ -89,6 +89,7 @@ type Frontmatter struct {
 	Allowlist      []string          `yaml:"allowlist"`
 	Inputs         any               `yaml:"inputs"`
 	Skills         any               `yaml:"skills"`
+	Connectors     any               `yaml:"connectors"`
 	Email          *EmailYAML        `yaml:"email,omitempty"`
 	Kit            *KitYAML          `yaml:"kit,omitempty"`
 	Budget         *BudgetYAML       `yaml:"budget,omitempty"`
@@ -184,6 +185,7 @@ type Job struct {
 	Disabled       bool
 	FollowupPrompt string
 	Skills         []string
+	Connectors     []string
 	Prompt         string
 	Kind           string // job | assistant | agent
 	Owner          string // owning agent index name (agents/<name>) for jobs under an agent folder
@@ -538,6 +540,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Disabled:       fm.Disabled,
 		FollowupPrompt: fm.FollowupPrompt,
 		Skills:         stringList(fm.Skills),
+		Connectors:     stringList(fm.Connectors),
 		Prompt:         string(bytes.TrimSpace(body)),
 		Kind:           kindFromPath(filePath),
 		EmailAccept:    rawAccept,

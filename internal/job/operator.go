@@ -15,10 +15,10 @@ type EmailYAML struct {
 // KitYAML is an agent's reusable run configuration. Owned jobs may inherit
 // it; job-level values take precedence (plan A.10 and Part J).
 type KitYAML struct {
-	Envset EnvsetList        `yaml:"envset,omitempty"`
-	Env    map[string]string `yaml:"env,omitempty"`
-	Skills []string          `yaml:"skills,omitempty"`
-	MCP    []string          `yaml:"mcp,omitempty"`
+	Envset     EnvsetList        `yaml:"envset,omitempty" json:"envset,omitempty"`
+	Env        map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Skills     []string          `yaml:"skills,omitempty" json:"skills,omitempty"`
+	Connectors []string          `yaml:"connectors,omitempty" json:"connectors,omitempty"`
 }
 
 // BudgetYAML is the optional monthly spend guardrail.

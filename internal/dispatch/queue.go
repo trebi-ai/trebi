@@ -86,16 +86,14 @@ const (
 type EventOutcome string
 
 const (
-	OutcomeNoMatch     EventOutcome = "no_match"
-	OutcomeDebounced   EventOutcome = "debounced"
-	OutcomeRateLimited EventOutcome = "rate_limited"
-	OutcomeError       EventOutcome = "error"
-	OutcomeQueued      EventOutcome = "queued"
-	OutcomeBlocked     EventOutcome = "blocked"
-	OutcomeLaunched    EventOutcome = "launched"
-	OutcomeCoalesced   EventOutcome = "coalesced"
-	OutcomeSkipped     EventOutcome = "skipped"
-	OutcomeDead        EventOutcome = "dead"
+	OutcomeNoMatch   EventOutcome = "no_match"
+	OutcomeError     EventOutcome = "error"
+	OutcomeQueued    EventOutcome = "queued"
+	OutcomeBlocked   EventOutcome = "blocked"
+	OutcomeLaunched  EventOutcome = "launched"
+	OutcomeCoalesced EventOutcome = "coalesced"
+	OutcomeSkipped   EventOutcome = "skipped"
+	OutcomeDead      EventOutcome = "dead"
 )
 
 // Queue owns event_queue rows for one store.
@@ -164,6 +162,9 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 // because RFC3339Nano strips trailing fractional zeros.
 func (q *Queue) ClaimNext(ctx context.Context, workspaceID, job, kind, conversationKey string) (*QueueItem, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// next_attempt_at is written as RFC3339 (second precision); compare it
+	// against the same shape so the lexical order is the time order.
+	due := time.Now().UTC().Format(time.RFC3339)
 	var item QueueItem
 	q.st.LockBus()
 	defer q.st.UnlockBus()
@@ -173,7 +174,8 @@ func (q *Queue) ClaimNext(ctx context.Context, workspaceID, job, kind, conversat
 			COALESCE(resume_of,''), attempts, COALESCE(vars_json,''), created_at
 			FROM event_queue
 			WHERE status='pending' AND workspace_id=? AND job=? AND kind=? AND conversation_key=?
-			ORDER BY id ASC LIMIT 1`, workspaceID, job, kind, conversationKey)
+			AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+			ORDER BY id ASC LIMIT 1`, workspaceID, job, kind, conversationKey, due)
 		var created, status, varsJSON string
 		if err := row.Scan(&item.ID, &item.Connector, &item.WorkspaceID, &item.Job, &item.Kind,
 			&item.OnIndex, &item.ConversationKey, &item.EventID, &item.EventRaw, &status, &item.Prompt,
@@ -233,6 +235,28 @@ func (q *Queue) MarkDone(ctx context.Context, id string, result QueueResult, run
 	}, store.BusEvent{
 		Topic: "queue.updated", Entity: "queue", EntityID: id, Action: "updated",
 		Attrs: map[string]string{"status": "done", "result": string(result)},
+	})
+	return err
+}
+
+// Defer returns a claimed or pending row to pending with the first allowed
+// attempt time. The launch records the fire, so a policy delay never spends
+// the rate budget.
+func (q *Queue) Defer(ctx context.Context, id string, until time.Time, reason string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE event_queue SET status='pending', next_attempt_at=?, error_message=?, updated_at=? WHERE id=?`,
+			until.UTC().Format(time.RFC3339), store.NullStr(reason), now, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("%w: %s", ErrNotFound, id)
+		}
+		return nil
+	}, store.BusEvent{
+		Topic: "queue.updated", Entity: "queue", EntityID: id, Action: "updated",
+		Attrs: map[string]string{"status": "pending", "next_attempt_at": until.UTC().Format(time.RFC3339)},
 	})
 	return err
 }

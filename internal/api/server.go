@@ -22,6 +22,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/agents"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/assistant"
+	"github.com/trebi-ai/trebi/internal/channels"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
@@ -60,6 +61,7 @@ type Server struct {
 	skills     *skills.Service
 	connectors *connectors.Service
 	conv       *conversations.Service
+	channels   *channels.Service
 	harness    *harness.Service
 	sched      *schedule.Service
 	email      *email.Service
@@ -81,9 +83,9 @@ type Server struct {
 	// The doctor summary cache. A background refresher computes it every
 	// minute and on a config change; the request path only reads it
 	// (plan 2026-09-26 H).
-	doctorMu      sync.Mutex
+	doctorMu     sync.Mutex
 	doctorCached map[string]int
-	doctorKick    chan struct{}
+	doctorKick   chan struct{}
 
 	// The assistant session stack. New builds a standalone default;
 	// BindAssistant swaps in the daemon's shared instances.
@@ -91,6 +93,7 @@ type Server struct {
 	asstStore   *assistant.Store
 	asstResolve *assistant.Resolver
 	asstDoctor  *assistant.Doctor
+	nativeProbe *assistant.NativeProbe
 
 	upgrader   websocket.Upgrader
 	httpServer *http.Server
@@ -130,12 +133,12 @@ func New(st *store.Store, opts Options) *Server {
 	r.SetMemoryResolver(ws)
 	r.SetBudgetGate(ws)
 	q := dispatch.NewQueue(st)
-	pol := dispatch.NewPolicy()
 	lic := opts.License
 	if lic == nil {
 		lic = license.New(opts.Ext.License)
 	}
-	conn := connectors.New(st, ws, r, pol)
+	sk := skills.New(st)
+	conn := connectors.New(st, ws, sk)
 	cl := cloudlink.New(st)
 	s := &Server{
 		st:           st,
@@ -143,7 +146,7 @@ func New(st *store.Store, opts Options) *Server {
 		ws:           ws,
 		files:        fs,
 		alerts:       alerts.New(st, alerts.Options{}),
-		skills:       skills.New(st),
+		skills:       sk,
 		connectors:   conn,
 		conv:         conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
 		harness:      harness.New(st, tmux.DefaultDriver{}, harness.Options{}),
@@ -167,6 +170,7 @@ func New(st *store.Store, opts Options) *Server {
 		},
 	}
 	_ = s.connectors.Load()
+	s.channels = channels.New(st, s.connectors, s.conv)
 	s.toolsReg = tools.NewRegistry(s)
 	s.buildAssistantStack(opts.FilesMaxBytes)
 	s.mcpHTTP = s.newMCPHandler()
@@ -179,18 +183,11 @@ func New(st *store.Store, opts Options) *Server {
 func (s *Server) buildAssistantStack(filesMaxBytes int64) {
 	cfg, _ := config.Load()
 	// The provider config is read live, so a save lands without a restart
-	// (plan 2026-09-26 G). The model is the top-level assistant.model; the
-	// nested native.model is a deprecated alias.
-	nativeFn := func() config.NativeConfig {
-		cur, err := config.Load()
-		if err != nil || cur == nil {
-			return config.NativeConfig{}
-		}
-		n := cur.Assistant.Native
-		n.Model = cur.Assistant.Model
-		return n
-	}
+	// (plan 2026-09-26 G). LiveNativeConfig merges the native model with the
+	// assistant.model fallback.
+	nativeFn := assistant.LiveNativeConfig
 	s.asstStore = assistant.NewStore(s.st)
+	s.nativeProbe = assistant.NewNativeProbe(assistant.NewNativeModel)
 	rt := agentwire.New(agentwire.Options{
 		ClientName:    "trebi",
 		ClientVersion: Version,
@@ -308,7 +305,7 @@ func (s *Server) BindAssistant(src AssistantSource) {
 }
 
 // BindControlPlane replaces core services with the daemon's shared instances.
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service, cloudSvc *cloudlink.Service, hooksSvc *webhooks.Service) {
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, skillsSvc *skills.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service, cloudSvc *cloudlink.Service, hooksSvc *webhooks.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
 	}
@@ -326,6 +323,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	}
 	if filesSvc != nil {
 		s.files = filesSvc
+	}
+	if skillsSvc != nil {
+		s.skills = skillsSvc
 	}
 	if conv != nil {
 		s.conv = conv
@@ -348,6 +348,7 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	if hooksSvc != nil {
 		s.hooks = hooksSvc
 	}
+	s.channels = channels.New(s.st, s.connectors, s.conv)
 }
 
 func checkWSOrigin(r *http.Request) bool {

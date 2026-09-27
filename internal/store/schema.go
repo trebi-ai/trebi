@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 24
+const SchemaVersion = 27
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -614,6 +614,83 @@ DELETE FROM event_queue WHERE kind = 'assistant' AND status IN ('pending','claim
 DELETE FROM runs WHERE kind = 'assistant';
 DROP TABLE assistant_usage;
 ALTER TABLE workspaces DROP COLUMN assistant_seeded;
+`,
+		// v25: title untitled conversations from their first user message
+		// (plan 2026-09-26 assistant-settings-annotation-fixes E). The first
+		// line, 60 characters, then an ellipsis, like deriveTitle in Go.
+		// SQLite length and substr count characters, which matches the rune
+		// count of deriveTitle.
+		`
+UPDATE conversations
+SET title = (
+  SELECT CASE
+    WHEN length(t) > 60 THEN substr(t, 1, 60) || '…'
+    ELSE t END
+  FROM (
+    SELECT trim(CASE WHEN instr(text, char(10)) > 0
+                     THEN substr(text, 1, instr(text, char(10)) - 1)
+                     ELSE text END) AS t
+    FROM conversation_messages m
+    WHERE m.conversation_id = conversations.id AND m.role = 'user'
+    ORDER BY m.id LIMIT 1
+  )
+)
+WHERE COALESCE(title, '') = ''
+  AND EXISTS (SELECT 1 FROM conversation_messages m
+              WHERE m.conversation_id = conversations.id AND m.role = 'user');
+`,
+		// v26: connectors as one object (plan 2026-09-27 D). Events gain the
+		// dedup key, the declared identity, the channel ref, and the catch-up
+		// flag. cursor_id was never written, so the rename loses no data. The
+		// metrics and policy tables have no reader or writer: counters live on
+		// the connector process and policy lives in memory.
+		`
+ALTER TABLE events RENAME COLUMN cursor_id TO source_id;
+ALTER TABLE events ADD COLUMN identity TEXT;
+ALTER TABLE events ADD COLUMN channel_ref TEXT;
+ALTER TABLE events ADD COLUMN catch_up INTEGER NOT NULL DEFAULT 0;
+CREATE UNIQUE INDEX idx_events_source ON events(connector, source_id) WHERE source_id IS NOT NULL;
+DROP TABLE connector_metrics;
+DROP TABLE dispatch_policy;
+`,
+		// v27: channels as a workspace-scoped pointer and one outbox
+		// (plan 2026-09-27 G.1). Connectors are global, so two workspaces
+		// that follow the same chat need two conversations: workspace_id
+		// joins the pointer key. channel_outbox holds one reply per
+		// assistant message, keyed by that message id.
+		`
+CREATE TABLE channel_pointers_new (
+    workspace_id    TEXT NOT NULL,
+    channel_type    TEXT NOT NULL,
+    channel_ref     TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, channel_type, channel_ref)
+);
+INSERT INTO channel_pointers_new
+    SELECT c.workspace_id, p.channel_type, p.channel_ref, p.conversation_id, p.updated_at
+    FROM channel_pointers p JOIN conversations c ON c.id = p.conversation_id;
+DROP TABLE channel_pointers;
+ALTER TABLE channel_pointers_new RENAME TO channel_pointers;
+
+CREATE TABLE channel_outbox (
+    id               TEXT PRIMARY KEY,
+    connector        TEXT NOT NULL,
+    workspace_id     TEXT NOT NULL,
+    conversation_id  TEXT NOT NULL,
+    channel_ref      TEXT NOT NULL,
+    message_id       TEXT NOT NULL,
+    run_id           TEXT,
+    text             TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  TEXT,
+    error_message    TEXT,
+    created_at       TEXT NOT NULL,
+    sent_at          TEXT
+);
+CREATE UNIQUE INDEX idx_channel_outbox_message ON channel_outbox(message_id);
+CREATE INDEX idx_channel_outbox_due ON channel_outbox(status, next_attempt_at);
 `,
 	}
 }

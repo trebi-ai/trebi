@@ -29,6 +29,9 @@ type (
 	Health         = wire.Health
 	WorkspaceInfo  = wire.WorkspaceInfo
 	NativeSettings = wire.NativeSettings
+
+	NativeTestRequest = wire.NativeTestRequest
+	NativeTestResult  = wire.NativeTestResult
 )
 
 // OverrideStore reads and writes the workspace assistant override. It is
@@ -82,6 +85,7 @@ func SettingsFromConfig(cfg *config.Config) Settings {
 func nativeSettingsOf(n config.NativeConfig) *NativeSettings {
 	src := n.KeySourceName()
 	return &NativeSettings{
+		Model:         n.Model,
 		APIFormat:     n.APIFormat,
 		BaseURL:       n.BaseURL,
 		APIKeyEnv:     n.APIKeyEnv,
@@ -139,6 +143,21 @@ func NewResolver(cfg ConfigSource, ws OverrideStore, rt Detector, nativeFn func(
 
 // nativeConfig returns the current native provider config.
 func (r *Resolver) nativeConfig() config.NativeConfig { return r.nativeFn() }
+
+// LiveNativeConfig reads the current provider config for the native driver
+// and the resolver. The model is the native block's own model; an empty one
+// falls back to assistant.model (annotation 2026-09-26). Both the daemon
+// and the API server wire this one function, so every reader sees the same
+// merge.
+func LiveNativeConfig() config.NativeConfig {
+	cur, err := config.Load()
+	if err != nil || cur == nil {
+		return config.NativeConfig{}
+	}
+	n := cur.Assistant.Native
+	n.Model = cur.Assistant.NativeModel()
+	return n
+}
 
 // Timing exposes the process timers.
 func (r *Resolver) Timing() ResolverTiming { return r.timing }
@@ -272,10 +291,10 @@ func (r *Resolver) resolveHarness(ctx context.Context, eff Settings) (string, He
 		detail := ""
 		if model == "" {
 			auth = "missing"
-			detail = "assistant.native.model is not set"
+			detail = "no model: set one in Settings -> Assistant"
 		} else if keyErr != nil {
 			auth = "missing"
-			detail = "no API key: set one in Settings or assistant.native.api_key_env"
+			detail = "no API key: set one in Settings -> Assistant"
 		}
 		return resolved, Health{Available: ok, Auth: auth, Detail: detail}
 	}
@@ -328,9 +347,8 @@ type HarnessOption struct {
 // (plan 2026-09-26 H).
 func (r *Resolver) HarnessOptions(ctx context.Context) []HarnessOption {
 	// Native answers through its registered driver: the credentials come
-	// from the live config (plan 2026-09-26 I.7). The model rides the
-	// top-level assistant.model; the nested native.model is a deprecated
-	// alias.
+	// from the live config (plan 2026-09-26 I.7). The model is the native
+	// block's own model, with assistant.model as the fallback.
 	nativeOpt := HarnessOption{Name: HarnessNative, Label: "Native", Native: true, Auth: "unknown"}
 	model := strings.TrimSpace(r.nativeConfig().Model)
 	if d, err := r.rt.Detect(ctx, agentwire.Native); err != nil {
@@ -342,7 +360,7 @@ func (r *Resolver) HarnessOptions(ctx context.Context) []HarnessOption {
 		switch {
 		case model == "":
 			nativeOpt.Status = HarnessNotConfigured
-			nativeOpt.Detail = "assistant.model is not set"
+			nativeOpt.Detail = "no model: set one in Settings -> Assistant"
 		case d.Auth == "missing":
 			nativeOpt.Status = HarnessNotConfigured
 			nativeOpt.Detail = d.Detail

@@ -285,7 +285,7 @@ func TestIngressPollOnceRoutesBatch(t *testing.T) {
 		{V: 1, Seq: 6, ID: "m6", LocalPart: "nobody-t0k0n0", From: "ops@example.com", Dmarc: "pass"},
 	}
 	acts := &fakeActions{env: testRouteEnv()}
-	conn := connectors.New(st, nil, nil, nil)
+	conn := connectors.New(st, nil, nil)
 	g := NewIngress(s, conn, acts, time.Minute, false)
 
 	n, err := g.PollOnce(t.Context())
@@ -371,7 +371,7 @@ func TestIngressUnhealthyAfterThree(t *testing.T) {
 	st := openEmailStore(t)
 	s := New(st)
 	configureTest(s, "http://127.0.0.1:1")
-	g := NewIngress(s, connectors.New(st, nil, nil, nil), &fakeActions{}, time.Minute, false)
+	g := NewIngress(s, connectors.New(st, nil, nil), &fakeActions{}, time.Minute, false)
 
 	for i := 0; i < 3; i++ {
 		if _, err := g.PollOnce(t.Context()); err == nil {
@@ -427,7 +427,7 @@ func TestIngressCursorFailureBlocksAck(t *testing.T) {
 	}
 
 	acts := &fakeActions{env: testRouteEnv()}
-	g := NewIngress(s, connectors.New(st, nil, nil, nil), acts, time.Minute, false)
+	g := NewIngress(s, connectors.New(st, nil, nil), acts, time.Minute, false)
 
 	n, err := g.PollOnce(t.Context())
 	if err == nil {

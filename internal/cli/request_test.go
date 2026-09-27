@@ -287,7 +287,7 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatal("harness auth mark should be gone")
 	}
 	connector := findCmd(app.Commands, "connector")
-	for _, want := range []string{"list", "show", "set", "remove", "stop", "restart", "logs", "test", "connect", "disconnect", "cursor"} {
+	for _, want := range []string{"list", "show", "set", "apply", "remove", "restart", "logs", "test", "connect", "disconnect", "cursor"} {
 		if findCmd(connector.Commands, want) == nil {
 			t.Fatalf("connector missing %s", want)
 		}
@@ -395,10 +395,13 @@ func TestCommandRegistration(t *testing.T) {
 		}
 	}
 	conv := findCmd(app.Commands, "conversation")
-	for _, want := range []string{"list", "show", "messages", "new", "switch", "delete"} {
+	for _, want := range []string{"list", "show", "messages", "new", "switch", "delete", "outbox"} {
 		if findCmd(conv.Commands, want) == nil {
 			t.Fatalf("conversation missing %s", want)
 		}
+	}
+	if findCmd(findCmd(conv.Commands, "outbox").Commands, "retry") == nil {
+		t.Fatal("conversation outbox missing retry")
 	}
 	setCmd := findCmd(asst.Commands, "set")
 	for _, f := range []string{"harness", "model", "effort", "envset", "mode", "skill", "context-file", "disabled", "unset", "defaults", "workspace"} {

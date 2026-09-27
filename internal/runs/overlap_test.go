@@ -168,3 +168,77 @@ func openRuns(t *testing.T) (*runs.Service, context.Context) {
 	t.Cleanup(func() { _ = st.Close() })
 	return runs.New(st, nil, nil), context.Background()
 }
+
+// TestIfRunningPerConversation proves the overlap check is scoped to one
+// conversation key (plan E.3): a live run of another chat does not block a
+// launch, and the same conversation coalesces against its own live run.
+func TestIfRunningPerConversation(t *testing.T) {
+	svc, ctx := openRuns(t)
+	if _, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws", Job: "chat", Harness: "fake", Reason: runs.ReasonManual,
+		ConversationKey: "conv-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A different conversation launches a second run.
+	r2, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "chat", Harness: "fake", Reason: runs.ReasonTrigger,
+			ConversationKey: "conv-b",
+		},
+		Prompt: "b", IfRunning: "skip",
+		FakeCommand: []string{"sh", "-c", `echo "$TREBI_RUN_COMPLETE"`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "" || r2.Status == runs.StatusSkipped {
+		t.Fatalf("outcome=%q status=%s; a second conversation must launch", outcome, r2.Status)
+	}
+	// A live run of conv-b makes the next conv-b item coalesce.
+	live, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws", Job: "chat", Harness: "fake", Reason: runs.ReasonManual,
+		ConversationKey: "conv-b",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r3, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "chat", Harness: "fake", Reason: runs.ReasonTrigger,
+			ConversationKey: "conv-b",
+		},
+		Prompt: "again", IfRunning: "coalesce",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "coalesce" || r3.ID != live.ID {
+		t.Fatalf("outcome=%q id=%s want coalesce on %s", outcome, r3.ID, live.ID)
+	}
+}
+
+// TestIfRunningEmptyKeyMatchesOnlyUnkeyed proves an unkeyed launch ignores a
+// keyed live run of the same job.
+func TestIfRunningEmptyKeyMatchesOnlyUnkeyed(t *testing.T) {
+	svc, ctx := openRuns(t)
+	if _, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws", Job: "mixed", Harness: "fake", Reason: runs.ReasonManual,
+		ConversationKey: "conv-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r2, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "mixed", Harness: "fake", Reason: runs.ReasonTrigger,
+		},
+		Prompt: "unkeyed", IfRunning: "skip",
+		FakeCommand: []string{"sh", "-c", `echo "$TREBI_RUN_COMPLETE"`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "" || r2.Status == runs.StatusSkipped {
+		t.Fatalf("outcome=%q status=%s; a keyed live run must not block an unkeyed launch", outcome, r2.Status)
+	}
+}

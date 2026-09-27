@@ -482,6 +482,22 @@ func (m *Manager) Sessions(ctx context.Context, workspaceID string) ([]Record, e
 	return m.store.List(ctx, workspaceID)
 }
 
+// TurnActive reports whether a turn is in flight on the conversation: the
+// recorded status is starting, running, or waiting on a permission. A closed
+// or idle record, or no record, is not active.
+func (m *Manager) TurnActive(ctx context.Context, convID string) bool {
+	rec, err := m.store.Get(ctx, convID)
+	if err != nil {
+		return false
+	}
+	switch rec.Status {
+	case StatusStarting, StatusRunning, StatusWaiting:
+		return true
+	default:
+		return false
+	}
+}
+
 // Live reports whether a process is attached to the conversation.
 func (m *Manager) Live(convID string) bool {
 	m.mu.Lock()

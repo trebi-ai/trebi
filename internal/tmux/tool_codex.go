@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 )
@@ -45,6 +46,17 @@ func (t codexTool) PrepareLaunch(command string) LaunchPlan {
 	// .codex/skills entry and the bridge policy reports on all four.
 	_, _ = t.prepare()
 	return LaunchPlan{Command: cmd, Env: nil}
+}
+
+// InjectMCP appends the `-c mcp_servers.…` overrides, quoted for the shell.
+func (t codexTool) InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, runDir string) error {
+	args := agentwire.CodexMCPArgs(servers)
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = ShellQuote(a)
+	}
+	plan.Command = AppendFlags(plan.Command, quoted)
+	return nil
 }
 
 func (codexTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {

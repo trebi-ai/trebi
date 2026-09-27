@@ -229,6 +229,8 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.onProposalCreated(ctx, ev, attrs)
 	case "proposal.decided":
 		s.autoResolve(ctx, KindAgentProposal, "proposal/"+firstNonEmpty(attrs["proposal_id"], ev.ID), attrs["decision"])
+	case "channel.send_failed":
+		s.onChannelSendFailed(ctx, ev, attrs)
 	}
 }
 
@@ -384,6 +386,18 @@ func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent
 	})
 	if err != nil {
 		s.log.Warn("raise connector_unhealthy", "connector", name, "error", err)
+	}
+}
+
+func (s *Service) onChannelSendFailed(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	convID := firstNonEmpty(attrs["conversation_id"], ev.ID)
+	_, err := s.Raise(ctx, RaiseOpts{
+		Kind: KindChannelSendFailed, Connector: attrs["connector"],
+		Subject: "conversation/" + convID, TraceID: ev.TraceID,
+		Title: "Channel reply failed", Body: attrs["error"],
+	})
+	if err != nil {
+		s.log.Warn("raise channel_send_failed", "conversation", convID, "error", err)
 	}
 }
 

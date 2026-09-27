@@ -110,7 +110,7 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 // EnsureForChannel returns the conversation the channel points at, creating one
 // when the pointer is absent.
 func (s *Service) EnsureForChannel(ctx context.Context, workspace, operator, channelType, channelRef string) (string, error) {
-	p, err := s.GetPointer(ctx, channelType, channelRef)
+	p, err := s.GetPointer(ctx, workspace, channelType, channelRef)
 	if err == nil && p.ConversationID != "" {
 		conv, err := s.Get(ctx, p.ConversationID)
 		if err != nil {
@@ -456,7 +456,7 @@ func (s *Service) insertUserMessage(ctx context.Context, conv *Conversation, opt
 			return err
 		}
 		if opts.ChannelType != "" && opts.ChannelRef != "" {
-			if err := writePointer(tx, opts.ChannelType, opts.ChannelRef, conv.ID, nowStr); err != nil {
+			if err := writePointer(tx, conv.Workspace, opts.ChannelType, opts.ChannelRef, conv.ID, nowStr); err != nil {
 				return err
 			}
 		}
@@ -553,30 +553,36 @@ func (s *Service) insertAssistantTurn(ctx context.Context, convID, runID string,
 	return true, nil
 }
 
+// maybeAutoTitle sets an empty title from the first user message
+// (plan 2026-09-26 E). It runs as soon as that message exists, before any
+// assistant reply, and it never overwrites a title the user set.
 func (s *Service) maybeAutoTitle(ctx context.Context, convID string) {
 	conv, err := s.Get(ctx, convID)
 	if err != nil || strings.TrimSpace(conv.Title) != "" {
 		return
 	}
-	msgs, err := s.ListMessages(ctx, convID, MessageListOpts{Limit: 50})
-	if err != nil {
+	text, err := s.firstUserText(ctx, convID)
+	if err != nil || strings.TrimSpace(text) == "" {
 		return
 	}
-	userText := ""
-	asst := 0
-	for _, m := range msgs {
-		if m.Role == RoleUser && userText == "" {
-			userText = m.Text
-		}
-		if m.Role == RoleAssistant {
-			asst++
-		}
-	}
-	if asst != 1 || userText == "" {
-		return
-	}
-	title := deriveTitle(userText)
+	title := deriveTitle(text)
 	_, _ = s.Patch(ctx, convID, PatchOpts{Title: &title, Revision: conv.Revision})
+}
+
+// firstUserText returns the text of the oldest user row. An empty result
+// with a nil error means the conversation has no user row yet.
+func (s *Service) firstUserText(ctx context.Context, convID string) (string, error) {
+	var text string
+	err := s.st.DB().QueryRowContext(ctx,
+		`SELECT text FROM conversation_messages WHERE conversation_id=? AND role=? ORDER BY id LIMIT 1`,
+		convID, RoleUser).Scan(&text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return text, nil
 }
 
 func (s *Service) lastMessages(ctx context.Context, convID string, n int) ([]Message, error) {
@@ -636,13 +642,15 @@ func (s *Service) LastUserMessage(ctx context.Context, conversationID string) (*
 }
 
 // LastAssistantTurn returns the run's newest assistant turn on one
-// conversation, or nil when the run produced none (plan I.2).
+// conversation, or the newest assistant_session turn when runID is empty
+// (plan I.2).
 func (s *Service) LastAssistantTurn(ctx context.Context, conversationID, runID string) (*Message, error) {
 	row := s.st.DB().QueryRowContext(ctx,
 		`SELECT `+msgCols+` FROM conversation_messages
-		WHERE conversation_id=? AND role='assistant' AND run_id=? AND turn_index IS NOT NULL
+		WHERE conversation_id=? AND role='assistant' AND (run_id = ? OR (? = '' AND run_id IS NULL))
+		AND turn_index IS NOT NULL
 		ORDER BY turn_index DESC LIMIT 1`,
-		conversationID, runID)
+		conversationID, runID, runID)
 	m, err := scanMsg(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

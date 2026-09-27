@@ -1,40 +1,45 @@
-// Package connectors loads connectors.yaml and supervises stream processes.
+// Package connectors loads connectors.yaml and supervises connector
+// processes. A connector is one external system with up to three optional
+// capabilities: actions, events, and a channel.
 package connectors
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
-	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/secrets"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 	"gopkg.in/yaml.v3"
 )
 
 var (
-	// ErrNotFound is a missing connector name or id.
+	// ErrNotFound is a missing connector name.
 	ErrNotFound = errors.New("connector not found")
 	// ErrInherited is a mutation against a read-only discovered MCP server.
 	ErrInherited = errors.New("inherited from user MCP config")
+	// ErrReserved is a write against a native connector name.
+	ErrReserved = errors.New("connector name is reserved")
+	// ErrExists is a create for a name that already exists.
+	ErrExists = errors.New("connector already exists")
+	// ErrNoEvents is a lifecycle action on a connector with no events block.
+	ErrNoEvents = errors.New("connector has no events block")
 )
 
 // AmbiguousError is a connector name that matches more than one row.
@@ -47,68 +52,11 @@ func (e *AmbiguousError) Error() string {
 	return fmt.Sprintf("connector name %q is ambiguous; use id (%s)", e.Name, strings.Join(e.IDs, ", "))
 }
 
-// Definition is one connector from connectors.yaml.
-type Definition struct {
-	Name    string            `yaml:"name" json:"name"`
-	Type    string            `yaml:"type" json:"type"` // stream|cli|mcp
-	Command string            `yaml:"command" json:"command"`
-	Format  string            `yaml:"format" json:"format"` // json|line
-	Cwd     string            `yaml:"cwd,omitempty" json:"cwd,omitempty"`
-	Env     map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
-	Facets  []string          `yaml:"facets,omitempty" json:"facets,omitempty"`
-}
-
-// MergeInto returns base with every non-empty field of d applied. It gives PUT
-// upsert-merge semantics: a partial write keeps the fields it omits.
-func (d Definition) MergeInto(base Definition) Definition {
-	base.Name = d.Name
-	for dst, src := range map[*string]string{
-		&base.Type:    d.Type,
-		&base.Command: d.Command,
-		&base.Format:  d.Format,
-		&base.Cwd:     d.Cwd,
-	} {
-		if src != "" {
-			*dst = src
-		}
-	}
-	if len(d.Env) > 0 {
-		base.Env = d.Env
-	}
-	if len(d.Facets) > 0 {
-		base.Facets = d.Facets
-	}
-	if base.Type == "" {
-		base.Type = "stream"
-	}
-	if base.Format == "" {
-		base.Format = "line"
-	}
-	return base
-}
-
-// File is the top-level connectors.yaml shape.
-// Accepts either a list or a map of name → def.
-type File struct {
-	Connectors []Definition `yaml:"connectors"`
-}
-
-// Status is live supervision state.
-type Status struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"` // stopped|starting|listening|crashed
-	PID      int    `json:"pid,omitempty"`
-	Restarts int    `json:"restarts"`
-	LastErr  string `json:"last_err,omitempty"`
-	Events   int64  `json:"events"`
-}
-
-// Service supervises connectors and dispatches matched events.
+// Service stores connector definitions and supervises their processes.
 type Service struct {
 	st    *store.Store
 	ws    *workspaces.Service
-	runs  *runs.Service
-	pol   *dispatch.Policy
+	sk    *skills.Service
 	queue *dispatch.Queue
 	log   *slog.Logger
 
@@ -117,6 +65,11 @@ type Service struct {
 	defs     map[string]Definition
 	runCtx   context.Context // process lifetime; not the caller's (HTTP) context
 	userHome string          // empty: skip MCP discovery (tests)
+	wg       sync.WaitGroup
+
+	// now and sleep are injectable for tests.
+	now   func() time.Time
+	sleep func(context.Context, time.Duration) bool
 
 	trigMu     sync.Mutex
 	trigFP     string
@@ -129,82 +82,47 @@ type cachedTrig struct {
 	tr  job.Trigger
 }
 
-type proc struct {
-	cancel context.CancelFunc // set once at creation
-
-	mu        sync.Mutex // guards the fields below (readLoop writes, List reads)
-	cmd       *exec.Cmd  // nil until the launch completes
-	restarts  int
-	events    int64
-	lastErr   string
-	status    string
-	startedAt time.Time
+// NativeMeta carries the native identity of an injected event.
+type NativeMeta struct {
+	SourceID   string
+	Identity   string
+	ChannelRef string
 }
 
 // eventRecord is one persisted ingress event.
 type eventRecord struct {
-	id, raw, trace, receivedAt string
-	payload                    any
+	id         string
+	raw        string
+	trace      string
+	receivedAt string
+	payload    any
+	sourceID   string
+	identity   string
+	channelRef string
+	catchUp    bool
 }
 
-func (p *proc) getStatus() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.status
-}
-
-func (p *proc) setStatus(st string) {
-	p.mu.Lock()
-	p.status = st
-	p.mu.Unlock()
-}
-
-// markStopped keeps a crashed status; every other status becomes stopped.
-func (p *proc) markStopped() {
-	p.mu.Lock()
-	if p.status != "crashed" {
-		p.status = "stopped"
-	}
-	p.mu.Unlock()
-}
-
-func (p *proc) markCrashed(msg string) {
-	p.mu.Lock()
-	p.lastErr = msg
-	p.status = "crashed"
-	p.mu.Unlock()
-}
-
-func (p *proc) addEvent() {
-	p.mu.Lock()
-	p.events++
-	p.mu.Unlock()
-}
-
-func (p *proc) addRestart() {
-	p.mu.Lock()
-	p.restarts++
-	p.mu.Unlock()
-}
-
-func (p *proc) snapshot() (status string, restarts int, events int64, lastErr string, pid int, startedAt time.Time) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.cmd != nil && p.cmd.Process != nil {
-		pid = p.cmd.Process.Pid
-	}
-	return p.status, p.restarts, p.events, p.lastErr, pid, p.startedAt
+// Patch is a block-level update: a present block replaces that block and an
+// explicit null removes it.
+type Patch struct {
+	Env     *map[string]string `json:"env"`
+	Cwd     *string            `json:"cwd"`
+	Actions json.RawMessage    `json:"actions"`
+	Events  json.RawMessage    `json:"events"`
+	Channel json.RawMessage    `json:"channel"`
 }
 
 // New creates a connectors service.
-func New(st *store.Store, ws *workspaces.Service, r *runs.Service, pol *dispatch.Policy) *Service {
+func New(st *store.Store, ws *workspaces.Service, sk *skills.Service) *Service {
 	return &Service{
-		st: st, ws: ws, runs: r, pol: pol,
+		st: st, ws: ws, sk: sk,
 		queue:  dispatch.NewQueue(st),
 		log:    slog.Default().With("source", "connectors"),
 		procs:  make(map[string]*proc),
 		defs:   make(map[string]Definition),
 		runCtx: context.Background(),
+		now:    time.Now,
+		sleep:  sleepCtx,
 	}
 }
 
@@ -214,7 +132,29 @@ func (s *Service) WithUserHome(dir string) *Service {
 	return s
 }
 
-// Load reads connectors.yaml into memory.
+// sleepCtx waits for d or until ctx is done; it reports whether ctx ended.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		select {
+		case <-ctx.Done():
+			return true
+		default:
+			return false
+		}
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return true
+	case <-t.C:
+		return false
+	}
+}
+
+// Load reads connectors.yaml into memory. The file is strict: an unknown
+// key, including the old top-level type, facets, command, and format, fails
+// the load with the file path, the connector name, and the key.
 func (s *Service) Load() error {
 	data, err := os.ReadFile(home.ConnectorsPath())
 	if err != nil {
@@ -226,8 +166,37 @@ func (s *Service) Load() error {
 		}
 		return err
 	}
-	defs, err := parseConnectorsYAML(data)
+	defs, err := parseDefinitionData(data)
 	if err != nil {
+		return fmt.Errorf("%s: %w", home.ConnectorsPath(), err)
+	}
+	for name, d := range defs {
+		if err := d.Validate(); err != nil {
+			return fmt.Errorf("%s: %w", home.ConnectorsPath(), err)
+		}
+		defs[name] = d.withDefaults()
+	}
+	s.mu.Lock()
+	s.defs = defs
+	s.mu.Unlock()
+	return nil
+}
+
+// Save writes defs back to connectors.yaml with a temp-and-rename write.
+func (s *Service) Save(defs map[string]Definition) error {
+	if err := home.EnsureDirs(); err != nil {
+		return err
+	}
+	b, err := yaml.Marshal(defs)
+	if err != nil {
+		return err
+	}
+	path := home.ConnectorsPath()
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -236,95 +205,434 @@ func (s *Service) Load() error {
 	return nil
 }
 
-func parseConnectorsYAML(data []byte) (map[string]Definition, error) {
-	out := map[string]Definition{}
-	// try list form
-	var file File
-	if err := yaml.Unmarshal(data, &file); err == nil && len(file.Connectors) > 0 {
-		for _, d := range file.Connectors {
-			if d.Name != "" {
-				out[d.Name] = d
-			}
-		}
-		return out, nil
-	}
-	// try map form: name: {command: ...}
-	var m map[string]Definition
-	if err := yaml.Unmarshal(data, &m); err == nil {
-		for name, d := range m {
-			d.Name = name
-			out[name] = d
-		}
-		return out, nil
-	}
-	// try sources-like: top-level keys with command
-	var raw map[string]any
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, err
-	}
-	for name, v := range raw {
-		if name == "connectors" {
-			continue
-		}
-		b, _ := yaml.Marshal(v)
-		var d Definition
-		if yaml.Unmarshal(b, &d) == nil {
-			d.Name = name
-			if d.Command != "" {
-				out[name] = d
-			}
-		}
-	}
-	return out, nil
-}
-
-// List returns definitions merged with live status, unioned with inherited MCP servers.
-func (s *Service) List() []map[string]any {
+// snapshotDefs returns a copy of the definitions map.
+func (s *Service) snapshotDefs() map[string]Definition {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return copyDefs(s.defs)
+}
+
+func copyDefs(in map[string]Definition) map[string]Definition {
+	out := make(map[string]Definition, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// emitWrite appends a connector.created/updated bus event with the
+// capabilities of the definition.
+func (s *Service) emitWrite(ctx context.Context, topic string, d Definition) {
+	capabilities := strings.Join(d.Capabilities(), ",")
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: topic, Entity: "connector", EntityID: d.Name, Action: strings.TrimPrefix(topic, "connector."),
+		Attrs: map[string]string{"capabilities": capabilities},
+	}); err != nil {
+		s.log.Warn("bus append", "topic", topic, "error", err)
+	}
+}
+
+// Create registers a new connector definition. An existing name is ErrExists.
+func (s *Service) Create(ctx context.Context, d Definition) error {
+	if err := s.GuardReserved(d.Name); err != nil {
+		return err
+	}
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	d = d.withDefaults()
+	defs := s.snapshotDefs()
+	if _, ok := defs[d.Name]; ok {
+		return fmt.Errorf("%w: %q", ErrExists, d.Name)
+	}
+	defs[d.Name] = d
+	if err := s.Save(defs); err != nil {
+		return err
+	}
+	s.emitWrite(ctx, "connector.created", d)
+	return nil
+}
+
+// Replace writes the whole definition of a connector, creating it when
+// missing.
+func (s *Service) Replace(ctx context.Context, d Definition) error {
+	if err := s.GuardReserved(d.Name); err != nil {
+		return err
+	}
+	if err := s.GuardMutate(d.Name); err != nil {
+		return err
+	}
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	d = d.withDefaults()
+	defs := s.snapshotDefs()
+	old, existed := defs[d.Name]
+	defs[d.Name] = d
+	if err := s.Save(defs); err != nil {
+		return err
+	}
+	topic := "connector.updated"
+	if !existed {
+		topic = "connector.created"
+	}
+	s.emitWrite(ctx, topic, d)
+	s.maybeRestart(ctx, old, d, existed)
+	return nil
+}
+
+// Patch applies a block-level update to an existing connector.
+func (s *Service) Patch(ctx context.Context, name string, p Patch) error {
+	if err := s.GuardReserved(name); err != nil {
+		return err
+	}
+	if err := s.GuardMutate(name); err != nil {
+		return err
+	}
+	defs := s.snapshotDefs()
+	old, ok := defs[name]
+	if !ok {
+		return fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
+	}
+	d := old
+	if p.Env != nil {
+		d.Env = *p.Env
+	}
+	if p.Cwd != nil {
+		d.Cwd = *p.Cwd
+	}
+	if len(p.Actions) > 0 {
+		block, err := decodeBlock[Actions](p.Actions)
+		if err != nil {
+			return &ValidationError{Name: name, Fields: []FieldError{{Field: "actions", Message: err.Error()}}}
+		}
+		d.Actions = block
+	}
+	if len(p.Events) > 0 {
+		block, err := decodeBlock[Events](p.Events)
+		if err != nil {
+			return &ValidationError{Name: name, Fields: []FieldError{{Field: "events", Message: err.Error()}}}
+		}
+		d.Events = block
+	}
+	if len(p.Channel) > 0 {
+		block, err := decodeBlock[Channel](p.Channel)
+		if err != nil {
+			return &ValidationError{Name: name, Fields: []FieldError{{Field: "channel", Message: err.Error()}}}
+		}
+		d.Channel = block
+	}
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	d = d.withDefaults()
+	defs[name] = d
+	if err := s.Save(defs); err != nil {
+		return err
+	}
+	s.emitWrite(ctx, "connector.updated", d)
+	s.maybeRestart(ctx, old, d, true)
+	return nil
+}
+
+// decodeBlock parses a patch block. A JSON null removes the block.
+func decodeBlock[T any](raw json.RawMessage) (*T, error) {
+	if string(bytesTrimSpace(raw)) == "null" {
+		return nil, nil
+	}
+	var out T
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	return []byte(strings.TrimSpace(string(b)))
+}
+
+// maybeRestart restarts a running supervisor when the events or env blocks
+// changed. An actions-only change does not restart it.
+func (s *Service) maybeRestart(ctx context.Context, old, next Definition, existed bool) {
+	if !existed {
+		return
+	}
+	if reflect.DeepEqual(old.Events, next.Events) && reflect.DeepEqual(old.Env, next.Env) {
+		return
+	}
+	s.mu.Lock()
+	p, running := s.procs[next.Name]
+	s.mu.Unlock()
+	if !running {
+		return
+	}
+	switch p.getStatus() {
+	case "stopped", "crashed":
+		return
+	}
+	if err := s.Restart(ctx, next.Name); err != nil {
+		s.log.Warn("connector restart after update", "connector", next.Name, "error", err)
+	}
+}
+
+// Delete removes a connector definition and stops its process.
+func (s *Service) Delete(ctx context.Context, name string) error {
+	if err := s.GuardReserved(name); err != nil {
+		return err
+	}
+	if err := s.GuardMutate(name); err != nil {
+		return err
+	}
+	_ = s.Stop(name) // already-stopped is fine; delete proceeds either way
+	defs := s.snapshotDefs()
+	if _, ok := defs[name]; !ok {
+		return fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
+	}
+	delete(defs, name)
+	if err := s.Save(defs); err != nil {
+		return err
+	}
+	s.deleteContributedSkills(ctx, name)
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "connector.deleted", Entity: "connector", EntityID: name, Action: "deleted",
+	}); err != nil {
+		s.log.Warn("bus append", "topic", "connector.deleted", "error", err)
+	}
+	return nil
+}
+
+// deleteContributedSkills removes skills this connector installed. It is a
+// no-op until the registry install writes them (Part H.4).
+func (s *Service) deleteContributedSkills(ctx context.Context, name string) {
+	if s.sk == nil {
+		return
+	}
+	list, err := s.sk.List(ctx)
+	if err != nil {
+		s.log.Warn("list skills for connector delete", "connector", name, "error", err)
+		return
+	}
+	for _, sk := range list {
+		if sk.FromConnector == name {
+			if err := s.sk.Delete(ctx, sk.Name); err != nil {
+				s.log.Warn("delete contributed skill", "skill", sk.Name, "connector", name, "error", err)
+			}
+		}
+	}
+}
+
+// List returns definitions merged with live status, unioned with inherited
+// MCP servers. One row shape covers managed, inherited, and native rows.
+func (s *Service) List() []map[string]any {
+	defs := s.snapshotDefs()
+	cursors, lastEvents := s.eventMeta()
+	s.mu.Lock()
+	procs := make(map[string]*proc, len(s.procs))
+	for name, p := range s.procs {
+		procs[name] = p
+	}
+	s.mu.Unlock()
+
 	var out []map[string]any
 	fpIndex := map[string]int{}
-	for name, d := range s.defs {
-		row := map[string]any{
-			"id": name, "name": name, "type": d.Type, "command": d.Command, "format": d.Format,
-			"cwd": d.Cwd, "facets": d.Facets, "status": "stopped",
-			"provenance": "managed", "managed": true,
-		}
-		if d.Env != nil {
-			row["env"] = d.Env
-		}
-		if p, ok := s.procs[name]; ok {
-			st, restarts, events, lastErr, pid, startedAt := p.snapshot()
-			row["status"] = st
-			row["restarts"] = restarts
-			row["events"] = events
-			row["last_err"] = lastErr
-			if pid != 0 {
-				row["pid"] = pid
+	for _, name := range sortedNames(defs) {
+		d := defs[name]
+		row := s.managedRow(name, d, procs[name], cursors[name], lastEvents[name])
+		if d.Actions != nil && d.Actions.MCP != nil {
+			if fp := d.Actions.MCP.fingerprint(); fp != "" {
+				fpIndex[fp] = len(out)
 			}
-			if !startedAt.IsZero() {
-				row["started_at"] = startedAt.UTC().Format(time.RFC3339Nano)
-			}
-		}
-		if fp := managedFingerprint(d); fp != "" {
-			fpIndex[fp] = len(out)
 		}
 		out = append(out, row)
 	}
 	return s.unionInherited(out, fpIndex)
 }
 
-func managedFingerprint(d Definition) string {
-	cmd := strings.TrimSpace(d.Command)
-	if d.Type != "mcp" || cmd == "" {
-		return ""
+// eventMeta reads every connector cursor and last event time in two queries.
+func (s *Service) eventMeta() (map[string]Cursor, map[string]string) {
+	cursors := map[string]Cursor{}
+	lastEvents := map[string]string{}
+	if s.st == nil {
+		return cursors, lastEvents
 	}
-	if strings.HasPrefix(cmd, "http://") || strings.HasPrefix(cmd, "https://") {
-		return "http:" + strings.TrimRight(cmd, "/")
+	if rows, err := s.st.DB().Query(`SELECT name, last_event_id, updated_at FROM connector_cursors`); err == nil {
+		for rows.Next() {
+			var c Cursor
+			if rows.Scan(&c.Name, &c.LastEventID, &c.UpdatedAt) == nil {
+				cursors[c.Name] = c
+			}
+		}
+		rows.Close()
 	}
-	return "stdio:" + strings.Join(strings.Fields(cmd), " ")
+	if rows, err := s.st.DB().Query(`SELECT connector, MAX(received_at) FROM events GROUP BY connector`); err == nil {
+		for rows.Next() {
+			var name, at string
+			if rows.Scan(&name, &at) == nil {
+				lastEvents[name] = at
+			}
+		}
+		rows.Close()
+	}
+	return cursors, lastEvents
 }
 
+// managedRow builds the wire row of a managed definition.
+func (s *Service) managedRow(name string, d Definition, p *proc, cur Cursor, lastEventAt string) map[string]any {
+	env := d.Env
+	if env == nil {
+		env = map[string]string{}
+	}
+	row := map[string]any{
+		"id":           name,
+		"name":         name,
+		"provenance":   "managed",
+		"managed":      true,
+		"capabilities": d.Capabilities(),
+		"env":          env,
+		"cwd":          d.Cwd,
+		"source":       d.Source,
+	}
+	if d.Actions != nil {
+		row["actions"] = s.actionsRow(d.Actions)
+	}
+	if d.Events != nil {
+		row["events"] = eventsRow(*d.Events, p, cur, lastEventAt)
+	}
+	if d.Channel != nil {
+		row["channel"] = channelRow(*d.Channel)
+	}
+	return row
+}
+
+// actionsRow renders the actions block; missing CLI commands are computed on
+// read and MCP header values are masked unless they are secret references.
+func (s *Service) actionsRow(a *Actions) map[string]any {
+	row := map[string]any{"mcp": nil, "cli": nil}
+	if a.MCP != nil {
+		m := map[string]any{
+			"command": a.MCP.Command,
+			"args":    orEmptySlice(a.MCP.Args),
+			"env":     orEmptyMap(a.MCP.Env),
+			"url":     a.MCP.URL,
+			"headers": maskHeaders(a.MCP.Headers),
+		}
+		row["mcp"] = m
+	}
+	if a.CLI != nil {
+		missing := []string{}
+		for _, cmd := range a.CLI.Commands {
+			if _, err := exec.LookPath(cmd); err != nil {
+				missing = append(missing, cmd)
+			}
+		}
+		row["cli"] = map[string]any{
+			"commands": orEmptySlice(a.CLI.Commands),
+			"skill":    a.CLI.Skill,
+			"missing":  missing,
+		}
+	}
+	return row
+}
+
+func maskHeaders(in map[string]string) map[string]string {
+	if in == nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if strings.HasPrefix(v, "secret:") {
+			out[k] = v
+			continue
+		}
+		out[k] = "***"
+	}
+	return out
+}
+
+func orEmptySlice(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	return in
+}
+
+func orEmptyMap(in map[string]string) map[string]string {
+	if in == nil {
+		return map[string]string{}
+	}
+	return in
+}
+
+// eventsRow renders the events block plus its live state.
+func eventsRow(e Events, p *proc, cur Cursor, lastEventAt string) map[string]any {
+	row := map[string]any{
+		"command":       e.Command,
+		"format":        e.Format,
+		"restart":       e.Restart,
+		"id":            e.ID,
+		"ts":            e.TS,
+		"identity":      e.Identity,
+		"status":        "stopped",
+		"restarts":      0,
+		"last_err":      "",
+		"last_event_id": cur.LastEventID,
+		"last_event_at": lastEventAt,
+		"counters":      map[string]any{"events": int64(0), "duplicates": int64(0), "parse_errors": int64(0)},
+	}
+	if e.Poll > 0 {
+		row["poll_ms"] = int64(e.Poll.Std() / time.Millisecond)
+	}
+	if e.Catchup != nil {
+		row["catchup"] = map[string]any{
+			"command":    e.Catchup.Command,
+			"max_events": e.Catchup.MaxEvents,
+			"timeout_ms": int64(e.Catchup.Timeout.Std() / time.Millisecond),
+		}
+	}
+	if p != nil {
+		snap := p.snapshot()
+		row["status"] = snap.status
+		row["restarts"] = snap.restarts
+		row["last_err"] = snap.lastErr
+		row["counters"] = map[string]any{
+			"events": snap.events, "duplicates": snap.duplicates, "parse_errors": snap.parseErrors,
+		}
+		if snap.pid != 0 {
+			row["pid"] = snap.pid
+		}
+		if !snap.startedAt.IsZero() {
+			row["started_at"] = snap.startedAt.UTC().Format(time.RFC3339Nano)
+		}
+		if !snap.lastEventAt.IsZero() {
+			row["last_event_at"] = snap.lastEventAt.UTC().Format(time.RFC3339Nano)
+		}
+		if snap.lastCatchup != nil {
+			row["last_catchup"] = map[string]any{
+				"at":             snap.lastCatchup.At.UTC().Format(time.RFC3339Nano),
+				"replayed":       snap.lastCatchup.Replayed,
+				"skipped_reason": snap.lastCatchup.Reason,
+			}
+		}
+	}
+	return row
+}
+
+// channelRow renders the channel block.
+func channelRow(c Channel) map[string]any {
+	row := map[string]any{
+		"ref": c.Ref, "send": c.Send, "typing": c.Typing, "ack": c.Ack,
+	}
+	if c.TypingInterval > 0 {
+		row["typing_interval_ms"] = int64(c.TypingInterval.Std() / time.Millisecond)
+	}
+	if c.TypingMax > 0 {
+		row["typing_max_ms"] = int64(c.TypingMax.Std() / time.Millisecond)
+	}
+	return row
+}
+
+// unionInherited appends discovered MCP servers and folds the metadata of a
+// managed connector that already declares the same server.
 func (s *Service) unionInherited(out []map[string]any, fpIndex map[string]int) []map[string]any {
 	discovered := harness.DiscoverMCP(s.userHome, nil)
 	usedNames := map[string]int{}
@@ -348,14 +656,15 @@ func (s *Service) unionInherited(out []map[string]any, fpIndex map[string]int) [
 			id = "inherited:" + srv.Name + "-" + harness.MCPFingerprintID(srv.Fingerprint)
 		}
 		row := map[string]any{
-			"id": id, "name": srv.Name, "type": "mcp", "command": srv.Command,
-			"facets": []string{"mcp"}, "status": "inherited",
-			"provenance": "inherited", "managed": false,
+			"id": id, "name": srv.Name, "provenance": "inherited", "managed": false,
+			"capabilities": []string{"actions"},
+			"actions": map[string]any{"mcp": map[string]any{
+				"command": srv.Command, "args": []string{},
+				"url": srv.URL, "transport": srv.Transport,
+				"env": map[string]string{}, "headers": map[string]string{},
+			}, "cli": nil},
 			"transport": srv.Transport, "harnesses": srv.Harnesses,
 			"injected": srv.Injected, "origins": srv.Origins,
-		}
-		if srv.URL != "" {
-			row["url"] = srv.URL
 		}
 		out = append(out, row)
 	}
@@ -387,20 +696,40 @@ func (s *Service) Get(name string) (map[string]any, error) {
 	return nil, fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
 }
 
-// ErrReserved marks a connector name the daemon owns natively.
-var ErrReserved = errors.New("connector name is reserved")
+// Definition returns the stored definition of a managed connector.
+func (s *Service) Definition(name string) (Definition, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.defs[name]
+	return d, ok
+}
 
-// reserved names belong to a native channel, not to a subprocess. The row
-// for one is synthesized by the API and is invisible to Get, so without
-// GuardReserved an Upsert would write a second row with the same name.
-var reserved = map[string]bool{"email": true} //nolint:gochecknoglobals // fixed set of native channel names, never mutated
+// Channel returns the channel block of a managed connector, its expanded
+// env, and whether the connector exists with a channel.
+func (s *Service) Channel(name string) (Channel, map[string]string, bool) {
+	d, ok := s.Definition(name)
+	if !ok || d.Channel == nil {
+		return Channel{}, nil, false
+	}
+	env, _ := secrets.ExpandRefs(d.Env)
+	return *d.Channel, env, true
+}
+
+// Cwd returns the working directory of a managed connector, or "".
+func (s *Service) Cwd(name string) string {
+	d, ok := s.Definition(name)
+	if !ok {
+		return ""
+	}
+	return d.Cwd
+}
 
 // GuardReserved refuses definition and lifecycle writes against a native
-// channel's name. The native channel still owns its event and cursor rows,
+// connector's name. The native service still owns its event and cursor rows,
 // so InjectEvent and PutCursor do not call it.
 func (s *Service) GuardReserved(name string) error {
 	if reserved[name] {
-		return fmt.Errorf("%w: %q is the native email channel", ErrReserved, name)
+		return fmt.Errorf("%w: %q is a native connector", ErrReserved, name)
 	}
 	return nil
 }
@@ -446,77 +775,8 @@ func inheritedOriginPath(row map[string]any) string {
 	return ""
 }
 
-// Save writes defs back to connectors.yaml.
-func (s *Service) Save(defs map[string]Definition) error {
-	if err := home.EnsureDirs(); err != nil {
-		return err
-	}
-	// write as map form
-	b, err := yaml.Marshal(defs)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(home.ConnectorsPath(), b, 0o644); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	s.defs = defs
-	s.mu.Unlock()
-	return nil
-}
-
-// Upsert registers or updates a connector definition.
-func (s *Service) Upsert(ctx context.Context, d Definition) error {
-	if err := s.GuardReserved(d.Name); err != nil {
-		return err
-	}
-	if err := s.GuardMutate(d.Name); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	if s.defs == nil {
-		s.defs = map[string]Definition{}
-	}
-	s.defs[d.Name] = d.MergeInto(s.defs[d.Name])
-	defs := copyDefs(s.defs)
-	s.mu.Unlock()
-	if err := s.Save(defs); err != nil {
-		return err
-	}
-	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: "connector.created", Entity: "connector", EntityID: d.Name, Action: "created",
-	}); err != nil {
-		s.log.Warn("bus append", "error", err)
-	}
-	return nil
-}
-
-// Delete removes a connector.
-func (s *Service) Delete(ctx context.Context, name string) error {
-	if err := s.GuardReserved(name); err != nil {
-		return err
-	}
-	if err := s.GuardMutate(name); err != nil {
-		return err
-	}
-	_ = s.Stop(name) // already-stopped is fine; delete proceeds either way
-	s.mu.Lock()
-	delete(s.defs, name)
-	defs := copyDefs(s.defs)
-	s.mu.Unlock()
-	if err := s.Save(defs); err != nil {
-		return err
-	}
-	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: "connector.deleted", Entity: "connector", EntityID: name, Action: "deleted",
-	}); err != nil {
-		s.log.Warn("bus append", "error", err)
-	}
-	return nil
-}
-
-// RewritePathPrefix updates connector cwd/command/env that point at old.
-// dryRun reports the names without writing. Names are sorted.
+// RewritePathPrefix updates connector cwd, commands, and env that point at
+// old. dryRun reports the names without writing. Names are sorted.
 func (s *Service) RewritePathPrefix(old, new string, dryRun bool) ([]string, error) {
 	if s == nil || strings.TrimSpace(old) == "" || old == new {
 		return nil, nil
@@ -524,24 +784,22 @@ func (s *Service) RewritePathPrefix(old, new string, dryRun bool) ([]string, err
 	if err := s.Load(); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	defs := copyDefs(s.defs)
-	s.mu.Unlock()
+	defs := s.snapshotDefs()
 	var names []string
+	rewrite := func(v string) (string, bool) {
+		next, ok := workspaces.RewritePathPrefix(v, old, new)
+		return next, ok
+	}
 	for name, d := range defs {
 		changed := false
-		if next, ok := workspaces.RewritePathPrefix(d.Cwd, old, new); ok {
+		if next, ok := rewrite(d.Cwd); ok {
 			d.Cwd = next
-			changed = true
-		}
-		if next, ok := workspaces.RewritePathPrefix(d.Command, old, new); ok {
-			d.Command = next
 			changed = true
 		}
 		if len(d.Env) > 0 {
 			env := make(map[string]string, len(d.Env))
 			for k, v := range d.Env {
-				if next, ok := workspaces.RewritePathPrefix(v, old, new); ok {
+				if next, ok := rewrite(v); ok {
 					env[k] = next
 					changed = true
 				} else {
@@ -549,6 +807,42 @@ func (s *Service) RewritePathPrefix(old, new string, dryRun bool) ([]string, err
 				}
 			}
 			d.Env = env
+		}
+		if d.Events != nil {
+			if next, ok := rewrite(d.Events.Command); ok {
+				d.Events.Command = next
+				changed = true
+			}
+			if d.Events.Catchup != nil {
+				if next, ok := rewrite(d.Events.Catchup.Command); ok {
+					d.Events.Catchup.Command = next
+					changed = true
+				}
+			}
+		}
+		if d.Channel != nil {
+			for dst, src := range map[*string]string{
+				&d.Channel.Send:   d.Channel.Send,
+				&d.Channel.Typing: d.Channel.Typing,
+				&d.Channel.Ack:    d.Channel.Ack,
+			} {
+				if next, ok := rewrite(src); ok {
+					*dst = next
+					changed = true
+				}
+			}
+		}
+		if d.Actions != nil && d.Actions.MCP != nil {
+			if next, ok := rewrite(d.Actions.MCP.Command); ok {
+				d.Actions.MCP.Command = next
+				changed = true
+			}
+			for i, arg := range d.Actions.MCP.Args {
+				if next, ok := rewrite(arg); ok {
+					d.Actions.MCP.Args[i] = next
+					changed = true
+				}
+			}
 		}
 		if changed {
 			defs[name] = d
@@ -560,196 +854,6 @@ func (s *Service) RewritePathPrefix(old, new string, dryRun bool) ([]string, err
 		return names, nil
 	}
 	return names, s.Save(defs)
-}
-
-func copyDefs(in map[string]Definition) map[string]Definition {
-	out := make(map[string]Definition, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
-// StartAll launches all stream connectors.
-func (s *Service) StartAll(ctx context.Context) {
-	_ = s.Load() // start whatever is already in memory if disk reload fails
-	s.mu.Lock()
-	s.runCtx = ctx
-	names := make([]string, 0, len(s.defs))
-	for n, d := range s.defs {
-		if d.Command != "" {
-			names = append(names, n)
-		}
-	}
-	s.mu.Unlock()
-	for _, n := range names {
-		if err := s.Start(ctx, n); err != nil {
-			s.log.Warn("connector start", "name", n, "error", err)
-		}
-	}
-}
-
-// Start launches one connector process. It reserves the s.procs slot
-// under s.mu (status "starting") so concurrent Starts launch one process.
-func (s *Service) Start(parent context.Context, name string) error {
-	if err := s.GuardReserved(name); err != nil {
-		return err
-	}
-	if err := s.GuardMutate(name); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	d, ok := s.defs[name]
-	if !ok {
-		s.mu.Unlock()
-		return fmt.Errorf("unknown connector %q", name)
-	}
-	runCtx := s.runCtx
-	if runCtx == nil {
-		runCtx = context.Background()
-	}
-	wasCrashed := false
-	if p, ok := s.procs[name]; ok {
-		st := p.getStatus()
-		if st == "listening" || st == "starting" {
-			s.mu.Unlock()
-			return nil
-		}
-		wasCrashed = st == "crashed"
-	}
-	// Process lifetime is Stop() / runCtx, not the caller's context. HTTP
-	// connect/restart pass r.Context(), which cancels when the response ends.
-	ctx, cancel := context.WithCancel(runCtx)
-	p := &proc{cancel: cancel, status: "starting"}
-	s.procs[name] = p
-	s.mu.Unlock()
-
-	// remove undoes the reservation on a launch error.
-	remove := func() {
-		cancel()
-		s.mu.Lock()
-		if s.procs[name] == p {
-			delete(s.procs, name)
-		}
-		s.mu.Unlock()
-	}
-	cmd := exec.CommandContext(ctx, "sh", "-c", d.Command)
-	if d.Cwd != "" {
-		cmd.Dir = d.Cwd
-	}
-	env := os.Environ()
-	resolved, missing := secrets.ExpandRefs(d.Env)
-	for _, secName := range missing {
-		s.log.Info("secret.referenced_missing", "name", secName, "connector", d.Name)
-	}
-	for k, v := range resolved {
-		env = append(env, k+"="+v)
-	}
-	cur, _ := s.GetCursor(parent, name)
-	env = append(env, "TREBI_LAST_EVENT_ID="+cur.LastEventID)
-	cmd.Env = env
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		remove()
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		remove()
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		remove()
-		return err
-	}
-	p.mu.Lock()
-	p.cmd = cmd
-	// A Stop during the launch already set "stopped"; keep it.
-	if p.status == "starting" {
-		p.status = "listening"
-		p.startedAt = time.Now().UTC()
-	}
-	p.mu.Unlock()
-
-	go s.readLoop(ctx, name, d, stdout, cmd, p)
-	go s.readStderr(name, stderr)
-	// connector.started is log-only; the bus rides connector.updated.
-	s.log.Info("connector.started", "connector", name)
-	if _, err := s.st.Append(parent, store.BusEvent{
-		Topic: "connector.updated", Entity: "connector", EntityID: name, Action: "updated",
-		Attrs: map[string]string{"status": "listening"},
-	}); err != nil {
-		s.log.Warn("bus append", "topic", "connector.updated", "error", err)
-	}
-	if wasCrashed {
-		if _, err := s.st.Append(parent, store.BusEvent{
-			Topic: "connector.recovered", Entity: "connector", EntityID: name, Action: "updated",
-			Attrs: map[string]string{"status": "listening"},
-		}); err != nil {
-			s.log.Warn("bus append", "topic", "connector.recovered", "error", err)
-		}
-	}
-	return nil
-}
-
-// Stop kills a connector process.
-func (s *Service) Stop(name string) error {
-	if err := s.GuardReserved(name); err != nil {
-		return err
-	}
-	if err := s.GuardMutate(name); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	p, ok := s.procs[name]
-	s.mu.Unlock()
-	if !ok {
-		return nil
-	}
-	p.cancel()
-	p.mu.Lock()
-	cmd := p.cmd
-	p.mu.Unlock()
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill() // process may have already exited
-	}
-	p.setStatus("stopped")
-	return nil
-}
-
-// Restart stops then starts.
-func (s *Service) Restart(ctx context.Context, name string) error {
-	if err := s.GuardReserved(name); err != nil {
-		return err
-	}
-	if err := s.GuardMutate(name); err != nil {
-		return err
-	}
-	_ = s.Stop(name) // not-running is the desired start state
-	s.mu.Lock()
-	p, ok := s.procs[name]
-	s.mu.Unlock()
-	if ok {
-		p.addRestart()
-	}
-	return s.Start(ctx, name)
-}
-
-// InjectEvent handles a fake event (rules/fire) through the same path.
-func (s *Service) InjectEvent(ctx context.Context, name string, event any) (string, error) {
-	if err := s.GuardMutate(name); err != nil {
-		return "", err
-	}
-	raw, _ := json.Marshal(event)
-	s.mu.Lock()
-	d, ok := s.defs[name]
-	s.mu.Unlock()
-	if !ok {
-		d = Definition{Name: name, Format: "json"}
-	}
-	line := string(raw)
-	s.handleLine(ctx, name, d, line)
-	return "ok", nil
 }
 
 // Cursor is one connector_cursors row.
@@ -776,13 +880,14 @@ func (s *Service) PutCursor(ctx context.Context, name, lastEventID string) error
 	if err := s.GuardMutate(name); err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := s.now().UTC().Format(time.RFC3339)
 	_, err := s.st.DB().ExecContext(ctx, `INSERT INTO connector_cursors (name, last_event_id, updated_at)
 		VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
 		name, lastEventID, now)
 	return err
 }
 
+// appendConnectorLog appends one line to the connector log file.
 func appendConnectorLog(name, stream, line string) {
 	logPath := filepath.Join(home.ConnectorsLogDir(), name+".jsonl")
 	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
@@ -793,331 +898,4 @@ func appendConnectorLog(name, stream, line string) {
 	_, _ = fmt.Fprintf(logf, `{"t":%q,"stream":%q,"line":%q}`+"\n",
 		time.Now().UTC().Format(time.RFC3339Nano), stream, line)
 	_ = logf.Close()
-}
-
-func (s *Service) readStderr(name string, r io.Reader) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		appendConnectorLog(name, "stderr", sc.Text())
-	}
-}
-
-func (s *Service) readLoop(ctx context.Context, name string, d Definition, r io.Reader, cmd *exec.Cmd, p *proc) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	defer func() {
-		p.markStopped()
-		final := p.getStatus()
-		s.log.Info("connector.exited", "connector", name, "status", final)
-		// The loop ctx is canceled on Stop; use Background for the bus write.
-		if _, err := s.st.Append(context.Background(), store.BusEvent{
-			Topic: "connector.updated", Entity: "connector", EntityID: name, Action: "updated",
-			Attrs: map[string]string{"status": final},
-		}); err != nil {
-			s.log.Warn("bus append", "topic", "connector.updated", "error", err)
-		}
-	}()
-	for sc.Scan() {
-		line := sc.Text()
-		appendConnectorLog(name, "stdout", line)
-		p.addEvent()
-		s.handleLine(ctx, name, d, line)
-	}
-	scanErr := sc.Err()
-	waitErr := cmd.Wait()
-	// A canceled ctx means an intentional Stop, not a crash. A self-exit
-	// with a zero code ends as "stopped"; a non-zero exit is "crashed".
-	if ctx.Err() == nil {
-		switch {
-		case scanErr != nil:
-			p.markCrashed(scanErr.Error())
-			s.emitUnhealthy(name, "crashed")
-		case waitErr != nil:
-			p.markCrashed(waitErr.Error())
-			s.emitUnhealthy(name, "crashed")
-		}
-	}
-}
-
-func (s *Service) emitUnhealthy(name, status string) {
-	if _, err := s.st.Append(context.Background(), store.BusEvent{
-		Topic: "connector.unhealthy", Entity: "connector", EntityID: name, Action: "updated",
-		Attrs: map[string]string{"connector": name, "status": status},
-	}); err != nil {
-		s.log.Warn("bus append", "topic", "connector.unhealthy", "error", err)
-	}
-}
-
-func (s *Service) handleLine(ctx context.Context, name string, d Definition, line string) {
-	ev := s.persistEvent(ctx, name, line, d.decodeLine(line))
-	s.dispatchEvent(ctx, name, ev)
-}
-
-// persistEvent stores one durable events row and returns its record.
-func (s *Service) persistEvent(ctx context.Context, name, line string, payload any) eventRecord {
-	raw, _ := json.Marshal(payload)
-	summary := line
-	if len(summary) > 200 {
-		summary = summary[:200]
-	}
-	ev := eventRecord{
-		id:         ulid.Make().String(),
-		raw:        string(raw),
-		trace:      ulid.Make().String(),
-		receivedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		payload:    payload,
-	}
-	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO events (id, connector, received_at, summary, raw_json, trace_id)
-		VALUES (?,?,?,?,?,?)`, ev.id, name, ev.receivedAt, summary, ev.raw, ev.trace); err != nil {
-		s.log.Warn("event insert", "connector", name, "error", err)
-		return ev
-	}
-	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: "event.created", Entity: "event", EntityID: ev.id, Action: "created",
-		Attrs: map[string]string{"connector": name},
-	}); err != nil {
-		s.log.Warn("bus append", "topic", "event.created", "error", err)
-	}
-	return ev
-}
-
-// dispatchEvent matches one event against the triggers of all active jobs.
-func (s *Service) dispatchEvent(ctx context.Context, name string, ev eventRecord) {
-	if s.ws == nil {
-		return
-	}
-	for _, t := range s.triggersFor(ctx, name) {
-		s.dispatchTrigger(ctx, name, ev, t.row, t.j, t.tr)
-	}
-	if s.pol != nil {
-		s.pol.PruneIdle(time.Now(), 24*time.Hour)
-	}
-}
-
-func (s *Service) triggersFor(ctx context.Context, connector string) []cachedTrig {
-	jobs, err := s.ws.ListJobs(ctx, "")
-	if err != nil {
-		return nil
-	}
-	// Assistant triggers come from the trebi.yaml assistant block, not the
-	// job index (plan E).
-	var assistant []workspaces.AssistantTriggerRow
-	if s.ws != nil {
-		assistant, _ = s.ws.AssistantTriggerRows(ctx)
-	}
-	var b strings.Builder
-	for _, row := range jobs {
-		if !row.Active {
-			continue
-		}
-		b.WriteString(row.WorkspaceID)
-		b.WriteByte('/')
-		b.WriteString(row.Name)
-		b.WriteByte('@')
-		b.WriteString(row.Hash)
-		b.WriteByte(';')
-	}
-	for _, at := range assistant {
-		b.WriteString(at.WorkspaceID)
-		b.WriteString("/assistant@")
-		b.WriteString(at.Hash)
-		b.WriteByte(';')
-	}
-	fp := b.String()
-	s.trigMu.Lock()
-	defer s.trigMu.Unlock()
-	if fp == s.trigFP && s.trigByConn != nil {
-		return s.trigByConn[connector]
-	}
-	by := map[string][]cachedTrig{}
-	for _, row := range jobs {
-		if !row.Active {
-			continue
-		}
-		j, err := job.ParseFile(row.Path)
-		if err != nil || j == nil {
-			continue
-		}
-		for _, tr := range j.Triggers {
-			if tr.Family != "event" || tr.Disabled || tr.Event == "" {
-				continue
-			}
-			by[tr.Event] = append(by[tr.Event], cachedTrig{row: row, j: j, tr: tr})
-		}
-	}
-	for _, at := range assistant {
-		row := workspaces.JobRow{
-			WorkspaceID: at.WorkspaceID, Name: "assistant",
-			Kind: dispatch.KindAssistant, Active: true, Hash: at.Hash,
-		}
-		j := &job.Job{Name: "assistant"}
-		for _, tr := range at.Triggers {
-			if tr.Family != "event" && tr.Event == "" {
-				continue
-			}
-			by[tr.Event] = append(by[tr.Event], cachedTrig{row: row, j: j, tr: tr})
-		}
-	}
-	s.trigFP = fp
-	s.trigByConn = by
-	return by[connector]
-}
-
-// dispatchTrigger gates one trigger (allowlist, match, policy) and enqueues.
-func (s *Service) dispatchTrigger(ctx context.Context, name string, ev eventRecord, row workspaces.JobRow, j *job.Job, tr job.Trigger) {
-	if s.st.IsDraining() {
-		return
-	}
-	// Ingress allowlist (security layer 1): deterministic gate before JS match.
-	if len(tr.Allowlist) > 0 && !allowlistPasses(tr.Allowlist, ev.payload) {
-		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeBlocked), "", ev.receivedAt)
-		return
-	}
-	res := dispatch.EvalMatch(ctx, tr.Match, tr.Extract, ev.payload)
-	if res.Error != "" || !res.Matched {
-		outcome := string(dispatch.OutcomeNoMatch)
-		if res.Error != "" {
-			outcome = string(dispatch.OutcomeError)
-		}
-		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, outcome, "", ev.receivedAt)
-		return
-	}
-	// policy
-	if s.pol != nil {
-		key := row.WorkspaceID + "/" + j.Name + "/" + fmt.Sprint(tr.Index)
-		if reason := s.pol.CheckAndRecord(key, tr.Debounce, parseRateLimit(tr.RateLimit), time.Now()); reason != "" {
-			s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, reason, "", ev.receivedAt)
-			return
-		}
-	}
-	item := &dispatch.QueueItem{
-		Connector:   name,
-		WorkspaceID: row.WorkspaceID,
-		Job:         j.Name,
-		Kind:        row.Kind,
-		OnIndex:     tr.Index,
-		EventID:     ev.id,
-		EventRaw:    ev.raw,
-		Vars:        res.Vars,
-		Status:      dispatch.QueuePending,
-		TraceID:     ev.trace,
-	}
-	if ck, ok := res.Vars["conversation_key"]; ok {
-		item.ConversationKey = ck
-	}
-	if err := s.queue.Enqueue(ctx, item); err != nil {
-		s.log.Warn("enqueue", "error", err)
-		return
-	}
-	s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeQueued), item.ID, ev.receivedAt)
-}
-
-// insertOutcome records one event_outcomes row (best-effort, logged on error).
-func (s *Service) insertOutcome(ctx context.Context, eid, wsID, jobName string, onIndex int, outcome, queueID, now string) {
-	var qid any
-	if queueID != "" {
-		qid = queueID
-	}
-	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO event_outcomes
-		(event_id, workspace_id, job, on_index, outcome, queue_id, created_at)
-		VALUES (?,?,?,?,?,?,?)
-		ON CONFLICT (event_id, workspace_id, job, on_index) DO NOTHING`, eid, wsID, jobName, onIndex, outcome, qid, now); err != nil {
-		s.log.Warn("event outcome insert", "job", jobName, "outcome", outcome, "error", err)
-	}
-}
-
-// decodeLine parses one output line per the declared format.
-func (d Definition) decodeLine(line string) any {
-	if d.Format == "json" || (d.Format == "" && strings.HasPrefix(strings.TrimSpace(line), "{")) {
-		var m any
-		if err := json.Unmarshal([]byte(line), &m); err == nil {
-			return m
-		}
-	}
-	return map[string]any{"line": line}
-}
-
-// identityKeys returns the event fields the ingress allowlist checks.
-func identityKeys() []string {
-	return []string{"sender", "from", "chat_id", "chat", "user", "user_id", "author", "phone", "email", "channel"}
-}
-
-// allowlistPasses reports whether an identity field of the event matches an
-// allowlist entry. An entry has two forms:
-//   - "key:value" (key is an identity key): matches only that event field.
-//   - bare "value": matches when ANY identity field equals it (flat OR
-//     across all identity keys).
-//
-// Numeric identity values compare as decimal strings. The gate denies when
-// no entry matches — the default is closed.
-func allowlistPasses(allow []string, event any) bool {
-	m, ok := event.(map[string]any)
-	if !ok {
-		return false
-	}
-	for _, a := range allow {
-		if k, want, scoped := strings.Cut(a, ":"); scoped && isIdentityKey(k) {
-			if want != "" && identityString(m[k]) == want {
-				return true
-			}
-			continue
-		}
-		if a == "" {
-			continue
-		}
-		for _, k := range identityKeys() {
-			if identityString(m[k]) == a {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isIdentityKey(k string) bool {
-	for _, ik := range identityKeys() {
-		if k == ik {
-			return true
-		}
-	}
-	return false
-}
-
-// identityString renders an identity value for comparison; "" means absent.
-func identityString(v any) string {
-	switch x := v.(type) {
-	case string:
-		return x
-	case float64:
-		return strconv.FormatFloat(x, 'f', -1, 64)
-	case json.Number:
-		return x.String()
-	case int:
-		return strconv.Itoa(x)
-	case int64:
-		return strconv.FormatInt(x, 10)
-	}
-	return ""
-}
-
-// parseRateLimit parses "N/duration" e.g. "10/1m".
-func parseRateLimit(s string) *dispatch.RateLimit {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	parts := strings.SplitN(s, "/", 2)
-	if len(parts) != 2 {
-		return nil
-	}
-	var n int
-	if _, err := fmt.Sscanf(parts[0], "%d", &n); err != nil || n <= 0 {
-		return nil
-	}
-	d, err := time.ParseDuration(parts[1])
-	if err != nil || d <= 0 {
-		return nil
-	}
-	return &dispatch.RateLimit{Count: n, Per: d}
 }

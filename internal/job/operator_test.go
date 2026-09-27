@@ -67,8 +67,8 @@ func TestLaunchDefaultsWithKit(t *testing.T) {
 	kit := &KitYAML{
 		Envset: EnvsetList{"agents"},
 		Env:    map[string]string{"REGION": "eu", "AGENT_ONLY": "1"},
-		Skills: []string{"research"},
-		MCP:    []string{"notion"},
+		Skills:     []string{"research"},
+		Connectors: []string{"notion"},
 	}
 	env := j.LaunchDefaultsWithKit(kit).Env
 	if env["AGENT_ONLY"] != "1" || env["REGION"] != "us" || env["JOB_ONLY"] != "yes" {

@@ -95,6 +95,11 @@ type LaunchOpts struct {
 	Kit *job.KitYAML
 	// JobSkills is the job's own preferred skill list.
 	JobSkills []string
+	// JobConnectors is the job's own connector list. It replaces the kit
+	// list when it is not empty.
+	JobConnectors []string
+	// Actions are the connector actions resolved for this launch (Part F.3).
+	Actions []ConnectorAction
 	// Command override (bare harness name or full argv string). Empty → harness name.
 	Command string
 	// ResumeSessionID warm-resumes that session.
@@ -194,8 +199,20 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	if opts.SessionID == "" && opts.ResumeSessionID == "" {
 		opts.SessionID = uuid.NewString()
 	}
+	if !opts.wantsFake() {
+		if err := s.resolveActions(ctx, &opts); err != nil {
+			return nil, "", err
+		}
+	}
 	s.prepMemory(ctx, &opts)
 	s.applyWakePrompt(ctx, &opts)
+	if hint := connectorHint(opts.Actions); hint != "" {
+		if strings.TrimSpace(opts.Prompt) == "" {
+			opts.Prompt = hint
+		} else {
+			opts.Prompt = strings.TrimSpace(opts.Prompt) + "\n\n" + hint
+		}
+	}
 	if opts.PromptPreview == "" {
 		opts.PromptPreview = opts.Prompt
 	}
@@ -229,6 +246,50 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 
 	run, err := s.launchTmux(ctx, opts)
 	return run, outcome, err
+}
+
+// resolveActions resolves the connector names of a launch and checks the
+// support matrix (decision 8) before a run row exists. The job list replaces
+// the kit list when it is not empty.
+func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
+	names := opts.JobConnectors
+	if len(names) == 0 && opts.Kit != nil {
+		names = opts.Kit.Connectors
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	if s.actions == nil {
+		return fmt.Errorf("%w: no connector resolver is wired", ErrActionsInvalid)
+	}
+	actions, err := s.actions.ResolveActions(ctx, names)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrActionsInvalid, err)
+	}
+	opts.Actions = actions
+	if !hasMCP(actions) {
+		return nil
+	}
+	command := opts.Command
+	if command == "" {
+		command = opts.Harness
+	}
+	if command == "" {
+		command = "claude"
+	}
+	tool := tmux.Detect(command)
+	if !supportsActions(tool, s.wantsCLI(tool, *opts)) {
+		return fmt.Errorf("%w: %s on the %s runtime", ErrActionsUnsupported, tool.Name(), runRuntimeName(s, tool, *opts))
+	}
+	return nil
+}
+
+// runRuntimeName names the runtime a launch will use, for error messages.
+func runRuntimeName(s *Service, tool tmux.Tool, opts LaunchOpts) string {
+	if s.wantsCLI(tool, opts) {
+		return "cli"
+	}
+	return "tui"
 }
 
 // applyWakePrompt composes the prompt for an operator launch (Part F.3).
@@ -467,7 +528,7 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 		"harness": tool.Name(), "session_id": opts.SessionID, "tmux": wsRef, "mode": "tmux",
 	})
 
-	sourceLine, envPath, err := paneEnvFile(run.WorkingDir, run.ID, opts.CreateOpts.ActorToken, tool.Name(), opts.Env, plan.Env)
+	sourceLine, envPath, err := paneEnvFile(run.WorkingDir, run.ID, opts.CreateOpts.ActorToken, tool.Name(), actionEnv(opts.Actions), opts.Env, plan.Env)
 	if err != nil {
 		return s.failLaunch(ctx, run, wsRef, err)
 	}
@@ -917,7 +978,24 @@ func preparePlan(tool tmux.Tool, command string, opts *LaunchOpts) (tmux.LaunchP
 	if plan.SessionID != "" {
 		opts.SessionID = plan.SessionID
 	}
+	if err := injectMCPPlan(tool, &plan, opts); err != nil {
+		return plan, err
+	}
 	return plan, nil
+}
+
+// injectMCPPlan hands the MCP actions to a pane tool. A tool without the
+// injector cannot reach this point: resolveActions already refused the launch.
+func injectMCPPlan(tool tmux.Tool, plan *tmux.LaunchPlan, opts *LaunchOpts) error {
+	servers := mcpServers(opts.Actions)
+	if len(servers) == 0 {
+		return nil
+	}
+	inj, ok := tool.(tmux.MCPInjector)
+	if !ok {
+		return fmt.Errorf("%w: %s cannot take an injected MCP server", ErrActionsUnsupported, tool.Name())
+	}
+	return inj.InjectMCP(plan, servers, opts.WorkingDir)
 }
 
 // sessionTitle labels the tmux session with the job name and time.
@@ -932,7 +1010,7 @@ func sessionTitle(jobName string) string {
 // paneEnvFile writes launch secrets to a 0600 file and returns one source
 // line. The line removes the file after sourcing, so values do not remain in
 // shell history or pane scrollback.
-func paneEnvFile(runDir, runID, token, toolName string, optEnv, planEnv map[string]string) (string, string, error) {
+func paneEnvFile(runDir, runID, token, toolName string, actEnv, optEnv, planEnv map[string]string) (string, string, error) {
 	if runDir == "" {
 		runDir = "."
 	}
@@ -945,8 +1023,16 @@ func paneEnvFile(runDir, runID, token, toolName string, optEnv, planEnv map[stri
 		return "", "", err
 	}
 	defer f.Close()
-	env := map[string]string{
-		"TREBI_RUN_ID": runID, "TREBI_RUN_TOKEN": token, "TREBI_HOOK_TOOL": toolName,
+	// Order: harness secret env, action env, opts.Env, plan.Env, then the run
+	// identity, which always wins.
+	env := map[string]string{}
+	if secretEnv, err := harness.LoadSecretEnv(toolName); err == nil {
+		for k, v := range secretEnv {
+			env[k] = v
+		}
+	}
+	for k, v := range actEnv {
+		env[k] = v
 	}
 	for k, v := range optEnv {
 		env[k] = v
@@ -954,14 +1040,12 @@ func paneEnvFile(runDir, runID, token, toolName string, optEnv, planEnv map[stri
 	for k, v := range planEnv {
 		env[k] = v
 	}
+	env["TREBI_RUN_ID"] = runID
+	env["TREBI_RUN_TOKEN"] = token
+	env["TREBI_HOOK_TOOL"] = toolName
 	binCurrent := filepath.Join(config.BinDir(), toolName, "current")
 	if st, err := os.Stat(binCurrent); err == nil && st.IsDir() {
 		env["PATH"] = binCurrent + ":" + os.Getenv("PATH")
-	}
-	if env, err := harness.LoadSecretEnv(toolName); err == nil {
-		for k, v := range env {
-			env[k] = v
-		}
 	}
 	var b strings.Builder
 	for _, k := range slices.Sorted(maps.Keys(env)) {
@@ -1180,9 +1264,17 @@ func (s *Service) applyIfRunning(ctx context.Context, opts *LaunchOpts) (string,
 		Status:    string(StatusRunning),
 		Limit:     20,
 	}
-	live, err := s.List(ctx, listOpts)
+	all, err := s.List(ctx, listOpts)
 	if err != nil {
 		return "", nil, err
+	}
+	// Overlap is per conversation (plan E.3): an empty key matches only runs
+	// with an empty key, so one busy chat does not block another.
+	live := make([]*Run, 0, len(all))
+	for _, r := range all {
+		if r.ConversationKey == opts.ConversationKey {
+			live = append(live, r)
+		}
 	}
 	if len(live) == 0 {
 		return "", nil, nil
@@ -1270,20 +1362,13 @@ func (s *Service) overlapCoalesce(ctx context.Context, opts *LaunchOpts, existin
 	}
 }
 
-// kitPromptHint is v1's portable skills/MCP inheritance hint. Real per-run
-// harness projection requires a per-run harness home.
+// kitPromptHint is v1's portable skills inheritance hint. Connector actions
+// reach a run by injection, not by a prompt line (Part F.4).
 func kitPromptHint(kit *job.KitYAML) string {
-	if kit == nil || (len(kit.Skills) == 0 && len(kit.MCP) == 0) {
+	if kit == nil || len(kit.Skills) == 0 {
 		return ""
 	}
-	var lines []string
-	if len(kit.Skills) > 0 {
-		lines = append(lines, "Preferred skills: "+strings.Join(kit.Skills, ", "))
-	}
-	if len(kit.MCP) > 0 {
-		lines = append(lines, "Preferred MCP servers: "+strings.Join(kit.MCP, ", "))
-	}
-	return strings.Join(lines, "\n")
+	return "Preferred skills: " + strings.Join(kit.Skills, ", ")
 }
 
 func combinedSkillHint(kit *job.KitYAML, jobSkills []string) string {
@@ -1302,5 +1387,5 @@ func combinedSkillHint(kit *job.KitYAML, jobSkills []string) string {
 			skills = append(skills, skill)
 		}
 	}
-	return kitPromptHint(&job.KitYAML{Skills: skills, MCP: kit.MCP})
+	return kitPromptHint(&job.KitYAML{Skills: skills})
 }

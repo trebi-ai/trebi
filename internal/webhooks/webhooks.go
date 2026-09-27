@@ -172,7 +172,7 @@ func (s *Service) Deliver(ctx context.Context, f cloudlink.WebhookIngress) error
 		"body":         f.Body, // stays a string; jobs call json(event.body)
 		"received_at":  f.ReceivedAt,
 	}
-	if _, err := s.conn.InjectEvent(ctx, "webhook", payload); err != nil {
+	if _, err := s.conn.InjectNative(ctx, "webhook", payload, connectors.NativeMeta{SourceID: f.ID}); err != nil {
 		return fmt.Errorf("webhook %s inject: %w", f.ID, err)
 	}
 	// hook.received carries the id and the path, never the body: the bus
@@ -198,6 +198,24 @@ func (s *Service) claim(ctx context.Context, id string) (bool, error) {
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
+}
+
+// ConnectorRow is the synthetic connectors-list row for the webhook
+// connector (plan J). It reports the count of cloud hooks and carries the
+// events capability only.
+func (s *Service) ConnectorRow() map[string]any {
+	var count int64
+	_ = s.st.DB().QueryRow(`SELECT COUNT(*) FROM cloud_hooks`).Scan(&count)
+	return map[string]any{
+		"id": "webhook", "name": "webhook",
+		"provenance": "native", "managed": false,
+		"capabilities": []string{"events"},
+		"events": map[string]any{
+			"status":   "listening",
+			"metrics":  map[string]any{"hooks": count},
+			"counters": map[string]any{"events": 0, "duplicates": 0, "parse_errors": 0},
+		},
+	}
 }
 
 // drop counts one deliberately discarded frame.

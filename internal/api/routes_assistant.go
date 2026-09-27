@@ -26,6 +26,7 @@ import (
 func (s *Server) routeAssistant(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/assistant", s.handleAssistantDefaultsGet)
 	mux.HandleFunc("PUT /v1/assistant", s.handleAssistantDefaultsPut)
+	mux.HandleFunc("POST /v1/assistant/native/test", s.handleAssistantNativeTest)
 	mux.HandleFunc("GET /v1/workspaces/{id}/assistant", s.handleWorkspaceAssistantGet)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/assistant", s.handleWorkspaceAssistantPut)
 	mux.HandleFunc("GET /v1/workspaces/{id}/assistant/preview", s.handleWorkspaceAssistantPreview)
@@ -109,18 +110,31 @@ func (s *Server) handleAssistantDefaultsPut(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// validateNativeFormat checks api_format with the rule of applyNativeSettings.
+func validateNativeFormat(f string) error {
+	switch f {
+	case "", "anthropic", "openai":
+		return nil
+	default:
+		return fmt.Errorf("native.api_format %q not in [anthropic, openai]", f)
+	}
+}
+
 // applyNativeSettings writes the provider block of a Defaults PUT into the
 // config (plan 2026-09-26 G). A non-empty key goes to the pending-key slot;
 // Save moves it into the secrets store and never into YAML.
 func applyNativeSettings(a *config.AssistantConfig, in *assistant.NativeSettings) error {
-	switch f := strings.TrimSpace(in.APIFormat); f {
-	case "", "anthropic", "openai":
-		a.Native.APIFormat = f
-	default:
-		return fmt.Errorf("native.api_format %q not in [anthropic, openai]", in.APIFormat)
+	if err := validateNativeFormat(strings.TrimSpace(in.APIFormat)); err != nil {
+		return err
 	}
+	a.Native.APIFormat = strings.TrimSpace(in.APIFormat)
 	a.Native.BaseURL = strings.TrimSpace(in.BaseURL)
-	a.Native.APIKeyEnv = strings.TrimSpace(in.APIKeyEnv)
+	// The model lives in the native block (annotation 2026-09-26): a save
+	// under another harness carries the block unchanged, so a configured
+	// native setup survives it. Empty means inherit assistant.model.
+	a.Native.Model = strings.TrimSpace(in.Model)
+	// api_key_env is read-only on /v1 (plan 2026-09-26 A): the PUT keeps the
+	// config value, so a UI save never clears the YAML setting.
 	a.Native.Headers = in.Headers
 	a.Native.WebSearch = in.WebSearch
 	a.Native.MaxTokens = in.MaxTokens
@@ -129,6 +143,42 @@ func applyNativeSettings(a *config.AssistantConfig, in *assistant.NativeSettings
 		a.SetPendingKey(key)
 	}
 	return nil
+}
+
+// handleAssistantNativeTest runs one small model call with the unsaved
+// native form values (plan 2026-09-26 B). It saves nothing and never logs
+// the request body.
+func (s *Server) handleAssistantNativeTest(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) || rejectAnyToken(w, r) {
+		return
+	}
+	var in assistant.NativeTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if err := validateNativeFormat(strings.TrimSpace(in.Native.APIFormat)); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if s.nativeProbe == nil {
+		writeErr(w, http.StatusInternalServerError, "internal", "native probe unavailable")
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil || cfg == nil {
+		writeErr(w, http.StatusInternalServerError, "internal", "config unavailable")
+		return
+	}
+	// The form values overlay the live block; APIKeyPresent and APIKeyEnv
+	// stay from the config, so an empty typed key resolves the stored one.
+	overlay := cfg.Assistant.Native
+	overlay.APIFormat = strings.TrimSpace(in.Native.APIFormat)
+	overlay.BaseURL = strings.TrimSpace(in.Native.BaseURL)
+	overlay.Headers = in.Native.Headers
+	result := s.nativeProbe.Run(r.Context(), overlay,
+		strings.TrimSpace(in.Model), strings.TrimSpace(in.Native.APIKey))
+	writeJSON(w, http.StatusOK, result)
 }
 
 // validateAssistantSettings checks mode, harness, effort, and that every

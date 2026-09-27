@@ -243,8 +243,8 @@ func (s *Server) kitSourceFrom(kits map[string]*job.KitYAML, row workspaces.JobR
 	if len(kit.Skills) > 0 {
 		out["skills"] = "agent"
 	}
-	if len(kit.MCP) > 0 {
-		out["mcp"] = "agent"
+	if len(kit.Connectors) > 0 {
+		out["connectors"] = "agent"
 	}
 	if row.Name != "" {
 		if parsed, err := job.ParseFile(row.Path); err == nil && parsed != nil {

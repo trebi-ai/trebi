@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // CollectAgentDoctorFindings checks agent-only optional configuration against
@@ -37,7 +39,7 @@ func CollectAgentDoctorFindings(st *store.Store) []DoctorFinding {
 
 func agentKitFindings(st *store.Store) []DoctorFinding {
 	db := st.DB()
-	rows, err := db.Query(`SELECT workspace_id, name, path FROM job_index WHERE kind='agent'`)
+	rows, err := db.Query(`SELECT workspace_id, name, path, kind FROM job_index`)
 	if err != nil {
 		return nil
 	}
@@ -49,10 +51,11 @@ func agentKitFindings(st *store.Store) []DoctorFinding {
 			skillNames[skill.Name] = true
 		}
 	}
-	servers := map[string]bool{}
+	defs, _ := connectors.LoadDefinitions()
+	inherited := map[string]bool{}
 	if userHome, err := os.UserHomeDir(); err == nil {
 		for _, server := range harness.DiscoverMCP(userHome, nil) {
-			servers[server.Name] = true
+			inherited[server.Name] = true
 		}
 	}
 	envsets := map[string]bool{}
@@ -64,48 +67,142 @@ func agentKitFindings(st *store.Store) []DoctorFinding {
 
 	var findings []DoctorFinding
 	for rows.Next() {
-		var wsID, name, path string
-		if err := rows.Scan(&wsID, &name, &path); err != nil {
+		var wsID, name, path, kind string
+		if err := rows.Scan(&wsID, &name, &path, &kind); err != nil {
 			continue
 		}
 		parsed, err := job.ParseFile(path)
-		if err != nil || parsed == nil || parsed.Kit == nil {
+		if err != nil || parsed == nil {
 			continue
 		}
 		short := strings.TrimPrefix(name, "agents/")
-		for _, skill := range parsed.Kit.Skills {
-			if skillNames[skill] {
-				continue
+		if parsed.Kit != nil {
+			for _, skill := range parsed.Kit.Skills {
+				if skillNames[skill] {
+					continue
+				}
+				findings = append(findings, DoctorFinding{
+					ID:       "agent-skill-" + wsID + "-" + short + "-" + skill,
+					Severity: "warn", Code: "agent_skill_missing",
+					Message: fmt.Sprintf("agent %s references missing skill %s", short, skill),
+				})
 			}
-			findings = append(findings, DoctorFinding{
-				ID:       "agent-skill-" + wsID + "-" + short + "-" + skill,
-				Severity: "warn", Code: "agent_skill_missing",
-				Message: fmt.Sprintf("agent %s references missing skill %s", short, skill),
-			})
+			for _, envset := range parsed.Kit.Envset {
+				if envsets[envset] {
+					continue
+				}
+				findings = append(findings, DoctorFinding{
+					ID:       "agent-envset-" + wsID + "-" + short + "-" + envset,
+					Severity: "warn", Code: "agent_envset_missing",
+					Message: fmt.Sprintf("agent %s references missing envset %s", short, envset),
+				})
+			}
 		}
-		for _, server := range parsed.Kit.MCP {
-			if servers[server] {
-				continue
-			}
-			findings = append(findings, DoctorFinding{
-				ID:       "agent-mcp-" + wsID + "-" + short + "-" + server,
-				Severity: "warn", Code: "agent_mcp_missing",
-				Message: fmt.Sprintf("agent %s references missing MCP server %s", short, server),
-			})
-		}
-		for _, envset := range parsed.Kit.Envset {
-			if envsets[envset] {
-				continue
-			}
-			findings = append(findings, DoctorFinding{
-				ID:       "agent-envset-" + wsID + "-" + short + "-" + envset,
-				Severity: "warn", Code: "agent_envset_missing",
-				Message: fmt.Sprintf("agent %s references missing envset %s", short, envset),
-			})
+		for _, name := range connectorNames(parsed, kind) {
+			findings = append(findings, connectorFindings(wsID, short, name, parsed, defs, inherited)...)
 		}
 	}
 	_ = rows.Err()
 	return findings
+}
+
+// connectorNames lists the connector names of one job: the kit list for an
+// agent, the job list for everything else.
+func connectorNames(parsed *job.Job, kind string) []string {
+	if kind == "agent" && parsed.Kit != nil {
+		return parsed.Kit.Connectors
+	}
+	return parsed.Connectors
+}
+
+// connectorFindings checks one connector name from a kit or job list against
+// the managed definitions, the inherited servers, and the support matrix.
+func connectorFindings(wsID, short, name string, parsed *job.Job, defs map[string]connectors.Definition, inherited map[string]bool) []DoctorFinding {
+	id := "connector-" + wsID + "-" + short + "-" + name
+	d, ok := defs[name]
+	if !ok {
+		if inherited[name] {
+			return []DoctorFinding{{
+				ID: id, Severity: "warn", Code: "kit_connector_inherited",
+				Message: fmt.Sprintf("%s names inherited MCP server %s; the harness bridge already gives it to the run", short, name),
+			}}
+		}
+		return []DoctorFinding{{
+			ID: id, Severity: "warn", Code: "kit_connector_missing",
+			Message: fmt.Sprintf("%s references missing connector %s", short, name),
+		}}
+	}
+	if d.Actions == nil {
+		return []DoctorFinding{{
+			ID: id, Severity: "warn", Code: "kit_connector_no_actions",
+			Message: fmt.Sprintf("%s references connector %s, which has no actions block", short, name),
+		}}
+	}
+	var out []DoctorFinding
+	if d.Actions.MCP != nil && !actionsSupportedForRun(parsed) {
+		out = append(out, DoctorFinding{
+			ID: id, Severity: "warn", Code: "kit_actions_unsupported",
+			Message: fmt.Sprintf("%s runs %s on the %s runtime, which cannot take the MCP actions of connector %s",
+				short, effectiveHarness(parsed), effectiveRuntime(parsed, effectiveHarness(parsed)), name),
+		})
+	}
+	for _, command := range d.Actions.CLI.Commands {
+		bin := strings.Fields(command)
+		if len(bin) == 0 {
+			continue
+		}
+		if _, err := exec.LookPath(bin[0]); err != nil {
+			out = append(out, DoctorFinding{
+				ID:       id + "-" + bin[0],
+				Severity: "info", Code: "connector_command_missing",
+				Message: fmt.Sprintf("connector %s names command %s, which is not on PATH", name, bin[0]),
+			})
+		}
+	}
+	return out
+}
+
+// effectiveHarness is the harness a job launches under.
+func effectiveHarness(parsed *job.Job) string {
+	if parsed != nil && parsed.Harness != "" {
+		return parsed.Harness
+	}
+	return "claude"
+}
+
+// effectiveRuntime is the runtime a job launches under, the same decision
+// wantsCLI makes.
+func effectiveRuntime(parsed *job.Job, harness string) string {
+	if parsed != nil && parsed.Runtime == "tui" {
+		return "tui"
+	}
+	if strings.EqualFold(os.Getenv("TREBI_HARNESS_RUNTIME"), "tui") {
+		return "tui"
+	}
+	if cfg, err := config.Load(); err == nil && cfg != nil && strings.EqualFold(cfg.HarnessRuntimeFor(harness), "tui") {
+		return "tui"
+	}
+	return "cli"
+}
+
+// actionsSupportedForRun is the doctor copy of decision 8: the CLI runtime
+// takes MCP servers on the driver harnesses; the pane runtime needs the
+// tool's MCPInjector.
+func actionsSupportedForRun(parsed *job.Job) bool {
+	harnessName := effectiveHarness(parsed)
+	tool, ok := tmux.ByName(harnessName)
+	if !ok {
+		return false
+	}
+	if effectiveRuntime(parsed, harnessName) == "cli" {
+		switch tool.Name() {
+		case tmux.Claude, tmux.Codex, tmux.OpenCode, tmux.Copilot, tmux.Cursor, tmux.Gemini:
+			return true
+		}
+		return false
+	}
+	_, ok = tool.(tmux.MCPInjector)
+	return ok
 }
 
 func agentWriteFindings(ctx context.Context, db *sql.DB) []DoctorFinding {

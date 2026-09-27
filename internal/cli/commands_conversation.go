@@ -73,6 +73,22 @@ func conversationCommand() *cli.Command {
 				Action: runConversationPatch,
 			},
 			{
+				Name:      "outbox",
+				Usage:     "list the channel replies of a conversation",
+				ArgsUsage: "<id>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action:    runConversationOutbox,
+				Commands: []*cli.Command{
+					{
+						Name:      "retry",
+						Usage:     "retry one failed channel reply",
+						ArgsUsage: "<id> <row>",
+						Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+						Action:    runConversationOutboxRetry,
+					},
+				},
+			},
+			{
 				Name:      "delete",
 				Usage:     "delete a conversation with its messages (closes the assistant session)",
 				ArgsUsage: "<id>",
@@ -159,6 +175,57 @@ func runConversationMessages(_ context.Context, c *cli.Command) error {
 		})
 	}
 	renderTable(tbl)
+	return nil
+}
+
+func runConversationOutbox(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi conversation outbox <id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	path := request.BuildConversationOutboxPath(id)
+	var body struct {
+		Outbox []map[string]any `json:"outbox"`
+	}
+	if err := client.GetJSON(path, &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	tbl := newTable(w, []string{"ID", "Status", "Attempts", "Message", "Error"})
+	for _, row := range body.Outbox {
+		tbl.AppendRow(table.Row{
+			mapStr(row, "id"), mapStr(row, "status"), mapStr(row, "attempts"),
+			mapStr(row, "message_id"), dash(mapStr(row, "error_message")),
+		})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runConversationOutboxRetry(_ context.Context, c *cli.Command) error {
+	id, row := c.Args().Get(0), c.Args().Get(1)
+	if id == "" || row == "" {
+		return fmt.Errorf("usage: trebi conversation outbox retry <id> <row>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := client.DoHTTP(request.BuildConversationOutboxRetry(id, row), &out); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, out)
+	}
+	fmt.Fprintf(outWriter(c), "outbox %s %s\n", mapStr(out, "id"), mapStr(out, "status"))
 	return nil
 }
 

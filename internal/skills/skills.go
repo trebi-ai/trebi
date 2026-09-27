@@ -87,6 +87,9 @@ func (s *Service) WithUserHome(dir string) *Service {
 	return s
 }
 
+// Dir returns the folder of one installed skill.
+func (s *Service) Dir(name string) string { return filepath.Join(home.SkillsDir(), name) }
+
 // List discovers skills under SkillsDir, unioned with inherited user-home skills.
 func (s *Service) List(ctx context.Context) ([]Skill, error) {
 	if err := home.EnsureDirs(); err != nil {

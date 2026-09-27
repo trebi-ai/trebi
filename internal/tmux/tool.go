@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 )
@@ -57,6 +58,19 @@ type LaunchPlan struct {
 	Command   string
 	SessionID string            // known upfront, or ""
 	Env       map[string]string // GROK_HOME, OPENCODE_CONFIG, …
+}
+
+// MCPInjector is implemented by tools whose pane launch can take extra MCP
+// servers. A tool without it cannot serve a connector action (decision 8).
+type MCPInjector interface {
+	InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, runDir string) error
+}
+
+// ShellQuote quotes one argument for the shell command line that the pane
+// runs. The command is typed into a shell, so every injected argument needs
+// it.
+func ShellQuote(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
 }
 
 // LifecycleAdapter installs hook/shim/plugin assets for AgentBus (via agent-hook).

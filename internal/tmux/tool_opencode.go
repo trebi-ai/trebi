@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/harness"
 )
 
@@ -30,6 +31,20 @@ func (t opencodeTool) Match(command string) bool {
 func (t opencodeTool) PrepareLaunch(command string) LaunchPlan {
 	// Session ID is assigned by OpenCode; capture via lifecycle plugin.
 	return LaunchPlan{Command: command, Env: t.launchEnv()}
+}
+
+// InjectMCP sets OPENCODE_CONFIG_CONTENT to the fragment that carries the
+// injected servers. OpenCode merges it with the user's own config.
+func (t opencodeTool) InjectMCP(plan *LaunchPlan, servers []agentwire.MCPServer, runDir string) error {
+	content, err := agentwire.OpenCodeConfigContent(servers)
+	if err != nil {
+		return err
+	}
+	if plan.Env == nil {
+		plan.Env = map[string]string{}
+	}
+	plan.Env["OPENCODE_CONFIG_CONTENT"] = content
+	return nil
 }
 
 func (t opencodeTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {

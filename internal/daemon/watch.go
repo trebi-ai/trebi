@@ -229,11 +229,19 @@ func (c *ControlPlane) turnWatchTick(ctx context.Context) {
 // (plan I.2): the session left running, or the run itself ended. It runs
 // after ingestRun stored new turns, so one reply covers them all.
 func (c *ControlPlane) replyIfExchangeEnded(ctx context.Context, run *runs.Run) {
-	if run.ConversationID == "" || c.Email == nil || c.Opts.Shadow || !c.Email.Configured() {
+	if run.ConversationID == "" {
 		return
 	}
 	state := c.Runs.SessionState(run.ID)
 	if !run.Status.IsTerminal() && state != runs.SessionWaiting && state != runs.SessionIdle {
+		return
+	}
+	if c.Channels != nil && !c.Opts.Shadow {
+		if err := c.Channels.ReplyOnTurn(ctx, run.ConversationID, run.ID); err != nil {
+			c.log.Warn("channel reply", "run_id", run.ID, "error", err)
+		}
+	}
+	if c.Email == nil || c.Opts.Shadow || !c.Email.Configured() {
 		return
 	}
 	opts := email.ReplyOpts{RunID: run.ID, ConversationID: run.ConversationID}

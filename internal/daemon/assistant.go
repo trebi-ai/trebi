@@ -54,6 +54,11 @@ func (c *ControlPlane) OpenPermissionTimeout(ctx context.Context, workspaceID, c
 // turn began by email. It replaces the run watcher for assistant
 // conversations (plan D.9). run_id stays empty: sessions are not runs.
 func (c *ControlPlane) onAssistantTurnEnd(ctx context.Context, te assistant.TurnEnd) {
+	if c.Channels != nil && !c.Opts.Shadow {
+		if err := c.Channels.ReplyOnTurn(ctx, te.ConversationID, ""); err != nil {
+			c.log.Warn("assistant channel reply", "conversation", te.ConversationID, "error", err)
+		}
+	}
 	if c.Opts.Shadow || c.Email == nil || !c.Email.Configured() {
 		return
 	}
@@ -146,4 +151,5 @@ func (c *ControlPlane) dispatchAssistant(ctx context.Context, item *dispatch.Que
 	if err := c.queue.MarkDone(ctx, item.ID, dispatch.ResultLaunched, ""); err != nil {
 		c.log.Warn("queue mark done", "queue_id", item.ID, "error", err)
 	}
+	c.ackChannel(ctx, item, dispatch.ResultLaunched)
 }

@@ -10,7 +10,10 @@ import (
 	"testing"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/assistant"
+	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // writeAssistant pins the fake harness in the workspace trebi.yaml, so a
@@ -180,5 +183,77 @@ func TestConversationSendWhileDraining(t *testing.T) {
 	}
 	if sent["delivery"] != "prompted" {
 		t.Fatalf("delivery under drain %v", sent)
+	}
+}
+
+// TestConversationOutboxRoutes covers the support read and the retry of one
+// failed channel reply (plan 2026-09-27 G.4).
+func TestConversationOutboxRoutes(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Setenv("TREBI_FAKE_HARNESS", "1")
+	t.Cleanup(func() { home.SetBase("") })
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s := api.New(st, api.Options{})
+	addr, err := s.ListenAndServe("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
+	base := "http://" + addr
+
+	wsID := addWorkspace(t, base, t.TempDir(), "outbox-ws")
+	code, body, _ := doJSON(t, "POST", base+"/v1/conversations",
+		map[string]any{"workspace": wsID, "origin_channel": "cli"})
+	if code != 201 {
+		t.Fatalf("create conversation %d %v", code, body)
+	}
+	convID, _ := body["id"].(string)
+	if convID == "" {
+		t.Fatalf("conversation id missing: %v", body)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := st.DB().Exec(`INSERT INTO channel_outbox
+		(id, connector, workspace_id, conversation_id, channel_ref, message_id, text, status, attempts, error_message, created_at)
+		VALUES ('01ROW1','telegram',?,?,'chat1','01MSG1','hello','failed',5,'boom',?)`,
+		wsID, convID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/conversations/"+convID+"/outbox", nil)
+	if code != 200 {
+		t.Fatalf("outbox read %d %v", code, body)
+	}
+	rows, _ := body["outbox"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("outbox rows = %v", rows)
+	}
+	row, _ := rows[0].(map[string]any)
+	if row["status"] != "failed" || row["connector"] != "telegram" || row["message_id"] != "01MSG1" {
+		t.Fatalf("outbox row %v", row)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/conversations/"+convID+"/outbox/01ROW1/retry", nil)
+	if code != 200 || body["status"] != "pending" || body["attempts"] != float64(0) {
+		t.Fatalf("retry %d %v", code, body)
+	}
+	// A pending row cannot retry again: conflict.
+	if code, _, _ = doJSON(t, "POST", base+"/v1/conversations/"+convID+"/outbox/01ROW1/retry", nil); code != 409 {
+		t.Fatalf("retry of a pending row = %d, want 409", code)
+	}
+	// A missing row is not found.
+	if code, _, _ = doJSON(t, "POST", base+"/v1/conversations/"+convID+"/outbox/missing/retry", nil); code != 404 {
+		t.Fatalf("retry of a missing row = %d, want 404", code)
+	}
+	// A missing conversation is not found.
+	if code, _, _ = doJSON(t, "GET", base+"/v1/conversations/missing/outbox", nil); code != 404 {
+		t.Fatalf("outbox of a missing conversation = %d, want 404", code)
 	}
 }

@@ -422,7 +422,11 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 	if d.Class == RouteDropped {
 		return nil // drops never fire triggers or stream
 	}
-	if _, err := g.conn.InjectEvent(ctx, cursorName, msg); err != nil {
+	if _, err := g.conn.InjectNative(ctx, cursorName, msg, connectors.NativeMeta{
+		SourceID:   msg.ID,
+		Identity:   msg.From,
+		ChannelRef: ThreadRoot(msg),
+	}); err != nil {
 		g.log.Warn("email.inject", "id", msg.ID, "error", err)
 	}
 	g.svc.emitReceived(ctx, msg.ID)

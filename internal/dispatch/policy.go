@@ -1,6 +1,8 @@
 package dispatch
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -11,7 +13,8 @@ type RateLimit struct {
 	Per   time.Duration
 }
 
-// Policy tracks debounce + rate-limit per key (workspace|job|onIndex).
+// Policy tracks debounce + rate-limit per key
+// (workspace/job/on_index/conversation_key).
 type Policy struct {
 	mu        sync.Mutex
 	lastFired map[string]time.Time
@@ -26,22 +29,33 @@ func NewPolicy() *Policy {
 	}
 }
 
-// Check dry-runs policy without recording a fire.
-func (p *Policy) Check(key string, debounce time.Duration, rate *RateLimit, now time.Time) (blocked string) {
+// NextAllowed returns the first time a fire is allowed for key, or the zero
+// time when a fire is allowed now. It does not record anything.
+func (p *Policy) NextAllowed(key string, debounce time.Duration, rate *RateLimit, now time.Time) time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.checkLocked(key, debounce, rate, now)
-}
-
-// CheckAndRecord atomically checks policy and, when allowed, records the fire.
-func (p *Policy) CheckAndRecord(key string, debounce time.Duration, rate *RateLimit, now time.Time) (blocked string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if b := p.checkLocked(key, debounce, rate, now); b != "" {
-		return b
+	var wait time.Duration
+	if debounce > 0 {
+		if last, ok := p.lastFired[key]; ok {
+			if d := debounce - now.Sub(last); d > wait {
+				wait = d
+			}
+		}
 	}
-	p.recordLocked(key, rate, now)
-	return ""
+	if rate != nil && rate.Count > 0 && rate.Per > 0 {
+		p.window[key] = pruneWindow(p.window[key], now.Add(-rate.Per))
+		if kept := p.window[key]; len(kept) >= rate.Count {
+			// The oldest fire above the limit must expire first.
+			oldest := kept[len(kept)-rate.Count]
+			if d := oldest.Add(rate.Per).Sub(now); d > wait {
+				wait = d
+			}
+		}
+	}
+	if wait <= 0 {
+		return time.Time{}
+	}
+	return now.Add(wait)
 }
 
 // Record marks a successful fire.
@@ -51,43 +65,15 @@ func (p *Policy) Record(key string, rate *RateLimit, now time.Time) {
 	p.recordLocked(key, rate, now)
 }
 
-// LoadKey seeds state (migration / DB load).
-func (p *Policy) LoadKey(key string, lastFired time.Time, window []time.Time) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !lastFired.IsZero() {
-		p.lastFired[key] = lastFired
-	}
-	if len(window) > 0 {
-		p.window[key] = append([]time.Time(nil), window...)
-	}
-}
-
-// checkLocked evaluates policy and prunes the stored window. Caller holds mu.
-func (p *Policy) checkLocked(key string, debounce time.Duration, rate *RateLimit, now time.Time) (blocked string) {
-	if debounce > 0 {
-		if last, ok := p.lastFired[key]; ok && now.Sub(last) < debounce {
-			return "debounced"
+// pruneWindow drops fires at or before cut.
+func pruneWindow(window []time.Time, cut time.Time) []time.Time {
+	var kept []time.Time
+	for _, t := range window {
+		if t.After(cut) {
+			kept = append(kept, t)
 		}
 	}
-	if rate != nil && rate.Count > 0 && rate.Per > 0 {
-		cut := now.Add(-rate.Per)
-		var kept []time.Time
-		for _, t := range p.window[key] {
-			if t.After(cut) {
-				kept = append(kept, t)
-			}
-		}
-		if kept == nil {
-			delete(p.window, key)
-		} else {
-			p.window[key] = kept
-		}
-		if len(kept) >= rate.Count {
-			return "rate_limited"
-		}
-	}
-	return ""
+	return kept
 }
 
 // recordLocked stamps lastFired; the window grows only for rate-limited keys
@@ -113,4 +99,25 @@ func (p *Policy) PruneIdle(now time.Time, idle time.Duration) {
 			delete(p.window, k)
 		}
 	}
+}
+
+// ParseRateLimit parses "N/duration" e.g. "10/1m".
+func ParseRateLimit(s string) *RateLimit {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.SplitN(s, "/", 2)
+	if len(parts) != 2 {
+		return nil
+	}
+	var n int
+	if _, err := fmt.Sscanf(parts[0], "%d", &n); err != nil || n <= 0 {
+		return nil
+	}
+	d, err := time.ParseDuration(parts[1])
+	if err != nil || d <= 0 {
+		return nil
+	}
+	return &RateLimit{Count: n, Per: d}
 }

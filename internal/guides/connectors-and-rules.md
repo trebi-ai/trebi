@@ -6,15 +6,18 @@ description: Create and connect connectors, test and fire rules, event triggers,
 
 # Connectors, rules, events, and the queue
 
-A connector is a command that produces events. A job trigger of type `event` matches those events. See `trebi guide jobs-and-scheduling` for the `triggers[]` shape.
+A connector is one external system. It can give **actions** to an agent run (an MCP server, or CLI commands plus a skill), **events** to a job trigger, and a **channel** for a conversation. The three blocks are optional and independent; a connector with no block is invalid. See `trebi guide jobs-and-scheduling` for the `triggers[]` shape.
 
 `trebi connector list` also shows **inherited** MCP servers discovered from the user harness configs the bridge injects (`~/.claude.json` / `~/.claude/mcp.json`, `~/.codex/mcp.json`, `~/.cursor/mcp.json`, `~/.pi/agent/mcp.json`). Those rows are read-only: connect, edit, and delete are refused. Edit the origin file instead. Managed rows are the ones in `connectors.yaml`.
 
 ## Connectors
 
 ```bash
-trebi connector list --json
-trebi connector set slack --type stream --format json --cwd /opt/slack -- ./slack-stream --follow
+trebi connector list --capability events --json
+trebi connector set slack --events-command 'slack-stream --follow' --format json --cwd /opt/slack --restart on-failure
+trebi connector set slack --poll 15m --events-command 'slack-fetch --since $TREBI_LAST_EVENT_ID' --catchup-command 'slack-fetch --since $TREBI_LAST_EVENT_ID' --id ts --identity user
+trebi connector set notion --mcp-command npx --mcp-arg=-y --mcp-arg @notionhq/notion-mcp-server
+trebi connector set mail --channel-ref '{{ chat_id }}' --send send-mail.sh --typing typing-mail.sh --ack ack-mail.sh
 trebi connector show slack
 trebi connector test slack
 trebi connector connect slack
@@ -23,6 +26,10 @@ trebi connector restart slack
 trebi connector logs slack
 trebi connector remove slack
 ```
+
+`trebi connector set <name>` sends a `PATCH`: a flag replaces that part of the definition and the stored blocks stay. `trebi connector set slack --no-events` removes the events block. `trebi connector apply --file ./slack.yaml` writes a whole definition with `PUT`, for an import.
+
+A job or agent receives connector actions through `connectors:` (or the agent `kit: connectors`). A run with an MCP action needs a supported harness and runtime: claude, codex, and opencode on either runtime, and the ACP harnesses (copilot, cursor, gemini) on the CLI runtime. An unsupported pair fails the launch with `validation`.
 
 `connector logs` (and `--follow`) blocks — **local only**; remote: poll `connector.logs`. `connector remove` is destructive — ask first.
 

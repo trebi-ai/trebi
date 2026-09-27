@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"path"
-	"reflect"
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/job"
@@ -63,13 +62,6 @@ func slicesEqual(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-func kitEqual(a, b *job.KitYAML) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return reflect.DeepEqual(a, b)
 }
 
 func budgetEqual(a, b *job.BudgetYAML) bool {

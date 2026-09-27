@@ -320,7 +320,7 @@ func TestSendRecipientMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The allowlist rides the routing environment; only a wired ingress has it.
-	s.AttachIngress(NewIngress(s, connectors.New(st, nil, nil, nil),
+	s.AttachIngress(NewIngress(s, connectors.New(st, nil, nil),
 		&fakeActions{env: RouteEnv{Allowlist: []string{"Friend@Example.com"}}}, time.Minute, false))
 
 	// An operator passes; the mail carries the plain workspace address.
@@ -541,7 +541,7 @@ func TestDeliverHostedRoutesLikePoll(t *testing.T) {
 		{V: 1, ID: "h6", LocalPart: "nobody-t0k0n0", From: "ops@example.com", Dmarc: "pass"},
 	}
 	acts := &fakeActions{env: testRouteEnv()}
-	conn := connectors.New(st, nil, nil, nil)
+	conn := connectors.New(st, nil, nil)
 	s.AttachIngress(NewIngress(s, conn, acts, time.Minute, false))
 
 	for _, msg := range msgs {

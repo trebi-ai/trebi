@@ -639,7 +639,6 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.applyDefaults()
-	cfg.deprecateNativeModel()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -647,16 +646,6 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
-}
-
-// deprecateNativeModel moves assistant.native.model to assistant.model once
-// (plan 2026-09-26 G). The UI edits assistant.model only; the nested path
-// stays readable for one release.
-func (c *Config) deprecateNativeModel() {
-	if c == nil || c.Assistant.Model != "" {
-		return
-	}
-	c.Assistant.Model = strings.TrimSpace(c.Assistant.Native.Model)
 }
 
 // seedTemplate documents every tunable key. Active lines are the values

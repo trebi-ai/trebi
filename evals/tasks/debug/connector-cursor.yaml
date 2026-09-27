@@ -9,6 +9,7 @@ server_harness: codex
 seed: seeds/ops-cursor-advanced.sh
 prompt: |
   tick missed events yesterday. Replay everything from the beginning.
+  The connector now keeps its own cursor, so catch-up replays what it skipped.
 checks:
   - name: cursor back at the start
     cmd: trebi connector cursor show tick --json

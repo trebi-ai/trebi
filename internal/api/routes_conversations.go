@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/assistant"
+	"github.com/trebi-ai/trebi/internal/channels"
 	"github.com/trebi-ai/trebi/internal/conversations"
 )
 
@@ -28,6 +29,8 @@ func (s *Server) routeConversations(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/conversations/{id}/mode", s.handleConversationMode)
 	mux.HandleFunc("POST /v1/conversations/{id}/close", s.handleConversationClose)
 	mux.HandleFunc("POST /v1/conversations/{id}/revert", s.handleConversationRevert)
+	mux.HandleFunc("GET /v1/conversations/{id}/outbox", s.handleConversationOutbox)
+	mux.HandleFunc("POST /v1/conversations/{id}/outbox/{row}/retry", s.handleConversationOutboxRetry)
 	mux.HandleFunc("GET /v1/channel-pointers/{type}/{ref}", s.handlePointerGet)
 	mux.HandleFunc("PUT /v1/channel-pointers/{type}/{ref}", s.handlePointerPut)
 }
@@ -242,7 +245,12 @@ func (s *Server) handleConversationSend(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handlePointerGet(w http.ResponseWriter, r *http.Request) {
-	p, err := s.conv.GetPointer(r.Context(), r.PathValue("type"), r.PathValue("ref"))
+	workspace := r.URL.Query().Get("workspace")
+	if workspace == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "workspace is required")
+		return
+	}
+	p, err := s.conv.GetPointer(r.Context(), workspace, r.PathValue("type"), r.PathValue("ref"))
 	if s.convErr(w, err, "pointer not found") {
 		return
 	}
@@ -251,6 +259,7 @@ func (s *Server) handlePointerGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePointerPut(w http.ResponseWriter, r *http.Request) {
 	var body struct {
+		Workspace      string `json:"workspace"`
 		ConversationID string `json:"conversation_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
@@ -261,7 +270,7 @@ func (s *Server) handlePointerPut(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "conversation_id is required")
 		return
 	}
-	p, err := s.conv.PutPointer(r.Context(), r.PathValue("type"), r.PathValue("ref"), body.ConversationID)
+	p, err := s.conv.PutPointer(r.Context(), body.Workspace, r.PathValue("type"), r.PathValue("ref"), body.ConversationID)
 	if s.convErr(w, err, "conversation not found") {
 		return
 	}
@@ -285,4 +294,45 @@ func (s *Server) convErr(w http.ResponseWriter, err error, notFoundMsg string) b
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 	}
 	return true
+}
+
+// handleConversationOutbox lists the channel replies of one conversation.
+// This is a support read.
+func (s *Server) handleConversationOutbox(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "internal", "channels service is not available")
+		return
+	}
+	if _, err := s.conv.Get(r.Context(), r.PathValue("id")); s.convErr(w, err, "conversation not found") {
+		return
+	}
+	rows, err := s.channels.ListOutbox(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"outbox": rows})
+}
+
+// handleConversationOutboxRetry sets one failed reply of a conversation back
+// to pending.
+func (s *Server) handleConversationOutboxRetry(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "internal", "channels service is not available")
+		return
+	}
+	row, err := s.channels.RetryOutbox(r.Context(), r.PathValue("id"), r.PathValue("row"))
+	switch {
+	case err == nil:
+	case errors.Is(err, channels.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", "outbox row not found")
+		return
+	case errors.Is(err, channels.ErrNotFailed):
+		writeErr(w, http.StatusConflict, "conflict", "outbox row is not failed")
+		return
+	default:
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
 }

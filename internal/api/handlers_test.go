@@ -149,7 +149,7 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	// --- Connector cursor (DB write) ---
 	// create connector first
 	code, _ = do("POST", "/v1/connectors", map[string]any{
-		"name": "gap-src", "type": "stream", "command": "true", "format": "line",
+		"name": "gap-src", "events": map[string]any{"command": "true", "format": "line"},
 	})
 	if code != 201 {
 		t.Fatalf("connector create %d", code)

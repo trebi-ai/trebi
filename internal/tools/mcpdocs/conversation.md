@@ -68,10 +68,20 @@ Delete one conversation with its messages, events, and assistant session row; it
 - `id` (string, required): conversation id.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
+### outbox
+List the channel replies of one conversation. Each row carries `id`, `connector`, `status` (`pending`, `sent`, or `failed`), `attempts`, `error_message`, and `message_id`. This is a support read.
+- `id` (string, required): conversation id.
+
+### outbox_retry
+Set one failed channel reply of a conversation back to `pending` with `attempts = 0`, so the send worker retries it. The call returns `conflict` when the row did not fail.
+- `id` (string, required): conversation id.
+- `row` (string, required): outbox row id.
+
 ### pointer_show
 Read the conversation pointer of one channel.
 - `channel_type` (string, required): channel type.
 - `channel_ref` (string, required): channel reference.
+- `workspace` (string, required): workspace id. Pointers belong to a workspace.
 
 ### pointer_set
 Point one channel at a conversation.

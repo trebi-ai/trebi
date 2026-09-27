@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func TestConversationCRUDAndMessages(t *testing.T) {
 		t.Fatalf("channels %+v", c.Channels)
 	}
 
-	ptr, err := svc.GetPointer(ctx, "cli", "ws1")
+	ptr, err := svc.GetPointer(ctx, "ws1", "cli", "ws1")
 	if err != nil || ptr.ConversationID != c.ID {
 		t.Fatalf("pointer %+v %v", ptr, err)
 	}
@@ -154,21 +155,21 @@ func TestPointerSwitchAnd404(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.PutPointer(ctx, "cli", "ws", a.ID); err != nil {
+	if _, err := svc.PutPointer(ctx, "ws", "cli", "ws", a.ID); err != nil {
 		t.Fatal(err)
 	}
 	msgsA, _ := svc.ListMessages(ctx, a.ID, conversations.MessageListOpts{Limit: 10})
-	if _, err := svc.PutPointer(ctx, "cli", "ws", a.ID); err != nil {
+	if _, err := svc.PutPointer(ctx, "ws", "cli", "ws", a.ID); err != nil {
 		t.Fatal(err)
 	}
 	msgsA2, _ := svc.ListMessages(ctx, a.ID, conversations.MessageListOpts{Limit: 10})
 	if len(msgsA2) != len(msgsA) {
 		t.Fatalf("repeat PutPointer added recap rows: %d -> %d", len(msgsA), len(msgsA2))
 	}
-	if _, err := svc.PutPointer(ctx, "cli", "ws", b.ID); err != nil {
+	if _, err := svc.PutPointer(ctx, "ws", "cli", "ws", b.ID); err != nil {
 		t.Fatal(err)
 	}
-	ptr, err := svc.GetPointer(ctx, "cli", "ws")
+	ptr, err := svc.GetPointer(ctx, "ws", "cli", "ws")
 	if err != nil || ptr.ConversationID != b.ID {
 		t.Fatalf("%+v %v", ptr, err)
 	}
@@ -176,7 +177,7 @@ func TestPointerSwitchAnd404(t *testing.T) {
 	if len(msgs) == 0 || msgs[0].Role != conversations.RoleSystem {
 		t.Fatalf("recap row %v", msgs)
 	}
-	_, err = svc.GetPointer(ctx, "telegram", "missing")
+	_, err = svc.GetPointer(ctx, "ws", "telegram", "missing")
 	if !errors.Is(err, conversations.ErrNotFound) {
 		t.Fatalf("missing pointer %v", err)
 	}
@@ -198,7 +199,7 @@ func TestAskCreatesAndReusesTheChannelConversation(t *testing.T) {
 	if first.ConversationID == "" || first.Message.Text != "status?" {
 		t.Fatalf("%+v", first)
 	}
-	ptr, err := svc.GetPointer(ctx, "cli", "ws1")
+	ptr, err := svc.GetPointer(ctx, "ws1", "cli", "ws1")
 	if err != nil || ptr.ConversationID != first.ConversationID {
 		t.Fatalf("pointer %+v %v", ptr, err)
 	}
@@ -277,4 +278,96 @@ func (p stubPrompter) ask(ctx context.Context, convID string, in wire.PromptInpu
 func wireFromConv(m conversations.Message) wire.Message {
 	return wire.Message{ID: m.ID, ConversationID: m.ConversationID, Role: m.Role,
 		ChannelType: m.ChannelType, ChannelRef: m.ChannelRef, Text: m.Text, CreatedAt: m.CreatedAt}
+}
+
+// TestAutoTitleOnFirstUserMessage pins plan 2026-09-26 E: the title comes
+// from the first user row as soon as it exists, before any assistant row.
+func TestAutoTitleOnFirstUserMessage(t *testing.T) {
+	svc := testSvc(t)
+	ctx := context.Background()
+	c, err := svc.Create(ctx, conversations.CreateOpts{Workspace: "ws", OriginChannel: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// AppendUser titles the conversation with no assistant row present.
+	msg, _, err := svc.AppendUser(ctx, c.ID, conversations.UserTurn{Text: "How do I reset the daemon cache?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Role != conversations.RoleUser {
+		t.Fatalf("role = %v", msg.Role)
+	}
+	got, err := svc.Get(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "How do I reset the daemon cache?" {
+		t.Fatalf("title after AppendUser = %q", got.Title)
+	}
+
+	// A second user message does not change the title.
+	if _, _, err := svc.AppendUser(ctx, c.ID, conversations.UserTurn{Text: "Second question"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = svc.Get(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "How do I reset the daemon cache?" {
+		t.Fatalf("title moved on second message = %q", got.Title)
+	}
+
+	// A title the user set is never overwritten.
+	c2, err := svc.Create(ctx, conversations.CreateOpts{Workspace: "ws", OriginChannel: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := "Ops handover"
+	if _, err := svc.Patch(ctx, c2.ID, conversations.PatchOpts{Title: &named}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.AppendUser(ctx, c2.ID, conversations.UserTurn{Text: "Different question"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = svc.Get(ctx, c2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != named {
+		t.Fatalf("user title overwritten = %q", got.Title)
+	}
+
+	// A 70-rune first line truncates to 60 runes plus an ellipsis.
+	c3, err := svc.Create(ctx, conversations.CreateOpts{Workspace: "ws", OriginChannel: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("x", 70)
+	if _, _, err := svc.AppendUser(ctx, c3.ID, conversations.UserTurn{Text: long}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = svc.Get(ctx, c3.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != long[:60]+"\u2026" {
+		t.Fatalf("long title = %q (%d runes)", got.Title, len([]rune(got.Title)))
+	}
+
+	// A multi-line message titles from the first line only.
+	c4, err := svc.Create(ctx, conversations.CreateOpts{Workspace: "ws", OriginChannel: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.AppendUser(ctx, c4.ID, conversations.UserTurn{Text: "First line\n\nbody"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = svc.Get(ctx, c4.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "First line" {
+		t.Fatalf("multiline title = %q", got.Title)
+	}
 }

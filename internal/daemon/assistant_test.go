@@ -84,7 +84,7 @@ func TestTriggerItemPromptsAssistantSession(t *testing.T) {
 		if err == nil {
 			for _, row := range rows {
 				if row.ID == item.ID && row.Status == dispatch.QueueDone {
-					p, err := cp.Conversations.GetPointer(ctx, "test-conn", "k1")
+					p, err := cp.Conversations.GetPointer(ctx, ws.ID, "test-conn", "k1")
 					if err == nil {
 						convID = p.ConversationID
 					}

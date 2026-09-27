@@ -664,7 +664,7 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 		License: lic,
 	})
 	// Share control-plane services so API and workers see the same state.
-	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Conversations, cp.Harness, cp.Email, cp.License, cp.Cloud, cp.Webhooks)
+	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Skills, cp.Conversations, cp.Harness, cp.Email, cp.License, cp.Cloud, cp.Webhooks)
 	srv.BindAssistant(cp)
 	srv.Skills().WithUserHome(harness.UserHome())
 

@@ -23,8 +23,8 @@ func TestMigrateFreshSchema(t *testing.T) {
 	}
 	tables := []string{
 		"workspaces", "runs", "run_segments", "run_events", "event_log",
-		"event_queue", "events", "event_outcomes", "schedules", "dispatch_policy",
-		"connector_cursors", "connector_metrics", "inbox_items", "approvals",
+		"event_queue", "events", "event_outcomes", "schedules",
+		"connector_cursors", "inbox_items", "approvals",
 		"skill_index", "harness_state", "job_index", "conversations", "system_flags",
 	}
 	for _, tbl := range tables {

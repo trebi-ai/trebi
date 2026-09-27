@@ -120,6 +120,17 @@ func (n NativeConfig) Enabled() bool {
 	return err == nil
 }
 
+// NativeModel returns the model the native provider uses. The native block
+// carries its own model, so a harness switch that changes or blanks
+// assistant.model never touches a configured native setup. An empty
+// native.model falls back to assistant.model (plan 2026-09-26 G).
+func (a AssistantConfig) NativeModel() string {
+	if m := strings.TrimSpace(a.Native.Model); m != "" {
+		return m
+	}
+	return a.Model
+}
+
 // ResolveKey returns the API key and a source name that never includes the value.
 // Precedence: stored secret > api_key_env > well-known env for the format.
 func (n NativeConfig) ResolveKey() (key, source string, err error) {

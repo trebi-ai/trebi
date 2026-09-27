@@ -208,7 +208,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	}}); n != 1 {
 		t.Fatalf("pulled %d, want 1", n)
 	}
-	pointer, err := p.cp.Conversations.GetPointer(ctx, conversations.ChannelEmail, "<ask@x>")
+	pointer, err := p.cp.Conversations.GetPointer(ctx, p.wsID, conversations.ChannelEmail, "<ask@x>")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,4 +403,56 @@ func startMailPlane(t *testing.T) *mailPlane {
 func writeMailJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// TestAssistantTurnMailsReplyOnThread proves the phase-0 fix end to end:
+// a plain operator mail runs one assistant session turn, and the turn-end
+// hook mails the reply on the thread. The outbound envelope carries
+// run_id NULL (a session is not a run) and covered_turn, and it reaches
+// sent only after the transport accepted the mail.
+func TestAssistantTurnMailsReplyOnThread(t *testing.T) {
+	p := startMailPlane(t)
+	ctx := t.Context()
+	const u = "01ARZ3NDEKTSV4RRFFQ69G5FA9"
+	if n := p.poll(t, []email.IngressMessage{{
+		V: 1, Seq: 1, ID: u, LocalPart: p.local,
+		From: "ops@example.com", Dmarc: "pass", MessageID: "<plain@x>",
+		Subject: "hello", Text: "Say hi.",
+	}}); n != 1 {
+		t.Fatalf("pulled %d, want 1", n)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) && len(p.fw.sends) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(p.fw.sends) == 0 {
+		t.Fatal("assistant turn sent no reply mail")
+	}
+	var convID, disposition, runID string
+	var covered sql.NullInt64
+	if err := p.st.DB().QueryRowContext(ctx, `
+SELECT conversation_id, disposition, COALESCE(run_id,''), covered_turn
+FROM email_messages WHERE direction='out'`).Scan(&convID, &disposition, &runID, &covered); err != nil {
+		t.Fatal(err)
+	}
+	if disposition != "sent" {
+		t.Fatalf("disposition = %q, want sent", disposition)
+	}
+	if runID != "" {
+		t.Fatalf("run_id = %q, want empty for the assistant session", runID)
+	}
+	if !covered.Valid {
+		t.Fatal("covered_turn must be set once the reply is sent")
+	}
+	last := p.fw.sends[len(p.fw.sends)-1]
+	if last.To[0] != "ops@example.com" || !strings.Contains(last.Text, "--\ntrebi conversation "+convID) {
+		t.Fatalf("reply mail = %+v", last)
+	}
+	// The mail went out once; a repeat of the hook covers the same turn.
+	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.fw.sends) != 1 {
+		t.Fatalf("assistant reply sent %d times; want 1", len(p.fw.sends))
+	}
 }

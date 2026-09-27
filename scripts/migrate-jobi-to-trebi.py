@@ -23,10 +23,14 @@ path). Incremental --job/--agent --apply copies into the target and leaves
 in place (cutover). rewrite-jobs converts jobi MEMORY.md (extra ## headings)
 to trebi v1; convert-memory does only that.
 
-Schema v16 (store.SchemaVersion): runs gained inputs_json/memory_hash/outcome*/
-runtime_pid/attach_kind, and event_queue/events use connector, not integration.
-This script writes the columns that have a jobi source; the rest stay NULL and
-trebi's readers treat them as unset.
+Schema v25 (store.SchemaVersion): runs gained inputs_json/memory_hash/outcome*/
+runtime_pid/attach_kind/actor_token_hash, and event_queue/events use connector,
+not integration. This script writes the columns that have a jobi source; the
+rest keep their defaults and trebi's readers treat them as unset.
+
+A jobi workspace with AGENT.md at its root is one agent. --agent <name> maps
+it onto agents/<name>/. --agent --apply also copies that agent's run fail
+notes and harness session files (merge, never a replace).
 
 --jobi-dir, --trebi-dir, --job and --target-workspace are accepted on either
 side of the subcommand. make-fixture takes only its output directory.
@@ -87,8 +91,9 @@ LAYER_MAP = {"agent": "session", "task": "run"}
 SECRET_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|AUTH)", re.I)
 # store.SchemaVersion at the time this script was last synced. A trebi.db older
 # than this is a pre-migration database: bump it with `trebi service migrate-db`
-# before applying DB phases (the script writes v16 columns).
-EXPECTED_SCHEMA = 16
+# before applying DB phases. v17-v25 add only tables and defaulted columns the
+# script does not write.
+EXPECTED_SCHEMA = 25
 
 
 def default_jobi_dir() -> Path:
@@ -802,34 +807,45 @@ def command_to_string(cmd: Any) -> str:
     return str(cmd)
 
 
-def convert_source_entry(src: dict[str, Any]) -> dict[str, Any]:
+def convert_source_entry(name: str, src: dict[str, Any]) -> dict[str, Any]:
+    """One jobi source becomes one trebi connector definition.
+
+    A jobi source maps directly: command -> events.command, format -> events.format,
+    restart -> events.restart, cursor.id -> events.id, cursor.ts -> events.ts,
+    catchup -> events.catchup.
+    """
     out: dict[str, Any] = {}
-    if src.get("name"):
-        out["name"] = src["name"]
-    out["type"] = src.get("type") or "stream"
-    out["command"] = command_to_string(src.get("command"))
-    if src.get("format"):
-        out["format"] = src["format"]
     if src.get("cwd"):
         out["cwd"] = src["cwd"]
     if src.get("env"):
         out["env"] = src["env"]
-    if src.get("facets"):
-        out["facets"] = src["facets"]
-    # Preserve jobi-only fields so they are not silently dropped from disk.
-    # Current trebi Definition ignores them on load.
-    for k in ("cursor", "catchup", "restart"):
-        if k not in src:
-            continue
-        val = src[k]
-        if k == "catchup" and isinstance(val, dict) and "command" in val:
-            val = dict(val)
-            val["command"] = command_to_string(val.get("command"))
-        out[k] = val
+    command = command_to_string(src.get("command"))
+    if command:
+        events: dict[str, Any] = {"command": command}
+        if src.get("format"):
+            events["format"] = src["format"]
+        if src.get("restart"):
+            events["restart"] = src["restart"]
+        cur = src.get("cursor")
+        if isinstance(cur, dict):
+            if cur.get("id"):
+                events["id"] = cur["id"]
+            if cur.get("ts"):
+                events["ts"] = cur["ts"]
+        cap = src.get("catchup")
+        if isinstance(cap, dict) and cap.get("command"):
+            cu: dict[str, Any] = {"command": command_to_string(cap.get("command"))}
+            if cap.get("max_events"):
+                cu["max_events"] = cap["max_events"]
+            if cap.get("timeout"):
+                cu["timeout"] = cap["timeout"]
+            events["catchup"] = cu
+        out["events"] = events
     return out
 
 
 def convert_sources_yaml(raw_text: str) -> tuple[Any, list[str]]:
+    """Convert jobi sources.yaml into the trebi connectors.yaml map form."""
     notes: list[str] = []
     data = yaml.load(raw_text) or {}
     entries: list[Any] = []
@@ -841,22 +857,28 @@ def convert_sources_yaml(raw_text: str) -> tuple[Any, list[str]]:
             entries = [{"name": k, **(v if isinstance(v, dict) else {"command": v})} for k, v in src.items()]
     elif isinstance(data, list):
         entries = data
-    converted: list[dict[str, Any]] = []
+    converted: dict[str, Any] = {}
+    dropped_facets = 0
     for item in entries:
         if not isinstance(item, dict):
             notes.append(f"skipped non-object source: {item!r}")
             continue
-        conv = convert_source_entry(item)
-        if not conv.get("command"):
-            notes.append(f"source {conv.get('name', '?')}: empty command after conversion")
-        if "catchup" in conv or "cursor" in conv:
-            notes.append(
-                f"source {conv.get('name', '?')}: cursor/catchup preserved in YAML; "
-                "trebi Definition does not load them yet"
-            )
-        converted.append(conv)
+        name = str(item.get("name") or "").strip()
+        if not name:
+            notes.append("skipped a source with no name")
+            continue
+        if item.get("type") or item.get("facets"):
+            dropped_facets += 1
+        conv = convert_source_entry(name, item)
+        if "events" not in conv:
+            notes.append(f"source {name}: empty command after conversion; kept as a bare definition")
+        converted[name] = conv
+    if dropped_facets:
+        notes.append(
+            f"{dropped_facets} source(s): jobi type/facets dropped; trebi derives capabilities from the blocks"
+        )
     notes.append(f"connectors: {len(converted)} (command lists joined for sh -c)")
-    return {"connectors": converted}, notes
+    return converted, notes
 
 
 def envsets_secret_key_names(jobi_dir: Path) -> list[str]:
@@ -1144,6 +1166,9 @@ def agent_spec_matches(path: Path, spec: str, source_ws: Path | None) -> bool:
             parts = path.parts
     else:
         parts = path.parts
+    # A jobi workspace can itself be the agent (AGENT.md at its root).
+    if source_ws and parts[:1] != ("agents",) and (source_ws / "AGENT.md").is_file():
+        parts = ("agents", source_ws.name, *parts)
     if len(parts) < 2 or parts[0] != "agents":
         return False
     if spec.lower() in (parts[1].lower(), parts[-2].lower(), job_file_name(path).lower()):
@@ -1533,9 +1558,13 @@ def plan_migrate(
         finally:
             conn.close()
 
-    if job:
+    if job or agent_scope:
         plan.phases.append(
-            PhasePlan("files", "skipped for --job (harness/bin/logs are global)")
+            PhasePlan(
+                "files",
+                "scoped: copy only these runs' fail notes and harness session files "
+                "(bin/config/connector logs are global and stay)",
+            )
         )
     else:
         for name, src_rel, dst_rel in (
@@ -2092,6 +2121,56 @@ def copy_logs(jobi: Path, trebi: Path) -> None:
         shutil.copy2(tray, imported / "tray.log")
 
 
+def copy_scoped_run_files(
+    jobi: Path, trebi: Path, jconn: sqlite3.Connection, run_ids: set[str]
+) -> tuple[int, int]:
+    """The run files of a --job/--agent import: logs/tasks/<id>.* fail notes,
+    and every harness entry (file or folder) named after one of their session
+    ids. Relative paths are kept; an existing destination is never replaced,
+    so the live trebi harness homes stay intact."""
+    notes = 0
+    tasks = jobi / "logs" / "tasks"
+    if tasks.is_dir():
+        dst = trebi / "logs" / "runs"
+        dst.mkdir(parents=True, exist_ok=True)
+        for f in tasks.iterdir():
+            if f.is_file() and f.name.split(".", 1)[0] in run_ids and not (dst / f.name).exists():
+                shutil.copy2(f, dst / f.name)
+                notes += 1
+    sids: set[str] = set()
+    for chunk in [sorted(run_ids)[i : i + 500] for i in range(0, len(run_ids), 500)]:
+        q = f"SELECT session_id FROM tasks WHERE id IN ({','.join('?' * len(chunk))})"
+        sids.update(r[0] for r in jconn.execute(q, chunk) if r[0])
+    sessions = 0
+    src_root = jobi / "harness"
+    if not sids or not src_root.is_dir():
+        return notes, sessions
+    for root, dirs, files in os.walk(src_root):
+        rel = Path(root).relative_to(src_root)
+        for d in list(dirs):
+            if d.split(".", 1)[0] in sids:
+                dirs.remove(d)
+                shutil.copytree(
+                    Path(root) / d, trebi / "harness" / rel / d,
+                    symlinks=True, dirs_exist_ok=True, copy_function=_copy_new,
+                )
+                sessions += 1
+        for f in files:
+            if f.split(".", 1)[0] in sids:
+                dst = trebi / "harness" / rel / f
+                if not dst.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(Path(root) / f, dst, follow_symlinks=False)
+                sessions += 1
+    return notes, sessions
+
+
+def _copy_new(src: str, dst: str) -> str:
+    if os.path.lexists(dst):
+        return dst
+    return shutil.copy2(src, dst, follow_symlinks=False)
+
+
 def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> int:
     trebi.mkdir(parents=True, exist_ok=True)
     if refuse_if_daemon_running(trebi, "migrate --apply"):
@@ -2157,6 +2236,9 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
         print(f"inserted runs: {n}")
         apply_timeline(jconn, tconn, ids if (job_filter or plan.agent_scope) else None)
         print("timeline segments+events copied")
+        if job_filter or plan.agent_scope:
+            notes, sessions = copy_scoped_run_files(jobi, trebi, jconn, ids)
+            print(f"run files copied: {notes} fail notes, {sessions} harness session entries")
         n = apply_queue(
             jconn,
             tconn,
@@ -2304,8 +2386,8 @@ def operator_dest(target: TargetWorkspace | None, fallback: Path, agent: str | N
     """Where the jobi AGENT.md lands.
 
     Agent mode keeps it as AGENT.md at agents/<name>/ (the shipped layout;
-    a nested operator). Without --agent it becomes the workspace assistant's
-    TREBI.md at the root, which was the pre-agents behaviour — unless the
+    a nested operator). Without --agent it falls back to TREBI.md at the root,
+    which trebi no longer reads (v24); plan_rewrite warns about it — unless the
     computed destination is already agents/<name>/, which a plain copy of an
     agent tree produces.
     """
@@ -2543,6 +2625,11 @@ def plan_rewrite(
                     agent_name=agent,
                 )
                 report.extend(merge_report)
+                if op_dest.name == "TREBI.md":
+                    report.append(
+                        "TREBI.md is not read since schema v24; pass --agent <name> "
+                        "or move the body to Settings -> Assistant -> Context"
+                    )
                 same = _dest_has_same_text(op_dest, merged)
                 details.append(
                     {

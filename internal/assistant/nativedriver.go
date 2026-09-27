@@ -17,6 +17,17 @@ import (
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
+// NewNativeModel builds the provider model for the API format (plan
+// 2026-09-26 B). The driver and the settings probe share it.
+func NewNativeModel(c agentwire.Credentials, model string) (native.Model, error) {
+	switch c.Format {
+	case "anthropic":
+		return anthropic.New(c, model)
+	default:
+		return openai.New(c, model)
+	}
+}
+
 // RegisterNativeDriver builds the agent-wire native driver and registers it
 // on the runtime (plan 2026-09-26 I). The provider follows the API format
 // in the live config, so a save lands without a restart. The trebi tool
@@ -31,14 +42,7 @@ func RegisterNativeDriver(rt *agentwire.Runtime, cfgFn func() config.NativeConfi
 	cfg := cfgFn()
 	daily := cfg.Limits.DailyTokens
 	drvCfg := native.Config{
-		NewModel: func(c agentwire.Credentials, model string) (native.Model, error) {
-			switch c.Format {
-			case "anthropic":
-				return anthropic.New(c, model)
-			default:
-				return openai.New(c, model)
-			}
-		},
+		NewModel: NewNativeModel,
 		Credentials: func() (agentwire.Credentials, error) {
 			n := cfgFn()
 			key, _, err := n.ResolveKey()

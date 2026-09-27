@@ -11,28 +11,54 @@ List connectors. Includes managed rows from `connectors.yaml` and read-only
 **inherited** MCP servers discovered from user harness config. Inherited rows
 carry `provenance: inherited`, `managed: false`, `origins[]` (tool, path, key),
 and `injected` (whether a trebi session of that harness will load them).
+A running row carries `status`, `pid`, `restarts`, and `last_error` from its
+supervisor. A row whose definition has no `events` block has no supervisor and
+no status.
 - `limit` (number, optional): page size.
+- `capability` (string, optional): keep rows with `actions`, `events`, or `channel`.
+- `provenance` (string, optional): keep rows with `native`, `managed`, or `inherited`.
 
 ### show
 Read one connector by name or `id`. Duplicate names return `ambiguous`; use `id`.
 - `name` (string, required): connector name or id.
 
 ### create
-Create one connector from a definition object.
-- `definition` (object, required): connector fields, for example `{"name": "mail", "command": "fetch-mail.sh"}`.
+Create one connector from a definition object. Each block is optional; a
+connector with none is a bare definition.
+- `definition` (object, required): a definition such as
+  `{"name": "mail", "events": {"command": "fetch-mail.sh", "format": "line"}}`.
+  Blocks: `events` (`command` required; `format`, `restart`, `poll_ms`, `id`,
+  `ts`, `identity`, `catchup{command,max_events,timeout_ms}`), `actions`
+  (`mcp{command,args,env,url,headers}` and/or `cli{commands,skill}`), `channel`
+  (`ref`, `send` required; `typing`, `typing_interval_ms`, `typing_max_ms`, `ack`),
+  plus `env` and `cwd`.
 
-Mutations (`create`, `set`, `delete`, `connect`, `disconnect`, `restart`, `test`,
-`cursor_set`) on an inherited row return `conflict`.
+Mutations (`create`, `replace`, `set`, `delete`, `connect`, `disconnect`,
+`restart`, `test`, `cursor_set`) on an inherited row return `conflict`.
+
+### replace
+Replace the whole definition of one connector (`PUT`). Use it for an import:
+the body is the new definition, and anything absent is gone.
+- `name` (string, required): connector name.
+- `definition` (object, required): the complete definition, as in `create`
+  without `name`.
 
 ### set
-Create or update one connector from flat fields.
+Update one connector (`PATCH`). Each key given replaces that part of the
+definition; keys left out stay. `env` merges into the stored map. Send `null`
+for `actions`, `events`, or `channel` to remove that block. A rename is not
+possible; use `create` and `delete`.
 - `name` (string, required): connector name.
-- `command` (string, optional): command that emits events.
-- `format` (string, optional): event format.
-- `type` (string, optional): connector type.
 - `cwd` (string, optional): working directory.
-- `env` (object, optional): string-to-string environment map.
-- `facets` (array, optional): facet names this connector serves.
+- `env` (object, optional): string-to-string environment map; merges.
+- `events` (object, optional): whole events block, same shape as in `create`
+  (`{"command": "fetch-mail.sh", "poll_ms": 900000}`), or `null` to remove it.
+- `actions` (object, optional): whole actions block
+  (`{"mcp": {"command": "npx", "args": ["-y", "server"]}}`), or `null`.
+- `channel` (object, optional): whole channel block
+  (`{"ref": "chat-1", "send": "..." }`), or `null`.
+A connector with an `events` block runs a supervisor; changing `events` while it
+runs restarts it, and changing only `actions` does not.
 
 ### delete
 Remove one connector and stop its event stream. Destructive.

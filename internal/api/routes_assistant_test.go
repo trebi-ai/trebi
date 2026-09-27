@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/assistant"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
@@ -456,11 +458,11 @@ func TestAssistantNativeProviderRoundTrip(t *testing.T) {
 		"harness": "native",
 		"model":   "claude-sonnet-5",
 		"native": map[string]any{
-			"api_format": "anthropic",
-			"base_url":   "http://127.0.0.1:9",
-			"api_key":    "sk-live-123",
+			"api_format":  "anthropic",
+			"base_url":    "http://127.0.0.1:9",
+			"api_key":     "sk-live-123",
 			"api_key_env": "TREBI_TEST_NATIVE_KEY",
-			"max_tokens": 2048,
+			"max_tokens":  2048,
 		},
 	})
 	if code != 200 {
@@ -500,6 +502,229 @@ func TestAssistantNativeProviderRoundTrip(t *testing.T) {
 	if status != "ready" {
 		t.Fatalf("native status = %q, want ready", status)
 	}
+}
+
+// TestAssistantNativeModelSurvivesHarnessSwitch pins the 2026-09-26
+// annotation: the model lives in the native block, so a save under another
+// harness with a blanked model keeps native configured and ready.
+func TestAssistantNativeModelSurvivesHarnessSwitch(t *testing.T) {
+	t.Setenv("TREBI_TEST_NATIVE_KEY", "sk-live-123")
+	_, base := startTestServer(t)
+
+	put := func(harness, model string) {
+		code, body, _ := doJSON(t, "PUT", base+"/v1/assistant", map[string]any{
+			"harness": harness,
+			"model":   model,
+			"native": map[string]any{
+				"model":       "claude-sonnet-5",
+				"api_format":  "anthropic",
+				"base_url":    "http://127.0.0.1:9",
+				"api_key":     "sk-live-123",
+				"api_key_env": "TREBI_TEST_NATIVE_KEY",
+				"max_tokens":  100,
+			},
+		})
+		if code != 200 {
+			t.Fatalf("put %s %d %v", harness, code, body)
+		}
+	}
+	put("native", "claude-sonnet-5")
+
+	// The user switches to a CLI harness and blanks the shared model.
+	put("claude", "")
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/assistant", nil)
+	if code != 200 {
+		t.Fatalf("get defaults %d %v", code, body)
+	}
+	native, _ := settings2(t, body)["native"].(map[string]any)
+	if native["model"] != "claude-sonnet-5" {
+		t.Fatalf("native model = %v, want it kept", native["model"])
+	}
+	harnesses, _ := body["harnesses"].([]any)
+	status := ""
+	for _, h := range harnesses {
+		m := h.(map[string]any)
+		if m["name"] == "native" {
+			status = fmt.Sprint(m["status"])
+		}
+	}
+	if status != "ready" {
+		t.Fatalf("native status = %q, want ready", status)
+	}
+
+	// An empty native model falls back to assistant.model: clearing the
+	// block's model keeps native usable while the shared model is set.
+	code, _, _ = doJSON(t, "PUT", base+"/v1/assistant", map[string]any{
+		"harness": "claude",
+		"model":   "claude-3-5",
+		"native": map[string]any{
+			"model":      "",
+			"api_format": "anthropic",
+		},
+	})
+	if code != 200 {
+		t.Fatalf("put fallback %d", code)
+	}
+	_, body, _ = doJSON(t, "GET", base+"/v1/assistant", nil)
+	harnesses, _ = body["harnesses"].([]any)
+	for _, h := range harnesses {
+		m := h.(map[string]any)
+		if m["name"] == "native" {
+			status = fmt.Sprint(m["status"])
+		}
+	}
+	if status != "ready" {
+		t.Fatalf("native status = %q with inherited model, want ready", status)
+	}
+}
+
+// TestAssistantDefaultsPutKeepsAPIKeyEnv pins plan 2026-09-26 A: the PUT no
+// longer writes api_key_env, so a UI save never clears the YAML value.
+func TestAssistantDefaultsPutKeepsAPIKeyEnv(t *testing.T) {
+	_, base := startTestServer(t)
+	cfgYAML := "assistant:\n  native:\n    api_key_env: MY_KEY\n"
+	if err := os.WriteFile(config.ConfigPath(), []byte(cfgYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A PUT without the field keeps the config value.
+	code, body, _ := doJSON(t, "PUT", base+"/v1/assistant", map[string]any{
+		"harness": "native",
+		"model":   "claude-sonnet-5",
+		"native":  map[string]any{"api_format": "anthropic"},
+	})
+	if code != 200 {
+		t.Fatalf("put defaults %d %v", code, body)
+	}
+	if env := nativeOfSettings(t, body)["api_key_env"]; env != "MY_KEY" {
+		t.Fatalf("api_key_env cleared by PUT: %v", env)
+	}
+
+	// A PUT that sends the field does not change the value either.
+	code, body, _ = doJSON(t, "PUT", base+"/v1/assistant", map[string]any{
+		"harness": "native",
+		"model":   "claude-sonnet-5",
+		"native":  map[string]any{"api_format": "anthropic", "api_key_env": "OTHER"},
+	})
+	if code != 200 {
+		t.Fatalf("second put %d %v", code, body)
+	}
+	if env := nativeOfSettings(t, body)["api_key_env"]; env != "MY_KEY" {
+		t.Fatalf("api_key_env changed by PUT: %v", env)
+	}
+}
+
+// nativeOfSettings digs the native block out of a defaults response.
+func nativeOfSettings(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+	settings, _ := body["settings"].(map[string]any)
+	native, _ := settings["native"].(map[string]any)
+	if native == nil {
+		t.Fatalf("no native block in %v", body)
+	}
+	return native
+}
+
+// sseTestServer serves one OpenAI SSE body for the native test route.
+func sseTestServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestAssistantNativeTestRoute pins plan 2026-09-26 B: the probe answers
+// 200 with the result, 400 for a bad api_format, 403 for a session token,
+// and the typed key never appears in the response.
+func TestAssistantNativeTestRoute(t *testing.T) {
+	s, base := startTestServer(t)
+	srv := sseTestServer(t, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"+
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"+
+		"data: [DONE]\n\n")
+
+	const typedKey = "sk-typed-secret-9"
+	payload := func(native map[string]any) map[string]any {
+		return map[string]any{"model": "test-model", "native": native}
+	}
+	nativeBlock := func(extra map[string]any) map[string]any {
+		block := map[string]any{"api_format": "openai", "base_url": srv.URL, "api_key": typedKey}
+		for k, v := range extra {
+			block[k] = v
+		}
+		return block
+	}
+
+	// A valid request runs one call and reports the typed key source.
+	req, _ := http.NewRequest("POST", base+"/v1/assistant/native/test",
+		bytes.NewBufferString(mustJSONAny(payload(nativeBlock(nil)))))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("test route %d %s", resp.StatusCode, raw)
+	}
+	if bytes.Contains(raw, []byte(typedKey)) {
+		t.Fatal("response leaks the typed key")
+	}
+	var res struct {
+		OK        bool   `json:"ok"`
+		Model     string `json:"model"`
+		Reply     string `json:"reply"`
+		KeySource string `json:"key_source"`
+		Code      string `json:"code"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK || res.Model != "test-model" || res.Reply != "ok" || res.KeySource != "typed" || res.Code != "" {
+		t.Fatalf("result = %+v", res)
+	}
+
+	// A bad api_format is a 400, like the PUT.
+	code, body, _ := doJSON(t, "POST", base+"/v1/assistant/native/test",
+		payload(nativeBlock(map[string]any{"api_format": "x", "base_url": ""})))
+	if code != 400 || !strings.Contains(fmt.Sprint(body["error"]), "api_format") {
+		t.Fatalf("bad format %d %v", code, body)
+	}
+
+	// A session token is forbidden, like the PUT.
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, wsDir, "probe-ws")
+	code, conv, _ := doJSON(t, "POST", base+"/v1/conversations", map[string]any{
+		"workspace": wsID, "origin_channel": "cli", "harness": "fake",
+	})
+	if code != 201 {
+		t.Fatalf("create %d %v", code, conv)
+	}
+	id, _ := conv["id"].(string)
+	token, hash, err := assistant.MintSessionToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AssistantStore().Update(context.Background(), id, func(r *assistant.Record) {
+		r.ActorTokenHash = hash
+		r.Status = assistant.StatusRunning
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, _, _ = doJSONHeader(t, "POST", base+"/v1/assistant/native/test",
+		payload(nativeBlock(nil)), token)
+	if code != 403 {
+		t.Fatalf("session token %d", code)
+	}
+}
+
+func mustJSONAny(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 // TestWorkspaceAssistantPutRejectsNative pins the Defaults-only rule.

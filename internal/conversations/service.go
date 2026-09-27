@@ -331,7 +331,7 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Conversation, e
 		if opts.Activate == nil {
 			return nil
 		}
-		return writePointer(tx, opts.Activate.ChannelType, opts.Activate.ChannelRef, id, nowStr)
+		return writePointer(tx, opts.Workspace, opts.Activate.ChannelType, opts.Activate.ChannelRef, id, nowStr)
 	}, store.BusEvent{
 		Topic: "conversation.created", Entity: "conversation", EntityID: id, Action: "created", Revision: 1,
 	})
@@ -383,14 +383,14 @@ func (s *Service) Patch(ctx context.Context, id string, opts PatchOpts) (*Conver
 	return cur, nil
 }
 
-// GetPointer resolves a channel's active conversation.
-func (s *Service) GetPointer(ctx context.Context, channelType, channelRef string) (*Pointer, error) {
+// GetPointer resolves a channel's active conversation in one workspace.
+func (s *Service) GetPointer(ctx context.Context, workspace, channelType, channelRef string) (*Pointer, error) {
 	var p Pointer
 	var updated string
 	err := s.st.DB().QueryRowContext(ctx, `
 		SELECT channel_type, channel_ref, conversation_id, updated_at
-		FROM channel_pointers WHERE channel_type=? AND channel_ref=?`,
-		channelType, channelRef).Scan(&p.ChannelType, &p.ChannelRef, &p.ConversationID, &updated)
+		FROM channel_pointers WHERE workspace_id=? AND channel_type=? AND channel_ref=?`,
+		workspace, channelType, channelRef).Scan(&p.ChannelType, &p.ChannelRef, &p.ConversationID, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -402,16 +402,20 @@ func (s *Service) GetPointer(ctx context.Context, channelType, channelRef string
 }
 
 // PutPointer is the /switch primitive: point a channel at a conversation.
-func (s *Service) PutPointer(ctx context.Context, channelType, channelRef, convID string) (*Pointer, error) {
+// An empty workspace takes the conversation's workspace.
+func (s *Service) PutPointer(ctx context.Context, workspace, channelType, channelRef, convID string) (*Pointer, error) {
 	if channelType == "" || channelRef == "" {
 		return nil, fmt.Errorf("%w: channel_type and channel_ref are required", ErrValidation)
-	}
-	if cur, err := s.GetPointer(ctx, channelType, channelRef); err == nil && cur.ConversationID == convID {
-		return cur, nil
 	}
 	conv, err := s.Get(ctx, convID)
 	if err != nil {
 		return nil, err
+	}
+	if workspace == "" {
+		workspace = conv.Workspace
+	}
+	if cur, err := s.GetPointer(ctx, workspace, channelType, channelRef); err == nil && cur.ConversationID == convID {
+		return cur, nil
 	}
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339Nano)
@@ -421,7 +425,7 @@ func (s *Service) PutPointer(ctx context.Context, channelType, channelRef, convI
 	}
 	msgID := ulid.Make().String()
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		if err := writePointer(tx, channelType, channelRef, convID, nowStr); err != nil {
+		if err := writePointer(tx, workspace, channelType, channelRef, convID, nowStr); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`INSERT INTO conversation_messages
@@ -531,15 +535,15 @@ func (s *Service) listChannels(ctx context.Context, convID string) ([]Conversati
 	return out, rows.Err()
 }
 
-func writePointer(tx *sql.Tx, channelType, channelRef, convID, nowStr string) error {
+func writePointer(tx *sql.Tx, workspace, channelType, channelRef, convID, nowStr string) error {
 	if channelType == "" || channelRef == "" {
 		return fmt.Errorf("%w: activate requires channel_type and channel_ref", ErrValidation)
 	}
-	_, err := tx.Exec(`INSERT INTO channel_pointers (channel_type, channel_ref, conversation_id, updated_at)
-		VALUES (?,?,?,?)
-		ON CONFLICT(channel_type, channel_ref) DO UPDATE SET
+	_, err := tx.Exec(`INSERT INTO channel_pointers (workspace_id, channel_type, channel_ref, conversation_id, updated_at)
+		VALUES (?,?,?,?,?)
+		ON CONFLICT(workspace_id, channel_type, channel_ref) DO UPDATE SET
 			conversation_id=excluded.conversation_id, updated_at=excluded.updated_at`,
-		channelType, channelRef, convID, nowStr)
+		workspace, channelType, channelRef, convID, nowStr)
 	if err != nil {
 		return err
 	}

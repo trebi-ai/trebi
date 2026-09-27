@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
+	"gopkg.in/yaml.v3"
 )
 
 func connectorCommand() *cli.Command {
@@ -21,6 +24,8 @@ func connectorCommand() *cli.Command {
 				Usage: "list connectors",
 				Flags: []cli.Flag{
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
+					&cli.StringFlag{Name: "capability", Usage: "filter: actions|events|channel"},
+					&cli.StringFlag{Name: "provenance", Usage: "filter: native|managed|inherited"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runConnectorList,
@@ -33,16 +38,46 @@ func connectorCommand() *cli.Command {
 			},
 			{
 				Name:      "set",
-				Usage:     "create or update a connector",
-				ArgsUsage: "<name> <command...>",
+				Usage:     "create or update a connector (PATCH; flags overlay the stored definition)",
+				ArgsUsage: "<name>",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "format", Aliases: []string{"f"}, Usage: "json|line (default line)"},
-					&cli.StringFlag{Name: "type", Usage: "stream|cli|mcp (default stream)"},
 					&cli.StringFlag{Name: "cwd", Usage: "working directory"},
-					&cli.StringSliceFlag{Name: "env", Aliases: []string{"e"}, Usage: "KEY=VALUE (repeatable)"},
-					&cli.StringSliceFlag{Name: "facet", Usage: "facet name (repeatable)"},
+					&cli.StringSliceFlag{Name: "env", Aliases: []string{"e"}, Usage: "KEY=VALUE (repeatable; merges into the stored env)"},
+					&cli.BoolFlag{Name: "no-events", Usage: "remove the events block"},
+					&cli.StringFlag{Name: "events-command", Usage: "events.command; implies the events block"},
+					&cli.StringFlag{Name: "format", Usage: "events.format: line|json (default line)"},
+					&cli.StringFlag{Name: "restart", Usage: "events.restart: always|on-failure|never"},
+					&cli.DurationFlag{Name: "poll", Usage: "events.poll: poll interval such as 15m; 0 runs live"},
+					&cli.StringFlag{Name: "id", Usage: "events.id: dot path to the source event id"},
+					&cli.StringFlag{Name: "ts", Usage: "events.ts: dot path used to sort catch-up output"},
+					&cli.StringFlag{Name: "identity", Usage: "events.identity: dot path to the sender"},
+					&cli.StringFlag{Name: "catchup-command", Usage: "events.catchup.command"},
+					&cli.IntFlag{Name: "catchup-max", Usage: "events.catchup.max_events"},
+					&cli.DurationFlag{Name: "catchup-timeout", Usage: "events.catchup.timeout, e.g. 60s"},
+					&cli.BoolFlag{Name: "no-actions", Usage: "remove the actions block"},
+					&cli.StringFlag{Name: "mcp-command", Usage: "actions.mcp.command; implies the actions block"},
+					&cli.StringSliceFlag{Name: "mcp-arg", Usage: "actions.mcp.args (repeatable)"},
+					&cli.StringSliceFlag{Name: "mcp-env", Usage: "actions.mcp.env KEY=VALUE (repeatable)"},
+					&cli.StringFlag{Name: "mcp-url", Usage: "actions.mcp.url"},
+					&cli.StringSliceFlag{Name: "mcp-header", Usage: "actions.mcp.headers KEY=VALUE (repeatable)"},
+					&cli.StringSliceFlag{Name: "cli-command", Usage: "actions.cli.commands (repeatable)"},
+					&cli.StringFlag{Name: "skill", Usage: "actions.cli.skill"},
+					&cli.BoolFlag{Name: "no-channel", Usage: "remove the channel block"},
+					&cli.StringFlag{Name: "channel-ref", Usage: "channel.ref"},
+					&cli.StringFlag{Name: "send", Usage: "channel.send template"},
+					&cli.StringFlag{Name: "typing", Usage: "channel.typing template"},
+					&cli.StringFlag{Name: "ack", Usage: "channel.ack template"},
 				},
 				Action: runConnectorSet,
+			},
+			{
+				Name:      "apply",
+				Usage:     "write one connector definition from a YAML or JSON file (PUT)",
+				ArgsUsage: "--file <path>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "definition file"},
+				},
+				Action: runConnectorApply,
 			},
 			{
 				Name:      "delete",
@@ -63,12 +98,6 @@ func connectorCommand() *cli.Command {
 				Usage:     "halt the listening process (alias: stop)",
 				ArgsUsage: "<name>",
 				Action:    runConnectorDisconnect,
-			},
-			{
-				Name:      "stop",
-				Usage:     "stop a running connector (alias of disconnect)",
-				ArgsUsage: "<name>",
-				Action:    runConnectorStop,
 			},
 			{
 				Name:      "restart",
@@ -215,8 +244,9 @@ func runConnectorList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	path := request.BuildConnectorsListPath(c.Int("limit"), c.String("capability"), c.String("provenance"))
 	var body map[string]any
-	if err := client.GetJSON(request.BuildConnectorsListPath(c.Int("limit")), &body); err != nil {
+	if err := client.GetJSON(path, &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -224,7 +254,7 @@ func runConnectorList(_ context.Context, c *cli.Command) error {
 	}
 	w := outWriter(c)
 	if list, ok := body["connectors"].([]any); ok {
-		tbl := newTable(w, []string{"Name", "Type", "Provenance", "Status", "Command"})
+		tbl := newTable(w, []string{"Name", "Capabilities", "Provenance", "Status", "Detail"})
 		for _, raw := range list {
 			m, ok := raw.(map[string]any)
 			if !ok {
@@ -233,10 +263,10 @@ func runConnectorList(_ context.Context, c *cli.Command) error {
 			}
 			tbl.AppendRow(table.Row{
 				mapStr(m, "name", "Name", "id"),
-				dash(mapStr(m, "type", "Type")),
+				dash(connectorCapabilities(m)),
 				dash(mapStr(m, "provenance", "Provenance")),
-				colorStatus(w, mapStr(m, "status", "Status")),
-				dash(mapStr(m, "command", "Command", "cmd")),
+				colorStatus(w, connectorStatus(m)),
+				dash(connectorDetail(m)),
 			})
 		}
 		renderTable(tbl)
@@ -245,6 +275,68 @@ func runConnectorList(_ context.Context, c *cli.Command) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(body)
+}
+
+// connectorCapabilities lists the block keys present in a definition row.
+func connectorCapabilities(m map[string]any) string {
+	var caps []string
+	for _, k := range []string{"actions", "events", "channel"} {
+		if b, ok := m[k].(map[string]any); ok && len(b) > 0 {
+			caps = append(caps, k)
+		}
+	}
+	return strings.Join(caps, ",")
+}
+
+// connectorStatus reads the lifecycle status; a definition without events has
+// no supervisor and no status.
+func connectorStatus(m map[string]any) string {
+	st, _ := m["status"].(string)
+	return st
+}
+
+// connectorDetail names the process behind the row: the events command, the
+// MCP server, or the CLI commands.
+func connectorDetail(m map[string]any) string {
+	if ev, ok := m["events"].(map[string]any); ok {
+		if cmd := mapStr(ev, "command"); cmd != "" {
+			return cmd
+		}
+	}
+	acts, ok := m["actions"].(map[string]any)
+	if !ok {
+		return strings.Join(connectorCLICommands(m), " ")
+	}
+	if mcp, ok := acts["mcp"].(map[string]any); ok {
+		if u := mapStr(mcp, "url"); u != "" {
+			return u
+		}
+		if cmd := mapStr(mcp, "command"); cmd != "" {
+			args := stringList(mcp["args"])
+			return strings.TrimSpace(cmd + " " + strings.Join(args, " "))
+		}
+	}
+	if cli, ok := acts["cli"].(map[string]any); ok {
+		return strings.Join(stringList(cli["commands"]), " ")
+	}
+	return ""
+}
+
+func connectorCLICommands(m map[string]any) []string {
+	acts, _ := m["actions"].(map[string]any)
+	cli, _ := acts["cli"].(map[string]any)
+	return stringList(cli["commands"])
+}
+
+func stringList(v any) []string {
+	list, _ := v.([]any)
+	out := make([]string, 0, len(list))
+	for _, raw := range list {
+		if s, ok := raw.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func runConnectorShow(_ context.Context, c *cli.Command) error {
@@ -264,29 +356,325 @@ func runConnectorShow(_ context.Context, c *cli.Command) error {
 }
 
 func runConnectorSet(_ context.Context, c *cli.Command) error {
-	if c.NArg() < 2 {
-		return fmt.Errorf("usage: trebi connector set <name> <command...>")
+	if c.NArg() < 1 {
+		return fmt.Errorf("usage: trebi connector set <name> [flags]")
 	}
 	name := c.Args().Get(0)
-	cmdParts := c.Args().Tail()
-	command := strings.Join(cmdParts, " ")
-	env, err := parseKeyValues(c.StringSlice("env"))
-	if err != nil {
-		return fmt.Errorf("env %w", err)
-	}
-	req := request.ConnectorSpec{
-		Name: name, Command: command, Format: c.String("format"),
-		Type: c.String("type"), Cwd: c.String("cwd"),
-		Env: env, Facets: c.StringSlice("facet"),
-	}.Build()
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(req, nil); err != nil {
+	row, err := fetchConnectorRow(client, name)
+	if err != nil {
+		return err
+	}
+	patch := request.ConnectorPatch{Name: name}
+	touched := false
+
+	if c.IsSet("env") {
+		env := existingEnv(row)
+		kv, err := parseKeyValues(c.StringSlice("env"))
+		if err != nil {
+			return fmt.Errorf("env %w", err)
+		}
+		for k, v := range kv {
+			env[k] = v
+		}
+		patch.Env = env
+		touched = true
+	}
+	if c.IsSet("cwd") {
+		patch.Cwd = c.String("cwd")
+		touched = true
+	}
+
+	switch {
+	case c.Bool("no-events"):
+		patch.Events = json.RawMessage("null")
+		touched = true
+	case eventsFlagsSet(c):
+		ev := existingBlock(row, "events")
+		if c.IsSet("events-command") {
+			ev["command"] = c.String("events-command")
+		}
+		if c.IsSet("format") {
+			ev["format"] = c.String("format")
+		}
+		if c.IsSet("restart") {
+			ev["restart"] = c.String("restart")
+		}
+		if c.IsSet("poll") {
+			ev["poll_ms"] = c.Duration("poll").Milliseconds()
+		}
+		if c.IsSet("id") {
+			ev["id"] = c.String("id")
+		}
+		if c.IsSet("ts") {
+			ev["ts"] = c.String("ts")
+		}
+		if c.IsSet("identity") {
+			ev["identity"] = c.String("identity")
+		}
+		if c.IsSet("catchup-command") || c.IsSet("catchup-max") || c.IsSet("catchup-timeout") {
+			cu := existingBlock(ev, "catchup")
+			if c.IsSet("catchup-command") {
+				cu["command"] = c.String("catchup-command")
+			}
+			if c.IsSet("catchup-max") {
+				cu["max_events"] = c.Int("catchup-max")
+			}
+			if c.IsSet("catchup-timeout") {
+				cu["timeout_ms"] = c.Duration("catchup-timeout").Milliseconds()
+			}
+			ev["catchup"] = cu
+		}
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			return err
+		}
+		patch.Events = raw
+		touched = true
+	}
+
+	switch {
+	case c.Bool("no-actions"):
+		patch.Actions = json.RawMessage("null")
+		touched = true
+	case actionsFlagsSet(c):
+		acts := existingBlock(row, "actions")
+		if mcpFlagsSet(c) {
+			mcp := existingBlock(acts, "mcp")
+			if c.IsSet("mcp-command") {
+				mcp["command"] = c.String("mcp-command")
+			}
+			if c.IsSet("mcp-url") {
+				mcp["url"] = c.String("mcp-url")
+			}
+			if c.IsSet("mcp-arg") {
+				mcp["args"] = c.StringSlice("mcp-arg")
+			}
+			if c.IsSet("mcp-env") {
+				env, err := parseKeyValues(c.StringSlice("mcp-env"))
+				if err != nil {
+					return fmt.Errorf("mcp-env %w", err)
+				}
+				mcp["env"] = env
+			}
+			if c.IsSet("mcp-header") {
+				headers, err := parseKeyValues(c.StringSlice("mcp-header"))
+				if err != nil {
+					return fmt.Errorf("mcp-header %w", err)
+				}
+				mcp["headers"] = headers
+			}
+			acts["mcp"] = mcp
+		}
+		if c.IsSet("cli-command") || c.IsSet("skill") {
+			cli := existingBlock(acts, "cli")
+			if c.IsSet("cli-command") {
+				cli["commands"] = c.StringSlice("cli-command")
+			}
+			if c.IsSet("skill") {
+				cli["skill"] = c.String("skill")
+			}
+			acts["cli"] = cli
+		}
+		raw, err := json.Marshal(acts)
+		if err != nil {
+			return err
+		}
+		patch.Actions = raw
+		touched = true
+	}
+
+	switch {
+	case c.Bool("no-channel"):
+		patch.Channel = json.RawMessage("null")
+		touched = true
+	case channelFlagsSet(c):
+		ch := existingBlock(row, "channel")
+		for flag, key := range map[string]string{
+			"channel-ref": "ref", "send": "send", "typing": "typing", "ack": "ack",
+		} {
+			if c.IsSet(flag) {
+				ch[key] = c.String(flag)
+			}
+		}
+		raw, err := json.Marshal(ch)
+		if err != nil {
+			return err
+		}
+		patch.Channel = raw
+		touched = true
+	}
+
+	if !touched {
+		return fmt.Errorf("no fields given; pass flags or --no-events/--no-actions/--no-channel")
+	}
+	if err := client.DoHTTP(patch.Build(), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "connector %s set\n", name)
+	return nil
+}
+
+// fetchConnectorRow reads one connector row; an unknown name returns an empty
+// map so set can create it.
+func fetchConnectorRow(client *APIClient, name string) (map[string]any, error) {
+	var row map[string]any
+	err := client.GetJSON(request.BuildConnectorGetPath(name), &row)
+	if err != nil {
+		if strings.Contains(err.Error(), "404") {
+			return map[string]any{}, nil
+		}
+		return nil, err
+	}
+	return row, nil
+}
+
+// existingBlock returns a copy of one definition block so a patch overlays
+// the stored value instead of replacing it with only the flags given.
+func existingBlock(row map[string]any, key string) map[string]any {
+	block, ok := row[key].(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(block))
+	for k, v := range block {
+		out[k] = v
+	}
+	return out
+}
+
+// existingEnv reads the stored env map so --env merges instead of replacing.
+func existingEnv(row map[string]any) map[string]string {
+	block, _ := row["env"].(map[string]any)
+	out := make(map[string]string, len(block))
+	for k, v := range block {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+func eventsFlagsSet(c *cli.Command) bool {
+	for _, f := range []string{"events-command", "format", "restart", "poll", "id", "ts", "identity",
+		"catchup-command", "catchup-max", "catchup-timeout"} {
+		if c.IsSet(f) {
+			return true
+		}
+	}
+	return false
+}
+
+func mcpFlagsSet(c *cli.Command) bool {
+	for _, f := range []string{"mcp-command", "mcp-arg", "mcp-env", "mcp-url", "mcp-header"} {
+		if c.IsSet(f) {
+			return true
+		}
+	}
+	return false
+}
+
+func actionsFlagsSet(c *cli.Command) bool {
+	return mcpFlagsSet(c) || c.IsSet("cli-command") || c.IsSet("skill")
+}
+
+func channelFlagsSet(c *cli.Command) bool {
+	for _, f := range []string{"channel-ref", "send", "typing", "ack"} {
+		if c.IsSet(f) {
+			return true
+		}
+	}
+	return false
+}
+
+func runConnectorApply(_ context.Context, c *cli.Command) error {
+	path := c.String("file")
+	if path == "" {
+		return fmt.Errorf("usage: trebi connector apply --file <path>")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	def := map[string]any{}
+	if err := json.Unmarshal(raw, &def); err != nil {
+		def = map[string]any{}
+		if yerr := yaml.Unmarshal(raw, &def); yerr != nil {
+			return fmt.Errorf("parse %s: %v", path, yerr)
+		}
+	}
+	name, _ := def["name"].(string)
+	if name == "" && len(def) == 1 {
+		// connectors.yaml form: a one-entry name: definition map.
+		for k, v := range def {
+			if m, ok := v.(map[string]any); ok {
+				name, def = k, m
+			}
+		}
+	}
+	if name == "" {
+		return fmt.Errorf("%s: add a top-level name, or one name: definition entry", path)
+	}
+	def["name"] = name
+	if err := normalizeDurationKeys(def); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if err := client.DoHTTP(request.BuildConnectorReplace(name, def), nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "connector %s applied\n", name)
+	return nil
+}
+
+// normalizeDurationKeys maps the YAML text forms (poll, timeout,
+// typing_interval, typing_max) onto the JSON millisecond keys the API reads.
+func normalizeDurationKeys(def map[string]any) error {
+	if ev, ok := def["events"].(map[string]any); ok {
+		if err := moveDurationKey(ev, "poll", "poll_ms"); err != nil {
+			return err
+		}
+		if cu, ok := ev["catchup"].(map[string]any); ok {
+			if err := moveDurationKey(cu, "timeout", "timeout_ms"); err != nil {
+				return err
+			}
+		}
+	}
+	if ch, ok := def["channel"].(map[string]any); ok {
+		if err := moveDurationKey(ch, "typing_interval", "typing_interval_ms"); err != nil {
+			return err
+		}
+		if err := moveDurationKey(ch, "typing_max", "typing_max_ms"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func moveDurationKey(m map[string]any, from, to string) error {
+	v, ok := m[from]
+	if !ok {
+		return nil
+	}
+	delete(m, from)
+	switch t := v.(type) {
+	case string:
+		d, err := time.ParseDuration(strings.TrimSpace(t))
+		if err != nil {
+			return fmt.Errorf("%s: %w", from, err)
+		}
+		m[to] = d.Milliseconds()
+	case int, int64, float64:
+		m[to] = t
+	default:
+		return fmt.Errorf("%s: want a duration such as 15m", from)
+	}
 	return nil
 }
 
@@ -328,18 +716,6 @@ func runConnectorDisconnect(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	return client.DoHTTP(request.BuildConnectorDisconnect(name), nil)
-}
-
-func runConnectorStop(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("name required")
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildConnectorStop(name), nil)
 }
 
 func runConnectorCursorShow(_ context.Context, c *cli.Command) error {

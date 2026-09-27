@@ -266,28 +266,42 @@ func TestBuildConnectorRestart(t *testing.T) {
 	}
 }
 
-func TestConnectorSpecBuild(t *testing.T) {
+func TestConnectorPatchBuild(t *testing.T) {
 	t.Parallel()
-	req := ConnectorSpec{
-		Name: "echo", Command: "echo hi", Format: "json", Type: "stream", Cwd: "/tmp",
-		Env: map[string]string{"A": "1"}, Facets: []string{"mail"},
+	req := ConnectorPatch{
+		Name: "echo", Cwd: "/tmp", Env: map[string]string{"A": "1"},
+		Events: json.RawMessage(`{"command":"echo hi","format":"json"}`),
 	}.Build()
-	if req.Method != "PUT" || req.Path != "/v1/connectors/echo" {
+	if req.Method != "PATCH" || req.Path != "/v1/connectors/echo" {
 		t.Fatalf("%+v", req)
 	}
 	b, _ := json.Marshal(req.Body)
 	s := string(b)
-	for _, want := range []string{`"name":"echo"`, `"command":"echo hi"`, `"format":"json"`, `"cwd":"/tmp"`, `"facets":["mail"]`} {
+	for _, want := range []string{`"cwd":"/tmp"`, `"env":{"A":"1"}`, `"events":{"command":"echo hi","format":"json"}`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %s in %s", want, s)
 		}
 	}
-	// A partial set omits the fields it does not name, so the daemon keeps them.
-	b, _ = json.Marshal(ConnectorSpec{Name: "echo", Command: "echo hi"}.Build().Body)
-	for _, unwanted := range []string{`"format"`, `"type"`, `"cwd"`, `"env"`, `"facets"`} {
-		if strings.Contains(string(b), unwanted) {
-			t.Fatalf("partial set must omit %s: %s", unwanted, b)
-		}
+	// A partial patch omits the blocks it does not name, so the daemon keeps
+	// them; an explicit null removes one.
+	b, _ = json.Marshal(ConnectorPatch{Name: "echo", Events: json.RawMessage("null")}.Build().Body)
+	if strings.Contains(string(b), "actions") || strings.Contains(string(b), "channel") {
+		t.Fatalf("partial patch must omit untouched blocks: %s", b)
+	}
+	if !strings.Contains(string(b), `"events":null`) {
+		t.Fatalf("null must survive as a removal: %s", b)
+	}
+}
+
+func TestBuildConnectorReplace(t *testing.T) {
+	t.Parallel()
+	req := BuildConnectorReplace("echo", map[string]any{"events": map[string]any{"command": "echo hi"}})
+	if req.Method != "PUT" || req.Path != "/v1/connectors/echo" {
+		t.Fatalf("%+v", req)
+	}
+	b, _ := json.Marshal(req.Body)
+	if !strings.Contains(string(b), `"command":"echo hi"`) {
+		t.Fatalf("body: %s", b)
 	}
 }
 
@@ -574,13 +588,21 @@ func TestBuildConversationChatRequests(t *testing.T) {
 	if req.Method != "POST" || !strings.Contains(req.Path, "/messages") {
 		t.Fatalf("send %+v", req)
 	}
-	req = BuildPointerGet("cli", "ws1")
-	if req.Method != "GET" || req.Path != "/v1/channel-pointers/cli/ws1" {
+	req = BuildPointerGet("cli", "ws1", "ws1")
+	if req.Method != "GET" || !strings.Contains(req.Path, "/v1/channel-pointers/cli/ws1") ||
+		!strings.Contains(req.Path, "workspace=ws1") {
 		t.Fatalf("ptr get %+v", req)
 	}
 	req = BuildPointerPut("cli", "ws1", "01C")
 	if req.Method != "PUT" || req.Path != "/v1/channel-pointers/cli/ws1" {
 		t.Fatalf("ptr put %+v", req)
+	}
+	if got := BuildConversationOutboxPath("01C"); got != "/v1/conversations/01C/outbox" {
+		t.Fatalf("outbox path %s", got)
+	}
+	req = BuildConversationOutboxRetry("01C", "01R")
+	if req.Method != "POST" || req.Path != "/v1/conversations/01C/outbox/01R/retry" {
+		t.Fatalf("outbox retry %+v", req)
 	}
 	// The ask route lets the daemon resolve the conversation, so a client
 	// sends no pointer calls of its own.

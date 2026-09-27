@@ -24,7 +24,7 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | assistant | the workspace chat agent; one live session per conversation, settings in config and `trebi.yaml` |
 | agent | a folder-scoped `AGENT.md` at `agents/<name>/`; owns the jobs inside that folder, kind=agent |
 | conversation | a chat thread with the assistant; the CLI/UI are channels onto it |
-| connector | an external event producer (a `stream`, `cli`, or `mcp` command) |
+| connector | one external system with up to three capabilities: actions (an MCP server or CLI commands for agent runs), events (a supervised process that produces trigger events), and a channel (a conversation transport) |
 | trigger | a rule on a job: `cron`, `every`, or `event` from a connector |
 | skill | a stored `SKILL.md` the harness can load |
 | inbox | the queue you drain: approvals, failures, health, watchdog |

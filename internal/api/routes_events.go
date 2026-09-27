@@ -16,6 +16,18 @@ import (
 // eventRow is one scanned events table row.
 type eventRow struct {
 	id, connector, at, sum, trace, raw string
+	sourceID, identity, channelRef     string
+	catchUp                            bool
+}
+
+// base is the shared row fields of the list and get shapes.
+func (e eventRow) base() map[string]any {
+	return map[string]any{
+		"id": e.id, "connector": e.connector, "at": e.at, "received_at": e.at,
+		"summary": e.sum, "trace_id": e.trace,
+		"source_id": e.sourceID, "identity": e.identity, "channel_ref": e.channelRef,
+		"catch_up": e.catchUp,
+	}
 }
 
 // queueResult is the queue state joined into event outcomes.
@@ -158,7 +170,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	workspace := s.workspaceID(r.Context(), r.URL.Query().Get("workspace"))
 	outcome := r.URL.Query().Get("outcome")
-	q := `SELECT id, connector, received_at, COALESCE(summary,''), COALESCE(trace_id,''), COALESCE(raw_json,'')
+	catchUp := r.URL.Query().Get("catch_up")
+	if catchUp != "" && catchUp != "0" && catchUp != "1" {
+		writeErr(w, http.StatusBadRequest, "validation", "catch_up must be 0 or 1")
+		return
+	}
+	q := `SELECT id, connector, received_at, COALESCE(summary,''), COALESCE(trace_id,''), COALESCE(raw_json,''),
+		COALESCE(source_id,''), COALESCE(identity,''), COALESCE(channel_ref,''), catch_up
 		FROM events WHERE 1=1`
 	args := []any{}
 	if cursor != "" {
@@ -172,6 +190,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if since != "" {
 		q += ` AND received_at >= ?`
 		args = append(args, since)
+	}
+	if catchUp != "" {
+		q += ` AND catch_up = ?`
+		args = append(args, catchUp)
 	}
 	// Workspace/outcome ride event_outcomes: an event with no outcome row is
 	// global and shows only when no workspace is set (A.3.2).
@@ -204,7 +226,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	var ids []string
 	for rows.Next() {
 		var e eventRow
-		if rows.Scan(&e.id, &e.connector, &e.at, &e.sum, &e.trace, &e.raw) == nil {
+		if rows.Scan(&e.id, &e.connector, &e.at, &e.sum, &e.trace, &e.raw,
+			&e.sourceID, &e.identity, &e.channelRef, &e.catchUp) == nil {
 			evs = append(evs, e)
 			ids = append(ids, e.id)
 		}
@@ -229,10 +252,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // listEntries expands one event into list rows: one row per interesting
 // outcome, a single collapsed row when every outcome is no_match.
 func (e eventRow) listEntries(outs []map[string]any) []map[string]any {
-	base := map[string]any{
-		"id": e.id, "connector": e.connector, "at": e.at, "received_at": e.at,
-		"summary": e.sum, "trace_id": e.trace,
-	}
+	base := e.base()
 	if len(outs) == 0 {
 		base["outcomes"] = []any{}
 		return []map[string]any{base}
@@ -254,12 +274,11 @@ func (e eventRow) listEntries(outs []map[string]any) []map[string]any {
 		if o["outcome"] == string(dispatch.OutcomeNoMatch) {
 			continue // skip pure no_match when mixed (list is per interesting outcome)
 		}
-		row := map[string]any{
-			"id": e.id, "connector": e.connector, "at": e.at, "received_at": e.at,
-			"summary": e.sum, "trace_id": e.trace,
-			"workspace": o["workspace"], "job": o["job"], "on_index": o["on_index"],
-			"outcome": o["outcome"],
-		}
+		row := e.base()
+		row["workspace"] = o["workspace"]
+		row["job"] = o["job"]
+		row["on_index"] = o["on_index"]
+		row["outcome"] = o["outcome"]
 		if qid, ok := o["queue_id"]; ok {
 			row["queue_id"] = qid
 		}
@@ -402,10 +421,12 @@ func fmtSprint(v any) string {
 
 func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var connector, at, sum, raw, trace string
+	var connector, at, sum, raw, trace, sourceID, identity, channelRef string
+	var catchUp bool
 	err := s.st.DB().QueryRowContext(r.Context(), `
-		SELECT connector, received_at, COALESCE(summary,''), COALESCE(raw_json,''), COALESCE(trace_id,'')
-		FROM events WHERE id=?`, id).Scan(&connector, &at, &sum, &raw, &trace)
+		SELECT connector, received_at, COALESCE(summary,''), COALESCE(raw_json,''), COALESCE(trace_id,''),
+		COALESCE(source_id,''), COALESCE(identity,''), COALESCE(channel_ref,''), catch_up
+		FROM events WHERE id=?`, id).Scan(&connector, &at, &sum, &raw, &trace, &sourceID, &identity, &channelRef, &catchUp)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "event not found")
 		return
@@ -423,6 +444,7 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": id, "connector": connector, "at": at, "received_at": at, "summary": sum,
 		"raw": rawMsg, "trace_id": trace, "outcomes": outs,
+		"source_id": sourceID, "identity": identity, "channel_ref": channelRef, "catch_up": catchUp,
 	})
 }
 
