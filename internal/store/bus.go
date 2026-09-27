@@ -288,12 +288,6 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "schedule.catch_up", Bus: true, Log: true},
 		{Name: "schedule.catch_up_skipped", Bus: true, Log: true},
 		// dispatch
-		{Name: "dispatch.evaluated", Bus: false, Log: true},
-		{Name: "dispatch.matched", Bus: false, Log: true},
-		{Name: "dispatch.no_match", Bus: false, Log: true},
-		{Name: "dispatch.error", Bus: false, Log: true},
-		{Name: "dispatch.debounced", Bus: false, Log: true},
-		{Name: "dispatch.rate_limited", Bus: false, Log: true},
 		{Name: "event.created", Bus: true, Log: true},
 		// queue
 		{Name: "queue.updated", Bus: true, Log: true},

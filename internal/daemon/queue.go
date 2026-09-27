@@ -191,8 +191,11 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	convKey := item.ConversationKey
 	if id, key := c.channelConversation(ctx, item); id != "" {
 		// An agent item from a connector channel binds its conversation
-		// through the channel pointer, not the lane key (plan G.2).
+		// through the channel pointer, not the lane key (plan G.2). The
+		// inbound text becomes the channel-typed user turn, so the reply
+		// has a way back (plan G.3).
 		convID, convKey = id, key
+		c.noteChannelUser(ctx, item, id, prompt)
 	}
 	var wake *runs.WakeOpts
 	if kind != runs.KindJob {
@@ -376,6 +379,27 @@ func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.Q
 		return convID, ""
 	}
 	return conv.ID, conv.Key
+}
+
+// noteChannelUser stores the inbound event text as the channel-typed user
+// turn of an agent item. The row carries the channel, so the reply path can
+// send the answer back (plan G.3). The event id is the idempotency key, so a
+// retry writes nothing.
+func (c *ControlPlane) noteChannelUser(ctx context.Context, item *dispatch.QueueItem, convID, text string) {
+	if c.Conversations == nil || convID == "" {
+		return
+	}
+	if strings.TrimSpace(text) == "" {
+		text = "Event trigger " + item.Connector + " fired."
+	}
+	if _, _, err := c.Conversations.AppendUser(ctx, convID, conversations.UserTurn{
+		Text:           text,
+		ChannelType:    item.Connector,
+		ChannelRef:     item.ConversationKey,
+		IdempotencyKey: item.EventID,
+	}); err != nil {
+		c.log.Warn("channel user turn", "queue_id", item.ID, "error", err)
+	}
 }
 
 // ackChannel runs the connector's ack command once for a finished queue item
