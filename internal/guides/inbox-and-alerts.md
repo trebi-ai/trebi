@@ -1,7 +1,7 @@
 ---
 topic: inbox-and-alerts
 title: Inbox and alerts
-description: Drain the inbox, handle approvals, read the alert feed, and retry failed sends.
+description: Drain the inbox, handle approvals, read the alert feed, set the alert route, and retry failed sends.
 ---
 
 # Inbox and alerts
@@ -41,6 +41,23 @@ trebi alerts --since 2026-08-01T00:00:00Z --json
 ```
 
 Alerts are a log, not a queue — reading them does not drain the inbox.
+
+## Alert routes
+
+An alert goes along a route: an ordered list of steps `{via, to}`. `via` is `email` or a connector with a `channel` block. The first step that sends stops the route. A failed step moves the alert to the next step. When no step is left, the item stays in the inbox with `delivery: failed` and a `view_outbox` action. `inbox show` lists the `deliveries` of the item.
+
+The route comes from the first layer that sets `notify`: the job, the owner agent, the workspace, then the global config. With no layer set, the route mails the contact. `notify: []` sends nothing. The contact follows the same order; the global contact is `email.admins`.
+
+```bash
+trebi notify route --workspace <ws> --job <job> --json
+trebi notify test --workspace <ws>
+trebi notify test --workspace <ws> --step 1
+trebi config set notify.route '[{"via":"whatsapp","to":"+15551234567"},{"via":"email"}]'
+trebi workspace set <ws> --notify '[{"via":"email","to":"admins"}]' --contact '["ops@acme.com"]'
+trebi job patch <job> 'notify=[]' --workspace <ws>
+```
+
+For email, `to` is `contact` (the default), `admins`, or one address. For a connector, `to` is the channel ref. A step with a `problem` (`email_off`, `no_contact`, `unknown_connector`, `no_channel`) is skipped, and doctor reports `notify_route_invalid`. `notify test` sends one message per usable step, with one attempt each, and does not stop at a failure.
 
 ## Outbox
 

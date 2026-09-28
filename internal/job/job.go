@@ -21,6 +21,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/memory"
+	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/secrets"
 	"gopkg.in/yaml.v3"
 )
@@ -94,9 +95,10 @@ type Frontmatter struct {
 	Kit            *KitYAML          `yaml:"kit,omitempty"`
 	Budget         *BudgetYAML       `yaml:"budget,omitempty"`
 	Report         *ReportYAML       `yaml:"report,omitempty"`
-	// Notify selects alert channels for this job. Nil = unset (every
-	// channel); an empty list suppresses delivery for this job's alerts.
-	Notify []string `yaml:"notify"`
+	// Notify is the alert route; Contact is the owner address list. See
+	// internal/notify.
+	Notify  yaml.Node `yaml:"notify,omitempty"`
+	Contact yaml.Node `yaml:"contact,omitempty"`
 }
 
 // SessionYAML — canonical keys; idle_timeout not timeout.
@@ -200,9 +202,11 @@ type Job struct {
 	ParseError   string
 	Hash         string
 	Description  string
-	// Notify selects alert channels for this job. Nil = unset (every
-	// channel); an empty list suppresses delivery for this job's alerts.
-	Notify []string
+	// Notify is the alert route. NotifySet is true when the file holds the
+	// key, also as an empty list (no notification).
+	Notify    []notify.Step
+	NotifySet bool
+	Contact   []string
 }
 
 // ProtectedChange reports identity, trust, and spend keys changed from this
@@ -224,6 +228,12 @@ func (j *Job) ProtectedChange(next *Job) []string {
 	}
 	if !reflect.DeepEqual(j.Report, next.Report) {
 		out = append(out, "report")
+	}
+	if !equalStrings(j.Contact, next.Contact) {
+		out = append(out, "contact")
+	}
+	if j.NotifySet != next.NotifySet || !reflect.DeepEqual(j.Notify, next.Notify) {
+		out = append(out, "notify")
 	}
 	return out
 }
@@ -522,6 +532,14 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	// it); parse keeps the path-derived name for jobs.
 	name := deriveName(filePath)
 
+	route, err := notify.ParseSteps(&fm.Notify)
+	if err != nil {
+		return parseFail(filePath, hash, err)
+	}
+	contact, err := notify.ParseContact(&fm.Contact)
+	if err != nil {
+		return parseFail(filePath, hash, err)
+	}
 	j := &Job{
 		Name:           name,
 		FilePath:       filePath,
@@ -553,7 +571,9 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Report:         fm.Report,
 		Hash:           hash,
 		Description:    fm.Description,
-		Notify:         fm.Notify,
+		Notify:         route,
+		NotifySet:      route != nil,
+		Contact:        contact,
 	}
 	return j, nil
 }

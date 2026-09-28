@@ -96,11 +96,13 @@ func workspaceCommand() *cli.Command {
 			},
 			{
 				Name:      "set",
-				Usage:     "update workspace name and/or git_enabled",
+				Usage:     "update workspace name, git_enabled, contact, or notify route",
 				ArgsUsage: "<id>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "name", Usage: "display name"},
 					&cli.BoolFlag{Name: "git-enabled", Usage: "write git_enabled to trebi.yaml"},
+					&cli.StringFlag{Name: "contact", Usage: `contact address, JSON list, or null to inherit (e.g. '["ops@acme.com","admins"]')`},
+					&cli.StringFlag{Name: "notify", Usage: `notify route as JSON, or null to inherit (e.g. '[{"via":"email","to":"contact"}]')`},
 				},
 				Action: runWorkspaceSet,
 			},
@@ -284,10 +286,16 @@ func runWorkspaceRename(_ context.Context, c *cli.Command) error {
 func runWorkspaceSet(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
-		return fmt.Errorf("usage: trebi workspace set <id> [--name] [--git-enabled]")
+		return fmt.Errorf("usage: trebi workspace set <id> [--name] [--git-enabled] [--contact] [--notify]")
 	}
-	if !c.IsSet("name") && !c.IsSet("git-enabled") {
-		return fmt.Errorf("set --name and/or --git-enabled")
+	route := map[string]any{}
+	for _, k := range []string{"contact", "notify"} {
+		if c.IsSet(k) {
+			route[k] = patchValue(k, c.String(k))
+		}
+	}
+	if !c.IsSet("name") && !c.IsSet("git-enabled") && len(route) == 0 {
+		return fmt.Errorf("set --name, --git-enabled, --contact, or --notify")
 	}
 	var name *string
 	var git *bool
@@ -303,7 +311,7 @@ func runWorkspaceSet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(request.BuildWorkspacePatch(id, name, git), nil); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspacePatch(id, name, git, route), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "updated %s\n", id)

@@ -768,13 +768,17 @@ func BuildWorkspaceAdd(path, name string, create bool) HTTPRequest {
 }
 
 // BuildWorkspacePatch builds PATCH /v1/workspaces/{id}.
-func BuildWorkspacePatch(id string, name *string, gitEnabled *bool) HTTPRequest {
+// route holds contact and notify as raw values; a nil value removes the key.
+func BuildWorkspacePatch(id string, name *string, gitEnabled *bool, route map[string]any) HTTPRequest {
 	body := map[string]any{}
 	if name != nil {
 		body["name"] = *name
 	}
 	if gitEnabled != nil {
 		body["git_enabled"] = *gitEnabled
+	}
+	for k, v := range route {
+		body[k] = v
 	}
 	return HTTPRequest{
 		Method: "PATCH",
@@ -785,7 +789,7 @@ func BuildWorkspacePatch(id string, name *string, gitEnabled *bool) HTTPRequest 
 
 // BuildWorkspaceRename builds PATCH /v1/workspaces/{id} with name.
 func BuildWorkspaceRename(id, name string) HTTPRequest {
-	return BuildWorkspacePatch(id, &name, nil)
+	return BuildWorkspacePatch(id, &name, nil, nil)
 }
 
 // BuildEmailStatusPath builds GET /v1/email/status.
@@ -793,7 +797,7 @@ func BuildEmailStatusPath() string {
 	return "/v1/email/status"
 }
 
-// BuildEmailTest builds POST /v1/email/test (fixed message to the operators).
+// BuildEmailTest builds POST /v1/email/test (fixed message to the admins).
 func BuildEmailTest() HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/email/test"}
 }
@@ -2341,4 +2345,26 @@ func BuildOutboxRetry(id string) HTTPRequest {
 // BuildOutboxCancel builds POST /v1/outbox/{id}/cancel.
 func BuildOutboxCancel(id string) HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/outbox/" + url.PathEscape(id) + "/cancel"}
+}
+
+// NotifyScope selects the layers of a notify route.
+type NotifyScope struct{ Workspace, Agent, Job string }
+
+// BuildNotifyRoutePath builds GET /v1/notify/route for sc.
+func BuildNotifyRoutePath(sc NotifyScope) string {
+	return withQuery("/v1/notify/route", map[string]string{"workspace": sc.Workspace, "agent": sc.Agent, "job": sc.Job})
+}
+
+// BuildNotifyTest builds POST /v1/notify/test. A nil step tests every step.
+func BuildNotifyTest(sc NotifyScope, step *int) HTTPRequest {
+	body := map[string]any{}
+	for k, v := range map[string]string{"workspace": sc.Workspace, "agent": sc.Agent, "job": sc.Job} {
+		if v != "" {
+			body[k] = v
+		}
+	}
+	if step != nil {
+		body["step"] = *step
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/notify/test", Body: body}
 }

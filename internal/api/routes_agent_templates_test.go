@@ -23,7 +23,7 @@ func TestAgentTemplateCreate(t *testing.T) {
 	}
 
 	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/research", map[string]any{
-		"title": "Research", "template": "research", "email_accept": []string{"operators"},
+		"title": "Research", "template": "research", "email_accept": []string{"admins"},
 		"inputs": map[string]string{"competitors": "acme"},
 	})
 	if code != http.StatusCreated {

@@ -165,7 +165,9 @@ func TestNativeDetectReportsKeyState(t *testing.T) {
 // --- plan 2026-09-26 F: the harness picker reports a status ---
 
 // stubDetector answers Detect from a fixed table.
-type stubDetector struct{ dets map[agentwire.Harness]agentwire.Detection }
+type stubDetector struct {
+	dets map[agentwire.Harness]agentwire.Detection
+}
 
 func (s stubDetector) Detect(_ context.Context, h agentwire.Harness) (agentwire.Detection, error) {
 	if d, ok := s.dets[h]; ok {

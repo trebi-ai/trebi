@@ -11,6 +11,9 @@ import (
 	"fmt"
 	"time"
 
+	"sort"
+	"strings"
+
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/assistant"
@@ -18,8 +21,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/store"
-	"sort"
-	"strings"
 )
 
 // OpenPermissionTimeout records the headless permission timeout: an inbox

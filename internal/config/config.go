@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/notify"
 	"gopkg.in/yaml.v3"
 )
 
@@ -180,18 +181,13 @@ func (f FilesConfig) MaxBytesOrDefault() int64 {
 	return f.MaxBytes
 }
 
-// NotifyConfig: shell templates per channel (email → whatsapp → discord).
-// Values are passed as TREBI_ALERT_* environment variables. Existing
-// {{kind}} {{tool}} {{task_id}} {{job}} {{workspace}} {{message}} {{hint}}
-// {{body}} {{resume}} {{connector}} placeholders are rewritten to
-// "$TREBI_ALERT_*" so untrusted text is never interpolated into the shell string.
+// NotifyConfig is the global alert layer. Route is the global notify route
+// (see internal/notify); nil means unset, so the default route applies.
 type NotifyConfig struct {
-	Email         string `yaml:"email,omitempty"`
-	WhatsApp      string `yaml:"whatsapp,omitempty"`
-	Discord       string `yaml:"discord,omitempty"`
-	WaitingAfter  string `yaml:"waiting_after,omitempty"`  // empty → 5m; "0"/"off" disables
-	ApprovalAfter string `yaml:"approval_after,omitempty"` // empty → 5m; "0" mails at once; "off" never
-	UsageWarnAt   int    `yaml:"usage_warn_at,omitempty"`  // 0 → 80
+	Route         []notify.Step `yaml:"route,omitempty"`
+	WaitingAfter  string        `yaml:"waiting_after,omitempty"`  // empty → 5m; "0"/"off" disables
+	ApprovalAfter string        `yaml:"approval_after,omitempty"` // empty → 5m; "0" mails at once; "off" never
+	UsageWarnAt   int           `yaml:"usage_warn_at,omitempty"`  // 0 → 80
 }
 
 // DefaultWaitingAfter is used when notify.waiting_after is unset.
@@ -247,32 +243,13 @@ func (n NotifyConfig) UsageWarnPercent() int {
 	return n.UsageWarnAt
 }
 
-// NotifyChannel is one shell template in the notifier chain.
-type NotifyChannel struct {
-	Name    string
-	Command string
-}
-
-// Channels returns named non-empty notify commands in try order.
-func (n NotifyConfig) Channels() []NotifyChannel {
-	var out []NotifyChannel
-	for _, ch := range []NotifyChannel{
-		{Name: "email", Command: n.Email},
-		{Name: "whatsapp", Command: n.WhatsApp},
-		{Name: "discord", Command: n.Discord},
-	} {
-		ch.Command = strings.TrimSpace(ch.Command)
-		if ch.Command != "" {
-			out = append(out, ch)
-		}
-	}
-	return out
-}
-
 type Defaults struct {
-	Command string          `yaml:"command"`
-	Session SessionDefaults `yaml:"session,omitempty"`
-	Memory  MemoryDefaults  `yaml:"memory,omitempty"`
+	Command string `yaml:"command"`
+	// Workspace is the system sender for alerts with no workspace: an id or
+	// a name.
+	Workspace string          `yaml:"workspace,omitempty"`
+	Session   SessionDefaults `yaml:"session,omitempty"`
+	Memory    MemoryDefaults  `yaml:"memory,omitempty"`
 }
 
 // MemoryDefaults are the global structured-memory knobs when job frontmatter
@@ -685,9 +662,9 @@ tools:
   #   never: []
 
 # notify:
-#   email: ""              # shell template; text arrives as $TREBI_ALERT_*
-#   whatsapp: ""
-#   discord: ""
+#   route:                 # tried in order; the first sent message stops it
+#     - {via: whatsapp, to: "+15551234567"}   # a connector with a channel block
+#     - {via: email, to: contact}             # contact | admins | an address
 #   waiting_after: 5m      # "0" or "off" disables the waiting escalation
 #   approval_after: 5m     # tray first, mail after; "0" mails at once; "off" never
 #   usage_warn_at: 80      # percent
@@ -721,7 +698,7 @@ tools:
 #   worker: ""               # Worker URL; present enables the channel
 #   token: ""                # secret:<name> holding the shared Worker token
 #   domain: ""               # bare hostname the addresses live on
-#   operators: []            # alert recipients and default inbound allowlist
+#   admins: []               # alert contact and default inbound allowlist
 #   poll_interval: 30s       # 5s to 10m
 #   require_dmarc: true
 #   from_name: Trebi
@@ -820,6 +797,9 @@ func defaultConfig() *Config {
 }
 
 func decodeConfig(data []byte, cfg *Config) error {
+	if gone := removedKeys(data); len(gone) > 0 {
+		return fmt.Errorf("%s: %s", filepath.Base(ConfigPath()), strings.Join(gone, "; "))
+	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(cfg); err != nil {
@@ -1151,4 +1131,26 @@ func validBridgeModeValue(raw string) bool {
 	}
 	_, ok := NormalizeBridgeMode(raw)
 	return ok
+}
+
+// removedKeys names each removed config key with its replacement. The strict
+// decode alone gives only "field not found".
+func removedKeys(data []byte) []string {
+	var raw struct {
+		Notify map[string]any `yaml:"notify"`
+		Email  map[string]any `yaml:"email"`
+	}
+	if yaml.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	var out []string
+	for _, k := range []string{"email", "whatsapp", "discord"} {
+		if _, ok := raw.Notify[k]; ok {
+			out = append(out, "notify."+k+": removed; add a connector with a channel block and list it in notify.route")
+		}
+	}
+	if _, ok := raw.Email["operators"]; ok {
+		out = append(out, "email.operators: renamed to email.admins")
+	}
+	return out
 }

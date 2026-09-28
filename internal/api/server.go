@@ -34,6 +34,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/license"
+	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/registry"
@@ -65,6 +66,7 @@ type Server struct {
 	connectors *connectors.Service
 	conv       *conversations.Service
 	outbox     *outbox.Service
+	router     *notify.Resolver
 	harness    *harness.Service
 	sched      *schedule.Service
 	email      *email.Service
@@ -253,7 +255,7 @@ type freshConfigSource struct{}
 func (freshConfigSource) AssistantDefaults() assistant.Settings {
 	c, err := config.Load()
 	if err != nil || c == nil {
-		return assistant.Settings{Accept: []string{"operators", "allowlist"}}
+		return assistant.Settings{Accept: []string{"admins", "allowlist"}}
 	}
 	return assistant.SettingsFromConfig(c)
 }
@@ -453,6 +455,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeSettings(mux)
 	s.routeEmail(mux)
 	s.routeOutbox(mux)
+	s.routeNotify(mux)
 	s.routeHooks(mux)
 	s.routeMCP(mux)
 	// Dispatch from catalog tools re-enters here, audit-wrapped and

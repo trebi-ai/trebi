@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -350,7 +351,7 @@ func runJobPatch(_ context.Context, c *cli.Command) error {
 	}
 	patch := make(map[string]any, len(fields))
 	for k, v := range fields {
-		patch[k] = v
+		patch[k] = patchValue(k, v)
 	}
 	client, err := clientFor(c)
 	if err != nil {
@@ -542,4 +543,17 @@ func runJobTail(_ context.Context, c *cli.Command) error {
 		fmt.Fprintln(outWriter(c))
 	}
 	return nil
+}
+
+// patchValue decodes contact and notify from JSON, so notify='[{"via":"email"}]'
+// sends a list and null removes the key. A plain address stays a string.
+func patchValue(key, v string) any {
+	if key != "contact" && key != "notify" {
+		return v
+	}
+	var out any
+	if json.Unmarshal([]byte(v), &out) != nil {
+		return v
+	}
+	return out
 }

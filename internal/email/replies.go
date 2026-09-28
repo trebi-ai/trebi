@@ -284,7 +284,7 @@ func (g *Ingress) dispatchReply(ctx context.Context, msg IngressMessage, d Route
 			}
 			rule = found
 		}
-		if !rule.Accepts(msg.From, cfg.Operators, env.Allowlist) {
+		if !rule.Accepts(msg.From, cfg.Admins, env.Allowlist) {
 			g.log.Warn("email.reply rejected", "id", msg.ID, "operator", t.operator, "sender", msg.From)
 			return true
 		}

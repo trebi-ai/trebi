@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -151,15 +152,22 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name       *string `json:"name"`
-		GitEnabled *bool   `json:"git_enabled"`
+		Name       *string         `json:"name"`
+		GitEnabled *bool           `json:"git_enabled"`
+		Contact    json.RawMessage `json:"contact"`
+		Notify     json.RawMessage `json:"notify"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is a no-op get
 	id := r.PathValue("id")
 	if body.Name != nil && strings.TrimSpace(*body.Name) == "" {
 		body.Name = nil
 	}
-	if body.Name == nil && body.GitEnabled == nil {
+	p := workspaces.Patch{Name: body.Name, GitEnabled: body.GitEnabled}
+	if err := routePatch(&p, body.Contact, body.Notify); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if body.Name == nil && body.GitEnabled == nil && body.Contact == nil && body.Notify == nil {
 		ws, err := s.ws.Get(r.Context(), id)
 		if err != nil {
 			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
@@ -168,7 +176,7 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, ws)
 		return
 	}
-	ws, err := s.ws.Patch(r.Context(), id, workspaces.Patch{Name: body.Name, GitEnabled: body.GitEnabled})
+	ws, err := s.ws.Patch(r.Context(), id, p)
 	if errors.Is(err, workspaces.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
 		return
@@ -178,6 +186,43 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
+}
+
+// routePatch decodes contact and notify into p. A JSON null clears the key.
+func routePatch(p *workspaces.Patch, contact, route json.RawMessage) error {
+	decode := func(raw json.RawMessage) (any, bool, error) {
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return nil, false, err
+		}
+		return v, v == nil, nil
+	}
+	if contact != nil {
+		v, clear, err := decode(contact)
+		if err != nil {
+			return err
+		}
+		list, err := notify.ParseContact(v)
+		if err != nil {
+			return err
+		}
+		p.Contact, p.ClearContact = &list, clear
+	}
+	if route != nil {
+		v, clear, err := decode(route)
+		if err != nil {
+			return err
+		}
+		steps, err := notify.ParseSteps(v)
+		if err != nil {
+			return err
+		}
+		if steps == nil && !clear {
+			steps = []notify.Step{}
+		}
+		p.Notify, p.ClearNotify = &steps, clear
+	}
+	return nil
 }
 
 func (s *Server) handleWorkspaceMove(w http.ResponseWriter, r *http.Request) {

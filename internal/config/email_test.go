@@ -23,8 +23,8 @@ func TestEmailValidate(t *testing.T) {
 		{"empty secret name", func(e *EmailConfig) { e.Token = "secret:" }, "email.token"},
 		{"missing domain", func(e *EmailConfig) { e.Domain = "" }, "email.domain"},
 		{"domain with scheme", func(e *EmailConfig) { e.Domain = "https://mail.example.com" }, "email.domain"},
-		{"no operators", func(e *EmailConfig) { e.Operators = nil }, "email.operators"},
-		{"operator not address", func(e *EmailConfig) { e.Operators = []string{"ops"} }, "email.operators"},
+		{"no operators", func(e *EmailConfig) { e.Admins = nil }, "email.admins"},
+		{"operator not address", func(e *EmailConfig) { e.Admins = []string{"ops"} }, "email.admins"},
 		{"poll too fast", func(e *EmailConfig) { e.PollInterval = "1s" }, "email.poll_interval"},
 		{"poll too slow", func(e *EmailConfig) { e.PollInterval = "11m" }, "email.poll_interval"},
 		{"poll unparsable", func(e *EmailConfig) { e.PollInterval = "fast" }, "email.poll_interval"},
@@ -73,20 +73,27 @@ func TestEmailPartialBlockRejected(t *testing.T) {
 	}
 }
 
-func TestEmailNotifyConflict(t *testing.T) {
+// TestRemovedNotifyKeys: a removed key fails the load and names its
+// replacement (plan 2026-09-28 C.4).
+func TestRemovedNotifyKeys(t *testing.T) {
 	t.Parallel()
-	cfg := defaultConfig()
-	cfg.applyDefaults()
-	cfg.Email = validEmailBlock()
-	cfg.Notify.Email = "echo notify"
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "cannot both be set") {
-		t.Fatalf("want conflict error, got %v", err)
+	for src, want := range map[string]string{
+		"notify:\n  email: echo hi\n":         "notify.email: removed; add a connector",
+		"notify:\n  whatsapp: echo hi\n":      "notify.whatsapp: removed",
+		"email:\n  operators: [a@acme.com]\n": "email.operators: renamed to email.admins",
+	} {
+		var cfg Config
+		if err := decodeConfig([]byte(src), &cfg); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err %v, want %q", src, err, want)
+		}
 	}
-	// The shell template alone stays valid: legacy notify chain without the block.
-	cfg.Email = EmailConfig{}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("notify.email without the block must validate: %v", err)
+	var cfg Config
+	src := "defaults:\n  workspace: ops\nemail:\n  admins: [a@acme.com]\nnotify:\n  route:\n    - {via: whatsapp, to: '+1555'}\n    - {via: email}\n"
+	if err := decodeConfig([]byte(src), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Defaults.Workspace != "ops" || len(cfg.Email.Admins) != 1 || len(cfg.Notify.Route) != 2 || cfg.Notify.Route[0].To != "+1555" {
+		t.Fatalf("decoded %+v %+v %+v", cfg.Defaults, cfg.Email, cfg.Notify)
 	}
 }
 
@@ -138,7 +145,7 @@ func TestEmailSetPathAndShow(t *testing.T) {
 	set("email.worker", "https://trebi-mail.example.workers.dev")
 	set("email.token", "secret:trebi_mail")
 	set("email.domain", "mail.example.com")
-	set("email.operators", "a@example.com,b@example.com")
+	set("email.admins", "a@example.com,b@example.com")
 	set("email.poll_interval", "45s")
 	set("email.require_dmarc", "false")
 	set("email.from_name", "Ops")
@@ -161,8 +168,8 @@ func TestEmailSetPathAndShow(t *testing.T) {
 	if by["email.worker"].Value != "https://trebi-mail.example.workers.dev" {
 		t.Fatalf("show worker: %+v", by["email.worker"])
 	}
-	if by["email.operators"].Value != "a@example.com,b@example.com" {
-		t.Fatalf("show operators: %+v", by["email.operators"])
+	if by["email.admins"].Value != "a@example.com,b@example.com" {
+		t.Fatalf("show admins: %+v", by["email.admins"])
 	}
 	if by["email.require_dmarc"].Value != "false" {
 		t.Fatalf("show dmarc: %+v", by["email.require_dmarc"])
@@ -174,9 +181,9 @@ func TestEmailSetPathAndShow(t *testing.T) {
 
 func validEmailBlock() EmailConfig {
 	return EmailConfig{
-		Worker:    "https://trebi-mail.example.workers.dev",
-		Token:     "secret:trebi_mail",
-		Domain:    "mail.example.com",
-		Operators: []string{"ops@example.com"},
+		Worker: "https://trebi-mail.example.workers.dev",
+		Token:  "secret:trebi_mail",
+		Domain: "mail.example.com",
+		Admins: []string{"ops@example.com"},
 	}
 }

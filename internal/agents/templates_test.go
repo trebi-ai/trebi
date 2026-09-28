@@ -11,7 +11,7 @@ func TestEmbeddedTemplatesRender(t *testing.T) {
 	if len(list) != 5 {
 		t.Fatalf("templates = %d, want 5", len(list))
 	}
-	files, err := c.Render(RenderOpts{Template: "research", AgentID: "research", Title: "Research", Accept: []string{"operators"}, Inputs: map[string]string{"competitors": "acme"}})
+	files, err := c.Render(RenderOpts{Template: "research", AgentID: "research", Title: "Research", Accept: []string{"admins"}, Inputs: map[string]string{"competitors": "acme"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestEmbeddedTemplatesRender(t *testing.T) {
 		byRel[f.Rel] = f.Content
 	}
 	agent := string(byRel["AGENT.md"])
-	if !strings.Contains(agent, "title: Research") || !strings.Contains(agent, `"operators"`) || strings.Contains(agent, "{{agent_title}}") {
+	if !strings.Contains(agent, "title: Research") || !strings.Contains(agent, `"admins"`) || strings.Contains(agent, "{{agent_title}}") {
 		t.Fatalf("agent render = %q", agent)
 	}
 	job := string(byRel["weekly-brief/JOB.md"])

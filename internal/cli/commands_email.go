@@ -25,13 +25,13 @@ func emailCommand() *cli.Command {
 			},
 			{
 				Name:   "test",
-				Usage:  "send a fixed test message to the operators",
+				Usage:  "send a fixed test message to the admins",
 				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
 				Action: runEmailTest,
 			},
 			{
 				Name:  "send",
-				Usage: "send one message from the workspace address (operators or allowlist only)",
+				Usage: "send one message from the workspace address (admins or allowlist only)",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "workspace", Required: true, Usage: "workspace id or name"},
 					&cli.StringFlag{Name: "agent", Usage: "send from the agent subaddress"},
@@ -118,12 +118,12 @@ func runEmailStatus(_ context.Context, c *cli.Command) error {
 	fmt.Fprintf(w, "Configured:  %s\n", mapStr(body, "configured"))
 	fmt.Fprintf(w, "Worker:      %s\n", dash(mapStr(body, "worker")))
 	fmt.Fprintf(w, "Domain:      %s\n", dash(mapStr(body, "domain")))
-	if ops, ok := body["operators"].([]any); ok && len(ops) > 0 {
+	if ops, ok := body["admins"].([]any); ok && len(ops) > 0 {
 		parts := make([]string, len(ops))
 		for i, o := range ops {
 			parts[i] = fmt.Sprint(o)
 		}
-		fmt.Fprintf(w, "Operators:   %s\n", strings.Join(parts, ", "))
+		fmt.Fprintf(w, "Admins:      %s\n", strings.Join(parts, ", "))
 	}
 	if ms := mapStr(body, "poll_interval_ms"); ms != "" {
 		fmt.Fprintf(w, "Poll:        %sms\n", ms)
@@ -171,7 +171,7 @@ func runEmailTest(_ context.Context, c *cli.Command) error {
 }
 
 // runEmailSend sends one explicit message (plan I.3). Recipients must be
-// operators or on the workspace allowlist; the API answers 400 otherwise.
+// admins or on the workspace allowlist; the API answers 400 otherwise.
 func runEmailSend(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {

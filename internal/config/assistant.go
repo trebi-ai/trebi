@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/trebi-ai/agent-wire"
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/secrets"
 )
 

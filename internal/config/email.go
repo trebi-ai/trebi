@@ -27,7 +27,7 @@ type EmailConfig struct {
 	Worker       string   `yaml:"worker,omitempty"`
 	Token        string   `yaml:"token,omitempty"` // secret:<name>, resolved at load
 	Domain       string   `yaml:"domain,omitempty"`
-	Operators    []string `yaml:"operators,omitempty"`
+	Admins       []string `yaml:"admins,omitempty"`
 	PollInterval string   `yaml:"poll_interval,omitempty"` // empty → 30s
 	RequireDMARC *bool    `yaml:"require_dmarc,omitempty"` // nil → true
 	FromName     string   `yaml:"from_name,omitempty"`     // empty → Trebi
@@ -82,7 +82,7 @@ func (e EmailConfig) ResolveToken() (string, error) {
 // not the stored secret; a missing secret is a doctor finding, not a config
 // error, so the daemon still boots. Without a Worker URL the block is
 // hosted mail tuning: the cloud link carries the mail, so domain and
-// operators are optional there (plan 2026-09-22 Part D).
+// admins are optional there (plan 2026-09-22 Part D).
 func (e *ConfigError) checkEmail(c Config) {
 	ec := c.Email
 	bearer := ec.Enabled()
@@ -98,11 +98,8 @@ func (e *ConfigError) checkEmail(c Config) {
 	// The bearer path fixes the domain in config; the hosted path learns
 	// it from the address the cloud mints, so it is optional there.
 	e.checkEmailDomain(ec, bearer)
-	e.checkEmailOperators(ec.Operators, bearer)
+	e.checkEmailAdmins(ec.Admins, bearer)
 	e.checkEmailPollInterval(ec)
-	if c.Notify.Email != "" && (bearer || emailBlockSet(ec)) {
-		e.add("email", "notify.email and the email block cannot both be set; the native channel takes the email slot")
-	}
 }
 
 // checkEmailWorker validates the Worker URL and the token reference form,
@@ -131,18 +128,18 @@ func (e *ConfigError) checkEmailDomain(ec EmailConfig, required bool) {
 	}
 }
 
-// checkEmailOperators validates the operator addresses. The bearer path
+// checkEmailAdmins validates the operator addresses. The bearer path
 // needs at least one; the hosted path may leave the list empty.
-func (e *ConfigError) checkEmailOperators(operators []string, required bool) {
-	if len(operators) == 0 {
+func (e *ConfigError) checkEmailAdmins(admins []string, required bool) {
+	if len(admins) == 0 {
 		if required {
-			e.add("email.operators", "at least one operator address is required")
+			e.add("email.admins", "at least one admin address is required")
 		}
 		return
 	}
-	for _, op := range operators {
+	for _, op := range admins {
 		if !strings.Contains(strings.TrimSpace(op), "@") {
-			e.add("email.operators", fmt.Sprintf("%q is not an email address", op))
+			e.add("email.admins", fmt.Sprintf("%q is not an email address", op))
 		}
 	}
 }
@@ -159,6 +156,6 @@ func (e *ConfigError) checkEmailPollInterval(ec EmailConfig) {
 
 // emailBlockSet reports whether any email key besides worker is set.
 func emailBlockSet(ec EmailConfig) bool {
-	return ec.Token != "" || ec.Domain != "" || len(ec.Operators) > 0 ||
+	return ec.Token != "" || ec.Domain != "" || len(ec.Admins) > 0 ||
 		ec.PollInterval != "" || ec.RequireDMARC != nil || ec.FromName != ""
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -36,10 +37,11 @@ type WorkspaceRef struct {
 // Service owns addresses, the Worker settings, and the envelope log.
 // Long-running work (the poll loop) belongs to the daemon, not here.
 type Service struct {
-	st    *store.Store
-	convs *conversations.Service
-	ob    *outbox.Service
-	log   *slog.Logger
+	st     *store.Store
+	convs  *conversations.Service
+	ob     *outbox.Service
+	picker WorkspacePicker
+	log    *slog.Logger
 
 	mu          sync.RWMutex
 	settings    *Settings
@@ -154,7 +156,7 @@ type Status struct {
 	Configured     bool     `json:"configured"`
 	Worker         string   `json:"worker,omitempty"`
 	Domain         string   `json:"domain,omitempty"`
-	Operators      []string `json:"operators,omitempty"`
+	Admins         []string `json:"admins,omitempty"`
 	PollIntervalMS int64    `json:"poll_interval_ms,omitempty"`
 	RequireDMARC   bool     `json:"require_dmarc,omitempty"`
 	Entitlement    string   `json:"entitlement"` // ok | missing
@@ -190,7 +192,7 @@ func (s *Service) Status(ctx context.Context) Status {
 	if cfg != nil {
 		out.Worker = cfg.Worker
 		out.Domain = cfg.Domain
-		out.Operators = cfg.Operators
+		out.Admins = cfg.Admins
 		out.PollIntervalMS = cfg.PollInterval.Milliseconds()
 		out.RequireDMARC = cfg.RequireDMARC
 	}
@@ -210,7 +212,7 @@ func (s *Service) Status(ctx context.Context) Status {
 	return out
 }
 
-// Test sends one fixed message to the operators and logs the envelope.
+// Test sends one fixed message to the admins and logs the envelope.
 // It is the "does the pipe work" action for the route and the CLI. The row
 // gets one attempt, made now.
 func (s *Service) Test(ctx context.Context) (string, error) {
@@ -224,7 +226,7 @@ func (s *Service) Test(ctx context.Context) (string, error) {
 	}
 	msgID := MintMessageID(domain)
 	row, err := s.enqueue(ctx, envelope{
-		messageID: msgID, recipients: cfg.Operators, subject: "trebi email test",
+		messageID: msgID, recipients: cfg.Admins, subject: "trebi email test",
 	}, outbox.Row{
 		Purpose: outbox.PurposeTest, MaxAttempts: 1,
 		Body: "This is a test message from trebi. The email channel works.",
@@ -241,6 +243,52 @@ func (s *Service) Test(ctx context.Context) (string, error) {
 		return "", errors.New(cmp.Or(row.ErrorMessage, "email test did not send"))
 	}
 	return msgID, nil
+}
+
+// SendTest writes one test mail of a notify route to the given addresses,
+// from the alert sender of the workspace. The row gets one attempt; the
+// caller calls SendNow.
+func (s *Service) SendTest(ctx context.Context, workspaceID string, to []string) (outbox.Row, error) {
+	if len(to) == 0 {
+		return outbox.Row{}, errors.New("test mail has no recipient")
+	}
+	cfg, err := s.Settings()
+	if err != nil {
+		return outbox.Row{}, err
+	}
+	dom, err := s.domain(ctx)
+	if err != nil {
+		return outbox.Row{}, err
+	}
+	return s.enqueue(ctx, envelope{
+		workspaceID: workspaceID, messageID: MintMessageID(dom), recipients: to, subject: "trebi notify test",
+	}, outbox.Row{
+		Purpose: outbox.PurposeTest, MaxAttempts: 1,
+		Body: "This is a test message from trebi. This step of the notify route works.",
+		Env:  fromEnv(s.alertFrom(ctx, workspaceID), cfg.FromName),
+	})
+}
+
+// WorkspacePicker names the workspace that sends a system alert: the
+// configured default, else the workspace with the most active jobs.
+type WorkspacePicker interface {
+	Default() string
+	MostActive(ctx context.Context) string
+}
+
+// WithWorkspacePicker sets the system sender seam. Nil keeps trebi@<domain>.
+func (s *Service) WithWorkspacePicker(p WorkspacePicker) *Service {
+	s.picker = p
+	return s
+}
+
+// SystemWorkspace is the workspace id that sends an alert with no
+// workspace, or "".
+func (s *Service) SystemWorkspace(ctx context.Context) string {
+	if s.picker == nil {
+		return ""
+	}
+	return cmp.Or(s.picker.Default(), s.picker.MostActive(ctx))
 }
 
 // SendOpts is POST /v1/email/send (plan I.3): one explicit message from
@@ -312,55 +360,56 @@ func (s *Service) Send(ctx context.Context, opts SendOpts) (Queued, error) {
 	return Queued{MessageID: msgID, OutboxID: row.ID}, nil
 }
 
-// SendAlert enqueues one alert mail on its thread and returns the minted
-// Message-ID. The envelope row, the inbox link, and the outbox row are
-// written in one transaction, so a reply resolves to the item even if this
-// process dies before the send. subject doubles as the thread key: a repeat
-// alert with the same subject carries In-Reply-To for the previous one.
-func (s *Service) SendAlert(ctx context.Context, inboxID, subject, text string) (string, error) {
+// AlertMail is the email step of an alert route.
+type AlertMail struct {
+	InboxID, Subject, Text string
+	To                     []string
+	RouteStep              int
+	Route                  []notify.Step
+}
+
+// SendAlert writes the envelope, the inbox link, and the outbox row of one
+// alert mail in one transaction, so a reply resolves to the item even if the
+// process dies before the send. The subject is the thread key: a repeat
+// alert with the same subject carries In-Reply-To. A repeat of the same
+// inbox item and step returns the stored row. The caller may call SendNow.
+func (s *Service) SendAlert(ctx context.Context, a AlertMail) (outbox.Row, string, error) {
+	if len(a.To) == 0 {
+		return outbox.Row{}, "", errors.New("alert mail has no recipient")
+	}
 	cfg, err := s.Settings()
 	if err != nil {
-		return "", err
+		return outbox.Row{}, "", err
 	}
 	var ws sql.NullString
 	if err := s.st.DB().QueryRowContext(ctx,
-		`SELECT workspace_id FROM inbox_items WHERE id=?`, inboxID).Scan(&ws); err != nil {
-		return "", fmt.Errorf("alert inbox item %s: %w", inboxID, err)
+		`SELECT workspace_id FROM inbox_items WHERE id=?`, a.InboxID).Scan(&ws); err != nil {
+		return outbox.Row{}, "", fmt.Errorf("alert inbox item %s: %w", a.InboxID, err)
 	}
 	workspaceID := ws.String
-	prev, err := s.lastSentOnThread(ctx, workspaceID, subject)
+	prev, err := s.lastSentOnThread(ctx, workspaceID, a.Subject)
 	if err != nil {
-		return "", err
+		return outbox.Row{}, "", err
 	}
 	dom, err := s.domain(ctx)
 	if err != nil {
-		return "", err
+		return outbox.Row{}, "", err
 	}
 	msgID := MintMessageID(dom)
 	root, inReplyTo := msgID, ""
 	if prev.messageID != "" {
 		root, inReplyTo = prev.threadRoot, prev.messageID
 	}
+	step := a.RouteStep
 	row, err := s.enqueue(ctx, envelope{
 		workspaceID: workspaceID, messageID: msgID, inReplyTo: inReplyTo, threadRoot: root,
-		recipients: cfg.Operators, subject: subject, inboxID: inboxID,
+		recipients: a.To, subject: a.Subject, inboxID: a.InboxID,
 	}, outbox.Row{
-		Purpose: outbox.PurposeAlert, Body: text, InboxID: inboxID,
+		Purpose: outbox.PurposeAlert, Body: a.Text, InboxID: a.InboxID,
+		DedupeKey: fmt.Sprintf("alert/%s/%d", a.InboxID, step), RouteStep: &step, Route: a.Route,
 		Env: fromEnv(s.alertFrom(ctx, workspaceID), cfg.FromName),
 	})
-	if err != nil {
-		return "", err
-	}
-	// The first attempt is synchronous, so a failure can fall through to the
-	// next alert channel. The outbox keeps the row and retries it.
-	row, err = s.ob.SendNow(ctx, row.ID)
-	if err != nil {
-		return msgID, err
-	}
-	if row.Status != outbox.StatusSent {
-		return msgID, errors.New(cmp.Or(row.ErrorMessage, "alert mail did not send"))
-	}
-	return msgID, nil
+	return row, msgID, err
 }
 
 // envelope is the email_messages row of one outbound mail.
@@ -817,10 +866,13 @@ func (s *Service) ConnectorRow() map[string]any {
 
 // alertFrom picks the sender for one alert. A workspace address makes the
 // alert answerable: the local part is in the known set, so the operator's
-// reply reaches the spool and resolves by Message-ID (plan I.1). The bare
-// instance sender is the fallback for an alert with no workspace; mail to
-// it never comes back, because no address row owns that local part.
+// reply reaches the spool and resolves by Message-ID (plan I.1). An alert
+// with no workspace uses the system workspace. The bare instance sender is
+// the last fallback; mail to it never comes back.
 func (s *Service) alertFrom(ctx context.Context, workspaceID string) string {
+	if workspaceID == "" {
+		workspaceID = s.SystemWorkspace(ctx)
+	}
 	if workspaceID != "" {
 		if addr, err := s.Address(ctx, workspaceID); err == nil {
 			return addr.Full()
@@ -847,18 +899,18 @@ func (s *Service) RouteEnvFor(ctx context.Context, workspaceID string) (RouteEnv
 
 // checkRecipients applies the v1 trust dial (plan I.3): every recipient
 // must be an operator or on the workspace allowlist. The allowlist comes
-// from the routing environment; without an ingress only operators pass.
+// from the routing environment; without an ingress only admins pass.
 func (s *Service) checkRecipients(ctx context.Context, cfg Settings, opts SendOpts) error {
 	if opts.Recipients != nil {
 		for _, to := range opts.To {
-			if !opts.Recipients.Accepts(to, cfg.Operators, s.workspaceAllowlist(ctx, opts.WorkspaceID)) {
+			if !opts.Recipients.Accepts(to, cfg.Admins, s.workspaceAllowlist(ctx, opts.WorkspaceID)) {
 				return fmt.Errorf("%w: %s", ErrRecipient, to)
 			}
 		}
 		return nil
 	}
 	allowed := map[string]bool{}
-	for _, o := range append([]string(nil), cfg.Operators...) {
+	for _, o := range append([]string(nil), cfg.Admins...) {
 		allowed[strings.ToLower(strings.TrimSpace(o))] = true
 	}
 	if s.ingress != nil {

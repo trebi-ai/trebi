@@ -70,9 +70,9 @@ func KnownHarness(h string) bool {
 	return false
 }
 
-// DefaultAccept preserves the behavior of an absent email block: operators
+// DefaultAccept preserves the behavior of an absent email block: admins
 // and the allowlist may write.
-var DefaultAccept = []string{"operators", "allowlist"}
+var DefaultAccept = []string{"admins", "allowlist"} //nolint:gochecknoglobals // read-only default, copied by callers
 
 // Settings are the effective assistant settings for one workspace (plan
 // 2026-09-26 Part B). Both the assistant manager and the workspace

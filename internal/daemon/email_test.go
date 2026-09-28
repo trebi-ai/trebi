@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/trebi-ai/agent-wire"
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/conversations"
@@ -199,8 +199,15 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alertMsgID, err := p.cp.Email.SendAlert(ctx, inbox, "[trebi] approval requested", "Reply approve or deny.")
+	// Shadow skips route delivery, so the test mails the alert itself.
+	row, alertMsgID, err := p.cp.Email.SendAlert(ctx, email.AlertMail{
+		InboxID: inbox, Subject: "[trebi] approval requested", Text: "Reply approve or deny.",
+		To: []string{"ops@example.com"},
+	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.cp.Outbox.SendNow(ctx, row.ID); err != nil {
 		t.Fatal(err)
 	}
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
@@ -439,7 +446,7 @@ done`)
 	}
 	cp.Email.Configure(&email.Settings{
 		Worker: wsSrv.URL, Token: "test-token-0000", Domain: "mail.example.com",
-		Operators: []string{"ops@example.com"}, PollInterval: time.Minute,
+		Admins: []string{"ops@example.com"}, PollInterval: time.Minute,
 		RequireDMARC: true, FromName: "Trebi",
 	}, email.NewClient(wsSrv.URL, "test-token-0000"))
 	addr, err := cp.Email.EnsureAddress(ctx, added.ID, "ellis")

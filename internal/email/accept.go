@@ -10,7 +10,7 @@ import (
 // AcceptRule is one operator's resolved sender gate (2026-09-24 plan D.1).
 // Zero value is closed.
 type AcceptRule struct {
-	operators bool
+	admins    bool
 	allowlist bool
 	addrs     []string
 	domains   []string
@@ -21,8 +21,8 @@ func NewAcceptRule(entries []job.AcceptEntry) AcceptRule {
 	var r AcceptRule
 	for _, entry := range entries {
 		switch {
-		case entry.Keyword == "operators":
-			r.operators = true
+		case entry.Keyword == "admins":
+			r.admins = true
 		case entry.Keyword == "allowlist":
 			r.allowlist = true
 		case entry.Address != "":
@@ -37,17 +37,17 @@ func NewAcceptRule(entries []job.AcceptEntry) AcceptRule {
 // Empty reports a closed rule: no entry at all. An explicitly empty
 // email.accept list and a missing agent list are both closed.
 func (r AcceptRule) Empty() bool {
-	return !r.operators && !r.allowlist && len(r.addrs) == 0 && len(r.domains) == 0
+	return !r.admins && !r.allowlist && len(r.addrs) == 0 && len(r.domains) == 0
 }
 
-// Accepts matches one From address. Operators and allowlist expand to their
+// Accepts matches one From address. Admins and allowlist expand to their
 // configured address lists at call time so config changes need no reparse.
-func (r AcceptRule) Accepts(from string, operators, allowlist []string) bool {
+func (r AcceptRule) Accepts(from string, admins, allowlist []string) bool {
 	from = strings.ToLower(strings.TrimSpace(from))
 	if from == "" {
 		return false
 	}
-	if r.operators && addrListed(operators, from) {
+	if r.admins && addrListed(admins, from) {
 		return true
 	}
 	if r.allowlist && addrListed(allowlist, from) {
@@ -69,7 +69,7 @@ func slicesContains(values []string, want string) bool {
 	return false
 }
 
-// ResolveRecipients expands report.to against configured operators and the
+// ResolveRecipients expands report.to against the configured admins and the
 // workspace allowlist. It returns the concrete addresses only.
 func (s *Service) ResolveRecipients(ctx context.Context, workspaceID string, entries []string) ([]string, error) {
 	parsed, err := job.ParseAccept(entries)
@@ -92,10 +92,10 @@ func (s *Service) ResolveRecipients(ctx context.Context, workspaceID string, ent
 	}
 	out := make([]string, 0)
 	seen := map[string]bool{}
-	for _, group := range [][]string{cfg.Operators, allowlist} {
+	for _, group := range [][]string{cfg.Admins, allowlist} {
 		for _, addr := range group {
 			addr = strings.TrimSpace(addr)
-			if addr == "" || seen[strings.ToLower(addr)] || !rule.Accepts(addr, cfg.Operators, allowlist) {
+			if addr == "" || seen[strings.ToLower(addr)] || !rule.Accepts(addr, cfg.Admins, allowlist) {
 				continue
 			}
 			seen[strings.ToLower(addr)] = true

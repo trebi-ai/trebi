@@ -219,7 +219,7 @@ func (in Input) strList(key string) ([]string, error) {
 func (in Input) pick(keys ...string) map[string]any {
 	out := map[string]any{}
 	for _, k := range keys {
-		if v, ok := in[k]; ok && v != nil {
+		if v, ok := in[k]; ok && (v != nil || routeKey(k)) {
 			out[k] = v
 		}
 	}
@@ -1103,7 +1103,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildWorkspaceAdd(v[0], v[1], mkdir), nil
 			}),
-			"patch": act("PATCH /v1/workspaces/{id}", Input{"id": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+			"patch": act("PATCH /v1/workspaces/{id}", Input{"id": "ws1", "git_enabled": true}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1116,7 +1116,11 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildWorkspacePatch(id, name, gitEnabled), nil
+				route := in.pick("contact", "notify")
+				if name == nil && gitEnabled == nil && len(route) == 0 {
+					return request.HTTPRequest{}, fmt.Errorf("give at least one of name, git_enabled, contact, notify")
+				}
+				return request.BuildWorkspacePatch(id, name, gitEnabled, route), nil
 			}),
 			"move": func() Action {
 				e := act("POST /v1/workspaces/{id}/move", Input{"id": "ws1", "path": "/tmp/reports", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
@@ -1927,6 +1931,31 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"cancel": idPost("POST /v1/outbox/{id}/cancel", "id", "01ROW", request.BuildOutboxCancel),
 		},
 
+		"notify": {
+			"route": act("GET /v1/notify/route", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("workspace", "agent", "job")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildNotifyRoutePath(request.NotifyScope{Workspace: v[0], Agent: v[1], Job: v[2]})), nil
+			}),
+			"test": act("POST /v1/notify/test", Input{"workspace": "ws1", "step": float64(0)}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("workspace", "agent", "job")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				n, ok, err := in.num("step")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				var step *int
+				if ok {
+					step = &n
+				}
+				return request.BuildNotifyTest(request.NotifyScope{Workspace: v[0], Agent: v[1], Job: v[2]}, step), nil
+			}),
+		},
+
 		"conversation": {
 			"list": act("GET /v1/conversations", Input{}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("workspace", "channel", "operator", "cursor")
@@ -2158,7 +2187,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"test": act("POST /v1/email/test", Input{}, func(Input) (request.HTTPRequest, error) {
 				return request.BuildEmailTest(), nil
 			}),
-			// Plan I.3: recipients must be operators or on the workspace
+			// Plan I.3: recipients must be admins or on the workspace
 			// allowlist; the API answers 400 for anyone else.
 			"send": act("POST /v1/email/send",
 				Input{"workspace": "ws1", "agent": "research", "to": []any{"ops@example.com"},
@@ -2360,8 +2389,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 // jobPatchFields are the flat fields job.patch accepts. They mirror the keys
 // job.MergePatchFrontmatter honors; an unknown key is a validation error.
 // envset takes one name or a list of names (plan H.3). connectors is a list.
+// contact and notify take null to remove the key (inherit).
 var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
-	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "envset", "connectors", "followup_prompt", "session",
+	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "envset", "connectors", "followup_prompt", "session", "contact", "notify",
 }
 
 // agentPatchFields add kit, which only an agent self-patch accepts: the
@@ -2466,3 +2496,7 @@ func logLinesTransform(in Input, _ int, body []byte) ([]byte, error) {
 	}
 	return json.Marshal(res)
 }
+
+// routeKey names the patch keys where null is a value: it removes the key so
+// the layer inherits.
+func routeKey(k string) bool { return k == "contact" || k == "notify" }

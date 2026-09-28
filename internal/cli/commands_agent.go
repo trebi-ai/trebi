@@ -300,7 +300,7 @@ func runAgentPatch(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	for k, v := range fields {
-		patch[k] = v
+		patch[k] = patchValue(k, v)
 	}
 	if len(patch) == 0 {
 		return fmt.Errorf("usage: trebi agent patch <name> --disabled [KEY=VALUE …]")

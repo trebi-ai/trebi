@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/notify"
 	"gopkg.in/yaml.v3"
 )
 
@@ -413,6 +414,7 @@ func (l *pathEntryList) add(path, value, def string) {
 // addCore adds the top-level, defaults, and notify rows.
 func (l *pathEntryList) addCore(cfg *Config) {
 	l.add("defaults.command", cfg.Defaults.Command, "claude")
+	l.add("defaults.workspace", cfg.Defaults.Workspace, "")
 	l.add("defaults.session.timeout", cfg.Defaults.Session.Timeout, "")
 	l.add("defaults.session.max_duration", cfg.Defaults.Session.MaxDuration, "")
 	l.add("defaults.session.keep_alive", cfg.Defaults.Session.KeepAlive, "")
@@ -434,15 +436,23 @@ func (l *pathEntryList) addCore(cfg *Config) {
 		harnessRuntime = "cli"
 	}
 	l.add("harness.runtime", harnessRuntime, "cli")
-	l.add("notify.email", cfg.Notify.Email, "")
-	l.add("notify.whatsapp", cfg.Notify.WhatsApp, "")
-	l.add("notify.discord", cfg.Notify.Discord, "")
+	route := ""
+	if cfg.Notify.Route != nil {
+		b, _ := json.Marshal(cfg.Notify.Route) // []notify.Step always marshals
+		route = string(b)
+	}
+	l.add("notify.route", route, "")
 	// Effective value: unset → 5m (WaitingAfterDuration); keep source=default when not in YAML.
 	waShow := strings.TrimSpace(cfg.Notify.WaitingAfter)
 	if waShow == "" {
 		waShow = "5m"
 	}
 	l.add("notify.waiting_after", waShow, "5m")
+	aaShow := strings.TrimSpace(cfg.Notify.ApprovalAfter)
+	if aaShow == "" {
+		aaShow = "5m"
+	}
+	l.add("notify.approval_after", aaShow, "5m")
 	warnShow := "80"
 	if cfg.Notify.UsageWarnAt > 0 {
 		warnShow = strconv.Itoa(cfg.Notify.UsageWarnAt)
@@ -477,7 +487,7 @@ func (l *pathEntryList) addEmail(cfg *Config) {
 	l.add("email.worker", e.Worker, "")
 	l.add("email.token", e.Token, "")
 	l.add("email.domain", e.Domain, "")
-	l.add("email.operators", joinCSV(e.Operators), "")
+	l.add("email.admins", joinCSV(e.Admins), "")
 	pi := strings.TrimSpace(e.PollInterval)
 	if pi == "" {
 		pi = DefaultEmailPollInterval.String()
@@ -602,6 +612,9 @@ func (c *Config) setDefaultsKey(path, value string) (handled bool, err error) {
 		}
 		c.Defaults.Command = value
 		return true, nil
+	case "defaults.workspace":
+		c.Defaults.Workspace = clearOrValue(value)
+		return true, nil
 	case "defaults.session.timeout":
 		return true, setDurationOrEmpty(&c.Defaults.Session.Timeout, value, path)
 	case "defaults.session.max_duration":
@@ -661,14 +674,33 @@ func (c *Config) setAPIKey(path, value string) (handled bool, err error) {
 // setNotifyKey handles notify.* keys; handled=false when path is not one.
 func (c *Config) setNotifyKey(path, value string) (handled bool, err error) {
 	switch path {
-	case "notify.email":
-		c.Notify.Email = clearOrValue(value)
-	case "notify.whatsapp":
-		c.Notify.WhatsApp = clearOrValue(value)
-	case "notify.discord":
-		c.Notify.Discord = clearOrValue(value)
+	case "notify.route":
+		if clearOrValue(value) == "" {
+			c.Notify.Route = nil
+			return true, nil
+		}
+		var raw any
+		if err := json.Unmarshal([]byte(value), &raw); err != nil {
+			return true, fmt.Errorf("notify.route: want a JSON list of {via, to} steps: %w", err)
+		}
+		steps, err := notify.ParseSteps(raw)
+		if err != nil {
+			return true, err
+		}
+		if steps == nil {
+			steps = []notify.Step{}
+		}
+		c.Notify.Route = steps
 	case "notify.waiting_after":
 		return true, setNudge(&c.Notify.WaitingAfter, value, path)
+	case "notify.approval_after":
+		v := strings.TrimSpace(value)
+		if v != "" && v != "0" && !strings.EqualFold(v, "off") {
+			if d, err := time.ParseDuration(v); err != nil || d < 0 {
+				return true, fmt.Errorf("notify.approval_after: want a duration, 0, or off")
+			}
+		}
+		c.Notify.ApprovalAfter = clearOrValue(v)
 	case "notify.usage_warn_at":
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || n < 0 || n > 100 {
@@ -749,12 +781,12 @@ func (c *Config) setEmailKey(path, value string) (handled bool, err error) {
 		c.Email.Token = clearOrValue(value)
 	case "email.domain":
 		c.Email.Domain = clearOrValue(value)
-	case "email.operators":
+	case "email.admins":
 		ops, err := parseStringSlice(value, true)
 		if err != nil {
-			return true, fmt.Errorf("email.operators: %w", err)
+			return true, fmt.Errorf("email.admins: %w", err)
 		}
-		c.Email.Operators = ops
+		c.Email.Admins = ops
 	case "email.poll_interval":
 		return true, setDurationOrEmpty(&c.Email.PollInterval, value, path)
 	case "email.require_dmarc":
@@ -1096,10 +1128,10 @@ func pathKeyDescriptions() map[string]string {
 		"terminal":                      "macOS app for trebi run attach (Terminal|iTerm|Ghostty)",
 		"tools.fallback":                "When pin missing: require (fail) or path (use PATH)",
 		"harness.runtime":               "Vendor run runtime: cli (subprocess wire, default) or tui (incident kill switch)",
-		"notify.email":                  "Shell cmd for email alerts (tried first)",
-		"notify.whatsapp":               "Shell cmd for WhatsApp alerts (tried second)",
-		"notify.discord":                "Shell cmd for Discord alerts (tried third)",
-		"notify.waiting_after":          "Escalate waiting tasks via notify chain (default 5m; off/0 disables)",
+		"notify.route":                  `Global alert route as JSON, e.g. [{"via":"whatsapp","to":"+1555"},{"via":"email","to":"contact"}]`,
+		"notify.waiting_after":          "Escalate waiting tasks through the notify route (default 5m; off/0 disables)",
+		"notify.approval_after":         "Delay before an approval request pages (default 5m; 0 at once; off never)",
+		"defaults.workspace":            "System sender workspace (id or name) for alerts with no workspace",
 		"notify.usage_warn_at":          "Harness usage percent that pages a warning (default 80)",
 		"files.max_bytes":               "Workspace file PUT/GET size cap in bytes (default 10485760)",
 		"workspaces.root":               "Directory for pathless workspace create (default ~/trebi)",
@@ -1121,7 +1153,7 @@ func pathKeyDescriptions() map[string]string {
 		"email.worker":                  "trebi-mail Worker URL; present enables the email channel",
 		"email.token":                   "secret:<name> holding the shared Worker token",
 		"email.domain":                  "Bare hostname the workspace addresses live on",
-		"email.operators":               "Comma-separated alert recipients and default inbound allowlist",
+		"email.admins":                  "Comma-separated alert contact and default inbound allowlist",
 		"email.poll_interval":           "Ingress poll period (default 30s; 5s to 10m)",
 		"email.require_dmarc":           "Reject inbound mail without a DMARC pass (default true)",
 		"email.from_name":               "Display name on outbound mail (default Trebi)",

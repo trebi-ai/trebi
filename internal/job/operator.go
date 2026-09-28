@@ -54,9 +54,11 @@ func ParseAccept(lines []string) ([]AcceptEntry, error) {
 			return nil, fmt.Errorf("email.accept[%d]: empty entry", i)
 		}
 		switch strings.ToLower(value) {
-		case "operators":
-			out = append(out, AcceptEntry{Keyword: "operators"})
+		case "admins":
+			out = append(out, AcceptEntry{Keyword: "admins"})
 			continue
+		case "operators":
+			return nil, fmt.Errorf(`email.accept[%d]: unknown accept token "operators"; use "admins"`, i)
 		case "allowlist":
 			out = append(out, AcceptEntry{Keyword: "allowlist"})
 			continue
@@ -74,7 +76,7 @@ func ParseAccept(lines []string) ([]AcceptEntry, error) {
 		}
 		addr, err := mail.ParseAddress(value)
 		if err != nil || !strings.EqualFold(addr.Address, value) || strings.ContainsAny(addr.Address, " \t") {
-			return nil, fmt.Errorf("email.accept[%d]: want operators, allowlist, an address, or @domain", i)
+			return nil, fmt.Errorf("email.accept[%d]: want admins, allowlist, an address, or @domain", i)
 		}
 		out = append(out, AcceptEntry{Address: strings.ToLower(addr.Address)})
 	}

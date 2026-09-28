@@ -27,13 +27,13 @@ Inbound agent mail is closed unless `AGENT.md` explicitly accepts it:
 ```yaml
 email:
   accept:
-    - operators        # config.yaml email.operators
+    - admins           # config.yaml email.admins
     - allowlist        # trebi.yaml email.allowlist
     - alice@acme.com   # exact address
     - "@acme.com"      # exact domain
 ```
 
-The assistant has the same `email.accept` key in the `assistant:` block of the workspace `trebi.yaml`. If it is absent, the assistant keeps the `operators` plus `allowlist` rule.
+The assistant has the same `email.accept` key in the `assistant:` block of the workspace `trebi.yaml`. If it is absent, the assistant keeps the `admins` plus `allowlist` rule.
 
 ## Rename identity
 
@@ -50,7 +50,7 @@ List onboarding templates or create a disabled starter portfolio:
 ```bash
 trebi agent templates
 trebi agent create research --workspace reports --template research \
-  --title "Research" --accept operators --input competitors="acme,beta"
+  --title "Research" --accept admins --input competitors="acme,beta"
 ```
 
 `AGENT.md kit:` carries reusable `envset` (a name or a list of names), `env`, `skills`, and `connectors` values. Owned jobs inherit it; their own `envset`/`env`/`connectors` wins. `skills` stays a prompt hint and a doctor check; `connectors` names managed connectors whose actions are injected into each run (see `trebi guide connectors-and-rules`).
@@ -63,7 +63,7 @@ budget:
   on_exceed: pause # or alert
 report:
   every: 168h
-  to: [operators]
+  to: [admins]
 ```
 
 `pause` refuses automated work after the limit; a human manual launch always runs. `report` creates an internal schedule, wakes the agent with portfolio context, and mails the final brief from the agent subaddress to the resolved recipients.

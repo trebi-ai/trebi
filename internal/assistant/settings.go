@@ -75,7 +75,7 @@ func SettingsFromConfig(cfg *config.Config) Settings {
 		Mode:     a.ModeOrDefault(),
 		Skills:   a.SkillsOrDefault(),
 		Context:  a.Context,
-		Accept:   []string{"operators", "allowlist"},
+		Accept:   []string{"admins", "allowlist"},
 		Native:   nativeSettingsOf(a.Native),
 	}
 }

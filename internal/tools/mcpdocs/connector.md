@@ -91,14 +91,18 @@ Create one connector from a definition object. Each block is optional, but
 the definition needs at least one of `actions`, `events`, and `channel`. The
 name matches `^[a-z0-9][a-z0-9-]{0,39}$`; `email`, `webhook`, and `trebi` are
 reserved. `catchup` needs `format: json` and `id`, and it cannot be combined
-with `poll_ms`. `poll_ms` is at least 10000. A `channel` needs an `events` block
-with `format: json`, and `ref` is a dotted path into the event.
+with `poll_ms`. `poll_ms` is at least 10000. A reply `channel` needs an `events`
+block with `format: json`, and `ref` is a dotted path into the event. A
+`channel` with no `ref` and no `events` is send-only: it needs only `send`, has
+no `typing` or `ack`, and only pushes alerts that a `notify` route names. The
+list row shows `channel.modes`: `["reply","push"]` or `["push"]`.
 - `definition` (object, required): a definition such as
   `{"name": "mail", "events": {"command": "fetch-mail.sh", "format": "line"}}`.
   Blocks: `events` (`command` required; `format`, `restart`, `poll_ms`, `id`,
   `ts`, `identity`, `catchup{command,max_events,timeout_ms}`), `actions`
   (`mcp{command,args,env,url,headers}` and/or `cli{commands,skill}`), `channel`
-  (`ref`, `send` required; `typing`, `typing_interval_ms`, `typing_max_ms`, `ack`),
+  (`send` required; `ref` required with `events`; `typing`, `typing_interval_ms`,
+  `typing_max_ms`, `ack`),
   plus `env` and `cwd`. `cwd` applies to the events command and the channel
   commands. It does not apply to an MCP server.
 

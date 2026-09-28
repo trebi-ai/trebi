@@ -82,9 +82,6 @@ func TestSetPath_AllShowKeys(t *testing.T) {
 	cfg.applyDefaults()
 	ents := cfg.PathEntries(nil)
 	for _, e := range ents {
-		if e.Key == "notify.email" {
-			continue // mutually exclusive with the email block, which is also set here
-		}
 		sample := sampleSetValue(e.Key)
 		if err := cfg.SetPath(e.Key, sample); err != nil {
 			if strings.Contains(err.Error(), "read-only") {
@@ -189,23 +186,20 @@ func TestSetPath_RoundTrip(t *testing.T) {
 	if !cfg.API.TLSEnabled() {
 		t.Fatal("tls")
 	}
-	if err := cfg.SetPath("notify.email", "inbox-cli send …"); err != nil {
+	if err := cfg.SetPath("notify.route", `[{"via":"whatsapp","to":"+1555"},{"via":"email","to":"admins"}]`); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Notify.Email != "inbox-cli send …" {
-		t.Fatalf("%q", cfg.Notify.Email)
+	if len(cfg.Notify.Route) != 2 || cfg.Notify.Route[1].To != "admins" {
+		t.Fatalf("%+v", cfg.Notify.Route)
 	}
-	if err := cfg.SetPath("notify.discord", "discord-cli dm …"); err != nil {
-		t.Fatal(err)
+	if err := cfg.SetPath("notify.route", `["email"]`); err == nil {
+		t.Fatal("old channel list must fail")
 	}
-	if len(cfg.Notify.Channels()) != 2 {
-		t.Fatalf("channels: %v", cfg.Notify.Channels())
+	if err := cfg.SetPath("notify.route", "-"); err != nil || cfg.Notify.Route != nil {
+		t.Fatalf("clear %v %+v", err, cfg.Notify.Route)
 	}
-	if err := cfg.SetPath("notify.email", "-"); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Notify.Email != "" {
-		t.Fatalf("%q", cfg.Notify.Email)
+	if err := cfg.SetPath("notify.approval_after", "soon"); err == nil {
+		t.Fatal("bad approval_after must fail")
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -351,8 +345,12 @@ func sampleSetValue(key string) string {
 		return "path"
 	case key == "harness.runtime":
 		return "cli"
-	case key == "notify.email", key == "notify.whatsapp", key == "notify.discord":
-		return "echo trebi-notify-{{message}}"
+	case key == "notify.route":
+		return `[{"via":"email","to":"contact"}]`
+	case key == "notify.approval_after":
+		return "5m"
+	case key == "defaults.workspace":
+		return "ops"
 	case key == "email.worker":
 		return "https://trebi-mail.example.workers.dev"
 	case key == "connectors.registries":
@@ -365,7 +363,7 @@ func sampleSetValue(key string) string {
 		return "secret:trebi_mail"
 	case key == "email.domain":
 		return "mail.example.com"
-	case key == "email.operators":
+	case key == "email.admins":
 		return "ops@example.com"
 	case key == "email.poll_interval":
 		return "30s"

@@ -49,6 +49,10 @@ func TestDefinitionValidate(t *testing.T) {
 		{"env bad key", connectors.Definition{Name: "a", Env: map[string]string{"../x": "v"}, Events: &connectors.Events{Command: "x"}}, []string{"env"}},
 		{"mcp env bad key", connectors.Definition{Name: "a", Actions: &connectors.Actions{MCP: &connectors.MCPAction{Command: "npx", Env: map[string]string{"A-B": "v"}}}}, []string{"actions.mcp.env"}},
 		{"channel valid", connectors.Definition{Name: "a", Events: validEvents, Channel: &connectors.Channel{Ref: "r", Send: "s", Typing: "t", Ack: "a"}}, nil},
+		{"send-only valid", connectors.Definition{Name: "a", Channel: &connectors.Channel{Send: "s"}}, nil},
+		{"send-only needs send", connectors.Definition{Name: "a", Channel: &connectors.Channel{}}, []string{"channel.send"}},
+		{"send-only no typing", connectors.Definition{Name: "a", Channel: &connectors.Channel{Send: "s", Typing: "t", Ack: "a"}}, []string{"channel.typing", "channel.ack"}},
+		{"ref needs events", connectors.Definition{Name: "a", Channel: &connectors.Channel{Ref: "r", Send: "s"}}, []string{"channel"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

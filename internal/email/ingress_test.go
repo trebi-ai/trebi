@@ -167,7 +167,7 @@ func TestRouteAcceptRules(t *testing.T) {
 		}
 		return NewAcceptRule(entries)
 	}
-	closed := RouteEnv{Agents: map[string]AcceptRule{"closed": {}}, Assistant: accept("operators", "allowlist"), Allowlist: []string{"friend@example.com"}}
+	closed := RouteEnv{Agents: map[string]AcceptRule{"closed": {}}, Assistant: accept("admins", "allowlist"), Allowlist: []string{"friend@example.com"}}
 	open := RouteEnv{
 		Agents:    map[string]AcceptRule{"research": accept("@acme.com")},
 		Assistant: accept("@assistant.com"),

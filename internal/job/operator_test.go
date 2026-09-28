@@ -8,18 +8,18 @@ import (
 
 func TestParseAcceptGrammar(t *testing.T) {
 	t.Parallel()
-	got, err := ParseAccept([]string{" Operators ", "ALLOWLIST", "Alice@ACME.com", "@Acme.com"})
+	got, err := ParseAccept([]string{" Admins ", "ALLOWLIST", "Alice@ACME.com", "@Acme.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []AcceptEntry{
-		{Keyword: "operators"}, {Keyword: "allowlist"},
+		{Keyword: "admins"}, {Keyword: "allowlist"},
 		{Address: "alice@acme.com"}, {Domain: "acme.com"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v want %+v", got, want)
 	}
-	for _, bad := range []string{"", "*", "@", "alice", "@acme", "a b@c.com"} {
+	for _, bad := range []string{"", "*", "@", "alice", "@acme", "a b@c.com", "operators"} {
 		if _, err := ParseAccept([]string{bad}); err == nil {
 			t.Errorf("ParseAccept(%q) accepted", bad)
 		}
@@ -28,12 +28,12 @@ func TestParseAcceptGrammar(t *testing.T) {
 
 func TestOperatorFrontmatterByDocument(t *testing.T) {
 	t.Parallel()
-	agent := "---\ntitle: Research\nemail:\n  accept: [operators]\nkit:\n  skills: [research]\nbudget:\n  monthly_usd: 10\nreport:\n  every: 168h\n  to: [operators]\n---\n\nResearch.\n"
+	agent := "---\ntitle: Research\nemail:\n  accept: [admins]\nkit:\n  skills: [research]\nbudget:\n  monthly_usd: 10\nreport:\n  every: 168h\n  to: [admins]\n---\n\nResearch.\n"
 	j, err := ParseBytes("/ws/agents/research/AGENT.md", []byte(agent))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if j.Title != "Research" || !j.AcceptSet || !reflect.DeepEqual(j.EmailAccept, []string{"operators"}) {
+	if j.Title != "Research" || !j.AcceptSet || !reflect.DeepEqual(j.EmailAccept, []string{"admins"}) {
 		t.Fatalf("identity/email = %+v", j)
 	}
 	if j.Kit == nil || len(j.Kit.Skills) != 1 || j.Budget == nil || j.Budget.MonthlyUSD != 10 || j.Report == nil || j.Report.Every != "168h" {
@@ -41,14 +41,14 @@ func TestOperatorFrontmatterByDocument(t *testing.T) {
 	}
 
 	for name, doc := range map[string]string{
-		"job email":     "---\nemail:\n  accept: [operators]\n---\n\nNo.\n",
+		"job email":     "---\nemail:\n  accept: [admins]\n---\n\nNo.\n",
 		"job kit":       "---\nkit:\n  skills: [x]\n---\n\nNo.\n",
 		"job budget":    "---\nbudget:\n  monthly_usd: 1\n---\n\nNo.\n",
 		"job report":    "---\nreport:\n  every: 1h\n---\n\nNo.\n",
 		"assistant kit": "---\nkit:\n  skills: [x]\n---\n\nNo.\n",
 		"zero budget":   "---\nbudget:\n  monthly_usd: 0\n---\n\nNo.\n",
 		"bad mode":      "---\nbudget:\n  monthly_usd: 1\n  on_exceed: explode\n---\n\nNo.\n",
-		"both report":   "---\nreport:\n  cron: '* * * * *'\n  every: 1h\n  to: [operators]\n---\n\nNo.\n",
+		"both report":   "---\nreport:\n  cron: '* * * * *'\n  every: 1h\n  to: [admins]\n---\n\nNo.\n",
 	} {
 		j, err := ParseBytes("/ws/"+strings.Replace(name, " ", "_", 1)+"/JOB.md", []byte(doc))
 		if err == nil || j == nil || j.ParseError == "" {
@@ -65,8 +65,8 @@ func TestLaunchDefaultsWithKit(t *testing.T) {
 		t.Fatal(err)
 	}
 	kit := &KitYAML{
-		Envset: EnvsetList{"agents"},
-		Env:    map[string]string{"REGION": "eu", "AGENT_ONLY": "1"},
+		Envset:     EnvsetList{"agents"},
+		Env:        map[string]string{"REGION": "eu", "AGENT_ONLY": "1"},
 		Skills:     []string{"research"},
 		Connectors: []string{"notion"},
 	}

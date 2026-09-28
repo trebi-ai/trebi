@@ -215,6 +215,24 @@ type Channel struct {
 	Ack            string   `yaml:"ack,omitempty" json:"ack,omitempty"`
 }
 
+// Channel modes. A reply channel answers conversations and also pushes; a
+// send-only channel (no ref, no events) only pushes.
+const (
+	ModeReply = "reply"
+	ModePush  = "push"
+)
+
+// SendOnly reports whether the channel has no ref, so it only pushes.
+func (c Channel) SendOnly() bool { return strings.TrimSpace(c.Ref) == "" }
+
+// Modes lists what the channel does.
+func (c Channel) Modes() []string {
+	if c.SendOnly() {
+		return []string{ModePush}
+	}
+	return []string{ModeReply, ModePush}
+}
+
 // Source records where a registry install came from.
 type Source struct {
 	Registry string   `yaml:"registry" json:"registry"`
@@ -384,13 +402,24 @@ func (d Definition) Validate() error {
 		}
 	}
 	if c := d.Channel; c != nil {
-		if d.Events == nil || d.Events.Format != FormatJSON {
-			add("channel", "needs events with format: json")
-		}
-		if strings.TrimSpace(c.Ref) == "" {
-			add("channel.ref", "required")
-		} else if !validPath(c.Ref) {
-			add("channel.ref", "must be a dotted path")
+		switch {
+		case d.Events != nil || !c.SendOnly():
+			// A reply channel reads its ref from the events.
+			if d.Events == nil || d.Events.Format != FormatJSON {
+				add("channel", "needs events with format: json")
+			}
+			if strings.TrimSpace(c.Ref) == "" {
+				add("channel.ref", "required")
+			} else if !validPath(c.Ref) {
+				add("channel.ref", "must be a dotted path")
+			}
+		default:
+			if strings.TrimSpace(c.Typing) != "" {
+				add("channel.typing", "needs events; a send-only channel has no typing")
+			}
+			if strings.TrimSpace(c.Ack) != "" {
+				add("channel.ack", "needs events; a send-only channel has no ack")
+			}
 		}
 		if strings.TrimSpace(c.Send) == "" {
 			add("channel.send", "required")

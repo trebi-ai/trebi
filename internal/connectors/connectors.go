@@ -688,7 +688,7 @@ func eventsRow(e Events, p *proc, pos Cursor, lastEventAt string) map[string]any
 // channelRow renders the channel block.
 func channelRow(c Channel) map[string]any {
 	row := map[string]any{
-		"ref": c.Ref, "send": c.Send, "typing": c.Typing, "ack": c.Ack,
+		"ref": c.Ref, "send": c.Send, "typing": c.Typing, "ack": c.Ack, "modes": c.Modes(),
 	}
 	if c.TypingInterval > 0 {
 		row["typing_interval_ms"] = int64(c.TypingInterval.Std() / time.Millisecond)

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/notify"
 	"gopkg.in/yaml.v3"
 )
 
@@ -93,12 +94,15 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 	if err := applyHarnessPatch(path, patch); err != nil {
 		return err
 	}
+	if err := applyRoutePatch(path, patch); err != nil {
+		return err
+	}
 	return applySessionPatch(path, patch)
 }
 
 // checkPatchKeys rejects a key the writer does not honor.
 func checkPatchKeys(patch map[string]any) error {
-	known := map[string]bool{"disabled": true, "harness": true}
+	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true}
 	for k := range patchHarnessFields {
 		known[k] = true
 	}
@@ -119,7 +123,7 @@ func checkPatchKeys(patch map[string]any) error {
 	}
 	sort.Strings(unknown)
 	valid := append([]string{"disabled", "harness", "model", "effort"}, patchScalars...)
-	valid = append(valid, "session")
+	valid = append(valid, "contact", "notify", "session")
 	return fmt.Errorf("unknown patch field(s) %s; valid fields are %s",
 		strings.Join(unknown, ", "), strings.Join(valid, ", "))
 }
@@ -198,6 +202,55 @@ func patchFieldText(key string, v any) string {
 		}
 	}
 	return fmt.Sprint(v)
+}
+
+// applyRoutePatch writes contact and notify as flow sequences. A null value
+// removes the key, so the file inherits the route or the contact.
+func applyRoutePatch(path string, patch map[string]any) error {
+	for _, k := range []string{"contact", "notify"} {
+		v, ok := patch[k]
+		if !ok {
+			continue
+		}
+		text := ""
+		if v != nil {
+			var err error
+			if text, err = routeFieldText(k, v); err != nil {
+				return err
+			}
+		}
+		if err := setTopLevelField(path, k, text); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// routeFieldText validates a contact or notify value and renders it.
+func routeFieldText(key string, v any) (string, error) {
+	var items []string
+	if key == "contact" {
+		contact, err := notify.ParseContact(v)
+		if err != nil {
+			return "", err
+		}
+		for _, c := range contact {
+			items = append(items, strconv.Quote(c))
+		}
+		return "[" + strings.Join(items, ", ") + "]", nil
+	}
+	steps, err := notify.ParseSteps(v)
+	if err != nil {
+		return "", err
+	}
+	for _, st := range steps {
+		item := "{via: " + strconv.Quote(st.Via)
+		if st.To != "" {
+			item += ", to: " + strconv.Quote(st.To)
+		}
+		items = append(items, item+"}")
+	}
+	return "[" + strings.Join(items, ", ") + "]", nil
 }
 
 // applySessionPatch writes session.* keys under the session: block.
@@ -424,6 +477,7 @@ func setFieldInBlock(fm []string, key, value string) []string {
 }
 
 // setTopLevelField sets a top-level key and drops the block items under it.
+// An empty value removes the key.
 func setTopLevelField(path, key, value string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -456,8 +510,13 @@ func setTopLevelInBlock(fm []string, key, value string) []string {
 			end++
 		}
 		out := append([]string{}, fm[:i]...)
-		out = append(out, key+": "+value)
+		if value != "" {
+			out = append(out, key+": "+value)
+		}
 		return append(out, fm[end:]...)
+	}
+	if value == "" {
+		return fm
 	}
 	return append(fm, key+": "+value)
 }
@@ -540,6 +599,9 @@ type Spec struct {
 	On      *EventSpec
 	Session SessionYAML
 	Env     map[string]string
+	Contact []string
+	// Notify nil leaves the key out; an empty list writes notify: [].
+	Notify []notify.Step
 }
 
 // EventSpec is the on: field of a Spec.
@@ -568,6 +630,19 @@ func (s Spec) Render() (string, error) {
 	}
 	if fm.Harness.Name == "" {
 		fm.Harness.Name = "claude"
+	}
+	if len(s.Contact) > 0 {
+		if err := fm.Contact.Encode(s.Contact); err != nil {
+			return "", err
+		}
+	}
+	if s.Notify != nil {
+		if err := notify.ValidateSteps(s.Notify); err != nil {
+			return "", err
+		}
+		if err := fm.Notify.Encode(s.Notify); err != nil {
+			return "", err
+		}
 	}
 	block, err := yaml.Marshal(fm)
 	if err != nil {

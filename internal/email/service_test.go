@@ -231,7 +231,7 @@ func TestSendAlertThreadsAndRecovers(t *testing.T) {
 	const subject = "[trebi] Run failed: job/ws-1/deploy"
 
 	// First mail on the thread: no In-Reply-To, its own id is the root.
-	first, err := s.SendAlert(t.Context(), "inbox-1", subject, "kind: run_failed")
+	first, err := sendAlert(t, s, "inbox-1", subject, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestSendAlertThreadsAndRecovers(t *testing.T) {
 	}
 
 	// A repeat of the same fault threads under the first root.
-	second, err := s.SendAlert(t.Context(), "inbox-1", subject, "kind: run_failed")
+	second, err := sendAlert(t, s, "inbox-1", subject, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestSendAlertThreadsAndRecovers(t *testing.T) {
 	// A failure keeps the row queued with the body and the error, and
 	// surfaces in Status. The next attempt sends the same Message-ID.
 	fw.sendScript = []int{http.StatusInternalServerError}
-	failed, err := s.SendAlert(t.Context(), "inbox-1", subject, "kind: run_failed")
+	failed, err := sendAlert(t, s, "inbox-1", subject, 2)
 	if err == nil {
 		t.Fatal("a failed first attempt must return the error")
 	}
@@ -495,7 +495,7 @@ func TestSendAlertFromWorkspaceAddress(t *testing.T) {
 			tc.id, "failure", "Run failed", store.NullStr(tc.workspace), 1, now, now); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.SendAlert(t.Context(), tc.id, "[trebi] Run failed: "+tc.id, "kind: run_failed"); err != nil {
+		if _, err := sendAlert(t, s, tc.id, "[trebi] Run failed: "+tc.id, 0); err != nil {
 			t.Fatal(err)
 		}
 		flush(t, s)
@@ -726,9 +726,29 @@ func testSettings(worker string) *Settings {
 		Worker:       worker,
 		Token:        "test-token-0000",
 		Domain:       "mail.example.com",
-		Operators:    []string{"ops@example.com"},
+		Admins:       []string{"ops@example.com"},
 		PollInterval: 30 * time.Second,
 		RequireDMARC: true,
 		FromName:     "Trebi",
 	}
+}
+
+// sendAlert enqueues one alert mail to ops@example.com and makes the first
+// attempt. It returns an error when that attempt did not send.
+func sendAlert(t *testing.T, s *Service, inboxID, subject string, step int) (string, error) {
+	t.Helper()
+	row, msgID, err := s.SendAlert(t.Context(), AlertMail{
+		InboxID: inboxID, Subject: subject, Text: "kind: run_failed",
+		To: []string{"ops@example.com"}, RouteStep: step,
+	})
+	if err != nil {
+		return "", err
+	}
+	if row, err = s.ob.SendNow(t.Context(), row.ID); err != nil {
+		return msgID, err
+	}
+	if row.Status != outbox.StatusSent {
+		return msgID, errors.New(row.ErrorMessage)
+	}
+	return msgID, nil
 }

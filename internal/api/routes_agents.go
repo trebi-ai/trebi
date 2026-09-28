@@ -19,6 +19,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
@@ -760,6 +761,8 @@ type agentPutRequest struct {
 	On          *jobEventTrigger  `json:"on"`
 	Template    string            `json:"template"`
 	Inputs      map[string]string `json:"inputs"`
+	Contact     []string          `json:"contact"`
+	Notify      []notify.Step     `json:"notify"`
 }
 
 // markdown composes the AGENT.md text. Empty means no field was set.
@@ -767,14 +770,14 @@ func (b agentPutRequest) markdown() (string, error) {
 	spec := job.Spec{
 		Content: b.Content, Title: b.Title, Prompt: b.Prompt, Harness: b.Harness,
 		Description: b.Description, Cron: b.Cron, Every: b.Every,
-		EmailAccept: b.EmailAccept,
+		EmailAccept: b.EmailAccept, Contact: b.Contact, Notify: b.Notify,
 	}
 	if b.On != nil {
 		spec.On = &job.EventSpec{Event: b.On.Event, Match: b.On.Match, Extract: b.On.Extract}
 	}
 	if spec.Content == "" && spec.Prompt == "" && spec.Harness == "" &&
 		spec.Description == "" && spec.Cron == "" && spec.Every == "" && spec.On == nil &&
-		spec.Title == "" && spec.EmailAccept == nil {
+		spec.Title == "" && spec.EmailAccept == nil && spec.Contact == nil && spec.Notify == nil {
 		return "", nil
 	}
 	return spec.Render()

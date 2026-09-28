@@ -30,7 +30,17 @@ trebi connector logs slack
 trebi connector remove slack
 ```
 
-`trebi connector set <name>` sends a `PATCH`: a flag replaces that part of the definition and the stored blocks stay. An `--mcp-*` or `--cli-*` flag changes only that field of the actions block. `connector show` prints each literal env value and MCP header as `***`; a `secret:NAME` reference stays visible. `trebi connector set slack --no-events` removes the events block. A connector name matches `^[a-z0-9][a-z0-9-]{0,39}$`; `email`, `webhook`, and `trebi` are reserved. Catch-up needs `--format json` and `--id`, and it cannot be combined with `--poll`. `--poll` is at least `10s`. A channel needs an events block with `--format json`, and `--channel-ref` is a dotted path into the event. `trebi connector apply --file ./slack.yaml` writes a whole definition with `PUT`, for an import.
+`trebi connector set <name>` sends a `PATCH`: a flag replaces that part of the definition and the stored blocks stay. An `--mcp-*` or `--cli-*` flag changes only that field of the actions block. `connector show` prints each literal env value and MCP header as `***`; a `secret:NAME` reference stays visible. `trebi connector set slack --no-events` removes the events block. A connector name matches `^[a-z0-9][a-z0-9-]{0,39}$`; `email`, `webhook`, and `trebi` are reserved. Catch-up needs `--format json` and `--id`, and it cannot be combined with `--poll`. `--poll` is at least `10s`. A reply channel needs an events block with `--format json`, and `--channel-ref` is a dotted path into the event. A channel with no ref and no events block is send-only: it needs only `send`, has no typing and no ack, and only pushes alerts that a `notify` route names. `trebi connector apply --file ./slack.yaml` writes a whole definition with `PUT`, for an import.
+
+A send-only WhatsApp channel for alerts:
+
+```yaml
+whatsapp:
+  channel:
+    send: whatsapp-cli send --to "$TREBI_CHANNEL_REF" --stdin
+```
+
+Then name it in a route: `trebi config set notify.route '[{"via":"whatsapp","to":"+15551234567"},{"via":"email"}]'`. `TREBI_CHANNEL_REF` is the step `to`, and `TREBI_PURPOSE` is `alert`.
 
 A trigger `allowlist` checks only the value at the connector `--identity` path. A connector with no identity fails every allowlist. The `email` connector compares the sender address without case. Every other connector compares the value exactly.
 

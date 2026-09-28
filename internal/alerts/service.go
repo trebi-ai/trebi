@@ -2,13 +2,14 @@
 package alerts
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/email"
+	"github.com/trebi-ai/trebi/internal/notify"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -80,7 +83,26 @@ const (
 	ActionReAuth      = "re_auth"
 	ActionFix         = "fix"
 	ActionReview      = "review"
+	ActionViewOutbox  = "view_outbox"
 )
+
+// Delivery states of an inbox item. Empty means no delivery ran.
+const (
+	DeliveryPending   = "pending"
+	DeliveryDelivered = "delivered"
+	DeliveryFailed    = "failed"
+	DeliveryInboxOnly = "inbox_only"
+)
+
+// Delivery is one outbox row of an alert route.
+type Delivery struct {
+	Step   int        `json:"step"`
+	Via    string     `json:"via"`
+	Target string     `json:"target,omitempty"`
+	Status string     `json:"status"`
+	Error  string     `json:"error,omitempty"`
+	SentAt *time.Time `json:"sent_at,omitempty"`
+}
 
 // InboxAction is one executable action on an inbox item (§3.12).
 type InboxAction struct {
@@ -110,6 +132,8 @@ type InboxItem struct {
 	CreatedAt      time.Time     `json:"created_at"`
 	ResolvedAt     *time.Time    `json:"resolved_at,omitempty"`
 	TraceID        string        `json:"trace_id"`
+	Delivery       string        `json:"delivery,omitempty"`
+	Deliveries     []Delivery    `json:"deliveries,omitempty"`
 	Revision       int64         `json:"revision"`
 	UpdatedAt      time.Time     `json:"updated_at,omitempty"`
 }
@@ -167,27 +191,18 @@ type Options struct {
 	// ProposalContent returns reviewed/proposed content for a proposal email.
 	ProposalContent func(ctx context.Context, id string) (base, proposed string, ok bool)
 	UsageWarnAt     int
-	Notify          []NotifyChannel
-	NotifyTimeout   time.Duration // per-channel exec timeout; default 5s
-	// Email is the native channel. It takes the email slot ahead of the
-	// shell chain; nil or an unconfigured service leaves it out.
+	// Email writes alert mail rows. Nil leaves email steps unusable.
 	Email *email.Service
-	// JobNotify resolves a job's notify: frontmatter. Nil means no alert
-	// carries a per-job filter. The return is nil (unset → every channel)
-	// or the channel-name allow-list; an empty list suppresses delivery.
-	JobNotify func(ctx context.Context, workspaceID, job string) []string
-	Shadow    bool // consume bus / write inbox; skip outbound notify
-	Drain     bool // same notify suppression as Shadow
-	Now       func() time.Time
-	Doctor    func() []DoctorFinding
+	// Router resolves the notify route of an alert. Outbox holds and sends
+	// its rows. A nil value of either keeps every alert in the inbox.
+	Router *notify.Resolver
+	Outbox *outbox.Service
+	Shadow bool // consume bus / write inbox; skip outbound notify
+	Drain  bool // same notify suppression as Shadow
+	Now    func() time.Time
+	Doctor func() []DoctorFinding
 	// Actions checks connector actions in the doctor. Nil skips the check.
 	Actions ActionsChecker
-}
-
-// NotifyChannel is one named shell template in the notifier chain.
-type NotifyChannel struct {
-	Name    string
-	Command string
 }
 
 // DoctorFinding is one system doctor row that may land in the inbox.
@@ -247,7 +262,8 @@ type scanner interface {
 const inboxCols = `id, kind, status, COALESCE(subject,''), COALESCE(title,''), COALESCE(body,''),
 	COALESCE(hint,''), COALESCE(run_id,''), COALESCE(workspace_id,''), COALESCE(job,''),
 	COALESCE(alert_kind,''), COALESCE(connector,''), COALESCE(actions,''), COALESCE(trace_id,''),
-	COALESCE(email_message_id,''), escalates_at, revision, created_at, updated_at, resolved_at`
+	COALESCE(email_message_id,''), escalates_at, revision, created_at, updated_at, resolved_at,
+	COALESCE(delivery,'')`
 
 // New creates an alerts service. opts may be zero.
 func New(st *store.Store, opts Options) *Service {
@@ -256,9 +272,6 @@ func New(st *store.Store, opts Options) *Service {
 	}
 	if opts.UsageWarnAt <= 0 {
 		opts.UsageWarnAt = 80
-	}
-	if opts.NotifyTimeout <= 0 {
-		opts.NotifyTimeout = defaultNotifyTimeout
 	}
 	return &Service{
 		st:         st,
@@ -356,7 +369,24 @@ func (s *Service) Get(ctx context.Context, id string) (*InboxItem, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	return item, err
+	if err != nil || s.opts.Outbox == nil {
+		return item, err
+	}
+	rows, _, err := s.opts.Outbox.List(ctx, outbox.Filter{InboxID: id, Limit: 100})
+	if err != nil {
+		return nil, fmt.Errorf("inbox %s deliveries: %w", id, err)
+	}
+	for _, r := range rows {
+		if r.RouteStep == nil {
+			continue
+		}
+		item.Deliveries = append(item.Deliveries, Delivery{
+			Step: *r.RouteStep, Via: cmp.Or(r.Connector, notify.ViaEmail), Target: r.Target,
+			Status: string(r.Status), Error: r.ErrorMessage, SentAt: r.SentAt,
+		})
+	}
+	slices.SortFunc(item.Deliveries, func(a, b Delivery) int { return cmp.Compare(a.Step, b.Step) })
+	return item, nil
 }
 
 // SetStatus updates one item. how is auto|manual when status is resolved.
@@ -662,7 +692,7 @@ func scanInbox(row scanner, includeBody bool) (*InboxItem, error) {
 	var esc, resolved sql.NullString
 	var created, updated string
 	err := row.Scan(&it.ID, &it.Kind, &it.Status, &sub, &title, &body, &hint, &runID, &ws, &job,
-		&ak, &connector, &acts, &trace, &emailMsgID, &esc, &it.Revision, &created, &updated, &resolved)
+		&ak, &connector, &acts, &trace, &emailMsgID, &esc, &it.Revision, &created, &updated, &resolved, &it.Delivery)
 	if err != nil {
 		return nil, err
 	}
@@ -677,6 +707,9 @@ func scanInbox(row scanner, includeBody bool) (*InboxItem, error) {
 		it.Body = body
 	}
 	it.Actions = unmarshalActions(acts)
+	if it.Delivery == DeliveryFailed {
+		it.Actions = append(it.Actions, InboxAction{Kind: ActionViewOutbox, Route: "/outbox?inbox=" + it.ID, Label: "View outbox"})
+	}
 	it.CreatedAt = parseTime(created)
 	it.UpdatedAt = parseTime(updated)
 	if resolved.Valid {
@@ -789,8 +822,9 @@ func (o RaiseOpts) defaultActions() []InboxAction {
 	return []InboxAction{}
 }
 
-func (o RaiseOpts) notifyEnv(id string) []string {
-	vals := map[string]string{
+// notifyEnv is the extra env of a connector alert send.
+func (o RaiseOpts) notifyEnv(id string) map[string]string {
+	return map[string]string{
 		"TREBI_ALERT_KIND":      string(o.Kind),
 		"TREBI_ALERT_TOOL":      o.Harness,
 		"TREBI_ALERT_TASK_ID":   o.RunID,
@@ -802,11 +836,20 @@ func (o RaiseOpts) notifyEnv(id string) []string {
 		"TREBI_ALERT_RESUME":    id,
 		"TREBI_ALERT_CONNECTOR": o.Connector,
 	}
-	env := os.Environ()
-	for k, v := range vals {
-		env = append(env, k+"="+v)
+}
+
+// pushText is the short text of a connector alert.
+func (o RaiseOpts) pushText(id string) string {
+	text := o.Title
+	if o.Body != "" {
+		text += ": " + o.Body
 	}
-	return env
+	return text + " (inbox " + id + ")"
+}
+
+// scope is the notify scope of the alert.
+func (o RaiseOpts) scope() notify.Scope {
+	return notify.Scope{WorkspaceID: o.WorkspaceID, Job: o.JobName}
 }
 
 // emailSubject is the stable mail subject for this alert. The alert

@@ -3,11 +3,11 @@ package alerts_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/email"
+	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -278,14 +279,13 @@ func TestWaitingDwell(t *testing.T) {
 func TestWaitingApprovalEscalation(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
-	svc, st := testSvc(t, alerts.Options{
+	svc, st := routeSvc(t, alerts.Options{
 		WaitingAfter: 5 * time.Minute, ApprovalAfter: time.Minute,
-		Now:    func() time.Time { return now },
-		Notify: []alerts.NotifyChannel{{Name: "email", Command: "true"}},
+		Now: func() time.Time { return now },
 		ApprovalQuestion: func(context.Context, string) string {
 			return "Deploy to production?"
 		},
-	})
+	}, nil, &sendWorker{token: "test-token-0000"}, nil)
 	ctx := context.Background()
 	since := now.Add(-6 * time.Minute).Format(time.RFC3339Nano)
 	if _, err := st.Append(ctx, store.BusEvent{
@@ -315,6 +315,7 @@ func TestWaitingApprovalEscalation(t *testing.T) {
 
 	now = now.Add(2 * time.Minute)
 	svc.Tick(ctx)
+	svc.Consume(ctx)
 	events, _ := st.ListBus(ctx, 0, []string{"alert.delivered"}, 10)
 	if len(events) != 1 {
 		t.Fatalf("want one delivery, got %v", events)
@@ -566,43 +567,12 @@ func TestDoctorSync(t *testing.T) {
 	}
 }
 
-func TestNotifyDelivered(t *testing.T) {
+// TestAlertTextSanitized: a hostile connector status lands in the item
+// body without quotes, backticks, or newlines.
+func TestAlertTextSanitized(t *testing.T) {
 	t.Parallel()
-	svc, st := testSvc(t, alerts.Options{
-		Notify: []alerts.NotifyChannel{{Name: "email", Command: "true"}},
-	})
-	ctx := context.Background()
-	if _, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"}); err != nil {
-		t.Fatal(err)
-	}
-	events, _ := st.ListBus(ctx, 0, []string{"alert.delivered"}, 10)
-	found := false
-	for _, ev := range events {
-		if ev.Topic == "alert.delivered" {
-			found = true
-			var attrs map[string]string
-			_ = json.Unmarshal(ev.Attrs, &attrs)
-			if attrs["channel"] != "email" || attrs["index"] != "0" {
-				t.Fatalf("attrs %v", attrs)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("missing alert.delivered")
-	}
-}
-
-func TestNotifyNoShellInjection(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "marker")
-	pwned := filepath.Join(dir, "pwned")
-	cmd := fmt.Sprintf("echo {{body}} {{message}} {{hint}} > %q", marker)
-	status := fmt.Sprintf("ok`; touch %s; echo $(touch %s); echo \"; touch %s #\nboom", pwned, pwned, pwned)
-
-	svc, st := testSvc(t, alerts.Options{
-		Notify: []alerts.NotifyChannel{{Name: "email", Command: cmd}},
-	})
+	status := "ok`; touch /tmp/x; echo $(id); echo \"; boom #\nboom"
+	svc, st := testSvc(t, alerts.Options{})
 	ctx := context.Background()
 	if _, err := st.Append(ctx, store.BusEvent{
 		Topic: "connector.unhealthy", Entity: "connector", EntityID: "mail", Action: "updated",
@@ -611,9 +581,6 @@ func TestNotifyNoShellInjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Consume(ctx)
-	if _, err := os.Stat(pwned); err == nil {
-		t.Fatal("payload executed")
-	}
 	items, err := svc.List(ctx, alerts.ListOpts{})
 	if err != nil || len(items) != 1 {
 		t.Fatalf("items %v %v", items, err)
@@ -625,137 +592,6 @@ func TestNotifyNoShellInjection(t *testing.T) {
 	if strings.ContainsAny(got.Body, "`\"\n") {
 		t.Fatalf("body not sanitized: %q", got.Body)
 	}
-}
-
-func TestNotifyChainStopsAtFirstSuccess(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	first := filepath.Join(dir, "first")
-	second := filepath.Join(dir, "second")
-	svc, st := testSvc(t, alerts.Options{
-		Notify: []alerts.NotifyChannel{
-			{Name: "email", Command: fmt.Sprintf("echo 1 > %q", first)},
-			{Name: "whatsapp", Command: fmt.Sprintf("echo 2 > %q", second)},
-		},
-	})
-	ctx := context.Background()
-	if _, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(first); err != nil {
-		t.Fatal("first channel did not run")
-	}
-	if _, err := os.Stat(second); err == nil {
-		t.Fatal("second channel ran after success")
-	}
-	events, _ := st.ListBus(ctx, 0, []string{"alert.delivered"}, 10)
-	n := 0
-	for _, ev := range events {
-		if ev.Topic == "alert.delivered" {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Fatalf("delivered %d want 1", n)
-	}
-}
-
-func TestNotifyChainFallsThrough(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	second := filepath.Join(dir, "second")
-	svc, st := testSvc(t, alerts.Options{
-		Notify: []alerts.NotifyChannel{
-			{Name: "email", Command: "false"},
-			{Name: "whatsapp", Command: fmt.Sprintf("echo 2 > %q", second)},
-		},
-	})
-	ctx := context.Background()
-	if _, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(second); err != nil {
-		t.Fatal("fallback did not run")
-	}
-	events, _ := st.ListBus(ctx, 0, []string{"alert.delivered"}, 10)
-	var indexes []string
-	for _, ev := range events {
-		if ev.Topic != "alert.delivered" {
-			continue
-		}
-		var attrs map[string]string
-		_ = json.Unmarshal(ev.Attrs, &attrs)
-		indexes = append(indexes, attrs["index"])
-	}
-	if len(indexes) != 2 || indexes[0] != "0" || indexes[1] != "1" {
-		t.Fatalf("indexes %v", indexes)
-	}
-}
-
-func TestNotifySuppressedInShadowAndDrain(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		opts alerts.Options
-	}{
-		{"shadow", alerts.Options{Shadow: true}},
-		{"drain", alerts.Options{}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			tc.opts.Notify = []alerts.NotifyChannel{{Name: "email", Command: "true"}}
-			svc, st := testSvc(t, tc.opts)
-			if tc.name == "drain" {
-				if err := st.SetFlag("drain", "1"); err != nil {
-					t.Fatal(err)
-				}
-			}
-			ctx := context.Background()
-			id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
-			if err != nil || id == "" {
-				t.Fatalf("%q %v", id, err)
-			}
-			events, _ := st.ListBus(ctx, 0, []string{"alert.delivered"}, 10)
-			for _, ev := range events {
-				if ev.Topic == "alert.delivered" {
-					t.Fatal("must not deliver")
-				}
-			}
-		})
-	}
-}
-
-func TestDeliverDoesNotBlockConsume(t *testing.T) {
-	t.Parallel()
-	svc, st := testSvc(t, alerts.Options{
-		TickInterval:  15 * time.Millisecond,
-		NotifyTimeout: 2 * time.Second,
-		Notify:        []alerts.NotifyChannel{{Name: "slow", Command: "sleep 30"}},
-	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go svc.Run(ctx)
-
-	if _, err := st.Append(ctx, store.BusEvent{
-		Topic: "connector.unhealthy", Entity: "connector", EntityID: "mail", Action: "updated",
-		Attrs: map[string]string{"connector": "mail", "status": "down"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	waitInbox(t, svc, 1)
-
-	start := time.Now()
-	if _, err := st.Append(ctx, store.BusEvent{
-		Topic: "connector.unhealthy", Entity: "connector", EntityID: "chat", Action: "updated",
-		Attrs: map[string]string{"connector": "chat", "status": "down"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	waitInbox(t, svc, 2)
-	if time.Since(start) > time.Second {
-		t.Fatal("consume blocked by slow notify")
-	}
-	cancel()
 }
 
 func TestListAlertsNewestFirst(t *testing.T) {
@@ -793,20 +629,17 @@ func TestListAlertsNewestFirst(t *testing.T) {
 	}
 }
 
-func TestNativeEmailFirstSuccess(t *testing.T) {
+// TestRouteDefaultEmail: with no route set, the alert mails the admins.
+func TestRouteDefaultEmail(t *testing.T) {
 	t.Parallel()
-	st := openAlertsStore(t)
 	w := &sendWorker{token: "test-token-0000"}
-	marker := filepath.Join(t.TempDir(), "marker")
-	svc := alerts.New(st, alerts.Options{
-		Email:  nativeEmail(t, st, w),
-		Notify: []alerts.NotifyChannel{{Name: "whatsapp", Command: "touch " + marker}},
-	})
+	svc, st := routeSvc(t, alerts.Options{}, nil, w, nil)
 	ctx := context.Background()
 	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc.Consume(ctx)
 	sends := w.sent()
 	if len(sends) != 1 {
 		t.Fatalf("native sends = %d, want 1", len(sends))
@@ -817,103 +650,244 @@ func TestNativeEmailFirstSuccess(t *testing.T) {
 	if !strings.Contains(sends[0].Text, "inbox: "+id) {
 		t.Errorf("text = %q", sends[0].Text)
 	}
-	if _, err := os.Stat(marker); err == nil {
-		t.Error("shell channel ran after native success")
-	}
 	item, err := svc.Get(ctx, id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.EmailMessageID != sends[0].MessageID {
-		t.Errorf("inbox email_message_id = %q, want %q", item.EmailMessageID, sends[0].MessageID)
+	if item.EmailMessageID != sends[0].MessageID || item.Delivery != alerts.DeliveryDelivered {
+		t.Errorf("item message id %q delivery %q", item.EmailMessageID, item.Delivery)
 	}
-	events := delivered(t, st)
-	if len(events) != 1 {
-		t.Fatalf("alert.delivered rows = %d, want 1", len(events))
+	if len(item.Deliveries) != 1 || item.Deliveries[0].Via != "email" || item.Deliveries[0].Status != "sent" {
+		t.Errorf("deliveries %+v", item.Deliveries)
 	}
-	var attrs map[string]string
-	_ = json.Unmarshal(events[0].Attrs, &attrs)
-	if attrs["channel"] != "email" || attrs["index"] != "0" || attrs["status"] != "ok" ||
-		attrs["message_id"] != sends[0].MessageID {
-		t.Errorf("delivered attrs = %v", attrs)
+	got := deliveredAttrs(t, st)
+	if len(got) != 1 || got[0]["channel"] != "email" || got[0]["index"] != "0" || got[0]["status"] != "ok" ||
+		got[0]["message_id"] != sends[0].MessageID {
+		t.Errorf("delivered attrs = %v", got)
 	}
 }
 
-func TestNativeEmailFallsBackToShell(t *testing.T) {
+// TestRouteConnectorFirst: a working connector step stops the route.
+func TestRouteConnectorFirst(t *testing.T) {
 	t.Parallel()
-	st := openAlertsStore(t)
-	w := &sendWorker{token: "test-token-0000", failAll: true}
-	marker := filepath.Join(t.TempDir(), "marker")
-	svc := alerts.New(st, alerts.Options{
-		Email:  nativeEmail(t, st, w),
-		Notify: []alerts.NotifyChannel{{Name: "whatsapp", Command: "touch " + marker}},
-	})
+	w := &sendWorker{token: "test-token-0000"}
+	ch := &chanSender{}
+	route := []notify.Step{{Via: "whatsapp", To: "+1555"}, {Via: "email"}}
+	svc, st := routeSvc(t, alerts.Options{}, route, w, ch)
 	ctx := context.Background()
-	if _, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"}); err != nil {
+	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatal("shell fallback did not run")
+	svc.Consume(ctx)
+	rows := ch.sent()
+	if len(rows) != 1 || rows[0].Target != "+1555" || rows[0].Env["TREBI_ALERT_RESUME"] != id {
+		t.Fatalf("channel rows %+v", rows)
 	}
-	events := delivered(t, st)
-	if len(events) != 2 {
-		t.Fatalf("alert.delivered rows = %d, want 2", len(events))
+	if len(w.sent()) != 0 {
+		t.Fatal("email ran after the connector succeeded")
 	}
-	want := []struct{ channel, index string }{{"email", "0"}, {"whatsapp", "1"}}
-	for i, ev := range events {
-		var attrs map[string]string
-		_ = json.Unmarshal(ev.Attrs, &attrs)
-		if attrs["channel"] != want[i].channel || attrs["index"] != want[i].index {
-			t.Errorf("row %d attrs = %v", i, attrs)
-		}
-	}
-	var failAttrs map[string]string
-	_ = json.Unmarshal(events[0].Attrs, &failAttrs)
-	if failAttrs["status"] == "ok" {
-		t.Errorf("email status = %q; the failure must be named", failAttrs["status"])
+	got := deliveredAttrs(t, st)
+	if len(got) != 1 || got[0]["channel"] != "whatsapp" || got[0]["status"] != "ok" {
+		t.Fatalf("delivered %v", got)
 	}
 }
 
-func TestJobNotifySelectsChannels(t *testing.T) {
+// TestRouteAdvancesOnFailure: a failed connector step moves to email, and
+// a problem step is skipped.
+func TestRouteAdvancesOnFailure(t *testing.T) {
+	t.Parallel()
+	w := &sendWorker{token: "test-token-0000"}
+	ch := &chanSender{fail: true}
+	route := []notify.Step{{Via: "whatsapp", To: "+1555"}, {Via: "nope"}, {Via: "email"}}
+	svc, st := routeSvc(t, alerts.Options{}, route, w, ch)
+	ctx := context.Background()
+	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settle(ctx, svc)
+	if len(w.sent()) != 1 {
+		t.Fatalf("email sends = %d, want 1", len(w.sent()))
+	}
+	var seq []string
+	for _, a := range deliveredAttrs(t, st) {
+		seq = append(seq, a["channel"]+"/"+a["index"]+"/"+a["status"])
+	}
+	want := "whatsapp/0/failed nope/1/skipped:unknown_connector email/2/ok"
+	if strings.Join(seq, " ") != want {
+		t.Fatalf("delivered %v, want %s", seq, want)
+	}
+	item, _ := svc.Get(ctx, id)
+	if item.Delivery != alerts.DeliveryDelivered || len(item.Deliveries) != 2 {
+		t.Fatalf("item %q %+v", item.Delivery, item.Deliveries)
+	}
+}
+
+// TestRouteAllFail: every step fails; the item shows view_outbox and no
+// second alert is raised.
+func TestRouteAllFail(t *testing.T) {
+	t.Parallel()
+	w := &sendWorker{token: "test-token-0000", failAll: true}
+	ch := &chanSender{fail: true}
+	route := []notify.Step{{Via: "whatsapp", To: "+1555"}, {Via: "email"}}
+	svc, st := routeSvc(t, alerts.Options{}, route, w, ch)
+	ctx := context.Background()
+	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settle(ctx, svc)
+	item, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Delivery != alerts.DeliveryFailed {
+		t.Fatalf("delivery %q", item.Delivery)
+	}
+	if n := len(item.Actions); n == 0 || item.Actions[n-1].Kind != alerts.ActionViewOutbox {
+		t.Fatalf("actions %+v", item.Actions)
+	}
+	items, _ := svc.List(ctx, alerts.ListOpts{})
+	if len(items) != 1 {
+		t.Fatalf("items %d, want 1", len(items))
+	}
+	got := deliveredAttrs(t, st)
+	if last := got[len(got)-1]; last["channel"] != "inbox" || last["status"] != alerts.DeliveryFailed {
+		t.Fatalf("delivered %v", got)
+	}
+}
+
+// TestRouteEmptyStaysInInbox: an empty route delivers nothing.
+func TestRouteEmptyStaysInInbox(t *testing.T) {
+	t.Parallel()
+	w := &sendWorker{token: "test-token-0000"}
+	svc, _ := routeSvc(t, alerts.Options{}, []notify.Step{}, w, nil)
+	ctx := context.Background()
+	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.sent()) != 0 {
+		t.Fatal("empty route sent mail")
+	}
+	if item, _ := svc.Get(ctx, id); item.Delivery != alerts.DeliveryInboxOnly {
+		t.Fatalf("delivery %q", item.Delivery)
+	}
+}
+
+func TestNotifySuppressedInShadowAndDrain(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name  string
-		allow []string
-		noJob bool
-		sends int
-		shell bool
+		name string
+		opts alerts.Options
 	}{
-		{name: "unset delivers everywhere", sends: 1},
-		{name: "empty suppresses", allow: []string{}, sends: 0},
-		{name: "email only", allow: []string{"email"}, sends: 1},
-		{name: "whatsapp only", allow: []string{"whatsapp"}, sends: 0, shell: true},
-		{name: "filter needs a job", allow: []string{"whatsapp"}, noJob: true, sends: 1},
+		{"shadow", alerts.Options{Shadow: true}},
+		{"drain", alerts.Options{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			st := openAlertsStore(t)
 			w := &sendWorker{token: "test-token-0000"}
-			marker := filepath.Join(t.TempDir(), "marker")
-			svc := alerts.New(st, alerts.Options{
-				Email:     nativeEmail(t, st, w),
-				Notify:    []alerts.NotifyChannel{{Name: "whatsapp", Command: "touch " + marker}},
-				JobNotify: func(context.Context, string, string) []string { return tc.allow },
-			})
-			opts := alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"}
-			if !tc.noJob {
-				opts.WorkspaceID, opts.JobName = "ws1", "deploy"
+			svc, st := routeSvc(t, tc.opts, nil, w, nil)
+			if tc.name == "drain" {
+				if err := st.SetFlag("drain", "1"); err != nil {
+					t.Fatal(err)
+				}
 			}
-			if _, err := svc.Raise(context.Background(), opts); err != nil {
-				t.Fatal(err)
+			ctx := context.Background()
+			id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
+			if err != nil || id == "" {
+				t.Fatalf("%q %v", id, err)
 			}
-			if got := len(w.sent()); got != tc.sends {
-				t.Errorf("native sends = %d, want %d", got, tc.sends)
-			}
-			if _, err := os.Stat(marker); (err == nil) != tc.shell {
-				t.Errorf("shell channel ran = %v, want %v", err == nil, tc.shell)
+			if len(deliveredAttrs(t, st)) != 0 || len(w.sent()) != 0 {
+				t.Fatal("must not deliver")
 			}
 		})
 	}
+}
+
+func TestDeliverDoesNotBlockConsume(t *testing.T) {
+	t.Parallel()
+	ch := &chanSender{delay: 30 * time.Second}
+	svc, st := routeSvc(t, alerts.Options{TickInterval: 15 * time.Millisecond},
+		[]notify.Step{{Via: "whatsapp", To: "+1555"}}, nil, ch)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go svc.Run(ctx)
+
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "connector.unhealthy", Entity: "connector", EntityID: "mail", Action: "updated",
+		Attrs: map[string]string{"connector": "mail", "status": "down"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitInbox(t, svc, 1)
+
+	start := time.Now()
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "connector.unhealthy", Entity: "connector", EntityID: "chat", Action: "updated",
+		Attrs: map[string]string{"connector": "chat", "status": "down"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitInbox(t, svc, 2)
+	if time.Since(start) > time.Second {
+		t.Fatal("consume blocked by slow notify")
+	}
+	cancel()
+}
+
+// testLayers sets only the global layer.
+type testLayers struct{ route []notify.Step }
+
+func (testLayers) JobLayer(context.Context, string, string) ([]notify.Step, bool, []string, string) {
+	return nil, false, nil, ""
+}
+
+func (testLayers) AgentLayer(context.Context, string, string) ([]notify.Step, bool, []string) {
+	return nil, false, nil
+}
+
+func (testLayers) WorkspaceLayer(context.Context, string) ([]notify.Step, bool, []string) {
+	return nil, false, nil
+}
+
+func (l testLayers) Global() ([]notify.Step, bool, []string) {
+	return l.route, l.route != nil, []string{"ops@example.com"}
+}
+
+// chanSender is a connector send command that knows only whatsapp.
+type chanSender struct {
+	mu    sync.Mutex
+	fail  bool
+	delay time.Duration
+	rows  []outbox.Row
+}
+
+func (c *chanSender) HasChannel(name string) (bool, bool) {
+	return name == "whatsapp", name == "whatsapp"
+}
+
+func (c *chanSender) Deliver(ctx context.Context, r outbox.Row) error {
+	if c.delay > 0 {
+		select {
+		case <-ctx.Done():
+		case <-time.After(c.delay):
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rows = append(c.rows, r)
+	if c.fail {
+		return outbox.Permanent{Err: errors.New("send failed")}
+	}
+	return nil
+}
+
+func (c *chanSender) sent() []outbox.Row {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]outbox.Row(nil), c.rows...)
 }
 
 func delivered(t *testing.T, st *store.Store) []store.StreamEvent {
@@ -975,21 +949,6 @@ func (w *sendWorker) sent() []email.SendRequest {
 	return append([]email.SendRequest(nil), w.sends...)
 }
 
-func nativeEmail(t *testing.T, st *store.Store, w *sendWorker) *email.Service {
-	t.Helper()
-	srv := httptest.NewServer(w.handler())
-	t.Cleanup(srv.Close)
-	s := email.New(st)
-	ob := outbox.New(st)
-	ob.Register(outbox.KindEmail, s.Outbound(), outbox.Policy{Base: time.Second, Max: time.Second, Attempts: 5})
-	s.WithOutbox(ob)
-	s.Configure(&email.Settings{
-		Worker: srv.URL, Token: w.token, Domain: "mail.example.com",
-		Operators: []string{"ops@example.com"}, FromName: "Trebi",
-	}, email.NewClient(srv.URL, w.token))
-	return s
-}
-
 func openAlertsStore(t *testing.T) *store.Store {
 	t.Helper()
 	st, err := store.OpenPath(filepath.Join(t.TempDir(), "a.db"))
@@ -1007,4 +966,73 @@ func testSvc(t *testing.T, opts alerts.Options) (*alerts.Service, *store.Store) 
 		opts.Now = func() time.Time { return time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC) }
 	}
 	return alerts.New(st, opts), st
+}
+
+func TestNotifyDoctorFindings(t *testing.T) {
+	t.Parallel()
+	w := &sendWorker{token: "test-token-0000"}
+	svc, _ := routeSvc(t, alerts.Options{}, []notify.Step{{Via: "nope"}, {Via: "email"}}, w, nil)
+	var codes []string
+	for _, f := range svc.CollectDoctorFindings() {
+		if strings.HasPrefix(f.Code, "notify_") {
+			codes = append(codes, f.Code+":"+f.Message)
+		}
+	}
+	if len(codes) != 1 || !strings.Contains(codes[0], "notify_route_invalid:notify route of global: step 0 (nope)") {
+		t.Fatalf("findings %v", codes)
+	}
+}
+
+// routeSvc builds a service whose global route is route (nil = unset). A
+// nil worker leaves email off; a nil channel sender knows no connector.
+func routeSvc(t *testing.T, opts alerts.Options, route []notify.Step, w *sendWorker, ch *chanSender) (*alerts.Service, *store.Store) {
+	t.Helper()
+	st := openAlertsStore(t)
+	ob := outbox.New(st)
+	one := outbox.Policy{Base: time.Second, Max: time.Second, Attempts: 1}
+	var em *email.Service
+	if w != nil {
+		em = mailService(t, st, ob, w, one)
+	}
+	if ch != nil {
+		ob.Register(outbox.KindChannel, ch, one)
+	}
+	opts.Email, opts.Outbox = em, ob
+	opts.Router = notify.NewResolver(testLayers{route: route}, ch, func() bool { return em != nil && em.Configured() })
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	return alerts.New(st, opts), st
+}
+
+// settle consumes the bus until each route step frame is handled.
+func settle(ctx context.Context, svc *alerts.Service) {
+	for range 4 {
+		svc.Consume(ctx)
+	}
+}
+
+func deliveredAttrs(t *testing.T, st *store.Store) []map[string]string {
+	t.Helper()
+	var out []map[string]string
+	for _, ev := range delivered(t, st) {
+		var attrs map[string]string
+		_ = json.Unmarshal(ev.Attrs, &attrs)
+		out = append(out, attrs)
+	}
+	return out
+}
+
+func mailService(t *testing.T, st *store.Store, ob *outbox.Service, w *sendWorker, p outbox.Policy) *email.Service {
+	t.Helper()
+	srv := httptest.NewServer(w.handler())
+	t.Cleanup(srv.Close)
+	s := email.New(st)
+	ob.Register(outbox.KindEmail, s.Outbound(), p)
+	s.WithOutbox(ob)
+	s.Configure(&email.Settings{
+		Worker: srv.URL, Token: w.token, Domain: "mail.example.com",
+		Admins: []string{"ops@example.com"}, FromName: "Trebi",
+	}, email.NewClient(srv.URL, w.token))
+	return s
 }

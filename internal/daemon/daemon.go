@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/trebi-ai/agent-wire"
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/assistant"
@@ -28,6 +28,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/license"
+	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/request"
@@ -86,13 +87,15 @@ type ControlPlane struct {
 	Conversations *conversations.Service
 	Channels      *channels.Service
 	Outbox        *outbox.Service
-	Harness       *harness.Service
-	Email         *email.Service
-	Proposals     *proposals.Service
-	Cloud         *cloudlink.Service
-	Webhooks      *webhooks.Service
-	License       *license.Service
-	Opts          Options
+	// Router resolves alert and test routes.
+	Router    *notify.Resolver
+	Harness   *harness.Service
+	Email     *email.Service
+	Proposals *proposals.Service
+	Cloud     *cloudlink.Service
+	Webhooks  *webhooks.Service
+	License   *license.Service
+	Opts      Options
 
 	// The assistant session stack (plan D). The API server binds these
 	// through BindAssistant, so /v1 and the workers drive one set of
@@ -114,6 +117,8 @@ type ControlPlane struct {
 	turnCursor map[string]transcriptCursor
 
 	jobCacheMu sync.Mutex
+	notify     *notifyLayers
+	picker     *workspacePicker
 	jobCache   map[string]parsedJob
 
 	tickCfg *config.Config
@@ -238,7 +243,13 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		}
 		return a.Prompt
 	}
-	c.Alerts = newAlerts(st, opts, cfg, em, r, c.jobNotify, approvalQuestion)
+	c.notify = &notifyLayers{c: c}
+	c.notify.setGlobal(cfg)
+	c.picker = &workspacePicker{c: c}
+	c.picker.setDefault(cfg)
+	em.WithWorkspacePicker(c.picker)
+	c.Router = notify.NewResolver(c.notify, connectorChannels{conn: connector}, em.Configured)
+	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion})
 	c.Alerts.SetDoctor(c.Alerts.CollectDoctorFindings)
 	c.Alerts.SetProposalContent(func(ctx context.Context, id string) (string, string, bool) {
 		p, err := c.Proposals.Get(ctx, id)
@@ -324,7 +335,7 @@ type freshConfigSource struct{}
 func (freshConfigSource) AssistantDefaults() assistant.Settings {
 	c, err := config.Load()
 	if err != nil || c == nil {
-		return assistant.Settings{Accept: []string{"operators", "allowlist"}}
+		return assistant.Settings{Accept: []string{"admins", "allowlist"}}
 	}
 	return assistant.SettingsFromConfig(c)
 }
@@ -336,17 +347,9 @@ func (a wsMemory) Render(ctx context.Context, workspaceID string) (string, error
 	return a.ws.AssistantMemory(ctx, workspaceID)
 }
 
-func newAlerts(st *store.Store, opts Options, cfg *config.Config, em *email.Service, actions alerts.ActionsChecker,
-	jobNotify func(context.Context, string, string) []string,
-	approvalQuestion func(context.Context, string) string) *alerts.Service {
-	aopts := alerts.Options{
-		TickInterval:     opts.AlertsInterval,
-		Shadow:           opts.Shadow,
-		Email:            em,
-		Actions:          actions,
-		JobNotify:        jobNotify,
-		ApprovalQuestion: approvalQuestion,
-	}
+// newAlerts adds the process options and the notify config to aopts.
+func newAlerts(st *store.Store, opts Options, cfg *config.Config, aopts alerts.Options) *alerts.Service {
+	aopts.TickInterval, aopts.Shadow = opts.AlertsInterval, opts.Shadow
 	if cfg != nil {
 		if d, ok := cfg.Notify.WaitingAfterDuration(); ok {
 			aopts.WaitingAfter = d
@@ -359,9 +362,6 @@ func newAlerts(st *store.Store, opts Options, cfg *config.Config, em *email.Serv
 			aopts.ApprovalDisabled = true
 		}
 		aopts.UsageWarnAt = cfg.Notify.UsageWarnPercent()
-		for _, ch := range cfg.Notify.Channels() {
-			aopts.Notify = append(aopts.Notify, alerts.NotifyChannel{Name: ch.Name, Command: ch.Command})
-		}
 	}
 	return alerts.New(st, aopts)
 }
@@ -505,6 +505,8 @@ func (c *ControlPlane) Stop() {
 // hosted link at once is a config error that doctor reports and that
 // leaves the Worker path running.
 func (c *ControlPlane) configureEmail(cfg *config.Config) {
+	c.notify.setGlobal(cfg)
+	c.picker.setDefault(cfg)
 	mode, _ := emailTransportMode(cfg, c.Cloud.Entitlement())
 	if mode == emailOff {
 		c.Email.Configure(nil, nil)
@@ -518,7 +520,7 @@ func (c *ControlPlane) configureEmail(cfg *config.Config) {
 	}
 	settings := &email.Settings{
 		Domain:       cfg.Email.Domain,
-		Operators:    cfg.Email.Operators,
+		Admins:       cfg.Email.Admins,
 		PollInterval: interval,
 		RequireDMARC: cfg.Email.DMARCRequired(),
 		FromName:     cfg.Email.FromSenderName(),
@@ -562,17 +564,6 @@ func (c *ControlPlane) syncEmailAddresses(ctx context.Context) {
 // mode (workers never start); drain is a runtime flag that undrain clears.
 func (c *ControlPlane) draining(_ context.Context) bool {
 	return c.Store.IsDraining()
-}
-
-// jobNotify resolves a job's notify: frontmatter for alert delivery. Nil
-// means unset (every channel); an empty list suppresses. An absent or
-// unparsable job never silences alerts.
-func (c *ControlPlane) jobNotify(ctx context.Context, workspaceID, job string) []string {
-	j, _ := c.findJob(ctx, workspaceID, job)
-	if j == nil {
-		return nil
-	}
-	return j.Notify
 }
 
 // findJob resolves a job by name in a workspace. It returns the parsed job

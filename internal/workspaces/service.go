@@ -18,6 +18,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/memory"
+	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"gopkg.in/yaml.v3"
@@ -34,6 +35,11 @@ type Workspace struct {
 	Orphaned   bool      `json:"orphaned,omitempty"`
 	Assistant  *string   `json:"assistant,omitempty"` // nickname from trebi.yaml assistant.name
 	Revision   int64     `json:"revision"`
+	// Contact and Notify are the workspace route layer from trebi.yaml.
+	// NotifySet is true when the file holds notify, also as an empty list.
+	Contact   []string      `json:"contact,omitempty"`
+	Notify    []notify.Step `json:"notify,omitempty"`
+	NotifySet bool          `json:"notify_set"`
 	// JobCount and RunningCount are filled by list reads only.
 	JobCount     int `json:"job_count"`
 	RunningCount int `json:"running_count"`
@@ -74,10 +80,19 @@ type AddOpts struct {
 	Create bool
 }
 
-// Patch is a partial workspace update. Nil fields are left unchanged.
+// Patch is a partial workspace update. Nil fields are left unchanged. A
+// Clear flag removes the key from trebi.yaml, so the layer inherits.
 type Patch struct {
-	Name       *string
-	GitEnabled *bool
+	Name         *string
+	GitEnabled   *bool
+	Contact      *[]string
+	Notify       *[]notify.Step
+	ClearContact bool
+	ClearNotify  bool
+}
+
+func (p Patch) touchesRoute() bool {
+	return p.Contact != nil || p.Notify != nil || p.ClearContact || p.ClearNotify
 }
 
 // trebiYAML is the on-disk workspace config (B26).
@@ -87,6 +102,48 @@ type trebiYAML struct {
 	GitEnabled bool            `yaml:"git_enabled"`
 	Email      *trebiYAMLEmail `yaml:"email,omitempty" json:"email,omitempty"`
 	Assistant  *wire.Override  `yaml:"assistant,omitempty" json:"assistant,omitempty"`
+	Contact    yaml.Node       `yaml:"contact,omitempty"`
+	Notify     yaml.Node       `yaml:"notify,omitempty"`
+}
+
+// route parses the contact and the notify route.
+func (y *trebiYAML) route() (route []notify.Step, set bool, contact []string, err error) {
+	if route, err = notify.ParseSteps(&y.Notify); err != nil {
+		return nil, false, nil, fmt.Errorf("trebi.yaml: %w", err)
+	}
+	if contact, err = notify.ParseContact(&y.Contact); err != nil {
+		return nil, false, nil, fmt.Errorf("trebi.yaml: %w", err)
+	}
+	return route, route != nil, contact, nil
+}
+
+// applyRoute writes the route fields of p.
+func (y *trebiYAML) applyRoute(p Patch) error {
+	switch {
+	case p.ClearContact:
+		y.Contact = yaml.Node{}
+	case p.Contact != nil:
+		y.Contact = yaml.Node{}
+		if len(*p.Contact) > 0 {
+			if err := y.Contact.Encode(*p.Contact); err != nil {
+				return err
+			}
+		}
+	}
+	switch {
+	case p.ClearNotify:
+		y.Notify = yaml.Node{}
+	case p.Notify != nil:
+		if err := notify.ValidateSteps(*p.Notify); err != nil {
+			return err
+		}
+		y.Notify = yaml.Node{}
+		steps := append([]notify.Step{}, *p.Notify...)
+		if err := y.Notify.Encode(steps); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // trebiYAMLEmail carries the workspace's own email additions (plan F):
@@ -225,7 +282,7 @@ func (s *Service) Rename(ctx context.Context, id, name string) (*Workspace, erro
 
 // Patch writes trebi.yaml first, then the registry row and workspace.updated.
 func (s *Service) Patch(ctx context.Context, id string, p Patch) (*Workspace, error) {
-	if p.Name == nil && p.GitEnabled == nil {
+	if p.Name == nil && p.GitEnabled == nil && !p.touchesRoute() {
 		ws, err := s.Get(ctx, id)
 		if err != nil {
 			return nil, ErrNotFound
@@ -247,7 +304,7 @@ func (s *Service) Patch(ctx context.Context, id string, p Patch) (*Workspace, er
 	if p.GitEnabled != nil {
 		git = *p.GitEnabled
 	}
-	if err := writeTrebiYAML(cur.Path, cur.ID, name, git); err != nil {
+	if err := writeTrebiYAML(cur.Path, cur.ID, name, git, p); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -359,6 +416,9 @@ func (s *Service) decorateWorkspaces(ctx context.Context, list []Workspace) ([]W
 	}
 	for i := range list {
 		list[i].JobCount = counts[list[i].ID]
+		if route, set, contact, rerr := s.Route(&list[i]); rerr == nil {
+			list[i].Notify, list[i].NotifySet, list[i].Contact = route, set, contact
+		}
 		ov, _, oerr := s.AssistantOverride(ctx, list[i].ID)
 		if oerr != nil || ov.Name == nil || *ov.Name == "" {
 			continue
@@ -808,7 +868,7 @@ func ensureTrebiYAML(dir, name string) (id, dispName string, git bool, err error
 	return id, name, false, nil
 }
 
-func writeTrebiYAML(dir, id, name string, git bool) error {
+func writeTrebiYAML(dir, id, name string, git bool, p Patch) error {
 	y := trebiYAML{ID: id, Name: name, GitEnabled: git}
 	// Patch never edits the email or assistant blocks; carry them forward.
 	if data, err := os.ReadFile(filepath.Join(dir, "trebi.yaml")); err == nil {
@@ -816,7 +876,12 @@ func writeTrebiYAML(dir, id, name string, git bool) error {
 		if yaml.Unmarshal(data, &old) == nil {
 			y.Email = old.Email
 			y.Assistant = old.Assistant
+			y.Contact = old.Contact
+			y.Notify = old.Notify
 		}
+	}
+	if err := y.applyRoute(p); err != nil {
+		return err
 	}
 	b, err := yaml.Marshal(&y)
 	if err != nil {
@@ -829,6 +894,23 @@ func mintID() string {
 	var b [4]byte
 	_, _ = rand.Read(b[:])
 	return "ws_" + hex.EncodeToString(b[:])
+}
+
+// Route reads the contact and the notify route of trebi.yaml. set is true
+// when the file holds notify, also as an empty list.
+func (s *Service) Route(ws *Workspace) (route []notify.Step, set bool, contact []string, err error) {
+	data, err := os.ReadFile(filepath.Join(ws.Path, "trebi.yaml"))
+	if os.IsNotExist(err) {
+		return nil, false, nil, nil
+	}
+	if err != nil {
+		return nil, false, nil, err
+	}
+	var y trebiYAML
+	if err := yaml.Unmarshal(data, &y); err != nil {
+		return nil, false, nil, fmt.Errorf("trebi.yaml: %w", err)
+	}
+	return y.route()
 }
 
 // EmailAllowlist reads the workspace's own inbound allowlist extension from

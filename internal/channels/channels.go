@@ -106,7 +106,7 @@ func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string)
 	if user.ChannelRef == "" || strings.HasPrefix(user.ChannelRef, triggerRefPrefix) {
 		return nil
 	}
-	if _, _, ok := s.conn.Channel(user.ChannelType); !ok {
+	if ch, _, ok := s.conn.Channel(user.ChannelType); !ok || ch.SendOnly() {
 		return nil
 	}
 	last, text, ok, err := s.convs.ReplyText(ctx, conversationID, runID, user.ID)
@@ -152,7 +152,7 @@ func (s *Service) Ack(ctx context.Context, item dispatch.QueueItem) error {
 		return nil
 	}
 	ch, env, ok := s.conn.Channel(item.Connector)
-	if !ok || strings.TrimSpace(ch.Ack) == "" {
+	if !ok || ch.SendOnly() || strings.TrimSpace(ch.Ack) == "" {
 		return nil
 	}
 	sourceID, channelRef := "", ""
@@ -218,7 +218,7 @@ func (s *Service) pulseOne(ctx context.Context, conversationID string, now time.
 		return
 	}
 	ch, env, ok := s.conn.Channel(user.ChannelType)
-	if !ok || strings.TrimSpace(ch.Typing) == "" {
+	if !ok || ch.SendOnly() || strings.TrimSpace(ch.Typing) == "" {
 		return
 	}
 	interval := ch.TypingInterval.Std()

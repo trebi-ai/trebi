@@ -2,13 +2,15 @@ package job_test
 
 import (
 	"os"
-	"slices"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/secrets"
 )
 
@@ -67,32 +69,85 @@ func TestParseCanonical(t *testing.T) {
 	}
 }
 
-// TestParseNotify pins the nil-ness the alert filter keys on: nil = unset
-// (every channel), an empty list = suppress.
+// TestParseNotify pins the route forms: unset is nil (inherit), an empty
+// list is set (no notification), and the old channel list is an error.
 func TestParseNotify(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name string
-		fm   string
-		want []string
+		name    string
+		fm      string
+		want    []notify.Step
+		set     bool
+		contact []string
+		err     string
 	}{
-		{"unset is nil", "", nil},
-		{"empty suppresses", "notify: []\n", []string{}},
-		{"list selects", "notify: [email, whatsapp]\n", []string{"email", "whatsapp"}},
+		{name: "unset is nil"},
+		{name: "empty is set", fm: "notify: []\n", want: []notify.Step{}, set: true},
+		{
+			name: "steps and contact", fm: "contact: Ops@Acme.com\nnotify:\n  - {via: whatsapp, to: '+1555'}\n  - via: email\n",
+			want: []notify.Step{{Via: "whatsapp", To: "+1555"}, {Via: "email"}}, set: true, contact: []string{"ops@acme.com"},
+		},
+		{name: "contact list", fm: "contact: [a@acme.com, admins]\n", contact: []string{"a@acme.com", "admins"}},
+		{name: "old list", fm: "notify: [email, whatsapp]\n", err: "the channel list is removed"},
+		{name: "bad contact", fm: "contact: nobody\n", err: "want an address"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			j, err := job.ParseBytes("/ws/demo/JOB.md", []byte("---\n"+tc.fm+"---\nBody\n"))
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("err %v, want %q", err, tc.err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (j.Notify == nil) != (tc.want == nil) {
-				t.Fatalf("notify = %#v, want %#v; nil-ness must survive", j.Notify, tc.want)
-			}
-			if !slices.Equal(j.Notify, tc.want) {
-				t.Fatalf("notify = %#v, want %#v", j.Notify, tc.want)
+			if j.NotifySet != tc.set || !reflect.DeepEqual(j.Notify, tc.want) || !reflect.DeepEqual(j.Contact, tc.contact) {
+				t.Fatalf("notify %#v set=%v contact %#v", j.Notify, j.NotifySet, j.Contact)
 			}
 		})
+	}
+}
+
+func TestPatchRoute(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "demo", "JOB.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("---\ntitle: Demo\n---\nBody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := map[string]any{
+		"contact": []any{"ops@acme.com"},
+		"notify":  []any{map[string]any{"via": "whatsapp", "to": "+1555"}, map[string]any{"via": "email"}},
+	}
+	if err := job.MergePatchFrontmatter(path, patch); err != nil {
+		t.Fatal(err)
+	}
+	j, err := job.ParseFile(path)
+	if err != nil || j.ParseError != "" {
+		t.Fatal(err, j.ParseError)
+	}
+	if len(j.Notify) != 2 || j.Notify[0].To != "+1555" || !reflect.DeepEqual(j.Contact, []string{"ops@acme.com"}) {
+		t.Fatalf("notify %#v contact %#v", j.Notify, j.Contact)
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"notify": nil}); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ = job.ParseFile(path); j.NotifySet || j.Title != "Demo" {
+		t.Fatalf("notify null must remove the key: %#v", j)
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"notify": []any{"email"}}); err == nil {
+		t.Fatal("old list form must fail")
+	}
+	body, err := job.Spec{Prompt: "Go.", Contact: []string{"a@acme.com"}, Notify: []notify.Step{}}.Render()
+	if err != nil || !strings.Contains(body, "notify: []") || !strings.Contains(body, "a@acme.com") {
+		t.Fatalf("render %v\n%s", err, body)
+	}
+	if body, _ = (job.Spec{Prompt: "Go."}).Render(); strings.Contains(body, "notify") || strings.Contains(body, "contact") {
+		t.Fatalf("an unset route must not render:\n%s", body)
 	}
 }
 

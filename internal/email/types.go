@@ -16,7 +16,7 @@ type Settings struct {
 	Worker       string
 	Token        string
 	Domain       string
-	Operators    []string
+	Admins       []string
 	PollInterval time.Duration
 	RequireDMARC bool
 	FromName     string

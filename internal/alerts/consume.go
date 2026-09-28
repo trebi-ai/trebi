@@ -1,13 +1,12 @@
 package alerts
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,20 +16,25 @@ import (
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/notify"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
 const (
-	busCursorFlag        = "alerts.bus_seq"
-	defaultNotifyTimeout = 5 * time.Second
-	deliverQueueSize     = 16
-	maxAlertText         = 512
+	busCursorFlag    = "alerts.bus_seq"
+	deliverQueueSize = 16
+	maxAlertText     = 512
 )
 
+// deliverJob is one route delivery. A nil route resolves a fresh one; a set
+// route continues that frozen route at step from.
 type deliverJob struct {
-	opts RaiseOpts
-	id   string
+	opts  RaiseOpts
+	id    string
+	route []notify.Step
+	from  int
 }
 
 //nolint:gochecknoglobals // static table
@@ -52,20 +56,6 @@ var consumeTopics = []string{
 	"proposal.decided",
 	"outbox.failed",
 	"outbox.sent",
-}
-
-//nolint:gochecknoglobals // static table
-var notifyPlaceholders = []struct{ ph, env string }{
-	{"kind", "TREBI_ALERT_KIND"},
-	{"tool", "TREBI_ALERT_TOOL"},
-	{"task_id", "TREBI_ALERT_TASK_ID"},
-	{"job", "TREBI_ALERT_JOB"},
-	{"workspace", "TREBI_ALERT_WORKSPACE"},
-	{"message", "TREBI_ALERT_MESSAGE"},
-	{"hint", "TREBI_ALERT_HINT"},
-	{"body", "TREBI_ALERT_BODY"},
-	{"resume", "TREBI_ALERT_RESUME"},
-	{"connector", "TREBI_ALERT_CONNECTOR"},
 }
 
 // Run polls the bus until ctx is cancelled. Tick interval comes from Options.
@@ -108,7 +98,7 @@ func (s *Service) deliverLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case job := <-s.deliverCh:
-			s.deliver(ctx, job.opts, job.id)
+			s.runDeliver(ctx, job)
 		}
 	}
 }
@@ -232,8 +222,15 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 	case "proposal.decided":
 		s.autoResolve(ctx, KindAgentProposal, "proposal/"+firstNonEmpty(attrs["proposal_id"], ev.ID), attrs["decision"])
 	case "outbox.failed":
+		if attrs["purpose"] == string(outbox.PurposeAlert) {
+			s.onAlertFailed(ctx, attrs)
+			return
+		}
 		s.onSendFailed(ctx, ev, attrs)
 	case "outbox.sent":
+		if attrs["purpose"] == string(outbox.PurposeAlert) {
+			s.onAlertSent(ctx, attrs)
+		}
 		if attrs["row_id"] != "" {
 			s.autoResolve(ctx, KindSendFailed, "outbox/"+attrs["row_id"], "auto")
 		}
@@ -548,17 +545,23 @@ func (s *Service) saveCursor(seq int64) {
 }
 
 func (s *Service) enqueueDeliver(ctx context.Context, opts RaiseOpts, id string) {
-	if s.skipNotify() || !s.anyChannel() {
+	s.queueDeliver(ctx, deliverJob{opts: opts, id: id})
+}
+
+// queueDeliver runs a delivery on the delivery goroutine, or inline when the
+// service does not run (tests, one-shot CLI).
+func (s *Service) queueDeliver(ctx context.Context, job deliverJob) {
+	if s.skipNotify() || !s.routeOn() {
 		return
 	}
 	if !s.running.Load() {
-		s.deliver(ctx, opts, id)
+		s.runDeliver(ctx, job)
 		return
 	}
 	select {
-	case s.deliverCh <- deliverJob{opts: opts, id: id}:
+	case s.deliverCh <- job:
 	default:
-		s.log.Warn("alert delivery queue full", "id", id)
+		s.log.Warn("alert delivery queue full", "id", job.id)
 	}
 }
 
@@ -598,7 +601,7 @@ func (s *Service) sweepEscalations(ctx context.Context) {
 		return
 	}
 	for _, item := range due {
-		if s.anyChannel() {
+		if s.routeOn() {
 			s.deliver(ctx, raiseOptsFromItem(item), item.ID)
 		}
 		if _, err := s.st.DB().ExecContext(ctx,
@@ -613,81 +616,159 @@ func (s *Service) emailOn() bool {
 	return s.opts.Email != nil && s.opts.Email.Configured()
 }
 
-func (s *Service) anyChannel() bool {
-	return s.emailOn() || len(s.opts.Notify) > 0
+// routeOn reports whether alert delivery is wired.
+func (s *Service) routeOn() bool {
+	return s.opts.Router != nil && s.opts.Outbox != nil
 }
 
-// deliver tries channels in order and stops at the first success. The
-// native email channel takes the email slot ahead of the shell chain; the
-// shell chain stays for WhatsApp, Discord, and anything without a Go
-// client. A job's notify: frontmatter selects or suppresses channels.
+// deliver resolves the route of the alert and starts it at step 0.
 func (s *Service) deliver(ctx context.Context, opts RaiseOpts, id string) {
-	allow := s.jobAllow(ctx, opts)
-	index := 0
-	if s.emailOn() && channelAllowed("email", allow) {
-		if s.deliverEmail(ctx, opts, id, index) {
-			return
-		}
-		index++
+	s.runDeliver(ctx, deliverJob{opts: opts, id: id})
+}
+
+// runDeliver sends the first usable step at or after job.from. A step with a
+// problem is skipped. The outbox retries a step; its outbox.failed frame
+// moves the route to the next step (onAlertFailed). When no usable step is
+// left, the item stays in the inbox.
+func (s *Service) runDeliver(ctx context.Context, job deliverJob) {
+	if !s.routeOn() {
+		return
 	}
-	timeout := s.opts.NotifyTimeout
-	if timeout <= 0 {
-		timeout = defaultNotifyTimeout
+	sc := job.opts.scope()
+	r := s.opts.Router.Resolve(ctx, sc)
+	if job.route != nil {
+		r = s.opts.Router.ResolveRoute(ctx, sc, job.route)
 	}
-	for _, ch := range s.opts.Notify {
-		if !channelAllowed(ch.Name, allow) {
+	plain := r.Plain()
+	for i := job.from; i < len(r.Steps); i++ {
+		st := r.Steps[i]
+		if st.Problem != "" {
+			s.appendDelivered(ctx, job.opts, job.id, st.Via, i, "skipped:"+st.Problem, "", "")
 			continue
 		}
-		cctx, cancel := context.WithTimeout(ctx, timeout)
-		cmd := exec.CommandContext(cctx, "sh", "-c", expandNotify(ch.Command))
-		cmd.Env = opts.notifyEnv(id)
-		err := cmd.Run()
-		cancel()
+		row, msgID, err := s.sendStep(ctx, job.opts, job.id, st, i, plain)
 		if err != nil {
-			s.log.Warn("alert.delivered", "channel", ch.Name, "index", index, "error", err)
+			s.log.Warn("alert.delivered", "channel", st.Via, "index", i, "error", err)
+			s.appendDelivered(ctx, job.opts, job.id, st.Via, i, "failed", msgID, err.Error())
+			continue
 		}
-		s.appendDelivered(ctx, opts, id, ch.Name, index, statusOf(err), "")
-		if err == nil {
-			return
+		s.setDelivery(ctx, job.id, DeliveryPending)
+		// A first attempt now keeps the latency low; the worker retries.
+		if _, err := s.opts.Outbox.SendNow(ctx, row.ID); err != nil {
+			s.log.Warn("alert first attempt", "row", row.ID, "error", err)
 		}
-		index++
+		return
 	}
+	state := DeliveryInboxOnly
+	if job.from > 0 {
+		state = DeliveryFailed
+	}
+	s.setDelivery(ctx, job.id, state)
+	s.appendDelivered(ctx, job.opts, job.id, "inbox", len(r.Steps), state, "", "")
 }
 
-// deliverEmail sends through the native channel and records the delivery.
-// It reports success, so the first-success chain stops here.
-func (s *Service) deliverEmail(ctx context.Context, opts RaiseOpts, id string, index int) bool {
+// sendStep writes the outbox row of one usable step.
+func (s *Service) sendStep(ctx context.Context, opts RaiseOpts, id string, st notify.ResolvedStep, i int, route []notify.Step) (outbox.Row, string, error) {
+	if st.Via == notify.ViaEmail {
+		if !s.emailOn() {
+			return outbox.Row{}, "", fmt.Errorf("email is not configured")
+		}
+		return s.opts.Email.SendAlert(ctx, email.AlertMail{
+			InboxID: id, Subject: opts.emailSubject(), Text: s.mailText(ctx, opts, id),
+			To: st.Targets, RouteStep: i, Route: route,
+		})
+	}
+	step := i
+	row, err := s.opts.Outbox.Enqueue(ctx, outbox.Row{
+		Kind: outbox.KindChannel, Purpose: outbox.PurposeAlert, WorkspaceID: opts.WorkspaceID,
+		Connector: st.Via, Target: st.To, Body: opts.pushText(id), Env: opts.notifyEnv(id),
+		InboxID: id, DedupeKey: fmt.Sprintf("alert/%s/%d", id, i), RouteStep: &step, Route: route,
+	})
+	return row, "", err
+}
+
+// mailText is the alert mail body. A proposal mail leads with the diff.
+func (s *Service) mailText(ctx context.Context, opts RaiseOpts, id string) string {
 	text := opts.emailText(id)
 	if opts.Kind == KindAgentProposal && s.opts.ProposalContent != nil && strings.HasPrefix(opts.Subject, "proposal/") {
 		if base, proposed, ok := s.opts.ProposalContent(ctx, strings.TrimPrefix(opts.Subject, "proposal/")); ok {
 			text = proposals.TruncateDiff(proposals.UnifiedDiff(base, proposed), 200) + "\n\n" + text
 		}
 	}
-	msgID, err := s.opts.Email.SendAlert(ctx, id, opts.emailSubject(), text)
-	if err != nil {
-		s.log.Warn("alert.delivered", "channel", "email", "index", index, "error", err)
-	}
-	s.appendDelivered(ctx, opts, id, "email", index, statusOf(err), msgID)
-	return err == nil
+	return text
 }
 
-// jobAllow resolves the per-job notify filter. Nil means every channel;
-// an empty list suppresses delivery for that job. Alerts without a job
-// carry no filter.
-func (s *Service) jobAllow(ctx context.Context, opts RaiseOpts) []string {
-	if s.opts.JobNotify == nil || opts.WorkspaceID == "" || opts.JobName == "" {
-		return nil
+// onAlertFailed records the failed step and moves the route to the next
+// step. It raises no alert: an alert about an alert would loop.
+func (s *Service) onAlertFailed(ctx context.Context, attrs map[string]string) {
+	row, item, ok := s.alertRow(ctx, attrs)
+	if !ok {
+		return
 	}
-	return s.opts.JobNotify(ctx, opts.WorkspaceID, opts.JobName)
+	opts := raiseOptsFromItem(*item)
+	via := cmp.Or(row.Connector, notify.ViaEmail)
+	s.appendDelivered(ctx, opts, item.ID, via, *row.RouteStep, "failed", "", row.ErrorMessage)
+	if item.Status == InboxResolved {
+		return
+	}
+	s.queueDeliver(ctx, deliverJob{opts: opts, id: item.ID, route: row.Route, from: *row.RouteStep + 1})
 }
 
-func (s *Service) appendDelivered(ctx context.Context, opts RaiseOpts, id, channel string, index int, status, msgID string) {
+// onAlertSent records the sent step. The route stops here.
+func (s *Service) onAlertSent(ctx context.Context, attrs map[string]string) {
+	row, item, ok := s.alertRow(ctx, attrs)
+	if !ok {
+		return
+	}
+	via, msgID := row.Connector, ""
+	if via == "" {
+		via, msgID = notify.ViaEmail, item.EmailMessageID
+	}
+	s.setDelivery(ctx, item.ID, DeliveryDelivered)
+	s.appendDelivered(ctx, raiseOptsFromItem(*item), item.ID, via, *row.RouteStep, "ok", msgID, "")
+}
+
+// alertRow loads the outbox row and the inbox item of an alert frame.
+func (s *Service) alertRow(ctx context.Context, attrs map[string]string) (outbox.Row, *InboxItem, bool) {
+	if s.opts.Outbox == nil || attrs["row_id"] == "" {
+		return outbox.Row{}, nil, false
+	}
+	row, err := s.opts.Outbox.Get(ctx, attrs["row_id"])
+	if err != nil || row.InboxID == "" || row.RouteStep == nil {
+		return outbox.Row{}, nil, false
+	}
+	item, err := s.Get(ctx, row.InboxID)
+	if err != nil || item == nil {
+		return outbox.Row{}, nil, false
+	}
+	return row, item, true
+}
+
+// setDelivery writes the delivery state of an item.
+func (s *Service) setDelivery(ctx context.Context, id, state string) {
+	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE inbox_items SET delivery=?, revision=revision+1, updated_at=? WHERE id=?`,
+			state, nowStr, id)
+		return err
+	}, store.BusEvent{
+		Topic: "inbox.updated", Entity: "inbox", EntityID: id, Action: "updated",
+		Attrs: map[string]string{"delivery": state},
+	}); err != nil {
+		s.log.Warn("inbox delivery", "id", id, "error", err)
+	}
+}
+
+func (s *Service) appendDelivered(ctx context.Context, opts RaiseOpts, id, channel string, index int, status, msgID, errMsg string) {
 	attrs := alertAttrs(opts, map[string]string{
 		"kind": string(opts.Kind), "channel": channel,
 		"index": strconv.Itoa(index), "status": status,
 	})
 	if msgID != "" {
 		attrs["message_id"] = msgID
+	}
+	if errMsg != "" {
+		attrs["error"] = sanitizeText(errMsg)
 	}
 	if _, aerr := s.st.Append(ctx, store.BusEvent{
 		Topic: "alert.delivered", Entity: "alert", EntityID: id, Action: "updated",
@@ -865,7 +946,74 @@ func (s *Service) resolveStaleDoctor(ctx context.Context, want map[string]struct
 
 // CollectDoctorFindings is the system doctor snapshot from the live store.
 func (s *Service) CollectDoctorFindings() []DoctorFinding {
-	return collectDoctorFindings(s.st, s.opts.Actions)
+	return append(collectDoctorFindings(s.st, s.opts.Actions), s.notifyFindings(context.Background())...)
+}
+
+// notifyFindings reports each layer whose route holds a problem step, and a
+// configured email channel with no address to mail.
+func (s *Service) notifyFindings(ctx context.Context) []DoctorFinding {
+	if s.opts.Router == nil {
+		return nil
+	}
+	scopes := []notify.Scope{{}}
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT w.id, COALESCE(j.name,'') FROM workspaces w
+		LEFT JOIN job_index j ON j.workspace_id=w.id AND j.active=1 WHERE w.orphaned=0 ORDER BY w.id, j.name`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	seenWS := map[string]bool{}
+	for rows.Next() {
+		var ws, job string
+		if rows.Scan(&ws, &job) != nil {
+			continue
+		}
+		if !seenWS[ws] {
+			seenWS[ws] = true
+			scopes = append(scopes, notify.Scope{WorkspaceID: ws})
+		}
+		if job != "" {
+			scopes = append(scopes, notify.Scope{WorkspaceID: ws, Job: job})
+		}
+	}
+	var out []DoctorFinding
+	seen := map[string]bool{}
+	noContact := s.emailOn()
+	for _, sc := range scopes {
+		r := s.opts.Router.Resolve(ctx, sc)
+		if len(r.Contact) > 0 {
+			noContact = false
+		}
+		// Report a route once, at the layer that sets it.
+		key := string(r.Source)
+		switch r.Source {
+		case notify.LayerJob, notify.LayerAgent:
+			key += "/" + sc.WorkspaceID + "/" + sc.Job
+		case notify.LayerWorkspace:
+			key += "/" + sc.WorkspaceID
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		for i, st := range r.Steps {
+			if st.Problem == "" {
+				continue
+			}
+			out = append(out, DoctorFinding{
+				ID: "notify-route-" + strings.ReplaceAll(key, "/", "-"), Severity: "warn", Code: "notify_route_invalid",
+				Message: fmt.Sprintf("notify route of %s: step %d (%s) is skipped: %s", key, i, st.Via, st.Problem),
+			})
+			break
+		}
+	}
+	if noContact {
+		out = append(out, DoctorFinding{
+			ID: "notify-no-contact", Severity: "info", Code: "notify_no_contact",
+			Message: "email is on, but no contact and no email.admins are set; alerts stay in the inbox",
+		})
+	}
+	return out
 }
 
 // collectDoctorFindings is the store-injected implementation so doctor never
@@ -918,20 +1066,6 @@ func raiseOptsFromItem(item InboxItem) RaiseOpts {
 	}
 }
 
-func channelAllowed(name string, allow []string) bool {
-	if allow == nil {
-		return true
-	}
-	return slices.Contains(allow, name)
-}
-
-func statusOf(err error) string {
-	if err != nil {
-		return err.Error()
-	}
-	return "ok"
-}
-
 func attrMap(raw json.RawMessage) map[string]string {
 	out := map[string]string{}
 	if len(raw) == 0 {
@@ -948,18 +1082,6 @@ func attrMap(raw json.RawMessage) map[string]string {
 		out[k] = fmt.Sprint(v)
 	}
 	return out
-}
-
-// expandNotify rewrites {{placeholders}} to quoted $TREBI_ALERT_* references.
-// Untrusted values never enter the command string; they travel via the env.
-func expandNotify(cmd string) string {
-	for _, p := range notifyPlaceholders {
-		wrapped := `"$` + p.env + `"`
-		cmd = strings.ReplaceAll(cmd, "'{{"+p.ph+"}}'", wrapped)
-		cmd = strings.ReplaceAll(cmd, `"{{`+p.ph+`}}"`, wrapped)
-		cmd = strings.ReplaceAll(cmd, "{{"+p.ph+"}}", wrapped)
-	}
-	return cmd
 }
 
 // sanitizeText strips shell-metacharacters and control chars from alert text

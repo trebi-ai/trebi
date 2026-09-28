@@ -128,7 +128,7 @@ func (s *Service) Route(msg IngressMessage, wsID string, env RouteEnv) RouteDeci
 		d.Class, d.Reason = RouteDropped, ReasonNotConfigured
 		return d
 	}
-	d.Trusted = addrListed(cfg.Operators, msg.From) || addrListed(env.Allowlist, msg.From)
+	d.Trusted = addrListed(cfg.Admins, msg.From) || addrListed(env.Allowlist, msg.From)
 	if cfg.RequireDMARC && msg.Dmarc != "pass" {
 		d.Class, d.Reason = RouteDropped, ReasonDMARCFail
 		if d.Trusted {
@@ -138,11 +138,11 @@ func (s *Service) Route(msg IngressMessage, wsID string, env RouteEnv) RouteDeci
 	}
 	rule, known := env.Agents[msg.Tag]
 	switch {
-	case msg.Tag == "" && env.Assistant.Accepts(msg.From, cfg.Operators, env.Allowlist):
+	case msg.Tag == "" && env.Assistant.Accepts(msg.From, cfg.Admins, env.Allowlist):
 		d.Class, d.Accepted = RouteAssistant, true
 	case msg.Tag == "":
 		d.Class, d.Reason = RouteDropped, ReasonNotAccepted
-	case known && !rule.Empty() && rule.Accepts(msg.From, cfg.Operators, env.Allowlist):
+	case known && !rule.Empty() && rule.Accepts(msg.From, cfg.Admins, env.Allowlist):
 		d.Class, d.Agent, d.Accepted = RouteAgent, msg.Tag, true
 	case known && d.Trusted:
 		d.Class, d.Reason = RouteMisrouted, ReasonNotAccepted
