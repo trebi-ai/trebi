@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/runs"
 )
 
@@ -46,15 +47,25 @@ func (c *ControlPlane) queueWorker(ctx context.Context) {
 	}
 }
 
-// channelWorker sends pending channel replies and pulses typing. It skips a
-// tick under shadow or drain (plan G.3).
-func (c *ControlPlane) channelWorker(ctx context.Context) {
-	iv := c.Opts.ChannelInterval
+// Retry policies of the outbox kinds (plan 2026-09-28 A.2).
+var (
+	channelPolicy = outbox.Policy{Base: 5 * time.Second, Max: 5 * time.Minute, Attempts: 5}   //nolint:gochecknoglobals // static policy
+	emailPolicy   = outbox.Policy{Base: 30 * time.Second, Max: 10 * time.Minute, Attempts: 5} //nolint:gochecknoglobals // static policy
+)
+
+// outboxPruneEvery is how often the outbox worker prunes old rows.
+const outboxPruneEvery = time.Hour
+
+// outboxWorker sends due outbox rows and pulses typing. It skips a tick
+// under shadow or drain (plan G.3), and prunes old rows once an hour.
+func (c *ControlPlane) outboxWorker(ctx context.Context) {
+	iv := c.Opts.OutboxInterval
 	if iv <= 0 {
 		iv = time.Second
 	}
 	t := time.NewTicker(iv)
 	defer t.Stop()
+	var lastPrune time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -63,11 +74,20 @@ func (c *ControlPlane) channelWorker(ctx context.Context) {
 			if c.Opts.Shadow || c.draining(ctx) {
 				continue
 			}
-			if err := c.Channels.SendDue(ctx, time.Now()); err != nil {
-				c.log.Warn("channel send due", "error", err)
+			now := time.Now()
+			if err := c.Outbox.SendDue(ctx, now); err != nil {
+				c.log.Warn("outbox send due", "error", err)
 			}
-			if err := c.Channels.PulseTyping(ctx, time.Now()); err != nil {
-				c.log.Warn("channel typing", "error", err)
+			if c.Channels != nil {
+				if err := c.Channels.PulseTyping(ctx, now); err != nil {
+					c.log.Warn("channel typing", "error", err)
+				}
+			}
+			if now.Sub(lastPrune) >= outboxPruneEvery {
+				lastPrune = now
+				if err := c.Outbox.Prune(ctx, now); err != nil {
+					c.log.Warn("outbox prune", "error", err)
+				}
 			}
 		}
 	}

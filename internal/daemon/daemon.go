@@ -28,6 +28,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/license"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -57,8 +58,8 @@ type Options struct {
 	// EmailInterval overrides the inbound mail poll tick (default: the
 	// configured poll_interval, else 30s; tests 50ms).
 	EmailInterval time.Duration
-	// ChannelInterval overrides the channel outbox and typing tick (default 1s).
-	ChannelInterval time.Duration
+	// OutboxInterval overrides the outbox and typing tick (default 1s).
+	OutboxInterval time.Duration
 	// LoginMaxAge is the interactive login session lifetime (default 10m).
 	LoginMaxAge time.Duration
 	// Now is the queue and trigger policy clock (default time.Now). Tests
@@ -84,6 +85,7 @@ type ControlPlane struct {
 	Alerts        *alerts.Service
 	Conversations *conversations.Service
 	Channels      *channels.Service
+	Outbox        *outbox.Service
 	Harness       *harness.Service
 	Email         *email.Service
 	Proposals     *proposals.Service
@@ -195,8 +197,11 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	if lic == nil {
 		lic = license.New(opts.Ext.License)
 	}
-	em := email.New(st).WithConversations(conv)
-	ch := channels.New(st, connector, conv)
+	ob := outbox.New(st)
+	em := email.New(st).WithConversations(conv).WithOutbox(ob)
+	ch := channels.New(st, ob, connector, conv)
+	ob.Register(outbox.KindEmail, em.Outbound(), emailPolicy)
+	ob.Register(outbox.KindChannel, ch, channelPolicy)
 	cl := cloudlink.New(st).WithMail(em)
 	hk := webhooks.New(st, connector, cl)
 	cl.WithWebhooks(hk)
@@ -214,6 +219,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Reaper:        runs.NewReaper(r),
 		Conversations: conv,
 		Channels:      ch,
+		Outbox:        ob,
 		Harness:       harness.New(st, tmux.DefaultDriver{}, harness.Options{LoginMaxAge: opts.LoginMaxAge}),
 		Email:         em,
 		Cloud:         cl,
@@ -445,13 +451,13 @@ func (c *ControlPlane) Start(parent context.Context) {
 		c.busPrune(ctx)
 	}()
 
-	// The channel worker sends pending replies and pulses typing. It skips
-	// its tick under shadow and drain (plan G.3).
-	if c.Channels != nil {
+	// The outbox worker sends due rows and pulses typing. It skips its tick
+	// under shadow and drain (plan G.3).
+	if c.Outbox != nil {
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
-			c.channelWorker(ctx)
+			c.outboxWorker(ctx)
 		}()
 	}
 

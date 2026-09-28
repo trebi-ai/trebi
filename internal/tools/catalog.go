@@ -1907,6 +1907,26 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			}),
 		},
 
+		"outbox": {
+			"list": act("GET /v1/outbox", Input{}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("kind", "status", "purpose", "workspace", "conversation", "inbox", "cursor")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				limit, _, err := in.num("limit")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildOutboxListPath(request.OutboxQuery{
+					Kind: v[0], Status: v[1], Purpose: v[2], Workspace: v[3],
+					Conversation: v[4], Inbox: v[5], Cursor: v[6], Limit: limit,
+				})), nil
+			}),
+			"get":    getReq("GET /v1/outbox/{id}", "id", "01ROW", request.BuildOutboxGet),
+			"retry":  idPost("POST /v1/outbox/{id}/retry", "id", "01ROW", request.BuildOutboxRetry),
+			"cancel": idPost("POST /v1/outbox/{id}/cancel", "id", "01ROW", request.BuildOutboxCancel),
+		},
+
 		"conversation": {
 			"list": act("GET /v1/conversations", Input{}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("workspace", "channel", "operator", "cursor")

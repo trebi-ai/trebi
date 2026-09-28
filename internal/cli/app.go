@@ -66,6 +66,7 @@ func NewApp(opts Options) *cli.Command {
 			skillCommand(),
 			secretCommand(),
 			inboxCommand(),
+			outboxCommand(),
 			eventsCommand(),
 			fileCommand(),
 			memoryCommand(),

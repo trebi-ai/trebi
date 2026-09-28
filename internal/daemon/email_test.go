@@ -23,6 +23,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -265,9 +266,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{RunID: run.ID, ConversationID: convID}); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.fw.sent()) != sendsBefore+1 {
-		t.Fatalf("sends = %d, want %d", len(p.fw.sent()), sendsBefore+1)
-	}
+	p.waitSends(t, sendsBefore+1)
 	// A repeat covers the same turn: no second mail for one exchange.
 	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{RunID: run.ID, ConversationID: convID}); err != nil {
 		t.Fatal(err)
@@ -463,80 +462,6 @@ func writeMailJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// TestUnsentReplyRowsDoNotCoverTheTurn proves the restart safety of the
-// reply path: only a `sent` row covers a turn, so a failed send retries,
-// and a row left `sending` by a crash does not suppress the next mail.
-func TestUnsentReplyRowsDoNotCoverTheTurn(t *testing.T) {
-	p := startMailPlane(t)
-	ctx := t.Context()
-	const u = "01ARZ3NDEKTSV4RRFFQ69G5FA8"
-
-	// The send fails: the envelope records send_failed and covers nothing.
-	p.fw.setFailSends(true)
-	if n := p.poll(t, []email.IngressMessage{{
-		V: 1, Seq: 1, ID: u, LocalPart: p.local,
-		From: "ops@example.com", Dmarc: "pass", MessageID: "<retry@x>",
-		Subject: "hello", Text: "Say hi.",
-	}}); n != 1 {
-		t.Fatalf("pulled %d, want 1", n)
-	}
-	deadline := time.Now().Add(30 * time.Second)
-	var convID, disposition string
-	for time.Now().Before(deadline) {
-		err := p.st.DB().QueryRowContext(ctx, `
-SELECT conversation_id, disposition FROM email_messages
-WHERE direction='out' ORDER BY id DESC LIMIT 1`).Scan(&convID, &disposition)
-		if err == nil && disposition == "send_failed" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if disposition != "send_failed" {
-		t.Fatalf("disposition = %q, want send_failed", disposition)
-	}
-
-	// The transport recovers: the same turn goes out on the next call.
-	p.fw.setFailSends(false)
-	sends := len(p.fw.sent())
-	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
-		t.Fatal(err)
-	}
-	if len(p.fw.sent()) != sends+1 {
-		t.Fatalf("a send_failed row covered the turn: %d sends", len(p.fw.sent()))
-	}
-	var covered sql.NullInt64
-	if err := p.st.DB().QueryRowContext(ctx, `
-SELECT disposition, covered_turn FROM email_messages
-WHERE direction='out' ORDER BY id DESC LIMIT 1`).Scan(&disposition, &covered); err != nil {
-		t.Fatal(err)
-	}
-	if disposition != "sent" || !covered.Valid {
-		t.Fatalf("retry row = %q covered=%v", disposition, covered)
-	}
-
-	// A crash between the envelope insert and the sent mark leaves
-	// `sending`, which covers nothing: the next call mails the turn again.
-	if _, err := p.st.DB().ExecContext(ctx,
-		`UPDATE email_messages SET disposition='sending' WHERE direction='out'`); err != nil {
-		t.Fatal(err)
-	}
-	sends = len(p.fw.sent())
-	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
-		t.Fatal(err)
-	}
-	if len(p.fw.sent()) != sends+1 {
-		t.Fatalf("a sending row covered the turn: %d sends", len(p.fw.sent()))
-	}
-
-	// Now the row is sent: one mail per exchange.
-	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
-		t.Fatal(err)
-	}
-	if len(p.fw.sent()) != sends+1 {
-		t.Fatalf("a second reply went out for one exchange: %d sends", len(p.fw.sent()))
-	}
-}
-
 // TestAssistantTurnMailsReplyOnThread proves the phase-0 fix end to end:
 // a plain operator mail runs one assistant session turn, and the turn-end
 // hook mails the reply on the thread. The outbound envelope carries
@@ -596,12 +521,13 @@ FROM email_messages WHERE direction='out'`).Scan(&convID, &disposition, &runID, 
 	}
 }
 
-// TestRetryDueResendsAssistantReply covers P1-31: a failed assistant reply
-// goes out again after the wait, a stale `sending` row counts as failed, and
-// one turn gets at most five envelopes.
-func TestRetryDueResendsAssistantReply(t *testing.T) {
+// TestOutboxRetriesAssistantReply: a failed assistant reply stays one
+// envelope while the outbox retries it, fails after five attempts, and sends
+// the same Message-ID on a manual retry. A stale claim goes out after 2m.
+func TestOutboxRetriesAssistantReply(t *testing.T) {
 	p := startMailPlane(t)
 	ctx := t.Context()
+	ob := p.cp.Outbox
 
 	// Thread one: the turn-end send fails.
 	p.fw.setFailSends(true)
@@ -610,59 +536,113 @@ func TestRetryDueResendsAssistantReply(t *testing.T) {
 		From: "ops@example.com", Dmarc: "pass", MessageID: "<r1@x>",
 		Subject: "one", Text: "Say hi.",
 	}})
-	convA := p.waitOut(t, "<r1@x>", "send_failed")
-	sends := len(p.fw.sent())
-
-	// Inside the wait nothing goes out.
-	if err := p.cp.Email.RetryDue(ctx, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if len(p.fw.sent()) != sends {
-		t.Fatal("retry sent inside the wait")
-	}
-	// Each due retry adds one envelope, up to five for the turn.
+	convA := p.waitOut(t, "<r1@x>", "queued")
+	rowID := p.outboxOf(t, convA)
+	p.waitAttempts(t, rowID, 1)
 	for i := 1; i <= 6; i++ {
-		if err := p.cp.Email.RetryDue(ctx, time.Now().Add(time.Duration(i)*time.Hour)); err != nil {
+		if err := ob.SendDue(ctx, time.Now().Add(time.Duration(i)*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n := p.outRows(t, convA); n != 5 {
-		t.Fatalf("envelopes = %d, want 5", n)
+	row, err := ob.Get(ctx, rowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != outbox.StatusFailed || row.Attempts != 5 {
+		t.Fatalf("row = %s after %d attempts, want failed after 5", row.Status, row.Attempts)
+	}
+	if n := p.outRows(t, convA); n != 1 {
+		t.Fatalf("envelopes = %d, want 1", n)
+	}
+	p.waitOut(t, "<r1@x>", "send_failed")
+
+	p.fw.setFailSends(false)
+	if _, err := ob.Retry(ctx, rowID); err != nil {
+		t.Fatal(err)
+	}
+	if err := ob.SendDue(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	p.waitOut(t, "<r1@x>", "sent")
+	sent := p.fw.sent()
+	var msgID string
+	if err := p.st.DB().QueryRowContext(ctx,
+		`SELECT message_id FROM email_messages WHERE outbox_id=?`, rowID).Scan(&msgID); err != nil {
+		t.Fatal(err)
+	}
+	if last := sent[len(sent)-1]; last.MessageID != msgID {
+		t.Fatalf("retry message id = %q, want %q", last.MessageID, msgID)
 	}
 
-	// Thread two: a crash leaves `sending`. It waits 2m, then it goes out.
-	p.fw.setFailSends(false)
+	// Thread two: a crash leaves the row claimed. It waits 2m, then it goes out.
+	p.fw.setFailSends(true)
 	p.poll(t, []email.IngressMessage{{
 		V: 1, Seq: 2, ID: "01ARZ3NDEKTSV4RRFFQ69G5FB2", LocalPart: p.local,
 		From: "ops@example.com", Dmarc: "pass", MessageID: "<r2@x>",
 		Subject: "two", Text: "Say hi again.",
 	}})
-	convB := p.waitOut(t, "<r2@x>", "sent")
-	if _, err := p.st.DB().ExecContext(ctx,
-		`UPDATE email_messages SET disposition='sending' WHERE direction='out' AND conversation_id=?`, convB); err != nil {
+	convB := p.waitOut(t, "<r2@x>", "queued")
+	rowB := p.outboxOf(t, convB)
+	p.waitAttempts(t, rowB, 1)
+	p.fw.setFailSends(false)
+	if _, err := p.st.DB().ExecContext(ctx, `UPDATE outbox SET status='sending', claimed_at=? WHERE id=?`,
+		time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"), rowB); err != nil {
 		t.Fatal(err)
 	}
-	sends = len(p.fw.sent())
-	if err := p.cp.Email.RetryDue(ctx, time.Now().Add(time.Minute)); err != nil {
+	sends := len(p.fw.sent())
+	if err := ob.SendDue(ctx, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if len(p.fw.sent()) != sends {
-		t.Fatal("a fresh sending row was retried")
+		t.Fatal("a fresh claim was sent again")
 	}
-	if err := p.cp.Email.RetryDue(ctx, time.Now().Add(3*time.Minute)); err != nil {
+	if err := ob.SendDue(ctx, time.Now().Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if len(p.fw.sent()) != sends+1 {
-		t.Fatalf("stale sending row: %d sends, want %d", len(p.fw.sent()), sends+1)
+		t.Fatalf("stale claim: %d sends, want %d", len(p.fw.sent()), sends+1)
 	}
-	var sent int
-	if err := p.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM email_messages
-		WHERE direction='out' AND conversation_id=? AND disposition='sent'`, convB).Scan(&sent); err != nil {
+	p.waitOut(t, "<r2@x>", "sent")
+}
+
+// waitSends waits until the worker holds n sends.
+func (p *mailPlane) waitSends(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) && len(p.fw.sent()) < n {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := len(p.fw.sent()); got != n {
+		t.Fatalf("sends = %d, want %d", got, n)
+	}
+}
+
+// outboxOf returns the outbox row of the one outbound envelope of convID.
+func (p *mailPlane) outboxOf(t *testing.T, convID string) string {
+	t.Helper()
+	var id string
+	if err := p.st.DB().QueryRowContext(t.Context(),
+		`SELECT outbox_id FROM email_messages WHERE direction='out' AND conversation_id=?`, convID).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	if sent != 1 {
-		t.Fatalf("sent rows = %d, want 1", sent)
+	return id
+}
+
+// waitAttempts waits until the worker made n attempts on the row.
+func (p *mailPlane) waitAttempts(t *testing.T, rowID string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		row, err := p.cp.Outbox.Get(t.Context(), rowID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.Attempts >= n && row.Status == outbox.StatusPending {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	t.Fatalf("row %s never reached %d attempts", rowID, n)
 }
 
 // waitOut waits for the outbound reply on the thread rooted at root to

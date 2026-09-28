@@ -50,6 +50,8 @@ var consumeTopics = []string{
 	"approval.decided",
 	"proposal.created",
 	"proposal.decided",
+	"outbox.failed",
+	"outbox.sent",
 }
 
 //nolint:gochecknoglobals // static table
@@ -229,11 +231,11 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.onProposalCreated(ctx, ev, attrs)
 	case "proposal.decided":
 		s.autoResolve(ctx, KindAgentProposal, "proposal/"+firstNonEmpty(attrs["proposal_id"], ev.ID), attrs["decision"])
-	case "channel.send_failed":
-		s.onChannelSendFailed(ctx, ev, attrs)
-	case "channel.sent":
+	case "outbox.failed":
+		s.onSendFailed(ctx, ev, attrs)
+	case "outbox.sent":
 		if attrs["row_id"] != "" {
-			s.autoResolve(ctx, KindChannelSendFailed, "outbox/"+attrs["row_id"], "auto")
+			s.autoResolve(ctx, KindSendFailed, "outbox/"+attrs["row_id"], "auto")
 		}
 	}
 }
@@ -393,21 +395,28 @@ func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent
 	}
 }
 
-// onChannelSendFailed raises one item per outbox row, so two failed replies
-// of one conversation stay two items.
-func (s *Service) onChannelSendFailed(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
-	convID := firstNonEmpty(attrs["conversation_id"], ev.ID)
-	subject := "conversation/" + convID
-	if attrs["row_id"] != "" {
-		subject = "outbox/" + attrs["row_id"]
+// onSendFailed raises one item per outbox row, so two failed sends stay two
+// items. A failed alert row raises nothing: the route moves on, and an
+// alert about an alert would loop (plan 2026-09-28 B.5).
+func (s *Service) onSendFailed(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	if attrs["purpose"] == "alert" {
+		return
+	}
+	rowID := firstNonEmpty(attrs["row_id"], ev.ID)
+	title := "Email send failed"
+	if attrs["kind"] == "channel" {
+		title = "Channel send failed"
+		if attrs["connector"] != "" {
+			title = "Send through " + attrs["connector"] + " failed"
+		}
 	}
 	_, err := s.Raise(ctx, RaiseOpts{
-		Kind: KindChannelSendFailed, Connector: attrs["connector"],
-		Subject: subject, TraceID: ev.TraceID,
-		Title: "Channel reply failed", Body: attrs["error"],
+		Kind: KindSendFailed, Connector: attrs["connector"], WorkspaceID: attrs["workspace"],
+		Subject: "outbox/" + rowID, TraceID: ev.TraceID,
+		Title: title, Body: attrs["error"],
 	})
 	if err != nil {
-		s.log.Warn("raise channel_send_failed", "conversation", convID, "error", err)
+		s.log.Warn("raise send_failed", "row", rowID, "error", err)
 	}
 }
 

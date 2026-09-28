@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/assistant"
-	"github.com/trebi-ai/trebi/internal/channels"
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/outbox"
 )
 
 func (s *Server) routeConversations(mux *http.ServeMux) {
@@ -303,20 +303,16 @@ func (s *Server) convErr(w http.ResponseWriter, err error, notFoundMsg string) b
 	return true
 }
 
-// handleConversationOutbox lists the channel replies of one conversation.
-// This is a support read.
+// handleConversationOutbox lists the outbox rows of one conversation, newest
+// first. This is a support read.
 func (s *Server) handleConversationOutbox(w http.ResponseWriter, r *http.Request) {
-	if s.channels == nil {
-		writeErr(w, http.StatusServiceUnavailable, "internal", "channels service is not available")
-		return
-	}
 	if !s.conversationOwned(w, r) {
 		return
 	}
 	if _, err := s.conv.Get(r.Context(), r.PathValue("id")); s.convErr(w, err, "conversation not found") {
 		return
 	}
-	rows, err := s.channels.ListOutbox(r.Context(), r.PathValue("id"))
+	rows, _, err := s.outbox.List(r.Context(), outbox.Filter{ConversationID: r.PathValue("id"), Limit: 500})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -324,28 +320,18 @@ func (s *Server) handleConversationOutbox(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"outbox": rows})
 }
 
-// handleConversationOutboxRetry sets one failed reply of a conversation back
+// handleConversationOutboxRetry sets one failed row of a conversation back
 // to pending.
 func (s *Server) handleConversationOutboxRetry(w http.ResponseWriter, r *http.Request) {
-	if s.channels == nil {
-		writeErr(w, http.StatusServiceUnavailable, "internal", "channels service is not available")
-		return
-	}
 	if !s.conversationOwned(w, r) {
 		return
 	}
-	row, err := s.channels.RetryOutbox(r.Context(), r.PathValue("id"), r.PathValue("row"))
-	switch {
-	case err == nil:
-	case errors.Is(err, channels.ErrNotFound):
-		writeErr(w, http.StatusNotFound, "not_found", "outbox row not found")
-		return
-	case errors.Is(err, channels.ErrNotFailed):
-		writeErr(w, http.StatusConflict, "conflict", "outbox row is not failed")
-		return
-	default:
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
+	row, err := s.outbox.Get(r.Context(), r.PathValue("row"))
+	if err == nil && row.ConversationID != r.PathValue("id") {
+		err = outbox.ErrNotFound
 	}
-	writeJSON(w, http.StatusOK, row)
+	if err == nil {
+		row, err = s.outbox.Retry(r.Context(), row.ID)
+	}
+	writeOutboxResult(w, row, err, "outbox row is not failed")
 }

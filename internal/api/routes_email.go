@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -130,12 +131,26 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	msgID, err := s.email.Send(r.Context(), opts)
+	queued, err := s.email.Send(r.Context(), opts)
 	if err != nil {
 		writeEmailErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "message_id": msgID})
+	// One attempt now, so the caller sees the first error at once. A failed
+	// attempt stays queued and the outbox worker retries it.
+	row, err := s.outbox.SendNow(r.Context(), queued.OutboxID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	resp := map[string]any{
+		"sent": row.Status == outbox.StatusSent, "message_id": queued.MessageID,
+		"outbox_id": row.ID, "status": row.Status,
+	}
+	if row.ErrorMessage != "" {
+		resp["error"] = row.ErrorMessage
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleEmailMessages is the envelope log (plan K): newest first, filtered

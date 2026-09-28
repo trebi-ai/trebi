@@ -69,11 +69,11 @@ Delete one conversation with its messages, events, and assistant session row; it
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
 ### outbox
-List the channel replies of one conversation. Each row carries `id`, `connector`, `status` (`pending`, `sent`, or `failed`), `attempts`, `error_message`, and `message_id`. This is a support read.
+List the outbox rows of one conversation. Each row carries `id`, `kind`, `connector`, `target`, `status` (`pending`, `sending`, `sent`, `failed`, or `canceled`), `attempts`, `error`, and `dedupe_key`. The `outbox` tool reads every row.
 - `id` (string, required): conversation id.
 
 ### outbox_retry
-Set one failed channel reply of a conversation back to `pending` with `attempts = 0`, so the send worker retries it. The call returns `conflict` when the row did not fail.
+Set one failed or canceled outbox row of a conversation back to `pending` with `attempts = 0`, so the worker retries it. The call returns `conflict` for any other status.
 - `id` (string, required): conversation id.
 - `row` (string, required): outbox row id.
 

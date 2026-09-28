@@ -313,9 +313,6 @@ func (g *Ingress) Run(ctx context.Context) {
 			if g.shadow || !g.svc.Configured() || g.svc.Draining() {
 				continue
 			}
-			if err := g.svc.RetryDue(ctx, time.Now()); err != nil {
-				g.log.Warn("email.reply retry", "error", err)
-			}
 			if _, err := g.svc.Client(); err != nil {
 				continue // hosted mail pushes; there is no spool to pull
 			}

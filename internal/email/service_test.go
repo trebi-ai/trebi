@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -22,7 +23,7 @@ import (
 // transport-selection tests.
 func TestServiceUnconfigured(t *testing.T) {
 	t.Parallel()
-	s := New(openEmailStore(t))
+	s := testService(openEmailStore(t))
 
 	st := s.Status(t.Context())
 	if st.Configured || st.Entitlement != "ok" || st.WorkerHealth != nil {
@@ -38,7 +39,7 @@ func TestServiceUnconfigured(t *testing.T) {
 
 func TestEnsureRotateSync(t *testing.T) {
 	t.Parallel()
-	s := New(openEmailStore(t))
+	s := testService(openEmailStore(t))
 	configureTest(s, "https://worker.example")
 
 	a, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
@@ -132,7 +133,7 @@ func TestStatusProbesWorker(t *testing.T) {
 	srv := httptest.NewServer(fw.handler())
 	t.Cleanup(srv.Close)
 
-	s := New(openEmailStore(t))
+	s := testService(openEmailStore(t))
 	configureTest(s, srv.URL)
 	s.SetPollState(PollState{Position: 41, LastPoll: "2026-09-19T09:00:00Z"})
 
@@ -162,7 +163,7 @@ func TestTestSendsAndLogs(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st)
+	s := testService(st)
 	configureTest(s, srv.URL)
 
 	msgID, err := s.Test(t.Context())
@@ -218,7 +219,7 @@ func TestSendAlertThreadsAndRecovers(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st)
+	s := testService(st)
 	configureTest(s, srv.URL)
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -241,7 +242,7 @@ func TestSendAlertThreadsAndRecovers(t *testing.T) {
 	if sent.MessageID != first || sent.InReplyTo != "" || len(sent.References) != 0 {
 		t.Errorf("first send = %+v", sent)
 	}
-	if inReplyTo, root, disp := envelope(t, st, first); inReplyTo != "" || root != first || disp != "sent" {
+	if inReplyTo, root, disp := envelopeOf(t, st, first); inReplyTo != "" || root != first || disp != "sent" {
 		t.Errorf("first envelope = %q/%q/%s", inReplyTo, root, disp)
 	}
 	var link string
@@ -258,49 +259,106 @@ func TestSendAlertThreadsAndRecovers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	flush(t, s)
 	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
 		t.Fatal(err)
 	}
 	if sent.InReplyTo != first || len(sent.References) != 1 || sent.References[0] != first {
 		t.Errorf("second send = %+v", sent)
 	}
-	if inReplyTo, root, _ := envelope(t, st, second); inReplyTo != first || root != first {
+	if inReplyTo, root, _ := envelopeOf(t, st, second); inReplyTo != first || root != first {
 		t.Errorf("second envelope = %q root %q", inReplyTo, root)
 	}
 
-	// A 429 is retried, not failed.
-	fw.sendScript = []int{http.StatusTooManyRequests}
-	third, err := s.SendAlert(t.Context(), "inbox-1", subject, "kind: run_failed")
-	if err != nil {
-		t.Fatalf("send after one 429: %v", err)
-	}
-
-	// A permanent failure marks the row send_failed and surfaces in Status.
+	// A failure keeps the row queued with the body and the error, and
+	// surfaces in Status. The next attempt sends the same Message-ID.
 	fw.sendScript = []int{http.StatusInternalServerError}
 	failed, err := s.SendAlert(t.Context(), "inbox-1", subject, "kind: run_failed")
 	if err == nil {
-		t.Fatal("permanent send failure must error")
+		t.Fatal("a failed first attempt must return the error")
 	}
-	if _, root, disp := envelope(t, st, failed); root != first || disp != "send_failed" {
+	var status, body, errMsg string
+	if err := st.DB().QueryRowContext(t.Context(), `
+SELECT o.status, COALESCE(o.body,''), COALESCE(o.error_message,'')
+FROM outbox o JOIN email_messages em ON em.outbox_id = o.id WHERE em.message_id=?`, failed).
+		Scan(&status, &body, &errMsg); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" || body == "" || errMsg == "" {
+		t.Errorf("failed row = %s body %q error %q; want pending with body and error", status, body, errMsg)
+	}
+	if _, root, disp := envelopeOf(t, st, failed); root != first || disp != "queued" {
 		t.Errorf("failed envelope root=%q disposition=%s", root, disp)
 	}
 	if se := s.Status(t.Context()).SendError; se == "" {
 		t.Error("send failure missing from Status")
 	}
-
-	// The next success clears the failure and threads on the last sent mail.
 	fw.sendScript = nil
-	if _, err := s.SendAlert(t.Context(), "inbox-1", subject, "kind: run_failed"); err != nil {
+	flush(t, s)
+	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
 		t.Fatal(err)
+	}
+	if sent.MessageID != failed {
+		t.Errorf("retry message id = %q, want %q", sent.MessageID, failed)
 	}
 	if se := s.Status(t.Context()).SendError; se != "" {
 		t.Errorf("send error not cleared: %q", se)
 	}
+	if _, _, disp := envelopeOf(t, st, failed); disp != "sent" {
+		t.Errorf("retried envelope = %s, want sent", disp)
+	}
+}
+
+// TestSendFailsAfterAttempts: the last failed attempt fails the row and
+// marks the envelope send_failed. A retry sends the same Message-ID.
+func TestSendFailsAfterAttempts(t *testing.T) {
+	t.Parallel()
+	fw := &fakeWorker{token: "test-token-0000"}
+	srv := httptest.NewServer(fw.handler())
+	t.Cleanup(srv.Close)
+	st := openEmailStore(t)
+	s := testService(st)
+	configureTest(s, srv.URL)
+	if _, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs"); err != nil {
+		t.Fatal(err)
+	}
+	fw.sendScript = []int{500, 500, 500, 500, 500}
+	q, err := s.Send(t.Context(), SendOpts{
+		WorkspaceID: "ws_1", To: []string{"ops@example.com"}, Subject: "digest", Text: "ready",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		flush(t, s)
+	}
+	row, err := s.ob.Get(t.Context(), q.OutboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != outbox.StatusFailed || row.Attempts != 5 || row.Body != "ready" || row.ErrorMessage == "" {
+		t.Errorf("row = %+v; want failed after 5 attempts with body and error", row)
+	}
+	if _, _, disp := envelopeOf(t, st, q.MessageID); disp != "send_failed" {
+		t.Errorf("envelope = %s, want send_failed", disp)
+	}
+	m, err := s.ListMessages(t.Context(), MessageListOpts{Direction: "out"})
+	if err != nil || len(m) != 1 || m[0].OutboxID != q.OutboxID || m[0].Status != "failed" || m[0].Error == "" {
+		t.Errorf("message wire = %+v, %v", m, err)
+	}
+	if _, err := s.ob.Retry(t.Context(), q.OutboxID); err != nil {
+		t.Fatal(err)
+	}
+	flush(t, s)
+	var sent SendRequest
 	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
 		t.Fatal(err)
 	}
-	if sent.InReplyTo != third {
-		t.Errorf("recovery send = %+v; a send_failed row must not thread", sent)
+	if sent.MessageID != q.MessageID {
+		t.Errorf("retry message id = %q, want %q", sent.MessageID, q.MessageID)
+	}
+	if _, _, disp := envelopeOf(t, st, q.MessageID); disp != "sent" {
+		t.Errorf("envelope after retry = %s, want sent", disp)
 	}
 }
 
@@ -314,7 +372,7 @@ func TestSendRecipientMatrix(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st)
+	s := testService(st)
 	configureTest(s, srv.URL)
 	if _, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs"); err != nil {
 		t.Fatal(err)
@@ -324,14 +382,16 @@ func TestSendRecipientMatrix(t *testing.T) {
 		&fakeActions{env: RouteEnv{Allowlist: []string{"Friend@Example.com"}}}, time.Minute, false))
 
 	// An operator passes; the mail carries the plain workspace address.
-	first, err := s.Send(t.Context(), SendOpts{
+	q, err := s.Send(t.Context(), SendOpts{
 		WorkspaceID: "ws_1", To: []string{"ops@example.com"},
 		Subject: "digest", Text: "ready",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	first := q.MessageID
 	var sent SendRequest
+	flush(t, s)
 	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +401,7 @@ func TestSendRecipientMatrix(t *testing.T) {
 	if sent.MessageID != first {
 		t.Errorf("message id %q != returned %q", sent.MessageID, first)
 	}
-	if inReplyTo, root, disp := envelope(t, st, first); inReplyTo != "" || root != first || disp != "sent" {
+	if inReplyTo, root, disp := envelopeOf(t, st, first); inReplyTo != "" || root != first || disp != "sent" {
 		t.Errorf("envelope = %q/%q/%s", inReplyTo, root, disp)
 	}
 
@@ -360,6 +420,7 @@ func TestSendRecipientMatrix(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	flush(t, s)
 	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
 		t.Fatal(err)
 	}
@@ -368,20 +429,22 @@ func TestSendRecipientMatrix(t *testing.T) {
 	}
 
 	// A reply threads onto the root of the message it answers.
-	threaded, err := s.Send(t.Context(), SendOpts{
+	tq, err := s.Send(t.Context(), SendOpts{
 		WorkspaceID: "ws_1", To: []string{"ops@example.com"},
 		Subject: "digest", Text: "ready", InReplyTo: first,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	threaded := tq.MessageID
+	flush(t, s)
 	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
 		t.Fatal(err)
 	}
 	if sent.InReplyTo != first || len(sent.References) == 0 || sent.References[len(sent.References)-1] != first {
 		t.Errorf("threaded send = %+v", sent)
 	}
-	if inReplyTo, root, _ := envelope(t, st, threaded); inReplyTo != first || root != first {
+	if inReplyTo, root, _ := envelopeOf(t, st, threaded); inReplyTo != first || root != first {
 		t.Errorf("threaded envelope = %q/%q", inReplyTo, root)
 	}
 
@@ -414,7 +477,7 @@ func TestSendAlertFromWorkspaceAddress(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st)
+	s := testService(st)
 	configureTest(s, srv.URL)
 	addr, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
 	if err != nil {
@@ -435,6 +498,7 @@ func TestSendAlertFromWorkspaceAddress(t *testing.T) {
 		if _, err := s.SendAlert(t.Context(), tc.id, "[trebi] Run failed: "+tc.id, "kind: run_failed"); err != nil {
 			t.Fatal(err)
 		}
+		flush(t, s)
 		var sent SendRequest
 		if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
 			t.Fatal(err)
@@ -490,7 +554,7 @@ func (h *hostedTransport) MintAddress(context.Context, string) (string, error) {
 func TestEnsureRotateHosted(t *testing.T) {
 	t.Parallel()
 	tr := &hostedTransport{mints: []string{"a-one@mail.example.com", "a-two@mail.example.com"}}
-	s := New(openEmailStore(t))
+	s := testService(openEmailStore(t))
 	cfg := testSettings("") // no Worker: the hosted selection supplies the transport
 	s.Configure(cfg, tr)
 
@@ -523,7 +587,7 @@ func TestEnsureRotateHosted(t *testing.T) {
 func TestDeliverHostedRoutesLikePoll(t *testing.T) {
 	t.Parallel()
 	st := openEmailStore(t)
-	s := New(st)
+	s := testService(st)
 	cfg := testSettings("")
 	cfg.Domain = "" // the hosted transport learns its domain from the mint
 	s.Configure(cfg, &hostedTransport{mints: []string{"a-hosted1@mail.example.com"}})
@@ -604,7 +668,23 @@ func TestDeliverHostedRoutesLikePoll(t *testing.T) {
 	}
 }
 
-func envelope(t *testing.T, st *store.Store, messageID string) (inReplyTo, root, disposition string) {
+// testService builds a service with an outbox whose email retry waits 1ms.
+func testService(st *store.Store) *Service {
+	s := New(st)
+	ob := outbox.New(st)
+	ob.Register(outbox.KindEmail, s.Outbound(), outbox.Policy{Base: time.Millisecond, Max: time.Millisecond, Attempts: 5})
+	return s.WithOutbox(ob)
+}
+
+// flush makes one outbox pass over every pending row.
+func flush(t *testing.T, s *Service) {
+	t.Helper()
+	if err := s.ob.SendDue(t.Context(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func envelopeOf(t *testing.T, st *store.Store, messageID string) (inReplyTo, root, disposition string) {
 	t.Helper()
 	err := st.DB().QueryRowContext(t.Context(),
 		`SELECT COALESCE(in_reply_to,''), thread_root, disposition FROM email_messages WHERE message_id=?`,

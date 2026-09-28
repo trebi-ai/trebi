@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 28
+const SchemaVersion = 29
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -697,6 +697,56 @@ CREATE INDEX idx_channel_outbox_due ON channel_outbox(status, next_attempt_at);
 		// fixes P1-20).
 		`
 ALTER TABLE runs ADD COLUMN connectors_json TEXT;
+`,
+		// v29: one outbox for every outgoing send (plan 2026-09-28 A.1).
+		// It replaces channel_outbox. The body stays on the row until the
+		// row is sent. email_messages keeps the envelope and points at its
+		// outbox row. inbox_items records the alert delivery state (D.2).
+		`
+CREATE TABLE outbox (
+    id              TEXT PRIMARY KEY,
+    kind            TEXT NOT NULL,
+    purpose         TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL DEFAULT '',
+    connector       TEXT NOT NULL DEFAULT '',
+    target          TEXT NOT NULL DEFAULT '',
+    subject         TEXT NOT NULL DEFAULT '',
+    body            TEXT,
+    env_json        TEXT NOT NULL DEFAULT '{}',
+    conversation_id TEXT,
+    run_id          TEXT,
+    inbox_id        TEXT,
+    email_row_id    TEXT,
+    dedupe_key      TEXT,
+    route_step      INTEGER,
+    route_json      TEXT,
+    status          TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    max_attempts    INTEGER NOT NULL DEFAULT 5,
+    next_attempt_at TEXT,
+    claimed_at      TEXT,
+    error_message   TEXT,
+    created_at      TEXT NOT NULL,
+    sent_at         TEXT,
+    revision        INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX idx_outbox_dedupe ON outbox(dedupe_key) WHERE dedupe_key IS NOT NULL;
+CREATE INDEX idx_outbox_due ON outbox(status, next_attempt_at);
+CREATE INDEX idx_outbox_ws ON outbox(workspace_id, created_at DESC);
+CREATE INDEX idx_outbox_inbox ON outbox(inbox_id) WHERE inbox_id IS NOT NULL;
+CREATE INDEX idx_outbox_conv ON outbox(conversation_id) WHERE conversation_id IS NOT NULL;
+
+INSERT INTO outbox (id, kind, purpose, workspace_id, connector, target, body, conversation_id,
+    run_id, dedupe_key, status, attempts, next_attempt_at, error_message, created_at, sent_at)
+SELECT id, 'channel', 'reply', workspace_id, connector, channel_ref,
+    CASE WHEN status='sent' THEN NULL ELSE text END, conversation_id, run_id, message_id,
+    status, attempts, next_attempt_at, error_message, created_at, sent_at
+FROM channel_outbox;
+DROP TABLE channel_outbox;
+
+ALTER TABLE email_messages ADD COLUMN outbox_id TEXT;
+UPDATE email_messages SET disposition='send_failed' WHERE disposition='sending';
+ALTER TABLE inbox_items ADD COLUMN delivery TEXT;
 `,
 	}
 }

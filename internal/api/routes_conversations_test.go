@@ -220,9 +220,9 @@ func TestConversationOutboxRoutes(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := st.DB().Exec(`INSERT INTO channel_outbox
-		(id, connector, workspace_id, conversation_id, channel_ref, message_id, text, status, attempts, error_message, created_at)
-		VALUES ('01ROW1','telegram',?,?,'chat1','01MSG1','hello','failed',5,'boom',?)`,
+	if _, err := st.DB().Exec(`INSERT INTO outbox
+		(id, kind, purpose, connector, workspace_id, conversation_id, target, dedupe_key, body, status, attempts, error_message, created_at)
+		VALUES ('01ROW1','channel','reply','telegram',?,?,'chat1','01MSG1','hello','failed',5,'boom',?)`,
 		wsID, convID, now); err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestConversationOutboxRoutes(t *testing.T) {
 		t.Fatalf("outbox rows = %v", rows)
 	}
 	row, _ := rows[0].(map[string]any)
-	if row["status"] != "failed" || row["connector"] != "telegram" || row["message_id"] != "01MSG1" {
+	if row["status"] != "failed" || row["connector"] != "telegram" || row["dedupe_key"] != "01MSG1" {
 		t.Fatalf("outbox row %v", row)
 	}
 

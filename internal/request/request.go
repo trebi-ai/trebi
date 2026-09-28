@@ -2309,3 +2309,36 @@ func fileListQ(prefix, afterPath, workspace string, limit int, recursive bool) m
 	}
 	return kv
 }
+
+// OutboxQuery is the filter of GET /v1/outbox. Empty fields stay out.
+type OutboxQuery struct {
+	Kind, Status, Purpose, Workspace, Conversation, Inbox, Cursor string
+	Limit                                                         int
+}
+
+// BuildOutboxListPath builds GET /v1/outbox with the filter of q.
+func BuildOutboxListPath(q OutboxQuery) string {
+	kv := map[string]string{
+		"kind": q.Kind, "status": q.Status, "purpose": q.Purpose, "workspace": q.Workspace,
+		"conversation": q.Conversation, "inbox": q.Inbox, "cursor": q.Cursor,
+	}
+	if q.Limit > 0 {
+		kv["limit"] = strconv.Itoa(q.Limit)
+	}
+	return withQuery("/v1/outbox", kv)
+}
+
+// BuildOutboxGet builds GET /v1/outbox/{id}.
+func BuildOutboxGet(id string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/outbox/" + url.PathEscape(id)}
+}
+
+// BuildOutboxRetry builds POST /v1/outbox/{id}/retry.
+func BuildOutboxRetry(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/outbox/" + url.PathEscape(id) + "/retry"}
+}
+
+// BuildOutboxCancel builds POST /v1/outbox/{id}/cancel.
+func BuildOutboxCancel(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/outbox/" + url.PathEscape(id) + "/cancel"}
+}

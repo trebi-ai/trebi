@@ -15,6 +15,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -37,6 +38,7 @@ type WorkspaceRef struct {
 type Service struct {
 	st    *store.Store
 	convs *conversations.Service
+	ob    *outbox.Service
 	log   *slog.Logger
 
 	mu          sync.RWMutex
@@ -73,6 +75,16 @@ func (s *Service) WithConversations(c *conversations.Service) *Service {
 	s.convs = c
 	return s
 }
+
+// WithOutbox installs the outbox that carries every outbound mail (plan
+// 2026-09-28 B.2). Plain wiring: the daemon calls it once, before Start.
+func (s *Service) WithOutbox(ob *outbox.Service) *Service {
+	s.ob = ob
+	return s
+}
+
+// errNoOutbox is a send with no outbox wired.
+var errNoOutbox = errors.New("email outbox is not wired")
 
 // Configure installs the resolved settings and the transport that moves
 // mail: the bearer Worker client or the hosted cloudlink client. Call it
@@ -199,13 +211,10 @@ func (s *Service) Status(ctx context.Context) Status {
 }
 
 // Test sends one fixed message to the operators and logs the envelope.
-// It is the "does the pipe work" action for the route and the CLI.
+// It is the "does the pipe work" action for the route and the CLI. The row
+// gets one attempt, made now.
 func (s *Service) Test(ctx context.Context) (string, error) {
 	cfg, err := s.Settings()
-	if err != nil {
-		return "", err
-	}
-	tr, err := s.Transport()
 	if err != nil {
 		return "", err
 	}
@@ -214,27 +223,23 @@ func (s *Service) Test(ctx context.Context) (string, error) {
 		return "", err
 	}
 	msgID := MintMessageID(domain)
-	req := SendRequest{
-		V:         ContractV,
-		From:      "trebi@" + domain,
-		FromName:  cfg.FromName,
-		To:        cfg.Operators,
-		Subject:   "trebi email test",
-		Text:      "This is a test message from trebi. The email channel works.",
-		MessageID: msgID,
-	}
-	var sentErr error
-	if _, err := tr.Send(ctx, req); err != nil {
-		sentErr = err
-	}
-	rowID, err := s.logTestEnvelope(ctx, cfg, msgID, sentErr)
-	if sentErr != nil {
-		return "", sentErr
-	}
+	row, err := s.enqueue(ctx, envelope{
+		messageID: msgID, recipients: cfg.Operators, subject: "trebi email test",
+	}, outbox.Row{
+		Purpose: outbox.PurposeTest, MaxAttempts: 1,
+		Body: "This is a test message from trebi. The email channel works.",
+		Env:  fromEnv("trebi@"+domain, cfg.FromName),
+	})
 	if err != nil {
-		return "", err // mail went out; the envelope write failed
+		return "", err
 	}
-	s.appendSent(ctx, rowID, msgID)
+	row, err = s.ob.SendNow(ctx, row.ID)
+	if err != nil {
+		return "", err
+	}
+	if row.Status != outbox.StatusSent {
+		return "", errors.New(cmp.Or(row.ErrorMessage, "email test did not send"))
+	}
 	return msgID, nil
 }
 
@@ -254,90 +259,75 @@ type SendOpts struct {
 	Purpose        string
 }
 
-// Send mails one explicit message and returns the minted Message-ID
-// (plan I.3). Every recipient must be an operator or on the workspace
-// allowlist. The envelope row is written before the send, so the log
-// holds the attempt even if the process dies mid-send.
-func (s *Service) Send(ctx context.Context, opts SendOpts) (string, error) {
+// Queued is the outcome of one enqueued send.
+type Queued struct {
+	MessageID string
+	OutboxID  string
+}
+
+// Send enqueues one explicit message and returns the minted Message-ID and
+// the outbox row id (plan I.3). Every recipient must be an operator or on
+// the workspace allowlist. The envelope row and the outbox row are written
+// in one transaction; the outbox worker sends.
+func (s *Service) Send(ctx context.Context, opts SendOpts) (Queued, error) {
 	cfg, err := s.Settings()
 	if err != nil {
-		return "", err
-	}
-	tr, err := s.Transport()
-	if err != nil {
-		return "", err
+		return Queued{}, err
 	}
 	addr, err := s.Address(ctx, opts.WorkspaceID)
 	if err != nil {
-		return "", err
+		return Queued{}, err
 	}
 	if err := s.checkRecipients(ctx, cfg, opts); err != nil {
-		return "", err
+		return Queued{}, err
 	}
 	from := addr.Full()
 	if opts.Agent != "" {
 		lp, err := tagAddress(addr, opts.Agent)
 		if err != nil {
-			return "", err
+			return Queued{}, err
 		}
 		from = lp + "@" + addr.Domain
 	}
 	msgID := MintMessageID(addr.Domain)
-	root, refs := msgID, []string(nil)
+	root := msgID
 	if opts.InReplyTo != "" {
-		root, refs = s.threadOnto(ctx, opts.InReplyTo, msgID)
+		root, _ = s.threadOnto(ctx, opts.InReplyTo, msgID)
 	}
-	rowID := ulid.Make().String()
-	if _, err := s.st.DB().ExecContext(ctx, `
- INSERT INTO email_messages
-  (id, direction, workspace_id, agent, message_id, in_reply_to, thread_root, recipients,
-   subject, disposition, conversation_id, run_id, purpose, created_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		rowID, "out", opts.WorkspaceID, opts.Agent, msgID,
-		opts.InReplyTo, root,
-		strings.Join(opts.To, ","), opts.Subject, "sent", store.NullStr(opts.ConversationID), store.NullStr(opts.RunID), opts.Purpose,
-		time.Now().UTC().Format(time.RFC3339)); err != nil {
-		return "", fmt.Errorf("send envelope: %w", err)
+	purpose := outbox.PurposeSend
+	if opts.Purpose == string(outbox.PurposeReport) {
+		purpose = outbox.PurposeReport
 	}
-	req := SendRequest{
-		V: ContractV, From: from, FromName: cmp.Or(opts.FromName, cfg.FromName),
-		To: opts.To, Subject: opts.Subject, Text: opts.Text,
-		MessageID: msgID, InReplyTo: opts.InReplyTo, References: refs,
+	row, err := s.enqueue(ctx, envelope{
+		workspaceID: opts.WorkspaceID, agent: opts.Agent, messageID: msgID,
+		inReplyTo: opts.InReplyTo, threadRoot: root, recipients: opts.To, subject: opts.Subject,
+		conversationID: opts.ConversationID, runID: opts.RunID, purpose: opts.Purpose,
+	}, outbox.Row{
+		Purpose: purpose, Body: opts.Text,
+		Env: fromEnv(from, cmp.Or(opts.FromName, cfg.FromName)),
+	})
+	if err != nil {
+		return Queued{}, err
 	}
-	if err := s.sendWithBackoff(ctx, tr, req); err != nil {
-		s.noteSendFailure(err)
-		if _, uerr := s.st.DB().ExecContext(ctx,
-			`UPDATE email_messages SET disposition='send_failed' WHERE id=?`, rowID); uerr != nil {
-			s.log.ErrorContext(ctx, "email send_failed mark", "row", rowID, "error", uerr.Error())
-		}
-		return msgID, err
-	}
-	s.noteSendFailure(nil)
-	s.appendSent(ctx, rowID, msgID)
-	return msgID, nil
+	return Queued{MessageID: msgID, OutboxID: row.ID}, nil
 }
 
-// SendAlert mails one alert on its thread and returns the minted
-// Message-ID. The envelope row and the inbox link are written before the
-// send, so a reply resolves to the item even if this process dies between
-// the two. subject doubles as the thread key: a repeat alert with the same
-// subject carries In-Reply-To for the previous one.
+// SendAlert enqueues one alert mail on its thread and returns the minted
+// Message-ID. The envelope row, the inbox link, and the outbox row are
+// written in one transaction, so a reply resolves to the item even if this
+// process dies before the send. subject doubles as the thread key: a repeat
+// alert with the same subject carries In-Reply-To for the previous one.
 func (s *Service) SendAlert(ctx context.Context, inboxID, subject, text string) (string, error) {
 	cfg, err := s.Settings()
 	if err != nil {
 		return "", err
 	}
-	tr, err := s.Transport()
-	if err != nil {
-		return "", err
-	}
-	var workspaceID string
 	var ws sql.NullString
 	if err := s.st.DB().QueryRowContext(ctx,
 		`SELECT workspace_id FROM inbox_items WHERE id=?`, inboxID).Scan(&ws); err != nil {
 		return "", fmt.Errorf("alert inbox item %s: %w", inboxID, err)
 	}
-	workspaceID = ws.String
+	workspaceID := ws.String
 	prev, err := s.lastSentOnThread(ctx, workspaceID, subject)
 	if err != nil {
 		return "", err
@@ -347,51 +337,130 @@ func (s *Service) SendAlert(ctx context.Context, inboxID, subject, text string) 
 		return "", err
 	}
 	msgID := MintMessageID(dom)
-	rowID := ulid.Make().String()
-	root, inReplyTo, refs := msgID, "", []string(nil)
+	root, inReplyTo := msgID, ""
 	if prev.messageID != "" {
-		root = prev.threadRoot
-		inReplyTo = prev.messageID
-		refs = []string{prev.threadRoot}
-		if prev.messageID != prev.threadRoot {
-			refs = append(refs, prev.messageID)
-		}
+		root, inReplyTo = prev.threadRoot, prev.messageID
 	}
-	if err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `
-INSERT INTO email_messages
-  (id, direction, workspace_id, message_id, in_reply_to, thread_root, recipients,
-   subject, disposition, inbox_id, created_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			rowID, "out", ws.String, msgID, inReplyTo, root, strings.Join(cfg.Operators, ","),
-			subject, "sent", store.NullStr(inboxID), time.Now().UTC().Format(time.RFC3339)); err != nil {
-			return fmt.Errorf("alert envelope: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE inbox_items SET email_message_id=? WHERE id=?`, msgID, inboxID); err != nil {
-			return fmt.Errorf("alert inbox link: %w", err)
-		}
-		return nil
-	}); err != nil {
+	row, err := s.enqueue(ctx, envelope{
+		workspaceID: workspaceID, messageID: msgID, inReplyTo: inReplyTo, threadRoot: root,
+		recipients: cfg.Operators, subject: subject, inboxID: inboxID,
+	}, outbox.Row{
+		Purpose: outbox.PurposeAlert, Body: text, InboxID: inboxID,
+		Env: fromEnv(s.alertFrom(ctx, workspaceID), cfg.FromName),
+	})
+	if err != nil {
 		return "", err
 	}
+	// The first attempt is synchronous, so a failure can fall through to the
+	// next alert channel. The outbox keeps the row and retries it.
+	row, err = s.ob.SendNow(ctx, row.ID)
+	if err != nil {
+		return msgID, err
+	}
+	if row.Status != outbox.StatusSent {
+		return msgID, errors.New(cmp.Or(row.ErrorMessage, "alert mail did not send"))
+	}
+	return msgID, nil
+}
+
+// envelope is the email_messages row of one outbound mail.
+type envelope struct {
+	workspaceID, agent, messageID, inReplyTo, threadRoot string
+	recipients                                           []string
+	subject, conversationID, runID, inboxID, purpose     string
+	coveredTurn                                          *int
+}
+
+// Keys of the From header fields on an email outbox row.
+const (
+	envFrom     = "from"
+	envFromName = "from_name"
+)
+
+// Outbound dispositions. The outbox row holds the in-flight state.
+const (
+	dispositionQueued     = "queued"
+	dispositionSent       = "sent"
+	dispositionSendFailed = "send_failed"
+)
+
+// Outbound is the outbox Sender of the email Kind. Service.Deliver is
+// already the inbound path, so the outbound methods live on this type.
+func (s *Service) Outbound() outbox.Sender { return outbound{s} }
+
+type outbound struct{ s *Service }
+
+// Deliver sends one email outbox row: one Transport.Send, with the Worker's
+// retry_after_ms honoured inside the attempt. A refused recipient is
+// permanent. The outbox retries every other failure.
+func (o outbound) Deliver(ctx context.Context, r outbox.Row) error {
+	s := o.s
+	tr, err := s.Transport()
+	if err != nil {
+		return err
+	}
+	var messageID, inReplyTo, root string
+	if err := s.st.DB().QueryRowContext(ctx, `
+SELECT COALESCE(message_id,''), COALESCE(in_reply_to,''), COALESCE(thread_root,'')
+FROM email_messages WHERE id=?`, r.EmailRowID).Scan(&messageID, &inReplyTo, &root); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return outbox.Permanent{Err: fmt.Errorf("email envelope %s is gone", r.EmailRowID)}
+		}
+		return fmt.Errorf("email envelope %s: %w", r.EmailRowID, err)
+	}
+	var refs []string
+	if root != "" && root != messageID {
+		refs = append(refs, root)
+	}
+	if inReplyTo != "" && inReplyTo != root {
+		refs = append(refs, inReplyTo)
+	}
 	req := SendRequest{
-		V: ContractV, From: s.alertFrom(ctx, workspaceID), FromName: cfg.FromName,
-		To: cfg.Operators, Subject: subject, Text: text,
-		MessageID: msgID, InReplyTo: inReplyTo, References: refs,
+		V: ContractV, From: r.Env[envFrom], FromName: r.Env[envFromName],
+		To: splitRecipients(r.Target), Subject: r.Subject, Text: r.Body,
+		MessageID: messageID, InReplyTo: inReplyTo, References: refs,
 	}
 	if err := s.sendWithBackoff(ctx, tr, req); err != nil {
 		s.noteSendFailure(err)
-		if _, uerr := s.st.DB().ExecContext(ctx,
-			`UPDATE email_messages SET disposition='send_failed' WHERE id=?`, rowID); uerr != nil {
-			s.log.ErrorContext(ctx, "email send_failed mark", "row", rowID, "error", uerr.Error())
+		if errors.Is(err, ErrRecipient) {
+			return outbox.Permanent{Err: err}
 		}
-		return msgID, err
+		return err
 	}
 	s.noteSendFailure(nil)
-	s.appendSent(ctx, rowID, msgID)
-	return msgID, nil
+	return nil
 }
+
+// Changed keeps the envelope disposition in step with its outbox row, and
+// publishes email.sent when the row is sent.
+func (o outbound) Changed(ctx context.Context, r outbox.Row) {
+	s := o.s
+	if r.EmailRowID == "" {
+		return
+	}
+	disposition := dispositionQueued
+	switch r.Status {
+	case outbox.StatusSent:
+		disposition = dispositionSent
+	case outbox.StatusFailed, outbox.StatusCanceled:
+		disposition = dispositionSendFailed
+	}
+	if _, err := s.st.DB().ExecContext(ctx,
+		`UPDATE email_messages SET disposition=?, revision=revision+1 WHERE id=?`,
+		disposition, r.EmailRowID); err != nil {
+		s.log.ErrorContext(ctx, "email disposition", "row", r.EmailRowID, "error", err.Error())
+		return
+	}
+	if r.Status == outbox.StatusSent {
+		var msgID string
+		// A missing row leaves the frame without a message id.
+		_ = s.st.DB().QueryRowContext(ctx,
+			`SELECT COALESCE(message_id,'') FROM email_messages WHERE id=?`, r.EmailRowID).Scan(&msgID)
+		s.appendSent(ctx, r.EmailRowID, msgID)
+	}
+}
+
+var _ outbox.Watcher = outbound{}
 
 // MintMessageID returns an RFC Message-ID trebid controls, so the
 // envelope is storable before the send.
@@ -612,6 +681,12 @@ type Message struct {
 	TraceID        string       `json:"trace_id,omitempty"`
 	CreatedAt      string       `json:"created_at"`
 	Revision       int64        `json:"revision"`
+	// Outbound delivery, from the outbox row (plan 2026-09-28 B.3).
+	OutboxID      string `json:"outbox_id,omitempty"`
+	Status        string `json:"status,omitempty"`
+	Attempts      int    `json:"attempts,omitempty"`
+	NextAttemptAt string `json:"next_attempt_at,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 // MessageListOpts filters the envelope log (plan K). Empty filters match
@@ -626,11 +701,15 @@ type MessageListOpts struct {
 
 // Null columns map to "" so one Scan serves both directions: outbound rows
 // carry recipients and no sender, inbound rows the reverse.
-const messageCols = `COALESCE(workspace_id,''), COALESCE(agent,''), COALESCE(message_id,''),
-COALESCE(in_reply_to,''), COALESCE(thread_root,''), COALESCE(sender,''), COALESCE(recipients,''),
-COALESCE(subject,''), COALESCE(dmarc,''), COALESCE(disposition,''), COALESCE(inbox_id,''),
-COALESCE(run_id,''), COALESCE(conversation_id,''), COALESCE(attachments,'[]'),
-COALESCE(trace_id,''), created_at, revision`
+const messageCols = `COALESCE(em.workspace_id,''), COALESCE(em.agent,''), COALESCE(em.message_id,''),
+COALESCE(em.in_reply_to,''), COALESCE(em.thread_root,''), COALESCE(em.sender,''), COALESCE(em.recipients,''),
+COALESCE(em.subject,''), COALESCE(em.dmarc,''), COALESCE(em.disposition,''), COALESCE(em.inbox_id,''),
+COALESCE(em.run_id,''), COALESCE(em.conversation_id,''), COALESCE(em.attachments,'[]'),
+COALESCE(em.trace_id,''), em.created_at, em.revision, COALESCE(em.outbox_id,''), COALESCE(o.status,''),
+COALESCE(o.attempts,0), COALESCE(o.next_attempt_at,''), COALESCE(o.error_message,'')`
+
+// messageFrom joins each envelope to its outbox row.
+const messageFrom = ` FROM email_messages em LEFT JOIN outbox o ON o.id = em.outbox_id`
 
 // ListMessages reads the envelope log newest-first. The row id is a ULID,
 // so it doubles as the cursor.
@@ -638,25 +717,25 @@ func (s *Service) ListMessages(ctx context.Context, opts MessageListOpts) ([]Mes
 	if opts.Limit <= 0 {
 		opts.Limit = 50
 	}
-	q := `SELECT id, direction, ` + messageCols + ` FROM email_messages WHERE 1=1`
+	q := `SELECT em.id, em.direction, ` + messageCols + messageFrom + ` WHERE 1=1`
 	var args []any
 	if opts.Direction != "" {
-		q += ` AND direction=?`
+		q += ` AND em.direction=?`
 		args = append(args, opts.Direction)
 	}
 	if opts.Workspace != "" {
-		q += ` AND workspace_id=?`
+		q += ` AND em.workspace_id=?`
 		args = append(args, opts.Workspace)
 	}
 	if opts.Thread != "" {
-		q += ` AND thread_root=?`
+		q += ` AND em.thread_root=?`
 		args = append(args, opts.Thread)
 	}
 	if opts.Cursor != "" {
-		q += ` AND id < ?`
+		q += ` AND em.id < ?`
 		args = append(args, opts.Cursor)
 	}
-	q += ` ORDER BY id DESC LIMIT ?`
+	q += ` ORDER BY em.id DESC LIMIT ?`
 	args = append(args, opts.Limit)
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
@@ -677,7 +756,7 @@ func (s *Service) ListMessages(ctx context.Context, opts MessageListOpts) ([]Mes
 // GetMessage returns one envelope row, or sql.ErrNoRows.
 func (s *Service) GetMessage(ctx context.Context, id string) (Message, error) {
 	row := s.st.DB().QueryRowContext(ctx,
-		`SELECT id, direction, `+messageCols+` FROM email_messages WHERE id=?`, id)
+		`SELECT em.id, em.direction, `+messageCols+messageFrom+` WHERE em.id=?`, id)
 	m, err := scanMessage(row.Scan)
 	if err != nil {
 		return Message{}, err
@@ -691,7 +770,8 @@ func scanMessage(scan func(dest ...any) error) (Message, error) {
 	if err := scan(&m.ID, &m.Direction, &m.WorkspaceID, &m.Agent, &m.MessageID,
 		&m.InReplyTo, &m.ThreadRoot, &m.Sender, &m.Recipients, &m.Subject,
 		&m.DMARC, &m.Disposition, &m.InboxID, &m.RunID, &m.ConversationID,
-		&att, &m.TraceID, &m.CreatedAt, &m.Revision); err != nil {
+		&att, &m.TraceID, &m.CreatedAt, &m.Revision, &m.OutboxID, &m.Status, &m.Attempts,
+		&m.NextAttemptAt, &m.Error); err != nil {
 		return Message{}, err
 	}
 	m.Attachments = []Attachment{}
@@ -874,8 +954,8 @@ const alertThreadWindow = 30 * 24 * time.Hour
 
 // lastSentOnThread finds the newest delivered outbound message with this
 // subject, in this workspace, inside the thread window. Only
-// disposition='sent' rows thread: a failed send never reached the
-// operator's client. The workspace scope keeps two workspaces with an
+// sent and queued rows thread: a failed send never reached the operator's
+// client. The workspace scope keeps two workspaces with an
 // identically titled fault on separate threads. Rows order by id (a minted
 // ULID), not created_at: two sends in one second must still pick the later
 // row.
@@ -884,7 +964,7 @@ func (s *Service) lastSentOnThread(ctx context.Context, workspaceID, subject str
 	since := time.Now().UTC().Add(-alertThreadWindow).Format(time.RFC3339)
 	err := s.st.DB().QueryRowContext(ctx, `
 SELECT message_id, thread_root FROM email_messages
-WHERE direction='out' AND subject=? AND disposition='sent'
+WHERE direction='out' AND subject=? AND disposition IN ('sent','queued')
   AND workspace_id=? AND created_at >= ?
 ORDER BY id DESC LIMIT 1`, subject, workspaceID, since).Scan(&p.messageID, &p.threadRoot)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -902,25 +982,6 @@ func (s *Service) appendSent(ctx context.Context, rowID, msgID string) {
 	}); err != nil {
 		s.log.Warn("bus append", "topic", "email.sent", "error", err)
 	}
-}
-
-func (s *Service) logTestEnvelope(ctx context.Context, cfg Settings, msgID string, sendErr error) (string, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
-	disposition := "sent"
-	if sendErr != nil {
-		disposition = "send_failed"
-	}
-	rowID := ulid.Make().String()
-	_, err := s.st.DB().ExecContext(ctx, `
-INSERT INTO email_messages
-  (id, direction, workspace_id, message_id, recipients, subject, disposition, created_at)
-VALUES (?,?,?,?,?,?,?,?)`,
-		rowID, "out", "", msgID, strings.Join(cfg.Operators, ","),
-		"trebi email test", disposition, now)
-	if err != nil {
-		return "", fmt.Errorf("email test envelope: %w", err)
-	}
-	return rowID, nil
 }
 
 // mintCandidate produces one candidate local part and domain. The hosted
@@ -996,4 +1057,60 @@ func isUniqueViolation(err error) bool {
 	return strings.Contains(msg, "UNIQUE constraint failed") ||
 		strings.Contains(msg, "email_addresses.local_part") ||
 		strings.Contains(msg, "duplicate key")
+}
+
+func fromEnv(from, name string) map[string]string {
+	return map[string]string{envFrom: from, envFromName: name}
+}
+
+// enqueue writes the envelope row and its outbox row in one transaction.
+// An alert envelope also links its inbox item. A dedupe hit writes nothing
+// and returns the stored row.
+func (s *Service) enqueue(ctx context.Context, e envelope, r outbox.Row) (outbox.Row, error) {
+	if s.ob == nil {
+		return outbox.Row{}, errNoOutbox
+	}
+	if e.threadRoot == "" {
+		e.threadRoot = e.messageID
+	}
+	r.Kind = outbox.KindEmail
+	r.WorkspaceID = e.workspaceID
+	r.Target = strings.Join(e.recipients, ",")
+	r.Subject = e.subject
+	r.ConversationID, r.RunID = e.conversationID, e.runID
+	r.EmailRowID = ulid.Make().String()
+	var turn any
+	if e.coveredTurn != nil {
+		turn = *e.coveredTurn
+	}
+	return s.ob.EnqueueTx(ctx, func(tx *sql.Tx, r outbox.Row) error {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO email_messages
+  (id, direction, workspace_id, agent, message_id, in_reply_to, thread_root, recipients,
+   subject, disposition, conversation_id, run_id, inbox_id, purpose, covered_turn, outbox_id, created_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			r.EmailRowID, "out", e.workspaceID, e.agent, e.messageID, e.inReplyTo, e.threadRoot,
+			r.Target, e.subject, dispositionQueued, store.NullStr(e.conversationID),
+			store.NullStr(e.runID), store.NullStr(e.inboxID), e.purpose, turn, r.ID,
+			time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("email envelope: %w", err)
+		}
+		if e.inboxID != "" {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE inbox_items SET email_message_id=? WHERE id=?`, e.messageID, e.inboxID); err != nil {
+				return fmt.Errorf("alert inbox link: %w", err)
+			}
+		}
+		return nil
+	}, r)
+}
+
+func splitRecipients(target string) []string {
+	var out []string
+	for _, a := range strings.Split(target, ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			out = append(out, a)
+		}
+	}
+	return out
 }

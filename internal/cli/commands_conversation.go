@@ -198,11 +198,11 @@ func runConversationOutbox(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
-	tbl := newTable(w, []string{"ID", "Status", "Attempts", "Message", "Error"})
+	tbl := newTable(w, []string{"ID", "Status", "Attempts", "Target", "Error"})
 	for _, row := range body.Outbox {
 		tbl.AppendRow(table.Row{
 			mapStr(row, "id"), mapStr(row, "status"), mapStr(row, "attempts"),
-			mapStr(row, "message_id"), dash(mapStr(row, "error_message")),
+			mapStr(row, "target"), dash(mapStr(row, "error")),
 		})
 	}
 	renderTable(tbl)

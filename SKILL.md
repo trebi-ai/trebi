@@ -1,6 +1,6 @@
 ---
 name: trebi
-description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, agents, skills, secrets, connectors, and event rules; drain the inbox or alerts; tail the event bus; link the daemon to a Trebi cloud account; mint hosted webhooks for job triggers; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi agent", "wake an agent", "trebi inbox", "trebi bus", "trebi connector", "trebi doctor", "wake the assistant", "trebi assistant say", "trebi assistant chat", "trebi conversation", "trebi cloud link", "trebi hooks", "hosted webhook".
+description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, agents, skills, secrets, connectors, and event rules; drain the inbox or alerts; tail the event bus; link the daemon to a Trebi cloud account; mint hosted webhooks for job triggers; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi agent", "wake an agent", "trebi inbox", "trebi outbox", "trebi bus", "trebi connector", "trebi doctor", "wake the assistant", "trebi assistant say", "trebi assistant chat", "trebi conversation", "trebi cloud link", "trebi hooks", "hosted webhook".
 ---
 
 # Trebi
@@ -29,6 +29,7 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | skill | a stored `SKILL.md` the harness can load |
 | inbox | the queue you drain: approvals, failures, health, watchdog |
 | alerts | the per-firing alert feed; a log, not a queue |
+| outbox | every outgoing message (channel reply, email, alert mail) with its status, attempts, and last error |
 | queue | the dispatch queue of pending launches |
 | bus | the live event stream (`trebi bus`) |
 
@@ -87,7 +88,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `assistant` | settings layers, chat and sessions, conversations, memory |
 | `agents` | folder-scoped agents: identity, rename, email accept, owned jobs, wake, conversations, agent memory |
 | `connectors-and-rules` | create/connect connectors, registry search/entry/install, the job `connectors:` key (MCP and CLI actions for a run), rules test/fire, event triggers, queue |
-| `inbox-and-alerts` | draining the inbox, approvals, the alert feed |
+| `inbox-and-alerts` | draining the inbox, approvals, the alert feed, failed sends in the outbox |
 | `observability` | bus, service logs, doctor, stats |
 | `skills-secrets-config` | stored skills, secrets, config keys, harness auth |
 | `mcp-basics` | remote MCP entry point, CLI→MCP translation, what MCP cannot do |

@@ -38,7 +38,7 @@ const (
 	KindResumeExhausted    Kind = "resume_exhausted"
 	KindMachineDown        Kind = "machine_down"
 	KindAgentProposal      Kind = "agent_proposal"
-	KindChannelSendFailed  Kind = "channel_send_failed"
+	KindSendFailed         Kind = "send_failed"
 	KindActionsInvalid     Kind = "actions_invalid"
 )
 
@@ -628,8 +628,8 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindAgentProposal: {
 			Kind: KindAgentProposal, Severity: SeverityAttention, InboxKind: InboxApproval,
 		},
-		KindChannelSendFailed: {
-			Kind: KindChannelSendFailed, Severity: SeverityError, InboxKind: InboxFailure,
+		KindSendFailed: {
+			Kind: KindSendFailed, Severity: SeverityError, InboxKind: InboxFailure,
 			Cooldown: 10 * time.Minute,
 		},
 		KindActionsInvalid: {
@@ -729,8 +729,8 @@ func (o RaiseOpts) defaultSubject() string {
 		return "run/" + o.RunID
 	case KindMachineDown:
 		return "machine"
-	case KindChannelSendFailed:
-		return "channel/" + o.Connector
+	case KindSendFailed:
+		return "outbox"
 	case KindActionsInvalid:
 		return "actions/" + o.WorkspaceID + "/" + o.JobName
 	}
@@ -757,8 +757,8 @@ func (o RaiseOpts) defaultTitle() string {
 		return "Resume exhausted"
 	case KindMachineDown:
 		return "Machine down"
-	case KindChannelSendFailed:
-		return "Channel reply failed"
+	case KindSendFailed:
+		return "Send failed"
 	case KindActionsInvalid:
 		return "Connector actions invalid"
 	}

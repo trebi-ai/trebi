@@ -16,6 +16,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/email"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -979,6 +980,9 @@ func nativeEmail(t *testing.T, st *store.Store, w *sendWorker) *email.Service {
 	srv := httptest.NewServer(w.handler())
 	t.Cleanup(srv.Close)
 	s := email.New(st)
+	ob := outbox.New(st)
+	ob.Register(outbox.KindEmail, s.Outbound(), outbox.Policy{Base: time.Second, Max: time.Second, Attempts: 5})
+	s.WithOutbox(ob)
 	s.Configure(&email.Settings{
 		Worker: srv.URL, Token: w.token, Domain: "mail.example.com",
 		Operators: []string{"ops@example.com"}, FromName: "Trebi",

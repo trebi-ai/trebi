@@ -34,6 +34,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/license"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -63,7 +64,7 @@ type Server struct {
 	skills     *skills.Service
 	connectors *connectors.Service
 	conv       *conversations.Service
-	channels   *channels.Service
+	outbox     *outbox.Service
 	harness    *harness.Service
 	sched      *schedule.Service
 	email      *email.Service
@@ -190,7 +191,11 @@ func New(st *store.Store, opts Options) *Server {
 	}
 	s.catalog.Store(reg)
 	_ = s.connectors.Load() // the service keeps the error; the list route and the daemon report it
-	s.channels = channels.New(st, s.connectors, s.conv)
+	s.outbox = outbox.New(st)
+	s.email.WithOutbox(s.outbox)
+	s.outbox.Register(outbox.KindEmail, s.email.Outbound(), outbox.Policy{Base: 30 * time.Second, Max: 10 * time.Minute, Attempts: 5})
+	s.outbox.Register(outbox.KindChannel, channels.New(st, s.outbox, s.connectors, s.conv),
+		outbox.Policy{Base: 5 * time.Second, Max: 5 * time.Minute, Attempts: 5})
 	s.toolsReg = tools.NewRegistry(s)
 	s.buildAssistantStack(opts.FilesMaxBytes)
 	s.mcpHTTP = s.newMCPHandler()
@@ -368,7 +373,6 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	if hooksSvc != nil {
 		s.hooks = hooksSvc
 	}
-	s.channels = channels.New(s.st, s.connectors, s.conv)
 }
 
 func checkWSOrigin(r *http.Request) bool {
@@ -448,6 +452,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeHarness(mux)
 	s.routeSettings(mux)
 	s.routeEmail(mux)
+	s.routeOutbox(mux)
 	s.routeHooks(mux)
 	s.routeMCP(mux)
 	// Dispatch from catalog tools re-enters here, audit-wrapped and

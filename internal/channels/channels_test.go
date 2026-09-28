@@ -3,6 +3,7 @@ package channels_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -39,6 +41,7 @@ type fixture struct {
 	st    *store.Store
 	convs *conversations.Service
 	defs  *fakeDefs
+	ob    *outbox.Service
 	svc   *channels.Service
 }
 
@@ -56,8 +59,10 @@ func newFixture(t *testing.T) *fixture {
 		envs:     map[string]map[string]string{},
 		cwds:     map[string]string{},
 	}
-	return &fixture{t: t, dir: dir, st: st, convs: convs, defs: defs,
-		svc: channels.New(st, defs, convs)}
+	ob := outbox.New(st)
+	svc := channels.New(st, ob, defs, convs)
+	ob.Register(outbox.KindChannel, svc, outbox.Policy{Base: 5 * time.Second, Max: 5 * time.Minute, Attempts: 5})
+	return &fixture{t: t, dir: dir, st: st, convs: convs, defs: defs, ob: ob, svc: svc}
 }
 
 func (f *fixture) conv(workspace string) string {
@@ -123,17 +128,17 @@ func TestReplyOnTurnRunAndSession(t *testing.T) {
 	if err := f.svc.ReplyOnTurn(ctx, runConv, "r1"); err != nil {
 		t.Fatal(err) // the message id dedupes a second write
 	}
-	rows, err := f.svc.ListOutbox(ctx, runConv)
+	rows, err := f.list(ctx, runConv)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 {
 		t.Fatalf("run outbox rows = %d, want 1", len(rows))
 	}
-	if rows[0].Text != "the answer" || rows[0].ChannelRef != "chat1" || rows[0].Connector != "telegram" {
+	if rows[0].Body != "the answer" || rows[0].Target != "chat1" || rows[0].Connector != "telegram" {
 		t.Fatalf("run row %+v", rows[0])
 	}
-	if rows[0].Workspace != "ws1" || rows[0].RunID != "r1" {
+	if rows[0].WorkspaceID != "ws1" || rows[0].RunID != "r1" {
 		t.Fatalf("run row workspace/run %+v", rows[0])
 	}
 
@@ -144,11 +149,11 @@ func TestReplyOnTurnRunAndSession(t *testing.T) {
 	if err := f.svc.ReplyOnTurn(ctx, sessionConv, ""); err != nil {
 		t.Fatal(err)
 	}
-	rows, err = f.svc.ListOutbox(ctx, sessionConv)
+	rows, err = f.list(ctx, sessionConv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Text != "pong" || rows[0].RunID != "" {
+	if len(rows) != 1 || rows[0].Body != "pong" || rows[0].RunID != "" {
 		t.Fatalf("session row %+v", rows)
 	}
 
@@ -160,7 +165,7 @@ func TestReplyOnTurnRunAndSession(t *testing.T) {
 	if err := f.svc.ReplyOnTurn(ctx, plain, ""); err != nil {
 		t.Fatal(err)
 	}
-	if rows, _ = f.svc.ListOutbox(ctx, plain); len(rows) != 0 {
+	if rows, _ = f.list(ctx, plain); len(rows) != 0 {
 		t.Fatalf("plain conversation got %+v", rows)
 	}
 }
@@ -184,8 +189,8 @@ func TestReplyOnTurnJoinsTextAfterUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	row := f.onlyOutbox(ctx, convID)
-	if row.Text != "Let me check.\n\nFinal answer." {
-		t.Fatalf("reply text = %q", row.Text)
+	if row.Body != "Let me check.\n\nFinal answer." {
+		t.Fatalf("reply text = %q", row.Body)
 	}
 
 	// A tool-only turn writes no text: no row, and no old answer.
@@ -196,7 +201,7 @@ func TestReplyOnTurnJoinsTextAfterUser(t *testing.T) {
 	if err := f.svc.ReplyOnTurn(ctx, toolOnly, ""); err != nil {
 		t.Fatal(err)
 	}
-	if rows, _ := f.svc.ListOutbox(ctx, toolOnly); len(rows) != 0 {
+	if rows, _ := f.list(ctx, toolOnly); len(rows) != 0 {
 		t.Fatalf("tool-only turn got %+v", rows)
 	}
 }
@@ -215,13 +220,13 @@ func TestReplyOnTurnSkipsNoAddress(t *testing.T) {
 		if err := f.svc.ReplyOnTurn(ctx, convID, ""); err != nil {
 			t.Fatal(err)
 		}
-		if rows, _ := f.svc.ListOutbox(ctx, convID); len(rows) != 0 {
+		if rows, _ := f.list(ctx, convID); len(rows) != 0 {
 			t.Fatalf("ref %q got %+v", ref, rows)
 		}
 	}
 }
 
-// TestOutboxFrames: a new row and each backoff retry emit channel.queued
+// TestOutboxFrames: a new row and each backoff retry emit outbox.queued
 // with the row id; a duplicate write emits nothing.
 func TestOutboxFrames(t *testing.T) {
 	t.Parallel()
@@ -238,13 +243,13 @@ func TestOutboxFrames(t *testing.T) {
 		}
 	}
 	row := f.onlyOutbox(ctx, convID)
-	if n := f.frames("channel.queued", row.ID); n != 1 {
+	if n := f.frames("outbox.queued", row.ID); n != 1 {
 		t.Fatalf("queued frames after insert = %d, want 1", n)
 	}
-	if err := f.svc.SendDue(ctx, time.Now()); err != nil {
+	if err := f.ob.SendDue(ctx, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.frames("channel.queued", row.ID); n != 2 {
+	if n := f.frames("outbox.queued", row.ID); n != 2 {
 		t.Fatalf("queued frames after retry = %d, want 2", n)
 	}
 }
@@ -262,10 +267,10 @@ func TestSendDueStopsOnCancel(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := f.svc.SendDue(ctx, time.Now()); err == nil {
+	if err := f.ob.SendDue(ctx, time.Now()); err == nil {
 		t.Fatal("SendDue on a cancelled context must return the error")
 	}
-	if row := f.onlyOutbox(context.Background(), convID); row.Status != channels.StatusPending || row.Attempts != 0 {
+	if row := f.onlyOutbox(context.Background(), convID); row.Status != outbox.StatusPending || row.Attempts != 0 {
 		t.Fatalf("row changed after cancel: %+v", row)
 	}
 }
@@ -290,7 +295,7 @@ func TestSendDueStdinEnvAndSuccess(t *testing.T) {
 	if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.SendDue(ctx, time.Now()); err != nil {
+	if err := f.ob.SendDue(ctx, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -305,8 +310,8 @@ func TestSendDueStdinEnvAndSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("env: %v", err)
 	}
-	rows, _ := f.svc.ListOutbox(ctx, convID)
-	if len(rows) != 1 || rows[0].Status != channels.StatusSent || rows[0].SentAt == "" {
+	rows, _ := f.list(ctx, convID)
+	if len(rows) != 1 || rows[0].Status != outbox.StatusSent || rows[0].SentAt == nil {
 		t.Fatalf("sent row %+v", rows)
 	}
 	if want := "chat1|" + convID + "|" + rows[0].ID; string(env) != want {
@@ -328,35 +333,33 @@ func TestSendDueRetryBackoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	t0 := time.Now()
-	if err := f.svc.SendDue(ctx, t0); err != nil {
+	if err := f.ob.SendDue(ctx, t0); err != nil {
 		t.Fatal(err)
 	}
 	row := f.onlyOutbox(ctx, convID)
-	if row.Attempts != 1 || row.Status != channels.StatusPending {
+	if row.Attempts != 1 || row.Status != outbox.StatusPending {
 		t.Fatalf("after first failure %+v", row)
 	}
-	wantNext := t0.Add(5 * time.Second).UTC().Format(time.RFC3339)
-	if row.NextAttemptAt != wantNext {
-		t.Fatalf("next = %q, want %q", row.NextAttemptAt, wantNext)
+	if want := t0.Add(5 * time.Second); row.NextAttemptAt == nil || !row.NextAttemptAt.Equal(want.Truncate(time.Millisecond)) {
+		t.Fatalf("next = %v, want %v", row.NextAttemptAt, want)
 	}
 	// Before the due time the row stays.
-	if err := f.svc.SendDue(ctx, t0.Add(2*time.Second)); err != nil {
+	if err := f.ob.SendDue(ctx, t0.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if row = f.onlyOutbox(ctx, convID); row.Attempts != 1 {
 		t.Fatalf("not-due row advanced: %+v", row)
 	}
 	// At the due time the second attempt runs.
-	if err := f.svc.SendDue(ctx, t0.Add(5*time.Second)); err != nil {
+	if err := f.ob.SendDue(ctx, t0.Add(5*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	row = f.onlyOutbox(ctx, convID)
 	if row.Attempts != 2 {
 		t.Fatalf("second attempt %+v", row)
 	}
-	wantNext = t0.Add(15 * time.Second).UTC().Format(time.RFC3339)
-	if row.NextAttemptAt != wantNext {
-		t.Fatalf("second next = %q, want %q", row.NextAttemptAt, wantNext)
+	if want := t0.Add(15 * time.Second); row.NextAttemptAt == nil || !row.NextAttemptAt.Equal(want.Truncate(time.Millisecond)) {
+		t.Fatalf("second next = %v, want %v", row.NextAttemptAt, want)
 	}
 }
 
@@ -375,21 +378,21 @@ func TestSendDueFailsAfterFiveWithInbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 5 {
-		if err := f.svc.SendDue(ctx, time.Now().Add(time.Duration(i)*time.Hour)); err != nil {
+		if err := f.ob.SendDue(ctx, time.Now().Add(time.Duration(i)*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	row := f.onlyOutbox(ctx, convID)
-	if row.Status != channels.StatusFailed || row.Attempts != 5 {
+	if row.Status != outbox.StatusFailed || row.Attempts != 5 {
 		t.Fatalf("failed row %+v", row)
 	}
 
-	frames, err := f.st.ListBusWith(ctx, store.ListBusOpts{Topics: []string{"channel.send_failed"}, Limit: 10})
+	frames, err := f.st.ListBusWith(ctx, store.ListBusOpts{Topics: []string{"outbox.failed"}, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(frames) != 1 {
-		t.Fatalf("channel.send_failed frames = %d, want 1", len(frames))
+		t.Fatalf("outbox.failed frames = %d, want 1", len(frames))
 	}
 	var attrs map[string]string
 	if err := json.Unmarshal(frames[0].Attrs, &attrs); err != nil {
@@ -407,15 +410,15 @@ func TestSendDueFailsAfterFiveWithInbox(t *testing.T) {
 
 	// A manual retry that sends resolves the item.
 	f.addChannel("telegram", "true")
-	if _, err := f.svc.RetryOutbox(ctx, convID, row.ID); err != nil {
+	if _, err := f.ob.Retry(ctx, row.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.SendDue(ctx, time.Now().Add(6*time.Hour)); err != nil {
+	if err := f.ob.SendDue(ctx, time.Now().Add(6*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	sent, err := f.st.ListBusWith(ctx, store.ListBusOpts{Topics: []string{"channel.sent"}, Limit: 10})
+	sent, err := f.st.ListBusWith(ctx, store.ListBusOpts{Topics: []string{"outbox.sent"}, Limit: 10})
 	if err != nil || len(sent) != 1 {
-		t.Fatalf("channel.sent frames = %d, %v", len(sent), err)
+		t.Fatalf("outbox.sent frames = %d, %v", len(sent), err)
 	}
 	alertSvc.HandleEvent(ctx, sent[0])
 	if n := f.openItems("outbox/" + row.ID); n != 0 {
@@ -427,7 +430,7 @@ func (f *fixture) openItems(subject string) int {
 	f.t.Helper()
 	var n int
 	if err := f.st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items
-		WHERE alert_kind='channel_send_failed' AND subject=? AND status!='resolved'`, subject).Scan(&n); err != nil {
+		WHERE alert_kind='send_failed' AND subject=? AND status!='resolved'`, subject).Scan(&n); err != nil {
 		f.t.Fatal(err)
 	}
 	return n
@@ -447,22 +450,22 @@ func TestRetryOutbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 5 {
-		if err := f.svc.SendDue(ctx, time.Now().Add(time.Duration(i)*time.Hour)); err != nil {
+		if err := f.ob.SendDue(ctx, time.Now().Add(time.Duration(i)*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	row := f.onlyOutbox(ctx, convID)
-	retried, err := f.svc.RetryOutbox(ctx, convID, row.ID)
+	retried, err := f.ob.Retry(ctx, row.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retried.Status != channels.StatusPending || retried.Attempts != 0 || retried.NextAttemptAt != "" {
+	if retried.Status != outbox.StatusPending || retried.Attempts != 0 || retried.NextAttemptAt != nil {
 		t.Fatalf("retried %+v", retried)
 	}
-	if _, err := f.svc.RetryOutbox(ctx, convID, row.ID); err == nil {
+	if _, err := f.ob.Retry(ctx, row.ID); !errors.Is(err, outbox.ErrConflict) {
 		t.Fatal("retry of a pending row must fail")
 	}
-	if _, err := f.svc.RetryOutbox(ctx, convID, "missing"); err == nil {
+	if _, err := f.ob.Retry(ctx, "missing"); !errors.Is(err, outbox.ErrNotFound) {
 		t.Fatal("retry of a missing row must fail")
 	}
 }
@@ -702,9 +705,14 @@ func (f *fixture) frames(topic, rowID string) int {
 	return n
 }
 
-func (f *fixture) onlyOutbox(ctx context.Context, convID string) channels.OutboxRow {
+func (f *fixture) list(ctx context.Context, convID string) ([]outbox.Row, error) {
+	rows, _, err := f.ob.List(ctx, outbox.Filter{ConversationID: convID})
+	return rows, err
+}
+
+func (f *fixture) onlyOutbox(ctx context.Context, convID string) outbox.Row {
 	f.t.Helper()
-	rows, err := f.svc.ListOutbox(ctx, convID)
+	rows, err := f.list(ctx, convID)
 	if err != nil {
 		f.t.Fatal(err)
 	}

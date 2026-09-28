@@ -94,7 +94,7 @@ func (f *fakeActions) AssistantName(context.Context, string) string { return "" 
 // DMARC gate first, then the tag split by sender trust.
 func TestRouteTruthTable(t *testing.T) {
 	t.Parallel()
-	s := New(openEmailStore(t))
+	s := testService(openEmailStore(t))
 	configureTest(s, "https://worker.example")
 	ops := testRouteEnv()
 
@@ -147,7 +147,7 @@ func TestRouteTruthTable(t *testing.T) {
 	}
 
 	// With no block, nothing routes.
-	fresh := New(openEmailStore(t))
+	fresh := testService(openEmailStore(t))
 	d = fresh.Route(IngressMessage{Tag: "research", From: "ops@example.com", Dmarc: "pass"}, "ws_1", ops)
 	if d.Class != RouteDropped || d.Reason != ReasonNotConfigured {
 		t.Errorf("unconfigured: got %+v", d)
@@ -158,7 +158,7 @@ func TestRouteTruthTable(t *testing.T) {
 // assistant gate (2026-09-24 plan D.2).
 func TestRouteAcceptRules(t *testing.T) {
 	t.Parallel()
-	s := New(openEmailStore(t))
+	s := testService(openEmailStore(t))
 	configureTest(s, "https://worker.example")
 	accept := func(lines ...string) AcceptRule {
 		entries, err := job.ParseAccept(lines)
@@ -271,7 +271,7 @@ func TestIngressPollOnceRoutesBatch(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st)
+	s := testService(st)
 	configureTest(s, srv.URL)
 	addr, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
 	if err != nil {
@@ -371,7 +371,7 @@ func TestIngressPollOnceRoutesBatch(t *testing.T) {
 func TestIngressUnhealthyAfterThree(t *testing.T) {
 	t.Parallel()
 	st := openEmailStore(t)
-	s := New(st)
+	s := testService(st)
 	configureTest(s, "http://127.0.0.1:1")
 	g := NewIngress(s, connectors.New(st, nil, nil), &fakeActions{}, time.Minute, false)
 
@@ -412,7 +412,7 @@ func TestIngressCursorFailureBlocksAck(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	st := openEmailStore(t)
-	s := New(st)
+	s := testService(st)
 	configureTest(s, srv.URL)
 	addr, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
 	if err != nil {

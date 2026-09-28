@@ -113,7 +113,7 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 	}
 	var rows int
 	var status, ref string
-	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*), MIN(status), MIN(channel_ref) FROM channel_outbox`).
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*), MIN(status), MIN(target) FROM outbox WHERE kind='channel'`).
 		Scan(&rows, &status, &ref); err != nil {
 		t.Fatal(err)
 	}

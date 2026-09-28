@@ -1237,3 +1237,31 @@ func TestBuildWorkspaceEmailReveal(t *testing.T) {
 		t.Fatalf("revealed %s", p)
 	}
 }
+
+func TestOutboxBuilders(t *testing.T) {
+	t.Parallel()
+	if got := BuildOutboxListPath(OutboxQuery{}); got != "/v1/outbox" {
+		t.Fatalf("bare list %s", got)
+	}
+	got := BuildOutboxListPath(OutboxQuery{Kind: "email", Status: "failed", Workspace: "ws1", Limit: 5})
+	for _, want := range []string{"/v1/outbox?", "kind=email", "status=failed", "workspace=ws1", "limit=5"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("list %s misses %s", got, want)
+		}
+	}
+	if strings.Contains(got, "purpose=") {
+		t.Fatalf("empty field in %s", got)
+	}
+	for _, tc := range []struct {
+		req  HTTPRequest
+		want string
+	}{
+		{BuildOutboxGet("01R"), "GET /v1/outbox/01R"},
+		{BuildOutboxRetry("01R"), "POST /v1/outbox/01R/retry"},
+		{BuildOutboxCancel("01R"), "POST /v1/outbox/01R/cancel"},
+	} {
+		if tc.req.Method+" "+tc.req.Path != tc.want {
+			t.Fatalf("%+v, want %s", tc.req, tc.want)
+		}
+	}
+}

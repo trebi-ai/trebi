@@ -8,8 +8,7 @@ import (
 
 // TestMigrationV27ChannelPointersWorkspace builds a v26 database with a
 // pointer and an event row, then applies v27 (plan 2026-09-27 G.1). The
-// pointer keeps its conversation, the key becomes workspace-scoped, and the
-// new channel_outbox table exists.
+// pointer keeps its conversation, and the key becomes workspace-scoped.
 func TestMigrationV27ChannelPointersWorkspace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v26.db")
 	db, err := sql.Open("sqlite", path)
@@ -71,10 +70,65 @@ func TestMigrationV27ChannelPointersWorkspace(t *testing.T) {
 	if src != "src1" {
 		t.Fatalf("source_id = %q, want src1", src)
 	}
-	if _, err := s.DB().Exec(`INSERT INTO channel_outbox
-		(id, connector, workspace_id, conversation_id, channel_ref, message_id, text, status, created_at)
-		VALUES ('o1', 'telegram', 'ws1', 'c1', 'chat1', 'm1', 'hi', 'pending', '2026-09-27T00:00:03Z')`); err != nil {
-		t.Fatalf("channel_outbox exists: %v", err)
+}
+
+// TestMigrationV29Outbox builds a v28 database with channel_outbox rows and
+// a `sending` envelope, then applies v29 (plan 2026-09-28 A.1). Each channel
+// row moves to outbox, a sent row drops its body, and the stale envelope
+// becomes send_failed.
+func TestMigrationV29Outbox(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v28.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyThrough(db, 28); err != nil {
+		t.Fatalf("v28 setup: %v", err)
+	}
+	seed := []string{
+		`INSERT INTO channel_outbox
+		(id, connector, workspace_id, conversation_id, channel_ref, message_id, text, status, attempts, error_message, created_at)
+		VALUES ('o1', 'telegram', 'ws1', 'c1', 'chat1', 'm1', 'hi', 'failed', 5, 'boom', '2026-09-28T00:00:00Z')`,
+		`INSERT INTO channel_outbox
+		(id, connector, workspace_id, conversation_id, channel_ref, message_id, text, status, attempts, created_at, sent_at)
+		VALUES ('o2', 'telegram', 'ws1', 'c1', 'chat1', 'm2', 'done', 'sent', 1, '2026-09-28T00:00:00Z', '2026-09-28T00:00:01Z')`,
+		`INSERT INTO email_messages (id, direction, message_id, disposition, created_at)
+		VALUES ('e1', 'out', '<a@x>', 'sending', '2026-09-28T00:00:00Z')`,
+	}
+	for _, q := range seed {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("seed: %v (%s)", err, q)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenPath(path)
+	if err != nil {
+		t.Fatalf("open applies v29: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	var kind, purpose, target, dedupe, status, errMsg string
+	var body sql.NullString
+	var attempts int
+	if err := s.DB().QueryRow(`SELECT kind, purpose, target, dedupe_key, body, status, attempts, error_message
+		FROM outbox WHERE id='o1'`).Scan(&kind, &purpose, &target, &dedupe, &body, &status, &attempts, &errMsg); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "channel" || purpose != "reply" || target != "chat1" || dedupe != "m1" ||
+		body.String != "hi" || status != "failed" || attempts != 5 || errMsg != "boom" {
+		t.Errorf("o1 = %s %s %s %s %q %s %d %s", kind, purpose, target, dedupe, body.String, status, attempts, errMsg)
+	}
+	if err := s.DB().QueryRow(`SELECT body FROM outbox WHERE id='o2'`).Scan(&body); err != nil || body.Valid {
+		t.Errorf("sent row body = %v, %v; want NULL", body, err)
+	}
+	if _, err := s.DB().Exec(`SELECT 1 FROM channel_outbox`); err == nil {
+		t.Error("channel_outbox still exists")
+	}
+	var disp string
+	if err := s.DB().QueryRow(`SELECT disposition FROM email_messages WHERE id='e1'`).Scan(&disp); err != nil || disp != "send_failed" {
+		t.Errorf("envelope disposition = %q, %v; want send_failed", disp, err)
 	}
 }
 

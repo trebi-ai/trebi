@@ -1,7 +1,7 @@
 ---
 topic: inbox-and-alerts
 title: Inbox and alerts
-description: Drain the inbox, handle approvals, and read the alert feed.
+description: Drain the inbox, handle approvals, read the alert feed, and retry failed sends.
 ---
 
 # Inbox and alerts
@@ -41,6 +41,20 @@ trebi alerts --since 2026-08-01T00:00:00Z --json
 ```
 
 Alerts are a log, not a queue — reading them does not drain the inbox.
+
+## Outbox
+
+Every outgoing message is an outbox row: a channel reply, an email, or an alert mail. A failed attempt keeps the row `pending` with its `error` and `next_attempt_at`. After the last attempt the row is `failed`, and a `send_failed` failure item opens in the inbox.
+
+```bash
+trebi outbox ls --status failed --json
+trebi outbox ls --kind email --workspace <ws> --json
+trebi outbox show <id> --json
+trebi outbox retry <id>
+trebi outbox cancel <id>
+```
+
+`retry` takes a `failed` or `canceled` row. `cancel` takes a `pending` or `failed` row. A sent row resolves its `send_failed` item.
 
 ## Daily triage
 
