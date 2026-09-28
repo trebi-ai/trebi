@@ -349,16 +349,16 @@ func TestAllowListAutoAnswers(t *testing.T) {
 	if ans.permissionID != "p1" || !ans.allow {
 		t.Fatalf("answer %+v", ans)
 	}
-	events, _ := h.mgr.Events(ctx, convID, 0, 100)
-	found := false
-	for _, e := range events {
-		if e.Type == "answer" && e.Answer != nil && e.Answer.By == "allow_list" {
-			found = true
+	// The event lands after the harness sees the answer.
+	waitFor(t, 2*time.Second, "allow_list answer event", func() bool {
+		events, _ := h.mgr.Events(ctx, convID, 0, 100)
+		for _, e := range events {
+			if e.Type == "answer" && e.Answer != nil && e.Answer.By == "allow_list" {
+				return true
+			}
 		}
-	}
-	if !found {
-		t.Fatalf("no allow_list answer event: %+v", events)
-	}
+		return false
+	})
 }
 
 func TestPermissionSetsWaitingAndAnswerStores(t *testing.T) {
