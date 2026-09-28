@@ -105,6 +105,30 @@ func TestFakeHarnessSentinel(t *testing.T) {
 	}
 }
 
+func TestFakeHarnessGetsRunToken(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "r.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	dir := t.TempDir()
+	if _, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
+			WorkingDir: dir, ActorToken: "tok-1",
+		},
+		Prompt:      "do it",
+		FakeCommand: []string{"sh", "-c", `printf %s "$TREBI_RUN_TOKEN" > token.txt; echo "$TREBI_RUN_COMPLETE"`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "token.txt")); string(got) != "tok-1" {
+		t.Fatalf("token %q", got)
+	}
+}
+
 func TestFakeHarnessFailure(t *testing.T) {
 	t.Parallel()
 	st, err := store.OpenPath(filepath.Join(t.TempDir(), "r.db"))

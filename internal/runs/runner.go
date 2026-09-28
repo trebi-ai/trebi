@@ -860,6 +860,9 @@ func fakeEnv(run *Run, opts LaunchOpts, dir string) []string {
 		"TREBI_FAKE_PROMPT="+opts.Prompt,
 		"TREBI_RESUME_SESSION_ID="+opts.ResumeSessionID,
 	)
+	if opts.ActorToken != "" {
+		env = append(env, "TREBI_RUN_TOKEN="+opts.ActorToken)
+	}
 	for k, v := range opts.Env {
 		env = append(env, k+"="+v)
 	}
