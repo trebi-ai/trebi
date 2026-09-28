@@ -56,7 +56,11 @@ func (s *Service) launchClaimed(ctx context.Context, run *runs.Run) error {
 	}
 	d := Delivery{Run: run, Requests: claimed}
 	path := "resume"
-	next, err := s.launch.Resume(ctx, run.ID, runs.ResumeOpts{Reason: runs.ReasonRequest, Prompt: d.Prompt()})
+	var next *runs.Run
+	err = runs.ErrNoSession
+	if run.SessionID != "" {
+		next, err = s.launch.Resume(ctx, run.ID, runs.ResumeOpts{Reason: runs.ReasonRequest, Prompt: d.Prompt()})
+	}
 	if errors.Is(err, runs.ErrResumeUnsupported) || errors.Is(err, runs.ErrNoSession) {
 		s.log.Info("request fresh run", "run_id", run.ID, "reason", err.Error())
 		path = "fresh"

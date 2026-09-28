@@ -20,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/api"
+	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/tools"
@@ -277,6 +278,38 @@ func TestRequestRunTokenCannotAnswer(t *testing.T) {
 		t.Fatalf("own get %d", code)
 	}
 	s.endTurn(t)
+}
+
+func TestRequestAssistantCanAnswer(t *testing.T) {
+	s := newRequestStack(t)
+	_, token := s.launch(t)
+	defer s.endTurn(t)
+	req := s.create(t, token, map[string]any{"type": "confirm", "title": "x", "delivery": "poll"})
+	id, _ := req["id"].(string)
+
+	code, conv, _ := doJSON(t, "POST", s.base+"/v1/conversations", map[string]any{"workspace": s.wsID, "origin_channel": "cli", "harness": "fake"})
+	if code != 201 {
+		t.Fatalf("conversation %d %v", code, conv)
+	}
+	convID, _ := conv["id"].(string)
+	asstToken, hash, err := assistant.MintSessionToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.srv.AssistantStore().Update(t.Context(), convID, func(r *assistant.Record) {
+		r.ActorTokenHash = hash
+		r.Status = assistant.StatusRunning
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, got, _ := doJSONHeader(t, "POST", s.base+"/v1/requests/"+id+"/answer", map[string]any{"decision": "approve"}, asstToken)
+	if code != 200 {
+		t.Fatalf("assistant answer %d %v", code, got)
+	}
+	ans, _ := got["answer"].(map[string]any)
+	if ans["by"] != "assistant" || ans["via"] != "assistant" {
+		t.Fatalf("answer %v", ans)
+	}
 }
 
 func TestRequestAnswerErrors(t *testing.T) {

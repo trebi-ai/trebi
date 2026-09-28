@@ -177,6 +177,25 @@ func TestDeliverFallbackFresh(t *testing.T) {
 	}
 }
 
+func TestDeliverNoSession(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	actor := h.run(t, "RUN1")
+	run, _ := h.rs.Get(context.Background(), "RUN1")
+	run.SessionID = ""
+	h.rs.put(*run)
+	r := h.create(t, actor, CreateOpts{})
+	h.park(t, "RUN1")
+	h.approve(t, r.ID)
+	calls := h.launch.Calls()
+	if len(calls) != 1 || calls[0].path != "fresh" {
+		t.Fatalf("calls %+v", calls)
+	}
+	if got := h.get(t, r.ID); got.DeliveryPath != "fresh" || got.DeliveryState != DeliveryDelivered {
+		t.Fatalf("row %+v", got)
+	}
+}
+
 func TestDeliverFailed(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
