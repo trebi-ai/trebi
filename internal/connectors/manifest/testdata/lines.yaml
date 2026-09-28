@@ -1,0 +1,12 @@
+schema: trebi-connector/1
+name: price-watch
+title: Price watch
+description: Prints one event when a price drops.
+version: 0.1.0
+events:
+  protocol: lines
+  command: ./watch.sh
+  format: json
+  id: id
+  identity: user
+  poll: 1m
