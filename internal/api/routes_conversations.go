@@ -31,8 +31,8 @@ func (s *Server) routeConversations(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/conversations/{id}/revert", s.handleConversationRevert)
 	mux.HandleFunc("GET /v1/conversations/{id}/outbox", s.handleConversationOutbox)
 	mux.HandleFunc("POST /v1/conversations/{id}/outbox/{row}/retry", s.handleConversationOutboxRetry)
-	mux.HandleFunc("GET /v1/channel-pointers/{type}/{ref}", s.handlePointerGet)
-	mux.HandleFunc("PUT /v1/channel-pointers/{type}/{ref}", s.handlePointerPut)
+	mux.HandleFunc("GET /v1/channel-pointers/{connector}/{room}", s.handlePointerGet)
+	mux.HandleFunc("PUT /v1/channel-pointers/{connector}/{room}", s.handlePointerPut)
 }
 
 func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
@@ -78,13 +78,13 @@ func (s *Server) handleConversationGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Workspace     string                  `json:"workspace"`
-		Operator      string                  `json:"operator"`
-		Title         string                  `json:"title"`
-		OriginChannel string                  `json:"origin_channel"`
-		Harness       string                  `json:"harness"`
-		Mode          string                  `json:"mode"`
-		Activate      *conversations.Activate `json:"activate"`
+		Workspace     string                 `json:"workspace"`
+		Operator      string                 `json:"operator"`
+		Title         string                 `json:"title"`
+		OriginChannel string                 `json:"origin_channel"`
+		Harness       string                 `json:"harness"`
+		Mode          string                 `json:"mode"`
+		Activate      *conversations.Address `json:"activate"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
@@ -232,9 +232,8 @@ func (s *Server) handleConversationSend(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		Text           string `json:"text"`
-		ChannelType    string `json:"channel_type"`
-		ChannelRef     string `json:"channel_ref"`
+		Text string `json:"text"`
+		conversations.Address
 		IdempotencyKey string `json:"idempotency_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
@@ -242,8 +241,7 @@ func (s *Server) handleConversationSend(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	out, err := s.conv.Send(r.Context(), r.PathValue("id"), conversations.SendOpts{
-		Text: body.Text, ChannelType: body.ChannelType,
-		ChannelRef: body.ChannelRef, IdempotencyKey: body.IdempotencyKey,
+		Text: body.Text, Address: body.Address, IdempotencyKey: body.IdempotencyKey,
 	})
 	if s.convErr(w, err, "conversation not found") {
 		return
@@ -257,7 +255,10 @@ func (s *Server) handlePointerGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "workspace is required")
 		return
 	}
-	p, err := s.conv.GetPointer(r.Context(), workspace, r.PathValue("type"), r.PathValue("ref"))
+	q := r.URL.Query()
+	p, err := s.conv.GetPointer(r.Context(), workspace, conversations.Address{
+		Connector: r.PathValue("connector"), Instance: q.Get("instance"), Room: r.PathValue("room"), Thread: q.Get("thread"),
+	})
 	if s.convErr(w, err, "pointer not found") {
 		return
 	}
@@ -268,6 +269,8 @@ func (s *Server) handlePointerPut(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Workspace      string `json:"workspace"`
 		ConversationID string `json:"conversation_id"`
+		Instance       string `json:"instance"`
+		Thread         string `json:"thread"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
@@ -277,7 +280,9 @@ func (s *Server) handlePointerPut(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "conversation_id is required")
 		return
 	}
-	p, err := s.conv.PutPointer(r.Context(), body.Workspace, r.PathValue("type"), r.PathValue("ref"), body.ConversationID)
+	p, err := s.conv.PutPointer(r.Context(), body.Workspace, conversations.Address{
+		Connector: r.PathValue("connector"), Instance: body.Instance, Room: r.PathValue("room"), Thread: body.Thread,
+	}, body.ConversationID)
 	if s.convErr(w, err, "conversation not found") {
 		return
 	}

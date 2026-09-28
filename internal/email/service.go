@@ -466,7 +466,7 @@ FROM email_messages WHERE id=?`, r.EmailRowID).Scan(&messageID, &inReplyTo, &roo
 	}
 	req := SendRequest{
 		V: ContractV, From: r.Env[envFrom], FromName: r.Env[envFromName],
-		To: splitRecipients(r.Target), Subject: r.Subject, Text: r.Body,
+		To: splitRecipients(r.Recipients), Subject: r.Subject, Text: r.Body,
 		MessageID: messageID, InReplyTo: inReplyTo, References: refs,
 	}
 	if err := s.sendWithBackoff(ctx, tr, req); err != nil {
@@ -1127,7 +1127,8 @@ func (s *Service) enqueue(ctx context.Context, e envelope, r outbox.Row) (outbox
 	}
 	r.Kind = outbox.KindEmail
 	r.WorkspaceID = e.workspaceID
-	r.Target = strings.Join(e.recipients, ",")
+	r.Instance, r.Room, r.Thread = "email", MailboxRoom(e.workspaceID, e.agent), e.threadRoot
+	r.Recipients = strings.Join(e.recipients, ",")
 	r.Subject = e.subject
 	r.ConversationID, r.RunID = e.conversationID, e.runID
 	r.EmailRowID = ulid.Make().String()
@@ -1142,7 +1143,7 @@ INSERT INTO email_messages
    subject, disposition, conversation_id, run_id, inbox_id, purpose, covered_turn, outbox_id, created_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			r.EmailRowID, "out", e.workspaceID, e.agent, e.messageID, e.inReplyTo, e.threadRoot,
-			r.Target, e.subject, dispositionQueued, store.NullStr(e.conversationID),
+			r.Recipients, e.subject, dispositionQueued, store.NullStr(e.conversationID),
 			store.NullStr(e.runID), store.NullStr(e.inboxID), e.purpose, turn, r.ID,
 			time.Now().UTC().Format(time.RFC3339)); err != nil {
 			return fmt.Errorf("email envelope: %w", err)

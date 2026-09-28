@@ -59,11 +59,11 @@ func (s *Service) ReplyOnThread(ctx context.Context, opts ReplyOpts) error {
 		return nil
 	}
 	user, err := s.convs.LastUserMessage(ctx, opts.ConversationID)
-	if err != nil || user == nil || user.ChannelType != conversations.ChannelEmail {
+	if err != nil || user == nil || user.Connector != conversations.ChannelEmail {
 		return err
 	}
-	// The channel ref of an email user row is the thread root (A.13).
-	root := user.ChannelRef
+	// The thread of an email user row is the thread root (A.13).
+	root := user.Thread
 	due, err := s.replyDueTurn(ctx, opts.ConversationID, opts.RunID, user.ID)
 	if err != nil || due == nil {
 		return err

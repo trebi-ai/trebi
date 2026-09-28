@@ -92,9 +92,10 @@ type cachedTrig struct {
 
 // NativeMeta carries the native identity of an injected event.
 type NativeMeta struct {
-	SourceID   string
-	Identity   string
-	ChannelRef string
+	SourceID string
+	Identity string
+	Room     string
+	Thread   string
 }
 
 // eventRecord is one persisted ingress event.
@@ -106,7 +107,8 @@ type eventRecord struct {
 	payload    any
 	sourceID   string
 	identity   string
-	channelRef string
+	room       string
+	thread     string
 	catchUp    bool
 }
 
@@ -549,7 +551,7 @@ func (s *Service) eventMeta() (map[string]Cursor, map[string]string) {
 	if s.st == nil {
 		return positions, lastEvents
 	}
-	if rows, err := s.st.DB().Query(`SELECT name, last_event_id, updated_at FROM connector_cursors`); err == nil {
+	if rows, err := s.st.DB().Query(`SELECT instance, last_event_id, updated_at FROM connector_cursors`); err == nil {
 		for rows.Next() {
 			var c Cursor
 			if rows.Scan(&c.Name, &c.LastEventID, &c.UpdatedAt) == nil {
@@ -937,7 +939,7 @@ type Cursor struct {
 func (s *Service) GetCursor(ctx context.Context, name string) (Cursor, error) {
 	c := Cursor{Name: name}
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT last_event_id, updated_at FROM connector_cursors WHERE name=?`, name).
+		`SELECT last_event_id, updated_at FROM connector_cursors WHERE instance=?`, name).
 		Scan(&c.LastEventID, &c.UpdatedAt)
 	if err != nil {
 		return c, nil
@@ -951,8 +953,8 @@ func (s *Service) PutCursor(ctx context.Context, name, lastEventID string) error
 		return err
 	}
 	now := s.now().UTC().Format(time.RFC3339)
-	_, err := s.st.DB().ExecContext(ctx, `INSERT INTO connector_cursors (name, last_event_id, updated_at)
-		VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
+	_, err := s.st.DB().ExecContext(ctx, `INSERT INTO connector_cursors (instance, last_event_id, updated_at)
+		VALUES (?,?,?) ON CONFLICT(instance) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
 		name, lastEventID, now)
 	return err
 }

@@ -1074,13 +1074,13 @@ func BuildConversationGet(id string) HTTPRequest {
 }
 
 // BuildConversationCreate builds POST /v1/conversations.
-func BuildConversationCreate(workspace, title, originChannel, channelType, channelRef, operator string) HTTPRequest {
+func BuildConversationCreate(workspace, title, originChannel, connector, room, operator string) HTTPRequest {
 	body := map[string]any{"workspace": workspace, "origin_channel": originChannel}
 	if title != "" {
 		body["title"] = title
 	}
-	if channelType != "" && channelRef != "" {
-		body["activate"] = map[string]any{"channel_type": channelType, "channel_ref": channelRef}
+	if connector != "" && room != "" {
+		body["activate"] = map[string]any{"connector": connector, "room": room}
 	}
 	if operator != "" {
 		body["operator"] = operator
@@ -1116,8 +1116,8 @@ func BuildConversationMessagesPath(id, cursor string, limit int) string {
 }
 
 // BuildConversationSend builds POST /v1/conversations/{id}/messages.
-func BuildConversationSend(id, text, channelType, channelRef, idempotencyKey string) HTTPRequest {
-	body := map[string]any{"text": text, "channel_type": channelType, "channel_ref": channelRef}
+func BuildConversationSend(id, text, connector, room, idempotencyKey string) HTTPRequest {
+	body := map[string]any{"text": text, "connector": connector, "room": room}
 	if idempotencyKey != "" {
 		body["idempotency_key"] = idempotencyKey
 	}
@@ -1213,22 +1213,26 @@ func BuildConversationOutboxRetry(id, row string) HTTPRequest {
 	}
 }
 
-// BuildPointerGet builds GET /v1/channel-pointers/{type}/{ref}?workspace=.
+// BuildPointerGet builds GET /v1/channel-pointers/{connector}/{room}?workspace=&thread=.
 // Pointers are workspace-scoped, so the caller names the workspace.
-func BuildPointerGet(channelType, channelRef, workspace string) HTTPRequest {
+func BuildPointerGet(connector, room, thread, workspace string) HTTPRequest {
 	return HTTPRequest{
 		Method: "GET",
-		Path: withQuery("/v1/channel-pointers/"+url.PathEscape(channelType)+"/"+url.PathEscape(channelRef),
-			map[string]string{"workspace": workspace}),
+		Path: withQuery("/v1/channel-pointers/"+url.PathEscape(connector)+"/"+url.PathEscape(room),
+			map[string]string{"workspace": workspace, "thread": thread}),
 	}
 }
 
-// BuildPointerPut builds PUT /v1/channel-pointers/{type}/{ref}.
-func BuildPointerPut(channelType, channelRef, conversationID string) HTTPRequest {
+// BuildPointerPut builds PUT /v1/channel-pointers/{connector}/{room}.
+func BuildPointerPut(connector, room, thread, conversationID string) HTTPRequest {
+	body := map[string]any{"conversation_id": conversationID}
+	if thread != "" {
+		body["thread"] = thread
+	}
 	return HTTPRequest{
 		Method: "PUT",
-		Path:   "/v1/channel-pointers/" + url.PathEscape(channelType) + "/" + url.PathEscape(channelRef),
-		Body:   map[string]any{"conversation_id": conversationID},
+		Path:   "/v1/channel-pointers/" + url.PathEscape(connector) + "/" + url.PathEscape(room),
+		Body:   body,
 	}
 }
 
@@ -1469,8 +1473,8 @@ func BuildAlertsPath(since string, limit int) string {
 type AskSpec struct {
 	Workspace      string
 	Text           string
-	ChannelType    string // defaults to cli server-side
-	ChannelRef     string // defaults to the workspace id server-side
+	Connector      string // defaults to cli server-side
+	Room           string // defaults to the workspace id server-side
 	IdempotencyKey string
 	WaitMS         int // long-poll for the assistant reply
 }
@@ -1479,8 +1483,8 @@ type AskSpec struct {
 func (a AskSpec) Build() HTTPRequest {
 	body := map[string]any{"text": a.Text}
 	for k, v := range map[string]string{
-		"channel_type":    a.ChannelType,
-		"channel_ref":     a.ChannelRef,
+		"connector":       a.Connector,
+		"room":            a.Room,
 		"idempotency_key": a.IdempotencyKey,
 	} {
 		if v != "" {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -80,7 +81,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		convID, convKey := "", ""
 		if c.Conversations != nil {
 			if id, err := c.Conversations.EnsureForChannel(ctx, r.WorkspaceID, r.Job,
-				"email", "report:"+r.Job); err == nil {
+				conversations.Address{Connector: conversations.ChannelEmail, Room: "report:" + r.Job}); err == nil {
 				if conv, err := c.Conversations.Get(ctx, id); err == nil {
 					convID, convKey = conv.ID, conv.Key
 				}

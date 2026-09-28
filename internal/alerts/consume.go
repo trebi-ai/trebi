@@ -681,7 +681,7 @@ func (s *Service) sendStep(ctx context.Context, opts RaiseOpts, id string, st no
 	step := i
 	row, err := s.opts.Outbox.Enqueue(ctx, outbox.Row{
 		Kind: outbox.KindChannel, Purpose: outbox.PurposeAlert, WorkspaceID: opts.WorkspaceID,
-		Connector: st.Via, Target: st.To, Body: opts.pushText(id), Env: opts.notifyEnv(id),
+		Instance: st.Via, Room: st.To, Body: opts.pushText(id), Env: opts.notifyEnv(id),
 		InboxID: id, DedupeKey: fmt.Sprintf("alert/%s/%d", id, i), RouteStep: &step, Route: route,
 	})
 	return row, "", err
@@ -706,7 +706,7 @@ func (s *Service) onAlertFailed(ctx context.Context, attrs map[string]string) {
 		return
 	}
 	opts := raiseOptsFromItem(*item)
-	via := cmp.Or(row.Connector, notify.ViaEmail)
+	via := cmp.Or(row.Connector(), notify.ViaEmail)
 	s.appendDelivered(ctx, opts, item.ID, via, *row.RouteStep, "failed", "", row.ErrorMessage)
 	if item.Status == InboxResolved {
 		return
@@ -720,9 +720,9 @@ func (s *Service) onAlertSent(ctx context.Context, attrs map[string]string) {
 	if !ok {
 		return
 	}
-	via, msgID := row.Connector, ""
-	if via == "" {
-		via, msgID = notify.ViaEmail, item.EmailMessageID
+	via, msgID := cmp.Or(row.Connector(), notify.ViaEmail), ""
+	if via == notify.ViaEmail {
+		msgID = item.EmailMessageID
 	}
 	s.setDelivery(ctx, item.ID, DeliveryDelivered)
 	s.appendDelivered(ctx, raiseOptsFromItem(*item), item.ID, via, *row.RouteStep, "ok", msgID, "")

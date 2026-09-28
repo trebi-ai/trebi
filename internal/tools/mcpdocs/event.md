@@ -9,12 +9,11 @@ The event log feeds the rule pipeline. Use the `system` tool action `bus_poll` f
 ## Actions
 
 ### list
-List events, newest first. Each row carries `id`, `connector`, `received_at`,
-`summary`, `trace_id`, `source_id` (the value at the connector `events.id`
-path, used for dedup), `identity` (the value at the `events.identity` path,
-checked by a trigger `allowlist`), `channel_ref` (the value at the `channel.ref`
-path; a reply goes there), and `catch_up` (true when a catch-up replay stored
-the event).
+List events, newest first. Each row carries `id`, `connector`, `instance`,
+`event_type`, `received_at`, `summary`, `trace_id`, `source_id` (the event id
+from the connector, used for dedup), `identity` (the sender identity, checked
+by a trigger `allowlist`), `room` and `thread` (a reply goes there), `sender`,
+and `catch_up` (true when a catch-up replay stored the event).
 - `connector` (string, optional): filter by connector name.
 - `since` (string, optional): RFC3339 time, or a duration such as `24h` meaning "that long ago".
 - `q` (string, optional): text match on the summary or the payload.

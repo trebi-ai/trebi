@@ -311,6 +311,12 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "connector.catchup.completed", Bus: true, Log: true},
 		{Name: "connector.catchup.skipped", Bus: true, Log: true},
 		{Name: "connector.parse_error", Bus: false, Log: true},
+		{Name: "connector.status", Bus: true, Log: true},
+		{Name: "connector.auth.required", Bus: true, Log: true},
+		{Name: "connector.auth.completed", Bus: true, Log: true},
+		{Name: "connector.installed", Bus: true, Log: true},
+		{Name: "connector.update.available", Bus: true, Log: true},
+		{Name: "connector.updated.version", Bus: true, Log: true},
 		// harness/auth
 		{Name: "harness.updated", Bus: true, Log: true},
 		{Name: "harness.installed", Bus: false, Log: true},

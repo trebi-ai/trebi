@@ -1204,7 +1204,7 @@ func TestConnectorsRedispatch(t *testing.T) {
 func TestConnectorsInjectNativeKeepsEmailPosition(t *testing.T) {
 	st, _, svc := openStack(t)
 	ctx := context.Background()
-	if _, err := st.DB().Exec(`INSERT INTO connector_cursors (name, last_event_id, updated_at) VALUES ('email','42','2026-09-27T00:00:00Z')`); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO connector_cursors (instance, last_event_id, updated_at) VALUES ('email','42','2026-09-27T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.InjectNative(ctx, "email", map[string]any{"subject": "hi"}, connectors.NativeMeta{SourceID: "<id@x>"}); err != nil {

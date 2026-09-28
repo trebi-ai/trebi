@@ -64,7 +64,7 @@ trebi conversation new --title "CI firefight"
 trebi conversation switch <id>
 ```
 
-`conversation switch` is **local only** (sticky CLI pointer); remote: pass `channel_ref` on `assistant.say`, or `pointer_set`.
+`conversation switch` is **local only** (sticky CLI pointer); remote: pass `room` on `assistant.say`, or `pointer_set`.
 
 ## Assistant memory
 

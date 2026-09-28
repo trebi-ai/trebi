@@ -124,9 +124,8 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Text           string `json:"text"`
-		ChannelType    string `json:"channel_type"`
-		ChannelRef     string `json:"channel_ref"`
+		Text string `json:"text"`
+		conversations.Address
 		IdempotencyKey string `json:"idempotency_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
@@ -136,8 +135,7 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 	out, err := s.conv.Ask(r.Context(), conversations.AskOpts{
 		Workspace:      r.PathValue("id"),
 		Text:           body.Text,
-		ChannelType:    body.ChannelType,
-		ChannelRef:     body.ChannelRef,
+		Address:        body.Address,
 		IdempotencyKey: body.IdempotencyKey,
 		Wait:           parseWait(r),
 	})

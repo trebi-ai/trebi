@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 29
+const SchemaVersion = 30
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -747,6 +747,176 @@ DROP TABLE channel_outbox;
 ALTER TABLE email_messages ADD COLUMN outbox_id TEXT;
 UPDATE email_messages SET disposition='send_failed' WHERE disposition='sending';
 ALTER TABLE inbox_items ADD COLUMN delivery TEXT;
+`,
+		// v30: connector instances, rooms, and threads (plan 2026-09-28
+		// connector manifest E.5). channel_type and channel_ref become
+		// connector and room, plus instance and thread. The instance of an
+		// old row is its connector. An email room is the mailbox key (the
+		// workspace id), and the email thread is the old channel ref (the
+		// thread root). The outbox keeps email recipients in their own
+		// column. Connector cursors key by instance.
+		`
+CREATE TABLE events_new (
+    id          TEXT PRIMARY KEY,
+    connector   TEXT NOT NULL,
+    instance    TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL,
+    summary     TEXT,
+    raw_json    TEXT,
+    trace_id    TEXT NOT NULL,
+    source_id   TEXT,
+    identity    TEXT,
+    event_type  TEXT,
+    room        TEXT,
+    thread      TEXT,
+    sender      TEXT,
+    catch_up    INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO events_new (id, connector, instance, received_at, summary, raw_json, trace_id,
+    source_id, identity, room, catch_up)
+SELECT id, connector, connector, received_at, summary, raw_json, trace_id,
+    source_id, identity, channel_ref, catch_up FROM events;
+DROP TABLE events;
+ALTER TABLE events_new RENAME TO events;
+CREATE INDEX idx_events_connector ON events(connector, received_at DESC);
+CREATE UNIQUE INDEX idx_events_source ON events(instance, source_id) WHERE source_id IS NOT NULL;
+CREATE INDEX idx_events_room ON events(instance, room);
+
+CREATE TABLE conversation_channels_new (
+    id              TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    connector       TEXT NOT NULL,
+    instance        TEXT NOT NULL,
+    room            TEXT NOT NULL,
+    thread          TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL
+);
+INSERT INTO conversation_channels_new
+SELECT ch.id, ch.conversation_id, ch.channel_type, ch.channel_type,
+    CASE WHEN ch.channel_type='email' THEN c.workspace_id ELSE ch.channel_ref END,
+    CASE WHEN ch.channel_type='email' THEN ch.channel_ref ELSE '' END,
+    ch.created_at
+FROM conversation_channels ch JOIN conversations c ON c.id = ch.conversation_id;
+DROP TABLE conversation_channels;
+ALTER TABLE conversation_channels_new RENAME TO conversation_channels;
+CREATE INDEX idx_convch_conv ON conversation_channels(conversation_id);
+
+CREATE TABLE channel_pointers_new (
+    workspace_id    TEXT NOT NULL,
+    connector       TEXT NOT NULL,
+    instance        TEXT NOT NULL,
+    room            TEXT NOT NULL,
+    thread          TEXT NOT NULL DEFAULT '',
+    conversation_id TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, instance, room, thread)
+);
+INSERT OR IGNORE INTO channel_pointers_new
+SELECT workspace_id, channel_type, channel_type,
+    CASE WHEN channel_type='email' THEN workspace_id ELSE channel_ref END,
+    CASE WHEN channel_type='email' THEN channel_ref ELSE '' END,
+    conversation_id, updated_at
+FROM channel_pointers;
+DROP TABLE channel_pointers;
+ALTER TABLE channel_pointers_new RENAME TO channel_pointers;
+
+CREATE TABLE conversation_messages_new (
+    id              TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    role            TEXT NOT NULL,
+    connector       TEXT NOT NULL DEFAULT '',
+    instance        TEXT NOT NULL DEFAULT '',
+    room            TEXT NOT NULL DEFAULT '',
+    thread          TEXT NOT NULL DEFAULT '',
+    text            TEXT NOT NULL,
+    run_id          TEXT,
+    turn_index      INTEGER,
+    idempotency_key TEXT,
+    created_at      TEXT NOT NULL
+);
+INSERT INTO conversation_messages_new
+SELECT m.id, m.conversation_id, m.role, m.channel_type, m.channel_type,
+    CASE WHEN m.channel_type='email' THEN c.workspace_id ELSE m.channel_ref END,
+    CASE WHEN m.channel_type='email' THEN m.channel_ref ELSE '' END,
+    m.text, m.run_id, m.turn_index, m.idempotency_key, m.created_at
+FROM conversation_messages m JOIN conversations c ON c.id = m.conversation_id;
+DROP TABLE conversation_messages;
+ALTER TABLE conversation_messages_new RENAME TO conversation_messages;
+CREATE INDEX idx_convmsg_conv ON conversation_messages(conversation_id, id);
+CREATE UNIQUE INDEX idx_convmsg_turn ON conversation_messages(run_id, turn_index)
+    WHERE run_id IS NOT NULL AND turn_index IS NOT NULL;
+CREATE UNIQUE INDEX idx_convmsg_idem ON conversation_messages(conversation_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+
+CREATE TABLE outbox_new (
+    id              TEXT PRIMARY KEY,
+    kind            TEXT NOT NULL,
+    purpose         TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL DEFAULT '',
+    instance        TEXT NOT NULL DEFAULT '',
+    room            TEXT NOT NULL DEFAULT '',
+    thread          TEXT NOT NULL DEFAULT '',
+    recipients      TEXT NOT NULL DEFAULT '',
+    subject         TEXT NOT NULL DEFAULT '',
+    body            TEXT,
+    env_json        TEXT NOT NULL DEFAULT '{}',
+    conversation_id TEXT,
+    run_id          TEXT,
+    inbox_id        TEXT,
+    email_row_id    TEXT,
+    dedupe_key      TEXT,
+    route_step      INTEGER,
+    route_json      TEXT,
+    status          TEXT NOT NULL,
+    hold_reason     TEXT NOT NULL DEFAULT '',
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    max_attempts    INTEGER NOT NULL DEFAULT 5,
+    next_attempt_at TEXT,
+    claimed_at      TEXT,
+    error_message   TEXT,
+    created_at      TEXT NOT NULL,
+    sent_at         TEXT,
+    revision        INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO outbox_new (id, kind, purpose, workspace_id, instance, room, recipients, subject, body,
+    env_json, conversation_id, run_id, inbox_id, email_row_id, dedupe_key, route_step, route_json,
+    status, attempts, max_attempts, next_attempt_at, claimed_at, error_message, created_at, sent_at, revision)
+SELECT id, kind, purpose, workspace_id, connector,
+    CASE WHEN kind='email' THEN '' ELSE target END,
+    CASE WHEN kind='email' THEN target ELSE '' END,
+    subject, body, env_json, conversation_id, run_id, inbox_id, email_row_id, dedupe_key, route_step,
+    route_json, status, attempts, max_attempts, next_attempt_at, claimed_at, error_message,
+    created_at, sent_at, revision
+FROM outbox;
+DROP TABLE outbox;
+ALTER TABLE outbox_new RENAME TO outbox;
+CREATE UNIQUE INDEX idx_outbox_dedupe ON outbox(dedupe_key) WHERE dedupe_key IS NOT NULL;
+CREATE INDEX idx_outbox_due ON outbox(status, next_attempt_at);
+CREATE INDEX idx_outbox_ws ON outbox(workspace_id, created_at DESC);
+CREATE INDEX idx_outbox_inbox ON outbox(inbox_id) WHERE inbox_id IS NOT NULL;
+CREATE INDEX idx_outbox_conv ON outbox(conversation_id) WHERE conversation_id IS NOT NULL;
+CREATE INDEX idx_outbox_hold ON outbox(instance, hold_reason) WHERE hold_reason <> '';
+
+ALTER TABLE connector_cursors RENAME COLUMN name TO instance;
+
+CREATE TABLE channel_threads (
+    instance          TEXT NOT NULL,
+    room              TEXT NOT NULL,
+    thread            TEXT NOT NULL,
+    title             TEXT NOT NULL DEFAULT '',
+    participants_json TEXT NOT NULL DEFAULT '[]',
+    last_activity_at  TEXT,
+    PRIMARY KEY (instance, room, thread)
+);
+
+CREATE TABLE connector_installs (
+    name         TEXT NOT NULL,
+    version      TEXT NOT NULL,
+    digest       TEXT NOT NULL DEFAULT '',
+    bin_path     TEXT NOT NULL DEFAULT '',
+    installed_at TEXT NOT NULL,
+    PRIMARY KEY (name, version)
+);
 `,
 	}
 }

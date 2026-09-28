@@ -255,7 +255,9 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	}}); n != 1 {
 		t.Fatalf("pulled %d, want 1", n)
 	}
-	pointer, err := p.cp.Conversations.GetPointer(ctx, p.wsID, conversations.ChannelEmail, "<ask@x>")
+	pointer, err := p.cp.Conversations.GetPointer(ctx, p.wsID, conversations.Address{
+		Connector: conversations.ChannelEmail, Room: p.wsID, Thread: "<ask@x>",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

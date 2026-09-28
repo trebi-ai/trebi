@@ -51,7 +51,7 @@ func TestMigrationV27ChannelPointersWorkspace(t *testing.T) {
 	}
 	var conv string
 	if err := s.DB().QueryRow(`SELECT conversation_id FROM channel_pointers
-		WHERE workspace_id='ws1' AND channel_type='telegram' AND channel_ref='chat1'`).Scan(&conv); err != nil {
+		WHERE workspace_id='ws1' AND connector='telegram' AND instance='telegram' AND room='chat1'`).Scan(&conv); err != nil {
 		t.Fatalf("pointer kept: %v", err)
 	}
 	if conv != "c1" {
@@ -59,8 +59,8 @@ func TestMigrationV27ChannelPointersWorkspace(t *testing.T) {
 	}
 	// The key is workspace-scoped, so the second workspace holds the same pair.
 	if _, err := s.DB().Exec(`INSERT INTO channel_pointers
-		(workspace_id, channel_type, channel_ref, conversation_id, updated_at)
-		VALUES ('ws2', 'telegram', 'chat1', 'c2', '2026-09-27T00:00:02Z')`); err != nil {
+		(workspace_id, connector, instance, room, thread, conversation_id, updated_at)
+		VALUES ('ws2', 'telegram', 'telegram', 'chat1', '', 'c2', '2026-09-27T00:00:02Z')`); err != nil {
 		t.Fatalf("second workspace pointer: %v", err)
 	}
 	var src string
@@ -112,7 +112,7 @@ func TestMigrationV29Outbox(t *testing.T) {
 	var kind, purpose, target, dedupe, status, errMsg string
 	var body sql.NullString
 	var attempts int
-	if err := s.DB().QueryRow(`SELECT kind, purpose, target, dedupe_key, body, status, attempts, error_message
+	if err := s.DB().QueryRow(`SELECT kind, purpose, room, dedupe_key, body, status, attempts, error_message
 		FROM outbox WHERE id='o1'`).Scan(&kind, &purpose, &target, &dedupe, &body, &status, &attempts, &errMsg); err != nil {
 		t.Fatal(err)
 	}
@@ -214,5 +214,67 @@ func TestMigrationV25BackfillsTitles(t *testing.T) {
 		if got != title {
 			t.Fatalf("%s title = %q, want %q", id, got, title)
 		}
+	}
+}
+
+// TestMigrationV30Rooms builds a v29 database with email and telegram
+// rows, then applies v30. An email pointer moves to the mailbox room and
+// keeps its thread. An email outbox target moves to recipients.
+func TestMigrationV30Rooms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v29.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyThrough(db, 29); err != nil {
+		t.Fatalf("v29 setup: %v", err)
+	}
+	seed := []string{
+		`INSERT INTO channel_pointers (workspace_id, channel_type, channel_ref, conversation_id, updated_at)
+		 VALUES ('ws1', 'email', '<root@x>', 'c1', '2026-09-28T00:00:00Z')`,
+		`INSERT INTO channel_pointers (workspace_id, channel_type, channel_ref, conversation_id, updated_at)
+		 VALUES ('ws1', 'telegram', 'chat1', 'c2', '2026-09-28T00:00:00Z')`,
+		`INSERT INTO outbox (id, kind, purpose, workspace_id, connector, target, status, created_at)
+		 VALUES ('o1', 'email', 'reply', 'ws1', 'email', 'a@x.com', 'queued', '2026-09-28T00:00:00Z')`,
+		`INSERT INTO outbox (id, kind, purpose, workspace_id, connector, target, status, created_at)
+		 VALUES ('o2', 'channel', 'reply', 'ws1', 'telegram', 'chat1', 'queued', '2026-09-28T00:00:00Z')`,
+		`INSERT INTO connector_cursors (name, last_event_id, updated_at) VALUES ('tick', 'e9', '2026-09-28T00:00:00Z')`,
+	}
+	for _, q := range seed {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("seed: %v (%s)", err, q)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenPath(path)
+	if err != nil {
+		t.Fatalf("open applies v30: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	var room, thread string
+	if err := s.DB().QueryRow(`SELECT room, thread FROM channel_pointers
+		WHERE instance='email'`).Scan(&room, &thread); err != nil || room != "ws1" || thread != "<root@x>" {
+		t.Errorf("email pointer = %q %q, %v", room, thread, err)
+	}
+	if err := s.DB().QueryRow(`SELECT room, thread FROM channel_pointers
+		WHERE instance='telegram'`).Scan(&room, &thread); err != nil || room != "chat1" || thread != "" {
+		t.Errorf("telegram pointer = %q %q, %v", room, thread, err)
+	}
+	var instance, recipients string
+	if err := s.DB().QueryRow(`SELECT instance, room, recipients FROM outbox WHERE id='o1'`).
+		Scan(&instance, &room, &recipients); err != nil || instance != "email" || room != "" || recipients != "a@x.com" {
+		t.Errorf("email outbox = %q %q %q, %v", instance, room, recipients, err)
+	}
+	if err := s.DB().QueryRow(`SELECT room, recipients FROM outbox WHERE id='o2'`).
+		Scan(&room, &recipients); err != nil || room != "chat1" || recipients != "" {
+		t.Errorf("channel outbox = %q %q, %v", room, recipients, err)
+	}
+	var last string
+	if err := s.DB().QueryRow(`SELECT last_event_id FROM connector_cursors WHERE instance='tick'`).
+		Scan(&last); err != nil || last != "e9" {
+		t.Errorf("connector cursor = %q, %v", last, err)
 	}
 }

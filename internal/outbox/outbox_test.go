@@ -305,7 +305,7 @@ func enqueue(t *testing.T, ob *outbox.Service, dedupe string) outbox.Row {
 	t.Helper()
 	r, err := ob.Enqueue(t.Context(), outbox.Row{
 		Kind: outbox.KindChannel, Purpose: outbox.PurposeReply, WorkspaceID: "ws1",
-		Connector: "telegram", Target: "chat1", Body: "hello", DedupeKey: dedupe,
+		Instance: "telegram", Room: "chat1", Body: "hello", DedupeKey: dedupe,
 	})
 	if err != nil {
 		t.Fatal(err)

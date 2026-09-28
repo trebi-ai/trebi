@@ -425,9 +425,10 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 		return nil // drops never fire triggers or stream
 	}
 	if _, err := g.conn.InjectNative(ctx, cursorName, msg, connectors.NativeMeta{
-		SourceID:   msg.ID,
-		Identity:   strings.ToLower(strings.TrimSpace(msg.From)),
-		ChannelRef: ThreadRoot(msg),
+		SourceID: msg.ID,
+		Identity: strings.ToLower(strings.TrimSpace(msg.From)),
+		Room:     MailboxRoom(d.WorkspaceID, d.Agent),
+		Thread:   ThreadRoot(msg),
 	}); err != nil {
 		g.log.Warn("email.inject", "id", msg.ID, "error", err)
 	}

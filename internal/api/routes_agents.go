@@ -77,7 +77,7 @@ func (s *Server) handleAgentAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	if conversationID != "" {
 		sent, err := s.conv.Send(r.Context(), conversationID, conversations.SendOpts{
-			Text: body.Text, ChannelType: channelType, ChannelRef: channelRef,
+			Text: body.Text, Address: conversations.Address{Connector: channelType, Room: channelRef},
 		})
 		if s.convErr(w, err, "conversation error") {
 			return
@@ -87,7 +87,7 @@ func (s *Server) handleAgentAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.conv.Ask(r.Context(), conversations.AskOpts{
 		Workspace: ws.ID, Operator: row.Name, Text: body.Text,
-		ChannelType: channelType, ChannelRef: channelRef,
+		Address: conversations.Address{Connector: channelType, Room: channelRef},
 	})
 	if s.convErr(w, err, "conversation error") {
 		return
@@ -168,7 +168,7 @@ func (s *Server) handleAgentEscalate(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, err := s.conv.Ask(r.Context(), conversations.AskOpts{
 			Workspace: ws.ID, Text: "Agent " + row.Name + " escalated:\n\n" + body.Reason,
-			ChannelType: conversations.ChannelAgent, ChannelRef: "assistant:" + assistantID,
+			Address: conversations.Address{Connector: conversations.ChannelAgent, Room: "assistant:" + assistantID},
 		}); err != nil {
 			s.log.Error("assistant escalation ask failed", "error", err)
 			s.convErr(w, err, "conversation error")

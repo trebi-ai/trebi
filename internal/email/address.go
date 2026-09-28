@@ -107,6 +107,15 @@ func splitLocalPart(lp string) (slug, token string, err error) {
 	return lp[:i], lp[i+1:], nil
 }
 
+// MailboxRoom is the channel room of one mailbox: the workspace id, or
+// <workspace>+<agent> for an agent subaddress. It survives address rotation.
+func MailboxRoom(workspaceID, agent string) string {
+	if agent == "" {
+		return workspaceID
+	}
+	return workspaceID + "+" + agent
+}
+
 // maskLocalPart hides the token, keeps the reading aids: slug and tag.
 // ellis-x7k2qm4p+research → ellis-********+research
 func maskLocalPart(lp string) string {

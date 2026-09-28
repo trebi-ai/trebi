@@ -55,11 +55,11 @@ func (s *Service) InjectEvent(ctx context.Context, name string, event any) (stri
 func (s *Service) Redispatch(ctx context.Context, eventID string) error {
 	var rec eventRecord
 	var name string
-	var sourceID, identity, channelRef sql.NullString
+	var sourceID, identity, room, thread sql.NullString
 	var catchUp int
 	err := s.st.DB().QueryRowContext(ctx, `SELECT connector, COALESCE(raw_json,''), COALESCE(trace_id,''),
-		source_id, identity, channel_ref, catch_up FROM events WHERE id=?`, eventID).
-		Scan(&name, &rec.raw, &rec.trace, &sourceID, &identity, &channelRef, &catchUp)
+		source_id, identity, room, thread, catch_up FROM events WHERE id=?`, eventID).
+		Scan(&name, &rec.raw, &rec.trace, &sourceID, &identity, &room, &thread, &catchUp)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: %s", ErrEventNotFound, eventID)
 	}
@@ -68,7 +68,8 @@ func (s *Service) Redispatch(ctx context.Context, eventID string) error {
 	}
 	rec.id = eventID
 	rec.receivedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	rec.sourceID, rec.identity, rec.channelRef = sourceID.String, identity.String, channelRef.String
+	rec.sourceID, rec.identity = sourceID.String, identity.String
+	rec.room, rec.thread = room.String, thread.String
 	rec.catchUp = catchUp != 0
 	rec.payload = decodeStored(rec.raw)
 	s.dispatchEvent(ctx, name, rec)
@@ -100,7 +101,8 @@ func (s *Service) InjectNative(ctx context.Context, name string, payload any, me
 		payload:    payload,
 		sourceID:   meta.SourceID,
 		identity:   meta.Identity,
-		channelRef: meta.ChannelRef,
+		room:       meta.Room,
+		thread:     meta.Thread,
 	}
 	inserted, err := s.recordEvent(ctx, name, rec, recordOpts{})
 	if err != nil {
@@ -126,7 +128,7 @@ func (s *Service) fillEventMeta(rec *eventRecord, name string) {
 		rec.identity, _ = lookupPath(rec.payload, d.Events.Identity)
 	}
 	if d.Channel != nil {
-		rec.channelRef, _ = lookupPath(rec.payload, d.Channel.Ref)
+		rec.room, _ = lookupPath(rec.payload, d.Channel.Ref)
 	}
 }
 
@@ -194,11 +196,13 @@ func (s *Service) recordEvent(ctx context.Context, name string, rec eventRecord,
 	s.st.LockBus()
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.Exec(`INSERT INTO events
-			(id, connector, received_at, summary, raw_json, trace_id, source_id, identity, channel_ref, catch_up)
-			VALUES (?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT (connector, source_id) WHERE source_id IS NOT NULL DO NOTHING`,
-			rec.id, name, rec.receivedAt, summary, rec.raw, rec.trace,
-			store.NullStr(rec.sourceID), store.NullStr(rec.identity), store.NullStr(rec.channelRef), boolInt(rec.catchUp))
+			(id, connector, instance, received_at, summary, raw_json, trace_id, source_id, identity,
+			room, thread, catch_up)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT (instance, source_id) WHERE source_id IS NOT NULL DO NOTHING`,
+			rec.id, name, name, rec.receivedAt, summary, rec.raw, rec.trace,
+			store.NullStr(rec.sourceID), store.NullStr(rec.identity), store.NullStr(rec.room),
+			store.NullStr(rec.thread), boolInt(rec.catchUp))
 		if err != nil {
 			return err
 		}
@@ -209,9 +213,9 @@ func (s *Service) recordEvent(ctx context.Context, name string, rec eventRecord,
 		}
 		if opts.advancePosition && rec.sourceID != "" {
 			now := time.Now().UTC().Format(time.RFC3339)
-			if _, err := tx.Exec(`INSERT INTO connector_cursors (name, last_event_id, updated_at)
+			if _, err := tx.Exec(`INSERT INTO connector_cursors (instance, last_event_id, updated_at)
 				VALUES (?,?,?)
-				ON CONFLICT(name) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
+				ON CONFLICT(instance) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
 				name, rec.sourceID, now); err != nil {
 				return err
 			}
@@ -352,8 +356,10 @@ func (s *Service) dispatchTrigger(ctx context.Context, name string, ev eventReco
 	}
 	if ck, ok := res.Vars["conversation_key"]; ok && ck != "" {
 		item.ConversationKey = ck
-	} else if ev.channelRef != "" {
-		item.ConversationKey = ev.channelRef
+	} else if ev.thread != "" {
+		item.ConversationKey = ev.room + "/" + ev.thread
+	} else if ev.room != "" {
+		item.ConversationKey = ev.room
 	}
 	if err := s.queue.Enqueue(ctx, item); err != nil {
 		s.log.Warn("enqueue", "error", err)

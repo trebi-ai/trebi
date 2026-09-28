@@ -55,7 +55,7 @@ func TestConversationSendPromptsSession(t *testing.T) {
 	id, _ := conv["id"].(string)
 
 	code, sent, _ := doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", map[string]any{
-		"text": "hi", "channel_type": "cli", "channel_ref": wsID,
+		"text": "hi", "connector": "cli", "room": wsID,
 	})
 	if code != 201 {
 		t.Fatalf("send %d %v", code, sent)
@@ -133,7 +133,7 @@ func TestConversationParallelSendsStoreRows(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", map[string]any{
-				"text": "hi", "channel_type": "cli", "channel_ref": wsID,
+				"text": "hi", "connector": "cli", "room": wsID,
 				"idempotency_key": ulid.Make().String(),
 			})
 		}()
@@ -176,7 +176,7 @@ func TestConversationSendWhileDraining(t *testing.T) {
 	}
 	id, _ := conv["id"].(string)
 	code, sent, _ := doJSON(t, "POST", base+"/v1/conversations/"+id+"/messages", map[string]any{
-		"text": "hi", "channel_type": "cli", "channel_ref": wsID,
+		"text": "hi", "connector": "cli", "room": wsID,
 	})
 	if code != 201 {
 		t.Fatalf("send while draining %d %v (want 201 not 503)", code, sent)
@@ -221,7 +221,7 @@ func TestConversationOutboxRoutes(t *testing.T) {
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := st.DB().Exec(`INSERT INTO outbox
-		(id, kind, purpose, connector, workspace_id, conversation_id, target, dedupe_key, body, status, attempts, error_message, created_at)
+		(id, kind, purpose, instance, workspace_id, conversation_id, room, dedupe_key, body, status, attempts, error_message, created_at)
 		VALUES ('01ROW1','channel','reply','telegram',?,?,'chat1','01MSG1','hello','failed',5,'boom',?)`,
 		wsID, convID, now); err != nil {
 		t.Fatal(err)
@@ -246,7 +246,7 @@ func TestConversationOutboxRoutes(t *testing.T) {
 		t.Fatalf("outbox rows = %v", rows)
 	}
 	row, _ := rows[0].(map[string]any)
-	if row["status"] != "failed" || row["connector"] != "telegram" || row["dedupe_key"] != "01MSG1" {
+	if row["status"] != "failed" || row["instance"] != "telegram" || row["dedupe_key"] != "01MSG1" {
 		t.Fatalf("outbox row %v", row)
 	}
 

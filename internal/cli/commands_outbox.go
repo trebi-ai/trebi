@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 
@@ -86,13 +87,13 @@ func runOutboxList(_ context.Context, c *cli.Command) error {
 	}
 	rows, _ := body["outbox"].([]any)
 	w := outWriter(c)
-	tbl := newTable(w, []string{"ID", "Kind", "Purpose", "Status", "Attempts", "Target", "Error"})
+	tbl := newTable(w, []string{"ID", "Kind", "Purpose", "Status", "Attempts", "To", "Error"})
 	for _, r := range rows {
 		row, _ := r.(map[string]any)
 		tbl.AppendRow(table.Row{
 			mapStr(row, "id"), mapStr(row, "kind"), mapStr(row, "purpose"),
 			colorStatus(w, mapStr(row, "status")), mapStr(row, "attempts"),
-			dash(mapStr(row, "target")), dash(truncateDisplay(mapStr(row, "error"), 60)),
+			dash(outboxTo(row)), dash(truncateDisplay(mapStr(row, "error"), 60)),
 		})
 	}
 	renderTable(tbl)
@@ -102,12 +103,18 @@ func runOutboxList(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
+// outboxTo is the address column of one outbox row: the room, else the
+// email recipients.
+func outboxTo(row map[string]any) string {
+	return cmp.Or(mapStr(row, "room"), mapStr(row, "recipients"))
+}
+
 func printOutboxRow(c *cli.Command, row map[string]any) {
 	w := outWriter(c)
 	for _, f := range []struct{ label, key string }{
 		{"ID", "id"}, {"Kind", "kind"}, {"Purpose", "purpose"}, {"Status", "status"},
-		{"Attempts", "attempts"}, {"Workspace", "workspace_id"}, {"Connector", "connector"},
-		{"Target", "target"}, {"Subject", "subject"}, {"Next", "next_attempt_at"},
+		{"Attempts", "attempts"}, {"Workspace", "workspace_id"}, {"Instance", "instance"},
+		{"Room", "room"}, {"Thread", "thread"}, {"Recipients", "recipients"}, {"Hold", "hold_reason"}, {"Subject", "subject"}, {"Next", "next_attempt_at"},
 		{"Sent", "sent_at"}, {"Error", "error"}, {"Body", "body"},
 	} {
 		if v := mapStr(row, f.key); v != "" {

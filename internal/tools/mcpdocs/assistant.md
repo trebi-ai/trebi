@@ -35,8 +35,8 @@ Return the composed instructions of a new assistant session: role, workspace, th
 Send one message to the workspace assistant. The daemon resolves or creates the channel conversation and prompts the session, so no pointer call is needed first.
 - `workspace` (string, required): workspace id.
 - `text` (string, required): message text.
-- `channel_type` (string, optional): channel kind; defaults to `cli`.
-- `channel_ref` (string, optional): channel key; defaults to the workspace id.
+- `connector` (string, optional): connector name; defaults to `cli`.
+- `room` (string, optional): room on the connector; defaults to the workspace id.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first message.
 - `wait_ms` (number, optional): long-poll for the assistant reply, up to 120000 ms. `replies` carries what arrived.
 

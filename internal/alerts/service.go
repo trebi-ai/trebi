@@ -381,7 +381,7 @@ func (s *Service) Get(ctx context.Context, id string) (*InboxItem, error) {
 			continue
 		}
 		item.Deliveries = append(item.Deliveries, Delivery{
-			Step: *r.RouteStep, Via: cmp.Or(r.Connector, notify.ViaEmail), Target: r.Target,
+			Step: *r.RouteStep, Via: cmp.Or(r.Connector(), notify.ViaEmail), Target: cmp.Or(r.Room, r.Recipients),
 			Status: string(r.Status), Error: r.ErrorMessage, SentAt: r.SentAt,
 		})
 	}

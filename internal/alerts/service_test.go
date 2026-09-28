@@ -681,7 +681,7 @@ func TestRouteConnectorFirst(t *testing.T) {
 	}
 	svc.Consume(ctx)
 	rows := ch.sent()
-	if len(rows) != 1 || rows[0].Target != "+1555" || rows[0].Env["TREBI_ALERT_RESUME"] != id {
+	if len(rows) != 1 || rows[0].Room != "+1555" || rows[0].Env["TREBI_ALERT_RESUME"] != id {
 		t.Fatalf("channel rows %+v", rows)
 	}
 	if len(w.sent()) != 0 {

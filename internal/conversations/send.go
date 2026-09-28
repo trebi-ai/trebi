@@ -16,7 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
-const msgCols = `id, conversation_id, role, COALESCE(channel_type,''), COALESCE(channel_ref,''),
+const msgCols = `id, conversation_id, role, connector, instance, room, thread,
 	text, COALESCE(run_id,''), turn_index, COALESCE(idempotency_key,''), created_at`
 
 // ListMessages returns messages in ascending ULID order.
@@ -60,13 +60,13 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 	if strings.TrimSpace(opts.Workspace) == "" {
 		return nil, fmt.Errorf("%w: workspace is required", ErrValidation)
 	}
-	if opts.ChannelType == "" {
-		opts.ChannelType = ChannelCLI
+	if opts.Connector == "" {
+		opts.Connector = ChannelCLI
 	}
-	if opts.ChannelRef == "" {
-		opts.ChannelRef = opts.Workspace
+	if opts.Room == "" {
+		opts.Room = opts.Workspace
 	}
-	convID, err := s.EnsureForChannel(ctx, opts.Workspace, opts.Operator, opts.ChannelType, opts.ChannelRef)
+	convID, err := s.EnsureForChannel(ctx, opts.Workspace, opts.Operator, opts.Address)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 			return nil, fmt.Errorf("%w: assistant session manager is not bound", ErrValidation)
 		}
 		res, err := s.assistant.Ask(ctx, convID, wire.PromptInput{
-			Text: opts.Text, ChannelType: opts.ChannelType, ChannelRef: opts.ChannelRef,
+			Text: opts.Text, Connector: opts.Connector, Instance: opts.Instance, Room: opts.Room, Thread: opts.Thread,
 			IdempotencyKey: opts.IdempotencyKey, Headless: opts.Headless,
 		}, opts.Wait)
 		if err != nil {
@@ -93,8 +93,7 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 		return nil, err
 	}
 	sent, err := s.Send(ctx, convID, SendOpts{
-		Text: opts.Text, ChannelType: opts.ChannelType,
-		ChannelRef: opts.ChannelRef, IdempotencyKey: opts.IdempotencyKey,
+		Text: opts.Text, Address: opts.Address, IdempotencyKey: opts.IdempotencyKey,
 	})
 	if err != nil {
 		return nil, err
@@ -109,8 +108,8 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 
 // EnsureForChannel returns the conversation the channel points at, creating one
 // when the pointer is absent.
-func (s *Service) EnsureForChannel(ctx context.Context, workspace, operator, channelType, channelRef string) (string, error) {
-	p, err := s.GetPointer(ctx, workspace, channelType, channelRef)
+func (s *Service) EnsureForChannel(ctx context.Context, workspace, operator string, a Address) (string, error) {
+	p, err := s.GetPointer(ctx, workspace, a)
 	if err == nil && p.ConversationID != "" {
 		conv, err := s.Get(ctx, p.ConversationID)
 		if err != nil {
@@ -127,8 +126,8 @@ func (s *Service) EnsureForChannel(ctx context.Context, workspace, operator, cha
 	conv, err := s.Create(ctx, CreateOpts{
 		Workspace:     workspace,
 		Operator:      operator,
-		OriginChannel: channelType,
-		Activate:      &Activate{ChannelType: channelType, ChannelRef: channelRef},
+		OriginChannel: a.Connector,
+		Activate:      &a,
 	})
 	if err != nil {
 		return "", err
@@ -196,7 +195,7 @@ func (s *Service) Send(ctx context.Context, convID string, opts SendOpts) (*Send
 			return nil, fmt.Errorf("%w: assistant session manager is not bound", ErrValidation)
 		}
 		res, err := s.assistant.Prompt(ctx, convID, wire.PromptInput{
-			Text: opts.Text, ChannelType: opts.ChannelType, ChannelRef: opts.ChannelRef,
+			Text: opts.Text, Connector: opts.Connector, Instance: opts.Instance, Room: opts.Room, Thread: opts.Thread,
 			IdempotencyKey: opts.IdempotencyKey,
 		})
 		if err != nil {
@@ -240,8 +239,7 @@ func (s *Service) AppendUser(ctx context.Context, convID string, in UserTurn) (M
 		}
 	}
 	msg, err := s.insertUserMessage(ctx, conv, SendOpts{
-		Text: in.Text, ChannelType: in.ChannelType,
-		ChannelRef: in.ChannelRef, IdempotencyKey: in.IdempotencyKey,
+		Text: in.Text, Address: in.Address, IdempotencyKey: in.IdempotencyKey,
 	}, in.Text)
 	if err != nil {
 		if uniqueViolation(err) && in.IdempotencyKey != "" {
@@ -357,7 +355,7 @@ func (s *Service) Delete(ctx context.Context, convID string) error {
 func convFromWire(m wire.Message) Message {
 	return Message{
 		ID: m.ID, ConversationID: m.ConversationID, Role: m.Role,
-		ChannelType: m.ChannelType, ChannelRef: m.ChannelRef, Text: m.Text,
+		Address: Address{Connector: m.Connector, Instance: m.Instance, Room: m.Room, Thread: m.Thread}, Text: m.Text,
 		TurnIndex: m.TurnIndex, IdempotencyKey: m.IdempotencyKey, CreatedAt: m.CreatedAt,
 	}
 }
@@ -444,19 +442,19 @@ func (s *Service) insertUserMessage(ctx context.Context, conv *Conversation, opt
 	nowStr := now.Format(time.RFC3339Nano)
 	msg := Message{
 		ID: ulid.Make().String(), ConversationID: conv.ID, Role: RoleUser,
-		ChannelType: opts.ChannelType, ChannelRef: opts.ChannelRef, Text: text,
+		Address: opts.Address, Text: text,
 		IdempotencyKey: opts.IdempotencyKey, CreatedAt: now,
 	}
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`INSERT INTO conversation_messages
-			(id, conversation_id, role, channel_type, channel_ref, text, idempotency_key, created_at)
-			VALUES (?,?,?,?,?,?,?,?)`,
-			msg.ID, conv.ID, RoleUser, opts.ChannelType, opts.ChannelRef, text,
+			(id, conversation_id, role, connector, instance, room, thread, text, idempotency_key, created_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			msg.ID, conv.ID, RoleUser, opts.Connector, opts.Instance, opts.Room, opts.Thread, text,
 			store.NullStr(opts.IdempotencyKey), nowStr); err != nil {
 			return err
 		}
-		if opts.ChannelType != "" && opts.ChannelRef != "" {
-			if err := writePointer(tx, conv.Workspace, opts.ChannelType, opts.ChannelRef, conv.ID, nowStr); err != nil {
+		if opts.Connector != "" && opts.Room != "" {
+			if err := writePointer(tx, conv.Workspace, opts.Address, conv.ID, nowStr); err != nil {
 				return err
 			}
 		}
@@ -701,7 +699,7 @@ func scanMsg(row convScanner) (Message, error) {
 	var m Message
 	var turn sql.NullInt64
 	var created string
-	err := row.Scan(&m.ID, &m.ConversationID, &m.Role, &m.ChannelType, &m.ChannelRef,
+	err := row.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Connector, &m.Instance, &m.Room, &m.Thread,
 		&m.Text, &m.RunID, &turn, &m.IdempotencyKey, &created)
 	if err != nil {
 		return m, err

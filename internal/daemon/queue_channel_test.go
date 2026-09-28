@@ -62,8 +62,8 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 	}
 
 	if _, err := st.DB().ExecContext(ctx, `INSERT INTO events
-		(id, connector, received_at, summary, raw_json, trace_id, channel_ref) VALUES (?,?,?,?,?,?,?)`,
-		"evt-1", "chat", time.Now().UTC().Format(time.RFC3339Nano), "", "{}", "tr", "u1"); err != nil {
+		(id, connector, instance, received_at, summary, raw_json, trace_id, room) VALUES (?,?,?,?,?,?,?,?)`,
+		"evt-1", "chat", "chat", time.Now().UTC().Format(time.RFC3339Nano), "", "{}", "tr", "u1"); err != nil {
 		t.Fatal(err)
 	}
 	item := &dispatch.QueueItem{
@@ -91,7 +91,7 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 	}
 
 	var convID, channelType, channelRef, text string
-	if err := st.DB().QueryRowContext(ctx, `SELECT conversation_id, channel_type, channel_ref, text
+	if err := st.DB().QueryRowContext(ctx, `SELECT conversation_id, connector, room, text
 		FROM conversation_messages WHERE role='user' ORDER BY id LIMIT 1`).
 		Scan(&convID, &channelType, &channelRef, &text); err != nil {
 		t.Fatalf("user turn: %v", err)
@@ -113,7 +113,7 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 	}
 	var rows int
 	var status, ref string
-	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*), MIN(status), MIN(target) FROM outbox WHERE kind='channel'`).
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*), MIN(status), MIN(room) FROM outbox WHERE kind='channel'`).
 		Scan(&rows, &status, &ref); err != nil {
 		t.Fatal(err)
 	}
@@ -138,18 +138,18 @@ func TestChannelPointerIsWorkspaceScoped(t *testing.T) {
 
 	ctx := context.Background()
 	conv := conversations.New(st)
-	first, err := conv.EnsureForChannel(ctx, "ws-a", "", "chat", "u1")
+	first, err := conv.EnsureForChannel(ctx, "ws-a", "", conversations.Address{Connector: "chat", Room: "u1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := conv.EnsureForChannel(ctx, "ws-b", "", "chat", "u1")
+	second, err := conv.EnsureForChannel(ctx, "ws-b", "", conversations.Address{Connector: "chat", Room: "u1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first == second {
 		t.Fatalf("both workspaces point at conversation %s; want one each", first)
 	}
-	again, err := conv.EnsureForChannel(ctx, "ws-a", "", "chat", "u1")
+	again, err := conv.EnsureForChannel(ctx, "ws-a", "", conversations.Address{Connector: "chat", Room: "u1"})
 	if err != nil {
 		t.Fatal(err)
 	}

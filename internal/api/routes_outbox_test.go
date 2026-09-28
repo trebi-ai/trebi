@@ -35,9 +35,9 @@ func TestOutboxRoutes(t *testing.T) {
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, q := range []string{
-		`INSERT INTO outbox (id, kind, purpose, workspace_id, connector, target, body, status, attempts, error_message, created_at)
+		`INSERT INTO outbox (id, kind, purpose, workspace_id, instance, room, body, status, attempts, error_message, created_at)
 		 VALUES ('01ROWA','channel','reply','` + wsID + `','telegram','chat1','hello','failed',5,'boom','` + now + `')`,
-		`INSERT INTO outbox (id, kind, purpose, workspace_id, target, subject, body, status, next_attempt_at, created_at)
+		`INSERT INTO outbox (id, kind, purpose, workspace_id, recipients, subject, body, status, next_attempt_at, created_at)
 		 VALUES ('01ROWB','email','alert','` + wsID + `','ops@example.com','[trebi] x','text','pending','2999-01-01T00:00:00.000Z','` + now + `')`,
 	} {
 		if _, err := st.DB().Exec(q); err != nil {

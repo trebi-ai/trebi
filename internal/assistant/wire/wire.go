@@ -11,8 +11,10 @@ type Message struct {
 	ID             string    `json:"id"`
 	ConversationID string    `json:"conversation_id"`
 	Role           string    `json:"role"`
-	ChannelType    string    `json:"channel_type,omitempty"`
-	ChannelRef     string    `json:"channel_ref,omitempty"`
+	Connector      string    `json:"connector,omitempty"`
+	Instance       string    `json:"instance,omitempty"`
+	Room           string    `json:"room,omitempty"`
+	Thread         string    `json:"thread,omitempty"`
 	Text           string    `json:"text"`
 	TurnIndex      *int      `json:"turn_index,omitempty"`
 	IdempotencyKey string    `json:"idempotency_key,omitempty"`
@@ -27,9 +29,11 @@ type PromptInput struct {
 	Display string
 	// Context holds the chip labels of the context blocks.
 	Context []string
-	// ChannelType and ChannelRef mark where the turn came from.
-	ChannelType string
-	ChannelRef  string
+	// Connector, Instance, Room, and Thread mark where the turn came from.
+	Connector string
+	Instance  string
+	Room      string
+	Thread    string
 	// IdempotencyKey deduplicates a resent prompt.
 	IdempotencyKey string
 	// Harness and Mode apply on the first prompt of a conversation only.

@@ -220,13 +220,13 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	coalesceText := prompt
 	convID := c.conversationID(ctx, item.WorkspaceID, item.ConversationKey)
 	convKey := item.ConversationKey
-	if id, key, ref := c.channelConversation(ctx, item); id != "" {
+	if id, key, addr := c.channelConversation(ctx, item); id != "" {
 		// An agent item from a connector channel binds its conversation
 		// through the channel pointer, not the lane key (plan G.2). The
 		// inbound text becomes the channel-typed user turn, so the reply
 		// has a way back (plan G.3).
 		convID, convKey = id, key
-		c.noteChannelUser(ctx, item, id, ref, prompt)
+		c.noteChannelUser(ctx, item, id, addr, prompt)
 	}
 	var wake *runs.WakeOpts
 	if kind != runs.KindJob {
@@ -423,67 +423,70 @@ func (c *ControlPlane) conversationID(ctx context.Context, workspaceID, key stri
 
 // channelConversation resolves the conversation of an agent item that came
 // from a connector channel (plan G.2). It returns the conversation id and
-// key, and the channel ref of the event for the reply; an empty id means the
-// item is not a channel item.
-func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.QueueItem) (convID, key, ref string) {
+// key, and the channel address of the event for the reply; an empty id means
+// the item is not a channel item.
+func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.QueueItem) (convID, key string, addr conversations.Address) {
 	if item.Kind != runs.KindAgent || item.Connector == "" || item.ConversationKey == "" {
-		return "", "", ""
+		return "", "", addr
 	}
 	if c.Connectors == nil || c.Conversations == nil {
-		return "", "", ""
+		return "", "", addr
 	}
 	if _, _, ok := c.Connectors.Channel(item.Connector); !ok {
-		return "", "", ""
+		return "", "", addr
 	}
-	ref = c.eventChannelRef(ctx, item.EventID)
-	pointer := cmp.Or(ref, item.ConversationKey)
-	convID, err := c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, item.Job, item.Connector, pointer)
+	addr = c.eventAddress(ctx, item)
+	pointer := addr
+	pointer.Room = cmp.Or(addr.Room, item.ConversationKey)
+	convID, err := c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, item.Job, pointer)
 	if err != nil || convID == "" {
-		c.noteOperatorConflict(ctx, err, item, item.Connector, pointer, item.Job)
-		return "", "", ""
+		c.noteOperatorConflict(ctx, err, item, pointer, item.Job)
+		return "", "", addr
 	}
 	conv, err := c.Conversations.Get(ctx, convID)
 	if err != nil {
-		return convID, "", ref
+		return convID, "", addr
 	}
-	return conv.ID, conv.Key, ref
+	return conv.ID, conv.Key, addr
 }
 
-// eventChannelRef reads the channel ref of the event behind a queue item.
-// The conversation key is only the lane key; the reply goes to this ref.
-func (c *ControlPlane) eventChannelRef(ctx context.Context, eventID string) string {
-	if eventID == "" {
-		return ""
+// eventAddress reads the channel address of the event behind a queue item.
+// The conversation key is only the lane key; the reply goes to this address.
+// An item with no event row has an address with no room.
+func (c *ControlPlane) eventAddress(ctx context.Context, item *dispatch.QueueItem) conversations.Address {
+	addr := conversations.Address{Connector: item.Connector, Instance: item.Connector}
+	if item.EventID == "" {
+		return addr
 	}
-	var ref string
 	// A missing event row means no channel address.
 	_ = c.Store.DB().QueryRowContext(ctx,
-		`SELECT COALESCE(channel_ref,'') FROM events WHERE id=?`, eventID).Scan(&ref)
-	return ref
+		`SELECT instance, COALESCE(room,''), COALESCE(thread,'') FROM events WHERE id=?`, item.EventID).
+		Scan(&addr.Instance, &addr.Room, &addr.Thread)
+	return addr
 }
 
 // noteOperatorConflict logs a channel that already belongs to another
 // operator. The doctor reports the trigger setup that causes it.
-func (c *ControlPlane) noteOperatorConflict(ctx context.Context, err error, item *dispatch.QueueItem, channelType, ref, operator string) {
+func (c *ControlPlane) noteOperatorConflict(ctx context.Context, err error, item *dispatch.QueueItem, addr conversations.Address, operator string) {
 	if !errors.Is(err, conversations.ErrOperatorConflict) {
 		return
 	}
 	current := ""
-	if p, perr := c.Conversations.GetPointer(ctx, item.WorkspaceID, channelType, ref); perr == nil {
+	if p, perr := c.Conversations.GetPointer(ctx, item.WorkspaceID, addr); perr == nil {
 		if conv, gerr := c.Conversations.Get(ctx, p.ConversationID); gerr == nil {
 			current = conv.Operator
 		}
 	}
-	c.log.WarnContext(ctx, "channel operator conflict", "connector", channelType, "ref", ref,
-		"operator", operator, "current_operator", current, "queue_id", item.ID)
+	c.log.WarnContext(ctx, "channel operator conflict", "instance", addr.Instance, "room", addr.Room,
+		"thread", addr.Thread, "operator", operator, "current_operator", current, "queue_id", item.ID)
 }
 
 // noteChannelUser stores the inbound event text as the channel-typed user
-// turn of an agent item. The row carries the channel and the event's channel
-// ref, so the reply path can send the answer back (plan G.3). An empty ref
-// gets no reply. The event id is the idempotency key, so a retry writes
+// turn of an agent item. The row carries the channel address of the event,
+// so the reply path can send the answer back (plan G.3). An address with no
+// room gets no reply. The event id is the idempotency key, so a retry writes
 // nothing.
-func (c *ControlPlane) noteChannelUser(ctx context.Context, item *dispatch.QueueItem, convID, ref, text string) {
+func (c *ControlPlane) noteChannelUser(ctx context.Context, item *dispatch.QueueItem, convID string, addr conversations.Address, text string) {
 	if c.Conversations == nil || convID == "" {
 		return
 	}
@@ -492,8 +495,7 @@ func (c *ControlPlane) noteChannelUser(ctx context.Context, item *dispatch.Queue
 	}
 	if _, _, err := c.Conversations.AppendUser(ctx, convID, conversations.UserTurn{
 		Text:           text,
-		ChannelType:    item.Connector,
-		ChannelRef:     ref,
+		Address:        addr,
 		IdempotencyKey: item.EventID,
 	}); err != nil {
 		c.log.Warn("channel user turn", "queue_id", item.ID, "error", err)
@@ -641,7 +643,7 @@ func (c *ControlPlane) assistantTurnActive(ctx context.Context, item *dispatch.Q
 	if c.asst == nil || c.Conversations == nil {
 		return false
 	}
-	convID, _, _, err := c.assistantConversation(ctx, item)
+	convID, _, err := c.assistantConversation(ctx, item)
 	if err != nil || convID == "" {
 		return false
 	}
@@ -649,27 +651,28 @@ func (c *ControlPlane) assistantTurnActive(ctx context.Context, item *dispatch.Q
 }
 
 // assistantConversation resolves the conversation of one assistant item:
-// the channel pointer of the item connector and the event's channel ref.
-// An event with no channel ref points by the conversation key and gets no
-// reply ref. An item with neither shares one trigger conversation per
-// channel, and its trigger ref gets no reply either.
-func (c *ControlPlane) assistantConversation(ctx context.Context, item *dispatch.QueueItem) (convID, channelType, ref string, err error) {
-	channelType = cmp.Or(item.Connector, conversations.ChannelAssistant)
-	ref = c.eventChannelRef(ctx, item.EventID)
-	pointer := ref
+// the channel pointer of the event's channel address. An event with no room
+// points by the conversation key and gets no reply room. An item with
+// neither shares one trigger conversation per channel, and its trigger room
+// gets no reply either.
+func (c *ControlPlane) assistantConversation(ctx context.Context, item *dispatch.QueueItem) (convID string, addr conversations.Address, err error) {
+	name := cmp.Or(item.Connector, conversations.ChannelAssistant)
+	addr = c.eventAddress(ctx, item)
+	addr.Connector, addr.Instance = name, cmp.Or(addr.Instance, name)
+	pointer := addr
 	switch {
-	case ref != "":
+	case addr.Room != "":
 	case item.ConversationKey != "":
-		pointer = item.ConversationKey
+		pointer.Room = item.ConversationKey
 	default:
-		pointer = "trigger:" + channelType
-		ref = pointer
+		addr.Room = "trigger:" + name
+		pointer = addr
 	}
-	convID, err = c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, "", channelType, pointer)
+	convID, err = c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, "", pointer)
 	if err != nil {
-		c.noteOperatorConflict(ctx, err, item, channelType, pointer, "")
+		c.noteOperatorConflict(ctx, err, item, pointer, "")
 	}
-	return convID, channelType, ref, err
+	return convID, addr, err
 }
 
 // recordPolicy notes one fire for the trigger's rate limit.

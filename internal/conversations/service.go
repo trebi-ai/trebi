@@ -63,18 +63,26 @@ type Conversation struct {
 
 // ConversationChannel is one window onto a conversation.
 type ConversationChannel struct {
-	ChannelType string    `json:"channel_type"`
-	ChannelRef  string    `json:"channel_ref"`
-	CreatedAt   time.Time `json:"created_at,omitempty"`
+	Address
+	CreatedAt time.Time `json:"created_at,omitempty"`
+}
+
+// Address is one place a conversation lives: a connector instance, a room,
+// and a thread. An empty instance is the connector itself (cli, ui, email,
+// or the global instance of a connector).
+type Address struct {
+	Connector string `json:"connector"`
+	Instance  string `json:"instance,omitempty"`
+	Room      string `json:"room"`
+	Thread    string `json:"thread,omitempty"`
 }
 
 // Message is one durable chat row.
 type Message struct {
-	ID             string    `json:"id"`
-	ConversationID string    `json:"conversation_id"`
-	Role           string    `json:"role"`
-	ChannelType    string    `json:"channel_type,omitempty"`
-	ChannelRef     string    `json:"channel_ref,omitempty"`
+	ID             string `json:"id"`
+	ConversationID string `json:"conversation_id"`
+	Role           string `json:"role"`
+	Address
 	Text           string    `json:"text"`
 	RunID          string    `json:"run_id,omitempty"`
 	TurnIndex      *int      `json:"turn_index,omitempty"`
@@ -93,16 +101,9 @@ type Delivery struct {
 
 // Pointer is a channel's active conversation.
 type Pointer struct {
-	ChannelType    string    `json:"channel_type"`
-	ChannelRef     string    `json:"channel_ref"`
+	Address
 	ConversationID string    `json:"conversation_id"`
 	UpdatedAt      time.Time `json:"updated_at"`
-}
-
-// Activate points a channel at a newly created conversation.
-type Activate struct {
-	ChannelType string `json:"channel_type"`
-	ChannelRef  string `json:"channel_ref"`
 }
 
 // CreateOpts is POST /v1/conversations.
@@ -111,7 +112,7 @@ type CreateOpts struct {
 	Operator      string
 	Title         string
 	OriginChannel string
-	Activate      *Activate
+	Activate      *Address // points this channel at the new conversation
 }
 
 // PatchOpts is PATCH /v1/conversations/{id}. Nil fields are left unchanged.
@@ -138,9 +139,8 @@ type MessageListOpts struct {
 
 // SendOpts is POST /v1/conversations/{id}/messages.
 type SendOpts struct {
-	Text           string
-	ChannelType    string
-	ChannelRef     string
+	Text string
+	Address
 	IdempotencyKey string
 }
 
@@ -161,8 +161,7 @@ type AskOpts struct {
 	Workspace      string
 	Operator       string // '' = assistant; agents/<id> = agent
 	Text           string
-	ChannelType    string // defaults to cli
-	ChannelRef     string // defaults to the workspace id
+	Address        // connector defaults to cli, room to the workspace id
 	IdempotencyKey string
 	Headless       bool          // email, trigger, escalation: timeout denies permissions
 	Wait           time.Duration // 0 returns as soon as the message is queued
@@ -179,9 +178,8 @@ type AskResult struct {
 // UserTurn is one stored user row. Text is the full prompt; the drawer
 // reads the draft from the assistant events instead.
 type UserTurn struct {
-	Text           string
-	ChannelType    string
-	ChannelRef     string
+	Text string
+	Address
 	IdempotencyKey string
 }
 
@@ -255,7 +253,7 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]Conversation, erro
 	}
 	if opts.Channel != "" {
 		q += ` AND (origin_channel=? OR EXISTS (
-			SELECT 1 FROM conversation_channels ch WHERE ch.conversation_id=conversations.id AND ch.channel_type=?))`
+			SELECT 1 FROM conversation_channels ch WHERE ch.conversation_id=conversations.id AND ch.connector=?))`
 		args = append(args, opts.Channel, opts.Channel)
 	}
 	if opts.Operator != "" {
@@ -331,7 +329,7 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Conversation, e
 		if opts.Activate == nil {
 			return nil
 		}
-		return writePointer(tx, opts.Workspace, opts.Activate.ChannelType, opts.Activate.ChannelRef, id, nowStr)
+		return writePointer(tx, opts.Workspace, *opts.Activate, id, nowStr)
 	}, store.BusEvent{
 		Topic: "conversation.created", Entity: "conversation", EntityID: id, Action: "created", Revision: 1,
 	})
@@ -384,13 +382,14 @@ func (s *Service) Patch(ctx context.Context, id string, opts PatchOpts) (*Conver
 }
 
 // GetPointer resolves a channel's active conversation in one workspace.
-func (s *Service) GetPointer(ctx context.Context, workspace, channelType, channelRef string) (*Pointer, error) {
-	var p Pointer
+func (s *Service) GetPointer(ctx context.Context, workspace string, a Address) (*Pointer, error) {
+	a = a.normal()
+	p := Pointer{Address: a}
 	var updated string
 	err := s.st.DB().QueryRowContext(ctx, `
-		SELECT channel_type, channel_ref, conversation_id, updated_at
-		FROM channel_pointers WHERE workspace_id=? AND channel_type=? AND channel_ref=?`,
-		workspace, channelType, channelRef).Scan(&p.ChannelType, &p.ChannelRef, &p.ConversationID, &updated)
+		SELECT connector, conversation_id, updated_at
+		FROM channel_pointers WHERE workspace_id=? AND instance=? AND room=? AND thread=?`,
+		workspace, a.Instance, a.Room, a.Thread).Scan(&p.Connector, &p.ConversationID, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -403,10 +402,11 @@ func (s *Service) GetPointer(ctx context.Context, workspace, channelType, channe
 
 // PutPointer is the /switch primitive: point a channel at a conversation.
 // An empty workspace takes the conversation's workspace.
-func (s *Service) PutPointer(ctx context.Context, workspace, channelType, channelRef, convID string) (*Pointer, error) {
-	if channelType == "" || channelRef == "" {
-		return nil, fmt.Errorf("%w: channel_type and channel_ref are required", ErrValidation)
+func (s *Service) PutPointer(ctx context.Context, workspace string, a Address, convID string) (*Pointer, error) {
+	if a.Connector == "" || a.Room == "" {
+		return nil, fmt.Errorf("%w: connector and room are required", ErrValidation)
 	}
+	a = a.normal()
 	conv, err := s.Get(ctx, convID)
 	if err != nil {
 		return nil, err
@@ -414,7 +414,7 @@ func (s *Service) PutPointer(ctx context.Context, workspace, channelType, channe
 	if workspace == "" {
 		workspace = conv.Workspace
 	}
-	if cur, err := s.GetPointer(ctx, workspace, channelType, channelRef); err == nil && cur.ConversationID == convID {
+	if cur, err := s.GetPointer(ctx, workspace, a); err == nil && cur.ConversationID == convID {
 		return cur, nil
 	}
 	now := time.Now().UTC()
@@ -425,13 +425,13 @@ func (s *Service) PutPointer(ctx context.Context, workspace, channelType, channe
 	}
 	msgID := ulid.Make().String()
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		if err := writePointer(tx, workspace, channelType, channelRef, convID, nowStr); err != nil {
+		if err := writePointer(tx, workspace, a, convID, nowStr); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`INSERT INTO conversation_messages
-			(id, conversation_id, role, channel_type, channel_ref, text, created_at)
-			VALUES (?,?,?,?,?,?,?)`,
-			msgID, convID, RoleSystem, channelType, channelRef, recap, nowStr); err != nil {
+			(id, conversation_id, role, connector, instance, room, thread, text, created_at)
+			VALUES (?,?,?,?,?,?,?,?,?)`,
+			msgID, convID, RoleSystem, a.Connector, a.Instance, a.Room, a.Thread, recap, nowStr); err != nil {
 			return err
 		}
 		res, err := tx.Exec(`UPDATE conversations SET last_activity_at=?, updated_at=?, revision=revision+1 WHERE id=?`,
@@ -450,9 +450,9 @@ func (s *Service) PutPointer(ctx context.Context, workspace, channelType, channe
 		return nil, err
 	}
 	s.log.Info("conversation.switched",
-		"channel_type", channelType, "channel_ref", channelRef,
+		"connector", a.Connector, "instance", a.Instance, "room", a.Room, "thread", a.Thread,
 		"from", "", "to", convID, "workspace", conv.Workspace)
-	return &Pointer{ChannelType: channelType, ChannelRef: channelRef, ConversationID: convID, UpdatedAt: now}, nil
+	return &Pointer{Address: a, ConversationID: convID, UpdatedAt: now}, nil
 }
 
 // IDByKey resolves a conversation id from the workspace lane key.
@@ -516,7 +516,7 @@ func (s *Service) ensureWorkspace(ctx context.Context, id string) error {
 
 func (s *Service) listChannels(ctx context.Context, convID string) ([]ConversationChannel, error) {
 	rows, err := s.st.DB().QueryContext(ctx, `
-		SELECT channel_type, channel_ref, created_at FROM conversation_channels
+		SELECT connector, instance, room, thread, created_at FROM conversation_channels
 		WHERE conversation_id=? ORDER BY created_at`, convID)
 	if err != nil {
 		return nil, err
@@ -526,7 +526,7 @@ func (s *Service) listChannels(ctx context.Context, convID string) ([]Conversati
 	for rows.Next() {
 		var ch ConversationChannel
 		var created string
-		if err := rows.Scan(&ch.ChannelType, &ch.ChannelRef, &created); err != nil {
+		if err := rows.Scan(&ch.Connector, &ch.Instance, &ch.Room, &ch.Thread, &created); err != nil {
 			return nil, err
 		}
 		ch.CreatedAt = parseTime(created)
@@ -535,31 +535,40 @@ func (s *Service) listChannels(ctx context.Context, convID string) ([]Conversati
 	return out, rows.Err()
 }
 
-func writePointer(tx *sql.Tx, workspace, channelType, channelRef, convID, nowStr string) error {
-	if channelType == "" || channelRef == "" {
-		return fmt.Errorf("%w: activate requires channel_type and channel_ref", ErrValidation)
+func writePointer(tx *sql.Tx, workspace string, a Address, convID, nowStr string) error {
+	if a.Connector == "" || a.Room == "" {
+		return fmt.Errorf("%w: activate requires connector and room", ErrValidation)
 	}
-	_, err := tx.Exec(`INSERT INTO channel_pointers (workspace_id, channel_type, channel_ref, conversation_id, updated_at)
-		VALUES (?,?,?,?,?)
-		ON CONFLICT(workspace_id, channel_type, channel_ref) DO UPDATE SET
+	a = a.normal()
+	_, err := tx.Exec(`INSERT INTO channel_pointers (workspace_id, connector, instance, room, thread, conversation_id, updated_at)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(workspace_id, instance, room, thread) DO UPDATE SET
 			conversation_id=excluded.conversation_id, updated_at=excluded.updated_at`,
-		workspace, channelType, channelRef, convID, nowStr)
+		workspace, a.Connector, a.Instance, a.Room, a.Thread, convID, nowStr)
 	if err != nil {
 		return err
 	}
 	var existing string
 	err = tx.QueryRow(`SELECT id FROM conversation_channels
-		WHERE conversation_id=? AND channel_type=? AND channel_ref=?`,
-		convID, channelType, channelRef).Scan(&existing)
+		WHERE conversation_id=? AND instance=? AND room=? AND thread=?`,
+		convID, a.Instance, a.Room, a.Thread).Scan(&existing)
 	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO conversation_channels (id, conversation_id, channel_type, channel_ref, created_at)
-		VALUES (?,?,?,?,?)`, ulid.Make().String(), convID, channelType, channelRef, nowStr)
+	_, err = tx.Exec(`INSERT INTO conversation_channels (id, conversation_id, connector, instance, room, thread, created_at)
+		VALUES (?,?,?,?,?,?,?)`, ulid.Make().String(), convID, a.Connector, a.Instance, a.Room, a.Thread, nowStr)
 	return err
+}
+
+// normal fills the instance with the connector name.
+func (a Address) normal() Address {
+	if a.Instance == "" {
+		a.Instance = a.Connector
+	}
+	return a
 }
 
 type convScanner interface {

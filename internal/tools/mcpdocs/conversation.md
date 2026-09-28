@@ -34,8 +34,8 @@ Create one conversation.
 - `workspace` (string, required): workspace id. The service rejects an empty value.
 - `title` (string, optional): title text.
 - `origin_channel` (string, optional): originating channel reference. Defaults to `mcp`.
-- `channel_type` (string, optional, with `channel_ref`): channel type. Both together activate the conversation on that channel.
-- `channel_ref` (string, optional, with `channel_type`): channel reference.
+- `connector` (string, optional, with `room`): connector name. Both together activate the conversation on that room.
+- `room` (string, optional, with `connector`): room on the connector, such as a chat id.
 - `operator` (string, optional): target operator; short agent id or `agents/<id>`. Empty is the assistant.
 
 ### patch
@@ -49,8 +49,8 @@ Change one conversation.
 Send one message in a conversation.
 - `id` (string, required): conversation id.
 - `text` (string, required): message text.
-- `channel_type` (string, optional): channel type.
-- `channel_ref` (string, optional): channel reference.
+- `connector` (string, optional): connector name.
+- `room` (string, optional): room on the connector.
 - `idempotency_key` (string, optional): deduplication key for retries.
 
 ### events
@@ -69,7 +69,7 @@ Delete one conversation with its messages, events, and assistant session row; it
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
 ### outbox
-List the outbox rows of one conversation. Each row carries `id`, `kind`, `connector`, `target`, `status` (`pending`, `sending`, `sent`, `failed`, or `canceled`), `attempts`, `error`, and `dedupe_key`. The `outbox` tool reads every row.
+List the outbox rows of one conversation. Each row carries `id`, `kind`, `instance`, `room`, `thread`, `recipients`, `status` (`pending`, `sending`, `sent`, `failed`, or `canceled`), `attempts`, `error`, and `dedupe_key`. The `outbox` tool reads every row.
 - `id` (string, required): conversation id.
 
 ### outbox_retry
@@ -78,15 +78,17 @@ Set one failed or canceled outbox row of a conversation back to `pending` with `
 - `row` (string, required): outbox row id.
 
 ### pointer_show
-Read the conversation pointer of one channel.
-- `channel_type` (string, required): channel type.
-- `channel_ref` (string, required): channel reference.
+Read the conversation pointer of one room or thread.
+- `connector` (string, required): connector name.
+- `room` (string, required): room on the connector.
+- `thread` (string, optional): thread in the room.
 - `workspace` (string, required): workspace id. Pointers belong to a workspace.
 
 ### pointer_set
-Point one channel at a conversation.
-- `channel_type` (string, required): channel type.
-- `channel_ref` (string, required): channel reference.
+Point one room or thread at a conversation.
+- `connector` (string, required): connector name.
+- `room` (string, required): room on the connector.
+- `thread` (string, optional): thread in the room.
 - `conversation_id` (string, required): conversation id.
 
 ## Related guides

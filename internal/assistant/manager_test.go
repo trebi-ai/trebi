@@ -165,7 +165,7 @@ func (e *testEnv) conversation(t *testing.T) string {
 	t.Helper()
 	c, err := e.conv.Create(context.Background(), conversations.CreateOpts{
 		Workspace: e.workspaceID(t), OriginChannel: conversations.ChannelUI,
-		Activate: &conversations.Activate{ChannelType: conversations.ChannelUI, ChannelRef: "ui-1"},
+		Activate: &conversations.Address{Connector: conversations.ChannelUI, Room: "ui-1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestFirstPromptStartsAndSecondReuses(t *testing.T) {
 	convID := env.conversation(t)
 
 	res, err := env.mgr.Prompt(ctx, convID, assistant.PromptInput{
-		Text: "hello", ChannelType: conversations.ChannelUI, ChannelRef: "ui-1",
+		Text: "hello", Connector: conversations.ChannelUI, Room: "ui-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -367,7 +367,7 @@ func wireOverride(harness string) assistant.Override {
 }
 
 func promptInput(text string) assistant.PromptInput {
-	return assistant.PromptInput{Text: text, ChannelType: conversations.ChannelUI, ChannelRef: "ui-1"}
+	return assistant.PromptInput{Text: text, Connector: conversations.ChannelUI, Room: "ui-1"}
 }
 
 func listOpts50() conversations.MessageListOpts { return conversations.MessageListOpts{Limit: 50} }
@@ -406,8 +406,8 @@ func TestPromptWritesUserEvent(t *testing.T) {
 	convID := env.conversation(t)
 
 	if _, err := env.mgr.Prompt(ctx, convID, assistant.PromptInput{
-		Text: "how many jobs active?", ChannelType: conversations.ChannelUI,
-		ChannelRef: "ui-1", Context: []string{"jobs:active"},
+		Text: "how many jobs active?", Connector: conversations.ChannelUI,
+		Room: "ui-1", Context: []string{"jobs:active"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -455,8 +455,8 @@ func TestDuplicatePromptWritesOneUserEvent(t *testing.T) {
 	ctx := context.Background()
 	convID := env.conversation(t)
 
-	in := assistant.PromptInput{Text: "once", ChannelType: conversations.ChannelUI,
-		ChannelRef: "ui-1", IdempotencyKey: "k1"}
+	in := assistant.PromptInput{Text: "once", Connector: conversations.ChannelUI,
+		Room: "ui-1", IdempotencyKey: "k1"}
 	if _, err := env.mgr.Prompt(ctx, convID, in); err != nil {
 		t.Fatal(err)
 	}
@@ -491,19 +491,19 @@ func (failDriver) Resume(context.Context, agentwire.StartRequest) (agentwire.Ses
 
 type failSession struct{}
 
-func (failSession) Provider() string               { return string(agentwire.Fake) }
-func (failSession) ID() string                     { return "fail-1" }
-func (failSession) PID() int                       { return 0 }
+func (failSession) Provider() string { return string(agentwire.Fake) }
+func (failSession) ID() string       { return "fail-1" }
+func (failSession) PID() int         { return 0 }
 func (failSession) Prompt(context.Context, agentwire.Prompt) error {
 	return errors.New("pipe broken")
 }
-func (failSession) Interrupt(context.Context) error  { return nil }
+func (failSession) Interrupt(context.Context) error                                    { return nil }
 func (failSession) AnswerPermission(context.Context, string, agentwire.Decision) error { return nil }
-func (failSession) InterruptTurn(context.Context) error { return nil }
-func (failSession) Done() <-chan struct{}            { return make(chan struct{}) }
-func (failSession) Err() error                       { return nil }
-func (failSession) Close(context.Context) error      { return nil }
-func (failSession) Events() <-chan agentwire.Event   { return make(chan agentwire.Event) }
+func (failSession) InterruptTurn(context.Context) error                                { return nil }
+func (failSession) Done() <-chan struct{}                                              { return make(chan struct{}) }
+func (failSession) Err() error                                                         { return nil }
+func (failSession) Close(context.Context) error                                        { return nil }
+func (failSession) Events() <-chan agentwire.Event                                     { return make(chan agentwire.Event) }
 
 func TestSendFailureKeepsUserEventAndAddsError(t *testing.T) {
 	env := newEnv(t, assistant.ResolverTiming{})

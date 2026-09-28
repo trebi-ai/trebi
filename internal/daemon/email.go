@@ -43,11 +43,14 @@ func (c *ControlPlane) RouteEnvFor(ctx context.Context, workspaceID string) (ema
 // ref: one conversation per mail thread, bound by the channel pointer.
 func (c *ControlPlane) Ask(ctx context.Context, d email.RouteDecision, msg email.IngressMessage, operator, text string) (string, error) {
 	res, err := c.Conversations.Ask(ctx, conversations.AskOpts{
-		Workspace:      d.WorkspaceID,
-		Operator:       operator,
-		Text:           text,
-		ChannelType:    conversations.ChannelEmail,
-		ChannelRef:     email.ThreadRoot(msg),
+		Workspace: d.WorkspaceID,
+		Operator:  operator,
+		Text:      text,
+		Address: conversations.Address{
+			Connector: conversations.ChannelEmail,
+			Room:      email.MailboxRoom(d.WorkspaceID, d.Agent),
+			Thread:    email.ThreadRoot(msg),
+		},
 		IdempotencyKey: msg.ID,
 		Headless:       operator == "",
 	})

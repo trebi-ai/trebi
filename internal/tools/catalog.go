@@ -1206,7 +1206,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				rest, err := in.strs("channel_type", "channel_ref", "idempotency_key")
+				rest, err := in.strs("connector", "room", "idempotency_key")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -1215,7 +1215,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				return request.AskSpec{
-					Workspace: v[0], Text: v[1], ChannelType: rest[0], ChannelRef: rest[1],
+					Workspace: v[0], Text: v[1], Connector: rest[0], Room: rest[1],
 					IdempotencyKey: rest[2], WaitMS: wait,
 				}.Build(), nil
 			}),
@@ -1982,9 +1982,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			}),
 			"create": actSamples("POST /v1/conversations",
 				Input{"workspace": "ws1", "title": "sync check"},
-				[]Input{{"workspace": "ws1", "channel_type": "cli", "channel_ref": "fritz"}},
+				[]Input{{"workspace": "ws1", "connector": "cli", "room": "fritz"}},
 				func(in Input) (request.HTTPRequest, error) {
-					v, err := in.head("workspace", "title", "origin_channel", "channel_type", "channel_ref", "operator")
+					v, err := in.head("workspace", "title", "origin_channel", "connector", "room", "operator")
 					if err != nil {
 						return request.HTTPRequest{}, err
 					}
@@ -2020,7 +2020,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				return request.BuildConversationPatch(id, title, summary, int64(revision)), nil
 			}),
 			"send": act("POST /v1/conversations/{id}/messages", Input{"id": "01ABC", "text": "run the sync"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("id", "text", "channel_type", "channel_ref", "idempotency_key")
+				v, err := in.head("id", "text", "connector", "room", "idempotency_key")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -2061,19 +2061,27 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildConversationOutboxRetry(v[0], v[1]), nil
 			}),
-			"pointer_show": act("GET /v1/channel-pointers/{type}/{ref}", Input{"channel_type": "cli", "channel_ref": "fritz", "workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("channel_type", "channel_ref", "workspace")
+			"pointer_show": act("GET /v1/channel-pointers/{connector}/{room}", Input{"connector": "cli", "room": "fritz", "workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("connector", "room", "workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildPointerGet(v[0], v[1], v[2]), nil
+				thread, err := in.str("thread")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildPointerGet(v[0], v[1], thread, v[2]), nil
 			}),
-			"pointer_set": act("PUT /v1/channel-pointers/{type}/{ref}", Input{"channel_type": "cli", "channel_ref": "fritz", "conversation_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("channel_type", "channel_ref", "conversation_id")
+			"pointer_set": act("PUT /v1/channel-pointers/{connector}/{room}", Input{"connector": "cli", "room": "fritz", "conversation_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("connector", "room", "conversation_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildPointerPut(v[0], v[1], v[2]), nil
+				thread, err := in.str("thread")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildPointerPut(v[0], v[1], thread, v[2]), nil
 			}),
 		},
 

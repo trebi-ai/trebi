@@ -105,7 +105,7 @@ func (s *Server) enqueueNotifyTest(ctx context.Context, workspaceID string, st n
 	}
 	return s.outbox.Enqueue(ctx, outbox.Row{
 		Kind: outbox.KindChannel, Purpose: outbox.PurposeTest, MaxAttempts: 1,
-		WorkspaceID: workspaceID, Connector: st.Via, Target: st.To,
+		WorkspaceID: workspaceID, Instance: st.Via, Room: st.To,
 		Body: "This is a test message from trebi. This step of the notify route works.",
 	})
 }

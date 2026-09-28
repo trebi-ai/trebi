@@ -285,7 +285,7 @@ func TestConversationEventsFollowReplaysAndStreamsLive(t *testing.T) {
 	}
 	id, _ := conv["id"].(string)
 	if _, err := s.Assistant().Prompt(context.Background(), id, assistant.PromptInput{
-		Text: "one", ChannelType: "ui", ChannelRef: "ui-1",
+		Text: "one", Connector: "ui", Room: "ui-1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func TestConversationEventsFollowReplaysAndStreamsLive(t *testing.T) {
 	go func() {
 		defer close(done)
 		_, err := s.Assistant().Prompt(context.Background(), id, assistant.PromptInput{
-			Text: "two", ChannelType: "ui", ChannelRef: "ui-1",
+			Text: "two", Connector: "ui", Room: "ui-1",
 		})
 		promptErr <- err
 	}()

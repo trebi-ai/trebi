@@ -643,12 +643,12 @@ func TestBuildConversationChatRequests(t *testing.T) {
 	if req.Method != "POST" || !strings.Contains(req.Path, "/messages") {
 		t.Fatalf("send %+v", req)
 	}
-	req = BuildPointerGet("cli", "ws1", "ws1")
+	req = BuildPointerGet("cli", "ws1", "", "ws1")
 	if req.Method != "GET" || !strings.Contains(req.Path, "/v1/channel-pointers/cli/ws1") ||
 		!strings.Contains(req.Path, "workspace=ws1") {
 		t.Fatalf("ptr get %+v", req)
 	}
-	req = BuildPointerPut("cli", "ws1", "01C")
+	req = BuildPointerPut("cli", "ws1", "", "01C")
 	if req.Method != "PUT" || req.Path != "/v1/channel-pointers/cli/ws1" {
 		t.Fatalf("ptr put %+v", req)
 	}
@@ -668,11 +668,11 @@ func TestBuildConversationChatRequests(t *testing.T) {
 	if body, _ := ask.Body.(map[string]any); body["text"] != "hi" || len(body) != 1 {
 		t.Fatalf("ask body %+v", ask.Body)
 	}
-	waited := AskSpec{Workspace: "ws1", Text: "hi", ChannelType: "ui", WaitMS: 5000}.Build()
+	waited := AskSpec{Workspace: "ws1", Text: "hi", Connector: "ui", WaitMS: 5000}.Build()
 	if waited.Path != "/v1/workspaces/ws1/assistant/messages?wait_ms=5000" {
 		t.Fatalf("ask wait %+v", waited)
 	}
-	if body, _ := waited.Body.(map[string]any); body["channel_type"] != "ui" {
+	if body, _ := waited.Body.(map[string]any); body["connector"] != "ui" {
 		t.Fatalf("ask channel %+v", waited.Body)
 	}
 }

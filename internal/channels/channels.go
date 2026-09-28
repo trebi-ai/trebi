@@ -103,10 +103,10 @@ func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string)
 	if err != nil || user == nil {
 		return err
 	}
-	if user.ChannelRef == "" || strings.HasPrefix(user.ChannelRef, triggerRefPrefix) {
+	if user.Room == "" || strings.HasPrefix(user.Room, triggerRefPrefix) {
 		return nil
 	}
-	if ch, _, ok := s.conn.Channel(user.ChannelType); !ok || ch.SendOnly() {
+	if ch, _, ok := s.conn.Channel(user.Connector); !ok || ch.SendOnly() {
 		return nil
 	}
 	last, text, ok, err := s.convs.ReplyText(ctx, conversationID, runID, user.ID)
@@ -119,7 +119,8 @@ func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string)
 	}
 	_, err = s.ob.Enqueue(ctx, outbox.Row{
 		Kind: outbox.KindChannel, Purpose: outbox.PurposeReply,
-		WorkspaceID: conv.Workspace, Connector: user.ChannelType, Target: user.ChannelRef,
+		WorkspaceID: conv.Workspace, Instance: cmp.Or(user.Instance, user.Connector),
+		Room: user.Room, Thread: user.Thread,
 		Body: text, ConversationID: conversationID, RunID: runID, DedupeKey: last.ID,
 	})
 	return err
@@ -131,18 +132,19 @@ func (s *Service) Deliver(ctx context.Context, r outbox.Row) error {
 	if s.conn == nil {
 		return outbox.Permanent{Err: errors.New("connectors are not available")}
 	}
-	ch, env, ok := s.conn.Channel(r.Connector)
+	name := r.Connector()
+	ch, env, ok := s.conn.Channel(name)
 	if !ok {
-		return outbox.Permanent{Err: fmt.Errorf("connector %q has no channel block", r.Connector)}
+		return outbox.Permanent{Err: fmt.Errorf("connector %q has no channel block", name)}
 	}
 	if strings.TrimSpace(ch.Send) == "" {
-		return outbox.Permanent{Err: fmt.Errorf("connector %q has no channel send command", r.Connector)}
+		return outbox.Permanent{Err: fmt.Errorf("connector %q has no channel send command", name)}
 	}
-	extra := channelEnv(r.ConversationID, r.Target, "", "")
+	extra := channelEnv(r.ConversationID, r.Room, "", "")
 	extra["TREBI_MESSAGE_ID"] = r.ID
 	extra["TREBI_PURPOSE"] = string(r.Purpose)
 	maps.Copy(extra, r.Env)
-	return s.runCommand(ctx, s.conn.Cwd(r.Connector), env, ch.Send, r.Body, extra, sendTimeout)
+	return s.runCommand(ctx, s.conn.Cwd(name), env, ch.Send, r.Body, extra, sendTimeout)
 }
 
 // Ack runs the connector's ack command once for a finished queue item. It is
@@ -159,13 +161,15 @@ func (s *Service) Ack(ctx context.Context, item dispatch.QueueItem) error {
 	if item.EventID != "" {
 		// A missing event row leaves both values empty.
 		_ = s.st.DB().QueryRowContext(ctx,
-			`SELECT COALESCE(source_id,''), COALESCE(channel_ref,'') FROM events WHERE id=?`,
+			`SELECT COALESCE(source_id,''), COALESCE(room,'') FROM events WHERE id=?`,
 			item.EventID).Scan(&sourceID, &channelRef)
 	}
 	pointerRef := cmp.Or(channelRef, item.ConversationKey)
 	convID := ""
 	if s.convs != nil && item.WorkspaceID != "" && pointerRef != "" {
-		if p, err := s.convs.GetPointer(ctx, item.WorkspaceID, item.Connector, pointerRef); err == nil {
+		if p, err := s.convs.GetPointer(ctx, item.WorkspaceID, conversations.Address{
+			Connector: item.Connector, Instance: item.Connector, Room: pointerRef,
+		}); err == nil {
 			convID = p.ConversationID
 		}
 	}
@@ -217,7 +221,7 @@ func (s *Service) pulseOne(ctx context.Context, conversationID string, now time.
 	if err != nil || user == nil {
 		return
 	}
-	ch, env, ok := s.conn.Channel(user.ChannelType)
+	ch, env, ok := s.conn.Channel(user.Connector)
 	if !ok || ch.SendOnly() || strings.TrimSpace(ch.Typing) == "" {
 		return
 	}
@@ -245,8 +249,8 @@ func (s *Service) pulseOne(ctx context.Context, conversationID string, now time.
 	st.lastSent = now
 	s.mu.Unlock()
 
-	err = s.runCommand(ctx, s.conn.Cwd(user.ChannelType), env, ch.Typing, "",
-		channelEnv(conversationID, user.ChannelRef, "", ""), typingTimeout)
+	err = s.runCommand(ctx, s.conn.Cwd(user.Connector), env, ch.Typing, "",
+		channelEnv(conversationID, user.Room, "", ""), typingTimeout)
 	s.mu.Lock()
 	if err != nil {
 		st.failures++

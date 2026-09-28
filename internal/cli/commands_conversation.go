@@ -18,7 +18,7 @@ func conversationCommand() *cli.Command {
 				Name:  "list",
 				Usage: "list conversations",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "channel", Usage: "origin or channel_type filter"},
+					&cli.StringFlag{Name: "channel", Usage: "origin or connector filter"},
 					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (conversation id)"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
@@ -171,7 +171,7 @@ func runConversationMessages(_ context.Context, c *cli.Command) error {
 	for _, m := range body.Messages {
 		tbl.AppendRow(table.Row{
 			mapStr(m, "id"), mapStr(m, "role"),
-			dash(mapStr(m, "channel_type")), truncateDisplay(mapStr(m, "text"), 60),
+			dash(mapStr(m, "connector")), truncateDisplay(mapStr(m, "text"), 60),
 		})
 	}
 	renderTable(tbl)
@@ -198,11 +198,11 @@ func runConversationOutbox(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
-	tbl := newTable(w, []string{"ID", "Status", "Attempts", "Target", "Error"})
+	tbl := newTable(w, []string{"ID", "Status", "Attempts", "To", "Error"})
 	for _, row := range body.Outbox {
 		tbl.AppendRow(table.Row{
 			mapStr(row, "id"), mapStr(row, "status"), mapStr(row, "attempts"),
-			mapStr(row, "target"), dash(mapStr(row, "error")),
+			outboxTo(row), dash(mapStr(row, "error")),
 		})
 	}
 	renderTable(tbl)
@@ -263,7 +263,7 @@ func runConversationSwitch(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(request.BuildPointerPut("cli", wsID, id), nil); err != nil {
+	if err := client.DoHTTP(request.BuildPointerPut("cli", wsID, "", id), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "switched cli → %s\n", id)

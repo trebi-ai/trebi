@@ -102,7 +102,7 @@ func (f *fixture) insertMsg(id, convID, role, channelType, ref, text, runID stri
 		turnIdx = 1
 	}
 	_, err := f.st.DB().Exec(`INSERT INTO conversation_messages
-		(id, conversation_id, role, channel_type, channel_ref, text, run_id, turn_index, created_at)
+		(id, conversation_id, role, connector, room, text, run_id, turn_index, created_at)
 		VALUES (?,?,?,?,?,?,?,?,?)`,
 		id, convID, role, channelType, ref, text, run, turnIdx,
 		time.Now().UTC().Format(time.RFC3339Nano))
@@ -135,7 +135,7 @@ func TestReplyOnTurnRunAndSession(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("run outbox rows = %d, want 1", len(rows))
 	}
-	if rows[0].Body != "the answer" || rows[0].Target != "chat1" || rows[0].Connector != "telegram" {
+	if rows[0].Body != "the answer" || rows[0].Room != "chat1" || rows[0].Connector() != "telegram" {
 		t.Fatalf("run row %+v", rows[0])
 	}
 	if rows[0].WorkspaceID != "ws1" || rows[0].RunID != "r1" {
@@ -480,7 +480,7 @@ func TestAckRunsOnce(t *testing.T) {
 	f.defs.cwds["telegram"] = cwd
 	ctx := context.Background()
 
-	if _, err := f.convs.EnsureForChannel(ctx, "ws1", "", "telegram", "chat1"); err != nil {
+	if _, err := f.convs.EnsureForChannel(ctx, "ws1", "", conversations.Address{Connector: "telegram", Room: "chat1"}); err != nil {
 		t.Fatal(err)
 	}
 	// The key is a thread id; the ack goes to the event's channel ref.
@@ -640,22 +640,22 @@ func TestPointersPerWorkspace(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	ctx := context.Background()
-	a, err := f.convs.EnsureForChannel(ctx, "ws1", "", "telegram", "chat1")
+	a, err := f.convs.EnsureForChannel(ctx, "ws1", "", conversations.Address{Connector: "telegram", Room: "chat1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := f.convs.EnsureForChannel(ctx, "ws2", "", "telegram", "chat1")
+	b, err := f.convs.EnsureForChannel(ctx, "ws2", "", conversations.Address{Connector: "telegram", Room: "chat1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a == b {
 		t.Fatalf("both workspaces share conversation %s", a)
 	}
-	pa, err := f.convs.GetPointer(ctx, "ws1", "telegram", "chat1")
+	pa, err := f.convs.GetPointer(ctx, "ws1", conversations.Address{Connector: "telegram", Room: "chat1"})
 	if err != nil || pa.ConversationID != a {
 		t.Fatalf("ws1 pointer %+v %v", pa, err)
 	}
-	pb, err := f.convs.GetPointer(ctx, "ws2", "telegram", "chat1")
+	pb, err := f.convs.GetPointer(ctx, "ws2", conversations.Address{Connector: "telegram", Room: "chat1"})
 	if err != nil || pb.ConversationID != b {
 		t.Fatalf("ws2 pointer %+v %v", pb, err)
 	}
@@ -666,9 +666,9 @@ func (f *fixture) event(connector, channelRef string) string {
 	f.t.Helper()
 	id := ulid.Make().String()
 	if _, err := f.st.DB().Exec(`INSERT INTO events
-		(id, connector, received_at, summary, raw_json, trace_id, channel_ref)
-		VALUES (?,?,?,?,?,?,?)`,
-		id, connector, time.Now().UTC().Format(time.RFC3339Nano), "", "{}", "tr", channelRef); err != nil {
+		(id, connector, instance, received_at, summary, raw_json, trace_id, room)
+		VALUES (?,?,?,?,?,?,?,?)`,
+		id, connector, connector, time.Now().UTC().Format(time.RFC3339Nano), "", "{}", "tr", channelRef); err != nil {
 		f.t.Fatal(err)
 	}
 	return id

@@ -23,7 +23,7 @@ func TestConversationCRUDAndMessages(t *testing.T) {
 
 	c, err := svc.Create(ctx, conversations.CreateOpts{
 		Workspace: "ws1", OriginChannel: "cli", Title: "",
-		Activate: &conversations.Activate{ChannelType: "cli", ChannelRef: "ws1"},
+		Activate: &conversations.Address{Connector: "cli", Room: "ws1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -31,11 +31,11 @@ func TestConversationCRUDAndMessages(t *testing.T) {
 	if c.Revision != 1 || c.Key == "" || c.OriginChannel != "cli" {
 		t.Fatalf("%+v", c)
 	}
-	if len(c.Channels) != 1 || c.Channels[0].ChannelType != "cli" {
+	if len(c.Channels) != 1 || c.Channels[0].Connector != "cli" {
 		t.Fatalf("channels %+v", c.Channels)
 	}
 
-	ptr, err := svc.GetPointer(ctx, "ws1", "cli", "ws1")
+	ptr, err := svc.GetPointer(ctx, "ws1", conversations.Address{Connector: "cli", Room: "ws1"})
 	if err != nil || ptr.ConversationID != c.ID {
 		t.Fatalf("pointer %+v %v", ptr, err)
 	}
@@ -72,7 +72,7 @@ func TestMessagePaginationAndIdempotency(t *testing.T) {
 	ids := make([]string, 0, 3)
 	for i := 0; i < 3; i++ {
 		res, err := svc.Send(ctx, c.ID, conversations.SendOpts{
-			Text: "m", ChannelType: "ui", ChannelRef: "ws",
+			Text: "m", Address: conversations.Address{Connector: "ui", Room: "ws"},
 			IdempotencyKey: ulid.Make().String(),
 		})
 		if err != nil {
@@ -93,13 +93,13 @@ func TestMessagePaginationAndIdempotency(t *testing.T) {
 	}
 
 	dup, err := svc.Send(ctx, c.ID, conversations.SendOpts{
-		Text: "ignored", ChannelType: "ui", ChannelRef: "ws", IdempotencyKey: "same",
+		Text: "ignored", Address: conversations.Address{Connector: "ui", Room: "ws"}, IdempotencyKey: "same",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	dup2, err := svc.Send(ctx, c.ID, conversations.SendOpts{
-		Text: "ignored", ChannelType: "ui", ChannelRef: "ws", IdempotencyKey: "same",
+		Text: "ignored", Address: conversations.Address{Connector: "ui", Room: "ws"}, IdempotencyKey: "same",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestWatcherIdempotencyAndAutoTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = svc.Send(ctx, c.ID, conversations.SendOpts{Text: "Please summarize the backlog", ChannelType: "cli", ChannelRef: "ws"})
+	_, err = svc.Send(ctx, c.ID, conversations.SendOpts{Text: "Please summarize the backlog", Address: conversations.Address{Connector: "cli", Room: "ws"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,21 +155,21 @@ func TestPointerSwitchAnd404(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.PutPointer(ctx, "ws", "cli", "ws", a.ID); err != nil {
+	if _, err := svc.PutPointer(ctx, "ws", conversations.Address{Connector: "cli", Room: "ws"}, a.ID); err != nil {
 		t.Fatal(err)
 	}
 	msgsA, _ := svc.ListMessages(ctx, a.ID, conversations.MessageListOpts{Limit: 10})
-	if _, err := svc.PutPointer(ctx, "ws", "cli", "ws", a.ID); err != nil {
+	if _, err := svc.PutPointer(ctx, "ws", conversations.Address{Connector: "cli", Room: "ws"}, a.ID); err != nil {
 		t.Fatal(err)
 	}
 	msgsA2, _ := svc.ListMessages(ctx, a.ID, conversations.MessageListOpts{Limit: 10})
 	if len(msgsA2) != len(msgsA) {
 		t.Fatalf("repeat PutPointer added recap rows: %d -> %d", len(msgsA), len(msgsA2))
 	}
-	if _, err := svc.PutPointer(ctx, "ws", "cli", "ws", b.ID); err != nil {
+	if _, err := svc.PutPointer(ctx, "ws", conversations.Address{Connector: "cli", Room: "ws"}, b.ID); err != nil {
 		t.Fatal(err)
 	}
-	ptr, err := svc.GetPointer(ctx, "ws", "cli", "ws")
+	ptr, err := svc.GetPointer(ctx, "ws", conversations.Address{Connector: "cli", Room: "ws"})
 	if err != nil || ptr.ConversationID != b.ID {
 		t.Fatalf("%+v %v", ptr, err)
 	}
@@ -177,7 +177,7 @@ func TestPointerSwitchAnd404(t *testing.T) {
 	if len(msgs) == 0 || msgs[0].Role != conversations.RoleSystem {
 		t.Fatalf("recap row %v", msgs)
 	}
-	_, err = svc.GetPointer(ctx, "ws", "telegram", "missing")
+	_, err = svc.GetPointer(ctx, "ws", conversations.Address{Connector: "telegram", Room: "missing"})
 	if !errors.Is(err, conversations.ErrNotFound) {
 		t.Fatalf("missing pointer %v", err)
 	}
@@ -199,7 +199,7 @@ func TestAskCreatesAndReusesTheChannelConversation(t *testing.T) {
 	if first.ConversationID == "" || first.Message.Text != "status?" {
 		t.Fatalf("%+v", first)
 	}
-	ptr, err := svc.GetPointer(ctx, "ws1", "cli", "ws1")
+	ptr, err := svc.GetPointer(ctx, "ws1", conversations.Address{Connector: "cli", Room: "ws1"})
 	if err != nil || ptr.ConversationID != first.ConversationID {
 		t.Fatalf("pointer %+v %v", ptr, err)
 	}
@@ -213,7 +213,7 @@ func TestAskCreatesAndReusesTheChannelConversation(t *testing.T) {
 	}
 
 	other, err := svc.Ask(ctx, conversations.AskOpts{
-		Workspace: "ws1", Text: "hi", ChannelType: "ui", ChannelRef: "panel",
+		Workspace: "ws1", Text: "hi", Address: conversations.Address{Connector: "ui", Room: "panel"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -251,7 +251,7 @@ type stubPrompter struct {
 
 func (p stubPrompter) Prompt(ctx context.Context, convID string, in wire.PromptInput) (wire.PromptResult, error) {
 	msg, _, err := p.svc.AppendUser(ctx, convID, conversations.UserTurn{
-		Text: in.Text, ChannelType: in.ChannelType, ChannelRef: in.ChannelRef,
+		Text: in.Text, Address: conversations.Address{Connector: in.Connector, Room: in.Room},
 		IdempotencyKey: in.IdempotencyKey,
 	})
 	if err != nil {
@@ -266,7 +266,7 @@ func (p stubPrompter) Ask(ctx context.Context, convID string, in wire.PromptInpu
 
 func (p stubPrompter) ask(ctx context.Context, convID string, in wire.PromptInput) (wire.AskResult, error) {
 	msg, _, err := p.svc.AppendUser(ctx, convID, conversations.UserTurn{
-		Text: in.Text, ChannelType: in.ChannelType, ChannelRef: in.ChannelRef,
+		Text: in.Text, Address: conversations.Address{Connector: in.Connector, Room: in.Room},
 		IdempotencyKey: in.IdempotencyKey,
 	})
 	if err != nil {
@@ -277,7 +277,7 @@ func (p stubPrompter) ask(ctx context.Context, convID string, in wire.PromptInpu
 
 func wireFromConv(m conversations.Message) wire.Message {
 	return wire.Message{ID: m.ID, ConversationID: m.ConversationID, Role: m.Role,
-		ChannelType: m.ChannelType, ChannelRef: m.ChannelRef, Text: m.Text, CreatedAt: m.CreatedAt}
+		Connector: m.Connector, Room: m.Room, Text: m.Text, CreatedAt: m.CreatedAt}
 }
 
 // TestAutoTitleOnFirstUserMessage pins plan 2026-09-26 E: the title comes

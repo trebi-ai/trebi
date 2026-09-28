@@ -202,7 +202,7 @@ func TestAssistantTurnWaits(t *testing.T) {
 	md := "---\nharness: fake\n---\n\nGo.\n"
 	cp, st, wsID, ctx := openQueuePlane(t, "asstlane", md)
 
-	convID, err := cp.Conversations.EnsureForChannel(ctx, wsID, "", conversations.ChannelAssistant, "ref-wait")
+	convID, err := cp.Conversations.EnsureForChannel(ctx, wsID, "", conversations.Address{Connector: conversations.ChannelAssistant, Room: "ref-wait"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestAssistantWaitThenAskErrorRetries(t *testing.T) {
 		assistant.Override{Harness: &fake, Disabled: &disabled}, ""); err != nil {
 		t.Fatal(err)
 	}
-	convID, err := cp.Conversations.EnsureForChannel(ctx, wsID, "", conversations.ChannelAssistant, "ref-retry")
+	convID, err := cp.Conversations.EnsureForChannel(ctx, wsID, "", conversations.Address{Connector: conversations.ChannelAssistant, Room: "ref-retry"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,8 +73,10 @@ type Row struct {
 	Kind           Kind              `json:"kind"`
 	Purpose        Purpose           `json:"purpose"`
 	WorkspaceID    string            `json:"workspace_id,omitempty"`
-	Connector      string            `json:"connector,omitempty"`
-	Target         string            `json:"target,omitempty"`
+	Instance       string            `json:"instance,omitempty"`
+	Room           string            `json:"room,omitempty"`
+	Thread         string            `json:"thread,omitempty"`
+	Recipients     string            `json:"recipients,omitempty"`
 	Subject        string            `json:"subject,omitempty"`
 	Body           string            `json:"body,omitempty"`
 	Env            map[string]string `json:"-"`
@@ -85,6 +88,7 @@ type Row struct {
 	RouteStep      *int              `json:"route_step,omitempty"`
 	Route          []notify.Step     `json:"route,omitempty"`
 	Status         Status            `json:"status"`
+	HoldReason     string            `json:"hold_reason,omitempty"`
 	Attempts       int               `json:"attempts"`
 	MaxAttempts    int               `json:"max_attempts"`
 	NextAttemptAt  *time.Time        `json:"next_attempt_at,omitempty"`
@@ -93,6 +97,12 @@ type Row struct {
 	CreatedAt      time.Time         `json:"created_at"`
 	SentAt         *time.Time        `json:"sent_at,omitempty"`
 	Revision       int64             `json:"revision"`
+}
+
+// Connector is the connector name of the instance: the part before '@'.
+func (r Row) Connector() string {
+	name, _, _ := strings.Cut(r.Instance, "@")
+	return name
 }
 
 // Sender delivers one row. email.Service and channels.Service implement it.
@@ -219,13 +229,13 @@ func (s *Service) EnqueueTx(ctx context.Context, write func(tx *sql.Tx, r Row) e
 			}
 		}
 		res, err := tx.ExecContext(ctx, `
-INSERT INTO outbox (id, kind, purpose, workspace_id, connector, target, subject, body, env_json,
-  conversation_id, run_id, inbox_id, email_row_id, dedupe_key, route_step, route_json,
+INSERT INTO outbox (id, kind, purpose, workspace_id, instance, room, thread, recipients, subject, body,
+  env_json, conversation_id, run_id, inbox_id, email_row_id, dedupe_key, route_step, route_json,
   status, attempts, max_attempts, created_at, revision)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,1)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,1)
 ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
-			r.ID, string(r.Kind), string(r.Purpose), r.WorkspaceID, r.Connector, r.Target, r.Subject,
-			r.Body, string(env), store.NullStr(r.ConversationID), store.NullStr(r.RunID),
+			r.ID, string(r.Kind), string(r.Purpose), r.WorkspaceID, r.Instance, r.Room, r.Thread,
+			r.Recipients, r.Subject, r.Body, string(env), store.NullStr(r.ConversationID), store.NullStr(r.RunID),
 			store.NullStr(r.InboxID), store.NullStr(r.EmailRowID), store.NullStr(r.DedupeKey),
 			routeStep, route, string(StatusPending), r.MaxAttempts, fmtTS(r.CreatedAt))
 		if err != nil {
@@ -534,7 +544,7 @@ func frame(r Row, topic string) store.BusEvent {
 		"kind": string(r.Kind), "purpose": string(r.Purpose), "row_id": r.ID,
 	}
 	for k, v := range map[string]string{
-		"workspace": r.WorkspaceID, "connector": r.Connector,
+		"workspace": r.WorkspaceID, "connector": r.Connector(), "instance": r.Instance,
 		"conversation_id": r.ConversationID, "inbox_id": r.InboxID,
 	} {
 		if v != "" {
@@ -594,9 +604,9 @@ func (s *Service) byDedupe(ctx context.Context, key string) (Row, error) {
 	return r, err
 }
 
-const rowCols = `id, kind, purpose, workspace_id, connector, target, subject, COALESCE(body,''), env_json,
+const rowCols = `id, kind, purpose, workspace_id, instance, room, thread, recipients, subject, COALESCE(body,''), env_json,
 COALESCE(conversation_id,''), COALESCE(run_id,''), COALESCE(inbox_id,''), COALESCE(email_row_id,''),
-COALESCE(dedupe_key,''), route_step, COALESCE(route_json,''), status, attempts, max_attempts,
+COALESCE(dedupe_key,''), route_step, COALESCE(route_json,''), status, hold_reason, attempts, max_attempts,
 COALESCE(next_attempt_at,''), COALESCE(claimed_at,''), COALESCE(error_message,''), created_at,
 COALESCE(sent_at,''), revision`
 
@@ -606,9 +616,9 @@ func scanRow(sc scanner) (Row, error) {
 	var r Row
 	var kind, purpose, status, env, route, next, claimed, created, sent string
 	var step sql.NullInt64
-	if err := sc.Scan(&r.ID, &kind, &purpose, &r.WorkspaceID, &r.Connector, &r.Target, &r.Subject,
-		&r.Body, &env, &r.ConversationID, &r.RunID, &r.InboxID, &r.EmailRowID, &r.DedupeKey,
-		&step, &route, &status, &r.Attempts, &r.MaxAttempts, &next, &claimed, &r.ErrorMessage,
+	if err := sc.Scan(&r.ID, &kind, &purpose, &r.WorkspaceID, &r.Instance, &r.Room, &r.Thread,
+		&r.Recipients, &r.Subject, &r.Body, &env, &r.ConversationID, &r.RunID, &r.InboxID, &r.EmailRowID,
+		&r.DedupeKey, &step, &route, &status, &r.HoldReason, &r.Attempts, &r.MaxAttempts, &next, &claimed, &r.ErrorMessage,
 		&created, &sent, &r.Revision); err != nil {
 		return Row{}, err
 	}

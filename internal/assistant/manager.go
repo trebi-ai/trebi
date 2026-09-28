@@ -158,9 +158,10 @@ func (m *Manager) prompt(ctx context.Context, convID string, in wire.PromptInput
 	// Store the user row first. On a duplicate idempotency key, send
 	// nothing (plan D.4 steps 2-3).
 	ut := conversations.UserTurn{
-		Text:           in.Text,
-		ChannelType:    in.ChannelType,
-		ChannelRef:     in.ChannelRef,
+		Text: in.Text,
+		Address: conversations.Address{
+			Connector: in.Connector, Instance: in.Instance, Room: in.Room, Thread: in.Thread,
+		},
 		IdempotencyKey: in.IdempotencyKey,
 	}
 	msg, dup, aerr := m.conv.AppendUser(ctx, convID, ut)
@@ -199,7 +200,7 @@ func (m *Manager) prompt(ctx context.Context, convID string, in wire.PromptInput
 	// drop filter in the pump, and the user event must precede every event of
 	// this turn (plan 2026-09-26 A).
 	s.lastPrompt = in.Text
-	s.lastChannel = in.ChannelType
+	s.lastChannel = in.Connector
 	s.headless = in.Headless
 	s.mu.Unlock()
 	s.appendUserEvent(rec.Prompts+1, in)
@@ -713,7 +714,7 @@ func displayOf(in wire.PromptInput) string {
 func convMsg(c conversations.Message) wire.Message {
 	return wire.Message{
 		ID: c.ID, ConversationID: c.ConversationID, Role: c.Role,
-		ChannelType: c.ChannelType, ChannelRef: c.ChannelRef, Text: c.Text,
+		Connector: c.Connector, Instance: c.Instance, Room: c.Room, Thread: c.Thread, Text: c.Text,
 		TurnIndex: c.TurnIndex, IdempotencyKey: c.IdempotencyKey, CreatedAt: c.CreatedAt,
 	}
 }

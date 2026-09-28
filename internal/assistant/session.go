@@ -559,7 +559,7 @@ func (s *session) appendUserEvent(turn int, in wire.PromptInput) {
 		Text:    displayOf(in),
 		Prompt:  in.Text,
 		Context: in.Context,
-		Channel: in.ChannelType,
+		Channel: in.Connector,
 	}
 	if seq, err := s.m.store.AppendEvent(s.ctx, s.convID, e); err == nil {
 		e.Seq = seq

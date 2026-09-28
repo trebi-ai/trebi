@@ -107,7 +107,7 @@ func (c *ControlPlane) dispatchAssistant(ctx context.Context, item *dispatch.Que
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
 		return
 	}
-	convID, channelType, ref, err := c.assistantConversation(ctx, item)
+	convID, addr, err := c.assistantConversation(ctx, item)
 	if err != nil {
 		c.failOrRetry(ctx, item, err, nil)
 		return
@@ -132,8 +132,10 @@ func (c *ControlPlane) dispatchAssistant(ctx context.Context, item *dispatch.Que
 	}
 	if _, err := c.asst.Ask(ctx, convID, assistant.PromptInput{
 		Text:           text,
-		ChannelType:    channelType,
-		ChannelRef:     ref,
+		Connector:      addr.Connector,
+		Instance:       addr.Instance,
+		Room:           addr.Room,
+		Thread:         addr.Thread,
 		IdempotencyKey: item.EventID,
 		Headless:       true,
 	}, 0); err != nil {

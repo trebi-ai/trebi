@@ -357,7 +357,7 @@ func chatLine(c *cli.Command, client *APIClient, wsID string, convID *string, li
 		if id == "" {
 			return true, fmt.Errorf("usage: /switch <id>")
 		}
-		if err := client.DoHTTP(request.BuildPointerPut("cli", wsID, id), nil); err != nil {
+		if err := client.DoHTTP(request.BuildPointerPut("cli", wsID, "", id), nil); err != nil {
 			return false, err
 		}
 		*convID = id

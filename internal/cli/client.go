@@ -289,7 +289,7 @@ func (c *APIClient) MessageIDSet(convID string) map[string]struct{} {
 // none exists yet. The daemon creates one on the first assistant message.
 func (c *APIClient) CLIConversation(wsID string) string {
 	var ptr map[string]any
-	if err := c.DoHTTP(request.BuildPointerGet("cli", wsID, wsID), &ptr); err != nil {
+	if err := c.DoHTTP(request.BuildPointerGet("cli", wsID, "", wsID), &ptr); err != nil {
 		return ""
 	}
 	return mapStr(ptr, "conversation_id")

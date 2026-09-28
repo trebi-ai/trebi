@@ -18,7 +18,8 @@ import (
 // eventRow is one scanned events table row.
 type eventRow struct {
 	id, connector, at, sum, trace, raw string
-	sourceID, identity, channelRef     string
+	instance, eventType, sourceID      string
+	identity, room, thread, sender     string
 	catchUp                            bool
 }
 
@@ -27,7 +28,8 @@ func (e eventRow) base() map[string]any {
 	return map[string]any{
 		"id": e.id, "connector": e.connector, "at": e.at, "received_at": e.at,
 		"summary": e.sum, "trace_id": e.trace,
-		"source_id": e.sourceID, "identity": e.identity, "channel_ref": e.channelRef,
+		"instance": e.instance, "event_type": e.eventType, "source_id": e.sourceID,
+		"identity": e.identity, "room": e.room, "thread": e.thread, "sender": e.sender,
 		"catch_up": e.catchUp,
 	}
 }
@@ -178,7 +180,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := `SELECT id, connector, received_at, COALESCE(summary,''), COALESCE(trace_id,''), COALESCE(raw_json,''),
-		COALESCE(source_id,''), COALESCE(identity,''), COALESCE(channel_ref,''), catch_up
+		instance, COALESCE(event_type,''), COALESCE(source_id,''), COALESCE(identity,''),
+		COALESCE(room,''), COALESCE(thread,''), COALESCE(sender,''), catch_up
 		FROM events WHERE 1=1`
 	args := []any{}
 	if cursor != "" {
@@ -230,7 +233,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var e eventRow
 		if rows.Scan(&e.id, &e.connector, &e.at, &e.sum, &e.trace, &e.raw,
-			&e.sourceID, &e.identity, &e.channelRef, &e.catchUp) == nil {
+			&e.instance, &e.eventType, &e.sourceID, &e.identity, &e.room, &e.thread, &e.sender, &e.catchUp) == nil {
 			evs = append(evs, e)
 			ids = append(ids, e.id)
 		}
@@ -424,12 +427,13 @@ func fmtSprint(v any) string {
 
 func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var connector, at, sum, raw, trace, sourceID, identity, channelRef string
-	var catchUp bool
+	e := eventRow{id: id}
 	err := s.st.DB().QueryRowContext(r.Context(), `
 		SELECT connector, received_at, COALESCE(summary,''), COALESCE(raw_json,''), COALESCE(trace_id,''),
-		COALESCE(source_id,''), COALESCE(identity,''), COALESCE(channel_ref,''), catch_up
-		FROM events WHERE id=?`, id).Scan(&connector, &at, &sum, &raw, &trace, &sourceID, &identity, &channelRef, &catchUp)
+		instance, COALESCE(event_type,''), COALESCE(source_id,''), COALESCE(identity,''),
+		COALESCE(room,''), COALESCE(thread,''), COALESCE(sender,''), catch_up
+		FROM events WHERE id=?`, id).Scan(&e.connector, &e.at, &e.sum, &e.raw, &e.trace,
+		&e.instance, &e.eventType, &e.sourceID, &e.identity, &e.room, &e.thread, &e.sender, &e.catchUp)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "event not found")
 		return
@@ -440,15 +444,14 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 	if outs == nil {
 		outs = []map[string]any{}
 	}
-	var rawMsg any
-	if raw != "" {
-		rawMsg = json.RawMessage(raw)
+	out := e.base()
+	if e.raw != "" {
+		out["raw"] = json.RawMessage(e.raw)
+	} else {
+		out["raw"] = nil
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id": id, "connector": connector, "at": at, "received_at": at, "summary": sum,
-		"raw": rawMsg, "trace_id": trace, "outcomes": outs,
-		"source_id": sourceID, "identity": identity, "channel_ref": channelRef, "catch_up": catchUp,
-	})
+	out["outcomes"] = outs
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleEventRetrigger(w http.ResponseWriter, r *http.Request) {

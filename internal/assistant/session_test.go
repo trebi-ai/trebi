@@ -182,7 +182,7 @@ func (h *pumpHarness) newConversation(t *testing.T) string {
 	t.Helper()
 	c, err := h.conv.Create(context.Background(), conversations.CreateOpts{
 		Workspace: h.ws.id, OriginChannel: conversations.ChannelUI,
-		Activate: &conversations.Activate{ChannelType: conversations.ChannelUI, ChannelRef: "ui-1"},
+		Activate: &conversations.Address{Connector: conversations.ChannelUI, Room: "ui-1"},
 	})
 	if err != nil {
 		t.Fatal(err)
