@@ -55,7 +55,12 @@ func (l *notifyLayers) WorkspaceLayer(ctx context.Context, id string) ([]notify.
 	return route, set, contact
 }
 
+// Global re-reads config.yaml, so a config PATCH changes the route without a
+// restart. A read error keeps the last good values.
 func (l *notifyLayers) Global() ([]notify.Step, bool, []string) {
+	if cfg, err := config.Load(); err == nil {
+		l.setGlobal(cfg)
+	}
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.route, l.route != nil, l.admins

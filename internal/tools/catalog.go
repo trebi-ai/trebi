@@ -2178,6 +2178,32 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"validate": act("GET /v1/config/validate", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildConfigValidatePath()), nil
 			}),
+			"validate_draft": act("POST /v1/config/validate",
+				Input{"set": map[string]any{"notify.route": []any{map[string]any{"via": "email", "to": "admins"}}}, "unset": []any{"defaults.workspace"}},
+				func(in Input) (request.HTTPRequest, error) {
+					set, err := in.obj("set")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					unset, err := in.strList("unset")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					text, err := in.optStr("yaml")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					if len(set) == 0 && len(unset) == 0 && text == nil {
+						return request.HTTPRequest{}, fmt.Errorf("give set, unset, or yaml")
+					}
+					return request.BuildConfigValidateDraft(set, unset, text), nil
+				}),
+			"schema": act("GET /v1/config/schema", Input{}, func(Input) (request.HTTPRequest, error) {
+				return mcpGet(request.BuildConfigSchemaPath()), nil
+			}),
+			"yaml": act("GET /v1/config/yaml", Input{}, func(Input) (request.HTTPRequest, error) {
+				return mcpGet(request.BuildConfigYAMLPath()), nil
+			}),
 		},
 
 		"email": {

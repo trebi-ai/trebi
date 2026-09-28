@@ -1388,6 +1388,28 @@ func BuildSchedulesListPath(limit int, workspace, dueBefore string) string {
 // BuildConfigValidatePath builds GET /v1/config/validate.
 func BuildConfigValidatePath() string { return "/v1/config/validate" }
 
+// BuildConfigSchemaPath builds GET /v1/config/schema.
+func BuildConfigSchemaPath() string { return "/v1/config/schema" }
+
+// BuildConfigYAMLPath builds GET /v1/config/yaml.
+func BuildConfigYAMLPath() string { return "/v1/config/yaml" }
+
+// BuildConfigValidateDraft builds POST /v1/config/validate. A non-nil yaml
+// replaces the file; set and unset change a copy of it.
+func BuildConfigValidateDraft(set map[string]any, unset []string, yaml *string) HTTPRequest {
+	body := map[string]any{}
+	if len(set) > 0 {
+		body["set"] = set
+	}
+	if len(unset) > 0 {
+		body["unset"] = unset
+	}
+	if yaml != nil {
+		body["yaml"] = *yaml
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/config/validate", Body: body}
+}
+
 // BuildSkillsListPath builds GET /v1/skills?limit=.
 func BuildSkillsListPath(limit int) string {
 	return listQuery("/v1/skills", "", limit)

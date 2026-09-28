@@ -695,6 +695,7 @@ func catalogEntryRow(e registry.Entry) map[string]any {
 		"registry": e.Registry,
 		"name":     e.Server.Name,
 		"version":  e.Server.Version,
+		"trust":    e.Trust,
 	}
 	if e.Server.Title != "" {
 		row["title"] = e.Server.Title

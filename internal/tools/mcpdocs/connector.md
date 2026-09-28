@@ -37,7 +37,9 @@ Read one connector by name or `id`. Duplicate names return `ambiguous`; use `id`
 Search the configured MCP registries for installable servers. With no
 `registry` the action reads every configured registry in order and merges the
 pages. The reply carries `entries`, `registries` (the configured list as
-`[{name, url}]`) and, when more exist, `next_cursor`. A registry that fails
+`[{name, url, kind}]`) and, when more exist, `next_cursor`. Each entry has
+`trust`: `official`, `verified`, or `community`. `kind` is `mcp-registry`,
+`smithery`, or `docker`. A registry that fails
 does not fail the search: the reply lists it in
 `registry_errors: [{registry, error}]` and the other registries still answer.
 The search fails only when every registry fails.

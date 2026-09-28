@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"unicode"
@@ -32,6 +33,11 @@ func TestGuideTranslationDrift(t *testing.T) {
 		src := string(data)
 		for _, inv := range extractTrebi(path, src) {
 			tool, action, local, ok := mcpMatch(catalog, inv.words)
+			if local && strings.Join(inv.words, " ") == "config validate" && slices.ContainsFunc(inv.flags, isDraftFlag) {
+				// A draft check goes through the daemon.
+				tool, action, local = "config", "validate_draft", false
+				_, ok = catalog[tool][action]
+			}
 			if local {
 				if !hasLocalOnly(src, inv.line) {
 					t.Errorf("%s:%d: local-only %q missing **local only** marker", e.Name(), inv.line, inv.raw)
@@ -414,3 +420,5 @@ func tokenize(s string) []string {
 	}
 	return toks
 }
+
+func isDraftFlag(f string) bool { return f == "set" || f == "unset" || f == "file" }

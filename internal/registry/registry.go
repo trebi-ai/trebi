@@ -1,6 +1,7 @@
-// Package registry is the client for MCP registries that implement the
-// official MCP Registry API. It searches the configured registries and turns
-// one server entry into a connector definition (Part H).
+// Package registry is the client for MCP server catalogs. It searches the
+// configured registries and turns one server entry into a connector
+// definition (Part H). A registry speaks the official MCP Registry API, the
+// Smithery API, or the Docker MCP Catalog file.
 package registry
 
 import (
@@ -77,7 +78,8 @@ type Service struct {
 
 	skillHTTP *http.Client
 	mu        sync.Mutex
-	prefix    map[string]string // registry URL → API prefix that answered
+	prefix    map[string]string       // registry URL → API prefix that answered
+	docker    map[string]dockerLoaded // catalog URL → last good file
 }
 
 // New builds a registry client.
@@ -98,8 +100,35 @@ func New(cfg Config) *Service {
 	if skill == nil {
 		skill = SafeClient(requestTimeout)
 	}
-	return &Service{Registries: regs, HTTP: hc, Log: log, skillHTTP: skill, prefix: map[string]string{}}
+	return &Service{Registries: regs, HTTP: hc, Log: log, skillHTTP: skill, prefix: map[string]string{}, docker: map[string]dockerLoaded{}}
 }
+
+// Source is one registry API. Each kind maps its wire shape to Entry.
+type Source interface {
+	Search(ctx context.Context, q Query) (Page, error)
+	Get(ctx context.Context, name, version string) (Entry, error)
+}
+
+// Query is one page request to one registry. Cursor is the value of the last
+// Page.Next.
+type Query struct {
+	Text   string
+	Cursor string
+	Limit  int
+}
+
+// Page is one page from one registry.
+type Page struct {
+	Entries []Entry
+	Next    string
+}
+
+// Trust levels of an entry.
+const (
+	TrustOfficial  = "official"
+	TrustVerified  = "verified"
+	TrustCommunity = "community"
+)
 
 // SearchOpts is one catalog search. An empty Registry queries every
 // configured registry in order.
@@ -115,6 +144,7 @@ type Entry struct {
 	Registry string
 	Server   ServerJSON
 	Meta     map[string]any // the response-level _meta
+	Trust    string
 }
 
 // SearchResult is one merged catalog page. Errors lists each registry that
@@ -158,7 +188,7 @@ func (s *Service) Search(ctx context.Context, o SearchOpts) (SearchResult, error
 			pos = o.Cursor // a bare cursor applies to the named registry
 		}
 		queried++
-		page, err := s.listPage(ctx, reg, o.Query, o.Limit, pos)
+		page, err := s.Source(reg).Search(ctx, Query{Text: o.Query, Cursor: pos, Limit: o.Limit})
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -169,11 +199,9 @@ func (s *Service) Search(ctx context.Context, o SearchOpts) (SearchResult, error
 			}
 			continue
 		}
-		for _, it := range page.Servers {
-			res.Entries = append(res.Entries, Entry{Registry: reg.Name, Server: it.Server, Meta: it.Meta})
-		}
-		if page.Metadata.NextCursor != "" {
-			next[reg.Name] = page.Metadata.NextCursor
+		res.Entries = append(res.Entries, page.Entries...)
+		if page.Next != "" {
+			next[reg.Name] = page.Next
 		}
 	}
 	if queried > 0 && len(res.Errors) == queried {
@@ -193,16 +221,19 @@ func (s *Service) Get(ctx context.Context, registryName, name, version string) (
 	if err != nil {
 		return Entry{}, err
 	}
-	v := strings.TrimSpace(version)
-	if v == "" {
-		v = "latest"
+	return s.Source(reg).Get(ctx, name, version)
+}
+
+// Source returns the API client for reg by its kind.
+func (s *Service) Source(reg config.Registry) Source {
+	switch reg.KindOrDefault() {
+	case config.RegistrySmithery:
+		return smithery{s: s, reg: reg}
+	case config.RegistryDocker:
+		return dockerCatalog{s: s, reg: reg}
+	default:
+		return mcpRegistry{s: s, reg: reg}
 	}
-	path := "/servers/" + url.PathEscape(name) + "/versions/" + url.PathEscape(v)
-	var out getResponse
-	if err := s.getJSON(ctx, reg, path, nil, &out); err != nil {
-		return Entry{}, err
-	}
-	return Entry{Registry: reg.Name, Server: out.Server, Meta: out.Meta}, nil
 }
 
 // FetchSkill reads the SKILL.md body of a contributed skill through the skill
@@ -250,27 +281,6 @@ func (s *Service) pick(name string) (config.Registry, error) {
 	return config.Registry{}, fmt.Errorf("%w: %q", ErrUnknownRegistry, name)
 }
 
-func (s *Service) listPage(ctx context.Context, reg config.Registry, query string, limit int, cursor string) (listResponse, error) {
-	q := url.Values{}
-	if strings.TrimSpace(query) != "" {
-		q.Set("search", query)
-	}
-	if cursor != "" {
-		q.Set("cursor", cursor)
-	}
-	if limit > 0 {
-		if limit > 100 {
-			limit = 100
-		}
-		q.Set("limit", strconv.Itoa(limit))
-	}
-	var out listResponse
-	if err := s.getJSON(ctx, reg, "/servers", q, &out); err != nil {
-		return out, err
-	}
-	return out, nil
-}
-
 // getJSON runs one GET against a registry and decodes the reply. The path has
 // no API version. The first call tries /v0.1, then /v0 on a 404, and keeps
 // the version that answered for the next calls.
@@ -306,30 +316,89 @@ func (s *Service) fetchJSON(ctx context.Context, reg config.Registry, path strin
 	if len(q) > 0 {
 		endpoint += "?" + q.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	body, err := s.fetch(ctx, reg, endpoint, "application/json")
 	if err != nil {
-		return fmt.Errorf("registry %s: %w", reg.Name, err)
-	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := s.HTTP.Do(req)
-	if err != nil {
-		return fmt.Errorf("registry %s: %w", reg.Name, err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
-	if err != nil {
-		return fmt.Errorf("registry %s: %w", reg.Name, err)
-	}
-	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		return fmt.Errorf("%w: %s %s", ErrNotFound, reg.Name, path)
-	case resp.StatusCode < 200 || resp.StatusCode >= 300:
-		return fmt.Errorf("registry %s: %s: %s", reg.Name, resp.Status, snippet(body))
+		return err
 	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("registry %s: decode %s: %w", reg.Name, path, err)
 	}
 	return nil
+}
+
+// fetch runs one GET and returns the body, capped at maxBody.
+func (s *Service) fetch(ctx context.Context, reg config.Registry, endpoint, accept string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("registry %s: %w", reg.Name, err)
+	}
+	req.Header.Set("Accept", accept)
+	resp, err := s.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("registry %s: %w", reg.Name, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	if err != nil {
+		return nil, fmt.Errorf("registry %s: %w", reg.Name, err)
+	}
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return nil, fmt.Errorf("%w: %s %s", ErrNotFound, reg.Name, strings.TrimPrefix(endpoint, strings.TrimRight(reg.URL, "/")))
+	case resp.StatusCode < 200 || resp.StatusCode >= 300:
+		return nil, fmt.Errorf("registry %s: %s: %s", reg.Name, resp.Status, snippet(body))
+	}
+	return body, nil
+}
+
+// mcpRegistry is a registry that speaks the official MCP Registry API.
+type mcpRegistry struct {
+	s   *Service
+	reg config.Registry
+}
+
+func (m mcpRegistry) Search(ctx context.Context, q Query) (Page, error) {
+	v := url.Values{}
+	if strings.TrimSpace(q.Text) != "" {
+		v.Set("search", q.Text)
+	}
+	if q.Cursor != "" {
+		v.Set("cursor", q.Cursor)
+	}
+	if q.Limit > 0 {
+		v.Set("limit", strconv.Itoa(min(q.Limit, 100)))
+	}
+	var out listResponse
+	if err := m.s.getJSON(ctx, m.reg, "/servers", v, &out); err != nil {
+		return Page{}, err
+	}
+	page := Page{Next: out.Metadata.NextCursor}
+	for _, it := range out.Servers {
+		page.Entries = append(page.Entries, Entry{Registry: m.reg.Name, Server: it.Server, Meta: it.Meta, Trust: m.trust()})
+	}
+	return page, nil
+}
+
+// Get reads one version; an empty version asks for the latest.
+func (m mcpRegistry) Get(ctx context.Context, name, version string) (Entry, error) {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		v = "latest"
+	}
+	path := "/servers/" + url.PathEscape(name) + "/versions/" + url.PathEscape(v)
+	var out getResponse
+	if err := m.s.getJSON(ctx, m.reg, path, nil, &out); err != nil {
+		return Entry{}, err
+	}
+	return Entry{Registry: m.reg.Name, Server: out.Server, Meta: out.Meta, Trust: m.trust()}, nil
+}
+
+// trust is official for the official registry and community for any other.
+func (m mcpRegistry) trust() string {
+	if strings.TrimRight(m.reg.URL, "/") == DefaultRegistryURL {
+		return TrustOfficial
+	}
+	return TrustCommunity
 }
 
 // snippet shortens a body for an error message.

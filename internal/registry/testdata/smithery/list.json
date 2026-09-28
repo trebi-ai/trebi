@@ -1,0 +1,50 @@
+{
+    "servers": [
+        {
+            "id": "944cef5a-2dfd-4d11-8924-d0a23a63221b",
+            "qualifiedName": "github",
+            "namespace": "github",
+            "slug": "",
+            "displayName": "GitHub",
+            "description": "Connect your AI agents to GitHub \u2014 manage repos, issues, PRs, workflows, and more",
+            "iconUrl": "https://api.smithery.ai/servers/github/icon",
+            "verified": true,
+            "useCount": 6059,
+            "remote": true,
+            "isDeployed": true,
+            "unlisted": false,
+            "inactive": false,
+            "createdAt": "2025-11-19T07:26:28.312Z",
+            "homepage": "https://github.com/",
+            "bySmithery": true,
+            "owner": "org_01KPBXJTDN7ASH7MJ3958C05QY",
+            "score": 0.053558844256518676
+        },
+        {
+            "id": "fd13505d-9ced-4de3-92c6-e1fbeddbf85f",
+            "qualifiedName": "deepwiki",
+            "namespace": "deepwiki",
+            "slug": "",
+            "displayName": "DeepWiki",
+            "description": "Explore GitHub repository documentation by topic to quickly understand any project. Open pages on demand and ask questions to get concise answers. Find what you need faster across complex wikis.",
+            "iconUrl": "https://api.smithery.ai/servers/deepwiki/icon",
+            "verified": true,
+            "useCount": 2356,
+            "remote": true,
+            "isDeployed": true,
+            "unlisted": false,
+            "inactive": false,
+            "createdAt": "2025-10-09T03:58:11.668Z",
+            "homepage": "https://smithery.ai/servers/deepwiki",
+            "bySmithery": true,
+            "owner": "org_01KPBXJTDN7ASH7MJ3958C05QY",
+            "score": 0.03835227272727273
+        }
+    ],
+    "pagination": {
+        "currentPage": 1,
+        "pageSize": 2,
+        "totalPages": 71,
+        "totalCount": 141
+    }
+}

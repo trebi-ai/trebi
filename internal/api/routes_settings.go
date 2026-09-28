@@ -31,6 +31,9 @@ func (s *Server) routeSettings(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/config", s.handleConfigGet)
 	mux.HandleFunc("PATCH /v1/config", s.handleConfigPatch)
 	mux.HandleFunc("GET /v1/config/validate", s.handleConfigValidate)
+	mux.HandleFunc("POST /v1/config/validate", s.handleConfigValidateDraft)
+	mux.HandleFunc("GET /v1/config/schema", s.handleConfigSchema)
+	mux.HandleFunc("GET /v1/config/yaml", s.handleConfigYAML)
 }
 
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
@@ -274,6 +277,56 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleConfigValidateDraft checks {set, unset} or {yaml} against a copy of
+// config.yaml. It writes nothing and answers 200 with ok and the errors.
+func (s *Server) handleConfigValidateDraft(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Set   map[string]any `json:"set"`
+		Unset []string       `json:"unset"`
+		YAML  *string        `json:"yaml"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	d := config.Draft{Set: map[string]string{}, Unset: body.Unset, YAML: body.YAML}
+	errs := []configFieldErr{}
+	for k, v := range body.Set {
+		val, err := configScalar(v)
+		if err != nil {
+			errs = append(errs, configFieldErr{Key: k, Message: err.Error()})
+			continue
+		}
+		if !keepSecret(k, val) {
+			d.Set[k] = val
+		}
+	}
+	for _, fe := range d.Check() {
+		errs = append(errs, configFieldErr{Key: fe.Field, Message: fe.Msg})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": len(errs) == 0, "errors": errs})
+}
+
+// configFieldErr is one problem of a config draft.
+type configFieldErr struct {
+	Key     string `json:"key"`
+	Message string `json:"message"`
+}
+
+func (s *Server) handleConfigSchema(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, config.NewSchema())
+}
+
+// handleConfigYAML returns config.yaml with secret values masked.
+func (s *Server) handleConfigYAML(w http.ResponseWriter, r *http.Request) {
+	text, hash, err := config.RedactedYAML()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"yaml": text, "hash": hash})
+}
+
 func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
@@ -313,6 +366,9 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "validation", "key "+k+": "+err.Error())
 			return
+		}
+		if keepSecret(k, val) {
+			continue
 		}
 		if err := cfg.SetPath(k, val); err != nil {
 			writeErr(w, http.StatusBadRequest, "validation", err.Error())
@@ -361,10 +417,23 @@ func redactAssistantConfig(m map[string]any) {
 	asst["api_key_source"] = cfg.Assistant.Native.KeySourceName()
 }
 
-// configScalar renders one JSON scalar as the text SetPath parses. An object
-// or array is rejected: every config key holds a scalar.
+// keepSecret reports whether val is the mask of a secret key, so the stored
+// value stays.
+func keepSecret(key, val string) bool {
+	k, ok := config.NewSchema().Key(key)
+	return ok && k.Secret && val == config.SecretMask
+}
+
+// configScalar renders one JSON value as the text SetPath parses. An array or
+// an object becomes JSON text, for keys such as notify.route.
 func configScalar(v any) (string, error) {
 	switch t := v.(type) {
+	case []any, map[string]any:
+		b, err := json.Marshal(t)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
 	case string:
 		return t, nil
 	case bool:

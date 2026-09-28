@@ -1,0 +1,63 @@
+{
+    "qualifiedName": "deepwiki",
+    "displayName": "DeepWiki",
+    "description": "Explore GitHub repository documentation by topic to quickly understand any project. Open pages on demand and ask questions to get concise answers. Find what you need faster across complex wikis.",
+    "iconUrl": "https://api.smithery.ai/servers/deepwiki/icon",
+    "remote": true,
+    "deploymentUrl": "https://deepwiki.run.tools",
+    "connections": [
+        {
+            "type": "http",
+            "deploymentUrl": "https://deepwiki.run.tools",
+            "configSchema": {}
+        }
+    ],
+    "security": null,
+    "tools": [
+        {
+            "name": "read_wiki_structure",
+            "description": "Get a list of documentation topics for a GitHub repository",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repoName": {
+                        "type": "string",
+                        "description": "GitHub repository: owner/repo (e.g. \"facebook/react\")"
+                    }
+                }
+            }
+        },
+        {
+            "name": "read_wiki_contents",
+            "description": "View documentation about a GitHub repository",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repoName": {
+                        "type": "string",
+                        "description": "GitHub repository: owner/repo (e.g. \"facebook/react\")"
+                    }
+                }
+            }
+        },
+        {
+            "name": "ask_question",
+            "description": "Ask any question about a GitHub repository",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question to ask about the repository"
+                    },
+                    "repoName": {
+                        "type": "string",
+                        "description": "GitHub repository: owner/repo (e.g. \"facebook/react\")"
+                    }
+                }
+            }
+        }
+    ],
+    "resources": null,
+    "prompts": null
+}

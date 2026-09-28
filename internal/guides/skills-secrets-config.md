@@ -115,3 +115,15 @@ trebi config bridge set claude credentials inherit
 ```
 
 `config path`, `config validate`, and `config bridge` are **local only**; remote: `config.show` / `config.set`. `config validate` works with the daemon down.
+
+Schema, YAML view, and draft checks go through the daemon:
+
+```bash
+trebi config schema --json
+trebi config schema --key notify.route --json
+trebi config yaml
+trebi config validate --set notify.usage_warn_at=90 --unset defaults.workspace --json
+trebi config validate --file ./draft.yaml
+```
+
+`schema` gives each key its `type` (`string|int|bool|duration|list|map|json`), `enum`, `default`, `secret`, and `restart`. A `restart` key takes effect after the daemon restarts. `yaml` masks secret values as `***`; a `set` with `***` keeps the stored value. `validate` with a draft applies the change to a copy and writes nothing. It answers `{ok, errors: [{key, message}]}`. A JSON value such as `notify.route` goes as JSON text: `--set 'notify.route=[{"via":"email","to":"admins"}]'`.

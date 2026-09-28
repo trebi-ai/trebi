@@ -52,6 +52,12 @@ A job or agent receives connector actions through `connectors:` (or the agent `k
 
 Install an MCP server from a registry. `search` reads every registry in `connectors.registries`; the default holds the official MCP Registry only.
 
+A registry entry has a `kind`: `mcp-registry` (the default; the official MCP Registry API), `smithery` (registry.smithery.ai), or `docker` (the Docker MCP Catalog file). Each search row carries `trust`: `official` for the official registry, `verified` for a Smithery server that Smithery verified and for every Docker entry, else `community`. Smithery installs only its HTTP connections. A Docker `server` installs as `docker run`; a Docker `remote` installs as an HTTP action; a `poci` entry does not install.
+
+```bash
+trebi config set connectors.registries '[{"name":"official","url":"https://registry.modelcontextprotocol.io"},{"name":"smithery","url":"https://registry.smithery.ai","kind":"smithery"},{"name":"docker","url":"https://desktop.docker.com/mcp/catalog/v3/catalog.yaml","kind":"docker"}]'
+```
+
 ```bash
 trebi connector search postgres --registry official --limit 20
 trebi connector search postgres --cursor <next_cursor>

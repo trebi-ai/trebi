@@ -23,6 +23,18 @@ Clear a config key. For `assistant.api_key`, this also deletes the stored secret
 Check the config. The reply is `{"ok": true}`, or `{"ok": false, "error": "…"}`
 with the problems named. No input fields.
 
+### validate_draft
+Check a change against a copy of the config. Nothing is written. The reply is `{"ok": bool, "errors": [{"key", "message"}]}`. Give at least one field.
+- `set` (object, optional): dotted keys and new values. A list or an object, for example for `notify.route`, is sent as JSON text.
+- `unset` (array, optional): keys to clear, as strings.
+- `yaml` (string, optional): full YAML text that replaces `config.yaml` in the draft.
+
+### schema
+List every key with `section`, `type` (`string|int|bool|duration|list|map|json`), `enum`, `default`, `description`, `secret`, and `restart`. A `restart` key takes effect after a daemon restart. No input fields.
+
+### yaml
+Read `config.yaml` as text, with secret values masked as `***`. The reply is `{"yaml", "hash"}`. A `set` with `***` keeps the stored value. No input fields.
+
 ## Related guides
 
 `skills-secrets-config`

@@ -1,0 +1,178 @@
+version: 3
+name: docker-mcp
+displayName: Docker MCP Catalog
+registry:
+  brave:
+    description: Search the Web for pages, images, news, videos, and more using the Brave Search API.
+    title: Brave Search
+    type: server
+    dateAdded: '2025-05-05T20:08:35Z'
+    image: mcp/brave-search@sha256:f58a5c22c1196ec7bd1ca586ce216f2334fc298550ddcf652c0e8adb6d256d78
+    ref: ''
+    readme: http://desktop.docker.com/mcp/catalog/v3/readme/brave.md
+    toolsUrl: http://desktop.docker.com/mcp/catalog/v3/tools/brave.json
+    source: https://github.com/brave/brave-search-mcp-server/tree/fd28e3e7b3e1911b4a2ba87a199feb86ec173c60
+    upstream: https://github.com/brave/brave-search-mcp-server
+    icon: https://avatars.githubusercontent.com/u/12301619?s=200&v=4
+    secrets:
+    - name: brave.api_key
+      env: BRAVE_API_KEY
+      example: YOUR_API_KEY_HERE
+      description: See [Getting an API key](https://github.com/brave/brave-search-mcp-server?tab=readme-ov-file#getting-an-api-key)
+    env:
+    - name: BRAVE_MCP_TRANSPORT
+      value: stdio
+    prompts: 0
+    resources: {}
+    metadata:
+      pulls: 274966
+      stars: 26
+      githubStars: 1473
+      category: search
+      tags:
+      - brave
+      - search
+      license: MIT License
+      owner: brave
+  context7:
+    description: Pull up-to-date, version-specific documentation and code examples for any library or framework straight into your prompt.
+    title: Context7
+    type: remote
+    dateAdded: '2025-05-05T20:08:35Z'
+    ref: ''
+    readme: http://desktop.docker.com/mcp/catalog/v3/readme/context7.md
+    toolsUrl: http://desktop.docker.com/mcp/catalog/v3/tools/context7.json
+    source: ''
+    remote:
+      transport_type: streamable-http
+      url: https://mcp.context7.com/mcp
+      headers:
+        CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
+    icon: https://avatars.githubusercontent.com/u/74989412?s=200&v=4
+    secrets:
+    - name: context7.api_key
+      env: CONTEXT7_API_KEY
+      example: <YOUR_API_KEY>
+    prompts: 0
+    resources: {}
+    metadata:
+      category: documentation
+      tags:
+      - documentation
+      - developer-tools
+      - code-examples
+      - remote
+      license: Apache License 2.0
+      owner: docker
+  dockerhub:
+    description: Docker Hub official MCP server.
+    title: Docker Hub
+    type: server
+    dateAdded: '2025-06-16T15:56:21Z'
+    image: mcp/dockerhub@sha256:76454af4edfd21571d9740113104d0d9f707220453d1c8f7c9971b21848d4248
+    ref: ''
+    readme: http://desktop.docker.com/mcp/catalog/v3/readme/dockerhub.md
+    toolsUrl: http://desktop.docker.com/mcp/catalog/v3/tools/dockerhub.json
+    source: https://github.com/docker/hub-mcp/tree/ad806e2cab0489a296aec0f32f3d3eea807d65c2
+    upstream: https://github.com/docker/hub-mcp
+    icon: https://avatars.githubusercontent.com/u/5429470?s=200&v=4
+    secrets:
+    - name: dockerhub.pat_token
+      env: HUB_PAT_TOKEN
+      example: your_hub_pat_token
+      description: Instructions for creating a personal access token can be found [in the Docker Docs](https://docs.docker.com/security/access-tokens/)
+    command:
+    - --transport=stdio
+    - --username={{dockerhub.username}}
+    prompts: 0
+    resources: {}
+    config:
+    - name: dockerhub
+      description: Configure connection to Docker Hub
+      type: object
+      properties:
+        username:
+          type: string
+    metadata:
+      pulls: 165238
+      stars: 10
+      githubStars: 167
+      category: devops
+      tags:
+      - docker
+      - dockerhub
+      license: Apache License 2.0
+      owner: docker
+  couchbase:
+    description: Couchbase is a distributed document database with a powerful search engine and in-built operational and analytical capabilities.
+    title: Couchbase
+    type: server
+    dateAdded: '2025-07-29T14:05:27Z'
+    image: mcp/couchbase@sha256:85a104706d8b2b3bceddf47f2a0e30e68dd5ddcdc2cbff3faa48e885d4b9f4bc
+    ref: ''
+    readme: http://desktop.docker.com/mcp/catalog/v3/readme/couchbase.md
+    toolsUrl: http://desktop.docker.com/mcp/catalog/v3/tools/couchbase.json
+    source: https://github.com/Couchbase-Ecosystem/mcp-server-couchbase/tree/1454b7b57b85fcb7fb1a72b8f248af9fbb0b5cdc
+    upstream: https://github.com/Couchbase-Ecosystem/mcp-server-couchbase
+    icon: https://avatars.githubusercontent.com/u/605755?s=200&v=4
+    secrets:
+    - name: couchbase.cb_password
+      env: CB_PASSWORD
+      example: <CB_PASSWORD>
+      description: Password for the Couchbase cluster with access to the bucket.
+    env:
+    - name: CB_CONNECTION_STRING
+      value: '{{couchbase.cb_connection_string}}'
+    - name: CB_USERNAME
+      value: '{{couchbase.cb_username}}'
+    - name: CB_BUCKET_NAME
+      value: '{{couchbase.cb_bucket_name}}'
+    - name: CB_MCP_READ_ONLY_QUERY_MODE
+      value: '{{couchbase.cb_mcp_read_only_query_mode}}'
+    prompts: 0
+    resources: {}
+    config:
+    - name: couchbase
+      description: Configure the connection to Couchbase
+      type: object
+      properties:
+        cb_connection_string:
+          type: string
+          description: Connection string for the Couchbase cluster.
+        cb_username:
+          type: string
+          description: Username for the Couchbase cluster with access to the bucket.
+        cb_bucket_name:
+          type: string
+          description: Bucket in the Couchbase cluster to use for the MCP server.
+        cb_mcp_read_only_query_mode:
+          type: string
+          description: Setting to "true" (default) enables read-only query mode while running SQL++ queries.
+    metadata:
+      pulls: 36240
+      stars: 4
+      githubStars: 36
+      category: database
+      tags:
+      - couchbase
+      - database
+      license: Apache License 2.0
+      owner: couchbase
+  curl:
+    description: Standard curl tool.
+    title: Curl
+    type: poci
+    dateAdded: '2025-05-05T20:04:34Z'
+    ref: ''
+    readme: http://desktop.docker.com/mcp/catalog/v3/readme/curl.md
+    toolsUrl: http://desktop.docker.com/mcp/catalog/v3/tools/curl.json
+    source: ''
+    icon: https://avatars.githubusercontent.com/u/16928085?s=200&v=4
+    prompts: 0
+    resources: {}
+    metadata:
+      category: devops
+      tags:
+      - http
+      license: Apache License 2.0
+      owner: docker

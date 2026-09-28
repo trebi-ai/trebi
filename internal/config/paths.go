@@ -1159,7 +1159,7 @@ func pathKeyDescriptions() map[string]string {
 		"email.from_name":               "Display name on outbound mail (default Trebi)",
 		"cloud.api_url":                 "Hosted account endpoint (default https://staging-api.trebi.ai)",
 		"cloud.enabled":                 "Dial the hosted workers; false keeps a linked device offline (default true)",
-		"connectors.registries":         "MCP registries the connector catalog reads, as name=url pairs",
+		"connectors.registries":         `MCP registries the connector catalog reads: name=url pairs, or JSON [{"name","url","kind"}] with kind mcp-registry, smithery, or docker`,
 	}
 }
 

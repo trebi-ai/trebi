@@ -13,10 +13,27 @@ import (
 type Registry struct {
 	Name string `yaml:"name" json:"name"`
 	URL  string `yaml:"url" json:"url"`
+	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
+}
+
+// Registry kinds. An empty kind is RegistryMCP.
+const (
+	RegistryMCP      = "mcp-registry"
+	RegistrySmithery = "smithery"
+	RegistryDocker   = "docker"
+)
+
+// KindOrDefault returns the kind, or RegistryMCP when it is empty.
+func (r Registry) KindOrDefault() string {
+	if r.Kind == "" {
+		return RegistryMCP
+	}
+	return r.Kind
 }
 
 // ConnectorsConfig holds the connector catalog settings. The only key is the
-// ordered registry list; an empty list means the built-in default.
+// ordered registry list; an empty list means the built-in default. Kind picks
+// the API: the MCP Registry API, Smithery, or the Docker MCP Catalog.
 type ConnectorsConfig struct {
 	Registries []Registry `yaml:"registries,omitempty" json:"registries,omitempty"`
 }
@@ -41,6 +58,11 @@ func (e *ConfigError) checkConnectors(c Config) {
 			e.add(field+".name", fmt.Sprintf("duplicate registry name %q", name))
 		default:
 			seen[name] = true
+		}
+		switch r.KindOrDefault() {
+		case RegistryMCP, RegistrySmithery, RegistryDocker:
+		default:
+			e.add(field+".kind", fmt.Sprintf("%q not in [%s, %s, %s]", r.Kind, RegistryMCP, RegistrySmithery, RegistryDocker))
 		}
 		raw := strings.TrimSpace(r.URL)
 		if raw == "" {
@@ -110,8 +132,14 @@ func parseRegistries(value string) ([]Registry, error) {
 }
 
 // renderRegistries renders the list as one "name=url" row split on ";", so
-// parseRegistries reads it back.
+// parseRegistries reads it back. A list with a kind renders as JSON.
 func renderRegistries(regs []Registry) string {
+	for _, r := range regs {
+		if r.Kind != "" {
+			b, _ := json.Marshal(regs) // []Registry always marshals
+			return string(b)
+		}
+	}
 	parts := make([]string, 0, len(regs))
 	for _, r := range regs {
 		parts = append(parts, r.Name+"="+r.URL)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -48,9 +49,47 @@ func configCommand() *cli.Command {
 				Action:    runConfigUnset,
 			},
 			{
-				Name:  "validate",
-				Usage: "validate local config.yaml (no daemon required)",
+				Name:  "schema",
+				Usage: "list config keys with type, enum, default, and restart flag",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "key", Aliases: []string{"k"}, Usage: "show one key"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runConfigSchema,
+			},
+			{
+				Name:  "yaml",
+				Usage: "print config.yaml from the daemon, with secrets masked",
+				Flags: []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit {yaml, hash}"}},
 				Action: func(_ context.Context, c *cli.Command) error {
+					client, err := clientFor(c)
+					if err != nil {
+						return err
+					}
+					var body map[string]any
+					if err := client.GetJSON(request.BuildConfigYAMLPath(), &body); err != nil {
+						return err
+					}
+					if c.Bool("json") {
+						return encodeJSON(c, body)
+					}
+					fmt.Fprint(outWriter(c), mapStr(body, "yaml"))
+					return nil
+				},
+			},
+			{
+				Name:  "validate",
+				Usage: "validate local config.yaml (no daemon required); with --set, --unset, or --file, check a draft on the daemon",
+				Flags: []cli.Flag{
+					&cli.StringSliceFlag{Name: "set", Usage: "key=value to apply to the draft (repeatable)"},
+					&cli.StringSliceFlag{Name: "unset", Usage: "key to clear in the draft (repeatable)"},
+					&cli.StringFlag{Name: "file", Usage: "YAML file that replaces config.yaml in the draft"},
+					&cli.BoolFlag{Name: "json", Usage: "emit {ok, errors}"},
+				},
+				Action: func(_ context.Context, c *cli.Command) error {
+					if c.IsSet("set") || c.IsSet("unset") || c.IsSet("file") {
+						return runConfigValidateDraft(c)
+					}
 					cfg, err := configFor(c)
 					if err != nil {
 						return err
@@ -411,4 +450,85 @@ func applyConfigHTTPOrLocal(c *cli.Command, state *appState, req request.HTTPReq
 	}
 	fmt.Fprintf(outWriter(c), "set %s\n", key)
 	return nil
+}
+
+func runConfigSchema(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var sc config.Schema
+	if err := client.GetJSON(request.BuildConfigSchemaPath(), &sc); err != nil {
+		return err
+	}
+	if k := c.String("key"); k != "" {
+		row, ok := sc.Key(k)
+		if !ok {
+			return fmt.Errorf("unknown key %q", k)
+		}
+		sc.Keys = []config.SchemaKey{row}
+	}
+	if c.Bool("json") {
+		if c.String("key") != "" {
+			return encodeJSON(c, sc.Keys[0])
+		}
+		return encodeJSON(c, sc)
+	}
+	tbl := newTable(outWriter(c), []string{"Key", "Type", "Default", "Enum", "Restart"})
+	for _, k := range sc.Keys {
+		restart := ""
+		if k.Restart {
+			restart = "yes"
+		}
+		tbl.AppendRow(table.Row{k.Key, k.Type, dash(k.Default), dash(strings.Join(k.Enum, "|")), restart})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+// runConfigValidateDraft checks a draft on the daemon and writes nothing.
+func runConfigValidateDraft(c *cli.Command) error {
+	set := map[string]any{}
+	for _, kv := range c.StringSlice("set") {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return fmt.Errorf("--set %q: want key=value", kv)
+		}
+		set[strings.TrimSpace(k)] = v
+	}
+	var text *string
+	if f := c.String("file"); f != "" {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return err
+		}
+		s := string(b)
+		text = &s
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		OK     bool `json:"ok"`
+		Errors []struct {
+			Key     string `json:"key"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := client.DoHTTP(request.BuildConfigValidateDraft(set, c.StringSlice("unset"), text), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	if body.OK {
+		fmt.Fprintln(w, "ok")
+		return nil
+	}
+	for _, e := range body.Errors {
+		fmt.Fprintf(w, "%s: %s\n", dash(e.Key), e.Message)
+	}
+	return fmt.Errorf("draft has %d problem(s)", len(body.Errors))
 }
