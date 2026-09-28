@@ -229,7 +229,7 @@ func TestCommandRegistration(t *testing.T) {
 	for _, c := range app.Commands {
 		names[c.Name] = true
 	}
-	for _, want := range []string{"runs", "job", "harness", "connector", "config", "service", "conversation", "event", "queue", "rules", "bus", "doctor"} {
+	for _, want := range []string{"runs", "job", "harness", "connector", "config", "service", "conversation", "event", "queue", "rules", "bus", "doctor", "request"} {
 		if !names[want] {
 			t.Fatalf("missing top-level %s", want)
 		}

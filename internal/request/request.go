@@ -624,6 +624,80 @@ func BuildProposalGet(id string) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/proposals/" + url.PathEscape(id)}
 }
 
+// RequestCreateBody is the body of POST /v1/requests. Payload fields are
+// flat; ExpiresIn is a duration string such as 24h.
+type RequestCreateBody struct {
+	Type      string          `json:"type"`
+	Title     string          `json:"title"`
+	Summary   string          `json:"summary,omitempty"`
+	Target    string          `json:"target,omitempty"`
+	Draft     any             `json:"draft,omitempty"`   // *RequestDraft or raw JSON
+	Options   any             `json:"options,omitempty"` // []RequestOption or raw JSON
+	Multi     bool            `json:"multi,omitempty"`
+	Schema    json.RawMessage `json:"schema,omitempty"`
+	Allow     []string        `json:"allow,omitempty"`
+	Report    string          `json:"report,omitempty"`
+	Delivery  string          `json:"delivery,omitempty"`
+	ExpiresIn string          `json:"expires_in,omitempty"`
+}
+
+type RequestDraft struct {
+	Format string `json:"format,omitempty"`
+	Text   string `json:"text"`
+}
+
+type RequestOption struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// RequestAnswerBody is the body of POST /v1/requests/{id}/answer.
+type RequestAnswerBody struct {
+	Decision string          `json:"decision"`
+	Text     string          `json:"text,omitempty"`
+	Message  string          `json:"message,omitempty"`
+	Choices  []string        `json:"choices,omitempty"`
+	Values   json.RawMessage `json:"values,omitempty"`
+	Note     string          `json:"note,omitempty"`
+	Via      string          `json:"via,omitempty"`
+}
+
+// BuildRequestCreate builds POST /v1/requests. It needs a run token.
+func BuildRequestCreate(b RequestCreateBody) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/requests", Body: b}
+}
+
+// BuildRequestGet builds GET /v1/requests/{id}; wait long-polls (e.g. 30s).
+func BuildRequestGet(id, wait string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: withQuery("/v1/requests/"+url.PathEscape(id), map[string]string{"wait": wait})}
+}
+
+// BuildRequestListPath builds GET /v1/requests with its filters.
+func BuildRequestListPath(status, run, job, workspace, cursor string, limit int) string {
+	q := map[string]string{"status": status, "run": run, "job": job, "workspace": workspace, "cursor": cursor}
+	if limit > 0 {
+		q["limit"] = strconv.Itoa(limit)
+	}
+	return withQuery("/v1/requests", q)
+}
+
+// BuildRequestReport builds GET /v1/requests/{id}/report.
+func BuildRequestReport(id string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/requests/" + url.PathEscape(id) + "/report"}
+}
+
+// BuildRequestAnswer builds POST /v1/requests/{id}/answer. ifMatch is the
+// request revision; empty skips the check.
+func BuildRequestAnswer(id string, b RequestAnswerBody, ifMatch string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/requests/" + url.PathEscape(id) + "/answer", Body: b, IfMatch: ifMatch}
+}
+
+// BuildRequestDismiss builds POST /v1/requests/{id}/dismiss.
+func BuildRequestDismiss(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/requests/" + url.PathEscape(id) + "/dismiss", Body: map[string]any{}}
+}
+
 // BuildAgentListPath builds GET /v1/workspaces/{id}/agents.
 func BuildAgentListPath(workspaceID string) string {
 	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/agents"

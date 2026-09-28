@@ -2065,6 +2065,57 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"cancel": idPost("POST /v1/outbox/{id}/cancel", "id", "01ROW", request.BuildOutboxCancel),
 		},
 
+		"request": {
+			"create": actSamples("POST /v1/requests", Input{
+				"type": "review", "title": "Reply to issue #812", "summary": "Draft answer to the crash report.",
+				"target": "GitHub comment on trebi-ai/trebi#812", "draft": map[string]any{"format": "markdown", "text": "Thanks for the report."},
+				"report": "out/triage.html", "expires_in": "24h", "allow": []any{"approve", "edit", "reject"},
+			}, []Input{
+				{"type": "choose", "title": "Which release?", "options": []any{map[string]any{"id": "v1", "label": "v0.14"}}, "multi": true},
+				{"type": "form", "title": "Ship details", "schema": map[string]any{"properties": map[string]any{"tag": map[string]any{"type": "string"}}}, "delivery": "poll"},
+			}, buildRequestCreate),
+			"get": act("GET /v1/requests/{id}", Input{"id": "01JB8ABC"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("id", "wait")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildRequestGet(v[0], v[1]), nil
+			}),
+			"list": act("GET /v1/requests", Input{}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("status", "run", "job", "workspace", "cursor")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				limit, _, err := in.num("limit")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildRequestListPath(v[0], v[1], v[2], v[3], v[4], limit)), nil
+			}),
+			"report": bound(getReq("GET /v1/requests/{id}/report", "id", "01JB8ABC", request.BuildRequestReport), false),
+			"answer": act("POST /v1/requests/{id}/answer", Input{"id": "01JB8ABC", "decision": "approve", "note": "Ship it."}, func(in Input) (request.HTTPRequest, error) {
+				if _, err := in.reqStrs("id", "decision"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				v, err := in.strs("id", "decision", "text", "message", "note", "if_match")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				choices, err := in.strList("choices")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				values, err := in.block("values")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildRequestAnswer(v[0], request.RequestAnswerBody{
+					Decision: v[1], Text: v[2], Message: v[3], Note: v[4], Choices: choices, Values: values,
+				}, v[5]), nil
+			}),
+			"dismiss": idDel("POST /v1/requests/{id}/dismiss", "id", "01JB8ABC", request.BuildRequestDismiss),
+		},
+
 		"notify": {
 			"route": act("GET /v1/notify/route", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("workspace", "agent", "job")
@@ -2668,3 +2719,31 @@ func logLinesTransform(in Input, _ int, body []byte) ([]byte, error) {
 // routeKey names the patch keys where null is a value: it removes the key so
 // the layer inherits.
 func routeKey(k string) bool { return k == "contact" || k == "notify" }
+
+// buildRequestCreate reads the flat create input of the request tool.
+func buildRequestCreate(in Input) (request.HTTPRequest, error) {
+	if _, err := in.reqStrs("type", "title"); err != nil {
+		return request.HTTPRequest{}, err
+	}
+	v, err := in.strs("type", "title", "summary", "target", "report", "delivery", "expires_in")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	b := request.RequestCreateBody{Type: v[0], Title: v[1], Summary: v[2], Target: v[3], Report: v[4], Delivery: v[5], ExpiresIn: v[6]}
+	if b.Multi, err = in.flag("multi"); err != nil {
+		return request.HTTPRequest{}, err
+	}
+	if b.Allow, err = in.strList("allow"); err != nil {
+		return request.HTTPRequest{}, err
+	}
+	if b.Schema, err = in.block("schema"); err != nil {
+		return request.HTTPRequest{}, err
+	}
+	if b.Draft, err = in.block("draft"); err != nil {
+		return request.HTTPRequest{}, err
+	}
+	if b.Options, err = in.block("options"); err != nil {
+		return request.HTTPRequest{}, err
+	}
+	return request.BuildRequestCreate(b), nil
+}

@@ -158,3 +158,12 @@ func rejectAnyAgentScope(w http.ResponseWriter, r *http.Request) bool {
 	}
 	return false
 }
+
+// rejectAnyRunToken refuses a job or agent run. The assistant and humans pass.
+func rejectAnyRunToken(w http.ResponseWriter, r *http.Request) bool {
+	if a, ok := tools.ActorFrom(r.Context()); ok && a.RunID != "" && a.Kind != "assistant" {
+		writeForbidden(w, "a job run cannot answer a request")
+		return true
+	}
+	return false
+}

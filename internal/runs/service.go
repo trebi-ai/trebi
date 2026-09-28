@@ -827,8 +827,6 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 
 	// Lock order everywhere: LockBus, then open the tx (see store.AppendEntity).
 	s.st.LockBus()
-	defer s.st.UnlockBus()
-
 	var rev int64
 	alreadyTerminal := false
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
@@ -886,6 +884,8 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 		})
 		return err
 	})
+	// The gate below writes through the bus, so the lock ends here.
+	s.st.UnlockBus()
 	if err != nil {
 		return err
 	}

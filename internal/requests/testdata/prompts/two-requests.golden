@@ -1,0 +1,38 @@
+[trebi] The person answered 2 requests. This session continues with the answers.
+
+Request R01  "Delete the old branch" (confirm)
+Decision: approve. Do the action as proposed.
+Answered by the user in the inbox at 2026-09-28T14:05:00Z.
+
+```json
+{
+  "request_id": "R01",
+  "type": "confirm",
+  "title": "Delete the old branch",
+  "decision": "approve",
+  "answered_by": "user",
+  "answered_via": "ui",
+  "answered_at": "2026-09-28T14:05:00Z"
+}
+```
+
+Request R02  "Pick a plan" (choose)
+Decision: choose. Continue with the chosen options.
+Answered by the user in the inbox at 2026-09-28T14:05:00Z.
+
+```json
+{
+  "request_id": "R02",
+  "type": "choose",
+  "title": "Pick a plan",
+  "decision": "choose",
+  "choices": [
+    "a"
+  ],
+  "answered_by": "user",
+  "answered_via": "ui",
+  "answered_at": "2026-09-28T14:05:00Z"
+}
+```
+
+Continue the task with these answers.

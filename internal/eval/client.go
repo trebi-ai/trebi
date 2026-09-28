@@ -295,7 +295,7 @@ func appendUnique(dst []string, msg string) []string {
 func isTrebiMCPTool(name string) bool {
 	switch name {
 	case "agent", "assistant", "config", "conversation", "events", "file",
-		"harness", "inbox", "connector", "job", "queue", "run", "secret",
+		"harness", "inbox", "connector", "job", "queue", "request", "run", "secret",
 		"skill", "system", "workspace":
 		return true
 	default:

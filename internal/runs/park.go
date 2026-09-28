@@ -90,3 +90,15 @@ func (s *Service) Unpark(ctx context.Context, runID string, end EndReason) error
 	})
 	return err
 }
+
+// ResumedChild returns the id of the first run with reason that continues
+// runID and started at or after since. It is empty when there is none.
+func (s *Service) ResumedChild(ctx context.Context, runID string, reason RunReason, since time.Time) (string, error) {
+	var id string
+	err := s.st.DB().QueryRowContext(ctx, `SELECT id FROM runs WHERE resumed_from=? AND reason=? AND started_at>=?
+		ORDER BY started_at LIMIT 1`, runID, string(reason), since.UTC().Format(time.RFC3339Nano)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}

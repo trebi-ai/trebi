@@ -61,6 +61,7 @@ func NewApp(opts Options) *cli.Command {
 			assistantCommand(),
 			agentCommand(),
 			proposalsCommand(),
+			requestCommand(),
 			connectorCommand(),
 			harnessCommand(),
 			skillCommand(),

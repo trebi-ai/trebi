@@ -31,7 +31,7 @@ func TestMCPToolsList(t *testing.T) {
 		t.Fatalf("list tools: %v", err)
 	}
 	want := []string{"agent", "assistant", "config", "connector", "conversation", "email", "event", "file",
-		"harness", "inbox", "job", "notify", "outbox", "queue", "run", "secret",
+		"harness", "inbox", "job", "notify", "outbox", "queue", "request", "run", "secret",
 		"skill", "system", "workspace"}
 	got := make([]string, 0, len(res.Tools))
 	total := 0
@@ -317,8 +317,8 @@ func TestGuidesHTTP(t *testing.T) {
 		t.Fatalf("list: %d %v", code, body)
 	}
 	items, _ := body["items"].([]any)
-	if len(items) != 11 {
-		t.Fatalf("list items %d; want 11", len(items))
+	if len(items) != 12 {
+		t.Fatalf("list items %d; want 12", len(items))
 	}
 
 	code, body, _ = doJSON(t, "GET", base+"/v1/system/guides/getting-started", nil)
@@ -345,7 +345,7 @@ func TestMCPGuides(t *testing.T) {
 	res, text := mcpCall(t, cs, "system", "guides", nil)
 	m := mcpOK(t, "system.guides", res, text)
 	items, _ := m["items"].([]any)
-	if len(items) != 11 {
+	if len(items) != 12 {
 		t.Fatalf("guides items %d", len(items))
 	}
 

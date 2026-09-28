@@ -60,6 +60,9 @@ func LibexecDir() string { return filepath.Join(Base(), "libexec") }
 func LogsDir() string    { return filepath.Join(Base(), "logs") }
 func RunsLogDir() string { return filepath.Join(Base(), "logs", "runs") }
 func RunsDir() string    { return filepath.Join(Base(), "runs") }
+
+// RequestsDir holds the report snapshots of requests, one folder per id.
+func RequestsDir() string { return filepath.Join(Base(), "requests") }
 func ConnectorsLogDir() string {
 	return filepath.Join(Base(), "logs", "connectors")
 }

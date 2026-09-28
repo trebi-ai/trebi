@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 30
+const SchemaVersion = 31
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -917,6 +917,49 @@ CREATE TABLE connector_installs (
     installed_at TEXT NOT NULL,
     PRIMARY KEY (name, version)
 );
+`,
+		// v31: requests (plan 2026-09-28). A request is a decision point that a
+		// job run opens for a person; its run parks until the answer.
+		`
+CREATE TABLE requests (
+    id               TEXT PRIMARY KEY,
+    run_id           TEXT NOT NULL,
+    workspace_id     TEXT NOT NULL,
+    job              TEXT NOT NULL,
+    kind             TEXT NOT NULL,
+    session_id       TEXT NOT NULL DEFAULT '',
+    harness          TEXT NOT NULL DEFAULT '',
+    runtime          TEXT NOT NULL DEFAULT '',
+    working_dir      TEXT NOT NULL DEFAULT '',
+    conversation_key TEXT NOT NULL DEFAULT '',
+    conversation_id  TEXT NOT NULL DEFAULT '',
+    type             TEXT NOT NULL,
+    title            TEXT NOT NULL,
+    summary          TEXT NOT NULL DEFAULT '',
+    target           TEXT NOT NULL DEFAULT '',
+    payload_json     TEXT NOT NULL DEFAULT '{}',
+    allow_json       TEXT NOT NULL,
+    report_kind      TEXT NOT NULL DEFAULT '',
+    report_sha256    TEXT NOT NULL DEFAULT '',
+    delivery         TEXT NOT NULL DEFAULT 'resume',
+    status           TEXT NOT NULL DEFAULT 'pending',
+    answer_json      TEXT,
+    answered_at      TEXT,
+    expires_at       TEXT,
+    delivery_state   TEXT NOT NULL DEFAULT 'none',
+    claimed_at       TEXT,
+    delivery_path    TEXT NOT NULL DEFAULT '',
+    delivered_run_id TEXT,
+    delivery_error   TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    revision         INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX idx_requests_run ON requests(run_id);
+CREATE INDEX idx_requests_open ON requests(status) WHERE status = 'pending';
+CREATE INDEX idx_requests_undelivered ON requests(delivery_state)
+    WHERE delivery = 'resume' AND status <> 'pending' AND delivery_state IN ('none','claimed');
+ALTER TABLE inbox_items ADD COLUMN request_id TEXT;
 `,
 	}
 }

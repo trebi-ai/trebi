@@ -35,6 +35,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/request"
+	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
@@ -57,6 +58,8 @@ type Options struct {
 	AlertsInterval time.Duration
 	// TurnWatchInterval overrides the transcript watcher tick (default 2s).
 	TurnWatchInterval time.Duration
+	// RequestsInterval is the request expiry sweep (default 1m).
+	RequestsInterval time.Duration
 	// AuthProbeInterval is how often blocked harnesses are re-probed (default 5m; tests 50ms).
 	AuthProbeInterval time.Duration
 	// EmailInterval overrides the inbound mail poll tick (default: the
@@ -105,6 +108,7 @@ type ControlPlane struct {
 	Webhooks  *webhooks.Service
 	License   *license.Service
 	Launcher  *launch.Launcher
+	Requests  *requests.Service
 	Opts      Options
 
 	// The assistant session stack (plan D). The API server binds these
@@ -231,6 +235,13 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	hk := webhooks.New(st, connector, cl)
 	cl.WithWebhooks(hk)
 	proposalSvc := proposals.NewService(st, fs, ws, st, r)
+	launcher := launch.NewLauncher(ws, r)
+	reqOpts := requests.Options{}
+	if cfg != nil {
+		reqOpts = requests.Options{ExpireAfter: cfg.Requests.ExpireAfterDuration(), Retain: cfg.Requests.RetainDuration()}
+	}
+	reqSvc := requests.NewService(st, r, launcher, lic, requests.NewReportStore(home.RequestsDir()), reqOpts)
+	r.SetRequestGate(reqSvc)
 	c := &ControlPlane{
 		Store:         st,
 		Runs:          r,
@@ -251,7 +262,8 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Cloud:         cl,
 		Webhooks:      hk,
 		License:       lic,
-		Launcher:      launch.NewLauncher(ws, r),
+		Launcher:      launcher,
+		Requests:      reqSvc,
 		Opts:          opts,
 		log:           slog.Default().With("source", "daemon"),
 		queue:         q,
@@ -428,6 +440,15 @@ func (c *ControlPlane) Start(parent context.Context) {
 		go func() {
 			defer c.wg.Done()
 			c.scheduleTicker(ctx)
+		}()
+		// Answers that came in while the daemon was down go out now.
+		if err := c.Requests.Recover(ctx); err != nil {
+			c.log.Warn("requests recover", "err", err)
+		}
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.requestsSweep(ctx)
 		}()
 		c.wg.Add(1)
 		go func() {
@@ -681,6 +702,27 @@ func (c *ControlPlane) connectorUpdates(ctx context.Context) {
 				c.log.Info("connector update", "connector", r.Name, "from", r.From, "to", r.To, "applied", r.Applied, "error", r.Error)
 			}
 			t.Reset(every)
+		}
+	}
+}
+
+// requestsSweep expires requests with no answer and removes old reports.
+// It stops on ctx.Done().
+func (c *ControlPlane) requestsSweep(ctx context.Context) {
+	every := c.Opts.RequestsInterval
+	if every <= 0 {
+		every = time.Minute
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := c.Requests.Sweep(ctx); err != nil {
+				c.log.Warn("requests sweep", "err", err)
+			}
 		}
 	}
 }

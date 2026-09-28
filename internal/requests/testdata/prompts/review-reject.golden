@@ -1,0 +1,19 @@
+[trebi] The person answered 1 request. This session continues with the answer.
+
+Request R01  "Send the reply to Ana" (review)
+Decision: reject. Do not do the action. Read the note. Finish, or make a new request.
+Answered by the user in the inbox at 2026-09-28T14:05:00Z.
+
+```json
+{
+  "request_id": "R01",
+  "type": "review",
+  "title": "Send the reply to Ana",
+  "decision": "reject",
+  "answered_by": "user",
+  "answered_via": "ui",
+  "answered_at": "2026-09-28T14:05:00Z"
+}
+```
+
+Continue the task with this answer.

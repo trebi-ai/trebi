@@ -24,16 +24,24 @@ const (
 	FeatureRemoteAccess  Feature = "remote_access"
 	FeatureHostedIngress Feature = "hosted_ingress"
 	FeatureBackup        Feature = "backup"
+	FeatureRequests      Feature = "requests"
 )
+
+// All lists every feature in a fixed order.
+func All() []Feature {
+	return []Feature{FeatureEmail, FeatureRemoteAccess, FeatureHostedIngress, FeatureBackup, FeatureRequests}
+}
 
 // enforced is the release decision: a feature listed true needs a license
 // that grants it. Nothing is enforced today; flipping a value is the
-// release action, not a code change elsewhere.
+// release action, not a code change elsewhere. Requests are the first
+// enforced feature.
 var enforced = map[Feature]bool{ //nolint:gochecknoglobals // the release table; never mutated at runtime
 	FeatureEmail:         false,
 	FeatureRemoteAccess:  false,
 	FeatureHostedIngress: false,
 	FeatureBackup:        false,
+	FeatureRequests:      true,
 }
 
 // Enforced reports whether this build gates f on a license.
@@ -49,6 +57,9 @@ type State struct {
 	Features  []string   `json:"features,omitempty"`
 	Subject   string     `json:"subject,omitempty"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Allowed lists the features Has allows now, enforced or not. Clients
+	// read it and never apply the rule themselves.
+	Allowed []string `json:"allowed"`
 }
 
 // Service reads ~/.trebi/license.json and answers feature checks. With a
@@ -96,12 +107,18 @@ func (s *Service) Has(f Feature) bool {
 
 // State returns the loaded entitlement facts.
 func (s *Service) State() State {
+	allowed := []string{}
+	for _, f := range All() {
+		if s.Has(f) {
+			allowed = append(allowed, string(f))
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.loaded {
 		s.load()
 	}
-	st := State{Supported: s.verifier != nil, Source: s.source}
+	st := State{Supported: s.verifier != nil, Source: s.source, Allowed: allowed}
 	if s.ent != nil {
 		st.Plan = s.ent.Plan
 		st.Features = s.ent.Features

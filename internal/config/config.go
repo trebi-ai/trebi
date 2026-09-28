@@ -32,6 +32,7 @@ type Config struct {
 	Email      EmailConfig      `yaml:"email,omitempty"`
 	Cloud      CloudConfig      `yaml:"cloud,omitempty"`
 	Connectors ConnectorsConfig `yaml:"connectors,omitempty"`
+	Requests   RequestsConfig   `yaml:"requests,omitempty"`
 }
 
 // HarnessConfig is the vendor run-runtime policy (plan 2026-09-16 Part J).
@@ -672,6 +673,10 @@ tools:
 # files:
 #   max_bytes: 10485760    # workspace file PUT/GET cap (10 MiB)
 
+# requests:                # a job asks a person, then continues
+#   expire_after: 168h     # a request with no answer expires after this
+#   retain: 720h           # keep the report of a closed request this long
+
 # workspaces:
 #   root: ~/trebi          # pathless workspace add --create --name lands here
 
@@ -899,6 +904,7 @@ func (c *Config) Validate() error {
 	if c.Files.MaxBytes < 0 {
 		ce.add("files.max_bytes", "must be >= 0")
 	}
+	ce.checkRequests(c.Requests)
 
 	// tools.fallback
 	if c.Tools.Fallback != "" && !validFallbackMode(c.Tools.Fallback) {

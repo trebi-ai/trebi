@@ -1,0 +1,386 @@
+package api_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	agentwire "github.com/trebi-ai/agent-wire"
+
+	"github.com/trebi-ai/trebi/ext"
+	"github.com/trebi-ai/trebi/internal/api"
+	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/license"
+	"github.com/trebi-ai/trebi/internal/tools"
+)
+
+type requestsVerifier struct{ features []string }
+
+func (v requestsVerifier) Verify([]byte, time.Time) (ext.Entitlement, error) {
+	return ext.Entitlement{Plan: "pro", Features: v.features, ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+// recDriver runs the fake driver and keeps every StartRequest.
+type recDriver struct {
+	agentwire.FakeDriver
+	mu   sync.Mutex
+	reqs []agentwire.StartRequest
+}
+
+func (d *recDriver) Start(ctx context.Context, req agentwire.StartRequest) (agentwire.Session, error) {
+	d.add(req)
+	return d.FakeDriver.Start(ctx, req)
+}
+
+func (d *recDriver) Resume(ctx context.Context, req agentwire.StartRequest) (agentwire.Session, error) {
+	d.add(req)
+	return d.FakeDriver.Resume(ctx, req)
+}
+
+func (d *recDriver) add(req agentwire.StartRequest) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.reqs = append(d.reqs, req)
+}
+
+func (d *recDriver) all() []agentwire.StartRequest {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]agentwire.StartRequest(nil), d.reqs...)
+}
+
+// requestStack is one daemon with a licensed requests feature and a job whose
+// fake harness writes its run token and its prompts, and ends its
+// turn once the test creates the file "go".
+type requestStack struct {
+	base string
+	dir  string
+	drv  *recDriver
+	wsID string
+}
+
+func newRequestStack(t *testing.T, features ...string) *requestStack {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if features == nil {
+		features = []string{string(license.FeatureRequests)}
+	}
+	s, base := startTestServerOpts(t, api.Options{License: license.New(requestsVerifier{features: features})})
+	t.Setenv("TREBI_FAKE_HARNESS", "")    // the CLI driver below runs the job
+	t.Setenv("ANTHROPIC_API_KEY", "test") // passes the auth probe; recDriver is not a bare FakeDriver
+	if err := os.WriteFile(home.LicensePath(), []byte("test"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := &requestStack{base: base, dir: t.TempDir()}
+	script := fmt.Sprintf(`read -r line; printf '%%s\n' "$line" >> %[1]s/prompts; printf '%%s' "$TREBI_RUN_TOKEN" > %[1]s/token.tmp; mv %[1]s/token.tmp %[1]s/token
+echo '{"type":"init","session_id":"sess-1"}'
+while [ ! -f %[1]s/go ]; do sleep 0.05; done
+echo '{"type":"result","subtype":"success","text":"done"}'`, st.dir)
+	st.drv = &recDriver{FakeDriver: agentwire.FakeDriver{Script: script}}
+	s.SetCLIDriver(st.drv)
+	wsDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wsDir, "demo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "demo", "JOB.md"), []byte("---\nharness: claude\n---\n\nDo work.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st.wsID = addWorkspace(t, base, wsDir, "req-ws")
+	return st
+}
+
+// launch starts the job and returns the run id and its token.
+func (s *requestStack) launch(t *testing.T) (runID, token string) {
+	t.Helper()
+	code, run, _ := doJSON(t, "POST", s.base+"/v1/jobs/demo/run", map[string]any{"workspace": s.wsID})
+	if code != 201 {
+		t.Fatalf("launch %d %v", code, run)
+	}
+	runID, _ = run["id"].(string)
+	waitForAsst(t, 10*time.Second, "run token", func() bool {
+		b, err := os.ReadFile(filepath.Join(s.dir, "token"))
+		token = string(b)
+		return err == nil && token != ""
+	})
+	return runID, token
+}
+
+func (s *requestStack) endTurn(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(s.dir, "go"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (s *requestStack) runStatus(t *testing.T, id string) map[string]any {
+	t.Helper()
+	_, run, _ := doJSON(t, "GET", s.base+"/v1/runs/"+id, nil)
+	return run
+}
+
+func (s *requestStack) waitRun(t *testing.T, id, status string) map[string]any {
+	t.Helper()
+	var run map[string]any
+	waitForAsst(t, 15*time.Second, "run "+id+" "+status, func() bool {
+		run = s.runStatus(t, id)
+		return run["status"] == status
+	})
+	return run
+}
+
+func (s *requestStack) create(t *testing.T, token string, body map[string]any) map[string]any {
+	t.Helper()
+	code, out, _ := doJSONHeader(t, "POST", s.base+"/v1/requests", body, token)
+	if code != 201 {
+		t.Fatalf("create %d %v", code, out)
+	}
+	req, _ := out["request"].(map[string]any)
+	return req
+}
+
+var promptJSON = regexp.MustCompile("(?s)```json\n(.*?)```")
+
+func TestRequestRoundTrip(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{"n": map[string]any{"type": "integer"}, "note": map[string]any{"type": "string", "format": "multiline"}}}
+	options := []map[string]any{{"id": "a", "label": "A"}, {"id": "b", "label": "B"}}
+	cases := []struct {
+		decision string
+		create   map[string]any
+		answer   map[string]any
+		check    func(a map[string]any) bool
+	}{
+		{"approve", map[string]any{"type": "confirm"}, map[string]any{}, func(map[string]any) bool { return true }},
+		{"edit", map[string]any{"type": "review", "draft": map[string]any{"format": "text", "text": "one"}},
+			map[string]any{"text": "two `x` \"q\" <b>\n"}, func(a map[string]any) bool { return a["text"] == "two `x` \"q\" <b>\n" }},
+		{"reject", map[string]any{"type": "confirm"}, map[string]any{"note": "no"}, func(a map[string]any) bool { return a["note"] == "no" }},
+		{"respond", map[string]any{"type": "confirm"}, map[string]any{"message": "why?\n\nexplain"}, func(a map[string]any) bool { return a["message"] == "why?\n\nexplain" }},
+		{"choose", map[string]any{"type": "choose", "options": options}, map[string]any{"choices": []string{"b"}},
+			func(a map[string]any) bool { c, _ := a["choices"].([]any); return len(c) == 1 && c[0] == "b" }},
+		{"submit", map[string]any{"type": "form", "schema": schema}, map[string]any{"values": map[string]any{"n": 3, "note": "a\nb"}},
+			func(a map[string]any) bool {
+				v, _ := a["values"].(map[string]any)
+				return v["n"] == 3.0 && v["note"] == "a\nb"
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.decision, func(t *testing.T) {
+			s := newRequestStack(t)
+			runID, token := s.launch(t)
+			c.create["title"] = "Decide " + c.decision
+			req := s.create(t, token, c.create)
+			id, _ := req["id"].(string)
+			s.endTurn(t)
+			s.waitRun(t, runID, "parked")
+
+			c.answer["decision"] = c.decision
+			code, ans, _ := doJSON(t, "POST", s.base+"/v1/requests/"+id+"/answer", c.answer)
+			if code != 200 {
+				t.Fatalf("answer %d %v", code, ans)
+			}
+			var got map[string]any
+			waitForAsst(t, 15*time.Second, "delivered", func() bool {
+				_, got, _ = doJSON(t, "GET", s.base+"/v1/requests/"+id, nil)
+				return got["delivery_state"] == "delivered"
+			})
+			reqs := s.drv.all()
+			if len(reqs) != 2 {
+				t.Fatalf("driver starts %d", len(reqs))
+			}
+			if reqs[1].SessionID == "" || reqs[1].SessionID != reqs[0].SessionID || reqs[1].WorkingDir != reqs[0].WorkingDir {
+				t.Fatalf("resume session %q dir %q, first dir %q", reqs[1].SessionID, reqs[1].WorkingDir, reqs[0].WorkingDir)
+			}
+			next, _ := got["delivered_run_id"].(string)
+			nextRun := s.waitRun(t, next, "complete")
+			if nextRun["resumed_from"] != runID || nextRun["reason"] != "request" {
+				t.Fatalf("next run %v", nextRun)
+			}
+			if st := s.runStatus(t, runID)["status"]; st != "resumed" {
+				t.Fatalf("parent status %v", st)
+			}
+
+			lines, err := os.ReadFile(filepath.Join(s.dir, "prompts"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			all := strings.Split(strings.TrimSpace(string(lines)), "\n")
+			var frame struct{ Text string }
+			if err := json.Unmarshal([]byte(all[len(all)-1]), &frame); err != nil {
+				t.Fatal(err)
+			}
+			m := promptJSON.FindStringSubmatch(frame.Text)
+			if m == nil {
+				t.Fatalf("no answer JSON in prompt:\n%s", frame.Text)
+			}
+			var a map[string]any
+			if err := json.Unmarshal([]byte(m[1]), &a); err != nil {
+				t.Fatal(err)
+			}
+			if a["request_id"] != id || a["decision"] != c.decision || !c.check(a) {
+				t.Fatalf("prompt answer %v", a)
+			}
+		})
+	}
+}
+
+func TestRequestRunTokenCannotAnswer(t *testing.T) {
+	s := newRequestStack(t)
+	_, token := s.launch(t)
+	req := s.create(t, token, map[string]any{"type": "confirm", "title": "x", "delivery": "poll"})
+	id, _ := req["id"].(string)
+	for _, verb := range []string{"answer", "dismiss"} {
+		code, body, _ := doJSONHeader(t, "POST", s.base+"/v1/requests/"+id+"/"+verb, map[string]any{"decision": "approve"}, token)
+		if code != 403 {
+			t.Fatalf("%s with run token: %d %v", verb, code, body)
+		}
+	}
+	// A run token reads its own job's requests.
+	if code, _, _ := doJSONHeader(t, "GET", s.base+"/v1/requests/"+id, nil, token); code != 200 {
+		t.Fatalf("own get %d", code)
+	}
+	s.endTurn(t)
+}
+
+func TestRequestAnswerErrors(t *testing.T) {
+	s := newRequestStack(t)
+	_, token := s.launch(t)
+	defer s.endTurn(t)
+	req := s.create(t, token, map[string]any{"type": "confirm", "title": "x", "delivery": "poll"})
+	id, _ := req["id"].(string)
+	url := s.base + "/v1/requests/" + id + "/answer"
+	code, body, _ := doJSON(t, "POST", url, map[string]any{"decision": "edit"})
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("edit on confirm %d %v", code, body)
+	}
+	code, body, _ = doJSONHeaders(t, "POST", url, map[string]any{"decision": "approve"}, map[string]string{"If-Match": `"9"`})
+	if code != 412 {
+		t.Fatalf("stale if-match %d %v", code, body)
+	}
+	if code, body, _ = doJSON(t, "POST", url, map[string]any{"decision": "approve", "via": "cli"}); code != 200 {
+		t.Fatalf("answer %d %v", code, body)
+	}
+	if a, _ := body["answer"].(map[string]any); a["via"] != "cli" || a["by"] != "user" {
+		t.Fatalf("answer by %v", body["answer"])
+	}
+	code, body, _ = doJSON(t, "POST", url, map[string]any{"decision": "reject"})
+	errBody, _ := body["error"].(map[string]any)
+	details, _ := errBody["details"].(map[string]any)
+	if code != 409 || errCode(body) != "request_closed" || details["request"] == nil {
+		t.Fatalf("second answer %d %v", code, body)
+	}
+	if code, _, _ = doJSON(t, "GET", s.base+"/v1/requests/NOPE", nil); code != 404 {
+		t.Fatalf("missing %d", code)
+	}
+}
+
+func TestRequestLicense402(t *testing.T) {
+	s := newRequestStack(t, "email")
+	_, token := s.launch(t)
+	defer s.endTurn(t)
+	code, body, _ := doJSONHeader(t, "POST", s.base+"/v1/requests", map[string]any{"type": "confirm", "title": "x"}, token)
+	errBody, _ := body["error"].(map[string]any)
+	details, _ := errBody["details"].(map[string]any)
+	if code != 402 || errCode(body) != "license_required" || details["feature"] != "requests" {
+		t.Fatalf("402: %d %v", code, body)
+	}
+	// Without a run token, create is 403 before the license check.
+	if code, _, _ = doJSON(t, "POST", s.base+"/v1/requests", map[string]any{"type": "confirm", "title": "x"}); code != 403 {
+		t.Fatalf("human create %d", code)
+	}
+}
+
+func TestRequestReportCSP(t *testing.T) {
+	s := newRequestStack(t)
+	runID, token := s.launch(t)
+	defer s.endTurn(t)
+	wd, _ := s.runStatus(t, runID)["working_dir"].(string)
+	for name, body := range map[string]string{"r.html": "<h1>x</h1>", "r.md": "# x\n"} {
+		if err := os.WriteFile(filepath.Join(wd, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := map[string]string{"r.html": "text/html; charset=utf-8", "r.md": "text/markdown; charset=utf-8"}
+	for name, ctype := range cases {
+		req := s.create(t, token, map[string]any{"type": "confirm", "title": "x", "report": name, "delivery": "poll"})
+		resp, err := http.Get(s.base + "/v1/requests/" + req["id"].(string) + "/report")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != ctype || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("%s: %d %v", name, resp.StatusCode, resp.Header)
+		}
+		csp := resp.Header.Get("Content-Security-Policy")
+		want := ""
+		if name == "r.html" {
+			want = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data: https:; connect-src 'none'; form-action 'none'; frame-ancestors 'self'"
+		}
+		if csp != want {
+			t.Fatalf("%s CSP %q", name, csp)
+		}
+	}
+}
+
+func TestRequestWaitLongPoll(t *testing.T) {
+	s := newRequestStack(t)
+	_, token := s.launch(t)
+	defer s.endTurn(t)
+	req := s.create(t, token, map[string]any{"type": "confirm", "title": "x", "delivery": "poll"})
+	id, _ := req["id"].(string)
+	start := time.Now()
+	_, got, _ := doJSONHeader(t, "GET", s.base+"/v1/requests/"+id+"?wait=1s", nil, token)
+	if got["status"] != "pending" || time.Since(start) < 900*time.Millisecond {
+		t.Fatalf("timeout: %v after %s", got["status"], time.Since(start))
+	}
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		resp, err := http.Post(s.base+"/v1/requests/"+id+"/answer", "application/json", strings.NewReader(`{"decision":"approve"}`))
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+	start = time.Now()
+	_, got, _ = doJSONHeader(t, "GET", s.base+"/v1/requests/"+id+"?wait=10s", nil, token)
+	if got["status"] != "answered" || time.Since(start) > 5*time.Second {
+		t.Fatalf("answered: %v after %s", got["status"], time.Since(start))
+	}
+}
+
+// tokenTransport sends the run token on each MCP call.
+type tokenTransport string
+
+func (t tokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set(tools.HeaderRunToken, string(t))
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func TestRequestToolLicenseMessage(t *testing.T) {
+	s := newRequestStack(t, "email")
+	_, token := s.launch(t)
+	defer s.endTurn(t)
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "req-test", Version: "1"}, nil).Connect(context.Background(),
+		&mcp.StreamableClientTransport{Endpoint: s.base + "/mcp", DisableStandaloneSSE: true, HTTPClient: &http.Client{Transport: tokenTransport(token)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	res, text := mcpCall(t, cs, "request", "create", map[string]any{"type": "confirm", "title": "x"})
+	if !res.IsError || !strings.Contains(text, "license_required") || !strings.Contains(text, tools.RequestLicenseMessage) {
+		t.Fatalf("mcp 402: %s", text)
+	}
+}

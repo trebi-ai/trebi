@@ -269,6 +269,13 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "file.updated", Bus: true, Log: true},
 		{Name: "file.deleted", Bus: true, Log: true},
 		// run
+		{Name: "request.created", Bus: true, Log: true},
+		{Name: "request.answered", Bus: true, Log: true},
+		{Name: "request.expired", Bus: true, Log: true},
+		{Name: "request.dismissed", Bus: true, Log: true},
+		{Name: "request.cancelled", Bus: true, Log: true},
+		{Name: "request.delivered", Bus: true, Log: true},
+		{Name: "request.delivery_failed", Bus: true, Log: true},
 		{Name: "run.created", Bus: true, Log: true},
 		{Name: "run.updated", Bus: true, Log: true},
 		{Name: "run.completed", Bus: false, Log: true},

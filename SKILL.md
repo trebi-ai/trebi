@@ -90,6 +90,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `agents` | folder-scoped agents: identity, rename, email accept, owned jobs, wake, conversations, agent memory |
 | `connectors-and-rules` | create/connect connectors, registry search/entry/install, the job `connectors:` key (MCP and CLI actions for a run), rules test/fire, event triggers, queue |
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed, alert routes (`trebi notify route|test`), failed sends in the outbox |
+| `requests` | a job asks a person (confirm, review, choose, form), ends its turn, and continues with the answer; answer and dismiss as a person |
 | `observability` | bus, service logs, doctor, stats |
 | `skills-secrets-config` | stored skills, secrets, config keys, config schema and draft checks, harness auth |
 | `mcp-basics` | remote MCP entry point, CLI→MCP translation, what MCP cannot do |

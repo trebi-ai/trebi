@@ -349,6 +349,8 @@ func sampleSetValue(key string) string {
 		return `[{"via":"email","to":"contact"}]`
 	case key == "notify.approval_after":
 		return "5m"
+	case key == "requests.expire_after", key == "requests.retain":
+		return "24h"
 	case key == "defaults.workspace":
 		return "ops"
 	case key == "email.worker":

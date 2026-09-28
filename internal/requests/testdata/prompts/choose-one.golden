@@ -1,0 +1,22 @@
+[trebi] The person answered 1 request. This session continues with the answer.
+
+Request R01  "Pick a plan" (choose)
+Decision: choose. Continue with the chosen options.
+Answered by the user with the CLI at 2026-09-28T14:05:00Z.
+
+```json
+{
+  "request_id": "R01",
+  "type": "choose",
+  "title": "Pick a plan",
+  "decision": "choose",
+  "choices": [
+    "b"
+  ],
+  "answered_by": "user",
+  "answered_via": "cli",
+  "answered_at": "2026-09-28T14:05:00Z"
+}
+```
+
+Continue the task with this answer.

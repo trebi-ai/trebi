@@ -38,6 +38,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/registry"
+	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
@@ -75,6 +76,7 @@ type Server struct {
 	lic        *license.Service
 	templates  *agents.Catalog
 	proposals  *proposals.Service
+	requests   *requests.Service
 	launch     *launch.Launcher
 	// catalog is the registry client; it follows the configured list.
 	catalog *registry.Live
@@ -152,6 +154,7 @@ func New(st *store.Store, opts Options) *Server {
 	sk := skills.New(st)
 	conn := connectors.New(st, ws, sk)
 	cl := cloudlink.New(st)
+	l := launch.NewLauncher(ws, r)
 	s := &Server{
 		st:           st,
 		runs:         r,
@@ -167,7 +170,8 @@ func New(st *store.Store, opts Options) *Server {
 		email:        email.New(st),
 		templates:    agents.NewCatalog(),
 		proposals:    proposals.NewService(st, fs, ws, st, r),
-		launch:       launch.NewLauncher(ws, r),
+		launch:       l,
+		requests:     requests.NewService(st, r, l, lic, requests.NewReportStore(home.RequestsDir()), requests.Options{}),
 		catalog:      registry.NewLive(opts.Registry),
 		cloud:        cl,
 		hooks:        webhooks.New(st, conn, cl),
@@ -183,6 +187,7 @@ func New(st *store.Store, opts Options) *Server {
 			CheckOrigin: checkWSOrigin,
 		},
 	}
+	r.SetRequestGate(s.requests)
 	s.connectors.WithInstall(connectors.InstallConfig{Catalog: s.catalog})
 	_ = s.connectors.Load() // the service keeps the error; the list route and the daemon report it
 	s.outbox = outbox.New(st)
@@ -331,7 +336,7 @@ func (s *Server) BindCatalog(c *registry.Live) {
 	}
 }
 
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, skillsSvc *skills.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service, cloudSvc *cloudlink.Service, hooksSvc *webhooks.Service, launcher *launch.Launcher) {
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, skillsSvc *skills.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service, cloudSvc *cloudlink.Service, hooksSvc *webhooks.Service, launcher *launch.Launcher, reqSvc *requests.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc
 	}
@@ -376,6 +381,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	}
 	if launcher != nil {
 		s.launch = launcher
+	}
+	if reqSvc != nil {
+		s.requests = reqSvc
 	}
 }
 
@@ -448,6 +456,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeJobs(mux)
 	s.routeRuns(mux)
 	s.routeProposals(mux)
+	s.routeRequests(mux)
 	s.routeQueue(mux)
 	s.routeEvents(mux)
 	s.routeInbox(mux)

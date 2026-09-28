@@ -204,6 +204,7 @@ func schemaSections() []SchemaSection {
 		{ID: "email", Title: "Email", Description: "Mail channel through the trebi-mail Worker"},
 		{ID: "cloud", Title: "Cloud", Description: "Hosted account link"},
 		{ID: "connectors", Title: "Connectors", Description: "MCP registries for the connector catalog"},
+		{ID: "requests", Title: "Requests", Description: "How long a job waits for a person's answer"},
 	}
 }
 
@@ -256,6 +257,8 @@ func schemaMetas() map[string]keyMeta {
 		"notify.approval_after":                restart(dur),
 		"notify.usage_warn_at":                 restart(keyMeta{typ: TypeInt}),
 		"files.max_bytes":                      restart(keyMeta{typ: TypeInt}),
+		"requests.expire_after":                dur,
+		"requests.retain":                      dur,
 		"assistant.effort":                     {typ: TypeString, enum: []string{"low", "medium", "high"}},
 		"assistant.mode":                       {typ: TypeString, enum: []string{"ask", "auto_edit", "auto"}},
 		"assistant.idle_close":                 dur,

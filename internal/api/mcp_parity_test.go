@@ -209,6 +209,7 @@ func mcpTestMux() *http.ServeMux {
 	s.routeMemory(mux)
 	s.routeQueue(mux)
 	s.routeProposals(mux)
+	s.routeRequests(mux)
 	s.routeRuns(mux)
 	s.routeSettings(mux)
 	s.routeSystem(mux)

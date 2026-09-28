@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "title": "Order",
+  "properties": {
+    "name": {"type": "string", "title": "Name"},
+    "count": {"type": "integer"},
+    "weight": {"type": "number"},
+    "express": {"type": "boolean"},
+    "size": {"type": "string", "enum": ["S", "M", "L"]},
+    "notes": {"type": "string", "format": "multiline", "description": "Free text"}
+  },
+  "required": ["name"]
+}

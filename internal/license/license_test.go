@@ -3,6 +3,7 @@ package license
 import (
 	"errors"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -186,4 +187,21 @@ func enforce(t *testing.T, f Feature, on bool) {
 	t.Helper()
 	enforced[f] = on
 	t.Cleanup(func() { enforced[f] = !on })
+}
+
+func TestStateAllowedRequests(t *testing.T) {
+	s := newTestService(t, nil)
+	if slices.Contains(s.State().Allowed, string(FeatureRequests)) {
+		t.Fatal("requests allowed without a license")
+	}
+	v := fakeVerifier{verify: func([]byte, time.Time) (ext.Entitlement, error) {
+		return ext.Entitlement{Plan: "pro", Features: []string{string(FeatureRequests)}}, nil
+	}}
+	s = newTestService(t, v)
+	if err := os.WriteFile(home.LicensePath(), []byte("signed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(s.State().Allowed, string(FeatureRequests)) {
+		t.Fatalf("allowed %v", s.State().Allowed)
+	}
 }
