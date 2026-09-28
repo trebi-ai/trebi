@@ -129,6 +129,7 @@ type Service struct {
 	budgetGate BudgetGate
 	actions    ActionResolver
 	kits       KitSource
+	gate       RequestGate
 
 	// Subprocess runtime (Part D). rt is the shared agentwire runtime (its
 	// own session + pid ledger); cliDriver is a test override; cliRuns is the
@@ -812,6 +813,7 @@ func (s *Service) ListApprovals(ctx context.Context, opts ApprovalListOpts) ([]A
 
 // Terminate marks a run terminal with end reason and freezes tokens.
 func (s *Service) Terminate(ctx context.Context, id string, status Status, end EndReason, tokens *pricing.TokenUsage) error {
+	status, end = s.parkStatus(ctx, id, status, end)
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339Nano)
 
@@ -899,6 +901,9 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 	s.mu.Lock()
 	delete(s.sessions, id)
 	s.mu.Unlock()
+	if g := s.requestGate(); g != nil {
+		g.RunEnded(context.WithoutCancel(ctx), id, status)
+	}
 	return nil
 }
 

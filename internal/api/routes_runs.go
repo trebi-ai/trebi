@@ -20,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/launch"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/tmux"
@@ -1016,79 +1017,19 @@ func (s *Server) handleRunResume(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAgentRunScope(w, r, r.PathValue("id")) {
 		return
 	}
-	run, err := s.runs.Resume(r.Context(), r.PathValue("id"))
+	run, err := s.launch.Resume(r.Context(), r.PathValue("id"), runs.ResumeOpts{Reason: runs.ReasonResume})
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
 			writeErr(w, http.StatusNotFound, "not_found", "run not found")
-			return
+		case errors.Is(err, launch.ErrJobMissing):
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		default:
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		}
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, run)
-}
-
-// launchOptsFromJob rebuilds launch options for prev from its job file:
-// prompt with trigger vars/inputs applied, cwd, if_running, and session knobs.
-// Trigger capture and conversation key carry over.
-// jobFileForRun resolves the markdown that produced this run. Assistant
-// runs are TREBI.md (kind=assistant); agent runs are AGENT.md; findJobRow
-// only returns JOB.md rows.
-func (s *Server) jobFileForRun(ctx context.Context, prev *runs.Run) (workspaces.JobRow, error) {
-	if prev.Kind == runs.KindAgent {
-		return s.findAgentRow(ctx, prev.Workspace, prev.Job)
-	}
-	return s.findJobRow(ctx, prev.Workspace, prev.Job)
-}
-
-func (s *Server) launchOptsFromJob(ctx context.Context, prev *runs.Run, reason runs.RunReason) (runs.LaunchOpts, error) {
-	row, err := s.jobFileForRun(ctx, prev)
-	if err != nil {
-		return runs.LaunchOpts{}, err
-	}
-	j, err := job.ParseFile(row.Path)
-	if err != nil || j == nil {
-		if err == nil {
-			err = errJobNotFound
-		}
-		return runs.LaunchOpts{}, err
-	}
-	extra := map[string]string{}
-	if prev.Trigger != nil {
-		for k, v := range prev.Trigger.Vars {
-			extra[k] = v
-		}
-	}
-	for k, v := range prev.Inputs {
-		extra[k] = v
-	}
-	prompt := s.expandLaunchPrompt(ctx, prev.Workspace, j, j.Prompt, extra)
-	lopts := runs.LaunchOpts{
-		CreateOpts: runs.CreateOpts{
-			WorkspaceID: prev.Workspace, Job: prev.Job, Kind: prev.Kind,
-			Reason: reason, Harness: prev.Harness,
-			PromptPreview:   prompt,
-			Inputs:          prev.Inputs,
-			Trigger:         prev.Trigger,
-			ConversationKey: prev.ConversationKey,
-		},
-		Prompt: prompt,
-	}
-	kit := s.ws.OwnerKit(ctx, prev.Workspace, prev.Job)
-	d := j.LaunchDefaultsWithKit(kit)
-	lopts.WorkingDir = d.WorkingDir
-	lopts.Env = d.Env
-	lopts.Model, lopts.Effort = d.Model, d.Effort
-	lopts.IfRunning = d.IfRunning
-	lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = d.MaxDurationMS, d.IdleTimeoutMS, d.KeepAliveMS, d.NudgeMS
-	// A replay/retry must honor the document runtime (Part J): a job that says
-	// runtime: tui reopens the pane instead of silently flipping to the wire.
-	lopts.Runtime = j.Runtime
-	lopts.Memory = s.memoryLaunchFor(ctx, prev.Workspace, j)
-	lopts.Kit = kit
-	lopts.JobSkills = j.Skills
-	lopts.JobConnectors = j.Connectors
-	return lopts, nil
 }
 
 // memoryLaunchFor resolves the MEMORY.md seam for a manual launch. Nil = off.
@@ -1114,7 +1055,7 @@ func (s *Server) handleRunReplay(w http.ResponseWriter, r *http.Request) {
 	}
 	// A replay rebuilds the prompt from the job file plus the captured
 	// trigger vars/inputs — prompt_preview is truncated and not a prompt.
-	lopts, err := s.launchOptsFromJob(r.Context(), prev, runs.ReasonReplay)
+	lopts, err := s.launch.FromRun(r.Context(), prev, runs.ReasonReplay)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "job file for run no longer resolvable")
 		return
@@ -1197,7 +1138,7 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 		// Agent/logic: resume with failure note
 		note := "Retry after failure (end_reason=" + string(prev.EndReason) + "). Continue or fix the issue."
 		if prev.SessionID != "" {
-			run, err := s.runs.Resume(r.Context(), prev.ID)
+			run, err := s.launch.Resume(r.Context(), prev.ID, runs.ResumeOpts{Reason: runs.ReasonResume})
 			if err == nil && run != nil {
 				// Inject failure note if session live. CLI sessions take it on
 				// stdin via Session.Prompt; resume already succeeded, so the
@@ -1215,7 +1156,7 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, "conflict", "resume cap reached")
 			return
 		}
-		lopts, err := s.launchOptsFromJob(r.Context(), prev, runs.ReasonResume)
+		lopts, err := s.launch.FromRun(r.Context(), prev, runs.ReasonResume)
 		if err != nil {
 			writeErr(w, http.StatusNotFound, "not_found", "job file for run no longer resolvable")
 			return

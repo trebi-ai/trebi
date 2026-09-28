@@ -10,7 +10,8 @@ import (
 )
 
 // Run status — trebi's taxonomy, verbatim (B2).
-// LIVE = {running}. `resumed` is SUPERSEDED-terminal (B17).
+// LIVE = {running}. `resumed` is SUPERSEDED-terminal (B17). `parked` is
+// terminal: the run waits for the answer to a request.
 type Status string
 
 const (
@@ -21,6 +22,7 @@ const (
 	StatusSkipped  Status = "skipped"
 	StatusTimedOut Status = "timed_out"
 	StatusResumed  Status = "resumed"
+	StatusParked   Status = "parked"
 )
 
 // IsLive reports whether status counts as an active run.
@@ -29,7 +31,7 @@ func (s Status) IsLive() bool { return s == StatusRunning }
 // IsTerminal reports a finished run (including superseded resumed).
 func (s Status) IsTerminal() bool {
 	switch s {
-	case StatusComplete, StatusFailed, StatusExited, StatusSkipped, StatusTimedOut, StatusResumed:
+	case StatusComplete, StatusFailed, StatusExited, StatusSkipped, StatusTimedOut, StatusResumed, StatusParked:
 		return true
 	}
 	return false
@@ -63,6 +65,10 @@ const (
 	EndFailed        EndReason = "failed"
 	EndSessionGone   EndReason = "session_gone"
 	EndUpdate        EndReason = "update"
+	// EndRequest parks a run that waits for the answer to a request.
+	EndRequest EndReason = "request"
+	// EndRequestDismissed completes a parked run whose request was dismissed.
+	EndRequestDismissed EndReason = "request_dismissed"
 )
 
 // RunReason — launch producer.
@@ -76,6 +82,8 @@ const (
 	ReasonReplay     RunReason = "replay"
 	ReasonEscalation RunReason = "escalation"
 	ReasonReport     RunReason = "report"
+	// ReasonRequest continues a parked session with the answer to a request.
+	ReasonRequest RunReason = "request"
 )
 
 // Kind for runs: job | agent. Declared in dispatch, the lowest
@@ -119,7 +127,7 @@ func DeriveJobDisplayStatus(active bool, liveCount int, liveWaiting bool, last S
 // ValidStatus reports whether s is a known run status.
 func ValidStatus(s string) bool {
 	switch Status(s) {
-	case StatusRunning, StatusComplete, StatusFailed, StatusExited, StatusSkipped, StatusTimedOut, StatusResumed:
+	case StatusRunning, StatusComplete, StatusFailed, StatusExited, StatusSkipped, StatusTimedOut, StatusResumed, StatusParked:
 		return true
 	}
 	return false
@@ -129,7 +137,8 @@ func ValidStatus(s string) bool {
 func ValidEndReason(r string) bool {
 	switch EndReason(r) {
 	case EndSentinel, EndResult, EndKeepAlive, EndKeepAliveIdle, EndIdleTimeout, EndMaxDuration,
-		EndAuth, EndLimit, EndKill, EndReplace, EndSkip, EndLaunch, EndFailed, EndSessionGone, EndUpdate:
+		EndAuth, EndLimit, EndKill, EndReplace, EndSkip, EndLaunch, EndFailed, EndSessionGone, EndUpdate,
+		EndRequest, EndRequestDismissed:
 		return true
 	}
 	return false

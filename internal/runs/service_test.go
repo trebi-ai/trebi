@@ -7,7 +7,9 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,7 +85,7 @@ func TestResumeRefusesSuccessfulRun(t *testing.T) {
 	if err := svc.Terminate(ctx, done.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Resume(ctx, done.ID); err == nil || !strings.Contains(err.Error(), "finished successfully") {
+	if _, err := svc.Resume(ctx, done.ID, runs.LaunchOpts{}, runs.ResumeOpts{}); err == nil || !strings.Contains(err.Error(), "finished successfully") {
 		t.Fatalf("resume of a successful run: err=%v", err)
 	}
 
@@ -91,7 +93,7 @@ func TestResumeRefusesSuccessfulRun(t *testing.T) {
 	if err := svc.Terminate(ctx, killed.ID, runs.StatusExited, runs.EndKill, nil); err != nil {
 		t.Fatal(err)
 	}
-	next, err := svc.Resume(ctx, killed.ID)
+	next, err := svc.Resume(ctx, killed.ID, runs.LaunchOpts{}, runs.ResumeOpts{})
 	if err != nil {
 		t.Fatalf("resume of an interrupted run: %v", err)
 	}
@@ -635,7 +637,7 @@ func TestResumeCap(t *testing.T) {
 	if err := svc.Terminate(ctx, prev.ID, runs.StatusExited, runs.EndKill, nil); err != nil {
 		t.Fatal(err)
 	}
-	_, err = svc.Resume(ctx, prev.ID)
+	_, err = svc.Resume(ctx, prev.ID, runs.LaunchOpts{}, runs.ResumeOpts{})
 	if err == nil {
 		t.Fatal("expected resume-cap error")
 	}
@@ -927,5 +929,103 @@ func TestStatsRangeAndMTD(t *testing.T) {
 	rep, err = svc.Stats(ctx, runs.StatsOpts{Range: "24h", Job: "other"})
 	if err != nil || rep.Totals.Runs != 0 {
 		t.Fatalf("job filter: %+v %v", rep, err)
+	}
+}
+
+// gateStub is a RequestGate with a fixed answer that records RunEnded.
+type gateStub struct {
+	open  bool
+	mu    sync.Mutex
+	ended []runs.Status
+}
+
+func (g *gateStub) HasOpen(context.Context, string) (bool, error) { return g.open, nil }
+
+func (g *gateStub) RunEnded(_ context.Context, _ string, st runs.Status) {
+	g.mu.Lock()
+	g.ended = append(g.ended, st)
+	g.mu.Unlock()
+}
+
+// TestTerminateParksWithOpenRequest pins the park rule: a clean end with an
+// open request parks; a failure stays a failure. RunEnded fires once.
+func TestTerminateParksWithOpenRequest(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	gate := &gateStub{open: true}
+	svc.SetRequestGate(gate)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		status     runs.Status
+		end        runs.EndReason
+		wantStatus runs.Status
+		wantEnd    runs.EndReason
+	}{
+		{runs.StatusComplete, runs.EndResult, runs.StatusParked, runs.EndRequest},
+		{runs.StatusExited, runs.EndKill, runs.StatusParked, runs.EndRequest},
+		{runs.StatusFailed, runs.EndFailed, runs.StatusFailed, runs.EndFailed},
+	} {
+		gate.mu.Lock()
+		gate.ended = nil
+		gate.mu.Unlock()
+		run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.Terminate(ctx, run.ID, tc.status, tc.end, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.Terminate(ctx, run.ID, tc.status, tc.end, nil); err != nil {
+			t.Fatal(err)
+		}
+		got, err := svc.Get(ctx, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != tc.wantStatus || got.EndReason != tc.wantEnd {
+			t.Fatalf("%s: got %s/%s", tc.status, got.Status, got.EndReason)
+		}
+		gate.mu.Lock()
+		ended := slices.Clone(gate.ended)
+		gate.mu.Unlock()
+		if len(ended) != 1 || ended[0] != tc.wantStatus {
+			t.Fatalf("%s: RunEnded calls %v", tc.status, ended)
+		}
+	}
+}
+
+// TestUnparkCompletesParkedRun pins the dismiss path.
+func TestUnparkCompletesParkedRun(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	svc.SetRequestGate(&gateStub{open: true})
+	ctx := context.Background()
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Unpark(ctx, run.ID, runs.EndRequestDismissed); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.Get(ctx, run.ID)
+	if got.Status != runs.StatusComplete || got.EndReason != runs.EndRequestDismissed {
+		t.Fatalf("got %s/%s", got.Status, got.EndReason)
+	}
+	if err := svc.Unpark(ctx, run.ID, runs.EndRequestDismissed); !errors.Is(err, runs.ErrNotParked) {
+		t.Fatalf("second unpark: %v", err)
 	}
 }

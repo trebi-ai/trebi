@@ -323,3 +323,40 @@ func TestPaneCaptureHeader(t *testing.T) {
 		t.Fatalf("blank capture %q", got)
 	}
 }
+
+// openGate reports an open request for every run.
+type openGate struct{}
+
+func (openGate) HasOpen(context.Context, string) (bool, error) { return true, nil }
+func (openGate) RunEnded(context.Context, string, Status)      {}
+
+// TestIdleWithOpenRequestParks pins the pane rule: an idle pane with an open
+// request parks at once, without the idle timeout.
+func TestIdleWithOpenRequestParks(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := New(st, nil, nil)
+	svc.SetRequestGate(openGate{})
+	run, err := svc.Create(context.Background(), CreateOpts{WorkspaceID: "ws", Job: "j", IdleTimeoutMS: 3_600_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewReaper(svc)
+	if !r.checkIdle(context.Background(), run, "> ", time.Now()) {
+		t.Fatal("checkIdle did not stop")
+	}
+	got, err := svc.Get(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusParked || got.EndReason != EndRequest {
+		t.Fatalf("run: status=%s end=%s", got.Status, got.EndReason)
+	}
+}

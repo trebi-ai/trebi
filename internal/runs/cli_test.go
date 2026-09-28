@@ -2,6 +2,7 @@ package runs_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -602,7 +603,7 @@ func TestResumeKeepsConnectors(t *testing.T) {
 	if err := svc.Terminate(ctx, prev.ID, runs.StatusFailed, runs.EndLaunch, nil); err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.Resume(ctx, prev.ID)
+	run, err := svc.Resume(ctx, prev.ID, runs.LaunchOpts{}, runs.ResumeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -625,4 +626,106 @@ func fakeBinaries(t *testing.T, names ...string) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("ANTHROPIC_API_KEY", "test")
 	t.Setenv("GEMINI_API_KEY", "test")
+}
+
+// parkedCLIRun makes a parked CLI run with session sess-1 in its own
+// working dir.
+func parkedCLIRun(t *testing.T, svc *runs.Service) (*runs.Run, string) {
+	t.Helper()
+	fakeBinaries(t, "claude")
+	ctx := context.Background()
+	dir := t.TempDir()
+	prev, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws", Job: "demo", Kind: runs.KindJob, Harness: "claude", Runtime: "cli",
+		SessionID: "sess-1", WorkingDir: dir, ConversationKey: "ck",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, prev.ID, runs.StatusExited, runs.EndKill, nil); err != nil {
+		t.Fatal(err)
+	}
+	return prev, dir
+}
+
+// TestResumeKeepsWorkingDir pins the fix: a resume starts in the working dir
+// of the parent, not the daemon cwd.
+func TestResumeKeepsWorkingDir(t *testing.T) {
+	drv := &captureDriver{}
+	svc, _, _ := cliFixture(t, drv)
+	prev, dir := parkedCLIRun(t, svc)
+	run, err := svc.Resume(context.Background(), prev.ID, runs.LaunchOpts{}, runs.ResumeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := drv.last(t)
+	if req.WorkingDir != dir || req.SessionID != "sess-1" {
+		t.Fatalf("working dir %q session %q, want %q sess-1", req.WorkingDir, req.SessionID, dir)
+	}
+	got := waitTerminal(t, svc, run.ID)
+	if got.WorkingDir != dir || got.ConversationKey != "ck" {
+		t.Fatalf("row working dir %q conversation %q", got.WorkingDir, got.ConversationKey)
+	}
+}
+
+// TestResumeRebuildsFromJob pins the base: model, effort, and env come from
+// the job options; the session comes from the parent.
+func TestResumeRebuildsFromJob(t *testing.T) {
+	drv := &captureDriver{}
+	svc, _, _ := cliFixture(t, drv)
+	svc.WithActions(mcpResolver{})
+	prev, _ := parkedCLIRun(t, svc)
+	base := runs.LaunchOpts{
+		Model: "opus", Effort: "high", Env: map[string]string{"JOB_ENV": "1"},
+		JobConnectors: []string{"gh"},
+	}
+	base.WorkingDir = "/elsewhere"
+	run, err := svc.Resume(context.Background(), prev.ID, base, runs.ResumeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := drv.last(t)
+	if req.Model != "opus" || req.Effort != "high" || req.Env["JOB_ENV"] != "1" {
+		t.Fatalf("model %q effort %q env %v", req.Model, req.Effort, req.Env["JOB_ENV"])
+	}
+	if len(req.MCPServers) != 1 || req.MCPServers[0].Name != "gh" {
+		t.Fatalf("servers %+v", req.MCPServers)
+	}
+	if req.SessionID != "sess-1" || req.WorkingDir == "/elsewhere" {
+		t.Fatalf("session %q working dir %q", req.SessionID, req.WorkingDir)
+	}
+	waitTerminal(t, svc, run.ID)
+}
+
+// TestCLIResumePromptExact pins the handoff: the first prompt of a request
+// resume reaches the session byte for byte.
+func TestCLIResumePromptExact(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "prompt.json")
+	drv := &captureDriver{FakeDriver: agentwire.FakeDriver{
+		Script: `read -r line; printf '%s' "$line" > ` + out + `; echo '{"type":"result","subtype":"success"}'`,
+	}}
+	svc, _, _ := cliFixture(t, drv)
+	prev, _ := parkedCLIRun(t, svc)
+	prompt := "[trebi] The person answered 1 request.\n\n```json\n{\n  \"text\": \"line 1\\nline `2` \\\"q\\\" <html> \"\n}\n```\n\nContinue the task with this answer."
+	run, err := svc.Resume(context.Background(), prev.ID, runs.LaunchOpts{}, runs.ResumeOpts{Reason: runs.ReasonRequest, Prompt: prompt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, svc, run.ID)
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frame struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatal(err)
+	}
+	if frame.Text != prompt {
+		t.Fatalf("prompt\n got %q\nwant %q", frame.Text, prompt)
+	}
+	if run.Reason != runs.ReasonRequest {
+		t.Fatalf("reason %s", run.Reason)
+	}
 }

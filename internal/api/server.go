@@ -32,6 +32,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/launch"
 	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
@@ -74,6 +75,7 @@ type Server struct {
 	lic        *license.Service
 	templates  *agents.Catalog
 	proposals  *proposals.Service
+	launch     *launch.Launcher
 	// catalog is the registry client; it follows the configured list.
 	catalog *registry.Live
 
@@ -165,6 +167,7 @@ func New(st *store.Store, opts Options) *Server {
 		email:        email.New(st),
 		templates:    agents.NewCatalog(),
 		proposals:    proposals.NewService(st, fs, ws, st, r),
+		launch:       launch.NewLauncher(ws, r),
 		catalog:      registry.NewLive(opts.Registry),
 		cloud:        cl,
 		hooks:        webhooks.New(st, conn, cl),
@@ -328,7 +331,7 @@ func (s *Server) BindCatalog(c *registry.Live) {
 	}
 }
 
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, skillsSvc *skills.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service, cloudSvc *cloudlink.Service, hooksSvc *webhooks.Service) {
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, skillsSvc *skills.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service, cloudSvc *cloudlink.Service, hooksSvc *webhooks.Service, launcher *launch.Launcher) {
 	if runsSvc != nil {
 		s.runs = runsSvc
 	}
@@ -370,6 +373,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	}
 	if hooksSvc != nil {
 		s.hooks = hooksSvc
+	}
+	if launcher != nil {
+		s.launch = launcher
 	}
 }
 

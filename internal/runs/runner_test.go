@@ -359,3 +359,103 @@ func wakeLaunchOpts(t *testing.T, kind, job string, wake *runs.WakeOpts) runs.La
 		FakeCommand: []string{"sh", "-c", "true"},
 	}
 }
+
+// parkedChain builds a service whose runs always park, plus one parked fake
+// run to resume from.
+func parkedChain(t *testing.T, fake string) (*runs.Service, *runs.Run, string) {
+	t.Helper()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "r.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := runs.New(st, nil, nil)
+	svc.SetRequestGate(&gateStub{open: true})
+	dir := t.TempDir()
+	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual, WorkingDir: dir,
+		},
+		Prompt:      "ask first",
+		FakeCommand: []string{"sh", "-c", fake},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != runs.StatusParked || run.SessionID == "" {
+		t.Fatalf("first run: %s session=%q", run.Status, run.SessionID)
+	}
+	return svc, run, dir
+}
+
+// TestResumeRequestNoAttemptCount pins the cap rule: a request resume does not
+// count toward MaxResumeAttempts; a plain resume still stops at the cap.
+func TestResumeRequestNoAttemptCount(t *testing.T) {
+	t.Parallel()
+	fake := `echo "$TREBI_RUN_COMPLETE"`
+	svc, prev, _ := parkedChain(t, fake)
+	ctx := context.Background()
+	base := runs.LaunchOpts{FakeCommand: []string{"sh", "-c", fake}}
+	for i := range 6 {
+		next, err := svc.Resume(ctx, prev.ID, base, runs.ResumeOpts{Reason: runs.ReasonRequest, Prompt: "answer"})
+		if err != nil {
+			t.Fatalf("request resume %d: %v", i, err)
+		}
+		if next.ResumeAttempts != 0 || next.Reason != runs.ReasonRequest || next.ResumedFrom != prev.ID {
+			t.Fatalf("request resume %d: attempts=%d reason=%s from=%s", i, next.ResumeAttempts, next.Reason, next.ResumedFrom)
+		}
+		prev = next
+	}
+	var err error
+	for i := range runs.MaxResumeAttempts + 1 {
+		prev, err = svc.Resume(ctx, prev.ID, base, runs.ResumeOpts{Reason: runs.ReasonResume})
+		if i < runs.MaxResumeAttempts && err != nil {
+			t.Fatalf("resume %d: %v", i, err)
+		}
+	}
+	if err == nil || !strings.Contains(err.Error(), "resume cap") {
+		t.Fatalf("plain resume past the cap: %v", err)
+	}
+}
+
+// TestResumeAcceptsParked pins the guard: a parked run resumes, and the
+// parent changes to resumed.
+func TestResumeAcceptsParked(t *testing.T) {
+	t.Parallel()
+	fake := `echo "$TREBI_RUN_COMPLETE"`
+	svc, prev, _ := parkedChain(t, fake)
+	ctx := context.Background()
+	next, err := svc.Resume(ctx, prev.ID, runs.LaunchOpts{FakeCommand: []string{"sh", "-c", fake}},
+		runs.ResumeOpts{Reason: runs.ReasonRequest, Prompt: "answer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.SessionID != prev.SessionID {
+		t.Fatalf("session %q, want %q", next.SessionID, prev.SessionID)
+	}
+	got, _ := svc.Get(ctx, prev.ID)
+	if got.Status != runs.StatusResumed {
+		t.Fatalf("parent status %s", got.Status)
+	}
+}
+
+// TestPaneResumePromptExact pins the fake pane contract: the resumed command
+// sees the session to resume and the exact prompt.
+func TestPaneResumePromptExact(t *testing.T) {
+	t.Parallel()
+	fake := `printf %s "$TREBI_RESUME_SESSION_ID" > resume.txt; printf %s "$TREBI_FAKE_PROMPT" > prompt.txt; echo "$TREBI_RUN_COMPLETE"`
+	svc, prev, dir := parkedChain(t, fake)
+	prompt := "[trebi] The person answered.\n\n```json\n{\"text\": \"a `b` \\\"c\\\" <d> \"}\n```\n"
+	if _, err := svc.Resume(context.Background(), prev.ID, runs.LaunchOpts{FakeCommand: []string{"sh", "-c", fake}},
+		runs.ResumeOpts{Reason: runs.ReasonRequest, Prompt: prompt}); err != nil {
+		t.Fatal(err)
+	}
+	gotSess, _ := os.ReadFile(filepath.Join(dir, "resume.txt"))
+	if string(gotSess) != prev.SessionID {
+		t.Fatalf("resume session %q, want %q", gotSess, prev.SessionID)
+	}
+	gotPrompt, _ := os.ReadFile(filepath.Join(dir, "prompt.txt"))
+	if string(gotPrompt) != prompt {
+		t.Fatalf("prompt %q, want %q", gotPrompt, prompt)
+	}
+}

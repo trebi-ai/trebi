@@ -200,7 +200,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		command = "claude"
 	}
 	command = resolveCommand(command)
-	if opts.WorkingDir == "" {
+	if opts.WorkingDir == "" && opts.ResumedFrom == "" {
 		opts.WorkingDir, _ = os.Getwd()
 	}
 	tool := detectTool(command, &opts)
@@ -301,6 +301,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		// surface ErrResumeUnsupported instead of a fake pane or a silent
 		// failed row.
 		if resuming && errors.Is(err, agentwire.ErrResumeUnsupported) {
+			_ = s.Terminate(ctx, run.ID, StatusFailed, EndLaunch, nil)
 			return nil, err
 		}
 		s.appendRunLog(run.ID, "cli launch failed: "+err.Error())
@@ -786,7 +787,9 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 			s.recordMemoryInvalid(ctx, run, issues, "wire")
 		}
 	}
-	if run.Session.KeepAliveMS > 0 && !cr.oneShot {
+	// A run that waits for a request answer parks at once: keep-alive would
+	// hold the session for nothing.
+	if run.Session.KeepAliveMS > 0 && !cr.oneShot && !s.hasOpenRequest(ctx, runID) {
 		cr.markKeepAlive(time.Now())
 		s.AddEvent(ctx, runID, "result", "wire", map[string]string{"keep_alive": "true"})
 		s.SetSessionState(ctx, runID, SessionIdle, "wire")

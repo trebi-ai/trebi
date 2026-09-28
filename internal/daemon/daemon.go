@@ -28,6 +28,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/launch"
 	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
@@ -103,6 +104,7 @@ type ControlPlane struct {
 	Cloud     *cloudlink.Service
 	Webhooks  *webhooks.Service
 	License   *license.Service
+	Launcher  *launch.Launcher
 	Opts      Options
 
 	// The assistant session stack (plan D). The API server binds these
@@ -249,6 +251,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Cloud:         cl,
 		Webhooks:      hk,
 		License:       lic,
+		Launcher:      launch.NewLauncher(ws, r),
 		Opts:          opts,
 		log:           slog.Default().With("source", "daemon"),
 		queue:         q,

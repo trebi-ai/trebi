@@ -352,7 +352,7 @@ func (c *ControlPlane) dispatchResume(ctx context.Context, item *dispatch.QueueI
 	if !c.markAttempt(ctx, item) {
 		return
 	}
-	run, err := c.Runs.Resume(ctx, item.ResumeOf)
+	run, err := c.Launcher.Resume(ctx, item.ResumeOf, runs.ResumeOpts{Reason: runs.ReasonResume})
 	if err != nil || run == nil {
 		c.log.Warn("queue resume", "job", item.Job, "queue_id", item.ID, "error", err)
 		c.failOrRetry(ctx, item, err, run)

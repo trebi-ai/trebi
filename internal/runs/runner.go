@@ -155,7 +155,9 @@ func (o *LaunchOpts) applyResumePlan(plan *tmux.LaunchPlan) {
 	if o.ResumedFrom == "" {
 		o.ResumedFrom = o.ResumeSessionID
 	}
-	o.Reason = ReasonResume
+	if o.Reason != ReasonRequest {
+		o.Reason = ReasonResume
+	}
 }
 
 // CreateAndLaunch inserts a run and starts the harness (tmux) or fake process.
@@ -388,6 +390,9 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 	if opts.TmuxSession == "" {
 		opts.TmuxSession = "trebi-fake-" + strings.ToLower(ulid.Make().String()[:8])
 	}
+	if opts.ResumeSessionID != "" {
+		opts.SessionID = opts.ResumeSessionID
+	}
 	run, err := s.Create(ctx, opts.CreateOpts)
 	if err != nil {
 		return nil, err
@@ -495,7 +500,7 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	// Prefer pinned binary under TREBI_HOME/bin/<tool>/current.
 	command = resolveCommand(command)
 
-	if opts.WorkingDir == "" {
+	if opts.WorkingDir == "" && opts.ResumedFrom == "" {
 		opts.WorkingDir, _ = os.Getwd()
 	}
 	cwd := opts.WorkingDir
@@ -853,6 +858,7 @@ func fakeEnv(run *Run, opts LaunchOpts, dir string) []string {
 		"TREBI_RUN_COMPLETE="+CompletionSentinel(run.ID),
 		"TREBI_SESSION_ID="+opts.SessionID,
 		"TREBI_FAKE_PROMPT="+opts.Prompt,
+		"TREBI_RESUME_SESSION_ID="+opts.ResumeSessionID,
 	)
 	for k, v := range opts.Env {
 		env = append(env, k+"="+v)
@@ -882,51 +888,78 @@ func (s *Service) Kill(ctx context.Context, runID string) error {
 	return s.Terminate(ctx, runID, StatusExited, EndKill, nil)
 }
 
-// MaxResumeAttempts caps the resume chain length for one session.
+// MaxResumeAttempts caps the resume chain length for one session. A request
+// resume does not count toward it.
 const MaxResumeAttempts = 5
 
-// Resume launches a new run that resumes the prior session.
-func (s *Service) Resume(ctx context.Context, fromID string) (*Run, error) {
+// ResumeOpts selects why a session continues and with which prompt.
+type ResumeOpts struct {
+	Reason RunReason
+	Prompt string
+}
+
+// Resume launches a new run that continues the session of fromID. base holds
+// the launch options rebuilt from the job file (model, env, memory, kit);
+// Resume sets the session, the predecessor, and the working directory from
+// the previous row.
+func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o ResumeOpts) (*Run, error) {
 	prev, err := s.Get(ctx, fromID)
 	if err != nil {
 		return nil, err
 	}
 	if prev.SessionID == "" {
-		return nil, fmt.Errorf("run %s has no session_id to resume", fromID)
+		return nil, fmt.Errorf("run %s: %w", fromID, ErrNoSession)
 	}
 	// A run that finished its job has nothing to continue: the vendor session
 	// is complete, and resuming it errors out. A fresh run is the right move.
 	if prev.Status == StatusComplete && (prev.EndReason == EndResult || prev.EndReason == EndSentinel) {
 		return nil, fmt.Errorf("run %s finished successfully; replay it for a fresh run", fromID)
 	}
-	if prev.ResumeAttempts >= MaxResumeAttempts {
-		s.emitResumeExhausted(ctx, prev)
-		return nil, fmt.Errorf("run %s reached the resume cap (%d attempts)", fromID, MaxResumeAttempts)
+	if o.Reason == "" {
+		o.Reason = ReasonResume
 	}
-	opts := LaunchOpts{
-		CreateOpts: CreateOpts{
-			WorkspaceID:    prev.Workspace,
-			Job:            prev.Job,
-			Kind:           prev.Kind,
-			Reason:         ReasonResume,
-			Harness:        prev.Harness,
-			PromptPreview:  "(resume)",
-			ResumedFrom:    fromID,
-			ResumeAttempts: prev.ResumeAttempts + 1,
-			MaxDurationMS:  prev.Session.MaxDurationMS,
-			IdleTimeoutMS:  prev.Session.IdleTimeoutMS,
-			KeepAliveMS:    prev.Session.KeepAliveMS,
-			Runtime:        prev.Runtime,
-		},
-		ResumeSessionID: prev.SessionID,
-		Prompt:          "Continue from where you left off.",
-		IfRunning:       "allow",
+	attempts := prev.ResumeAttempts
+	if o.Reason != ReasonRequest {
+		if prev.ResumeAttempts >= MaxResumeAttempts {
+			s.emitResumeExhausted(ctx, prev)
+			return nil, fmt.Errorf("run %s reached the resume cap (%d attempts)", fromID, MaxResumeAttempts)
+		}
+		attempts++
+	}
+	if o.Prompt == "" {
+		o.Prompt = "Continue from where you left off."
+	}
+	opts := base
+	opts.WorkspaceID, opts.Job, opts.Kind = prev.Workspace, prev.Job, prev.Kind
+	opts.Reason = o.Reason
+	opts.Harness = prev.Harness
+	opts.Runtime = prev.Runtime
+	opts.ResumedFrom = fromID
+	opts.ResumeAttempts = attempts
+	opts.ResumeSessionID = prev.SessionID
+	opts.SessionID = ""
+	opts.WorkingDir = prev.WorkingDir
+	opts.ConversationKey, opts.ConversationID = prev.ConversationKey, prev.ConversationID
+	opts.Prompt = o.Prompt
+	opts.PromptPreview = o.Prompt
+	opts.IfRunning = "allow"
+	opts.Wake = nil
+	if opts.MaxDurationMS == 0 && opts.IdleTimeoutMS == 0 && opts.KeepAliveMS == 0 {
+		opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS = prev.Session.MaxDurationMS, prev.Session.IdleTimeoutMS, prev.Session.KeepAliveMS
+	}
+	if len(opts.JobConnectors) == 0 {
 		// Resolve the names again: the run gets the current definitions
 		// and fresh secrets.
-		JobConnectors: s.runConnectors(ctx, fromID),
+		opts.JobConnectors = s.runConnectors(ctx, fromID)
 	}
 	run, _, err := s.CreateAndLaunch(ctx, opts)
-	return run, err
+	if err != nil {
+		if errors.Is(err, agentwire.ErrResumeUnsupported) || errors.Is(err, tmux.ErrResumeUnsupported) {
+			return run, fmt.Errorf("%w: %w", ErrResumeUnsupported, err)
+		}
+		return run, err
+	}
+	return run, nil
 }
 
 // runConnectors reads the connector names a run launched with.
