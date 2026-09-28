@@ -53,6 +53,9 @@ func (c *catalogServer) handler(t *testing.T) http.Handler {
 	mux.HandleFunc("/v1/snapshots/demo/1.1.0.tar.gz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(c.snap)
 	})
+	mux.HandleFunc("/v1/bin/demo/1.1.0/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("program bytes"))
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		down := c.down
@@ -73,6 +76,7 @@ func newCatalogService(t *testing.T) (*Service, *catalogServer) {
 	}
 	snap := []byte("snapshot bytes")
 	sum := sha256.Sum256(snap)
+	progSum := sha256.Sum256([]byte("program bytes"))
 	cs := &catalogServer{key: key, snap: snap}
 	srv := httptest.NewServer(cs.handler(t))
 	t.Cleanup(srv.Close)
@@ -80,7 +84,11 @@ func newCatalogService(t *testing.T) (*Service, *catalogServer) {
 		{Name: "demo", Title: "Demo", Description: "A demo connector", Publisher: "trebi", Capabilities: []string{"actions"}, Latest: "1.1.0",
 			Versions: []IndexVersion{
 				{Version: "1.0.0", Digest: "sha256:00", URL: srv.URL + "/v1/snapshots/demo/1.0.0.tar.gz"},
-				{Version: "1.1.0", Digest: "sha256:" + hex.EncodeToString(sum[:]), URL: srv.URL + "/v1/snapshots/demo/1.1.0.tar.gz"},
+				{Version: "1.1.0", Digest: "sha256:" + hex.EncodeToString(sum[:]), URL: srv.URL + "/v1/snapshots/demo/1.1.0.tar.gz",
+					Binaries: []IndexBinary{
+						{Platform: "linux/amd64", URL: srv.URL + "/v1/bin/demo/1.1.0/demo_linux_amd64.tar.gz", Digest: "sha256:" + hex.EncodeToString(progSum[:])},
+						{Platform: "linux/arm64", URL: srv.URL + "/v1/bin/demo/1.1.0/demo_linux_arm64.tar.gz", Digest: "sha256:00"},
+					}},
 			}},
 		{Name: "other", Title: "Other", Description: "Community entry", Publisher: "community", Latest: "0.1.0",
 			Versions: []IndexVersion{{Version: "0.1.0"}}},
@@ -122,6 +130,15 @@ func TestTrebiCatalog(t *testing.T) {
 	}
 	if _, err := svc.Snapshot(ctx, "demo", "1.0.0"); err == nil {
 		t.Fatal("a snapshot that misses its digest must fail")
+	}
+	if b, err := svc.Binary(ctx, "demo", "1.1.0", "linux/amd64"); err != nil || string(b) != "program bytes" {
+		t.Fatalf("binary = %q %v", b, err)
+	}
+	if _, err := svc.Binary(ctx, "demo", "1.1.0", "linux/arm64"); !errors.Is(err, ErrInvalidEntry) {
+		t.Fatalf("a program that misses its digest = %v", err)
+	}
+	if _, err := svc.Binary(ctx, "demo", "1.1.0", "darwin/arm64"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing platform = %v", err)
 	}
 
 	// A bad signature keeps the last good index and reports the problem.

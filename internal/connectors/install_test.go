@@ -24,10 +24,12 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
-// fakeCatalog serves snapshots built from a manifest template.
+// fakeCatalog serves snapshots built from a manifest template, and a
+// program archive of each version when binary is set.
 type fakeCatalog struct {
 	versions []registry.IndexVersion
 	files    func(version string) map[string]string
+	binary   func(version, platform string) ([]byte, error)
 }
 
 func (f fakeCatalog) Versions(context.Context, string) ([]registry.IndexVersion, error) {
@@ -36,6 +38,13 @@ func (f fakeCatalog) Versions(context.Context, string) ([]registry.IndexVersion,
 
 func (f fakeCatalog) Snapshot(_ context.Context, _, version string) ([]byte, error) {
 	return tarGz(f.files(version))
+}
+
+func (f fakeCatalog) Binary(_ context.Context, _, version, platform string) ([]byte, error) {
+	if f.binary == nil {
+		return nil, registry.ErrNotFound
+	}
+	return f.binary(version, platform)
 }
 
 func tarGz(files map[string]string) ([]byte, error) {
@@ -256,5 +265,39 @@ func TestInstallSnapshotNameMismatch(t *testing.T) {
 	_, svc := installStack(t, "other", nil)
 	if _, err := svc.Install(context.Background(), connectors.InstallRequest{Name: "demo", Version: "1.0.0"}); err == nil || !strings.Contains(err.Error(), "holds other@1.0.0") {
 		t.Fatalf("install = %v", err)
+	}
+}
+
+func TestInstallFromCatalog(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	ctx := context.Background()
+	_, _, svc := openStack(t)
+	var asked string
+	svc.WithInstall(connectors.InstallConfig{Catalog: fakeCatalog{
+		versions: []registry.IndexVersion{{Version: "1.0.0"}},
+		files: func(v string) map[string]string {
+			files := demoFiles("demo")(v)
+			m := files["trebi-connector.yaml"]
+			start, end := strings.Index(m, "install:"), strings.Index(m, "  bin:")
+			files["trebi-connector.yaml"] = m[:start] + "install:\n  catalog: true\n" + m[end:]
+			return files
+		},
+		binary: func(v, platform string) ([]byte, error) {
+			asked = platform
+			return tarGz(map[string]string{"demo-cli": "#!/bin/sh\necho demo-cli " + v + "\n"})
+		},
+	}})
+	r, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked != runtime.GOOS+"/"+runtime.GOARCH {
+		t.Fatalf("platform = %q", asked)
+	}
+	out, err := exec.Command(filepath.Join(r.BinDir(), "demo-cli")).Output()
+	if err != nil || strings.TrimSpace(string(out)) != "demo-cli 1.0.0" {
+		t.Fatalf("bin = %q %v", out, err)
 	}
 }

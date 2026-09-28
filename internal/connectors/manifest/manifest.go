@@ -47,6 +47,7 @@ type Manifest struct {
 
 // Install lists the install methods. The first method that works wins.
 type Install struct {
+	Catalog        bool           `yaml:"catalog,omitempty" json:"catalog,omitempty"` // the archive that the catalog index lists for this version
 	GitHubRelease  *GitHubRelease `yaml:"github_release,omitempty" json:"github_release,omitempty"`
 	Brew           string         `yaml:"brew,omitempty" json:"brew,omitempty"`
 	Go             string         `yaml:"go,omitempty" json:"go,omitempty"`
@@ -644,7 +645,7 @@ func (v *validator) install(m Manifest) {
 	if in.Packslip != nil {
 		v.add("install.packslip", "is reserved")
 	}
-	if (in.GitHubRelease != nil || in.Brew != "" || in.Go != "") && in.Bin == "" {
+	if (in.Catalog || in.GitHubRelease != nil || in.Brew != "" || in.Go != "") && in.Bin == "" {
 		v.add("install.bin", "required with an install method")
 	}
 }

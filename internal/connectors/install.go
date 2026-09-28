@@ -41,6 +41,7 @@ const digestFile = ".digest"
 type Catalog interface {
 	Versions(ctx context.Context, name string) ([]registry.IndexVersion, error)
 	Snapshot(ctx context.Context, name, version string) ([]byte, error)
+	Binary(ctx context.Context, name, version, platform string) ([]byte, error)
 }
 
 // InstallConfig wires the catalog and the release host of the installs.
@@ -219,6 +220,7 @@ func (s *Service) installBinary(ctx context.Context, m manifest.Manifest, bin st
 		ok   bool
 		run  func() error
 	}{
+		{"catalog", in.Catalog, func() error { return s.installCatalog(ctx, m, bin) }},
 		{"github_release", in.GitHubRelease != nil, func() error { return s.installRelease(ctx, m, bin) }},
 		{"brew", in.Brew != "", func() error { return runInstall(ctx, nil, "brew", "install", in.Brew) }},
 		{"go", in.Go != "", func() error {
@@ -286,6 +288,27 @@ func runInstall(ctx context.Context, env []string, name string, args ...string) 
 func lastLine(b []byte) string {
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	return lines[len(lines)-1]
+}
+
+// installCatalog writes the program from the catalog archive of this
+// platform into bin. The catalog checks the digest.
+func (s *Service) installCatalog(ctx context.Context, m manifest.Manifest, bin string) error {
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	if len(m.Platforms) > 0 && !slices.Contains(m.Platforms, platform) {
+		return fmt.Errorf("no program for %s", platform)
+	}
+	data, err := s.catalog.Binary(ctx, m.Name, m.Version, platform)
+	if err != nil {
+		return err
+	}
+	prog, err := extractProgram(m.Install.Bin+".tar.gz", data, m.Install.Bin)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(bin, m.Install.Bin), prog, 0o755) //nolint:gosec // the program must run
 }
 
 // installRelease downloads the release asset of this platform, checks it

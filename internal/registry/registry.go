@@ -673,3 +673,8 @@ func (l *Live) Versions(ctx context.Context, name string) ([]IndexVersion, error
 func (l *Live) Snapshot(ctx context.Context, name, version string) ([]byte, error) {
 	return l.Current().Snapshot(ctx, name, version)
 }
+
+// Binary downloads one checked program archive.
+func (l *Live) Binary(ctx context.Context, name, version, platform string) ([]byte, error) {
+	return l.Current().Binary(ctx, name, version, platform)
+}

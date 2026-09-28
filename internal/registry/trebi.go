@@ -30,6 +30,9 @@ const catalogTTL = 10 * time.Minute
 // maxSnapshot caps one snapshot download.
 const maxSnapshot = 32 << 20
 
+// maxBinary caps one program archive download.
+const maxBinary = 256 << 20
+
 // ErrBadSignature is an index whose signature no trusted key verifies.
 var ErrBadSignature = errors.New("catalog signature is not valid")
 
@@ -53,11 +56,20 @@ type IndexEntry struct {
 
 // IndexVersion is one immutable snapshot of a catalog connector.
 type IndexVersion struct {
-	Version     string `json:"version"`
-	Digest      string `json:"digest"`
-	URL         string `json:"url"`
-	PublishedAt string `json:"published_at"`
-	Yanked      bool   `json:"yanked,omitempty"`
+	Version     string        `json:"version"`
+	Digest      string        `json:"digest"`
+	URL         string        `json:"url"`
+	PublishedAt string        `json:"published_at"`
+	Yanked      bool          `json:"yanked,omitempty"`
+	Binaries    []IndexBinary `json:"binaries,omitempty"`
+}
+
+// IndexBinary is the program archive of one version for one platform. An
+// entry with install.catalog has one for each of its platforms.
+type IndexBinary struct {
+	Platform string `json:"platform"` // "<os>/<arch>"
+	URL      string `json:"url"`
+	Digest   string `json:"digest"`
 }
 
 // version returns the named version of e.
@@ -274,6 +286,34 @@ func (s *Service) Snapshot(ctx context.Context, name, version string) ([]byte, e
 	sum := sha256.Sum256(body)
 	if got := "sha256:" + hex.EncodeToString(sum[:]); got != v.Digest {
 		return nil, fmt.Errorf("%w: %s@%s has digest %s, the index says %s", ErrInvalidEntry, name, version, got, v.Digest)
+	}
+	return body, nil
+}
+
+// Binary downloads the program archive of one version for one platform and
+// checks it against the digest of the signed index.
+func (s *Service) Binary(ctx context.Context, name, version, platform string) ([]byte, error) {
+	e, err := s.catalogEntry(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	v, ok := e.version(version)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s@%s", ErrNotFound, name, version)
+	}
+	i := slices.IndexFunc(v.Binaries, func(b IndexBinary) bool { return b.Platform == platform })
+	if i < 0 {
+		return nil, fmt.Errorf("%w: %s@%s has no program for %s", ErrNotFound, name, version, platform)
+	}
+	b := v.Binaries[i]
+	t, _ := s.trebiRegistry() // catalogEntry found it
+	body, err := s.fetchCapped(ctx, t.reg, b.URL, "application/gzip", maxBinary)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(body)
+	if got := "sha256:" + hex.EncodeToString(sum[:]); got != b.Digest {
+		return nil, fmt.Errorf("%w: the %s program of %s@%s has digest %s, the index says %s", ErrInvalidEntry, platform, name, version, got, b.Digest)
 	}
 	return body, nil
 }

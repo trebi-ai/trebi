@@ -62,7 +62,9 @@ func TestValidateRules(t *testing.T) {
 		{"unknown login", func(m *manifest.Manifest) { m.Setup.Login = []string{"sms"} }, []string{"setup.login"}},
 		{"bad compat", func(m *manifest.Manifest) { m.Skill.Compat = ">=x" }, []string{"skill.compat"}},
 		{"skill escapes", func(m *manifest.Manifest) { m.Skill.Path = "../other" }, []string{"skill.path"}},
-		{"bad template", func(m *manifest.Manifest) { m.Install.GitHubRelease.Asset = "x_{goos}.tgz" }, []string{"install.github_release.asset"}},
+		{"bad template", func(m *manifest.Manifest) {
+			m.Install.GitHubRelease = &manifest.GitHubRelease{Repo: "a/b", Tag: "v{version}", Asset: "x_{goos}.tgz"}
+		}, []string{"install.github_release.asset"}},
 		{"install needs bin", func(m *manifest.Manifest) { m.Install.Bin = "" }, []string{"install.bin"}},
 		{"mcp two forms", func(m *manifest.Manifest) {
 			m.Actions.MCP = &manifest.MCPAction{Command: "x", URL: "https://x"}
