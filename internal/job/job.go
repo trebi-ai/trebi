@@ -139,10 +139,6 @@ type TriggerYAML struct {
 	Extract        string    `yaml:"extract,omitempty"`
 	Debounce       string    `yaml:"debounce,omitempty"`
 	RateLimit      string    `yaml:"rate_limit,omitempty"`
-	Acknowledge    any       `yaml:"acknowledge,omitempty"`
-	Typing         any       `yaml:"typing,omitempty"`
-	TypingInterval string    `yaml:"typing_interval,omitempty"`
-	TypingMax      string    `yaml:"typing_max,omitempty"`
 	FollowupPrompt string    `yaml:"followup_prompt,omitempty"`
 	When           *WhenYAML `yaml:"when,omitempty"`
 	Anchor         string    `yaml:"anchor,omitempty"` // @every phase
