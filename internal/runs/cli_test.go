@@ -120,6 +120,31 @@ func TestCLIJobCompletesWithoutTmux(t *testing.T) {
 	}
 }
 
+// TestCLIOneShotRunningMidTurn pins that a one-shot run reads running, not
+// idle, between init and result: the prompt is on argv, not stdin.
+func TestCLIOneShotRunningMidTurn(t *testing.T) {
+	gate := filepath.Join(t.TempDir(), "go")
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
+		Script: `echo '{"type":"init","session_id":"s1"}'; echo '{"type":"assistant","text":"working"}'; ` +
+			`while [ ! -f ` + gate + ` ]; do sleep 0.02; done; echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, _ := os.ReadFile(filepath.Join(home.RunsLogDir(), run.ID+".log")); strings.Contains(string(data), "working") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := svc.SessionState(run.ID); got != runs.SessionRunning {
+		t.Fatalf("session state mid-turn = %q, want running", got)
+	}
+	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, svc, run.ID)
+}
+
 // TestCLIFailingResultClassifies pulls a limit result through the whole path.
 func TestCLIFailingResultClassifies(t *testing.T) {
 	svc, st, _ := cliFixture(t, agentwire.FakeDriver{

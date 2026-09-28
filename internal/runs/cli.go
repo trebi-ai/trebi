@@ -311,6 +311,10 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	}
 	// The library tracks its own sessions in the ledger; no registry Add here.
 	cr := &cliRun{sess: sess, tracker: agentwire.NewTracker(), oneShot: oneShot}
+	if oneShot {
+		// The prompt is on argv, so the turn starts at launch.
+		cr.tracker.PromptWritten()
+	}
 	s.registerCLIRun(run.ID, cr)
 	s.setRunPid(ctx, run.ID, sess.PID())
 	s.AddEvent(ctx, run.ID, "proc", "proc", map[string]string{"pid": strconv.Itoa(sess.PID())})
