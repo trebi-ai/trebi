@@ -656,7 +656,7 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	drain := drainFlag == "1" || shadow
 	extSet := appStateFor(c).ext
 	lic := license.New(extSet.License)
-	cp := daemon.New(st, daemon.Options{Shadow: shadow, Drain: drain, Ext: extSet, License: lic})
+	cp := daemon.New(st, daemon.Options{Shadow: shadow, Drain: drain, Ext: extSet, License: lic, Version: api.Version})
 	srv := api.New(st, api.Options{
 		Shadow:  shadow,
 		Drain:   drain,
@@ -665,6 +665,7 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	})
 	// Share control-plane services so API and workers see the same state.
 	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Skills, cp.Conversations, cp.Harness, cp.Email, cp.License, cp.Cloud, cp.Webhooks)
+	srv.BindCatalog(cp.Catalog)
 	srv.BindOutbox(cp.Outbox)
 	srv.BindRouter(cp.Router)
 	srv.BindAssistant(cp)

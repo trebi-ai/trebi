@@ -100,8 +100,8 @@ func TestInsideAgentFolder(t *testing.T) {
 // TestConnectorKitFindings covers the F.5 doctor checks: an inherited name, a
 // connector with no actions block, and a CLI command that is not on PATH.
 func TestConnectorKitFindings(t *testing.T) {
-	st := kitStore(t, "actions-only:\n  actions:\n    cli:\n      commands: [trebi-definitely-missing-command]\n"+
-		"events-only:\n  events:\n    command: true\n", "actions-only, events-only, ghost")
+	st := kitStore(t, inlineYAML("actions-only", "actions:\n  cli:\n    commands: [trebi-definitely-missing-command]\n")+
+		inlineYAML("events-only", "events:\n  command: \"true\"\n"), "actions-only, events-only, ghost")
 	findings := agentKitFindings(st, launchView(t, st))
 	codes := map[string]bool{}
 	for _, finding := range findings {
@@ -117,7 +117,7 @@ func TestConnectorKitFindings(t *testing.T) {
 // TestConnectorKitFindingsMCPOnly proves a kit that names an MCP-only
 // connector does not panic and gives no command finding.
 func TestConnectorKitFindingsMCPOnly(t *testing.T) {
-	st := kitStore(t, "gh:\n  actions:\n    mcp:\n      command: npx\n", "gh")
+	st := kitStore(t, inlineYAML("gh", "actions:\n  mcp:\n    command: npx\n"), "gh")
 	for _, finding := range agentKitFindings(st, launchView(t, st)) {
 		if finding.Code == "connector_command_missing" {
 			t.Fatalf("unexpected finding %+v", finding)
@@ -135,6 +135,12 @@ func TestConnectorsFileInvalidFinding(t *testing.T) {
 		}
 	}
 	t.Fatal("no connectors_file_invalid finding")
+}
+
+// inlineYAML is one inline connectors.yaml entry; body is manifest YAML.
+func inlineYAML(name, body string) string {
+	m := "schema: trebi-connector/1\nname: " + name + "\ntitle: T\ndescription: D\nversion: 1.0.0\n" + body
+	return name + ":\n  from: inline\n  manifest:\n    " + strings.ReplaceAll(strings.TrimRight(m, "\n"), "\n", "\n    ") + "\n"
 }
 
 // kitStore writes connectors.yaml and one agent whose kit names connectors.
@@ -172,7 +178,7 @@ func kitStore(t *testing.T, connectorsYAML, kitConnectors string) *store.Store {
 // uses (P1-24): an owned job gets the owner kit, a top-level connectors: on
 // the agent replaces its kit, and the support table is the launch one.
 func TestDoctorUsesLaunchView(t *testing.T) {
-	st := kitStore(t, "gh:\n  actions:\n    mcp:\n      command: npx\n", "kit-only")
+	st := kitStore(t, inlineYAML("gh", "actions:\n  mcp:\n    command: npx\n"), "kit-only")
 	dir := t.TempDir()
 	t.Setenv("PATH", t.TempDir())
 	// The agent research (from kitStore) names kit-only in its kit. An owned
@@ -245,8 +251,8 @@ func writeJob(t *testing.T, st *store.Store, dir, name, kind, owner, md string) 
 // that both trigger on one channel connector give one finding; a connector
 // without a channel gives none.
 func TestChannelOperatorConflictFinding(t *testing.T) {
-	st := kitStore(t, "chat:\n  events:\n    command: cat\n    format: json\n  channel:\n    ref: chat_id\n    send: cat\n"+
-		"feed:\n  events:\n    command: cat\n", "")
+	st := kitStore(t, inlineYAML("chat", "events:\n  protocol: trebi-connector/1\n  command: cat\n  types:\n    - type: message\nchannel:\n  features: [typing]\n")+
+		inlineYAML("feed", "events:\n  command: cat\n"), "")
 	var dir string
 	if err := st.DB().QueryRow(`SELECT path FROM workspaces WHERE id='ws'`).Scan(&dir); err != nil {
 		t.Fatal(err)

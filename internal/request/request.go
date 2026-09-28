@@ -305,45 +305,61 @@ func BuildSkillPut(name, skillMD string, harnesses map[string]string, ifMatch st
 	}
 }
 
-// BuildConnectorConnect builds POST /v1/connectors/{name}/connect.
-func BuildConnectorConnect(name string) HTTPRequest {
-	return HTTPRequest{
-		Method: "POST",
-		Path:   "/v1/connectors/" + url.PathEscape(name) + "/connect",
+// ConnectorRef names a connector and the instance a route acts on. With
+// no Instance, the daemon picks the instance that serves Workspace, else the
+// global instance.
+type ConnectorRef struct {
+	Name, Instance, Workspace string
+}
+
+// path builds /v1/connectors/{name}{tail} with ?instance= and ?workspace=.
+func (c ConnectorRef) path(tail string, kv map[string]string) string {
+	q := map[string]string{"instance": c.Instance, "workspace": c.Workspace}
+	for k, v := range kv {
+		q[k] = v
 	}
+	return withQuery("/v1/connectors/"+url.PathEscape(c.Name)+tail, q)
+}
+
+// body returns {instance, workspace} with the empty keys left out.
+func (c ConnectorRef) body() map[string]any {
+	body := map[string]any{}
+	if c.Instance != "" {
+		body["instance"] = c.Instance
+	}
+	if c.Workspace != "" {
+		body["workspace"] = c.Workspace
+	}
+	return body
+}
+
+// BuildConnectorConnect builds POST /v1/connectors/{name}/connect.
+func BuildConnectorConnect(c ConnectorRef) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: c.path("/connect", nil)}
 }
 
 // BuildConnectorDisconnect builds POST /v1/connectors/{name}/disconnect.
-func BuildConnectorDisconnect(name string) HTTPRequest {
-	return HTTPRequest{
-		Method: "POST",
-		Path:   "/v1/connectors/" + url.PathEscape(name) + "/disconnect",
-	}
+func BuildConnectorDisconnect(c ConnectorRef) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: c.path("/disconnect", nil)}
 }
 
 // BuildConnectorCursorGet builds GET /v1/connectors/{name}/cursor.
-func BuildConnectorCursorGet(name string) HTTPRequest {
-	return HTTPRequest{
-		Method: "GET",
-		Path:   "/v1/connectors/" + url.PathEscape(name) + "/cursor",
-	}
+func BuildConnectorCursorGet(c ConnectorRef) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: c.path("/cursor", nil)}
 }
 
 // BuildConnectorCursorSet builds PUT /v1/connectors/{name}/cursor with last_event_id.
-func BuildConnectorCursorSet(name, lastEventID string) HTTPRequest {
+func BuildConnectorCursorSet(c ConnectorRef, lastEventID string) HTTPRequest {
 	return HTTPRequest{
 		Method: "PUT",
-		Path:   "/v1/connectors/" + url.PathEscape(name) + "/cursor",
+		Path:   c.path("/cursor", nil),
 		Body:   map[string]any{"last_event_id": lastEventID},
 	}
 }
 
 // BuildConnectorCursorReset builds PUT /v1/connectors/{name}/cursor with an empty body.
-func BuildConnectorCursorReset(name string) HTTPRequest {
-	return HTTPRequest{
-		Method: "PUT",
-		Path:   "/v1/connectors/" + url.PathEscape(name) + "/cursor",
-	}
+func BuildConnectorCursorReset(c ConnectorRef) HTTPRequest {
+	return HTTPRequest{Method: "PUT", Path: c.path("/cursor", nil)}
 }
 
 // --- Memory (B22 §3.3 rev 2) ---
@@ -1420,8 +1436,9 @@ func BuildSkillsListPath(limit int) string {
 }
 
 // BuildConnectorsListPath builds GET /v1/connectors with optional filters.
-func BuildConnectorsListPath(limit int, capability, provenance string) string {
-	kv := map[string]string{"capability": capability, "provenance": provenance}
+// A workspace resolves each row with the layer of that workspace.
+func BuildConnectorsListPath(limit int, capability, provenance, workspace string) string {
+	kv := map[string]string{"capability": capability, "provenance": provenance, "workspace": workspace}
 	if limit > 0 {
 		kv["limit"] = strconv.Itoa(limit)
 	}
@@ -1842,68 +1859,58 @@ func BuildHarnessLoginGet(name string) HTTPRequest {
 	}
 }
 
-// BuildConnectorGetPath builds GET /v1/connectors/{name}.
-func BuildConnectorGetPath(name string) string {
-	return "/v1/connectors/" + url.PathEscape(name)
+// BuildConnectorGetPath builds GET /v1/connectors/{name}?workspace=.
+func BuildConnectorGetPath(name, workspace string) string {
+	return withQuery("/v1/connectors/"+url.PathEscape(name), map[string]string{"workspace": workspace})
 }
 
-// BuildConnectorCreate builds POST /v1/connectors with a full definition.
-func BuildConnectorCreate(def map[string]any) HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: "/v1/connectors", Body: def}
+// BuildConnectorCreate builds POST /v1/connectors with an entry:
+// {name, from, version, track, inputs, patch, manifest}.
+func BuildConnectorCreate(entry map[string]any) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors", Body: entry}
 }
 
 // BuildConnectorRestart builds POST /v1/connectors/{name}/restart.
-func BuildConnectorRestart(name string) HTTPRequest {
-	return HTTPRequest{
-		Method: "POST",
-		Path:   "/v1/connectors/" + url.PathEscape(name) + "/restart",
-	}
+func BuildConnectorRestart(c ConnectorRef) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: c.path("/restart", nil)}
 }
 
 // BuildConnectorReplace builds PUT /v1/connectors/{name} with the whole
-// definition. The daemon sets the name from the path over the body.
-func BuildConnectorReplace(name string, def map[string]any) HTTPRequest {
+// entry. The daemon sets the name from the path over the body.
+func BuildConnectorReplace(name string, entry map[string]any) HTTPRequest {
 	return HTTPRequest{
 		Method: "PUT",
 		Path:   "/v1/connectors/" + url.PathEscape(name),
-		Body:   def,
+		Body:   entry,
 	}
 }
 
-// ConnectorPatch is the PATCH /v1/connectors/{name} body. A present block
-// replaces that block; a nil block leaves it untouched and raw "null"
-// removes it. ActionsMerge is {"mcp":{...}|null,"cli":{...}|null}: the
-// daemon merges each field given into the stored sub-block.
+// ConnectorPatch is the PATCH /v1/connectors/{name} body. A nil field
+// stays. Patch and Manifest are a JSON object, or raw "null" to clear.
 type ConnectorPatch struct {
-	Name         string
-	Env          map[string]string
-	Cwd          *string // nil leaves it; "" clears it
-	Actions      json.RawMessage
-	ActionsMerge json.RawMessage
-	Events       json.RawMessage
-	Channel      json.RawMessage
+	Name            string
+	Version, Track  *string
+	Inputs          map[string]string // nil leaves the stored inputs
+	Patch, Manifest json.RawMessage
 }
 
 // Build renders the patch as PATCH /v1/connectors/{name}.
 func (i ConnectorPatch) Build() HTTPRequest {
 	body := map[string]any{}
-	if i.Env != nil {
-		body["env"] = i.Env
+	if i.Version != nil {
+		body["version"] = *i.Version
 	}
-	if i.Cwd != nil {
-		body["cwd"] = *i.Cwd
+	if i.Track != nil {
+		body["track"] = *i.Track
 	}
-	if i.Actions != nil {
-		body["actions"] = json.RawMessage(i.Actions)
+	if i.Inputs != nil {
+		body["inputs"] = i.Inputs
 	}
-	if i.ActionsMerge != nil {
-		body["actions_merge"] = i.ActionsMerge
+	if i.Patch != nil {
+		body["patch"] = i.Patch
 	}
-	if i.Events != nil {
-		body["events"] = json.RawMessage(i.Events)
-	}
-	if i.Channel != nil {
-		body["channel"] = json.RawMessage(i.Channel)
+	if i.Manifest != nil {
+		body["manifest"] = i.Manifest
 	}
 	return HTTPRequest{
 		Method: "PATCH",
@@ -1933,13 +1940,105 @@ func BuildConnectorTest(name string, event any) HTTPRequest {
 	}
 }
 
-// BuildConnectorLogsPath builds GET logs path.
-func BuildConnectorLogsPath(name string, follow bool) string {
+// BuildConnectorLogsPath builds GET /v1/connectors/{name}/logs.
+func BuildConnectorLogsPath(c ConnectorRef, follow bool) string {
 	kv := map[string]string{}
 	if follow {
 		kv["follow"] = "1"
 	}
-	return withQuery("/v1/connectors/"+url.PathEscape(name)+"/logs", kv)
+	return c.path("/logs", kv)
+}
+
+// BuildConnectorOverrideGet builds GET /v1/workspaces/{id}/connectors/{name}.
+func BuildConnectorOverrideGet(workspace, name string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: connectorOverridePath(workspace, name)}
+}
+
+// BuildConnectorOverrideSet builds PUT /v1/workspaces/{id}/connectors/{name}
+// with the whole layer: {version, track, inputs, patch, disabled}.
+func BuildConnectorOverrideSet(workspace, name string, layer map[string]any) HTTPRequest {
+	return HTTPRequest{Method: "PUT", Path: connectorOverridePath(workspace, name), Body: layer}
+}
+
+// BuildConnectorOverrideDelete builds DELETE /v1/workspaces/{id}/connectors/{name}.
+func BuildConnectorOverrideDelete(workspace, name string) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: connectorOverridePath(workspace, name)}
+}
+
+func connectorOverridePath(workspace, name string) string {
+	return "/v1/workspaces/" + url.PathEscape(workspace) + "/connectors/" + url.PathEscape(name)
+}
+
+// BuildConnectorLogin builds POST /v1/connectors/{name}/login. An empty kind
+// lets the adapter choose.
+func BuildConnectorLogin(c ConnectorRef, kind string) HTTPRequest {
+	body := c.body()
+	if kind != "" {
+		body["kind"] = kind
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors/" + url.PathEscape(c.Name) + "/login", Body: body}
+}
+
+// BuildConnectorLoginStreamPath builds GET /v1/connectors/{name}/login/{flow_id}.
+func BuildConnectorLoginStreamPath(name, flowID string) string {
+	return "/v1/connectors/" + url.PathEscape(name) + "/login/" + url.PathEscape(flowID)
+}
+
+// BuildConnectorLoginSubmit builds POST /v1/connectors/{name}/login/{flow_id}.
+func BuildConnectorLoginSubmit(name, flowID string, fields map[string]string) HTTPRequest {
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	return HTTPRequest{
+		Method: "POST",
+		Path:   BuildConnectorLoginStreamPath(name, flowID),
+		Body:   map[string]any{"fields": fields},
+	}
+}
+
+// BuildConnectorLoginCancel builds DELETE /v1/connectors/{name}/login/{flow_id}.
+func BuildConnectorLoginCancel(name, flowID string) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: BuildConnectorLoginStreamPath(name, flowID)}
+}
+
+// BuildConnectorLogout builds POST /v1/connectors/{name}/logout.
+func BuildConnectorLogout(c ConnectorRef) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors/" + url.PathEscape(c.Name) + "/logout", Body: c.body()}
+}
+
+// BuildConnectorRoomsPath builds GET /v1/connectors/{name}/rooms.
+func BuildConnectorRoomsPath(c ConnectorRef, q, kind, cursor string, limit int) string {
+	kv := map[string]string{"q": q, "kind": kind, "cursor": cursor}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return c.path("/rooms", kv)
+}
+
+// BuildConnectorThreadsPath builds GET /v1/connectors/{name}/rooms/{room}/threads.
+func BuildConnectorThreadsPath(c ConnectorRef, room, cursor string, limit int) string {
+	kv := map[string]string{"cursor": cursor}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return c.path("/rooms/"+url.PathEscape(room)+"/threads", kv)
+}
+
+// BuildConnectorBind builds POST /v1/connectors/{name}/rooms/{room}/bind.
+// The operator is "assistant" or "agents/<name>"; c.Workspace is required.
+func BuildConnectorBind(c ConnectorRef, room, thread, operator string) HTTPRequest {
+	body := c.body()
+	if thread != "" {
+		body["thread"] = thread
+	}
+	if operator != "" {
+		body["operator"] = operator
+	}
+	return HTTPRequest{
+		Method: "POST",
+		Path:   "/v1/connectors/" + url.PathEscape(c.Name) + "/rooms/" + url.PathEscape(room) + "/bind",
+		Body:   body,
+	}
 }
 
 // BuildConnectorCatalogPath builds GET /v1/connectors/catalog.
@@ -1959,12 +2058,12 @@ func BuildConnectorCatalogEntryPath(registry, name, version string) string {
 }
 
 // ConnectorInstall is the POST /v1/connectors/install body. Package and
-// Remote are indices into the entry; -1 omits one.
+// Remote are indices into the entry; -1 omits one. Track applies to a Trebi
+// catalog entry only.
 type ConnectorInstall struct {
-	Registry, Name, Version, As string
-	Package, Remote             int
-	Env                         map[string]string
-	OverwriteSecrets            bool
+	Registry, Name, Version, Track, As string
+	Package, Remote                    int
+	Inputs                             map[string]string
 }
 
 // Build returns the install request.
@@ -1972,6 +2071,9 @@ func (i ConnectorInstall) Build() HTTPRequest {
 	body := map[string]any{"registry": i.Registry, "name": i.Name}
 	if i.Version != "" {
 		body["version"] = i.Version
+	}
+	if i.Track != "" {
+		body["track"] = i.Track
 	}
 	if i.As != "" {
 		body["as"] = i.As
@@ -1982,13 +2084,56 @@ func (i ConnectorInstall) Build() HTTPRequest {
 	if i.Remote >= 0 {
 		body["remote"] = i.Remote
 	}
-	if len(i.Env) > 0 {
-		body["env"] = i.Env
-	}
-	if i.OverwriteSecrets {
-		body["overwrite_secrets"] = true
+	if len(i.Inputs) > 0 {
+		body["inputs"] = i.Inputs
 	}
 	return HTTPRequest{Method: "POST", Path: "/v1/connectors/install", Body: body}
+}
+
+// BuildConnectorVersions builds GET /v1/connectors/{name}/versions.
+func BuildConnectorVersions(name string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/connectors/" + url.PathEscape(name) + "/versions"}
+}
+
+// BuildConnectorCheckUpdates builds POST /v1/connectors/{name}/check-updates,
+// or POST /v1/connectors/check-updates for every connector with no name.
+func BuildConnectorCheckUpdates(name string) HTTPRequest {
+	if name == "" {
+		return HTTPRequest{Method: "POST", Path: "/v1/connectors/check-updates"}
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors/" + url.PathEscape(name) + "/check-updates"}
+}
+
+// BuildConnectorUpdate builds POST /v1/connectors/{name}/update. No version
+// is the newest version on the track; a workspace updates its override.
+func BuildConnectorUpdate(name, version, workspace string) HTTPRequest {
+	body := map[string]any{}
+	if version != "" {
+		body["version"] = version
+	}
+	if workspace != "" {
+		body["workspace"] = workspace
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors/" + url.PathEscape(name) + "/update", Body: body}
+}
+
+// BuildConnectorCapabilities builds GET /v1/connectors/{name}/capabilities.
+func BuildConnectorCapabilities(c ConnectorRef) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: c.path("/capabilities", nil)}
+}
+
+// BuildConnectorConformance builds POST /v1/connectors/{name}/conformance.
+func BuildConnectorConformance(c ConnectorRef, room string) HTTPRequest {
+	body := c.body()
+	if room != "" {
+		body["room"] = room
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors/" + url.PathEscape(c.Name) + "/conformance", Body: body}
+}
+
+// BuildConnectorGC builds POST /v1/connectors/gc.
+func BuildConnectorGC(dryRun bool) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors/gc", Body: map[string]any{"dry_run": dryRun}}
 }
 
 // BuildConfigGet builds GET /v1/config.

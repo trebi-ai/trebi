@@ -2,7 +2,6 @@ package tools
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -55,30 +54,26 @@ func TestBusPollTransform(t *testing.T) {
 	}
 }
 
-func TestConnectorSetCwd(t *testing.T) {
+func TestConnectorSetPatch(t *testing.T) {
 	t.Parallel()
 	set := NewCatalog()["connector"]["set"]
 	for _, c := range []struct {
 		in   Input
 		want string
 	}{
-		{Input{"name": "x", "cwd": ""}, `"cwd":""`},
-		{Input{"name": "x", "cwd": "/w"}, `"cwd":"/w"`},
-		{Input{"name": "x", "env": map[string]any{"A": "1"}}, ""},
+		{Input{"name": "x", "version": ""}, `{"version":""}`},
+		{Input{"name": "x", "patch": nil}, `{"patch":null}`},
+		{Input{"name": "x", "manifest": map[string]any{"name": "x"}}, `{"manifest":{"name":"x"}}`},
+		{Input{"name": "x", "inputs": map[string]any{"A": "1"}}, `{"inputs":{"A":"1"}}`},
+		{Input{"name": "x"}, `{}`},
 	} {
 		req, err := set.Build(c.in)
 		if err != nil {
 			t.Fatal(err)
 		}
 		b, _ := json.Marshal(req.Body)
-		if c.want == "" {
-			if strings.Contains(string(b), "cwd") {
-				t.Fatalf("absent cwd sent: %s", b)
-			}
-			continue
-		}
-		if !strings.Contains(string(b), c.want) {
-			t.Fatalf("%v: body %s", c.in, b)
+		if string(b) != c.want {
+			t.Fatalf("%v: body %s, want %s", c.in, b, c.want)
 		}
 	}
 }

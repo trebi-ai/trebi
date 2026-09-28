@@ -15,11 +15,11 @@ checks:
     cmd: trebi connector list --json
     jq: '[.connectors[]? | select(.name == "echo")] | length == 1'
   - name: it came from the registry
-    cmd: trebi connector show echo
-    jq: '.source.registry == "fixture" and .actions.mcp.command == "npx"'
+    cmd: trebi connector show echo --json
+    jq: '.from == "inline" and .actions.mcp.command == "npx" and (.actions.mcp.args | index("acme-echo-mcp@1.0.0") != null)'
   - name: the token is a secret reference
-    cmd: trebi connector show echo
-    jq: '.actions.mcp.env.ECHO_TOKEN == "secret:echo_ECHO_TOKEN"'
+    cmd: trebi connector show echo --json
+    jq: '.inputs.ECHO_TOKEN == "secret:echo_ECHO_TOKEN"'
   - name: the agent kit carries the connector
     cmd: trebi agent show reviewer
     jq: '(.kit.connectors // []) | index("echo") != null'

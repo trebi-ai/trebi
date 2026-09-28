@@ -182,6 +182,50 @@ func (c *APIClient) StreamConversationEvents(ctx context.Context, path string, f
 	return flush()
 }
 
+// StreamSSE follows an SSE GET and calls fn with the event name and data of
+// each frame. It stops when the stream ends, ctx ends, or fn returns an error.
+func (c *APIClient) StreamSSE(ctx context.Context, path string, fn func(event, data string) error) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	httpClient := c.httpClient
+	if httpClient == nil {
+		httpClient = &http.Client{}
+	}
+	streamClient := *httpClient
+	streamClient.Timeout = 0
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("GET %s: %s: %s", path, resp.Status, raw)
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), streamScannerMax)
+	event, data := "", []string{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case line == "":
+			if len(data) > 0 {
+				if err := fn(event, strings.Join(data, "\n")); err != nil {
+					return err
+				}
+			}
+			event, data = "", data[:0]
+		case strings.HasPrefix(line, "event:"):
+			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		case strings.HasPrefix(line, "data:"):
+			data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	return scanner.Err()
+}
+
 // DoHTTP executes a pure request.HTTPRequest against this client.
 func (c *APIClient) DoHTTP(r request.HTTPRequest, out any) error {
 	if r.Raw != nil || r.IfMatch != "" {

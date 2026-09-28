@@ -12,7 +12,7 @@ prompt: |
   its fetch tool can replay history. Make it replay what it skipped.
 checks:
   - name: the catch-up replayed rows
-    cmd: trebi connector show tick
+    cmd: trebi connector show tick --json
     jq: '(.events.last_catchup.replayed // 0) >= 1'
   - name: the replayed rows are events with the catch-up mark
     cmd: trebi event list --connector tick --json

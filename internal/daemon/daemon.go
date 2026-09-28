@@ -20,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/email"
@@ -31,6 +32,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
+	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
@@ -63,10 +65,15 @@ type Options struct {
 	OutboxInterval time.Duration
 	// LoginMaxAge is the interactive login session lifetime (default 10m).
 	LoginMaxAge time.Duration
+	// UpdateCheckInterval is the connector update check (default 24h). The
+	// first check runs after 10m, or after the interval when it is shorter.
+	UpdateCheckInterval time.Duration
 	// Now is the queue and trigger policy clock (default time.Now). Tests
 	// replace it to pass rate windows without a real wait.
 	Now func() time.Time
 	Ext ext.Set
+	// Version is the daemon version a connector sees in initialize.
+	Version string
 	// License is the process-wide service built in service daemon. Nil
 	// builds a new one from Ext.License so tests can omit it.
 	License *license.Service
@@ -81,6 +88,7 @@ type ControlPlane struct {
 	Skills        *skills.Service
 	Schedule      *schedule.Service
 	Connectors    *connectors.Service
+	Catalog       *registry.Live
 	Policy        *dispatch.Policy
 	Reaper        *runs.Reaper
 	Alerts        *alerts.Service
@@ -196,7 +204,9 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()
 	sk := skills.New(st)
-	connector := connectors.New(st, ws, sk).WithUserHome(harness.UserHome())
+	catalog := registry.NewLive(nil)
+	connector := connectors.New(st, ws, sk).WithUserHome(harness.UserHome()).WithVersion(opts.Version).
+		WithInstall(connectors.InstallConfig{Catalog: catalog})
 	r.WithActions(connector)
 	lic := opts.License
 	if lic == nil {
@@ -205,6 +215,14 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	ob := outbox.New(st)
 	em := email.New(st).WithConversations(conv).WithOutbox(ob)
 	ch := channels.New(st, ob, connector, conv)
+	connector.OnStatus(func(ctx context.Context, instance, state string) {
+		if state != protocol.StateConnected {
+			return
+		}
+		if _, err := ob.Release(ctx, instance); err != nil {
+			slog.Default().Warn("outbox release", "connector", instance, "err", err)
+		}
+	})
 	ob.Register(outbox.KindEmail, em.Outbound(), emailPolicy)
 	ob.Register(outbox.KindChannel, ch, channelPolicy)
 	cl := cloudlink.New(st).WithMail(em)
@@ -220,6 +238,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Skills:        sk,
 		Schedule:      schedule.New(st),
 		Connectors:    connector,
+		Catalog:       catalog,
 		Policy:        pol,
 		Reaper:        runs.NewReaper(r),
 		Conversations: conv,
@@ -415,6 +434,11 @@ func (c *ControlPlane) Start(parent context.Context) {
 			}
 			c.Connectors.StartAll(ctx)
 			<-ctx.Done()
+		}()
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.connectorUpdates(ctx)
 		}()
 	}
 
@@ -631,6 +655,31 @@ func (c *ControlPlane) memoryLaunch(ctx context.Context, wsID string, j *job.Job
 		return nil
 	}
 	return runs.NewMemoryLaunch(j, ws.Path)
+}
+
+// connectorUpdates runs the connector update check until ctx ends.
+func (c *ControlPlane) connectorUpdates(ctx context.Context) {
+	every := c.Opts.UpdateCheckInterval
+	if every <= 0 {
+		every = 24 * time.Hour
+	}
+	t := time.NewTimer(min(10*time.Minute, every))
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			res, err := c.Connectors.CheckUpdates(ctx, "")
+			if err != nil {
+				c.log.Warn("connector update check", "error", err)
+			}
+			for _, r := range res {
+				c.log.Info("connector update", "connector", r.Name, "from", r.From, "to", r.To, "applied", r.Applied, "error", r.Error)
+			}
+			t.Reset(every)
+		}
+	}
 }
 
 func (c *ControlPlane) busPrune(ctx context.Context) {

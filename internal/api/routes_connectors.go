@@ -2,26 +2,19 @@ package api
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
-	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/registry"
-	"github.com/trebi-ai/trebi/internal/secrets"
-	"github.com/trebi-ai/trebi/internal/skills"
 )
 
 //nolint:dupl // route tables stay explicit and colocated with area handlers.
@@ -31,6 +24,8 @@ func (s *Server) routeConnectors(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/connectors/catalog", s.handleConnectorsCatalog)
 	mux.HandleFunc("GET /v1/connectors/catalog/entry", s.handleConnectorCatalogEntry)
 	mux.HandleFunc("POST /v1/connectors/install", s.handleConnectorInstall)
+	mux.HandleFunc("POST /v1/connectors/check-updates", s.handleConnectorCheckUpdates)
+	mux.HandleFunc("POST /v1/connectors/gc", s.handleConnectorGC)
 	mux.HandleFunc("GET /v1/connectors/{name}", s.handleConnectorGet)
 	mux.HandleFunc("PUT /v1/connectors/{name}", s.handleConnectorPut)
 	mux.HandleFunc("PATCH /v1/connectors/{name}", s.handleConnectorPatch)
@@ -40,8 +35,13 @@ func (s *Server) routeConnectors(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/connectors/{name}/restart", s.handleConnectorRestart)
 	mux.HandleFunc("POST /v1/connectors/{name}/test", s.handleConnectorTest)
 	mux.HandleFunc("GET /v1/connectors/{name}/logs", s.handleConnectorLogs)
+	mux.HandleFunc("GET /v1/connectors/{name}/versions", s.handleConnectorVersions)
+	mux.HandleFunc("POST /v1/connectors/{name}/check-updates", s.handleConnectorCheckUpdates)
+	mux.HandleFunc("POST /v1/connectors/{name}/update", s.handleConnectorUpdate)
+	mux.HandleFunc("GET /v1/connectors/{name}/capabilities", s.handleConnectorCapabilities)
 	mux.HandleFunc("GET /v1/connectors/{name}/cursor", s.handleConnectorCursorGet)
 	mux.HandleFunc("PUT /v1/connectors/{name}/cursor", s.handleConnectorCursorPut)
+	s.routeConnectorSessions(mux)
 }
 
 func (s *Server) handleConnectors(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +56,7 @@ func (s *Server) handleConnectors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.connectors.Load() // refresh from disk; a failed load shows as load_error
-	list := s.connectors.List()
+	list := s.connectors.List(s.workspaceID(r.Context(), r.URL.Query().Get("workspace")))
 	if row := s.email.ConnectorRow(); row != nil {
 		list = append(list, row) // the native email channel rides the list
 	}
@@ -128,7 +128,7 @@ func (s *Server) handleConnectorsCreate(w http.ResponseWriter, r *http.Request) 
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	var d connectors.Definition
+	var d connectors.Entry
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&d); err != nil {
@@ -148,7 +148,7 @@ func (s *Server) handleConnectorsCreate(w http.ResponseWriter, r *http.Request) 
 	}
 	row, err := s.connectors.Get(d.Name)
 	if err != nil {
-		writeJSON(w, http.StatusCreated, d)
+		writeJSON(w, http.StatusCreated, map[string]any{"name": d.Name})
 		return
 	}
 	writeJSON(w, http.StatusCreated, row)
@@ -171,7 +171,7 @@ func (s *Server) handleConnectorGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "webhook is not available")
 		return
 	}
-	row, err := s.connectors.Get(r.PathValue("name"))
+	row, err := s.connectors.GetFor(r.PathValue("name"), s.workspaceID(r.Context(), r.URL.Query().Get("workspace")))
 	if err != nil {
 		if s.writeConnectorErr(w, err) {
 			return
@@ -186,7 +186,7 @@ func (s *Server) handleConnectorPut(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	var d connectors.Definition
+	var d connectors.Entry
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&d); err != nil {
@@ -216,7 +216,7 @@ func (s *Server) handleConnectorPatch(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	var p connectors.Patch
+	var p connectors.EntryPatch
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&p); err != nil {
@@ -262,29 +262,33 @@ func (s *Server) requireEventsBlock(name string) error {
 	if name == "email" || name == "webhook" {
 		return nil
 	}
-	d, ok := s.connectors.Definition(name)
-	if !ok {
-		if _, err := s.connectors.Get(name); err != nil {
-			return err
+	return s.connectors.HasEvents(name)
+}
+
+// eventsInstance checks the events block and picks the instance.
+func (s *Server) eventsInstance(w http.ResponseWriter, r *http.Request, name string) (string, bool) {
+	if err := s.requireEventsBlock(name); err != nil {
+		if !s.writeConnectorErr(w, err) {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		}
-		return fmt.Errorf("%w: connector %q is not managed", connectors.ErrInherited, name)
+		return "", false
 	}
-	if d.Events == nil {
-		return fmt.Errorf("%w: %q", connectors.ErrNoEvents, name)
+	inst, err := s.connectorInstance(r, name)
+	if err != nil {
+		if !s.writeConnectorErr(w, err) {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		}
+		return "", false
 	}
-	return nil
+	return inst, true
 }
 
 func (s *Server) handleConnectorStart(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if err := s.requireEventsBlock(name); err != nil {
-		if s.writeConnectorErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	inst, ok := s.eventsInstance(w, r, r.PathValue("name"))
+	if !ok {
 		return
 	}
-	if err := s.connectors.Start(r.Context(), name); err != nil {
+	if err := s.connectors.Start(r.Context(), inst); err != nil {
 		if s.writeConnectorErr(w, err) {
 			return
 		}
@@ -295,15 +299,11 @@ func (s *Server) handleConnectorStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConnectorStop(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if err := s.requireEventsBlock(name); err != nil {
-		if s.writeConnectorErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	inst, ok := s.eventsInstance(w, r, r.PathValue("name"))
+	if !ok {
 		return
 	}
-	if err := s.connectors.Stop(name); err != nil {
+	if err := s.connectors.Stop(inst); err != nil {
 		if s.writeConnectorErr(w, err) {
 			return
 		}
@@ -322,14 +322,11 @@ func (s *Server) handleConnectorRestart(w http.ResponseWriter, r *http.Request) 
 		s.handleEmailPoll(w, r)
 		return
 	}
-	if err := s.requireEventsBlock(name); err != nil {
-		if s.writeConnectorErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	inst, ok := s.eventsInstance(w, r, name)
+	if !ok {
 		return
 	}
-	if err := s.connectors.Restart(r.Context(), name); err != nil {
+	if err := s.connectors.Restart(r.Context(), inst); err != nil {
 		if s.writeConnectorErr(w, err) {
 			return
 		}
@@ -378,14 +375,11 @@ func (s *Server) handleConnectorLogs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
-	if err := s.requireEventsBlock(name); err != nil {
-		if s.writeConnectorErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	inst, ok := s.eventsInstance(w, r, name)
+	if !ok {
 		return
 	}
-	path := filepath.Join(home.ConnectorsLogDir(), name+".jsonl")
+	path := connectors.LogPath(inst)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		data, _ := os.ReadFile(path)
@@ -444,14 +438,11 @@ func (s *Server) handleConnectorLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConnectorCursorGet(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := s.requireEventsBlock(name); err != nil {
-		if s.writeConnectorErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	inst, ok := s.eventsInstance(w, r, name)
+	if !ok {
 		return
 	}
-	cur, err := s.connectors.GetCursor(r.Context(), name)
+	cur, err := s.connectors.GetCursor(r.Context(), inst)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -460,30 +451,27 @@ func (s *Server) handleConnectorCursorGet(w http.ResponseWriter, r *http.Request
 	if cur.UpdatedAt != "" {
 		updated = cur.UpdatedAt
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "last_event_id": cur.LastEventID, "updated_at": updated})
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "instance": inst, "last_event_id": cur.LastEventID, "updated_at": updated})
 }
 
 func (s *Server) handleConnectorCursorPut(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := s.requireEventsBlock(name); err != nil {
-		if s.writeConnectorErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	inst, ok := s.eventsInstance(w, r, name)
+	if !ok {
 		return
 	}
 	var body struct {
 		LastEventID string `json:"last_event_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body sets last_event_id to ""
-	if err := s.connectors.PutCursor(r.Context(), name, body.LastEventID); err != nil {
+	if err := s.connectors.PutCursor(r.Context(), inst, body.LastEventID); err != nil {
 		if s.writeConnectorErr(w, err) {
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "last_event_id": body.LastEventID})
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "instance": inst, "last_event_id": body.LastEventID})
 }
 
 func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
@@ -506,10 +494,32 @@ func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
 		writeErr(w, http.StatusConflict, "validation", err.Error())
 	case errors.Is(err, connectors.ErrInherited):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
-	case errors.Is(err, connectors.ErrReserved):
+	case errors.Is(err, connectors.ErrReserved),
+		errors.Is(err, connectors.ErrDisabled):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, connectors.ErrNoCatalog):
+		writeErr(w, http.StatusConflict, "precondition_failed", err.Error())
 	default:
+		return writeProtocolErr(w, err)
+	}
+	return true
+}
+
+// writeProtocolErr maps an adapter error to a status code.
+func writeProtocolErr(w http.ResponseWriter, err error) bool {
+	var pe *protocol.Error
+	if !errors.As(err, &pe) {
 		return false
+	}
+	switch pe.Code {
+	case protocol.CodeNotFound:
+		writeErr(w, http.StatusNotFound, "not_found", pe.Message)
+	case protocol.CodeInvalid, protocol.CodeUnsupported:
+		writeErr(w, http.StatusBadRequest, "validation", pe.Message)
+	case protocol.CodeTransient, protocol.CodeAuthRequired, protocol.CodeRateLimited:
+		writeErr(w, http.StatusConflict, "conflict", pe.Message)
+	default:
+		writeErr(w, http.StatusBadGateway, "upstream", pe.Message)
 	}
 	return true
 }
@@ -542,6 +552,9 @@ func (s *Server) handleConnectorsCatalog(w http.ResponseWriter, r *http.Request)
 	if len(res.Errors) > 0 {
 		resp["registry_errors"] = res.Errors
 	}
+	if len(res.Stale) > 0 {
+		resp["stale_registries"] = res.Stale
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -565,23 +578,23 @@ func (s *Server) handleConnectorCatalogEntry(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, row)
 }
 
-// handleConnectorInstall installs one registry entry as a connector. Registry
-// data is untrusted: it validates the definition and the skill name first,
-// then checks the secrets, writes them, and creates the connector. A later
-// failure removes the connector and restores the secrets.
+// handleConnectorInstall installs one registry entry as a connector. A Trebi
+// catalog entry installs its signed snapshot. Other registry data is
+// untrusted: the entry becomes an inline manifest that passes the same
+// validation as any other entry. Secret inputs go to the secret store.
 func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
 	var body struct {
-		Registry         string            `json:"registry"`
-		Name             string            `json:"name"`
-		Version          string            `json:"version"`
-		As               string            `json:"as"`
-		Package          *int              `json:"package"`
-		Remote           *int              `json:"remote"`
-		Env              map[string]string `json:"env"`
-		OverwriteSecrets bool              `json:"overwrite_secrets"`
+		Registry string            `json:"registry"`
+		Name     string            `json:"name"`
+		Version  string            `json:"version"`
+		Track    string            `json:"track"`
+		As       string            `json:"as"`
+		Package  *int              `json:"package"`
+		Remote   *int              `json:"remote"`
+		Inputs   map[string]string `json:"inputs"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -597,96 +610,151 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, "validation", "give package or remote, not both")
 		return
 	}
-	cat := s.catalogRegistry()
-	entry, err := cat.Get(r.Context(), body.Registry, body.Name, body.Version)
+	entry, err := s.catalogRegistry().Get(r.Context(), body.Registry, body.Name, body.Version)
 	if err != nil {
 		s.writeRegistryErr(w, err)
 		return
 	}
-	def, secretWrites, err := entry.Definition(registry.InstallOpts{
+	if entry.Catalog != nil {
+		if body.As != "" || body.Package != nil || body.Remote != nil {
+			writeErr(w, http.StatusBadRequest, "validation", "as, package, and remote apply to MCP registry entries only")
+			return
+		}
+		req := connectors.InstallRequest{Name: body.Name, Version: entry.Server.Version, Track: body.Track, Inputs: body.Inputs}
+		if _, err := s.connectors.Install(r.Context(), req); err != nil {
+			s.writeInstallErr(w, err)
+			return
+		}
+		s.writeConnectorRow(w, http.StatusCreated, body.Name)
+		return
+	}
+	if body.Track != "" {
+		writeErr(w, http.StatusBadRequest, "validation", "track applies to Trebi catalog entries only")
+		return
+	}
+	m, inputs, err := entry.Manifest(registry.InstallOpts{
 		Name:    body.As,
 		Package: indexOr(body.Package),
 		Remote:  indexOr(body.Remote),
-		Env:     body.Env,
+		Env:     body.Inputs,
 	})
 	if err != nil {
 		s.writeRegistryErr(w, err)
 		return
 	}
-	sk, hasSkill := entry.Skill()
-	if hasSkill {
-		if err := skills.CheckName(sk.Name); err != nil {
-			writeErr(w, http.StatusBadRequest, "validation", err.Error())
-			return
-		}
-	}
-	sw, err := newSecretWrites(secretWrites, body.OverwriteSecrets)
-	if err != nil {
-		if errors.Is(err, errSecretConflict) {
-			writeErr(w, http.StatusConflict, "conflict", err.Error()+"; send overwrite_secrets to replace it")
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	def.Source.Secrets = sw.created()
-	if err := def.Validate(); err != nil {
+	e := connectors.Entry{Name: m.Name, From: connectors.FromInline, Manifest: &m, Inputs: inputs}
+	if err := s.connectors.Create(r.Context(), e); err != nil {
 		if !s.writeConnectorErr(w, err) {
-			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		}
 		return
 	}
-	if err := sw.write(); err != nil {
-		sw.restore(s.log)
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	if err := s.connectors.Create(r.Context(), def); err != nil {
-		sw.restore(s.log)
-		if s.writeConnectorErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	row, err := s.connectors.Get(def.Name)
-	if err != nil {
-		row = map[string]any{"name": def.Name}
-	}
-	if hasSkill {
-		// The entry contributes a skill (Part H.4). Fetch its body, write it
-		// with connector provenance, and point the CLI action at it.
-		written, serr := s.installSkill(r.Context(), cat, sk, def.Name)
-		if serr != nil {
-			if derr := s.connectors.Delete(r.Context(), def.Name); derr != nil {
-				s.log.Error("connector install rollback", "connector", def.Name, "err", derr)
-			}
-			sw.restore(s.log)
-			switch {
-			case errors.Is(serr, skills.ErrExists):
-				writeErr(w, http.StatusConflict, "conflict", serr.Error())
-			case errors.Is(serr, errSkillFetch):
-				writeErr(w, http.StatusBadGateway, "upstream", serr.Error())
-			default:
-				writeErr(w, http.StatusInternalServerError, "internal", serr.Error())
-			}
-			return
-		}
-		row["skill"] = map[string]any{"name": written.Name, "from_connector": def.Name}
-	}
-	writeJSON(w, http.StatusCreated, row)
+	s.writeConnectorRow(w, http.StatusCreated, m.Name)
 }
 
-// errSkillFetch marks a contributed skill that could not be read.
-var errSkillFetch = errors.New("fetch contributed skill")
-
-// installSkill fetches a contributed skill and writes it for the connector.
-func (s *Server) installSkill(ctx context.Context, cat *registry.Service, sk *registry.Skill, connector string) (*skills.Skill, error) {
-	md, err := cat.FetchSkill(ctx, sk.URL)
+// writeConnectorRow writes the row of one connector after a write.
+func (s *Server) writeConnectorRow(w http.ResponseWriter, status int, name string) {
+	row, err := s.connectors.Get(name)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errSkillFetch, err)
+		row = map[string]any{"name": name}
 	}
-	return s.skills.AddConnectorSkill(ctx, sk.Name, md, connector)
+	writeJSON(w, status, row)
+}
+
+// writeInstallErr maps an install or update error. A catalog failure is a
+// registry error; anything else is a connector error or upstream.
+func (s *Server) writeInstallErr(w http.ResponseWriter, err error) {
+	switch {
+	case s.writeConnectorErr(w, err):
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, registry.ErrUnknownRegistry),
+		errors.Is(err, registry.ErrInvalidEntry), errors.Is(err, registry.ErrBadSignature):
+		s.writeRegistryErr(w, err)
+	default:
+		writeErr(w, http.StatusBadGateway, "upstream", err.Error())
+	}
+}
+
+// handleConnectorVersions lists the catalog versions of one connector.
+func (s *Server) handleConnectorVersions(w http.ResponseWriter, r *http.Request) {
+	vers, err := s.connectors.Versions(r.Context(), r.PathValue("name"))
+	if err != nil {
+		s.writeInstallErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"versions": vers})
+}
+
+// handleConnectorCheckUpdates checks one connector, or all of them with no
+// name, against the catalog now.
+func (s *Server) handleConnectorCheckUpdates(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
+	res, err := s.connectors.CheckUpdates(r.Context(), r.PathValue("name"))
+	if err != nil {
+		s.writeInstallErr(w, err)
+		return
+	}
+	if res == nil {
+		res = []connectors.UpdateResult{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": res})
+}
+
+// handleConnectorUpdate moves the global entry, or one workspace override,
+// to a catalog version. No version is the newest on the track.
+func (s *Server) handleConnectorUpdate(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
+	var body struct {
+		Version   string `json:"version"`
+		Workspace string `json:"workspace"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	name := r.PathValue("name")
+	if err := s.connectors.Update(r.Context(), name, s.workspaceID(r.Context(), body.Workspace), body.Version); err != nil {
+		s.writeInstallErr(w, err)
+		return
+	}
+	s.writeConnectorRow(w, http.StatusOK, name)
+}
+
+// handleConnectorCapabilities inspects one connector instance.
+func (s *Server) handleConnectorCapabilities(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	c, err := s.connectors.Capabilities(r.Context(), r.PathValue("name"), s.workspaceID(r.Context(), q.Get("workspace")), q.Get("instance"))
+	if err != nil {
+		if !s.writeConnectorErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+// handleConnectorGC removes installed versions that no entry uses.
+func (s *Server) handleConnectorGC(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
+	var body struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	removed, err := s.connectors.GC(r.Context(), body.DryRun)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if removed == nil {
+		removed = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed, "dry_run": body.DryRun})
 }
 
 // catalogEntryRow is the search/list view of one registry entry.
@@ -702,6 +770,15 @@ func catalogEntryRow(e registry.Entry) map[string]any {
 	}
 	if e.Server.Description != "" {
 		row["description"] = e.Server.Description
+	}
+	if c := e.Catalog; c != nil {
+		row["publisher"] = c.Publisher
+		row["capabilities"] = c.Capabilities
+		row["versions"] = c.Versions
+		if c.IconURL != "" {
+			row["icon_url"] = c.IconURL
+		}
+		return row
 	}
 	row["packages"] = e.Server.Packages
 	row["remotes"] = e.Server.Remotes
@@ -759,109 +836,7 @@ func (s *Server) writeRegistryErr(w http.ResponseWriter, err error) {
 	}
 }
 
-// errSecretConflict is an install secret that exists with another value.
-var errSecretConflict = errors.New("secret exists with a different value")
-
-// secretWrites is the secret part of one install. It knows the prior value of
-// each name, so a failed install can put the store back as it was.
-type secretWrites struct {
-	writes []registry.SecretWrite
-	prior  []*string // nil: the secret did not exist
-	done   int
-}
-
-// newSecretWrites reads the prior values. A secret that exists with the same
-// value needs no write. One with a different value is errSecretConflict,
-// unless overwrite is set.
-func newSecretWrites(writes []registry.SecretWrite, overwrite bool) (*secretWrites, error) {
-	sw := &secretWrites{}
-	for _, w := range writes {
-		cur, err := secrets.Get(w.Name)
-		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				return nil, err
-			}
-			sw.writes = append(sw.writes, w)
-			sw.prior = append(sw.prior, nil)
-			continue
-		}
-		if string(cur) == w.Value {
-			continue
-		}
-		if !overwrite {
-			return nil, fmt.Errorf("%w: %s", errSecretConflict, w.Name)
-		}
-		v := string(cur)
-		sw.writes = append(sw.writes, w)
-		sw.prior = append(sw.prior, &v)
-	}
-	return sw, nil
-}
-
-// created lists the names that did not exist before the install. The
-// connector owns them, and its delete removes them.
-func (sw *secretWrites) created() []string {
-	var out []string
-	for i, w := range sw.writes {
-		if sw.prior[i] == nil {
-			out = append(out, w.Name)
-		}
-	}
-	return out
-}
-
-// write stores each secret in order.
-func (sw *secretWrites) write() error {
-	for _, w := range sw.writes {
-		if err := secrets.Set(w.Name, w.Value); err != nil {
-			return err
-		}
-		sw.done++
-	}
-	return nil
-}
-
-// restore puts back each prior value, or deletes a secret that did not
-// exist. It also covers a write that failed half way.
-func (sw *secretWrites) restore(log *slog.Logger) {
-	n := min(sw.done+1, len(sw.writes))
-	for i := n - 1; i >= 0; i-- {
-		name := sw.writes[i].Name
-		var err error
-		if p := sw.prior[i]; p != nil {
-			err = secrets.Set(name, *p)
-		} else {
-			err = secrets.Delete(name)
-		}
-		if err != nil {
-			log.Error("restore install secret", "secret", name, "err", err)
-		}
-	}
-}
-
-// catalogRegistry returns the registry client for the current config. A
-// change to connectors.registries takes effect on the next read, so a local
-// registry can start after the daemon does (plan H.1). The client is swapped
-// atomically, so a request never reads a half-built client.
+// catalogRegistry returns the registry client for the current config.
 func (s *Server) catalogRegistry() *registry.Service {
-	cur := s.catalog.Load()
-	if s.catalogFixed {
-		return cur
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return cur // keep the last good client
-	}
-	regs := cfg.Connectors.Registries
-	if len(regs) == 0 {
-		regs = config.DefaultRegistries()
-	}
-	if slices.Equal(regs, cur.Registries) {
-		return cur
-	}
-	next := registry.New(registry.Config{Registries: regs, Log: s.log.With("source", "registry")})
-	if s.catalog.CompareAndSwap(cur, next) {
-		return next
-	}
-	return s.catalog.Load()
+	return s.catalog.Current()
 }

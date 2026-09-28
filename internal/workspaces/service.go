@@ -97,13 +97,14 @@ func (p Patch) touchesRoute() bool {
 
 // trebiYAML is the on-disk workspace config (B26).
 type trebiYAML struct {
-	ID         string          `yaml:"id"`
-	Name       string          `yaml:"name"`
-	GitEnabled bool            `yaml:"git_enabled"`
-	Email      *trebiYAMLEmail `yaml:"email,omitempty" json:"email,omitempty"`
-	Assistant  *wire.Override  `yaml:"assistant,omitempty" json:"assistant,omitempty"`
-	Contact    yaml.Node       `yaml:"contact,omitempty"`
-	Notify     yaml.Node       `yaml:"notify,omitempty"`
+	ID         string                       `yaml:"id"`
+	Name       string                       `yaml:"name"`
+	GitEnabled bool                         `yaml:"git_enabled"`
+	Email      *trebiYAMLEmail              `yaml:"email,omitempty" json:"email,omitempty"`
+	Assistant  *wire.Override               `yaml:"assistant,omitempty" json:"assistant,omitempty"`
+	Contact    yaml.Node                    `yaml:"contact,omitempty"`
+	Notify     yaml.Node                    `yaml:"notify,omitempty"`
+	Connectors map[string]ConnectorOverride `yaml:"connectors,omitempty"`
 }
 
 // route parses the contact and the notify route.
@@ -870,7 +871,7 @@ func ensureTrebiYAML(dir, name string) (id, dispName string, git bool, err error
 
 func writeTrebiYAML(dir, id, name string, git bool, p Patch) error {
 	y := trebiYAML{ID: id, Name: name, GitEnabled: git}
-	// Patch never edits the email or assistant blocks; carry them forward.
+	// Patch never edits the email, assistant, or connectors blocks; carry them forward.
 	if data, err := os.ReadFile(filepath.Join(dir, "trebi.yaml")); err == nil {
 		var old trebiYAML
 		if yaml.Unmarshal(data, &old) == nil {
@@ -878,6 +879,7 @@ func writeTrebiYAML(dir, id, name string, git bool, p Patch) error {
 			y.Assistant = old.Assistant
 			y.Contact = old.Contact
 			y.Notify = old.Notify
+			y.Connectors = old.Connectors
 		}
 	}
 	if err := y.applyRoute(p); err != nil {

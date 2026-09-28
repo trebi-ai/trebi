@@ -21,8 +21,9 @@ func (s Secret) LogValue() slog.Value {
 	return slog.StringValue("[secret]")
 }
 
-// A secret name is one file name: no separator, and no leading dot.
-var nameRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
+// A secret name is one file name: no separator, and no leading dot. The "@"
+// is for the secrets of a workspace connector instance (name@ws_NAME).
+var nameRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,127}$`)
 
 // ErrBadName is a secret name that cannot be a plain file name.
 var ErrBadName = errors.New("secret name must match " + nameRE.String())

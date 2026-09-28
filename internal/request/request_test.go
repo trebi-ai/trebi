@@ -260,46 +260,39 @@ func TestSplitScheduleValues(t *testing.T) {
 
 func TestBuildConnectorRestart(t *testing.T) {
 	t.Parallel()
-	req := BuildConnectorRestart("echo-src")
+	req := BuildConnectorRestart(ConnectorRef{Name: "echo-src"})
 	if req.Method != "POST" || req.Path != "/v1/connectors/echo-src/restart" {
+		t.Fatalf("%+v", req)
+	}
+	req = BuildConnectorRestart(ConnectorRef{Name: "wa", Instance: "wa@ws1", Workspace: "ws1"})
+	if req.Path != "/v1/connectors/wa/restart?instance=wa%40ws1&workspace=ws1" {
 		t.Fatalf("%+v", req)
 	}
 }
 
 func TestConnectorPatchBuild(t *testing.T) {
 	t.Parallel()
-	cwd := "/tmp"
+	version, track := "1.2.0", "pinned"
 	req := ConnectorPatch{
-		Name: "echo", Cwd: &cwd, Env: map[string]string{"A": "1"},
-		Events:       json.RawMessage(`{"command":"echo hi","format":"json"}`),
-		ActionsMerge: json.RawMessage(`{"mcp":{"url":"https://a"}}`),
+		Name: "echo", Version: &version, Track: &track, Inputs: map[string]string{"A": "1"},
+		Patch: json.RawMessage(`{"events":{"restart":"never"}}`),
 	}.Build()
 	if req.Method != "PATCH" || req.Path != "/v1/connectors/echo" {
 		t.Fatalf("%+v", req)
 	}
 	b, _ := json.Marshal(req.Body)
 	s := string(b)
-	for _, want := range []string{`"cwd":"/tmp"`, `"env":{"A":"1"}`, `"events":{"command":"echo hi","format":"json"}`, `"actions_merge":{"mcp":{"url":"https://a"}}`} {
+	for _, want := range []string{`"version":"1.2.0"`, `"track":"pinned"`, `"inputs":{"A":"1"}`, `"patch":{"events":{"restart":"never"}}`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %s in %s", want, s)
 		}
 	}
-	// A partial patch omits the blocks it does not name, so the daemon keeps
-	// them; an explicit null removes one.
-	b, _ = json.Marshal(ConnectorPatch{Name: "echo", Events: json.RawMessage("null")}.Build().Body)
-	if strings.Contains(string(b), "actions") || strings.Contains(string(b), "channel") {
-		t.Fatalf("partial patch must omit untouched blocks: %s", b)
+	if strings.Contains(s, "manifest") {
+		t.Fatalf("nil manifest must be omitted: %s", s)
 	}
-	if !strings.Contains(string(b), `"events":null`) {
-		t.Fatalf("null must survive as a removal: %s", b)
-	}
-	if strings.Contains(string(b), "cwd") {
-		t.Fatalf("nil cwd must be omitted: %s", b)
-	}
-	empty := ""
-	b, _ = json.Marshal(ConnectorPatch{Name: "echo", Cwd: &empty}.Build().Body)
-	if !strings.Contains(string(b), `"cwd":""`) {
-		t.Fatalf("empty cwd must clear: %s", b)
+	b, _ = json.Marshal(ConnectorPatch{Name: "echo", Patch: json.RawMessage("null")}.Build().Body)
+	if string(b) != `{"patch":null}` {
+		t.Fatalf("null must survive as a clear: %s", b)
 	}
 }
 
@@ -326,14 +319,14 @@ func TestBuildConnectorInstall(t *testing.T) {
 	t.Parallel()
 	req := ConnectorInstall{
 		Registry: "official", Name: "ai.adtest/adtest-mcp", Version: "1.1.0", As: "adtest",
-		Package: 0, Remote: -1, Env: map[string]string{"ADTEST_API_KEY": "k"}, OverwriteSecrets: true,
+		Package: 0, Remote: -1, Inputs: map[string]string{"ADTEST_API_KEY": "k"},
 	}.Build()
 	if req.Method != "POST" || req.Path != "/v1/connectors/install" {
 		t.Fatalf("%+v", req)
 	}
 	b, _ := json.Marshal(req.Body)
 	s := string(b)
-	for _, want := range []string{`"registry":"official"`, `"name":"ai.adtest/adtest-mcp"`, `"version":"1.1.0"`, `"as":"adtest"`, `"package":0`, `"env":{"ADTEST_API_KEY":"k"}`, `"overwrite_secrets":true`} {
+	for _, want := range []string{`"registry":"official"`, `"name":"ai.adtest/adtest-mcp"`, `"version":"1.1.0"`, `"as":"adtest"`, `"package":0`, `"inputs":{"ADTEST_API_KEY":"k"}`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("body %s missing %s", s, want)
 		}
@@ -343,19 +336,55 @@ func TestBuildConnectorInstall(t *testing.T) {
 	}
 	b, _ = json.Marshal(ConnectorInstall{Name: "m", Package: -1, Remote: 1}.Build().Body)
 	s = string(b)
-	if !strings.Contains(s, `"remote":1`) || strings.Contains(s, `"package"`) || strings.Contains(s, `"env"`) || strings.Contains(s, "overwrite") {
+	if !strings.Contains(s, `"remote":1`) || strings.Contains(s, `"package"`) || strings.Contains(s, `"inputs"`) {
 		t.Fatalf("remote body: %s", s)
+	}
+}
+
+func TestBuildConnectorSessions(t *testing.T) {
+	t.Parallel()
+	wa := ConnectorRef{Name: "whatsapp", Workspace: "ws1"}
+	cases := []struct {
+		name         string
+		req          HTTPRequest
+		method, path string
+		body         string
+	}{
+		{"login", BuildConnectorLogin(wa, "qr"), "POST", "/v1/connectors/whatsapp/login", `{"kind":"qr","workspace":"ws1"}`},
+		{"login bare", BuildConnectorLogin(ConnectorRef{Name: "whatsapp"}, ""), "POST", "/v1/connectors/whatsapp/login", `{}`},
+		{"submit", BuildConnectorLoginSubmit("whatsapp", "f1", map[string]string{"code": "1"}), "POST", "/v1/connectors/whatsapp/login/f1", `{"fields":{"code":"1"}}`},
+		{"cancel", BuildConnectorLoginCancel("whatsapp", "f1"), "DELETE", "/v1/connectors/whatsapp/login/f1", `null`},
+		{"logout", BuildConnectorLogout(ConnectorRef{Name: "whatsapp", Instance: "whatsapp@ws1"}), "POST", "/v1/connectors/whatsapp/logout", `{"instance":"whatsapp@ws1"}`},
+		{"bind", BuildConnectorBind(wa, "r 1", "t1", "agents/triage"), "POST", "/v1/connectors/whatsapp/rooms/r%201/bind", `{"operator":"agents/triage","thread":"t1","workspace":"ws1"}`},
+		{"override get", BuildConnectorOverrideGet("ws1", "whatsapp"), "GET", "/v1/workspaces/ws1/connectors/whatsapp", `null`},
+		{"override set", BuildConnectorOverrideSet("ws1", "whatsapp", map[string]any{"disabled": true}), "PUT", "/v1/workspaces/ws1/connectors/whatsapp", `{"disabled":true}`},
+		{"override delete", BuildConnectorOverrideDelete("ws1", "whatsapp"), "DELETE", "/v1/workspaces/ws1/connectors/whatsapp", `null`},
+	}
+	for _, c := range cases {
+		b, _ := json.Marshal(c.req.Body)
+		if c.req.Method != c.method || c.req.Path != c.path || string(b) != c.body {
+			t.Errorf("%s: %s %s %s", c.name, c.req.Method, c.req.Path, b)
+		}
+	}
+	if p := BuildConnectorRoomsPath(wa, "fam", "group", "C1", 10); p != "/v1/connectors/whatsapp/rooms?cursor=C1&kind=group&limit=10&q=fam&workspace=ws1" {
+		t.Errorf("rooms %s", p)
+	}
+	if p := BuildConnectorThreadsPath(ConnectorRef{Name: "email"}, "mbx", "", 0); p != "/v1/connectors/email/rooms/mbx/threads" {
+		t.Errorf("threads %s", p)
+	}
+	if p := BuildConnectorLogsPath(wa, true); p != "/v1/connectors/whatsapp/logs?follow=1&workspace=ws1" {
+		t.Errorf("logs %s", p)
 	}
 }
 
 func TestBuildConnectorReplace(t *testing.T) {
 	t.Parallel()
-	req := BuildConnectorReplace("echo", map[string]any{"events": map[string]any{"command": "echo hi"}})
+	req := BuildConnectorReplace("echo", map[string]any{"from": "catalog", "version": "1.0.0"})
 	if req.Method != "PUT" || req.Path != "/v1/connectors/echo" {
 		t.Fatalf("%+v", req)
 	}
 	b, _ := json.Marshal(req.Body)
-	if !strings.Contains(string(b), `"command":"echo hi"`) {
+	if !strings.Contains(string(b), `"from":"catalog"`) {
 		t.Fatalf("body: %s", b)
 	}
 }
@@ -737,11 +766,15 @@ func TestBuildSkillPut(t *testing.T) {
 
 func TestBuildConnectorCursor(t *testing.T) {
 	t.Parallel()
-	got := BuildConnectorCursorGet("mail")
+	mail := ConnectorRef{Name: "mail"}
+	got := BuildConnectorCursorGet(mail)
 	if got.Method != "GET" || got.Path != "/v1/connectors/mail/cursor" {
 		t.Fatalf("get %+v", got)
 	}
-	got = BuildConnectorCursorSet("mail", "evt-1")
+	got = BuildConnectorCursorSet(ConnectorRef{Name: "mail", Workspace: "ws1"}, "evt-1")
+	if got.Path != "/v1/connectors/mail/cursor?workspace=ws1" {
+		t.Fatalf("set path %q", got.Path)
+	}
 	if got.Method != "PUT" || got.Body == nil {
 		t.Fatalf("set %+v", got)
 	}
@@ -749,7 +782,7 @@ func TestBuildConnectorCursor(t *testing.T) {
 	if !strings.Contains(string(b), `"last_event_id":"evt-1"`) {
 		t.Fatalf("%s", b)
 	}
-	got = BuildConnectorCursorReset("mail")
+	got = BuildConnectorCursorReset(mail)
 	if got.Method != "PUT" || got.Body != nil {
 		t.Fatalf("reset must send empty body, got %+v", got)
 	}
@@ -803,11 +836,11 @@ func TestBuildWorkspaceAndMemoryAndRules(t *testing.T) {
 	if req.Path != "/v1/rules/fire" {
 		t.Fatalf("rules fire %+v", req)
 	}
-	req = BuildConnectorConnect("mail")
+	req = BuildConnectorConnect(ConnectorRef{Name: "mail"})
 	if req.Path != "/v1/connectors/mail/connect" {
 		t.Fatalf("connect %+v", req)
 	}
-	req = BuildConnectorDisconnect("mail")
+	req = BuildConnectorDisconnect(ConnectorRef{Name: "mail"})
 	if req.Path != "/v1/connectors/mail/disconnect" {
 		t.Fatalf("disconnect %+v", req)
 	}
@@ -1014,10 +1047,13 @@ func TestBuildHarnessConnectorQueueRequests(t *testing.T) {
 	if cancel.Method != "DELETE" || cancel.Path != "/v1/harnesses/claude/login" {
 		t.Fatalf("%+v", cancel)
 	}
-	if p := BuildConnectorGetPath("mail"); p != "/v1/connectors/mail" {
+	if p := BuildConnectorGetPath("mail", ""); p != "/v1/connectors/mail" {
 		t.Fatalf("connector get %s", p)
 	}
-	def := map[string]any{"name": "mail", "kind": "imap"}
+	if p := BuildConnectorGetPath("mail", "ws1"); p != "/v1/connectors/mail?workspace=ws1" {
+		t.Fatalf("connector get %s", p)
+	}
+	def := map[string]any{"name": "mail", "from": "catalog"}
 	create := BuildConnectorCreate(def)
 	if create.Method != "POST" || create.Path != "/v1/connectors" || create.Body.(map[string]any)["name"] != "mail" {
 		t.Fatalf("%+v", create)

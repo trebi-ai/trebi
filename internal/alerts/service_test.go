@@ -864,8 +864,8 @@ type chanSender struct {
 	rows  []outbox.Row
 }
 
-func (c *chanSender) HasChannel(name string) (bool, bool) {
-	return name == "whatsapp", name == "whatsapp"
+func (c *chanSender) HasChannel(name, _ string) (bool, bool, bool) {
+	return name == "whatsapp", name == "whatsapp", false
 }
 
 func (c *chanSender) Deliver(ctx context.Context, r outbox.Row) error {
@@ -1035,4 +1035,75 @@ func mailService(t *testing.T, st *store.Store, ob *outbox.Service, w *sendWorke
 		Admins: []string{"ops@example.com"}, FromName: "Trebi",
 	}, email.NewClient(srv.URL, w.token))
 	return s
+}
+
+// TestConnectorAuthRequired proves a login alert per instance with a Log in
+// action, and that a connected status resolves it.
+func TestConnectorAuthRequired(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	handle := func(ev store.BusEvent) {
+		t.Helper()
+		if _, err := st.Append(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+		frames, err := st.ListBusWith(ctx, store.ListBusOpts{Topics: []string{ev.Topic}, Limit: 100})
+		if err != nil || len(frames) == 0 {
+			t.Fatalf("frames %v %v", frames, err)
+		}
+		svc.HandleEvent(ctx, frames[len(frames)-1])
+	}
+	handle(store.BusEvent{Topic: "connector.auth.required", Entity: "connector", EntityID: "chat", Action: "updated",
+		Attrs: map[string]string{"instance": "chat@ws1", "reason": "logged_out"}})
+	items, _ := svc.List(ctx, alerts.ListOpts{})
+	if len(items) != 1 || items[0].Subject != "connector/chat@ws1" || items[0].AlertKind != string(alerts.KindConnectorAuthRequired) {
+		t.Fatalf("items %+v", items)
+	}
+	if acts := items[0].Actions; len(acts) != 1 || acts[0].Kind != alerts.ActionLogIn || !strings.Contains(acts[0].Route, "instance=chat%40ws1") {
+		t.Fatalf("actions %+v", acts)
+	}
+	handle(store.BusEvent{Topic: "connector.status", Entity: "connector", EntityID: "chat", Action: "updated",
+		Attrs: map[string]string{"instance": "chat@ws1", "state": "connected"}})
+	if open, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)}); len(open) != 0 {
+		t.Fatalf("open after connected: %+v", open)
+	}
+}
+
+// TestConnectorUpdateAvailable proves an update item with an Update action,
+// and that a global version change resolves it.
+func TestConnectorUpdateAvailable(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	handle := func(ev store.BusEvent) {
+		t.Helper()
+		if _, err := st.Append(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+		frames, err := st.ListBusWith(ctx, store.ListBusOpts{Topics: []string{ev.Topic}, Limit: 100})
+		if err != nil || len(frames) == 0 {
+			t.Fatalf("frames %v %v", frames, err)
+		}
+		svc.HandleEvent(ctx, frames[len(frames)-1])
+	}
+	handle(store.BusEvent{Topic: "connector.update.available", Entity: "connector", EntityID: "whatsapp", Action: "update.available",
+		Attrs: map[string]string{"version": "0.7.0", "current": "0.6.0"}})
+	items, _ := svc.List(ctx, alerts.ListOpts{})
+	if len(items) != 1 || items[0].Subject != "connector/whatsapp" || items[0].AlertKind != string(alerts.KindConnectorUpdate) {
+		t.Fatalf("items %+v", items)
+	}
+	if acts := items[0].Actions; len(acts) != 1 || acts[0].Kind != alerts.ActionUpdate || acts[0].Route != "/v1/connectors/whatsapp/update" {
+		t.Fatalf("actions %+v", acts)
+	}
+	handle(store.BusEvent{Topic: "connector.updated.version", Entity: "connector", EntityID: "whatsapp", Action: "updated.version",
+		Attrs: map[string]string{"from": "0.6.0", "to": "0.7.0", "workspace": "ws1"}})
+	if open, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)}); len(open) != 1 {
+		t.Fatalf("a workspace update must not resolve: %+v", open)
+	}
+	handle(store.BusEvent{Topic: "connector.updated.version", Entity: "connector", EntityID: "whatsapp", Action: "updated.version",
+		Attrs: map[string]string{"from": "0.6.0", "to": "0.7.0"}})
+	if open, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)}); len(open) != 0 {
+		t.Fatalf("open after update: %+v", open)
+	}
 }

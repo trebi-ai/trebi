@@ -55,6 +55,8 @@ type IngressMessage struct {
 	Dkim        string            `json:"dkim"`
 	Dmarc       string            `json:"dmarc"`
 	ReceivedAt  string            `json:"received_at"`
+	// Thread is the thread the daemon found; it wins over the headers.
+	Thread string `json:"-"`
 }
 
 // SendRequest is the outbound shape testdata/contract/send-request.v1.json

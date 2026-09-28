@@ -1,11 +1,12 @@
-// Package registry is the client for MCP server catalogs. It searches the
-// configured registries and turns one server entry into a connector
-// definition (Part H). A registry speaks the official MCP Registry API, the
-// Smithery API, or the Docker MCP Catalog file.
+// Package registry is the client for connector catalogs. It searches the
+// configured sources and turns one entry into a connector manifest. A source
+// is the signed Trebi catalog, the official MCP Registry API, the Smithery
+// API, or the Docker MCP Catalog file.
 package registry
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +14,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/config"
@@ -67,6 +70,8 @@ type Config struct {
 	// to reach a loopback server.
 	SkillHTTP *http.Client
 	Log       *slog.Logger
+	// CatalogKeys verify the Trebi catalog index. Nil is the embedded key.
+	CatalogKeys []ed25519.PublicKey
 }
 
 // Service talks to one or more MCP registries. Build it with New; it is safe
@@ -76,17 +81,28 @@ type Service struct {
 	HTTP       *http.Client
 	Log        *slog.Logger
 
-	skillHTTP *http.Client
-	mu        sync.Mutex
-	prefix    map[string]string       // registry URL → API prefix that answered
-	docker    map[string]dockerLoaded // catalog URL → last good file
+	skillHTTP   *http.Client
+	catalogKeys []ed25519.PublicKey
+	mu          sync.Mutex
+	prefix      map[string]string       // registry URL → API prefix that answered
+	docker      map[string]dockerLoaded // catalog URL → last good file
+	trebi       map[string]trebiLoaded  // catalog URL → last good index
+	sigErr      map[string]error        // catalog URL → last signature failure
+	pages       map[string]cachedPage   // registry and query → last good page
+}
+
+// cachedPage is the last good page of one search, served stale when the
+// source fails.
+type cachedPage struct {
+	at   time.Time
+	page Page
 }
 
 // New builds a registry client.
 func New(cfg Config) *Service {
 	regs := cfg.Registries
 	if len(regs) == 0 {
-		regs = []config.Registry{{Name: DefaultRegistryName, URL: DefaultRegistryURL}}
+		regs = config.DefaultRegistries()
 	}
 	hc := cfg.HTTP
 	if hc == nil {
@@ -100,7 +116,15 @@ func New(cfg Config) *Service {
 	if skill == nil {
 		skill = SafeClient(requestTimeout)
 	}
-	return &Service{Registries: regs, HTTP: hc, Log: log, skillHTTP: skill, prefix: map[string]string{}, docker: map[string]dockerLoaded{}}
+	keys := cfg.CatalogKeys
+	if keys == nil {
+		keys = catalogKeys()
+	}
+	return &Service{
+		Registries: regs, HTTP: hc, Log: log, skillHTTP: skill, catalogKeys: keys,
+		prefix: map[string]string{}, docker: map[string]dockerLoaded{}, trebi: map[string]trebiLoaded{},
+		sigErr: map[string]error{}, pages: map[string]cachedPage{},
+	}
 }
 
 // Source is one registry API. Each kind maps its wire shape to Entry.
@@ -117,10 +141,12 @@ type Query struct {
 	Limit  int
 }
 
-// Page is one page from one registry.
+// Page is one page from one registry. Stale marks a page from the cache
+// after the source failed.
 type Page struct {
 	Entries []Entry
 	Next    string
+	Stale   bool
 }
 
 // Trust levels of an entry.
@@ -139,20 +165,24 @@ type SearchOpts struct {
 	Limit    int
 }
 
-// Entry is one server from one registry.
+// Entry is one server from one registry. Catalog is set for a Trebi
+// catalog entry, which installs from its snapshot and not from Server.
 type Entry struct {
 	Registry string
 	Server   ServerJSON
 	Meta     map[string]any // the response-level _meta
 	Trust    string
+	Catalog  *IndexEntry
 }
 
 // SearchResult is one merged catalog page. Errors lists each registry that
-// failed while the others answered.
+// failed while the others answered. Stale lists each registry whose page
+// came from the cache.
 type SearchResult struct {
 	Entries []Entry
 	Next    string
 	Errors  []RegistryError
+	Stale   []string
 }
 
 // RegistryError is one registry that failed in a merged search.
@@ -188,7 +218,7 @@ func (s *Service) Search(ctx context.Context, o SearchOpts) (SearchResult, error
 			pos = o.Cursor // a bare cursor applies to the named registry
 		}
 		queried++
-		page, err := s.Source(reg).Search(ctx, Query{Text: o.Query, Cursor: pos, Limit: o.Limit})
+		page, err := s.searchCached(ctx, reg, Query{Text: o.Query, Cursor: pos, Limit: o.Limit})
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -200,6 +230,9 @@ func (s *Service) Search(ctx context.Context, o SearchOpts) (SearchResult, error
 			continue
 		}
 		res.Entries = append(res.Entries, page.Entries...)
+		if page.Stale {
+			res.Stale = append(res.Stale, reg.Name)
+		}
 		if page.Next != "" {
 			next[reg.Name] = page.Next
 		}
@@ -211,22 +244,66 @@ func (s *Service) Search(ctx context.Context, o SearchOpts) (SearchResult, error
 	return res, nil
 }
 
-// Get reads one server version. An empty registry uses the default; an empty
-// version asks the registry for the latest.
+// searchCached runs one source search. A good page is kept for catalogTTL;
+// when the source fails, the kept page comes back with Stale set, so one
+// failing source does not empty the catalog.
+func (s *Service) searchCached(ctx context.Context, reg config.Registry, q Query) (Page, error) {
+	key := reg.Name + "\x00" + reg.URL + "\x00" + q.Text + "\x00" + q.Cursor + "\x00" + strconv.Itoa(q.Limit)
+	page, err := s.Source(reg).Search(ctx, q)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		if c, ok := s.pages[key]; ok && time.Since(c.at) < catalogTTL {
+			s.Log.Warn("catalog search", "registry", reg.Name, "error", err)
+			c.page.Stale = true
+			return c.page, nil
+		}
+		return Page{}, err
+	}
+	for k, c := range s.pages {
+		if time.Since(c.at) >= catalogTTL {
+			delete(s.pages, k)
+		}
+	}
+	s.pages[key] = cachedPage{at: time.Now(), page: page}
+	return page, nil
+}
+
+// Get reads one server version; an empty version asks for the latest. An
+// empty registry asks each registry in order, so a Trebi entry wins over an
+// MCP registry entry with the same name.
 func (s *Service) Get(ctx context.Context, registryName, name, version string) (Entry, error) {
 	if strings.TrimSpace(name) == "" {
 		return Entry{}, fmt.Errorf("%w: name required", ErrNotFound)
 	}
-	reg, err := s.pick(registryName)
-	if err != nil {
-		return Entry{}, err
+	if strings.TrimSpace(registryName) != "" {
+		reg, err := s.pick(registryName)
+		if err != nil {
+			return Entry{}, err
+		}
+		return s.Source(reg).Get(ctx, name, version)
 	}
-	return s.Source(reg).Get(ctx, name, version)
+	var firstErr error
+	for _, reg := range s.Registries {
+		e, err := s.Source(reg).Get(ctx, name, version)
+		if err == nil {
+			return e, nil
+		}
+		if firstErr == nil || errors.Is(firstErr, ErrNotFound) && !errors.Is(err, ErrNotFound) {
+			firstErr = err
+		}
+	}
+	if firstErr == nil {
+		firstErr = fmt.Errorf("%w: %s", ErrNotFound, name)
+	}
+	return Entry{}, firstErr
 }
 
 // Source returns the API client for reg by its kind.
 func (s *Service) Source(reg config.Registry) Source {
 	switch reg.KindOrDefault() {
+	case config.RegistryTrebi:
+		return trebiCatalog{s: s, reg: reg}
 	case config.RegistrySmithery:
 		return smithery{s: s, reg: reg}
 	case config.RegistryDocker:
@@ -328,6 +405,11 @@ func (s *Service) fetchJSON(ctx context.Context, reg config.Registry, path strin
 
 // fetch runs one GET and returns the body, capped at maxBody.
 func (s *Service) fetch(ctx context.Context, reg config.Registry, endpoint, accept string) ([]byte, error) {
+	return s.fetchCapped(ctx, reg, endpoint, accept, maxBody)
+}
+
+// fetchCapped runs one GET and returns the body, capped at limit.
+func (s *Service) fetchCapped(ctx context.Context, reg config.Registry, endpoint, accept string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("registry %s: %w", reg.Name, err)
@@ -338,7 +420,7 @@ func (s *Service) fetch(ctx context.Context, reg config.Registry, endpoint, acce
 		return nil, fmt.Errorf("registry %s: %w", reg.Name, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		return nil, fmt.Errorf("registry %s: %w", reg.Name, err)
 	}
@@ -531,4 +613,63 @@ type Argument struct {
 type KeyValue struct {
 	Name string `json:"name"`
 	Input
+}
+
+// Live is a registry client that follows connectors.registries in the
+// config. A change takes effect on the next read, so a local registry can
+// start after the daemon does. The client is swapped atomically.
+type Live struct {
+	cur   atomic.Pointer[Service]
+	fixed bool
+	log   *slog.Logger
+}
+
+// NewLive builds a Live client. A non-nil fixed client never swaps; tests
+// use it.
+func NewLive(fixed *Service) *Live {
+	l := &Live{fixed: fixed != nil, log: slog.Default().With("source", "registry")}
+	if fixed == nil {
+		fixed = New(Config{Registries: liveRegistries(nil), Log: l.log})
+	}
+	l.cur.Store(fixed)
+	return l
+}
+
+// liveRegistries reads the configured list, or keeps last on a bad config.
+func liveRegistries(last []config.Registry) []config.Registry {
+	cfg, err := config.Load()
+	if err != nil {
+		return last
+	}
+	if len(cfg.Connectors.Registries) == 0 {
+		return config.DefaultRegistries()
+	}
+	return cfg.Connectors.Registries
+}
+
+// Current returns the client for the current config.
+func (l *Live) Current() *Service {
+	cur := l.cur.Load()
+	if l.fixed {
+		return cur
+	}
+	regs := liveRegistries(cur.Registries)
+	if slices.Equal(regs, cur.Registries) {
+		return cur
+	}
+	next := New(Config{Registries: regs, Log: l.log})
+	if l.cur.CompareAndSwap(cur, next) {
+		return next
+	}
+	return l.cur.Load()
+}
+
+// Versions lists the catalog versions of one connector.
+func (l *Live) Versions(ctx context.Context, name string) ([]IndexVersion, error) {
+	return l.Current().Versions(ctx, name)
+}
+
+// Snapshot downloads one checked snapshot.
+func (l *Live) Snapshot(ctx context.Context, name, version string) ([]byte, error) {
+	return l.Current().Snapshot(ctx, name, version)
 }

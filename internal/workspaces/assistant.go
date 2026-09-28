@@ -41,6 +41,7 @@ func (s *Service) AssistantOverride(_ context.Context, id string) (wire.Override
 	if y.Assistant != nil {
 		ov = *y.Assistant
 	}
+	job.NumberTriggers(ov.Triggers)
 	return ov, hashBytes(data), nil
 }
 

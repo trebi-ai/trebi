@@ -474,6 +474,54 @@ type Trigger struct {
 	Raw       TriggerYAML
 }
 
+// UnmarshalYAML reads one trigger in the canonical YAML form, as in the
+// assistant block of trebi.yaml. Index stays 0; the reader numbers a list.
+func (t *Trigger) UnmarshalYAML(n *yaml.Node) error {
+	var raw TriggerYAML
+	if err := n.Decode(&raw); err != nil {
+		return err
+	}
+	out, err := normalizeTriggers([]TriggerYAML{raw})
+	if err != nil {
+		return err
+	}
+	*t = out[0]
+	return nil
+}
+
+// MarshalYAML writes the canonical form back. A trigger that did not come
+// from YAML (a JSON body) is built from its fields.
+func (t Trigger) MarshalYAML() (any, error) {
+	if !reflect.ValueOf(t.Raw).IsZero() {
+		return t.Raw, nil
+	}
+	raw := TriggerYAML{
+		Cron: t.Cron, Every: t.Every, Event: t.Event, Match: t.Match, Extract: t.Extract,
+		RateLimit: t.RateLimit, When: t.When, Anchor: t.Anchor, Timezone: t.Timezone,
+		Allowlist: t.Allowlist, Disabled: t.Disabled,
+	}
+	if t.Debounce > 0 {
+		raw.Debounce = t.Debounce.String()
+	}
+	return raw, nil
+}
+
+// NumberTriggers sets Index on a list read one trigger at a time: the
+// schedule family (cron and every) and the event family count apart.
+func NumberTriggers(list []Trigger) {
+	sched, event := 0, 0
+	for i := range list {
+		switch list[i].Family {
+		case "cron", "every":
+			list[i].Index = sched
+			sched++
+		case "event":
+			list[i].Index = event
+			event++
+		}
+	}
+}
+
 // ParseFile reads and parses a JOB.md or TREBI.md with canonical keys only.
 func ParseFile(filePath string) (*Job, error) {
 	data, err := os.ReadFile(filePath)

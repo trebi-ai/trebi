@@ -63,6 +63,20 @@ func RunsDir() string    { return filepath.Join(Base(), "runs") }
 func ConnectorsLogDir() string {
 	return filepath.Join(Base(), "logs", "connectors")
 }
+
+// ConnectorsDir holds one folder per connector name, with one unpacked
+// snapshot per version.
+func ConnectorsDir() string { return filepath.Join(Base(), "connectors") }
+
+// ConnectorVersionDir is the unpacked snapshot of one connector version.
+func ConnectorVersionDir(name, version string) string {
+	return filepath.Join(ConnectorsDir(), name, version)
+}
+
+// ConnectorStateDir is the adapter state of one connector instance.
+func ConnectorStateDir(instance string) string {
+	return filepath.Join(Base(), "state", "connectors", instance)
+}
 func DaemonLogPath() string { return filepath.Join(Base(), "logs", "trebid.log") }
 
 // EnsureDirs creates the standard directory tree.

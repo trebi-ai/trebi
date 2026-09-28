@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -444,8 +445,9 @@ func TestControlPlane_StopEndsConnectorGroups(t *testing.T) {
 
 	cp := daemon.New(st, daemon.Options{})
 	pidFile := filepath.Join(dir, "pid")
-	d := connectors.Definition{Name: "hold", Events: &connectors.Events{
-		Command: "echo $$ > " + pidFile + "; sleep 30 | cat", Format: "json",
+	d := connectors.Entry{Name: "hold", From: connectors.FromInline, Manifest: &manifest.Manifest{
+		Schema: manifest.SchemaID, Name: "hold", Title: "Hold", Description: "Test connector.", Version: "1.0.0",
+		Events: &manifest.Events{Command: "echo $$ > " + pidFile + "; sleep 30 | cat", Format: "json"},
 	}}
 	if err := cp.Connectors.Create(context.Background(), d); err != nil {
 		t.Fatal(err)

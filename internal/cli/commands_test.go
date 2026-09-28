@@ -277,9 +277,9 @@ func TestConnectorCursorBodies(t *testing.T) {
 	}
 }
 
-// TestConnectorSetSendsActionsMerge proves set sends only the flags given, so
-// the masked headers of the GET row never go back to the daemon.
-func TestConnectorSetSendsActionsMerge(t *testing.T) {
+// TestConnectorSetMergesInputs proves set sends the stored inputs back as
+// ***, so the daemon keeps them, and adds the inputs given.
+func TestConnectorSetMergesInputs(t *testing.T) {
 	var patchBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -287,35 +287,143 @@ func TestConnectorSetSendsActionsMerge(t *testing.T) {
 			b, _ := io.ReadAll(r.Body)
 			patchBody = string(b)
 		}
-		_, _ = w.Write([]byte(`{"name":"api","actions":{"mcp":{"url":"https://a","headers":{"X-Key":"***"}},"cli":null}}`))
+		_, _ = w.Write([]byte(`{"name":"api","inputs":{"TOKEN":"***"}}`))
 	}))
 	t.Cleanup(srv.Close)
 	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
-	if _, err := runCLI(t, client, "connector", "set", "api", "--mcp-url", "https://b"); err != nil {
+	if _, err := runCLI(t, client, "connector", "set", "api", "--input", "REGION=eu", "--track", "minor"); err != nil {
 		t.Fatal(err)
 	}
-	if patchBody != `{"actions_merge":{"mcp":{"url":"https://b"}}}` {
+	if patchBody != `{"inputs":{"REGION":"eu","TOKEN":"***"},"track":"minor"}` {
 		t.Fatalf("patch body %s", patchBody)
 	}
 }
 
-func TestConnectorSetEmptyCwdClears(t *testing.T) {
-	var patchBody string
+// TestConnectorSetCreatesInline proves set with --manifest-file creates an
+// inline entry when the connector does not exist.
+func TestConnectorSetCreatesInline(t *testing.T) {
+	var method, body string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method == "PATCH" {
-			b, _ := io.ReadAll(r.Body)
-			patchBody = string(b)
+		if r.Method == "GET" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"no"}}`))
+			return
 		}
-		_, _ = w.Write([]byte(`{"name":"api","cwd":"/old"}`))
+		b, _ := io.ReadAll(r.Body)
+		method, body = r.Method+" "+r.URL.Path, string(b)
+		_, _ = w.Write([]byte(`{"name":"tick"}`))
 	}))
 	t.Cleanup(srv.Close)
 	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
-	if _, err := runCLI(t, client, "connector", "set", "api", "--cwd", ""); err != nil {
+	path := filepath.Join(t.TempDir(), "m.yaml")
+	if err := os.WriteFile(path, []byte("name: tick\nevents:\n  command: tick.sh\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if patchBody != `{"cwd":""}` {
-		t.Fatalf("patch body %s", patchBody)
+	if _, err := runCLI(t, client, "connector", "set", "tick", "--manifest-file", path); err != nil {
+		t.Fatal(err)
+	}
+	if method != "POST /v1/connectors" || body != `{"from":"inline","manifest":{"events":{"command":"tick.sh"},"name":"tick"},"name":"tick"}` {
+		t.Fatalf("%s %s", method, body)
+	}
+}
+
+func TestConnectorApplyReadsEntry(t *testing.T) {
+	var method, body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		method, body = r.Method+" "+r.URL.Path, string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte("whatsapp:\n  from: catalog\n  track: minor\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, client, "connector", "apply", "--file", path); err != nil {
+		t.Fatal(err)
+	}
+	if method != "PUT /v1/connectors/whatsapp" || body != `{"from":"catalog","name":"whatsapp","track":"minor"}` {
+		t.Fatalf("%s %s", method, body)
+	}
+}
+
+func TestConnectorLoginFollowsSteps(t *testing.T) {
+	var submitted string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/connectors/wa/login":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"flow_id":"f1","instance":"wa","step":{"kind":"qr","data":"QRDATA"}}`))
+		case "GET /v1/connectors/wa/login/f1":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "event: ready\ndata: {}\n\n"+
+				"event: step\ndata: {\"flow_id\":\"f1\",\"step\":{\"kind\":\"qr\",\"data\":\"QRDATA\"}}\n\n"+
+				"event: step\ndata: {\"flow_id\":\"f1\",\"step\":{\"kind\":\"input\",\"fields\":[{\"name\":\"code\",\"label\":\"Code\"}]}}\n\n"+
+				"event: done\ndata: {\"flow_id\":\"f1\",\"done\":{\"flow_id\":\"f1\",\"ok\":true,\"account\":{\"id\":\"+1555\"}}}\n\n")
+		case "POST /v1/connectors/wa/login/f1":
+			b, _ := io.ReadAll(r.Body)
+			submitted = string(b)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+	out, err := runCLIWithInput(t, client, "123456\n", "connector", "login", "wa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Scan this code with the app:", "█", "Code: ", "logged in as +1555"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+	if submitted != `{"fields":{"code":"123456"}}` {
+		t.Fatalf("submit %s", submitted)
+	}
+}
+
+func TestConnectorSessionRequests(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = append(got, r.Method+" "+r.URL.RequestURI()+" "+string(b))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"override":{"inputs":{"A":"***"}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+	runs := [][]string{
+		{"connector", "rooms", "wa", "--workspace", "ws1", "--query", "fam"},
+		{"connector", "threads", "wa", "r1", "--instance", "wa@ws1"},
+		{"connector", "bind", "wa", "r1", "--workspace", "ws1", "--operator", "agents/triage"},
+		{"connector", "logout", "wa"},
+		{"connector", "restart", "wa", "--workspace", "ws1"},
+		{"connector", "override", "set", "wa", "--workspace", "ws1", "--input", "B=2", "--disabled"},
+	}
+	for _, args := range runs {
+		if _, err := runCLI(t, client, args...); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	want := []string{
+		"GET /v1/connectors/wa/rooms?q=fam&workspace=ws1 ",
+		"GET /v1/connectors/wa/rooms/r1/threads?instance=wa%40ws1 ",
+		`POST /v1/connectors/wa/rooms/r1/bind {"operator":"agents/triage","workspace":"ws1"}`,
+		"POST /v1/connectors/wa/logout {}",
+		"POST /v1/connectors/wa/restart?workspace=ws1 ",
+		"GET /v1/workspaces/ws1/connectors/wa ",
+		`PUT /v1/workspaces/ws1/connectors/wa {"disabled":true,"inputs":{"A":"***","B":"2"}}`,
+	}
+	for i, w := range want {
+		if i >= len(got) || strings.TrimSpace(got[i]) != strings.TrimSpace(w) {
+			t.Fatalf("request %d = %q, want %q (all %q)", i, got, w, got)
+		}
 	}
 }
 
@@ -509,8 +617,17 @@ func TestLicenseShowUnsupported(t *testing.T) {
 
 func runCLI(t *testing.T, client *APIClient, args ...string) (string, error) {
 	t.Helper()
+	return runCLIWithInput(t, client, "", args...)
+}
+
+// runCLIWithInput runs the CLI with stdin set to input.
+func runCLIWithInput(t *testing.T, client *APIClient, input string, args ...string) (string, error) {
+	t.Helper()
 	var buf bytes.Buffer
 	app := NewApp(Options{})
+	if input != "" {
+		app.Reader = strings.NewReader(input)
+	}
 	app.Writer = &buf
 	app.ErrWriter = &buf
 	prev := app.Before

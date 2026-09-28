@@ -12,6 +12,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/secrets"
+	"gopkg.in/yaml.v3"
 )
 
 const canonicalJob = `---
@@ -447,4 +448,30 @@ func parseErrOf(j *job.Job) string {
 		return "<nil job>"
 	}
 	return j.ParseError
+}
+
+// TestTriggerYAML proves a trigger read alone (the assistant block of
+// trebi.yaml) gets its family and canonical keys, and writes back the same.
+func TestTriggerYAML(t *testing.T) {
+	var list []job.Trigger
+	src := "- event: chat\n  match: kind = 'message'\n  rate_limit: 5/m\n- cron: '0 9 * * *'\n- event: mail\n"
+	if err := yaml.Unmarshal([]byte(src), &list); err != nil {
+		t.Fatal(err)
+	}
+	job.NumberTriggers(list)
+	if list[0].Family != "event" || list[0].RateLimit != "5/m" || list[0].Match == "" || list[1].Family != "cron" || list[2].Index != 1 {
+		t.Fatalf("triggers = %+v", list)
+	}
+	out, err := yaml.Marshal(list)
+	if err != nil || string(out) != "- event: chat\n  match: kind = 'message'\n  rate_limit: 5/m\n- cron: 0 9 * * *\n- event: mail\n" {
+		t.Fatalf("marshal = %q %v", out, err)
+	}
+	if err := yaml.Unmarshal([]byte("- match: x\n"), &list); err == nil {
+		t.Fatal("a trigger with no family must fail")
+	}
+	// A trigger from a JSON body has no raw form.
+	out, err = yaml.Marshal([]job.Trigger{{Family: "event", Event: "chat", Match: "x"}})
+	if err != nil || string(out) != "- event: chat\n  match: x\n" {
+		t.Fatalf("json-made marshal = %q %v", out, err)
+	}
 }

@@ -2,73 +2,53 @@ package connectors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/secrets"
 )
 
-// ResolveActions resolves connector names into the actions a run receives
-// (Part F.3). An unknown name, an inherited name, or a connector with no
-// actions block is an error; runs turns it into ErrActionsInvalid.
-func (s *Service) ResolveActions(ctx context.Context, names []string) ([]runs.ConnectorAction, error) {
+// ResolveActions resolves connector names into the actions a run receives,
+// with the layers of the workspace. An unknown name, an inherited name, a
+// disabled name, or a connector with no actions block is an error; runs
+// turns it into ErrActionsInvalid.
+func (s *Service) ResolveActions(_ context.Context, workspaceID string, names []string) ([]runs.ConnectorAction, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}
 	out := make([]runs.ConnectorAction, 0, len(names))
 	for _, name := range names {
-		d, ok := s.Definition(name)
-		if !ok {
-			if row, err := s.Get(name); err == nil {
-				if fmt.Sprint(row["provenance"]) == "inherited" {
-					return nil, fmt.Errorf("connector %q is an inherited MCP server; the harness bridge already gives it to the run", name)
-				}
-				return nil, fmt.Errorf("connector %q has no definition", name)
+		r, err := s.Resolve(name, workspaceID)
+		if errors.Is(err, ErrNotFound) {
+			if row, gerr := s.Get(name); gerr == nil && fmt.Sprint(row["provenance"]) == "inherited" {
+				return nil, fmt.Errorf("connector %q is an inherited MCP server; the harness bridge already gives it to the run", name)
 			}
 			return nil, fmt.Errorf("connector %q not found", name)
 		}
-		if d.Actions == nil {
+		if err != nil {
+			return nil, fmt.Errorf("connector %q: %w", name, err)
+		}
+		a := r.Manifest.Actions
+		if a == nil {
 			return nil, fmt.Errorf("connector %q has no actions block", name)
 		}
-		act := runs.ConnectorAction{Name: name}
-		if m := d.Actions.MCP; m != nil {
-			merged := make(map[string]string, len(d.Env)+len(m.Env))
-			for k, v := range d.Env {
-				merged[k] = v
+		act := runs.ConnectorAction{Name: name, BinDir: r.BinDir()}
+		if a.MCP != nil {
+			srv, missing, err := r.MCPServer()
+			if err != nil {
+				return nil, err
 			}
-			for k, v := range m.Env {
-				merged[k] = v
-			}
-			env, missing := secrets.ExpandRefs(merged)
 			s.logMissingSecrets(name, missing)
-			headers, missing := secrets.ExpandRefs(m.Headers)
-			s.logMissingSecrets(name, missing)
-			act.MCP = &agentwire.MCPServer{
-				Name:    name,
-				Command: m.Command,
-				Args:    m.Args,
-				Env:     env,
-				URL:     m.URL,
-				Headers: headers,
-			}
+			act.MCP = srv
 		}
-		if c := d.Actions.CLI; c != nil {
-			env, missing := secrets.ExpandRefs(d.Env)
+		if a.CLI != nil {
+			env, missing := r.Env()
 			s.logMissingSecrets(name, missing)
 			act.Env = env
-			act.Commands = c.Commands
-			act.Skill = c.Skill
-			if c.Skill != "" {
-				if s.sk == nil {
-					return nil, fmt.Errorf("connector %q skill %q: skills service unavailable", name, c.Skill)
-				}
-				sk, err := s.sk.Get(ctx, c.Skill, false)
-				if err != nil {
-					return nil, fmt.Errorf("connector %q skill %q: %w", name, c.Skill, err)
-				}
-				// Path is the managed folder or the user-home folder.
-				act.SkillDir = sk.Path
+			act.Commands = a.CLI.Commands
+			if dir := r.SkillDir(); dir != "" {
+				act.Skill = name
+				act.SkillDir = dir
 			}
 		}
 		out = append(out, act)

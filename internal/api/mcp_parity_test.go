@@ -150,6 +150,7 @@ var mcpExcluded = map[string]string{
 	"POST /v1/proposals/{id}/decide":                        "decisions are human-only and blocked from MCP",
 	"GET /v1/runs/{id}/attach":                              "WebSocket terminal",
 	"GET /v1/harnesses/{name}/login/attach":                 "WebSocket login TUI",
+	"GET /v1/connectors/{name}/login/{flow_id}":             "SSE stream that stays open until the login ends; login and login_submit return the current step",
 	"POST /v1/agent-hook/{event}":                           "internal harness hook, not a client operation",
 	"POST /v1/skills/{name}/update":                         "alias of refresh (same handler)",
 	"POST /v1/jobs/{name}/memory/migrate":                   "repair path; the daemon migrates legacy files at launch",

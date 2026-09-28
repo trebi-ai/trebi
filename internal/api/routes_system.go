@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -436,6 +437,7 @@ func (s *Server) doctorFindings() []map[string]any {
 	src = append(src, s.agentLayoutDoctor()...)
 	src = append(src, s.memoryDoctor()...)
 	src = append(src, s.emailDoctor()...)
+	src = append(src, s.connectorDoctor()...)
 	src = append(src, s.cloudDoctor()...)
 	src = append(src, s.harnessRuntimeDoctor(context.Background())...)
 	out := make([]map[string]any, 0, len(src))
@@ -496,6 +498,28 @@ func (s *Server) emailDoctor() []alerts.DoctorFinding {
 			ID: "email-spool-stalled", Severity: "warn", Code: "email_spool_stalled",
 			Message: fmt.Sprintf("spool holds mail %s old; trebid is not pulling",
 				time.Duration(st.WorkerHealth.SpoolOldestAgeMS)*time.Millisecond),
+		})
+	}
+	return out
+}
+
+// connectorDoctor reports the connector findings (plan 2026-09-28 Part E.12).
+func (s *Server) connectorDoctor() []alerts.DoctorFinding {
+	if s.connectors == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var out []alerts.DoctorFinding
+	for _, f := range s.connectors.Doctor(ctx) {
+		out = append(out, alerts.DoctorFinding{
+			ID: fmt.Sprintf("%s:%s:%08x", f.Code, f.Connector, crc32.ChecksumIEEE([]byte(f.Message))), Severity: f.Severity, Code: f.Code, Message: f.Message,
+		})
+	}
+	for reg, err := range s.catalogRegistry().CatalogProblems() {
+		out = append(out, alerts.DoctorFinding{
+			ID: "catalog_signature_invalid:" + reg, Severity: "error", Code: "catalog_signature_invalid",
+			Message: fmt.Sprintf("registry %s: %v; search and install use the last good index", reg, err),
 		})
 	}
 	return out

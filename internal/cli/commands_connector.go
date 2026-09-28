@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"strings"
-	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/request"
@@ -19,7 +20,7 @@ func connectorCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "connector",
 		Usage: "manage connectors",
-		Commands: []*cli.Command{
+		Commands: append([]*cli.Command{
 			{
 				Name:  "list",
 				Usage: "list connectors",
@@ -27,6 +28,7 @@ func connectorCommand() *cli.Command {
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
 					&cli.StringFlag{Name: "capability", Usage: "filter: actions|events|channel"},
 					&cli.StringFlag{Name: "provenance", Usage: "filter: native|managed|inherited"},
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "resolve each row for this workspace"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runConnectorList,
@@ -35,87 +37,31 @@ func connectorCommand() *cli.Command {
 				Name:      "show",
 				Usage:     "show one connector",
 				ArgsUsage: "<name>",
-				Action:    runConnectorShow,
-			},
-			{
-				Name:      "search",
-				Usage:     "search MCP registries for installable servers",
-				ArgsUsage: "<query>",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "registry", Usage: "registry name (default: every configured registry)"},
-					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (next_cursor of the previous page)"},
-					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 30, Usage: "max rows"},
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "resolve the connector for this workspace"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
-				Action: runConnectorSearch,
-			},
-			{
-				Name:      "entry",
-				Usage:     "show one registry server: packages, remotes, and their inputs",
-				ArgsUsage: "<name>",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "registry", Usage: "registry name"},
-					&cli.StringFlag{Name: "version", Usage: "server version (default: latest)"},
-					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
-				},
-				Action: runConnectorEntry,
-			},
-			{
-				Name:      "install",
-				Usage:     "install a registry server as a connector",
-				ArgsUsage: "<name>",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "registry", Usage: "registry name"},
-					&cli.StringFlag{Name: "version", Usage: "server version (default: latest)"},
-					&cli.StringFlag{Name: "as", Usage: "connector name (default: derived from the server name)"},
-					&cli.IntFlag{Name: "package", Value: -1, Usage: "package index to install"},
-					&cli.IntFlag{Name: "remote", Value: -1, Usage: "remote index to install"},
-					&cli.StringSliceFlag{Name: "env", Aliases: []string{"e"}, Usage: "NAME=VALUE for an env, header, argument, or variable input (repeatable); secret:NAME keeps a reference"},
-					&cli.BoolFlag{Name: "overwrite-secrets", Usage: "replace a stored secret that has a different value"},
-					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
-				},
-				Action: runConnectorInstall,
+				Action: runConnectorShow,
 			},
 			{
 				Name:      "set",
-				Usage:     "create or update a connector (PATCH; flags overlay the stored definition)",
+				Usage:     "update a connector (PATCH); with --manifest-file, create it when it does not exist",
 				ArgsUsage: "<name>",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "cwd", Usage: "working directory"},
-					&cli.StringSliceFlag{Name: "env", Aliases: []string{"e"}, Usage: "KEY=VALUE (repeatable; merges into the stored env)"},
-					&cli.BoolFlag{Name: "no-events", Usage: "remove the events block"},
-					&cli.StringFlag{Name: "events-command", Usage: "events.command; implies the events block"},
-					&cli.StringFlag{Name: "format", Usage: "events.format: line|json (default line)"},
-					&cli.StringFlag{Name: "restart", Usage: "events.restart: always|on-failure|never"},
-					&cli.DurationFlag{Name: "poll", Usage: "events.poll: poll interval such as 15m; 0 runs live"},
-					&cli.StringFlag{Name: "id", Usage: "events.id: dot path to the source event id"},
-					&cli.StringFlag{Name: "ts", Usage: "events.ts: dot path used to sort catch-up output"},
-					&cli.StringFlag{Name: "identity", Usage: "events.identity: dot path to the sender"},
-					&cli.StringFlag{Name: "catchup-command", Usage: "events.catchup.command"},
-					&cli.IntFlag{Name: "catchup-max", Usage: "events.catchup.max_events"},
-					&cli.DurationFlag{Name: "catchup-timeout", Usage: "events.catchup.timeout, e.g. 60s"},
-					&cli.BoolFlag{Name: "no-actions", Usage: "remove the actions block"},
-					&cli.StringFlag{Name: "mcp-command", Usage: "actions.mcp.command; implies the actions block"},
-					&cli.StringSliceFlag{Name: "mcp-arg", Usage: "actions.mcp.args (repeatable)"},
-					&cli.StringSliceFlag{Name: "mcp-env", Usage: "actions.mcp.env KEY=VALUE (repeatable)"},
-					&cli.StringFlag{Name: "mcp-url", Usage: "actions.mcp.url"},
-					&cli.StringSliceFlag{Name: "mcp-header", Usage: "actions.mcp.headers KEY=VALUE (repeatable)"},
-					&cli.StringSliceFlag{Name: "cli-command", Usage: "actions.cli.commands (repeatable)"},
-					&cli.StringFlag{Name: "skill", Usage: "actions.cli.skill"},
-					&cli.BoolFlag{Name: "no-channel", Usage: "remove the channel block"},
-					&cli.StringFlag{Name: "channel-ref", Usage: "channel.ref"},
-					&cli.StringFlag{Name: "send", Usage: "channel.send template"},
-					&cli.StringFlag{Name: "typing", Usage: "channel.typing template"},
-					&cli.StringFlag{Name: "ack", Usage: "channel.ack template"},
+					&cli.StringFlag{Name: "version", Usage: "catalog version"},
+					&cli.StringFlag{Name: "track", Usage: "update track: exact|patch|minor|latest"},
+					&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "KEY=VALUE setup input (repeatable; merges into the stored inputs); secret:NAME keeps a reference"},
+					&cli.StringFlag{Name: "patch-file", Usage: "YAML or JSON merge patch on the manifest; a file that holds null removes it"},
+					&cli.StringFlag{Name: "manifest-file", Usage: "YAML or JSON inline manifest; a file that holds null removes it"},
 				},
 				Action: runConnectorSet,
 			},
 			{
 				Name:      "apply",
-				Usage:     "write one connector definition from a YAML or JSON file (PUT)",
+				Usage:     "write one connector entry from a YAML or JSON file (PUT)",
 				ArgsUsage: "--file <path>",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "definition file"},
+					&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "entry file: {name, from, version, track, inputs, patch, manifest}"},
 				},
 				Action: runConnectorApply,
 			},
@@ -127,70 +73,189 @@ func connectorCommand() *cli.Command {
 				Flags:     []cli.Flag{forceFlag("required; stops the event stream")},
 				Action:    runConnectorRemove,
 			},
-			{
-				Name:      "connect",
-				Usage:     "start a connector (begin listening; inverse of disconnect)",
-				ArgsUsage: "<name>",
-				Action:    runConnectorConnect,
-			},
-			{
-				Name:      "disconnect",
-				Usage:     "halt the listening process (inverse of connect)",
-				ArgsUsage: "<name>",
-				Action:    runConnectorDisconnect,
-			},
-			{
-				Name:      "restart",
-				Usage:     "restart a connector",
-				ArgsUsage: "<name>",
-				Action:    runConnectorRestart,
-			},
-			{
-				Name:  "cursor",
-				Usage: "show or set connector_cursors.last_event_id (replay position)",
-				Commands: []*cli.Command{
-					{
-						Name:      "show",
-						Usage:     "show last_event_id",
-						ArgsUsage: "<name>",
-						Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-						Action:    runConnectorCursorShow,
-					},
-					{
-						Name:      "set",
-						Usage:     "set last_event_id",
-						ArgsUsage: "<name> <last-event-id>",
-						Action:    runConnectorCursorSet,
-					},
-					{
-						Name:      "reset",
-						Usage:     "reset last_event_id to empty (replay from start)",
-						ArgsUsage: "<name>",
-						Action:    runConnectorCursorReset,
-					},
-				},
-			},
-			{
-				Name:      "logs",
-				Usage:     "show connector log stream",
-				ArgsUsage: "<name>",
-				Flags: []cli.Flag{
-					&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "follow (SSE; may block)"},
-				},
-				Action: runConnectorLogs,
-			},
-			{
-				Name:      "test",
-				Usage:     "inject a test event into a connector",
-				ArgsUsage: "<name>",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "event", Aliases: []string{"e"}, Usage: "event JSON object (default {\"test\":true})"},
-				},
-				Action: runConnectorTest,
-			},
 			connectorQueueAlias(),
+		}, slices.Concat(connectorCatalogCommands(), connectorVersionCommands(), connectorProcessCommands(), connectorSessionCommands())...),
+	}
+}
+
+// connectorCatalogCommands search the MCP registries and install from them.
+func connectorCatalogCommands() []*cli.Command {
+	return []*cli.Command{
+		{
+			Name:      "search",
+			Usage:     "search MCP registries for installable servers",
+			ArgsUsage: "<query>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "registry", Usage: "registry name (default: every configured registry)"},
+				&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (next_cursor of the previous page)"},
+				&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 30, Usage: "max rows"},
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
+			Action: runConnectorSearch,
+		},
+		{
+			Name:      "entry",
+			Usage:     "show one registry server: packages, remotes, and their inputs",
+			ArgsUsage: "<name>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "registry", Usage: "registry name"},
+				&cli.StringFlag{Name: "version", Usage: "server version (default: latest)"},
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
+			Action: runConnectorEntry,
+		},
+		{
+			Name:      "install",
+			Usage:     "install a registry server as a connector",
+			ArgsUsage: "<name>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "registry", Usage: "registry name"},
+				&cli.StringFlag{Name: "version", Usage: "server version (default: latest)"},
+				&cli.StringFlag{Name: "track", Usage: "update track of a Trebi catalog connector: exact|patch|minor|latest"},
+				&cli.StringFlag{Name: "as", Usage: "connector name (default: derived from the server name)"},
+				&cli.IntFlag{Name: "package", Value: -1, Usage: "package index to install"},
+				&cli.IntFlag{Name: "remote", Value: -1, Usage: "remote index to install"},
+				&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "NAME=VALUE for an env, header, argument, or variable input (repeatable); secret:NAME keeps a reference"},
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
+			Action: runConnectorInstall,
 		},
 	}
+}
+
+// connectorVersionCommands list, check, and apply catalog versions, and
+// show what one connector offers.
+func connectorVersionCommands() []*cli.Command {
+	jsonFlag := func() cli.Flag { return &cli.BoolFlag{Name: "json", Usage: "emit JSON"} }
+	return []*cli.Command{
+		{
+			Name:      "versions",
+			Usage:     "list the catalog versions of a connector",
+			ArgsUsage: "<name>",
+			Flags:     []cli.Flag{jsonFlag()},
+			Action:    runConnectorVersions,
+		},
+		{
+			Name:      "check-updates",
+			Usage:     "check the catalog for new versions now (every connector with no name)",
+			ArgsUsage: "[name]",
+			Flags:     []cli.Flag{jsonFlag()},
+			Action:    runConnectorCheckUpdates,
+		},
+		{
+			Name:      "update",
+			Usage:     "move a connector to a catalog version (default: the newest on its track)",
+			ArgsUsage: "<name>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "version", Usage: "catalog version"},
+				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "update the override of this workspace"},
+				jsonFlag(),
+			},
+			Action: runConnectorUpdate,
+		},
+		{
+			Name:      "capabilities",
+			Usage:     "show what a connector offers: commands, MCP tools, events, channel features, and skill",
+			ArgsUsage: "<name>",
+			Flags:     append(connectorInstanceFlags(), jsonFlag()),
+			Action:    runConnectorCapabilities,
+		},
+		{
+			Name:   "gc",
+			Usage:  "remove installed versions that no connector uses",
+			Flags:  []cli.Flag{&cli.BoolFlag{Name: "dry-run", Usage: "list the versions only"}, jsonFlag()},
+			Action: runConnectorGC,
+		},
+	}
+}
+
+// connectorProcessCommands run and inspect the process of an instance.
+func connectorProcessCommands() []*cli.Command {
+	return []*cli.Command{
+		{
+			Name:      "connect",
+			Usage:     "start a connector (begin listening; inverse of disconnect)",
+			ArgsUsage: "<name>",
+			Flags:     connectorInstanceFlags(),
+			Action:    runConnectorConnect,
+		},
+		{
+			Name:      "disconnect",
+			Usage:     "halt the listening process (inverse of connect)",
+			ArgsUsage: "<name>",
+			Flags:     connectorInstanceFlags(),
+			Action:    runConnectorDisconnect,
+		},
+		{
+			Name:      "restart",
+			Usage:     "restart a connector",
+			ArgsUsage: "<name>",
+			Flags:     connectorInstanceFlags(),
+			Action:    runConnectorRestart,
+		},
+		{
+			Name:  "cursor",
+			Usage: "show or set connector_cursors.last_event_id (replay position)",
+			Commands: []*cli.Command{
+				{
+					Name:      "show",
+					Usage:     "show last_event_id",
+					ArgsUsage: "<name>",
+					Flags:     append(connectorInstanceFlags(), &cli.BoolFlag{Name: "json", Usage: "emit JSON"}),
+					Action:    runConnectorCursorShow,
+				},
+				{
+					Name:      "set",
+					Usage:     "set last_event_id",
+					ArgsUsage: "<name> <last-event-id>",
+					Flags:     connectorInstanceFlags(),
+					Action:    runConnectorCursorSet,
+				},
+				{
+					Name:      "reset",
+					Usage:     "reset last_event_id to empty (replay from start)",
+					ArgsUsage: "<name>",
+					Flags:     connectorInstanceFlags(),
+					Action:    runConnectorCursorReset,
+				},
+			},
+		},
+		{
+			Name:      "logs",
+			Usage:     "show connector log stream",
+			ArgsUsage: "<name>",
+			Flags: append(connectorInstanceFlags(),
+				&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "follow (SSE; may block)"}),
+			Action: runConnectorLogs,
+		},
+		{
+			Name:      "test",
+			Usage:     "inject a test event into a connector",
+			ArgsUsage: "<name>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "event", Aliases: []string{"e"}, Usage: "event JSON object (default {\"test\":true})"},
+			},
+			Action: runConnectorTest,
+		},
+	}
+}
+
+// connectorInstanceFlags select the instance a command acts on. With
+// neither flag, the command uses the global instance.
+func connectorInstanceFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "instance", Usage: "instance key: <name> or <name>@<workspace>"},
+		&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "use the instance that serves this workspace"},
+	}
+}
+
+// connectorRef reads <name>, --instance, and --workspace.
+func connectorRef(c *cli.Command) (request.ConnectorRef, error) {
+	name := c.Args().Get(0)
+	if name == "" {
+		return request.ConnectorRef{}, fmt.Errorf("name required")
+	}
+	return request.ConnectorRef{Name: name, Instance: c.String("instance"), Workspace: c.String("workspace")}, nil
 }
 
 func connectorQueueAlias() *cli.Command {
@@ -284,7 +349,7 @@ func runConnectorList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := request.BuildConnectorsListPath(c.Int("limit"), c.String("capability"), c.String("provenance"))
+	path := request.BuildConnectorsListPath(c.Int("limit"), c.String("capability"), c.String("provenance"), c.String("workspace"))
 	var body map[string]any
 	if err := client.GetJSON(path, &body); err != nil {
 		return err
@@ -296,79 +361,40 @@ func runConnectorList(_ context.Context, c *cli.Command) error {
 	if loadErr, ok := body["load_error"].(string); ok && loadErr != "" {
 		fmt.Fprintf(w, "connectors.yaml does not load; writes are refused until you fix it:\n  %s\n\n", loadErr)
 	}
-	if list, ok := body["connectors"].([]any); ok {
-		tbl := newTable(w, []string{"Name", "Capabilities", "Provenance", "Status", "Detail"})
-		for _, raw := range list {
-			m, ok := raw.(map[string]any)
-			if !ok {
-				tbl.AppendRow(table.Row{fmt.Sprint(raw), "-", "-", "-", "-"})
-				continue
-			}
-			tbl.AppendRow(table.Row{
-				mapStr(m, "name", "Name", "id"),
-				dash(connectorCapabilities(m)),
-				dash(mapStr(m, "provenance", "Provenance")),
-				colorStatus(w, connectorStatus(m)),
-				dash(connectorDetail(m)),
-			})
-		}
-		renderTable(tbl)
-		return nil
-	}
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(body)
-}
-
-// connectorCapabilities lists the block keys present in a definition row.
-func connectorCapabilities(m map[string]any) string {
-	var caps []string
-	for _, k := range []string{"actions", "events", "channel"} {
-		if b, ok := m[k].(map[string]any); ok && len(b) > 0 {
-			caps = append(caps, k)
+	list, _ := body["connectors"].([]any)
+	tbl := newTable(w, []string{"Name", "Version", "Track", "Capabilities", "Status", "Auth", "Instances"})
+	for _, raw := range list {
+		if m, ok := raw.(map[string]any); ok {
+			tbl.AppendRow(connectorTableRow(w, m))
 		}
 	}
-	return strings.Join(caps, ",")
+	renderTable(tbl)
+	return nil
 }
 
-// connectorStatus reads the lifecycle status; a definition without events has
-// no supervisor and no status.
+// connectorTableRow is one list row: name, version, track, capabilities,
+// status, auth state, and the count of instances.
+func connectorTableRow(w io.Writer, m map[string]any) table.Row {
+	instances, _ := m["instances"].([]any)
+	auth, _ := m["auth"].(map[string]any)
+	return table.Row{
+		mapStr(m, "name", "id"),
+		dash(mapStr(m, "version")),
+		dash(mapStr(m, "track")),
+		dash(strings.Join(stringList(m["capabilities"]), ",")),
+		colorStatus(w, connectorStatus(m)),
+		dash(mapStr(auth, "state")),
+		len(instances),
+	}
+}
+
+// connectorStatus reads the status of the first instance; a connector
+// without events has no supervisor and no status.
 func connectorStatus(m map[string]any) string {
-	st, _ := m["status"].(string)
-	return st
-}
-
-// connectorDetail names the process behind the row: the events command, the
-// MCP server, or the CLI commands.
-func connectorDetail(m map[string]any) string {
 	if ev, ok := m["events"].(map[string]any); ok {
-		if cmd := mapStr(ev, "command"); cmd != "" {
-			return cmd
-		}
+		return mapStr(ev, "status")
 	}
-	acts, ok := m["actions"].(map[string]any)
-	if !ok {
-		return strings.Join(connectorCLICommands(m), " ")
-	}
-	if mcp, ok := acts["mcp"].(map[string]any); ok {
-		if u := mapStr(mcp, "url"); u != "" {
-			return u
-		}
-		if cmd := mapStr(mcp, "command"); cmd != "" {
-			args := stringList(mcp["args"])
-			return strings.TrimSpace(cmd + " " + strings.Join(args, " "))
-		}
-	}
-	if cli, ok := acts["cli"].(map[string]any); ok {
-		return strings.Join(stringList(cli["commands"]), " ")
-	}
-	return ""
-}
-
-func connectorCLICommands(m map[string]any) []string {
-	acts, _ := m["actions"].(map[string]any)
-	cli, _ := acts["cli"].(map[string]any)
-	return stringList(cli["commands"])
+	return mapStr(m, "status")
 }
 
 func stringList(v any) []string {
@@ -392,10 +418,34 @@ func runConnectorShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON(request.BuildConnectorGetPath(name), &body); err != nil {
+	if err := client.GetJSON(request.BuildConnectorGetPath(name, c.String("workspace")), &body); err != nil {
 		return err
 	}
-	return encodeJSON(c, body)
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	tbl := newTable(w, []string{"Name", "Version", "Track", "Capabilities", "Status", "Auth", "Instances"})
+	tbl.AppendRow(connectorTableRow(w, body))
+	renderTable(tbl)
+	if e := mapStr(body, "resolve_error"); e != "" {
+		fmt.Fprintf(w, "resolve error: %s\n", e)
+	}
+	instances, _ := body["instances"].([]any)
+	if len(instances) == 0 {
+		return nil
+	}
+	fmt.Fprintln(w)
+	inst := newTable(w, []string{"Instance", "Workspace", "Status", "Last Event", "Error"})
+	for _, raw := range instances {
+		m, _ := raw.(map[string]any)
+		inst.AppendRow(table.Row{
+			mapStr(m, "key"), dash(mapStr(m, "workspace")), colorStatus(w, mapStr(m, "status")),
+			dash(mapStr(m, "last_event_at")), dash(mapStr(m, "last_err")),
+		})
+	}
+	renderTable(inst)
+	return nil
 }
 
 func runConnectorSearch(_ context.Context, c *cli.Command) error {
@@ -427,18 +477,20 @@ func runConnectorSearch(_ context.Context, c *cli.Command) error {
 		})
 	}
 	renderTable(tbl)
+	printNextCursor(c, body)
 	var ew io.Writer = os.Stderr
 	if c.Root().ErrWriter != nil {
 		ew = c.Root().ErrWriter
-	}
-	if next := mapStr(body, "next_cursor"); next != "" {
-		fmt.Fprintf(ew, "more: --cursor %s\n", next)
 	}
 	errs, _ := body["registry_errors"].([]any)
 	for _, raw := range errs {
 		if m, ok := raw.(map[string]any); ok {
 			fmt.Fprintf(ew, "warning: registry %s failed: %s\n", mapStr(m, "registry"), mapStr(m, "error"))
 		}
+	}
+	stale, _ := body["stale_registries"].([]any)
+	for _, r := range stale {
+		fmt.Fprintf(ew, "warning: registry %v did not answer; its rows are from the cache\n", r)
 	}
 	return nil
 }
@@ -508,18 +560,17 @@ func runConnectorInstall(_ context.Context, c *cli.Command) error {
 	if name == "" {
 		return fmt.Errorf("usage: trebi connector install <name> [flags]")
 	}
-	env, err := parseKeyValues(c.StringSlice("env"))
+	inputs, err := parseKeyValues(c.StringSlice("input"))
 	if err != nil {
-		return fmt.Errorf("env %w", err)
+		return fmt.Errorf("input %w", err)
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
 	req := request.ConnectorInstall{
-		Registry: c.String("registry"), Name: name, Version: c.String("version"), As: c.String("as"),
-		Package: c.Int("package"), Remote: c.Int("remote"), Env: env,
-		OverwriteSecrets: c.Bool("overwrite-secrets"),
+		Registry: c.String("registry"), Name: name, Version: c.String("version"), Track: c.String("track"), As: c.String("as"),
+		Package: c.Int("package"), Remote: c.Int("remote"), Inputs: inputs,
 	}.Build()
 	var body map[string]any
 	if err := client.DoHTTP(req, &body); err != nil {
@@ -532,189 +583,215 @@ func runConnectorInstall(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
-func runConnectorSet(_ context.Context, c *cli.Command) error {
-	if c.NArg() < 1 {
-		return fmt.Errorf("usage: trebi connector set <name> [flags]")
-	}
+func runConnectorVersions(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("usage: trebi connector versions <name>")
+	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	row, err := fetchConnectorRow(client, name)
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildConnectorVersions(name), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	tbl := newTable(outWriter(c), []string{"Version", "Published", "Installed", "Current", "Workspaces"})
+	rows, _ := body["versions"].([]any)
+	for _, raw := range rows {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		v := mapStr(m, "version")
+		if b, _ := m["yanked"].(bool); b {
+			v += " (yanked)"
+		}
+		var ws []string
+		list, _ := m["workspaces"].([]any)
+		for _, w := range list {
+			ws = append(ws, fmt.Sprint(w))
+		}
+		tbl.AppendRow(table.Row{v, dash(mapStr(m, "published_at")), yesNo(m["installed"] == true), yesNo(m["current"] == true), dash(strings.Join(ws, ", "))})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runConnectorCheckUpdates(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	patch := request.ConnectorPatch{Name: name}
-	touched := false
-
-	if c.IsSet("env") {
-		env := existingEnv(row)
-		kv, err := parseKeyValues(c.StringSlice("env"))
-		if err != nil {
-			return fmt.Errorf("env %w", err)
-		}
-		for k, v := range kv {
-			env[k] = v
-		}
-		patch.Env = env
-		touched = true
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildConnectorCheckUpdates(c.Args().Get(0)), &body); err != nil {
+		return err
 	}
-	if c.IsSet("cwd") {
-		cwd := c.String("cwd")
-		patch.Cwd = &cwd
-		touched = true
+	if c.Bool("json") {
+		return encodeJSON(c, body)
 	}
-
-	switch {
-	case c.Bool("no-events"):
-		patch.Events = json.RawMessage("null")
-		touched = true
-	case eventsFlagsSet(c):
-		ev := existingBlock(row, "events")
-		if c.IsSet("events-command") {
-			ev["command"] = c.String("events-command")
-		}
-		if c.IsSet("format") {
-			ev["format"] = c.String("format")
-		}
-		if c.IsSet("restart") {
-			ev["restart"] = c.String("restart")
-		}
-		if c.IsSet("poll") {
-			ev["poll_ms"] = c.Duration("poll").Milliseconds()
-		}
-		if c.IsSet("id") {
-			ev["id"] = c.String("id")
-		}
-		if c.IsSet("ts") {
-			ev["ts"] = c.String("ts")
-		}
-		if c.IsSet("identity") {
-			ev["identity"] = c.String("identity")
-		}
-		if c.IsSet("catchup-command") || c.IsSet("catchup-max") || c.IsSet("catchup-timeout") {
-			cu := existingBlock(ev, "catchup")
-			if c.IsSet("catchup-command") {
-				cu["command"] = c.String("catchup-command")
-			}
-			if c.IsSet("catchup-max") {
-				cu["max_events"] = c.Int("catchup-max")
-			}
-			if c.IsSet("catchup-timeout") {
-				cu["timeout_ms"] = c.Duration("catchup-timeout").Milliseconds()
-			}
-			ev["catchup"] = cu
-		}
-		raw, err := json.Marshal(ev)
-		if err != nil {
-			return err
-		}
-		patch.Events = raw
-		touched = true
-	}
-
-	switch {
-	case c.Bool("no-actions"):
-		patch.Actions = json.RawMessage("null")
-		touched = true
-	case actionsFlagsSet(c):
-		// The daemon merges only the fields given, so masked values and
-		// unnamed fields keep their stored values.
-		merge := map[string]any{}
-		if mcpFlagsSet(c) {
-			mcp := map[string]any{}
-			if c.IsSet("mcp-command") {
-				mcp["command"] = c.String("mcp-command")
-			}
-			if c.IsSet("mcp-url") {
-				mcp["url"] = c.String("mcp-url")
-			}
-			if c.IsSet("mcp-arg") {
-				mcp["args"] = c.StringSlice("mcp-arg")
-			}
-			if c.IsSet("mcp-env") {
-				env, err := parseKeyValues(c.StringSlice("mcp-env"))
-				if err != nil {
-					return fmt.Errorf("mcp-env %w", err)
-				}
-				mcp["env"] = env
-			}
-			if c.IsSet("mcp-header") {
-				headers, err := parseKeyValues(c.StringSlice("mcp-header"))
-				if err != nil {
-					return fmt.Errorf("mcp-header %w", err)
-				}
-				mcp["headers"] = headers
-			}
-			merge["mcp"] = mcp
-		}
-		if c.IsSet("cli-command") || c.IsSet("skill") {
-			cli := map[string]any{}
-			if c.IsSet("cli-command") {
-				cli["commands"] = c.StringSlice("cli-command")
-			}
-			if c.IsSet("skill") {
-				cli["skill"] = c.String("skill")
-			}
-			merge["cli"] = cli
-		}
-		raw, err := json.Marshal(merge)
-		if err != nil {
-			return err
-		}
-		patch.ActionsMerge = raw
-		touched = true
-	}
-
-	switch {
-	case c.Bool("no-channel"):
-		patch.Channel = json.RawMessage("null")
-		touched = true
-	case channelFlagsSet(c):
-		ch := existingBlock(row, "channel")
-		for flag, key := range map[string]string{
-			"channel-ref": "ref", "send": "send", "typing": "typing", "ack": "ack",
-		} {
-			if c.IsSet(flag) {
-				ch[key] = c.String(flag)
-			}
-		}
-		raw, err := json.Marshal(ch)
-		if err != nil {
-			return err
-		}
-		patch.Channel = raw
-		touched = true
-	}
-
-	if !touched {
-		return fmt.Errorf("no fields given; pass flags or --no-events/--no-actions/--no-channel")
-	}
-	if len(row) == 0 {
-		// An unknown name means create: set is the one writer a first use
-		// reaches, and the file holds no stored blocks to overlay.
-		def := map[string]any{"name": name}
-		if patch.Env != nil {
-			def["env"] = patch.Env
-		}
-		if patch.Cwd != nil && *patch.Cwd != "" {
-			def["cwd"] = *patch.Cwd
-		}
-		// On a new connector the merge maps are the whole actions block.
-		for key, raw := range map[string]json.RawMessage{
-			"actions": patch.ActionsMerge, "events": patch.Events, "channel": patch.Channel,
-		} {
-			if raw == nil || string(raw) == "null" {
-				continue
-			}
-			def[key] = raw
-		}
-		if err := client.DoHTTP(request.BuildConnectorCreate(def), nil); err != nil {
-			return err
-		}
-		fmt.Fprintf(outWriter(c), "connector %s created\n", name)
+	rows, _ := body["results"].([]any)
+	if len(rows) == 0 {
+		fmt.Fprintln(outWriter(c), "no updates")
 		return nil
+	}
+	tbl := newTable(outWriter(c), []string{"Name", "From", "To", "Result"})
+	for _, raw := range rows {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		result := "available"
+		if b, _ := m["applied"].(bool); b {
+			result = "applied"
+		}
+		if e := mapStr(m, "error"); e != "" {
+			result = "failed: " + e
+		}
+		tbl.AppendRow(table.Row{mapStr(m, "name"), dash(mapStr(m, "from")), dash(mapStr(m, "to")), result})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runConnectorUpdate(_ context.Context, c *cli.Command) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("usage: trebi connector update <name> [--version V] [--workspace W]")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildConnectorUpdate(name, c.String("version"), c.String("workspace")), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	fmt.Fprintf(outWriter(c), "connector %s is at version %s\n", name, dash(mapStr(body, "version")))
+	return nil
+}
+
+func runConnectorCapabilities(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildConnectorCapabilities(ref), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	fmt.Fprintf(w, "%s %s (instance %s)\n", mapStr(body, "name"), dash(mapStr(body, "version")), dash(mapStr(body, "instance")))
+	fmt.Fprintf(w, "capabilities: %s\n", dash(joinAny(body["capabilities"])))
+	if a, ok := body["actions"].(map[string]any); ok {
+		cmds, _ := a["commands"].([]any)
+		for _, raw := range cmds {
+			if m, ok := raw.(map[string]any); ok {
+				fmt.Fprintf(w, "command %s: %s\n", mapStr(m, "command"), dashOr(mapStr(m, "path"), "not found"))
+			}
+		}
+		if mcp, ok := a["mcp"].(map[string]any); ok {
+			if e := mapStr(mcp, "error"); e != "" {
+				fmt.Fprintf(w, "mcp error: %s\n", e)
+			}
+			for _, key := range []string{"tools", "prompts", "resources"} {
+				list, _ := mcp[key].([]any)
+				var names []string
+				for _, raw := range list {
+					if m, ok := raw.(map[string]any); ok {
+						names = append(names, mapStr(m, "name"))
+					}
+				}
+				fmt.Fprintf(w, "mcp %s: %s\n", key, dash(strings.Join(names, ", ")))
+			}
+		}
+	}
+	if ch, ok := body["channel"].(map[string]any); ok {
+		fmt.Fprintf(w, "channel features: %s\n", dash(joinAny(ch["features"])))
+	}
+	if sk, ok := body["skill"].(map[string]any); ok {
+		fmt.Fprintf(w, "skill %s: %s\n", mapStr(sk, "name"), dash(mapStr(sk, "description")))
+	}
+	return nil
+}
+
+func dashOr(s, alt string) string {
+	if s == "" {
+		return alt
+	}
+	return s
+}
+
+func runConnectorGC(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildConnectorGC(c.Bool("dry-run")), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	list, _ := body["removed"].([]any)
+	verb := "removed"
+	if c.Bool("dry-run") {
+		verb = "would remove"
+	}
+	if len(list) == 0 {
+		fmt.Fprintln(outWriter(c), "nothing to remove")
+	}
+	for _, v := range list {
+		fmt.Fprintf(outWriter(c), "%s %v\n", verb, v)
+	}
+	return nil
+}
+
+func runConnectorSet(_ context.Context, c *cli.Command) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("usage: trebi connector set <name> [flags]")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	patch, err := connectorPatchFlags(c, name)
+	if err != nil {
+		return err
+	}
+	var row map[string]any
+	if c.IsSet("input") || patch.Manifest != nil {
+		if row, err = fetchConnectorRow(client, name); err != nil {
+			return err
+		}
+	}
+	if len(row) == 0 && patch.Manifest != nil && string(patch.Manifest) != "null" {
+		return createInlineConnector(c, client, patch)
+	}
+	if c.IsSet("input") {
+		// The row shows stored values as ***, and the daemon keeps a *** value.
+		inputs := map[string]string{}
+		stored, _ := row["inputs"].(map[string]any)
+		for k, v := range stored {
+			inputs[k] = fmt.Sprint(v)
+		}
+		maps.Copy(inputs, patch.Inputs)
+		patch.Inputs = inputs
 	}
 	if err := client.DoHTTP(patch.Build(), nil); err != nil {
 		return err
@@ -723,11 +800,100 @@ func runConnectorSet(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
+// connectorPatchFlags reads the set flags into a patch. Inputs hold only the
+// flags given; the caller merges the stored inputs.
+func connectorPatchFlags(c *cli.Command, name string) (request.ConnectorPatch, error) {
+	p := request.ConnectorPatch{Name: name}
+	if c.IsSet("version") {
+		v := c.String("version")
+		p.Version = &v
+	}
+	if c.IsSet("track") {
+		t := c.String("track")
+		p.Track = &t
+	}
+	if c.IsSet("input") {
+		kv, err := parseKeyValues(c.StringSlice("input"))
+		if err != nil {
+			return p, fmt.Errorf("input %w", err)
+		}
+		p.Inputs = kv
+	}
+	var err error
+	if p.Patch, err = readObjectFile(c.String("patch-file")); err != nil {
+		return p, err
+	}
+	if p.Manifest, err = readObjectFile(c.String("manifest-file")); err != nil {
+		return p, err
+	}
+	if p.Version == nil && p.Track == nil && p.Inputs == nil && p.Patch == nil && p.Manifest == nil {
+		return p, fmt.Errorf("no fields given; pass --version, --track, --input, --patch-file, or --manifest-file")
+	}
+	return p, nil
+}
+
+// createInlineConnector creates an inline entry from the set flags.
+func createInlineConnector(c *cli.Command, client *APIClient, p request.ConnectorPatch) error {
+	entry := map[string]any{"name": p.Name, "from": "inline", "manifest": p.Manifest}
+	if p.Version != nil {
+		entry["version"] = *p.Version
+	}
+	if p.Track != nil {
+		entry["track"] = *p.Track
+	}
+	if p.Inputs != nil {
+		entry["inputs"] = p.Inputs
+	}
+	if p.Patch != nil && string(p.Patch) != "null" {
+		entry["patch"] = p.Patch
+	}
+	if err := client.DoHTTP(request.BuildConnectorCreate(entry), nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "connector %s created\n", p.Name)
+	return nil
+}
+
+// readObjectFile reads a YAML or JSON file as JSON. An empty path returns
+// nil; a file that holds null returns "null".
+func readObjectFile(path string) (json.RawMessage, error) {
+	if path == "" {
+		return nil, nil
+	}
+	v, err := readDataFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return json.RawMessage("null"), nil
+	}
+	if _, ok := v.(map[string]any); !ok {
+		return nil, fmt.Errorf("%s: want an object or null", path)
+	}
+	return json.Marshal(v)
+}
+
+// readDataFile parses a JSON or YAML file.
+func readDataFile(path string) (any, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var v any
+	if json.Unmarshal(raw, &v) == nil {
+		return v, nil
+	}
+	if err := yaml.Unmarshal(raw, &v); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return v, nil
+}
+
 // fetchConnectorRow reads one connector row; an unknown name returns an empty
 // map so set can create it.
 func fetchConnectorRow(client *APIClient, name string) (map[string]any, error) {
 	var row map[string]any
-	err := client.GetJSON(request.BuildConnectorGetPath(name), &row)
+	err := client.GetJSON(request.BuildConnectorGetPath(name, ""), &row)
 	if err != nil {
 		if strings.Contains(err.Error(), "404") {
 			return map[string]any{}, nil
@@ -737,149 +903,37 @@ func fetchConnectorRow(client *APIClient, name string) (map[string]any, error) {
 	return row, nil
 }
 
-// existingBlock returns a copy of one definition block so a patch overlays
-// the stored value instead of replacing it with only the flags given.
-func existingBlock(row map[string]any, key string) map[string]any {
-	block, ok := row[key].(map[string]any)
-	if !ok {
-		return map[string]any{}
-	}
-	out := make(map[string]any, len(block))
-	for k, v := range block {
-		out[k] = v
-	}
-	return out
-}
-
-// existingEnv reads the stored env map so --env merges instead of replacing.
-func existingEnv(row map[string]any) map[string]string {
-	block, _ := row["env"].(map[string]any)
-	out := make(map[string]string, len(block))
-	for k, v := range block {
-		if s, ok := v.(string); ok {
-			out[k] = s
-		}
-	}
-	return out
-}
-
-func eventsFlagsSet(c *cli.Command) bool {
-	for _, f := range []string{"events-command", "format", "restart", "poll", "id", "ts", "identity",
-		"catchup-command", "catchup-max", "catchup-timeout"} {
-		if c.IsSet(f) {
-			return true
-		}
-	}
-	return false
-}
-
-func mcpFlagsSet(c *cli.Command) bool {
-	for _, f := range []string{"mcp-command", "mcp-arg", "mcp-env", "mcp-url", "mcp-header"} {
-		if c.IsSet(f) {
-			return true
-		}
-	}
-	return false
-}
-
-func actionsFlagsSet(c *cli.Command) bool {
-	return mcpFlagsSet(c) || c.IsSet("cli-command") || c.IsSet("skill")
-}
-
-func channelFlagsSet(c *cli.Command) bool {
-	for _, f := range []string{"channel-ref", "send", "typing", "ack"} {
-		if c.IsSet(f) {
-			return true
-		}
-	}
-	return false
-}
-
 func runConnectorApply(_ context.Context, c *cli.Command) error {
 	path := c.String("file")
 	if path == "" {
 		return fmt.Errorf("usage: trebi connector apply --file <path>")
 	}
-	raw, err := os.ReadFile(path)
+	v, err := readDataFile(path)
 	if err != nil {
 		return err
 	}
-	def := map[string]any{}
-	if err := json.Unmarshal(raw, &def); err != nil {
-		def = map[string]any{}
-		if yerr := yaml.Unmarshal(raw, &def); yerr != nil {
-			return fmt.Errorf("parse %s: %v", path, yerr)
-		}
-	}
-	name, _ := def["name"].(string)
-	if name == "" && len(def) == 1 {
-		// connectors.yaml form: a one-entry name: definition map.
-		for k, v := range def {
+	entry, _ := v.(map[string]any)
+	name, _ := entry["name"].(string)
+	if _, hasFrom := entry["from"]; name == "" && !hasFrom && len(entry) == 1 {
+		// connectors.yaml form: a one-entry name: entry map.
+		for k, v := range entry {
 			if m, ok := v.(map[string]any); ok {
-				name, def = k, m
+				name, entry = k, m
 			}
 		}
 	}
 	if name == "" {
-		return fmt.Errorf("%s: add a top-level name, or one name: definition entry", path)
+		return fmt.Errorf("%s: add a top-level name, or one name: entry map", path)
 	}
-	def["name"] = name
-	if err := normalizeDurationKeys(def); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
+	entry["name"] = name
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(request.BuildConnectorReplace(name, def), nil); err != nil {
+	if err := client.DoHTTP(request.BuildConnectorReplace(name, entry), nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "connector %s applied\n", name)
-	return nil
-}
-
-// normalizeDurationKeys maps the YAML text forms (poll, timeout,
-// typing_interval, typing_max) onto the JSON millisecond keys the API reads.
-func normalizeDurationKeys(def map[string]any) error {
-	if ev, ok := def["events"].(map[string]any); ok {
-		if err := moveDurationKey(ev, "poll", "poll_ms"); err != nil {
-			return err
-		}
-		if cu, ok := ev["catchup"].(map[string]any); ok {
-			if err := moveDurationKey(cu, "timeout", "timeout_ms"); err != nil {
-				return err
-			}
-		}
-	}
-	if ch, ok := def["channel"].(map[string]any); ok {
-		if err := moveDurationKey(ch, "typing_interval", "typing_interval_ms"); err != nil {
-			return err
-		}
-		if err := moveDurationKey(ch, "typing_max", "typing_max_ms"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func moveDurationKey(m map[string]any, from, to string) error {
-	v, ok := m[from]
-	if !ok {
-		return nil
-	}
-	delete(m, from)
-	switch t := v.(type) {
-	case string:
-		d, err := time.ParseDuration(strings.TrimSpace(t))
-		if err != nil {
-			return fmt.Errorf("%s: %w", from, err)
-		}
-		m[to] = d.Milliseconds()
-	case int, int64, float64:
-		m[to] = t
-	default:
-		return fmt.Errorf("%s: want a duration such as 15m", from)
-	}
 	return nil
 }
 
@@ -900,49 +954,55 @@ func runConnectorRemove(_ context.Context, c *cli.Command) error {
 }
 
 func runConnectorConnect(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("name required")
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildConnectorConnect(name), nil)
+	return doConnectorRef(c, request.BuildConnectorConnect)
 }
 
 func runConnectorDisconnect(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("name required")
+	return doConnectorRef(c, request.BuildConnectorDisconnect)
+}
+
+func runConnectorRestart(_ context.Context, c *cli.Command) error {
+	return doConnectorRef(c, request.BuildConnectorRestart)
+}
+
+func runConnectorCursorReset(_ context.Context, c *cli.Command) error {
+	return doConnectorRef(c, request.BuildConnectorCursorReset)
+}
+
+// doConnectorRef sends one request that takes only the connector reference.
+func doConnectorRef(c *cli.Command, build func(request.ConnectorRef) request.HTTPRequest) error {
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildConnectorDisconnect(name), nil)
+	return client.DoHTTP(build(ref), nil)
 }
 
 func runConnectorCursorShow(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("name required")
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
 	var body map[string]any
-	if err := client.DoHTTP(request.BuildConnectorCursorGet(name), &body); err != nil {
+	if err := client.DoHTTP(request.BuildConnectorCursorGet(ref), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
 		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
-	tbl := newTable(w, []string{"Name", "Last Event ID", "Updated"})
+	tbl := newTable(w, []string{"Name", "Instance", "Last Event ID", "Updated"})
 	tbl.AppendRow(table.Row{
 		mapStr(body, "name"),
+		dash(mapStr(body, "instance")),
 		dash(mapStr(body, "last_event_id")),
 		dash(mapStr(body, "updated_at")),
 	})
@@ -951,51 +1011,28 @@ func runConnectorCursorShow(_ context.Context, c *cli.Command) error {
 }
 
 func runConnectorCursorSet(_ context.Context, c *cli.Command) error {
-	name, last := c.Args().Get(0), c.Args().Get(1)
-	if name == "" || last == "" {
+	ref, err := connectorRef(c)
+	last := c.Args().Get(1)
+	if err != nil || last == "" {
 		return fmt.Errorf("usage: trebi connector cursor set <name> <last-event-id>")
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildConnectorCursorSet(name, last), nil)
-}
-
-func runConnectorCursorReset(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("usage: trebi connector cursor reset <name>")
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildConnectorCursorReset(name), nil)
-}
-
-func runConnectorRestart(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("name required")
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	return client.DoHTTP(request.BuildConnectorRestart(name), nil)
+	return client.DoHTTP(request.BuildConnectorCursorSet(ref, last), nil)
 }
 
 func runConnectorLogs(_ context.Context, c *cli.Command) error {
-	name := c.Args().Get(0)
-	if name == "" {
-		return fmt.Errorf("name required")
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	path := request.BuildConnectorLogsPath(name, c.Bool("follow"))
+	path := request.BuildConnectorLogsPath(ref, c.Bool("follow"))
 	if c.Bool("follow") {
 		return client.StreamGET(path, outWriter(c))
 	}

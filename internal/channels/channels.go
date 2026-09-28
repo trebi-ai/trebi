@@ -1,6 +1,7 @@
 // Package channels owns channel replies. One outbox row carries one reply
 // per assistant turn. The outbox worker calls Deliver for each due row. The
-// queue ack and the typing pulse ride the connector's channel commands.
+// send, the seen mark, and the typing pulse are trebi-connector/1 requests
+// to the live session of the connector instance.
 package channels
 
 import (
@@ -9,40 +10,42 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
-	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
-	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/outbox"
-	"github.com/trebi-ai/trebi/internal/procgroup"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
-// triggerRefPrefix marks the channel ref of an assistant item with no
-// channel address. Such a conversation gets no reply.
-const triggerRefPrefix = "trigger:"
-
 const (
-	sendTimeout   = 30 * time.Second
 	ackTimeout    = 10 * time.Second
 	typingTimeout = 10 * time.Second
-	// commandOutputMax caps the output kept for an error message.
-	commandOutputMax = 64 * 1024
+	// typingInterval and typingMax pace the typing pulse (Part D.5).
+	typingInterval = 8 * time.Second
+	typingMax      = 15 * time.Minute
 )
 
-// Definitions is the channel view of the connectors service. The channels
+// Sessions is the channel view of the connectors service. The channels
 // package owns it.
-type Definitions interface {
-	// Channel returns the channel block and the expanded env of a managed
-	// connector with a channel.
-	Channel(name string) (connectors.Channel, map[string]string, bool)
-	// Cwd returns the connector working directory, or "".
-	Cwd(name string) string
+type Sessions interface {
+	// Call sends one request to the live session of an instance.
+	Call(ctx context.Context, instance, method string, params, result any) error
+	// Features lists the features the instance delivers.
+	Features(instance string) []string
+	// Limits returns the message limits of the instance.
+	Limits(instance string) manifest.Limits
+	// InstanceFor returns the instance that serves a connector in a
+	// workspace, or "" when the workspace turned it off.
+	InstanceFor(name, workspaceID string) string
+	// IsChannel reports whether a connector holds conversations.
+	IsChannel(name string) bool
 }
 
 // LiveTurns tells which conversations have a live turn. The channels
@@ -56,7 +59,7 @@ type LiveTurns interface {
 type Service struct {
 	st    *store.Store
 	ob    *outbox.Service
-	conn  Definitions
+	conn  Sessions
 	convs *conversations.Service
 	turns LiveTurns
 	log   *slog.Logger
@@ -75,7 +78,7 @@ type typingState struct {
 }
 
 // New creates a channels service. Replies go to ob.
-func New(st *store.Store, ob *outbox.Service, conn Definitions, convs *conversations.Service) *Service {
+func New(st *store.Store, ob *outbox.Service, conn Sessions, convs *conversations.Service) *Service {
 	return &Service{
 		st: st, ob: ob, conn: conn, convs: convs,
 		log:    slog.Default().With("source", "channels"),
@@ -103,10 +106,7 @@ func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string)
 	if err != nil || user == nil {
 		return err
 	}
-	if user.Room == "" || strings.HasPrefix(user.Room, triggerRefPrefix) {
-		return nil
-	}
-	if ch, _, ok := s.conn.Channel(user.Connector); !ok || ch.SendOnly() {
+	if user.Room == "" || !s.conn.IsChannel(user.Connector) {
 		return nil
 	}
 	last, text, ok, err := s.convs.ReplyText(ctx, conversationID, runID, user.ID)
@@ -126,63 +126,125 @@ func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string)
 	return err
 }
 
-// Deliver runs the connector's send command for one outbox row, with the
-// body on stdin. A connector with no channel block is a permanent failure.
+// Deliver sends one outbox row with messages/send. Text over max_text goes
+// in parts, each with the key <row_id>:<n>. The error code of the adapter
+// selects the outbox result (Part D.6).
 func (s *Service) Deliver(ctx context.Context, r outbox.Row) error {
 	if s.conn == nil {
 		return outbox.Permanent{Err: errors.New("connectors are not available")}
 	}
-	name := r.Connector()
-	ch, env, ok := s.conn.Channel(name)
-	if !ok {
-		return outbox.Permanent{Err: fmt.Errorf("connector %q has no channel block", name)}
-	}
-	if strings.TrimSpace(ch.Send) == "" {
-		return outbox.Permanent{Err: fmt.Errorf("connector %q has no channel send command", name)}
-	}
-	extra := channelEnv(r.ConversationID, r.Room, "", "")
-	extra["TREBI_MESSAGE_ID"] = r.ID
-	extra["TREBI_PURPOSE"] = string(r.Purpose)
-	maps.Copy(extra, r.Env)
-	return s.runCommand(ctx, s.conn.Cwd(name), env, ch.Send, r.Body, extra, sendTimeout)
-}
-
-// Ack runs the connector's ack command once for a finished queue item. It is
-// best effort: a failure is logged and changes nothing else.
-func (s *Service) Ack(ctx context.Context, item dispatch.QueueItem) error {
-	if s.conn == nil || item.Connector == "" {
-		return nil
-	}
-	ch, env, ok := s.conn.Channel(item.Connector)
-	if !ok || ch.SendOnly() || strings.TrimSpace(ch.Ack) == "" {
-		return nil
-	}
-	sourceID, channelRef := "", ""
-	if item.EventID != "" {
-		// A missing event row leaves both values empty.
-		_ = s.st.DB().QueryRowContext(ctx,
-			`SELECT COALESCE(source_id,''), COALESCE(room,'') FROM events WHERE id=?`,
-			item.EventID).Scan(&sourceID, &channelRef)
-	}
-	pointerRef := cmp.Or(channelRef, item.ConversationKey)
-	convID := ""
-	if s.convs != nil && item.WorkspaceID != "" && pointerRef != "" {
-		if p, err := s.convs.GetPointer(ctx, item.WorkspaceID, conversations.Address{
-			Connector: item.Connector, Instance: item.Connector, Room: pointerRef,
-		}); err == nil {
-			convID = p.ConversationID
+	instance := r.Instance
+	if !strings.Contains(instance, "@") && r.WorkspaceID != "" {
+		instance = s.conn.InstanceFor(r.Connector(), r.WorkspaceID)
+		if instance == "" {
+			return outbox.Permanent{Err: fmt.Errorf("connector %q is turned off in workspace %s", r.Connector(), r.WorkspaceID)}
 		}
 	}
-	err := s.runCommand(ctx, s.conn.Cwd(item.Connector), env, ch.Ack, "",
-		channelEnv(convID, channelRef, item.EventID, sourceID), ackTimeout)
-	if err != nil {
-		s.log.WarnContext(ctx, "channel ack", "connector", item.Connector, "error", err.Error())
+	limits := s.conn.Limits(instance)
+	format := "text"
+	if slices.Contains(limits.Formats, "markdown") {
+		format = "markdown"
+	} else if len(limits.Formats) > 0 {
+		format = limits.Formats[0]
+	}
+	parts := splitText(r.Body, limits.MaxText)
+	for i, part := range parts {
+		key := r.ID
+		if len(parts) > 1 {
+			key = fmt.Sprintf("%s:%d", r.ID, i+1)
+		}
+		var res protocol.SendResult
+		err := s.conn.Call(ctx, instance, protocol.MethodMessagesSend, protocol.SendParams{
+			Room: r.Room, Thread: r.Thread, Text: part, Format: format, Key: key,
+		}, &res)
+		if err != nil {
+			return deliverErr(err)
+		}
+	}
+	return nil
+}
+
+// deliverErr maps an adapter error to the outbox result.
+func deliverErr(err error) error {
+	switch protocol.CodeOf(err) {
+	case protocol.CodeRateLimited:
+		var pe *protocol.Error
+		errors.As(err, &pe)
+		return outbox.RetryAfter{After: pe.RetryAfter, Err: err}
+	case protocol.CodeAuthRequired:
+		return outbox.Hold{Reason: outbox.HoldAuthRequired, Err: err}
+	case protocol.CodeNotFound, protocol.CodeInvalid, protocol.CodeUnsupported, protocol.CodePermanent:
+		return outbox.Permanent{Err: err}
 	}
 	return err
 }
 
-// PulseTyping runs the typing command of every busy conversation at the
-// channel's typing interval, until the turn stops or typing_max passes.
+// splitText cuts text into parts of at most max runes: at a paragraph break,
+// else at a line break, else at a rune. max <= 0 keeps one part.
+func splitText(text string, max int) []string {
+	if max <= 0 || utf8.RuneCountInString(text) <= max {
+		return []string{text}
+	}
+	var out []string
+	for utf8.RuneCountInString(text) > max {
+		cut := byteOffset(text, max)
+		at := strings.LastIndex(text[:cut], "\n\n")
+		skip := 2
+		if at <= 0 {
+			at, skip = strings.LastIndex(text[:cut], "\n"), 1
+		}
+		if at <= 0 {
+			at, skip = cut, 0
+		}
+		out = append(out, text[:at])
+		text = strings.TrimLeft(text[at+skip:], "\n")
+	}
+	if text != "" {
+		out = append(out, text)
+	}
+	return out
+}
+
+// byteOffset returns the byte offset of rune n.
+func byteOffset(s string, n int) int {
+	i := 0
+	for off := range s {
+		if i == n {
+			return off
+		}
+		i++
+	}
+	return len(s)
+}
+
+// Ack marks the event of a finished queue item as seen. It is best effort:
+// a failure is logged and changes nothing else. An instance without the
+// seen feature is skipped.
+func (s *Service) Ack(ctx context.Context, item dispatch.QueueItem) error {
+	if s.conn == nil || item.Connector == "" || item.EventID == "" || !s.conn.IsChannel(item.Connector) {
+		return nil
+	}
+	var instance, room, sourceID string
+	if err := s.st.DB().QueryRowContext(ctx,
+		`SELECT instance, COALESCE(room,''), COALESCE(source_id,'') FROM events WHERE id=?`,
+		item.EventID).Scan(&instance, &room, &sourceID); err != nil || room == "" || sourceID == "" {
+		return nil //nolint:nilerr // a missing event has nothing to mark
+	}
+	instance = cmp.Or(instance, item.Connector)
+	if !slices.Contains(s.conn.Features(instance), manifest.FeatureSeen) {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, ackTimeout)
+	defer cancel()
+	err := s.conn.Call(cctx, instance, protocol.MethodMessagesSeen, protocol.SeenParams{Room: room, MessageID: sourceID}, nil)
+	if err != nil {
+		s.log.WarnContext(ctx, "channel ack", "connector", instance, "error", err.Error())
+	}
+	return err
+}
+
+// PulseTyping sends typing for every busy conversation each typingInterval,
+// until the turn stops or typingMax passes.
 // After typing_max the conversation stays silent until it is no longer busy.
 // Failures are logged at the first and at each tenth in a row.
 func (s *Service) PulseTyping(ctx context.Context, now time.Time) error {
@@ -221,15 +283,10 @@ func (s *Service) pulseOne(ctx context.Context, conversationID string, now time.
 	if err != nil || user == nil {
 		return
 	}
-	ch, env, ok := s.conn.Channel(user.Connector)
-	if !ok || ch.SendOnly() || strings.TrimSpace(ch.Typing) == "" {
+	instance := cmp.Or(user.Instance, user.Connector)
+	if user.Room == "" || !s.conn.IsChannel(user.Connector) || !slices.Contains(s.conn.Features(instance), manifest.FeatureTyping) {
 		return
 	}
-	interval := ch.TypingInterval.Std()
-	if interval <= 0 {
-		interval = 8 * time.Second
-	}
-	maximum := ch.TypingMax.Std()
 
 	s.mu.Lock()
 	st, ok := s.typing[conversationID]
@@ -237,20 +294,21 @@ func (s *Service) pulseOne(ctx context.Context, conversationID string, now time.
 		st = &typingState{startedAt: now}
 		s.typing[conversationID] = st
 	}
-	if st.expired || (maximum > 0 && now.Sub(st.startedAt) >= maximum) {
+	if st.expired || now.Sub(st.startedAt) >= typingMax {
 		st.expired = true
 		s.mu.Unlock()
 		return
 	}
-	if !st.lastSent.IsZero() && now.Sub(st.lastSent) < interval {
+	if !st.lastSent.IsZero() && now.Sub(st.lastSent) < typingInterval {
 		s.mu.Unlock()
 		return
 	}
 	st.lastSent = now
 	s.mu.Unlock()
 
-	err = s.runCommand(ctx, s.conn.Cwd(user.Connector), env, ch.Typing, "",
-		channelEnv(conversationID, user.Room, "", ""), typingTimeout)
+	cctx, cancel := context.WithTimeout(ctx, typingTimeout)
+	err = s.conn.Call(cctx, instance, protocol.MethodTyping, protocol.TypingParams{Room: user.Room, Thread: user.Thread}, nil)
+	cancel()
 	s.mu.Lock()
 	if err != nil {
 		st.failures++
@@ -284,43 +342,4 @@ SELECT DISTINCT conversation_id FROM runs WHERE conversation_id IS NOT NULL AND 
 		out = append(out, id)
 	}
 	return out, rows.Err()
-}
-
-// runCommand runs one channel command with sh -c, the connector cwd and env,
-// the channel env, the text on stdin, and a timeout.
-func (s *Service) runCommand(ctx context.Context, cwd string, env map[string]string,
-	cmdline, stdin string, extra map[string]string, timeout time.Duration) error {
-	if strings.TrimSpace(cmdline) == "" {
-		return nil
-	}
-	cctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	cmdEnv := os.Environ()
-	for k, v := range env {
-		cmdEnv = append(cmdEnv, k+"="+v)
-	}
-	for k, v := range extra {
-		cmdEnv = append(cmdEnv, k+"="+v)
-	}
-	out, err := procgroup.Command{Script: cmdline, Dir: cwd, Env: cmdEnv, Stdin: strings.NewReader(stdin)}.
-		Run(cctx, commandOutputMax)
-	if err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// channelEnv is the fixed channel env of decision 18. Empty values stay out.
-func channelEnv(conversationID, channelRef, eventID, sourceID string) map[string]string {
-	env := map[string]string{
-		"TREBI_CHANNEL_REF":     channelRef,
-		"TREBI_CONVERSATION_ID": conversationID,
-	}
-	if eventID != "" {
-		env["TREBI_EVENT_ID"] = eventID
-	}
-	if sourceID != "" {
-		env["TREBI_SOURCE_ID"] = sourceID
-	}
-	return env
 }

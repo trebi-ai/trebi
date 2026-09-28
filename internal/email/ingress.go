@@ -205,10 +205,13 @@ func (s *Service) LinkInbound(ctx context.Context, id, runID, conversationID, in
 	}
 }
 
-// ThreadRoot picks the thread anchor: first Reference, else
-// In-Reply-To, else the message's own Message-ID. It is the channel ref
-// for the assistant lane, so one mail thread binds one conversation.
+// ThreadRoot picks the thread anchor: the thread the daemon found, else
+// the first Reference, else In-Reply-To, else the message's own
+// Message-ID. One mail thread binds one conversation.
 func ThreadRoot(msg IngressMessage) string {
+	if msg.Thread != "" {
+		return msg.Thread
+	}
 	if len(msg.References) > 0 && strings.TrimSpace(msg.References[0]) != "" {
 		return msg.References[0]
 	}
@@ -408,12 +411,20 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 		}
 		d = g.svc.Route(msg, wsID, env)
 	}
+	room := MailboxRoom(d.WorkspaceID, d.Agent)
+	if d.WorkspaceID != "" {
+		msg.Thread = g.svc.threadFor(ctx, room, msg)
+	}
 	fresh, err := g.svc.RecordInbound(ctx, msg, d)
 	if err != nil {
 		return err
 	}
 	if !fresh {
 		return nil // re-pull after a crash between record and ack
+	}
+	if d.WorkspaceID != "" && d.Reason != ReasonDMARCFail && d.Reason != ReasonDMARCSpoof {
+		people := append(append([]string{msg.From}, msg.To...), msg.Cc...)
+		g.svc.touchThread(ctx, room, ThreadRoot(msg), msg.Subject, people)
 	}
 	g.log.Info("email.received", "id", msg.ID, "disposition", d.Disposition(),
 		"reason", d.Reason, "sender", msg.From, "tag", msg.Tag)
@@ -427,7 +438,7 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 	if _, err := g.conn.InjectNative(ctx, cursorName, msg, connectors.NativeMeta{
 		SourceID: msg.ID,
 		Identity: strings.ToLower(strings.TrimSpace(msg.From)),
-		Room:     MailboxRoom(d.WorkspaceID, d.Agent),
+		Room:     room,
 		Thread:   ThreadRoot(msg),
 	}); err != nil {
 		g.log.Warn("email.inject", "id", msg.ID, "error", err)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,21 +18,24 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
-// TestConnectorRoutes covers the write surface of Part E: create conflict,
-// replace, patch removal, strict decode, and the lifecycle guard on a
+// inlineEntry is one inline connector entry; blocks go into the manifest.
+func inlineEntry(name string, blocks map[string]any) map[string]any {
+	m := map[string]any{"schema": "trebi-connector/1", "name": name, "title": name, "description": "Test connector", "version": "1.0.0"}
+	maps.Copy(m, blocks)
+	return map[string]any{"name": name, "from": "inline", "manifest": m}
+}
+
+// TestConnectorRoutes covers the entry write surface: create conflict,
+// replace, patch layers, strict decode, and the lifecycle guard on a
 // connector without an events block.
 func TestConnectorRoutes(t *testing.T) {
 	do := startConnectorAPI(t, "")
 
-	def := map[string]any{
-		"name": "feed",
-		"events": map[string]any{
-			"command": "echo one",
-			"format":  "json",
-			"id":      "id",
-		},
-		"env": map[string]string{"MODE": "ro"},
-	}
+	def := inlineEntry("feed", map[string]any{
+		"setup":  map[string]any{"inputs": []map[string]any{{"name": "MODE"}}},
+		"events": map[string]any{"command": "echo one", "format": "json", "id": "id"},
+	})
+	def["inputs"] = map[string]string{"MODE": "ro"}
 	if code, body := do("POST", "/v1/connectors", def); code != http.StatusCreated {
 		t.Fatalf("create = %d %v", code, body)
 	}
@@ -71,9 +75,10 @@ func TestConnectorRoutes(t *testing.T) {
 	if code, body := do("POST", "/v1/events/missing/retrigger", nil); code != http.StatusNotFound {
 		t.Fatalf("retrigger missing = %d %v", code, body)
 	}
-	// An unknown key inside a PATCH block fails the strict decode.
-	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"events": map[string]any{"command": "x", "formt": "json"}}); code != http.StatusBadRequest || errCode(body) != "validation" {
-		t.Fatalf("patch block unknown key = %d %v", code, body)
+	// An unknown key inside a PATCH manifest fails the strict decode.
+	badManifest := inlineEntry("feed", map[string]any{"events": map[string]any{"command": "x", "formt": "json"}})["manifest"]
+	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"manifest": badManifest}); code != http.StatusBadRequest || errCode(body) != "validation" {
+		t.Fatalf("patch manifest unknown key = %d %v", code, body)
 	}
 
 	// An unknown top-level key fails the strict decode.
@@ -82,49 +87,58 @@ func TestConnectorRoutes(t *testing.T) {
 		t.Fatalf("unknown field = %d %v", code, body)
 	}
 
-	// A replace swaps the whole definition.
-	replaced := map[string]any{
+	// A replace swaps the whole entry.
+	replaced := inlineEntry("feed", map[string]any{
+		"setup":  map[string]any{"inputs": []map[string]any{{"name": "MODE"}}},
 		"events": map[string]any{"command": "echo two", "format": "json", "id": "id"},
-		"env":    map[string]string{"MODE": "rw"},
-	}
+	})
+	replaced["inputs"] = map[string]string{"MODE": "rw"}
 	if code, body := do("PUT", "/v1/connectors/feed", replaced); code != http.StatusOK {
 		t.Fatalf("replace = %d %v", code, body)
 	}
-	if row := getConnector(t, do, "feed"); row["env"] == nil {
-		t.Fatalf("replace dropped env: %v", row)
+	if row := getConnector(t, do, "feed"); row["inputs"].(map[string]any)["MODE"] != "***" {
+		t.Fatalf("replace inputs: %v", row["inputs"])
 	}
 
-	// A patch replaces a whole block, and a JSON null removes it.
-	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"env": map[string]string{"EXTRA": "1"}}); code != http.StatusOK {
+	// A patch replaces the inputs as a whole.
+	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"inputs": map[string]string{"EXTRA": "1"}}); code != http.StatusOK {
 		t.Fatalf("patch = %d %v", code, body)
 	}
-	row := getConnector(t, do, "feed")
-	env, _ := row["env"].(map[string]any)
-	if _, kept := env["MODE"]; kept || env["EXTRA"] != "***" {
-		t.Fatalf("patch env = %v; want a whole-block replace", env)
+	inputs, _ := getConnector(t, do, "feed")["inputs"].(map[string]any)
+	if _, kept := inputs["MODE"]; kept || inputs["EXTRA"] != "***" {
+		t.Fatalf("patch inputs = %v; want a whole replace", inputs)
 	}
 	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"nope": 1}); code != http.StatusBadRequest || errCode(body) != "validation" {
 		t.Fatalf("patch unknown field = %d %v", code, body)
 	}
-	// Null removal has to leave a valid definition, so the same patch adds
-	// the action block that replaces events.
-	swap := map[string]any{
-		"events":  nil,
-		"actions": map[string]any{"mcp": map[string]any{"command": "npx -y demo"}},
+	// A merge patch changes the resolved manifest, and a null removes it.
+	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"patch": map[string]any{"description": "Patched"}}); code != http.StatusOK {
+		t.Fatalf("patch layer = %d %v", code, body)
 	}
-	if code, body := do("PATCH", "/v1/connectors/feed", swap); code != http.StatusOK {
-		t.Fatalf("patch null events = %d %v", code, body)
+	if row := getConnector(t, do, "feed"); row["description"] != "Patched" {
+		t.Fatalf("patch layer not applied: %v", row["description"])
 	}
-	row = getConnector(t, do, "feed")
+	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"patch": nil}); code != http.StatusOK {
+		t.Fatalf("patch null = %d %v", code, body)
+	}
+	if row := getConnector(t, do, "feed"); row["description"] != "Test connector" {
+		t.Fatalf("null patch kept the layer: %v", row["description"])
+	}
+	// A new manifest can swap events for actions.
+	swap := inlineEntry("feed", map[string]any{"actions": map[string]any{"mcp": map[string]any{"command": "npx", "args": []string{"-y", "demo"}}}})["manifest"]
+	if code, body := do("PATCH", "/v1/connectors/feed", map[string]any{"manifest": swap}); code != http.StatusOK {
+		t.Fatalf("patch manifest = %d %v", code, body)
+	}
+	row := getConnector(t, do, "feed")
 	if row["events"] != nil {
-		t.Fatalf("null events kept the block: %v", row["events"])
+		t.Fatalf("new manifest kept events: %v", row["events"])
 	}
 	if acts, _ := row["actions"].(map[string]any); acts == nil {
 		t.Fatalf("patch dropped actions: %v", row)
 	}
 
 	// A connector without events refuses the lifecycle routes with 409.
-	cliOnly := map[string]any{"name": "cli-only", "actions": map[string]any{"mcp": map[string]any{"command": "npx"}}}
+	cliOnly := inlineEntry("cli-only", map[string]any{"actions": map[string]any{"mcp": map[string]any{"command": "npx"}}})
 	if code, body := do("POST", "/v1/connectors", cliOnly); code != http.StatusCreated {
 		t.Fatalf("create cli-only = %d %v", code, body)
 	}
@@ -150,13 +164,17 @@ func TestConnectorRoutes(t *testing.T) {
 	}
 }
 
-// TestConnectorHeaderMaskRoundTrip proves the masked GET row can go back on
-// PATCH actions_merge and on PUT without a loss of the stored header.
-func TestConnectorHeaderMaskRoundTrip(t *testing.T) {
+// TestConnectorInputMaskRoundTrip proves the masked GET inputs can go back
+// on PATCH and on PUT without a loss of the stored value.
+func TestConnectorInputMaskRoundTrip(t *testing.T) {
 	do := startConnectorAPI(t, "")
-	def := map[string]any{"name": "api", "actions": map[string]any{"mcp": map[string]any{
-		"url": "https://mcp.example.com", "headers": map[string]string{"X-Key": "abc"},
-	}}}
+	def := inlineEntry("api", map[string]any{
+		"setup": map[string]any{"inputs": []map[string]any{{"name": "API_KEY"}}},
+		"actions": map[string]any{"mcp": map[string]any{
+			"url": "https://mcp.example.com", "headers": map[string]string{"X-Key": "${API_KEY}"},
+		}},
+	})
+	def["inputs"] = map[string]string{"API_KEY": "abc"}
 	if code, body := do("POST", "/v1/connectors", def); code != http.StatusCreated {
 		t.Fatalf("create = %d %v", code, body)
 	}
@@ -168,45 +186,41 @@ func TestConnectorHeaderMaskRoundTrip(t *testing.T) {
 		}
 		return string(b)
 	}
-	mcp := getConnector(t, do, "api")["actions"].(map[string]any)["mcp"].(map[string]any)
-	if mcp["headers"].(map[string]any)["X-Key"] != "***" {
-		t.Fatalf("GET headers = %v", mcp["headers"])
+	if in := getConnector(t, do, "api")["inputs"].(map[string]any); in["API_KEY"] != "***" {
+		t.Fatalf("GET inputs = %v", in)
 	}
-	merge := map[string]any{"actions_merge": map[string]any{"mcp": map[string]any{"url": "https://mcp2.example.com"}}}
-	if code, body := do("PATCH", "/v1/connectors/api", merge); code != http.StatusOK {
-		t.Fatalf("merge = %d %v", code, body)
+	if code, body := do("PATCH", "/v1/connectors/api", map[string]any{"inputs": map[string]string{"API_KEY": "***"}}); code != http.StatusOK {
+		t.Fatalf("patch = %d %v", code, body)
 	}
-	if !strings.Contains(stored(), "X-Key: abc") || !strings.Contains(stored(), "mcp2.example.com") {
-		t.Fatalf("merge lost the header:\n%s", stored())
+	if !strings.Contains(stored(), "API_KEY: abc") {
+		t.Fatalf("patch lost the input:\n%s", stored())
 	}
-	put := map[string]any{"actions": map[string]any{"mcp": map[string]any{
-		"url": "https://mcp.example.com", "headers": map[string]string{"X-Key": "***"},
-	}}}
-	if code, body := do("PUT", "/v1/connectors/api", put); code != http.StatusOK {
+	def["inputs"] = map[string]string{"API_KEY": "***"}
+	if code, body := do("PUT", "/v1/connectors/api", def); code != http.StatusOK {
 		t.Fatalf("put = %d %v", code, body)
 	}
-	if !strings.Contains(stored(), "X-Key: abc") {
-		t.Fatalf("put lost the header:\n%s", stored())
+	if !strings.Contains(stored(), "API_KEY: abc") {
+		t.Fatalf("put lost the input:\n%s", stored())
 	}
-	put["actions"].(map[string]any)["mcp"].(map[string]any)["headers"] = map[string]string{"New": "***"}
-	if code, body := do("PUT", "/v1/connectors/api", put); code != http.StatusBadRequest || errCode(body) != "validation" {
+	def["inputs"] = map[string]string{"NEW": "***"}
+	if code, body := do("PUT", "/v1/connectors/api", def); code != http.StatusBadRequest || errCode(body) != "validation" {
 		t.Fatalf("mask without value = %d %v", code, body)
 	}
 }
 
-// TestConnectorPatchKeepsCursor proves a patch restarts the supervisor but
+// TestConnectorPatchKeepsEvents proves a patch restarts the supervisor but
 // leaves the cursor row alone.
 func TestConnectorPatchKeepsEvents(t *testing.T) {
 	do := startConnectorAPI(t, "")
 
-	def := map[string]any{"name": "keep", "events": map[string]any{"command": "sleep 30", "format": "json", "id": "id"}}
+	def := inlineEntry("keep", map[string]any{"events": map[string]any{"command": "sleep 30", "format": "json", "id": "id"}})
 	if code, body := do("POST", "/v1/connectors", def); code != http.StatusCreated {
 		t.Fatalf("create = %d %v", code, body)
 	}
 	if code, body := do("PUT", "/v1/connectors/keep/cursor", map[string]string{"last_event_id": "ev-7"}); code != http.StatusOK {
 		t.Fatalf("cursor put = %d %v", code, body)
 	}
-	if code, body := do("PATCH", "/v1/connectors/keep", map[string]any{"env": map[string]string{"A": "1"}}); code != http.StatusOK {
+	if code, body := do("PATCH", "/v1/connectors/keep", map[string]any{"inputs": map[string]string{"A": "1"}}); code != http.StatusOK {
 		t.Fatalf("patch = %d %v", code, body)
 	}
 	code, cur := do("GET", "/v1/connectors/keep/cursor", nil)
@@ -223,7 +237,7 @@ func TestConnectorPatchKeepsEvents(t *testing.T) {
 func TestConnectorWriteAfterFailedLoad(t *testing.T) {
 	body := "mail:\n  type: stream\n  events: {command: x}\n"
 	do := startConnectorAPI(t, body)
-	def := map[string]any{"name": "feed", "events": map[string]any{"command": "echo"}}
+	def := inlineEntry("feed", map[string]any{"events": map[string]any{"command": "echo"}})
 	if code, resp := do("POST", "/v1/connectors", def); code != http.StatusConflict || errCode(resp) != "conflict" {
 		t.Fatalf("create after failed load = %d %v", code, resp)
 	}

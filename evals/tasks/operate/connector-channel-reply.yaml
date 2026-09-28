@@ -13,14 +13,14 @@ prompt: |
   daemon sent back to the channel.
 checks:
   - name: the connector carries the channel
-    snapshot_jq: '[.connectors[]? | select(.name == "chat") | select(.capabilities | index("channel"))] | length == 1'
+    snapshot_jq: '[.connectors.connectors[]? | select(.name == "chat") | select(.capabilities | index("channel"))] | length == 1'
   - name: a conversation started on the channel
-    snapshot_jq: '[.conversations[]? | select(.origin_channel == "chat" or .channel_type == "chat")] | length >= 1'
+    snapshot_jq: '[.conversations[]? | select(.origin_channel == "chat" or ((.channels // []) | any(.connector == "chat")))] | length >= 1'
   - name: the reply left the daemon
-    snapshot_jq: '[.conversations[]?.outbox[]? | select(.connector == "chat" and .status == "sent")] | length >= 1'
-  - name: the channel command received the text
+    snapshot_jq: '[.conversations[]?.outbox[]? | select(.instance == "chat" and .status == "sent")] | length >= 1'
+  - name: the adapter received a send request
     file_matches: "{workdir}/replies.txt"
-    text: '\S'
+    text: '"method":"messages/send"'
 judge:
   model: claude-sonnet-5
   dimensions:
@@ -37,6 +37,7 @@ judge:
       min: 1.0
       rubric: |
         The final message states what the assistant replied on the channel,
-        and that reply matches the text the `send` command wrote. A message
+        and that reply matches the text of the `messages/send` request that the
+        adapter recorded. A message
         the agent wrote itself, with no outbox row behind it, is a fail.
 oracle: oracles/connector-channel-reply.md

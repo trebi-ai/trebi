@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"gopkg.in/yaml.v3"
 )
 
@@ -463,6 +464,34 @@ func (m Manifest) SkillCompat() (Range, error) {
 		return ExactRange(v), nil
 	}
 	return ParseRange(m.Skill.Compat)
+}
+
+// EventSchemas compiles the data schema of each event type. A schema path
+// is relative to dir, the entry folder.
+func (m Manifest) EventSchemas(dir string) (map[string]*jsonschema.Resolved, error) {
+	out := map[string]*jsonschema.Resolved{}
+	if m.Events == nil {
+		return out, nil
+	}
+	for _, t := range m.Events.Types {
+		if t.Schema == "" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(t.Schema)))
+		if err != nil {
+			return nil, fmt.Errorf("event %s schema: %w", t.Type, err)
+		}
+		var sch jsonschema.Schema
+		if err := json.Unmarshal(data, &sch); err != nil {
+			return nil, fmt.Errorf("event %s schema: %w", t.Type, err)
+		}
+		res, err := sch.Resolve(nil)
+		if err != nil {
+			return nil, fmt.Errorf("event %s schema: %w", t.Type, err)
+		}
+		out[t.Type] = res
+	}
+	return out, nil
 }
 
 // Features returns the promised channel features.

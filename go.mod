@@ -27,6 +27,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.75.0 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/openai/openai-go/v3 v3.66.0 // indirect
+	rsc.io/qr v0.2.0 // indirect
 )
 
 require (

@@ -409,3 +409,31 @@ func TestReplyTextJoinsTurnBlocks(t *testing.T) {
 		t.Fatalf("tool-only turn ok=%v err=%v", ok, err)
 	}
 }
+
+// TestBindRoom proves a bind keeps a pointer of the same operator and moves
+// the room to a new conversation for another operator.
+func TestBindRoom(t *testing.T) {
+	t.Parallel()
+	svc := testSvc(t)
+	ctx := context.Background()
+	room := conversations.Address{Connector: "whatsapp", Room: "r1"}
+	if _, err := svc.BindRoom(ctx, "ws1", "", conversations.Address{Connector: "whatsapp"}); !errors.Is(err, conversations.ErrValidation) {
+		t.Fatalf("no room: %v", err)
+	}
+	p1, err := svc.BindRoom(ctx, "ws1", "", room)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := svc.BindRoom(ctx, "ws1", "", room)
+	if err != nil || p2.ConversationID != p1.ConversationID {
+		t.Fatalf("second bind %+v %v", p2, err)
+	}
+	p3, err := svc.BindRoom(ctx, "ws1", "agents/research", room)
+	if err != nil || p3.ConversationID == p1.ConversationID {
+		t.Fatalf("agent bind %+v %v", p3, err)
+	}
+	conv, err := svc.Get(ctx, p3.ConversationID)
+	if err != nil || conv.Operator != "agents/research" || conv.OriginChannel != "whatsapp" {
+		t.Fatalf("conversation %+v %v", conv, err)
+	}
+}

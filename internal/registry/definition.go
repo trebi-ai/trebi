@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"encoding/json"
 	"fmt"
 	"maps"
 	"regexp"
@@ -9,16 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/trebi-ai/trebi/internal/connectors"
-	"github.com/trebi-ai/trebi/internal/secrets"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 )
-
-// trebiMetaKey is the Trebi namespace inside a server.json _meta block.
-const trebiMetaKey = "ai.trebi/connector"
-
-// publisherMetaKey is the only server _meta key the official registry keeps.
-// It drops every other key when a server is published.
-const publisherMetaKey = "io.modelcontextprotocol.registry/publisher-provided"
 
 // secretPrefix marks a value that names a stored secret.
 const secretPrefix = "secret:"
@@ -34,37 +25,35 @@ type InstallOpts struct {
 	Env     map[string]string
 }
 
-// SecretWrite is one secret the install must store before it creates the
-// connector.
-type SecretWrite struct {
-	Name  string
-	Value string
-}
-
-// Skill is the optional contributed skill block of a Trebi _meta entry. The
-// caller fetches the URL; this package never does.
-type Skill struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
-}
-
-// Definition derives the connector definition and the secret writes for one
-// install. It performs no I/O.
+// Manifest derives an inline actions.mcp manifest and its input values for
+// one install. Each env var and header becomes a setup input; the MCP block
+// refers to it as ${NAME}. A secret value stays literal in the inputs, and
+// the connectors service stores it as a secret. It performs no I/O.
 //
 // Precedence: an explicit Package index wins over an explicit Remote index;
 // with neither, the first package wins over the first usable remote.
-func (e Entry) Definition(o InstallOpts) (connectors.Definition, []SecretWrite, error) {
+func (e Entry) Manifest(o InstallOpts) (manifest.Manifest, map[string]string, error) {
 	name := o.connectorName(e.Server.Name)
-	def := connectors.Definition{
-		Name:   name,
-		Source: &connectors.Source{Registry: e.Registry, Name: e.Server.Name, Version: e.Server.Version},
+	m := manifest.Manifest{
+		Schema:      manifest.SchemaID,
+		Name:        name,
+		Title:       firstNonEmpty(e.Server.Title, e.Server.Name, name),
+		Description: firstNonEmpty(e.Server.Description, e.Server.Title, e.Server.Name),
+		Version:     "0.0.0",
+		Publisher:   manifest.PublisherCommunity,
+	}
+	if _, err := manifest.ParseVersion(e.Server.Version); err == nil {
+		m.Version = strings.TrimPrefix(e.Server.Version, "v")
+	}
+	if e.Server.Repository != nil {
+		m.Source = e.Server.Repository.URL
 	}
 	pkg, remote, err := e.selectSource(o)
 	if err != nil {
-		return def, nil, err
+		return m, nil, err
 	}
-	r := newInputResolver(name, o.Env)
-	var mcp *connectors.MCPAction
+	r := newInputResolver(o.Env)
+	var mcp *manifest.MCPAction
 	switch {
 	case pkg != nil:
 		mcp, err = e.packageAction(*pkg, r)
@@ -74,92 +63,23 @@ func (e Entry) Definition(o InstallOpts) (connectors.Definition, []SecretWrite, 
 		err = fmt.Errorf("%w: no installable package or remote", ErrUnsupportedPackage)
 	}
 	if err != nil {
-		return def, nil, err
+		return m, nil, err
 	}
-	def.Actions = &connectors.Actions{MCP: mcp}
-	if tb := e.trebiBlock(); tb != nil {
-		if raw, ok := tb["events"]; ok {
-			var ev connectors.Events
-			if err := decodeInto(raw, &ev); err != nil {
-				return def, nil, fmt.Errorf("_meta events: %w", err)
-			}
-			def.Events = &ev
-		}
-		if raw, ok := tb["channel"]; ok {
-			var ch connectors.Channel
-			if err := decodeInto(raw, &ch); err != nil {
-				return def, nil, fmt.Errorf("_meta channel: %w", err)
-			}
-			def.Channel = &ch
-		}
-		if raw, ok := tb["actions"]; ok {
-			var meta struct {
-				CLI *struct {
-					Commands []string `json:"commands"`
-					Skill    string   `json:"skill"`
-				} `json:"cli"`
-			}
-			if err := decodeInto(raw, &meta); err != nil {
-				return def, nil, fmt.Errorf("_meta actions: %w", err)
-			}
-			if meta.CLI != nil && len(meta.CLI.Commands) > 0 {
-				def.Actions.CLI = &connectors.CLIAction{
-					Commands: meta.CLI.Commands,
-					Skill:    meta.CLI.Skill,
-				}
-			}
-		}
-		if sk, ok := e.Skill(); ok && def.Actions.CLI != nil {
-			// The contributed skill takes the name the entry declares, so
-			// the install writes it under the same name (Part H.4).
-			def.Actions.CLI.Skill = sk.Name
-		}
+	m.Actions = &manifest.Actions{MCP: mcp}
+	inputs := r.lift(mcp)
+	if len(r.inputs) > 0 {
+		m.Setup = &manifest.Setup{Inputs: r.inputs}
 	}
-	return def, r.writes, nil
+	return m, inputs, nil
 }
 
-// Skill returns the contributed skill block of the entry. It is ok only when
-// the block sets both name and url. It is pure; the caller fetches the URL.
-func (e Entry) Skill() (*Skill, bool) {
-	tb := e.trebiBlock()
-	if tb == nil {
-		return nil, false
-	}
-	raw, ok := tb["skill"]
-	if !ok {
-		return nil, false
-	}
-	var sk Skill
-	if err := decodeInto(raw, &sk); err != nil {
-		return nil, false
-	}
-	if strings.TrimSpace(sk.Name) == "" || strings.TrimSpace(sk.URL) == "" {
-		return nil, false
-	}
-	return &sk, true
-}
-
-// trebiBlock finds the ai.trebi/connector block. The official registry keeps
-// only the publisher-provided key of the server _meta, so the block can be
-// there or at the top of the server _meta (a private registry). The
-// response-level _meta is the last place.
-func (e Entry) trebiBlock() map[string]any {
-	var places []map[string]any
-	if m := e.Server.Meta; m != nil {
-		places = append(places, m)
-		if pub, ok := m[publisherMetaKey].(map[string]any); ok {
-			places = append(places, pub)
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
 		}
 	}
-	if e.Meta != nil {
-		places = append(places, e.Meta)
-	}
-	for _, m := range places {
-		if b, ok := m[trebiMetaKey].(map[string]any); ok {
-			return b
-		}
-	}
-	return nil
+	return ""
 }
 
 // selectSource picks the package or remote to install.
@@ -196,7 +116,7 @@ func (e Entry) selectSource(o InstallOpts) (*Package, *Remote, error) {
 
 // packageAction maps one stdio package onto an MCP stdio action. A set
 // runtimeHint is the command, and runtimeArguments go before the package.
-func (e Entry) packageAction(p Package, r *inputResolver) (*connectors.MCPAction, error) {
+func (e Entry) packageAction(p Package, r *inputResolver) (*manifest.MCPAction, error) {
 	id := strings.TrimSpace(p.Identifier)
 	if id == "" {
 		return nil, fmt.Errorf("%w: package has no identifier", ErrUnsupportedPackage)
@@ -268,7 +188,7 @@ func (e Entry) packageAction(p Package, r *inputResolver) (*connectors.MCPAction
 	default:
 		args = append(runtimeArgs, ref)
 	}
-	m := &connectors.MCPAction{Command: command, Args: append(args, pkgArgs...)}
+	m := &manifest.MCPAction{Command: command, Args: append(args, pkgArgs...)}
 	if len(env) > 0 {
 		m.Env = env
 	}
@@ -287,7 +207,7 @@ func ociRef(id, version string) string {
 
 // remoteAction maps one remote transport onto an MCP HTTP action. URL
 // variables and header inputs are filled from the caller values.
-func (e Entry) remoteAction(rm Remote, r *inputResolver) (*connectors.MCPAction, error) {
+func (e Entry) remoteAction(rm Remote, r *inputResolver) (*manifest.MCPAction, error) {
 	u, secret, err := r.value("", Input{Value: rm.URL, Variables: rm.Variables})
 	if err != nil {
 		return nil, err
@@ -305,7 +225,7 @@ func (e Entry) remoteAction(rm Remote, r *inputResolver) (*connectors.MCPAction,
 	if err := CheckURL(u); err != nil {
 		return nil, fmt.Errorf("%w: remote %s", err, u)
 	}
-	m := &connectors.MCPAction{URL: u}
+	m := &manifest.MCPAction{URL: u}
 	if len(headers) > 0 {
 		m.Headers = headers
 	}
@@ -394,18 +314,58 @@ func (l *inputList) put(name, kind string, in Input) {
 }
 
 // inputResolver fills registry inputs from the caller values. It collects the
-// secret writes, the required inputs with no value, and the caller keys that
-// an input used.
+// secret names, the required inputs with no value, the caller keys that an
+// input used, and the setup inputs that lift makes.
 type inputResolver struct {
-	connector string
-	given     map[string]string
-	used      map[string]bool
-	writes    []SecretWrite
-	missing   []string
+	given   map[string]string
+	used    map[string]bool
+	secret  map[string]bool
+	missing []string
+	inputs  []manifest.Input
 }
 
-func newInputResolver(connector string, given map[string]string) *inputResolver {
-	return &inputResolver{connector: connector, given: given, used: map[string]bool{}}
+func newInputResolver(given map[string]string) *inputResolver {
+	return &inputResolver{given: given, used: map[string]bool{}, secret: map[string]bool{}}
+}
+
+// lift moves each env and header value of the MCP block into a setup input
+// and puts ${NAME} in its place. It returns the input values.
+func (r *inputResolver) lift(mcp *manifest.MCPAction) map[string]string {
+	values := map[string]string{}
+	add := func(key, name, v string) string {
+		r.inputs = append(r.inputs, manifest.Input{Name: name, Label: key, Secret: r.secret[key], Required: true})
+		values[name] = v
+		return "${" + name + "}"
+	}
+	for _, k := range slices.Sorted(maps.Keys(mcp.Env)) {
+		mcp.Env[k] = add(k, k, mcp.Env[k])
+	}
+	for _, k := range slices.Sorted(maps.Keys(mcp.Headers)) {
+		name := headerInputName(k)
+		if _, taken := values[name]; taken {
+			name += "_HEADER"
+		}
+		mcp.Headers[k] = add(k, name, mcp.Headers[k])
+	}
+	return values
+}
+
+// headerInputName maps a header name to an env name: upper case, and each
+// other character to an underscore.
+func headerInputName(h string) string {
+	out := strings.Map(func(c rune) rune {
+		switch {
+		case c >= 'a' && c <= 'z':
+			return c - 'a' + 'A'
+		case c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			return c
+		}
+		return '_'
+	}, h)
+	if out == "" || out[0] >= '0' && out[0] <= '9' {
+		out = "H_" + out
+	}
+	return out
 }
 
 // value resolves one input. A caller value under key wins; else the input
@@ -453,8 +413,8 @@ func (r *inputResolver) value(key string, in Input) (string, bool, error) {
 }
 
 // keyValues resolves env variables or headers into a map. nameRE checks each
-// declared name. A secret value is written to the store and replaced by a
-// secret: reference. A given secret: reference is kept as it is.
+// declared name. A secret value is marked, so lift makes a secret input. A
+// given secret: reference is kept as it is.
 func (r *inputResolver) keyValues(kvs []KeyValue, nameRE *regexp.Regexp) (map[string]string, error) {
 	out := map[string]string{}
 	for _, kv := range kvs {
@@ -472,17 +432,11 @@ func (r *inputResolver) keyValues(kvs []KeyValue, nameRE *regexp.Regexp) (map[st
 		if v == "" {
 			continue
 		}
-		if secret && !strings.HasPrefix(v, secretPrefix) {
-			secretName := r.connector + "_" + name
-			if err := secrets.CheckName(secretName); err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrInvalidEntry, err)
-			}
-			r.writes = append(r.writes, SecretWrite{Name: secretName, Value: v})
-			v = secretPrefix + secretName
+		if secret {
+			r.secret[name] = true
 		}
 		out[name] = v
 	}
-	sort.Slice(r.writes, func(i, j int) bool { return r.writes[i].Name < r.writes[j].Name })
 	return out, nil
 }
 
@@ -595,12 +549,3 @@ func (o InstallOpts) connectorName(serverName string) string {
 }
 
 var invalidNameChars = regexp.MustCompile(`[^a-z0-9]+`)
-
-// decodeInto re-encodes a decoded JSON value into a typed struct.
-func decodeInto(raw any, out any) error {
-	b, err := json.Marshal(raw)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(b, out)
-}

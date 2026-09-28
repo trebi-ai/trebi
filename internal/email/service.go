@@ -1136,7 +1136,7 @@ func (s *Service) enqueue(ctx context.Context, e envelope, r outbox.Row) (outbox
 	if e.coveredTurn != nil {
 		turn = *e.coveredTurn
 	}
-	return s.ob.EnqueueTx(ctx, func(tx *sql.Tx, r outbox.Row) error {
+	row, err := s.ob.EnqueueTx(ctx, func(tx *sql.Tx, r outbox.Row) error {
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO email_messages
   (id, direction, workspace_id, agent, message_id, in_reply_to, thread_root, recipients,
@@ -1156,6 +1156,10 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		}
 		return nil
 	}, r)
+	if err == nil {
+		s.touchThread(ctx, r.Room, r.Thread, e.subject, e.recipients)
+	}
+	return row, err
 }
 
 func splitRecipients(target string) []string {

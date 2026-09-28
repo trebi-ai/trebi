@@ -6,20 +6,18 @@ import (
 	"testing"
 )
 
-// TestConnectorsRegistriesDefault proves a missing file yields the official
-// registry only, so the catalog has a source out of the box.
+// TestConnectorsRegistriesDefault proves a missing file yields the Trebi
+// catalog first, then the official registry and the Docker catalog.
 func TestConnectorsRegistriesDefault(t *testing.T) {
 	withTempBase(t)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Connectors.Registries) != 1 {
-		t.Fatalf("registries = %+v", cfg.Connectors.Registries)
-	}
-	r := cfg.Connectors.Registries[0]
-	if r.Name != "official" || r.URL != "https://registry.modelcontextprotocol.io" {
-		t.Fatalf("registry = %+v", r)
+	regs := cfg.Connectors.Registries
+	if len(regs) != 3 || regs[0].Kind != RegistryTrebi || regs[0].URL != "https://catalog.trebi.ai/v1" ||
+		regs[1].Name != "official" || regs[2].Kind != RegistryDocker {
+		t.Fatalf("registries = %+v", regs)
 	}
 }
 

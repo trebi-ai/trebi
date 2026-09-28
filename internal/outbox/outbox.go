@@ -122,6 +122,28 @@ type Permanent struct{ Err error }
 func (p Permanent) Error() string { return p.Err.Error() }
 func (p Permanent) Unwrap() error { return p.Err }
 
+// Hold keeps a row pending with a hold reason and no attempt count, until
+// Release wakes it. A channel whose session needs a login returns it.
+type Hold struct {
+	Reason string
+	Err    error
+}
+
+func (h Hold) Error() string { return h.Err.Error() }
+func (h Hold) Unwrap() error { return h.Err }
+
+// RetryAfter is a failure whose next attempt waits at least After.
+type RetryAfter struct {
+	After time.Duration
+	Err   error
+}
+
+func (r RetryAfter) Error() string { return r.Err.Error() }
+func (r RetryAfter) Unwrap() error { return r.Err }
+
+// HoldAuthRequired is the hold reason of a channel that needs a login.
+const HoldAuthRequired = "auth_required"
+
 // Policy is the retry shape of one Kind.
 type Policy struct {
 	Base, Max time.Duration
@@ -295,7 +317,7 @@ func (s *Service) SendNow(ctx context.Context, id string) (Row, error) {
 func (s *Service) Retry(ctx context.Context, id string) (Row, error) {
 	return s.transition(ctx, id, "outbox.queued", []Status{StatusFailed, StatusCanceled}, `
 UPDATE outbox SET status='pending', attempts=0, next_attempt_at=NULL, claimed_at=NULL,
-  error_message=NULL, revision=revision+1
+  error_message=NULL, hold_reason='', revision=revision+1
 WHERE id=? AND status IN ('failed','canceled')`)
 }
 
@@ -415,12 +437,57 @@ func (s *Service) attempt(ctx context.Context, id string, now time.Time) (Row, e
 			`UPDATE outbox SET status='pending', claimed_at=NULL WHERE id=? AND status='sending'`, id)
 		return r, ctx.Err()
 	}
+	var hold Hold
+	if errors.As(sendErr, &hold) {
+		return s.markHeld(ctx, r, hold)
+	}
 	attempts := r.Attempts + 1
 	var perm Permanent
 	if errors.As(sendErr, &perm) || attempts >= r.MaxAttempts {
 		return s.markFailed(ctx, r, attempts, sendErr.Error())
 	}
-	return s.markRetry(ctx, r, attempts, now.Add(pol.Backoff(attempts)), sendErr.Error())
+	wait := pol.Backoff(attempts)
+	var ra RetryAfter
+	if errors.As(sendErr, &ra) && ra.After > wait {
+		wait = ra.After
+	}
+	return s.markRetry(ctx, r, attempts, now.Add(wait), sendErr.Error())
+}
+
+func (s *Service) markHeld(ctx context.Context, r Row, h Hold) (Row, error) {
+	var out Row
+	err := s.commit(ctx, func(tx *sql.Tx) (Row, string, error) {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE outbox SET status='pending', hold_reason=?, claimed_at=NULL, next_attempt_at=NULL,
+  error_message=?, revision=revision+1
+WHERE id=?`, h.Reason, truncate(h.Error()), r.ID); err != nil {
+			return Row{}, "", err
+		}
+		row, err := scanRow(tx.QueryRowContext(ctx, `SELECT `+rowCols+` FROM outbox WHERE id=?`, r.ID))
+		out = row
+		return row, "outbox.queued", err
+	})
+	if err == nil {
+		s.log.InfoContext(ctx, "outbox.queued", "row", r.ID, "hold_reason", h.Reason)
+		s.changed(ctx, out)
+	}
+	return out, err
+}
+
+// Release wakes the rows of a connector instance that wait for a login. It
+// returns the count of rows it woke.
+func (s *Service) Release(ctx context.Context, instance string) (int, error) {
+	res, err := s.st.DB().ExecContext(ctx, `
+UPDATE outbox SET hold_reason='', next_attempt_at=NULL, revision=revision+1
+WHERE status='pending' AND hold_reason <> '' AND instance=?`, instance)
+	if err != nil {
+		return 0, fmt.Errorf("outbox release: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		s.log.InfoContext(ctx, "outbox.queued", "instance", instance, "released", n)
+	}
+	return int(n), nil
 }
 
 func (s *Service) markSent(ctx context.Context, r Row) (Row, error) {
@@ -579,7 +646,7 @@ func (s *Service) releaseStale(ctx context.Context, now time.Time) error {
 func (s *Service) dueIDs(ctx context.Context, now time.Time) ([]string, error) {
 	rows, err := s.st.DB().QueryContext(ctx, `
 SELECT id FROM outbox
-WHERE status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+WHERE status='pending' AND hold_reason='' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 ORDER BY id LIMIT ?`, fmtTS(now), dueBatch)
 	if err != nil {
 		return nil, fmt.Errorf("outbox due: %w", err)

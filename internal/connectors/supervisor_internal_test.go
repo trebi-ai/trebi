@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -112,7 +113,7 @@ func topicCount(t *testing.T, st *store.Store, topic string) int {
 func TestStopEndsPipelineSupervisor(t *testing.T) {
 	_, svc := newInternalService(t)
 	ctx := context.Background()
-	d := Definition{Name: "pipe", Events: &Events{Command: "sleep 30 | cat", Format: "json"}}
+	d := linesEntry("pipe", manifest.Events{Command: "sleep 30 | cat", Format: "json"})
 	if err := svc.Create(ctx, d); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +140,7 @@ func TestLineTooLongKillsGroup(t *testing.T) {
 	_, svc := newInternalService(t)
 	ctx := context.Background()
 	command := `head -c 2000000 /dev/zero | tr '\0' a; echo; sleep 30`
-	d := Definition{Name: "long", Events: &Events{Command: command, Format: "line", Restart: RestartNever}}
+	d := linesEntry("long", manifest.Events{Command: command, Format: "line", Restart: manifest.RestartNever})
 	if err := svc.Create(ctx, d); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +170,7 @@ func TestStartAfterPollFailureKeepsOneSupervisor(t *testing.T) {
 		<-ctx.Done()
 		return true
 	}
-	d := Definition{Name: "flaky", Events: &Events{Command: "exit 3", Format: "json", Poll: Duration(10 * time.Second)}}
+	d := linesEntry("flaky", manifest.Events{Command: "exit 3", Format: "json", Poll: manifest.Duration(10 * time.Second)})
 	if err := svc.Create(ctx, d); err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +244,7 @@ exec sleep 30`
 		return slices.Clone(delays)
 	}
 
-	d := Definition{Name: "loop", Events: &Events{Command: command, Format: "json", Restart: RestartOnFailure}}
+	d := linesEntry("loop", manifest.Events{Command: command, Format: "json", Restart: manifest.RestartOnFailure})
 	if err := svc.Create(ctx, d); err != nil {
 		t.Fatal(err)
 	}
@@ -284,10 +285,10 @@ func TestCatchupBeforeEachLiveStart(t *testing.T) {
 		}
 		return ctx.Err() != nil
 	}
-	d := Definition{Name: "cu", Events: &Events{
-		Command: "exit 1", Format: "json", ID: "id", Restart: RestartOnFailure,
-		Catchup: &Catchup{Command: "echo x >> " + marks, Timeout: Duration(5 * time.Second)},
-	}}
+	d := linesEntry("cu", manifest.Events{
+		Command: "exit 1", Format: "json", ID: "id", Restart: manifest.RestartOnFailure,
+		Catchup: &manifest.Catchup{Command: "echo x >> " + marks, Timeout: manifest.Duration(5 * time.Second)},
+	})
 	if err := svc.Create(ctx, d); err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +350,7 @@ func TestPollTicksIngestEachBatch(t *testing.T) {
 		return ticks
 	}
 
-	d := Definition{Name: "ticker", Events: &Events{Command: command, Format: "json", ID: "id", Poll: Duration(10 * time.Second)}}
+	d := linesEntry("ticker", manifest.Events{Command: command, Format: "json", ID: "id", Poll: manifest.Duration(10 * time.Second)})
 	if err := svc.Create(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
@@ -413,21 +414,28 @@ func TestParseEventTime(t *testing.T) {
 	}
 }
 
-// TestParseDefinitionDataLine proves the strict-decode error names the
+// TestParseEntriesDataLine proves the strict-decode error names the
 // connector and the line in the file.
-func TestParseDefinitionDataLine(t *testing.T) {
+func TestParseEntriesDataLine(t *testing.T) {
 	t.Parallel()
-	data := "feed:\n  events:\n    command: echo\n\nmail:\n  events:\n    command: x\n    formt: json\n"
-	_, err := parseDefinitionData([]byte(data))
-	if err == nil || !strings.Contains(err.Error(), `connector "mail": line 8: field formt not found`) {
+	data := "feed:\n  from: inline\n\nmail:\n  from: inline\n  frm: x\n"
+	_, err := parseEntries([]byte(data))
+	if err == nil || !strings.Contains(err.Error(), `connector "mail": line 6: field frm not found`) {
 		t.Fatalf("err = %v", err)
 	}
-	defs, err := parseDefinitionData([]byte(""))
-	if err != nil || len(defs) != 0 {
-		t.Fatalf("empty file: %v %v", defs, err)
+	entries, err := parseEntries([]byte(""))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("empty file: %v %v", entries, err)
 	}
-	defs, err = parseDefinitionData([]byte("feed:\n  events: {command: echo}\n"))
-	if err != nil || defs["feed"].Name != "feed" || defs["feed"].Events.Command != "echo" {
-		t.Fatalf("valid file: %v %v", defs, err)
+	entries, err = parseEntries([]byte("feed:\n  from: catalog\n  version: 1.2.0\n"))
+	if err != nil || entries["feed"].Name != "feed" || entries["feed"].Version != "1.2.0" {
+		t.Fatalf("valid file: %v %v", entries, err)
 	}
+}
+
+// linesEntry is an inline entry with one lines events block.
+func linesEntry(name string, ev manifest.Events) Entry {
+	return Entry{Name: name, From: FromInline, Manifest: &manifest.Manifest{
+		Schema: manifest.SchemaID, Name: name, Title: name, Description: "Test connector.", Version: "1.0.0", Events: &ev,
+	}}
 }

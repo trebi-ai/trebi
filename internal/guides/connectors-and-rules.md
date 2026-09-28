@@ -15,44 +15,85 @@ When `connectors.yaml` does not load, `trebi connector list` prints the error an
 ## Connectors
 
 ```bash
-trebi connector list --capability events --json
-trebi connector set slack --events-command 'slack-stream --follow' --format json --cwd /opt/slack --restart on-failure
-trebi connector set slack --catchup-command 'slack-fetch --since $TREBI_LAST_EVENT_ID' --id ts --identity user
-trebi connector set feed --poll 15m --events-command 'feed-fetch --since $TREBI_LAST_EVENT_ID' --format json --id id
-trebi connector set notion --mcp-command npx --mcp-arg=-y --mcp-arg @notionhq/notion-mcp-server
-trebi connector set chat --events-command 'chat-stream --follow' --format json --channel-ref chat_id --send send-chat.sh --typing typing-chat.sh --ack ack-chat.sh
-trebi connector show slack
-trebi connector test slack
-trebi connector connect slack
-trebi connector disconnect slack
-trebi connector restart slack
-trebi connector logs slack
-trebi connector remove slack
+trebi connector list --capability events --workspace reports --json
+trebi connector show slack --workspace reports --json
+trebi connector apply --file ./feed.yaml
+trebi connector set feed --input FEED_TOKEN=secret:feed_token
+trebi connector set feed --patch-file ./feed-patch.yaml
+trebi connector set feed --manifest-file ./feed-manifest.yaml
+trebi connector test feed --event '{"id":"t1","text":"hello"}'
+trebi connector connect feed
+trebi connector disconnect feed
+trebi connector restart feed --workspace reports
+trebi connector logs feed --instance feed@reports
+trebi connector delete feed --force
 ```
 
-`trebi connector set <name>` sends a `PATCH`: a flag replaces that part of the definition and the stored blocks stay. An `--mcp-*` or `--cli-*` flag changes only that field of the actions block. `connector show` prints each literal env value and MCP header as `***`; a `secret:NAME` reference stays visible. `trebi connector set slack --no-events` removes the events block. A connector name matches `^[a-z0-9][a-z0-9-]{0,39}$`; `email`, `webhook`, and `trebi` are reserved. Catch-up needs `--format json` and `--id`, and it cannot be combined with `--poll`. `--poll` is at least `10s`. A reply channel needs an events block with `--format json`, and `--channel-ref` is a dotted path into the event. A channel with no ref and no events block is send-only: it needs only `send`, has no typing and no ack, and only pushes alerts that a `notify` route names. `trebi connector apply --file ./slack.yaml` writes a whole definition with `PUT`, for an import.
-
-A send-only WhatsApp channel for alerts:
+A connector is one entry in `connectors.yaml`. The entry has `from` (where the manifest comes from), `version`, `track`, `inputs`, an optional merge `patch`, and, for `from: inline`, the whole `manifest`. `connector apply --file` writes one entry with `PUT`:
 
 ```yaml
-whatsapp:
-  channel:
-    send: whatsapp-cli send --to "$TREBI_CHANNEL_REF" --stdin
+feed:
+  from: inline
+  inputs:
+    FEED_TOKEN: secret:feed_token
+  manifest:
+    schema: trebi-connector/1
+    name: feed
+    title: Feed
+    description: New items from the feed.
+    version: 1.0.0
+    events:
+      command: feed-fetch --since "$TREBI_LAST_EVENT_ID"
+      format: json
+      poll: 15m
+      id: id
+      identity: author
 ```
 
-Then name it in a route: `trebi config set notify.route '[{"via":"whatsapp","to":"+15551234567"},{"via":"email"}]'`. `TREBI_CHANNEL_REF` is the step `to`, and `TREBI_PURPOSE` is `alert`.
+A manifest needs `schema`, `name`, `title`, `description`, `version`, and at least one of `actions` (`mcp` or `cli`), `events`, and `channel`. Each input is an env variable of the connector processes, so `${FEED_TOKEN}` in an MCP `env` value reads the input. `connector show` prints each literal input, MCP env value, and header as `***`; a `secret:NAME` reference stays visible. A plain value for a secret input of the manifest becomes the secret `<connector>_<INPUT>`.
 
-A trigger `allowlist` checks only the value at the connector `--identity` path. A connector with no identity fails every allowlist. The `email` connector compares the sender address without case. Every other connector compares the value exactly.
+`connector set` sends a `PATCH`. `--input` merges into the stored inputs. `--patch-file` replaces the merge patch, `--manifest-file` replaces the inline manifest, and a file that holds `null` removes it. With `--manifest-file`, `set` creates a connector that does not exist. A connector name matches `^[a-z0-9][a-z0-9-]{0,39}$`; `email`, `webhook`, and `trebi` are reserved.
 
-A job or agent receives connector actions through `connectors:` (or the agent `kit: connectors`). A job list that is not empty replaces the kit list. `kit.mcp` is gone: trebi ignores it and doctor reports `kit_mcp_removed`; move the names to `kit.connectors`. A run with an MCP action needs a supported harness and runtime: claude, codex, and opencode on either runtime, and the ACP harnesses (copilot, cursor, gemini) on the CLI runtime. The CLI runtime asks the installed harness if it can take MCP servers; pi cannot. An unsupported pair fails the launch with `validation`, and doctor reports `kit_actions_unsupported` first. A resumed run keeps the actions of the run it resumes. Codex gets MCP secrets through the environment, never on the command line. For opencode, the injected servers merge into the `OPENCODE_CONFIG_CONTENT` of the job; an injected server wins on a name clash. The connector `cwd` does not apply to an MCP server.
+The events block has two protocols. `lines` (the default) reads one event per output line: `format` is `json` or `line`, `poll` runs the command again on an interval (at least `10s`), and `catchup.command` reads the events after `$TREBI_LAST_EVENT_ID` at start. Catch-up needs `format: json` and `id`, and it cannot be combined with `poll`. `trebi-connector/1` runs an adapter that speaks the connector protocol: it sends typed events, and it can log in to an account and hold a channel. A `channel` block needs `events.protocol: trebi-connector/1`.
 
-`connector logs` (and `--follow`) blocks — **local only**; remote: poll `connector.logs`. `connector remove` is destructive — ask first.
+A trigger `allowlist` checks only the value at the events `identity` path. A connector with no identity fails every allowlist. The `email` connector compares the sender address without case. Every other connector compares the value exactly.
+
+A job or agent receives connector actions through `connectors:` (or the agent `kit: connectors`). A job list that is not empty replaces the kit list. `kit.mcp` is gone: trebi ignores it and doctor reports `kit_mcp_removed`; move the names to `kit.connectors`. A run with an MCP action needs a supported harness and runtime: claude, codex, and opencode on either runtime, and the ACP harnesses (copilot, cursor, gemini) on the CLI runtime. The CLI runtime asks the installed harness if it can take MCP servers; pi cannot. An unsupported pair fails the launch with `validation`, and doctor reports `kit_actions_unsupported` first. A resumed run keeps the actions of the run it resumes. Codex gets MCP secrets through the environment, never on the command line. For opencode, the injected servers merge into the `OPENCODE_CONFIG_CONTENT` of the job; an injected server wins on a name clash.
+
+`connector logs` (and `--follow`) blocks — **local only**; remote: poll `connector.logs`. `connector delete` is destructive — ask first.
+
+## Workspace overrides
+
+A workspace can change a connector for its own jobs. The workspace layer holds `version`, `track`, `inputs`, `patch`, and `disabled`. A layer that changes the connector runs a second instance, `<name>@<workspace>`. `--workspace` selects the instance of that workspace, and `--instance` names an instance key.
+
+```bash
+trebi connector override show slack --workspace reports
+trebi connector override set slack --workspace reports --input SLACK_TOKEN=secret:reports_slack
+trebi connector override set slack --workspace reports --disabled
+trebi connector override delete slack --workspace reports
+```
+
+`override delete` removes the layer, and the workspace uses the global connector again.
+
+## Accounts and rooms
+
+A `trebi-connector/1` adapter can log in to an account and list the rooms of its channel (chats, groups, mailboxes).
+
+```bash
+trebi connector login whatsapp
+trebi connector logout whatsapp
+trebi connector rooms whatsapp --query ops --json
+trebi connector threads whatsapp <room> --json
+trebi connector bind whatsapp <room> --workspace reports --operator assistant
+```
+
+`connector login` prints each step (a code, a QR code, or a link) and waits for the user. Ask the user before you log out. `connector bind` sends the messages of a room to the assistant or to `agents/<name>` of a workspace; `--thread` binds one thread only. A notify route step names the connector and a room id: `trebi config set notify.route '[{"via":"whatsapp","to":"<room>"},{"via":"email"}]'`.
 
 ## Registry
 
-Install an MCP server from a registry. `search` reads every registry in `connectors.registries`; the default holds the official MCP Registry only.
+Install a connector from a registry. `search` reads every registry in `connectors.registries` in order. The default list is `trebi` (the signed Trebi catalog), `official` (the MCP Registry), and `docker`, so a Trebi entry shows first.
 
-A registry entry has a `kind`: `mcp-registry` (the default; the official MCP Registry API), `smithery` (registry.smithery.ai), or `docker` (the Docker MCP Catalog file). Each search row carries `trust`: `official` for the official registry, `verified` for a Smithery server that Smithery verified and for every Docker entry, else `community`. Smithery installs only its HTTP connections. A Docker `server` installs as `docker run`; a Docker `remote` installs as an HTTP action; a `poci` entry does not install.
+A registry entry has a `kind`: `trebi` (the Trebi catalog), `mcp-registry` (the default; the official MCP Registry API), `smithery` (registry.smithery.ai), or `docker` (the Docker MCP Catalog file). Each search row carries `trust`: `official` for the official registry and for a Trebi catalog entry that Trebi publishes, `verified` for another Trebi catalog entry, for a Smithery server that Smithery verified, and for every Docker entry, else `community`. A registry that does not answer shows its last good rows and a warning on stderr. Smithery installs only its HTTP connections. A Docker `server` installs as `docker run`; a Docker `remote` installs as an HTTP action; a `poci` entry does not install.
 
 ```bash
 trebi config set connectors.registries '[{"name":"official","url":"https://registry.modelcontextprotocol.io"},{"name":"smithery","url":"https://registry.smithery.ai","kind":"smithery"},{"name":"docker","url":"https://desktop.docker.com/mcp/catalog/v3/catalog.yaml","kind":"docker"}]'
@@ -62,12 +103,30 @@ trebi config set connectors.registries '[{"name":"official","url":"https://regis
 trebi connector search postgres --registry official --limit 20
 trebi connector search postgres --cursor <next_cursor>
 trebi connector entry acme/weather --registry official --version 1.2.0
-trebi connector install io.github.modelcontextprotocol/server-github --as github --env GITHUB_PERSONAL_ACCESS_TOKEN=secret:github_pat
-trebi connector install acme/weather --package 0 --env WEATHER_API_KEY=secret:weather
+trebi connector install io.github.modelcontextprotocol/server-github --as github --input GITHUB_PERSONAL_ACCESS_TOKEN=secret:github_pat
+trebi connector install acme/weather --package 0 --input WEATHER_API_KEY=secret:weather
 trebi connector install acme/weather --remote 0
 ```
 
-`--env NAME=VALUE` fills an input of the entry: an env variable, a header, an argument, or a `{name}` URL or header variable. `connector entry` (MCP `connector.catalog_entry`) lists the packages, the remotes, and the inputs of each; a `*` marks a required input. `search` prints `more: --cursor X` on stderr when a next page exists. `--env VAR=secret:NAME` keeps the reference and writes no secret. A plain value for a secret input becomes the secret `<connector>_<VAR>`. A secret that exists with a different value makes the install fail with `conflict`; pass `--overwrite-secrets` to replace it. `connector remove` deletes the secrets the install created, unless another connector refers to them. `--package` and `--remote` select one entry of the server; give one, not both (default: the first package, else the first remote that speaks `streamable-http` or `sse`). An entry that contributes a skill writes it under `~/.trebi/skills/<name>/` with provenance `connector`; `connector remove` deletes it again. An install runs third-party code on this machine, so ask the user before you install.
+The install writes an inline entry: the manifest has one MCP action, and each input of the server becomes an entry input. `--input NAME=VALUE` fills an input: an env variable, a header, an argument, or a `{name}` URL or header variable. `connector entry` (MCP `connector.catalog_entry`) lists the packages, the remotes, and the inputs of each; a `*` marks a required input. `search` prints `more: --cursor X` on stderr when a next page exists. `--input VAR=secret:NAME` keeps the reference and writes no secret. A plain value for a secret input becomes the secret `<connector>_<VAR>`. `connector delete` deletes the secrets the install created, unless another connector refers to them. `--package` and `--remote` select one entry of the server; give one, not both (default: the first package, else the first remote that speaks `streamable-http` or `sse`). An install runs third-party code on this machine, so ask the user before you install. When a secret with the name `<connector>_<VAR>` exists and the connector did not write it, the install fails; pass `--input VAR=secret:<name>` to use it.
+
+## Versions
+
+A Trebi catalog entry installs its signed snapshot (the manifest and the skill) and its program. It follows an update track: `exact` (never changes), `patch` (the default; moves to a new patch version at once), `minor`, or `latest`. On `minor` and `latest`, a new version shows as `update` on the row and as an Inbox item; apply it with `connector update`. The daemon checks once a day.
+
+```bash
+trebi connector install whatsapp --registry trebi --track minor
+trebi connector versions whatsapp
+trebi connector check-updates            # every connector; give a name for one
+trebi connector update whatsapp          # the newest version on the track
+trebi connector update whatsapp --version 0.6.0 --workspace acme
+trebi connector capabilities github      # commands, MCP tools, events, channel features, skill
+trebi connector gc --dry-run
+```
+
+`connector conformance <name>` checks a running protocol connector against its manifest; `--room` adds a real test send. `connector conformance --command CMD --manifest FILE` checks an adapter program on this machine with no daemon.
+
+`update` installs the version next to the current one, switches the entry (or the workspace layer with `--workspace`), restarts the instance, and removes versions that nothing uses. `capabilities` starts an MCP server to list its tools, prompts, and resources, and keeps the result for 10 minutes. `gc` removes installed versions that no entry and no workspace layer uses.
 
 ## Cursors
 

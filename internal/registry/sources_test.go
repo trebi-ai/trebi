@@ -39,7 +39,7 @@ func TestSmitherySource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	def, _, err := e.Definition(InstallOpts{Package: -1, Remote: -1})
+	def, _, err := e.Manifest(InstallOpts{Package: -1, Remote: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,17 +70,17 @@ func TestDockerSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	def, secrets, err := brave.Definition(InstallOpts{Package: -1, Remote: -1, Env: map[string]string{"BRAVE_API_KEY": "k"}})
+	def, inputs, err := brave.Manifest(InstallOpts{Package: -1, Remote: -1, Env: map[string]string{"BRAVE_API_KEY": "k"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := def.Actions.MCP
-	if m.Command != "docker" || m.Env["BRAVE_API_KEY"] != "secret:brave_BRAVE_API_KEY" || m.Env["BRAVE_MCP_TRANSPORT"] != "stdio" || len(secrets) != 1 {
-		t.Fatalf("brave = %+v secrets %+v", m, secrets)
+	if m.Command != "docker" || m.Env["BRAVE_API_KEY"] != "${BRAVE_API_KEY}" || inputs["BRAVE_API_KEY"] != "k" || inputs["BRAVE_MCP_TRANSPORT"] != "stdio" {
+		t.Fatalf("brave = %+v inputs %+v", m, inputs)
 	}
 
 	hub, _ := svc.Get(ctx, "docker", "dockerhub", "")
-	def, _, err = hub.Definition(InstallOpts{Package: -1, Remote: -1, Env: map[string]string{"HUB_PAT_TOKEN": "t", "dockerhub.username": "me"}})
+	def, _, err = hub.Manifest(InstallOpts{Package: -1, Remote: -1, Env: map[string]string{"HUB_PAT_TOKEN": "t", "dockerhub.username": "me"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,16 +89,16 @@ func TestDockerSource(t *testing.T) {
 	}
 
 	c7, _ := svc.Get(ctx, "docker", "context7", "")
-	def, _, err = c7.Definition(InstallOpts{Package: -1, Remote: -1, Env: map[string]string{"CONTEXT7_API_KEY": "secret:c7"}})
+	def, inputs, err = c7.Manifest(InstallOpts{Package: -1, Remote: -1, Env: map[string]string{"CONTEXT7_API_KEY": "secret:c7"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if def.Actions.MCP.URL != "https://mcp.context7.com/mcp" || def.Actions.MCP.Headers["CONTEXT7_API_KEY"] != "secret:c7" {
+	if def.Actions.MCP.URL != "https://mcp.context7.com/mcp" || inputs["CONTEXT7_API_KEY"] != "secret:c7" {
 		t.Fatalf("context7 = %+v", def.Actions.MCP)
 	}
 
 	curl, _ := svc.Get(ctx, "docker", "curl", "")
-	if _, _, err := curl.Definition(InstallOpts{Package: -1, Remote: -1}); !errors.Is(err, ErrUnsupportedPackage) {
+	if _, _, err := curl.Manifest(InstallOpts{Package: -1, Remote: -1}); !errors.Is(err, ErrUnsupportedPackage) {
 		t.Fatalf("poci = %v", err)
 	}
 	if _, err := svc.Get(ctx, "docker", "nope", ""); !errors.Is(err, ErrNotFound) {

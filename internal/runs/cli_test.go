@@ -547,7 +547,7 @@ func (d *captureDriver) last(t *testing.T) agentwire.StartRequest {
 // mcpResolver gives every name one stdio MCP server.
 type mcpResolver struct{}
 
-func (mcpResolver) ResolveActions(_ context.Context, names []string) ([]runs.ConnectorAction, error) {
+func (mcpResolver) ResolveActions(_ context.Context, _ string, names []string) ([]runs.ConnectorAction, error) {
 	out := make([]runs.ConnectorAction, 0, len(names))
 	for _, n := range names {
 		out = append(out, runs.ConnectorAction{Name: n, MCP: &agentwire.MCPServer{

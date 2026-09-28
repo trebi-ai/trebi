@@ -42,6 +42,7 @@ const (
 	ProblemNoAddr = "no_contact"
 	ProblemNoConn = "unknown_connector"
 	ProblemNoChan = "no_channel"
+	ProblemDown   = "channel_down"
 )
 
 var viaRe = regexp.MustCompile(`^(email|[a-z0-9][a-z0-9-]{0,39})$`)
@@ -91,10 +92,11 @@ type Layers interface {
 	Global() (route []Step, set bool, admins []string)
 }
 
-// Channels tells whether a connector exists and has a channel with a send
-// command.
+// Channels tells whether a connector exists, whether it is a channel, and
+// whether the instance that serves the workspace is down: logged out or
+// unresponsive.
 type Channels interface {
-	HasChannel(name string) (known, channel bool)
+	HasChannel(name, workspaceID string) (known, channel, down bool)
 }
 
 // Resolver applies the inheritance rules to a scope.
@@ -176,12 +178,12 @@ func (r *Resolver) resolve(ctx context.Context, sc Scope, frozen []Step) Resolve
 	}
 	out := Resolved{Steps: make([]ResolvedStep, 0, len(route)), Source: source, Contact: contact, ContactSource: contactSource}
 	for _, s := range route {
-		out.Steps = append(out.Steps, r.expand(s, contact, admins))
+		out.Steps = append(out.Steps, r.expand(s, sc.WorkspaceID, contact, admins))
 	}
 	return out
 }
 
-func (r *Resolver) expand(s Step, contact, admins []string) ResolvedStep {
+func (r *Resolver) expand(s Step, workspaceID string, contact, admins []string) ResolvedStep {
 	rs := ResolvedStep{Step: s, Targets: []string{}}
 	if s.Via == ViaEmail {
 		switch strings.ToLower(strings.TrimSpace(s.To)) {
@@ -201,15 +203,17 @@ func (r *Resolver) expand(s Step, contact, admins []string) ResolvedStep {
 		return rs
 	}
 	rs.Targets = append(rs.Targets, s.To)
-	known, channel := false, false
+	known, channel, down := false, false, false
 	if r.channels != nil {
-		known, channel = r.channels.HasChannel(s.Via)
+		known, channel, down = r.channels.HasChannel(s.Via, workspaceID)
 	}
 	switch {
 	case !known:
 		rs.Problem = ProblemNoConn
 	case !channel:
 		rs.Problem = ProblemNoChan
+	case down:
+		rs.Problem = ProblemDown
 	}
 	return rs
 }

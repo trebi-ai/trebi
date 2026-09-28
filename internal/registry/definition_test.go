@@ -25,7 +25,7 @@ func entryFor(t *testing.T, name, version string) Entry {
 
 func TestDefinitionNPM(t *testing.T) {
 	entry := entryFor(t, "ai.adtest/adtest-mcp", "1.1.0")
-	def, secrets, err := entry.Definition(InstallOpts{Name: "adtest", Package: 0, Remote: -1, Env: map[string]string{
+	def, inputs, err := entry.Manifest(InstallOpts{Name: "adtest", Package: 0, Remote: -1, Env: map[string]string{
 		"ADTEST_API_KEY":         "key-1",
 		"ADTEST_API_BASE":        "https://api.example",
 		"ADTEST_POLL_TIMEOUT_MS": "1000",
@@ -43,23 +43,30 @@ func TestDefinitionNPM(t *testing.T) {
 	if want := []string{"-y", "adtest-mcp@1.1.0"}; !reflect.DeepEqual(mcp.Args, want) {
 		t.Fatalf("args = %v", mcp.Args)
 	}
-	if mcp.Env["ADTEST_API_KEY"] != "secret:adtest_ADTEST_API_KEY" {
+	if mcp.Env["ADTEST_API_KEY"] != "${ADTEST_API_KEY}" || mcp.Env["ADTEST_API_BASE"] != "${ADTEST_API_BASE}" {
 		t.Fatalf("env = %v", mcp.Env)
 	}
-	if mcp.Env["ADTEST_API_BASE"] != "https://api.example" {
-		t.Fatalf("env = %v", mcp.Env)
+	if inputs["ADTEST_API_KEY"] != "key-1" || inputs["ADTEST_API_BASE"] != "https://api.example" {
+		t.Fatalf("inputs = %v", inputs)
 	}
-	if len(secrets) != 1 || secrets[0].Name != "adtest_ADTEST_API_KEY" || secrets[0].Value != "key-1" {
-		t.Fatalf("secrets = %+v", secrets)
+	secret := map[string]bool{}
+	for _, in := range def.Setup.Inputs {
+		secret[in.Name] = in.Secret
 	}
-	if def.Source == nil || def.Source.Registry != "official" || def.Source.Name != "ai.adtest/adtest-mcp" || def.Source.Version != "1.1.0" {
-		t.Fatalf("source = %+v", def.Source)
+	if !secret["ADTEST_API_KEY"] || secret["ADTEST_API_BASE"] {
+		t.Fatalf("setup inputs = %+v", def.Setup.Inputs)
+	}
+	if def.Version != "1.1.0" {
+		t.Fatalf("version = %q", def.Version)
+	}
+	if err := def.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestDefinitionPyPI(t *testing.T) {
 	entry := entryFor(t, "medium-ops", "0.1.0")
-	def, secrets, err := entry.Definition(InstallOpts{Package: -1, Remote: -1})
+	def, inputs, err := entry.Manifest(InstallOpts{Package: -1, Remote: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,14 +80,14 @@ func TestDefinitionPyPI(t *testing.T) {
 	if def.Name != "medium-ops" {
 		t.Fatalf("name = %q", def.Name)
 	}
-	if len(secrets) != 0 {
-		t.Fatalf("secrets = %+v", secrets)
+	if len(inputs) != 0 {
+		t.Fatalf("inputs = %+v", inputs)
 	}
 }
 
 func TestDefinitionOCI(t *testing.T) {
 	entry := entryFor(t, "acme/docker", "1.0.0")
-	def, secrets, err := entry.Definition(InstallOpts{Name: "docker-mcp", Package: -1, Remote: -1, Env: map[string]string{"TOKEN": "tok"}})
+	def, inputs, err := entry.Manifest(InstallOpts{Name: "docker-mcp", Package: -1, Remote: -1, Env: map[string]string{"TOKEN": "tok"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,17 +99,14 @@ func TestDefinitionOCI(t *testing.T) {
 	if !reflect.DeepEqual(mcp.Args, want) {
 		t.Fatalf("args = %v", mcp.Args)
 	}
-	if mcp.Env["TOKEN"] != "secret:docker-mcp_TOKEN" {
-		t.Fatalf("env = %v", mcp.Env)
-	}
-	if len(secrets) != 1 || secrets[0].Value != "tok" {
-		t.Fatalf("secrets = %+v", secrets)
+	if mcp.Env["TOKEN"] != "${TOKEN}" || inputs["TOKEN"] != "tok" {
+		t.Fatalf("env = %v inputs = %v", mcp.Env, inputs)
 	}
 }
 
 func TestDefinitionRemote(t *testing.T) {
 	entry := entryFor(t, "acme/remote", "2.0.0")
-	def, secrets, err := entry.Definition(InstallOpts{Package: -1, Remote: -1})
+	def, inputs, err := entry.Manifest(InstallOpts{Package: -1, Remote: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,17 +114,17 @@ func TestDefinitionRemote(t *testing.T) {
 	if mcp.URL != "https://mcp.acme.example/mcp" {
 		t.Fatalf("url = %q", mcp.URL)
 	}
-	if mcp.Headers["Authorization"] != "Bearer static-token" {
-		t.Fatalf("headers = %v", mcp.Headers)
+	if mcp.Headers["Authorization"] != "${AUTHORIZATION}" || inputs["AUTHORIZATION"] != "Bearer static-token" {
+		t.Fatalf("headers = %v inputs = %v", mcp.Headers, inputs)
 	}
-	if mcp.Command != "" || len(secrets) != 0 {
-		t.Fatalf("mcp = %+v secrets = %+v", mcp, secrets)
+	if mcp.Command != "" {
+		t.Fatalf("mcp = %+v", mcp)
 	}
 }
 
 func TestDefinitionMissingRequiredEnv(t *testing.T) {
 	entry := entryFor(t, "ai.adtest/adtest-mcp", "1.1.0")
-	_, _, err := entry.Definition(InstallOpts{Name: "adtest", Package: 0, Remote: -1})
+	_, _, err := entry.Manifest(InstallOpts{Name: "adtest", Package: 0, Remote: -1})
 	if !errors.Is(err, ErrMissingInput) {
 		t.Fatalf("err = %v", err)
 	}
@@ -131,7 +135,7 @@ func TestDefinitionMissingRequiredEnv(t *testing.T) {
 
 func TestDefinitionUnsupportedPackage(t *testing.T) {
 	entry := entryFor(t, "acme/cargo", "1.0.0")
-	_, _, err := entry.Definition(InstallOpts{Package: -1, Remote: -1})
+	_, _, err := entry.Manifest(InstallOpts{Package: -1, Remote: -1})
 	if !errors.Is(err, ErrUnsupportedPackage) {
 		t.Fatalf("err = %v", err)
 	}
@@ -139,43 +143,16 @@ func TestDefinitionUnsupportedPackage(t *testing.T) {
 
 func TestDefinitionPackageBeforeRemote(t *testing.T) {
 	entry := entryFor(t, "acme/contributed", "1.0.0")
-	def, _, err := entry.Definition(InstallOpts{Package: -1, Remote: -1})
+	def, _, err := entry.Manifest(InstallOpts{Package: -1, Remote: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if def.Actions.MCP == nil || def.Actions.MCP.Command != "npx" {
 		t.Fatalf("mcp = %+v", def.Actions.MCP)
 	}
-	if def.Events == nil || def.Events.Command != "contributed listen" || def.Events.Format != "json" {
-		t.Fatalf("events = %+v", def.Events)
-	}
-	if def.Channel == nil || def.Channel.Send != "contributed send" {
-		t.Fatalf("channel = %+v", def.Channel)
-	}
-	// The _meta CLI action installs, and the contributed skill names itself.
-	if def.Actions.CLI == nil || len(def.Actions.CLI.Commands) != 1 || def.Actions.CLI.Commands[0] != "contributed-cli" {
-		t.Fatalf("cli = %+v", def.Actions.CLI)
-	}
-	if def.Actions.CLI.Skill != "contributed" {
-		t.Fatalf("cli skill = %q", def.Actions.CLI.Skill)
-	}
-}
-
-func TestSkillReturned(t *testing.T) {
-	entry := entryFor(t, "acme/contributed", "1.0.0")
-	sk, ok := entry.Skill()
-	if !ok {
-		t.Fatal("expected skill block")
-	}
-	if sk.Name != "contributed" || sk.URL != "https://example.com/contributed-skill.tar.gz" {
-		t.Fatalf("skill = %+v", sk)
-	}
-}
-
-func TestSkillAbsent(t *testing.T) {
-	entry := entryFor(t, "ai.adtest/adtest-mcp", "1.1.0")
-	if _, ok := entry.Skill(); ok {
-		t.Fatal("adtest has no skill block")
+	// The ai.trebi/connector _meta block is not read any more.
+	if def.Events != nil || def.Channel != nil || def.Actions.CLI != nil {
+		t.Fatalf("manifest = %+v", def)
 	}
 }
 
@@ -196,20 +173,17 @@ func TestConnectorNameDerived(t *testing.T) {
 }
 
 // TestDefinitionKeepsSecretReference proves a given secret: value goes into
-// the env as it is, with no secret write (P1-32).
+// the inputs as it is (P1-32).
 func TestDefinitionKeepsSecretReference(t *testing.T) {
 	entry := entryFor(t, "ai.adtest/adtest-mcp", "1.1.0")
-	def, writes, err := entry.Definition(InstallOpts{Name: "adtest", Package: 0, Remote: -1, Env: map[string]string{
+	_, inputs, err := entry.Manifest(InstallOpts{Name: "adtest", Package: 0, Remote: -1, Env: map[string]string{
 		"ADTEST_API_KEY": "secret:shared_key",
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := def.Actions.MCP.Env["ADTEST_API_KEY"]; got != "secret:shared_key" {
-		t.Fatalf("env = %v", def.Actions.MCP.Env)
-	}
-	if len(writes) != 0 {
-		t.Fatalf("writes = %+v", writes)
+	if got := inputs["ADTEST_API_KEY"]; got != "secret:shared_key" {
+		t.Fatalf("inputs = %v", inputs)
 	}
 }
 
@@ -232,7 +206,7 @@ func templatedRemote(url string) Entry {
 
 func TestDefinitionRemoteInputs(t *testing.T) {
 	entry := templatedRemote("https://mcp.acme.example/{tenant}")
-	def, writes, err := entry.Definition(InstallOpts{Name: "acme", Package: -1, Remote: 0, Env: map[string]string{
+	def, inputs, err := entry.Manifest(InstallOpts{Name: "acme", Package: -1, Remote: 0, Env: map[string]string{
 		"tenant": "t1", "api_key": "k-1",
 	}})
 	if err != nil {
@@ -242,22 +216,27 @@ func TestDefinitionRemoteInputs(t *testing.T) {
 	if m.URL != "https://mcp.acme.example/t1" {
 		t.Fatalf("url = %q", m.URL)
 	}
-	if m.Headers["Authorization"] != "secret:acme_Authorization" || m.Headers["X-Region"] != "eu" {
+	if m.Headers["Authorization"] != "${AUTHORIZATION}" || m.Headers["X-Region"] != "${X_REGION}" {
 		t.Fatalf("headers = %v", m.Headers)
 	}
-	if len(writes) != 1 || writes[0].Name != "acme_Authorization" || writes[0].Value != "Bearer k-1" {
-		t.Fatalf("writes = %+v", writes)
+	if inputs["AUTHORIZATION"] != "Bearer k-1" || inputs["X_REGION"] != "eu" {
+		t.Fatalf("inputs = %v", inputs)
+	}
+	for _, in := range def.Setup.Inputs {
+		if in.Name == "AUTHORIZATION" && !in.Secret {
+			t.Fatalf("setup inputs = %+v", def.Setup.Inputs)
+		}
 	}
 
 	// The full header value can come as a secret reference.
-	def, writes, err = entry.Definition(InstallOpts{Name: "acme", Package: -1, Remote: 0, Env: map[string]string{
+	_, inputs, err = entry.Manifest(InstallOpts{Name: "acme", Package: -1, Remote: 0, Env: map[string]string{
 		"tenant": "t1", "Authorization": "secret:gh_auth",
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if def.Actions.MCP.Headers["Authorization"] != "secret:gh_auth" || len(writes) != 0 {
-		t.Fatalf("headers = %v writes = %+v", def.Actions.MCP.Headers, writes)
+	if inputs["AUTHORIZATION"] != "secret:gh_auth" {
+		t.Fatalf("inputs = %v", inputs)
 	}
 }
 
@@ -277,7 +256,7 @@ func TestDefinitionRemoteInputErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := templatedRemote(tc.url).Definition(InstallOpts{Name: "acme", Package: -1, Remote: 0, Env: tc.env})
+			_, _, err := templatedRemote(tc.url).Manifest(InstallOpts{Name: "acme", Package: -1, Remote: 0, Env: tc.env})
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
@@ -314,7 +293,7 @@ func dockerEntry() Entry {
 }
 
 func TestDefinitionDockerArguments(t *testing.T) {
-	def, writes, err := dockerEntry().Definition(InstallOpts{Name: "db", Package: 0, Remote: -1, Env: map[string]string{
+	def, inputs, err := dockerEntry().Manifest(InstallOpts{Name: "db", Package: 0, Remote: -1, Env: map[string]string{
 		"db_type": "postgres", "database_name": "prod", "DB_PASSWORD": "pw", "EXTRA": "1",
 	}})
 	if err != nil {
@@ -329,14 +308,11 @@ func TestDefinitionDockerArguments(t *testing.T) {
 	if m.Command != "docker" || !reflect.DeepEqual(m.Args, want) {
 		t.Fatalf("command = %q args = %v", m.Command, m.Args)
 	}
-	if m.Env["DB_PASSWORD"] != "secret:db_DB_PASSWORD" || m.Env["SSL_MODE"] != "prefer" || m.Env["EXTRA"] != "1" {
-		t.Fatalf("env = %v", m.Env)
-	}
-	if len(writes) != 1 || writes[0].Value != "pw" {
-		t.Fatalf("writes = %+v", writes)
+	if m.Env["DB_PASSWORD"] != "${DB_PASSWORD}" || inputs["DB_PASSWORD"] != "pw" || inputs["SSL_MODE"] != "prefer" || inputs["EXTRA"] != "1" {
+		t.Fatalf("env = %v inputs = %v", m.Env, inputs)
 	}
 
-	_, _, err = dockerEntry().Definition(InstallOpts{Name: "db", Package: 0, Remote: -1, Env: map[string]string{
+	_, _, err = dockerEntry().Manifest(InstallOpts{Name: "db", Package: 0, Remote: -1, Env: map[string]string{
 		"DB_PASSWORD": "pw",
 	}})
 	if !errors.Is(err, ErrMissingInput) || !strings.Contains(err.Error(), "database_name") || !strings.Contains(err.Error(), "db_type") {
@@ -367,7 +343,7 @@ func TestDefinitionPackageMapping(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			def, _, err := base(tc.pkg).Definition(InstallOpts{Name: "tool", Package: 0, Remote: -1})
+			def, _, err := base(tc.pkg).Manifest(InstallOpts{Name: "tool", Package: 0, Remote: -1})
 			if tc.err != nil {
 				if !errors.Is(err, tc.err) {
 					t.Fatalf("err = %v, want %v", err, tc.err)
@@ -381,29 +357,6 @@ func TestDefinitionPackageMapping(t *testing.T) {
 				t.Fatalf("command = %q args = %v", m.Command, m.Args)
 			}
 		})
-	}
-}
-
-// TestTrebiBlockUnderPublisherMeta proves the block is read where the
-// official registry keeps it: under the publisher-provided key.
-func TestTrebiBlockUnderPublisherMeta(t *testing.T) {
-	entry := Entry{Server: ServerJSON{Meta: map[string]any{
-		publisherMetaKey: map[string]any{
-			trebiMetaKey: map[string]any{"skill": map[string]any{"name": "pub", "url": "https://example.com/SKILL.md"}},
-		},
-	}}}
-	sk, ok := entry.Skill()
-	if !ok || sk.Name != "pub" {
-		t.Fatalf("skill = %+v ok %v", sk, ok)
-	}
-}
-
-func TestSkillNeedsNameAndURL(t *testing.T) {
-	for _, sk := range []map[string]any{{"name": "only-name"}, {"url": "https://example.com/x"}} {
-		entry := Entry{Server: ServerJSON{Meta: map[string]any{trebiMetaKey: map[string]any{"skill": sk}}}}
-		if _, ok := entry.Skill(); ok {
-			t.Fatalf("skill %v must not be ok", sk)
-		}
 	}
 }
 

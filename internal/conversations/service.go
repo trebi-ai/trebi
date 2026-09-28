@@ -455,6 +455,29 @@ func (s *Service) PutPointer(ctx context.Context, workspace string, a Address, c
 	return &Pointer{Address: a, ConversationID: convID, UpdatedAt: now}, nil
 }
 
+// BindRoom points a room at a conversation of the operator. A room that
+// already points at a conversation of that operator keeps it; else a new
+// conversation takes the room.
+func (s *Service) BindRoom(ctx context.Context, workspace, operator string, a Address) (*Pointer, error) {
+	if a.Connector == "" || a.Room == "" {
+		return nil, fmt.Errorf("%w: connector and room are required", ErrValidation)
+	}
+	p, err := s.GetPointer(ctx, workspace, a)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if p != nil && p.ConversationID != "" {
+		if conv, gerr := s.Get(ctx, p.ConversationID); gerr == nil && conv.Operator == operator {
+			return p, nil
+		}
+	}
+	conv, err := s.Create(ctx, CreateOpts{Workspace: workspace, Operator: operator, OriginChannel: a.Connector})
+	if err != nil {
+		return nil, err
+	}
+	return s.PutPointer(ctx, workspace, a, conv.ID)
+}
+
 // IDByKey resolves a conversation id from the workspace lane key.
 func (s *Service) IDByKey(ctx context.Context, workspaceID, key string) (string, error) {
 	var id string

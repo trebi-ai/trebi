@@ -1,18 +1,16 @@
 # Oracle: connector-channel-reply
 
 ```bash
-trebi connector show chat
-trebi connector test chat --event '{"chat_id":"eval-user","text":"ping"}'
+trebi connector show chat --json
+trebi connector test chat --event '{"id":"eval-1","type":"message","room":{"id":"eval-user","kind":"dm"},"sender":{"id":"eval-user"},"text":"ping"}'
+for _ in $(seq 1 90); do
+  grep -q '"method":"messages/send"' "$EVAL_WORKDIR/replies.txt" 2>/dev/null && break
+  sleep 2
+done
 trebi conversation list --json
-trebi conversation outbox <id> --json
-cat "$EVAL_WORKDIR/replies.txt"
+grep '"method":"messages/send"' "$EVAL_WORKDIR/replies.txt"
 ```
 
-The seed gives the chat connector a channel whose `send` command appends its
-stdin to `replies.txt`, and an assistant trigger on the connector. The test
-event runs through the real pipeline, so the assistant takes one turn on the
-conversation the channel points at.
+The seed runs the chat connector as a trebi-connector/1 sandbox adapter (`fake connector`). The adapter records each request it receives in `replies.txt`. The seed also gives the ops assistant a trigger on the connector. The test event runs through the real pipeline, so the assistant takes one turn on the conversation of room `eval-user`.
 
-Pass when the conversation holds an outbox row with `status: sent` for the
-`chat` connector and `replies.txt` holds at least one character. A reply that
-stays `pending` or `failed` is not a reply.
+Pass when the conversation holds an outbox row with `status: sent` for the `chat` instance and `replies.txt` holds a `messages/send` request. A reply that stays `pending` or `failed` is not a reply.

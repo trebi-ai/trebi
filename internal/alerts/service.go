@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -43,6 +44,10 @@ const (
 	KindAgentProposal      Kind = "agent_proposal"
 	KindSendFailed         Kind = "send_failed"
 	KindActionsInvalid     Kind = "actions_invalid"
+	// KindConnectorAuthRequired is a channel that needs a login.
+	KindConnectorAuthRequired Kind = "connector_auth_required"
+	// KindConnectorUpdate is a catalog version that waits for the user.
+	KindConnectorUpdate Kind = "connector_update_available"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -84,6 +89,8 @@ const (
 	ActionFix         = "fix"
 	ActionReview      = "review"
 	ActionViewOutbox  = "view_outbox"
+	ActionLogIn       = "log_in"
+	ActionUpdate      = "update"
 )
 
 // Delivery states of an inbox item. Empty means no delivery ran.
@@ -666,6 +673,12 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 			Kind: KindActionsInvalid, Severity: SeverityError, InboxKind: InboxHealth,
 			Cooldown: time.Hour,
 		},
+		KindConnectorAuthRequired: {
+			Kind: KindConnectorAuthRequired, Severity: SeverityBlocker, InboxKind: InboxHealth,
+		},
+		KindConnectorUpdate: {
+			Kind: KindConnectorUpdate, Severity: SeverityAttention, InboxKind: InboxHealth,
+		},
 	}
 }
 
@@ -745,7 +758,7 @@ func (o RaiseOpts) defaultSubject() string {
 		return "harness/" + o.Harness
 	case KindLimitExceeded, KindUsageWarning:
 		return "harness/" + firstNonEmpty(o.Harness, o.Connector)
-	case KindConnectorUnhealthy:
+	case KindConnectorUnhealthy, KindConnectorAuthRequired, KindConnectorUpdate:
 		return "connector/" + o.Connector
 	case KindRunFailed:
 		return "job/" + o.WorkspaceID + "/" + o.JobName
@@ -794,6 +807,10 @@ func (o RaiseOpts) defaultTitle() string {
 		return "Send failed"
 	case KindActionsInvalid:
 		return "Connector actions invalid"
+	case KindConnectorAuthRequired:
+		return "Connector needs a login"
+	case KindConnectorUpdate:
+		return "Connector update available"
 	}
 	return string(o.Kind)
 }
@@ -807,6 +824,12 @@ func (o RaiseOpts) defaultActions() []InboxAction {
 		return []InboxAction{{Kind: ActionOpenSession, Route: "/v1/runs/" + o.RunID + "/attach", Label: "Open session"}}
 	case KindRunFailed:
 		return runFailedActions(o.RunID)
+	case KindConnectorAuthRequired:
+		name, _, _ := strings.Cut(o.Connector, "@")
+		route := "/connectors/" + name + "?tab=login&instance=" + url.QueryEscape(o.Connector)
+		return []InboxAction{{Kind: ActionLogIn, Route: route, Label: "Log in"}}
+	case KindConnectorUpdate:
+		return []InboxAction{{Kind: ActionUpdate, Route: "/v1/connectors/" + url.PathEscape(o.Connector) + "/update", Label: "Update"}}
 	case KindAuthMissing:
 		name := firstNonEmpty(o.Harness, o.Connector)
 		if name == "" {

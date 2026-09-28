@@ -18,6 +18,7 @@ type Registry struct {
 
 // Registry kinds. An empty kind is RegistryMCP.
 const (
+	RegistryTrebi    = "trebi"
 	RegistryMCP      = "mcp-registry"
 	RegistrySmithery = "smithery"
 	RegistryDocker   = "docker"
@@ -38,9 +39,14 @@ type ConnectorsConfig struct {
 	Registries []Registry `yaml:"registries,omitempty" json:"registries,omitempty"`
 }
 
-// DefaultRegistries is the built-in list: the official registry only.
+// DefaultRegistries is the built-in list: the Trebi catalog, the official
+// MCP registry, and the Docker MCP Catalog.
 func DefaultRegistries() []Registry {
-	return []Registry{{Name: "official", URL: "https://registry.modelcontextprotocol.io"}}
+	return []Registry{
+		{Name: "trebi", URL: "https://catalog.trebi.ai/v1", Kind: RegistryTrebi},
+		{Name: "official", URL: "https://registry.modelcontextprotocol.io"},
+		{Name: "docker", URL: "https://desktop.docker.com/mcp/catalog/v3/catalog.yaml", Kind: RegistryDocker},
+	}
 }
 
 // checkConnectors validates the registry list: every entry needs a name and
@@ -60,9 +66,9 @@ func (e *ConfigError) checkConnectors(c Config) {
 			seen[name] = true
 		}
 		switch r.KindOrDefault() {
-		case RegistryMCP, RegistrySmithery, RegistryDocker:
+		case RegistryTrebi, RegistryMCP, RegistrySmithery, RegistryDocker:
 		default:
-			e.add(field+".kind", fmt.Sprintf("%q not in [%s, %s, %s]", r.Kind, RegistryMCP, RegistrySmithery, RegistryDocker))
+			e.add(field+".kind", fmt.Sprintf("%q not in [%s, %s, %s, %s]", r.Kind, RegistryTrebi, RegistryMCP, RegistrySmithery, RegistryDocker))
 		}
 		raw := strings.TrimSpace(r.URL)
 		if raw == "" {

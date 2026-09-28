@@ -46,6 +46,8 @@ var consumeTopics = []string{
 	"memory.invalid",
 	"connector.unhealthy",
 	"connector.recovered",
+	"connector.auth.required",
+	"connector.status",
 	"auth.probe.failed",
 	"harness.updated",
 	"harness.limit_exceeded",
@@ -204,6 +206,24 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.onConnectorUnhealthy(ctx, ev, attrs)
 	case "connector.recovered":
 		s.autoResolve(ctx, KindConnectorUnhealthy, "connector/"+ev.ID, "auto")
+	case "connector.auth.required":
+		s.onConnectorAuthRequired(ctx, ev, attrs)
+	case "connector.update.available":
+		name := firstNonEmpty(attrs["connector"], ev.ID)
+		if _, err := s.Raise(ctx, RaiseOpts{
+			Kind: KindConnectorUpdate, Connector: name, TraceID: ev.TraceID,
+			Body: fmt.Sprintf("Version %s is available. The connector uses %s.", attrs["version"], attrs["current"]),
+		}); err != nil {
+			s.log.Warn("raise connector_update_available", "connector", name, "error", err)
+		}
+	case "connector.updated.version":
+		if attrs["workspace"] == "" {
+			s.autoResolve(ctx, KindConnectorUpdate, "connector/"+firstNonEmpty(attrs["connector"], ev.ID), "auto")
+		}
+	case "connector.status":
+		if attrs["state"] == "connected" {
+			s.autoResolve(ctx, KindConnectorAuthRequired, "connector/"+firstNonEmpty(attrs["instance"], ev.ID), "auto")
+		}
 	case "auth.probe.failed":
 		s.onAuthMissing(ctx, ev, attrs)
 	case "harness.updated":
@@ -389,6 +409,19 @@ func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent
 	})
 	if err != nil {
 		s.log.Warn("raise connector_unhealthy", "connector", name, "error", err)
+	}
+}
+
+// onConnectorAuthRequired raises one item per episode. The subject is the
+// instance, so a workspace instance has its own item.
+func (s *Service) onConnectorAuthRequired(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	instance := firstNonEmpty(attrs["instance"], ev.ID)
+	_, err := s.Raise(ctx, RaiseOpts{
+		Kind: KindConnectorAuthRequired, Connector: instance, TraceID: ev.TraceID,
+		Body: attrs["reason"],
+	})
+	if err != nil {
+		s.log.Warn("raise connector_auth_required", "connector", instance, "error", err)
 	}
 }
 

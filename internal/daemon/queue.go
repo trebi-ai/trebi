@@ -432,7 +432,7 @@ func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.Q
 	if c.Connectors == nil || c.Conversations == nil {
 		return "", "", addr
 	}
-	if _, _, ok := c.Connectors.Channel(item.Connector); !ok {
+	if !c.Connectors.IsChannel(item.Connector) {
 		return "", "", addr
 	}
 	addr = c.eventAddress(ctx, item)
@@ -653,8 +653,8 @@ func (c *ControlPlane) assistantTurnActive(ctx context.Context, item *dispatch.Q
 // assistantConversation resolves the conversation of one assistant item:
 // the channel pointer of the event's channel address. An event with no room
 // points by the conversation key and gets no reply room. An item with
-// neither shares one trigger conversation per channel, and its trigger room
-// gets no reply either.
+// neither shares one trigger conversation per channel; its address keeps an
+// empty room, so it gets no reply either.
 func (c *ControlPlane) assistantConversation(ctx context.Context, item *dispatch.QueueItem) (convID string, addr conversations.Address, err error) {
 	name := cmp.Or(item.Connector, conversations.ChannelAssistant)
 	addr = c.eventAddress(ctx, item)
@@ -665,8 +665,7 @@ func (c *ControlPlane) assistantConversation(ctx context.Context, item *dispatch
 	case item.ConversationKey != "":
 		pointer.Room = item.ConversationKey
 	default:
-		addr.Room = "trigger:" + name
-		pointer = addr
+		pointer.Room = "trigger:" + name
 	}
 	convID, err = c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, "", pointer)
 	if err != nil {

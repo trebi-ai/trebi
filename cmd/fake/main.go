@@ -1,6 +1,7 @@
 // Command fake stands in for a vendor CLI in eval trials. It prints a device
 // login screen, accepts any code, and records the login in a marker file that
-// the fake harness auth probe reads.
+// the fake harness auth probe reads. "fake connector" is a trebi-connector/1
+// sandbox adapter, configured by TREBI_FAKEADAPTER.
 package main
 
 import (
@@ -9,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/trebi-ai/trebi/internal/connectors/protocol/fakeadapter"
 )
 
 func main() {
@@ -22,6 +25,8 @@ func main() {
 			os.Exit(status())
 		case "chat":
 			os.Exit(chat())
+		case "connector":
+			os.Exit(fakeadapter.Main())
 		}
 	}
 	os.Exit(chat())

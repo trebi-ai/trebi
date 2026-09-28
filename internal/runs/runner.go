@@ -266,7 +266,7 @@ func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 	if s.actions == nil {
 		return fmt.Errorf("%w: no connector resolver is wired", ErrActionsInvalid)
 	}
-	actions, err := s.actions.ResolveActions(ctx, names)
+	actions, err := s.actions.ResolveActions(ctx, opts.WorkspaceID, names)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrActionsInvalid, err)
 	}
@@ -1116,7 +1116,7 @@ func paneEnvFile(runDir, runID, token, toolName string, actEnv, optEnv, planEnv 
 	env["TREBI_HOOK_TOOL"] = toolName
 	binCurrent := filepath.Join(config.BinDir(), toolName, "current")
 	if st, err := os.Stat(binCurrent); err == nil && st.IsDir() {
-		env["PATH"] = binCurrent + ":" + os.Getenv("PATH")
+		env["PATH"] = binCurrent + ":" + basePath(actEnv)
 	}
 	var b strings.Builder
 	for _, k := range slices.Sorted(maps.Keys(env)) {

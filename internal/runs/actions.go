@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	agentwire "github.com/trebi-ai/agent-wire"
@@ -19,6 +20,7 @@ type ConnectorAction struct {
 	Name     string
 	MCP      *agentwire.MCPServer // nil for CLI-only actions
 	Env      map[string]string    // connector env, secrets expanded
+	BinDir   string               // installed binaries; first on PATH
 	Skill    string               // connector skill name, empty when none
 	SkillDir string               // empty when the connector names no skill
 	Commands []string             // for the prompt hint
@@ -26,7 +28,7 @@ type ConnectorAction struct {
 
 // ActionResolver resolves connector names to run actions.
 type ActionResolver interface {
-	ResolveActions(ctx context.Context, names []string) ([]ConnectorAction, error)
+	ResolveActions(ctx context.Context, workspaceID string, names []string) ([]ConnectorAction, error)
 }
 
 var (
@@ -49,12 +51,28 @@ func actionEnv(actions []ConnectorAction) map[string]string {
 		return nil
 	}
 	out := map[string]string{}
+	var bins []string
 	for _, a := range actions {
 		for k, v := range a.Env {
 			out[k] = v
 		}
+		if a.BinDir != "" {
+			bins = append(bins, a.BinDir)
+		}
+	}
+	if len(bins) > 0 {
+		out["PATH"] = strings.Join(append(bins, os.Getenv("PATH")), string(os.PathListSeparator))
 	}
 	return out
+}
+
+// basePath is the PATH a run starts from: the action PATH, else the daemon
+// PATH.
+func basePath(actEnv map[string]string) string {
+	if p := actEnv["PATH"]; p != "" {
+		return p
+	}
+	return os.Getenv("PATH")
 }
 
 // mcpServers lists the MCP servers of the resolved actions.

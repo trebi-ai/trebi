@@ -2,19 +2,22 @@
 
 ```bash
 trebi connector search echo --registry fixture
-trebi connector install acme/echo --as echo --env ECHO_TOKEN=tok-123
-trebi connector show echo
+trebi connector install acme/echo --registry fixture --as echo --input ECHO_TOKEN=tok-123
+trebi connector show echo --json
+cat > "$EVAL_WORKDIR/AGENT.md" <<'MD'
+---
+harness: codex
+kit:
+  connectors: [echo]
+---
+You review changes. Do what the job says.
+MD
+trebi agent set reviewer --file "$EVAL_WORKDIR/AGENT.md"
 trebi agent show reviewer
 ```
 
-The seed serves a fixture registry over `http://127.0.0.1:<port>` and points
-`connectors.registries` at it. The install writes `ECHO_TOKEN` as the secret
-`echo_ECHO_TOKEN` and refers to it from the MCP env, so the definition holds a
-reference, never the value.
+The seed serves a fixture registry over `http://127.0.0.1:<port>` and points `connectors.registries` at it. The install makes an inline entry: the MCP env holds `${ECHO_TOKEN}`, and the input `ECHO_TOKEN` holds the reference `secret:echo_ECHO_TOKEN`. The entry never holds the value.
 
-Pass when the connector list holds `echo` with `source.registry: fixture` and
-`actions.mcp.command: npx`, its `ECHO_TOKEN` is `secret:echo_ECHO_TOKEN`, and
-the reviewer agent's kit names `echo`.
+Pass when the connector list holds `echo` with `from: inline` and `actions.mcp.command: npx`, its input `ECHO_TOKEN` is `secret:echo_ECHO_TOKEN`, and the kit of the reviewer agent names `echo`.
 
-The kit edit goes through `PATCH /v1/workspaces/{id}/agents/reviewer` (the
-`agent patch` tool) or the AGENT.md frontmatter.
+The kit edit goes through `PATCH /v1/workspaces/{id}/agents/reviewer` (the `agent patch` tool) or the AGENT.md frontmatter (`agent set --file`).

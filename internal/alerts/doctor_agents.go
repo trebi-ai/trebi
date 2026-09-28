@@ -16,6 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/skills"
@@ -52,7 +53,7 @@ func CollectAgentDoctorFindings(st *store.Store, actions ActionsChecker) []Docto
 func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	ctx := context.Background()
 	var findings []DoctorFinding
-	defs, err := connectors.LoadDefinitions()
+	defs, err := connectors.LoadManifests()
 	if err != nil {
 		findings = append(findings, DoctorFinding{
 			ID: "connectors-file-invalid", Severity: "error", Code: "connectors_file_invalid",
@@ -118,10 +119,10 @@ type channelOperators map[string]map[string]map[string]bool
 
 // add records the operator of each enabled event trigger on a channel
 // connector. An assistant trigger with no family is an event trigger.
-func (c channelOperators) add(wsID, operator string, triggers []job.Trigger, defs map[string]connectors.Definition, assistant bool) {
+func (c channelOperators) add(wsID, operator string, triggers []job.Trigger, defs map[string]manifest.Manifest, assistant bool) {
 	for _, tr := range triggers {
 		event := tr.Family == "event" || (assistant && tr.Family == "")
-		if tr.Disabled || !event || defs[tr.Event].Channel == nil {
+		if tr.Disabled || !event || !slices.Contains(defs[tr.Event].Modes(), manifest.ModeReply) {
 			continue
 		}
 		if c[wsID] == nil {
@@ -135,7 +136,7 @@ func (c channelOperators) add(wsID, operator string, triggers []job.Trigger, def
 }
 
 // addAssistants records the event triggers of each workspace assistant.
-func (c channelOperators) addAssistants(db *sql.DB, defs map[string]connectors.Definition) {
+func (c channelOperators) addAssistants(db *sql.DB, defs map[string]manifest.Manifest) {
 	rows, err := db.Query(`SELECT id, path FROM workspaces WHERE orphaned=0`)
 	if err != nil {
 		return
@@ -221,7 +222,7 @@ func kitRefFindings(wsID, short string, parsed *job.Job, skillNames, envsets map
 // connectorFindings checks one connector name of a launch against the
 // managed definitions, the inherited servers, and the support table.
 // launchFindings checks each connector the launch gives the job.
-func launchFindings(ctx context.Context, actions ActionsChecker, wsID, short string, spec job.Job, defs map[string]connectors.Definition, inherited map[string]bool) []DoctorFinding {
+func launchFindings(ctx context.Context, actions ActionsChecker, wsID, short string, spec job.Job, defs map[string]manifest.Manifest, inherited map[string]bool) []DoctorFinding {
 	names, harnessName, runtime, err := actions.EffectiveActions(ctx, wsID, spec)
 	if err != nil {
 		return nil
@@ -233,7 +234,7 @@ func launchFindings(ctx context.Context, actions ActionsChecker, wsID, short str
 	return out
 }
 
-func connectorFindings(ctx context.Context, actions ActionsChecker, wsID, short, name, harnessName, runtime string, defs map[string]connectors.Definition, inherited map[string]bool) []DoctorFinding {
+func connectorFindings(ctx context.Context, actions ActionsChecker, wsID, short, name, harnessName, runtime string, defs map[string]manifest.Manifest, inherited map[string]bool) []DoctorFinding {
 	id := "connector-" + wsID + "-" + short + "-" + name
 	d, ok := defs[name]
 	if !ok {

@@ -29,7 +29,7 @@ func (g globalRoute) Global() ([]notify.Step, bool, []string) {
 
 type noChannels struct{}
 
-func (noChannels) HasChannel(string) (bool, bool) { return false, false }
+func (noChannels) HasChannel(string, string) (bool, bool, bool) { return false, false, false }
 
 // TestNotifyRoutes: route shows the problems; test skips each problem step
 // and tests only the asked step.

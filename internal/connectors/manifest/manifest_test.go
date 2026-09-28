@@ -218,3 +218,23 @@ func load(t *testing.T, file string) manifest.Manifest {
 	}
 	return m
 }
+
+func TestEventSchemas(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/message.json", []byte(`{"type":"object","required":["chat"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := manifest.Manifest{Events: &manifest.Events{Types: []manifest.EventType{{Type: "message", Schema: "message.json"}, {Type: "plain"}}}}
+	got, err := m.EventSchemas(dir)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("schemas = %v %v", got, err)
+	}
+	if got["message"].Validate(map[string]any{}) == nil || got["message"].Validate(map[string]any{"chat": "x"}) != nil {
+		t.Fatal("the schema does not validate")
+	}
+	m.Events.Types[0].Schema = "missing.json"
+	if _, err := m.EventSchemas(dir); err == nil {
+		t.Fatal("a missing schema file must fail")
+	}
+}

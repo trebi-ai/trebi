@@ -121,7 +121,7 @@ func TestDoHTTPRoundTrip(t *testing.T) {
 	}
 
 	// connector restart
-	req = request.BuildConnectorRestart("mail")
+	req = request.BuildConnectorRestart(request.ConnectorRef{Name: "mail"})
 	if err := client.DoHTTP(req, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatal("harness auth mark should be gone")
 	}
 	connector := findCmd(app.Commands, "connector")
-	for _, want := range []string{"list", "show", "search", "entry", "install", "set", "apply", "remove", "restart", "logs", "test", "connect", "disconnect", "cursor"} {
+	for _, want := range []string{"list", "show", "search", "entry", "install", "set", "apply", "remove", "restart", "logs", "test", "connect", "disconnect", "cursor", "login", "logout", "rooms", "threads", "bind", "override"} {
 		if findCmd(connector.Commands, want) == nil {
 			t.Fatalf("connector missing %s", want)
 		}

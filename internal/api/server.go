@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -75,10 +74,8 @@ type Server struct {
 	lic        *license.Service
 	templates  *agents.Catalog
 	proposals  *proposals.Service
-	// catalog is the registry client. catalogRegistry swaps it when the
-	// configured list changes; catalogFixed (a test override) keeps it.
-	catalog      atomic.Pointer[registry.Service]
-	catalogFixed bool
+	// catalog is the registry client; it follows the configured list.
+	catalog *registry.Live
 
 	startedAt time.Time
 	drain     bool
@@ -153,14 +150,6 @@ func New(st *store.Store, opts Options) *Server {
 	sk := skills.New(st)
 	conn := connectors.New(st, ws, sk)
 	cl := cloudlink.New(st)
-	reg := opts.Registry
-	if reg == nil {
-		var regs []config.Registry
-		if cfg, err := config.Load(); err == nil {
-			regs = cfg.Connectors.Registries
-		}
-		reg = registry.New(registry.Config{Registries: regs, Log: slog.Default().With("source", "registry")})
-	}
 	s := &Server{
 		st:           st,
 		runs:         r,
@@ -176,7 +165,7 @@ func New(st *store.Store, opts Options) *Server {
 		email:        email.New(st),
 		templates:    agents.NewCatalog(),
 		proposals:    proposals.NewService(st, fs, ws, st, r),
-		catalogFixed: opts.Registry != nil,
+		catalog:      registry.NewLive(opts.Registry),
 		cloud:        cl,
 		hooks:        webhooks.New(st, conn, cl),
 		startedAt:    time.Now().UTC(),
@@ -191,7 +180,7 @@ func New(st *store.Store, opts Options) *Server {
 			CheckOrigin: checkWSOrigin,
 		},
 	}
-	s.catalog.Store(reg)
+	s.connectors.WithInstall(connectors.InstallConfig{Catalog: s.catalog})
 	_ = s.connectors.Load() // the service keeps the error; the list route and the daemon report it
 	s.outbox = outbox.New(st)
 	s.email.WithOutbox(s.outbox)
@@ -332,6 +321,13 @@ func (s *Server) BindAssistant(src AssistantSource) {
 }
 
 // BindControlPlane replaces core services with the daemon's shared instances.
+// BindCatalog shares the registry client of the control plane.
+func (s *Server) BindCatalog(c *registry.Live) {
+	if c != nil {
+		s.catalog = c
+	}
+}
+
 func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, skillsSvc *skills.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service, cloudSvc *cloudlink.Service, hooksSvc *webhooks.Service) {
 	if runsSvc != nil {
 		s.runs = runsSvc

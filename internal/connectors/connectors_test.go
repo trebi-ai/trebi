@@ -2,10 +2,12 @@ package connectors_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,44 +15,84 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/connectors/protocol"
+	"github.com/trebi-ai/trebi/internal/connectors/protocol/fakeadapter"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
-// eventsDef is a minimal valid events connector.
-func eventsDef(name, command string) connectors.Definition {
-	return connectors.Definition{Name: name, Events: &connectors.Events{Command: command, Format: "json"}}
+func TestMain(m *testing.M) {
+	if fakeadapter.Enabled() {
+		os.Exit(fakeadapter.Main())
+	}
+	os.Exit(m.Run())
+}
+
+// spec is a short form of an inline entry with an events block.
+type spec struct {
+	Name   string
+	Env    map[string]string
+	Events *manifest.Events
+}
+
+func (s spec) entry() connectors.Entry {
+	m := baseManifest(s.Name)
+	m.Events = s.Events
+	return connectors.Entry{Name: s.Name, From: connectors.FromInline, Inputs: s.Env, Manifest: &m}
+}
+
+func create(ctx context.Context, svc *connectors.Service, s spec) error {
+	return svc.Create(ctx, s.entry())
+}
+
+// eventsDef is a minimal valid lines connector.
+func eventsDef(name, command string) spec {
+	return spec{Name: name, Events: &manifest.Events{Command: command, Format: manifest.FormatJSON}}
+}
+
+func baseManifest(name string) manifest.Manifest {
+	return manifest.Manifest{Schema: manifest.SchemaID, Name: name, Title: name, Description: "Test connector.", Version: "1.0.0"}
+}
+
+// inline builds an inline entry from a manifest body.
+func inline(name string, edit func(*manifest.Manifest)) connectors.Entry {
+	m := baseManifest(name)
+	edit(&m)
+	return connectors.Entry{Name: name, From: connectors.FromInline, Manifest: &m}
 }
 
 func TestConnectorsCreateReplacePatchDelete(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
 
-	d := connectors.Definition{
-		Name: "feed",
-		Events: &connectors.Events{
-			Command: "rss-fetch https://example.com/feed.xml", Format: "json", ID: "guid",
-		},
-	}
-	if err := svc.Create(ctx, d); err != nil {
+	e := inline("feed", func(m *manifest.Manifest) {
+		m.Events = &manifest.Events{Command: "rss-fetch https://example.com/feed.xml", Format: "json", ID: "guid"}
+	})
+	if err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(home.ConnectorsPath()); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Create(ctx, d); !errors.Is(err, connectors.ErrExists) {
+	if err := svc.Create(ctx, e); !errors.Is(err, connectors.ErrExists) {
 		t.Fatalf("double create: %v", err)
 	}
-	if err := svc.Create(ctx, connectors.Definition{Name: "email", Events: &connectors.Events{Command: "x"}}); !errors.Is(err, connectors.ErrReserved) {
+	if err := svc.Create(ctx, eventsDef("email", "x").entry()); !errors.Is(err, connectors.ErrReserved) {
 		t.Fatalf("reserved create: %v", err)
 	}
+	if err := svc.Create(ctx, connectors.Entry{Name: "bad", From: connectors.FromInline}); !errors.Is(err, connectors.ErrInvalid) {
+		t.Fatalf("inline with no manifest: %v", err)
+	}
 
-	// Replace swaps the whole definition.
-	replaced := d
-	replaced.Events = &connectors.Events{Command: "rss-fetch v2", Format: "line"}
+	// Replace swaps the whole entry.
+	replaced := inline("feed", func(m *manifest.Manifest) {
+		m.Events = &manifest.Events{Command: "rss-fetch v2", Format: "line"}
+	})
 	if err := svc.Replace(ctx, replaced); err != nil {
 		t.Fatal(err)
 	}
@@ -63,58 +105,41 @@ func TestConnectorsCreateReplacePatchDelete(t *testing.T) {
 		t.Fatalf("replace row %v", ev)
 	}
 
-	// Patch replaces one block and removes another with null.
-	env := map[string]string{"FEED": "https://example.com/x"}
-	cwd := "/tmp"
-	p := connectors.Patch{Env: &env, Cwd: &cwd, Events: []byte(`{"command":"rss-fetch v3","format":"json","id":"guid"}`)}
+	// Patch sets inputs and a merge patch on the manifest.
+	inputs := map[string]string{"FEED": "https://example.com/x"}
+	p := connectors.EntryPatch{
+		Inputs: &inputs,
+		Patch:  json.RawMessage(`{"events":{"command":"rss-fetch v3","format":"json","id":"guid"},"actions":{"cli":{"commands":["rss-fetch"]}}}`),
+	}
 	if err := svc.Patch(ctx, "feed", p); err != nil {
 		t.Fatal(err)
 	}
 	row, _ = svc.Get("feed")
-	if row["cwd"] != "/tmp" || row["env"].(map[string]string)["FEED"] != "***" {
-		t.Fatalf("patch env/cwd %v", row)
+	if row["inputs"].(map[string]string)["FEED"] != "***" {
+		t.Fatalf("patch inputs %v", row["inputs"])
 	}
-	if d, _ := svc.Definition("feed"); d.Env["FEED"] != "https://example.com/x" {
-		t.Fatalf("stored env %v", d.Env)
+	if got, _ := svc.Entry("feed"); got.Inputs["FEED"] != "https://example.com/x" {
+		t.Fatalf("stored inputs %v", got.Inputs)
 	}
 	if ev := row["events"].(map[string]any); ev["command"] != "rss-fetch v3" || ev["id"] != "guid" {
 		t.Fatalf("patch events %v", ev)
 	}
-
-	// Add actions and a channel, then remove actions with null.
-	add := connectors.Patch{
-		Actions: []byte(`{"cli":{"commands":["rss-fetch"],"skill":"feeds"}}`),
-		Channel: []byte(`{"ref":"chat","send":"rss-send"}`),
-	}
-	if err := svc.Patch(ctx, "feed", add); err != nil {
-		t.Fatal(err)
-	}
-	row, _ = svc.Get("feed")
-	caps := row["capabilities"].([]string)
-	if strings.Join(caps, ",") != "actions,events,channel" {
+	if caps := row["capabilities"].([]string); strings.Join(caps, ",") != "actions,events" {
 		t.Fatalf("capabilities %v", caps)
 	}
-	// An unknown key in a patch block is a validation error, not a silent drop.
-	for field, p := range map[string]connectors.Patch{
-		"events":  {Events: []byte(`{"command":"x","formt":"json"}`)},
-		"actions": {Actions: []byte(`{"cli":{"commands":["a"]},"mpc":{}}`)},
-		"channel": {Channel: []byte(`{"ref":"chat","send":"s","typo":1}`)},
-	} {
-		var ve *connectors.ValidationError
-		err := svc.Patch(ctx, "feed", p)
-		if !errors.As(err, &ve) || ve.Fields[0].Field != field {
-			t.Fatalf("%s: unknown key err = %v", field, err)
-		}
+
+	// A patch that breaks the manifest is a validation error on the global layer.
+	var ve *connectors.ValidationError
+	if err := svc.Patch(ctx, "feed", connectors.EntryPatch{Patch: json.RawMessage(`{"events":{"restart":"sometimes"}}`)}); !errors.As(err, &ve) || ve.Layer != connectors.LayerGlobal {
+		t.Fatalf("bad patch err = %v", err)
 	}
-	if err := svc.Patch(ctx, "feed", connectors.Patch{Actions: []byte("null")}); err != nil {
+	// A null patch removes the layer.
+	if err := svc.Patch(ctx, "feed", connectors.EntryPatch{Patch: json.RawMessage("null")}); err != nil {
 		t.Fatal(err)
 	}
 	row, _ = svc.Get("feed")
 	if row["actions"] != nil {
-		t.Fatalf("actions after null: %v", row["actions"])
-	}
-	if _, ok := row["channel"].(map[string]any); !ok {
-		t.Fatalf("channel survived actions removal: %v", row)
+		t.Fatalf("actions after null patch: %v", row["actions"])
 	}
 
 	// Delete twice: the second is ErrNotFound.
@@ -126,101 +151,151 @@ func TestConnectorsCreateReplacePatchDelete(t *testing.T) {
 	}
 }
 
+// TestConnectorsSecretInputs proves a literal secret input becomes a secret
+// that the entry owns, and Delete removes it.
+func TestConnectorsSecretInputs(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	e := inline("gh", func(m *manifest.Manifest) {
+		m.Setup = &manifest.Setup{Inputs: []manifest.Input{{Name: "TOKEN", Secret: true, Required: true}}}
+		m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"gh"}}}
+	})
+	e.Inputs = map[string]string{"TOKEN": "t0k"}
+	if err := svc.Create(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.Entry("gh")
+	if got.Inputs["TOKEN"] != "secret:gh_TOKEN" || !reflect.DeepEqual(got.InstalledSecrets, []string{"gh_TOKEN"}) {
+		t.Fatalf("entry %+v", got)
+	}
+	if v, err := secrets.Get("gh_TOKEN"); err != nil || v != "t0k" {
+		t.Fatalf("secret %q %v", v, err)
+	}
+	r, err := svc.Resolve("gh", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env, missing := r.Env(); env["TOKEN"] != "t0k" || len(missing) != 0 {
+		t.Fatalf("env %v missing %v", env, missing)
+	}
+	if err := svc.Delete(ctx, "gh"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secrets.Get("gh_TOKEN"); err == nil {
+		t.Fatal("owned secret survived delete")
+	}
+
+	// A secret that the user made first is not overwritten or owned.
+	if err := secrets.Set("gh_TOKEN", "mine"); err != nil {
+		t.Fatal(err)
+	}
+	e.Inputs = map[string]string{"TOKEN": "t1k"}
+	var ve *connectors.ValidationError
+	if err := svc.Create(ctx, e); !errors.As(err, &ve) {
+		t.Fatalf("create over a user secret = %v", err)
+	}
+	if v, _ := secrets.Get("gh_TOKEN"); v != "mine" {
+		t.Fatalf("user secret = %q", v)
+	}
+	e.Inputs = map[string]string{"TOKEN": "secret:gh_TOKEN"}
+	if err := svc.Create(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.Entry("gh"); len(got.InstalledSecrets) != 0 {
+		t.Fatalf("installed = %v", got.InstalledSecrets)
+	}
+}
+
 func TestConnectorsRewritePathPrefix(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
-	oldDir, newDir := "/tmp/old-ws", "/tmp/new-ws"
-	d := connectors.Definition{
-		Name: "whatsapp",
-		Cwd:  oldDir,
-		Env:  map[string]string{"ROOT": oldDir + "/data"},
-		Actions: &connectors.Actions{
-			MCP: &connectors.MCPAction{Command: "npx", Args: []string{"--root", oldDir + "/mcp"}},
-			CLI: &connectors.CLIAction{Commands: []string{"whatsapp-cli"}},
-		},
-		Events: &connectors.Events{
-			Command: "whatsapp-cli listen --dir " + oldDir,
-			Format:  "json",
-			ID:      "d.id",
-			Catchup: &connectors.Catchup{Command: "whatsapp-cli back --dir " + oldDir},
-		},
-		Channel: &connectors.Channel{
-			Ref: "chat", Send: "whatsapp-cli send " + oldDir,
-			Typing: "whatsapp-cli typing " + oldDir, Ack: "whatsapp-cli ack " + oldDir,
-		},
-	}
-	if err := svc.Create(ctx, d); err != nil {
+	oldDir := filepath.Join(t.TempDir(), "old")
+	newDir := filepath.Join(filepath.Dir(oldDir), "new")
+	e := inline("whatsapp", func(m *manifest.Manifest) {
+		m.Actions = &manifest.Actions{MCP: &manifest.MCPAction{Command: "npx", Args: []string{"--root", oldDir + "/mcp"}}}
+		m.Events = &manifest.Events{
+			Command: "whatsapp-cli listen --dir " + oldDir, Format: "json", ID: "d.id",
+			Catchup: &manifest.Catchup{Command: "whatsapp-cli back --dir " + oldDir},
+		}
+	})
+	e.Inputs = map[string]string{"ROOT": oldDir + "/data"}
+	if err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
+
+	// A file entry moves with its folder.
+	if err := os.MkdirAll(filepath.Join(oldDir, "conn"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(inline("local", func(m *manifest.Manifest) {
+		m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"local"}}}
+	}).Manifest)
+	if err := os.WriteFile(filepath.Join(oldDir, "conn", manifest.FileName), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Create(ctx, connectors.Entry{Name: "local", From: "file:" + filepath.Join(oldDir, "conn", manifest.FileName)}); err != nil {
+		t.Fatal(err)
+	}
+
 	preview, err := svc.RewritePathPrefix(oldDir, newDir, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(preview) != 1 || preview[0] != "whatsapp" {
+	if strings.Join(preview, ",") != "local,whatsapp" {
 		t.Fatalf("preview %v", preview)
 	}
-	got, _ := svc.Get("whatsapp")
-	if got["cwd"] != oldDir {
-		t.Fatalf("dry-run wrote cwd %v", got["cwd"])
+	if got, _ := svc.Entry("whatsapp"); got.Inputs["ROOT"] != oldDir+"/data" || got.Manifest.Events.Command != "whatsapp-cli listen --dir "+oldDir {
+		t.Fatalf("dry run changed the live entry: %+v", got)
 	}
-	names, err := svc.RewritePathPrefix(oldDir, newDir, false)
-	if err != nil {
+	if err := os.Rename(oldDir, newDir); err != nil {
 		t.Fatal(err)
 	}
-	if len(names) != 1 {
-		t.Fatalf("names %v", names)
+	if _, err := svc.RewritePathPrefix(oldDir, newDir, false); err != nil {
+		t.Fatal(err)
 	}
-	got, _ = svc.Get("whatsapp")
-	if got["cwd"] != newDir {
-		t.Fatalf("cwd %v", got["cwd"])
+	got, _ := svc.Entry("whatsapp")
+	if got.Inputs["ROOT"] != newDir+"/data" {
+		t.Fatalf("inputs %v", got.Inputs)
 	}
-	if d, _ := svc.Definition("whatsapp"); d.Env["ROOT"] != newDir+"/data" {
-		t.Fatalf("env %v", d.Env)
+	m := got.Manifest
+	if m.Events.Command != "whatsapp-cli listen --dir "+newDir || m.Events.Catchup.Command != "whatsapp-cli back --dir "+newDir {
+		t.Fatalf("events %+v", m.Events)
 	}
-	ev := got["events"].(map[string]any)
-	if ev["command"] != "whatsapp-cli listen --dir "+newDir {
-		t.Fatalf("events command %v", ev["command"])
+	if m.Actions.MCP.Args[1] != newDir+"/mcp" {
+		t.Fatalf("mcp args %v", m.Actions.MCP.Args)
 	}
-	if ev["catchup"].(map[string]any)["command"] != "whatsapp-cli back --dir "+newDir {
-		t.Fatalf("catchup %v", ev["catchup"])
+	if local, _ := svc.Entry("local"); local.FilePath() != filepath.Join(newDir, "conn", manifest.FileName) {
+		t.Fatalf("file entry %q", local.From)
 	}
-	ch := got["channel"].(map[string]any)
-	for _, k := range []string{"send", "typing", "ack"} {
-		if !strings.Contains(ch[k].(string), newDir) {
-			t.Fatalf("channel %s %v", k, ch[k])
-		}
-	}
-	acts := got["actions"].(map[string]any)
-	if acts["mcp"].(map[string]any)["args"].([]string)[1] != newDir+"/mcp" {
-		t.Fatalf("mcp args %v", acts["mcp"])
+	if _, err := svc.Resolve("local", ""); err != nil {
+		t.Fatalf("resolve after move: %v", err)
 	}
 }
 
-// TestConnectorsListRowShape pins the wire row fields of Part B.3.
+// TestConnectorsListRowShape pins the wire row fields.
 func TestConnectorsListRowShape(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
-	d := connectors.Definition{
-		Name: "github",
-		Env:  map[string]string{"GITHUB_TOKEN": "secret:github"},
-		Actions: &connectors.Actions{
-			MCP: &connectors.MCPAction{
+	e := inline("github", func(m *manifest.Manifest) {
+		m.Setup = &manifest.Setup{Inputs: []manifest.Input{{Name: "GITHUB_TOKEN"}}}
+		m.Actions = &manifest.Actions{
+			MCP: &manifest.MCPAction{
 				URL:     "https://mcp.example.com/github",
 				Headers: map[string]string{"Authorization": "Bearer tok", "X-Ref": "secret:github"},
 			},
-			CLI: &connectors.CLIAction{Commands: []string{"definitely-not-on-path-xyz"}, Skill: "github"},
-		},
-		Source: &connectors.Source{Registry: "official", Name: "io.github.x/server-github", Version: "1.4.0"},
-	}
-	if err := svc.Create(ctx, d); err != nil {
+			CLI: &manifest.CLIAction{Commands: []string{"definitely-not-on-path-xyz"}},
+		}
+	})
+	e.Inputs = map[string]string{"GITHUB_TOKEN": "secret:github"}
+	if err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
 	row, err := svc.Get("github")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row["provenance"] != "managed" || row["managed"] != true {
-		t.Fatalf("provenance %v", row)
+	if row["provenance"] != "managed" || row["managed"] != true || row["from"] != "inline" || row["version"] != "1.0.0" {
+		t.Fatalf("row %v", row)
 	}
 	if caps := row["capabilities"].([]string); strings.Join(caps, ",") != "actions" {
 		t.Fatalf("capabilities %v", caps)
@@ -228,9 +303,8 @@ func TestConnectorsListRowShape(t *testing.T) {
 	if row["events"] != nil || row["channel"] != nil {
 		t.Fatalf("absent blocks must be nil: %v", row)
 	}
-	src := row["source"].(*connectors.Source)
-	if src.Name != "io.github.x/server-github" || src.Version != "1.4.0" {
-		t.Fatalf("source %+v", src)
+	if in := row["inputs"].(map[string]string); in["GITHUB_TOKEN"] != "secret:github" {
+		t.Fatalf("secret reference masked: %v", in)
 	}
 	acts := row["actions"].(map[string]any)
 	mcp := acts["mcp"].(map[string]any)
@@ -238,41 +312,39 @@ func TestConnectorsListRowShape(t *testing.T) {
 		t.Fatalf("mcp %v", mcp)
 	}
 	headers := mcp["headers"].(map[string]string)
-	if headers["Authorization"] != "***" {
-		t.Fatalf("plain header not masked: %v", headers)
-	}
-	if headers["X-Ref"] != "secret:github" {
-		t.Fatalf("secret header masked: %v", headers)
+	if headers["Authorization"] != "***" || headers["X-Ref"] != "secret:github" {
+		t.Fatalf("headers %v", headers)
 	}
 	cli := acts["cli"].(map[string]any)
-	if len(cli["missing"].([]string)) != 1 || cli["missing"].([]string)[0] != "definitely-not-on-path-xyz" {
-		t.Fatalf("missing %v", cli["missing"])
+	if missing := cli["missing"].([]string); len(missing) != 1 || missing[0] != "definitely-not-on-path-xyz" {
+		t.Fatalf("missing %v", missing)
 	}
 
 	// An events row carries the live fields even when stopped.
-	d2 := eventsDef("feed", "echo hi")
-	if err := svc.Create(ctx, d2); err != nil {
+	if err := create(ctx, svc, eventsDef("feed", "echo hi")); err != nil {
 		t.Fatal(err)
 	}
 	row, _ = svc.Get("feed")
 	ev := row["events"].(map[string]any)
-	if ev["status"] != "stopped" || ev["format"] != "json" || ev["last_err"] != "" {
+	if ev["status"] != "stopped" || ev["format"] != "json" || ev["last_err"] != "" || ev["protocol"] != "lines" || ev["restart"] != "on-failure" {
 		t.Fatalf("events row %v", ev)
 	}
 	counters := ev["counters"].(map[string]any)
 	if counters["events"] != int64(0) || counters["duplicates"] != int64(0) || counters["parse_errors"] != int64(0) {
 		t.Fatalf("counters %v", counters)
 	}
+	if inst := row["instances"].([]map[string]any); len(inst) != 1 || inst[0]["key"] != "feed" {
+		t.Fatalf("instances %v", inst)
+	}
 }
 
 func TestConnectorsStrictLoadRefusesOldKeys(t *testing.T) {
-	svc, teardown := stackWithFile(t, "mail:\n  type: stream\n  events: {command: x}\n")
+	svc, teardown := stackWithFile(t, "mail:\n  events: {command: x}\n")
 	defer teardown()
-	if err := svc.Load(); err == nil || !strings.Contains(err.Error(), "type") {
+	if err := svc.Load(); err == nil || !strings.Contains(err.Error(), "events") {
 		t.Fatalf("load: %v", err)
 	}
-	// A valid map loads and applies defaults.
-	svc2, teardown2 := stackWithFile(t, "feed:\n  events: {command: echo, format: json, id: g}\n")
+	svc2, teardown2 := stackWithFile(t, "feed:\n  from: inline\n  manifest:\n    schema: trebi-connector/1\n    name: feed\n    title: Feed\n    description: A feed.\n    version: 1.0.0\n    events: {command: echo, format: json, id: g}\n")
 	defer teardown2()
 	if err := svc2.Load(); err != nil {
 		t.Fatal(err)
@@ -281,8 +353,7 @@ func TestConnectorsStrictLoadRefusesOldKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev := row["events"].(map[string]any)
-	if ev["restart"] != "on-failure" {
+	if ev := row["events"].(map[string]any); ev["restart"] != "on-failure" {
 		t.Fatalf("default restart %v", ev["restart"])
 	}
 }
@@ -290,7 +361,7 @@ func TestConnectorsStrictLoadRefusesOldKeys(t *testing.T) {
 // TestConnectorsFailedLoadBlocksWrites proves a failed load keeps the error
 // and refuses every write until a load succeeds.
 func TestConnectorsFailedLoadBlocksWrites(t *testing.T) {
-	body := "mail:\n  type: stream\n  events: {command: x}\n"
+	body := "mail:\n  type: stream\n"
 	svc, teardown := stackWithFile(t, body)
 	defer teardown()
 	ctx := context.Background()
@@ -300,12 +371,12 @@ func TestConnectorsFailedLoadBlocksWrites(t *testing.T) {
 	if svc.LoadErr() == nil {
 		t.Fatal("LoadErr is nil after a failed load")
 	}
-	def := eventsDef("feed", "echo")
-	env := map[string]string{"A": "1"}
+	e := eventsDef("feed", "echo").entry()
+	inputs := map[string]string{"A": "1"}
 	for name, write := range map[string]func() error{
-		"create":  func() error { return svc.Create(ctx, def) },
-		"replace": func() error { return svc.Replace(ctx, def) },
-		"patch":   func() error { return svc.Patch(ctx, "mail", connectors.Patch{Env: &env}) },
+		"create":  func() error { return svc.Create(ctx, e) },
+		"replace": func() error { return svc.Replace(ctx, e) },
+		"patch":   func() error { return svc.Patch(ctx, "mail", connectors.EntryPatch{Inputs: &inputs}) },
 		"delete":  func() error { return svc.Delete(ctx, "mail") },
 		"rewrite": func() error { _, err := svc.RewritePathPrefix("/a", "/b", false); return err },
 	} {
@@ -316,126 +387,132 @@ func TestConnectorsFailedLoadBlocksWrites(t *testing.T) {
 	if got, _ := os.ReadFile(home.ConnectorsPath()); string(got) != body {
 		t.Fatalf("file changed: %q", got)
 	}
-	if err := os.WriteFile(home.ConnectorsPath(), []byte("mail:\n  events: {command: x}\n"), 0o644); err != nil {
+	if err := os.WriteFile(home.ConnectorsPath(), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Load(); err != nil || svc.LoadErr() != nil {
 		t.Fatalf("load after fix: %v %v", err, svc.LoadErr())
 	}
-	if err := svc.Create(ctx, def); err != nil {
+	if err := svc.Create(ctx, e); err != nil {
 		t.Fatalf("create after fix: %v", err)
 	}
 }
 
-// TestConnectorsMaskedValuesRoundTrip proves a masked value that comes back on
-// a write keeps the stored value, and that GET hides every literal.
-func TestConnectorsMaskedValuesRoundTrip(t *testing.T) {
+// TestConnectorsMaskedInputsRoundTrip proves a masked input that comes back
+// on a write keeps the stored value.
+func TestConnectorsMaskedInputsRoundTrip(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
-	d := connectors.Definition{
-		Name: "api",
-		Env:  map[string]string{"TOKEN": "t0k", "REF": "secret:api_TOKEN"},
-		Actions: &connectors.Actions{MCP: &connectors.MCPAction{
-			URL:     "https://mcp.example.com",
-			Headers: map[string]string{"X-Key": "abc", "Authorization": "Bearer secret:api_KEY"},
-		}},
-	}
-	if err := svc.Create(ctx, d); err != nil {
+	e := eventsDef("api", "true").entry()
+	e.Inputs = map[string]string{"TOKEN": "t0k", "REF": "secret:api_TOKEN"}
+	if err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
 	if fi, err := os.Stat(home.ConnectorsPath()); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("file mode %v %v", fi.Mode(), err)
+		t.Fatalf("file mode %v %v", fi, err)
 	}
 	row, _ := svc.Get("api")
-	if env := row["env"].(map[string]string); env["TOKEN"] != "***" || env["REF"] != "secret:api_TOKEN" {
-		t.Fatalf("env %v", env)
+	if in := row["inputs"].(map[string]string); in["TOKEN"] != "***" || in["REF"] != "secret:api_TOKEN" {
+		t.Fatalf("inputs %v", in)
 	}
-	hdr := row["actions"].(map[string]any)["mcp"].(map[string]any)["headers"].(map[string]string)
-	if hdr["X-Key"] != "***" || hdr["Authorization"] != "Bearer secret:api_KEY" {
-		t.Fatalf("headers %v", hdr)
-	}
-
-	// A merge that does not name the headers keeps them.
-	if err := svc.Patch(ctx, "api", connectors.Patch{ActionsMerge: []byte(`{"mcp":{"url":"https://mcp2.example.com"}}`)}); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := svc.Definition("api")
-	if got.Actions.MCP.URL != "https://mcp2.example.com" || got.Actions.MCP.Headers["X-Key"] != "abc" {
-		t.Fatalf("merge %+v", got.Actions.MCP)
-	}
-
-	// A whole-block PATCH and a PUT that send the mask back keep "abc".
-	if err := svc.Patch(ctx, "api", connectors.Patch{ActionsMerge: []byte(`{"mcp":{"headers":{"X-Key":"***","Y":"1"}}}`)}); err != nil {
-		t.Fatal(err)
-	}
-	put := d
-	put.Env = map[string]string{"TOKEN": "***"}
-	put.Actions = &connectors.Actions{MCP: &connectors.MCPAction{URL: "https://mcp.example.com", Headers: map[string]string{"X-Key": "***"}}}
+	put := e
+	put.Inputs = map[string]string{"TOKEN": "***"}
 	if err := svc.Replace(ctx, put); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = svc.Definition("api")
-	if got.Actions.MCP.Headers["X-Key"] != "abc" || got.Env["TOKEN"] != "t0k" {
-		t.Fatalf("put %+v %v", got.Actions.MCP, got.Env)
+	if got, _ := svc.Entry("api"); got.Inputs["TOKEN"] != "t0k" {
+		t.Fatalf("put %v", got.Inputs)
 	}
-
-	// A mask with no stored value is a validation error.
-	put.Env = map[string]string{"NEW": "***"}
+	put.Inputs = map[string]string{"NEW": "***"}
 	if err := svc.Replace(ctx, put); !errors.Is(err, connectors.ErrInvalid) {
 		t.Fatalf("new mask: %v", err)
 	}
 }
 
-// TestConnectorsActionsMerge proves the field merge, the transport switch,
-// and sub-block removal.
-func TestConnectorsActionsMerge(t *testing.T) {
-	_, _, svc := openStack(t)
+// TestConnectorsWorkspaceOverride covers the workspace layer: an actions
+// patch keeps the global instance, new inputs make a workspace instance, and
+// disabled turns the connector off.
+func TestConnectorsWorkspaceOverride(t *testing.T) {
+	_, ws, svc := openStack(t)
 	ctx := context.Background()
-	d := connectors.Definition{
-		Name: "gh",
-		Actions: &connectors.Actions{
-			MCP: &connectors.MCPAction{URL: "https://mcp.example.com", Headers: map[string]string{"X-Key": "abc"}},
-			CLI: &connectors.CLIAction{Commands: []string{"gh"}, Skill: "gh"},
-		},
-	}
-	if err := svc.Create(ctx, d); err != nil {
+	wsPath := filepath.Join(home.Base(), "ws")
+	if err := os.MkdirAll(wsPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	merge := func(body string) error {
-		return svc.Patch(ctx, "gh", connectors.Patch{ActionsMerge: []byte(body)})
-	}
-	if err := merge(`{"mcp":{"command":"npx","args":["-v"]}}`); err != nil {
+	w, err := ws.Add(ctx, wsPath, "ov-ws")
+	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := svc.Definition("gh")
-	if m := got.Actions.MCP; m.Command != "npx" || m.URL != "" || m.Headers != nil || len(m.Args) != 1 {
-		t.Fatalf("command switch %+v", m)
-	}
-	if c := got.Actions.CLI; c == nil || c.Skill != "gh" {
-		t.Fatalf("cli touched %+v", c)
-	}
-	if err := merge(`{"mcp":{"env":{"A":"1"}}}`); err != nil {
+	e := inline("chat", func(m *manifest.Manifest) {
+		m.Setup = &manifest.Setup{Inputs: []manifest.Input{{Name: "KEY", Secret: true}, {Name: "ROOM"}}}
+		m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"chat"}}}
+		m.Events = &manifest.Events{Command: "sleep 30", Format: "json"}
+	})
+	e.Inputs = map[string]string{"ROOM": "global"}
+	if err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	if err := merge(`{"mcp":{"url":"https://x.example.com"}}`); err != nil {
+	if err := svc.SetOverride(ctx, w.ID, "missing", &workspaces.ConnectorOverride{}); !errors.Is(err, connectors.ErrNotFound) {
+		t.Fatalf("override of a missing connector: %v", err)
+	}
+
+	patchOnly := &workspaces.ConnectorOverride{Patch: map[string]any{"actions": map[string]any{"cli": map[string]any{"commands": []any{"chat", "chat-admin"}}}}}
+	if err := svc.SetOverride(ctx, w.ID, "chat", patchOnly); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = svc.Definition("gh")
-	if m := got.Actions.MCP; m.Command != "" || m.Args != nil || m.Env != nil || m.URL != "https://x.example.com" {
-		t.Fatalf("url switch %+v", m)
+	if got := svc.InstanceFor("chat", w.ID); got != "chat" {
+		t.Fatalf("actions override instance %q", got)
 	}
-	if err := merge(`{"mcp":{"bogus":1}}`); !errors.Is(err, connectors.ErrInvalid) {
-		t.Fatalf("unknown field: %v", err)
-	}
-	if err := merge(`{"mcp":null}`); err != nil {
+	r, err := svc.Resolve("chat", w.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := merge(`{"cli":null}`); !errors.Is(err, connectors.ErrInvalid) {
-		t.Fatalf("empty connector: %v", err)
+	if len(r.Manifest.Actions.CLI.Commands) != 2 || r.Workspace != w.ID {
+		t.Fatalf("resolved %+v", r)
 	}
-	got, _ = svc.Definition("gh")
-	if got.Actions == nil || got.Actions.MCP != nil || got.Actions.CLI == nil {
-		t.Fatalf("remove mcp %+v", got.Actions)
+
+	own := &workspaces.ConnectorOverride{Inputs: map[string]string{"ROOM": "team", "KEY": "k3y"}}
+	if err := svc.SetOverride(ctx, w.ID, "chat", own); err != nil {
+		t.Fatal(err)
+	}
+	inst := "chat@" + w.ID
+	if got := svc.InstanceFor("chat", w.ID); got != inst {
+		t.Fatalf("inputs override instance %q", got)
+	}
+	ov, ok, err := svc.Override(ctx, w.ID, "chat")
+	if err != nil || !ok || ov.Inputs["KEY"] != "secret:"+inst+"_KEY" {
+		t.Fatalf("override %+v %v %v", ov, ok, err)
+	}
+	r, _ = svc.Resolve("chat", w.ID)
+	if env, _ := r.Env(); env["ROOM"] != "team" || env["KEY"] != "k3y" {
+		t.Fatalf("workspace env %v", env)
+	}
+	if g, _ := svc.Resolve("chat", ""); g.Inputs["ROOM"] != "global" {
+		t.Fatalf("global inputs changed: %v", g.Inputs)
+	}
+	row, err := svc.GetFor("chat", w.ID)
+	if err != nil || row["instance"] != inst || row["workspace"] != w.ID {
+		t.Fatalf("row %v %v", row, err)
+	}
+
+	if err := svc.SetOverride(ctx, w.ID, "chat", &workspaces.ConnectorOverride{Disabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.InstanceFor("chat", w.ID); got != "" {
+		t.Fatalf("disabled instance %q", got)
+	}
+	if _, err := svc.Resolve("chat", w.ID); !errors.Is(err, connectors.ErrDisabled) {
+		t.Fatalf("disabled resolve: %v", err)
+	}
+	if _, err := svc.ResolveActions(ctx, w.ID, []string{"chat"}); err == nil {
+		t.Fatal("disabled connector gave actions")
+	}
+
+	if err := svc.SetOverride(ctx, w.ID, "chat", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.InstanceFor("chat", w.ID); got != "chat" {
+		t.Fatalf("removed override instance %q", got)
 	}
 }
 
@@ -443,13 +520,12 @@ func TestConnectorsInheritedUnionAndGuard(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
 	user := t.TempDir()
-	claude := filepath.Join(user, ".claude.json")
-	if err := os.WriteFile(claude, []byte(`{"mcpServers":{"sling":{"command":"sling","args":["serve","mcp"]}}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(user, ".claude.json"), []byte(`{"mcpServers":{"sling":{"command":"sling","args":["serve","mcp"]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	svc.WithUserHome(user)
 
-	list := svc.List()
+	list := svc.List("")
 	if len(list) != 1 {
 		t.Fatalf("list=%v", list)
 	}
@@ -480,12 +556,10 @@ func TestConnectorsInheritedUnionAndGuard(t *testing.T) {
 	if err := svc.Delete(ctx, "sling"); !errors.Is(err, connectors.ErrInherited) {
 		t.Fatalf("delete inherited: %v", err)
 	}
-
-	// A managed connector stays a separate row.
-	if err := svc.Create(ctx, eventsDef("mail", "echo")); err != nil {
+	if err := create(ctx, svc, eventsDef("mail", "echo")); err != nil {
 		t.Fatal(err)
 	}
-	if list = svc.List(); len(list) != 2 {
+	if list = svc.List(""); len(list) != 2 {
 		t.Fatalf("managed+inherited %d %v", len(list), list)
 	}
 }
@@ -495,62 +569,53 @@ func TestConnectorsInheritedUnionAndGuard(t *testing.T) {
 func TestConnectorsMCPFingerprintMerge(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
-	d := connectors.Definition{
-		Name:    "sling",
-		Actions: &connectors.Actions{MCP: &connectors.MCPAction{Command: "sling", Args: []string{"serve", "mcp"}}},
-	}
-	if err := svc.Create(ctx, d); err != nil {
+	e := inline("sling", func(m *manifest.Manifest) {
+		m.Actions = &manifest.Actions{MCP: &manifest.MCPAction{Command: "sling", Args: []string{"serve", "mcp"}}}
+	})
+	if err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
 	user := t.TempDir()
-	if err := os.WriteFile(filepath.Join(user, ".claude.json"), []byte(`{"mcpServers":{"sling":{"command":"sling","args":["serve","mcp"]}}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(user, ".claude.json"), []byte(`{"mcpServers":{"sling":{"command":"sling","args":["serve","mcp"]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	svc.WithUserHome(user)
-	list := svc.List()
+	list := svc.List("")
 	if len(list) != 1 {
 		t.Fatalf("want merged 1 row, got %v", list)
 	}
-	row := list[0]
-	if row["managed"] != true || row["name"] != "sling" {
+	if row := list[0]; row["managed"] != true || row["name"] != "sling" || row["origins"] == nil {
 		t.Fatalf("%+v", row)
-	}
-	if _, ok := row["origins"]; !ok {
-		t.Fatalf("origins missing %+v", row)
 	}
 }
 
 func TestConnectorsInheritedAmbiguousName(t *testing.T) {
 	_, _, svc := openStack(t)
 	user := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(user, ".cursor"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(user, ".cursor"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(user, ".claude.json"), []byte(`{"mcpServers":{"x":{"command":"echo","args":["a"]}}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(user, ".claude.json"), []byte(`{"mcpServers":{"x":{"command":"echo","args":["a"]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(user, ".cursor", "mcp.json"), []byte(`{"mcpServers":{"x":{"command":"echo","args":["b"]}}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(user, ".cursor", "mcp.json"), []byte(`{"mcpServers":{"x":{"command":"echo","args":["b"]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	svc.WithUserHome(user)
-	list := svc.List()
-	if len(list) != 2 {
+	if list := svc.List(""); len(list) != 2 {
 		t.Fatalf("want 2 fingerprints named x, got %v", list)
 	}
-	_, err := svc.Get("x")
 	var amb *connectors.AmbiguousError
-	if !errors.As(err, &amb) {
-		t.Fatalf("want ambiguous, got %v list=%v", err, list)
+	if _, err := svc.Get("x"); !errors.As(err, &amb) {
+		t.Fatalf("want ambiguous, got %v", err)
 	}
 }
 
-// TestConnectorsStartStopLifecycle runs a short-lived stream process and
-// observes listening → stopped status transitions.
 func TestConnectorsStartStopLifecycle(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
 	d := eventsDef("tick", `while true; do echo '{"n":1}'; sleep 0.2; done`)
-	if err := svc.Create(ctx, d); err != nil {
+	if err := create(ctx, svc, d); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "tick"); err != nil {
@@ -573,7 +638,7 @@ func TestConnectorsStartStopLifecycle(t *testing.T) {
 func TestConnectorsStartOutlivesCallerContext(t *testing.T) {
 	_, _, svc := openStack(t)
 	d := eventsDef("tick", `while true; do echo '{"n":1}'; sleep 0.2; done`)
-	if err := svc.Create(context.Background(), d); err != nil {
+	if err := create(context.Background(), svc, d); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -593,12 +658,12 @@ func TestConnectorsConcurrentStartSingleProcess(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
 	out := filepath.Join(t.TempDir(), "pids")
-	d := connectors.Definition{
+	d := spec{
 		Name:   "once",
 		Env:    map[string]string{"OUT": out},
-		Events: &connectors.Events{Command: `echo started >> "$OUT"; sleep 3`},
+		Events: &manifest.Events{Command: `echo started >> "$OUT"; sleep 3`},
 	}
-	if err := svc.Create(ctx, d); err != nil {
+	if err := create(ctx, svc, d); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
@@ -634,11 +699,11 @@ func TestConnectorsRestartPolicies(t *testing.T) {
 	ctx := context.Background()
 
 	// never: one non-zero exit ends the supervisor.
-	never := connectors.Definition{
+	never := spec{
 		Name:   "never",
-		Events: &connectors.Events{Command: "echo one; exit 1", Restart: connectors.RestartNever},
+		Events: &manifest.Events{Command: "echo one; exit 1", Restart: manifest.RestartNever},
 	}
-	if err := svc.Create(ctx, never); err != nil {
+	if err := create(ctx, svc, never); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "never"); err != nil {
@@ -652,11 +717,11 @@ func TestConnectorsRestartPolicies(t *testing.T) {
 	}
 
 	// on-failure: a non-zero exit restarts (backoff 1s), a zero exit does not.
-	onFail := connectors.Definition{
+	onFail := spec{
 		Name:   "onfail",
-		Events: &connectors.Events{Command: "echo one; exit 1", Restart: connectors.RestartOnFailure},
+		Events: &manifest.Events{Command: "echo one; exit 1", Restart: manifest.RestartOnFailure},
 	}
-	if err := svc.Create(ctx, onFail); err != nil {
+	if err := create(ctx, svc, onFail); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "onfail"); err != nil {
@@ -669,11 +734,11 @@ func TestConnectorsRestartPolicies(t *testing.T) {
 	}, "on-failure did not restart")
 	_ = svc.Stop("onfail")
 
-	clean := connectors.Definition{
+	clean := spec{
 		Name:   "clean",
-		Events: &connectors.Events{Command: "echo one; exit 0", Restart: connectors.RestartOnFailure},
+		Events: &manifest.Events{Command: "echo one; exit 0", Restart: manifest.RestartOnFailure},
 	}
-	if err := svc.Create(ctx, clean); err != nil {
+	if err := create(ctx, svc, clean); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "clean"); err != nil {
@@ -687,11 +752,11 @@ func TestConnectorsRestartPolicies(t *testing.T) {
 	}
 
 	// always: a zero exit restarts.
-	always := connectors.Definition{
+	always := spec{
 		Name:   "always",
-		Events: &connectors.Events{Command: "echo one; exit 0", Restart: connectors.RestartAlways},
+		Events: &manifest.Events{Command: "echo one; exit 0", Restart: manifest.RestartAlways},
 	}
-	if err := svc.Create(ctx, always); err != nil {
+	if err := create(ctx, svc, always); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "always"); err != nil {
@@ -710,11 +775,11 @@ func TestConnectorsRestartPolicies(t *testing.T) {
 func TestConnectorsNonZeroExitCrashes(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
-	d := connectors.Definition{
+	d := spec{
 		Name:   "boom",
-		Events: &connectors.Events{Command: "echo one; exit 1", Restart: connectors.RestartNever},
+		Events: &manifest.Events{Command: "echo one; exit 1", Restart: manifest.RestartNever},
 	}
-	if err := svc.Create(ctx, d); err != nil {
+	if err := create(ctx, svc, d); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "boom"); err != nil {
@@ -732,14 +797,14 @@ func TestConnectorsNonZeroExitCrashes(t *testing.T) {
 func TestConnectorsCountersPerOutcome(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
-	d := connectors.Definition{
+	d := spec{
 		Name: "count",
-		Events: &connectors.Events{
+		Events: &manifest.Events{
 			Command: `printf '{"id":"a"}\n{"id":"a"}\nnot json\n{"id":"b"}\n'; sleep 30`,
-			Format:  "json", ID: "id", Restart: connectors.RestartNever,
+			Format:  "json", ID: "id", Restart: manifest.RestartNever,
 		},
 	}
-	if err := svc.Create(ctx, d); err != nil {
+	if err := create(ctx, svc, d); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "count"); err != nil {
@@ -778,7 +843,7 @@ func TestConnectorsInjectEventMatchesJob(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.Create(ctx, eventsDef("src", "true")); err != nil {
+	if err := create(ctx, svc, eventsDef("src", "true")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.InjectEvent(ctx, "src", map[string]any{"n": 42}); err != nil {
@@ -824,7 +889,7 @@ func TestConnectorsInjectEventMatchesAssistant(t *testing.T) {
 	if err := ws.RebuildIndex(ctx, w); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Create(ctx, eventsDef("src", "true")); err != nil {
+	if err := create(ctx, svc, eventsDef("src", "true")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.InjectEvent(ctx, "src", map[string]any{"n": 1}); err != nil {
@@ -867,7 +932,7 @@ func TestConnectorsAllowlistIdentity(t *testing.T) {
 	}
 	def := eventsDef("src", "true")
 	def.Events.Identity = "sender"
-	if err := svc.Create(ctx, def); err != nil {
+	if err := create(ctx, svc, def); err != nil {
 		t.Fatal(err)
 	}
 	queueRows := func() int {
@@ -918,7 +983,7 @@ func TestConnectorsAllowlistIdentity(t *testing.T) {
 	}
 
 	// A connector with no identity and no allowlist stays open.
-	if err := svc.Create(ctx, eventsDef("open", "true")); err != nil {
+	if err := create(ctx, svc, eventsDef("open", "true")); err != nil {
 		t.Fatal(err)
 	}
 	openJob := filepath.Join(wsPath, "open")
@@ -968,7 +1033,7 @@ func TestConnectorsAllowlistEmailCase(t *testing.T) {
 	}
 	def := eventsDef("src", "true")
 	def.Events.Identity = "sender"
-	if err := svc.Create(ctx, def); err != nil {
+	if err := create(ctx, svc, def); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.InjectNative(ctx, "email", map[string]any{"subject": "hi"}, connectors.NativeMeta{SourceID: "<1@x>", Identity: "ops@example.com"}); err != nil {
@@ -988,82 +1053,6 @@ func TestConnectorsAllowlistEmailCase(t *testing.T) {
 	}
 }
 
-// TestConnectorsChannelRefConversationKey proves the channel ref becomes the
-// queue conversation key when extract does not set one, and that an
-// extracted key wins.
-func TestConnectorsChannelRefConversationKey(t *testing.T) {
-	st, ws, svc := openStack(t)
-	ctx := context.Background()
-
-	wsPath := filepath.Join(home.Base(), "ws")
-	jobDir := filepath.Join(wsPath, "chat")
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\nharness: fake\ntriggers:\n  - event: whatsapp\n    match: \"true\"\n    extract: '({conversation_key: event.chat, who: event.sender})'\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	w, err := ws.Add(ctx, wsPath, "chat-ws")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ws.RebuildIndex(ctx, w); err != nil {
-		t.Fatal(err)
-	}
-	def := connectors.Definition{
-		Name: "whatsapp",
-		Events: &connectors.Events{
-			Command: "true", Format: "json", ID: "id", Identity: "sender",
-		},
-		Channel: &connectors.Channel{Ref: "chat", Send: "send"},
-	}
-	if err := svc.Create(ctx, def); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.InjectEvent(ctx, "whatsapp", map[string]any{"id": "m1", "sender": "a", "chat": "c-1"}); err != nil {
-		t.Fatal(err)
-	}
-	var key string
-	if err := st.DB().QueryRow(`SELECT conversation_key FROM event_queue WHERE job='chat'`).Scan(&key); err != nil {
-		t.Fatal(err)
-	}
-	if key != "c-1" {
-		t.Fatalf("conversation key %q want c-1", key)
-	}
-
-	// Without an extract key, an event with no chat ref leaves it empty.
-	def2 := connectors.Definition{
-		Name:   "wa2",
-		Events: &connectors.Events{Command: "true", Format: "json", ID: "id"},
-	}
-	if err := svc.Create(ctx, def2); err != nil {
-		t.Fatal(err)
-	}
-	md2 := "---\nharness: fake\ntriggers:\n  - event: wa2\n    match: \"true\"\n---\n\nRun.\n"
-	jobDir2 := filepath.Join(wsPath, "chat2")
-	if err := os.MkdirAll(jobDir2, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(jobDir2, "JOB.md"), []byte(md2), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := ws.RebuildIndex(ctx, w); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.InjectEvent(ctx, "wa2", map[string]any{"id": "m2"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.DB().QueryRow(`SELECT conversation_key FROM event_queue WHERE job='chat2'`).Scan(&key); err != nil {
-		t.Fatal(err)
-	}
-	if key != "" {
-		t.Fatalf("conversation key %q want empty", key)
-	}
-}
-
-// TestConnectorsDedup: the same source id twice gives one row, one dispatch,
-// and one duplicate counter; the connector cursor moves only on a new row.
 func TestConnectorsDedup(t *testing.T) {
 	st, ws, svc := openStack(t)
 	ctx := context.Background()
@@ -1084,7 +1073,7 @@ func TestConnectorsDedup(t *testing.T) {
 	if err := ws.RebuildIndex(ctx, w); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Create(ctx, eventsDef("src", "true")); err != nil {
+	if err := create(ctx, svc, eventsDef("src", "true")); err != nil {
 		t.Fatal(err)
 	}
 	meta := connectors.NativeMeta{SourceID: "evt-1"}
@@ -1178,7 +1167,7 @@ func TestConnectorsRedispatch(t *testing.T) {
 
 	def := eventsDef("src", "true")
 	def.Events.ID = "id"
-	if err := svc.Create(ctx, def); err != nil {
+	if err := create(ctx, svc, def); err != nil {
 		t.Fatal(err)
 	}
 	id, err := svc.InjectEvent(ctx, "src", map[string]any{"id": "a", "n": 7})
@@ -1223,18 +1212,18 @@ func TestConnectorsCatchup(t *testing.T) {
 	ctx := context.Background()
 
 	// A cursor that does not appear in the output skips the replay.
-	skip := connectors.Definition{
+	skip := spec{
 		Name: "feed",
-		Events: &connectors.Events{
+		Events: &manifest.Events{
 			Command: "sleep 30",
 			Format:  "json",
 			ID:      "id",
-			Catchup: &connectors.Catchup{
+			Catchup: &manifest.Catchup{
 				Command: `printf '%s\n' '{"id":"n1"}' '{"id":"n2"}'`,
 			},
 		},
 	}
-	if err := svc.Create(ctx, skip); err != nil {
+	if err := create(ctx, svc, skip); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.PutCursor(ctx, "feed", "old"); err != nil {
@@ -1262,20 +1251,20 @@ func TestConnectorsCatchup(t *testing.T) {
 
 	// The cut after the last occurrence replays only later rows, sorted by
 	// ts, and marks them catch_up.
-	replay := connectors.Definition{
+	replay := spec{
 		Name: "feed2",
-		Events: &connectors.Events{
+		Events: &manifest.Events{
 			Command:  "sleep 30",
 			Format:   "json",
 			ID:       "id",
 			TS:       "ts",
 			Identity: "sender",
-			Catchup: &connectors.Catchup{
+			Catchup: &manifest.Catchup{
 				Command: `printf '%s\n' '{"id":"5","ts":"2026-09-27T10:05:00Z","sender":"e"}' '{"id":"3","ts":"2026-09-27T10:03:00Z","sender":"c"}' '{"id":"4","ts":"2026-09-27T10:04:00Z","sender":"d"}' '{"id":"2","ts":"2026-09-27T10:02:00Z","sender":"b"}'`,
 			},
 		},
 	}
-	if err := svc.Create(ctx, replay); err != nil {
+	if err := create(ctx, svc, replay); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.PutCursor(ctx, "feed2", "3"); err != nil {
@@ -1305,19 +1294,19 @@ func TestConnectorsCatchup(t *testing.T) {
 	}
 
 	// The buffer cap kills the command and keeps the rows it already read.
-	capped := connectors.Definition{
+	capped := spec{
 		Name: "feed4",
-		Events: &connectors.Events{
+		Events: &manifest.Events{
 			Command: "sleep 30",
 			Format:  "json",
 			ID:      "id",
-			Catchup: &connectors.Catchup{
+			Catchup: &manifest.Catchup{
 				Command:   `i=0; while [ $i -lt 50 ]; do i=$((i+1)); echo "{\"id\":\"c$i\"}"; sleep 0.05; done`,
 				MaxEvents: 3,
 			},
 		},
 	}
-	if err := svc.Create(ctx, capped); err != nil {
+	if err := create(ctx, svc, capped); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.PutCursor(ctx, "feed4", "c1"); err != nil {
@@ -1340,16 +1329,16 @@ func TestConnectorsCatchup(t *testing.T) {
 	}
 
 	// An empty connector cursor skips without running the command.
-	empty := connectors.Definition{
+	empty := spec{
 		Name: "feed3",
-		Events: &connectors.Events{
+		Events: &manifest.Events{
 			Command: "sleep 30",
 			Format:  "json",
 			ID:      "id",
-			Catchup: &connectors.Catchup{Command: "echo should-not-run"},
+			Catchup: &manifest.Catchup{Command: "echo should-not-run"},
 		},
 	}
-	if err := svc.Create(ctx, empty); err != nil {
+	if err := create(ctx, svc, empty); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "feed3"); err != nil {
@@ -1469,7 +1458,7 @@ func TestConnectorsConcurrentWrites(t *testing.T) {
 	ctx := context.Background()
 	errs := make(chan error, 2)
 	for range 2 {
-		go func() { errs <- svc.Create(ctx, eventsDef("dup", "true")) }()
+		go func() { errs <- create(ctx, svc, eventsDef("dup", "true")) }()
 	}
 	var exists int
 	for range 2 {
@@ -1490,10 +1479,10 @@ func TestConnectorsConcurrentWrites(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			env := map[string]string{"K": "v"}
-			cwd := "/tmp/c"
-			p := connectors.Patch{Env: &env}
+			track := "minor"
+			p := connectors.EntryPatch{Inputs: &env}
 			if i%2 == 1 {
-				p = connectors.Patch{Cwd: &cwd}
+				p = connectors.EntryPatch{Track: &track}
 			}
 			if err := svc.Patch(ctx, "dup", p); err != nil {
 				t.Error(err)
@@ -1501,43 +1490,21 @@ func TestConnectorsConcurrentWrites(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	d, _ := svc.Definition("dup")
-	if d.Env["K"] != "v" || d.Cwd != "/tmp/c" {
-		t.Fatalf("lost an edit: env %v cwd %q", d.Env, d.Cwd)
+	e, _ := svc.Entry("dup")
+	if e.Inputs["K"] != "v" || e.Track != "minor" {
+		t.Fatalf("lost an edit: inputs %v track %q", e.Inputs, e.Track)
 	}
 }
 
 // TestConnectorsRewriteDryRunKeepsLiveBlocks proves a dry run does not change
 // the pointer blocks of the live definitions.
-func TestConnectorsRewriteDryRunKeepsLiveBlocks(t *testing.T) {
-	_, _, svc := openStack(t)
-	ctx := context.Background()
-	d := connectors.Definition{
-		Name:    "dry",
-		Actions: &connectors.Actions{MCP: &connectors.MCPAction{Command: "/old/bin/mcp", Args: []string{"/old/a"}}},
-		Events:  &connectors.Events{Command: "/old/bin/listen", Format: "json"},
-		Channel: &connectors.Channel{Ref: "id", Send: "/old/bin/send"},
-	}
-	if err := svc.Create(ctx, d); err != nil {
-		t.Fatal(err)
-	}
-	names, err := svc.RewritePathPrefix("/old", "/new", true)
-	if err != nil || len(names) != 1 {
-		t.Fatalf("names %v err %v", names, err)
-	}
-	got, _ := svc.Definition("dry")
-	if got.Events.Command != "/old/bin/listen" || got.Channel.Send != "/old/bin/send" ||
-		got.Actions.MCP.Command != "/old/bin/mcp" || got.Actions.MCP.Args[0] != "/old/a" {
-		t.Fatalf("dry run changed the live definition: %+v %+v %+v", got.Events, got.Channel, got.Actions.MCP)
-	}
-}
 
-// TestConnectorsCwdChangeRestarts proves a cwd edit restarts a live
-// connector.
-func TestConnectorsCwdChangeRestarts(t *testing.T) {
+// TestConnectorsEditRestarts proves an edit that changes the process
+// restarts a live instance.
+func TestConnectorsEditRestarts(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
-	if err := svc.Create(ctx, eventsDef("wd", "sleep 30")); err != nil {
+	if err := create(ctx, svc, eventsDef("wd", "sleep 30")); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "wd"); err != nil {
@@ -1545,8 +1512,8 @@ func TestConnectorsCwdChangeRestarts(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = svc.Stop("wd") })
 	waitStatus(t, svc, "wd", "listening")
-	cwd := t.TempDir()
-	if err := svc.Patch(ctx, "wd", connectors.Patch{Cwd: &cwd}); err != nil {
+	inputs := map[string]string{"A": "1"}
+	if err := svc.Patch(ctx, "wd", connectors.EntryPatch{Inputs: &inputs}); err != nil {
 		t.Fatal(err)
 	}
 	row, _ := svc.Get("wd")
@@ -1555,31 +1522,214 @@ func TestConnectorsCwdChangeRestarts(t *testing.T) {
 	}
 }
 
-// TestResolveActionsUserHomeSkill proves a connector skill found in the user
-// home projects from that folder, not from a missing managed folder (P1-23).
-func TestResolveActionsUserHomeSkill(t *testing.T) {
+// TestResolveActionsSkill proves the skill folder of a file entry projects
+// with the connector name.
+func TestResolveActionsSkill(t *testing.T) {
 	st, ws, _ := openStack(t)
-	user := t.TempDir()
-	skillDir := filepath.Join(user, ".agents", "skills", "pg")
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: pg\ndescription: d\n---\nBody.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	svc := connectors.New(st, ws, skills.New(st).WithUserHome(user))
+	svc := connectors.New(st, ws, skills.New(st))
 	ctx := context.Background()
-	if err := svc.Create(ctx, connectors.Definition{
-		Name:    "psql",
-		Actions: &connectors.Actions{CLI: &connectors.CLIAction{Commands: []string{"psql"}, Skill: "pg"}},
-	}); err != nil {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "skill"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	acts, err := svc.ResolveActions(ctx, []string{"psql"})
+	if err := os.WriteFile(filepath.Join(dir, "skill", "SKILL.md"), []byte("---\nname: psql\ndescription: d\n---\nBody.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(inline("psql", func(m *manifest.Manifest) {
+		m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"psql"}}}
+	}).Manifest)
+	if err := os.WriteFile(filepath.Join(dir, manifest.FileName), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Create(ctx, connectors.Entry{Name: "psql", From: "file:" + filepath.Join(dir, manifest.FileName)}); err != nil {
+		t.Fatal(err)
+	}
+	acts, err := svc.ResolveActions(ctx, "", []string{"psql"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(acts) != 1 || acts[0].SkillDir != skillDir {
-		t.Fatalf("actions = %+v; want skill dir %s", acts, skillDir)
+	if len(acts) != 1 || acts[0].Skill != "psql" || acts[0].SkillDir != filepath.Join(dir, "skill") {
+		t.Fatalf("actions = %+v", acts)
+	}
+	if _, err := svc.ResolveActions(ctx, "", []string{"nope"}); err == nil {
+		t.Fatal("unknown name resolved")
+	}
+}
+
+// TestConnectorsProtocolSession drives a trebi-connector/1 adapter: the
+// status gate, a login flow, a room call, one event, and a logout.
+func TestConnectorsProtocolSession(t *testing.T) {
+	st, _, svc := openStack(t)
+	ctx := context.Background()
+	sb := &fakeadapter.Sandbox{
+		Result: protocol.InitializeResult{Login: []string{protocol.StepQR}, Features: []string{manifest.FeatureRoomsList}},
+		Rooms:  []protocol.Room{{ID: "r1", Name: "General", Kind: protocol.RoomGroup}},
+		Events: []protocol.Event{{ID: "e1", Type: "message", TS: "2026-09-28T10:00:00Z", Room: &protocol.Room{ID: "r1"}, Text: "hi"}},
+	}
+	path := filepath.Join(t.TempDir(), "sandbox.json")
+	if err := sb.WriteFile(path); err != nil {
+		t.Fatal(err)
+	}
+	e := inline("chat", func(m *manifest.Manifest) {
+		m.Events = &manifest.Events{Protocol: manifest.ProtocolConnector, Command: `"` + os.Args[0] + `"`, Types: []manifest.EventType{{Type: "message"}}}
+		m.Channel = &manifest.Channel{Features: []string{manifest.FeatureRoomsList}}
+	})
+	e.Inputs = map[string]string{fakeadapter.Env: "sandbox:" + path}
+	if err := svc.Create(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var states []string
+	svc.OnStatus(func(_ context.Context, instance, state string) {
+		mu.Lock()
+		defer mu.Unlock()
+		states = append(states, instance+":"+state)
+	})
+	if err := svc.Start(ctx, "chat"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Stop("chat") })
+	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateAuthRequired }, "no auth_required status")
+	if !svc.Down("chat") {
+		t.Fatal("an instance that needs a login is not down")
+	}
+	if !svc.IsChannel("chat") {
+		t.Fatal("chat is not a channel")
+	}
+
+	f, err := svc.Login(ctx, "chat", protocol.StepQR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 5*time.Second, func() bool { d := f.Current().Done; return d != nil && d.OK }, "login did not finish")
+	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "not connected")
+	if svc.Down("chat") {
+		t.Fatal("a connected instance is down")
+	}
+	if got, ok := svc.FindFlow("chat", f.ID); !ok || got != f {
+		t.Fatal("FindFlow lost the flow")
+	}
+	waitUntil(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Contains(states, "chat:"+protocol.StateConnected)
+	}, "no connected hook")
+
+	var page protocol.RoomPage
+	if err := svc.Call(ctx, "chat", protocol.MethodRoomsList, protocol.RoomsListParams{}, &page); err != nil || len(page.Rooms) != 1 {
+		t.Fatalf("rooms %+v %v", page, err)
+	}
+	if err := svc.Call(ctx, "chat", protocol.MethodThreadsList, protocol.ThreadsListParams{Room: "r1"}, nil); protocol.CodeOf(err) != protocol.CodeUnsupported {
+		t.Fatalf("threads without the feature: %v", err)
+	}
+	waitUntil(t, 5*time.Second, func() bool {
+		var n int
+		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE connector='chat' AND source_id='e1'`).Scan(&n) // retried until the deadline
+		return n == 1
+	}, "event e1 not stored")
+
+	if err := svc.Logout(ctx, "chat"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateAuthRequired }, "logout kept the session")
+}
+
+// TestConnectorsDoctor proves the findings of a broken file entry.
+func TestConnectorsDoctor(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	body, _ := json.Marshal(inline("tool", func(m *manifest.Manifest) {
+		m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"definitely-not-on-path-xyz"}}}
+		m.Install = &manifest.Install{Bin: "definitely-not-on-path-xyz", VersionCommand: "echo tool 0.9.0"}
+	}).Manifest)
+	if err := os.WriteFile(filepath.Join(dir, manifest.FileName), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Create(ctx, connectors.Entry{Name: "tool", From: "file:" + filepath.Join(dir, manifest.FileName)}); err != nil {
+		t.Fatal(err)
+	}
+	codes := func() []string {
+		var out []string
+		for _, f := range svc.Doctor(ctx) {
+			out = append(out, f.Code)
+		}
+		return out
+	}
+	want := []string{"connector_binary_missing", "connector_version_mismatch", "connector_skill_missing"}
+	if got := codes(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("codes %v, want %v", got, want)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill", "SKILL.md"), []byte("---\nname: tool\ndescription: d\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := baseManifest("tool")
+	m.Skill = &manifest.Skill{Compat: ">=2.0.0"}
+	m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"sh"}}}
+	body, _ = json.Marshal(m)
+	if err := os.WriteFile(filepath.Join(dir, manifest.FileName), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := codes(); !reflect.DeepEqual(got, []string{"connector_skill_compat"}) {
+		t.Fatalf("codes %v", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, manifest.FileName), []byte("schema: nope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := codes(); !reflect.DeepEqual(got, []string{"connector_manifest_invalid"}) {
+		t.Fatalf("codes %v", got)
+	}
+}
+
+// TestConnectorsConformance runs the live checks against a logged-in
+// sandbox and proves that the adapter keeps running.
+func TestConnectorsConformance(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	sb := &fakeadapter.Sandbox{
+		Result:   protocol.InitializeResult{Login: []string{protocol.StepQR}, Features: []string{manifest.FeatureRoomsList}},
+		Rooms:    []protocol.Room{{ID: "r1", Name: "General"}},
+		LoggedIn: true,
+	}
+	path := filepath.Join(t.TempDir(), "sandbox.json")
+	if err := sb.WriteFile(path); err != nil {
+		t.Fatal(err)
+	}
+	e := inline("chat", func(m *manifest.Manifest) {
+		m.Events = &manifest.Events{Protocol: manifest.ProtocolConnector, Command: `"` + os.Args[0] + `"`, Types: []manifest.EventType{{Type: "message"}}}
+		m.Channel = &manifest.Channel{Features: []string{manifest.FeatureRoomsList}}
+		m.Setup = &manifest.Setup{Login: []string{"qr"}}
+	})
+	e.Inputs = map[string]string{fakeadapter.Env: "sandbox:" + path}
+	if err := svc.Create(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Conformance(ctx, "chat", ""); err == nil {
+		t.Fatal("a stopped instance must fail")
+	}
+	if err := svc.Start(ctx, "chat"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Stop("chat") })
+	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "no connected status")
+	res, err := svc.Conformance(ctx, "chat", "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, r := range res {
+		got[r.Check] = r.Status
+		if r.Status == protocol.CheckFail {
+			t.Errorf("%s failed: %s", r.Check, r.Message)
+		}
+	}
+	if got["send once"] != protocol.CheckPass || got["login"] != protocol.CheckSkip || got["shutdown"] != protocol.CheckSkip {
+		t.Fatalf("results = %v", got)
+	}
+	if svc.AuthState("chat").State != protocol.StateConnected {
+		t.Fatal("the adapter stopped")
 	}
 }

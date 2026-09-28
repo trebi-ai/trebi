@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,33 +12,89 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/channels"
-	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
-// fakeDefs is the channel view of a connectors service without a file.
-type fakeDefs struct {
-	channels map[string]connectors.Channel
-	envs     map[string]map[string]string
-	cwds     map[string]string
+// call is one request the fake sessions received.
+type call struct {
+	Instance string
+	Method   string
+	Params   any
 }
 
-func (f *fakeDefs) Channel(name string) (connectors.Channel, map[string]string, bool) {
-	ch, ok := f.channels[name]
-	return ch, f.envs[name], ok
+// fakeSessions is the channel view of a connectors service with no process.
+type fakeSessions struct {
+	mu       sync.Mutex
+	channels map[string]bool
+	features map[string][]string
+	limits   map[string]manifest.Limits
+	errs     map[string]error // instance → error of every call
+	calls    []call
 }
 
-func (f *fakeDefs) Cwd(name string) string { return f.cwds[name] }
+func (f *fakeSessions) Call(_ context.Context, instance, method string, params, result any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call{instance, method, params})
+	if err := f.errs[instance]; err != nil {
+		return err
+	}
+	if r, ok := result.(*protocol.SendResult); ok {
+		r.MessageID = "m" + ulid.Make().String()
+	}
+	return nil
+}
+
+func (f *fakeSessions) Features(instance string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.features[instance]
+}
+
+func (f *fakeSessions) Limits(instance string) manifest.Limits {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.limits[instance]
+}
+
+func (f *fakeSessions) InstanceFor(name, _ string) string { return name }
+
+func (f *fakeSessions) IsChannel(name string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.channels[name]
+}
+
+func (f *fakeSessions) fail(instance string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.errs[instance] = err
+}
+
+// count returns the calls of one method.
+func (f *fakeSessions) count(method string) []call {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []call
+	for _, c := range f.calls {
+		if c.Method == method {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 type fixture struct {
 	t     *testing.T
 	dir   string
 	st    *store.Store
 	convs *conversations.Service
-	defs  *fakeDefs
+	sess  *fakeSessions
 	ob    *outbox.Service
 	svc   *channels.Service
 }
@@ -54,15 +108,14 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	convs := conversations.New(st)
-	defs := &fakeDefs{
-		channels: map[string]connectors.Channel{},
-		envs:     map[string]map[string]string{},
-		cwds:     map[string]string{},
+	sess := &fakeSessions{
+		channels: map[string]bool{}, features: map[string][]string{},
+		limits: map[string]manifest.Limits{}, errs: map[string]error{},
 	}
 	ob := outbox.New(st)
-	svc := channels.New(st, ob, defs, convs)
+	svc := channels.New(st, ob, sess, convs)
 	ob.Register(outbox.KindChannel, svc, outbox.Policy{Base: 5 * time.Second, Max: 5 * time.Minute, Attempts: 5})
-	return &fixture{t: t, dir: dir, st: st, convs: convs, defs: defs, ob: ob, svc: svc}
+	return &fixture{t: t, dir: dir, st: st, convs: convs, sess: sess, ob: ob, svc: svc}
 }
 
 func (f *fixture) conv(workspace string) string {
@@ -76,9 +129,12 @@ func (f *fixture) conv(workspace string) string {
 	return c.ID
 }
 
-// addChannel registers a connector channel with a send command.
-func (f *fixture) addChannel(name, send string) {
-	f.defs.channels[name] = connectors.Channel{Ref: "id", Send: send}
+// addChannel registers a channel connector. A non-nil err fails each call.
+func (f *fixture) addChannel(name string, err error) {
+	f.sess.mu.Lock()
+	f.sess.channels[name] = true
+	f.sess.mu.Unlock()
+	f.sess.fail(name, err)
 }
 
 func (f *fixture) userMsg(convID, channelType, ref, text string) {
@@ -116,7 +172,7 @@ func (f *fixture) insertMsg(id, convID, role, channelType, ref, text, runID stri
 func TestReplyOnTurnRunAndSession(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	f.addChannel("telegram", "true")
+	f.addChannel("telegram", nil)
 	ctx := context.Background()
 
 	runConv := f.conv("ws1")
@@ -176,7 +232,7 @@ func TestReplyOnTurnRunAndSession(t *testing.T) {
 func TestReplyOnTurnJoinsTextAfterUser(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	f.addChannel("telegram", "true")
+	f.addChannel("telegram", nil)
 	ctx := context.Background()
 
 	convID := f.conv("ws1")
@@ -206,14 +262,13 @@ func TestReplyOnTurnJoinsTextAfterUser(t *testing.T) {
 	}
 }
 
-// TestReplyOnTurnSkipsNoAddress: a user row with no channel ref, or with a
-// trigger ref, gets no reply row.
+// TestReplyOnTurnSkipsNoAddress: a user row with no room gets no reply row.
 func TestReplyOnTurnSkipsNoAddress(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	f.addChannel("telegram", "true")
+	f.addChannel("telegram", nil)
 	ctx := context.Background()
-	for _, ref := range []string{"", "trigger:telegram"} {
+	for _, ref := range []string{""} {
 		convID := f.conv("ws1")
 		f.userMsg(convID, "telegram", ref, "event")
 		f.assistantMsg(convID, "", "reply")
@@ -231,7 +286,7 @@ func TestReplyOnTurnSkipsNoAddress(t *testing.T) {
 func TestOutboxFrames(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	f.addChannel("telegram", "exit 1")
+	f.addChannel("telegram", errSend)
 	ctx := context.Background()
 
 	convID := f.conv("ws1")
@@ -258,7 +313,7 @@ func TestOutboxFrames(t *testing.T) {
 func TestSendDueStopsOnCancel(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	f.addChannel("telegram", "true")
+	f.addChannel("telegram", nil)
 	convID := f.conv("ws1")
 	f.userMsg(convID, "telegram", "chat1", "hello")
 	f.assistantMsg(convID, "r1", "reply")
@@ -275,47 +330,113 @@ func TestSendDueStopsOnCancel(t *testing.T) {
 	}
 }
 
-// TestSendDueStdinEnvAndSuccess: the reply text goes on stdin, the channel env
-// is set, and the connector cwd applies.
-func TestSendDueStdinEnvAndSuccess(t *testing.T) {
+// TestDeliverSendsParts: the reply goes to the room in parts of max_text,
+// each with its own key, in the preferred format.
+func TestDeliverSendsParts(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	cwd := filepath.Join(f.dir, "cwd")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f.addChannel("telegram", `cat > body.txt && printf '%s|%s|%s' "$TREBI_CHANNEL_REF" "$TREBI_CONVERSATION_ID" "$TREBI_MESSAGE_ID" > env.txt`)
-	f.defs.cwds["telegram"] = cwd
-	f.defs.envs["telegram"] = map[string]string{"EXTRA": "x"}
+	f.addChannel("telegram", nil)
+	f.sess.limits["telegram"] = manifest.Limits{MaxText: 10, Formats: []string{"text", "markdown"}}
 	ctx := context.Background()
 
 	convID := f.conv("ws1")
 	f.userMsg(convID, "telegram", "chat1", "hello")
-	f.assistantMsg(convID, "r1", "the reply text")
+	f.assistantMsg(convID, "r1", "first part\n\nsecond")
 	if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.ob.SendDue(ctx, time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	row := f.onlyOutbox(ctx, convID)
+	if row.Status != outbox.StatusSent || row.SentAt == nil {
+		t.Fatalf("sent row %+v", row)
+	}
+	sends := f.sess.count(protocol.MethodMessagesSend)
+	if len(sends) != 2 {
+		t.Fatalf("sends %+v", sends)
+	}
+	for i, want := range []string{"first part", "second"} {
+		p := sends[i].Params.(protocol.SendParams)
+		if p.Text != want || p.Room != "chat1" || p.Format != "markdown" || p.Key != row.ID+":"+string(rune('1'+i)) {
+			t.Fatalf("part %d %+v", i, p)
+		}
+	}
+}
 
-	body, err := os.ReadFile(filepath.Join(cwd, "body.txt"))
-	if err != nil {
-		t.Fatalf("body: %v", err)
+// TestDeliverErrorCodes: auth_required holds the row, rate_limited waits at
+// least retry_after, and not_found fails at once.
+func TestDeliverErrorCodes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	limited := protocol.NewError(protocol.CodeRateLimited, "slow down")
+	limited.RetryAfter = time.Minute
+	cases := map[string]struct {
+		err   error
+		check func(t *testing.T, r outbox.Row, t0 time.Time)
+	}{
+		"auth": {protocol.NewError(protocol.CodeAuthRequired, "log in"), func(t *testing.T, r outbox.Row, _ time.Time) {
+			if r.Status != outbox.StatusPending || r.HoldReason != outbox.HoldAuthRequired || r.Attempts != 0 {
+				t.Fatalf("held row %+v", r)
+			}
+		}},
+		"rate": {limited, func(t *testing.T, r outbox.Row, t0 time.Time) {
+			if r.NextAttemptAt == nil || r.NextAttemptAt.Before(t0.Add(time.Minute).Truncate(time.Millisecond)) {
+				t.Fatalf("rate-limited row %+v", r)
+			}
+		}},
+		"gone": {protocol.NewError(protocol.CodeNotFound, "no room"), func(t *testing.T, r outbox.Row, _ time.Time) {
+			if r.Status != outbox.StatusFailed || r.Attempts != 1 {
+				t.Fatalf("failed row %+v", r)
+			}
+		}},
 	}
-	if string(body) != "the reply text" {
-		t.Fatalf("stdin body = %q", body)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			f.addChannel("telegram", tc.err)
+			convID := f.conv("ws1")
+			f.userMsg(convID, "telegram", "chat1", "hello")
+			f.assistantMsg(convID, "r1", "reply")
+			if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
+				t.Fatal(err)
+			}
+			t0 := time.Now()
+			if err := f.ob.SendDue(ctx, t0); err != nil {
+				t.Fatal(err)
+			}
+			tc.check(t, f.onlyOutbox(ctx, convID), t0)
+		})
 	}
-	env, err := os.ReadFile(filepath.Join(cwd, "env.txt"))
-	if err != nil {
-		t.Fatalf("env: %v", err)
+
+	// A held row waits until Release, then sends.
+	f := newFixture(t)
+	f.addChannel("telegram", protocol.NewError(protocol.CodeAuthRequired, "log in"))
+	convID := f.conv("ws1")
+	f.userMsg(convID, "telegram", "chat1", "hello")
+	f.assistantMsg(convID, "r1", "reply")
+	if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
+		t.Fatal(err)
 	}
-	rows, _ := f.list(ctx, convID)
-	if len(rows) != 1 || rows[0].Status != outbox.StatusSent || rows[0].SentAt == nil {
-		t.Fatalf("sent row %+v", rows)
+	if err := f.ob.SendDue(ctx, time.Now()); err != nil {
+		t.Fatal(err)
 	}
-	if want := "chat1|" + convID + "|" + rows[0].ID; string(env) != want {
-		t.Fatalf("env = %q, want %q", env, want)
+	f.sess.fail("telegram", nil)
+	if err := f.ob.SendDue(ctx, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.onlyOutbox(ctx, convID); r.Status != outbox.StatusPending {
+		t.Fatalf("held row sent before release: %+v", r)
+	}
+	if n, err := f.ob.Release(ctx, "telegram"); err != nil || n != 1 {
+		t.Fatalf("release %d %v", n, err)
+	}
+	if err := f.ob.SendDue(ctx, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.onlyOutbox(ctx, convID); r.Status != outbox.StatusSent {
+		t.Fatalf("released row %+v", r)
 	}
 }
 
@@ -323,7 +444,7 @@ func TestSendDueStdinEnvAndSuccess(t *testing.T) {
 func TestSendDueRetryBackoff(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	f.addChannel("telegram", "exit 1")
+	f.addChannel("telegram", errSend)
 	ctx := context.Background()
 
 	convID := f.conv("ws1")
@@ -368,7 +489,7 @@ func TestSendDueRetryBackoff(t *testing.T) {
 func TestSendDueFailsAfterFiveWithInbox(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	f.addChannel("telegram", "exit 1")
+	f.addChannel("telegram", errSend)
 	ctx := context.Background()
 
 	convID := f.conv("ws1")
@@ -409,7 +530,7 @@ func TestSendDueFailsAfterFiveWithInbox(t *testing.T) {
 	}
 
 	// A manual retry that sends resolves the item.
-	f.addChannel("telegram", "true")
+	f.addChannel("telegram", nil)
 	if _, err := f.ob.Retry(ctx, row.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +561,7 @@ func (f *fixture) openItems(subject string) int {
 func TestRetryOutbox(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	f.addChannel("telegram", "exit 1")
+	f.addChannel("telegram", errSend)
 	ctx := context.Background()
 
 	convID := f.conv("ws1")
@@ -470,34 +591,35 @@ func TestRetryOutbox(t *testing.T) {
 	}
 }
 
-// TestAckRunsOnce: the ack command runs once per Ack call with the channel env.
-func TestAckRunsOnce(t *testing.T) {
+// TestAckMarksSeen: Ack sends messages/seen for the event room and source
+// id when the instance has the seen feature.
+func TestAckMarksSeen(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	cwd := f.dir
-	f.defs.channels["telegram"] = connectors.Channel{Ref: "id", Send: "true",
-		Ack: `printf '%s' "$TREBI_CHANNEL_REF" >> ack.txt`}
-	f.defs.cwds["telegram"] = cwd
+	f.addChannel("telegram", nil)
 	ctx := context.Background()
 
-	if _, err := f.convs.EnsureForChannel(ctx, "ws1", "", conversations.Address{Connector: "telegram", Room: "chat1"}); err != nil {
-		t.Fatal(err)
-	}
-	// The key is a thread id; the ack goes to the event's channel ref.
 	evID := f.event("telegram", "chat1")
 	item := dispatch.QueueItem{Connector: "telegram", WorkspaceID: "ws1", ConversationKey: "thread9", EventID: evID}
 	if err := f.svc.Ack(ctx, item); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(cwd, "ack.txt"))
-	if err != nil {
-		t.Fatalf("ack file: %v", err)
+	if n := len(f.sess.count(protocol.MethodMessagesSeen)); n != 0 {
+		t.Fatalf("seen without the feature: %d", n)
 	}
-	if string(data) != "chat1" {
-		t.Fatalf("ack = %q", data)
+	f.sess.features["telegram"] = []string{manifest.FeatureSeen}
+	if err := f.svc.Ack(ctx, item); err != nil {
+		t.Fatal(err)
 	}
-	// A connector with no ack command is a no-op.
-	if err := f.svc.Ack(ctx, dispatch.QueueItem{Connector: "missing"}); err != nil {
+	seen := f.sess.count(protocol.MethodMessagesSeen)
+	if len(seen) != 1 {
+		t.Fatalf("seen calls %+v", seen)
+	}
+	if p := seen[0].Params.(protocol.SeenParams); p.Room != "chat1" || p.MessageID != "src-"+evID {
+		t.Fatalf("seen params %+v", p)
+	}
+	// A connector that is not a channel is a no-op.
+	if err := f.svc.Ack(ctx, dispatch.QueueItem{Connector: "missing", EventID: evID}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -507,13 +629,8 @@ func TestAckRunsOnce(t *testing.T) {
 func TestPulseTypingStartsAndStops(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	cwd := f.dir
-	f.defs.channels["telegram"] = connectors.Channel{Ref: "id", Send: "true",
-		Typing:         `date +%s%N >> typing.txt`,
-		TypingInterval: connectors.Duration(8 * time.Second),
-		TypingMax:      connectors.Duration(15 * time.Minute),
-	}
-	f.defs.cwds["telegram"] = cwd
+	f.addChannel("telegram", nil)
+	f.sess.features["telegram"] = []string{manifest.FeatureTyping}
 	ctx := context.Background()
 
 	convID := f.conv("ws1")
@@ -521,41 +638,27 @@ func TestPulseTypingStartsAndStops(t *testing.T) {
 	f.setSessionStatus(convID, "running")
 
 	t0 := time.Now()
-	if err := f.svc.PulseTyping(ctx, t0); err != nil {
-		t.Fatal(err)
+	steps := []struct {
+		at     time.Duration
+		status string
+		want   int
+	}{
+		{0, "", 1},                       // start
+		{time.Second, "", 1},             // inside the interval
+		{9 * time.Second, "", 2},         // after the interval
+		{20 * time.Second, "idle", 2},    // the turn ends
+		{21 * time.Second, "running", 3}, // a new turn
 	}
-	if n := f.lines("typing.txt"); n != 1 {
-		t.Fatalf("typing lines after start = %d, want 1", n)
-	}
-	// Inside the interval nothing more is sent.
-	if err := f.svc.PulseTyping(ctx, t0.Add(time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.lines("typing.txt"); n != 1 {
-		t.Fatalf("typing lines inside interval = %d, want 1", n)
-	}
-	// After the interval one more pulse goes.
-	if err := f.svc.PulseTyping(ctx, t0.Add(9*time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.lines("typing.txt"); n != 2 {
-		t.Fatalf("typing lines after interval = %d, want 2", n)
-	}
-	// The turn ends: the pulse stops and the state clears.
-	f.setSessionStatus(convID, "idle")
-	if err := f.svc.PulseTyping(ctx, t0.Add(20*time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.lines("typing.txt"); n != 2 {
-		t.Fatalf("typing lines after stop = %d, want 2", n)
-	}
-	// A new turn starts the pulse again.
-	f.setSessionStatus(convID, "running")
-	if err := f.svc.PulseTyping(ctx, t0.Add(21*time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.lines("typing.txt"); n != 3 {
-		t.Fatalf("typing lines after restart = %d, want 3", n)
+	for _, st := range steps {
+		if st.status != "" {
+			f.setSessionStatus(convID, st.status)
+		}
+		if err := f.svc.PulseTyping(ctx, t0.Add(st.at)); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(f.sess.count(protocol.MethodTyping)); n != st.want {
+			t.Fatalf("at %s typing calls = %d, want %d", st.at, n, st.want)
+		}
 	}
 }
 
@@ -577,7 +680,7 @@ func (b *busyTurns) set(convID string, v bool) {
 	b.busy[convID] = v
 }
 
-// TestPulseTypingStopsAtMax: typing stops at typing_max and stays stopped
+// TestPulseTypingStopsAtMax: typing stops after 15 minutes and stays stopped
 // while the turn is busy. A conversation that waits is not busy, and the
 // next busy turn starts typing again.
 func TestPulseTypingStopsAtMax(t *testing.T) {
@@ -585,12 +688,8 @@ func TestPulseTypingStopsAtMax(t *testing.T) {
 	f := newFixture(t)
 	turns := &busyTurns{busy: map[string]bool{}}
 	f.svc.WithLiveTurns(turns)
-	f.defs.channels["telegram"] = connectors.Channel{Ref: "id", Send: "true",
-		Typing:         `date +%s%N >> typing.txt`,
-		TypingInterval: connectors.Duration(8 * time.Second),
-		TypingMax:      connectors.Duration(20 * time.Second),
-	}
-	f.defs.cwds["telegram"] = f.dir
+	f.addChannel("telegram", nil)
+	f.sess.features["telegram"] = []string{manifest.FeatureTyping}
 	ctx := context.Background()
 
 	convID := f.conv("ws1")
@@ -602,35 +701,35 @@ func TestPulseTypingStopsAtMax(t *testing.T) {
 	if err := f.svc.PulseTyping(ctx, t0); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.lines("typing.txt"); n != 0 {
-		t.Fatalf("typing lines while not busy = %d, want 0", n)
+	if n := len(f.sess.count(protocol.MethodTyping)); n != 0 {
+		t.Fatalf("typing calls while not busy = %d, want 0", n)
 	}
 	turns.set(convID, true)
 	steps := []struct {
 		at   time.Duration
 		want int
 	}{
-		{0, 1}, {10 * time.Second, 2}, {20 * time.Second, 2}, {30 * time.Second, 2}, {60 * time.Second, 2},
+		{0, 1}, {10 * time.Second, 2}, {15 * time.Minute, 2}, {16 * time.Minute, 2}, {20 * time.Minute, 2},
 	}
 	for _, st := range steps {
 		if err := f.svc.PulseTyping(ctx, t0.Add(st.at)); err != nil {
 			t.Fatal(err)
 		}
-		if n := f.lines("typing.txt"); n != st.want {
-			t.Fatalf("at %s typing lines = %d, want %d", st.at, n, st.want)
+		if n := len(f.sess.count(protocol.MethodTyping)); n != st.want {
+			t.Fatalf("at %s typing calls = %d, want %d", st.at, n, st.want)
 		}
 	}
 	// The turn waits, then a new turn starts: typing runs again.
 	turns.set(convID, false)
-	if err := f.svc.PulseTyping(ctx, t0.Add(61*time.Second)); err != nil {
+	if err := f.svc.PulseTyping(ctx, t0.Add(21*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	turns.set(convID, true)
-	if err := f.svc.PulseTyping(ctx, t0.Add(62*time.Second)); err != nil {
+	if err := f.svc.PulseTyping(ctx, t0.Add(22*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.lines("typing.txt"); n != 3 {
-		t.Fatalf("typing lines after a new turn = %d, want 3", n)
+	if n := len(f.sess.count(protocol.MethodTyping)); n != 3 {
+		t.Fatalf("typing calls after a new turn = %d, want 3", n)
 	}
 }
 
@@ -666,9 +765,9 @@ func (f *fixture) event(connector, channelRef string) string {
 	f.t.Helper()
 	id := ulid.Make().String()
 	if _, err := f.st.DB().Exec(`INSERT INTO events
-		(id, connector, instance, received_at, summary, raw_json, trace_id, room)
-		VALUES (?,?,?,?,?,?,?,?)`,
-		id, connector, connector, time.Now().UTC().Format(time.RFC3339Nano), "", "{}", "tr", channelRef); err != nil {
+		(id, connector, instance, received_at, summary, raw_json, trace_id, room, source_id)
+		VALUES (?,?,?,?,?,?,?,?,?)`,
+		id, connector, connector, time.Now().UTC().Format(time.RFC3339Nano), "", "{}", "tr", channelRef, "src-"+id); err != nil {
 		f.t.Fatal(err)
 	}
 	return id
@@ -735,14 +834,4 @@ func (f *fixture) setSessionStatus(convID, status string) {
 	}
 }
 
-func (f *fixture) lines(name string) int {
-	f.t.Helper()
-	data, err := os.ReadFile(filepath.Join(f.dir, name))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0
-		}
-		f.t.Fatal(err)
-	}
-	return strings.Count(strings.TrimSpace(string(data)), "\n") + 1
-}
+var errSend = errors.New("send failed")

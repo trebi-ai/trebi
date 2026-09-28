@@ -311,6 +311,61 @@ func (s *Service) AddConnectorSkill(ctx context.Context, name, skillMD, connecto
 	return s.create(ctx, name, skillMD, ProvenanceConnector, "connector", connector)
 }
 
+// SyncConnectorSkill copies the skill folder of a resolved connector into
+// the managed skills as ProvenanceConnector (Part C.6). A skill of the same
+// name that another owner holds is ErrExists. A copy that the same connector
+// owns is replaced.
+func (s *Service) SyncConnectorSkill(ctx context.Context, name, srcDir, connector string) (*Skill, error) {
+	if err := CheckName(name); err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home.SkillsDir(), name)
+	var prov, ref sql.NullString
+	err := s.st.DB().QueryRowContext(ctx, `SELECT provenance, source_ref FROM skill_index WHERE name=?`, name).Scan(&prov, &ref)
+	switch {
+	case err == nil && (prov.String != string(ProvenanceConnector) || ref.String != connector):
+		return nil, fmt.Errorf("%w: %q", ErrExists, name)
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return nil, err
+	case err != nil:
+		if _, statErr := os.Stat(dir); statErr == nil {
+			return nil, fmt.Errorf("%w: %q", ErrExists, name)
+		}
+	}
+	exists := err == nil
+	tmp := dir + ".sync"
+	_ = os.RemoveAll(tmp) // a leftover of a failed sync
+	if err := os.CopyFS(tmp, os.DirFS(srcDir)); err != nil {
+		_ = os.RemoveAll(tmp) // best effort
+		return nil, err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp, dir); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	topic, action := "skill.created", "created"
+	if exists {
+		topic, action = "skill.updated", "updated"
+	}
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO skill_index (name, provenance, path, hash, used_30d, updated_at, source_kind, source_ref)
+			VALUES (?,?,?,?,0,?,?,?)
+			ON CONFLICT(name) DO UPDATE SET path=excluded.path, hash=excluded.hash, updated_at=excluded.updated_at`,
+			name, string(ProvenanceConnector), dir, hashDir(dir), now, "connector", connector)
+		return err
+	}, store.BusEvent{
+		Topic: topic, Entity: "skill", EntityID: name, Action: action,
+		Attrs: map[string]string{"provenance": string(ProvenanceConnector)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, name, false)
+}
+
 // RemoveConnectorSkills removes the skills one connector contributed. It
 // returns the names it removed.
 func (s *Service) RemoveConnectorSkills(ctx context.Context, connector string) ([]string, error) {

@@ -35,12 +35,20 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "connectors.yaml"), []byte(`chat:
-  events:
-    command: 'cat'
-    format: json
-  channel:
-    ref: chat_id
-    send: 'cat >> /dev/null'
+  from: inline
+  manifest:
+    schema: trebi-connector/1
+    name: chat
+    title: Chat
+    description: Test chat
+    version: 1.0.0
+    events:
+      protocol: trebi-connector/1
+      command: 'sleep 60'
+      types:
+        - type: message
+    channel:
+      features: [typing]
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
