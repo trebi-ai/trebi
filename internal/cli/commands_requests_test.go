@@ -184,3 +184,12 @@ func TestRequestAnswerSendsCLI(t *testing.T) {
 		t.Fatalf("body %v", got)
 	}
 }
+
+func TestRequestGetAlias(t *testing.T) {
+	s := newRequestTestServer(t)
+	s.reply = requests.Request{ID: "R1", Title: "Send it", Status: requests.StatusPending}
+	out, err := runCLI(t, s.client(), "request", "get", "R1", "--json")
+	if err != nil || !strings.Contains(out, "Send it") {
+		t.Fatalf("out %q err %v", out, err)
+	}
+}

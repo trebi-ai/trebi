@@ -34,6 +34,19 @@ trebi runs approve <id> --decision deny
 
 A pending row carries the question the agent asked. See `trebi guide runs-and-debugging`.
 
+## Requests (jobs)
+
+A request inbox item points at a request that a job run opened. `request_id` on the item names it. Answer the request, not the item: the item resolves when the request closes.
+
+```bash
+trebi inbox list --kind request --json
+trebi request show <request_id>
+trebi request answer <request_id> approve
+trebi request dismiss <request_id>
+```
+
+An email reply to the request mail also answers: `approve` or `reject` on the first line, or one option for a `choose` request. Any other reply goes to the job as a message. See `trebi guide requests`.
+
 ## Alerts
 
 ```bash

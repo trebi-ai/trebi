@@ -83,6 +83,7 @@ func requestListCommand() *cli.Command {
 func requestShowCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "show",
+		Aliases:   []string{"get"},
 		ArgsUsage: "<id>",
 		Usage:     "show one request and its answer",
 		Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},

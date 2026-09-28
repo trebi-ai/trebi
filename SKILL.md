@@ -5,7 +5,7 @@ description: Operate trebi, an LLM task runner (daemon + CLI), fully from the sh
 
 # Trebi
 
-Trebi is one binary that is both a daemon (`trebid`) and a CLI. The daemon owns an HTTP `/v1` API, an SSE event bus, and a SQLite store under `~/.trebi`. The CLI is a thin client of that API and covers the whole control plane; the MCP surface and the native assistant share the same 16 catalog tools.
+Trebi is one binary that is both a daemon (`trebid`) and a CLI. The daemon owns an HTTP `/v1` API, an SSE event bus, and a SQLite store under `~/.trebi`. The CLI is a thin client of that API and covers the whole control plane; the MCP surface and the native assistant share the same catalog tools.
 
 ## How to reach trebi
 
@@ -27,7 +27,8 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | connector | one external system with up to three capabilities: actions (an MCP server or CLI commands for agent runs), events (a supervised process that produces trigger events), and a channel (a conversation transport) |
 | trigger | a rule on a job: `cron`, `every`, or `event` from a connector |
 | skill | a stored `SKILL.md` the harness can load |
-| inbox | the queue you drain: approvals, failures, health, watchdog |
+| request | a decision a job run asks a person for (confirm, review, choose, form). The run ends its turn as `parked` and continues with the answer |
+| inbox | the queue you drain: approvals, requests, failures, health, watchdog |
 | alerts | the per-firing alert feed; a log, not a queue |
 | outbox | every outgoing message (channel reply, email, alert mail) with its status, attempts, and last error |
 | notify route | the ordered steps an alert tries (email, then connector channels); set per job, agent, workspace, or globally. `trebi notify route` shows it, `trebi notify test` sends a test |
@@ -122,6 +123,7 @@ Every error is `{"error":{"code","message","details"}}` with a stable code:
 - Never show a secret value you did not have to read. Always prefer the form that keeps it out of your transcript: on the CLI pass the path, `trebi secret set --from-file ./key.txt NAME`; on the catalog pass `value_file`, which is resolved before dispatch. If you only have the value in context, pass `value` once and never show it again: no second `cat`, not in the final message, not in a job prompt or a file. Do not stop the task over this — store the secret and carry on. Reference a stored secret from a job by its **name**; the daemon resolves it at launch. A secret name is not a secret.
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.
 - Agent runs carry `TREBI_RUN_TOKEN`; keep it in the environment for `trebi` and `trebi mcp serve` calls. It scopes an agent to its folder, owned jobs, and own memory. `email.accept`, `kit`, and `budget` are human-only. If a write returns `forbidden`, ask the human instead of changing owners or protected keys.
+- When a job run needs a person's decision before an action, use `trebi request create` (or the `request` tool) and then end the turn. Do not wait or poll. Do not answer a request from a job run; a person answers it. Read `trebi guide requests` first.
 - To hand a problem up, use `agent escalate` (`to=assistant` or `to=operator`) with the concrete blocker and what you tried. A failed owned job first wakes its owner with `reason=escalation`; the fourth failure in 24 hours goes to the operator inbox.
 - Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
 - `trebi bus --limit N` dumps up to N frames and exits. `connector logs` returns at once; `-f` follows and blocks. `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.
