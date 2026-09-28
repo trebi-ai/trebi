@@ -1,10 +1,13 @@
 package email
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/requests"
 )
 
 // TestDecorateMarksSentTurns: only a sent row with covered_turn marks its
@@ -61,5 +64,65 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		id, "out", "ws_1", messageID, messageID, "ops@example.com", disposition,
 		conversation, runID, covered, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRequestAnswer(t *testing.T) {
+	t.Parallel()
+	review := requests.Request{Type: requests.TypeReview, Allow: []requests.Decision{requests.DecisionApprove, requests.DecisionEdit, requests.DecisionReject, requests.DecisionRespond}}
+	choose := requests.Request{Type: requests.TypeChoose, Payload: requests.Payload{Options: []requests.Option{{ID: "a", Label: "Plan A"}, {ID: "b", Label: "Plan B"}}}}
+	form := func(schema string) requests.Request {
+		return requests.Request{Type: requests.TypeForm, Payload: requests.Payload{Schema: json.RawMessage(schema)}}
+	}
+	cases := []struct {
+		name     string
+		r        requests.Request
+		text     string
+		decision requests.Decision
+		extra    string
+	}{
+		{"approve", review, "Approve.\n\n> quoted", requests.DecisionApprove, ""},
+		{"yes", review, "yes", requests.DecisionApprove, ""},
+		{"reject", review, "Reject", requests.DecisionReject, ""},
+		{"no", review, "no thanks", requests.DecisionReject, ""},
+		{"other text", review, "Make it shorter.\n> Draft", requests.DecisionRespond, "Make it shorter."},
+		{"both words", review, "yes or no", requests.DecisionRespond, "yes or no"},
+		{"option label", choose, "plan b\nthanks", requests.DecisionChoose, "b"},
+		{"option id", choose, "a", requests.DecisionChoose, "a"},
+		{"choose approve", choose, "approve", requests.DecisionRespond, "approve"},
+		{"form no required", form(`{"type":"object","properties":{"n":{"type":"string"}}}`), "yes", requests.DecisionSubmit, ""},
+		{"form required", form(`{"type":"object","properties":{"n":{"type":"string"}},"required":["n"]}`), "yes", requests.DecisionRespond, "yes"},
+	}
+	for _, c := range cases {
+		a := requestAnswer(c.r, c.text)
+		if a.Decision != c.decision {
+			t.Errorf("%s: decision %s, want %s", c.name, a.Decision, c.decision)
+			continue
+		}
+		switch c.decision {
+		case requests.DecisionRespond:
+			if a.Message != c.extra {
+				t.Errorf("%s: message %q", c.name, a.Message)
+			}
+		case requests.DecisionChoose:
+			if len(a.Choices) != 1 || a.Choices[0] != c.extra {
+				t.Errorf("%s: choices %v", c.name, a.Choices)
+			}
+		}
+	}
+}
+
+func TestRequestReplyAnswers(t *testing.T) {
+	t.Parallel()
+	s := testService(openEmailStore(t))
+	acts := &fakeActions{env: testRouteEnv(), request: requests.Request{Type: requests.TypeConfirm, Allow: []requests.Decision{requests.DecisionApprove, requests.DecisionReject, requests.DecisionRespond}}}
+	g := NewIngress(s, connectors.New(s.st, nil, nil), acts, time.Minute, false)
+	msg := IngressMessage{ID: "m1", From: "ops@example.com", Text: "approve"}
+	g.applyItemReply(t.Context(), msg, RouteDecision{}, &replyTarget{inboxID: "in1", alertKind: "request", requestID: "R1", isItem: true})
+	if len(acts.answers) != 1 || acts.answers[0].Decision != requests.DecisionApprove || acts.answers[0].By != "email:ops@example.com" {
+		t.Fatalf("answers %+v", acts.answers)
+	}
+	if len(acts.asks) != 0 || len(acts.messages) != 0 {
+		t.Fatalf("asks %v messages %v", acts.asks, acts.messages)
 	}
 }

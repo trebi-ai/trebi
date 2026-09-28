@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
+	"github.com/trebi-ai/trebi/internal/requests"
 )
 
 // replyHops caps how deep one reply walks the References chain (plan I.1).
@@ -31,6 +33,7 @@ type replyTarget struct {
 	inboxID        string
 	alertKind      string
 	proposalID     string
+	requestID      string
 	resolved       bool
 	isItem         bool
 }
@@ -198,12 +201,21 @@ func (s *Service) itemByMessageID(ctx context.Context, messageID string) (*reply
 		return nil, fmt.Errorf("reply item %s: %w", messageID, err)
 	}
 	return &replyTarget{inboxID: id, runID: runID, alertKind: kind,
-		proposalID: proposalIDFromSubject(subject), resolved: status == "resolved", isItem: true}, nil
+		proposalID: proposalIDFromSubject(subject), requestID: requestIDFromSubject(subject),
+		resolved: status == "resolved", isItem: true}, nil
 }
 
 // proposalIDFromSubject extracts the derived proposal link from an alert subject.
 func proposalIDFromSubject(subject string) string {
 	if id, ok := strings.CutPrefix(subject, "proposal/"); ok {
+		return id
+	}
+	return ""
+}
+
+// requestIDFromSubject extracts the request id from a request alert subject.
+func requestIDFromSubject(subject string) string {
+	if id, ok := strings.CutPrefix(subject, "request/"); ok {
 		return id
 	}
 	return ""
@@ -236,7 +248,8 @@ func (s *Service) rowByMessageID(ctx context.Context, messageID string) (*replyT
 			inboxID).Scan(&runID, &alertKind, &status, &subject)
 		if err == nil {
 			return &replyTarget{inboxID: inboxID, runID: runID, alertKind: alertKind,
-				proposalID: proposalIDFromSubject(subject), resolved: status == "resolved", isItem: true}, nil
+				proposalID: proposalIDFromSubject(subject), requestID: requestIDFromSubject(subject),
+				resolved: status == "resolved", isItem: true}, nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
@@ -318,6 +331,8 @@ func (g *Ingress) applyItemReply(ctx context.Context, msg IngressMessage, d Rout
 		g.askReply(ctx, msg, d, t)
 	case t.proposalID != "":
 		g.decideProposalReply(ctx, msg, d, t)
+	case t.alertKind == "request" && t.requestID != "":
+		g.decideRequestReply(ctx, msg, d, t)
 	case t.alertKind == "waiting" && t.runID != "":
 		g.decideReply(ctx, msg, d, t)
 	default:
@@ -342,6 +357,72 @@ func (g *Ingress) decideProposalReply(ctx context.Context, msg IngressMessage, d
 		g.log.Warn("email.reply resolve proposal item", "inbox", t.inboxID, "error", err)
 	}
 	g.svc.LinkInbound(ctx, msg.ID, t.runID, "", t.inboxID)
+}
+
+// decideRequestReply answers the request of one inbox item. The first line
+// picks the decision; any other reply goes to the job as a message.
+func (g *Ingress) decideRequestReply(ctx context.Context, msg IngressMessage, d RouteDecision, t *replyTarget) {
+	r, err := g.act.Request(ctx, t.requestID)
+	if err != nil {
+		g.log.Warn("email.reply request", "request", t.requestID, "id", msg.ID, "error", err)
+		g.askReply(ctx, msg, d, t)
+		return
+	}
+	a := requestAnswer(r, msg.Text)
+	a.By = "email:" + msg.From
+	if err := g.act.AnswerRequest(ctx, t.requestID, a); err != nil {
+		g.log.Warn("email.reply answer", "request", t.requestID, "id", msg.ID, "error", err)
+		if errors.Is(err, requests.ErrClosed) {
+			_, _ = g.act.Ask(ctx, d, msg, "", "This request is already closed. Nothing changed.") // best effort notice
+		}
+	}
+	g.svc.LinkInbound(ctx, msg.ID, t.runID, "", t.inboxID)
+}
+
+// requestAnswer maps one mail reply to an answer. approve and reject words
+// decide; a first line that names one option chooses it; other text is a
+// respond message.
+func requestAnswer(r requests.Request, text string) requests.Answer {
+	body := strings.TrimSpace(unquoted(text))
+	line, _, _ := strings.Cut(body, "\n")
+	line = strings.TrimSpace(line)
+	if r.Type == requests.TypeChoose {
+		for _, o := range r.Payload.Options {
+			if strings.EqualFold(line, o.ID) || strings.EqualFold(line, o.Label) {
+				return requests.Answer{Decision: requests.DecisionChoose, Choices: []string{o.ID}}
+			}
+		}
+	}
+	respond := requests.Answer{Decision: requests.DecisionRespond, Message: body}
+	decision, ambiguous := parseDecision(text)
+	switch {
+	case ambiguous || decision == "":
+		return respond
+	case decision == "deny":
+		return requests.Answer{Decision: requests.DecisionReject}
+	case slices.Contains(r.Allow, requests.DecisionApprove):
+		return requests.Answer{Decision: requests.DecisionApprove}
+	case r.Type == requests.TypeForm && !requiresFields(r):
+		return requests.Answer{Decision: requests.DecisionSubmit, Values: json.RawMessage(`{}`)}
+	}
+	return respond
+}
+
+// requiresFields reports whether a form request has a required field.
+func requiresFields(r requests.Request) bool {
+	sc, err := requests.ParseSchema(r.Payload.Schema)
+	return err != nil || len(sc.Required) > 0
+}
+
+// unquoted drops the quoted lines of a mail reply.
+func unquoted(text string) string {
+	var keep []string
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), ">") {
+			keep = append(keep, line)
+		}
+	}
+	return strings.Join(keep, "\n")
 }
 
 // decideReply reads the decision word and applies it to the pending
@@ -473,7 +554,7 @@ func replyText(msg IngressMessage) string {
 }
 
 // parseDecision reads the first non-quoted content line for the decision
-// word (Part P): approve, allow, yes; deny, no. Whole words only, so
+// word (Part P): approve, allow, yes; deny, no, reject. Whole words only, so
 // "now" never matches "no". Both sets is ambiguous; no word is no
 // decision.
 func parseDecision(text string) (decision string, ambiguous bool) {
@@ -487,7 +568,7 @@ func parseDecision(text string) (decision string, ambiguous bool) {
 			switch trimWord(f) {
 			case "approve", "approved", "allow", "yes":
 				allow = true
-			case "deny", "denied", "no":
+			case "deny", "denied", "no", "reject", "rejected":
 				deny = true
 			}
 		}

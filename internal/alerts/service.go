@@ -20,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
+	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -48,6 +49,10 @@ const (
 	KindConnectorAuthRequired Kind = "connector_auth_required"
 	// KindConnectorUpdate is a catalog version that waits for the user.
 	KindConnectorUpdate Kind = "connector_update_available"
+	// KindRequest is a job request that waits for a person.
+	KindRequest Kind = "request"
+	// KindRequestUndelivered is an answer that could not reach the job.
+	KindRequestUndelivered Kind = "request_delivery_failed"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -59,6 +64,7 @@ const (
 	InboxHealth     InboxKind = "health"
 	InboxWatchdog   InboxKind = "watchdog"
 	InboxEscalation InboxKind = "escalation"
+	InboxRequest    InboxKind = "request"
 )
 
 // InboxStatus is the durable read/resolved state.
@@ -134,6 +140,7 @@ type InboxItem struct {
 	AlertKind      string        `json:"alert_kind,omitempty"`
 	EmailMessageID string        `json:"email_message_id,omitempty"`
 	ProposalID     string        `json:"proposal_id,omitempty"`
+	RequestID      string        `json:"request_id,omitempty"`
 	EscalatesAt    *time.Time    `json:"escalates_at,omitempty"`
 	Actions        []InboxAction `json:"actions"`
 	CreatedAt      time.Time     `json:"created_at"`
@@ -169,9 +176,12 @@ type RaiseOpts struct {
 	TraceID     string
 	EndReason   string
 	SessionID   string
+	RequestID   string
 	// EscalateAt arms the escalation sweep at this time instead of the
 	// immediate notify chain (plan M5). Zero leaves the item tray-only.
 	EscalateAt time.Time
+	// TrayOnly skips every notify step.
+	TrayOnly bool
 }
 
 // ListOpts filters inbox lists.
@@ -195,6 +205,9 @@ type Options struct {
 	// ApprovalQuestion returns the pending approval's question for the item
 	// body, or "". Nil leaves the body empty.
 	ApprovalQuestion func(ctx context.Context, runID string) string
+	// Request returns a request for its inbox body and mail. Nil leaves the
+	// body empty.
+	Request func(ctx context.Context, id string) (requests.Request, error)
 	// ProposalContent returns reviewed/proposed content for a proposal email.
 	ProposalContent func(ctx context.Context, id string) (base, proposed string, ok bool)
 	UsageWarnAt     int
@@ -270,7 +283,7 @@ const inboxCols = `id, kind, status, COALESCE(subject,''), COALESCE(title,''), C
 	COALESCE(hint,''), COALESCE(run_id,''), COALESCE(workspace_id,''), COALESCE(job,''),
 	COALESCE(alert_kind,''), COALESCE(connector,''), COALESCE(actions,''), COALESCE(trace_id,''),
 	COALESCE(email_message_id,''), escalates_at, revision, created_at, updated_at, resolved_at,
-	COALESCE(delivery,'')`
+	COALESCE(delivery,''), COALESCE(request_id,'')`
 
 // New creates an alerts service. opts may be zero.
 func New(st *store.Store, opts Options) *Service {
@@ -523,17 +536,17 @@ func (s *Service) insertItem(ctx context.Context, spec KindSpec, opts RaiseOpts)
 	id := ulid.Make().String()
 	now := s.opts.Now().UTC()
 	nowStr := now.Format(time.RFC3339Nano)
-	actions := opts.defaultActions()
+	actions := opts.defaultActions(id)
 	actJSON, _ := json.Marshal(actions)
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO inbox_items (
 			id, kind, status, subject, title, body, hint, run_id, workspace_id, job,
-			alert_kind, connector, actions, trace_id, revision, created_at, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+			alert_kind, connector, actions, trace_id, request_id, revision, created_at, updated_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
 			id, string(spec.InboxKind), string(InboxUnread), opts.Subject, opts.Title, opts.Body, opts.Hint,
 			store.NullStr(opts.RunID), store.NullStr(opts.WorkspaceID), store.NullStr(opts.JobName),
 			string(opts.Kind), store.NullStr(opts.Connector), string(actJSON), store.NullStr(opts.TraceID),
-			nowStr, nowStr)
+			store.NullStr(opts.RequestID), nowStr, nowStr)
 		return err
 	}, store.BusEvent{
 		Topic: "alert.raised", Entity: "alert", EntityID: id, Action: "created",
@@ -562,6 +575,9 @@ func (s *Service) insertItem(ctx context.Context, spec KindSpec, opts RaiseOpts)
 		}
 		return id, nil
 	}
+	if opts.TrayOnly {
+		return id, nil
+	}
 	s.enqueueDeliver(ctx, opts, id)
 	return id, nil
 }
@@ -576,7 +592,7 @@ func (s *Service) updateActive(ctx context.Context, item *InboxItem, opts RaiseO
 		title = fmt.Sprintf("%s (%d×)", opts.Title, n)
 	}
 	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
-	actions := opts.defaultActions()
+	actions := opts.defaultActions(item.ID)
 	actJSON, _ := json.Marshal(actions)
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`UPDATE inbox_items SET title=?, body=?, hint=?, actions=?,
@@ -679,6 +695,12 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindConnectorUpdate: {
 			Kind: KindConnectorUpdate, Severity: SeverityAttention, InboxKind: InboxHealth,
 		},
+		KindRequest: {
+			Kind: KindRequest, Severity: SeverityAttention, InboxKind: InboxRequest,
+		},
+		KindRequestUndelivered: {
+			Kind: KindRequestUndelivered, Severity: SeverityError, InboxKind: InboxFailure,
+		},
 	}
 }
 
@@ -705,7 +727,7 @@ func scanInbox(row scanner, includeBody bool) (*InboxItem, error) {
 	var esc, resolved sql.NullString
 	var created, updated string
 	err := row.Scan(&it.ID, &it.Kind, &it.Status, &sub, &title, &body, &hint, &runID, &ws, &job,
-		&ak, &connector, &acts, &trace, &emailMsgID, &esc, &it.Revision, &created, &updated, &resolved, &it.Delivery)
+		&ak, &connector, &acts, &trace, &emailMsgID, &esc, &it.Revision, &created, &updated, &resolved, &it.Delivery, &it.RequestID)
 	if err != nil {
 		return nil, err
 	}
@@ -779,44 +801,44 @@ func (o RaiseOpts) defaultSubject() string {
 		return "outbox"
 	case KindActionsInvalid:
 		return "actions/" + o.WorkspaceID + "/" + o.JobName
+	case KindRequest, KindRequestUndelivered:
+		return "request/" + o.RequestID
 	}
 	return o.Kind.String()
 }
 
+//nolint:gochecknoglobals // static table
+var defaultTitles = map[Kind]string{
+	KindWaiting:               "Agent waiting",
+	KindAuthMissing:           "Auth missing",
+	KindLimitExceeded:         "Harness limit exceeded",
+	KindUsageWarning:          "Harness usage warning",
+	KindConnectorUnhealthy:    "Connector unhealthy",
+	KindRunFailed:             "Run failed",
+	KindMemoryInvalid:         "Memory invalid",
+	KindResumeExhausted:       "Resume exhausted",
+	KindMachineDown:           "Machine down",
+	KindSendFailed:            "Send failed",
+	KindActionsInvalid:        "Connector actions invalid",
+	KindConnectorAuthRequired: "Connector needs a login",
+	KindConnectorUpdate:       "Connector update available",
+	KindRequest:               "Request",
+}
+
 func (o RaiseOpts) defaultTitle() string {
-	switch o.Kind {
-	case KindWaiting:
-		return "Agent waiting"
-	case KindAuthMissing:
-		return "Auth missing"
-	case KindLimitExceeded:
-		return "Harness limit exceeded"
-	case KindUsageWarning:
-		return "Harness usage warning"
-	case KindConnectorUnhealthy:
-		return "Connector unhealthy"
-	case KindRunFailed:
-		return "Run failed"
-	case KindMemoryInvalid:
-		return "Memory invalid"
-	case KindResumeExhausted:
-		return "Resume exhausted"
-	case KindMachineDown:
-		return "Machine down"
-	case KindSendFailed:
-		return "Send failed"
-	case KindActionsInvalid:
-		return "Connector actions invalid"
-	case KindConnectorAuthRequired:
-		return "Connector needs a login"
-	case KindConnectorUpdate:
-		return "Connector update available"
+	if o.Kind == KindRequestUndelivered {
+		return "Could not continue " + o.JobName
+	}
+	if t, ok := defaultTitles[o.Kind]; ok {
+		return t
 	}
 	return string(o.Kind)
 }
 
-func (o RaiseOpts) defaultActions() []InboxAction {
+func (o RaiseOpts) defaultActions(id string) []InboxAction {
 	switch o.Kind {
+	case KindRequest:
+		return []InboxAction{{Kind: ActionReview, Route: "/inbox/" + id, Label: "Open"}}
 	case KindWaiting:
 		if o.RunID == "" {
 			return []InboxAction{}

@@ -18,6 +18,7 @@ import (
 	agentwire "github.com/trebi-ai/agent-wire"
 
 	"github.com/trebi-ai/trebi/ext"
+	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/license"
@@ -67,6 +68,7 @@ type requestStack struct {
 	dir  string
 	drv  *recDriver
 	wsID string
+	srv  *api.Server
 }
 
 func newRequestStack(t *testing.T, features ...string) *requestStack {
@@ -85,7 +87,7 @@ func newRequestStack(t *testing.T, features ...string) *requestStack {
 	if err := os.WriteFile(home.LicensePath(), []byte("test"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	st := &requestStack{base: base, dir: t.TempDir()}
+	st := &requestStack{base: base, dir: t.TempDir(), srv: s}
 	script := fmt.Sprintf(`read -r line; printf '%%s\n' "$line" >> %[1]s/prompts; printf '%%s' "$TREBI_RUN_TOKEN" > %[1]s/token.tmp; mv %[1]s/token.tmp %[1]s/token
 echo '{"type":"init","session_id":"sess-1"}'
 while [ ! -f %[1]s/go ]; do sleep 0.05; done
@@ -152,6 +154,23 @@ func (s *requestStack) create(t *testing.T, token string, body map[string]any) m
 	return req
 }
 
+// inboxItem consumes the bus and returns the inbox item of request id.
+func (s *requestStack) inboxItem(t *testing.T, id string) alerts.InboxItem {
+	t.Helper()
+	s.srv.Alerts().Consume(t.Context())
+	items, err := s.srv.Alerts().List(t.Context(), alerts.ListOpts{Kind: string(alerts.InboxRequest)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		if it.RequestID == id {
+			return it
+		}
+	}
+	t.Fatalf("no inbox item for request %s in %+v", id, items)
+	return alerts.InboxItem{}
+}
+
 var promptJSON = regexp.MustCompile("(?s)```json\n(.*?)```")
 
 func TestRequestRoundTrip(t *testing.T) {
@@ -185,6 +204,9 @@ func TestRequestRoundTrip(t *testing.T) {
 			id, _ := req["id"].(string)
 			s.endTurn(t)
 			s.waitRun(t, runID, "parked")
+			if it := s.inboxItem(t, id); it.Status != alerts.InboxUnread || it.Title != "Decide "+c.decision {
+				t.Fatalf("inbox item %+v", it)
+			}
 
 			c.answer["decision"] = c.decision
 			code, ans, _ := doJSON(t, "POST", s.base+"/v1/requests/"+id+"/answer", c.answer)
@@ -210,6 +232,9 @@ func TestRequestRoundTrip(t *testing.T) {
 			}
 			if st := s.runStatus(t, runID)["status"]; st != "resumed" {
 				t.Fatalf("parent status %v", st)
+			}
+			if it := s.inboxItem(t, id); it.Status != alerts.InboxResolved {
+				t.Fatalf("inbox item after answer %+v", it)
 			}
 
 			lines, err := os.ReadFile(filepath.Join(s.dir, "prompts"))

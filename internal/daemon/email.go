@@ -11,6 +11,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/proposals"
+	"github.com/trebi-ai/trebi/internal/requests"
 )
 
 var _ email.Actions = (*ControlPlane)(nil)
@@ -90,6 +91,18 @@ func (c *ControlPlane) RunMessage(ctx context.Context, runID, text string) error
 // DecideProposal applies one emailed AGENT.md proposal decision (Part A.6).
 func (c *ControlPlane) DecideProposal(ctx context.Context, id string, allow bool, by string) error {
 	_, err := c.Proposals.Decide(ctx, id, proposals.Decision{Allow: allow, By: by})
+	return err
+}
+
+// Request returns one request for an emailed answer.
+func (c *ControlPlane) Request(ctx context.Context, id string) (requests.Request, error) {
+	return c.Requests.Get(ctx, id)
+}
+
+// AnswerRequest applies one emailed request answer.
+func (c *ControlPlane) AnswerRequest(ctx context.Context, id string, a requests.Answer) error {
+	a.Via = "email"
+	_, err := c.Requests.Answer(ctx, id, a, 0)
 	return err
 }
 

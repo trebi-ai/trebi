@@ -22,6 +22,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/request"
+	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -97,6 +98,12 @@ func (a *emailAPIActions) DecideApproval(context.Context, string, string) (bool,
 }
 
 func (a *emailAPIActions) DecideProposal(context.Context, string, bool, string) error { return nil }
+
+func (a *emailAPIActions) Request(context.Context, string) (requests.Request, error) {
+	return requests.Request{}, requests.ErrNotFound
+}
+
+func (a *emailAPIActions) AnswerRequest(context.Context, string, requests.Answer) error { return nil }
 
 func (a *emailAPIActions) RunMessage(context.Context, string, string) error {
 	a.messages++

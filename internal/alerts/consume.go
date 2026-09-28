@@ -19,6 +19,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
+	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -56,6 +57,12 @@ var consumeTopics = []string{
 	"approval.decided",
 	"proposal.created",
 	"proposal.decided",
+	"request.created",
+	"request.answered",
+	"request.expired",
+	"request.dismissed",
+	"request.cancelled",
+	"request.delivery_failed",
 	"outbox.failed",
 	"outbox.sent",
 }
@@ -179,6 +186,78 @@ func (s *Service) onProposalCreated(ctx context.Context, ev store.StreamEvent, a
 	}
 }
 
+// onRequestCreated raises the inbox item of a new request. It sits in the
+// tray first and mails after ApprovalAfter, as an approval does.
+func (s *Service) onRequestCreated(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	opts := RaiseOpts{
+		Kind: KindRequest, RequestID: ev.ID, Title: attrs["title"], RunID: attrs["run_id"],
+		WorkspaceID: attrs["workspace_id"], JobName: attrs["job"], TraceID: ev.TraceID,
+		TrayOnly: s.opts.ApprovalDisabled,
+	}
+	if !opts.TrayOnly {
+		opts.EscalateAt = s.opts.Now().Add(s.opts.ApprovalAfter)
+	}
+	if r, ok := s.request(ctx, ev.ID); ok {
+		opts.Body = r.Summary
+	}
+	if _, err := s.Raise(ctx, opts); err != nil {
+		s.log.Warn("raise request", "request", ev.ID, "error", err)
+	}
+}
+
+// onRequestUndelivered raises a failure item when an answer cannot reach
+// the job.
+func (s *Service) onRequestUndelivered(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	opts := RaiseOpts{
+		Kind: KindRequestUndelivered, RequestID: ev.ID, RunID: attrs["run_id"],
+		WorkspaceID: attrs["workspace_id"], JobName: attrs["job"], TraceID: ev.TraceID,
+	}
+	if r, ok := s.request(ctx, ev.ID); ok {
+		opts.Body = r.DeliveryError
+	}
+	if _, err := s.Raise(ctx, opts); err != nil {
+		s.log.Warn("raise request delivery", "request", ev.ID, "error", err)
+	}
+}
+
+func (s *Service) request(ctx context.Context, id string) (requests.Request, bool) {
+	if s.opts.Request == nil {
+		return requests.Request{}, false
+	}
+	r, err := s.opts.Request(ctx, id)
+	if err != nil {
+		s.log.Warn("request lookup", "request", id, "error", err)
+		return requests.Request{}, false
+	}
+	return r, true
+}
+
+// requestMail is the mail text of a request: what to decide, then how to
+// reply.
+func requestMail(r requests.Request) string {
+	var b strings.Builder
+	b.WriteString(r.Title + "\n\n")
+	if r.Summary != "" {
+		b.WriteString(r.Summary + "\n\n")
+	}
+	switch {
+	case r.Payload.Draft != nil:
+		b.WriteString("Draft:\n\n" + r.Payload.Draft.Text + "\n\n")
+	case len(r.Payload.Options) > 0:
+		b.WriteString("Options:\n")
+		for _, o := range r.Payload.Options {
+			fmt.Fprintf(&b, "- %s: %s\n", o.ID, o.Label)
+		}
+		b.WriteString("\nReply with one option on the first line to choose it.\n\n")
+	case len(r.Payload.Schema) > 0:
+		if sc, err := requests.ParseSchema(r.Payload.Schema); err == nil {
+			b.WriteString("Fields: " + strings.Join(sc.Names(), ", ") + "\n\n")
+		}
+	}
+	b.WriteString("Reply with approve or reject on the first line. Any other reply goes to the job as a message. Open the inbox to edit the draft.\n\n")
+	return b.String()
+}
+
 // SyncDoctor upserts health inbox items for findings and auto-resolves stale ones.
 func (s *Service) SyncDoctor(ctx context.Context, findings []DoctorFinding) {
 	want := map[string]struct{}{}
@@ -241,6 +320,12 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.onProposalCreated(ctx, ev, attrs)
 	case "proposal.decided":
 		s.autoResolve(ctx, KindAgentProposal, "proposal/"+firstNonEmpty(attrs["proposal_id"], ev.ID), attrs["decision"])
+	case "request.created":
+		s.onRequestCreated(ctx, ev, attrs)
+	case "request.answered", "request.expired", "request.dismissed", "request.cancelled":
+		s.autoResolve(ctx, KindRequest, "request/"+ev.ID, strings.TrimPrefix(ev.Topic, "request."))
+	case "request.delivery_failed":
+		s.onRequestUndelivered(ctx, ev, attrs)
 	case "outbox.failed":
 		if attrs["purpose"] == string(outbox.PurposeAlert) {
 			s.onAlertFailed(ctx, attrs)
@@ -723,6 +808,11 @@ func (s *Service) sendStep(ctx context.Context, opts RaiseOpts, id string, st no
 // mailText is the alert mail body. A proposal mail leads with the diff.
 func (s *Service) mailText(ctx context.Context, opts RaiseOpts, id string) string {
 	text := opts.emailText(id)
+	if opts.Kind == KindRequest {
+		if r, ok := s.request(ctx, opts.RequestID); ok {
+			text = requestMail(r) + text
+		}
+	}
 	if opts.Kind == KindAgentProposal && s.opts.ProposalContent != nil && strings.HasPrefix(opts.Subject, "proposal/") {
 		if base, proposed, ok := s.opts.ProposalContent(ctx, strings.TrimPrefix(opts.Subject, "proposal/")); ok {
 			text = proposals.TruncateDiff(proposals.UnifiedDiff(base, proposed), 200) + "\n\n" + text
@@ -1096,6 +1186,7 @@ func raiseOptsFromItem(item InboxItem) RaiseOpts {
 		Kind: Kind(item.AlertKind), Subject: item.Subject, Title: item.Title,
 		Body: item.Body, Hint: item.Hint, RunID: item.RunID,
 		WorkspaceID: item.Workspace, JobName: item.Job, TraceID: item.TraceID,
+		RequestID: item.RequestID,
 	}
 }
 

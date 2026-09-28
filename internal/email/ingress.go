@@ -18,6 +18,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -97,6 +98,10 @@ type Actions interface {
 	RunMessage(ctx context.Context, runID, text string) error
 	// DecideProposal applies one emailed AGENT.md proposal decision.
 	DecideProposal(ctx context.Context, id string, allow bool, by string) error
+	// Request returns one request for an emailed answer.
+	Request(ctx context.Context, id string) (requests.Request, error)
+	// AnswerRequest applies one emailed request answer.
+	AnswerRequest(ctx context.Context, id string, a requests.Answer) error
 	// ResolveInbox marks one inbox item resolved.
 	ResolveInbox(ctx context.Context, inboxID string) error
 	// AmbiguousReplyItem records the item for one approval reply that named

@@ -19,7 +19,7 @@ func inboxCommand() *cli.Command {
 				Usage: "list inbox",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "status", Usage: "unread|read|resolved"},
-					&cli.StringFlag{Name: "kind", Usage: "approval|failure|health|watchdog"},
+					&cli.StringFlag{Name: "kind", Usage: "approval|request|failure|health|watchdog"},
 					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (inbox id)"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Usage: "max rows"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},

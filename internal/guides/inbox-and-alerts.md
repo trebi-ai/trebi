@@ -20,7 +20,7 @@ trebi inbox resolve-all --kind approval
 trebi inbox resolve <id>
 ```
 
-Kinds: `approval` | `failure` | `health` | `watchdog`. `resolve` manually dismisses one item; `resolve-all` clears every open item, or one kind with `--kind`.
+Kinds: `approval` | `request` | `failure` | `health` | `watchdog`. `resolve` manually dismisses one item; `resolve-all` clears every open item, or one kind with `--kind`.
 
 ## Approvals (runs)
 

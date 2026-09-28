@@ -283,7 +283,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	c.picker.setDefault(cfg)
 	em.WithWorkspacePicker(c.picker)
 	c.Router = notify.NewResolver(c.notify, connectorChannels{conn: connector}, em.Configured)
-	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion})
+	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get})
 	c.Alerts.SetDoctor(c.Alerts.CollectDoctorFindings)
 	c.Alerts.SetProposalContent(func(ctx context.Context, id string) (string, string, bool) {
 		p, err := c.Proposals.Get(ctx, id)

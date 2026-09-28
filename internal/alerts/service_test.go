@@ -18,6 +18,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
+	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -1105,5 +1106,96 @@ func TestConnectorUpdateAvailable(t *testing.T) {
 		Attrs: map[string]string{"from": "0.6.0", "to": "0.7.0"}})
 	if open, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)}); len(open) != 0 {
 		t.Fatalf("open after update: %+v", open)
+	}
+}
+
+func requestEvent(topic string) store.BusEvent {
+	return store.BusEvent{
+		Topic: topic, Entity: "request", EntityID: "R1", Action: "updated",
+		Attrs: map[string]string{"run_id": "r1", "job": "mailer", "workspace_id": "ws", "title": "Send the reply"},
+	}
+}
+
+func TestRequestItemLifecycle(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	w := &sendWorker{token: "test-token-0000"}
+	svc, st := routeSvc(t, alerts.Options{
+		ApprovalAfter: time.Minute,
+		Now:           func() time.Time { return now },
+		Request: func(_ context.Context, id string) (requests.Request, error) {
+			return requests.Request{
+				ID: id, Title: "Send the reply", Summary: "Ana asks for a refund.", DeliveryError: "no session",
+				Payload: requests.Payload{Draft: &requests.Draft{Format: "text", Text: "Hi Ana, yes."}},
+			}, nil
+		},
+	}, nil, w, nil)
+	ctx := context.Background()
+	if _, err := st.Append(ctx, requestEvent("request.created")); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(ctx)
+	items, _ := svc.List(ctx, alerts.ListOpts{Kind: string(alerts.InboxRequest)})
+	if len(items) != 1 {
+		t.Fatalf("want one request item, got %d", len(items))
+	}
+	item, err := svc.Get(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.RequestID != "R1" || item.Body != "Ana asks for a refund." || item.Subject != "request/R1" {
+		t.Fatalf("item %+v", item)
+	}
+	if len(item.Actions) != 1 || item.Actions[0].Route != "/inbox/"+item.ID {
+		t.Fatalf("actions %+v", item.Actions)
+	}
+	if item.EscalatesAt == nil || !item.EscalatesAt.Equal(now.Add(time.Minute)) || len(w.sent()) != 0 {
+		t.Fatalf("escalates_at %v, sends %d", item.EscalatesAt, len(w.sent()))
+	}
+
+	now = now.Add(2 * time.Minute)
+	svc.Tick(ctx)
+	settle(ctx, svc)
+	sends := w.sent()
+	if len(sends) != 1 {
+		t.Fatalf("sends %d", len(sends))
+	}
+	for _, want := range []string{"Hi Ana, yes.", "Ana asks for a refund.", "Reply with approve or reject on the first line."} {
+		if !strings.Contains(sends[0].Text, want) {
+			t.Errorf("mail lacks %q:\n%s", want, sends[0].Text)
+		}
+	}
+
+	if _, err := st.Append(ctx, requestEvent("request.answered")); err != nil {
+		t.Fatal(err)
+	}
+	svc.Consume(ctx)
+	if item, _ = svc.Get(ctx, item.ID); item.Status != alerts.InboxResolved {
+		t.Fatalf("status %s", item.Status)
+	}
+
+	if _, err := st.Append(ctx, requestEvent("request.delivery_failed")); err != nil {
+		t.Fatal(err)
+	}
+	svc.Consume(ctx)
+	items, _ = svc.List(ctx, alerts.ListOpts{Kind: string(alerts.InboxFailure)})
+	if len(items) != 1 || items[0].Title != "Could not continue mailer" || items[0].RequestID != "R1" {
+		t.Fatalf("failure items %+v", items)
+	}
+}
+
+func TestRequestItemApprovalDisabled(t *testing.T) {
+	t.Parallel()
+	w := &sendWorker{token: "test-token-0000"}
+	svc, st := routeSvc(t, alerts.Options{ApprovalDisabled: true}, nil, w, nil)
+	ctx := context.Background()
+	if _, err := st.Append(ctx, requestEvent("request.created")); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(ctx)
+	settle(ctx, svc)
+	items, _ := svc.List(ctx, alerts.ListOpts{Kind: string(alerts.InboxRequest)})
+	if len(items) != 1 || items[0].EscalatesAt != nil || len(w.sent()) != 0 {
+		t.Fatalf("items %+v, sends %d", items, len(w.sent()))
 	}
 }

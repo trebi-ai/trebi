@@ -12,6 +12,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/requests"
 )
 
 // testRouteEnv preserves the old broad test identities while exercising the
@@ -43,6 +44,8 @@ type fakeActions struct {
 	messages          []string // run message texts, in inject order
 	resolves          []string // inbox ids one reply decided
 	ambiguous         int      // replies that named both decisions
+	request           requests.Request
+	answers           []requests.Answer // request answers, in answer order
 }
 
 func (f *fakeActions) RouteEnvFor(_ context.Context, _ string) (RouteEnv, error) {
@@ -75,6 +78,17 @@ func (f *fakeActions) DecideProposal(_ context.Context, id string, allow bool, _
 		decision = "allow"
 	}
 	f.proposalDecisions = append(f.proposalDecisions, id+" "+decision)
+	return nil
+}
+
+func (f *fakeActions) Request(_ context.Context, id string) (requests.Request, error) {
+	r := f.request
+	r.ID = id
+	return r, nil
+}
+
+func (f *fakeActions) AnswerRequest(_ context.Context, _ string, a requests.Answer) error {
+	f.answers = append(f.answers, a)
 	return nil
 }
 
