@@ -31,13 +31,6 @@ func (c CloudConfig) APIURLOrDefault() string {
 	return DefaultCloudAPIURL
 }
 
-// Present reports whether the cloud block is in the file. An absent block
-// keeps the hosted defaults; a worker-less email block then has nothing
-// to point at and stays a config error.
-func (c CloudConfig) Present() bool {
-	return strings.TrimSpace(c.APIURL) != "" || c.Enabled != nil
-}
-
 // checkCloud validates the cloud block. A Worker URL and a granted cloud
 // link at once is a runtime conflict that doctor reports, not a config
 // error: the link state lives in the store (plan 2026-09-22 Part D).

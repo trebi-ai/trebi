@@ -17,7 +17,6 @@ func TestEmailValidate(t *testing.T) {
 		want string
 	}{
 		{"valid", func(*EmailConfig) {}, ""},
-		{"missing worker", func(e *EmailConfig) { e.Worker = "" }, "email.worker"},
 		{"bad worker url", func(e *EmailConfig) { e.Worker = "mail.example" }, "email.worker"},
 		{"bad token form", func(e *EmailConfig) { e.Token = "plain-value" }, "email.token"},
 		{"empty secret name", func(e *EmailConfig) { e.Token = "secret:" }, "email.token"},
@@ -62,11 +61,18 @@ func TestEmailAbsentBlockValid(t *testing.T) {
 	}
 }
 
-func TestEmailPartialBlockRejected(t *testing.T) {
+// TestEmailPartialBlock: a worker-less block is hosted mail tuning while the
+// cloud link is on, and a config error when cloud.enabled is false.
+func TestEmailPartialBlock(t *testing.T) {
 	t.Parallel()
 	cfg := defaultConfig()
 	cfg.applyDefaults()
-	cfg.Email = EmailConfig{Domain: "mail.example.com"}
+	cfg.Email = EmailConfig{Admins: []string{"ops@example.com"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("hosted tuning must validate: %v", err)
+	}
+	off := false
+	cfg.Cloud.Enabled = &off
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "email.worker") {
 		t.Fatalf("want email.worker error, got %v", err)

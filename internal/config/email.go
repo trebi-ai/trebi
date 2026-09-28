@@ -82,11 +82,12 @@ func (e EmailConfig) ResolveToken() (string, error) {
 // not the stored secret; a missing secret is a doctor finding, not a config
 // error, so the daemon still boots. Without a Worker URL the block is
 // hosted mail tuning: the cloud link carries the mail, so domain and
-// admins are optional there (plan 2026-09-22 Part D).
+// admins are optional there (plan 2026-09-22 Part D). The link is on by
+// default, so only cloud.enabled: false makes the worker required.
 func (e *ConfigError) checkEmail(c Config) {
 	ec := c.Email
 	bearer := ec.Enabled()
-	if !bearer && !c.Cloud.Present() {
+	if !bearer && !c.Cloud.Active() {
 		if emailBlockSet(ec) {
 			e.add("email.worker", "required when any email key is set")
 		}

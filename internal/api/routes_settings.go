@@ -376,6 +376,11 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := cfg.Save(); err != nil {
+		var ce *config.ConfigError
+		if errors.As(err, &ce) {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
