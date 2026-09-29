@@ -63,7 +63,8 @@ func (d *recDriver) all() []agentwire.StartRequest {
 
 // requestStack is one daemon with a licensed requests feature and a job whose
 // fake harness writes its run token and its prompts, and ends its
-// turn once the test creates the file "go".
+// turn once the test creates the file "go". The harness also ends when
+// the test removes its directory or after 60s, so it never outlives the test.
 type requestStack struct {
 	base string
 	dir  string
@@ -91,7 +92,7 @@ func newRequestStack(t *testing.T, features ...string) *requestStack {
 	st := &requestStack{base: base, dir: t.TempDir(), srv: s}
 	script := fmt.Sprintf(`read -r line; printf '%%s\n' "$line" >> %[1]s/prompts; printf '%%s' "$TREBI_RUN_TOKEN" > %[1]s/token.tmp; mv %[1]s/token.tmp %[1]s/token
 echo '{"type":"init","session_id":"sess-1"}'
-while [ ! -f %[1]s/go ]; do sleep 0.05; done
+n=0; while [ ! -f %[1]s/go ] && [ -d %[1]s ] && [ $n -lt 1200 ]; do n=$((n+1)); sleep 0.05; done
 echo '{"type":"result","subtype":"success","text":"done"}'`, st.dir)
 	st.drv = &recDriver{FakeDriver: agentwire.FakeDriver{Script: script}}
 	s.SetCLIDriver(st.drv)
