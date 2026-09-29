@@ -94,7 +94,7 @@ type Transport interface {
 // mints locally with crypto/rand instead. A second mint for the same
 // workspace replaces the hosted address.
 type HostedMint interface {
-	MintAddress(ctx context.Context, workspaceID string) (string, error)
+	MintAddress(ctx context.Context, workspaceID, handle string) (string, error)
 }
 
 // Health is the Worker fact sheet. Spool depth and oldest-entry age are

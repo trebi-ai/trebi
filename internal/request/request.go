@@ -842,11 +842,15 @@ func BuildWorkspaceDelete(id string, confirm bool) HTTPRequest {
 	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/workspaces/"+url.PathEscape(id), confirmQ(confirm))}
 }
 
-// BuildWorkspaceAdd builds POST /v1/workspaces.
-func BuildWorkspaceAdd(path, name string, create bool) HTTPRequest {
+// BuildWorkspaceAdd builds POST /v1/workspaces. An empty handle lets the
+// daemon derive one from the name.
+func BuildWorkspaceAdd(path, name, handle string, create bool) HTTPRequest {
 	body := map[string]any{}
 	if name != "" {
 		body["name"] = name
+	}
+	if handle != "" {
+		body["handle"] = handle
 	}
 	if path != "" {
 		body["path"] = path
@@ -903,9 +907,14 @@ func BuildWorkspaceEmailGetPath(id string, reveal bool) string {
 }
 
 // BuildWorkspaceEmailRotate builds POST /v1/workspaces/{id}/email/rotate.
-func BuildWorkspaceEmailRotate(id string, confirm bool) HTTPRequest {
-	return HTTPRequest{Method: "POST",
+// A non-empty handle replaces the workspace handle.
+func BuildWorkspaceEmailRotate(id, handle string, confirm bool) HTTPRequest {
+	req := HTTPRequest{Method: "POST",
 		Path: withQuery("/v1/workspaces/"+url.PathEscape(id)+"/email/rotate", confirmQ(confirm))}
+	if handle != "" {
+		req.Body = map[string]any{"handle": handle}
+	}
+	return req
 }
 
 // BuildEmailMessagesPath builds GET /v1/email/messages (the envelope log).

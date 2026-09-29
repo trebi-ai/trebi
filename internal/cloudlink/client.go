@@ -97,10 +97,10 @@ func (c *Client) Register(ctx context.Context, enrollToken, name string) (string
 	return out.DeviceID, nil
 }
 
-// MintAddress mints one hosted mail address. The workspace_id body is
-// carried for the daemon's own bookkeeping; the worker ignores it.
-func (c *Client) MintAddress(ctx context.Context, workspaceID string) (Address, error) {
-	body, err := json.Marshal(map[string]string{"workspace_id": workspaceID})
+// MintAddress mints one hosted mail address, <handle>-<token>. The worker
+// replaces the earlier address of the same device and workspace.
+func (c *Client) MintAddress(ctx context.Context, workspaceID, handle string) (Address, error) {
+	body, err := json.Marshal(map[string]string{"workspace_id": workspaceID, "handle": handle})
 	if err != nil {
 		return Address{}, err
 	}

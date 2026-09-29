@@ -45,7 +45,12 @@ func TestClientWirePaths(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/devices":
 			_, _ = w.Write([]byte(`{"device_id":"dev-1"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/addresses":
-			_, _ = w.Write([]byte(`{"id":"addr-1","local_part":"a-1","address":"a-1@mail.example.com"}`))
+			var body map[string]string
+			if err := json.Unmarshal(raw, &body); err != nil || body["handle"] != "acme" || body["workspace_id"] != "ws-1" {
+				http.Error(w, "bad mint body", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"addr-1","local_part":"acme-x7k2qm","address":"acme-x7k2qm@mail.example.com"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/addresses":
 			_, _ = w.Write([]byte(`{"addresses":[{"id":"addr-1","local_part":"a-1","created_at":"2026-09-22T10:00:00Z"}]}`))
 		case r.Method == http.MethodDelete && r.URL.Path == "/v1/addresses/addr-1":
@@ -77,8 +82,8 @@ func TestClientWirePaths(t *testing.T) {
 	if err != nil || deviceID != "dev-1" {
 		t.Fatalf("Register = (%q, %v)", deviceID, err)
 	}
-	addr, err := c.MintAddress(ctx, "ws-1")
-	if err != nil || addr.ID != "addr-1" || addr.Address != "a-1@mail.example.com" {
+	addr, err := c.MintAddress(ctx, "ws-1", "acme")
+	if err != nil || addr.ID != "addr-1" || addr.Address != "acme-x7k2qm@mail.example.com" {
 		t.Fatalf("MintAddress = (%+v, %v)", addr, err)
 	}
 	addrs, err := c.ListAddresses(ctx)

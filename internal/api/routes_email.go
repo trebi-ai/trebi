@@ -112,7 +112,7 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.email.Configured() {
-		if _, err := s.email.EnsureAddress(r.Context(), ws.ID, ws.Name); err != nil {
+		if _, err := s.email.EnsureAddress(r.Context(), ws.ID, ws.Handle); err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
@@ -277,7 +277,7 @@ func (s *Server) handleWorkspaceEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reveal := r.URL.Query().Get("reveal") == "1"
-	if _, err := s.email.EnsureAddress(r.Context(), ws.ID, ws.Name); err != nil {
+	if _, err := s.email.EnsureAddress(r.Context(), ws.ID, ws.Handle); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
@@ -297,8 +297,10 @@ func (s *Server) handleWorkspaceEmail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, emailAddressPayload(a, !reveal))
 }
 
-// handleWorkspaceEmailRotate mints a new token. The response carries the
-// full new address: the operator acted, so the mask has no use here.
+// handleWorkspaceEmailRotate mints a new address. An optional handle
+// replaces the workspace handle first; this is the only way to change it.
+// The response carries the full new address: the operator acted, so the
+// mask has no use here.
 func (s *Server) handleWorkspaceEmailRotate(w http.ResponseWriter, r *http.Request) {
 	ws, ok := s.emailWorkspace(w, r)
 	if !ok {
@@ -308,7 +310,25 @@ func (s *Server) handleWorkspaceEmailRotate(w http.ResponseWriter, r *http.Reque
 		writeErr(w, http.StatusNotFound, "not_found", "email is not configured")
 		return
 	}
-	a, err := s.email.Rotate(r.Context(), ws.ID, ws.Name)
+	var body struct {
+		Handle string `json:"handle"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if body.Handle != "" && body.Handle != ws.Handle {
+		updated, err := s.ws.SetHandle(r.Context(), ws.ID, body.Handle)
+		if errors.Is(err, workspaces.ErrHandle) {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		ws = updated
+	}
+	a, err := s.email.Rotate(r.Context(), ws.ID, ws.Handle)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -341,7 +361,7 @@ func (s *Server) handleAgentEmail(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(row.Name, "agents/")
 	// Lazy mint, as the workspace reveal: a workspace added before the
 	// block existed still answers.
-	if _, err := s.email.EnsureAddress(r.Context(), ws.ID, ws.Name); err != nil {
+	if _, err := s.email.EnsureAddress(r.Context(), ws.ID, ws.Handle); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
@@ -400,11 +420,11 @@ func writeEmailErr(w http.ResponseWriter, err error) {
 
 // ensureWorkspaceEmail is the workspace-add hook: mint on add when the
 // channel is live. A failure logs; it never fails the add.
-func (s *Server) ensureWorkspaceEmail(ctx context.Context, wsID, name string) {
+func (s *Server) ensureWorkspaceEmail(ctx context.Context, wsID, handle string) {
 	if !s.email.Configured() {
 		return
 	}
-	if _, err := s.email.EnsureAddress(ctx, wsID, name); err != nil {
+	if _, err := s.email.EnsureAddress(ctx, wsID, handle); err != nil {
 		s.log.Warn("email.mint_on_add", "workspace_id", wsID, "err", err.Error())
 	}
 }

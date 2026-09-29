@@ -1096,8 +1096,8 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				return mcpGet(request.BuildWorkspacesListPath(limit)), nil
 			}),
 			"show": idGet("GET /v1/workspaces/{id}", "id", "ws1", request.BuildWorkspaceGetPath),
-			"create": act("POST /v1/workspaces", Input{"path": "/tmp/reports", "name": "reports"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("path", "name")
+			"create": act("POST /v1/workspaces", Input{"path": "/tmp/reports", "name": "reports", "handle": "reports"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("path", "name", "handle")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -1110,7 +1110,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if v[0] == "" && (!mkdir || v[1] == "") {
 					return request.HTTPRequest{}, fmt.Errorf(`input field "path" is required (or pass "mkdir": true with "name" to mint one)`)
 				}
-				return request.BuildWorkspaceAdd(v[0], v[1], mkdir), nil
+				return request.BuildWorkspaceAdd(v[0], v[1], v[2], mkdir), nil
 			}),
 			"patch": act("PATCH /v1/workspaces/{id}", Input{"id": "ws1", "git_enabled": true}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
@@ -2443,7 +2443,25 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildWorkspaceEmailGetPath(ws, reveal)), nil
 			}),
-			"workspace_rotate": confirmDel("POST /v1/workspaces/{id}/email/rotate", "workspace", "ws1", request.BuildWorkspaceEmailRotate),
+			"workspace_rotate": func() Action {
+				e := act("POST /v1/workspaces/{id}/email/rotate", Input{"workspace": "ws1", "handle": "reports", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
+					ws, err := in.reqStr("workspace")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					handle, err := in.str("handle")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					confirm, err := in.flag("confirm")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					return request.BuildWorkspaceEmailRotate(ws, handle, confirm), nil
+				})
+				e.Destructive = true
+				return e
+			}(),
 			"messages": act("GET /v1/email/messages", Input{"direction": "in"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("direction", "workspace", "thread", "cursor")
 				if err != nil {

@@ -27,11 +27,11 @@ var ErrNotConfigured = errors.New("email is not configured")
 // workspace allowlist (plan I.3: an agent cannot mail a third party).
 var ErrRecipient = errors.New("email recipient is not an operator or allowlisted address")
 
-// WorkspaceRef is the (id, name) pair address minting needs. The caller
+// WorkspaceRef is the (id, handle) pair address minting needs. The caller
 // owns the workspace list; email never reads the workspaces table.
 type WorkspaceRef struct {
-	ID   string
-	Name string
+	ID     string
+	Handle string
 }
 
 // Service owns addresses, the Worker settings, and the envelope log.
@@ -576,20 +576,18 @@ func (s *Service) AgentAddressMasked(ctx context.Context, workspaceID, agent str
 	return a, nil
 }
 
-// EnsureAddress mints the workspace address once. The local part is
-// <slug(name)>-<token>; the slug is frozen at first mint. The hosted
-// transport mints in the cloud instead, and the row keeps the address the
-// worker assigned (plan 2026-09-22 Part D).
-func (s *Service) EnsureAddress(ctx context.Context, workspaceID, workspaceName string) (Address, error) {
+// EnsureAddress mints the workspace address once: <handle>-<token>. The
+// hosted transport mints in the cloud instead, and the row keeps the
+// address the worker assigned.
+func (s *Service) EnsureAddress(ctx context.Context, workspaceID, handle string) (Address, error) {
 	if a, err := s.Address(ctx, workspaceID); err == nil {
 		return a, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Address{}, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	slug := slugify(workspaceName)
 	for range 5 {
-		lp, domain, hosted, err := s.mintCandidate(ctx, workspaceID, slug)
+		lp, domain, hosted, err := s.mintCandidate(ctx, workspaceID, handle)
 		if err != nil {
 			return Address{}, err
 		}
@@ -608,32 +606,13 @@ VALUES (?,?,?,?) ON CONFLICT(workspace_id) DO NOTHING`,
 	return Address{}, fmt.Errorf("mint address for %s: no free token", workspaceID)
 }
 
-// Rotate mints a new token for the workspace. The slug stays; the old
-// local part is retired from the Worker known set on the next ack. The
-// hosted transport replaces the hosted address instead.
-func (s *Service) Rotate(ctx context.Context, workspaceID, workspaceName string) (Address, error) {
-	s.mu.RLock()
-	hostedMode := s.hosted != nil
-	s.mu.RUnlock()
-	slug := ""
-	if !hostedMode {
-		old, err := s.Address(ctx, workspaceID)
-		switch {
-		case err == nil:
-			var splitErr error
-			slug, _, splitErr = splitLocalPart(old.LocalPart)
-			if splitErr != nil {
-				return Address{}, splitErr
-			}
-		case errors.Is(err, sql.ErrNoRows):
-			slug = slugify(workspaceName)
-		default:
-			return Address{}, err
-		}
-	}
+// Rotate mints a new address with the given handle and a new token. The
+// old local part is retired from the Worker known set on the next ack.
+// The hosted transport replaces the hosted address instead.
+func (s *Service) Rotate(ctx context.Context, workspaceID, handle string) (Address, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	for range 5 {
-		lp, domain, hosted, err := s.mintCandidate(ctx, workspaceID, slug)
+		lp, domain, hosted, err := s.mintCandidate(ctx, workspaceID, handle)
 		if err != nil {
 			return Address{}, err
 		}
@@ -662,7 +641,7 @@ func (s *Service) SyncAddresses(ctx context.Context, refs []WorkspaceRef) error 
 		return nil
 	}
 	for _, ref := range refs {
-		if _, err := s.EnsureAddress(ctx, ref.ID, ref.Name); err != nil {
+		if _, err := s.EnsureAddress(ctx, ref.ID, ref.Handle); err != nil {
 			s.log.ErrorContext(ctx, "email.sync_address", "workspace_id", ref.ID, "err", err.Error())
 		}
 	}
@@ -1039,13 +1018,13 @@ func (s *Service) appendSent(ctx context.Context, rowID, msgID string) {
 // mintCandidate produces one candidate local part and domain. The hosted
 // transport calls MintAddress on the cloud, where a second mint for one
 // workspace replaces the address; the bearer transport mints locally with
-// crypto/rand and the frozen slug. hosted reports which path ran.
-func (s *Service) mintCandidate(ctx context.Context, workspaceID, slug string) (string, string, bool, error) {
+// crypto/rand and the handle. hosted reports which path ran.
+func (s *Service) mintCandidate(ctx context.Context, workspaceID, handle string) (string, string, bool, error) {
 	s.mu.RLock()
 	hosted := s.hosted
 	s.mu.RUnlock()
 	if hosted != nil {
-		full, err := hosted.MintAddress(ctx, workspaceID)
+		full, err := hosted.MintAddress(ctx, workspaceID, handle)
 		if err != nil {
 			return "", "", true, fmt.Errorf("mint hosted address for %s: %w", workspaceID, err)
 		}
@@ -1059,7 +1038,7 @@ func (s *Service) mintCandidate(ctx context.Context, workspaceID, slug string) (
 	if err != nil {
 		return "", "", false, err
 	}
-	lp, err := localPart(slug, token, "")
+	lp, err := localPart(handle, token, "")
 	if err != nil {
 		return "", "", false, err
 	}

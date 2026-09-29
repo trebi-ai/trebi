@@ -129,7 +129,7 @@ func TestCallsRequireLink(t *testing.T) {
 	svc.Configure(Settings{APIURL: "https://api.example.com", Enabled: false})
 	ctx := context.Background()
 
-	if _, err := svc.MintAddress(ctx, "ws-1"); !errors.Is(err, ErrNotLinked) {
+	if _, err := svc.MintAddress(ctx, "ws-1", "acme"); !errors.Is(err, ErrNotLinked) {
 		t.Errorf("MintAddress error = %v, want ErrNotLinked", err)
 	}
 	if _, err := svc.MintHook(ctx, "deploy"); !errors.Is(err, ErrNotLinked) {

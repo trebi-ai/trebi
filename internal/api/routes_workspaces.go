@@ -72,6 +72,7 @@ func (s *Server) handleWorkspacesAdd(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path   string `json:"path"`
 		Name   string `json:"name"`
+		Handle string `json:"handle"`
 		Create bool   `json:"create"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -79,13 +80,13 @@ func (s *Server) handleWorkspacesAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ws, err := s.ws.AddWith(r.Context(), workspaces.AddOpts{
-		Path: body.Path, Name: body.Name, Create: body.Create,
+		Path: body.Path, Name: body.Name, Handle: body.Handle, Create: body.Create,
 	})
 	if err != nil {
 		writeWorkspaceAddErr(w, err)
 		return
 	}
-	s.ensureWorkspaceEmail(r.Context(), ws.ID, ws.Name)
+	s.ensureWorkspaceEmail(r.Context(), ws.ID, ws.Handle)
 	writeJSON(w, http.StatusCreated, ws)
 }
 

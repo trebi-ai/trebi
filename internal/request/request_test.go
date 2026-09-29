@@ -143,18 +143,21 @@ func TestBuildSkillFilePaths(t *testing.T) {
 
 func TestBuildWorkspaceAdd(t *testing.T) {
 	t.Parallel()
-	req := BuildWorkspaceAdd("/tmp/ws", "reports", true)
+	req := BuildWorkspaceAdd("/tmp/ws", "reports", "acme", true)
 	if req.Method != "POST" || req.Path != "/v1/workspaces" {
 		t.Fatalf("%+v", req)
 	}
 	body, _ := req.Body.(map[string]any)
-	if body["path"] != "/tmp/ws" || body["name"] != "reports" || body["create"] != true {
+	if body["path"] != "/tmp/ws" || body["name"] != "reports" || body["handle"] != "acme" || body["create"] != true {
 		t.Fatalf("body %+v", body)
 	}
-	req = BuildWorkspaceAdd("", "reports", true)
+	req = BuildWorkspaceAdd("", "reports", "", true)
 	body, _ = req.Body.(map[string]any)
 	if _, ok := body["path"]; ok {
 		t.Fatalf("pathless should omit path: %+v", body)
+	}
+	if _, ok := body["handle"]; ok {
+		t.Fatalf("empty handle should be omitted: %+v", body)
 	}
 }
 
@@ -1225,12 +1228,16 @@ func TestBuildEmailRequests(t *testing.T) {
 	if test.Method != "POST" || test.Path != "/v1/email/test" {
 		t.Fatalf("test %+v", test)
 	}
-	rot := BuildWorkspaceEmailRotate("ws_1", true)
-	if rot.Method != "POST" || rot.Path != "/v1/workspaces/ws_1/email/rotate?confirm=1" {
+	rot := BuildWorkspaceEmailRotate("ws_1", "", true)
+	if rot.Method != "POST" || rot.Path != "/v1/workspaces/ws_1/email/rotate?confirm=1" || rot.Body != nil {
 		t.Fatalf("rotate %+v", rot)
 	}
-	if bare := BuildWorkspaceEmailRotate("ws_1", false); bare.Path != "/v1/workspaces/ws_1/email/rotate" {
+	if bare := BuildWorkspaceEmailRotate("ws_1", "", false); bare.Path != "/v1/workspaces/ws_1/email/rotate" {
 		t.Fatalf("rotate unconfirmed %+v", bare)
+	}
+	renamed := BuildWorkspaceEmailRotate("ws_1", "acme", true)
+	if body, _ := renamed.Body.(map[string]any); body["handle"] != "acme" {
+		t.Fatalf("rotate with handle %+v", renamed)
 	}
 	show := BuildEmailMessagePath("01A")
 	if show != "/v1/email/messages/01A" {

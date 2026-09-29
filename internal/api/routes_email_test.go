@@ -171,7 +171,7 @@ func (e *emailAPIServer) getRaw(t *testing.T, path string) (int, http.Header, []
 // log, one envelope, and one attachment, and checks the connectors row.
 func TestEmailRoutes(t *testing.T) {
 	e := startEmailAPI(t)
-	addrRow, err := e.svc.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
+	addrRow, err := e.svc.EnsureAddress(t.Context(), "ws_1", "ellis-labs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,8 +316,8 @@ func TestEmailWorkspaceAddress(t *testing.T) {
 		[]byte("---\nharness: fake\n---\n\nAssistant.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "ellis"})
-	if code != 201 {
+	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "Ellis Labs", "handle": "ellis"})
+	if code != 201 || wsBody["handle"] != "ellis" {
 		t.Fatalf("workspace %d %v", code, wsBody)
 	}
 	wsID, _ := wsBody["id"].(string)
@@ -326,7 +326,7 @@ func TestEmailWorkspaceAddress(t *testing.T) {
 	if code != 200 || m["masked"] != true {
 		t.Fatalf("masked: %d %v", code, m)
 	}
-	if lp, _ := m["local_part"].(string); !strings.Contains(lp, "********") {
+	if lp, _ := m["local_part"].(string); !strings.Contains(lp, "******") {
 		t.Fatalf("local part not masked: %q", lp)
 	}
 	code, m = e.do(t, http.MethodGet, "/v1/workspaces/"+wsID+"/email?reveal=1", nil)
@@ -334,7 +334,7 @@ func TestEmailWorkspaceAddress(t *testing.T) {
 		t.Fatalf("revealed: %d %v", code, m)
 	}
 	full, _ := m["address"].(string)
-	if !strings.HasSuffix(full, "@mail.example.com") || strings.Contains(full, "********") {
+	if !strings.HasSuffix(full, "@mail.example.com") || strings.Contains(full, "******") {
 		t.Fatalf("full address %q", full)
 	}
 	rev := m["revision"]
@@ -353,6 +353,19 @@ func TestEmailWorkspaceAddress(t *testing.T) {
 	}
 	if m["revision"].(float64) <= rev.(float64) {
 		t.Fatalf("revision must advance: %v then %v", rev, m["revision"])
+	}
+
+	// A rotate with a handle replaces the workspace handle; a bad one is a 400.
+	code, m = e.do(t, http.MethodPost, "/v1/workspaces/"+wsID+"/email/rotate?confirm=1", map[string]string{"handle": "Bad!"})
+	if code != 400 {
+		t.Fatalf("rotate bad handle: %d %v", code, m)
+	}
+	code, m = e.do(t, http.MethodPost, "/v1/workspaces/"+wsID+"/email/rotate?confirm=1", map[string]string{"handle": "acme"})
+	if lp, _ := m["local_part"].(string); code != 200 || !strings.HasPrefix(lp, "acme-") || len(lp) != len("acme-")+6 {
+		t.Fatalf("rotate with handle: %d %v", code, m)
+	}
+	if code, ws := e.do(t, http.MethodGet, "/v1/workspaces/"+wsID, nil); code != 200 || ws["handle"] != "acme" {
+		t.Fatalf("workspace handle after rotate: %d %v", code, ws)
 	}
 }
 
@@ -536,10 +549,10 @@ func TestAgentEmailReveal(t *testing.T) {
 	if code != 200 || m["masked"] != true {
 		t.Fatalf("masked: %d %v", code, m)
 	}
-	if lp, _ := m["local_part"].(string); !strings.Contains(lp, "********") || !strings.HasSuffix(lp, "+research") {
+	if lp, _ := m["local_part"].(string); !strings.Contains(lp, "******") || !strings.HasSuffix(lp, "+research") {
 		t.Fatalf("masked local part %q", lp)
 	}
-	if addr, _ := m["address"].(string); !strings.HasSuffix(addr, "@mail.example.com") || !strings.Contains(addr, "********") {
+	if addr, _ := m["address"].(string); !strings.HasSuffix(addr, "@mail.example.com") || !strings.Contains(addr, "******") {
 		t.Fatalf("masked address %q", addr)
 	}
 
@@ -560,7 +573,7 @@ func TestAgentEmailReveal(t *testing.T) {
 	if code != http.StatusOK || revealed["masked"] != false {
 		t.Fatalf("revealed: %d %v", code, revealed)
 	}
-	if addr, _ := revealed["address"].(string); !strings.HasSuffix(addr, "+research@mail.example.com") || strings.Contains(addr, "********") {
+	if addr, _ := revealed["address"].(string); !strings.HasSuffix(addr, "+research@mail.example.com") || strings.Contains(addr, "******") {
 		t.Fatalf("full address %q", addr)
 	}
 	out := sink.String()

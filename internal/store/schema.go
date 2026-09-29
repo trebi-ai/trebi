@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 31
+const SchemaVersion = 32
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -960,6 +960,16 @@ CREATE INDEX idx_requests_open ON requests(status) WHERE status = 'pending';
 CREATE INDEX idx_requests_undelivered ON requests(delivery_state)
     WHERE delivery = 'resume' AND status <> 'pending' AND delivery_state IN ('none','claimed');
 ALTER TABLE inbox_items ADD COLUMN request_id TEXT;
+`,
+		// v32: workspace handle, the fixed name in the email address. The old
+		// long random addresses go; the daemon mints <handle>-<token> again.
+		`
+ALTER TABLE workspaces ADD COLUMN handle TEXT NOT NULL DEFAULT '';
+UPDATE workspaces SET handle = trim(substr(replace(replace(replace(replace(
+    lower(trim(name)), ' ', '-'), '_', '-'), '.', '-'), '/', '-'), 1, 20), '-');
+UPDATE workspaces SET handle = 'ws' WHERE length(handle) < 2 OR handle GLOB '*[^a-z0-9-]*';
+DELETE FROM email_addresses;
+DELETE FROM cloud_addresses;
 `,
 	}
 }

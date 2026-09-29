@@ -36,8 +36,8 @@ func (t cloudTransport) Health(context.Context) (email.Health, error) {
 
 // MintAddress mints one hosted address. A second mint for the same
 // workspace replaces it in the cloud.
-func (t cloudTransport) MintAddress(ctx context.Context, workspaceID string) (string, error) {
-	a, err := t.cl.MintAddress(ctx, workspaceID)
+func (t cloudTransport) MintAddress(ctx context.Context, workspaceID, handle string) (string, error) {
+	a, err := t.cl.MintAddress(ctx, workspaceID, handle)
 	if err != nil {
 		return "", err
 	}

@@ -65,7 +65,7 @@ func TestRoomsListAddresses(t *testing.T) {
 	s := testService(st)
 	configureTest(s, "http://127.0.0.1:1")
 	ctx := t.Context()
-	if _, err := s.EnsureAddress(ctx, "ws_1", "Ellis Labs"); err != nil {
+	if _, err := s.EnsureAddress(ctx, "ws_1", "ellis-labs"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DB().Exec(`INSERT INTO email_messages (id, workspace_id, agent, direction, disposition, created_at)

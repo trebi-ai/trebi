@@ -20,6 +20,7 @@ Read one workspace.
 Register one directory as a workspace.
 - `path` (string, required unless you mint one): absolute directory path.
 - `name` (string, optional): display name. Required for a pathless add.
+- `handle` (string, optional): the fixed name in the workspace email address, `<handle>-<token>@<domain>`. 2 to 20 characters: a-z, 0-9, and inner dashes. When absent, the daemon derives it from the name. It cannot change later, except with `email.workspace_rotate`. Ask the user for it when they care how the address reads.
 - `mkdir` (boolean, optional): create the directory when absent.
 
 Pass `create: true` with `name` and no `path` to mint a folder under the trebi home.

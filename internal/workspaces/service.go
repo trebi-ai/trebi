@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,7 @@ import (
 type Workspace struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
+	Handle     string    `json:"handle"` // fixed name in the email address
 	Path       string    `json:"path"`
 	GitEnabled bool      `json:"git_enabled"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -77,6 +79,7 @@ func (s *Service) WithRoot(root string) *Service {
 type AddOpts struct {
 	Path   string
 	Name   string
+	Handle string // empty derives one from the name
 	Create bool
 }
 
@@ -179,7 +182,45 @@ var (
 	ErrMissing = errors.New("workspace folder is missing")
 	// ErrRebindID reports a rebind destination whose trebi.yaml id does not match.
 	ErrRebindID = errors.New("destination trebi.yaml id does not match")
+	// ErrHandle reports a handle outside the address grammar.
+	ErrHandle = errors.New("handle must be 2 to 20 characters: a-z, 0-9, and inner dashes")
 )
+
+var handleRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,18}[a-z0-9]$`)
+
+// ValidateHandle checks the handle grammar of the email address.
+func ValidateHandle(h string) error {
+	if !handleRe.MatchString(h) {
+		return fmt.Errorf("%w: %q", ErrHandle, h)
+	}
+	return nil
+}
+
+// HandleFor derives a handle from a display name: lowercase, [a-z0-9-],
+// collapsed dashes, at most 20 characters. A name with no usable
+// characters gives "ws".
+func HandleFor(name string) string {
+	var sb strings.Builder
+	prevDash := true // also trims leading dashes
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			sb.WriteRune(r)
+			prevDash = false
+		case !prevDash:
+			sb.WriteByte('-')
+			prevDash = true
+		}
+		if sb.Len() >= 20 {
+			break
+		}
+	}
+	out := strings.Trim(sb.String(), "-")
+	if len(out) < 2 {
+		return "ws"
+	}
+	return out
+}
 
 // Add registers a workspace folder, minting id into trebi.yaml if missing.
 func (s *Service) Add(ctx context.Context, path, name string) (*Workspace, error) {
@@ -188,6 +229,11 @@ func (s *Service) Add(ctx context.Context, path, name string) (*Workspace, error
 
 // AddWith registers a workspace, optionally creating the directory.
 func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error) {
+	if opts.Handle != "" {
+		if err := ValidateHandle(opts.Handle); err != nil {
+			return nil, err
+		}
+	}
 	abs, err := s.resolveAddPath(opts)
 	if err != nil {
 		return nil, err
@@ -206,19 +252,25 @@ func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error)
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339)
 
+	handle := opts.Handle
+	if handle == "" {
+		handle = HandleFor(dispName)
+	}
 	// Reject id collision with a different path (copied trebi.yaml).
-	var existingPath string
-	scanErr := s.st.DB().QueryRowContext(ctx, `SELECT path FROM workspaces WHERE id=?`, id).Scan(&existingPath)
+	var existingPath, existingHandle string
+	scanErr := s.st.DB().QueryRowContext(ctx, `SELECT path, handle FROM workspaces WHERE id=?`, id).
+		Scan(&existingPath, &existingHandle)
 	switch {
 	case scanErr == nil && existingPath != abs:
 		return nil, fmt.Errorf("workspace id %s already registered at %s", id, existingPath)
 	case scanErr == nil:
-		// Same path: idempotent no-op, no insert or event.
+		// Same path: idempotent no-op, no insert or event. The handle stays.
+		handle = existingHandle
 	case scanErr == sql.ErrNoRows:
 		_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-			_, err := tx.Exec(`INSERT INTO workspaces (id, name, path, git_enabled, created_at, updated_at)
-				VALUES (?,?,?,?,?,?)`,
-				id, dispName, abs, boolInt(gitEn), nowStr, nowStr)
+			_, err := tx.Exec(`INSERT INTO workspaces (id, name, handle, path, git_enabled, created_at, updated_at)
+				VALUES (?,?,?,?,?,?,?)`,
+				id, dispName, handle, abs, boolInt(gitEn), nowStr, nowStr)
 			return err
 		}, store.BusEvent{
 			Topic: "workspace.created", Entity: "workspace", EntityID: id, Action: "created", Revision: 1,
@@ -230,7 +282,7 @@ func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error)
 	default:
 		return nil, scanErr
 	}
-	ws := &Workspace{ID: id, Name: dispName, Path: abs, GitEnabled: gitEn, CreatedAt: now, Watching: true, Revision: 1}
+	ws := &Workspace{ID: id, Name: dispName, Handle: handle, Path: abs, GitEnabled: gitEn, CreatedAt: now, Watching: true, Revision: 1}
 	if err := s.RebuildIndex(ctx, ws); err != nil {
 		return ws, err // still registered
 	}
@@ -338,6 +390,41 @@ func (s *Service) Patch(ctx context.Context, id string, p Patch) (*Workspace, er
 	return s.Get(ctx, id)
 }
 
+// SetHandle replaces the handle. Only a new email address calls it: the
+// handle is fixed while the address lives.
+func (s *Service) SetHandle(ctx context.Context, id, handle string) (*Workspace, error) {
+	if err := ValidateHandle(handle); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	s.st.LockBus()
+	defer s.st.UnlockBus()
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		var rev int64
+		err := tx.QueryRow(`SELECT revision FROM workspaces WHERE id=?`, id).Scan(&rev)
+		if err == sql.ErrNoRows {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		rev++
+		if _, err := tx.Exec(`UPDATE workspaces SET handle=?, updated_at=?, revision=? WHERE id=?`,
+			handle, now, rev, id); err != nil {
+			return err
+		}
+		_, err = store.AppendInTx(tx, store.BusEvent{
+			Topic: "workspace.updated", Entity: "workspace", EntityID: id, Action: "updated",
+			Revision: rev, Attrs: map[string]string{"handle": handle},
+		})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, id)
+}
+
 // Remove unregisters a workspace, deletes its folder, and emits workspace.deleted.
 // An unknown id returns ErrNotFound and emits nothing.
 func (s *Service) Remove(ctx context.Context, id string) error {
@@ -394,13 +481,13 @@ func refuseFolderDelete(path, root string) error {
 	return nil
 }
 
-const workspaceCols = `id, name, path, git_enabled, orphaned, created_at, revision`
+const workspaceCols = `id, name, handle, path, git_enabled, orphaned, created_at, revision`
 
 func scanWorkspace(sc interface{ Scan(...any) error }) (Workspace, error) {
 	var w Workspace
 	var git, orphan int
 	var created string
-	if err := sc.Scan(&w.ID, &w.Name, &w.Path, &git, &orphan, &created, &w.Revision); err != nil {
+	if err := sc.Scan(&w.ID, &w.Name, &w.Handle, &w.Path, &git, &orphan, &created, &w.Revision); err != nil {
 		return Workspace{}, err
 	}
 	w.GitEnabled = git == 1

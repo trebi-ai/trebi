@@ -32,7 +32,7 @@ func TestServiceUnconfigured(t *testing.T) {
 	if _, err := s.Client(); !errors.Is(err, ErrNotConfigured) {
 		t.Errorf("client = %v, want ErrNotConfigured", err)
 	}
-	if err := s.SyncAddresses(t.Context(), []WorkspaceRef{{ID: "ws_1", Name: "One"}}); err != nil {
+	if err := s.SyncAddresses(t.Context(), []WorkspaceRef{{ID: "ws_1", Handle: "one"}}); err != nil {
 		t.Errorf("sync with no block must be a no-op: %v", err)
 	}
 }
@@ -42,7 +42,7 @@ func TestEnsureRotateSync(t *testing.T) {
 	s := testService(openEmailStore(t))
 	configureTest(s, "https://worker.example")
 
-	a, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
+	a, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,13 +54,13 @@ func TestEnsureRotateSync(t *testing.T) {
 	}
 
 	// Second call is idempotent.
-	again, err := s.EnsureAddress(t.Context(), "ws_1", "Renamed")
+	again, err := s.EnsureAddress(t.Context(), "ws_1", "renamed")
 	if err != nil || again.LocalPart != a.LocalPart {
-		t.Fatalf("re-ensure = %+v,%v; slug must be frozen", again, err)
+		t.Fatalf("re-ensure = %+v,%v; the address must stay", again, err)
 	}
 
-	// Rotate keeps the slug, changes the token, bumps the revision.
-	rot, err := s.Rotate(t.Context(), "ws_1", "Renamed")
+	// Rotate keeps the handle, changes the token, bumps the revision.
+	rot, err := s.Rotate(t.Context(), "ws_1", "ellis-labs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,16 +68,22 @@ func TestEnsureRotateSync(t *testing.T) {
 		t.Fatalf("rotated = %+v", rot)
 	}
 	if !strings.HasPrefix(rot.LocalPart, "ellis-labs-") {
-		t.Fatalf("rotate lost the slug: %q", rot.LocalPart)
+		t.Fatalf("rotate lost the handle: %q", rot.LocalPart)
 	}
 	if rot.LocalPart == a.LocalPart {
 		t.Fatalf("rotate kept the old token: %q", rot.LocalPart)
 	}
 
+	// Rotate with a new handle takes it.
+	rot, err = s.Rotate(t.Context(), "ws_1", "ellis")
+	if err != nil || !strings.HasPrefix(rot.LocalPart, "ellis-") || len(rot.LocalPart) != len("ellis-")+tokenLen {
+		t.Fatalf("rotate with handle = %+v,%v", rot, err)
+	}
+
 	// Sync mints for workspaces that lack one, skips those that have one.
 	if err := s.SyncAddresses(t.Context(), []WorkspaceRef{
-		{ID: "ws_1", Name: "Renamed"},
-		{ID: "ws_2", Name: "Two"},
+		{ID: "ws_1", Handle: "ellis"},
+		{ID: "ws_2", Handle: "two"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -94,11 +100,11 @@ func TestEnsureRotateSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.LocalPart != "ellis-labs-********" {
+	if m.LocalPart != "ellis-******" {
 		t.Errorf("masked = %q", m.LocalPart)
 	}
 	agent, err := s.AgentAddress(t.Context(), "ws_1", "research")
-	if err != nil || agent != "ellis-labs-********+research@mail.example.com" {
+	if err != nil || agent != "ellis-******+research@mail.example.com" {
 		t.Errorf("agent address = %q,%v", agent, err)
 	}
 	if _, err := s.AgentAddress(t.Context(), "ws_9", "research"); err != nil || agent == "" {
@@ -111,14 +117,14 @@ func TestEnsureRotateSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(full.LocalPart, "ellis-labs-") || !strings.HasSuffix(full.LocalPart, "+research") {
+	if !strings.HasPrefix(full.LocalPart, "ellis-") || !strings.HasSuffix(full.LocalPart, "+research") {
 		t.Errorf("agent full = %+v", full)
 	}
-	if strings.Contains(full.LocalPart, "********") {
+	if strings.Contains(full.LocalPart, "******") {
 		t.Errorf("agent full must carry the token: %q", full.LocalPart)
 	}
 	masked, err := s.AgentAddressMasked(t.Context(), "ws_1", "research")
-	if err != nil || masked.LocalPart != "ellis-labs-********+research" {
+	if err != nil || masked.LocalPart != "ellis-******+research" {
 		t.Errorf("agent masked = %+v,%v", masked, err)
 	}
 	if _, err := s.AgentAddressFull(t.Context(), "ws_9", "research"); !errors.Is(err, sql.ErrNoRows) {
@@ -319,7 +325,7 @@ func TestSendFailsAfterAttempts(t *testing.T) {
 	st := openEmailStore(t)
 	s := testService(st)
 	configureTest(s, srv.URL)
-	if _, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs"); err != nil {
+	if _, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs"); err != nil {
 		t.Fatal(err)
 	}
 	fw.sendScript = []int{500, 500, 500, 500, 500}
@@ -374,7 +380,7 @@ func TestSendRecipientMatrix(t *testing.T) {
 	st := openEmailStore(t)
 	s := testService(st)
 	configureTest(s, srv.URL)
-	if _, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs"); err != nil {
+	if _, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs"); err != nil {
 		t.Fatal(err)
 	}
 	// The allowlist rides the routing environment; only a wired ingress has it.
@@ -479,7 +485,7 @@ func TestSendAlertFromWorkspaceAddress(t *testing.T) {
 	st := openEmailStore(t)
 	s := testService(st)
 	configureTest(s, srv.URL)
-	addr, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
+	addr, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,10 +542,10 @@ func (h *hostedTransport) Health(context.Context) (Health, error) {
 	return Health{Version: "hosted"}, nil
 }
 
-func (h *hostedTransport) MintAddress(context.Context, string) (string, error) {
+func (h *hostedTransport) MintAddress(_ context.Context, _, handle string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.seen = append(h.seen, "mint")
+	h.seen = append(h.seen, "mint:"+handle)
 	if len(h.mints) == 0 {
 		return "", errors.New("no scripted mint left")
 	}
@@ -553,30 +559,30 @@ func (h *hostedTransport) MintAddress(context.Context, string) (string, error) {
 // replaces it instead of minting a local token.
 func TestEnsureRotateHosted(t *testing.T) {
 	t.Parallel()
-	tr := &hostedTransport{mints: []string{"a-one@mail.example.com", "a-two@mail.example.com"}}
+	tr := &hostedTransport{mints: []string{"ellis-labs-one@mail.example.com", "ellis-labs-two@mail.example.com"}}
 	s := testService(openEmailStore(t))
 	cfg := testSettings("") // no Worker: the hosted selection supplies the transport
 	s.Configure(cfg, tr)
 
-	a, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
+	a, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.LocalPart != "a-one" || a.Domain != "mail.example.com" {
+	if a.LocalPart != "ellis-labs-one" || a.Domain != "mail.example.com" {
 		t.Fatalf("hosted address = %+v", a)
 	}
-	if _, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs"); err != nil {
+	if _, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs"); err != nil {
 		t.Fatal(err)
 	}
-	if len(tr.seen) != 1 {
-		t.Fatalf("mints = %v; an existing address must not re-mint", tr.seen)
+	if len(tr.seen) != 1 || tr.seen[0] != "mint:ellis-labs" {
+		t.Fatalf("mints = %v; one mint with the handle, and no re-mint", tr.seen)
 	}
 
-	a2, err := s.Rotate(t.Context(), "ws_1", "Ellis Labs")
+	a2, err := s.Rotate(t.Context(), "ws_1", "ellis-labs")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a2.LocalPart != "a-two" || a2.Revision != 2 || a2.RotatedAt == "" {
+	if a2.LocalPart != "ellis-labs-two" || a2.Revision != 2 || a2.RotatedAt == "" {
 		t.Fatalf("rotated = %+v", a2)
 	}
 }
@@ -592,7 +598,7 @@ func TestDeliverHostedRoutesLikePoll(t *testing.T) {
 	cfg.Domain = "" // the hosted transport learns its domain from the mint
 	s.Configure(cfg, &hostedTransport{mints: []string{"a-hosted1@mail.example.com"}})
 
-	addr, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
+	addr, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -41,6 +41,7 @@ func workspaceCommand() *cli.Command {
 				ArgsUsage: "[path]",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "name", Usage: "display name (default: basename of path)"},
+					&cli.StringFlag{Name: "handle", Usage: "fixed name in the email address, 2-20 of a-z 0-9 - (default: from the name)"},
 					&cli.BoolFlag{Name: "mkdir", Aliases: []string{"create"}, Usage: "make the folder if missing; path optional with --name"},
 					&cli.StringFlag{Name: "url", Aliases: []string{"remote"}, Usage: "remote trebid base URL"},
 					&cli.StringFlag{Name: "id", Usage: "existing remote workspace id to link (with --url)"},
@@ -122,9 +123,10 @@ func workspaceCommand() *cli.Command {
 					},
 					{
 						Name:      "rotate",
-						Usage:     "mint a new address token; the old address retires",
+						Usage:     "mint a new address; the old address retires",
 						ArgsUsage: "[id|name]",
 						Flags: []cli.Flag{
+							&cli.StringFlag{Name: "handle", Usage: "new workspace handle for the address"},
 							&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 							&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "confirm the rotate"},
 						},
@@ -366,7 +368,7 @@ func runWorkspaceEmailRotate(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.DoHTTP(request.BuildWorkspaceEmailRotate(id, c.Bool("yes")), &body); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspaceEmailRotate(id, c.String("handle"), c.Bool("yes")), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -489,7 +491,7 @@ func workspaceAddLocal(c *cli.Command, path string) error {
 		name = filepath.Base(path)
 	}
 	var out map[string]any
-	if err := client.DoHTTP(request.BuildWorkspaceAdd(path, name, c.Bool("mkdir")), &out); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspaceAdd(path, name, c.String("handle"), c.Bool("mkdir")), &out); err != nil {
 		return err
 	}
 	id := mapStr(out, "id")
@@ -577,7 +579,7 @@ func registerRemoteWorkspace(c *cli.Command, client *APIClient) (id, name, path 
 		name = filepath.Base(path)
 	}
 	var out map[string]any
-	if err := client.DoHTTP(request.BuildWorkspaceAdd(path, name, create), &out); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspaceAdd(path, name, c.String("handle"), create), &out); err != nil {
 		return "", "", "", err
 	}
 	id = mapStr(out, "id")

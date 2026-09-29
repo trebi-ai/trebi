@@ -287,7 +287,7 @@ func TestIngressPollOnceRoutesBatch(t *testing.T) {
 	st := openEmailStore(t)
 	s := testService(st)
 	configureTest(s, srv.URL)
-	addr, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
+	addr, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ func TestIngressCursorFailureBlocksAck(t *testing.T) {
 	st := openEmailStore(t)
 	s := testService(st)
 	configureTest(s, srv.URL)
-	addr, err := s.EnsureAddress(t.Context(), "ws_1", "Ellis Labs")
+	addr, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs")
 	if err != nil {
 		t.Fatal(err)
 	}

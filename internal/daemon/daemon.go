@@ -602,7 +602,7 @@ func (c *ControlPlane) syncEmailAddresses(ctx context.Context) {
 	}
 	refs := make([]email.WorkspaceRef, len(list))
 	for i, ws := range list {
-		refs[i] = email.WorkspaceRef{ID: ws.ID, Name: ws.Name}
+		refs[i] = email.WorkspaceRef{ID: ws.ID, Handle: ws.Handle}
 	}
 	if err := c.Email.SyncAddresses(ctx, refs); err != nil {
 		c.log.Warn("email sync", "error", err)

@@ -449,6 +449,75 @@ func TestRenameBumpsRevisionAndBusFrame(t *testing.T) {
 	}
 }
 
+func TestHandleForAndValidate(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"Ellis Labs", "ellis-labs"},
+		{"", "ws"},
+		{"---", "ws"},
+		{"x", "ws"},
+		{"Acme!!!Corp", "acme-corp"},
+		{"--Lead--Trim--", "lead-trim"},
+		{strings.Repeat("x", 40), strings.Repeat("x", 20)},
+		{"Über Café", "ber-caf"},
+	}
+	for _, c := range cases {
+		got := workspaces.HandleFor(c.in)
+		if got != c.want {
+			t.Errorf("HandleFor(%q) = %q, want %q", c.in, got, c.want)
+		}
+		if err := workspaces.ValidateHandle(got); err != nil {
+			t.Errorf("HandleFor(%q) = %q is not valid: %v", c.in, got, err)
+		}
+	}
+	for _, bad := range []string{"", "a", "-ab", "ab-", "Ab", "a_b", "a+b", strings.Repeat("x", 21)} {
+		if err := workspaces.ValidateHandle(bad); !errors.Is(err, workspaces.ErrHandle) {
+			t.Errorf("ValidateHandle(%q) = %v, want ErrHandle", bad, err)
+		}
+	}
+}
+
+func TestAddHandleAndSetHandle(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+
+	ws, err := svc.AddWith(ctx, workspaces.AddOpts{Path: t.TempDir(), Name: "Ellis Labs"})
+	if err != nil || ws.Handle != "ellis-labs" {
+		t.Fatalf("derived handle = %+v, %v", ws, err)
+	}
+	own, err := svc.AddWith(ctx, workspaces.AddOpts{Path: t.TempDir(), Name: "Reports", Handle: "acme"})
+	if err != nil || own.Handle != "acme" {
+		t.Fatalf("given handle = %+v, %v", own, err)
+	}
+	if got, _ := svc.Get(ctx, own.ID); got.Handle != "acme" {
+		t.Fatalf("stored handle = %q", got.Handle)
+	}
+	if _, err := svc.AddWith(ctx, workspaces.AddOpts{Path: t.TempDir(), Name: "x", Handle: "Bad!"}); !errors.Is(err, workspaces.ErrHandle) {
+		t.Fatalf("bad handle: %v", err)
+	}
+
+	// A rename leaves the handle alone.
+	if got, err := svc.Rename(ctx, own.ID, "Other"); err != nil || got.Handle != "acme" {
+		t.Fatalf("rename changed the handle: %+v, %v", got, err)
+	}
+	seq := mustSeq(t, st)
+	got, err := svc.SetHandle(ctx, own.ID, "acme-2")
+	if err != nil || got.Handle != "acme-2" || got.Revision != 3 {
+		t.Fatalf("SetHandle = %+v, %v", got, err)
+	}
+	if evs, _ := st.ListBus(ctx, seq, []string{"workspace.updated"}, 10); len(evs) != 1 {
+		t.Fatalf("SetHandle must emit one workspace.updated, got %d", len(evs))
+	}
+	if _, err := svc.SetHandle(ctx, own.ID, "-"); !errors.Is(err, workspaces.ErrHandle) {
+		t.Fatalf("SetHandle bad: %v", err)
+	}
+	if _, err := svc.SetHandle(ctx, "ws_nope", "abc"); !errors.Is(err, workspaces.ErrNotFound) {
+		t.Fatalf("SetHandle missing: %v", err)
+	}
+}
+
 func TestAddCreateAndGuards(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

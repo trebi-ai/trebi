@@ -315,12 +315,12 @@ func (s *Service) Unlink(ctx context.Context) error {
 }
 
 // MintAddress mints a hosted address for a workspace and records the row.
-func (s *Service) MintAddress(ctx context.Context, workspaceID string) (Address, error) {
+func (s *Service) MintAddress(ctx context.Context, workspaceID, handle string) (Address, error) {
 	c, err := s.client()
 	if err != nil {
 		return Address{}, err
 	}
-	addr, err := c.MintAddress(ctx, workspaceID)
+	addr, err := c.MintAddress(ctx, workspaceID, handle)
 	if err != nil {
 		return Address{}, err
 	}

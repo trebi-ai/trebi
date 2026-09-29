@@ -29,8 +29,9 @@ Read one workspace email address. The reply is masked by default: only the domai
 - `reveal` (boolean, optional): return the full address. Ask the user before you set it.
 
 ### workspace_rotate
-Mint a new address token for one workspace. The old address retires; mail to it stops matching the workspace. Destructive and irreversible: open mail threads break, and replies to an earlier alert no longer arrive. Rotate only when the address leaked, and only when the operator asks. Run data does not change.
+Mint a new address for one workspace: `<handle>-<token>@<domain>`. The old address retires; mail to it stops matching the workspace. Destructive and irreversible: open mail threads break, and replies to an earlier alert no longer arrive. Rotate only when the address leaked or the operator wants a new handle, and only when the operator asks. Run data does not change.
 - `workspace` (string, required): workspace id.
+- `handle` (string, optional): a new workspace handle. This is the only way to change the handle. 2 to 20 characters: a-z, 0-9, and inner dashes.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
 ### messages

@@ -237,7 +237,7 @@ func TestCloudLinkAddressesUnlink(t *testing.T) {
 	}
 
 	// The minted hosted address serves masked, and reveal returns it full.
-	if _, err := s.Cloud().MintAddress(t.Context(), "ws_1"); err != nil {
+	if _, err := s.Cloud().MintAddress(t.Context(), "ws_1", "acme"); err != nil {
 		t.Fatal(err)
 	}
 	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/addresses", nil)
