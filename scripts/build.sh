@@ -81,7 +81,8 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   export CGO_ENABLED=1
 fi
 
-go build ${tags[@]+"${tags[@]}"} -ldflags "$ldflags" -o build/trebi ./cmd/trebi
+# -trimpath keeps the build host paths out of the binary and its panics.
+go build -trimpath ${tags[@]+"${tags[@]}"} -ldflags "$ldflags" -o build/trebi ./cmd/trebi
 
 built="($version"
 if [[ "$with_ui" == 1 ]]; then

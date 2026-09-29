@@ -20,7 +20,11 @@ concurrency:
 jobs:
   test:
     runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
     steps:
+      # Jobs share one runner user. A tmux server per job keeps their sessions apart.
+      - name: Use a job-local tmux server
+        run: echo "TMUX_TMPDIR=$RUNNER_TEMP" >>"$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
@@ -29,7 +33,7 @@ jobs:
           # it as an Actions cache takes longer than the build.
           cache: false
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+        run: command -v tmux >/dev/null || { sudo apt-get update && sudo apt-get install -y tmux; }
       - name: semver-ge tests
         run: bash scripts/semver-ge.test.sh
       - name: go test
@@ -44,6 +48,7 @@ jobs:
 
   lint:
     runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,7 +71,11 @@ jobs:
   # no secret and no network. See docs/plans/2026-09-18-release-versioning.md.
   tagged-build:
     runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
     steps:
+      # Jobs share one runner user. A tmux server per job keeps their sessions apart.
+      - name: Use a job-local tmux server
+        run: echo "TMUX_TMPDIR=$RUNNER_TEMP" >>"$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:

@@ -1,12 +1,11 @@
 name: dispatch
 
 # This repository does not release. trebi-pro owns tags and releases, so a
-# green main here must tell trebi-pro to cut one. trebi-pro pins this
-# repository by tag, so it first tags the commit that passed, then bumps its
-# own pin and releases.
+# green main here must tell trebi-pro to cut one. trebi-pro builds this exact
+# commit and tags it on this repository after its builds pass.
 #
-# The dispatch must be loud. A lost dispatch means a commit never ships, and
-# the only fallback is Dependabot's daily gomod scan, up to 24 hours late.
+# The dispatch must be loud. A lost dispatch means this commit ships only with
+# the next core commit.
 on:
   workflow_dispatch:
   push:
@@ -25,6 +24,7 @@ jobs:
     if: github.repository == 'trebi-ai/trebi'
     environment: release
     runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 5
     steps:
       - name: Mint a trebi-pro dispatch token
         id: app

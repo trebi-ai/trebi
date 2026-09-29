@@ -61,9 +61,8 @@ binary and a license unlocks them at run time. The full scheme is
 `.github/workflows/check.yml` is the gate: test, lint, and the fixture-backed
 `-tags ui` build. It runs on PRs and on branch pushes. On `main` it runs
 inside `.github/workflows/dispatch.yml`, which then tells `trebi-pro` to
-release that commit. `.github/workflows/tag.yml` answers `trebi-pro` and cuts
-the version tag here, because only this repository's own token may always do
-that.
+release that commit. `trebi-pro` builds that exact commit and tags it here
+after its builds pass.
 
 - A binary reports `version` and its `edition`. It also reports `ui_version` on
   `/v1/system/health` and `/v1/system/overview` when a SPA is embedded; the
