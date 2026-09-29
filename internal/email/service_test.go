@@ -685,6 +685,7 @@ func testService(st *store.Store) *Service {
 // flush makes one outbox pass over every pending row.
 func flush(t *testing.T, s *Service) {
 	t.Helper()
+	time.Sleep(2 * time.Millisecond) // the 1 ms backoff counts from the previous pass
 	if err := s.ob.SendDue(t.Context(), time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
