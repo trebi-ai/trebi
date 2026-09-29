@@ -1632,6 +1632,17 @@ func TestConnectorsProtocolSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateAuthRequired }, "logout kept the session")
+
+	if _, err := svc.Login(ctx, "chat", protocol.StepQR); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "not connected again")
+	if err := svc.Stop("chat"); err != nil {
+		t.Fatal(err)
+	}
+	if st := svc.AuthState("chat"); st.State != "" {
+		t.Fatalf("a stopped instance keeps the status %+v", st)
+	}
 }
 
 // TestConnectorsDoctor proves the findings of a broken file entry.

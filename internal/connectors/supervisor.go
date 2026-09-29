@@ -192,10 +192,14 @@ func (p *proc) setLastCatchup(r catchupResult) {
 	p.mu.Unlock()
 }
 
-// setSession stores the live session, or clears it with nil.
+// setSession stores the live session. nil clears it and the last status,
+// which a process that does not run cannot vouch for.
 func (p *proc) setSession(conn *protocol.Conn, init *protocol.InitializeResult) {
 	p.mu.Lock()
 	p.conn, p.init = conn, init
+	if conn == nil {
+		p.auth = protocol.Status{}
+	}
 	p.mu.Unlock()
 }
 
