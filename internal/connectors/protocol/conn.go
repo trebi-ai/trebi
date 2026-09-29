@@ -197,23 +197,29 @@ func (c *Conn) Call(ctx context.Context, method string, params, result any) erro
 	if err := c.write(Message{JSONRPC: "2.0", ID: json.RawMessage(strconv.FormatInt(id, 10)), Method: method, Params: raw}); err != nil {
 		return err
 	}
+	var res response
 	select {
-	case res := <-ch:
-		if res.err != nil {
-			return res.err
-		}
-		if result == nil || len(res.result) == 0 {
-			return nil
-		}
-		if err := json.Unmarshal(res.result, result); err != nil {
-			return fmt.Errorf("%s result: %w", method, err)
-		}
-		return nil
+	case res = <-ch:
 	case <-ctx.Done():
 		return fmt.Errorf("%s: %w", method, ctx.Err())
 	case <-c.closed:
-		return ErrClosed
+		// Run dispatches every line before it closes, so an answer read before EOF is already in ch.
+		select {
+		case res = <-ch:
+		default:
+			return ErrClosed
+		}
 	}
+	if res.err != nil {
+		return res.err
+	}
+	if result == nil || len(res.result) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(res.result, result); err != nil {
+		return fmt.Errorf("%s result: %w", method, err)
+	}
+	return nil
 }
 
 // Notify sends one notification.

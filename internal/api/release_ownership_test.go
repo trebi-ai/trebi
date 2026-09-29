@@ -38,24 +38,21 @@ func TestMainIsGatedBeforeDispatch(t *testing.T) {
 	}
 }
 
-// trebi-pro asks this repository to cut each release tag, because an App
-// token is refused when the asking run came from a workflow-touching push.
-func TestTagWorkflowAnswersTrebiPro(t *testing.T) {
+// trebi-pro cuts each release tag here after its builds pass. No workflow in
+// this repository creates a tag.
+func TestRepositoryDoesNotTag(t *testing.T) {
 	t.Parallel()
-	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "tag.yml"))
+	paths, err := filepath.Glob(filepath.Join("..", "..", ".github", "workflows", "*.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := string(data)
-	if !strings.Contains(src, "types: [cut-tag]") {
-		t.Fatal("tag.yml must answer the cut-tag dispatch")
-	}
-	// The Actions token is refused a tag that points at a commit which
-	// changes .github/workflows. Only the App token carries that right.
-	if !strings.Contains(src, "create-github-app-token") {
-		t.Fatal("tag.yml must push with an App token")
-	}
-	if !strings.Contains(src, "token: ${{ steps.app.outputs.token }}") {
-		t.Fatal("checkout must use the App token, or the push uses the Actions token")
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "git tag") || strings.Contains(string(data), "refs/tags/") {
+			t.Fatalf("%s creates a tag; trebi-pro owns the tags", filepath.Base(p))
+		}
 	}
 }
