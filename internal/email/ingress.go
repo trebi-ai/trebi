@@ -49,6 +49,9 @@ const (
 	ReasonUnknownTag    = "unknown_tag_untrusted"
 	ReasonNotConfigured = "not_configured"
 	ReasonNotAccepted   = "not_accepted"
+	ReasonNotAddressed  = "not_addressed"
+	ReasonMultipleFrom  = "multiple_from"
+	ReasonDuplicate     = "duplicate"
 )
 
 // RouteDecision is the verdict for one inbound message.
@@ -141,6 +144,14 @@ func (s *Service) Route(msg IngressMessage, wsID string, env RouteEnv) RouteDeci
 		}
 		return d
 	}
+	if !msg.SingleFrom() {
+		d.Class, d.Reason = RouteDropped, ReasonMultipleFrom
+		return d
+	}
+	if !msg.Addressed() {
+		d.Class, d.Reason = RouteDropped, ReasonNotAddressed // a signed mail replayed from another thread
+		return d
+	}
 	rule, known := env.Agents[msg.Tag]
 	switch {
 	case msg.Tag == "" && env.Assistant.Accepts(msg.From, cfg.Admins, env.Allowlist):
@@ -185,6 +196,24 @@ func (s *Service) RecordInbound(ctx context.Context, msg IngressMessage, d Route
 		return false, fmt.Errorf("record inbound %s: %w", msg.ID, err)
 	}
 	return n > 0, nil
+}
+
+// seenInbound reports an earlier copy of one Message-ID that reached the
+// same operator. A re-sent copy must not act twice.
+func (s *Service) seenInbound(ctx context.Context, msg IngressMessage, d RouteDecision) bool {
+	if msg.MessageID == "" {
+		return false
+	}
+	var n int
+	err := s.st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM email_messages WHERE direction='in' AND message_id=?
+		 AND workspace_id=? AND agent=? AND id<>? AND disposition<>'dropped'`,
+		msg.MessageID, d.WorkspaceID, d.Agent, msg.ID).Scan(&n)
+	if err != nil {
+		s.log.Warn("email.seen", "id", msg.ID, "error", err)
+		return false
+	}
+	return n > 0
 }
 
 // LinkInbound records routing-produced ids on the message row. Empty
@@ -415,6 +444,9 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 			return fmt.Errorf("route env %s: %w", wsID, err)
 		}
 		d = g.svc.Route(msg, wsID, env)
+	}
+	if d.Class != RouteDropped && g.svc.seenInbound(ctx, msg, d) {
+		d.Class, d.Reason = RouteDropped, ReasonDuplicate
 	}
 	room := MailboxRoom(d.WorkspaceID, d.Agent)
 	if d.WorkspaceID != "" {

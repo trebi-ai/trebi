@@ -145,7 +145,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 		u3 = "01ARZ3NDEKTSV4RRFFQ69G5FA3"
 	)
 	if n := p.poll(t, []email.IngressMessage{{
-		V: 1, Seq: 1, ID: u1, LocalPart: p.local, Tag: "research",
+		V: 1, Seq: 1, ID: u1, LocalPart: p.local, To: []string{p.local + "@in.example.com"}, Tag: "research",
 		From: "alice@example.com", Dmarc: "pass", MessageID: "<wake@x>",
 		Subject: "dig the news", Text: "Run the research pass.",
 	}}); n != 1 {
@@ -221,7 +221,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if n := p.poll(t, []email.IngressMessage{{
-		V: 1, Seq: 2, ID: u2, LocalPart: p.local,
+		V: 1, Seq: 2, ID: u2, LocalPart: p.local, To: []string{p.local + "@in.example.com"},
 		From: "ops@example.com", Dmarc: "pass", MessageID: "<decide@x>",
 		InReplyTo: alertMsgID, Subject: "Re: [trebi] approval requested",
 		Text: "Approve. Ship it.",
@@ -249,7 +249,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	// Leg 3: plain operator mail opens a conversation; the run answers; the
 	// answer goes back on the thread as one mail.
 	if n := p.poll(t, []email.IngressMessage{{
-		V: 1, Seq: 3, ID: u3, LocalPart: p.local,
+		V: 1, Seq: 3, ID: u3, LocalPart: p.local, To: []string{p.local + "@in.example.com"},
 		From: "ops@example.com", Dmarc: "pass", MessageID: "<ask@x>",
 		Subject: "weekly digest", Text: "Send the digest.",
 	}}); n != 1 {
@@ -481,7 +481,7 @@ func TestAssistantTurnMailsReplyOnThread(t *testing.T) {
 	ctx := t.Context()
 	const u = "01ARZ3NDEKTSV4RRFFQ69G5FA9"
 	if n := p.poll(t, []email.IngressMessage{{
-		V: 1, Seq: 1, ID: u, LocalPart: p.local,
+		V: 1, Seq: 1, ID: u, LocalPart: p.local, To: []string{p.local + "@in.example.com"},
 		From: "ops@example.com", Dmarc: "pass", MessageID: "<plain@x>",
 		Subject: "hello", Text: "Say hi.",
 	}}); n != 1 {
@@ -541,7 +541,7 @@ func TestOutboxRetriesAssistantReply(t *testing.T) {
 	// Thread one: the turn-end send fails.
 	p.fw.setFailSends(true)
 	p.poll(t, []email.IngressMessage{{
-		V: 1, Seq: 1, ID: "01ARZ3NDEKTSV4RRFFQ69G5FB1", LocalPart: p.local,
+		V: 1, Seq: 1, ID: "01ARZ3NDEKTSV4RRFFQ69G5FB1", LocalPart: p.local, To: []string{p.local + "@in.example.com"},
 		From: "ops@example.com", Dmarc: "pass", MessageID: "<r1@x>",
 		Subject: "one", Text: "Say hi.",
 	}})
@@ -586,7 +586,7 @@ func TestOutboxRetriesAssistantReply(t *testing.T) {
 	// Thread two: a crash leaves the row claimed. It waits 2m, then it goes out.
 	p.fw.setFailSends(true)
 	p.poll(t, []email.IngressMessage{{
-		V: 1, Seq: 2, ID: "01ARZ3NDEKTSV4RRFFQ69G5FB2", LocalPart: p.local,
+		V: 1, Seq: 2, ID: "01ARZ3NDEKTSV4RRFFQ69G5FB2", LocalPart: p.local, To: []string{p.local + "@in.example.com"},
 		From: "ops@example.com", Dmarc: "pass", MessageID: "<r2@x>",
 		Subject: "two", Text: "Say hi again.",
 	}})

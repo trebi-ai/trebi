@@ -185,11 +185,11 @@ func TestEmailRoutes(t *testing.T) {
 		u3 = "01ARZ3NDEKTSV4RRFFQ69G5FA3"
 	)
 	e.fw.pulled = []email.IngressMessage{
-		{V: 1, Seq: 1, ID: u1, LocalPart: addr, Tag: "research", From: "ops@example.com",
+		{V: 1, Seq: 1, ID: u1, LocalPart: addr, To: []string{addr + "@in.example.com"}, Tag: "research", From: "ops@example.com",
 			Dmarc: "pass", MessageID: "<u1@x>", Subject: "run the digest",
 			Attachments: []email.Attachment{{ID: "a1", Name: "invoice.pdf", Size: 4, Type: "application/pdf"}}},
-		{V: 1, Seq: 2, ID: u2, LocalPart: addr, From: "ops@example.com", Dmarc: "pass", MessageID: "<u2@x>"},
-		{V: 1, Seq: 3, ID: u3, LocalPart: addr, Tag: "billing", From: "stranger@example.net", Dmarc: "pass", MessageID: "<u3@x>"},
+		{V: 1, Seq: 2, ID: u2, LocalPart: addr, To: []string{addr + "@in.example.com"}, From: "ops@example.com", Dmarc: "pass", MessageID: "<u2@x>"},
+		{V: 1, Seq: 3, ID: u3, LocalPart: addr, To: []string{addr + "@in.example.com"}, Tag: "billing", From: "stranger@example.net", Dmarc: "pass", MessageID: "<u3@x>"},
 	}
 	e.fw.attach["<u1@x>/a1"] = "PDF1"
 

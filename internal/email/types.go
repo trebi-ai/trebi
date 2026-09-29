@@ -4,6 +4,11 @@ package email
 
 import (
 	"context"
+	"io"
+	"mime"
+	"net/mail"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -57,6 +62,40 @@ type IngressMessage struct {
 	ReceivedAt  string            `json:"received_at"`
 	// Thread is the thread the daemon found; it wins over the headers.
 	Thread string `json:"-"`
+}
+
+// Addressed reports whether To or Cc names the address. A signed mail sent
+// to another person and replayed here does not.
+func (m IngressMessage) Addressed() bool {
+	want := strings.ToLower(m.LocalPart)
+	for _, a := range slices.Concat(m.To, m.Cc) {
+		local, _, ok := strings.Cut(strings.ToLower(strings.TrimSpace(a)), "@")
+		base, _, _ := strings.Cut(local, "+")
+		if ok && base == want {
+			return true
+		}
+	}
+	return false
+}
+
+// SingleFrom reports whether the From header names one address, so the
+// DMARC verdict and the sender are about the same address.
+func (m IngressMessage) SingleFrom() bool {
+	raw, ok := m.Headers["from"]
+	if !ok {
+		return true
+	}
+	if strings.Contains(raw, "\n") {
+		return false // two From headers
+	}
+	p := mail.AddressParser{WordDecoder: &mime.WordDecoder{
+		CharsetReader: func(_ string, in io.Reader) (io.Reader, error) { return in, nil },
+	}}
+	list, err := p.ParseList(raw)
+	if err != nil {
+		return strings.Count(raw, "@") == 1
+	}
+	return len(list) == 1
 }
 
 // SendRequest is the outbound shape testdata/contract/send-request.v1.json

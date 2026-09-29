@@ -109,7 +109,7 @@ func TestClientPullAck(t *testing.T) {
 	fw := &fakeWorker{token: "test-token-0000", pullNext: 9, ackStatus: http.StatusNoContent}
 	srv := httptest.NewServer(fw.handler())
 	t.Cleanup(srv.Close)
-	fw.pulled = []IngressMessage{{V: 1, Seq: 8, ID: "m8", LocalPart: "ellis-x7k2qm4p"}}
+	fw.pulled = []IngressMessage{{V: 1, Seq: 8, ID: "m8", LocalPart: "ellis-x7k2qm4p", To: []string{"ellis-x7k2qm4p@in.example.com"}}}
 	c := NewClient(srv.URL, fw.token)
 
 	msgs, next, err := c.Pull(t.Context(), 7, 50)

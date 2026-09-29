@@ -603,12 +603,12 @@ func TestDeliverHostedRoutesLikePoll(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := []IngressMessage{
-		{V: 1, ID: "h1", LocalPart: addr.LocalPart, Tag: "research", From: "any@example.net", Dmarc: "pass"},
-		{V: 1, ID: "h2", LocalPart: addr.LocalPart, From: "ops@example.com", Dmarc: "pass"},
-		{V: 1, ID: "h3", LocalPart: addr.LocalPart, Tag: "billing", From: "ops@example.com", Dmarc: "pass"},
-		{V: 1, ID: "h4", LocalPart: addr.LocalPart, Tag: "billing", From: "stranger@example.net", Dmarc: "pass"},
-		{V: 1, ID: "h5", LocalPart: addr.LocalPart, Tag: "research", From: "ops@example.com", Dmarc: "fail"},
-		{V: 1, ID: "h6", LocalPart: "nobody-t0k0n0", From: "ops@example.com", Dmarc: "pass"},
+		{V: 1, ID: "h1", LocalPart: addr.LocalPart, To: []string{addr.LocalPart + "@in.example.com"}, Tag: "research", From: "any@example.net", Dmarc: "pass"},
+		{V: 1, ID: "h2", LocalPart: addr.LocalPart, To: []string{addr.LocalPart + "@in.example.com"}, From: "ops@example.com", Dmarc: "pass"},
+		{V: 1, ID: "h3", LocalPart: addr.LocalPart, To: []string{addr.LocalPart + "@in.example.com"}, Tag: "billing", From: "ops@example.com", Dmarc: "pass"},
+		{V: 1, ID: "h4", LocalPart: addr.LocalPart, To: []string{addr.LocalPart + "@in.example.com"}, Tag: "billing", From: "stranger@example.net", Dmarc: "pass"},
+		{V: 1, ID: "h5", LocalPart: addr.LocalPart, To: []string{addr.LocalPart + "@in.example.com"}, Tag: "research", From: "ops@example.com", Dmarc: "fail"},
+		{V: 1, ID: "h6", LocalPart: "nobody-t0k0n0", To: []string{"nobody-t0k0n0@in.example.com"}, From: "ops@example.com", Dmarc: "pass"},
 	}
 	acts := &fakeActions{env: testRouteEnv()}
 	conn := connectors.New(st, nil, nil)
