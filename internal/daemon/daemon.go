@@ -431,6 +431,10 @@ func (c *ControlPlane) Start(parent context.Context) {
 	}()
 
 	if !c.Opts.Shadow {
+		// The queue reads the channel connectors, so they load before it starts.
+		if err := c.Connectors.Load(); err != nil {
+			c.log.Error("connectors load", "path", home.ConnectorsPath(), "err", err)
+		}
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
@@ -453,9 +457,6 @@ func (c *ControlPlane) Start(parent context.Context) {
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
-			if err := c.Connectors.Load(); err != nil {
-				c.log.Error("connectors load", "path", home.ConnectorsPath(), "err", err)
-			}
 			c.Connectors.StartAll(ctx)
 			<-ctx.Done()
 		}()
