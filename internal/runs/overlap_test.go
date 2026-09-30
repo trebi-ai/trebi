@@ -94,7 +94,7 @@ func TestIfRunningCoalesce(t *testing.T) {
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
 		},
-		Prompt: "coalesce me", IfRunning: "coalesce",
+		Prompt: "coalesce me", Conversation: true, IfRunning: "skip",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func TestIfRunningCoalesce(t *testing.T) {
 	}
 }
 
-func TestIfRunningAllow(t *testing.T) {
+func TestIfRunningBypass(t *testing.T) {
 	svc, ctx := openRuns(t)
 	_, err := svc.Create(ctx, runs.CreateOpts{
 		WorkspaceID: "ws", Job: "demo", Harness: "fake", TmuxSession: "trebi-live-4",
@@ -134,13 +134,13 @@ func TestIfRunningAllow(t *testing.T) {
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
 		},
-		Prompt: "parallel", IfRunning: "allow",
+		Prompt: "parallel", BypassOverlap: true,
 		FakeCommand: []string{"sh", "-c", `echo "$TREBI_RUN_COMPLETE"`},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome != "allow" {
+	if outcome != "" {
 		t.Fatalf("outcome=%s", outcome)
 	}
 	if r2.Status != runs.StatusComplete && r2.Status != runs.StatusRunning {
@@ -153,6 +153,31 @@ func TestIfRunningAllow(t *testing.T) {
 	}
 	if len(list) < 2 {
 		t.Fatalf("want ≥2 runs got %d", len(list))
+	}
+}
+
+// TestIfRunningQueueDefault proves an empty if_running resolves to queue: a
+// live run returns ErrRunActive and no row is created.
+func TestIfRunningQueueDefault(t *testing.T) {
+	svc, ctx := openRuns(t)
+	if _, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws", Job: "demo", Harness: "fake", TmuxSession: "trebi-live-q",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual},
+		Prompt:     "later",
+	})
+	if !errors.Is(err, runs.ErrRunActive) {
+		t.Fatalf("err=%v, want ErrRunActive", err)
+	}
+	list, err := svc.List(ctx, runs.ListOpts{Workspace: "ws", Job: "demo", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("runs=%d, want 1", len(list))
 	}
 }
 
@@ -210,7 +235,7 @@ func TestIfRunningPerConversation(t *testing.T) {
 			WorkspaceID: "ws", Job: "chat", Harness: "fake", Reason: runs.ReasonTrigger,
 			ConversationKey: "conv-b",
 		},
-		Prompt: "again", IfRunning: "coalesce",
+		Prompt: "again", Conversation: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +296,7 @@ func TestCoalesceFindsKeyedRunPastTwentyLive(t *testing.T) {
 		},
 		Wake:         &runs.WakeOpts{Message: "second message"},
 		CoalesceText: "second message",
-		IfRunning:    "coalesce",
+		Conversation: true,
 	})
 	if err != nil {
 		t.Fatal(err)

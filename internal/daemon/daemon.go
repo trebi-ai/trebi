@@ -293,6 +293,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		return p.BaseContent, p.Proposed, true
 	})
 	c.Alerts.SetFailureRouter(c)
+	connector.OnFlood(c.raiseFlood)
 	ws.SetBudgetAlerter(c)
 	c.buildAssistant(cfg, ws, conv, maxBytes)
 	c.configureCloud(cfg)

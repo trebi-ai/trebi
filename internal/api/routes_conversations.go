@@ -11,6 +11,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/outbox"
 )
 
@@ -302,6 +303,8 @@ func (s *Server) convErr(w http.ResponseWriter, err error, notFoundMsg string) b
 		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", "revision conflict")
 	case errors.Is(err, conversations.ErrValidation):
 		writeErr(w, http.StatusBadRequest, "validation", strings.TrimPrefix(err.Error(), "validation: "))
+	case errors.Is(err, dispatch.ErrLaneFull):
+		writeQueueFull(w)
 	default:
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 	}

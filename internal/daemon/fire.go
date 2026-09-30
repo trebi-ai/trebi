@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/alerts"
@@ -93,7 +94,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		if cwd == "" {
 			cwd = dirOf(path)
 		}
-		_, _, err = c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
+		lopts := runs.LaunchOpts{
 			CreateOpts: runs.CreateOpts{
 				WorkspaceID: r.WorkspaceID, Job: r.Job, Kind: j.Kind,
 				Reason: runs.ReasonReport, Harness: j.ResolvedHarness(),
@@ -105,8 +106,11 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 			Wake: &runs.WakeOpts{Message: block}, Memory: c.memoryLaunch(ctx, r.WorkspaceID, j),
 			Kit: kit, JobSkills: j.Skills, JobConnectors: j.Connectors,
 			IfRunning: d.IfRunning, Env: d.Env, Model: d.Model, Effort: d.Effort,
-		})
-		if err != nil {
+		}
+		_, _, err = c.Runs.CreateAndLaunch(ctx, lopts)
+		if errors.Is(err, runs.ErrRunActive) {
+			c.queueFire(ctx, &lopts)
+		} else if err != nil {
 			c.log.Warn("report fire", "job", r.Job, "error", err)
 			c.raiseActionsFault(ctx, r, err)
 		}
@@ -173,6 +177,11 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		return
 	}
 	run, _, err := c.Runs.CreateAndLaunch(ctx, lopts)
+	if errors.Is(err, runs.ErrRunActive) {
+		c.queueFire(ctx, &lopts)
+		c.markFired(ctx, r)
+		return
+	}
 	if err != nil {
 		c.log.Warn("schedule fire", "job", r.Job, "error", err)
 		if c.raiseActionsFault(ctx, r, err) {
@@ -188,6 +197,39 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		}
 	}
 	c.markFired(ctx, r)
+}
+
+// queueFire puts a schedule fire in the queue behind the live run of its
+// job. The when: gate already ran, so the row holds the gated prompt. A full
+// queue drops the fire and raises the flood alert.
+func (c *ControlPlane) queueFire(ctx context.Context, lopts *runs.LaunchOpts) {
+	err := c.queue.Enqueue(ctx, lopts.QueueItem(dispatch.ConnectorSchedule))
+	if errors.Is(err, dispatch.ErrLaneFull) {
+		c.raiseFlood(ctx, lopts.WorkspaceID, lopts.Job, dispatch.ConnectorSchedule)
+		return
+	}
+	if err != nil {
+		c.log.Warn("schedule queue", "job", lopts.Job, "error", err)
+	}
+}
+
+// raiseFlood opens one inbox item for a job whose queue is full. The alert
+// cooldown keeps it to one item for each job and hour.
+func (c *ControlPlane) raiseFlood(ctx context.Context, workspaceID, jobName, source string) {
+	if c.Alerts == nil {
+		return
+	}
+	if _, err := c.Alerts.Raise(ctx, alerts.RaiseOpts{
+		Kind:        alerts.KindTriggerFlood,
+		WorkspaceID: workspaceID,
+		JobName:     jobName,
+		Connector:   source,
+		Title:       fmt.Sprintf("%q gets too many events", jobName),
+		Body:        fmt.Sprintf("Trebi dropped events from %s because %d are already waiting.", source, dispatch.LaneCap),
+		Hint:        "Check the source, or set a lower limit on the trigger.",
+	}); err != nil {
+		c.log.Warn("flood alert", "job", jobName, "error", err)
+	}
 }
 
 // raiseActionsFault opens one inbox item for a schedule fire that fails on

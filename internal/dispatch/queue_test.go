@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -311,10 +312,9 @@ func TestMarkDeadKeepsMessage(t *testing.T) {
 	}
 }
 
-// TestConversationLaneClaimsHead proves FIFO inside a conversation lane: a
-// head row in backoff holds the rows behind it. A lane without a key does
-// not wait.
-func TestConversationLaneClaimsHead(t *testing.T) {
+// TestLaneClaimsHead proves FIFO in every lane: a head row in backoff holds
+// the rows behind it, with or without a conversation key.
+func TestLaneClaimsHead(t *testing.T) {
 	t.Parallel()
 	st := openTestStore(t)
 	ctx := context.Background()
@@ -327,7 +327,7 @@ func TestConversationLaneClaimsHead(t *testing.T) {
 		return it
 	}
 	for _, conv := range []string{"chat", ""} {
-		head, next := enqueue(conv), enqueue(conv)
+		head, _ := enqueue(conv), enqueue(conv)
 		if it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, conv); err != nil || it == nil || it.ID != head.ID {
 			t.Fatalf("conv=%q first claim=%v err=%v", conv, it, err)
 		}
@@ -338,12 +338,66 @@ func TestConversationLaneClaimsHead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if conv != "" && it != nil {
-			t.Fatalf("conv lane claimed %s behind a head row in backoff", it.ID)
+		if it != nil {
+			t.Fatalf("conv=%q claimed %s behind a head row in backoff", conv, it.ID)
 		}
-		if conv == "" && (it == nil || it.ID != next.ID) {
-			t.Fatalf("unkeyed lane claim=%v, want %s", it, next.ID)
+	}
+}
+
+// TestEnqueueLaneCap proves the cap: the row after LaneCap pending rows
+// fails with ErrLaneFull and inserts nothing, a resume row ignores the cap,
+// and another lane is not affected.
+func TestEnqueueLaneCap(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+	ctx := context.Background()
+	q := dispatch.NewQueue(st)
+	item := func(conv string) *dispatch.QueueItem {
+		return &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", ConversationKey: conv, EventRaw: "{}"}
+	}
+	for i := 0; i < dispatch.LaneCap; i++ {
+		if err := q.Enqueue(ctx, item("")); err != nil {
+			t.Fatal(err)
 		}
+	}
+	if err := q.Enqueue(ctx, item("")); !errors.Is(err, dispatch.ErrLaneFull) {
+		t.Fatalf("err=%v, want ErrLaneFull", err)
+	}
+	resume := item("")
+	resume.ResumeOf = "run-1"
+	if err := q.Enqueue(ctx, resume); err != nil {
+		t.Fatalf("resume row: %v", err)
+	}
+	if err := q.Enqueue(ctx, item("other")); err != nil {
+		t.Fatalf("other lane: %v", err)
+	}
+	var n int
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM event_queue WHERE conversation_key=''`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != dispatch.LaneCap+1 {
+		t.Fatalf("rows=%d, want %d", n, dispatch.LaneCap+1)
+	}
+}
+
+// TestLaunchRequestRoundTrip proves a queued launch keeps its request.
+func TestLaunchRequestRoundTrip(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+	ctx := context.Background()
+	q := dispatch.NewQueue(st)
+	in := &dispatch.QueueItem{Connector: dispatch.ConnectorManual, WorkspaceID: "ws1", Job: "j", Launch: &dispatch.LaunchRequest{
+		Reason: "manual", Prompt: "hi", Inputs: map[string]string{"a": "1"}, Wake: &dispatch.LaunchWake{Body: "b"},
+	}}
+	if err := q.Enqueue(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, "")
+	if err != nil || it == nil || it.Launch == nil {
+		t.Fatalf("claim=%+v err=%v", it, err)
+	}
+	if it.Launch.Reason != "manual" || it.Launch.Prompt != "hi" || it.Launch.Inputs["a"] != "1" || it.Launch.Wake.Body != "b" {
+		t.Fatalf("launch=%+v", it.Launch)
 	}
 }
 

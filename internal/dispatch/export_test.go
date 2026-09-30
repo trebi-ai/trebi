@@ -11,5 +11,5 @@ func (p *Policy) WindowLen(key string) int {
 func (p *Policy) Keys() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return len(p.lastFired)
+	return len(p.expires)
 }

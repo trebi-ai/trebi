@@ -475,7 +475,16 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 	} else if ev.room != "" {
 		item.ConversationKey = ev.room
 	}
-	if err := s.queue.Enqueue(ctx, item); err != nil {
+	err := s.queue.Enqueue(ctx, item)
+	if errors.Is(err, dispatch.ErrLaneFull) {
+		// Drop the new event, not an old one, so the order stays correct.
+		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeDropped), "", ev.receivedAt)
+		if s.onFlood != nil {
+			s.onFlood(ctx, row.WorkspaceID, j.Name, ev.instance)
+		}
+		return
+	}
+	if err != nil {
 		s.log.Warn("enqueue", "error", err)
 		return
 	}

@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 33
+const SchemaVersion = 34
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -996,5 +996,8 @@ DELETE FROM inbox_items WHERE connector IS NOT NULL AND connector <> '' AND conn
 UPDATE runs SET trigger_connector = NULL WHERE trigger_connector IS NOT NULL AND trigger_connector NOT IN ('email','webhook');
 UPDATE runs SET connectors_json = NULL WHERE connectors_json IS NOT NULL AND connectors_json NOT IN ('', '[]', 'null');
 `,
+		// v34: trigger flood control (plan 2026-09-30). A manual or
+		// scheduled launch that waits for a live run keeps its request.
+		`ALTER TABLE event_queue ADD COLUMN launch_json TEXT;`,
 	}
 }

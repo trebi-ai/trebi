@@ -265,7 +265,7 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	}
 	hash, _ = got["hash"].(string)
 	req, _ = http.NewRequest("PATCH", base+"/v1/jobs/editme?workspace="+wsID,
-		bytes.NewBufferString(`{"harness":"claude","session":{"if_running":"coalesce"},"disabled":false}`))
+		bytes.NewBufferString(`{"harness":"claude","session":{"if_running":"replace"},"disabled":false}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", hash)
 	resp, err = http.DefaultClient.Do(req)
@@ -281,7 +281,7 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	if !strings.Contains(string(onDisk), "harness: claude") {
 		t.Fatalf("patch harness: %s", onDisk)
 	}
-	if !strings.Contains(string(onDisk), "if_running: coalesce") {
+	if !strings.Contains(string(onDisk), "if_running: replace") {
 		t.Fatalf("patch session: %s", onDisk)
 	}
 	// Re-parse
@@ -289,7 +289,7 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	if err != nil || j.Harness != "claude" {
 		t.Fatalf("parse after patch: %v %+v", err, j)
 	}
-	if j.Session.IfRunning != "coalesce" {
+	if j.Session.IfRunning != "replace" {
 		t.Fatalf("session.if_running=%q", j.Session.IfRunning)
 	}
 }

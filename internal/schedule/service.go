@@ -79,21 +79,17 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 				s := next.UTC().Format(time.RFC3339)
 				nextStr = &s
 			}
-			var anchor *string
-			if tr.Anchor != "" {
-				anchor = &tr.Anchor
-			}
 			if _, ok := existing[tr.Index]; ok {
-				if _, err := tx.Exec(`UPDATE schedules SET spec=?, timezone=?, catch_up=?, next_due_at=?, last_fired_at=NULL, anchor=?, updated_at=?
+				if _, err := tx.Exec(`UPDATE schedules SET spec=?, timezone=?, catch_up=?, next_due_at=?, last_fired_at=NULL, anchor=NULL, updated_at=?
 					WHERE workspace_id=? AND job=? AND idx=?`,
-					spec, tz, catchUp, nextStr, anchor, now, workspaceID, j.Name, tr.Index); err != nil {
+					spec, tz, catchUp, nextStr, now, workspaceID, j.Name, tr.Index); err != nil {
 					return err
 				}
 				continue
 			}
-			if _, err := tx.Exec(`INSERT INTO schedules (workspace_id, job, idx, spec, timezone, catch_up, next_due_at, anchor, updated_at)
-				VALUES (?,?,?,?,?,?,?,?,?)`,
-				workspaceID, j.Name, tr.Index, spec, tz, catchUp, nextStr, anchor, now); err != nil {
+			if _, err := tx.Exec(`INSERT INTO schedules (workspace_id, job, idx, spec, timezone, catch_up, next_due_at, updated_at)
+				VALUES (?,?,?,?,?,?,?,?)`,
+				workspaceID, j.Name, tr.Index, spec, tz, catchUp, nextStr, now); err != nil {
 				return err
 			}
 		}

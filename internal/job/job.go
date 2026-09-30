@@ -111,6 +111,16 @@ type SessionYAML struct {
 	IfRunning   string `yaml:"if_running,omitempty"`
 }
 
+// ValidateIfRunning rejects an if_running value that is not queue, skip,
+// replace, or empty (queue).
+func ValidateIfRunning(v string) error {
+	switch v {
+	case "", "queue", "skip", "replace":
+		return nil
+	}
+	return fmt.Errorf("if_running %q: must be queue, skip, or replace", v)
+}
+
 // KnobsMS is the one resolver from session strings to launch knobs (B16).
 // A bad duration parses to 0; validation reports it separately.
 func (s SessionYAML) KnobsMS() (maxMS, idleMS, keepMS, nudgeMS int64) {
@@ -132,20 +142,40 @@ func (s SessionYAML) KnobsMS() (maxMS, idleMS, keepMS, nudgeMS int64) {
 // TriggerYAML — unified triggers array (B21).
 // Exactly one of Cron, Every, Event is set per entry.
 type TriggerYAML struct {
-	Cron           string    `yaml:"cron,omitempty"`
-	Every          string    `yaml:"every,omitempty"`
-	Event          string    `yaml:"event,omitempty"` // connector name
-	Match          string    `yaml:"match,omitempty"`
-	Extract        string    `yaml:"extract,omitempty"`
-	Debounce       string    `yaml:"debounce,omitempty"`
-	RateLimit      string    `yaml:"rate_limit,omitempty"`
-	FollowupPrompt string    `yaml:"followup_prompt,omitempty"`
-	When           *WhenYAML `yaml:"when,omitempty"`
-	Anchor         string    `yaml:"anchor,omitempty"` // @every phase
-	Timezone       string    `yaml:"timezone,omitempty"`
-	Allowlist      []string  `yaml:"allowlist,omitempty"`
-	Enabled        *bool     `yaml:"enabled,omitempty"`
-	Disabled       bool      `yaml:"disabled,omitempty"` // keeps family index (B21)
+	Cron      string    `yaml:"cron,omitempty"`
+	Every     string    `yaml:"every,omitempty"`
+	Event     string    `yaml:"event,omitempty"` // connector name
+	Match     string    `yaml:"match,omitempty"`
+	Extract   string    `yaml:"extract,omitempty"`
+	Limit     string    `yaml:"limit,omitempty"` // N/<duration> | off; event only
+	When      *WhenYAML `yaml:"when,omitempty"`
+	Timezone  string    `yaml:"timezone,omitempty"`
+	Allowlist []string  `yaml:"allowlist,omitempty"`
+	Disabled  bool      `yaml:"disabled,omitempty"` // keeps family index (B21)
+
+	// Removed keys. A set value is a parse error that names the fix.
+	Debounce       string `yaml:"debounce,omitempty" json:"-"`
+	RateLimit      string `yaml:"rate_limit,omitempty" json:"-"`
+	Anchor         string `yaml:"anchor,omitempty" json:"-"`
+	Enabled        *bool  `yaml:"enabled,omitempty" json:"-"`
+	FollowupPrompt string `yaml:"followup_prompt,omitempty" json:"-"`
+}
+
+// removedKey returns the parse error of the first removed key that t sets.
+func (t TriggerYAML) removedKey() error {
+	switch {
+	case t.Debounce != "":
+		return fmt.Errorf(`trigger key "debounce" is removed; use "limit: N/<duration>" (default %s)`, DefaultLimit)
+	case t.RateLimit != "":
+		return fmt.Errorf(`trigger key "rate_limit" is removed; use "limit: N/<duration>" (default %s)`, DefaultLimit)
+	case t.Anchor != "":
+		return fmt.Errorf(`trigger key "anchor" is removed; use cron for a fixed start time`)
+	case t.Enabled != nil:
+		return fmt.Errorf(`trigger key "enabled" is removed; use "disabled: true"`)
+	case t.FollowupPrompt != "":
+		return fmt.Errorf(`trigger key "followup_prompt" is removed; set followup_prompt on the job, not on a trigger`)
+	}
+	return nil
 }
 
 // WhenYAML — gate on a cron/every entry (B25).
@@ -460,14 +490,15 @@ type Trigger struct {
 	// Allowlist is the ingress gate (security layer 1), checked before match.
 	// Each entry is compared with the value at the connector events.identity path.
 	Allowlist []string
-	Debounce  time.Duration
-	RateLimit string
-	When      *WhenYAML
-	Anchor    string
-	Timezone  string
-	Index     int // per-family index (B21): schedule family shares cron+every; event separate
-	Disabled  bool
-	Raw       TriggerYAML
+	// Limit is the file value of an event trigger: N/<duration>, off, or
+	// empty for DefaultLimit. EffectiveLimit is the resolved value.
+	Limit          string
+	EffectiveLimit string
+	When           *WhenYAML
+	Timezone       string
+	Index          int // per-family index (B21): schedule family shares cron+every; event separate
+	Disabled       bool
+	Raw            TriggerYAML
 }
 
 // UnmarshalYAML reads one trigger in the canonical YAML form, as in the
@@ -493,13 +524,26 @@ func (t Trigger) MarshalYAML() (any, error) {
 	}
 	raw := TriggerYAML{
 		Cron: t.Cron, Every: t.Every, Event: t.Event, Match: t.Match, Extract: t.Extract,
-		RateLimit: t.RateLimit, When: t.When, Anchor: t.Anchor, Timezone: t.Timezone,
+		Limit: t.Limit, When: t.When, Timezone: t.Timezone,
 		Allowlist: t.Allowlist, Disabled: t.Disabled,
 	}
-	if t.Debounce > 0 {
-		raw.Debounce = t.Debounce.String()
-	}
 	return raw, nil
+}
+
+// DefaultLimit is the limit of an event trigger that sets none.
+const DefaultLimit = "15/10m"
+
+// LimitOff is the limit value that removes the limit.
+const LimitOff = "off"
+
+// RateLimit returns the rate of an event trigger, or nil when the limit is
+// off or the trigger is not an event trigger.
+func (t Trigger) RateLimit() *dispatch.RateLimit {
+	if t.Event == "" {
+		return nil
+	}
+	rate, _ := parseLimit(t.Limit)
+	return rate
 }
 
 // NumberTriggers sets Index on a list read one trigger at a time: the
@@ -569,7 +613,10 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 
 	triggers, err := normalizeTriggers(fm.Triggers)
 	if err != nil {
-		return nil, fmt.Errorf("%s: triggers: %w", filePath, err)
+		return parseFail(filePath, hash, fmt.Errorf("triggers: %w", err))
+	}
+	if err := ValidateIfRunning(fm.Session.IfRunning); err != nil {
+		return parseFail(filePath, hash, fmt.Errorf("session: %w", err))
 	}
 
 	// A name: mismatch with the path-derived name is soft (migration reports
@@ -725,18 +772,20 @@ func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 		if n > 1 {
 			return nil, fmt.Errorf("trigger entry must set exactly one of cron, every, event")
 		}
-		tr := Trigger{Raw: t, When: t.When, Match: t.Match, Extract: t.Extract, Allowlist: t.Allowlist, Anchor: t.Anchor, Timezone: t.Timezone, Disabled: t.Disabled}
-		if t.Enabled != nil && !*t.Enabled {
-			tr.Disabled = true
+		if err := t.removedKey(); err != nil {
+			return nil, err
 		}
-		if t.Debounce != "" {
-			d, err := time.ParseDuration(t.Debounce)
+		if t.Limit != "" && t.Event == "" {
+			return nil, fmt.Errorf(`"limit" applies only to an event trigger`)
+		}
+		tr := Trigger{Raw: t, When: t.When, Match: t.Match, Extract: t.Extract, Allowlist: t.Allowlist, Limit: t.Limit, Timezone: t.Timezone, Disabled: t.Disabled}
+		if t.Event != "" {
+			rate, err := parseLimit(t.Limit)
 			if err != nil {
-				return nil, fmt.Errorf("debounce: %w", err)
+				return nil, err
 			}
-			tr.Debounce = d
+			tr.EffectiveLimit = rate.String()
 		}
-		tr.RateLimit = t.RateLimit
 		switch {
 		case t.Cron != "":
 			tr.Family = "cron"
@@ -989,4 +1038,20 @@ func stringList(raw any) []string {
 		}
 	}
 	return nil
+}
+
+// parseLimit resolves a limit value: empty is DefaultLimit, off is nil.
+func parseLimit(v string) (*dispatch.RateLimit, error) {
+	v = strings.TrimSpace(v)
+	switch v {
+	case "":
+		v = DefaultLimit
+	case LimitOff:
+		return nil, nil
+	}
+	rate := dispatch.ParseRateLimit(v)
+	if rate == nil {
+		return nil, fmt.Errorf(`limit %q: use N/<duration> such as 15/10m, or "off"`, v)
+	}
+	return rate, nil
 }

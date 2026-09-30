@@ -111,7 +111,7 @@ func (l *Launcher) Fresh(ctx context.Context, prevID, prompt string, reason runs
 	lopts.ConversationID = prev.ConversationID
 	lopts.Prompt = prompt
 	lopts.PromptPreview = prompt
-	lopts.IfRunning = "allow"
+	lopts.BypassOverlap = true
 	run, _, err := l.runs.CreateAndLaunch(ctx, lopts)
 	return run, err
 }

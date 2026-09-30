@@ -641,7 +641,7 @@ defaults:
   #   max_duration: ""     # hard wall-clock cap per run
   #   keep_alive: ""
   #   nudge: ""
-  #   if_running: ""       # skip | replace | coalesce | allow
+  #   if_running: ""       # queue (default) | skip | replace
   # memory:                # structured MEMORY.md defaults
   #   max_logs: 100        # Log entry cap; 0 = no cap
   #   require_update: true # a run must rewrite MEMORY.md
@@ -894,7 +894,7 @@ func (c *Config) Validate() error {
 	ce.checkNudge("defaults.session.nudge", s.Nudge)
 	if s.IfRunning != "" && !validIfRunningMode(strings.ToLower(strings.TrimSpace(s.IfRunning))) {
 		ce.add("defaults.session.if_running",
-			fmt.Sprintf("%q not in [skip, replace, coalesce, allow]", s.IfRunning))
+			fmt.Sprintf("%q not in [queue, skip, replace]", s.IfRunning))
 	}
 
 	// notify.waiting_after: empty → default 5m; 0/off disables escalate
@@ -1124,7 +1124,7 @@ func validFallbackMode(v string) bool {
 // validIfRunningMode accepts empty (default policy).
 func validIfRunningMode(v string) bool {
 	switch v {
-	case "", "skip", "replace", "coalesce", "allow":
+	case "", "queue", "skip", "replace":
 		return true
 	}
 	return false

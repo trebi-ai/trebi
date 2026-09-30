@@ -567,7 +567,19 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	if ck := res.Vars["conversation_key"]; ck != "" {
 		item.ConversationKey = ck
 	}
-	if err := s.queue.Enqueue(r.Context(), item); err != nil {
+	err = s.queue.Enqueue(r.Context(), item)
+	if errors.Is(err, dispatch.ErrLaneFull) {
+		if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO event_outcomes
+			(event_id, workspace_id, job, on_index, outcome, created_at)
+			VALUES (?,?,?,?,?,?)
+			ON CONFLICT (event_id, workspace_id, job, on_index) DO NOTHING`, eid, body.Workspace, body.Job, body.OnIndex,
+			string(dispatch.OutcomeDropped), now); err != nil {
+			s.log.Warn("rules.fire outcome insert", "event_id", eid, "error", err)
+		}
+		writeQueueFull(w)
+		return
+	}
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/api"
+	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -910,4 +911,36 @@ func dirRows(body map[string]any) int {
 		}
 	}
 	return n
+}
+
+// TestCreateRunQueuesBehindLiveRun proves a manual launch waits in the queue
+// while a run of the job is live, and a full queue answers 429.
+func TestCreateRunQueuesBehindLiveRun(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wsDir, "busy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "busy", "JOB.md"), []byte("---\nharness: fake\n---\n\nGo.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wsID := addWorkspace(t, base, wsDir, "busy-ws")
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job,kind,status,trace_id,started_at,updated_at)
+		VALUES ('live',?,'busy','job','running','trace',?,?)`, wsID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	launch := map[string]any{"workspace": wsID, "job": "busy", "kind": "job", "reason": "manual", "harness": "fake"}
+	for i := 0; i < dispatch.LaneCap; i++ {
+		code, body, _ := doJSON(t, "POST", base+"/v1/runs", launch)
+		if code != http.StatusAccepted || body["queued"] != true || body["queue_id"] == "" {
+			t.Fatalf("launch %d: %d %v, want 202 queued", i, code, body)
+		}
+	}
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs", launch)
+	e, _ := body["error"].(map[string]any)
+	if code != http.StatusTooManyRequests || e == nil || e["code"] != "queue_full" {
+		t.Fatalf("launch at cap: %d %v, want 429 queue_full", code, body)
+	}
 }

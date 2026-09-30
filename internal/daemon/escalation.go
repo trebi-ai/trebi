@@ -61,6 +61,7 @@ WHERE connector='escalation' AND workspace_id=? AND created_at >= ? AND event_id
 		Status:      dispatch.QueuePending,
 	}
 	if err := c.queue.Enqueue(ctx, item); err != nil {
+		c.log.Warn("escalation enqueue", "agent", f.Owner, "run", f.RunID, "error", err)
 		return false, nil
 	}
 	c.log.Info("agent.escalated", "agent", f.Owner, "to", "agent-owner", "run", f.RunID)

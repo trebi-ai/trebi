@@ -66,6 +66,10 @@ func (e *AmbiguousError) Error() string {
 // daemon wires it to the outbox, so held rows wake on connected.
 type StatusHook func(ctx context.Context, id, state string)
 
+// FloodHook is told about an event that Trebi dropped because the queue of
+// the job is full. The daemon wires it to the trigger_flood alert.
+type FloodHook func(ctx context.Context, workspaceID, job, connection string)
+
 // Service stores connections and supervises their processes.
 type Service struct {
 	st    *store.Store
@@ -87,6 +91,7 @@ type Service struct {
 	userHome  string                                             // empty: skip MCP discovery (tests)
 	version   string                                             // daemon version for initialize
 	onStatus  StatusHook
+	onFlood   FloodHook
 	wg        sync.WaitGroup
 
 	catalog   Catalog
@@ -191,6 +196,12 @@ func (s *Service) WithVersion(v string) *Service {
 // OnStatus sets the hook for adapter state changes.
 func (s *Service) OnStatus(h StatusHook) *Service {
 	s.onStatus = h
+	return s
+}
+
+// OnFlood sets the hook for dropped events.
+func (s *Service) OnFlood(h FloodHook) *Service {
+	s.onFlood = h
 	return s
 }
 

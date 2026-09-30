@@ -13,6 +13,10 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
+// LaneCap is the number of pending rows one lane holds. A resume row does
+// not count.
+const LaneCap = 10
+
 // MaxAttempts caps how many launch attempts a queue row may take. A wait
 // is not an attempt.
 const MaxAttempts = 5
@@ -29,6 +33,8 @@ var (
 	ErrNotFound = errors.New("queue item not found")
 	// ErrDone is a mutation against a finished row.
 	ErrDone = errors.New("queue item is done")
+	// ErrLaneFull is an enqueue into a lane that holds LaneCap pending rows.
+	ErrLaneFull = errors.New("lane full")
 )
 
 // QueueItem is an event_queue row.
@@ -53,6 +59,31 @@ type QueueItem struct {
 	NextAttemptAt   *time.Time        `json:"next_attempt_at,omitempty"`
 	ErrorMessage    string            `json:"error_message,omitempty"`
 	CreatedAt       time.Time         `json:"created_at"`
+	// Launch is set on a manual or scheduled launch that waits for a live run.
+	Launch *LaunchRequest `json:"-"`
+}
+
+// Connectors of queue rows that are not events.
+const (
+	ConnectorManual   = "manual"
+	ConnectorSchedule = "schedule"
+)
+
+// LaunchRequest is a manual or scheduled launch that waits for a live run.
+type LaunchRequest struct {
+	Reason         string            `json:"reason"` // manual | schedule | report
+	Harness        string            `json:"harness,omitempty"`
+	Runtime        string            `json:"runtime,omitempty"`
+	Prompt         string            `json:"prompt,omitempty"` // expanded prompt of a job run
+	Wake           *LaunchWake       `json:"wake,omitempty"`   // operator body and message
+	Inputs         map[string]string `json:"inputs,omitempty"`
+	ConversationID string            `json:"conversation_id,omitempty"`
+}
+
+type LaunchWake struct {
+	Body        string `json:"body,omitempty"`
+	ExtraPrompt string `json:"extra_prompt,omitempty"`
+	Message     string `json:"message,omitempty"`
 }
 
 // QueueStatus / QueueResult / BlockReason — trebi event_queue, verbatim.
@@ -81,13 +112,14 @@ type BlockReason string
 type DeferReason string
 
 const (
-	DeferPolicy DeferReason = "policy"
-	DeferTurn   DeferReason = "turn_active"
-	DeferRetry  DeferReason = "retry"
+	DeferPolicy    DeferReason = "policy"
+	DeferTurn      DeferReason = "turn_active"
+	DeferRunActive DeferReason = "run_active"
+	DeferRetry     DeferReason = "retry"
 )
 
 // waitReasons is the SQL list of defer reasons that are waits, not errors.
-const waitReasons = `('policy','turn_active')`
+const waitReasons = `('policy','turn_active','run_active')`
 
 const (
 	BlockAuthMissing   BlockReason = "auth_missing"
@@ -109,6 +141,8 @@ const (
 	OutcomeCoalesced EventOutcome = "coalesced"
 	OutcomeSkipped   EventOutcome = "skipped"
 	OutcomeDead      EventOutcome = "dead"
+	// OutcomeDropped is an event that found its lane full.
+	OutcomeDropped EventOutcome = "dropped"
 )
 
 // Queue owns event_queue rows for one store.
@@ -132,7 +166,9 @@ func NewQueueWithClock(st *store.Store, now func() time.Time) *Queue {
 	return &Queue{st: st, log: slog.Default().With("source", "queue"), now: now}
 }
 
-// Enqueue inserts a pending queue row + bus event.
+// Enqueue inserts a pending queue row + bus event. A pending row that is not
+// a resume returns ErrLaneFull and inserts nothing when its lane holds
+// LaneCap pending rows.
 func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 	if item.ID == "" {
 		item.ID = ulid.Make().String()
@@ -159,17 +195,35 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 	if item.EventID != "" {
 		eventID = &item.EventID
 	}
+	var launchJSON *string
+	if item.Launch != nil {
+		b, _ := json.Marshal(item.Launch)
+		s := string(b)
+		launchJSON = &s
+	}
 
 	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		if item.Status == QueuePending && item.ResumeOf == "" {
+			var n int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM event_queue
+				WHERE status='pending' AND resume_of IS NULL
+				AND workspace_id=? AND job=? AND kind=? AND conversation_key=?`,
+				item.WorkspaceID, item.Job, item.Kind, item.ConversationKey).Scan(&n); err != nil {
+				return err
+			}
+			if n >= LaneCap {
+				return ErrLaneFull
+			}
+		}
 		_, err := tx.Exec(`INSERT INTO event_queue (
 			id, connector, workspace_id, job, kind, on_index, conversation_key,
 			event_id, event_raw, vars_json, prompt, status, block_reason, resume_of,
-			trace_id, created_at, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			trace_id, launch_json, created_at, updated_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			item.ID, item.Connector, item.WorkspaceID, item.Job, item.Kind, item.OnIndex,
 			item.ConversationKey, eventID, store.NullStr(item.EventRaw), varsJSON, item.Prompt,
 			string(item.Status), store.NullStr(string(item.BlockReason)), store.NullStr(item.ResumeOf),
-			item.TraceID, now, now)
+			item.TraceID, launchJSON, now, now)
 		return err
 	}, store.BusEvent{
 		Topic:    "queue.updated",
@@ -184,8 +238,8 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 
 // ClaimNext claims one pending row for a lane (FIFO). Concurrent-safe via RowsAffected.
 // Orders by id: ids are ULIDs (time-sortable); created_at text mis-sorts
-// because RFC3339Nano strips trailing fractional zeros. A conversation lane
-// claims only its head row, so a row in backoff holds the rows behind it.
+// because RFC3339Nano strips trailing fractional zeros. A lane claims only
+// its head row, so a row in backoff or in a wait holds the rows behind it.
 // The claim does not change attempts; MarkAttempt counts a launch.
 func (q *Queue) ClaimNext(ctx context.Context, workspaceID, job, kind, conversationKey string) (*QueueItem, error) {
 	at := q.now().UTC()
@@ -195,31 +249,33 @@ func (q *Queue) ClaimNext(ctx context.Context, workspaceID, job, kind, conversat
 	due := at.Format(time.RFC3339)
 	query := `SELECT id, connector, workspace_id, job, kind, on_index, conversation_key,
 			COALESCE(event_id,''), COALESCE(event_raw,''), status, COALESCE(prompt,''), COALESCE(trace_id,''),
-			COALESCE(resume_of,''), attempts, COALESCE(vars_json,''), created_at
+			COALESCE(resume_of,''), attempts, COALESCE(vars_json,''), COALESCE(launch_json,''), created_at
 			FROM event_queue
 			WHERE status='pending' AND workspace_id=? AND job=? AND kind=? AND conversation_key=?
-			AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`
-	args := []any{workspaceID, job, kind, conversationKey, due}
-	if conversationKey != "" {
-		query += ` AND id = (SELECT MIN(id) FROM event_queue
+			AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+			AND id = (SELECT MIN(id) FROM event_queue
 			WHERE status='pending' AND workspace_id=? AND job=? AND kind=? AND conversation_key=?)`
-		args = append(args, workspaceID, job, kind, conversationKey)
-	}
-	query += ` ORDER BY id ASC LIMIT 1`
+	args := []any{workspaceID, job, kind, conversationKey, due, workspaceID, job, kind, conversationKey}
 	var item QueueItem
 	q.st.LockBus()
 	defer q.st.UnlockBus()
 	err := q.st.WithTx(ctx, func(tx *sql.Tx) error {
 		row := tx.QueryRow(query, args...)
-		var created, status, varsJSON string
+		var created, status, varsJSON, launchJSON string
 		if err := row.Scan(&item.ID, &item.Connector, &item.WorkspaceID, &item.Job, &item.Kind,
 			&item.OnIndex, &item.ConversationKey, &item.EventID, &item.EventRaw, &status, &item.Prompt,
-			&item.TraceID, &item.ResumeOf, &item.Attempts, &varsJSON, &created); err != nil {
+			&item.TraceID, &item.ResumeOf, &item.Attempts, &varsJSON, &launchJSON, &created); err != nil {
 			return err
 		}
 		item.Status = QueueStatus(status)
 		if varsJSON != "" {
 			_ = json.Unmarshal([]byte(varsJSON), &item.Vars)
+		}
+		if launchJSON != "" {
+			item.Launch = &LaunchRequest{}
+			if err := json.Unmarshal([]byte(launchJSON), item.Launch); err != nil {
+				return fmt.Errorf("parse queue item %s launch_json: %w", item.ID, err)
+			}
 		}
 		createdAt, parseErr := time.Parse(time.RFC3339Nano, created)
 		if parseErr != nil {
@@ -347,6 +403,16 @@ func (q *Queue) Defer(ctx context.Context, id string, until time.Time, reason De
 		},
 	})
 	return err
+}
+
+// Wait returns a claimed row to pending after an attempt that did not
+// launch, because a run of the same job is live. It undoes the attempt count
+// of MarkAttempt, so a wait is not an attempt.
+func (q *Queue) Wait(ctx context.Context, id string, until time.Time, reason DeferReason) error {
+	if _, err := q.st.DB().ExecContext(ctx, `UPDATE event_queue SET attempts=CASE WHEN attempts > 0 THEN attempts-1 ELSE 0 END WHERE id=?`, id); err != nil {
+		return err
+	}
+	return q.Defer(ctx, id, until, reason)
 }
 
 // MarkBlocked sets status=blocked with a block_reason (auth/limit/policy/job_missing).

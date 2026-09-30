@@ -97,7 +97,7 @@ func waitQueue(t *testing.T, st *store.Store, id string, want func(status, errMs
 // TestQueuePolicyDefersSecondFire proves the trigger policy is checked at the
 // claim (plan E.2): the first fire launches, the second waits with a due time.
 func TestQueuePolicyDefersSecondFire(t *testing.T) {
-	md := "---\nharness: fake\ntriggers:\n  - event: tick\n    match: \"true\"\n    debounce: 1h\n---\n\nGo.\n"
+	md := "---\nharness: fake\ntriggers:\n  - event: tick\n    match: \"true\"\n    limit: 1/1h\n---\n\nGo.\n"
 	cp, st, wsID, ctx := openQueuePlane(t, "tickjob", md)
 
 	q := dispatch.NewQueue(st)
@@ -131,7 +131,7 @@ func TestQueuePolicyDefersSecondFire(t *testing.T) {
 		t.Fatalf("next_attempt_at=%q: %v", next, err)
 	}
 	if due.Before(time.Now().Add(50 * time.Minute)) {
-		t.Fatalf("next_attempt_at=%s is not a debounce of 1h", next)
+		t.Fatalf("next_attempt_at=%s is not a limit window of 1h", next)
 	}
 }
 
@@ -253,9 +253,9 @@ func queueCount(t *testing.T, st *store.Store, where string) int {
 }
 
 // TestQueueRateLimitLaunchesEveryEvent proves a policy wait is not an
-// attempt (P1-9): 8 events under rate_limit 1/1m all launch, one per window.
+// attempt (P1-9): 8 events under limit 1/1m all launch, one per window.
 func TestQueueRateLimitLaunchesEveryEvent(t *testing.T) {
-	md := "---\nharness: fake\nsession:\n  if_running: allow\ntriggers:\n  - event: tick\n    match: \"true\"\n    rate_limit: 1/1m\n---\n\nGo.\n"
+	md := "---\nharness: fake\nsession:\n  if_running: replace\ntriggers:\n  - event: tick\n    match: \"true\"\n    limit: 1/1m\n---\n\nGo.\n"
 	clock := newTestClock()
 	cp, st, wsID, ctx := openQueuePlaneAt(t, "burst", md, clock.Now)
 	q := dispatch.NewQueue(st)
@@ -358,7 +358,7 @@ func TestAssistantWaitThenAskErrorRetries(t *testing.T) {
 // TestEscalationItemTakesNoTriggerPolicy proves an item whose connector is
 // not the event of trigger OnIndex has no policy key (P1-12).
 func TestEscalationItemTakesNoTriggerPolicy(t *testing.T) {
-	md := "---\nharness: fake\nsession:\n  if_running: allow\ntriggers:\n  - event: tick\n    match: \"true\"\n    debounce: 1h\n---\n\nGo.\n"
+	md := "---\nharness: fake\nsession:\n  if_running: replace\ntriggers:\n  - event: tick\n    match: \"true\"\n    limit: 1/1h\n---\n\nGo.\n"
 	cp, st, wsID, ctx := openQueuePlane(t, "esc", md)
 	q := dispatch.NewQueue(st)
 	first := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, Job: "esc", EventRaw: `{}`}
@@ -378,7 +378,7 @@ func TestEscalationItemTakesNoTriggerPolicy(t *testing.T) {
 	}
 	status, errMsg, _ := waitQueue(t, st, esc.ID, func(s, _, _ string) bool { return s == "done" })
 	if status != "done" || errMsg == "policy" {
-		t.Fatalf("escalation status=%s error_message=%q; it must not wait on the trigger debounce", status, errMsg)
+		t.Fatalf("escalation status=%s error_message=%q; it must not wait on the trigger limit", status, errMsg)
 	}
 }
 
@@ -445,7 +445,7 @@ func TestAgentCoalesceKeepsMessage(t *testing.T) {
 	}
 }
 
-// TestAssistantTriggerPolicy proves assistant triggers take their debounce
+// TestAssistantTriggerPolicy proves assistant triggers take their limit
 // (P1-10): the first item prompts the session, the second waits.
 func TestAssistantTriggerPolicy(t *testing.T) {
 	cp, st, wsID, ctx := openQueuePlane(t, "asstpol", "---\nharness: fake\n---\n\nGo.\n")
@@ -453,7 +453,7 @@ func TestAssistantTriggerPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	yml := "assistant:\n  harness: fake\n  triggers:\n    - event: tick\n      debounce: 1h\n"
+	yml := "assistant:\n  harness: fake\n  triggers:\n    - event: tick\n      limit: 1/1h\n"
 	if err := os.WriteFile(filepath.Join(ws.Path, "trebi.yaml"), []byte(yml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestAssistantTriggerPolicy(t *testing.T) {
 // TestQueuePolicyMatchesTriggerBySlug proves a trigger that names the slug
 // applies to an item that holds the connection id.
 func TestQueuePolicyMatchesTriggerBySlug(t *testing.T) {
-	md := "---\nharness: fake\ntriggers:\n  - event: feed\n    match: \"true\"\n    debounce: 1h\n---\n\nGo.\n"
+	md := "---\nharness: fake\ntriggers:\n  - event: feed\n    match: \"true\"\n    limit: 1/1h\n---\n\nGo.\n"
 	cp, st, wsID, ctx := openQueuePlane(t, "feedjob", md)
 
 	feed, err := cp.Connectors.Create(ctx, connectors.Connection{Type: "rss", Slug: "feed", From: connectors.FromInline, Manifest: &manifest.Manifest{
@@ -519,5 +519,98 @@ func TestQueuePolicyMatchesTriggerBySlug(t *testing.T) {
 	status, errMsg, _ := waitQueue(t, st, second.ID, func(s, _, next string) bool { return s == "pending" && next != "" })
 	if status != "pending" || errMsg != "policy" {
 		t.Fatalf("second fire status=%s error=%q want pending policy", status, errMsg)
+	}
+}
+
+// TestTriggerFloodDrops proves a full lane drops new events: 100 events give
+// 10 waiting rows, 90 dropped outcomes, and one trigger_flood inbox item.
+func TestTriggerFloodDrops(t *testing.T) {
+	md := "---\nharness: fake\ntriggers:\n  - event: feed\n    match: \"true\"\n---\n\nGo.\n"
+	cp, st, wsID, ctx := openQueuePlane(t, "floodjob", md)
+	if _, err := cp.Connectors.Create(ctx, connectors.Connection{Type: "feed", Slug: "feed", From: connectors.FromInline, Manifest: &manifest.Manifest{
+		Schema: manifest.SchemaID, Name: "feed", Title: "Feed", Description: "Test feed", Version: "1.0.0",
+		Events: &manifest.Events{Command: "sleep 60", Format: manifest.FormatJSON},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		if _, err := cp.Connectors.InjectEvent(ctx, "feed", map[string]any{"n": i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := queueCount(t, st, `job='floodjob' AND status='pending'`); n != dispatch.LaneCap {
+		t.Fatalf("pending=%d want %d", n, dispatch.LaneCap)
+	}
+	var dropped, flood int
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE outcome=?`, string(dispatch.OutcomeDropped)).Scan(&dropped)
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE alert_kind='trigger_flood' AND workspace_id=?`, wsID).Scan(&flood)
+	if dropped != 100-dispatch.LaneCap {
+		t.Fatalf("dropped=%d want %d", dropped, 100-dispatch.LaneCap)
+	}
+	if flood != 1 {
+		t.Fatalf("trigger_flood items=%d want 1", flood)
+	}
+}
+
+// TestManualLaunchWaitsForLiveRun proves waiting manual launches stay pending
+// with reason run_active, do not count an attempt, and launch in id order
+// after the live run ends.
+func TestManualLaunchWaitsForLiveRun(t *testing.T) {
+	clock := newTestClock()
+	cp, st, wsID, ctx := openQueuePlaneAt(t, "waiter", "---\nharness: fake\n---\n\nGo.\n", clock.Now)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job,kind,status,trace_id,started_at,updated_at)
+		VALUES ('live-1',?,'waiter','job','running','trace-live',?,?)`, wsID, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	q := dispatch.NewQueue(st)
+	var ids []string
+	for _, p := range []string{"one", "two"} {
+		item := &dispatch.QueueItem{Connector: dispatch.ConnectorManual, WorkspaceID: wsID, Job: "waiter",
+			Launch: &dispatch.LaunchRequest{Reason: string(runs.ReasonManual), Prompt: p}}
+		if err := q.Enqueue(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, item.ID)
+	}
+	status, errMsg, _ := waitQueue(t, st, ids[0], func(_, e, _ string) bool { return e == string(dispatch.DeferRunActive) })
+	if status != "pending" || errMsg != string(dispatch.DeferRunActive) {
+		t.Fatalf("status=%s error_message=%q want pending/run_active", status, errMsg)
+	}
+	if n := queueCount(t, st, `job='waiter' AND attempts > 0`); n != 0 {
+		t.Fatalf("%d rows with attempts; a run_active wait is not an attempt", n)
+	}
+	if _, err := st.DB().Exec(`UPDATE runs SET status='done', end_reason='complete' WHERE id='live-1'`); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for queueCount(t, st, `job='waiter' AND result='launched'`) < 2 && time.Now().Before(deadline) {
+		clock.Advance(3 * time.Second)
+		time.Sleep(50 * time.Millisecond)
+	}
+	if n := queueCount(t, st, `job='waiter' AND result='launched'`); n != 2 {
+		t.Fatalf("launched=%d want 2", n)
+	}
+	rows, err := st.DB().Query(`SELECT queue_id FROM runs WHERE job='waiter' AND queue_id IS NOT NULL ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var got []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, id)
+	}
+	if strings.Join(got, ",") != strings.Join(ids, ",") {
+		t.Fatalf("launch order=%v want %v", got, ids)
 	}
 }

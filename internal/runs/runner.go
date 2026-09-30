@@ -22,6 +22,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -119,8 +120,57 @@ type LaunchOpts struct {
 	// Both already include harness defaults; empty = vendor default.
 	Model  string
 	Effort string
-	// IfRunning policy for overlap: skip|replace|coalesce|allow.
+	// IfRunning policy for overlap: queue|skip|replace. Empty resolves to
+	// the config default, then queue.
 	IfRunning string
+	// Conversation sends the prompt into a live run of the same
+	// conversation, whatever IfRunning says. The queue lane sets it for an
+	// item with a conversation key.
+	Conversation bool
+	// BypassOverlap launches next to a live run. Only resume paths set it.
+	BypassOverlap bool
+}
+
+// Values of session.if_running.
+const (
+	IfRunningQueue   = "queue"
+	IfRunningSkip    = "skip"
+	IfRunningReplace = "replace"
+)
+
+// Overlap outcomes that are not if_running values.
+const (
+	OverlapCoalesce = "coalesce"
+)
+
+// ErrRunActive is a queue launch that must wait for a live run of the same
+// job and conversation. No run row is created.
+var ErrRunActive = errors.New("run active")
+
+// QueueItem returns the queue row of a launch that waits for a live run of
+// its job. The queue lane rebuilds the options from the job file and this
+// request.
+func (o *LaunchOpts) QueueItem(connector string) *dispatch.QueueItem {
+	lr := &dispatch.LaunchRequest{
+		Reason:         string(o.Reason),
+		Harness:        o.Harness,
+		Runtime:        o.Runtime,
+		Prompt:         o.Prompt,
+		Inputs:         o.Inputs,
+		ConversationID: o.ConversationID,
+	}
+	if o.Wake != nil {
+		lr.Wake = &dispatch.LaunchWake{Body: o.Wake.Body, ExtraPrompt: o.Wake.ExtraPrompt, Message: o.Wake.Message}
+	}
+	return &dispatch.QueueItem{
+		Connector:       connector,
+		WorkspaceID:     o.WorkspaceID,
+		Job:             o.Job,
+		Kind:            o.Kind,
+		ConversationKey: o.ConversationKey,
+		Status:          dispatch.QueuePending,
+		Launch:          lr,
+	}
 }
 
 // wantsFake reports the fake-harness path (contract e2e without real LLM binary).
@@ -161,8 +211,9 @@ func (o *LaunchOpts) applyResumePlan(plan *tmux.LaunchPlan) {
 }
 
 // CreateAndLaunch inserts a run and starts the harness (tmux) or fake process.
-// The second return is the if_running outcome: "" (no live run) | skip | coalesce | replace | allow.
+// The second return is the overlap outcome: "" (no live run or bypass) | skip | coalesce | replace.
 // On skip/coalesce the returned run is the skipped row / the live run — no launch happens.
+// On queue with a live run it returns ErrRunActive and creates no row.
 func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, string, error) {
 	// Decide human status before minting a token: a token identifies the run
 	// process, not the human who launched it.
@@ -194,12 +245,9 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 			return nil, "", err
 		}
 	}
-	if opts.IfRunning == "" {
-		opts.IfRunning = "skip"
-	}
 	var outcome string
 	// Overlap policy against live runs of the same job (assistant: same conversation).
-	if opts.Job != "" && opts.WorkspaceID != "" {
+	if opts.Job != "" && opts.WorkspaceID != "" && !opts.BypassOverlap {
 		oc, done, err := s.applyIfRunning(ctx, &opts)
 		if err != nil {
 			return nil, "", err
@@ -948,7 +996,7 @@ func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o 
 	opts.ConversationKey, opts.ConversationID = prev.ConversationKey, prev.ConversationID
 	opts.Prompt = o.Prompt
 	opts.PromptPreview = o.Prompt
-	opts.IfRunning = "allow"
+	opts.BypassOverlap = true
 	opts.Wake = nil
 	if opts.MaxDurationMS == 0 && opts.IdleTimeoutMS == 0 && opts.KeepAliveMS == 0 {
 		opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS = prev.Session.MaxDurationMS, prev.Session.IdleTimeoutMS, prev.Session.KeepAliveMS
@@ -1361,14 +1409,9 @@ func (s *Service) stampHarnessLimit(ctx context.Context, name string, exceeded b
 
 // applyIfRunning enforces session.if_running against live runs of the same job
 // (or, for assistant, the same conversation).
-// It returns the outcome ("" when no live run, else skip|coalesce|replace|allow)
+// It returns the outcome ("" when no live run, else skip|coalesce|replace)
 // and, for skip/coalesce, the run row the caller must return instead of a launch.
 func (s *Service) applyIfRunning(ctx context.Context, opts *LaunchOpts) (string, *Run, error) {
-	policy := opts.IfRunning
-	if policy == "" {
-		policy = "skip"
-	}
-
 	// Overlap is per conversation (plan E.3): an empty key matches only runs
 	// with an empty key, so one busy chat does not block another.
 	live, err := s.List(ctx, ListOpts{
@@ -1385,24 +1428,36 @@ func (s *Service) applyIfRunning(ctx context.Context, opts *LaunchOpts) (string,
 	if len(live) == 0 {
 		return "", nil, nil
 	}
-	switch policy {
-	case "allow":
-		return "allow", nil, nil
-	case "skip":
+	if opts.Conversation {
+		s.overlapCoalesce(ctx, opts, live[0])
+		return OverlapCoalesce, live[0], nil
+	}
+	switch policy := resolveIfRunning(opts.IfRunning); policy {
+	case IfRunningQueue:
+		return "", nil, ErrRunActive
+	case IfRunningSkip:
 		row, err := s.overlapSkip(ctx, opts, live[0])
 		if err != nil {
 			return "", nil, err
 		}
-		return "skip", row, nil
-	case "replace":
+		return IfRunningSkip, row, nil
+	case IfRunningReplace:
 		s.overlapReplace(ctx, live)
-		return "replace", nil, nil
-	case "coalesce":
-		s.overlapCoalesce(ctx, opts, live[0])
-		return "coalesce", live[0], nil
+		return IfRunningReplace, nil, nil
 	default:
 		return "", nil, fmt.Errorf("unknown if_running policy %q", policy)
 	}
+}
+
+// resolveIfRunning returns v, else defaults.session.if_running, else queue.
+func resolveIfRunning(v string) string {
+	if v != "" {
+		return v
+	}
+	if cfg, err := config.Load(); err == nil && cfg != nil && cfg.Defaults.Session.IfRunning != "" {
+		return cfg.Defaults.Session.IfRunning
+	}
+	return IfRunningQueue
 }
 
 // overlapSkip records a terminal skipped row instead of a launch.
@@ -1425,7 +1480,7 @@ func (s *Service) overlapSkip(ctx context.Context, opts *LaunchOpts, existing *R
 		return nil, err
 	}
 	s.AddEvent(ctx, skipped.ID, "skip", "runner", map[string]string{
-		"because": existing.ID, "policy": "skip",
+		"because": existing.ID, "policy": IfRunningSkip,
 	})
 	return s.Get(ctx, skipped.ID)
 }

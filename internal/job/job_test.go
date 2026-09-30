@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -21,7 +22,7 @@ harness: claude
 envset: claude-zai
 session:
   idle_timeout: 30m
-  if_running: coalesce
+  if_running: queue
 triggers:
   - cron: "0 9 * * *"
     when:
@@ -277,7 +278,6 @@ triggers:
   - event: b
     match: "true"
   - every: 45m
-    anchor: "2026-01-02T15:04:05Z"
 ---
 hi
 `
@@ -454,16 +454,16 @@ func parseErrOf(j *job.Job) string {
 // trebi.yaml) gets its family and canonical keys, and writes back the same.
 func TestTriggerYAML(t *testing.T) {
 	var list []job.Trigger
-	src := "- event: chat\n  match: kind = 'message'\n  rate_limit: 5/m\n- cron: '0 9 * * *'\n- event: mail\n"
+	src := "- event: chat\n  match: kind = 'message'\n  limit: 5/1m\n- cron: '0 9 * * *'\n- event: mail\n"
 	if err := yaml.Unmarshal([]byte(src), &list); err != nil {
 		t.Fatal(err)
 	}
 	job.NumberTriggers(list)
-	if list[0].Family != "event" || list[0].RateLimit != "5/m" || list[0].Match == "" || list[1].Family != "cron" || list[2].Index != 1 {
+	if list[0].Family != "event" || list[0].Limit != "5/1m" || list[0].RateLimit().Count != 5 || list[2].EffectiveLimit != job.DefaultLimit || list[0].Match == "" || list[1].Family != "cron" || list[2].Index != 1 {
 		t.Fatalf("triggers = %+v", list)
 	}
 	out, err := yaml.Marshal(list)
-	if err != nil || string(out) != "- event: chat\n  match: kind = 'message'\n  rate_limit: 5/m\n- cron: 0 9 * * *\n- event: mail\n" {
+	if err != nil || string(out) != "- event: chat\n  match: kind = 'message'\n  limit: 5/1m\n- cron: 0 9 * * *\n- event: mail\n" {
 		t.Fatalf("marshal = %q %v", out, err)
 	}
 	if err := yaml.Unmarshal([]byte("- match: x\n"), &list); err == nil {
@@ -473,5 +473,61 @@ func TestTriggerYAML(t *testing.T) {
 	out, err = yaml.Marshal([]job.Trigger{{Family: "event", Event: "chat", Match: "x"}})
 	if err != nil || string(out) != "- event: chat\n  match: x\n" {
 		t.Fatalf("json-made marshal = %q %v", out, err)
+	}
+}
+
+// TestTriggerRemovedKeys proves each removed key fails the parse with its fix.
+func TestTriggerRemovedKeys(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"    debounce: 30s\n":          `use "limit: N/<duration>"`,
+		"    rate_limit: 5/1m\n":       `use "limit: N/<duration>"`,
+		"    anchor: \"2026-01-02\"\n": "use cron",
+		"    enabled: false\n":         `use "disabled: true"`,
+		"    followup_prompt: more\n":  "set followup_prompt on the job",
+	}
+	for extra, want := range cases {
+		src := "---\ntriggers:\n  - event: chat\n" + extra + "---\nhi\n"
+		j, err := job.ParseBytes("/ws/x/JOB.md", []byte(src))
+		if err == nil || !strings.Contains(parseErrOf(j), want) {
+			t.Errorf("%q: err=%v parse_error=%q, want %q", extra, err, parseErrOf(j), want)
+		}
+	}
+}
+
+func TestTriggerLimit(t *testing.T) {
+	t.Parallel()
+	parse := func(tr string) (*job.Job, error) {
+		return job.ParseBytes("/ws/x/JOB.md", []byte("---\ntriggers:\n"+tr+"---\nhi\n"))
+	}
+	j, err := parse("  - event: chat\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr := j.Triggers[0]; tr.Limit != "" || tr.EffectiveLimit != "15/10m" || tr.RateLimit().Count != 15 || tr.RateLimit().Per != 10*time.Minute {
+		t.Fatalf("default: %+v", tr)
+	}
+	j, err = parse("  - event: chat\n    limit: \"off\"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr := j.Triggers[0]; tr.EffectiveLimit != "off" || tr.RateLimit() != nil {
+		t.Fatalf("off: %+v", tr)
+	}
+	if _, err := parse("  - event: chat\n    limit: fast\n"); err == nil {
+		t.Fatal("a bad limit must fail")
+	}
+	if _, err := parse("  - cron: \"0 9 * * *\"\n    limit: 1/1h\n"); err == nil {
+		t.Fatal("limit on cron must fail")
+	}
+}
+
+func TestIfRunningValues(t *testing.T) {
+	t.Parallel()
+	for v, ok := range map[string]bool{"queue": true, "skip": true, "replace": true, "allow": false, "coalesce": false} {
+		_, err := job.ParseBytes("/ws/x/JOB.md", []byte("---\nsession:\n  if_running: "+v+"\n---\nhi\n"))
+		if (err == nil) != ok {
+			t.Errorf("%s: err=%v", v, err)
+		}
 	}
 }

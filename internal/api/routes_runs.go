@@ -205,6 +205,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	lopts.Memory = mem
 	lopts.Kit = kit
 	run, _, err := s.runs.CreateAndLaunch(r.Context(), lopts)
+	if errors.Is(err, runs.ErrRunActive) {
+		s.queueLaunch(w, r, body, lopts)
+		return
+	}
 	if err != nil {
 		writeLaunchErr(w, err)
 		return
@@ -231,6 +235,35 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	writeJSON(w, http.StatusCreated, run)
 }
 
+// queueLaunch puts a manual launch in the queue behind the live run of its
+// job and answers 202. The queue lane launches it when the live run ends.
+func (s *Server) queueLaunch(w http.ResponseWriter, r *http.Request, body runCreateRequest, lopts runs.LaunchOpts) {
+	lopts.Runtime = body.Runtime
+	item := lopts.QueueItem(dispatch.ConnectorManual)
+	err := s.queue.Enqueue(r.Context(), item)
+	if errors.Is(err, dispatch.ErrLaneFull) {
+		writeQueueFull(w)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if body.IdempotencyKey != "" {
+		if _, err := s.st.RememberIdempotent(r.Context(), idempotencyRuns, body.IdempotencyKey, queuedKeyPrefix+item.ID); err != nil {
+			s.log.Warn("remember idempotency key", "queue_id", item.ID, "error", err)
+		}
+	}
+	writeQueued(w, item.ID)
+}
+
+// queuedKeyPrefix marks an idempotency value that names a queue row, not a run.
+const queuedKeyPrefix = "queue:"
+
+func writeQueued(w http.ResponseWriter, queueID string) {
+	writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "queue_id": queueID})
+}
+
 // runForKey answers a repeated launch. ok reports that the caller must stop: it
 // returns the first run, or nil when the lookup already wrote an error.
 func (s *Server) runForKey(w http.ResponseWriter, r *http.Request, key string) (*runs.Run, bool) {
@@ -241,6 +274,10 @@ func (s *Server) runForKey(w http.ResponseWriter, r *http.Request, key string) (
 	}
 	if !found {
 		return nil, false
+	}
+	if qid, ok := strings.CutPrefix(id, queuedKeyPrefix); ok {
+		writeQueued(w, qid)
+		return nil, true
 	}
 	run, err := s.runs.Get(r.Context(), id)
 	if err != nil {
@@ -1071,6 +1108,8 @@ func (s *Server) handleRunReplay(w http.ResponseWriter, r *http.Request) {
 // writeLaunchErr maps a CreateAndLaunch error to its status and code.
 func writeLaunchErr(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, runs.ErrRunActive):
+		writeErr(w, http.StatusConflict, "conflict", "a run of this job is still active; wait for it to finish")
 	case errors.Is(err, runs.ErrBudgetExceeded):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, runs.ErrActionsInvalid) || errors.Is(err, runs.ErrActionsUnsupported):
@@ -1078,6 +1117,12 @@ func writeLaunchErr(w http.ResponseWriter, err error) {
 	default:
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 	}
+}
+
+// writeQueueFull answers a launch or an event that finds its queue full.
+func writeQueueFull(w http.ResponseWriter) {
+	writeErr(w, http.StatusTooManyRequests, "queue_full",
+		fmt.Sprintf("%d runs of this job are already waiting", dispatch.LaneCap))
 }
 
 func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {

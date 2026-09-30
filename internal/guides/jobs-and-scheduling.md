@@ -21,18 +21,16 @@ env:
 session:
   max_duration: 30m
   idle_timeout: 5m
-  if_running: skip
+  if_running: queue
   resumable: "true"
 triggers:
   - cron: "0 9 * * *"
     timezone: America/New_York
   - every: 15m
-    anchor: "00:00"
   - event: slack
     match: "e.channel === 'ops' && /deploy/.test(e.text)"
     extract: "({ user: e.user, text: e.text })"
-    debounce: 30s
-    rate_limit: 10/1h
+    limit: 5/1h
     when:
       run: "git -C /repo status --porcelain"
       match: "out.trim() === ''"
@@ -48,6 +46,8 @@ The prompt body. This is what the harness receives.
 - `triggers[]` is the trebi form. Do not use a top-level `schedule:`.
 - `match` and `extract` are JavaScript, evaluated over the event as `e`.
 - `when` is an inline shell gate: the job runs only when `match` over `out` is true.
+- `limit` sets how often an event trigger starts a run: `N/<duration>`, or `off`. The default is `15/10m`. Events above the limit wait in order. When 10 events wait, Trebi drops new events and opens one inbox item.
+- `session.if_running` tells Trebi what to do when a run of the job is still active: `queue` (default) starts the new run after the active run, `skip` drops it, and `replace` stops the active run.
 - Only `harness` (name, or a `{name, model, effort}` map), `triggers`, `envset` (a name or a list of names, applied in order), `env` (inline map), and `session.idle_timeout` are canonical frontmatter; keep other fields minimal.
 
 ## Create, inspect, validate

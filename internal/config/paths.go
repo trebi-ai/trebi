@@ -1123,7 +1123,7 @@ func pathKeyDescriptions() map[string]string {
 		"defaults.session.max_duration": "Wall-clock hard cap from task start (s/m/h)",
 		"defaults.session.keep_alive":   "Hold session after COMPLETE for follow-ups",
 		"defaults.session.nudge":        "Idle delay before typing continue (default off; set e.g. 5m)",
-		"defaults.session.if_running":   "Overlap policy: skip|replace|coalesce|allow",
+		"defaults.session.if_running":   "Overlap policy: queue|skip|replace",
 		"api.host":                      "HTTP bind host (default 127.0.0.1; 0.0.0.0 opens LAN)",
 		"api.port":                      "HTTP bind port (default 7433; 0 = ephemeral, written to api.json)",
 		"api.tls.cert":                  "PEM cert path; required with api.tls.key for non-loopback HTTPS",
@@ -1324,7 +1324,7 @@ func setIfRunning(dst *string, value, path string) error {
 	}
 	v := strings.ToLower(value)
 	if !validIfRunningMode(v) || v == "" {
-		return fmt.Errorf("%s: %q not in [skip, replace, coalesce, allow]", path, value)
+		return fmt.Errorf("%s: %q not in [queue, skip, replace]", path, value)
 	}
 	*dst = v
 	return nil

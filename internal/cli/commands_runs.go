@@ -640,6 +640,13 @@ func launchAndMaybeAttach(ctx context.Context, c *cli.Command, client *APIClient
 	if c.Bool("test") {
 		return encodeJSON(c, out)
 	}
+	if queued, _ := out["queued"].(bool); queued {
+		if c.Bool("json") {
+			return encodeJSON(c, out)
+		}
+		fmt.Fprintf(outWriter(c), "queued %v: it starts when the current run finishes\n", out["queue_id"])
+		return nil
+	}
 	runID := mapStr(out, "id")
 	if c.Bool("json") {
 		if err := encodeJSON(c, out); err != nil {

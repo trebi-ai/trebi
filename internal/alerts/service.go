@@ -53,6 +53,8 @@ const (
 	KindRequest Kind = "request"
 	// KindRequestUndelivered is an answer that could not reach the job.
 	KindRequestUndelivered Kind = "request_delivery_failed"
+	// KindTriggerFlood is a job whose queue is full, so Trebi drops events.
+	KindTriggerFlood Kind = "trigger_flood"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -692,6 +694,10 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindConnectorAuthRequired: {
 			Kind: KindConnectorAuthRequired, Severity: SeverityBlocker, InboxKind: InboxHealth,
 		},
+		KindTriggerFlood: {
+			Kind: KindTriggerFlood, Severity: SeverityAttention, InboxKind: InboxHealth,
+			Cooldown: time.Hour,
+		},
 		KindConnectorUpdate: {
 			Kind: KindConnectorUpdate, Severity: SeverityAttention, InboxKind: InboxHealth,
 		},
@@ -801,6 +807,8 @@ func (o RaiseOpts) defaultSubject() string {
 		return "outbox"
 	case KindActionsInvalid:
 		return "actions/" + o.WorkspaceID + "/" + o.JobName
+	case KindTriggerFlood:
+		return "flood/" + o.WorkspaceID + "/" + o.JobName
 	case KindRequest, KindRequestUndelivered:
 		return "request/" + o.RequestID
 	}
@@ -823,6 +831,7 @@ var defaultTitles = map[Kind]string{
 	KindConnectorAuthRequired: "Connector needs a login",
 	KindConnectorUpdate:       "Connector update available",
 	KindRequest:               "Request",
+	KindTriggerFlood:          "Too many events",
 }
 
 func (o RaiseOpts) defaultTitle() string {

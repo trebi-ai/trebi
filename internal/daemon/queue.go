@@ -154,16 +154,16 @@ func (c *ControlPlane) now() time.Time {
 	return time.Now()
 }
 
-// queueLanes returns distinct lanes with due pending rows. A conversation
-// lane counts only when its head row is due (FIFO inside a conversation).
+// queueLanes returns distinct lanes with due pending rows. A lane counts
+// only when its head row is due (FIFO inside each lane).
 func (c *ControlPlane) queueLanes(ctx context.Context) []lane {
 	due := c.now().UTC().Format(time.RFC3339)
 	rows, err := c.Store.DB().QueryContext(ctx, `
 		SELECT DISTINCT workspace_id, job, kind, conversation_key FROM event_queue q
 		WHERE status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-		AND (conversation_key = '' OR id = (SELECT MIN(h.id) FROM event_queue h
+		AND id = (SELECT MIN(h.id) FROM event_queue h
 			WHERE h.status='pending' AND h.workspace_id=q.workspace_id AND h.job=q.job
-			AND h.kind=q.kind AND h.conversation_key=q.conversation_key))
+			AND h.kind=q.kind AND h.conversation_key=q.conversation_key)
 		LIMIT 50`, due)
 	if err != nil {
 		c.log.Warn("queue lane query", "error", err)
@@ -189,6 +189,10 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	kind := item.Kind
 	if kind == "" {
 		kind = "job"
+	}
+	if item.Launch != nil {
+		c.launchDeferred(ctx, item)
+		return
 	}
 	// Policy is checked at the claim (plan E.2): a blocked row stays pending
 	// with the first allowed attempt time.
@@ -252,16 +256,6 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	}
 	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.Job)
 	d := j.LaunchDefaultsWithKit(kit)
-	ifRunning := d.IfRunning
-	if ifRunning == "" {
-		// A conversation-keyed item coalesces by default so one busy chat
-		// does not skip the next message (plan E.3).
-		if item.ConversationKey != "" {
-			ifRunning = "coalesce"
-		} else {
-			ifRunning = "skip"
-		}
-	}
 	cwd := d.WorkingDir
 	if cwd == "" {
 		cwd = dirOf(path)
@@ -298,15 +292,36 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		Memory:       c.memoryLaunch(ctx, item.WorkspaceID, j),
 		Kit:          kit,
 		JobSkills:    j.Skills, JobConnectors: j.Connectors,
-		IfRunning: ifRunning,
-		Env:       d.Env,
-		Model:     d.Model,
-		Effort:    d.Effort,
+		// A message of a conversation goes into its live run (plan A.6).
+		Conversation: item.ConversationKey != "",
+		IfRunning:    d.IfRunning,
+		Env:          d.Env,
+		Model:        d.Model,
+		Effort:       d.Effort,
 	})
+	if !c.finishLaunch(ctx, item, run, outcome, err) {
+		return
+	}
+	if item.Kind == runs.KindAgent {
+		c.log.Info("agent.woken", "reason", string(runs.ReasonTrigger), "agent", item.Job)
+	}
+}
+
+// finishLaunch writes the queue result of one launch. A live run of the
+// same job puts the row back to wait; the wait is not an attempt. Only a
+// new run counts toward the trigger limit. It reports whether the row is
+// done.
+func (c *ControlPlane) finishLaunch(ctx context.Context, item *dispatch.QueueItem, run *runs.Run, outcome string, err error) bool {
+	if errors.Is(err, runs.ErrRunActive) {
+		if werr := c.queue.Wait(ctx, item.ID, c.now().Add(2*time.Second), dispatch.DeferRunActive); werr != nil {
+			c.log.Warn("queue wait", "queue_id", item.ID, "error", werr)
+		}
+		return false
+	}
 	if err != nil || run == nil {
 		c.log.Warn("queue launch", "job", item.Job, "queue_id", item.ID, "error", err)
 		c.failOrRetry(ctx, item, err, run)
-		return
+		return false
 	}
 	if run.Status == runs.StatusFailed && (run.EndReason == runs.EndAuth || run.EndReason == runs.EndLimit) {
 		reason := dispatch.BlockAuthMissing
@@ -314,10 +329,10 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			reason = dispatch.BlockLimitExceeded
 		}
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
-		return
+		return false
 	}
 	result := queueResult(outcome, run)
-	if result == dispatch.ResultLaunched || result == dispatch.ResultCoalesced {
+	if result == dispatch.ResultLaunched {
 		c.recordPolicy(ctx, item)
 	}
 	if merr := c.queue.MarkDone(ctx, item.ID, result, run.ID); merr != nil {
@@ -325,9 +340,70 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	} else {
 		c.ackChannel(ctx, item, result)
 	}
-	if item.Kind == runs.KindAgent {
-		c.log.Info("agent.woken", "reason", string(runs.ReasonTrigger), "agent", item.Job)
+	return true
+}
+
+// launchDeferred launches a manual or scheduled request that waited for a
+// live run. The launch options come from the current job file; the request
+// adds the reason, prompt, wake, inputs, and conversation. The trigger limit
+// does not apply.
+func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueItem) {
+	lr := item.Launch
+	j, path := c.findJobKind(ctx, item.WorkspaceID, item.Job, cmp.Or(item.Kind, dispatch.KindJob))
+	if j == nil {
+		_ = c.queue.MarkBlocked(ctx, item.ID, dispatch.BlockJobMissing)
+		return
 	}
+	harness := cmp.Or(lr.Harness, j.ResolvedHarness())
+	if reason := c.blockedFor(ctx, item.Kind, harness); reason != "" {
+		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
+		return
+	}
+	if !c.markAttempt(ctx, item) {
+		return
+	}
+	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.Job)
+	d := j.LaunchDefaultsWithKit(kit)
+	cwd := cmp.Or(d.WorkingDir, dirOf(path))
+	var wake *runs.WakeOpts
+	if lr.Wake != nil {
+		wake = &runs.WakeOpts{Body: lr.Wake.Body, ExtraPrompt: lr.Wake.ExtraPrompt, Message: lr.Wake.Message}
+		if lr.ConversationID != "" && c.Conversations != nil {
+			wake.Recap = c.Conversations.Recap(ctx, lr.ConversationID, wakeRecapN)
+		}
+	}
+	runtime := cmp.Or(lr.Runtime, j.Runtime)
+	run, outcome, err := c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID:     item.WorkspaceID,
+			Job:             item.Job,
+			Kind:            item.Kind,
+			Reason:          runs.RunReason(lr.Reason),
+			Harness:         harness,
+			PromptPreview:   trunc(lr.Prompt, 200),
+			Inputs:          lr.Inputs,
+			QueueID:         item.ID,
+			ConversationKey: item.ConversationKey,
+			ConversationID:  lr.ConversationID,
+			TraceID:         item.TraceID,
+			MaxDurationMS:   d.MaxDurationMS,
+			IdleTimeoutMS:   d.IdleTimeoutMS,
+			KeepAliveMS:     d.KeepAliveMS,
+			NudgeMS:         d.NudgeMS,
+			WorkingDir:      cwd,
+			Runtime:         runtime,
+		},
+		Prompt:    lr.Prompt,
+		Wake:      wake,
+		Memory:    c.memoryLaunch(ctx, item.WorkspaceID, j),
+		Kit:       kit,
+		JobSkills: j.Skills, JobConnectors: j.Connectors,
+		IfRunning: d.IfRunning,
+		Env:       d.Env,
+		Model:     d.Model,
+		Effort:    d.Effort,
+	})
+	c.finishLaunch(ctx, item, run, outcome, err)
 }
 
 // markAttempt counts one launch attempt just before the launch. It marks
@@ -597,25 +673,19 @@ func expandVars(prompt string, vars map[string]string) string {
 	return prompt
 }
 
-// queueResult maps the if_running outcome to a queue result.
+// queueResult maps the overlap outcome to a queue result.
 func queueResult(outcome string, run *runs.Run) dispatch.QueueResult {
 	switch outcome {
-	case "skip":
+	case runs.IfRunningSkip:
 		return dispatch.ResultSkipped
-	case "coalesce":
+	case runs.OverlapCoalesce:
 		return dispatch.ResultCoalesced
-	case "replace", "allow", "":
-		// Fail-fast launch (nil error, failed run) is a dead event, not launched.
-		if run.Status == runs.StatusFailed {
-			return dispatch.ResultDead
-		}
-		return dispatch.ResultLaunched
-	default:
-		if run.Status == runs.StatusFailed {
-			return dispatch.ResultDead
-		}
-		return dispatch.ResultLaunched
 	}
+	// Fail-fast launch (nil error, failed run) is a dead event, not launched.
+	if run.Status == runs.StatusFailed {
+		return dispatch.ResultDead
+	}
+	return dispatch.ResultLaunched
 }
 
 // policyDefer applies the trigger policy window (plan E.2): a blocked row
@@ -624,11 +694,11 @@ func (c *ControlPlane) policyDefer(ctx context.Context, item *dispatch.QueueItem
 	if c.Policy == nil {
 		return false
 	}
-	debounce, rate, key := c.itemPolicy(ctx, item)
+	rate, key := c.itemPolicy(ctx, item)
 	if key == "" {
 		return false
 	}
-	until := c.Policy.NextAllowed(key, debounce, rate, c.now())
+	until := c.Policy.NextAllowed(key, rate, c.now())
 	if until.IsZero() {
 		return false
 	}
@@ -680,20 +750,20 @@ func (c *ControlPlane) recordPolicy(ctx context.Context, item *dispatch.QueueIte
 	if c.Policy == nil {
 		return
 	}
-	debounce, rate, key := c.itemPolicy(ctx, item)
+	rate, key := c.itemPolicy(ctx, item)
 	if key != "" {
-		c.Policy.Record(key, debounce, rate, c.now())
+		c.Policy.Record(key, rate, c.now())
 	}
 }
 
-// itemPolicy returns the debounce, rate limit, and claim key of the trigger
-// behind one queue item. The key matches TriggerRows: workspace, job, trigger
-// index, conversation key. A resume item, or an item whose connector is not
-// the event of the trigger at OnIndex (escalation, conversation wake), has
-// no policy.
-func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem) (time.Duration, *dispatch.RateLimit, string) {
-	if item.ResumeOf != "" {
-		return 0, nil, ""
+// itemPolicy returns the rate limit and claim key of the trigger behind one
+// queue item. The key matches TriggerRows: workspace, job, trigger index,
+// conversation key. A resume item, a waiting launch, or an item whose
+// connector is not the event of the trigger at OnIndex (escalation,
+// conversation wake), has no policy.
+func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem) (*dispatch.RateLimit, string) {
+	if item.ResumeOf != "" || item.Launch != nil {
+		return nil, ""
 	}
 	key := item.WorkspaceID + "/" + item.Job + "/" + strconv.Itoa(item.OnIndex) + "/" + item.ConversationKey
 	// Triggers name the slug; the item holds the connection id.
@@ -702,31 +772,39 @@ func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem)
 		slug = cmp.Or(c.Connectors.SlugOf(item.Connector), item.Connector)
 	}
 	if item.Kind == dispatch.KindAssistant {
-		rows, err := c.Workspaces.AssistantTriggerRows(ctx)
-		if err != nil {
-			return 0, nil, ""
+		if rate := c.assistantLimit(ctx, item, slug); rate != nil {
+			return rate, key
 		}
-		for _, at := range rows {
-			if at.WorkspaceID != item.WorkspaceID {
-				continue
-			}
-			for _, tr := range at.Triggers {
-				// The pipeline takes an assistant trigger with no family.
-				if tr.Index == item.OnIndex && (tr.Family == "" || tr.Family == "event") && tr.Event == slug {
-					return tr.Debounce, dispatch.ParseRateLimit(tr.RateLimit), key
-				}
-			}
-		}
-		return 0, nil, ""
+		return nil, ""
 	}
 	j, _ := c.findJobKind(ctx, item.WorkspaceID, item.Job, item.Kind)
 	if j == nil {
-		return 0, nil, ""
+		return nil, ""
 	}
 	for _, tr := range j.Triggers {
 		if tr.Index == item.OnIndex && tr.Family == "event" && tr.Event == slug {
-			return tr.Debounce, dispatch.ParseRateLimit(tr.RateLimit), key
+			return tr.RateLimit(), key
 		}
 	}
-	return 0, nil, ""
+	return nil, ""
+}
+
+// assistantLimit is the limit of the assistant trigger of item.
+func (c *ControlPlane) assistantLimit(ctx context.Context, item *dispatch.QueueItem, slug string) *dispatch.RateLimit {
+	rows, err := c.Workspaces.AssistantTriggerRows(ctx)
+	if err != nil {
+		return nil
+	}
+	for _, at := range rows {
+		if at.WorkspaceID != item.WorkspaceID {
+			continue
+		}
+		for _, tr := range at.Triggers {
+			// The pipeline takes an assistant trigger with no family.
+			if tr.Index == item.OnIndex && (tr.Family == "" || tr.Family == "event") && tr.Event == slug {
+				return tr.RateLimit()
+			}
+		}
+	}
+	return nil
 }

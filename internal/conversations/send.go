@@ -518,6 +518,7 @@ func (s *Service) enqueueWake(ctx context.Context, conv *Conversation, text stri
 		Status:          dispatch.QueuePending,
 	}
 	if err := s.queue.Enqueue(ctx, item); err != nil {
+		s.log.Warn("enqueue wake", "conversation", conv.ID, "error", err)
 		return "", err
 	}
 	return item.ID, nil
