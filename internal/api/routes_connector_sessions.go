@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/connectors/conformance"
+
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/conversations"
@@ -20,43 +22,29 @@ import (
 //
 //nolint:dupl // route tables stay explicit and colocated with area handlers.
 func (s *Server) routeConnectorSessions(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/connectors/{name}/login", s.handleConnectorLogin)
-	mux.HandleFunc("GET /v1/connectors/{name}/login/{flow_id}", s.handleConnectorLoginStream)
-	mux.HandleFunc("POST /v1/connectors/{name}/login/{flow_id}", s.handleConnectorLoginSubmit)
-	mux.HandleFunc("DELETE /v1/connectors/{name}/login/{flow_id}", s.handleConnectorLoginCancel)
-	mux.HandleFunc("POST /v1/connectors/{name}/logout", s.handleConnectorLogout)
-	mux.HandleFunc("POST /v1/connectors/{name}/conformance", s.handleConnectorConformance)
-	mux.HandleFunc("GET /v1/connectors/{name}/rooms", s.handleConnectorRooms)
-	mux.HandleFunc("GET /v1/connectors/{name}/rooms/{room}/threads", s.handleConnectorThreads)
-	mux.HandleFunc("POST /v1/connectors/{name}/rooms/{room}/bind", s.handleConnectorBind)
-	mux.HandleFunc("GET /v1/workspaces/{id}/connectors/{name}", s.handleConnectorOverrideGet)
-	mux.HandleFunc("PUT /v1/workspaces/{id}/connectors/{name}", s.handleConnectorOverridePut)
-	mux.HandleFunc("DELETE /v1/workspaces/{id}/connectors/{name}", s.handleConnectorOverrideDelete)
+	mux.HandleFunc("POST /v1/connectors/{ref}/login", s.handleConnectorLogin)
+	mux.HandleFunc("GET /v1/connectors/{ref}/login/{flow_id}", s.handleConnectorLoginStream)
+	mux.HandleFunc("POST /v1/connectors/{ref}/login/{flow_id}", s.handleConnectorLoginSubmit)
+	mux.HandleFunc("DELETE /v1/connectors/{ref}/login/{flow_id}", s.handleConnectorLoginCancel)
+	mux.HandleFunc("POST /v1/connectors/{ref}/logout", s.handleConnectorLogout)
+	mux.HandleFunc("POST /v1/connectors/{ref}/conformance", s.handleConnectorConformance)
+	mux.HandleFunc("GET /v1/connectors/{ref}/rooms", s.handleConnectorRooms)
+	mux.HandleFunc("GET /v1/connectors/{ref}/rooms/{room}/threads", s.handleConnectorThreads)
+	mux.HandleFunc("POST /v1/connectors/{ref}/rooms/{room}/bind", s.handleConnectorBind)
+	mux.HandleFunc("GET /v1/workspaces/{id}/connectors/{ref}", s.handleConnectorOverrideGet)
+	mux.HandleFunc("PUT /v1/workspaces/{id}/connectors/{ref}", s.handleConnectorOverridePut)
+	mux.HandleFunc("DELETE /v1/workspaces/{id}/connectors/{ref}", s.handleConnectorOverrideDelete)
 }
 
-// pickInstance picks an instance: the given one, else the instance that
-// serves the workspace, else the global instance.
-func (s *Server) pickInstance(r *http.Request, name, instance, workspace string) (string, error) {
-	if instance = strings.TrimSpace(instance); instance != "" {
-		if n, _, _ := strings.Cut(instance, "@"); n != name {
-			return "", fmt.Errorf("%w: instance %q is not an instance of %q", connectors.ErrInvalid, instance, name)
-		}
-		return instance, nil
+// connectionID returns the id of the {ref} of a route. A native name is its
+// own id.
+func (s *Server) connectionID(r *http.Request) (string, error) {
+	ref := r.PathValue("ref")
+	if id := s.connectors.IDOf(ref); id != "" {
+		return id, nil
 	}
-	if ws := s.workspaceID(r.Context(), workspace); ws != "" {
-		inst := s.connectors.InstanceFor(name, ws)
-		if inst == "" {
-			return "", fmt.Errorf("%w: %q in %s", connectors.ErrDisabled, name, ws)
-		}
-		return inst, nil
-	}
-	return name, nil
-}
-
-// connectorInstance picks the instance from ?instance= and ?workspace=.
-func (s *Server) connectorInstance(r *http.Request, name string) (string, error) {
-	q := r.URL.Query()
-	return s.pickInstance(r, name, q.Get("instance"), q.Get("workspace"))
+	_, err := s.connectors.Lookup(ref)
+	return "", err
 }
 
 // writeAnyConnectorErr writes a connector or adapter error, else a 400.
@@ -81,16 +69,13 @@ func (s *Server) handleConnectorLogin(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	name := r.PathValue("name")
 	var body struct {
-		Instance  string `json:"instance"`
-		Workspace string `json:"workspace"`
-		Kind      string `json:"kind"`
+		Kind string `json:"kind"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	inst, err := s.pickInstance(r, name, body.Instance, body.Workspace)
+	inst, err := s.connectionID(r)
 	if err != nil {
 		s.writeAnyConnectorErr(w, err)
 		return
@@ -101,12 +86,12 @@ func (s *Server) handleConnectorLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cur := f.Current()
-	writeJSON(w, http.StatusOK, map[string]any{"flow_id": f.ID, "instance": inst, "step": cur.Step, "done": cur.Done})
+	writeJSON(w, http.StatusOK, map[string]any{"flow_id": f.ID, "id": inst, "step": cur.Step, "done": cur.Done})
 }
 
 // loginFlow finds the flow of the route, or writes 404.
 func (s *Server) loginFlow(w http.ResponseWriter, r *http.Request) (*connectors.Flow, bool) {
-	f, ok := s.connectors.FindFlow(r.PathValue("name"), r.PathValue("flow_id"))
+	f, ok := s.connectors.FindFlow(r.PathValue("ref"), r.PathValue("flow_id"))
 	if !ok {
 		writeErr(w, http.StatusNotFound, "not_found", "login flow not found")
 	}
@@ -180,15 +165,7 @@ func (s *Server) handleConnectorLogout(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	name := r.PathValue("name")
-	var body struct {
-		Instance  string `json:"instance"`
-		Workspace string `json:"workspace"`
-	}
-	if !decodeBody(w, r, &body) {
-		return
-	}
-	inst, err := s.pickInstance(r, name, body.Instance, body.Workspace)
+	inst, err := s.connectionID(r)
 	if err != nil {
 		s.writeAnyConnectorErr(w, err)
 		return
@@ -197,57 +174,54 @@ func (s *Server) handleConnectorLogout(w http.ResponseWriter, r *http.Request) {
 		s.writeAnyConnectorErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"instance": inst, "logged_out": true})
+	writeJSON(w, http.StatusOK, map[string]any{"id": inst, "logged_out": true})
 }
 
-// handleConnectorConformance runs the Part H checks against a live
-// instance. It sends a message only to the room in the body. A failed check
-// is a result row, not an error status.
+// handleConnectorConformance runs the conformance suites against a live
+// connection. It sends a message only to the room in the body. A failed
+// check is a result row, not an error status.
 func (s *Server) handleConnectorConformance(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	name := r.PathValue("name")
 	var body struct {
-		Instance  string `json:"instance"`
-		Workspace string `json:"workspace"`
-		Room      string `json:"room"`
+		Room   string   `json:"room"`
+		Suites []string `json:"suites"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	inst, err := s.pickInstance(r, name, body.Instance, body.Workspace)
+	inst, err := s.connectionID(r)
 	if err != nil {
 		s.writeAnyConnectorErr(w, err)
 		return
 	}
-	res, err := s.connectors.Conformance(r.Context(), inst, body.Room)
+	res, err := s.connectors.Conformance(r.Context(), inst, body.Room, body.Suites)
 	if err != nil {
 		s.writeAnyConnectorErr(w, err)
 		return
 	}
 	ok := true
 	for _, c := range res {
-		ok = ok && c.Status != protocol.CheckFail
+		ok = ok && c.Status != conformance.StatusFail
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "instance": inst, "ok": ok, "results": res})
+	writeJSON(w, http.StatusOK, map[string]any{"id": inst, "slug": s.connectors.SlugOf(inst), "ok": ok, "results": res})
 }
 
 // handleConnectorRooms lists rooms. Email serves its addresses; a protocol
 // instance answers rooms/list.
 func (s *Server) handleConnectorRooms(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
 	q := r.URL.Query()
-	if name == email.Instance {
+	if r.PathValue("ref") == email.Instance {
 		rooms, err := s.email.Rooms(r.Context(), q.Get("q"))
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"instance": email.Instance, "rooms": nonNil(rooms)})
+		writeJSON(w, http.StatusOK, map[string]any{"id": email.Instance, "rooms": nonNil(rooms)})
 		return
 	}
-	inst, err := s.connectorInstance(r, name)
+	inst, err := s.connectionID(r)
 	if err != nil {
 		s.writeAnyConnectorErr(w, err)
 		return
@@ -258,7 +232,7 @@ func (s *Server) handleConnectorRooms(w http.ResponseWriter, r *http.Request) {
 		s.writeAnyConnectorErr(w, err)
 		return
 	}
-	resp := map[string]any{"instance": inst, "rooms": nonNil(page.Rooms)}
+	resp := map[string]any{"id": inst, "rooms": nonNil(page.Rooms)}
 	if page.Next != "" {
 		resp["next_cursor"] = page.Next
 	}
@@ -268,11 +242,11 @@ func (s *Server) handleConnectorRooms(w http.ResponseWriter, r *http.Request) {
 // handleConnectorThreads lists the threads of a room. An adapter without
 // threads/list, and email, read the threads the daemon saw.
 func (s *Server) handleConnectorThreads(w http.ResponseWriter, r *http.Request) {
-	name, room := r.PathValue("name"), r.PathValue("room")
+	room := r.PathValue("room")
 	inst := email.Instance
-	if name != email.Instance {
+	if r.PathValue("ref") != email.Instance {
 		var err error
-		if inst, err = s.connectorInstance(r, name); err != nil {
+		if inst, err = s.connectionID(r); err != nil {
 			s.writeAnyConnectorErr(w, err)
 			return
 		}
@@ -280,7 +254,7 @@ func (s *Server) handleConnectorThreads(w http.ResponseWriter, r *http.Request) 
 		params := protocol.ThreadsListParams{Room: room, Page: r.URL.Query().Get("cursor"), Limit: parseLimit(r)}
 		err = s.connectors.Call(r.Context(), inst, protocol.MethodThreadsList, params, &page)
 		if err == nil {
-			resp := map[string]any{"instance": inst, "threads": nonNil(page.Threads)}
+			resp := map[string]any{"id": inst, "threads": nonNil(page.Threads)}
 			if page.Next != "" {
 				resp["next_cursor"] = page.Next
 			}
@@ -297,7 +271,7 @@ func (s *Server) handleConnectorThreads(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"instance": inst, "threads": threads})
+	writeJSON(w, http.StatusOK, map[string]any{"id": inst, "threads": threads})
 }
 
 // handleConnectorBind binds a room to the assistant or an agent of a
@@ -306,10 +280,9 @@ func (s *Server) handleConnectorBind(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	name, room := r.PathValue("name"), r.PathValue("room")
+	room := r.PathValue("room")
 	var body struct {
 		Workspace string `json:"workspace"`
-		Instance  string `json:"instance"`
 		Thread    string `json:"thread"`
 		Operator  string `json:"operator"`
 	}
@@ -329,21 +302,24 @@ func (s *Server) handleConnectorBind(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", `operator must be "assistant" or "agents/<name>"`)
 		return
 	}
-	inst := email.Instance
-	if name != email.Instance {
-		var err error
-		if inst, err = s.pickInstance(r, name, body.Instance, ws); err != nil {
+	addr := conversations.Address{Connector: email.Instance, Instance: email.Instance, Room: room, Thread: body.Thread}
+	if ref := r.PathValue("ref"); ref != email.Instance {
+		c, err := s.connectors.Lookup(ref)
+		if err != nil {
 			s.writeAnyConnectorErr(w, err)
 			return
 		}
-		if !s.connectors.IsChannel(name) {
-			writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("connector %q is not a channel", name))
+		if s.connectors.ConnectionFor(c.ID, ws) == "" {
+			s.writeAnyConnectorErr(w, fmt.Errorf("%w: %q in %s", connectors.ErrDisabled, c.Slug, ws))
 			return
 		}
+		if !s.connectors.IsChannel(c.ID) {
+			writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("connector %q is not a channel", c.Slug))
+			return
+		}
+		addr.Connector, addr.Instance = c.Type, c.ID
 	}
-	p, err := s.conv.BindRoom(r.Context(), ws, operator, conversations.Address{
-		Connector: name, Instance: inst, Room: room, Thread: body.Thread,
-	})
+	p, err := s.conv.BindRoom(r.Context(), ws, operator, addr)
 	if s.convErr(w, err, "workspace not found") {
 		return
 	}
@@ -355,7 +331,7 @@ func (s *Server) handleConnectorOverrideGet(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	ov, found, err := s.connectors.Override(r.Context(), ws.ID, r.PathValue("name"))
+	ov, found, err := s.connectors.Override(r.Context(), ws.ID, r.PathValue("ref"))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -364,8 +340,7 @@ func (s *Server) handleConnectorOverrideGet(w http.ResponseWriter, r *http.Reque
 		writeErr(w, http.StatusNotFound, "not_found", "workspace has no layer for this connector")
 		return
 	}
-	ov.Inputs = connectors.MaskInputs(ov.Inputs)
-	writeJSON(w, http.StatusOK, map[string]any{"workspace": ws.ID, "name": r.PathValue("name"), "override": ov})
+	writeJSON(w, http.StatusOK, map[string]any{"workspace": ws.ID, "slug": s.connectors.SlugOf(s.connectors.IDOf(r.PathValue("ref"))), "override": ov})
 }
 
 func (s *Server) handleConnectorOverridePut(w http.ResponseWriter, r *http.Request) {
@@ -380,14 +355,14 @@ func (s *Server) handleConnectorOverridePut(w http.ResponseWriter, r *http.Reque
 	if !decodeBody(w, r, &ov) {
 		return
 	}
-	name := r.PathValue("name")
-	if err := s.connectors.SetOverride(r.Context(), ws.ID, name, &ov); err != nil {
+	ref := r.PathValue("ref")
+	if err := s.connectors.SetOverride(r.Context(), ws.ID, ref, &ov); err != nil {
 		s.writeAnyConnectorErr(w, err)
 		return
 	}
-	row, err := s.connectors.GetFor(name, ws.ID)
+	row, err := s.connectors.GetFor(ref, ws.ID)
 	if err != nil {
-		row = map[string]any{"name": name}
+		row = map[string]any{"ref": ref}
 	}
 	writeJSON(w, http.StatusOK, row)
 }
@@ -400,12 +375,12 @@ func (s *Server) handleConnectorOverrideDelete(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	name := r.PathValue("name")
-	if err := s.connectors.SetOverride(r.Context(), ws.ID, name, nil); err != nil {
+	ref := r.PathValue("ref")
+	if err := s.connectors.SetOverride(r.Context(), ws.ID, ref, nil); err != nil {
 		s.writeAnyConnectorErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workspace": ws.ID, "deleted": name})
+	writeJSON(w, http.StatusOK, map[string]any{"workspace": ws.ID, "deleted": ref})
 }
 
 // nonNil turns a nil slice into an empty one, so JSON shows [].

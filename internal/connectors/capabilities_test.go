@@ -30,10 +30,10 @@ func TestCapabilitiesMCP(t *testing.T) {
 			MCP: &manifest.MCPAction{URL: srv.URL},
 		}
 	})
-	if err := svc.Create(ctx, e); err != nil {
+	if _, err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	c, err := svc.Capabilities(ctx, "demo", "", "")
+	c, err := svc.Capabilities(ctx, "demo", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,11 +47,11 @@ func TestCapabilitiesMCP(t *testing.T) {
 
 	// The second call comes from the cache: a closed server still answers.
 	srv.Close()
-	if c, err = svc.Capabilities(ctx, "demo", "", ""); err != nil || len(c.Actions.MCP.Tools) != 1 {
+	if c, err = svc.Capabilities(ctx, "demo", ""); err != nil || len(c.Actions.MCP.Tools) != 1 {
 		t.Fatalf("cached = %+v %v", c.Actions.MCP, err)
 	}
-	if _, err := svc.Capabilities(ctx, "demo", "", "other:x"); err == nil {
-		t.Fatal("an instance of another connector must fail")
+	if _, err := svc.Capabilities(ctx, "missing", ""); err == nil {
+		t.Fatal("a missing connection must fail")
 	}
 }
 
@@ -61,10 +61,10 @@ func TestCapabilitiesMCPDown(t *testing.T) {
 	e := inline("down", func(m *manifest.Manifest) {
 		m.Actions = &manifest.Actions{MCP: &manifest.MCPAction{URL: "http://127.0.0.1:1/mcp"}}
 	})
-	if err := svc.Create(ctx, e); err != nil {
+	if _, err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	c, err := svc.Capabilities(ctx, "down", "", "")
+	c, err := svc.Capabilities(ctx, "down", "")
 	if err != nil || c.Actions.MCP.Error == "" {
 		t.Fatalf("down = %+v %v", c.Actions, err)
 	}

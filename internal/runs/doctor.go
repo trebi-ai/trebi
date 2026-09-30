@@ -14,8 +14,8 @@ import (
 	"time"
 
 	agentwire "github.com/trebi-ai/agent-wire"
-	"github.com/trebi-ai/trebi/internal/flight"
 	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/flight"
 )
 
 // Finding is one doctor row. The API maps these onto the alerts finding

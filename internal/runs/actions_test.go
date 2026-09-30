@@ -20,9 +20,9 @@ import (
 func TestActionEnvMergesConnectorEnv(t *testing.T) {
 	t.Parallel()
 	actions := []ConnectorAction{
-		{Name: "files", Env: map[string]string{"ROOT": "/srv"}},
-		{Name: "search", MCP: &agentwire.MCPServer{Name: "search", Command: "npx"}, Env: nil},
-		{Name: "db", Env: map[string]string{"ROOT": "/data", "MODE": "ro"}},
+		{Slug: "files", Env: map[string]string{"ROOT": "/srv"}},
+		{Slug: "search", MCP: &agentwire.MCPServer{Name: "search", Command: "npx"}, Env: nil},
+		{Slug: "db", Env: map[string]string{"ROOT": "/data", "MODE": "ro"}},
 	}
 	env := actionEnv(actions)
 	if env["ROOT"] != "/data" || env["MODE"] != "ro" || len(env) != 2 {
@@ -38,7 +38,7 @@ func TestActionEnvMergesConnectorEnv(t *testing.T) {
 func TestActionEnvIsNilForMCPOnly(t *testing.T) {
 	t.Parallel()
 	actions := []ConnectorAction{{
-		Name: "gh",
+		Slug: "gh",
 		MCP:  &agentwire.MCPServer{Name: "gh", Command: "npx", Env: map[string]string{"TOKEN": "secret:x"}},
 	}}
 	if env := actionEnv(actions); len(env) != 0 {
@@ -50,8 +50,8 @@ func TestActionEnvIsNilForMCPOnly(t *testing.T) {
 func TestMCPServersListsOnlyMCPActions(t *testing.T) {
 	t.Parallel()
 	actions := []ConnectorAction{
-		{Name: "files", Commands: []string{"ls"}},
-		{Name: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx", Args: []string{"-y", "gh"}}},
+		{Slug: "files", Commands: []string{"ls"}},
+		{Slug: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx", Args: []string{"-y", "gh"}}},
 	}
 	servers := mcpServers(actions)
 	if len(servers) != 1 || servers[0].Name != "gh" || servers[0].Command != "npx" {
@@ -68,8 +68,8 @@ func TestActionSkillsNeedADir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	actions := []ConnectorAction{
-		{Name: "psql", Skill: "postgres", SkillDir: dir},
-		{Name: "named-only", Skill: "postgres"},
+		{Slug: "psql", Skill: "postgres", SkillDir: dir},
+		{Slug: "named-only", Skill: "postgres"},
 	}
 	skills := actionSkills(actions)
 	if len(skills) != 1 || skills[0].Name != "postgres" || skills[0].Dir != dir {
@@ -82,9 +82,9 @@ func TestActionSkillsNeedADir(t *testing.T) {
 func TestConnectorHintLines(t *testing.T) {
 	t.Parallel()
 	actions := []ConnectorAction{
-		{Name: "psql", Commands: []string{"psql"}, Skill: "postgres"},
-		{Name: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx"}},
-		{Name: "jq", Commands: []string{"jq", "yq"}},
+		{Slug: "psql", Commands: []string{"psql"}, Skill: "postgres"},
+		{Slug: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx"}},
+		{Slug: "jq", Commands: []string{"jq", "yq"}},
 	}
 	hint := connectorHint(actions)
 	if !strings.Contains(hint, "Connector psql: use psql (skill postgres).") {
@@ -95,6 +95,10 @@ func TestConnectorHintLines(t *testing.T) {
 	}
 	if strings.Contains(hint, "gh") {
 		t.Fatalf("hint names an MCP-only connector: %q", hint)
+	}
+	titled := connectorHint([]ConnectorAction{{Slug: "wa-work", Title: "Work phone", Commands: []string{"whatsapp-cli"}}})
+	if titled != "Connector wa-work (Work phone): use whatsapp-cli." {
+		t.Fatalf("titled hint = %q", titled)
 	}
 }
 
@@ -177,7 +181,7 @@ func TestPaneClaudeMCPConfigLeavesJobDir(t *testing.T) {
 	svc, ctx := paneStack(t)
 	wd := t.TempDir()
 	opts := LaunchOpts{Actions: []ConnectorAction{{
-		Name: "gh",
+		Slug: "gh",
 		MCP:  &agentwire.MCPServer{Name: "gh", Command: "npx", Env: map[string]string{"TOKEN": "tok"}},
 	}}}
 	opts.WorkingDir = wd
@@ -291,7 +295,7 @@ func TestPaneEnvFileHidesActionEnvFromArgv(t *testing.T) {
 func TestPaneResumeInjectsMCP(t *testing.T) {
 	paneStack(t)
 	opts := LaunchOpts{ResumeSessionID: "sess-1", Actions: []ConnectorAction{{
-		Name: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx"},
+		Slug: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx"},
 	}}}
 	tool := tmux.Detect("claude")
 	plan, err := preparePlan(tool, "claude", &opts)
@@ -311,8 +315,8 @@ func TestPaneResumeInjectsMCP(t *testing.T) {
 func TestPaneCodexSecretsOffCommandLine(t *testing.T) {
 	paneStack(t)
 	opts := LaunchOpts{Actions: []ConnectorAction{
-		{Name: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx", Env: map[string]string{"GH_TOKEN": "s3cret-env"}}},
-		{Name: "api", MCP: &agentwire.MCPServer{Name: "api", URL: "https://x.test/mcp", Headers: map[string]string{"Authorization": "Bearer s3cret-hdr"}}},
+		{Slug: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx", Env: map[string]string{"GH_TOKEN": "s3cret-env"}}},
+		{Slug: "api", MCP: &agentwire.MCPServer{Name: "api", URL: "https://x.test/mcp", Headers: map[string]string{"Authorization": "Bearer s3cret-hdr"}}},
 	}}
 	tool := tmux.Detect("codex")
 	plan, err := preparePlan(tool, "codex", &opts)
@@ -359,7 +363,7 @@ func TestPaneOpenCodeMergesJobConfig(t *testing.T) {
 	opts := LaunchOpts{
 		Env: map[string]string{"OPENCODE_CONFIG_CONTENT": `{"theme":"dark","mcp":{"mine":{"type":"remote","url":"https://m.test"}}}`},
 		Actions: []ConnectorAction{{
-			Name: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx"},
+			Slug: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx"},
 		}},
 	}
 	tool := tmux.Detect("opencode")

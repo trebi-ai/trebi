@@ -17,22 +17,23 @@ cat > "$EVAL_WORKDIR/chat-sandbox.json" <<JSON
 JSON
 FAKE=$(command -v fake)
 cat > "$EVAL_WORKDIR/chat.yaml" <<YML
-chat:
-  from: inline
-  inputs:
-    TREBI_FAKEADAPTER: sandbox:$EVAL_WORKDIR/chat-sandbox.json
-  manifest:
-    schema: trebi-connector/1
-    name: chat
-    title: Chat
-    description: A sandbox chat channel for the eval.
-    version: 1.0.0
-    events:
-      protocol: trebi-connector/1
-      command: '"$FAKE" connector'
-      restart: never
-      types:
-        - type: message
-    channel: {}
+type: chat
+slug: chat
+from: inline
+inputs:
+  TREBI_FAKEADAPTER: sandbox:$EVAL_WORKDIR/chat-sandbox.json
+manifest:
+  schema: trebi-connector/1
+  name: chat
+  title: Chat
+  description: A sandbox chat channel for the eval.
+  version: 1.0.0
+  events:
+    protocol: trebi-connector/1
+    command: '"$FAKE" connector'
+    restart: never
+    types:
+      - type: message
+  channel: {}
 YML
 trebi connector apply --file "$EVAL_WORKDIR/chat.yaml"

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -61,11 +62,12 @@ func TestConnectorSetPatch(t *testing.T) {
 		in   Input
 		want string
 	}{
-		{Input{"name": "x", "version": ""}, `{"version":""}`},
-		{Input{"name": "x", "patch": nil}, `{"patch":null}`},
-		{Input{"name": "x", "manifest": map[string]any{"name": "x"}}, `{"manifest":{"name":"x"}}`},
-		{Input{"name": "x", "inputs": map[string]any{"A": "1"}}, `{"inputs":{"A":"1"}}`},
-		{Input{"name": "x"}, `{}`},
+		{Input{"connector": "x", "version": ""}, `{"version":""}`},
+		{Input{"connector": "x", "patch": nil}, `{"patch":null}`},
+		{Input{"connector": "x", "manifest": map[string]any{"name": "x"}}, `{"manifest":{"name":"x"}}`},
+		{Input{"connector": "x", "inputs": map[string]any{"A": "1"}}, `{"inputs":{"A":"1"}}`},
+		{Input{"connector": "x", "slug": "x-work", "title": "Work"}, `{"slug":"x-work","title":"Work"}`},
+		{Input{"connector": "x"}, `{}`},
 	} {
 		req, err := set.Build(c.in)
 		if err != nil {
@@ -75,5 +77,34 @@ func TestConnectorSetPatch(t *testing.T) {
 		if string(b) != c.want {
 			t.Fatalf("%v: body %s, want %s", c.in, b, c.want)
 		}
+	}
+}
+
+// TestConnectorActionsUseConnectionRefs proves the connector actions take a
+// slug or id in "connector", install takes slug and title, and replace is
+// gone.
+func TestConnectorActionsUseConnectionRefs(t *testing.T) {
+	t.Parallel()
+	cat := NewCatalog()["connector"]
+	if _, ok := cat["replace"]; ok {
+		t.Fatal("replace action must be gone; set covers every field")
+	}
+	req, err := cat["restart"].Build(Input{"connector": "con_01k6abcdefghjkmnpqrstvwxyz"})
+	if err != nil || req.Path != "/v1/connectors/con_01k6abcdefghjkmnpqrstvwxyz/restart" {
+		t.Fatalf("restart by id: %+v %v", req, err)
+	}
+	if _, err := cat["restart"].Build(Input{"name": "mail"}); err == nil {
+		t.Fatal("the old name key must not name a connection")
+	}
+	req, err = cat["install"].Build(Input{"registry": "trebi", "name": "whatsapp", "slug": "wa-work", "title": "Work phone"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(req.Body)
+	if !strings.Contains(string(b), `"slug":"wa-work"`) || !strings.Contains(string(b), `"title":"Work phone"`) || strings.Contains(string(b), `"as"`) {
+		t.Fatalf("install body %s", b)
+	}
+	if _, err := cat["create"].Build(Input{}); err == nil {
+		t.Fatal("create without a connection must fail")
 	}
 }

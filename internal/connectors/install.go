@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -65,51 +66,108 @@ func (s *Service) WithInstall(c InstallConfig) *Service {
 	return s
 }
 
-// InstallRequest installs one catalog connector.
+// InstallRequest adds one connection of a catalog type. Name is the type.
+// An empty slug is the default slug of the type.
 type InstallRequest struct {
 	Name    string            `json:"name"`
 	Version string            `json:"version,omitempty"`
 	Track   string            `json:"track,omitempty"`
 	Inputs  map[string]string `json:"inputs,omitempty"`
+	Slug    string            `json:"slug,omitempty"`
+	Title   string            `json:"title,omitempty"`
 }
 
-// Install reads one catalog version, installs its program into the version
-// folder, writes the entry, and starts the instance (Part E.7). A failure
-// removes the version folder that it made.
-func (s *Service) Install(ctx context.Context, req InstallRequest) (Resolved, error) {
+// Install reads one catalog version, installs its program into the package
+// folder, creates the connection, and starts it (Part E.7). A failure
+// removes the package folder that it made.
+func (s *Service) Install(ctx context.Context, req InstallRequest) (Connection, error) {
 	if s.catalog == nil {
-		return Resolved{}, ErrNoCatalog
-	}
-	if err := s.checkLoaded(); err != nil {
-		return Resolved{}, err
+		return Connection{}, ErrNoCatalog
 	}
 	if err := s.GuardReserved(req.Name); err != nil {
-		return Resolved{}, err
+		return Connection{}, err
 	}
-	if _, ok := s.Entry(req.Name); ok {
-		return Resolved{}, fmt.Errorf("%w: %q", ErrExists, req.Name)
-	}
-	e := Entry{Name: req.Name, From: FromCatalog, Version: "0.0.0", Track: manifest.Track(req.Track), Inputs: req.Inputs}
-	if err := e.Validate(); err != nil {
-		return Resolved{}, err
+	if req.Slug != "" {
+		if err := s.GuardReserved(req.Slug); err != nil {
+			return Connection{}, err
+		}
+		if !s.slugFree(req.Slug, "") {
+			return Connection{}, fmt.Errorf("%w: slug %q", ErrExists, req.Slug)
+		}
 	}
 	version, err := s.pickVersion(ctx, req.Name, req.Version, "", "")
 	if err != nil {
-		return Resolved{}, err
+		return Connection{}, err
 	}
-	created, err := s.installVersion(ctx, req.Name, version)
+	created, digest, err := s.installVersion(ctx, req.Name, version)
 	if err != nil {
-		return Resolved{}, err
+		return Connection{}, err
 	}
-	e.Version = version
-	if err := s.Create(ctx, e); err != nil {
+	c, err := s.Create(ctx, Connection{
+		Type: req.Name, Slug: req.Slug, Title: req.Title, From: FromCatalog,
+		Version: version, Digest: digest, Track: manifest.Track(req.Track), Inputs: req.Inputs,
+	})
+	if err != nil {
 		if created {
 			s.removeVersion(ctx, req.Name, version)
 		}
-		return Resolved{}, err
+		return Connection{}, err
 	}
-	s.appendBus(ctx, "connector.installed", req.Name, map[string]string{"version": version})
-	return s.Resolve(req.Name, "")
+	s.appendBus(ctx, "connector.installed", c.ID, map[string]string{"version": version, "type": c.Type, "slug": c.Slug})
+	return c, nil
+}
+
+// EnsurePackage installs the missing package of a catalog connection by its
+// version and checks it against the digest in the record. A restore needs
+// no user step.
+func (s *Service) EnsurePackage(ctx context.Context, c Connection) error {
+	if c.From != FromCatalog {
+		return nil
+	}
+	have := packageDigest(c.Type, c.Version)
+	if have == "" {
+		if s.catalog == nil {
+			return fmt.Errorf("%w: %s %s", ErrNotInstalled, c.Type, c.Version)
+		}
+		created, digest, err := s.installVersion(ctx, c.Type, c.Version)
+		if err != nil {
+			return err
+		}
+		if c.Digest != "" && digest != c.Digest {
+			if created {
+				s.removeVersion(ctx, c.Type, c.Version)
+			}
+			return fmt.Errorf("connector %q: the catalog package %s %s has digest %s, not %s", c.Slug, c.Type, c.Version, digest, c.Digest)
+		}
+		return nil
+	}
+	if c.Digest != "" && have != c.Digest {
+		return fmt.Errorf("connector %q: the package %s %s has digest %s, not %s", c.Slug, c.Type, c.Version, have, c.Digest)
+	}
+	return nil
+}
+
+// EnsurePackages runs EnsurePackage for each catalog connection whose
+// package folder is missing. A failure is logged; the row shows the resolve
+// error.
+func (s *Service) EnsurePackages(ctx context.Context) {
+	for _, c := range s.snapshot() {
+		if c.From != FromCatalog || packageDigest(c.Type, c.Version) != "" {
+			continue
+		}
+		if err := s.EnsurePackage(ctx, c); err != nil {
+			s.log.Warn("connector package", "connector", c.ID, "error", err)
+		}
+	}
+}
+
+// packageDigest reads the digest of a complete package folder, or "".
+func packageDigest(typ, version string) string {
+	b, err := os.ReadFile(filepath.Join(home.PackageDir(typ, version), digestFile))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // pickVersion returns the wanted version when it exists, else the newest
@@ -153,57 +211,49 @@ func (s *Service) pickVersion(ctx context.Context, name, want, cur string, track
 }
 
 // installVersion unpacks one snapshot and installs its program. It reports
-// whether it made the folder; a complete folder stays as it is.
-func (s *Service) installVersion(ctx context.Context, name, version string) (bool, error) {
-	dir := home.ConnectorVersionDir(name, version)
-	if _, err := os.Stat(filepath.Join(dir, digestFile)); err == nil {
-		return false, nil
+// whether it made the folder, and the package digest; a complete folder
+// stays as it is.
+func (s *Service) installVersion(ctx context.Context, name, version string) (bool, string, error) {
+	dir := home.PackageDir(name, version)
+	if d := packageDigest(name, version); d != "" {
+		return false, d, nil
 	}
 	snap, err := s.catalog.Snapshot(ctx, name, version)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
-		return false, err
+		return false, "", err
 	}
 	tmp, err := os.MkdirTemp(filepath.Dir(dir), ".install-*")
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	defer os.RemoveAll(tmp) //nolint:errcheck // best effort; empty after the rename
-	if err := untarGz(snap, tmp); err != nil {
-		return false, fmt.Errorf("unpack %s@%s: %w", name, version, err)
-	}
-	m, err := readManifest(tmp)
+	m, err := unpackSnapshot(snap, tmp, name, version)
 	if err != nil {
-		return false, withLayer(err, name, LayerCatalog)
-	}
-	if m.Name != name || m.Version != version {
-		return false, fmt.Errorf("unpack %s@%s: the snapshot holds %s@%s", name, version, m.Name, m.Version)
-	}
-	if err := m.Validate(); err != nil {
-		return false, withLayer(err, name, LayerCatalog)
+		return false, "", err
 	}
 	binPath, err := s.installBinary(ctx, m, filepath.Join(tmp, "bin"))
 	if err != nil {
-		return false, fmt.Errorf("install %s@%s: %w", name, version, err)
+		return false, "", fmt.Errorf("install %s@%s: %w", name, version, err)
 	}
 	sum := sha256.Sum256(snap)
 	digest := "sha256:" + hex.EncodeToString(sum[:])
 	if err := os.WriteFile(filepath.Join(tmp, digestFile), []byte(digest+"\n"), 0o600); err != nil {
-		return false, err
+		return false, "", err
 	}
 	if err := os.RemoveAll(dir); err != nil {
-		return false, err
+		return false, "", err
 	}
 	if err := os.Rename(tmp, dir); err != nil {
-		return false, err
+		return false, "", err
 	}
 	if binPath != "" && strings.HasPrefix(binPath, tmp) {
 		binPath = filepath.Join(dir, strings.TrimPrefix(binPath, tmp))
 	}
 	s.recordInstall(ctx, name, version, digest, binPath)
-	return true, nil
+	return true, digest, nil
 }
 
 // installBinary runs the first install method that works and checks
@@ -471,97 +521,97 @@ func untarGz(data []byte, dir string) error {
 }
 
 // recordInstall writes the derived connector_installs row.
-func (s *Service) recordInstall(ctx context.Context, name, version, digest, binPath string) {
-	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO connector_installs (name, version, digest, bin_path, installed_at)
+func (s *Service) recordInstall(ctx context.Context, typ, version, digest, binPath string) {
+	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO connector_installs (type, version, digest, bin_path, installed_at)
 		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT (name, version) DO UPDATE SET digest = excluded.digest, bin_path = excluded.bin_path, installed_at = excluded.installed_at`,
-		name, version, digest, binPath, s.now().UTC().Format(time.RFC3339)); err != nil {
-		s.log.Warn("connector install row", "connector", name, "version", version, "error", err)
+		ON CONFLICT (type, version) DO UPDATE SET digest = excluded.digest, bin_path = excluded.bin_path, installed_at = excluded.installed_at`,
+		typ, version, digest, binPath, s.now().UTC().Format(time.RFC3339)); err != nil {
+		s.log.Warn("connector install row", "connector", typ, "version", version, "error", err)
 	}
 }
 
-// removeVersion deletes one version folder and its install row.
-func (s *Service) removeVersion(ctx context.Context, name, version string) {
-	if err := os.RemoveAll(home.ConnectorVersionDir(name, version)); err != nil {
-		s.log.Warn("remove connector version", "connector", name, "version", version, "error", err)
+// removeVersion deletes one package folder and its install row.
+func (s *Service) removeVersion(ctx context.Context, typ, version string) {
+	if err := os.RemoveAll(home.PackageDir(typ, version)); err != nil {
+		s.log.Warn("remove connector version", "connector", typ, "version", version, "error", err)
 	}
-	if _, err := s.st.DB().ExecContext(ctx, `DELETE FROM connector_installs WHERE name = ? AND version = ?`, name, version); err != nil {
-		s.log.Warn("connector install row", "connector", name, "version", version, "error", err)
+	if _, err := s.st.DB().ExecContext(ctx, `DELETE FROM connector_installs WHERE type = ? AND version = ?`, typ, version); err != nil {
+		s.log.Warn("connector install row", "connector", typ, "version", version, "error", err)
 	}
 }
 
-// installedVersions lists the complete version folders of each connector.
+// installedVersions lists the complete package folders of each type.
 func installedVersions() map[string][]string {
 	out := map[string][]string{}
-	names, err := os.ReadDir(home.ConnectorsDir())
+	types, err := os.ReadDir(home.PackagesDir())
 	if err != nil {
 		return out
 	}
-	for _, n := range names {
-		if !n.IsDir() || strings.HasPrefix(n.Name(), ".") {
+	for _, t := range types {
+		if !t.IsDir() || strings.HasPrefix(t.Name(), ".") {
 			continue
 		}
-		vers, err := os.ReadDir(filepath.Join(home.ConnectorsDir(), n.Name()))
+		vers, err := os.ReadDir(filepath.Join(home.PackagesDir(), t.Name()))
 		if err != nil {
 			continue
 		}
 		for _, v := range vers {
-			if _, err := os.Stat(filepath.Join(home.ConnectorVersionDir(n.Name(), v.Name()), digestFile)); err == nil {
-				out[n.Name()] = append(out[n.Name()], v.Name())
+			if packageDigest(t.Name(), v.Name()) != "" {
+				out[t.Name()] = append(out[t.Name()], v.Name())
 			}
 		}
 	}
 	return out
 }
 
-// VersionRow is one catalog version of a connector.
+// VersionRow is one catalog version of a connector type.
 type VersionRow struct {
 	Version     string   `json:"version"`
 	PublishedAt string   `json:"published_at,omitempty"`
 	Yanked      bool     `json:"yanked"`
 	Installed   bool     `json:"installed"`
 	Current     bool     `json:"current"`
-	Workspaces  []string `json:"workspaces"`
+	Connections []string `json:"connections"` // slugs of the connections of the type on this version
 }
 
-// Versions lists the catalog versions of a connector, newest first, with
-// the installed flag and the layers that use each one.
-func (s *Service) Versions(ctx context.Context, name string) ([]VersionRow, error) {
+// Versions lists the catalog versions of the type of a connection, newest
+// first, with the installed flag and the connections that use each one.
+func (s *Service) Versions(ctx context.Context, ref string) ([]VersionRow, error) {
 	if s.catalog == nil {
 		return nil, ErrNoCatalog
 	}
-	vers, err := s.catalog.Versions(ctx, name)
+	c, err := s.Lookup(ref)
 	if err != nil {
 		return nil, err
 	}
-	installed := installedVersions()[name]
-	e, _ := s.Entry(name)
-	s.mu.Lock()
+	vers, err := s.catalog.Versions(ctx, c.Type)
+	if err != nil {
+		return nil, err
+	}
+	installed := installedVersions()[c.Type]
 	byVersion := map[string][]string{}
-	for ws, ovs := range s.overrides {
-		if ov, ok := ovs[name]; ok && ov.Version != "" {
-			byVersion[ov.Version] = append(byVersion[ov.Version], ws)
+	for _, o := range s.snapshot() {
+		if o.Type == c.Type && o.From == FromCatalog {
+			byVersion[o.Version] = append(byVersion[o.Version], o.Slug)
 		}
 	}
-	s.mu.Unlock()
 	out := make([]VersionRow, 0, len(vers))
 	for i := len(vers) - 1; i >= 0; i-- {
 		v := vers[i]
-		ws := byVersion[v.Version]
-		slices.Sort(ws)
 		out = append(out, VersionRow{
 			Version: v.Version, PublishedAt: v.PublishedAt, Yanked: v.Yanked,
-			Installed:  slices.Contains(installed, v.Version),
-			Current:    e.From == FromCatalog && e.Version == v.Version,
-			Workspaces: orEmptySlice(ws),
+			Installed:   slices.Contains(installed, v.Version),
+			Current:     c.From == FromCatalog && c.Version == v.Version,
+			Connections: orEmptySlice(byVersion[v.Version]),
 		})
 	}
 	return out, nil
 }
 
-// UpdateResult is one connector that CheckUpdates found behind.
+// UpdateResult is one connection that CheckUpdates found behind.
 type UpdateResult struct {
-	Name    string `json:"name"`
+	ID      string `json:"id"`
+	Slug    string `json:"slug"`
 	From    string `json:"from"`
 	To      string `json:"to"`
 	Applied bool   `json:"applied"`
@@ -569,169 +619,184 @@ type UpdateResult struct {
 }
 
 // CheckUpdates finds the newest catalog version on the track of each catalog
-// entry. The patch track applies it at once. The minor and latest tracks
-// record it and emit connector.update.available. An empty name checks every
-// entry.
-func (s *Service) CheckUpdates(ctx context.Context, name string) ([]UpdateResult, error) {
+// connection. The patch track applies it at once. The minor and latest
+// tracks record it and emit connector.update.available. An empty ref checks
+// every connection.
+func (s *Service) CheckUpdates(ctx context.Context, ref string) ([]UpdateResult, error) {
 	if s.catalog == nil {
 		return nil, ErrNoCatalog
 	}
-	entries := s.snapshotEntries()
-	if name != "" {
-		e, ok := entries[name]
-		if !ok {
-			return nil, fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
+	conns := s.snapshot()
+	if ref != "" {
+		c, err := s.Lookup(ref)
+		if err != nil {
+			return nil, err
 		}
-		entries = map[string]Entry{name: e}
+		conns = []Connection{c}
 	}
 	out := []UpdateResult{}
-	for _, n := range sortedNames(entries) {
-		e := entries[n]
-		if e.From != FromCatalog || e.track() == manifest.TrackExact {
+	for _, c := range conns {
+		if c.From != FromCatalog || c.track() == manifest.TrackExact {
 			continue
 		}
-		next, err := s.pickVersion(ctx, n, "", e.Version, e.track())
+		next, err := s.pickVersion(ctx, c.Type, "", c.Version, c.track())
 		if err != nil {
-			if name != "" {
+			if ref != "" {
 				return nil, err
 			}
-			s.log.Warn("connector update check", "connector", n, "error", err)
+			s.log.Warn("connector update check", "connector", c.ID, "error", err)
 			continue
 		}
 		if next == "" {
-			s.setUpdate(n, "")
+			s.setUpdate(c.ID, "")
 			continue
 		}
-		res := UpdateResult{Name: n, From: e.Version, To: next}
-		if e.track() == manifest.TrackPatch {
-			if err := s.Update(ctx, n, "", next); err != nil {
+		res := UpdateResult{ID: c.ID, Slug: c.Slug, From: c.Version, To: next}
+		if c.track() == manifest.TrackPatch {
+			if err := s.Update(ctx, c.ID, next); err != nil {
 				res.Error = err.Error()
 			} else {
 				res.Applied = true
 			}
-		} else if s.setUpdate(n, next) {
-			s.appendBus(ctx, "connector.update.available", n, map[string]string{"version": next, "current": e.Version})
+		} else if s.setUpdate(c.ID, next) {
+			s.appendBus(ctx, "connector.update.available", c.ID, map[string]string{"version": next, "current": c.Version, "slug": c.Slug})
 		}
 		out = append(out, res)
 	}
 	return out, nil
 }
 
-// setUpdate records the available version of a connector. It reports
+// setUpdate records the available version of a connection. It reports
 // whether the value changed.
-func (s *Service) setUpdate(name, version string) bool {
+func (s *Service) setUpdate(id, version string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.updates[name] == version {
+	if s.updates[id] == version {
 		return false
 	}
 	if version == "" {
-		delete(s.updates, name)
+		delete(s.updates, id)
 	} else {
-		s.updates[name] = version
+		s.updates[id] = version
 	}
 	return true
 }
 
-// availableUpdate returns the recorded update of a connector, or "".
-func (s *Service) availableUpdate(name string) string {
+// availableUpdate returns the recorded update of a connection, or "".
+func (s *Service) availableUpdate(id string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.updates[name]
+	return s.updates[id]
 }
 
-// Update installs a version side by side, switches the global entry or the
-// workspace layer to it, and restarts the instance. An empty version is the
-// newest version that is not yanked.
-func (s *Service) Update(ctx context.Context, name, workspaceID, version string) error {
+// Update installs a version side by side, moves the version and the digest
+// of the connection to it, and restarts the process. An empty version is
+// the newest version that is not yanked.
+func (s *Service) Update(ctx context.Context, ref, version string) error {
 	if s.catalog == nil {
 		return ErrNoCatalog
 	}
-	e, ok := s.Entry(name)
-	if !ok {
-		return fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
+	if err := s.GuardReserved(ref); err != nil {
+		return err
 	}
-	if e.From != FromCatalog {
-		return &ValidationError{Name: name, Fields: []FieldError{{Field: "from", Message: "only a catalog connector has versions"}}}
-	}
-	version, err := s.pickVersion(ctx, name, version, "", "")
+	c, err := s.Lookup(ref)
 	if err != nil {
 		return err
 	}
-	created, err := s.installVersion(ctx, name, version)
+	if c.From != FromCatalog {
+		return &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "from", Message: "only a catalog connector has versions"}}}
+	}
+	version, err = s.pickVersion(ctx, c.Type, version, "", "")
 	if err != nil {
 		return err
 	}
-	from := e.Version
-	if workspaceID == "" {
-		err = s.Patch(ctx, name, EntryPatch{Version: &version})
-	} else {
-		ov, _, oerr := s.Override(ctx, workspaceID, name)
-		if oerr != nil {
-			return oerr
-		}
-		from = ov.Version
-		ov.Version = version
-		err = s.SetOverride(ctx, workspaceID, name, &ov)
-	}
+	created, digest, err := s.installVersion(ctx, c.Type, version)
 	if err != nil {
+		return err
+	}
+	from := c.Version
+	if err := s.setVersion(ctx, c.ID, version, digest); err != nil {
 		if created {
-			s.removeVersion(ctx, name, version)
+			s.removeVersion(ctx, c.Type, version)
 		}
 		return err
 	}
-	if workspaceID == "" {
-		s.setUpdate(name, "")
-	}
-	s.appendBus(ctx, "connector.updated.version", name, map[string]string{"from": from, "to": version, "workspace": workspaceID})
+	s.setUpdate(c.ID, "")
+	s.appendBus(ctx, "connector.updated.version", c.ID, map[string]string{"from": from, "to": version, "slug": c.Slug})
 	if _, err := s.GC(ctx, false); err != nil {
 		s.log.Warn("connector gc", "error", err)
 	}
 	return nil
 }
 
-// GC removes each version folder that no layer uses. With dryRun it only
-// lists them as name@version.
+// setVersion writes a new version and digest to a connection record.
+func (s *Service) setVersion(ctx context.Context, id, version, digest string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.checkLoaded(id); err != nil {
+		return err
+	}
+	old, err := s.Lookup(id)
+	if err != nil {
+		return err
+	}
+	c := old.clone()
+	c.Version, c.Digest = version, digest
+	return s.commit(ctx, c, &old, nil)
+}
+
+// GC removes each package folder that no connection uses. With dryRun it
+// only lists them as type@version.
 func (s *Service) GC(ctx context.Context, dryRun bool) ([]string, error) {
 	used := map[string]bool{}
-	for n, e := range s.snapshotEntries() {
-		if e.From == FromCatalog {
-			used[n+"@"+e.Version] = true
+	for _, c := range s.snapshot() {
+		if c.From == FromCatalog {
+			used[c.Type+"@"+c.Version] = true
 		}
 	}
-	s.mu.Lock()
-	for _, ovs := range s.overrides {
-		for n, ov := range ovs {
-			if ov.Version != "" {
-				used[n+"@"+ov.Version] = true
-			}
-		}
-	}
-	s.mu.Unlock()
 	removed := []string{}
 	installed := installedVersions()
-	for _, n := range sortedNames(installed) {
-		for _, v := range installed[n] {
-			if used[n+"@"+v] {
+	for _, typ := range slices.Sorted(maps.Keys(installed)) {
+		for _, v := range installed[typ] {
+			if used[typ+"@"+v] {
 				continue
 			}
-			removed = append(removed, n+"@"+v)
+			removed = append(removed, typ+"@"+v)
 			if !dryRun {
-				s.removeVersion(ctx, n, v)
+				s.removeVersion(ctx, typ, v)
 			}
 		}
 		if !dryRun {
-			_ = os.Remove(filepath.Join(home.ConnectorsDir(), n)) // only an empty folder goes
+			_ = os.Remove(filepath.Join(home.PackagesDir(), typ)) // only an empty folder goes
 		}
 	}
 	return removed, nil
 }
 
-// appendBus appends one connector domain event.
-func (s *Service) appendBus(ctx context.Context, topic, name string, attrs map[string]string) {
+// appendBus appends one connector domain event keyed by the connection id.
+func (s *Service) appendBus(ctx context.Context, topic, id string, attrs map[string]string) {
 	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: topic, Entity: "connector", EntityID: name, Action: strings.TrimPrefix(topic, "connector."), Attrs: attrs,
+		Topic: topic, Entity: "connector", EntityID: id, Action: strings.TrimPrefix(topic, "connector."), Attrs: attrs,
 	}); err != nil {
 		s.log.Warn("bus append", "topic", topic, "error", err)
 	}
+}
+
+// unpackSnapshot unpacks a catalog snapshot into dir and checks that its
+// manifest is the one of name at version.
+func unpackSnapshot(snap []byte, dir, name, version string) (manifest.Manifest, error) {
+	if err := untarGz(snap, dir); err != nil {
+		return manifest.Manifest{}, fmt.Errorf("unpack %s@%s: %w", name, version, err)
+	}
+	m, err := readManifest(dir)
+	if err != nil {
+		return manifest.Manifest{}, withLayer(err, name, LayerCatalog)
+	}
+	if m.Name != name || m.Version != version {
+		return manifest.Manifest{}, fmt.Errorf("unpack %s@%s: the snapshot holds %s@%s", name, version, m.Name, m.Version)
+	}
+	if err := m.Validate(); err != nil {
+		return manifest.Manifest{}, withLayer(err, name, LayerCatalog)
+	}
+	return m, nil
 }

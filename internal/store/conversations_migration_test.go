@@ -37,20 +37,12 @@ func TestMigrationV27ChannelPointersWorkspace(t *testing.T) {
 			t.Fatalf("seed: %v (%s)", err, q)
 		}
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	s, err := OpenPath(path)
-	if err != nil {
-		t.Fatalf("open applies v27: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	if v, _ := s.SchemaVersion(); v != SchemaVersion {
-		t.Fatalf("schema version %d", v)
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applyThrough(db, 32); err != nil {
+		t.Fatalf("apply v32: %v", err)
 	}
 	var conv string
-	if err := s.DB().QueryRow(`SELECT conversation_id FROM channel_pointers
+	if err := db.QueryRow(`SELECT conversation_id FROM channel_pointers
 		WHERE workspace_id='ws1' AND connector='telegram' AND instance='telegram' AND room='chat1'`).Scan(&conv); err != nil {
 		t.Fatalf("pointer kept: %v", err)
 	}
@@ -58,13 +50,13 @@ func TestMigrationV27ChannelPointersWorkspace(t *testing.T) {
 		t.Fatalf("pointer conversation = %q, want c1", conv)
 	}
 	// The key is workspace-scoped, so the second workspace holds the same pair.
-	if _, err := s.DB().Exec(`INSERT INTO channel_pointers
+	if _, err := db.Exec(`INSERT INTO channel_pointers
 		(workspace_id, connector, instance, room, thread, conversation_id, updated_at)
 		VALUES ('ws2', 'telegram', 'telegram', 'chat1', '', 'c2', '2026-09-27T00:00:02Z')`); err != nil {
 		t.Fatalf("second workspace pointer: %v", err)
 	}
 	var src string
-	if err := s.DB().QueryRow(`SELECT source_id FROM events WHERE id='e1'`).Scan(&src); err != nil {
+	if err := db.QueryRow(`SELECT source_id FROM events WHERE id='e1'`).Scan(&src); err != nil {
 		t.Fatalf("events row kept: %v", err)
 	}
 	if src != "src1" {
@@ -100,19 +92,15 @@ func TestMigrationV29Outbox(t *testing.T) {
 			t.Fatalf("seed: %v (%s)", err, q)
 		}
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applyThrough(db, 32); err != nil {
+		t.Fatalf("apply v32: %v", err)
 	}
-	s, err := OpenPath(path)
-	if err != nil {
-		t.Fatalf("open applies v29: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
 
 	var kind, purpose, target, dedupe, status, errMsg string
 	var body sql.NullString
 	var attempts int
-	if err := s.DB().QueryRow(`SELECT kind, purpose, room, dedupe_key, body, status, attempts, error_message
+	if err := db.QueryRow(`SELECT kind, purpose, room, dedupe_key, body, status, attempts, error_message
 		FROM outbox WHERE id='o1'`).Scan(&kind, &purpose, &target, &dedupe, &body, &status, &attempts, &errMsg); err != nil {
 		t.Fatal(err)
 	}
@@ -120,14 +108,14 @@ func TestMigrationV29Outbox(t *testing.T) {
 		body.String != "hi" || status != "failed" || attempts != 5 || errMsg != "boom" {
 		t.Errorf("o1 = %s %s %s %s %q %s %d %s", kind, purpose, target, dedupe, body.String, status, attempts, errMsg)
 	}
-	if err := s.DB().QueryRow(`SELECT body FROM outbox WHERE id='o2'`).Scan(&body); err != nil || body.Valid {
+	if err := db.QueryRow(`SELECT body FROM outbox WHERE id='o2'`).Scan(&body); err != nil || body.Valid {
 		t.Errorf("sent row body = %v, %v; want NULL", body, err)
 	}
-	if _, err := s.DB().Exec(`SELECT 1 FROM channel_outbox`); err == nil {
+	if _, err := db.Exec(`SELECT 1 FROM channel_outbox`); err == nil {
 		t.Error("channel_outbox still exists")
 	}
 	var disp string
-	if err := s.DB().QueryRow(`SELECT disposition FROM email_messages WHERE id='e1'`).Scan(&disp); err != nil || disp != "send_failed" {
+	if err := db.QueryRow(`SELECT disposition FROM email_messages WHERE id='e1'`).Scan(&disp); err != nil || disp != "send_failed" {
 		t.Errorf("envelope disposition = %q, %v; want send_failed", disp, err)
 	}
 }
@@ -196,9 +184,6 @@ func TestMigrationV25BackfillsTitles(t *testing.T) {
 		t.Fatalf("open applies v25: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if v, _ := s.SchemaVersion(); v != SchemaVersion {
-		t.Fatalf("schema version %d", v)
-	}
 	want := map[string]string{
 		"c1": "What is the queue depth?",
 		"c2": "Custom",
@@ -245,36 +230,86 @@ func TestMigrationV30Rooms(t *testing.T) {
 			t.Fatalf("seed: %v (%s)", err, q)
 		}
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applyThrough(db, 32); err != nil {
+		t.Fatalf("apply v32: %v", err)
 	}
-	s, err := OpenPath(path)
-	if err != nil {
-		t.Fatalf("open applies v30: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
 
 	var room, thread string
-	if err := s.DB().QueryRow(`SELECT room, thread FROM channel_pointers
+	if err := db.QueryRow(`SELECT room, thread FROM channel_pointers
 		WHERE instance='email'`).Scan(&room, &thread); err != nil || room != "ws1" || thread != "<root@x>" {
 		t.Errorf("email pointer = %q %q, %v", room, thread, err)
 	}
-	if err := s.DB().QueryRow(`SELECT room, thread FROM channel_pointers
+	if err := db.QueryRow(`SELECT room, thread FROM channel_pointers
 		WHERE instance='telegram'`).Scan(&room, &thread); err != nil || room != "chat1" || thread != "" {
 		t.Errorf("telegram pointer = %q %q, %v", room, thread, err)
 	}
 	var instance, recipients string
-	if err := s.DB().QueryRow(`SELECT instance, room, recipients FROM outbox WHERE id='o1'`).
+	if err := db.QueryRow(`SELECT instance, room, recipients FROM outbox WHERE id='o1'`).
 		Scan(&instance, &room, &recipients); err != nil || instance != "email" || room != "" || recipients != "a@x.com" {
 		t.Errorf("email outbox = %q %q %q, %v", instance, room, recipients, err)
 	}
-	if err := s.DB().QueryRow(`SELECT room, recipients FROM outbox WHERE id='o2'`).
+	if err := db.QueryRow(`SELECT room, recipients FROM outbox WHERE id='o2'`).
 		Scan(&room, &recipients); err != nil || room != "chat1" || recipients != "" {
 		t.Errorf("channel outbox = %q %q, %v", room, recipients, err)
 	}
 	var last string
-	if err := s.DB().QueryRow(`SELECT last_event_id FROM connector_cursors WHERE instance='tick'`).
+	if err := db.QueryRow(`SELECT last_event_id FROM connector_cursors WHERE instance='tick'`).
 		Scan(&last); err != nil || last != "e9" {
 		t.Errorf("connector cursor = %q, %v", last, err)
+	}
+}
+
+// TestMigrationV33Connections builds a v32 database with native and
+// non-native connector rows, then applies v33. The native rows stay, the
+// other rows go, and connector_cursors is gone.
+func TestMigrationV33Connections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v32.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applyThrough(db, 32); err != nil {
+		t.Fatalf("v32 setup: %v", err)
+	}
+	seed := []string{
+		`INSERT INTO events (id, connector, instance, received_at, trace_id) VALUES ('e1', 'email', 'email', '2026-09-30T00:00:00Z', 't1')`,
+		`INSERT INTO events (id, connector, instance, received_at, trace_id) VALUES ('e2', 'whatsapp', 'whatsapp', '2026-09-30T00:00:00Z', 't2')`,
+		`INSERT INTO outbox (id, kind, purpose, workspace_id, instance, status, created_at)
+		 VALUES ('o1', 'email', 'reply', 'ws1', 'email', 'queued', '2026-09-30T00:00:00Z')`,
+		`INSERT INTO outbox (id, kind, purpose, workspace_id, instance, status, created_at)
+		 VALUES ('o2', 'channel', 'reply', 'ws1', 'whatsapp', 'queued', '2026-09-30T00:00:00Z')`,
+		`INSERT INTO connector_cursors (instance, last_event_id, updated_at) VALUES ('whatsapp', 'e9', '2026-09-30T00:00:00Z')`,
+		`INSERT INTO connector_installs (name, version, installed_at) VALUES ('whatsapp', '0.6.0', '2026-09-30T00:00:00Z')`,
+	}
+	for _, q := range seed {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("seed: %v (%s)", err, q)
+		}
+	}
+	if err := applyThrough(db, 33); err != nil {
+		t.Fatalf("apply v33: %v", err)
+	}
+	for _, c := range []struct {
+		q    string
+		want int
+	}{
+		{`SELECT COUNT(*) FROM events WHERE id='e1'`, 1},
+		{`SELECT COUNT(*) FROM events WHERE id='e2'`, 0},
+		{`SELECT COUNT(*) FROM outbox WHERE id='o1'`, 1},
+		{`SELECT COUNT(*) FROM outbox WHERE id='o2'`, 0},
+		{`SELECT COUNT(*) FROM connector_installs`, 0},
+	} {
+		var n int
+		if err := db.QueryRow(c.q).Scan(&n); err != nil || n != c.want {
+			t.Errorf("%s = %d, %v; want %d", c.q, n, err, c.want)
+		}
+	}
+	if _, err := db.Exec(`SELECT 1 FROM connector_cursors`); err == nil {
+		t.Error("connector_cursors still exists")
+	}
+	if _, err := db.Exec(`INSERT INTO connector_installs (type, version, installed_at) VALUES ('whatsapp', '0.7.0', 'x')`); err != nil {
+		t.Errorf("connector_installs keys on type: %v", err)
 	}
 }

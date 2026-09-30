@@ -176,13 +176,10 @@ func (in Input) block(key string) (json.RawMessage, error) {
 	return b, nil
 }
 
-// connectorRef reads name (required), instance, and workspace.
+// connectorRef reads connector (required): a slug or a connection id.
 func (in Input) connectorRef() (request.ConnectorRef, error) {
-	v, err := in.head("name", "instance", "workspace")
-	if err != nil {
-		return request.ConnectorRef{}, err
-	}
-	return request.ConnectorRef{Name: v[0], Instance: v[1], Workspace: v[2]}, nil
+	ref, err := in.reqStr("connector")
+	return request.ConnectorRef{Ref: ref}, err
 }
 
 // strMap reads one string-to-string object field: nil when the field is absent.
@@ -1639,8 +1636,8 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildConnectorsListPath(limit, v[0], v[1], v[2])), nil
 			}),
-			"show": act("GET /v1/connectors/{name}", Input{"name": "mail"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "workspace")
+			"show": act("GET /v1/connectors/{ref}", Input{"connector": "mail"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("connector", "workspace")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -1677,11 +1674,12 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				"name":     "ai.adtest/adtest-mcp",
 				"version":  "1.1.0",
 				"track":    "minor",
-				"as":       "adtest",
+				"slug":     "adtest",
+				"title":    "Ad test",
 				"package":  float64(0),
 				"inputs":   map[string]any{"ADTEST_API_KEY": "secret:adtest_key"},
 			}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "registry", "version", "as", "track")
+				v, err := in.head("name", "registry", "version", "slug", "track", "title")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -1704,79 +1702,77 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				return request.ConnectorInstall{
-					Registry: v[1], Name: v[0], Version: v[2], As: v[3], Track: v[4],
+					Registry: v[1], Name: v[0], Version: v[2], Slug: v[3], Track: v[4], Title: v[5],
 					Package: pkg, Remote: remote, Inputs: inputs,
 				}.Build(), nil
 			}),
-			"versions": act("GET /v1/connectors/{name}/versions", Input{"name": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
-				name, err := in.reqStr("name")
-				return request.BuildConnectorVersions(name), err
+			"versions": act("GET /v1/connectors/{ref}/versions", Input{"connector": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
+				ref, err := in.reqStr("connector")
+				return request.BuildConnectorVersions(ref), err
 			}),
 			"check_updates": func() Action {
-				e := multiAct(Input{"name": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
-					name, err := in.str("name")
-					return request.BuildConnectorCheckUpdates(name), err
-				}, "POST /v1/connectors/{name}/check-updates", "POST /v1/connectors/check-updates")
+				e := multiAct(Input{"connector": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
+					ref, err := in.str("connector")
+					return request.BuildConnectorCheckUpdates(ref), err
+				}, "POST /v1/connectors/{ref}/check-updates", "POST /v1/connectors/check-updates")
 				e.Samples = []Input{{}}
 				return e
 			}(),
-			"update": act("POST /v1/connectors/{name}/update", Input{"name": "whatsapp", "version": "0.7.0", "workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "version", "workspace")
+			"update": act("POST /v1/connectors/{ref}/update", Input{"connector": "whatsapp", "version": "0.7.0"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("connector", "version")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildConnectorUpdate(v[0], v[1], v[2]), nil
+				return request.BuildConnectorUpdate(v[0], v[1]), nil
 			}),
-			"capabilities": act("GET /v1/connectors/{name}/capabilities", Input{"name": "github", "instance": "github", "workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+			"capabilities": act("GET /v1/connectors/{ref}/capabilities", Input{"connector": "github", "workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
-				return request.BuildConnectorCapabilities(c), err
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				ws, err := in.str("workspace")
+				return request.BuildConnectorCapabilities(c, ws), err
 			}),
-			"conformance": act("POST /v1/connectors/{name}/conformance", Input{"name": "whatsapp", "instance": "whatsapp", "workspace": "ws1", "room": "123@g.us"}, func(in Input) (request.HTTPRequest, error) {
+			"conformance": act("POST /v1/connectors/{ref}/conformance", Input{"connector": "whatsapp", "room": "123@g.us", "suites": []any{"protocol"}}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				room, err := in.str("room")
-				return request.BuildConnectorConformance(c, room), err
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				suites, err := in.strList("suites")
+				return request.BuildConnectorConformance(c, room, suites), err
 			}),
 			"gc": act("POST /v1/connectors/gc", Input{"dry_run": true}, func(in Input) (request.HTTPRequest, error) {
 				dry, err := in.flag("dry_run")
 				return request.BuildConnectorGC(dry), err
 			}),
-			"create": act("POST /v1/connectors", Input{"entry": map[string]any{
-				"name": "whatsapp", "from": "catalog", "track": "minor",
+			"create": act("POST /v1/connectors", Input{"connection": map[string]any{
+				"type": "whatsapp", "slug": "whatsapp-work", "title": "Work WhatsApp", "from": "catalog", "version": "1.2.0", "track": "minor",
 			}}, func(in Input) (request.HTTPRequest, error) {
-				entry, err := in.obj("entry")
+				conn, err := in.obj("connection")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if entry == nil {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "entry")
+				if conn == nil {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "connection")
 				}
-				return request.BuildConnectorCreate(entry), nil
+				return request.BuildConnectorCreate(conn), nil
 			}),
-			"replace": act("PUT /v1/connectors/{name}", Input{"name": "whatsapp", "entry": map[string]any{
-				"from": "catalog", "version": "1.2.0", "track": "pinned",
-			}}, func(in Input) (request.HTTPRequest, error) {
-				name, err := in.reqStr("name")
+			"set": act("PATCH /v1/connectors/{ref}", Input{"connector": "whatsapp", "slug": "whatsapp-work", "title": "Work WhatsApp", "track": "minor"}, func(in Input) (request.HTTPRequest, error) {
+				ref, err := in.reqStr("connector")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				entry, err := in.obj("entry")
-				if err != nil {
+				p := request.ConnectorPatch{Ref: ref}
+				if p.Slug, err = in.presentStr("slug"); err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if entry == nil {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "entry")
-				}
-				return request.BuildConnectorReplace(name, entry), nil
-			}),
-			"set": act("PATCH /v1/connectors/{name}", Input{"name": "whatsapp", "track": "minor"}, func(in Input) (request.HTTPRequest, error) {
-				name, err := in.reqStr("name")
-				if err != nil {
+				if p.Title, err = in.presentStr("title"); err != nil {
 					return request.HTTPRequest{}, err
 				}
-				p := request.ConnectorPatch{Name: name}
 				if p.Version, err = in.presentStr("version"); err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -1794,39 +1790,39 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return p.Build(), nil
 			}),
-			"delete": confirmDel("DELETE /v1/connectors/{name}", "name", "mail", request.BuildConnectorDelete),
-			"connect": act("POST /v1/connectors/{name}/connect", Input{"name": "mail"}, func(in Input) (request.HTTPRequest, error) {
+			"delete": confirmDel("DELETE /v1/connectors/{ref}", "connector", "mail", request.BuildConnectorDelete),
+			"connect": act("POST /v1/connectors/{ref}/connect", Input{"connector": "mail"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				return request.BuildConnectorConnect(c), err
 			}),
-			"disconnect": act("POST /v1/connectors/{name}/disconnect", Input{"name": "mail"}, func(in Input) (request.HTTPRequest, error) {
+			"disconnect": act("POST /v1/connectors/{ref}/disconnect", Input{"connector": "mail"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				return request.BuildConnectorDisconnect(c), err
 			}),
-			"restart": act("POST /v1/connectors/{name}/restart", Input{"name": "mail"}, func(in Input) (request.HTTPRequest, error) {
+			"restart": act("POST /v1/connectors/{ref}/restart", Input{"connector": "mail"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				return request.BuildConnectorRestart(c), err
 			}),
-			"test": act("POST /v1/connectors/{name}/test", Input{"name": "mail", "event": map[string]any{"kind": "mail"}}, func(in Input) (request.HTTPRequest, error) {
-				name, err := in.reqStr("name")
+			"test": act("POST /v1/connectors/{ref}/test", Input{"connector": "mail", "event": map[string]any{"kind": "mail"}}, func(in Input) (request.HTTPRequest, error) {
+				ref, err := in.reqStr("connector")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildConnectorTest(name, in.value("event")), nil
+				return request.BuildConnectorTest(ref, in.value("event")), nil
 			}),
 			"logs": func() Action {
-				e := act("GET /v1/connectors/{name}/logs", Input{"name": "mail"}, func(in Input) (request.HTTPRequest, error) {
+				e := act("GET /v1/connectors/{ref}/logs", Input{"connector": "mail"}, func(in Input) (request.HTTPRequest, error) {
 					c, err := in.connectorRef()
 					return mcpGet(request.BuildConnectorLogsPath(c, false)), err // follow is not available over MCP
 				})
 				e.Transform = logLinesTransform
 				return bound(e, true)
 			}(),
-			"cursor_show": act("GET /v1/connectors/{name}/cursor", Input{"name": "mail"}, func(in Input) (request.HTTPRequest, error) {
+			"cursor_show": act("GET /v1/connectors/{ref}/cursor", Input{"connector": "mail"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				return request.BuildConnectorCursorGet(c), err
 			}),
-			"cursor_set": act("PUT /v1/connectors/{name}/cursor", Input{"name": "mail", "last_event_id": "42"}, func(in Input) (request.HTTPRequest, error) {
+			"cursor_set": act("PUT /v1/connectors/{ref}/cursor", Input{"connector": "mail", "last_event_id": "42"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1837,37 +1833,37 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildConnectorCursorSet(c, id), nil
 			}),
-			"cursor_reset": act("PUT /v1/connectors/{name}/cursor", Input{"name": "mail"}, func(in Input) (request.HTTPRequest, error) {
+			"cursor_reset": act("PUT /v1/connectors/{ref}/cursor", Input{"connector": "mail"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				return request.BuildConnectorCursorReset(c), err
 			}),
-			"override_show": act("GET /v1/workspaces/{id}/connectors/{name}", Input{"workspace": "ws1", "name": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("workspace", "name")
+			"override_show": act("GET /v1/workspaces/{id}/connectors/{ref}", Input{"workspace": "ws1", "connector": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "connector")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildConnectorOverrideGet(v[0], v[1]), nil
 			}),
-			"override_set": act("PUT /v1/workspaces/{id}/connectors/{name}", Input{
-				"workspace": "ws1", "name": "whatsapp", "version": "1.2.0", "track": "pinned",
-				"inputs": map[string]any{"PHONE": "+15550100"}, "patch": map[string]any{"events": map[string]any{"restart": "never"}},
+			"override_set": act("PUT /v1/workspaces/{id}/connectors/{ref}", Input{
+				"workspace": "ws1", "connector": "whatsapp",
+				"patch":    map[string]any{"actions": map[string]any{"cli": map[string]any{"commands": []any{"whatsapp-cli"}}}},
 				"disabled": false,
 			}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("workspace", "name")
+				v, err := in.reqStrs("workspace", "connector")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				layer := in.pick("version", "track", "inputs", "patch", "disabled")
+				layer := in.pick("patch", "disabled")
 				return request.BuildConnectorOverrideSet(v[0], v[1], layer), nil
 			}),
-			"override_delete": act("DELETE /v1/workspaces/{id}/connectors/{name}", Input{"workspace": "ws1", "name": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("workspace", "name")
+			"override_delete": act("DELETE /v1/workspaces/{id}/connectors/{ref}", Input{"workspace": "ws1", "connector": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "connector")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildConnectorOverrideDelete(v[0], v[1]), nil
 			}),
-			"login": act("POST /v1/connectors/{name}/login", Input{"name": "whatsapp", "kind": "qr"}, func(in Input) (request.HTTPRequest, error) {
+			"login": act("POST /v1/connectors/{ref}/login", Input{"connector": "whatsapp", "kind": "qr"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1878,10 +1874,10 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildConnectorLogin(c, kind), nil
 			}),
-			"login_submit": act("POST /v1/connectors/{name}/login/{flow_id}", Input{
-				"name": "whatsapp", "flow_id": "f1", "fields": map[string]any{"code": "123456"},
+			"login_submit": act("POST /v1/connectors/{ref}/login/{flow_id}", Input{
+				"connector": "whatsapp", "flow_id": "f1", "fields": map[string]any{"code": "123456"},
 			}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("name", "flow_id")
+				v, err := in.reqStrs("connector", "flow_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -1891,18 +1887,18 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildConnectorLoginSubmit(v[0], v[1], fields), nil
 			}),
-			"login_cancel": act("DELETE /v1/connectors/{name}/login/{flow_id}", Input{"name": "whatsapp", "flow_id": "f1"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("name", "flow_id")
+			"login_cancel": act("DELETE /v1/connectors/{ref}/login/{flow_id}", Input{"connector": "whatsapp", "flow_id": "f1"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("connector", "flow_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildConnectorLoginCancel(v[0], v[1]), nil
 			}),
-			"logout": act("POST /v1/connectors/{name}/logout", Input{"name": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
+			"logout": act("POST /v1/connectors/{ref}/logout", Input{"connector": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				return request.BuildConnectorLogout(c), err
 			}),
-			"rooms": act("GET /v1/connectors/{name}/rooms", Input{"name": "whatsapp", "q": "family"}, func(in Input) (request.HTTPRequest, error) {
+			"rooms": act("GET /v1/connectors/{ref}/rooms", Input{"connector": "whatsapp", "q": "family"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1917,7 +1913,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildConnectorRoomsPath(c, v[0], v[1], v[2], limit)), nil
 			}),
-			"threads": act("GET /v1/connectors/{name}/rooms/{room}/threads", Input{"name": "whatsapp", "room": "123@g.us"}, func(in Input) (request.HTTPRequest, error) {
+			"threads": act("GET /v1/connectors/{ref}/rooms/{room}/threads", Input{"connector": "whatsapp", "room": "123@g.us"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1932,21 +1928,22 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildConnectorThreadsPath(c, v[0], v[1], limit)), nil
 			}),
-			"bind": act("POST /v1/connectors/{name}/rooms/{room}/bind", Input{
-				"name": "whatsapp", "room": "123@g.us", "workspace": "ws1", "operator": "agents/triage",
+			"bind": act("POST /v1/connectors/{ref}/rooms/{room}/bind", Input{
+				"connector": "whatsapp", "room": "123@g.us", "workspace": "ws1", "operator": "agents/triage",
 			}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if c.Workspace == "" {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
+				ws, err := in.reqStr("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
 				}
 				v, err := in.head("room", "thread", "operator")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildConnectorBind(c, v[0], v[1], v[2]), nil
+				return request.BuildConnectorBind(c, ws, v[0], v[1], v[2]), nil
 			}),
 		},
 

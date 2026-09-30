@@ -94,8 +94,12 @@ func applyThrough(db *sql.DB, n int) error {
 	)`); err != nil {
 		return err
 	}
+	var from int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&from); err != nil {
+		return err
+	}
 	steps := migrations()
-	for i := 0; i < n; i++ {
+	for i := from; i < n; i++ {
 		tx, err := db.Begin()
 		if err != nil {
 			return err

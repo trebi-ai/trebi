@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,27 +20,31 @@ import (
 )
 
 // InjectEvent handles a synthetic event (`connector test`) through the same
-// ingest path of the global instance. A protocol connector takes a typed
-// event. It refuses a reserved name. A source id that is already stored
-// returns ErrDuplicate.
-func (s *Service) InjectEvent(ctx context.Context, name string, event any) (string, error) {
-	if err := s.GuardReserved(name); err != nil {
+// ingest path of the connection. A protocol connector takes a typed event.
+// It refuses a reserved name. A source id that is already stored returns
+// ErrDuplicate.
+func (s *Service) InjectEvent(ctx context.Context, ref string, event any) (string, error) {
+	if err := s.GuardReserved(ref); err != nil {
 		return "", err
 	}
-	if err := s.GuardMutate(name); err != nil {
+	if err := s.GuardMutate(ref); err != nil {
+		return "", err
+	}
+	c, err := s.Lookup(ref)
+	if err != nil {
 		return "", err
 	}
 	raw, err := json.Marshal(event)
 	if err != nil {
 		return "", err
 	}
-	rec := newRecord(name, string(raw), event)
-	if r, err := s.Resolve(name, ""); err == nil && r.Manifest.Protocol() == manifest.ProtocolConnector {
+	rec := newRecord(c.Type, c.ID, string(raw), event)
+	if r, err := s.Resolve(c.ID, ""); err == nil && r.Manifest.Protocol() == manifest.ProtocolConnector {
 		var ev protocol.Event
 		if err := decodeStrict(raw, &ev); err != nil || ev.ID == "" || ev.Type == "" {
-			return "", &ValidationError{Name: name, Fields: []FieldError{{Field: "event", Message: "must be a trebi-connector/1 event with id and type"}}}
+			return "", &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "event", Message: "must be a trebi-connector/1 event with id and type"}}}
 		}
-		rec = protocolRecord(name, ev, false)
+		rec = protocolRecord(c.Type, c.ID, ev, false)
 	} else if err == nil && r.Manifest.Events != nil {
 		fillLinesMeta(&rec, r.Manifest.Events)
 	}
@@ -50,14 +55,16 @@ func (s *Service) InjectEvent(ctx context.Context, name string, event any) (stri
 	if !inserted {
 		return "", fmt.Errorf("%w: %q", ErrDuplicate, rec.sourceID)
 	}
-	s.dispatchEvent(ctx, name, rec)
+	s.dispatchEvent(ctx, rec)
 	return rec.id, nil
 }
 
-// newRecord builds an event record with fresh ids.
-func newRecord(instance, raw string, payload any) eventRecord {
+// newRecord builds an event record with fresh ids. connector is the type
+// and instance the connection id.
+func newRecord(connector, instance, raw string, payload any) eventRecord {
 	return eventRecord{
 		id:         ulid.Make().String(),
+		connector:  connector,
 		instance:   instance,
 		raw:        raw,
 		trace:      ulid.Make().String(),
@@ -71,12 +78,11 @@ func newRecord(instance, raw string, payload any) eventRecord {
 // included, and for an event whose source id is already stored.
 func (s *Service) Redispatch(ctx context.Context, eventID string) error {
 	var rec eventRecord
-	var name string
 	var sourceID, identity, room, thread, sender, eventType sql.NullString
 	var catchUp int
 	err := s.st.DB().QueryRowContext(ctx, `SELECT connector, instance, COALESCE(raw_json,''), COALESCE(trace_id,''),
 		source_id, identity, room, thread, sender, event_type, catch_up FROM events WHERE id=?`, eventID).
-		Scan(&name, &rec.instance, &rec.raw, &rec.trace, &sourceID, &identity, &room, &thread, &sender, &eventType, &catchUp)
+		Scan(&rec.connector, &rec.instance, &rec.raw, &rec.trace, &sourceID, &identity, &room, &thread, &sender, &eventType, &catchUp)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: %s", ErrEventNotFound, eventID)
 	}
@@ -84,7 +90,7 @@ func (s *Service) Redispatch(ctx context.Context, eventID string) error {
 		return err
 	}
 	if rec.instance == "" {
-		rec.instance = name
+		rec.instance = rec.connector
 	}
 	rec.id = eventID
 	rec.receivedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -93,7 +99,7 @@ func (s *Service) Redispatch(ctx context.Context, eventID string) error {
 	rec.sender, rec.eventType = sender.String, eventType.String
 	rec.catchUp = catchUp != 0
 	rec.payload = decodeStored(rec.raw)
-	s.dispatchEvent(ctx, name, rec)
+	s.dispatchEvent(ctx, rec)
 	return nil
 }
 
@@ -114,7 +120,7 @@ func decodeStored(raw string) any {
 // native service owns its position row, so this never writes it.
 func (s *Service) InjectNative(ctx context.Context, name string, payload any, meta NativeMeta) (string, error) {
 	raw, _ := json.Marshal(payload)
-	rec := newRecord(name, string(raw), payload)
+	rec := newRecord(name, name, string(raw), payload)
 	rec.sourceID, rec.identity = meta.SourceID, meta.Identity
 	rec.room, rec.thread = meta.Room, meta.Thread
 	rec.sender, rec.eventType = meta.Sender, meta.Type
@@ -123,7 +129,7 @@ func (s *Service) InjectNative(ctx context.Context, name string, payload any, me
 		return "", err
 	}
 	if inserted {
-		s.dispatchEvent(ctx, name, rec)
+		s.dispatchEvent(ctx, rec)
 	}
 	return rec.id, nil
 }
@@ -143,11 +149,11 @@ func (s *Service) ingest(ctx context.Context, p *proc, line string, catchUp bool
 	payload := decodeLine(ev, line)
 	if payload == nil {
 		p.addParseError()
-		s.log.Warn("connector.parse_error", "connector", p.instance, "line", truncate(line, 200))
+		s.log.Warn("connector.parse_error", "connector", p.id, "line", truncate(line, 200))
 		return
 	}
 	raw, _ := json.Marshal(payload)
-	rec := newRecord(p.instance, string(raw), payload)
+	rec := newRecord(p.res.Type, p.id, string(raw), payload)
 	rec.catchUp = catchUp
 	fillLinesMeta(&rec, ev)
 	s.store(ctx, p, rec, true)
@@ -155,9 +161,9 @@ func (s *Service) ingest(ctx context.Context, p *proc, line string, catchUp bool
 
 // protocolRecord maps a typed event to its record. The sender id is the
 // identity for allowlists.
-func protocolRecord(instance string, ev protocol.Event, catchUp bool) eventRecord {
+func protocolRecord(connector, instance string, ev protocol.Event, catchUp bool) eventRecord {
 	raw, _ := json.Marshal(ev)
-	rec := newRecord(instance, string(raw), decodeStored(string(raw)))
+	rec := newRecord(connector, instance, string(raw), decodeStored(string(raw)))
 	rec.sourceID, rec.eventType, rec.catchUp = ev.ID, ev.Type, catchUp
 	if ev.Room != nil {
 		rec.room = ev.Room.ID
@@ -179,21 +185,21 @@ func protocolRecord(instance string, ev protocol.Event, catchUp bool) eventRecor
 // An unknown type is dropped. A message from the account itself is stored
 // and not dispatched.
 func (s *Service) ingestProtocol(ctx context.Context, p *proc, ev protocol.Event, catchUp bool) {
-	appendConnectorLog(p.instance, "event", ev.ID+" "+ev.Type)
+	appendConnectorLog(p.id, "event", ev.ID+" "+ev.Type)
 	if ev.ID == "" || ev.Type == "" {
 		p.addParseError()
-		s.log.Warn("connector.parse_error", "connector", p.instance, "reason", "missing_id_or_type")
+		s.log.Warn("connector.parse_error", "connector", p.id, "reason", "missing_id_or_type")
 		return
 	}
 	if !p.knowsType(ev.Type) {
 		p.addParseError()
-		s.log.Warn("connector.parse_error", "connector", p.instance, "reason", "unknown_type", "type", ev.Type)
+		s.log.Warn("connector.parse_error", "connector", p.id, "reason", "unknown_type", "type", ev.Type)
 		return
 	}
-	rec := protocolRecord(p.instance, ev, catchUp)
+	rec := protocolRecord(p.res.Type, p.id, ev, catchUp)
 	self := ev.Type == manifest.EventMessage && ev.Sender != nil && ev.Sender.Self
 	if s.store(ctx, p, rec, !self) && ev.Room != nil {
-		s.touchThread(ctx, p.instance, ev)
+		s.touchThread(ctx, p.id, ev)
 	}
 }
 
@@ -218,7 +224,7 @@ func (s *Service) store(ctx context.Context, p *proc, rec eventRecord, dispatch 
 	inserted, err := s.recordEvent(ctx, rec, recordOpts{advancePosition: true})
 	if err != nil {
 		p.addParseError()
-		s.log.Warn("connector.parse_error", "connector", p.instance, "error", err.Error())
+		s.log.Warn("connector.parse_error", "connector", p.id, "error", err.Error())
 		return false
 	}
 	if !inserted {
@@ -227,7 +233,7 @@ func (s *Service) store(ctx context.Context, p *proc, rec eventRecord, dispatch 
 	}
 	p.markEvent(time.Now().UTC())
 	if dispatch {
-		s.dispatchEvent(ctx, p.res.Name, rec)
+		s.dispatchEvent(ctx, rec)
 	}
 	return true
 }
@@ -279,16 +285,18 @@ func (s *Service) KnownThreads(ctx context.Context, instance, room string, limit
 
 // recordOpts selects the side effects of recordEvent.
 type recordOpts struct {
-	// advancePosition moves connector_cursors to the new source id. Only
-	// the supervisor ingest sets it; synthetic and native events do not.
+	// advancePosition moves the connector cursor to the new source id.
+	// Only the supervisor ingest sets it; synthetic and native events do
+	// not.
 	advancePosition bool
 }
 
 // recordEvent stores one durable events row. When the row is new, carries a
-// source id, and opts.advancePosition is set, the connector cursor moves in
-// the same transaction.
+// source id, and opts.advancePosition is set, the connector cursor moves
+// after the commit. A crash between the two replays at most one event, and
+// the unique source id drops it.
 func (s *Service) recordEvent(ctx context.Context, rec eventRecord, opts recordOpts) (inserted bool, err error) {
-	name, _ := splitInstance(rec.instance)
+	name := rec.connector
 	summary := rec.raw
 	if len(summary) > 200 {
 		summary = summary[:200]
@@ -311,15 +319,6 @@ func (s *Service) recordEvent(ctx context.Context, rec eventRecord, opts recordO
 		if !inserted {
 			return nil
 		}
-		if opts.advancePosition && rec.sourceID != "" {
-			now := time.Now().UTC().Format(time.RFC3339)
-			if _, err := tx.Exec(`INSERT INTO connector_cursors (instance, last_event_id, updated_at)
-				VALUES (?,?,?)
-				ON CONFLICT(instance) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
-				rec.instance, rec.sourceID, now); err != nil {
-				return err
-			}
-		}
 		_, err = store.AppendInTx(tx, store.BusEvent{
 			Topic: "event.created", Entity: "event", EntityID: rec.id, Action: "created",
 			Attrs: map[string]string{"connector": name, "instance": rec.instance},
@@ -332,6 +331,12 @@ func (s *Service) recordEvent(ctx context.Context, rec eventRecord, opts recordO
 	}
 	if inserted {
 		s.st.NotifyBus()
+		if opts.advancePosition && rec.sourceID != "" {
+			cur := Cursor{LastEventID: rec.sourceID, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+			if err := NewFolder(rec.instance).SetCursor(cur); err != nil {
+				return true, fmt.Errorf("connector cursor: %w", err)
+			}
+		}
 	}
 	return inserted, nil
 }
@@ -344,17 +349,22 @@ func boolInt(b bool) int {
 }
 
 // dispatchEvent matches one event against the triggers of all active jobs
-// and the assistant. A trigger fires only in the workspaces that the event
-// instance serves.
-func (s *Service) dispatchEvent(ctx context.Context, name string, ev eventRecord) {
+// and the assistant. A trigger names the current slug of the connection, so
+// history survives a slug change. A workspace that turned the connection off
+// gets no fire.
+func (s *Service) dispatchEvent(ctx context.Context, ev eventRecord) {
 	if s.ws == nil {
 		return
 	}
-	for _, t := range s.triggersFor(ctx, name) {
-		if ev.instance != "" && s.InstanceFor(name, t.row.WorkspaceID) != ev.instance {
+	slug := s.SlugOf(ev.instance)
+	if slug == "" {
+		return
+	}
+	for _, t := range s.triggersFor(ctx, slug) {
+		if s.disabledIn(t.row.WorkspaceID, slug) {
 			continue
 		}
-		s.dispatchTrigger(ctx, name, ev, t.row, t.j, t.tr)
+		s.dispatchTrigger(ctx, ev, t.row, t.j, t.tr)
 	}
 }
 
@@ -427,13 +437,13 @@ func (s *Service) triggersFor(ctx context.Context, connector string) []cachedTri
 
 // dispatchTrigger gates one trigger (allowlist, match) and enqueues. Policy
 // is checked at the claim, and the launch records the fire.
-func (s *Service) dispatchTrigger(ctx context.Context, name string, ev eventRecord, row workspaces.JobRow, j *job.Job, tr job.Trigger) {
+func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row workspaces.JobRow, j *job.Job, tr job.Trigger) {
 	if s.st.IsDraining() {
 		return
 	}
 	// Ingress allowlist (security layer 1): the declared identity is the only
 	// field checked. A connector with no identity fails every allowlist.
-	if len(tr.Allowlist) > 0 && !allowlistPasses(tr.Allowlist, ev.identity, name == "email") {
+	if len(tr.Allowlist) > 0 && !allowlistPasses(tr.Allowlist, ev.identity, ev.connector == NativeEmail) {
 		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeBlocked), "", ev.receivedAt)
 		return
 	}
@@ -447,7 +457,7 @@ func (s *Service) dispatchTrigger(ctx context.Context, name string, ev eventReco
 		return
 	}
 	item := &dispatch.QueueItem{
-		Connector:   name,
+		Connector:   ev.instance,
 		WorkspaceID: row.WorkspaceID,
 		Job:         j.Name,
 		Kind:        row.Kind,
@@ -504,4 +514,69 @@ func allowlistPasses(allow []string, identity string, fold bool) bool {
 		}
 	}
 	return false
+}
+
+// decodeLine parses one lines-protocol output line per the declared format.
+// A json connector returns nil for a line that is not valid json.
+func decodeLine(e *manifest.Events, line string) any {
+	if e.Format == manifest.FormatJSON {
+		// UseNumber keeps a large id exact for the id and identity paths.
+		var m any
+		dec := json.NewDecoder(strings.NewReader(line))
+		dec.UseNumber()
+		if err := dec.Decode(&m); err != nil || dec.More() {
+			return nil
+		}
+		return m
+	}
+	return map[string]any{"line": line}
+}
+
+// lookupPath reads a dotted path from a decoded JSON value. A numeric
+// segment indexes an array. It renders strings, numbers, and booleans for
+// comparison; anything else misses.
+func lookupPath(v any, path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	cur := v
+	for _, seg := range strings.Split(path, ".") {
+		switch node := cur.(type) {
+		case map[string]any:
+			next, ok := node[seg]
+			if !ok {
+				return "", false
+			}
+			cur = next
+		case []any:
+			i, err := strconv.Atoi(seg)
+			if err != nil || i < 0 || i >= len(node) {
+				return "", false
+			}
+			cur = node[i]
+		default:
+			return "", false
+		}
+	}
+	return identityString(cur), identityString(cur) != ""
+}
+
+// identityString renders a scalar for comparison; "" means absent or not a
+// scalar.
+func identityString(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case json.Number:
+		return x.String()
+	case bool:
+		return strconv.FormatBool(x)
+	case int:
+		return strconv.Itoa(x)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	}
+	return ""
 }

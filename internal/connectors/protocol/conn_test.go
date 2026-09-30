@@ -131,6 +131,35 @@ func TestConnEdges(t *testing.T) {
 	}
 }
 
+// TestConnBadLine proves a line that is not JSON-RPC reaches WithBadLine,
+// and reaches notify with an empty method without it.
+func TestConnBadLine(t *testing.T) {
+	t.Parallel()
+	in := strings.NewReader("hello from the adapter\n{\"jsonrpc\":\"2.0\",\"method\":\"status\",\"params\":{\"state\":\"connected\"}}\n")
+	var bad []error
+	var methods []string
+	c := protocol.NewConn(in, io.Discard, func(method string, _ json.RawMessage) { methods = append(methods, method) },
+		protocol.WithBadLine(func(err error) { bad = append(bad, err) }))
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(bad) != 1 || !errors.Is(bad[0], protocol.ErrNotJSONRPC) || !strings.Contains(bad[0].Error(), "hello from the adapter") {
+		t.Fatalf("bad = %v", bad)
+	}
+	if len(methods) != 1 || methods[0] != protocol.MethodStatus {
+		t.Fatalf("methods = %v", methods)
+	}
+
+	methods = nil
+	c = protocol.NewConn(strings.NewReader("noise\n"), io.Discard, func(method string, _ json.RawMessage) { methods = append(methods, method) })
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(methods) != 1 || methods[0] != "" {
+		t.Fatalf("methods without WithBadLine = %v", methods)
+	}
+}
+
 // pair wires a Conn to an adapter function over two pipes.
 func pair(t *testing.T, adapter func(r io.Reader, w io.Writer) error) (*protocol.Conn, func() []notice, <-chan error) {
 	t.Helper()

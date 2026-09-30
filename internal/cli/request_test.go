@@ -121,7 +121,7 @@ func TestDoHTTPRoundTrip(t *testing.T) {
 	}
 
 	// connector restart
-	req = request.BuildConnectorRestart(request.ConnectorRef{Name: "mail"})
+	req = request.BuildConnectorRestart(request.ConnectorRef{Ref: "mail"})
 	if err := client.DoHTTP(req, nil); err != nil {
 		t.Fatal(err)
 	}

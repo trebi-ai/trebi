@@ -62,8 +62,8 @@ func newConfirmGate() *confirmGate {
 		"DELETE /v1/secrets/{name}": {2, func(n string, _ *http.Request) string {
 			return "deletes secret " + n + "; jobs that read it will fail"
 		}},
-		"DELETE /v1/connectors/{name}": {2, func(n string, _ *http.Request) string {
-			return "deletes connector " + n + " and stops its event stream"
+		"DELETE /v1/connectors/{ref}": {2, func(n string, _ *http.Request) string {
+			return "deletes connection " + n + " with its folder, login, and cursor, and stops its event stream"
 		}},
 		"DELETE /v1/skills/{name}": {2, func(n string, _ *http.Request) string {
 			return "deletes skill " + n + " and its folder"

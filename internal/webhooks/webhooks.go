@@ -220,7 +220,7 @@ func (s *Service) ConnectorRow() map[string]any {
 	drops := s.drops
 	s.mu.Unlock()
 	return map[string]any{
-		"id": "webhook", "name": "webhook",
+		"id": "webhook", "type": "webhook", "slug": "webhook", "title": "Webhooks", "status": status,
 		"provenance": "native", "managed": false,
 		"capabilities": []string{"events"},
 		"events": map[string]any{

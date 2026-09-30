@@ -26,21 +26,20 @@ func (s *Server) routeConnectors(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/connectors/install", s.handleConnectorInstall)
 	mux.HandleFunc("POST /v1/connectors/check-updates", s.handleConnectorCheckUpdates)
 	mux.HandleFunc("POST /v1/connectors/gc", s.handleConnectorGC)
-	mux.HandleFunc("GET /v1/connectors/{name}", s.handleConnectorGet)
-	mux.HandleFunc("PUT /v1/connectors/{name}", s.handleConnectorPut)
-	mux.HandleFunc("PATCH /v1/connectors/{name}", s.handleConnectorPatch)
-	mux.HandleFunc("DELETE /v1/connectors/{name}", s.handleConnectorDelete)
-	mux.HandleFunc("POST /v1/connectors/{name}/connect", s.handleConnectorStart)
-	mux.HandleFunc("POST /v1/connectors/{name}/disconnect", s.handleConnectorStop)
-	mux.HandleFunc("POST /v1/connectors/{name}/restart", s.handleConnectorRestart)
-	mux.HandleFunc("POST /v1/connectors/{name}/test", s.handleConnectorTest)
-	mux.HandleFunc("GET /v1/connectors/{name}/logs", s.handleConnectorLogs)
-	mux.HandleFunc("GET /v1/connectors/{name}/versions", s.handleConnectorVersions)
-	mux.HandleFunc("POST /v1/connectors/{name}/check-updates", s.handleConnectorCheckUpdates)
-	mux.HandleFunc("POST /v1/connectors/{name}/update", s.handleConnectorUpdate)
-	mux.HandleFunc("GET /v1/connectors/{name}/capabilities", s.handleConnectorCapabilities)
-	mux.HandleFunc("GET /v1/connectors/{name}/cursor", s.handleConnectorCursorGet)
-	mux.HandleFunc("PUT /v1/connectors/{name}/cursor", s.handleConnectorCursorPut)
+	mux.HandleFunc("GET /v1/connectors/{ref}", s.handleConnectorGet)
+	mux.HandleFunc("PATCH /v1/connectors/{ref}", s.handleConnectorPatch)
+	mux.HandleFunc("DELETE /v1/connectors/{ref}", s.handleConnectorDelete)
+	mux.HandleFunc("POST /v1/connectors/{ref}/connect", s.handleConnectorStart)
+	mux.HandleFunc("POST /v1/connectors/{ref}/disconnect", s.handleConnectorStop)
+	mux.HandleFunc("POST /v1/connectors/{ref}/restart", s.handleConnectorRestart)
+	mux.HandleFunc("POST /v1/connectors/{ref}/test", s.handleConnectorTest)
+	mux.HandleFunc("GET /v1/connectors/{ref}/logs", s.handleConnectorLogs)
+	mux.HandleFunc("GET /v1/connectors/{ref}/versions", s.handleConnectorVersions)
+	mux.HandleFunc("POST /v1/connectors/{ref}/check-updates", s.handleConnectorCheckUpdates)
+	mux.HandleFunc("POST /v1/connectors/{ref}/update", s.handleConnectorUpdate)
+	mux.HandleFunc("GET /v1/connectors/{ref}/capabilities", s.handleConnectorCapabilities)
+	mux.HandleFunc("GET /v1/connectors/{ref}/cursor", s.handleConnectorCursorGet)
+	mux.HandleFunc("PUT /v1/connectors/{ref}/cursor", s.handleConnectorCursorPut)
 	s.routeConnectorSessions(mux)
 }
 
@@ -74,9 +73,9 @@ func (s *Server) handleConnectors(w http.ResponseWriter, r *http.Request) {
 		list = filtered
 	}
 	sort.Slice(list, func(i, j int) bool {
-		return fmt.Sprint(list[i]["name"]) < fmt.Sprint(list[j]["name"])
+		return fmt.Sprint(list[i]["slug"]) < fmt.Sprint(list[j]["slug"])
 	})
-	// Name-keyed collection: limit only, no ULID cursor.
+	// Slug-sorted collection: limit only, no ULID cursor.
 	limit := parseLimit(r)
 	truncated := len(list) > limit
 	if truncated {
@@ -128,34 +127,36 @@ func (s *Server) handleConnectorsCreate(w http.ResponseWriter, r *http.Request) 
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	var d connectors.Entry
+	var c connectors.Connection
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&d); err != nil {
+	if err := dec.Decode(&c); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	if d.Name == "" {
-		writeErr(w, http.StatusBadRequest, "validation", "name required")
+	if c.ID != "" {
+		writeErr(w, http.StatusBadRequest, "validation", "id is set by the daemon")
 		return
 	}
-	if err := s.connectors.Create(r.Context(), d); err != nil {
-		if s.writeConnectorErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	if c.Type == "" && c.Manifest != nil {
+		c.Type = c.Manifest.Name
+	}
+	if c.Type == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "type required")
 		return
 	}
-	row, err := s.connectors.Get(d.Name)
+	created, err := s.connectors.Create(r.Context(), c)
 	if err != nil {
-		writeJSON(w, http.StatusCreated, map[string]any{"name": d.Name})
+		if !s.writeConnectorErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		}
 		return
 	}
-	writeJSON(w, http.StatusCreated, row)
+	s.writeConnectorRow(w, http.StatusCreated, created.ID)
 }
 
 func (s *Server) handleConnectorGet(w http.ResponseWriter, r *http.Request) {
-	switch r.PathValue("name") {
+	switch r.PathValue("ref") {
 	case "email":
 		if row := s.email.ConnectorRow(); row != nil {
 			writeJSON(w, http.StatusOK, row)
@@ -163,7 +164,7 @@ func (s *Server) handleConnectorGet(w http.ResponseWriter, r *http.Request) {
 		}
 		writeErr(w, http.StatusNotFound, "not_found", "email is not configured")
 		return
-	case "webhook":
+	case connectors.NativeWebhook:
 		if row := s.hooks.ConnectorRow(); row != nil {
 			writeJSON(w, http.StatusOK, row)
 			return
@@ -171,7 +172,7 @@ func (s *Server) handleConnectorGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "webhook is not available")
 		return
 	}
-	row, err := s.connectors.GetFor(r.PathValue("name"), s.workspaceID(r.Context(), r.URL.Query().Get("workspace")))
+	row, err := s.connectors.GetFor(r.PathValue("ref"), s.workspaceID(r.Context(), r.URL.Query().Get("workspace")))
 	if err != nil {
 		if s.writeConnectorErr(w, err) {
 			return
@@ -182,62 +183,39 @@ func (s *Server) handleConnectorGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, row)
 }
 
-func (s *Server) handleConnectorPut(w http.ResponseWriter, r *http.Request) {
-	if rejectAnyAgentScope(w, r) {
-		return
-	}
-	var d connectors.Entry
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&d); err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	d.Name = r.PathValue("name")
-	if err := s.connectors.Replace(r.Context(), d); err != nil {
-		if s.writeConnectorErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	row, err := s.connectors.Get(d.Name)
-	if err != nil {
-		if s.writeConnectorErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, row)
-}
-
 func (s *Server) handleConnectorPatch(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	var p connectors.EntryPatch
+	var p connectors.ConnectionPatch
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&p); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	name := r.PathValue("name")
-	if err := s.connectors.Patch(r.Context(), name, p); err != nil {
-		if s.writeConnectorErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
+	id := s.connectors.IDOf(r.PathValue("ref"))
+	if id == "" {
+		id = r.PathValue("ref")
 	}
-	row, err := s.connectors.Get(name)
+	changed, err := s.connectors.Patch(r.Context(), id, p)
 	if err != nil {
 		if s.writeConnectorErr(w, err) {
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
+	}
+	row, err := s.connectors.Get(id)
+	if err != nil {
+		if s.writeConnectorErr(w, err) {
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if len(changed) > 0 {
+		row["changed_files"] = changed
 	}
 	writeJSON(w, http.StatusOK, row)
 }
@@ -246,34 +224,34 @@ func (s *Server) handleConnectorDelete(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	if err := s.connectors.Delete(r.Context(), r.PathValue("name")); err != nil {
+	if err := s.connectors.Delete(r.Context(), r.PathValue("ref")); err != nil {
 		if s.writeConnectorErr(w, err) {
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": r.PathValue("name")})
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": r.PathValue("ref")})
 }
 
 // requireEventsBlock refuses lifecycle and stream routes on a connector with
 // no events block. Native connectors carry events in their own service.
-func (s *Server) requireEventsBlock(name string) error {
-	if name == "email" || name == "webhook" {
+func (s *Server) requireEventsBlock(ref string) error {
+	if ref == connectors.NativeEmail || ref == connectors.NativeWebhook {
 		return nil
 	}
-	return s.connectors.HasEvents(name)
+	return s.connectors.HasEvents(ref)
 }
 
-// eventsInstance checks the events block and picks the instance.
-func (s *Server) eventsInstance(w http.ResponseWriter, r *http.Request, name string) (string, bool) {
-	if err := s.requireEventsBlock(name); err != nil {
+// eventsInstance checks the events block and returns the connection id.
+func (s *Server) eventsInstance(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if err := s.requireEventsBlock(r.PathValue("ref")); err != nil {
 		if !s.writeConnectorErr(w, err) {
 			writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		}
 		return "", false
 	}
-	inst, err := s.connectorInstance(r, name)
+	inst, err := s.connectionID(r)
 	if err != nil {
 		if !s.writeConnectorErr(w, err) {
 			writeErr(w, http.StatusBadRequest, "validation", err.Error())
@@ -284,7 +262,7 @@ func (s *Server) eventsInstance(w http.ResponseWriter, r *http.Request, name str
 }
 
 func (s *Server) handleConnectorStart(w http.ResponseWriter, r *http.Request) {
-	inst, ok := s.eventsInstance(w, r, r.PathValue("name"))
+	inst, ok := s.eventsInstance(w, r)
 	if !ok {
 		return
 	}
@@ -299,7 +277,7 @@ func (s *Server) handleConnectorStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConnectorStop(w http.ResponseWriter, r *http.Request) {
-	inst, ok := s.eventsInstance(w, r, r.PathValue("name"))
+	inst, ok := s.eventsInstance(w, r)
 	if !ok {
 		return
 	}
@@ -317,12 +295,11 @@ func (s *Server) handleConnectorStop(w http.ResponseWriter, r *http.Request) {
 // restart is a forced poll and nothing else: the native channel has no
 // process (plan K).
 func (s *Server) handleConnectorRestart(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if name == "email" {
+	if r.PathValue("ref") == connectors.NativeEmail {
 		s.handleEmailPoll(w, r)
 		return
 	}
-	inst, ok := s.eventsInstance(w, r, name)
+	inst, ok := s.eventsInstance(w, r)
 	if !ok {
 		return
 	}
@@ -337,7 +314,7 @@ func (s *Server) handleConnectorRestart(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	name := r.PathValue("ref")
 	if err := s.requireEventsBlock(name); err != nil {
 		if s.writeConnectorErr(w, err) {
 			return
@@ -368,18 +345,21 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConnectorLogs(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
 	// The native channel has no process, so it has no process log. Its
 	// activity is the email log (plan K).
-	if err := s.connectors.GuardReserved(name); err != nil {
+	if err := s.connectors.GuardReserved(r.PathValue("ref")); err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
-	inst, ok := s.eventsInstance(w, r, name)
+	inst, ok := s.eventsInstance(w, r)
 	if !ok {
 		return
 	}
-	path := connectors.LogPath(inst)
+	path, err := s.connectors.LogPath(inst)
+	if err != nil {
+		s.writeAnyConnectorErr(w, err)
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		data, _ := os.ReadFile(path)
@@ -437,8 +417,7 @@ func (s *Server) handleConnectorLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConnectorCursorGet(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	inst, ok := s.eventsInstance(w, r, name)
+	inst, ok := s.eventsInstance(w, r)
 	if !ok {
 		return
 	}
@@ -451,12 +430,11 @@ func (s *Server) handleConnectorCursorGet(w http.ResponseWriter, r *http.Request
 	if cur.UpdatedAt != "" {
 		updated = cur.UpdatedAt
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "instance": inst, "last_event_id": cur.LastEventID, "updated_at": updated})
+	writeJSON(w, http.StatusOK, map[string]any{"id": inst, "slug": s.connectors.SlugOf(inst), "last_event_id": cur.LastEventID, "updated_at": updated})
 }
 
 func (s *Server) handleConnectorCursorPut(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	inst, ok := s.eventsInstance(w, r, name)
+	inst, ok := s.eventsInstance(w, r)
 	if !ok {
 		return
 	}
@@ -471,7 +449,7 @@ func (s *Server) handleConnectorCursorPut(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "instance": inst, "last_event_id": body.LastEventID})
+	writeJSON(w, http.StatusOK, map[string]any{"id": inst, "slug": s.connectors.SlugOf(inst), "last_event_id": body.LastEventID})
 }
 
 func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
@@ -488,7 +466,8 @@ func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, connectors.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, connectors.ErrExists),
-		errors.Is(err, connectors.ErrLoadFailed):
+		errors.Is(err, connectors.ErrLoadFailed),
+		errors.Is(err, connectors.ErrSlugRewrite):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, connectors.ErrNoEvents):
 		writeErr(w, http.StatusConflict, "validation", err.Error())
@@ -578,10 +557,11 @@ func (s *Server) handleConnectorCatalogEntry(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, row)
 }
 
-// handleConnectorInstall installs one registry entry as a connector. A Trebi
-// catalog entry installs its signed snapshot. Other registry data is
+// handleConnectorInstall installs one registry entry as a new connection. A
+// Trebi catalog entry installs its signed snapshot. Other registry data is
 // untrusted: the entry becomes an inline manifest that passes the same
-// validation as any other entry. Secret inputs go to the secret store.
+// validation as any other connection. A literal secret input goes to the
+// folder of the connection.
 func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
@@ -591,7 +571,8 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		Name     string            `json:"name"`
 		Version  string            `json:"version"`
 		Track    string            `json:"track"`
-		As       string            `json:"as"`
+		Slug     string            `json:"slug"`
+		Title    string            `json:"title"`
 		Package  *int              `json:"package"`
 		Remote   *int              `json:"remote"`
 		Inputs   map[string]string `json:"inputs"`
@@ -616,16 +597,20 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if entry.Catalog != nil {
-		if body.As != "" || body.Package != nil || body.Remote != nil {
-			writeErr(w, http.StatusBadRequest, "validation", "as, package, and remote apply to MCP registry entries only")
+		if body.Package != nil || body.Remote != nil {
+			writeErr(w, http.StatusBadRequest, "validation", "package and remote apply to MCP registry entries only")
 			return
 		}
-		req := connectors.InstallRequest{Name: body.Name, Version: entry.Server.Version, Track: body.Track, Inputs: body.Inputs}
-		if _, err := s.connectors.Install(r.Context(), req); err != nil {
+		req := connectors.InstallRequest{
+			Name: body.Name, Version: entry.Server.Version, Track: body.Track, Inputs: body.Inputs,
+			Slug: body.Slug, Title: body.Title,
+		}
+		c, err := s.connectors.Install(r.Context(), req)
+		if err != nil {
 			s.writeInstallErr(w, err)
 			return
 		}
-		s.writeConnectorRow(w, http.StatusCreated, body.Name)
+		s.writeConnectorRow(w, http.StatusCreated, c.ID)
 		return
 	}
 	if body.Track != "" {
@@ -633,7 +618,6 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	m, inputs, err := entry.Manifest(registry.InstallOpts{
-		Name:    body.As,
 		Package: indexOr(body.Package),
 		Remote:  indexOr(body.Remote),
 		Env:     body.Inputs,
@@ -642,21 +626,22 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		s.writeRegistryErr(w, err)
 		return
 	}
-	e := connectors.Entry{Name: m.Name, From: connectors.FromInline, Manifest: &m, Inputs: inputs}
-	if err := s.connectors.Create(r.Context(), e); err != nil {
+	c := connectors.Connection{Type: m.Name, Slug: body.Slug, Title: body.Title, From: connectors.FromInline, Manifest: &m, Inputs: inputs}
+	created, err := s.connectors.Create(r.Context(), c)
+	if err != nil {
 		if !s.writeConnectorErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		}
 		return
 	}
-	s.writeConnectorRow(w, http.StatusCreated, m.Name)
+	s.writeConnectorRow(w, http.StatusCreated, created.ID)
 }
 
-// writeConnectorRow writes the row of one connector after a write.
-func (s *Server) writeConnectorRow(w http.ResponseWriter, status int, name string) {
-	row, err := s.connectors.Get(name)
+// writeConnectorRow writes the row of one connection after a write.
+func (s *Server) writeConnectorRow(w http.ResponseWriter, status int, id string) {
+	row, err := s.connectors.Get(id)
 	if err != nil {
-		row = map[string]any{"name": name}
+		row = map[string]any{"id": id}
 	}
 	writeJSON(w, status, row)
 }
@@ -676,7 +661,7 @@ func (s *Server) writeInstallErr(w http.ResponseWriter, err error) {
 
 // handleConnectorVersions lists the catalog versions of one connector.
 func (s *Server) handleConnectorVersions(w http.ResponseWriter, r *http.Request) {
-	vers, err := s.connectors.Versions(r.Context(), r.PathValue("name"))
+	vers, err := s.connectors.Versions(r.Context(), r.PathValue("ref"))
 	if err != nil {
 		s.writeInstallErr(w, err)
 		return
@@ -684,13 +669,13 @@ func (s *Server) handleConnectorVersions(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"versions": vers})
 }
 
-// handleConnectorCheckUpdates checks one connector, or all of them with no
-// name, against the catalog now.
+// handleConnectorCheckUpdates checks one connection, or all of them with no
+// ref, against the catalog now.
 func (s *Server) handleConnectorCheckUpdates(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	res, err := s.connectors.CheckUpdates(r.Context(), r.PathValue("name"))
+	res, err := s.connectors.CheckUpdates(r.Context(), r.PathValue("ref"))
 	if err != nil {
 		s.writeInstallErr(w, err)
 		return
@@ -701,31 +686,30 @@ func (s *Server) handleConnectorCheckUpdates(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"results": res})
 }
 
-// handleConnectorUpdate moves the global entry, or one workspace override,
-// to a catalog version. No version is the newest on the track.
+// handleConnectorUpdate moves a connection to a catalog version. No version
+// is the newest on the track.
 func (s *Server) handleConnectorUpdate(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
 	var body struct {
-		Version   string `json:"version"`
-		Workspace string `json:"workspace"`
+		Version string `json:"version"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	name := r.PathValue("name")
-	if err := s.connectors.Update(r.Context(), name, s.workspaceID(r.Context(), body.Workspace), body.Version); err != nil {
+	ref := r.PathValue("ref")
+	if err := s.connectors.Update(r.Context(), ref, body.Version); err != nil {
 		s.writeInstallErr(w, err)
 		return
 	}
-	s.writeConnectorRow(w, http.StatusOK, name)
+	s.writeConnectorRow(w, http.StatusOK, s.connectors.IDOf(ref))
 }
 
-// handleConnectorCapabilities inspects one connector instance.
+// handleConnectorCapabilities inspects one connection. ?workspace= applies
+// the workspace layer.
 func (s *Server) handleConnectorCapabilities(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	c, err := s.connectors.Capabilities(r.Context(), r.PathValue("name"), s.workspaceID(r.Context(), q.Get("workspace")), q.Get("instance"))
+	c, err := s.connectors.Capabilities(r.Context(), r.PathValue("ref"), s.workspaceID(r.Context(), r.URL.Query().Get("workspace")))
 	if err != nil {
 		if !s.writeConnectorErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -735,7 +719,7 @@ func (s *Server) handleConnectorCapabilities(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, c)
 }
 
-// handleConnectorGC removes installed versions that no entry uses.
+// handleConnectorGC removes installed packages that no connection uses.
 func (s *Server) handleConnectorGC(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return

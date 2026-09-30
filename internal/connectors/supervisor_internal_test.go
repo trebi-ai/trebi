@@ -114,13 +114,13 @@ func TestStopEndsPipelineSupervisor(t *testing.T) {
 	_, svc := newInternalService(t)
 	ctx := context.Background()
 	d := linesEntry("pipe", manifest.Events{Command: "sleep 30 | cat", Format: "json"})
-	if err := svc.Create(ctx, d); err != nil {
+	if _, err := svc.Create(ctx, d); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "pipe"); err != nil {
 		t.Fatal(err)
 	}
-	p := svc.procByName("pipe")
+	p := svc.procByName(svc.IDOf("pipe"))
 	waitFor(t, func() bool { return p.snapshot().status == statusListening }, "not listening")
 	start := time.Now()
 	if err := svc.Stop("pipe"); err != nil {
@@ -141,13 +141,13 @@ func TestLineTooLongKillsGroup(t *testing.T) {
 	ctx := context.Background()
 	command := `head -c 2000000 /dev/zero | tr '\0' a; echo; sleep 30`
 	d := linesEntry("long", manifest.Events{Command: command, Format: "line", Restart: manifest.RestartNever})
-	if err := svc.Create(ctx, d); err != nil {
+	if _, err := svc.Create(ctx, d); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "long"); err != nil {
 		t.Fatal(err)
 	}
-	p := svc.procByName("long")
+	p := svc.procByName(svc.IDOf("long"))
 	waitFor(t, func() bool { return !p.alive() }, "the supervisor did not end")
 	snap := p.snapshot()
 	if snap.status != statusCrashed || snap.parseErrors != 1 {
@@ -171,13 +171,13 @@ func TestStartAfterPollFailureKeepsOneSupervisor(t *testing.T) {
 		return true
 	}
 	d := linesEntry("flaky", manifest.Events{Command: "exit 3", Format: "json", Poll: manifest.Duration(10 * time.Second)})
-	if err := svc.Create(ctx, d); err != nil {
+	if _, err := svc.Create(ctx, d); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "flaky"); err != nil {
 		t.Fatal(err)
 	}
-	p := svc.procByName("flaky")
+	p := svc.procByName(svc.IDOf("flaky"))
 	waitFor(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -189,7 +189,7 @@ func TestStartAfterPollFailureKeepsOneSupervisor(t *testing.T) {
 	if err := svc.Start(ctx, "flaky"); err != nil {
 		t.Fatal(err)
 	}
-	if svc.procByName("flaky") != p {
+	if svc.procByName(svc.IDOf("flaky")) != p {
 		t.Fatal("Start replaced a live supervisor")
 	}
 	if err := svc.Restart(ctx, "flaky"); err != nil {
@@ -201,7 +201,7 @@ func TestStartAfterPollFailureKeepsOneSupervisor(t *testing.T) {
 	if p.alive() {
 		t.Fatal("Restart left the old supervisor running")
 	}
-	if n := svc.procByName("flaky").snapshot().restarts; n != 2 {
+	if n := svc.procByName(svc.IDOf("flaky")).snapshot().restarts; n != 2 {
 		t.Fatalf("restarts %d, want 2", n)
 	}
 }
@@ -245,13 +245,13 @@ exec sleep 30`
 	}
 
 	d := linesEntry("loop", manifest.Events{Command: command, Format: "json", Restart: manifest.RestartOnFailure})
-	if err := svc.Create(ctx, d); err != nil {
+	if _, err := svc.Create(ctx, d); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, "loop"); err != nil {
 		t.Fatal(err)
 	}
-	p := svc.procByName("loop")
+	p := svc.procByName(svc.IDOf("loop"))
 	waitFor(t, func() bool { return len(backoffs()) == 4 && p.snapshot().status == statusListening }, "run 5 did not start")
 	if n := topicCount(t, st, "connector.unhealthy"); n != 1 {
 		t.Fatalf("unhealthy events %d, want 1", n)
@@ -289,7 +289,7 @@ func TestCatchupBeforeEachLiveStart(t *testing.T) {
 		Command: "exit 1", Format: "json", ID: "id", Restart: manifest.RestartOnFailure,
 		Catchup: &manifest.Catchup{Command: "echo x >> " + marks, Timeout: manifest.Duration(5 * time.Second)},
 	})
-	if err := svc.Create(ctx, d); err != nil {
+	if _, err := svc.Create(ctx, d); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.PutCursor(ctx, "cu", "ev1"); err != nil {
@@ -351,7 +351,7 @@ func TestPollTicksIngestEachBatch(t *testing.T) {
 	}
 
 	d := linesEntry("ticker", manifest.Events{Command: command, Format: "json", ID: "id", Poll: manifest.Duration(10 * time.Second)})
-	if err := svc.Create(context.Background(), d); err != nil {
+	if _, err := svc.Create(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(context.Background(), "ticker"); err != nil {
@@ -414,28 +414,41 @@ func TestParseEventTime(t *testing.T) {
 	}
 }
 
-// TestParseEntriesDataLine proves the strict-decode error names the
-// connector and the line in the file.
-func TestParseEntriesDataLine(t *testing.T) {
-	t.Parallel()
-	data := "feed:\n  from: inline\n\nmail:\n  from: inline\n  frm: x\n"
-	_, err := parseEntries([]byte(data))
-	if err == nil || !strings.Contains(err.Error(), `connector "mail": line 6: field frm not found`) {
-		t.Fatalf("err = %v", err)
+// TestFolderLoadStrict proves the strict decode of connection.yaml names
+// the file and the field, and a record in the wrong folder does not load.
+func TestFolderLoadStrict(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	id := NewConnectionID()
+	f := NewFolder(id)
+	if err := f.Create(); err != nil {
+		t.Fatal(err)
 	}
-	entries, err := parseEntries([]byte(""))
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("empty file: %v %v", entries, err)
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(f.Dir(), recordFile), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	entries, err = parseEntries([]byte("feed:\n  from: catalog\n  version: 1.2.0\n"))
-	if err != nil || entries["feed"].Name != "feed" || entries["feed"].Version != "1.2.0" {
-		t.Fatalf("valid file: %v %v", entries, err)
+	write("id: " + id + "\ntype: feed\nslug: feed\nfrom: catalog\nversion: 1.2.0\nfrm: x\n")
+	if _, err := f.Load(); err == nil || !strings.Contains(err.Error(), "connection.yaml") || !strings.Contains(err.Error(), "field frm not found") {
+		t.Fatalf("unknown field: %v", err)
+	}
+	write("id: " + NewConnectionID() + "\ntype: feed\nslug: feed\nfrom: catalog\nversion: 1.2.0\n")
+	if _, err := f.Load(); err == nil || !strings.Contains(err.Error(), "does not match the folder") {
+		t.Fatalf("wrong folder: %v", err)
+	}
+	write("id: " + id + "\ntype: feed\nslug: feed\nfrom: catalog\nversion: 1.2.0\n")
+	if c, err := f.Load(); err != nil || c.Slug != "feed" || c.Version != "1.2.0" {
+		t.Fatalf("valid record: %+v %v", c, err)
 	}
 }
 
-// linesEntry is an inline entry with one lines events block.
-func linesEntry(name string, ev manifest.Events) Entry {
-	return Entry{Name: name, From: FromInline, Manifest: &manifest.Manifest{
+// linesEntry is an inline connection with one lines events block. The slug
+// and the type are name.
+func linesEntry(name string, ev manifest.Events) Connection {
+	return Connection{Type: name, Slug: name, From: FromInline, Manifest: &manifest.Manifest{
 		Schema: manifest.SchemaID, Name: name, Title: name, Description: "Test connector.", Version: "1.0.0", Events: &ev,
 	}}
 }

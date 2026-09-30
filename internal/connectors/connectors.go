@@ -1,10 +1,11 @@
-// Package connectors loads connector entries, resolves their manifests
-// through the catalog, global, and workspace layers, and supervises one
-// process per instance. A connector is one external system with up to three
-// capabilities: actions, events, and a channel.
+// Package connectors loads connections, resolves their manifests through the
+// package, connection, and workspace layers, and supervises one process per
+// connection. A connection is one account of a connector type with up to
+// three capabilities: actions, events, and a channel.
 package connectors
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,26 +28,24 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
-	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
-	"gopkg.in/yaml.v3"
 )
 
 var (
-	// ErrNotFound is a missing connector name.
+	// ErrNotFound is a missing connection.
 	ErrNotFound = errors.New("connector not found")
 	// ErrInherited is a mutation against a read-only discovered MCP server.
 	ErrInherited = errors.New("inherited from user MCP config")
 	// ErrReserved is a write against a native connector name.
 	ErrReserved = errors.New("connector name is reserved")
-	// ErrExists is a create for a name that already exists.
+	// ErrExists is a create with a slug that another connection has.
 	ErrExists = errors.New("connector already exists")
 	// ErrNoEvents is a lifecycle action on a connector with no events block.
 	ErrNoEvents = errors.New("connector has no events block")
-	// ErrLoadFailed is a write while connectors.yaml does not load.
-	ErrLoadFailed = errors.New("connectors.yaml did not load")
+	// ErrLoadFailed is a write to a connection whose folder does not load.
+	ErrLoadFailed = errors.New("connection did not load")
 	// ErrDuplicate is an injected event whose source id is already stored.
 	ErrDuplicate = errors.New("event source id already recorded")
 	// ErrEventNotFound is a redispatch of a missing events row.
@@ -61,11 +62,11 @@ func (e *AmbiguousError) Error() string {
 	return fmt.Sprintf("connector name %q is ambiguous; use id (%s)", e.Name, strings.Join(e.IDs, ", "))
 }
 
-// StatusHook is told about each adapter state change of an instance. The
+// StatusHook is told about each adapter state change of a connection. The
 // daemon wires it to the outbox, so held rows wake on connected.
-type StatusHook func(ctx context.Context, instance, state string)
+type StatusHook func(ctx context.Context, id, state string)
 
-// Service stores connector entries and supervises their instances.
+// Service stores connections and supervises their processes.
 type Service struct {
 	st    *store.Store
 	ws    *workspaces.Service
@@ -74,12 +75,13 @@ type Service struct {
 	log   *slog.Logger
 
 	mu        sync.Mutex
-	procs     map[string]*proc // by instance
-	entries   map[string]Entry
-	overrides map[string]map[string]workspaces.ConnectorOverride // workspace → name
-	flows     map[string]*Flow                                   // by instance and flow id
-	loadErr   error                                              // set by a failed Load; blocks writes
-	started   bool                                               // StartAll ran; reconcile starts new instances
+	procs     map[string]*proc                                   // by connection id
+	conns     map[string]Connection                              // by connection id
+	slugs     map[string]string                                  // slug → connection id
+	loadErr   map[string]error                                   // folder name → load error; blocks writes to that connection
+	overrides map[string]map[string]workspaces.ConnectorOverride // workspace → slug
+	flows     map[string]*Flow                                   // by connection id and flow id
+	started   bool                                               // StartAll ran; reconcile starts new connections
 	writeMu   sync.Mutex                                         // held across read, check, and save of a write
 	runCtx    context.Context                                    // process lifetime; not the caller's (HTTP) context
 	userHome  string                                             // empty: skip MCP discovery (tests)
@@ -90,7 +92,7 @@ type Service struct {
 	catalog   Catalog
 	relHTTP   *http.Client
 	githubURL string
-	updates   map[string]string    // name → newer catalog version on its track
+	updates   map[string]string    // connection id → newer catalog version on its track
 	inspected map[string]inspected // resolved fingerprint → MCP inspection
 
 	// now, sleep, and the session intervals are injectable for tests.
@@ -120,9 +122,11 @@ type NativeMeta struct {
 	Type     string
 }
 
-// eventRecord is one persisted ingress event.
+// eventRecord is one persisted ingress event. connector is the type and
+// instance the connection id.
 type eventRecord struct {
 	id         string
+	connector  string
 	instance   string
 	raw        string
 	trace      string
@@ -137,10 +141,12 @@ type eventRecord struct {
 	catchUp    bool
 }
 
-// EntryPatch updates a global entry. A present field replaces the stored
+// ConnectionPatch updates a connection. A present field replaces the stored
 // value. A null patch or manifest removes it. A masked input ("***") keeps
-// the stored value.
-type EntryPatch struct {
+// the stored value. A new slug rewrites the references to the old one.
+type ConnectionPatch struct {
+	Slug     *string            `json:"slug"`
+	Title    *string            `json:"title"`
 	Version  *string            `json:"version"`
 	Track    *string            `json:"track"`
 	Inputs   *map[string]string `json:"inputs"`
@@ -155,7 +161,9 @@ func New(st *store.Store, ws *workspaces.Service, sk *skills.Service) *Service {
 		queue:     dispatch.NewQueue(st),
 		log:       slog.Default().With("source", "connectors"),
 		procs:     make(map[string]*proc),
-		entries:   make(map[string]Entry),
+		conns:     map[string]Connection{},
+		slugs:     map[string]string{},
+		loadErr:   map[string]error{},
 		overrides: map[string]map[string]workspaces.ConnectorOverride{},
 		flows:     map[string]*Flow{},
 		updates:   map[string]string{},
@@ -186,6 +194,481 @@ func (s *Service) OnStatus(h StatusHook) *Service {
 	return s
 }
 
+// Load scans the connection folders and the workspace layers into memory. A
+// folder that does not load gets a load error; the last good copy of that
+// connection stays, and writes to it fail until it loads again. The other
+// connections are not affected.
+func (s *Service) Load() error {
+	conns, errs := readConnections()
+	overrides := s.loadOverrides(context.Background())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range errs {
+		if old, ok := s.conns[id]; ok {
+			conns[id] = old
+		}
+	}
+	slugs := map[string]string{}
+	for _, id := range slices.Sorted(maps.Keys(conns)) {
+		c := conns[id]
+		if other, dup := slugs[c.Slug]; dup {
+			errs[id] = fmt.Errorf("slug %q is also used by %s", c.Slug, other)
+			delete(conns, id)
+			continue
+		}
+		slugs[c.Slug] = id
+	}
+	s.conns, s.slugs, s.loadErr, s.overrides = conns, slugs, errs, overrides
+	var all []error
+	for _, id := range slices.Sorted(maps.Keys(errs)) {
+		all = append(all, fmt.Errorf("%s: %w", id, errs[id]))
+	}
+	return errors.Join(all...)
+}
+
+// LoadErr joins the load errors of every folder, or returns nil.
+func (s *Service) LoadErr() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var all []error
+	for _, id := range slices.Sorted(maps.Keys(s.loadErr)) {
+		all = append(all, fmt.Errorf("%s: %w", id, s.loadErr[id]))
+	}
+	return errors.Join(all...)
+}
+
+// Lookup returns the connection with the slug or the id ref.
+func (s *Service) Lookup(ref string) (Connection, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.conns[ref]; ok {
+		return c.clone(), nil
+	}
+	if id, ok := s.slugs[ref]; ok {
+		return s.conns[id].clone(), nil
+	}
+	if err, ok := s.loadErr[ref]; ok {
+		return Connection{}, fmt.Errorf("%w: %s: %v", ErrLoadFailed, ref, err)
+	}
+	return Connection{}, fmt.Errorf("connector %q not found: %w", ref, ErrNotFound)
+}
+
+// SlugOf returns the current slug of a connection id, or "" when the id is
+// not a connection. A native id is its own slug.
+func (s *Service) SlugOf(id string) string {
+	if manifest.Reserved(id) {
+		return id
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conns[id].Slug
+}
+
+// IDOf returns the id of a slug or id ref, or "" when no connection has it.
+// A native name is its own id.
+func (s *Service) IDOf(ref string) string {
+	if manifest.Reserved(ref) {
+		return ref
+	}
+	c, err := s.Lookup(ref)
+	if err != nil {
+		return ""
+	}
+	return c.ID
+}
+
+// ConnectionFor returns the id of a slug or id ref, or "" when no
+// connection has it or the workspace turned it off.
+func (s *Service) ConnectionFor(ref, workspaceID string) string {
+	id := s.IDOf(ref)
+	if id == "" || s.disabledIn(workspaceID, s.SlugOf(id)) {
+		return ""
+	}
+	return id
+}
+
+// Create stores a new connection. It fills the id and, when empty, the
+// default slug, and returns the stored value. A used slug is ErrExists.
+func (s *Service) Create(ctx context.Context, c Connection) (Connection, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	c = c.clone()
+	c.ID = NewConnectionID()
+	c.Title = strings.TrimSpace(c.Title)
+	if c.Slug == "" {
+		c.Slug = s.nextSlug(c.Type)
+	}
+	if err := s.GuardReserved(c.Slug); err != nil {
+		return Connection{}, err
+	}
+	if !s.slugFree(c.Slug, c.ID) {
+		return Connection{}, fmt.Errorf("%w: slug %q", ErrExists, c.Slug)
+	}
+	if err := s.commit(ctx, c, nil, nil); err != nil {
+		_ = NewFolder(c.ID).Remove() // best effort; the create already failed
+		return Connection{}, err
+	}
+	return s.Lookup(c.ID)
+}
+
+// Patch applies a field update to a connection. It returns the config files
+// that a slug change rewrote.
+func (s *Service) Patch(ctx context.Context, ref string, p ConnectionPatch) ([]string, error) {
+	if err := s.GuardReserved(ref); err != nil {
+		return nil, err
+	}
+	if err := s.GuardMutate(ref); err != nil {
+		return nil, err
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	old, err := s.Lookup(ref)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkLoaded(old.ID); err != nil {
+		return nil, err
+	}
+	c := old.clone()
+	if err := p.apply(&c); err != nil {
+		return nil, err
+	}
+	var keep map[string]bool
+	if p.Inputs != nil {
+		if keep, err = c.keepSecrets(old); err != nil {
+			return nil, err
+		}
+	}
+	rw, err := s.rewriteSlug(ctx, old, c)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.commit(ctx, c, &old, keep); err != nil {
+		if rw != nil {
+			rw.rollback()
+		}
+		return nil, err
+	}
+	if rw == nil {
+		return nil, nil
+	}
+	overrides := s.loadOverrides(ctx)
+	s.mu.Lock()
+	s.overrides = overrides
+	s.mu.Unlock()
+	return rw.changed(), nil
+}
+
+// Delete stops a connection and removes its folder. The skills of its type
+// go when no other connection has the type. GC then removes each package
+// version that no connection uses.
+func (s *Service) Delete(ctx context.Context, ref string) error {
+	if err := s.GuardReserved(ref); err != nil {
+		return err
+	}
+	if err := s.GuardMutate(ref); err != nil {
+		return err
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	c, err := s.Lookup(ref)
+	if err != nil {
+		if IsConnectionID(ref) && errors.Is(err, ErrLoadFailed) {
+			return s.removeBroken(ctx, ref)
+		}
+		return err
+	}
+	s.mu.Lock()
+	delete(s.conns, c.ID)
+	delete(s.slugs, c.Slug)
+	delete(s.loadErr, c.ID)
+	delete(s.updates, c.ID)
+	s.mu.Unlock()
+	s.reconcile(ctx)
+	if err := NewFolder(c.ID).Remove(); err != nil {
+		return fmt.Errorf("remove connection folder: %w", err)
+	}
+	if !s.ofType(c.Type, c.ID) {
+		s.deleteContributedSkills(ctx, c.Type)
+	}
+	if _, err := s.GC(ctx, false); err != nil {
+		s.log.Warn("connector gc", "error", err)
+	}
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "connector.deleted", Entity: "connector", EntityID: c.ID, Action: "deleted",
+		Attrs: map[string]string{"slug": c.Slug, "type": c.Type},
+	}); err != nil {
+		s.log.Warn("bus append", "topic", "connector.deleted", "error", err)
+	}
+	return nil
+}
+
+// Override returns the workspace layer of one connection.
+func (s *Service) Override(ctx context.Context, workspaceID, ref string) (workspaces.ConnectorOverride, bool, error) {
+	if s.ws == nil {
+		return workspaces.ConnectorOverride{}, false, nil
+	}
+	c, err := s.Lookup(ref)
+	if err != nil {
+		return workspaces.ConnectorOverride{}, false, err
+	}
+	all, err := s.ws.ConnectorOverrides(ctx, workspaceID)
+	if err != nil {
+		return workspaces.ConnectorOverride{}, false, err
+	}
+	ov, ok := all[c.Slug]
+	return ov, ok, nil
+}
+
+// SetOverride writes, or with nil removes, the workspace layer of a
+// connection. The layer can only turn the connection off or patch its
+// actions and skill.
+func (s *Service) SetOverride(ctx context.Context, workspaceID, ref string, ov *workspaces.ConnectorOverride) error {
+	if s.ws == nil {
+		return errors.New("workspaces are not available")
+	}
+	if err := s.GuardReserved(ref); err != nil {
+		return err
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	c, err := s.Lookup(ref)
+	if err != nil {
+		return err
+	}
+	if ov != nil {
+		if err := ov.Validate(); err != nil {
+			return &ValidationError{Name: c.Slug, Layer: LayerWorkspace, Fields: []FieldError{{Field: "patch", Message: err.Error()}}}
+		}
+		if !ov.Disabled {
+			if _, err := resolveConnection(c, workspaceID, ov); err != nil {
+				return err
+			}
+		}
+	}
+	if err := s.ws.SetConnectorOverride(ctx, workspaceID, c.Slug, ov); err != nil {
+		return err
+	}
+	overrides := s.loadOverrides(ctx)
+	s.mu.Lock()
+	s.overrides = overrides
+	s.mu.Unlock()
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "connector.updated", Entity: "connector", EntityID: c.ID, Action: "updated",
+		Attrs: map[string]string{"workspace": workspaceID, "slug": c.Slug, "type": c.Type},
+	}); err != nil {
+		s.log.Warn("bus append", "topic", "connector.updated", "error", err)
+	}
+	return nil
+}
+
+// List returns the connection rows, with live status, unioned with inherited
+// MCP servers. With a workspace, each row applies the workspace layer.
+func (s *Service) List(workspaceID string) []map[string]any {
+	lastEvents := s.lastEvents()
+	var out []map[string]any
+	fpIndex := map[string]int{}
+	for _, c := range s.snapshot() {
+		row := s.connectionRow(c, workspaceID, lastEvents)
+		if fp, ok := row["mcp_fingerprint"].(string); ok && fp != "" {
+			fpIndex[fp] = len(out)
+		}
+		delete(row, "mcp_fingerprint")
+		out = append(out, row)
+	}
+	s.mu.Lock()
+	broken := map[string]error{}
+	for id, err := range s.loadErr {
+		if _, ok := s.conns[id]; !ok {
+			broken[id] = err
+		}
+	}
+	s.mu.Unlock()
+	for _, id := range slices.Sorted(maps.Keys(broken)) {
+		out = append(out, map[string]any{
+			"id": id, "type": "", "slug": "", "title": "", "provenance": "managed", "managed": true,
+			"capabilities": []string{}, "load_error": broken[id].Error(),
+		})
+	}
+	return s.unionInherited(out, fpIndex)
+}
+
+// Get returns one connection row by slug or id.
+func (s *Service) Get(ref string) (map[string]any, error) {
+	return s.GetFor(ref, "")
+}
+
+// GetFor returns one row by slug or id with the workspace layer applied. An
+// inherited MCP server matches by its id, or by a name no other row has.
+func (s *Service) GetFor(ref, workspaceID string) (map[string]any, error) {
+	if c, err := s.Lookup(ref); err == nil {
+		ref = c.ID
+	}
+	var byName []map[string]any
+	for _, row := range s.List(workspaceID) {
+		if fmt.Sprint(row["id"]) == ref {
+			return row, nil
+		}
+		if fmt.Sprint(row["slug"]) == ref {
+			byName = append(byName, row)
+		}
+	}
+	switch len(byName) {
+	case 0:
+		return nil, fmt.Errorf("connector %q not found: %w", ref, ErrNotFound)
+	case 1:
+		return byName[0], nil
+	}
+	ids := make([]string, len(byName))
+	for i, r := range byName {
+		ids[i] = fmt.Sprint(r["id"])
+	}
+	return nil, &AmbiguousError{Name: ref, IDs: ids}
+}
+
+// HasEvents reports whether a connection has an events block. A missing ref
+// is ErrNotFound.
+func (s *Service) HasEvents(ref string) error {
+	if _, err := s.Lookup(ref); err != nil {
+		if _, gerr := s.Get(ref); gerr != nil {
+			return err
+		}
+		return fmt.Errorf("%w: connector %q is not managed", ErrInherited, ref)
+	}
+	r, err := s.Resolve(ref, "")
+	if err != nil {
+		return err
+	}
+	if r.Manifest.Events == nil {
+		return fmt.Errorf("%w: %q", ErrNoEvents, ref)
+	}
+	return nil
+}
+
+// IsChannel reports whether a connection is a channel that can hold a
+// conversation.
+func (s *Service) IsChannel(ref string) bool {
+	r, err := s.Resolve(ref, "")
+	return err == nil && slices.Contains(r.Manifest.Modes(), manifest.ModeReply)
+}
+
+// GuardReserved refuses record and lifecycle writes against a native
+// connector name. The native service still owns its event and cursor rows,
+// so InjectEvent and PutCursor do not call it.
+func (s *Service) GuardReserved(ref string) error {
+	if manifest.Reserved(ref) {
+		return fmt.Errorf("%w: %q is a native connector", ErrReserved, ref)
+	}
+	return nil
+}
+
+// GuardMutate refuses writes against inherited MCP rows. A missing ref
+// passes, so the caller reports its own not found.
+func (s *Service) GuardMutate(ref string) error {
+	if _, err := s.Lookup(ref); err == nil || errors.Is(err, ErrLoadFailed) {
+		return nil
+	}
+	row, err := s.Get(ref)
+	if err != nil {
+		var amb *AmbiguousError
+		if errors.As(err, &amb) {
+			return err
+		}
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if managed, _ := row["managed"].(bool); managed {
+		return nil
+	}
+	if path := inheritedOriginPath(row); path != "" {
+		return fmt.Errorf("%w: inherited from %s; edit there", ErrInherited, path)
+	}
+	return fmt.Errorf("%w; edit the origin file", ErrInherited)
+}
+
+// RewritePathPrefix updates the file sources, inline commands, and input
+// values that point at old. dryRun reports the slugs without writing. Slugs
+// are sorted.
+func (s *Service) RewritePathPrefix(old, new string, dryRun bool) ([]string, error) {
+	if s == nil || strings.TrimSpace(old) == "" || old == new {
+		return nil, nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.Load(); err != nil {
+		s.log.Warn("connections", "error", err)
+	}
+	var changed []Connection
+	for _, c := range s.snapshot() {
+		if c.rewritePaths(old, new) {
+			changed = append(changed, c)
+		}
+	}
+	slugs := make([]string, 0, len(changed))
+	for _, c := range changed {
+		slugs = append(slugs, c.Slug)
+	}
+	if dryRun {
+		return slugs, nil
+	}
+	for _, c := range changed {
+		if err := NewFolder(c.ID).Save(c); err != nil {
+			return slugs, err
+		}
+		s.mu.Lock()
+		s.conns[c.ID] = c
+		s.mu.Unlock()
+	}
+	return slugs, nil
+}
+
+// GetCursor returns the stored connector cursor of a connection. A missing
+// cursor has an empty LastEventID.
+func (s *Service) GetCursor(_ context.Context, ref string) (Cursor, error) {
+	f, err := s.cursorFolder(ref)
+	if err != nil {
+		return Cursor{}, err
+	}
+	return f.Cursor()
+}
+
+// PutCursor writes the connector cursor of a connection. Not a bus entity.
+func (s *Service) PutCursor(_ context.Context, ref, lastEventID string) error {
+	if err := s.GuardMutate(ref); err != nil {
+		return err
+	}
+	f, err := s.cursorFolder(ref)
+	if err != nil {
+		return err
+	}
+	return f.SetCursor(Cursor{LastEventID: lastEventID, UpdatedAt: s.now().UTC().Format(time.RFC3339)})
+}
+
+// LogPath is the stream log of a connection.
+func (s *Service) LogPath(ref string) (string, error) {
+	c, err := s.Lookup(ref)
+	if err != nil {
+		return "", err
+	}
+	return NewFolder(c.ID).LogPath(), nil
+}
+
+// LoadManifests resolves every connection without a Service, keyed by slug.
+// The doctor uses it. A connection that does not resolve is left out; each
+// folder that does not load is in the error map.
+func LoadManifests() (map[string]manifest.Manifest, map[string]error) {
+	conns, errs := readConnections()
+	out := map[string]manifest.Manifest{}
+	for _, c := range conns {
+		if r, err := resolveConnection(c, "", nil); err == nil {
+			out[c.Slug] = r.Manifest
+		}
+	}
+	return out, errs
+}
+
 // sleepCtx waits for d or until ctx is done; it reports whether ctx ended.
 func sleepCtx(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
@@ -206,217 +689,136 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// Load reads connectors.yaml and the workspace layers into memory. The file
-// is strict: an unknown key fails the load with the file path, the connector
-// name, and the key. A failed load keeps the last good entries and blocks
-// writes until a load succeeds.
-func (s *Service) Load() error {
-	entries, err := readEntries()
-	overrides := s.loadOverrides(context.Background())
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.overrides = overrides
-	s.loadErr = err
+// readConnections loads every folder under the connections folder whose name
+// is a connection id. A native cursor folder is not a connection.
+func readConnections() (map[string]Connection, map[string]error) {
+	conns := map[string]Connection{}
+	errs := map[string]error{}
+	ents, err := os.ReadDir(home.ConnectionsDir())
 	if err != nil {
-		return err
+		return conns, errs
 	}
-	s.entries = entries
-	return nil
+	for _, e := range ents {
+		if !e.IsDir() || !IsConnectionID(e.Name()) {
+			continue
+		}
+		c, err := NewFolder(e.Name()).Load()
+		if err != nil {
+			errs[e.Name()] = err
+			continue
+		}
+		conns[c.ID] = c
+	}
+	return conns, errs
 }
 
-// LoadErr returns the error of the last failed Load, or nil.
-func (s *Service) LoadErr() error {
+// checkLoaded refuses a write to a connection whose folder does not load, so
+// a write cannot replace a file that the user is still editing.
+func (s *Service) checkLoaded(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.loadErr
-}
-
-// checkLoaded refuses a write while connectors.yaml does not load, so a
-// write cannot replace the file with a partial set.
-func (s *Service) checkLoaded() error {
-	if err := s.LoadErr(); err != nil {
-		return fmt.Errorf("%w: %v", ErrLoadFailed, err)
-	}
-	return nil
-}
-
-// save writes the entries back to connectors.yaml with a temp-and-rename
-// write. The file has mode 0600, because it can hold literal tokens. The
-// caller holds writeMu.
-func (s *Service) save(entries map[string]Entry) error {
-	if err := home.EnsureDirs(); err != nil {
-		return err
-	}
-	b, err := yaml.Marshal(entries)
-	if err != nil {
-		return err
-	}
-	path := home.ConnectorsPath()
-	f, err := os.CreateTemp(filepath.Dir(path), ".connectors-*.yaml")
-	if err != nil {
-		return fmt.Errorf("save connectors: %w", err)
-	}
-	tmp := f.Name()
-	_, werr := f.Write(b)
-	if cerr := f.Close(); werr == nil {
-		werr = cerr
-	}
-	if werr != nil {
-		_ = os.Remove(tmp) // best effort; the write already failed
-		return fmt.Errorf("save connectors: %w", werr)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp) // best effort; the rename already failed
-		return fmt.Errorf("save connectors: %w", err)
-	}
-	s.mu.Lock()
-	s.entries = entries
+	err := s.loadErr[id]
 	s.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("%w: %s: %v", ErrLoadFailed, id, err)
+	}
 	return nil
 }
 
-// snapshotEntries returns a deep copy of the entries.
-func (s *Service) snapshotEntries() map[string]Entry {
+// snapshot returns a copy of every connection, sorted by slug.
+func (s *Service) snapshot() []Connection {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make(map[string]Entry, len(s.entries))
-	for k, v := range s.entries {
-		out[k] = v.clone()
+	out := make([]Connection, 0, len(s.conns))
+	for _, c := range s.conns {
+		out = append(out, c.clone())
 	}
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
 	return out
 }
 
-// Entry returns the stored global entry of a connector.
-func (s *Service) Entry(name string) (Entry, bool) {
+// ofType reports whether another connection than id has the type typ.
+func (s *Service) ofType(typ, id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, ok := s.entries[name]
-	if !ok {
-		return Entry{}, false
+	for _, c := range s.conns {
+		if c.Type == typ && c.ID != id {
+			return true
+		}
 	}
-	return e.clone(), true
+	return false
 }
 
 // emitWrite appends a connector.created/updated bus event with the
 // capabilities of the resolved manifest.
 func (s *Service) emitWrite(ctx context.Context, topic string, r Resolved) {
 	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: topic, Entity: "connector", EntityID: r.Name, Action: strings.TrimPrefix(topic, "connector."),
-		Attrs: map[string]string{"capabilities": strings.Join(r.Manifest.Capabilities(), ",")},
+		Topic: topic, Entity: "connector", EntityID: r.ID, Action: strings.TrimPrefix(topic, "connector."),
+		Attrs: map[string]string{"capabilities": strings.Join(r.Manifest.Capabilities(), ","), "slug": r.Slug, "type": r.Type},
 	}); err != nil {
 		s.log.Warn("bus append", "topic", topic, "error", err)
 	}
 }
 
-// checkEntry validates an entry and resolves its global layer.
-func (s *Service) checkEntry(e Entry) (Resolved, error) {
-	if err := e.Validate(); err != nil {
-		return Resolved{}, err
+// nextSlug returns the default slug of a new connection of a type: the type,
+// then type-2, type-3, and so on. The caller holds writeMu.
+func (s *Service) nextSlug(typ string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for n := 1; ; n++ {
+		slug := typ
+		if n > 1 {
+			slug = typ + "-" + strconv.Itoa(n)
+		}
+		if _, used := s.slugs[slug]; !used && CheckSlug(slug) == nil {
+			return slug
+		}
 	}
-	return resolveEntry(e.clone(), "", nil)
 }
 
-// Create registers a new connector entry. An existing name is ErrExists.
-func (s *Service) Create(ctx context.Context, e Entry) error {
-	if err := s.checkLoaded(); err != nil {
-		return err
-	}
-	if err := s.GuardReserved(e.Name); err != nil {
-		return err
-	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	entries := s.snapshotEntries()
-	if _, ok := entries[e.Name]; ok {
-		return fmt.Errorf("%w: %q", ErrExists, e.Name)
-	}
-	return s.commitEntry(ctx, entries, e, Entry{}, false)
+// slugFree reports whether no connection other than id has slug.
+func (s *Service) slugFree(slug, id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	other, used := s.slugs[slug]
+	return !used || other == id
 }
 
-// Replace writes the whole entry of a connector, creating it when missing.
-// A masked input ("***") keeps the stored value.
-func (s *Service) Replace(ctx context.Context, e Entry) error {
-	if err := s.checkLoaded(); err != nil {
-		return err
-	}
-	if err := s.GuardReserved(e.Name); err != nil {
-		return err
-	}
-	if err := s.GuardMutate(e.Name); err != nil {
-		return err
-	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	entries := s.snapshotEntries()
-	old, existed := entries[e.Name]
-	e.Inputs = maps.Clone(e.Inputs)
-	if err := keepMasked(e.Name, e.Inputs, old.Inputs); err != nil {
-		return err
-	}
-	if len(e.InstalledSecrets) == 0 {
-		e.InstalledSecrets = old.InstalledSecrets
-	}
-	return s.commitEntry(ctx, entries, e, old, existed)
-}
-
-// Patch applies a field update to an existing entry.
-func (s *Service) Patch(ctx context.Context, name string, p EntryPatch) error {
-	if err := s.checkLoaded(); err != nil {
-		return err
-	}
-	if err := s.GuardReserved(name); err != nil {
-		return err
-	}
-	if err := s.GuardMutate(name); err != nil {
-		return err
-	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	entries := s.snapshotEntries()
-	old, ok := entries[name]
-	if !ok {
-		return fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
-	}
-	e := old.clone()
-	if err := p.apply(&e); err != nil {
-		return err
-	}
-	if err := keepMasked(name, e.Inputs, old.Inputs); err != nil {
-		return err
-	}
-	return s.commitEntry(ctx, entries, e, old, true)
-}
-
-// apply writes the present fields of p into e.
-func (p EntryPatch) apply(e *Entry) error {
+// apply writes the present fields of p into c.
+func (p ConnectionPatch) apply(c *Connection) error {
 	bad := func(field string, err error) error {
-		return &ValidationError{Name: e.Name, Fields: []FieldError{{Field: field, Message: err.Error()}}}
+		return &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: field, Message: err.Error()}}}
+	}
+	if p.Slug != nil {
+		c.Slug = strings.TrimSpace(*p.Slug)
+	}
+	if p.Title != nil {
+		c.Title = strings.TrimSpace(*p.Title)
 	}
 	if p.Version != nil {
-		e.Version = *p.Version
+		c.Version = *p.Version
 	}
 	if p.Track != nil {
-		e.Track = manifest.Track(*p.Track)
+		c.Track = manifest.Track(*p.Track)
 	}
 	if p.Inputs != nil {
-		e.Inputs = maps.Clone(*p.Inputs)
+		c.Inputs = maps.Clone(*p.Inputs)
 	}
 	if len(p.Patch) > 0 {
-		e.Patch = nil
+		c.Patch = nil
 		if !isNull(p.Patch) {
-			if err := json.Unmarshal(p.Patch, &e.Patch); err != nil {
+			if err := json.Unmarshal(p.Patch, &c.Patch); err != nil {
 				return bad("patch", err)
 			}
 		}
 	}
 	if len(p.Manifest) > 0 {
-		e.Manifest = nil
+		c.Manifest = nil
 		if !isNull(p.Manifest) {
 			var m manifest.Manifest
 			if err := decodeStrict(p.Manifest, &m); err != nil {
 				return bad("manifest", err)
 			}
-			e.Manifest = &m
+			c.Manifest = &m
 		}
 	}
 	return nil
@@ -426,302 +828,167 @@ func isNull(raw json.RawMessage) bool {
 	return strings.TrimSpace(string(raw)) == "null"
 }
 
-// commitEntry validates, stores secret inputs, saves, emits, and reconciles.
-// The caller holds writeMu.
-func (s *Service) commitEntry(ctx context.Context, entries map[string]Entry, e, old Entry, existed bool) error {
-	r, err := s.checkEntry(e)
+// commit validates c, moves its literal secret inputs to the folder, saves
+// the record, emits, and reconciles. With keep set, the inputs were
+// replaced: an owned secret that is not in keep and not written again is
+// deleted. The caller holds writeMu.
+func (s *Service) commit(ctx context.Context, c Connection, old *Connection, keep map[string]bool) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	r, err := resolveConnection(c, "", nil)
 	if err != nil {
 		return err
 	}
-	owned := func(n string) bool {
-		return slices.Contains(e.InstalledSecrets, n) || slices.Contains(old.InstalledSecrets, n)
-	}
-	created, err := storeSecretInputs(e.Name, r.Manifest, e.Inputs, owned)
-	if err != nil {
+	f := NewFolder(c.ID)
+	owned := c.takeSecrets(r.Manifest)
+	if err := f.Create(); err != nil {
 		return err
 	}
-	for _, n := range created {
-		if !slices.Contains(e.InstalledSecrets, n) {
-			e.InstalledSecrets = append(e.InstalledSecrets, n)
-		}
-	}
-	entries[e.Name] = e
-	if err := s.save(entries); err != nil {
+	if err := f.syncSecrets(owned, c.Inputs, keep); err != nil {
 		return err
 	}
+	if err := f.Save(c); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if old != nil {
+		delete(s.slugs, old.Slug)
+	}
+	s.conns[c.ID] = c
+	s.slugs[c.Slug] = c.ID
+	delete(s.loadErr, c.ID)
+	s.mu.Unlock()
 	topic := "connector.updated"
-	if !existed {
+	if old == nil {
 		topic = "connector.created"
 	}
-	s.emitWrite(ctx, topic, r)
-	s.syncSkill(ctx, r)
+	if r, err = resolveConnection(c, "", nil); err == nil {
+		s.emitWrite(ctx, topic, r)
+		s.syncSkill(ctx, r)
+	}
 	s.reconcile(ctx)
 	return nil
 }
 
-// storeSecretInputs writes each literal value of a secret input to the
-// secret <prefix>_<NAME> and puts the reference in inputs. It returns the
-// names it wrote. It does not overwrite a secret that owned rejects: that
-// secret belongs to the user.
-func storeSecretInputs(prefix string, m manifest.Manifest, inputs map[string]string, owned func(string) bool) ([]string, error) {
-	if m.Setup == nil {
-		return nil, nil
-	}
-	var out []string
-	for _, in := range m.Setup.Inputs {
-		v, ok := inputs[in.Name]
-		if !in.Secret || !ok || v == "" || strings.HasPrefix(v, "secret:") {
-			continue
-		}
-		name := prefix + "_" + in.Name
-		if err := secrets.CheckName(name); err != nil {
-			return out, &ValidationError{Name: m.Name, Fields: []FieldError{{Field: "inputs", Message: err.Error()}}}
-		}
-		if _, err := secrets.Get(name); err == nil && !owned(name) {
-			msg := fmt.Sprintf("secret %s exists; give secret:%s to use it, or delete it first", name, name)
-			return out, &ValidationError{Name: m.Name, Fields: []FieldError{{Field: "inputs." + in.Name, Message: msg}}}
-		}
-		if err := secrets.Set(name, v); err != nil {
-			return out, err
-		}
-		inputs[in.Name] = "secret:" + name
-		out = append(out, name)
-	}
-	return out, nil
-}
-
-// syncSkill copies the skill folder of the global instance into the managed
-// skills, so the harness homes project it (Part C.6).
+// syncSkill copies the skill folder of the type into the managed skills, so
+// the harness homes project it. Skills are per type.
 func (s *Service) syncSkill(ctx context.Context, r Resolved) {
 	dir := r.SkillDir()
 	if s.sk == nil || dir == "" {
 		return
 	}
-	if _, err := s.sk.SyncConnectorSkill(ctx, r.Name, dir, r.Name); err != nil {
-		s.log.Warn("connector skill", "connector", r.Name, "error", err)
+	if _, err := s.sk.SyncConnectorSkill(ctx, r.Type, dir, r.Type); err != nil {
+		s.log.Warn("connector skill", "connector", r.Slug, "error", err)
 	}
 }
 
-// Delete removes a connector entry and stops its instances.
-func (s *Service) Delete(ctx context.Context, name string) error {
-	if err := s.checkLoaded(); err != nil {
-		return err
+// removeBroken deletes the folder of a connection that does not load. The
+// caller holds writeMu.
+func (s *Service) removeBroken(ctx context.Context, id string) error {
+	if err := NewFolder(id).Remove(); err != nil {
+		return fmt.Errorf("remove connection folder: %w", err)
 	}
-	if err := s.GuardReserved(name); err != nil {
-		return err
-	}
-	if err := s.GuardMutate(name); err != nil {
-		return err
-	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	entries := s.snapshotEntries()
-	e, ok := entries[name]
-	if !ok {
-		return fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
-	}
-	delete(entries, name)
-	if err := s.save(entries); err != nil {
-		return err
-	}
-	s.reconcile(ctx)
-	s.deleteContributedSkills(ctx, name)
-	s.deleteOwnedSecrets(e, entries)
+	s.mu.Lock()
+	delete(s.loadErr, id)
+	s.mu.Unlock()
 	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: "connector.deleted", Entity: "connector", EntityID: name, Action: "deleted",
+		Topic: "connector.deleted", Entity: "connector", EntityID: id, Action: "deleted",
 	}); err != nil {
 		s.log.Warn("bus append", "topic", "connector.deleted", "error", err)
 	}
 	return nil
 }
 
-// deleteOwnedSecrets removes the secrets that the install of e wrote, when no
-// remaining entry refers to them. A failure is logged and does not undo the
-// connector delete.
-func (s *Service) deleteOwnedSecrets(e Entry, remaining map[string]Entry) {
-	for _, n := range e.InstalledSecrets {
-		used := false
-		for _, other := range remaining {
-			if other.refersToSecret(n) {
-				used = true
-				break
-			}
-		}
-		if used {
-			continue
-		}
-		if err := secrets.Delete(n); err != nil {
-			s.log.Warn("delete owned secret", "connector", e.Name, "secret", n, "error", err)
-		}
-	}
-}
-
-// deleteContributedSkills removes the skills this connector installed. A
-// failure is logged and does not undo the connector delete.
-func (s *Service) deleteContributedSkills(ctx context.Context, name string) {
+// deleteContributedSkills removes the skills of a type. A failure is logged
+// and does not undo the delete.
+func (s *Service) deleteContributedSkills(ctx context.Context, typ string) {
 	if s.sk == nil {
 		return
 	}
-	removed, err := s.sk.RemoveConnectorSkills(ctx, name)
+	removed, err := s.sk.RemoveConnectorSkills(ctx, typ)
 	if err != nil {
-		s.log.Warn("delete contributed skills", "connector", name, "error", err)
+		s.log.Warn("delete contributed skills", "connector", typ, "error", err)
 		return
 	}
 	if len(removed) > 0 {
-		s.log.Info("connector skills removed", "connector", name, "skills", strings.Join(removed, ","))
+		s.log.Info("connector skills removed", "connector", typ, "skills", strings.Join(removed, ","))
 	}
 }
 
-// Override returns the workspace layer of one connector.
-func (s *Service) Override(ctx context.Context, workspaceID, name string) (workspaces.ConnectorOverride, bool, error) {
-	if s.ws == nil {
-		return workspaces.ConnectorOverride{}, false, nil
-	}
-	all, err := s.ws.ConnectorOverrides(ctx, workspaceID)
-	if err != nil {
-		return workspaces.ConnectorOverride{}, false, err
-	}
-	ov, ok := all[name]
-	return ov, ok, nil
-}
-
-// SetOverride writes, or with nil removes, the workspace layer of a
-// connector (Part C.2). A workspace cannot add a connector that is not
-// installed globally. A literal secret input becomes the secret
-// <name>@<ws>_<NAME>.
-func (s *Service) SetOverride(ctx context.Context, workspaceID, name string, ov *workspaces.ConnectorOverride) error {
-	if s.ws == nil {
-		return errors.New("workspaces are not available")
-	}
-	if err := s.GuardReserved(name); err != nil {
-		return err
-	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	e, ok := s.Entry(name)
-	if !ok {
-		return fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
-	}
-	if ov != nil {
-		prev, _, err := s.Override(ctx, workspaceID, name)
-		if err != nil {
-			return err
-		}
-		ov.Inputs = maps.Clone(ov.Inputs)
-		if err := keepMasked(name, ov.Inputs, prev.Inputs); err != nil {
-			return err
-		}
-		if ov.Track != "" && !manifest.Track(ov.Track).Valid() {
-			return &ValidationError{Name: name, Layer: LayerWorkspace, Fields: []FieldError{{Field: "track", Message: "must be exact, patch, minor, or latest"}}}
-		}
-		for k := range ov.Inputs {
-			if !envKeyRE.MatchString(k) {
-				return &ValidationError{Name: name, Layer: LayerWorkspace, Fields: []FieldError{{Field: "inputs", Message: fmt.Sprintf("key %q must match %s", k, envKeyRE)}}}
-			}
-		}
-		if !ov.Disabled {
-			r, err := resolveEntry(e, workspaceID, ov)
-			if err != nil {
-				return err
-			}
-			all := func(string) bool { return true } // the override namespace belongs to Trebi
-			if _, err := storeSecretInputs(name+"@"+workspaceID, r.Manifest, ov.Inputs, all); err != nil {
-				return err
-			}
-		}
-	}
-	if err := s.ws.SetConnectorOverride(ctx, workspaceID, name, ov); err != nil {
-		return err
-	}
-	overrides := s.loadOverrides(ctx)
-	s.mu.Lock()
-	s.overrides = overrides
-	s.mu.Unlock()
-	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: "connector.updated", Entity: "connector", EntityID: name, Action: "updated",
-		Attrs: map[string]string{"workspace": workspaceID},
-	}); err != nil {
-		s.log.Warn("bus append", "topic", "connector.updated", "error", err)
-	}
-	s.reconcile(ctx)
-	return nil
-}
-
-// List returns the resolved rows, with live status, unioned with inherited
-// MCP servers. With a workspace, each row is resolved for that workspace.
-func (s *Service) List(workspaceID string) []map[string]any {
-	entries := s.snapshotEntries()
-	positions, lastEvents := s.eventMeta()
-	var out []map[string]any
-	fpIndex := map[string]int{}
-	for _, name := range sortedNames(entries) {
-		row := s.managedRow(entries[name], workspaceID, positions, lastEvents)
-		if fp, ok := row["mcp_fingerprint"].(string); ok && fp != "" {
-			fpIndex[fp] = len(out)
-		}
-		delete(row, "mcp_fingerprint")
-		out = append(out, row)
-	}
-	return s.unionInherited(out, fpIndex)
-}
-
-// eventMeta reads every connector cursor and last event time in two queries,
-// keyed by instance.
-func (s *Service) eventMeta() (map[string]Cursor, map[string]string) {
-	positions := map[string]Cursor{}
-	lastEvents := map[string]string{}
+// lastEvents reads the last event time of each connection in one query.
+func (s *Service) lastEvents() map[string]string {
+	out := map[string]string{}
 	if s.st == nil {
-		return positions, lastEvents
+		return out
 	}
-	if rows, err := s.st.DB().Query(`SELECT instance, last_event_id, updated_at FROM connector_cursors`); err == nil {
-		for rows.Next() {
-			var c Cursor
-			if rows.Scan(&c.Instance, &c.LastEventID, &c.UpdatedAt) == nil {
-				positions[c.Instance] = c
-			}
+	rows, err := s.st.DB().Query(`SELECT instance, MAX(received_at) FROM events GROUP BY instance`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, at string
+		if rows.Scan(&id, &at) == nil {
+			out[id] = at
 		}
-		_ = rows.Close() // read-only query
 	}
-	if rows, err := s.st.DB().Query(`SELECT instance, MAX(received_at) FROM events GROUP BY instance`); err == nil {
-		for rows.Next() {
-			var name, at string
-			if rows.Scan(&name, &at) == nil {
-				lastEvents[name] = at
-			}
-		}
-		_ = rows.Close() // read-only query
-	}
-	return positions, lastEvents
+	return out
 }
 
-// managedRow builds the wire row of one entry, resolved for a workspace.
-func (s *Service) managedRow(e Entry, workspaceID string, positions map[string]Cursor, lastEvents map[string]string) map[string]any {
+// connectionRow builds the wire row of one connection. The live fields of
+// its process are at the top of the row.
+func (s *Service) connectionRow(c Connection, workspaceID string, lastEvents map[string]string) map[string]any {
+	inputs := MaskInputs(c.Inputs)
+	for _, name := range NewFolder(c.ID).Secrets() {
+		if _, ok := inputs[name]; !ok {
+			inputs[name] = maskValue
+		}
+	}
 	row := map[string]any{
-		"id":                e.Name,
-		"name":              e.Name,
-		"provenance":        "managed",
-		"managed":           true,
-		"from":              e.From,
-		"track":             string(e.track()),
-		"inputs":            MaskInputs(e.Inputs),
-		"installed_secrets": orEmptySlice(e.InstalledSecrets),
-		"capabilities":      []string{},
-		"instances":         []map[string]any{},
-		"update":            nil,
+		"id":           c.ID,
+		"type":         c.Type,
+		"slug":         c.Slug,
+		"title":        c.Title,
+		"provenance":   "managed",
+		"managed":      true,
+		"from":         c.From,
+		"track":        string(c.track()),
+		"inputs":       inputs,
+		"capabilities": []string{},
+		"update":       nil,
+		"folder":       NewFolder(c.ID).Dir(),
 	}
-	if e.Version != "" {
-		row["version"] = e.Version
+	if c.Version != "" {
+		row["version"] = c.Version
 	}
-	if v := s.availableUpdate(e.Name); v != "" {
+	if c.Digest != "" {
+		row["digest"] = c.Digest
+	}
+	if err := s.loadErrOf(c.ID); err != nil {
+		row["load_error"] = err.Error()
+	}
+	if v := s.availableUpdate(c.ID); v != "" {
 		row["update"] = map[string]any{"version": v}
 	}
-	r, err := s.Resolve(e.Name, workspaceID)
+	ws := workspaceID
+	if s.disabledIn(workspaceID, c.Slug) {
+		row["disabled"] = true
+		ws = ""
+	}
+	if workspaceID != "" {
+		row["workspace"] = workspaceID
+	}
+	r, err := s.Resolve(c.ID, ws)
 	if err != nil {
 		row["resolve_error"] = err.Error()
 		return row
 	}
+	if _, missing := r.Env(); len(missing) > 0 {
+		row["resolve_error"] = "missing secrets: " + strings.Join(missing, ", ")
+	}
 	m := r.Manifest
-	row["title"] = m.Title
+	row["title"] = r.Title
 	row["description"] = m.Description
 	row["icon"] = m.Icon
 	row["version"] = r.Version
@@ -729,12 +996,7 @@ func (s *Service) managedRow(e Entry, workspaceID string, positions map[string]C
 	row["publisher"] = m.Publisher
 	row["warning"] = m.Warning
 	row["manifest"] = m
-	row["inputs"] = MaskInputs(r.Inputs)
 	row["capabilities"] = m.Capabilities()
-	if workspaceID != "" {
-		row["workspace"] = workspaceID
-		row["instance"] = r.Instance
-	}
 	if m.Actions != nil {
 		row["actions"] = actionsRow(r)
 		if srv, _, err := r.MCPServer(); err == nil && srv != nil {
@@ -745,67 +1007,15 @@ func (s *Service) managedRow(e Entry, workspaceID string, positions map[string]C
 			row["mcp_fingerprint"] = harness.MCPFingerprint(transport, srv.Command, srv.Args, srv.URL)
 		}
 	}
-	instances := s.instanceRows(e.Name, workspaceID, r, positions, lastEvents)
-	row["instances"] = instances
-	if m.Events != nil {
-		ev := eventsRow(*m.Events)
-		if len(instances) > 0 {
-			maps.Copy(ev, instances[0])
-		}
-		row["events"] = ev
-	}
-	if m.Channel != nil {
-		row["channel"] = map[string]any{
-			"features": orEmptySlice(m.Channel.Features),
-			"limits":   m.Channel.Limits,
-			"modes":    m.Modes(),
-		}
-	}
-	if p := s.procByName(r.Instance); p != nil {
-		snap := p.snapshot()
-		row["auth"] = snap.authRow()
-		row["features"] = orEmptySlice(snap.features())
-		row["limits"] = snap.limits(m)
-	} else {
-		row["features"] = orEmptySlice(m.Features())
-		if m.Channel != nil {
-			row["limits"] = m.Channel.Limits
-		}
-	}
+	s.fillLive(row, c.ID, m, lastEvents)
 	return row
 }
 
-// instanceRows lists the instance that serves the workspace, or with no
-// workspace every instance of the connector.
-func (s *Service) instanceRows(name, workspaceID string, r Resolved, positions map[string]Cursor, lastEvents map[string]string) []map[string]any {
-	if r.Manifest.Events == nil {
-		return []map[string]any{}
-	}
-	keys := []string{r.Instance}
-	if workspaceID == "" {
-		s.mu.Lock()
-		for key := range s.procs {
-			if n, ws := splitInstance(key); n == name && ws != "" {
-				keys = append(keys, key)
-			}
-		}
-		s.mu.Unlock()
-		slices.Sort(keys[1:])
-	}
-	out := make([]map[string]any, 0, len(keys))
-	for _, key := range keys {
-		_, ws := splitInstance(key)
-		row := map[string]any{
-			"key": key, "workspace": ws, "status": statusStopped, "restarts": 0, "last_err": "",
-			"last_event_id": positions[key].LastEventID, "last_event_at": lastEvents[key],
-			"counters": map[string]any{"events": int64(0), "duplicates": int64(0), "parse_errors": int64(0)},
-		}
-		if p := s.procByName(key); p != nil {
-			p.snapshot().fill(row)
-		}
-		out = append(out, row)
-	}
-	return out
+// loadErrOf returns the load error of one folder, or nil.
+func (s *Service) loadErrOf(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadErr[id]
 }
 
 // actionsRow renders the actions block: the CLI commands with the missing
@@ -830,7 +1040,7 @@ func actionsRow(r Resolved) map[string]any {
 		}
 		row["cli"] = map[string]any{
 			"commands": orEmptySlice(a.CLI.Commands),
-			"skill":    r.Name,
+			"skill":    r.Type,
 			"missing":  missing,
 		}
 	}
@@ -885,12 +1095,12 @@ func eventsRow(e manifest.Events) map[string]any {
 }
 
 // unionInherited appends discovered MCP servers and folds the metadata of a
-// managed connector that already declares the same server.
+// connection that already declares the same server.
 func (s *Service) unionInherited(out []map[string]any, fpIndex map[string]int) []map[string]any {
 	discovered := harness.DiscoverMCP(s.userHome, nil)
 	usedNames := map[string]int{}
 	for _, row := range out {
-		usedNames[fmt.Sprint(row["name"])]++
+		usedNames[fmt.Sprint(row["slug"])]++
 	}
 	for _, srv := range discovered {
 		usedNames[srv.Name]++
@@ -909,7 +1119,7 @@ func (s *Service) unionInherited(out []map[string]any, fpIndex map[string]int) [
 			id = "inherited:" + srv.Name + "-" + harness.MCPFingerprintID(srv.Fingerprint)
 		}
 		row := map[string]any{
-			"id": id, "name": srv.Name, "provenance": "inherited", "managed": false,
+			"id": id, "type": "", "slug": srv.Name, "title": srv.Name, "provenance": "inherited", "managed": false,
 			"capabilities": []string{"actions"},
 			"actions": map[string]any{"mcp": map[string]any{
 				"command": srv.Command, "args": []string{},
@@ -922,99 +1132,6 @@ func (s *Service) unionInherited(out []map[string]any, fpIndex map[string]int) [
 		out = append(out, row)
 	}
 	return out
-}
-
-// Get returns one connector by id or unique name, resolved for a workspace.
-func (s *Service) Get(name string) (map[string]any, error) {
-	return s.GetFor(name, "")
-}
-
-// GetFor returns one connector by id or unique name, resolved for a
-// workspace. An empty workspace resolves the global layer.
-func (s *Service) GetFor(name, workspaceID string) (map[string]any, error) {
-	list := s.List(workspaceID)
-	var names []map[string]any
-	for _, row := range list {
-		if fmt.Sprint(row["id"]) == name {
-			return row, nil
-		}
-		if fmt.Sprint(row["name"]) == name {
-			names = append(names, row)
-		}
-	}
-	if len(names) == 1 {
-		return names[0], nil
-	}
-	if len(names) > 1 {
-		ids := make([]string, len(names))
-		for i, r := range names {
-			ids[i] = fmt.Sprint(r["id"])
-		}
-		return nil, &AmbiguousError{Name: name, IDs: ids}
-	}
-	return nil, fmt.Errorf("connector %q not found: %w", name, ErrNotFound)
-}
-
-// HasEvents reports whether the global layer of a managed connector has an
-// events block. A missing name is ErrNotFound.
-func (s *Service) HasEvents(name string) error {
-	if _, ok := s.Entry(name); !ok {
-		if _, err := s.Get(name); err != nil {
-			return err
-		}
-		return fmt.Errorf("%w: connector %q is not managed", ErrInherited, name)
-	}
-	r, err := s.Resolve(name, "")
-	if err != nil {
-		return err
-	}
-	if r.Manifest.Events == nil {
-		return fmt.Errorf("%w: %q", ErrNoEvents, name)
-	}
-	return nil
-}
-
-// IsChannel reports whether the global layer of a connector is a channel
-// that can hold a conversation.
-func (s *Service) IsChannel(name string) bool {
-	r, err := s.Resolve(name, "")
-	return err == nil && slices.Contains(r.Manifest.Modes(), manifest.ModeReply)
-}
-
-// GuardReserved refuses entry and lifecycle writes against a native
-// connector's name. The native service still owns its event and cursor rows,
-// so InjectEvent and PutCursor do not call it.
-func (s *Service) GuardReserved(name string) error {
-	if manifest.Reserved(name) {
-		return fmt.Errorf("%w: %q is a native connector", ErrReserved, name)
-	}
-	return nil
-}
-
-// GuardMutate refuses writes against inherited MCP rows. Missing names pass
-// through so Start/Delete keep their existing missing-name behavior.
-func (s *Service) GuardMutate(name string) error {
-	if _, ok := s.Entry(name); ok {
-		return nil
-	}
-	row, err := s.Get(name)
-	if err != nil {
-		var amb *AmbiguousError
-		if errors.As(err, &amb) {
-			return err
-		}
-		if errors.Is(err, ErrNotFound) {
-			return nil
-		}
-		return err
-	}
-	if managed, _ := row["managed"].(bool); managed {
-		return nil
-	}
-	if path := inheritedOriginPath(row); path != "" {
-		return fmt.Errorf("%w: inherited from %s; edit there", ErrInherited, path)
-	}
-	return fmt.Errorf("%w; edit the origin file", ErrInherited)
 }
 
 func inheritedOriginPath(row map[string]any) string {
@@ -1033,35 +1150,8 @@ func inheritedOriginPath(row map[string]any) string {
 	return ""
 }
 
-// RewritePathPrefix updates the file sources, inline commands, and input
-// values that point at old. dryRun reports the names without writing. Names
-// are sorted.
-func (s *Service) RewritePathPrefix(old, new string, dryRun bool) ([]string, error) {
-	if s == nil || strings.TrimSpace(old) == "" || old == new {
-		return nil, nil
-	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	if err := s.Load(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrLoadFailed, err)
-	}
-	entries := s.snapshotEntries()
-	var names []string
-	for name, e := range entries {
-		if e.rewritePaths(old, new) {
-			entries[name] = e
-			names = append(names, name)
-		}
-	}
-	slices.Sort(names)
-	if dryRun || len(names) == 0 {
-		return names, nil
-	}
-	return names, s.save(entries)
-}
-
-// rewritePaths rewrites every path field of e that starts with old.
-func (e *Entry) rewritePaths(old, new string) bool {
+// rewritePaths rewrites every path field of c that starts with old.
+func (c *Connection) rewritePaths(old, new string) bool {
 	changed := false
 	rewrite := func(p *string) {
 		if next, ok := workspaces.RewritePathPrefix(*p, old, new); ok {
@@ -1069,17 +1159,17 @@ func (e *Entry) rewritePaths(old, new string) bool {
 			changed = true
 		}
 	}
-	if path := e.FilePath(); path != "" {
+	if path := c.FilePath(); path != "" {
 		if next, ok := workspaces.RewritePathPrefix(path, old, new); ok {
-			e.From = fromFile + next
+			c.From = fromFile + next
 			changed = true
 		}
 	}
-	for k, v := range e.Inputs {
+	for k, v := range c.Inputs {
 		rewrite(&v)
-		e.Inputs[k] = v
+		c.Inputs[k] = v
 	}
-	if m := e.Manifest; m != nil {
+	if m := c.Manifest; m != nil {
 		if m.Events != nil {
 			rewrite(&m.Events.Command)
 			if m.Events.Catchup != nil {
@@ -1096,47 +1186,22 @@ func (e *Entry) rewritePaths(old, new string) bool {
 	return changed
 }
 
-// Cursor is one connector_cursors row.
-type Cursor struct {
-	Instance    string
-	LastEventID string
-	UpdatedAt   string
-}
-
-// GetCursor returns the stored cursor of an instance, or a zero LastEventID
-// when missing.
-func (s *Service) GetCursor(ctx context.Context, instance string) (Cursor, error) {
-	c := Cursor{Instance: instance}
-	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT last_event_id, updated_at FROM connector_cursors WHERE instance=?`, instance).
-		Scan(&c.LastEventID, &c.UpdatedAt)
+// cursorFolder returns the folder that holds the cursor of ref. A native
+// connector keeps its cursor in a folder named after it.
+func (s *Service) cursorFolder(ref string) (Folder, error) {
+	if manifest.Reserved(ref) {
+		return Folder{dir: home.ConnectionDir(ref)}, nil
+	}
+	c, err := s.Lookup(ref)
 	if err != nil {
-		return c, nil
+		return Folder{}, err
 	}
-	return c, nil
+	return NewFolder(c.ID), nil
 }
 
-// PutCursor upserts the connector cursor of an instance. Not a bus entity.
-func (s *Service) PutCursor(ctx context.Context, instance, lastEventID string) error {
-	name, _ := splitInstance(instance)
-	if err := s.GuardMutate(name); err != nil {
-		return err
-	}
-	now := s.now().UTC().Format(time.RFC3339)
-	_, err := s.st.DB().ExecContext(ctx, `INSERT INTO connector_cursors (instance, last_event_id, updated_at)
-		VALUES (?,?,?) ON CONFLICT(instance) DO UPDATE SET last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`,
-		instance, lastEventID, now)
-	return err
-}
-
-// LogPath is the stream log of an instance.
-func LogPath(instance string) string {
-	return filepath.Join(home.ConnectorsLogDir(), instance+".jsonl")
-}
-
-// appendConnectorLog appends one line to the stream log of an instance.
-func appendConnectorLog(instance, stream, line string) {
-	logPath := LogPath(instance)
+// appendConnectorLog appends one line to the stream log of a connection.
+func appendConnectorLog(id, stream, line string) {
+	logPath := NewFolder(id).LogPath()
 	_ = os.MkdirAll(filepath.Dir(logPath), 0o755) // the open below reports the failure
 	logf, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -1145,4 +1210,110 @@ func appendConnectorLog(instance, stream, line string) {
 	_, _ = fmt.Fprintf(logf, `{"t":%q,"stream":%q,"line":%q}`+"\n", //nolint:errcheck // a lost log line is not an error
 		time.Now().UTC().Format(time.RFC3339Nano), stream, line)
 	_ = logf.Close()
+}
+
+// decodeStrict decodes JSON and rejects unknown fields.
+func decodeStrict(raw json.RawMessage, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
+
+// orEmptySlice returns a copy of in, or an empty slice for nil, so JSON
+// shows [] and not null.
+func orEmptySlice[T any](in []T) []T {
+	if in == nil {
+		return []T{}
+	}
+	return slices.Clone(in)
+}
+
+// keepSecrets drops each input that comes back as the mask and has an owned
+// secret, and returns those names. It puts back the stored value of each
+// other masked input.
+func (c *Connection) keepSecrets(old Connection) (map[string]bool, error) {
+	keep := map[string]bool{}
+	owned := NewFolder(c.ID).Secrets()
+	for k, v := range c.Inputs {
+		if v == maskValue && slices.Contains(owned, k) {
+			delete(c.Inputs, k)
+			keep[k] = true
+		}
+	}
+	return keep, keepMasked(c.Slug, c.Inputs, old.Inputs)
+}
+
+// rewriteSlug rewrites the config files when the slug changes. It returns
+// nil when the slug stays.
+func (s *Service) rewriteSlug(ctx context.Context, old, c Connection) (*slugRewrite, error) {
+	if c.Slug == old.Slug {
+		return nil, nil
+	}
+	if err := CheckSlug(c.Slug); err != nil {
+		return nil, &ValidationError{Name: old.Slug, Fields: []FieldError{{Field: "slug", Message: err.Error()}}}
+	}
+	if !s.slugFree(c.Slug, c.ID) {
+		return nil, fmt.Errorf("%w: slug %q", ErrExists, c.Slug)
+	}
+	rw := &slugRewrite{old: old.Slug, new: c.Slug}
+	if err := rw.apply(s.slugFiles(ctx)); err != nil {
+		rw.rollback()
+		return nil, err
+	}
+	return rw, nil
+}
+
+// takeSecrets moves each literal value of a secret input out of the inputs
+// and returns them.
+func (c *Connection) takeSecrets(m manifest.Manifest) map[string]string {
+	owned := map[string]string{}
+	if m.Setup == nil {
+		return owned
+	}
+	for _, in := range m.Setup.Inputs {
+		v, ok := c.Inputs[in.Name]
+		if !in.Secret || !ok || v == "" || strings.HasPrefix(v, "secret:") {
+			continue
+		}
+		owned[in.Name] = v
+		delete(c.Inputs, in.Name)
+	}
+	return owned
+}
+
+// fillLive adds the events, channel, and auth fields of a connection row:
+// the live session when the process runs, else the manifest.
+func (s *Service) fillLive(row map[string]any, id string, m manifest.Manifest, lastEvents map[string]string) {
+	p := s.procByName(id)
+	if m.Events != nil {
+		row["events"] = eventsRow(*m.Events)
+		pos, _ := NewFolder(id).Cursor()
+		row["status"] = statusStopped
+		row["restarts"] = 0
+		row["last_err"] = ""
+		row["last_event_id"] = pos.LastEventID
+		row["last_event_at"] = lastEvents[id]
+		row["counters"] = map[string]any{"events": int64(0), "duplicates": int64(0), "parse_errors": int64(0)}
+		if p != nil {
+			p.snapshot().fill(row)
+		}
+	}
+	if m.Channel != nil {
+		row["channel"] = map[string]any{
+			"features": orEmptySlice(m.Channel.Features),
+			"limits":   m.Channel.Limits,
+			"modes":    m.Modes(),
+		}
+	}
+	if p != nil {
+		snap := p.snapshot()
+		row["auth"] = snap.authRow()
+		row["features"] = orEmptySlice(snap.features())
+		row["limits"] = snap.limits(m)
+	} else {
+		row["features"] = orEmptySlice(m.Features())
+		if m.Channel != nil {
+			row["limits"] = m.Channel.Limits
+		}
+	}
 }

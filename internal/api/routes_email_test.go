@@ -279,7 +279,7 @@ func TestEmailRoutes(t *testing.T) {
 	}
 	var row map[string]any
 	for _, c := range m["connectors"].([]any) {
-		if c.(map[string]any)["name"] == "email" {
+		if c.(map[string]any)["slug"] == "email" {
 			row = c.(map[string]any)
 		}
 	}

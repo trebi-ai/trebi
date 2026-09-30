@@ -26,23 +26,29 @@ func TestMain(m *testing.M) {
 func TestConnectorConformanceLocal(t *testing.T) {
 	dir := t.TempDir()
 	sb := &fakeadapter.Sandbox{
-		Result:   protocol.InitializeResult{Features: []string{"rooms.list"}, Events: []protocol.EventDecl{{Type: "message"}}},
-		Rooms:    []protocol.Room{{ID: "r1"}},
-		LoggedIn: true,
+		Result: protocol.InitializeResult{
+			Features: []string{"rooms.list"}, Events: []protocol.EventDecl{{Type: "message"}}, Login: []string{"qr"},
+		},
+		Rooms:     []protocol.Room{{ID: "r1"}},
+		Reference: true,
 	}
 	path := filepath.Join(dir, "sandbox.json")
 	if err := sb.WriteFile(path); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(fakeadapter.Env, "sandbox:"+path)
+	// The runner gives the adapter a clean env, so the command sets the
+	// switch itself.
+	command := fakeadapter.Env + "=sandbox:" + path + " " + `"` + os.Args[0] + `"`
 	manifestYAML := `schema: trebi-connector/1
 name: chat
 title: Chat
 description: A test chat.
 version: 1.0.0
+setup:
+  login: [qr]
 events:
   protocol: trebi-connector/1
-  command: '"` + os.Args[0] + `"'
+  command: '` + command + `'
   types: [{type: message}]
 channel:
   features: [rooms.list]
@@ -54,25 +60,22 @@ channel:
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"initialize", "send once", "shutdown"} {
+	for _, want := range []string{"initialize", "shutdown"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("no %q in\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "fail") {
-		t.Fatalf("a check failed:\n%s", out)
+	if statusColumn(out, "fail") || !statusColumn(out, "pass") {
+		t.Fatalf("want pass rows and no fail row:\n%s", out)
 	}
 
 	// A promise the adapter does not keep fails the command.
-	if _, err := runCLI(t, nil, "connector", "conformance", "--command", `"`+os.Args[0]+`"`, "--json"); err != nil {
-		t.Fatalf("command only: %v", err)
-	}
 	manifestYAML = strings.Replace(manifestYAML, "[rooms.list]", "[rooms.list, reactions]", 1)
 	if err := os.WriteFile(filepath.Join(dir, "trebi-connector.yaml"), []byte(manifestYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runCLI(t, nil, "connector", "conformance", "--manifest", dir); err == nil {
-		t.Fatal("a missing feature must fail")
+	if out, err := runCLI(t, nil, "connector", "conformance", "--manifest", dir); err == nil {
+		t.Fatalf("a missing feature must fail:\n%s", out)
 	}
 }
 
@@ -97,4 +100,16 @@ func TestConnectorConformanceLive(t *testing.T) {
 	if sent["room"] != "r9" {
 		t.Fatalf("body = %v", sent)
 	}
+}
+
+// statusColumn reports whether a row of the conformance table has status in
+// its Status column.
+func statusColumn(out, status string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		cells := strings.Split(line, "│")
+		if len(cells) > 4 && strings.TrimSpace(cells[3]) == status {
+			return true
+		}
+	}
+	return false
 }

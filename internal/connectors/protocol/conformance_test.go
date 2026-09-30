@@ -55,6 +55,72 @@ func TestConformanceLiveSkipsShutdown(t *testing.T) {
 	}
 }
 
+// TestConformanceSandboxReference runs every new check against the
+// reference sandbox: write features, the self event of a send, replay with
+// a cursor, error codes, status, limits, and clean stdout.
+func TestConformanceSandboxReference(t *testing.T) {
+	t.Parallel()
+	sb := sandbox()
+	sb.Reference = true
+	sb.LoggedIn = false
+	sb.Result.Features = []string{"rooms.list", "rooms.open", "threads", "threads.create", "history", "replay", "typing", "seen", "reactions", "edit", "attachments.out"}
+	sb.Result.Limits = protocol.Limits{MaxText: 1000, Formats: []string{"text"}}
+	c := &protocol.Checker{
+		Features: sb.Result.Features, EventTypes: []string{"message"}, Login: []string{"qr"},
+		Limits: protocol.Limits{MaxText: 4000, Formats: []string{"text", "markdown"}}, Sandbox: true, EmptyState: true,
+	}
+	res := runChecker(t, sb, c)
+	for check, r := range res {
+		want := protocol.CheckPass
+		if check == "unsupported" || check == "attachments in" {
+			want = protocol.CheckSkip // every feature declared; no state folder in process
+		}
+		if r.Status != want {
+			t.Errorf("%s = %+v, want %s", check, r, want)
+		}
+	}
+	for _, check := range []string{"status", "limits", "sandbox login", "feature edit", "feature attachments.out", "events from send", "replay cursor", "error codes", "clean stdout"} {
+		if _, ok := res[check]; !ok {
+			t.Errorf("no row %q", check)
+		}
+	}
+}
+
+func TestConformanceNewFailures(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		edit  func(*fakeadapter.Sandbox, *protocol.Checker)
+		check string
+	}{
+		{"stdout noise", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) { sb.Faults = []string{fakeadapter.FaultStdoutNoise} }, "clean stdout"},
+		{"limits", func(sb *fakeadapter.Sandbox, c *protocol.Checker) {
+			sb.Result.Limits.MaxText = 5000
+			c.Limits.MaxText = 4000
+		}, "limits"},
+		{"no echo", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) { sb.Reference = false }, "events from send"},
+		{"logged in on empty state", func(sb *fakeadapter.Sandbox, c *protocol.Checker) { sb.LoggedIn = true }, "status"},
+		{"replay ignores the cursor", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) {
+			sb.Reference = false
+			sb.Result.Features = append(sb.Result.Features, "replay")
+		}, "replay cursor"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			sb := sandbox()
+			sb.Reference = true
+			sb.LoggedIn = false
+			c := &protocol.Checker{Login: []string{"qr"}, Sandbox: true, EmptyState: true}
+			tt.edit(sb, c)
+			res := runChecker(t, sb, c)
+			if r := res[tt.check]; r.Status != protocol.CheckFail {
+				t.Fatalf("%s = %+v", tt.check, r)
+			}
+		})
+	}
+}
+
 // runChecker runs a checker against an in-process sandbox and returns the
 // status of each check.
 func runChecker(t *testing.T, sb *fakeadapter.Sandbox, c *protocol.Checker) map[string]protocol.CheckResult {
@@ -66,7 +132,7 @@ func runChecker(t *testing.T, sb *fakeadapter.Sandbox, c *protocol.Checker) map[
 		_ = outW.Close()
 	}()
 	t.Cleanup(func() { _ = inW.Close() })
-	conn := protocol.NewConn(outR, inW, c.Notify)
+	conn := protocol.NewConn(outR, inW, c.Notify, protocol.WithBadLine(c.BadLine))
 	ctx := context.Background()
 	go func() { _ = conn.Run(ctx) }() // ends at EOF of outR
 	out := map[string]protocol.CheckResult{}

@@ -20,6 +20,7 @@ type eventRow struct {
 	id, connector, at, sum, trace, raw string
 	instance, eventType, sourceID      string
 	identity, room, thread, sender     string
+	slug                               string
 	catchUp                            bool
 }
 
@@ -30,7 +31,7 @@ func (e eventRow) base() map[string]any {
 		"summary": e.sum, "trace_id": e.trace,
 		"instance": e.instance, "event_type": e.eventType, "source_id": e.sourceID,
 		"identity": e.identity, "room": e.room, "thread": e.thread, "sender": e.sender,
-		"catch_up": e.catchUp,
+		"catch_up": e.catchUp, "slug": e.slug,
 	}
 }
 
@@ -188,9 +189,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		q += ` AND id < ?`
 		args = append(args, cursor)
 	}
+	// A slug or id filters one connection; any other value filters a type.
 	if connector := r.URL.Query().Get("connector"); connector != "" {
-		q += ` AND connector = ?`
-		args = append(args, connector)
+		if id := s.connectors.IDOf(connector); id != "" {
+			q += ` AND instance = ?`
+			args = append(args, id)
+		} else {
+			q += ` AND connector = ?`
+			args = append(args, connector)
+		}
 	}
 	if since != "" {
 		q += ` AND received_at >= ?`
@@ -234,6 +241,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		var e eventRow
 		if rows.Scan(&e.id, &e.connector, &e.at, &e.sum, &e.trace, &e.raw,
 			&e.instance, &e.eventType, &e.sourceID, &e.identity, &e.room, &e.thread, &e.sender, &e.catchUp) == nil {
+			e.slug = s.connectors.SlugOf(e.instance)
 			evs = append(evs, e)
 			ids = append(ids, e.id)
 		}
@@ -438,6 +446,7 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "event not found")
 		return
 	}
+	e.slug = s.connectors.SlugOf(e.instance)
 	outcomesBy := s.enrichEventOutcomes(r.Context(), "", "", []string{id})
 	s.patchDoneResults(r.Context(), outcomesBy)
 	outs := outcomesBy[id]
@@ -532,13 +541,18 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	if len(summary) > 200 {
 		summary = summary[:200]
 	}
-	if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO events (id, connector, received_at, summary, raw_json, trace_id)
-		VALUES (?,?,?,?,?,?)`, eid, body.Connector, now, summary, string(raw), trace); err != nil {
+	// A connection keeps its type on the event row and its id on the queue.
+	typ, instance := body.Connector, body.Connector
+	if c, err := s.connectors.Lookup(body.Connector); err == nil {
+		typ, instance = c.Type, c.ID
+	}
+	if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO events (id, connector, instance, received_at, summary, raw_json, trace_id)
+		VALUES (?,?,?,?,?,?,?)`, eid, typ, instance, now, summary, string(raw), trace); err != nil {
 		s.log.Warn("rules.fire event insert", "event_id", eid, "error", err)
 	}
 
 	item := &dispatch.QueueItem{
-		Connector:   body.Connector,
+		Connector:   instance,
 		WorkspaceID: body.Workspace,
 		Job:         body.Job,
 		Kind:        s.indexRowKind(r.Context(), body.Workspace, body.Job),

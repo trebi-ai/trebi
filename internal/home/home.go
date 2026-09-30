@@ -42,7 +42,6 @@ func SetBase(dir string) {
 // Paths under home.
 func DBPath() string         { return filepath.Join(Base(), "trebi.db") }
 func ConfigPath() string     { return filepath.Join(Base(), "config.yaml") }
-func ConnectorsPath() string { return filepath.Join(Base(), "connectors.yaml") }
 func APIJSONPath() string    { return filepath.Join(Base(), "api.json") }
 func DaemonLockPath() string { return filepath.Join(Base(), "daemon.lock") }
 func LicensePath() string    { return filepath.Join(Base(), "license.json") }
@@ -63,23 +62,20 @@ func RunsDir() string    { return filepath.Join(Base(), "runs") }
 
 // RequestsDir holds the report snapshots of requests, one folder per id.
 func RequestsDir() string { return filepath.Join(Base(), "requests") }
-func ConnectorsLogDir() string {
-	return filepath.Join(Base(), "logs", "connectors")
-}
 
-// ConnectorsDir holds one folder per connector name, with one unpacked
-// snapshot per version.
-func ConnectorsDir() string { return filepath.Join(Base(), "connectors") }
+// ConnectionsDir holds one folder per connection, named by its id.
+func ConnectionsDir() string { return filepath.Join(Base(), "connectors") }
 
-// ConnectorVersionDir is the unpacked snapshot of one connector version.
-func ConnectorVersionDir(name, version string) string {
-	return filepath.Join(ConnectorsDir(), name, version)
-}
+// ConnectionDir is the folder of one connection: the unit of backup and
+// restore.
+func ConnectionDir(id string) string { return filepath.Join(ConnectionsDir(), id) }
 
-// ConnectorStateDir is the adapter state of one connector instance.
-func ConnectorStateDir(instance string) string {
-	return filepath.Join(Base(), "state", "connectors", instance)
-}
+// PackagesDir holds the unpacked catalog packages, shared by type.
+func PackagesDir() string { return filepath.Join(Base(), "packages", "connectors") }
+
+// PackageDir is the unpacked snapshot of one connector type at one version.
+func PackageDir(typ, version string) string { return filepath.Join(PackagesDir(), typ, version) }
+
 func DaemonLogPath() string { return filepath.Join(Base(), "logs", "trebid.log") }
 
 // EnsureDirs creates the standard directory tree.
@@ -93,8 +89,6 @@ func EnsureDirs() error {
 		LogsDir(),
 		RunsLogDir(),
 		RunsDir(),
-		ConnectorsLogDir(),
-		filepath.Join(Base(), "state"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {

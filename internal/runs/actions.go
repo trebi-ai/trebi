@@ -17,7 +17,9 @@ import (
 
 // ConnectorAction is one connector's contribution to a run.
 type ConnectorAction struct {
-	Name     string
+	ID       string // connection id; connectors_json stores it
+	Slug     string
+	Title    string
 	MCP      *agentwire.MCPServer // nil for CLI-only actions
 	Env      map[string]string    // connector env, secrets expanded
 	BinDir   string               // installed binaries; first on PATH
@@ -105,13 +107,17 @@ func connectorHint(actions []ConnectorAction) string {
 		if len(a.Commands) == 0 && a.Skill == "" {
 			continue
 		}
+		name := a.Slug
+		if a.Title != "" && a.Title != a.Slug {
+			name += " (" + a.Title + ")"
+		}
 		switch {
 		case len(a.Commands) > 0 && a.Skill != "":
-			lines = append(lines, "Connector "+a.Name+": use "+strings.Join(a.Commands, ", ")+" (skill "+a.Skill+").")
+			lines = append(lines, "Connector "+name+": use "+strings.Join(a.Commands, ", ")+" (skill "+a.Skill+").")
 		case len(a.Commands) > 0:
-			lines = append(lines, "Connector "+a.Name+": use "+strings.Join(a.Commands, ", ")+".")
+			lines = append(lines, "Connector "+name+": use "+strings.Join(a.Commands, ", ")+".")
 		default:
-			lines = append(lines, "Connector "+a.Name+": skill "+a.Skill+".")
+			lines = append(lines, "Connector "+name+": skill "+a.Skill+".")
 		}
 	}
 	return strings.Join(lines, "\n")

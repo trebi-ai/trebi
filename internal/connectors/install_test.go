@@ -160,26 +160,46 @@ func TestInstallUpdateGC(t *testing.T) {
 	ctx := context.Background()
 	st, svc := installStack(t, "demo", nil)
 
-	r, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Version: "1.0.0", Track: "patch"})
+	c, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Version: "1.0.0", Track: "patch"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(home.ConnectorVersionDir("demo", "1.0.0"), "bin", "demo-cli")
-	if r.Version != "1.0.0" || r.BinDir() != filepath.Dir(bin) || r.SkillDir() == "" {
+	r, err := svc.Resolve(c.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(home.PackageDir("demo", "1.0.0"), "bin", "demo-cli")
+	if c.Slug != "demo" || r.Version != "1.0.0" || r.BinDir() != filepath.Dir(bin) || r.SkillDir() == "" {
 		t.Fatalf("resolved = %+v", r)
 	}
 	if out, err := exec.Command(bin).Output(); err != nil || strings.TrimSpace(string(out)) != "demo-cli 1.0.0" {
 		t.Fatalf("bin = %q %v", out, err)
 	}
 	var rows int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM connector_installs WHERE name = 'demo' AND version = '1.0.0' AND digest LIKE 'sha256:%'`).Scan(&rows); err != nil || rows != 1 {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM connector_installs WHERE type = 'demo' AND version = '1.0.0' AND digest LIKE 'sha256:%'`).Scan(&rows); err != nil || rows != 1 {
 		t.Fatalf("install rows = %d %v", rows, err)
 	}
 	if topicCount(t, st, "connector.installed") != 1 {
 		t.Fatal("connector.installed not emitted")
 	}
-	if _, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo"}); !errors.Is(err, connectors.ErrExists) {
-		t.Fatalf("second install = %v", err)
+	if _, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Slug: "demo"}); !errors.Is(err, connectors.ErrExists) {
+		t.Fatalf("install with a used slug = %v", err)
+	}
+
+	// A second account of the type shares the package. Its delete keeps the
+	// package that the first connection still uses.
+	second, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Version: "1.0.0", Track: "exact", Title: "Work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Slug != "demo-2" || second.ID == c.ID || second.Title != "Work" {
+		t.Fatalf("second = %+v", second)
+	}
+	if err := svc.Delete(ctx, "demo-2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Fatalf("delete removed a used package: %v", err)
 	}
 
 	vers, err := svc.Versions(ctx, "demo")
@@ -192,16 +212,16 @@ func TestInstallUpdateGC(t *testing.T) {
 	if err != nil || len(res) != 1 || !res[0].Applied || res[0].To != "1.0.1" {
 		t.Fatalf("check = %+v %v", res, err)
 	}
-	if e, _ := svc.Entry("demo"); e.Version != "1.0.1" {
-		t.Fatalf("entry version = %s", e.Version)
+	if e, _ := svc.Lookup("demo"); e.Version != "1.0.1" {
+		t.Fatalf("connection version = %s", e.Version)
 	}
-	if _, err := os.Stat(home.ConnectorVersionDir("demo", "1.0.0")); !os.IsNotExist(err) {
+	if _, err := os.Stat(home.PackageDir("demo", "1.0.0")); !os.IsNotExist(err) {
 		t.Fatalf("old version stays: %v", err)
 	}
 
 	// The minor track records 1.1.0 and does not apply it.
 	track := "minor"
-	if err := svc.Patch(ctx, "demo", connectors.EntryPatch{Track: &track}); err != nil {
+	if _, err := svc.Patch(ctx, "demo", connectors.ConnectionPatch{Track: &track}); err != nil {
 		t.Fatal(err)
 	}
 	res, err = svc.CheckUpdates(ctx, "demo")
@@ -225,10 +245,10 @@ func TestInstallUpdateGC(t *testing.T) {
 
 	// Update with no version takes the newest version that is not yanked
 	// and not a pre-release.
-	if err := svc.Update(ctx, "demo", "", ""); err != nil {
+	if err := svc.Update(ctx, "demo", ""); err != nil {
 		t.Fatal(err)
 	}
-	if e, _ := svc.Entry("demo"); e.Version != "1.1.0" {
+	if e, _ := svc.Lookup("demo"); e.Version != "1.1.0" {
 		t.Fatalf("updated version = %s", e.Version)
 	}
 	row, _ = svc.Get("demo")
@@ -249,10 +269,13 @@ func TestInstallChecksumRollback(t *testing.T) {
 	if _, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo"}); err == nil || !strings.Contains(err.Error(), "checksum") {
 		t.Fatalf("install = %v", err)
 	}
-	if _, ok := svc.Entry("demo"); ok {
-		t.Fatal("a failed install must not write the entry")
+	if _, err := svc.Lookup("demo"); err == nil {
+		t.Fatal("a failed install must not create the connection")
 	}
-	entries, _ := os.ReadDir(filepath.Join(home.ConnectorsDir(), "demo"))
+	if entries, _ := os.ReadDir(home.ConnectionsDir()); len(entries) != 0 {
+		t.Fatalf("connection left behind: %v", entries)
+	}
+	entries, _ := os.ReadDir(filepath.Join(home.PackagesDir(), "demo"))
 	if len(entries) != 0 {
 		t.Fatalf("left behind: %v", entries)
 	}
@@ -289,7 +312,11 @@ func TestInstallFromCatalog(t *testing.T) {
 			return tarGz(map[string]string{"demo-cli": "#!/bin/sh\necho demo-cli " + v + "\n"})
 		},
 	}})
-	r, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo"})
+	c, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.Resolve(c.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}

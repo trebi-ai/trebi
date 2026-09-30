@@ -551,7 +551,7 @@ type mcpResolver struct{}
 func (mcpResolver) ResolveActions(_ context.Context, _ string, names []string) ([]runs.ConnectorAction, error) {
 	out := make([]runs.ConnectorAction, 0, len(names))
 	for _, n := range names {
-		out = append(out, runs.ConnectorAction{Name: n, MCP: &agentwire.MCPServer{
+		out = append(out, runs.ConnectorAction{ID: n, Slug: n, MCP: &agentwire.MCPServer{
 			Name: n, Command: "npx", Env: map[string]string{"TOKEN": "secret-" + n},
 		}})
 	}

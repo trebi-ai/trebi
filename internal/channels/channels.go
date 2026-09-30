@@ -41,9 +41,9 @@ type Sessions interface {
 	Features(instance string) []string
 	// Limits returns the message limits of the instance.
 	Limits(instance string) manifest.Limits
-	// InstanceFor returns the instance that serves a connector in a
-	// workspace, or "" when the workspace turned it off.
-	InstanceFor(name, workspaceID string) string
+	// ConnectionFor returns the id of a slug or id ref, or "" when no
+	// connection has it or the workspace turned it off.
+	ConnectionFor(ref, workspaceID string) string
 	// IsChannel reports whether a connector holds conversations.
 	IsChannel(name string) bool
 }
@@ -106,7 +106,8 @@ func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string)
 	if err != nil || user == nil {
 		return err
 	}
-	if user.Room == "" || !s.conn.IsChannel(user.Connector) {
+	instance := cmp.Or(user.Instance, user.Connector)
+	if user.Room == "" || !s.conn.IsChannel(instance) {
 		return nil
 	}
 	last, text, ok, err := s.convs.ReplyText(ctx, conversationID, runID, user.ID)
@@ -119,7 +120,7 @@ func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string)
 	}
 	_, err = s.ob.Enqueue(ctx, outbox.Row{
 		Kind: outbox.KindChannel, Purpose: outbox.PurposeReply,
-		WorkspaceID: conv.Workspace, Instance: cmp.Or(user.Instance, user.Connector),
+		WorkspaceID: conv.Workspace, Instance: instance,
 		Room: user.Room, Thread: user.Thread,
 		Body: text, ConversationID: conversationID, RunID: runID, DedupeKey: last.ID,
 	})
@@ -133,12 +134,10 @@ func (s *Service) Deliver(ctx context.Context, r outbox.Row) error {
 	if s.conn == nil {
 		return outbox.Permanent{Err: errors.New("connectors are not available")}
 	}
-	instance := r.Instance
-	if !strings.Contains(instance, "@") && r.WorkspaceID != "" {
-		instance = s.conn.InstanceFor(r.Connector(), r.WorkspaceID)
-		if instance == "" {
-			return outbox.Permanent{Err: fmt.Errorf("connector %q is turned off in workspace %s", r.Connector(), r.WorkspaceID)}
-		}
+	// A notify row names the slug of its via: step; a reply row holds the id.
+	instance := s.conn.ConnectionFor(r.Instance, r.WorkspaceID)
+	if instance == "" {
+		return outbox.Permanent{Err: fmt.Errorf("connector %q is not found or is turned off in workspace %s", r.Instance, r.WorkspaceID)}
 	}
 	limits := s.conn.Limits(instance)
 	format := "text"
@@ -284,7 +283,7 @@ func (s *Service) pulseOne(ctx context.Context, conversationID string, now time.
 		return
 	}
 	instance := cmp.Or(user.Instance, user.Connector)
-	if user.Room == "" || !s.conn.IsChannel(user.Connector) || !slices.Contains(s.conn.Features(instance), manifest.FeatureTyping) {
+	if user.Room == "" || !s.conn.IsChannel(instance) || !slices.Contains(s.conn.Features(instance), manifest.FeatureTyping) {
 		return
 	}
 

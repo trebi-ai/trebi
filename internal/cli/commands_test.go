@@ -259,7 +259,7 @@ func TestConnectorCursorBodies(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"name":"mail","last_event_id":""}`))
+		_, _ = w.Write([]byte(`{"id":"con_01k6abcdefghjkmnpqrstvwxyz","slug":"mail","last_event_id":"evt-1"}`))
 	}))
 	t.Cleanup(srv.Close)
 	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
@@ -274,6 +274,15 @@ func TestConnectorCursorBodies(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, `"last_event_id":"evt-9"`) {
 		t.Fatalf("set body %s", gotBody)
+	}
+	out, err := runCLI(t, client, "connector", "cursor", "show", "mail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SLUG", "ID", "con_01k6abcdefghjkmnpqrstvwxyz", "evt-1"} {
+		if !strings.Contains(strings.ToUpper(out), strings.ToUpper(want)) {
+			t.Fatalf("cursor show missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -323,30 +332,115 @@ func TestConnectorSetCreatesInline(t *testing.T) {
 	if _, err := runCLI(t, client, "connector", "set", "tick", "--manifest-file", path); err != nil {
 		t.Fatal(err)
 	}
-	if method != "POST /v1/connectors" || body != `{"from":"inline","manifest":{"events":{"command":"tick.sh"},"name":"tick"},"name":"tick"}` {
+	if method != "POST /v1/connectors" || body != `{"from":"inline","manifest":{"events":{"command":"tick.sh"},"name":"tick"},"slug":"tick"}` {
 		t.Fatalf("%s %s", method, body)
 	}
 }
 
-func TestConnectorApplyReadsEntry(t *testing.T) {
-	var method, body string
+// TestConnectorApplyCreatesOrPatches proves apply reads a slug-keyed file,
+// creates the connection when the slug is new, and else sends a PATCH to
+// its id.
+func TestConnectorApplyCreatesOrPatches(t *testing.T) {
+	var got []string
+	exists := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		method, body = r.Method+" "+r.URL.Path, string(b)
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "GET" {
+			if !exists {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"no"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"con_01k6abcdefghjkmnpqrstvwxyz","slug":"wa-work"}`))
+			return
+		}
+		got = append(got, r.Method+" "+r.URL.Path+" "+string(b))
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	t.Cleanup(srv.Close)
 	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
 	path := filepath.Join(t.TempDir(), "c.yaml")
-	if err := os.WriteFile(path, []byte("whatsapp:\n  from: catalog\n  track: minor\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("type: whatsapp\nslug: wa-work\ntitle: Work phone\nfrom: catalog\nversion: 0.7.0\ntrack: minor\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runCLI(t, client, "connector", "apply", "--file", path); err != nil {
 		t.Fatal(err)
 	}
-	if method != "PUT /v1/connectors/whatsapp" || body != `{"from":"catalog","name":"whatsapp","track":"minor"}` {
-		t.Fatalf("%s %s", method, body)
+	exists = true
+	if _, err := runCLI(t, client, "connector", "apply", "--file", path); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		`POST /v1/connectors {"from":"catalog","slug":"wa-work","title":"Work phone","track":"minor","type":"whatsapp","version":"0.7.0"}`,
+		`PATCH /v1/connectors/con_01k6abcdefghjkmnpqrstvwxyz {"title":"Work phone","track":"minor","version":"0.7.0"}`,
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// The old name-keyed form has no slug.
+	if err := os.WriteFile(path, []byte("whatsapp:\n  from: catalog\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, client, "connector", "apply", "--file", path); err == nil || !strings.Contains(err.Error(), "slug") {
+		t.Fatalf("name-keyed file err = %v", err)
+	}
+}
+
+// TestConnectorAddSendsSlugAndTitle proves add sends the slug and title of
+// the new connection, and install stays an alias.
+func TestConnectorAddSendsSlugAndTitle(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = append(got, r.Method+" "+r.URL.Path+" "+string(b))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"con_01k6abcdefghjkmnpqrstvwxyz","slug":"wa-work"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+	out, err := runCLI(t, client, "connector", "add", "whatsapp", "--slug", "wa-work", "--title", "Work phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "wa-work") || !strings.Contains(out, "con_01k6abcdefghjkmnpqrstvwxyz") {
+		t.Fatalf("out = %s", out)
+	}
+	if _, err := runCLI(t, client, "connector", "install", "whatsapp"); err != nil {
+		t.Fatalf("install alias: %v", err)
+	}
+	if len(got) != 2 || !strings.HasPrefix(got[0], "POST /v1/connectors/install ") ||
+		!strings.Contains(got[0], `"slug":"wa-work"`) || !strings.Contains(got[0], `"title":"Work phone"`) {
+		t.Fatalf("requests %q", got)
+	}
+	if strings.Contains(got[1], `"slug"`) || strings.Contains(got[1], `"as"`) {
+		t.Fatalf("add with no slug must let the daemon pick it: %s", got[1])
+	}
+	if _, err := runCLI(t, client, "connector", "add", "whatsapp", "--as", "x"); err == nil {
+		t.Fatal("--as must be gone")
+	}
+}
+
+// TestConnectorSetSlug proves set --slug sends the new slug and names it.
+func TestConnectorSetSlug(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if r.Method == "PATCH" && r.URL.Path == "/v1/connectors/wa" {
+			body = string(b)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+	out, err := runCLI(t, client, "connector", "set", "wa", "--slug", "wa-work", "--title", "Work phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != `{"slug":"wa-work","title":"Work phone"}` || !strings.Contains(out, "connector wa-work set") {
+		t.Fatalf("body %s out %s", body, out)
 	}
 }
 
@@ -394,17 +488,17 @@ func TestConnectorSessionRequests(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		got = append(got, r.Method+" "+r.URL.RequestURI()+" "+string(b))
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"override":{"inputs":{"A":"***"}}}`))
+		_, _ = w.Write([]byte(`{"override":{"patch":{"x":1}}}`))
 	}))
 	t.Cleanup(srv.Close)
 	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
 	runs := [][]string{
-		{"connector", "rooms", "wa", "--workspace", "ws1", "--query", "fam"},
-		{"connector", "threads", "wa", "r1", "--instance", "wa@ws1"},
+		{"connector", "rooms", "wa", "--query", "fam"},
+		{"connector", "threads", "wa", "r1"},
 		{"connector", "bind", "wa", "r1", "--workspace", "ws1", "--operator", "agents/triage"},
 		{"connector", "logout", "wa"},
-		{"connector", "restart", "wa", "--workspace", "ws1"},
-		{"connector", "override", "set", "wa", "--workspace", "ws1", "--input", "B=2", "--disabled"},
+		{"connector", "restart", "wa"},
+		{"connector", "override", "set", "wa", "--workspace", "ws1", "--disabled"},
 	}
 	for _, args := range runs {
 		if _, err := runCLI(t, client, args...); err != nil {
@@ -412,17 +506,27 @@ func TestConnectorSessionRequests(t *testing.T) {
 		}
 	}
 	want := []string{
-		"GET /v1/connectors/wa/rooms?q=fam&workspace=ws1 ",
-		"GET /v1/connectors/wa/rooms/r1/threads?instance=wa%40ws1 ",
+		"GET /v1/connectors/wa/rooms?q=fam ",
+		"GET /v1/connectors/wa/rooms/r1/threads ",
 		`POST /v1/connectors/wa/rooms/r1/bind {"operator":"agents/triage","workspace":"ws1"}`,
 		"POST /v1/connectors/wa/logout {}",
-		"POST /v1/connectors/wa/restart?workspace=ws1 ",
+		"POST /v1/connectors/wa/restart ",
 		"GET /v1/workspaces/ws1/connectors/wa ",
-		`PUT /v1/workspaces/ws1/connectors/wa {"disabled":true,"inputs":{"A":"***","B":"2"}}`,
+		`PUT /v1/workspaces/ws1/connectors/wa {"disabled":true,"patch":{"x":1}}`,
 	}
 	for i, w := range want {
 		if i >= len(got) || strings.TrimSpace(got[i]) != strings.TrimSpace(w) {
 			t.Fatalf("request %d = %q, want %q (all %q)", i, got, w, got)
+		}
+	}
+	// A connection is one ref: the instance flag is gone.
+	for _, args := range [][]string{
+		{"connector", "threads", "wa", "r1", "--instance", "wa@ws1"},
+		{"connector", "restart", "wa", "--instance", "wa@ws1"},
+		{"connector", "override", "set", "wa", "--workspace", "ws1", "--input", "B=2"},
+	} {
+		if _, err := runCLI(t, client, args...); err == nil {
+			t.Errorf("%v: want a flag error", args)
 		}
 	}
 }

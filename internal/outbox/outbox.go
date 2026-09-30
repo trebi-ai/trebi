@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -97,12 +96,6 @@ type Row struct {
 	CreatedAt      time.Time         `json:"created_at"`
 	SentAt         *time.Time        `json:"sent_at,omitempty"`
 	Revision       int64             `json:"revision"`
-}
-
-// Connector is the connector name of the instance: the part before '@'.
-func (r Row) Connector() string {
-	name, _, _ := strings.Cut(r.Instance, "@")
-	return name
 }
 
 // Sender delivers one row. email.Service and channels.Service implement it.
@@ -611,7 +604,7 @@ func frame(r Row, topic string) store.BusEvent {
 		"kind": string(r.Kind), "purpose": string(r.Purpose), "row_id": r.ID,
 	}
 	for k, v := range map[string]string{
-		"workspace": r.WorkspaceID, "connector": r.Connector(), "instance": r.Instance,
+		"workspace": r.WorkspaceID, "instance": r.Instance,
 		"conversation_id": r.ConversationID, "inbox_id": r.InboxID,
 	} {
 		if v != "" {

@@ -23,10 +23,15 @@ path). Incremental --job/--agent --apply copies into the target and leaves
 in place (cutover). rewrite-jobs converts jobi MEMORY.md (extra ## headings)
 to trebi v1; convert-memory does only that.
 
-Schema v25 (store.SchemaVersion): runs gained inputs_json/memory_hash/outcome*/
+Schema v32 (store.SchemaVersion): runs gained inputs_json/memory_hash/outcome*/
 runtime_pid/attach_kind/actor_token_hash, and event_queue/events use connector,
 not integration. This script writes the columns that have a jobi source; the
 rest keep their defaults and trebi's readers treat them as unset.
+
+Each jobi source becomes one `from: inline` connection in ~/.trebi/connectors/<id>/connection.yaml
+(events protocol lines, so match expressions keep the jobi event shape). The
+script merges: an existing entry is never replaced. --job/--agent add only the
+connectors that the selected jobs name. A new entry takes the jobi cursor.
 
 A jobi workspace with AGENT.md at its root is one agent. --agent <name> maps
 it onto agents/<name>/. --agent --apply also copies that agent's run fail
@@ -49,6 +54,7 @@ import shutil
 import socket
 import sqlite3
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -81,23 +87,21 @@ TABLE_MAP = {
     "task_segments": "run_segments",
     "task_events": "run_events",
     "event_queue": "event_queue",
-    "trigger_policy": "dispatch_policy",
-    "source_metrics": "connector_metrics",
     "source_cursors": "connector_cursors",
     "schedule_anchors": "schedules",
 }
 # Schema v11: run_segments.layer values agent→session, task→run.
 LAYER_MAP = {"agent": "session", "task": "run"}
 SECRET_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|AUTH)", re.I)
-# Mirrors internal/connectors/definition.go (nameRE, envKeyRE, reserved).
+# Mirrors internal/connectors/manifest (nameRE, envKeyRE, Reserved).
 CONNECTOR_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 CONNECTOR_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RESERVED_CONNECTORS = {"email", "webhook", "trebi"}
 # store.SchemaVersion at the time this script was last synced. A trebi.db older
 # than this is a pre-migration database: bump it with `trebi service migrate-db`
-# before applying DB phases. v17-v25 add only tables and defaulted columns the
-# script does not write.
-EXPECTED_SCHEMA = 25
+# before applying DB phases. v26 dropped dispatch_policy and connector_metrics;
+# v30 keyed connector_cursors by instance.
+EXPECTED_SCHEMA = 32
 
 
 def default_jobi_dir() -> Path:
@@ -826,55 +830,62 @@ def command_to_string(cmd: Any) -> str:
     return str(cmd)
 
 
-def convert_source_entry(name: str, src: dict[str, Any]) -> dict[str, Any]:
-    """One jobi source becomes one trebi connector definition.
+def convert_source_entry(name: str, src: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """One jobi source becomes one inline connector entry.
 
-    A jobi source maps directly: command -> events.command, format -> events.format,
-    restart -> events.restart, cursor.id -> events.id, cursor.ts -> events.ts,
-    catchup -> events.catchup.
+    command/format/restart/cursor.id/cursor.ts/catchup map onto manifest
+    events. env becomes inputs. cwd has no place: an inline connector runs in
+    its state folder.
     """
-    out: dict[str, Any] = {}
-    if src.get("cwd"):
-        out["cwd"] = src["cwd"]
-    if src.get("env"):
-        out["env"] = src["env"]
+    notes: list[str] = []
+    events: dict[str, Any] = {}
     command = command_to_string(src.get("command"))
     if command:
-        events: dict[str, Any] = {"command": command}
-        if src.get("format"):
-            events["format"] = src["format"]
-        if src.get("restart"):
-            events["restart"] = src["restart"]
+        events["command"] = command
+        for k in ("format", "restart"):
+            if src.get(k):
+                events[k] = src[k]
         cur = src.get("cursor")
         if isinstance(cur, dict):
-            if cur.get("id"):
-                events["id"] = cur["id"]
-            if cur.get("ts"):
-                events["ts"] = cur["ts"]
+            for k in ("id", "ts"):
+                if cur.get(k):
+                    events[k] = cur[k]
         cap = src.get("catchup")
         if isinstance(cap, dict) and cap.get("command"):
-            cu: dict[str, Any] = {"command": command_to_string(cap.get("command"))}
-            if cap.get("max_events"):
-                cu["max_events"] = cap["max_events"]
-            if cap.get("timeout"):
-                cu["timeout"] = cap["timeout"]
+            cu: dict[str, Any] = {"command": command_to_string(cap["command"])}
+            for k in ("max_events", "timeout"):
+                if cap.get(k):
+                    cu[k] = cap[k]
             events["catchup"] = cu
-        out["events"] = events
-    return out
+    manifest: dict[str, Any] = {
+        "schema": "trebi-connector/1",
+        "name": name,
+        "title": name,
+        "description": f"Imported from the jobi source {name}.",
+        "version": "1.0.0",
+    }
+    if events:
+        manifest["events"] = events
+    out: dict[str, Any] = {"from": "inline", "manifest": manifest}
+    if src.get("env"):
+        out["inputs"] = {str(k): str(v) for k, v in dict(src["env"]).items()}
+    if src.get("cwd"):
+        notes.append(f"{name}: cwd {src['cwd']} dropped (the connector runs in its state folder)")
+    return out, notes
 
 
-def connector_problems(name: str, conv: dict[str, Any]) -> list[str]:
-    """Return the reasons why trebi refuses this definition. One invalid
-    connector makes the whole connectors.yaml fail to load."""
+def connector_problems(name: str, entry: dict[str, Any]) -> list[str]:
+    """The reasons trebi refuses this connection. An invalid record fails the
+    load of that connection."""
     problems: list[str] = []
     if not CONNECTOR_NAME_RE.match(name):
         problems.append(f"name must match {CONNECTOR_NAME_RE.pattern}")
     if name in RESERVED_CONNECTORS:
         problems.append("name is reserved")
-    for k in (conv.get("env") or {}):
-        if not CONNECTOR_ENV_KEY_RE.match(str(k)):
+    for k in entry.get("inputs") or {}:
+        if not CONNECTOR_ENV_KEY_RE.match(k):
             problems.append(f"env key {k!r} must match {CONNECTOR_ENV_KEY_RE.pattern}")
-    ev = conv.get("events")
+    ev = entry["manifest"].get("events")
     if not ev:
         problems.append("no command, so no events block")
         return problems
@@ -886,51 +897,183 @@ def connector_problems(name: str, conv: dict[str, Any]) -> list[str]:
         for key in ("id", "ts", "catchup"):
             if key in ev:
                 problems.append(f"events.{key} needs format: json")
-    if "catchup" in ev:
-        if "id" not in ev:
-            problems.append("events.catchup needs events.id")
-        if "poll" in ev:
-            problems.append("events.catchup cannot be combined with poll")
+    if "catchup" in ev and "id" not in ev:
+        problems.append("events.catchup needs events.id")
     return problems
 
 
-def convert_sources_yaml(raw_text: str) -> tuple[Any, list[str]]:
-    """Convert jobi sources.yaml into the trebi connectors.yaml map form."""
-    notes: list[str] = []
+def jobi_sources(raw_text: str) -> list[dict[str, Any]]:
     data = yaml.load(raw_text) or {}
-    entries: list[Any] = []
-    if isinstance(data, dict):
-        src = data.get("sources") or data.get("connectors") or []
-        if isinstance(src, list):
-            entries = src
-        elif isinstance(src, dict):
-            entries = [{"name": k, **(v if isinstance(v, dict) else {"command": v})} for k, v in src.items()]
-    elif isinstance(data, list):
-        entries = data
+    if isinstance(data, list):
+        return [d for d in data if isinstance(d, dict)]
+    if not isinstance(data, dict):
+        return []
+    src = data.get("sources") or data.get("connectors") or []
+    if isinstance(src, dict):
+        return [{"name": k, **(v if isinstance(v, dict) else {"command": v})} for k, v in src.items()]
+    return [d for d in src if isinstance(d, dict)]
+
+
+def convert_sources_yaml(
+    raw_text: str, only: set[str] | None = None
+) -> tuple[dict[str, Any], list[str]]:
+    """jobi sources.yaml → connection records keyed by slug. only limits the names."""
+    notes: list[str] = []
     converted: dict[str, Any] = {}
-    dropped_facets = 0
-    for item in entries:
-        if not isinstance(item, dict):
-            notes.append(f"skipped non-object source: {item!r}")
-            continue
+    for item in jobi_sources(raw_text):
         name = str(item.get("name") or "").strip()
         if not name:
             notes.append("skipped a source with no name")
             continue
-        if item.get("type") or item.get("facets"):
-            dropped_facets += 1
-        conv = convert_source_entry(name, item)
-        problems = connector_problems(name, conv)
+        if only is not None and name not in only:
+            continue
+        entry, enotes = convert_source_entry(name, item)
+        notes.extend(enotes)
+        problems = connector_problems(name, entry)
         if problems:
             notes.append(f"skipped source {name}: " + "; ".join(problems))
             continue
-        converted[name] = conv
-    if dropped_facets:
-        notes.append(
-            f"{dropped_facets} source(s): jobi type/facets dropped; trebi derives capabilities from the blocks"
-        )
+        converted[name] = entry
+    if only is not None:
+        for name in sorted(only - set(converted)):
+            if not any(n.startswith(f"skipped source {name}:") for n in notes):
+                notes.append(f"trigger names {name}, which is not a jobi source")
     notes.append(f"connectors: {len(converted)} (command lists joined for sh -c)")
     return converted, notes
+
+
+def load_connections(trebi_dir: Path) -> dict[str, Any]:
+    """The connection records in trebi_dir, keyed by slug."""
+    out: dict[str, Any] = {}
+    for rec in sorted((trebi_dir / "connectors").glob("*/connection.yaml")):
+        try:
+            data = yaml.load(rec.read_text(encoding="utf-8")) or {}
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("slug"):
+            out[str(data["slug"])] = data
+    return out
+
+
+def new_connection_id() -> str:
+    """con_ plus a lowercase ULID, like the daemon makes."""
+    alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+    n = (int(time.time() * 1000) << 80) | int.from_bytes(os.urandom(10), "big")
+    chars = []
+    for _ in range(26):
+        chars.append(alphabet[n & 31])
+        n >>= 5
+    return "con_" + "".join(reversed(chars))
+
+
+def catalog_overlaps(entries: dict[str, Any], existing: dict[str, Any], trebi_dir: Path) -> list[str]:
+    """Imported entries whose program an installed connector already runs.
+    Two listeners on one account work, but the catalog entry has typed
+    events, so a move to it needs new match expressions."""
+    installed: dict[str, str] = {}
+    for name, e in existing.items():
+        if not isinstance(e, dict) or e.get("from") != "catalog":
+            continue
+        man = (
+            trebi_dir / "packages" / "connectors" / str(e.get("type") or "")
+            / str(e.get("version") or "") / "trebi-connector.yaml"
+        )
+        try:
+            ev = (yaml.load(man.read_text()) or {}).get("events") or {}
+        except OSError:
+            continue
+        prog = shlex.split(str(ev.get("command") or ""))[:1]
+        if prog:
+            installed[Path(prog[0]).name] = name
+    out: list[str] = []
+    for name, e in entries.items():
+        cmd = shlex.split(e["manifest"].get("events", {}).get("command", ""))[:1]
+        if cmd and Path(cmd[0]).name in installed:
+            out.append(
+                f"{name} runs {Path(cmd[0]).name}, like the catalog connector "
+                f"{installed[Path(cmd[0]).name]}; imported as a second listener"
+            )
+    return out
+
+
+def merge_connectors(
+    trebi_dir: Path, entries: dict[str, Any]
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """The new connection records by slug, the slugs added, and the slugs kept."""
+    existing = load_connections(trebi_dir)
+    new: dict[str, Any] = {}
+    added, kept = [], []
+    for slug, e in entries.items():
+        if slug in existing:
+            kept.append(slug)
+            continue
+        new[slug] = {"id": new_connection_id(), "type": slug, "slug": slug, **e}
+        added.append(slug)
+    return new, added, kept
+
+
+def write_connections(trebi_dir: Path, records: dict[str, Any]) -> None:
+    """Writes one connection folder per record, mode 0700, record 0600."""
+    from io import StringIO
+
+    for rec in records.values():
+        folder = trebi_dir / "connectors" / rec["id"]
+        for sub in ("", "secrets", "state", "cache"):
+            (folder / sub).mkdir(mode=0o700, parents=True, exist_ok=True)
+        (folder / "logs").mkdir(mode=0o755, exist_ok=True)
+        buf = StringIO()
+        yaml.dump(rec, buf)
+        path = folder / "connection.yaml"
+        tmp = path.with_suffix(".yaml.tmp")
+        tmp.write_text(buf.getvalue())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+
+
+def job_trigger_connectors(path: Path) -> set[str]:
+    """Connector names that one jobi job file subscribes to."""
+    fm, _, _ = split_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
+    data = load_fm_map(fm or "")
+    names: set[str] = set()
+    for key, attr in (("on", "source"), ("on", "event"), ("triggers", "event")):
+        for t in data.get(key) or []:
+            if isinstance(t, dict) and t.get(attr):
+                names.add(str(t[attr]))
+    return names
+
+
+def selected_connectors(jobi_dir: Path, job: str | None, agent: str | None) -> set[str]:
+    """Connectors that the --job/--agent selection names in its triggers."""
+    names: set[str] = set()
+    for ws in workspace_paths_from_jobi(jobi_dir):
+        if not ws.exists():
+            continue
+        for path in find_job_files(ws):
+            if path.name not in ("JOB.md", "AGENT.md"):
+                continue
+            if agent and not agent_spec_matches(path, agent, ws):
+                continue
+            if not agent and job and not job_spec_matches(path, job, ws):
+                continue
+            names |= job_trigger_connectors(path)
+    return names
+
+
+def plan_connectors(
+    jobi_dir: Path, trebi_dir: Path, job: str | None, agent: str | None
+) -> tuple[dict[str, Any], list[str]]:
+    """The entries to add and the notes. Shared by the plan and the apply."""
+    src = jobi_dir / "sources.yaml"
+    if not src.exists():
+        return {}, ["no sources.yaml"]
+    only = selected_connectors(jobi_dir, job, agent) if (job or agent) else None
+    entries, notes = convert_sources_yaml(src.read_text(encoding="utf-8", errors="replace"), only)
+    existing = load_connections(trebi_dir)
+    for name in sorted(entries):
+        if name in existing:
+            notes.append(f"{name}: a connection with this slug exists, kept as is")
+    notes.extend(catalog_overlaps(entries, existing, trebi_dir))
+    return {k: v for k, v in entries.items() if k not in existing}, notes
 
 
 def envsets_secret_key_names(jobi_dir: Path) -> list[str]:
@@ -1568,12 +1711,17 @@ def plan_migrate(
     if flagged:
         cfg.notes.append(f"secret-like envset keys (names only): {len(flagged)}")
         plan.warnings.append(f"plaintext envsets keys: {', '.join(flagged)}")
-    if (jobi_dir / "sources.yaml").exists():
-        _, cnotes = convert_sources_yaml((jobi_dir / "sources.yaml").read_text())
-        cfg.notes.extend(cnotes)
-    if job:
-        cfg.notes.append("--job: config/connectors not copied on apply")
+    if job or agent_scope:
+        cfg.notes.append("scoped: config.yaml and envsets.yaml are not copied")
     plan.phases.append(cfg)
+
+    entries, cnotes = plan_connectors(jobi_dir, trebi_dir, job, agent_scope)
+    con = PhasePlan("connectors", "add jobi sources as inline connections")
+    con.counts["add"] = len(entries)
+    con.notes.extend(cnotes)
+    for name in sorted(entries):
+        con.notes.append(f"add {name}: {entries[name]['manifest']['events']['command'][:90]}")
+    plan.phases.append(con)
 
     conn = open_jobi_ro(jobi_dir)
     if conn is None:
@@ -2016,39 +2164,22 @@ def apply_queue(
     return n
 
 
-def apply_policy_cursors(jconn: sqlite3.Connection, tconn: sqlite3.Connection) -> None:
+def apply_cursors(jconn: sqlite3.Connection, tconn: sqlite3.Connection, names: set[str]) -> int:
+    """The jobi cursor of each new connector. The instance of a global entry
+    is its name. A cursor lets the first catch-up replay only the events after
+    it; with none, trebi skips the catch-up."""
+    n = 0
     try:
-        for key, last, win in jconn.execute(
-            "SELECT key, last_fired_at, window_json FROM trigger_policy"
-        ):
-            tconn.execute(
-                "INSERT OR REPLACE INTO dispatch_policy (key, last_fired_at, window_json) VALUES (?,?,?)",
-                (key, last, win),
-            )
+        rows = jconn.execute("SELECT source_name, last_event_id, updated_at FROM source_cursors").fetchall()
     except sqlite3.Error:
-        pass
-    try:
-        for name, eid, upd in jconn.execute(
-            "SELECT source_name, last_event_id, updated_at FROM source_cursors"
-        ):
-            tconn.execute(
-                "INSERT OR REPLACE INTO connector_cursors (name, last_event_id, updated_at) VALUES (?,?,?)",
+        return 0
+    for name, eid, upd in rows:
+        if name in names and eid:
+            n += tconn.execute(
+                "INSERT OR IGNORE INTO connector_cursors (instance, last_event_id, updated_at) VALUES (?,?,?)",
                 (name, eid, upd),
-            )
-    except sqlite3.Error:
-        pass
-    try:
-        for row in jconn.execute(
-            "SELECT name, events_total, parse_errors, match_errors, fires, drops, last_event_at, updated_at FROM source_metrics"
-        ):
-            tconn.execute(
-                "INSERT OR REPLACE INTO connector_metrics "
-                "(name, events_total, parse_errors, match_errors, fires, drops, last_event_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                row,
-            )
-    except sqlite3.Error:
-        pass
+            ).rowcount
+    return n
 
 
 def schedule_spec(interval: str) -> str:
@@ -2230,6 +2361,14 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
     job_filter = plan.job
     target_id = plan.target.id if plan.target else None
 
+    entries, notes = plan_connectors(jobi, trebi, job_filter, plan.agent_scope)
+    records, added, _ = merge_connectors(trebi, entries)
+    for n in notes:
+        print(f"  {n}")
+    if added:
+        write_connections(trebi, records)
+        print(f"connections: added {', '.join(added)}")
+
     if not job_filter and not plan.agent_scope:
         src_cfg = jobi / "config.yaml"
         if src_cfg.exists():
@@ -2240,17 +2379,6 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
         if src_env.exists():
             (trebi / "envsets.yaml").write_text(src_env.read_text(encoding="utf-8", errors="replace"))
             print("wrote envsets.yaml (values not printed)")
-        src_src = jobi / "sources.yaml"
-        if src_src.exists():
-            converted, notes = convert_sources_yaml(src_src.read_text(encoding="utf-8", errors="replace"))
-            from io import StringIO
-
-            buf = StringIO()
-            yaml.dump(converted, buf)
-            (trebi / "connectors.yaml").write_text(buf.getvalue())
-            for n in notes:
-                print(f"  {n}")
-            print("wrote connectors.yaml")
         for name in ("harness", "bin"):
             src = jobi / name
             dst = trebi / name
@@ -2301,9 +2429,8 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
             agent_scope=plan.agent_scope,
         )
         print(f"queue rows: {n}")
-        if not job_filter and not plan.agent_scope:
-            apply_policy_cursors(jconn, tconn)
-            print("policy + cursors + metrics copied")
+        n = apply_cursors(jconn, tconn, set(added))
+        print(f"connector cursors: {n}")
         n = apply_schedules(
             jconn,
             tconn,
@@ -3131,7 +3258,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
             "run_events",
             "event_queue",
             "schedules",
-            "dispatch_policy",
             "connector_cursors",
             "workspaces",
             "job_index",

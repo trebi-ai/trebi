@@ -53,13 +53,8 @@ func CollectAgentDoctorFindings(st *store.Store, actions ActionsChecker) []Docto
 func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	ctx := context.Background()
 	var findings []DoctorFinding
-	defs, err := connectors.LoadManifests()
-	if err != nil {
-		findings = append(findings, DoctorFinding{
-			ID: "connectors-file-invalid", Severity: "error", Code: "connectors_file_invalid",
-			Message: fmt.Sprintf("connectors.yaml does not load; connector writes are refused: %v", err),
-		})
-	}
+	// The connectors doctor reports each folder that does not load.
+	defs, _ := connectors.LoadManifests()
 	db := st.DB()
 	rows, err := db.Query(`SELECT workspace_id, name, path, kind FROM job_index`)
 	if err != nil {

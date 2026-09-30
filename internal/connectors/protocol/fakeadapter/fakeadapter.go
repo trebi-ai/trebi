@@ -1,7 +1,9 @@
 // Package fakeadapter is a test adapter for trebi-connector/1. Play runs a
-// transcript strictly. Sandbox answers every request from in-memory state.
-// A test binary runs either one as a child process through Main, so the
-// supervisor tests start a real process.
+// transcript strictly. Sandbox answers every request from in-memory state;
+// with Reference it is the reference of the adapter folder contract, and
+// Faults break that contract on purpose. A test binary runs either one as a
+// child process through Main, so the supervisor and conformance tests start
+// a real process.
 package fakeadapter
 
 import (
@@ -12,11 +14,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 )
@@ -39,12 +43,37 @@ type Sandbox struct {
 	// Record is a file that gets one JSON line per request the sandbox
 	// receives, so a test can read what the daemon sent.
 	Record string `json:"record,omitempty"`
+	// Reference keeps the login and the sent keys in TREBI_STATE_DIR, emits
+	// a self message event for each new send, and replays after a cursor.
+	Reference bool `json:"reference,omitempty"`
+	// Required are input env names. With one unset, the sandbox reports
+	// auth_required with reason missing_input.
+	Required []string `json:"required,omitempty"`
+	// Faults break the adapter folder contract on purpose.
+	Faults []string `json:"faults,omitempty"`
 
-	w     io.Writer
-	wmu   sync.Mutex
-	sent  map[string]protocol.SendResult
-	flows int
+	w        io.Writer
+	wmu      sync.Mutex
+	sent     map[string]protocol.SendResult
+	flows    int
+	stateDir string
+	log      []protocol.Event // the events of this process, for replay and history
+	echo     *protocol.Event  // the self event of the last send, emitted after the reply
 }
+
+// Faults of the adapter folder contract.
+const (
+	FaultWriteHome     = "write_home"     // writes a file to $HOME
+	FaultAbsoluteState = "absolute_state" // stores the absolute state path in a state file
+	FaultExitEmpty     = "exit_empty"     // exits on an empty state folder
+	FaultStdoutNoise   = "stdout_noise"   // prints a line that is not JSON-RPC on stdout
+)
+
+// Files of a Reference sandbox in TREBI_STATE_DIR.
+const (
+	loginFile = "login.json"
+	sentFile  = "sent.json"
+)
 
 // Env is the variable that switches a test binary into an adapter:
 // "transcript:<path>" or "sandbox:<path to a Sandbox JSON file>".
@@ -191,6 +220,9 @@ func (s *Sandbox) Serve(r io.Reader, w io.Writer) error {
 	if s.Result.Protocol == "" {
 		s.Result.Protocol = protocol.Version
 	}
+	if err := s.start(); err != nil {
+		return err
+	}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), protocol.MaxLine)
 	for {
@@ -208,22 +240,39 @@ func (s *Sandbox) Serve(r io.Reader, w io.Writer) error {
 			}
 			continue
 		}
-		if code, ok := s.Errors[m.Method]; ok {
-			s.reply(m.ID, nil, protocol.NewError(code, "sandbox error"))
-			continue
-		}
-		if f := protocol.FeatureOf(m.Method); f != "" && !slices.Contains(s.Result.Features, f) {
-			s.reply(m.ID, nil, protocol.NewError(protocol.CodeUnsupported, f+" is not a feature of this adapter"))
-			continue
-		}
-		result, perr := s.handle(m)
+		result, perr := s.answer(m)
 		s.reply(m.ID, result, perr)
 		if m.Method == protocol.MethodShutdown {
 			return nil
 		}
-		if m.Method == protocol.MethodAuthBegin && perr == nil {
-			s.finishQR(result.(protocol.AuthBeginResult))
-		}
+		s.afterReply(m.Method, result, perr)
+	}
+}
+
+// answer is the reply to one request: a configured error, unsupported for
+// a feature the adapter does not have, or the result of handle.
+func (s *Sandbox) answer(m protocol.Message) (any, *protocol.Error) {
+	if code, ok := s.Errors[m.Method]; ok {
+		return nil, protocol.NewError(code, "sandbox error")
+	}
+	if f := protocol.FeatureOf(m.Method); f != "" && !slices.Contains(s.Result.Features, f) {
+		return nil, protocol.NewError(protocol.CodeUnsupported, f+" is not a feature of this adapter")
+	}
+	return s.handle(m)
+}
+
+// afterReply sends what follows a reply: the self event of a send, the
+// stdout noise fault, and the end of a QR login.
+func (s *Sandbox) afterReply(method string, result any, perr *protocol.Error) {
+	if s.echo != nil {
+		s.notify(protocol.MethodEvent, *s.echo)
+		s.echo = nil
+	}
+	if method == protocol.MethodInitialize && s.has(FaultStdoutNoise) {
+		s.writeRaw("fakeadapter ready")
+	}
+	if method == protocol.MethodAuthBegin && perr == nil {
+		s.finishQR(result.(protocol.AuthBeginResult))
 	}
 }
 
@@ -248,9 +297,9 @@ func (s *Sandbox) handle(m protocol.Message) (any, *protocol.Error) {
 	case protocol.MethodMessagesSend:
 		return s.send(m.Params)
 	case protocol.MethodEventsReplay:
-		return protocol.ReplayResult{Events: orEmpty(s.Replay), Complete: true}, nil
+		return s.replay(m.Params)
 	case protocol.MethodMessagesHistory:
-		return protocol.EventPage{Events: orEmpty(s.Events)}, nil
+		return s.history(m.Params)
 	case protocol.MethodRoomsList:
 		return protocol.RoomPage{Rooms: s.rooms()}, nil
 	case protocol.MethodRoomsOpen, protocol.MethodRoomsGet, protocol.MethodThreadsList, protocol.MethodThreadsCreate:
@@ -264,7 +313,7 @@ func (s *Sandbox) send(raw json.RawMessage) (any, *protocol.Error) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, protocol.NewError(protocol.CodeInvalid, err.Error())
 	}
-	if !s.LoggedIn && len(s.Result.Login) > 0 {
+	if s.state() == protocol.StateAuthRequired {
 		return nil, protocol.NewError(protocol.CodeAuthRequired, "log in first")
 	}
 	if max := s.Result.Limits.MaxText; max > 0 && len([]rune(p.Text)) > max {
@@ -275,11 +324,144 @@ func (s *Sandbox) send(raw json.RawMessage) (any, *protocol.Error) {
 	}
 	r := protocol.SendResult{MessageID: "m" + strconv.Itoa(len(s.sent)+1), Thread: p.Thread}
 	s.sent[p.Key] = r
+	if s.Reference {
+		e := protocol.Event{
+			ID: r.MessageID, Type: "message", TS: time.Now().UTC().Format(time.RFC3339Nano),
+			Room: &protocol.Room{ID: p.Room}, Sender: &protocol.Sender{ID: s.account().ID, Self: true},
+			Text: p.Text, ReplyTo: p.ReplyTo, Attachments: p.Attachments,
+		}
+		if p.Thread != "" {
+			e.Thread = &protocol.Thread{ID: p.Thread}
+		}
+		s.log = append(s.log, e)
+		s.echo = &e
+		if err := s.save(sentFile, s.sent); err != nil {
+			return nil, protocol.NewError(protocol.CodeTransient, err.Error())
+		}
+	}
 	return r, nil
 }
 
+// start reads the state of a Reference sandbox and applies the faults.
+func (s *Sandbox) start() error {
+	s.stateDir = os.Getenv(protocol.EnvStateDir)
+	s.log = slices.Clone(s.Events)
+	if err := s.applyFaults(); err != nil {
+		return err
+	}
+	if !s.Reference || s.stateDir == "" {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(s.stateDir, loginFile)); err == nil {
+		s.LoggedIn = true
+	}
+	data, err := os.ReadFile(filepath.Join(s.stateDir, sentFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, &s.sent)
+}
+
+// applyFaults applies the folder faults at start.
+func (s *Sandbox) applyFaults() error {
+	if s.stateDir != "" && s.has(FaultExitEmpty) {
+		if entries, err := os.ReadDir(s.stateDir); err == nil && len(entries) == 0 {
+			return errors.New("the state folder is empty")
+		}
+	}
+	if s.has(FaultWriteHome) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(home, ".fakeadapter"), []byte("state\n"), 0o600); err != nil {
+			return err
+		}
+	}
+	if s.stateDir != "" && s.has(FaultAbsoluteState) {
+		return s.save("config.json", map[string]string{"store": s.stateDir})
+	}
+	return nil
+}
+
+// save writes one state file of a Reference sandbox: a temp file, then a
+// rename. It does nothing outside Trebi.
+func (s *Sandbox) save(name string, v any) error {
+	if s.stateDir == "" {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(s.stateDir, name+".tmp")
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(s.stateDir, name))
+}
+
+func (s *Sandbox) has(fault string) bool { return slices.Contains(s.Faults, fault) }
+
+// missing returns the first required input with no value, or "".
+func (s *Sandbox) missing() string {
+	for _, name := range s.Required {
+		if os.Getenv(name) == "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// replay returns the events after a cursor. A Reference sandbox knows the
+// events of this process only; an unknown cursor is not complete.
+func (s *Sandbox) replay(raw json.RawMessage) (any, *protocol.Error) {
+	if !s.Reference {
+		return protocol.ReplayResult{Events: orEmpty(s.Replay), Complete: true}, nil
+	}
+	var p protocol.ReplayParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, protocol.NewError(protocol.CodeInvalid, err.Error())
+	}
+	events := slices.Concat(s.Replay, s.log)
+	if p.After == "" {
+		return protocol.ReplayResult{Events: orEmpty(events), Complete: true}, nil
+	}
+	i := slices.IndexFunc(events, func(e protocol.Event) bool { return e.ID == p.After })
+	if i < 0 {
+		return protocol.ReplayResult{Events: []protocol.Event{}, Complete: false}, nil
+	}
+	return protocol.ReplayResult{Events: orEmpty(events[i+1:]), Complete: true}, nil
+}
+
+// history returns the configured events, or for a Reference sandbox the
+// events of the room.
+func (s *Sandbox) history(raw json.RawMessage) (any, *protocol.Error) {
+	if !s.Reference {
+		return protocol.EventPage{Events: orEmpty(s.Events)}, nil
+	}
+	var p protocol.HistoryParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, protocol.NewError(protocol.CodeInvalid, err.Error())
+	}
+	out := []protocol.Event{}
+	for _, e := range s.log {
+		if e.Room != nil && e.Room.ID == p.Room {
+			out = append(out, e)
+		}
+	}
+	return protocol.EventPage{Events: out}, nil
+}
+
 func (s *Sandbox) afterInitialized() {
-	s.notify(protocol.MethodStatus, protocol.Status{State: s.state(), Account: s.account(), Reason: s.reason()})
+	st := protocol.Status{State: s.state(), Account: s.account(), Reason: s.reason()}
+	if name := s.missing(); name != "" {
+		st.Message = name + " is missing"
+	}
+	s.notify(protocol.MethodStatus, st)
 	for _, e := range s.Events {
 		s.notify(protocol.MethodEvent, e)
 	}
@@ -290,18 +472,24 @@ func (s *Sandbox) finishQR(begin protocol.AuthBeginResult) {
 	s.notify(protocol.MethodStatus, protocol.Status{State: protocol.StateAuthPending})
 	s.notify(protocol.MethodAuthStep, protocol.AuthStepParams{FlowID: begin.FlowID, Step: protocol.Step{Kind: protocol.StepQR, Data: "sandbox-qr-2"}})
 	s.LoggedIn = true
+	if s.Reference {
+		_ = s.save(loginFile, s.account()) //nolint:errcheck // a lost login file shows as auth_required at the next start
+	}
 	s.notify(protocol.MethodAuthDone, protocol.AuthDoneParams{FlowID: begin.FlowID, OK: true, Account: s.account()})
 	s.notify(protocol.MethodStatus, protocol.Status{State: protocol.StateConnected, Account: s.account()})
 }
 
 func (s *Sandbox) state() string {
-	if !s.LoggedIn && len(s.Result.Login) > 0 {
+	if s.missing() != "" || (!s.LoggedIn && len(s.Result.Login) > 0) {
 		return protocol.StateAuthRequired
 	}
 	return protocol.StateConnected
 }
 
 func (s *Sandbox) reason() string {
+	if s.missing() != "" {
+		return protocol.ReasonMissingInput
+	}
 	if s.state() == protocol.StateAuthRequired {
 		return protocol.ReasonNone
 	}

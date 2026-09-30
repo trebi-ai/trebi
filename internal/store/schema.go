@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 32
+const SchemaVersion = 33
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -12,7 +12,7 @@ const SchemaVersion = 32
 //
 // Not in this change (internal bookkeeping, file index, or not yet a sync source):
 //
-//	connector_cursors, harness_state, skill_index, job_index,
+//	harness_state, skill_index, job_index,
 //	event_queue, schedules, conversations
 //
 // AUTOINCREMENT (run_segments.id, run_events.id, event_log.seq) is a known
@@ -970,6 +970,31 @@ UPDATE workspaces SET handle = trim(substr(replace(replace(replace(replace(
 UPDATE workspaces SET handle = 'ws' WHERE length(handle) < 2 OR handle GLOB '*[^a-z0-9-]*';
 DELETE FROM email_addresses;
 DELETE FROM cloud_addresses;
+`,
+		// v33: connections (plan 2026-09-30). cursor.json in the connection
+		// folder replaces connector_cursors. Old rows name connectors that no
+		// connection has, so the rows of every non-native connector go.
+		`
+DROP TABLE connector_cursors;
+DROP TABLE connector_installs;
+CREATE TABLE connector_installs (
+    type         TEXT NOT NULL,
+    version      TEXT NOT NULL,
+    digest       TEXT NOT NULL DEFAULT '',
+    bin_path     TEXT NOT NULL DEFAULT '',
+    installed_at TEXT NOT NULL,
+    PRIMARY KEY (type, version)
+);
+DELETE FROM events WHERE connector NOT IN ('email','webhook');
+DELETE FROM event_queue WHERE connector NOT IN ('email','webhook');
+DELETE FROM outbox WHERE instance NOT IN ('email','webhook');
+DELETE FROM conversation_channels WHERE instance NOT IN ('email','webhook');
+DELETE FROM channel_pointers WHERE instance NOT IN ('email','webhook');
+DELETE FROM conversation_messages WHERE instance IS NOT NULL AND instance <> '' AND instance NOT IN ('email','webhook');
+DELETE FROM channel_threads WHERE instance NOT IN ('email','webhook');
+DELETE FROM inbox_items WHERE connector IS NOT NULL AND connector <> '' AND connector NOT IN ('email','webhook');
+UPDATE runs SET trigger_connector = NULL WHERE trigger_connector IS NOT NULL AND trigger_connector NOT IN ('email','webhook');
+UPDATE runs SET connectors_json = NULL WHERE connectors_json IS NOT NULL AND connectors_json NOT IN ('', '[]', 'null');
 `,
 	}
 }

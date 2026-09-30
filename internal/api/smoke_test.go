@@ -115,7 +115,7 @@ func TestPlatformSurface_NonStub(t *testing.T) {
 
 	// connectors upsert
 	req, _ = http.NewRequest("POST", base+"/v1/connectors", bytes.NewBufferString(
-		`{"name":"line-src","from":"inline","manifest":{"schema":"trebi-connector/1","name":"line-src","title":"Line","description":"Lines","version":"1.0.0","events":{"command":"yes","format":"line"}}}`))
+		`{"slug":"line-src","from":"inline","manifest":{"schema":"trebi-connector/1","name":"line-src","title":"Line","description":"Lines","version":"1.0.0","events":{"command":"yes","format":"line"}}}`))
 	auth(req)
 	resp, err = client.Do(req)
 	if err != nil {

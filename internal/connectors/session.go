@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/trebi-ai/trebi/internal/connectors/conformance"
 
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
@@ -23,7 +24,8 @@ const (
 // Call sends one request to the live session of an instance. An instance
 // with no live session is a transient error, so the outbox retries. A method
 // whose feature the adapter did not deliver is unsupported.
-func (s *Service) Call(ctx context.Context, instance, method string, params, result any) error {
+func (s *Service) Call(ctx context.Context, ref, method string, params, result any) error {
+	instance := s.IDOf(ref)
 	p := s.procByName(instance)
 	if p == nil {
 		return protocol.NewError(protocol.CodeTransient, fmt.Sprintf("connector %s is not running", instance))
@@ -40,13 +42,14 @@ func (s *Service) Call(ctx context.Context, instance, method string, params, res
 
 // Features returns the features the live session delivers, else the ones
 // the manifest promises.
-func (s *Service) Features(instance string) []string {
+func (s *Service) Features(ref string) []string {
+	instance := s.IDOf(ref)
 	if p := s.procByName(instance); p != nil {
 		if _, init := p.session(); init != nil {
 			return slices.Clone(init.Features)
 		}
 	}
-	r, err := s.resolveInstance(instance)
+	r, err := s.Resolve(instance, "")
 	if err != nil {
 		return nil
 	}
@@ -55,8 +58,9 @@ func (s *Service) Features(instance string) []string {
 
 // Limits returns the message limits of an instance: delivered, else
 // promised.
-func (s *Service) Limits(instance string) manifest.Limits {
-	r, err := s.resolveInstance(instance)
+func (s *Service) Limits(ref string) manifest.Limits {
+	instance := s.IDOf(ref)
+	r, err := s.Resolve(instance, "")
 	if err != nil {
 		return manifest.Limits{}
 	}
@@ -71,8 +75,8 @@ func (s *Service) Limits(instance string) manifest.Limits {
 
 // AuthState returns the last status of an instance. The state is empty for
 // an instance that does not run.
-func (s *Service) AuthState(instance string) protocol.Status {
-	if p := s.procByName(instance); p != nil {
+func (s *Service) AuthState(ref string) protocol.Status {
+	if p := s.procByName(s.IDOf(ref)); p != nil {
 		return p.authStatus()
 	}
 	return protocol.Status{}
@@ -81,8 +85,8 @@ func (s *Service) AuthState(instance string) protocol.Status {
 // Down reports whether a running instance cannot send: it waits for a login
 // or does not answer ping. An instance that does not run is not down; the
 // outbox retries it.
-func (s *Service) Down(instance string) bool {
-	p := s.procByName(instance)
+func (s *Service) Down(ref string) bool {
+	p := s.procByName(s.IDOf(ref))
 	if p == nil {
 		return false
 	}
@@ -99,7 +103,7 @@ func (s *Service) onNotify(p *proc, method string, params json.RawMessage) {
 		var ev protocol.Event
 		if err := json.Unmarshal(params, &ev); err != nil {
 			p.addParseError()
-			s.log.Warn("connector.parse_error", "connector", p.instance, "reason", "bad_event", "error", err)
+			s.log.Warn("connector.parse_error", "connector", p.id, "reason", "bad_event", "error", err)
 			return
 		}
 		s.ingestProtocol(ctx, p, ev, false)
@@ -111,19 +115,19 @@ func (s *Service) onNotify(p *proc, method string, params json.RawMessage) {
 	case protocol.MethodAuthStep:
 		var st protocol.AuthStepParams
 		if err := json.Unmarshal(params, &st); err == nil && st.FlowID != "" {
-			s.flow(p.instance, st.FlowID, true).setStep(st.Step, false)
+			s.flow(p.id, st.FlowID, true).setStep(st.Step, false)
 		}
 	case protocol.MethodAuthDone:
 		var d protocol.AuthDoneParams
 		if err := json.Unmarshal(params, &d); err != nil || d.FlowID == "" {
 			return
 		}
-		s.flow(p.instance, d.FlowID, true).finish(d)
+		s.flow(p.id, d.FlowID, true).finish(d)
 		if d.OK {
-			s.emitConnector("connector.auth.completed", p.instance, nil)
+			s.emitConnector("connector.auth.completed", p.id, nil)
 		}
 	default:
-		s.log.Debug("connector notification", "connector", p.instance, "method", method)
+		s.log.Debug("connector notification", "connector", p.id, "method", method)
 	}
 }
 
@@ -135,7 +139,7 @@ func (s *Service) applyStatus(p *proc, st protocol.Status) {
 	}
 	s.emitStatus(p, st.State, st.Reason)
 	if st.State == protocol.StateAuthRequired {
-		s.emitConnector("connector.auth.required", p.instance, map[string]string{"reason": st.Reason})
+		s.emitConnector("connector.auth.required", p.id, map[string]string{"reason": st.Reason})
 	}
 }
 
@@ -257,17 +261,13 @@ func (s *Service) flow(instance, id string, create bool) *Flow {
 	return f
 }
 
-// FindFlow returns a flow of a connector by id, for any of its instances.
-func (s *Service) FindFlow(name, id string) (*Flow, bool) {
+// FindFlow returns a flow of a connection by flow id.
+func (s *Service) FindFlow(ref, id string) (*Flow, bool) {
+	instance := s.IDOf(ref)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for key, f := range s.flows {
-		inst, fid, _ := strings.Cut(key, "\x00")
-		if n, _ := splitInstance(inst); n == name && fid == id {
-			return f, true
-		}
-	}
-	return nil, false
+	f, ok := s.flows[instance+"\x00"+id]
+	return f, ok
 }
 
 // pruneFlows drops finished flows after flowKeep.
@@ -287,7 +287,8 @@ func (s *Service) pruneFlows() {
 
 // Login starts a login flow on an instance and returns it with its first
 // step.
-func (s *Service) Login(ctx context.Context, instance, kind string) (*Flow, error) {
+func (s *Service) Login(ctx context.Context, ref, kind string) (*Flow, error) {
+	instance := s.IDOf(ref)
 	s.pruneFlows()
 	ctx, cancel := context.WithTimeout(ctx, loginWait)
 	defer cancel()
@@ -327,43 +328,45 @@ func (s *Service) Logout(ctx context.Context, instance string) error {
 	return s.Call(ctx, instance, protocol.MethodAuthLogout, protocol.Empty{}, nil)
 }
 
-// Conformance runs the checks of Part H against the live session of an
-// instance. It does not shut the adapter down. It starts a login only when
-// the instance waits for one, and it sends only to the room the operator
-// names.
-func (s *Service) Conformance(ctx context.Context, instance, room string) ([]protocol.CheckResult, error) {
-	r, err := s.resolveInstance(instance)
+// Conformance runs the conformance suites against a live connection. With
+// suites, it runs the named suites only. It does not shut the adapter down,
+// it starts a login only when the connection waits for one, and it sends
+// only to the room that the operator names.
+func (s *Service) Conformance(ctx context.Context, ref, room string, suites []string) ([]conformance.Result, error) {
+	r, err := s.Resolve(ref, "")
 	if err != nil {
 		return nil, err
 	}
-	m := r.Manifest
-	if m.Protocol() != manifest.ProtocolConnector {
-		return nil, fmt.Errorf("%w: connector %s does not speak %s", ErrInvalid, instance, protocol.Version)
-	}
-	p := s.procByName(instance)
-	if p == nil {
-		return nil, protocol.NewError(protocol.CodeTransient, fmt.Sprintf("connector %s is not running", instance))
-	}
-	conn, init := p.session()
-	if conn == nil || init == nil {
-		return nil, protocol.NewError(protocol.CodeTransient, fmt.Sprintf("connector %s is not connected", instance))
-	}
-	c := &protocol.Checker{
-		Features:  m.Features(),
-		Room:      room,
-		Init:      init,
-		SkipLogin: p.authStatus().State != protocol.StateAuthRequired,
-	}
-	if m.Setup != nil {
-		c.Login = m.Setup.Login
-	}
-	for _, t := range m.Events.Types {
-		c.EventTypes = append(c.EventTypes, t.Type)
-	}
-	if r.Dir != "" {
-		if c.Schemas, err = m.EventSchemas(r.Dir); err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+	inputs, _ := r.Env()
+	t := conformance.Target{Manifest: r.Manifest, Dir: r.Dir, Inputs: inputs, Room: room}
+	if r.Manifest.Protocol() == manifest.ProtocolConnector {
+		p := s.procByName(r.ID)
+		if p == nil {
+			return nil, protocol.NewError(protocol.CodeTransient, fmt.Sprintf("connector %s is not running", r.Slug))
 		}
+		if _, init := p.session(); init == nil {
+			return nil, protocol.NewError(protocol.CodeTransient, fmt.Sprintf("connector %s is not connected", r.Slug))
+		}
+		t.Live = liveSession{s: s, p: p, id: r.ID}
 	}
-	return c.Run(ctx, conn), nil
+	return conformance.NewRunner(s.log).Run(ctx, t, suites), nil
+}
+
+// liveSession is the running session of one connection for the
+// conformance runner.
+type liveSession struct {
+	s  *Service
+	p  *proc
+	id string
+}
+
+func (l liveSession) Call(ctx context.Context, method string, params, result any) error {
+	return l.s.Call(ctx, l.id, method, params, result)
+}
+
+func (l liveSession) Init() protocol.InitializeResult {
+	if _, init := l.p.session(); init != nil {
+		return *init
+	}
+	return protocol.InitializeResult{}
 }

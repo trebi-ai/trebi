@@ -454,14 +454,15 @@ func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.Q
 // The conversation key is only the lane key; the reply goes to this address.
 // An item with no event row has an address with no room.
 func (c *ControlPlane) eventAddress(ctx context.Context, item *dispatch.QueueItem) conversations.Address {
+	// item.Connector holds the connection id; the event row has the type.
 	addr := conversations.Address{Connector: item.Connector, Instance: item.Connector}
 	if item.EventID == "" {
 		return addr
 	}
 	// A missing event row means no channel address.
 	_ = c.Store.DB().QueryRowContext(ctx,
-		`SELECT instance, COALESCE(room,''), COALESCE(thread,'') FROM events WHERE id=?`, item.EventID).
-		Scan(&addr.Instance, &addr.Room, &addr.Thread)
+		`SELECT connector, instance, COALESCE(room,''), COALESCE(thread,'') FROM events WHERE id=?`, item.EventID).
+		Scan(&addr.Connector, &addr.Instance, &addr.Room, &addr.Thread)
 	return addr
 }
 
@@ -695,6 +696,11 @@ func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem)
 		return 0, nil, ""
 	}
 	key := item.WorkspaceID + "/" + item.Job + "/" + strconv.Itoa(item.OnIndex) + "/" + item.ConversationKey
+	// Triggers name the slug; the item holds the connection id.
+	slug := item.Connector
+	if c.Connectors != nil {
+		slug = cmp.Or(c.Connectors.SlugOf(item.Connector), item.Connector)
+	}
 	if item.Kind == dispatch.KindAssistant {
 		rows, err := c.Workspaces.AssistantTriggerRows(ctx)
 		if err != nil {
@@ -706,7 +712,7 @@ func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem)
 			}
 			for _, tr := range at.Triggers {
 				// The pipeline takes an assistant trigger with no family.
-				if tr.Index == item.OnIndex && (tr.Family == "" || tr.Family == "event") && tr.Event == item.Connector {
+				if tr.Index == item.OnIndex && (tr.Family == "" || tr.Family == "event") && tr.Event == slug {
 					return tr.Debounce, dispatch.ParseRateLimit(tr.RateLimit), key
 				}
 			}
@@ -718,7 +724,7 @@ func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem)
 		return 0, nil, ""
 	}
 	for _, tr := range j.Triggers {
-		if tr.Index == item.OnIndex && tr.Family == "event" && tr.Event == item.Connector {
+		if tr.Index == item.OnIndex && tr.Family == "event" && tr.Event == slug {
 			return tr.Debounce, dispatch.ParseRateLimit(tr.RateLimit), key
 		}
 	}

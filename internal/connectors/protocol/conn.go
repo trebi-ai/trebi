@@ -28,9 +28,10 @@ type Error struct {
 // Conn is the daemon end of one adapter session. Run reads the adapter
 // output; Call and Notify write to it.
 type Conn struct {
-	w      io.Writer
-	r      io.Reader
-	notify NotifyFunc
+	w       io.Writer
+	r       io.Reader
+	notify  NotifyFunc
+	badLine func(error)
 
 	wmu     sync.Mutex
 	mu      sync.Mutex
@@ -41,9 +42,19 @@ type Conn struct {
 }
 
 // NotifyFunc receives each notification from the adapter. An empty method
-// means a line that is not JSON-RPC 2.0. It runs on the read loop, so it
-// must not block on a Call of the same Conn.
+// means a line that is not JSON-RPC 2.0, when the Conn has no WithBadLine.
+// It runs on the read loop, so it must not block on a Call of the same Conn.
 type NotifyFunc func(method string, params json.RawMessage)
+
+// Option configures a Conn.
+type Option func(*Conn)
+
+// WithBadLine gives each stdout line that is not JSON-RPC 2.0 to fn, as an
+// error that wraps ErrNotJSONRPC and holds the start of the line. The
+// notify func then does not get the empty method. fn runs on the read loop.
+func WithBadLine(fn func(error)) Option {
+	return func(c *Conn) { c.badLine = fn }
+}
 
 // Message is one JSON-RPC 2.0 object on the wire.
 type Message struct {
@@ -99,15 +110,24 @@ var (
 	ErrClosed = errors.New("connector session closed")
 	// ErrLineTooLong is a line over MaxLine.
 	ErrLineTooLong = errors.New("connector line over 1 MiB")
+	// ErrNotJSONRPC is a stdout line that is not a JSON-RPC 2.0 message.
+	ErrNotJSONRPC = errors.New("stdout line is not JSON-RPC 2.0")
 )
 
+// badLineShown is the part of a bad line that an ErrNotJSONRPC error holds.
+const badLineShown = 200
+
 // NewConn builds a Conn. notify may be nil.
-func NewConn(r io.Reader, w io.Writer, notify NotifyFunc) *Conn {
-	return &Conn{
+func NewConn(r io.Reader, w io.Writer, notify NotifyFunc, opts ...Option) *Conn {
+	c := &Conn{
 		r: r, w: w, notify: notify,
 		pending: map[int64]chan response{},
 		closed:  make(chan struct{}),
 	}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
 }
 
 // Run reads adapter output until EOF, a framing error, or ctx ends. It
@@ -249,7 +269,11 @@ func (c *Conn) dispatch(line []byte) {
 	}
 	var m Message
 	if err := json.Unmarshal(line, &m); err != nil || m.JSONRPC != "2.0" {
-		if c.notify != nil {
+		switch {
+		case c.badLine != nil:
+			shown := line[:min(len(line), badLineShown)]
+			c.badLine(fmt.Errorf("%w: %q", ErrNotJSONRPC, shown))
+		case c.notify != nil:
 			c.notify("", nil) // a parse error; the owner counts it
 		}
 		return

@@ -401,7 +401,7 @@ func (s *Service) Get(ctx context.Context, id string) (*InboxItem, error) {
 			continue
 		}
 		item.Deliveries = append(item.Deliveries, Delivery{
-			Step: *r.RouteStep, Via: cmp.Or(r.Connector(), notify.ViaEmail), Target: cmp.Or(r.Room, r.Recipients),
+			Step: *r.RouteStep, Via: cmp.Or(r.Instance, notify.ViaEmail), Target: cmp.Or(r.Room, r.Recipients),
 			Status: string(r.Status), Error: r.ErrorMessage, SentAt: r.SentAt,
 		})
 	}
@@ -847,8 +847,7 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 	case KindRunFailed:
 		return runFailedActions(o.RunID)
 	case KindConnectorAuthRequired:
-		name, _, _ := strings.Cut(o.Connector, "@")
-		route := "/connectors/" + name + "?tab=login&instance=" + url.QueryEscape(o.Connector)
+		route := "/connectors/" + url.PathEscape(o.Connector) + "?tab=login"
 		return []InboxAction{{Kind: ActionLogIn, Route: route, Label: "Log in"}}
 	case KindConnectorUpdate:
 		return []InboxAction{{Kind: ActionUpdate, Route: "/v1/connectors/" + url.PathEscape(o.Connector) + "/update", Label: "Update"}}

@@ -433,7 +433,7 @@ func (c *ControlPlane) Start(parent context.Context) {
 	if !c.Opts.Shadow {
 		// The queue reads the channel connectors, so they load before it starts.
 		if err := c.Connectors.Load(); err != nil {
-			c.log.Error("connectors load", "path", home.ConnectorsPath(), "err", err)
+			c.log.Error("connectors load", "path", home.ConnectionsDir(), "err", err)
 		}
 		c.wg.Add(1)
 		go func() {
@@ -700,7 +700,7 @@ func (c *ControlPlane) connectorUpdates(ctx context.Context) {
 				c.log.Warn("connector update check", "error", err)
 			}
 			for _, r := range res {
-				c.log.Info("connector update", "connector", r.Name, "from", r.From, "to", r.To, "applied", r.Applied, "error", r.Error)
+				c.log.Info("connector update", "connector", r.Slug, "id", r.ID, "from", r.From, "to", r.To, "applied", r.Applied, "error", r.Error)
 			}
 			t.Reset(every)
 		}

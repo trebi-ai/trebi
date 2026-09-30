@@ -5,33 +5,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/requests"
 )
-
-// testRouteEnv preserves the old broad test identities while exercising the
-// new rule matcher: research accepts example.net, the assistant accepts the
-// operator, allowlist friend, and example.net.
-func testRouteEnv() RouteEnv {
-	mustRule := func(lines ...string) AcceptRule {
-		entries, err := job.ParseAccept(lines)
-		if err != nil {
-			panic(err)
-		}
-		return NewAcceptRule(entries)
-	}
-	return RouteEnv{
-		Agents:    map[string]AcceptRule{"research": mustRule("@example.net")},
-		Assistant: mustRule("ops@example.com", "friend@example.com", "@example.net"),
-		Allowlist: []string{"friend@example.com"},
-	}
-}
 
 // fakeActions records every routing side effect the ingress loop causes.
 type fakeActions struct {
@@ -354,7 +338,7 @@ func TestAssistantTextFence(t *testing.T) {
 // cycle against a fake Worker: every verdict class in one batch, then the
 // crash-recovery re-pull that must not route twice.
 func TestIngressPollOnceRoutesBatch(t *testing.T) {
-	t.Parallel()
+	isolateHome(t)
 	fw := &fakeWorker{token: "test-token-0000", pullNext: 7, ackStatus: http.StatusNoContent}
 	srv := httptest.NewServer(fw.handler())
 	t.Cleanup(srv.Close)
@@ -458,7 +442,7 @@ func TestIngressPollOnceRoutesBatch(t *testing.T) {
 // TestIngressUnhealthyAfterThree: three failed polls mark the connector
 // unhealthy on the bus; the first success recovers it.
 func TestIngressUnhealthyAfterThree(t *testing.T) {
-	t.Parallel()
+	isolateHome(t)
 	st := openEmailStore(t)
 	s := testService(st)
 	configureTest(s, "http://127.0.0.1:1")
@@ -495,7 +479,7 @@ func TestIngressUnhealthyAfterThree(t *testing.T) {
 // position. If the write fails, the poll must not ack; an ack deletes spool
 // rows the next pull can no longer ask for, so the mail is lost (plan H).
 func TestIngressCursorFailureBlocksAck(t *testing.T) {
-	t.Parallel()
+	isolateHome(t)
 	fw := &fakeWorker{token: "test-token-0000", pullNext: 2, ackStatus: http.StatusNoContent}
 	srv := httptest.NewServer(fw.handler())
 	t.Cleanup(srv.Close)
@@ -511,9 +495,12 @@ func TestIngressCursorFailureBlocksAck(t *testing.T) {
 		{V: 1, Seq: 1, ID: "m1", LocalPart: addr.LocalPart, To: []string{addr.LocalPart + "@in.example.com"}, From: "ops@example.com", Dmarc: "pass"},
 	}
 
-	// Remove the cursor table so only the cursor write fails; routing and
-	// the envelope row still commit.
-	if _, err := st.DB().ExecContext(t.Context(), `DROP TABLE connector_cursors`); err != nil {
+	// A file where the cursor folder goes fails only the cursor write;
+	// routing and the envelope row still commit.
+	if err := os.MkdirAll(home.ConnectionsDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(home.ConnectionDir(Instance), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -532,5 +519,32 @@ func TestIngressCursorFailureBlocksAck(t *testing.T) {
 	}
 	if f := s.Status(t.Context()).Failures; f != 1 {
 		t.Errorf("failures = %d, want 1", f)
+	}
+}
+
+// isolateHome points home at a temp folder for a test that polls, because
+// the poll keeps its connector cursor under home. The test must not be
+// parallel.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+}
+
+// testRouteEnv preserves the old broad test identities while exercising the
+// new rule matcher: research accepts example.net, the assistant accepts the
+// operator, allowlist friend, and example.net.
+func testRouteEnv() RouteEnv {
+	mustRule := func(lines ...string) AcceptRule {
+		entries, err := job.ParseAccept(lines)
+		if err != nil {
+			panic(err)
+		}
+		return NewAcceptRule(entries)
+	}
+	return RouteEnv{
+		Agents:    map[string]AcceptRule{"research": mustRule("@example.net")},
+		Assistant: mustRule("ops@example.com", "friend@example.com", "@example.net"),
+		Allowlist: []string{"friend@example.com"},
 	}
 }

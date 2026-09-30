@@ -15,6 +15,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/conformance"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol/fakeadapter"
@@ -33,92 +34,58 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// spec is a short form of an inline entry with an events block.
+// spec is a short form of an inline connection with an events block. The
+// type and the slug are Name.
 type spec struct {
 	Name   string
 	Env    map[string]string
 	Events *manifest.Events
 }
 
-func (s spec) entry() connectors.Entry {
-	m := baseManifest(s.Name)
-	m.Events = s.Events
-	return connectors.Entry{Name: s.Name, From: connectors.FromInline, Inputs: s.Env, Manifest: &m}
-}
-
-func create(ctx context.Context, svc *connectors.Service, s spec) error {
-	return svc.Create(ctx, s.entry())
-}
-
-// eventsDef is a minimal valid lines connector.
-func eventsDef(name, command string) spec {
-	return spec{Name: name, Events: &manifest.Events{Command: command, Format: manifest.FormatJSON}}
-}
-
-func baseManifest(name string) manifest.Manifest {
-	return manifest.Manifest{Schema: manifest.SchemaID, Name: name, Title: name, Description: "Test connector.", Version: "1.0.0"}
-}
-
-// inline builds an inline entry from a manifest body.
-func inline(name string, edit func(*manifest.Manifest)) connectors.Entry {
-	m := baseManifest(name)
-	edit(&m)
-	return connectors.Entry{Name: name, From: connectors.FromInline, Manifest: &m}
-}
-
-func TestConnectorsCreateReplacePatchDelete(t *testing.T) {
+func TestConnectorsCreatePatchDelete(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
 
 	e := inline("feed", func(m *manifest.Manifest) {
 		m.Events = &manifest.Events{Command: "rss-fetch https://example.com/feed.xml", Format: "json", ID: "guid"}
 	})
-	if err := svc.Create(ctx, e); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(home.ConnectorsPath()); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.Create(ctx, e); !errors.Is(err, connectors.ErrExists) {
-		t.Fatalf("double create: %v", err)
-	}
-	if err := svc.Create(ctx, eventsDef("email", "x").entry()); !errors.Is(err, connectors.ErrReserved) {
-		t.Fatalf("reserved create: %v", err)
-	}
-	if err := svc.Create(ctx, connectors.Entry{Name: "bad", From: connectors.FromInline}); !errors.Is(err, connectors.ErrInvalid) {
-		t.Fatalf("inline with no manifest: %v", err)
-	}
-
-	// Replace swaps the whole entry.
-	replaced := inline("feed", func(m *manifest.Manifest) {
-		m.Events = &manifest.Events{Command: "rss-fetch v2", Format: "line"}
-	})
-	if err := svc.Replace(ctx, replaced); err != nil {
-		t.Fatal(err)
-	}
-	row, err := svc.Get("feed")
+	c, err := svc.Create(ctx, e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev := row["events"].(map[string]any)
-	if ev["command"] != "rss-fetch v2" || ev["id"] != "" {
-		t.Fatalf("replace row %v", ev)
+	if !connectors.IsConnectionID(c.ID) || c.Slug != "feed" || c.Type != "feed" {
+		t.Fatalf("created %+v", c)
+	}
+	if fi, err := os.Stat(filepath.Join(home.ConnectionDir(c.ID), "connection.yaml")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("record %v %v", fi, err)
+	}
+	if _, err := svc.Create(ctx, e); !errors.Is(err, connectors.ErrExists) {
+		t.Fatalf("double create: %v", err)
+	}
+	if _, err := svc.Create(ctx, eventsDef("email", "x").entry()); !errors.Is(err, connectors.ErrReserved) {
+		t.Fatalf("reserved create: %v", err)
+	}
+	if _, err := svc.Create(ctx, connectors.Connection{Type: "bad", Slug: "bad", From: connectors.FromInline}); !errors.Is(err, connectors.ErrInvalid) {
+		t.Fatalf("inline with no manifest: %v", err)
+	}
+	if _, err := os.Stat(home.ConnectionsDir()); err != nil {
+		t.Fatal(err)
 	}
 
 	// Patch sets inputs and a merge patch on the manifest.
 	inputs := map[string]string{"FEED": "https://example.com/x"}
-	p := connectors.EntryPatch{
+	p := connectors.ConnectionPatch{
 		Inputs: &inputs,
 		Patch:  json.RawMessage(`{"events":{"command":"rss-fetch v3","format":"json","id":"guid"},"actions":{"cli":{"commands":["rss-fetch"]}}}`),
 	}
-	if err := svc.Patch(ctx, "feed", p); err != nil {
+	if _, err := svc.Patch(ctx, "feed", p); err != nil {
 		t.Fatal(err)
 	}
-	row, _ = svc.Get("feed")
+	row, _ := svc.Get(c.ID)
 	if row["inputs"].(map[string]string)["FEED"] != "***" {
 		t.Fatalf("patch inputs %v", row["inputs"])
 	}
-	if got, _ := svc.Entry("feed"); got.Inputs["FEED"] != "https://example.com/x" {
+	if got, _ := svc.Lookup("feed"); got.Inputs["FEED"] != "https://example.com/x" {
 		t.Fatalf("stored inputs %v", got.Inputs)
 	}
 	if ev := row["events"].(map[string]any); ev["command"] != "rss-fetch v3" || ev["id"] != "guid" {
@@ -130,11 +97,11 @@ func TestConnectorsCreateReplacePatchDelete(t *testing.T) {
 
 	// A patch that breaks the manifest is a validation error on the global layer.
 	var ve *connectors.ValidationError
-	if err := svc.Patch(ctx, "feed", connectors.EntryPatch{Patch: json.RawMessage(`{"events":{"restart":"sometimes"}}`)}); !errors.As(err, &ve) || ve.Layer != connectors.LayerGlobal {
+	if _, err := svc.Patch(ctx, "feed", connectors.ConnectionPatch{Patch: json.RawMessage(`{"events":{"restart":"sometimes"}}`)}); !errors.As(err, &ve) || ve.Layer != connectors.LayerGlobal {
 		t.Fatalf("bad patch err = %v", err)
 	}
 	// A null patch removes the layer.
-	if err := svc.Patch(ctx, "feed", connectors.EntryPatch{Patch: json.RawMessage("null")}); err != nil {
+	if _, err := svc.Patch(ctx, "feed", connectors.ConnectionPatch{Patch: json.RawMessage("null")}); err != nil {
 		t.Fatal(err)
 	}
 	row, _ = svc.Get("feed")
@@ -142,17 +109,59 @@ func TestConnectorsCreateReplacePatchDelete(t *testing.T) {
 		t.Fatalf("actions after null patch: %v", row["actions"])
 	}
 
-	// Delete twice: the second is ErrNotFound.
+	// Delete removes the folder. The second delete is ErrNotFound.
 	if err := svc.Delete(ctx, "feed"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Delete(ctx, "feed"); !errors.Is(err, connectors.ErrNotFound) {
+	if _, err := os.Stat(home.ConnectionDir(c.ID)); !os.IsNotExist(err) {
+		t.Fatalf("folder after delete: %v", err)
+	}
+	if err := svc.Delete(ctx, c.ID); !errors.Is(err, connectors.ErrNotFound) {
 		t.Fatalf("second delete: %v", err)
 	}
 }
 
-// TestConnectorsSecretInputs proves a literal secret input becomes a secret
-// that the entry owns, and Delete removes it.
+// TestConnectorsTitle proves a display name replaces the manifest title on
+// the row, keeps the name, and an empty title restores the manifest title.
+func TestConnectorsTitle(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	if _, err := svc.Create(ctx, inline("feed", func(m *manifest.Manifest) { m.Events = &manifest.Events{Command: "rss-fetch", Format: "line"} })); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := svc.Get("feed")
+	base, _ := row["title"].(string)
+
+	title := "  Work feed "
+	if _, err := svc.Patch(ctx, "feed", connectors.ConnectionPatch{Title: &title}); err != nil {
+		t.Fatal(err)
+	}
+	row, _ = svc.Get("feed")
+	if row["title"] != "Work feed" || row["slug"] != "feed" {
+		t.Fatalf("row title %v name %v", row["title"], row["slug"])
+	}
+	if e, _ := svc.Lookup("feed"); e.Title != "Work feed" {
+		t.Fatalf("stored title %q", e.Title)
+	}
+
+	for _, bad := range []string{strings.Repeat("x", 61), "two\nlines"} {
+		if _, err := svc.Patch(ctx, "feed", connectors.ConnectionPatch{Title: &bad}); !errors.Is(err, connectors.ErrInvalid) {
+			t.Fatalf("title %q: %v", bad, err)
+		}
+	}
+
+	empty := ""
+	if _, err := svc.Patch(ctx, "feed", connectors.ConnectionPatch{Title: &empty}); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ = svc.Get("feed"); row["title"] != base {
+		t.Fatalf("cleared title %v, want %q", row["title"], base)
+	}
+}
+
+// TestConnectorsSecretInputs proves a literal secret input moves to the
+// secrets folder of the connection, and Delete removes it. A secret: value
+// stays a reference to a user secret.
 func TestConnectorsSecretInputs(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
@@ -161,15 +170,26 @@ func TestConnectorsSecretInputs(t *testing.T) {
 		m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"gh"}}}
 	})
 	e.Inputs = map[string]string{"TOKEN": "t0k"}
-	if err := svc.Create(ctx, e); err != nil {
+	c, err := svc.Create(ctx, e)
+	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := svc.Entry("gh")
-	if got.Inputs["TOKEN"] != "secret:gh_TOKEN" || !reflect.DeepEqual(got.InstalledSecrets, []string{"gh_TOKEN"}) {
-		t.Fatalf("entry %+v", got)
+	if _, ok := c.Inputs["TOKEN"]; ok {
+		t.Fatalf("the record keeps the literal: %+v", c.Inputs)
 	}
-	if v, err := secrets.Get("gh_TOKEN"); err != nil || v != "t0k" {
-		t.Fatalf("secret %q %v", v, err)
+	f := connectors.NewFolder(c.ID)
+	if v, err := f.Secret("TOKEN"); err != nil || v != "t0k" {
+		t.Fatalf("owned secret %q %v", v, err)
+	}
+	if fi, err := os.Stat(filepath.Join(f.Dir(), "secrets", "TOKEN")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("secret file %v %v", fi, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(f.Dir(), "connection.yaml")); strings.Contains(string(b), "t0k") {
+		t.Fatalf("connection.yaml holds the secret: %s", b)
+	}
+	row, _ := svc.Get("gh")
+	if in := row["inputs"].(map[string]string); in["TOKEN"] != "***" {
+		t.Fatalf("row inputs %v", in)
 	}
 	r, err := svc.Resolve("gh", "")
 	if err != nil {
@@ -181,28 +201,25 @@ func TestConnectorsSecretInputs(t *testing.T) {
 	if err := svc.Delete(ctx, "gh"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := secrets.Get("gh_TOKEN"); err == nil {
+	if _, err := f.Secret("TOKEN"); err == nil {
 		t.Fatal("owned secret survived delete")
 	}
 
-	// A secret that the user made first is not overwritten or owned.
+	// A secret: reference reads the user secret and owns nothing.
 	if err := secrets.Set("gh_TOKEN", "mine"); err != nil {
 		t.Fatal(err)
 	}
-	e.Inputs = map[string]string{"TOKEN": "t1k"}
-	var ve *connectors.ValidationError
-	if err := svc.Create(ctx, e); !errors.As(err, &ve) {
-		t.Fatalf("create over a user secret = %v", err)
-	}
-	if v, _ := secrets.Get("gh_TOKEN"); v != "mine" {
-		t.Fatalf("user secret = %q", v)
-	}
 	e.Inputs = map[string]string{"TOKEN": "secret:gh_TOKEN"}
-	if err := svc.Create(ctx, e); err != nil {
+	c, err = svc.Create(ctx, e)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := svc.Entry("gh"); len(got.InstalledSecrets) != 0 {
-		t.Fatalf("installed = %v", got.InstalledSecrets)
+	if got := connectors.NewFolder(c.ID).Secrets(); len(got) != 0 {
+		t.Fatalf("owned = %v", got)
+	}
+	r, _ = svc.Resolve("gh", "")
+	if env, _ := r.Env(); env["TOKEN"] != "mine" {
+		t.Fatalf("env %v", env)
 	}
 }
 
@@ -219,7 +236,7 @@ func TestConnectorsRewritePathPrefix(t *testing.T) {
 		}
 	})
 	e.Inputs = map[string]string{"ROOT": oldDir + "/data"}
-	if err := svc.Create(ctx, e); err != nil {
+	if _, err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
 
@@ -233,7 +250,7 @@ func TestConnectorsRewritePathPrefix(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(oldDir, "conn", manifest.FileName), body, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Create(ctx, connectors.Entry{Name: "local", From: "file:" + filepath.Join(oldDir, "conn", manifest.FileName)}); err != nil {
+	if _, err := svc.Create(ctx, fileConn("local", filepath.Join(oldDir, "conn", manifest.FileName))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -244,7 +261,7 @@ func TestConnectorsRewritePathPrefix(t *testing.T) {
 	if strings.Join(preview, ",") != "local,whatsapp" {
 		t.Fatalf("preview %v", preview)
 	}
-	if got, _ := svc.Entry("whatsapp"); got.Inputs["ROOT"] != oldDir+"/data" || got.Manifest.Events.Command != "whatsapp-cli listen --dir "+oldDir {
+	if got, _ := svc.Lookup("whatsapp"); got.Inputs["ROOT"] != oldDir+"/data" || got.Manifest.Events.Command != "whatsapp-cli listen --dir "+oldDir {
 		t.Fatalf("dry run changed the live entry: %+v", got)
 	}
 	if err := os.Rename(oldDir, newDir); err != nil {
@@ -253,7 +270,7 @@ func TestConnectorsRewritePathPrefix(t *testing.T) {
 	if _, err := svc.RewritePathPrefix(oldDir, newDir, false); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := svc.Entry("whatsapp")
+	got, _ := svc.Lookup("whatsapp")
 	if got.Inputs["ROOT"] != newDir+"/data" {
 		t.Fatalf("inputs %v", got.Inputs)
 	}
@@ -264,7 +281,7 @@ func TestConnectorsRewritePathPrefix(t *testing.T) {
 	if m.Actions.MCP.Args[1] != newDir+"/mcp" {
 		t.Fatalf("mcp args %v", m.Actions.MCP.Args)
 	}
-	if local, _ := svc.Entry("local"); local.FilePath() != filepath.Join(newDir, "conn", manifest.FileName) {
+	if local, _ := svc.Lookup("local"); local.FilePath() != filepath.Join(newDir, "conn", manifest.FileName) {
 		t.Fatalf("file entry %q", local.From)
 	}
 	if _, err := svc.Resolve("local", ""); err != nil {
@@ -287,7 +304,7 @@ func TestConnectorsListRowShape(t *testing.T) {
 		}
 	})
 	e.Inputs = map[string]string{"GITHUB_TOKEN": "secret:github"}
-	if err := svc.Create(ctx, e); err != nil {
+	if _, err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
 	row, err := svc.Get("github")
@@ -326,75 +343,117 @@ func TestConnectorsListRowShape(t *testing.T) {
 	}
 	row, _ = svc.Get("feed")
 	ev := row["events"].(map[string]any)
-	if ev["status"] != "stopped" || ev["format"] != "json" || ev["last_err"] != "" || ev["protocol"] != "lines" || ev["restart"] != "on-failure" {
-		t.Fatalf("events row %v", ev)
+	if row["status"] != "stopped" || ev["format"] != "json" || row["last_err"] != "" || ev["protocol"] != "lines" || ev["restart"] != "on-failure" {
+		t.Fatalf("events row %v", row)
 	}
-	counters := ev["counters"].(map[string]any)
+	counters := row["counters"].(map[string]any)
 	if counters["events"] != int64(0) || counters["duplicates"] != int64(0) || counters["parse_errors"] != int64(0) {
 		t.Fatalf("counters %v", counters)
 	}
-	if inst := row["instances"].([]map[string]any); len(inst) != 1 || inst[0]["key"] != "feed" {
-		t.Fatalf("instances %v", inst)
+	if id, _ := row["id"].(string); !connectors.IsConnectionID(id) || row["slug"] != "feed" || row["type"] != "feed" || row["folder"] != home.ConnectionDir(id) {
+		t.Fatalf("identity fields %v", row)
 	}
 }
 
-func TestConnectorsStrictLoadRefusesOldKeys(t *testing.T) {
-	svc, teardown := stackWithFile(t, "mail:\n  events: {command: x}\n")
-	defer teardown()
-	if err := svc.Load(); err == nil || !strings.Contains(err.Error(), "events") {
-		t.Fatalf("load: %v", err)
-	}
-	svc2, teardown2 := stackWithFile(t, "feed:\n  from: inline\n  manifest:\n    schema: trebi-connector/1\n    name: feed\n    title: Feed\n    description: A feed.\n    version: 1.0.0\n    events: {command: echo, format: json, id: g}\n")
-	defer teardown2()
-	if err := svc2.Load(); err != nil {
-		t.Fatal(err)
-	}
-	row, err := svc2.Get("feed")
+// TestConnectorsLoadFolders proves Load reads each connection folder, skips
+// a native cursor folder, and applies the manifest defaults.
+func TestConnectorsLoadFolders(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	c, err := svc.Create(ctx, eventsDef("feed", "echo").entry())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := svc.PutCursor(ctx, "email", "e1"); err != nil {
+		t.Fatal(err)
+	}
+	fresh := connectors.New(nil, nil, nil)
+	if err := fresh.Load(); err != nil {
+		t.Fatal(err)
+	}
+	row, err := fresh.Get("feed")
+	if err != nil || row["id"] != c.ID {
+		t.Fatalf("row %v %v", row, err)
 	}
 	if ev := row["events"].(map[string]any); ev["restart"] != "on-failure" {
 		t.Fatalf("default restart %v", ev["restart"])
 	}
+	if len(fresh.List("")) != 1 {
+		t.Fatalf("list %v", fresh.List(""))
+	}
 }
 
-// TestConnectorsFailedLoadBlocksWrites proves a failed load keeps the error
-// and refuses every write until a load succeeds.
+// TestConnectorsFailedLoadBlocksWrites proves a folder that does not load
+// keeps its error and refuses writes to that connection, while the other
+// connections stay writable.
 func TestConnectorsFailedLoadBlocksWrites(t *testing.T) {
-	body := "mail:\n  type: stream\n"
-	svc, teardown := stackWithFile(t, body)
-	defer teardown()
+	_, _, svc := openStack(t)
 	ctx := context.Background()
-	if err := svc.Load(); err == nil {
-		t.Fatal("load passed")
+	mail, err := svc.Create(ctx, eventsDef("mail", "echo").entry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, eventsDef("feed", "echo").entry()); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(home.ConnectionDir(mail.ID), "connection.yaml")
+	good, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := append(append([]byte{}, good...), "frm: x\n"...)
+	if err := os.WriteFile(record, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Load(); err == nil || !strings.Contains(err.Error(), mail.ID) {
+		t.Fatalf("load: %v", err)
 	}
 	if svc.LoadErr() == nil {
 		t.Fatal("LoadErr is nil after a failed load")
 	}
-	e := eventsDef("feed", "echo").entry()
 	inputs := map[string]string{"A": "1"}
-	for name, write := range map[string]func() error{
-		"create":  func() error { return svc.Create(ctx, e) },
-		"replace": func() error { return svc.Replace(ctx, e) },
-		"patch":   func() error { return svc.Patch(ctx, "mail", connectors.EntryPatch{Inputs: &inputs}) },
-		"delete":  func() error { return svc.Delete(ctx, "mail") },
-		"rewrite": func() error { _, err := svc.RewritePathPrefix("/a", "/b", false); return err },
-	} {
-		if err := write(); !errors.Is(err, connectors.ErrLoadFailed) {
-			t.Fatalf("%s: %v", name, err)
-		}
+	if _, err := svc.Patch(ctx, "mail", connectors.ConnectionPatch{Inputs: &inputs}); !errors.Is(err, connectors.ErrLoadFailed) {
+		t.Fatalf("patch: %v", err)
 	}
-	if got, _ := os.ReadFile(home.ConnectorsPath()); string(got) != body {
+	if got, _ := os.ReadFile(record); string(got) != string(bad) {
 		t.Fatalf("file changed: %q", got)
 	}
-	if err := os.WriteFile(home.ConnectorsPath(), nil, 0o644); err != nil {
+	row, _ := svc.Get("mail")
+	if row["load_error"] == nil {
+		t.Fatalf("row has no load error: %v", row)
+	}
+	if _, err := svc.Patch(ctx, "feed", connectors.ConnectionPatch{Inputs: &inputs}); err != nil {
+		t.Fatalf("patch of a good connection: %v", err)
+	}
+	if err := os.WriteFile(record, good, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Load(); err != nil || svc.LoadErr() != nil {
 		t.Fatalf("load after fix: %v %v", err, svc.LoadErr())
 	}
-	if err := svc.Create(ctx, e); err != nil {
-		t.Fatalf("create after fix: %v", err)
+	if _, err := svc.Patch(ctx, "mail", connectors.ConnectionPatch{Inputs: &inputs}); err != nil {
+		t.Fatalf("patch after fix: %v", err)
+	}
+
+	// A folder that never loaded is a list row, and Delete removes it.
+	broken := connectors.NewConnectionID()
+	if err := os.MkdirAll(home.ConnectionDir(broken), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home.ConnectionDir(broken), "connection.yaml"), []byte("id: nope\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Load(); err == nil {
+		t.Fatal("broken folder loaded")
+	}
+	if row, err := svc.Get(broken); err != nil || row["load_error"] == nil {
+		t.Fatalf("broken row %v %v", row, err)
+	}
+	if err := svc.Delete(ctx, broken); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(home.ConnectionDir(broken)); !os.IsNotExist(err) {
+		t.Fatalf("broken folder kept: %v", err)
 	}
 }
 
@@ -405,33 +464,29 @@ func TestConnectorsMaskedInputsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	e := eventsDef("api", "true").entry()
 	e.Inputs = map[string]string{"TOKEN": "t0k", "REF": "secret:api_TOKEN"}
-	if err := svc.Create(ctx, e); err != nil {
+	if _, err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
-	}
-	if fi, err := os.Stat(home.ConnectorsPath()); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("file mode %v %v", fi, err)
 	}
 	row, _ := svc.Get("api")
 	if in := row["inputs"].(map[string]string); in["TOKEN"] != "***" || in["REF"] != "secret:api_TOKEN" {
 		t.Fatalf("inputs %v", in)
 	}
-	put := e
-	put.Inputs = map[string]string{"TOKEN": "***"}
-	if err := svc.Replace(ctx, put); err != nil {
+	in := map[string]string{"TOKEN": "***"}
+	if _, err := svc.Patch(ctx, "api", connectors.ConnectionPatch{Inputs: &in}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := svc.Entry("api"); got.Inputs["TOKEN"] != "t0k" {
-		t.Fatalf("put %v", got.Inputs)
+	if got, _ := svc.Lookup("api"); got.Inputs["TOKEN"] != "t0k" {
+		t.Fatalf("patch %v", got.Inputs)
 	}
-	put.Inputs = map[string]string{"NEW": "***"}
-	if err := svc.Replace(ctx, put); !errors.Is(err, connectors.ErrInvalid) {
+	in = map[string]string{"NEW": "***"}
+	if _, err := svc.Patch(ctx, "api", connectors.ConnectionPatch{Inputs: &in}); !errors.Is(err, connectors.ErrInvalid) {
 		t.Fatalf("new mask: %v", err)
 	}
 }
 
 // TestConnectorsWorkspaceOverride covers the workspace layer: an actions
-// patch keeps the global instance, new inputs make a workspace instance, and
-// disabled turns the connector off.
+// patch applies in that workspace only, and disabled turns the connection
+// off there. The layer cannot hold inputs.
 func TestConnectorsWorkspaceOverride(t *testing.T) {
 	_, ws, svc := openStack(t)
 	ctx := context.Background()
@@ -444,65 +499,58 @@ func TestConnectorsWorkspaceOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := inline("chat", func(m *manifest.Manifest) {
-		m.Setup = &manifest.Setup{Inputs: []manifest.Input{{Name: "KEY", Secret: true}, {Name: "ROOM"}}}
+		m.Setup = &manifest.Setup{Inputs: []manifest.Input{{Name: "ROOM"}}}
 		m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"chat"}}}
 		m.Events = &manifest.Events{Command: "sleep 30", Format: "json"}
 	})
 	e.Inputs = map[string]string{"ROOM": "global"}
-	if err := svc.Create(ctx, e); err != nil {
+	c, err := svc.Create(ctx, e)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.SetOverride(ctx, w.ID, "missing", &workspaces.ConnectorOverride{}); !errors.Is(err, connectors.ErrNotFound) {
 		t.Fatalf("override of a missing connector: %v", err)
+	}
+	bad := &workspaces.ConnectorOverride{Patch: map[string]any{"events": map[string]any{"command": "x"}}}
+	if err := svc.SetOverride(ctx, w.ID, "chat", bad); !errors.Is(err, connectors.ErrInvalid) {
+		t.Fatalf("events patch in a workspace: %v", err)
 	}
 
 	patchOnly := &workspaces.ConnectorOverride{Patch: map[string]any{"actions": map[string]any{"cli": map[string]any{"commands": []any{"chat", "chat-admin"}}}}}
 	if err := svc.SetOverride(ctx, w.ID, "chat", patchOnly); err != nil {
 		t.Fatal(err)
 	}
-	if got := svc.InstanceFor("chat", w.ID); got != "chat" {
-		t.Fatalf("actions override instance %q", got)
+	if got := svc.ConnectionFor("chat", w.ID); got != c.ID {
+		t.Fatalf("connection in the workspace %q", got)
 	}
 	r, err := svc.Resolve("chat", w.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Manifest.Actions.CLI.Commands) != 2 || r.Workspace != w.ID {
+	if len(r.Manifest.Actions.CLI.Commands) != 2 || r.ID != c.ID {
 		t.Fatalf("resolved %+v", r)
 	}
-
-	own := &workspaces.ConnectorOverride{Inputs: map[string]string{"ROOM": "team", "KEY": "k3y"}}
-	if err := svc.SetOverride(ctx, w.ID, "chat", own); err != nil {
-		t.Fatal(err)
+	if g, _ := svc.Resolve("chat", ""); len(g.Manifest.Actions.CLI.Commands) != 1 || g.Inputs["ROOM"] != "global" {
+		t.Fatalf("global layer changed: %+v", g)
 	}
-	inst := "chat@" + w.ID
-	if got := svc.InstanceFor("chat", w.ID); got != inst {
-		t.Fatalf("inputs override instance %q", got)
-	}
-	ov, ok, err := svc.Override(ctx, w.ID, "chat")
-	if err != nil || !ok || ov.Inputs["KEY"] != "secret:"+inst+"_KEY" {
+	if ov, ok, err := svc.Override(ctx, w.ID, c.ID); err != nil || !ok || ov.Patch == nil {
 		t.Fatalf("override %+v %v %v", ov, ok, err)
-	}
-	r, _ = svc.Resolve("chat", w.ID)
-	if env, _ := r.Env(); env["ROOM"] != "team" || env["KEY"] != "k3y" {
-		t.Fatalf("workspace env %v", env)
-	}
-	if g, _ := svc.Resolve("chat", ""); g.Inputs["ROOM"] != "global" {
-		t.Fatalf("global inputs changed: %v", g.Inputs)
-	}
-	row, err := svc.GetFor("chat", w.ID)
-	if err != nil || row["instance"] != inst || row["workspace"] != w.ID {
-		t.Fatalf("row %v %v", row, err)
 	}
 
 	if err := svc.SetOverride(ctx, w.ID, "chat", &workspaces.ConnectorOverride{Disabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := svc.InstanceFor("chat", w.ID); got != "" {
-		t.Fatalf("disabled instance %q", got)
+	if got := svc.ConnectionFor("chat", w.ID); got != "" {
+		t.Fatalf("disabled connection %q", got)
+	}
+	if got := svc.ConnectionFor("chat", ""); got != c.ID {
+		t.Fatalf("global connection %q", got)
 	}
 	if _, err := svc.Resolve("chat", w.ID); !errors.Is(err, connectors.ErrDisabled) {
 		t.Fatalf("disabled resolve: %v", err)
+	}
+	if row, _ := svc.GetFor("chat", w.ID); row["disabled"] != true {
+		t.Fatalf("row %v", row)
 	}
 	if _, err := svc.ResolveActions(ctx, w.ID, []string{"chat"}); err == nil {
 		t.Fatal("disabled connector gave actions")
@@ -511,8 +559,8 @@ func TestConnectorsWorkspaceOverride(t *testing.T) {
 	if err := svc.SetOverride(ctx, w.ID, "chat", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := svc.InstanceFor("chat", w.ID); got != "chat" {
-		t.Fatalf("removed override instance %q", got)
+	if got := svc.ConnectionFor("chat", w.ID); got != c.ID {
+		t.Fatalf("removed override connection %q", got)
 	}
 }
 
@@ -530,7 +578,7 @@ func TestConnectorsInheritedUnionAndGuard(t *testing.T) {
 		t.Fatalf("list=%v", list)
 	}
 	row := list[0]
-	if row["name"] != "sling" || row["provenance"] != "inherited" || row["managed"] != false {
+	if row["slug"] != "sling" || row["provenance"] != "inherited" || row["managed"] != false {
 		t.Fatalf("row %+v", row)
 	}
 	if caps := row["capabilities"].([]string); strings.Join(caps, ",") != "actions" {
@@ -572,7 +620,7 @@ func TestConnectorsMCPFingerprintMerge(t *testing.T) {
 	e := inline("sling", func(m *manifest.Manifest) {
 		m.Actions = &manifest.Actions{MCP: &manifest.MCPAction{Command: "sling", Args: []string{"serve", "mcp"}}}
 	})
-	if err := svc.Create(ctx, e); err != nil {
+	if _, err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
 	user := t.TempDir()
@@ -584,7 +632,7 @@ func TestConnectorsMCPFingerprintMerge(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("want merged 1 row, got %v", list)
 	}
-	if row := list[0]; row["managed"] != true || row["name"] != "sling" || row["origins"] == nil {
+	if row := list[0]; row["managed"] != true || row["slug"] != "sling" || row["origins"] == nil {
 		t.Fatalf("%+v", row)
 	}
 }
@@ -712,8 +760,8 @@ func TestConnectorsRestartPolicies(t *testing.T) {
 	waitStatus(t, svc, "never", "crashed")
 	time.Sleep(300 * time.Millisecond)
 	row, _ := svc.Get("never")
-	if ev := row["events"].(map[string]any); ev["restarts"].(int) != 0 {
-		t.Fatalf("never restarted: %v", ev)
+	if n, _ := row["restarts"].(int); n != 0 {
+		t.Fatalf("never restarted: %v", row)
 	}
 
 	// on-failure: a non-zero exit restarts (backoff 1s), a zero exit does not.
@@ -729,8 +777,8 @@ func TestConnectorsRestartPolicies(t *testing.T) {
 	}
 	waitUntil(t, 5*time.Second, func() bool {
 		row, _ := svc.Get("onfail")
-		ev, ok := row["events"].(map[string]any)
-		return ok && ev["restarts"].(int) >= 1
+		n, _ := row["restarts"].(int)
+		return n >= 1
 	}, "on-failure did not restart")
 	_ = svc.Stop("onfail")
 
@@ -747,8 +795,8 @@ func TestConnectorsRestartPolicies(t *testing.T) {
 	waitStatus(t, svc, "clean", "stopped")
 	time.Sleep(300 * time.Millisecond)
 	row, _ = svc.Get("clean")
-	if ev := row["events"].(map[string]any); ev["restarts"].(int) != 0 {
-		t.Fatalf("clean exit restarted: %v", ev)
+	if n, _ := row["restarts"].(int); n != 0 {
+		t.Fatalf("clean exit restarted: %v", row)
 	}
 
 	// always: a zero exit restarts.
@@ -764,8 +812,8 @@ func TestConnectorsRestartPolicies(t *testing.T) {
 	}
 	waitUntil(t, 5*time.Second, func() bool {
 		row, _ := svc.Get("always")
-		ev, ok := row["events"].(map[string]any)
-		return ok && ev["restarts"].(int) >= 1
+		n, _ := row["restarts"].(int)
+		return n >= 1
 	}, "always did not restart")
 	_ = svc.Stop("always")
 }
@@ -787,7 +835,7 @@ func TestConnectorsNonZeroExitCrashes(t *testing.T) {
 	}
 	waitStatus(t, svc, "boom", "crashed")
 	row, _ := svc.Get("boom")
-	if le := row["events"].(map[string]any)["last_err"].(string); le == "" {
+	if le := row["last_err"].(string); le == "" {
 		t.Fatalf("want non-empty last_err: %v", row)
 	}
 }
@@ -815,7 +863,7 @@ func TestConnectorsCountersPerOutcome(t *testing.T) {
 	var got map[string]any
 	waitUntil(t, 5*time.Second, func() bool {
 		row, _ := svc.Get("count")
-		got, _ = row["events"].(map[string]any)["counters"].(map[string]any)
+		got, _ = row["counters"].(map[string]any)
 		return reflect.DeepEqual(got, want)
 	}, "counters")
 }
@@ -1062,7 +1110,7 @@ func TestConnectorsDedup(t *testing.T) {
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	md := "---\nharness: fake\ntriggers:\n  - event: src\n    match: \"true\"\n---\n\nRun.\n"
+	md := "---\nharness: fake\ntriggers:\n  - event: webhook\n    match: \"true\"\n---\n\nRun.\n"
 	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1073,15 +1121,12 @@ func TestConnectorsDedup(t *testing.T) {
 	if err := ws.RebuildIndex(ctx, w); err != nil {
 		t.Fatal(err)
 	}
-	if err := create(ctx, svc, eventsDef("src", "true")); err != nil {
-		t.Fatal(err)
-	}
 	meta := connectors.NativeMeta{SourceID: "evt-1"}
-	id1, err := svc.InjectNative(ctx, "src", map[string]any{"n": 1}, meta)
+	id1, err := svc.InjectNative(ctx, "webhook", map[string]any{"n": 1}, meta)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id2, err := svc.InjectNative(ctx, "src", map[string]any{"n": 1}, meta)
+	id2, err := svc.InjectNative(ctx, "webhook", map[string]any{"n": 1}, meta)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1089,7 +1134,7 @@ func TestConnectorsDedup(t *testing.T) {
 		t.Fatalf("duplicate returned the same id %s", id1)
 	}
 	var events, queue int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE connector='src'`).Scan(&events); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE connector='webhook'`).Scan(&events); err != nil {
 		t.Fatal(err)
 	}
 	if events != 1 {
@@ -1102,7 +1147,7 @@ func TestConnectorsDedup(t *testing.T) {
 		t.Fatalf("queue rows %d want 1", queue)
 	}
 	// A native event never moves the position (decision 2).
-	cur, _ := svc.GetCursor(ctx, "src")
+	cur, _ := svc.GetCursor(ctx, "webhook")
 	if cur.LastEventID != "" {
 		t.Fatalf("native event moved the cursor to %q", cur.LastEventID)
 	}
@@ -1189,11 +1234,15 @@ func TestConnectorsRedispatch(t *testing.T) {
 }
 
 // TestConnectorsInjectNativeKeepsEmailPosition proves an email event leaves
-// the ingress position row of the email service alone.
+// the cursor of the email service alone. A native cursor lives in a folder
+// named after the connector, and Load does not read it as a connection.
 func TestConnectorsInjectNativeKeepsEmailPosition(t *testing.T) {
-	st, _, svc := openStack(t)
+	_, _, svc := openStack(t)
 	ctx := context.Background()
-	if _, err := st.DB().Exec(`INSERT INTO connector_cursors (instance, last_event_id, updated_at) VALUES ('email','42','2026-09-27T00:00:00Z')`); err != nil {
+	if err := svc.PutCursor(ctx, "email", "42"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home.ConnectionDir("email"), "cursor.json")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.InjectNative(ctx, "email", map[string]any{"subject": "hi"}, connectors.NativeMeta{SourceID: "<id@x>"}); err != nil {
@@ -1202,6 +1251,9 @@ func TestConnectorsInjectNativeKeepsEmailPosition(t *testing.T) {
 	cur, _ := svc.GetCursor(ctx, "email")
 	if cur.LastEventID != "42" {
 		t.Fatalf("email position = %q; want 42", cur.LastEventID)
+	}
+	if err := svc.Load(); err != nil {
+		t.Fatalf("load with a native cursor folder: %v", err)
 	}
 }
 
@@ -1359,100 +1411,8 @@ func TestConnectorsCatchup(t *testing.T) {
 	}, "no_position skip missing")
 }
 
-func openStack(t *testing.T) (*store.Store, *workspaces.Service, *connectors.Service) {
-	t.Helper()
-	dir := t.TempDir()
-	home.SetBase(dir)
-	t.Setenv("TREBI_HOME", dir)
-	t.Cleanup(func() { home.SetBase("") })
-	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	ws := workspaces.New(st)
-	svc := connectors.New(st, ws, nil)
-	return st, ws, svc
-}
-
-// stackWithFile opens a stack whose connectors.yaml holds body. The
-// returned teardown closes the store.
-func stackWithFile(t *testing.T, body string) (*connectors.Service, func()) {
-	t.Helper()
-	dir := t.TempDir()
-	home.SetBase(dir)
-	t.Setenv("TREBI_HOME", dir)
-	if err := os.WriteFile(home.ConnectorsPath(), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	svc := connectors.New(st, nil, nil)
-	return svc, func() {
-		_ = st.Close()
-		home.SetBase("")
-	}
-}
-
-// waitStatus polls Get until the connector's events.status reaches want.
-func waitStatus(t *testing.T, svc *connectors.Service, name, want string) {
-	t.Helper()
-	var status string
-	waitUntil(t, 3*time.Second, func() bool {
-		row, _ := svc.Get(name)
-		if ev, ok := row["events"].(map[string]any); ok {
-			status, _ = ev["status"].(string)
-		}
-		return status == want
-	}, "status want "+want)
-}
-
-func waitUntil(t *testing.T, d time.Duration, cond func() bool, msg string) {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatal(msg)
-}
-
-// eventCount reads the events counter of one connector row.
-func eventCount(row map[string]any) int64 {
-	ev, ok := row["events"].(map[string]any)
-	if !ok {
-		return 0
-	}
-	counters, ok := ev["counters"].(map[string]any)
-	if !ok {
-		return 0
-	}
-	switch n := counters["events"].(type) {
-	case int64:
-		return n
-	case int:
-		return int64(n)
-	case float64:
-		return int64(n)
-	}
-	return 0
-}
-
-func countEvents(t *testing.T, st *store.Store) int {
-	t.Helper()
-	var n int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
-
 // TestConnectorsConcurrentWrites proves writes are serialized: two creates of
-// one name give one ErrExists, and parallel patches keep every edit.
+// one slug give one ErrExists, and parallel patches keep every edit.
 func TestConnectorsConcurrentWrites(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
@@ -1480,24 +1440,21 @@ func TestConnectorsConcurrentWrites(t *testing.T) {
 			defer wg.Done()
 			env := map[string]string{"K": "v"}
 			track := "minor"
-			p := connectors.EntryPatch{Inputs: &env}
+			p := connectors.ConnectionPatch{Inputs: &env}
 			if i%2 == 1 {
-				p = connectors.EntryPatch{Track: &track}
+				p = connectors.ConnectionPatch{Track: &track}
 			}
-			if err := svc.Patch(ctx, "dup", p); err != nil {
+			if _, err := svc.Patch(ctx, "dup", p); err != nil {
 				t.Error(err)
 			}
 		}()
 	}
 	wg.Wait()
-	e, _ := svc.Entry("dup")
+	e, _ := svc.Lookup("dup")
 	if e.Inputs["K"] != "v" || e.Track != "minor" {
 		t.Fatalf("lost an edit: inputs %v track %q", e.Inputs, e.Track)
 	}
 }
-
-// TestConnectorsRewriteDryRunKeepsLiveBlocks proves a dry run does not change
-// the pointer blocks of the live definitions.
 
 // TestConnectorsEditRestarts proves an edit that changes the process
 // restarts a live instance.
@@ -1513,11 +1470,11 @@ func TestConnectorsEditRestarts(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Stop("wd") })
 	waitStatus(t, svc, "wd", "listening")
 	inputs := map[string]string{"A": "1"}
-	if err := svc.Patch(ctx, "wd", connectors.EntryPatch{Inputs: &inputs}); err != nil {
+	if _, err := svc.Patch(ctx, "wd", connectors.ConnectionPatch{Inputs: &inputs}); err != nil {
 		t.Fatal(err)
 	}
 	row, _ := svc.Get("wd")
-	if n := row["events"].(map[string]any)["restarts"]; n != 1 {
+	if n := row["restarts"]; n != 1 {
 		t.Fatalf("restarts %v, want 1", n)
 	}
 }
@@ -1541,7 +1498,7 @@ func TestResolveActionsSkill(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, manifest.FileName), body, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Create(ctx, connectors.Entry{Name: "psql", From: "file:" + filepath.Join(dir, manifest.FileName)}); err != nil {
+	if _, err := svc.Create(ctx, fileConn("psql", filepath.Join(dir, manifest.FileName))); err != nil {
 		t.Fatal(err)
 	}
 	acts, err := svc.ResolveActions(ctx, "", []string{"psql"})
@@ -1575,7 +1532,8 @@ func TestConnectorsProtocolSession(t *testing.T) {
 		m.Channel = &manifest.Channel{Features: []string{manifest.FeatureRoomsList}}
 	})
 	e.Inputs = map[string]string{fakeadapter.Env: "sandbox:" + path}
-	if err := svc.Create(ctx, e); err != nil {
+	c, err := svc.Create(ctx, e)
+	if err != nil {
 		t.Fatal(err)
 	}
 	var mu sync.Mutex
@@ -1612,7 +1570,7 @@ func TestConnectorsProtocolSession(t *testing.T) {
 	waitUntil(t, 5*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return slices.Contains(states, "chat:"+protocol.StateConnected)
+		return slices.Contains(states, c.ID+":"+protocol.StateConnected)
 	}, "no connected hook")
 
 	var page protocol.RoomPage
@@ -1657,7 +1615,7 @@ func TestConnectorsDoctor(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, manifest.FileName), body, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Create(ctx, connectors.Entry{Name: "tool", From: "file:" + filepath.Join(dir, manifest.FileName)}); err != nil {
+	if _, err := svc.Create(ctx, fileConn("tool", filepath.Join(dir, manifest.FileName))); err != nil {
 		t.Fatal(err)
 	}
 	codes := func() []string {
@@ -1715,10 +1673,10 @@ func TestConnectorsConformance(t *testing.T) {
 		m.Setup = &manifest.Setup{Login: []string{"qr"}}
 	})
 	e.Inputs = map[string]string{fakeadapter.Env: "sandbox:" + path}
-	if err := svc.Create(ctx, e); err != nil {
+	if _, err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Conformance(ctx, "chat", ""); err == nil {
+	if _, err := svc.Conformance(ctx, "chat", "", []string{conformance.SuiteProtocol}); err == nil {
 		t.Fatal("a stopped instance must fail")
 	}
 	if err := svc.Start(ctx, "chat"); err != nil {
@@ -1726,21 +1684,373 @@ func TestConnectorsConformance(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = svc.Stop("chat") })
 	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "no connected status")
-	res, err := svc.Conformance(ctx, "chat", "r1")
+	res, err := svc.Conformance(ctx, "chat", "r1", []string{conformance.SuiteProtocol})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]string{}
 	for _, r := range res {
 		got[r.Check] = r.Status
-		if r.Status == protocol.CheckFail {
+		if r.Status == conformance.StatusFail {
 			t.Errorf("%s failed: %s", r.Check, r.Message)
 		}
 	}
-	if got["send once"] != protocol.CheckPass || got["login"] != protocol.CheckSkip || got["shutdown"] != protocol.CheckSkip {
+	if got["send once"] != conformance.StatusPass || got["login"] != conformance.StatusSkip || got["shutdown"] != conformance.StatusSkip {
 		t.Fatalf("results = %v", got)
 	}
 	if svc.AuthState("chat").State != protocol.StateConnected {
 		t.Fatal("the adapter stopped")
 	}
+}
+
+// TestConnectorsTwoOfOneType proves two connections of one type get their
+// own folder, state, log, and events rows.
+func TestConnectorsTwoOfOneType(t *testing.T) {
+	st, _, svc := openStack(t)
+	ctx := context.Background()
+	d := spec{Name: "feed", Events: &manifest.Events{
+		Command: `printf '{"id":"a"}\n'; sleep 30`, Format: manifest.FormatJSON, ID: "id", Restart: manifest.RestartNever,
+	}}
+	first, err := svc.Create(ctx, d.entry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := d.entry()
+	e.Slug = ""
+	second, err := svc.Create(ctx, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Slug != "feed-2" || second.Type != "feed" || second.ID == first.ID {
+		t.Fatalf("second = %+v", second)
+	}
+	var dirs, states, logs []string
+	for _, c := range []connectors.Connection{first, second} {
+		r, err := svc.Resolve(c.Slug, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lp, err := svc.LogPath(c.Slug)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := r.Folder().Dir()
+		if dir != home.ConnectionDir(c.ID) || !strings.HasPrefix(r.StateDir(), dir) || !strings.HasPrefix(lp, dir) {
+			t.Fatalf("%s: dir %s state %s log %s", c.Slug, dir, r.StateDir(), lp)
+		}
+		dirs, states, logs = append(dirs, dir), append(states, r.StateDir()), append(logs, lp)
+		if err := svc.Start(ctx, c.Slug); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = svc.Stop(c.Slug) })
+	}
+	if dirs[0] == dirs[1] || states[0] == states[1] || logs[0] == logs[1] {
+		t.Fatalf("shared paths: %v %v %v", dirs, states, logs)
+	}
+	// The same source id in two accounts is two events, one per instance.
+	for _, c := range []connectors.Connection{first, second} {
+		waitUntil(t, 5*time.Second, func() bool {
+			var n int
+			_ = st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE connector='feed' AND instance=?`, c.ID).Scan(&n)
+			return n == 1
+		}, "events row of "+c.Slug)
+	}
+}
+
+// TestConnectorsIDAndSlug proves that a ref resolves by id or by slug, and
+// that a native name is its own id and slug.
+func TestConnectorsIDAndSlug(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	c, err := svc.Create(ctx, eventsDef("feed", "sleep 30").entry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !connectors.IsConnectionID(c.ID) || connectors.IsConnectionID("feed") {
+		t.Fatalf("IsConnectionID(%q)", c.ID)
+	}
+	byID, err := svc.Lookup(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bySlug, err := svc.Lookup("feed")
+	if err != nil || !reflect.DeepEqual(byID, bySlug) {
+		t.Fatalf("lookup by slug %+v %v", bySlug, err)
+	}
+	for ref, want := range map[string]string{"feed": c.ID, c.ID: c.ID, "email": "email", "webhook": "webhook", "missing": ""} {
+		if got := svc.IDOf(ref); got != want {
+			t.Fatalf("IDOf(%q) = %q; want %q", ref, got, want)
+		}
+	}
+	if svc.SlugOf(c.ID) != "feed" || svc.SlugOf("email") != "email" || svc.SlugOf("con_missing") != "" {
+		t.Fatal("SlugOf")
+	}
+	if row, err := svc.Get(c.ID); err != nil || row["slug"] != "feed" || row["id"] != c.ID {
+		t.Fatalf("get by id %v %v", row, err)
+	}
+	bad := eventsDef("x", "true").entry()
+	bad.Slug = "con_x"
+	if _, err := svc.Create(ctx, bad); !errors.Is(err, connectors.ErrInvalid) {
+		t.Fatalf("con_ slug: %v", err)
+	}
+	slug := "news"
+	if _, err := svc.Patch(ctx, c.ID, connectors.ConnectionPatch{Slug: &slug}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Lookup("feed"); !errors.Is(err, connectors.ErrNotFound) {
+		t.Fatalf("old slug still resolves: %v", err)
+	}
+	if svc.IDOf("news") != c.ID {
+		t.Fatal("new slug does not resolve to the same id")
+	}
+}
+
+// TestConnectorsSlugRewrite proves a slug change rewrites the references in
+// config.yaml, trebi.yaml, and job front matter, and puts them all back when
+// one write fails.
+func TestConnectorsSlugRewrite(t *testing.T) {
+	_, ws, svc := openStack(t)
+	ctx := context.Background()
+	wsPath := filepath.Join(home.Base(), "ws")
+	jobDir := filepath.Join(wsPath, "digest")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jobPath := filepath.Join(jobDir, "JOB.md")
+	md := "---\nharness: fake\nconnectors: [old]\ntriggers:\n  - event: old\n    match: \"true\"\n---\n\nRead old mail.\n"
+	if err := os.WriteFile(jobPath, []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "notify:\n  route:\n    - via: old\n      to: admins\n"
+	if err := os.WriteFile(home.ConfigPath(), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Add(ctx, wsPath, "rw-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	c, err := svc.Create(ctx, inline("old", func(m *manifest.Manifest) {
+		m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"old"}}}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SetOverride(ctx, w.ID, "old", &workspaces.ConnectorOverride{Disabled: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	slug := "mail"
+	changed, err := svc.Patch(ctx, "old", connectors.ConnectionPatch{Slug: &slug})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsFile := filepath.Join(wsPath, "trebi.yaml")
+	want := []string{home.ConfigPath(), jobPath, wsFile}
+	slices.Sort(want)
+	if !slices.Equal(changed, want) {
+		t.Fatalf("changed = %v; want %v", changed, want)
+	}
+	read := func(p string) string {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if got := read(jobPath); got != "---\nharness: fake\nconnectors: [mail]\ntriggers:\n  - event: mail\n    match: \"true\"\n---\n\nRead old mail.\n" {
+		t.Fatalf("job = %q", got)
+	}
+	if got := read(home.ConfigPath()); got != strings.Replace(cfg, "via: old", "via: mail", 1) {
+		t.Fatalf("config = %q", got)
+	}
+	if got := read(wsFile); !strings.Contains(got, "mail:") || strings.Contains(got, "old:") {
+		t.Fatalf("trebi.yaml = %q", got)
+	}
+	if svc.ConnectionFor("mail", w.ID) != "" {
+		t.Fatal("workspace override lost after the rename")
+	}
+
+	// A failed write puts back every file and keeps the slug.
+	if err := os.Chmod(jobDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(jobDir, 0o755) })
+	cfgBefore, jobBefore := read(home.ConfigPath()), read(jobPath)
+	slug = "post"
+	if _, err := svc.Patch(ctx, "mail", connectors.ConnectionPatch{Slug: &slug}); !errors.Is(err, connectors.ErrSlugRewrite) {
+		t.Fatalf("patch with a read-only job = %v", err)
+	}
+	if read(home.ConfigPath()) != cfgBefore || read(jobPath) != jobBefore {
+		t.Fatal("rollback did not restore the files")
+	}
+	if got, err := svc.Lookup(c.ID); err != nil || got.Slug != "mail" {
+		t.Fatalf("slug after rollback = %q %v", got.Slug, err)
+	}
+}
+
+// TestConnectorsCursorFile proves the connector cursor lives in cursor.json
+// in the connection folder.
+func TestConnectorsCursorFile(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	c, err := svc.Create(ctx, eventsDef("feed", "sleep 30").entry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur, err := svc.GetCursor(ctx, "feed"); err != nil || cur.LastEventID != "" {
+		t.Fatalf("new cursor %+v %v", cur, err)
+	}
+	if err := svc.PutCursor(ctx, "feed", "evt-9"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(home.ConnectionDir(c.ID), "cursor.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk connectors.Cursor
+	if err := json.Unmarshal(b, &onDisk); err != nil || onDisk.LastEventID != "evt-9" || onDisk.UpdatedAt == "" {
+		t.Fatalf("cursor.json = %s %v", b, err)
+	}
+	if cur, err := svc.GetCursor(ctx, c.ID); err != nil || cur.LastEventID != "evt-9" {
+		t.Fatalf("cursor by id %+v %v", cur, err)
+	}
+	if _, err := svc.GetCursor(ctx, "missing"); !errors.Is(err, connectors.ErrNotFound) {
+		t.Fatalf("missing cursor: %v", err)
+	}
+	if err := svc.Delete(ctx, "feed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(home.ConnectionDir(c.ID)); !os.IsNotExist(err) {
+		t.Fatalf("folder after delete: %v", err)
+	}
+}
+
+// TestResolveActionsCLIConflict proves one run cannot use the CLI actions of
+// two connections of one type, and that a CLI action gets its own folders.
+func TestResolveActionsCLIConflict(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	gh := inline("gh", func(m *manifest.Manifest) {
+		m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"gh"}}}
+	})
+	if _, err := svc.Create(ctx, gh); err != nil {
+		t.Fatal(err)
+	}
+	gh.Slug = ""
+	work, err := svc.Create(ctx, gh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ResolveActions(ctx, "", []string{"gh", work.Slug}); err == nil || !strings.Contains(err.Error(), "are both gh connections") {
+		t.Fatalf("conflict err = %v", err)
+	}
+	acts, err := svc.ResolveActions(ctx, "", []string{work.Slug})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := connectors.NewFolder(work.ID)
+	if len(acts) != 1 || acts[0].ID != work.ID || acts[0].Env["TREBI_STATE_DIR"] != f.StateDir() || acts[0].Env["TREBI_CACHE_DIR"] != f.CacheDir() {
+		t.Fatalf("actions = %+v", acts)
+	}
+}
+
+func (s spec) entry() connectors.Connection {
+	m := baseManifest(s.Name)
+	m.Events = s.Events
+	return connectors.Connection{Type: s.Name, Slug: s.Name, From: connectors.FromInline, Inputs: s.Env, Manifest: &m}
+}
+
+func create(ctx context.Context, svc *connectors.Service, s spec) error {
+	_, err := svc.Create(ctx, s.entry())
+	return err
+}
+
+// eventsDef is a minimal valid lines connector.
+func eventsDef(name, command string) spec {
+	return spec{Name: name, Events: &manifest.Events{Command: command, Format: manifest.FormatJSON}}
+}
+
+func baseManifest(name string) manifest.Manifest {
+	return manifest.Manifest{Schema: manifest.SchemaID, Name: name, Title: name, Description: "Test connector.", Version: "1.0.0"}
+}
+
+// inline builds an inline connection from a manifest body. The type and the
+// slug are name.
+func inline(name string, edit func(*manifest.Manifest)) connectors.Connection {
+	m := baseManifest(name)
+	edit(&m)
+	return connectors.Connection{Type: name, Slug: name, From: connectors.FromInline, Manifest: &m}
+}
+
+// fileConn is a file: connection of the manifest at path.
+func fileConn(name, path string) connectors.Connection {
+	return connectors.Connection{Type: name, Slug: name, From: "file:" + path}
+}
+
+func openStack(t *testing.T) (*store.Store, *workspaces.Service, *connectors.Service) {
+	t.Helper()
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ws := workspaces.New(st)
+	svc := connectors.New(st, ws, nil)
+	return st, ws, svc
+}
+
+// waitStatus polls Get until the status of the connection reaches want.
+func waitStatus(t *testing.T, svc *connectors.Service, name, want string) {
+	t.Helper()
+	var status string
+	waitUntil(t, 3*time.Second, func() bool {
+		row, _ := svc.Get(name)
+		status, _ = row["status"].(string)
+		return status == want
+	}, "status want "+want)
+}
+
+func waitUntil(t *testing.T, d time.Duration, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal(msg)
+}
+
+// eventCount reads the events counter of one connection row.
+func eventCount(row map[string]any) int64 {
+	counters, ok := row["counters"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	switch n := counters["events"].(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	}
+	return 0
+}
+
+func countEvents(t *testing.T, st *store.Store) int {
+	t.Helper()
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

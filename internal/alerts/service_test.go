@@ -1038,12 +1038,13 @@ func mailService(t *testing.T, st *store.Store, ob *outbox.Service, w *sendWorke
 	return s
 }
 
-// TestConnectorAuthRequired proves a login alert per instance with a Log in
-// action, and that a connected status resolves it.
+// TestConnectorAuthRequired proves a login alert per connection with a Log
+// in action on its page, and that a connected status resolves it.
 func TestConnectorAuthRequired(t *testing.T) {
 	t.Parallel()
 	svc, st := testSvc(t, alerts.Options{})
 	ctx := context.Background()
+	const id = "con_01k6a0000000000000000000ab"
 	handle := func(ev store.BusEvent) {
 		t.Helper()
 		if _, err := st.Append(ctx, ev); err != nil {
@@ -1055,17 +1056,17 @@ func TestConnectorAuthRequired(t *testing.T) {
 		}
 		svc.HandleEvent(ctx, frames[len(frames)-1])
 	}
-	handle(store.BusEvent{Topic: "connector.auth.required", Entity: "connector", EntityID: "chat", Action: "updated",
-		Attrs: map[string]string{"instance": "chat@ws1", "reason": "logged_out"}})
+	handle(store.BusEvent{Topic: "connector.auth.required", Entity: "connector", EntityID: id, Action: "updated",
+		Attrs: map[string]string{"instance": id, "reason": "logged_out"}})
 	items, _ := svc.List(ctx, alerts.ListOpts{})
-	if len(items) != 1 || items[0].Subject != "connector/chat@ws1" || items[0].AlertKind != string(alerts.KindConnectorAuthRequired) {
+	if len(items) != 1 || items[0].Subject != "connector/"+id || items[0].AlertKind != string(alerts.KindConnectorAuthRequired) {
 		t.Fatalf("items %+v", items)
 	}
-	if acts := items[0].Actions; len(acts) != 1 || acts[0].Kind != alerts.ActionLogIn || !strings.Contains(acts[0].Route, "instance=chat%40ws1") {
+	if acts := items[0].Actions; len(acts) != 1 || acts[0].Kind != alerts.ActionLogIn || acts[0].Route != "/connectors/"+id+"?tab=login" {
 		t.Fatalf("actions %+v", acts)
 	}
-	handle(store.BusEvent{Topic: "connector.status", Entity: "connector", EntityID: "chat", Action: "updated",
-		Attrs: map[string]string{"instance": "chat@ws1", "state": "connected"}})
+	handle(store.BusEvent{Topic: "connector.status", Entity: "connector", EntityID: id, Action: "updated",
+		Attrs: map[string]string{"instance": id, "state": "connected"}})
 	if open, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)}); len(open) != 0 {
 		t.Fatalf("open after connected: %+v", open)
 	}

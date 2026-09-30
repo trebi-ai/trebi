@@ -1,0 +1,3 @@
+#!/bin/sh
+# A stand-in for apollo-cli: it prints the usage on --help.
+echo "usage: apollo-cli <command>"

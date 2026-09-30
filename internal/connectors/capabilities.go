@@ -3,7 +3,6 @@ package connectors
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -23,11 +22,12 @@ const (
 	inspectTTL  = 10 * time.Minute
 )
 
-// Capabilities is what one connector instance offers (Part E.9): the
-// manifest blocks, the live session, the skill, and for MCP the live lists.
+// Capabilities is what one connection offers (Part E.9): the manifest
+// blocks, the live session, the skill, and for MCP the live lists.
 type Capabilities struct {
-	Name         string                     `json:"name"`
-	Instance     string                     `json:"instance"`
+	ID           string                     `json:"id"`
+	Type         string                     `json:"type"`
+	Slug         string                     `json:"slug"`
 	Version      string                     `json:"version"`
 	Capabilities []string                   `json:"capabilities"`
 	Actions      *ActionCapabilities        `json:"actions,omitempty"`
@@ -75,24 +75,14 @@ type inspected struct {
 	res *MCPInspection
 }
 
-// Capabilities inspects one connector. An instance key wins over the
-// workspace.
-func (s *Service) Capabilities(ctx context.Context, name, workspaceID, instance string) (Capabilities, error) {
-	var r Resolved
-	var err error
-	if instance != "" {
-		if n, _ := splitInstance(instance); n != name {
-			return Capabilities{}, fmt.Errorf("connector instance %q not found: %w", instance, ErrNotFound)
-		}
-		r, err = s.resolveInstance(instance)
-	} else {
-		r, err = s.Resolve(name, workspaceID)
-	}
+// Capabilities inspects one connection with the workspace layer applied.
+func (s *Service) Capabilities(ctx context.Context, ref, workspaceID string) (Capabilities, error) {
+	r, err := s.Resolve(ref, workspaceID)
 	if err != nil {
 		return Capabilities{}, err
 	}
 	m := r.Manifest
-	out := Capabilities{Name: r.Name, Instance: r.Instance, Version: r.Version, Capabilities: m.Capabilities(), Events: m.Events, Channel: m.Channel}
+	out := Capabilities{ID: r.ID, Type: r.Type, Slug: r.Slug, Version: r.Version, Capabilities: m.Capabilities(), Events: m.Events, Channel: m.Channel}
 	if m.Actions != nil {
 		ac := &ActionCapabilities{Commands: []CommandInfo{}}
 		if m.Actions.CLI != nil {
@@ -106,7 +96,7 @@ func (s *Service) Capabilities(ctx context.Context, name, workspaceID, instance 
 		}
 		out.Actions = ac
 	}
-	if p := s.procByName(r.Instance); p != nil {
+	if p := s.procByName(r.ID); p != nil {
 		out.Session = p.snapshot().init
 	}
 	if dir := r.SkillDir(); dir != "" {

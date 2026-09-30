@@ -33,7 +33,8 @@ type fakeSessions struct {
 	channels map[string]bool
 	features map[string][]string
 	limits   map[string]manifest.Limits
-	errs     map[string]error // instance → error of every call
+	errs     map[string]error  // instance → error of every call
+	slugs    map[string]string // slug → connection id; "" is turned off
 	calls    []call
 }
 
@@ -62,7 +63,15 @@ func (f *fakeSessions) Limits(instance string) manifest.Limits {
 	return f.limits[instance]
 }
 
-func (f *fakeSessions) InstanceFor(name, _ string) string { return name }
+// ConnectionFor maps a known slug to its id; any other ref is its own id.
+func (f *fakeSessions) ConnectionFor(ref, _ string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if id, ok := f.slugs[ref]; ok {
+		return id
+	}
+	return ref
+}
 
 func (f *fakeSessions) IsChannel(name string) bool {
 	f.mu.Lock()
@@ -111,6 +120,7 @@ func newFixture(t *testing.T) *fixture {
 	sess := &fakeSessions{
 		channels: map[string]bool{}, features: map[string][]string{},
 		limits: map[string]manifest.Limits{}, errs: map[string]error{},
+		slugs: map[string]string{},
 	}
 	ob := outbox.New(st)
 	svc := channels.New(st, ob, sess, convs)
@@ -191,7 +201,7 @@ func TestReplyOnTurnRunAndSession(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("run outbox rows = %d, want 1", len(rows))
 	}
-	if rows[0].Body != "the answer" || rows[0].Room != "chat1" || rows[0].Connector() != "telegram" {
+	if rows[0].Body != "the answer" || rows[0].Room != "chat1" || rows[0].Instance != "telegram" {
 		t.Fatalf("run row %+v", rows[0])
 	}
 	if rows[0].WorkspaceID != "ws1" || rows[0].RunID != "r1" {
@@ -364,6 +374,34 @@ func TestDeliverSendsParts(t *testing.T) {
 	}
 }
 
+// TestDeliverResolvesSlugOrID proves Deliver sends a notify row that holds
+// a slug to the connection id, and fails a row whose connection is turned
+// off at once.
+func TestDeliverResolvesSlugOrID(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	const id = "con_01k6abcdefghjkmnpqrstvwxyz"
+	f.addChannel(id, nil)
+	f.sess.slugs["wa-work"] = id
+	f.sess.slugs["wa-off"] = ""
+	ctx := context.Background()
+	for _, ref := range []string{"wa-work", id} {
+		if err := f.svc.Deliver(ctx, outbox.Row{ID: "o-" + ref, WorkspaceID: "ws1", Instance: ref, Room: "chat1", Body: "hi"}); err != nil {
+			t.Fatalf("%s: %v", ref, err)
+		}
+	}
+	for _, c := range f.sess.count(protocol.MethodMessagesSend) {
+		if c.Instance != id {
+			t.Fatalf("send went to %q, want %q", c.Instance, id)
+		}
+	}
+	err := f.svc.Deliver(ctx, outbox.Row{ID: "o-off", WorkspaceID: "ws1", Instance: "wa-off", Room: "chat1", Body: "hi"})
+	var perm outbox.Permanent
+	if !errors.As(err, &perm) {
+		t.Fatalf("turned-off connection err = %v, want Permanent", err)
+	}
+}
+
 // TestDeliverErrorCodes: auth_required holds the row, rate_limited waits at
 // least retry_after, and not_found fails at once.
 func TestDeliverErrorCodes(t *testing.T) {
@@ -519,7 +557,7 @@ func TestSendDueFailsAfterFiveWithInbox(t *testing.T) {
 	if err := json.Unmarshal(frames[0].Attrs, &attrs); err != nil {
 		t.Fatal(err)
 	}
-	if attrs["connector"] != "telegram" || attrs["conversation_id"] != convID || attrs["row_id"] != row.ID {
+	if attrs["instance"] != "telegram" || attrs["conversation_id"] != convID || attrs["row_id"] != row.ID {
 		t.Fatalf("attrs %+v", attrs)
 	}
 

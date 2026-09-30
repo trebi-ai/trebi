@@ -445,11 +445,11 @@ func TestControlPlane_StopEndsConnectorGroups(t *testing.T) {
 
 	cp := daemon.New(st, daemon.Options{})
 	pidFile := filepath.Join(dir, "pid")
-	d := connectors.Entry{Name: "hold", From: connectors.FromInline, Manifest: &manifest.Manifest{
+	d := connectors.Connection{Type: "hold", Slug: "hold", From: connectors.FromInline, Manifest: &manifest.Manifest{
 		Schema: manifest.SchemaID, Name: "hold", Title: "Hold", Description: "Test connector.", Version: "1.0.0",
 		Events: &manifest.Events{Command: "echo $$ > " + pidFile + "; sleep 30 | cat", Format: "json"},
 	}}
-	if err := cp.Connectors.Create(context.Background(), d); err != nil {
+	if _, err := cp.Connectors.Create(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	cp.Start(context.Background())

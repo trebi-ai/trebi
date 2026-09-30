@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -100,8 +101,10 @@ func TestInsideAgentFolder(t *testing.T) {
 // TestConnectorKitFindings covers the F.5 doctor checks: an inherited name, a
 // connector with no actions block, and a CLI command that is not on PATH.
 func TestConnectorKitFindings(t *testing.T) {
-	st := kitStore(t, inlineYAML("actions-only", "actions:\n  cli:\n    commands: [trebi-definitely-missing-command]\n")+
-		inlineYAML("events-only", "events:\n  command: \"true\"\n"), "actions-only, events-only, ghost")
+	st := kitStore(t, []string{
+		inlineYAML("actions-only", "actions:\n  cli:\n    commands: [trebi-definitely-missing-command]\n"),
+		inlineYAML("events-only", "events:\n  command: \"true\"\n"),
+	}, "actions-only, events-only, ghost")
 	findings := agentKitFindings(st, launchView(t, st))
 	codes := map[string]bool{}
 	for _, finding := range findings {
@@ -117,7 +120,7 @@ func TestConnectorKitFindings(t *testing.T) {
 // TestConnectorKitFindingsMCPOnly proves a kit that names an MCP-only
 // connector does not panic and gives no command finding.
 func TestConnectorKitFindingsMCPOnly(t *testing.T) {
-	st := kitStore(t, inlineYAML("gh", "actions:\n  mcp:\n    command: npx\n"), "gh")
+	st := kitStore(t, []string{inlineYAML("gh", "actions:\n  mcp:\n    command: npx\n")}, "gh")
 	for _, finding := range agentKitFindings(st, launchView(t, st)) {
 		if finding.Code == "connector_command_missing" {
 			t.Fatalf("unexpected finding %+v", finding)
@@ -125,60 +128,11 @@ func TestConnectorKitFindingsMCPOnly(t *testing.T) {
 	}
 }
 
-// TestConnectorsFileInvalidFinding proves the doctor reports a
-// connectors.yaml that does not load.
-func TestConnectorsFileInvalidFinding(t *testing.T) {
-	st := kitStore(t, "mail:\n  type: stream\n", "mail")
-	for _, finding := range agentKitFindings(st, launchView(t, st)) {
-		if finding.Code == "connectors_file_invalid" && strings.Contains(finding.Message, "type") {
-			return
-		}
-	}
-	t.Fatal("no connectors_file_invalid finding")
-}
-
-// inlineYAML is one inline connectors.yaml entry; body is manifest YAML.
-func inlineYAML(name, body string) string {
-	m := "schema: trebi-connector/1\nname: " + name + "\ntitle: T\ndescription: D\nversion: 1.0.0\n" + body
-	return name + ":\n  from: inline\n  manifest:\n    " + strings.ReplaceAll(strings.TrimRight(m, "\n"), "\n", "\n    ") + "\n"
-}
-
-// kitStore writes connectors.yaml and one agent whose kit names connectors.
-func kitStore(t *testing.T, connectorsYAML, kitConnectors string) *store.Store {
-	t.Helper()
-	home.SetBase(t.TempDir())
-	t.Cleanup(func() { home.SetBase("") })
-	if err := os.WriteFile(filepath.Join(home.Base(), "connectors.yaml"), []byte(connectorsYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	agentDir := filepath.Join(dir, "agents", "research")
-	if err := os.MkdirAll(agentDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\nkit:\n  connectors: [" + kitConnectors + "]\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.DB().Exec(`INSERT INTO job_index (workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
-		t.Fatal(err)
-	}
-	return st
-}
-
 // TestDoctorUsesLaunchView proves the doctor sees the connectors a launch
 // uses (P1-24): an owned job gets the owner kit, a top-level connectors: on
 // the agent replaces its kit, and the support table is the launch one.
 func TestDoctorUsesLaunchView(t *testing.T) {
-	st := kitStore(t, inlineYAML("gh", "actions:\n  mcp:\n    command: npx\n"), "kit-only")
+	st := kitStore(t, []string{inlineYAML("gh", "actions:\n  mcp:\n    command: npx\n")}, "kit-only")
 	dir := t.TempDir()
 	t.Setenv("PATH", t.TempDir())
 	// The agent research (from kitStore) names kit-only in its kit. An owned
@@ -206,7 +160,7 @@ func TestDoctorUsesLaunchView(t *testing.T) {
 // TestKitMCPRemovedFinding proves an old kit.mcp list gets a finding that
 // names the connectors to add (P1-25).
 func TestKitMCPRemovedFinding(t *testing.T) {
-	st := kitStore(t, "", "")
+	st := kitStore(t, nil, "")
 	dir := t.TempDir()
 	writeJob(t, st, dir, "agents/old", "agent", "", "---\nkit:\n  mcp: [github, linear]\n---\n\nRun.\n")
 	for _, f := range agentKitFindings(st, launchView(t, st)) {
@@ -218,6 +172,87 @@ func TestKitMCPRemovedFinding(t *testing.T) {
 		}
 	}
 	t.Fatal("no kit_mcp_removed finding")
+}
+
+// TestChannelOperatorConflictFinding: an agent and the workspace assistant
+// that both trigger on one channel connector give one finding; a connector
+// without a channel gives none.
+func TestChannelOperatorConflictFinding(t *testing.T) {
+	st := kitStore(t, []string{
+		inlineYAML("chat", "events:\n  protocol: trebi-connector/1\n  command: cat\n  types:\n    - type: message\nchannel:\n  features: [typing]\n"),
+		inlineYAML("feed", "events:\n  command: cat\n"),
+	}, "")
+	var dir string
+	if err := st.DB().QueryRow(`SELECT path FROM workspaces WHERE id='ws'`).Scan(&dir); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\ntriggers:\n  - event: chat\n  - event: feed\n---\n\nRun.\n"
+	if err := os.WriteFile(filepath.Join(dir, "agents", "research", "AGENT.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	yml := "assistant:\n  triggers:\n    - event: chat\n    - event: feed\n"
+	if err := os.WriteFile(filepath.Join(dir, "trebi.yaml"), []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var found []DoctorFinding
+	for _, f := range agentKitFindings(st, nil) {
+		if f.Code == "channel_operator_conflict" {
+			found = append(found, f)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("conflict findings = %+v", found)
+	}
+	if found[0].ID != "channel-operator-conflict-ws-chat" ||
+		!strings.Contains(found[0].Message, "agents/research") || !strings.Contains(found[0].Message, "assistant") {
+		t.Fatalf("finding = %+v", found[0])
+	}
+}
+
+// inlineYAML is the connection.yaml of one inline connection whose slug and
+// type are name; body is manifest YAML.
+func inlineYAML(name, body string) string {
+	m := "schema: trebi-connector/1\nname: " + name + "\ntitle: T\ndescription: D\nversion: 1.0.0\n" + body
+	return "id: " + connectors.NewConnectionID() + "\ntype: " + name + "\nslug: " + name +
+		"\nfrom: inline\nmanifest:\n  " + strings.ReplaceAll(strings.TrimRight(m, "\n"), "\n", "\n  ") + "\n"
+}
+
+// kitStore writes one folder per connection and one agent whose kit names
+// connectors.
+func kitStore(t *testing.T, conns []string, kitConnectors string) *store.Store {
+	t.Helper()
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	for _, c := range conns {
+		id := strings.TrimPrefix(strings.SplitN(c, "\n", 2)[0], "id: ")
+		if err := os.MkdirAll(home.ConnectionDir(id), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home.ConnectionDir(id), "connection.yaml"), []byte(c), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "agents", "research")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\nkit:\n  connectors: [" + kitConnectors + "]\n---\n\nRun.\n"
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO job_index (workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
+		t.Fatal(err)
+	}
+	return st
 }
 
 // launchView is the runs service the daemon wires into the doctor.
@@ -244,38 +279,5 @@ func writeJob(t *testing.T, st *store.Store, dir, name, kind, owner, md string) 
 	}
 	if _, err := st.DB().Exec(`INSERT INTO job_index (workspace_id,name,path,kind,active,harness,hash,updated_at,owner) VALUES ('ws',?,?,?,1,'claude','hash',datetime(),?)`, name, path, kind, owner); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// TestChannelOperatorConflictFinding: an agent and the workspace assistant
-// that both trigger on one channel connector give one finding; a connector
-// without a channel gives none.
-func TestChannelOperatorConflictFinding(t *testing.T) {
-	st := kitStore(t, inlineYAML("chat", "events:\n  protocol: trebi-connector/1\n  command: cat\n  types:\n    - type: message\nchannel:\n  features: [typing]\n")+
-		inlineYAML("feed", "events:\n  command: cat\n"), "")
-	var dir string
-	if err := st.DB().QueryRow(`SELECT path FROM workspaces WHERE id='ws'`).Scan(&dir); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\ntriggers:\n  - event: chat\n  - event: feed\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(dir, "agents", "research", "AGENT.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	yml := "assistant:\n  triggers:\n    - event: chat\n    - event: feed\n"
-	if err := os.WriteFile(filepath.Join(dir, "trebi.yaml"), []byte(yml), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var found []DoctorFinding
-	for _, f := range agentKitFindings(st, nil) {
-		if f.Code == "channel_operator_conflict" {
-			found = append(found, f)
-		}
-	}
-	if len(found) != 1 {
-		t.Fatalf("conflict findings = %+v", found)
-	}
-	if found[0].ID != "channel-operator-conflict-ws-chat" ||
-		!strings.Contains(found[0].Message, "agents/research") || !strings.Contains(found[0].Message, "assistant") {
-		t.Fatalf("finding = %+v", found[0])
 	}
 }

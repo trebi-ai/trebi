@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/assistant"
+	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/dispatch"
@@ -480,5 +482,42 @@ func TestAssistantTriggerPolicy(t *testing.T) {
 	status, errMsg, _ := waitQueue(t, st, second.ID, func(_, e, _ string) bool { return e != "" })
 	if status != "pending" || errMsg != "policy" {
 		t.Fatalf("second status=%s error_message=%q, want pending/policy", status, errMsg)
+	}
+}
+
+// TestQueuePolicyMatchesTriggerBySlug proves a trigger that names the slug
+// applies to an item that holds the connection id.
+func TestQueuePolicyMatchesTriggerBySlug(t *testing.T) {
+	md := "---\nharness: fake\ntriggers:\n  - event: feed\n    match: \"true\"\n    debounce: 1h\n---\n\nGo.\n"
+	cp, st, wsID, ctx := openQueuePlane(t, "feedjob", md)
+
+	feed, err := cp.Connectors.Create(ctx, connectors.Connection{Type: "rss", Slug: "feed", From: connectors.FromInline, Manifest: &manifest.Manifest{
+		Schema: manifest.SchemaID, Name: "rss", Title: "RSS", Description: "Test feed", Version: "1.0.0",
+		Events: &manifest.Events{Protocol: manifest.ProtocolConnector, Command: "sleep 60", Types: []manifest.EventType{{Type: "item"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	q := dispatch.NewQueue(st)
+	first := &dispatch.QueueItem{Connector: feed.ID, WorkspaceID: wsID, Job: "feedjob", Status: dispatch.QueuePending, EventRaw: `{"n":1}`}
+	if err := q.Enqueue(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+
+	if status, _, _ := waitQueue(t, st, first.ID, func(s, _, _ string) bool { return s == "done" }); status != "done" {
+		t.Fatalf("first fire status=%s want done", status)
+	}
+	second := &dispatch.QueueItem{Connector: feed.ID, WorkspaceID: wsID, Job: "feedjob", Status: dispatch.QueuePending, EventRaw: `{"n":2}`}
+	if err := q.Enqueue(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	status, errMsg, _ := waitQueue(t, st, second.ID, func(s, _, next string) bool { return s == "pending" && next != "" })
+	if status != "pending" || errMsg != "policy" {
+		t.Fatalf("second fire status=%s error=%q want pending policy", status, errMsg)
 	}
 }

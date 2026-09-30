@@ -79,13 +79,14 @@ func (l *notifyLayers) setGlobal(cfg *config.Config) {
 type connectorChannels struct{ conn *connectors.Service }
 
 func (c connectorChannels) HasChannel(name, workspaceID string) (known, channel, down bool) {
-	if _, ok := c.conn.Entry(name); !ok {
+	if _, err := c.conn.Lookup(name); err != nil {
 		return false, false, false
 	}
 	if !c.conn.IsChannel(name) {
 		return true, false, false
 	}
-	return true, true, c.conn.Down(c.conn.InstanceFor(name, workspaceID))
+	id := c.conn.ConnectionFor(name, workspaceID)
+	return true, true, id == "" || c.conn.Down(id)
 }
 
 // workspacePicker picks the system sender workspace for email.

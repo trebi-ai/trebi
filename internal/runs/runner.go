@@ -273,7 +273,10 @@ func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 		return fmt.Errorf("%w: %s", ErrActionsInvalid, err)
 	}
 	opts.Actions = actions
-	opts.Connectors = names
+	opts.Connectors = make([]string, 0, len(actions))
+	for _, a := range actions {
+		opts.Connectors = append(opts.Connectors, a.ID)
+	}
 	command := opts.Command
 	if command == "" {
 		command = opts.Harness
@@ -965,7 +968,8 @@ func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o 
 	return run, nil
 }
 
-// runConnectors reads the connector names a run launched with.
+// runConnectors reads the connection ids a run launched with. A resume
+// resolves the ids, so a slug change does not break it.
 func (s *Service) runConnectors(ctx context.Context, runID string) []string {
 	var raw sql.NullString
 	if err := s.st.DB().QueryRowContext(ctx, `SELECT connectors_json FROM runs WHERE id = ?`, runID).Scan(&raw); err != nil || !raw.Valid {

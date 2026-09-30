@@ -7,18 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"rsc.io/qr"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/connectors/conformance"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
-	"github.com/trebi-ai/trebi/internal/procgroup"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 	"golang.org/x/term"
@@ -31,63 +31,67 @@ func connectorSessionCommands() []*cli.Command {
 		{
 			Name:      "login",
 			Usage:     "log in to a connector account and follow the steps",
-			ArgsUsage: "<name>",
-			Flags: append(connectorInstanceFlags(),
-				&cli.StringFlag{Name: "kind", Usage: "login kind to ask for, such as qr (default: the connector chooses)"}),
+			ArgsUsage: "<connector>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "kind", Usage: "login kind to ask for, such as qr (default: the connector chooses)"},
+			},
 			Action: runConnectorLogin,
 		},
 		{
 			Name:      "conformance",
-			Usage:     "check an adapter against the trebi-connector/1 protocol (Part H)",
-			ArgsUsage: "[name]",
-			Description: "With a name, the daemon checks the live instance and does not stop it.\n" +
-				"With --command or --manifest, the check runs here with no daemon: it starts the adapter, checks it, and shuts it down.\n" +
+			Usage:     "check a connector against its manifest and the trebi-connector/1 protocol",
+			ArgsUsage: "[connector]",
+			Description: "With a connector, the daemon checks the live connection and does not stop it.\n" +
+				"With --manifest or --command, the check runs here with no daemon, in a sandbox with a clean env and temp folders.\n" +
+				"The command exits 1 when a check fails.\n" +
 				"A message is sent only to the --room you name.",
-			Flags: append(connectorInstanceFlags(),
+			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "command", Usage: "adapter command to start here (default: events.command of --manifest)"},
 				&cli.StringFlag{Name: "manifest", Usage: "trebi-connector.yaml, or its folder, that declares the features, events, and login"},
 				&cli.StringFlag{Name: "room", Usage: "test room; with it, the check sends one message twice with one key"},
-				&cli.BoolFlag{Name: "json", Usage: "emit JSON"}),
+				&cli.StringSliceFlag{Name: "suite", Usage: "suites to run: manifest, install, inputs, actions, actions.cli, actions.mcp, events.lines, protocol, folder (default: each block of the manifest)"},
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
 			Action: runConnectorConformance,
 		},
 		{
 			Name:      "logout",
 			Usage:     "log out of a connector account",
-			ArgsUsage: "<name>",
-			Flags:     connectorInstanceFlags(),
+			ArgsUsage: "<connector>",
 			Action:    runConnectorLogout,
 		},
 		{
 			Name:      "rooms",
 			Usage:     "list the rooms of a channel connector (chats, groups, mailboxes)",
-			ArgsUsage: "<name>",
-			Flags: append(connectorInstanceFlags(),
+			ArgsUsage: "<connector>",
+			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "query", Usage: "match on the room name"},
 				&cli.StringFlag{Name: "kind", Usage: "keep rooms of this kind"},
 				&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (next_cursor of the previous page)"},
 				&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Usage: "max rows"},
-				&cli.BoolFlag{Name: "json", Usage: "emit JSON"}),
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
 			Action: runConnectorRooms,
 		},
 		{
 			Name:      "threads",
 			Usage:     "list the threads of one room",
-			ArgsUsage: "<name> <room>",
-			Flags: append(connectorInstanceFlags(),
+			ArgsUsage: "<connector> <room>",
+			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (next_cursor of the previous page)"},
 				&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Usage: "max rows"},
-				&cli.BoolFlag{Name: "json", Usage: "emit JSON"}),
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
 			Action: runConnectorThreads,
 		},
 		{
 			Name:      "bind",
 			Usage:     "send the messages of a room to the assistant or an agent of a workspace",
-			ArgsUsage: "<name> <room>",
+			ArgsUsage: "<connector> <room>",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Required: true, Usage: "workspace id or name"},
 				&cli.StringFlag{Name: "operator", Value: "assistant", Usage: "assistant or agents/<name>"},
 				&cli.StringFlag{Name: "thread", Usage: "bind one thread of the room only"},
-				&cli.StringFlag{Name: "instance", Usage: "instance key: <name> or <name>@<workspace>"},
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 			},
 			Action: runConnectorBind,
@@ -102,25 +106,22 @@ func connectorOverrideCommand() *cli.Command {
 	}
 	return &cli.Command{
 		Name:  "override",
-		Usage: "show or change the connector settings of one workspace",
+		Usage: "show or change the connector layer of one workspace: turn a connection off, or patch its actions and skill",
 		Commands: []*cli.Command{
 			{
 				Name:      "show",
-				Usage:     "show the workspace layer of a connector",
-				ArgsUsage: "<name>",
+				Usage:     "show the workspace layer of a connection",
+				ArgsUsage: "<connector>",
 				Flags:     []cli.Flag{ws()},
 				Action:    runConnectorOverrideShow,
 			},
 			{
 				Name:      "set",
-				Usage:     "change the workspace layer of a connector (flags overlay the stored layer)",
-				ArgsUsage: "<name>",
+				Usage:     "change the workspace layer of a connection (flags overlay the stored layer)",
+				ArgsUsage: "<connector>",
 				Flags: []cli.Flag{
 					ws(),
-					&cli.StringFlag{Name: "version", Usage: "catalog version for this workspace"},
-					&cli.StringFlag{Name: "track", Usage: "update track: exact|patch|minor|latest"},
-					&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "KEY=VALUE setup input (repeatable)"},
-					&cli.StringFlag{Name: "patch-file", Usage: "YAML or JSON merge patch on the manifest; a file that holds null removes it"},
+					&cli.StringFlag{Name: "patch-file", Usage: "YAML or JSON merge patch on the actions and skill keys of the manifest; a file that holds null removes it"},
 					&cli.BoolFlag{Name: "disabled", Usage: "turn the connector off in this workspace (--disabled=false turns it on)"},
 				},
 				Action: runConnectorOverrideSet,
@@ -128,8 +129,8 @@ func connectorOverrideCommand() *cli.Command {
 			{
 				Name:      "delete",
 				Aliases:   []string{"remove"},
-				Usage:     "remove the workspace layer; the workspace uses the global connector again",
-				ArgsUsage: "<name>",
+				Usage:     "remove the workspace layer; the workspace uses the connection as it is again",
+				ArgsUsage: "<connector>",
 				Flags:     []cli.Flag{ws()},
 				Action:    runConnectorOverrideDelete,
 			},
@@ -160,8 +161,8 @@ func runConnectorLogin(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 	var start struct {
-		FlowID   string `json:"flow_id"`
-		Instance string `json:"instance"`
+		FlowID string `json:"flow_id"`
+		ID     string `json:"id"`
 	}
 	if err := client.DoHTTP(request.BuildConnectorLogin(ref, c.String("kind")), &start); err != nil {
 		return err
@@ -170,16 +171,16 @@ func runConnectorLogin(ctx context.Context, c *cli.Command) error {
 	if c.Root().Reader != nil {
 		in = c.Root().Reader
 	}
-	l := &connectorLogin{client: client, name: ref.Name, flowID: start.FlowID, w: outWriter(c), in: bufio.NewReader(in)}
-	fmt.Fprintf(l.w, "login to %s (flow %s)\n", start.Instance, start.FlowID)
+	l := &connectorLogin{client: client, name: ref.Ref, flowID: start.FlowID, w: outWriter(c), in: bufio.NewReader(in)}
+	fmt.Fprintf(l.w, "login to %s (flow %s)\n", ref.Ref, start.FlowID)
 	// The stream sends the current step first, so the start step is not
 	// rendered here.
-	err = client.StreamSSE(ctx, request.BuildConnectorLoginStreamPath(ref.Name, start.FlowID), l.frame)
+	err = client.StreamSSE(ctx, request.BuildConnectorLoginStreamPath(ref.Ref, start.FlowID), l.frame)
 	switch {
 	case errors.Is(err, errLoginEnd):
 		return l.err
 	case ctx.Err() != nil:
-		_ = client.DoHTTP(request.BuildConnectorLoginCancel(ref.Name, start.FlowID), nil) // best effort; the flow also expires
+		_ = client.DoHTTP(request.BuildConnectorLoginCancel(ref.Ref, start.FlowID), nil) // best effort; the flow also expires
 		return ctx.Err()
 	case err != nil:
 		return err
@@ -333,151 +334,106 @@ func runConnectorLogout(_ context.Context, c *cli.Command) error {
 	if err := client.DoHTTP(request.BuildConnectorLogout(ref), &body); err != nil {
 		return err
 	}
-	fmt.Fprintf(outWriter(c), "connector %s logged out\n", dash(mapStr(body, "instance")))
+	fmt.Fprintf(outWriter(c), "connector %s logged out\n", ref.Ref)
 	return nil
 }
 
 func runConnectorConformance(ctx context.Context, c *cli.Command) error {
 	local := c.String("command") != "" || c.String("manifest") != ""
-	var body map[string]any
+	var rows []conformance.Result
+	var payload any
 	if local {
 		if c.Args().Len() > 0 {
 			return fmt.Errorf("give a name or --command/--manifest, not both")
 		}
-		res, err := localConformance(ctx, c)
+		t, only, err := localConformance(c)
 		if err != nil {
 			return err
 		}
-		ok := !slices.ContainsFunc(res, func(r protocol.CheckResult) bool { return r.Status == protocol.CheckFail })
-		b, err := json.Marshal(map[string]any{"ok": ok, "results": res})
-		if err != nil {
-			return err
-		}
-		if err := json.Unmarshal(b, &body); err != nil {
-			return err
-		}
+		rows = conformance.NewRunner(slog.Default()).Run(ctx, t, only)
+		payload = rows
 	} else {
 		ref, err := connectorRef(c)
 		if err != nil {
-			return fmt.Errorf("give a name, --command, or --manifest")
+			return fmt.Errorf("give a connector, --command, or --manifest")
 		}
 		client, err := clientFor(c)
 		if err != nil {
 			return err
 		}
-		if err := client.DoHTTP(request.BuildConnectorConformance(ref, c.String("room")), &body); err != nil {
+		req := request.BuildConnectorConformance(ref, c.String("room"), c.StringSlice("suite"))
+		var raw json.RawMessage
+		if err := client.DoHTTP(req, &raw); err != nil {
 			return err
 		}
+		payload = raw
+		var body struct {
+			Results []conformance.Result `json:"results"`
+		}
+		if err := json.Unmarshal(raw, &body); err != nil || body.Results == nil {
+			if err := json.Unmarshal(raw, &body.Results); err != nil {
+				return fmt.Errorf("conformance: read the result: %w", err)
+			}
+		}
+		rows = body.Results
 	}
 	if c.Bool("json") {
-		if err := encodeJSON(c, body); err != nil {
+		if err := encodeJSON(c, payload); err != nil {
 			return err
 		}
 	} else {
-		results, _ := body["results"].([]any)
-		tbl := newTable(outWriter(c), []string{"Check", "Status", "Message"})
-		for _, raw := range results {
-			if m, ok := raw.(map[string]any); ok {
-				tbl.AppendRow(table.Row{mapStr(m, "check"), mapStr(m, "status"), dash(mapStr(m, "message"))})
-			}
+		tbl := newTable(outWriter(c), []string{"Suite", "Check", "Status", "Message"})
+		for _, r := range rows {
+			tbl.AppendRow(table.Row{r.Suite, r.Check, r.Status, dash(r.Message)})
 		}
 		renderTable(tbl)
 	}
-	if ok, _ := body["ok"].(bool); !ok {
-		return fmt.Errorf("conformance: a check failed")
+	if slices.ContainsFunc(rows, func(r conformance.Result) bool { return r.Status == conformance.StatusFail }) {
+		return errors.New("conformance: a check failed")
 	}
 	return nil
 }
 
-// localConformance starts an adapter here and runs every check on it,
-// shutdown included. The manifest gives the promises to check.
-func localConformance(ctx context.Context, c *cli.Command) ([]protocol.CheckResult, error) {
-	chk := &protocol.Checker{Room: c.String("room")}
-	script, dir := c.String("command"), ""
+// localConformance builds the sandbox target from --manifest and
+// --command. With --command only, the manifest is a stub and the default
+// suites are protocol and folder.
+func localConformance(c *cli.Command) (conformance.Target, []string, error) {
+	t := conformance.Target{Command: c.String("command"), Room: c.String("room")}
+	only := c.StringSlice("suite")
 	if path := c.String("manifest"); path != "" {
-		cmdline, err := conformanceManifest(chk, path)
+		m, dir, err := conformanceManifest(path)
 		if err != nil {
-			return nil, err
+			return t, nil, err
 		}
-		dir = filepath.Dir(path)
-		if fi, err := os.Stat(path); err == nil && fi.IsDir() {
-			dir = path
-		}
-		if script == "" {
-			script = cmdline
-		}
+		t.Manifest, t.Dir = m, dir
+		return t, only, nil
 	}
-	if script == "" {
-		return nil, fmt.Errorf("the manifest has no events.command; give --command")
+	t.Manifest = manifest.Manifest{
+		Schema: manifest.SchemaID, Name: "adapter", Title: "Adapter", Description: "adapter from --command", Version: "0.0.0",
+		Events: &manifest.Events{Protocol: manifest.ProtocolConnector, Command: t.Command},
 	}
-	pr, pw, err := os.Pipe()
-	if err != nil {
-		return nil, err
+	if len(only) == 0 {
+		only = []string{conformance.SuiteProtocol, conformance.SuiteFolder}
 	}
-	defer pw.Close() //nolint:errcheck // closed again below; the second close is a no-op
-	pctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	env := append(os.Environ(), "TREBI_PROTOCOL="+protocol.Version)
-	cmd, stdout, stderr, err := procgroup.Command{Script: script, Dir: dir, Env: env, Stdin: pr}.Start(pctx)
-	_ = pr.Close() // the child holds its own copy
-	if err != nil {
-		return nil, err
-	}
-	var ew io.Writer = os.Stderr
-	if c.Root().ErrWriter != nil {
-		ew = c.Root().ErrWriter
-	}
-	errDone := make(chan struct{})
-	go func() { // ends when the adapter exits
-		defer close(errDone)
-		_, _ = io.Copy(ew, stderr)
-	}()
-	conn := protocol.NewConn(stdout, pw, chk.Notify)
-	go func() { _ = conn.Run(context.Background()) }() // ends at stdout EOF
-	res := chk.Run(ctx, conn)
-	_ = pw.Close() // EOF on stdin asks the adapter to exit
-	select {
-	case <-conn.Done():
-	case <-time.After(5 * time.Second):
-	}
-	cancel() // kills an adapter that did not exit
-	<-conn.Done()
-	<-errDone
-	_ = cmd.Wait() // the shutdown check reports how it exited
-	return res, nil
+	return t, only, nil
 }
 
-// conformanceManifest reads the promises of a manifest file or folder into
-// chk and returns its events.command.
-func conformanceManifest(chk *protocol.Checker, path string) (string, error) {
+// conformanceManifest reads a manifest file or folder. It does not
+// validate; the manifest suite reports each error as a row.
+func conformanceManifest(path string) (manifest.Manifest, string, error) {
+	dir := filepath.Dir(path)
 	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
-		path = filepath.Join(path, manifest.FileName)
+		dir, path = path, filepath.Join(path, manifest.FileName)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return manifest.Manifest{}, "", err
 	}
 	m, err := manifest.Parse(data)
-	if err == nil {
-		err = m.Validate()
-	}
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
+		return manifest.Manifest{}, "", fmt.Errorf("%s: %w", path, err)
 	}
-	chk.Features = m.Features()
-	if m.Setup != nil {
-		chk.Login = m.Setup.Login
-	}
-	if chk.Schemas, err = m.EventSchemas(filepath.Dir(path)); err != nil {
-		return "", err
-	}
-	if m.Events == nil {
-		return "", nil
-	}
-	for _, t := range m.Events.Types {
-		chk.EventTypes = append(chk.EventTypes, t.Type)
-	}
-	return m.Events.Command, nil
+	return m, dir, nil
 }
 
 func runConnectorRooms(_ context.Context, c *cli.Command) error {
@@ -516,7 +472,7 @@ func runConnectorThreads(_ context.Context, c *cli.Command) error {
 	ref, err := connectorRef(c)
 	room := c.Args().Get(1)
 	if err != nil || room == "" {
-		return fmt.Errorf("usage: trebi connector threads <name> <room>")
+		return fmt.Errorf("usage: trebi connector threads <connector> <room>")
 	}
 	client, err := clientFor(c)
 	if err != nil {
@@ -559,27 +515,27 @@ func runConnectorBind(_ context.Context, c *cli.Command) error {
 	ref, err := connectorRef(c)
 	room := c.Args().Get(1)
 	if err != nil || room == "" {
-		return fmt.Errorf("usage: trebi connector bind <name> <room> --workspace W [--operator assistant|agents/<name>] [--thread T]")
+		return fmt.Errorf("usage: trebi connector bind <connector> <room> --workspace W [--operator assistant|agents/<name>] [--thread T]")
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
 	var body map[string]any
-	if err := client.DoHTTP(request.BuildConnectorBind(ref, room, c.String("thread"), c.String("operator")), &body); err != nil {
+	if err := client.DoHTTP(request.BuildConnectorBind(ref, c.String("workspace"), room, c.String("thread"), c.String("operator")), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
 		return encodeJSON(c, body)
 	}
-	fmt.Fprintf(outWriter(c), "room %s of %s now goes to %s\n", room, ref.Name, c.String("operator"))
+	fmt.Fprintf(outWriter(c), "room %s of %s now goes to %s\n", room, ref.Ref, c.String("operator"))
 	return nil
 }
 
 func runConnectorOverrideShow(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
-		return fmt.Errorf("usage: trebi connector override show <name> --workspace W")
+		return fmt.Errorf("usage: trebi connector override show <connector> --workspace W")
 	}
 	client, err := clientFor(c)
 	if err != nil {
@@ -595,14 +551,13 @@ func runConnectorOverrideShow(_ context.Context, c *cli.Command) error {
 func runConnectorOverrideSet(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
-		return fmt.Errorf("usage: trebi connector override set <name> --workspace W [flags]")
+		return fmt.Errorf("usage: trebi connector override set <connector> --workspace W [flags]")
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
 	ws := c.String("workspace")
-	// The stored layer shows inputs as ***, and the daemon keeps a *** value.
 	var cur struct {
 		Override map[string]any `json:"override"`
 	}
@@ -625,27 +580,8 @@ func runConnectorOverrideSet(_ context.Context, c *cli.Command) error {
 
 // overlayOverrideFlags writes the flags given onto the stored layer.
 func overlayOverrideFlags(c *cli.Command, layer map[string]any) error {
-	for _, k := range []string{"version", "track"} {
-		if c.IsSet(k) {
-			layer[k] = c.String(k)
-		}
-	}
 	if c.IsSet("disabled") {
 		layer["disabled"] = c.Bool("disabled")
-	}
-	if c.IsSet("input") {
-		kv, err := parseKeyValues(c.StringSlice("input"))
-		if err != nil {
-			return fmt.Errorf("input %w", err)
-		}
-		inputs, _ := layer["inputs"].(map[string]any)
-		if inputs == nil {
-			inputs = map[string]any{}
-		}
-		for k, v := range kv {
-			inputs[k] = v
-		}
-		layer["inputs"] = inputs
 	}
 	patch, err := readObjectFile(c.String("patch-file"))
 	switch {
@@ -662,7 +598,7 @@ func overlayOverrideFlags(c *cli.Command, layer map[string]any) error {
 func runConnectorOverrideDelete(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
-		return fmt.Errorf("usage: trebi connector override delete <name> --workspace W")
+		return fmt.Errorf("usage: trebi connector override delete <connector> --workspace W")
 	}
 	client, err := clientFor(c)
 	if err != nil {
@@ -671,6 +607,6 @@ func runConnectorOverrideDelete(_ context.Context, c *cli.Command) error {
 	if err := client.DoHTTP(request.BuildConnectorOverrideDelete(c.String("workspace"), name), nil); err != nil {
 		return err
 	}
-	fmt.Fprintf(outWriter(c), "connector %s uses the global settings in workspace %s\n", name, c.String("workspace"))
+	fmt.Fprintf(outWriter(c), "connector %s has no layer in workspace %s\n", name, c.String("workspace"))
 	return nil
 }

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/dispatch"
@@ -34,25 +36,6 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 		[]byte("---\ntitle: Ops\nharness: fake\n---\n\nAnswer the message.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "connectors.yaml"), []byte(`chat:
-  from: inline
-  manifest:
-    schema: trebi-connector/1
-    name: chat
-    title: Chat
-    description: Test chat
-    version: 1.0.0
-    events:
-      protocol: trebi-connector/1
-      command: 'sleep 60'
-      types:
-        - type: message
-    channel:
-      features: [typing]
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -61,6 +44,17 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 
 	ctx := context.Background()
 	cp := daemon.New(st, daemon.Options{QueueInterval: 30 * time.Millisecond})
+	chat, err := cp.Connectors.Create(ctx, connectors.Connection{Type: "chat", Slug: "chat", From: connectors.FromInline, Manifest: &manifest.Manifest{
+		Schema: manifest.SchemaID, Name: "chat", Title: "Chat", Description: "Test chat", Version: "1.0.0",
+		Events: &manifest.Events{
+			Protocol: manifest.ProtocolConnector, Command: "sleep 60",
+			Types: []manifest.EventType{{Type: "message"}},
+		},
+		Channel: &manifest.Channel{Features: []string{"typing"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ws, err := cp.Workspaces.Add(ctx, filepath.Join(dir, "ws"), "ws")
 	if err != nil {
 		t.Fatal(err)
@@ -71,11 +65,11 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 
 	if _, err := st.DB().ExecContext(ctx, `INSERT INTO events
 		(id, connector, instance, received_at, summary, raw_json, trace_id, room) VALUES (?,?,?,?,?,?,?,?)`,
-		"evt-1", "chat", "chat", time.Now().UTC().Format(time.RFC3339Nano), "", "{}", "tr", "u1"); err != nil {
+		"evt-1", "chat", chat.ID, time.Now().UTC().Format(time.RFC3339Nano), "", "{}", "tr", "u1"); err != nil {
 		t.Fatal(err)
 	}
 	item := &dispatch.QueueItem{
-		Connector:       "chat",
+		Connector:       chat.ID,
 		WorkspaceID:     ws.ID,
 		Job:             "agents/ops",
 		Kind:            "agent",
@@ -98,14 +92,14 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 		t.Fatalf("item status=%s want done", status)
 	}
 
-	var convID, channelType, channelRef, text string
-	if err := st.DB().QueryRowContext(ctx, `SELECT conversation_id, connector, room, text
+	var convID, channelType, instance, channelRef, text string
+	if err := st.DB().QueryRowContext(ctx, `SELECT conversation_id, connector, instance, room, text
 		FROM conversation_messages WHERE role='user' ORDER BY id LIMIT 1`).
-		Scan(&convID, &channelType, &channelRef, &text); err != nil {
+		Scan(&convID, &channelType, &instance, &channelRef, &text); err != nil {
 		t.Fatalf("user turn: %v", err)
 	}
-	if channelType != "chat" || channelRef != "u1" || text != "status?" {
-		t.Fatalf("user turn %q %q %q; want chat u1 status?", channelType, channelRef, text)
+	if channelType != "chat" || instance != chat.ID || channelRef != "u1" || text != "status?" {
+		t.Fatalf("user turn %q %q %q %q; want chat %s u1 status?", channelType, instance, channelRef, text, chat.ID)
 	}
 
 	// The reply of a turn arrives as one pending outbox row, and a second

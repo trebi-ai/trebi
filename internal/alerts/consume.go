@@ -288,7 +288,7 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 	case "connector.auth.required":
 		s.onConnectorAuthRequired(ctx, ev, attrs)
 	case "connector.update.available":
-		name := firstNonEmpty(attrs["connector"], ev.ID)
+		name := ev.ID
 		if _, err := s.Raise(ctx, RaiseOpts{
 			Kind: KindConnectorUpdate, Connector: name, TraceID: ev.TraceID,
 			Body: fmt.Sprintf("Version %s is available. The connector uses %s.", attrs["version"], attrs["current"]),
@@ -297,7 +297,7 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		}
 	case "connector.updated.version":
 		if attrs["workspace"] == "" {
-			s.autoResolve(ctx, KindConnectorUpdate, "connector/"+firstNonEmpty(attrs["connector"], ev.ID), "auto")
+			s.autoResolve(ctx, KindConnectorUpdate, "connector/"+ev.ID, "auto")
 		}
 	case "connector.status":
 		if attrs["state"] == "connected" {
@@ -487,7 +487,7 @@ func (s *Service) onMemoryInvalid(ctx context.Context, ev store.StreamEvent, att
 }
 
 func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
-	name := firstNonEmpty(attrs["connector"], ev.ID)
+	name := firstNonEmpty(attrs["instance"], ev.ID)
 	_, err := s.Raise(ctx, RaiseOpts{
 		Kind: KindConnectorUnhealthy, Connector: name, TraceID: ev.TraceID,
 		Title: "Connector unhealthy", Body: attrs["status"],
@@ -498,7 +498,7 @@ func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent
 }
 
 // onConnectorAuthRequired raises one item per episode. The subject is the
-// instance, so a workspace instance has its own item.
+// connection id, so each account has its own item.
 func (s *Service) onConnectorAuthRequired(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
 	instance := firstNonEmpty(attrs["instance"], ev.ID)
 	_, err := s.Raise(ctx, RaiseOpts{
@@ -829,7 +829,7 @@ func (s *Service) onAlertFailed(ctx context.Context, attrs map[string]string) {
 		return
 	}
 	opts := raiseOptsFromItem(*item)
-	via := cmp.Or(row.Connector(), notify.ViaEmail)
+	via := cmp.Or(row.Instance, notify.ViaEmail)
 	s.appendDelivered(ctx, opts, item.ID, via, *row.RouteStep, "failed", "", row.ErrorMessage)
 	if item.Status == InboxResolved {
 		return
@@ -843,7 +843,7 @@ func (s *Service) onAlertSent(ctx context.Context, attrs map[string]string) {
 	if !ok {
 		return
 	}
-	via, msgID := cmp.Or(row.Connector(), notify.ViaEmail), ""
+	via, msgID := cmp.Or(row.Instance, notify.ViaEmail), ""
 	if via == notify.ViaEmail {
 		msgID = item.EmailMessageID
 	}

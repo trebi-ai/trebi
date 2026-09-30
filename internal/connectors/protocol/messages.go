@@ -2,11 +2,44 @@ package protocol
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
 // Version is the protocol name in initialize.
 const Version = "trebi-connector/1"
+
+// Env names that the daemon gives to an adapter process (the adapter
+// folder contract).
+const (
+	EnvProtocol = "TREBI_PROTOCOL"
+	EnvStateDir = "TREBI_STATE_DIR"
+	EnvCacheDir = "TREBI_CACHE_DIR"
+)
+
+// BaseEnv keeps the entries of environ that a connector process may see
+// (D12): the user, the locale, the time zone, the proxies, and the TLS
+// roots. The caller adds TMPDIR, PATH, the folders, and the inputs.
+func BaseEnv(environ []string) []string {
+	var out []string
+	for _, kv := range environ {
+		k, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "HOME", "USER", "LOGNAME", "LANG", "TZ",
+			"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+			"SSL_CERT_FILE", "SSL_CERT_DIR":
+			out = append(out, kv)
+		default:
+			if strings.HasPrefix(k, "LC_") {
+				out = append(out, kv)
+			}
+		}
+	}
+	return out
+}
 
 // Methods of Part D. The daemon sends requests; the adapter sends the
 // notifications event, status, auth/step, and auth/done.
@@ -57,6 +90,8 @@ const (
 	ReasonExpired   = "expired"
 	ReasonRevoked   = "revoked"
 	ReasonLoggedOut = "logged_out"
+	// ReasonMissingInput is a required input with no value (D13, D14).
+	ReasonMissingInput = "missing_input"
 )
 
 // Login step kinds.

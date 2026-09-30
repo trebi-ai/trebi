@@ -2,11 +2,13 @@ package connectors
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"slices"
@@ -67,13 +69,13 @@ type catchupResult struct {
 
 // proc is the live state of one instance supervisor.
 type proc struct {
-	instance string
-	res      Resolved
-	fp       string
-	cancel   context.CancelFunc
-	done     chan struct{} // closed when supervise returns
-	mu       sync.Mutex
-	cmd      *exec.Cmd
+	id     string // connection id
+	res    Resolved
+	fp     string
+	cancel context.CancelFunc
+	done   chan struct{} // closed when supervise returns
+	mu     sync.Mutex
+	cmd    *exec.Cmd
 
 	status      string
 	restarts    int
@@ -87,6 +89,7 @@ type proc struct {
 
 	exits     []time.Time // non-zero exits inside unhealthyWindow
 	unhealthy bool
+	gated     bool // a required input is missing; no process runs (D13)
 
 	conn *protocol.Conn             // nil until initialize answers
 	init *protocol.InitializeResult // the initialize result of the live session
@@ -370,17 +373,20 @@ func (s *Service) StopAll() {
 	s.started = false
 	s.mu.Unlock()
 	for _, p := range procs {
-		p.cancel()
+		if p.cancel != nil {
+			p.cancel()
+		}
 		p.kill()
 	}
 }
 
-// StartAll starts every instance with an events block. Later writes start
-// and stop instances through reconcile.
+// StartAll installs missing packages and starts every connection with an
+// events block. Later writes start and stop connections through reconcile.
 func (s *Service) StartAll(ctx context.Context) {
 	if err := s.Load(); err != nil {
-		s.log.Warn("connectors.yaml", "error", err) // start what is in memory
+		s.log.Warn("connections", "error", err) // start what loaded
 	}
+	s.EnsurePackages(ctx)
 	s.mu.Lock()
 	s.runCtx = ctx
 	s.started = true
@@ -390,131 +396,150 @@ func (s *Service) StartAll(ctx context.Context) {
 	}
 }
 
-// Start launches the supervisor of one instance ("name" or "name@ws").
-func (s *Service) Start(_ context.Context, instance string) error {
-	name, _ := splitInstance(instance)
-	if err := s.GuardReserved(name); err != nil {
+// Start launches the supervisor of one connection. Backup and restore call
+// it after Stop.
+func (s *Service) Start(_ context.Context, ref string) error {
+	if err := s.GuardReserved(ref); err != nil {
 		return err
 	}
-	if err := s.GuardMutate(name); err != nil {
+	if err := s.GuardMutate(ref); err != nil {
 		return err
 	}
-	r, err := s.resolveInstance(instance)
+	r, err := s.Resolve(ref, "")
 	if err != nil {
 		return err
 	}
 	if r.Manifest.Events == nil {
-		return fmt.Errorf("%w: %q", ErrNoEvents, name)
+		return fmt.Errorf("%w: %q", ErrNoEvents, ref)
 	}
 	s.startInstance(r)
 	return nil
 }
 
 // startInstance reserves the s.procs slot under s.mu, so concurrent starts
-// launch one supervisor.
+// launch one supervisor. A connection with a missing required input does not
+// start (D13): its proc records auth_required and the process stays down.
 func (s *Service) startInstance(r Resolved) {
 	s.mu.Lock()
 	runCtx := s.runCtx
-	p := &proc{instance: r.Instance, res: r, fp: r.fingerprint(), status: statusStarting, done: make(chan struct{})}
-	if old, ok := s.procs[r.Instance]; ok {
+	p := &proc{id: r.ID, res: r, fp: r.fingerprint(), status: statusStarting, done: make(chan struct{})}
+	if old, ok := s.procs[r.ID]; ok {
 		if old.alive() {
 			s.mu.Unlock()
 			return
 		}
 		p.restarts = old.snapshot().restarts
 	}
+	if missing := r.MissingInputs(); len(missing) > 0 {
+		label := cmp.Or(missing[0].Label, missing[0].Name)
+		p.gated = true
+		p.status = statusStopped
+		p.lastErr = label + " is missing"
+		p.auth = protocol.Status{State: protocol.StateAuthRequired, Reason: protocol.ReasonMissingInput, Message: p.lastErr}
+		close(p.done)
+		s.procs[r.ID] = p
+		s.mu.Unlock()
+		s.emitConnector("connector.status", r.ID, map[string]string{"state": protocol.StateAuthRequired, "reason": protocol.ReasonMissingInput})
+		return
+	}
 	ctx, cancel := context.WithCancel(runCtx)
 	p.cancel = cancel
-	s.procs[r.Instance] = p
+	s.procs[r.ID] = p
 	s.mu.Unlock()
 
 	s.wg.Add(1)
 	go s.supervise(ctx, p)
 }
 
-// Stop ends the supervisor of one instance. A protocol instance gets
+// Stop ends the supervisor of one connection. A protocol adapter gets
 // shutdown first. It waits for the supervisor to end.
-func (s *Service) Stop(instance string) error {
-	name, _ := splitInstance(instance)
-	if err := s.GuardReserved(name); err != nil {
+func (s *Service) Stop(ref string) error {
+	if err := s.GuardReserved(ref); err != nil {
 		return err
 	}
-	if err := s.GuardMutate(name); err != nil {
+	if err := s.GuardMutate(ref); err != nil {
 		return err
 	}
-	s.stopInstance(instance)
+	c, err := s.Lookup(ref)
+	if err != nil {
+		return err
+	}
+	s.stopInstance(c.ID)
 	return nil
 }
 
-func (s *Service) stopInstance(instance string) {
-	p := s.procByName(instance)
+func (s *Service) stopInstance(id string) {
+	p := s.procByName(id)
 	if p == nil {
 		return
 	}
-	p.cancel()
+	if p.cancel != nil {
+		p.cancel()
+	}
 	select {
 	case <-p.done:
 	case <-time.After(stopWait):
 		p.kill()
-		s.log.Warn("connector.stopped", "connector", instance, "error", "supervisor did not end")
+		s.log.Warn("connector.stopped", "connector", id, "error", "supervisor did not end")
 	}
 	p.setStatus(statusStopped)
-	s.log.Info("connector.stopped", "connector", instance)
+	s.log.Info("connector.stopped", "connector", id)
 }
 
-// Restart stops then starts one instance.
-func (s *Service) Restart(ctx context.Context, instance string) error {
-	if err := s.Stop(instance); err != nil {
+// Restart stops then starts one connection.
+func (s *Service) Restart(ctx context.Context, ref string) error {
+	if err := s.Stop(ref); err != nil {
 		return err
 	}
-	if err := s.Start(ctx, instance); err != nil {
+	if err := s.Start(ctx, ref); err != nil {
 		return err
 	}
-	if p := s.procByName(instance); p != nil {
+	if p := s.procByName(s.IDOf(ref)); p != nil {
 		p.addRestart()
 	}
 	return nil
 }
 
-// reconcile moves the live instances to the resolved set after a write: it
-// stops a removed instance, restarts a changed one, and starts a new one
-// once StartAll ran. An instance that a user stopped stays stopped.
+// reconcile moves the live processes to the resolved set after a write: it
+// stops a removed connection, restarts a changed one, and starts a new one
+// once StartAll ran. A connection that a user stopped stays stopped. A
+// connection that waits for an input starts when its inputs change.
 func (s *Service) reconcile(ctx context.Context) {
 	want := map[string]Resolved{}
 	for _, r := range s.Instances() {
-		want[r.Instance] = r
+		want[r.ID] = r
 	}
 	s.mu.Lock()
 	started := s.started
-	procs := make(map[string]*proc, len(s.procs))
-	for k, p := range s.procs {
-		procs[k] = p
-	}
+	procs := maps.Clone(s.procs)
 	s.mu.Unlock()
-	for key, p := range procs {
-		r, ok := want[key]
+	for id, p := range procs {
+		r, ok := want[id]
 		switch {
 		case !ok:
-			s.stopInstance(key)
+			s.stopInstance(id)
 			s.mu.Lock()
-			if s.procs[key] == p {
-				delete(s.procs, key)
+			if s.procs[id] == p {
+				delete(s.procs, id)
 			}
 			s.mu.Unlock()
-		case p.alive() && p.fp != r.fingerprint():
-			s.log.InfoContext(ctx, "connector.restarted", "connector", key, "reason", "changed")
-			s.stopInstance(key)
+		case p.fp == r.fingerprint():
+		case p.alive():
+			s.log.InfoContext(ctx, "connector.restarted", "connector", id, "reason", "changed")
+			s.stopInstance(id)
 			s.startInstance(r)
-			if np := s.procByName(key); np != nil {
+			if np := s.procByName(id); np != nil {
 				np.addRestart()
 			}
+		case p.gated && started:
+			s.startInstance(r)
 		}
 	}
 	if !started {
 		return
 	}
-	for key, r := range want {
-		if _, ok := procs[key]; !ok {
+	for id, r := range want {
+		if _, ok := procs[id]; !ok {
 			s.startInstance(r)
 		}
 	}
@@ -529,7 +554,7 @@ func (s *Service) supervise(ctx context.Context, p *proc) {
 	// its terminal status, counters, and last_err.
 	defer p.markStopped()
 	ev := p.res.Manifest.Events
-	s.log.Info("connector.started", "connector", p.instance)
+	s.log.Info("connector.started", "connector", p.id)
 	lines := ev.Protocol != manifest.ProtocolConnector
 	if lines && ev.Poll > 0 {
 		if ev.Catchup != nil {
@@ -562,13 +587,13 @@ func (s *Service) supervise(ctx context.Context, p *proc) {
 		failed := err != nil
 		if failed {
 			p.markCrashed(err.Error())
-			s.log.Info("connector.exit", "connector", p.instance, "error", err.Error())
+			s.log.Info("connector.exit", "connector", p.id, "error", err.Error())
 			if p.recordExit(s.now()) {
-				s.emitUnhealthy(p.instance, statusCrashed)
+				s.emitUnhealthy(p.id, statusCrashed)
 			}
 		} else {
 			p.markStopped()
-			s.log.Info("connector.exit", "connector", p.instance, "status", statusStopped)
+			s.log.Info("connector.exit", "connector", p.id, "status", statusStopped)
 		}
 		if !restartWanted(ev.Restart, failed) {
 			return
@@ -576,12 +601,12 @@ func (s *Service) supervise(ctx context.Context, p *proc) {
 		attempt++
 		delay := backoffDelay(attempt)
 		p.setStatus(statusBackoff)
-		s.log.Info("connector.exit", "connector", p.instance, "backoff", delay.String(), "attempt", attempt)
+		s.log.Info("connector.exit", "connector", p.id, "backoff", delay.String(), "attempt", attempt)
 		if s.sleep(ctx, delay) {
 			return
 		}
 		p.addRestart()
-		s.log.Info("connector.restarted", "connector", p.instance, "attempt", attempt)
+		s.log.Info("connector.restarted", "connector", p.id, "attempt", attempt)
 	}
 }
 
@@ -624,7 +649,7 @@ func (s *Service) goHealthy(ctx context.Context, p *proc) *atomic.Bool {
 		}
 		ok.Store(true)
 		if p.clearUnhealthy() {
-			s.emitRecovered(p.instance)
+			s.emitRecovered(p.id)
 		}
 	}()
 	return &ok
@@ -635,7 +660,7 @@ func (s *Service) goHealthy(ctx context.Context, p *proc) *atomic.Bool {
 func (s *Service) runLines(ctx context.Context, p *proc) (healthy bool, err error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	pos, _ := s.GetCursor(ctx, p.instance)
+	pos, _ := p.res.Folder().Cursor()
 	cmd, stdout, stderr, err := s.startCommand(runCtx, p.res, p.res.Manifest.Events.Command, map[string]string{"TREBI_LAST_EVENT_ID": pos.LastEventID}, nil)
 	if err != nil {
 		return false, err
@@ -643,7 +668,7 @@ func (s *Service) runLines(ctx context.Context, p *proc) (healthy bool, err erro
 	p.setCmd(cmd)
 	p.setStatus(statusListening)
 	p.markStarted(s.now())
-	s.goStderr(p.instance, stderr)
+	s.goStderr(p.id, stderr)
 	ok := s.goHealthy(runCtx, p)
 	err = s.scanInto(ctx, p, stdout, cmd, false)
 	cancel()
@@ -668,12 +693,12 @@ func (s *Service) runPoll(ctx context.Context, p *proc) {
 		if err != nil {
 			p.markCrashed(err.Error())
 			p.setStatus(statusBackoff) // crashed means the supervisor ended
-			s.log.Info("connector.exit", "connector", p.instance, "error", err.Error())
+			s.log.Info("connector.exit", "connector", p.id, "error", err.Error())
 			if p.recordExit(s.now()) {
-				s.emitUnhealthy(p.instance, statusCrashed)
+				s.emitUnhealthy(p.id, statusCrashed)
 			}
 		} else if p.clearUnhealthy() {
-			s.emitRecovered(p.instance)
+			s.emitRecovered(p.id)
 		}
 		if s.sleep(ctx, every) {
 			return
@@ -683,13 +708,13 @@ func (s *Service) runPoll(ctx context.Context, p *proc) {
 
 // runOnce runs the poll command to completion and ingests its output.
 func (s *Service) runOnce(ctx context.Context, p *proc) error {
-	pos, _ := s.GetCursor(ctx, p.instance)
+	pos, _ := p.res.Folder().Cursor()
 	cmd, stdout, stderr, err := s.startCommand(ctx, p.res, p.res.Manifest.Events.Command, map[string]string{"TREBI_LAST_EVENT_ID": pos.LastEventID}, nil)
 	if err != nil {
 		return err
 	}
 	p.setCmd(cmd)
-	s.goStderr(p.instance, stderr)
+	s.goStderr(p.id, stderr)
 	return s.scanInto(ctx, p, stdout, cmd, false)
 }
 
@@ -714,14 +739,18 @@ func (s *Service) runProtocol(ctx context.Context, p *proc) (healthy bool, err e
 	p.setCmd(cmd)
 	p.setStatus(statusStarting)
 	p.markStarted(s.now())
-	s.goStderr(p.instance, stderr)
-	conn := protocol.NewConn(stdout, pw, func(method string, params json.RawMessage) { s.onNotify(p, method, params) })
+	s.goStderr(p.id, stderr)
+	conn := protocol.NewConn(stdout, pw, func(method string, params json.RawMessage) { s.onNotify(p, method, params) },
+		protocol.WithBadLine(func(err error) {
+			p.addParseError()
+			s.log.Warn("connector.parse_error", "connector", p.id, "reason", "not_jsonrpc", "error", err)
+		}))
 	s.wg.Add(1)
 	go func() { // ends at stdout EOF, when the process group exits
 		defer s.wg.Done()
 		if err := conn.Run(context.Background()); err != nil && errors.Is(err, protocol.ErrLineTooLong) {
 			p.addParseError()
-			s.log.Warn("connector.parse_error", "connector", p.instance, "reason", "line_too_long")
+			s.log.Warn("connector.parse_error", "connector", p.id, "reason", "line_too_long")
 			pcancel()
 		}
 	}()
@@ -756,13 +785,13 @@ func (s *Service) runProtocol(ctx context.Context, p *proc) (healthy bool, err e
 // ends, or the adapter misses three pings.
 func (s *Service) session(ctx context.Context, p *proc, conn *protocol.Conn) error {
 	r := p.res
-	pos, _ := s.GetCursor(ctx, p.instance)
+	pos, _ := p.res.Folder().Cursor()
 	var init protocol.InitializeResult
 	ictx, cancel := context.WithTimeout(ctx, protocol.DefaultTimeout)
 	err := conn.Call(ictx, protocol.MethodInitialize, protocol.InitializeParams{
 		Protocol:    protocol.Version,
 		Daemon:      protocol.DaemonInfo{Version: s.version},
-		Instance:    protocol.InstanceInfo{Key: r.Instance, Name: r.Name, Workspace: r.Workspace},
+		Instance:    protocol.InstanceInfo{Key: r.ID, Name: r.Type},
 		LastEventID: pos.LastEventID,
 	}, &init)
 	cancel()
@@ -771,7 +800,7 @@ func (s *Service) session(ctx context.Context, p *proc, conn *protocol.Conn) err
 	}
 	if init.Protocol != protocol.Version {
 		p.addParseError()
-		s.log.Warn("connector.parse_error", "connector", p.instance, "reason", "protocol_mismatch", "protocol", init.Protocol)
+		s.log.Warn("connector.parse_error", "connector", p.id, "reason", "protocol_mismatch", "protocol", init.Protocol)
 		return fmt.Errorf("adapter speaks %q, not %s", init.Protocol, protocol.Version)
 	}
 	p.setSession(conn, &init)
@@ -822,7 +851,7 @@ func (s *Service) session(ctx context.Context, p *proc, conn *protocol.Conn) err
 // replay asks for the events after the connector cursor before initialized
 // (Part D.5). An incomplete replay is logged as a skip.
 func (s *Service) replay(ctx context.Context, p *proc, conn *protocol.Conn, after string) {
-	s.emitCatchup(p.instance, "connector.catchup.started", nil)
+	s.emitCatchup(p.id, "connector.catchup.started", nil)
 	var res protocol.ReplayResult
 	if err := conn.Call(ctx, protocol.MethodEventsReplay, protocol.ReplayParams{After: after, Limit: replayLimit}, &res); err != nil {
 		s.skipCatchup(p, "error", "catchup failed: "+err.Error())
@@ -836,25 +865,30 @@ func (s *Service) replay(ctx context.Context, p *proc, conn *protocol.Conn, afte
 		s.ingestProtocol(ctx, p, ev, true)
 	}
 	p.setLastCatchup(catchupResult{At: s.now(), Replayed: len(res.Events)})
-	s.emitCatchup(p.instance, "connector.catchup.completed", map[string]string{"replayed": strconv.Itoa(len(res.Events))})
+	s.emitCatchup(p.id, "connector.catchup.completed", map[string]string{"replayed": strconv.Itoa(len(res.Events))})
 }
 
-// startCommand launches sh -c cmdline with the resolved env, the state
-// folder, and extra vars. PATH starts with the bin folder of the version.
+// startCommand launches sh -c cmdline with the base env (D12), the
+// connection folders, the inputs, and extra vars. PATH starts with the bin
+// folder of the version.
 func (s *Service) startCommand(ctx context.Context, r Resolved, cmdline string, extra map[string]string, stdin io.Reader) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error) {
-	stateDir := r.StateDir()
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return nil, nil, nil, fmt.Errorf("connector state folder: %w", err)
+	if err := r.Folder().Create(); err != nil {
+		return nil, nil, nil, err
 	}
-	env := os.Environ()
+	env := protocol.BaseEnv(os.Environ())
 	vals, missing := r.Env()
 	for _, secName := range missing {
-		s.log.Info("secret.referenced_missing", "name", secName, "connector", r.Instance)
+		s.log.Info("secret.referenced_missing", "name", secName, "connector", r.ID)
 	}
 	for k, v := range vals {
 		env = append(env, k+"="+v)
 	}
-	env = append(env, "PATH="+r.PathEnv(os.Getenv("PATH")), "TREBI_STATE_DIR="+stateDir)
+	env = append(env,
+		"PATH="+r.PathEnv(os.Getenv("PATH")),
+		"TMPDIR="+r.CacheDir(),
+		"TREBI_STATE_DIR="+r.StateDir(),
+		"TREBI_CACHE_DIR="+r.CacheDir(),
+	)
 	for k, v := range extra {
 		env = append(env, k+"="+v)
 	}
@@ -869,14 +903,14 @@ func (s *Service) scanInto(ctx context.Context, p *proc, stdout io.Reader, cmd *
 	sc.Buffer(make([]byte, 0, 64*1024), protocol.MaxLine)
 	for sc.Scan() {
 		line := sc.Text()
-		appendConnectorLog(p.instance, "stdout", line)
+		appendConnectorLog(p.id, "stdout", line)
 		s.ingest(ctx, p, line, catchUp)
 	}
 	scanErr := sc.Err()
 	if scanErr != nil {
 		if errors.Is(scanErr, bufio.ErrTooLong) {
 			p.addParseError()
-			s.log.Warn("connector.parse_error", "connector", p.instance, "reason", "line_too_long")
+			s.log.Warn("connector.parse_error", "connector", p.id, "reason", "line_too_long")
 		}
 		_ = procgroup.Kill(cmd, syscall.SIGKILL) // the group may have exited
 	}
@@ -889,14 +923,14 @@ func (s *Service) scanInto(ctx context.Context, p *proc, stdout io.Reader, cmd *
 
 // goStderr copies stderr to the stream log in a goroutine that s.wg tracks.
 // It ends at EOF, when the process group exits.
-func (s *Service) goStderr(instance string, r io.Reader) {
+func (s *Service) goStderr(id string, r io.Reader) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		sc := bufio.NewScanner(r)
 		sc.Buffer(make([]byte, 0, 64*1024), protocol.MaxLine)
 		for sc.Scan() {
-			appendConnectorLog(instance, "stderr", sc.Text())
+			appendConnectorLog(id, "stderr", sc.Text())
 		}
 		_, _ = io.Copy(io.Discard, r) // drain after a long line; EOF or close ends it
 	}()
@@ -907,21 +941,21 @@ func (s *Service) goStderr(instance string, r io.Reader) {
 // when set, and a skip when the cursor is not in the output.
 func (s *Service) runCatchup(ctx context.Context, p *proc) {
 	ev := p.res.Manifest.Events
-	pos, _ := s.GetCursor(ctx, p.instance)
+	pos, _ := p.res.Folder().Cursor()
 	if pos.LastEventID == "" {
 		s.skipCatchup(p, "no_position", "catchup skipped: no connector cursor")
 		return
 	}
-	s.emitCatchup(p.instance, "connector.catchup.started", nil)
+	s.emitCatchup(p.id, "connector.catchup.started", nil)
 	cctx, cancel := context.WithTimeout(ctx, ev.Catchup.Timeout.Std())
 	defer cancel()
 	cmd, stdout, stderr, err := s.startCommand(cctx, p.res, ev.Catchup.Command, map[string]string{"TREBI_LAST_EVENT_ID": pos.LastEventID}, nil)
 	if err != nil {
-		s.log.Warn("connector.catchup.started", "connector", p.instance, "error", err)
+		s.log.Warn("connector.catchup.started", "connector", p.id, "error", err)
 		s.skipCatchup(p, "error", "catchup failed to start: "+err.Error())
 		return
 	}
-	s.goStderr(p.instance, stderr)
+	s.goStderr(p.id, stderr)
 	lines := readCapped(stdout, ev.Catchup.MaxEvents, cmd)
 	_ = cmd.Wait() // exit code is irrelevant; the buffer is the result
 
@@ -935,7 +969,7 @@ func (s *Service) runCatchup(ctx context.Context, p *proc) {
 		payload := decodeLine(ev, line)
 		if payload == nil {
 			p.addParseError()
-			s.log.Warn("connector.parse_error", "connector", p.instance, "line", truncate(line, 200))
+			s.log.Warn("connector.parse_error", "connector", p.id, "line", truncate(line, 200))
 			continue
 		}
 		it := item{line: line}
@@ -970,7 +1004,7 @@ func (s *Service) runCatchup(ctx context.Context, p *proc) {
 		replayed++
 	}
 	p.setLastCatchup(catchupResult{At: s.now(), Replayed: replayed})
-	s.emitCatchup(p.instance, "connector.catchup.completed", map[string]string{"replayed": strconv.Itoa(replayed)})
+	s.emitCatchup(p.id, "connector.catchup.completed", map[string]string{"replayed": strconv.Itoa(replayed)})
 }
 
 // readCapped reads at most max lines. Over the cap, or on a scan error, it
@@ -993,9 +1027,9 @@ func readCapped(r io.Reader, max int, cmd *exec.Cmd) []string {
 }
 
 func (s *Service) skipCatchup(p *proc, reason, logLine string) {
-	appendConnectorLog(p.instance, "system", logLine)
+	appendConnectorLog(p.id, "system", logLine)
 	p.setLastCatchup(catchupResult{At: s.now(), Reason: reason})
-	s.emitCatchup(p.instance, "connector.catchup.skipped", map[string]string{"reason": reason})
+	s.emitCatchup(p.id, "connector.catchup.skipped", map[string]string{"reason": reason})
 }
 
 // parseEventTime reads RFC3339, epoch seconds, or epoch milliseconds. Epoch
@@ -1040,47 +1074,50 @@ func truncate(line string, n int) string {
 	return line[:n]
 }
 
-// emitConnector appends one connector bus event keyed by the instance.
-func (s *Service) emitConnector(topic, instance string, attrs map[string]string) {
-	name, _ := splitInstance(instance)
+// emitConnector appends one connector bus event keyed by the connection id.
+func (s *Service) emitConnector(topic, id string, attrs map[string]string) {
 	if attrs == nil {
 		attrs = map[string]string{}
 	}
-	attrs["connector"] = name
-	attrs["instance"] = instance
+	s.mu.Lock()
+	c := s.conns[id]
+	s.mu.Unlock()
+	attrs["connector"] = c.Type
+	attrs["instance"] = id
+	attrs["slug"] = c.Slug
 	if _, err := s.st.Append(context.Background(), store.BusEvent{
-		Topic: topic, Entity: "connector", EntityID: name, Action: "updated", Attrs: attrs,
+		Topic: topic, Entity: "connector", EntityID: id, Action: "updated", Attrs: attrs,
 	}); err != nil {
 		s.log.Warn("bus append", "topic", topic, "error", err)
 	}
 }
 
 // emitCatchup appends one catch-up bus event.
-func (s *Service) emitCatchup(instance, topic string, attrs map[string]string) {
-	s.emitConnector(topic, instance, attrs)
+func (s *Service) emitCatchup(id, topic string, attrs map[string]string) {
+	s.emitConnector(topic, id, attrs)
 }
 
 // emitUnhealthy appends connector.unhealthy once per outage window.
-func (s *Service) emitUnhealthy(instance, status string) {
-	s.emitConnector("connector.unhealthy", instance, map[string]string{"status": status})
+func (s *Service) emitUnhealthy(id, status string) {
+	s.emitConnector("connector.unhealthy", id, map[string]string{"status": status})
 }
 
 // emitRecovered appends connector.recovered.
-func (s *Service) emitRecovered(instance string) {
-	s.emitConnector("connector.recovered", instance, map[string]string{"status": statusListening})
+func (s *Service) emitRecovered(id string) {
+	s.emitConnector("connector.recovered", id, map[string]string{"status": statusListening})
 }
 
 // emitStatus appends connector.status and tells the status hook.
 func (s *Service) emitStatus(p *proc, state, reason string) {
-	s.emitConnector("connector.status", p.instance, map[string]string{"state": state, "reason": reason})
+	s.emitConnector("connector.status", p.id, map[string]string{"state": state, "reason": reason})
 	if s.onStatus != nil {
-		s.onStatus(context.Background(), p.instance, state)
+		s.onStatus(context.Background(), p.id, state)
 	}
 }
 
-// procByName returns the live proc of an instance, or nil.
-func (s *Service) procByName(instance string) *proc {
+// procByName returns the live proc of a connection id, or nil.
+func (s *Service) procByName(id string) *proc {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.procs[instance]
+	return s.procs[id]
 }

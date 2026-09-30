@@ -833,7 +833,7 @@ func (s *Service) ConnectorRow() map[string]any {
 		metrics["last_error"] = state.LastError
 	}
 	return map[string]any{
-		"id": "email", "name": "email",
+		"id": "email", "type": "email", "slug": "email", "title": "Email", "status": status,
 		"provenance": "native", "managed": false,
 		"capabilities": []string{"events", "channel"},
 		"events": map[string]any{
