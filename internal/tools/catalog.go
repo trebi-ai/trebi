@@ -484,11 +484,14 @@ func (in Input) ruleTest() (request.RuleTest, error) {
 	if err != nil {
 		return request.RuleTest{}, err
 	}
-	g, err := in.strs("from", "replies")
+	g, err := in.strs("from", "replies", "workspace", "job")
 	if err != nil {
 		return request.RuleTest{}, err
 	}
-	return request.RuleTest{Match: v[0], Extract: v[1], Rooms: rooms, Allowlist: allow, Contains: contains, From: g[0], Replies: g[1]}, nil
+	return request.RuleTest{
+		Match: v[0], Extract: v[1], Rooms: rooms, Allowlist: allow, Contains: contains,
+		From: g[0], Replies: g[1], Workspace: g[2], Job: g[3],
+	}, nil
 }
 
 // agentSpec reads the PUT agent body of agent.create.

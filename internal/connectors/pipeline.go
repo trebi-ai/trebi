@@ -549,9 +549,8 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 	in := GateInput{Room: ev.room, Identity: ev.identity, Text: ev.text, Bot: ev.bot}
 	continues := tr.Continues() && row.Kind == dispatch.KindJob
 	key := ev.conversationKey(continues)
-	if continues && ev.root != "" && ev.root != ev.sourceID && s.convs != nil {
-		within := time.Duration(j.LaunchDefaults().ContinueMS) * time.Millisecond
-		open, err := s.convs.ConversationOpen(ctx, row.WorkspaceID, j.Name, key, within)
+	if continues {
+		open, err := s.conversationOpen(ctx, ev, row.WorkspaceID, j)
 		if err != nil {
 			s.log.Warn("conversation lookup", "job", j.Name, "error", err)
 			s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeError), "", ev.receivedAt)
@@ -612,6 +611,16 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 		return
 	}
 	s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeQueued), item.ID, ev.receivedAt)
+}
+
+// conversationOpen reports whether r continues an open conversation of a
+// job with replies: continue (plan A.9). A start message never does.
+func (s *Service) conversationOpen(ctx context.Context, r eventRecord, workspaceID string, j *job.Job) (bool, error) {
+	if s.convs == nil || r.root == "" || r.root == r.sourceID {
+		return false, nil
+	}
+	within := time.Duration(j.LaunchDefaults().ContinueMS) * time.Millisecond
+	return s.convs.ConversationOpen(ctx, workspaceID, j.Name, r.conversationKey(true), within)
 }
 
 // mergeVars copies base, then over on top: an extract var wins over a

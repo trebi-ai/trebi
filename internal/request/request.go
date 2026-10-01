@@ -1092,7 +1092,8 @@ func BuildSkillFileDelete(name, rel, ifMatch string) HTTPRequest {
 }
 
 // RuleTest is the trigger side of a rules test: the code and the scope.
-// Replies is "continue" or "off" and only changes the conversation key.
+// Replies is "continue" or "off". With Job, an event of an open conversation
+// of that job is a follow-up.
 type RuleTest struct {
 	Match     string
 	Extract   string
@@ -1101,6 +1102,8 @@ type RuleTest struct {
 	Contains  []string
 	From      string
 	Replies   string
+	Workspace string
+	Job       string
 }
 
 // Build builds POST /v1/rules/test against a stored event (eventID) or a
@@ -2666,7 +2669,7 @@ func (t RuleTest) body() map[string]any {
 	if len(t.Contains) > 0 {
 		body["contains"] = t.Contains
 	}
-	for k, v := range map[string]string{"from": t.From, "replies": t.Replies} {
+	for k, v := range map[string]string{"from": t.From, "replies": t.Replies, "workspace": t.Workspace, "job": t.Job} {
 		if v != "" {
 			body[k] = v
 		}

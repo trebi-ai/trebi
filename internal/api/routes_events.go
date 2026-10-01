@@ -487,6 +487,10 @@ type ruleGate struct {
 	From      string   `json:"from"`
 	Contains  []string `json:"contains"`
 	Replies   string   `json:"replies"`
+	// Workspace and Job name the job of the trigger. With replies: continue,
+	// an event of an open conversation of that job is a follow-up.
+	Workspace string `json:"workspace"`
+	Job       string `json:"job"`
 }
 
 func (g ruleGate) gate() connectors.Gate {
@@ -496,8 +500,7 @@ func (g ruleGate) gate() connectors.Gate {
 	}
 }
 
-// ruleResult is the wire form of one gate result. The rule test has no job
-// context, so every event is the start of a conversation.
+// ruleResult is the wire form of one gate result.
 func (g ruleGate) result(ev connectors.GateEvent, res connectors.GateResult) map[string]any {
 	vars := res.Vars
 	if res.Matched {
@@ -511,6 +514,42 @@ func (g ruleGate) result(ev connectors.GateEvent, res connectors.GateResult) map
 		"extracted": res.Extracted, "error": res.Error, "follow_up": res.FollowUp,
 		"conversation_key": ev.ConversationKey(g.Replies == job.RepliesContinue, res.Vars),
 	}
+}
+
+// ruleJob loads the job of a rules test body. Nil means every event is the
+// start of a conversation: no job, or a trigger that does not continue.
+func (s *Server) ruleJob(ctx context.Context, g ruleGate) (*job.Job, string, error) {
+	if g.Job == "" || g.Replies != job.RepliesContinue {
+		return nil, "", nil
+	}
+	row, err := s.findJobRow(ctx, g.Workspace, g.Job)
+	if err != nil {
+		return nil, "", err
+	}
+	if row.Kind != dispatch.KindJob {
+		return nil, "", nil
+	}
+	doc, err := readIndexedDoc(row.Path)
+	if err != nil {
+		return nil, "", err
+	}
+	doc.Job.Name = row.Name
+	return doc.Job, row.WorkspaceID, nil
+}
+
+// evalRule runs the gate against ev. With a job, ev is a follow-up when it
+// continues an open conversation of that job.
+func (s *Server) evalRule(ctx context.Context, ev connectors.GateEvent, g connectors.Gate, j *job.Job, wsID string) (connectors.GateResult, error) {
+	followUp := false
+	if j != nil {
+		var err error
+		if followUp, err = s.connectors.FollowUp(ctx, ev, wsID, j); err != nil {
+			return connectors.GateResult{}, err
+		}
+	}
+	res := ev.Eval(ctx, g, followUp)
+	res.FollowUp = followUp
+	return res, nil
 }
 
 // handleRulesTest runs the gate of one trigger against a stored event
@@ -530,6 +569,11 @@ func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "set event_id or event, not both")
 		return
 	}
+	j, wsID, err := s.ruleJob(r.Context(), body.ruleGate)
+	if err != nil {
+		writeResolveErr(w, err, "job")
+		return
+	}
 	var ev connectors.GateEvent
 	if body.EventID != "" {
 		var err error
@@ -544,7 +588,12 @@ func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		}
 		ev = connectors.DraftGateEvent(typ, body.Event)
 	}
-	out := body.result(ev, ev.Eval(r.Context(), body.gate()))
+	res, err := s.evalRule(r.Context(), ev, body.gate(), j, wsID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	out := body.result(ev, res)
 	out["room"], out["identity"] = ev.Room, ev.Identity
 	writeJSON(w, http.StatusOK, out)
 }
@@ -568,6 +617,11 @@ func (s *Server) handleRulesTestBatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("event_ids: at most %d events", maxRulesTestBatch))
 		return
 	}
+	j, wsID, err := s.ruleJob(r.Context(), body.ruleGate)
+	if err != nil {
+		writeResolveErr(w, err, "job")
+		return
+	}
 	g := body.gate()
 	results := make([]map[string]any, 0, len(body.EventIDs))
 	for _, id := range body.EventIDs {
@@ -580,7 +634,12 @@ func (s *Server) handleRulesTestBatch(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		default:
-			out = body.result(ev, ev.Eval(r.Context(), g))
+			res, err := s.evalRule(r.Context(), ev, g, j, wsID)
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+				return
+			}
+			out = body.result(ev, res)
 		}
 		out["event_id"] = id
 		results = append(results, out)

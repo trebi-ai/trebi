@@ -187,11 +187,21 @@ func (r eventRecord) gateEvent() GateEvent {
 	}
 }
 
-// Eval runs the gate against the event as a start of a conversation. The
-// sender fold follows the connector of the event.
-func (ev GateEvent) Eval(ctx context.Context, g Gate) GateResult {
+// Eval runs the gate against the event. The sender fold follows the
+// connector of the event. A bot message in an open conversation does not
+// run, as in the pipeline (plan A.9).
+func (ev GateEvent) Eval(ctx context.Context, g Gate, followUp bool) GateResult {
+	if followUp && ev.Bot {
+		return GateResult{Stage: StageFrom}
+	}
 	g.Fold = ev.Connector == NativeEmail
-	return g.Eval(ctx, GateInput{Room: ev.Room, Identity: ev.Identity, Text: ev.Text, Bot: ev.Bot}, ev.Payload)
+	return g.Eval(ctx, GateInput{Room: ev.Room, Identity: ev.Identity, Text: ev.Text, Bot: ev.Bot, FollowUp: followUp}, ev.Payload)
+}
+
+// FollowUp reports whether ev continues an open conversation of j, a job
+// with replies: continue.
+func (s *Service) FollowUp(ctx context.Context, ev GateEvent, workspaceID string, j *job.Job) (bool, error) {
+	return s.conversationOpen(ctx, ev.record, workspaceID, j)
 }
 
 // Vars merges the built-in vars of the event under the extract vars.

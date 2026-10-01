@@ -201,3 +201,63 @@ func draft(text string, bot bool) map[string]any {
 		"room": map[string]any{"id": "r9"}, "sender": map[string]any{"id": "u9", "bot": bot},
 	}
 }
+
+// TestRulesTestFollowUp proves that a reply in an open conversation of the
+// job skips from and contains, and that a bot reply stops at from.
+func TestRulesTestFollowUp(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "watch")
+	wsID := addWorkspace(t, base, wsDir, "ops")
+
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, ev := range []struct {
+		id, text, root string
+		bot            bool
+	}{{"e1", "build failure", "", true}, {"e2", "why?", "e1", false}, {"e3", "retrying", "e1", true}} {
+		raw := fmt.Sprintf(`{"id":%q,"type":"message","text":%q,"room":{"id":"r1"},"sender":{"id":"s","bot":%t}}`, ev.id, ev.text, ev.bot)
+		if _, err := st.DB().Exec(`INSERT INTO events (id, connector, instance, received_at, raw_json, trace_id, source_id, room, identity, text, root)
+			VALUES (?,?,?,?,?,?,?,?,?,?,NULLIF(?,''))`, ev.id, "discord", "con_dc", now, raw, ev.id, ev.id, "r1", "s", ev.text, ev.root); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.DB().Exec(`INSERT INTO event_queue (id, connector, workspace_id, job, kind, conversation_key, status, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?)`, "q1", "discord", wsID, "watch", "job", "r1/e1", "pending", now, now); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	gate := map[string]any{"from": "bots", "contains": []string{"failure"}, "replies": "continue", "workspace": wsID, "job": "watch"}
+	tests := []struct {
+		name     string
+		edit     func(map[string]any)
+		id       string
+		matched  bool
+		followUp bool
+		stage    string
+	}{
+		{"person reply", func(map[string]any) {}, "e2", true, true, ""},
+		{"bot reply", func(map[string]any) {}, "e3", false, true, "from"},
+		{"first message", func(map[string]any) {}, "e1", true, false, ""},
+		{"no job", func(b map[string]any) { delete(b, "job") }, "e2", false, false, "from"},
+	}
+	for _, tt := range tests {
+		body := map[string]any{"event_id": tt.id}
+		for k, v := range gate {
+			body[k] = v
+		}
+		tt.edit(body)
+		code, out, _ := doJSON(t, "POST", base+"/v1/rules/test", body)
+		if code != 200 {
+			t.Fatalf("%s: %d %v", tt.name, code, out)
+		}
+		fu, _ := out["follow_up"].(bool)
+		if out["matched"] != tt.matched || fu != tt.followUp || out["stage"] != tt.stage {
+			t.Errorf("%s = %v", tt.name, out)
+		}
+	}
+	if code, out, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"event_id": "e2", "replies": "continue", "job": "nope"}); code != 404 {
+		t.Fatalf("unknown job: %d %v", code, out)
+	}
+}
