@@ -63,7 +63,7 @@ func TestConformanceSandboxReference(t *testing.T) {
 	sb := sandbox()
 	sb.Reference = true
 	sb.LoggedIn = false
-	sb.Result.Features = []string{"rooms.list", "rooms.open", "threads", "threads.create", "history", "replay", "typing", "seen", "reactions", "edit", "attachments.out"}
+	sb.Result.Features = []string{"rooms.list", "rooms.open", "threads", "threads.create", "history", "replay", "typing", "seen", "reactions", "edit", "attachments.out", "replies"}
 	sb.Result.Limits = protocol.Limits{MaxText: 1000, Formats: []string{"text"}}
 	c := &protocol.Checker{
 		Features: sb.Result.Features, EventTypes: []string{"message"}, Login: []string{"qr"},
@@ -79,7 +79,7 @@ func TestConformanceSandboxReference(t *testing.T) {
 			t.Errorf("%s = %+v, want %s", check, r, want)
 		}
 	}
-	for _, check := range []string{"status", "limits", "sandbox login", "feature edit", "feature attachments.out", "events from send", "replay cursor", "error codes", "clean stdout"} {
+	for _, check := range []string{"status", "limits", "sandbox login", "feature edit", "feature attachments.out", "feature replies", "events from send", "replay cursor", "error codes", "clean stdout"} {
 		if _, ok := res[check]; !ok {
 			t.Errorf("no row %q", check)
 		}
@@ -100,6 +100,11 @@ func TestConformanceNewFailures(t *testing.T) {
 		}, "limits"},
 		{"no echo", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) { sb.Reference = false }, "events from send"},
 		{"logged in on empty state", func(sb *fakeadapter.Sandbox, c *protocol.Checker) { sb.LoggedIn = true }, "status"},
+		{"rejects reply_to", func(sb *fakeadapter.Sandbox, c *protocol.Checker) {
+			sb.Faults = []string{fakeadapter.FaultRejectReplyTo}
+			sb.Result.Features = append(sb.Result.Features, "replies")
+			c.Features = []string{"replies"}
+		}, "feature replies"},
 		{"replay ignores the cursor", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) {
 			sb.Reference = false
 			sb.Result.Features = append(sb.Result.Features, "replay")

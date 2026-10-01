@@ -82,6 +82,7 @@ func fixtureTypes() map[string]func() any {
 		"shutdown.result":          func() any { return &Empty{} },
 		"event.message":            func() any { return &Event{} },
 		"event.message.thread":     func() any { return &Event{} },
+		"event.message.bot":        func() any { return &Event{} },
 		"event.reaction":           func() any { return &Event{} },
 		"status.connected":         func() any { return &Status{} },
 		"status.auth_required":     func() any { return &Status{} },

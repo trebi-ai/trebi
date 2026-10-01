@@ -222,6 +222,7 @@ const (
 	FeatureEdit           = "edit"
 	FeatureAttachmentsIn  = "attachments.in"
 	FeatureAttachmentsOut = "attachments.out"
+	FeatureReplies        = "replies"
 )
 
 var (
@@ -857,7 +858,7 @@ func ChannelFeatures() []string {
 	return []string{
 		FeatureRoomsList, FeatureRoomsOpen, FeatureThreads, FeatureThreadsCreate, FeatureHistory,
 		FeatureReplay, FeatureTyping, FeatureSeen, FeatureReactions, FeatureEdit,
-		FeatureAttachmentsIn, FeatureAttachmentsOut,
+		FeatureAttachmentsIn, FeatureAttachmentsOut, FeatureReplies,
 	}
 }
 

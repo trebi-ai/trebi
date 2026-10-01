@@ -468,6 +468,14 @@ func (w *writer) feature(ctx context.Context, f string) (string, error) {
 		return "", nil
 	case "attachments.out":
 		return "", w.attachment(ctx)
+	case "replies":
+		id, err := w.message(ctx)
+		if err != nil {
+			return "", err
+		}
+		key := "conformance-reply-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		p := SendParams{Room: w.room, Text: "Trebi conformance reply", Format: "text", ReplyTo: id, Key: key}
+		return "", w.conn.Call(ctx, MethodMessagesSend, p, &SendResult{})
 	case "seen", "reactions", "edit":
 		id, err := w.message(ctx)
 		if err != nil {

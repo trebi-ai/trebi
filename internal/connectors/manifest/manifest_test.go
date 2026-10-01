@@ -59,6 +59,7 @@ func TestValidateRules(t *testing.T) {
 		{"login on lines", func(m *manifest.Manifest) { m.Events.Protocol = "lines"; m.Channel = nil }, []string{"setup.login"}},
 		{"lines field on protocol", func(m *manifest.Manifest) { m.Events.ID = "d.id" }, []string{"events.id"}},
 		{"unknown feature", func(m *manifest.Manifest) { m.Channel.Features = append(m.Channel.Features, "fly") }, []string{"channel.features"}},
+		{"replies feature", func(m *manifest.Manifest) { m.Channel.Features = append(m.Channel.Features, manifest.FeatureReplies) }, nil},
 		{"unknown login", func(m *manifest.Manifest) { m.Setup.Login = []string{"sms"} }, []string{"setup.login"}},
 		{"bad compat", func(m *manifest.Manifest) { m.Skill.Compat = ">=x" }, []string{"skill.compat"}},
 		{"skill escapes", func(m *manifest.Manifest) { m.Skill.Path = "../other" }, []string{"skill.path"}},

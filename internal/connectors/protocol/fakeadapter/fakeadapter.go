@@ -63,10 +63,11 @@ type Sandbox struct {
 
 // Faults of the adapter folder contract.
 const (
-	FaultWriteHome     = "write_home"     // writes a file to $HOME
-	FaultAbsoluteState = "absolute_state" // stores the absolute state path in a state file
-	FaultExitEmpty     = "exit_empty"     // exits on an empty state folder
-	FaultStdoutNoise   = "stdout_noise"   // prints a line that is not JSON-RPC on stdout
+	FaultWriteHome     = "write_home"      // writes a file to $HOME
+	FaultAbsoluteState = "absolute_state"  // stores the absolute state path in a state file
+	FaultExitEmpty     = "exit_empty"      // exits on an empty state folder
+	FaultStdoutNoise   = "stdout_noise"    // prints a line that is not JSON-RPC on stdout
+	FaultRejectReplyTo = "reject_reply_to" // fails a send with reply_to
 )
 
 // Files of a Reference sandbox in TREBI_STATE_DIR.
@@ -315,6 +316,9 @@ func (s *Sandbox) send(raw json.RawMessage) (any, *protocol.Error) {
 	}
 	if s.state() == protocol.StateAuthRequired {
 		return nil, protocol.NewError(protocol.CodeAuthRequired, "log in first")
+	}
+	if p.ReplyTo != "" && s.has(FaultRejectReplyTo) {
+		return nil, protocol.NewError(protocol.CodeInvalid, "reply_to is not supported")
 	}
 	if max := s.Result.Limits.MaxText; max > 0 && len([]rune(p.Text)) > max {
 		return nil, protocol.NewError(protocol.CodeInvalid, "text too long")

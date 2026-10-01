@@ -198,6 +198,7 @@ type Sender struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitempty"`
 	Self bool   `json:"self,omitempty"`
+	Bot  bool   `json:"bot,omitempty"`
 }
 
 // Attachment is one file on a message.
@@ -213,13 +214,16 @@ type Attachment struct {
 // Event is one inbound event (Part D.3). ID is the dedupe key and the
 // connector cursor.
 type Event struct {
-	ID          string          `json:"id"`
-	Type        string          `json:"type"`
-	TS          string          `json:"ts"`
-	Room        *Room           `json:"room"`
-	Thread      *Thread         `json:"thread"`
-	Sender      *Sender         `json:"sender"`
-	Text        string          `json:"text,omitempty"`
+	ID     string  `json:"id"`
+	Type   string  `json:"type"`
+	TS     string  `json:"ts"`
+	Room   *Room   `json:"room"`
+	Thread *Thread `json:"thread"`
+	Sender *Sender `json:"sender"`
+	// Text is what a person sees: the body, then the readable parts of
+	// rich content, one part per line. Never raw JSON.
+	Text string `json:"text,omitempty"`
+	// ReplyTo is the id of the message that this message quotes or answers.
 	ReplyTo     string          `json:"reply_to,omitempty"`
 	Attachments []Attachment    `json:"attachments,omitempty"`
 	Data        json.RawMessage `json:"data,omitempty"`
