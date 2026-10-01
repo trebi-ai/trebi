@@ -24,6 +24,17 @@ func TestEvalMatchFalse(t *testing.T) {
 	}
 }
 
+func TestEvalMatchEmpty(t *testing.T) {
+	t.Parallel()
+	if r := dispatch.EvalMatch(context.Background(), "", "", map[string]any{}); r.Error != "" || !r.Matched {
+		t.Fatalf("no match, no extract: %+v", r)
+	}
+	r := dispatch.EvalMatch(context.Background(), "", "({who: event.sender})", map[string]any{"sender": "alice"})
+	if r.Error != "" || !r.Matched || r.Vars["who"] != "alice" {
+		t.Fatalf("extract only: %+v", r)
+	}
+}
+
 func TestEvalExtractVars(t *testing.T) {
 	t.Parallel()
 	r := dispatch.EvalMatch(context.Background(),
@@ -47,14 +58,6 @@ func TestEvalMatchError(t *testing.T) {
 	r := dispatch.EvalMatch(context.Background(), "throw new Error('boom')", "", map[string]any{})
 	if r.Error == "" {
 		t.Fatal("expected error")
-	}
-}
-
-func TestEvalMatchRequired(t *testing.T) {
-	t.Parallel()
-	r := dispatch.EvalMatch(context.Background(), "", "", nil)
-	if r.Error == "" {
-		t.Fatal("match required")
 	}
 }
 

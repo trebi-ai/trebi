@@ -25,6 +25,13 @@ func TestRulesTestStages(t *testing.T) {
 		{"draft protocol shape", map[string]any{"match": "true", "rooms": []string{"r9"},
 			"event": map[string]any{"type": "message", "room": map[string]any{"id": "r9"}, "sender": map[string]any{"id": "u9"}}}, true, ""},
 		{"draft plain fails room", map[string]any{"match": "true", "rooms": []string{"r9"}, "event": map[string]any{"x": 1}}, false, "room"},
+		{"no match takes all", map[string]any{"event": draft("deploy now", false)}, true, ""},
+		{"contains hit", map[string]any{"contains": []string{"Deploy"}, "event": draft("deploy now", false)}, true, ""},
+		{"contains miss", map[string]any{"contains": []string{"rollback"}, "event": draft("deploy now", false)}, false, "contains"},
+		{"bot by default", map[string]any{"event": draft("deploy now", true)}, true, ""},
+		{"people only", map[string]any{"from": "people", "event": draft("deploy now", true)}, false, "from"},
+		{"bots only", map[string]any{"from": "bots", "event": draft("deploy now", false)}, false, "from"},
+		{"anyone", map[string]any{"from": "anyone", "event": draft("deploy now", true)}, true, ""},
 	}
 	for _, c := range cases {
 		code, out, _ := doJSON(t, "POST", base+"/v1/rules/test", c.body)
@@ -38,6 +45,11 @@ func TestRulesTestStages(t *testing.T) {
 	ex, _ := out["extracted"].(map[string]any)
 	if code != 200 || out["room"] != "r1" || out["identity"] != "u1" || ex["who"] != "Ana" || out["matched"] != true {
 		t.Fatalf("extracted: %d %v", code, out)
+	}
+	code, out, _ = doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"replies": "continue", "event": draft("deploy now", false)})
+	vars, _ := out["vars"].(map[string]any)
+	if code != 200 || out["conversation_key"] != "r9/m9" || out["follow_up"] != false || vars["text"] != "deploy now" {
+		t.Fatalf("conversation key: %d %v", code, out)
 	}
 	if code, out, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"event_id": "nope", "match": "true"}); code != 404 {
 		t.Fatalf("missing event: %d %v", code, out)
@@ -179,5 +191,13 @@ func seedGateEvents(t *testing.T, dir string) {
 			VALUES (?,?,?,?,?,?,?,?,?)`, ev.id, "whatsapp", "con_wa", at, raw, ev.id, ev.room, ev.identity, ev.name); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// draft is a trebi-connector/1 message event for a rules test.
+func draft(text string, bot bool) map[string]any {
+	return map[string]any{
+		"id": "m9", "type": "message", "ts": "2026-10-01T10:00:00Z", "text": text,
+		"room": map[string]any{"id": "r9"}, "sender": map[string]any{"id": "u9", "bot": bot},
 	}
 }

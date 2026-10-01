@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -630,6 +632,50 @@ func (s *Service) FindLive(ctx context.Context, workspaceID, kind, conversationK
 		return nil, sql.ErrNoRows
 	}
 	return list[0], nil
+}
+
+// ConversationOpen reports whether a job conversation is open (plan A.9):
+// it has a pending or claimed queue row, a live run, or a run that ended at
+// most within ago. within 0 is no limit.
+func (s *Service) ConversationOpen(ctx context.Context, workspaceID, job, key string, within time.Duration) (bool, error) {
+	var queued bool
+	if err := s.st.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM event_queue
+		WHERE workspace_id=? AND job=? AND kind=? AND conversation_key=? AND status IN (?,?))`,
+		workspaceID, job, KindJob, key, string(dispatch.QueuePending), string(dispatch.QueueClaimed)).Scan(&queued); err != nil {
+		return false, fmt.Errorf("conversation queue %s: %w", key, err)
+	}
+	if queued {
+		return true, nil
+	}
+	rows, err := s.List(ctx, ListOpts{Workspace: workspaceID, Job: job, Kind: KindJob, ConversationKey: key, ConversationKeyExact: true, Limit: 1})
+	if err != nil || len(rows) == 0 {
+		return false, err
+	}
+	last := rows[0]
+	if last.Status.IsLive() || within == 0 {
+		return true, nil
+	}
+	return last.EndedAt != nil && time.Since(*last.EndedAt) <= within, nil
+}
+
+// FirstTriggerVars returns the trigger vars of the oldest run of a job
+// conversation. No run gives nil.
+func (s *Service) FirstTriggerVars(ctx context.Context, workspaceID, job, key string) (map[string]string, error) {
+	var raw sql.NullString
+	err := s.st.DB().QueryRowContext(ctx, `SELECT trigger_vars_json FROM runs
+		WHERE workspace_id=? AND job=? AND kind=? AND COALESCE(conversation_key,'')=? ORDER BY id LIMIT 1`,
+		workspaceID, job, KindJob, key).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil || !raw.Valid || raw.String == "" {
+		return nil, err
+	}
+	var vars map[string]string
+	if err := json.Unmarshal([]byte(raw.String), &vars); err != nil {
+		return nil, fmt.Errorf("trigger vars of %s: %w", key, err)
+	}
+	return vars, nil
 }
 
 // HasLiveJobs reports whether any non-terminal run targets job or any job

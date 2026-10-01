@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -181,6 +182,9 @@ type TriggerYAML struct {
 	Timezone  string    `yaml:"timezone,omitempty"`
 	Allowlist []string  `yaml:"allowlist,omitempty"`
 	Rooms     []string  `yaml:"rooms,omitempty"`
+	Contains  textList  `yaml:"contains,omitempty"` // event only; any entry, case-insensitive
+	From      string    `yaml:"from,omitempty"`     // people | bots | anyone; event only
+	Replies   string    `yaml:"replies,omitempty"`  // continue | off; job event only
 	Disabled  bool      `yaml:"disabled,omitempty"` // keeps family index (B21)
 
 	// Removed keys. A set value is a parse error that names the fix.
@@ -189,6 +193,30 @@ type TriggerYAML struct {
 	Anchor         string `yaml:"anchor,omitempty" json:"-"`
 	Enabled        *bool  `yaml:"enabled,omitempty" json:"-"`
 	FollowupPrompt string `yaml:"followup_prompt,omitempty" json:"-"`
+}
+
+// textList is one string or a list of strings in YAML. One entry writes
+// back as a scalar.
+type textList []string
+
+func (l *textList) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		*l = textList{n.Value}
+		return nil
+	}
+	var list []string
+	if err := n.Decode(&list); err != nil {
+		return err
+	}
+	*l = list
+	return nil
+}
+
+func (l textList) MarshalYAML() (any, error) {
+	if len(l) == 1 {
+		return l[0], nil
+	}
+	return []string(l), nil
 }
 
 // removedKey returns the parse error of the first removed key that t sets.
@@ -526,6 +554,12 @@ type Trigger struct {
 	// Rooms is the room scope of an event trigger. Empty takes every room.
 	// Each entry is a room ID of the connector.
 	Rooms []string
+	// Contains takes an event whose text contains any entry, case-insensitive.
+	Contains []string
+	// From is FromPeople, FromBots, or FromAnyone. Empty is FromAnyone.
+	From string
+	// Replies is RepliesContinue or RepliesOff. Empty is RepliesOff.
+	Replies string
 	// Limit is the file value of an event trigger: N/<duration>, off, or
 	// empty for DefaultLimit. EffectiveLimit is the resolved value.
 	Limit          string
@@ -548,6 +582,9 @@ func (t *Trigger) UnmarshalYAML(n *yaml.Node) error {
 	if err != nil {
 		return err
 	}
+	if out[0].Continues() {
+		return errRepliesNotJob
+	}
 	*t = out[0]
 	return nil
 }
@@ -561,16 +598,31 @@ func (t Trigger) MarshalYAML() (any, error) {
 	raw := TriggerYAML{
 		Cron: t.Cron, Every: t.Every, Event: t.Event, Match: t.Match, Extract: t.Extract,
 		Limit: t.Limit, When: t.When, Timezone: t.Timezone,
-		Allowlist: t.Allowlist, Rooms: t.Rooms, Disabled: t.Disabled,
+		Allowlist: t.Allowlist, Rooms: t.Rooms, Contains: t.Contains, From: t.From, Replies: t.Replies,
+		Disabled: t.Disabled,
 	}
 	return raw, nil
 }
+
+// Continues reports whether a reply to a run continues the run (replies: continue).
+func (t Trigger) Continues() bool { return t.Event != "" && t.Replies == RepliesContinue }
 
 // DefaultLimit is the limit of an event trigger that sets none.
 const DefaultLimit = "15/10m"
 
 // LimitOff is the limit value that removes the limit.
 const LimitOff = "off"
+
+// Values of the event trigger keys from and replies.
+const (
+	FromPeople      = "people"
+	FromBots        = "bots"
+	FromAnyone      = "anyone"
+	RepliesContinue = "continue"
+	RepliesOff      = "off"
+)
+
+var errRepliesNotJob = errors.New(`"replies" applies only to a job trigger; an agent keeps its channel conversation`)
 
 // RateLimit returns the rate of an event trigger, or nil when the limit is
 // off or the trigger is not an event trigger.
@@ -650,6 +702,9 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	triggers, err := normalizeTriggers(fm.Triggers)
 	if err != nil {
 		return parseFail(filePath, hash, fmt.Errorf("triggers: %w", err))
+	}
+	if kindFromPath(filePath) == "agent" && slices.ContainsFunc(triggers, Trigger.Continues) {
+		return parseFail(filePath, hash, fmt.Errorf("triggers: %w", errRepliesNotJob))
 	}
 	if err := ValidateIfRunning(fm.Session.IfRunning); err != nil {
 		return parseFail(filePath, hash, fmt.Errorf("session: %w", err))
@@ -825,11 +880,28 @@ func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 				return nil, fmt.Errorf(`"rooms" applies only to an event trigger`)
 			case len(t.Allowlist) > 0:
 				return nil, fmt.Errorf(`"allowlist" applies only to an event trigger`)
+			case len(t.Contains) > 0:
+				return nil, fmt.Errorf(`"contains" applies only to an event trigger`)
+			case t.From != "":
+				return nil, fmt.Errorf(`"from" applies only to an event trigger`)
+			case t.Replies != "":
+				return nil, fmt.Errorf(`"replies" applies only to an event trigger`)
 			}
+		}
+		switch t.From {
+		case "", FromPeople, FromBots, FromAnyone:
+		default:
+			return nil, fmt.Errorf(`from %q: use %s, %s, or %s`, t.From, FromPeople, FromBots, FromAnyone)
+		}
+		switch t.Replies {
+		case "", RepliesContinue, RepliesOff:
+		default:
+			return nil, fmt.Errorf(`replies %q: use %s or %s`, t.Replies, RepliesContinue, RepliesOff)
 		}
 		tr := Trigger{
 			Raw: t, When: t.When, Match: t.Match, Extract: t.Extract,
 			Allowlist: uniqueEntries(t.Allowlist), Rooms: uniqueEntries(t.Rooms),
+			Contains: uniqueEntries(t.Contains), From: t.From, Replies: t.Replies,
 			Limit: t.Limit, Timezone: t.Timezone, Disabled: t.Disabled,
 		}
 		if t.Event != "" {

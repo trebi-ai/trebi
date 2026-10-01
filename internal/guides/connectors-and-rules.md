@@ -69,6 +69,8 @@ The events block has two protocols. `lines` (the default) reads one event per ou
 
 A trigger `allowlist` checks only the value at the events `identity` path. A connector with no identity fails every allowlist. The `email` connector compares the sender address without case. Every other connector compares the value exactly.
 
+A trigger `from` (`people`, `bots`, or `anyone`, the default) reads `sender.bot` of a `trebi-connector/1` event. A `lines` connector and an adapter that does not send `sender.bot` make every sender a person. A trigger `contains` tests the event `text`: what a person sees, with the readable parts of embeds and other rich content, one per line.
+
 A job or agent receives connector actions through `connectors:` (or the agent `kit: connectors`). A job list that is not empty replaces the kit list. `kit.mcp` is gone: trebi ignores it and doctor reports `kit_mcp_removed`; move the slugs to `kit.connectors`. A run with an MCP action needs a supported harness and runtime: claude, codex, and opencode on either runtime, and the ACP harnesses (copilot, cursor, gemini) on the CLI runtime. The CLI runtime asks the installed harness if it can take MCP servers; pi cannot. An unsupported pair fails the launch with `validation`, and doctor reports `kit_actions_unsupported` first. A resumed run keeps the actions of the run it resumes. Codex gets MCP secrets through the environment, never on the command line. For opencode, the injected servers merge into the `OPENCODE_CONFIG_CONTENT` of the job; an injected server wins on a name clash.
 
 `connector logs` (and `--follow`) blocks — **local only**; remote: poll `connector.logs`. `connector delete` is destructive — ask first.
@@ -101,6 +103,17 @@ trebi connector bind whatsapp <room> --workspace reports --operator assistant
 ```
 
 `connector login` prints each step (a code, a QR code, or a link) and waits for the user. Ask the user before you log out. `connector senders` lists the recent senders from the stored events; put an `identity` in the `allowlist` of an event trigger, and a room `id` in its `rooms`. `connector dependents` lists the triggers on the connector (disabled and inactive ones too) and the rooms that are bound to the assistant or an agent. `connector threads` answers 400 `unsupported` when the connector has no `threads` feature. `connector bind` sends the messages of a room to the assistant or to `agents/<name>` of a workspace; `--thread` binds one thread only. A notify route step names the connection slug and a room id: `trebi config set notify.route '[{"via":"whatsapp","to":"<room>"},{"via":"email"}]'`.
+
+## Conversations
+
+A job trigger with `replies: continue` keeps each conversation of a connector in one run session. The daemon finds the conversation root of each `trebi-connector/1` event: the thread, else the message that the event quotes or answers, else the whole DM. Per platform:
+
+- Discord and Slack: the thread. A thread id is the id of its start message, so the start message and its replies are one conversation.
+- Telegram: the topic, or the reply chain.
+- WhatsApp: the reply chain, or the whole DM.
+- Email: the thread root.
+
+A reply chain needs the `replies` channel feature: the adapter sets `reply_to` on a quoted reply. A follow-up run reads older messages with the history command of the connector (for example `discord-cli message list <channel_id>`). The daemon puts the connection, room, and thread in the prompt.
 
 ## Registry
 
@@ -162,11 +175,12 @@ trebi rules fire --connector slack --job my-job --workspace reports --match "e.c
 
 `--event-file` is **local only**; remote: pass `event` in input. `rules test` only evaluates. `rules fire` evaluates and enqueues on a match.
 
-Test a trigger against stored events. The checks run in trigger order: `--room` (the rooms the trigger takes), `--allowlist` (the senders), extract, then match. The result names the `stage` that stopped the event: `room`, `sender`, `extract`, or `match`.
+Test a trigger against stored events. The checks run in trigger order: `--room` (the rooms the trigger takes), `--allowlist` (the senders), `--from` (`people`, `bots`, or `anyone`), `--contains` (repeatable; the text must hold one entry), extract, then match. `--match` is optional. The result names the `stage` that stopped the event: `room`, `sender`, `from`, `contains`, `extract`, or `match`. On a match, `vars` holds the built-in vars of the event plus the extract vars. `--replies continue` sets `conversation_key` to the key of a job with `replies: continue`. `follow_up` is always false: the test treats each event as the first message of its conversation.
 
 ```bash
 trebi rules test --event-id <event-id> --room 120363430107848596@g.us --match "event.type === 'message'" --json
-trebi rules test-batch <event-id> <event-id> --allowlist 15551234567@s.whatsapp.net --match "true" --json
+trebi rules test --event-id <event-id> --from bots --contains failure --replies continue --json
+trebi rules test-batch <event-id> <event-id> --allowlist 15551234567@s.whatsapp.net --json
 ```
 
 `rules test-batch` takes at most 50 events.

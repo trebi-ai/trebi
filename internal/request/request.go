@@ -744,6 +744,8 @@ type AgentSpec struct {
 	Extract     string
 	Rooms       []string
 	Allowlist   []string
+	Contains    []string
+	From        string
 	Title       string
 	EmailAccept []string
 	Template    string
@@ -773,7 +775,7 @@ func (a AgentSpec) Build() HTTPRequest {
 		body["inputs"] = a.Inputs
 	}
 	if a.Event != "" {
-		body["on"] = eventOn(a.Event, a.Match, a.Extract, a.Rooms, a.Allowlist)
+		body["on"] = RuleTest{Match: a.Match, Extract: a.Extract, Rooms: a.Rooms, Allowlist: a.Allowlist, Contains: a.Contains, From: a.From}.on(a.Event)
 	}
 	return HTTPRequest{Method: "PUT", Path: BuildAgentGetPath(a.Workspace, a.Name), Body: body}
 }
@@ -1090,11 +1092,15 @@ func BuildSkillFileDelete(name, rel, ifMatch string) HTTPRequest {
 }
 
 // RuleTest is the trigger side of a rules test: the code and the scope.
+// Replies is "continue" or "off" and only changes the conversation key.
 type RuleTest struct {
 	Match     string
 	Extract   string
 	Rooms     []string
 	Allowlist []string
+	Contains  []string
+	From      string
+	Replies   string
 }
 
 // Build builds POST /v1/rules/test against a stored event (eventID) or a
@@ -1686,6 +1692,9 @@ type JobSpec struct {
 	Agent          string // short name; the file lands under agents/<agent>/
 	Rooms          []string
 	Allowlist      []string
+	Contains       []string
+	From           string
+	Replies        string
 }
 
 // Build renders the spec as POST /v1/jobs.
@@ -1712,7 +1721,7 @@ func (j JobSpec) body() map[string]any {
 		}
 	}
 	if j.Event != "" {
-		body["on"] = eventOn(j.Event, j.Match, j.Extract, j.Rooms, j.Allowlist)
+		body["on"] = RuleTest{Match: j.Match, Extract: j.Extract, Rooms: j.Rooms, Allowlist: j.Allowlist, Contains: j.Contains, From: j.From, Replies: j.Replies}.on(j.Event)
 	}
 	return body
 }
@@ -2634,20 +2643,14 @@ func connectorOverridePath(workspace, ref string) string {
 	return "/v1/workspaces/" + url.PathEscape(workspace) + "/connectors/" + url.PathEscape(ref)
 }
 
-// eventOn renders the on: body of a job or agent create. Empty fields stay out.
-func eventOn(event, match, extract string, rooms, allowlist []string) map[string]any {
-	on := map[string]any{"event": event}
-	if match != "" {
-		on["match"] = match
-	}
-	if extract != "" {
-		on["extract"] = extract
-	}
-	if len(rooms) > 0 {
-		on["rooms"] = rooms
-	}
-	if len(allowlist) > 0 {
-		on["allowlist"] = allowlist
+// on renders the on: body of a job or agent create. Empty fields stay out.
+func (t RuleTest) on(event string) map[string]any {
+	on := t.body()
+	on["event"] = event
+	for _, k := range []string{"match", "extract"} {
+		if on[k] == "" {
+			delete(on, k)
+		}
 	}
 	return on
 }
@@ -2659,6 +2662,14 @@ func (t RuleTest) body() map[string]any {
 	}
 	if len(t.Allowlist) > 0 {
 		body["allowlist"] = t.Allowlist
+	}
+	if len(t.Contains) > 0 {
+		body["contains"] = t.Contains
+	}
+	for k, v := range map[string]string{"from": t.From, "replies": t.Replies} {
+		if v != "" {
+			body[k] = v
+		}
 	}
 	return body
 }

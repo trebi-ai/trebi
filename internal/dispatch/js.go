@@ -25,10 +25,11 @@ type EvalResult struct {
 }
 
 // EvalMatch runs extract (optional) then match against event in a Goja VM.
-// event is bound as `event` (parsed object or {line: "..."}).
+// event is bound as `event` (parsed object or {line: "..."}). An empty
+// match matches.
 func EvalMatch(ctx context.Context, match, extract string, event any) EvalResult {
-	if match == "" {
-		return EvalResult{Error: "match is required"}
+	if match == "" && extract == "" {
+		return EvalResult{Matched: true}
 	}
 	vm := goja.New()
 	type result struct {
@@ -84,6 +85,10 @@ func evalMatchOn(vm *goja.Runtime, match, extract string, event any) EvalResult 
 				}
 			}
 		}
+	}
+	if match == "" {
+		res.Matched = true
+		return res
 	}
 	matched, err := runMatch(vm, match)
 	if err != nil {

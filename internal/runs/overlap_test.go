@@ -186,17 +186,8 @@ func TestIfRunningQueueDefault(t *testing.T) {
 
 func openRuns(t *testing.T) (*runs.Service, context.Context) {
 	t.Helper()
-	dir := t.TempDir()
-	home.SetBase(dir)
-	t.Setenv("TREBI_HOME", dir)
-	t.Setenv("TREBI_FAKE_HARNESS", "1")
-	t.Cleanup(func() { home.SetBase("") })
-	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	return runs.New(st, nil, nil), context.Background()
+	svc, _, ctx := openRunsStore(t)
+	return svc, ctx
 }
 
 // TestIfRunningPerConversation proves the overlap check is scoped to one
@@ -460,4 +451,122 @@ func TestContinueConversationCoalesces(t *testing.T) {
 	if outcome != runs.OverlapCoalesce || run.ID != live.ID {
 		t.Fatalf("outcome=%q run=%s: want coalesce into %s", outcome, run.ID, live.ID)
 	}
+}
+
+// TestContinueFollowUp proves a follow-up continues with no time limit: a
+// resume sends the message, and a fresh session gets the fresh prompt.
+func TestContinueFollowUp(t *testing.T) {
+	cases := []struct {
+		name       string
+		transcript bool
+		wantResume bool
+		wantPrompt string
+	}{
+		{name: "resume sends the message", transcript: true, wantResume: true, wantPrompt: "msg"},
+		{name: "session file missing", wantPrompt: "fresh"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, st, ctx := openRunsStore(t)
+			if tc.transcript {
+				dir := home.HarnessDir("fake")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "transcript.jsonl"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			prev, err := svc.Create(ctx, runs.CreateOpts{
+				WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+				ConversationKey: "r1/e1", SessionID: "sess-1", WorkingDir: t.TempDir(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.Terminate(ctx, prev.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+				t.Fatal(err)
+			}
+			// 60 days ago: a follow-up has no window.
+			old := time.Now().Add(-60 * 24 * time.Hour).UTC().Format(time.RFC3339Nano)
+			if _, err := st.DB().Exec(`UPDATE runs SET ended_at=? WHERE id=?`, old, prev.ID); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(t.TempDir(), "prompt")
+			run, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+				CreateOpts: runs.CreateOpts{
+					WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+					ConversationKey: "r1/e1", QueueID: "q-2",
+				},
+				Prompt: "job prompt", Conversation: true,
+				FollowUp:    &runs.FollowUp{Text: "msg", FreshPrompt: "fresh"},
+				FakeCommand: []string{"sh", "-c", `printf %s "$TREBI_FAKE_PROMPT" > ` + out + `; echo "$TREBI_RUN_COMPLETE"`},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resumed := run.ResumedFrom == prev.ID; resumed != tc.wantResume {
+				t.Fatalf("resumed_from=%q, want resume=%v", run.ResumedFrom, tc.wantResume)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for b, _ := os.ReadFile(out); len(b) == 0 && time.Now().Before(deadline); b, _ = os.ReadFile(out) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if b, _ := os.ReadFile(out); string(b) != tc.wantPrompt {
+				t.Fatalf("prompt = %q, want %q", b, tc.wantPrompt)
+			}
+		})
+	}
+}
+
+// TestConversationOpen proves the probe of the follow-up gate (plan A.9).
+func TestConversationOpen(t *testing.T) {
+	svc, st, ctx := openRunsStore(t)
+	open := func(key string, within time.Duration) bool {
+		t.Helper()
+		ok, err := svc.ConversationOpen(ctx, "ws", "demo", key, within)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if open("r1/e1", 0) {
+		t.Fatal("no run is an open conversation")
+	}
+	live, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo", Harness: "fake", ConversationKey: "r1/e1", Trigger: &runs.TriggerCapture{Vars: map[string]string{"text": "first"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !open("r1/e1", time.Hour) || open("r1/e2", 0) || open("r1", 0) {
+		t.Fatal("a live run opens only its own key")
+	}
+	if err := svc.Terminate(ctx, live.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := st.DB().Exec(`UPDATE runs SET ended_at=? WHERE id=?`, old, live.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !open("r1/e1", 0) || open("r1/e1", time.Hour) || !open("r1/e1", 3*time.Hour) {
+		t.Fatal("an ended run is open with no limit or inside the limit only")
+	}
+	vars, err := svc.FirstTriggerVars(ctx, "ws", "demo", "r1/e1")
+	if err != nil || vars["text"] != "first" {
+		t.Fatalf("first vars = %v %v", vars, err)
+	}
+}
+
+func openRunsStore(t *testing.T) (*runs.Service, *store.Store, context.Context) {
+	t.Helper()
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Setenv("TREBI_FAKE_HARNESS", "1")
+	t.Cleanup(func() { home.SetBase("") })
+	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return runs.New(st, nil, nil), st, context.Background()
 }

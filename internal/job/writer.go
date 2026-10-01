@@ -612,6 +612,9 @@ type EventSpec struct {
 	Extract   string
 	Rooms     []string
 	Allowlist []string
+	Contains  []string
+	From      string
+	Replies   string
 }
 
 // Render composes JOB.md text. It returns Content unchanged when set.
@@ -673,6 +676,7 @@ func (s Spec) triggers() []TriggerYAML {
 		out = append(out, TriggerYAML{
 			Event: s.On.Event, Match: s.On.Match, Extract: s.On.Extract,
 			Rooms: s.On.Rooms, Allowlist: s.On.Allowlist,
+			Contains: s.On.Contains, From: s.On.From, Replies: s.On.Replies,
 		})
 	}
 	return out

@@ -30,21 +30,27 @@ Run the rule pipeline again for one stored event. It writes no new event row, so
 - `id` (string, required): event id.
 
 ### rules_test
-Evaluate one event trigger against one event. No rule is recorded. The checks run in trigger order: `rooms`, `allowlist`, `extract`, then `match`. The reply carries `matched`, `stage` (the check that stopped the event: `room`, `sender`, `extract`, or `match`; empty on a match), `vars`, `extracted` (the extract output), `error`, and the `room` and `identity` of the event. Give `event_id` or `event`, not both.
-- `match` (string, required): match expression, for example `kind = 'mail'`.
+Evaluate one event trigger against one event. No rule is recorded. The checks run in trigger order: `rooms`, `allowlist`, `from`, `contains`, `extract`, then `match`. The reply carries `matched`, `stage` (the check that stopped the event: `room`, `sender`, `from`, `contains`, `extract`, or `match`; empty on a match), `follow_up` (always false here: the test treats the event as the first message), `conversation_key`, `vars`, `extracted` (the extract output), `error`, and the `room` and `identity` of the event. Give `event_id` or `event`, not both.
+- `match` (string, optional): match expression, for example `kind = 'mail'`. Empty matches every event that passes the other checks.
 - `extract` (string, optional): extract expression.
 - `rooms` (array, optional): room ids the trigger takes; empty takes every room.
 - `allowlist` (array, optional): sender ids the trigger takes; empty takes every sender.
+- `contains` (array, optional): words or phrases; the message text must hold one of them.
+- `from` (string, optional): `people`, `bots`, or `anyone` (default).
+- `replies` (string, optional): `continue` or `off`; `continue` gives the conversation key of a job that continues.
 - `event_id` (string, optional): a stored event id; the event payload, room, and sender come from the event log.
 - `event` (any, optional): a draft event payload. A `trebi-connector/1` event gives its `room.id` and `sender.id`.
 - `connector` (string, optional): connector of a draft `event`; `email` compares senders without case.
 
 ### rules_test_batch
 Evaluate one event trigger against up to 50 stored events, in order. The reply is `results`: one row per event with `event_id`, `matched`, `stage`, `vars`, `extracted`, and `error`. A missing event gives a row with the error `event not found`.
-- `match` (string, required): match expression.
+- `match` (string, optional): match expression.
 - `extract` (string, optional): extract expression.
 - `rooms` (array, optional): room ids the trigger takes.
 - `allowlist` (array, optional): sender ids the trigger takes.
+- `contains` (array, optional): words or phrases; the message text must hold one of them.
+- `from` (string, optional): `people`, `bots`, or `anyone`.
+- `replies` (string, optional): `continue` or `off`.
 - `event_ids` (array, required): stored event ids, at most 50.
 
 ### rules_fire

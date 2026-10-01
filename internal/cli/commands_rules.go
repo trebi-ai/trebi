@@ -61,6 +61,9 @@ func ruleGateFlags() []cli.Flag {
 		&cli.StringFlag{Name: "extract", Usage: "extract expression"},
 		&cli.StringSliceFlag{Name: "room", Usage: "room id the trigger takes (repeatable)"},
 		&cli.StringSliceFlag{Name: "allowlist", Usage: "sender id the trigger takes (repeatable)"},
+		&cli.StringSliceFlag{Name: "contains", Usage: "word or phrase the message text must hold, any of them (repeatable)"},
+		&cli.StringFlag{Name: "from", Usage: "senders the trigger takes: people, bots, or anyone (default)"},
+		&cli.StringFlag{Name: "replies", Usage: "continue or off; continue shows the conversation key"},
 	}
 }
 
@@ -68,6 +71,7 @@ func ruleTestOf(c *cli.Command) request.RuleTest {
 	return request.RuleTest{
 		Match: c.String("match"), Extract: c.String("extract"),
 		Rooms: c.StringSlice("room"), Allowlist: c.StringSlice("allowlist"),
+		Contains: c.StringSlice("contains"), From: c.String("from"), Replies: c.String("replies"),
 	}
 }
 

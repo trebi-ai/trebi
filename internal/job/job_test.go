@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -473,6 +474,58 @@ func TestTriggerYAML(t *testing.T) {
 	out, err = yaml.Marshal([]job.Trigger{{Family: "event", Event: "chat", Match: "x"}})
 	if err != nil || string(out) != "- event: chat\n  match: x\n" {
 		t.Fatalf("json-made marshal = %q %v", out, err)
+	}
+}
+
+func TestTriggerGateKeys(t *testing.T) {
+	t.Parallel()
+	parse := func(fm string) (*job.Job, error) {
+		return job.ParseBytes("/ws/x/JOB.md", []byte("---\n"+fm+"---\nhi\n"))
+	}
+	j, err := parse("triggers:\n  - event: chat\n    contains: failure\n    from: bots\n    replies: continue\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr := j.Triggers[0]; !slices.Equal(tr.Contains, []string{"failure"}) || tr.From != job.FromBots || !tr.Continues() {
+		t.Fatalf("scalar: %+v", tr)
+	}
+	if j.LaunchDefaults().ContinueMS != 0 {
+		t.Fatalf("continue = %d, want 0", j.LaunchDefaults().ContinueMS)
+	}
+	j, err = parse("triggers:\n  - event: chat\n    contains: [\" a \", b, a, \"\"]\n")
+	if err != nil || !slices.Equal(j.Triggers[0].Contains, []string{"a", "b"}) {
+		t.Fatalf("list: %+v %v", j, err)
+	}
+	for _, bad := range []string{
+		"  - cron: '0 9 * * *'\n    contains: x\n",
+		"  - every: 1h\n    from: bots\n",
+		"  - cron: '0 9 * * *'\n    replies: continue\n",
+		"  - event: chat\n    from: robots\n",
+		"  - event: chat\n    replies: always\n",
+	} {
+		if _, err := parse("triggers:\n" + bad); err == nil {
+			t.Errorf("%q: want a parse error", bad)
+		}
+	}
+	_, err = job.ParseBytes("/ws/agents/a/AGENT.md", []byte("---\ntriggers:\n  - event: chat\n    replies: continue\n---\nhi\n"))
+	if err == nil || !strings.Contains(err.Error(), `"replies" applies only to a job trigger`) {
+		t.Fatalf("agent replies: %v", err)
+	}
+	var list []job.Trigger
+	if err := yaml.Unmarshal([]byte("- event: chat\n  replies: continue\n"), &list); err == nil {
+		t.Fatal("assistant replies: want an error")
+	}
+	out, err := yaml.Marshal([]job.Trigger{{Family: "event", Event: "chat", Contains: []string{"failure"}, From: job.FromBots, Replies: job.RepliesContinue}})
+	if err != nil || string(out) != "- event: chat\n  contains: failure\n  from: bots\n  replies: continue\n" {
+		t.Fatalf("json-made marshal = %q %v", out, err)
+	}
+	j, err = parse("triggers:\n  - event: mail\n    contains: [a, b]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = yaml.Marshal(j.Triggers)
+	if err != nil || string(out) != "- event: mail\n  contains:\n    - a\n    - b\n" {
+		t.Fatalf("round trip = %q %v", out, err)
 	}
 }
 

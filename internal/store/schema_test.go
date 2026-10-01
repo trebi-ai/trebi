@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,5 +58,47 @@ func TestMigrationV32Handles(t *testing.T) {
 		if err := s.DB().QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil || n != 0 {
 			t.Errorf("%s rows = %d, %v; want 0", table, n, err)
 		}
+	}
+}
+
+// TestMigrationV36Conversations adds the conversation columns to a v35 DB.
+// The unique source index serves the parent lookup.
+func TestMigrationV36Conversations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v35.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyThrough(db, 35); err != nil {
+		t.Fatalf("v35 setup: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO events (id, connector, instance, received_at, trace_id, source_id)
+		VALUES ('e1', 'discord', 'c1', 't', 'tr', 's1')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenPath(path)
+	if err != nil {
+		t.Fatalf("open applies v36: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	var root sql.NullString
+	if err := s.DB().QueryRow(`SELECT COALESCE(root, source_id) FROM events WHERE instance='c1' AND source_id='s1'`).Scan(&root); err != nil || root.String != "s1" {
+		t.Fatalf("root = %v, %v", root, err)
+	}
+	var followUp int
+	if err := s.DB().QueryRow(`SELECT COUNT(follow_up) FROM event_queue`).Scan(&followUp); err != nil {
+		t.Fatalf("follow_up: %v", err)
+	}
+	var id, parent, notused int
+	var detail string
+	if err := s.DB().QueryRow(`EXPLAIN QUERY PLAN SELECT COALESCE(root, source_id) FROM events WHERE instance=? AND source_id=?`, "c1", "s1").
+		Scan(&id, &parent, &notused, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(detail, "idx_events_source") {
+		t.Fatalf("parent lookup plan = %q", detail)
 	}
 }

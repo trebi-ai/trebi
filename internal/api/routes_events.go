@@ -14,6 +14,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/job"
 )
 
 // eventRow is one scanned events table row.
@@ -483,21 +484,32 @@ type ruleGate struct {
 	Extract   string   `json:"extract"`
 	Rooms     []string `json:"rooms"`
 	Allowlist []string `json:"allowlist"`
+	From      string   `json:"from"`
+	Contains  []string `json:"contains"`
+	Replies   string   `json:"replies"`
 }
 
 func (g ruleGate) gate() connectors.Gate {
-	return connectors.Gate{Rooms: g.Rooms, Allowlist: g.Allowlist, Match: g.Match, Extract: g.Extract}
+	return connectors.Gate{
+		Rooms: g.Rooms, Allowlist: g.Allowlist, From: g.From, Contains: g.Contains,
+		Match: g.Match, Extract: g.Extract,
+	}
 }
 
-// ruleResult is the wire form of one gate result.
-func ruleResult(res connectors.GateResult) map[string]any {
+// ruleResult is the wire form of one gate result. The rule test has no job
+// context, so every event is the start of a conversation.
+func (g ruleGate) result(ev connectors.GateEvent, res connectors.GateResult) map[string]any {
 	vars := res.Vars
+	if res.Matched {
+		vars = ev.Vars(res.Vars)
+	}
 	if vars == nil {
 		vars = map[string]string{}
 	}
 	return map[string]any{
 		"matched": res.Matched, "stage": res.Stage, "vars": vars,
-		"extracted": res.Extracted, "error": res.Error,
+		"extracted": res.Extracted, "error": res.Error, "follow_up": res.FollowUp,
+		"conversation_key": ev.ConversationKey(g.Replies == job.RepliesContinue, res.Vars),
 	}
 }
 
@@ -532,7 +544,7 @@ func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		}
 		ev = connectors.DraftGateEvent(typ, body.Event)
 	}
-	out := ruleResult(ev.Eval(r.Context(), body.gate()))
+	out := body.result(ev, ev.Eval(r.Context(), body.gate()))
 	out["room"], out["identity"] = ev.Room, ev.Identity
 	writeJSON(w, http.StatusOK, out)
 }
@@ -563,12 +575,12 @@ func (s *Server) handleRulesTestBatch(w http.ResponseWriter, r *http.Request) {
 		ev, err := s.connectors.StoredGateEvent(r.Context(), id)
 		switch {
 		case errors.Is(err, connectors.ErrEventNotFound):
-			out = ruleResult(connectors.GateResult{Error: "event not found"})
+			out = body.result(connectors.GateEvent{}, connectors.GateResult{Error: "event not found"})
 		case err != nil:
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		default:
-			out = ruleResult(ev.Eval(r.Context(), g))
+			out = body.result(ev, ev.Eval(r.Context(), g))
 		}
 		out["event_id"] = id
 		results = append(results, out)
@@ -652,7 +664,7 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 		OnIndex:     body.OnIndex,
 		EventID:     eid,
 		EventRaw:    string(raw),
-		Vars:        res.Vars,
+		Vars:        connectors.DraftGateEvent(typ, body.Event).Vars(res.Vars),
 		Status:      dispatch.QueuePending,
 		TraceID:     trace,
 	}

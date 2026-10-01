@@ -109,6 +109,14 @@ type Service struct {
 	trigMu     sync.Mutex
 	trigFP     string
 	trigByConn map[string][]cachedTrig
+
+	convs conversationProbe // nil: no conversation is open
+}
+
+// conversationProbe reports whether a job conversation is open (plan A.9).
+type conversationProbe interface {
+	// within is the limit after the last run; 0 is no limit.
+	ConversationOpen(ctx context.Context, workspaceID, job, key string, within time.Duration) (bool, error)
 }
 
 // cachedTrig is one event trigger in the index. The index keeps inactive
@@ -132,6 +140,7 @@ type NativeMeta struct {
 	Thread   string
 	Sender   string
 	Type     string
+	Text     string // what a person reads; contains tests it
 }
 
 // eventRecord is one persisted ingress event. connector is the type and
@@ -151,6 +160,16 @@ type eventRecord struct {
 	room       string
 	thread     string
 	catchUp    bool
+	text       string
+	replyTo    string
+	root       string // the conversation root (plan A.7)
+	protocol   bool   // a trebi-connector/1 event; it gets the built-in vars
+	bot        bool
+	self       bool
+	roomName   string
+	roomKind   string
+	ts         string
+	slug       string // the connection slug at dispatch
 }
 
 // ConnectionPatch updates a connection. A present field replaces the stored
@@ -197,6 +216,13 @@ func (s *Service) WithUserHome(dir string) *Service {
 // WithVersion sets the daemon version that initialize sends.
 func (s *Service) WithVersion(v string) *Service {
 	s.version = v
+	return s
+}
+
+// WithConversations sets the probe that finds open job conversations, so a
+// reply continues its run (replies: continue).
+func (s *Service) WithConversations(p conversationProbe) *Service {
+	s.convs = p
 	return s
 }
 

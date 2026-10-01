@@ -37,6 +37,11 @@ triggers:
       run: "git -C /repo status --porcelain"
       match: "out.trim() === ''"
       timeout: 10s
+  - event: discord
+    rooms: ["1053685470757916764"]
+    from: bots
+    contains: failure
+    replies: continue
 skills: [my-skill]
 description: What this job does.
 ---
@@ -45,12 +50,19 @@ The prompt body. This is what the harness receives.
 ```
 
 - `triggers[]` is the trebi form. Do not use a top-level `schedule:`.
-- `match` and `extract` are JavaScript, evaluated over the event as `e`.
-- An event trigger checks the event in this order: `rooms` (room IDs of the connector; empty takes every room), `allowlist` (sender IDs; empty takes every sender), `extract`, then `match`. A room miss records `no_match`. A sender miss records `blocked`.
+- `match` and `extract` are JavaScript, evaluated over the event as `e`. Both are optional. An event trigger with neither takes every event that passes the other checks.
+- An event trigger checks the event in this order: `rooms` (room IDs of the connector; empty takes every room), `allowlist` (sender IDs; empty takes every sender), `from`, `contains`, `extract`, then `match`. A sender miss records `blocked`. Every other miss records `no_match`.
+- `from` is `people`, `bots`, or `anyone` (default). It reads `sender.bot` of the event. A connector that does not send it makes every sender a person.
+- `contains` is one string or a list. The trigger takes the event when the message text contains any entry. Case does not matter. Prefer `contains` and `from` to a `match` expression.
+- `contains`, `from`, and `replies` apply only to an `event` entry. On a `cron` or `every` entry each one is a parse error.
+- Each `trebi-connector/1` event gives the prompt built-in vars: `{{text}}`, `{{sender}}`, `{{sender_id}}`, `{{room}}`, `{{room_name}}`, `{{thread}}`, `{{message_id}}`, `{{reply_to}}`, and `{{connection}}`. An `extract` var with the same name wins.
 - `when` is an inline shell gate: the job runs only when `match` over `out` is true.
 - `limit` sets how often an event trigger starts a run: `N/<duration>`, or `off`. The default is `15/10m`. Events above the limit wait in order. When 10 events wait, Trebi drops new events and opens one inbox item.
 - `session.if_running` tells Trebi what to do when a run of the job is still active: `queue` (default) starts the new run after the active run, `skip` drops it, and `replace` stops the active run.
-- `session.continue` (for example `7d`) keeps a conversation going after its run ends. An event with the same conversation key continues the session of the last run when that run ended inside the window. Set `conversation_key` in the trigger `extract` (for example a thread id). Without it, all events of one room share a conversation.
+- `session.continue` (for example `7d`) keeps a conversation going after its run ends. An event with the same conversation key continues the session of the last run when that run ended inside the window. Set `conversation_key` in the trigger `extract` (for example a thread id). Without it, all events of one thread, or of one room with no thread, share a conversation.
+- `replies: continue` (job triggers only; an agent rejects it, because an agent keeps its own channel conversation) sends each later message of a conversation to the run that the first message started. The conversation is the thread, the reply chain, or the whole DM (`trebi guide connectors-and-rules`). A later message is a follow-up: it skips `from`, `contains`, and `match`, but `rooms`, `allowlist`, and `extract` still apply. A bot message in an open conversation does not run. The conversation stays open with no time limit. Set `session.continue` to add a limit; after it, the next message must pass the full trigger again as a new start.
+- A follow-up resumes the session of the newest run with the text "New message in this conversation from {{sender}}:" and the message, then one line that names the connection, room, and thread for the history command of the connector. When the session cannot resume (session file gone, failed run, other harness), a fresh session gets the job prompt with the vars of the first run, the last 20 stored messages, that line, and the message.
+- Known effects of `replies: continue`: the harness deletes old session files, so a late reply gets a fresh session that sees only the messages, not the earlier tool output. A resumed session keeps the job prompt of its first run; a prompt edit reaches only a fresh session. In a DM each message after the first is a follow-up, so `contains` and `match` do not apply again in that DM.
 - Only `harness` (name, or a `{name, model, effort}` map), `triggers`, `envset` (a name or a list of names, applied in order), `env` (inline map), and `session.idle_timeout` are canonical frontmatter; keep other fields minimal.
 
 ## Create, inspect, validate

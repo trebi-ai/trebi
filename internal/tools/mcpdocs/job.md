@@ -60,6 +60,9 @@ structured fields cover the job.
 - `extract` (string, optional): event extract expression, with `event`.
 - `rooms` (string, optional): comma list of room ids, with `event`; the trigger takes only events from these rooms. Empty takes every room.
 - `allowlist` (string, optional): comma list of sender ids, with `event`; the trigger takes only events from these senders. `connector.senders` lists them.
+- `contains` (string, optional): comma list of words or phrases, with `event`; the message text must hold one of them. Case does not matter.
+- `from` (string, optional): `people`, `bots`, or `anyone` (default), with `event`; which senders the trigger takes.
+- `replies` (string, optional): `continue` or `off`, with `event`. `continue` sends each later message of the same conversation to the run that the first message started, also when that run ended.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first job.
 - `agent` (string, optional): agent short name. The job lands in `agents/<agent>/` and the name becomes the full relative path.
 
@@ -81,6 +84,9 @@ compose a definition yourself. The response is `{ok, error, markdown}`, where
 - `extract` (string, optional): event extract expression, with `event`.
 - `rooms` (string, optional): comma list of room ids, with `event`.
 - `allowlist` (string, optional): comma list of sender ids, with `event`.
+- `contains` (string, optional): comma list of words or phrases, with `event`.
+- `from` (string, optional): `people`, `bots`, or `anyone`, with `event`.
+- `replies` (string, optional): `continue` or `off`, with `event`.
 - `workspace` (string, optional): workspace id.
 - `idempotency_key` (string, optional): accepted and ignored; validation writes nothing.
 

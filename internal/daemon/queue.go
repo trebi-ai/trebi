@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -221,6 +222,11 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		return
 	}
 	prompt := queuePrompt(item, j)
+	var followUp *runs.FollowUp
+	if item.FollowUp && kind == runs.KindJob {
+		followUp = c.followUp(ctx, item, j)
+		prompt = followUp.Text
+	}
 	coalesceText := prompt
 	convID := c.conversationID(ctx, item.WorkspaceID, item.ConversationKey)
 	convKey := item.ConversationKey
@@ -300,6 +306,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		// A message of a conversation goes into its live run (plan A.6).
 		Conversation: item.ConversationKey != "",
 		ContinueMS:   continueMS,
+		FollowUp:     followUp,
 		IfRunning:    d.IfRunning,
 		Env:          d.Env,
 		Model:        d.Model,
@@ -660,6 +667,88 @@ func (c *ControlPlane) harnessBlocked(ctx context.Context, harness string) dispa
 		return dispatch.BlockAuthMissing
 	}
 	return ""
+}
+
+// The texts of a follow-up (plan A.11, A.16).
+const (
+	followUpTemplate = "New message in this conversation from {{sender}}:\n\n{{text}}"
+	lookupLine       = "Earlier messages: connection {{connection}}, room {{room}}, thread {{thread}}. Read more with the history command of the connector."
+	recapN           = 20
+	recapCut         = 500
+)
+
+// followUp builds the texts of a follow-up item. A resumed session gets the
+// message and the lookup line. A fresh session also gets the job prompt with
+// the vars of the first run, and a recap of the stored messages.
+func (c *ControlPlane) followUp(ctx context.Context, item *dispatch.QueueItem, j *job.Job) *runs.FollowUp {
+	msg := fillTemplate(followUpTemplate, item.Vars)
+	tmpl := lookupLine
+	if item.Vars["thread"] == "" {
+		tmpl = strings.Replace(tmpl, ", thread {{thread}}", "", 1)
+	}
+	lookup := fillTemplate(tmpl, item.Vars)
+	first, err := c.Runs.FirstTriggerVars(ctx, item.WorkspaceID, item.Job, item.ConversationKey)
+	if err != nil {
+		c.log.Warn("follow-up first vars", "queue_id", item.ID, "error", err)
+	}
+	if first == nil {
+		first = item.Vars
+	}
+	parts := []string{expandVars(j.Prompt, first)}
+	if recap := c.recap(ctx, item); recap != "" {
+		parts = append(parts, recap)
+	}
+	parts = append(parts, lookup, msg)
+	return &runs.FollowUp{Text: msg + "\n\n" + lookup, FreshPrompt: strings.Join(parts, "\n\n")}
+}
+
+// recap formats the last stored messages of the conversation of item, not
+// the item event itself. Lines from the connected account read "you".
+func (c *ControlPlane) recap(ctx context.Context, item *dispatch.QueueItem) string {
+	if c.Connectors == nil || item.EventID == "" {
+		return ""
+	}
+	var instance, root string
+	if err := c.Store.DB().QueryRowContext(ctx, `SELECT instance, COALESCE(root,'') FROM events WHERE id=?`, item.EventID).
+		Scan(&instance, &root); err != nil || root == "" {
+		return ""
+	}
+	lines, err := c.Connectors.Recap(ctx, instance, root, recapN+1)
+	if err != nil {
+		c.log.Warn("follow-up recap", "queue_id", item.ID, "error", err)
+		return ""
+	}
+	var b strings.Builder
+	n := 0
+	for _, l := range lines {
+		if l.EventID == item.EventID || n == recapN {
+			continue
+		}
+		n++
+		who := l.Sender
+		if l.Self {
+			who = "you"
+		}
+		text := l.Text
+		if r := []rune(text); len(r) > recapCut {
+			text = string(r[:recapCut]) + "…"
+		}
+		fmt.Fprintf(&b, "\n%s: %s", who, text)
+	}
+	if n == 0 {
+		return ""
+	}
+	return "Messages in this conversation so far:" + b.String()
+}
+
+// fillTemplate replaces each {{var}} of a fixed template in one pass, so a
+// value that holds {{x}} stays as it is.
+func fillTemplate(tmpl string, vars map[string]string) string {
+	pairs := make([]string, 0, 2*len(vars))
+	for k, v := range vars {
+		pairs = append(pairs, "{{"+k+"}}", v)
+	}
+	return strings.NewReplacer(pairs...).Replace(tmpl)
 }
 
 // queuePrompt picks the item prompt (job prompt as fallback) and expands vars.

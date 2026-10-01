@@ -453,7 +453,7 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 	if err != nil {
 		return request.JobSpec{}, err
 	}
-	scope, err := in.strs("rooms", "allowlist")
+	scope, err := in.strs("rooms", "allowlist", "contains", "from", "replies")
 	if err != nil {
 		return request.JobSpec{}, err
 	}
@@ -462,12 +462,13 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 		Model: m[0], Effort: m[1],
 		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4], IdempotencyKey: t[5],
 		Agent: t[6], Rooms: commaList(scope[0]), Allowlist: commaList(scope[1]),
+		Contains: commaList(scope[2]), From: scope[3], Replies: scope[4],
 	}, nil
 }
 
 // ruleTest reads the trigger side of event.rules_test and rules_test_batch.
 func (in Input) ruleTest() (request.RuleTest, error) {
-	v, err := in.head("match", "extract")
+	v, err := in.strs("match", "extract")
 	if err != nil {
 		return request.RuleTest{}, err
 	}
@@ -479,7 +480,15 @@ func (in Input) ruleTest() (request.RuleTest, error) {
 	if err != nil {
 		return request.RuleTest{}, err
 	}
-	return request.RuleTest{Match: v[0], Extract: v[1], Rooms: rooms, Allowlist: allow}, nil
+	contains, err := in.strList("contains")
+	if err != nil {
+		return request.RuleTest{}, err
+	}
+	g, err := in.strs("from", "replies")
+	if err != nil {
+		return request.RuleTest{}, err
+	}
+	return request.RuleTest{Match: v[0], Extract: v[1], Rooms: rooms, Allowlist: allow, Contains: contains, From: g[0], Replies: g[1]}, nil
 }
 
 // agentSpec reads the PUT agent body of agent.create.
@@ -496,7 +505,7 @@ func (in Input) agentSpec() (request.AgentSpec, error) {
 	if err != nil {
 		return request.AgentSpec{}, err
 	}
-	scope, err := in.strs("rooms", "allowlist")
+	scope, err := in.strs("rooms", "allowlist", "contains", "from")
 	if err != nil {
 		return request.AgentSpec{}, err
 	}
@@ -509,6 +518,7 @@ func (in Input) agentSpec() (request.AgentSpec, error) {
 		Name: v[0], Workspace: v[1], Content: v[2], Prompt: v[3], Harness: v[4], Description: v[5],
 		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4],
 		Rooms: commaList(scope[0]), Allowlist: commaList(scope[1]),
+		Contains: commaList(scope[2]), From: scope[3],
 		Title: m[0], Template: m[1], EmailAccept: accept, Inputs: inputs,
 	}, nil
 }

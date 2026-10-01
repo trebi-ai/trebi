@@ -600,6 +600,9 @@ type jobEventTrigger struct {
 	Extract   string   `json:"extract"`
 	Rooms     []string `json:"rooms"`
 	Allowlist []string `json:"allowlist"`
+	Contains  []string `json:"contains"`
+	From      string   `json:"from"`
+	Replies   string   `json:"replies"`
 }
 
 // spec maps the body trigger to the writer form; nil stays nil.
@@ -607,7 +610,10 @@ func (t *jobEventTrigger) spec() *job.EventSpec {
 	if t == nil {
 		return nil
 	}
-	return &job.EventSpec{Event: t.Event, Match: t.Match, Extract: t.Extract, Rooms: t.Rooms, Allowlist: t.Allowlist}
+	return &job.EventSpec{
+		Event: t.Event, Match: t.Match, Extract: t.Extract, Rooms: t.Rooms, Allowlist: t.Allowlist,
+		Contains: t.Contains, From: t.From, Replies: t.Replies,
+	}
 }
 
 // markdown renders the JOB.md text of the request. A body with neither text nor

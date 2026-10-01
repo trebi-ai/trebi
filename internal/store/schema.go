@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 35
+const SchemaVersion = 36
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1002,5 +1002,15 @@ UPDATE runs SET connectors_json = NULL WHERE connectors_json IS NOT NULL AND con
 		// v35: the recent senders of a connection read events by instance,
 		// newest first (plan 2026-10-01 B.3).
 		`CREATE INDEX idx_events_instance ON events(instance, received_at DESC);`,
+		// v36: channel conversations (plan 2026-10-01 channel conversations
+		// E.1). The unique source index serves the parent lookup. text keeps
+		// the readable text of a native event for a redispatch.
+		`
+ALTER TABLE events ADD COLUMN text TEXT;
+ALTER TABLE events ADD COLUMN reply_to TEXT;
+ALTER TABLE events ADD COLUMN root TEXT;
+CREATE INDEX idx_events_instance_root ON events(instance, root, received_at);
+ALTER TABLE event_queue ADD COLUMN follow_up INTEGER NOT NULL DEFAULT 0;
+`,
 	}
 }

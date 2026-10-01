@@ -1,11 +1,14 @@
 package connectors
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -45,8 +48,10 @@ func (s *Service) InjectEvent(ctx context.Context, ref string, event any) (strin
 			return "", &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "event", Message: "must be a trebi-connector/1 event with id and type"}}}
 		}
 		rec = protocolRecord(c.Type, c.ID, ev, false)
+		rec.root = s.root(ctx, c.ID, ev)
 	} else if err == nil && r.Manifest.Events != nil {
 		fillLinesMeta(&rec, r.Manifest.Events)
+		rec.text = string(raw)
 	}
 	inserted, err := s.recordEvent(ctx, rec, recordOpts{})
 	if err != nil {
@@ -77,30 +82,45 @@ func newRecord(connector, instance, raw string, payload any) eventRecord {
 // It writes no new events row, so it works for every connector, native ones
 // included, and for an event whose source id is already stored.
 func (s *Service) Redispatch(ctx context.Context, eventID string) error {
-	var rec eventRecord
-	var sourceID, identity, room, thread, sender, eventType sql.NullString
-	var catchUp int
-	err := s.st.DB().QueryRowContext(ctx, `SELECT connector, instance, COALESCE(raw_json,''), COALESCE(trace_id,''),
-		source_id, identity, room, thread, sender, event_type, catch_up FROM events WHERE id=?`, eventID).
-		Scan(&rec.connector, &rec.instance, &rec.raw, &rec.trace, &sourceID, &identity, &room, &thread, &sender, &eventType, &catchUp)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("%w: %s", ErrEventNotFound, eventID)
-	}
+	rec, err := s.loadRecord(ctx, eventID)
 	if err != nil {
 		return err
+	}
+	rec.receivedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	s.dispatchEvent(ctx, rec)
+	return nil
+}
+
+// loadRecord reads one stored event. A stored trebi-connector/1 event gets
+// its typed fields back from raw_json. A missing id is ErrEventNotFound.
+func (s *Service) loadRecord(ctx context.Context, eventID string) (eventRecord, error) {
+	rec := eventRecord{id: eventID}
+	var sourceID, identity, room, thread, sender, eventType, text, replyTo, root sql.NullString
+	var catchUp int
+	err := s.st.DB().QueryRowContext(ctx, `SELECT connector, instance, COALESCE(raw_json,''), COALESCE(trace_id,''),
+		source_id, identity, room, thread, sender, event_type, catch_up, text, reply_to, root, received_at FROM events WHERE id=?`, eventID).
+		Scan(&rec.connector, &rec.instance, &rec.raw, &rec.trace, &sourceID, &identity, &room, &thread, &sender, &eventType,
+			&catchUp, &text, &replyTo, &root, &rec.receivedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return rec, fmt.Errorf("%w: %s", ErrEventNotFound, eventID)
+	}
+	if err != nil {
+		return rec, err
 	}
 	if rec.instance == "" {
 		rec.instance = rec.connector
 	}
-	rec.id = eventID
-	rec.receivedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	rec.sourceID, rec.identity = sourceID.String, identity.String
 	rec.room, rec.thread = room.String, thread.String
 	rec.sender, rec.eventType = sender.String, eventType.String
+	rec.text, rec.replyTo, rec.root = text.String, replyTo.String, root.String
 	rec.catchUp = catchUp != 0
 	rec.payload = decodeStored(rec.raw)
-	s.dispatchEvent(ctx, rec)
-	return nil
+	var ev protocol.Event
+	if !manifest.Reserved(rec.connector) && decodeStrict([]byte(rec.raw), &ev) == nil && ev.ID != "" && ev.Type != "" {
+		rec.fillProtocol(ev)
+	}
+	return rec, nil
 }
 
 // decodeStored decodes a stored raw_json value with numbers kept exact. A
@@ -124,6 +144,7 @@ func (s *Service) InjectNative(ctx context.Context, name string, payload any, me
 	rec.sourceID, rec.identity = meta.SourceID, meta.Identity
 	rec.room, rec.thread = meta.Room, meta.Thread
 	rec.sender, rec.eventType = meta.Sender, meta.Type
+	rec.text, rec.root = meta.Text, cmp.Or(meta.Thread, meta.SourceID)
 	inserted, err := s.recordEvent(ctx, rec, recordOpts{})
 	if err != nil {
 		return "", err
@@ -155,6 +176,7 @@ func (s *Service) ingest(ctx context.Context, p *proc, line string, catchUp bool
 	raw, _ := json.Marshal(payload)
 	rec := newRecord(p.res.Type, p.id, string(raw), payload)
 	rec.catchUp = catchUp
+	rec.text = line
 	fillLinesMeta(&rec, ev)
 	s.store(ctx, p, rec, true)
 }
@@ -164,21 +186,83 @@ func (s *Service) ingest(ctx context.Context, p *proc, line string, catchUp bool
 func protocolRecord(connector, instance string, ev protocol.Event, catchUp bool) eventRecord {
 	raw, _ := json.Marshal(ev)
 	rec := newRecord(connector, instance, string(raw), decodeStored(string(raw)))
-	rec.sourceID, rec.eventType, rec.catchUp = ev.ID, ev.Type, catchUp
+	rec.catchUp = catchUp
+	rec.fillProtocol(ev)
+	rec.root = eventRoot(ev, "")
+	return rec
+}
+
+// fillProtocol sets the typed fields of a trebi-connector/1 event.
+func (r *eventRecord) fillProtocol(ev protocol.Event) {
+	r.protocol = true
+	r.sourceID, r.eventType, r.ts = ev.ID, ev.Type, ev.TS
+	r.text, r.replyTo = ev.Text, ev.ReplyTo
 	if ev.Room != nil {
-		rec.room = ev.Room.ID
+		r.room, r.roomName, r.roomKind = ev.Room.ID, ev.Room.Name, ev.Room.Kind
 	}
 	if ev.Thread != nil {
-		rec.thread = ev.Thread.ID
+		r.thread = ev.Thread.ID
 	}
 	if ev.Sender != nil {
-		rec.identity = ev.Sender.ID
-		rec.sender = ev.Sender.Name
-		if rec.sender == "" {
-			rec.sender = ev.Sender.ID
-		}
+		r.identity = ev.Sender.ID
+		r.sender = cmp.Or(ev.Sender.Name, ev.Sender.ID)
+		r.bot, r.self = ev.Sender.Bot, ev.Sender.Self
 	}
-	return rec
+}
+
+// vars is the built-in var set of a protocol event (plan A.12). Other
+// events have none.
+func (r eventRecord) vars() map[string]string {
+	if !r.protocol {
+		return nil
+	}
+	return map[string]string{
+		"text": r.text, "sender": r.sender, "sender_id": r.identity,
+		"room": r.room, "room_name": r.roomName, "thread": r.thread,
+		"message_id": r.sourceID, "reply_to": r.replyTo, "connection": r.slug,
+	}
+}
+
+// conversationKey is the lane key of the event (plan A.8). With continues,
+// it is <room>/<root>, or the room alone when the root is the room. Else it
+// is <room>/<thread>, or the room.
+func (r eventRecord) conversationKey(continues bool) string {
+	if continues && r.root != "" {
+		if r.root == r.room {
+			return r.room
+		}
+		return r.room + "/" + r.root
+	}
+	if r.thread != "" {
+		return r.room + "/" + r.thread
+	}
+	return r.room
+}
+
+// root is the conversation root of a protocol event (plan A.7). A reply to
+// a stored message takes the root of that message.
+func (s *Service) root(ctx context.Context, instance string, ev protocol.Event) string {
+	parent := ""
+	if ev.ReplyTo != "" && (ev.Thread == nil || ev.Thread.ID == "") {
+		// A missing parent row is normal: the parent is older than the store.
+		_ = s.st.DB().QueryRowContext(ctx, `SELECT COALESCE(root, source_id) FROM events WHERE instance=? AND source_id=?`,
+			instance, ev.ReplyTo).Scan(&parent)
+	}
+	return eventRoot(ev, parent)
+}
+
+// eventRoot is the root rule of plan A.7. parent is the root of the stored
+// message that ev replies to, or empty.
+func eventRoot(ev protocol.Event, parent string) string {
+	switch {
+	case ev.Thread != nil && ev.Thread.ID != "":
+		return ev.Thread.ID
+	case ev.ReplyTo != "":
+		return cmp.Or(parent, ev.ReplyTo)
+	case ev.Room != nil && ev.Room.Kind == protocol.RoomDM:
+		return ev.Room.ID
+	}
+	return ev.ID
 }
 
 // ingestProtocol records one typed event of a protocol instance (Part D.3).
@@ -197,6 +281,7 @@ func (s *Service) ingestProtocol(ctx context.Context, p *proc, ev protocol.Event
 		return
 	}
 	rec := protocolRecord(p.res.Type, p.id, ev, catchUp)
+	rec.root = s.root(ctx, p.id, ev)
 	self := ev.Type == manifest.EventMessage && ev.Sender != nil && ev.Sender.Self
 	if s.store(ctx, p, rec, !self) && ev.Room != nil {
 		s.touchThread(ctx, p.id, ev)
@@ -305,12 +390,13 @@ func (s *Service) recordEvent(ctx context.Context, rec eventRecord, opts recordO
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.Exec(`INSERT INTO events
 			(id, connector, instance, received_at, summary, raw_json, trace_id, source_id, identity,
-			room, thread, sender, event_type, catch_up)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			room, thread, sender, event_type, catch_up, text, reply_to, root)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT (instance, source_id) WHERE source_id IS NOT NULL DO NOTHING`,
 			rec.id, name, rec.instance, rec.receivedAt, summary, rec.raw, rec.trace,
 			store.NullStr(rec.sourceID), store.NullStr(rec.identity), store.NullStr(rec.room),
-			store.NullStr(rec.thread), store.NullStr(rec.sender), store.NullStr(rec.eventType), boolInt(rec.catchUp))
+			store.NullStr(rec.thread), store.NullStr(rec.sender), store.NullStr(rec.eventType), boolInt(rec.catchUp),
+			store.NullStr(rec.text), store.NullStr(rec.replyTo), store.NullStr(rec.root))
 		if err != nil {
 			return err
 		}
@@ -360,6 +446,7 @@ func (s *Service) dispatchEvent(ctx context.Context, ev eventRecord) {
 	if slug == "" {
 		return
 	}
+	ev.slug = slug
 	for _, t := range s.triggersFor(ctx, slug) {
 		if s.disabledIn(t.row.WorkspaceID, slug) {
 			continue
@@ -452,13 +539,32 @@ func triggerFingerprint(jobs []workspaces.JobRow, assistant []workspaces.Assista
 	return b.String()
 }
 
-// dispatchTrigger gates one trigger (room, sender, extract, match) and
-// enqueues. Policy is checked at the claim, and the launch records the fire.
+// dispatchTrigger gates one trigger (room, sender, from, contains,
+// extract, match) and enqueues. Policy is checked at the claim, and the
+// launch records the fire.
 func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row workspaces.JobRow, j *job.Job, tr job.Trigger) {
 	if s.st.IsDraining() {
 		return
 	}
-	res := GateFor(tr, ev.connector).Eval(ctx, ev.room, ev.identity, ev.payload)
+	in := GateInput{Room: ev.room, Identity: ev.identity, Text: ev.text, Bot: ev.bot}
+	continues := tr.Continues() && row.Kind == dispatch.KindJob
+	key := ev.conversationKey(continues)
+	if continues && ev.root != "" && ev.root != ev.sourceID && s.convs != nil {
+		within := time.Duration(j.LaunchDefaults().ContinueMS) * time.Millisecond
+		open, err := s.convs.ConversationOpen(ctx, row.WorkspaceID, j.Name, key, within)
+		if err != nil {
+			s.log.Warn("conversation lookup", "job", j.Name, "error", err)
+			s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeError), "", ev.receivedAt)
+			return
+		}
+		if open && ev.bot {
+			// A bot reply in an open conversation is not a follow-up (plan A.9).
+			s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeNoMatch), "", ev.receivedAt)
+			return
+		}
+		in.FollowUp = open
+	}
+	res := GateFor(tr, ev.connector).Eval(ctx, in, ev.payload)
 	if !res.Matched {
 		outcome := dispatch.OutcomeNoMatch
 		switch {
@@ -471,24 +577,26 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(outcome), "", ev.receivedAt)
 		return
 	}
-	item := &dispatch.QueueItem{
-		Connector:   ev.instance,
-		WorkspaceID: row.WorkspaceID,
-		Job:         j.Name,
-		Kind:        row.Kind,
-		OnIndex:     tr.Index,
-		EventID:     ev.id,
-		EventRaw:    ev.raw,
-		Vars:        res.Vars,
-		Status:      dispatch.QueuePending,
-		TraceID:     ev.trace,
+	vars := ev.vars()
+	if vars != nil || res.Vars != nil {
+		vars = mergeVars(vars, res.Vars)
 	}
-	if ck, ok := res.Vars["conversation_key"]; ok && ck != "" {
-		item.ConversationKey = ck
-	} else if ev.thread != "" {
-		item.ConversationKey = ev.room + "/" + ev.thread
-	} else if ev.room != "" {
-		item.ConversationKey = ev.room
+	if ck := res.Vars["conversation_key"]; ck != "" {
+		key = ck
+	}
+	item := &dispatch.QueueItem{
+		Connector:       ev.instance,
+		WorkspaceID:     row.WorkspaceID,
+		Job:             j.Name,
+		Kind:            row.Kind,
+		OnIndex:         tr.Index,
+		ConversationKey: key,
+		FollowUp:        res.FollowUp,
+		EventID:         ev.id,
+		EventRaw:        ev.raw,
+		Vars:            vars,
+		Status:          dispatch.QueuePending,
+		TraceID:         ev.trace,
 	}
 	err := s.queue.Enqueue(ctx, item)
 	if errors.Is(err, dispatch.ErrLaneFull) {
@@ -504,6 +612,53 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 		return
 	}
 	s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeQueued), item.ID, ev.receivedAt)
+}
+
+// mergeVars copies base, then over on top: an extract var wins over a
+// built-in var.
+func mergeVars(base, over map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+len(over))
+	maps.Copy(out, base)
+	maps.Copy(out, over)
+	return out
+}
+
+// RecapLine is one stored message of a conversation.
+type RecapLine struct {
+	EventID string
+	Sender  string
+	Text    string
+	Self    bool
+	At      time.Time
+}
+
+// Recap returns the last n stored messages with this root, oldest first.
+func (s *Service) Recap(ctx context.Context, instance, root string, n int) ([]RecapLine, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT id, COALESCE(sender,''), COALESCE(text,''), COALESCE(raw_json,''), received_at
+		FROM events WHERE instance=? AND root=? ORDER BY id DESC LIMIT ?`, instance, root, n)
+	if err != nil {
+		return nil, fmt.Errorf("recap %s: %w", root, err)
+	}
+	defer rows.Close()
+	var out []RecapLine
+	for rows.Next() {
+		var l RecapLine
+		var raw, at string
+		if err := rows.Scan(&l.EventID, &l.Sender, &l.Text, &raw, &at); err != nil {
+			return nil, err
+		}
+		l.At, _ = time.Parse(time.RFC3339Nano, at) // a bad time reads as zero
+		var ev protocol.Event
+		if json.Unmarshal([]byte(raw), &ev) == nil && ev.Sender != nil {
+			l.Self = ev.Sender.Self
+			if t, err := time.Parse(time.RFC3339Nano, ev.TS); err == nil {
+				l.At = t
+			}
+		}
+		out = append(out, l)
+	}
+	slices.Reverse(out)
+	return out, rows.Err()
 }
 
 // insertOutcome records one event_outcomes row (best-effort, logged on

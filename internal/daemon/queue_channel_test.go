@@ -13,6 +13,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -157,5 +158,105 @@ func TestChannelPointerIsWorkspaceScoped(t *testing.T) {
 	}
 	if again != first {
 		t.Fatalf("second ensure=%s want %s", again, first)
+	}
+}
+
+// TestJobFollowUpPrompt proves the follow-up texts (plan A.11): a fresh
+// session gets the job prompt with the first vars, the recap, the lookup
+// line, and the new message.
+func TestJobFollowUpPrompt(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Setenv("TREBI_FAKE_HARNESS", "1")
+	out := filepath.Join(dir, "prompt")
+	t.Setenv("TREBI_FAKE_HARNESS_CMD", `printf %s "$TREBI_FAKE_PROMPT" > `+out+`; echo "$TREBI_RUN_COMPLETE"`)
+	t.Cleanup(func() { home.SetBase("") })
+
+	jobDir := filepath.Join(dir, "ws", "deploy")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\nharness: fake\ntriggers:\n  - event: chat\n    replies: continue\n---\n\nInvestigate {{text}}.\n"
+	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	cp := daemon.New(st, daemon.Options{QueueInterval: 30 * time.Millisecond})
+	chat, err := cp.Connectors.Create(ctx, connectors.Connection{Type: "chat", Slug: "chat", From: connectors.FromInline, Manifest: &manifest.Manifest{
+		Schema: manifest.SchemaID, Name: "chat", Title: "Chat", Description: "Test chat", Version: "1.0.0",
+		Events: &manifest.Events{
+			Protocol: manifest.ProtocolConnector, Command: "sleep 60",
+			Types: []manifest.EventType{{Type: "message"}},
+		},
+		Channel: &manifest.Channel{},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := cp.Workspaces.Add(ctx, filepath.Join(dir, "ws"), "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, e := range []struct{ id, sender, text, raw string }{
+		{"evt-1", "ann", "the deploy", `{"sender":{"id":"u1"}}`},
+		{"evt-2", "me", "on it", `{"sender":{"id":"u0","self":true}}`},
+		{"evt-3", "bob", "thanks", `{"sender":{"id":"u2"}}`},
+	} {
+		if _, err := st.DB().ExecContext(ctx, `INSERT INTO events
+			(id, connector, instance, received_at, summary, raw_json, trace_id, room, sender, text, root, source_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			e.id, "chat", chat.ID, now, "", e.raw, "tr", "r1", e.sender, e.text, "m1", e.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := cp.Runs.Create(ctx, runs.CreateOpts{
+		WorkspaceID: ws.ID, Job: "deploy", Harness: "fake", ConversationKey: "r1/m1",
+		Trigger: &runs.TriggerCapture{Vars: map[string]string{"text": "the deploy"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.Runs.Terminate(ctx, first.ID, runs.StatusFailed, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	item := &dispatch.QueueItem{
+		Connector: chat.ID, WorkspaceID: ws.ID, Job: "deploy", Kind: "job",
+		ConversationKey: "r1/m1", FollowUp: true, EventID: "evt-3", EventRaw: "{}",
+		Vars:   map[string]string{"text": "thanks", "sender": "bob", "room": "r1", "connection": "chat", "thread": ""},
+		Status: dispatch.QueuePending,
+	}
+	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+	if status, _, _ := waitQueue(t, st, item.ID, func(s, _, _ string) bool { return s == "done" }); status != "done" {
+		t.Fatalf("item status=%s want done", status)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	b, _ := os.ReadFile(out)
+	for ; len(b) == 0 && time.Now().Before(deadline); b, _ = os.ReadFile(out) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	want := "Investigate the deploy.\n\n" +
+		"Messages in this conversation so far:\nann: the deploy\nyou: on it\n\n" +
+		"Earlier messages: connection chat, room r1. Read more with the history command of the connector.\n\n" +
+		"New message in this conversation from bob:\n\nthanks"
+	if string(b) != want {
+		t.Fatalf("prompt =\n%s\nwant\n%s", b, want)
 	}
 }

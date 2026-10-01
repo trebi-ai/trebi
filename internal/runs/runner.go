@@ -134,6 +134,15 @@ type LaunchOpts struct {
 	ContinueMS int64
 	// BypassOverlap launches next to a live run. Only resume paths set it.
 	BypassOverlap bool
+	// FollowUp continues the newest run of the conversation with no time
+	// limit when ContinueMS is 0 (plan A.11). It replaces Prompt.
+	FollowUp *FollowUp
+}
+
+// FollowUp is a message that continues a conversation (plan A.11).
+type FollowUp struct {
+	Text        string // the prompt when the session resumes
+	FreshPrompt string // the prompt when the launch starts a new session
 }
 
 // Values of session.if_running.
@@ -264,8 +273,14 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 		outcome = oc
 	}
 	var fallback map[string]string
-	if opts.Conversation && opts.ContinueMS > 0 && opts.ResumeSessionID == "" {
+	if opts.Conversation && opts.ResumeSessionID == "" && (opts.ContinueMS > 0 || opts.FollowUp != nil) {
 		fallback = s.continueConversation(ctx, &opts)
+	}
+	if f := opts.FollowUp; f != nil {
+		opts.Prompt = f.FreshPrompt
+		if opts.ResumeSessionID != "" {
+			opts.Prompt = f.Text
+		}
 	}
 
 	if opts.SessionID == "" && opts.ResumeSessionID == "" {
@@ -294,6 +309,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 
 // continueConversation points opts at the session of the newest finished run
 // of its conversation when that run ended inside the session.continue window.
+// A ContinueMS of 0 has no window (a follow-up).
 // It returns the run event detail when a session was due but cannot continue.
 func (s *Service) continueConversation(ctx context.Context, opts *LaunchOpts) map[string]string {
 	rows, err := s.List(ctx, ListOpts{
@@ -319,7 +335,7 @@ func (s *Service) continueConversation(ctx context.Context, opts *LaunchOpts) ma
 	default:
 		return nil
 	}
-	if prev.EndedAt == nil || time.Since(*prev.EndedAt) > time.Duration(opts.ContinueMS)*time.Millisecond {
+	if prev.EndedAt == nil || (opts.ContinueMS > 0 && time.Since(*prev.EndedAt) > time.Duration(opts.ContinueMS)*time.Millisecond) {
 		return nil
 	}
 	if opts.Harness != "" && prev.Harness != opts.Harness {

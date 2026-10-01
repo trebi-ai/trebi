@@ -25,7 +25,7 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | agent | a folder-scoped `AGENT.md` at `agents/<name>/`; owns the jobs inside that folder, kind=agent |
 | conversation | a chat thread with the assistant; the CLI/UI are channels onto it |
 | connector | one external system with up to three capabilities: actions (an MCP server or CLI commands for agent runs), events (a supervised process that produces trigger events), and a channel (a conversation transport) |
-| trigger | a rule on a job: `cron`, `every`, or `event` from a connector |
+| trigger | a rule on a job: `cron`, `every`, or `event` from a connector. An event trigger filters with `rooms`, `allowlist`, `from` (people, bots, anyone), `contains` (words in the message), and optional `match`; `replies: continue` sends later messages of a conversation to the same run |
 | skill | a stored `SKILL.md` the harness can load |
 | request | a decision a job run asks a person for (confirm, review, choose, form). The run ends its turn as `parked` and continues with the answer |
 | inbox | the queue you drain: approvals, requests, failures, health, watchdog |

@@ -152,7 +152,7 @@ func New(st *store.Store, opts Options) *Server {
 		lic = license.New(opts.Ext.License)
 	}
 	sk := skills.New(st)
-	conn := connectors.New(st, ws, sk)
+	conn := connectors.New(st, ws, sk).WithConversations(r)
 	cl := cloudlink.New(st)
 	l := launch.NewLauncher(ws, r)
 	s := &Server{

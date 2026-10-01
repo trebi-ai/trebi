@@ -54,6 +54,8 @@ Create one agent. Give `prompt` and the daemon composes the document, or give `c
 - `extract` (string, optional): event extract expression, with `event`.
 - `rooms` (string, optional): comma list of room ids, with `event`; the trigger takes only events from these rooms. Empty takes every room.
 - `allowlist` (string, optional): comma list of sender ids, with `event`; the trigger takes only events from these senders. `connector.senders` lists them.
+- `contains` (string, optional): comma list of words or phrases, with `event`; the message text must hold one of them. Case does not matter.
+- `from` (string, optional): `people`, `bots`, or `anyone` (default), with `event`; which senders the trigger takes.
 
 ### set
 Replace the document of one agent. For an agent run writing its own document, this returns a pending human proposal instead of writing.

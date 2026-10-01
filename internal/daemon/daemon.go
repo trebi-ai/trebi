@@ -211,7 +211,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	pol := dispatch.NewPolicy()
 	sk := skills.New(st)
 	catalog := registry.NewLive(nil)
-	connector := connectors.New(st, ws, sk).WithUserHome(harness.UserHome()).WithVersion(opts.Version).
+	connector := connectors.New(st, ws, sk).WithUserHome(harness.UserHome()).WithVersion(opts.Version).WithConversations(r).
 		WithInstall(connectors.InstallConfig{Catalog: catalog})
 	r.WithActions(connector)
 	lic := opts.License

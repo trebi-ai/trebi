@@ -2054,3 +2054,173 @@ func countEvents(t *testing.T, st *store.Store) int {
 	}
 	return n
 }
+
+// openProbe reports every conversation as open and records the keys.
+type openProbe struct {
+	mu   sync.Mutex
+	keys []string
+}
+
+func (p *openProbe) ConversationOpen(_ context.Context, _, _, key string, _ time.Duration) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.keys = append(p.keys, key)
+	return true, nil
+}
+
+// TestConnectorsConversations proves the root rule, the follow-up gate,
+// the bot reply rule, the built-in vars, and the recap (plan A.7 to A.11).
+func TestConnectorsConversations(t *testing.T) {
+	st, ws, svc := openStack(t)
+	ctx := context.Background()
+	probe := &openProbe{}
+	svc.WithConversations(probe)
+
+	wsPath := filepath.Join(home.Base(), "ws")
+	if err := os.MkdirAll(filepath.Join(wsPath, "deploy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\nharness: fake\ntriggers:\n  - event: chat\n    contains: deploy\n    replies: continue\n---\n\nRun.\n"
+	if err := os.WriteFile(filepath.Join(wsPath, "deploy", "JOB.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Add(ctx, wsPath, "conv-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+
+	r1 := &protocol.Room{ID: "r1", Name: "ops"}
+	msg := func(id, sender, text, replyTo string, bot bool) protocol.Event {
+		return protocol.Event{
+			ID: id, Type: "message", TS: "2026-10-01T10:00:00Z", Room: r1,
+			Sender: &protocol.Sender{ID: sender, Name: sender, Bot: bot}, Text: text, ReplyTo: replyTo,
+		}
+	}
+	sb := &fakeadapter.Sandbox{
+		Result: protocol.InitializeResult{Login: []string{protocol.StepQR}},
+		Events: []protocol.Event{
+			msg("e1", "ann", "please deploy", "", false),
+			msg("e2", "bob", "thanks", "e1", false),
+			msg("e3", "ci", "done", "e1", true),
+			msg("e4", "ann", "hello", "", false),
+			msg("e5", "ann", "and staging?", "e2", false),
+		},
+		LoggedIn: true,
+	}
+	path := filepath.Join(t.TempDir(), "sandbox.json")
+	if err := sb.WriteFile(path); err != nil {
+		t.Fatal(err)
+	}
+	e := inline("chat", func(m *manifest.Manifest) {
+		m.Events = &manifest.Events{Protocol: manifest.ProtocolConnector, Command: `"` + os.Args[0] + `"`, Types: []manifest.EventType{{Type: "message"}}}
+		m.Channel = &manifest.Channel{}
+	})
+	e.Inputs = map[string]string{fakeadapter.Env: "sandbox:" + path}
+	if _, err := svc.Create(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(ctx, "chat"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Stop("chat") })
+	waitUntil(t, 5*time.Second, func() bool {
+		var n int
+		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes`).Scan(&n) // retried until the deadline
+		return n == 5
+	}, "not every event has an outcome")
+
+	roots := map[string]string{}
+	rows, err := st.DB().Query(`SELECT source_id, root FROM events WHERE connector='chat'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id, root string
+		if err := rows.Scan(&id, &root); err != nil {
+			t.Fatal(err)
+		}
+		roots[id] = root
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"e1": "e1", "e2": "e1", "e3": "e1", "e4": "e4", "e5": "e1"}; !reflect.DeepEqual(roots, want) {
+		t.Fatalf("roots = %v, want %v", roots, want)
+	}
+
+	outcomes := map[string]string{}
+	rows, err = st.DB().Query(`SELECT e.source_id, o.outcome FROM event_outcomes o JOIN events e ON e.id = o.event_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id, outcome string
+		if err := rows.Scan(&id, &outcome); err != nil {
+			t.Fatal(err)
+		}
+		outcomes[id] = outcome
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	// e2 and e5 skip contains as follow-ups; the bot reply e3 and the
+	// unrelated e4 do not run.
+	if want := map[string]string{"e1": "queued", "e2": "queued", "e3": "no_match", "e4": "no_match", "e5": "queued"}; !reflect.DeepEqual(outcomes, want) {
+		t.Fatalf("outcomes = %v, want %v", outcomes, want)
+	}
+
+	type item struct {
+		key      string
+		followUp bool
+		vars     map[string]string
+	}
+	var items []item
+	rows, err = st.DB().Query(`SELECT conversation_key, follow_up, vars_json FROM event_queue ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var it item
+		var raw string
+		if err := rows.Scan(&it.key, &it.followUp, &raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(raw), &it.vars); err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 || items[0].followUp || !items[1].followUp || !items[2].followUp {
+		t.Fatalf("items = %+v", items)
+	}
+	for _, it := range items {
+		if it.key != "r1/e1" {
+			t.Fatalf("key = %q", it.key)
+		}
+	}
+	if v := items[1].vars; v["text"] != "thanks" || v["sender"] != "bob" || v["room_name"] != "ops" || v["reply_to"] != "e1" || v["connection"] != "chat" {
+		t.Fatalf("vars = %v", v)
+	}
+
+	var instance string
+	if err := st.DB().QueryRow(`SELECT instance FROM events WHERE source_id='e1'`).Scan(&instance); err != nil {
+		t.Fatal(err)
+	}
+	recap, err := svc.Recap(ctx, instance, "e1", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, l := range recap {
+		texts = append(texts, l.Sender+": "+l.Text)
+	}
+	if want := []string{"bob: thanks", "ci: done", "ann: and staging?"}; !reflect.DeepEqual(texts, want) {
+		t.Fatalf("recap = %v, want %v", texts, want)
+	}
+}
