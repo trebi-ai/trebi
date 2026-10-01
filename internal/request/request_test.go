@@ -834,9 +834,17 @@ func TestBuildWorkspaceAndMemoryAndRules(t *testing.T) {
 	if req.Body != nil {
 		t.Fatalf("mem clear must carry no body: %+v", req.Body)
 	}
-	req = BuildRulesTest("true", "x", map[string]any{"a": 1})
+	req = RuleTest{Match: "true", Extract: "x"}.Build("", "", map[string]any{"a": 1})
 	if req.Method != "POST" || req.Path != "/v1/rules/test" {
 		t.Fatalf("rules test %+v", req)
+	}
+	req = RuleTest{Match: "true", Rooms: []string{"r1"}}.Build("01E", "", nil)
+	if b := req.Body.(map[string]any); b["event_id"] != "01E" || b["event"] != nil || len(b["rooms"].([]string)) != 1 {
+		t.Fatalf("rules test by id %+v", req)
+	}
+	req = RuleTest{Match: "true"}.BuildBatch([]string{"01A", "01B"})
+	if req.Path != "/v1/rules/test-batch" || len(req.Body.(map[string]any)["event_ids"].([]string)) != 2 {
+		t.Fatalf("rules test batch %+v", req)
 	}
 	req = BuildRulesFire("mail", "ws", "job", "true", "", map[string]any{"a": 1}, 0)
 	if req.Path != "/v1/rules/fire" {
@@ -1309,5 +1317,21 @@ func TestOutboxBuilders(t *testing.T) {
 		if tc.req.Method+" "+tc.req.Path != tc.want {
 			t.Fatalf("%+v, want %s", tc.req, tc.want)
 		}
+	}
+}
+
+func TestSpecEventScope(t *testing.T) {
+	t.Parallel()
+	job := JobSpec{Name: "n", Workspace: "ws1", Prompt: "p", Event: "whatsapp", Rooms: []string{"r1"}, Allowlist: []string{"u1"}}.Build()
+	agent := AgentSpec{Name: "a", Workspace: "ws1", Prompt: "p", Event: "whatsapp", Rooms: []string{"r1"}, Allowlist: []string{"u1"}}.Build()
+	for _, req := range []HTTPRequest{job, agent} {
+		b, _ := json.Marshal(req.Body)
+		if !strings.Contains(string(b), `"on":{"allowlist":["u1"],"event":"whatsapp","rooms":["r1"]}`) {
+			t.Fatalf("%s %s", req.Path, b)
+		}
+	}
+	bare, _ := json.Marshal(JobSpec{Name: "n", Event: "mail"}.Build().Body)
+	if !strings.Contains(string(bare), `"on":{"event":"mail"}`) {
+		t.Fatalf("bare %s", bare)
 	}
 }

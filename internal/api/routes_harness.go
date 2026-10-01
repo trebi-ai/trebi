@@ -85,8 +85,9 @@ func (s *Server) handleHarnessEnsure(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "home": dir, "ensured": true})
 }
 
-// handleHarnessModels lists the models a harness CLI reports (cli source) or
-// answers none, so the UI keeps a free-text input.
+// handleHarnessModels lists the models of a harness: the CLI list (cli
+// source) or the list trebi ships (static source). Else it answers none, so
+// the UI keeps a free-text input.
 func (s *Server) handleHarnessModels(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !harness.Known(name) {

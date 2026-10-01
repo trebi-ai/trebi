@@ -486,3 +486,34 @@ func getConnector(t *testing.T, do func(string, string, any) (int, map[string]an
 	}
 	return row
 }
+
+// TestConnectorThreadsGuard proves a connector without the threads feature
+// answers 400 unsupported on the threads route and on a thread bind.
+func TestConnectorThreadsGuard(t *testing.T) {
+	do := startConnectorAPI(t)
+	def := inlineEntry("flat", map[string]any{
+		"events":  map[string]any{"command": "sleep 30", "protocol": "trebi-connector/1", "types": []map[string]any{{"type": "message"}}},
+		"channel": map[string]any{"features": []string{"typing"}},
+	})
+	if code, body := do("POST", "/v1/connectors", def); code != 201 {
+		t.Fatalf("create %d %v", code, body)
+	}
+	code, body := do("GET", "/v1/connectors/flat/rooms/r1/threads", nil)
+	e, _ := body["error"].(map[string]any)
+	if code != 400 || e["code"] != "unsupported" || e["message"] != "connector flat has no threads" {
+		t.Fatalf("threads %d %v", code, body)
+	}
+	code, body = do("POST", "/v1/workspaces", map[string]any{"path": t.TempDir(), "name": "flatws"})
+	if code != 201 {
+		t.Fatalf("workspace %d %v", code, body)
+	}
+	ws, _ := body["id"].(string)
+	code, body = do("POST", "/v1/connectors/flat/rooms/r1/bind", map[string]any{"workspace": ws, "thread": "t1"})
+	e, _ = body["error"].(map[string]any)
+	if code != 400 || e["code"] != "unsupported" {
+		t.Fatalf("thread bind %d %v", code, body)
+	}
+	if code, body = do("POST", "/v1/connectors/flat/rooms/r1/bind", map[string]any{"workspace": ws}); code != 200 {
+		t.Fatalf("room bind %d %v", code, body)
+	}
+}

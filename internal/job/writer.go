@@ -606,9 +606,11 @@ type Spec struct {
 
 // EventSpec is the on: field of a Spec.
 type EventSpec struct {
-	Event   string
-	Match   string
-	Extract string
+	Event     string
+	Match     string
+	Extract   string
+	Rooms     []string
+	Allowlist []string
 }
 
 // Render composes JOB.md text. It returns Content unchanged when set.
@@ -667,7 +669,10 @@ func (s Spec) triggers() []TriggerYAML {
 		out = append(out, TriggerYAML{Every: s.Every})
 	}
 	if s.On != nil && s.On.Event != "" {
-		out = append(out, TriggerYAML{Event: s.On.Event, Match: s.On.Match, Extract: s.On.Extract})
+		out = append(out, TriggerYAML{
+			Event: s.On.Event, Match: s.On.Match, Extract: s.On.Extract,
+			Rooms: s.On.Rooms, Allowlist: s.On.Allowlist,
+		})
 	}
 	return out
 }

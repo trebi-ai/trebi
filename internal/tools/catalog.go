@@ -453,12 +453,33 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 	if err != nil {
 		return request.JobSpec{}, err
 	}
+	scope, err := in.strs("rooms", "allowlist")
+	if err != nil {
+		return request.JobSpec{}, err
+	}
 	return request.JobSpec{
 		Name: v[0], Workspace: v[1], Content: v[2], Prompt: v[3], Harness: v[4], Description: v[5],
 		Model: m[0], Effort: m[1],
 		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4], IdempotencyKey: t[5],
-		Agent: t[6],
+		Agent: t[6], Rooms: commaList(scope[0]), Allowlist: commaList(scope[1]),
 	}, nil
+}
+
+// ruleTest reads the trigger side of event.rules_test and rules_test_batch.
+func (in Input) ruleTest() (request.RuleTest, error) {
+	v, err := in.head("match", "extract")
+	if err != nil {
+		return request.RuleTest{}, err
+	}
+	rooms, err := in.strList("rooms")
+	if err != nil {
+		return request.RuleTest{}, err
+	}
+	allow, err := in.strList("allowlist")
+	if err != nil {
+		return request.RuleTest{}, err
+	}
+	return request.RuleTest{Match: v[0], Extract: v[1], Rooms: rooms, Allowlist: allow}, nil
 }
 
 // agentSpec reads the PUT agent body of agent.create.
@@ -475,6 +496,10 @@ func (in Input) agentSpec() (request.AgentSpec, error) {
 	if err != nil {
 		return request.AgentSpec{}, err
 	}
+	scope, err := in.strs("rooms", "allowlist")
+	if err != nil {
+		return request.AgentSpec{}, err
+	}
 	var accept []string
 	if raw, _ := in.str("accept"); raw != "" {
 		accept = strings.Split(raw, ",")
@@ -483,6 +508,7 @@ func (in Input) agentSpec() (request.AgentSpec, error) {
 	return request.AgentSpec{
 		Name: v[0], Workspace: v[1], Content: v[2], Prompt: v[3], Harness: v[4], Description: v[5],
 		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4],
+		Rooms: commaList(scope[0]), Allowlist: commaList(scope[1]),
 		Title: m[0], Template: m[1], EmailAccept: accept, Inputs: inputs,
 	}, nil
 }
@@ -1913,6 +1939,28 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildConnectorRoomsPath(c, v[0], v[1], v[2], limit)), nil
 			}),
+			"senders": act("GET /v1/connectors/{ref}/senders", Input{"connector": "whatsapp", "q": "ana"}, func(in Input) (request.HTTPRequest, error) {
+				c, err := in.connectorRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				q, err := in.str("q")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				limit, _, err := in.num("limit")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildConnectorSendersPath(c, q, limit)), nil
+			}),
+			"dependents": act("GET /v1/connectors/{ref}/dependents", Input{"connector": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
+				c, err := in.connectorRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildConnectorDependentsPath(c)), nil
+			}),
 			"threads": act("GET /v1/connectors/{ref}/rooms/{room}/threads", Input{"connector": "whatsapp", "room": "123@g.us"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				if err != nil {
@@ -1966,11 +2014,29 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"show":      getReq("GET /v1/events/{id}", "id", "01ABC", request.BuildEventGet),
 			"retrigger": idPost("POST /v1/events/{id}/retrigger", "id", "01ABC", request.BuildEventsRetrigger),
 			"rules_test": act("POST /v1/rules/test", Input{"match": "kind = 'mail'", "event": map[string]any{"kind": "mail"}}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("match", "extract")
+				t, err := in.ruleTest()
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildRulesTest(v[0], v[1], in.value("event")), nil
+				v, err := in.strs("event_id", "connector")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return t.Build(v[0], v[1], in.value("event")), nil
+			}),
+			"rules_test_batch": act("POST /v1/rules/test-batch", Input{"match": "kind = 'mail'", "event_ids": []any{"01ABC"}}, func(in Input) (request.HTTPRequest, error) {
+				t, err := in.ruleTest()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				ids, err := in.strList("event_ids")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if len(ids) == 0 {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "event_ids")
+				}
+				return t.BuildBatch(ids), nil
 			}),
 			"rules_fire": act("POST /v1/rules/fire", Input{"connector": "mail", "job": "nightly-sync", "match": "kind = 'mail'"}, func(in Input) (request.HTTPRequest, error) {
 				req, err := in.reqStrs("connector", "job", "match")
@@ -2761,4 +2827,15 @@ func buildRequestCreate(in Input) (request.HTTPRequest, error) {
 		return request.HTTPRequest{}, err
 	}
 	return request.BuildRequestCreate(b), nil
+}
+
+// commaList splits a comma list input; blank entries drop out.
+func commaList(raw string) []string {
+	var out []string
+	for _, e := range strings.Split(raw, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			out = append(out, e)
+		}
+	}
+	return out
 }

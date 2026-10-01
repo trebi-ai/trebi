@@ -368,7 +368,21 @@ func (s *Service) dispatchEvent(ctx context.Context, ev eventRecord) {
 	}
 }
 
+// triggersFor lists the live event triggers of one connector.
 func (s *Service) triggersFor(ctx context.Context, connector string) []cachedTrig {
+	var out []cachedTrig
+	for _, t := range s.triggerIndex(ctx)[connector] {
+		if t.live() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// triggerIndex maps each connector to its event triggers, inactive jobs and
+// disabled triggers included. The index is cached on a fingerprint of the
+// job index and the assistant blocks.
+func (s *Service) triggerIndex(ctx context.Context) map[string][]cachedTrig {
 	jobs, err := s.ws.ListJobs(ctx, "")
 	if err != nil {
 		return nil
@@ -377,44 +391,23 @@ func (s *Service) triggersFor(ctx context.Context, connector string) []cachedTri
 	// job index (plan E).
 	var assistant []workspaces.AssistantTriggerRow
 	assistant, _ = s.ws.AssistantTriggerRows(ctx)
-	var b strings.Builder
-	for _, row := range jobs {
-		if !row.Active {
-			continue
-		}
-		b.WriteString(row.WorkspaceID)
-		b.WriteByte('/')
-		b.WriteString(row.Name)
-		b.WriteByte('@')
-		b.WriteString(row.Hash)
-		b.WriteByte(';')
-	}
-	for _, at := range assistant {
-		b.WriteString(at.WorkspaceID)
-		b.WriteString("/assistant@")
-		b.WriteString(at.Hash)
-		b.WriteByte(';')
-	}
-	fp := b.String()
+	fp := triggerFingerprint(jobs, assistant)
 	s.trigMu.Lock()
 	defer s.trigMu.Unlock()
 	if fp == s.trigFP && s.trigByConn != nil {
-		return s.trigByConn[connector]
+		return s.trigByConn
 	}
 	by := map[string][]cachedTrig{}
 	for _, row := range jobs {
-		if !row.Active {
-			continue
-		}
 		j, err := job.ParseFile(row.Path)
 		if err != nil || j == nil {
 			continue
 		}
 		for _, tr := range j.Triggers {
-			if tr.Family != "event" || tr.Disabled || tr.Event == "" {
+			if tr.Family != "event" || tr.Event == "" {
 				continue
 			}
-			by[tr.Event] = append(by[tr.Event], cachedTrig{row: row, j: j, tr: tr})
+			by[tr.Event] = append(by[tr.Event], cachedTrig{row: row, j: j, tr: tr, active: row.Active, disabled: tr.Disabled})
 		}
 	}
 	for _, at := range assistant {
@@ -424,36 +417,58 @@ func (s *Service) triggersFor(ctx context.Context, connector string) []cachedTri
 		}
 		j := &job.Job{Name: "assistant"}
 		for _, tr := range at.Triggers {
-			if tr.Family != "event" || tr.Disabled || tr.Event == "" {
+			if tr.Family != "event" || tr.Event == "" {
 				continue
 			}
-			by[tr.Event] = append(by[tr.Event], cachedTrig{row: row, j: j, tr: tr})
+			by[tr.Event] = append(by[tr.Event], cachedTrig{row: row, j: j, tr: tr, active: true, disabled: tr.Disabled})
 		}
 	}
 	s.trigFP = fp
 	s.trigByConn = by
-	return by[connector]
+	return by
 }
 
-// dispatchTrigger gates one trigger (allowlist, match) and enqueues. Policy
-// is checked at the claim, and the launch records the fire.
+// triggerFingerprint changes when a job file, the active flag of a job, or
+// an assistant block changes.
+func triggerFingerprint(jobs []workspaces.JobRow, assistant []workspaces.AssistantTriggerRow) string {
+	var b strings.Builder
+	for _, row := range jobs {
+		b.WriteString(row.WorkspaceID)
+		b.WriteByte('/')
+		b.WriteString(row.Name)
+		b.WriteByte('@')
+		b.WriteString(row.Hash)
+		if !row.Active {
+			b.WriteString("!off")
+		}
+		b.WriteByte(';')
+	}
+	for _, at := range assistant {
+		b.WriteString(at.WorkspaceID)
+		b.WriteString("/assistant@")
+		b.WriteString(at.Hash)
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
+// dispatchTrigger gates one trigger (room, sender, extract, match) and
+// enqueues. Policy is checked at the claim, and the launch records the fire.
 func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row workspaces.JobRow, j *job.Job, tr job.Trigger) {
 	if s.st.IsDraining() {
 		return
 	}
-	// Ingress allowlist (security layer 1): the declared identity is the only
-	// field checked. A connector with no identity fails every allowlist.
-	if len(tr.Allowlist) > 0 && !allowlistPasses(tr.Allowlist, ev.identity, ev.connector == NativeEmail) {
-		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeBlocked), "", ev.receivedAt)
-		return
-	}
-	res := dispatch.EvalMatch(ctx, tr.Match, tr.Extract, ev.payload)
-	if res.Error != "" || !res.Matched {
-		outcome := string(dispatch.OutcomeNoMatch)
-		if res.Error != "" {
-			outcome = string(dispatch.OutcomeError)
+	res := GateFor(tr, ev.connector).Eval(ctx, ev.room, ev.identity, ev.payload)
+	if !res.Matched {
+		outcome := dispatch.OutcomeNoMatch
+		switch {
+		case res.Error != "":
+			outcome = dispatch.OutcomeError
+		case res.Stage == StageSender:
+			// The sender gate is security layer 1; a room miss is scope only.
+			outcome = dispatch.OutcomeBlocked
 		}
-		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, outcome, "", ev.receivedAt)
+		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(outcome), "", ev.receivedAt)
 		return
 	}
 	item := &dispatch.QueueItem{
@@ -505,24 +520,6 @@ func (s *Service) insertOutcome(ctx context.Context, eid, wsID, jobName string, 
 			outcome=excluded.outcome, queue_id=excluded.queue_id, error_message=NULL, created_at=excluded.created_at`, eid, wsID, jobName, onIndex, outcome, qid, now); err != nil {
 		s.log.Warn("event outcome insert", "job", jobName, "outcome", outcome, "error", err)
 	}
-}
-
-// allowlistPasses compares the declared identity with the entries; the gate
-// denies when no entry matches, and a connector with no identity is closed.
-// An email address compares without case; every other identity is exact.
-func allowlistPasses(allow []string, identity string, fold bool) bool {
-	if identity == "" {
-		return false
-	}
-	for _, a := range allow {
-		if a == "" {
-			continue
-		}
-		if a == identity || (fold && strings.EqualFold(strings.TrimSpace(a), identity)) {
-			return true
-		}
-	}
-	return false
 }
 
 // decodeLine parses one lines-protocol output line per the declared format.

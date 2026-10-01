@@ -522,6 +522,32 @@ func TestTriggerLimit(t *testing.T) {
 	}
 }
 
+// TestTriggerRooms proves the room scope parses on an event trigger, drops
+// empty and duplicate entries, and fails on a schedule trigger.
+func TestTriggerRooms(t *testing.T) {
+	t.Parallel()
+	parse := func(fm string) (*job.Job, error) {
+		return job.ParseBytes("/ws/x/JOB.md", []byte("---\n"+fm+"---\nhi\n"))
+	}
+	j, err := parse("triggers:\n  - event: chat\n    rooms: [\"r1\", \"\", \"r1\", \"r2\"]\n    allowlist: [alice, alice]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr := j.Triggers[0]; !reflect.DeepEqual(tr.Rooms, []string{"r1", "r2"}) || !reflect.DeepEqual(tr.Allowlist, []string{"alice"}) {
+		t.Fatalf("trigger = %+v", tr)
+	}
+	for fm, want := range map[string]string{
+		"triggers:\n  - cron: \"0 9 * * *\"\n    rooms: [r1]\n": `"rooms" applies only to an event trigger`,
+		"triggers:\n  - every: 5m\n    allowlist: [a]\n":        `"allowlist" applies only to an event trigger`,
+		"allowlist: [Bash]\n":                                   `job key "allowlist" is removed; set "allowlist" on the event trigger`,
+	} {
+		j, err := parse(fm)
+		if err == nil || !strings.Contains(parseErrOf(j), want) {
+			t.Errorf("%q: err=%v parse_error=%q, want %q", fm, err, parseErrOf(j), want)
+		}
+	}
+}
+
 func TestIfRunningValues(t *testing.T) {
 	t.Parallel()
 	for v, ok := range map[string]bool{"queue": true, "skip": true, "replace": true, "allow": false, "coalesce": false} {

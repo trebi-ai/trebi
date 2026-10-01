@@ -595,9 +595,19 @@ type jobCreateRequest struct {
 
 // jobEventTrigger is the on: field of a structured job body.
 type jobEventTrigger struct {
-	Event   string `json:"event"`
-	Match   string `json:"match"`
-	Extract string `json:"extract"`
+	Event     string   `json:"event"`
+	Match     string   `json:"match"`
+	Extract   string   `json:"extract"`
+	Rooms     []string `json:"rooms"`
+	Allowlist []string `json:"allowlist"`
+}
+
+// spec maps the body trigger to the writer form; nil stays nil.
+func (t *jobEventTrigger) spec() *job.EventSpec {
+	if t == nil {
+		return nil
+	}
+	return &job.EventSpec{Event: t.Event, Match: t.Match, Extract: t.Extract, Rooms: t.Rooms, Allowlist: t.Allowlist}
 }
 
 // markdown renders the JOB.md text of the request. A body with neither text nor
@@ -609,9 +619,7 @@ func (b jobCreateRequest) markdown() (string, error) {
 		Description: b.Description, Cron: b.Cron, Every: b.Every,
 		Session: b.Session, Env: b.Env,
 	}
-	if b.On != nil {
-		spec.On = &job.EventSpec{Event: b.On.Event, Match: b.On.Match, Extract: b.On.Extract}
-	}
+	spec.On = b.On.spec()
 	if spec.Content == "" && spec.Prompt == "" {
 		spec.Prompt = "Do the task."
 	}

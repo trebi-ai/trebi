@@ -111,11 +111,18 @@ type Service struct {
 	trigByConn map[string][]cachedTrig
 }
 
+// cachedTrig is one event trigger in the index. The index keeps inactive
+// jobs and disabled triggers for the dependents list; dispatch skips them.
 type cachedTrig struct {
-	row workspaces.JobRow
-	j   *job.Job
-	tr  job.Trigger
+	row      workspaces.JobRow
+	j        *job.Job
+	tr       job.Trigger
+	active   bool
+	disabled bool
 }
+
+// live reports whether dispatch fires the trigger.
+func (c cachedTrig) live() bool { return c.active && !c.disabled }
 
 // NativeMeta carries the native identity of an injected event.
 type NativeMeta struct {

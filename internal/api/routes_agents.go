@@ -772,9 +772,7 @@ func (b agentPutRequest) markdown() (string, error) {
 		Description: b.Description, Cron: b.Cron, Every: b.Every,
 		EmailAccept: b.EmailAccept, Contact: b.Contact, Notify: b.Notify,
 	}
-	if b.On != nil {
-		spec.On = &job.EventSpec{Event: b.On.Event, Match: b.On.Match, Extract: b.On.Extract}
-	}
+	spec.On = b.On.spec()
 	if spec.Content == "" && spec.Prompt == "" && spec.Harness == "" &&
 		spec.Description == "" && spec.Cron == "" && spec.Every == "" && spec.On == nil &&
 		spec.Title == "" && spec.EmailAccept == nil && spec.Contact == nil && spec.Notify == nil {

@@ -158,6 +158,7 @@ var exactFolds = map[string]string{
 	"doctor fix":          "system.doctor_fix",
 	"alerts":              "inbox.alerts",
 	"rules test":          "event.rules_test",
+	"rules test-batch":    "event.rules_test_batch",
 	"rules fire":          "event.rules_fire",
 	"service logs":        "system.logs",
 	"service drain":       "system.drain",

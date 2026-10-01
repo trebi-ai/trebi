@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
@@ -17,14 +18,23 @@ func rulesCommand() *cli.Command {
 		Commands: []*cli.Command{
 			{
 				Name:  "test",
-				Usage: "evaluate match/extract against a sample event",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "match", Usage: "match expression"},
-					&cli.StringFlag{Name: "extract", Usage: "extract expression"},
+				Usage: "evaluate rooms, allowlist, extract, and match against a stored or sample event",
+				Flags: append(ruleGateFlags(),
+					&cli.StringFlag{Name: "event-id", Usage: "stored event id (instead of an event file)"},
+					&cli.StringFlag{Name: "connector", Usage: "connector of a sample event"},
 					&cli.StringFlag{Name: "event-file", Usage: "event JSON file (stdin if omitted)"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
-				},
+				),
 				Action: runRulesTest,
+			},
+			{
+				Name:      "test-batch",
+				Usage:     "evaluate one trigger against up to 50 stored events",
+				ArgsUsage: "<event-id>...",
+				Flags: append(ruleGateFlags(),
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				),
+				Action: runRulesTestBatch,
 			},
 			{
 				Name:  "fire",
@@ -45,6 +55,22 @@ func rulesCommand() *cli.Command {
 	}
 }
 
+func ruleGateFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "match", Usage: "match expression"},
+		&cli.StringFlag{Name: "extract", Usage: "extract expression"},
+		&cli.StringSliceFlag{Name: "room", Usage: "room id the trigger takes (repeatable)"},
+		&cli.StringSliceFlag{Name: "allowlist", Usage: "sender id the trigger takes (repeatable)"},
+	}
+}
+
+func ruleTestOf(c *cli.Command) request.RuleTest {
+	return request.RuleTest{
+		Match: c.String("match"), Extract: c.String("extract"),
+		Rooms: c.StringSlice("room"), Allowlist: c.StringSlice("allowlist"),
+	}
+}
+
 func loadRuleEvent(c *cli.Command) (any, error) {
 	raw, err := readFileOrStdin(c.String("event-file"))
 	if err != nil {
@@ -62,16 +88,19 @@ func loadRuleEvent(c *cli.Command) (any, error) {
 }
 
 func runRulesTest(_ context.Context, c *cli.Command) error {
-	event, err := loadRuleEvent(c)
-	if err != nil {
-		return err
+	var event any
+	if c.String("event-id") == "" {
+		var err error
+		if event, err = loadRuleEvent(c); err != nil {
+			return err
+		}
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
 	var out map[string]any
-	if err := client.DoHTTP(request.BuildRulesTest(c.String("match"), c.String("extract"), event), &out); err != nil {
+	if err := client.DoHTTP(ruleTestOf(c).Build(c.String("event-id"), c.String("connector"), event), &out); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -79,10 +108,39 @@ func runRulesTest(_ context.Context, c *cli.Command) error {
 	}
 	w := outWriter(c)
 	fmt.Fprintf(w, "matched=%v\n", out["matched"])
+	if stage := mapStr(out, "stage"); stage != "" {
+		fmt.Fprintf(w, "stage=%s\n", stage)
+	}
 	fmt.Fprintf(w, "vars=%v\n", out["vars"])
 	if errVal := out["error"]; errVal != nil && fmt.Sprint(errVal) != "" {
 		fmt.Fprintf(w, "error=%v\n", errVal)
 	}
+	return nil
+}
+
+func runRulesTestBatch(_ context.Context, c *cli.Command) error {
+	ids := c.Args().Slice()
+	if len(ids) == 0 {
+		return fmt.Errorf("usage: trebi rules test-batch <event-id>... --match EXPR")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := client.DoHTTP(ruleTestOf(c).BuildBatch(ids), &out); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, out)
+	}
+	results, _ := out["results"].([]any)
+	tbl := newTable(outWriter(c), []string{"Event", "Matched", "Stage", "Error"})
+	for _, raw := range results {
+		m, _ := raw.(map[string]any)
+		tbl.AppendRow(table.Row{mapStr(m, "event_id"), m["matched"], dash(mapStr(m, "stage")), dash(mapStr(m, "error"))})
+	}
+	renderTable(tbl)
 	return nil
 }
 

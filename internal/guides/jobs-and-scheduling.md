@@ -30,13 +30,14 @@ triggers:
   - event: slack
     match: "e.channel === 'ops' && /deploy/.test(e.text)"
     extract: "({ user: e.user, text: e.text })"
+    rooms: ["C024BE91L"]
+    allowlist: ["U012AB3CD"]
     limit: 5/1h
     when:
       run: "git -C /repo status --porcelain"
       match: "out.trim() === ''"
       timeout: 10s
 skills: [my-skill]
-allowlist: [Bash, Read, Edit]
 description: What this job does.
 ---
 
@@ -45,6 +46,7 @@ The prompt body. This is what the harness receives.
 
 - `triggers[]` is the trebi form. Do not use a top-level `schedule:`.
 - `match` and `extract` are JavaScript, evaluated over the event as `e`.
+- An event trigger checks the event in this order: `rooms` (room IDs of the connector; empty takes every room), `allowlist` (sender IDs; empty takes every sender), `extract`, then `match`. A room miss records `no_match`. A sender miss records `blocked`.
 - `when` is an inline shell gate: the job runs only when `match` over `out` is true.
 - `limit` sets how often an event trigger starts a run: `N/<duration>`, or `off`. The default is `15/10m`. Events above the limit wait in order. When 10 events wait, Trebi drops new events and opens one inbox item.
 - `session.if_running` tells Trebi what to do when a run of the job is still active: `queue` (default) starts the new run after the active run, `skip` drops it, and `replace` stops the active run.

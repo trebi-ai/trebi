@@ -189,8 +189,18 @@ List the rooms of a channel connection: chats, groups, channels, or mailboxes. T
 - `cursor` (string, optional): opaque cursor from a prior page (`next_cursor`).
 - `limit` (number, optional): page size.
 
+### senders
+List the recent senders of a connection, from its stored events, the most recent first. Use an `identity` as an entry of a trigger `allowlist`. The reply is `{id, senders}`. Each sender has `identity`, `name`, `last_at`, and `count` (the number of stored events).
+- `connector` (string, required): connection slug or id, or `email`.
+- `q` (string, optional): substring match on the identity or the name.
+- `limit` (number, optional): at most this many senders (default 50, at most 200).
+
+### dependents
+List what uses a connection: each event trigger on it and each room binding. The reply is `{id, slug, triggers, bindings}`. Each trigger has `kind` (job, agent, or assistant), `workspace`, `name`, `on_index`, `disabled`, `active`, `rooms` (empty means any room), and `senders` (the size of the allowlist). Disabled triggers and inactive jobs are in the list; they do not fire. Each binding has `workspace`, `operator` (assistant or agents/<name>), `room`, `thread`, and `conversation_id`.
+- `connector` (string, required): connection slug or id, or `email`.
+
 ### threads
-List the threads of one room. The reply is `{id, threads, next_cursor}`. Each thread has `id`, `title`, `last_activity_at`, and `participants`. A connector that cannot list threads returns the threads that the daemon saw.
+List the threads of one room. The reply is `{id, threads, next_cursor}`. Each thread has `id`, `title`, `last_activity_at`, and `participants`. A connector that cannot list threads returns the threads that the daemon saw. A connection without the `threads` feature answers 400 `unsupported`.
 - `connector` (string, required): connection slug or id.
 - `room` (string, required): room id from `rooms`.
 - `cursor` (string, optional): opaque cursor from a prior page (`next_cursor`).
@@ -202,7 +212,7 @@ Bind one room, or one thread of a room, to the assistant or to an agent of a wor
 - `room` (string, required): room id from `rooms`.
 - `workspace` (string, required): workspace id or name.
 - `operator` (string, optional): `assistant` (the default) or `agents/<name>`.
-- `thread` (string, optional): thread id from `threads`; empty binds the whole room.
+- `thread` (string, optional): thread id from `threads`; empty binds the whole room. A connection without the `threads` feature answers 400 `unsupported` to a thread.
 
 ## Related guides
 

@@ -181,7 +181,7 @@ func TestHarnessConfigDefault(t *testing.T) {
 
 func TestListModelsWithoutListCommand(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{Claude, Codex, Copilot, Gemini, Fake} {
+	for _, name := range []string{Gemini, Fake} {
 		got := ListModels(context.Background(), name)
 		if got.Source != ModelSourceNone {
 			t.Errorf("%s: source=%q, want none", name, got.Source)
@@ -192,5 +192,54 @@ func TestListModelsWithoutListCommand(t *testing.T) {
 		if got.Models == nil {
 			t.Errorf("%s: models must encode as [], not null", name)
 		}
+	}
+}
+
+func TestListModelsStatic(t *testing.T) {
+	base := t.TempDir()
+	home.SetBase(base)
+	t.Cleanup(func() { home.SetBase("") })
+	if err := os.MkdirAll(filepath.Join(base, "harness/claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "harness/claude/settings.json"), []byte(`{"model": "opus"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	codexDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte("model = \"glm-5.3-Flash\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexDir)
+
+	cases := []struct{ name, def, first string }{
+		{Claude, "opus", "sonnet"},
+		{Codex, "glm-5.3-Flash", "glm-5.3-Flash"}, // not in the list: it comes first
+		{Copilot, "", "claude-sonnet-4.6"},
+	}
+	for _, tc := range cases {
+		got := ListModels(context.Background(), tc.name)
+		if got.Source != ModelSourceStatic || len(got.Models) < 2 || got.Error != "" {
+			t.Fatalf("%s: %+v", tc.name, got)
+		}
+		if got.Default != tc.def || got.Models[0].ID != tc.first {
+			t.Errorf("%s: default=%q first=%q", tc.name, got.Default, got.Models[0].ID)
+		}
+		marked := 0
+		for _, m := range got.Models {
+			if m.Default {
+				marked++
+				if m.ID != tc.def {
+					t.Errorf("%s: marked %q", tc.name, m.ID)
+				}
+			}
+		}
+		if (tc.def != "") != (marked == 1) {
+			t.Errorf("%s: %d marked", tc.name, marked)
+		}
+	}
+	list := staticModels(Claude)
+	list[0].ID = "changed"
+	if staticModels(Claude)[0].ID != "sonnet" {
+		t.Fatal("staticModels shares the package list")
 	}
 }

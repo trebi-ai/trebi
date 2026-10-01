@@ -34,7 +34,7 @@ Read the authentication state of one harness.
 - `live` (boolean, optional): probe the live credential.
 
 ### models
-List the models a harness CLI reports, when it has a list command (cursor, grok, opencode, pi). `source` is `cli` with the parsed catalog, or `none` with an empty list when the harness has no list command, is not installed, or answered nothing — keep the configured model free-text then.
+List the models of a harness. `source` is `cli` when the harness CLI has a list command (cursor, grok, opencode, pi). `source` is `static` for claude, codex, and copilot: trebi ships their list, and a configured default that is not in it comes first. `source` is `none` with an empty list when the harness has no list, is not installed, or answered nothing; keep the configured model free-text then. `default` is the model a run uses with no pin.
 - `name` (string, required): harness name.
 
 ### login_start

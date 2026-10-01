@@ -437,3 +437,35 @@ func TestBindRoom(t *testing.T) {
 		t.Fatalf("conversation %+v %v", conv, err)
 	}
 }
+
+// TestRoomBindings proves the bindings of one instance carry the operator
+// of the conversation, with "assistant" for the empty operator.
+func TestRoomBindings(t *testing.T) {
+	t.Parallel()
+	svc := testSvc(t)
+	ctx := context.Background()
+	if _, err := svc.BindRoom(ctx, "ws1", "", conversations.Address{Connector: "whatsapp", Instance: "con_wa", Room: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	p2, err := svc.BindRoom(ctx, "ws1", "agents/triage", conversations.Address{Connector: "whatsapp", Instance: "con_wa", Room: "r2", Thread: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.BindRoom(ctx, "ws1", "", conversations.Address{Connector: "whatsapp", Instance: "con_other", Room: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.RoomBindings(ctx, "con_wa")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("bindings %+v %v", got, err)
+	}
+	if got[0].Operator != "assistant" || got[0].Room != "r1" || got[0].Workspace != "ws1" {
+		t.Fatalf("first %+v", got[0])
+	}
+	want := conversations.RoomBinding{Workspace: "ws1", Operator: "agents/triage", Room: "r2", Thread: "t1", ConversationID: p2.ConversationID}
+	if got[1] != want {
+		t.Fatalf("second %+v", got[1])
+	}
+	if none, err := svc.RoomBindings(ctx, "con_none"); err != nil || none == nil || len(none) != 0 {
+		t.Fatalf("none %#v %v", none, err)
+	}
+}

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/connectors/conformance"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/email"
@@ -31,6 +33,8 @@ func (s *Server) routeConnectorSessions(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/connectors/{ref}/rooms", s.handleConnectorRooms)
 	mux.HandleFunc("GET /v1/connectors/{ref}/rooms/{room}/threads", s.handleConnectorThreads)
 	mux.HandleFunc("POST /v1/connectors/{ref}/rooms/{room}/bind", s.handleConnectorBind)
+	mux.HandleFunc("GET /v1/connectors/{ref}/senders", s.handleConnectorSenders)
+	mux.HandleFunc("GET /v1/connectors/{ref}/dependents", s.handleConnectorDependents)
 	mux.HandleFunc("GET /v1/workspaces/{id}/connectors/{ref}", s.handleConnectorOverrideGet)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/connectors/{ref}", s.handleConnectorOverridePut)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/connectors/{ref}", s.handleConnectorOverrideDelete)
@@ -45,6 +49,15 @@ func (s *Server) connectionID(r *http.Request) (string, error) {
 	}
 	_, err := s.connectors.Lookup(ref)
 	return "", err
+}
+
+// instanceOf returns the instance of the {ref} of a route. Native email is
+// its own instance.
+func (s *Server) instanceOf(r *http.Request) (string, error) {
+	if r.PathValue("ref") == email.Instance {
+		return email.Instance, nil
+	}
+	return s.connectionID(r)
 }
 
 // writeAnyConnectorErr writes a connector or adapter error, else a 400.
@@ -250,6 +263,9 @@ func (s *Server) handleConnectorThreads(w http.ResponseWriter, r *http.Request) 
 			s.writeAnyConnectorErr(w, err)
 			return
 		}
+		if s.rejectNoThreads(w, inst) {
+			return
+		}
 		var page protocol.ThreadPage
 		params := protocol.ThreadsListParams{Room: room, Page: r.URL.Query().Get("cursor"), Limit: parseLimit(r)}
 		err = s.connectors.Call(r.Context(), inst, protocol.MethodThreadsList, params, &page)
@@ -272,6 +288,16 @@ func (s *Server) handleConnectorThreads(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": inst, "threads": threads})
+}
+
+// rejectNoThreads writes 400 unsupported when the instance does not declare
+// the threads feature (live session first, then the manifest).
+func (s *Server) rejectNoThreads(w http.ResponseWriter, inst string) bool {
+	if slices.Contains(s.connectors.Features(inst), manifest.FeatureThreads) {
+		return false
+	}
+	writeErr(w, http.StatusBadRequest, "unsupported", fmt.Sprintf("connector %s has no threads", s.connectors.SlugOf(inst)))
+	return true
 }
 
 // handleConnectorBind binds a room to the assistant or an agent of a
@@ -317,6 +343,9 @@ func (s *Server) handleConnectorBind(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("connector %q is not a channel", c.Slug))
 			return
 		}
+		if body.Thread != "" && s.rejectNoThreads(w, c.ID) {
+			return
+		}
 		addr.Connector, addr.Instance = c.Type, c.ID
 	}
 	p, err := s.conv.BindRoom(r.Context(), ws, operator, addr)
@@ -324,6 +353,43 @@ func (s *Server) handleConnectorBind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
+}
+
+// handleConnectorDependents lists the event triggers and the room bindings
+// that use a connection.
+func (s *Server) handleConnectorDependents(w http.ResponseWriter, r *http.Request) {
+	inst, err := s.instanceOf(r)
+	if err != nil {
+		s.writeAnyConnectorErr(w, err)
+		return
+	}
+	slug := s.connectors.SlugOf(inst)
+	bindings, err := s.conv.RoomBindings(r.Context(), inst)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": inst, "slug": slug,
+		"triggers": s.connectors.TriggerDependents(r.Context(), slug),
+		"bindings": bindings,
+	})
+}
+
+// handleConnectorSenders lists the recent senders of a connection, from its
+// stored events.
+func (s *Server) handleConnectorSenders(w http.ResponseWriter, r *http.Request) {
+	inst, err := s.instanceOf(r)
+	if err != nil {
+		s.writeAnyConnectorErr(w, err)
+		return
+	}
+	senders, err := s.connectors.Senders(r.Context(), inst, r.URL.Query().Get("q"), parseLimit(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": inst, "senders": senders})
 }
 
 func (s *Server) handleConnectorOverrideGet(w http.ResponseWriter, r *http.Request) {

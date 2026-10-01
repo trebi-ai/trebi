@@ -95,10 +95,12 @@ trebi connector login whatsapp
 trebi connector logout whatsapp
 trebi connector rooms whatsapp --query ops --json
 trebi connector threads whatsapp <room> --json
+trebi connector senders whatsapp --query ana --json
+trebi connector dependents whatsapp --json
 trebi connector bind whatsapp <room> --workspace reports --operator assistant
 ```
 
-`connector login` prints each step (a code, a QR code, or a link) and waits for the user. Ask the user before you log out. `connector bind` sends the messages of a room to the assistant or to `agents/<name>` of a workspace; `--thread` binds one thread only. A notify route step names the connection slug and a room id: `trebi config set notify.route '[{"via":"whatsapp","to":"<room>"},{"via":"email"}]'`.
+`connector login` prints each step (a code, a QR code, or a link) and waits for the user. Ask the user before you log out. `connector senders` lists the recent senders from the stored events; put an `identity` in the `allowlist` of an event trigger, and a room `id` in its `rooms`. `connector dependents` lists the triggers on the connector (disabled and inactive ones too) and the rooms that are bound to the assistant or an agent. `connector threads` answers 400 `unsupported` when the connector has no `threads` feature. `connector bind` sends the messages of a room to the assistant or to `agents/<name>` of a workspace; `--thread` binds one thread only. A notify route step names the connection slug and a room id: `trebi config set notify.route '[{"via":"whatsapp","to":"<room>"},{"via":"email"}]'`.
 
 ## Registry
 
@@ -159,6 +161,15 @@ trebi rules fire --connector slack --job my-job --workspace reports --match "e.c
 ```
 
 `--event-file` is **local only**; remote: pass `event` in input. `rules test` only evaluates. `rules fire` evaluates and enqueues on a match.
+
+Test a trigger against stored events. The checks run in trigger order: `--room` (the rooms the trigger takes), `--allowlist` (the senders), extract, then match. The result names the `stage` that stopped the event: `room`, `sender`, `extract`, or `match`.
+
+```bash
+trebi rules test --event-id <event-id> --room 120363430107848596@g.us --match "event.type === 'message'" --json
+trebi rules test-batch <event-id> <event-id> --allowlist 15551234567@s.whatsapp.net --match "true" --json
+```
+
+`rules test-batch` takes at most 50 events.
 
 ## Hosted webhooks
 

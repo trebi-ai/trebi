@@ -74,6 +74,24 @@ func connectorSessionCommands() []*cli.Command {
 			Action: runConnectorRooms,
 		},
 		{
+			Name:      "senders",
+			Usage:     "list the recent senders of a connector, for a trigger allowlist",
+			ArgsUsage: "<connector>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "query", Usage: "match on the sender id or name"},
+				&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Usage: "max rows (default 50, at most 200)"},
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
+			Action: runConnectorSenders,
+		},
+		{
+			Name:      "dependents",
+			Usage:     "list the triggers and the room bindings that use a connector",
+			ArgsUsage: "<connector>",
+			Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+			Action:    runConnectorDependents,
+		},
+		{
 			Name:      "threads",
 			Usage:     "list the threads of one room",
 			ArgsUsage: "<connector> <room>",
@@ -465,6 +483,79 @@ func runConnectorRooms(_ context.Context, c *cli.Command) error {
 	}
 	renderTable(tbl)
 	printNextCursor(c, body)
+	return nil
+}
+
+func runConnectorSenders(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.GetJSON(request.BuildConnectorSendersPath(ref, c.String("query"), c.Int("limit")), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	senders, _ := body["senders"].([]any)
+	tbl := newTable(outWriter(c), []string{"Identity", "Name", "Events", "Last Event"})
+	for _, raw := range senders {
+		m, _ := raw.(map[string]any)
+		tbl.AppendRow(table.Row{mapStr(m, "identity"), dash(mapStr(m, "name")), m["count"], dash(mapStr(m, "last_at"))})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runConnectorDependents(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.GetJSON(request.BuildConnectorDependentsPath(ref), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	triggers, _ := body["triggers"].([]any)
+	tbl := newTable(outWriter(c), []string{"Kind", "Workspace", "Name", "On", "State", "Rooms", "Senders"})
+	for _, raw := range triggers {
+		m, _ := raw.(map[string]any)
+		state := "on"
+		switch {
+		case m["active"] != true:
+			state = "inactive"
+		case m["disabled"] == true:
+			state = "disabled"
+		}
+		rooms := "any"
+		if list, _ := m["rooms"].([]any); len(list) > 0 {
+			rooms = strings.Trim(fmt.Sprint(list), "[]")
+		}
+		tbl.AppendRow(table.Row{mapStr(m, "kind"), mapStr(m, "workspace"), mapStr(m, "name"), m["on_index"], state, rooms, m["senders"]})
+	}
+	renderTable(tbl)
+	bindings, _ := body["bindings"].([]any)
+	if len(bindings) == 0 {
+		return nil
+	}
+	tbl = newTable(outWriter(c), []string{"Workspace", "Operator", "Room", "Thread", "Conversation"})
+	for _, raw := range bindings {
+		m, _ := raw.(map[string]any)
+		tbl.AppendRow(table.Row{mapStr(m, "workspace"), mapStr(m, "operator"), mapStr(m, "room"), dash(mapStr(m, "thread")), mapStr(m, "conversation_id")})
+	}
+	renderTable(tbl)
 	return nil
 }
 

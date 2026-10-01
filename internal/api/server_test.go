@@ -693,6 +693,21 @@ func TestJobValidateText(t *testing.T) {
 		t.Fatalf("bad yaml must report ok=false: %d %v", code, body)
 	}
 
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{
+		"prompt": "Read it.", "on": map[string]any{"event": "whatsapp", "rooms": []string{"r1"}, "allowlist": []string{"u1", "u2"}},
+	})
+	md, _ = body["markdown"].(string)
+	if code != 200 || body["ok"] != true || !strings.Contains(md, "rooms:\n") || !strings.Contains(md, "- r1") || !strings.Contains(md, "- u2") {
+		t.Fatalf("event scope: %d %v", code, body)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{
+		"content": "---\nharness: fake\nallowlist: [a]\ntriggers:\n  - event: email\n---\n\nhi\n",
+	})
+	if code != 200 || body["ok"] != false || body["error"] != `job key "allowlist" is removed; set "allowlist" on the event trigger` {
+		t.Fatalf("job-level allowlist: %d %v", code, body)
+	}
+
 	code, body, _ = doJSON(t, "GET", base+"/v1/jobs", nil)
 	jobs, _ := body["jobs"].([]any)
 	if code != 200 || len(jobs) != 0 {

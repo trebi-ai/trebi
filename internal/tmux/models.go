@@ -21,7 +21,10 @@ import (
 const (
 	// ModelSourceCLI: the harness CLI answered with its own catalog.
 	ModelSourceCLI = "cli"
-	// ModelSourceNone: no list command, not installed, or nothing parsed.
+	// ModelSourceStatic: a list trebi ships for a harness whose CLI cannot
+	// list models.
+	ModelSourceStatic = "static"
+	// ModelSourceNone: no list, not installed, or nothing parsed.
 	// The UI keeps a free-text input then.
 	ModelSourceNone = "none"
 )
@@ -47,8 +50,8 @@ type ModelList struct {
 const modelListTimeout = 6 * time.Second
 
 // modelListArgs returns the argv for the harnesses whose CLI lists models.
-// claude, codex, and copilot only have an interactive /model picker, so they
-// stay free-text: a hardcoded catalog would rot in a week.
+// claude, codex, and copilot only have an interactive /model picker; they
+// use staticModels.
 func modelListArgs(name string) ([]string, bool) {
 	switch name {
 	case Grok, OpenCode, OpenCode2, Cursor:
@@ -67,7 +70,12 @@ func modelListArgs(name string) ([]string, bool) {
 func ListModels(ctx context.Context, name string) ModelList {
 	args, ok := modelListArgs(name)
 	if !ok {
-		return emptyModelList("")
+		list := staticModels(name)
+		if list == nil {
+			return emptyModelList("")
+		}
+		def := harnessConfigDefault(name)
+		return ModelList{Models: markDefault(withDefault(list, def), def), Source: ModelSourceStatic, Default: def}
 	}
 	bin := modelBinary(name)
 	if bin == "" {

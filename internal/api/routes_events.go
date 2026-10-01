@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -43,6 +44,7 @@ type queueResult struct {
 //nolint:dupl // route tables stay explicit and colocated with area handlers.
 func (s *Server) routeEvents(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/rules/test", s.handleRulesTest)
+	mux.HandleFunc("POST /v1/rules/test-batch", s.handleRulesTestBatch)
 	mux.HandleFunc("POST /v1/rules/fire", s.handleRulesFire)
 	mux.HandleFunc("GET /v1/events", s.handleEvents)
 	mux.HandleFunc("GET /v1/events/{id}", s.handleEventGet)
@@ -466,30 +468,121 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleEventRetrigger(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.connectors.Redispatch(r.Context(), id); err != nil {
-		if errors.Is(err, connectors.ErrEventNotFound) {
-			writeErr(w, http.StatusNotFound, "not_found", "event not found")
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		s.writeEventErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"retrigged": true, "event_id": id})
 }
 
+// maxRulesTestBatch caps the events of one rules/test-batch call.
+const maxRulesTestBatch = 50
+
+// ruleGate is the trigger side of a rules test body.
+type ruleGate struct {
+	Match     string   `json:"match"`
+	Extract   string   `json:"extract"`
+	Rooms     []string `json:"rooms"`
+	Allowlist []string `json:"allowlist"`
+}
+
+func (g ruleGate) gate() connectors.Gate {
+	return connectors.Gate{Rooms: g.Rooms, Allowlist: g.Allowlist, Match: g.Match, Extract: g.Extract}
+}
+
+// ruleResult is the wire form of one gate result.
+func ruleResult(res connectors.GateResult) map[string]any {
+	vars := res.Vars
+	if vars == nil {
+		vars = map[string]string{}
+	}
+	return map[string]any{
+		"matched": res.Matched, "stage": res.Stage, "vars": vars,
+		"extracted": res.Extracted, "error": res.Error,
+	}
+}
+
+// handleRulesTest runs the gate of one trigger against a stored event
+// (event_id) or a draft event (event).
 func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Match   string `json:"match"`
-		Extract string `json:"extract"`
-		Event   any    `json:"event"`
+		ruleGate
+		Event     any    `json:"event"`
+		EventID   string `json:"event_id"`
+		Connector string `json:"connector"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	res := dispatch.EvalMatch(r.Context(), body.Match, body.Extract, body.Event)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"matched": res.Matched, "vars": res.Vars, "error": res.Error,
-	})
+	if body.EventID != "" && body.Event != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "set event_id or event, not both")
+		return
+	}
+	var ev connectors.GateEvent
+	if body.EventID != "" {
+		var err error
+		if ev, err = s.connectors.StoredGateEvent(r.Context(), body.EventID); err != nil {
+			s.writeEventErr(w, err)
+			return
+		}
+	} else {
+		typ := body.Connector
+		if c, err := s.connectors.Lookup(body.Connector); err == nil {
+			typ = c.Type
+		}
+		ev = connectors.DraftGateEvent(typ, body.Event)
+	}
+	out := ruleResult(ev.Eval(r.Context(), body.gate()))
+	out["room"], out["identity"] = ev.Room, ev.Identity
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleRulesTestBatch runs the gate of one trigger against up to 50 stored
+// events, in order. A missing event is a result with an error.
+func (s *Server) handleRulesTestBatch(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ruleGate
+		EventIDs []string `json:"event_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	switch {
+	case len(body.EventIDs) == 0:
+		writeErr(w, http.StatusBadRequest, "validation", "event_ids is required")
+		return
+	case len(body.EventIDs) > maxRulesTestBatch:
+		writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("event_ids: at most %d events", maxRulesTestBatch))
+		return
+	}
+	g := body.gate()
+	results := make([]map[string]any, 0, len(body.EventIDs))
+	for _, id := range body.EventIDs {
+		var out map[string]any
+		ev, err := s.connectors.StoredGateEvent(r.Context(), id)
+		switch {
+		case errors.Is(err, connectors.ErrEventNotFound):
+			out = ruleResult(connectors.GateResult{Error: "event not found"})
+		case err != nil:
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		default:
+			out = ruleResult(ev.Eval(r.Context(), g))
+		}
+		out["event_id"] = id
+		results = append(results, out)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// writeEventErr writes 404 for a missing event, else 500.
+func (s *Server) writeEventErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, connectors.ErrEventNotFound) {
+		writeErr(w, http.StatusNotFound, "not_found", "event not found")
+		return
+	}
+	writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 }
 
 // indexRowKind returns job_index.kind for (workspace, name). Empty when the row

@@ -742,6 +742,8 @@ type AgentSpec struct {
 	Event       string
 	Match       string
 	Extract     string
+	Rooms       []string
+	Allowlist   []string
 	Title       string
 	EmailAccept []string
 	Template    string
@@ -771,14 +773,7 @@ func (a AgentSpec) Build() HTTPRequest {
 		body["inputs"] = a.Inputs
 	}
 	if a.Event != "" {
-		on := map[string]any{"event": a.Event}
-		if a.Match != "" {
-			on["match"] = a.Match
-		}
-		if a.Extract != "" {
-			on["extract"] = a.Extract
-		}
-		body["on"] = on
+		body["on"] = eventOn(a.Event, a.Match, a.Extract, a.Rooms, a.Allowlist)
 	}
 	return HTTPRequest{Method: "PUT", Path: BuildAgentGetPath(a.Workspace, a.Name), Body: body}
 }
@@ -1094,13 +1089,34 @@ func BuildSkillFileDelete(name, rel, ifMatch string) HTTPRequest {
 	}
 }
 
-// BuildRulesTest builds POST /v1/rules/test.
-func BuildRulesTest(match, extract string, event any) HTTPRequest {
-	return HTTPRequest{
-		Method: "POST",
-		Path:   "/v1/rules/test",
-		Body:   map[string]any{"match": match, "extract": extract, "event": event},
+// RuleTest is the trigger side of a rules test: the code and the scope.
+type RuleTest struct {
+	Match     string
+	Extract   string
+	Rooms     []string
+	Allowlist []string
+}
+
+// Build builds POST /v1/rules/test against a stored event (eventID) or a
+// draft event. connector names the connection of a draft.
+func (t RuleTest) Build(eventID, connector string, event any) HTTPRequest {
+	body := t.body()
+	if eventID != "" {
+		body["event_id"] = eventID
+	} else {
+		body["event"] = event
 	}
+	if connector != "" {
+		body["connector"] = connector
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/rules/test", Body: body}
+}
+
+// BuildBatch builds POST /v1/rules/test-batch over stored events.
+func (t RuleTest) BuildBatch(eventIDs []string) HTTPRequest {
+	body := t.body()
+	body["event_ids"] = eventIDs
+	return HTTPRequest{Method: "POST", Path: "/v1/rules/test-batch", Body: body}
 }
 
 // BuildRulesFire builds POST /v1/rules/fire.
@@ -1668,6 +1684,8 @@ type JobSpec struct {
 	Extract        string
 	IdempotencyKey string
 	Agent          string // short name; the file lands under agents/<agent>/
+	Rooms          []string
+	Allowlist      []string
 }
 
 // Build renders the spec as POST /v1/jobs.
@@ -1694,14 +1712,7 @@ func (j JobSpec) body() map[string]any {
 		}
 	}
 	if j.Event != "" {
-		on := map[string]any{"event": j.Event}
-		if j.Match != "" {
-			on["match"] = j.Match
-		}
-		if j.Extract != "" {
-			on["extract"] = j.Extract
-		}
-		body["on"] = on
+		body["on"] = eventOn(j.Event, j.Match, j.Extract, j.Rooms, j.Allowlist)
 	}
 	return body
 }
@@ -2070,6 +2081,20 @@ func BuildConnectorRoomsPath(c ConnectorRef, q, kind, cursor string, limit int) 
 		kv["limit"] = strconv.Itoa(limit)
 	}
 	return c.path("/rooms", kv)
+}
+
+// BuildConnectorSendersPath builds GET /v1/connectors/{ref}/senders.
+func BuildConnectorSendersPath(c ConnectorRef, q string, limit int) string {
+	kv := map[string]string{"q": q}
+	if limit > 0 {
+		kv["limit"] = strconv.Itoa(limit)
+	}
+	return c.path("/senders", kv)
+}
+
+// BuildConnectorDependentsPath builds GET /v1/connectors/{ref}/dependents.
+func BuildConnectorDependentsPath(c ConnectorRef) string {
+	return c.path("/dependents", nil)
 }
 
 // BuildConnectorThreadsPath builds GET /v1/connectors/{ref}/rooms/{room}/threads.
@@ -2607,4 +2632,33 @@ func BuildNotifyTest(sc NotifyScope, step *int) HTTPRequest {
 
 func connectorOverridePath(workspace, ref string) string {
 	return "/v1/workspaces/" + url.PathEscape(workspace) + "/connectors/" + url.PathEscape(ref)
+}
+
+// eventOn renders the on: body of a job or agent create. Empty fields stay out.
+func eventOn(event, match, extract string, rooms, allowlist []string) map[string]any {
+	on := map[string]any{"event": event}
+	if match != "" {
+		on["match"] = match
+	}
+	if extract != "" {
+		on["extract"] = extract
+	}
+	if len(rooms) > 0 {
+		on["rooms"] = rooms
+	}
+	if len(allowlist) > 0 {
+		on["allowlist"] = allowlist
+	}
+	return on
+}
+
+func (t RuleTest) body() map[string]any {
+	body := map[string]any{"match": t.Match, "extract": t.Extract}
+	if len(t.Rooms) > 0 {
+		body["rooms"] = t.Rooms
+	}
+	if len(t.Allowlist) > 0 {
+		body["allowlist"] = t.Allowlist
+	}
+	return body
 }

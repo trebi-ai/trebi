@@ -16,7 +16,12 @@ const jsStageTimeout = 2 * time.Second
 type EvalResult struct {
 	Matched bool
 	Vars    map[string]string
-	Error   string
+	// Extracted is the extract output; nil when there is no extract or it
+	// returns null.
+	Extracted any
+	Error     string
+	// ExtractErr marks an Error of the extract stage.
+	ExtractErr bool
 }
 
 // EvalMatch runs extract (optional) then match against event in a Goja VM.
@@ -61,34 +66,33 @@ func evalMatchOn(vm *goja.Runtime, match, extract string, event any) EvalResult 
 		return EvalResult{Error: fmt.Sprintf("bind json helper: %v", err)}
 	}
 
+	var res EvalResult
 	if extract != "" {
 		v, err := vm.RunString(extract)
 		if err != nil {
-			return EvalResult{Error: fmt.Sprintf("extract: %v", err)}
+			return EvalResult{Error: fmt.Sprintf("extract: %v", err), ExtractErr: true}
 		}
 		if v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
-			exported := v.Export()
-			if err := vm.Set("event", exported); err != nil {
-				return EvalResult{Error: fmt.Sprintf("bind extracted event: %v", err)}
+			res.Extracted = v.Export()
+			if err := vm.Set("event", res.Extracted); err != nil {
+				return EvalResult{Extracted: res.Extracted, Error: fmt.Sprintf("bind extracted event: %v", err), ExtractErr: true}
 			}
-			if m, ok := exported.(map[string]any); ok {
-				vars := map[string]string{}
+			if m, ok := res.Extracted.(map[string]any); ok {
+				res.Vars = map[string]string{}
 				for k, val := range m {
-					vars[k] = fmt.Sprint(val)
+					res.Vars[k] = fmt.Sprint(val)
 				}
-				matched, err := runMatch(vm, match)
-				if err != nil {
-					return EvalResult{Error: err.Error()}
-				}
-				return EvalResult{Matched: matched, Vars: vars}
 			}
 		}
 	}
 	matched, err := runMatch(vm, match)
 	if err != nil {
-		return EvalResult{Error: err.Error()}
+		res.Vars = nil
+		res.Error = err.Error()
+		return res
 	}
-	return EvalResult{Matched: matched}
+	res.Matched = matched
+	return res
 }
 
 func runMatch(vm *goja.Runtime, match string) (bool, error) {

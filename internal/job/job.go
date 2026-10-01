@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -87,7 +88,6 @@ type Frontmatter struct {
 	FollowupPrompt string            `yaml:"followup_prompt"`
 	Name           string            `yaml:"name"` // verified then ignored for JOB.md identity
 	Description    string            `yaml:"description"`
-	Allowlist      []string          `yaml:"allowlist"`
 	Inputs         any               `yaml:"inputs"`
 	Skills         any               `yaml:"skills"`
 	Connectors     any               `yaml:"connectors"`
@@ -151,6 +151,7 @@ type TriggerYAML struct {
 	When      *WhenYAML `yaml:"when,omitempty"`
 	Timezone  string    `yaml:"timezone,omitempty"`
 	Allowlist []string  `yaml:"allowlist,omitempty"`
+	Rooms     []string  `yaml:"rooms,omitempty"`
 	Disabled  bool      `yaml:"disabled,omitempty"` // keeps family index (B21)
 
 	// Removed keys. A set value is a parse error that names the fix.
@@ -487,9 +488,12 @@ type Trigger struct {
 	Event   string // connector
 	Match   string
 	Extract string
-	// Allowlist is the ingress gate (security layer 1), checked before match.
-	// Each entry is compared with the value at the connector events.identity path.
+	// Allowlist is the sender gate (security layer 1), checked before match.
+	// Each entry is compared with the event identity (the sender id).
 	Allowlist []string
+	// Rooms is the room scope of an event trigger. Empty takes every room.
+	// Each entry is a room ID of the connector.
+	Rooms []string
 	// Limit is the file value of an event trigger: N/<duration>, off, or
 	// empty for DefaultLimit. EffectiveLimit is the resolved value.
 	Limit          string
@@ -525,7 +529,7 @@ func (t Trigger) MarshalYAML() (any, error) {
 	raw := TriggerYAML{
 		Cron: t.Cron, Every: t.Every, Event: t.Event, Match: t.Match, Extract: t.Extract,
 		Limit: t.Limit, When: t.When, Timezone: t.Timezone,
-		Allowlist: t.Allowlist, Disabled: t.Disabled,
+		Allowlist: t.Allowlist, Rooms: t.Rooms, Disabled: t.Disabled,
 	}
 	return raw, nil
 }
@@ -712,6 +716,9 @@ func rejectLegacyKeys(data []byte) error {
 			}
 		}
 	}
+	if _, exists := raw["allowlist"]; exists {
+		return fmt.Errorf(`job key "allowlist" is removed; set "allowlist" on the event trigger`)
+	}
 	// top-level when: moved onto trigger entries
 	if _, exists := raw["when"]; exists {
 		return fmt.Errorf("legacy top-level key \"when\" not accepted; place when: on a triggers entry (B25)")
@@ -775,10 +782,21 @@ func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 		if err := t.removedKey(); err != nil {
 			return nil, err
 		}
-		if t.Limit != "" && t.Event == "" {
-			return nil, fmt.Errorf(`"limit" applies only to an event trigger`)
+		if t.Event == "" {
+			switch {
+			case t.Limit != "":
+				return nil, fmt.Errorf(`"limit" applies only to an event trigger`)
+			case len(t.Rooms) > 0:
+				return nil, fmt.Errorf(`"rooms" applies only to an event trigger`)
+			case len(t.Allowlist) > 0:
+				return nil, fmt.Errorf(`"allowlist" applies only to an event trigger`)
+			}
 		}
-		tr := Trigger{Raw: t, When: t.When, Match: t.Match, Extract: t.Extract, Allowlist: t.Allowlist, Limit: t.Limit, Timezone: t.Timezone, Disabled: t.Disabled}
+		tr := Trigger{
+			Raw: t, When: t.When, Match: t.Match, Extract: t.Extract,
+			Allowlist: uniqueEntries(t.Allowlist), Rooms: uniqueEntries(t.Rooms),
+			Limit: t.Limit, Timezone: t.Timezone, Disabled: t.Disabled,
+		}
 		if t.Event != "" {
 			rate, err := parseLimit(t.Limit)
 			if err != nil {
@@ -1054,4 +1072,16 @@ func parseLimit(v string) (*dispatch.RateLimit, error) {
 		return nil, fmt.Errorf(`limit %q: use N/<duration> such as 15/10m, or "off"`, v)
 	}
 	return rate, nil
+}
+
+// uniqueEntries drops empty and duplicate entries and keeps the order.
+func uniqueEntries(in []string) []string {
+	var out []string
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v != "" && !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }

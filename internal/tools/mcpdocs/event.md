@@ -30,10 +30,22 @@ Run the rule pipeline again for one stored event. It writes no new event row, so
 - `id` (string, required): event id.
 
 ### rules_test
-Evaluate one match expression against an event. No rule is recorded.
+Evaluate one event trigger against one event. No rule is recorded. The checks run in trigger order: `rooms`, `allowlist`, `extract`, then `match`. The reply carries `matched`, `stage` (the check that stopped the event: `room`, `sender`, `extract`, or `match`; empty on a match), `vars`, `extracted` (the extract output), `error`, and the `room` and `identity` of the event. Give `event_id` or `event`, not both.
 - `match` (string, required): match expression, for example `kind = 'mail'`.
 - `extract` (string, optional): extract expression.
-- `event` (any, optional): event payload.
+- `rooms` (array, optional): room ids the trigger takes; empty takes every room.
+- `allowlist` (array, optional): sender ids the trigger takes; empty takes every sender.
+- `event_id` (string, optional): a stored event id; the event payload, room, and sender come from the event log.
+- `event` (any, optional): a draft event payload. A `trebi-connector/1` event gives its `room.id` and `sender.id`.
+- `connector` (string, optional): connector of a draft `event`; `email` compares senders without case.
+
+### rules_test_batch
+Evaluate one event trigger against up to 50 stored events, in order. The reply is `results`: one row per event with `event_id`, `matched`, `stage`, `vars`, `extracted`, and `error`. A missing event gives a row with the error `event not found`.
+- `match` (string, required): match expression.
+- `extract` (string, optional): extract expression.
+- `rooms` (array, optional): room ids the trigger takes.
+- `allowlist` (array, optional): sender ids the trigger takes.
+- `event_ids` (array, required): stored event ids, at most 50.
 
 ### rules_fire
 Evaluate one rule and fire its actions when it matches.

@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 34
+const SchemaVersion = 35
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -999,5 +999,8 @@ UPDATE runs SET connectors_json = NULL WHERE connectors_json IS NOT NULL AND con
 		// v34: trigger flood control (plan 2026-09-30). A manual or
 		// scheduled launch that waits for a live run keeps its request.
 		`ALTER TABLE event_queue ADD COLUMN launch_json TEXT;`,
+		// v35: the recent senders of a connection read events by instance,
+		// newest first (plan 2026-10-01 B.3).
+		`CREATE INDEX idx_events_instance ON events(instance, received_at DESC);`,
 	}
 }

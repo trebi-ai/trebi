@@ -625,3 +625,37 @@ func uniqueViolation(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "unique") || strings.Contains(msg, "constraint")
 }
+
+// RoomBinding is one room pointer of a connector instance.
+type RoomBinding struct {
+	Workspace      string `json:"workspace"`
+	Operator       string `json:"operator"` // assistant | agents/<name>
+	Room           string `json:"room"`
+	Thread         string `json:"thread"`
+	ConversationID string `json:"conversation_id"`
+}
+
+// RoomBindings lists the room pointers of one connector instance. The
+// instance is unique, so the connector type does not filter.
+func (s *Service) RoomBindings(ctx context.Context, instance string) ([]RoomBinding, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `
+		SELECT p.workspace_id, COALESCE(c.operator,''), p.room, p.thread, p.conversation_id
+		FROM channel_pointers p JOIN conversations c ON c.id = p.conversation_id
+		WHERE p.instance=? ORDER BY p.room, p.thread, p.workspace_id`, instance)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RoomBinding{}
+	for rows.Next() {
+		var b RoomBinding
+		if err := rows.Scan(&b.Workspace, &b.Operator, &b.Room, &b.Thread, &b.ConversationID); err != nil {
+			return nil, err
+		}
+		if b.Operator == "" {
+			b.Operator = "assistant"
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
