@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 
@@ -24,11 +25,11 @@ func TestControlPlane_CloudLinkUsesBootConfig(t *testing.T) {
 	t.Setenv("TREBI_HOME", dir)
 	t.Cleanup(func() { home.SetBase("") })
 
-	var mu sync.Mutex // guards path; the handler runs on a server goroutine
-	var path string
+	var mu sync.Mutex // guards paths; the handler runs on a server goroutine
+	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		path = r.URL.Path
+		paths = append(paths, r.URL.Path) // the link socket can call after the register
 		mu.Unlock()
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(`{"device_id":"01m3a1b2c3d4e5f6g7h8j9k0m1"}`))
@@ -50,9 +51,9 @@ func TestControlPlane_CloudLinkUsesBootConfig(t *testing.T) {
 		t.Fatalf("Link: %v", err)
 	}
 	mu.Lock()
-	got := path
+	got := slices.Clone(paths)
 	mu.Unlock()
-	if got != "/v1/devices" {
-		t.Fatalf("register path = %q; want /v1/devices", got)
+	if len(got) == 0 || got[0] != "/v1/devices" {
+		t.Fatalf("paths = %q; want /v1/devices first", got)
 	}
 }
