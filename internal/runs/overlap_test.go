@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -345,5 +348,116 @@ func TestActionErrorKeepsLiveRun(t *testing.T) {
 	got, _ := svc.Get(ctx, live.ID)
 	if got.Status != runs.StatusRunning {
 		t.Fatalf("live status=%s end=%s, want running", got.Status, got.EndReason)
+	}
+}
+
+// TestContinueConversation pins session.continue: with no live run, an event
+// of a known conversation resumes the session of its last finished run.
+func TestContinueConversation(t *testing.T) {
+	const day = int64(24 * time.Hour / time.Millisecond)
+	cases := []struct {
+		name       string
+		continueMS int64
+		status     runs.Status
+		harness    string
+		transcript bool
+		wantResume bool
+		wantEvent  bool
+	}{
+		{name: "complete run continues", continueMS: day, status: runs.StatusComplete, harness: "fake", transcript: true, wantResume: true},
+		{name: "timed out run continues", continueMS: day, status: runs.StatusTimedOut, harness: "fake", transcript: true, wantResume: true},
+		{name: "setting off", continueMS: 0, status: runs.StatusComplete, harness: "fake", transcript: true},
+		{name: "outside window", continueMS: 1, status: runs.StatusComplete, harness: "fake", transcript: true},
+		{name: "failed run starts fresh", continueMS: day, status: runs.StatusFailed, harness: "fake", transcript: true},
+		{name: "other harness starts fresh", continueMS: day, status: runs.StatusComplete, harness: "codex", transcript: true},
+		{name: "session file missing", continueMS: day, status: runs.StatusComplete, harness: "fake", wantEvent: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, ctx := openRuns(t)
+			if tc.transcript {
+				dir := home.HarnessDir("fake")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "transcript.jsonl"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			prev, err := svc.Create(ctx, runs.CreateOpts{
+				WorkspaceID: "ws", Job: "demo", Harness: tc.harness, Reason: runs.ReasonTrigger,
+				ConversationKey: "thread-1", SessionID: "sess-1", WorkingDir: t.TempDir(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.Terminate(ctx, prev.ID, tc.status, runs.EndResult, nil); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(5 * time.Millisecond)
+			run, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+				CreateOpts: runs.CreateOpts{
+					WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+					ConversationKey: "thread-1", QueueID: "q-2",
+				},
+				Prompt: "reply", Conversation: true, ContinueMS: tc.continueMS,
+				FakeCommand: []string{"sh", "-c", `echo "$TREBI_RUN_COMPLETE"`},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome != "" || run.ID == prev.ID {
+				t.Fatalf("outcome=%q run=%s: want a new launch", outcome, run.ID)
+			}
+			resumed := run.ResumedFrom == prev.ID && run.SessionID == "sess-1"
+			if resumed != tc.wantResume {
+				t.Fatalf("resumed_from=%q session=%q, want resume=%v", run.ResumedFrom, run.SessionID, tc.wantResume)
+			}
+			if run.Reason != runs.ReasonTrigger {
+				t.Fatalf("reason=%s want trigger", run.Reason)
+			}
+			want := tc.status
+			if resumed {
+				want = runs.StatusResumed
+			}
+			got, _ := svc.Get(ctx, prev.ID)
+			if got.Status != want {
+				t.Fatalf("previous status=%s want %s", got.Status, want)
+			}
+			tl, err := svc.Timeline(ctx, run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := slices.ContainsFunc(tl.Events, func(e runs.TimelinePoint) bool { return e.Kind == "continue_fallback" })
+			if event != tc.wantEvent {
+				t.Fatalf("continue_fallback event=%v want %v", event, tc.wantEvent)
+			}
+		})
+	}
+}
+
+// TestContinueConversationCoalesces proves a live run of the conversation
+// still takes the message, so two close events never resume one session twice.
+func TestContinueConversationCoalesces(t *testing.T) {
+	svc, ctx := openRuns(t)
+	live, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws", Job: "demo", Harness: "fake", ConversationKey: "thread-1",
+		SessionID: "sess-1", TmuxSession: "trebi-live-c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+			ConversationKey: "thread-1",
+		},
+		Prompt: "reply", Conversation: true, ContinueMS: 3600_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != runs.OverlapCoalesce || run.ID != live.ID {
+		t.Fatalf("outcome=%q run=%s: want coalesce into %s", outcome, run.ID, live.ID)
 	}
 }

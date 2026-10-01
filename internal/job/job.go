@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -109,6 +110,34 @@ type SessionYAML struct {
 	Nudge       string `yaml:"nudge,omitempty"`
 	Resumable   string `yaml:"resumable,omitempty"`
 	IfRunning   string `yaml:"if_running,omitempty"`
+	// Continue is how long after a run ends a new event of the same
+	// conversation continues its session. Empty is off.
+	Continue string `yaml:"continue,omitempty"`
+}
+
+// ContinueMS parses session.continue: a Go duration or whole days ("7d").
+func (s SessionYAML) ContinueMS() (int64, error) {
+	v := strings.TrimSpace(s.Continue)
+	if v == "" {
+		return 0, nil
+	}
+	var d time.Duration
+	if days, ok := strings.CutSuffix(v, "d"); ok {
+		n, err := strconv.Atoi(days)
+		if err != nil {
+			return 0, fmt.Errorf("continue %q: must be a duration such as 12h or 7d", v)
+		}
+		d = time.Duration(n) * 24 * time.Hour
+	} else {
+		var err error
+		if d, err = time.ParseDuration(v); err != nil {
+			return 0, fmt.Errorf("continue %q: must be a duration such as 12h or 7d", v)
+		}
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("continue %q: must not be negative", v)
+	}
+	return d.Milliseconds(), nil
 }
 
 // ValidateIfRunning rejects an if_running value that is not queue, skip,
@@ -323,6 +352,7 @@ type LaunchDefaults struct {
 	IdleTimeoutMS int64
 	KeepAliveMS   int64
 	NudgeMS       int64
+	ContinueMS    int64
 }
 
 // ResolvedWorkingDir is working_dir, else the JOB.md directory.
@@ -438,6 +468,7 @@ func (j *Job) LaunchEnv() map[string]string {
 // LaunchDefaults returns the four-line launch seam (cwd / if_running / env / knobs).
 func (j *Job) LaunchDefaults() LaunchDefaults {
 	maxMS, idleMS, keepMS, nudgeMS := j.Session.KnobsMS()
+	continueMS, _ := j.Session.ContinueMS() // Parse rejects a bad value
 	return LaunchDefaults{
 		WorkingDir:    j.ResolvedWorkingDir(),
 		IfRunning:     j.Session.IfRunning,
@@ -448,6 +479,7 @@ func (j *Job) LaunchDefaults() LaunchDefaults {
 		IdleTimeoutMS: idleMS,
 		KeepAliveMS:   keepMS,
 		NudgeMS:       nudgeMS,
+		ContinueMS:    continueMS,
 	}
 }
 
@@ -620,6 +652,9 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		return parseFail(filePath, hash, fmt.Errorf("triggers: %w", err))
 	}
 	if err := ValidateIfRunning(fm.Session.IfRunning); err != nil {
+		return parseFail(filePath, hash, fmt.Errorf("session: %w", err))
+	}
+	if _, err := fm.Session.ContinueMS(); err != nil {
 		return parseFail(filePath, hash, fmt.Errorf("session: %w", err))
 	}
 

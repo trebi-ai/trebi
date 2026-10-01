@@ -21,7 +21,7 @@ func TestMergePatchFrontmatter(t *testing.T) {
 	err := job.MergePatchFrontmatter(path, map[string]any{
 		"harness":  "claude",
 		"title":    "New",
-		"session":  map[string]any{"if_running": "replace", "idle_timeout": "10m"},
+		"session":  map[string]any{"if_running": "replace", "idle_timeout": "10m", "continue": "7d"},
 		"disabled": true,
 	})
 	if err != nil {
@@ -51,7 +51,7 @@ func TestMergePatchFrontmatter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if j.Harness != "claude" || !j.Disabled || j.Session.IfRunning != "replace" {
+	if j.Harness != "claude" || !j.Disabled || j.Session.IfRunning != "replace" || j.Session.Continue != "7d" {
 		t.Fatalf("%+v", j)
 	}
 }

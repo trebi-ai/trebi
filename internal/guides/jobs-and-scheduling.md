@@ -50,6 +50,7 @@ The prompt body. This is what the harness receives.
 - `when` is an inline shell gate: the job runs only when `match` over `out` is true.
 - `limit` sets how often an event trigger starts a run: `N/<duration>`, or `off`. The default is `15/10m`. Events above the limit wait in order. When 10 events wait, Trebi drops new events and opens one inbox item.
 - `session.if_running` tells Trebi what to do when a run of the job is still active: `queue` (default) starts the new run after the active run, `skip` drops it, and `replace` stops the active run.
+- `session.continue` (for example `7d`) keeps a conversation going after its run ends. An event with the same conversation key continues the session of the last run when that run ended inside the window. Set `conversation_key` in the trigger `extract` (for example a thread id). Without it, all events of one room share a conversation.
 - Only `harness` (name, or a `{name, model, effort}` map), `triggers`, `envset` (a name or a list of names, applied in order), `env` (inline map), and `session.idle_timeout` are canonical frontmatter; keep other fields minimal.
 
 ## Create, inspect, validate

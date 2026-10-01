@@ -557,3 +557,34 @@ func TestIfRunningValues(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionContinue(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{value: "", want: 0},
+		{value: "12h", want: 12 * time.Hour},
+		{value: "7d", want: 7 * 24 * time.Hour},
+		{value: "soon", wantErr: true},
+		{value: "-1h", wantErr: true},
+	}
+	for _, tc := range cases {
+		raw := "---\nharness: claude\nsession:\n  continue: \"" + tc.value + "\"\n---\nbody\n"
+		j, err := job.ParseBytes("/ws/x/JOB.md", []byte(raw))
+		if tc.wantErr {
+			if err == nil && j.ParseError == "" {
+				t.Fatalf("continue %q: want a parse error", tc.value)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("continue %q: %v", tc.value, err)
+		}
+		if got := j.LaunchDefaults().ContinueMS; got != tc.want.Milliseconds() {
+			t.Fatalf("continue %q: got %dms want %s", tc.value, got, tc.want)
+		}
+	}
+}

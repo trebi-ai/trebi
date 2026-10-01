@@ -69,6 +69,7 @@ var patchSessionFields = map[string]string{ //nolint:gochecknoglobals // static 
 	"session.nudge":        "nudge",
 	"session.resumable":    "resumable",
 	"session.if_running":   "if_running",
+	"session.continue":     "continue",
 }
 
 // MergePatchFrontmatter applies a JSON-merge-patch of known scalar frontmatter fields.

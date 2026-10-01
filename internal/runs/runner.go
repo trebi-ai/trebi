@@ -3,6 +3,7 @@ package runs
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -127,6 +128,10 @@ type LaunchOpts struct {
 	// conversation, whatever IfRunning says. The queue lane sets it for an
 	// item with a conversation key.
 	Conversation bool
+	// ContinueMS is session.continue: with Conversation and no live run, the
+	// launch continues the session of the newest run of the conversation
+	// that ended inside this window. 0 is off.
+	ContinueMS int64
 	// BypassOverlap launches next to a live run. Only resume paths set it.
 	BypassOverlap bool
 }
@@ -205,7 +210,8 @@ func (o *LaunchOpts) applyResumePlan(plan *tmux.LaunchPlan) {
 	if o.ResumedFrom == "" {
 		o.ResumedFrom = o.ResumeSessionID
 	}
-	if o.Reason != ReasonRequest {
+	// A request answer and a conversation event keep their own reason.
+	if o.Reason != ReasonRequest && o.Reason != ReasonTrigger {
 		o.Reason = ReasonResume
 	}
 }
@@ -257,6 +263,10 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 		}
 		outcome = oc
 	}
+	var fallback map[string]string
+	if opts.Conversation && opts.ContinueMS > 0 && opts.ResumeSessionID == "" {
+		fallback = s.continueConversation(ctx, &opts)
+	}
 
 	if opts.SessionID == "" && opts.ResumeSessionID == "" {
 		opts.SessionID = uuid.NewString()
@@ -275,9 +285,65 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	}
 	opts.CreateOpts.Prompt = opts.Prompt
 
+	run, err := s.launch(ctx, opts)
+	if err == nil && run != nil && fallback != nil {
+		s.AddEvent(ctx, run.ID, "continue_fallback", "runner", fallback)
+	}
+	return run, outcome, err
+}
+
+// continueConversation points opts at the session of the newest finished run
+// of its conversation when that run ended inside the session.continue window.
+// It returns the run event detail when a session was due but cannot continue.
+func (s *Service) continueConversation(ctx context.Context, opts *LaunchOpts) map[string]string {
+	rows, err := s.List(ctx, ListOpts{
+		Workspace:            opts.WorkspaceID,
+		Job:                  opts.Job,
+		Kind:                 opts.Kind,
+		ConversationKey:      opts.ConversationKey,
+		ConversationKeyExact: true,
+		Limit:                20,
+	})
+	if err != nil {
+		s.log.Warn("continue lookup", "job", opts.Job, "error", err)
+		return nil
+	}
+	// A skip row has no session; the newest row with one is the conversation.
+	i := slices.IndexFunc(rows, func(r *Run) bool { return r.SessionID != "" })
+	if i < 0 {
+		return nil
+	}
+	prev := rows[i]
+	switch prev.Status {
+	case StatusComplete, StatusExited, StatusTimedOut:
+	default:
+		return nil
+	}
+	if prev.EndedAt == nil || time.Since(*prev.EndedAt) > time.Duration(opts.ContinueMS)*time.Millisecond {
+		return nil
+	}
+	if opts.Harness != "" && prev.Harness != opts.Harness {
+		return nil
+	}
+	if tool, ok := tmux.ByName(prev.Harness); ok {
+		dir := tmux.TranscriptWorkingDir(prev.Harness, prev.WorkingDir, prev.StartedAt)
+		path, err := tool.TranscriptPath(home.HarnessDir(prev.Harness), dir, prev.SessionID)
+		if err == nil {
+			if _, statErr := os.Stat(path); statErr != nil {
+				return map[string]string{"from": prev.ID, "because": "session file not found"}
+			}
+		}
+	}
+	opts.ResumeSessionID = prev.SessionID
+	opts.ResumedFrom = prev.ID
+	opts.WorkingDir = cmp.Or(prev.WorkingDir, opts.WorkingDir)
+	return nil
+}
+
+// launch starts the run on the runtime that opts select.
+func (s *Service) launch(ctx context.Context, opts LaunchOpts) (*Run, error) {
 	if opts.wantsFake() {
-		run, err := s.launchFake(ctx, opts)
-		return run, outcome, err
+		return s.launchFake(ctx, opts)
 	}
 	command := opts.Command
 	if command == "" {
@@ -287,22 +353,17 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	// TREBI_ALLOW_FAKE_FALLBACK=1, else fail fast.
 	if command != "" && commandUnavailable(command) {
 		if os.Getenv("TREBI_ALLOW_FAKE_FALLBACK") == "1" {
-			run, err := s.launchFake(ctx, opts)
-			return run, outcome, err
+			return s.launchFake(ctx, opts)
 		}
-		run, err := s.failFast(ctx, opts)
-		return run, outcome, err
+		return s.failFast(ctx, opts)
 	}
 
 	// Subprocess is the default vendor runtime (Part F); runtime: tui, the
 	// kill switch, or a harness without a proven wire stays on the pane.
 	if s.wantsCLI(tmux.Detect(command), opts) {
-		run, err := s.launchCLI(ctx, opts)
-		return run, outcome, err
+		return s.launchCLI(ctx, opts)
 	}
-
-	run, err := s.launchTmux(ctx, opts)
-	return run, outcome, err
+	return s.launchTmux(ctx, opts)
 }
 
 // resolveActions resolves the connector names of a launch and checks the
