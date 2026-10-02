@@ -35,6 +35,8 @@ func runsCommand() *cli.Command {
 					&cli.StringFlag{Name: "since", Usage: "RFC3339 time or a duration such as 24h"},
 					&cli.StringFlag{Name: "until", Usage: "RFC3339 time or a duration such as 1h"},
 					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (run id)"},
+					&cli.BoolFlag{Name: "group", Usage: "one row per session: its newest turn, with the turn count"},
+					&cli.StringFlag{Name: "first-run", Usage: "list the turns of one session (its first_run_id)"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 20, Usage: "max rows"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
@@ -508,6 +510,7 @@ func runRunsList(_ context.Context, c *cli.Command) error {
 		Cursor: c.String("cursor"), Harness: c.String("harness"), Model: c.String("model"),
 		EndReason: c.String("end-reason"), Q: c.String("search"),
 		Since: c.String("since"), Until: c.String("until"), Limit: c.Int("limit"),
+		FirstRun: c.String("first-run"), Group: c.Bool("group"),
 	}
 	// Fetch a wider page when conversation filter needs post-filter.
 	conv := c.String("conversation")
@@ -539,9 +542,13 @@ func runRunsList(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
-	tbl := newTable(w, []string{"ID", "Job", "Kind", "Status", "Harness", "Started", "Reason", "Conversation"})
+	tbl := newTable(w, []string{"ID", "Job", "Kind", "Status", "Harness", "Started", "Reason", "Conversation", "Turns"})
 	for _, r := range body.Runs {
 		status := mapStr(r, "status")
+		turns := "-"
+		if t, ok := r["turns"].(map[string]any); ok {
+			turns = fmt.Sprint(t["count"])
+		}
 		tbl.AppendRow(table.Row{
 			mapStr(r, "id"),
 			mapStr(r, "job"),
@@ -551,6 +558,7 @@ func runRunsList(_ context.Context, c *cli.Command) error {
 			dash(mapStr(r, "started_at")),
 			dash(mapStr(r, "reason")),
 			dash(mapStr(r, "conversation_key")),
+			turns,
 		})
 	}
 	renderTable(tbl)

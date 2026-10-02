@@ -154,6 +154,14 @@ type RunSummary struct {
 	CostUSD    float64   `json:"cost_usd"`
 }
 
+// Turns sums the runs of one resume chain.
+type Turns struct {
+	Count      int       `json:"count"`
+	StartedAt  time.Time `json:"started_at"`
+	DurationMS int64     `json:"duration_ms"`
+	CostUSD    float64   `json:"cost_usd"`
+}
+
 // Outcome is a human verdict over a terminal run's machine status. The
 // reaper's status/end_reason stay as recorded; display, job health, and the
 // inbox read the outcome instead.
@@ -255,10 +263,15 @@ type Run struct {
 	CoalescedCount    int                `json:"coalesced_count,omitempty"`
 	Session           SessionSpec        `json:"session"`
 	ResumedFrom       string             `json:"resumed_from,omitempty"`
-	ResumeAttempts    int                `json:"resume_attempts,omitempty"`
-	Outcome           *Outcome           `json:"outcome,omitempty"`
-	QueueID           string             `json:"queue_id,omitempty"`
-	TraceID           string             `json:"trace_id"`
+	// FirstRunID is the first run of the resume chain: the run itself when
+	// it is no resume. All runs of one chain are the turns of one session.
+	FirstRunID string `json:"first_run_id"`
+	// Turns sums the chain. Get and a grouped list set it.
+	Turns          *Turns   `json:"turns,omitempty"`
+	ResumeAttempts int      `json:"resume_attempts,omitempty"`
+	Outcome        *Outcome `json:"outcome,omitempty"`
+	QueueID        string   `json:"queue_id,omitempty"`
+	TraceID        string   `json:"trace_id"`
 	// MemoryHash is the launch-time MEMORY.md hash; empty when memory is off.
 	MemoryHash string `json:"memory_hash,omitempty"`
 	// RuntimePID is the subprocess child pid for runtime=cli runs.

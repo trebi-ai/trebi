@@ -1029,3 +1029,58 @@ func TestUnparkCompletesParkedRun(t *testing.T) {
 		t.Fatalf("second unpark: %v", err)
 	}
 }
+
+// TestRunTurns proves that a resume chain shares one first run, that a
+// grouped list shows the newest turn once, and that turns sum the chain.
+func TestRunTurns(t *testing.T) {
+	svc, _, ctx := openRunsStore(t)
+	first, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := first
+	for range 2 {
+		if err := svc.Terminate(ctx, prev.ID, runs.StatusComplete, runs.EndSentinel, nil); err != nil {
+			t.Fatal(err)
+		}
+		if prev, err = svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude", ResumedFrom: prev.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prev.FirstRunID != first.ID || other.FirstRunID != other.ID {
+		t.Fatalf("first runs = %s, %s", prev.FirstRunID, other.FirstRunID)
+	}
+
+	list, err := svc.List(ctx, runs.ListOpts{Workspace: "ws", Group: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].ID != other.ID || list[1].ID != prev.ID {
+		t.Fatalf("grouped = %v", list)
+	}
+	if tt := list[1].Turns; tt == nil || tt.Count != 3 || tt.StartedAt.After(first.StartedAt) {
+		t.Fatalf("turns = %+v", list[1].Turns)
+	}
+	if list[0].Turns == nil || list[0].Turns.Count != 1 {
+		t.Fatalf("single = %+v", list[0].Turns)
+	}
+
+	chain, err := svc.List(ctx, runs.ListOpts{FirstRun: first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chain) != 3 || chain[2].ID != first.ID {
+		t.Fatalf("chain = %v", chain)
+	}
+	got, err := svc.Get(ctx, prev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err = svc.WithTurns(ctx, got); err != nil || got.Turns.Count != 3 {
+		t.Fatalf("with turns = %+v %v", got.Turns, err)
+	}
+}

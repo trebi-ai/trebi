@@ -21,6 +21,8 @@ List runs, newest first.
 - `q` (string, optional): text match on the prompt preview, the job, or the id.
 - `since` (string, optional): RFC3339 time, or a duration such as `24h` meaning "that long ago".
 - `until` (string, optional): RFC3339 time, or a duration such as `1h`.
+- `group` (boolean, optional): true lists one row per session: its newest turn. A resume of a run is a new turn of the same session. `turns` on each row holds the count, the first start, the total duration, and the total cost.
+- `first_run` (string, optional): list the turns of one session. Give the `first_run_id` of any of its runs.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.
 

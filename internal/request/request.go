@@ -1635,7 +1635,10 @@ type RunsQuery struct {
 	Q            string
 	Since        string
 	Until        string
-	Limit        int
+	// FirstRun lists the turns of one session; Group lists one row per session.
+	FirstRun string
+	Group    bool
+	Limit    int
 }
 
 // Path renders the query as GET /v1/runs.
@@ -1653,6 +1656,10 @@ func (r RunsQuery) Path() string {
 		"q":            r.Q,
 		"since":        r.Since,
 		"until":        r.Until,
+		"first_run":    r.FirstRun,
+	}
+	if r.Group {
+		kv["group"] = "true"
 	}
 	if r.Limit > 0 {
 		kv["limit"] = strconv.Itoa(r.Limit)

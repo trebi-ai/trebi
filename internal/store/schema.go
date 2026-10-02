@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 36
+const SchemaVersion = 37
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1011,6 +1011,18 @@ ALTER TABLE events ADD COLUMN reply_to TEXT;
 ALTER TABLE events ADD COLUMN root TEXT;
 CREATE INDEX idx_events_instance_root ON events(instance, root, received_at);
 ALTER TABLE event_queue ADD COLUMN follow_up INTEGER NOT NULL DEFAULT 0;
+`,
+		// v37: first_run_id links the turns of one session: each resume
+		// names the first run of its chain.
+		`
+ALTER TABLE runs ADD COLUMN first_run_id TEXT;
+WITH RECURSIVE chain(id, first) AS (
+    SELECT id, id FROM runs WHERE COALESCE(resumed_from,'') = ''
+    UNION ALL
+    SELECT r.id, chain.first FROM runs r JOIN chain ON r.resumed_from = chain.id
+)
+UPDATE runs SET first_run_id = (SELECT first FROM chain WHERE chain.id = runs.id);
+CREATE INDEX idx_runs_first_run ON runs(first_run_id);
 `,
 	}
 }

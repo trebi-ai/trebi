@@ -291,3 +291,42 @@ func writeAgentFixture(t *testing.T, wsDir string) {
 		}
 	}
 }
+
+// TestRunsGroupedTurns covers group=true, first_run, and turns on a run.
+func TestRunsGroupedTurns(t *testing.T) {
+	_, base, dir := startAPI(t)
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+	first, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "fake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, first.ID, runs.StatusComplete, runs.EndSentinel, nil); err != nil {
+		t.Fatal(err)
+	}
+	next, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "fake", ResumedFrom: first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	_, out, _ := doJSON(t, "GET", base+"/v1/runs?group=true", nil)
+	rows, _ := out["runs"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("grouped = %v", out)
+	}
+	row, _ := rows[0].(map[string]any)
+	turns, _ := row["turns"].(map[string]any)
+	if row["id"] != next.ID || row["first_run_id"] != first.ID || turns["count"] != float64(2) {
+		t.Fatalf("row = %v", row)
+	}
+	_, out, _ = doJSON(t, "GET", base+"/v1/runs?first_run="+first.ID, nil)
+	if rows, _ := out["runs"].([]any); len(rows) != 2 {
+		t.Fatalf("chain = %v", out)
+	}
+	_, out, _ = doJSON(t, "GET", base+"/v1/runs/"+first.ID, nil)
+	if turns, _ := out["turns"].(map[string]any); turns["count"] != float64(2) {
+		t.Fatalf("get = %v", out)
+	}
+}

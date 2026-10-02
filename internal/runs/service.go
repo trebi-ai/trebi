@@ -415,7 +415,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 			COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
 			trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
 			COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
-			outcome, COALESCE(outcome_note,''), outcome_at
+			outcome, COALESCE(outcome_note,''), outcome_at, COALESCE(first_run_id, id)
 		FROM runs WHERE id = ?`, id)
 	return s.scanRun(row)
 }
@@ -464,7 +464,11 @@ type ListOpts struct {
 	ConversationKeyExact bool
 	// Conversation matches conversation_id.
 	Conversation string
-	EndReason    string
+	// FirstRun lists the turns of one session: the runs of its resume chain.
+	FirstRun string
+	// Group lists one row per session: its newest turn, with Turns set.
+	Group     bool
+	EndReason string
 	// Q matches the prompt preview, the job, and the run id.
 	Q string
 	// Since and Until bound started_at; both are optional.
@@ -491,7 +495,7 @@ func (o ListOpts) query() (string, []any) {
 		COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
 		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
 		COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
-		outcome, COALESCE(outcome_note,''), outcome_at
+		outcome, COALESCE(outcome_note,''), outcome_at, COALESCE(first_run_id, id)
 		FROM runs WHERE 1=1`
 	var args []any
 	if o.Workspace != "" {
@@ -534,6 +538,13 @@ func (o ListOpts) query() (string, []any) {
 		q += ` AND conversation_id = ?`
 		args = append(args, o.Conversation)
 	}
+	if o.FirstRun != "" {
+		q += ` AND COALESCE(first_run_id, id) = ?`
+		args = append(args, o.FirstRun)
+	}
+	if o.Group {
+		q += ` AND id IN (SELECT MAX(id) FROM runs GROUP BY COALESCE(first_run_id, id))`
+	}
 	if o.EndReason != "" {
 		q += ` AND end_reason = ?`
 		args = append(args, o.EndReason)
@@ -562,40 +573,16 @@ func (o ListOpts) query() (string, []any) {
 
 // List returns runs newest first.
 func (s *Service) List(ctx context.Context, opts ListOpts) ([]*Run, error) {
-	if opts.Limit <= 0 {
-		opts.Limit = 50
+	out, err := s.list(ctx, opts)
+	if err != nil || !opts.Group {
+		return out, err
 	}
-	if !opts.pseudoStatus() {
-		return s.listPage(ctx, opts)
-	}
-	want := opts.Limit
-	var out []*Run
-	cursor := opts.Cursor
-	for len(out) < want {
-		pageOpts := opts
-		pageOpts.Limit = want * 4
-		pageOpts.Cursor = cursor
-		page, err := s.listPage(ctx, pageOpts)
-		if err != nil {
-			return nil, err
-		}
-		if len(page) == 0 {
-			break
-		}
-		for _, r := range page {
-			if string(r.SessionState) == opts.Status {
-				out = append(out, r)
-				if len(out) == want {
-					break
-				}
-			}
-		}
-		cursor = page[len(page)-1].ID
-		if len(page) < pageOpts.Limit {
-			break
-		}
-	}
-	return out, nil
+	return out, s.fillTurns(ctx, out)
+}
+
+// WithTurns sets Turns on r from its chain.
+func (s *Service) WithTurns(ctx context.Context, r *Run) (*Run, error) {
+	return r, s.fillTurns(ctx, []*Run{r})
 }
 
 func (s *Service) listPage(ctx context.Context, opts ListOpts) ([]*Run, error) {
@@ -1502,6 +1489,13 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		connectorsJSON = &s
 	}
 
+	run.FirstRunID = run.ID
+	if opts.ResumedFrom != "" {
+		err := tx.QueryRow(`SELECT COALESCE(first_run_id, id) FROM runs WHERE id = ?`, opts.ResumedFrom).Scan(&run.FirstRunID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("first run of %s: %w", opts.ResumedFrom, err)
+		}
+	}
 	_, err := tx.Exec(`INSERT INTO runs (
 		id, workspace_id, job, kind, reason, status, prompt_preview, inputs_json,
 		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json,
@@ -1509,15 +1503,15 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		attach_kind, runtime_pid, actor_token_hash,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		resumed_from, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at,
-		connectors_json
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		connectors_json, first_run_id
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.Job, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON,
 		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.TmuxSession),
 		store.NullStr(attachKindFor(opts)), nil, opts.ActorTokenHash,
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
 		store.NullStr(opts.ResumedFrom), opts.ResumeAttempts, queueID, opts.TraceID, opts.MemoryHash, 1, nowStr,
-		connectorsJSON,
+		connectorsJSON, run.FirstRunID,
 	)
 	if err != nil {
 		return err
@@ -1823,7 +1817,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		&started, &ended, &maxD, &idle, &keep, &nudge,
 		&resumedFrom, &resumeAtt, &qid, &trace, &rev,
 		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
-		&memoryHash, &runtimePID, &attachKind, &outcomeStatus, &outcomeNote, &outcomeAt,
+		&memoryHash, &runtimePID, &attachKind, &outcomeStatus, &outcomeNote, &outcomeAt, &r.FirstRunID,
 	)
 	if err != nil {
 		return nil, err
@@ -1903,4 +1897,96 @@ func trunc(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// fillTurns sets Turns on each run from all runs of its chain.
+func (s *Service) fillTurns(ctx context.Context, list []*Run) error {
+	if len(list) == 0 {
+		return nil
+	}
+	byFirst := map[string][]*Run{}
+	args := make([]any, 0, len(list))
+	for _, r := range list {
+		if byFirst[r.FirstRunID] == nil {
+			args = append(args, r.FirstRunID)
+		}
+		byFirst[r.FirstRunID] = append(byFirst[r.FirstRunID], r)
+	}
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT COALESCE(first_run_id, id), started_at, ended_at,
+		COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
+		COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,'')
+		FROM runs WHERE COALESCE(first_run_id, id) IN (?`+strings.Repeat(",?", len(args)-1)+`)`, args...)
+	if err != nil {
+		return fmt.Errorf("run turns: %w", err)
+	}
+	defer rows.Close()
+	sums := map[string]*Turns{}
+	for rows.Next() {
+		var first, started string
+		var ended sql.NullString
+		var u pricing.TokenUsage
+		if err := rows.Scan(&first, &started, &ended, &u.Input, &u.Output, &u.CacheRead, &u.CacheCreation, &u.Model); err != nil {
+			return err
+		}
+		t := sums[first]
+		if t == nil {
+			t = &Turns{}
+			sums[first] = t
+		}
+		at := store.ParseTS(started)
+		if t.Count == 0 || at.Before(t.StartedAt) {
+			t.StartedAt = at
+		}
+		t.Count++
+		end := time.Now()
+		if ended.Valid {
+			end = store.ParseTS(ended.String)
+		}
+		t.DurationMS += end.Sub(at).Milliseconds()
+		u.ApplyRates()
+		t.CostUSD += u.CostUSD
+	}
+	for first, t := range sums {
+		for _, r := range byFirst[first] {
+			r.Turns = t
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Service) list(ctx context.Context, opts ListOpts) ([]*Run, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 50
+	}
+	if !opts.pseudoStatus() {
+		return s.listPage(ctx, opts)
+	}
+	want := opts.Limit
+	var out []*Run
+	cursor := opts.Cursor
+	for len(out) < want {
+		pageOpts := opts
+		pageOpts.Limit = want * 4
+		pageOpts.Cursor = cursor
+		page, err := s.listPage(ctx, pageOpts)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, r := range page {
+			if string(r.SessionState) == opts.Status {
+				out = append(out, r)
+				if len(out) == want {
+					break
+				}
+			}
+		}
+		cursor = page[len(page)-1].ID
+		if len(page) < pageOpts.Limit {
+			break
+		}
+	}
+	return out, nil
 }

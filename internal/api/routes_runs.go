@@ -104,6 +104,8 @@ func (s *Server) handleRunsList(w http.ResponseWriter, r *http.Request) {
 		Model:        q.Get("model"),
 		Conversation: q.Get("conversation"),
 		EndReason:    q.Get("end_reason"),
+		FirstRun:     q.Get("first_run"),
+		Group:        q.Get("group") == "true",
 		Q:            q.Get("q"),
 		Since:        since,
 		Until:        until,
@@ -464,6 +466,10 @@ func (s *Server) handleRunGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if run, err = s.runs.WithTurns(r.Context(), run); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
