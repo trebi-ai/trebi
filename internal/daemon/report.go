@@ -43,7 +43,7 @@ ORDER BY created_at DESC, id DESC LIMIT 1`, run.Workspace, shortAgent(run.Job)).
 	}
 	if _, err := c.Email.Send(ctx, email.SendOpts{
 		WorkspaceID: run.Workspace, Agent: shortAgent(run.Job),
-		To: recipients, Subject: subject, Text: turn.Text, Markdown: true,
+		To: recipients, Subject: subject, Text: turn.Text,
 		InReplyTo: inReplyTo, RunID: run.ID, ConversationID: run.ConversationID,
 		FromName: agent.Title, Purpose: "report",
 	}); err != nil {

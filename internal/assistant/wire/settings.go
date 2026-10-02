@@ -88,6 +88,7 @@ type Settings struct {
 	Skills   []string      `json:"skills"`
 	Context  string        `json:"context"`
 	Accept   []string      `json:"email_accept"`
+	Style    job.StyleYAML `json:"email_style"`
 	Triggers []job.Trigger `json:"triggers,omitempty"`
 	// Native is the provider block of the Defaults scope only. A workspace
 	// view never fills it and a workspace PUT must reject it
@@ -138,19 +139,24 @@ type NativeTestResult struct {
 // Override is the trebi.yaml assistant block. A nil field means "inherit"
 // the global default. For Skills an empty list means "no skills".
 type Override struct {
-	Disabled *bool     `yaml:"disabled,omitempty" json:"disabled,omitempty"`
-	Name     *string   `yaml:"name,omitempty" json:"name,omitempty"`
-	Harness  *string   `yaml:"harness,omitempty" json:"harness,omitempty"`
-	Model    *string   `yaml:"model,omitempty" json:"model,omitempty"`
-	Effort   *string   `yaml:"effort,omitempty" json:"effort,omitempty"`
-	Envset   *string   `yaml:"envset,omitempty" json:"envset,omitempty"`
-	Mode     *string   `yaml:"mode,omitempty" json:"mode,omitempty"`
-	Skills   *[]string `yaml:"skills,omitempty" json:"skills,omitempty"`
-	Context  *string   `yaml:"context,omitempty" json:"context,omitempty"`
-	Email    *struct {
-		Accept []string `yaml:"accept" json:"accept"`
-	} `yaml:"email,omitempty" json:"email,omitempty"`
-	Triggers []job.Trigger `yaml:"triggers,omitempty" json:"triggers,omitempty"`
+	Disabled *bool          `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+	Name     *string        `yaml:"name,omitempty" json:"name,omitempty"`
+	Harness  *string        `yaml:"harness,omitempty" json:"harness,omitempty"`
+	Model    *string        `yaml:"model,omitempty" json:"model,omitempty"`
+	Effort   *string        `yaml:"effort,omitempty" json:"effort,omitempty"`
+	Envset   *string        `yaml:"envset,omitempty" json:"envset,omitempty"`
+	Mode     *string        `yaml:"mode,omitempty" json:"mode,omitempty"`
+	Skills   *[]string      `yaml:"skills,omitempty" json:"skills,omitempty"`
+	Context  *string        `yaml:"context,omitempty" json:"context,omitempty"`
+	Email    *EmailOverride `yaml:"email,omitempty" json:"email,omitempty"`
+	Triggers []job.Trigger  `yaml:"triggers,omitempty" json:"triggers,omitempty"`
+}
+
+// EmailOverride is the email block of the assistant: the inbound gate and
+// the mail style of the workspace.
+type EmailOverride struct {
+	Accept []string       `yaml:"accept" json:"accept"`
+	Style  *job.StyleYAML `yaml:"style,omitempty" json:"style,omitempty"`
 }
 
 // Effective is Settings plus where each field came from.

@@ -2,6 +2,7 @@ package workspaces
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
@@ -96,4 +97,35 @@ func trimAgentPrefix(name string) string {
 		return name[len(prefix):]
 	}
 	return name
+}
+
+// EmailStyle returns the mail style of one sender. The trebi.yaml assistant
+// block sets the workspace style; an agent's AGENT.md overrides each field.
+func (s *Service) EmailStyle(ctx context.Context, workspaceID, agent string) (job.StyleYAML, error) {
+	ov, _, err := s.AssistantOverride(ctx, workspaceID)
+	if err != nil {
+		return job.StyleYAML{}, err
+	}
+	var style job.StyleYAML
+	if ov.Email != nil && ov.Email.Style != nil {
+		if err := ov.Email.Style.Validate(); err != nil {
+			return job.StyleYAML{}, fmt.Errorf("trebi.yaml assistant: %w", err)
+		}
+		style = *ov.Email.Style
+	}
+	if agent == "" {
+		return style, nil
+	}
+	rows, err := s.ListJobs(ctx, workspaceID)
+	if err != nil {
+		return style, err
+	}
+	for _, row := range rows {
+		if row.Kind == "agent" && trimAgentPrefix(row.Name) == agent {
+			if j, _ := job.ParseFile(row.Path); j != nil {
+				return j.EmailStyle.Merge(style), nil
+			}
+		}
+	}
+	return style, nil
 }

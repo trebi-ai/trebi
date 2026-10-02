@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -404,7 +405,7 @@ func TestSendParts(t *testing.T) {
 	}
 
 	if _, err := s.Send(t.Context(), SendOpts{
-		WorkspaceID: "ws_1", To: []string{"ops@example.com"}, Subject: "report", Text: "Runs are **up**.", Markdown: true,
+		WorkspaceID: "ws_1", To: []string{"ops@example.com"}, Subject: "report", Text: "Runs are **up**.",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -414,6 +415,22 @@ func TestSendParts(t *testing.T) {
 	}
 	if sent.Text != "Runs are **up**." || !strings.Contains(sent.HTML, "<strong") {
 		t.Errorf("markdown send: text %q, html %q", sent.Text, sent.HTML)
+	}
+
+	long := strings.Repeat("Run "+strings.Repeat("ok and ", 60)+"done.\n\n", 400)
+	if _, err := s.Send(t.Context(), SendOpts{
+		WorkspaceID: "ws_1", To: []string{"ops@example.com"}, Subject: "long", Text: long,
+		Attachments: []SendAttachment{{Name: "q3.csv", Content: []byte("a,b\n")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	flush(t, s)
+	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.Text != long || len(sent.HTML) > ClipBytes || len(sent.Attachments) != 2 ||
+		sent.Attachments[1].Name != FullMailName || sent.Attachments[1].Type != "text/html" {
+		t.Errorf("long send: html %d bytes, %d files", len(sent.HTML), len(sent.Attachments))
 	}
 
 	tooMany := make([]SendAttachment, MaxAttachments+1)
@@ -431,6 +448,52 @@ func TestSendParts(t *testing.T) {
 		if _, err := s.Send(t.Context(), opts); !errors.Is(err, ErrContent) {
 			t.Errorf("%s: err = %v; want ErrContent", name, err)
 		}
+	}
+}
+
+type fakeStyles map[string]job.StyleYAML
+
+func (f fakeStyles) EmailStyle(_ context.Context, workspaceID, agent string) (job.StyleYAML, error) {
+	return f[workspaceID+"/"+agent], nil
+}
+
+// TestSendStyle: a send with no HTML part gets the report layout in the
+// style of the workspace; the test mail gets the minimal layout.
+func TestSendStyle(t *testing.T) {
+	t.Parallel()
+	fw := &fakeWorker{token: "test-token-0000"}
+	srv := httptest.NewServer(fw.handler())
+	t.Cleanup(srv.Close)
+	s := testService(openEmailStore(t)).WithStyles(fakeStyles{
+		"ws_1/": {Accent: "#0f766e", Logo: "https://acme.com/l.png", Footer: "Acme Ops"},
+	})
+	configureTest(s, srv.URL)
+	if _, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(t.Context(), SendOpts{
+		WorkspaceID: "ws_1", To: []string{"ops@example.com"}, Subject: "digest", Text: "See [runs](https://x.io).", FromName: "Growth",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	flush(t, s)
+	var sent SendRequest
+	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{"border-top:4px solid #0f766e", `src="https://acme.com/l.png" alt="Growth"`, "Acme Ops", "color:#0f766e"} {
+		if !strings.Contains(sent.HTML, w) {
+			t.Errorf("send html misses %q", w)
+		}
+	}
+	if _, err := s.Test(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sent.HTML, "The email channel works.") || strings.Contains(sent.HTML, "border-top:4px") {
+		t.Errorf("test html = %q", sent.HTML)
 	}
 }
 

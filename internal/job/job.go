@@ -276,6 +276,7 @@ type Job struct {
 	Kind           string // job | assistant | agent
 	Owner          string // owning agent index name (agents/<name>) for jobs under an agent folder
 	EmailAccept    []string
+	EmailStyle     *StyleYAML
 	AcceptSet      bool
 	Accept         []AcceptEntry
 	Kit            *KitYAML
@@ -689,6 +690,10 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	if err != nil {
 		return parseFail(filePath, hash, err)
 	}
+	var style *StyleYAML
+	if fm.Email != nil {
+		style = fm.Email.Style
+	}
 
 	memCfg, err := resolveMemory(fm.Memory)
 	if err != nil {
@@ -748,6 +753,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Prompt:         string(bytes.TrimSpace(body)),
 		Kind:           kindFromPath(filePath),
 		EmailAccept:    rawAccept,
+		EmailStyle:     style,
 		AcceptSet:      acceptSet,
 		Accept:         accept,
 		Kit:            fm.Kit,

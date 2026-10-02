@@ -58,7 +58,7 @@ func TestGuideCommandDrift(t *testing.T) {
 
 func TestGuideCorpusLoaded(t *testing.T) {
 	t.Parallel()
-	if n := len(guides.List()); n != 12 {
+	if n := len(guides.List()); n != 13 {
 		t.Fatalf("guides.List = %d", n)
 	}
 }

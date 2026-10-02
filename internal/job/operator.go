@@ -1,8 +1,11 @@
 package job
 
 import (
+	"cmp"
 	"fmt"
 	"net/mail"
+	"net/url"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -11,7 +14,46 @@ import (
 // EmailYAML is the inbound-mail gate shared by agents and the workspace
 // assistant (2026-09-24 plan B.1/B.2).
 type EmailYAML struct {
-	Accept []string `yaml:"accept"`
+	Accept []string   `yaml:"accept"`
+	Style  *StyleYAML `yaml:"style,omitempty"`
+}
+
+// StyleYAML changes the house style of the HTML mail. An empty field keeps
+// the house value.
+type StyleYAML struct {
+	Accent string `yaml:"accent,omitempty" json:"accent,omitempty"` // #rgb or #rrggbb
+	Logo   string `yaml:"logo,omitempty" json:"logo,omitempty"`     // https URL of an image
+	Footer string `yaml:"footer,omitempty" json:"footer,omitempty"` // one line of plain text
+}
+
+var hexColor = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}){1,2}$`)
+
+func (s StyleYAML) Validate() error {
+	if s.Accent != "" && !hexColor.MatchString(s.Accent) {
+		return fmt.Errorf("email.style.accent %q must be a color such as #2563eb", s.Accent)
+	}
+	if s.Logo != "" {
+		u, err := url.Parse(s.Logo)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("email.style.logo must be an https URL")
+		}
+	}
+	if len(s.Footer) > 200 || strings.ContainsAny(s.Footer, "\r\n") {
+		return fmt.Errorf("email.style.footer must be one line of at most 200 characters")
+	}
+	return nil
+}
+
+// Merge returns s with each empty field taken from base.
+func (s *StyleYAML) Merge(base StyleYAML) StyleYAML {
+	if s == nil {
+		return base
+	}
+	return StyleYAML{
+		Accent: cmp.Or(s.Accent, base.Accent),
+		Logo:   cmp.Or(s.Logo, base.Logo),
+		Footer: cmp.Or(s.Footer, base.Footer),
+	}
 }
 
 // KitYAML is an agent's reusable run configuration. Owned jobs may inherit
@@ -132,6 +174,11 @@ func normalizeOperatorKeys(path string, fm *Frontmatter) (accept []AcceptEntry, 
 	}
 	if fm.Email == nil {
 		return nil, nil, false, nil
+	}
+	if fm.Email.Style != nil {
+		if err := fm.Email.Style.Validate(); err != nil {
+			return nil, fm.Email.Accept, true, err
+		}
 	}
 	accept, err = ParseAccept(fm.Email.Accept)
 	if err != nil {

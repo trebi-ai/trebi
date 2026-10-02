@@ -78,3 +78,30 @@ func TestLaunchDefaultsWithKit(t *testing.T) {
 		t.Fatal("plain defaults changed")
 	}
 }
+
+func TestEmailStyle(t *testing.T) {
+	t.Parallel()
+	doc := "---\nemail:\n  style:\n    accent: \"#0f766e\"\n    logo: https://acme.com/logo.png\n    footer: Acme Ops\n---\n\nGrow.\n"
+	j, err := ParseBytes("/ws/agents/growth/AGENT.md", []byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := StyleYAML{Accent: "#0f766e", Logo: "https://acme.com/logo.png", Footer: "Acme Ops"}
+	if j.EmailStyle == nil || *j.EmailStyle != want {
+		t.Fatalf("style = %+v", j.EmailStyle)
+	}
+	if got := (&StyleYAML{Footer: "Mine"}).Merge(want); got.Footer != "Mine" || got.Accent != want.Accent {
+		t.Errorf("merge = %+v", got)
+	}
+	if got := (*StyleYAML)(nil).Merge(want); got != want {
+		t.Errorf("nil merge = %+v", got)
+	}
+	for _, bad := range []StyleYAML{
+		{Accent: "teal"}, {Accent: "#12345"}, {Logo: "http://acme.com/l.png"}, {Logo: "javascript:x"},
+		{Footer: "a\nb"}, {Footer: strings.Repeat("x", 201)},
+	} {
+		if bad.Validate() == nil {
+			t.Errorf("Validate(%+v) accepted", bad)
+		}
+	}
+}

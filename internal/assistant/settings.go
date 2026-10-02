@@ -225,9 +225,13 @@ func (r *Resolver) Effective(ctx context.Context, workspaceID string) (Effective
 		eff.Context = *ov.Context
 		apply("context", true)
 	}
-	if ov.Email != nil {
+	if ov.Email != nil && len(ov.Email.Accept) > 0 {
 		eff.Accept = ov.Email.Accept
 		apply("email_accept", true)
+	}
+	if ov.Email != nil && ov.Email.Style != nil {
+		eff.Style = *ov.Email.Style
+		apply("email_style", true)
 	}
 	if len(ov.Triggers) > 0 {
 		eff.Triggers = ov.Triggers

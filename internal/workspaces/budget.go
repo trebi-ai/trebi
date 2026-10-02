@@ -127,5 +127,6 @@ FROM runs WHERE workspace_id=? AND started_at>=? AND (job=? OR job LIKE ?)`,
 		"\nFailures: " + strconv.Itoa(failures) +
 		"\nCost USD: " + strconv.FormatFloat(cost, 'f', 4, 64) +
 		"\nOpen inbox items: " + strconv.Itoa(openItems) +
-		"\n\nAnswer with a concise brief for report.to.", nil
+		"\n\nAnswer with a concise brief for report.to. Write it in Markdown; Trebi mails it as styled HTML. " +
+		"Use kpi, status, and button blocks and GitHub alerts where they help (trebi guide email-format).", nil
 }

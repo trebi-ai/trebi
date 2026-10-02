@@ -15,6 +15,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -44,6 +45,7 @@ type Service struct {
 	convs  *conversations.Service
 	ob     *outbox.Service
 	picker WorkspacePicker
+	styles StyleSource
 	render *Renderer
 	log    *slog.Logger
 
@@ -72,7 +74,7 @@ func New(st *store.Store) *Service {
 	return &Service{
 		st:     st,
 		log:    slog.Default().With("source", "email"),
-		render: NewRenderer(DefaultTheme()),
+		render: NewRenderer(),
 	}
 }
 
@@ -230,12 +232,16 @@ func (s *Service) Test(ctx context.Context) (string, error) {
 		return "", err
 	}
 	msgID := MintMessageID(domain)
+	const body = "This is a test message from trebi. The email channel works."
+	parts, err := s.htmlParts(ctx, "", "", body, Page{Layout: LayoutMinimal, Title: "trebi email test"})
+	if err != nil {
+		return "", err
+	}
 	row, err := s.enqueue(ctx, envelope{
 		messageID: msgID, recipients: cfg.Admins, subject: "trebi email test",
 	}, outbox.Row{
-		Purpose: outbox.PurposeTest, MaxAttempts: 1,
-		Body: "This is a test message from trebi. The email channel works.",
-		Env:  fromEnv("trebi@"+domain, cfg.FromName),
+		Purpose: outbox.PurposeTest, MaxAttempts: 1, Body: body, Parts: parts,
+		Env: fromEnv("trebi@"+domain, cfg.FromName),
 	})
 	if err != nil {
 		return "", err
@@ -265,12 +271,16 @@ func (s *Service) SendTest(ctx context.Context, workspaceID string, to []string)
 	if err != nil {
 		return outbox.Row{}, err
 	}
+	const body = "This is a test message from trebi. This step of the notify route works."
+	parts, err := s.htmlParts(ctx, workspaceID, "", body, Page{Layout: LayoutMinimal, Title: "trebi notify test"})
+	if err != nil {
+		return outbox.Row{}, err
+	}
 	return s.enqueue(ctx, envelope{
 		workspaceID: workspaceID, messageID: MintMessageID(dom), recipients: to, subject: "trebi notify test",
 	}, outbox.Row{
-		Purpose: outbox.PurposeTest, MaxAttempts: 1,
-		Body: "This is a test message from trebi. This step of the notify route works.",
-		Env:  fromEnv(s.alertFrom(ctx, workspaceID), cfg.FromName),
+		Purpose: outbox.PurposeTest, MaxAttempts: 1, Body: body, Parts: parts,
+		Env: fromEnv(s.alertFrom(ctx, workspaceID), cfg.FromName),
 	})
 }
 
@@ -279,6 +289,18 @@ func (s *Service) SendTest(ctx context.Context, workspaceID string, to []string)
 type WorkspacePicker interface {
 	Default() string
 	MostActive(ctx context.Context) string
+}
+
+// StyleSource reads the mail style of one sender: the workspace, or an
+// agent of it when agent is set.
+type StyleSource interface {
+	EmailStyle(ctx context.Context, workspaceID, agent string) (job.StyleYAML, error)
+}
+
+// WithStyles sets the style seam. Nil keeps the house style for all mail.
+func (s *Service) WithStyles(src StyleSource) *Service {
+	s.styles = src
+	return s
 }
 
 // WithWorkspacePicker sets the system sender seam. Nil keeps trebi@<domain>.
@@ -305,7 +327,6 @@ type SendOpts struct {
 	Subject        string
 	Text           string
 	HTML           string
-	Markdown       bool // render Text as the HTML part when HTML is empty
 	Attachments    []SendAttachment
 	InReplyTo      string
 	RunID          string
@@ -367,10 +388,15 @@ func (s *Service) Send(ctx context.Context, opts SendOpts) (Queued, error) {
 	if err := s.checkRecipients(ctx, cfg, opts); err != nil {
 		return Queued{}, err
 	}
-	if opts.Markdown && opts.HTML == "" {
-		if opts.HTML, err = s.render.Markdown(opts.Text, Page{}); err != nil {
+	if opts.HTML == "" {
+		// Text is Markdown: the HTML part is Text in the sender style.
+		r, err := s.htmlPart(ctx, opts.WorkspaceID, opts.Agent, opts.Text, Page{
+			Layout: LayoutReport, Title: opts.Subject, Brand: cmp.Or(opts.FromName, cfg.FromName),
+		})
+		if err != nil {
 			return Queued{}, err
 		}
+		opts.HTML, opts.Attachments = r.attach(opts.Attachments)
 	}
 	parts, err := opts.parts()
 	if err != nil {
@@ -448,11 +474,15 @@ func (s *Service) SendAlert(ctx context.Context, a AlertMail) (outbox.Row, strin
 		root, inReplyTo = prev.threadRoot, prev.messageID
 	}
 	step := a.RouteStep
+	parts, err := s.htmlParts(ctx, workspaceID, "", a.Text, Page{Layout: LayoutMinimal, Title: a.Subject})
+	if err != nil {
+		return outbox.Row{}, "", err
+	}
 	row, err := s.enqueue(ctx, envelope{
 		workspaceID: workspaceID, messageID: msgID, inReplyTo: inReplyTo, threadRoot: root,
 		recipients: a.To, subject: a.Subject, inboxID: a.InboxID,
 	}, outbox.Row{
-		Purpose: outbox.PurposeAlert, Body: a.Text, InboxID: a.InboxID,
+		Purpose: outbox.PurposeAlert, Body: a.Text, Parts: parts, InboxID: a.InboxID,
 		DedupeKey: fmt.Sprintf("alert/%s/%d", a.InboxID, step), RouteStep: &step, Route: a.Route,
 		Env: fromEnv(s.alertFrom(ctx, workspaceID), cfg.FromName),
 	})
@@ -1203,4 +1233,33 @@ func splitRecipients(target string) []string {
 		}
 	}
 	return out
+}
+
+// htmlPart renders text in the style of the sender. A failed style lookup
+// keeps the house style.
+func (s *Service) htmlPart(ctx context.Context, workspaceID, agent, text string, p Page) (Rendered, error) {
+	p.Theme = DefaultTheme()
+	if s.styles != nil && workspaceID != "" {
+		st, err := s.styles.EmailStyle(ctx, workspaceID, agent)
+		if err != nil {
+			s.log.WarnContext(ctx, "email style", "workspace", workspaceID, "agent", agent, "err", err)
+		}
+		p.Theme, p.Logo = p.Theme.With(st), st.Logo
+		if st.Footer != "" && p.Footer != "" {
+			p.Footer = st.Footer + " · " + p.Footer
+		} else {
+			p.Footer = cmp.Or(p.Footer, st.Footer)
+		}
+	}
+	return s.render.Markdown(text, p)
+}
+
+// htmlParts is htmlPart as the outbox Parts value of a mail with no files.
+func (s *Service) htmlParts(ctx context.Context, workspaceID, agent, text string, p Page) ([]byte, error) {
+	r, err := s.htmlPart(ctx, workspaceID, agent, text, p)
+	if err != nil {
+		return nil, err
+	}
+	h, files := r.attach(nil)
+	return json.Marshal(sendParts{HTML: h, Attachments: files})
 }

@@ -35,6 +35,18 @@ email:
 
 The assistant has the same `email.accept` key in the `assistant:` block of the workspace `trebi.yaml`. If it is absent, the assistant keeps the `admins` plus `allowlist` rule.
 
+Mail from Trebi has the house style. `email.style` changes it:
+
+```yaml
+email:
+  style:
+    accent: "#0f766e"                  # links, report header, and accent bar
+    logo: https://acme.com/logo.png    # https image at the top of a report
+    footer: Acme Ops · weekly          # one line below each mail
+```
+
+Put `email.style` in the `assistant:` block of `trebi.yaml` to set the style of the workspace. An agent `email.style` changes only the fields it sets. The purpose of the mail selects the layout: a report or a send gets the report layout, a reply gets the reply layout, and an alert or a test gets the minimal layout. `trebi guide email-format` shows the layouts and the report blocks.
+
 ## Rename identity
 
 ```bash

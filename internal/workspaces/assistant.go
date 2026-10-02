@@ -108,6 +108,11 @@ func (s *Service) SetAssistantOverride(ctx context.Context, id string, o wire.Ov
 	y.ID = ws.ID
 	y.Name = ws.Name
 	y.GitEnabled = ws.GitEnabled
+	if o.Email != nil && o.Email.Style != nil {
+		if err := o.Email.Style.Validate(); err != nil {
+			return current, err
+		}
+	}
 	y.Assistant = &o
 	out, err := yaml.Marshal(&y)
 	if err != nil {

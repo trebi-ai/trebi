@@ -25,7 +25,7 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | agent | a folder-scoped `AGENT.md` at `agents/<name>/`; owns the jobs inside that folder, kind=agent |
 | conversation | a chat thread with the assistant; the CLI/UI are channels onto it |
 | connector | one external system with up to three capabilities: actions (an MCP server or CLI commands for agent runs), events (a supervised process that produces trigger events), and a channel (a conversation transport). A type from the catalog (for example `whatsapp`) can have many **connections**, one per account. Each connection has an id (`con_…`), a slug, and a title; jobs, triggers, and notify steps use the slug |
-| email | the native channel. Each workspace has an address `<handle>-<token>@<domain>` (`trebi workspace email show`); agents send from a subaddress. `trebi email send` takes `--html`, `--html-file`, `--attach`, and `--workspace-file` (10 files, 5 MiB total) |
+| email | the native channel. Each workspace has an address `<handle>-<token>@<domain>` (`trebi workspace email show`); agents send from a subaddress. `trebi email send --text` is Markdown, and Trebi renders the HTML part in the workspace style (`email.style`; report blocks in `trebi guide email-format`). `--html` or `--html-file` replaces it. `--attach` and `--workspace-file` add files (10 files, 5 MiB total) |
 | trigger | a rule on a job: `cron`, `every`, or `event` from a connector. An event trigger filters with `rooms`, `allowlist`, `from` (people, bots, anyone), `contains` (words in the message), and optional `match`; `replies: continue` sends later messages of a conversation to the same run |
 | skill | a stored `SKILL.md` the harness can load |
 | request | a decision a job run asks a person for (confirm, review, choose, form). The run ends its turn as `parked` and continues with the answer |
@@ -107,6 +107,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `assistant` | settings layers, chat and sessions, conversations, memory |
 | `agents` | folder-scoped agents: identity, rename, email accept, owned jobs, wake, conversations, agent memory |
 | `connectors-and-rules` | add connections, login, rooms, senders, bind, overrides, versions and updates, registry search/entry/install, the job `connectors:` key (MCP and CLI actions for a run), rules test/test-batch/fire, event triggers, retrigger, queue |
+| `email-format` | Markdown that Trebi mails as styled HTML: alerts, `kpi`/`status`/`button` report blocks, layouts, `email.style` |
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed, alert routes (`trebi notify route|test`), failed sends in the outbox |
 | `requests` | a job asks a person (confirm, review, choose, form), ends its turn, and continues with the answer; answer and dismiss as a person |
 | `observability` | bus, service logs, doctor, stats |

@@ -150,11 +150,9 @@ func (s *Service) sendReply(ctx context.Context, opts ReplyOpts, root string, du
 		from = tagged + "@" + addr.Domain
 	}
 	turn := due.turn
-	html, err := s.render.Markdown(due.text, Page{Footer: "Trebi conversation " + opts.ConversationID})
-	if err != nil {
-		return err
-	}
-	parts, err := json.Marshal(sendParts{HTML: html})
+	parts, err := s.htmlParts(ctx, in.workspaceID, opts.Agent, due.text, Page{
+		Layout: LayoutReply, Title: subject, Footer: "Trebi conversation " + opts.ConversationID,
+	})
 	if err != nil {
 		return err
 	}
