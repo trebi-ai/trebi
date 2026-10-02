@@ -111,6 +111,8 @@ type LaunchOpts struct {
 	Command string
 	// ResumeSessionID warm-resumes that session.
 	ResumeSessionID string
+	// ReopenRunID makes the launch the next turn of that run, not a new run.
+	ReopenRunID string
 	// Fake: run a local shell command instead of a real harness (tests/CI).
 	FakeCommand []string
 	// SkipReady skips WaitReady (tests).
@@ -209,16 +211,11 @@ func (o *LaunchOpts) fakeTranscriptPath(dir string) string {
 }
 
 // applyResumePlan sets session identity for a resume launch.
-// It keeps a caller-set ResumedFrom (predecessor run ULID) so the
-// B17 UPDATE in Create matches the predecessor row (not a session UUID).
 func (o *LaunchOpts) applyResumePlan(plan *tmux.LaunchPlan) {
 	if plan.SessionID == "" {
 		plan.SessionID = o.ResumeSessionID
 	}
 	o.SessionID = plan.SessionID
-	if o.ResumedFrom == "" {
-		o.ResumedFrom = o.ResumeSessionID
-	}
 	// A request answer and a conversation event keep their own reason.
 	if o.Reason != ReasonRequest && o.Reason != ReasonTrigger {
 		o.Reason = ReasonResume
@@ -346,18 +343,46 @@ func (s *Service) continueConversation(ctx context.Context, opts *LaunchOpts) ma
 		path, err := tool.TranscriptPath(home.HarnessDir(prev.Harness), dir, prev.SessionID)
 		if err == nil {
 			if _, statErr := os.Stat(path); statErr != nil {
+				opts.PreviousRunID = prev.ID
 				return map[string]string{"from": prev.ID, "because": "session file not found"}
 			}
 		}
 	}
-	opts.ResumeSessionID = prev.SessionID
-	opts.ResumedFrom = prev.ID
+	opts.ResumeSessionID = prev.harnessSessionID()
+	opts.ReopenRunID = prev.ID
 	opts.WorkingDir = cmp.Or(prev.WorkingDir, opts.WorkingDir)
 	return nil
 }
 
+// harnessSessionID returns the id that the harness resumes. A codex pane run
+// stores the trebi id, so the codex id comes from its rollout file name.
+func (r *Run) harnessSessionID() string {
+	if r.Harness != tmux.Codex || r.Runtime != "tui" || r.SessionID == "" {
+		return r.SessionID
+	}
+	tool, _ := tmux.ByName(tmux.Codex)
+	dir := tmux.TranscriptWorkingDir(r.Harness, r.WorkingDir, r.StartedAt)
+	path, err := tool.TranscriptPath(home.HarnessDir(r.Harness), dir, r.SessionID)
+	if err != nil {
+		return r.SessionID
+	}
+	return cmp.Or(tmux.CodexRolloutID(path), r.SessionID)
+}
+
+// open creates the run, or reopens opts.ReopenRunID as its next turn.
+func (s *Service) open(ctx context.Context, opts LaunchOpts) (*Run, error) {
+	if opts.ReopenRunID == "" {
+		return s.Create(ctx, opts.CreateOpts)
+	}
+	return s.Reopen(ctx, opts.ReopenRunID, opts.CreateOpts)
+}
+
 // launch starts the run on the runtime that opts select.
 func (s *Service) launch(ctx context.Context, opts LaunchOpts) (*Run, error) {
+	if opts.ReopenRunID != "" {
+		// The MCP plan and the pane env name the run before it reopens.
+		opts.ID = opts.ReopenRunID
+	}
 	if opts.wantsFake() {
 		return s.launchFake(ctx, opts)
 	}
@@ -521,7 +546,7 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 	if opts.ResumeSessionID != "" {
 		opts.SessionID = opts.ResumeSessionID
 	}
-	run, err := s.Create(ctx, opts.CreateOpts)
+	run, err := s.open(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -533,7 +558,7 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 	if len(cmdArgs) == 0 {
 		cmd := os.Getenv("TREBI_FAKE_HARNESS_CMD")
 		if cmd == "" {
-			cmd = fmt.Sprintf("echo working; echo %s", CompletionSentinel(run.ID))
+			cmd = fmt.Sprintf("echo working; echo %s", CompletionSentinel(run.sentinelKey()))
 		}
 		cmdArgs = []string{"sh", "-c", cmd}
 	}
@@ -557,7 +582,11 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 	_ = stdin.Close()
 	_ = cmd.Wait()
 	output := out + errBuf.String()
-	s.writeRunLog(run.ID, output)
+	if run.TurnCount > 1 {
+		s.appendRunLog(run.ID, output)
+	} else {
+		s.writeRunLog(run.ID, output)
+	}
 	end, status := EndLaunch, StatusFailed
 	switch {
 	case done:
@@ -566,7 +595,7 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 		end, status = EndMaxDuration, StatusTimedOut
 	}
 	tokens := &pricing.TokenUsage{Input: 1, Output: 1, Model: opts.Harness}
-	if termErr := s.Terminate(ctx, run.ID, status, end, tokens); termErr != nil {
+	if termErr := s.TerminateTurn(ctx, run.ID, run.TurnCount, status, end, tokens); termErr != nil {
 		return run, fmt.Errorf("terminate: %w", termErr)
 	}
 	return s.Get(ctx, run.ID)
@@ -577,7 +606,7 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 // A fix message goes to the fake's stdin; a fake that exits without answering
 // it counts as budget spent (recordMemoryInvalid, complete).
 func (s *Service) driveFake(ctx context.Context, run *Run, opts LaunchOpts, stdout io.Reader, stdin io.Writer) (string, bool) {
-	sentinel := CompletionSentinel(run.ID)
+	sentinel := CompletionSentinel(run.sentinelKey())
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var b strings.Builder
@@ -602,7 +631,7 @@ func (s *Service) driveFake(ctx context.Context, run *Run, opts LaunchOpts, stdo
 		attempts++
 		lastIssues = issues
 		s.requestMemoryFix(ctx, run.ID, "fake", attempts, issues)
-		if _, werr := io.WriteString(stdin, fixMessage(issues, run.ID)+"\n"); werr != nil {
+		if _, werr := io.WriteString(stdin, fixMessage(issues, run.sentinelKey())+"\n"); werr != nil {
 			s.recordMemoryInvalid(ctx, run, issues, "fake")
 			return b.String(), true
 		}
@@ -628,7 +657,7 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	// Prefer pinned binary under TREBI_HOME/bin/<tool>/current.
 	command = resolveCommand(command)
 
-	if opts.WorkingDir == "" && opts.ResumedFrom == "" {
+	if opts.WorkingDir == "" && opts.ReopenRunID == "" {
 		opts.WorkingDir, _ = os.Getwd()
 	}
 	cwd := opts.WorkingDir
@@ -654,7 +683,7 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	_ = tmux.RenameSession(wsRef, sessionTitle(opts.Job))
 
 	// Persist run before readiness so reaper can attribute the session.
-	run, err := s.Create(ctx, opts.CreateOpts)
+	run, err := s.open(ctx, opts)
 	if err != nil {
 		_ = tmux.KillSession(wsRef)
 		return nil, err
@@ -679,7 +708,7 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	if prompt == "" {
 		prompt = opts.PromptPreview
 	}
-	prompt += PromptSuffix(run.ID)
+	prompt += PromptSuffix(run.sentinelKey())
 	if opts.Memory != nil {
 		prompt += " " + memoryPromptSentence
 	}
@@ -704,7 +733,7 @@ func (s *Service) finishLaunch(run *Run, wsRef string, tool tmux.Tool, prompt st
 	ctx := context.Background()
 	s.markLaunching(run.ID, true)
 	defer s.markLaunching(run.ID, false)
-	ready, waitQ := s.waitHarnessReady(ctx, run.ID, wsRef, tool, resuming)
+	ready, waitQ := s.waitHarnessReady(ctx, run, wsRef, tool, resuming)
 	if !ready {
 		return
 	}
@@ -743,7 +772,10 @@ func (s *Service) FailBeforeLaunch(ctx context.Context, opts LaunchOpts, end End
 			opts.Runtime = "cli"
 		}
 	}
-	run, err := s.Create(ctx, opts.CreateOpts)
+	if opts.ReopenRunID != "" {
+		opts.ID = opts.ReopenRunID
+	}
+	run, err := s.open(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -757,14 +789,14 @@ func (s *Service) FailBeforeLaunch(ctx context.Context, opts LaunchOpts, end End
 		detail["harness"] = opts.Harness
 	}
 	s.AddEvent(ctx, run.ID, "error", "launch", detail)
-	s.writeRunLog(run.ID, detail["message"]+"\n")
+	s.appendRunLog(run.ID, detail["message"])
 	switch end {
 	case EndAuth:
 		s.emitAuthProbeFailed(ctx, opts.Harness, run.ID, harness.SourceLaunch)
 	case EndLimit:
 		s.emitLimitExceeded(ctx, opts.Harness, run.ID)
 	}
-	_ = s.Terminate(ctx, run.ID, StatusFailed, end, nil)
+	_ = s.TerminateTurn(ctx, run.ID, run.TurnCount, StatusFailed, end, nil)
 	return s.Get(ctx, run.ID)
 }
 
@@ -842,7 +874,7 @@ func (s *Service) closeSession(runID, session string) {
 }
 
 func (s *Service) failLaunch(ctx context.Context, run *Run, wsRef string, err error) (*Run, error) {
-	_ = s.Terminate(ctx, run.ID, StatusFailed, EndLaunch, nil)
+	_ = s.TerminateTurn(ctx, run.ID, run.TurnCount, StatusFailed, EndLaunch, nil)
 	s.closeSession(run.ID, wsRef)
 	got, _ := s.Get(ctx, run.ID)
 	if got != nil {
@@ -855,7 +887,8 @@ func (s *Service) failLaunch(ctx context.Context, run *Run, wsRef string, err er
 // ready=false means the run is already terminal.
 // ready=true with a non-empty waitQ means a TUI dialog is stuck: keep the
 // session, mark waiting, and let the reaper paste once the composer appears.
-func (s *Service) waitHarnessReady(ctx context.Context, runID, wsRef string, tool tmux.Tool, resuming bool) (ready bool, waitQ string) {
+func (s *Service) waitHarnessReady(ctx context.Context, run *Run, wsRef string, tool tmux.Tool, resuming bool) (ready bool, waitQ string) {
+	runID := run.ID
 	rt := readyTimeout
 	if resuming {
 		rt = resumeReadyTimeout
@@ -883,12 +916,13 @@ func (s *Service) waitHarnessReady(ctx context.Context, runID, wsRef string, too
 		end = EndLimit
 		s.emitLimitExceeded(ctx, tool.Name(), runID)
 	}
-	_ = s.Terminate(ctx, runID, StatusFailed, end, nil)
+	_ = s.TerminateTurn(ctx, runID, run.TurnCount, StatusFailed, end, nil)
 	s.closeSession(runID, wsRef)
 	return false, ""
 }
 
-// DetectCompletion reports whether the pane shows the run's sentinel.
+// DetectCompletion reports whether the pane shows the sentinel of key (see
+// Run.sentinelKey).
 func DetectCompletion(screen, runID string) bool {
 	if runID == "" {
 		return false
@@ -983,7 +1017,7 @@ func (r *Run) sendToPane(text string) error {
 func fakeEnv(run *Run, opts LaunchOpts, dir string) []string {
 	env := append(os.Environ(),
 		"TREBI_RUN_ID="+run.ID,
-		"TREBI_RUN_COMPLETE="+CompletionSentinel(run.ID),
+		"TREBI_RUN_COMPLETE="+CompletionSentinel(run.sentinelKey()),
 		"TREBI_SESSION_ID="+opts.SessionID,
 		"TREBI_FAKE_PROMPT="+opts.Prompt,
 		"TREBI_RESUME_SESSION_ID="+opts.ResumeSessionID,
@@ -1019,20 +1053,22 @@ func (s *Service) Kill(ctx context.Context, runID string) error {
 	return s.Terminate(ctx, runID, StatusExited, EndKill, nil)
 }
 
-// MaxResumeAttempts caps the resume chain length for one session. A request
-// resume does not count toward it.
+// MaxResumeAttempts caps the reopens with reason resume of one run. A
+// follow-up or a request answer does not count toward it.
 const MaxResumeAttempts = 5
 
 // ResumeOpts selects why a session continues and with which prompt.
 type ResumeOpts struct {
 	Reason RunReason
 	Prompt string
+	// QueueID is the queue row that the new turn serves.
+	QueueID string
 }
 
-// Resume launches a new run that continues the session of fromID. base holds
-// the launch options rebuilt from the job file (model, env, memory, kit);
-// Resume sets the session, the predecessor, and the working directory from
-// the previous row.
+// Resume reopens fromID as its next turn: the harness continues the same
+// session. base holds the launch options rebuilt from the job file (model,
+// env, memory, kit); Resume sets the session and the working directory from
+// the run row.
 func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o ResumeOpts) (*Run, error) {
 	prev, err := s.Get(ctx, fromID)
 	if err != nil {
@@ -1050,7 +1086,7 @@ func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o 
 		o.Reason = ReasonResume
 	}
 	attempts := prev.ResumeAttempts
-	if o.Reason != ReasonRequest {
+	if o.Reason == ReasonResume {
 		if prev.ResumeAttempts >= MaxResumeAttempts {
 			s.emitResumeExhausted(ctx, prev)
 			return nil, fmt.Errorf("run %s reached the resume cap (%d attempts)", fromID, MaxResumeAttempts)
@@ -1065,9 +1101,10 @@ func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o 
 	opts.Reason = o.Reason
 	opts.Harness = prev.Harness
 	opts.Runtime = prev.Runtime
-	opts.ResumedFrom = fromID
+	opts.ReopenRunID = fromID
+	opts.QueueID = o.QueueID
 	opts.ResumeAttempts = attempts
-	opts.ResumeSessionID = prev.SessionID
+	opts.ResumeSessionID = prev.harnessSessionID()
 	opts.SessionID = ""
 	opts.WorkingDir = prev.WorkingDir
 	opts.ConversationKey, opts.ConversationID = prev.ConversationKey, prev.ConversationID

@@ -64,6 +64,10 @@ func TestBudgetGateExceedsAndAlerts(t *testing.T) {
 		VALUES ('run','ws','agents/research/build','job','complete','trace',40000000,'default',?,?)`, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.DB().Exec(`INSERT INTO run_turns (run_id,n,reason,status,started_at,tokens_input,tokens_model)
+		VALUES ('run',1,'manual','complete',?,40000000,'default')`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
 	svc := workspaces.New(st).WithRoot(dir)
 	alerter := &recordedBudgetAlert{}
 	svc.SetBudgetAlerter(alerter)

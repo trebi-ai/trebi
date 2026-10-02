@@ -2,6 +2,7 @@ package runs
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,11 +36,42 @@ type cliRun struct {
 	result    *agentwire.Result
 	memoryFix int
 	oneShot   bool
+	// turn is the run turn this session serves.
+	turn int
 
 	mu             sync.Mutex
+	usage          pricing.TokenUsage
 	keepAliveSince time.Time
 	terminal       bool
 	stalled        bool
+}
+
+// addUsage adds the usage of one result and returns the turn total.
+func (cr *cliRun) addUsage(u *pricing.TokenUsage) *pricing.TokenUsage {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	if u != nil {
+		cr.usage.Input += u.Input
+		cr.usage.Output += u.Output
+		cr.usage.CacheRead += u.CacheRead
+		cr.usage.CacheCreation += u.CacheCreation
+		if u.Model != "" {
+			cr.usage.Model = u.Model
+		}
+	}
+	total := cr.usage
+	return &total
+}
+
+// usageSoFar is the turn total, or nil before the first result.
+func (cr *cliRun) usageSoFar() *pricing.TokenUsage {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	if cr.usage.Input+cr.usage.Output+cr.usage.CacheRead+cr.usage.CacheCreation == 0 {
+		return nil
+	}
+	total := cr.usage
+	return &total
 }
 
 // markKeepAlive starts the keep-alive window once.
@@ -168,10 +200,13 @@ func (s *Service) cliRunFor(id string) *cliRun {
 	return s.cliRuns[id]
 }
 
-func (s *Service) unregisterCLIRun(id string) {
+// unregisterCLIRun drops cr. A newer turn of the run keeps its own session.
+func (s *Service) unregisterCLIRun(id string, cr *cliRun) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.cliRuns, id)
+	if s.cliRuns[id] == cr {
+		delete(s.cliRuns, id)
+	}
 }
 
 // wantsCLI decides the run runtime (Part F/J): explicit `runtime: tui`, the
@@ -200,7 +235,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		command = "claude"
 	}
 	command = resolveCommand(command)
-	if opts.WorkingDir == "" && opts.ResumedFrom == "" {
+	if opts.WorkingDir == "" && opts.ReopenRunID == "" {
 		opts.WorkingDir, _ = os.Getwd()
 	}
 	tool := detectTool(command, &opts)
@@ -240,7 +275,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	}
 
 	opts.Runtime = "cli"
-	run, err := s.Create(ctx, opts.CreateOpts)
+	run, err := s.open(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -301,17 +336,17 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		// surface ErrResumeUnsupported instead of a fake pane or a silent
 		// failed row.
 		if resuming && errors.Is(err, agentwire.ErrResumeUnsupported) {
-			_ = s.Terminate(ctx, run.ID, StatusFailed, EndLaunch, nil)
+			_ = s.TerminateTurn(ctx, run.ID, run.TurnCount, StatusFailed, EndLaunch, nil)
 			return nil, err
 		}
 		s.appendRunLog(run.ID, "cli launch failed: "+err.Error())
 		s.AddEvent(ctx, run.ID, "error", "launch", map[string]string{"message": err.Error()})
-		_ = s.Terminate(ctx, run.ID, StatusFailed, EndLaunch, nil)
+		_ = s.TerminateTurn(ctx, run.ID, run.TurnCount, StatusFailed, EndLaunch, nil)
 		got, _ := s.Get(ctx, run.ID)
 		return got, nil
 	}
 	// The library tracks its own sessions in the ledger; no registry Add here.
-	cr := &cliRun{sess: sess, tracker: agentwire.NewTracker(), oneShot: oneShot}
+	cr := &cliRun{sess: sess, tracker: agentwire.NewTracker(), oneShot: oneShot, turn: run.TurnCount}
 	if oneShot {
 		// The prompt is on argv, so the turn starts at launch.
 		cr.tracker.PromptWritten()
@@ -325,8 +360,8 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	if !oneShot {
 		if err := sess.Prompt(ctx, agentwire.Prompt{Text: body, Kind: kindOrDefault(opts.Kind)}); err != nil {
 			s.appendRunLog(run.ID, "prompt write failed: "+err.Error())
-			s.Terminate(ctx, run.ID, StatusFailed, EndLaunch, nil)
-			s.unregisterCLIRun(run.ID)
+			_ = s.TerminateTurn(ctx, run.ID, cr.turn, StatusFailed, EndLaunch, nil)
+			s.unregisterCLIRun(run.ID, cr)
 			go sess.Close(context.Background())
 			got, _ := s.Get(ctx, run.ID)
 			return got, nil
@@ -479,13 +514,21 @@ func (s *Service) setRunPid(ctx context.Context, runID string, pid int) {
 	}
 }
 
-// setRunSessionID fills the vendor session id learned on the wire.
-func (s *Service) setRunSessionID(ctx context.Context, runID, sessionID string) {
+// setRunSessionID records the vendor session id learned on the wire on the
+// run and on the turn. A resume can report a new id; the latest one wins.
+func (s *Service) setRunSessionID(ctx context.Context, runID string, turn int, sessionID string) {
 	if sessionID == "" {
 		return
 	}
-	if _, err := s.st.DB().ExecContext(ctx, `UPDATE runs SET session_id=?, updated_at=? WHERE id=? AND COALESCE(session_id,'') = ''`,
-		sessionID, time.Now().UTC().Format(time.RFC3339Nano), runID); err != nil {
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET session_id=?, updated_at=? WHERE id=? AND turn_count=?`,
+			sessionID, time.Now().UTC().Format(time.RFC3339Nano), runID, turn); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE run_turns SET session_id=? WHERE run_id=? AND n=?`, sessionID, runID, turn)
+		return err
+	})
+	if err != nil {
 		s.log.Warn("set run session id", "run", runID, "error", err)
 	}
 }
@@ -500,7 +543,7 @@ func cliFixMessage(issues []string) string {
 // log, approvals, the memory gate, and the terminal transition.
 func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 	ctx := context.Background()
-	defer s.unregisterCLIRun(runID)
+	defer s.unregisterCLIRun(runID, cr)
 	sawResult := false
 	var lastErr *agentwire.Event
 	for ev := range cr.sess.Events() {
@@ -509,7 +552,7 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 		switch ev.Type {
 		case agentwire.EventInit:
 			if ev.SessionID != "" {
-				s.setRunSessionID(ctx, runID, ev.SessionID)
+				s.setRunSessionID(ctx, runID, cr.turn, ev.SessionID)
 			}
 			s.AddEvent(ctx, runID, "session.init", "wire", map[string]string{"session_id": ev.SessionID})
 		case agentwire.EventAssistant:
@@ -545,7 +588,7 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 			sawResult = true
 			s.finishCLIResult(ctx, runID, opts, cr, ev)
 		case agentwire.EventExit:
-			if run, err := s.Get(ctx, runID); err == nil && !run.Status.IsTerminal() && !sawResult {
+			if run, err := s.Get(ctx, runID); err == nil && run.TurnCount == cr.turn && !run.Status.IsTerminal() && !sawResult {
 				e := ev
 				if lastErr == nil && e.Error != "" {
 					lastErr = &e
@@ -593,6 +636,29 @@ func (s *Service) addCLIToolEvent(ctx context.Context, runID string, ev agentwir
 		"name": ev.Tool.Name, "status": ev.Tool.Status,
 		"id": ev.Tool.ID, "input": trunc(ev.Tool.Input, 500), "output": trunc(ev.Tool.Output, 500),
 	})
+}
+
+// LabelTurns sets RunTurn on each transcript entry: the last run turn that
+// started at or before the entry. An entry with no time takes the number of
+// the entry before it.
+func (s *Service) LabelTurns(ctx context.Context, runID string, entries []tmux.Turn) error {
+	turns, err := s.Turns(ctx, runID)
+	if err != nil {
+		return err
+	}
+	n := 1
+	for i := range entries {
+		if at := entries[i].At; !at.IsZero() {
+			n = 1
+			for _, t := range turns {
+				if !t.StartedAt.After(at) {
+					n = t.N
+				}
+			}
+		}
+		entries[i].RunTurn = n
+	}
+	return nil
 }
 
 // CLITurns reconstructs the transcript from wire events (Part H: prefer live
@@ -751,10 +817,8 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 		res = &agentwire.Result{Subtype: "success"}
 	}
 	cr.result = res
-	if res.SessionID != "" {
-		s.setRunSessionID(ctx, runID, res.SessionID)
-	}
-	tokens := tokenUsage(res, opts)
+	s.setRunSessionID(ctx, runID, cr.turn, res.SessionID)
+	tokens := cr.addUsage(tokenUsage(res, opts))
 	if res.IsError {
 		s.failCLIResult(ctx, runID, opts, cr, res, tokens)
 		return
@@ -860,7 +924,7 @@ func (s *Service) terminateCLI(ctx context.Context, runID string, cr *cliRun, st
 		return
 	}
 	cr.setTerminal()
-	if err := s.Terminate(ctx, runID, status, end, tokens); err != nil {
+	if err := s.TerminateTurn(ctx, runID, cr.turn, status, end, tokens); err != nil {
 		s.log.Warn("cli terminate", "run", runID, "error", err)
 	}
 	go func() {
@@ -871,7 +935,7 @@ func (s *Service) terminateCLI(ctx context.Context, runID string, cr *cliRun, st
 // afterCLIExit reconciles a process that ended without a result.
 func (s *Service) afterCLIExit(ctx context.Context, runID string, opts LaunchOpts, cr *cliRun, sawResult bool, lastErr *agentwire.Event) {
 	run, err := s.Get(ctx, runID)
-	if err != nil || run.Status.IsTerminal() {
+	if err != nil || run.Status.IsTerminal() || run.TurnCount != cr.turn {
 		return
 	}
 	if sawResult {
@@ -883,11 +947,11 @@ func (s *Service) afterCLIExit(ctx context.Context, runID string, opts LaunchOpt
 				s.recordMemoryInvalid(ctx, run, issues, "wire")
 			}
 		}
+		end := EndResult
 		if run.Session.KeepAliveMS > 0 {
-			_ = s.Terminate(ctx, runID, StatusComplete, EndKeepAlive, nil)
-		} else {
-			_ = s.Terminate(ctx, runID, StatusComplete, EndResult, nil)
+			end = EndKeepAlive
 		}
+		_ = s.TerminateTurn(ctx, runID, cr.turn, StatusComplete, end, cr.usageSoFar())
 		return
 	}
 	class, msg, code := "", "", ""
@@ -917,7 +981,7 @@ func (s *Service) afterCLIExit(ctx context.Context, runID string, opts LaunchOpt
 	if end == EndLimit {
 		s.emitLimitExceeded(ctx, opts.Harness, runID)
 	}
-	_ = s.Terminate(ctx, runID, StatusFailed, end, nil)
+	_ = s.TerminateTurn(ctx, runID, cr.turn, StatusFailed, end, cr.usageSoFar())
 }
 
 // stopCLIRun interrupts and closes a live CLI session (kill/replace/reaper).
@@ -935,7 +999,7 @@ func (s *Service) stopCLIRun(runID string, cr *cliRun) {
 // it. The caller writes the terminal row.
 func (s *Service) teardownRuntime(ctx context.Context, run *Run) {
 	removeRunEnvFile(run)
-	if cr := s.cliRunFor(run.ID); cr != nil {
+	if cr := s.cliRunFor(run.ID); cr != nil && (run.TurnCount == 0 || cr.turn == run.TurnCount) {
 		s.stopCLIRun(run.ID, cr)
 	}
 	if run.TmuxSession != "" {

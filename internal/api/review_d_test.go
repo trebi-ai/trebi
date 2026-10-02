@@ -8,7 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // TestReplayUsesCapturedTrigger covers D9/A6: replay rebuilds the prompt from
@@ -292,41 +295,114 @@ func writeAgentFixture(t *testing.T, wsDir string) {
 	}
 }
 
-// TestRunsGroupedTurns covers group=true, first_run, and turns on a run.
-func TestRunsGroupedTurns(t *testing.T) {
+// TestRunTurnsRoute covers GET /v1/runs/{id}/turns and the turn fields of a
+// reopened run. The old group parameter has no effect.
+func TestRunTurnsRoute(t *testing.T) {
 	_, base, dir := startAPI(t)
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
-	first, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "fake"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "fake", PromptPreview: "first"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Terminate(ctx, first.ID, runs.StatusComplete, runs.EndSentinel, nil); err != nil {
+	tok := &pricing.TokenUsage{Input: 10, Output: 5, Model: "claude-sonnet-4-5"}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndSentinel, tok); err != nil {
 		t.Fatal(err)
 	}
-	next, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "fake", ResumedFrom: first.ID})
-	if err != nil {
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{Reason: runs.ReasonResume, Harness: "fake", PromptPreview: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusFailed, runs.EndLaunch, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "fake", PreviousRunID: run.ID}); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
 
-	_, out, _ := doJSON(t, "GET", base+"/v1/runs?group=true", nil)
-	rows, _ := out["runs"].([]any)
-	if len(rows) != 1 {
-		t.Fatalf("grouped = %v", out)
+	_, out, _ := doJSON(t, "GET", base+"/v1/runs/"+run.ID+"/turns", nil)
+	list, _ := out["turns"].([]any)
+	if len(list) != 2 {
+		t.Fatalf("turns = %v", out)
 	}
-	row, _ := rows[0].(map[string]any)
-	turns, _ := row["turns"].(map[string]any)
-	if row["id"] != next.ID || row["first_run_id"] != first.ID || turns["count"] != float64(2) {
-		t.Fatalf("row = %v", row)
+	first, _ := list[0].(map[string]any)
+	second, _ := list[1].(map[string]any)
+	tokens, _ := first["tokens"].(map[string]any)
+	if first["n"] != float64(1) || first["status"] != "complete" || first["reason"] != "manual" || first["prompt_preview"] != "first" || tokens["input"] != float64(10) {
+		t.Fatalf("turn 1 = %v", first)
 	}
-	_, out, _ = doJSON(t, "GET", base+"/v1/runs?first_run="+first.ID, nil)
+	if second["n"] != float64(2) || second["status"] != "failed" || second["end_reason"] != "launch" || second["reason"] != "resume" {
+		t.Fatalf("turn 2 = %v", second)
+	}
+	for _, k := range []string{"started_at", "ended_at", "duration_ms"} {
+		if _, ok := second[k]; !ok {
+			t.Fatalf("turn 2 has no %s: %v", k, second)
+		}
+	}
+	_, out, _ = doJSON(t, "GET", base+"/v1/runs/"+run.ID, nil)
+	if out["turn_count"] != float64(2) || out["status"] != "failed" || out["turn_started_at"] == nil {
+		t.Fatalf("run = %v", out)
+	}
+	for _, k := range []string{"first_run_id", "turns", "resumed_from"} {
+		if _, ok := out[k]; ok {
+			t.Fatalf("run still has %s: %v", k, out)
+		}
+	}
+	_, out, _ = doJSON(t, "GET", base+"/v1/runs?group=true", nil)
 	if rows, _ := out["runs"].([]any); len(rows) != 2 {
-		t.Fatalf("chain = %v", out)
+		t.Fatalf("group must be ignored: %v", out)
 	}
-	_, out, _ = doJSON(t, "GET", base+"/v1/runs/"+first.ID, nil)
-	if turns, _ := out["turns"].(map[string]any); turns["count"] != float64(2) {
-		t.Fatalf("get = %v", out)
+	_, out, _ = doJSON(t, "GET", base+"/v1/runs/NOPE/turns", nil)
+	if e, _ := out["error"].(map[string]any); e["code"] != "not_found" {
+		t.Fatalf("missing run = %v", out)
+	}
+}
+
+// TestTranscriptRunTurn: the transcript of a reopened run marks each entry
+// with the run turn it belongs to.
+func TestTranscriptRunTurn(t *testing.T) {
+	_, base, _ := startAPI(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	st := mustOpenStore(t, home.DBPath())
+	defer st.Close()
+	wd := t.TempDir()
+	tool, _ := tmux.ByName("claude")
+	path, err := tool.TranscriptPath(home.HarnessDir("claude"), wd, "sess-r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join("..", "tmux", "testdata", "transcripts", "claude", "resumed.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO runs (id,workspace_id,job,status,trace_id,harness,runtime,session_id,working_dir,turn_count,started_at,updated_at)
+			VALUES ('R','ws','j','complete','t','claude','tui','sess-r','` + wd + `',2,'2026-09-30T12:00:00Z','x')`,
+		`INSERT INTO run_turns (run_id,n,reason,status,started_at) VALUES
+			('R',1,'manual','complete','2026-09-30T12:00:00Z'), ('R',2,'trigger','complete','2026-09-30T14:00:00Z')`,
+	} {
+		if _, err := st.DB().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body, _ := doJSON(t, "GET", base+"/v1/runs/R/transcript", nil)
+	entries, _ := body["turns"].([]any)
+	if code != 200 || len(entries) != 4 {
+		t.Fatalf("transcript %d %v", code, body)
+	}
+	var got []string
+	for _, e := range entries {
+		m, _ := e.(map[string]any)
+		got = append(got, fmt.Sprint(m["run_turn"]))
+	}
+	if strings.Join(got, ",") != "1,1,2,2" {
+		t.Fatalf("run_turn %v", got)
 	}
 }

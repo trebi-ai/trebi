@@ -353,6 +353,49 @@ func TestRetryPolicyByEndReason(t *testing.T) {
 	}
 }
 
+// TestRetryReopensOrReruns: a retry with a session reopens the run as its
+// next turn; without a session it makes a new run that follows the old one.
+func TestRetryReopensOrReruns(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "x")
+	wsID := addWorkspace(t, base, wsDir, "retry-turn-ws")
+	st := mustOpenStore(t, home.DBPath())
+	defer st.Close()
+	failed := func(session string) string {
+		t.Helper()
+		code, run, _ := doJSON(t, "POST", base+"/v1/jobs/x/run", map[string]any{
+			"workspace": wsID, "harness": "fake", "prompt_override": "hi",
+		})
+		if code != 201 {
+			t.Fatalf("launch %d %v", code, run)
+		}
+		id, _ := run["id"].(string)
+		waitFor(t, 10*time.Second, "run ends", func() bool {
+			_, got, _ := doJSON(t, "GET", base+"/v1/runs/"+id, nil)
+			return got["status"] != "running"
+		})
+		if _, err := st.DB().Exec(`UPDATE runs SET status='failed', end_reason='failed', session_id=? WHERE id=?`, store.NullStr(session), id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	id := failed("sess-1")
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs/"+id+"/retry", nil)
+	run, _ := body["run"].(map[string]any)
+	if code != 201 || body["action"] != "resume" || run["id"] != id || run["turn_count"] != float64(2) {
+		t.Fatalf("retry with session %d %v", code, body)
+	}
+
+	id = failed("")
+	code, body, _ = doJSON(t, "POST", base+"/v1/runs/"+id+"/retry", nil)
+	run, _ = body["run"].(map[string]any)
+	if code != 201 || body["action"] != "rerun_with_note" || run["id"] == id || run["previous_run_id"] != id || run["turn_count"] != float64(1) {
+		t.Fatalf("retry without session %d %v", code, body)
+	}
+}
+
 // TestDrainFlagPersistsAcrossRestart proves the launch gate honors the
 // persisted drain flag when in-memory drain is off (API restart survival).
 func TestDrainFlagPersistsAcrossRestart(t *testing.T) {

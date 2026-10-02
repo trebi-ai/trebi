@@ -124,7 +124,7 @@ func TestDeliverAfterRestart(t *testing.T) {
 
 func TestRecoverStaleClaim(t *testing.T) {
 	t.Parallel()
-	for _, child := range []string{"", "CHILD"} {
+	for _, turn := range []int{0, 2} {
 		h := newHarness(t)
 		r := h.create(t, h.run(t, "RUN1"), CreateOpts{})
 		h.rs.setStatus("RUN1", runs.StatusParked)
@@ -133,7 +133,7 @@ func TestRecoverStaleClaim(t *testing.T) {
   delivery_state='claimed', claimed_at=? WHERE id=?`, fmtTime(h.clock.now()), r.ID); err != nil {
 			t.Fatal(err)
 		}
-		h.rs.child = child
+		h.rs.turn = turn
 		ctx := context.Background()
 		if err := h.svc.Recover(ctx); err != nil || len(h.launch.Calls()) != 0 {
 			t.Fatalf("fresh claim: %v, calls %d", err, len(h.launch.Calls()))
@@ -144,14 +144,14 @@ func TestRecoverStaleClaim(t *testing.T) {
 		}
 		got := h.get(t, r.ID)
 		wantCalls := 1
-		if child != "" {
+		if turn > 0 {
 			wantCalls = 0
-			if got.DeliveredRunID != child {
+			if got.DeliveredRunID != "RUN1" {
 				t.Errorf("delivered run %q", got.DeliveredRunID)
 			}
 		}
 		if got.DeliveryState != DeliveryDelivered || len(h.launch.Calls()) != wantCalls {
-			t.Errorf("child %q: state %s calls %d", child, got.DeliveryState, len(h.launch.Calls()))
+			t.Errorf("turn %d: state %s calls %d", turn, got.DeliveryState, len(h.launch.Calls()))
 		}
 	}
 }

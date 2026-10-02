@@ -762,11 +762,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				f, err := in.strs("conversation", "end_reason", "q", "since", "until", "first_run")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				group, err := in.flag("group")
+				f, err := in.strs("conversation", "end_reason", "q", "since", "until")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -777,7 +773,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				return mcpGet(request.RunsQuery{
 					Status: v[0], Job: v[1], Workspace: v[2], Kind: v[3], Cursor: v[4],
 					Harness: v[5], Model: v[6], Conversation: f[0], EndReason: f[1],
-					Q: f[2], Since: f[3], Until: f[4], FirstRun: f[5], Group: group, Limit: limit,
+					Q: f[2], Since: f[3], Until: f[4], Limit: limit,
 				}.Path()), nil
 			}),
 			"create": act("POST /v1/runs", Input{"job": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
@@ -802,6 +798,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				return mcpGet(request.BuildRunGetPath(id, wait)), nil
 			}),
 			"timeline": idGet("GET /v1/runs/{id}/timeline", "id", "01ABC", request.BuildRunTimelinePath),
+			"turns":    idGet("GET /v1/runs/{id}/turns", "id", "01ABC", request.BuildRunTurnsPath),
 			"transcript": bound(act("GET /v1/runs/{id}/transcript", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
 				if err != nil {

@@ -405,6 +405,9 @@ func newAlerts(st *store.Store, opts Options, cfg *config.Config, aopts alerts.O
 func (c *ControlPlane) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	c.cancel = cancel
+	if err := c.Store.MergeRunLogs(ctx, home.RunsLogDir()); err != nil {
+		c.log.Warn("merge run logs", "err", err)
+	}
 	c.Runs.RecoverCLI(ctx)
 	if n, err := c.Runs.RemoveStaleRunFiles(ctx); err != nil {
 		c.log.Warn("remove stale run files", "err", err)

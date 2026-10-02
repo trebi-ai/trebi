@@ -3,8 +3,10 @@ package runs_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -725,7 +727,138 @@ func TestCLIResumePromptExact(t *testing.T) {
 	if frame.Text != prompt {
 		t.Fatalf("prompt\n got %q\nwant %q", frame.Text, prompt)
 	}
-	if run.Reason != runs.ReasonRequest {
-		t.Fatalf("reason %s", run.Reason)
+	turns, err := svc.Turns(context.Background(), run.ID)
+	if err != nil || len(turns) != 2 || turns[1].Reason != runs.ReasonRequest {
+		t.Fatalf("turns %+v err %v", turns, err)
+	}
+}
+
+// profileDriver plays one fake wire profile from testdata/fakewire: start.sh
+// for a new session, resume.sh for a reopen. No resume.sh means the harness
+// cannot resume.
+type profileDriver struct {
+	agentwire.FakeDriver
+	dir  string
+	mu   sync.Mutex
+	reqs []agentwire.StartRequest
+}
+
+func (d *profileDriver) Start(ctx context.Context, req agentwire.StartRequest) (agentwire.Session, error) {
+	return d.run(ctx, req, "start.sh")
+}
+
+func (d *profileDriver) Resume(ctx context.Context, req agentwire.StartRequest) (agentwire.Session, error) {
+	return d.run(ctx, req, "resume.sh")
+}
+
+func (d *profileDriver) run(ctx context.Context, req agentwire.StartRequest, name string) (agentwire.Session, error) {
+	d.mu.Lock()
+	d.reqs = append(d.reqs, req)
+	d.mu.Unlock()
+	script, err := os.ReadFile(filepath.Join(d.dir, name))
+	if os.IsNotExist(err) {
+		return nil, agentwire.ErrResumeUnsupported
+	}
+	if err != nil {
+		return nil, err
+	}
+	return agentwire.FakeDriver{Script: string(script)}.Start(ctx, req)
+}
+
+// TestHarnessResumeProfiles runs turn 1 and a reopen for each fake wire
+// profile, and checks the run, its turns, and the run log.
+func TestHarnessResumeProfiles(t *testing.T) {
+	cases := []struct {
+		profile    string
+		resumeFrom string   // session id the reopen asks the harness for
+		sessions   []string // session id of each turn
+		runSession string
+	}{
+		{"claude-same-id", "sess-a", []string{"sess-a", "sess-a"}, "sess-a"},
+		{"codex-adopt-id", "thr-1", []string{"thr-1", "thr-1"}, "thr-1"},
+		{"fork-id", "sess-a", []string{"sess-a", "sess-b"}, "sess-b"},
+		{"no-resume", "sess-a", []string{"sess-a", "sess-a"}, "sess-a"},
+	}
+	for _, c := range cases {
+		t.Run(c.profile, func(t *testing.T) {
+			drv := &profileDriver{dir: filepath.Join("testdata", "fakewire", c.profile)}
+			svc, _, _ := cliFixture(t, drv)
+			fakeBinaries(t, "claude")
+			ctx := context.Background()
+			first := launchCLIJob(t, svc)
+			waitTerminal(t, svc, first.ID)
+
+			run, err := svc.Resume(ctx, first.ID, runs.LaunchOpts{}, runs.ResumeOpts{Reason: runs.ReasonResume})
+			if c.profile == "no-resume" {
+				if !errors.Is(err, runs.ErrResumeUnsupported) {
+					t.Fatalf("err %v, want ErrResumeUnsupported", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			done := waitTerminal(t, svc, first.ID)
+			if run != nil && run.ID != first.ID {
+				t.Fatalf("reopen made run %s, want %s", run.ID, first.ID)
+			}
+			if done.TurnCount != 2 || done.SessionID != c.runSession || done.Status != runs.StatusFailed {
+				t.Fatalf("run turns %d session %q status %s", done.TurnCount, done.SessionID, done.Status)
+			}
+			drv.mu.Lock()
+			reqs := slices.Clone(drv.reqs)
+			drv.mu.Unlock()
+			if len(reqs) != 2 || reqs[1].SessionID != c.resumeFrom {
+				t.Fatalf("driver requests %d, resume session %q", len(reqs), reqs[len(reqs)-1].SessionID)
+			}
+			if reqs[1].WorkingDir == "" || reqs[1].WorkingDir != reqs[0].WorkingDir {
+				t.Fatalf("resume dir %q, want %q", reqs[1].WorkingDir, reqs[0].WorkingDir)
+			}
+			turns, err := svc.Turns(ctx, first.ID)
+			if err != nil || len(turns) != 2 {
+				t.Fatalf("turns %+v err %v", turns, err)
+			}
+			for i, tr := range turns {
+				if tr.SessionID != c.sessions[i] {
+					t.Fatalf("turn %d session %q, want %q", tr.N, tr.SessionID, c.sessions[i])
+				}
+			}
+			if turns[0].Tokens.Input != 100 {
+				t.Fatalf("turn 1 tokens %+v", turns[0].Tokens)
+			}
+			all, err := svc.List(ctx, runs.ListOpts{Workspace: "ws"})
+			if err != nil || len(all) != 1 {
+				t.Fatalf("runs %d err %v", len(all), err)
+			}
+			if c.profile == "no-resume" {
+				if turns[1].Status != runs.StatusFailed || turns[1].EndReason != runs.EndLaunch {
+					t.Fatalf("turn 2 %s/%s, want failed/launch", turns[1].Status, turns[1].EndReason)
+				}
+				return
+			}
+			if turns[1].Tokens.Input != 50 || done.Tokens.Input != 150 {
+				t.Fatalf("turn 2 tokens %+v run tokens %+v", turns[1].Tokens, done.Tokens)
+			}
+			log, err := os.ReadFile(filepath.Join(home.RunsLogDir(), first.ID+".log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			one, two := strings.Index(string(log), "frame turn 1"), strings.Index(string(log), "frame turn 2")
+			if one < 0 || two < one {
+				t.Fatalf("run log does not hold both turns in order:\n%s", log)
+			}
+			if c.profile != "fork-id" {
+				return
+			}
+			// The next reopen resumes the forked id.
+			if _, err := svc.Resume(ctx, first.ID, runs.LaunchOpts{}, runs.ResumeOpts{Reason: runs.ReasonResume}); err != nil {
+				t.Fatal(err)
+			}
+			waitTerminal(t, svc, first.ID)
+			drv.mu.Lock()
+			last := drv.reqs[len(drv.reqs)-1]
+			drv.mu.Unlock()
+			if last.SessionID != "sess-b" {
+				t.Fatalf("turn 3 resumed %q, want sess-b", last.SessionID)
+			}
+		})
 	}
 }

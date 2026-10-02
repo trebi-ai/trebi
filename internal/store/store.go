@@ -130,6 +130,11 @@ func migrate(d *sql.DB) error {
 		return err
 	}
 	steps := migrations()
+	if current > 0 && current < len(steps) {
+		if err := backup(d, current); err != nil {
+			return err
+		}
+	}
 	for i := current; i < len(steps); i++ {
 		version := i + 1
 		tx, err := d.Begin()
@@ -150,6 +155,80 @@ func migrate(d *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// backup copies the database to <path>.v<version>.bak before a migration.
+func backup(d *sql.DB, version int) error {
+	var path string
+	if err := d.QueryRow(`SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&path); err != nil || path == "" {
+		return err
+	}
+	dst := fmt.Sprintf("%s.v%d.bak", path, version)
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("backup %s: %w", dst, err)
+	}
+	if _, err := d.Exec(`VACUUM INTO ?`, dst); err != nil {
+		return fmt.Errorf("backup %s: %w", dst, err)
+	}
+	return nil
+}
+
+// MergeRunLogs finishes migration v38: it appends the log of each merged run
+// to the log of its root run in turn order, then removes the old log. A
+// missing old log is not an error. It drops v38_log_merge when it is done.
+func (s *Store) MergeRunLogs(ctx context.Context, dir string) error {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='v38_log_merge')`).Scan(&exists); err != nil || !exists {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT root, old FROM v38_log_merge ORDER BY root, n`)
+	if err != nil {
+		return err
+	}
+	type pair struct{ root, old string }
+	var pairs []pair
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.root, &p.old); err != nil {
+			rows.Close()
+			return err
+		}
+		pairs = append(pairs, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, p := range pairs {
+		if err := appendLog(filepath.Join(dir, p.root+".log"), filepath.Join(dir, p.old+".log")); err != nil {
+			return fmt.Errorf("merge run log %s into %s: %w", p.old, p.root, err)
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `DROP TABLE v38_log_merge`)
+	return err
+}
+
+// appendLog appends src to dst and removes src.
+func appendLog(dst, src string) error {
+	data, err := os.ReadFile(src)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Remove(src)
 }
 
 // GetFlag reads a system_flags value.

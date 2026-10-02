@@ -397,23 +397,32 @@ func TestContinueConversation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if outcome != "" || run.ID == prev.ID {
-				t.Fatalf("outcome=%q run=%s: want a new launch", outcome, run.ID)
+			if outcome != "" {
+				t.Fatalf("outcome=%q: want a launch", outcome)
 			}
-			resumed := run.ResumedFrom == prev.ID && run.SessionID == "sess-1"
-			if resumed != tc.wantResume {
-				t.Fatalf("resumed_from=%q session=%q, want resume=%v", run.ResumedFrom, run.SessionID, tc.wantResume)
+			reopened := run.ID == prev.ID
+			if reopened != tc.wantResume {
+				t.Fatalf("run=%s prev=%s, want reopen=%v", run.ID, prev.ID, tc.wantResume)
 			}
 			if run.Reason != runs.ReasonTrigger {
 				t.Fatalf("reason=%s want trigger", run.Reason)
 			}
-			want := tc.status
-			if resumed {
-				want = runs.StatusResumed
-			}
-			got, _ := svc.Get(ctx, prev.ID)
-			if got.Status != want {
-				t.Fatalf("previous status=%s want %s", got.Status, want)
+			if reopened {
+				turns, err := svc.Turns(ctx, run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if run.TurnCount != 2 || run.SessionID != "sess-1" || len(turns) != 2 || turns[1].QueueID != "q-2" || turns[1].Reason != runs.ReasonTrigger {
+					t.Fatalf("reopened run turns=%d session=%q rows=%+v", run.TurnCount, run.SessionID, turns)
+				}
+			} else {
+				got, _ := svc.Get(ctx, prev.ID)
+				if got.Status != tc.status || got.TurnCount != 1 {
+					t.Fatalf("previous status=%s turns=%d, want %s and 1", got.Status, got.TurnCount, tc.status)
+				}
+				if follows := run.PreviousRunID == prev.ID; follows != tc.wantEvent {
+					t.Fatalf("previous_run_id=%q, want set=%v", run.PreviousRunID, tc.wantEvent)
+				}
 			}
 			tl, err := svc.Timeline(ctx, run.ID)
 			if err != nil {
@@ -450,6 +459,18 @@ func TestContinueConversationCoalesces(t *testing.T) {
 	}
 	if outcome != runs.OverlapCoalesce || run.ID != live.ID {
 		t.Fatalf("outcome=%q run=%s: want coalesce into %s", outcome, run.ID, live.ID)
+	}
+	// A reply to a live turn joins it: no new turn.
+	got, err := svc.Get(ctx, live.ID)
+	if err != nil || got.TurnCount != 1 {
+		t.Fatalf("turns after coalesce %v err %v", got, err)
+	}
+	tl, err := svc.Timeline(ctx, live.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(tl.Events, func(ev runs.TimelinePoint) bool { return ev.Kind == "coalesce" }) {
+		t.Fatal("no coalesce event")
 	}
 }
 
@@ -505,8 +526,8 @@ func TestContinueFollowUp(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if resumed := run.ResumedFrom == prev.ID; resumed != tc.wantResume {
-				t.Fatalf("resumed_from=%q, want resume=%v", run.ResumedFrom, tc.wantResume)
+			if reopened := run.ID == prev.ID; reopened != tc.wantResume {
+				t.Fatalf("run=%s prev=%s, want reopen=%v", run.ID, prev.ID, tc.wantResume)
 			}
 			deadline := time.Now().Add(5 * time.Second)
 			for b, _ := os.ReadFile(out); len(b) == 0 && time.Now().Before(deadline); b, _ = os.ReadFile(out) {

@@ -44,7 +44,6 @@ func TestDeriveJobDisplayStatus(t *testing.T) {
 		{"failed maps to failed", true, 0, false, StatusFailed, JobDisplayFailed},
 		{"timed_out maps to failed", true, 0, false, StatusTimedOut, JobDisplayFailed},
 		{"skipped maps to idle", true, 0, false, StatusSkipped, JobDisplayIdle},
-		{"resumed maps to idle", true, 0, false, StatusResumed, JobDisplayIdle},
 		{"never ran is idle", true, 0, false, Status(""), JobDisplayIdle},
 	}
 	for _, c := range cases {
@@ -73,8 +72,8 @@ func TestStatusHelpers(t *testing.T) {
 	if StatusComplete.IsLive() {
 		t.Fatal("complete is not live")
 	}
-	if !StatusResumed.IsTerminal() {
-		t.Fatal("resumed is terminal (superseded)")
+	if !StatusParked.IsTerminal() || ValidStatus("resumed") {
+		t.Fatal("parked is terminal; resumed is no status")
 	}
 	if !ValidStatus("complete") || ValidStatus("bogus") {
 		t.Fatal("ValidStatus mismatch")
@@ -103,7 +102,7 @@ func TestOutcomeStatus(t *testing.T) {
 			t.Errorf("ValidOutcomeStatus(%q)=false", s)
 		}
 	}
-	for _, s := range []Status{StatusRunning, StatusResumed, StatusExited, StatusTimedOut} {
+	for _, s := range []Status{StatusRunning, StatusExited, StatusTimedOut} {
 		if ValidOutcomeStatus(s) {
 			t.Errorf("ValidOutcomeStatus(%q)=true", s)
 		}

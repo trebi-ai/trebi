@@ -375,6 +375,34 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	if !sawUser || !sawDelivery {
 		t.Fatalf("messages: user=%v delivery=%v", sawUser, sawDelivery)
 	}
+
+	// Leg 4: the operator replies on the thread and the run reopens. Its
+	// transcript now holds both turns; the new mail quotes only turn 2.
+	const u4 = "01ARZ3NDEKTSV4RRFFQ69G5FA4"
+	if n := p.poll(t, []email.IngressMessage{{
+		V: 1, Seq: 4, ID: u4, LocalPart: p.local, To: []string{p.local + "@in.example.com"},
+		From: "ops@example.com", Dmarc: "pass", MessageID: "<more@x>", InReplyTo: last.MessageID,
+		References: []string{"<ask@x>"}, Subject: "Re: weekly digest", Text: "Add the fourth item.",
+	}}); n != 1 {
+		t.Fatalf("pulled %d, want 1", n)
+	}
+	const turn2Text = "Added the fourth item."
+	if _, err := p.cp.Conversations.IngestAssistantTurnsAt(ctx, run.ID, convID, 0, []conversations.IncomingTurn{
+		{Role: conversations.RoleAssistant, Text: turnText, At: time.Now()},
+		{Role: conversations.RoleAssistant, Text: turn2Text, At: time.Now()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sendsBefore = len(p.fw.sent())
+	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{RunID: run.ID, ConversationID: convID}); err != nil {
+		t.Fatal(err)
+	}
+	p.waitSends(t, sendsBefore+1)
+	sent = p.fw.sent()
+	reply := sent[len(sent)-1]
+	if !strings.Contains(reply.Text, turn2Text) || strings.Contains(reply.Text, turnText) {
+		t.Fatalf("turn 2 reply text = %q", reply.Text)
+	}
 }
 
 func startMailPlane(t *testing.T) *mailPlane {

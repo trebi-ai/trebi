@@ -1,9 +1,14 @@
 package runs
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
@@ -34,30 +39,43 @@ func TestPreparePlanAppliesModelEffort(t *testing.T) {
 	}
 }
 
-// TestApplyResumePlanKeepsResumedFrom covers B17 on the real resume path:
-// the predecessor run ULID must survive; only an empty ResumedFrom falls
-// back to the harness session id.
-func TestApplyResumePlanKeepsResumedFrom(t *testing.T) {
-	opts := LaunchOpts{
-		CreateOpts:      CreateOpts{ResumedFrom: "01PREDECESSOR"},
-		ResumeSessionID: "uuid-session-1",
-	}
-	plan := tmux.LaunchPlan{}
-	opts.applyResumePlan(&plan)
-	if opts.ResumedFrom != "01PREDECESSOR" {
-		t.Fatalf("resumed_from=%q, want predecessor run id", opts.ResumedFrom)
-	}
-	if opts.SessionID != "uuid-session-1" {
-		t.Fatalf("session_id=%q", opts.SessionID)
+// TestApplyResumePlanSession keeps the harness session of a resume.
+func TestApplyResumePlanSession(t *testing.T) {
+	opts := LaunchOpts{ResumeSessionID: "uuid-session-1"}
+	opts.applyResumePlan(&tmux.LaunchPlan{})
+	if opts.SessionID != "uuid-session-1" || opts.PreviousRunID != "" {
+		t.Fatalf("session_id=%q previous_run_id=%q", opts.SessionID, opts.PreviousRunID)
 	}
 	if opts.Reason != ReasonResume {
 		t.Fatalf("reason=%q", opts.Reason)
 	}
+}
 
-	// Empty ResumedFrom keeps the session-id fallback.
-	opts2 := LaunchOpts{ResumeSessionID: "uuid-session-2"}
-	opts2.applyResumePlan(&tmux.LaunchPlan{SessionID: "uuid-session-2"})
-	if opts2.ResumedFrom != "uuid-session-2" {
-		t.Fatalf("fallback resumed_from=%q", opts2.ResumedFrom)
+// TestHarnessSessionIDCodexPane: a codex pane run resumes the id in its
+// rollout file name, not the trebi id.
+func TestHarnessSessionIDCodexPane(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	t.Setenv("HOME", t.TempDir())
+	codex := t.TempDir()
+	t.Setenv("CODEX_HOME", codex)
+	work := t.TempDir()
+	started := time.Now().UTC()
+	const id = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+	day := filepath.Join(codex, "sessions", started.Format("2006"), started.Format("01"), started.Format("02"))
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	meta := fmt.Sprintf(`{"type":"session_meta","payload":{"timestamp":%q,"id":%q,"cwd":%q}}`+"\n", started.Add(time.Second).Format(time.RFC3339Nano), id, work)
+	if err := os.WriteFile(filepath.Join(day, "rollout-"+started.Format("2006-01-02T15-04-05")+"-"+id+".jsonl"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := Run{Harness: tmux.Codex, Runtime: "tui", SessionID: "trebi-uuid", WorkingDir: work, StartedAt: started}
+	if got := run.harnessSessionID(); got != id {
+		t.Fatalf("pane id %q, want %q", got, id)
+	}
+	run.Runtime = "cli"
+	if got := run.harnessSessionID(); got != "trebi-uuid" {
+		t.Fatalf("cli id %q, want the stored id", got)
 	}
 }

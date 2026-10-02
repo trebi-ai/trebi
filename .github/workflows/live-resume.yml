@@ -1,0 +1,42 @@
+name: live-resume
+
+# Live resume tier: real harnesses, real quota. Run by hand before a release.
+on:
+  workflow_dispatch:
+    inputs:
+      harnesses:
+        description: Space-separated harness names (empty runs every installed harness)
+        required: false
+        default: ""
+      tui:
+        description: Use the tmux runtime
+        type: boolean
+        default: false
+
+jobs:
+  resume:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: live resume
+        env:
+          TREBI_LIVE_SKIP_NOAUTH: "1"
+          HARNESSES: ${{ inputs.harnesses }}
+          TUI: ${{ inputs.tui }}
+        run: |
+          flags=()
+          if [[ "$TUI" == "true" ]]; then flags+=(--tui); fi
+          # shellcheck disable=SC2086
+          scripts/test.resume.sh "${flags[@]}" $HARNESSES
+      - name: upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-resume
+          path: build/live-resume.txt
+          retention-days: 30

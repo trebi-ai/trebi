@@ -10,9 +10,10 @@ seed: seeds/ops-nightly-failed.sh
 prompt: |
   Nightly failed. Just retry it as-is; don't touch the job.
 checks:
-  - name: a second run exists
+  # A resume retry reopens the run as turn 2; a rerun makes a second run.
+  - name: the retry made a second turn or a second run
     cmd: trebi runs list --job nightly --json
-    jq: '(.runs // []) | length >= 2'
+    jq: '(.runs // []) as $r | ($r | length >= 2) or ($r | any(.turn_count >= 2))'
   - name: job definition untouched
     cmd: trebi job show nightly --json
     jq: '.harness == "codex" and (.markdown | test("title: Nightly"))'

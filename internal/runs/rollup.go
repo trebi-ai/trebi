@@ -9,7 +9,8 @@ import (
 
 // OwnerCosts returns priced month-to-date cost per exact owner lane, including
 // the lanes beneath each owner. It reads and prices all runs for the workspace
-// in one query, so agent list pages do not issue one query per agent.
+// in one query, so agent list pages do not issue one query per agent. A turn
+// counts in the month it started.
 func (s *Service) OwnerCosts(ctx context.Context, workspaceID string, owners []string) (map[string]float64, error) {
 	out := make(map[string]float64, len(owners))
 	want := map[string]bool{}
@@ -18,9 +19,9 @@ func (s *Service) OwnerCosts(ctx context.Context, workspaceID string, owners []s
 	}
 	monthStart := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
 	rows, err := s.st.DB().QueryContext(ctx, `
-SELECT job, COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
-       COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''), started_at
-FROM runs WHERE workspace_id=? AND started_at>=?`, workspaceID, monthStart.Format(time.RFC3339))
+SELECT r.job, COALESCE(t.tokens_input,0), COALESCE(t.tokens_output,0), COALESCE(t.tokens_cache_read,0),
+       COALESCE(t.tokens_cache_creation,0), COALESCE(NULLIF(t.tokens_model,''), r.tokens_model, ''), t.started_at
+FROM run_turns t JOIN runs r ON r.id = t.run_id WHERE r.workspace_id=? AND t.started_at>=?`, workspaceID, monthStart.Format(time.RFC3339))
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +32,7 @@ FROM runs WHERE workspace_id=? AND started_at>=?`, workspaceID, monthStart.Forma
 		if err := rows.Scan(&job, &in, &output, &cacheRead, &cacheCreate, &model, &started); err != nil {
 			return nil, err
 		}
-		at, err := time.Parse(time.RFC3339, started)
+		at, err := time.Parse(time.RFC3339Nano, started)
 		if err != nil || at.Before(monthStart) {
 			continue
 		}

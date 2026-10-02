@@ -73,9 +73,10 @@ func (s *Service) SetBudgetAlerter(a BudgetAlerter) { s.budgetAlerter = a }
 func (s *Service) monthToDateCost(ctx context.Context, workspaceID, owner string) (float64, error) {
 	monthStart := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
 	rows, err := s.st.DB().QueryContext(ctx, `
-SELECT job, COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
-       COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''), started_at
-FROM runs WHERE workspace_id=? AND started_at>=? AND (job=? OR job LIKE ?)`,
+SELECT r.job, COALESCE(t.tokens_input,0), COALESCE(t.tokens_output,0), COALESCE(t.tokens_cache_read,0),
+       COALESCE(t.tokens_cache_creation,0), COALESCE(NULLIF(t.tokens_model,''), r.tokens_model, ''), t.started_at
+FROM run_turns t JOIN runs r ON r.id = t.run_id
+WHERE r.workspace_id=? AND t.started_at>=? AND (r.job=? OR r.job LIKE ?)`,
 		workspaceID, monthStart.Format(time.RFC3339), owner, owner+"/%")
 	if err != nil {
 		return 0, err

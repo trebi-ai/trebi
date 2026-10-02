@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 37
+const SchemaVersion = 38
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1023,6 +1023,123 @@ WITH RECURSIVE chain(id, first) AS (
 )
 UPDATE runs SET first_run_id = (SELECT first FROM chain WHERE chain.id = runs.id);
 CREATE INDEX idx_runs_first_run ON runs(first_run_id);
+`,
+		// v38: one run per harness session (plan 2026-10-01). Each launch of
+		// the harness is a turn in run_turns. A resume chain with one session
+		// merges into its first run. v38_log_merge lists the run logs that
+		// the Go step MergeRunLogs appends to the log of the root run.
+		`
+CREATE TABLE run_turns (
+    run_id                 TEXT    NOT NULL,
+    n                      INTEGER NOT NULL,
+    reason                 TEXT    NOT NULL,
+    status                 TEXT    NOT NULL,
+    end_reason             TEXT,
+    queue_id               TEXT,
+    trigger_event_id       TEXT,
+    prompt_preview         TEXT    NOT NULL DEFAULT '',
+    session_id             TEXT,
+    started_at             TEXT    NOT NULL,
+    ended_at               TEXT,
+    duration_ms            INTEGER,
+    tokens_input           INTEGER,
+    tokens_output          INTEGER,
+    tokens_cache_read      INTEGER,
+    tokens_cache_creation  INTEGER,
+    tokens_model           TEXT,
+    PRIMARY KEY (run_id, n)
+);
+CREATE UNIQUE INDEX idx_turns_queue ON run_turns(queue_id) WHERE queue_id IS NOT NULL AND queue_id != '';
+CREATE INDEX idx_turns_started ON run_turns(started_at);
+
+ALTER TABLE runs ADD COLUMN turn_count INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE runs ADD COLUMN turn_started_at TEXT;
+ALTER TABLE runs ADD COLUMN active_ms INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs RENAME COLUMN resumed_from TO previous_run_id;
+
+CREATE TABLE v38_chain AS
+WITH RECURSIVE chain(id, root) AS (
+    SELECT r.id, r.id FROM runs r
+    WHERE NOT EXISTS (SELECT 1 FROM runs p WHERE p.id = r.previous_run_id
+        AND COALESCE(r.session_id,'') != '' AND p.session_id = r.session_id)
+    UNION ALL
+    SELECT r.id, chain.root FROM runs r JOIN chain ON r.previous_run_id = chain.id
+    JOIN runs p ON p.id = chain.id
+    WHERE COALESCE(r.session_id,'') != '' AND r.session_id = p.session_id
+)
+SELECT id, root, ROW_NUMBER() OVER (PARTITION BY root ORDER BY (SELECT started_at FROM runs WHERE runs.id = chain.id), id) AS n
+FROM chain;
+CREATE INDEX v38_chain_id ON v38_chain(id);
+
+INSERT INTO run_turns (run_id, n, reason, status, end_reason, queue_id, trigger_event_id, prompt_preview,
+    session_id, started_at, ended_at, duration_ms, tokens_input, tokens_output, tokens_cache_read,
+    tokens_cache_creation, tokens_model)
+SELECT c.root, c.n, COALESCE(NULLIF(r.reason,''), 'manual'),
+    CASE WHEN r.status = 'resumed' THEN 'complete' ELSE r.status END,
+    r.end_reason, NULLIF(r.queue_id,''), r.trigger_event_id, COALESCE(r.prompt_preview,''), r.session_id,
+    r.started_at, r.ended_at,
+    CASE WHEN r.ended_at IS NULL THEN NULL
+        ELSE MAX(0, CAST(ROUND((julianday(r.ended_at) - julianday(r.started_at)) * 86400000) AS INTEGER)) END,
+    r.tokens_input, r.tokens_output, r.tokens_cache_read, r.tokens_cache_creation, r.tokens_model
+FROM runs r JOIN v38_chain c ON c.id = r.id;
+
+CREATE TABLE v38_log_merge (root TEXT NOT NULL, old TEXT NOT NULL, n INTEGER NOT NULL);
+INSERT INTO v38_log_merge (root, old, n) SELECT root, id, n FROM v38_chain WHERE id != root;
+
+UPDATE run_segments SET run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = run_segments.run_id)
+    WHERE run_id IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE run_events SET run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = run_events.run_id)
+    WHERE run_id IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE approvals SET run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = approvals.run_id)
+    WHERE run_id IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE requests SET run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = requests.run_id)
+    WHERE run_id IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE requests SET delivered_run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = requests.delivered_run_id)
+    WHERE delivered_run_id IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE event_queue SET run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = event_queue.run_id)
+    WHERE run_id IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE event_queue SET resume_of = (SELECT root FROM v38_chain WHERE v38_chain.id = event_queue.resume_of)
+    WHERE resume_of IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE inbox_items SET run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = inbox_items.run_id)
+    WHERE run_id IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE outbox SET run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = outbox.run_id)
+    WHERE run_id IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE agent_proposals SET run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = agent_proposals.run_id)
+    WHERE run_id IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE email_messages SET run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = email_messages.run_id)
+    WHERE run_id IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE OR IGNORE conversation_messages SET run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = conversation_messages.run_id)
+    WHERE run_id IN (SELECT id FROM v38_chain WHERE id != root);
+DELETE FROM conversation_messages WHERE run_id IN (SELECT id FROM v38_chain WHERE id != root);
+UPDATE runs SET previous_run_id = (SELECT root FROM v38_chain WHERE v38_chain.id = runs.previous_run_id)
+    WHERE previous_run_id IN (SELECT id FROM v38_chain WHERE id != root)
+    AND id NOT IN (SELECT id FROM v38_chain WHERE id != root);
+
+UPDATE runs SET
+    turn_count = (SELECT COUNT(*) FROM run_turns t WHERE t.run_id = runs.id),
+    active_ms = (SELECT COALESCE(SUM(t.duration_ms), 0) FROM run_turns t WHERE t.run_id = runs.id),
+    started_at = (SELECT t.started_at FROM run_turns t WHERE t.run_id = runs.id AND t.n = 1),
+    turn_started_at = (SELECT t.started_at FROM run_turns t WHERE t.run_id = runs.id ORDER BY t.n DESC LIMIT 1),
+    ended_at = (SELECT t.ended_at FROM run_turns t WHERE t.run_id = runs.id ORDER BY t.n DESC LIMIT 1),
+    status = (SELECT t.status FROM run_turns t WHERE t.run_id = runs.id ORDER BY t.n DESC LIMIT 1),
+    end_reason = (SELECT t.end_reason FROM run_turns t WHERE t.run_id = runs.id ORDER BY t.n DESC LIMIT 1),
+    session_id = (SELECT t.session_id FROM run_turns t WHERE t.run_id = runs.id ORDER BY t.n DESC LIMIT 1),
+    tokens_input = (SELECT SUM(t.tokens_input) FROM run_turns t WHERE t.run_id = runs.id),
+    tokens_output = (SELECT SUM(t.tokens_output) FROM run_turns t WHERE t.run_id = runs.id),
+    tokens_cache_read = (SELECT SUM(t.tokens_cache_read) FROM run_turns t WHERE t.run_id = runs.id),
+    tokens_cache_creation = (SELECT SUM(t.tokens_cache_creation) FROM run_turns t WHERE t.run_id = runs.id),
+    tokens_model = COALESCE((SELECT t.tokens_model FROM run_turns t WHERE t.run_id = runs.id
+        AND COALESCE(t.tokens_model,'') != '' ORDER BY t.n DESC LIMIT 1), tokens_model)
+WHERE id IN (SELECT root FROM v38_chain);
+UPDATE runs SET resume_attempts = (SELECT COUNT(*) FROM run_turns t WHERE t.run_id = runs.id AND t.n > 1 AND t.reason = 'resume')
+WHERE turn_count > 1;
+DELETE FROM runs WHERE id IN (SELECT id FROM v38_chain WHERE id != root);
+DROP TABLE v38_chain;
+
+DROP INDEX idx_runs_first_run;
+DROP INDEX idx_runs_queue_id;
+ALTER TABLE runs DROP COLUMN first_run_id;
+CREATE INDEX idx_runs_queue_id ON runs(queue_id);
 `,
 	}
 }

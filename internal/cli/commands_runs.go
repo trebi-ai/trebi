@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/request"
@@ -35,8 +36,6 @@ func runsCommand() *cli.Command {
 					&cli.StringFlag{Name: "since", Usage: "RFC3339 time or a duration such as 24h"},
 					&cli.StringFlag{Name: "until", Usage: "RFC3339 time or a duration such as 1h"},
 					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (run id)"},
-					&cli.BoolFlag{Name: "group", Usage: "one row per session: its newest turn, with the turn count"},
-					&cli.StringFlag{Name: "first-run", Usage: "list the turns of one session (its first_run_id)"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 20, Usage: "max rows"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
@@ -64,6 +63,15 @@ func runsCommand() *cli.Command {
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON (always on)"},
 				},
 				Action: runRunsShow,
+			},
+			{
+				Name:      "turns",
+				Usage:     "list the turns of a run (one per harness launch)",
+				ArgsUsage: "<id>",
+				Action:    runRunsTurns,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON instead of a table"},
+				},
 			},
 			{
 				Name:      "timeline",
@@ -230,6 +238,52 @@ func runRunsTimeline(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	return renderTimeline(outWriter(c), body)
+}
+
+func runRunsTurns(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi runs turns <id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		Turns []struct {
+			N          int    `json:"n"`
+			Reason     string `json:"reason"`
+			Status     string `json:"status"`
+			EndReason  string `json:"end_reason"`
+			StartedAt  string `json:"started_at"`
+			DurationMS int64  `json:"duration_ms"`
+			SessionID  string `json:"session_id"`
+			Tokens     struct {
+				CostUSD float64 `json:"cost_usd"`
+			} `json:"tokens"`
+		} `json:"turns"`
+	}
+	if c.Bool("json") {
+		var raw map[string]any
+		if err := client.GetJSON(request.BuildRunTurnsPath(id), &raw); err != nil {
+			return err
+		}
+		return encodeJSON(c, raw)
+	}
+	if err := client.GetJSON(request.BuildRunTurnsPath(id), &body); err != nil {
+		return err
+	}
+	w := outWriter(c)
+	tbl := newTable(w, []string{"Turn", "Reason", "Status", "End", "Started", "Duration", "Cost", "Session"})
+	for _, t := range body.Turns {
+		tbl.AppendRow(table.Row{
+			t.N, dash(t.Reason), colorStatus(w, t.Status), dash(t.EndReason), dash(t.StartedAt),
+			(time.Duration(t.DurationMS) * time.Millisecond).Round(time.Second).String(),
+			fmt.Sprintf("%.4f", t.Tokens.CostUSD), dash(t.SessionID),
+		})
+	}
+	renderTable(tbl)
+	return nil
 }
 
 func runRunsTranscript(_ context.Context, c *cli.Command) error {
@@ -510,7 +564,6 @@ func runRunsList(_ context.Context, c *cli.Command) error {
 		Cursor: c.String("cursor"), Harness: c.String("harness"), Model: c.String("model"),
 		EndReason: c.String("end-reason"), Q: c.String("search"),
 		Since: c.String("since"), Until: c.String("until"), Limit: c.Int("limit"),
-		FirstRun: c.String("first-run"), Group: c.Bool("group"),
 	}
 	// Fetch a wider page when conversation filter needs post-filter.
 	conv := c.String("conversation")
@@ -545,10 +598,7 @@ func runRunsList(_ context.Context, c *cli.Command) error {
 	tbl := newTable(w, []string{"ID", "Job", "Kind", "Status", "Harness", "Started", "Reason", "Conversation", "Turns"})
 	for _, r := range body.Runs {
 		status := mapStr(r, "status")
-		turns := "-"
-		if t, ok := r["turns"].(map[string]any); ok {
-			turns = fmt.Sprint(t["count"])
-		}
+		turns := dash(mapStr(r, "turn_count"))
 		tbl.AppendRow(table.Row{
 			mapStr(r, "id"),
 			mapStr(r, "job"),

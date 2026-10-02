@@ -45,6 +45,10 @@ func TestHumanManualRunAllowedOverBudgetWithWarning(t *testing.T) {
 		wsID, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.DB().Exec(`INSERT INTO run_turns (run_id,n,reason,status,started_at,tokens_input,tokens_model)
+		VALUES ('spent',1,'manual','complete',?,40000000,'default')`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
 
 	code, body, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{
 		"workspace": wsID, "job": "agents/keeper/build", "kind": "job",

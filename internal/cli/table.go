@@ -267,7 +267,7 @@ func colorStatus(out io.Writer, s string) string {
 		return s
 	}
 	switch s {
-	case "running", "resumed", "ok", "pending", "claimed":
+	case "running", "ok", "pending", "claimed":
 		return text.FgGreen.Sprint(s)
 	case "complete", "done":
 		return text.FgHiGreen.Sprint(s)

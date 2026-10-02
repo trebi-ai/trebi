@@ -162,6 +162,28 @@ func TestParseTranscriptFake(t *testing.T) {
 	}
 }
 
+// TestParseResumedTranscripts: a resumed session keeps both prompts in one
+// file, each with its time, so the API can label the run turn of each entry.
+func TestParseResumedTranscripts(t *testing.T) {
+	t.Parallel()
+	for name, tool := range map[string]Tool{"claude": claudeTool{}, "codex": codexTool{}} {
+		turns, err := tool.ParseTranscript(bytes.NewReader(readTranscript(t, name, "resumed.jsonl")))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var roles []string
+		for _, tr := range turns {
+			if tr.At.IsZero() {
+				t.Fatalf("%s: entry without time %+v", name, tr)
+			}
+			roles = append(roles, tr.Role)
+		}
+		if strings.Join(roles, ",") != "user,assistant,user,assistant" || turns[3].Text != "apple" {
+			t.Fatalf("%s: turns %+v", name, turns)
+		}
+	}
+}
+
 func readTranscript(t *testing.T, tool, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "transcripts", tool, name))

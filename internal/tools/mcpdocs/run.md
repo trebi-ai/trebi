@@ -6,6 +6,8 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 
 A launch blocks until the queue accepts the run. Poll `show` for status changes.
 
+A run is one harness session. Resume reopens the same run as a new turn: the run id stays, and `turn_count` goes up. A run between turns shows the status of its last turn. `duration_ms` is the active time of all turns, and the cost is the sum of all turns. `previous_run_id` names the run that a new session follows, for example a rerun.
+
 ## Actions
 
 ### list
@@ -21,8 +23,6 @@ List runs, newest first.
 - `q` (string, optional): text match on the prompt preview, the job, or the id.
 - `since` (string, optional): RFC3339 time, or a duration such as `24h` meaning "that long ago".
 - `until` (string, optional): RFC3339 time, or a duration such as `1h`.
-- `group` (boolean, optional): true lists one row per session: its newest turn. A resume of a run is a new turn of the same session. `turns` on each row holds the count, the first start, the total duration, and the total cost.
-- `first_run` (string, optional): list the turns of one session. Give the `first_run_id` of any of its runs.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.
 
@@ -50,8 +50,12 @@ Read one run.
 Read the event timeline of one run.
 - `id` (string, required): run id.
 
+### turns
+List the turns of one run, oldest first. The response is `{"turns": [...]}`. Each turn has `n`, `reason`, `status`, `end_reason`, `started_at`, `ended_at`, `duration_ms`, `session_id`, and `tokens`.
+- `id` (string, required): run id.
+
 ### transcript
-Read the agent transcript of one run.
+Read the agent transcript of one run. Each entry has `run_turn`, the turn that wrote it.
 - `id` (string, required): run id.
 - `raw` (boolean, optional): return the raw transcript without formatting.
 - `max_bytes` (number, optional): cap the body at this size; default 64 KB. A cut body returns `{"content": "…", "truncated": true}`.
@@ -67,7 +71,7 @@ Stop one run, or several. Destructive.
 - `ids` (array, optional): kill several runs in one call. The reply carries `ok`, `count`, and `failed`, so a partial kill is visible.
 
 ### resume
-Resume one interrupted run.
+Resume one interrupted run. The run reopens as its next turn.
 - `id` (string, required): run id.
 
 ### replay

@@ -2,6 +2,7 @@ package runs
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 )
 
 // Run status — trebi's taxonomy, verbatim (B2).
-// LIVE = {running}. `resumed` is SUPERSEDED-terminal (B17). `parked` is
+// LIVE = {running}. A run shows the status of its latest turn. `parked` is
 // terminal: the run waits for the answer to a request.
 type Status string
 
@@ -21,17 +22,16 @@ const (
 	StatusExited   Status = "exited"
 	StatusSkipped  Status = "skipped"
 	StatusTimedOut Status = "timed_out"
-	StatusResumed  Status = "resumed"
 	StatusParked   Status = "parked"
 )
 
 // IsLive reports whether status counts as an active run.
 func (s Status) IsLive() bool { return s == StatusRunning }
 
-// IsTerminal reports a finished run (including superseded resumed).
+// IsTerminal reports a finished run, or a run between two turns.
 func (s Status) IsTerminal() bool {
 	switch s {
-	case StatusComplete, StatusFailed, StatusExited, StatusSkipped, StatusTimedOut, StatusResumed, StatusParked:
+	case StatusComplete, StatusFailed, StatusExited, StatusSkipped, StatusTimedOut, StatusParked:
 		return true
 	}
 	return false
@@ -127,7 +127,7 @@ func DeriveJobDisplayStatus(active bool, liveCount int, liveWaiting bool, last S
 // ValidStatus reports whether s is a known run status.
 func ValidStatus(s string) bool {
 	switch Status(s) {
-	case StatusRunning, StatusComplete, StatusFailed, StatusExited, StatusSkipped, StatusTimedOut, StatusResumed, StatusParked:
+	case StatusRunning, StatusComplete, StatusFailed, StatusExited, StatusSkipped, StatusTimedOut, StatusParked:
 		return true
 	}
 	return false
@@ -154,12 +154,20 @@ type RunSummary struct {
 	CostUSD    float64   `json:"cost_usd"`
 }
 
-// Turns sums the runs of one resume chain.
-type Turns struct {
-	Count      int       `json:"count"`
-	StartedAt  time.Time `json:"started_at"`
-	DurationMS int64     `json:"duration_ms"`
-	CostUSD    float64   `json:"cost_usd"`
+// Turn is one launch of the harness inside a run.
+type Turn struct {
+	N             int                `json:"n"`
+	Reason        RunReason          `json:"reason"`
+	Status        Status             `json:"status"`
+	EndReason     EndReason          `json:"end_reason,omitempty"`
+	QueueID       string             `json:"queue_id,omitempty"`
+	TriggerEvent  string             `json:"trigger_event_id,omitempty"`
+	PromptPreview string             `json:"prompt_preview"`
+	SessionID     string             `json:"session_id,omitempty"`
+	StartedAt     time.Time          `json:"started_at"`
+	EndedAt       *time.Time         `json:"ended_at,omitempty"`
+	DurationMS    int64              `json:"duration_ms"`
+	Tokens        pricing.TokenUsage `json:"tokens"`
 }
 
 // Outcome is a human verdict over a terminal run's machine status. The
@@ -235,39 +243,40 @@ type TriggerCapture struct {
 
 // Run — one execution (wire shape §3.4).
 type Run struct {
-	ID                string             `json:"id"`
-	Workspace         string             `json:"workspace"`
-	Job               string             `json:"job"`
-	Kind              string             `json:"kind"`
-	Reason            RunReason          `json:"reason,omitempty"`
-	Status            Status             `json:"status"`
-	EndReason         EndReason          `json:"end_reason,omitempty"`
-	SessionState      SessionState       `json:"session_state,omitempty"`
-	SessionStateSince *time.Time         `json:"session_state_since,omitempty"`
-	StartedAt         time.Time          `json:"started_at"`
-	EndedAt           *time.Time         `json:"ended_at,omitempty"`
-	DurationMS        int64              `json:"duration_ms"`
-	Harness           string             `json:"harness"`
-	Runtime           string             `json:"runtime"`
-	Model             string             `json:"model,omitempty"`
-	SessionID         string             `json:"session_id,omitempty"`
-	TmuxSession       string             `json:"tmux_session,omitempty"`
-	Attach            *AttachInfo        `json:"attach,omitempty"`
-	PromptPreview     string             `json:"prompt_preview"`
-	Inputs            map[string]string  `json:"inputs,omitempty"`
-	Trigger           *TriggerCapture    `json:"trigger,omitempty"`
-	ConversationKey   string             `json:"conversation_key,omitempty"`
-	ConversationID    string             `json:"conversation_id,omitempty"`
-	WorkingDir        string             `json:"working_dir,omitempty"`
-	Tokens            pricing.TokenUsage `json:"tokens"`
-	CoalescedCount    int                `json:"coalesced_count,omitempty"`
-	Session           SessionSpec        `json:"session"`
-	ResumedFrom       string             `json:"resumed_from,omitempty"`
-	// FirstRunID is the first run of the resume chain: the run itself when
-	// it is no resume. All runs of one chain are the turns of one session.
-	FirstRunID string `json:"first_run_id"`
-	// Turns sums the chain. Get and a grouped list set it.
-	Turns          *Turns   `json:"turns,omitempty"`
+	ID                string       `json:"id"`
+	Workspace         string       `json:"workspace"`
+	Job               string       `json:"job"`
+	Kind              string       `json:"kind"`
+	Reason            RunReason    `json:"reason,omitempty"`
+	Status            Status       `json:"status"`
+	EndReason         EndReason    `json:"end_reason,omitempty"`
+	SessionState      SessionState `json:"session_state,omitempty"`
+	SessionStateSince *time.Time   `json:"session_state_since,omitempty"`
+	StartedAt         time.Time    `json:"started_at"`
+	EndedAt           *time.Time   `json:"ended_at,omitempty"`
+	// DurationMS is active time: the sum of the turn durations.
+	DurationMS int64 `json:"duration_ms"`
+	// TurnCount is the number of harness launches of the run.
+	TurnCount       int                `json:"turn_count"`
+	TurnStartedAt   *time.Time         `json:"turn_started_at,omitempty"`
+	Harness         string             `json:"harness"`
+	Runtime         string             `json:"runtime"`
+	Model           string             `json:"model,omitempty"`
+	SessionID       string             `json:"session_id,omitempty"`
+	TmuxSession     string             `json:"tmux_session,omitempty"`
+	Attach          *AttachInfo        `json:"attach,omitempty"`
+	PromptPreview   string             `json:"prompt_preview"`
+	Inputs          map[string]string  `json:"inputs,omitempty"`
+	Trigger         *TriggerCapture    `json:"trigger,omitempty"`
+	ConversationKey string             `json:"conversation_key,omitempty"`
+	ConversationID  string             `json:"conversation_id,omitempty"`
+	WorkingDir      string             `json:"working_dir,omitempty"`
+	Tokens          pricing.TokenUsage `json:"tokens"`
+	CoalescedCount  int                `json:"coalesced_count,omitempty"`
+	Session         SessionSpec        `json:"session"`
+	// PreviousRunID is the run that a new session follows (a fresh start
+	// or a rerun).
+	PreviousRunID  string   `json:"previous_run_id,omitempty"`
 	ResumeAttempts int      `json:"resume_attempts,omitempty"`
 	Outcome        *Outcome `json:"outcome,omitempty"`
 	QueueID        string   `json:"queue_id,omitempty"`
@@ -299,6 +308,16 @@ func (r *Run) EffectiveStatus() Status {
 		return r.Outcome.Status
 	}
 	return r.Status
+}
+
+// sentinelKey names the completion sentinel of the current turn. A resumed
+// pane shows the earlier turns again, so each turn after the first has its
+// own sentinel.
+func (r *Run) sentinelKey() string {
+	if r.TurnCount > 1 {
+		return r.ID + "_" + strconv.Itoa(r.TurnCount)
+	}
+	return r.ID
 }
 
 // Timeline — two-layer segments + point events.

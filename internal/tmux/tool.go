@@ -139,6 +139,8 @@ type Turn struct {
 	At    time.Time  `json:"at"`
 	Text  string     `json:"text,omitempty"`
 	Tools []ToolCall `json:"tools,omitempty"`
+	// RunTurn is the run turn (harness launch) the entry belongs to.
+	RunTurn int `json:"run_turn,omitempty"`
 }
 
 // ToolCall is one tool invocation on a turn.

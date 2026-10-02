@@ -425,8 +425,8 @@ func TestResumeRequestNoAttemptCount(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request resume %d: %v", i, err)
 		}
-		if next.ResumeAttempts != 0 || next.Reason != runs.ReasonRequest || next.ResumedFrom != prev.ID {
-			t.Fatalf("request resume %d: attempts=%d reason=%s from=%s", i, next.ResumeAttempts, next.Reason, next.ResumedFrom)
+		if next.ResumeAttempts != 0 || next.ID != prev.ID || next.TurnCount != i+2 {
+			t.Fatalf("request resume %d: attempts=%d id=%s turns=%d", i, next.ResumeAttempts, next.ID, next.TurnCount)
 		}
 		prev = next
 	}
@@ -442,8 +442,8 @@ func TestResumeRequestNoAttemptCount(t *testing.T) {
 	}
 }
 
-// TestResumeAcceptsParked pins the guard: a parked run resumes, and the
-// parent changes to resumed.
+// TestResumeAcceptsParked pins the guard: a parked run resumes as its next
+// turn.
 func TestResumeAcceptsParked(t *testing.T) {
 	t.Parallel()
 	fake := `echo "$TREBI_RUN_COMPLETE"`
@@ -454,12 +454,12 @@ func TestResumeAcceptsParked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.SessionID != prev.SessionID {
-		t.Fatalf("session %q, want %q", next.SessionID, prev.SessionID)
+	if next.SessionID != prev.SessionID || next.ID != prev.ID || next.TurnCount != 2 {
+		t.Fatalf("session %q id %s turns %d, want %q %s 2", next.SessionID, next.ID, next.TurnCount, prev.SessionID, prev.ID)
 	}
-	got, _ := svc.Get(ctx, prev.ID)
-	if got.Status != runs.StatusResumed {
-		t.Fatalf("parent status %s", got.Status)
+	turns, err := svc.Turns(ctx, prev.ID)
+	if err != nil || len(turns) != 2 || turns[1].Reason != runs.ReasonRequest {
+		t.Fatalf("turns %+v %v", turns, err)
 	}
 }
 

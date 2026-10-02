@@ -19,9 +19,9 @@ import (
 )
 
 type fakeRuns struct {
-	mu    sync.Mutex
-	runs  map[string]*runs.Run
-	child string
+	mu   sync.Mutex
+	runs map[string]*runs.Run
+	turn int
 }
 
 func (f *fakeRuns) put(r runs.Run) {
@@ -58,8 +58,8 @@ func (f *fakeRuns) Unpark(_ context.Context, id string, end runs.EndReason) erro
 	return nil
 }
 
-func (f *fakeRuns) ResumedChild(context.Context, string, runs.RunReason, time.Time) (string, error) {
-	return f.child, nil
+func (f *fakeRuns) TurnAfter(context.Context, string, runs.RunReason, time.Time) (int, error) {
+	return f.turn, nil
 }
 
 type launchCall struct {
@@ -83,9 +83,16 @@ func (f *fakeLauncher) record(c launchCall, err error) (*runs.Run, error) {
 		return nil, err
 	}
 	prev, _ := f.rs.Get(context.Background(), c.prevID) // the test put it
-	next := runs.Run{ID: fmt.Sprintf("%s-next%d", c.prevID, len(f.calls)), Status: runs.StatusRunning, Reason: c.reason, ResumedFrom: c.prevID}
+	// A resume reopens the run as its next turn; a fresh run is a new row.
+	next := runs.Run{ID: c.prevID, Status: runs.StatusRunning, Reason: c.reason, TurnCount: 2}
+	if c.path == "fresh" {
+		next = runs.Run{ID: fmt.Sprintf("%s-next%d", c.prevID, len(f.calls)), Status: runs.StatusRunning, Reason: c.reason, PreviousRunID: c.prevID, TurnCount: 1}
+	}
 	if prev != nil {
 		next.Job, next.Workspace, next.Kind, next.SessionID, next.WorkingDir = prev.Job, prev.Workspace, prev.Kind, prev.SessionID, prev.WorkingDir
+		if c.path != "fresh" {
+			next.Reason, next.TurnCount = prev.Reason, prev.TurnCount+1
+		}
 	}
 	f.rs.put(next)
 	return &next, nil

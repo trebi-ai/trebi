@@ -106,7 +106,7 @@ func (l *Launcher) Fresh(ctx context.Context, prevID, prompt string, reason runs
 	if err != nil {
 		return nil, err
 	}
-	lopts.ResumedFrom = prev.ID
+	lopts.PreviousRunID = prev.ID
 	lopts.ResumeAttempts = prev.ResumeAttempts
 	lopts.ConversationID = prev.ConversationID
 	lopts.Prompt = prompt

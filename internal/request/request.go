@@ -166,6 +166,11 @@ func BuildRunTimelinePath(id string) string {
 	return "/v1/runs/" + url.PathEscape(id) + "/timeline"
 }
 
+// BuildRunTurnsPath builds GET /v1/runs/{id}/turns.
+func BuildRunTurnsPath(id string) string {
+	return "/v1/runs/" + url.PathEscape(id) + "/turns"
+}
+
 // BuildRunLogPath builds GET /v1/runs/{id}/log. follow adds follow=1 (SSE).
 func BuildRunLogPath(id string, follow bool) string {
 	path := "/v1/runs/" + url.PathEscape(id) + "/log"
@@ -1635,10 +1640,7 @@ type RunsQuery struct {
 	Q            string
 	Since        string
 	Until        string
-	// FirstRun lists the turns of one session; Group lists one row per session.
-	FirstRun string
-	Group    bool
-	Limit    int
+	Limit        int
 }
 
 // Path renders the query as GET /v1/runs.
@@ -1656,10 +1658,6 @@ func (r RunsQuery) Path() string {
 		"q":            r.Q,
 		"since":        r.Since,
 		"until":        r.Until,
-		"first_run":    r.FirstRun,
-	}
-	if r.Group {
-		kv["group"] = "true"
 	}
 	if r.Limit > 0 {
 		kv["limit"] = strconv.Itoa(r.Limit)

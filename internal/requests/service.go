@@ -21,7 +21,7 @@ import (
 type Runs interface {
 	Get(ctx context.Context, id string) (*runs.Run, error)
 	Unpark(ctx context.Context, runID string, end runs.EndReason) error
-	ResumedChild(ctx context.Context, runID string, reason runs.RunReason, since time.Time) (string, error)
+	TurnAfter(ctx context.Context, runID string, reason runs.RunReason, since time.Time) (int, error)
 }
 
 type Launcher interface {

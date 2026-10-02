@@ -28,7 +28,9 @@ type Reaper struct {
 	fixAttempts map[string]int
 	memDone     map[string]bool
 	lastPane    map[string]string
-	stop        chan struct{}
+	// turns is the run turn the per-run maps describe.
+	turns map[string]int
+	stop  chan struct{}
 }
 
 // NewReaper builds a reaper bound to the runs service.
@@ -45,6 +47,7 @@ func NewReaper(svc *Service) *Reaper {
 		fixAttempts: make(map[string]int),
 		memDone:     make(map[string]bool),
 		lastPane:    make(map[string]string),
+		turns:       make(map[string]int),
 		stop:        make(chan struct{}),
 	}
 }
@@ -106,8 +109,14 @@ func liveTmuxSessions() (map[string]struct{}, bool) {
 
 func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions map[string]struct{}, listOK bool) {
 	r.mu.Lock()
+	if r.turns[run.ID] != run.TurnCount {
+		// A new turn starts with clean windows and counts.
+		r.forgetLocked(run.ID)
+		r.turns[run.ID] = run.TurnCount
+	}
 	_, keeping := r.idleSince["keep:"+run.ID]
 	r.mu.Unlock()
+	turnStart := run.turnStart()
 	// CLI keep-alive suppresses max duration exactly like the pane path: the
 	// session is done, it lingers for follow-ups until the window closes.
 	if !keeping && run.Runtime == "cli" && run.Session.KeepAliveMS > 0 {
@@ -128,7 +137,7 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 			keeping = true
 		}
 		if !keeping && run.Session.MaxDurationMS > 0 {
-			if now.Sub(run.StartedAt) >= time.Duration(run.Session.MaxDurationMS)*time.Millisecond {
+			if now.Sub(turnStart) >= time.Duration(run.Session.MaxDurationMS)*time.Millisecond {
 				r.finish(ctx, run, StatusTimedOut, EndMaxDuration)
 			}
 		}
@@ -136,7 +145,7 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 	}
 
 	if !keeping && run.Session.MaxDurationMS > 0 {
-		if now.Sub(run.StartedAt) >= time.Duration(run.Session.MaxDurationMS)*time.Millisecond {
+		if now.Sub(turnStart) >= time.Duration(run.Session.MaxDurationMS)*time.Millisecond {
 			r.finish(ctx, run, StatusTimedOut, EndMaxDuration)
 			return
 		}
@@ -182,7 +191,7 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 	if hist, herr := tmux.ReadHistory(run.TmuxSession); herr == nil && hist != "" {
 		completeText = hist
 	}
-	if DetectCompletion(completeText, run.ID) {
+	if DetectCompletion(completeText, run.sentinelKey()) {
 		r.gateCompletion(ctx, run, completeText, now)
 		return
 	}
@@ -289,7 +298,7 @@ func (r *Reaper) markDialogWaiting(ctx context.Context, run *Run, question strin
 // §3.3). Only a rising exact-line sentinel count re-runs the gate, so the fix
 // message's quoted sentinel does not retrigger it.
 func (r *Reaper) gateCompletion(ctx context.Context, run *Run, screen string, now time.Time) {
-	n := countSentinels(screen, run.ID)
+	n := countSentinels(screen, run.sentinelKey())
 	r.mu.Lock()
 	if n <= r.sentinels[run.ID] {
 		r.mu.Unlock()
@@ -317,7 +326,7 @@ func (r *Reaper) gateCompletion(ctx context.Context, run *Run, screen string, no
 	delete(r.idleSince, run.ID)
 	r.mu.Unlock()
 	r.svc.requestMemoryFix(ctx, run.ID, "reaper", attempts, issues)
-	if err := tmux.Send(run.TmuxSession, fixMessage(issues, run.ID)); err != nil {
+	if err := tmux.Send(run.TmuxSession, fixMessage(issues, run.sentinelKey())); err != nil {
 		r.log.Warn("memory fix send", "run", run.ID, "error", err)
 		return
 	}
@@ -421,22 +430,28 @@ func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndRea
 		r.gateAtFinish(ctx, run)
 	}
 	r.svc.teardownRuntime(ctx, run)
-	if err := r.svc.Terminate(ctx, run.ID, status, end, nil); err != nil {
+	if err := r.svc.TerminateTurn(ctx, run.ID, run.TurnCount, status, end, nil); err != nil {
 		r.log.Warn("reaper terminate", "run", run.ID, "error", err)
 	}
 	r.svc.takePendingPrompt(run.ID)
 	r.mu.Lock()
-	delete(r.idleSince, run.ID)
-	delete(r.idleSince, "keep:"+run.ID)
-	delete(r.idleSince, "cli-idle:"+run.ID)
-	delete(r.limitHits, run.ID)
-	delete(r.dialogHits, run.ID)
-	delete(r.sentinels, run.ID)
-	delete(r.fixAttempts, run.ID)
-	delete(r.memDone, run.ID)
-	delete(r.lastPane, run.ID)
+	r.forgetLocked(run.ID)
+	delete(r.turns, run.ID)
 	r.mu.Unlock()
 	// Terminate records the finish ("run finished"); nothing to add here.
+}
+
+// forgetLocked drops the per-turn state of a run. The caller holds r.mu.
+func (r *Reaper) forgetLocked(id string) {
+	delete(r.idleSince, id)
+	delete(r.idleSince, "keep:"+id)
+	delete(r.idleSince, "cli-idle:"+id)
+	delete(r.limitHits, id)
+	delete(r.dialogHits, id)
+	delete(r.sentinels, id)
+	delete(r.fixAttempts, id)
+	delete(r.memDone, id)
+	delete(r.lastPane, id)
 }
 
 // checkCLI reads the CLI tracker instead of a pane (G.5): idle timeout is
@@ -453,7 +468,7 @@ func (r *Reaper) checkCLI(ctx context.Context, run *Run, now time.Time) (finishe
 	if cr == nil {
 		// A sweep can race the launch window (row inserted, session not yet
 		// registered); only a fresh row is protected by the grace period.
-		if now.Sub(run.StartedAt) < cliLaunchGrace {
+		if now.Sub(run.turnStart()) < cliLaunchGrace {
 			return false, false
 		}
 		// The pump unregisters after the terminal transition; a live row with
@@ -522,6 +537,14 @@ func authFailed(screen string) bool {
 	low := strings.ToLower(screen)
 	return strings.Contains(low, "please login") || strings.Contains(screen, "Not logged in") ||
 		strings.Contains(low, "please run /login")
+}
+
+// turnStart is the start of the current turn.
+func (r *Run) turnStart() time.Time {
+	if r.TurnStartedAt != nil {
+		return *r.TurnStartedAt
+	}
+	return r.StartedAt
 }
 
 func (r *Run) screenIdle(screen string) bool {

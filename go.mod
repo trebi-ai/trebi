@@ -16,18 +16,18 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/trebi-ai/agent-wire v0.4.0
+	github.com/trebi-ai/agent-wire v0.4.1
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
+	rsc.io/qr v0.2.0
 )
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.75.0 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/openai/openai-go/v3 v3.66.0 // indirect
-	rsc.io/qr v0.2.0 // indirect
 )
 
 require (

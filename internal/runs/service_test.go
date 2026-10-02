@@ -59,7 +59,7 @@ func TestTerminateLogsRunFinish(t *testing.T) {
 
 // TestResumeRefusesSuccessfulRun pins the guard: a run that finished its job
 // must not be resumed (the vendor session is complete); an interrupted run
-// still resumes into a successor row.
+// still reopens as its next turn.
 func TestResumeRefusesSuccessfulRun(t *testing.T) {
 	t.Parallel()
 	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
@@ -97,8 +97,8 @@ func TestResumeRefusesSuccessfulRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume of an interrupted run: %v", err)
 	}
-	if next.Reason != runs.ReasonResume || next.ResumedFrom != killed.ID {
-		t.Fatalf("successor: %+v", next)
+	if next.ID != killed.ID || next.TurnCount != 2 || next.ResumeAttempts != 1 {
+		t.Fatalf("reopened: %+v", next)
 	}
 }
 
@@ -411,62 +411,6 @@ func TestTerminateClosesAgentSegmentAndIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestCreateMarksPredecessorResumed covers B17: a run created with ResumedFrom
-// flips the terminal predecessor to status resumed; a live predecessor stays.
-func TestCreateMarksPredecessorResumed(t *testing.T) {
-	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	svc := runs.New(st, nil, nil)
-	ctx := context.Background()
-
-	prev, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.Terminate(ctx, prev.ID, runs.StatusComplete, runs.EndSentinel, nil); err != nil {
-		t.Fatal(err)
-	}
-
-	next, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "j", Harness: "claude",
-		ResumedFrom: prev.ID, ResumeAttempts: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := svc.Get(ctx, prev.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != runs.StatusResumed {
-		t.Fatalf("predecessor status=%s want resumed", got.Status)
-	}
-	if next.ResumedFrom != prev.ID {
-		t.Fatalf("resumed_from=%s", next.ResumedFrom)
-	}
-
-	// A still-running predecessor keeps its status.
-	live, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j2", Harness: "claude"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "j2", Harness: "claude", ResumedFrom: live.ID,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	got, err = svc.Get(ctx, live.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != runs.StatusRunning {
-		t.Fatalf("live predecessor status=%s want running", got.Status)
-	}
-}
-
 // TestMarkOutcomeOverridesMachineStatus covers the human outcome: Mark sets the
 // verdict without touching status/end_reason, StatusByJob reads the outcome,
 // and Clear restores the machine record.
@@ -582,35 +526,6 @@ func TestMarkOutcomeOverridesMachineStatus(t *testing.T) {
 	}
 	if stats.Totals.OK != 0 || stats.Totals.Failed != 1 {
 		t.Fatalf("totals after clear: %+v", stats.Totals)
-	}
-}
-
-// TestMarkRejectsSupersededRun: a resumed predecessor is history, not a row a
-// human disposes of.
-func TestMarkRejectsSupersededRun(t *testing.T) {
-	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	svc := runs.New(st, nil, nil)
-	ctx := context.Background()
-
-	prev, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.Terminate(ctx, prev.ID, runs.StatusFailed, runs.EndIdleTimeout, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "j", Harness: "claude",
-		ResumedFrom: prev.ID, ResumeAttempts: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.Mark(ctx, runs.MarkOpts{ID: prev.ID, Status: runs.StatusComplete}); !errors.Is(err, runs.ErrSuperseded) {
-		t.Fatalf("mark superseded err=%v want ErrSuperseded", err)
 	}
 }
 
@@ -1030,57 +945,265 @@ func TestUnparkCompletesParkedRun(t *testing.T) {
 	}
 }
 
-// TestRunTurns proves that a resume chain shares one first run, that a
-// grouped list shows the newest turn once, and that turns sum the chain.
-func TestRunTurns(t *testing.T) {
-	svc, _, ctx := openRunsStore(t)
-	first, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+// TestReopenTurns: a reopen adds a turn to the same run, and the run sums
+// the tokens and the active time of its turns.
+func TestReopenTurns(t *testing.T) {
+	t.Parallel()
+	svc, _, ctx := openTurnSvc(t)
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude", Reason: runs.ReasonManual, QueueID: "q1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	prev := first
-	for range 2 {
-		if err := svc.Terminate(ctx, prev.ID, runs.StatusComplete, runs.EndSentinel, nil); err != nil {
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, &pricing.TokenUsage{Input: 100, Output: 10}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	got, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude", Reason: runs.ReasonResume, QueueID: "q2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != run.ID || got.Status != runs.StatusRunning || got.EndedAt != nil || got.TurnCount != 2 {
+		t.Fatalf("reopened run %+v", got)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, &pricing.TokenUsage{Input: 50, Output: 5}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = svc.Get(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := svc.Turns(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 2 || turns[0].Reason != runs.ReasonManual || turns[1].Reason != runs.ReasonResume ||
+		turns[0].QueueID != "q1" || turns[1].QueueID != "q2" {
+		t.Fatalf("turns %+v", turns)
+	}
+	if got.Tokens.Input != 150 || got.Tokens.Output != 15 || turns[1].Tokens.Input != 50 {
+		t.Fatalf("run tokens %+v turn 2 tokens %+v", got.Tokens, turns[1].Tokens)
+	}
+	if got.DurationMS != turns[0].DurationMS+turns[1].DurationMS || got.DurationMS <= 0 {
+		t.Fatalf("active %d, turns %d + %d", got.DurationMS, turns[0].DurationMS, turns[1].DurationMS)
+	}
+	all, err := svc.List(ctx, runs.ListOpts{Workspace: "ws"})
+	if err != nil || len(all) != 1 {
+		t.Fatalf("list %d runs, err %v", len(all), err)
+	}
+}
+
+// TestReopenLiveRun: a running run cannot reopen.
+func TestReopenLiveRun(t *testing.T) {
+	t.Parallel()
+	svc, _, ctx := openTurnSvc(t)
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonResume}); !errors.Is(err, runs.ErrRunActive) {
+		t.Fatalf("err %v, want ErrRunActive", err)
+	}
+	if turns, _ := svc.Turns(ctx, run.ID); len(turns) != 1 {
+		t.Fatalf("turns %+v", turns)
+	}
+}
+
+// TestReopenRace: of two concurrent reopens, one wins.
+func TestReopenRace(t *testing.T) {
+	t.Parallel()
+	svc, _, ctx := openTurnSvc(t)
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonTrigger})
+		}()
+	}
+	wg.Wait()
+	ok, active := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, runs.ErrRunActive):
+			active++
+		default:
 			t.Fatal(err)
 		}
-		if prev, err = svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude", ResumedFrom: prev.ID}); err != nil {
-			t.Fatal(err)
+	}
+	got, _ := svc.Get(ctx, run.ID)
+	if ok != 1 || active != 1 || got.TurnCount != 2 {
+		t.Fatalf("ok %d active %d turns %d", ok, active, got.TurnCount)
+	}
+}
+
+// TestReopenClearsOutcome: the human outcome of the last turn does not carry
+// into the new turn.
+func TestReopenClearsOutcome(t *testing.T) {
+	t.Parallel()
+	svc, _, ctx := openTurnSvc(t)
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Mark(ctx, runs.MarkOpts{ID: run.ID, Status: runs.StatusFailed, Note: "wrong"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonTrigger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != nil || got.EffectiveStatus() != runs.StatusRunning {
+		t.Fatalf("outcome %+v status %s", got.Outcome, got.EffectiveStatus())
+	}
+}
+
+// TestReopenKeepsTerminalGuard: a late end of turn 1 does not close turn 2,
+// and a second end of turn 2 does nothing.
+func TestReopenKeepsTerminalGuard(t *testing.T) {
+	t.Parallel()
+	svc, _, ctx := openTurnSvc(t)
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.TerminateTurn(ctx, run.ID, 1, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonTrigger}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.TerminateTurn(ctx, run.ID, 1, runs.StatusFailed, runs.EndKill, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.Get(ctx, run.ID); got.Status != runs.StatusRunning {
+		t.Fatalf("stale end closed turn 2: %s", got.Status)
+	}
+	if err := svc.TerminateTurn(ctx, run.ID, 2, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.TerminateTurn(ctx, run.ID, 2, runs.StatusFailed, runs.EndKill, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.Get(ctx, run.ID)
+	turns, _ := svc.Turns(ctx, run.ID)
+	if got.Status != runs.StatusComplete || len(turns) != 2 || turns[0].Status != runs.StatusComplete || turns[1].Status != runs.StatusComplete {
+		t.Fatalf("run %s turns %+v", got.Status, turns)
+	}
+}
+
+// TestTurnQueueIDUnique: one queue item starts at most one turn.
+func TestTurnQueueIDUnique(t *testing.T) {
+	t.Parallel()
+	svc, _, ctx := openTurnSvc(t)
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude", QueueID: "q1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonTrigger, QueueID: "q1"}); err == nil {
+		t.Fatal("expected a unique queue id error")
+	}
+	got, _ := svc.Get(ctx, run.ID)
+	if got.TurnCount != 1 || got.Status != runs.StatusComplete {
+		t.Fatalf("failed reopen changed the run: turns %d status %s", got.TurnCount, got.Status)
+	}
+}
+
+// TestCostByTurnMonth: a turn counts in the month it started, not the month
+// of its run.
+func TestCostByTurnMonth(t *testing.T) {
+	t.Parallel()
+	svc, st, ctx := openTurnSvc(t)
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "agents/a/build", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := pricing.TokenUsage{Input: 1_000_000, Model: "default"}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, &usage); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	lastMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	if _, err := st.DB().Exec(`UPDATE run_turns SET started_at=? WHERE run_id=? AND n=1`, lastMonth, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`UPDATE runs SET started_at=? WHERE id=?`, lastMonth, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "agents/a/build", Reason: runs.ReasonTrigger}); err != nil {
+		t.Fatal(err)
+	}
+	usage = pricing.TokenUsage{Input: 1_000_000, Model: "default"}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, &usage); err != nil {
+		t.Fatal(err)
+	}
+	want := pricing.TokenUsage{Input: 1_000_000, Model: "default"}
+	want.ApplyRates()
+	costs, err := svc.OwnerCosts(ctx, "ws", []string{"agents/a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want.CostUSD <= 0 || costs["agents/a"] != want.CostUSD {
+		t.Fatalf("cost %v, want %v (turn 2 only)", costs["agents/a"], want.CostUSD)
+	}
+}
+
+// TestTurnAfter finds the turn that a request answer started.
+func TestTurnAfter(t *testing.T) {
+	t.Parallel()
+	svc, _, ctx := openTurnSvc(t)
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Now().Add(-time.Millisecond)
+	if n, err := svc.TurnAfter(ctx, run.ID, runs.ReasonRequest, since); err != nil || n != 0 {
+		t.Fatalf("before reopen n %d err %v", n, err)
+	}
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonRequest}); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		reason runs.RunReason
+		since  time.Time
+		want   int
+	}{
+		{runs.ReasonRequest, since, 2},
+		{runs.ReasonResume, since, 0},
+		{runs.ReasonRequest, time.Now().Add(time.Hour), 0},
+	}
+	for _, c := range cases {
+		if n, err := svc.TurnAfter(ctx, run.ID, c.reason, c.since); err != nil || n != c.want {
+			t.Fatalf("%s since %v: n %d err %v, want %d", c.reason, c.since, n, err, c.want)
 		}
 	}
-	other, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prev.FirstRunID != first.ID || other.FirstRunID != other.ID {
-		t.Fatalf("first runs = %s, %s", prev.FirstRunID, other.FirstRunID)
-	}
+}
 
-	list, err := svc.List(ctx, runs.ListOpts{Workspace: "ws", Group: true})
+func openTurnSvc(t *testing.T) (*runs.Service, *store.Store, context.Context) {
+	t.Helper()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 2 || list[0].ID != other.ID || list[1].ID != prev.ID {
-		t.Fatalf("grouped = %v", list)
-	}
-	if tt := list[1].Turns; tt == nil || tt.Count != 3 || tt.StartedAt.After(first.StartedAt) {
-		t.Fatalf("turns = %+v", list[1].Turns)
-	}
-	if list[0].Turns == nil || list[0].Turns.Count != 1 {
-		t.Fatalf("single = %+v", list[0].Turns)
-	}
-
-	chain, err := svc.List(ctx, runs.ListOpts{FirstRun: first.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(chain) != 3 || chain[2].ID != first.ID {
-		t.Fatalf("chain = %v", chain)
-	}
-	got, err := svc.Get(ctx, prev.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err = svc.WithTurns(ctx, got); err != nil || got.Turns.Count != 3 {
-		t.Fatalf("with turns = %+v %v", got.Turns, err)
-	}
+	t.Cleanup(func() { _ = st.Close() })
+	return runs.New(st, nil, nil), st, context.Background()
 }

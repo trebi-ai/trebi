@@ -83,7 +83,10 @@ func (s *Service) Unpark(ctx context.Context, runID string, end EndReason) error
 		if n, _ := res.RowsAffected(); n == 0 {
 			return fmt.Errorf("unpark %s: %w", runID, ErrNotParked)
 		}
-		return nil
+		_, err = tx.ExecContext(ctx, `UPDATE run_turns SET status = ?, end_reason = ?
+			WHERE run_id = ? AND n = (SELECT turn_count FROM runs WHERE id = ?) AND status = ?`,
+			string(StatusComplete), string(end), runID, runID, string(StatusParked))
+		return err
 	}, store.BusEvent{
 		Topic: "run.updated", Entity: "run", EntityID: runID, Action: "updated",
 		Attrs: map[string]string{"status": string(StatusComplete), "end_reason": string(end)},
@@ -91,14 +94,14 @@ func (s *Service) Unpark(ctx context.Context, runID string, end EndReason) error
 	return err
 }
 
-// ResumedChild returns the id of the first run with reason that continues
-// runID and started at or after since. It is empty when there is none.
-func (s *Service) ResumedChild(ctx context.Context, runID string, reason RunReason, since time.Time) (string, error) {
-	var id string
-	err := s.st.DB().QueryRowContext(ctx, `SELECT id FROM runs WHERE resumed_from=? AND reason=? AND started_at>=?
-		ORDER BY started_at LIMIT 1`, runID, string(reason), since.UTC().Format(time.RFC3339Nano)).Scan(&id)
+// TurnAfter returns the number of the first turn of runID with reason that
+// started at or after since. It is 0 when there is none.
+func (s *Service) TurnAfter(ctx context.Context, runID string, reason RunReason, since time.Time) (int, error) {
+	var n int
+	err := s.st.DB().QueryRowContext(ctx, `SELECT n FROM run_turns WHERE run_id=? AND reason=? AND started_at>=?
+		ORDER BY n LIMIT 1`, runID, string(reason), since.UTC().Format(time.RFC3339Nano)).Scan(&n)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return 0, nil
 	}
-	return id, err
+	return n, err
 }

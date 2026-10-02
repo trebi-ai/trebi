@@ -326,9 +326,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 // done.
 func (c *ControlPlane) finishLaunch(ctx context.Context, item *dispatch.QueueItem, run *runs.Run, outcome string, err error) bool {
 	if errors.Is(err, runs.ErrRunActive) {
-		if werr := c.queue.Wait(ctx, item.ID, c.now().Add(2*time.Second), dispatch.DeferRunActive); werr != nil {
-			c.log.Warn("queue wait", "queue_id", item.ID, "error", werr)
-		}
+		c.waitRunActive(ctx, item)
 		return false
 	}
 	if err != nil || run == nil {
@@ -437,11 +435,27 @@ func (c *ControlPlane) markAttempt(ctx context.Context, item *dispatch.QueueItem
 	return true
 }
 
+// waitRunActive puts the row back until the live run of its job ends.
+func (c *ControlPlane) waitRunActive(ctx context.Context, item *dispatch.QueueItem) {
+	if err := c.queue.Wait(ctx, item.ID, c.now().Add(2*time.Second), dispatch.DeferRunActive); err != nil {
+		c.log.Warn("queue wait", "queue_id", item.ID, "error", err)
+	}
+}
+
 func (c *ControlPlane) dispatchResume(ctx context.Context, item *dispatch.QueueItem) {
+	// A live turn of the run makes the resume wait; the wait is not an attempt.
+	if prev, err := c.Runs.Get(ctx, item.ResumeOf); err == nil && prev.Status == runs.StatusRunning {
+		c.waitRunActive(ctx, item)
+		return
+	}
 	if !c.markAttempt(ctx, item) {
 		return
 	}
-	run, err := c.Launcher.Resume(ctx, item.ResumeOf, runs.ResumeOpts{Reason: runs.ReasonResume})
+	run, err := c.Launcher.Resume(ctx, item.ResumeOf, runs.ResumeOpts{Reason: runs.ReasonResume, QueueID: item.ID})
+	if errors.Is(err, runs.ErrRunActive) {
+		c.waitRunActive(ctx, item)
+		return
+	}
 	if err != nil || run == nil {
 		c.log.Warn("queue resume", "job", item.Job, "queue_id", item.ID, "error", err)
 		c.failOrRetry(ctx, item, err, run)

@@ -80,6 +80,56 @@ func TestRunsTranscript(t *testing.T) {
 	}
 }
 
+func TestRunsTurnsTable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/runs/01ABC/turns":
+			_, _ = w.Write([]byte(`{"turns":[
+				{"n":1,"reason":"manual","status":"complete","end_reason":"result","started_at":"2026-09-30T12:00:00Z","duration_ms":61000,"session_id":"sess-a","tokens":{"cost_usd":0.0123}},
+				{"n":2,"reason":"request","status":"running","started_at":"2026-09-30T14:00:00Z","session_id":"sess-a","tokens":{}}]}`))
+		case "/v1/runs":
+			_, _ = w.Write([]byte(`{"runs":[{"id":"01ABC","job":"demo","status":"complete","turn_count":2}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "runs", "turns", "01ABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"TURN", "REASON", "SESSION", "manual", "request", "1m1s", "0.0123", "sess-a"} {
+		if !strings.Contains(strings.ToUpper(out), strings.ToUpper(want)) {
+			t.Fatalf("turns table lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "manual") > strings.Index(out, "request") {
+		t.Fatalf("turns out of order:\n%s", out)
+	}
+
+	out, err = runCLI(t, client, "runs", "turns", "--json", "01ABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Turns []map[string]any `json:"turns"`
+	}
+	if err := json.Unmarshal([]byte(out), &body); err != nil || len(body.Turns) != 2 {
+		t.Fatalf("turns json %q err %v", out, err)
+	}
+
+	out, err = runCLI(t, client, "runs", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.ToUpper(out), "TURNS") || !strings.Contains(out, "2") {
+		t.Fatalf("runs list lacks the turns column:\n%s", out)
+	}
+}
+
 func TestRunsMessageJoinAndError(t *testing.T) {
 
 	var gotBody string

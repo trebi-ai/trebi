@@ -80,7 +80,20 @@ func (codexTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
 	if sessionID == "" {
 		return LaunchPlan{}, fmt.Errorf("no session ID captured for codex resume")
 	}
-	return LaunchPlan{Command: AppendFlags(command, []string{"--resume", sessionID}), SessionID: sessionID}, nil
+	// Codex resumes with a subcommand: "codex resume [flags] <id>".
+	bin, flags, _ := strings.Cut(strings.TrimSpace(command), " ")
+	resume := strings.TrimSpace(bin + " resume " + flags)
+	return LaunchPlan{Command: AppendFlags(resume, []string{sessionID}), SessionID: sessionID}, nil
+}
+
+// CodexRolloutID returns the codex session id in a rollout file name
+// (rollout-<time>-<uuid>.jsonl), or "" when the name has none.
+func CodexRolloutID(path string) string {
+	name := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	if !strings.HasPrefix(name, "rollout-") || len(name) < len("rollout-")+36 {
+		return ""
+	}
+	return name[len(name)-36:]
 }
 
 // codexTrustDialog marks the first-run folder-trust dialog; its text starts

@@ -224,16 +224,22 @@ func TestRequestRoundTrip(t *testing.T) {
 			if len(reqs) != 2 {
 				t.Fatalf("driver starts %d", len(reqs))
 			}
-			if reqs[1].SessionID == "" || reqs[1].SessionID != reqs[0].SessionID || reqs[1].WorkingDir != reqs[0].WorkingDir {
+			if reqs[1].SessionID != "sess-1" || reqs[1].WorkingDir != reqs[0].WorkingDir {
 				t.Fatalf("resume session %q dir %q, first dir %q", reqs[1].SessionID, reqs[1].WorkingDir, reqs[0].WorkingDir)
 			}
-			next, _ := got["delivered_run_id"].(string)
-			nextRun := s.waitRun(t, next, "complete")
-			if nextRun["resumed_from"] != runID || nextRun["reason"] != "request" {
-				t.Fatalf("next run %v", nextRun)
+			if next, _ := got["delivered_run_id"].(string); next != runID {
+				t.Fatalf("delivered run %q, want the same run %q", next, runID)
 			}
-			if st := s.runStatus(t, runID)["status"]; st != "resumed" {
-				t.Fatalf("parent status %v", st)
+			if run := s.waitRun(t, runID, "complete"); run["turn_count"] != float64(2) {
+				t.Fatalf("run after answer %v", run)
+			}
+			_, turns, _ := doJSON(t, "GET", s.base+"/v1/runs/"+runID+"/turns", nil)
+			list, _ := turns["turns"].([]any)
+			if len(list) != 2 {
+				t.Fatalf("turns %v", turns)
+			}
+			if t2, _ := list[1].(map[string]any); t2["reason"] != "request" || t2["n"] != float64(2) {
+				t.Fatalf("turn 2 %v", t2)
 			}
 			if it := s.inboxItem(t, id); it.Status != alerts.InboxResolved {
 				t.Fatalf("inbox item after answer %+v", it)

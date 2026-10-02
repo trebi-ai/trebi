@@ -102,8 +102,8 @@ func (s *Service) markDelivery(ctx context.Context, r Request, st DeliveryState,
 	}
 }
 
-// Recover runs at boot. A claim older than two minutes either launched (a
-// request run exists after it) or did not (the claim is reset). Then every
+// Recover runs at boot. A claim older than two minutes either launched (the
+// run has a request turn after it) or did not (the claim is reset). Then every
 // closed answer that is not delivered goes out.
 func (s *Service) Recover(ctx context.Context) error {
 	cutoff := s.now().Add(-staleClaim)
@@ -115,12 +115,12 @@ func (s *Service) Recover(ctx context.Context) error {
 		if r.ClaimedAt == nil || r.ClaimedAt.After(cutoff) {
 			continue
 		}
-		child, err := s.runs.ResumedChild(ctx, r.RunID, runs.ReasonRequest, *r.ClaimedAt)
+		turn, err := s.runs.TurnAfter(ctx, r.RunID, runs.ReasonRequest, *r.ClaimedAt)
 		if err != nil {
 			return err
 		}
-		if child != "" {
-			s.markDelivery(ctx, r, DeliveryDelivered, "resume", child, "")
+		if turn > 0 {
+			s.markDelivery(ctx, r, DeliveryDelivered, "resume", r.RunID, "")
 			continue
 		}
 		if _, err := s.st.DB().ExecContext(ctx, `UPDATE requests SET delivery_state=?, claimed_at=NULL WHERE id=? AND delivery_state=?`,

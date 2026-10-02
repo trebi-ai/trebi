@@ -393,7 +393,7 @@ func TestPrepareResume(t *testing.T) {
 		{Claude, "claude --session-id oldid --dangerously-skip-permissions", "new-sid", []string{"--resume", "new-sid"}},
 		{Grok, "grok --session-id oldid", "gsid", []string{"--resume", "gsid"}},
 		{OpenCode, "opencode --auto", "osid", []string{"--session", "osid"}},
-		{Codex, "codex", "csid", []string{"--resume", "csid"}},
+		{Codex, "codex -C /work", "csid", []string{"codex resume -C /work csid"}},
 		{Copilot, "copilot", "psid", []string{"--resume", "psid"}},
 		{Gemini, "gemini", "msid", []string{"--resume", "msid"}},
 		{Pi, "pi --session-id oldid", "psid-pi", []string{"--session", "psid-pi"}},
@@ -416,6 +416,13 @@ func TestPrepareResume(t *testing.T) {
 				t.Errorf("%s: launch session id leaked into resume: %q", c.tool, plan.Command)
 			}
 		}
+	}
+
+	if got := CodexRolloutID("/x/rollout-2026-09-30T12-00-00-0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b.jsonl"); got != "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" {
+		t.Errorf("rollout id %q", got)
+	}
+	if got := CodexRolloutID("/x/transcript.jsonl"); got != "" {
+		t.Errorf("rollout id of other file %q", got)
 	}
 
 	// Empty session id errors.

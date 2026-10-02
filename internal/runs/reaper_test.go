@@ -10,6 +10,7 @@ import (
 
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -358,5 +359,70 @@ func TestIdleWithOpenRequestParks(t *testing.T) {
 	}
 	if got.Status != StatusParked || got.EndReason != EndRequest {
 		t.Fatalf("run: status=%s end=%s", got.Status, got.EndReason)
+	}
+}
+
+// TestReaperPerTurnLimit: max duration counts from the start of the turn, so
+// a reopened run is not ended by the age of its first turn.
+func TestReaperPerTurnLimit(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	_ = home.EnsureDirs()
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := New(st, nil, nil)
+	ctx := context.Background()
+	opts := CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "fake", MaxDurationMS: time.Hour.Milliseconds()}
+	run, err := svc.Create(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339Nano)
+	if _, err := st.DB().Exec(`UPDATE runs SET started_at=?, turn_started_at=? WHERE id=?`, old, old, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, StatusComplete, EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	opts.Reason = ReasonTrigger
+	if _, err := svc.Reopen(ctx, run.ID, opts); err != nil {
+		t.Fatal(err)
+	}
+	r := NewReaper(svc)
+	r.interval = time.Hour
+	r.Sweep(ctx)
+	got, err := svc.Get(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EndReason == EndMaxDuration {
+		t.Fatalf("turn 2 ended by the age of turn 1: %s %s", got.Status, got.EndReason)
+	}
+}
+
+// TestKeepAliveTokens: when the reaper closes a keep-alive turn, the turn
+// keeps the usage of every result it had, not only the last one.
+func TestKeepAliveTokens(t *testing.T) {
+	svc, run, cr := cliReaperFixture(t, CreateOpts{WorkspaceID: "ws", Job: "j", KeepAliveMS: 60_000})
+	cr.turn = run.TurnCount
+	cr.addUsage(&pricing.TokenUsage{Input: 100, Output: 10, Model: "default"})
+	cr.addUsage(&pricing.TokenUsage{Input: 50, Output: 5, Model: "default"})
+	cr.markKeepAlive(time.Now())
+	r := NewReaper(svc)
+	r.checkOne(context.Background(), run, time.Now().Add(2*time.Minute), nil, false)
+	got, err := svc.Get(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EndReason != EndKeepAlive || got.Tokens.Input != 150 || got.Tokens.Output != 15 {
+		t.Fatalf("run end %s tokens %+v", got.EndReason, got.Tokens)
+	}
+	turns, err := svc.Turns(context.Background(), run.ID)
+	if err != nil || len(turns) != 1 || turns[0].Tokens.Input != 150 {
+		t.Fatalf("turns %+v err %v", turns, err)
 	}
 }

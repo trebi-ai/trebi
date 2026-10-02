@@ -614,3 +614,47 @@ func TestManualLaunchWaitsForLiveRun(t *testing.T) {
 		t.Fatalf("launch order=%v want %v", got, ids)
 	}
 }
+
+// TestQueueResumeWaitsForLiveTurn: a resume item for a run with a live turn
+// waits without an attempt, then reopens the run as its next turn.
+func TestQueueResumeWaitsForLiveTurn(t *testing.T) {
+	clock := newTestClock()
+	cp, st, wsID, ctx := openQueuePlaneAt(t, "waiter", "---\nharness: fake\n---\n\nGo.\n", clock.Now)
+	prev, err := cp.Runs.Create(ctx, runs.CreateOpts{
+		WorkspaceID: wsID, Job: "waiter", Kind: runs.KindJob, Harness: "fake", SessionID: "sess-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := &dispatch.QueueItem{Connector: "retry", WorkspaceID: wsID, Job: "waiter", Kind: runs.KindJob,
+		ResumeOf: prev.ID, Prompt: "resume", Status: dispatch.QueuePending}
+	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+	status, errMsg, _ := waitQueue(t, st, item.ID, func(_, e, _ string) bool { return e == string(dispatch.DeferRunActive) })
+	if status != "pending" || errMsg != string(dispatch.DeferRunActive) {
+		t.Fatalf("status=%s error_message=%q want pending/run_active", status, errMsg)
+	}
+	if n := queueCount(t, st, `id='`+item.ID+`' AND attempts > 0`); n != 0 {
+		t.Fatal("a run_active wait is not an attempt")
+	}
+	if err := cp.Runs.Terminate(ctx, prev.ID, runs.StatusExited, runs.EndKill, nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for queueCount(t, st, `id='`+item.ID+`' AND result='launched'`) < 1 && time.Now().Before(deadline) {
+		clock.Advance(3 * time.Second)
+		time.Sleep(50 * time.Millisecond)
+	}
+	turns, err := cp.Runs.Turns(ctx, prev.ID)
+	if err != nil || len(turns) != 2 || turns[1].QueueID != item.ID || turns[1].Reason != runs.ReasonResume {
+		t.Fatalf("turns %+v err %v", turns, err)
+	}
+	if n := queueCount(t, st, `result='launched' AND run_id='`+prev.ID+`'`); n != 1 {
+		t.Fatalf("launched rows for the run: %d", n)
+	}
+}

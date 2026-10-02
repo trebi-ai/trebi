@@ -50,6 +50,7 @@ func (s *Server) routeRuns(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runs", s.handleRunsCreate)
 	mux.HandleFunc("GET /v1/runs/{id}", s.handleRunGet)
 	mux.HandleFunc("GET /v1/runs/{id}/timeline", s.handleRunTimeline)
+	mux.HandleFunc("GET /v1/runs/{id}/turns", s.handleRunTurns)
 	mux.HandleFunc("GET /v1/runs/{id}/transcript", s.handleRunTranscript)
 	mux.HandleFunc("GET /v1/runs/{id}/log", s.handleRunLog)
 	mux.HandleFunc("POST /v1/runs/{id}/kill", s.handleRunKill)
@@ -104,8 +105,6 @@ func (s *Server) handleRunsList(w http.ResponseWriter, r *http.Request) {
 		Model:        q.Get("model"),
 		Conversation: q.Get("conversation"),
 		EndReason:    q.Get("end_reason"),
-		FirstRun:     q.Get("first_run"),
-		Group:        q.Get("group") == "true",
 		Q:            q.Get("q"),
 		Since:        since,
 		Until:        until,
@@ -469,10 +468,6 @@ func (s *Server) handleRunGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	if run, err = s.runs.WithTurns(r.Context(), run); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
 	writeJSON(w, http.StatusOK, run)
 }
 
@@ -483,6 +478,19 @@ func (s *Server) handleRunTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, tl)
+}
+
+func (s *Server) handleRunTurns(w http.ResponseWriter, r *http.Request) {
+	turns, err := s.runs.Turns(r.Context(), r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"turns": turns})
 }
 
 // handleRunsKill kills every run named in ids.
@@ -831,42 +839,52 @@ func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")
 		return
 	}
-	// CLI runs prefer the live wire events (Part H), then fall back to the
-	// vendor session file (Claude/Codex jsonl), then to OpenCode serve.
-	if run.Runtime == "cli" {
-		if turns, err := s.runs.CLITurns(r.Context(), run.ID); err == nil && len(turns) > 0 {
-			writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
-			return
-		}
-		if run.Harness == tmux.OpenCode && run.SessionID != "" {
-			if raw, ok := s.runs.OpenCodeMessages(r.Context(), run.SessionID); ok {
-				if turns, err := tmux.ParseOpenCodeMessages(raw); err == nil {
-					writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
-					return
-				}
-			}
-		}
-	}
-	data, tool, ok := s.readTranscript(run)
+	turns, ok := s.cliTranscript(r.Context(), run)
 	if !ok {
-		writeErr(w, http.StatusNotFound, "not_found", "no transcript")
-		return
-	}
-	if r.URL.Query().Get("raw") == "1" {
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		_, _ = w.Write(data)
-		return
-	}
-	turns, err := tool.ParseTranscript(bytes.NewReader(data))
-	if err != nil {
-		if errors.Is(err, tmux.ErrTranscriptUnsupported) {
-			writeErr(w, http.StatusNotFound, "not_found", "transcript unsupported")
+		data, tool, found := s.readTranscript(run)
+		if !found {
+			writeErr(w, http.StatusNotFound, "not_found", "no transcript")
 			return
 		}
+		if r.URL.Query().Get("raw") == "1" {
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			_, _ = w.Write(data)
+			return
+		}
+		turns, err = tool.ParseTranscript(bytes.NewReader(data))
+		if err != nil {
+			if errors.Is(err, tmux.ErrTranscriptUnsupported) {
+				writeErr(w, http.StatusNotFound, "not_found", "transcript unsupported")
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+	}
+	if err := s.runs.LabelTurns(r.Context(), run.ID, turns); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
+}
+
+// cliTranscript reads a CLI run from the live wire events (Part H), then
+// from OpenCode serve. The caller falls back to the vendor session file.
+func (s *Server) cliTranscript(ctx context.Context, run *runs.Run) ([]tmux.Turn, bool) {
+	if run.Runtime != "cli" {
+		return nil, false
+	}
+	if turns, err := s.runs.CLITurns(ctx, run.ID); err == nil && len(turns) > 0 {
+		return turns, true
+	}
+	if run.Harness == tmux.OpenCode && run.SessionID != "" {
+		if raw, ok := s.runs.OpenCodeMessages(ctx, run.SessionID); ok {
+			if turns, err := tmux.ParseOpenCodeMessages(raw); err == nil {
+				return turns, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func (s *Server) readTranscript(run *runs.Run) ([]byte, tmux.Tool, bool) {
@@ -1067,6 +1085,8 @@ func (s *Server) handleRunResume(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", "run not found")
 		case errors.Is(err, launch.ErrJobMissing):
 			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		case errors.Is(err, runs.ErrRunActive):
+			writeErr(w, http.StatusConflict, "conflict", "the run is still active")
 		default:
 			writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		}
@@ -1212,7 +1232,7 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", "job file for run no longer resolvable")
 			return
 		}
-		lopts.ResumedFrom = prev.ID
+		lopts.PreviousRunID = prev.ID
 		lopts.ResumeAttempts = prev.ResumeAttempts + 1
 		lopts.Prompt = note + "\n\n" + lopts.Prompt
 		lopts.PromptPreview = lopts.Prompt
@@ -1276,7 +1296,7 @@ func (s *Server) handleRunMark(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, runs.ErrBadOutcome):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
-	case errors.Is(err, runs.ErrNotTerminal), errors.Is(err, runs.ErrSuperseded):
+	case errors.Is(err, runs.ErrNotTerminal):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 		return
 	default:

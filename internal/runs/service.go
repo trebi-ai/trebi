@@ -165,8 +165,6 @@ var (
 	ErrSentinelInMessage = errors.New("message must not contain the run completion sentinel")
 	// ErrNotTerminal reports Mark on a run that has not finished.
 	ErrNotTerminal = errors.New("run is still live")
-	// ErrSuperseded reports Mark on a run a resume replaced.
-	ErrSuperseded = errors.New("run was superseded by a resume")
 	// ErrBadOutcome reports an outcome other than complete|failed|skipped.
 	ErrBadOutcome = errors.New("outcome must be complete, failed, or skipped")
 )
@@ -244,15 +242,16 @@ type CreateOpts struct {
 	ConversationID  string
 	// WorkingDir is the directory the session launched in. Persisted because a
 	// harness that mints its own session id finds its transcript by path.
-	WorkingDir     string
-	Runtime        string
-	Trigger        *TriggerCapture
-	Inputs         map[string]string
-	MaxDurationMS  int64
-	IdleTimeoutMS  int64
-	KeepAliveMS    int64
-	NudgeMS        int64
-	ResumedFrom    string
+	WorkingDir    string
+	Runtime       string
+	Trigger       *TriggerCapture
+	Inputs        map[string]string
+	MaxDurationMS int64
+	IdleTimeoutMS int64
+	KeepAliveMS   int64
+	NudgeMS       int64
+	// PreviousRunID links a new session to the run it follows (a rerun).
+	PreviousRunID  string
 	ResumeAttempts int
 	// Connectors are the connector names the launch resolved. A resume
 	// resolves them again.
@@ -403,20 +402,22 @@ func (s *Service) WaitFor(ctx context.Context, id string, wait time.Duration) (*
 	}
 }
 
+// runCols is the select list that scanRun reads.
+const runCols = `SELECT id, workspace_id, job, kind, COALESCE(reason,''), status, COALESCE(end_reason,''),
+	COALESCE(prompt_preview,''), COALESCE(session_id,''), COALESCE(harness,''),
+	COALESCE(runtime,'tui'), COALESCE(tmux_session,''),
+	COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
+	COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
+	started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
+	COALESCE(previous_run_id,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
+	COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
+	trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
+	COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
+	outcome, COALESCE(outcome_note,''), outcome_at, turn_count, turn_started_at, active_ms`
+
 func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 	row := s.st.DB().QueryRowContext(ctx, `
-		SELECT id, workspace_id, job, kind, COALESCE(reason,''), status, COALESCE(end_reason,''),
-			COALESCE(prompt_preview,''), COALESCE(session_id,''), COALESCE(harness,''),
-			COALESCE(runtime,'tui'), COALESCE(tmux_session,''),
-			COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
-			COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
-			started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
-			COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
-			COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
-			trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
-			COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
-			outcome, COALESCE(outcome_note,''), outcome_at, COALESCE(first_run_id, id)
-		FROM runs WHERE id = ?`, id)
+		`+runCols+` FROM runs WHERE id = ?`, id)
 	return s.scanRun(row)
 }
 
@@ -464,11 +465,7 @@ type ListOpts struct {
 	ConversationKeyExact bool
 	// Conversation matches conversation_id.
 	Conversation string
-	// FirstRun lists the turns of one session: the runs of its resume chain.
-	FirstRun string
-	// Group lists one row per session: its newest turn, with Turns set.
-	Group     bool
-	EndReason string
+	EndReason    string
 	// Q matches the prompt preview, the job, and the run id.
 	Q string
 	// Since and Until bound started_at; both are optional.
@@ -485,18 +482,7 @@ func (o ListOpts) pseudoStatus() bool {
 
 // query builds the SQL and args for List.
 func (o ListOpts) query() (string, []any) {
-	q := `SELECT id, workspace_id, job, kind, COALESCE(reason,''), status, COALESCE(end_reason,''),
-		COALESCE(prompt_preview,''), COALESCE(session_id,''), COALESCE(harness,''),
-		COALESCE(runtime,'tui'), COALESCE(tmux_session,''),
-		COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
-		COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
-		started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
-		COALESCE(resumed_from,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
-		COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
-		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
-		COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
-		outcome, COALESCE(outcome_note,''), outcome_at, COALESCE(first_run_id, id)
-		FROM runs WHERE 1=1`
+	q := runCols + ` FROM runs WHERE 1=1`
 	var args []any
 	if o.Workspace != "" {
 		q += ` AND workspace_id = ?`
@@ -538,13 +524,6 @@ func (o ListOpts) query() (string, []any) {
 		q += ` AND conversation_id = ?`
 		args = append(args, o.Conversation)
 	}
-	if o.FirstRun != "" {
-		q += ` AND COALESCE(first_run_id, id) = ?`
-		args = append(args, o.FirstRun)
-	}
-	if o.Group {
-		q += ` AND id IN (SELECT MAX(id) FROM runs GROUP BY COALESCE(first_run_id, id))`
-	}
 	if o.EndReason != "" {
 		q += ` AND end_reason = ?`
 		args = append(args, o.EndReason)
@@ -573,16 +552,7 @@ func (o ListOpts) query() (string, []any) {
 
 // List returns runs newest first.
 func (s *Service) List(ctx context.Context, opts ListOpts) ([]*Run, error) {
-	out, err := s.list(ctx, opts)
-	if err != nil || !opts.Group {
-		return out, err
-	}
-	return out, s.fillTurns(ctx, out)
-}
-
-// WithTurns sets Turns on r from its chain.
-func (s *Service) WithTurns(ctx context.Context, r *Run) (*Run, error) {
-	return r, s.fillTurns(ctx, []*Run{r})
+	return s.list(ctx, opts)
 }
 
 func (s *Service) listPage(ctx context.Context, opts ListOpts) ([]*Run, error) {
@@ -844,33 +814,37 @@ func (s *Service) ListApprovals(ctx context.Context, opts ApprovalListOpts) ([]A
 	return out, rows.Err()
 }
 
-// Terminate marks a run terminal with end reason and freezes tokens.
+// Terminate ends the current turn of a run and adds its tokens.
 func (s *Service) Terminate(ctx context.Context, id string, status Status, end EndReason, tokens *pricing.TokenUsage) error {
-	status, end = s.parkStatus(ctx, id, status, end)
-	now := time.Now().UTC()
-	nowStr := now.Format(time.RFC3339Nano)
+	return s.TerminateTurn(ctx, id, 0, status, end, tokens)
+}
 
-	var ti, to, tcr, tcc int64
-	var modelName string
-	if tokens != nil {
-		tokens.ApplyRates()
-		ti, to, tcr, tcc = tokens.Input, tokens.Output, tokens.CacheRead, tokens.CacheCreation
-		modelName = tokens.Model
-	}
+// TerminateTurn ends turn n of a run. n 0 is the current turn. A call for an
+// earlier turn does nothing, because the run started a new turn.
+func (s *Service) TerminateTurn(ctx context.Context, id string, turn int, status Status, end EndReason, tokens *pricing.TokenUsage) error {
+	status, end = s.parkStatus(ctx, id, status, end)
+	tu := s.turnTokens(id, turn, tokens)
+	now := time.Now().UTC()
 
 	// Lock order everywhere: LockBus, then open the tx (see store.AppendEntity).
 	s.st.LockBus()
 	var rev int64
-	alreadyTerminal := false
+	alreadyTerminal, stale := false, false
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		var cur, jobName, wsID, harness, kind, owner string
+		var cur, jobName, wsID, harness, kind, owner, turnStart string
+		var turnCount int
 		err := tx.QueryRow(`SELECT r.revision, r.status, r.job, r.workspace_id, COALESCE(r.harness,''),
-				COALESCE(r.kind,'job'), COALESCE(j.owner,'') FROM runs r
+				COALESCE(r.kind,'job'), COALESCE(j.owner,''), r.turn_count, COALESCE(r.turn_started_at, r.started_at)
+				FROM runs r
 				LEFT JOIN job_index j ON j.workspace_id=r.workspace_id AND j.name=r.job
 				WHERE r.id = ?`, id).
-			Scan(&rev, &cur, &jobName, &wsID, &harness, &kind, &owner)
+			Scan(&rev, &cur, &jobName, &wsID, &harness, &kind, &owner, &turnCount, &turnStart)
 		if err != nil {
 			return err
+		}
+		if turn > 0 && turn != turnCount {
+			stale = true
+			return nil
 		}
 		// Idempotent: a terminal run stays as its first terminal write left it.
 		if Status(cur).IsTerminal() {
@@ -878,30 +852,8 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 			return nil
 		}
 		rev++
-		_, err = tx.Exec(`UPDATE runs SET status=?, end_reason=?, ended_at=?, tokens_input=?, tokens_output=?,
-			tokens_cache_read=?, tokens_cache_creation=?, tokens_model=?, revision=?, updated_at=?
-			WHERE id=?`, string(status), string(end), nowStr, ti, to, tcr, tcc, modelName, rev, nowStr, id)
-		if err != nil {
-			return err
-		}
-		// Close open task + agent segments (duration computed in Go — SQLite julianday mishandles RFC3339Nano).
-		for _, layer := range []string{"run", "session"} {
-			var segStart string
-			_ = tx.QueryRow(`SELECT started_at FROM run_segments WHERE run_id=? AND layer=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1`,
-				id, layer).Scan(&segStart)
-			var durMS int64
-			if t0, err := time.Parse(time.RFC3339Nano, segStart); err == nil {
-				durMS = now.Sub(t0).Milliseconds()
-			}
-			if _, err := tx.Exec(`UPDATE run_segments SET ended_at=?, duration_ms=?, reason=?
-				WHERE run_id=? AND layer=? AND ended_at IS NULL`, nowStr, durMS, string(end), id, layer); err != nil {
-				return err
-			}
-		}
-		// Terminal segment.
-		_, err = tx.Exec(`INSERT INTO run_segments (run_id, layer, state, started_at, ended_at, duration_ms, reason, source)
-			VALUES (?, 'run', ?, ?, ?, 0, ?, 'reaper')`, id, string(status), nowStr, nowStr, string(end))
-		if err != nil {
+		te := turnEnd{id: id, n: turnCount, status: status, end: end, tokens: tu, start: turnStart, now: now, rev: rev}
+		if err := te.write(tx); err != nil {
 			return err
 		}
 		topic := "run.updated"
@@ -911,7 +863,7 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 		_, err = store.AppendInTx(tx, store.BusEvent{
 			Topic: topic, Entity: "run", EntityID: id, Action: "updated", Revision: rev,
 			Attrs: map[string]string{
-				"end_reason": string(end), "status": string(status),
+				"end_reason": string(end), "status": string(status), "turn": strconv.Itoa(turnCount),
 				"job": jobName, "workspace": wsID, "harness": harness, "kind": kind, "owner": owner,
 			},
 		})
@@ -919,7 +871,7 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 	})
 	// The gate below writes through the bus, so the lock ends here.
 	s.st.UnlockBus()
-	if err != nil {
+	if err != nil || stale {
 		return err
 	}
 	if err := runFiles(id).Remove(); err != nil {
@@ -928,7 +880,7 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 	if alreadyTerminal {
 		return nil
 	}
-	// One finish record per run, whatever runtime ended it (cli pump, native
+	// One finish record per turn, whatever runtime ended it (cli pump, native
 	// loop, reaper, or kill). The Log tab filters the daemon log by run id.
 	s.log.Info("run finished", "id", id, "status", string(status), "end_reason", string(end))
 	s.mu.Lock()
@@ -938,6 +890,62 @@ func (s *Service) Terminate(ctx context.Context, id string, status Status, end E
 		g.RunEnded(context.WithoutCancel(ctx), id, status)
 	}
 	return nil
+}
+
+// turnEnd is the terminal write of one turn: the run sums, the turn row, and
+// the closed segments.
+type turnEnd struct {
+	id     string
+	n      int
+	status Status
+	end    EndReason
+	tokens pricing.TokenUsage
+	start  string // turn_started_at
+	now    time.Time
+	rev    int64
+}
+
+func (e turnEnd) write(tx *sql.Tx) error {
+	nowStr := e.now.Format(time.RFC3339Nano)
+	var turnMS int64
+	if t0 := store.ParseTS(e.start); !t0.IsZero() {
+		turnMS = max(e.now.Sub(t0).Milliseconds(), 0)
+	}
+	_, err := tx.Exec(`UPDATE runs SET status=?, end_reason=?, ended_at=?,
+		tokens_input=COALESCE(tokens_input,0)+?, tokens_output=COALESCE(tokens_output,0)+?,
+		tokens_cache_read=COALESCE(tokens_cache_read,0)+?, tokens_cache_creation=COALESCE(tokens_cache_creation,0)+?,
+		tokens_model=COALESCE(NULLIF(?,''), tokens_model), active_ms=active_ms+?, revision=?, updated_at=?
+		WHERE id=?`, string(e.status), string(e.end), nowStr, e.tokens.Input, e.tokens.Output, e.tokens.CacheRead, e.tokens.CacheCreation,
+		e.tokens.Model, turnMS, e.rev, nowStr, e.id)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`UPDATE run_turns SET status=?, end_reason=?, ended_at=?, duration_ms=?,
+		tokens_input=?, tokens_output=?, tokens_cache_read=?, tokens_cache_creation=?,
+		tokens_model=COALESCE(NULLIF(?,''), tokens_model)
+		WHERE run_id=? AND n=? AND ended_at IS NULL`, string(e.status), string(e.end), nowStr, turnMS,
+		e.tokens.Input, e.tokens.Output, e.tokens.CacheRead, e.tokens.CacheCreation, e.tokens.Model, e.id, e.n)
+	if err != nil {
+		return err
+	}
+	// Close open task + agent segments.
+	for _, layer := range []string{"run", "session"} {
+		var segStart string
+		_ = tx.QueryRow(`SELECT started_at FROM run_segments WHERE run_id=? AND layer=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1`,
+			e.id, layer).Scan(&segStart)
+		var durMS int64
+		if t0, err := time.Parse(time.RFC3339Nano, segStart); err == nil {
+			durMS = e.now.Sub(t0).Milliseconds()
+		}
+		if _, err := tx.Exec(`UPDATE run_segments SET ended_at=?, duration_ms=?, reason=?
+			WHERE run_id=? AND layer=? AND ended_at IS NULL`, nowStr, durMS, string(e.end), e.id, layer); err != nil {
+			return err
+		}
+	}
+	// Terminal segment.
+	_, err = tx.Exec(`INSERT INTO run_segments (run_id, layer, state, started_at, ended_at, duration_ms, reason, source)
+		VALUES (?, 'run', ?, ?, ?, 0, ?, 'reaper')`, e.id, string(e.status), nowStr, nowStr, string(e.end))
+	return err
 }
 
 // MarkOpts is the human outcome write of POST /v1/runs/{id}/mark. Clear drops
@@ -970,11 +978,8 @@ func (s *Service) Mark(ctx context.Context, opts MarkOpts) (*Run, error) {
 		if err != nil {
 			return err
 		}
-		switch Status(machine) {
-		case StatusRunning:
+		if Status(machine) == StatusRunning {
 			return ErrNotTerminal
-		case StatusResumed:
-			return ErrSuperseded
 		}
 		rev++
 		if opts.Clear {
@@ -1430,7 +1435,6 @@ func streamedRunEvent(kind string, detail any) bool {
 	return !ok || m["delta"] != "true"
 }
 
-// markResumedPredecessor makes the predecessor of a resume terminal `resumed` (B17).
 // newRun builds the in-memory run row for Create.
 func newRun(id string, now time.Time, opts CreateOpts) *Run {
 	run := &Run{
@@ -1454,8 +1458,10 @@ func newRun(id string, now time.Time, opts CreateOpts) *Run {
 		TraceID:         opts.TraceID,
 		Revision:        1,
 		MemoryHash:      opts.MemoryHash,
-		ResumedFrom:     opts.ResumedFrom,
+		PreviousRunID:   opts.PreviousRunID,
 		ResumeAttempts:  opts.ResumeAttempts,
+		TurnCount:       1,
+		TurnStartedAt:   &now,
 		Session: SessionSpec{
 			MaxDurationMS: opts.MaxDurationMS,
 			IdleTimeoutMS: opts.IdleTimeoutMS,
@@ -1489,31 +1495,27 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		connectorsJSON = &s
 	}
 
-	run.FirstRunID = run.ID
-	if opts.ResumedFrom != "" {
-		err := tx.QueryRow(`SELECT COALESCE(first_run_id, id) FROM runs WHERE id = ?`, opts.ResumedFrom).Scan(&run.FirstRunID)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("first run of %s: %w", opts.ResumedFrom, err)
-		}
-	}
 	_, err := tx.Exec(`INSERT INTO runs (
 		id, workspace_id, job, kind, reason, status, prompt_preview, inputs_json,
 		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json,
 		conversation_key, conversation_id, working_dir, session_id, runtime, harness, tmux_session,
 		attach_kind, runtime_pid, actor_token_hash,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
-		resumed_from, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at,
-		connectors_json, first_run_id
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		previous_run_id, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at,
+		connectors_json, turn_count, turn_started_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.Job, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON,
 		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.TmuxSession),
 		store.NullStr(attachKindFor(opts)), nil, opts.ActorTokenHash,
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
-		store.NullStr(opts.ResumedFrom), opts.ResumeAttempts, queueID, opts.TraceID, opts.MemoryHash, 1, nowStr,
-		connectorsJSON, run.FirstRunID,
+		store.NullStr(opts.PreviousRunID), opts.ResumeAttempts, queueID, opts.TraceID, opts.MemoryHash, 1, nowStr,
+		connectorsJSON, 1, nowStr,
 	)
 	if err != nil {
+		return err
+	}
+	if err := insertTurnRow(tx, run.ID, 1, opts, run.PromptPreview, nowStr); err != nil {
 		return err
 	}
 	_, err = tx.Exec(`INSERT INTO run_segments (run_id, layer, state, started_at, reason, source)
@@ -1527,29 +1529,83 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 	if err != nil {
 		return err
 	}
-	// B17: the predecessor of a resume becomes superseded-terminal `resumed`.
-	if opts.ResumedFrom != "" {
-		return markResumedPredecessor(tx, opts.ResumedFrom, run.ID, nowStr)
-	}
 	return nil
 }
 
-func markResumedPredecessor(tx *sql.Tx, predecessorID, newID, nowStr string) error {
-	res, err := tx.Exec(`UPDATE runs SET status=?, revision=revision+1, updated_at=?
-		WHERE id=? AND status NOT IN (?, ?)`,
-		string(StatusResumed), nowStr, predecessorID,
-		string(StatusRunning), string(StatusResumed))
-	if err != nil {
-		return err
+// Reopen starts the next turn of a finished run: the harness resumes the
+// same session, so the run stays one row. A running run returns ErrRunActive.
+func (s *Service) Reopen(ctx context.Context, id string, opts CreateOpts) (*Run, error) {
+	opts.applyDefaults()
+	if opts.ActorToken == "" {
+		token, hash, err := mintActorToken()
+		if err != nil {
+			return nil, err
+		}
+		opts.ActorToken = token
+		opts.ActorTokenHash = hash
+	} else {
+		opts.ActorTokenHash = HashActorToken(opts.ActorToken)
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
+	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+	preview := trunc(opts.PromptPreview, 80)
+
+	s.st.LockBus()
+	var rev int64
+	var n int
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		var status string
+		if err := tx.QueryRow(`SELECT status, turn_count, revision FROM runs WHERE id = ?`, id).
+			Scan(&status, &n, &rev); err != nil {
+			return err
+		}
+		if Status(status) == StatusRunning {
+			return ErrRunActive
+		}
+		n++
+		rev++
+		_, err := tx.Exec(`UPDATE runs SET status=?, end_reason=NULL, ended_at=NULL,
+			outcome=NULL, outcome_note='', outcome_at=NULL,
+			turn_count=?, turn_started_at=?, actor_token_hash=?, runtime=?, tmux_session=?, attach_kind=?,
+			runtime_pid=NULL, session_id=COALESCE(NULLIF(?,''), session_id), memory_hash=?,
+			max_duration_ms=?, idle_timeout_ms=?, keep_alive_ms=?, nudge_ms=?, resume_attempts=?,
+			revision=?, updated_at=? WHERE id=?`,
+			string(StatusRunning), n, nowStr, opts.ActorTokenHash, opts.Runtime, store.NullStr(opts.TmuxSession),
+			store.NullStr(attachKindFor(opts)), opts.SessionID, opts.MemoryHash,
+			opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS, opts.ResumeAttempts,
+			rev, nowStr, id)
+		if err != nil {
+			return err
+		}
+		if err := insertTurnRow(tx, id, n, opts, preview, nowStr); err != nil {
+			return err
+		}
+		detail, _ := json.Marshal(map[string]any{"turn": n, "reason": string(opts.Reason)})
+		if _, err := tx.Exec(`INSERT INTO run_segments (run_id, layer, state, started_at, reason, source, detail_json)
+			VALUES (?, 'run', 'running', ?, 'turn', 'runner', ?)`, id, nowStr, string(detail)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO run_events (run_id, at, kind, source, detail_json, trace_id)
+			VALUES (?, ?, 'turn', 'runner', ?, ?)`, id, nowStr, string(detail), opts.TraceID); err != nil {
+			return err
+		}
 		_, err = store.AppendInTx(tx, store.BusEvent{
-			Topic: "run.updated", Entity: "run", EntityID: predecessorID, Action: "updated",
-			Attrs: map[string]string{"status": string(StatusResumed), "resumed_by": newID},
+			Topic: "run.updated", Entity: "run", EntityID: id, Action: "updated", Revision: rev,
+			Attrs: map[string]string{
+				"status": string(StatusRunning), "turn": strconv.Itoa(n), "reason": string(opts.Reason),
+			},
 		})
 		return err
+	})
+	s.st.UnlockBus()
+	if err != nil {
+		return nil, fmt.Errorf("reopen run %s: %w", id, err)
 	}
-	return nil
+	if opts.Prompt != "" {
+		s.AddEvent(ctx, id, "user", "launch", map[string]string{"text": opts.Prompt})
+	}
+	s.SetSessionState(ctx, id, SessionRunning, "launch")
+	s.log.Info("run reopened", "id", id, "turn", n, "reason", string(opts.Reason))
+	return s.Get(ctx, id)
 }
 
 // rowScanner is satisfied by *sql.Row and *sql.Rows.
@@ -1615,6 +1671,22 @@ func ValidRange(r string) bool {
 	return false
 }
 
+// insertTurnRow writes turn n of a run.
+func insertTurnRow(tx *sql.Tx, runID string, n int, opts CreateOpts, preview, nowStr string) error {
+	var trigEventID *string
+	if opts.Trigger != nil && opts.Trigger.EventID != "" {
+		trigEventID = &opts.Trigger.EventID
+	}
+	_, err := tx.Exec(`INSERT INTO run_turns (run_id, n, reason, status, queue_id, trigger_event_id,
+		prompt_preview, session_id, started_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+		runID, n, string(opts.Reason), string(StatusRunning), store.NullStr(opts.QueueID), trigEventID,
+		preview, store.NullStr(opts.SessionID), nowStr)
+	if err != nil {
+		return fmt.Errorf("insert turn %d of %s: %w", n, runID, err)
+	}
+	return nil
+}
+
 // Stats reports run counts and cost for the selected range, plus the month to
 // date. Cost is priced per model, the same way a single run row is priced.
 func (s *Service) Stats(ctx context.Context, opts StatsOpts) (*Stats, error) {
@@ -1655,21 +1727,25 @@ func (s *Service) CostSummary(ctx context.Context, workspaceID, owner string) (C
 	}, nil
 }
 
-// statsRow is one run reduced to what a report needs.
+// statsRow is one run (counted at its start) or one turn (priced at its
+// start) reduced to what a report needs.
 type statsRow struct {
 	at     time.Time
+	run    bool
 	status Status
 	usage  pricing.TokenUsage
 }
 
-// add folds one run into the totals.
+// add folds one row into the totals.
 func (t *StatsTotals) add(row statsRow) {
-	t.Runs++
-	switch row.status {
-	case StatusComplete:
-		t.OK++
-	case StatusFailed, StatusExited, StatusTimedOut:
-		t.Failed++
+	if row.run {
+		t.Runs++
+		switch row.status {
+		case StatusComplete:
+			t.OK++
+		case StatusFailed, StatusExited, StatusTimedOut:
+			t.Failed++
+		}
 	}
 	t.CostUSD += row.usage.CostUSD
 	t.TokensBilled += row.usage.Billed
@@ -1692,26 +1768,34 @@ func dailyStats(rows []statsRow, from, now time.Time) []StatsDay {
 	return days
 }
 
-// statsRows reads the runs of the report window and prices each one. A human
+// statsRows reads the runs and the turns of the report window. A run counts
+// on the day it started; each turn is priced on the day it started. A human
 // outcome overrides the machine status here, so a marked run counts as its
 // verdict in the ok/fail totals and day buckets.
 func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time) ([]statsRow, error) {
-	q := `SELECT started_at, status, COALESCE(outcome,''), COALESCE(tokens_input,0), COALESCE(tokens_output,0),
-		COALESCE(tokens_cache_read,0), COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,'')
-		FROM runs WHERE started_at >= ?`
-	args := []any{from.Format(time.RFC3339)}
+	filter := ""
+	var fargs []any
 	if opts.Workspace != "" {
-		q += ` AND workspace_id = ?`
-		args = append(args, opts.Workspace)
+		filter += ` AND r.workspace_id = ?`
+		fargs = append(fargs, opts.Workspace)
 	}
 	if opts.Job != "" {
-		q += ` AND job = ?`
-		args = append(args, opts.Job)
+		filter += ` AND r.job = ?`
+		fargs = append(fargs, opts.Job)
 	}
 	if opts.Owner != "" {
-		q += ` AND (job = ? OR job LIKE ?)`
-		args = append(args, opts.Owner, opts.Owner+"/%")
+		filter += ` AND (r.job = ? OR r.job LIKE ?)`
+		fargs = append(fargs, opts.Owner, opts.Owner+"/%")
 	}
+	q := `SELECT r.started_at, 1, r.status, COALESCE(r.outcome,''), 0, 0, 0, 0, ''
+		FROM runs r WHERE r.started_at >= ?` + filter + `
+		UNION ALL
+		SELECT t.started_at, 0, '', '', COALESCE(t.tokens_input,0), COALESCE(t.tokens_output,0),
+		COALESCE(t.tokens_cache_read,0), COALESCE(t.tokens_cache_creation,0),
+		COALESCE(NULLIF(t.tokens_model,''), r.tokens_model, '')
+		FROM run_turns t JOIN runs r ON r.id = t.run_id WHERE t.started_at >= ?` + filter
+	fromStr := from.Format(time.RFC3339)
+	args := append(append(append([]any{fromStr}, fargs...), fromStr), fargs...)
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -1721,8 +1805,9 @@ func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time)
 	var out []statsRow
 	for rows.Next() {
 		var started, status, outcome, model string
+		var isRun bool
 		var in, outTok, cacheR, cacheC int64
-		if err := rows.Scan(&started, &status, &outcome, &in, &outTok, &cacheR, &cacheC, &model); err != nil {
+		if err := rows.Scan(&started, &isRun, &status, &outcome, &in, &outTok, &cacheR, &cacheC, &model); err != nil {
 			return nil, err
 		}
 		at, err := time.Parse(time.RFC3339, started)
@@ -1735,7 +1820,7 @@ func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time)
 		}
 		u := pricing.TokenUsage{Input: in, Output: outTok, CacheRead: cacheR, CacheCreation: cacheC, Model: model}
 		u.ApplyRates()
-		out = append(out, statsRow{at: at.UTC(), status: effective, usage: u})
+		out = append(out, statsRow{at: at.UTC(), run: isRun, status: effective, usage: u})
 	}
 	return out, rows.Err()
 }
@@ -1806,8 +1891,9 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r := &Run{}
 	var reason, endReason, started, ended sql.NullString
 	var trigEvent, trigInteg, capJSON, varsJSON, inputsJSON sql.NullString
-	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev, runtimePID int64
-	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, workingDir, resumedFrom string
+	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev, runtimePID, turnCount, activeMS int64
+	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, workingDir, previousRunID string
+	var turnStarted sql.NullString
 	var prompt, ws, job, kind, status, memoryHash, attachKind string
 	var outcomeStatus, outcomeNote, outcomeAt sql.NullString
 	err := row.Scan(
@@ -1815,9 +1901,9 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		&prompt, &sess, &harness, &runtime, &tmux,
 		&ti, &to, &tcr, &tcc, &modelName,
 		&started, &ended, &maxD, &idle, &keep, &nudge,
-		&resumedFrom, &resumeAtt, &qid, &trace, &rev,
+		&previousRunID, &resumeAtt, &qid, &trace, &rev,
 		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
-		&memoryHash, &runtimePID, &attachKind, &outcomeStatus, &outcomeNote, &outcomeAt, &r.FirstRunID,
+		&memoryHash, &runtimePID, &attachKind, &outcomeStatus, &outcomeNote, &outcomeAt, &turnCount, &turnStarted, &activeMS,
 	)
 	if err != nil {
 		return nil, err
@@ -1835,7 +1921,8 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r.SessionID = sess
 	r.Harness = harness
 	r.Runtime = runtime
-	r.ResumedFrom = resumedFrom
+	r.PreviousRunID = previousRunID
+	r.TurnCount = int(turnCount)
 	r.ResumeAttempts = int(resumeAtt)
 	r.QueueID = qid
 	r.TraceID = trace
@@ -1855,9 +1942,14 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	if ended.Valid {
 		t := store.ParseTS(ended.String)
 		r.EndedAt = &t
-		r.DurationMS = t.Sub(r.StartedAt).Milliseconds()
-	} else {
-		r.DurationMS = time.Since(r.StartedAt).Milliseconds()
+	}
+	r.DurationMS = activeMS
+	if turnStarted.Valid && turnStarted.String != "" {
+		t := store.ParseTS(turnStarted.String)
+		r.TurnStartedAt = &t
+		if r.Status.IsLive() {
+			r.DurationMS += time.Since(t).Milliseconds()
+		}
 	}
 	r.Tokens = pricing.TokenUsage{Input: ti, Output: to, CacheRead: tcr, CacheCreation: tcc, Model: modelName}
 	r.Tokens.ApplyRates()
@@ -1899,59 +1991,58 @@ func trunc(s string, n int) string {
 	return s[:n]
 }
 
-// fillTurns sets Turns on each run from all runs of its chain.
-func (s *Service) fillTurns(ctx context.Context, list []*Run) error {
-	if len(list) == 0 {
-		return nil
+// Turns returns the turns of a run, oldest first.
+func (s *Service) Turns(ctx context.Context, runID string) ([]Turn, error) {
+	if _, err := s.Get(ctx, runID); err != nil {
+		return nil, err
 	}
-	byFirst := map[string][]*Run{}
-	args := make([]any, 0, len(list))
-	for _, r := range list {
-		if byFirst[r.FirstRunID] == nil {
-			args = append(args, r.FirstRunID)
-		}
-		byFirst[r.FirstRunID] = append(byFirst[r.FirstRunID], r)
-	}
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT COALESCE(first_run_id, id), started_at, ended_at,
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT n, reason, status, COALESCE(end_reason,''),
+		COALESCE(queue_id,''), COALESCE(trigger_event_id,''), COALESCE(prompt_preview,''),
+		COALESCE(session_id,''), started_at, ended_at, COALESCE(duration_ms,0),
 		COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
 		COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,'')
-		FROM runs WHERE COALESCE(first_run_id, id) IN (?`+strings.Repeat(",?", len(args)-1)+`)`, args...)
+		FROM run_turns WHERE run_id = ? ORDER BY n`, runID)
 	if err != nil {
-		return fmt.Errorf("run turns: %w", err)
+		return nil, fmt.Errorf("run turns %s: %w", runID, err)
 	}
 	defer rows.Close()
-	sums := map[string]*Turns{}
+	out := []Turn{}
 	for rows.Next() {
-		var first, started string
+		var t Turn
+		var reason, status, end, started string
 		var ended sql.NullString
-		var u pricing.TokenUsage
-		if err := rows.Scan(&first, &started, &ended, &u.Input, &u.Output, &u.CacheRead, &u.CacheCreation, &u.Model); err != nil {
-			return err
+		if err := rows.Scan(&t.N, &reason, &status, &end, &t.QueueID, &t.TriggerEvent, &t.PromptPreview,
+			&t.SessionID, &started, &ended, &t.DurationMS,
+			&t.Tokens.Input, &t.Tokens.Output, &t.Tokens.CacheRead, &t.Tokens.CacheCreation, &t.Tokens.Model); err != nil {
+			return nil, err
 		}
-		t := sums[first]
-		if t == nil {
-			t = &Turns{}
-			sums[first] = t
-		}
-		at := store.ParseTS(started)
-		if t.Count == 0 || at.Before(t.StartedAt) {
-			t.StartedAt = at
-		}
-		t.Count++
-		end := time.Now()
+		t.Reason, t.Status, t.EndReason = RunReason(reason), Status(status), EndReason(end)
+		t.StartedAt = store.ParseTS(started)
 		if ended.Valid {
-			end = store.ParseTS(ended.String)
+			e := store.ParseTS(ended.String)
+			t.EndedAt = &e
+		} else {
+			t.DurationMS = time.Since(t.StartedAt).Milliseconds()
 		}
-		t.DurationMS += end.Sub(at).Milliseconds()
-		u.ApplyRates()
-		t.CostUSD += u.CostUSD
+		t.Tokens.ApplyRates()
+		out = append(out, t)
 	}
-	for first, t := range sums {
-		for _, r := range byFirst[first] {
-			r.Turns = t
+	return out, rows.Err()
+}
+
+// turnTokens prices the usage of the ending turn. With no usage given, a kill
+// or a reaper stop still records what the wire reported.
+func (s *Service) turnTokens(id string, turn int, tokens *pricing.TokenUsage) pricing.TokenUsage {
+	if tokens == nil {
+		if cr := s.cliRunFor(id); cr != nil && (turn == 0 || cr.turn == turn) {
+			tokens = cr.usageSoFar()
 		}
 	}
-	return rows.Err()
+	if tokens == nil {
+		return pricing.TokenUsage{}
+	}
+	tokens.ApplyRates()
+	return *tokens
 }
 
 func (s *Service) list(ctx context.Context, opts ListOpts) ([]*Run, error) {
