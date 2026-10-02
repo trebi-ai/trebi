@@ -1,6 +1,6 @@
 ---
 name: trebi
-description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, agents, skills, secrets, connectors, and event rules; drain the inbox or alerts; tail the event bus; link the daemon to a Trebi cloud account; mint hosted webhooks for job triggers; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi agent", "wake an agent", "trebi inbox", "trebi outbox", "trebi notify", "alert route", "trebi config schema", "validate a config change", "trebi bus", "trebi connector", "trebi doctor", "wake the assistant", "trebi assistant say", "trebi assistant chat", "trebi conversation", "trebi cloud link", "trebi hooks", "hosted webhook".
+description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, agents, skills, secrets, connectors, connections, and event rules; find why a trigger did not fire; send email with HTML and attachments; drain the inbox or alerts; tail the event bus; link the daemon to a Trebi cloud account; mint hosted webhooks for job triggers; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi agent", "wake an agent", "trebi inbox", "trebi outbox", "trebi notify", "alert route", "trebi config schema", "validate a config change", "trebi bus", "trebi connector", "add a connection", "connector login", "why did my job not fire", "rules test", "run turns", "trebi email send", "trebi status", "trebi doctor", "wake the assistant", "trebi assistant say", "trebi assistant chat", "trebi conversation", "trebi cloud link", "trebi hooks", "hosted webhook".
 ---
 
 # Trebi
@@ -20,11 +20,12 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | workspace | a registered folder; the unit of context. Jobs, runs, and the assistant belong to one |
 | job | a `JOB.md` file: YAML frontmatter (harness, triggers, session) plus a prompt body |
 | file | any path inside a workspace (scripts, templates, eval files). Raw bytes; no job semantics. Job-scoped via `trebi job file`; workspace-wide via `trebi file` |
-| run | one launch of a job in a harness session (subprocess by default; tmux when `runtime: tui`) |
+| run | one harness session of a job (subprocess by default; tmux when `runtime: tui`). Resume reopens the same run as a new turn: the id stays and `turn_count` goes up. Cost and `duration_ms` sum all turns. `previous_run_id` names the run that a rerun follows. `trebi runs turns <id>` lists the turns |
 | assistant | the workspace chat agent; one live session per conversation, settings in config and `trebi.yaml` |
 | agent | a folder-scoped `AGENT.md` at `agents/<name>/`; owns the jobs inside that folder, kind=agent |
 | conversation | a chat thread with the assistant; the CLI/UI are channels onto it |
-| connector | one external system with up to three capabilities: actions (an MCP server or CLI commands for agent runs), events (a supervised process that produces trigger events), and a channel (a conversation transport) |
+| connector | one external system with up to three capabilities: actions (an MCP server or CLI commands for agent runs), events (a supervised process that produces trigger events), and a channel (a conversation transport). A type from the catalog (for example `whatsapp`) can have many **connections**, one per account. Each connection has an id (`con_…`), a slug, and a title; jobs, triggers, and notify steps use the slug |
+| email | the native channel. Each workspace has an address `<handle>-<token>@<domain>` (`trebi workspace email show`); agents send from a subaddress. `trebi email send` takes `--html`, `--html-file`, `--attach`, and `--workspace-file` (10 files, 5 MiB total) |
 | trigger | a rule on a job: `cron`, `every`, or `event` from a connector. An event trigger filters with `rooms`, `allowlist`, `from` (people, bots, anyone), `contains` (words in the message), and optional `match`; `replies: continue` sends later messages of a conversation to the same run |
 | skill | a stored `SKILL.md` the harness can load |
 | request | a decision a job run asks a person for (confirm, review, choose, form). The run ends its turn as `parked` and continues with the answer |
@@ -32,7 +33,8 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | alerts | the per-firing alert feed; a log, not a queue |
 | outbox | every outgoing message (channel reply, email, alert mail) with its status, attempts, and last error |
 | notify route | the ordered steps an alert tries (email, then connector channels); set per job, agent, workspace, or globally. `trebi notify route` shows it, `trebi notify test` sends a test |
-| queue | the dispatch queue of pending launches |
+| queue | the dispatch queue of pending launches. With `session.if_running: queue` (the default), a new launch waits behind the live run of the same job; `skip` drops it, `replace` stops the live run |
+| proposal | an agent change to its `AGENT.md` that a person approves or denies (`trebi proposals`). Human workflow: do not decide one from an agent run |
 | bus | the live event stream (`trebi bus`) |
 
 ## First checks
@@ -41,6 +43,7 @@ Run these before anything else. Most failures are a daemon that is down.
 
 ```bash
 trebi service status --json      # OS service + API health
+trebi status --json              # one screen: health, live runs, inbox, next due
 trebi doctor --json              # findings; add --fix to repair automatically
 trebi workspace current --json   # the sticky workspace context
 ```
@@ -52,6 +55,20 @@ If the daemon is down: `trebi service start`. If it was never installed: `trebi 
 Only these work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate|path|show|set|unset`, `guide`, `mcp config|install`, `memory validate|skeleton`, and `workspace list|current|use|unlink`. Everything else fails with a clear message.
 
 Native assistant (no vendor CLI): `trebi config set assistant.native.model claude-sonnet-4-5` and `trebi config set assistant.native.api_key_env ANTHROPIC_API_KEY`. API key only.
+
+## Troubleshooting map
+
+Start from the symptom. Each line is a read first, then the fix. Read the matching guide for the details.
+
+| Symptom | Read | Then |
+|---|---|---|
+| a run failed or hangs | `runs show <id> --json`, `runs turns <id> --json`, `runs timeline <id> --json`, `runs logs <id>`, `service logs --level error --lines 100 --grep <id>` | `runs retry <id>` (it picks resume, park, or rerun). Do not kill a live run to re-prompt |
+| a job did not start on schedule | `job status <job> --json`, `queue --json`, `inbox list --json` | a launch can wait behind a live run (`if_running: queue`). `job unpause` if paused |
+| a job did not start on an event | `event list --connector <slug> --since 1h --json`, then `rules test --event-id <id> --job <job> --json` with the trigger keys | `stage` names the check that stopped it: `room`, `sender`, `from`, `contains`, `extract`, or `match`. `connector senders` gives allowlist values. The trigger `limit` (default `15/10m`) holds extra events in order; at 10 waiting, new events drop and an inbox item opens. `event retrigger <id>` after the fix |
+| a connector is down or silent | `connector show <slug> --json`, `connector logs <slug>`, `connector dependents <slug>` | `connector restart`, `connector login` (ask the user to follow the steps), `connector check-updates` |
+| an alert or reply did not arrive | `notify route --json`, `outbox ls --json`, `inbox show <id> --json` | `outbox retry <id>`, `notify test` |
+| email does not arrive | `email status --json`, `email messages --direction in --json`, `email show <id> --json` | `email poll` pulls the spool now |
+| a harness cannot log in | `harness auth status --json`, `doctor --json` | `harness auth login` (ask the user) |
 
 ## Cloud link and hosted webhooks
 
@@ -85,11 +102,11 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 |---|---|
 | `getting-started` | fresh install → workspace → first job → first run |
 | `jobs-and-scheduling` | JOB.md shape, cron/every/event triggers, pause, validate, job memory |
-| `runs-and-debugging` | show/timeline/transcript/logs, retry/resume/replay/mark, attach, approvals |
+| `runs-and-debugging` | show/turns/timeline/transcript/logs, retry/resume/replay/mark, attach, approvals |
 | `files` | job-scoped vs workspace files, scripts next to jobs, If-Match |
 | `assistant` | settings layers, chat and sessions, conversations, memory |
 | `agents` | folder-scoped agents: identity, rename, email accept, owned jobs, wake, conversations, agent memory |
-| `connectors-and-rules` | create/connect connectors, registry search/entry/install, the job `connectors:` key (MCP and CLI actions for a run), rules test/fire, event triggers, queue |
+| `connectors-and-rules` | add connections, login, rooms, senders, bind, overrides, versions and updates, registry search/entry/install, the job `connectors:` key (MCP and CLI actions for a run), rules test/test-batch/fire, event triggers, retrigger, queue |
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed, alert routes (`trebi notify route|test`), failed sends in the outbox |
 | `requests` | a job asks a person (confirm, review, choose, form), ends its turn, and continues with the answer; answer and dismiss as a person |
 | `observability` | bus, service logs, doctor, stats |
@@ -118,7 +135,7 @@ Every error is `{"error":{"code","message","details"}}` with a stable code:
 - Run `trebi job validate` after every `JOB.md` write.
 - Memory (`job` / `agent` / `assistant memory …`) is a structured `MEMORY.md`: Context, State, Lessons, Log. Edit it through the section commands (`set-context`, `set-state`, `lesson add`, `log add`), not by rewriting the whole file with `set`. Lessons persist; log entries are capped and pruned oldest-first. A run that ends with an invalid file gets two fix injections, then a `memory_invalid` alert.
 - Use `trebi job run --test` (or `trebi agent wake --test`) before the first real launch only when **this session** created or edited that `JOB.md` / `AGENT.md`. Not `rules fire`, not `assistant say`, not a job that already existed.
-- Ask the user before `job delete` / `job delete --purge`, `agent delete` (plain or `--purge`), `workspace delete`, `workspace move`, `memory clear`, `agent memory clear`, `assistant memory clear`, `secret delete`, `connector delete`, `connector install`, `cloud unlink`, `hooks delete`, and `service uninstall`. They destroy state (move rewrites files; install runs third-party code). Ask **before** you make the call, not after: state what the action deletes, then stop and wait for the answer. Do not send the call to see what it says. The daemon refuses it without `--force` (`confirm=1` over the API) and names what it deletes, but that gate is a backstop, not your confirmation step. `runs kill` of a run you just started to debug is not in that list. `--dry-run` on `workspace move` is not in that list.
+- Ask the user before `job delete` / `job delete --purge`, `agent delete` (plain or `--purge`), `workspace delete`, `workspace move`, `memory clear`, `agent memory clear`, `assistant memory clear`, `secret delete`, `connector delete`, `connector install`, `connector logout`, `workspace email rotate`, `cloud unlink`, `hooks delete`, and `service uninstall`. They destroy state (move rewrites files; install runs third-party code). Ask **before** you make the call, not after: state what the action deletes, then stop and wait for the answer. Do not send the call to see what it says. For most of them the daemon refuses the call without `--force` (`confirm=1` over the API; `--yes` on `workspace email rotate`) and names what it deletes. `connector logout` has no gate. A gate is a backstop, not your confirmation step. `runs kill` of a run you just started to debug is not in that list. `--dry-run` on `workspace move` is not in that list.
 - If a trebi command fails with "Confirm with the user first", stop. That refusal is the confirmation gate. Report the consequence to the user and wait. Do not retry with `--force` in the same turn.
 - Never show a secret value you did not have to read. Always prefer the form that keeps it out of your transcript: on the CLI pass the path, `trebi secret set --from-file ./key.txt NAME`; on the catalog pass `value_file`, which is resolved before dispatch. If you only have the value in context, pass `value` once and never show it again: no second `cat`, not in the final message, not in a job prompt or a file. Do not stop the task over this — store the secret and carry on. Reference a stored secret from a job by its **name**; the daemon resolves it at launch. A secret name is not a secret.
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.
