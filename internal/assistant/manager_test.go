@@ -137,6 +137,8 @@ func newEnv(t *testing.T, timing assistant.ResolverTiming) *testEnv {
 			SkillsDir: home.SkillsDir(),
 			Log:       nil,
 		})
+	// Stop live sessions before the store closes and TempDir is removed.
+	t.Cleanup(func() { _ = mgr.Shutdown(context.Background()) })
 	convSvc.WithAssistant(mgr)
 
 	env := &testEnv{
@@ -196,7 +198,8 @@ func TestFirstPromptStartsAndSecondReuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Duplicate || res.Status != assistant.StatusRunning {
+	// The fake turn can end before Prompt reads the status back.
+	if res.Duplicate || (res.Status != assistant.StatusRunning && res.Status != assistant.StatusIdle) {
 		t.Fatalf("res %+v", res)
 	}
 	waitFor(t, 2*time.Second, "first turn end", func() bool {
@@ -482,28 +485,35 @@ type failDriver struct{}
 func (failDriver) Name() string { return string(agentwire.Fake) }
 
 func (failDriver) Start(context.Context, agentwire.StartRequest) (agentwire.Session, error) {
-	return failSession{}, nil
+	return &failSession{events: make(chan agentwire.Event)}, nil
 }
 
 func (failDriver) Resume(context.Context, agentwire.StartRequest) (agentwire.Session, error) {
-	return failSession{}, nil
+	return &failSession{events: make(chan agentwire.Event)}, nil
 }
 
-type failSession struct{}
+// failSession closes its event stream on Close, so the pump ends.
+type failSession struct {
+	events chan agentwire.Event
+	once   sync.Once
+}
 
-func (failSession) Provider() string { return string(agentwire.Fake) }
-func (failSession) ID() string       { return "fail-1" }
-func (failSession) PID() int         { return 0 }
-func (failSession) Prompt(context.Context, agentwire.Prompt) error {
+func (*failSession) Provider() string { return string(agentwire.Fake) }
+func (*failSession) ID() string       { return "fail-1" }
+func (*failSession) PID() int         { return 0 }
+func (*failSession) Prompt(context.Context, agentwire.Prompt) error {
 	return errors.New("pipe broken")
 }
-func (failSession) Interrupt(context.Context) error                                    { return nil }
-func (failSession) AnswerPermission(context.Context, string, agentwire.Decision) error { return nil }
-func (failSession) InterruptTurn(context.Context) error                                { return nil }
-func (failSession) Done() <-chan struct{}                                              { return make(chan struct{}) }
-func (failSession) Err() error                                                         { return nil }
-func (failSession) Close(context.Context) error                                        { return nil }
-func (failSession) Events() <-chan agentwire.Event                                     { return make(chan agentwire.Event) }
+func (*failSession) Interrupt(context.Context) error                                    { return nil }
+func (*failSession) AnswerPermission(context.Context, string, agentwire.Decision) error { return nil }
+func (*failSession) InterruptTurn(context.Context) error                                { return nil }
+func (*failSession) Done() <-chan struct{}                                              { return make(chan struct{}) }
+func (*failSession) Err() error                                                         { return nil }
+func (f *failSession) Close(context.Context) error {
+	f.once.Do(func() { close(f.events) })
+	return nil
+}
+func (f *failSession) Events() <-chan agentwire.Event { return f.events }
 
 func TestSendFailureKeepsUserEventAndAddsError(t *testing.T) {
 	env := newEnv(t, assistant.ResolverTiming{})

@@ -308,16 +308,23 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	}
 
 	// The outbound envelope row carries the conversation, the run, and
-	// covered_turn 0 (the one turn of this exchange).
-	out, err := p.cp.Email.ListMessages(ctx, email.MessageListOpts{Direction: "out", Workspace: p.wsID})
-	if err != nil {
-		t.Fatal(err)
-	}
+	// covered_turn 0 (the one turn of this exchange). The outbox hook
+	// writes the disposition after the send, so poll for it.
 	var envelope email.Message
-	for _, m := range out {
-		if m.ConversationID == convID {
-			envelope = m
+	for until := time.Now().Add(10 * time.Second); ; {
+		out, err := p.cp.Email.ListMessages(ctx, email.MessageListOpts{Direction: "out", Workspace: p.wsID})
+		if err != nil {
+			t.Fatal(err)
 		}
+		for _, m := range out {
+			if m.ConversationID == convID {
+				envelope = m
+			}
+		}
+		if envelope.Disposition == "sent" || time.Now().After(until) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if envelope.ID == "" {
 		t.Fatalf("no outbound envelope for conversation %s", convID)
