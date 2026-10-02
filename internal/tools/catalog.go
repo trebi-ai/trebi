@@ -382,6 +382,24 @@ func (in Input) buildFilePut() (request.HTTPRequest, error) {
 	}
 }
 
+// emailFiles reads the attachments field of email send: nil when absent.
+func (in Input) emailFiles() ([]request.EmailFile, error) {
+	raw, err := in.block("attachments")
+	if err != nil || raw == nil {
+		return nil, err
+	}
+	var files []request.EmailFile
+	if err := json.Unmarshal(raw, &files); err != nil {
+		return nil, fmt.Errorf("input field %q must be an array of file objects: %w", "attachments", err)
+	}
+	for _, f := range files {
+		if f.Path == "" && f.Name == "" {
+			return nil, fmt.Errorf("input field %q: each file needs path or name", "attachments")
+		}
+	}
+	return files, nil
+}
+
 // decodeContent reads the content field. encoding "base64" carries binary; the
 // default "text" is passed through as written.
 func (in Input) decodeContent(content string) ([]byte, error) {
@@ -2487,16 +2505,14 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			// allowlist; the API answers 400 for anyone else.
 			"send": act("POST /v1/email/send",
 				Input{"workspace": "ws1", "agent": "research", "to": []any{"ops@example.com"},
-					"subject": "digest ready", "text": "The digest is ready.", "in_reply_to": "<out-1@x>"},
+					"subject": "digest ready", "text": "The digest is ready.", "html": "<p>The digest is <b>ready</b>.</p>",
+					"in_reply_to": "<out-1@x>", "attachments": []any{map[string]any{"path": "reports/digest.csv"}}},
 				func(in Input) (request.HTTPRequest, error) {
 					v, err := in.reqStrs("workspace", "subject", "text")
 					if err != nil {
 						return request.HTTPRequest{}, err
 					}
-					opt, err := in.strs("agent", "in_reply_to")
-					if err != nil {
-						return request.HTTPRequest{}, err
-					}
+					opt, err := in.strs("agent", "in_reply_to", "html")
 					if err != nil {
 						return request.HTTPRequest{}, err
 					}
@@ -2507,7 +2523,14 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					if len(to) == 0 {
 						return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "to")
 					}
-					return request.BuildEmailSend(v[0], opt[0], to, v[1], v[2], opt[1]), nil
+					files, err := in.emailFiles()
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					return request.EmailSendSpec{
+						Workspace: v[0], Agent: opt[0], To: to, Subject: v[1], Text: v[2],
+						HTML: opt[2], InReplyTo: opt[1], Attachments: files,
+					}.Build(), nil
 				}),
 			"workspace_address": act("GET /v1/workspaces/{id}/email", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 				ws, err := in.reqStr("workspace")

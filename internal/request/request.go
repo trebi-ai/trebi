@@ -931,15 +931,42 @@ func BuildEmailPoll() HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/email/poll"}
 }
 
-// BuildEmailSend builds POST /v1/email/send (plan I.3): one explicit
-// message from the workspace address, or the agent subaddress when set.
-func BuildEmailSend(workspace, agent string, to []string, subject, text, inReplyTo string) HTTPRequest {
-	body := map[string]any{"workspace": workspace, "to": to, "subject": subject, "text": text}
-	if agent != "" {
-		body["agent"] = agent
+// EmailSendSpec is POST /v1/email/send (plan I.3): one explicit message
+// from the workspace address, or the agent subaddress when Agent is set.
+type EmailSendSpec struct {
+	Workspace   string
+	Agent       string
+	To          []string
+	Subject     string
+	Text        string
+	HTML        string
+	InReplyTo   string
+	Attachments []EmailFile
+}
+
+// EmailFile is one file to send. Path names a workspace file that the
+// daemon reads. Otherwise Name and Content (base64) carry the file.
+type EmailFile struct {
+	Path    string `json:"path,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
+// Build renders the spec as POST /v1/email/send.
+func (e EmailSendSpec) Build() HTTPRequest {
+	body := map[string]any{"workspace": e.Workspace, "to": e.To, "subject": e.Subject, "text": e.Text}
+	if e.Agent != "" {
+		body["agent"] = e.Agent
 	}
-	if inReplyTo != "" {
-		body["in_reply_to"] = inReplyTo
+	if e.HTML != "" {
+		body["html"] = e.HTML
+	}
+	if e.InReplyTo != "" {
+		body["in_reply_to"] = e.InReplyTo
+	}
+	if len(e.Attachments) > 0 {
+		body["attachments"] = e.Attachments
 	}
 	return HTTPRequest{Method: "POST", Path: "/v1/email/send", Body: body}
 }

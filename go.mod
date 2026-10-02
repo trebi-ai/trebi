@@ -18,7 +18,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/trebi-ai/agent-wire v0.4.1
 	github.com/urfave/cli/v3 v3.11.0
-	golang.org/x/term v0.45.0
+	golang.org/x/term v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
 	rsc.io/qr v0.2.0
@@ -28,6 +28,9 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.75.0 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/openai/openai-go/v3 v3.66.0 // indirect
+	github.com/yuin/goldmark-alert v1.0.1 // indirect
+	github.com/yuin/goldmark/v2 v2.1.6 // indirect
+	golang.org/x/net v0.59.0 // indirect
 )
 
 require (
@@ -59,9 +62,9 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect
 	gopkg.in/yaml.v2 v2.3.0 // indirect

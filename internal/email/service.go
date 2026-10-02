@@ -27,6 +27,9 @@ var ErrNotConfigured = errors.New("email is not configured")
 // workspace allowlist (plan I.3: an agent cannot mail a third party).
 var ErrRecipient = errors.New("email recipient is not an operator or allowlisted address")
 
+// ErrContent means the HTML part or a file breaks the send contract limits.
+var ErrContent = errors.New("email content is not valid")
+
 // WorkspaceRef is the (id, handle) pair address minting needs. The caller
 // owns the workspace list; email never reads the workspaces table.
 type WorkspaceRef struct {
@@ -41,6 +44,7 @@ type Service struct {
 	convs  *conversations.Service
 	ob     *outbox.Service
 	picker WorkspacePicker
+	render *Renderer
 	log    *slog.Logger
 
 	mu          sync.RWMutex
@@ -66,8 +70,9 @@ type PollState struct {
 // selection, never here (plan 2026-09-22 Part C).
 func New(st *store.Store) *Service {
 	return &Service{
-		st:  st,
-		log: slog.Default().With("source", "email"),
+		st:     st,
+		log:    slog.Default().With("source", "email"),
+		render: NewRenderer(DefaultTheme()),
 	}
 }
 
@@ -299,12 +304,45 @@ type SendOpts struct {
 	To             []string
 	Subject        string
 	Text           string
+	HTML           string
+	Markdown       bool // render Text as the HTML part when HTML is empty
+	Attachments    []SendAttachment
 	InReplyTo      string
 	RunID          string
 	ConversationID string
 	FromName       string
 	Recipients     *AcceptRule
 	Purpose        string
+}
+
+// sendParts is the outbox Parts value of an email row.
+type sendParts struct {
+	HTML        string           `json:"html,omitempty"`
+	Attachments []SendAttachment `json:"attachments,omitempty"`
+}
+
+// parts checks the HTML part and the files against the send contract and
+// encodes them for the outbox row. A file with no type gets one from its
+// name. nil means a plain text mail.
+func (o *SendOpts) parts() ([]byte, error) {
+	if o.HTML == "" && len(o.Attachments) == 0 {
+		return nil, nil
+	}
+	if len(o.Attachments) > MaxAttachments {
+		return nil, fmt.Errorf("%w: at most %d files", ErrContent, MaxAttachments)
+	}
+	size := len(o.Text) + len(o.HTML)
+	for i := range o.Attachments {
+		a := &o.Attachments[i]
+		if err := a.normalize(); err != nil {
+			return nil, err
+		}
+		size += len(a.Content)
+	}
+	if size > MaxSendBytes {
+		return nil, fmt.Errorf("%w: the message is %d bytes, the limit is %d", ErrContent, size, MaxSendBytes)
+	}
+	return json.Marshal(sendParts{HTML: o.HTML, Attachments: o.Attachments})
 }
 
 // Queued is the outcome of one enqueued send.
@@ -329,6 +367,15 @@ func (s *Service) Send(ctx context.Context, opts SendOpts) (Queued, error) {
 	if err := s.checkRecipients(ctx, cfg, opts); err != nil {
 		return Queued{}, err
 	}
+	if opts.Markdown && opts.HTML == "" {
+		if opts.HTML, err = s.render.Markdown(opts.Text, Page{}); err != nil {
+			return Queued{}, err
+		}
+	}
+	parts, err := opts.parts()
+	if err != nil {
+		return Queued{}, err
+	}
 	from := addr.Full()
 	if opts.Agent != "" {
 		lp, err := tagAddress(addr, opts.Agent)
@@ -351,7 +398,7 @@ func (s *Service) Send(ctx context.Context, opts SendOpts) (Queued, error) {
 		inReplyTo: opts.InReplyTo, threadRoot: root, recipients: opts.To, subject: opts.Subject,
 		conversationID: opts.ConversationID, runID: opts.RunID, purpose: opts.Purpose,
 	}, outbox.Row{
-		Purpose: purpose, Body: opts.Text,
+		Purpose: purpose, Body: opts.Text, Parts: parts,
 		Env: fromEnv(from, cmp.Or(opts.FromName, cfg.FromName)),
 	})
 	if err != nil {
@@ -464,9 +511,16 @@ FROM email_messages WHERE id=?`, r.EmailRowID).Scan(&messageID, &inReplyTo, &roo
 	if inReplyTo != "" && inReplyTo != root {
 		refs = append(refs, inReplyTo)
 	}
+	var parts sendParts
+	if len(r.Parts) > 0 {
+		if err := json.Unmarshal(r.Parts, &parts); err != nil {
+			return outbox.Permanent{Err: fmt.Errorf("email parts of %s: %w", r.ID, err)}
+		}
+	}
 	req := SendRequest{
 		V: ContractV, From: r.Env[envFrom], FromName: r.Env[envFromName],
 		To: splitRecipients(r.Recipients), Subject: r.Subject, Text: r.Body,
+		HTML: parts.HTML, Attachments: parts.Attachments,
 		MessageID: messageID, InReplyTo: inReplyTo, References: refs,
 	}
 	if err := s.sendWithBackoff(ctx, tr, req); err != nil {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -365,6 +366,71 @@ func TestSendFailsAfterAttempts(t *testing.T) {
 	}
 	if _, _, disp := envelopeOf(t, st, q.MessageID); disp != "sent" {
 		t.Errorf("envelope after retry = %s, want sent", disp)
+	}
+}
+
+// TestSendParts: the HTML part and the files ride the outbox row to the
+// Worker, and the row drops them once sent.
+func TestSendParts(t *testing.T) {
+	t.Parallel()
+	fw := &fakeWorker{token: "test-token-0000"}
+	srv := httptest.NewServer(fw.handler())
+	t.Cleanup(srv.Close)
+	st := openEmailStore(t)
+	s := testService(st)
+	configureTest(s, srv.URL)
+	if _, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs"); err != nil {
+		t.Fatal(err)
+	}
+	q, err := s.Send(t.Context(), SendOpts{
+		WorkspaceID: "ws_1", To: []string{"ops@example.com"}, Subject: "digest", Text: "ready",
+		HTML: "<p>ready</p>", Attachments: []SendAttachment{{Name: "q3.csv", Content: []byte("a,b\n")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	flush(t, s)
+	var sent SendRequest
+	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.HTML != "<p>ready</p>" || len(sent.Attachments) != 1 ||
+		sent.Attachments[0].Type != "text/csv" || string(sent.Attachments[0].Content) != "a,b\n" {
+		t.Errorf("sent = %+v", sent)
+	}
+	var parts sql.NullString
+	if err := st.DB().QueryRow(`SELECT parts FROM outbox WHERE id=?`, q.OutboxID).Scan(&parts); err != nil || parts.Valid {
+		t.Errorf("parts after send = %v, %v; want NULL", parts, err)
+	}
+
+	if _, err := s.Send(t.Context(), SendOpts{
+		WorkspaceID: "ws_1", To: []string{"ops@example.com"}, Subject: "report", Text: "Runs are **up**.", Markdown: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	flush(t, s)
+	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.Text != "Runs are **up**." || !strings.Contains(sent.HTML, "<strong") {
+		t.Errorf("markdown send: text %q, html %q", sent.Text, sent.HTML)
+	}
+
+	tooMany := make([]SendAttachment, MaxAttachments+1)
+	for i := range tooMany {
+		tooMany[i] = SendAttachment{Name: fmt.Sprintf("f%d.txt", i)}
+	}
+	for name, opts := range map[string]SendOpts{
+		"too many files": {Attachments: tooMany},
+		"too large":      {HTML: strings.Repeat("x", MaxSendBytes)},
+		"path in name":   {Attachments: []SendAttachment{{Name: "../x.txt"}}},
+		"newline":        {Attachments: []SendAttachment{{Name: "x\r\nBcc: y.txt"}}},
+		"bad type":       {Attachments: []SendAttachment{{Name: "x.txt", Type: "nonsense"}}},
+	} {
+		opts.WorkspaceID, opts.To, opts.Subject, opts.Text = "ws_1", []string{"ops@example.com"}, "digest", "ready"
+		if _, err := s.Send(t.Context(), opts); !errors.Is(err, ErrContent) {
+			t.Errorf("%s: err = %v; want ErrContent", name, err)
+		}
 	}
 }
 

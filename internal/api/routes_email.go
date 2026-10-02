@@ -1,12 +1,16 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"mime"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/oklog/ulid/v2"
@@ -54,19 +58,24 @@ func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "message_id": msgID})
 }
 
+// emailSendBodyCap fits the base64 of a full-size message plus the JSON.
+const emailSendBodyCap = 8 << 20
+
 // handleEmailSend is the explicit send (plan I.3): one message from the
 // workspace address, or the agent subaddress when agent is set. Recipients
 // outside the operator list and the workspace allowlist are a 400.
 func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Workspace string   `json:"workspace"`
-		Agent     string   `json:"agent"`
-		To        []string `json:"to"`
-		Subject   string   `json:"subject"`
-		Text      string   `json:"text"`
-		InReplyTo string   `json:"in_reply_to"`
+		Workspace   string              `json:"workspace"`
+		Agent       string              `json:"agent"`
+		To          []string            `json:"to"`
+		Subject     string              `json:"subject"`
+		Text        string              `json:"text"`
+		HTML        string              `json:"html"`
+		InReplyTo   string              `json:"in_reply_to"`
+		Attachments []request.EmailFile `json:"attachments"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, emailSendBodyCap)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
@@ -117,9 +126,15 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	files, err := s.emailFiles(r.Context(), ws, body.Attachments)
+	if err != nil {
+		writeEmailErr(w, err)
+		return
+	}
 	opts := email.SendOpts{
 		WorkspaceID: ws.ID, Agent: body.Agent, To: body.To,
-		Subject: body.Subject, Text: body.Text, InReplyTo: body.InReplyTo, Recipients: recipientRule,
+		Subject: body.Subject, Text: body.Text, HTML: body.HTML, Attachments: files,
+		InReplyTo: body.InReplyTo, Recipients: recipientRule,
 	}
 	if actor, ok := tools.ActorFrom(r.Context()); ok {
 		opts.RunID = actor.RunID
@@ -151,6 +166,33 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 		resp["error"] = row.ErrorMessage
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// emailFiles resolves the files of one send. A path reads a file inside
+// the workspace; otherwise the content is base64.
+func (s *Server) emailFiles(ctx context.Context, ws *workspaces.Workspace, in []request.EmailFile) ([]email.SendAttachment, error) {
+	if len(in) > email.MaxAttachments {
+		return nil, fmt.Errorf("%w: at most %d files", email.ErrContent, email.MaxAttachments)
+	}
+	out := make([]email.SendAttachment, 0, len(in))
+	for _, f := range in {
+		if f.Path != "" {
+			data, info, err := s.files.Read(ctx, ws.Path, f.Path)
+			if err != nil {
+				return nil, fmt.Errorf("%w: workspace file %s: %w", email.ErrContent, f.Path, err)
+			}
+			out = append(out, email.SendAttachment{
+				Name: cmp.Or(f.Name, path.Base(info.Path)), Type: f.Type, Content: data,
+			})
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(f.Content)
+		if err != nil {
+			return nil, fmt.Errorf("%w: file %q content is not valid base64", email.ErrContent, f.Name)
+		}
+		out = append(out, email.SendAttachment{Name: f.Name, Type: f.Type, Content: data})
+	}
+	return out, nil
 }
 
 // handleEmailMessages is the envelope log (plan K): newest first, filtered
@@ -409,7 +451,7 @@ func emailAddressPayload(a email.Address, masked bool) map[string]any {
 // writeEmailErr maps the service sentinels to stable codes.
 func writeEmailErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, email.ErrNotConfigured), errors.Is(err, email.ErrRecipient):
+	case errors.Is(err, email.ErrNotConfigured), errors.Is(err, email.ErrRecipient), errors.Is(err, email.ErrContent):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 	case errors.Is(err, sql.ErrNoRows):
 		writeErr(w, http.StatusNotFound, "not_found", "workspace has no email address")

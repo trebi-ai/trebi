@@ -3,10 +3,12 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,6 +36,7 @@ type emailWorkerFake struct {
 	attach map[string]string // "<message-id>/<attachment-id>" -> body
 	acks   int
 	sends  int
+	last   email.SendRequest
 }
 
 func (f *emailWorkerFake) handler() http.Handler {
@@ -50,6 +53,8 @@ func (f *emailWorkerFake) handler() http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/send":
 			f.sends++
+			f.last = email.SendRequest{}
+			_ = json.NewDecoder(r.Body).Decode(&f.last) // a bad body fails the caller's asserts
 			writeEmailJSON(w, map[string]any{"message_id": "out-1"})
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/attachments/"):
 			body, ok := f.attach[strings.TrimPrefix(r.URL.Path, "/v1/attachments/")]
@@ -444,6 +449,69 @@ func TestEmailSendRoute(t *testing.T) {
 		"workspace": wsID, "to": []string{"ops@example.com"}, "text": "The digest is ready.",
 	}); code != 400 || errCode(m) != "validation" {
 		t.Fatalf("missing subject: %d %v", code, m)
+	}
+}
+
+// TestEmailSendParts: the HTML part, a workspace file, and inline bytes reach
+// the Worker. A path outside the workspace and a bad file name are a 400.
+func TestEmailSendParts(t *testing.T) {
+	e := startEmailAPI(t)
+	wsPath := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(filepath.Join(wsPath, "reports"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsPath, "TREBI.md"), []byte("Assistant.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsPath, "reports", "q3.csv"), []byte("week,runs\n39,42\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "ellis"})
+	if code != 201 {
+		t.Fatalf("workspace %d %v", code, wsBody)
+	}
+	wsID, _ := wsBody["id"].(string)
+	send := func(extra map[string]any) (int, map[string]any) {
+		body := map[string]any{
+			"workspace": wsID, "to": []string{"ops@example.com"},
+			"subject": "digest ready", "text": "The digest is ready.",
+		}
+		maps.Copy(body, extra)
+		return e.do(t, http.MethodPost, "/v1/email/send", body)
+	}
+
+	code, m := send(map[string]any{
+		"html": "<p>The digest is <b>ready</b>.</p>",
+		"attachments": []any{
+			map[string]any{"path": "reports/q3.csv"},
+			map[string]any{"name": "note.txt", "content": base64.StdEncoding.EncodeToString([]byte("hi"))},
+		},
+	})
+	if code != 200 || m["sent"] != true {
+		t.Fatalf("send: %d %v", code, m)
+	}
+	got := e.fw.last
+	if got.HTML != "<p>The digest is <b>ready</b>.</p>" || got.Text != "The digest is ready." || len(got.Attachments) != 2 {
+		t.Fatalf("worker request: %+v", got)
+	}
+	if a := got.Attachments[0]; a.Name != "q3.csv" || a.Type != "text/csv" || string(a.Content) != "week,runs\n39,42\n" {
+		t.Fatalf("workspace file: %+v", a)
+	}
+	if a := got.Attachments[1]; a.Name != "note.txt" || !strings.HasPrefix(a.Type, "text/plain") || string(a.Content) != "hi" {
+		t.Fatalf("inline file: %+v", a)
+	}
+
+	for name, extra := range map[string]map[string]any{
+		"outside workspace": {"attachments": []any{map[string]any{"path": "../secret.txt"}}},
+		"missing file":      {"attachments": []any{map[string]any{"path": "reports/none.csv"}}},
+		"bad name":          {"attachments": []any{map[string]any{"name": "a/b.txt", "content": "aGk="}}},
+		"bad base64":        {"attachments": []any{map[string]any{"name": "a.txt", "content": "%%"}}},
+		"too large":         {"html": strings.Repeat("x", email.MaxSendBytes)},
+	} {
+		sends := e.fw.sends
+		if code, m := send(extra); code != 400 || errCode(m) != "validation" || e.fw.sends != sends {
+			t.Errorf("%s: %d %v", name, code, m)
+		}
 	}
 }
 

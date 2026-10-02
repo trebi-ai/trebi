@@ -26,7 +26,7 @@ All routes require `Authorization: Bearer <token>`. A missing or wrong token ret
 
 `counters` counts `received`, `dropped_oversize`, `dropped_malformed_local_part`, `dropped_unknown_recipient`, `dropped_parse`, `sent`, and `send_failed`. Counters live for the life of the instance and never reset.
 
-`POST /v1/send` requires `from` on the configured domain and at most 10 recipients across `to` and `cc`. The Worker sets `Message-ID` only when the caller omits it. `In-Reply-To` and `References` pass through unchanged. A 429 from the platform passes through as 429 with `retry_after_ms`. The Worker does not retry a send.
+`POST /v1/send` requires `from` on the configured domain and at most 10 recipients across `to` and `cc`. `text` is required. `html` is optional; when present, the mail carries a text part and an HTML part. `attachments` is optional: at most 10 items, each `{name, type, content}`, where `content` is the base64 of the file bytes, `name` is a plain file name without CR, LF, `/`, or `\`, and `type` is a media type. The text, the HTML, and the decoded file bytes together are at most 5 MiB. The Worker answers a request that breaks one of these limits with 400 `validation`. The Worker sets `Message-ID` only when the caller omits it. `In-Reply-To` and `References` pass through unchanged. A 429 from the platform passes through as 429 with `retry_after_ms`. The Worker does not retry a send.
 
 Errors use `{error: {code, message}}`. A validation failure is 400 with code `validation`. An unsupported `v` is a validation failure.
 

@@ -3,13 +3,17 @@
 package email
 
 import (
+	"cmp"
 	"context"
+	"fmt"
 	"io"
 	"mime"
 	"net/mail"
+	"path"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ContractV is the wire version both shapes carry.
@@ -102,17 +106,52 @@ func (m IngressMessage) SingleFrom() bool {
 // defines. The caller always supplies Message-ID so it can store the
 // envelope before the send.
 type SendRequest struct {
-	V          int      `json:"v"`
-	From       string   `json:"from"`
-	FromName   string   `json:"from_name"`
-	To         []string `json:"to"`
-	Cc         []string `json:"cc"`
-	Subject    string   `json:"subject"`
-	Text       string   `json:"text"`
-	MessageID  string   `json:"message_id"`
-	InReplyTo  string   `json:"in_reply_to,omitempty"`
-	References []string `json:"references,omitempty"`
+	V           int              `json:"v"`
+	From        string           `json:"from"`
+	FromName    string           `json:"from_name"`
+	To          []string         `json:"to"`
+	Cc          []string         `json:"cc"`
+	Subject     string           `json:"subject"`
+	Text        string           `json:"text"`
+	HTML        string           `json:"html,omitempty"`
+	Attachments []SendAttachment `json:"attachments,omitempty"`
+	MessageID   string           `json:"message_id"`
+	InReplyTo   string           `json:"in_reply_to,omitempty"`
+	References  []string         `json:"references,omitempty"`
 }
+
+// SendAttachment is one outbound file. Content is base64 on the wire.
+type SendAttachment struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Content []byte `json:"content"`
+}
+
+// normalize checks the name and sets the media type. An empty type comes
+// from the file extension.
+func (a *SendAttachment) normalize() error {
+	a.Name = strings.TrimSpace(a.Name)
+	if a.Name == "" || len(a.Name) > 255 || strings.ContainsAny(a.Name, "/\\") ||
+		strings.ContainsFunc(a.Name, unicode.IsControl) {
+		return fmt.Errorf("%w: file name %q must be a plain name of 1 to 255 bytes", ErrContent, a.Name)
+	}
+	if a.Type == "" {
+		a.Type = cmp.Or(mime.TypeByExtension(path.Ext(a.Name)), "application/octet-stream")
+	}
+	mt, _, err := mime.ParseMediaType(a.Type)
+	if err != nil || !strings.Contains(mt, "/") {
+		return fmt.Errorf("%w: file %q has no valid media type", ErrContent, a.Name)
+	}
+	a.Type = mt
+	return nil
+}
+
+// Outbound limits of the send contract. Size counts text, html, and the
+// decoded attachment bytes.
+const (
+	MaxAttachments = 10
+	MaxSendBytes   = 5 << 20
+)
 
 // SendResult is the accepted reply from one send.
 type SendResult struct {

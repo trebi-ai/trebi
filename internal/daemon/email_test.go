@@ -303,6 +303,9 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	if !strings.Contains(last.Text, turnText) || !strings.Contains(last.Text, convID) {
 		t.Fatalf("reply text = %q", last.Text)
 	}
+	if !strings.Contains(last.HTML, "<p style=") || !strings.Contains(last.HTML, "Trebi conversation "+convID) {
+		t.Fatalf("reply html = %q", last.HTML)
+	}
 
 	// The outbound envelope row carries the conversation, the run, and
 	// covered_turn 0 (the one turn of this exchange).

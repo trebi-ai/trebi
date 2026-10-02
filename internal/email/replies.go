@@ -150,6 +150,14 @@ func (s *Service) sendReply(ctx context.Context, opts ReplyOpts, root string, du
 		from = tagged + "@" + addr.Domain
 	}
 	turn := due.turn
+	html, err := s.render.Markdown(due.text, Page{Footer: "Trebi conversation " + opts.ConversationID})
+	if err != nil {
+		return err
+	}
+	parts, err := json.Marshal(sendParts{HTML: html})
+	if err != nil {
+		return err
+	}
 	_, err = s.enqueue(ctx, envelope{
 		workspaceID: in.workspaceID, agent: opts.Agent, messageID: MintMessageID(addr.Domain),
 		inReplyTo: in.messageID, threadRoot: root, recipients: []string{in.sender}, subject: subject,
@@ -157,6 +165,7 @@ func (s *Service) sendReply(ctx context.Context, opts ReplyOpts, root string, du
 	}, outbox.Row{
 		Purpose:   outbox.PurposeReply,
 		Body:      due.text + "\n\n--\ntrebi conversation " + opts.ConversationID,
+		Parts:     parts,
 		Env:       fromEnv(from, cmp.Or(opts.FromName, cfg.FromName)),
 		DedupeKey: "email:" + opts.ConversationID + ":" + opts.RunID + ":" + strconv.Itoa(turn),
 	})

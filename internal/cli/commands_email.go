@@ -2,8 +2,11 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -37,7 +40,11 @@ func emailCommand() *cli.Command {
 					&cli.StringFlag{Name: "agent", Usage: "send from the agent subaddress"},
 					&cli.StringSliceFlag{Name: "to", Required: true, Usage: "recipient address (repeatable)"},
 					&cli.StringFlag{Name: "subject", Required: true, Usage: "subject line"},
-					&cli.StringFlag{Name: "text", Required: true, Usage: "message body"},
+					&cli.StringFlag{Name: "text", Required: true, Usage: "message body as plain text"},
+					&cli.StringFlag{Name: "html", Usage: "message body as HTML"},
+					&cli.StringFlag{Name: "html-file", Usage: "read the HTML body from a local file"},
+					&cli.StringSliceFlag{Name: "attach", Usage: "attach a local file (repeatable)"},
+					&cli.StringSliceFlag{Name: "workspace-file", Usage: "attach a workspace file by its workspace path (repeatable)"},
 					&cli.StringFlag{Name: "in-reply-to", Usage: "message id this mail answers"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
@@ -177,9 +184,35 @@ func runEmailSend(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	spec := request.EmailSendSpec{
+		Workspace: c.String("workspace"), Agent: c.String("agent"), To: c.StringSlice("to"),
+		Subject: c.String("subject"), Text: c.String("text"), HTML: c.String("html"),
+		InReplyTo: c.String("in-reply-to"),
+	}
+	if f := c.String("html-file"); f != "" {
+		if spec.HTML != "" {
+			return errors.New("use --html or --html-file, not both")
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("read html file: %w", err)
+		}
+		spec.HTML = string(raw)
+	}
+	for _, f := range c.StringSlice("attach") {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("read attachment: %w", err)
+		}
+		spec.Attachments = append(spec.Attachments, request.EmailFile{
+			Name: filepath.Base(f), Content: base64.StdEncoding.EncodeToString(raw),
+		})
+	}
+	for _, p := range c.StringSlice("workspace-file") {
+		spec.Attachments = append(spec.Attachments, request.EmailFile{Path: p})
+	}
 	var body map[string]any
-	req := request.BuildEmailSend(c.String("workspace"), c.String("agent"),
-		c.StringSlice("to"), c.String("subject"), c.String("text"), c.String("in-reply-to"))
+	req := spec.Build()
 	if err := client.DoHTTP(req, &body); err != nil {
 		return err
 	}

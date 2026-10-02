@@ -244,6 +244,7 @@ var knownFields = []tools.DocField{ //nolint:gochecknoglobals // static probe li
 	{Name: "slug", Type: "string"}, {Name: "rooms", Type: "array"}, {Name: "allowlist", Type: "array"},
 	{Name: "contains", Type: "array"}, {Name: "from", Type: "string"}, {Name: "replies", Type: "string"},
 	{Name: "event_id", Type: "string"}, {Name: "event_ids", Type: "array"},
+	{Name: "html", Type: "string"}, {Name: "attachments", Type: "array"},
 }
 
 // probeValue returns a value that differs from what the sample carries, so a
@@ -437,6 +438,9 @@ func probeValue(f tools.DocField, sample tools.Input) any {
 	case "object":
 		return map[string]any{"probe": "1"}
 	case "array":
+		if f.Name == "attachments" {
+			return []any{map[string]any{"path": "probe"}}
+		}
 		return []any{"probe"}
 	}
 	if f.Name == "encoding" {

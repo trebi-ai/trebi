@@ -8,6 +8,14 @@
   "cc": [],
   "subject": "Re: Weekly report",
   "text": "The weekly report is ready.",
+  "html": "<p>The weekly report is <b>ready</b>.</p>",
+  "attachments": [
+    {
+      "name": "report.csv",
+      "type": "text/csv",
+      "content": "d2VlayxydW5zCjM5LDQyCg=="
+    }
+  ],
   "message_id": "<01J8Y8A2C4E6G8H0J2K4M6N8P@mail.example.com>",
   "in_reply_to": "<CAF0R1LYq2Mx@mail.example.com>",
   "references": [

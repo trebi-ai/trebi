@@ -65,8 +65,8 @@ const (
 	errorMessageMx = 4000
 )
 
-// Row is one outgoing message and its delivery state. Body is empty after
-// the row is sent.
+// Row is one outgoing message and its delivery state. Body and Parts are
+// empty after the row is sent.
 type Row struct {
 	ID             string            `json:"id"`
 	Kind           Kind              `json:"kind"`
@@ -78,6 +78,7 @@ type Row struct {
 	Recipients     string            `json:"recipients,omitempty"`
 	Subject        string            `json:"subject,omitempty"`
 	Body           string            `json:"body,omitempty"`
+	Parts          []byte            `json:"-"` // sender-owned extra content, such as email HTML and files
 	Env            map[string]string `json:"-"`
 	ConversationID string            `json:"conversation_id,omitempty"`
 	RunID          string            `json:"run_id,omitempty"`
@@ -245,12 +246,12 @@ func (s *Service) EnqueueTx(ctx context.Context, write func(tx *sql.Tx, r Row) e
 		}
 		res, err := tx.ExecContext(ctx, `
 INSERT INTO outbox (id, kind, purpose, workspace_id, instance, room, thread, recipients, subject, body,
-  env_json, conversation_id, run_id, inbox_id, email_row_id, dedupe_key, route_step, route_json,
+  parts, env_json, conversation_id, run_id, inbox_id, email_row_id, dedupe_key, route_step, route_json,
   status, attempts, max_attempts, created_at, revision)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,1)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,1)
 ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
 			r.ID, string(r.Kind), string(r.Purpose), r.WorkspaceID, r.Instance, r.Room, r.Thread,
-			r.Recipients, r.Subject, r.Body, string(env), store.NullStr(r.ConversationID), store.NullStr(r.RunID),
+			r.Recipients, r.Subject, r.Body, store.NullStr(string(r.Parts)), string(env), store.NullStr(r.ConversationID), store.NullStr(r.RunID),
 			store.NullStr(r.InboxID), store.NullStr(r.EmailRowID), store.NullStr(r.DedupeKey),
 			routeStep, route, string(StatusPending), r.MaxAttempts, fmtTS(r.CreatedAt))
 		if err != nil {
@@ -487,7 +488,7 @@ func (s *Service) markSent(ctx context.Context, r Row) (Row, error) {
 	var out Row
 	err := s.commit(ctx, func(tx *sql.Tx) (Row, string, error) {
 		if _, err := tx.ExecContext(ctx, `
-UPDATE outbox SET status='sent', sent_at=?, body=NULL, env_json='{}', error_message=NULL,
+UPDATE outbox SET status='sent', sent_at=?, body=NULL, parts=NULL, env_json='{}', error_message=NULL,
   attempts=attempts+1, claimed_at=NULL, next_attempt_at=NULL, revision=revision+1
 WHERE id=?`, fmtTS(s.now()), r.ID); err != nil {
 			return Row{}, "", err
@@ -664,7 +665,7 @@ func (s *Service) byDedupe(ctx context.Context, key string) (Row, error) {
 	return r, err
 }
 
-const rowCols = `id, kind, purpose, workspace_id, instance, room, thread, recipients, subject, COALESCE(body,''), env_json,
+const rowCols = `id, kind, purpose, workspace_id, instance, room, thread, recipients, subject, COALESCE(body,''), COALESCE(parts,''), env_json,
 COALESCE(conversation_id,''), COALESCE(run_id,''), COALESCE(inbox_id,''), COALESCE(email_row_id,''),
 COALESCE(dedupe_key,''), route_step, COALESCE(route_json,''), status, hold_reason, attempts, max_attempts,
 COALESCE(next_attempt_at,''), COALESCE(claimed_at,''), COALESCE(error_message,''), created_at,
@@ -674,15 +675,18 @@ type scanner interface{ Scan(dest ...any) error }
 
 func scanRow(sc scanner) (Row, error) {
 	var r Row
-	var kind, purpose, status, env, route, next, claimed, created, sent string
+	var kind, purpose, status, parts, env, route, next, claimed, created, sent string
 	var step sql.NullInt64
 	if err := sc.Scan(&r.ID, &kind, &purpose, &r.WorkspaceID, &r.Instance, &r.Room, &r.Thread,
-		&r.Recipients, &r.Subject, &r.Body, &env, &r.ConversationID, &r.RunID, &r.InboxID, &r.EmailRowID,
+		&r.Recipients, &r.Subject, &r.Body, &parts, &env, &r.ConversationID, &r.RunID, &r.InboxID, &r.EmailRowID,
 		&r.DedupeKey, &step, &route, &status, &r.HoldReason, &r.Attempts, &r.MaxAttempts, &next, &claimed, &r.ErrorMessage,
 		&created, &sent, &r.Revision); err != nil {
 		return Row{}, err
 	}
 	r.Kind, r.Purpose, r.Status = Kind(kind), Purpose(purpose), Status(status)
+	if parts != "" {
+		r.Parts = []byte(parts)
+	}
 	if env != "" && env != "{}" {
 		// The column is always json.Marshal output; a bad value degrades to none.
 		_ = json.Unmarshal([]byte(env), &r.Env)

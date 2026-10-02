@@ -247,8 +247,11 @@ func TestContractFixtures(t *testing.T) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		t.Fatalf("send fixture: %v", err)
 	}
-	if req.V != 1 || req.From != "ellis-x7k2qm4p@mail.example.com" || req.InReplyTo == "" {
+	if req.V != 1 || req.From != "ellis-x7k2qm4p@mail.example.com" || req.InReplyTo == "" || req.HTML == "" {
 		t.Errorf("send fixture decoded = %+v", req)
+	}
+	if len(req.Attachments) != 1 || req.Attachments[0].Name != "report.csv" || len(req.Attachments[0].Content) == 0 {
+		t.Errorf("send fixture attachments = %+v", req.Attachments)
 	}
 }
 
