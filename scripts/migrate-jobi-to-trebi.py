@@ -23,10 +23,17 @@ path). Incremental --job/--agent --apply copies into the target and leaves
 in place (cutover). rewrite-jobs converts jobi MEMORY.md (extra ## headings)
 to trebi v1; convert-memory does only that.
 
-Schema v32 (store.SchemaVersion): runs gained inputs_json/memory_hash/outcome*/
+Schema v38 (store.SchemaVersion): runs gained inputs_json/memory_hash/outcome*/
 runtime_pid/attach_kind/actor_token_hash, and event_queue/events use connector,
-not integration. This script writes the columns that have a jobi source; the
-rest keep their defaults and trebi's readers treat them as unset.
+not integration. Each imported run gets one run_turns row (v38). This script
+writes the columns that have a jobi source; the rest keep their defaults and
+trebi's readers treat them as unset.
+
+--connector-map OLD=NEW (repeatable) replaces a jobi source with an existing
+trebi connection, for example whatsapp-cli-messages=whatsapp-ellis or
+ellis-inbox=email. OLD is not imported. Its triggers move to NEW with
+disabled: true and no match/extract, because the jobi expressions read the old
+event shape. Rewrite them with rooms/allowlist/from/contains, then enable.
 
 Each jobi source becomes one `from: inline` connection in ~/.trebi/connectors/<id>/connection.yaml
 (events protocol lines, so match expressions keep the jobi event shape). The
@@ -87,7 +94,6 @@ TABLE_MAP = {
     "task_segments": "run_segments",
     "task_events": "run_events",
     "event_queue": "event_queue",
-    "source_cursors": "connector_cursors",
     "schedule_anchors": "schedules",
 }
 # Schema v11: run_segments.layer values agent→session, task→run.
@@ -100,8 +106,11 @@ RESERVED_CONNECTORS = {"email", "webhook", "trebi"}
 # store.SchemaVersion at the time this script was last synced. A trebi.db older
 # than this is a pre-migration database: bump it with `trebi service migrate-db`
 # before applying DB phases. v26 dropped dispatch_policy and connector_metrics;
-# v30 keyed connector_cursors by instance.
-EXPECTED_SCHEMA = 32
+# v33 moved the cursor to <connection>/cursor.json; v38 added run_turns.
+EXPECTED_SCHEMA = 39
+# --connector-map OLD=NEW: a jobi source that an existing trebi connection
+# replaces. The source is not imported and its triggers move to NEW.
+CONNECTOR_MAP: dict[str, str] = {}
 
 
 def default_jobi_dir() -> Path:
@@ -197,19 +206,31 @@ def load_fm_map(fm_text: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def local_timezone() -> str | None:
+    """The IANA zone jobi evaluated cron in (host local time)."""
+    if os.environ.get("TZ"):
+        return os.environ["TZ"].lstrip(":")
+    try:
+        target = os.readlink("/etc/localtime")
+    except OSError:
+        return None
+    _, sep, name = target.partition("zoneinfo/")
+    return name or None if sep else None
+
+
 def _schedule_entry(item: str, top_when: Any) -> dict[str, Any]:
     entry: dict[str, Any] = {}
     s = item.strip()
     if s.startswith("@every"):
-        m = re.match(r"@every\s+(\S+)(?:\s+\(([^)]+)\))?", s)
-        if m:
-            entry["every"] = m.group(1)
-            if m.group(2):
-                entry["anchor"] = m.group(2)
-        else:
-            entry["every"] = s.removeprefix("@every").strip()
+        # The "(anchor)" suffix seeds schedules.last_fired_at; trebi rejects
+        # a trigger anchor key.
+        m = re.match(r"@every\s+(\S+)", s)
+        entry["every"] = m.group(1) if m else s.removeprefix("@every").strip()
     else:
         entry["cron"] = s
+        # jobi ran cron in host local time; trebi defaults to UTC.
+        if tz := local_timezone():
+            entry["timezone"] = tz
     if top_when is not None:
         entry["when"] = top_when
     return entry
@@ -324,23 +345,33 @@ def rewrite_frontmatter_inplace(
                     continue
                 entry: dict[str, Any] = {}
                 src = on.get("source") or on.get("event")
+                mapped = CONNECTOR_MAP.get(str(src)) if src else None
                 if src:
-                    entry["event"] = src
-                for k in (
-                    "match",
-                    "extract",
-                    "debounce",
-                    "rate_limit",
-                    "acknowledge",
-                    "typing",
-                    "typing_interval",
-                    "typing_max",
-                    "followup_prompt",
-                    "allowlist",
-                    "when",
-                ):
+                    entry["event"] = mapped or src
+                for k in ("match", "extract", "allowlist", "when"):
                     if k in on:
                         entry[k] = on[k]
+                if mapped:
+                    dropped = [k for k in ("match", "extract") if entry.pop(k, None) is not None]
+                    entry["disabled"] = True
+                    report.append(
+                        f"trigger {src} → {mapped}: disabled, dropped {'/'.join(dropped) or 'nothing'}; "
+                        "rewrite with rooms/allowlist/from/contains, then enable"
+                    )
+                # Removed trigger keys are a parse error in trebi.
+                for k in ("debounce", "rate_limit"):
+                    if k in on:
+                        report.append(f"dropped trigger {k} {on[k]!r}: use limit: N/<duration> (default 15/10m)")
+                for k in ("acknowledge", "typing", "typing_interval", "typing_max"):
+                    if k in on:
+                        report.append(f"dropped trigger {k}: trebi has no such trigger key")
+                fp = on.get("followup_prompt")
+                if fp:
+                    if not data.get("followup_prompt"):
+                        data["followup_prompt"] = fp
+                        report.append("trigger followup_prompt → job followup_prompt")
+                    elif data["followup_prompt"] != fp:
+                        report.append("dropped a second trigger followup_prompt: the job keeps one")
                 triggers.append(entry)
         if triggers:
             data["triggers"] = triggers
@@ -348,6 +379,14 @@ def rewrite_frontmatter_inplace(
             report.append(
                 "top-level when: with no schedule — manual-only gate; needs human decision (B25)"
             )
+
+    # Job-level allowlist is a parse error; it belongs on the event triggers.
+    if "allowlist" in data:
+        allow = data.pop("allowlist")
+        for t in data.get("triggers") or []:
+            if isinstance(t, dict) and t.get("event") and "allowlist" not in t:
+                t["allowlist"] = allow
+        report.append("job allowlist → each event trigger")
 
     for k in ("schedule", "on", "when", "command"):
         if k in data:
@@ -683,6 +722,9 @@ def render_memory_v1(context: str, state: str, lessons: str, log: str) -> str:
         ("Log", log),
     ):
         body = _trim_body(body)
+        if name in ("Context", "State"):
+            # memory.Parse rejects a "# " line inside a section, code fences too.
+            body = re.sub(r"^# ", "### ", body, flags=re.MULTILINE)
         if body:
             parts.append(f"## {name}\n{body}\n")
         else:
@@ -1067,8 +1109,14 @@ def plan_connectors(
     if not src.exists():
         return {}, ["no sources.yaml"]
     only = selected_connectors(jobi_dir, job, agent) if (job or agent) else None
+    if only is not None:
+        only -= set(CONNECTOR_MAP)
     entries, notes = convert_sources_yaml(src.read_text(encoding="utf-8", errors="replace"), only)
     existing = load_connections(trebi_dir)
+    for old, new in sorted(CONNECTOR_MAP.items()):
+        entries.pop(old, None)
+        known = new in RESERVED_CONNECTORS or new in existing
+        notes.append(f"{old} → {new}: not imported" + ("" if known else f"; WARNING: no connection {new}"))
     for name in sorted(entries):
         if name in existing:
             notes.append(f"{name}: a connection with this slug exists, kept as is")
@@ -2018,6 +2066,29 @@ def apply_tasks(
                 d.get("working_dir"),
             ),
         )
+        # v38: each launch is a turn. A jobi task is one run with one turn,
+        # backfilled like the v38 migration does it.
+        tconn.execute(
+            """INSERT OR REPLACE INTO run_turns (
+              run_id, n, reason, status, end_reason, queue_id, prompt_preview, session_id,
+              started_at, ended_at, duration_ms, tokens_input, tokens_output,
+              tokens_cache_read, tokens_cache_creation, tokens_model
+            ) SELECT id, 1, COALESCE(NULLIF(reason,''), 'manual'),
+              CASE WHEN status = 'resumed' THEN 'complete' ELSE status END,
+              end_reason, NULLIF(queue_id,''), COALESCE(prompt_preview,''), session_id,
+              started_at, ended_at,
+              CASE WHEN ended_at IS NULL THEN NULL
+                ELSE MAX(0, CAST(ROUND((julianday(ended_at) - julianday(started_at)) * 86400000) AS INTEGER)) END,
+              tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_model
+            FROM runs WHERE id = ? AND started_at IS NOT NULL""",
+            (d["id"],),
+        )
+        tconn.execute(
+            """UPDATE runs SET turn_count = 1, turn_started_at = started_at,
+              active_ms = COALESCE((SELECT duration_ms FROM run_turns WHERE run_id = runs.id AND n = 1), 0)
+            WHERE id = ?""",
+            (d["id"],),
+        )
         ids.add(d["id"])
         n += 1
     return n, ids
@@ -2164,21 +2235,25 @@ def apply_queue(
     return n
 
 
-def apply_cursors(jconn: sqlite3.Connection, tconn: sqlite3.Connection, names: set[str]) -> int:
-    """The jobi cursor of each new connector. The instance of a global entry
-    is its name. A cursor lets the first catch-up replay only the events after
-    it; with none, trebi skips the catch-up."""
+def apply_cursors(jconn: sqlite3.Connection, trebi: Path, records: dict[str, Any]) -> int:
+    """The jobi cursor of each new connection, as its cursor.json (v33). A
+    cursor lets the first catch-up replay only the events after it; with
+    none, trebi skips the catch-up. An existing cursor.json stays."""
     n = 0
     try:
         rows = jconn.execute("SELECT source_name, last_event_id, updated_at FROM source_cursors").fetchall()
     except sqlite3.Error:
         return 0
     for name, eid, upd in rows:
-        if name in names and eid:
-            n += tconn.execute(
-                "INSERT OR IGNORE INTO connector_cursors (instance, last_event_id, updated_at) VALUES (?,?,?)",
-                (name, eid, upd),
-            ).rowcount
+        rec = records.get(name)
+        if not rec or not eid:
+            continue
+        path = trebi / "connectors" / rec["id"] / "cursor.json"
+        if path.exists():
+            continue
+        path.write_text(json.dumps({"last_event_id": str(eid), "updated_at": upd or now_iso()}))
+        os.chmod(path, 0o600)
+        n += 1
     return n
 
 
@@ -2365,9 +2440,6 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
     records, added, _ = merge_connectors(trebi, entries)
     for n in notes:
         print(f"  {n}")
-    if added:
-        write_connections(trebi, records)
-        print(f"connections: added {', '.join(added)}")
 
     if not job_filter and not plan.agent_scope:
         src_cfg = jobi / "config.yaml"
@@ -2429,8 +2501,6 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
             agent_scope=plan.agent_scope,
         )
         print(f"queue rows: {n}")
-        n = apply_cursors(jconn, tconn, set(added))
-        print(f"connector cursors: {n}")
         n = apply_schedules(
             jconn,
             tconn,
@@ -2443,9 +2513,11 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
         print(f"schedule seeds: {n}")
         now = now_iso()
         if plan.target:
+            # An upsert, not REPLACE: a replace resets handle (the email name,
+            # v32) and revision of a registered workspace.
             tconn.execute(
-                "INSERT OR REPLACE INTO workspaces (id, name, path, git_enabled, orphaned, created_at, updated_at) "
-                "VALUES (?,?,?,0,0,?,?)",
+                "INSERT INTO workspaces (id, name, path, git_enabled, orphaned, created_at, updated_at) "
+                "VALUES (?,?,?,0,0,?,?) ON CONFLICT(id) DO NOTHING",
                 (plan.target.id, plan.target.name, str(plan.target.path), now, now),
             )
         else:
@@ -2466,8 +2538,9 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
                         print(f"minted {ty}")
                     dest = str(shadow)
                 tconn.execute(
-                    "INSERT OR REPLACE INTO workspaces (id, name, path, git_enabled, orphaned, created_at, updated_at) "
-                    "VALUES (?,?,?,0,0,?,?)",
+                    "INSERT INTO workspaces (id, name, path, git_enabled, orphaned, created_at, updated_at) "
+                    "VALUES (?,?,?,0,0,?,?) ON CONFLICT(id) DO UPDATE SET "
+                    "name = excluded.name, path = excluded.path, updated_at = excluded.updated_at",
                     (wid, name, dest, now, now),
                 )
         tconn.commit()
@@ -2482,6 +2555,11 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
         }
         (trebi / "migration-manifest.json").write_text(json.dumps(manifest, indent=2))
         print("wrote migration-manifest.json")
+        # After the commit, so a failed DB phase leaves no running connector.
+        if added:
+            write_connections(trebi, records)
+            print(f"connections: added {', '.join(added)}")
+            print(f"connector cursors: {apply_cursors(jconn, trebi, records)}")
     finally:
         jconn.close()
         tconn.close()
@@ -2782,11 +2860,12 @@ def plan_rewrite(
                     continue
                 if path.name == "SOUL.md" and not agent_spec_matches(path.parent, agent, ws):
                     continue
+                # --job narrows the agent's jobs; the agent itself always comes.
+                if job and path.name == "JOB.md" and not job_spec_matches(path, job, ws):
+                    continue
             elif job and not job_spec_matches(path, job, ws):
                 continue
-            if path.name == "SOUL.md" and job and job_file_name(path) != job:
-                continue
-            if path.name == "AGENT.md" and job and job_file_name(path) != job:
+            if not agent and path.name in ("SOUL.md", "AGENT.md") and job and job_file_name(path) != job:
                 continue
             matched += 1
             if not header_written:
@@ -3258,7 +3337,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             "run_events",
             "event_queue",
             "schedules",
-            "connector_cursors",
+            "run_turns",
             "workspaces",
             "job_index",
         ):
@@ -3541,6 +3620,12 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         help="target one agent and its jobs: selects the agent's rows and files, "
         "which land under agents/<name>/ with AGENT.md as an operator (schema v12).",
     )
+    parser.add_argument(
+        "--connector-map",
+        action="append",
+        metavar="OLD=NEW",
+        help="replace jobi source OLD with the trebi connection NEW (repeatable)",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3601,6 +3686,11 @@ def main(argv: list[str] | None = None) -> int:
     ret.set_defaults(func=cmd_retire_jobi)
 
     args = p.parse_args(argv)
+    for item in getattr(args, "connector_map", None) or []:
+        old, sep, new = item.partition("=")
+        if not sep or not old.strip() or not new.strip():
+            p.error(f"--connector-map wants OLD=NEW, got {item!r}")
+        CONNECTOR_MAP[old.strip()] = new.strip()
     return args.func(args)
 
 

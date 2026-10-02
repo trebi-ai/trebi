@@ -1,12 +1,14 @@
 ---
 topic: runs-and-debugging
 title: Inspect and recover runs
-description: Show, timeline, transcript, log, retry/resume/replay, and approvals.
+description: Show, turns, timeline, transcript, log, retry/resume/replay, and approvals.
 ---
 
 # Inspect and recover runs
 
-A run is one launch of a job. `job run` returns when the session exists. To wait for the end, pass `--wait` (or use `runs wait`) instead of a poll loop. Do not kill a live run to "unstick" it.
+A run is one harness session of a job. Resume reopens the same run as a new turn: the run id stays, and `turn_count` goes up. A run between turns shows the status of its last turn. `duration_ms` and the cost sum all turns. A rerun or a fresh session is a new run, and its `previous_run_id` names the run it follows. A run that waits for a person is `parked`; it resumes with the answer (`trebi guide requests`).
+
+`job run` returns when the session exists. To wait for the end, pass `--wait` (or use `runs wait`) instead of a poll loop. Do not kill a live run to "unstick" it.
 
 ## List and inspect
 
@@ -18,6 +20,7 @@ trebi runs list --harness claude --kind agent --json
 trebi runs list --since 24h --end-reason failed --json
 trebi runs list --search deploy --json
 trebi runs show <id> --json
+trebi runs turns <id> --json
 trebi runs timeline <id> --json
 trebi runs transcript <id> --json
 trebi runs transcript <id> --raw --json
@@ -43,7 +46,7 @@ The assistant has no runs. Use `trebi assistant sessions` to find its conversati
 trebi runs attach <id>
 ```
 
-A run's runtime is `cli` by default: the harness binary runs as a subprocess and the daemon speaks its structured protocol. `attach` on a CLI run streams normalized events (user, assistant, tool, permission, result, status); `runs logs -f` always works and is the remote-friendly view. `runtime: tui` in the job document, `tools.<harness>.runtime tui` in config, or the incident-only `harness.runtime: tui` puts that run back in a tmux pane, where `attach` is the pane. A CLI run that fails closed (protocol drift, missing login, quota) leaves a doctor hint; relaunch or resume with `runtime: tui` when needed — there is no silent TUI fallback. Transcripts prefer the live wire events, then the vendor session file.
+A run's runtime is `cli` by default: the harness binary runs as a subprocess and the daemon speaks its structured protocol. `attach` on a CLI run streams normalized events (user, assistant, tool, permission, result, status); `runs logs -f` always works and is the remote-friendly view. `runtime: tui` in the job document, `tools.<harness>.runtime tui` in config, or the incident-only `harness.runtime: tui` puts that run back in a tmux pane, where `attach` is the pane. A CLI run that fails closed (protocol drift, missing login, quota) leaves a doctor hint; relaunch or resume with `runtime: tui` when needed — there is no silent TUI fallback. Transcripts prefer the live wire events, then the vendor session file. Each transcript entry has `run_turn`, the turn that wrote it.
 
 `runs attach` is **local only**; remote: none — poll `runs transcript` / `runs logs`. Never attach from an agent session.
 
@@ -65,7 +68,7 @@ trebi runs mark <id> --clear
 trebi runs kill <id> [id...]
 ```
 
-After `end_reason=session_gone` or `launch`, use `runs timeline` and `trebi service logs --level error --lines 100 --grep <id>`. `service logs` is **local only** in follow/`-f` form; remote: `system.logs`. Do not `sqlite3` / `find` under `$TREBI_HOME`. See `trebi guide observability`.
+After `end_reason=session_gone` or `launch`, use `runs turns` to find the turn that failed, then `runs timeline` and `trebi service logs --level error --lines 100 --grep <id>`. `service logs` is **local only** in follow/`-f` form; remote: `system.logs`. Do not `sqlite3` / `find` under `$TREBI_HOME`. See `trebi guide observability`.
 
 ## Approvals
 
