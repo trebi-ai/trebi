@@ -102,8 +102,8 @@ type LaunchOpts struct {
 	Kit *job.KitYAML
 	// JobSkills is the job's own preferred skill list.
 	JobSkills []string
-	// JobConnectors is the job's own connector list. It replaces the kit
-	// list when it is not empty.
+	// JobConnectors is the job's own connector list. It adds to the kit
+	// list.
 	JobConnectors []string
 	// Actions are the connector actions resolved for this launch (Part F.3).
 	Actions []ConnectorAction
@@ -408,19 +408,37 @@ func (s *Service) launch(ctx context.Context, opts LaunchOpts) (*Run, error) {
 }
 
 // resolveActions resolves the connector names of a launch and checks the
-// support matrix (decision 8) before a run row exists. The job list replaces
-// the kit list when it is not empty.
+// support matrix (decision 8) before a run row exists. The job list adds to
+// the kit list. The email name is built in; the resolver gets the rest.
 func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 	names := connectorNames(opts.JobConnectors, opts.Kit)
 	if len(names) == 0 {
 		return nil
 	}
-	if s.actions == nil {
-		return fmt.Errorf("%w: no connector resolver is wired", ErrActionsInvalid)
+	var actions []ConnectorAction
+	managed := make([]string, 0, len(names))
+	for _, n := range names {
+		if n == job.EmailConnector {
+			actions = append(actions, s.emailAction(ctx, *opts))
+			continue
+		}
+		managed = append(managed, n)
 	}
-	actions, err := s.actions.ResolveActions(ctx, opts.WorkspaceID, names)
-	if err != nil {
-		return fmt.Errorf("%w: %s", ErrActionsInvalid, err)
+	if len(managed) > 0 {
+		if s.actions == nil {
+			return fmt.Errorf("%w: no connector resolver is wired", ErrActionsInvalid)
+		}
+		resolved, err := s.actions.ResolveActions(ctx, opts.WorkspaceID, managed)
+		if err != nil {
+			return fmt.Errorf("%w: %s", ErrActionsInvalid, err)
+		}
+		// A resume names the run's connection ids next to the kit slugs, so
+		// one connection can resolve twice.
+		for _, a := range resolved {
+			if !slices.ContainsFunc(actions, func(b ConnectorAction) bool { return b.ID == a.ID }) {
+				actions = append(actions, a)
+			}
+		}
 	}
 	opts.Actions = actions
 	opts.Connectors = make([]string, 0, len(actions))

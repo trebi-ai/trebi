@@ -131,6 +131,7 @@ type Service struct {
 	budgetGate BudgetGate
 	actions    ActionResolver
 	kits       KitSource
+	email      EmailSource
 	gate       RequestGate
 
 	// Subprocess runtime (Part D). rt is the shared agentwire runtime (its

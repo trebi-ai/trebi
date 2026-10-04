@@ -36,8 +36,8 @@ func emailCommand() *cli.Command {
 				Name:  "send",
 				Usage: "send one message from the workspace address (admins or allowlist only)",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "workspace", Required: true, Usage: "workspace id or name"},
-					&cli.StringFlag{Name: "agent", Usage: "send from the agent subaddress"},
+					&cli.StringFlag{Name: "workspace", Required: true, Sources: cli.EnvVars("TREBI_WORKSPACE"), Usage: "workspace id or name"},
+					&cli.StringFlag{Name: "agent", Sources: cli.EnvVars("TREBI_AGENT"), Usage: "send from the agent subaddress"},
 					&cli.StringSliceFlag{Name: "to", Required: true, Usage: "recipient address (repeatable)"},
 					&cli.StringFlag{Name: "subject", Required: true, Usage: "subject line"},
 					&cli.StringFlag{Name: "text", Required: true, Usage: "message body as Markdown"},

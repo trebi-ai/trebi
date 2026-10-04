@@ -130,7 +130,8 @@ func TestConnectorKitFindingsMCPOnly(t *testing.T) {
 
 // TestDoctorUsesLaunchView proves the doctor sees the connectors a launch
 // uses (P1-24): an owned job gets the owner kit, a top-level connectors: on
-// the agent replaces its kit, and the support table is the launch one.
+// the agent adds to its kit, the built-in email name is no finding, and the
+// support table is the launch one.
 func TestDoctorUsesLaunchView(t *testing.T) {
 	st := kitStore(t, []string{inlineYAML("gh", "actions:\n  mcp:\n    command: npx\n")}, "kit-only")
 	dir := t.TempDir()
@@ -138,8 +139,8 @@ func TestDoctorUsesLaunchView(t *testing.T) {
 	// The agent research (from kitStore) names kit-only in its kit. An owned
 	// job with no list of its own inherits that kit.
 	writeJob(t, st, dir, "agents/research/daily", "job", "agents/research", "---\n---\n\nRun.\n")
-	// An agent with a top-level list: the kit list is not used.
-	writeJob(t, st, dir, "agents/pi-agent", "agent", "", "---\nharness: pi\nconnectors: [gh]\nkit:\n  connectors: [kit-ghost]\n---\n\nRun.\n")
+	// An agent with a top-level list: it adds to the kit list.
+	writeJob(t, st, dir, "agents/pi-agent", "agent", "", "---\nharness: pi\nconnectors: [gh]\nkit:\n  connectors: [kit-ghost, email]\n---\n\nRun.\n")
 	byID := map[string]DoctorFinding{}
 	for _, f := range agentKitFindings(st, launchView(t, st)) {
 		byID[f.ID+"|"+f.Code] = f
@@ -150,9 +151,12 @@ func TestDoctorUsesLaunchView(t *testing.T) {
 	if _, ok := byID["connector-ws-pi-agent-gh|kit_actions_unsupported"]; !ok {
 		t.Fatalf("pi MCP action not reported: %+v", byID)
 	}
+	if _, ok := byID["connector-ws-pi-agent-kit-ghost|kit_connector_missing"]; !ok {
+		t.Fatalf("kit list not merged with the top-level list: %+v", byID)
+	}
 	for k := range byID {
-		if strings.Contains(k, "kit-ghost") {
-			t.Fatalf("kit list used next to a top-level list: %s", k)
+		if strings.Contains(k, "-email|") {
+			t.Fatalf("built-in email reported: %s", k)
 		}
 	}
 }

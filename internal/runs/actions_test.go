@@ -11,6 +11,7 @@ import (
 
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
@@ -393,4 +394,66 @@ func TestPaneOpenCodeMergesJobConfig(t *testing.T) {
 	if err := injectMCPPlan(tool, &plan, &opts); !errors.Is(err, ErrActionsInvalid) {
 		t.Fatalf("bad config err = %v", err)
 	}
+}
+
+// TestConnectorNamesMergeKitAndJob proves a job list adds to the kit list
+// with no duplicates.
+func TestConnectorNamesMergeKitAndJob(t *testing.T) {
+	t.Parallel()
+	kit := &job.KitYAML{Connectors: []string{"email", "wa"}}
+	got := connectorNames([]string{"wa", "discord"}, kit)
+	if strings.Join(got, ",") != "email,wa,discord" {
+		t.Fatalf("names = %v", got)
+	}
+	if got := connectorNames(nil, kit); strings.Join(got, ",") != "email,wa" {
+		t.Fatalf("kit only = %v", got)
+	}
+	if got := connectorNames([]string{"gh"}, nil); strings.Join(got, ",") != "gh" {
+		t.Fatalf("job only = %v", got)
+	}
+}
+
+type fakeEmailSource map[string]string
+
+func (f fakeEmailSource) AgentAddress(_ context.Context, _, agent string) (string, error) {
+	return f[agent], nil
+}
+
+// TestResolveActionsBuildsEmail proves the email name needs no resolver: an
+// owned job sends as its owner agent, and the prompt names the address.
+func TestResolveActionsBuildsEmail(t *testing.T) {
+	t.Parallel()
+	s := (&Service{}).WithEmail(fakeEmailSource{"ellis": "ellis@mail.example.com"})
+	opts := LaunchOpts{Kit: &job.KitYAML{Connectors: []string{"email"}}}
+	opts.WorkspaceID, opts.Job, opts.Kind = "ws1", "agents/ellis/digest", KindJob
+	if err := s.resolveActions(t.Context(), &opts); err != nil {
+		t.Fatal(err)
+	}
+	if len(opts.Actions) != 1 || strings.Join(opts.Connectors, ",") != "email" {
+		t.Fatalf("actions = %+v connectors = %v", opts.Actions, opts.Connectors)
+	}
+	env := actionEnv(opts.Actions)
+	if env["TREBI_WORKSPACE"] != "ws1" || env["TREBI_AGENT"] != "ellis" {
+		t.Fatalf("env = %v", env)
+	}
+	hint := connectorHint(opts.Actions)
+	if !strings.Contains(hint, "ellis agent address (ellis@mail.example.com)") || !strings.Contains(hint, "trebi email send --to") {
+		t.Fatalf("hint = %q", hint)
+	}
+
+	// An agent run sends as itself; a top-level job sends from the workspace.
+	agent := emailEnvOf(t, s, KindAgent, "agents/watch")
+	if agent["TREBI_AGENT"] != "watch" {
+		t.Fatalf("agent env = %v", agent)
+	}
+	if top := emailEnvOf(t, s, KindJob, "nightly"); top["TREBI_AGENT"] != "" {
+		t.Fatalf("top-level env = %v", top)
+	}
+}
+
+func emailEnvOf(t *testing.T, s *Service, kind, name string) map[string]string {
+	t.Helper()
+	opts := LaunchOpts{JobConnectors: []string{"email"}}
+	opts.WorkspaceID, opts.Job, opts.Kind = "ws1", name, kind
+	return s.emailAction(t.Context(), opts).Env
 }

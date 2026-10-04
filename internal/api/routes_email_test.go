@@ -25,6 +25,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/requests"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -136,6 +137,7 @@ type emailAPIServer struct {
 	fw   *emailWorkerFake
 	acts *emailAPIActions
 	svc  *email.Service
+	st   *store.Store
 }
 
 func (e *emailAPIServer) do(t *testing.T, method, path string, body any) (int, map[string]any) {
@@ -452,6 +454,57 @@ func TestEmailSendRoute(t *testing.T) {
 	}
 }
 
+// TestEmailSendJobSendsAsOwner: an owned job run sends from its owner agent
+// address with no agent field, and cannot name another agent.
+func TestEmailSendJobSendsAsOwner(t *testing.T) {
+	e := startEmailAPI(t)
+	wsPath := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(wsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsPath, "TREBI.md"),
+		[]byte("---\nharness: fake\n---\n\nAssistant.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "owned"})
+	if code != 201 {
+		t.Fatalf("workspace %d %v", code, wsBody)
+	}
+	wsID, _ := wsBody["id"].(string)
+	token := "job-token-00000000000000000000000000"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := e.st.DB().Exec(`INSERT INTO runs
+		(id,workspace_id,job,kind,status,trace_id,started_at,updated_at,actor_token_hash)
+		VALUES (?,?,?,?,?,?,?,?,?)`,
+		"run-job", wsID, "agents/research/digest", "job", "running", "trace", now, now,
+		runs.HashActorToken(token)); err != nil {
+		t.Fatal(err)
+	}
+
+	code, m := doScoped(t, http.MethodPost, e.base+"/v1/email/send", token, map[string]any{
+		"workspace": wsID, "to": []string{"ops@example.com"},
+		"subject": "digest ready", "text": "The digest is ready.",
+	})
+	if code != 200 {
+		t.Fatalf("job send: %d %v", code, m)
+	}
+	code, m = e.do(t, http.MethodGet, "/v1/email/messages?direction=out", nil)
+	if code != 200 {
+		t.Fatalf("out log: %d", code)
+	}
+	if last := m["messages"].([]any)[0].(map[string]any); last["agent"] != "research" {
+		t.Fatalf("job send must use the owner agent: %v", last)
+	}
+
+	code, m = doScoped(t, http.MethodPost, e.base+"/v1/email/send", token, map[string]any{
+		"workspace": wsID, "agent": "other", "to": []string{"ops@example.com"},
+		"subject": "digest ready", "text": "The digest is ready.",
+	})
+	if code != 403 {
+		t.Fatalf("other agent: %d %v", code, m)
+	}
+}
+
 // TestEmailSendParts: the HTML part, a workspace file, and inline bytes reach
 // the Worker. A path outside the workspace and a bad file name are a 400.
 func TestEmailSendParts(t *testing.T) {
@@ -744,7 +797,7 @@ func startEmailAPI(t *testing.T) *emailAPIServer {
 		RequireDMARC: true, FromName: "Trebi",
 	}, email.NewClient(ws.URL, "test-token-0000"))
 	s.Email().AttachIngress(email.NewIngress(s.Email(), connectors.New(st, nil, nil), acts, time.Minute, false))
-	return &emailAPIServer{base: "http://" + addr, dir: dir, api: s, fw: fw, acts: acts, svc: s.Email()}
+	return &emailAPIServer{base: "http://" + addr, dir: dir, api: s, fw: fw, acts: acts, svc: s.Email(), st: st}
 }
 
 func writeEmailJSON(w http.ResponseWriter, v any) {

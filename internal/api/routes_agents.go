@@ -799,6 +799,7 @@ var agentNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,23}$`)
 
 // seededAgentMarkdown is the default AGENT.md of a bare create. It names
 // {{agent_dir}} so the agent finds its ledger from the workspace root (C.3).
+// The kit attaches email, so the agent and its jobs can send mail.
 func seededAgentMarkdown(name, title string, accept []string) string {
 	display := title
 	if display == "" {
@@ -817,6 +818,7 @@ func seededAgentMarkdown(name, title string, accept []string) string {
 			fmt.Fprintf(&b, "    - %q\n", entry)
 		}
 	}
+	b.WriteString("kit:\n  connectors:\n    - email\n")
 	b.WriteString("---\n\n")
 	b.WriteString(
 		"You are " + name + ", an agent of this workspace.\n" +

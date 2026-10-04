@@ -167,7 +167,7 @@ func (dv *discovery) job(path string) *Job {
 		}
 	} else {
 		j.Name = filepath.ToSlash(rel)
-		j.Owner = ownerForRelDir(rel)
+		j.Owner = OwnerOf(rel)
 	}
 	j.WorkspacePath = dv.workspacePath
 	if parseErr != nil && j.ParseError == "" {
@@ -325,10 +325,10 @@ func ExpandPrompt(body, jobDir, workspaceDir string, extra map[string]string) st
 	return ExpandVars(body, vars)
 }
 
-// ownerForRelDir returns the owning agent index name for a workspace-relative
-// job directory: agents/<seg>/… → agents/<seg>, else "" (Part D). Pure path
-// rule; doctor reports jobs whose owner row is gone.
-func ownerForRelDir(rel string) string {
+// OwnerOf returns the owning agent index name for a job index name or a
+// workspace-relative job directory: agents/<seg>/… → agents/<seg>, else ""
+// (Part D). Pure path rule; doctor reports jobs whose owner row is gone.
+func OwnerOf(rel string) string {
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	if len(parts) >= 3 && parts[0] == "agents" && parts[1] != "" {
 		return "agents/" + parts[1]

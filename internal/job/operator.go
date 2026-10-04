@@ -56,8 +56,13 @@ func (s *StyleYAML) Merge(base StyleYAML) StyleYAML {
 	}
 }
 
+// EmailConnector is the built-in connector name for native email. A kit or
+// job lists it next to managed connectors; no connection row backs it.
+const EmailConnector = "email"
+
 // KitYAML is an agent's reusable run configuration. Owned jobs may inherit
-// it; job-level values take precedence (plan A.10 and Part J).
+// it; job-level values take precedence (plan A.10 and Part J). Connectors
+// merge: a job adds to the kit list.
 type KitYAML struct {
 	Envset     EnvsetList        `yaml:"envset,omitempty" json:"envset,omitempty"`
 	Env        map[string]string `yaml:"env,omitempty" json:"env,omitempty"`

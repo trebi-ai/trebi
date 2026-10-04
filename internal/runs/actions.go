@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	agentwire "github.com/trebi-ai/agent-wire"
@@ -26,6 +27,7 @@ type ConnectorAction struct {
 	Skill    string               // connector skill name, empty when none
 	SkillDir string               // empty when the connector names no skill
 	Commands []string             // for the prompt hint
+	Hint     string               // full prompt text; replaces the command line
 }
 
 // ActionResolver resolves connector names to run actions.
@@ -39,6 +41,48 @@ var (
 	// ErrActionsUnsupported is a harness or runtime that cannot take an MCP action.
 	ErrActionsUnsupported = errors.New("harness runtime cannot take MCP actions")
 )
+
+// EmailSource finds the address an agent sends from. *email.Service
+// satisfies it.
+type EmailSource interface {
+	AgentAddress(ctx context.Context, workspaceID, agent string) (string, error)
+}
+
+// WithEmail wires the address lookup for the built-in email action.
+func (s *Service) WithEmail(e EmailSource) *Service {
+	s.email = e
+	return s
+}
+
+// emailAction is the built-in email connector of one launch. The env makes
+// `trebi email send` find the workspace and the sender, so the prompt
+// command needs neither flag. A job sends as its owner agent.
+func (s *Service) emailAction(ctx context.Context, opts LaunchOpts) ConnectorAction {
+	agent := strings.TrimPrefix(job.OwnerOf(opts.Job), "agents/")
+	if opts.Kind == KindAgent {
+		agent = strings.TrimPrefix(opts.Job, "agents/")
+	}
+	env := map[string]string{"TREBI_WORKSPACE": opts.WorkspaceID}
+	from := "the workspace address"
+	if agent != "" {
+		env["TREBI_AGENT"] = agent
+		from = "the " + agent + " agent address"
+		if s.email != nil {
+			if addr, err := s.email.AgentAddress(ctx, opts.WorkspaceID, agent); err == nil && addr != "" {
+				from += " (" + addr + ")"
+			}
+		}
+	}
+	return ConnectorAction{
+		ID: job.EmailConnector, Slug: job.EmailConnector, Title: "Email", Env: env,
+		Hint: "Email: you send email from " + from + ". Send one message with:\n" +
+			"  trebi email send --to <address> --subject \"<subject>\" --text \"<Markdown body>\"\n" +
+			"Repeat --to for more recipients. Trebi renders the Markdown as the HTML part (see `trebi guide email-format`). " +
+			"Add --html-file <file> only for a layout Markdown cannot give; --text is then the plain-text part. Add --attach <file> to attach a file (repeatable).\n" +
+			"Trebi sends only to workspace admins and the email allowlist. If Trebi refuses a recipient, report it. Do not use a different mail tool.\n" +
+			"When you answer a message, your final answer is the reply. Use this command only for a separate message.",
+	}
+}
 
 // WithActions wires the connector action resolver.
 func (s *Service) WithActions(r ActionResolver) *Service {
@@ -104,6 +148,10 @@ func actionSkills(actions []ConnectorAction) []agentwire.Skill {
 func connectorHint(actions []ConnectorAction) string {
 	var lines []string
 	for _, a := range actions {
+		if a.Hint != "" {
+			lines = append(lines, a.Hint)
+			continue
+		}
 		if len(a.Commands) == 0 && a.Skill == "" {
 			continue
 		}
@@ -184,11 +232,20 @@ func (s *Service) EffectiveActions(ctx context.Context, ws string, j job.Job) (n
 	return connectorNames(j.Connectors, kit), harness, runtime, nil
 }
 
-// connectorNames is the connector list of a launch: the job list replaces
-// the kit list when it is not empty.
+// connectorNames is the connector list of a launch: the kit list, then the
+// names the job adds.
 func connectorNames(jobList []string, kit *job.KitYAML) []string {
-	if len(jobList) == 0 && kit != nil {
-		return kit.Connectors
+	var kitList []string
+	if kit != nil {
+		kitList = kit.Connectors
 	}
-	return jobList
+	var out []string
+	seen := map[string]bool{}
+	for _, n := range slices.Concat(kitList, jobList) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
 }

@@ -220,6 +220,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	}
 	ob := outbox.New(st)
 	em := email.New(st).WithConversations(conv).WithOutbox(ob)
+	r.WithEmail(em)
 	ch := channels.New(st, ob, connector, conv)
 	connector.OnStatus(func(ctx context.Context, instance, state string) {
 		if state != protocol.StateConnected {

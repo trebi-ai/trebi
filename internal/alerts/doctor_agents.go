@@ -224,6 +224,9 @@ func launchFindings(ctx context.Context, actions ActionsChecker, wsID, short str
 	}
 	var out []DoctorFinding
 	for _, cn := range names {
+		if cn == job.EmailConnector {
+			continue
+		}
 		out = append(out, connectorFindings(ctx, actions, wsID, short, cn, harnessName, runtime, defs, inherited)...)
 	}
 	return out

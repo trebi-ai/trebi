@@ -110,6 +110,19 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 			rule := env.Agents[body.Agent]
 			recipientRule = &rule
 		}
+	} else if actor, ok := tools.ActorFrom(r.Context()); ok && actor.Kind == "job" {
+		if actor.WorkspaceID != ws.ID {
+			writeForbidden(w, "job may send only from its own workspace")
+			return
+		}
+		// An owned job sends as its owner agent.
+		if owner := job.OwnerOf(actor.Job); owner != "" {
+			if body.Agent != "" && request.AgentIndexName(body.Agent) != owner {
+				writeForbidden(w, "job may send only as its owner agent")
+				return
+			}
+			body.Agent = strings.TrimPrefix(owner, "agents/")
+		}
 	} else if actor, ok := tools.ActorFrom(r.Context()); ok && actor.Kind == "assistant" {
 		if actor.WorkspaceID != ws.ID {
 			writeForbidden(w, "assistant may send only from its own workspace")
