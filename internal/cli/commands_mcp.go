@@ -27,6 +27,7 @@ func mcpCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "client", Value: "json", Usage: "claude, codex, opencode, opencode2, cursor, vscode, or json"},
 					&cli.BoolFlag{Name: "command", Usage: "print the add command instead of the config file block"},
+					&cli.BoolFlag{Name: "remote", Usage: "print the Trebi Cloud URL and the steps for Claude and ChatGPT"},
 				},
 				Action: runMCPConfig,
 			},
@@ -130,6 +131,9 @@ func (t mcpTarget) addCommand(client string) ([]string, error) {
 }
 
 func runMCPConfig(_ context.Context, c *cli.Command) error {
+	if c.Bool("remote") {
+		return runMCPConfigRemote(c)
+	}
 	target, err := mcpConn()
 	if err != nil {
 		return err
@@ -148,6 +152,38 @@ func runMCPConfig(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	fmt.Fprint(outWriter(c), block)
+	return nil
+}
+
+// runMCPConfigRemote prints the remote MCP URL. The client does the OAuth
+// flow, so the output holds no secret.
+func runMCPConfigRemote(c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var st struct {
+		Linked    bool   `json:"linked"`
+		RemoteMCP bool   `json:"remote_mcp"`
+		McpURL    string `json:"mcp_url"`
+	}
+	if err := client.GetJSON("/v1/cloud/status", &st); err != nil {
+		return err
+	}
+	w := outWriter(c)
+	switch {
+	case !st.Linked:
+		return fmt.Errorf("this machine is not linked to Trebi Cloud; run trebi cloud link first")
+	case st.McpURL == "":
+		return fmt.Errorf("Trebi Cloud has not sent the remote URL yet; check trebi cloud status")
+	}
+	fmt.Fprintln(w, st.McpURL)
+	if !st.RemoteMCP {
+		fmt.Fprintln(w, "\nRemote access is off. Turn it on: trebi config set cloud.remote_mcp true")
+	}
+	fmt.Fprintln(w, "\nClaude: Settings > Connectors > Add custom connector > paste the URL.")
+	fmt.Fprintln(w, "Claude Code: claude mcp add --transport http trebi "+st.McpURL)
+	fmt.Fprintln(w, "ChatGPT: Settings > Apps > Advanced > Developer mode > Create app > paste the URL.")
 	return nil
 }
 

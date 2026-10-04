@@ -374,7 +374,7 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 		s.proposals = proposals.NewService(s.st, s.files, s.ws, s.st, s.runs)
 	}
 	if cloudSvc != nil {
-		s.cloud = cloudSvc
+		s.cloud = cloudSvc.WithMCP(s)
 	}
 	if hooksSvc != nil {
 		s.hooks = hooksSvc
@@ -472,7 +472,7 @@ func (s *Server) Handler() http.Handler {
 	// Dispatch from catalog tools re-enters here, audit-wrapped and
 	// noTraversal-wrapped. MCP and native dispatch share that path.
 	s.apiMux = mux
-	s.apiWrapped = s.actorMiddleware(s.auditMiddleware(noTraversalMiddleware(newScopeGate(mux).wrap(newConfirmGate().wrap(mux)))))
+	s.apiWrapped = s.actorMiddleware(s.auditMiddleware(noTraversalMiddleware(newRemoteGate(mux).wrap(newScopeGate(mux).wrap(newConfirmGate().wrap(mux))))))
 	if s.ext.UI != nil {
 		// The SPA sits beside the API on one mux.
 		return ui.Handler(s.ext.UI, s.apiWrapped)

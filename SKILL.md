@@ -52,7 +52,7 @@ If `doctor` is healthy, stop. Do not "fix" the database, edit `$TREBI_HOME`, or 
 
 If the daemon is down: `trebi service start`. If it was never installed: `trebi service install` then `trebi service start`. Never run `trebi service daemon` yourself and never `kill` the daemon PID. `service daemon` is a foreground dev entrypoint; `start`/`stop` own the process.
 
-Only these work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate|path|show|set|unset`, `guide`, `mcp config|install`, `memory validate|skeleton`, and `workspace list|current|use|unlink`. Everything else fails with a clear message.
+Only these work with the daemon down: `service install|start|stop|status`, `doctor`, `config validate|path|show|set|unset`, `guide`, `mcp config|install` (not `mcp config --remote`), `memory validate|skeleton`, and `workspace list|current|use|unlink`. Everything else fails with a clear message.
 
 Native assistant (no vendor CLI): `trebi config set assistant.native.model claude-sonnet-4-5` and `trebi config set assistant.native.api_key_env ANTHROPIC_API_KEY`. API key only.
 

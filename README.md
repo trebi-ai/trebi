@@ -96,6 +96,7 @@ trebi mcp config --client claude             # the config block
 trebi mcp config --client claude --command   # the add command
 trebi mcp install --client claude            # runs the add command
 trebi mcp serve                              # stdio bridge for a client without HTTP
+trebi mcp config --remote                    # the Trebi Cloud URL for Claude and ChatGPT (Pro Cloud)
 ```
 
 Clients: `claude`, `codex`, `opencode`, `opencode2`, `cursor`, `vscode`, and `json` for the raw url. The sections below show the same blocks, filled in by hand.

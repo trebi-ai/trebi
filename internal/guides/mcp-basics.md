@@ -19,7 +19,11 @@ trebi mcp install --client claude         # runs the add command
 trebi mcp serve                           # stdio bridge for a client without HTTP
 ```
 
-Every `mcp` command is **local only**. Clients: `claude`, `codex`, `opencode`, `cursor`, `vscode`, and `json` for the raw url. `install` covers `claude`, `codex`, and `opencode`.
+Every `mcp` command is **local only**, except `trebi mcp config --remote`. Clients: `claude`, `codex`, `opencode`, `cursor`, `vscode`, and `json` for the raw url. `install` covers `claude`, `codex`, and `opencode`.
+
+## Remote access (Pro Cloud)
+
+Claude (web, Desktop, mobile) and ChatGPT cannot reach a local URL. A machine linked to Trebi Cloud with the `remote_access` feature can serve them through the cloud. Turn it on with `trebi config set cloud.remote_mcp true` (default `false`). `trebi mcp config --remote` prints the URL (`https://staging-mcp.trebi.ai` on staging) and the steps for each client. The client signs in to the Trebi account with OAuth, and the user selects the machine and the access level (Read only or Full control). A remote caller can never shut down the daemon, link or unlink the cloud, install a license, or change `cloud.remote_mcp`. The cloud forwards each request and does not store or log its body.
 
 ## Translation rule
 

@@ -38,6 +38,8 @@ type socket struct {
 	unauthorized bool
 	unknown      int64
 	drops        int64
+
+	mcpSlots chan struct{} // bounds concurrent MCP requests
 }
 
 // run redials until the context is cancelled or the dial is rejected as
@@ -82,7 +84,11 @@ func (sk *socket) session(ctx context.Context) (helloOK, unauthorized bool) {
 	sk.setConn(conn)
 	defer sk.clearConn(conn)
 
-	if err := sk.writeFrame(Hello{V: ContractV, Type: "hello"}); err != nil {
+	hello := Hello{V: ContractV, Type: "hello"}
+	if sk.svc.remoteMCP() {
+		hello.Caps = []string{CapMCP}
+	}
+	if err := sk.writeFrame(hello); err != nil {
 		return false, false
 	}
 	sessCtx, cancel := context.WithCancel(ctx)
@@ -110,6 +116,7 @@ func (sk *socket) handleFrame(ctx, sessCtx context.Context, raw []byte) bool {
 	switch f := frame.(type) {
 	case HelloOK:
 		sk.svc.applyEntitlement(ctx, f.Plan, f.Features)
+		sk.svc.setMcpURL(f.McpURL)
 		go sk.heartbeatLoop(sessCtx, f.HeartbeatInterval) // stop: sessCtx done
 		sk.markUp(ctx)
 		sk.svc.fireOnChange(ctx)
@@ -129,6 +136,8 @@ func (sk *socket) handleFrame(ctx, sessCtx context.Context, raw []byte) bool {
 		}
 	case RelayFrame:
 		sk.handleRelay(ctx, f)
+	case McpRequest:
+		go sk.handleMcp(sessCtx, f) // stop: the sink returns or the timeout ends
 	default:
 		sk.bumpUnknown()
 		sk.svc.log.Debug("cloudlink.frame", "type", typ)
@@ -388,6 +397,14 @@ func decodeFrame(raw []byte) (frame any, typ string, err error) {
 		frame = f
 	case "relay_frame":
 		var f RelayFrame
+		err = json.Unmarshal(raw, &f)
+		frame = f
+	case "mcp_request":
+		var f McpRequest
+		err = json.Unmarshal(raw, &f)
+		frame = f
+	case "mcp_response":
+		var f McpResponse
 		err = json.Unmarshal(raw, &f)
 		frame = f
 	default:

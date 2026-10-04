@@ -23,26 +23,39 @@ The signed payload is `timestamp` + LF + `nonce` + LF + `METHOD` + LF + `pathnam
 
 | Type | Fixture | Fields |
 |---|---|---|
-| `hello` | `hello.v1.json` | `v`, `type` |
+| `hello` | `hello.v1.json` | `v`, `type`, `caps` |
 | `heartbeat` | `heartbeat.v1.json` | `v`, `type` |
 | `alert` | `alert.v1.json` | `v`, `type`, `cursor`, `kind`, `summary`, `message_id` |
 | `ack` | `ack.v1.json` | `v`, `type`, `id` |
 | `relay_frame` | `relay-frame.v1.json` | `v`, `type`, `bytes` |
+| `mcp_response` | `mcp-response.v1.json` | `v`, `type`, `id`, `status`, `headers`, `body` |
 
-`alert.summary` is notification text, not a run log. The daemon mints and stores `message_id` before it sends the frame. `ack.id` is the ingress id. `relay_frame.bytes` is opaque. The cloud does not decode it.
+`hello.caps` is optional. An absent or empty list means no remote MCP. `alert.summary` is notification text, not a run log. The daemon mints and stores `message_id` before it sends the frame. `ack.id` is the ingress id. `relay_frame.bytes` is opaque. The cloud does not decode it.
 
 ## Socket frames, cloud to daemon
 
 | Type | Fixture | Fields |
 |---|---|---|
-| `hello_ok` | `hello-ok.v1.json` | `v`, `type`, `plan`, `features`, `heartbeat_interval` |
+| `hello_ok` | `hello-ok.v1.json` | `v`, `type`, `plan`, `features`, `heartbeat_interval`, `mcp_url` |
 | `ingress` | `ingress.v1.json` | `v`, `type`, `id`, `kind`, `payload` |
 | `relay_frame` | `relay-frame.v1.json` | `v`, `type`, `bytes` |
 | `entitlement` | `entitlement.v1.json` | `v`, `type`, `plan`, `features` |
+| `mcp_request` | `mcp-request.v1.json` | `v`, `type`, `id`, `client`, `scope`, `headers`, `body` |
 
 `hello_ok.features` is a cache hint. The worker checks the plan again before every granted action. Kind `email` carries `ingress-message.v1.json`. Kind `webhook` carries `webhook-ingress.v1.json`. An approval reply is an `ingress` frame of kind `email`. There is no decision frame.
 
 An unknown `type` is ignored and counted. The cloud does not execute a job.
+
+## Remote MCP
+
+The cloud forwards one MCP HTTP POST from a remote client (Claude, ChatGPT) as one `mcp_request`. The daemon answers with exactly one `mcp_response` with the same `id`. A response with an unknown `id` is dropped and counted. The cloud sends `mcp_request` only when the last `hello` had the cap `mcp`.
+
+- `headers` keys are lowercase. The cloud sends only these keys: `content-type`, `accept`, `mcp-protocol-version`, `mcp-method`, `mcp-name`, `mcp-session-id`. The daemon ignores all other keys.
+- `body` is the raw HTTP body as a UTF-8 string, at most 4 MiB in each direction.
+- `client` is the OAuth client id. `scope` is the granted scope list: `mcp:read`, and `mcp:write` for full control.
+- `hello_ok.mcp_url` is the URL that the user gives to the client. The daemon shows it and does not build it.
+- The cloud does not store or log `body`. It reads only the JSON-RPC `id` and `method`.
+- An error that the daemon or the cloud builds is HTTP 200 with a JSON-RPC error that carries the request `id`. A notification gets 202 with no body. The codes are `-32001` machine offline, `-32002` remote MCP off, `-32003` timeout, and `-32004` busy.
 
 ## Webhook ingress
 

@@ -18,8 +18,9 @@ import (
 // Settings is the resolved cloud block handed to the service at wiring
 // time. The config package owns parsing; this is what the service acts on.
 type Settings struct {
-	APIURL  string // from config cloud.api_url
-	Enabled bool   // config cloud.enabled; a linked device with Enabled false stays offline
+	APIURL    string // from config cloud.api_url
+	Enabled   bool   // config cloud.enabled; a linked device with Enabled false stays offline
+	RemoteMCP bool   // config cloud.remote_mcp
 }
 
 // MailSink is the email channel. email.Service implements it.
@@ -37,6 +38,11 @@ type RelaySink interface {
 	DeliverRelay(ctx context.Context, raw []byte) error
 }
 
+// McpSink serves one MCP request that the cloud forwards. api.Server implements it.
+type McpSink interface {
+	ServeRemoteMCP(ctx context.Context, req McpRequest) McpResponse
+}
+
 // Status is the cloud-link fact sheet the API serves verbatim.
 type Status struct {
 	Linked       bool     `json:"linked"`
@@ -47,6 +53,8 @@ type Status struct {
 	Features     []string `json:"features"`
 	Connected    bool     `json:"connected"`
 	RefreshedAt  string   `json:"refreshed_at"` // RFC3339, "" when never refreshed
+	RemoteMCP    bool     `json:"remote_mcp"`   // config cloud.remote_mcp
+	McpURL       string   `json:"mcp_url"`      // from hello_ok, "" before the first connect
 }
 
 // Service is the long-lived cloud-link worker: the cached link row, the
@@ -60,6 +68,7 @@ type Service struct {
 	mail  MailSink
 	hooks WebhookSink
 	relay RelaySink
+	mcp   McpSink
 
 	onChange []func(ctx context.Context)
 
@@ -70,6 +79,7 @@ type Service struct {
 	life   context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
+	mcpURL string
 }
 
 // linkRow is the single cloud_link row.
@@ -106,10 +116,53 @@ func New(st *store.Store) *Service {
 }
 
 // Configure applies the resolved config block. Safe before Start.
+// A RemoteMCP change drops the socket, so the redial sends new caps.
 func (s *Service) Configure(cfg Settings) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	changed := s.cfg.RemoteMCP != cfg.RemoteMCP
 	s.cfg = cfg
+	sk := s.sock
+	s.mu.Unlock()
+	if changed && sk != nil {
+		sk.close()
+	}
+}
+
+// SetRemoteMCP changes only the RemoteMCP setting.
+func (s *Service) SetRemoteMCP(on bool) {
+	s.mu.Lock()
+	cfg := s.cfg
+	s.mu.Unlock()
+	cfg.RemoteMCP = on
+	s.Configure(cfg)
+}
+
+// WithMCP wires the remote MCP sink.
+func (s *Service) WithMCP(m McpSink) *Service {
+	s.mu.Lock()
+	s.mcp = m
+	s.mu.Unlock()
+	return s
+}
+
+// McpURL is the URL from the last hello_ok, or "".
+func (s *Service) McpURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mcpURL
+}
+
+// remoteMCP reports whether the socket may serve MCP requests.
+func (s *Service) remoteMCP() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.RemoteMCP && s.mcp != nil
+}
+
+func (s *Service) setMcpURL(u string) {
+	s.mu.Lock()
+	s.mcpURL = u
+	s.mu.Unlock()
 }
 
 // WithMail wires the email channel sink.
@@ -193,7 +246,7 @@ func (s *Service) Status() Status {
 	defer s.mu.Unlock()
 	row := s.link
 	if row == nil {
-		return Status{Status: statusNotLinked, Features: []string{}}
+		return Status{Status: statusNotLinked, Features: []string{}, RemoteMCP: s.cfg.RemoteMCP}
 	}
 	st := Status{
 		Linked:       true,
@@ -202,6 +255,8 @@ func (s *Service) Status() Status {
 		Plan:         row.plan,
 		Features:     row.features,
 		RefreshedAt:  row.refreshedAt,
+		RemoteMCP:    s.cfg.RemoteMCP,
+		McpURL:       s.mcpURL,
 	}
 	if st.Features == nil {
 		st.Features = []string{}
@@ -579,7 +634,7 @@ func (s *Service) launchLocked(id Identity) {
 	if s.sock != nil || s.link == nil || !s.cfg.Enabled {
 		return
 	}
-	sk := &socket{svc: s, base: s.apiBaseLocked(), id: id}
+	sk := &socket{svc: s, base: s.apiBaseLocked(), id: id, mcpSlots: make(chan struct{}, mcpSlotCount)}
 	s.sock = sk
 	s.done = make(chan struct{})
 	// Stop condition: s.life is cancelled by Stop (directly or via Start).

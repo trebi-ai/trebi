@@ -9,10 +9,15 @@ import "encoding/json"
 const ContractV = 1
 
 // Hello is the first frame on the socket. The upgrade request carries the signature.
+// Caps lists optional daemon features. An absent list means none.
 type Hello struct {
-	V    int    `json:"v"`
-	Type string `json:"type"`
+	V    int      `json:"v"`
+	Type string   `json:"type"`
+	Caps []string `json:"caps,omitempty"`
 }
+
+// CapMCP tells the cloud that remote MCP is on for this machine.
+const CapMCP = "mcp"
 
 // Heartbeat re-arms the device alarm.
 type Heartbeat struct {
@@ -52,6 +57,7 @@ type HelloOK struct {
 	Plan              string   `json:"plan"`
 	Features          []string `json:"features"`
 	HeartbeatInterval int      `json:"heartbeat_interval"`
+	McpURL            string   `json:"mcp_url,omitempty"`
 }
 
 // Ingress is one buffered payload. Kind email carries the email contract.
@@ -82,4 +88,26 @@ type WebhookIngress struct {
 	Headers     map[string]string `json:"headers"`
 	Body        string            `json:"body"`
 	ReceivedAt  string            `json:"received_at"`
+}
+
+// McpRequest is one MCP HTTP POST that the cloud forwards. The cloud does
+// not store or log Body. Headers keys are lowercase.
+type McpRequest struct {
+	V       int               `json:"v"`
+	Type    string            `json:"type"`
+	ID      string            `json:"id"`
+	Client  string            `json:"client"`
+	Scope   []string          `json:"scope"`
+	Headers map[string]string `json:"headers"`
+	Body    string            `json:"body"`
+}
+
+// McpResponse is the daemon reply to the McpRequest with the same ID.
+type McpResponse struct {
+	V       int               `json:"v"`
+	Type    string            `json:"type"`
+	ID      string            `json:"id"`
+	Status  int               `json:"status"`
+	Headers map[string]string `json:"headers"`
+	Body    string            `json:"body"`
 }

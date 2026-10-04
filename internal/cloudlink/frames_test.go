@@ -16,7 +16,7 @@ func TestContractFixtures(t *testing.T) {
 
 	var hello Hello
 	mustDecode(t, dir, "hello.v1.json", &hello)
-	if hello.V != ContractV || hello.Type != "hello" {
+	if hello.V != ContractV || hello.Type != "hello" || len(hello.Caps) != 1 || hello.Caps[0] != CapMCP {
 		t.Errorf("hello = %+v", hello)
 	}
 
@@ -46,7 +46,7 @@ func TestContractFixtures(t *testing.T) {
 
 	var ok HelloOK
 	mustDecode(t, dir, "hello-ok.v1.json", &ok)
-	if ok.V != ContractV || ok.Plan != "free" || ok.HeartbeatInterval != 60 || len(ok.Features) != 1 || ok.Features[0] != "watchdog" {
+	if ok.V != ContractV || ok.Plan != "free" || ok.HeartbeatInterval != 60 || len(ok.Features) != 1 || ok.Features[0] != "watchdog" || ok.McpURL == "" {
 		t.Errorf("hello_ok = %+v", ok)
 	}
 
@@ -75,12 +75,24 @@ func TestContractFixtures(t *testing.T) {
 		t.Errorf("webhook = %+v", hook)
 	}
 
+	var mreq McpRequest
+	mustDecode(t, dir, "mcp-request.v1.json", &mreq)
+	if mreq.V != ContractV || mreq.Type != "mcp_request" || mreq.ID == "" || mreq.Client == "" || len(mreq.Scope) != 2 || mreq.Headers["content-type"] == "" || mreq.Body == "" {
+		t.Errorf("mcp_request = %+v", mreq)
+	}
+
+	var mres McpResponse
+	mustDecode(t, dir, "mcp-response.v1.json", &mres)
+	if mres.V != ContractV || mres.Type != "mcp_response" || mres.ID != mreq.ID || mres.Status != 200 || mres.Body == "" {
+		t.Errorf("mcp_response = %+v", mres)
+	}
+
 	raw, err := os.ReadFile(filepath.Join(dir, "CONTRACT.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, needle := range []string{"X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "ingress-message.v1.json"} {
+	for _, needle := range []string{"X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "ingress-message.v1.json", "mcp-request.v1.json", "mcp-response.v1.json"} {
 		if !strings.Contains(text, needle) {
 			t.Errorf("CONTRACT.md missing %s", needle)
 		}
@@ -124,6 +136,10 @@ func TestDecodeFrameRoundTrip(t *testing.T) {
 	mustDecode(t, dir, "hello-ok.v1.json", &ok)
 	var ent Entitlement
 	mustDecode(t, dir, "entitlement.v1.json", &ent)
+	var mreq McpRequest
+	mustDecode(t, dir, "mcp-request.v1.json", &mreq)
+	var mres McpResponse
+	mustDecode(t, dir, "mcp-response.v1.json", &mres)
 
 	for _, tc := range []struct {
 		name string
@@ -137,6 +153,8 @@ func TestDecodeFrameRoundTrip(t *testing.T) {
 		{"relay_frame", "relay_frame", relay},
 		{"hello_ok", "hello_ok", ok},
 		{"entitlement", "entitlement", ent},
+		{"mcp_request", "mcp_request", mreq},
+		{"mcp_response", "mcp_response", mres},
 		{"ingress/email", "ingress", emailIngress},
 		{"ingress/webhook", "ingress", hookIngress},
 	} {

@@ -16,9 +16,13 @@ const DefaultCloudAPIURL = "https://staging-api.trebi.ai"
 // device id lives in the store and the private key lives in the secrets
 // directory.
 type CloudConfig struct {
-	APIURL  string `yaml:"api_url,omitempty"`
-	Enabled *bool  `yaml:"enabled,omitempty"` // nil → true; false keeps a linked device offline
+	APIURL    string `yaml:"api_url,omitempty"`
+	Enabled   *bool  `yaml:"enabled,omitempty"`    // nil → true; false keeps a linked device offline
+	RemoteMCP *bool  `yaml:"remote_mcp,omitempty"` // nil → false
 }
+
+// RemoteMCPOn reports whether remote MCP clients may use this machine.
+func (c CloudConfig) RemoteMCPOn() bool { return c.RemoteMCP != nil && *c.RemoteMCP }
 
 // Active reports whether the daemon may dial the hosted workers.
 func (c CloudConfig) Active() bool { return c.Enabled == nil || *c.Enabled }

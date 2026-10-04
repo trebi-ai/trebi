@@ -280,6 +280,7 @@ func schemaMetas() map[string]keyMeta {
 		"email.from_name":                      restart(keyMeta{typ: TypeString}),
 		"cloud.api_url":                        restart(keyMeta{typ: TypeString}),
 		"cloud.enabled":                        restart(keyMeta{typ: TypeBool}),
+		"cloud.remote_mcp":                     {typ: TypeBool},
 		"connectors.registries":                {typ: TypeJSON},
 	}
 }

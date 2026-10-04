@@ -558,6 +558,20 @@ func (s *Server) cloudDoctor() []alerts.DoctorFinding {
 			Message: "email.worker and a hosted cloud link are both set; the Worker transport wins. Remove one.",
 		})
 	}
+	if cfg.Cloud.RemoteMCPOn() {
+		switch {
+		case !ent.Linked:
+			out = append(out, alerts.DoctorFinding{
+				ID: "cloud-remote-mcp-unlinked", Severity: "warn", Code: "remote_mcp_unlinked",
+				Message: "Remote access for Claude and ChatGPT is on, but this machine is not linked to Trebi Cloud.",
+			})
+		case !ent.Has(entitle.RemoteAccess):
+			out = append(out, alerts.DoctorFinding{
+				ID: "cloud-remote-mcp-plan", Severity: "info", Code: "remote_mcp_plan",
+				Message: "Remote access for Claude and ChatGPT is on, but your plan does not include it. Upgrade to Pro Cloud.",
+			})
+		}
+	}
 	return out
 }
 

@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
@@ -28,6 +31,57 @@ func (s *Server) newMCPHandler() http.Handler {
 		JSONResponse: true,
 	})
 }
+
+// remoteMCPHeaders are the only request headers a forwarded MCP call keeps.
+var remoteMCPHeaders = []string{
+	"content-type", "accept", "mcp-protocol-version", "mcp-method", "mcp-name", "mcp-session-id",
+}
+
+// ServeRemoteMCP runs one cloud-forwarded MCP POST in-process. It trusts the
+// socket, not the request: the actor and scope come from the frame.
+func (s *Server) ServeRemoteMCP(ctx context.Context, f cloudlink.McpRequest) cloudlink.McpResponse {
+	ctx = tools.WithActor(ctx, tools.Actor{
+		Kind:   tools.ActorRemote,
+		Name:   "remote:" + clientLabel(f.Client),
+		Scopes: f.Scope,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://remote.mcp/mcp", strings.NewReader(f.Body))
+	if err != nil {
+		return cloudlink.McpResponse{Status: http.StatusBadRequest, Headers: map[string]string{}}
+	}
+	for _, k := range remoteMCPHeaders {
+		if v := f.Headers[k]; v != "" {
+			req.Header.Set(k, v)
+		}
+	}
+	rec := &mcpRecorder{header: http.Header{}}
+	s.mcpHTTP.ServeHTTP(rec, req)
+	code := rec.code
+	if code == 0 {
+		code = http.StatusOK
+	}
+	headers := map[string]string{}
+	for _, k := range []string{"Content-Type", "Mcp-Session-Id"} {
+		if v := rec.header.Get(k); v != "" {
+			headers[strings.ToLower(k)] = v
+		}
+	}
+	return cloudlink.McpResponse{Status: code, Headers: headers, Body: rec.body.String()}
+}
+
+// clientLabel names an OAuth client for the audit log: the host of a
+// metadata URL client id, or the id itself.
+func clientLabel(client string) string {
+	if u, err := url.Parse(client); err == nil && u.Scheme == "https" && u.Host != "" {
+		return u.Host
+	}
+	if client == "" {
+		return "unknown"
+	}
+	return client
+}
+
+var _ cloudlink.McpSink = (*Server)(nil)
 
 // Dispatch serves one built /v1 request through the audited, confirm-gated mux.
 // The local API carries no auth, so there is nothing to skip: every caller is

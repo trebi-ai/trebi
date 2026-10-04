@@ -80,7 +80,11 @@ func (c *ControlPlane) configureCloud(cfg *config.Config) {
 	if cfg == nil {
 		return
 	}
-	c.Cloud.Configure(cloudlink.Settings{APIURL: cfg.Cloud.APIURLOrDefault(), Enabled: cfg.Cloud.Active()})
+	c.Cloud.Configure(cloudlink.Settings{
+		APIURL:    cfg.Cloud.APIURLOrDefault(),
+		Enabled:   cfg.Cloud.Active(),
+		RemoteMCP: cfg.Cloud.RemoteMCPOn(),
+	})
 }
 
 // EmailConflict reports that both mail transports are configured at once.

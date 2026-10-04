@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "type": "mcp_response",
+  "id": "01JA0000000000000000000000",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}"
+}

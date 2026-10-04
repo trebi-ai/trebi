@@ -231,8 +231,12 @@ type Actor struct {
 	// Conversation pins an assistant actor to its session conversation.
 	Conversation string
 	WorkspaceID  string
-	Token        string // context-local; never persisted or logged
+	Token        string   // context-local; never persisted or logged
+	Scopes       []string // remote MCP grant; context-local, never persisted
 }
+
+// ActorRemote is the Kind of a remote MCP client that the cloud forwards.
+const ActorRemote = "remote"
 
 // WithActor stores the native-loop identity on ctx.
 func WithActor(ctx context.Context, a Actor) context.Context {
