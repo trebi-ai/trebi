@@ -500,6 +500,7 @@ func (l *pathEntryList) addEmail(cfg *Config) {
 	l.add("email.poll_interval", pi, DefaultEmailPollInterval.String())
 	l.add("email.require_dmarc", strconv.FormatBool(e.DMARCRequired()), "true")
 	l.add("email.from_name", e.FromSenderName(), "Trebi")
+	l.add("email.content_days", strconv.Itoa(e.ContentDaysOrDefault()), strconv.Itoa(DefaultEmailContentDays))
 }
 
 func (l *pathEntryList) addAssistant(cfg *Config) {
@@ -806,6 +807,8 @@ func (c *Config) setEmailKey(path, value string) (handled bool, err error) {
 		c.Email.RequireDMARC = &b
 	case "email.from_name":
 		c.Email.FromName = clearOrValue(value)
+	case "email.content_days":
+		return true, c.Email.setContentDays(value)
 	default:
 		return false, nil
 	}
@@ -1174,6 +1177,7 @@ func pathKeyDescriptions() map[string]string {
 		"email.poll_interval":           "Ingress poll period (default 30s; 5s to 10m)",
 		"email.require_dmarc":           "Reject inbound mail without a DMARC pass (default true)",
 		"email.from_name":               "Display name on outbound mail (default Trebi)",
+		"email.content_days":            "Days to keep email message text (default 45; 0 = do not keep)",
 		"cloud.api_url":                 "Hosted account endpoint (default https://staging-api.trebi.ai)",
 		"cloud.enabled":                 "Dial the hosted workers; false keeps a linked device offline (default true)",
 		"cloud.remote_mcp":              "Allow Claude, ChatGPT, and other remote MCP clients to use this machine through Trebi Cloud (default true)",

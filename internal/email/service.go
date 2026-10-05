@@ -388,7 +388,15 @@ func (s *Service) Send(ctx context.Context, opts SendOpts) (Queued, error) {
 	if err := s.checkRecipients(ctx, cfg, opts); err != nil {
 		return Queued{}, err
 	}
-	if opts.HTML == "" {
+	switch {
+	case strings.TrimSpace(opts.Text) != "" && strings.TrimSpace(opts.HTML) != "":
+		return Queued{}, fmt.Errorf("%w: send text or html, not both", ErrContent)
+	case strings.TrimSpace(opts.HTML) != "":
+		// The text part is the HTML as text, so it never drifts from it.
+		opts.Text = cmp.Or(PlainText(opts.HTML), opts.Subject)
+	case strings.TrimSpace(opts.Text) == "":
+		return Queued{}, fmt.Errorf("%w: text or html is required", ErrContent)
+	default:
 		// Text is Markdown: the HTML part is Text in the sender style.
 		r, err := s.htmlPart(ctx, opts.WorkspaceID, opts.Agent, opts.Text, Page{
 			Layout: LayoutReport, Title: opts.Subject, Brand: cmp.Or(opts.FromName, cfg.FromName),
@@ -771,8 +779,8 @@ func (s *Service) AddressCount(ctx context.Context) (int, error) {
 }
 
 // Message is one envelope-log row (plan G), the wire shape for the log
-// routes. Both directions share it; absent columns are omitted. Bodies
-// never live here: they stay in the Worker's object store.
+// routes. Both directions share it; absent columns are omitted. Only
+// GetMessage fills Content, and only while the content prune keeps it.
 type Message struct {
 	ID             string       `json:"id"`
 	Direction      string       `json:"direction"` // in | out
@@ -799,6 +807,27 @@ type Message struct {
 	Attempts      int    `json:"attempts,omitempty"`
 	NextAttemptAt string `json:"next_attempt_at,omitempty"`
 	Error         string `json:"error,omitempty"`
+	// Content is nil when the daemon does not keep the text.
+	Content *Content `json:"content,omitempty"`
+}
+
+// Content is the kept text of one message. Inbound HTML is sanitized
+// when it is read; outbound HTML is the daemon's own render.
+type Content struct {
+	Text string `json:"text"`
+	HTML string `json:"html,omitempty"`
+}
+
+// PruneContent clears message text older than keep. A zero keep clears
+// all of it. The envelope rows stay.
+func (s *Service) PruneContent(ctx context.Context, now time.Time, keep time.Duration) (int64, error) {
+	cutoff := now.Add(-keep).UTC().Format(time.RFC3339)
+	res, err := s.st.DB().ExecContext(ctx, `UPDATE email_messages SET body_text=NULL, body_html=NULL
+WHERE created_at < ? AND (body_text IS NOT NULL OR body_html IS NOT NULL)`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("email content prune: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // MessageListOpts filters the envelope log (plan K). Empty filters match
@@ -843,11 +872,13 @@ func (s *Service) ListMessages(ctx context.Context, opts MessageListOpts) ([]Mes
 		q += ` AND em.thread_root=?`
 		args = append(args, opts.Thread)
 	}
+	// Inbound ids come from the Worker in lowercase; outbound ids are minted
+	// in uppercase. Compare without case so both sort by time.
 	if opts.Cursor != "" {
-		q += ` AND em.id < ?`
+		q += ` AND upper(em.id) < upper(?)`
 		args = append(args, opts.Cursor)
 	}
-	q += ` ORDER BY em.id DESC LIMIT ?`
+	q += ` ORDER BY upper(em.id) DESC LIMIT ?`
 	args = append(args, opts.Limit)
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
@@ -865,13 +896,23 @@ func (s *Service) ListMessages(ctx context.Context, opts MessageListOpts) ([]Mes
 	return out, rows.Err()
 }
 
-// GetMessage returns one envelope row, or sql.ErrNoRows.
+// GetMessage returns one envelope row with its kept content, or
+// sql.ErrNoRows.
 func (s *Service) GetMessage(ctx context.Context, id string) (Message, error) {
+	var text, html sql.NullString
 	row := s.st.DB().QueryRowContext(ctx,
-		`SELECT em.id, em.direction, `+messageCols+messageFrom+` WHERE em.id=?`, id)
-	m, err := scanMessage(row.Scan)
+		`SELECT em.id, em.direction, `+messageCols+`, em.body_text, em.body_html`+messageFrom+` WHERE em.id=?`, id)
+	m, err := scanMessage(func(dest ...any) error {
+		return row.Scan(append(dest, &text, &html)...)
+	})
 	if err != nil {
 		return Message{}, err
+	}
+	if text.Valid || html.Valid {
+		m.Content = &Content{Text: text.String, HTML: html.String}
+		if m.Direction == "in" && m.Content.HTML != "" {
+			m.Content.HTML = SanitizeHTML(m.Content.HTML)
+		}
 	}
 	return m, nil
 }
@@ -1195,6 +1236,12 @@ func (s *Service) enqueue(ctx context.Context, e envelope, r outbox.Row) (outbox
 	r.Subject = e.subject
 	r.ConversationID, r.RunID = e.conversationID, e.runID
 	r.EmailRowID = ulid.Make().String()
+	var parts sendParts
+	if len(r.Parts) > 0 {
+		// Parts is always json.Marshal output; a failed parse keeps the text only.
+		_ = json.Unmarshal(r.Parts, &parts)
+	}
+	text, html := s.keptContent(r.Body, parts.HTML)
 	var turn any
 	if e.coveredTurn != nil {
 		turn = *e.coveredTurn
@@ -1203,12 +1250,13 @@ func (s *Service) enqueue(ctx context.Context, e envelope, r outbox.Row) (outbox
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO email_messages
   (id, direction, workspace_id, agent, message_id, in_reply_to, thread_root, recipients,
-   subject, disposition, conversation_id, run_id, inbox_id, purpose, covered_turn, outbox_id, created_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+   subject, disposition, conversation_id, run_id, inbox_id, purpose, covered_turn, outbox_id, created_at,
+   body_text, body_html)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			r.EmailRowID, "out", e.workspaceID, e.agent, e.messageID, e.inReplyTo, e.threadRoot,
 			r.Recipients, e.subject, dispositionQueued, store.NullStr(e.conversationID),
 			store.NullStr(e.runID), store.NullStr(e.inboxID), e.purpose, turn, r.ID,
-			time.Now().UTC().Format(time.RFC3339)); err != nil {
+			time.Now().UTC().Format(time.RFC3339), text, html); err != nil {
 			return fmt.Errorf("email envelope: %w", err)
 		}
 		if e.inboxID != "" {
@@ -1262,4 +1310,14 @@ func (s *Service) htmlParts(ctx context.Context, workspaceID, agent, text string
 	}
 	h, files := r.attach(nil)
 	return json.Marshal(sendParts{HTML: h, Attachments: files})
+}
+
+// keptContent returns the body columns of a new row: NULL when the
+// daemon does not keep content.
+func (s *Service) keptContent(text, html string) (any, any) {
+	cfg, err := s.Settings()
+	if err != nil || cfg.ContentRetention <= 0 {
+		return nil, nil
+	}
+	return text, store.NullStr(html)
 }

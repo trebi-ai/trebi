@@ -253,3 +253,24 @@ func TestRendererClip(t *testing.T) {
 		t.Errorf("attach with no room sends the cut mail")
 	}
 }
+
+func TestPlainText(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct{ in, want string }{
+		"paragraphs": {"<p>One  line.</p><p>Two\n lines.</p>", "One line.\n\nTwo lines."},
+		"head and hidden": {`<html><head><title>T</title><style>p{}</style></head><body>` +
+			`<div style="display: none">preview&zwnj;&nbsp;</div><p>Body</p><script>x()</script></body></html>`, "Body"},
+		"inline": {"<p>A <b>bold</b> word.<br>Next line</p>", "A bold word.\nNext line"},
+		"lists":  {"<ul><li>a</li><li>b</li></ul><ol><li>x</li><li>y</li></ol>", "- a\n- b\n\n1. x\n2. y"},
+		"links":  {`<p><a href="https://x.io/r">report</a> <a href="https://x.io">https://x.io</a> <a href="#top">top</a></p>`, "report (https://x.io/r) https://x.io top"},
+		"table rows": {`<table><tr><td>Mon</td><td><table><tr><td style="width:40%"></td></tr></table></td><td>66 bpm</td></tr>` +
+			`<tr><td>Tue</td><td></td><td>65 bpm</td></tr></table>`, "Mon 66 bpm\nTue 65 bpm"},
+		"image alt": {`<p><img src="a.png" alt="Logo"> Weekly</p>`, "Logo Weekly"},
+		"pre":       {"<pre>a\n  b</pre>", "a\n  b"},
+		"no text":   {`<img src="a.png">`, ""},
+	} {
+		if got := PlainText(tc.in); got != tc.want {
+			t.Errorf("%s: got %q, want %q", name, got, tc.want)
+		}
+	}
+}

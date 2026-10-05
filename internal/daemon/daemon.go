@@ -574,11 +574,12 @@ func (c *ControlPlane) configureEmail(cfg *config.Config) {
 		return
 	}
 	settings := &email.Settings{
-		Domain:       cfg.Email.Domain,
-		Admins:       cfg.Email.Admins,
-		PollInterval: interval,
-		RequireDMARC: cfg.Email.DMARCRequired(),
-		FromName:     cfg.Email.FromSenderName(),
+		Domain:           cfg.Email.Domain,
+		Admins:           cfg.Email.Admins,
+		PollInterval:     interval,
+		RequireDMARC:     cfg.Email.DMARCRequired(),
+		FromName:         cfg.Email.FromSenderName(),
+		ContentRetention: cfg.Email.ContentRetention(),
 	}
 	if mode == emailHosted {
 		c.Email.Configure(settings, cloudTransport{cl: c.Cloud})

@@ -371,7 +371,8 @@ func TestSendFailsAfterAttempts(t *testing.T) {
 }
 
 // TestSendParts: the HTML part and the files ride the outbox row to the
-// Worker, and the row drops them once sent.
+// Worker, and the row drops them once sent. The text part of an HTML send
+// is the HTML as text.
 func TestSendParts(t *testing.T) {
 	t.Parallel()
 	fw := &fakeWorker{token: "test-token-0000"}
@@ -384,7 +385,7 @@ func TestSendParts(t *testing.T) {
 		t.Fatal(err)
 	}
 	q, err := s.Send(t.Context(), SendOpts{
-		WorkspaceID: "ws_1", To: []string{"ops@example.com"}, Subject: "digest", Text: "ready",
+		WorkspaceID: "ws_1", To: []string{"ops@example.com"}, Subject: "digest",
 		HTML: "<p>ready</p>", Attachments: []SendAttachment{{Name: "q3.csv", Content: []byte("a,b\n")}},
 	})
 	if err != nil {
@@ -395,7 +396,7 @@ func TestSendParts(t *testing.T) {
 	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
 		t.Fatal(err)
 	}
-	if sent.HTML != "<p>ready</p>" || len(sent.Attachments) != 1 ||
+	if sent.HTML != "<p>ready</p>" || sent.Text != "ready" || len(sent.Attachments) != 1 ||
 		sent.Attachments[0].Type != "text/csv" || string(sent.Attachments[0].Content) != "a,b\n" {
 		t.Errorf("sent = %+v", sent)
 	}
@@ -440,11 +441,16 @@ func TestSendParts(t *testing.T) {
 	for name, opts := range map[string]SendOpts{
 		"too many files": {Attachments: tooMany},
 		"too large":      {HTML: strings.Repeat("x", MaxSendBytes)},
-		"path in name":   {Attachments: []SendAttachment{{Name: "../x.txt"}}},
-		"newline":        {Attachments: []SendAttachment{{Name: "x\r\nBcc: y.txt"}}},
-		"bad type":       {Attachments: []SendAttachment{{Name: "x.txt", Type: "nonsense"}}},
+		"path in name":   {Text: "ready", Attachments: []SendAttachment{{Name: "../x.txt"}}},
+		"newline":        {Text: "ready", Attachments: []SendAttachment{{Name: "x\r\nBcc: y.txt"}}},
+		"bad type":       {Text: "ready", Attachments: []SendAttachment{{Name: "x.txt", Type: "nonsense"}}},
+		"text and html":  {Text: "ready", HTML: "<p>ready</p>"},
+		"no body":        {Text: " "},
 	} {
-		opts.WorkspaceID, opts.To, opts.Subject, opts.Text = "ws_1", []string{"ops@example.com"}, "digest", "ready"
+		if name == "too many files" {
+			opts.Text = "ready"
+		}
+		opts.WorkspaceID, opts.To, opts.Subject = "ws_1", []string{"ops@example.com"}, "digest"
 		if _, err := s.Send(t.Context(), opts); !errors.Is(err, ErrContent) {
 			t.Errorf("%s: err = %v; want ErrContent", name, err)
 		}
@@ -859,13 +865,14 @@ func configureTest(s *Service, worker string) {
 
 func testSettings(worker string) *Settings {
 	return &Settings{
-		Worker:       worker,
-		Token:        "test-token-0000",
-		Domain:       "mail.example.com",
-		Admins:       []string{"ops@example.com"},
-		PollInterval: 30 * time.Second,
-		RequireDMARC: true,
-		FromName:     "Trebi",
+		Worker:           worker,
+		Token:            "test-token-0000",
+		Domain:           "mail.example.com",
+		Admins:           []string{"ops@example.com"},
+		PollInterval:     30 * time.Second,
+		RequireDMARC:     true,
+		FromName:         "Trebi",
+		ContentRetention: 45 * 24 * time.Hour,
 	}
 }
 
@@ -887,4 +894,103 @@ func sendAlert(t *testing.T, s *Service, inboxID, subject string, step int) (str
 		return msgID, errors.New(row.ErrorMessage)
 	}
 	return msgID, nil
+}
+
+// TestListMessagesMixedCaseIDs proves that lowercase inbound ids and
+// uppercase outbound ids sort and page together by time.
+func TestListMessagesMixedCaseIDs(t *testing.T) {
+	t.Parallel()
+	st := openEmailStore(t)
+	s := testService(st)
+	if _, err := st.DB().Exec(`INSERT INTO email_messages (id, workspace_id, direction, disposition, created_at) VALUES
+		('01m440rzhkq1kdzb2as9v9det1','ws_1','in','misrouted','2026-10-04T17:53:19Z'),
+		('01M440SVM2FCSTF66JBNFQRPVW','ws_1','out','sent','2026-10-04T17:53:47Z'),
+		('01M3K74H52V1N2BTSV7ECEMC39','ws_1','out','sent','2026-09-28T05:17:23Z')`); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.ListMessages(t.Context(), MessageListOpts{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 2 || m[0].ID != "01M440SVM2FCSTF66JBNFQRPVW" || m[1].ID != "01m440rzhkq1kdzb2as9v9det1" {
+		t.Fatalf("first page = %+v", m)
+	}
+	next, err := s.ListMessages(t.Context(), MessageListOpts{Limit: 2, Cursor: m[1].ID})
+	if err != nil || len(next) != 1 || next[0].ID != "01M3K74H52V1N2BTSV7ECEMC39" {
+		t.Fatalf("second page = %+v, %v", next, err)
+	}
+}
+
+// TestMessageContent: both directions keep their text. Inbound HTML is
+// sanitized on read. The prune clears old text and keeps the rows.
+func TestMessageContent(t *testing.T) {
+	t.Parallel()
+	fw := &fakeWorker{token: "test-token-0000"}
+	srv := httptest.NewServer(fw.handler())
+	t.Cleanup(srv.Close)
+	st := openEmailStore(t)
+	s := testService(st)
+	configureTest(s, srv.URL)
+	if _, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(t.Context(), SendOpts{
+		WorkspaceID: "ws_1", To: []string{"ops@example.com"}, Subject: "digest",
+		HTML: "<p>ready</p>",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	flush(t, s)
+	in := IngressMessage{ID: "01m440rzhkq1kdzb2as9v9det1", From: "ops@example.com", Subject: "hi",
+		Text: "hello", HTML: `<p onclick="x()">hello</p><script>bad()</script>`}
+	if _, err := s.RecordInbound(t.Context(), in, RouteDecision{WorkspaceID: "ws_1", Class: RouteAssistant}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.ListMessages(t.Context(), MessageListOpts{Direction: "out"})
+	if err != nil || len(out) != 1 {
+		t.Fatalf("out = %+v, %v", out, err)
+	}
+	got := func(id string) *Content {
+		t.Helper()
+		m, err := s.GetMessage(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.Content
+	}
+	if c := got(out[0].ID); c == nil || c.Text != "ready" || c.HTML != "<p>ready</p>" {
+		t.Errorf("outbound content = %+v", c)
+	}
+	c := got(in.ID)
+	if c == nil || c.Text != "hello" || !strings.Contains(c.HTML, "hello") ||
+		strings.Contains(c.HTML, "script") || strings.Contains(c.HTML, "onclick") {
+		t.Errorf("inbound content = %+v", c)
+	}
+	if n, err := s.PruneContent(t.Context(), time.Now(), 45*24*time.Hour); err != nil || n != 0 {
+		t.Fatalf("early prune = %d, %v", n, err)
+	}
+	if n, err := s.PruneContent(t.Context(), time.Now().Add(46*24*time.Hour), 45*24*time.Hour); err != nil || n != 2 {
+		t.Fatalf("prune = %d, %v", n, err)
+	}
+	if got(out[0].ID) != nil || got(in.ID) != nil {
+		t.Error("content survived the prune")
+	}
+}
+
+// TestMessageContentOff: a zero retention keeps no text.
+func TestMessageContentOff(t *testing.T) {
+	t.Parallel()
+	st := openEmailStore(t)
+	s := testService(st)
+	cfg := testSettings("http://127.0.0.1:1")
+	cfg.ContentRetention = 0
+	s.Configure(cfg, NewClient(cfg.Worker, cfg.Token))
+	in := IngressMessage{ID: "01m440rzhkq1kdzb2as9v9det1", From: "ops@example.com", Text: "hello"}
+	if _, err := s.RecordInbound(t.Context(), in, RouteDecision{WorkspaceID: "ws_1", Class: RouteAssistant}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.GetMessage(t.Context(), in.ID)
+	if err != nil || m.Content != nil {
+		t.Errorf("message = %+v, %v; want no content", m, err)
+	}
 }

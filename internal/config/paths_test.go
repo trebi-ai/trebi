@@ -367,6 +367,8 @@ func sampleSetValue(key string) string {
 		return "mail.example.com"
 	case key == "email.admins":
 		return "ops@example.com"
+	case key == "email.content_days":
+		return "30"
 	case key == "email.poll_interval":
 		return "30s"
 	case key == "email.require_dmarc":

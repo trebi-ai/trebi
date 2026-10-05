@@ -8,8 +8,10 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
+	"github.com/microcosm-cc/bluemonday"
 	"github.com/trebi-ai/trebi/internal/job"
 	alert "github.com/yuin/goldmark-alert"
 	"github.com/yuin/goldmark/v2/extension"
@@ -232,6 +234,36 @@ func (r *Renderer) page(p Page, body, pre string) (string, error) {
 type styler struct {
 	t    Theme
 	tags map[atom.Atom]string
+}
+
+// SanitizeHTML strips scripts, forms, and event handlers from untrusted
+// mail HTML. It keeps layout, links, images, and simple inline styles.
+// The UI still shows the result in a sandboxed frame.
+func SanitizeHTML(in string) string {
+	p := bluemonday.UGCPolicy()
+	p.AllowStyles("color", "background-color", "font-size", "font-weight", "font-style",
+		"font-family", "text-align", "text-decoration", "line-height", "margin", "padding",
+		"border", "width", "max-width", "height").Globally()
+	p.AllowAttrs("align", "valign", "bgcolor", "width", "height").Globally()
+	p.AddTargetBlankToFullyQualifiedLinks(true)
+	return p.Sanitize(in)
+}
+
+// PlainText converts an HTML part into its text part. Blocks become lines,
+// table cells of one row share a line, and a link keeps its URL. Hidden
+// elements, such as a preheader, are dropped.
+func PlainText(src string) string {
+	doc, err := xhtml.Parse(strings.NewReader(src))
+	if err != nil {
+		return ""
+	}
+	var t textPart
+	t.walk(doc, false)
+	lines := strings.Split(t.b.String(), "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(l, " ")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func newStyler(t Theme) styler {
@@ -541,6 +573,183 @@ func preheader(s string) string {
 		cut--
 	}
 	return strings.TrimSpace(s[:cut]) + "…"
+}
+
+// textPart collects the text of an HTML tree. breaks and space are the
+// separator due before the next word; it is written only when a word comes.
+type textPart struct {
+	b      strings.Builder
+	breaks int
+	space  bool
+}
+
+// dropInvisible removes the format characters that mail templates use as
+// padding, such as the zero-width joiners after a preheader.
+func dropInvisible(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\u200b', '\u200c', '\u200d', '\u034f', '\ufeff', '\u00ad':
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func (t *textPart) brk(n int) {
+	t.breaks = max(t.breaks, n)
+}
+
+func (t *textPart) write(s string) {
+	if t.b.Len() > 0 {
+		switch {
+		case t.breaks > 0:
+			t.b.WriteString(strings.Repeat("\n", t.breaks))
+		case t.space:
+			t.b.WriteByte(' ')
+		}
+	}
+	t.breaks, t.space = 0, false
+	t.b.WriteString(s)
+}
+
+// words writes inline text with its whitespace collapsed.
+func (t *textPart) words(s string) {
+	s = dropInvisible(s)
+	if s == "" {
+		return
+	}
+	lead := strings.TrimLeftFunc(s, unicode.IsSpace) != s
+	trail := strings.TrimRightFunc(s, unicode.IsSpace) != s
+	f := strings.Fields(s)
+	if len(f) == 0 {
+		t.space = true
+		return
+	}
+	t.space = t.space || lead
+	t.write(strings.Join(f, " "))
+	t.space = trail
+}
+
+func (t *textPart) walk(n *xhtml.Node, inPre bool) {
+	switch n.Type {
+	case xhtml.TextNode:
+		if inPre {
+			t.write(dropInvisible(n.Data))
+		} else {
+			t.words(n.Data)
+		}
+		return
+	case xhtml.ElementNode:
+		if hidden(n) {
+			return
+		}
+	case xhtml.DocumentNode:
+	default:
+		return
+	}
+	gap, done := t.open(n)
+	if done {
+		return
+	}
+	breaks, space := t.breaks, t.space
+	t.brk(gap)
+	start := t.b.Len()
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		t.walk(c, inPre || n.DataAtom == atom.Pre)
+	}
+	if t.b.Len() == start {
+		// An empty block, such as a chart bar, adds no break.
+		t.breaks, t.space = breaks, space
+		return
+	}
+	t.close(n, gap, strings.TrimSpace(t.b.String()[start:]))
+}
+
+// close ends an element that wrote text. A link adds its URL after the
+// label, unless the label is the URL.
+func (t *textPart) close(n *xhtml.Node, gap int, label string) {
+	if n.DataAtom == atom.A {
+		href := strings.TrimSpace(attr(n, "href"))
+		if (strings.HasPrefix(href, "http") || strings.HasPrefix(href, "mailto:")) &&
+			label != href && label != strings.TrimPrefix(href, "mailto:") {
+			t.space = true
+			t.write("(" + href + ")")
+		}
+	}
+	t.brk(gap)
+	if n.DataAtom == atom.Td || n.DataAtom == atom.Th {
+		t.space = true
+	}
+}
+
+// open writes what an element shows before its children: a break, a list
+// mark, or the alt text of an image. done means the children are skipped.
+func (t *textPart) open(n *xhtml.Node) (gap int, done bool) {
+	switch n.DataAtom {
+	case atom.Head, atom.Style, atom.Script, atom.Title, atom.Template, atom.Noscript:
+		return 0, true
+	case atom.Br:
+		t.brk(1)
+		return 0, true
+	case atom.Hr:
+		t.brk(2)
+		t.write("---")
+		t.brk(2)
+		return 0, true
+	case atom.Img:
+		if alt := strings.TrimSpace(attr(n, "alt")); alt != "" {
+			t.space = true
+			t.write(alt)
+			t.space = true
+		}
+		return 0, true
+	case atom.P, atom.H1, atom.H2, atom.H3, atom.H4, atom.H5, atom.H6, atom.Ul, atom.Ol,
+		atom.Table, atom.Blockquote, atom.Pre:
+		gap = 2
+	case atom.Div, atom.Tr, atom.Section, atom.Header, atom.Footer, atom.Article, atom.Center, atom.Dt, atom.Dd:
+		gap = 1
+	case atom.Td, atom.Th:
+		t.space = true
+	case atom.Li:
+		t.brk(1)
+		t.write(listMark(n))
+		t.space = true
+	}
+	return gap, false
+}
+
+// listMark is "-" for a bullet and "3." for the third item of an ordered list.
+func listMark(li *xhtml.Node) string {
+	if li.Parent == nil || li.Parent.DataAtom != atom.Ol {
+		return "-"
+	}
+	i := 1
+	for s := li.PrevSibling; s != nil; s = s.PrevSibling {
+		if s.DataAtom == atom.Li {
+			i++
+		}
+	}
+	return fmt.Sprintf("%d.", i)
+}
+
+// hidden reports an element that a mail client does not show.
+func hidden(n *xhtml.Node) bool {
+	for _, a := range n.Attr {
+		if a.Key == "hidden" {
+			return true
+		}
+	}
+	css := strings.ReplaceAll(strings.ToLower(attr(n, "style")), " ", "")
+	return strings.Contains(css, "display:none") || strings.Contains(css, "mso-hide:all")
+}
+
+func attr(n *xhtml.Node, key string) string {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return a.Val
+		}
+	}
+	return ""
 }
 
 // layoutHTML is the frame of all three layouts. Base styles are inline;

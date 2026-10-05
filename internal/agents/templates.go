@@ -142,7 +142,7 @@ func renderContent(text, title string, accept []string, inputs map[string]string
 
 func acceptYAML(accept []string) string {
 	if len(accept) == 0 {
-		return "email:\n  accept: [] # absent or empty means this agent tag is closed"
+		return "email:\n  accept: [] # admins always pass; add more senders here"
 	}
 	var b strings.Builder
 	b.WriteString("email:\n  accept:\n")

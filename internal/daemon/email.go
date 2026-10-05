@@ -29,7 +29,7 @@ func (c *ControlPlane) RouteEnvFor(ctx context.Context, workspaceID string) (ema
 	}
 	agents := make(map[string]email.AcceptRule, len(agentEntries))
 	for tag, entries := range agentEntries {
-		agents[tag] = email.NewAcceptRule(entries)
+		agents[tag] = email.NewAgentAcceptRule(entries)
 	}
 	return email.RouteEnv{
 		Agents:    agents,
@@ -117,13 +117,13 @@ func (c *ControlPlane) AmbiguousReplyItem(ctx context.Context, runID string, d e
 	return c.Alerts.AmbiguousReplyItem(ctx, runID, d, msg)
 }
 
-// AssistantName returns the workspace assistant title for the reply From name.
+// AssistantName returns the From name of assistant mail.
 func (c *ControlPlane) AssistantName(ctx context.Context, workspaceID string) string {
 	ws, err := c.Workspaces.Get(ctx, workspaceID)
-	if err != nil || ws == nil || ws.Assistant == nil {
+	if err != nil || ws == nil {
 		return ""
 	}
-	return *ws.Assistant
+	return ws.SenderName()
 }
 
 // startEmail attaches the inbound pipeline to the service and runs it.

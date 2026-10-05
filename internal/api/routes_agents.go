@@ -811,7 +811,7 @@ func seededAgentMarkdown(name, title string, accept []string) string {
 	b.WriteString("memory: true\n")
 	if len(accept) == 0 {
 		b.WriteString("email:\n")
-		b.WriteString("  accept: [] # mandatory for agent mail; absent or empty = tag closed\n")
+		b.WriteString("  accept: [] # admins always pass; add more senders here\n")
 	} else {
 		b.WriteString("email:\n  accept:\n")
 		for _, entry := range accept {

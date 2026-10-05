@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,8 +41,8 @@ func emailCommand() *cli.Command {
 					&cli.StringFlag{Name: "agent", Sources: cli.EnvVars("TREBI_AGENT"), Usage: "send from the agent subaddress"},
 					&cli.StringSliceFlag{Name: "to", Required: true, Usage: "recipient address (repeatable)"},
 					&cli.StringFlag{Name: "subject", Required: true, Usage: "subject line"},
-					&cli.StringFlag{Name: "text", Required: true, Usage: "message body as Markdown"},
-					&cli.StringFlag{Name: "html", Usage: "your own HTML part; without it the text is rendered as Markdown"},
+					&cli.StringFlag{Name: "text", Usage: "message body as Markdown; Trebi renders the HTML part"},
+					&cli.StringFlag{Name: "html", Usage: "your own HTML body; Trebi makes the text part from it"},
 					&cli.StringFlag{Name: "html-file", Usage: "read the HTML body from a local file"},
 					&cli.StringSliceFlag{Name: "attach", Usage: "attach a local file (repeatable)"},
 					&cli.StringSliceFlag{Name: "workspace-file", Usage: "attach a workspace file by its workspace path (repeatable)"},
@@ -189,10 +190,16 @@ func runEmailSend(_ context.Context, c *cli.Command) error {
 		Subject: c.String("subject"), Text: c.String("text"), HTML: c.String("html"),
 		InReplyTo: c.String("in-reply-to"),
 	}
-	if f := c.String("html-file"); f != "" {
-		if spec.HTML != "" {
-			return errors.New("use --html or --html-file, not both")
+	given := 0
+	for _, f := range []string{"text", "html", "html-file"} {
+		if c.String(f) != "" {
+			given++
 		}
+	}
+	if given != 1 {
+		return errors.New("give one of --text, --html, or --html-file")
+	}
+	if f := c.String("html-file"); f != "" {
 		raw, err := os.ReadFile(f)
 		if err != nil {
 			return fmt.Errorf("read html file: %w", err)
@@ -307,7 +314,21 @@ func runEmailShow(_ context.Context, c *cli.Command) error {
 		}
 	}
 	fmt.Fprintf(w, "Created:  %s\n", mapStr(body, "created_at"))
+	printEmailContent(w, body)
 	return nil
+}
+
+// printEmailContent prints the kept text of one message, or why it has none.
+func printEmailContent(w io.Writer, body map[string]any) {
+	content, ok := body["content"].(map[string]any)
+	switch {
+	case !ok:
+		fmt.Fprintln(w, "Content:  not kept")
+	case mapStr(content, "text") == "":
+		fmt.Fprintln(w, "Content:  HTML only; open it in the UI")
+	default:
+		fmt.Fprintf(w, "\n%s\n", mapStr(content, "text"))
+	}
 }
 
 // runEmailAttachment writes one attachment to a local file (plan A.11: the

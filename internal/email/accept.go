@@ -34,6 +34,14 @@ func NewAcceptRule(entries []job.AcceptEntry) AcceptRule {
 	return r
 }
 
+// NewAgentAcceptRule is the gate of an agent tag. Admins always pass; the
+// list adds senders.
+func NewAgentAcceptRule(entries []job.AcceptEntry) AcceptRule {
+	r := NewAcceptRule(entries)
+	r.admins = true
+	return r
+}
+
 // Empty reports a closed rule: no entry at all. An explicitly empty
 // email.accept list and a missing agent list are both closed.
 func (r AcceptRule) Empty() bool {

@@ -72,7 +72,7 @@ email:
 
 ## Your own HTML
 
-`trebi email send --html` or `--html-file` replaces the rendered Markdown. Use it only for a layout that Markdown cannot give. Use inline styles, and do not link scripts or stylesheets.
+`trebi email send --html` or `--html-file` sends your own HTML instead of Markdown. Use it only for a layout that Markdown cannot give. Give `--text` or the HTML, never both. Trebi makes the plain-text part from the HTML, so do not write a separate text version. Use inline styles, and do not link scripts or stylesheets.
 
 ## Related guides
 

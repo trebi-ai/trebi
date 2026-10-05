@@ -534,7 +534,7 @@ func TestEmailSendParts(t *testing.T) {
 	}
 
 	code, m := send(map[string]any{
-		"html": "<p>The digest is <b>ready</b>.</p>",
+		"text": nil, "html": "<p>The digest is <b>ready</b>.</p>",
 		"attachments": []any{
 			map[string]any{"path": "reports/q3.csv"},
 			map[string]any{"name": "note.txt", "content": base64.StdEncoding.EncodeToString([]byte("hi"))},
@@ -559,7 +559,9 @@ func TestEmailSendParts(t *testing.T) {
 		"missing file":      {"attachments": []any{map[string]any{"path": "reports/none.csv"}}},
 		"bad name":          {"attachments": []any{map[string]any{"name": "a/b.txt", "content": "aGk="}}},
 		"bad base64":        {"attachments": []any{map[string]any{"name": "a.txt", "content": "%%"}}},
-		"too large":         {"html": strings.Repeat("x", email.MaxSendBytes)},
+		"too large":         {"text": nil, "html": strings.Repeat("x", email.MaxSendBytes)},
+		"text and html":     {"html": "<p>ready</p>"},
+		"no body":           {"text": nil},
 	} {
 		sends := e.fw.sends
 		if code, m := send(extra); code != 400 || errCode(m) != "validation" || e.fw.sends != sends {

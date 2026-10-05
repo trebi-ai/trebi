@@ -78,7 +78,7 @@ func (s *Service) emailAction(ctx context.Context, opts LaunchOpts) ConnectorAct
 		Hint: "Email: you send email from " + from + ". Send one message with:\n" +
 			"  trebi email send --to <address> --subject \"<subject>\" --text \"<Markdown body>\"\n" +
 			"Repeat --to for more recipients. Trebi renders the Markdown as the HTML part (see `trebi guide email-format`). " +
-			"Add --html-file <file> only for a layout Markdown cannot give; --text is then the plain-text part. Add --attach <file> to attach a file (repeatable).\n" +
+			"For a layout Markdown cannot give, use --html-file <file> instead of --text, never both; Trebi makes the plain-text part from the HTML. Add --attach <file> to attach a file (repeatable).\n" +
 			"Trebi sends only to workspace admins and the email allowlist. If Trebi refuses a recipient, report it. Do not use a different mail tool.\n" +
 			"When you answer a message, your final answer is the reply. Use this command only for a separate message.",
 	}

@@ -471,7 +471,7 @@ func (g *Ingress) runReply(ctx context.Context, msg IngressMessage, runID, inbox
 // askReply replays one reply as an assistant message (plan J: a reply on
 // a resolved item never repeats the action).
 func (g *Ingress) askReply(ctx context.Context, msg IngressMessage, d RouteDecision, t *replyTarget) {
-	convID, err := g.act.Ask(ctx, d, msg, "", inboundText(msg, untrustedFor(msg), false))
+	convID, err := g.act.Ask(ctx, d, msg, "", inboundText(msg, untrustedFor(msg), ""))
 	if err != nil {
 		g.log.Warn("email.reply ask", "id", msg.ID, "error", err)
 	}

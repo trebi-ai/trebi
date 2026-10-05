@@ -108,3 +108,28 @@ func TestConnectorActionsUseConnectionRefs(t *testing.T) {
 		t.Fatal("create without a connection must fail")
 	}
 }
+
+func TestEmailShowTransform(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		dir, key, absent string
+	}{
+		{"in", "untrusted_text", "text"},
+		{"out", "text", "untrusted_text"},
+	} {
+		body := `{"id":"01A","direction":"` + tc.dir + `","content":{"text":"hi","html":"<p>hi</p>"}}`
+		out, err := emailShowTransform(nil, 200, []byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m struct {
+			Content map[string]any `json:"content"`
+		}
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatal(err)
+		}
+		if m.Content[tc.key] != "hi" || m.Content[tc.absent] != nil || m.Content["html"] != nil {
+			t.Errorf("%s: content = %v", tc.dir, m.Content)
+		}
+	}
+}

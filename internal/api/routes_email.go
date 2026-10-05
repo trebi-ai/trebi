@@ -80,9 +80,9 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(body.Workspace) == "" || len(body.To) == 0 ||
-		strings.TrimSpace(body.Subject) == "" || strings.TrimSpace(body.Text) == "" {
+		strings.TrimSpace(body.Subject) == "" {
 		writeErr(w, http.StatusBadRequest, "validation",
-			"workspace, to, subject, and text are required")
+			"workspace, to, and subject are required")
 		return
 	}
 	ws, err := s.ws.Resolve(r.Context(), body.Workspace)
@@ -153,11 +153,14 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 		opts.RunID = actor.RunID
 	}
 	if body.Agent != "" {
+		opts.FromName = body.Agent
 		if row, err := s.findAgentRow(r.Context(), ws.ID, body.Agent); err == nil {
 			if parsed, err := job.ParseFile(row.Path); err == nil && parsed != nil && parsed.Title != "" {
 				opts.FromName = parsed.Title
 			}
 		}
+	} else {
+		opts.FromName = ws.SenderName()
 	}
 	queued, err := s.email.Send(r.Context(), opts)
 	if err != nil {

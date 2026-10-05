@@ -247,7 +247,8 @@ func (c *ControlPlane) replyIfExchangeEnded(ctx context.Context, run *runs.Run) 
 	opts := email.ReplyOpts{RunID: run.ID, ConversationID: run.ConversationID}
 	if conv, err := c.Conversations.Get(ctx, run.ConversationID); err == nil && conv.Operator != "" {
 		short := strings.TrimPrefix(conv.Operator, "agents/")
-		if j, _ := c.findJobKind(ctx, run.Workspace, conv.Operator, runs.KindAgent); j != nil {
+		opts.FromName = short
+		if j, _ := c.findJobKind(ctx, run.Workspace, conv.Operator, runs.KindAgent); j != nil && j.Title != "" {
 			opts.FromName = j.Title
 		}
 		if short != "" {

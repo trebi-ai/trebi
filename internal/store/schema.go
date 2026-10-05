@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 39
+const SchemaVersion = 40
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1145,6 +1145,12 @@ CREATE INDEX idx_runs_queue_id ON runs(queue_id);
 		// parts. The send clears it with the body.
 		`
 ALTER TABLE outbox ADD COLUMN parts TEXT;
+`,
+		// v40: an email message keeps its text and HTML until the content
+		// prune clears them. NULL means the daemon does not have them.
+		`
+ALTER TABLE email_messages ADD COLUMN body_text TEXT;
+ALTER TABLE email_messages ADD COLUMN body_html TEXT;
 `,
 	}
 }

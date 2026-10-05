@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,12 @@ const (
 	MaxEmailPollInterval     = 10 * time.Minute
 )
 
+// Bounds of email.content_days, the days the daemon keeps message text.
+const (
+	DefaultEmailContentDays = 45
+	MaxEmailContentDays     = 3650
+)
+
 // EmailConfig is the instance-level email channel block. A present worker
 // URL enables the channel; there is no enabled flag. An absent block
 // disables polling, the notifier channel, and every address surface.
@@ -31,6 +38,7 @@ type EmailConfig struct {
 	PollInterval string   `yaml:"poll_interval,omitempty"` // empty → 30s
 	RequireDMARC *bool    `yaml:"require_dmarc,omitempty"` // nil → true
 	FromName     string   `yaml:"from_name,omitempty"`     // empty → Trebi
+	ContentDays  *int     `yaml:"content_days,omitempty"`  // nil → 45; 0 → do not keep
 }
 
 // Enabled reports whether the email channel is on: worker URL present.
@@ -51,6 +59,20 @@ func (e EmailConfig) PollIntervalDuration() (time.Duration, error) {
 
 // DMARCRequired reports the inbound DMARC policy. Unset means required.
 func (e EmailConfig) DMARCRequired() bool { return e.RequireDMARC == nil || *e.RequireDMARC }
+
+// ContentDaysOrDefault returns the days the daemon keeps message text.
+// Zero means the daemon does not keep it.
+func (e EmailConfig) ContentDaysOrDefault() int {
+	if e.ContentDays == nil {
+		return DefaultEmailContentDays
+	}
+	return *e.ContentDays
+}
+
+// ContentRetention is ContentDaysOrDefault as a duration.
+func (e EmailConfig) ContentRetention() time.Duration {
+	return time.Duration(e.ContentDaysOrDefault()) * 24 * time.Hour
+}
 
 // FromSenderName returns the display name for outbound mail.
 func (e EmailConfig) FromSenderName() string {
@@ -78,6 +100,21 @@ func (e EmailConfig) ResolveToken() (string, error) {
 	return string(v), nil
 }
 
+// setContentDays sets content_days. Empty or "-" restores the default.
+func (e *EmailConfig) setContentDays(value string) error {
+	v := strings.TrimSpace(value)
+	if v == "" || v == "-" {
+		e.ContentDays = nil
+		return nil
+	}
+	days, err := strconv.Atoi(v)
+	if err != nil || days < 0 || days > MaxEmailContentDays {
+		return fmt.Errorf("email.content_days: want integer 0 to %d", MaxEmailContentDays)
+	}
+	e.ContentDays = &days
+	return nil
+}
+
 // checkEmail validates the email block. It checks the token reference form,
 // not the stored secret; a missing secret is a doctor finding, not a config
 // error, so the daemon still boots. Without a Worker URL the block is
@@ -101,6 +138,9 @@ func (e *ConfigError) checkEmail(c Config) {
 	e.checkEmailDomain(ec, bearer)
 	e.checkEmailAdmins(ec.Admins, bearer)
 	e.checkEmailPollInterval(ec)
+	if d := ec.ContentDaysOrDefault(); d < 0 || d > MaxEmailContentDays {
+		e.add("email.content_days", fmt.Sprintf("must be between 0 and %d", MaxEmailContentDays))
+	}
 }
 
 // checkEmailWorker validates the Worker URL and the token reference form,
@@ -158,5 +198,5 @@ func (e *ConfigError) checkEmailPollInterval(ec EmailConfig) {
 // emailBlockSet reports whether any email key besides worker is set.
 func emailBlockSet(ec EmailConfig) bool {
 	return ec.Token != "" || ec.Domain != "" || len(ec.Admins) > 0 ||
-		ec.PollInterval != "" || ec.RequireDMARC != nil || ec.FromName != ""
+		ec.PollInterval != "" || ec.RequireDMARC != nil || ec.FromName != "" || ec.ContentDays != nil
 }

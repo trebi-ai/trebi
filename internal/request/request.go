@@ -955,7 +955,10 @@ type EmailFile struct {
 
 // Build renders the spec as POST /v1/email/send.
 func (e EmailSendSpec) Build() HTTPRequest {
-	body := map[string]any{"workspace": e.Workspace, "to": e.To, "subject": e.Subject, "text": e.Text}
+	body := map[string]any{"workspace": e.Workspace, "to": e.To, "subject": e.Subject}
+	if e.Text != "" {
+		body["text"] = e.Text
+	}
 	if e.Agent != "" {
 		body["agent"] = e.Agent
 	}

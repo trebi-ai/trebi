@@ -89,6 +89,7 @@ func (c *ControlPlane) outboxWorker(ctx context.Context) {
 				if err := c.Outbox.Prune(ctx, now); err != nil {
 					c.log.Warn("outbox prune", "error", err)
 				}
+				c.pruneEmailContent(ctx, now)
 			}
 		}
 	}
@@ -916,4 +917,20 @@ func (c *ControlPlane) assistantLimit(ctx context.Context, item *dispatch.QueueI
 		}
 	}
 	return nil
+}
+
+// pruneEmailContent clears email text older than email.content_days. It
+// runs with the channel off too, so a lower setting still takes effect.
+func (c *ControlPlane) pruneEmailContent(ctx context.Context, now time.Time) {
+	if c.Email == nil {
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		c.log.Warn("email content prune", "error", err)
+		return
+	}
+	if _, err := c.Email.PruneContent(ctx, now, cfg.Email.ContentRetention()); err != nil {
+		c.log.Warn("email content prune", "error", err)
+	}
 }

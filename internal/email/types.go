@@ -29,6 +29,9 @@ type Settings struct {
 	PollInterval time.Duration
 	RequireDMARC bool
 	FromName     string
+	// ContentRetention is how long message text stays in the store.
+	// Zero means the daemon does not keep it.
+	ContentRetention time.Duration
 }
 
 // Attachment is one inbound attachment's metadata. Bytes stay in the

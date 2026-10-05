@@ -677,3 +677,21 @@ func mustSeq(t *testing.T, st *store.Store) int64 {
 	}
 	return v.Int64
 }
+
+func TestWorkspaceSenderName(t *testing.T) {
+	t.Parallel()
+	nick, blank := "Ellis", "  "
+	cases := []struct {
+		ws   workspaces.Workspace
+		want string
+	}{
+		{workspaces.Workspace{Name: "ocral"}, "ocral"},
+		{workspaces.Workspace{Name: "ocral", Assistant: &blank}, "ocral"},
+		{workspaces.Workspace{Name: "ocral", Assistant: &nick}, "Ellis"},
+	}
+	for _, tc := range cases {
+		if got := tc.ws.SenderName(); got != tc.want {
+			t.Errorf("SenderName(%+v) = %q, want %q", tc.ws, got, tc.want)
+		}
+	}
+}

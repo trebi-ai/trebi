@@ -47,6 +47,15 @@ type Workspace struct {
 	RunningCount int `json:"running_count"`
 }
 
+// SenderName is the From name of mail the workspace assistant sends: the
+// assistant nickname, else the workspace name.
+func (w Workspace) SenderName() string {
+	if w.Assistant != nil && strings.TrimSpace(*w.Assistant) != "" {
+		return strings.TrimSpace(*w.Assistant)
+	}
+	return w.Name
+}
+
 // Service owns workspace registry rows.
 type Service struct {
 	st            *store.Store

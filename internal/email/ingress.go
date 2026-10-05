@@ -180,14 +180,16 @@ func (s *Service) RecordInbound(ctx context.Context, msg IngressMessage, d Route
 	if err != nil {
 		att = []byte("[]")
 	}
+	text, html := s.keptContent(msg.Text, msg.HTML)
 	res, err := s.st.DB().ExecContext(ctx, `INSERT INTO email_messages (
 		id, direction, workspace_id, agent, message_id, in_reply_to, thread_root,
-		sender, subject, dmarc, disposition, attachments, trace_id, created_at, revision
-	) VALUES (?, 'in', ?,?,?,?,?,?,?,?,?,?,?,?,1)
+		sender, subject, dmarc, disposition, attachments, trace_id, created_at, revision,
+		body_text, body_html
+	) VALUES (?, 'in', ?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)
 		ON CONFLICT(id) DO NOTHING`,
 		msg.ID, d.WorkspaceID, d.Agent, msg.MessageID, msg.InReplyTo, ThreadRoot(msg),
 		msg.From, msg.Subject, msg.Dmarc, d.Disposition(), string(att), d.TraceID,
-		time.Now().UTC().Format(time.RFC3339))
+		time.Now().UTC().Format(time.RFC3339), text, html)
 	if err != nil {
 		return false, fmt.Errorf("record inbound %s: %w", msg.ID, err)
 	}
@@ -490,13 +492,13 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 func (g *Ingress) dispatch(ctx context.Context, msg IngressMessage, d RouteDecision, u *runs.UntrustedMessage) {
 	switch d.Class {
 	case RouteAgent:
-		convID, err := g.act.Ask(ctx, d, msg, "agents/"+d.Agent, inboundText(msg, u, false))
+		convID, err := g.act.Ask(ctx, d, msg, "agents/"+d.Agent, inboundText(msg, u, ""))
 		if err != nil {
 			g.log.Warn("email.ask", "agent", d.Agent, "id", msg.ID, "error", err)
 		}
 		g.svc.LinkInbound(ctx, msg.ID, "", convID, "")
 	case RouteAssistant, RouteMisrouted:
-		convID, err := g.act.Ask(ctx, d, msg, "", inboundText(msg, u, d.Class == RouteMisrouted))
+		convID, err := g.act.Ask(ctx, d, msg, "", inboundText(msg, u, d.misroutedNote(msg.Tag)))
 		if err != nil {
 			g.log.Warn("email.ask", "id", msg.ID, "error", err)
 		}
@@ -572,14 +574,24 @@ func untrustedFor(msg IngressMessage) *runs.UntrustedMessage {
 	return u
 }
 
-// inboundText composes the conversation message: the misrouted mark
-// when set, a header line, and the untrusted fence (A.8, A.13).
-func inboundText(msg IngressMessage, u *runs.UntrustedMessage, misrouted bool) string {
-	var b strings.Builder
-	if misrouted {
-		b.WriteString("Misrouted email for +" + msg.Tag +
-			": no agent in this workspace has that tag. The original tag is kept.\n\n")
+// misroutedNote is the mark the assistant sees on a misrouted message, or "".
+func (d RouteDecision) misroutedNote(tag string) string {
+	switch {
+	case d.Class != RouteMisrouted:
+		return ""
+	case d.Reason == ReasonNotAccepted:
+		return "Misrouted email for +" + tag + ": the agent with that ID does not accept this sender. " +
+			"Its email.accept list is empty or does not name the sender. The original tag is kept.\n\n"
+	default:
+		return "Misrouted email for +" + tag + ": no agent in this workspace has that tag. The original tag is kept.\n\n"
 	}
+}
+
+// inboundText composes the conversation message: the note when set, a
+// header line, and the untrusted fence (A.8, A.13).
+func inboundText(msg IngressMessage, u *runs.UntrustedMessage, note string) string {
+	var b strings.Builder
+	b.WriteString(note)
 	b.WriteString("Email from " + msg.From + ": " + msg.Subject + "\n\n")
 	b.WriteString(u.Fence())
 	return b.String()
