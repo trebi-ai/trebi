@@ -1,6 +1,6 @@
 # request
 
-Request operations: a job run asks a person for a decision, then continues with the answer. Requests are a Pro feature. Without the license, `create` returns 402 `license_required`; answer, dismiss, and the reads still work.
+Request operations: a job run asks a person for a decision, then continues with the answer. Requests are a Pro feature. When the linked Trebi Cloud plan does not grant `requests`, `create` returns 402 `plan_required`; answer, dismiss, and the reads still work.
 
 Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error envelope `{"error":{"code","message","details"}}` unchanged, with `isError: true`.
 

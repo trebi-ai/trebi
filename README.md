@@ -26,7 +26,6 @@ trebi/
     ui/                # embedded SPA (build tag ui; dist is git-ignored)
   scripts/
     eval.py                    # uv: run/oracle/review + report/ls/why/compare
-    build.sh                   # dev build with a stamped version (embeds the UI; --no-ui to skip)
     semver-ge.sh               # release compatibility rule
 ```
 
@@ -39,22 +38,15 @@ go build -o ../build/trebi ./cmd/trebi
 ./../build/trebi --help
 ```
 
-`scripts/build.sh` wraps the build, stamps `internal/api.Version` from
-`git describe --tags --always --dirty`, and restarts the LaunchAgent when one
-is installed. It embeds the UI by default: it builds the sibling `../trebi-ui`
-working tree (override with `TREBI_UI_SRC`), copies its `apps/app/dist` into
-git-ignored `internal/ui/dist`, and builds with `-tags ui`. The UI version is
-stamped from that checkout's `git describe` too (e.g.
-`0.1.0-2-g5fd0d06-dirty`); `TREBI_UI_VERSION` overrides it, and the release
-job keeps its npm-stamped version. Pass `--no-ui` for a plain binary. Only the
-release workflow downloads a `trebi-ui` release tarball; local builds never do.
+`go build` makes a plain binary with no embedded UI. `-tags ui` embeds the SPA from git-ignored `internal/ui/dist`; CI builds it with the fixture under `internal/ui/testdata/dist`. The release binary is built elsewhere and is not built from this repository.
 
 ## Releases
 
 This repository does not release. `trebi-pro` owns the tags and the releases,
 and it creates them here, so the download URLs stay on the public repository.
 One binary ships, `trebi_*`, with `SHA256SUMS`. Pro features live in that same
-binary and a license unlocks them at run time. The full scheme is
+binary. A Trebi Cloud account with the Pro plan unlocks them at run time; the
+user links it in the UI. The full scheme is
 `../docs/plans/2026-09-18-release-versioning.md` plus
 `../docs/plans/2026-09-19-open-core-build.md`.
 

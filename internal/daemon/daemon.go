@@ -29,7 +29,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/launch"
-	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
@@ -78,9 +77,6 @@ type Options struct {
 	Ext ext.Set
 	// Version is the daemon version a connector sees in initialize.
 	Version string
-	// License is the process-wide service built in service daemon. Nil
-	// builds a new one from Ext.License so tests can omit it.
-	License *license.Service
 }
 
 // ControlPlane wires workers to services.
@@ -106,7 +102,6 @@ type ControlPlane struct {
 	Proposals *proposals.Service
 	Cloud     *cloudlink.Service
 	Webhooks  *webhooks.Service
-	License   *license.Service
 	Launcher  *launch.Launcher
 	Requests  *requests.Service
 	Opts      Options
@@ -214,10 +209,6 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	connector := connectors.New(st, ws, sk).WithUserHome(harness.UserHome()).WithVersion(opts.Version).WithConversations(r).
 		WithInstall(connectors.InstallConfig{Catalog: catalog})
 	r.WithActions(connector)
-	lic := opts.License
-	if lic == nil {
-		lic = license.New(opts.Ext.License)
-	}
 	ob := outbox.New(st)
 	em := email.New(st).WithConversations(conv).WithOutbox(ob)
 	r.WithEmail(em)
@@ -241,7 +232,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	if cfg != nil {
 		reqOpts = requests.Options{ExpireAfter: cfg.Requests.ExpireAfterDuration(), Retain: cfg.Requests.RetainDuration()}
 	}
-	reqSvc := requests.NewService(st, r, launcher, lic, requests.NewReportStore(home.RequestsDir()), reqOpts)
+	reqSvc := requests.NewService(st, r, launcher, cl, requests.NewReportStore(home.RequestsDir()), reqOpts)
 	r.SetRequestGate(reqSvc)
 	c := &ControlPlane{
 		Store:         st,
@@ -262,7 +253,6 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Email:         em,
 		Cloud:         cl,
 		Webhooks:      hk,
-		License:       lic,
 		Launcher:      launcher,
 		Requests:      reqSvc,
 		Opts:          opts,

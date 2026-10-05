@@ -48,8 +48,6 @@ func (s *Server) routeSystem(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/system/guides", s.handleGuidesList)
 	mux.HandleFunc("GET /v1/system/guides/{topic}", s.handleGuideGet)
 	mux.HandleFunc("GET /v1/system/overview", s.handleOverview)
-	mux.HandleFunc("GET /v1/system/license", s.handleSystemLicenseGet)
-	mux.HandleFunc("PUT /v1/system/license", s.handleSystemLicensePut)
 	mux.HandleFunc("GET /v1/cloud/status", s.handleCloudStatus)
 	mux.HandleFunc("POST /v1/cloud/link", s.handleCloudLink)
 	mux.HandleFunc("DELETE /v1/cloud/link", s.handleCloudUnlink)
@@ -235,28 +233,6 @@ func (s *Server) doctorSummary() map[string]int {
 		}
 	}
 	return out
-}
-
-// handleSystemLicenseGet answers the license posture of this build.
-func (s *Server) handleSystemLicenseGet(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.lic.State())
-}
-
-// handleSystemLicensePut installs a license key. A free build answers 400:
-// the key has no verifier to satisfy here.
-func (s *Server) handleSystemLicensePut(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		License string `json:"license"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil || strings.TrimSpace(body.License) == "" {
-		writeErr(w, http.StatusBadRequest, "validation", "license key required")
-		return
-	}
-	if err := s.lic.Install([]byte(body.License)); err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, s.lic.State())
 }
 
 // harnessAuthTable maps each known harness to whether its auth is ok.

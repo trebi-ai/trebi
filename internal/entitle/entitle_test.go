@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// TestFeatureNamesMatchContract pins the four Feature values to the
+// TestFeatureNamesMatchContract pins the Feature values to the
 // vendored contract's features array, set-equal with no extras. A rename
 // on either side fails here.
 func TestFeatureNamesMatchContract(t *testing.T) {
@@ -24,7 +24,7 @@ func TestFeatureNamesMatchContract(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	local := []Feature{Watchdog, RemoteAccess, HostedIngress, Backup}
+	local := []Feature{Watchdog, RemoteAccess, HostedIngress, Backup, Requests}
 	if len(local) != len(fixture.Features) {
 		t.Fatalf("contract has %d features, entitle declares %d", len(fixture.Features), len(local))
 	}

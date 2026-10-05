@@ -122,18 +122,19 @@ def clean_old_runs(out: Path, *, max_age: timedelta = MAX_RUN_AGE) -> None:
 
 
 def build(repo: Path) -> None:
-    (repo / "build").mkdir(exist_ok=True)
+    # build/eval, not build/trebi: that path holds the binary the local service runs.
+    (repo / "build" / "eval").mkdir(parents=True, exist_ok=True)
     (repo / "out").mkdir(exist_ok=True)
     env = os.environ.copy()
     if platform.system() == "Darwin":
         env["CGO_ENABLED"] = "1"
-    subprocess.check_call(["go", "build", "-o", "build/trebi", "./cmd/trebi"], cwd=repo, env=env)
+    subprocess.check_call(["go", "build", "-o", "build/eval/trebi", "./cmd/trebi"], cwd=repo, env=env)
     subprocess.check_call(
-        ["go", "build", "-o", "build/trebi-eval", "./cmd/trebi-eval"], cwd=repo, env=env
+        ["go", "build", "-o", "build/eval/trebi-eval", "./cmd/trebi-eval"], cwd=repo, env=env
     )
     # The fake harness sits next to trebi, so a trial PATH reaches it.
-    subprocess.check_call(["go", "build", "-o", "build/fake", "./cmd/fake"], cwd=repo, env=env)
-    os.environ["TREBI_BIN"] = str(repo / "build" / "trebi")
+    subprocess.check_call(["go", "build", "-o", "build/eval/fake", "./cmd/fake"], cwd=repo, env=env)
+    os.environ["TREBI_BIN"] = str(repo / "build" / "eval" / "trebi")
 
 
 def _tee(src, *dsts: Any) -> None:
@@ -151,9 +152,9 @@ def _tee(src, *dsts: Any) -> None:
 def invoke_eval(repo: Path, sub_args: list[str]) -> int:
     log_path = Path(os.environ.get("EVAL_LOG", repo / "out" / "eval-live.log"))
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    trebi = Path(os.environ.get("TREBI_BIN", repo / "build" / "trebi"))
+    trebi = Path(os.environ.get("TREBI_BIN", repo / "build" / "eval" / "trebi"))
     args = [
-        str(repo / "build" / "trebi-eval"),
+        str(repo / "build" / "eval" / "trebi-eval"),
         "--evals",
         str(repo / "evals"),
         "--out",

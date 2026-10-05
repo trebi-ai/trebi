@@ -27,7 +27,6 @@ func newRemoteGate(mux *http.ServeMux) *remoteGate {
 		"POST /v1/system/shutdown": true,
 		"POST /v1/cloud/link":      true,
 		"DELETE /v1/cloud/link":    true,
-		"PUT /v1/system/license":   true,
 	}}
 }
 

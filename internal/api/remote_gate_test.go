@@ -14,7 +14,7 @@ func TestRemoteGate(t *testing.T) {
 	ok := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }
 	for _, p := range []string{
 		"POST /v1/system/shutdown", "POST /v1/cloud/link", "DELETE /v1/cloud/link",
-		"PUT /v1/system/license", "PATCH /v1/config", "POST /v1/jobs", "GET /v1/jobs",
+		"PATCH /v1/config", "POST /v1/jobs", "GET /v1/jobs",
 	} {
 		mux.HandleFunc(p, ok)
 	}
@@ -38,7 +38,6 @@ func TestRemoteGate(t *testing.T) {
 		{"shutdown", remote("mcp:read", "mcp:write"), "POST", "/v1/system/shutdown", "", 403, "remote_denied"},
 		{"link", remote("mcp:read", "mcp:write"), "POST", "/v1/cloud/link", "", 403, "remote_denied"},
 		{"unlink", remote("mcp:read", "mcp:write"), "DELETE", "/v1/cloud/link", "", 403, "remote_denied"},
-		{"license", remote("mcp:read", "mcp:write"), "PUT", "/v1/system/license", "", 403, "remote_denied"},
 		{"config remote_mcp", remote("mcp:read", "mcp:write"), "PATCH", "/v1/config", `{"set":{"cloud.remote_mcp":"false"}}`, 403, "remote_denied"},
 		{"config other", remote("mcp:read", "mcp:write"), "PATCH", "/v1/config", `{"set":{"defaults.command":"claude"}}`, 204, ""},
 	} {

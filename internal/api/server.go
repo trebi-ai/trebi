@@ -33,7 +33,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/launch"
-	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
@@ -73,7 +72,6 @@ type Server struct {
 	email      *email.Service
 	cloud      *cloudlink.Service
 	hooks      *webhooks.Service
-	lic        *license.Service
 	templates  *agents.Catalog
 	proposals  *proposals.Service
 	requests   *requests.Service
@@ -127,9 +125,6 @@ type Options struct {
 	FilesMaxBytes  int64  // 0 = files.DefaultMaxBytes
 	WorkspacesRoot string // pathless workspace create; empty refuses it
 	Ext            ext.Set
-	// License is the process-wide service built in service daemon. Nil
-	// builds a new one from Ext.License so tests can omit it.
-	License *license.Service
 	// LookupLatest overrides the GitHub release lookup used by
 	// /v1/system/update. Tests inject a stub so the suite never hits the network.
 	LookupLatest func() (tag, url string, err error)
@@ -147,10 +142,6 @@ func New(st *store.Store, opts Options) *Server {
 	r.SetBudgetGate(ws)
 	r.SetKitSource(ws)
 	q := dispatch.NewQueue(st)
-	lic := opts.License
-	if lic == nil {
-		lic = license.New(opts.Ext.License)
-	}
 	sk := skills.New(st)
 	conn := connectors.New(st, ws, sk).WithConversations(r)
 	cl := cloudlink.New(st)
@@ -166,12 +157,11 @@ func New(st *store.Store, opts Options) *Server {
 		conv:         conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
 		harness:      harness.New(st, tmux.DefaultDriver{}, harness.Options{}),
 		sched:        schedule.New(st),
-		lic:          lic,
 		email:        email.New(st),
 		templates:    agents.NewCatalog(),
 		proposals:    proposals.NewService(st, fs, ws, st, r),
 		launch:       l,
-		requests:     requests.NewService(st, r, l, lic, requests.NewReportStore(home.RequestsDir()), requests.Options{}),
+		requests:     requests.NewService(st, r, l, cl, requests.NewReportStore(home.RequestsDir()), requests.Options{}),
 		catalog:      registry.NewLive(opts.Registry),
 		cloud:        cl,
 		hooks:        webhooks.New(st, conn, cl),
@@ -336,54 +326,32 @@ func (s *Server) BindCatalog(c *registry.Live) {
 	}
 }
 
-func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, skillsSvc *skills.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, licSvc *license.Service, cloudSvc *cloudlink.Service, hooksSvc *webhooks.Service, launcher *launch.Launcher, reqSvc *requests.Service) {
-	if runsSvc != nil {
-		s.runs = runsSvc
-	}
-	if ws != nil {
-		s.ws = ws
-	}
-	if connectors != nil {
-		s.connectors = connectors
-	}
-	if sched != nil {
-		s.sched = sched
-	}
-	if alertsSvc != nil {
-		s.alerts = alertsSvc
-	}
-	if filesSvc != nil {
-		s.files = filesSvc
-	}
-	if skillsSvc != nil {
-		s.skills = skillsSvc
-	}
-	if conv != nil {
-		s.conv = conv
-	}
-	if harnessSvc != nil {
-		s.harness = harnessSvc
-	}
-	if emailSvc != nil {
-		s.email = emailSvc
-	}
-	if licSvc != nil {
-		s.lic = licSvc
-	}
+func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service, connectors *connectors.Service, sched *schedule.Service, alertsSvc *alerts.Service, filesSvc *files.Service, skillsSvc *skills.Service, conv *conversations.Service, harnessSvc *harness.Service, emailSvc *email.Service, cloudSvc *cloudlink.Service, hooksSvc *webhooks.Service, launcher *launch.Launcher, reqSvc *requests.Service) {
+	bind(&s.runs, runsSvc)
+	bind(&s.ws, ws)
+	bind(&s.connectors, connectors)
+	bind(&s.sched, sched)
+	bind(&s.alerts, alertsSvc)
+	bind(&s.files, filesSvc)
+	bind(&s.skills, skillsSvc)
+	bind(&s.conv, conv)
+	bind(&s.harness, harnessSvc)
+	bind(&s.email, emailSvc)
 	if runsSvc != nil && ws != nil && filesSvc != nil {
 		s.proposals = proposals.NewService(s.st, s.files, s.ws, s.st, s.runs)
 	}
 	if cloudSvc != nil {
 		s.cloud = cloudSvc.WithMCP(s)
 	}
-	if hooksSvc != nil {
-		s.hooks = hooksSvc
-	}
-	if launcher != nil {
-		s.launch = launcher
-	}
-	if reqSvc != nil {
-		s.requests = reqSvc
+	bind(&s.hooks, hooksSvc)
+	bind(&s.launch, launcher)
+	bind(&s.requests, reqSvc)
+}
+
+// bind keeps the current service when the shared one is nil.
+func bind[T any](dst **T, v *T) {
+	if v != nil {
+		*dst = v
 	}
 }
 
@@ -440,9 +408,6 @@ func (s *Server) Cloud() *cloudlink.Service { return s.cloud }
 
 // Hooks returns the hosted webhook service.
 func (s *Server) Hooks() *webhooks.Service { return s.hooks }
-
-// License returns the license service.
-func (s *Server) License() *license.Service { return s.lic }
 
 // Handler returns the root mux.
 func (s *Server) Handler() http.Handler {

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/trebi-ai/trebi/internal/license"
+	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
@@ -112,9 +112,14 @@ func (f *fakeLauncher) Calls() []launchCall {
 	return append([]launchCall(nil), f.calls...)
 }
 
-type fakeLicense struct{ ok atomic.Bool }
+type fakeGrant struct{ ok atomic.Bool }
 
-func (f *fakeLicense) Has(license.Feature) bool { return f.ok.Load() }
+func (f *fakeGrant) Entitlement() entitle.State {
+	if !f.ok.Load() {
+		return entitle.State{Linked: true, Plan: "free"}
+	}
+	return entitle.State{Linked: true, Plan: "pro_cloud", Features: []entitle.Feature{entitle.Requests}}
+}
 
 type clock struct {
 	mu sync.Mutex
@@ -138,7 +143,7 @@ type harness struct {
 	st     *store.Store
 	rs     *fakeRuns
 	launch *fakeLauncher
-	lic    *fakeLicense
+	grant  *fakeGrant
 	clock  *clock
 	dbPath string
 	dir    string
@@ -149,12 +154,12 @@ func newHarness(t *testing.T) *harness {
 	dir := t.TempDir()
 	h := &harness{
 		rs:     &fakeRuns{runs: map[string]*runs.Run{}},
-		lic:    &fakeLicense{},
+		grant:  &fakeGrant{},
 		clock:  &clock{t: time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)},
 		dbPath: filepath.Join(dir, "trebi.db"),
 		dir:    dir,
 	}
-	h.lic.ok.Store(true)
+	h.grant.ok.Store(true)
 	h.launch = &fakeLauncher{rs: h.rs}
 	h.open(t)
 	return h
@@ -168,7 +173,7 @@ func (h *harness) open(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	h.st = st
-	h.svc = NewService(st, h.rs, h.launch, h.lic, NewReportStore(filepath.Join(h.dir, "requests")), Options{}).WithClock(h.clock.now)
+	h.svc = NewService(st, h.rs, h.launch, h.grant, NewReportStore(filepath.Join(h.dir, "requests")), Options{}).WithClock(h.clock.now)
 }
 
 // run adds a live run with a session and a working dir.
@@ -235,15 +240,15 @@ func TestCreateNeedsRunActor(t *testing.T) {
 	}
 }
 
-func TestCreateNeedsLicense(t *testing.T) {
+func TestCreateNeedsPlan(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	actor := h.run(t, "RUN1")
-	h.lic.ok.Store(false)
-	if _, err := h.svc.Create(context.Background(), actor, CreateOpts{Type: TypeConfirm, Title: "x"}); !errors.Is(err, ErrLicense) {
+	h.grant.ok.Store(false)
+	if _, err := h.svc.Create(context.Background(), actor, CreateOpts{Type: TypeConfirm, Title: "x"}); !errors.Is(err, ErrPlan) {
 		t.Fatalf("err %v", err)
 	}
-	h.lic.ok.Store(true)
+	h.grant.ok.Store(true)
 	r := h.create(t, actor, CreateOpts{})
 	if h.topics(t, "request.created") != 1 || r.Status != StatusPending {
 		t.Fatalf("created %+v", r)

@@ -17,20 +17,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	agentwire "github.com/trebi-ai/agent-wire"
 
-	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/assistant"
-	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/license"
+	"github.com/trebi-ai/trebi/internal/entitle"
+	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
-
-type requestsVerifier struct{ features []string }
-
-func (v requestsVerifier) Verify([]byte, time.Time) (ext.Entitlement, error) {
-	return ext.Entitlement{Plan: "pro", Features: v.features, ExpiresAt: time.Now().Add(time.Hour)}, nil
-}
 
 // recDriver runs the fake driver and keeps every StartRequest.
 type recDriver struct {
@@ -61,7 +54,7 @@ func (d *recDriver) all() []agentwire.StartRequest {
 	return append([]agentwire.StartRequest(nil), d.reqs...)
 }
 
-// requestStack is one daemon with a licensed requests feature and a job whose
+// requestStack is one daemon whose cloud plan grants requests, and a job whose
 // fake harness writes its run token and its prompts, and ends its
 // turn once the test creates the file "go". The harness also ends when
 // the test removes its directory or after 60s, so it never outlives the test.
@@ -81,14 +74,11 @@ func newRequestStack(t *testing.T, features ...string) *requestStack {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if features == nil {
-		features = []string{string(license.FeatureRequests)}
+		features = []string{string(entitle.Requests)}
 	}
-	s, base := startTestServerOpts(t, api.Options{License: license.New(requestsVerifier{features: features})})
+	s, base := startTestServerSeeded(t, api.Options{}, func(st *store.Store) { grantCloud(t, st, features) })
 	t.Setenv("TREBI_FAKE_HARNESS", "")    // the CLI driver below runs the job
 	t.Setenv("ANTHROPIC_API_KEY", "test") // passes the auth probe; recDriver is not a bare FakeDriver
-	if err := os.WriteFile(home.LicensePath(), []byte("test"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	st := &requestStack{base: base, dir: t.TempDir(), srv: s}
 	script := fmt.Sprintf(`read -r line; printf '%%s\n' "$line" >> %[1]s/prompts; printf '%%s' "$TREBI_RUN_TOKEN" > %[1]s/token.tmp; mv %[1]s/token.tmp %[1]s/token
 echo '{"type":"init","session_id":"sess-1"}'
@@ -351,17 +341,17 @@ func TestRequestAnswerErrors(t *testing.T) {
 	}
 }
 
-func TestRequestLicense402(t *testing.T) {
-	s := newRequestStack(t, "email")
+func TestRequestPlan402(t *testing.T) {
+	s := newRequestStack(t, "backup")
 	_, token := s.launch(t)
 	defer s.endTurn(t)
 	code, body, _ := doJSONHeader(t, "POST", s.base+"/v1/requests", map[string]any{"type": "confirm", "title": "x"}, token)
 	errBody, _ := body["error"].(map[string]any)
 	details, _ := errBody["details"].(map[string]any)
-	if code != 402 || errCode(body) != "license_required" || details["feature"] != "requests" {
+	if code != 402 || errCode(body) != "plan_required" || details["feature"] != "requests" {
 		t.Fatalf("402: %d %v", code, body)
 	}
-	// Without a run token, create is 403 before the license check.
+	// Without a run token, create is 403 before the plan check.
 	if code, _, _ = doJSON(t, "POST", s.base+"/v1/requests", map[string]any{"type": "confirm", "title": "x"}); code != 403 {
 		t.Fatalf("human create %d", code)
 	}
@@ -434,8 +424,8 @@ func (t tokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(r)
 }
 
-func TestRequestToolLicenseMessage(t *testing.T) {
-	s := newRequestStack(t, "email")
+func TestRequestToolPlanMessage(t *testing.T) {
+	s := newRequestStack(t, "backup")
 	_, token := s.launch(t)
 	defer s.endTurn(t)
 	cs, err := mcp.NewClient(&mcp.Implementation{Name: "req-test", Version: "1"}, nil).Connect(context.Background(),
@@ -445,7 +435,18 @@ func TestRequestToolLicenseMessage(t *testing.T) {
 	}
 	defer cs.Close()
 	res, text := mcpCall(t, cs, "request", "create", map[string]any{"type": "confirm", "title": "x"})
-	if !res.IsError || !strings.Contains(text, "license_required") || !strings.Contains(text, tools.RequestLicenseMessage) {
+	if !res.IsError || !strings.Contains(text, "plan_required") || !strings.Contains(text, tools.RequestPlanMessage) {
 		t.Fatalf("mcp 402: %s", text)
+	}
+}
+
+// grantCloud writes a linked cloud row whose plan grants features.
+func grantCloud(t *testing.T, st *store.Store, features []string) {
+	t.Helper()
+	raw, _ := json.Marshal(features)
+	if _, err := st.DB().Exec(`INSERT INTO cloud_link
+		(id, device_id, device_name, api_url, account_email, plan, features, linked_at, refreshed_at)
+		VALUES (1, 'dev', 'mbp', 'http://127.0.0.1:1', '', 'pro_cloud', ?, '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z')`, string(raw)); err != nil {
+		t.Fatal(err)
 	}
 }

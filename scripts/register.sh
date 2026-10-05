@@ -10,7 +10,7 @@ cd "$repo"
 target="$repo/build/trebi"
 link="/usr/local/bin/trebi"
 if [ ! -f "$target" ]; then
-  echo "error: $target not found; run scripts/build.sh first" >&2
+  echo "error: $target not found; build it first (go build -o build/trebi ./cmd/trebi)" >&2
   exit 1
 fi
 if [ -e "$link" ] && [ "$link" -ef "$target" ]; then

@@ -44,7 +44,6 @@ func DBPath() string         { return filepath.Join(Base(), "trebi.db") }
 func ConfigPath() string     { return filepath.Join(Base(), "config.yaml") }
 func APIJSONPath() string    { return filepath.Join(Base(), "api.json") }
 func DaemonLockPath() string { return filepath.Join(Base(), "daemon.lock") }
-func LicensePath() string    { return filepath.Join(Base(), "license.json") }
 func ContextPath() string    { return filepath.Join(Base(), "context") }
 func LinkedWorkspacesPath() string {
 	return filepath.Join(Base(), "linked-workspaces.yaml")

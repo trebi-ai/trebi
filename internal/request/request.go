@@ -1397,20 +1397,6 @@ func BuildSystemDoctorPath() string {
 	return "/v1/system/doctor"
 }
 
-// BuildSystemLicenseGetPath builds GET /v1/system/license.
-func BuildSystemLicenseGetPath() string {
-	return "/v1/system/license"
-}
-
-// BuildSystemLicenseInstall builds PUT /v1/system/license with the raw key.
-func BuildSystemLicenseInstall(raw string) HTTPRequest {
-	return HTTPRequest{
-		Method: "PUT",
-		Path:   "/v1/system/license",
-		Body:   map[string]string{"license": raw},
-	}
-}
-
 // BuildSystemLogsPath builds GET /v1/system/logs (last 200 daemon log lines).
 func BuildSystemLogsPath() string {
 	return "/v1/system/logs"

@@ -6,6 +6,7 @@
     "watchdog",
     "remote_access",
     "hosted_ingress",
-    "backup"
+    "backup",
+    "requests"
   ]
 }

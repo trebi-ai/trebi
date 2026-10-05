@@ -65,7 +65,7 @@ func TestContractFixtures(t *testing.T) {
 
 	var ent Entitlement
 	mustDecode(t, dir, "entitlement.v1.json", &ent)
-	if ent.V != ContractV || ent.Plan != "pro_cloud" || len(ent.Features) != 4 {
+	if ent.V != ContractV || ent.Plan != "pro_cloud" || len(ent.Features) != 5 {
 		t.Errorf("entitlement = %+v", ent)
 	}
 

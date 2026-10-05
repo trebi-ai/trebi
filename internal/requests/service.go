@@ -12,7 +12,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/trebi-ai/trebi/internal/license"
+	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
@@ -29,7 +29,8 @@ type Launcher interface {
 	Fresh(ctx context.Context, prevID, prompt string, reason runs.RunReason) (*runs.Run, error)
 }
 
-type Licenser interface{ Has(f license.Feature) bool }
+// Grant answers the cloud plan grant. A Pro Cloud account grants requests.
+type Grant interface{ Entitlement() entitle.State }
 
 // Options are the config knobs of requests.
 type Options struct {
@@ -49,14 +50,14 @@ type Service struct {
 	st      *store.Store
 	runs    Runs
 	launch  Launcher
-	lic     Licenser
+	grant   Grant
 	reports *ReportStore
 	opts    Options
 	now     func() time.Time
 	log     *slog.Logger
 }
 
-func NewService(st *store.Store, rs Runs, l Launcher, lic Licenser, reports *ReportStore, o Options) *Service {
+func NewService(st *store.Store, rs Runs, l Launcher, g Grant, reports *ReportStore, o Options) *Service {
 	if o.ExpireAfter <= 0 {
 		o.ExpireAfter = defaultExpireAfter
 	}
@@ -64,7 +65,7 @@ func NewService(st *store.Store, rs Runs, l Launcher, lic Licenser, reports *Rep
 		o.Retain = defaultRetain
 	}
 	return &Service{
-		st: st, runs: rs, launch: l, lic: lic, reports: reports, opts: o,
+		st: st, runs: rs, launch: l, grant: g, reports: reports, opts: o,
 		now: func() time.Time { return time.Now().UTC() },
 		log: slog.Default().With("source", "requests"),
 	}
@@ -92,13 +93,13 @@ type CreateOpts struct {
 }
 
 // Create opens a request for the run of actor. Only a run can ask, and only
-// with the requests feature.
+// when the cloud plan grants requests.
 func (s *Service) Create(ctx context.Context, actor tools.Actor, o CreateOpts) (Request, error) {
 	if actor.RunID == "" {
 		return Request{}, ErrNotRun
 	}
-	if s.lic == nil || !s.lic.Has(license.FeatureRequests) {
-		return Request{}, ErrLicense
+	if s.grant == nil || !s.grant.Entitlement().Has(entitle.Requests) {
+		return Request{}, ErrPlan
 	}
 	run, err := s.runs.Get(ctx, actor.RunID)
 	if err != nil {

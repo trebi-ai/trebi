@@ -148,7 +148,7 @@ func (r *Registry) Call(ctx context.Context, tool, action string, in Input) Resu
 		return Result{Err: err}
 	}
 	if status == http.StatusPaymentRequired && tool == "request" {
-		res := fail("license_required", RequestLicenseMessage)
+		res := fail("plan_required", RequestPlanMessage)
 		res.Status = status
 		return res
 	}
@@ -204,9 +204,9 @@ func nativeConfigDenied(tool, action string, in Input) bool {
 	return false
 }
 
-// RequestLicenseMessage tells a model what to do when requests are not
-// licensed. The job must not stop on it.
-const RequestLicenseMessage = "Requests need Trebi Pro. Do not stop the task for this. Continue without the approval if the job allows it, or end the run and report what needs a decision."
+// RequestPlanMessage tells a model what to do when the plan does not
+// grant requests. The job must not stop on it.
+const RequestPlanMessage = "Requests need Trebi Pro. Do not stop the task for this. Continue without the approval if the job allows it, or end the run and report what needs a decision."
 
 func fail(code, message string) Result {
 	body, _ := json.Marshal(map[string]any{

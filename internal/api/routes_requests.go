@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/trebi-ai/trebi/internal/license"
+	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
@@ -48,13 +48,17 @@ type requestCreateBody struct {
 	ExpiresIn string                `json:"expires_in"`
 }
 
-// requireFeature writes 402 when the license does not allow f.
-func (s *Server) requireFeature(w http.ResponseWriter, f license.Feature) bool {
-	if s.lic != nil && s.lic.Has(f) {
+// requireFeature writes 402 when the cloud plan does not grant f.
+func (s *Server) requireFeature(w http.ResponseWriter, f entitle.Feature) bool {
+	if s.cloud != nil && s.cloud.Entitlement().Has(f) {
 		return true
 	}
-	writeErrDetails(w, http.StatusPaymentRequired, "license_required", "Requests need Trebi Pro.", map[string]string{"feature": string(f)})
+	writePlanRequired(w, f)
 	return false
+}
+
+func writePlanRequired(w http.ResponseWriter, f entitle.Feature) {
+	writeErrDetails(w, http.StatusPaymentRequired, "plan_required", "Requests need Trebi Pro.", map[string]string{"feature": string(f)})
 }
 
 func (s *Server) handleRequestCreate(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +67,7 @@ func (s *Server) handleRequestCreate(w http.ResponseWriter, r *http.Request) {
 		writeForbidden(w, requests.ErrNotRun.Error())
 		return
 	}
-	if !s.requireFeature(w, license.FeatureRequests) {
+	if !s.requireFeature(w, entitle.Requests) {
 		return
 	}
 	var body requestCreateBody
@@ -260,8 +264,8 @@ func writeRequestErr(w http.ResponseWriter, req requests.Request, err error) {
 		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", err.Error())
 	case errors.Is(err, requests.ErrNotRun), errors.Is(err, requests.ErrRunToken):
 		writeForbidden(w, err.Error())
-	case errors.Is(err, requests.ErrLicense):
-		writeErrDetails(w, http.StatusPaymentRequired, "license_required", "Requests need Trebi Pro.", map[string]string{"feature": string(license.FeatureRequests)})
+	case errors.Is(err, requests.ErrPlan):
+		writePlanRequired(w, entitle.Requests)
 	default:
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 	}

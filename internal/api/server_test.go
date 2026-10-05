@@ -551,30 +551,7 @@ func startTestServer(t *testing.T) (*api.Server, string) {
 // startTestServerOpts starts a server with caller-chosen options.
 func startTestServerOpts(t *testing.T, opts api.Options) (*api.Server, string) {
 	t.Helper()
-	dir := t.TempDir()
-	home.SetBase(dir)
-	t.Setenv("TREBI_HOME", dir)
-	t.Setenv("TREBI_FAKE_HARNESS", "1")
-	t.Cleanup(func() { home.SetBase("") })
-
-	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-
-	if opts.LookupLatest == nil {
-		opts.LookupLatest = func() (string, string, error) {
-			return api.Version, "", nil
-		}
-	}
-	s := api.New(st, opts)
-	addr, err := s.ListenAndServe("127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
-	return s, "http://" + addr
+	return startTestServerSeeded(t, opts, nil)
 }
 
 func mustQuote(s string) string {
@@ -984,4 +961,36 @@ func TestCreateRunQueuesBehindLiveRun(t *testing.T) {
 	if code != http.StatusTooManyRequests || e == nil || e["code"] != "queue_full" {
 		t.Fatalf("launch at cap: %d %v, want 429 queue_full", code, body)
 	}
+}
+
+// startTestServerSeeded runs seed on the store before the server reads it.
+func startTestServerSeeded(t *testing.T, opts api.Options, seed func(*store.Store)) (*api.Server, string) {
+	t.Helper()
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Setenv("TREBI_FAKE_HARNESS", "1")
+	t.Cleanup(func() { home.SetBase("") })
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if seed != nil {
+		seed(st)
+	}
+
+	if opts.LookupLatest == nil {
+		opts.LookupLatest = func() (string, string, error) {
+			return api.Version, "", nil
+		}
+	}
+	s := api.New(st, opts)
+	addr, err := s.ListenAndServe("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
+	return s, "http://" + addr
 }

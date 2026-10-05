@@ -88,28 +88,6 @@ func emailCommand() *cli.Command {
 	}
 }
 
-func licenseCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "license",
-		Usage: "license state and install",
-		Commands: []*cli.Command{
-			{
-				Name:   "show",
-				Usage:  "show license state",
-				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-				Action: runLicenseShow,
-			},
-			{
-				Name:      "install",
-				Usage:     "install a license key",
-				ArgsUsage: "<key>",
-				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
-				Action:    runLicenseInstall,
-			},
-		},
-	}
-}
-
 func runEmailStatus(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
@@ -367,63 +345,5 @@ func runEmailPoll(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	fmt.Fprintf(outWriter(c), "pulled %s\n", mapStr(body, "pulled"))
-	return nil
-}
-
-func runLicenseShow(_ context.Context, c *cli.Command) error {
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	var body map[string]any
-	if err := client.GetJSON(request.BuildSystemLicenseGetPath(), &body); err != nil {
-		return err
-	}
-	if c.Bool("json") {
-		return encodeJSON(c, body)
-	}
-	if mapStr(body, "supported") == "false" {
-		fmt.Fprintln(outWriter(c), "license: unsupported")
-		return nil
-	}
-	w := outWriter(c)
-	fmt.Fprintf(w, "Supported: %s\n", mapStr(body, "supported"))
-	fmt.Fprintf(w, "Source:    %s\n", mapStr(body, "source"))
-	if plan := mapStr(body, "plan"); plan != "" {
-		fmt.Fprintf(w, "Plan:      %s\n", plan)
-	}
-	if sub := mapStr(body, "subject"); sub != "" {
-		fmt.Fprintf(w, "Subject:   %s\n", sub)
-	}
-	if exp := mapStr(body, "expires_at"); exp != "" {
-		fmt.Fprintf(w, "Expires:   %s\n", exp)
-	}
-	if feats, ok := body["features"].([]any); ok && len(feats) > 0 {
-		parts := make([]string, len(feats))
-		for i, f := range feats {
-			parts[i] = fmt.Sprint(f)
-		}
-		fmt.Fprintf(w, "Features:  %s\n", strings.Join(parts, ", "))
-	}
-	return nil
-}
-
-func runLicenseInstall(_ context.Context, c *cli.Command) error {
-	key := c.Args().Get(0)
-	if key == "" {
-		return fmt.Errorf("usage: trebi license install <key>")
-	}
-	client, err := clientFor(c)
-	if err != nil {
-		return err
-	}
-	var body map[string]any
-	if err := client.DoHTTP(request.BuildSystemLicenseInstall(key), &body); err != nil {
-		return err
-	}
-	if c.Bool("json") {
-		return encodeJSON(c, body)
-	}
-	fmt.Fprintf(outWriter(c), "installed (source %s)\n", mapStr(body, "source"))
 	return nil
 }

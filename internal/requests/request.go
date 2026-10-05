@@ -77,7 +77,7 @@ var (
 	ErrConflict = errors.New("request revision changed")
 	ErrNotRun   = errors.New("only a job run can create a request")
 	ErrRunToken = errors.New("a job run cannot answer a request")
-	ErrLicense  = errors.New("requests need Trebi Pro")
+	ErrPlan     = errors.New("requests need Trebi Pro")
 	ErrInvalid  = errors.New("invalid request")
 )
 

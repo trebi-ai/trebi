@@ -1,6 +1,6 @@
 # system
 
-System operations: health, doctor, lifecycle, cloud link, license, and the bus poll.
+System operations: health, doctor, lifecycle, cloud link, and the bus poll.
 
 Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error envelope `{"error":{"code","message"}}` unchanged, with `isError: true`.
 
@@ -80,13 +80,6 @@ List workflow guide topics. No input fields. Response is `{"items":[{"topic","ti
 ### guide
 Read one workflow guide body.
 - `topic` (string, required): guide topic from `guides`.
-
-### license_show
-Read the license state: supported flag, source, plan, subject, expiry, and the feature list. Works with no license installed. No input fields.
-
-### license_install
-Install a license key. Ask the user for the key first; never invent one. A build without license support answers 400 `validation`.
-- `license` (string, required): the license key the operator gave you.
 
 ## Related guides
 

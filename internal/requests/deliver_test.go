@@ -285,12 +285,12 @@ func TestDismissUnparks(t *testing.T) {
 	}
 }
 
-func TestLicenseLapseStillDelivers(t *testing.T) {
+func TestPlanLapseStillDelivers(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	r := h.create(t, h.run(t, "RUN1"), CreateOpts{})
 	h.park(t, "RUN1")
-	h.lic.ok.Store(false)
+	h.grant.ok.Store(false)
 	h.approve(t, r.ID)
 	if n := len(h.launch.Calls()); n != 1 {
 		t.Fatalf("launches %d", n)

@@ -23,7 +23,7 @@ Every `mcp` command is **local only**, except `trebi mcp config --remote`. Clien
 
 ## Remote access (Pro Cloud)
 
-Claude (web, Desktop, mobile) and ChatGPT cannot reach a local URL. A machine linked to Trebi Cloud with the `remote_access` feature can serve them through the cloud. It is on by default. Turn it off with `trebi config set cloud.remote_mcp false`. `trebi mcp config --remote` prints the URL (`https://staging-mcp.trebi.ai` on staging) and the steps for each client. The client signs in to the Trebi account with OAuth, and the user selects the machine and the access level (Read only or Full control). A remote caller can never shut down the daemon, link or unlink the cloud, install a license, or change `cloud.remote_mcp`. The cloud forwards each request and does not store or log its body.
+Claude (web, Desktop, mobile) and ChatGPT cannot reach a local URL. A machine linked to Trebi Cloud with the `remote_access` feature can serve them through the cloud. It is on by default. Turn it off with `trebi config set cloud.remote_mcp false`. `trebi mcp config --remote` prints the URL (`https://staging-mcp.trebi.ai` on staging) and the steps for each client. The client signs in to the Trebi account with OAuth, and the user selects the machine and the access level (Read only or Full control). A remote caller can never shut down the daemon, link or unlink the cloud, or change `cloud.remote_mcp`. The cloud forwards each request and does not store or log its body.
 
 ## Translation rule
 

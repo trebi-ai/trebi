@@ -24,7 +24,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/license"
 	"github.com/trebi-ai/trebi/internal/platform"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -655,16 +654,14 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	shadow := c.Bool("shadow")
 	drain := drainFlag == "1" || shadow
 	extSet := appStateFor(c).ext
-	lic := license.New(extSet.License)
-	cp := daemon.New(st, daemon.Options{Shadow: shadow, Drain: drain, Ext: extSet, License: lic, Version: api.Version})
+	cp := daemon.New(st, daemon.Options{Shadow: shadow, Drain: drain, Ext: extSet, Version: api.Version})
 	srv := api.New(st, api.Options{
-		Shadow:  shadow,
-		Drain:   drain,
-		Ext:     extSet,
-		License: lic,
+		Shadow: shadow,
+		Drain:  drain,
+		Ext:    extSet,
 	})
 	// Share control-plane services so API and workers see the same state.
-	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Skills, cp.Conversations, cp.Harness, cp.Email, cp.License, cp.Cloud, cp.Webhooks, cp.Launcher, cp.Requests)
+	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Skills, cp.Conversations, cp.Harness, cp.Email, cp.Cloud, cp.Webhooks, cp.Launcher, cp.Requests)
 	srv.BindCatalog(cp.Catalog)
 	srv.BindOutbox(cp.Outbox)
 	srv.BindRouter(cp.Router)

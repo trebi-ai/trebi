@@ -237,7 +237,7 @@ var knownFields = []tools.DocField{ //nolint:gochecknoglobals // static probe li
 	{Name: "content", Type: "string"}, {Name: "force", Type: "boolean"}, {Name: "at", Type: "string"},
 	{Name: "text", Type: "string"}, {Name: "body", Type: "string"}, {Name: "entry_id", Type: "string"},
 	{Name: "status", Type: "string"}, {Name: "note", Type: "string"},
-	{Name: "reveal", Type: "boolean"}, {Name: "license", Type: "string"},
+	{Name: "reveal", Type: "boolean"},
 	{Name: "direction", Type: "string"}, {Name: "thread", Type: "string"},
 	{Name: "message", Type: "string"}, {Name: "attachment", Type: "string"}, {Name: "out", Type: "string"},
 	{Name: "connector", Type: "string"}, {Name: "connection", Type: "object"}, {Name: "suites", Type: "array"},

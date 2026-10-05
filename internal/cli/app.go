@@ -79,7 +79,6 @@ func NewApp(opts Options) *cli.Command {
 			queueCommand(),
 			rulesCommand(),
 			emailCommand(),
-			licenseCommand(),
 			cloudCommand(),
 			hooksCommand(),
 		},

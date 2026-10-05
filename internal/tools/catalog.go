@@ -2714,16 +2714,6 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildSystemGuidePath(topic)), nil
 			}),
-			"license_show": act("GET /v1/system/license", Input{}, func(Input) (request.HTTPRequest, error) {
-				return mcpGet(request.BuildSystemLicenseGetPath()), nil
-			}),
-			"license_install": act("PUT /v1/system/license", Input{"license": "test-license-0000"}, func(in Input) (request.HTTPRequest, error) {
-				key, err := in.reqStr("license")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildSystemLicenseInstall(key), nil
-			}),
 		},
 	}
 }

@@ -18,7 +18,7 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - name: run suite
         env:
-          TREBI_BIN: ${{ github.workspace }}/build/trebi
+          TREBI_BIN: ${{ github.workspace }}/build/eval/trebi
         run: uv run scripts/eval.py run --budget 50
       - name: upload report
         if: always()
