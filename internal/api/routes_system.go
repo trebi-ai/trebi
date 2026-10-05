@@ -383,10 +383,15 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // streamOpts parses cursor/topics and emits a synthetic reset when the
-// cursor fell behind the retained bus window.
+// cursor fell behind the retained bus window. cursor=latest skips the
+// retained history: a client that loads state over REST needs only new frames.
 func (s *Server) streamOpts(w http.ResponseWriter, r *http.Request, flusher http.Flusher) (int64, []string) {
 	cursor := int64(0)
-	if c := r.URL.Query().Get("cursor"); c != "" {
+	switch c := r.URL.Query().Get("cursor"); c {
+	case "":
+	case "latest":
+		cursor, _ = s.st.LatestSeq(r.Context())
+	default:
 		cursor, _ = strconv.ParseInt(c, 10, 64)
 	}
 	var topics []string

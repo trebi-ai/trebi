@@ -26,7 +26,7 @@ func busCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "topics", Usage: "exact topic or family prefix, comma-separated, OR-ed (server-side; e.g. run or run.failed,alert)"},
 			&cli.Int64Flag{Name: "cursor", Usage: "bus cursor (event_log.seq); resume from a known point (server-side)"},
-			&cli.BoolFlag{Name: "replay", Usage: "include retained history (default is live frames only)"},
+			&cli.BoolFlag{Name: "replay", Usage: "include retained history (default is live frames only; --limit implies it)"},
 			&cli.StringFlag{Name: "since", Usage: "RFC3339 lower bound on ts (client-side, inclusive)"},
 			&cli.StringFlag{Name: "entity", Usage: "match entity (run, job, alert, …) (client-side)"},
 			&cli.StringFlag{Name: "id", Usage: "match entity id (client-side)"},
@@ -61,10 +61,12 @@ func runBusWith(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	cursorSet := c.IsSet("cursor")
-	cursor := ""
-	if cursorSet {
+	cursor := "latest"
+	switch {
+	case c.IsSet("cursor"):
 		cursor = fmt.Sprintf("%d", c.Int64("cursor"))
+	case c.Bool("replay") || c.Int("limit") > 0:
+		cursor = ""
 	}
 	tail := &busTail{
 		w:     outWriter(c),
@@ -76,7 +78,7 @@ func runBusWith(ctx context.Context, c *cli.Command) error {
 	if tail.limit > 0 {
 		path = request.BuildStreamDumpPath(topics, cursor)
 	}
-	streamErr := client.streamEvents(ctx, path, !c.Bool("replay") && !cursorSet, tail.onFrame)
+	streamErr := client.StreamEvents(ctx, path, tail.onFrame)
 	return tail.finish(streamErr)
 }
 

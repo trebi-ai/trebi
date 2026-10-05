@@ -173,6 +173,15 @@ func (s *Store) OldestSeq(ctx context.Context) (int64, error) {
 	return v.Int64, nil
 }
 
+// LatestSeq returns the maximum retained seq (0 if empty).
+func (s *Store) LatestSeq(ctx context.Context) (int64, error) {
+	var v sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(seq) FROM event_log`).Scan(&v); err != nil {
+		return 0, err
+	}
+	return v.Int64, nil
+}
+
 // PruneBus deletes event_log rows older than retention.
 func (s *Store) PruneBus(ctx context.Context, retention time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-retention).Format("2006-01-02T15:04:05.000000Z")

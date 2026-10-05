@@ -442,6 +442,32 @@ func TestStreamStaysOpenAndDeliversLateEvent(t *testing.T) {
 	t.Fatalf("stream closed without late event: %v", sc.Err())
 }
 
+func TestStreamCursorLatestSkipsHistory(t *testing.T) {
+	_, base := startTestServer(t)
+	req, _ := http.NewRequest("POST", base+"/v1/system/drain", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	dump := func(cursor string) string {
+		resp, err := http.Get(base + "/v1/stream?follow=0&cursor=" + cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+	if got := dump("0"); !strings.Contains(got, "system.drain.entered") {
+		t.Fatalf("cursor=0 lost history: %q", got)
+	}
+	if got := dump("latest"); strings.Contains(got, "data:") {
+		t.Fatalf("cursor=latest replayed history: %q", got)
+	}
+}
+
 // TestOpenAPI pins the local-API contract: the daemon answers every route
 // without a credential. A stray Authorization header or ?token= is ignored, so
 // a client that still sends one is not refused. The bind address and the

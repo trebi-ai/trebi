@@ -121,12 +121,6 @@ func (c *APIClient) StreamGET(path string, dst io.Writer) error {
 
 const streamScannerMax = 1 << 20 // 1 MiB; attrs are small, but one malformed frame must not truncate
 
-// StreamEvents follows an SSE GET, decoding each `data:` line as a bus frame.
-// The HTTP client is cloned with Timeout=0 so the default 30s timeout cannot kill the tail.
-func (c *APIClient) StreamEvents(ctx context.Context, path string, fn func(store.StreamEvent) error) error {
-	return c.streamEvents(ctx, path, false, fn)
-}
-
 // StreamConversationEvents follows one conversation event stream (SSE). Each
 // frame carries one assistant.Event body; ping comments are skipped. Frames
 // with no data line are dropped.
@@ -458,7 +452,9 @@ func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
 	return json.Unmarshal(raw, out)
 }
 
-func (c *APIClient) streamEvents(ctx context.Context, path string, skipCatchup bool, fn func(store.StreamEvent) error) error {
+// StreamEvents follows an SSE GET, decoding each `data:` line as a bus frame.
+// The HTTP client is cloned with Timeout=0 so the default 30s timeout cannot kill the tail.
+func (c *APIClient) StreamEvents(ctx context.Context, path string, fn func(store.StreamEvent) error) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
 	if err != nil {
 		return err
@@ -480,8 +476,6 @@ func (c *APIClient) streamEvents(ctx context.Context, path string, skipCatchup b
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 256*1024), streamScannerMax)
-	live := !skipCatchup
-	lastData := time.Now()
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" || strings.HasPrefix(line, ":") {
@@ -498,15 +492,6 @@ func (c *APIClient) streamEvents(ctx context.Context, path string, skipCatchup b
 		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
 			return fmt.Errorf("decode bus frame: %w", err)
 		}
-		now := time.Now()
-		if !live {
-			if now.Sub(lastData) < 100*time.Millisecond {
-				lastData = now
-				continue
-			}
-			live = true
-		}
-		lastData = now
 		if err := fn(ev); err != nil {
 			return err
 		}

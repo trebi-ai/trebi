@@ -42,6 +42,29 @@ func TestStreamEventsQueryPassthrough(t *testing.T) {
 	}
 }
 
+func TestBusStartCursor(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"bus"}, "cursor=latest"},
+		{[]string{"bus", "--replay"}, ""},
+		{[]string{"bus", "--limit", "1"}, ""},
+		{[]string{"bus", "--cursor", "7"}, "cursor=7"},
+	} {
+		var gotPath string
+		srv := fakeStreamHandler(t, func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.RequestURI()
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		})
+		_, _ = runCLI(t, streamClient(srv), tc.args...)
+		if tc.want == "" && strings.Contains(gotPath, "cursor=") || !strings.Contains(gotPath, tc.want) {
+			t.Fatalf("%v: path %s, want %q", tc.args, gotPath, tc.want)
+		}
+	}
+}
+
 func TestBusLimitShortHistoryExits(t *testing.T) {
 	srv := fakeStreamHandler(t, func(w http.ResponseWriter, r *http.Request) {
 		flusher, _ := w.(http.Flusher)
