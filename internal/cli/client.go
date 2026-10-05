@@ -18,7 +18,9 @@ import (
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/request"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tools"
 )
 
 // APIClient talks to trebid over HTTP.
@@ -35,11 +37,11 @@ func (c *APIClient) IsRemote() bool {
 
 // GetJSON performs GET and decodes JSON.
 func (c *APIClient) GetJSON(path string, out any) error {
-	req, err := http.NewRequest("GET", c.base+path, nil)
+	req, err := c.newRequest(context.Background(), "GET", path, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpFor("GET", path).Do(req)
 	if err != nil {
 		return err
 	}
@@ -76,7 +78,7 @@ func (c *APIClient) Delete(path string) error {
 
 // GetRaw performs GET and returns the response body bytes (any content-type).
 func (c *APIClient) GetRaw(path string) ([]byte, error) {
-	req, err := http.NewRequest("GET", c.base+path, nil)
+	req, err := c.newRequest(context.Background(), "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +97,7 @@ func (c *APIClient) GetRaw(path string) ([]byte, error) {
 // StreamGET copies a GET response body to dst until EOF or ctx cancel.
 // Used for connector logs --follow (SSE). Timeout is disabled on this call.
 func (c *APIClient) StreamGET(path string, dst io.Writer) error {
-	req, err := http.NewRequest("GET", c.base+path, nil)
+	req, err := c.newRequest(context.Background(), "GET", path, nil)
 	if err != nil {
 		return err
 	}
@@ -125,7 +127,7 @@ const streamScannerMax = 1 << 20 // 1 MiB; attrs are small, but one malformed fr
 // frame carries one assistant.Event body; ping comments are skipped. Frames
 // with no data line are dropped.
 func (c *APIClient) StreamConversationEvents(ctx context.Context, path string, fn func(assistant.Event) error) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
+	req, err := c.newRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return err
 	}
@@ -179,7 +181,7 @@ func (c *APIClient) StreamConversationEvents(ctx context.Context, path string, f
 // StreamSSE follows an SSE GET and calls fn with the event name and data of
 // each frame. It stops when the stream ends, ctx ends, or fn returns an error.
 func (c *APIClient) StreamSSE(ctx context.Context, path string, fn func(event, data string) error) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
+	req, err := c.newRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return err
 	}
@@ -281,6 +283,31 @@ func (c *APIClient) WaitTmuxSession(runID string, maxWait time.Duration) string 
 	return ""
 }
 
+// WaitRun long-polls the run until it ends or timeout passes. A zero
+// timeout has no limit. The last poll result is returned in both cases.
+func (c *APIClient) WaitRun(ctx context.Context, runID string, timeout time.Duration) (map[string]any, error) {
+	var deadline time.Time
+	if timeout > 0 {
+		deadline = time.Now().Add(timeout)
+	}
+	for {
+		step := runs.MaxWait
+		if !deadline.IsZero() {
+			step = max(min(step, time.Until(deadline)), time.Second)
+		}
+		var run map[string]any
+		if err := c.GetJSON(request.BuildRunGetPath(runID, int(step.Milliseconds())), &run); err != nil {
+			return nil, err
+		}
+		if runs.Status(mapStr(run, "status")).IsTerminal() || (!deadline.IsZero() && !time.Now().Before(deadline)) {
+			return run, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return run, err
+		}
+	}
+}
+
 // DialAttach opens a WebSocket to GET /v1/runs/{id}/attach.
 func (c *APIClient) DialAttach(runID string) (*websocket.Conn, error) {
 	return c.DialWS("/v1/runs/" + url.PathEscape(runID) + "/attach")
@@ -293,7 +320,7 @@ func (c *APIClient) DialWS(path string) (*websocket.Conn, error) {
 		return nil, err
 	}
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	conn, resp, err := dialer.Dial(wsURL, nil)
+	conn, resp, err := dialer.Dial(wsURL, c.tokenHeader())
 	if err != nil {
 		if resp != nil {
 			body, readErr := io.ReadAll(resp.Body)
@@ -421,7 +448,7 @@ func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
 		}
 		contentType = "application/json"
 	}
-	req, err := http.NewRequest(method, c.base+r.Path, bytes.NewReader(payload))
+	req, err := c.newRequest(context.Background(), method, r.Path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -433,9 +460,6 @@ func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
 	}
 	if r.IfMatch != "" {
 		req.Header.Set("If-Match", r.IfMatch)
-	}
-	if token := os.Getenv("TREBI_RUN_TOKEN"); token != "" {
-		req.Header.Set("X-Trebi-Run-Token", token)
 	}
 	resp, err := c.httpFor(method, r.Path).Do(req)
 	if err != nil {
@@ -455,7 +479,7 @@ func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
 // StreamEvents follows an SSE GET, decoding each `data:` line as a bus frame.
 // The HTTP client is cloned with Timeout=0 so the default 30s timeout cannot kill the tail.
 func (c *APIClient) StreamEvents(ctx context.Context, path string, fn func(store.StreamEvent) error) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
+	req, err := c.newRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return err
 	}
@@ -502,6 +526,29 @@ func (c *APIClient) StreamEvents(ctx context.Context, path string, fn func(store
 	return io.EOF
 }
 
+// newRequest builds a request to path with the run token headers.
+func (c *APIClient) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range c.tokenHeader() {
+		req.Header[k] = v
+	}
+	return req, nil
+}
+
+// tokenHeader carries the run token inside a run, so the daemon scopes the
+// call to that run. A remote daemon cannot resolve the token, so it never
+// leaves this host.
+func (c *APIClient) tokenHeader() http.Header {
+	h := http.Header{}
+	if token := os.Getenv("TREBI_RUN_TOKEN"); token != "" && !c.remote {
+		h.Set(tools.HeaderRunToken, token)
+	}
+	return h
+}
+
 func (c *APIClient) doJSON(method, path string, body any, out any) error {
 	var r io.Reader
 	if body != nil {
@@ -511,7 +558,7 @@ func (c *APIClient) doJSON(method, path string, body any, out any) error {
 		}
 		r = strings.NewReader(string(b))
 	}
-	req, err := http.NewRequest(method, c.base+path, r)
+	req, err := c.newRequest(context.Background(), method, path, r)
 	if err != nil {
 		return err
 	}

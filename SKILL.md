@@ -82,7 +82,7 @@ trebi hooks list
 
 `hooks create` prints the public URL once. Handle it like a webhook secret: anyone holding it can post an event. A job fires on a delivery with `on: [{event: webhook, match: …}]`; the event carries `path`, `headers`, `body` as a string, and the delivery facts. Delete a hook with `trebi hooks delete <id>`.
 
-Vendor runs (`claude`, `codex`, `opencode`, `opencode2`, `pi`, `copilot`, `cursor`) spawn the installed CLI as a subprocess and speak its structured protocol by default — no tmux pane, no prompt pasting. `runtime: tui` in `JOB.md` / `AGENT.md` opts that run back into a pane; `trebi config set harness.runtime tui` is the incident-only global kill switch. A CLI run that fails closed leaves a doctor hint; relaunch or resume with `runtime: tui` — there is no silent fallback. `trebi runs attach` on a CLI run prints the event stream; `trebi runs logs -f` always works.
+Vendor runs (`claude`, `codex`, `opencode`, `opencode2`, `pi`, `copilot`, `cursor`) spawn the installed CLI as a subprocess and speak its structured protocol by default — no tmux pane, no prompt pasting. `runtime: tui` in `JOB.md` / `AGENT.md` opts that run back into a pane; `trebi config set harness.runtime tui` is the incident-only global kill switch. A CLI run that fails closed leaves a doctor hint; relaunch or resume with `runtime: tui` — there is no silent fallback. `trebi runs attach` on a CLI run prints the event stream; `trebi runs watch <id|job>` prints it without input and exits with the run result; `trebi runs logs -f` always works.
 
 ## Global rules
 
@@ -146,5 +146,5 @@ Every error is `{"error":{"code","message","details"}}` with a stable code:
 - Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
 - `trebi bus --limit N` dumps up to N frames and exits. `connector logs` returns at once; `-f` follows and blocks. `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.
 - `-w` / `--workspace` accepts name or id and can go before the verb or after the job name.
-- Do not `runs attach` from an agent session. Poll `runs show` / `conversation messages`. Do not `runs kill` a live session to re-prompt.
+- Do not `runs attach` from an agent session. To wait for a run, use `runs wait <id> --timeout 9m` (exit 3 means still running; call it again) or `runs watch <id|job> --timeout 9m`. Do not write a poll loop over `runs show`. For the assistant, poll `conversation messages`. Do not `runs kill` a live session to re-prompt.
 - Report only what a call returned. Do not carry a value from one call into a claim about another: if a filtered read returned nothing, say it returned nothing, and do not borrow a count or a cursor from the unfiltered read next to it. If a read failed or came back `not_found`, say so — do not claim what you would have seen. Reporting a failure plainly is a good answer; an unsupported claim is not.

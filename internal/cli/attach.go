@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/request"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/urfave/cli/v3"
 	"golang.org/x/term"
 )
@@ -243,4 +246,175 @@ func httpToWS(httpURL string) (string, error) {
 		return "", fmt.Errorf("unsupported scheme %q", u.Scheme)
 	}
 	return u.String(), nil
+}
+
+// runWatch follows one run to its end and never sends input. A CLI-runtime
+// run prints its event stream; a pane run prints only its result.
+type runWatch struct {
+	client *APIClient
+	out    io.Writer
+	json   bool
+}
+
+// withTimeout ends ctx on Ctrl-C and after timeout; a zero timeout has no limit.
+func (w *runWatch) withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, stopSignal := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	if timeout <= 0 {
+		return ctx, stopSignal
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	return ctx, func() { cancel(); stopSignal() }
+}
+
+// resolve maps a run id or a job name to the run to watch. For a job it is
+// the live run, else the latest one; next waits for a new run to start.
+func (w *runWatch) resolve(ctx context.Context, arg, workspace string, next bool) (string, error) {
+	if _, err := ulid.Parse(arg); err == nil && !next {
+		return arg, nil
+	}
+	latest, err := w.latestRun(arg, workspace, "")
+	if err != nil {
+		return "", err
+	}
+	if !next {
+		if live, err := w.latestRun(arg, workspace, string(runs.StatusRunning)); err != nil || live != "" {
+			return live, err
+		}
+		if latest == "" {
+			return "", fmt.Errorf("job %s has no runs; use --next to wait for its next run", arg)
+		}
+		return latest, nil
+	}
+	if !w.json {
+		fmt.Fprintf(w.out, "waiting for the next run of %s\n", arg)
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return "", cli.Exit(fmt.Sprintf("no new run of %s started", arg), runExitRunning)
+		case <-ticker.C:
+		}
+		id, err := w.latestRun(arg, workspace, "")
+		if err != nil {
+			return "", err
+		}
+		if id != "" && id != latest {
+			return id, nil
+		}
+	}
+}
+
+// latestRun returns the id of the newest run of job, or "" when none matches.
+func (w *runWatch) latestRun(job, workspace, status string) (string, error) {
+	var body struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	q := request.RunsQuery{Job: job, Workspace: workspace, Status: status, Limit: 1}
+	if err := w.client.GetJSON(q.Path(), &body); err != nil {
+		return "", err
+	}
+	if len(body.Runs) == 0 {
+		return "", nil
+	}
+	return mapStr(body.Runs[0], "id"), nil
+}
+
+// watch prints the progress of runID until it ends or ctx ends, then the
+// result. The exit code follows runExitCode.
+func (w *runWatch) watch(ctx context.Context, runID string) error {
+	var run map[string]any
+	if err := w.client.GetJSON(request.BuildRunGetPath(runID, 0), &run); err != nil {
+		return err
+	}
+	events := mapStr(run, "runtime") == "cli"
+	if attach, ok := run["attach"].(map[string]any); ok && mapStr(attach, "kind") == "events" {
+		events = true
+	}
+	if !w.json {
+		fmt.Fprintf(w.out, "watching run %s (%s). Ctrl-C stops watching; the run continues.\n", runID, mapStr(run, "job"))
+	}
+	if events && !runs.Status(mapStr(run, "status")).IsTerminal() {
+		if err := w.stream(ctx, runID); err != nil {
+			return err
+		}
+	}
+	// The remaining time bounds a pane run; a stopped watch polls once.
+	remaining := time.Duration(0)
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining = max(time.Until(deadline), time.Nanosecond)
+	}
+	if ctx.Err() != nil {
+		remaining = time.Nanosecond
+	}
+	run, err := w.client.WaitRun(context.Background(), runID, remaining)
+	if err != nil {
+		return err
+	}
+	if w.json {
+		if err := json.NewEncoder(w.out).Encode(run); err != nil {
+			return err
+		}
+	} else {
+		printRunEnd(w.out, run)
+	}
+	return exitForRun(run)
+}
+
+// stream prints the attach event stream of runID until the run ends or ctx
+// ends. Status frames print only when the session state changes.
+func (w *runWatch) stream(ctx context.Context, runID string) error {
+	conn, err := w.client.DialAttach(runID)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close() // unblocks ReadMessage; the stream is over
+		case <-done:
+		}
+	}()
+	printer := &wsAttach{out: w.out, eventMode: true}
+	state := ""
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			if ctx.Err() != nil || attachEndOK(err) {
+				return nil
+			}
+			return err
+		}
+		var m map[string]any
+		if json.Unmarshal(msg, &m) != nil {
+			continue
+		}
+		switch fmt.Sprint(m["type"]) {
+		case "event":
+			w.emit(msg, func() { printer.printEvent(m["data"]) })
+		case "status":
+			data, _ := m["data"].(map[string]any)
+			if s := mapStr(data, "state"); s != state {
+				state = s
+				w.emit(msg, func() { printer.printStatus(data) })
+			}
+		case "ended":
+			return nil
+		case "error":
+			return fmt.Errorf("%v", m["data"])
+		}
+	}
+}
+
+// emit writes the raw frame in JSON mode, else calls text.
+func (w *runWatch) emit(raw []byte, text func()) {
+	if w.json {
+		fmt.Fprintln(w.out, string(raw))
+		return
+	}
+	text()
 }

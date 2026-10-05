@@ -12,6 +12,7 @@ import (
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/request"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/urfave/cli/v3"
 )
 
@@ -56,13 +57,25 @@ func runsCommand() *cli.Command {
 			},
 			{
 				Name:      "wait",
-				Usage:     "wait until a run ends, then show it",
+				Usage:     "wait until a run ends, then show it; exit 0 complete, 1 failed, 2 parked, 3 still running",
 				ArgsUsage: "<id>",
 				Flags: []cli.Flag{
-					&cli.IntFlag{Name: "wait-ms", Value: 60000, Usage: "long-poll milliseconds (max 120000)"},
+					&cli.DurationFlag{Name: "timeout", Usage: "stop waiting after this long, for example 9m (default: no limit)"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON (always on)"},
 				},
-				Action: runRunsShow,
+				Action: runRunsWait,
+			},
+			{
+				Name:      "watch",
+				Usage:     "print the progress of a run until it ends; takes a run id or a job name; exit codes as runs wait",
+				ArgsUsage: "<id|job>",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "next", Usage: "job: wait for the next run to start, then watch it"},
+					&cli.DurationFlag{Name: "timeout", Usage: "stop watching after this long (default: no limit)"},
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name of the job"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSONL: one frame per line, then the run"},
+				},
+				Action: runRunsWatch,
 			},
 			{
 				Name:      "turns",
@@ -219,10 +232,80 @@ func runRunsShow(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON(request.BuildRunGetPath(c.Args().Get(0), c.Int("wait-ms")), &body); err != nil {
+	if err := client.GetJSON(request.BuildRunGetPath(c.Args().Get(0), 0), &body); err != nil {
 		return err
 	}
 	return encodeJSON(c, body)
+}
+
+// Exit codes of runs wait, runs watch, and job run --wait / --follow.
+const (
+	runExitComplete = 0
+	runExitFailed   = 1
+	runExitParked   = 2
+	runExitRunning  = 3
+)
+
+// runExitCode maps a run to its exit code. A human outcome wins over the
+// machine status.
+func runExitCode(run map[string]any) int {
+	status := runs.Status(mapStr(run, "status"))
+	if o, ok := run["outcome"].(map[string]any); ok && mapStr(o, "status") != "" {
+		status = runs.Status(mapStr(o, "status"))
+	}
+	switch status {
+	case runs.StatusComplete, runs.StatusSkipped:
+		return runExitComplete
+	case runs.StatusParked:
+		return runExitParked
+	case runs.StatusRunning:
+		return runExitRunning
+	}
+	return runExitFailed
+}
+
+// exitForRun returns a silent exit error for a run that did not complete.
+func exitForRun(run map[string]any) error {
+	if code := runExitCode(run); code != runExitComplete {
+		return cli.Exit("", code)
+	}
+	return nil
+}
+
+func runRunsWait(ctx context.Context, c *cli.Command) error {
+	if c.NArg() != 1 {
+		return fmt.Errorf("usage: trebi runs wait <id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	run, err := client.WaitRun(ctx, c.Args().First(), c.Duration("timeout"))
+	if err != nil {
+		return err
+	}
+	if err := encodeJSON(c, run); err != nil {
+		return err
+	}
+	return exitForRun(run)
+}
+
+func runRunsWatch(ctx context.Context, c *cli.Command) error {
+	if c.NArg() != 1 {
+		return fmt.Errorf("usage: trebi runs watch <id|job>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	w := &runWatch{client: client, out: outWriter(c), json: c.Bool("json")}
+	ctx, stop := w.withTimeout(ctx, c.Duration("timeout"))
+	defer stop()
+	runID, err := w.resolve(ctx, c.Args().First(), workspaceFlag(c), c.Bool("next"))
+	if err != nil {
+		return err
+	}
+	return w.watch(ctx, runID)
 }
 
 func runRunsTimeline(_ context.Context, c *cli.Command) error {
@@ -649,17 +732,16 @@ func runCommand() *cli.Command {
 		Name:      "run",
 		Usage:     "launch a job",
 		ArgsUsage: "<job>",
-		Flags: []cli.Flag{
+		Flags: append([]cli.Flag{
 			&cli.StringFlag{Name: "extra-prompt", Aliases: []string{"e"}, Usage: "append text to the job prompt"},
 			&cli.StringFlag{Name: "prompt", Usage: "replace the job prompt"},
 			&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "job placeholder value, key=value (repeatable)"},
 			&cli.StringFlag{Name: "harness", Usage: "agent tool to run with"},
 			&cli.BoolFlag{Name: "test", Usage: "dry_run: evaluate gates, print plan, do not launch"},
 			&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (tmux local or WebSocket remote)"},
-			&cli.IntFlag{Name: "wait", Usage: "wait milliseconds for the run to end (max 120000)"},
 			&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
-		},
+		}, launchWaitFlags()...),
 		Action: runLaunch,
 	}
 }
@@ -690,7 +772,6 @@ func launchAndMaybeAttach(ctx context.Context, c *cli.Command, client *APIClient
 	spec.Harness = c.String("harness")
 	spec.ConversationID = c.String("conversation")
 	spec.DryRun = c.Bool("test")
-	spec.WaitMS = c.Int("wait")
 	var out map[string]any
 	if err := client.DoHTTP(build(spec), &out); err != nil {
 		return err
@@ -703,9 +784,32 @@ func launchAndMaybeAttach(ctx context.Context, c *cli.Command, client *APIClient
 			return encodeJSON(c, out)
 		}
 		fmt.Fprintf(outWriter(c), "queued %v: it starts when the current run finishes\n", out["queue_id"])
+		if c.Bool("wait") || c.Bool("follow") {
+			fmt.Fprintf(outWriter(c), "to watch it: trebi runs watch %s --next\n", spec.Job)
+		}
 		return nil
 	}
 	runID := mapStr(out, "id")
+	if c.Bool("follow") && runID != "" {
+		w := &runWatch{client: client, out: outWriter(c), json: c.Bool("json")}
+		ctx, stop := w.withTimeout(ctx, c.Duration("timeout"))
+		defer stop()
+		return w.watch(ctx, runID)
+	}
+	if c.Bool("wait") && runID != "" {
+		run, err := client.WaitRun(ctx, runID, c.Duration("timeout"))
+		if err != nil {
+			return err
+		}
+		if c.Bool("json") {
+			if err := encodeJSON(c, run); err != nil {
+				return err
+			}
+		} else {
+			printRunEnd(outWriter(c), run)
+		}
+		return exitForRun(run)
+	}
 	if c.Bool("json") {
 		if err := encodeJSON(c, out); err != nil {
 			return err
@@ -719,6 +823,28 @@ func launchAndMaybeAttach(ctx context.Context, c *cli.Command, client *APIClient
 		return attachAfterLaunch(ctx, c, client, out)
 	}
 	return nil
+}
+
+// launchWaitFlags are the flags of job run and agent wake that keep the
+// command open until the run ends.
+func launchWaitFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.BoolFlag{Name: "wait", Usage: "after launch: wait until the run ends; exit codes as runs wait"},
+		&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "after launch: print progress until the run ends (runs watch)"},
+		&cli.DurationFlag{Name: "timeout", Usage: "with --wait or --follow: stop after this long, for example 9m (default: no limit)"},
+	}
+}
+
+// printRunEnd prints the one-line result of a run.
+func printRunEnd(w io.Writer, run map[string]any) {
+	line := fmt.Sprintf("run %s status=%s", mapStr(run, "id"), mapStr(run, "status"))
+	if r := mapStr(run, "end_reason"); r != "" {
+		line += " end_reason=" + r
+	}
+	if d := formatDurationMS(run["duration_ms"]); d != "" {
+		line += " duration=" + d
+	}
+	fmt.Fprintln(w, line)
 }
 
 func renderTimeline(w io.Writer, body map[string]any) error {

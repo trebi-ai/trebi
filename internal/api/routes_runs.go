@@ -1364,12 +1364,12 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
 	event := r.PathValue("event")
 	runID := r.Header.Get("X-Trebi-Run-Id")
+	if runID == "" {
+		runID = r.URL.Query().Get("run_id")
+	}
 	if actor, ok := tools.ActorFrom(r.Context()); ok && actor.RunID != "" && actor.RunID != runID {
 		writeForbidden(w, "run token may post only its own hook")
 		return
-	}
-	if runID == "" {
-		runID = r.URL.Query().Get("run_id")
 	}
 	body, _ := io.ReadAll(r.Body)
 	if runID != "" {

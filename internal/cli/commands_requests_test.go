@@ -48,17 +48,19 @@ type requestTestServer struct {
 	srv    *httptest.Server
 	mu     sync.Mutex
 	bodies map[string][]byte
+	tokens map[string]string
 	gets   int
 	reply  requests.Request
 }
 
 func newRequestTestServer(t *testing.T) *requestTestServer {
 	t.Helper()
-	s := &requestTestServer{bodies: map[string][]byte{}}
+	s := &requestTestServer{bodies: map[string][]byte{}, tokens: map[string]string{}}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
 		s.bodies[r.Method+" "+r.URL.Path] = body
+		s.tokens[r.Method+" "+r.URL.Path] = r.Header.Get("X-Trebi-Run-Token")
 		if r.Method == http.MethodGet {
 			s.gets++
 		}
@@ -130,6 +132,21 @@ func TestRequestCreateOptions(t *testing.T) {
 	}
 	if _, err := runCLI(t, s.client(), "request", "create", "--type", "choose", "--title", "Pick", "--option", "nolabel"); err == nil {
 		t.Fatal("option without a label passes")
+	}
+}
+
+func TestRequestCreateSendsRunToken(t *testing.T) {
+	s := newRequestTestServer(t)
+	s.reply = requests.Request{ID: "R1", Status: requests.StatusPending}
+	t.Setenv("TREBI_RUN_TOKEN", "tok")
+	if _, err := runCLI(t, s.client(), "request", "create", "--type", "confirm", "--title", "Go"); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	got := s.tokens["POST /v1/requests"]
+	s.mu.Unlock()
+	if got != "tok" {
+		t.Fatalf("run token %q, want tok", got)
 	}
 }
 

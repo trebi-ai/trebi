@@ -1,7 +1,7 @@
 # Oracle: job-memory-fix
 
 ```bash
-trebi job run digest --wait 60000
+trebi job run digest --wait --timeout 1m
 trebi runs list --job digest --json | jq -e '[.runs[] | select(.status == "complete")] | length >= 1'
 for i in 1 2 3 4 5 6 7 8 9 10; do
   n=$(trebi alerts --json | jq '[.alerts[] | select(.topic == "alert.raised" and .attrs.kind == "memory_invalid")] | length')

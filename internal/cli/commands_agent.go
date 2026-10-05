@@ -134,7 +134,7 @@ func agentWakeCommand() *cli.Command {
 		Name:      "wake",
 		ArgsUsage: "<name>",
 		Usage:     "wake the agent (AGENT.md → kind=agent run)",
-		Flags: []cli.Flag{
+		Flags: append([]cli.Flag{
 			&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 			&cli.StringFlag{Name: "extra-prompt", Aliases: []string{"e"}, Usage: "append text to the agent prompt (server-side)"},
 			&cli.StringFlag{Name: "prompt", Usage: "replace the agent prompt"},
@@ -143,8 +143,7 @@ func agentWakeCommand() *cli.Command {
 			&cli.StringFlag{Name: "conversation", Usage: "attach the run to a conversation id"},
 			&cli.BoolFlag{Name: "test", Usage: "dry_run: evaluate gates, print plan, do not launch"},
 			&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (tmux local or WebSocket remote)"},
-			&cli.IntFlag{Name: "wait", Usage: "wait milliseconds for the run to end (max 120000)"},
-		},
+		}, launchWaitFlags()...),
 		Action: runAgentWake,
 	}
 }

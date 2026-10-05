@@ -220,3 +220,22 @@ func TestScopeGateFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentHookAcceptsRunIDQueryWithToken(t *testing.T) {
+	_, base, dir := startAPI(t)
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, wsDir, "hook")
+	token := "hook-token-000000000000000000000000"
+	insertAgentCaller(t, st, wsID, "cmo", token, "running")
+	runID := "run-cmo-running"
+
+	// `trebi agent-hook` sends the run ID as a query and the token as a header.
+	if code, body := doScoped(t, "POST", base+"/v1/agent-hook/running?run_id="+runID, token, map[string]any{"payload": "{}"}); code != http.StatusOK {
+		t.Fatalf("own hook: %d %v", code, body)
+	}
+	if code, body := doScoped(t, "POST", base+"/v1/agent-hook/running?run_id=other", token, map[string]any{"payload": "{}"}); code != http.StatusForbidden {
+		t.Fatalf("other hook: %d %v", code, body)
+	}
+}
