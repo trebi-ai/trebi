@@ -558,7 +558,8 @@ func (s *Server) cloudDoctor() []alerts.DoctorFinding {
 			Message: "email.worker and a hosted cloud link are both set; the Worker transport wins. Remove one.",
 		})
 	}
-	if cfg.Cloud.RemoteMCPOn() {
+	// Only an explicit opt-in warns; the default is on for every machine.
+	if cfg.Cloud.RemoteMCP != nil && *cfg.Cloud.RemoteMCP {
 		switch {
 		case !ent.Linked:
 			out = append(out, alerts.DoctorFinding{
