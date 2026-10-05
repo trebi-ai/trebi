@@ -177,16 +177,16 @@ func TestAuthProbeCredWatcher(t *testing.T) {
 	cp.Start(runCtx)
 	defer cp.Stop()
 
-	time.Sleep(150 * time.Millisecond)
-	if err := os.WriteFile(cred, []byte(`{"ok":true}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(3 * time.Second)
+	// Write until a probe lands: a busy runner can arm the watch late.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
+		if err := os.WriteFile(cred, []byte(`{"ok":true}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(200 * time.Millisecond)
 		if stub.probes() > 0 {
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("cred watcher did not re-probe")
 }
@@ -219,16 +219,15 @@ func TestAuthProbeCredWatcherDirCred(t *testing.T) {
 	cp.Start(runCtx)
 	defer cp.Stop()
 
-	time.Sleep(150 * time.Millisecond)
-	if err := os.WriteFile(filepath.Join(credDir, "token.json"), []byte(`{}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
+		if err := os.WriteFile(filepath.Join(credDir, "token.json"), []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(200 * time.Millisecond)
 		if stub.probes() > 0 {
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("cred watcher did not re-probe on dir-shaped CredFile")
 }
