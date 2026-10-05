@@ -330,6 +330,7 @@ type openGate struct{}
 
 func (openGate) HasOpen(context.Context, string) (bool, error) { return true, nil }
 func (openGate) RunEnded(context.Context, string, Status)      {}
+func (openGate) PromptHint() string                            { return "" }
 
 // TestIdleWithOpenRequestParks pins the pane rule: an idle pane with an open
 // request parks at once, without the idle timeout.

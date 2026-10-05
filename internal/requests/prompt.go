@@ -11,6 +11,14 @@ import (
 // maxPrompt is the size above which each answer JSON is cut to its id.
 const maxPrompt = 32 << 10
 
+// launchHint tells a job run how to ask a person.
+const launchHint = "Requests: ask the person before an action that needs approval, or for a fact that only a person has. Do not ask for a thing that you can decide alone. Open one request with:\n" +
+	"  trebi request create --type <confirm|review|choose|form> --title \"<what the person decides>\"\n" +
+	"confirm is one action. review is a draft that the person can change (--draft-file <file>). choose is a list (--option <id>=<label>, repeat; --multi for more than one). form is a few fields (--schema-file <file>). " +
+	"Add --summary \"<Markdown context>\", --report <file.html or .md> in the working dir, and --expires-in <duration> as necessary.\n" +
+	"After create, end your turn. Do not wait and do not poll. Trebi continues this session with a prompt that starts with \"[trebi] The person answered\". Its JSON block is the source of truth. " +
+	"Run `trebi guide requests` for the decisions and their meaning."
+
 // answerJSON is the fenced block that the model reads. The field order is
 // part of the prompt contract.
 type answerJSON struct {

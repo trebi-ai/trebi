@@ -285,7 +285,10 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	}
 	s.prepMemory(ctx, &opts)
 	s.applyWakePrompt(ctx, &opts)
-	if hint := connectorHint(opts.Actions); hint != "" {
+	for _, hint := range []string{connectorHint(opts.Actions), s.requestHint(opts)} {
+		if hint == "" {
+			continue
+		}
 		if strings.TrimSpace(opts.Prompt) == "" {
 			opts.Prompt = hint
 		} else {

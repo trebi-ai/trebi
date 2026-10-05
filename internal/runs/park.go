@@ -22,9 +22,11 @@ var (
 
 // RequestGate is the requests seam of runs. A run with an open request parks
 // when its session ends; RunEnded tells the requests side that a run is done.
+// PromptHint is the launch text of a job run, empty when requests are off.
 type RequestGate interface {
 	HasOpen(ctx context.Context, runID string) (bool, error)
 	RunEnded(ctx context.Context, runID string, st Status)
+	PromptHint() string
 }
 
 // SetRequestGate wires the requests seam. Nil (the default) never parks.
@@ -38,6 +40,16 @@ func (s *Service) requestGate() RequestGate {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.gate
+}
+
+// requestHint is the requests text of a fresh job or agent launch. A resumed
+// session saw it at its first launch, and the assistant asks with its own tools.
+func (s *Service) requestHint(opts LaunchOpts) string {
+	g := s.requestGate()
+	if g == nil || opts.ResumeSessionID != "" || (opts.Kind != "" && opts.Kind != KindJob && opts.Kind != KindAgent) {
+		return ""
+	}
+	return g.PromptHint()
 }
 
 // hasOpenRequest reports whether a run waits for a request answer. An error

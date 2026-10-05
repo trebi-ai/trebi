@@ -98,7 +98,7 @@ func (s *Service) Create(ctx context.Context, actor tools.Actor, o CreateOpts) (
 	if actor.RunID == "" {
 		return Request{}, ErrNotRun
 	}
-	if s.grant == nil || !s.grant.Entitlement().Has(entitle.Requests) {
+	if !s.granted() {
 		return Request{}, ErrPlan
 	}
 	run, err := s.runs.Get(ctx, actor.RunID)
@@ -281,6 +281,15 @@ func (s *Service) Wait(ctx context.Context, id string, d time.Duration) (Request
 	}
 }
 
+// PromptHint is the launch prompt text that tells a run how to ask. It is
+// empty when the cloud plan does not grant requests.
+func (s *Service) PromptHint() string {
+	if !s.granted() {
+		return ""
+	}
+	return launchHint
+}
+
 // HasOpen reports whether the session of runID must wait: a resume request
 // is pending, or closed with an answer that is not delivered yet.
 func (s *Service) HasOpen(ctx context.Context, runID string) (bool, error) {
@@ -308,6 +317,10 @@ func (s *Service) RunEnded(ctx context.Context, runID string, _ runs.Status) {
 	if err := s.deliver(ctx, runID); err != nil {
 		s.log.Warn("request deliver", "run_id", runID, "err", err)
 	}
+}
+
+func (s *Service) granted() bool {
+	return s.grant != nil && s.grant.Entitlement().Has(entitle.Requests)
 }
 
 func (s *Service) query(ctx context.Context, tail string, args ...any) ([]Request, error) {

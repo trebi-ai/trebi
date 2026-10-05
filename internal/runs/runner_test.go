@@ -372,6 +372,37 @@ func TestWakePromptWins(t *testing.T) {
 	}
 }
 
+// TestRequestHintOnJobLaunch pins the requests text: a job or agent launch
+// gets it after the prompt, the assistant does not.
+func TestRequestHintOnJobLaunch(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ kind, want string }{
+		{runs.KindJob, "do it\n\nREQUESTS"},
+		{runs.KindAgent, "do it\n\nREQUESTS"},
+		{"assistant", "do it"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			t.Parallel()
+			st, err := store.OpenPath(filepath.Join(t.TempDir(), "r.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			svc := runs.New(st, nil, nil)
+			svc.SetRequestGate(&gateStub{hint: "REQUESTS"})
+			lopts := wakeLaunchOpts(t, tc.kind, "demo", nil)
+			lopts.Prompt = "do it"
+			run, _, err := svc.CreateAndLaunch(context.Background(), lopts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.PromptPreview != tc.want {
+				t.Fatalf("preview = %q, want %q", run.PromptPreview, tc.want)
+			}
+		})
+	}
+}
+
 func wakeLaunchOpts(t *testing.T, kind, job string, wake *runs.WakeOpts) runs.LaunchOpts {
 	t.Helper()
 	return runs.LaunchOpts{

@@ -6,7 +6,7 @@ description: Ask a person for a decision from a job run, end the turn, and conti
 
 # Requests
 
-A request is a decision point that a job run opens for a person. The run asks, ends its turn, and waits with status `parked`. Nothing runs while it waits. When the person answers, Trebi continues the same session. The first prompt of the new run holds the answer. Requests are a Pro feature.
+A request is a decision point that a job run opens for a person. The run asks, ends its turn, and waits with status `parked`. Nothing runs while it waits. When the person answers, Trebi continues the same session. The first prompt of the new run holds the answer. Requests are a Pro feature. When the plan grants requests, every job and agent run gets a short version of this guide at the end of its first prompt. A job prompt then states only what to ask.
 
 ## When to ask
 

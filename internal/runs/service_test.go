@@ -850,11 +850,14 @@ func TestStatsRangeAndMTD(t *testing.T) {
 // gateStub is a RequestGate with a fixed answer that records RunEnded.
 type gateStub struct {
 	open  bool
+	hint  string
 	mu    sync.Mutex
 	ended []runs.Status
 }
 
 func (g *gateStub) HasOpen(context.Context, string) (bool, error) { return g.open, nil }
+
+func (g *gateStub) PromptHint() string { return g.hint }
 
 func (g *gateStub) RunEnded(_ context.Context, _ string, st runs.Status) {
 	g.mu.Lock()

@@ -386,3 +386,17 @@ func TestWaitReturnsOnAnswer(t *testing.T) {
 		t.Fatalf("wait: %v %s", err, got.Status)
 	}
 }
+
+// TestPromptHintFollowsPlan pins the launch text: it names the create command
+// with a grant and is empty without one.
+func TestPromptHintFollowsPlan(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	if hint := h.svc.PromptHint(); !strings.Contains(hint, "trebi request create") || !strings.Contains(hint, "[trebi] The person answered") {
+		t.Fatalf("hint = %q", hint)
+	}
+	h.grant.ok.Store(false)
+	if hint := h.svc.PromptHint(); hint != "" {
+		t.Fatalf("hint without a grant = %q", hint)
+	}
+}
