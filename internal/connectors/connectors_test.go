@@ -2107,6 +2107,9 @@ func TestConnectorsConversations(t *testing.T) {
 			msg("e3", "ci", "done", "e1", true),
 			msg("e4", "ann", "hello", "", false),
 			msg("e5", "ann", "and staging?", "e2", false),
+			// The ack reaction of the account itself never dispatches.
+			{ID: "e6", Type: "reaction", TS: "2026-10-01T10:00:01Z", Room: r1, Text: "deploy",
+				Sender: &protocol.Sender{ID: "me", Self: true}},
 		},
 		LoggedIn: true,
 	}
@@ -2115,7 +2118,7 @@ func TestConnectorsConversations(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := inline("chat", func(m *manifest.Manifest) {
-		m.Events = &manifest.Events{Protocol: manifest.ProtocolConnector, Command: `"` + os.Args[0] + `"`, Types: []manifest.EventType{{Type: "message"}}}
+		m.Events = &manifest.Events{Protocol: manifest.ProtocolConnector, Command: `"` + os.Args[0] + `"`, Types: []manifest.EventType{{Type: "message"}, {Type: "reaction"}}}
 		m.Channel = &manifest.Channel{}
 	})
 	e.Inputs = map[string]string{fakeadapter.Env: "sandbox:" + path}
@@ -2131,6 +2134,11 @@ func TestConnectorsConversations(t *testing.T) {
 		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes`).Scan(&n) // retried until the deadline
 		return n == 5
 	}, "not every event has an outcome")
+	waitUntil(t, 5*time.Second, func() bool {
+		var n int
+		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE connector='chat'`).Scan(&n) // retried until the deadline
+		return n == 6
+	}, "the self reaction is not stored")
 
 	roots := map[string]string{}
 	rows, err := st.DB().Query(`SELECT source_id, root FROM events WHERE connector='chat'`)
@@ -2147,7 +2155,7 @@ func TestConnectorsConversations(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]string{"e1": "e1", "e2": "e1", "e3": "e1", "e4": "e4", "e5": "e1"}; !reflect.DeepEqual(roots, want) {
+	if want := map[string]string{"e1": "e1", "e2": "e1", "e3": "e1", "e4": "e4", "e5": "e1", "e6": "e6"}; !reflect.DeepEqual(roots, want) {
 		t.Fatalf("roots = %v, want %v", roots, want)
 	}
 

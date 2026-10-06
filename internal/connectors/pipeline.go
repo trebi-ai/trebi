@@ -266,8 +266,8 @@ func eventRoot(ev protocol.Event, parent string) string {
 }
 
 // ingestProtocol records one typed event of a protocol instance (Part D.3).
-// An unknown type is dropped. A message from the account itself is stored
-// and not dispatched.
+// An unknown type is dropped. An event of the account itself (its message,
+// its ack reaction) is stored and not dispatched.
 func (s *Service) ingestProtocol(ctx context.Context, p *proc, ev protocol.Event, catchUp bool) {
 	appendConnectorLog(p.id, "event", ev.ID+" "+ev.Type)
 	if ev.ID == "" || ev.Type == "" {
@@ -282,7 +282,7 @@ func (s *Service) ingestProtocol(ctx context.Context, p *proc, ev protocol.Event
 	}
 	rec := protocolRecord(p.res.Type, p.id, ev, catchUp)
 	rec.root = s.root(ctx, p.id, ev)
-	self := ev.Type == manifest.EventMessage && ev.Sender != nil && ev.Sender.Self
+	self := ev.Sender != nil && ev.Sender.Self
 	if s.store(ctx, p, rec, !self) && ev.Room != nil {
 		s.touchThread(ctx, p.id, ev)
 	}

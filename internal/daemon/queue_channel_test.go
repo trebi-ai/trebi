@@ -22,6 +22,8 @@ import (
 // channel-typed user turn into the conversation the channel points at, and
 // the turn that follows it becomes one pending outbox row. The extract sets
 // a thread key; the reply still goes to the event's channel ref (P1-29).
+// The item is the shape a trigger queues: the message is only the text var,
+// never the AGENT.md body.
 func TestAgentChannelItemQueuesReply(t *testing.T) {
 	dir := t.TempDir()
 	home.SetBase(dir)
@@ -77,7 +79,7 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 		ConversationKey: "thread-7",
 		EventID:         "evt-1",
 		EventRaw:        `{"chat_id":"u1","text":"status?"}`,
-		Prompt:          "status?",
+		Vars:            map[string]string{"text": "status?"},
 		Status:          dispatch.QueuePending,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {

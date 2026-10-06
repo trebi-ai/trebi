@@ -223,6 +223,11 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		return
 	}
 	prompt := queuePrompt(item, j)
+	if kind != runs.KindJob {
+		// The body of an operator is not its message. A channel event
+		// carries the message as the text var.
+		prompt = cmp.Or(strings.TrimSpace(item.Prompt), strings.TrimSpace(item.Vars["text"]))
+	}
 	var followUp *runs.FollowUp
 	if item.FollowUp && kind == runs.KindJob {
 		followUp = c.followUp(ctx, item, j)
@@ -245,7 +250,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		// var-expanded operator body feeds the composer at dispatch time.
 		wake = &runs.WakeOpts{
 			Body:    expandVars(j.Prompt, item.Vars),
-			Message: strings.TrimSpace(item.Prompt),
+			Message: prompt,
 		}
 		if convID != "" && c.Conversations != nil {
 			wake.Recap = c.Conversations.Recap(ctx, convID, wakeRecapN)
