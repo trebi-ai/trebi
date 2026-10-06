@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -238,4 +239,58 @@ func scanStrings(t *testing.T, db *sql.DB, query string) []string {
 		out = append(out, v)
 	}
 	return out
+}
+
+// TestMigrationV42IDs proves that v42 stops on rows with no ID and changes
+// nothing, and that it drops the name columns once the IDs are filled.
+func TestMigrationV42IDs(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "v41.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applyThrough(db, 41); err != nil {
+		t.Fatalf("v41 setup: %v", err)
+	}
+	for _, q := range []string{
+		`INSERT INTO job_index (workspace_id,name,path,updated_at) VALUES ('ws','daily','/j','x')`,
+		`INSERT INTO runs (id,workspace_id,job,status,trace_id,started_at,updated_at) VALUES ('R','ws','daily','complete','t','x','x')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+	if err := migrate(db); !errors.Is(err, ErrIDMigration) {
+		t.Fatalf("migrate with no IDs = %v, want ErrIDMigration", err)
+	}
+	var version int
+	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != 41 {
+		t.Fatalf("version = %d, %v; want 41", version, err)
+	}
+
+	for _, q := range []string{
+		`UPDATE job_index SET id='jb_daily'`,
+		`UPDATE runs SET job_id='jb_daily'`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate with IDs: %v", err)
+	}
+	for _, tc := range []struct{ table, column string }{{"runs", "job"}, {"job_index", "owner"}} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, tc.table, tc.column).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("%s.%s still exists (%d, %v)", tc.table, tc.column, n, err)
+		}
+	}
+	var idx int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_job_index_name','idx_job_index_owner')`).Scan(&idx); err != nil || idx != 2 {
+		t.Fatalf("indexes = %d, %v; want 2", idx, err)
+	}
+	var jobID string
+	if err := db.QueryRow(`SELECT job_id FROM runs WHERE id='R'`).Scan(&jobID); err != nil || jobID != "jb_daily" {
+		t.Fatalf("runs.job_id = %q, %v", jobID, err)
+	}
 }

@@ -154,3 +154,32 @@ func renameFixture(ctx context.Context, t *testing.T, st *store.Store) (svc *wor
 		ws.ID, "conv-key", "Research", "email", agent.ID, now, now)
 	return svc, ws.ID, root, agent.ID, brief.ID
 }
+
+// TestDeletedJobRetires: a deleted job file keeps its index row with
+// retired_at, so its runs still resolve the old name.
+func TestDeletedJobRetires(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	svc, wsID, root, _, jobID := renameFixture(ctx, t, st)
+	if err := os.RemoveAll(filepath.Join(root, "agents/old/brief")); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := svc.Get(ctx, wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	row, err := svc.JobByID(ctx, jobID)
+	if err != nil || row.RetiredAt == "" || row.Name != "agents/old/brief" {
+		t.Fatalf("retired row=%+v err=%v", row, err)
+	}
+	if _, err := svc.JobByName(ctx, wsID, "agents/old/brief"); err == nil {
+		t.Fatal("JobByName finds a retired job")
+	}
+	var name string
+	if err := st.DB().QueryRowContext(ctx, `SELECT `+store.JobNameSQL("job_id")+` FROM runs WHERE id='run-owned'`).Scan(&name); err != nil || name != "agents/old/brief" {
+		t.Fatalf("run job name = %q, %v", name, err)
+	}
+}
