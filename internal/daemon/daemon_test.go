@@ -60,7 +60,7 @@ func TestControlPlane_QueueWorkerDrainsPending(t *testing.T) {
 	item := &dispatch.QueueItem{
 		Connector:   "test-src",
 		WorkspaceID: ws.ID,
-		JobID:       "demo", JobName: "demo",
+		JobID:       indexID(t, st, ws.ID, "demo"), JobName: "demo",
 		Kind:     runs.KindJob,
 		EventRaw: `{"n":1}`,
 		Status:   dispatch.QueuePending,

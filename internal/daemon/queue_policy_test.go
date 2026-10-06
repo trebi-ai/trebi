@@ -101,7 +101,7 @@ func TestQueuePolicyDefersSecondFire(t *testing.T) {
 	cp, st, wsID, ctx := openQueuePlane(t, "tickjob", md)
 
 	q := dispatch.NewQueue(st)
-	first := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: "tickjob", JobName: "tickjob", Status: dispatch.QueuePending, EventRaw: `{"n":1}`}
+	first := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "tickjob"), JobName: "tickjob", Status: dispatch.QueuePending, EventRaw: `{"n":1}`}
 	if err := q.Enqueue(ctx, first); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestQueuePolicyDefersSecondFire(t *testing.T) {
 		t.Fatalf("first fire status=%s want done", status)
 	}
 
-	second := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: "tickjob", JobName: "tickjob", Status: dispatch.QueuePending, EventRaw: `{"n":2}`}
+	second := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "tickjob"), JobName: "tickjob", Status: dispatch.QueuePending, EventRaw: `{"n":2}`}
 	if err := q.Enqueue(ctx, second); err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestQueueSkipsRowsNotDue(t *testing.T) {
 	cp, st, wsID, ctx := openQueuePlane(t, "later", md)
 
 	later := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
-	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: wsID, JobID: "later", JobName: "later", Status: dispatch.QueuePending, EventRaw: `{}`}
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "later"), JobName: "later", Status: dispatch.QueuePending, EventRaw: `{}`}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestQueueRetryBackoff(t *testing.T) {
 	t.Setenv("TREBI_FAKE_HARNESS", "")
 	_ = os.Unsetenv("TREBI_FAKE_HARNESS")
 
-	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: wsID, JobID: "badkit", JobName: "badkit", Status: dispatch.QueuePending, EventRaw: `{}`}
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "badkit"), JobName: "badkit", Status: dispatch.QueuePending, EventRaw: `{}`}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestAssistantTurnWaits(t *testing.T) {
 	}
 
 	item := &dispatch.QueueItem{
-		Connector: conversations.ChannelAssistant, WorkspaceID: wsID, JobID: "asstlane", JobName: "asstlane",
+		Connector: conversations.ChannelAssistant, WorkspaceID: wsID, JobID: wsID, JobName: "asstlane",
 		Kind: dispatch.KindAssistant, ConversationKey: "ref-wait",
 		Prompt: "hello", Status: dispatch.QueuePending,
 	}
@@ -260,7 +260,7 @@ func TestQueueRateLimitLaunchesEveryEvent(t *testing.T) {
 	cp, st, wsID, ctx := openQueuePlaneAt(t, "burst", md, clock.Now)
 	q := dispatch.NewQueue(st)
 	for i := 0; i < 8; i++ {
-		if err := q.Enqueue(ctx, &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: "burst", JobName: "burst", EventRaw: `{}`}); err != nil {
+		if err := q.Enqueue(ctx, &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "burst"), JobName: "burst", EventRaw: `{}`}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -317,7 +317,7 @@ func TestAssistantWaitThenAskErrorRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := &dispatch.QueueItem{
-		Connector: conversations.ChannelAssistant, WorkspaceID: wsID, JobID: "asstretry", JobName: "asstretry",
+		Connector: conversations.ChannelAssistant, WorkspaceID: wsID, JobID: wsID, JobName: "asstretry",
 		Kind: dispatch.KindAssistant, ConversationKey: "ref-retry",
 		Prompt: "hello", Status: dispatch.QueuePending,
 	}
@@ -361,7 +361,7 @@ func TestEscalationItemTakesNoTriggerPolicy(t *testing.T) {
 	md := "---\nharness: fake\nsession:\n  if_running: replace\ntriggers:\n  - event: tick\n    match: \"true\"\n    limit: 1/1h\n---\n\nGo.\n"
 	cp, st, wsID, ctx := openQueuePlane(t, "esc", md)
 	q := dispatch.NewQueue(st)
-	first := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: "esc", JobName: "esc", EventRaw: `{}`}
+	first := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "esc"), JobName: "esc", EventRaw: `{}`}
 	if err := q.Enqueue(ctx, first); err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +372,7 @@ func TestEscalationItemTakesNoTriggerPolicy(t *testing.T) {
 	if status, _, _ := waitQueue(t, st, first.ID, func(s, _, _ string) bool { return s == "done" }); status != "done" {
 		t.Fatalf("first status=%s", status)
 	}
-	esc := &dispatch.QueueItem{Connector: "escalation", WorkspaceID: wsID, JobID: "esc", JobName: "esc", EventRaw: `{}`}
+	esc := &dispatch.QueueItem{Connector: "escalation", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "esc"), JobName: "esc", EventRaw: `{}`}
 	if err := q.Enqueue(ctx, esc); err != nil {
 		t.Fatal(err)
 	}
@@ -413,14 +413,14 @@ func TestAgentCoalesceKeepsMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	live, err := cp.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: ws.ID, JobID: "agents/ops", JobName: "agents/ops", Kind: runs.KindAgent, Harness: "fake",
+		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops"), JobName: "agents/ops", Kind: runs.KindAgent, Harness: "fake",
 		ConversationKey: "u1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	item := &dispatch.QueueItem{
-		Connector: "x", WorkspaceID: ws.ID, JobID: "agents/ops", JobName: "agents/ops", Kind: runs.KindAgent,
+		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops"), JobName: "agents/ops", Kind: runs.KindAgent,
 		ConversationKey: "u1", Prompt: "second message", Status: dispatch.QueuePending,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
@@ -459,7 +459,7 @@ func TestAssistantTriggerPolicy(t *testing.T) {
 	}
 	q := dispatch.NewQueue(st)
 	first := &dispatch.QueueItem{
-		Connector: "tick", WorkspaceID: wsID, JobID: "assistant", JobName: "assistant", Kind: dispatch.KindAssistant,
+		Connector: "tick", WorkspaceID: wsID, JobID: wsID, JobName: "assistant", Kind: dispatch.KindAssistant,
 		EventID: "evt-1", Prompt: "one", Status: dispatch.QueuePending,
 	}
 	if err := q.Enqueue(ctx, first); err != nil {
@@ -473,7 +473,7 @@ func TestAssistantTriggerPolicy(t *testing.T) {
 		t.Fatalf("first status=%s want done", status)
 	}
 	second := &dispatch.QueueItem{
-		Connector: "tick", WorkspaceID: wsID, JobID: "assistant", JobName: "assistant", Kind: dispatch.KindAssistant,
+		Connector: "tick", WorkspaceID: wsID, JobID: wsID, JobName: "assistant", Kind: dispatch.KindAssistant,
 		EventID: "evt-2", Prompt: "two", Status: dispatch.QueuePending,
 	}
 	if err := q.Enqueue(ctx, second); err != nil {
@@ -500,7 +500,7 @@ func TestQueuePolicyMatchesTriggerBySlug(t *testing.T) {
 	}
 
 	q := dispatch.NewQueue(st)
-	first := &dispatch.QueueItem{Connector: feed.ID, WorkspaceID: wsID, JobID: "feedjob", JobName: "feedjob", Status: dispatch.QueuePending, EventRaw: `{"n":1}`}
+	first := &dispatch.QueueItem{Connector: feed.ID, WorkspaceID: wsID, JobID: indexID(t, st, wsID, "feedjob"), JobName: "feedjob", Status: dispatch.QueuePending, EventRaw: `{"n":1}`}
 	if err := q.Enqueue(ctx, first); err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +512,7 @@ func TestQueuePolicyMatchesTriggerBySlug(t *testing.T) {
 	if status, _, _ := waitQueue(t, st, first.ID, func(s, _, _ string) bool { return s == "done" }); status != "done" {
 		t.Fatalf("first fire status=%s want done", status)
 	}
-	second := &dispatch.QueueItem{Connector: feed.ID, WorkspaceID: wsID, JobID: "feedjob", JobName: "feedjob", Status: dispatch.QueuePending, EventRaw: `{"n":2}`}
+	second := &dispatch.QueueItem{Connector: feed.ID, WorkspaceID: wsID, JobID: indexID(t, st, wsID, "feedjob"), JobName: "feedjob", Status: dispatch.QueuePending, EventRaw: `{"n":2}`}
 	if err := q.Enqueue(ctx, second); err != nil {
 		t.Fatal(err)
 	}

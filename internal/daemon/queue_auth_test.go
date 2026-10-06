@@ -62,7 +62,7 @@ func TestQueueDrain_AuthMissingBlocks(t *testing.T) {
 	_ = cp.Workspaces.RebuildIndex(ctx, ws)
 
 	item := &dispatch.QueueItem{
-		Connector: "x", WorkspaceID: ws.ID, JobID: "gated", JobName: "gated",
+		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "gated"), JobName: "gated",
 		Status: dispatch.QueuePending, EventRaw: `{}`,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
@@ -141,14 +141,14 @@ func TestQueueDrain_IfRunningSkipResult(t *testing.T) {
 
 	// Seed a live run for the same job
 	_, err = cp.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: ws.ID, JobID: "skipme", JobName: "skipme", Harness: "fake", TmuxSession: "trebi-live-skip",
+		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "skipme"), JobName: "skipme", Harness: "fake", TmuxSession: "trebi-live-skip",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	item := &dispatch.QueueItem{
-		Connector: "x", WorkspaceID: ws.ID, JobID: "skipme", JobName: "skipme",
+		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "skipme"), JobName: "skipme",
 		Status: dispatch.QueuePending, EventRaw: `{}`,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
