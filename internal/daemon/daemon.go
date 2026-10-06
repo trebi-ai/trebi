@@ -326,7 +326,7 @@ func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service
 	c.asstStore = assistant.NewStore(c.Store)
 	c.asstRT = agentwire.New(agentwire.Options{
 		ClientName: "trebi",
-		LedgerPath: filepath.Join(home.RunsDir(), "agent-procs.json"),
+		LedgerPath: filepath.Join(home.RunsDir(), "assistant-procs.json"),
 		Logger:     c.log,
 	})
 	assistant.RegisterNativeDriver(c.asstRT, nativeFn, c.asstDisp, c.asstStore, maxFileBytes, c.log)
@@ -423,6 +423,9 @@ func (c *ControlPlane) Start(parent context.Context) {
 
 	// No assistant process survives a restart; rows left running or
 	// waiting are closed (plan C.2).
+	if err := c.asstRT.Reconcile(); err != nil {
+		c.log.Warn("reconcile assistant processes", "error", err)
+	}
 	if n, err := c.asstStore.CloseStale(ctx); err != nil {
 		c.log.Warn("assistant close stale", "error", err)
 	} else if n > 0 {
@@ -547,6 +550,10 @@ func (c *ControlPlane) Stop() {
 	c.Reaper.Stop()
 	if c.Runs != nil {
 		c.Runs.CloseCLIRuns(context.Background())
+	}
+	if c.asst != nil {
+		_ = c.asst.Shutdown(context.Background()) // always nil
+		_ = c.asstRT.Close(context.Background())  // always nil
 	}
 	if c.Harness != nil {
 		c.Harness.StopLoginWatchers()

@@ -79,23 +79,23 @@ func (h HarnessSpec) MarshalYAML() (any, error) {
 // Frontmatter is the canonical YAML block.
 type Frontmatter struct {
 	ID             string            `yaml:"id,omitempty"`
-	WorkingDir     string            `yaml:"working_dir"`
+	WorkingDir     string            `yaml:"working_dir,omitempty"`
 	Harness        HarnessSpec       `yaml:"harness"`
-	Runtime        string            `yaml:"runtime"`
-	Title          string            `yaml:"title"`
-	Memory         any               `yaml:"memory"`
-	State          any               `yaml:"state"`
-	Envset         EnvsetList        `yaml:"envset"`
-	Env            map[string]string `yaml:"env"` // inline env map (new); never auto-written by migration
-	Session        SessionYAML       `yaml:"session"`
-	Triggers       []TriggerYAML     `yaml:"triggers"`
-	Disabled       bool              `yaml:"disabled"`
-	FollowupPrompt string            `yaml:"followup_prompt"`
-	Name           string            `yaml:"name"` // verified then ignored for JOB.md identity
-	Description    string            `yaml:"description"`
-	Inputs         any               `yaml:"inputs"`
-	Skills         any               `yaml:"skills"`
-	Connectors     any               `yaml:"connectors"`
+	Runtime        string            `yaml:"runtime,omitempty"`
+	Title          string            `yaml:"title,omitempty"`
+	Memory         any               `yaml:"memory,omitempty"`
+	State          any               `yaml:"state,omitempty"`
+	Envset         EnvsetList        `yaml:"envset,omitempty"`
+	Env            map[string]string `yaml:"env,omitempty"` // inline env map (new); never auto-written by migration
+	Session        SessionYAML       `yaml:"session,omitempty"`
+	Triggers       []TriggerYAML     `yaml:"triggers,omitempty"`
+	Disabled       bool              `yaml:"disabled,omitempty"`
+	FollowupPrompt string            `yaml:"followup_prompt,omitempty"`
+	Name           string            `yaml:"name,omitempty"` // verified then ignored for JOB.md identity
+	Description    string            `yaml:"description,omitempty"`
+	Inputs         any               `yaml:"inputs,omitempty"`
+	Skills         any               `yaml:"skills,omitempty"`
+	Connectors     any               `yaml:"connectors,omitempty"`
 	Email          *EmailYAML        `yaml:"email,omitempty"`
 	Kit            *KitYAML          `yaml:"kit,omitempty"`
 	Budget         *BudgetYAML       `yaml:"budget,omitempty"`

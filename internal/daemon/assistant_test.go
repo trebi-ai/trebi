@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/daemon"
@@ -24,6 +25,11 @@ func TestTriggerItemPromptsAssistantSession(t *testing.T) {
 	dir := t.TempDir()
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
+	// Stay alive after the turn like a real CLI, so Stop has a session to close.
+	t.Setenv(agentwire.FakeScriptEnv, `while IFS= read -r line; do
+echo '{"type":"assistant","text":"working"}'
+echo '{"type":"result","subtype":"success","text":"done"}'
+done`)
 	t.Cleanup(func() { home.SetBase("") })
 
 	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
@@ -58,7 +64,12 @@ func TestTriggerItemPromptsAssistantSession(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cp.Start(runCtx)
-	defer cp.Stop()
+	stopped := false
+	defer func() {
+		if !stopped {
+			cp.Stop()
+		}
+	}()
 
 	q := dispatch.NewQueue(st)
 	item := &dispatch.QueueItem{
@@ -117,6 +128,19 @@ func TestTriggerItemPromptsAssistantSession(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("turn end hook never fired")
+	}
+
+	// No assistant session outlives the daemon.
+	if !cp.Assistant().Live(convID) {
+		t.Fatal("session not live before stop")
+	}
+	stopped = true
+	cp.Stop()
+	if cp.Assistant().Live(convID) {
+		t.Fatal("session live after stop")
+	}
+	if rec, err := cp.AssistantStore().Get(ctx, convID); err != nil || rec.Status != assistant.StatusClosed {
+		t.Fatalf("status after stop = %q, %v; want closed", rec.Status, err)
 	}
 }
 

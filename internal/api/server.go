@@ -211,7 +211,7 @@ func (s *Server) buildAssistantStack(filesMaxBytes int64) {
 	rt := agentwire.New(agentwire.Options{
 		ClientName:    "trebi",
 		ClientVersion: Version,
-		LedgerPath:    filepath.Join(home.RunsDir(), "agent-procs.json"),
+		LedgerPath:    filepath.Join(home.RunsDir(), "assistant-procs.json"),
 		Logger:        s.log,
 	})
 	assistant.RegisterNativeDriver(rt, nativeFn, s, s.asstStore, filesMaxBytes, s.log)

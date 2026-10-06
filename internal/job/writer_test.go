@@ -126,6 +126,18 @@ func TestSpecRender(t *testing.T) {
 	}
 }
 
+func TestSpecRenderOmitsUnsetFields(t *testing.T) {
+	t.Parallel()
+	md, err := job.Spec{ID: "agt_0123456789", Prompt: "Go.", Description: "Watch usage."}.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "---\nid: agt_0123456789\nharness: claude\ndescription: Watch usage.\n---\n\nGo.\n"
+	if md != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", md, want)
+	}
+}
+
 func TestSpecRenderNestedHarness(t *testing.T) {
 	t.Parallel()
 	md, err := job.Spec{Prompt: "Run.", Harness: "claude", Model: "opus", Effort: "xhigh"}.Render()
