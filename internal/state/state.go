@@ -90,7 +90,8 @@ const (
 	ModeInsert Mode = "insert"
 	ModeMerge  Mode = "merge"
 
-	retiredGrace = 30 * 24 * time.Hour
+	// RetiredGrace is how long the state of a retired owner stays before Sweep deletes it.
+	RetiredGrace = 30 * 24 * time.Hour
 	sqlChunk     = 500
 	liveSQL      = "(expires_at IS NULL OR expires_at > ?)"
 )
@@ -341,7 +342,7 @@ func (s *Store) Sweep(ctx context.Context) (expired, purged int, err error) {
 			return err
 		}
 		const retired = `owner_id IN (SELECT id FROM job_index WHERE retired_at IS NOT NULL AND retired_at < ?)`
-		cutoff := formatTS(now.Add(-retiredGrace))
+		cutoff := formatTS(now.Add(-RetiredGrace))
 		if purged, err = s.remove(ctx, tx, retired, cutoff); err != nil {
 			return err
 		}

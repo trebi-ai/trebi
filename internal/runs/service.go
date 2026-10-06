@@ -18,6 +18,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/pricing"
+	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -100,6 +101,7 @@ type WakeScope struct {
 	WorkspaceID string
 	Kind        string // assistant | agent
 	Name        string // agent index name (agents/<name>); ignored for assistant
+	OwnerID     string // agent ID; owner of the state block
 }
 
 // WakeComposer is the one seam from runs to workspace wake composition
@@ -128,6 +130,7 @@ type Service struct {
 	life       context.Context
 	composer   WakeComposer
 	memRes     MemoryResolver
+	briefer    StateBriefer
 	budgetGate BudgetGate
 	actions    ActionResolver
 	kits       KitSource
@@ -217,6 +220,15 @@ func (s *Service) takePendingPrompt(id string) (pendingPrompt, bool) {
 	}
 	return p, ok
 }
+
+// StateBriefer renders the state block of one owner. *state.Store satisfies
+// it; nil gives no state block.
+type StateBriefer interface {
+	Brief(ctx context.Context, o state.Owner) (string, error)
+}
+
+// SetStateBriefer wires the state block of job prompts.
+func (s *Service) SetStateBriefer(b StateBriefer) { s.briefer = b }
 
 // SetMemoryResolver wires the gate-time memory seam. Both daemon and api hold
 // the workspaces service at their runs.New call sites.
@@ -578,6 +590,22 @@ func (s *Service) listPage(ctx context.Context, opts ListOpts) ([]*Run, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// LastComplete returns the newest complete run of an owner other than
+// exceptRunID. It is the state.RunClock of the daemon.
+func (s *Service) LastComplete(ctx context.Context, ownerID, exceptRunID string) (state.RunRef, bool, error) {
+	var id, started string
+	err := s.st.DB().QueryRowContext(ctx, `SELECT id, started_at FROM runs
+WHERE job_id = ? AND status = ? AND id <> ? ORDER BY started_at DESC, id DESC LIMIT 1`,
+		ownerID, string(StatusComplete), exceptRunID).Scan(&id, &started)
+	if errors.Is(err, sql.ErrNoRows) {
+		return state.RunRef{}, false, nil
+	}
+	if err != nil {
+		return state.RunRef{}, false, fmt.Errorf("last complete run: %w", err)
+	}
+	return state.RunRef{ID: id, Start: store.ParseTS(started)}, true, nil
 }
 
 // FindLive returns the running run on a conversation lane, or sql.ErrNoRows.

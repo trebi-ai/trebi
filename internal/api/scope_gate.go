@@ -51,6 +51,14 @@ func newScopeGate(mux *http.ServeMux) *scopeGate {
 		"POST /v1/conversations/{id}/messages":            true,
 		"POST /v1/email/send":                             true,
 		"POST /v1/agent-hook/{event}":                     true,
+		// The state handler limits a run to its own owner.
+		"POST /v1/state/{owner}/{collection}/query":  true,
+		"POST /v1/state/{owner}/{collection}/get":    true,
+		"POST /v1/state/{owner}/{collection}/has":    true,
+		"POST /v1/state/{owner}/{collection}/rows":   true,
+		"POST /v1/state/{owner}/{collection}/delete": true,
+		"POST /v1/state/{owner}/{collection}/prune":  true,
+		"DELETE /v1/state/{owner}/{collection}":      true,
 	}
 	policies := make(map[string]scopePolicy, len(allow))
 	for pattern := range allow {

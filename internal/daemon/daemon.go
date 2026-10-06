@@ -38,6 +38,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
+	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
@@ -68,6 +69,8 @@ type Options struct {
 	OutboxInterval time.Duration
 	// LoginMaxAge is the interactive login session lifetime (default 10m).
 	LoginMaxAge time.Duration
+	// StateSweepInterval is the state TTL and retired-owner sweep (default 1h).
+	StateSweepInterval time.Duration
 	// UpdateCheckInterval is the connector update check (default 24h). The
 	// first check runs after 10m, or after the interval when it is shorter.
 	UpdateCheckInterval time.Duration
@@ -104,6 +107,7 @@ type ControlPlane struct {
 	Webhooks  *webhooks.Service
 	Launcher  *launch.Launcher
 	Requests  *requests.Service
+	State     *state.Store
 	Opts      Options
 
 	// The assistant session stack (plan D). The API server binds these
@@ -198,6 +202,14 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	r.SetMemoryResolver(ws)
 	r.SetBudgetGate(ws)
 	r.SetKitSource(ws)
+	limits := state.DefaultLimits()
+	if cfg != nil {
+		d := cfg.Defaults.State.Resolved()
+		limits.OwnerRows, limits.OwnerBytes = d.MaxRows, d.MaxBytes
+	}
+	stateStore := state.NewStore(st.DB(), limits, r, nil)
+	r.SetStateBriefer(stateStore)
+	ws.SetStateBriefer(stateStore)
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -255,6 +267,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Webhooks:      hk,
 		Launcher:      launcher,
 		Requests:      reqSvc,
+		State:         stateStore,
 		Opts:          opts,
 		log:           slog.Default().With("source", "daemon"),
 		queue:         q,
@@ -494,6 +507,12 @@ func (c *ControlPlane) Start(parent context.Context) {
 	go func() {
 		defer c.wg.Done()
 		c.busPrune(ctx)
+	}()
+
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.stateSweep(ctx)
 	}()
 
 	// The outbox worker sends due rows and pulses typing. It skips its tick
@@ -749,6 +768,30 @@ func (c *ControlPlane) busPrune(ctx context.Context) {
 				`DELETE FROM cloud_cursors WHERE stream LIKE 'ingress:%' AND updated_at < ?`,
 				time.Now().UTC().Add(-7*24*time.Hour).Format(time.RFC3339)); err != nil {
 				c.log.Warn("ingress ledger prune", "error", err)
+			}
+		}
+	}
+}
+
+// stateSweep removes expired state rows and the rows of owners retired for
+// more than 30 days.
+func (c *ControlPlane) stateSweep(ctx context.Context) {
+	every := c.Opts.StateSweepInterval
+	if every <= 0 {
+		every = time.Hour
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			expired, purged, err := c.State.Sweep(ctx)
+			if err != nil {
+				c.log.Warn("state sweep", "error", err)
+			} else if expired+purged > 0 {
+				c.log.Info("state.swept", "expired", expired, "purged", purged)
 			}
 		}
 	}

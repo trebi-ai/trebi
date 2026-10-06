@@ -75,6 +75,7 @@ func (l *Launcher) FromRun(ctx context.Context, prev *runs.Run, reason runs.RunR
 	if wsPath != "" {
 		lopts.Memory = runs.NewMemoryLaunch(j, wsPath)
 	}
+	lopts.StateDecl = j.State
 	lopts.Kit = kit
 	lopts.JobSkills = j.Skills
 	lopts.JobConnectors = j.Connectors

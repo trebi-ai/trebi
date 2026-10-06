@@ -23,6 +23,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 	"gopkg.in/yaml.v3"
 )
@@ -67,6 +68,7 @@ type Service struct {
 	fp            map[string]string
 	jobs          map[string][]*job.Job
 	budgetAlerter BudgetAlerter
+	briefer       runs.StateBriefer
 
 	asstMu     sync.Mutex
 	asstWrites map[string]string // workspace id -> trebi.yaml hash of the last API write
@@ -79,6 +81,9 @@ func New(st *store.Store) *Service {
 		fp: map[string]string{}, jobs: map[string][]*job.Job{},
 	}
 }
+
+// SetStateBriefer wires the state block of agent wakes.
+func (s *Service) SetStateBriefer(b runs.StateBriefer) { s.briefer = b }
 
 // WithRoot injects workspaces.root (already expanded). Empty refuses pathless create.
 func (s *Service) WithRoot(root string) *Service {
@@ -1110,11 +1115,13 @@ func (s *Service) writeAgentWake(ctx context.Context, b *strings.Builder, ws *Wo
 		}
 	}
 	body := opts.Body
+	var spec *job.Job
 	if agent != nil {
-		if strings.TrimSpace(body) == "" {
-			if j, err := job.ParseFile(agent.Path); err == nil && j != nil {
-				body = j.Prompt
-			}
+		if j, err := job.ParseFile(agent.Path); err == nil {
+			spec = j
+		}
+		if strings.TrimSpace(body) == "" && spec != nil {
+			body = spec.Prompt
 		}
 		// A fire-time re-parse is raw, so expand here too (idempotent).
 		body = job.SubstituteAgentVars(body, filepath.Dir(agent.Path), ws.Path)
@@ -1138,7 +1145,34 @@ func (s *Service) writeAgentWake(ctx context.Context, b *strings.Builder, ws *Wo
 	if m := wakeMemory(opts.Memory); m != "" {
 		writeSection(b, "Memory", m)
 	}
+	if brief := s.agentBrief(ctx, scope, agent, spec); brief != "" {
+		writeSection(b, "State", strings.TrimPrefix(brief, "## State\n"))
+	}
 	writeWakeTail(b, opts)
+}
+
+// agentBrief renders the state block of an agent wake. "" when no briefer is
+// wired or the agent has no state.
+func (s *Service) agentBrief(ctx context.Context, scope runs.WakeScope, agent *JobRow, spec *job.Job) string {
+	if s.briefer == nil {
+		return ""
+	}
+	o := state.Owner{ID: scope.OwnerID, WorkspaceID: scope.WorkspaceID}
+	if o.ID == "" && agent != nil {
+		o.ID = agent.ID
+	}
+	if spec != nil {
+		o.Collections = spec.State
+	}
+	if o.ID == "" {
+		return ""
+	}
+	brief, err := s.briefer.Brief(ctx, o)
+	if err != nil {
+		s.log.Warn("state brief", "agent_id", o.ID, "err", err)
+		return ""
+	}
+	return brief
 }
 
 // writeWakeTail renders the chat-only sections of an assistant wake.

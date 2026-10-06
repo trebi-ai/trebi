@@ -2330,6 +2330,91 @@ func ParseJobListKind(s string) (string, error) {
 	}
 }
 
+// StateQuery is the body of a state query. It matches state.Query.
+type StateQuery struct {
+	Keys   []string `json:"keys,omitempty"`
+	Prefix string   `json:"prefix,omitempty"`
+	Q      string   `json:"q,omitempty"`
+	Where  string   `json:"where,omitempty"`
+	Since  string   `json:"since,omitempty"`
+	Until  string   `json:"until,omitempty"`
+	By     string   `json:"by,omitempty"`
+	Sort   string   `json:"sort,omitempty"`
+	Fields []string `json:"fields,omitempty"`
+	Limit  int      `json:"limit,omitempty"`
+	Cursor string   `json:"cursor,omitempty"`
+}
+
+// StatePath is /v1/state/{owner}[/{collection}][/{verb}]. owner is an ID,
+// "self", or a name; a name needs workspace.
+func StatePath(owner, collection, verb string) string {
+	p := "/v1/state/" + url.PathEscape(owner)
+	if collection != "" {
+		p += "/" + url.PathEscape(collection)
+	}
+	if verb != "" {
+		p += "/" + verb
+	}
+	return p
+}
+
+// BuildStateSummary builds GET /v1/state/{owner}.
+func BuildStateSummary(owner, workspace string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: withQuery(StatePath(owner, "", ""), workspaceQ(workspace))}
+}
+
+// BuildStateQuery builds POST /v1/state/{owner}/{collection}/query.
+func BuildStateQuery(owner, workspace, collection string, q StateQuery) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: withQuery(StatePath(owner, collection, "query"), workspaceQ(workspace)), Body: q}
+}
+
+// BuildStateGet builds POST /v1/state/{owner}/{collection}/get.
+func BuildStateGet(owner, workspace, collection string, keys []string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: withQuery(StatePath(owner, collection, "get"), workspaceQ(workspace)),
+		Body: map[string]any{"keys": keys}}
+}
+
+// BuildStateHas builds POST /v1/state/{owner}/{collection}/has.
+func BuildStateHas(owner, workspace, collection string, keys []string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: withQuery(StatePath(owner, collection, "has"), workspaceQ(workspace)),
+		Body: map[string]any{"keys": keys}}
+}
+
+// BuildStatePut builds POST /v1/state/{owner}/{collection}/rows. Each row is
+// {key, at, value, inc}. An empty mode is upsert.
+func BuildStatePut(owner, workspace, collection string, rows []any, mode string) HTTPRequest {
+	body := map[string]any{"rows": rows}
+	if mode != "" {
+		body["mode"] = mode
+	}
+	return HTTPRequest{Method: "POST", Path: withQuery(StatePath(owner, collection, "rows"), workspaceQ(workspace)), Body: body}
+}
+
+// BuildStateDelete builds POST /v1/state/{owner}/{collection}/delete. A
+// caller that is not a run needs confirm.
+func BuildStateDelete(owner, workspace, collection string, keys []string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: withQuery(StatePath(owner, collection, "delete"), mergeQ(workspaceQ(workspace), confirmQ(confirm))),
+		Body: map[string]any{"keys": keys}}
+}
+
+// BuildStatePrune builds POST /v1/state/{owner}/{collection}/prune. Since or
+// until must be set. A caller that is not a run needs confirm.
+func BuildStatePrune(owner, workspace, collection, since, until, by string, confirm bool) HTTPRequest {
+	body := map[string]any{}
+	for k, v := range map[string]string{"since": since, "until": until, "by": by} {
+		if v != "" {
+			body[k] = v
+		}
+	}
+	return HTTPRequest{Method: "POST", Path: withQuery(StatePath(owner, collection, "prune"), mergeQ(workspaceQ(workspace), confirmQ(confirm))), Body: body}
+}
+
+// BuildStateDrop builds DELETE /v1/state/{owner}/{collection}. A caller that
+// is not a run needs confirm.
+func BuildStateDrop(owner, workspace, collection string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: withQuery(StatePath(owner, collection, ""), mergeQ(workspaceQ(workspace), confirmQ(confirm)))}
+}
+
 func keepJobKind(want, rowKind string) bool {
 	switch want {
 	case "all":

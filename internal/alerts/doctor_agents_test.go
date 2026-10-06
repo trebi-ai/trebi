@@ -293,3 +293,33 @@ func writeJob(t *testing.T, st *store.Store, dir, name, kind, owner, md string) 
 		t.Fatal(err)
 	}
 }
+
+func TestStateRetiredFinding(t *testing.T) {
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	db := st.DB()
+	if _, ok := stateRetiredFinding(t.Context(), db); ok {
+		t.Fatal("finding on an empty store")
+	}
+	for _, q := range []string{
+		`INSERT INTO job_index (id, workspace_id, name, path, updated_at, retired_at) VALUES
+			('jb_live','ws','live','/x','2026-10-01T00:00:00Z',NULL),
+			('jb_gone','ws','gone','/y','2026-10-01T00:00:00Z','2026-10-02T00:00:00Z'),
+			('jb_empty','ws','empty','/z','2026-10-01T00:00:00Z','2026-09-01T00:00:00Z')`,
+		`INSERT INTO state_rows (owner_id, collection, key, value, created_at, updated_at) VALUES
+			('jb_live','c','k','{}','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z'),
+			('jb_gone','c','k','{}','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z'),
+			('jb_gone','c','k2','{}','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, ok := stateRetiredFinding(t.Context(), db)
+	if !ok || f.Code != "state_retired" || f.Severity != "info" || !strings.Contains(f.Message, "1 deleted") || !strings.Contains(f.Message, "2026-11-01") {
+		t.Fatalf("finding %+v", f)
+	}
+}

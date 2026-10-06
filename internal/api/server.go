@@ -41,6 +41,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
+	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
@@ -76,6 +77,7 @@ type Server struct {
 	proposals  *proposals.Service
 	requests   *requests.Service
 	launch     *launch.Launcher
+	state      *state.Store
 	// catalog is the registry client; it follows the configured list.
 	catalog *registry.Live
 
@@ -146,6 +148,9 @@ func New(st *store.Store, opts Options) *Server {
 	conn := connectors.New(st, ws, sk).WithConversations(r)
 	cl := cloudlink.New(st)
 	l := launch.NewLauncher(ws, r)
+	stateStore := state.NewStore(st.DB(), stateLimits(), r, nil)
+	r.SetStateBriefer(stateStore)
+	ws.SetStateBriefer(stateStore)
 	s := &Server{
 		st:           st,
 		runs:         r,
@@ -161,6 +166,7 @@ func New(st *store.Store, opts Options) *Server {
 		templates:    agents.NewCatalog(),
 		proposals:    proposals.NewService(st, fs, ws, st, r),
 		launch:       l,
+		state:        stateStore,
 		requests:     requests.NewService(st, r, l, cl, requests.NewReportStore(home.RequestsDir()), requests.Options{}),
 		catalog:      registry.NewLive(opts.Registry),
 		cloud:        cl,
@@ -348,6 +354,19 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	bind(&s.requests, reqSvc)
 }
 
+// BindState swaps in the daemon's state store.
+func (s *Server) BindState(st *state.Store) { bind(&s.state, st) }
+
+// stateLimits reads the owner limits from config.
+func stateLimits() state.Limits {
+	limits := state.DefaultLimits()
+	if c, err := config.Load(); err == nil && c != nil {
+		d := c.Defaults.State.Resolved()
+		limits.OwnerRows, limits.OwnerBytes = d.MaxRows, d.MaxBytes
+	}
+	return limits
+}
+
 // bind keeps the current service when the shared one is nil.
 func bind[T any](dst **T, v *T) {
 	if v != nil {
@@ -433,6 +452,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeOutbox(mux)
 	s.routeNotify(mux)
 	s.routeHooks(mux)
+	s.routeState(mux)
 	s.routeMCP(mux)
 	// Dispatch from catalog tools re-enters here, audit-wrapped and
 	// noTraversal-wrapped. MCP and native dispatch share that path.

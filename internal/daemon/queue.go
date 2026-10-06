@@ -303,6 +303,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		CoalesceText: coalesceText,
 		Wake:         wake,
 		Memory:       c.memoryLaunch(ctx, item.WorkspaceID, j),
+		StateDecl:    j.State,
 		Kit:          kit,
 		JobSkills:    j.Skills, JobConnectors: j.Connectors,
 		// A message of a conversation goes into its live run (plan A.6).
@@ -410,6 +411,7 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 		Prompt:    lr.Prompt,
 		Wake:      wake,
 		Memory:    c.memoryLaunch(ctx, item.WorkspaceID, j),
+		StateDecl: j.State,
 		Kit:       kit,
 		JobSkills: j.Skills, JobConnectors: j.Connectors,
 		IfRunning: d.IfRunning,

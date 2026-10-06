@@ -181,7 +181,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 			wakeDry := *wake
 			wakeDry.Memory = mem
 			if composed, err := s.ws.ComposeWakePrompt(r.Context(), runs.WakeScope{
-				WorkspaceID: body.Workspace, Kind: body.Kind, Name: body.Job,
+				WorkspaceID: body.Workspace, Kind: body.Kind, Name: body.Job, OwnerID: body.jobID,
 			}, wakeDry); err == nil {
 				prompt = composed
 			}
@@ -367,6 +367,7 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 		lopts.Model, lopts.Effort = d.Model, d.Effort
 		lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = d.MaxDurationMS, d.IdleTimeoutMS, d.KeepAliveMS, d.NudgeMS
 		lopts.Runtime = spec.Runtime
+		lopts.StateDecl = spec.State
 	}
 	if body.Runtime != "" {
 		lopts.Runtime = body.Runtime

@@ -20,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/requests"
+	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -1170,10 +1171,30 @@ func collectDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFind
 		})
 	}
 	findings = append(findings, CollectAgentDoctorFindings(st, actions)...)
+	if f, ok := stateRetiredFinding(context.Background(), st.DB()); ok {
+		findings = append(findings, f)
+	}
 	if findings == nil {
 		return []DoctorFinding{}
 	}
 	return findings
+}
+
+// stateRetiredFinding counts the retired jobs and agents that still have
+// state rows. The state sweep deletes them state.RetiredGrace after retire.
+func stateRetiredFinding(ctx context.Context, db *sql.DB) (DoctorFinding, bool) {
+	var n int
+	var first sql.NullString
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*), MIN(retired_at) FROM job_index
+		WHERE retired_at IS NOT NULL AND id IN (SELECT DISTINCT owner_id FROM state_rows)`).Scan(&n, &first)
+	if err != nil || n == 0 {
+		return DoctorFinding{}, false
+	}
+	purge := store.ParseTS(first.String).Add(state.RetiredGrace).Format("2006-01-02")
+	return DoctorFinding{
+		ID: "state-retired", Severity: "info", Code: "state_retired",
+		Message: fmt.Sprintf("%d deleted job(s) or agent(s) still have state; the first purge is on %s", n, purge),
+	}, true
 }
 
 // raiseOptsFromItem rebuilds the delivery context one stored item carries.

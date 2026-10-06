@@ -76,8 +76,8 @@ func TestRemoteMCPInitializeAndList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Tools) != 20 {
-		t.Fatalf("tools = %d, want 20", len(res.Tools))
+	if len(res.Tools) != 21 {
+		t.Fatalf("tools = %d, want 21", len(res.Tools))
 	}
 }
 

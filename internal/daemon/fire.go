@@ -103,7 +103,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 				KeepAliveMS: d.KeepAliveMS, NudgeMS: d.NudgeMS,
 				WorkingDir: cwd, Runtime: j.Runtime,
 			},
-			Wake: &runs.WakeOpts{Message: block}, Memory: c.memoryLaunch(ctx, r.WorkspaceID, j),
+			Wake: &runs.WakeOpts{Message: block}, Memory: c.memoryLaunch(ctx, r.WorkspaceID, j), StateDecl: j.State,
 			Kit: kit, JobSkills: j.Skills, JobConnectors: j.Connectors,
 			IfRunning: d.IfRunning, Env: d.Env, Model: d.Model, Effort: d.Effort,
 		}
@@ -154,6 +154,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		Prompt:    prompt,
 		Wake:      wake,
 		Memory:    c.memoryLaunch(ctx, r.WorkspaceID, j),
+		StateDecl: j.State,
 		Kit:       kit,
 		JobSkills: j.Skills, JobConnectors: j.Connectors,
 		IfRunning: d.IfRunning,

@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -545,4 +546,42 @@ func launchMemoryRun(t *testing.T, svc *runs.Service, mem *runs.MemoryLaunch) (*
 		t.Fatal(err)
 	}
 	return run, string(prompt)
+}
+
+// fakeBriefer records the owner and returns a fixed brief.
+type fakeBriefer struct{ owner state.Owner }
+
+func (f *fakeBriefer) Brief(_ context.Context, o state.Owner) (string, error) {
+	f.owner = o
+	return "## State\n\n- seen: 3 rows", nil
+}
+
+func TestStateBriefWithoutMemory(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := memoryFixture(t)
+	b := &fakeBriefer{}
+	svc.SetStateBriefer(b)
+	dir := t.TempDir()
+	_, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", JobID: "jb_demo", JobName: "demo", Kind: runs.KindJob, Harness: "fake",
+			Reason: runs.ReasonManual, WorkingDir: dir,
+		},
+		Prompt:      "run the digest",
+		StateDecl:   map[string]state.Collection{"seen": {Description: "Sent items."}},
+		FakeCommand: []string{"sh", "-c", `printf %s "$TREBI_FAKE_PROMPT" > prompt.txt; echo "$TREBI_RUN_COMPLETE"`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := os.ReadFile(filepath.Join(dir, "prompt.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "## State\n\n- seen: 3 rows\n\nrun the digest"; !strings.Contains(string(prompt), want) {
+		t.Fatalf("prompt:\n%s", prompt)
+	}
+	if b.owner.ID != "jb_demo" || b.owner.WorkspaceID != "ws" || b.owner.Collections["seen"].Description != "Sent items." {
+		t.Fatalf("owner %+v", b.owner)
+	}
 }

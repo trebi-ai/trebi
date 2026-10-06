@@ -30,6 +30,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/pricing"
+	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
@@ -98,6 +99,9 @@ type LaunchOpts struct {
 	Wake *WakeOpts
 	// Memory is the MEMORY.md seam; nil = memory off.
 	Memory *MemoryLaunch
+	// StateDecl is the state collections that the job declares. JobID is
+	// the state owner.
+	StateDecl map[string]state.Collection
 	// Kit is the owning agent's reusable run kit.
 	Kit *job.KitYAML
 	// JobSkills is the job's own preferred skill list.
@@ -480,7 +484,7 @@ func (s *Service) applyWakePrompt(ctx context.Context, opts *LaunchOpts) {
 		wake := *opts.Wake
 		wake.Memory = opts.Memory
 		composed, err := s.composer.ComposeWakePrompt(ctx, WakeScope{
-			WorkspaceID: opts.WorkspaceID, Kind: opts.Kind, Name: opts.JobName,
+			WorkspaceID: opts.WorkspaceID, Kind: opts.Kind, Name: opts.JobName, OwnerID: opts.JobID,
 		}, wake)
 		if err != nil {
 			s.log.Warn("wake compose failed; using raw body", "job_id", opts.JobID, "err", err)
@@ -495,42 +499,77 @@ func (s *Service) applyWakePrompt(ctx context.Context, opts *LaunchOpts) {
 	}
 }
 
-// prepMemory seeds, migrates, hashes, and injects MEMORY.md for one launch
-// (B22 §3.3). It runs before wake composition so the composer reads a settled
-// file. A files error skips memory for the launch (logged).
+// prepMemory seeds, migrates, hashes, and injects MEMORY.md and the state
+// block for one launch (B22 §3.3, plan 2026-10-06 B5). It runs before wake
+// composition so the composer reads a settled file. A files error skips
+// memory for the launch (logged). Agents get both through the wake composer.
 func (s *Service) prepMemory(ctx context.Context, opts *LaunchOpts) {
-	mem := opts.Memory
-	if mem == nil || s.fs == nil {
+	data := s.memoryData(ctx, opts.Memory)
+	if data != nil {
+		opts.MemoryHash = memory.Hash(data)
+	}
+	if opts.Kind == KindAgent {
 		return
+	}
+	var parts []string
+	var doc *memory.Doc
+	if data != nil {
+		doc, _ = memory.Parse(data)
+		parts = append(parts, memory.Render(doc, opts.Memory.Opt))
+	}
+	if brief := s.stateBrief(ctx, *opts); brief != "" {
+		parts = append(parts, strings.TrimSpace(brief))
+	}
+	if data != nil {
+		parts = append(parts, memory.Protocol(opts.Memory.Opt, memory.NewProtocolInfo(doc, opts.Memory.Opt)))
+	}
+	if len(parts) > 0 {
+		opts.Prompt = strings.Join(append(parts, opts.Prompt), "\n\n")
+	}
+}
+
+// memoryData seeds or migrates MEMORY.md and returns its bytes. Nil = memory
+// off or not readable.
+func (s *Service) memoryData(ctx context.Context, mem *MemoryLaunch) []byte {
+	if mem == nil || s.fs == nil {
+		return nil
 	}
 	data, _, err := s.fs.Read(ctx, mem.Root, mem.Rel)
 	switch {
 	case errors.Is(err, files.ErrNotFound):
 		if _, _, werr := s.fs.Write(ctx, mem.Root, mem.Rel, memory.Skeleton(), ""); werr != nil {
 			s.log.Warn("memory seed", "rel", mem.Rel, "err", werr)
-			return
+			return nil
 		}
-		data = memory.Skeleton()
+		return memory.Skeleton()
 	case err != nil:
 		s.log.Warn("memory read", "rel", mem.Rel, "err", err)
-		return
-	default:
-		if doc, _ := memory.Parse(data); doc.Legacy {
-			fixed := memory.Migrate(data)
-			if _, _, werr := s.fs.Write(ctx, mem.Root, mem.Rel, fixed, ""); werr != nil {
-				s.log.Warn("memory migrate", "rel", mem.Rel, "err", werr)
-			} else {
-				data = fixed
-				s.log.Info("memory.migrated", "rel", mem.Rel)
-			}
+		return nil
+	}
+	if doc, _ := memory.Parse(data); doc.Legacy {
+		fixed := memory.Migrate(data)
+		if _, _, werr := s.fs.Write(ctx, mem.Root, mem.Rel, fixed, ""); werr != nil {
+			s.log.Warn("memory migrate", "rel", mem.Rel, "err", werr)
+		} else {
+			data = fixed
+			s.log.Info("memory.migrated", "rel", mem.Rel)
 		}
 	}
-	opts.MemoryHash = memory.Hash(data)
-	if opts.Kind == KindAgent {
-		return // agents get memory through the wake composer
+	return data
+}
+
+// stateBrief renders the state block of a job launch. "" when no briefer is
+// wired, the run has no owner, or the owner has no state.
+func (s *Service) stateBrief(ctx context.Context, opts LaunchOpts) string {
+	if s.briefer == nil || opts.JobID == "" || (opts.Kind != KindJob && opts.Kind != "") {
+		return ""
 	}
-	doc, _ := memory.Parse(data)
-	opts.Prompt = memory.Render(doc, mem.Opt) + "\n\n" + memory.Protocol(mem.Opt, memory.NewProtocolInfo(doc, mem.Opt)) + "\n\n" + opts.Prompt
+	brief, err := s.briefer.Brief(ctx, state.Owner{ID: opts.JobID, WorkspaceID: opts.WorkspaceID, Collections: opts.StateDecl})
+	if err != nil {
+		s.log.Warn("state brief", "job_id", opts.JobID, "err", err)
+		return ""
+	}
+	return brief
 }
 
 // memoryFor resolves the gate-time memory seam for a stored run. Nil when the

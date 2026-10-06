@@ -1335,3 +1335,35 @@ func TestSpecEventScope(t *testing.T) {
 		t.Fatalf("bare %s", bare)
 	}
 }
+
+func TestBuildState(t *testing.T) {
+	t.Parallel()
+	body := func(r HTTPRequest) string {
+		b, _ := json.Marshal(r.Body)
+		return string(b)
+	}
+	cases := []struct {
+		name, method, path, body string
+		req                      HTTPRequest
+	}{
+		{"summary self", "GET", "/v1/state/self", "null", BuildStateSummary("self", "")},
+		{"summary name", "GET", "/v1/state/digest?workspace=ws1", "null", BuildStateSummary("digest", "ws1")},
+		{"query", "POST", "/v1/state/jb_0123456789/reported/query", `{"q":"alz","since":"7d","fields":["key","title"],"limit":5}`,
+			BuildStateQuery("jb_0123456789", "", "reported", StateQuery{Q: "alz", Since: "7d", Fields: []string{"key", "title"}, Limit: 5})},
+		{"get", "POST", "/v1/state/self/reported/get", `{"keys":["doi:10/1"]}`, BuildStateGet("self", "", "reported", []string{"doi:10/1"})},
+		{"has", "POST", "/v1/state/self/reported/has", `{"keys":["a","b"]}`, BuildStateHas("self", "", "reported", []string{"a", "b"})},
+		{"put", "POST", "/v1/state/self/reported/rows", `{"mode":"merge","rows":[{"key":"a"}]}`,
+			BuildStatePut("self", "", "reported", []any{map[string]any{"key": "a"}}, "merge")},
+		{"put upsert", "POST", "/v1/state/self/reported/rows", `{"rows":[]}`, BuildStatePut("self", "", "reported", []any{}, "")},
+		{"delete", "POST", "/v1/state/agt_0123456789/reported/delete?confirm=1", `{"keys":["a"]}`,
+			BuildStateDelete("agt_0123456789", "", "reported", []string{"a"}, true)},
+		{"prune", "POST", "/v1/state/digest/reported/prune?workspace=ws1", `{"until":"180d"}`,
+			BuildStatePrune("digest", "ws1", "reported", "", "180d", "", false)},
+		{"drop", "DELETE", "/v1/state/self/reported?confirm=1", "null", BuildStateDrop("self", "", "reported", true)},
+	}
+	for _, c := range cases {
+		if c.req.Method != c.method || c.req.Path != c.path || body(c.req) != c.body {
+			t.Errorf("%s: got %s %s %s", c.name, c.req.Method, c.req.Path, body(c.req))
+		}
+	}
+}

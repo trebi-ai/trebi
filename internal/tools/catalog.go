@@ -622,6 +622,52 @@ func (in Input) runSpec() (request.RunSpec, error) {
 	}, nil
 }
 
+// stateRef reads owner (default "self"), workspace, and collection. The
+// summary passes needColl false.
+func (in Input) stateRef(needColl bool) (owner, workspace, collection string, err error) {
+	v, err := in.strs("owner", "workspace", "collection")
+	if err != nil {
+		return "", "", "", err
+	}
+	if needColl && v[2] == "" {
+		return "", "", "", fmt.Errorf("input field %q is required", "collection")
+	}
+	if v[0] == "" {
+		v[0] = "self"
+	}
+	return v[0], v[1], v[2], nil
+}
+
+// stateKeys reads the required keys list.
+func (in Input) stateKeys() ([]string, error) {
+	keys, err := in.strList("keys")
+	if err == nil && len(keys) == 0 {
+		err = fmt.Errorf("input field %q is required", "keys")
+	}
+	return keys, err
+}
+
+// stateQuery reads the query fields.
+func (in Input) stateQuery() (request.StateQuery, error) {
+	v, err := in.strs("prefix", "q", "where", "since", "until", "by", "sort", "cursor")
+	if err != nil {
+		return request.StateQuery{}, err
+	}
+	keys, err := in.strList("keys")
+	if err != nil {
+		return request.StateQuery{}, err
+	}
+	fields, err := in.strList("fields")
+	if err != nil {
+		return request.StateQuery{}, err
+	}
+	limit, _, err := in.num("limit")
+	return request.StateQuery{
+		Keys: keys, Prefix: v[0], Q: v[1], Where: v[2], Since: v[3], Until: v[4], By: v[5],
+		Sort: v[6], Cursor: v[7], Fields: fields, Limit: limit,
+	}, err
+}
+
 // Catalog is the tool → action table. One action per CLI verb.
 type Catalog map[string]map[string]Action
 
@@ -2379,6 +2425,8 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"delete":  confirmDel("DELETE /v1/skills/{name}", "name", "deploy", request.BuildSkillDelete),
 		},
 
+		"state": stateActions(),
+
 		"secret": {
 			"list": act("GET /v1/secrets", Input{}, func(in Input) (request.HTTPRequest, error) {
 				limit, _, err := in.num("limit")
@@ -2702,6 +2750,96 @@ var agentPatchFields = append(append([]string{}, jobPatchFields...), "kit") //no
 // trebi.yaml for now.
 var assistantSetFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
 	"name", "harness", "model", "effort", "envset", "mode", "skills", "context", "disabled",
+}
+
+// stateActions is the state tool (plan 2026-10-06 B6). In a run, owner
+// defaults to self.
+func stateActions() map[string]Action { //nolint:funlen // static action table
+	keyed := func(verb string, build func(owner, ws, coll string, keys []string) request.HTTPRequest) Action {
+		return act("POST /v1/state/{owner}/{collection}/"+verb, Input{"collection": "reported", "keys": []any{"doi:10/1"}},
+			func(in Input) (request.HTTPRequest, error) {
+				owner, ws, coll, err := in.stateRef(true)
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				keys, err := in.stateKeys()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return build(owner, ws, coll, keys), nil
+			})
+	}
+	confirmed := func(e Action) Action {
+		e.Sample["confirm"] = true
+		e.Destructive = true
+		return e
+	}
+	return map[string]Action{
+		"summary": act("GET /v1/state/{owner}", Input{"owner": "jb_3f9a1c7e04"}, func(in Input) (request.HTTPRequest, error) {
+			owner, ws, _, err := in.stateRef(false)
+			return request.BuildStateSummary(owner, ws), err
+		}),
+		"query": act("POST /v1/state/{owner}/{collection}/query", Input{"collection": "reported", "q": "alz", "limit": float64(20)},
+			func(in Input) (request.HTTPRequest, error) {
+				owner, ws, coll, err := in.stateRef(true)
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				q, err := in.stateQuery()
+				return request.BuildStateQuery(owner, ws, coll, q), err
+			}),
+		"get": keyed("get", request.BuildStateGet),
+		"has": keyed("has", request.BuildStateHas),
+		"put": act("POST /v1/state/{owner}/{collection}/rows",
+			Input{"collection": "reported", "rows": []any{map[string]any{"key": "doi:10/1", "value": map[string]any{"title": "A"}}}},
+			func(in Input) (request.HTTPRequest, error) {
+				owner, ws, coll, err := in.stateRef(true)
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				rows, ok := in["rows"].([]any)
+				if !ok || len(rows) == 0 {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q must be a non-empty array of rows", "rows")
+				}
+				mode, err := in.str("mode")
+				return request.BuildStatePut(owner, ws, coll, rows, mode), err
+			}),
+		"delete": confirmed(act("POST /v1/state/{owner}/{collection}/delete", Input{"collection": "reported", "keys": []any{"doi:10/1"}},
+			func(in Input) (request.HTTPRequest, error) {
+				owner, ws, coll, err := in.stateRef(true)
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				keys, err := in.stateKeys()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				confirm, err := in.flag("confirm")
+				return request.BuildStateDelete(owner, ws, coll, keys, confirm), err
+			})),
+		"prune": confirmed(act("POST /v1/state/{owner}/{collection}/prune", Input{"collection": "reported", "until": "180d"},
+			func(in Input) (request.HTTPRequest, error) {
+				owner, ws, coll, err := in.stateRef(true)
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				v, err := in.strs("since", "until", "by")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				confirm, err := in.flag("confirm")
+				return request.BuildStatePrune(owner, ws, coll, v[0], v[1], v[2], confirm), err
+			})),
+		"drop": confirmed(act("DELETE /v1/state/{owner}/{collection}", Input{"collection": "reported"},
+			func(in Input) (request.HTTPRequest, error) {
+				owner, ws, coll, err := in.stateRef(true)
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				confirm, err := in.flag("confirm")
+				return request.BuildStateDrop(owner, ws, coll, confirm), err
+			})),
+	}
 }
 
 // assistantOverrideFields reads the assistant.set body: an explicit override

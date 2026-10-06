@@ -18,8 +18,9 @@ const (
 // remoteGate enforces the cloud-granted scope on remote MCP callers.
 // Local callers pass unchanged.
 type remoteGate struct {
-	mux  *http.ServeMux
-	deny map[string]bool // route patterns that no remote caller may use
+	mux   *http.ServeMux
+	deny  map[string]bool // route patterns that no remote caller may use
+	reads map[string]bool // POST patterns that only read
 }
 
 func newRemoteGate(mux *http.ServeMux) *remoteGate {
@@ -27,6 +28,10 @@ func newRemoteGate(mux *http.ServeMux) *remoteGate {
 		"POST /v1/system/shutdown": true,
 		"POST /v1/cloud/link":      true,
 		"DELETE /v1/cloud/link":    true,
+	}, reads: map[string]bool{
+		"POST /v1/state/{owner}/{collection}/query": true,
+		"POST /v1/state/{owner}/{collection}/get":   true,
+		"POST /v1/state/{owner}/{collection}/has":   true,
 	}}
 }
 
@@ -42,12 +47,16 @@ func (g *remoteGate) wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		_, pattern := g.mux.Handler(r)
+		if g.reads[pattern] {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !slices.Contains(a.Scopes, scopeMCPWrite) {
 			writeErr(w, http.StatusForbidden, "remote_read_only",
 				"This connection is read only. Reconnect with Full control to make changes.")
 			return
 		}
-		_, pattern := g.mux.Handler(r)
 		if g.deny[pattern] || (pattern == "PATCH /v1/config" && touchesRemoteMCP(r)) {
 			writeErr(w, http.StatusForbidden, "remote_denied",
 				"A remote connection cannot do this. Use the Trebi app on this machine.")
