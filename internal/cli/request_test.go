@@ -344,7 +344,7 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatal("events retrigger missing")
 	}
 	mem := findCmd(findCmd(app.Commands, "job").Commands, "memory")
-	for _, want := range []string{"show", "validate", "migrate", "set-context", "set-state", "lesson", "log", "set", "clear", "add"} {
+	for _, want := range []string{"show", "validate", "migrate", "set-context", "lesson", "log", "set", "clear", "add"} {
 		if findCmd(mem.Commands, want) == nil {
 			t.Fatalf("job memory missing %s", want)
 		}
@@ -426,7 +426,7 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatal("workspace move missing --force/--mkdir/--dry-run")
 	}
 	asstMem := findCmd(findCmd(app.Commands, "assistant").Commands, "memory")
-	for _, want := range []string{"show", "validate", "migrate", "set-context", "set-state", "lesson", "log", "set", "clear", "add"} {
+	for _, want := range []string{"show", "validate", "migrate", "set-context", "lesson", "log", "set", "clear", "add"} {
 		if findCmd(asstMem.Commands, want) == nil {
 			t.Fatalf("assistant memory missing %s", want)
 		}

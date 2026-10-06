@@ -423,6 +423,7 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.add("defaults.session.keep_alive", cfg.Defaults.Session.KeepAlive, "")
 	l.add("defaults.session.nudge", cfg.Defaults.Session.Nudge, "")
 	l.add("defaults.session.if_running", cfg.Defaults.Session.IfRunning, "")
+	l.add("defaults.memory.max_bytes", strconv.Itoa(cfg.Defaults.Memory.MaxBytes), strconv.Itoa(DefaultMemoryMaxBytes))
 	l.add("api.host", cfg.API.HostOrDefault(), DefaultAPIHost)
 	l.add("api.port", strconv.Itoa(cfg.API.PortOrDefault()), strconv.Itoa(DefaultAPIPort))
 	l.add("api.tls.cert", cfg.API.TLS.Cert, "")
@@ -631,6 +632,17 @@ func (c *Config) setDefaultsKey(path, value string) (handled bool, err error) {
 		return true, setNudge(&c.Defaults.Session.Nudge, value, path)
 	case "defaults.session.if_running":
 		return true, setIfRunning(&c.Defaults.Session.IfRunning, value, path)
+	case "defaults.memory.max_bytes":
+		if strings.TrimSpace(value) == "" {
+			c.Defaults.Memory.MaxBytes = DefaultMemoryMaxBytes
+			return true, nil
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 0 {
+			return true, fmt.Errorf("%s: want non-negative integer", path)
+		}
+		c.Defaults.Memory.MaxBytes = n
+		return true, nil
 	}
 	return false, nil
 }
@@ -1138,6 +1150,7 @@ func pathKeyDescriptions() map[string]string {
 		"defaults.session.keep_alive":   "Hold session after COMPLETE for follow-ups",
 		"defaults.session.nudge":        "Idle delay before typing continue (default off; set e.g. 5m)",
 		"defaults.session.if_running":   "Overlap policy: queue|skip|replace",
+		"defaults.memory.max_bytes":     "Cap on MEMORY.md bytes in the launch prompt; 0 = no cap (default 16384)",
 		"api.host":                      "HTTP bind host (default 127.0.0.1; 0.0.0.0 opens LAN)",
 		"api.port":                      "HTTP bind port (default 7433; 0 = ephemeral, written to api.json)",
 		"api.tls.cert":                  "PEM cert path; required with api.tls.key for non-loopback HTTPS",

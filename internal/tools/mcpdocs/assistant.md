@@ -47,7 +47,7 @@ Read the structured assistant memory of one workspace. The response carries `con
 ### memory_set
 Replace the whole assistant MEMORY.md. The daemon returns `validation` with the issues unless `force` is true.
 - `workspace` (string, required): workspace id.
-- `content` (string, required): full file text. Keep the four sections in order: Context, State, Lessons, Log.
+- `content` (string, required): full file text. Keep the three sections in order: Context, Lessons, Log. Keep records in `trebi state`, not in memory.
 - `if_match` (string, optional): current hash from `memory_show`; a stale value returns 412.
 - `force` (boolean, optional): write the file even when it has validation issues.
 
@@ -58,11 +58,6 @@ Check memory text against the file rules. The response is `{valid, issues, legac
 
 ### memory_set_context
 Replace the Context section of the assistant memory.
-- `workspace` (string, required): workspace id.
-- `body` (string, required): section body. An explicit `""` clears the section.
-
-### memory_set_state
-Replace the State section of the assistant memory.
 - `workspace` (string, required): workspace id.
 - `body` (string, required): section body. An explicit `""` clears the section.
 

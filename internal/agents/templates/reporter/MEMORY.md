@@ -2,8 +2,6 @@
 
 ## Context
 
-## State
-
 ## Lessons
 
 ## Log

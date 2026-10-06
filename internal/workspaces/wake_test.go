@@ -14,15 +14,12 @@ import (
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
-// memoryMD is a valid v1 MEMORY.md fixture: marker, H1, four sections.
-const memoryMD = `<!-- trebi memory v1. Keep these four sections in this order. Do not add other "## " headings. -->
+// memoryMD is a valid MEMORY.md fixture: marker, H1, three sections.
+const memoryMD = `<!-- trebi memory v2. Keep these three sections in this order. Do not add other "## " headings. -->
 # Memory
 
 ## Context
 Durable facts about the workspace.
-
-## State
-Watching CI.
 
 ## Lessons
 - [2026-09-01 09:00] Prune stale branches weekly.

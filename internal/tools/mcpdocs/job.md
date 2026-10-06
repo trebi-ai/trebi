@@ -169,7 +169,7 @@ Read the structured memory file of one job. The response carries `content`, `doc
 ### memory_set
 Replace the whole MEMORY.md of one job. The daemon returns `validation` with the issues unless `force` is true.
 - `name` (string, required): job name.
-- `content` (string, required): full file text. Keep the four sections in order: Context, State, Lessons, Log.
+- `content` (string, required): full file text. Keep the three sections in order: Context, Lessons, Log. Keep records in `trebi state`, not in memory.
 - `workspace` (string, optional): workspace id.
 - `if_match` (string, optional): current hash from `memory_show`; a stale value returns 412.
 - `force` (boolean, optional): write the file even when it has validation issues.
@@ -182,12 +182,6 @@ Check memory text against the file rules. The response is `{valid, issues, legac
 
 ### memory_set_context
 Replace the Context section of job memory.
-- `name` (string, required): job name.
-- `body` (string, required): section body. An explicit `""` clears the section.
-- `workspace` (string, optional): workspace id.
-
-### memory_set_state
-Replace the State section of job memory.
 - `name` (string, required): job name.
 - `body` (string, required): section body. An explicit `""` clears the section.
 - `workspace` (string, optional): workspace id.

@@ -241,6 +241,7 @@ func schemaMetas() map[string]keyMeta {
 		"defaults.session.keep_alive":          dur,
 		"defaults.session.nudge":               dur,
 		"defaults.session.if_running":          {typ: TypeString, enum: []string{"queue", "skip", "replace"}},
+		"defaults.memory.max_bytes":            {typ: TypeInt},
 		"api.host":                             restart(keyMeta{typ: TypeString}),
 		"api.port":                             restart(keyMeta{typ: TypeInt}),
 		"api.tls.cert":                         restart(keyMeta{typ: TypeString}),

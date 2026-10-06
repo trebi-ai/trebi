@@ -561,7 +561,7 @@ func (in Input) agentContentPut() (workspace, name, content, ifMatch string, err
 	return id[0], id[1], v[0], v[1], nil
 }
 
-// memorySectionBody reads the body of memory_set_context and memory_set_state.
+// memorySectionBody reads the body of memory_set_context.
 // The key must be present; an explicit "" clears the section.
 func (in Input) memorySectionBody() (string, error) {
 	body, err := in.presentStr("body")
@@ -1070,17 +1070,6 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildJobMemorySectionPut(v[0], v[1], "context", body), nil
 			}),
-			"memory_set_state": act("PUT /v1/jobs/{name}/memory/state", Input{"name": "nightly-sync", "body": "Cursor: 2026-09-14."}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "workspace")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				body, err := in.memorySectionBody()
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildJobMemorySectionPut(v[0], v[1], "state", body), nil
-			}),
 			"memory_lesson_add": act("POST /v1/jobs/{name}/memory/lessons", Input{"name": "nightly-sync", "text": "The API needs the cursor header."}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace", "at")
 				if err != nil {
@@ -1323,17 +1312,6 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildAssistantMemorySectionPut(ws, "context", body), nil
 			}),
-			"memory_set_state": act("PUT /v1/workspaces/{id}/assistant/memory/state", Input{"workspace": "ws1", "body": "Last sweep: 2026-09-14."}, func(in Input) (request.HTTPRequest, error) {
-				ws, err := in.reqStr("workspace")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				body, err := in.memorySectionBody()
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAssistantMemorySectionPut(ws, "state", body), nil
-			}),
 			"memory_lesson_add": act("POST /v1/workspaces/{id}/assistant/memory/lessons", Input{"workspace": "ws1", "text": "Fritz prefers short replies."}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("workspace", "at")
 				if err != nil {
@@ -1532,17 +1510,6 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildAgentMemorySectionPut(v[0], v[1], "context", body), nil
-			}),
-			"memory_set_state": act("PUT /v1/workspaces/{id}/agents/{name}/memory/state", Input{"workspace": "ws1", "name": "cmo", "body": "Draft two of the memo."}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("workspace", "name")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				body, err := in.memorySectionBody()
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAgentMemorySectionPut(v[0], v[1], "state", body), nil
 			}),
 			"memory_lesson_add": act("POST /v1/workspaces/{id}/agents/{name}/memory/lessons", Input{"workspace": "ws1", "name": "cmo", "text": "The growth deck needs the week number."}, func(in Input) (request.HTTPRequest, error) {
 				ws, name, at, text, err := in.agentMemoryEntry()

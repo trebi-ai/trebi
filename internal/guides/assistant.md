@@ -68,12 +68,12 @@ trebi conversation switch <id>
 
 ## Assistant memory
 
-The assistant keeps a structured `MEMORY.md` at the workspace root. It holds four sections in a fixed order: Context, State, Lessons, Log. The assistant reads the memory at every process start.
+The assistant keeps a structured `MEMORY.md` at the workspace root. It holds three sections in a fixed order: Context, Lessons, Log. The assistant reads the memory at every process start.
 
 ```bash
 trebi --workspace reports assistant memory show --json
 trebi --workspace reports assistant memory validate
-trebi --workspace reports assistant memory set-state --body state.md
+trebi --workspace reports assistant memory set-context --body context.md
 trebi --workspace reports assistant memory lesson add --text "Reviewed the backlog"
 trebi --workspace reports assistant memory log add --text "planned the week"
 trebi --workspace reports assistant memory log delete <entry-id>
