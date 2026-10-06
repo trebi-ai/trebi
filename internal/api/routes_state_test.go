@@ -92,7 +92,7 @@ func TestStateRoutes(t *testing.T) {
 
 	// A bare agent name resolves to agents/<name>.
 	code, body = doScoped(t, "GET", base+"/v1/state/cmo?workspace="+wsID, "", nil)
-	if code != http.StatusOK || body["owner_name"] != "agents/cmo" || body["kind"] != "agent" {
+	if code != http.StatusOK || body["owner_name"] != "cmo" || body["kind"] != "agent" {
 		t.Fatalf("summary: %d %v", code, body)
 	}
 

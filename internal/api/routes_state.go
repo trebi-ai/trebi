@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/state"
@@ -141,8 +142,12 @@ func (s *Server) handleStateSummary(w http.ResponseWriter, r *http.Request) {
 		rows += c.Rows
 		size += c.Bytes
 	}
+	name := t.row.Name
+	if t.row.Kind == "agent" {
+		name = strings.TrimPrefix(name, "agents/") // short, like agent_name and owner_name elsewhere
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"owner_id": t.row.ID, "owner_name": t.row.Name, "kind": t.row.Kind, "workspace_id": t.row.WorkspaceID,
+		"owner_id": t.row.ID, "owner_name": name, "kind": t.row.Kind, "workspace_id": t.row.WorkspaceID,
 		"collections": stats, "rows": rows, "bytes": size,
 	})
 }

@@ -343,7 +343,7 @@ func (s *Server) handleMemoryMigrate(w http.ResponseWriter, r *http.Request, sco
 	}
 	doc, _ := memory.Parse(data)
 	if !doc.Legacy {
-		writeErr(w, http.StatusConflict, "conflict", "memory file is already v1")
+		writeErr(w, http.StatusConflict, "conflict", "memory file is already v2")
 		return
 	}
 	fixed := memory.Migrate(data)
