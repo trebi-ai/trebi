@@ -59,6 +59,7 @@ type RouteDecision struct {
 	Class       RouteClass
 	WorkspaceID string
 	Agent       string // short agent name; RouteAgent only
+	AgentID     string // job_index ID of Agent; set by deliver
 	Trusted     bool   // sender is an operator or on the workspace allowlist
 	DMARC       string
 	TraceID     string
@@ -185,9 +186,9 @@ func (s *Service) RecordInbound(ctx context.Context, msg IngressMessage, d Route
 		id, direction, workspace_id, agent_id, message_id, in_reply_to, thread_root,
 		sender, subject, dmarc, disposition, attachments, trace_id, created_at, revision,
 		body_text, body_html
-	) VALUES (?, 'in', ?,`+agentIDSQL+`,?,?,?,?,?,?,?,?,?,?,1,?,?)
+	) VALUES (?, 'in', ?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)
 		ON CONFLICT(id) DO NOTHING`,
-		msg.ID, d.WorkspaceID, d.WorkspaceID, d.Agent, msg.MessageID, msg.InReplyTo, ThreadRoot(msg),
+		msg.ID, d.WorkspaceID, store.NullStr(d.AgentID), msg.MessageID, msg.InReplyTo, ThreadRoot(msg),
 		msg.From, msg.Subject, msg.Dmarc, d.Disposition(), string(att), d.TraceID,
 		time.Now().UTC().Format(time.RFC3339), text, html)
 	if err != nil {
@@ -200,6 +201,25 @@ func (s *Service) RecordInbound(ctx context.Context, msg IngressMessage, d Route
 	return n > 0, nil
 }
 
+// resolveAgent sets d.AgentID. An agent that went away after Route
+// routes like an unknown tag, so its mail never records a NULL agent.
+func (s *Service) resolveAgent(ctx context.Context, d *RouteDecision) error {
+	err := s.st.DB().QueryRowContext(ctx, `SELECT id FROM job_index WHERE workspace_id=? AND kind='agent' AND name=? AND retired_at IS NULL`,
+		d.WorkspaceID, "agents/"+d.Agent).Scan(&d.AgentID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		d.Agent, d.Accepted = "", false
+		d.Class, d.Reason = RouteDropped, ReasonUnknownTag
+		if d.Trusted {
+			d.Class, d.Reason = RouteMisrouted, ""
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("resolve agent %s: %w", d.Agent, err)
+	}
+	return nil
+}
+
 // seenInbound reports an earlier copy of one Message-ID that reached the
 // same operator. A re-sent copy must not act twice.
 func (s *Service) seenInbound(ctx context.Context, msg IngressMessage, d RouteDecision) bool {
@@ -209,8 +229,8 @@ func (s *Service) seenInbound(ctx context.Context, msg IngressMessage, d RouteDe
 	var n int
 	err := s.st.DB().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM email_messages WHERE direction='in' AND message_id=?
-		 AND workspace_id=? AND COALESCE(agent_id,'') = COALESCE(`+agentIDSQL+`,'') AND id<>? AND disposition<>'dropped'`,
-		msg.MessageID, d.WorkspaceID, d.WorkspaceID, d.Agent, msg.ID).Scan(&n)
+		 AND workspace_id=? AND COALESCE(agent_id,'') = ? AND id<>? AND disposition<>'dropped'`,
+		msg.MessageID, d.WorkspaceID, d.AgentID, msg.ID).Scan(&n)
 	if err != nil {
 		s.log.Warn("email.seen", "id", msg.ID, "error", err)
 		return false
@@ -446,6 +466,11 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 			return fmt.Errorf("route env %s: %w", wsID, err)
 		}
 		d = g.svc.Route(msg, wsID, env)
+	}
+	if d.Class == RouteAgent {
+		if err := g.svc.resolveAgent(ctx, &d); err != nil {
+			return err
+		}
 	}
 	if d.Class != RouteDropped && g.svc.seenInbound(ctx, msg, d) {
 		d.Class, d.Reason = RouteDropped, ReasonDuplicate

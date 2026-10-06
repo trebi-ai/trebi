@@ -745,6 +745,7 @@ func TestDeliverHostedRoutesLikePoll(t *testing.T) {
 		{V: 1, ID: "h5", LocalPart: addr.LocalPart, To: []string{addr.LocalPart + "@in.example.com"}, Tag: "research", From: "ops@example.com", Dmarc: "fail"},
 		{V: 1, ID: "h6", LocalPart: "nobody-t0k0n0", To: []string{"nobody-t0k0n0@in.example.com"}, From: "ops@example.com", Dmarc: "pass"},
 	}
+	indexAgent(t, st, "ws_1", "research")
 	acts := &fakeActions{env: testRouteEnv()}
 	conn := connectors.New(st, nil, nil)
 	s.AttachIngress(NewIngress(s, conn, acts, time.Minute, false))

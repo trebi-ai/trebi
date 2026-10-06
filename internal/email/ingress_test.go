@@ -15,6 +15,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/requests"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // fakeActions records every routing side effect the ingress loop causes.
@@ -258,11 +259,7 @@ func TestDeliverDropsDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The index holds the agent, so its mail rows carry an agent_id.
-	if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at)
-		VALUES ('agt_0000000001','ws_1','agents/research','/x/AGENT.md','agent','2026-09-28T00:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
+	indexAgent(t, st, "ws_1", "research")
 	acts := &fakeActions{env: testRouteEnv()}
 	s.AttachIngress(NewIngress(s, connectors.New(st, nil, nil), acts, time.Minute, false))
 	msg := func(id, tag string) IngressMessage {
@@ -378,6 +375,7 @@ func TestIngressPollOnceRoutesBatch(t *testing.T) {
 		{V: 1, Seq: 5, ID: "m5", LocalPart: addr.LocalPart, To: []string{addr.LocalPart + "@in.example.com"}, Tag: "research", From: "ops@example.com", Dmarc: "fail"},
 		{V: 1, Seq: 6, ID: "m6", LocalPart: "nobody-t0k0n0", To: []string{"nobody-t0k0n0@in.example.com"}, From: "ops@example.com", Dmarc: "pass"},
 	}
+	indexAgent(t, st, "ws_1", "research")
 	acts := &fakeActions{env: testRouteEnv()}
 	conn := connectors.New(st, nil, nil)
 	g := NewIngress(s, conn, acts, time.Minute, false)
@@ -553,6 +551,44 @@ func isolateHome(t *testing.T) {
 // testRouteEnv preserves the old broad test identities while exercising the
 // new rule matcher: research accepts example.net, the assistant accepts the
 // operator, allowlist friend, and example.net.
+// TestDeliverAgentGoneAfterRoute: the route table still names an agent
+// that has no live index row. The mail routes like an unknown tag and
+// never records a routed row with no agent.
+func TestDeliverAgentGoneAfterRoute(t *testing.T) {
+	isolateHome(t)
+	st := openEmailStore(t)
+	s := testService(st)
+	configureTest(s, "https://worker.example")
+	addr, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	acts := &fakeActions{env: testRouteEnv()}
+	s.AttachIngress(NewIngress(s, connectors.New(st, nil, nil), acts, time.Minute, false))
+	if err := s.Deliver(t.Context(), IngressMessage{V: 1, ID: "g1", LocalPart: addr.LocalPart, Tag: "research",
+		To: []string{addr.Full()}, From: "ops@example.com", Dmarc: "pass"}); err != nil {
+		t.Fatal(err)
+	}
+	var disp string
+	var agentSet bool
+	if err := st.DB().QueryRow(`SELECT disposition, agent_id IS NOT NULL FROM email_messages WHERE id='g1'`).Scan(&disp, &agentSet); err != nil {
+		t.Fatal(err)
+	}
+	if disp != "misrouted" || agentSet || len(acts.asks) != 1 || !strings.Contains(acts.asks[0], "Misrouted email for +research") {
+		t.Fatalf("disposition=%s agent_set=%v asks=%q", disp, agentSet, acts.asks)
+	}
+}
+
+// indexAgent adds the job_index row of one agent, so routed mail resolves
+// its agent_id.
+func indexAgent(t *testing.T, st *store.Store, wsID, name string) {
+	t.Helper()
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at)
+		VALUES (?, ?, ?, '/x/AGENT.md', 'agent', '2026-09-28T00:00:00Z')`, "agt_"+name, wsID, "agents/"+name); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func testRouteEnv() RouteEnv {
 	mustRule := func(lines ...string) AcceptRule {
 		entries, err := job.ParseAccept(lines)
