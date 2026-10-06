@@ -533,6 +533,73 @@ func TestListRoutesCursorAndLimit(t *testing.T) {
 	}
 }
 
+// TestNoLegacyNameFields: after the ID migration no response names a job,
+// agent, or operator with a bare field. Each one is an _id + _name pair.
+func TestNoLegacyNameFields(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, wsDir, "legacy")
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	t.Cleanup(func() { _ = st.Close() })
+	agentID := indexedJobID(t, st, wsID, "agents/cmo")
+	jobID := indexedJobID(t, st, wsID, "alpha")
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, q := range []string{
+		`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at) VALUES ('r-job','` + wsID + `','` + jobID + `','job','complete','t','` + now + `','` + now + `')`,
+		`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at) VALUES ('r-agent','` + wsID + `','` + agentID + `','agent','complete','t','` + now + `','` + now + `')`,
+		`INSERT INTO conversations (id,workspace_id,key,title,origin_channel,operator_id,created_at,updated_at) VALUES ('cv','` + wsID + `','k','T','email','` + agentID + `','` + now + `','` + now + `')`,
+		`INSERT INTO event_queue (id,connector,workspace_id,job_id,kind,status,prompt,created_at,updated_at) VALUES ('eq','tick','` + wsID + `','` + jobID + `','job','pending','','` + now + `','` + now + `')`,
+		`INSERT INTO schedules (workspace_id,job_id,idx,spec,updated_at) VALUES ('` + wsID + `','` + jobID + `',0,'0 9 * * *','` + now + `')`,
+	} {
+		if _, err := st.DB().Exec(q); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+	banned := map[string]bool{"job": true, "agent": true, "operator": true, "owner": true}
+	var walk func(path string, v any)
+	walk = func(path string, v any) {
+		switch v := v.(type) {
+		case map[string]any:
+			for k, child := range v {
+				if banned[k] {
+					t.Errorf("%s has field %q", path, k)
+				}
+				walk(path+"."+k, child)
+			}
+		case []any:
+			for _, child := range v {
+				walk(path, child)
+			}
+		}
+	}
+	for _, p := range []string{
+		"/v1/jobs?workspace=" + wsID,
+		"/v1/jobs/alpha?workspace=" + wsID,
+		"/v1/workspaces/" + wsID + "/agents",
+		"/v1/agents",
+		"/v1/runs?workspace=" + wsID,
+		"/v1/runs/r-job",
+		"/v1/runs/r-agent",
+		"/v1/conversations?workspace=" + wsID,
+		"/v1/conversations/cv",
+		"/v1/queue?workspace=" + wsID,
+		"/v1/schedules?workspace=" + wsID,
+		"/v1/inbox?workspace=" + wsID,
+		"/v1/requests?workspace=" + wsID,
+		"/v1/proposals?workspace=" + wsID,
+		"/v1/events?workspace=" + wsID,
+		"/v1/stats/runs?workspace=" + wsID,
+	} {
+		code, body, _ := doJSON(t, "GET", base+p, nil)
+		if code != 200 {
+			t.Errorf("GET %s: %d %v", p, code, body)
+			continue
+		}
+		walk(p, body)
+	}
+}
+
 func startAPI(t *testing.T) (*api.Server, string, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -599,71 +666,4 @@ func indexedJobID(t *testing.T, st *store.Store, wsID, name string) string {
 func mustJSON(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
-}
-
-// TestNoLegacyNameFields: after the ID migration no response names a job,
-// agent, or operator with a bare field. Each one is an _id + _name pair.
-func TestNoLegacyNameFields(t *testing.T) {
-	_, base, dir := startAPI(t)
-	wsDir := t.TempDir()
-	writeAgentFixture(t, wsDir)
-	wsID := addWorkspace(t, base, wsDir, "legacy")
-	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
-	t.Cleanup(func() { _ = st.Close() })
-	agentID := indexedJobID(t, st, wsID, "agents/cmo")
-	jobID := indexedJobID(t, st, wsID, "alpha")
-	now := time.Now().UTC().Format(time.RFC3339)
-	for _, q := range []string{
-		`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at) VALUES ('r-job','` + wsID + `','` + jobID + `','job','complete','t','` + now + `','` + now + `')`,
-		`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at) VALUES ('r-agent','` + wsID + `','` + agentID + `','agent','complete','t','` + now + `','` + now + `')`,
-		`INSERT INTO conversations (id,workspace_id,key,title,origin_channel,operator_id,created_at,updated_at) VALUES ('cv','` + wsID + `','k','T','email','` + agentID + `','` + now + `','` + now + `')`,
-		`INSERT INTO event_queue (id,connector,workspace_id,job_id,kind,status,prompt,created_at,updated_at) VALUES ('eq','tick','` + wsID + `','` + jobID + `','job','pending','','` + now + `','` + now + `')`,
-		`INSERT INTO schedules (workspace_id,job_id,idx,spec,updated_at) VALUES ('` + wsID + `','` + jobID + `',0,'0 9 * * *','` + now + `')`,
-	} {
-		if _, err := st.DB().Exec(q); err != nil {
-			t.Fatalf("seed %q: %v", q, err)
-		}
-	}
-	banned := map[string]bool{"job": true, "agent": true, "operator": true, "owner": true}
-	var walk func(path string, v any)
-	walk = func(path string, v any) {
-		switch v := v.(type) {
-		case map[string]any:
-			for k, child := range v {
-				if banned[k] {
-					t.Errorf("%s has field %q", path, k)
-				}
-				walk(path+"."+k, child)
-			}
-		case []any:
-			for _, child := range v {
-				walk(path, child)
-			}
-		}
-	}
-	for _, p := range []string{
-		"/v1/jobs?workspace=" + wsID,
-		"/v1/jobs/alpha?workspace=" + wsID,
-		"/v1/workspaces/" + wsID + "/agents",
-		"/v1/agents",
-		"/v1/runs?workspace=" + wsID,
-		"/v1/runs/r-job",
-		"/v1/runs/r-agent",
-		"/v1/conversations?workspace=" + wsID,
-		"/v1/conversations/cv",
-		"/v1/queue?workspace=" + wsID,
-		"/v1/schedules?workspace=" + wsID,
-		"/v1/inbox?workspace=" + wsID,
-		"/v1/requests?workspace=" + wsID,
-		"/v1/proposals?workspace=" + wsID,
-		"/v1/events?workspace=" + wsID,
-		"/v1/stats/runs?workspace=" + wsID,
-	} {
-		code, body, _ := doJSON(t, "GET", base+p, nil)
-		if code != 200 {
-			t.Errorf("GET %s: %d %v", p, code, body)
-			continue
-		}
-		walk(p, body)
-	}
 }
