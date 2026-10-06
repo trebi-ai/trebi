@@ -162,7 +162,7 @@ func TestQueueSkipsRowsNotDue(t *testing.T) {
 		t.Fatalf("status=%s want pending", status)
 	}
 	var runs int
-	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job='later'`).Scan(&runs)
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job_id=?`, indexID(t, st, wsID, "later")).Scan(&runs)
 	if runs != 0 {
 		t.Fatalf("runs=%d; a not-due row must not launch", runs)
 	}
@@ -538,7 +538,7 @@ func TestTriggerFloodDrops(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n := queueCount(t, st, `job='floodjob' AND status='pending'`); n != dispatch.LaneCap {
+	if n := queueCount(t, st, `job_id='`+indexID(t, st, wsID, "floodjob")+`' AND status='pending'`); n != dispatch.LaneCap {
 		t.Fatalf("pending=%d want %d", n, dispatch.LaneCap)
 	}
 	var dropped, flood int
@@ -558,20 +558,21 @@ func TestTriggerFloodDrops(t *testing.T) {
 func TestManualLaunchWaitsForLiveRun(t *testing.T) {
 	clock := newTestClock()
 	cp, st, wsID, ctx := openQueuePlaneAt(t, "waiter", "---\nharness: fake\n---\n\nGo.\n", clock.Now)
+	jobID := indexID(t, st, wsID, "waiter")
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cp.Start(runCtx)
 	defer cp.Stop()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job,kind,status,trace_id,started_at,updated_at)
-		VALUES ('live-1',?,'waiter','job','running','trace-live',?,?)`, wsID, now, now); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at)
+		VALUES ('live-1',?,?,'job','running','trace-live',?,?)`, wsID, jobID, now, now); err != nil {
 		t.Fatal(err)
 	}
 
 	q := dispatch.NewQueue(st)
 	var ids []string
 	for _, p := range []string{"one", "two"} {
-		item := &dispatch.QueueItem{Connector: dispatch.ConnectorManual, WorkspaceID: wsID, JobID: "waiter", JobName: "waiter",
+		item := &dispatch.QueueItem{Connector: dispatch.ConnectorManual, WorkspaceID: wsID, JobID: jobID, JobName: "waiter",
 			Launch: &dispatch.LaunchRequest{Reason: string(runs.ReasonManual), Prompt: p}}
 		if err := q.Enqueue(ctx, item); err != nil {
 			t.Fatal(err)
@@ -582,7 +583,7 @@ func TestManualLaunchWaitsForLiveRun(t *testing.T) {
 	if status != "pending" || errMsg != string(dispatch.DeferRunActive) {
 		t.Fatalf("status=%s error_message=%q want pending/run_active", status, errMsg)
 	}
-	if n := queueCount(t, st, `job='waiter' AND attempts > 0`); n != 0 {
+	if n := queueCount(t, st, `job_id='`+jobID+`' AND attempts > 0`); n != 0 {
 		t.Fatalf("%d rows with attempts; a run_active wait is not an attempt", n)
 	}
 	if _, err := st.DB().Exec(`UPDATE runs SET status='done', end_reason='complete' WHERE id='live-1'`); err != nil {
@@ -590,14 +591,14 @@ func TestManualLaunchWaitsForLiveRun(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(10 * time.Second)
-	for queueCount(t, st, `job='waiter' AND result='launched'`) < 2 && time.Now().Before(deadline) {
+	for queueCount(t, st, `job_id='`+jobID+`' AND result='launched'`) < 2 && time.Now().Before(deadline) {
 		clock.Advance(3 * time.Second)
 		time.Sleep(50 * time.Millisecond)
 	}
-	if n := queueCount(t, st, `job='waiter' AND result='launched'`); n != 2 {
+	if n := queueCount(t, st, `job_id='`+jobID+`' AND result='launched'`); n != 2 {
 		t.Fatalf("launched=%d want 2", n)
 	}
-	rows, err := st.DB().Query(`SELECT queue_id FROM runs WHERE job='waiter' AND queue_id IS NOT NULL ORDER BY id`)
+	rows, err := st.DB().Query(`SELECT queue_id FROM runs WHERE job_id=? AND queue_id IS NOT NULL ORDER BY id`, jobID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,13 +621,14 @@ func TestManualLaunchWaitsForLiveRun(t *testing.T) {
 func TestQueueResumeWaitsForLiveTurn(t *testing.T) {
 	clock := newTestClock()
 	cp, st, wsID, ctx := openQueuePlaneAt(t, "waiter", "---\nharness: fake\n---\n\nGo.\n", clock.Now)
+	jobID := indexID(t, st, wsID, "waiter")
 	prev, err := cp.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: wsID, JobID: "waiter", JobName: "waiter", Kind: runs.KindJob, Harness: "fake", SessionID: "sess-1",
+		WorkspaceID: wsID, JobID: jobID, JobName: "waiter", Kind: runs.KindJob, Harness: "fake", SessionID: "sess-1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := &dispatch.QueueItem{Connector: "retry", WorkspaceID: wsID, JobID: "waiter", JobName: "waiter", Kind: runs.KindJob,
+	item := &dispatch.QueueItem{Connector: "retry", WorkspaceID: wsID, JobID: jobID, JobName: "waiter", Kind: runs.KindJob,
 		ResumeOf: prev.ID, Prompt: "resume", Status: dispatch.QueuePending}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
@@ -657,4 +659,14 @@ func TestQueueResumeWaitsForLiveTurn(t *testing.T) {
 	if n := queueCount(t, st, `result='launched' AND run_id='`+prev.ID+`'`); n != 1 {
 		t.Fatalf("launched rows for the run: %d", n)
 	}
+}
+
+// indexID reads the static ID of one indexed job or agent.
+func indexID(t *testing.T, st *store.Store, wsID, name string) string {
+	t.Helper()
+	var id string
+	if err := st.DB().QueryRow(`SELECT id FROM job_index WHERE workspace_id=? AND name=?`, wsID, name).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
 }

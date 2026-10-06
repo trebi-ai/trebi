@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -56,16 +57,34 @@ func TestRebuildIndexEmitsDiffEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	alpha := indexedID(ctx, t, svc, ws.ID, "alpha", filepath.Join(root, "alpha", "JOB.md"))
+	beta := indexedID(ctx, t, svc, ws.ID, "beta", filepath.Join(root, "beta", "JOB.md"))
 
-	// Edit one job file: exactly one job.updated.
+	// Edit one job file and keep its ID: exactly one job.updated.
 	seq := mustSeq(t, st)
-	writeFile(t, filepath.Join(root, "alpha", "JOB.md"), jobMD+"\nMore work.\n")
+	withID := "---\nid: " + alpha + "\nharness: claude\n---\n\nDo the task.\n"
+	writeFile(t, filepath.Join(root, "alpha", "JOB.md"), withID+"\nMore work.\n")
 	if err := svc.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
 	topics := busTopics(t, st, seq)
-	if len(topics) != 1 || topics[0] != "job.updated:alpha" {
-		t.Fatalf("topics=%v want [job.updated:alpha]", topics)
+	if len(topics) != 1 || topics[0] != "job.updated:"+alpha {
+		t.Fatalf("topics=%v want [job.updated:%s]", topics, alpha)
+	}
+
+	// Write the file again with no ID: the job keeps its ID, and the
+	// daemon writes it back into the file.
+	seq = mustSeq(t, st)
+	writeFile(t, filepath.Join(root, "alpha", "JOB.md"), jobMD+"\nLess work.\n")
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	topics = busTopics(t, st, seq)
+	if len(topics) != 2 || topics[0] != "job.id_assigned:"+alpha || topics[1] != "job.updated:"+alpha {
+		t.Fatalf("topics=%v want [job.id_assigned:%s job.updated:%s]", topics, alpha, alpha)
+	}
+	if got := indexedID(ctx, t, svc, ws.ID, "alpha", filepath.Join(root, "alpha", "JOB.md")); got != alpha {
+		t.Fatalf("alpha id=%s want %s", got, alpha)
 	}
 
 	// Remove one job file: exactly one job.deleted.
@@ -77,19 +96,20 @@ func TestRebuildIndexEmitsDiffEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	topics = busTopics(t, st, seq)
-	if len(topics) != 1 || topics[0] != "job.deleted:beta" {
-		t.Fatalf("topics=%v want [job.deleted:beta]", topics)
+	if len(topics) != 1 || topics[0] != "job.deleted:"+beta {
+		t.Fatalf("topics=%v want [job.deleted:%s]", topics, beta)
 	}
 
-	// New job file: exactly one job.created.
+	// New job file: the ID is assigned, then exactly one job.created.
 	seq = mustSeq(t, st)
 	writeFile(t, filepath.Join(root, "gamma", "JOB.md"), jobMD)
 	if err := svc.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	gamma := indexedID(ctx, t, svc, ws.ID, "gamma", filepath.Join(root, "gamma", "JOB.md"))
 	topics = busTopics(t, st, seq)
-	if len(topics) != 1 || topics[0] != "job.created:gamma" {
-		t.Fatalf("topics=%v want [job.created:gamma]", topics)
+	if len(topics) != 2 || topics[0] != "job.id_assigned:"+gamma || topics[1] != "job.created:"+gamma {
+		t.Fatalf("topics=%v want [job.id_assigned:%s job.created:%s]", topics, gamma, gamma)
 	}
 
 	// TREBI.md is no longer indexed: no new events, no assistant rows.
@@ -195,16 +215,21 @@ func TestRebuildIndexAgents(t *testing.T) {
 	if dutyRow.OwnerID != agentRow.ID || dutyRow.OwnerIndex() != "agents/cmo" {
 		t.Errorf("duty owner=%q (%s) want agents/cmo", dutyRow.OwnerIndex(), dutyRow.OwnerID)
 	}
+	agentID := indexedID(ctx, t, svc, ws.ID, "agents/cmo", filepath.Join(root, "agents", "cmo", "AGENT.md"))
+	dutyID := indexedID(ctx, t, svc, ws.ID, "agents/cmo/duty", filepath.Join(root, "agents", "cmo", "duty", "JOB.md"))
+	if !job.ValidID("agent", agentID) || !job.ValidID("job", dutyID) {
+		t.Fatalf("agent id=%s duty id=%s", agentID, dutyID)
+	}
 
-	// Edit the agent file: agent.updated only, never job.updated.
+	// Edit the agent file and keep its ID: agent.updated only, never job.updated.
 	seq := mustSeq(t, st)
-	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\nharness: codex\n---\n\nLead all growth.\n")
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\nid: "+agentID+"\nharness: codex\n---\n\nLead all growth.\n")
 	if err := svc.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
 	topics := busTopics(t, st, seq)
-	if len(topics) != 1 || topics[0] != "agent.updated:agents/cmo" {
-		t.Fatalf("topics=%v want [agent.updated:agents/cmo]", topics)
+	if len(topics) != 1 || topics[0] != "agent.updated:"+agentID {
+		t.Fatalf("topics=%v want [agent.updated:%s]", topics, agentID)
 	}
 
 	// Remove the agents folder: one agent.deleted plus one job.deleted.
@@ -217,7 +242,7 @@ func TestRebuildIndexAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	topics = busTopics(t, st, seq)
-	want := map[string]bool{"agent.deleted:agents/cmo": true, "job.deleted:agents/cmo/duty": true}
+	want := map[string]bool{"agent.deleted:" + agentID: true, "job.deleted:" + dutyID: true}
 	if len(topics) != len(want) {
 		t.Fatalf("topics=%v want %v", topics, want)
 	}
@@ -694,4 +719,22 @@ func TestWorkspaceSenderName(t *testing.T) {
 			t.Errorf("SenderName(%+v) = %q, want %q", tc.ws, got, tc.want)
 		}
 	}
+}
+
+// indexedID returns the index ID of name. It fails when the file at path
+// does not start its frontmatter with the same ID.
+func indexedID(ctx context.Context, t *testing.T, svc *workspaces.Service, wsID, name, path string) string {
+	t.Helper()
+	row, err := svc.JobByName(ctx, wsID, name)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "---\nid: "+row.ID+"\n") {
+		t.Fatalf("%s: file does not start with id %s:\n%s", name, row.ID, data)
+	}
+	return row.ID
 }

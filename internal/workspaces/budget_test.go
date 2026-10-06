@@ -57,11 +57,15 @@ func TestBudgetGateExceedsAndAlerts(t *testing.T) {
 	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,?,?)`, root, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO job_index (workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('ws','agents/research',?,'agent',1,'fake','hash',?)`, filepath.Join(agentDir, "AGENT.md"), time.Now().UTC()); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_00000000a1','ws','agents/research',?,'agent',1,'fake','hash',?)`, filepath.Join(agentDir, "AGENT.md"), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job,kind,status,trace_id,tokens_input,tokens_model,started_at,updated_at)
-		VALUES ('run','ws','agents/research/build','job','complete','trace',40000000,'default',?,?)`, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	// The run belongs to a job that the agent owns.
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,owner_id,updated_at) VALUES ('jb_00000000b1','ws','agents/research/build',?,'job',1,'fake','hash','agt_00000000a1',?)`, filepath.Join(agentDir, "build", "JOB.md"), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,tokens_input,tokens_model,started_at,updated_at)
+		VALUES ('run','ws','jb_00000000b1','job','complete','trace',40000000,'default',?,?)`, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DB().Exec(`INSERT INTO run_turns (run_id,n,reason,status,started_at,tokens_input,tokens_model)

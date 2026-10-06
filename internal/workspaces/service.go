@@ -597,36 +597,6 @@ type indexRow struct {
 	active                                                   bool
 }
 
-func rowFromJob(j *job.Job, kind, ownerID string) indexRow {
-	return indexRow{
-		id: j.ID, name: j.Name, path: j.FilePath, kind: kind, harness: j.Harness,
-		hash: j.Hash, parseError: j.ParseError, active: !j.Disabled, ownerID: ownerID,
-	}
-}
-
-// desiredRows keys the discovered jobs and agents by ID. byName resolves
-// the owner agent of a child job that is not in jobs.
-func desiredRows(jobs []*job.Job, byName map[string]string) map[string]indexRow {
-	names := make(map[string]string, len(byName)+len(jobs))
-	maps.Copy(names, byName)
-	for _, j := range jobs {
-		names[j.Name] = j.ID
-	}
-	out := make(map[string]indexRow, len(jobs))
-	for _, j := range jobs {
-		kind := j.Kind
-		if kind == "" {
-			kind = "job"
-		}
-		owner := ""
-		if j.Owner != "" {
-			owner = names[j.Owner]
-		}
-		out[j.ID] = rowFromJob(j, kind, owner)
-	}
-	return out
-}
-
 // RebuildIndex rescans job files into job_index (diff-aware, B5).
 // It emits job.*/assistant.*/agent.* bus events for changes.
 // Bus errors never fail the rebuild.
@@ -666,7 +636,7 @@ func (s *Service) RebuildIndexJobs(ctx context.Context, ws *Workspace) ([]*job.J
 	if err := s.ensureIDs(ctx, ws.ID, jobs, existing); err != nil {
 		return nil, err
 	}
-	desired := desiredRows(jobs, nil)
+	desired := desiredRows(jobs, idsByName(existing))
 	if err := s.writeIndexDiff(ctx, ws.ID, existing, desired); err != nil {
 		return nil, err
 	}
@@ -702,11 +672,7 @@ func (s *Service) RebuildIndexPath(ctx context.Context, ws *Workspace, path stri
 		if err := s.ensureIDs(ctx, ws.ID, []*job.Job{j}, existing); err != nil {
 			return nil, err
 		}
-		byName := make(map[string]string, len(existing))
-		for id, row := range existing {
-			byName[row.name] = id
-		}
-		maps.Copy(desired, desiredRows([]*job.Job{j}, byName))
+		maps.Copy(desired, desiredRows([]*job.Job{j}, idsByName(existing)))
 	}
 	if err := s.writeIndexDiff(ctx, ws.ID, existing, desired); err != nil {
 		return nil, err
@@ -777,28 +743,6 @@ func (s *Service) ResolveJob(ctx context.Context, workspaceID, ref string) (*Job
 const jobRowSelect = `SELECT j.id, j.workspace_id, j.name, j.path, j.kind, j.active, COALESCE(j.harness,''), COALESCE(j.hash,''),
 	COALESCE(j.parse_error,''), j.owner_id, COALESCE(o.name,''), COALESCE(j.retired_at,'')
 	FROM job_index j LEFT JOIN job_index o ON o.id = j.owner_id AND j.owner_id <> ''`
-
-func (s *Service) queryJobRows(ctx context.Context, q string, args ...any) ([]JobRow, error) {
-	rows, err := s.st.DB().QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []JobRow
-	for rows.Next() {
-		var r JobRow
-		var active int
-		var ownerName string
-		if err := rows.Scan(&r.ID, &r.WorkspaceID, &r.Name, &r.Path, &r.Kind, &active, &r.Harness, &r.Hash, &r.ParseError,
-			&r.OwnerID, &ownerName, &r.RetiredAt); err != nil {
-			return nil, err
-		}
-		r.Active = active == 1
-		r.OwnerName = strings.TrimPrefix(ownerName, "agents/")
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
 
 func (s *Service) resolveAddPath(opts AddOpts) (string, error) {
 	path := strings.TrimSpace(opts.Path)
@@ -879,122 +823,6 @@ func (s *Service) existingIndexRows(ctx context.Context, wsID string) (map[strin
 		existing[r.id] = r
 	}
 	return existing, rows.Err()
-}
-
-// ensureIDs gives each job and agent a valid, unique ID (plan 2026-10-06
-// A6). It writes a new ID into the file. A file that does not parse gets
-// an ID in the index only; the write waits until the file parses.
-func (s *Service) ensureIDs(ctx context.Context, wsID string, jobs []*job.Job, existing map[string]indexRow) error {
-	sorted := slices.Clone(jobs)
-	slices.SortFunc(sorted, func(a, b *job.Job) int { return strings.Compare(a.FilePath, b.FilePath) })
-	byName := make(map[string]string, len(existing))
-	for id, r := range existing {
-		byName[r.name] = id
-	}
-	claimed := map[string]string{} // id -> path
-	// The path that has the ID in job_index keeps it.
-	for _, j := range sorted {
-		if j.IDState != job.IDOK {
-			continue
-		}
-		if p, err := s.indexPath(ctx, j.ID); err != nil {
-			return err
-		} else if p == j.FilePath {
-			claimed[j.ID] = j.FilePath
-		}
-	}
-	for _, j := range sorted {
-		reason, err := s.idProblem(ctx, j, claimed)
-		if err != nil {
-			return err
-		}
-		if reason == "" {
-			claimed[j.ID] = j.FilePath
-			continue
-		}
-		id := ""
-		if prev, ok := byName[j.Name]; ok && reason != "duplicate" && existing[prev].path == j.FilePath {
-			if _, taken := claimed[prev]; !taken {
-				id = prev
-			}
-		}
-		if id == "" {
-			if id, err = s.mintJobID(ctx, j.Kind, claimed); err != nil {
-				return err
-			}
-		}
-		claimed[id] = j.FilePath
-		if j.ParseError != "" {
-			j.ID = id
-			continue
-		}
-		if err := j.AssignID(id); err != nil {
-			// The index keeps the ID; the next rebuild reuses it by name and path.
-			s.log.Warn("job id write failed", "path", j.FilePath, "err", err)
-			j.ID = id
-			continue
-		}
-		if _, err := s.st.Append(ctx, store.BusEvent{
-			Topic: "job.id_assigned", Entity: j.Kind, EntityID: id, Action: "updated",
-			Attrs: map[string]string{"workspace": wsID, "name": j.Name, "id": id, "reason": reason},
-		}); err != nil {
-			s.log.Warn("job id bus append failed", "workspace", wsID, "error", err)
-		}
-	}
-	return nil
-}
-
-// idProblem returns why j needs a new ID, or "" when its ID is good.
-func (s *Service) idProblem(ctx context.Context, j *job.Job, claimed map[string]string) (string, error) {
-	switch j.IDState {
-	case job.IDMissing:
-		return "missing", nil
-	case job.IDInvalid:
-		return "invalid", nil
-	}
-	if p, ok := claimed[j.ID]; ok {
-		if p == j.FilePath {
-			return "", nil
-		}
-		return "duplicate", nil
-	}
-	// A live row with the ID at a path that still exists is a copy.
-	p, err := s.indexPath(ctx, j.ID)
-	if err != nil {
-		return "", err
-	}
-	if p != "" && p != j.FilePath {
-		if _, err := os.Stat(p); err == nil {
-			return "duplicate", nil
-		}
-	}
-	return "", nil
-}
-
-// indexPath returns the path of the live job_index row of id, or "".
-func (s *Service) indexPath(ctx context.Context, id string) (string, error) {
-	var p string
-	err := s.st.DB().QueryRowContext(ctx, `SELECT path FROM job_index WHERE id=? AND retired_at IS NULL`, id).Scan(&p)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return p, err
-}
-
-func (s *Service) mintJobID(ctx context.Context, kind string, claimed map[string]string) (string, error) {
-	for {
-		id := job.NewID(kind)
-		if _, ok := claimed[id]; ok {
-			continue
-		}
-		var n int
-		if err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM job_index WHERE id=?`, id).Scan(&n); err != nil {
-			return "", err
-		}
-		if n == 0 {
-			return id, nil
-		}
-	}
 }
 
 // writeIndexDiff upserts changed rows and retires stale ones in one tx.
@@ -1511,4 +1339,185 @@ func (s *Service) jobCounts(ctx context.Context) (map[string]int, error) {
 		out[id] = n
 	}
 	return out, rows.Err()
+}
+
+func rowFromJob(j *job.Job, kind, ownerID string) indexRow {
+	return indexRow{
+		id: j.ID, name: j.Name, path: j.FilePath, kind: kind, harness: j.Harness,
+		hash: j.Hash, parseError: j.ParseError, active: !j.Disabled, ownerID: ownerID,
+	}
+}
+
+// idsByName maps the index name of each row to its ID.
+func idsByName(rows map[string]indexRow) map[string]string {
+	out := make(map[string]string, len(rows))
+	for id, row := range rows {
+		out[row.name] = id
+	}
+	return out
+}
+
+// desiredRows keys the discovered jobs and agents by ID. byName resolves
+// the owner agent of a child job that is not in jobs, so a child keeps the
+// ID of a deleted owner.
+func desiredRows(jobs []*job.Job, byName map[string]string) map[string]indexRow {
+	names := make(map[string]string, len(byName)+len(jobs))
+	maps.Copy(names, byName)
+	for _, j := range jobs {
+		names[j.Name] = j.ID
+	}
+	out := make(map[string]indexRow, len(jobs))
+	for _, j := range jobs {
+		kind := j.Kind
+		if kind == "" {
+			kind = "job"
+		}
+		owner := ""
+		if j.Owner != "" {
+			owner = names[j.Owner]
+		}
+		out[j.ID] = rowFromJob(j, kind, owner)
+	}
+	return out
+}
+
+func (s *Service) queryJobRows(ctx context.Context, q string, args ...any) ([]JobRow, error) {
+	rows, err := s.st.DB().QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []JobRow
+	for rows.Next() {
+		var r JobRow
+		var active int
+		var ownerName string
+		if err := rows.Scan(&r.ID, &r.WorkspaceID, &r.Name, &r.Path, &r.Kind, &active, &r.Harness, &r.Hash, &r.ParseError,
+			&r.OwnerID, &ownerName, &r.RetiredAt); err != nil {
+			return nil, err
+		}
+		r.Active = active == 1
+		r.OwnerName = strings.TrimPrefix(ownerName, "agents/")
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// idProblem returns why j needs a new ID, or "" when its ID is good.
+func (s *Service) idProblem(ctx context.Context, j *job.Job, claimed map[string]string) (string, error) {
+	switch j.IDState {
+	case job.IDMissing:
+		return "missing", nil
+	case job.IDInvalid:
+		return "invalid", nil
+	}
+	if p, ok := claimed[j.ID]; ok {
+		if p == j.FilePath {
+			return "", nil
+		}
+		return "duplicate", nil
+	}
+	// A live row with the ID at a path that still exists is a copy.
+	p, err := s.indexPath(ctx, j.ID)
+	if err != nil {
+		return "", err
+	}
+	if p != "" && p != j.FilePath {
+		if _, err := os.Stat(p); err == nil {
+			return "duplicate", nil
+		}
+	}
+	return "", nil
+}
+
+// indexPath returns the path of the live job_index row of id, or "".
+func (s *Service) indexPath(ctx context.Context, id string) (string, error) {
+	var p string
+	err := s.st.DB().QueryRowContext(ctx, `SELECT path FROM job_index WHERE id=? AND retired_at IS NULL`, id).Scan(&p)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return p, err
+}
+
+func (s *Service) mintJobID(ctx context.Context, j *job.Job, reuse string, existing map[string]indexRow, claimed map[string]string) (string, error) {
+	// The index row of the same name and path keeps its ID when it is free.
+	if row, ok := existing[reuse]; ok && row.path == j.FilePath {
+		if _, taken := claimed[reuse]; !taken {
+			return reuse, nil
+		}
+	}
+	for {
+		id := job.NewID(j.Kind)
+		if _, ok := claimed[id]; ok {
+			continue
+		}
+		var n int
+		if err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM job_index WHERE id=?`, id).Scan(&n); err != nil {
+			return "", err
+		}
+		if n == 0 {
+			return id, nil
+		}
+	}
+}
+
+// ensureIDs gives each job and agent a valid, unique ID (plan 2026-10-06
+// A6). It writes a new ID into the file. A file that does not parse gets
+// an ID in the index only; the write waits until the file parses.
+func (s *Service) ensureIDs(ctx context.Context, wsID string, jobs []*job.Job, existing map[string]indexRow) error {
+	sorted := slices.Clone(jobs)
+	slices.SortFunc(sorted, func(a, b *job.Job) int { return strings.Compare(a.FilePath, b.FilePath) })
+	byName := make(map[string]string, len(existing))
+	for id, r := range existing {
+		byName[r.name] = id
+	}
+	claimed := map[string]string{} // id -> path
+	// The path that has the ID in job_index keeps it.
+	for _, j := range sorted {
+		if j.IDState != job.IDOK {
+			continue
+		}
+		if p, err := s.indexPath(ctx, j.ID); err != nil {
+			return err
+		} else if p == j.FilePath {
+			claimed[j.ID] = j.FilePath
+		}
+	}
+	for _, j := range sorted {
+		reason, err := s.idProblem(ctx, j, claimed)
+		if err != nil {
+			return err
+		}
+		if reason == "" {
+			claimed[j.ID] = j.FilePath
+			continue
+		}
+		reuse := ""
+		if reason != "duplicate" {
+			reuse = byName[j.Name]
+		}
+		id, err := s.mintJobID(ctx, j, reuse, existing, claimed)
+		if err != nil {
+			return err
+		}
+		claimed[id] = j.FilePath
+		if j.ParseError != "" {
+			j.ID = id
+			continue
+		}
+		if err := j.AssignID(id); err != nil {
+			// The index keeps the ID; the next rebuild reuses it by name and path.
+			s.log.Warn("job id write failed", "path", j.FilePath, "err", err)
+			j.ID = id
+			continue
+		}
+		if _, err := s.st.Append(ctx, store.BusEvent{
+			Topic: "job.id_assigned", Entity: j.Kind, EntityID: id, Action: "updated",
+			Attrs: map[string]string{"workspace": wsID, "name": j.Name, "id": id, "reason": reason},
+		}); err != nil {
+			s.log.Warn("job id bus append failed", "workspace", wsID, "error", err)
+		}
+	}
+	return nil
 }

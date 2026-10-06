@@ -151,7 +151,7 @@ func TestJobPauseIfMatch(t *testing.T) {
 func TestQueueCancelAndRequeue(t *testing.T) {
 	_, base, _ := startAPI(t)
 	fire := map[string]any{
-		"connector": "qtest", "workspace": "ws", "job": "j",
+		"connector": "qtest", "workspace": fireWorkspace(t, base), "job": "j",
 		"match": "true", "event": map[string]any{"x": 1},
 	}
 	code, res, _ := doJSON(t, "POST", base+"/v1/rules/fire", fire)
@@ -419,4 +419,12 @@ func TestJobKitSourceJobOverride(t *testing.T) {
 	if src["skills"] != "job" || src["connectors"] != "job" || src["envset"] != "agent" {
 		t.Fatalf("kit_source = %v", src)
 	}
+}
+
+// fireWorkspace adds a workspace with the job "j" for rules/fire.
+func fireWorkspace(t *testing.T, base string) string {
+	t.Helper()
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "j")
+	return addWorkspace(t, base, wsDir, "ws")
 }

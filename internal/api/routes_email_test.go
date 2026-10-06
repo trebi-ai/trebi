@@ -183,6 +183,11 @@ func TestEmailRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := addrRow.LocalPart
+	// The index holds the agent, so its mail rows carry an agent_id.
+	if _, err := e.st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at)
+		VALUES ('agt_0000000001','ws_1','agents/research','/x/AGENT.md','agent','2026-09-28T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
 
 	// One batch, every verdict class: wake, assistant, drop. ULID ids keep
 	// the log order and the cursor path honest.
@@ -238,7 +243,7 @@ func TestEmailRoutes(t *testing.T) {
 
 	// One envelope with verdicts and links; a miss is a 404.
 	code, m = e.do(t, http.MethodGet, "/v1/email/messages/"+u1, nil)
-	if code != 200 || m["disposition"] != "routed" || m["agent"] != "research" || m["conversation_id"] != "conv-1" {
+	if code != 200 || m["disposition"] != "routed" || m["agent_id"] != "agt_0000000001" || m["agent_name"] != "research" || m["conversation_id"] != "conv-1" {
 		t.Fatalf("show: %d %v", code, m)
 	}
 	if atts := m["attachments"].([]any); len(atts) != 1 || atts[0].(map[string]any)["id"] != "a1" {
@@ -391,6 +396,13 @@ func TestEmailSendRoute(t *testing.T) {
 		[]byte("---\nharness: fake\n---\n\nAssistant.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The agent send below needs an indexed agent.
+	if err := os.MkdirAll(filepath.Join(wsPath, "agents", "research"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsPath, "agents", "research", "AGENT.md"), []byte("---\n---\n\nResearch.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "ellis"})
 	if code != 201 {
 		t.Fatalf("workspace %d %v", code, wsBody)
@@ -428,7 +440,7 @@ func TestEmailSendRoute(t *testing.T) {
 		t.Fatalf("out log: %d", code)
 	}
 	rows := m["messages"].([]any)
-	if last := rows[0].(map[string]any); last["agent"] != "research" {
+	if last := rows[0].(map[string]any); last["agent_name"] != "research" || last["agent_id"] == "" {
 		t.Fatalf("agent row: %v", last)
 	}
 
@@ -466,6 +478,10 @@ func TestEmailSendJobSendsAsOwner(t *testing.T) {
 		[]byte("---\nharness: fake\n---\n\nAssistant.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeJobFile(t, wsPath, "agents/research/digest")
+	if err := os.WriteFile(filepath.Join(wsPath, "agents", "research", "AGENT.md"), []byte("---\n---\n\nResearch.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "owned"})
 	if code != 201 {
 		t.Fatalf("workspace %d %v", code, wsBody)
@@ -474,9 +490,9 @@ func TestEmailSendJobSendsAsOwner(t *testing.T) {
 	token := "job-token-00000000000000000000000000"
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := e.st.DB().Exec(`INSERT INTO runs
-		(id,workspace_id,job,kind,status,trace_id,started_at,updated_at,actor_token_hash)
+		(id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at,actor_token_hash)
 		VALUES (?,?,?,?,?,?,?,?,?)`,
-		"run-job", wsID, "agents/research/digest", "job", "running", "trace", now, now,
+		"run-job", wsID, indexedJobID(t, e.st, wsID, "agents/research/digest"), "job", "running", "trace", now, now,
 		runs.HashActorToken(token)); err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +508,7 @@ func TestEmailSendJobSendsAsOwner(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("out log: %d", code)
 	}
-	if last := m["messages"].([]any)[0].(map[string]any); last["agent"] != "research" {
+	if last := m["messages"].([]any)[0].(map[string]any); last["agent_name"] != "research" || last["agent_id"] == "" {
 		t.Fatalf("job send must use the owner agent: %v", last)
 	}
 

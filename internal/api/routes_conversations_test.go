@@ -208,7 +208,9 @@ func TestConversationOutboxRoutes(t *testing.T) {
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
 
-	wsID := addWorkspace(t, base, t.TempDir(), "outbox-ws")
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, wsDir, "outbox-ws")
 	code, body, _ := doJSON(t, "POST", base+"/v1/conversations",
 		map[string]any{"workspace": wsID, "origin_channel": "cli"})
 	if code != 201 {

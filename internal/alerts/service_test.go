@@ -192,7 +192,7 @@ func TestConsumeRunFailed(t *testing.T) {
 	ctx := context.Background()
 	if _, err := st.Append(ctx, store.BusEvent{
 		Topic: "run.failed", Entity: "run", EntityID: "run1", Action: "updated",
-		Attrs: map[string]string{"end_reason": "failed", "status": "failed", "job": "demo", "workspace": "ws"},
+		Attrs: map[string]string{"end_reason": "failed", "status": "failed", "job_id": "jb_00000000d1", "job_name": "demo", "workspace": "ws"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestConsumeRunFailed(t *testing.T) {
 	// kill never pages
 	if _, err := st.Append(ctx, store.BusEvent{
 		Topic: "run.failed", Entity: "run", EntityID: "run2", Action: "updated",
-		Attrs: map[string]string{"end_reason": "kill", "status": "failed", "job": "demo", "workspace": "ws"},
+		Attrs: map[string]string{"end_reason": "kill", "status": "failed", "job_id": "jb_00000000d1", "job_name": "demo", "workspace": "ws"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestConsumeRunMarkedCompleteResolves(t *testing.T) {
 	ctx := context.Background()
 	if _, err := st.Append(ctx, store.BusEvent{
 		Topic: "run.failed", Entity: "run", EntityID: "run1", Action: "updated",
-		Attrs: map[string]string{"end_reason": "idle_timeout", "status": "failed", "job": "demo", "workspace": "ws"},
+		Attrs: map[string]string{"end_reason": "idle_timeout", "status": "failed", "job_id": "jb_00000000d1", "job_name": "demo", "workspace": "ws"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestConsumeRunMarkedCompleteResolves(t *testing.T) {
 	// The machine status stays failed; the outcome is what resolves the item.
 	if _, err := st.Append(ctx, store.BusEvent{
 		Topic: "run.updated", Entity: "run", EntityID: "run1", Action: "updated",
-		Attrs: map[string]string{"status": "failed", "outcome": "complete", "job": "demo", "workspace": "ws"},
+		Attrs: map[string]string{"status": "failed", "outcome": "complete", "job_id": "jb_00000000d1", "job_name": "demo", "workspace": "ws"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestWaitingDwell(t *testing.T) {
 	since := now.Add(-6 * time.Minute).Format(time.RFC3339Nano)
 	if _, err := st.Append(ctx, store.BusEvent{
 		Topic: "session.state",
-		Attrs: map[string]string{"run_id": "r1", "state": "waiting", "since": since, "workspace": "ws", "job": "j"},
+		Attrs: map[string]string{"run_id": "r1", "state": "waiting", "since": since, "workspace": "ws", "job_id": "jb_00000000b2", "job_name": "j"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1113,7 +1113,7 @@ func TestConnectorUpdateAvailable(t *testing.T) {
 func requestEvent(topic string) store.BusEvent {
 	return store.BusEvent{
 		Topic: topic, Entity: "request", EntityID: "R1", Action: "updated",
-		Attrs: map[string]string{"run_id": "r1", "job": "mailer", "workspace_id": "ws", "title": "Send the reply"},
+		Attrs: map[string]string{"run_id": "r1", "job_id": "jb_00000000c3", "job_name": "mailer", "workspace_id": "ws", "title": "Send the reply"},
 	}
 }
 

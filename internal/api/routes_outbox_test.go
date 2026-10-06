@@ -31,7 +31,9 @@ func TestOutboxRoutes(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
-	wsID := addWorkspace(t, base, t.TempDir(), "outbox-routes")
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, wsDir, "outbox-routes")
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, q := range []string{

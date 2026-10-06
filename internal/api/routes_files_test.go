@@ -176,8 +176,16 @@ func TestFilesJobMarkdownHook(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("get job %d %v", code, got)
 	}
-	if got["hash"] != job.ContentHash(md) {
-		t.Fatalf("hash mismatch job=%v file=%s", got["hash"], job.ContentHash(md))
+	// The index writes the job ID into the file, so the hash covers the file on disk.
+	onDisk, err := os.ReadFile(filepath.Join(wsDir, "reports", "JOB.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(onDisk), "---\nid: jb_") {
+		t.Fatalf("job ID not written: %q", onDisk)
+	}
+	if got["hash"] != job.ContentHash(onDisk) {
+		t.Fatalf("hash mismatch job=%v file=%s", got["hash"], job.ContentHash(onDisk))
 	}
 
 	frames := collectBus(t, base, "file.created,file.deleted,job.created,job.deleted", 600*time.Millisecond)

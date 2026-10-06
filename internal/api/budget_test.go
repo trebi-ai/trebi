@@ -40,9 +40,9 @@ func TestHumanManualRunAllowedOverBudgetWithWarning(t *testing.T) {
 	// 40m default-priced input tokens costs $120 month-to-date.
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	if _, err := st.DB().Exec(`INSERT INTO runs
-		(id,workspace_id,job,kind,status,trace_id,tokens_input,tokens_model,started_at,updated_at)
-		VALUES ('spent',?,'agents/keeper/build','job','complete','trace',40000000,'default',?,?)`,
-		wsID, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		(id,workspace_id,job_id,kind,status,trace_id,tokens_input,tokens_model,started_at,updated_at)
+		VALUES ('spent',?,?,'job','complete','trace',40000000,'default',?,?)`,
+		wsID, indexedJobID(t, st, wsID, "agents/keeper/build"), time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DB().Exec(`INSERT INTO run_turns (run_id,n,reason,status,started_at,tokens_input,tokens_model)

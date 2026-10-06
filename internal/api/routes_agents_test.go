@@ -392,8 +392,8 @@ func TestAgentWakeSugarRoute(t *testing.T) {
 	if code != 201 {
 		t.Fatalf("wake: %d %v", code, run)
 	}
-	if run["kind"] != "agent" || run["job"] != "agents/cmo" {
-		t.Fatalf("wake run identity: kind=%v job=%v", run["kind"], run["job"])
+	if run["kind"] != "agent" || run["job_name"] != "agents/cmo" {
+		t.Fatalf("wake run identity: kind=%v job_name=%v", run["kind"], run["job_name"])
 	}
 	preview, _ := run["prompt_preview"].(string)
 	if !strings.Contains(preview, "Run growth.") || !strings.Contains(preview, "# Your jobs") {
@@ -424,7 +424,7 @@ func docEntries(t *testing.T, body map[string]any, section string) int {
 // oldest first) and the 7-day counts from the same run walk, and the
 // single GET leaves the list-only fields empty (plan 2026-09-24 G.1).
 func TestAgentListRecentRuns(t *testing.T) {
-	s, base, _ := startAPI(t)
+	s, base, dir := startAPI(t)
 	wsDir := t.TempDir()
 	for path, md := range map[string]string{
 		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):  "---\nharness: fake\n---\n\nRun growth.\n",
@@ -438,13 +438,15 @@ func TestAgentListRecentRuns(t *testing.T) {
 		}
 	}
 	wsID := addWorkspace(t, base, wsDir, "agent-runs")
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	defer st.Close()
 
 	// Spaced ids keep the newest-first list order deterministic: ULIDs
 	// minted in the same millisecond order by entropy, not by time.
 	mk := func(agent, status string, end runs.EndReason) string {
 		t.Helper()
 		run, err := s.Runs().Create(t.Context(), runs.CreateOpts{
-			WorkspaceID: wsID, JobID: "agents/" + agent, JobName: "agents/" + agent, Kind: runs.KindAgent, Harness: "fake",
+			WorkspaceID: wsID, JobID: indexedJobID(t, st, wsID, "agents/"+agent), JobName: "agents/" + agent, Kind: runs.KindAgent, Harness: "fake",
 		})
 		if err != nil {
 			t.Fatal(err)

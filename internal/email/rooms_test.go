@@ -68,8 +68,12 @@ func TestRoomsListAddresses(t *testing.T) {
 	if _, err := s.EnsureAddress(ctx, "ws_1", "ellis-labs"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO email_messages (id, workspace_id, agent, direction, disposition, created_at)
-		VALUES ('m1','ws_1','research','inbound','routed','2026-09-28T00:00:00Z')`); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at)
+		VALUES ('agt_0000000001','ws_1','agents/research','/x/AGENT.md','agent','2026-09-28T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO email_messages (id, workspace_id, agent_id, direction, disposition, created_at)
+		VALUES ('m1','ws_1','agt_0000000001','inbound','routed','2026-09-28T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	rooms, err := s.Rooms(ctx, "")

@@ -91,19 +91,19 @@ func TestTriggerDependents(t *testing.T) {
 		t.Fatal(err)
 	}
 	var n int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job IN ('off','paused') AND outcome != 'no_match'`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id IN (SELECT id FROM job_index WHERE name IN ('off','paused')) AND outcome != 'no_match'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
 		t.Fatalf("skipped triggers fired %d", n)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job='off'`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='off')`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
 		t.Fatalf("inactive job has %d outcomes", n)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job='triage'`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/triage')`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {

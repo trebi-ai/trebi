@@ -1,6 +1,8 @@
 package alerts
 
 import (
+	"fmt"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +35,7 @@ func TestAgentKitFindings(t *testing.T) {
 	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO job_index (workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
 		t.Fatal(err)
 	}
 	findings := agentKitFindings(st, launchView(t, st))
@@ -72,7 +74,7 @@ func TestAgentEnvsetFinding(t *testing.T) {
 	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO job_index (workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -253,7 +255,7 @@ func kitStore(t *testing.T, conns []string, kitConnectors string) *store.Store {
 	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO job_index (workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
 		t.Fatal(err)
 	}
 	return st
@@ -281,7 +283,13 @@ func writeJob(t *testing.T, st *store.Store, dir, name, kind, owner, md string) 
 	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO job_index (workspace_id,name,path,kind,active,harness,hash,updated_at,owner) VALUES ('ws',?,?,?,1,'claude','hash',datetime(),?)`, name, path, kind, owner); err != nil {
+	prefix := "jb_"
+	if kind == "agent" {
+		prefix = "agt_"
+	}
+	id := fmt.Sprintf("%s%010x", prefix, crc32.ChecksumIEEE([]byte(name)))
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at,owner_id)
+		VALUES (?,'ws',?,?,?,1,'claude','hash',datetime(),COALESCE((SELECT o.id FROM job_index o WHERE o.name = ?),''))`, id, name, path, kind, owner); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -106,7 +106,7 @@ func (s *Service) RenameAgent(ctx context.Context, workspaceID, from, to string)
 		restore()
 		return err
 	}
-	desired := desiredRows(jobs, nil)
+	desired := desiredRows(jobs, idsByName(existing))
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE agent_proposals SET status = 'stale', revision = revision + 1
 			WHERE agent_id = ? AND status = 'pending'`, agentID); err != nil {

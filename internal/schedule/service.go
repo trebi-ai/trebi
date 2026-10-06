@@ -134,36 +134,6 @@ func reportUnchanged(rows map[int]Row, spec string) bool {
 	return ok && old.Spec == spec
 }
 
-func (s *Service) upsertReport(ctx context.Context, workspaceID, jobID, spec string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		next := nextDue(spec, time.Time{}, "UTC")
-		var nextStr *string
-		if !next.IsZero() {
-			value := next.UTC().Format(time.RFC3339)
-			nextStr = &value
-		}
-		var oldSpec string
-		err := tx.QueryRow(`SELECT spec FROM schedules WHERE workspace_id=? AND job_id=? AND idx=-1`,
-			workspaceID, jobID).Scan(&oldSpec)
-		switch {
-		case err == nil:
-			if oldSpec == spec {
-				return nil
-			}
-			_, err = tx.Exec(`UPDATE schedules SET spec=?, next_due_at=?, last_fired_at=NULL, updated_at=?
-				WHERE workspace_id=? AND job_id=? AND idx=-1`, spec, nextStr, now, workspaceID, jobID)
-			return err
-		case errors.Is(err, sql.ErrNoRows):
-			_, err = tx.Exec(`INSERT INTO schedules (workspace_id, job_id, idx, spec, timezone, catch_up, next_due_at, updated_at)
-				VALUES (?,?,-1,?,'UTC',1,?,?)`, workspaceID, jobID, spec, nextStr, now)
-			return err
-		default:
-			return err
-		}
-	})
-}
-
 const scheduleCols = `workspace_id, job_id, COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = schedules.job_id), ''), idx, spec, timezone, catch_up, next_due_at, last_fired_at`
 
 func scanSchedule(rows *sql.Rows) (Row, error) {
@@ -392,4 +362,34 @@ func (s *Service) Delete(ctx context.Context, workspaceID, jobID string, idx int
 	_, err := s.st.DB().ExecContext(ctx,
 		`DELETE FROM schedules WHERE workspace_id=? AND job_id=? AND idx=?`, workspaceID, jobID, idx)
 	return err
+}
+
+func (s *Service) upsertReport(ctx context.Context, workspaceID, jobID, spec string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		next := nextDue(spec, time.Time{}, "UTC")
+		var nextStr *string
+		if !next.IsZero() {
+			value := next.UTC().Format(time.RFC3339)
+			nextStr = &value
+		}
+		var oldSpec string
+		err := tx.QueryRow(`SELECT spec FROM schedules WHERE workspace_id=? AND job_id=? AND idx=-1`,
+			workspaceID, jobID).Scan(&oldSpec)
+		switch {
+		case err == nil:
+			if oldSpec == spec {
+				return nil
+			}
+			_, err = tx.Exec(`UPDATE schedules SET spec=?, next_due_at=?, last_fired_at=NULL, updated_at=?
+				WHERE workspace_id=? AND job_id=? AND idx=-1`, spec, nextStr, now, workspaceID, jobID)
+			return err
+		case errors.Is(err, sql.ErrNoRows):
+			_, err = tx.Exec(`INSERT INTO schedules (workspace_id, job_id, idx, spec, timezone, catch_up, next_due_at, updated_at)
+				VALUES (?,?,-1,?,'UTC',1,?,?)`, workspaceID, jobID, spec, nextStr, now)
+			return err
+		default:
+			return err
+		}
+	})
 }

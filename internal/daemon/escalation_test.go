@@ -17,9 +17,11 @@ import (
 )
 
 type escalationFixture struct {
-	cp   *daemon.ControlPlane
-	st   *store.Store
-	wsID string
+	cp      *daemon.ControlPlane
+	st      *store.Store
+	wsID    string
+	jobID   string
+	ownerID string
 }
 
 func newEscalationFixture(t *testing.T) *escalationFixture {
@@ -59,21 +61,27 @@ func newEscalationFixture(t *testing.T) *escalationFixture {
 	if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
-	return &escalationFixture{cp: cp, st: st, wsID: ws.ID}
+	f := &escalationFixture{cp: cp, st: st, wsID: ws.ID}
+	for name, id := range map[string]*string{"agents/keeper/build": &f.jobID, "agents/keeper": &f.ownerID} {
+		if err := st.DB().QueryRow(`SELECT id FROM job_index WHERE workspace_id=? AND name=?`, ws.ID, name).Scan(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f
 }
 
 func insertRunFailure(t *testing.T, f *escalationFixture, id, kind string, seq int64) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := f.st.DB().Exec(`INSERT INTO runs
-		(id,workspace_id,job,kind,status,end_reason,trace_id,started_at,updated_at)
+		(id,workspace_id,job_id,kind,status,end_reason,trace_id,started_at,updated_at)
 		VALUES (?,?,?,?,?,?,?,?,?)`,
-		id, f.wsID, "agents/keeper/build", kind, "failed", "failed", ulid.Make().String(), now, now); err != nil {
+		id, f.wsID, f.jobID, kind, "failed", "failed", ulid.Make().String(), now, now); err != nil {
 		t.Fatal(err)
 	}
 	attrs := map[string]string{
-		"workspace": f.wsID, "job": "agents/keeper/build", "kind": kind,
-		"owner": "agents/keeper", "end_reason": "failed", "status": "failed",
+		"workspace": f.wsID, "job_id": f.jobID, "job_name": "agents/keeper/build", "kind": kind,
+		"owner_id": f.ownerID, "end_reason": "failed", "status": "failed",
 	}
 	raw, err := json.Marshal(attrs)
 	if err != nil {
@@ -116,7 +124,7 @@ func TestOwnedJobFailureEscalatesThenRaises(t *testing.T) {
 	var reason string
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		err := f.st.DB().QueryRowContext(ctx, `SELECT reason FROM runs WHERE job='agents/keeper' AND kind='agent'`).Scan(&reason)
+		err := f.st.DB().QueryRowContext(ctx, `SELECT reason FROM runs WHERE job_id=? AND kind='agent'`, f.ownerID).Scan(&reason)
 		if err == nil {
 			break
 		}

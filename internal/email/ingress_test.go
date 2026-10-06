@@ -258,6 +258,11 @@ func TestDeliverDropsDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The index holds the agent, so its mail rows carry an agent_id.
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at)
+		VALUES ('agt_0000000001','ws_1','agents/research','/x/AGENT.md','agent','2026-09-28T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
 	acts := &fakeActions{env: testRouteEnv()}
 	s.AttachIngress(NewIngress(s, connectors.New(st, nil, nil), acts, time.Minute, false))
 	msg := func(id, tag string) IngressMessage {

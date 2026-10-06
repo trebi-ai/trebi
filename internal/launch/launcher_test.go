@@ -39,8 +39,12 @@ func TestFreshNewRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	row, err := wss.JobByName(ctx, ws.ID, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
 	rs := runs.New(st, nil, nil)
-	prev, err := rs.Create(ctx, runs.CreateOpts{WorkspaceID: ws.ID, JobID: "x", JobName: "x", Kind: runs.KindJob, Harness: "fake", SessionID: "sess-1"})
+	prev, err := rs.Create(ctx, runs.CreateOpts{WorkspaceID: ws.ID, JobID: row.ID, JobName: "x", Kind: runs.KindJob, Harness: "fake", SessionID: "sess-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +60,9 @@ func TestFreshNewRun(t *testing.T) {
 	}
 	if run.ID == prev.ID || run.PreviousRunID != prev.ID || run.TurnCount != 1 || run.SessionID == "sess-1" {
 		t.Fatalf("fresh run %s previous %q turns %d session %q", run.ID, run.PreviousRunID, run.TurnCount, run.SessionID)
+	}
+	if run.JobID != row.ID {
+		t.Fatalf("fresh run job_id %q want %q", run.JobID, row.ID)
 	}
 	if old, _ := rs.Get(ctx, prev.ID); old.TurnCount != 1 || old.Status != runs.StatusExited {
 		t.Fatalf("old run turns %d status %s", old.TurnCount, old.Status)

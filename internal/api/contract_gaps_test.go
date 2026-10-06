@@ -24,9 +24,12 @@ import (
 func TestEventsJoinOutcomesFromQueue(t *testing.T) {
 	_, base, _ := startAPI(t)
 	client := &http.Client{Timeout: 5 * time.Second}
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "demo")
+	wsID := addWorkspace(t, base, wsDir, "ws1")
 
 	// rules/fire creates event + outcome + queue pending
-	payload := `{"connector":"src","workspace":"ws1","job":"demo","match":"true","event":{"n":1}}`
+	payload := `{"connector":"src","workspace":"` + wsID + `","job":"demo","match":"true","event":{"n":1}}`
 	req, _ := http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(payload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
@@ -580,6 +583,17 @@ func mustOpenStore(t *testing.T, path string) *store.Store {
 		t.Fatal(err)
 	}
 	return st
+}
+
+// indexedJobID returns the static ID of the live indexed job or agent name.
+func indexedJobID(t *testing.T, st *store.Store, wsID, name string) string {
+	t.Helper()
+	var id string
+	if err := st.DB().QueryRow(`SELECT id FROM job_index WHERE workspace_id=? AND name=? AND retired_at IS NULL`,
+		wsID, name).Scan(&id); err != nil {
+		t.Fatalf("job_index %s/%s: %v", wsID, name, err)
+	}
+	return id
 }
 
 func mustJSON(s string) string {

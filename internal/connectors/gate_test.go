@@ -110,16 +110,16 @@ func TestPipelineRoomScope(t *testing.T) {
 	if _, err := svc.InjectNative(ctx, "email", map[string]any{"n": 1}, connectors.NativeMeta{SourceID: "s1", Room: "r2"}); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job='scoped'`); n != 0 {
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='scoped')`); n != 0 {
 		t.Fatalf("room miss enqueued %d", n)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_outcomes WHERE job='scoped' AND outcome='no_match'`); n != 1 {
+	if n := count(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='scoped') AND outcome='no_match'`); n != 1 {
 		t.Fatalf("room miss no_match rows = %d", n)
 	}
 	if _, err := svc.InjectNative(ctx, "email", map[string]any{"n": 2}, connectors.NativeMeta{SourceID: "s2", Room: "r1"}); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job='scoped'`); n != 1 {
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='scoped')`); n != 1 {
 		t.Fatalf("room hit enqueued %d", n)
 	}
 }

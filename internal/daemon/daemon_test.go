@@ -153,7 +153,7 @@ func TestControlPlane_ScheduleFireDue(t *testing.T) {
 	}
 	// Force due now
 	past := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	res, err := st.DB().Exec(`UPDATE schedules SET next_due_at=? WHERE workspace_id=? AND job=?`, past, ws.ID, j.Name)
+	res, err := st.DB().Exec(`UPDATE schedules SET next_due_at=? WHERE workspace_id=? AND job_id=?`, past, ws.ID, j.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,11 +166,11 @@ func TestControlPlane_ScheduleFireDue(t *testing.T) {
 	cp.FireDue(ctx)
 
 	var n int
-	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job=? AND reason='schedule'`, j.Name).Scan(&n)
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job_id=? AND reason='schedule'`, j.ID).Scan(&n)
 	if n < 1 {
 		// one more tick path
 		cp.FireDue(ctx)
-		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job=? AND reason='schedule'`, j.Name).Scan(&n)
+		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job_id=? AND reason='schedule'`, j.ID).Scan(&n)
 	}
 	if n < 1 {
 		t.Fatal("expected at least one schedule-fired run")
@@ -219,19 +219,19 @@ func TestScheduleWhenGateSkips(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	if _, err := st.DB().Exec(`UPDATE schedules SET next_due_at=? WHERE workspace_id=? AND job=?`, past, ws.ID, j.Name); err != nil {
+	if _, err := st.DB().Exec(`UPDATE schedules SET next_due_at=? WHERE workspace_id=? AND job_id=?`, past, ws.ID, j.ID); err != nil {
 		t.Fatal(err)
 	}
 
 	cp.FireDue(ctx)
 
 	var n int
-	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job=?`, j.Name).Scan(&n)
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job_id=?`, j.ID).Scan(&n)
 	if n != 0 {
 		t.Fatalf("gated job launched %d run(s); want 0", n)
 	}
 	var nextDue string
-	if err := st.DB().QueryRow(`SELECT next_due_at FROM schedules WHERE workspace_id=? AND job=?`, ws.ID, j.Name).Scan(&nextDue); err != nil {
+	if err := st.DB().QueryRow(`SELECT next_due_at FROM schedules WHERE workspace_id=? AND job_id=?`, ws.ID, j.ID).Scan(&nextDue); err != nil {
 		t.Fatal(err)
 	}
 	nd, err := time.Parse(time.RFC3339, nextDue)
@@ -293,14 +293,14 @@ func TestScheduleFireDueAuthMissingCreatesFailedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	if _, err := st.DB().Exec(`UPDATE schedules SET next_due_at=? WHERE workspace_id=? AND job=?`, past, ws.ID, j.Name); err != nil {
+	if _, err := st.DB().Exec(`UPDATE schedules SET next_due_at=? WHERE workspace_id=? AND job_id=?`, past, ws.ID, j.ID); err != nil {
 		t.Fatal(err)
 	}
 
 	cp.FireDue(ctx)
 
 	var id, status, end, reason, lastFired, nextDue string
-	err = st.DB().QueryRow(`SELECT id, status, end_reason, reason FROM runs WHERE job=?`, j.Name).
+	err = st.DB().QueryRow(`SELECT id, status, end_reason, reason FROM runs WHERE job_id=?`, j.ID).
 		Scan(&id, &status, &end, &reason)
 	if err != nil {
 		t.Fatalf("expected a schedule run: %v", err)
@@ -336,7 +336,7 @@ func TestScheduleFireDueAuthMissingCreatesFailedRun(t *testing.T) {
 	if !strings.Contains(string(logb), "auth_missing") {
 		t.Fatalf("run log %q want auth_missing", logb)
 	}
-	if err := st.DB().QueryRow(`SELECT COALESCE(last_fired_at,''), next_due_at FROM schedules WHERE workspace_id=? AND job=?`, ws.ID, j.Name).
+	if err := st.DB().QueryRow(`SELECT COALESCE(last_fired_at,''), next_due_at FROM schedules WHERE workspace_id=? AND job_id=?`, ws.ID, j.ID).
 		Scan(&lastFired, &nextDue); err != nil {
 		t.Fatal(err)
 	}
@@ -521,14 +521,14 @@ func TestScheduleActionErrorOpensOneInboxItem(t *testing.T) {
 	}
 	for i := 0; i < 2; i++ {
 		past := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-		if _, err := st.DB().Exec(`UPDATE schedules SET next_due_at=? WHERE workspace_id=? AND job=?`, past, ws.ID, j.Name); err != nil {
+		if _, err := st.DB().Exec(`UPDATE schedules SET next_due_at=? WHERE workspace_id=? AND job_id=?`, past, ws.ID, j.ID); err != nil {
 			t.Fatal(err)
 		}
 		cp.FireDue(ctx)
 	}
 	var runsN, items int
-	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job=?`, j.Name).Scan(&runsN)
-	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE alert_kind='actions_invalid' AND job=?`, j.Name).Scan(&items)
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job_id=?`, j.ID).Scan(&runsN)
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE alert_kind='actions_invalid' AND job_id=?`, j.ID).Scan(&items)
 	if runsN != 0 {
 		t.Fatalf("runs=%d, want 0: an action error writes no failed run", runsN)
 	}

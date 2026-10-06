@@ -18,9 +18,9 @@ func insertAgentCaller(t *testing.T, st *store.Store, wsID, agent, token, status
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := st.DB().Exec(`INSERT INTO runs
-		(id,workspace_id,job,kind,status,trace_id,started_at,updated_at,actor_token_hash)
+		(id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at,actor_token_hash)
 		VALUES (?,?,?,?,?,?,?,?,?)`,
-		"run-"+agent+"-"+status, wsID, "agents/"+agent, "agent", status, "trace", now, now,
+		"run-"+agent+"-"+status, wsID, indexedJobID(t, st, wsID, "agents/"+agent), "agent", status, "trace", now, now,
 		runs.HashActorToken(token))
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestAgentEscalationRoutes(t *testing.T) {
 	}
 	var operator string
 	var channel string
-	if err := st.DB().QueryRow(`SELECT operator, origin_channel FROM conversations ORDER BY id DESC LIMIT 1`).Scan(&operator, &channel); err != nil {
+	if err := st.DB().QueryRow(`SELECT operator_id, origin_channel FROM conversations ORDER BY id DESC LIMIT 1`).Scan(&operator, &channel); err != nil {
 		t.Fatal(err)
 	}
 	if operator != "" || channel != "agent" {

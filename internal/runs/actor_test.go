@@ -19,8 +19,10 @@ func TestActorForTokenAndTerminalExpiry(t *testing.T) {
 	defer st.Close()
 	svc := runs.New(st, nil, nil)
 	const token = "0123456789abcdef0123456789abcdef"
+	const agentID = "agt_00000000c1"
+	seedIndex(t, st, agentID, "ws1", "agents/research", "agent", "")
 	run, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws1", JobID: "agents/research", JobName: "agents/research", Kind: "agent",
+		WorkspaceID: "ws1", JobID: agentID, JobName: "agents/research", Kind: "agent",
 		Harness: "claude", ActorToken: token,
 	})
 	if err != nil {
@@ -30,7 +32,7 @@ func TestActorForTokenAndTerminalExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if actor.RunID != run.ID || actor.Kind != "agent" || actor.Job != "agents/research" || actor.WorkspaceID != "ws1" {
+	if actor.RunID != run.ID || actor.Kind != "agent" || actor.Job != "agents/research" || actor.JobID != agentID || actor.WorkspaceID != "ws1" {
 		t.Fatalf("actor=%+v", actor)
 	}
 	svc.SetSessionState(ctx, run.ID, runs.SessionWaiting, "test")

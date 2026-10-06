@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,6 +145,13 @@ func TestConnectorDependents(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The room binding below names this agent.
+	if err := os.MkdirAll(filepath.Join(wsPath, "agents", "triage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsPath, "agents", "triage", "AGENT.md"), []byte("---\nharness: fake\n---\n\nTriage.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	wsID := addWorkspace(t, base, wsPath, "deps")
 	if code, out, _ := doJSON(t, "POST", base+"/v1/connectors/email/rooms/inbox/bind", map[string]any{"workspace": wsID, "operator": "agents/triage"}); code != 200 {
 		t.Fatalf("bind: %d %v", code, out)
@@ -166,7 +174,7 @@ func TestConnectorDependents(t *testing.T) {
 		t.Fatalf("rooms = %v", tr["rooms"])
 	}
 	b, _ := bindings[0].(map[string]any)
-	if b["workspace"] != wsID || b["operator"] != "agents/triage" || b["room"] != "inbox" || b["thread"] != "" || b["conversation_id"] == "" {
+	if b["workspace"] != wsID || !strings.HasPrefix(fmt.Sprint(b["operator_id"]), "agt_") || b["operator_name"] != "triage" || b["room"] != "inbox" || b["thread"] != "" || b["conversation_id"] == "" {
 		t.Fatalf("binding = %v", b)
 	}
 	if code, _, _ := doJSON(t, "GET", base+"/v1/connectors/nope/dependents", nil); code != 404 {
@@ -222,8 +230,8 @@ func TestRulesTestFollowUp(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := st.DB().Exec(`INSERT INTO event_queue (id, connector, workspace_id, job, kind, conversation_key, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, "q1", "discord", wsID, "watch", "job", "r1/e1", "pending", now, now); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO event_queue (id, connector, workspace_id, job_id, kind, conversation_key, status, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?)`, "q1", "discord", wsID, indexedJobID(t, st, wsID, "watch"), "job", "r1/e1", "pending", now, now); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()

@@ -250,6 +250,16 @@ func TestConnectorSlugRewrite(t *testing.T) {
 	if code, body := do("POST", "/v1/workspaces", map[string]string{"name": "rw", "path": wsPath}); code != http.StatusCreated && code != http.StatusOK {
 		t.Fatalf("workspace = %d %v", code, body)
 	}
+	// The index writes the job ID first; the rewrite keeps that line.
+	raw, err := os.ReadFile(jobPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idLine, rest, ok := strings.Cut(strings.TrimPrefix(string(raw), "---\n"), "\n")
+	if !strings.HasPrefix(string(raw), "---\nid: jb_") || !ok || "---\n"+rest != jobMD {
+		t.Fatalf("indexed job:\n%s", raw)
+	}
+	jobMD = string(raw)
 	def := inlineEntry("feed", map[string]any{"actions": map[string]any{"mcp": map[string]any{"command": "npx"}}})
 	if code, body := do("POST", "/v1/connectors", def); code != http.StatusCreated {
 		t.Fatalf("create = %d %v", code, body)
@@ -276,7 +286,7 @@ func TestConnectorSlugRewrite(t *testing.T) {
 	if files, _ := body["changed_files"].([]any); !slices.ContainsFunc(files, func(f any) bool { return f == jobPath }) {
 		t.Fatalf("changed_files = %v; want %s", body["changed_files"], jobPath)
 	}
-	want := strings.ReplaceAll(jobMD, "feed", "news")
+	want := "---\n" + idLine + "\n" + strings.ReplaceAll(rest, "feed", "news")
 	if got, _ := os.ReadFile(jobPath); string(got) != want {
 		t.Fatalf("job =\n%s\nwant\n%s", got, want)
 	}
@@ -399,8 +409,14 @@ func TestRulesFireConnection(t *testing.T) {
 		t.Fatalf("create = %d %v", code, row)
 	}
 	id := row["id"].(string)
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "j")
+	code, ws := do("POST", "/v1/workspaces", map[string]string{"name": "ws", "path": wsDir})
+	if code != http.StatusCreated {
+		t.Fatalf("workspace = %d %v", code, ws)
+	}
 	code, res := do("POST", "/v1/rules/fire", map[string]any{
-		"connector": "feed", "workspace": "ws", "job": "j", "match": "true", "event": map[string]any{"x": 1},
+		"connector": "feed", "workspace": ws["id"], "job": "j", "match": "true", "event": map[string]any{"x": 1},
 	})
 	if code != http.StatusOK || res["outcome"] != "queued" {
 		t.Fatalf("fire = %d %v", code, res)

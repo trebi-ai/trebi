@@ -220,7 +220,7 @@ func TestRulesTestAndQueueFire(t *testing.T) {
 		t.Fatalf("%v", res)
 	}
 
-	fire := `{"connector":"test","workspace":"ws","job":"j","match":"true","event":{"x":1}}`
+	fire := `{"connector":"test","workspace":"` + fireWorkspace(t, base) + `","job":"j","match":"true","event":{"x":1}}`
 	req, _ = http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(fire))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = client.Do(req)
@@ -535,8 +535,8 @@ func TestJobRunEndpointLaunchesFakeHarness(t *testing.T) {
 	if code != 201 {
 		t.Fatalf("status=%d %v", code, run)
 	}
-	if run["job"] != "demo" {
-		t.Fatalf("job=%v", run["job"])
+	if run["job_name"] != "demo" {
+		t.Fatalf("job_name=%v", run["job_name"])
 	}
 	if st, _ := run["status"].(string); st != "running" && st != "complete" {
 		t.Fatalf("status=%v: %v", st, run)
@@ -945,8 +945,8 @@ func TestCreateRunQueuesBehindLiveRun(t *testing.T) {
 	wsID := addWorkspace(t, base, wsDir, "busy-ws")
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job,kind,status,trace_id,started_at,updated_at)
-		VALUES ('live',?,'busy','job','running','trace',?,?)`, wsID, now, now); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at)
+		VALUES ('live',?,?,'job','running','trace',?,?)`, wsID, indexedJobID(t, st, wsID, "busy"), now, now); err != nil {
 		t.Fatal(err)
 	}
 	launch := map[string]any{"workspace": wsID, "job": "busy", "kind": "job", "reason": "manual", "harness": "fake"}

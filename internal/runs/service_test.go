@@ -488,8 +488,8 @@ func TestMarkOutcomeOverridesMachineStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if last["ws/j"] != runs.StatusComplete {
-		t.Fatalf("StatusByJob=%s want complete", last["ws/j"])
+	if last["j"] != runs.StatusComplete {
+		t.Fatalf("StatusByJob=%s want complete", last["j"])
 	}
 
 	tl, err := svc.Timeline(ctx, run.ID)
@@ -517,8 +517,8 @@ func TestMarkOutcomeOverridesMachineStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if last["ws/j"] != runs.StatusFailed {
-		t.Fatalf("StatusByJob after clear=%s want failed", last["ws/j"])
+	if last["j"] != runs.StatusFailed {
+		t.Fatalf("StatusByJob after clear=%s want failed", last["j"])
 	}
 	stats, err = svc.Stats(ctx, runs.StatsOpts{Range: "30d"})
 	if err != nil {
@@ -1133,7 +1133,10 @@ func TestTurnQueueIDUnique(t *testing.T) {
 func TestCostByTurnMonth(t *testing.T) {
 	t.Parallel()
 	svc, st, ctx := openTurnSvc(t)
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "agents/a/build", JobName: "agents/a/build", Harness: "claude"})
+	const agentID, jobID = "agt_00000000a1", "jb_00000000b1"
+	seedIndex(t, st, agentID, "ws", "agents/a", "agent", "")
+	seedIndex(t, st, jobID, "ws", "agents/a/build", "job", agentID)
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: jobID, JobName: "agents/a/build", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1149,7 +1152,7 @@ func TestCostByTurnMonth(t *testing.T) {
 	if _, err := st.DB().Exec(`UPDATE runs SET started_at=? WHERE id=?`, lastMonth, run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: "agents/a/build", JobName: "agents/a/build", Reason: runs.ReasonTrigger}); err != nil {
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: jobID, JobName: "agents/a/build", Reason: runs.ReasonTrigger}); err != nil {
 		t.Fatal(err)
 	}
 	usage = pricing.TokenUsage{Input: 1_000_000, Model: "default"}
@@ -1158,12 +1161,12 @@ func TestCostByTurnMonth(t *testing.T) {
 	}
 	want := pricing.TokenUsage{Input: 1_000_000, Model: "default"}
 	want.ApplyRates()
-	costs, err := svc.OwnerCosts(ctx, "ws", []string{"agents/a"})
+	costs, err := svc.OwnerCosts(ctx, "ws", []string{agentID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want.CostUSD <= 0 || costs["agents/a"] != want.CostUSD {
-		t.Fatalf("cost %v, want %v (turn 2 only)", costs["agents/a"], want.CostUSD)
+	if want.CostUSD <= 0 || costs[agentID] != want.CostUSD {
+		t.Fatalf("cost %v, want %v (turn 2 only)", costs[agentID], want.CostUSD)
 	}
 }
 
@@ -1198,6 +1201,15 @@ func TestTurnAfter(t *testing.T) {
 		if n, err := svc.TurnAfter(ctx, run.ID, c.reason, c.since); err != nil || n != c.want {
 			t.Fatalf("%s since %v: n %d err %v, want %d", c.reason, c.since, n, err, c.want)
 		}
+	}
+}
+
+// seedIndex adds a job_index row, so that the name and owner of id resolve.
+func seedIndex(t *testing.T, st *store.Store, id, ws, name, kind, ownerID string) {
+	t.Helper()
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, owner_id, updated_at) VALUES (?,?,?,?,?,?,?)`,
+		id, ws, name, "/"+name, kind, ownerID, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
 	}
 }
 
