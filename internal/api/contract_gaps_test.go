@@ -298,6 +298,21 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	if j.Session.IfRunning != "replace" {
 		t.Fatalf("session.if_running=%q", j.Session.IfRunning)
 	}
+	// The index diff emits one job.updated per change, keyed by the ID.
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	defer st.Close()
+	evs, err := st.ListBus(t.Context(), 0, []string{"job.updated"}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("job.updated events = %d, want 2 (PUT, PATCH)", len(evs))
+	}
+	for _, ev := range evs {
+		if !strings.HasPrefix(ev.ID, "jb_") {
+			t.Fatalf("job.updated entity id = %q, want the job ID", ev.ID)
+		}
+	}
 }
 
 // TestRetryPolicyByEndReason covers D7 dispatch.

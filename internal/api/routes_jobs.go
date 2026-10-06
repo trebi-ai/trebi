@@ -557,8 +557,9 @@ func (s *Server) patchIndexedMarkdown(w http.ResponseWriter, r *http.Request, ws
 	return info.Hash, true
 }
 
-// purgeFolder removes dir, rebuilds the index, emits extra then file.deleted.
-func (s *Server) purgeFolder(w http.ResponseWriter, r *http.Request, ws *workspaces.Workspace, dir string, extra ...store.BusEvent) (int, bool) {
+// purgeFolder removes dir, rebuilds the index, and emits file.deleted. The
+// index diff emits the job and agent events.
+func (s *Server) purgeFolder(w http.ResponseWriter, r *http.Request, ws *workspaces.Workspace, dir string) (int, bool) {
 	n, err := s.countFiles(r.Context(), dir)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -569,9 +570,6 @@ func (s *Server) purgeFolder(w http.ResponseWriter, r *http.Request, ws *workspa
 		return 0, false
 	}
 	_ = s.ws.RebuildIndex(r.Context(), ws)
-	for _, ev := range extra {
-		s.appendBus(r.Context(), ev)
-	}
 	folderRel, _ := workspaceRel(ws.Path, dir)
 	s.appendBus(r.Context(), store.BusEvent{
 		Topic: "file.deleted", Entity: "file", EntityID: ws.ID + ":" + folderRel, Action: "deleted",
@@ -766,10 +764,6 @@ func (s *Server) handleJobPut(w http.ResponseWriter, r *http.Request) {
 	// Frontmatter drives job_index; a full replace can change harness or active.
 	_ = s.ws.RebuildIndex(r.Context(), ws)
 	setETagHash(w, info.Hash)
-	s.appendBus(r.Context(), store.BusEvent{
-		Topic: "job.updated", Entity: "job", EntityID: name, Action: "updated",
-		Attrs: map[string]string{"workspace": row.WorkspaceID, "path": row.Path},
-	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": name, "path": row.Path, "hash": info.Hash,
 	})
@@ -798,10 +792,6 @@ func (s *Server) handleJobPatch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.appendBus(r.Context(), store.BusEvent{
-		Topic: "job.updated", Entity: "job", EntityID: name, Action: "updated",
-		Attrs: map[string]string{"workspace": row.WorkspaceID, "path": row.Path},
-	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": name, "patched": true, "hash": hash,
 	})
@@ -854,10 +844,7 @@ func (s *Server) purgeJob(w http.ResponseWriter, r *http.Request, name string, r
 		writeErr(w, http.StatusConflict, "conflict", msg)
 		return
 	}
-	n, ok := s.purgeFolder(w, r, ws, jobDir, store.BusEvent{
-		Topic: "job.deleted", Entity: "job", EntityID: name, Action: "deleted",
-		Attrs: map[string]string{"workspace": row.WorkspaceID, "path": row.Path},
-	})
+	n, ok := s.purgeFolder(w, r, ws, jobDir)
 	if !ok {
 		return
 	}
