@@ -9,18 +9,13 @@ import (
 	"testing"
 )
 
-// filledExample is the plan's filled file, byte for byte.
-const filledExample = `<!-- trebi memory v1. Keep these four sections in this order. Do not add other "## " headings. -->
+// filledExample is a filled v2 file, byte for byte.
+const filledExample = `<!-- trebi memory v2. Keep these three sections in this order. Do not add other "## " headings. -->
 # Memory
 
 ## Context
 Daily monitor. Sends one email when a topic's R value crosses 0.8.
 Topics come from ` + "`topics.yaml`" + ` next to this file.
-
-## State
-- topic A: ok (R 0.41)
-- topic B: warn since 2026-09-13, alerted once
-- next: re-check topic B tomorrow, no new alert unless R > 0.9
 
 ## Lessons
 - [2026-08-02 09:00] Skip duplicate alerts within 24h.
@@ -30,6 +25,24 @@ Topics come from ` + "`topics.yaml`" + ` next to this file.
 - [2026-09-13 08:00] topic B crossed 0.8 (R 0.83). Alerted.
 - [2026-09-14 08:00] topic A 0.41, topic B 0.85. No alert.
   Two topics scanned in 4s.
+`
+
+// v1Example is a v1 file with the deprecated State section.
+const v1Example = `<!-- trebi memory v1. Keep these four sections in this order. Do not add other "## " headings. -->
+# Memory
+
+## Context
+Daily monitor.
+
+## State
+- topic A: ok (R 0.41)
+- next: re-check topic B tomorrow
+
+## Lessons
+- [2026-09-01] The API rate limits at 60 req/min.
+
+## Log
+- [2026-09-14 08:00] topic A 0.41. No alert.
 `
 
 // head is the marker + H1 prefix shared by hand-built inputs.
@@ -44,7 +57,7 @@ func TestParseSkeleton(t *testing.T) {
 	if doc.Legacy {
 		t.Fatal("skeleton parsed as legacy")
 	}
-	if doc.Context != "" || doc.State != "" || len(doc.Lessons) != 0 || len(doc.Log) != 0 {
+	if doc.Context != "" || doc.DeprecatedState != "" || len(doc.Lessons) != 0 || len(doc.Log) != 0 {
 		t.Fatalf("skeleton not empty: %+v", doc)
 	}
 }
@@ -59,20 +72,16 @@ func TestParseFilledExample(t *testing.T) {
 	if doc.Context != wantCtx {
 		t.Fatalf("Context = %q", doc.Context)
 	}
-	wantState := "- topic A: ok (R 0.41)\n- topic B: warn since 2026-09-13, alerted once\n- next: re-check topic B tomorrow, no new alert unless R > 0.9"
-	if doc.State != wantState {
-		t.Fatalf("State = %q", doc.State)
-	}
 	if len(doc.Lessons) != 2 || len(doc.Log) != 2 {
 		t.Fatalf("counts: lessons %d log %d", len(doc.Lessons), len(doc.Log))
 	}
-	if doc.Lessons[0].At != "2026-08-02 09:00" || doc.Lessons[0].Line != 14 {
+	if doc.Lessons[0].At != "2026-08-02 09:00" || doc.Lessons[0].Line != 9 {
 		t.Fatalf("lesson[0] = %+v", doc.Lessons[0])
 	}
-	if doc.Lessons[1].At != "2026-09-01" || doc.Lessons[1].Line != 15 {
+	if doc.Lessons[1].At != "2026-09-01" || doc.Lessons[1].Line != 10 {
 		t.Fatalf("lesson[1] = %+v", doc.Lessons[1])
 	}
-	if doc.Log[0].At != "2026-09-13 08:00" || doc.Log[0].Line != 18 {
+	if doc.Log[0].At != "2026-09-13 08:00" || doc.Log[0].Line != 13 {
 		t.Fatalf("log[0] = %+v", doc.Log[0])
 	}
 	if doc.Log[1].Text != "topic A 0.41, topic B 0.85. No alert.\nTwo topics scanned in 4s." {
@@ -121,10 +130,11 @@ func TestErrorCodes(t *testing.T) {
 		{"missing_section", markerLine + "\n## Context\n## Lessons\n", "missing_section", 3},
 		{"unknown_section", head + "## Context\n\n## Notes\nmore\n", "unknown_section", 5},
 		{"duplicate_section", head + "## Context\n\n## Log\n- [2026-09-01] a\n\n## Log\n- [2026-09-02] b\n", "duplicate_section", 8},
-		{"section_order", markerLine + "\n## Context\n\n## Log\n\n## State\n\n## Lessons\n", "section_order", 4},
-		{"bad_entry", head + "## Context\n\n## State\n\n## Lessons\n\n## Log\nplain text\n", "bad_entry", 10},
-		{"empty_entry", head + "## Context\n\n## State\n\n## Lessons\n\n## Log\n- [2026-09-01] \n", "empty_entry", 10},
-		{"continuation_no_entry", head + "## Context\n\n## State\n\n## Lessons\n\n## Log\n  orphan\n", "bad_entry", 10},
+		{"section_order", markerLine + "\n## Context\n\n## Log\n\n## Lessons\n", "section_order", 4},
+		{"bad_entry", head + "## Context\n\n## Lessons\n\n## Log\nplain text\n", "bad_entry", 8},
+		{"empty_entry", head + "## Context\n\n## Lessons\n\n## Log\n- [2026-09-01] \n", "empty_entry", 8},
+		{"continuation_no_entry", head + "## Context\n\n## Lessons\n\n## Log\n  orphan\n", "bad_entry", 8},
+		{"state_deprecated", head + "## Context\n\n## State\nx\n\n## Lessons\n\n## Log\n", "state_deprecated", 5},
 	}
 	for _, tc := range cases {
 		_, issues := Parse([]byte(tc.in))
@@ -137,18 +147,18 @@ func TestErrorCodes(t *testing.T) {
 
 func TestVerbatimIssueMessages(t *testing.T) {
 	t.Parallel()
-	// Plan example position: the bad Log line lands on line 14.
-	in := markerLine + "\n# Memory\n\n## Context\nc\n\n## State\ns\n\n## Lessons\n- [2026-09-01] l\n\n## Log\nplain text\n"
+	// The bad Log line lands on line 11.
+	in := markerLine + "\n# Memory\n\n## Context\nc\n\n## Lessons\n- [2026-09-01] l\n\n## Log\nplain text\n"
 	_, issues := Parse([]byte(in))
 	got := FormatIssues("MEMORY.md", issues)
-	want := `MEMORY.md:14: log entry must start with "- [YYYY-MM-DD HH:MM] " or "- [YYYY-MM-DD] "`
+	want := `MEMORY.md:11: log entry must start with "- [YYYY-MM-DD HH:MM] " or "- [YYYY-MM-DD] "`
 	if len(got) == 0 || got[0] != want {
 		t.Fatalf("bad_entry message = %q", got)
 	}
 
-	_, issues = Parse([]byte(markerLine + "\n## Context\n## Lessons\n"))
+	_, issues = Parse([]byte(markerLine + "\n## Context\n## Log\n"))
 	iss := issueByCode(t, issues, "missing_section")
-	if iss.Msg != `missing section "## State" (sections in order: Context, State, Lessons, Log)` || iss.Line != 3 {
+	if iss.Msg != `missing section "## Lessons" (sections in order: Context, Lessons, Log)` || iss.Line != 3 {
 		t.Fatalf("missing_section = %+v", iss)
 	}
 
@@ -159,7 +169,7 @@ func TestVerbatimIssueMessages(t *testing.T) {
 	}
 
 	unchanged := FormatIssues("MEMORY.md", []Issue{Unchanged()})
-	if unchanged[0] != "MEMORY.md: unchanged this run. Update State, and Log if anything happened." {
+	if unchanged[0] != "MEMORY.md: unchanged this run. Add a Log entry for this run." {
 		t.Fatalf("unchanged = %q", unchanged[0])
 	}
 }
@@ -169,19 +179,14 @@ func TestValidateCaps(t *testing.T) {
 	if issues := Validate([]byte(filledExample), Options{MaxLogs: 0}); len(issues) != 0 {
 		t.Fatalf("max_logs 0 reported cap: %v", issues)
 	}
-	issues := Validate([]byte(filledExample), Options{MaxBytes: 10})
-	wantMsg := fmt.Sprintf("file is %d bytes, cap is 10.", len(filledExample))
-	if issueByCode(t, issues, "too_large").Msg != wantMsg {
-		t.Fatalf("too_large message = %v", issues)
-	}
 	// Legacy input is never valid.
-	issues = Validate([]byte("# Memory\n\n[2026-09-01] x\n"), Options{})
+	issues := Validate([]byte("# Memory\n\n[2026-09-01] x\n"), Options{})
 	issueByCode(t, issues, "no_marker")
 }
 
 func TestCommentsAndH3(t *testing.T) {
 	t.Parallel()
-	in := head + "<!-- a comment -->\n\n## Context\n### Subhead\nText.\n<!-- inline note -->\n\n## State\n\n## Lessons\n<!-- wait -->\n- [2026-09-01] lesson\n\n## Log\n- [2026-09-02] log\n<!-- trailing -->\n"
+	in := head + "<!-- a comment -->\n\n## Context\n### Subhead\nText.\n<!-- inline note -->\n\n## Lessons\n<!-- wait -->\n- [2026-09-01] lesson\n\n## Log\n- [2026-09-02] log\n<!-- trailing -->\n"
 	doc, issues := Parse([]byte(in))
 	if len(issues) != 0 {
 		t.Fatalf("issues: %v", issues)
@@ -198,7 +203,7 @@ func TestFencedHeadingStillError(t *testing.T) {
 	t.Parallel()
 	// Documented limit: the parser is line-based, so "## " inside a fence
 	// in Context is still a section heading.
-	in := head + "## Context\n```\n## not a section\n```\n\n## State\n\n## Lessons\n\n## Log\n"
+	in := head + "## Context\n```\n## not a section\n```\n\n## Lessons\n\n## Log\n"
 	_, issues := Parse([]byte(in))
 	if issueByCode(t, issues, "unknown_section").Line != 5 {
 		t.Fatalf("issues: %v", issues)
@@ -260,8 +265,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 	}
 	// Trailing whitespace inside Context survives the round trip. Empty
 	// sections re-emit their comments, so the input carries them.
-	in := markerLine + "\n# Memory\n\n## Context\nline one  \nline two\n\n## State\n" +
-		sectionComments["State"] + "\n\n## Lessons\n" + sectionComments["Lessons"] +
+	in := markerLine + "\n# Memory\n\n## Context\nline one  \nline two\n\n## Lessons\n" + sectionComments["Lessons"] +
 		"\n\n## Log\n" + sectionComments["Log"] + "\n"
 	doc, _ := Parse([]byte(in))
 	if doc.Context != "line one  \nline two" {
@@ -316,8 +320,8 @@ func TestRender(t *testing.T) {
 	if !strings.HasPrefix(out, "## Context\nDaily monitor.") {
 		t.Fatalf("prefix:\n%s", out)
 	}
-	if !strings.Contains(out, "## State\n- topic A: ok (R 0.41)") {
-		t.Fatalf("state missing:\n%s", out)
+	if strings.Contains(out, "## State") {
+		t.Fatalf("v2 render has State:\n%s", out)
 	}
 	// Both lessons render; InjectLogs does not cap Lessons.
 	if !strings.Contains(out, "[2026-08-02 09:00]") || !strings.Contains(out, "[2026-09-01]") {
@@ -337,21 +341,146 @@ func TestRender(t *testing.T) {
 	}
 	// Empty doc renders placeholders.
 	empty := Render(&Doc{}, Options{InjectLogs: 20})
-	if strings.Count(empty, "(empty)") != 4 {
+	if strings.Count(empty, "(empty)") != 3 {
 		t.Fatalf("empty render:\n%s", empty)
 	}
 }
 
 func TestProtocol(t *testing.T) {
 	t.Parallel()
-	if p := Protocol(Options{MaxLogs: 100}); !strings.Contains(p, "Keep Log under 100 entries; prune the oldest.") {
+	if p := Protocol(Options{MaxLogs: 100}, ProtocolInfo{}); !strings.Contains(p, "Keep Log under 100 entries; prune the oldest.") {
 		t.Fatalf("capped protocol: %q", p)
 	}
-	if p := Protocol(Options{}); !strings.Contains(p, "Log has no entry cap.") {
-		t.Fatalf("uncapped protocol: %q", p)
+	base := Protocol(Options{}, ProtocolInfo{})
+	for _, want := range []string{
+		"Log has no entry cap.",
+		"Keep its three sections in order: Context, Lessons, Log.",
+		"End each run with a Log entry that starts with `Next:`.",
+		"Keep records in `trebi state`, not in memory.",
+		"Update the file before you print the completion line.",
+	} {
+		if !strings.Contains(base, want) {
+			t.Fatalf("protocol lacks %q: %q", want, base)
+		}
 	}
-	if !strings.Contains(Protocol(Options{}), "Update the file before you print the completion line.") {
-		t.Fatal("protocol lacks the completion-line instruction")
+	if strings.Contains(base, "deprecated") || strings.Contains(base, "Trim it") {
+		t.Fatalf("plain protocol has a notice: %q", base)
+	}
+	cases := []struct {
+		name string
+		opt  Options
+		info ProtocolInfo
+		want []string
+		not  []string
+	}{
+		{"state", Options{}, ProtocolInfo{HasState: true}, []string{"This file has a deprecated State section. Move it this run."}, []string{"Trim it"}},
+		{"over cap", Options{MaxBytes: 16384}, ProtocolInfo{PromptBytes: 41 * 1024}, []string{"Memory is 41 KB in the prompt; the cap is 16 KB. Trim it this run."}, []string{"deprecated"}},
+		{"under cap", Options{MaxBytes: 16384}, ProtocolInfo{PromptBytes: 100}, nil, []string{"Trim it"}},
+		{"cap off", Options{}, ProtocolInfo{PromptBytes: 1 << 20}, nil, []string{"Trim it"}},
+	}
+	for _, tc := range cases {
+		p := Protocol(tc.opt, tc.info)
+		for _, w := range tc.want {
+			if !strings.Contains(p, w) {
+				t.Errorf("%s: lacks %q: %q", tc.name, w, p)
+			}
+		}
+		for _, n := range tc.not {
+			if strings.Contains(p, n) {
+				t.Errorf("%s: has %q: %q", tc.name, n, p)
+			}
+		}
+	}
+	doc, _ := Parse([]byte(v1Example))
+	opt := Options{InjectLogs: 20}
+	if got := NewProtocolInfo(doc, opt); got.PromptBytes != len(Render(doc, opt)) || !got.HasState {
+		t.Fatalf("NewProtocolInfo = %+v", got)
+	}
+}
+
+func TestDeprecatedState(t *testing.T) {
+	t.Parallel()
+	doc, issues := Parse([]byte(v1Example))
+	if len(issues) != 1 || issues[0].Code != "state_deprecated" || issues[0].Line != 7 {
+		t.Fatalf("issues = %v", issues)
+	}
+	if !strings.Contains(issues[0].Msg, "`trebi state`") || !strings.Contains(issues[0].Msg, `"Next:"`) {
+		t.Fatalf("message = %q", issues[0].Msg)
+	}
+	if doc.DeprecatedState != "- topic A: ok (R 0.41)\n- next: re-check topic B tomorrow" {
+		t.Fatalf("DeprecatedState = %q", doc.DeprecatedState)
+	}
+	// A structured edit keeps the State text until the session moves it.
+	doc.AddLog("2026-09-15 08:00", "Next: check topic B.")
+	again, issues := Parse(doc.Marshal())
+	if again.DeprecatedState != doc.DeprecatedState || len(again.Log) != 2 {
+		t.Fatalf("round trip lost data: %+v", again)
+	}
+	issueByCode(t, issues, "state_deprecated")
+	// Render shows the block that the session must move.
+	out := Render(doc, Options{InjectLogs: 20})
+	if !strings.Contains(out, "## State (deprecated, move it)\n- topic A: ok (R 0.41)") {
+		t.Fatalf("render:\n%s", out)
+	}
+	// A blank State is dropped on the next write.
+	blank, _ := Parse([]byte(head + "## Context\n\n## State\n\n## Lessons\n\n## Log\n"))
+	if blank.DeprecatedState != "" || strings.Contains(string(blank.Marshal()), "## State") {
+		t.Fatalf("blank State kept: %q", blank.Marshal())
+	}
+}
+
+func TestV1MarkerPasses(t *testing.T) {
+	t.Parallel()
+	v1 := strings.Replace(filledExample, markerLine,
+		`<!-- trebi memory v1. Keep these four sections in this order. Do not add other "## " headings. -->`, 1)
+	if issues := Validate([]byte(v1), Options{}); len(issues) != 0 {
+		t.Fatalf("v1 marker: %v", issues)
+	}
+	doc, _ := Parse([]byte(v1))
+	if !strings.HasPrefix(string(doc.Marshal()), markerLine) {
+		t.Fatal("Marshal does not write the v2 marker")
+	}
+}
+
+func TestPromptSizeCap(t *testing.T) {
+	t.Parallel()
+	doc := &Doc{Context: strings.Repeat("c", 2000), DeprecatedState: strings.Repeat("s", 3000)}
+	for i := range 100 {
+		doc.AddLog(fmt.Sprintf("2026-09-%02d 08:%02d", 1+i/60, i%60), strings.Repeat("l", 200))
+	}
+	doc.AddLesson("2026-09-01", strings.Repeat("x", 1000))
+	data := doc.Marshal()
+	opt := Options{InjectLogs: 20, MaxBytes: 1024}
+	iss := issueByCode(t, Validate(data, opt), "too_large")
+	parsed, _ := Parse(data)
+	total := len(Render(parsed, opt))
+	if total > len(data)/2 {
+		t.Fatalf("render measured the whole Log: %d of %d", total, len(data))
+	}
+	want := fmt.Sprintf("memory is %d KB in the prompt (Context 2 KB, State 3 KB, Lessons 1 KB, Log 5 KB); the cap is 1 KB. "+
+		"Trim it in this order: 1. Log: remove the oldest entries. "+
+		"2. Lessons: merge duplicates, make each lesson one short rule, remove lessons that Context or the job file now covers. "+
+		"3. Context: move instructions to the job file. Move records to `trebi state`.", (total+1023)/1024)
+	if iss.Msg != want {
+		t.Fatalf("too_large:\n%s\nwant:\n%s", iss.Msg, want)
+	}
+	// Twenty Log entries in the prompt fit a cap that the whole file does not.
+	opt.MaxBytes = total
+	if issues := Validate(data, opt); hasCode(issues, "too_large") {
+		t.Fatalf("cap at render size failed: %v", issues)
+	}
+	if len(data) <= total {
+		t.Fatal("file is not larger than the render")
+	}
+	opt.MaxBytes = 0
+	if hasCode(Validate(data, opt), "too_large") {
+		t.Fatal("max_bytes 0 reported too_large")
+	}
+	// No State: the message has no State part.
+	doc.DeprecatedState = ""
+	iss = issueByCode(t, Validate(doc.Marshal(), Options{InjectLogs: 20, MaxBytes: 1024}), "too_large")
+	if strings.Contains(iss.Msg, "State") {
+		t.Fatalf("State in message: %q", iss.Msg)
 	}
 }
 
@@ -388,4 +517,13 @@ func issueByCode(t *testing.T, issues []Issue, code string) Issue {
 	}
 	t.Fatalf("issue %q not found in %v", code, issues)
 	return Issue{}
+}
+
+func hasCode(issues []Issue, code string) bool {
+	for _, iss := range issues {
+		if iss.Code == code {
+			return true
+		}
+	}
+	return false
 }

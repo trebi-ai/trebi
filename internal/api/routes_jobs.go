@@ -972,8 +972,6 @@ func (s *Server) handleJobsSubtree(w http.ResponseWriter, r *http.Request) {
 		s.handleMemoryMigrate(w, r, memoryJob)
 	case "PUT /memory/context":
 		s.handleMemorySectionPut(w, r, memoryJob, "context")
-	case "PUT /memory/state":
-		s.handleMemorySectionPut(w, r, memoryJob, "state")
 	case "POST /memory/lessons":
 		s.handleMemoryEntryPost(w, r, memoryJob, "lessons")
 	case "POST /memory/log":

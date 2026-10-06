@@ -9,10 +9,8 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   sleep 1
 done
 trebi alerts --json | jq -e '[.alerts[] | select(.topic == "alert.raised" and .attrs.kind == "memory_invalid")] | length >= 1'
-tmp=$(mktemp)
-printf 'One fake run; no digest changes.' > "$tmp"
-trebi job memory set-state --body "$tmp" digest
 trebi job memory log add --text "fake run ended memory_invalid; memory repaired" digest
-trebi job memory show --json digest | jq -e '(.doc.log | length >= 1) and (.doc.state | length > 0)'
+trebi job memory log add --text "Next: run the digest again and check the memory gate." digest
+trebi job memory show --json digest | jq -e '(.doc.log | length >= 2) and any(.doc.log[]; .text | startswith("Next:"))'
 trebi job memory validate digest --json | jq -e '.valid == true and (.issues | length == 0)'
 ```

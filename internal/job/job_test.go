@@ -348,21 +348,23 @@ func TestParseMemoryFrontmatter(t *testing.T) {
 		maxLogs *int
 		require *bool
 		inject  *int
+		bytes   *int
 	}{
-		{"true", "/ws/a/JOB.md", "memory: true", true, nil, nil, nil},
-		{"false", "/ws/a/JOB.md", "memory: false", false, nil, nil, nil},
-		{"absent job", "/ws/a/JOB.md", "", false, nil, nil, nil},
-		{"legacy string", "/ws/a/JOB.md", "memory: ledger", true, nil, nil, nil},
-		{"empty string", "/ws/a/JOB.md", `memory: ""`, false, nil, nil, nil},
+		{"true", "/ws/a/JOB.md", "memory: true", true, nil, nil, nil, nil},
+		{"false", "/ws/a/JOB.md", "memory: false", false, nil, nil, nil, nil},
+		{"absent job", "/ws/a/JOB.md", "", false, nil, nil, nil, nil},
+		{"legacy string", "/ws/a/JOB.md", "memory: ledger", true, nil, nil, nil, nil},
+		{"empty string", "/ws/a/JOB.md", `memory: ""`, false, nil, nil, nil, nil},
 		{
 			"object", "/ws/a/JOB.md",
-			"memory:\n  max_logs: 60\n  require_update: false\n  inject_logs: 30",
-			true, ptrInt(60), ptrBool(false), ptrInt(30),
+			"memory:\n  max_logs: 60\n  require_update: false\n  inject_logs: 30\n  max_bytes: 4096",
+			true, ptrInt(60), ptrBool(false), ptrInt(30), ptrInt(4096),
 		},
-		{"object empty", "/ws/a/JOB.md", "memory: {}", true, nil, nil, nil},
-		{"agent default", "/ws/agents/bot/AGENT.md", "", true, nil, nil, nil},
-		{"agent false", "/ws/agents/bot/AGENT.md", "memory: false", false, nil, nil, nil},
-		{"agent object", "/ws/agents/bot/AGENT.md", "memory:\n  max_logs: 5", true, ptrInt(5), nil, nil},
+		{"object empty", "/ws/a/JOB.md", "memory: {}", true, nil, nil, nil, nil},
+		{"max_bytes off", "/ws/a/JOB.md", "memory:\n  max_bytes: 0", true, nil, nil, nil, ptrInt(0)},
+		{"agent default", "/ws/agents/bot/AGENT.md", "", true, nil, nil, nil, nil},
+		{"agent false", "/ws/agents/bot/AGENT.md", "memory: false", false, nil, nil, nil, nil},
+		{"agent object", "/ws/agents/bot/AGENT.md", "memory:\n  max_logs: 5", true, ptrInt(5), nil, nil, nil},
 	}
 	for _, tc := range cases {
 		doc := "---\n" + tc.fm + "\n---\nbody\n"
@@ -382,19 +384,23 @@ func TestParseMemoryFrontmatter(t *testing.T) {
 		if !ptrEqInt(j.MemoryOpts.InjectLogs, tc.inject) {
 			t.Errorf("%s: inject_logs = %v, want %v", tc.name, j.MemoryOpts.InjectLogs, tc.inject)
 		}
+		if !ptrEqInt(j.MemoryOpts.MaxBytes, tc.bytes) {
+			t.Errorf("%s: max_bytes = %v, want %v", tc.name, j.MemoryOpts.MaxBytes, tc.bytes)
+		}
 	}
 }
 
 func TestParseMemoryErrors(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"unknown key":       "memory:\n  cap: 5",
-		"max_logs string":   "memory:\n  max_logs: many",
-		"inject float":      "memory:\n  inject_logs: 1.5",
-		"require as int":    "memory:\n  require_update: 1",
-		"memory as list":    "memory: [1, 2]",
-		"memory as int":     "memory: 3",
-		"require as string": "memory:\n  require_update: yes!",
+		"unknown key":        "memory:\n  cap: 5",
+		"max_logs string":    "memory:\n  max_logs: many",
+		"inject float":       "memory:\n  inject_logs: 1.5",
+		"max_bytes negative": "memory:\n  max_bytes: -1",
+		"require as int":     "memory:\n  require_update: 1",
+		"memory as list":     "memory: [1, 2]",
+		"memory as int":      "memory: 3",
+		"require as string":  "memory:\n  require_update: yes!",
 	}
 	for name, fm := range cases {
 		doc := "---\n" + fm + "\n---\nbody\n"
@@ -411,18 +417,21 @@ func TestParseMemoryErrors(t *testing.T) {
 
 func TestMemoryConfigResolve(t *testing.T) {
 	t.Parallel()
-	def := config.MemoryDefaults{MaxLogs: 100, RequireUpdate: true, InjectLogs: 20}
+	def := config.MemoryDefaults{MaxLogs: 100, RequireUpdate: true, InjectLogs: 20, MaxBytes: 16384}
 
 	// Nil pointers take config defaults.
 	opt := job.MemoryConfig{}.Resolve(def)
-	if opt.MaxLogs != 100 || !opt.RequireUpdate || opt.InjectLogs != 20 {
+	if opt.MaxLogs != 100 || !opt.RequireUpdate || opt.InjectLogs != 20 || opt.MaxBytes != 16384 {
 		t.Fatalf("defaults not filled: %+v", opt)
+	}
+	if got := (job.MemoryConfig{}).Resolve(config.DefaultMemory()); got.MaxBytes != 16384 {
+		t.Fatalf("built-in max_bytes = %d", got.MaxBytes)
 	}
 
 	// Explicit values win, including zero (no cap) and false.
-	zero, noUpdate, none := 0, false, 0
-	opt = job.MemoryConfig{MaxLogs: &zero, RequireUpdate: &noUpdate, InjectLogs: &none}.Resolve(def)
-	if opt.MaxLogs != 0 || opt.RequireUpdate || opt.InjectLogs != 0 {
+	zero, noUpdate, none, off := 0, false, 0, 0
+	opt = job.MemoryConfig{MaxLogs: &zero, RequireUpdate: &noUpdate, InjectLogs: &none, MaxBytes: &off}.Resolve(def)
+	if opt.MaxLogs != 0 || opt.RequireUpdate || opt.InjectLogs != 0 || opt.MaxBytes != 0 {
 		t.Fatalf("explicit zeros not kept: %+v", opt)
 	}
 }

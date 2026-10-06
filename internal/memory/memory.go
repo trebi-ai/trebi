@@ -1,6 +1,7 @@
 // Package memory parses, validates, and renders the structured MEMORY.md
-// file (v1): four fixed H2 sections (Context, State, Lessons, Log) with
-// stamped bullet entries in Lessons and Log. The parser is line-based and
+// file (v2): three fixed H2 sections (Context, Lessons, Log) with stamped
+// bullet entries in Lessons and Log. A v1 State section is deprecated: the
+// parser keeps its text and reports it. The parser is line-based and
 // shape-only; it never rewrites the model's entries.
 package memory
 
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,7 +21,7 @@ type Options struct {
 	MaxLogs       int  `json:"max_logs"`       // 0 = no entry cap
 	RequireUpdate bool `json:"require_update"` // file must change each run
 	InjectLogs    int  `json:"inject_logs"`    // Log entries in the launch prompt; 0 = none
-	MaxBytes      int  `json:"max_bytes"`      // files cap for the too_large check; 0 = no byte check
+	MaxBytes      int  `json:"max_bytes"`      // cap on len(Render) for too_large; 0 = no cap
 }
 
 // Entry is one stamped bullet in Lessons or Log.
@@ -32,11 +34,11 @@ type Entry struct {
 
 // Doc is the parsed memory file.
 type Doc struct {
-	Context string  `json:"context"`
-	State   string  `json:"state"`
-	Lessons []Entry `json:"lessons"`
-	Log     []Entry `json:"log"`
-	Legacy  bool    `json:"-"` // parsed from a B22 ledger file
+	Context         string  `json:"context"`
+	Lessons         []Entry `json:"lessons"`
+	Log             []Entry `json:"log"`
+	DeprecatedState string  `json:"deprecated_state,omitempty"` // v1 State body, kept until the session moves it
+	Legacy          bool    `json:"-"`                          // parsed from a B22 ledger file
 }
 
 // Issue is one validation finding. Msg carries no file or line prefix;
@@ -48,21 +50,22 @@ type Issue struct {
 }
 
 const (
-	markerLine   = `<!-- trebi memory v1. Keep these four sections in this order. Do not add other "## " headings. -->`
-	markerPrefix = "<!-- trebi memory v1"
-	sectionsHint = "(sections in order: Context, State, Lessons, Log)"
+	markerLine   = `<!-- trebi memory v2. Keep these three sections in this order. Do not add other "## " headings. -->`
+	markerPrefix = "<!-- trebi memory v"
+	markerMsg    = `missing marker "<!-- trebi memory v2" on line 1`
+	sectionsHint = "(sections in order: Context, Lessons, Log)"
 	entryShape   = `"- [YYYY-MM-DD HH:MM] " or "- [YYYY-MM-DD] "`
+	stateTitle   = "State" // deprecated v1 section
 )
 
 // sectionNames is the fixed H2 order.
-var sectionNames = []string{"Context", "State", "Lessons", "Log"} //nolint:gochecknoglobals // static data table, never mutated
+var sectionNames = []string{"Context", "Lessons", "Log"} //nolint:gochecknoglobals // static data table, never mutated
 
 // sectionComments are re-emitted by Marshal when a section is empty.
 var sectionComments = map[string]string{ //nolint:gochecknoglobals // static data table, never mutated
 	"Context": "<!-- Durable facts about this job: what it does, where things are, how they work. Free form. Rewrite when facts change. -->",
-	"State":   "<!-- Current situation, open issues, next steps. Free form. Rewrite each run. -->",
 	"Lessons": "<!-- One bullet per lesson: `- [YYYY-MM-DD HH:MM] text`. Never prune by age. -->",
-	"Log":     "<!-- One bullet per event, observation, or stat: `- [YYYY-MM-DD HH:MM] text`. Prune the oldest entries when over the cap. -->",
+	"Log":     "<!-- One bullet per event, observation, or stat: `- [YYYY-MM-DD HH:MM] text`. End each run with a `Next:` entry for the next run. Prune the oldest entries when over the cap. -->",
 }
 
 // entryRe is the entry shape: date-only or date+time stamp, any text.
@@ -79,7 +82,7 @@ var stampRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?$`)
 // Shape only; calendar validity is not checked.
 func ValidStamp(at string) bool { return stampRe.MatchString(at) }
 
-// Parse returns the document and its structure issues. A file with no v1
+// Parse returns the document and its structure issues. A file with no
 // marker and no H2 headings is a legacy B22 ledger: it returns Doc.Legacy
 // and no issues. The parser is line-based; comments are ignored everywhere.
 func Parse(data []byte) (*Doc, []Issue) {
@@ -94,8 +97,7 @@ func Parse(data []byte) (*Doc, []Issue) {
 	}
 	p := &parseState{seen: map[string]bool{}, orderLines: map[string]int{}, openLesson: -1, openLog: -1}
 	if offset == 1 {
-		p.issues = append(p.issues, Issue{Code: "no_marker", Line: 1,
-			Msg: `missing v1 marker "<!-- trebi memory v1" on line 1`})
+		p.issues = append(p.issues, Issue{Code: "no_marker", Line: 1, Msg: markerMsg})
 	}
 	for i, line := range lines {
 		p.line(i+offset, line)
@@ -103,26 +105,24 @@ func Parse(data []byte) (*Doc, []Issue) {
 	return p.finish()
 }
 
-// Validate runs Parse plus the Log cap and the byte-size cap.
+// Validate runs Parse plus the Log cap and the prompt-size cap.
 // It returns nil when the file is valid.
 func Validate(data []byte, opt Options) []Issue {
 	doc, issues := Parse(data)
 	if doc.Legacy {
-		issues = append(issues, Issue{Code: "no_marker", Line: 1,
-			Msg: `missing v1 marker "<!-- trebi memory v1" on line 1`})
+		issues = append(issues, Issue{Code: "no_marker", Line: 1, Msg: markerMsg})
 	}
 	if opt.MaxLogs > 0 && len(doc.Log) > opt.MaxLogs {
 		issues = append(issues, Issue{Code: "log_over_cap",
 			Msg: fmt.Sprintf("Log has %d entries, cap is %d. Remove the oldest entries.", len(doc.Log), opt.MaxLogs)})
 	}
-	if opt.MaxBytes > 0 && len(data) > opt.MaxBytes {
-		issues = append(issues, Issue{Code: "too_large",
-			Msg: fmt.Sprintf("file is %d bytes, cap is %d.", len(data), opt.MaxBytes)})
+	if iss, ok := doc.sizeIssue(opt); ok {
+		issues = append(issues, iss)
 	}
 	return issues
 }
 
-// Skeleton returns the seeded file: marker, H1, four empty sections with
+// Skeleton returns the seeded file: marker, H1, three empty sections with
 // their rule comments.
 func Skeleton() []byte {
 	var b strings.Builder
@@ -133,10 +133,10 @@ func Skeleton() []byte {
 	return []byte(b.String())
 }
 
-// Migrate converts a legacy B22 ledger to v1: preamble to Context, dated
-// lines to Log with the same date, State and Lessons empty. Leading "# "
-// heading lines in the preamble are dropped; v1 supplies its own H1. Input
-// that is already v1 (or v1-shaped) returns unchanged. An empty file
+// Migrate converts a legacy B22 ledger to v2: preamble to Context, dated
+// lines to Log with the same date, Lessons empty. Leading "# " heading
+// lines in the preamble are dropped; v2 supplies its own H1. Input that
+// already has a marker or "## " headings returns unchanged. An empty file
 // returns the skeleton.
 func Migrate(legacy []byte) []byte {
 	lines := splitLines(legacy)
@@ -172,38 +172,60 @@ func Migrate(legacy []byte) []byte {
 	return doc.Marshal()
 }
 
-// Render builds the Memory prompt section: full Context and State, all
-// Lessons, and the newest InjectLogs Log entries plus a count of older ones.
+// Render builds the Memory prompt section: full Context, all Lessons, and
+// the newest InjectLogs Log entries plus a count of older ones. A deprecated
+// State prints after Context, so that the session sees what it must move.
 // Entries print newest first; empty sections print "(empty)".
 func Render(doc *Doc, opt Options) string {
 	if doc == nil {
 		doc = &Doc{}
 	}
-	log := sortedEntries(doc.Log)
-	shown, older := log, 0
-	if opt.InjectLogs >= 0 && len(log) > opt.InjectLogs {
-		shown, older = log[:opt.InjectLogs], len(log)-opt.InjectLogs
-	}
+	shown := shownLog(doc.Log, opt)
 	var b strings.Builder
 	b.WriteString("## Context\n" + bodyOrEmpty(doc.Context) + "\n\n")
-	b.WriteString("## State\n" + bodyOrEmpty(doc.State) + "\n\n")
+	if doc.DeprecatedState != "" {
+		b.WriteString("## State (deprecated, move it)\n" + doc.DeprecatedState + "\n\n")
+	}
 	b.WriteString("## Lessons\n" + entriesBlock(sortedEntries(doc.Lessons), 0) + "\n\n")
-	b.WriteString("## Log\n" + entriesBlock(shown, older))
+	b.WriteString("## Log\n" + entriesBlock(shown, len(doc.Log)-len(shown)))
 	return b.String()
 }
 
+// ProtocolInfo is the launch data that Protocol adds to the rules.
+type ProtocolInfo struct {
+	PromptBytes int  // bytes of Render output
+	HasState    bool // Doc.DeprecatedState != ""
+}
+
+// NewProtocolInfo measures doc for Protocol.
+func NewProtocolInfo(doc *Doc, opt Options) ProtocolInfo {
+	if doc == nil {
+		doc = &Doc{}
+	}
+	return ProtocolInfo{PromptBytes: len(Render(doc, opt)), HasState: doc.DeprecatedState != ""}
+}
+
 // Protocol returns the rules paragraph for enabled launches.
-func Protocol(opt Options) string {
+func Protocol(opt Options, p ProtocolInfo) string {
 	capRule := "Log has no entry cap."
 	if opt.MaxLogs > 0 {
 		capRule = fmt.Sprintf("Keep Log under %d entries; prune the oldest.", opt.MaxLogs)
 	}
-	return "MEMORY.md is next to your job file and is shown above. " +
-		"Keep its four sections in order: Context, State, Lessons, Log. " +
-		"Context and State are free form. " +
+	out := "MEMORY.md is next to your job file and is shown above. " +
+		"Keep its three sections in order: Context, Lessons, Log. " +
+		"Context is free form. " +
 		"Lessons and Log take one bullet per entry in the form `- [YYYY-MM-DD HH:MM] text` (`- [YYYY-MM-DD] text` is accepted). " +
-		"Rewrite State each run. Add Log entries for events, observations, and stats. " +
+		"Add Log entries for events, observations, and stats. " +
+		"End each run with a Log entry that starts with `Next:`. " +
+		"Keep records in `trebi state`, not in memory. " +
 		capRule + " Never prune Lessons by age. Update the file before you print the completion line."
+	if p.HasState {
+		out += " This file has a deprecated State section. Move it this run."
+	}
+	if opt.MaxBytes > 0 && p.PromptBytes > opt.MaxBytes {
+		out += fmt.Sprintf(" Memory is %s in the prompt; the cap is %s. Trim it this run.", kb(p.PromptBytes), kb(opt.MaxBytes))
+	}
+	return out
 }
 
 // Hash is the files ContentHash of the file bytes.
@@ -238,7 +260,7 @@ func Inspect(data []byte, opt Options, at time.Time) *Info {
 
 // Unchanged is the freshness issue for a file not rewritten this run.
 func Unchanged() Issue {
-	return Issue{Code: "unchanged", Msg: "unchanged this run. Update State, and Log if anything happened."}
+	return Issue{Code: "unchanged", Msg: "unchanged this run. Add a Log entry for this run."}
 }
 
 // FormatIssues renders issues one per line: "MEMORY.md:14: msg", or
@@ -255,13 +277,16 @@ func FormatIssues(file string, issues []Issue) []string {
 	return out
 }
 
-// Marshal re-emits the file: Context and State verbatim, Lessons and Log
-// from entries, skeleton comments only for empty sections.
+// Marshal re-emits the file: Context verbatim, Lessons and Log from
+// entries, skeleton comments only for empty sections. A deprecated State
+// stays after Context, so that no edit loses it before the session moves it.
 func (d *Doc) Marshal() []byte {
 	var b strings.Builder
 	b.WriteString(markerLine + "\n# Memory\n")
 	b.WriteString("\n## Context\n" + bodyOrComment(d.Context, "Context"))
-	b.WriteString("\n## State\n" + bodyOrComment(d.State, "State"))
+	if d.DeprecatedState != "" {
+		b.WriteString("\n## " + stateTitle + "\n" + d.DeprecatedState + "\n")
+	}
 	b.WriteString("\n## Lessons\n" + entriesOrComment(d.Lessons, "Lessons"))
 	b.WriteString("\n## Log\n" + entriesOrComment(d.Log, "Log"))
 	return []byte(b.String())
@@ -269,9 +294,6 @@ func (d *Doc) Marshal() []byte {
 
 // SetContext replaces the Context body.
 func (d *Doc) SetContext(body string) { d.Context = strings.TrimRight(body, "\n") }
-
-// SetState replaces the State body.
-func (d *Doc) SetState(body string) { d.State = strings.TrimRight(body, "\n") }
 
 // AddLesson appends a lesson; an empty at stamps now UTC to the minute.
 func (d *Doc) AddLesson(at, text string) Entry { return d.addEntry("Lessons", &d.Lessons, at, text) }
@@ -288,6 +310,28 @@ func (d *Doc) Remove(section, id string) bool {
 		return removeEntry(&d.Log, id)
 	}
 	return false
+}
+
+// sizeIssue reports too_large when the Render output is over opt.MaxBytes.
+// The message gives the size of each section and the trim order.
+func (d *Doc) sizeIssue(opt Options) (Issue, bool) {
+	if opt.MaxBytes <= 0 {
+		return Issue{}, false
+	}
+	total := len(Render(d, opt))
+	if total <= opt.MaxBytes {
+		return Issue{}, false
+	}
+	parts := []string{"Context " + kb(len(d.Context))}
+	if d.DeprecatedState != "" {
+		parts = append(parts, "State "+kb(len(d.DeprecatedState)))
+	}
+	parts = append(parts, "Lessons "+kb(entriesSize(d.Lessons)), "Log "+kb(entriesSize(shownLog(d.Log, opt))))
+	return Issue{Code: "too_large", Msg: fmt.Sprintf("memory is %s in the prompt (%s); the cap is %s. "+
+		"Trim it in this order: 1. Log: remove the oldest entries. "+
+		"2. Lessons: merge duplicates, make each lesson one short rule, remove lessons that Context or the job file now covers. "+
+		"3. Context: move instructions to the job file. Move records to `trebi state`.",
+		kb(total), strings.Join(parts, ", "), kb(opt.MaxBytes))}, true
 }
 
 func (d *Doc) addEntry(section string, list *[]Entry, at, text string) Entry {
@@ -341,7 +385,7 @@ func (p *parseState) line(n int, line string) {
 		p.headLine(n, line)
 	case "Context":
 		p.bodyLine(n, line, &p.ctx)
-	case "State":
+	case stateTitle:
 		p.bodyLine(n, line, &p.state)
 	case "Lessons":
 		p.entryLine(n, line, "Lessons", &p.lessons, &p.openLesson)
@@ -419,6 +463,12 @@ func (p *parseState) badEntry(n int, section string) {
 }
 
 func (p *parseState) heading(n int, title string) {
+	if title == stateTitle {
+		p.section = stateTitle
+		p.issues = append(p.issues, Issue{Code: "state_deprecated", Line: n, Msg: "the State section is deprecated. " +
+			"Move records to `trebi state` and the handoff to a Log entry that starts with \"Next:\". Then remove the section."})
+		return
+	}
 	if !knownSection(title) {
 		p.section = "unknown"
 		p.issues = append(p.issues, Issue{Code: "unknown_section", Line: n,
@@ -453,9 +503,18 @@ func (p *parseState) finish() (*Doc, []Issue) {
 		p.log = []Entry{}
 	}
 	return &Doc{
-		Context: trimBody(p.ctx), State: trimBody(p.state),
+		Context: trimBody(p.ctx), DeprecatedState: p.stateBody(),
 		Lessons: p.lessons, Log: p.log,
 	}, p.issues
+}
+
+// stateBody is the deprecated State text; a blank section is "".
+func (p *parseState) stateBody() string {
+	body := strings.TrimLeft(trimBody(p.state), "\n")
+	if strings.TrimSpace(body) == "" {
+		return ""
+	}
+	return body
 }
 
 // checkOrder reports one section_order at the first heading that breaks the
@@ -582,6 +641,28 @@ func entriesBlock(entries []Entry, older int) string {
 		fmt.Fprintf(&b, "(%d older entries in MEMORY.md)\n", older)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// kb renders a byte count in whole KB, rounded up so that a non-empty
+// section never shows 0 KB.
+func kb(n int) string { return strconv.Itoa((n+1023)/1024) + " KB" }
+
+// entriesSize is the byte size of entries as Render writes them.
+func entriesSize(entries []Entry) int {
+	n := 0
+	for _, e := range entries {
+		n += len(formatEntry(e))
+	}
+	return n
+}
+
+// shownLog returns the newest opt.InjectLogs Log entries, newest first.
+func shownLog(log []Entry, opt Options) []Entry {
+	sorted := sortedEntries(log)
+	if opt.InjectLogs >= 0 && len(sorted) > opt.InjectLogs {
+		return sorted[:opt.InjectLogs]
+	}
+	return sorted
 }
 
 // sortedEntries returns a newest-first copy (stamp strings sort chronologically).

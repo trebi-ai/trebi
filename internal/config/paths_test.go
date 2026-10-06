@@ -381,6 +381,8 @@ func sampleSetValue(key string) string {
 		return "80"
 	case key == "files.max_bytes":
 		return "10485760"
+	case key == "defaults.memory.max_bytes":
+		return "16384"
 	case key == "defaults.session.if_running":
 		return "skip"
 	case key == "defaults.session.nudge":

@@ -117,7 +117,7 @@ Ask the user first. Plain delete removes `AGENT.md` only; the owned jobs stay an
 
 ## Agent memory
 
-Each agent keeps a structured `MEMORY.md` at `agents/<name>/MEMORY.md`. It survives between runs and feeds every wake. It holds four sections in a fixed order: Context, State, Lessons, Log. The daemon validates it at wake completion, like job memory.
+Each agent keeps a structured `MEMORY.md` at `agents/<name>/MEMORY.md`. It survives between runs and feeds every wake. It holds three sections in a fixed order: Context, Lessons, Log. Keep records in `trebi state`, not in memory. The daemon validates it at wake completion, like job memory.
 
 ```bash
 trebi agent memory show cmo --workspace reports --json

@@ -318,6 +318,7 @@ defaults:
   memory:
     max_logs: 0
     require_update: false
+    max_bytes: 8192
 `
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0644); err != nil {
 		t.Fatal(err)
@@ -327,8 +328,23 @@ defaults:
 		t.Fatal(err)
 	}
 	m := cfg.Defaults.Memory
-	if m.MaxLogs != 0 || m.RequireUpdate || m.InjectLogs != 20 {
+	if m.MaxLogs != 0 || m.RequireUpdate || m.InjectLogs != 20 || m.MaxBytes != 8192 {
 		t.Fatalf("partial override lost defaults: %+v", m)
+	}
+
+	// max_bytes 0 turns the cap off; a negative value is invalid.
+	if err := cfg.SetPath("defaults.memory.max_bytes", "0"); err != nil || cfg.Defaults.Memory.MaxBytes != 0 {
+		t.Fatalf("set 0: %v %+v", err, cfg.Defaults.Memory)
+	}
+	if err := cfg.SetPath("defaults.memory.max_bytes", "-1"); err == nil {
+		t.Fatal("set -1 accepted")
+	}
+	if err := cfg.UnsetPath("defaults.memory.max_bytes"); err != nil || cfg.Defaults.Memory.MaxBytes != DefaultMemoryMaxBytes {
+		t.Fatalf("unset: %v %+v", err, cfg.Defaults.Memory)
+	}
+	cfg.Defaults.Memory.MaxBytes = -5
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "defaults.memory.max_bytes") {
+		t.Fatalf("validate negative: %v", err)
 	}
 
 	// Absent block keeps the seeded defaults.
@@ -337,7 +353,7 @@ defaults:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := cfg.Defaults.Memory; m.MaxLogs != 100 || !m.RequireUpdate || m.InjectLogs != 20 {
+	if m := cfg.Defaults.Memory; m.MaxLogs != 100 || !m.RequireUpdate || m.InjectLogs != 20 || m.MaxBytes != 16384 {
 		t.Fatalf("seeded defaults: %+v", m)
 	}
 

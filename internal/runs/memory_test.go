@@ -33,8 +33,9 @@ func TestMemoryLaunchSeedsSkeleton(t *testing.T) {
 		t.Fatalf("memory_hash = %s, want %s", run.MemoryHash, memory.Hash(data))
 	}
 	for _, want := range []string{
-		"## Context", "## State", "## Lessons", "## Log",
+		"## Context", "## Lessons", "## Log",
 		"MEMORY.md is next to your job file",
+		"Keep records in `trebi state`",
 		"Keep Log under 100 entries",
 		"Update the file before you print the completion line.",
 		"run the digest",
@@ -42,6 +43,9 @@ func TestMemoryLaunchSeedsSkeleton(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, "## State") || strings.Contains(prompt, "deprecated") {
+		t.Errorf("skeleton prompt has a State notice:\n%s", prompt)
 	}
 	// Memory block, then protocol, then the task itself.
 	i := strings.Index(prompt, "## Log")
@@ -163,7 +167,7 @@ func TestMemoryPromptRecordedInTranscript(t *testing.T) {
 	if turns[0].Text != prompt {
 		t.Fatalf("recorded prompt differs from the submitted one:\n got %q\nwant %q", turns[0].Text, prompt)
 	}
-	if !strings.Contains(turns[0].Text, "## State") || !strings.Contains(turns[0].Text, "run the digest") {
+	if !strings.Contains(turns[0].Text, "## Lessons") || !strings.Contains(turns[0].Text, "run the digest") {
 		t.Fatalf("prompt missing memory render or body: %q", turns[0].Text)
 	}
 }
@@ -253,7 +257,7 @@ func TestMemoryGateRequireUpdateOff(t *testing.T) {
 func TestMemoryGateLogOverCap(t *testing.T) {
 	t.Parallel()
 	svc, _, root := memoryFixture(t)
-	over := &memory.Doc{Context: "Client sends CSV.", State: "Digest pending.", Log: []memory.Entry{
+	over := &memory.Doc{Context: "Client sends CSV.", Log: []memory.Entry{
 		{At: "2026-09-14 09:00", Text: "first"},
 		{At: "2026-09-14 09:01", Text: "second"},
 		{At: "2026-09-14 09:02", Text: "third"},
@@ -265,7 +269,7 @@ func TestMemoryGateLogOverCap(t *testing.T) {
 	if err := os.WriteFile(p, over.Marshal(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pruned := &memory.Doc{Context: "Client sends CSV.", State: "Digest done.", Log: over.Log[1:]}
+	pruned := &memory.Doc{Context: "Client sends CSV.", Log: over.Log[1:]}
 	mem := memoryLaunch(root)
 	mem.Opt.MaxLogs = 2
 	script := fakeWaitFix() + `echo "$TREBI_RUN_COMPLETE"
@@ -312,14 +316,12 @@ waitfix
 func TestMemoryGateInvalidShape(t *testing.T) {
 	t.Parallel()
 	svc, _, root := memoryFixture(t)
-	broken := `<!-- trebi memory v1. Keep these four sections in this order. Do not add other "## " headings. -->
+	broken := `<!-- trebi memory v2. Keep these three sections in this order. Do not add other "## " headings. -->
 # Memory
 
 ## Context
 
 Client sends CSV.
-
-## Lessons
 
 ## Log
 `
@@ -329,7 +331,85 @@ waitfix
 	run := launchMemoryScript(t, svc, memoryLaunch(root), script)
 
 	assertRunComplete(t, run, runs.EndSentinel)
-	if issues := runEventIssues(t, svc, run.ID, "memory.fix_requested"); !strings.Contains(issues, `missing section "## State"`) {
+	if issues := runEventIssues(t, svc, run.ID, "memory.fix_requested"); !strings.Contains(issues, `missing section "## Lessons"`) {
+		t.Fatalf("fix issues = %q", issues)
+	}
+}
+
+// TestMemoryGateDeprecatedState pins Part C: a v1 State section gets a
+// notice at launch, fails the gate, and the fix message names the move.
+func TestMemoryGateDeprecatedState(t *testing.T) {
+	t.Parallel()
+	svc, _, root := memoryFixture(t)
+	old := &memory.Doc{Context: "Client sends CSV.", DeprecatedState: "Sent: a, b, c."}
+	p := filepath.Join(root, "demo", "MEMORY.md")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, old.Marshal(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, prompt := launchMemoryRun(t, svc, memoryLaunch(root))
+	for _, want := range []string{"## State (deprecated, move it)\nSent: a, b, c.", "This file has a deprecated State section. Move it this run."} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+
+	svc, _, root = memoryFixture(t)
+	p = filepath.Join(root, "demo", "MEMORY.md")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, old.Marshal(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mem := memoryLaunch(root)
+	mem.Opt.RequireUpdate = false
+	script := fakeWaitFix() + `echo "$TREBI_RUN_COMPLETE"
+waitfix
+` + fakeWriteMemory(gateValidMemory) + `echo "$TREBI_RUN_COMPLETE"`
+	run := launchMemoryScript(t, svc, mem, script)
+
+	assertRunComplete(t, run, runs.EndSentinel)
+	issues := runEventIssues(t, svc, run.ID, "memory.fix_requested")
+	if !strings.Contains(issues, "the State section is deprecated") || !strings.Contains(issues, "`trebi state`") {
+		t.Fatalf("fix issues = %q", issues)
+	}
+}
+
+// TestMemoryLaunchOverCapNotice pins Part D: memory over max_bytes gets the
+// trim notice at launch and fails the gate with the section sizes.
+func TestMemoryLaunchOverCapNotice(t *testing.T) {
+	t.Parallel()
+	svc, _, root := memoryFixture(t)
+	big := &memory.Doc{Context: strings.Repeat("c", 3000)}
+	p := filepath.Join(root, "demo", "MEMORY.md")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, big.Marshal(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mem := memoryLaunch(root)
+	mem.Opt.MaxBytes = 1024
+	mem.Opt.RequireUpdate = false
+	script := `printf %s "$TREBI_FAKE_PROMPT" > "$TREBI_MEMORY_PATH.prompt"
+` + fakeWaitFix() + `echo "$TREBI_RUN_COMPLETE"
+waitfix
+` + fakeWriteMemory(gateValidMemory) + `echo "$TREBI_RUN_COMPLETE"`
+	run := launchMemoryScript(t, svc, mem, script)
+
+	assertRunComplete(t, run, runs.EndSentinel)
+	prompt, err := os.ReadFile(p + ".prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(prompt), "Memory is 3 KB in the prompt; the cap is 1 KB. Trim it this run.") {
+		t.Fatalf("prompt lacks the trim notice:\n%s", prompt)
+	}
+	issues := runEventIssues(t, svc, run.ID, "memory.fix_requested")
+	if !strings.Contains(issues, "(Context 3 KB, Lessons 0 KB, Log 0 KB); the cap is 1 KB. Trim it in this order") {
 		t.Fatalf("fix issues = %q", issues)
 	}
 }
@@ -355,16 +435,12 @@ func memoryLaunch(root string) *runs.MemoryLaunch {
 }
 
 // gateValidMemory is a valid, changed MEMORY.md the gate fakes write back.
-const gateValidMemory = `<!-- trebi memory v1. Keep these four sections in this order. Do not add other "## " headings. -->
+const gateValidMemory = `<!-- trebi memory v2. Keep these three sections in this order. Do not add other "## " headings. -->
 # Memory
 
 ## Context
 
 Client sends CSV.
-
-## State
-
-Digest done.
 
 ## Lessons
 

@@ -55,7 +55,6 @@ func (s *Server) routeMemory(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/jobs/{name}/memory/validate", s.mem(j, s.handleMemoryValidate))
 	mux.HandleFunc("POST /v1/jobs/{name}/memory/migrate", s.mem(j, s.handleMemoryMigrate))
 	mux.HandleFunc("PUT /v1/jobs/{name}/memory/context", s.memSection(j, "context"))
-	mux.HandleFunc("PUT /v1/jobs/{name}/memory/state", s.memSection(j, "state"))
 	mux.HandleFunc("POST /v1/jobs/{name}/memory/lessons", s.memEntry(j, "lessons"))
 	mux.HandleFunc("DELETE /v1/jobs/{name}/memory/lessons/{eid}", s.memEntryDelete(j, "lessons"))
 	mux.HandleFunc("POST /v1/jobs/{name}/memory/log", s.memEntry(j, "log"))
@@ -69,7 +68,6 @@ func (s *Server) routeMemory(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/memory/validate", s.mem(a, s.handleMemoryValidate))
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/memory/migrate", s.mem(a, s.handleMemoryMigrate))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/agents/{name}/memory/context", s.memSection(a, "context"))
-	mux.HandleFunc("PUT /v1/workspaces/{id}/agents/{name}/memory/state", s.memSection(a, "state"))
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/memory/lessons", s.memEntry(a, "lessons"))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/agents/{name}/memory/lessons/{eid}", s.memEntryDelete(a, "lessons"))
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/memory/log", s.memEntry(a, "log"))
@@ -83,7 +81,6 @@ func (s *Server) routeMemory(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/memory/validate", s.mem(w, s.handleMemoryValidate))
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/memory/migrate", s.mem(w, s.handleMemoryMigrate))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/assistant/memory/context", s.memSection(w, "context"))
-	mux.HandleFunc("PUT /v1/workspaces/{id}/assistant/memory/state", s.memSection(w, "state"))
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/memory/lessons", s.memEntry(w, "lessons"))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant/memory/lessons/{eid}", s.memEntryDelete(w, "lessons"))
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/memory/log", s.memEntry(w, "log"))
@@ -95,7 +92,7 @@ func (s *Server) mem(sc memoryScope, h func(w http.ResponseWriter, r *http.Reque
 	return func(w http.ResponseWriter, r *http.Request) { h(w, r, sc) }
 }
 
-// memSection binds a section handler (context or state).
+// memSection binds a section handler (context).
 func (s *Server) memSection(sc memoryScope, section string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) { s.handleMemorySectionPut(w, r, sc, section) }
 }
@@ -357,7 +354,7 @@ func (s *Server) handleMemoryMigrate(w http.ResponseWriter, r *http.Request, sco
 	writeJSON(w, http.StatusOK, memory.Inspect(fixed, tgt.opt, at))
 }
 
-// handleMemorySectionPut replaces the Context or State body. A legacy file
+// handleMemorySectionPut replaces the Context body. A legacy file
 // migrates first.
 func (s *Server) handleMemorySectionPut(w http.ResponseWriter, r *http.Request, scope memoryScope, section string) {
 	var body struct {
@@ -380,11 +377,8 @@ func (s *Server) handleMemorySectionPut(w http.ResponseWriter, r *http.Request, 
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	switch section {
-	case "context":
+	if section == "context" {
 		doc.SetContext(body.Body)
-	case "state":
-		doc.SetState(body.Body)
 	}
 	info, ok := s.memoryWrite(w, r, tgt, doc.Marshal())
 	if !ok {

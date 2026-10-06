@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
@@ -387,7 +388,7 @@ func memorySubcommands(o memoryOwner) *cli.Command {
 				Action: o.runValidate,
 			},
 			{
-				Name: "migrate", Usage: "convert a legacy ledger to the v1 layout", ArgsUsage: nameArgs,
+				Name: "migrate", Usage: "convert a legacy ledger to the current layout", ArgsUsage: nameArgs,
 				Flags:  o.flags(),
 				Action: o.runMigrate,
 			},
@@ -395,11 +396,6 @@ func memorySubcommands(o memoryOwner) *cli.Command {
 				Name: "set-context", Usage: "replace the Context section (--body FILE or stdin)", ArgsUsage: nameArgs,
 				Flags:  o.flags(bodyFlag()),
 				Action: o.runSectionPut("context"),
-			},
-			{
-				Name: "set-state", Usage: "replace the State section (--body FILE or stdin)", ArgsUsage: nameArgs,
-				Flags:  o.flags(bodyFlag()),
-				Action: o.runSectionPut("state"),
 			},
 			{
 				Name: "lesson", Usage: "lesson entries (never pruned by age)",
@@ -444,7 +440,7 @@ func memorySubcommands(o memoryOwner) *cli.Command {
 			},
 			{
 				Name: "clear", Usage: "rewrite MEMORY.md as an empty skeleton", ArgsUsage: nameArgs,
-				Flags:  o.flags(forceFlag("required; wipes Context, State, Lessons, and Log"), ifMatchFlag()),
+				Flags:  o.flags(forceFlag("required; wipes Context, Lessons, and Log"), ifMatchFlag()),
 				Action: o.runClear,
 			},
 		},
@@ -524,6 +520,7 @@ func (o memoryOwner) printInfo(c *cli.Command, info *memory.Info) {
 	t.AppendRow(table.Row{"log", logCell})
 	t.AppendRow(table.Row{"inject_logs", info.Options.InjectLogs})
 	t.AppendRow(table.Row{"require_update", yesNo(info.Options.RequireUpdate)})
+	t.AppendRow(table.Row{"max_bytes", info.Options.MaxBytes})
 	t.AppendRow(table.Row{"issues", len(info.Issues)})
 	renderTable(t)
 }
@@ -577,7 +574,7 @@ func (o memoryOwner) runMigrate(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
-// runSectionPut builds the action of set-context and set-state.
+// runSectionPut builds the action of set-context.
 func (o memoryOwner) runSectionPut(section string) cli.ActionFunc {
 	return func(_ context.Context, c *cli.Command) error {
 		client, name, ws, err := o.resolve(c)
@@ -721,6 +718,7 @@ func memoryCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 					&cli.IntFlag{Name: "max-logs", Value: 100, Usage: "log entry cap (0 = no cap)"},
+					&cli.IntFlag{Name: "max-bytes", Value: config.DefaultMemoryMaxBytes, Usage: "cap on memory bytes in the prompt (0 = no cap)"},
 					&cli.BoolFlag{Name: "fix", Usage: "migrate a legacy file; seed the skeleton when the file is missing"},
 				},
 				Action: runMemoryValidateOffline,
@@ -767,7 +765,7 @@ func runMemoryValidateOffline(_ context.Context, c *cli.Command) error {
 
 // memoryIssues reports the validation verdict; a file with issues exits 1.
 func memoryIssues(c *cli.Command, data []byte, path string, legacy bool) error {
-	opt := memory.Options{MaxLogs: c.Int("max-logs")}
+	opt := memory.Options{MaxLogs: c.Int("max-logs"), MaxBytes: c.Int("max-bytes"), InjectLogs: config.DefaultMemory().InjectLogs}
 	issues := memory.Validate(data, opt)
 	if c.Bool("json") {
 		return encodeJSON(c, map[string]any{

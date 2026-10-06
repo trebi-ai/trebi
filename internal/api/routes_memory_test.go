@@ -11,17 +11,13 @@ import (
 	"github.com/trebi-ai/trebi/internal/api"
 )
 
-// memValid is a valid v1 MEMORY.md for PUT bodies.
-const memValid = `<!-- trebi memory v1. Keep these four sections in this order. Do not add other "## " headings. -->
+// memValid is a valid MEMORY.md for PUT bodies.
+const memValid = `<!-- trebi memory v2. Keep these three sections in this order. Do not add other "## " headings. -->
 # Memory
 
 ## Context
 
 Client sends CSV.
-
-## State
-
-Digest pending.
 
 ## Lessons
 
@@ -30,8 +26,8 @@ Digest pending.
 - [2026-09-14 09:00] ran the digest
 `
 
-// memBroken misses two sections.
-const memBroken = `<!-- trebi memory v1. Keep these four sections in this order. Do not add other "## " headings. -->
+// memBroken misses a section.
+const memBroken = `<!-- trebi memory v2. Keep these three sections in this order. Do not add other "## " headings. -->
 # Memory
 
 ## Context
@@ -139,9 +135,10 @@ func TestMemorySectionsAndEntries(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("put context %d %v", code, body)
 	}
+	// The State section route is gone (Part C).
 	code, body = doReq(t, "PUT", root+"/state"+q, nil,
 		map[string]any{"body": "Digest done."})
-	if code != 200 {
+	if code < 400 {
 		t.Fatalf("put state %d %v", code, body)
 	}
 	code, mem := doReq(t, "GET", root+q, nil, nil)
@@ -149,7 +146,7 @@ func TestMemorySectionsAndEntries(t *testing.T) {
 		t.Fatalf("get %d", code)
 	}
 	doc, _ := mem["doc"].(map[string]any)
-	if doc == nil || doc["context"] != "Client sends CSV nightly." || doc["state"] != "Digest done." {
+	if doc == nil || doc["context"] != "Client sends CSV nightly." || doc["deprecated_state"] != nil {
 		t.Fatalf("doc after sections: %v", doc)
 	}
 

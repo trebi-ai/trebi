@@ -260,12 +260,16 @@ type MemoryDefaults struct {
 	MaxLogs       int  `yaml:"max_logs"`       // Log entry cap; 0 = no cap
 	RequireUpdate bool `yaml:"require_update"` // a run must rewrite MEMORY.md
 	InjectLogs    int  `yaml:"inject_logs"`    // Log entries in the launch prompt
+	MaxBytes      int  `yaml:"max_bytes"`      // cap on the memory part of the prompt; 0 = no cap
 }
+
+// DefaultMemoryMaxBytes is defaults.memory.max_bytes when config omits it (16 KiB).
+const DefaultMemoryMaxBytes = 16384
 
 // DefaultMemory returns the built-in memory defaults (also the seed of
 // defaultConfig), so per-launch resolvers can fall back without a config file.
 func DefaultMemory() MemoryDefaults {
-	return MemoryDefaults{MaxLogs: 100, RequireUpdate: true, InjectLogs: 20}
+	return MemoryDefaults{MaxLogs: 100, RequireUpdate: true, InjectLogs: 20, MaxBytes: DefaultMemoryMaxBytes}
 }
 
 // SessionDefaults are global reaper/session knobs when job frontmatter omits them.
@@ -646,6 +650,7 @@ defaults:
   #   max_logs: 100        # Log entry cap; 0 = no cap
   #   require_update: true # a run must rewrite MEMORY.md
   #   inject_logs: 20      # Log entries in the launch prompt
+  #   max_bytes: 16384     # memory bytes in the launch prompt; 0 = no cap
 
 # api:
 #   host: 127.0.0.1        # 0.0.0.0 or a LAN/Tailscale IP opens remote access
@@ -903,6 +908,9 @@ func (c *Config) Validate() error {
 
 	if c.Files.MaxBytes < 0 {
 		ce.add("files.max_bytes", "must be >= 0")
+	}
+	if c.Defaults.Memory.MaxBytes < 0 {
+		ce.add("defaults.memory.max_bytes", "must be >= 0")
 	}
 	ce.checkRequests(c.Requests)
 

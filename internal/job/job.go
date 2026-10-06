@@ -349,6 +349,7 @@ type MemoryConfig struct {
 	MaxLogs       *int
 	RequireUpdate *bool
 	InjectLogs    *int
+	MaxBytes      *int
 }
 
 // Resolve returns the effective options after config defaults.
@@ -357,6 +358,7 @@ func (m MemoryConfig) Resolve(cfg config.MemoryDefaults) memory.Options {
 		MaxLogs:       cfg.MaxLogs,
 		RequireUpdate: cfg.RequireUpdate,
 		InjectLogs:    cfg.InjectLogs,
+		MaxBytes:      cfg.MaxBytes,
 	}
 	if m.MaxLogs != nil {
 		opt.MaxLogs = *m.MaxLogs
@@ -366,6 +368,9 @@ func (m MemoryConfig) Resolve(cfg config.MemoryDefaults) memory.Options {
 	}
 	if m.InjectLogs != nil {
 		opt.InjectLogs = *m.InjectLogs
+	}
+	if m.MaxBytes != nil {
+		opt.MaxBytes = *m.MaxBytes
 	}
 	return opt
 }
@@ -1103,15 +1108,21 @@ func memoryFromMap(m map[string]any) (MemoryConfig, error) {
 	cfg := MemoryConfig{Enabled: true}
 	for k, v := range m {
 		switch k {
-		case "max_logs", "inject_logs":
+		case "max_logs", "inject_logs", "max_bytes":
 			n, err := memoryInt(k, v)
 			if err != nil {
 				return MemoryConfig{}, err
 			}
-			if k == "max_logs" {
+			switch k {
+			case "max_logs":
 				cfg.MaxLogs = &n
-			} else {
+			case "inject_logs":
 				cfg.InjectLogs = &n
+			default:
+				if n < 0 {
+					return MemoryConfig{}, fmt.Errorf("max_bytes: must be >= 0, got %d", n)
+				}
+				cfg.MaxBytes = &n
 			}
 		case "require_update":
 			b, ok := v.(bool)
@@ -1120,7 +1131,7 @@ func memoryFromMap(m map[string]any) (MemoryConfig, error) {
 			}
 			cfg.RequireUpdate = &b
 		default:
-			return MemoryConfig{}, fmt.Errorf("unknown key %q (known: max_logs, require_update, inject_logs)", k)
+			return MemoryConfig{}, fmt.Errorf("unknown key %q (known: max_logs, require_update, inject_logs, max_bytes)", k)
 		}
 	}
 	return cfg, nil

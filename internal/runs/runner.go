@@ -529,7 +529,7 @@ func (s *Service) prepMemory(ctx context.Context, opts *LaunchOpts) {
 		return // agents get memory through the wake composer
 	}
 	doc, _ := memory.Parse(data)
-	opts.Prompt = memory.Render(doc, mem.Opt) + "\n\n" + memory.Protocol(mem.Opt) + "\n\n" + opts.Prompt
+	opts.Prompt = memory.Render(doc, mem.Opt) + "\n\n" + memory.Protocol(mem.Opt, memory.NewProtocolInfo(doc, mem.Opt)) + "\n\n" + opts.Prompt
 }
 
 // memoryFor resolves the gate-time memory seam for a stored run. Nil when the
@@ -549,13 +549,13 @@ func (s *Service) gateMemory(ctx context.Context, run *Run, mem *MemoryLaunch) [
 	data, _, err := s.fs.Read(ctx, mem.Root, mem.Rel)
 	if err != nil {
 		if errors.Is(err, files.ErrNotFound) {
-			return []string{"MEMORY.md: file is missing. Restore it with the four sections."}
+			return []string{"MEMORY.md: file is missing. Restore it with the three sections."}
 		}
 		return []string{fmt.Sprintf("MEMORY.md: read failed: %v", err)}
 	}
 	issues := memory.FormatIssues("MEMORY.md", memory.Validate(data, mem.Opt))
 	if mem.Opt.RequireUpdate && memory.Hash(data) == run.MemoryHash {
-		issues = append(issues, "MEMORY.md: unchanged this run. Update State, and Log if anything happened.")
+		issues = append(issues, memory.FormatIssues("MEMORY.md", []memory.Issue{memory.Unchanged()})...)
 	}
 	return issues
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -156,8 +157,12 @@ func (s *Service) AssistantMemory(_ context.Context, workspaceID string) (string
 	if err != nil {
 		data = nil
 	}
+	def := config.DefaultMemory()
+	if c, cerr := config.Load(); cerr == nil {
+		def = c.Defaults.Memory
+	}
 	doc, _ := memory.Parse(data)
-	return memory.Render(doc, memory.Options{MaxLogs: 100, InjectLogs: 20}), nil
+	return memory.Render(doc, job.MemoryConfig{}.Resolve(def)), nil
 }
 
 // AssistantSettingsChanged reports whether the watcher must still emit
