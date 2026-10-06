@@ -35,7 +35,7 @@ CREATE TABLE job_index (
   harness TEXT, hash TEXT, parse_error TEXT, updated_at TEXT NOT NULL,
   owner TEXT NOT NULL DEFAULT '', PRIMARY KEY (workspace_id, name));
 CREATE TABLE runs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, job TEXT NOT NULL);
-CREATE TABLE event_queue (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, job TEXT NOT NULL);
+CREATE TABLE event_queue (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, job TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'job');
 CREATE TABLE event_outcomes (event_id TEXT NOT NULL, workspace_id TEXT NOT NULL, job TEXT NOT NULL);
 CREATE TABLE schedules (workspace_id TEXT NOT NULL, job TEXT NOT NULL, idx INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE inbox_items (id TEXT PRIMARY KEY, workspace_id TEXT, job TEXT);
@@ -81,7 +81,7 @@ class Fixture:
             c.execute("INSERT INTO job_index (workspace_id, name, path, kind, updated_at, owner) VALUES (?,?,?,?,?,?)", (WS, name, str(p), kind, T, owner))
         c.execute("INSERT INTO job_index (workspace_id, name, path, updated_at) VALUES (?, 'gone', ?, ?)", (WS, str(self.ws / "gone/JOB.md"), T))
         c.executemany("INSERT INTO runs VALUES (?,?,?)", [("r1", WS, "plain"), ("r2", WS, "deleted"), ("r3", WS, "agents/ops"), ("r4", WS, "agents/ops/child")])
-        c.execute("INSERT INTO event_queue VALUES ('q1', ?, 'deleted')", (WS,))
+        c.execute("INSERT INTO event_queue (id, workspace_id, job) VALUES ('q1', ?, 'deleted')", (WS,))
         c.execute("INSERT INTO event_outcomes VALUES ('e1', ?, 'plain')", (WS,))
         c.execute("INSERT INTO schedules VALUES (?, 'valid', 0)", (WS,))
         c.executemany("INSERT INTO inbox_items VALUES (?,?,?)", [("i1", WS, "plain"), ("i2", WS, ""), ("i3", None, None)])
@@ -219,6 +219,29 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(json.loads(ev[0][0]), {"job_id": child, "job_name": "agents/ops/child", "parent_agent_id": ops, "parent_agent_name": "ops", "reason": "manual"})
         self.assertEqual(ev[1][0], '{"delta": "true", "text": "agent"}')
         self.assertEqual(ev[2][0], '{"operator_id":"","operator_name":""}')
+
+    def test_assistant_rows_use_the_workspace_id(self):
+        c = sqlite3.connect(self.fx.db_path)
+        c.executemany("INSERT INTO event_queue VALUES (?,?,?,?)", [("qa1", WS, "assistant", "assistant"), ("qa2", WS, "", "assistant"), ("qa3", WS, "assistant", "job")])
+        c.execute("INSERT INTO event_outcomes VALUES ('ea', ?, 'assistant')", (WS,))
+        c.execute("INSERT INTO schedules VALUES (?, 'assistant', 0)", (WS,))
+        c.executemany(
+            "INSERT INTO event_log (entity, entity_id, attrs_json) VALUES (?,?,?)",
+            [("job", "assistant", json.dumps({"job": "assistant", "workspace": WS})), ("queue", "qa1", json.dumps({"job": "assistant", "workspace": WS}))],
+        )
+        c.commit()
+        c.close()
+        code, out = self.fx.run("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("retired: 2 names", out)
+        self.assertIn("unresolved: 2 ", out)  # the two names of the base fixture only
+        self.assertEqual(self.fx.q("SELECT id, job_id FROM event_queue WHERE id LIKE 'qa%' ORDER BY id"), [("qa1", WS), ("qa2", WS), ("qa3", WS)])
+        self.assertEqual(self.fx.q("SELECT job_id FROM event_outcomes WHERE event_id = 'ea'"), [(WS,)])
+        self.assertEqual(self.fx.q("SELECT job_id FROM schedules WHERE job = 'assistant'"), [(WS,)])
+        self.assertEqual(self.fx.q("SELECT COUNT(*) FROM job_index WHERE name = 'assistant'"), [(0,)])
+        log = self.fx.q("SELECT entity_id, attrs_json FROM event_log WHERE entity IN ('job', 'queue') AND attrs_json LIKE '%assistant%' ORDER BY seq")
+        want = f'{{"job_id":"{WS}","job_name":"assistant","workspace":"{WS}"}}'
+        self.assertEqual(log, [(WS, want), ("qa1", want)])
 
     def test_second_apply_changes_nothing(self):
         self.assertEqual(self.fx.run("--apply")[0], 0)

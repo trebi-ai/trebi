@@ -89,6 +89,13 @@ V41_COLUMNS = {
 
 # Tables with a job_index name in `job`. inbox_items.job is nullable.
 JOB_TABLES = ("runs", "event_queue", "event_outcomes", "schedules", "inbox_items", "requests")
+# Rows of the workspace assistant: job_id is the workspace ID, with no job_index row.
+ASSISTANT = "assistant"
+ASSISTANT_ROWS = {
+    "event_queue": "(job = 'assistant' OR kind = 'assistant')",
+    "event_outcomes": "job = 'assistant'",
+    "schedules": "job = 'assistant'",
+}
 # Tables with a short agent name in `agent`. email_messages.agent '' stays NULL.
 AGENT_TABLES = ("agent_proposals", "email_messages")
 
@@ -490,7 +497,8 @@ class Migration:
     def _table_names(self) -> set[tuple[str, str]]:
         out: set[tuple[str, str]] = set()
         for t in JOB_TABLES:
-            out.update(self.db.execute(f"SELECT DISTINCT workspace_id, job FROM {t} WHERE job_id IS NULL AND job IS NOT NULL AND job <> '' AND workspace_id IS NOT NULL"))
+            skip = f" AND NOT {ASSISTANT_ROWS[t]}" if t in ASSISTANT_ROWS else ""
+            out.update(self.db.execute(f"SELECT DISTINCT workspace_id, job FROM {t} WHERE job_id IS NULL AND job IS NOT NULL AND job <> '' AND workspace_id IS NOT NULL{skip}"))
         for t in AGENT_TABLES:
             for ws, a in self.db.execute(f"SELECT DISTINCT workspace_id, agent FROM {t} WHERE agent_id IS NULL AND agent <> ''"):
                 out.add((ws, agent_index_name(a)))
@@ -527,11 +535,13 @@ class Migration:
             "WHERE owner <> '' AND owner_id = '' AND EXISTS (SELECT 1 FROM job_index a WHERE a.workspace_id = job_index.workspace_id AND a.name = job_index.owner AND a.id IS NOT NULL)"
         )
         f["job_index"] = f.get("job_index", 0) + cur.rowcount
+        for t, cond in ASSISTANT_ROWS.items():
+            f[t] = self.db.execute(f"UPDATE {t} SET job_id = workspace_id WHERE job_id IS NULL AND {cond}").rowcount
         sub = "(SELECT j.id FROM job_index j WHERE j.workspace_id = {t}.workspace_id AND j.name = {n})"
         for t in JOB_TABLES:
             q = sub.format(t=t, n=f"{t}.job")
             cur = self.db.execute(f"UPDATE {t} SET job_id = {q} WHERE job_id IS NULL AND job IS NOT NULL AND job <> '' AND {q} IS NOT NULL")
-            f[t] = cur.rowcount
+            f[t] = f.get(t, 0) + cur.rowcount
         agent_expr = "CASE WHEN {t}.{c} LIKE 'agents/%' THEN {t}.{c} ELSE 'agents/' || {t}.{c} END"
         for t in AGENT_TABLES:
             q = sub.format(t=t, n=agent_expr.format(t=t, c="agent"))
@@ -568,6 +578,8 @@ class Migration:
         return r[0] if r and r[0] else None
 
     def _lookup_job(self, ws: str, name: str, run_job: str | None, want: set) -> str | None:
+        if name == ASSISTANT:
+            return ws
         v = self.ids.get((ws, name))
         if v:
             return v
@@ -711,7 +723,8 @@ class Migration:
             checks.append((f"{t}.agent_id is NULL", f"SELECT workspace_id, agent FROM {t} WHERE agent_id IS NULL AND agent <> ''"))
         refs = [(t, "job_id") for t in JOB_TABLES] + [(t, "agent_id") for t in AGENT_TABLES] + [("conversations", "operator_id"), ("job_index", "owner_id")]
         for t, c in refs:
-            checks.append((f"{t}.{c} is not in job_index", f"SELECT {c} FROM {t} WHERE {c} IS NOT NULL AND {c} <> '' AND {c} NOT IN (SELECT id FROM job_index WHERE id IS NOT NULL)"))
+            own = f" AND NOT ({ASSISTANT_ROWS[t]} AND {c} = workspace_id)" if t in ASSISTANT_ROWS else ""
+            checks.append((f"{t}.{c} is not in job_index", f"SELECT {c} FROM {t} WHERE {c} IS NOT NULL AND {c} <> '' AND {c} NOT IN (SELECT id FROM job_index WHERE id IS NOT NULL){own}"))
         for t, c in refs[len(JOB_TABLES) :]:
             checks.append((f"{t}.{c} is not an agent ID", f"SELECT {c} FROM {t} WHERE {c} IS NOT NULL AND {c} <> '' AND {c} NOT LIKE 'agt\\_%' ESCAPE '\\'"))
         for label, q in checks:
