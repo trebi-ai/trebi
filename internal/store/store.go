@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -141,6 +142,12 @@ func migrate(d *sql.DB) error {
 		if err != nil {
 			return err
 		}
+		if version == idRebuildVersion {
+			if err := idsFilled(tx); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+		}
 		if _, err := tx.Exec(steps[i]); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("migration v%d: %w", version, err)
@@ -153,6 +160,44 @@ func migrate(d *sql.DB) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("committing migration v%d: %w", version, err)
 		}
+	}
+	return nil
+}
+
+// idRebuildVersion is the migration that drops the job name columns.
+const idRebuildVersion = 42
+
+// ErrIDMigration stops the daemon on a database that has name references
+// with no ID. The ID migration script fills them.
+var ErrIDMigration = errors.New("the database needs a one-time ID migration. Run: uv run scripts/migrate-ids.py --apply")
+
+// idsFilled reports whether the v42 rebuild can run: each required ID
+// column is filled. A new install has no rows, so it passes.
+func idsFilled(tx *sql.Tx) error {
+	checks := []struct{ table, where string }{
+		{"job_index", "id IS NULL OR (owner <> '' AND owner_id = '')"},
+		{"runs", "job_id IS NULL"},
+		{"event_queue", "job_id IS NULL"},
+		{"event_outcomes", "job_id IS NULL"},
+		{"schedules", "job_id IS NULL"},
+		{"inbox_items", "job_id IS NULL AND COALESCE(job, '') <> ''"},
+		{"requests", "job_id IS NULL"},
+		{"agent_proposals", "agent_id IS NULL"},
+		{"conversations", "operator <> '' AND operator_id = ''"},
+		{"email_messages", "agent_id IS NULL AND agent <> ''"},
+	}
+	var missing []string
+	for _, c := range checks {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM ` + c.table + ` WHERE ` + c.where).Scan(&n); err != nil {
+			return fmt.Errorf("check %s ids: %w", c.table, err)
+		}
+		if n > 0 {
+			missing = append(missing, fmt.Sprintf("%s %d", c.table, n))
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w (rows with no ID: %s)", ErrIDMigration, strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -303,4 +348,26 @@ func (s *Store) PruneIdempotent(ctx context.Context, retention time.Duration) (i
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// JobNameSQL is a select expression for the name of the job or agent that
+// idCol refers to. A workspace ID in idCol is the workspace assistant.
+func JobNameSQL(idCol string) string {
+	return `COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = ` + idCol + `), ` +
+		`CASE WHEN SUBSTR(` + idCol + `, 1, 3) = 'ws_' THEN 'assistant' ELSE '' END)`
+}
+
+// JobRefSQL is a condition that matches idCol to one job or agent by ID, or
+// by its live name in the workspace of wsCol. It takes the reference twice.
+func JobRefSQL(idCol, wsCol string) string {
+	return `(` + idCol + ` = ? OR ` + idCol + ` IN (SELECT ji.id FROM job_index ji WHERE ji.workspace_id = ` + wsCol +
+		` AND ji.name = ? AND ji.retired_at IS NULL))`
+}
+
+// OwnerRefSQL is a condition that matches idCol to an agent (ID or index
+// name) or to a job that the agent owns. It takes the reference four times.
+func OwnerRefSQL(idCol, wsCol string) string {
+	agent := `(SELECT o.id FROM job_index o WHERE o.id = ? OR (o.workspace_id = ` + wsCol +
+		` AND o.name = ? AND o.retired_at IS NULL))`
+	return `(` + idCol + ` IN ` + agent + ` OR ` + idCol + ` IN (SELECT ji.id FROM job_index ji WHERE ji.owner_id IN ` + agent + `))`
 }

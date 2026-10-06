@@ -10,6 +10,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
 // Gate is the ingress check of one event trigger: room, sender, from,
@@ -200,8 +201,8 @@ func (ev GateEvent) Eval(ctx context.Context, g Gate, followUp bool) GateResult 
 
 // FollowUp reports whether ev continues an open conversation of j, a job
 // with replies: continue.
-func (s *Service) FollowUp(ctx context.Context, ev GateEvent, workspaceID string, j *job.Job) (bool, error) {
-	return s.conversationOpen(ctx, ev.record, workspaceID, j)
+func (s *Service) FollowUp(ctx context.Context, ev GateEvent, row workspaces.JobRow, j *job.Job) (bool, error) {
+	return s.conversationOpen(ctx, ev.record, row, j)
 }
 
 // Vars merges the built-in vars of the event under the extract vars.

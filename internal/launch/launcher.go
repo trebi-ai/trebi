@@ -6,9 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
-	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -37,7 +35,7 @@ func (l *Launcher) FromRun(ctx context.Context, prev *runs.Run, reason runs.RunR
 	}
 	j, err := job.ParseFile(row.Path)
 	if err != nil || j == nil {
-		return runs.LaunchOpts{}, fmt.Errorf("%w: %s", ErrJobMissing, prev.Job)
+		return runs.LaunchOpts{}, fmt.Errorf("%w: %s", ErrJobMissing, prev.JobName)
 	}
 	extra := map[string]string{}
 	if prev.Trigger != nil {
@@ -55,7 +53,7 @@ func (l *Launcher) FromRun(ctx context.Context, prev *runs.Run, reason runs.RunR
 	prompt := job.ExpandPrompt(j.Prompt, j.Dir, wsPath, extra)
 	lopts := runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: prev.Workspace, Job: prev.Job, Kind: prev.Kind,
+			WorkspaceID: prev.Workspace, JobID: prev.JobID, JobName: prev.JobName, Kind: prev.Kind,
 			Reason: reason, Harness: prev.Harness,
 			PromptPreview:   prompt,
 			Inputs:          prev.Inputs,
@@ -64,7 +62,7 @@ func (l *Launcher) FromRun(ctx context.Context, prev *runs.Run, reason runs.RunR
 		},
 		Prompt: prompt,
 	}
-	kit := l.ws.OwnerKit(ctx, prev.Workspace, prev.Job)
+	kit := l.ws.OwnerKit(ctx, prev.Workspace, prev.JobName)
 	d := j.LaunchDefaultsWithKit(kit)
 	lopts.WorkingDir = d.WorkingDir
 	lopts.Env = d.Env
@@ -117,22 +115,14 @@ func (l *Launcher) Fresh(ctx context.Context, prevID, prompt string, reason runs
 }
 
 // jobRow resolves the markdown that produced prev: JOB.md for a job run,
-// AGENT.md for an agent run, TREBI.md for an assistant run.
+// AGENT.md for an agent run.
 func (l *Launcher) jobRow(ctx context.Context, prev *runs.Run) (workspaces.JobRow, error) {
-	rows, err := l.ws.ListJobs(ctx, prev.Workspace)
+	row, err := l.ws.JobByID(ctx, prev.JobID)
 	if err != nil {
 		return workspaces.JobRow{}, err
 	}
-	for _, row := range rows {
-		switch {
-		case prev.Kind == runs.KindAgent && row.Kind == "agent" &&
-			(row.Name == prev.Job || strings.TrimPrefix(row.Name, "agents/") == prev.Job):
-			return row, nil
-		case prev.Kind == dispatch.KindAssistant && row.Kind == "assistant":
-			return row, nil
-		case prev.Kind != runs.KindAgent && prev.Kind != dispatch.KindAssistant && row.Kind == "job" && row.Name == prev.Job:
-			return row, nil
-		}
+	if row == nil || row.RetiredAt != "" {
+		return workspaces.JobRow{}, fmt.Errorf("%w: %s", ErrJobMissing, prev.JobName)
 	}
-	return workspaces.JobRow{}, fmt.Errorf("%w: %s", ErrJobMissing, prev.Job)
+	return *row, nil
 }

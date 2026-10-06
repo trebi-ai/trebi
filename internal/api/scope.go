@@ -16,7 +16,8 @@ import (
 type agentScope struct {
 	workspaceID string
 	runID       string
-	agent       string // agents/<id>
+	agentID     string
+	agent       string // agents/<name>
 }
 
 // scopeFrom returns the scope of an agent caller. Jobs, the assistant, and
@@ -30,15 +31,15 @@ func scopeFrom(ctx context.Context) (agentScope, bool) {
 	if short == a.Job {
 		return agentScope{}, false
 	}
-	return agentScope{workspaceID: a.WorkspaceID, runID: a.RunID, agent: "agents/" + short}, true
+	return agentScope{workspaceID: a.WorkspaceID, runID: a.RunID, agentID: a.JobID, agent: "agents/" + short}, true
 }
 
-func (a agentScope) canActOnRun(run runs.Run, owner string) bool {
-	return run.Workspace == a.workspaceID && (run.ID == a.runID || run.Job == a.agent || owner == a.agent)
+func (a agentScope) canActOnRun(run runs.Run, ownerID string) bool {
+	return run.Workspace == a.workspaceID && (run.ID == a.runID || run.JobID == a.agentID || ownerID == a.agentID)
 }
 
 func (a agentScope) canWriteJob(row workspaces.JobRow) bool {
-	return row.WorkspaceID == a.workspaceID && row.Owner == a.agent
+	return row.WorkspaceID == a.workspaceID && row.OwnerID == a.agentID
 }
 
 func (a agentScope) canWritePath(workspaceID, rel string) bool {
@@ -93,11 +94,11 @@ func (s *Server) requireAgentRunScope(w http.ResponseWriter, r *http.Request, ru
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")
 		return false
 	}
-	var owner string
-	if row, err := s.findJobRow(r.Context(), run.Workspace, run.Job); err == nil {
-		owner = row.Owner
+	var ownerID string
+	if row, err := s.ws.JobByID(r.Context(), run.JobID); err == nil {
+		ownerID = row.OwnerID
 	}
-	if scope.canActOnRun(*run, owner) {
+	if scope.canActOnRun(*run, ownerID) {
 		return true
 	}
 	writeForbidden(w, "agent may change only its own runs")
@@ -109,15 +110,14 @@ func (s *Server) requireAgentQueueScope(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return true
 	}
-	var wsID, job string
-	err := s.st.DB().QueryRowContext(r.Context(), `SELECT workspace_id, job FROM event_queue WHERE id=?`, id).
-		Scan(&wsID, &job)
+	var jobID string
+	err := s.st.DB().QueryRowContext(r.Context(), `SELECT job_id FROM event_queue WHERE id=?`, id).Scan(&jobID)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "queue item not found")
 		return false
 	}
-	row, err := s.findJobRow(r.Context(), wsID, job)
-	if err != nil || !scope.canWriteJob(row) {
+	row, err := s.ws.JobByID(r.Context(), jobID)
+	if err != nil || !scope.canWriteJob(*row) {
 		writeForbidden(w, "agent may change only queue items for jobs it owns")
 		return false
 	}

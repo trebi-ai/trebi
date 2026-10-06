@@ -77,6 +77,7 @@ func (h HarnessSpec) MarshalYAML() (any, error) {
 
 // Frontmatter is the canonical YAML block.
 type Frontmatter struct {
+	ID             string            `yaml:"id,omitempty"`
 	WorkingDir     string            `yaml:"working_dir"`
 	Harness        HarnessSpec       `yaml:"harness"`
 	Runtime        string            `yaml:"runtime"`
@@ -249,6 +250,9 @@ type WhenYAML struct {
 
 // Job is the resolved in-memory definition.
 type Job struct {
+	// ID is the static identity from the id key. Empty when IDState is not IDOK.
+	ID            string
+	IDState       IDState
 	Name          string
 	FilePath      string
 	Dir           string
@@ -662,33 +666,32 @@ func ParseFile(filePath string) (*Job, error) {
 
 // ParseBytes parses content; filePath is used for errors and name derivation.
 func ParseBytes(filePath string, data []byte) (*Job, error) {
-	sum := sha256.Sum256(data)
-	hash := hex.EncodeToString(sum[:8])
+	hash := fileHash(data)
 
 	if err := rejectLegacyKeys(data); err != nil {
-		return parseFail(filePath, hash, err)
+		return parseFail(filePath, data, hash, err)
 	}
 
 	var fm Frontmatter
 	body, err := frontmatter.Parse(bytes.NewReader(data), &fm, frontmatter.NewFormat("---", "---", yaml.Unmarshal))
 	if err != nil {
-		return parseFail(filePath, hash, fmt.Errorf("parsing frontmatter in %s: %w", filePath, err))
+		return parseFail(filePath, data, hash, fmt.Errorf("parsing frontmatter in %s: %w", filePath, err))
 	}
 
 	// session.timeout is legacy — detect raw.
 	if strings.Contains(string(data), "session:") && hasLegacySessionTimeout(data) {
-		return parseFail(filePath, hash, fmt.Errorf("legacy key session.timeout: use session.idle_timeout"))
+		return parseFail(filePath, data, hash, fmt.Errorf("legacy key session.timeout: use session.idle_timeout"))
 	}
 
 	// An agent name: that differs from the folder basename is a validation
 	// error (C.2). The row stays indexed with parse_error.
 	if isAgentFile(filePath) && fm.Name != "" && fm.Name != filepath.Base(filepath.Dir(filePath)) {
-		return parseFail(filePath, hash, fmt.Errorf("agent name %q must equal folder name %q", fm.Name, filepath.Base(filepath.Dir(filePath))))
+		return parseFail(filePath, data, hash, fmt.Errorf("agent name %q must equal folder name %q", fm.Name, filepath.Base(filepath.Dir(filePath))))
 	}
 
 	accept, rawAccept, acceptSet, err := normalizeOperatorKeys(filePath, &fm)
 	if err != nil {
-		return parseFail(filePath, hash, err)
+		return parseFail(filePath, data, hash, err)
 	}
 	var style *StyleYAML
 	if fm.Email != nil {
@@ -697,7 +700,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 
 	memCfg, err := resolveMemory(fm.Memory)
 	if err != nil {
-		return parseFail(filePath, hash, fmt.Errorf("memory: %w", err))
+		return parseFail(filePath, data, hash, fmt.Errorf("memory: %w", err))
 	}
 	// Agents default to memory on (C.3); jobs stay opt-in.
 	if fm.Memory == nil && isAgentFile(filePath) {
@@ -706,16 +709,16 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 
 	triggers, err := normalizeTriggers(fm.Triggers)
 	if err != nil {
-		return parseFail(filePath, hash, fmt.Errorf("triggers: %w", err))
+		return parseFail(filePath, data, hash, fmt.Errorf("triggers: %w", err))
 	}
 	if kindFromPath(filePath) == "agent" && slices.ContainsFunc(triggers, Trigger.Continues) {
-		return parseFail(filePath, hash, fmt.Errorf("triggers: %w", errRepliesNotJob))
+		return parseFail(filePath, data, hash, fmt.Errorf("triggers: %w", errRepliesNotJob))
 	}
 	if err := ValidateIfRunning(fm.Session.IfRunning); err != nil {
-		return parseFail(filePath, hash, fmt.Errorf("session: %w", err))
+		return parseFail(filePath, data, hash, fmt.Errorf("session: %w", err))
 	}
 	if _, err := fm.Session.ContinueMS(); err != nil {
-		return parseFail(filePath, hash, fmt.Errorf("session: %w", err))
+		return parseFail(filePath, data, hash, fmt.Errorf("session: %w", err))
 	}
 
 	// A name: mismatch with the path-derived name is soft (migration reports
@@ -724,11 +727,11 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 
 	route, err := notify.ParseSteps(&fm.Notify)
 	if err != nil {
-		return parseFail(filePath, hash, err)
+		return parseFail(filePath, data, hash, err)
 	}
 	contact, err := notify.ParseContact(&fm.Contact)
 	if err != nil {
-		return parseFail(filePath, hash, err)
+		return parseFail(filePath, data, hash, err)
 	}
 	j := &Job{
 		Name:           name,
@@ -766,18 +769,37 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		NotifySet:      route != nil,
 		Contact:        contact,
 	}
+	j.setID(fm.ID)
 	return j, nil
 }
 
-func parseFail(path, hash string, err error) (*Job, error) {
-	return &Job{
+func fileHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:8])
+}
+
+func parseFail(path string, data []byte, hash string, err error) (*Job, error) {
+	j := &Job{
 		Name:       deriveName(path),
 		FilePath:   path,
 		Dir:        filepath.Dir(path),
 		ParseError: err.Error(),
 		Hash:       hash,
 		Kind:       kindFromPath(path),
-	}, err
+	}
+	j.setID(scanID(data))
+	return j, err
+}
+
+func (j *Job) setID(id string) {
+	switch {
+	case id == "":
+		j.IDState = IDMissing
+	case ValidID(j.Kind, id):
+		j.ID, j.IDState = id, IDOK
+	default:
+		j.IDState = IDInvalid
+	}
 }
 
 // ContentHash returns a short content hash for If-Match.

@@ -119,7 +119,7 @@ func (p *workspacePicker) MostActive(ctx context.Context) string {
 	var id string
 	err := p.c.Store.DB().QueryRowContext(ctx, `SELECT j.workspace_id FROM job_index j
 		JOIN workspaces w ON w.id=j.workspace_id
-		WHERE j.kind='job' AND j.active=1 AND w.orphaned=0
+		WHERE j.kind='job' AND j.active=1 AND j.retired_at IS NULL AND w.orphaned=0
 		GROUP BY j.workspace_id, w.created_at ORDER BY COUNT(*) DESC, w.created_at ASC LIMIT 1`).Scan(&id)
 	if err != nil {
 		return ""

@@ -139,7 +139,7 @@ func (m *Manager) prompt(ctx context.Context, convID string, in wire.PromptInput
 	if err != nil {
 		return wire.PromptResult{}, err
 	}
-	if conv.Operator != "" {
+	if conv.OperatorID != "" {
 		return wire.PromptResult{}, fmt.Errorf("%w: agent conversations do not use the assistant", errValidation)
 	}
 	eff, err := m.settings.Effective(ctx, conv.Workspace)

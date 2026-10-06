@@ -618,17 +618,18 @@ func (c *ControlPlane) findJob(ctx context.Context, ws, name string) (*job.Job, 
 	return c.findJobKind(ctx, ws, name, "")
 }
 
-// findJobKind matches name and, when kind is set, job_index.kind.
-func (c *ControlPlane) findJobKind(ctx context.Context, ws, name, kind string) (*job.Job, string) {
+// findJobKind matches ref (an ID or a name) and, when kind is set,
+// job_index.kind.
+func (c *ControlPlane) findJobKind(ctx context.Context, ws, ref, kind string) (*job.Job, string) {
 	jobs, _ := c.Workspaces.ListJobs(ctx, ws)
 	for _, row := range jobs {
-		if row.Name != name {
+		if row.ID != ref && row.Name != ref {
 			continue
 		}
 		if kind != "" && row.Kind != kind {
 			continue
 		}
-		key := row.WorkspaceID + "\x00" + row.Name + "\x00" + row.Kind
+		key := row.ID
 		c.jobCacheMu.Lock()
 		if c.jobCache == nil {
 			c.jobCache = map[string]parsedJob{}

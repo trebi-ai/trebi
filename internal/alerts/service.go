@@ -136,7 +136,8 @@ type InboxItem struct {
 	Body           string        `json:"body,omitempty"`
 	Hint           string        `json:"hint,omitempty"`
 	Workspace      string        `json:"workspace,omitempty"`
-	Job            string        `json:"job,omitempty"`
+	JobID          string        `json:"job_id,omitempty"`
+	JobName        string        `json:"job_name,omitempty"`
 	RunID          string        `json:"run_id,omitempty"`
 	Connector      string        `json:"connector,omitempty"`
 	AlertKind      string        `json:"alert_kind,omitempty"`
@@ -172,13 +173,15 @@ type RaiseOpts struct {
 	Hint        string
 	RunID       string
 	WorkspaceID string
-	JobName     string
-	Connector   string
-	Harness     string
-	TraceID     string
-	EndReason   string
-	SessionID   string
-	RequestID   string
+	// JobID and JobName name the job or agent. Raise fills one from the other.
+	JobID     string
+	JobName   string
+	Connector string
+	Harness   string
+	TraceID   string
+	EndReason string
+	SessionID string
+	RequestID string
 	// EscalateAt arms the escalation sweep at this time instead of the
 	// immediate notify chain (plan M5). Zero leaves the item tray-only.
 	EscalateAt time.Time
@@ -257,7 +260,7 @@ type FailureRouter interface {
 }
 
 type RunFailure struct {
-	RunID, WorkspaceID, Job, Owner, EndReason string
+	RunID, WorkspaceID, JobID, JobName, OwnerID, EndReason string
 }
 
 func (s *Service) SetFailureRouter(r FailureRouter) { s.failureRouter = r }
@@ -272,7 +275,9 @@ func (s *Service) SetProposalContent(fn func(ctx context.Context, id string) (st
 type waitingEp struct {
 	since   time.Time
 	runID   string
-	ws, job string
+	ws      string
+	jobID   string
+	jobName string
 	trace   string
 	raised  bool
 }
@@ -282,7 +287,8 @@ type scanner interface {
 }
 
 const inboxCols = `id, kind, status, COALESCE(subject,''), COALESCE(title,''), COALESCE(body,''),
-	COALESCE(hint,''), COALESCE(run_id,''), COALESCE(workspace_id,''), COALESCE(job,''),
+	COALESCE(hint,''), COALESCE(run_id,''), COALESCE(workspace_id,''), COALESCE(job_id,''),
+	COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = inbox_items.job_id), ''),
 	COALESCE(alert_kind,''), COALESCE(connector,''), COALESCE(actions,''), COALESCE(trace_id,''),
 	COALESCE(email_message_id,''), escalates_at, revision, created_at, updated_at, resolved_at,
 	COALESCE(delivery,''), COALESCE(request_id,'')`
@@ -314,6 +320,9 @@ func (s *Service) Raise(ctx context.Context, opts RaiseOpts) (string, error) {
 	}
 	if !spec.allowsEndReason(opts.EndReason) {
 		return "", nil
+	}
+	if err := s.fillJob(ctx, &opts); err != nil {
+		return "", err
 	}
 	if opts.Subject == "" {
 		opts.Subject = opts.defaultSubject()
@@ -542,11 +551,11 @@ func (s *Service) insertItem(ctx context.Context, spec KindSpec, opts RaiseOpts)
 	actJSON, _ := json.Marshal(actions)
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO inbox_items (
-			id, kind, status, subject, title, body, hint, run_id, workspace_id, job,
+			id, kind, status, subject, title, body, hint, run_id, workspace_id, job_id,
 			alert_kind, connector, actions, trace_id, request_id, revision, created_at, updated_at
 		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
 			id, string(spec.InboxKind), string(InboxUnread), opts.Subject, opts.Title, opts.Body, opts.Hint,
-			store.NullStr(opts.RunID), store.NullStr(opts.WorkspaceID), store.NullStr(opts.JobName),
+			store.NullStr(opts.RunID), store.NullStr(opts.WorkspaceID), store.NullStr(opts.JobID),
 			string(opts.Kind), store.NullStr(opts.Connector), string(actJSON), store.NullStr(opts.TraceID),
 			store.NullStr(opts.RequestID), nowStr, nowStr)
 		return err
@@ -729,16 +738,16 @@ func runFailedActions(runID string) []InboxAction {
 
 func scanInbox(row scanner, includeBody bool) (*InboxItem, error) {
 	var it InboxItem
-	var sub, title, body, hint, runID, ws, job, ak, connector, acts, trace, emailMsgID string
+	var sub, title, body, hint, runID, ws, jobID, jobName, ak, connector, acts, trace, emailMsgID string
 	var esc, resolved sql.NullString
 	var created, updated string
-	err := row.Scan(&it.ID, &it.Kind, &it.Status, &sub, &title, &body, &hint, &runID, &ws, &job,
+	err := row.Scan(&it.ID, &it.Kind, &it.Status, &sub, &title, &body, &hint, &runID, &ws, &jobID, &jobName,
 		&ak, &connector, &acts, &trace, &emailMsgID, &esc, &it.Revision, &created, &updated, &resolved, &it.Delivery, &it.RequestID)
 	if err != nil {
 		return nil, err
 	}
 	it.Subject, it.Title, it.Hint = sub, title, hint
-	it.RunID, it.Workspace, it.Job = runID, ws, job
+	it.RunID, it.Workspace, it.JobID, it.JobName = runID, ws, jobID, jobName
 	it.AlertKind, it.Connector, it.TraceID = ak, connector, trace
 	it.EmailMessageID = emailMsgID
 	if strings.HasPrefix(sub, "proposal/") {
@@ -778,6 +787,29 @@ func unmarshalActions(raw string) []InboxAction {
 
 func parseTime(s string) time.Time { return store.ParseTS(s) }
 
+// jobRef is the job part of a subject: the ID, which a rename keeps.
+func (o RaiseOpts) jobRef() string { return firstNonEmpty(o.JobID, o.JobName) }
+
+// fillJob resolves JobID from JobName (an index name or a short agent name)
+// or JobName from JobID. A name with no live row keeps an empty JobID.
+func (s *Service) fillJob(ctx context.Context, o *RaiseOpts) error {
+	db := s.st.DB()
+	switch {
+	case o.JobID == "" && o.JobName != "" && o.WorkspaceID != "":
+		err := db.QueryRowContext(ctx, `SELECT id FROM job_index WHERE workspace_id=? AND (name=? OR name=?) AND retired_at IS NULL
+			ORDER BY kind LIMIT 1`, o.WorkspaceID, o.JobName, "agents/"+o.JobName).Scan(&o.JobID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	case o.JobID != "" && o.JobName == "":
+		err := db.QueryRowContext(ctx, `SELECT name FROM job_index WHERE id=?`, o.JobID).Scan(&o.JobName)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (o RaiseOpts) defaultSubject() string {
 	switch o.Kind {
 	case KindWaiting:
@@ -789,13 +821,13 @@ func (o RaiseOpts) defaultSubject() string {
 	case KindConnectorUnhealthy, KindConnectorAuthRequired, KindConnectorUpdate:
 		return "connector/" + o.Connector
 	case KindRunFailed:
-		return "job/" + o.WorkspaceID + "/" + o.JobName
+		return "job/" + o.WorkspaceID + "/" + o.jobRef()
 	case KindAgentEscalation:
-		return "agent/" + o.WorkspaceID + "/" + o.JobName
+		return "agent/" + o.WorkspaceID + "/" + o.jobRef()
 	case KindBudgetExceeded:
-		return "budget/" + o.WorkspaceID + "/" + o.JobName
+		return "budget/" + o.WorkspaceID + "/" + o.jobRef()
 	case KindMemoryInvalid:
-		return "memory/" + o.WorkspaceID + "/" + o.JobName
+		return "memory/" + o.WorkspaceID + "/" + o.jobRef()
 	case KindResumeExhausted:
 		if o.SessionID != "" {
 			return "session/" + o.SessionID
@@ -806,9 +838,9 @@ func (o RaiseOpts) defaultSubject() string {
 	case KindSendFailed:
 		return "outbox"
 	case KindActionsInvalid:
-		return "actions/" + o.WorkspaceID + "/" + o.JobName
+		return "actions/" + o.WorkspaceID + "/" + o.jobRef()
 	case KindTriggerFlood:
-		return "flood/" + o.WorkspaceID + "/" + o.JobName
+		return "flood/" + o.WorkspaceID + "/" + o.jobRef()
 	case KindRequest, KindRequestUndelivered:
 		return "request/" + o.RequestID
 	}

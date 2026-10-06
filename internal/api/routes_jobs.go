@@ -59,7 +59,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		q:       strings.ToLower(strings.TrimSpace(q.Get("q"))),
 		harness: strings.TrimSpace(q.Get("harness")),
 		active:  q.Get("active"),
-		owner:   request.AgentIndexName(strings.TrimSpace(q.Get("owner"))),
+		owner:   ownerFilter(strings.TrimSpace(q.Get("owner"))),
 	}
 	if !filter.validActive() {
 		writeErr(w, http.StatusBadRequest, "validation", "active must be true or false")
@@ -73,7 +73,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		if row.Kind != "job" || !filter.keep(row) {
 			continue
 		}
-		key := row.WorkspaceID + "/" + row.Name
+		key := row.ID
 		waiting := false
 		for _, id := range live[key] {
 			if s.runs.SessionState(id) == runs.SessionWaiting {
@@ -83,10 +83,10 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		}
 		status := runs.DeriveJobDisplayStatus(row.Active, len(live[key]), waiting, last[key])
 		item := map[string]any{
-			"workspace_id": row.WorkspaceID, "name": row.Name, "path": row.Path,
+			"id": row.ID, "workspace_id": row.WorkspaceID, "name": row.Name, "path": row.Path,
 			"kind": row.Kind, "active": row.Active, "harness": row.Harness,
-			"owner": row.Owner,
-			"hash":  row.Hash, "parse_error": row.ParseError, "status": status,
+			"owner_id": row.OwnerID, "owner_name": row.OwnerName,
+			"hash": row.Hash, "parse_error": row.ParseError, "status": status,
 			"last_run_at": "", "last_status": "", "next_due_at": "", "mtd_usd": 0.0,
 			"triggers": []string{},
 		}
@@ -102,7 +102,15 @@ type jobFilter struct {
 	q       string
 	harness string
 	active  string
-	owner   string // agent index name (agents/<short>)
+	owner   string // agent ID or index name (agents/<short>)
+}
+
+// ownerFilter keeps an agent ID and makes a name an index name.
+func ownerFilter(ref string) string {
+	if job.LooksLikeID(ref) {
+		return ref
+	}
+	return request.AgentIndexName(ref)
 }
 
 func (f jobFilter) validActive() bool {
@@ -119,7 +127,7 @@ func (f jobFilter) keep(row workspaces.JobRow) bool {
 	if f.active != "" && row.Active != (f.active == "true") {
 		return false
 	}
-	if f.owner != "" && row.Owner != f.owner {
+	if f.owner != "" && row.OwnerID != f.owner && row.OwnerIndex() != f.owner {
 		return false
 	}
 	return true
@@ -133,7 +141,7 @@ func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path 
 	due := map[string]string{}
 	if rows, err := s.sched.List(ctx, schedule.ListOpts{Workspace: wsID, Limit: maxListLimit}); err == nil {
 		for _, row := range rows {
-			k := row.WorkspaceID + "/" + row.Job
+			k := row.JobID
 			if due[k] == "" || (row.NextDueAt != "" && row.NextDueAt < due[k]) {
 				due[k] = row.NextDueAt
 			}
@@ -144,7 +152,7 @@ func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path 
 	lastAt := map[string]string{}
 	monthStart := time.Now().UTC().Format("2006-01")
 	for _, run := range recent {
-		k := run.Workspace + "/" + run.Job
+		k := run.JobID
 		if lastAt[k] == "" {
 			lastAt[k] = run.StartedAt.UTC().Format(time.RFC3339)
 		}
@@ -186,7 +194,8 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 	// Index name, not ParseFile's folder basename. Runs, list, and pause
 	// all key off row.Name (agents/watchtower/job, not job).
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
+		"id": row.ID, "name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
+		"owner_id": row.OwnerID, "owner_name": row.OwnerName,
 		"harness": j.Harness, "model": j.Model, "effort": j.Effort,
 		"active": !j.Disabled, "hash": doc.Hash,
 		"parse_error": j.ParseError, "prompt": j.Prompt,
@@ -227,10 +236,10 @@ func (s *Server) kitSource(ctx context.Context, row workspaces.JobRow) map[strin
 
 func (s *Server) kitSourceFrom(kits map[string]*job.KitYAML, row workspaces.JobRow) map[string]string {
 	out := map[string]string{}
-	if row.Owner == "" {
+	if row.OwnerIndex() == "" {
 		return out
 	}
-	kit := kits[row.Owner]
+	kit := kits[row.OwnerIndex()]
 	if kit == nil {
 		return out
 	}
@@ -360,7 +369,7 @@ func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request) {
 	list := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		list = append(list, map[string]any{
-			"workspace": row.WorkspaceID, "job": row.Job, "idx": row.Idx, "spec": row.Spec,
+			"workspace": row.WorkspaceID, "job_id": row.JobID, "job_name": row.JobName, "idx": row.Idx, "spec": row.Spec,
 			"timezone": row.Timezone, "catch_up": row.CatchUp,
 			"next_due_at": row.NextDueAt, "last_fired_at": row.LastFiredAt,
 		})
@@ -385,7 +394,7 @@ func (e *ambiguousJobError) Error() string {
 // findJobRow resolves a job by (workspace, name). B4: zero matches means
 // not found; duplicates without a workspace disambiguator are ambiguous.
 func (s *Server) findJobRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
-	return s.findIndexRow(ctx, wsID, func(row workspaces.JobRow) bool {
+	return s.findIndexRow(ctx, wsID, name, func(row workspaces.JobRow) bool {
 		return row.Name == name
 	}, "job")
 }
@@ -397,7 +406,7 @@ func (s *Server) findJobRow(ctx context.Context, wsID, name string) (workspaces.
 // index name resolves at most one row -- and this resolver is used only for
 // file jails, never for launches.
 func (s *Server) findFileRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
-	return s.findIndexRow(ctx, wsID, func(row workspaces.JobRow) bool {
+	return s.findIndexRow(ctx, wsID, name, func(row workspaces.JobRow) bool {
 		return row.Name == name
 	}, "job", "agent")
 }
@@ -421,15 +430,15 @@ func (s *Server) findAssistantRow(ctx context.Context, wsID string) (workspaces.
 // (cmo) and the index name (agents/cmo) match. Kind-strict: a kind=job
 // launch can never pick up an agent row.
 func (s *Server) findAgentRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
-	return s.findIndexRow(ctx, wsID, func(row workspaces.JobRow) bool {
+	return s.findIndexRow(ctx, wsID, name, func(row workspaces.JobRow) bool {
 		return row.Name == name || strings.TrimPrefix(row.Name, "agents/") == name
 	}, "agent")
 }
 
 // findIndexRow is the kind-scoped job_index lookup: only rows whose kind is
-// in kinds match. Zero matches is not found; duplicates without a workspace
+// in kinds match. A ref that is the ID of a row always matches. Zero matches is not found; duplicates without a workspace
 // disambiguator are ambiguous.
-func (s *Server) findIndexRow(ctx context.Context, wsID string, match func(workspaces.JobRow) bool, kinds ...string) (workspaces.JobRow, error) {
+func (s *Server) findIndexRow(ctx context.Context, wsID, ref string, match func(workspaces.JobRow) bool, kinds ...string) (workspaces.JobRow, error) {
 	wsID = s.workspaceID(ctx, wsID)
 	rows, err := s.ws.ListJobs(ctx, wsID)
 	if err != nil {
@@ -437,7 +446,7 @@ func (s *Server) findIndexRow(ctx context.Context, wsID string, match func(works
 	}
 	var matches []workspaces.JobRow
 	for _, row := range rows {
-		if !slices.Contains(kinds, row.Kind) || !match(row) {
+		if !slices.Contains(kinds, row.Kind) || (row.ID != ref && !match(row)) {
 			continue
 		}
 		matches = append(matches, row)

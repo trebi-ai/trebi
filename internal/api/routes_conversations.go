@@ -12,6 +12,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/outbox"
 )
 
@@ -42,12 +43,21 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	operatorID := q.Get("operator")
+	if operatorID != "" && !job.LooksLikeID(operatorID) {
+		row, err := s.findAgentRow(r.Context(), q.Get("workspace"), strings.TrimPrefix(operatorID, "agents/"))
+		if err != nil {
+			writeResolveErr(w, err, "agent")
+			return
+		}
+		operatorID = row.ID
+	}
 	list, err := s.conv.List(r.Context(), conversations.ListOpts{
-		Workspace: q.Get("workspace"),
-		Channel:   q.Get("channel"),
-		Operator:  q.Get("operator"),
-		Limit:     parseLimit(r),
-		Cursor:    cursor,
+		Workspace:  q.Get("workspace"),
+		Channel:    q.Get("channel"),
+		OperatorID: operatorID,
+		Limit:      parseLimit(r),
+		Cursor:     cursor,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -104,7 +114,7 @@ func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request
 			writeResolveErr(w, err, "agent")
 			return
 		}
-		operator = row.Name
+		operator = row.ID
 	} else {
 		if body.Harness != "" && !assistant.KnownHarness(body.Harness) {
 			writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("unknown harness %q", body.Harness))
@@ -119,7 +129,7 @@ func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request
 	}
 	c, err := s.conv.Create(r.Context(), conversations.CreateOpts{
 		Workspace: body.Workspace, Title: body.Title,
-		Operator: operator, OriginChannel: body.OriginChannel, Activate: body.Activate,
+		OperatorID: operator, OriginChannel: body.OriginChannel, Activate: body.Activate,
 	})
 	if s.convErr(w, err, "workspace not found") {
 		return
@@ -157,7 +167,7 @@ func (s *Server) handleAgentConversations(w http.ResponseWriter, r *http.Request
 		return
 	}
 	list, err := s.conv.List(r.Context(), conversations.ListOpts{
-		Workspace: ws.ID, Operator: row.Name,
+		Workspace: ws.ID, OperatorID: row.ID,
 		Limit: parseLimit(r), Cursor: cursor,
 	})
 	if err != nil {
@@ -216,7 +226,7 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 func (s *Server) conversationOwned(w http.ResponseWriter, r *http.Request) bool {
 	if scope, ok := scopeFrom(r.Context()); ok {
 		c, err := s.conv.Get(r.Context(), r.PathValue("id"))
-		if err != nil || c.Workspace != scope.workspaceID || c.Operator != scope.agent {
+		if err != nil || c.Workspace != scope.workspaceID || c.OperatorID != scope.agentID {
 			writeForbidden(w, "agent may act only on its own conversation")
 			return false
 		}

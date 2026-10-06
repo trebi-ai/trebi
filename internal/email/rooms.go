@@ -140,7 +140,7 @@ func (s *Service) Rooms(ctx context.Context, query string) ([]protocol.Room, err
 	}
 	rows.Close()
 	agents, err := s.st.DB().QueryContext(ctx,
-		`SELECT DISTINCT workspace_id, agent FROM email_messages WHERE COALESCE(agent,'') <> ''`)
+		`SELECT DISTINCT workspace_id, `+agentNameSQL+` FROM email_messages em WHERE em.agent_id IS NOT NULL`)
 	if err != nil {
 		return nil, fmt.Errorf("email rooms: %w", err)
 	}

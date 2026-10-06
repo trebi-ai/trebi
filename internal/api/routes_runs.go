@@ -43,6 +43,7 @@ type runCreateRequest struct {
 	Runtime         string            `json:"runtime,omitempty"` // cli|tui
 	IdempotencyKey  string            `json:"idempotency_key"`
 	conversationKey string
+	jobID           string
 }
 
 func (s *Server) routeRuns(mux *http.ServeMux) {
@@ -157,10 +158,8 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		writeResolveErr(w, rerr, "job")
 		return
 	}
-	if body.Kind == runs.KindAgent {
-		// Canonical launch takes the short name; runs and wakes carry the index name.
-		body.Job = row.Name
-	}
+	// The ref can be a short name or an ID; runs and wakes carry the index name.
+	body.Job, body.jobID = row.Name, row.ID
 	if body.Workspace == "" {
 		body.Workspace = row.WorkspaceID
 	}
@@ -347,7 +346,8 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 	lopts := runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID:     body.Workspace,
-			Job:             body.Job,
+			JobID:           body.jobID,
+			JobName:         body.Job,
 			Kind:            body.Kind,
 			Reason:          reason,
 			Harness:         harness,
@@ -524,9 +524,9 @@ func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request,
 	ctx := r.Context()
 	// Resolve job file through the A4 resolver.
 	var j *job.Job
-	var path string
+	var path, jobID string
 	if row, err := s.findJobRow(ctx, workspace, jobName); err == nil {
-		path = row.Path
+		path, jobID = row.Path, row.ID
 		if parsed, perr := job.ParseFile(row.Path); perr == nil {
 			j = parsed
 		}
@@ -559,7 +559,8 @@ func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request,
 		"dry_run":        true,
 		"fire":           fire,
 		"workspace":      workspace,
-		"job":            jobName,
+		"job_id":         jobID,
+		"job_name":       jobName,
 		"kind":           kind,
 		"reason":         reason,
 		"harness":        harness,
@@ -1180,7 +1181,8 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 		item := &dispatch.QueueItem{
 			Connector:       "retry",
 			WorkspaceID:     prev.Workspace,
-			Job:             prev.Job,
+			JobID:           prev.JobID,
+			JobName:         prev.JobName,
 			Kind:            prev.Kind,
 			ConversationKey: prev.ConversationKey,
 			Status:          dispatch.QueueBlocked,

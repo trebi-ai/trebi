@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 40
+const SchemaVersion = 42
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1151,6 +1151,321 @@ ALTER TABLE outbox ADD COLUMN parts TEXT;
 		`
 ALTER TABLE email_messages ADD COLUMN body_text TEXT;
 ALTER TABLE email_messages ADD COLUMN body_html TEXT;
+`,
+		// v41: static job and agent IDs (plan 2026-10-06 Part F). Each name
+		// reference gets an ID column. scripts/migrate-ids.py fills them.
+		// The script has a copy of this step; keep the two the same.
+		`
+ALTER TABLE job_index ADD COLUMN id TEXT;
+ALTER TABLE job_index ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE job_index ADD COLUMN retired_at TEXT;
+CREATE UNIQUE INDEX job_index_id ON job_index(id) WHERE id IS NOT NULL;
+ALTER TABLE runs ADD COLUMN job_id TEXT;
+ALTER TABLE event_queue ADD COLUMN job_id TEXT;
+ALTER TABLE event_outcomes ADD COLUMN job_id TEXT;
+ALTER TABLE schedules ADD COLUMN job_id TEXT;
+ALTER TABLE inbox_items ADD COLUMN job_id TEXT;
+ALTER TABLE requests ADD COLUMN job_id TEXT;
+ALTER TABLE agent_proposals ADD COLUMN agent_id TEXT;
+ALTER TABLE conversations ADD COLUMN operator_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE email_messages ADD COLUMN agent_id TEXT;
+`,
+		// v42: the name columns go and the ID columns become required.
+		// migrate runs idsFilled first. job_index keeps the rows of
+		// deleted jobs with retired_at, so old runs keep a name.
+		`
+CREATE TABLE job_index_new (
+	id           TEXT PRIMARY KEY,
+	workspace_id TEXT NOT NULL,
+	name         TEXT NOT NULL,
+	path         TEXT NOT NULL,
+	kind         TEXT NOT NULL DEFAULT 'job',
+	active       INTEGER NOT NULL DEFAULT 1,
+	harness      TEXT,
+	hash         TEXT,
+	parse_error  TEXT,
+	owner_id     TEXT NOT NULL DEFAULT '',
+	updated_at   TEXT NOT NULL,
+	retired_at   TEXT
+);
+INSERT INTO job_index_new (id, workspace_id, name, path, kind, active, harness, hash, parse_error, owner_id, updated_at, retired_at)
+    SELECT id, workspace_id, name, path, kind, active, harness, hash, parse_error, owner_id, updated_at, retired_at FROM job_index;
+DROP TABLE job_index;
+ALTER TABLE job_index_new RENAME TO job_index;
+CREATE UNIQUE INDEX idx_job_index_name ON job_index(workspace_id, name) WHERE retired_at IS NULL;
+CREATE INDEX idx_job_index_owner ON job_index(owner_id) WHERE owner_id <> '';
+
+CREATE TABLE runs_new (
+	id                    TEXT PRIMARY KEY,
+	workspace_id          TEXT NOT NULL,
+	job_id                TEXT NOT NULL,
+	kind                  TEXT NOT NULL DEFAULT 'job',
+	reason                TEXT,
+	status                TEXT NOT NULL,
+	end_reason            TEXT,
+	prompt_preview        TEXT,
+	inputs_json           TEXT,
+	trigger_event_id      TEXT,
+	trigger_connector     TEXT,
+	trigger_capture_json  TEXT,
+	trigger_vars_json     TEXT,
+	conversation_key      TEXT,
+	conversation_id       TEXT,
+	session_id            TEXT,
+	runtime               TEXT NOT NULL DEFAULT 'tui',
+	harness               TEXT,
+	tmux_session          TEXT,
+	tokens_input          INTEGER,
+	tokens_output         INTEGER,
+	tokens_cache_read     INTEGER,
+	tokens_cache_creation INTEGER,
+	tokens_model          TEXT,
+	started_at            TEXT NOT NULL,
+	ended_at              TEXT,
+	max_duration_ms       INTEGER NOT NULL DEFAULT 0,
+	idle_timeout_ms       INTEGER NOT NULL DEFAULT 0,
+	keep_alive_ms         INTEGER NOT NULL DEFAULT 0,
+	nudge_ms              INTEGER NOT NULL DEFAULT -1,
+	resumable_ms          INTEGER NOT NULL DEFAULT 0,
+	previous_run_id       TEXT,
+	resume_attempts       INTEGER NOT NULL DEFAULT 0,
+	queue_id              TEXT,
+	claimed_by            TEXT,
+	trace_id              TEXT NOT NULL,
+	revision              INTEGER NOT NULL DEFAULT 1,
+	updated_at            TEXT NOT NULL,
+	working_dir           TEXT,
+	memory_hash           TEXT NOT NULL DEFAULT '',
+	outcome               TEXT,
+	outcome_note          TEXT NOT NULL DEFAULT '',
+	outcome_at            TEXT,
+	runtime_pid           INTEGER,
+	attach_kind           TEXT,
+	actor_token_hash      TEXT NOT NULL DEFAULT '',
+	connectors_json       TEXT,
+	turn_count            INTEGER NOT NULL DEFAULT 1,
+	turn_started_at       TEXT,
+	active_ms             INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO runs_new (id, workspace_id, job_id, kind, reason, status, end_reason, prompt_preview, inputs_json, trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, conversation_key, conversation_id, session_id, runtime, harness, tmux_session, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_model, started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms, resumable_ms, previous_run_id, resume_attempts, queue_id, claimed_by, trace_id, revision, updated_at, working_dir, memory_hash, outcome, outcome_note, outcome_at, runtime_pid, attach_kind, actor_token_hash, connectors_json, turn_count, turn_started_at, active_ms)
+    SELECT id, workspace_id, job_id, kind, reason, status, end_reason, prompt_preview, inputs_json, trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, conversation_key, conversation_id, session_id, runtime, harness, tmux_session, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_model, started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms, resumable_ms, previous_run_id, resume_attempts, queue_id, claimed_by, trace_id, revision, updated_at, working_dir, memory_hash, outcome, outcome_note, outcome_at, runtime_pid, attach_kind, actor_token_hash, connectors_json, turn_count, turn_started_at, active_ms FROM runs;
+DROP TABLE runs;
+ALTER TABLE runs_new RENAME TO runs;
+CREATE INDEX idx_runs_ws_started ON runs(workspace_id, started_at DESC);
+CREATE INDEX idx_runs_job_started ON runs(job_id, started_at DESC);
+CREATE INDEX idx_runs_status ON runs(status);
+CREATE INDEX idx_runs_conversation ON runs(conversation_key);
+CREATE INDEX idx_runs_ws_kind ON runs(workspace_id, kind, started_at DESC);
+CREATE INDEX idx_runs_session ON runs(session_id);
+CREATE INDEX idx_runs_actor_token ON runs(actor_token_hash) WHERE actor_token_hash != '';
+CREATE INDEX idx_runs_queue_id ON runs(queue_id);
+
+CREATE TABLE event_queue_new (
+	id               TEXT PRIMARY KEY,
+	connector        TEXT NOT NULL,
+	workspace_id     TEXT NOT NULL,
+	job_id           TEXT NOT NULL,
+	kind             TEXT NOT NULL DEFAULT 'job',
+	on_index         INTEGER NOT NULL DEFAULT 0,
+	conversation_key TEXT NOT NULL DEFAULT '',
+	event_id         TEXT,
+	event_raw        TEXT,
+	capture_json     TEXT,
+	vars_json        TEXT,
+	prompt           TEXT NOT NULL DEFAULT '',
+	status           TEXT NOT NULL,
+	block_reason     TEXT,
+	result           TEXT,
+	attempts         INTEGER NOT NULL DEFAULT 0,
+	next_attempt_at  TEXT,
+	claimed_at       TEXT,
+	run_id           TEXT,
+	resume_of        TEXT,
+	priority         INTEGER NOT NULL DEFAULT 0,
+	error_message    TEXT,
+	trace_id         TEXT,
+	created_at       TEXT NOT NULL,
+	updated_at       TEXT NOT NULL,
+	done_at          TEXT,
+	launch_json      TEXT,
+	follow_up        INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO event_queue_new (id, connector, workspace_id, job_id, kind, on_index, conversation_key, event_id, event_raw, capture_json, vars_json, prompt, status, block_reason, result, attempts, next_attempt_at, claimed_at, run_id, resume_of, priority, error_message, trace_id, created_at, updated_at, done_at, launch_json, follow_up)
+    SELECT id, connector, workspace_id, job_id, kind, on_index, conversation_key, event_id, event_raw, capture_json, vars_json, prompt, status, block_reason, result, attempts, next_attempt_at, claimed_at, run_id, resume_of, priority, error_message, trace_id, created_at, updated_at, done_at, launch_json, follow_up FROM event_queue;
+DROP TABLE event_queue;
+ALTER TABLE event_queue_new RENAME TO event_queue;
+CREATE INDEX idx_eq_status_next ON event_queue(status, next_attempt_at, created_at);
+CREATE INDEX idx_eq_lane ON event_queue(workspace_id, job_id, kind, conversation_key, status, created_at);
+CREATE INDEX idx_eq_connector ON event_queue(connector, created_at DESC);
+
+CREATE TABLE event_outcomes_new (
+	event_id      TEXT NOT NULL,
+	workspace_id  TEXT NOT NULL,
+	job_id        TEXT NOT NULL,
+	on_index      INTEGER NOT NULL DEFAULT 0,
+	outcome       TEXT NOT NULL,
+	queue_id      TEXT,
+	error_message TEXT,
+	created_at    TEXT NOT NULL,
+	PRIMARY KEY (event_id, workspace_id, job_id, on_index)
+);
+INSERT INTO event_outcomes_new (event_id, workspace_id, job_id, on_index, outcome, queue_id, error_message, created_at)
+    SELECT event_id, workspace_id, job_id, on_index, outcome, queue_id, error_message, created_at FROM event_outcomes;
+DROP TABLE event_outcomes;
+ALTER TABLE event_outcomes_new RENAME TO event_outcomes;
+
+CREATE TABLE schedules_new (
+	workspace_id  TEXT NOT NULL,
+	job_id        TEXT NOT NULL,
+	idx           INTEGER NOT NULL DEFAULT 0,
+	spec          TEXT NOT NULL,
+	timezone      TEXT NOT NULL DEFAULT 'UTC',
+	catch_up      INTEGER NOT NULL DEFAULT 1,
+	next_due_at   TEXT,
+	last_fired_at TEXT,
+	anchor        TEXT,
+	updated_at    TEXT NOT NULL,
+	PRIMARY KEY (workspace_id, job_id, idx)
+);
+INSERT INTO schedules_new (workspace_id, job_id, idx, spec, timezone, catch_up, next_due_at, last_fired_at, anchor, updated_at)
+    SELECT workspace_id, job_id, idx, spec, timezone, catch_up, next_due_at, last_fired_at, anchor, updated_at FROM schedules;
+DROP TABLE schedules;
+ALTER TABLE schedules_new RENAME TO schedules;
+CREATE INDEX idx_sched_due ON schedules(next_due_at);
+
+CREATE TABLE inbox_items_new (
+	id               TEXT PRIMARY KEY,
+	kind             TEXT NOT NULL,
+	status           TEXT NOT NULL DEFAULT 'unread',
+	subject          TEXT,
+	title            TEXT,
+	body             TEXT,
+	hint             TEXT,
+	run_id           TEXT,
+	workspace_id     TEXT,
+	job_id           TEXT,
+	alert_kind       TEXT,
+	created_at       TEXT NOT NULL,
+	updated_at       TEXT NOT NULL,
+	resolved_at      TEXT,
+	connector        TEXT,
+	actions          TEXT,
+	trace_id         TEXT,
+	escalates_at     TEXT,
+	revision         INTEGER NOT NULL DEFAULT 0,
+	email_message_id TEXT NOT NULL DEFAULT '',
+	delivery         TEXT,
+	request_id       TEXT
+);
+INSERT INTO inbox_items_new (id, kind, status, subject, title, body, hint, run_id, workspace_id, job_id, alert_kind, created_at, updated_at, resolved_at, connector, actions, trace_id, escalates_at, revision, email_message_id, delivery, request_id)
+    SELECT id, kind, status, subject, title, body, hint, run_id, workspace_id, job_id, alert_kind, created_at, updated_at, resolved_at, connector, actions, trace_id, escalates_at, revision, email_message_id, delivery, request_id FROM inbox_items;
+DROP TABLE inbox_items;
+ALTER TABLE inbox_items_new RENAME TO inbox_items;
+CREATE INDEX idx_inbox_status ON inbox_items(status, created_at DESC);
+CREATE INDEX idx_inbox_kind_subject ON inbox_items(alert_kind, subject, status);
+
+CREATE TABLE requests_new (
+	id               TEXT PRIMARY KEY,
+	run_id           TEXT NOT NULL,
+	workspace_id     TEXT NOT NULL,
+	job_id           TEXT NOT NULL,
+	kind             TEXT NOT NULL,
+	session_id       TEXT NOT NULL DEFAULT '',
+	harness          TEXT NOT NULL DEFAULT '',
+	runtime          TEXT NOT NULL DEFAULT '',
+	working_dir      TEXT NOT NULL DEFAULT '',
+	conversation_key TEXT NOT NULL DEFAULT '',
+	conversation_id  TEXT NOT NULL DEFAULT '',
+	type             TEXT NOT NULL,
+	title            TEXT NOT NULL,
+	summary          TEXT NOT NULL DEFAULT '',
+	target           TEXT NOT NULL DEFAULT '',
+	payload_json     TEXT NOT NULL DEFAULT '{}',
+	allow_json       TEXT NOT NULL,
+	report_kind      TEXT NOT NULL DEFAULT '',
+	report_sha256    TEXT NOT NULL DEFAULT '',
+	delivery         TEXT NOT NULL DEFAULT 'resume',
+	status           TEXT NOT NULL DEFAULT 'pending',
+	answer_json      TEXT,
+	answered_at      TEXT,
+	expires_at       TEXT,
+	delivery_state   TEXT NOT NULL DEFAULT 'none',
+	claimed_at       TEXT,
+	delivery_path    TEXT NOT NULL DEFAULT '',
+	delivered_run_id TEXT,
+	delivery_error   TEXT NOT NULL DEFAULT '',
+	created_at       TEXT NOT NULL,
+	updated_at       TEXT NOT NULL,
+	revision         INTEGER NOT NULL DEFAULT 1
+);
+INSERT INTO requests_new (id, run_id, workspace_id, job_id, kind, session_id, harness, runtime, working_dir, conversation_key, conversation_id, type, title, summary, target, payload_json, allow_json, report_kind, report_sha256, delivery, status, answer_json, answered_at, expires_at, delivery_state, claimed_at, delivery_path, delivered_run_id, delivery_error, created_at, updated_at, revision)
+    SELECT id, run_id, workspace_id, job_id, kind, session_id, harness, runtime, working_dir, conversation_key, conversation_id, type, title, summary, target, payload_json, allow_json, report_kind, report_sha256, delivery, status, answer_json, answered_at, expires_at, delivery_state, claimed_at, delivery_path, delivered_run_id, delivery_error, created_at, updated_at, revision FROM requests;
+DROP TABLE requests;
+ALTER TABLE requests_new RENAME TO requests;
+CREATE INDEX idx_requests_run ON requests(run_id);
+CREATE INDEX idx_requests_open ON requests(status) WHERE status = 'pending';
+CREATE INDEX idx_requests_undelivered ON requests(delivery_state)
+    WHERE delivery = 'resume' AND status <> 'pending' AND delivery_state IN ('none','claimed');
+
+CREATE TABLE agent_proposals_new (
+	id             TEXT PRIMARY KEY,
+	workspace_id   TEXT NOT NULL,
+	agent_id       TEXT NOT NULL,
+	run_id         TEXT NOT NULL DEFAULT '',
+	rel_path       TEXT NOT NULL,
+	base_hash      TEXT NOT NULL,
+	base_content   TEXT NOT NULL,
+	proposed       TEXT NOT NULL,
+	note           TEXT NOT NULL DEFAULT '',
+	protected_keys TEXT NOT NULL DEFAULT '[]',
+	status         TEXT NOT NULL DEFAULT 'pending',
+	decided_by     TEXT NOT NULL DEFAULT '',
+	created_at     TEXT NOT NULL,
+	decided_at     TEXT,
+	revision       INTEGER NOT NULL DEFAULT 1
+);
+INSERT INTO agent_proposals_new (id, workspace_id, agent_id, run_id, rel_path, base_hash, base_content, proposed, note, protected_keys, status, decided_by, created_at, decided_at, revision)
+    SELECT id, workspace_id, agent_id, run_id, rel_path, base_hash, base_content, proposed, note, protected_keys, status, decided_by, created_at, decided_at, revision FROM agent_proposals;
+DROP TABLE agent_proposals;
+ALTER TABLE agent_proposals_new RENAME TO agent_proposals;
+CREATE INDEX idx_agent_proposals_pending ON agent_proposals(workspace_id, agent_id, status);
+
+CREATE TABLE email_messages_new (
+	id              TEXT PRIMARY KEY,
+	direction       TEXT NOT NULL,
+	workspace_id    TEXT NOT NULL DEFAULT '',
+	agent_id        TEXT,
+	message_id      TEXT NOT NULL DEFAULT '',
+	in_reply_to     TEXT NOT NULL DEFAULT '',
+	thread_root     TEXT NOT NULL DEFAULT '',
+	sender          TEXT NOT NULL DEFAULT '',
+	recipients      TEXT NOT NULL DEFAULT '',
+	subject         TEXT NOT NULL DEFAULT '',
+	dmarc           TEXT NOT NULL DEFAULT '',
+	disposition     TEXT NOT NULL,
+	inbox_id        TEXT,
+	run_id          TEXT,
+	conversation_id TEXT,
+	attachments     TEXT NOT NULL DEFAULT '[]',
+	trace_id        TEXT NOT NULL DEFAULT '',
+	created_at      TEXT NOT NULL,
+	revision        INTEGER NOT NULL DEFAULT 1,
+	covered_turn    INTEGER,
+	purpose         TEXT NOT NULL DEFAULT '',
+	outbox_id       TEXT,
+	body_text       TEXT,
+	body_html       TEXT
+);
+INSERT INTO email_messages_new (id, direction, workspace_id, agent_id, message_id, in_reply_to, thread_root, sender, recipients, subject, dmarc, disposition, inbox_id, run_id, conversation_id, attachments, trace_id, created_at, revision, covered_turn, purpose, outbox_id, body_text, body_html)
+    SELECT id, direction, workspace_id, agent_id, message_id, in_reply_to, thread_root, sender, recipients, subject, dmarc, disposition, inbox_id, run_id, conversation_id, attachments, trace_id, created_at, revision, covered_turn, purpose, outbox_id, body_text, body_html FROM email_messages;
+DROP TABLE email_messages;
+ALTER TABLE email_messages_new RENAME TO email_messages;
+CREATE INDEX email_messages_message_id ON email_messages(message_id);
+CREATE INDEX email_messages_thread ON email_messages(thread_root, created_at);
+
+DROP INDEX idx_conv_operator;
+ALTER TABLE conversations DROP COLUMN operator;
+CREATE INDEX idx_conv_operator ON conversations(workspace_id, operator_id, last_activity_at);
 `,
 	}
 }

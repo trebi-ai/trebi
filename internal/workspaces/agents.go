@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/job"
@@ -20,9 +21,9 @@ var (
 	ErrAgentLiveRun = errors.New("agent has a live run")
 )
 
-// RenameAgent moves agents/<from> to agents/<to> and rewrites stored
-// references in one transaction. The index follows the move without emitting
-// synthetic deleted/created pairs for the renamed subtree.
+// RenameAgent moves agents/<from> to agents/<to>. The files keep their
+// IDs, so the index rows keep their IDs and every reference stays valid.
+// The index follows the move without deleted/created pairs.
 func (s *Service) RenameAgent(ctx context.Context, workspaceID, from, to string) error {
 	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
 	if from == "" || to == "" {
@@ -41,25 +42,28 @@ func (s *Service) RenameAgent(ctx context.Context, workspaceID, from, to string)
 	if err != nil {
 		return err
 	}
-	if _, ok := existing[fromIndex]; !ok {
-		return ErrNotFound
+	agentID := ""
+	var affected []string
+	for id, row := range existing {
+		switch {
+		case row.name == toIndex:
+			return ErrAgentExists
+		case row.name == fromIndex:
+			agentID = id
+			affected = append(affected, id)
+		case strings.HasPrefix(row.name, fromIndex+"/"):
+			affected = append(affected, id)
+		}
 	}
-	if _, ok := existing[toIndex]; ok {
-		return ErrAgentExists
+	if agentID == "" {
+		return ErrNotFound
 	}
 	if _, err := os.Stat(filepath.Join(ws.Path, "agents", to)); err == nil {
 		return ErrAgentExists
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-
-	var affected []string
-	for name := range existing {
-		if name == fromIndex || strings.HasPrefix(name, fromIndex+"/") {
-			affected = append(affected, name)
-		}
-	}
-	if live, err := hasLiveRuns(ctx, s.st, workspaceID, affected); err != nil {
+	if live, err := hasLiveRuns(ctx, s.st, affected); err != nil {
 		return err
 	} else if live {
 		return ErrAgentLiveRun
@@ -76,20 +80,11 @@ func (s *Service) RenameAgent(ctx context.Context, workspaceID, from, to string)
 
 	// Preserve an explicit identity `name:` by rewriting it with the folder.
 	agentPath := filepath.Join(newPath, "AGENT.md")
-	if original, readErr := os.ReadFile(agentPath); readErr == nil {
-		parsed, _ := job.ParseBytes(agentPath, original)
-		if parsed != nil && parsed.ParseError == "" {
-			data, err := os.ReadFile(agentPath)
-			if err == nil {
-				// Only rewrite when a scalar name key exists. job.SetName adds
-				// the key otherwise, which is a visible but harmless identity
-				// assertion; preserve the user's shape by checking first.
-				if hasFrontmatterName(data) {
-					if err := job.SetName(agentPath, to); err != nil {
-						restore()
-						return err
-					}
-				}
+	if data, readErr := os.ReadFile(agentPath); readErr == nil {
+		if parsed, _ := job.ParseBytes(agentPath, data); parsed != nil && parsed.ParseError == "" && hasFrontmatterName(data) {
+			if err := job.SetName(agentPath, to); err != nil {
+				restore()
+				return err
 			}
 		}
 	}
@@ -106,19 +101,15 @@ func (s *Service) RenameAgent(ctx context.Context, workspaceID, from, to string)
 		restore()
 		return err
 	}
-	desired := map[string]indexRow{}
-	for _, j := range disc.Jobs {
-		desired[j.Name] = rowFromJob(j, "job")
+	jobs := append(slices.Clone(disc.Jobs), disc.Agents...)
+	if err := s.ensureIDs(ctx, workspaceID, jobs, existing); err != nil {
+		restore()
+		return err
 	}
-	if disc.Assistant != nil {
-		desired[disc.Assistant.Name] = rowFromJob(disc.Assistant, "assistant")
-	}
-	for _, j := range disc.Agents {
-		desired[j.Name] = rowFromJob(j, "agent")
-	}
-
+	desired := desiredRows(jobs, nil)
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		if err := renameJobReferencesTx(ctx, tx, workspaceID, fromIndex, toIndex, from, to); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_proposals SET status = 'stale', revision = revision + 1
+			WHERE agent_id = ? AND status = 'pending'`, agentID); err != nil {
 			return err
 		}
 		return writeIndexDiffTx(ctx, tx, workspaceID, existing, desired)
@@ -133,66 +124,24 @@ func (s *Service) RenameAgent(ctx context.Context, workspaceID, from, to string)
 	delete(s.jobs, workspaceID)
 
 	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: "agent.renamed", Entity: "agent", EntityID: toIndex, Action: "renamed",
-		Attrs: map[string]string{"workspace": workspaceID, "from": fromIndex, "to": toIndex},
+		Topic: "agent.renamed", Entity: "agent", EntityID: agentID, Action: "renamed",
+		Attrs: map[string]string{"workspace": workspaceID, "agent_id": agentID, "agent_name": to, "from": from, "to": to},
 	}); err != nil {
 		s.log.Warn("agent rename bus append failed", "workspace", workspaceID, "error", err)
 	}
 	return nil
 }
 
-func renameJobReferencesTx(ctx context.Context, tx *sql.Tx, workspaceID, fromIndex, toIndex, fromShort, toShort string) error {
-	statements := []struct {
-		query  string
-		fields []any
-	}{
-		{`UPDATE runs SET job = ? || substr(job, length(?) + 1)
-			WHERE workspace_id = ? AND (job = ? OR job LIKE ?)`,
-			[]any{toIndex, fromIndex, workspaceID, fromIndex, fromIndex + "/%"}},
-		{`UPDATE event_queue SET job = ? || substr(job, length(?) + 1)
-			WHERE workspace_id = ? AND (job = ? OR job LIKE ?)`,
-			[]any{toIndex, fromIndex, workspaceID, fromIndex, fromIndex + "/%"}},
-		{`UPDATE schedules SET job = ? || substr(job, length(?) + 1)
-			WHERE workspace_id = ? AND (job = ? OR job LIKE ?)`,
-			[]any{toIndex, fromIndex, workspaceID, fromIndex, fromIndex + "/%"}},
-		{`UPDATE email_messages SET agent = ?
-			WHERE workspace_id = ? AND agent = ?`,
-			[]any{toShort, workspaceID, fromShort}},
-		{`UPDATE conversations SET operator = ?
-			WHERE workspace_id = ? AND operator = ?`,
-			[]any{toIndex, workspaceID, fromIndex}},
-		{`UPDATE inbox_items SET job = ?
-			WHERE workspace_id = ? AND job = ?`,
-			[]any{toIndex, workspaceID, fromIndex}},
-		{`UPDATE event_outcomes SET job = ?
-			WHERE workspace_id = ? AND job = ?`,
-			[]any{toIndex, workspaceID, fromIndex}},
-		{`UPDATE agent_proposals SET status = 'stale', revision = revision + 1
-			WHERE workspace_id = ? AND agent = ? AND status = 'pending'`,
-			[]any{workspaceID, fromIndex}},
-	}
-	for _, statement := range statements {
-		if _, err := tx.ExecContext(ctx, statement.query, statement.fields...); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func hasLiveRuns(ctx context.Context, st *store.Store, workspaceID string, jobs []string) (bool, error) {
-	if len(jobs) == 0 {
+func hasLiveRuns(ctx context.Context, st *store.Store, ids []string) (bool, error) {
+	if len(ids) == 0 {
 		return false, nil
 	}
-	conds := make([]string, 0, len(jobs))
-	args := make([]any, 0, len(jobs)+2)
-	args = append(args, workspaceID)
-	for _, job := range jobs {
-		conds = append(conds, `(job = ? OR job LIKE ?)`)
-		args = append(args, job, job+"/%")
+	args := make([]any, 0, len(ids)+1)
+	for _, id := range ids {
+		args = append(args, id)
 	}
 	args = append(args, "running")
-	q := `SELECT EXISTS(SELECT 1 FROM runs WHERE workspace_id = ? AND (` +
-		strings.Join(conds, " OR ") + `) AND status = ?)`
+	q := `SELECT EXISTS(SELECT 1 FROM runs WHERE job_id IN (?` + strings.Repeat(",?", len(ids)-1) + `) AND status = ?)`
 	var found bool
 	if err := st.DB().QueryRowContext(ctx, q, args...).Scan(&found); err != nil {
 		return false, err

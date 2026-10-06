@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-const requestColumns = `id, run_id, workspace_id, job, kind, session_id, harness, runtime,
+const requestColumns = `id, run_id, workspace_id, job_id,
+  COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = requests.job_id), ''), kind, session_id, harness, runtime,
   working_dir, conversation_key, conversation_id, type, title, summary, target,
   payload_json, allow_json, report_kind, report_sha256, delivery, status,
   answer_json, expires_at, delivery_state, claimed_at, delivery_path,
@@ -19,7 +20,7 @@ func scanRequest(rs rowScanner) (Request, error) {
 	var r Request
 	var payload, allow, createdAt, updatedAt string
 	var answer, expiresAt, claimedAt, deliveredRun sql.NullString
-	if err := rs.Scan(&r.ID, &r.RunID, &r.WorkspaceID, &r.Job, &r.Kind, &r.SessionID,
+	if err := rs.Scan(&r.ID, &r.RunID, &r.WorkspaceID, &r.JobID, &r.JobName, &r.Kind, &r.SessionID,
 		&r.Harness, &r.Runtime, &r.WorkingDir, &r.ConversationKey, &r.ConversationID,
 		&r.Type, &r.Title, &r.Summary, &r.Target, &payload, &allow, &r.ReportKind,
 		&r.ReportSHA256, &r.Delivery, &r.Status, &answer, &expiresAt, &r.DeliveryState,

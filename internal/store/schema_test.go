@@ -143,15 +143,12 @@ func TestMigrationV38(t *testing.T) {
 			t.Fatalf("seed %q: %v", q, err)
 		}
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { _ = db.Close() })
+	// v42 needs the ID script, so stop before it.
+	if err := applyThrough(db, 40); err != nil {
+		t.Fatalf("apply v38: %v", err)
 	}
-	s, err := OpenPath(path)
-	if err != nil {
-		t.Fatalf("open applies v38: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	q := s.DB()
+	q := db
 
 	ids := scanStrings(t, q, `SELECT id FROM runs ORDER BY id`)
 	if strings.Join(ids, ",") != "A,F,L" {

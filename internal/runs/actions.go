@@ -58,9 +58,9 @@ func (s *Service) WithEmail(e EmailSource) *Service {
 // `trebi email send` find the workspace and the sender, so the prompt
 // command needs neither flag. A job sends as its owner agent.
 func (s *Service) emailAction(ctx context.Context, opts LaunchOpts) ConnectorAction {
-	agent := strings.TrimPrefix(job.OwnerOf(opts.Job), "agents/")
+	agent := strings.TrimPrefix(job.OwnerOf(opts.JobName), "agents/")
 	if opts.Kind == KindAgent {
-		agent = strings.TrimPrefix(opts.Job, "agents/")
+		agent = strings.TrimPrefix(opts.JobName, "agents/")
 	}
 	env := map[string]string{"TREBI_WORKSPACE": opts.WorkspaceID}
 	from := "the workspace address"

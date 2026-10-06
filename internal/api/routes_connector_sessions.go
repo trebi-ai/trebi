@@ -16,6 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/email"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -324,9 +325,16 @@ func (s *Server) handleConnectorBind(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case operator == "" || operator == "assistant":
 		operator = ""
-	case !strings.HasPrefix(operator, "agents/"):
-		writeErr(w, http.StatusBadRequest, "validation", `operator must be "assistant" or "agents/<name>"`)
+	case !strings.HasPrefix(operator, "agents/") && !job.LooksLikeID(operator):
+		writeErr(w, http.StatusBadRequest, "validation", `operator must be "assistant", "agents/<name>", or an agent ID`)
 		return
+	default:
+		row, err := s.findAgentRow(r.Context(), ws, strings.TrimPrefix(operator, "agents/"))
+		if err != nil {
+			writeResolveErr(w, err, "agent")
+			return
+		}
+		operator = row.ID
 	}
 	addr := conversations.Address{Connector: email.Instance, Instance: email.Instance, Room: room, Thread: body.Thread}
 	if ref := r.PathValue("ref"); ref != email.Instance {

@@ -28,7 +28,7 @@ const replyHops = 8
 // still goes to the assistant lane.
 type replyTarget struct {
 	conversationID string
-	operator       string
+	operator       string // short agent name; '' = assistant
 	runID          string
 	inboxID        string
 	alertKind      string
@@ -234,7 +234,7 @@ func (s *Service) rowByMessageID(ctx context.Context, messageID string) (*replyT
 	var runID, convID, inboxID, operator string
 	err := s.st.DB().QueryRowContext(ctx,
 		`SELECT COALESCE(em.run_id,''), COALESCE(em.conversation_id,''), COALESCE(em.inbox_id,''),
-			COALESCE(c.operator,'')
+			COALESCE((SELECT SUBSTR(ji.name, 8) FROM job_index ji WHERE ji.id = c.operator_id), '')
 		 FROM email_messages em
 		 LEFT JOIN conversations c ON c.id = em.conversation_id
 		 WHERE em.message_id=? ORDER BY em.id DESC LIMIT 1`,
@@ -295,8 +295,8 @@ func (g *Ingress) dispatchReply(ctx context.Context, msg IngressMessage, d Route
 			return true
 		}
 		rule := env.Assistant
-		if short, isAgent := strings.CutPrefix(t.operator, "agents/"); isAgent {
-			found, ok := env.Agents[short]
+		if t.operator != "" {
+			found, ok := env.Agents[t.operator]
 			if !ok {
 				// A deleted or renamed agent closes its tag.
 				g.log.Warn("email.reply closed tag", "id", msg.ID, "operator", t.operator, "sender", msg.From)

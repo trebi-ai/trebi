@@ -120,7 +120,7 @@ func (s *Server) agentOwnsRow(ctx context.Context, scope agentScope, row outbox.
 		return false
 	}
 	if row.ConversationID != "" {
-		if c, err := s.conv.Get(ctx, row.ConversationID); err == nil && c.Operator == scope.agent {
+		if c, err := s.conv.Get(ctx, row.ConversationID); err == nil && c.OperatorID == scope.agentID {
 			return true
 		}
 	}
@@ -128,7 +128,7 @@ func (s *Server) agentOwnsRow(ctx context.Context, scope agentScope, row outbox.
 		if row.RunID == scope.runID {
 			return true
 		}
-		if run, err := s.runs.Get(ctx, row.RunID); err == nil && run.Job == scope.agent {
+		if run, err := s.runs.Get(ctx, row.RunID); err == nil && run.JobID == scope.agentID {
 			return true
 		}
 	}

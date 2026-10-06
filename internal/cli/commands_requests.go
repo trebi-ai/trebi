@@ -72,7 +72,7 @@ func requestListCommand() *cli.Command {
 			}
 			tbl := newTable(outWriter(c), []string{"ID", "Job", "Type", "Status", "Title", "Created"})
 			for _, r := range body.Requests {
-				tbl.AppendRow(table.Row{r.ID, r.Job, r.Type, r.Status, r.Title, r.CreatedAt.Local().Format("2006-01-02 15:04")})
+				tbl.AppendRow(table.Row{r.ID, r.JobName, r.Type, r.Status, r.Title, r.CreatedAt.Local().Format("2006-01-02 15:04")})
 			}
 			renderTable(tbl)
 			return nil
@@ -360,7 +360,7 @@ func requestAnswerCommand() *cli.Command {
 func printRequest(c *cli.Command, r requests.Request) {
 	w := outWriter(c)
 	fmt.Fprintf(w, "%s  %s (%s)\n", r.ID, r.Title, r.Type)
-	fmt.Fprintf(w, "Job: %s   Run: %s   Status: %s\n", r.Job, r.RunID, r.Status)
+	fmt.Fprintf(w, "Job: %s   Run: %s   Status: %s\n", r.JobName, r.RunID, r.Status)
 	if r.Target != "" {
 		fmt.Fprintf(w, "Target: %s\n", r.Target)
 	}

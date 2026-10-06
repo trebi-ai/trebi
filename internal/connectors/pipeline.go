@@ -499,7 +499,7 @@ func (s *Service) triggerIndex(ctx context.Context) map[string][]cachedTrig {
 	}
 	for _, at := range assistant {
 		row := workspaces.JobRow{
-			WorkspaceID: at.WorkspaceID, Name: "assistant",
+			ID: at.WorkspaceID, WorkspaceID: at.WorkspaceID, Name: "assistant",
 			Kind: dispatch.KindAssistant, Active: true, Hash: at.Hash,
 		}
 		j := &job.Job{Name: "assistant"}
@@ -550,15 +550,15 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 	continues := tr.Continues() && row.Kind == dispatch.KindJob
 	key := ev.conversationKey(continues)
 	if continues {
-		open, err := s.conversationOpen(ctx, ev, row.WorkspaceID, j)
+		open, err := s.conversationOpen(ctx, ev, row, j)
 		if err != nil {
 			s.log.Warn("conversation lookup", "job", j.Name, "error", err)
-			s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeError), "", ev.receivedAt)
+			s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeError), "", ev.receivedAt)
 			return
 		}
 		if open && ev.bot {
 			// A bot reply in an open conversation is not a follow-up (plan A.9).
-			s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeNoMatch), "", ev.receivedAt)
+			s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeNoMatch), "", ev.receivedAt)
 			return
 		}
 		in.FollowUp = open
@@ -573,7 +573,7 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 			// The sender gate is security layer 1; a room miss is scope only.
 			outcome = dispatch.OutcomeBlocked
 		}
-		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(outcome), "", ev.receivedAt)
+		s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(outcome), "", ev.receivedAt)
 		return
 	}
 	vars := ev.vars()
@@ -586,7 +586,8 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 	item := &dispatch.QueueItem{
 		Connector:       ev.instance,
 		WorkspaceID:     row.WorkspaceID,
-		Job:             j.Name,
+		JobID:           row.ID,
+		JobName:         j.Name,
 		Kind:            row.Kind,
 		OnIndex:         tr.Index,
 		ConversationKey: key,
@@ -600,7 +601,7 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 	err := s.queue.Enqueue(ctx, item)
 	if errors.Is(err, dispatch.ErrLaneFull) {
 		// Drop the new event, not an old one, so the order stays correct.
-		s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeDropped), "", ev.receivedAt)
+		s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeDropped), "", ev.receivedAt)
 		if s.onFlood != nil {
 			s.onFlood(ctx, row.WorkspaceID, j.Name, ev.instance)
 		}
@@ -610,17 +611,17 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 		s.log.Warn("enqueue", "error", err)
 		return
 	}
-	s.insertOutcome(ctx, ev.id, row.WorkspaceID, j.Name, tr.Index, string(dispatch.OutcomeQueued), item.ID, ev.receivedAt)
+	s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeQueued), item.ID, ev.receivedAt)
 }
 
 // conversationOpen reports whether r continues an open conversation of a
 // job with replies: continue (plan A.9). A start message never does.
-func (s *Service) conversationOpen(ctx context.Context, r eventRecord, workspaceID string, j *job.Job) (bool, error) {
+func (s *Service) conversationOpen(ctx context.Context, r eventRecord, row workspaces.JobRow, j *job.Job) (bool, error) {
 	if s.convs == nil || r.root == "" || r.root == r.sourceID {
 		return false, nil
 	}
 	within := time.Duration(j.LaunchDefaults().ContinueMS) * time.Millisecond
-	return s.convs.ConversationOpen(ctx, workspaceID, j.Name, r.conversationKey(true), within)
+	return s.convs.ConversationOpen(ctx, row.WorkspaceID, row.ID, r.conversationKey(true), within)
 }
 
 // mergeVars copies base, then over on top: an extract var wins over a
@@ -672,17 +673,17 @@ func (s *Service) Recap(ctx context.Context, instance, root string, n int) ([]Re
 
 // insertOutcome records one event_outcomes row (best-effort, logged on
 // error). A redispatch replaces the earlier outcome of the same trigger.
-func (s *Service) insertOutcome(ctx context.Context, eid, wsID, jobName string, onIndex int, outcome, queueID, now string) {
+func (s *Service) insertOutcome(ctx context.Context, eid, wsID, jobID string, onIndex int, outcome, queueID, now string) {
 	var qid any
 	if queueID != "" {
 		qid = queueID
 	}
 	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO event_outcomes
-		(event_id, workspace_id, job, on_index, outcome, queue_id, created_at)
+		(event_id, workspace_id, job_id, on_index, outcome, queue_id, created_at)
 		VALUES (?,?,?,?,?,?,?)
-		ON CONFLICT (event_id, workspace_id, job, on_index) DO UPDATE SET
-			outcome=excluded.outcome, queue_id=excluded.queue_id, error_message=NULL, created_at=excluded.created_at`, eid, wsID, jobName, onIndex, outcome, qid, now); err != nil {
-		s.log.Warn("event outcome insert", "job", jobName, "outcome", outcome, "error", err)
+		ON CONFLICT (event_id, workspace_id, job_id, on_index) DO UPDATE SET
+			outcome=excluded.outcome, queue_id=excluded.queue_id, error_message=NULL, created_at=excluded.created_at`, eid, wsID, jobID, onIndex, outcome, qid, now); err != nil {
+		s.log.Warn("event outcome insert", "job_id", jobID, "outcome", outcome, "error", err)
 	}
 }
 

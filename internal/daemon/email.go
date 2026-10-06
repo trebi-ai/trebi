@@ -42,18 +42,26 @@ func (c *ControlPlane) RouteEnvFor(ctx context.Context, workspaceID string) (ema
 // An assistant ask prompts the session manager through Conversations.Ask;
 // an agent ask still injects or enqueues. The thread root is the channel
 // ref: one conversation per mail thread, bound by the channel pointer.
-func (c *ControlPlane) Ask(ctx context.Context, d email.RouteDecision, msg email.IngressMessage, operator, text string) (string, error) {
+func (c *ControlPlane) Ask(ctx context.Context, d email.RouteDecision, msg email.IngressMessage, agent, text string) (string, error) {
+	operatorID := ""
+	if agent != "" {
+		row, err := c.Workspaces.JobByName(ctx, d.WorkspaceID, "agents/"+agent)
+		if err != nil {
+			return "", fmt.Errorf("agent %s: %w", agent, err)
+		}
+		operatorID = row.ID
+	}
 	res, err := c.Conversations.Ask(ctx, conversations.AskOpts{
-		Workspace: d.WorkspaceID,
-		Operator:  operator,
-		Text:      text,
+		Workspace:  d.WorkspaceID,
+		OperatorID: operatorID,
+		Text:       text,
 		Address: conversations.Address{
 			Connector: conversations.ChannelEmail,
 			Room:      email.MailboxRoom(d.WorkspaceID, d.Agent),
 			Thread:    email.ThreadRoot(msg),
 		},
 		IdempotencyKey: msg.ID,
-		Headless:       operator == "",
+		Headless:       operatorID == "",
 	})
 	if err != nil {
 		return "", err

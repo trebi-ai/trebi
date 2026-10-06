@@ -453,7 +453,7 @@ func locateFrontmatter(data []byte) (start, end int, err error) {
 			lineEnd++
 		}
 		line := string(rest[idx:lineEnd])
-		if strings.TrimRight(line, " \t") == "---" {
+		if strings.TrimRight(line, " \t\r") == "---" {
 			return start, start + idx, nil
 		}
 		if lineEnd >= len(rest) {
@@ -586,6 +586,9 @@ func setInSessionBlock(fmLines []string, sessIdx int, key, entry string) []strin
 // so a client does not write YAML by hand. Content, when set, wins over every
 // other field.
 type Spec struct {
+	// ID is written as the first key. Render adds it to Content too when
+	// Content has no valid id.
+	ID          string
 	Content     string
 	Title       string
 	Prompt      string
@@ -620,12 +623,17 @@ type EventSpec struct {
 // Render composes JOB.md text. It returns Content unchanged when set.
 func (s Spec) Render() (string, error) {
 	if strings.TrimSpace(s.Content) != "" {
-		return s.Content, nil
+		if s.ID == "" || LooksLikeID(scanID([]byte(s.Content))) {
+			return s.Content, nil
+		}
+		out, err := WithID([]byte(s.Content), s.ID)
+		return string(out), err
 	}
 	if strings.TrimSpace(s.Prompt) == "" {
 		return "", errors.New("prompt or content is required")
 	}
 	fm := Frontmatter{
+		ID:          s.ID,
 		Title:       s.Title,
 		Harness:     HarnessSpec{Name: s.Harness, Model: s.Model, Effort: s.Effort},
 		Description: s.Description,

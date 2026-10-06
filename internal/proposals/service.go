@@ -42,7 +42,8 @@ var (
 type Proposal struct {
 	ID            string     `json:"id"`
 	WorkspaceID   string     `json:"workspace"`
-	Agent         string     `json:"agent"`
+	AgentID       string     `json:"agent_id"`
+	AgentName     string     `json:"agent_name"`
 	RunID         string     `json:"run_id,omitempty"`
 	RelPath       string     `json:"path"`
 	BaseHash      string     `json:"base_hash"`
@@ -65,6 +66,7 @@ type fileWriter interface {
 type indexer interface {
 	Get(ctx context.Context, id string) (*workspaces.Workspace, error)
 	RebuildIndex(ctx context.Context, ws *workspaces.Workspace) error
+	JobByName(ctx context.Context, workspaceID, name string) (*workspaces.JobRow, error)
 }
 
 type bus interface {
@@ -116,6 +118,17 @@ func (s *Service) Create(ctx context.Context, o CreateOpts) (Proposal, error) {
 	if err != nil && !errors.Is(err, files.ErrNotFound) {
 		return Proposal{}, err
 	}
+	row, err := s.ws.JobByName(ctx, o.WorkspaceID, o.Agent)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Proposal{}, fmt.Errorf("%w: agent %s not found", ErrInvalid, short)
+	}
+	if err != nil {
+		return Proposal{}, err
+	}
+	// The proposal cannot change or drop the agent ID.
+	if o.Proposed, err = job.WithID(o.Proposed, row.ID); err != nil {
+		return Proposal{}, fmt.Errorf("%w: %s", ErrInvalid, err)
+	}
 	nextPath := path.Join(ws.Path, rel)
 	next, parseErr := job.ParseBytes(nextPath, o.Proposed)
 	if parseErr != nil {
@@ -141,21 +154,21 @@ func (s *Service) Create(ctx context.Context, o CreateOpts) (Proposal, error) {
 	baseHash := job.ContentHash(base)
 	p := Proposal{
 		ID: "prop_" + strings.ToLower(ulid.Make().String()), WorkspaceID: o.WorkspaceID,
-		Agent: o.Agent, RunID: o.RunID, RelPath: rel, BaseHash: baseHash,
+		AgentID: row.ID, AgentName: short, RunID: o.RunID, RelPath: rel, BaseHash: baseHash,
 		BaseContent: string(base), Proposed: string(o.Proposed), Note: o.Note,
 		ProtectedKeys: protected, Status: StatusPending, CreatedAt: s.now().UTC(), Revision: 1,
 	}
 	var superseded []Proposal
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT id, agent, run_id FROM agent_proposals
-WHERE workspace_id=? AND agent=? AND status=? AND id<>?`,
-			p.WorkspaceID, p.Agent, string(StatusPending), p.ID)
+		rows, err := tx.QueryContext(ctx, `SELECT id, run_id FROM agent_proposals
+WHERE workspace_id=? AND agent_id=? AND status=? AND id<>?`,
+			p.WorkspaceID, p.AgentID, string(StatusPending), p.ID)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var old Proposal
-			if err := rows.Scan(&old.ID, &old.Agent, &old.RunID); err != nil {
+			if err := rows.Scan(&old.ID, &old.RunID); err != nil {
 				rows.Close()
 				return err
 			}
@@ -173,10 +186,10 @@ WHERE workspace_id=? AND agent=? AND status=? AND id<>?`,
 			}
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO agent_proposals
-(id, workspace_id, agent, run_id, rel_path, base_hash, base_content, proposed,
+(id, workspace_id, agent_id, run_id, rel_path, base_hash, base_content, proposed,
   note, protected_keys, status, created_at, revision)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			p.ID, p.WorkspaceID, p.Agent, p.RunID, p.RelPath, p.BaseHash, p.BaseContent,
+			p.ID, p.WorkspaceID, p.AgentID, p.RunID, p.RelPath, p.BaseHash, p.BaseContent,
 			p.Proposed, p.Note, string(protectedJSON), string(StatusPending),
 			p.CreatedAt.Format(time.RFC3339Nano), p.Revision)
 		return err
@@ -185,13 +198,13 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		return Proposal{}, err
 	}
 	for _, old := range superseded {
-		oldAttrs, _ := json.Marshal(map[string]any{"workspace": p.WorkspaceID, "agent": p.Agent, "proposal_id": old.ID, "decision": "superseded"})
+		oldAttrs, _ := json.Marshal(map[string]any{"workspace": p.WorkspaceID, "agent_id": p.AgentID, "agent_name": p.AgentName, "proposal_id": old.ID, "decision": "superseded"})
 		if _, err := s.bus.Append(ctx, store.BusEvent{Topic: "proposal.decided", Entity: "proposal", EntityID: old.ID, Action: "superseded", Attrs: oldAttrs}); err != nil {
 			return Proposal{}, err
 		}
 	}
 	attrs, _ := json.Marshal(map[string]any{
-		"workspace": p.WorkspaceID, "agent": p.Agent, "proposal_id": p.ID,
+		"workspace": p.WorkspaceID, "agent_id": p.AgentID, "agent_name": p.AgentName, "proposal_id": p.ID,
 		"run_id": p.RunID, "protected_keys": p.ProtectedKeys,
 		"added": added, "removed": removed,
 	})
@@ -203,7 +216,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 
 type ListOpts struct {
 	Workspace string
-	Agent     string
+	Agent     string // ID, short name, or index name
 	State     string
 	Limit     int
 }
@@ -220,8 +233,9 @@ func (s *Service) List(ctx context.Context, o ListOpts) ([]Proposal, error) {
 		args = append(args, o.Workspace)
 	}
 	if o.Agent != "" {
-		where = append(where, "agent=?")
-		args = append(args, o.Agent)
+		where = append(where, `(agent_id=? OR agent_id IN (SELECT ji.id FROM job_index ji
+  WHERE ji.workspace_id=agent_proposals.workspace_id AND ji.name=? AND ji.retired_at IS NULL))`)
+		args = append(args, o.Agent, "agents/"+strings.TrimPrefix(o.Agent, "agents/"))
 	}
 	switch o.State {
 	case "pending", "decided":

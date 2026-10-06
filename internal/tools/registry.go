@@ -227,7 +227,9 @@ type Actor struct {
 	Name  string
 	RunID string
 	Kind  string
+	// Job is the index name of the run's job or agent; JobID is its ID.
 	Job   string
+	JobID string
 	// Conversation pins an assistant actor to its session conversation.
 	Conversation string
 	WorkspaceID  string

@@ -43,19 +43,12 @@ func TestMigrationV24FromV23(t *testing.T) {
 		VALUES ('q1', 'whatsapp', 'ws1', 'sling', 'assistant', 'pending', '2026-09-25T00:00:00Z', '2026-09-25T00:00:00Z')`); err != nil {
 		t.Fatalf("seed queue: %v", err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { _ = db.Close() })
+	// v42 needs the ID script, so stop before it.
+	if err := applyThrough(db, 40); err != nil {
+		t.Fatalf("apply v24: %v", err)
 	}
-
-	s, err := OpenPath(path)
-	if err != nil {
-		t.Fatalf("open applies v24: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	if v, _ := s.SchemaVersion(); v != SchemaVersion {
-		t.Fatalf("schema version %d", v)
-	}
-	db2 := s.DB()
+	db2 := db
 	var n int
 	if err := db2.QueryRow(`SELECT COUNT(*) FROM assistant_sessions`).Scan(&n); err != nil {
 		t.Fatalf("assistant_sessions missing: %v", err)

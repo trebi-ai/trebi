@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/entitle"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/tools"
+	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
 func (s *Server) routeRequests(mux *http.ServeMux) {
@@ -105,12 +107,12 @@ func (s *Server) handleRequestCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // requestScope limits a run token to the requests of its own job.
-func requestScope(r *http.Request) (workspace, job string, scoped bool) {
+func requestScope(r *http.Request) (workspace, jobID string, scoped bool) {
 	a, ok := tools.ActorFrom(r.Context())
 	if !ok || a.RunID == "" {
 		return "", "", false
 	}
-	return a.WorkspaceID, a.Job, true
+	return a.WorkspaceID, a.JobID, true
 }
 
 func (s *Server) handleRequestsList(w http.ResponseWriter, r *http.Request) {
@@ -120,11 +122,21 @@ func (s *Server) handleRequestsList(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	o := requests.ListOpts{
-		Status: requests.Status(q.Get("status")), RunID: q.Get("run"), Job: q.Get("job"),
+		Status: requests.Status(q.Get("status")), RunID: q.Get("run"), JobID: q.Get("job"),
 		Workspace: q.Get("workspace"), After: after, Limit: parseLimit(r),
 	}
-	if ws, job, scoped := requestScope(r); scoped {
-		o.Workspace, o.Job = ws, job
+	if ref := o.JobID; ref != "" && !job.LooksLikeID(ref) {
+		row, err := s.findIndexRow(r.Context(), o.Workspace, ref, func(row workspaces.JobRow) bool {
+			return row.Name == ref
+		}, "job", "agent")
+		if err != nil {
+			writeResolveErr(w, err, "job")
+			return
+		}
+		o.JobID = row.ID
+	}
+	if ws, jobID, scoped := requestScope(r); scoped {
+		o.Workspace, o.JobID = ws, jobID
 	}
 	list, next, err := s.requests.List(r.Context(), o)
 	if err != nil {
@@ -145,7 +157,7 @@ func (s *Server) requestFor(w http.ResponseWriter, r *http.Request) (requests.Re
 		writeRequestErr(w, req, err)
 		return req, false
 	}
-	if ws, job, scoped := requestScope(r); scoped && (req.WorkspaceID != ws || req.Job != job) {
+	if ws, jobID, scoped := requestScope(r); scoped && (req.WorkspaceID != ws || req.JobID != jobID) {
 		writeErr(w, http.StatusNotFound, "not_found", requests.ErrNotFound.Error())
 		return req, false
 	}

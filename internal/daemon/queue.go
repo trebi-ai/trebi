@@ -23,7 +23,7 @@ import (
 const wakeRecapN = 10
 
 // lane is one FIFO stream of pending queue rows.
-type lane struct{ ws, job, kind, conv string }
+type lane struct{ ws, jobID, kind, conv string }
 
 func (c *ControlPlane) queueWorker(ctx context.Context) {
 	iv := c.Opts.QueueInterval
@@ -111,7 +111,7 @@ func (c *ControlPlane) drainQueue(ctx context.Context) {
 // stamp is ok again — recovery must drain without a manual requeue.
 func (c *ControlPlane) releaseAuthBlocks(ctx context.Context) {
 	rows, err := c.Store.DB().QueryContext(ctx, `
-		SELECT id, workspace_id, job, kind FROM event_queue
+		SELECT id, workspace_id, job_id, kind FROM event_queue
 		WHERE status='blocked' AND block_reason=?`, string(dispatch.BlockAuthMissing))
 	if err != nil {
 		c.log.Warn("list auth-blocked queue", "error", err)
@@ -161,10 +161,10 @@ func (c *ControlPlane) now() time.Time {
 func (c *ControlPlane) queueLanes(ctx context.Context) []lane {
 	due := c.now().UTC().Format(time.RFC3339)
 	rows, err := c.Store.DB().QueryContext(ctx, `
-		SELECT DISTINCT workspace_id, job, kind, conversation_key FROM event_queue q
+		SELECT DISTINCT workspace_id, job_id, kind, conversation_key FROM event_queue q
 		WHERE status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 		AND id = (SELECT MIN(h.id) FROM event_queue h
-			WHERE h.status='pending' AND h.workspace_id=q.workspace_id AND h.job=q.job
+			WHERE h.status='pending' AND h.job_id=q.job_id
 			AND h.kind=q.kind AND h.conversation_key=q.conversation_key)
 		LIMIT 50`, due)
 	if err != nil {
@@ -175,7 +175,7 @@ func (c *ControlPlane) queueLanes(ctx context.Context) []lane {
 	var lanes []lane
 	for rows.Next() {
 		var l lane
-		if rows.Scan(&l.ws, &l.job, &l.kind, &l.conv) == nil {
+		if rows.Scan(&l.ws, &l.jobID, &l.kind, &l.conv) == nil {
 			lanes = append(lanes, l)
 		}
 	}
@@ -184,7 +184,7 @@ func (c *ControlPlane) queueLanes(ctx context.Context) []lane {
 
 // dispatchLane claims the next pending item on a lane and launches it.
 func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
-	item, err := c.queue.ClaimNext(ctx, l.ws, l.job, l.kind, l.conv)
+	item, err := c.queue.ClaimNext(ctx, l.jobID, l.kind, l.conv)
 	if err != nil || item == nil {
 		return
 	}
@@ -213,7 +213,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		c.dispatchAssistant(ctx, item)
 		return
 	}
-	j, path := c.findJobKind(ctx, l.ws, l.job, kind)
+	j, path := c.findJobKind(ctx, l.ws, l.jobID, kind)
 	if j == nil {
 		_ = c.queue.MarkBlocked(ctx, item.ID, dispatch.BlockJobMissing)
 		return
@@ -261,7 +261,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	if !c.markAttempt(ctx, item) {
 		return
 	}
-	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.Job)
+	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.JobName)
 	d := j.LaunchDefaultsWithKit(kit)
 	cwd := d.WorkingDir
 	if cwd == "" {
@@ -281,7 +281,8 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	run, outcome, err := c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID:     item.WorkspaceID,
-			Job:             item.Job,
+			JobID:           item.JobID,
+			JobName:         item.JobName,
 			Kind:            item.Kind,
 			Reason:          runsReasonFor(item),
 			Harness:         harness,
@@ -317,7 +318,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		return
 	}
 	if item.Kind == runs.KindAgent {
-		c.log.Info("agent.woken", "reason", string(runs.ReasonTrigger), "agent", item.Job)
+		c.log.Info("agent.woken", "reason", string(runs.ReasonTrigger), "agent", item.JobName)
 	}
 }
 
@@ -331,7 +332,7 @@ func (c *ControlPlane) finishLaunch(ctx context.Context, item *dispatch.QueueIte
 		return false
 	}
 	if err != nil || run == nil {
-		c.log.Warn("queue launch", "job", item.Job, "queue_id", item.ID, "error", err)
+		c.log.Warn("queue launch", "job", item.JobName, "queue_id", item.ID, "error", err)
 		c.failOrRetry(ctx, item, err, run)
 		return false
 	}
@@ -361,7 +362,7 @@ func (c *ControlPlane) finishLaunch(ctx context.Context, item *dispatch.QueueIte
 // does not apply.
 func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueItem) {
 	lr := item.Launch
-	j, path := c.findJobKind(ctx, item.WorkspaceID, item.Job, cmp.Or(item.Kind, dispatch.KindJob))
+	j, path := c.findJobKind(ctx, item.WorkspaceID, item.JobID, cmp.Or(item.Kind, dispatch.KindJob))
 	if j == nil {
 		_ = c.queue.MarkBlocked(ctx, item.ID, dispatch.BlockJobMissing)
 		return
@@ -374,7 +375,7 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 	if !c.markAttempt(ctx, item) {
 		return
 	}
-	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.Job)
+	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.JobName)
 	d := j.LaunchDefaultsWithKit(kit)
 	cwd := cmp.Or(d.WorkingDir, dirOf(path))
 	var wake *runs.WakeOpts
@@ -388,7 +389,8 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 	run, outcome, err := c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID:     item.WorkspaceID,
-			Job:             item.Job,
+			JobID:           item.JobID,
+			JobName:         item.JobName,
 			Kind:            item.Kind,
 			Reason:          runs.RunReason(lr.Reason),
 			Harness:         harness,
@@ -458,7 +460,7 @@ func (c *ControlPlane) dispatchResume(ctx context.Context, item *dispatch.QueueI
 		return
 	}
 	if err != nil || run == nil {
-		c.log.Warn("queue resume", "job", item.Job, "queue_id", item.ID, "error", err)
+		c.log.Warn("queue resume", "job", item.JobName, "queue_id", item.ID, "error", err)
 		c.failOrRetry(ctx, item, err, run)
 		return
 	}
@@ -542,9 +544,9 @@ func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.Q
 	addr = c.eventAddress(ctx, item)
 	pointer := addr
 	pointer.Room = cmp.Or(addr.Room, item.ConversationKey)
-	convID, err := c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, item.Job, pointer)
+	convID, err := c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, item.JobID, pointer)
 	if err != nil || convID == "" {
-		c.noteOperatorConflict(ctx, err, item, pointer, item.Job)
+		c.noteOperatorConflict(ctx, err, item, pointer, item.JobName)
 		return "", "", addr
 	}
 	conv, err := c.Conversations.Get(ctx, convID)
@@ -579,7 +581,7 @@ func (c *ControlPlane) noteOperatorConflict(ctx context.Context, err error, item
 	current := ""
 	if p, perr := c.Conversations.GetPointer(ctx, item.WorkspaceID, addr); perr == nil {
 		if conv, gerr := c.Conversations.Get(ctx, p.ConversationID); gerr == nil {
-			current = conv.Operator
+			current = conv.OperatorName
 		}
 	}
 	c.log.WarnContext(ctx, "channel operator conflict", "instance", addr.Instance, "room", addr.Room,
@@ -702,7 +704,7 @@ func (c *ControlPlane) followUp(ctx context.Context, item *dispatch.QueueItem, j
 		tmpl = strings.Replace(tmpl, ", thread {{thread}}", "", 1)
 	}
 	lookup := fillTemplate(tmpl, item.Vars)
-	first, err := c.Runs.FirstTriggerVars(ctx, item.WorkspaceID, item.Job, item.ConversationKey)
+	first, err := c.Runs.FirstTriggerVars(ctx, item.WorkspaceID, item.JobID, item.ConversationKey)
 	if err != nil {
 		c.log.Warn("follow-up first vars", "queue_id", item.ID, "error", err)
 	}
@@ -875,7 +877,7 @@ func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem)
 	if item.ResumeOf != "" || item.Launch != nil {
 		return nil, ""
 	}
-	key := item.WorkspaceID + "/" + item.Job + "/" + strconv.Itoa(item.OnIndex) + "/" + item.ConversationKey
+	key := item.WorkspaceID + "/" + item.JobID + "/" + strconv.Itoa(item.OnIndex) + "/" + item.ConversationKey
 	// Triggers name the slug; the item holds the connection id.
 	slug := item.Connector
 	if c.Connectors != nil {
@@ -887,7 +889,7 @@ func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem)
 		}
 		return nil, ""
 	}
-	j, _ := c.findJobKind(ctx, item.WorkspaceID, item.Job, item.Kind)
+	j, _ := c.findJobKind(ctx, item.WorkspaceID, item.JobID, item.Kind)
 	if j == nil {
 		return nil, ""
 	}

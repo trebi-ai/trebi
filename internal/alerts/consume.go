@@ -147,11 +147,7 @@ func (s *Service) onProposalCreated(ctx context.Context, ev store.StreamEvent, a
 	if id == "" {
 		return
 	}
-	agent := strings.TrimPrefix(attrs["agent"], "agents/")
-	title := attrs["agent"]
-	if agent != "" {
-		title = agent
-	}
+	title := attrs["agent_name"]
 	body := attrs["note"]
 	var keys []string
 	if raw := attrs["protected_keys"]; raw != "" {
@@ -177,7 +173,7 @@ func (s *Service) onProposalCreated(ctx context.Context, ev store.StreamEvent, a
 	body = strings.TrimSpace(strings.Join([]string{body, stats}, "\n"))
 	_, err := s.Raise(ctx, RaiseOpts{
 		Kind: KindAgentProposal, Subject: "proposal/" + id, WorkspaceID: attrs["workspace"],
-		JobName: attrs["agent"], RunID: attrs["run_id"], TraceID: ev.TraceID,
+		JobID: attrs["agent_id"], RunID: attrs["run_id"], TraceID: ev.TraceID,
 		Title: title + " proposes an AGENT.md change", Body: body,
 		Hint: "Review the diff and approve or deny. Reply approve or deny by mail.",
 	})
@@ -191,7 +187,7 @@ func (s *Service) onProposalCreated(ctx context.Context, ev store.StreamEvent, a
 func (s *Service) onRequestCreated(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
 	opts := RaiseOpts{
 		Kind: KindRequest, RequestID: ev.ID, Title: attrs["title"], RunID: attrs["run_id"],
-		WorkspaceID: attrs["workspace_id"], JobName: attrs["job"], TraceID: ev.TraceID,
+		WorkspaceID: attrs["workspace_id"], JobID: attrs["job_id"], JobName: attrs["job_name"], TraceID: ev.TraceID,
 		TrayOnly: s.opts.ApprovalDisabled,
 	}
 	if !opts.TrayOnly {
@@ -210,7 +206,7 @@ func (s *Service) onRequestCreated(ctx context.Context, ev store.StreamEvent, at
 func (s *Service) onRequestUndelivered(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
 	opts := RaiseOpts{
 		Kind: KindRequestUndelivered, RequestID: ev.ID, RunID: attrs["run_id"],
-		WorkspaceID: attrs["workspace_id"], JobName: attrs["job"], TraceID: ev.TraceID,
+		WorkspaceID: attrs["workspace_id"], JobID: attrs["job_id"], JobName: attrs["job_name"], TraceID: ev.TraceID,
 	}
 	if r, ok := s.request(ctx, ev.ID); ok {
 		opts.Body = r.DeliveryError
@@ -375,7 +371,7 @@ func (s *Service) noteWaiting(runID string, attrs map[string]string) {
 	}
 	s.waiting[runID] = waitingEp{
 		since: since, runID: runID,
-		ws: attrs["workspace"], job: attrs["job"], trace: attrs["trace_id"],
+		ws: attrs["workspace"], jobID: attrs["job_id"], jobName: attrs["job_name"], trace: attrs["trace_id"],
 	}
 }
 
@@ -401,7 +397,7 @@ func (s *Service) raiseDweltWaiting(ctx context.Context) {
 	s.mu.Unlock()
 	for _, ep := range due {
 		opts := RaiseOpts{
-			Kind: KindWaiting, RunID: ep.runID, WorkspaceID: ep.ws, JobName: ep.job,
+			Kind: KindWaiting, RunID: ep.runID, WorkspaceID: ep.ws, JobID: ep.jobID, JobName: ep.jobName,
 			TraceID: ep.trace, Title: "Agent waiting", Hint: "open attach",
 		}
 		// A pending approval turns the wait into an answerable item: the
@@ -427,10 +423,10 @@ func (s *Service) approvalQuestion(ctx context.Context, runID string) string {
 }
 
 func (s *Service) onRunFailed(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
-	if attrs["owner"] != "" && attrs["kind"] == "job" && s.failureRouter != nil {
+	if attrs["owner_id"] != "" && attrs["kind"] == "job" && s.failureRouter != nil {
 		handled, err := s.failureRouter.RouteFailure(ctx, RunFailure{
-			RunID: ev.ID, WorkspaceID: attrs["workspace"], Job: attrs["job"],
-			Owner: attrs["owner"], EndReason: attrs["end_reason"],
+			RunID: ev.ID, WorkspaceID: attrs["workspace"], JobID: attrs["job_id"], JobName: attrs["job_name"],
+			OwnerID: attrs["owner_id"], EndReason: attrs["end_reason"],
 		})
 		if err != nil {
 			s.log.Warn("failure route", "run", ev.ID, "error", err)
@@ -441,7 +437,7 @@ func (s *Service) onRunFailed(ctx context.Context, ev store.StreamEvent, attrs m
 	}
 	_, err := s.Raise(ctx, RaiseOpts{
 		Kind: KindRunFailed, RunID: ev.ID, WorkspaceID: attrs["workspace"],
-		JobName: attrs["job"], EndReason: attrs["end_reason"], TraceID: ev.TraceID,
+		JobID: attrs["job_id"], JobName: attrs["job_name"], EndReason: attrs["end_reason"], TraceID: ev.TraceID,
 		Harness: attrs["harness"],
 		Title:   "Run failed", Body: "end_reason=" + attrs["end_reason"],
 	})
@@ -456,8 +452,8 @@ func (s *Service) onRunUpdated(ctx context.Context, ev store.StreamEvent, attrs 
 	if attrs["status"] != "complete" && attrs["outcome"] != "complete" {
 		return
 	}
-	subj := "job/" + attrs["workspace"] + "/" + attrs["job"]
-	if attrs["workspace"] != "" && attrs["job"] != "" {
+	subj := "job/" + attrs["workspace"] + "/" + attrs["job_id"]
+	if attrs["workspace"] != "" && attrs["job_id"] != "" {
 		s.autoResolve(ctx, KindRunFailed, subj, "auto")
 	}
 	s.autoResolve(ctx, KindResumeExhausted, "run/"+ev.ID, "auto")
@@ -467,7 +463,7 @@ func (s *Service) onResumeExhausted(ctx context.Context, ev store.StreamEvent, a
 	_, err := s.Raise(ctx, RaiseOpts{
 		Kind: KindResumeExhausted, RunID: firstNonEmpty(attrs["run_id"], ev.ID),
 		SessionID: attrs["session_id"], WorkspaceID: attrs["workspace"],
-		JobName: attrs["job"], TraceID: ev.TraceID,
+		JobID: attrs["job_id"], JobName: attrs["job_name"], TraceID: ev.TraceID,
 		Title: "Resume exhausted",
 	})
 	if err != nil {
@@ -478,7 +474,7 @@ func (s *Service) onResumeExhausted(ctx context.Context, ev store.StreamEvent, a
 func (s *Service) onMemoryInvalid(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
 	_, err := s.Raise(ctx, RaiseOpts{
 		Kind: KindMemoryInvalid, RunID: firstNonEmpty(attrs["run_id"], ev.ID),
-		WorkspaceID: attrs["workspace"], JobName: attrs["job"], TraceID: ev.TraceID,
+		WorkspaceID: attrs["workspace"], JobID: attrs["job_id"], JobName: attrs["job_name"], TraceID: ev.TraceID,
 		Body: attrs["issue"],
 	})
 	if err != nil {
@@ -1080,7 +1076,7 @@ func (s *Service) notifyFindings(ctx context.Context) []DoctorFinding {
 	}
 	scopes := []notify.Scope{{}}
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT w.id, COALESCE(j.name,'') FROM workspaces w
-		LEFT JOIN job_index j ON j.workspace_id=w.id AND j.active=1 WHERE w.orphaned=0 ORDER BY w.id, j.name`)
+		LEFT JOIN job_index j ON j.workspace_id=w.id AND j.active=1 AND j.retired_at IS NULL WHERE w.orphaned=0 ORDER BY w.id, j.name`)
 	if err != nil {
 		return nil
 	}
@@ -1185,7 +1181,7 @@ func raiseOptsFromItem(item InboxItem) RaiseOpts {
 	return RaiseOpts{
 		Kind: Kind(item.AlertKind), Subject: item.Subject, Title: item.Title,
 		Body: item.Body, Hint: item.Hint, RunID: item.RunID,
-		WorkspaceID: item.Workspace, JobName: item.Job, TraceID: item.TraceID,
+		WorkspaceID: item.Workspace, JobID: item.JobID, JobName: item.JobName, TraceID: item.TraceID,
 		RequestID: item.RequestID,
 	}
 }

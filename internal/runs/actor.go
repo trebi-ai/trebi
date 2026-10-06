@@ -33,11 +33,11 @@ func (s *Service) ActorForToken(ctx context.Context, token string) (tools.Actor,
 		return tools.Actor{}, fmt.Errorf("invalid run token")
 	}
 	row := s.st.DB().QueryRowContext(ctx, `
-SELECT id, workspace_id, job, kind FROM runs
+SELECT id, workspace_id, job_id, `+jobNameSQL+`, kind FROM runs
 WHERE actor_token_hash = ? AND status = ?`, HashActorToken(token), string(StatusRunning))
 	var a tools.Actor
 	var kind string
-	if err := row.Scan(&a.RunID, &a.WorkspaceID, &a.Job, &kind); err != nil {
+	if err := row.Scan(&a.RunID, &a.WorkspaceID, &a.JobID, &a.Job, &kind); err != nil {
 		return tools.Actor{}, fmt.Errorf("invalid run token")
 	}
 	a.Name = kind

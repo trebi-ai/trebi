@@ -86,7 +86,7 @@ func (s *Server) handleAgentAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.conv.Ask(r.Context(), conversations.AskOpts{
-		Workspace: ws.ID, Operator: row.Name, Text: body.Text,
+		Workspace: ws.ID, OperatorID: row.ID, Text: body.Text,
 		Address: conversations.Address{Connector: channelType, Room: channelRef},
 	})
 	if s.convErr(w, err, "conversation error") {
@@ -138,7 +138,7 @@ func (s *Server) handleAgentEscalate(w http.ResponseWriter, r *http.Request) {
 		writeResolveErr(w, err, "agent")
 		return
 	}
-	if scope, agent := scopeFrom(r.Context()); !agent || scope.agent != row.Name {
+	if scope, agent := scopeFrom(r.Context()); !agent || scope.agentID != row.ID {
 		writeForbidden(w, "only the named agent caller may escalate")
 		return
 	}
@@ -179,8 +179,8 @@ func (s *Server) handleAgentEscalate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = s.st.Append(r.Context(), store.BusEvent{
-		Topic: "agent.escalated", Entity: "agent", EntityID: row.Name, Action: "escalated",
-		Attrs: map[string]string{"workspace": ws.ID, "agent": row.Name, "to": body.To},
+		Topic: "agent.escalated", Entity: "agent", EntityID: row.ID, Action: "escalated",
+		Attrs: map[string]string{"workspace": ws.ID, "agent_id": row.ID, "agent_name": strings.TrimPrefix(row.Name, "agents/"), "to": body.To},
 	})
 	writeJSON(w, http.StatusAccepted, map[string]any{"escalated": true, "to": body.To})
 }
@@ -203,7 +203,7 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 		}
 		list = append(list, buildAgentPayload(row, owned[row.Name], false))
 	}
-	s.setAgentListMetadata(r.Context(), ws.ID, list, true)
+	s.setAgentListMetadata(r.Context(), ws.ID, rows, list, true)
 	writeJSON(w, http.StatusOK, map[string]any{"agents": list})
 }
 
@@ -240,7 +240,7 @@ func (s *Server) handleAgentsListAll(w http.ResponseWriter, r *http.Request) {
 			}
 			list = append(list, buildAgentPayload(row, owned[row.Name], false))
 		}
-		s.setAgentListMetadata(r.Context(), all[i].ID, list[base:], true)
+		s.setAgentListMetadata(r.Context(), all[i].ID, rows, list[base:], true)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": list})
 }
@@ -261,7 +261,7 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := buildAgentPayload(row, ownedJobNames(rows)[row.Name], true)
-	s.setAgentListMetadata(r.Context(), ws.ID, []agentPayload{p}, false)
+	s.setAgentListMetadata(r.Context(), ws.ID, rows, []agentPayload{p}, false)
 	setETagHash(w, p.Hash)
 	writeJSON(w, http.StatusOK, p)
 }
@@ -439,7 +439,7 @@ func (s *Server) handleAgentPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if scope, agent := scopeFrom(r.Context()); agent {
-		if row.Name != scope.agent {
+		if row.ID != scope.agentID {
 			writeForbidden(w, "agent may change only itself")
 			return
 		}
@@ -567,18 +567,7 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 		writeResolveErr(w, err, "agent")
 		return
 	}
-	rows, err := s.ws.ListJobs(r.Context(), ws.ID)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	targets := []string{row.Name}
-	for _, candidate := range rows {
-		if candidate.Kind == "job" && candidate.Owner == row.Name {
-			targets = append(targets, candidate.Name)
-		}
-	}
-	live, err := s.runs.HasLiveJobs(r.Context(), ws.ID, targets...)
+	live, err := s.runs.HasLiveJobs(r.Context(), ws.ID, row.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -607,6 +596,7 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 // agentPayload is the agent wire shape: the job show fields plus memory,
 // disabled, and the owned job list (Part H).
 type agentPayload struct {
+	ID                string           `json:"id"`
 	Name              string           `json:"name"`
 	IndexName         string           `json:"index_name"`
 	WorkspaceID       string           `json:"workspace_id"`
@@ -680,7 +670,7 @@ const recentRunCap = 20
 // and the full-content hash; the list shape uses the index hash.
 func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agentPayload {
 	p := agentPayload{
-		Name: strings.TrimPrefix(row.Name, "agents/"), IndexName: row.Name,
+		ID: row.ID, Name: strings.TrimPrefix(row.Name, "agents/"), IndexName: row.Name,
 		WorkspaceID: row.WorkspaceID, Path: row.Path,
 		Harness: row.Harness, Active: row.Active, Hash: row.Hash,
 		Triggers: []job.Trigger{}, JobCount: len(jobs), Jobs: jobs,
@@ -785,8 +775,8 @@ func (b agentPutRequest) markdown() (string, error) {
 func ownedJobNames(rows []workspaces.JobRow) map[string][]string {
 	owned := map[string][]string{}
 	for _, row := range rows {
-		if row.Kind == "job" && row.Owner != "" {
-			owned[row.Owner] = append(owned[row.Owner], row.Name)
+		if row.Kind == "job" && row.OwnerIndex() != "" {
+			owned[row.OwnerIndex()] = append(owned[row.OwnerIndex()], row.Name)
 		}
 	}
 	return owned
@@ -842,17 +832,27 @@ func (s *Server) seedAgentMemory(ctx context.Context, ws *workspaces.Workspace, 
 // setAgentListMetadata fills one workspace's agent page rollup in batch:
 // recent runs, schedules, conversations, inbox items, and priced MTD cost.
 // withRuns adds the sparkline fields (G.1); the single-agent GET passes
-// false and leaves them empty.
-func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, list []agentPayload, withRuns bool) {
+// false and leaves them empty. rows are the workspace index rows.
+func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, rows []workspaces.JobRow, list []agentPayload, withRuns bool) {
 	if len(list) == 0 {
 		return
 	}
 	owners := make([]string, 0, len(list))
 	byOwner := make(map[string]int, len(list))
 	for i := range list {
-		owners = append(owners, list[i].IndexName)
-		byOwner[list[i].IndexName] = i
+		owners = append(owners, list[i].ID)
+		byOwner[list[i].ID] = i
 		s.setAgentEmail(ctx, &list[i], wsID)
+	}
+	// ownerOf maps a job or agent ID to the agent ID that owns its lane.
+	ownerOf := make(map[string]string, len(rows))
+	for _, row := range rows {
+		switch {
+		case row.Kind == "agent":
+			ownerOf[row.ID] = row.ID
+		case row.OwnerID != "":
+			ownerOf[row.ID] = row.OwnerID
+		}
 	}
 	if costs, err := s.runs.OwnerCosts(ctx, wsID, owners); err == nil {
 		for owner, i := range byOwner {
@@ -872,7 +872,7 @@ func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, list []a
 	}
 	if items, err := s.alerts.List(ctx, alerts.ListOpts{Workspace: wsID, Status: string(alerts.InboxUnread), Limit: 200}); err == nil {
 		for _, item := range items {
-			owner := ownerForLane(item.Job, byOwner)
+			owner := ownerOf[item.JobID]
 			if i, ok := byOwner[owner]; ok {
 				list[i].OpenItems++
 			}
@@ -880,14 +880,14 @@ func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, list []a
 	}
 	if convs, err := s.conv.List(ctx, conversations.ListOpts{Workspace: wsID, Limit: 200}); err == nil {
 		for _, conv := range convs {
-			if i, ok := byOwner[conv.Operator]; ok {
+			if i, ok := byOwner[conv.OperatorID]; ok {
 				list[i].OpenConversations++
 			}
 		}
 	}
 	if schedules, err := s.sched.List(ctx, schedule.ListOpts{Workspace: wsID, Limit: maxListLimit}); err == nil {
 		for _, row := range schedules {
-			i, ok := byOwner[ownerForLane(row.Job, byOwner)]
+			i, ok := byOwner[ownerOf[row.JobID]]
 			if !ok || row.NextDueAt == "" {
 				continue
 			}
@@ -905,7 +905,7 @@ func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, list []a
 	ok7 := map[string]int{}
 	window := time.Now().Add(-7 * 24 * time.Hour)
 	for _, run := range recent {
-		owner := ownerForLane(run.Job, byOwner)
+		owner := ownerOf[run.JobID]
 		if owner == "" {
 			continue
 		}
@@ -963,16 +963,4 @@ func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, list []a
 			list[i].Status = "idle"
 		}
 	}
-}
-
-func ownerForLane(lane string, owners map[string]int) string {
-	if _, ok := owners[lane]; ok {
-		return lane
-	}
-	for owner := range owners {
-		if strings.HasPrefix(lane, owner+"/") {
-			return owner
-		}
-	}
-	return ""
 }

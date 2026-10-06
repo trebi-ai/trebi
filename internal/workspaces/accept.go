@@ -64,7 +64,7 @@ func (s *Service) OwnerKit(ctx context.Context, workspaceID, name string) *job.K
 	}
 	owner := name
 	if row, err := s.findRow(rows, name); err == nil {
-		owner = row.Owner
+		owner = row.OwnerIndex()
 		if owner == "" && row.Kind == "agent" {
 			owner = row.Name
 		}

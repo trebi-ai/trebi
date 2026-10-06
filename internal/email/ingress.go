@@ -88,10 +88,10 @@ func (d RouteDecision) Spoof() bool { return d.Reason == ReasonDMARCSpoof }
 type Actions interface {
 	// RouteEnvFor returns one workspace's agent tags and allowlist.
 	RouteEnvFor(ctx context.Context, workspaceID string) (RouteEnv, error)
-	// Ask delivers one message to the operator's conversation; operator is
-	// empty for the assistant and agents/<id> for an agent. It returns the
+	// Ask delivers one message to the operator's conversation; agent is the
+	// short agent name, or empty for the assistant. It returns the
 	// conversation id.
-	Ask(ctx context.Context, d RouteDecision, msg IngressMessage, operator, text string) (string, error)
+	Ask(ctx context.Context, d RouteDecision, msg IngressMessage, agent, text string) (string, error)
 	// InboxItem records the low-severity item; returns the inbox item id.
 	InboxItem(ctx context.Context, d RouteDecision, msg IngressMessage) (string, error)
 	// DecideApproval applies one reply decision to the run's pending
@@ -182,12 +182,12 @@ func (s *Service) RecordInbound(ctx context.Context, msg IngressMessage, d Route
 	}
 	text, html := s.keptContent(msg.Text, msg.HTML)
 	res, err := s.st.DB().ExecContext(ctx, `INSERT INTO email_messages (
-		id, direction, workspace_id, agent, message_id, in_reply_to, thread_root,
+		id, direction, workspace_id, agent_id, message_id, in_reply_to, thread_root,
 		sender, subject, dmarc, disposition, attachments, trace_id, created_at, revision,
 		body_text, body_html
-	) VALUES (?, 'in', ?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)
+	) VALUES (?, 'in', ?,`+agentIDSQL+`,?,?,?,?,?,?,?,?,?,?,1,?,?)
 		ON CONFLICT(id) DO NOTHING`,
-		msg.ID, d.WorkspaceID, d.Agent, msg.MessageID, msg.InReplyTo, ThreadRoot(msg),
+		msg.ID, d.WorkspaceID, d.WorkspaceID, d.Agent, msg.MessageID, msg.InReplyTo, ThreadRoot(msg),
 		msg.From, msg.Subject, msg.Dmarc, d.Disposition(), string(att), d.TraceID,
 		time.Now().UTC().Format(time.RFC3339), text, html)
 	if err != nil {
@@ -209,8 +209,8 @@ func (s *Service) seenInbound(ctx context.Context, msg IngressMessage, d RouteDe
 	var n int
 	err := s.st.DB().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM email_messages WHERE direction='in' AND message_id=?
-		 AND workspace_id=? AND agent=? AND id<>? AND disposition<>'dropped'`,
-		msg.MessageID, d.WorkspaceID, d.Agent, msg.ID).Scan(&n)
+		 AND workspace_id=? AND COALESCE(agent_id,'') = COALESCE(`+agentIDSQL+`,'') AND id<>? AND disposition<>'dropped'`,
+		msg.MessageID, d.WorkspaceID, d.WorkspaceID, d.Agent, msg.ID).Scan(&n)
 	if err != nil {
 		s.log.Warn("email.seen", "id", msg.ID, "error", err)
 		return false
@@ -492,7 +492,7 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 func (g *Ingress) dispatch(ctx context.Context, msg IngressMessage, d RouteDecision, u *runs.UntrustedMessage) {
 	switch d.Class {
 	case RouteAgent:
-		convID, err := g.act.Ask(ctx, d, msg, "agents/"+d.Agent, inboundText(msg, u, ""))
+		convID, err := g.act.Ask(ctx, d, msg, d.Agent, inboundText(msg, u, ""))
 		if err != nil {
 			g.log.Warn("email.ask", "agent", d.Agent, "id", msg.ID, "error", err)
 		}

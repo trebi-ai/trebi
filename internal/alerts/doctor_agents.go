@@ -56,7 +56,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	// The connectors doctor reports each folder that does not load.
 	defs, _ := connectors.LoadManifests()
 	db := st.DB()
-	rows, err := db.Query(`SELECT workspace_id, name, path, kind FROM job_index`)
+	rows, err := db.Query(`SELECT workspace_id, name, path, kind FROM job_index WHERE retired_at IS NULL`)
 	if err != nil {
 		return findings
 	}
@@ -284,8 +284,8 @@ func connectorFindings(ctx context.Context, actions ActionsChecker, wsID, short,
 func agentWriteFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
 	cutoff := time.Now().UTC().Add(-24 * time.Hour)
 	rows, err := db.Query(`
-SELECT r.workspace_id, r.job, r.started_at, COALESCE(r.ended_at,''), w.path, r.working_dir
-FROM runs r JOIN workspaces w ON w.id=r.workspace_id
+SELECT r.workspace_id, COALESCE(ji.name,''), r.started_at, COALESCE(r.ended_at,''), w.path, r.working_dir
+FROM runs r JOIN workspaces w ON w.id=r.workspace_id LEFT JOIN job_index ji ON ji.id=r.job_id
 WHERE r.kind='agent' AND r.ended_at IS NOT NULL AND r.ended_at>=?`, cutoff.Format(time.RFC3339Nano))
 	if err != nil {
 		return nil

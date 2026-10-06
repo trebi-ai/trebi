@@ -51,7 +51,8 @@ type Conversation struct {
 	Key            string                `json:"key"`
 	Title          string                `json:"title"`
 	OriginChannel  string                `json:"origin_channel"`
-	Operator       string                `json:"operator,omitempty"`
+	OperatorID     string                `json:"operator_id,omitempty"`
+	OperatorName   string                `json:"operator_name,omitempty"`
 	Summary        string                `json:"summary,omitempty"`
 	CreatedAt      time.Time             `json:"created_at"`
 	UpdatedAt      time.Time             `json:"updated_at"`
@@ -109,7 +110,7 @@ type Pointer struct {
 // CreateOpts is POST /v1/conversations.
 type CreateOpts struct {
 	Workspace     string
-	Operator      string
+	OperatorID    string
 	Title         string
 	OriginChannel string
 	Activate      *Address // points this channel at the new conversation
@@ -124,11 +125,11 @@ type PatchOpts struct {
 
 // ListOpts filters conversation lists.
 type ListOpts struct {
-	Workspace string
-	Operator  string
-	Channel   string
-	Limit     int
-	Cursor    string
+	Workspace  string
+	OperatorID string
+	Channel    string
+	Limit      int
+	Cursor     string
 }
 
 // MessageListOpts pages messages in ascending ULID order.
@@ -159,7 +160,7 @@ type SendResult struct {
 // or creates the channel conversation, so a client sends no pointer calls.
 type AskOpts struct {
 	Workspace      string
-	Operator       string // '' = assistant; agents/<id> = agent
+	OperatorID     string // '' = assistant; agt_… = agent
 	Text           string
 	Address        // connector defaults to cli, room to the workspace id
 	IdempotencyKey string
@@ -190,8 +191,11 @@ type IncomingTurn struct {
 	At   time.Time
 }
 
+// operatorNameSQL reads the short agent name of conversations.operator_id.
+const operatorNameSQL = `COALESCE((SELECT SUBSTR(ji.name, 8) FROM job_index ji WHERE ji.id = conversations.operator_id), '')`
+
 const convCols = `id, workspace_id, COALESCE(key,''), COALESCE(title,''), COALESCE(origin_channel,''),
-	COALESCE(summary,''), COALESCE(operator,''), created_at, updated_at, last_activity_at, revision`
+	COALESCE(summary,''), operator_id, ` + operatorNameSQL + `, created_at, updated_at, last_activity_at, revision`
 
 // assistantPrompter is the session-manager seam for operator="" sends
 // (plan 2026-09-26 Part E). *assistant.Manager satisfies it. The types live
@@ -256,9 +260,9 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]Conversation, erro
 			SELECT 1 FROM conversation_channels ch WHERE ch.conversation_id=conversations.id AND ch.connector=?))`
 		args = append(args, opts.Channel, opts.Channel)
 	}
-	if opts.Operator != "" {
-		q += ` AND operator=?`
-		args = append(args, opts.Operator)
+	if opts.OperatorID != "" {
+		q += ` AND operator_id=?`
+		args = append(args, opts.OperatorID)
 	}
 	if opts.Cursor != "" {
 		q += ` AND id < ?`
@@ -320,10 +324,10 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Conversation, e
 	key := ulid.Make().String()
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`INSERT INTO conversations
-				(id, workspace_id, key, title, origin_channel, summary, operator, created_at, updated_at, last_activity_at, revision)
+				(id, workspace_id, key, title, origin_channel, summary, operator_id, created_at, updated_at, last_activity_at, revision)
 			VALUES (?,?,?,?,?,'',?,?,?,?,1)`,
 			id, opts.Workspace, key, store.NullStr(opts.Title), opts.OriginChannel,
-			opts.Operator, nowStr, nowStr, nowStr); err != nil {
+			opts.OperatorID, nowStr, nowStr, nowStr); err != nil {
 			return err
 		}
 		if opts.Activate == nil {
@@ -458,7 +462,7 @@ func (s *Service) PutPointer(ctx context.Context, workspace string, a Address, c
 // BindRoom points a room at a conversation of the operator. A room that
 // already points at a conversation of that operator keeps it; else a new
 // conversation takes the room.
-func (s *Service) BindRoom(ctx context.Context, workspace, operator string, a Address) (*Pointer, error) {
+func (s *Service) BindRoom(ctx context.Context, workspace, operatorID string, a Address) (*Pointer, error) {
 	if a.Connector == "" || a.Room == "" {
 		return nil, fmt.Errorf("%w: connector and room are required", ErrValidation)
 	}
@@ -467,11 +471,11 @@ func (s *Service) BindRoom(ctx context.Context, workspace, operator string, a Ad
 		return nil, err
 	}
 	if p != nil && p.ConversationID != "" {
-		if conv, gerr := s.Get(ctx, p.ConversationID); gerr == nil && conv.Operator == operator {
+		if conv, gerr := s.Get(ctx, p.ConversationID); gerr == nil && conv.OperatorID == operatorID {
 			return p, nil
 		}
 	}
-	conv, err := s.Create(ctx, CreateOpts{Workspace: workspace, Operator: operator, OriginChannel: a.Connector})
+	conv, err := s.Create(ctx, CreateOpts{Workspace: workspace, OperatorID: operatorID, OriginChannel: a.Connector})
 	if err != nil {
 		return nil, err
 	}
@@ -602,7 +606,7 @@ func scanConv(row convScanner) (Conversation, error) {
 	var c Conversation
 	var created, updated string
 	var last sql.NullString
-	err := row.Scan(&c.ID, &c.Workspace, &c.Key, &c.Title, &c.OriginChannel, &c.Summary, &c.Operator,
+	err := row.Scan(&c.ID, &c.Workspace, &c.Key, &c.Title, &c.OriginChannel, &c.Summary, &c.OperatorID, &c.OperatorName,
 		&created, &updated, &last, &c.Revision)
 	if err != nil {
 		return c, err
@@ -629,7 +633,8 @@ func uniqueViolation(err error) bool {
 // RoomBinding is one room pointer of a connector instance.
 type RoomBinding struct {
 	Workspace      string `json:"workspace"`
-	Operator       string `json:"operator"` // assistant | agents/<name>
+	OperatorID     string `json:"operator_id"`   // '' = assistant
+	OperatorName   string `json:"operator_name"` // assistant | <agent name>
 	Room           string `json:"room"`
 	Thread         string `json:"thread"`
 	ConversationID string `json:"conversation_id"`
@@ -639,7 +644,7 @@ type RoomBinding struct {
 // instance is unique, so the connector type does not filter.
 func (s *Service) RoomBindings(ctx context.Context, instance string) ([]RoomBinding, error) {
 	rows, err := s.st.DB().QueryContext(ctx, `
-		SELECT p.workspace_id, COALESCE(c.operator,''), p.room, p.thread, p.conversation_id
+		SELECT p.workspace_id, c.operator_id, COALESCE((SELECT SUBSTR(ji.name, 8) FROM job_index ji WHERE ji.id = c.operator_id), ''), p.room, p.thread, p.conversation_id
 		FROM channel_pointers p JOIN conversations c ON c.id = p.conversation_id
 		WHERE p.instance=? ORDER BY p.room, p.thread, p.workspace_id`, instance)
 	if err != nil {
@@ -649,11 +654,11 @@ func (s *Service) RoomBindings(ctx context.Context, instance string) ([]RoomBind
 	out := []RoomBinding{}
 	for rows.Next() {
 		var b RoomBinding
-		if err := rows.Scan(&b.Workspace, &b.Operator, &b.Room, &b.Thread, &b.ConversationID); err != nil {
+		if err := rows.Scan(&b.Workspace, &b.OperatorID, &b.OperatorName, &b.Room, &b.Thread, &b.ConversationID); err != nil {
 			return nil, err
 		}
-		if b.Operator == "" {
-			b.Operator = "assistant"
+		if b.OperatorID == "" {
+			b.OperatorName = "assistant"
 		}
 		out = append(out, b)
 	}

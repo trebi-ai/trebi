@@ -23,26 +23,26 @@ func (c *ControlPlane) RouteFailure(ctx context.Context, f alerts.RunFailure) (b
 	err := c.Store.DB().QueryRowContext(ctx, `
 SELECT COUNT(*) FROM event_queue
 WHERE connector='escalation' AND workspace_id=? AND created_at >= ? AND event_id LIKE ?`,
-		f.WorkspaceID, cutoff, "escalation:"+f.Job+":%").Scan(&n)
+		f.WorkspaceID, cutoff, "escalation:"+f.JobID+":%").Scan(&n)
 	if err != nil {
 		return false, err
 	}
 	if n >= 3 {
 		return false, nil
 	}
-	ownerJob, _ := c.findJobKind(ctx, f.WorkspaceID, f.Owner, runs.KindAgent)
+	ownerJob, _ := c.findJobKind(ctx, f.WorkspaceID, f.OwnerID, runs.KindAgent)
 	if ownerJob == nil {
 		return false, nil
 	}
-	if allowed, reason, err := c.Workspaces.Allow(ctx, f.WorkspaceID, f.Job, runs.KindJob); err != nil {
+	if allowed, reason, err := c.Workspaces.Allow(ctx, f.WorkspaceID, f.JobName, runs.KindJob); err != nil {
 		return false, err
 	} else if !allowed {
-		c.log.Warn("agent escalation over budget", "agent", f.Owner, "reason", reason)
+		c.log.Warn("agent escalation over budget", "agent_id", f.OwnerID, "reason", reason)
 		return false, nil
 	}
-	eventID := "escalation:" + f.Job + ":" + f.RunID
+	eventID := "escalation:" + f.JobID + ":" + f.RunID
 	message := fmt.Sprintf("Owned job failed.\n\nJob: %s\nFailed run: %s\nEnd reason: %s\n",
-		f.Job, f.RunID, f.EndReason)
+		f.JobName, f.RunID, f.EndReason)
 	if tail := c.transcriptTail(ctx, f.RunID, 40); tail != "" {
 		message += "\nTranscript tail:\n" + tail + "\n"
 	}
@@ -55,16 +55,17 @@ WHERE connector='escalation' AND workspace_id=? AND created_at >= ? AND event_id
 		EventID:     eventID,
 		Connector:   "escalation",
 		WorkspaceID: f.WorkspaceID,
-		Job:         f.Owner,
+		JobID:       f.OwnerID,
+		JobName:     ownerJob.Name,
 		Kind:        runs.KindAgent,
 		Prompt:      message,
 		Status:      dispatch.QueuePending,
 	}
 	if err := c.queue.Enqueue(ctx, item); err != nil {
-		c.log.Warn("escalation enqueue", "agent", f.Owner, "run", f.RunID, "error", err)
+		c.log.Warn("escalation enqueue", "agent_id", f.OwnerID, "run", f.RunID, "error", err)
 		return false, nil
 	}
-	c.log.Info("agent.escalated", "agent", f.Owner, "to", "agent-owner", "run", f.RunID)
+	c.log.Info("agent.escalated", "agent_id", f.OwnerID, "to", "agent-owner", "run", f.RunID)
 	return true, nil
 }
 

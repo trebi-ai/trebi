@@ -245,7 +245,8 @@ type TriggerCapture struct {
 type Run struct {
 	ID                string       `json:"id"`
 	Workspace         string       `json:"workspace"`
-	Job               string       `json:"job"`
+	JobID             string       `json:"job_id"`
+	JobName           string       `json:"job_name"`
 	Kind              string       `json:"kind"`
 	Reason            RunReason    `json:"reason,omitempty"`
 	Status            Status       `json:"status"`

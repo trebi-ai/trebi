@@ -73,7 +73,7 @@ func (s *Server) handleProposalsList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleProposalGet(w http.ResponseWriter, r *http.Request) {
 	p, err := s.proposals.Get(r.Context(), r.PathValue("id"))
 	if err == nil {
-		if scope, ok := scopeFrom(r.Context()); ok && (scope.workspaceID != p.WorkspaceID || scope.agent != p.Agent) {
+		if scope, ok := scopeFrom(r.Context()); ok && (scope.workspaceID != p.WorkspaceID || scope.agentID != p.AgentID) {
 			writeForbidden(w, "agent may read only its own proposal")
 			return
 		}

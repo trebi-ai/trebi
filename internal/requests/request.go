@@ -128,7 +128,8 @@ type Request struct {
 	ID              string        `json:"id"`
 	RunID           string        `json:"run_id"`
 	WorkspaceID     string        `json:"workspace"`
-	Job             string        `json:"job"`
+	JobID           string        `json:"job_id"`
+	JobName         string        `json:"job_name"`
 	Kind            string        `json:"kind"`
 	SessionID       string        `json:"session_id,omitempty"`
 	Harness         string        `json:"harness,omitempty"`

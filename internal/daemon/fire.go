@@ -51,11 +51,11 @@ func (c *ControlPlane) scheduleTicker(ctx context.Context) {
 // kind instead of being orphan-deleted. Auth/limit gates create a failed run so
 // the attempt is visible; a false when: gate still skips without a run.
 func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
-	j, path := c.findJob(ctx, r.WorkspaceID, r.Job)
+	j, path := c.findJob(ctx, r.WorkspaceID, r.JobID)
 	if j == nil {
-		c.log.Info("schedule orphan deleted", "workspace", r.WorkspaceID, "job", r.Job, "idx", r.Idx)
-		if err := c.Schedule.Delete(ctx, r.WorkspaceID, r.Job, r.Idx); err != nil {
-			c.log.Warn("schedule orphan delete", "job", r.Job, "error", err)
+		c.log.Info("schedule orphan deleted", "workspace", r.WorkspaceID, "job", r.JobName, "idx", r.Idx)
+		if err := c.Schedule.Delete(ctx, r.WorkspaceID, r.JobID, r.Idx); err != nil {
+			c.log.Warn("schedule orphan delete", "job", r.JobName, "error", err)
 		}
 		return
 	}
@@ -69,9 +69,9 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 				since = parsed
 			}
 		}
-		block, err := c.Workspaces.ReportBlock(ctx, r.WorkspaceID, r.Job, since)
+		block, err := c.Workspaces.ReportBlock(ctx, r.WorkspaceID, r.JobName, since)
 		if err != nil {
-			c.log.Warn("report block", "job", r.Job, "error", err)
+			c.log.Warn("report block", "job", r.JobName, "error", err)
 			return
 		}
 		prompt, gateSkip := c.evalWhenGate(ctx, j, r, path)
@@ -81,14 +81,14 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		}
 		convID, convKey := "", ""
 		if c.Conversations != nil {
-			if id, err := c.Conversations.EnsureForChannel(ctx, r.WorkspaceID, r.Job,
-				conversations.Address{Connector: conversations.ChannelEmail, Room: "report:" + r.Job}); err == nil {
+			if id, err := c.Conversations.EnsureForChannel(ctx, r.WorkspaceID, r.JobID,
+				conversations.Address{Connector: conversations.ChannelEmail, Room: "report:" + r.JobID}); err == nil {
 				if conv, err := c.Conversations.Get(ctx, id); err == nil {
 					convID, convKey = conv.ID, conv.Key
 				}
 			}
 		}
-		kit := c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.Job)
+		kit := c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.JobName)
 		d := j.LaunchDefaultsWithKit(kit)
 		cwd := d.WorkingDir
 		if cwd == "" {
@@ -96,7 +96,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		}
 		lopts := runs.LaunchOpts{
 			CreateOpts: runs.CreateOpts{
-				WorkspaceID: r.WorkspaceID, Job: r.Job, Kind: j.Kind,
+				WorkspaceID: r.WorkspaceID, JobID: r.JobID, JobName: r.JobName, Kind: j.Kind,
 				Reason: runs.ReasonReport, Harness: j.ResolvedHarness(),
 				ConversationID: convID, ConversationKey: convKey,
 				MaxDurationMS: d.MaxDurationMS, IdleTimeoutMS: d.IdleTimeoutMS,
@@ -111,7 +111,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		if errors.Is(err, runs.ErrRunActive) {
 			c.queueFire(ctx, &lopts)
 		} else if err != nil {
-			c.log.Warn("report fire", "job", r.Job, "error", err)
+			c.log.Warn("report fire", "job", r.JobName, "error", err)
 			c.raiseActionsFault(ctx, r, err)
 		}
 		c.markFired(ctx, r)
@@ -122,7 +122,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		return
 	}
 	harness := j.ResolvedHarness()
-	kit := c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.Job)
+	kit := c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.JobName)
 	d := j.LaunchDefaultsWithKit(kit)
 	cwd := d.WorkingDir
 	if cwd == "" {
@@ -138,7 +138,8 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 	lopts := runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID:   r.WorkspaceID,
-			Job:           r.Job,
+			JobID:         r.JobID,
+			JobName:       r.JobName,
 			Kind:          j.Kind,
 			Reason:        runs.ReasonSchedule,
 			Harness:       harness,
@@ -165,13 +166,13 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		if reason == dispatch.BlockLimitExceeded {
 			end = runs.EndLimit
 		}
-		c.log.Info("schedule skip harness", "job", r.Job, "harness", harness, "reason", reason)
+		c.log.Info("schedule skip harness", "job", r.JobName, "harness", harness, "reason", reason)
 		if _, err := c.Runs.FailBeforeLaunch(ctx, lopts, end, map[string]string{
 			"harness": harness,
 			"reason":  string(reason),
 			"message": "schedule: harness " + harness + " blocked (" + string(reason) + ")",
 		}); err != nil {
-			c.log.Warn("schedule fail before launch", "job", r.Job, "error", err)
+			c.log.Warn("schedule fail before launch", "job", r.JobName, "error", err)
 		}
 		c.markFired(ctx, r)
 		return
@@ -183,7 +184,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		return
 	}
 	if err != nil {
-		c.log.Warn("schedule fire", "job", r.Job, "error", err)
+		c.log.Warn("schedule fire", "job", r.JobName, "error", err)
 		if c.raiseActionsFault(ctx, r, err) {
 			c.markFired(ctx, r)
 			return
@@ -192,7 +193,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 			if _, ferr := c.Runs.FailBeforeLaunch(ctx, lopts, runs.EndLaunch, map[string]string{
 				"message": err.Error(),
 			}); ferr != nil {
-				c.log.Warn("schedule fail before launch", "job", r.Job, "error", ferr)
+				c.log.Warn("schedule fail before launch", "job", r.JobName, "error", ferr)
 			}
 		}
 	}
@@ -205,11 +206,11 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 func (c *ControlPlane) queueFire(ctx context.Context, lopts *runs.LaunchOpts) {
 	err := c.queue.Enqueue(ctx, lopts.QueueItem(dispatch.ConnectorSchedule))
 	if errors.Is(err, dispatch.ErrLaneFull) {
-		c.raiseFlood(ctx, lopts.WorkspaceID, lopts.Job, dispatch.ConnectorSchedule)
+		c.raiseFlood(ctx, lopts.WorkspaceID, lopts.JobName, dispatch.ConnectorSchedule)
 		return
 	}
 	if err != nil {
-		c.log.Warn("schedule queue", "job", lopts.Job, "error", err)
+		c.log.Warn("schedule queue", "job", lopts.JobName, "error", err)
 	}
 }
 
@@ -246,18 +247,19 @@ func (c *ControlPlane) raiseActionsFault(ctx context.Context, r schedule.Row, er
 	if _, aerr := c.Alerts.Raise(ctx, alerts.RaiseOpts{
 		Kind:        alerts.KindActionsInvalid,
 		WorkspaceID: r.WorkspaceID,
-		JobName:     r.Job,
+		JobID:       r.JobID,
+		JobName:     r.JobName,
 		Body:        err.Error(),
 		Hint:        "Fix the connectors list of the job, then run trebi doctor.",
 	}); aerr != nil {
-		c.log.Warn("actions fault alert", "job", r.Job, "error", aerr)
+		c.log.Warn("actions fault alert", "job", r.JobName, "error", aerr)
 	}
 	return true
 }
 
 func (c *ControlPlane) markFired(ctx context.Context, r schedule.Row) {
 	if err := c.Schedule.MarkFired(ctx, r, time.Now().UTC()); err != nil {
-		c.log.Warn("schedule mark fired", "job", r.Job, "error", err)
+		c.log.Warn("schedule mark fired", "job", r.JobName, "error", err)
 	}
 }
 
@@ -275,11 +277,11 @@ func (c *ControlPlane) evalWhenGate(ctx context.Context, j *job.Job, r schedule.
 		if tr.When != nil {
 			wr := job.EvalWhen(ctx, tr.When, cwd, j.Env)
 			if wr.Error != "" {
-				c.log.Warn("when gate error", "job", r.Job, "error", wr.Error)
+				c.log.Warn("when gate error", "job", r.JobName, "error", wr.Error)
 				return prompt, true
 			}
 			if wr.Skip || !wr.Fire {
-				c.log.Info("when gate skip", "job", r.Job)
+				c.log.Info("when gate skip", "job", r.JobName)
 				return prompt, true
 			}
 			for k, v := range wr.Vars {

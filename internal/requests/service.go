@@ -107,7 +107,7 @@ func (s *Service) Create(ctx context.Context, actor tools.Actor, o CreateOpts) (
 	}
 	now := s.now()
 	r := Request{
-		ID: ulid.Make().String(), RunID: run.ID, WorkspaceID: run.Workspace, Job: run.Job,
+		ID: ulid.Make().String(), RunID: run.ID, WorkspaceID: run.Workspace, JobID: run.JobID, JobName: run.JobName,
 		Kind: run.Kind, SessionID: run.SessionID, Harness: run.Harness, Runtime: run.Runtime,
 		WorkingDir: run.WorkingDir, ConversationKey: run.ConversationKey, ConversationID: run.ConversationID,
 		Type: o.Type, Title: strings.TrimSpace(o.Title), Summary: o.Summary, Target: o.Target,
@@ -135,12 +135,12 @@ func (s *Service) Create(ctx context.Context, actor tools.Actor, o CreateOpts) (
 	payload, _ := json.Marshal(r.Payload)
 	allow, _ := json.Marshal(r.Allow)
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO requests (id, run_id, workspace_id, job, kind,
+		_, err := tx.ExecContext(ctx, `INSERT INTO requests (id, run_id, workspace_id, job_id, kind,
   session_id, harness, runtime, working_dir, conversation_key, conversation_id, type, title,
   summary, target, payload_json, allow_json, report_kind, report_sha256, delivery, status,
   expires_at, delivery_state, created_at, updated_at, revision)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			r.ID, r.RunID, r.WorkspaceID, r.Job, r.Kind, r.SessionID, r.Harness, r.Runtime,
+			r.ID, r.RunID, r.WorkspaceID, r.JobID, r.Kind, r.SessionID, r.Harness, r.Runtime,
 			r.WorkingDir, r.ConversationKey, r.ConversationID, string(r.Type), r.Title, r.Summary,
 			r.Target, string(payload), string(allow), r.ReportKind, r.ReportSHA256,
 			string(r.Delivery), string(r.Status), fmtTime(at), string(r.DeliveryState),
@@ -161,7 +161,7 @@ func (r Request) event(topic, action string) store.BusEvent {
 	return store.BusEvent{
 		Topic: topic, Entity: "request", EntityID: r.ID, Action: action, Revision: int64(r.Revision),
 		Attrs: map[string]string{
-			"run_id": r.RunID, "job": r.Job, "workspace_id": r.WorkspaceID,
+			"run_id": r.RunID, "job_id": r.JobID, "job_name": r.JobName, "workspace_id": r.WorkspaceID,
 			"type": string(r.Type), "status": string(r.Status), "title": r.Title,
 			"delivery_state": string(r.DeliveryState),
 		},
@@ -180,7 +180,7 @@ func (s *Service) Get(ctx context.Context, id string) (Request, error) {
 type ListOpts struct {
 	Status    Status
 	RunID     string
-	Job       string
+	JobID     string
 	Workspace string
 	After     string // the id cursor: rows older than this id
 	Limit     int
@@ -195,7 +195,7 @@ func (s *Service) List(ctx context.Context, o ListOpts) ([]Request, string, erro
 	where := []string{"1=1"}
 	var args []any
 	for _, f := range []struct{ col, v string }{
-		{"status", string(o.Status)}, {"run_id", o.RunID}, {"job", o.Job}, {"workspace_id", o.Workspace},
+		{"status", string(o.Status)}, {"run_id", o.RunID}, {"job_id", o.JobID}, {"workspace_id", o.Workspace},
 	} {
 		if f.v != "" {
 			where = append(where, f.col+"=?")

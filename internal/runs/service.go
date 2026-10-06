@@ -230,7 +230,8 @@ type CreateOpts struct {
 	// (private run files). Empty mints a new ULID.
 	ID              string
 	WorkspaceID     string
-	Job             string
+	JobID           string
+	JobName         string
 	Kind            string
 	Reason          RunReason
 	Harness         string
@@ -322,7 +323,8 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Run, error) {
 		return &Run{
 			ID:        "dry-run",
 			Workspace: opts.WorkspaceID,
-			Job:       opts.Job,
+			JobID:     opts.JobID,
+			JobName:   opts.JobName,
 			Kind:      opts.Kind,
 			Reason:    opts.Reason,
 			Status:    StatusRunning,
@@ -359,7 +361,7 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Run, error) {
 		Action:   "created",
 		Revision: 1,
 		Attrs: map[string]string{
-			"job": opts.Job, "workspace": opts.WorkspaceID,
+			"job_id": opts.JobID, "job_name": opts.JobName, "workspace": opts.WorkspaceID,
 			"kind": opts.Kind, "conversation_key": opts.ConversationKey,
 			"conversation_id": opts.ConversationID,
 		},
@@ -403,8 +405,12 @@ func (s *Service) WaitFor(ctx context.Context, id string, wait time.Duration) (*
 	}
 }
 
+// jobNameSQL reads the job name of the job_id column of a runs row.
+// It is store.JobNameSQL("runs.job_id") as a constant; a run has no assistant.
+const jobNameSQL = `COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = runs.job_id), '')`
+
 // runCols is the select list that scanRun reads.
-const runCols = `SELECT id, workspace_id, job, kind, COALESCE(reason,''), status, COALESCE(end_reason,''),
+const runCols = `SELECT id, workspace_id, job_id, ` + jobNameSQL + `, kind, COALESCE(reason,''), status, COALESCE(end_reason,''),
 	COALESCE(prompt_preview,''), COALESCE(session_id,''), COALESCE(harness,''),
 	COALESCE(runtime,'tui'), COALESCE(tmux_session,''),
 	COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
@@ -490,8 +496,8 @@ func (o ListOpts) query() (string, []any) {
 		args = append(args, o.Workspace)
 	}
 	if o.Job != "" {
-		q += ` AND job = ?`
-		args = append(args, o.Job)
+		q += ` AND ` + store.JobRefSQL("runs.job_id", "runs.workspace_id")
+		args = append(args, o.Job, o.Job)
 	}
 	if o.Kind != "" {
 		q += ` AND kind = ?`
@@ -539,7 +545,7 @@ func (o ListOpts) query() (string, []any) {
 	}
 	if o.Q != "" {
 		like := "%" + strings.ToLower(strings.TrimSpace(o.Q)) + "%"
-		q += ` AND (LOWER(COALESCE(prompt_preview,'')) LIKE ? OR LOWER(job) LIKE ? OR LOWER(id) LIKE ?)`
+		q += ` AND (LOWER(COALESCE(prompt_preview,'')) LIKE ? OR LOWER(` + jobNameSQL + `) LIKE ? OR LOWER(id) LIKE ?)`
 		args = append(args, like, like, like)
 	}
 	if o.Cursor != "" {
@@ -595,17 +601,17 @@ func (s *Service) FindLive(ctx context.Context, workspaceID, kind, conversationK
 // ConversationOpen reports whether a job conversation is open (plan A.9):
 // it has a pending or claimed queue row, a live run, or a run that ended at
 // most within ago. within 0 is no limit.
-func (s *Service) ConversationOpen(ctx context.Context, workspaceID, job, key string, within time.Duration) (bool, error) {
+func (s *Service) ConversationOpen(ctx context.Context, workspaceID, jobID, key string, within time.Duration) (bool, error) {
 	var queued bool
 	if err := s.st.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM event_queue
-		WHERE workspace_id=? AND job=? AND kind=? AND conversation_key=? AND status IN (?,?))`,
-		workspaceID, job, KindJob, key, string(dispatch.QueuePending), string(dispatch.QueueClaimed)).Scan(&queued); err != nil {
+		WHERE job_id=? AND kind=? AND conversation_key=? AND status IN (?,?))`,
+		jobID, KindJob, key, string(dispatch.QueuePending), string(dispatch.QueueClaimed)).Scan(&queued); err != nil {
 		return false, fmt.Errorf("conversation queue %s: %w", key, err)
 	}
 	if queued {
 		return true, nil
 	}
-	rows, err := s.List(ctx, ListOpts{Workspace: workspaceID, Job: job, Kind: KindJob, ConversationKey: key, ConversationKeyExact: true, Limit: 1})
+	rows, err := s.List(ctx, ListOpts{Workspace: workspaceID, Job: jobID, Kind: KindJob, ConversationKey: key, ConversationKeyExact: true, Limit: 1})
 	if err != nil || len(rows) == 0 {
 		return false, err
 	}
@@ -618,11 +624,11 @@ func (s *Service) ConversationOpen(ctx context.Context, workspaceID, job, key st
 
 // FirstTriggerVars returns the trigger vars of the oldest run of a job
 // conversation. No run gives nil.
-func (s *Service) FirstTriggerVars(ctx context.Context, workspaceID, job, key string) (map[string]string, error) {
+func (s *Service) FirstTriggerVars(ctx context.Context, workspaceID, jobID, key string) (map[string]string, error) {
 	var raw sql.NullString
 	err := s.st.DB().QueryRowContext(ctx, `SELECT trigger_vars_json FROM runs
-		WHERE workspace_id=? AND job=? AND kind=? AND COALESCE(conversation_key,'')=? ORDER BY id LIMIT 1`,
-		workspaceID, job, KindJob, key).Scan(&raw)
+		WHERE workspace_id=? AND job_id=? AND kind=? AND COALESCE(conversation_key,'')=? ORDER BY id LIMIT 1`,
+		workspaceID, jobID, KindJob, key).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -636,20 +642,19 @@ func (s *Service) FirstTriggerVars(ctx context.Context, workspaceID, job, key st
 	return vars, nil
 }
 
-// HasLiveJobs reports whether any non-terminal run targets job or any job
-// beneath it. Rename uses this to freeze both an agent run and an owned run.
+// HasLiveJobs reports whether any non-terminal run targets a job or agent
+// (ID or index name) or a child job of an agent. Rename uses this to freeze
+// both an agent run and an owned run.
 func (s *Service) HasLiveJobs(ctx context.Context, workspaceID string, jobs ...string) (bool, error) {
 	if len(jobs) == 0 {
 		return false, nil
 	}
-	args := make([]any, 0, len(jobs)+1)
+	args := make([]any, 0, 4*len(jobs)+2)
 	args = append(args, workspaceID)
-	for _, job := range jobs {
-		args = append(args, job, job+"/%")
-	}
 	conds := make([]string, 0, len(jobs))
-	for range jobs {
-		conds = append(conds, `(job = ? OR job LIKE ?)`)
+	for _, job := range jobs {
+		args = append(args, job, job, job, job)
+		conds = append(conds, store.OwnerRefSQL("runs.job_id", "runs.workspace_id"))
 	}
 	q := `SELECT EXISTS(SELECT 1 FROM runs WHERE workspace_id = ? AND (` +
 		strings.Join(conds, " OR ") + `) AND status = ?)`
@@ -832,14 +837,14 @@ func (s *Service) TerminateTurn(ctx context.Context, id string, turn int, status
 	var rev int64
 	alreadyTerminal, stale := false, false
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		var cur, jobName, wsID, harness, kind, owner, turnStart string
+		var cur, jobID, jobName, wsID, harness, kind, ownerID, turnStart string
 		var turnCount int
-		err := tx.QueryRow(`SELECT r.revision, r.status, r.job, r.workspace_id, COALESCE(r.harness,''),
-				COALESCE(r.kind,'job'), COALESCE(j.owner,''), r.turn_count, COALESCE(r.turn_started_at, r.started_at)
+		err := tx.QueryRow(`SELECT r.revision, r.status, r.job_id, COALESCE(j.name,''), r.workspace_id, COALESCE(r.harness,''),
+				COALESCE(r.kind,'job'), COALESCE(j.owner_id,''), r.turn_count, COALESCE(r.turn_started_at, r.started_at)
 				FROM runs r
-				LEFT JOIN job_index j ON j.workspace_id=r.workspace_id AND j.name=r.job
+				LEFT JOIN job_index j ON j.id = r.job_id
 				WHERE r.id = ?`, id).
-			Scan(&rev, &cur, &jobName, &wsID, &harness, &kind, &owner, &turnCount, &turnStart)
+			Scan(&rev, &cur, &jobID, &jobName, &wsID, &harness, &kind, &ownerID, &turnCount, &turnStart)
 		if err != nil {
 			return err
 		}
@@ -865,7 +870,7 @@ func (s *Service) TerminateTurn(ctx context.Context, id string, turn int, status
 			Topic: topic, Entity: "run", EntityID: id, Action: "updated", Revision: rev,
 			Attrs: map[string]string{
 				"end_reason": string(end), "status": string(status), "turn": strconv.Itoa(turnCount),
-				"job": jobName, "workspace": wsID, "harness": harness, "kind": kind, "owner": owner,
+				"job_id": jobID, "job_name": jobName, "workspace": wsID, "harness": harness, "kind": kind, "owner_id": ownerID,
 			},
 		})
 		return err
@@ -972,10 +977,10 @@ func (s *Service) Mark(ctx context.Context, opts MarkOpts) (*Run, error) {
 	defer s.st.UnlockBus()
 
 	var rev int64
-	var machine, jobName, wsID string
+	var machine, jobID, jobName, wsID string
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		err := tx.QueryRow(`SELECT revision, status, job, workspace_id FROM runs WHERE id = ?`, opts.ID).
-			Scan(&rev, &machine, &jobName, &wsID)
+		err := tx.QueryRow(`SELECT revision, status, job_id, `+jobNameSQL+`, workspace_id FROM runs WHERE id = ?`, opts.ID).
+			Scan(&rev, &machine, &jobID, &jobName, &wsID)
 		if err != nil {
 			return err
 		}
@@ -1006,7 +1011,7 @@ func (s *Service) Mark(ctx context.Context, opts MarkOpts) (*Run, error) {
 			VALUES (?, ?, 'run.marked', 'user', ?)`, opts.ID, nowStr, string(detailJSON)); err != nil {
 			return err
 		}
-		attrs := map[string]string{"status": machine, "job": jobName, "workspace": wsID}
+		attrs := map[string]string{"status": machine, "job_id": jobID, "job_name": jobName, "workspace": wsID}
 		if opts.Clear {
 			attrs["outcome"] = ""
 		} else {
@@ -1293,8 +1298,8 @@ func (s *Service) SetSessionState(ctx context.Context, runID string, state Sessi
 	if err != nil {
 		s.log.Warn("agent segment write", "run", runID, "error", err)
 	}
-	var ws, job string
-	_ = s.st.DB().QueryRowContext(ctx, `SELECT workspace_id, job FROM runs WHERE id=?`, runID).Scan(&ws, &job)
+	var ws, jobID, jobName string
+	_ = s.st.DB().QueryRowContext(ctx, `SELECT workspace_id, job_id, `+jobNameSQL+` FROM runs WHERE id=?`, runID).Scan(&ws, &jobID, &jobName)
 	// The transition is also a run_events point (Part H), so "why did it
 	// think idle?" is answerable from the timeline alone.
 	from := ""
@@ -1310,7 +1315,7 @@ func (s *Service) SetSessionState(ctx context.Context, runID string, state Sessi
 		EntityID: runID,
 		Attrs: map[string]any{
 			"run_id": runID, "state": string(state), "since": nowStr, "source": source,
-			"workspace": ws, "job": job,
+			"workspace": ws, "job_id": jobID, "job_name": jobName,
 		},
 	}); err != nil {
 		s.log.Warn("session.state append", "run", runID, "error", err)
@@ -1369,13 +1374,13 @@ func (s *Service) Counts(ctx context.Context) (total, running int, err error) {
 	return total, running, err
 }
 
-// StatusByJob returns the newest run status and live run ids per "workspace/job" lane.
+// StatusByJob returns the newest run status and live run ids per job ID.
 // A human outcome overrides the newest run's machine status, so a marked run
 // shows through in job health and last_status.
 func (s *Service) StatusByJob(ctx context.Context) (last map[string]Status, live map[string][]string, err error) {
 	rows, err := s.st.DB().QueryContext(ctx, `
-		SELECT workspace_id, job, id, status, COALESCE(outcome,'') FROM runs WHERE kind='job' AND (
-			status='running' OR id IN (SELECT MAX(id) FROM runs WHERE kind='job' GROUP BY workspace_id, job)
+		SELECT job_id, id, status, COALESCE(outcome,'') FROM runs WHERE kind='job' AND (
+			status='running' OR id IN (SELECT MAX(id) FROM runs WHERE kind='job' GROUP BY job_id)
 		)`)
 	if err != nil {
 		return nil, nil, err
@@ -1384,11 +1389,10 @@ func (s *Service) StatusByJob(ctx context.Context) (last map[string]Status, live
 	last = map[string]Status{}
 	live = map[string][]string{}
 	for rows.Next() {
-		var ws, jb, id, st, outcome string
-		if err := rows.Scan(&ws, &jb, &id, &st, &outcome); err != nil {
+		var key, id, st, outcome string
+		if err := rows.Scan(&key, &id, &st, &outcome); err != nil {
 			return nil, nil, err
 		}
-		key := ws + "/" + jb
 		if outcome != "" {
 			last[key] = Status(outcome)
 		} else {
@@ -1441,7 +1445,8 @@ func newRun(id string, now time.Time, opts CreateOpts) *Run {
 	run := &Run{
 		ID:              id,
 		Workspace:       opts.WorkspaceID,
-		Job:             opts.Job,
+		JobID:           opts.JobID,
+		JobName:         opts.JobName,
 		Kind:            opts.Kind,
 		Reason:          opts.Reason,
 		Status:          StatusRunning,
@@ -1497,7 +1502,7 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 	}
 
 	_, err := tx.Exec(`INSERT INTO runs (
-		id, workspace_id, job, kind, reason, status, prompt_preview, inputs_json,
+		id, workspace_id, job_id, kind, reason, status, prompt_preview, inputs_json,
 		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json,
 		conversation_key, conversation_id, working_dir, session_id, runtime, harness, tmux_session,
 		attach_kind, runtime_pid, actor_token_hash,
@@ -1505,7 +1510,7 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		previous_run_id, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at,
 		connectors_json, turn_count, turn_started_at
 	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		run.ID, opts.WorkspaceID, opts.Job, opts.Kind, string(opts.Reason), string(StatusRunning),
+		run.ID, opts.WorkspaceID, opts.JobID, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON,
 		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.TmuxSession),
 		store.NullStr(attachKindFor(opts)), nil, opts.ActorTokenHash,
@@ -1781,12 +1786,12 @@ func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time)
 		fargs = append(fargs, opts.Workspace)
 	}
 	if opts.Job != "" {
-		filter += ` AND r.job = ?`
-		fargs = append(fargs, opts.Job)
+		filter += ` AND ` + store.JobRefSQL("r.job_id", "r.workspace_id")
+		fargs = append(fargs, opts.Job, opts.Job)
 	}
 	if opts.Owner != "" {
-		filter += ` AND (r.job = ? OR r.job LIKE ?)`
-		fargs = append(fargs, opts.Owner, opts.Owner+"/%")
+		filter += ` AND ` + store.OwnerRefSQL("r.job_id", "r.workspace_id")
+		fargs = append(fargs, opts.Owner, opts.Owner, opts.Owner, opts.Owner)
 	}
 	q := `SELECT r.started_at, 1, r.status, COALESCE(r.outcome,''), 0, 0, 0, 0, ''
 		FROM runs r WHERE r.started_at >= ?` + filter + `
@@ -1895,10 +1900,10 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev, runtimePID, turnCount, activeMS int64
 	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, workingDir, previousRunID string
 	var turnStarted sql.NullString
-	var prompt, ws, job, kind, status, memoryHash, attachKind string
+	var prompt, ws, kind, status, memoryHash, attachKind string
 	var outcomeStatus, outcomeNote, outcomeAt sql.NullString
 	err := row.Scan(
-		&r.ID, &ws, &job, &kind, &reason, &status, &endReason,
+		&r.ID, &ws, &r.JobID, &r.JobName, &kind, &reason, &status, &endReason,
 		&prompt, &sess, &harness, &runtime, &tmux,
 		&ti, &to, &tcr, &tcc, &modelName,
 		&started, &ended, &maxD, &idle, &keep, &nudge,
@@ -1913,7 +1918,6 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		_ = json.Unmarshal([]byte(inputsJSON.String), &r.Inputs)
 	}
 	r.Workspace = ws
-	r.Job = job
 	r.Kind = kind
 	r.Reason = RunReason(reason.String)
 	r.Status = Status(status)

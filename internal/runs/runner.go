@@ -181,7 +181,8 @@ func (o *LaunchOpts) QueueItem(connector string) *dispatch.QueueItem {
 	return &dispatch.QueueItem{
 		Connector:       connector,
 		WorkspaceID:     o.WorkspaceID,
-		Job:             o.Job,
+		JobID:           o.JobID,
+		JobName:         o.JobName,
 		Kind:            o.Kind,
 		ConversationKey: o.ConversationKey,
 		Status:          dispatch.QueuePending,
@@ -242,7 +243,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	// A human manual wake has no actor token and is deliberately allowed over
 	// budget; the gate still gives automated launches and agent calls a vote.
 	if s.budgetGate != nil && !humanManual {
-		ok, reason, err := s.budgetGate.Allow(ctx, opts.WorkspaceID, opts.Job, opts.Kind)
+		ok, reason, err := s.budgetGate.Allow(ctx, opts.WorkspaceID, opts.JobName, opts.Kind)
 		if err != nil {
 			return nil, "", err
 		}
@@ -259,7 +260,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	}
 	var outcome string
 	// Overlap policy against live runs of the same job (assistant: same conversation).
-	if opts.Job != "" && opts.WorkspaceID != "" && !opts.BypassOverlap {
+	if opts.JobID != "" && opts.WorkspaceID != "" && !opts.BypassOverlap {
 		oc, done, err := s.applyIfRunning(ctx, &opts)
 		if err != nil {
 			return nil, "", err
@@ -314,14 +315,14 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 func (s *Service) continueConversation(ctx context.Context, opts *LaunchOpts) map[string]string {
 	rows, err := s.List(ctx, ListOpts{
 		Workspace:            opts.WorkspaceID,
-		Job:                  opts.Job,
+		Job:                  opts.JobID,
 		Kind:                 opts.Kind,
 		ConversationKey:      opts.ConversationKey,
 		ConversationKeyExact: true,
 		Limit:                20,
 	})
 	if err != nil {
-		s.log.Warn("continue lookup", "job", opts.Job, "error", err)
+		s.log.Warn("continue lookup", "job_id", opts.JobID, "error", err)
 		return nil
 	}
 	// A skip row has no session; the newest row with one is the conversation.
@@ -479,10 +480,10 @@ func (s *Service) applyWakePrompt(ctx context.Context, opts *LaunchOpts) {
 		wake := *opts.Wake
 		wake.Memory = opts.Memory
 		composed, err := s.composer.ComposeWakePrompt(ctx, WakeScope{
-			WorkspaceID: opts.WorkspaceID, Kind: opts.Kind, Name: opts.Job,
+			WorkspaceID: opts.WorkspaceID, Kind: opts.Kind, Name: opts.JobName,
 		}, wake)
 		if err != nil {
-			s.log.Warn("wake compose failed; using raw body", "job", opts.Job, "err", err)
+			s.log.Warn("wake compose failed; using raw body", "job_id", opts.JobID, "err", err)
 		} else if strings.TrimSpace(composed) != "" {
 			opts.Prompt = strings.TrimSpace(composed + "\n\n" + hint)
 			return
@@ -695,13 +696,13 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	}
 	command = plan.Command
 
-	s.log.Info("creating tmux session", "job", opts.Job, "cwd", cwd, "harness", tool.Name())
+	s.log.Info("creating tmux session", "job_id", opts.JobID, "cwd", cwd, "harness", tool.Name())
 	wsRef, err := tmux.NewSession(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("tmux new-session: %w", err)
 	}
 	opts.TmuxSession = wsRef
-	_ = tmux.RenameSession(wsRef, sessionTitle(opts.Job))
+	_ = tmux.RenameSession(wsRef, sessionTitle(opts.JobName))
 
 	// Persist run before readiness so reaper can attribute the session.
 	run, err := s.open(ctx, opts)
@@ -1118,7 +1119,7 @@ func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o 
 		o.Prompt = "Continue from where you left off."
 	}
 	opts := base
-	opts.WorkspaceID, opts.Job, opts.Kind = prev.Workspace, prev.Job, prev.Kind
+	opts.WorkspaceID, opts.JobID, opts.JobName, opts.Kind = prev.Workspace, prev.JobID, prev.JobName, prev.Kind
 	opts.Reason = o.Reason
 	opts.Harness = prev.Harness
 	opts.Runtime = prev.Runtime
@@ -1490,7 +1491,7 @@ func (s *Service) emitResumeExhausted(ctx context.Context, run *Run) {
 		Topic: "run.resume_exhausted", Entity: "run", EntityID: run.ID, Action: "updated",
 		Attrs: map[string]string{
 			"run_id": run.ID, "session_id": run.SessionID,
-			"workspace": run.Workspace, "job": run.Job,
+			"workspace": run.Workspace, "job_id": run.JobID, "job_name": run.JobName,
 		},
 	}); err != nil {
 		s.log.Warn("run.resume_exhausted", "error", err)
@@ -1515,7 +1516,7 @@ func (s *Service) recordMemoryInvalid(ctx context.Context, run *Run, issues []st
 	s.log.Warn("memory.invalid", "id", run.ID, "source", source, "issues", joined)
 	attrs := map[string]string{
 		"run_id": run.ID, "kind": run.Kind,
-		"workspace": run.Workspace, "job": run.Job,
+		"workspace": run.Workspace, "job_id": run.JobID, "job_name": run.JobName,
 	}
 	if len(issues) > 0 {
 		attrs["issue"] = issues[0]
@@ -1551,7 +1552,7 @@ func (s *Service) applyIfRunning(ctx context.Context, opts *LaunchOpts) (string,
 	// with an empty key, so one busy chat does not block another.
 	live, err := s.List(ctx, ListOpts{
 		Workspace:            opts.WorkspaceID,
-		Job:                  opts.Job,
+		Job:                  opts.JobID,
 		Status:               string(StatusRunning),
 		ConversationKey:      opts.ConversationKey,
 		ConversationKeyExact: true,
@@ -1599,7 +1600,8 @@ func resolveIfRunning(v string) string {
 func (s *Service) overlapSkip(ctx context.Context, opts *LaunchOpts, existing *Run) (*Run, error) {
 	skipped, err := s.Create(ctx, CreateOpts{
 		WorkspaceID:   opts.WorkspaceID,
-		Job:           opts.Job,
+		JobID:         opts.JobID,
+		JobName:       opts.JobName,
 		Kind:          opts.Kind,
 		Reason:        opts.Reason,
 		Harness:       opts.Harness,

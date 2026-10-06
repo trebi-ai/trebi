@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -589,18 +591,39 @@ func (s *Service) Resolve(ctx context.Context, idOrName string) (*Workspace, err
 	return s.GetByName(ctx, idOrName)
 }
 
-// indexRow is one desired or existing job_index row for the diff.
+// indexRow is one desired or existing live job_index row for the diff.
 type indexRow struct {
-	name, path, kind, harness, hash, parseError, owner string
-	active                                             bool
+	id, name, path, kind, harness, hash, parseError, ownerID string
+	active                                                   bool
 }
 
-func rowFromJob(j *job.Job, kind string) indexRow {
+func rowFromJob(j *job.Job, kind, ownerID string) indexRow {
 	return indexRow{
-		name: j.Name, path: j.FilePath, kind: kind, harness: j.Harness,
-		hash: j.Hash, parseError: j.ParseError, active: !j.Disabled,
-		owner: j.Owner,
+		id: j.ID, name: j.Name, path: j.FilePath, kind: kind, harness: j.Harness,
+		hash: j.Hash, parseError: j.ParseError, active: !j.Disabled, ownerID: ownerID,
 	}
+}
+
+// desiredRows keys the discovered jobs and agents by ID. byName resolves
+// the owner agent of a child job that is not in jobs.
+func desiredRows(jobs []*job.Job, byName map[string]string) map[string]indexRow {
+	names := maps.Clone(byName)
+	for _, j := range jobs {
+		names[j.Name] = j.ID
+	}
+	out := make(map[string]indexRow, len(jobs))
+	for _, j := range jobs {
+		kind := j.Kind
+		if kind == "" {
+			kind = "job"
+		}
+		owner := ""
+		if j.Owner != "" {
+			owner = names[j.Owner]
+		}
+		out[j.ID] = rowFromJob(j, kind, owner)
+	}
+	return out
 }
 
 // RebuildIndex rescans job files into job_index (diff-aware, B5).
@@ -636,16 +659,13 @@ func (s *Service) RebuildIndexJobs(ctx context.Context, ws *Workspace) ([]*job.J
 	if err != nil {
 		return nil, err
 	}
-	desired := map[string]indexRow{}
 	jobs := make([]*job.Job, 0, len(disc.Jobs)+len(disc.Agents))
-	for _, j := range disc.Jobs {
-		desired[j.Name] = rowFromJob(j, "job")
-		jobs = append(jobs, j)
+	jobs = append(jobs, disc.Jobs...)
+	jobs = append(jobs, disc.Agents...)
+	if err := s.ensureIDs(ctx, ws.ID, jobs, existing); err != nil {
+		return nil, err
 	}
-	for _, j := range disc.Agents {
-		desired[j.Name] = rowFromJob(j, "agent")
-		jobs = append(jobs, j)
-	}
+	desired := desiredRows(jobs, nil)
 	if err := s.writeIndexDiff(ctx, ws.ID, existing, desired); err != nil {
 		return nil, err
 	}
@@ -671,22 +691,21 @@ func (s *Service) RebuildIndexPath(ctx context.Context, ws *Workspace, path stri
 	if err != nil {
 		return nil, err
 	}
-	desired := make(map[string]indexRow, len(existing)+1)
-	for k, v := range existing {
-		desired[k] = v
+	desired := maps.Clone(existing)
+	for id, row := range existing {
+		if row.path == path {
+			delete(desired, id)
+		}
 	}
-	if j == nil {
-		for name, row := range existing {
-			if row.path == path {
-				delete(desired, name)
-			}
+	if j != nil {
+		if err := s.ensureIDs(ctx, ws.ID, []*job.Job{j}, existing); err != nil {
+			return nil, err
 		}
-	} else {
-		kind := "job"
-		if strings.EqualFold(filepath.Base(path), "agent.md") {
-			kind = "agent"
+		byName := make(map[string]string, len(existing))
+		for id, row := range existing {
+			byName[row.name] = id
 		}
-		desired[j.Name] = rowFromJob(j, kind)
+		maps.Copy(desired, desiredRows([]*job.Job{j}, byName))
 	}
 	if err := s.writeIndexDiff(ctx, ws.ID, existing, desired); err != nil {
 		return nil, err
@@ -702,15 +721,63 @@ func (s *Service) RebuildIndexPath(ctx context.Context, ws *Workspace, path stri
 	return j, nil
 }
 
-// ListJobs returns job_index rows for a workspace (empty workspace = all).
+// ListJobs returns the live job_index rows for a workspace (empty workspace = all).
 func (s *Service) ListJobs(ctx context.Context, workspaceID string) ([]JobRow, error) {
-	q := `SELECT workspace_id, name, path, kind, active, COALESCE(harness,''), COALESCE(hash,''), COALESCE(parse_error,''), COALESCE(owner,'') FROM job_index`
+	q := jobRowSelect + ` WHERE j.retired_at IS NULL`
 	var args []any
 	if workspaceID != "" {
-		q += ` WHERE workspace_id=?`
+		q += ` AND j.workspace_id=?`
 		args = append(args, workspaceID)
 	}
-	q += ` ORDER BY name`
+	q += ` ORDER BY j.name`
+	return s.queryJobRows(ctx, q, args...)
+}
+
+// JobByID returns the job_index row of id, also a retired one.
+func (s *Service) JobByID(ctx context.Context, id string) (*JobRow, error) {
+	rows, err := s.queryJobRows(ctx, jobRowSelect+` WHERE j.id=?`, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return &rows[0], nil
+}
+
+// JobByName returns the live job_index row of name in a workspace.
+func (s *Service) JobByName(ctx context.Context, workspaceID, name string) (*JobRow, error) {
+	rows, err := s.queryJobRows(ctx, jobRowSelect+` WHERE j.workspace_id=? AND j.name=? AND j.retired_at IS NULL`, workspaceID, name)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return &rows[0], nil
+}
+
+// ResolveJob finds a job or agent row by ID or by name. An ID matches in
+// any workspace; a name needs workspaceID.
+func (s *Service) ResolveJob(ctx context.Context, workspaceID, ref string) (*JobRow, error) {
+	ref = strings.TrimSpace(ref)
+	if job.LooksLikeID(ref) {
+		row, err := s.JobByID(ctx, ref)
+		if err == nil && (workspaceID == "" || row.WorkspaceID == workspaceID) {
+			return row, nil
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+	return s.JobByName(ctx, workspaceID, ref)
+}
+
+const jobRowSelect = `SELECT j.id, j.workspace_id, j.name, j.path, j.kind, j.active, COALESCE(j.harness,''), COALESCE(j.hash,''),
+	COALESCE(j.parse_error,''), j.owner_id, COALESCE(o.name,''), COALESCE(j.retired_at,'')
+	FROM job_index j LEFT JOIN job_index o ON o.id = j.owner_id AND j.owner_id <> ''`
+
+func (s *Service) queryJobRows(ctx context.Context, q string, args ...any) ([]JobRow, error) {
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -720,10 +787,13 @@ func (s *Service) ListJobs(ctx context.Context, workspaceID string) ([]JobRow, e
 	for rows.Next() {
 		var r JobRow
 		var active int
-		if err := rows.Scan(&r.WorkspaceID, &r.Name, &r.Path, &r.Kind, &active, &r.Harness, &r.Hash, &r.ParseError, &r.Owner); err != nil {
+		var ownerName string
+		if err := rows.Scan(&r.ID, &r.WorkspaceID, &r.Name, &r.Path, &r.Kind, &active, &r.Harness, &r.Hash, &r.ParseError,
+			&r.OwnerID, &ownerName, &r.RetiredAt); err != nil {
 			return nil, err
 		}
 		r.Active = active == 1
+		r.OwnerName = strings.TrimPrefix(ownerName, "agents/")
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -789,10 +859,10 @@ func (s *Service) rejectNested(ctx context.Context, abs string) error {
 	return nil
 }
 
-// existingIndexRows loads current job_index rows by name.
+// existingIndexRows loads the live job_index rows of a workspace by ID.
 func (s *Service) existingIndexRows(ctx context.Context, wsID string) (map[string]indexRow, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT name, path, kind, active, COALESCE(harness,''), COALESCE(hash,''), COALESCE(parse_error,''), COALESCE(owner,'')
-		FROM job_index WHERE workspace_id=?`, wsID)
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT id, name, path, kind, active, COALESCE(harness,''), COALESCE(hash,''), COALESCE(parse_error,''), owner_id
+		FROM job_index WHERE workspace_id=? AND retired_at IS NULL`, wsID)
 	if err != nil {
 		return nil, err
 	}
@@ -801,16 +871,132 @@ func (s *Service) existingIndexRows(ctx context.Context, wsID string) (map[strin
 	for rows.Next() {
 		var r indexRow
 		var active int
-		if err := rows.Scan(&r.name, &r.path, &r.kind, &active, &r.harness, &r.hash, &r.parseError, &r.owner); err != nil {
+		if err := rows.Scan(&r.id, &r.name, &r.path, &r.kind, &active, &r.harness, &r.hash, &r.parseError, &r.ownerID); err != nil {
 			return nil, err
 		}
 		r.active = active == 1
-		existing[r.name] = r
+		existing[r.id] = r
 	}
 	return existing, rows.Err()
 }
 
-// writeIndexDiff upserts changed rows and deletes stale ones in one tx.
+// ensureIDs gives each job and agent a valid, unique ID (plan 2026-10-06
+// A6). It writes a new ID into the file. A file that does not parse gets
+// an ID in the index only; the write waits until the file parses.
+func (s *Service) ensureIDs(ctx context.Context, wsID string, jobs []*job.Job, existing map[string]indexRow) error {
+	sorted := slices.Clone(jobs)
+	slices.SortFunc(sorted, func(a, b *job.Job) int { return strings.Compare(a.FilePath, b.FilePath) })
+	byName := make(map[string]string, len(existing))
+	for id, r := range existing {
+		byName[r.name] = id
+	}
+	claimed := map[string]string{} // id -> path
+	// The path that has the ID in job_index keeps it.
+	for _, j := range sorted {
+		if j.IDState != job.IDOK {
+			continue
+		}
+		if p, err := s.indexPath(ctx, j.ID); err != nil {
+			return err
+		} else if p == j.FilePath {
+			claimed[j.ID] = j.FilePath
+		}
+	}
+	for _, j := range sorted {
+		reason, err := s.idProblem(ctx, j, claimed)
+		if err != nil {
+			return err
+		}
+		if reason == "" {
+			claimed[j.ID] = j.FilePath
+			continue
+		}
+		id := ""
+		if prev, ok := byName[j.Name]; ok && reason != "duplicate" && existing[prev].path == j.FilePath {
+			if _, taken := claimed[prev]; !taken {
+				id = prev
+			}
+		}
+		if id == "" {
+			if id, err = s.mintJobID(ctx, j.Kind, claimed); err != nil {
+				return err
+			}
+		}
+		claimed[id] = j.FilePath
+		if j.ParseError != "" {
+			j.ID = id
+			continue
+		}
+		if err := j.AssignID(id); err != nil {
+			// The index keeps the ID; the next rebuild reuses it by name and path.
+			s.log.Warn("job id write failed", "path", j.FilePath, "err", err)
+			j.ID = id
+			continue
+		}
+		if _, err := s.st.Append(ctx, store.BusEvent{
+			Topic: "job.id_assigned", Entity: j.Kind, EntityID: id, Action: "updated",
+			Attrs: map[string]string{"workspace": wsID, "name": j.Name, "id": id, "reason": reason},
+		}); err != nil {
+			s.log.Warn("job id bus append failed", "workspace", wsID, "error", err)
+		}
+	}
+	return nil
+}
+
+// idProblem returns why j needs a new ID, or "" when its ID is good.
+func (s *Service) idProblem(ctx context.Context, j *job.Job, claimed map[string]string) (string, error) {
+	switch j.IDState {
+	case job.IDMissing:
+		return "missing", nil
+	case job.IDInvalid:
+		return "invalid", nil
+	}
+	if p, ok := claimed[j.ID]; ok {
+		if p == j.FilePath {
+			return "", nil
+		}
+		return "duplicate", nil
+	}
+	// A live row with the ID at a path that still exists is a copy.
+	p, err := s.indexPath(ctx, j.ID)
+	if err != nil {
+		return "", err
+	}
+	if p != "" && p != j.FilePath {
+		if _, err := os.Stat(p); err == nil {
+			return "duplicate", nil
+		}
+	}
+	return "", nil
+}
+
+// indexPath returns the path of the live job_index row of id, or "".
+func (s *Service) indexPath(ctx context.Context, id string) (string, error) {
+	var p string
+	err := s.st.DB().QueryRowContext(ctx, `SELECT path FROM job_index WHERE id=? AND retired_at IS NULL`, id).Scan(&p)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return p, err
+}
+
+func (s *Service) mintJobID(ctx context.Context, kind string, claimed map[string]string) (string, error) {
+	for {
+		id := job.NewID(kind)
+		if _, ok := claimed[id]; ok {
+			continue
+		}
+		var n int
+		if err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM job_index WHERE id=?`, id).Scan(&n); err != nil {
+			return "", err
+		}
+		if n == 0 {
+			return id, nil
+		}
+	}
+}
+
+// writeIndexDiff upserts changed rows and retires stale ones in one tx.
 func (s *Service) writeIndexDiff(ctx context.Context, wsID string, existing, desired map[string]indexRow) error {
 	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		return writeIndexDiffTx(ctx, tx, wsID, existing, desired)
@@ -819,36 +1005,56 @@ func (s *Service) writeIndexDiff(ctx context.Context, wsID string, existing, des
 
 func writeIndexDiffTx(ctx context.Context, tx *sql.Tx, wsID string, existing, desired map[string]indexRow) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	for name, want := range desired {
-		if have, ok := existing[name]; ok && have == want {
+	for id := range existing {
+		if _, ok := desired[id]; !ok {
+			if _, err := tx.ExecContext(ctx, `UPDATE job_index SET retired_at=?, updated_at=? WHERE id=?`, now, now, id); err != nil {
+				return err
+			}
+		}
+	}
+	// A rename can take the name of another changed row. Free the old
+	// names first, so the unique name index never sees two live rows.
+	for id, want := range desired {
+		if have, ok := existing[id]; ok && have.name != want.name {
+			if _, err := tx.ExecContext(ctx, `UPDATE job_index SET name=id WHERE id=?`, id); err != nil {
+				return err
+			}
+		}
+	}
+	for id, want := range desired {
+		if have, ok := existing[id]; ok && have == want {
 			continue // unchanged: no row churn
 		}
 		active := 0
 		if want.active {
 			active = 1
 		}
-		var pe *string
-		if want.parseError != "" {
-			pe = &want.parseError
-		}
-		if _, err := tx.Exec(`INSERT INTO job_index (workspace_id, name, path, kind, active, harness, hash, parse_error, owner, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(workspace_id, name) DO UPDATE SET
-				path=excluded.path, kind=excluded.kind, active=excluded.active,
-				harness=excluded.harness, hash=excluded.hash,
-				parse_error=excluded.parse_error, owner=excluded.owner, updated_at=excluded.updated_at`,
-			wsID, name, want.path, want.kind, active, want.harness, want.hash, pe, want.owner, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO job_index (id, workspace_id, name, path, kind, active, harness, hash, parse_error, owner_id, updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(id) DO UPDATE SET
+				workspace_id=excluded.workspace_id, name=excluded.name, path=excluded.path, kind=excluded.kind,
+				active=excluded.active, harness=excluded.harness, hash=excluded.hash, parse_error=excluded.parse_error,
+				owner_id=excluded.owner_id, updated_at=excluded.updated_at, retired_at=NULL`,
+			id, wsID, want.name, want.path, want.kind, active, want.harness, want.hash, store.NullStr(want.parseError), want.ownerID, now); err != nil {
 			return err
 		}
 	}
-	for name := range existing {
-		if _, ok := desired[name]; !ok {
-			if _, err := tx.Exec(`DELETE FROM job_index WHERE workspace_id=? AND name=?`, wsID, name); err != nil {
-				return err
-			}
+	return nil
+}
+
+// IndexEvent is the bus event of one job or agent index change. A job
+// event names the job; an agent event names the agent by its short name.
+func IndexEvent(wsID, kind, action, id, name string) store.BusEvent {
+	if kind == "agent" {
+		return store.BusEvent{
+			Topic: "agent." + action, Entity: "agent", EntityID: id, Action: action,
+			Attrs: map[string]string{"workspace": wsID, "agent_id": id, "agent_name": strings.TrimPrefix(name, "agents/")},
 		}
 	}
-	return nil
+	return store.BusEvent{
+		Topic: "job." + action, Entity: "job", EntityID: id, Action: action,
+		Attrs: map[string]string{"workspace": wsID, "job_id": id, "job_name": name},
+	}
 }
 
 // emitIndexDiff appends bus events for index changes (best-effort).
@@ -858,45 +1064,19 @@ func (s *Service) emitIndexDiff(ctx context.Context, wsID string, existing, desi
 			s.log.Warn("job index bus append failed", "workspace", wsID, "topic", ev.Topic, "error", err)
 		}
 	}
-	jobEvent := func(action, name string) store.BusEvent {
-		return store.BusEvent{
-			Topic: "job." + action, Entity: "job", EntityID: name, Action: action,
-			Attrs: map[string]string{"workspace": wsID, "job": name},
-		}
-	}
-	agentEvent := func(action, name string) store.BusEvent {
-		return store.BusEvent{
-			Topic: "agent." + action, Entity: "agent", EntityID: name, Action: action,
-			Attrs: map[string]string{"workspace": wsID, "name": name},
-		}
-	}
-	for name, want := range desired {
-		have, ok := existing[name]
-		if want.kind == "agent" {
-			switch {
-			case !ok:
-				emit(agentEvent("created", name))
-			case have.hash != want.hash:
-				emit(agentEvent("updated", name))
-			}
-			continue
-		}
+	for id, want := range desired {
+		have, ok := existing[id]
 		switch {
 		case !ok:
-			emit(jobEvent("created", name))
-		case have.hash != want.hash:
-			emit(jobEvent("updated", name))
+			emit(IndexEvent(wsID, want.kind, "created", id, want.name))
+		case have != want:
+			emit(IndexEvent(wsID, want.kind, "updated", id, want.name))
 		}
 	}
-	for name, have := range existing {
-		if _, ok := desired[name]; ok {
-			continue
+	for id, have := range existing {
+		if _, ok := desired[id]; !ok {
+			emit(IndexEvent(wsID, have.kind, "deleted", id, have.name))
 		}
-		if have.kind == "agent" {
-			emit(agentEvent("deleted", name))
-			continue
-		}
-		emit(jobEvent("deleted", name))
 	}
 }
 
@@ -920,6 +1100,7 @@ func (s *Service) otherWorkspaceRoots(ctx context.Context, id string) ([]string,
 
 // JobRow is a job_index entry.
 type JobRow struct {
+	ID          string `json:"id"`
 	WorkspaceID string `json:"workspace_id"`
 	Name        string `json:"name"`
 	Path        string `json:"path"`
@@ -928,7 +1109,18 @@ type JobRow struct {
 	Harness     string `json:"harness"`
 	Hash        string `json:"hash"`
 	ParseError  string `json:"parse_error,omitempty"`
-	Owner       string `json:"owner,omitempty"` // owning agent index name (agents/<name>) for child jobs
+	// OwnerID and OwnerName name the agent of a child job.
+	OwnerID   string `json:"owner_id,omitempty"`
+	OwnerName string `json:"owner_name,omitempty"`
+	RetiredAt string `json:"retired_at,omitempty"`
+}
+
+// OwnerIndex returns the index name of the owner agent (agents/<name>), or "".
+func (r JobRow) OwnerIndex() string {
+	if r.OwnerName == "" {
+		return ""
+	}
+	return "agents/" + r.OwnerName
 }
 
 func ensureTrebiYAML(dir, name string) (id, dispName string, git bool, err error) {
@@ -1069,30 +1261,12 @@ func (s *Service) MemoryLaunchFor(ctx context.Context, run *runs.Run) *runs.Memo
 	if err != nil || ws == nil {
 		return nil
 	}
-	rows, err := s.ListJobs(ctx, ws.ID)
-	if err != nil {
+	row, err := s.JobByID(ctx, run.JobID)
+	if err != nil || row == nil || row.RetiredAt != "" || row.WorkspaceID != ws.ID {
 		return nil
 	}
-	for _, row := range rows {
-		if !rowMatchesKind(row, run.Kind, run.Job) {
-			continue
-		}
-		j, _ := job.ParseFile(row.Path)
-		return runs.NewMemoryLaunch(j, ws.Path)
-	}
-	return nil
-}
-
-// rowMatchesKind applies the kind-strict name match the launch finders use:
-// exact name for jobs, short or index name for agents.
-func rowMatchesKind(row JobRow, kind, name string) bool {
-	switch kind {
-	case runs.KindAgent:
-		return row.Kind == runs.KindAgent &&
-			(row.Name == name || strings.TrimPrefix(row.Name, "agents/") == name)
-	default:
-		return row.Kind == runs.KindJob && row.Name == name
-	}
+	j, _ := job.ParseFile(row.Path)
+	return runs.NewMemoryLaunch(j, ws.Path)
 }
 
 // writeAgentWake renders the agent sections: instructions, owned jobs, and
@@ -1195,7 +1369,7 @@ func (s *Service) unownedIndex(ctx context.Context, wsID string) string {
 	rows, _ := s.ListJobs(ctx, wsID)
 	var b strings.Builder
 	for _, row := range rows {
-		if row.Kind == "job" && row.Owner == "" {
+		if row.Kind == "job" && row.OwnerID == "" {
 			b.WriteString(portfolioLine(row) + "\n")
 		}
 	}
@@ -1218,8 +1392,8 @@ func (s *Service) agentRollup(ctx context.Context, wsID string) string {
 	conversations := make(map[string]int, len(agents))
 	items := make(map[string]int, len(agents))
 
-	rows2, err := s.st.DB().QueryContext(ctx, `SELECT owner, COUNT(*) FROM job_index
-		WHERE workspace_id=? AND owner!='' GROUP BY owner`, wsID)
+	rows2, err := s.st.DB().QueryContext(ctx, `SELECT owner_id, COUNT(*) FROM job_index
+		WHERE workspace_id=? AND owner_id<>'' AND retired_at IS NULL GROUP BY owner_id`, wsID)
 	if err == nil {
 		for rows2.Next() {
 			var owner string
@@ -1232,13 +1406,13 @@ func (s *Service) agentRollup(ctx context.Context, wsID string) string {
 	}
 
 	runRows, err := s.st.DB().QueryContext(ctx, `SELECT lane, value FROM (
-			SELECT CASE WHEN j.kind='agent' THEN r.job ELSE substr(r.job,1,instr(r.job||'/','/')-1) END lane,
+			SELECT CASE WHEN j.kind='agent' THEN j.id ELSE j.owner_id END lane,
 			       COALESCE(r.outcome,r.status) value,
-			       row_number() OVER (PARTITION BY CASE WHEN j.kind='agent' THEN r.job ELSE substr(r.job,1,instr(r.job||'/','/')-1) END ORDER BY r.id DESC) rn
+			       row_number() OVER (PARTITION BY CASE WHEN j.kind='agent' THEN j.id ELSE j.owner_id END ORDER BY r.id DESC) rn
 			FROM runs r
-			JOIN job_index j ON j.workspace_id=r.workspace_id AND j.name=r.job
+			JOIN job_index j ON j.id=r.job_id
 			WHERE r.workspace_id=?
-		) WHERE rn=1`, wsID)
+		) WHERE rn=1 AND lane<>''`, wsID)
 	if err == nil {
 		for runRows.Next() {
 			var lane, value string
@@ -1249,8 +1423,8 @@ func (s *Service) agentRollup(ctx context.Context, wsID string) string {
 		runRows.Close()
 	}
 
-	convRows, err := s.st.DB().QueryContext(ctx, `SELECT operator, COUNT(*) FROM conversations
-		WHERE workspace_id=? AND operator!='' GROUP BY operator`, wsID)
+	convRows, err := s.st.DB().QueryContext(ctx, `SELECT operator_id, COUNT(*) FROM conversations
+		WHERE workspace_id=? AND operator_id<>'' GROUP BY operator_id`, wsID)
 	if err == nil {
 		for convRows.Next() {
 			var owner string
@@ -1262,8 +1436,9 @@ func (s *Service) agentRollup(ctx context.Context, wsID string) string {
 		convRows.Close()
 	}
 
-	itemRows, err := s.st.DB().QueryContext(ctx, `SELECT CASE WHEN job IN (SELECT name FROM job_index WHERE workspace_id=? AND kind='agent') THEN job ELSE substr(job,1,instr(job||'/','/')-1) END, COUNT(*)
-		FROM inbox_items WHERE workspace_id=? AND status!='resolved' GROUP BY 1`, wsID, wsID)
+	itemRows, err := s.st.DB().QueryContext(ctx, `SELECT CASE WHEN j.kind='agent' THEN j.id ELSE j.owner_id END lane, COUNT(*)
+		FROM inbox_items i JOIN job_index j ON j.id=i.job_id
+		WHERE i.workspace_id=? AND i.status<>'resolved' GROUP BY 1`, wsID)
 	if err == nil {
 		for itemRows.Next() {
 			var owner string
@@ -1278,7 +1453,7 @@ func (s *Service) agentRollup(ctx context.Context, wsID string) string {
 	var b strings.Builder
 	for _, row := range agents {
 		fmt.Fprintf(&b, "%s children=%d last_status=%s conversations=%d open_items=%d\n",
-			portfolioLine(row), children[row.Name], status[row.Name], conversations[row.Name], items[row.Name])
+			portfolioLine(row), children[row.ID], status[row.ID], conversations[row.ID], items[row.ID])
 	}
 	return linesBlock(b.String())
 }
@@ -1287,7 +1462,7 @@ func (s *Service) agentRollup(ctx context.Context, wsID string) string {
 func ownedIndex(rows []JobRow, owner string) string {
 	var b strings.Builder
 	for _, row := range rows {
-		if row.Owner == owner {
+		if row.OwnerIndex() == owner {
 			b.WriteString(portfolioLine(row) + "\n")
 		}
 	}
@@ -1320,7 +1495,7 @@ func capSection(s string, n int) string {
 // jobCounts returns the number of indexed jobs per workspace.
 func (s *Service) jobCounts(ctx context.Context) (map[string]int, error) {
 	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT workspace_id, COUNT(*) FROM job_index WHERE kind='job' GROUP BY workspace_id`)
+		`SELECT workspace_id, COUNT(*) FROM job_index WHERE kind='job' AND retired_at IS NULL GROUP BY workspace_id`)
 	if err != nil {
 		return nil, err
 	}

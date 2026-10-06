@@ -24,12 +24,12 @@ func New(st *store.Store) *Service {
 }
 
 // RecomputeFromJob rebuilds schedule rows for one job from its triggers.
-// Unchanged (workspace, job, idx, spec, timezone) rows keep next_due_at and
+// Unchanged (workspace, job ID, idx, spec, timezone) rows keep next_due_at and
 // last_fired_at so a periodic index rebuild cannot push @every into the future.
 func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *job.Job, cutoverStartedAt time.Time) error {
 	report, hasReport := reportSpec(j)
 	if !j.Disabled {
-		existing, err := loadRowsDB(ctx, s.st.DB(), workspaceID, j.Name)
+		existing, err := loadRowsDB(ctx, s.st.DB(), workspaceID, j.ID)
 		if err != nil {
 			return err
 		}
@@ -40,11 +40,11 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 	now := time.Now().UTC().Format(time.RFC3339)
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		if j.Disabled {
-			_, err := tx.Exec(`DELETE FROM schedules WHERE workspace_id=? AND job=?`, workspaceID, j.Name)
+			_, err := tx.Exec(`DELETE FROM schedules WHERE workspace_id=? AND job_id=?`, workspaceID, j.ID)
 			return err
 		}
 
-		existing, err := loadRows(tx, workspaceID, j.Name)
+		existing, err := loadRows(tx, workspaceID, j.ID)
 		if err != nil {
 			return err
 		}
@@ -81,15 +81,15 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 			}
 			if _, ok := existing[tr.Index]; ok {
 				if _, err := tx.Exec(`UPDATE schedules SET spec=?, timezone=?, catch_up=?, next_due_at=?, last_fired_at=NULL, anchor=NULL, updated_at=?
-					WHERE workspace_id=? AND job=? AND idx=?`,
-					spec, tz, catchUp, nextStr, now, workspaceID, j.Name, tr.Index); err != nil {
+					WHERE workspace_id=? AND job_id=? AND idx=?`,
+					spec, tz, catchUp, nextStr, now, workspaceID, j.ID, tr.Index); err != nil {
 					return err
 				}
 				continue
 			}
-			if _, err := tx.Exec(`INSERT INTO schedules (workspace_id, job, idx, spec, timezone, catch_up, next_due_at, updated_at)
+			if _, err := tx.Exec(`INSERT INTO schedules (workspace_id, job_id, idx, spec, timezone, catch_up, next_due_at, updated_at)
 				VALUES (?,?,?,?,?,?,?,?)`,
-				workspaceID, j.Name, tr.Index, spec, tz, catchUp, nextStr, now); err != nil {
+				workspaceID, j.ID, tr.Index, spec, tz, catchUp, nextStr, now); err != nil {
 				return err
 			}
 		}
@@ -100,8 +100,8 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 			if keep[idx] {
 				continue
 			}
-			if _, err := tx.Exec(`DELETE FROM schedules WHERE workspace_id=? AND job=? AND idx=?`,
-				workspaceID, j.Name, idx); err != nil {
+			if _, err := tx.Exec(`DELETE FROM schedules WHERE workspace_id=? AND job_id=? AND idx=?`,
+				workspaceID, j.ID, idx); err != nil {
 				return err
 			}
 		}
@@ -111,7 +111,7 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 		return err
 	}
 	if hasReport && !j.Disabled {
-		return s.upsertReport(ctx, workspaceID, j.Name, report)
+		return s.upsertReport(ctx, workspaceID, j.ID, report)
 	}
 	return nil
 }
@@ -134,7 +134,7 @@ func reportUnchanged(rows map[int]Row, spec string) bool {
 	return ok && old.Spec == spec
 }
 
-func (s *Service) upsertReport(ctx context.Context, workspaceID, jobName, spec string) error {
+func (s *Service) upsertReport(ctx context.Context, workspaceID, jobID, spec string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		next := nextDue(spec, time.Time{}, "UTC")
@@ -144,19 +144,19 @@ func (s *Service) upsertReport(ctx context.Context, workspaceID, jobName, spec s
 			nextStr = &value
 		}
 		var oldSpec string
-		err := tx.QueryRow(`SELECT spec FROM schedules WHERE workspace_id=? AND job=? AND idx=-1`,
-			workspaceID, jobName).Scan(&oldSpec)
+		err := tx.QueryRow(`SELECT spec FROM schedules WHERE workspace_id=? AND job_id=? AND idx=-1`,
+			workspaceID, jobID).Scan(&oldSpec)
 		switch {
 		case err == nil:
 			if oldSpec == spec {
 				return nil
 			}
 			_, err = tx.Exec(`UPDATE schedules SET spec=?, next_due_at=?, last_fired_at=NULL, updated_at=?
-				WHERE workspace_id=? AND job=? AND idx=-1`, spec, nextStr, now, workspaceID, jobName)
+				WHERE workspace_id=? AND job_id=? AND idx=-1`, spec, nextStr, now, workspaceID, jobID)
 			return err
 		case errors.Is(err, sql.ErrNoRows):
-			_, err = tx.Exec(`INSERT INTO schedules (workspace_id, job, idx, spec, timezone, catch_up, next_due_at, updated_at)
-				VALUES (?,?,-1,?,'UTC',1,?,?)`, workspaceID, jobName, spec, nextStr, now)
+			_, err = tx.Exec(`INSERT INTO schedules (workspace_id, job_id, idx, spec, timezone, catch_up, next_due_at, updated_at)
+				VALUES (?,?,-1,?,'UTC',1,?,?)`, workspaceID, jobID, spec, nextStr, now)
 			return err
 		default:
 			return err
@@ -164,13 +164,13 @@ func (s *Service) upsertReport(ctx context.Context, workspaceID, jobName, spec s
 	})
 }
 
-const scheduleCols = `workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at`
+const scheduleCols = `workspace_id, job_id, COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = schedules.job_id), ''), idx, spec, timezone, catch_up, next_due_at, last_fired_at`
 
 func scanSchedule(rows *sql.Rows) (Row, error) {
 	var r Row
 	var next, last sql.NullString
 	var catch int
-	if err := rows.Scan(&r.WorkspaceID, &r.Job, &r.Idx, &r.Spec, &r.Timezone, &catch, &next, &last); err != nil {
+	if err := rows.Scan(&r.WorkspaceID, &r.JobID, &r.JobName, &r.Idx, &r.Spec, &r.Timezone, &catch, &next, &last); err != nil {
 		return Row{}, err
 	}
 	r.CatchUp = catch == 1
@@ -179,9 +179,9 @@ func scanSchedule(rows *sql.Rows) (Row, error) {
 	return r, nil
 }
 
-func loadRows(tx *sql.Tx, workspaceID, jobName string) (map[int]Row, error) {
+func loadRows(tx *sql.Tx, workspaceID, jobID string) (map[int]Row, error) {
 	rows, err := tx.Query(`SELECT `+scheduleCols+`
-		FROM schedules WHERE workspace_id=? AND job=?`, workspaceID, jobName)
+		FROM schedules WHERE workspace_id=? AND job_id=?`, workspaceID, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -197,9 +197,9 @@ func loadRows(tx *sql.Tx, workspaceID, jobName string) (map[int]Row, error) {
 	return out, rows.Err()
 }
 
-func loadRowsDB(ctx context.Context, db *sql.DB, workspaceID, jobName string) (map[int]Row, error) {
+func loadRowsDB(ctx context.Context, db *sql.DB, workspaceID, jobID string) (map[int]Row, error) {
 	rows, err := db.QueryContext(ctx, `SELECT `+scheduleCols+`
-		FROM schedules WHERE workspace_id=? AND job=?`, workspaceID, jobName)
+		FROM schedules WHERE workspace_id=? AND job_id=?`, workspaceID, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -303,8 +303,8 @@ func (s *Service) ClaimDue(ctx context.Context, now time.Time, limit int) ([]Row
 				nextStr = &s
 			}
 			res, err := tx.Exec(`UPDATE schedules SET next_due_at=?, updated_at=?
-				WHERE workspace_id=? AND job=? AND idx=? AND next_due_at=?`,
-				nextStr, nowStr, r.WorkspaceID, r.Job, r.Idx, r.NextDueAt)
+				WHERE workspace_id=? AND job_id=? AND idx=? AND next_due_at=?`,
+				nextStr, nowStr, r.WorkspaceID, r.JobID, r.Idx, r.NextDueAt)
 			if err != nil {
 				return err
 			}
@@ -321,7 +321,8 @@ func (s *Service) ClaimDue(ctx context.Context, now time.Time, limit int) ([]Row
 // Row is a schedules table row.
 type Row struct {
 	WorkspaceID string
-	Job         string
+	JobID       string
+	JobName     string
 	Idx         int
 	Spec        string
 	Timezone    string
@@ -339,8 +340,8 @@ func (s *Service) MarkFired(ctx context.Context, r Row, firedAt time.Time) error
 		s := next.UTC().Format(time.RFC3339)
 		nextStr = &s
 	}
-	_, err := s.st.DB().ExecContext(ctx, `UPDATE schedules SET last_fired_at=?, next_due_at=?, updated_at=? WHERE workspace_id=? AND job=? AND idx=?`,
-		now, nextStr, now, r.WorkspaceID, r.Job, r.Idx)
+	_, err := s.st.DB().ExecContext(ctx, `UPDATE schedules SET last_fired_at=?, next_due_at=?, updated_at=? WHERE workspace_id=? AND job_id=? AND idx=?`,
+		now, nextStr, now, r.WorkspaceID, r.JobID, r.Idx)
 	return err
 }
 
@@ -387,8 +388,8 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]Row, error) {
 }
 
 // Delete removes one schedule row (orphan job).
-func (s *Service) Delete(ctx context.Context, workspaceID, jobName string, idx int) error {
+func (s *Service) Delete(ctx context.Context, workspaceID, jobID string, idx int) error {
 	_, err := s.st.DB().ExecContext(ctx,
-		`DELETE FROM schedules WHERE workspace_id=? AND job=? AND idx=?`, workspaceID, jobName, idx)
+		`DELETE FROM schedules WHERE workspace_id=? AND job_id=? AND idx=?`, workspaceID, jobID, idx)
 	return err
 }

@@ -785,7 +785,8 @@ type Message struct {
 	ID             string       `json:"id"`
 	Direction      string       `json:"direction"` // in | out
 	WorkspaceID    string       `json:"workspace_id,omitempty"`
-	Agent          string       `json:"agent,omitempty"`
+	AgentID        string       `json:"agent_id,omitempty"`
+	AgentName      string       `json:"agent_name,omitempty"`
 	MessageID      string       `json:"message_id,omitempty"`
 	InReplyTo      string       `json:"in_reply_to,omitempty"`
 	ThreadRoot     string       `json:"thread_root,omitempty"`
@@ -842,7 +843,14 @@ type MessageListOpts struct {
 
 // Null columns map to "" so one Scan serves both directions: outbound rows
 // carry recipients and no sender, inbound rows the reverse.
-const messageCols = `COALESCE(em.workspace_id,''), COALESCE(em.agent,''), COALESCE(em.message_id,''),
+// agentIDSQL resolves a short agent name to its ID. It takes the workspace
+// and the short name. An empty name gives NULL: the workspace address.
+const agentIDSQL = `(SELECT ji.id FROM job_index ji WHERE ji.workspace_id = ? AND ji.kind = 'agent' AND ji.name = 'agents/' || ? AND ji.retired_at IS NULL)`
+
+// agentNameSQL reads the short agent name of em.agent_id.
+const agentNameSQL = `COALESCE((SELECT SUBSTR(ji.name, 8) FROM job_index ji WHERE ji.id = em.agent_id), '')`
+
+const messageCols = `COALESCE(em.workspace_id,''), COALESCE(em.agent_id,''), ` + agentNameSQL + `, COALESCE(em.message_id,''),
 COALESCE(em.in_reply_to,''), COALESCE(em.thread_root,''), COALESCE(em.sender,''), COALESCE(em.recipients,''),
 COALESCE(em.subject,''), COALESCE(em.dmarc,''), COALESCE(em.disposition,''), COALESCE(em.inbox_id,''),
 COALESCE(em.run_id,''), COALESCE(em.conversation_id,''), COALESCE(em.attachments,'[]'),
@@ -920,7 +928,7 @@ func (s *Service) GetMessage(ctx context.Context, id string) (Message, error) {
 func scanMessage(scan func(dest ...any) error) (Message, error) {
 	var m Message
 	var att string
-	if err := scan(&m.ID, &m.Direction, &m.WorkspaceID, &m.Agent, &m.MessageID,
+	if err := scan(&m.ID, &m.Direction, &m.WorkspaceID, &m.AgentID, &m.AgentName, &m.MessageID,
 		&m.InReplyTo, &m.ThreadRoot, &m.Sender, &m.Recipients, &m.Subject,
 		&m.DMARC, &m.Disposition, &m.InboxID, &m.RunID, &m.ConversationID,
 		&att, &m.TraceID, &m.CreatedAt, &m.Revision, &m.OutboxID, &m.Status, &m.Attempts,
@@ -1249,11 +1257,11 @@ func (s *Service) enqueue(ctx context.Context, e envelope, r outbox.Row) (outbox
 	row, err := s.ob.EnqueueTx(ctx, func(tx *sql.Tx, r outbox.Row) error {
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO email_messages
-  (id, direction, workspace_id, agent, message_id, in_reply_to, thread_root, recipients,
+  (id, direction, workspace_id, agent_id, message_id, in_reply_to, thread_root, recipients,
    subject, disposition, conversation_id, run_id, inbox_id, purpose, covered_turn, outbox_id, created_at,
    body_text, body_html)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			r.EmailRowID, "out", e.workspaceID, e.agent, e.messageID, e.inReplyTo, e.threadRoot,
+VALUES (?,?,?,`+agentIDSQL+`,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			r.EmailRowID, "out", e.workspaceID, e.workspaceID, e.agent, e.messageID, e.inReplyTo, e.threadRoot,
 			r.Recipients, e.subject, dispositionQueued, store.NullStr(e.conversationID),
 			store.NullStr(e.runID), store.NullStr(e.inboxID), e.purpose, turn, r.ID,
 			time.Now().UTC().Format(time.RFC3339), text, html); err != nil {

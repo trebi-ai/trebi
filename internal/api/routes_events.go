@@ -15,6 +15,8 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
 // eventRow is one scanned events table row.
@@ -62,7 +64,7 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 		return out
 	}
 	placeholders, args := inClause(eventIDs)
-	q := `SELECT event_id, workspace_id, job, on_index, outcome, COALESCE(error_message,''), COALESCE(queue_id,'')
+	q := `SELECT event_id, workspace_id, job_id, ` + store.JobNameSQL("event_outcomes.job_id") + `, on_index, outcome, COALESCE(error_message,''), COALESCE(queue_id,'')
 		FROM event_outcomes WHERE event_id IN (` + placeholders + `) ORDER BY event_id, on_index`
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
@@ -70,13 +72,13 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 	}
 	defer rows.Close()
 	type raw struct {
-		eid, ws, job, outcome, detail, qid string
-		idx                                int
+		eid, ws, jobID, jobName, outcome, detail, qid string
+		idx                                           int
 	}
 	var raws []raw
 	for rows.Next() {
 		var r raw
-		if rows.Scan(&r.eid, &r.ws, &r.job, &r.idx, &r.outcome, &r.detail, &r.qid) == nil {
+		if rows.Scan(&r.eid, &r.ws, &r.jobID, &r.jobName, &r.idx, &r.outcome, &r.detail, &r.qid) == nil {
 			if workspace != "" && r.ws != workspace {
 				continue
 			}
@@ -97,7 +99,8 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 	for _, r := range raws {
 		entry := map[string]any{
 			"workspace": r.ws,
-			"job":       r.job,
+			"job_id":    r.jobID,
+			"job_name":  r.jobName,
 			"on_index":  r.idx,
 			"outcome":   r.outcome,
 		}
@@ -518,32 +521,32 @@ func (g ruleGate) result(ev connectors.GateEvent, res connectors.GateResult) map
 
 // ruleJob loads the job of a rules test body. Nil means every event is the
 // start of a conversation: no job, or a trigger that does not continue.
-func (s *Server) ruleJob(ctx context.Context, g ruleGate) (*job.Job, string, error) {
+func (s *Server) ruleJob(ctx context.Context, g ruleGate) (*job.Job, workspaces.JobRow, error) {
 	if g.Job == "" || g.Replies != job.RepliesContinue {
-		return nil, "", nil
+		return nil, workspaces.JobRow{}, nil
 	}
 	row, err := s.findJobRow(ctx, g.Workspace, g.Job)
 	if err != nil {
-		return nil, "", err
+		return nil, workspaces.JobRow{}, err
 	}
 	if row.Kind != dispatch.KindJob {
-		return nil, "", nil
+		return nil, workspaces.JobRow{}, nil
 	}
 	doc, err := readIndexedDoc(row.Path)
 	if err != nil {
-		return nil, "", err
+		return nil, workspaces.JobRow{}, err
 	}
 	doc.Job.Name = row.Name
-	return doc.Job, row.WorkspaceID, nil
+	return doc.Job, row, nil
 }
 
 // evalRule runs the gate against ev. With a job, ev is a follow-up when it
 // continues an open conversation of that job.
-func (s *Server) evalRule(ctx context.Context, ev connectors.GateEvent, g connectors.Gate, j *job.Job, wsID string) (connectors.GateResult, error) {
+func (s *Server) evalRule(ctx context.Context, ev connectors.GateEvent, g connectors.Gate, j *job.Job, row workspaces.JobRow) (connectors.GateResult, error) {
 	followUp := false
 	if j != nil {
 		var err error
-		if followUp, err = s.connectors.FollowUp(ctx, ev, wsID, j); err != nil {
+		if followUp, err = s.connectors.FollowUp(ctx, ev, row, j); err != nil {
 			return connectors.GateResult{}, err
 		}
 	}
@@ -569,7 +572,7 @@ func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "set event_id or event, not both")
 		return
 	}
-	j, wsID, err := s.ruleJob(r.Context(), body.ruleGate)
+	j, jobRow, err := s.ruleJob(r.Context(), body.ruleGate)
 	if err != nil {
 		writeResolveErr(w, err, "job")
 		return
@@ -588,7 +591,7 @@ func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		}
 		ev = connectors.DraftGateEvent(typ, body.Event)
 	}
-	res, err := s.evalRule(r.Context(), ev, body.gate(), j, wsID)
+	res, err := s.evalRule(r.Context(), ev, body.gate(), j, jobRow)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -617,7 +620,7 @@ func (s *Server) handleRulesTestBatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("event_ids: at most %d events", maxRulesTestBatch))
 		return
 	}
-	j, wsID, err := s.ruleJob(r.Context(), body.ruleGate)
+	j, jobRow, err := s.ruleJob(r.Context(), body.ruleGate)
 	if err != nil {
 		writeResolveErr(w, err, "job")
 		return
@@ -634,7 +637,7 @@ func (s *Server) handleRulesTestBatch(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		default:
-			res, err := s.evalRule(r.Context(), ev, g, j, wsID)
+			res, err := s.evalRule(r.Context(), ev, g, j, jobRow)
 			if err != nil {
 				writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 				return
@@ -656,16 +659,6 @@ func (s *Server) writeEventErr(w http.ResponseWriter, err error) {
 	writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 }
 
-// indexRowKind returns job_index.kind for (workspace, name). Empty when the row
-// is absent; the queue then defaults the lane to job.
-func (s *Server) indexRowKind(ctx context.Context, wsID, name string) string {
-	var kind string
-	_ = s.st.DB().QueryRowContext(ctx,
-		`SELECT kind FROM job_index WHERE workspace_id=? AND name=?`,
-		s.workspaceID(ctx, wsID), name).Scan(&kind)
-	return kind
-}
-
 func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Connector string `json:"connector"`
@@ -682,6 +675,13 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Connector == "" {
 		body.Connector = "rules-fire"
+	}
+	row, err := s.findIndexRow(r.Context(), body.Workspace, body.Job, func(row workspaces.JobRow) bool {
+		return row.Name == body.Job
+	}, "job", "agent")
+	if err != nil {
+		writeResolveErr(w, err, "job")
+		return
 	}
 	res := dispatch.EvalMatch(r.Context(), body.Match, body.Extract, body.Event)
 	if res.Error != "" {
@@ -717,9 +717,10 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 
 	item := &dispatch.QueueItem{
 		Connector:   instance,
-		WorkspaceID: body.Workspace,
-		Job:         body.Job,
-		Kind:        s.indexRowKind(r.Context(), body.Workspace, body.Job),
+		WorkspaceID: row.WorkspaceID,
+		JobID:       row.ID,
+		JobName:     row.Name,
+		Kind:        row.Kind,
 		OnIndex:     body.OnIndex,
 		EventID:     eid,
 		EventRaw:    string(raw),
@@ -734,9 +735,9 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	err = s.queue.Enqueue(r.Context(), item)
 	if errors.Is(err, dispatch.ErrLaneFull) {
 		if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO event_outcomes
-			(event_id, workspace_id, job, on_index, outcome, created_at)
+			(event_id, workspace_id, job_id, on_index, outcome, created_at)
 			VALUES (?,?,?,?,?,?)
-			ON CONFLICT (event_id, workspace_id, job, on_index) DO NOTHING`, eid, body.Workspace, body.Job, body.OnIndex,
+			ON CONFLICT (event_id, workspace_id, job_id, on_index) DO NOTHING`, eid, row.WorkspaceID, row.ID, body.OnIndex,
 			string(dispatch.OutcomeDropped), now); err != nil {
 			s.log.Warn("rules.fire outcome insert", "event_id", eid, "error", err)
 		}
@@ -748,9 +749,9 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO event_outcomes
-		(event_id, workspace_id, job, on_index, outcome, queue_id, created_at)
+		(event_id, workspace_id, job_id, on_index, outcome, queue_id, created_at)
 		VALUES (?,?,?,?,?,?,?)
-		ON CONFLICT (event_id, workspace_id, job, on_index) DO NOTHING`, eid, body.Workspace, body.Job, body.OnIndex,
+		ON CONFLICT (event_id, workspace_id, job_id, on_index) DO NOTHING`, eid, row.WorkspaceID, row.ID, body.OnIndex,
 		string(dispatch.OutcomeQueued), item.ID, now); err != nil {
 		s.log.Warn("rules.fire outcome insert", "event_id", eid, "error", err)
 	}

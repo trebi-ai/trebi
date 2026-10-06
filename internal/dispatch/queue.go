@@ -42,7 +42,8 @@ type QueueItem struct {
 	ID              string `json:"id"`
 	Connector       string `json:"connector"`
 	WorkspaceID     string `json:"workspace_id"`
-	Job             string `json:"job"`
+	JobID           string `json:"job_id"`
+	JobName         string `json:"job_name"`
 	Kind            string `json:"kind"`
 	OnIndex         int    `json:"on_index"`
 	ConversationKey string `json:"conversation_key,omitempty"`
@@ -209,8 +210,8 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 			var n int
 			if err := tx.QueryRow(`SELECT COUNT(*) FROM event_queue
 				WHERE status='pending' AND resume_of IS NULL
-				AND workspace_id=? AND job=? AND kind=? AND conversation_key=?`,
-				item.WorkspaceID, item.Job, item.Kind, item.ConversationKey).Scan(&n); err != nil {
+				AND job_id=? AND kind=? AND conversation_key=?`,
+				item.JobID, item.Kind, item.ConversationKey).Scan(&n); err != nil {
 				return err
 			}
 			if n >= LaneCap {
@@ -218,11 +219,11 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 			}
 		}
 		_, err := tx.Exec(`INSERT INTO event_queue (
-			id, connector, workspace_id, job, kind, on_index, conversation_key,
+			id, connector, workspace_id, job_id, kind, on_index, conversation_key,
 			event_id, event_raw, vars_json, prompt, status, block_reason, resume_of,
 			trace_id, launch_json, follow_up, created_at, updated_at
 		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			item.ID, item.Connector, item.WorkspaceID, item.Job, item.Kind, item.OnIndex,
+			item.ID, item.Connector, item.WorkspaceID, item.JobID, item.Kind, item.OnIndex,
 			item.ConversationKey, eventID, store.NullStr(item.EventRaw), varsJSON, item.Prompt,
 			string(item.Status), store.NullStr(string(item.BlockReason)), store.NullStr(item.ResumeOf),
 			item.TraceID, launchJSON, item.FollowUp, now, now)
@@ -243,28 +244,28 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 // because RFC3339Nano strips trailing fractional zeros. A lane claims only
 // its head row, so a row in backoff or in a wait holds the rows behind it.
 // The claim does not change attempts; MarkAttempt counts a launch.
-func (q *Queue) ClaimNext(ctx context.Context, workspaceID, job, kind, conversationKey string) (*QueueItem, error) {
+func (q *Queue) ClaimNext(ctx context.Context, jobID, kind, conversationKey string) (*QueueItem, error) {
 	at := q.now().UTC()
 	now := at.Format(time.RFC3339Nano)
 	// next_attempt_at is written as RFC3339 (second precision); compare it
 	// against the same shape so the lexical order is the time order.
 	due := at.Format(time.RFC3339)
-	query := `SELECT id, connector, workspace_id, job, kind, on_index, conversation_key,
+	query := `SELECT id, connector, workspace_id, job_id, ` + store.JobNameSQL("event_queue.job_id") + `, kind, on_index, conversation_key,
 			COALESCE(event_id,''), COALESCE(event_raw,''), status, COALESCE(prompt,''), COALESCE(trace_id,''),
 			COALESCE(resume_of,''), attempts, COALESCE(vars_json,''), COALESCE(launch_json,''), follow_up, created_at
 			FROM event_queue
-			WHERE status='pending' AND workspace_id=? AND job=? AND kind=? AND conversation_key=?
+			WHERE status='pending' AND job_id=? AND kind=? AND conversation_key=?
 			AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 			AND id = (SELECT MIN(id) FROM event_queue
-			WHERE status='pending' AND workspace_id=? AND job=? AND kind=? AND conversation_key=?)`
-	args := []any{workspaceID, job, kind, conversationKey, due, workspaceID, job, kind, conversationKey}
+			WHERE status='pending' AND job_id=? AND kind=? AND conversation_key=?)`
+	args := []any{jobID, kind, conversationKey, due, jobID, kind, conversationKey}
 	var item QueueItem
 	q.st.LockBus()
 	defer q.st.UnlockBus()
 	err := q.st.WithTx(ctx, func(tx *sql.Tx) error {
 		row := tx.QueryRow(query, args...)
 		var created, status, varsJSON, launchJSON string
-		if err := row.Scan(&item.ID, &item.Connector, &item.WorkspaceID, &item.Job, &item.Kind,
+		if err := row.Scan(&item.ID, &item.Connector, &item.WorkspaceID, &item.JobID, &item.JobName, &item.Kind,
 			&item.OnIndex, &item.ConversationKey, &item.EventID, &item.EventRaw, &status, &item.Prompt,
 			&item.TraceID, &item.ResumeOf, &item.Attempts, &varsJSON, &launchJSON, &item.FollowUp, &created); err != nil {
 			return err
@@ -525,7 +526,7 @@ func (q *Queue) List(ctx context.Context, opts ListOpts) ([]QueueItem, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 50
 	}
-	query := `SELECT id, connector, workspace_id, job, kind, on_index, conversation_key,
+	query := `SELECT id, connector, workspace_id, job_id, ` + store.JobNameSQL("event_queue.job_id") + `, kind, on_index, conversation_key,
 		COALESCE(event_id,''), COALESCE(event_raw,''), status, COALESCE(block_reason,''),
 		COALESCE(prompt,''), COALESCE(trace_id,''), COALESCE(run_id,''), attempts,
 		COALESCE(next_attempt_at,''), COALESCE(error_message,''), follow_up, created_at
@@ -554,7 +555,7 @@ func (q *Queue) List(ctx context.Context, opts ListOpts) ([]QueueItem, error) {
 	for rows.Next() {
 		var it QueueItem
 		var stStr, br, next, created string
-		if err := rows.Scan(&it.ID, &it.Connector, &it.WorkspaceID, &it.Job, &it.Kind, &it.OnIndex,
+		if err := rows.Scan(&it.ID, &it.Connector, &it.WorkspaceID, &it.JobID, &it.JobName, &it.Kind, &it.OnIndex,
 			&it.ConversationKey, &it.EventID, &it.EventRaw, &stStr, &br, &it.Prompt, &it.TraceID, &it.RunID,
 			&it.Attempts, &next, &it.ErrorMessage, &it.FollowUp, &created); err != nil {
 			return nil, err

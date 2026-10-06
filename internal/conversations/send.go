@@ -66,11 +66,11 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 	if opts.Room == "" {
 		opts.Room = opts.Workspace
 	}
-	convID, err := s.EnsureForChannel(ctx, opts.Workspace, opts.Operator, opts.Address)
+	convID, err := s.EnsureForChannel(ctx, opts.Workspace, opts.OperatorID, opts.Address)
 	if err != nil {
 		return nil, err
 	}
-	if opts.Operator == "" {
+	if opts.OperatorID == "" {
 		// The workspace assistant is a session (plan 2026-09-26 Part E).
 		if s.assistant == nil {
 			return nil, fmt.Errorf("%w: assistant session manager is not bound", ErrValidation)
@@ -108,14 +108,14 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 
 // EnsureForChannel returns the conversation the channel points at, creating one
 // when the pointer is absent.
-func (s *Service) EnsureForChannel(ctx context.Context, workspace, operator string, a Address) (string, error) {
+func (s *Service) EnsureForChannel(ctx context.Context, workspace, operatorID string, a Address) (string, error) {
 	p, err := s.GetPointer(ctx, workspace, a)
 	if err == nil && p.ConversationID != "" {
 		conv, err := s.Get(ctx, p.ConversationID)
 		if err != nil {
 			return "", err
 		}
-		if conv.Operator != operator {
+		if conv.OperatorID != operatorID {
 			return "", ErrOperatorConflict
 		}
 		return conv.ID, nil
@@ -125,7 +125,7 @@ func (s *Service) EnsureForChannel(ctx context.Context, workspace, operator stri
 	}
 	conv, err := s.Create(ctx, CreateOpts{
 		Workspace:     workspace,
-		Operator:      operator,
+		OperatorID:    operatorID,
 		OriginChannel: a.Connector,
 		Activate:      &a,
 	})
@@ -189,7 +189,7 @@ func (s *Service) Send(ctx context.Context, convID string, opts SendOpts) (*Send
 			return &SendResult{Message: existing}, nil
 		}
 	}
-	if conv.Operator == "" {
+	if conv.OperatorID == "" {
 		// The workspace assistant is a session (plan 2026-09-26 Part E).
 		if s.assistant == nil {
 			return nil, fmt.Errorf("%w: assistant session manager is not bound", ErrValidation)
@@ -504,14 +504,14 @@ func (s *Service) enqueueWake(ctx context.Context, conv *Conversation, text stri
 	if s.queue == nil {
 		return "", fmt.Errorf("%w: queue not bound", ErrValidation)
 	}
-	jobName := conv.Operator
 	kind := runs.KindAgent
 	// The raw text rides the queue; dispatch composes the wake with a fresh
 	// recap (Part F.3). item.Prompt is the wake message.
 	item := &dispatch.QueueItem{
 		Connector:       "conversation",
 		WorkspaceID:     conv.Workspace,
-		Job:             jobName,
+		JobID:           conv.OperatorID,
+		JobName:         "agents/" + conv.OperatorName,
 		Kind:            kind,
 		ConversationKey: conv.Key,
 		Prompt:          text,

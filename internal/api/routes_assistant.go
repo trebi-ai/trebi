@@ -42,7 +42,7 @@ type conversationRow struct {
 // assistantRow decorates one conversation with its session record.
 func (s *Server) assistantRow(ctx context.Context, c *conversations.Conversation) conversationRow {
 	row := conversationRow{Conversation: c}
-	if c.Operator != "" || s.asst == nil {
+	if c.OperatorID != "" || s.asst == nil {
 		return row
 	}
 	if rec, err := s.asst.Session(ctx, c.ID); err == nil {
@@ -310,7 +310,7 @@ func (s *Server) handleConversationEvents(w http.ResponseWriter, r *http.Request
 	if s.convErr(w, err, "conversation not found") {
 		return
 	}
-	if conv.Operator != "" {
+	if conv.OperatorID != "" {
 		writeErr(w, http.StatusBadRequest, "validation", "agent conversations have no assistant events")
 		return
 	}

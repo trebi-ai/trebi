@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/job"
 	"gopkg.in/yaml.v3"
 )
 
@@ -115,8 +116,20 @@ func (c *Catalog) Render(o RenderOpts) ([]File, error) {
 		return nil, err
 	}
 	for i := range files {
-		if strings.HasSuffix(files[i].Rel, "/JOB.md") || files[i].Rel == "JOB.md" {
+		kind := ""
+		switch {
+		case strings.HasSuffix(files[i].Rel, "/JOB.md") || files[i].Rel == "JOB.md":
 			files[i].Content = forceDisabled(files[i].Content)
+			kind = "job"
+		case files[i].Rel == "AGENT.md":
+			kind = "agent"
+		}
+		if kind != "" {
+			out, err := job.WithID(files[i].Content, job.NewID(kind))
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", files[i].Rel, err)
+			}
+			files[i].Content = out
 		}
 	}
 	return files, nil
