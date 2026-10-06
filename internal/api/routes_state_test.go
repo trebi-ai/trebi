@@ -14,7 +14,7 @@ func TestStateRoutes(t *testing.T) {
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
 	files := map[string]string{
-		filepath.Join(wsDir, "agents", "beta", "AGENT.md"): "---\n---\n\nBeta.\n",
+		filepath.Join(wsDir, "agents", "beta", "AGENT.md"): "---\ndescription: Test agent.\n---\n\nBeta.\n",
 		filepath.Join(wsDir, "digest", "JOB.md"): "---\nharness: fake\nstate:\n  topics:\n    schema:\n      type: object\n" +
 			"      properties:\n        topic: {enum: [alz, bone]}\n---\n\nDigest.\n",
 	}

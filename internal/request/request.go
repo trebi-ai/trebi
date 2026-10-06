@@ -686,13 +686,14 @@ func BuildRequestDismiss(id string) HTTPRequest {
 }
 
 // BuildAgentListPath builds GET /v1/workspaces/{id}/agents.
-func BuildAgentListPath(workspaceID string) string {
-	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/agents"
+// forWords filters by name, title, and description.
+func BuildAgentListPath(workspaceID, forWords string) string {
+	return withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/agents", map[string]string{"for": forWords})
 }
 
 // BuildAgentListAllPath builds GET /v1/agents across workspaces.
-func BuildAgentListAllPath(workspaceFilter string) string {
-	return withQuery("/v1/agents", map[string]string{"workspace": workspaceFilter})
+func BuildAgentListAllPath(workspaceFilter, forWords string) string {
+	return withQuery("/v1/agents", map[string]string{"workspace": workspaceFilter, "for": forWords})
 }
 
 // BuildAgentGetPath builds GET /v1/workspaces/{id}/agents/{name}. name is the

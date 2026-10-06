@@ -45,6 +45,8 @@ type Workspace struct {
 	Contact   []string      `json:"contact,omitempty"`
 	Notify    []notify.Step `json:"notify,omitempty"`
 	NotifySet bool          `json:"notify_set"`
+	// Chains is the resolved agents.chains block of trebi.yaml.
+	Chains ChainConfig `json:"chains"`
 	// JobCount and RunningCount are filled by list reads only.
 	JobCount     int `json:"job_count"`
 	RunningCount int `json:"running_count"`
@@ -108,10 +110,11 @@ type Patch struct {
 	Notify       *[]notify.Step
 	ClearContact bool
 	ClearNotify  bool
+	Chains       *ChainPatch
 }
 
 func (p Patch) touchesRoute() bool {
-	return p.Contact != nil || p.Notify != nil || p.ClearContact || p.ClearNotify
+	return p.Contact != nil || p.Notify != nil || p.ClearContact || p.ClearNotify || p.Chains != nil
 }
 
 // trebiYAML is the on-disk workspace config (B26).
@@ -124,6 +127,7 @@ type trebiYAML struct {
 	Contact    yaml.Node                    `yaml:"contact,omitempty"`
 	Notify     yaml.Node                    `yaml:"notify,omitempty"`
 	Connectors map[string]ConnectorOverride `yaml:"connectors,omitempty"`
+	Agents     *trebiYAMLAgents             `yaml:"agents,omitempty"`
 }
 
 // route parses the contact and the notify route.
@@ -525,6 +529,11 @@ func (s *Service) decorateWorkspaces(ctx context.Context, list []Workspace) ([]W
 		list[i].JobCount = counts[list[i].ID]
 		if route, set, contact, rerr := s.Route(&list[i]); rerr == nil {
 			list[i].Notify, list[i].NotifySet, list[i].Contact = route, set, contact
+		}
+		if c, cerr := s.chainConfig(&list[i]); cerr == nil {
+			list[i].Chains = c
+		} else {
+			list[i].Chains = (*chainYAML)(nil).config()
 		}
 		ov, _, oerr := s.AssistantOverride(ctx, list[i].ID)
 		if oerr != nil || ov.Name == nil || *ov.Name == "" {
@@ -1005,9 +1014,13 @@ func writeTrebiYAML(dir, id, name string, git bool, p Patch) error {
 			y.Contact = old.Contact
 			y.Notify = old.Notify
 			y.Connectors = old.Connectors
+			y.Agents = old.Agents
 		}
 	}
 	if err := y.applyRoute(p); err != nil {
+		return err
+	}
+	if err := y.applyChains(p.Chains); err != nil {
 		return err
 	}
 	b, err := yaml.Marshal(&y)
@@ -1129,22 +1142,27 @@ func (s *Service) writeAgentWake(ctx context.Context, b *strings.Builder, ws *Wo
 		// A fire-time re-parse is raw, so expand here too (idempotent).
 		body = job.SubstituteAgentVars(body, filepath.Dir(agent.Path), ws.Path)
 	}
+	short := strings.TrimPrefix(scope.Name, "agents/")
 	jobs := capSection(ownedIndex(rows, scope.Name), wakeIndexCap)
-	writeSection(b, "Instructions", body)
+	team := ""
+	if c, err := s.chainConfig(ws); err == nil && c.Enabled {
+		team = teamSection(teamAgents(rows), short)
+	}
+	team = strings.TrimSpace(team + "\n\n" + chainLines(opts.Chain))
+	writeSection(b, "Instructions", strings.NewReplacer("{{agent_jobs}}", jobs, "{{agent_team}}", linesBlock(team)).Replace(body))
 	if !strings.Contains(body, "{{agent_jobs}}") {
 		writeSection(b, "Your jobs", jobs)
-	} else {
-		b.Reset()
-		writeSection(b, "Instructions", strings.ReplaceAll(body, "{{agent_jobs}}", jobs))
 	}
-	short := strings.TrimPrefix(scope.Name, "agents/")
 	writeSection(b, "What you can do", strings.Join([]string{
 		"- You can read the whole workspace.",
 		"- You can create and change jobs only under agents/" + short + "/. Use `trebi job create <name> --agent " + short + "` or the MCP `job` tool.",
 		"- When a human asks for repeated work, propose a job in the conversation. Create it after the human agrees.",
-		"- You cannot change your own `email.accept`, `kit`, or `budget`.",
+		"- You cannot change your own `email.accept`, `kit`, `budget`, or `team`.",
 		"- To pass a problem up, use `agent escalate`.",
 	}, "\n"))
+	if team != "" && !strings.Contains(body, "{{agent_team}}") {
+		writeSection(b, "Your team", team)
+	}
 	if m := wakeMemory(opts.Memory); m != "" {
 		writeSection(b, "Memory", m)
 	}

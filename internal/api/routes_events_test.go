@@ -149,7 +149,7 @@ func TestConnectorDependents(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(wsPath, "agents", "triage"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wsPath, "agents", "triage", "AGENT.md"), []byte("---\nharness: fake\n---\n\nTriage.\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(wsPath, "agents", "triage", "AGENT.md"), []byte("---\ndescription: Test agent.\nharness: fake\n---\n\nTriage.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	wsID := addWorkspace(t, base, wsPath, "deps")

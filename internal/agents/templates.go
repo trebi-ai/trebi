@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/job"
@@ -20,12 +21,15 @@ var embedded embed.FS
 
 // Template is the template.yaml wire shape.
 type Template struct {
-	ID          string          `json:"id" yaml:"id"`
-	Title       string          `json:"title" yaml:"title"`
-	Description string          `json:"description" yaml:"description"`
-	Icon        string          `json:"icon" yaml:"icon"`
-	Inputs      []TemplateInput `json:"inputs,omitempty" yaml:"inputs,omitempty"`
-	Jobs        []string        `json:"jobs" yaml:"jobs"`
+	ID          string `json:"id" yaml:"id"`
+	Title       string `json:"title" yaml:"title"`
+	Description string `json:"description" yaml:"description"`
+	// AgentDescription is the default description of an agent made from
+	// this template: what to ask the agent for.
+	AgentDescription string          `json:"agent_description" yaml:"agent_description"`
+	Icon             string          `json:"icon" yaml:"icon"`
+	Inputs           []TemplateInput `json:"inputs,omitempty" yaml:"inputs,omitempty"`
+	Jobs             []string        `json:"jobs" yaml:"jobs"`
 }
 
 // TemplateInput is one user-supplied template value.
@@ -90,14 +94,24 @@ type RenderOpts struct {
 	Template string
 	AgentID  string
 	Title    string
-	Accept   []string
-	Inputs   map[string]string
+	// Description overrides the template default agent description.
+	Description string
+	Accept      []string
+	Inputs      map[string]string
 }
 
 func (c *Catalog) Render(o RenderOpts) ([]File, error) {
 	id := o.Template
-	if _, ok := c.Get(id); !ok {
+	t, ok := c.Get(id)
+	if !ok {
 		return nil, fmt.Errorf("unknown template %q", id)
+	}
+	desc := strings.TrimSpace(o.Description)
+	if desc == "" {
+		desc = t.AgentDescription
+	}
+	if err := job.CheckAgentDescription(desc); err != nil {
+		return nil, err
 	}
 	var files []File
 	err := fs.WalkDir(c.fs, path.Join("templates", id), func(p string, d fs.DirEntry, err error) error {
@@ -109,7 +123,7 @@ func (c *Catalog) Render(o RenderOpts) ([]File, error) {
 			return err
 		}
 		rel := strings.TrimPrefix(p, path.Join("templates", id)+"/")
-		files = append(files, File{Rel: filepath.ToSlash(rel), Content: renderContent(string(data), o.Title, o.Accept, o.Inputs)})
+		files = append(files, File{Rel: filepath.ToSlash(rel), Content: renderContent(string(data), o.Title, desc, o.Accept, o.Inputs)})
 		return nil
 	})
 	if err != nil {
@@ -135,12 +149,13 @@ func (c *Catalog) Render(o RenderOpts) ([]File, error) {
 	return files, nil
 }
 
-func renderContent(text, title string, accept []string, inputs map[string]string) []byte {
+func renderContent(text, title, description string, accept []string, inputs map[string]string) []byte {
 	display := title
 	if display == "" {
 		display = "Agent"
 	}
 	text = strings.ReplaceAll(text, "{{agent_title}}", display)
+	text = strings.ReplaceAll(text, "{{agent_description}}", strconv.Quote(description))
 	for key, value := range inputs {
 		text = strings.ReplaceAll(text, "{{input."+key+"}}", value)
 	}

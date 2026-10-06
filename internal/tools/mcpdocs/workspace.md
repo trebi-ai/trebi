@@ -30,6 +30,9 @@ Change one workspace.
 - `id` (string, required): workspace id.
 - `name` (string, optional): new display name.
 - `git_enabled` (boolean, optional): enable or disable git tracking.
+- `contact` (string or list, optional): the workspace contact addresses; `null` inherits.
+- `notify` (list, optional): the workspace alert route; `null` inherits.
+- `chains` (object, optional): the agent chain settings in `trebi.yaml` `agents.chains`. Give only the keys to change: `enabled` (agents can ask each other; default true), `max_hops` (depth limit, 1 to 20; default 5), `max_turns` (turn limit, 1 to 500; default 20), `max_usd` (cost limit; 0, the default, is no limit), `pair_per_hour` (asks from one agent to another in one hour, 1 to 1000; default 10). A value out of range returns `validation`. The workspace row carries the resolved `chains` block.
 
 ### move
 Move the workspace folder to a new absolute path and rewrite absolute path prefixes in its files (jobs, scripts). Connector `cwd` / command / env values that point at the old path are rewritten too. Historical run rows are left alone.

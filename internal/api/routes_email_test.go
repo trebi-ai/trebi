@@ -400,7 +400,7 @@ func TestEmailSendRoute(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(wsPath, "agents", "research"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wsPath, "agents", "research", "AGENT.md"), []byte("---\n---\n\nResearch.\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(wsPath, "agents", "research", "AGENT.md"), []byte("---\ndescription: Test agent.\n---\n\nResearch.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "ellis"})
@@ -479,7 +479,7 @@ func TestEmailSendJobSendsAsOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeJobFile(t, wsPath, "agents/research/digest")
-	if err := os.WriteFile(filepath.Join(wsPath, "agents", "research", "AGENT.md"), []byte("---\n---\n\nResearch.\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(wsPath, "agents", "research", "AGENT.md"), []byte("---\ndescription: Test agent.\n---\n\nResearch.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "owned"})
@@ -678,7 +678,7 @@ func TestAgentEmailReveal(t *testing.T) {
 
 	e := startEmailAPI(t)
 	wsID := newEmailWorkspace(t, e, "ellis")
-	code, body, _ := doJSON(t, "PUT", e.base+"/v1/workspaces/"+wsID+"/agents/research", nil)
+	code, body, _ := doJSON(t, "PUT", e.base+"/v1/workspaces/"+wsID+"/agents/research", map[string]any{"description": "Market research."})
 	if code != 201 {
 		t.Fatalf("agent create: %d %v", code, body)
 	}

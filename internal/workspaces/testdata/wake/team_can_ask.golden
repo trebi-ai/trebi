@@ -1,0 +1,7 @@
+# Your team
+Other agents in this workspace. Ask one when the question is in its area.
+
+- legal: Contracts, terms, and compliance questions.
+
+To ask: `trebi agent ask <name> "<question>" --context "<facts they need>"`. Then end your turn. The reply starts your next turn.
+To pass work on with no reply: `trebi agent handoff <name> "<task>" --context "<facts>"`.

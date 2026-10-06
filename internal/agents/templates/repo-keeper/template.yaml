@@ -1,5 +1,6 @@
 id: repo-keeper
 title: Repo keeper
 description: Watch repository health and prepare safe maintenance proposals.
+agent_description: "Repository health: CI failures, stale branches, and safe maintenance."
 icon: wrench
 jobs: [ci-watch]

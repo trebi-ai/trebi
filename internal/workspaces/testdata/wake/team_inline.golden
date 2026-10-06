@@ -1,0 +1,10 @@
+# Instructions
+Ask these agents:
+Other agents in this workspace. Ask one when the question is in its area.
+
+- cfo: Invoices, vendor payments, and monthly spend.
+- legal: Contracts, terms, and compliance questions.
+
+To ask: `trebi agent ask <name> "<question>" --context "<facts they need>"`. Then end your turn. The reply starts your next turn.
+To pass work on with no reply: `trebi agent handoff <name> "<task>" --context "<facts>"`.
+End.

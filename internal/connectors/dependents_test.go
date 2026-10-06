@@ -23,7 +23,7 @@ func TestTriggerDependents(t *testing.T) {
 		"off/JOB.md":             "---\nharness: fake\ndisabled: true\ntriggers:\n  - event: email\n    match: \"true\"\n---\n\nRun.\n",
 		"paused/JOB.md":          "---\nharness: fake\ntriggers:\n  - cron: \"0 9 * * *\"\n  - event: email\n    match: \"true\"\n    disabled: true\n  - event: email\n    match: \"false\"\n---\n\nRun.\n",
 		"other/JOB.md":           "---\nharness: fake\ntriggers:\n  - event: whatsapp\n---\n\nRun.\n",
-		"agents/triage/AGENT.md": "---\nharness: fake\ntriggers:\n  - event: email\n    match: \"true\"\n---\n\nTriage.\n",
+		"agents/triage/AGENT.md": "---\ndescription: Test agent.\nharness: fake\ntriggers:\n  - event: email\n    match: \"true\"\n---\n\nTriage.\n",
 	}
 	for name, body := range files {
 		p := filepath.Join(wsPath, name)

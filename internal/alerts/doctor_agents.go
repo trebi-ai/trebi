@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -82,6 +83,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	}
 
 	ops := channelOperators{}
+	team := teamRefs{}
 	for rows.Next() {
 		var wsID, name, path, kind string
 		if err := rows.Scan(&wsID, &name, &path, &kind); err != nil {
@@ -91,10 +93,11 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		if err != nil || parsed == nil {
 			continue
 		}
+		short := strings.TrimPrefix(name, "agents/")
 		if kind == "agent" {
 			ops.add(wsID, name, parsed.Triggers, defs, false)
+			team.add(wsID, short, parsed.Team)
 		}
-		short := strings.TrimPrefix(name, "agents/")
 		findings = append(findings, kitRefFindings(wsID, short, parsed, skillNames, envsets)...)
 		if actions != nil {
 			spec := *parsed
@@ -104,7 +107,44 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	}
 	_ = rows.Err()
 	ops.addAssistants(db, defs)
+	findings = append(findings, team.findings()...)
 	return append(findings, ops.findings()...)
+}
+
+// teamRefs maps workspace -> agent short name -> its team.can_ask list.
+type teamRefs map[string]map[string][]string
+
+func (t teamRefs) add(wsID, short string, team *job.TeamYAML) {
+	if t[wsID] == nil {
+		t[wsID] = map[string][]string{}
+	}
+	if team != nil && team.CanAsk != nil {
+		t[wsID][short] = team.CanAsk
+	} else {
+		t[wsID][short] = nil
+	}
+}
+
+// findings reports team.can_ask names with no agent in the workspace. It is
+// a finding, not a parse error, because an agent can be deleted later.
+func (t teamRefs) findings() []DoctorFinding {
+	var out []DoctorFinding
+	for wsID, agents := range t {
+		for short, canAsk := range agents {
+			for _, name := range canAsk {
+				if _, ok := agents[name]; ok {
+					continue
+				}
+				out = append(out, DoctorFinding{
+					ID:       "agent-team-" + wsID + "-" + short + "-" + name,
+					Severity: "warn", Code: "agent_team_unknown",
+					Message: fmt.Sprintf("agent %s lists %s in team.can_ask, but the workspace has no agent %s", short, name, name),
+				})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // channelOperators maps workspace -> channel connector -> operators whose

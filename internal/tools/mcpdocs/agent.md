@@ -18,14 +18,22 @@ with a letter or a digit. `create` is the upsert: PUT on a new name creates
 the agent. With no `content` and no `prompt`, the daemon seeds a default
 document and a memory ledger.
 
+Each agent has a `description`: one line, up to 200 characters, that says
+what to ask the agent for. Other agents and people read it to pick the agent
+to ask. An AGENT.md with no description has a parse error and does not wake.
+The `team` key limits the agents that this agent can ask: `can_ask` (a list of
+agent names; absent is every agent of the workspace) and `chains` (false keeps
+the agent out of all asks).
+
 The `harness` field names the agent tool that answers. Set it only to a
 harness that the `harness` tool `list` action reports with `auth_ok: true`.
 
 ## Actions
 
 ### list
-List agents across every workspace; filter with `workspace`. Each row carries `job_count`, `jobs`, status, cost, and open work counts.
+List agents across every workspace; filter with `workspace`. Each row carries `description`, `team` (`can_ask`, `chains`), `job_count`, `jobs`, status, cost, and open work counts.
 - `workspace` (string, optional): workspace id or name filter.
+- `for` (string, optional): words; keep the agents whose name, title, or description has one of them. Case does not matter.
 
 ### show
 Read one agent. The response carries `name`, `index_name`, the document fields, `memory`, `disabled`, `job_count`, and `jobs`.
@@ -46,7 +54,9 @@ Create one agent. Give `prompt` and the daemon composes the document, or give `c
 - `prompt` (string, optional): instruction body.
 - `content` (string, optional): full AGENT.md text with front matter; it wins over every structured field.
 - `harness` (string, optional): agent tool that runs the agent; default `claude`.
-- `description` (string, optional): description text.
+- `description` (string, required unless `content` or `template` gives it): one line, up to 200 characters, that says what to ask this agent for. A missing value returns `validation` with `details.field: description`.
+- `title` (string, optional): display title.
+- `template` (string, optional): template id from `templates`; the template gives a default description.
 - `cron` (string, optional): cron trigger, for example `0 3 * * *`.
 - `every` (string, optional): interval trigger, for example `15m`.
 - `event` (string, optional): event trigger; the connector name.
@@ -71,7 +81,7 @@ Change front matter fields of one agent. For an agent run patching itself, the r
 - `disabled` (boolean, optional): stop or restart automatic scheduling.
 - `harness` (string, optional): agent tool that runs the agent.
 - `title` (string, optional): display title.
-- `description` (string, optional): description text.
+- `description` (string, optional): one line, up to 200 characters, that says what to ask this agent for.
 - `working_dir` (string, optional): run directory.
 - `envset` (string or list, optional): environment set name, or a list of names applied in order.
 - `connectors` (list, optional): connector names for the agent's own runs. A list that is not empty replaces the kit list; `[]` clears it.

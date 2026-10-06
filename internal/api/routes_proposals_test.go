@@ -18,10 +18,10 @@ func TestAgentMarkdownProposals(t *testing.T) {
 	insertAgentCaller(t, st, wsID, "cmo", live, "running")
 
 	agentPath := filepath.Join(wsDir, "agents", "cmo", "AGENT.md")
-	next := "---\ntitle: CMO\nemail:\n  accept:\n    - \"ops@example.com\"\n---\n\nRun growth safely.\n"
+	next := "---\ntitle: CMO\ndescription: Growth.\nemail:\n  accept:\n    - \"ops@example.com\"\n---\n\nRun growth safely.\n"
 
 	// Three write paths create proposals. Files and agent PUT/PATCH never write.
-	code, body := doScoped(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/agents/cmo/AGENT.md", live, map[string]any{"content": next})
+	code, body, _ := doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/agents/cmo/AGENT.md", map[string]string{"X-Trebi-Run-Token": live}, []byte(next))
 	if code != http.StatusAccepted || body["proposal_id"] == "" {
 		t.Fatalf("files proposal: %d %v", code, body)
 	}

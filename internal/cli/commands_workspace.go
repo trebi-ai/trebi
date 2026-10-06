@@ -97,10 +97,15 @@ func workspaceCommand() *cli.Command {
 			},
 			{
 				Name:      "set",
-				Usage:     "update workspace name, git_enabled, contact, or notify route",
+				Usage:     "update workspace name, git_enabled, contact, notify route, or agent chain limits",
 				ArgsUsage: "<id>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "name", Usage: "display name"},
+					&cli.BoolFlag{Name: "chains", Usage: "agents can ask each other (--chains=false turns it off)"},
+					&cli.IntFlag{Name: "chain-max-hops", Usage: "chain depth limit, 1 to 20"},
+					&cli.IntFlag{Name: "chain-max-turns", Usage: "chain turn limit, 1 to 500"},
+					&cli.FloatFlag{Name: "chain-max-usd", Usage: "chain cost limit in USD; 0 is no limit"},
+					&cli.IntFlag{Name: "chain-pair-per-hour", Usage: "asks from one agent to another in one hour, 1 to 1000"},
 					&cli.BoolFlag{Name: "git-enabled", Usage: "write git_enabled to trebi.yaml"},
 					&cli.StringFlag{Name: "contact", Usage: `contact address, JSON list, or null to inherit (e.g. '["ops@acme.com","admins"]')`},
 					&cli.StringFlag{Name: "notify", Usage: `notify route as JSON, or null to inherit (e.g. '[{"via":"email","to":"contact"}]')`},
@@ -296,8 +301,23 @@ func runWorkspaceSet(_ context.Context, c *cli.Command) error {
 			route[k] = patchValue(k, c.String(k))
 		}
 	}
+	chains := map[string]any{}
+	if c.IsSet("chains") {
+		chains["enabled"] = c.Bool("chains")
+	}
+	for flag, key := range map[string]string{"chain-max-hops": "max_hops", "chain-max-turns": "max_turns", "chain-pair-per-hour": "pair_per_hour"} {
+		if c.IsSet(flag) {
+			chains[key] = c.Int(flag)
+		}
+	}
+	if c.IsSet("chain-max-usd") {
+		chains["max_usd"] = c.Float("chain-max-usd")
+	}
+	if len(chains) > 0 {
+		route["chains"] = chains
+	}
 	if !c.IsSet("name") && !c.IsSet("git-enabled") && len(route) == 0 {
-		return fmt.Errorf("set --name, --git-enabled, --contact, or --notify")
+		return fmt.Errorf("set --name, --git-enabled, --contact, --notify, or a --chain flag")
 	}
 	var name *string
 	var git *bool

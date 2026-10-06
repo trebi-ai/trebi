@@ -6,6 +6,7 @@ import (
 	"net/mail"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -74,6 +75,23 @@ type KitYAML struct {
 type BudgetYAML struct {
 	MonthlyUSD float64 `yaml:"monthly_usd,omitempty"`
 	OnExceed   string  `yaml:"on_exceed,omitempty"` // pause | alert; empty is pause
+}
+
+// TeamYAML limits which agents an agent may ask. A nil CanAsk is every
+// agent of the workspace; Chains false keeps the agent out of all chains.
+type TeamYAML struct {
+	CanAsk []string `yaml:"can_ask,omitempty" json:"can_ask,omitempty"`
+	Chains *bool    `yaml:"chains,omitempty" json:"chains,omitempty"`
+}
+
+// InChains reports whether the agent asks and takes asks. The default is true.
+func (t *TeamYAML) InChains() bool {
+	return t == nil || t.Chains == nil || *t.Chains
+}
+
+// Allows reports whether the agent may ask the agent with this short name.
+func (t *TeamYAML) Allows(name string) bool {
+	return t == nil || t.CanAsk == nil || slices.Contains(t.CanAsk, name)
 }
 
 // ReportYAML configures the optional recurring portfolio report.

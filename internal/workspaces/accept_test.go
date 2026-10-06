@@ -15,7 +15,7 @@ func TestEmailStyle(t *testing.T) {
 	ctx := context.Background()
 	svc := workspaces.New(openTest(t))
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\nemail:\n  style:\n    accent: \"#0f766e\"\n---\n\nGrow.\n")
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\ndescription: Test agent.\nemail:\n  style:\n    accent: \"#0f766e\"\n---\n\nGrow.\n")
 	ws, err := svc.Add(ctx, root, "demo")
 	if err != nil {
 		t.Fatal(err)

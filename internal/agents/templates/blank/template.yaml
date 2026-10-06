@@ -1,5 +1,6 @@
 id: blank
 title: Blank agent
 description: Start from an empty instruction body.
+agent_description: "General help. Edit this line to say what to ask this agent for."
 icon: plus
 jobs: []

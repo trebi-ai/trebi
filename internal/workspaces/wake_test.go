@@ -2,6 +2,7 @@ package workspaces_test
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,7 +44,7 @@ func TestComposeAgentWake(t *testing.T) {
 			files: map[string]string{
 				"TREBI.md":               "---\nharness: claude\n---\n\nWorkspace.\n",
 				"alpha/JOB.md":           jobMD,
-				"agents/cmo/AGENT.md":    "---\nharness: codex\n---\n\nLead growth from {{agent_dir}}.\n",
+				"agents/cmo/AGENT.md":    "---\ndescription: Test agent.\nharness: codex\n---\n\nLead growth from {{agent_dir}}.\n",
 				"agents/cmo/duty/JOB.md": jobMD,
 				"agents/cmo/MEMORY.md":   memoryMD,
 			},
@@ -61,7 +62,7 @@ func TestComposeAgentWake(t *testing.T) {
 		{
 			name: "body override still expands vars",
 			files: map[string]string{
-				"agents/cmo/AGENT.md":    "---\n---\n\nFile body.\n",
+				"agents/cmo/AGENT.md":    "---\ndescription: Test agent.\n---\n\nFile body.\n",
 				"agents/cmo/duty/JOB.md": jobMD,
 			},
 			opts:    runs.WakeOpts{Body: "Raw {{agent_dir}} body."},
@@ -71,7 +72,7 @@ func TestComposeAgentWake(t *testing.T) {
 		{
 			name: "inline agent_jobs",
 			files: map[string]string{
-				"agents/cmo/AGENT.md":    "---\n---\n\nDuties:\n{{agent_jobs}}\nEnd.\n",
+				"agents/cmo/AGENT.md":    "---\ndescription: Test agent.\n---\n\nDuties:\n{{agent_jobs}}\nEnd.\n",
 				"agents/cmo/duty/JOB.md": jobMD,
 			},
 			want:    []string{"Duties:", "- agents/cmo/duty kind=job", "End."},
@@ -100,7 +101,7 @@ func TestComposeAgentWake(t *testing.T) {
 
 func TestComposeWakeTruncatesHugeIndex(t *testing.T) {
 	t.Parallel()
-	files := map[string]string{"agents/cmo/AGENT.md": "---\n---\n\nLead.\n"}
+	files := map[string]string{"agents/cmo/AGENT.md": "---\ndescription: Test agent.\n---\n\nLead.\n"}
 	for i := 0; i < 250; i++ {
 		files[fmt.Sprintf("agents/cmo/duty%03d/JOB.md", i)] = jobMD
 	}
@@ -194,7 +195,7 @@ func (f *fakeBriefer) Brief(_ context.Context, o state.Owner) (string, error) {
 func TestComposeAgentWakeState(t *testing.T) {
 	t.Parallel()
 	svc, wsID, _ := wakeFixture(t, map[string]string{
-		"agents/cmo/AGENT.md": "---\nstate:\n  reported:\n    description: Sent items.\n---\n\nLead.\n",
+		"agents/cmo/AGENT.md": "---\ndescription: Test agent.\nstate:\n  reported:\n    description: Sent items.\n---\n\nLead.\n",
 	})
 	b := &fakeBriefer{}
 	svc.SetStateBriefer(b)
@@ -211,4 +212,95 @@ func TestComposeAgentWakeState(t *testing.T) {
 	if !strings.HasPrefix(b.got.ID, "agt_") || b.got.WorkspaceID != wsID || b.got.Collections["reported"].Description != "Sent items." {
 		t.Fatalf("owner = %+v", b.got)
 	}
+}
+
+var updateGolden = flag.Bool("update", false, "rewrite the golden files")
+
+func TestComposeWakeTeam(t *testing.T) {
+	t.Parallel()
+	team := map[string]string{
+		"agents/cmo/AGENT.md":      "---\ndescription: Growth plans.\n---\n\nLead growth.\n",
+		"agents/cfo/AGENT.md":      "---\ndescription: Invoices, vendor payments, and monthly spend.\n---\n\nMoney.\n",
+		"agents/legal/AGENT.md":    "---\ndescription: Contracts, terms, and compliance questions.\n---\n\nLaw.\n",
+		"agents/off/AGENT.md":      "---\ndescription: Disabled.\ndisabled: true\n---\n\nOff.\n",
+		"agents/broken/AGENT.md":   "---\n---\n\nNo description.\n",
+		"agents/private/AGENT.md":  "---\ndescription: Keeps to itself.\nteam:\n  chains: false\n---\n\nAlone.\n",
+		"agents/cmo/duty/JOB.md":   jobMD,
+		"agents/legal/MEMORY.md":   memoryMD,
+		"agents/cfo/report/JOB.md": jobMD,
+	}
+	with := func(extra map[string]string) map[string]string {
+		out := map[string]string{}
+		for k, v := range team {
+			out[k] = v
+		}
+		for k, v := range extra {
+			out[k] = v
+		}
+		return out
+	}
+	cases := []struct {
+		name    string
+		files   map[string]string
+		opts    runs.WakeOpts
+		chains  *workspaces.ChainPatch
+		section string // "" compares the whole prompt is free of a team section
+	}{
+		{name: "team", files: team, section: "# Your team"},
+		{name: "team_can_ask", files: with(map[string]string{"agents/cmo/AGENT.md": "---\ndescription: Growth plans.\nteam:\n  can_ask: [legal]\n---\n\nLead growth.\n"}), section: "# Your team"},
+		{name: "team_chain", files: team, section: "# Your team", opts: runs.WakeOpts{Chain: &runs.WakeChain{Depth: 2, MaxHops: 5, Turns: 7, MaxTurns: 20, Waiting: []string{"ceo", "cfo"}}}},
+		{name: "team_inline", files: with(map[string]string{"agents/cmo/AGENT.md": "---\ndescription: Growth plans.\n---\n\nAsk these agents:\n{{agent_team}}\nEnd.\n"}), section: "# Instructions"},
+		{name: "team_off", files: team, chains: &workspaces.ChainPatch{Enabled: new(false)}},
+		{name: "team_self_off", files: with(map[string]string{"agents/cmo/AGENT.md": "---\ndescription: Growth plans.\nteam:\n  chains: false\n---\n\nLead growth.\n"})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, wsID, _ := wakeFixture(t, tc.files)
+			if tc.chains != nil {
+				if _, err := svc.Patch(context.Background(), wsID, workspaces.Patch{Chains: tc.chains}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{WorkspaceID: wsID, Kind: "agent", Name: "agents/cmo"}, tc.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.section == "" {
+				assertWake(t, got, nil, []string{"# Your team", "trebi agent ask"})
+				return
+			}
+			assertWake(t, got, nil, []string{"broken", "off:", "private", "{{agent_team}}", "- cmo:"})
+			body := wakeSection(got, tc.section)
+			golden := filepath.Join("testdata", "wake", tc.name+".golden")
+			if *updateGolden {
+				if err := os.MkdirAll(filepath.Dir(golden), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(golden, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, err := os.ReadFile(golden)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body != string(want) {
+				t.Fatalf("%s section:\n%s\nwant:\n%s", tc.section, body, want)
+			}
+		})
+	}
+}
+
+// wakeSection returns one "# Title" section of a wake prompt, up to the next.
+func wakeSection(prompt, title string) string {
+	i := strings.Index(prompt, title+"\n")
+	if i < 0 {
+		return ""
+	}
+	rest := prompt[i:]
+	if j := strings.Index(rest[len(title):], "\n# "); j >= 0 {
+		rest = rest[:len(title)+j]
+	}
+	return strings.TrimSpace(rest) + "\n"
 }

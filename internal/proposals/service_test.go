@@ -56,8 +56,8 @@ func (fakeIndex) JobByName(_ context.Context, ws, name string) (*workspaces.JobR
 
 const agentID = "agt_0000000001"
 
-const baseAgent = "---\nid: " + agentID + "\ntitle: Research\nemail:\n  accept: []\n---\n\nRead only.\n"
-const nextAgent = "---\nid: " + agentID + "\ntitle: Research\nemail:\n  accept:\n    - \"ops@example.com\"\n---\n\nRead less.\n"
+const baseAgent = "---\nid: " + agentID + "\ntitle: Research\ndescription: Market research.\nemail:\n  accept: []\n---\n\nRead only.\n"
+const nextAgent = "---\nid: " + agentID + "\ntitle: Research\ndescription: Market research.\nemail:\n  accept:\n    - \"ops@example.com\"\n---\n\nRead less.\n"
 
 func seedFile(t *testing.T, dir, content string) string {
 	t.Helper()
@@ -127,7 +127,7 @@ func TestProposalLifecycle(t *testing.T) {
 		t.Fatalf("applied decide err=%v", err)
 	}
 
-	denied, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "agents/research", RunID: "run3", Proposed: []byte("---\n---\n\nchanged\n")})
+	denied, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "agents/research", RunID: "run3", Proposed: []byte("---\ndescription: Changed.\n---\n\nchanged\n")})
 	if err != nil {
 		t.Fatal(err)
 	}

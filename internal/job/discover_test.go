@@ -60,7 +60,7 @@ func TestDiscoverValidAgent(t *testing.T) {
 	root := t.TempDir()
 	writeJob(t, filepath.Join(root, "a"))
 	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"),
-		"---\nname: cmo\nharness: codex\n---\n\nLead growth.\n")
+		"---\nname: cmo\nharness: codex\ndescription: Growth plans.\n---\n\nLead growth.\n")
 	writeJob(t, filepath.Join(root, "agents", "cmo", "duty"))
 
 	disc, err := job.Discover(root)
@@ -193,7 +193,7 @@ func TestDiscoverDuplicateAgentNames(t *testing.T) {
 	// case-sensitive disk. APFS here is case-insensitive, so this covers
 	// the clean single-agent path only.
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\n---\n\nA.\n")
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\ndescription: Growth.\n---\n\nA.\n")
 	disc, err := job.Discover(root)
 	if err != nil {
 		t.Fatal(err)
@@ -488,5 +488,47 @@ func TestLayoutIssueSeverity(t *testing.T) {
 		if iss.Severity() != want {
 			t.Errorf("%s severity=%q want %q", code, iss.Severity(), want)
 		}
+	}
+}
+
+func TestAgentDescriptionRequired(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("x", 201)
+	for _, tc := range []struct {
+		name, fm, want string
+	}{
+		{"missing", "", "description is required"},
+		{"blank", "description: \"  \"\n", "description is required"},
+		{"newline", "description: \"a\\nb\"\n", "one line"},
+		{"long", "description: " + long + "\n", "longer than 200"},
+		{"bad team", "description: Ok.\nteam:\n  can_ask: [Bad]\n", "team.can_ask"},
+		{"ok", "description: Invoices.\nteam:\n  can_ask: [cfo]\n  chains: false\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\n"+tc.fm+"---\n\nA.\n")
+			disc, err := job.Discover(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := disc.Agents[0].ParseError
+			if (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
+				t.Fatalf("parse_error=%q want %q", got, tc.want)
+			}
+			parsed, _ := job.ParseBytes("agents/cmo/AGENT.md", []byte("---\n"+tc.fm+"---\n\nA.\n"))
+			if err := job.ValidateAgent(parsed, "cmo"); (err == nil) != (tc.want == "") {
+				t.Fatalf("ValidateAgent err=%v want %q", err, tc.want)
+			}
+		})
+	}
+	root := t.TempDir()
+	writeJob(t, filepath.Join(root, "a"))
+	disc, err := job.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disc.Jobs[0].ParseError != "" {
+		t.Fatalf("job without description: %q", disc.Jobs[0].ParseError)
 	}
 }

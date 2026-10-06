@@ -1,6 +1,7 @@
 id: research
 title: Research
 description: Track competitors and prepare a weekly brief.
+agent_description: "Competitor and topic research, and the weekly brief."
 icon: search
 inputs:
   - key: competitors

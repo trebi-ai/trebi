@@ -1,5 +1,6 @@
 id: reporter
 title: Reporter
 description: Produce a scheduled status digest.
+agent_description: "Status digests and summaries of recent work."
 icon: newspaper
 jobs: [daily-digest]

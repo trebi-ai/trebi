@@ -51,7 +51,7 @@ func TestBudgetGateExceedsAndAlerts(t *testing.T) {
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte("---\nbudget:\n  monthly_usd: 100\n  on_exceed: pause\n---\n\nRun.\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte("---\ndescription: Test agent.\nbudget:\n  monthly_usd: 100\n  on_exceed: pause\n---\n\nRun.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,?,?)`, root, time.Now().UTC(), time.Now().UTC()); err != nil {

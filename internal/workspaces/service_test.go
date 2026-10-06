@@ -185,7 +185,7 @@ func TestRebuildIndexAgents(t *testing.T) {
 	svc := workspaces.New(st)
 
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\nharness: codex\n---\n\nLead growth.\n")
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\ndescription: Test agent.\nharness: codex\n---\n\nLead growth.\n")
 	writeFile(t, filepath.Join(root, "agents", "cmo", "duty", "JOB.md"), jobMD)
 
 	ws, err := svc.Add(ctx, root, "demo")
@@ -223,7 +223,7 @@ func TestRebuildIndexAgents(t *testing.T) {
 
 	// Edit the agent file and keep its ID: agent.updated only, never job.updated.
 	seq := mustSeq(t, st)
-	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\nid: "+agentID+"\nharness: codex\n---\n\nLead all growth.\n")
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\ndescription: Test agent.\nid: "+agentID+"\nharness: codex\n---\n\nLead all growth.\n")
 	if err := svc.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestRebuildIndexDisabledAgentInactive(t *testing.T) {
 	svc := workspaces.New(st)
 
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\ndisabled: true\n---\n\nLead growth.\n")
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\ndescription: Test agent.\ndisabled: true\n---\n\nLead growth.\n")
 	ws, err := svc.Add(ctx, root, "demo")
 	if err != nil {
 		t.Fatal(err)

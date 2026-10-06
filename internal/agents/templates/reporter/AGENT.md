@@ -1,5 +1,6 @@
 ---
 title: {{agent_title}}
+description: {{agent_description}}
 memory: true
 email:
   accept: []

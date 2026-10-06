@@ -1,5 +1,6 @@
 id: inbox-triage
 title: Inbox triage
 description: Classify inbound mail and prepare draft replies.
+agent_description: "Inbound mail: sort it, flag what matters, and draft replies."
 icon: inbox
 jobs: []

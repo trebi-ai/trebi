@@ -39,7 +39,7 @@ func newEscalationFixture(t *testing.T) *escalationFixture {
 		t.Fatal(err)
 	}
 	files := map[string]string{
-		filepath.Join(agentDir, "AGENT.md"): "---\nharness: fake\n---\n\nKeep the repository healthy.\n",
+		filepath.Join(agentDir, "AGENT.md"): "---\ndescription: Test agent.\nharness: fake\n---\n\nKeep the repository healthy.\n",
 		filepath.Join(jobDir, "JOB.md"):     "---\nharness: fake\n---\n\nBuild the repository.\n",
 	}
 	for path, content := range files {

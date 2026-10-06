@@ -343,3 +343,41 @@ func TestDuplicateIDFinding(t *testing.T) {
 		t.Fatalf("finding %+v", f)
 	}
 }
+
+func TestAgentTeamUnknownFinding(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	dir := t.TempDir()
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
+		t.Fatal(err)
+	}
+	for i, a := range []struct{ name, md string }{
+		{"ceo", "---\ndescription: Runs the company.\nteam:\n  can_ask: [cfo, ghost]\n---\n\nLead.\n"},
+		{"cfo", "---\ndescription: Money.\n---\n\nMoney.\n"},
+	} {
+		path := filepath.Join(dir, "agents", a.name, "AGENT.md")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(a.md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES (?,'ws',?,?,'agent',1,'claude','hash',datetime())`, fmt.Sprintf("agt_000000000%d", i), "agents/"+a.name, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var found []DoctorFinding
+	for _, f := range agentKitFindings(st, nil) {
+		if f.Code == "agent_team_unknown" {
+			found = append(found, f)
+		}
+	}
+	if len(found) != 1 || !strings.Contains(found[0].Message, "ghost") {
+		t.Fatalf("team findings = %+v", found)
+	}
+}

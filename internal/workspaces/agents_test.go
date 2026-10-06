@@ -151,7 +151,7 @@ func TestDeletedJobRetires(t *testing.T) {
 func renameFixture(ctx context.Context, t *testing.T, st *store.Store) (svc *workspaces.Service, wsID, root, agentID, jobID string) {
 	t.Helper()
 	root = t.TempDir()
-	writeFile(t, filepath.Join(root, "agents/old/AGENT.md"), "---\ntitle: Research\n---\n\nResearch.\n")
+	writeFile(t, filepath.Join(root, "agents/old/AGENT.md"), "---\ndescription: Test agent.\ntitle: Research\n---\n\nResearch.\n")
 	writeFile(t, filepath.Join(root, "agents/old/brief/JOB.md"), jobMD)
 	writeFile(t, filepath.Join(root, "TREBI.md"), "---\nharness: claude\n---\n\nAssist.\n")
 	svc = workspaces.New(st)

@@ -35,6 +35,19 @@ type WakeOpts struct {
 	// as a fenced, labelled data block, never as instructions (plan
 	// 2026-09-19 A.11). Nil = no inbound block.
 	Untrusted *UntrustedMessage
+	// Chain is set when the turn is part of an agent chain (plan
+	// 2026-10-06 A.4). Nil = no chain lines.
+	Chain *WakeChain
+}
+
+// WakeChain is the chain frame of one agent turn for its wake prompt.
+// Waiting lists the agents up the path, which this agent must not ask.
+type WakeChain struct {
+	Depth    int
+	MaxHops  int
+	Turns    int
+	MaxTurns int
+	Waiting  []string
 }
 
 // UntrustedAttachment lists one inbound attachment by metadata only. The

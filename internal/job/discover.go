@@ -3,12 +3,14 @@ package job
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // Discovery is the result of one workspace walk.
@@ -198,6 +200,11 @@ func (dv *discovery) agent(path string) *Job {
 		j.ParseError = parseErr.Error()
 	}
 	dv.validateAgent(j, rel, dir)
+	if parseErr == nil {
+		if err := j.agentFieldsError(); err != nil {
+			j.ParseError = JoinParseError(j.ParseError, err.Error())
+		}
+	}
 	j.Prompt = SubstituteAgentVars(j.Prompt, dir, dv.workspacePath)
 	if dv.seenAgents[strings.ToLower(j.Name)] {
 		j.ParseError = JoinParseError(j.ParseError, fmt.Sprintf("duplicate agent name %s", j.Name))
@@ -226,6 +233,43 @@ func ValidateAgent(j *Job, id string) error {
 	}
 	if j.ParseError != "" {
 		return fmt.Errorf("%s", j.ParseError)
+	}
+	return j.agentFieldsError()
+}
+
+// MaxAgentDescription bounds the one-line agent description in runes.
+const MaxAgentDescription = 200
+
+// ErrAgentDescription marks a missing or bad agent description.
+var ErrAgentDescription = errors.New("description")
+
+// CheckAgentDescription applies the agent description rules: one line, 1 to
+// MaxAgentDescription runes after trim.
+func CheckAgentDescription(desc string) error {
+	d := strings.TrimSpace(desc)
+	switch {
+	case d == "":
+		return fmt.Errorf("%w is required: say in one line what to ask this agent for", ErrAgentDescription)
+	case strings.ContainsAny(d, "\r\n"):
+		return fmt.Errorf("%w must be one line", ErrAgentDescription)
+	case utf8.RuneCountInString(d) > MaxAgentDescription:
+		return fmt.Errorf("%w is longer than %d characters", ErrAgentDescription, MaxAgentDescription)
+	}
+	return nil
+}
+
+// agentFieldsError checks the AGENT.md keys that other agents read: the
+// one-line description and the team names.
+func (j *Job) agentFieldsError() error {
+	if err := CheckAgentDescription(j.Description); err != nil {
+		return err
+	}
+	if j.Team != nil {
+		for _, name := range j.Team.CanAsk {
+			if !agentNameRe.MatchString(name) {
+				return fmt.Errorf("team.can_ask: %q must match [a-z0-9][a-z0-9-]*", name)
+			}
+		}
 	}
 	return nil
 }
@@ -259,6 +303,7 @@ var (
 		"workspace_dir": true,
 		"agent_dir":     true,
 		"agent_jobs":    true,
+		"agent_team":    true,
 	}
 	inputPlaceholderRe = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
 	fencedCodeRe       = regexp.MustCompile("(?s)```.*?```|~~~.*?~~~")
@@ -287,7 +332,7 @@ func DiscoverInputKeys(body string) []string {
 }
 
 // SubstituteAgentVars expands the AGENT.md body placeholders (C.3).
-// {{agent_jobs}} is wake-time (Part F) and stays literal here.
+// {{agent_jobs}} and {{agent_team}} are wake-time and stay literal here.
 func SubstituteAgentVars(body, agentDir, workspaceDir string) string {
 	return strings.NewReplacer("{{agent_dir}}", agentDir, "{{workspace_dir}}", workspaceDir).Replace(body)
 }

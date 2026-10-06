@@ -285,7 +285,7 @@ func TestRunsListCursorPaginationIsStable(t *testing.T) {
 func writeAgentFixture(t *testing.T, wsDir string) {
 	t.Helper()
 	files := map[string]string{
-		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):       "---\nharness: fake\n---\n\nRun growth.\n",
+		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):       "---\ndescription: Test agent.\nharness: fake\n---\n\nRun growth.\n",
 		filepath.Join(wsDir, "agents", "cmo", "duty", "JOB.md"): "---\nharness: fake\n---\n\nDo the duty.\n",
 		filepath.Join(wsDir, "alpha", "JOB.md"):                 "---\nharness: fake\n---\n\nDo alpha.\n",
 	}

@@ -398,7 +398,7 @@ func TestJobKitSourceJobOverride(t *testing.T) {
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
 	files := map[string]string{
-		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):       "---\nharness: fake\nkit:\n  skills: [a]\n  connectors: [c]\n  envset: [e]\n---\n\nRun growth.\n",
+		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):       "---\ndescription: Test agent.\nharness: fake\nkit:\n  skills: [a]\n  connectors: [c]\n  envset: [e]\n---\n\nRun growth.\n",
 		filepath.Join(wsDir, "agents", "cmo", "duty", "JOB.md"): "---\nharness: fake\nskills: [b]\nconnectors: [d]\n---\n\nDo the duty.\n",
 	}
 	for path, md := range files {

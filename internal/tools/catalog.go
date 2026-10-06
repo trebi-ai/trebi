@@ -1218,9 +1218,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				route := in.pick("contact", "notify")
+				route := in.pick("contact", "notify", "chains")
 				if name == nil && gitEnabled == nil && len(route) == 0 {
-					return request.HTTPRequest{}, fmt.Errorf("give at least one of name, git_enabled, contact, notify")
+					return request.HTTPRequest{}, fmt.Errorf("give at least one of name, git_enabled, contact, notify, chains")
 				}
 				return request.BuildWorkspacePatch(id, name, gitEnabled, route), nil
 			}),
@@ -1411,12 +1411,12 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 		},
 
 		"agent": {
-			"list": act("GET /v1/agents", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
-				ws, err := in.str("workspace")
+			"list": act("GET /v1/agents", Input{"workspace": "ws1", "for": "invoices"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("workspace", "for")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildAgentListAllPath(ws)), nil
+				return mcpGet(request.BuildAgentListAllPath(v[0], v[1])), nil
 			}),
 			"templates": act("GET /v1/agent-templates", Input{}, func(in Input) (request.HTTPRequest, error) {
 				return mcpGet("/v1/agent-templates"), nil
@@ -1429,8 +1429,8 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				return mcpGet(request.BuildAgentGetPath(v[0], v[1])), nil
 			}),
 			"create": actSamples("PUT /v1/workspaces/{id}/agents/{name}",
-				Input{"workspace": "ws1", "name": "cmo", "prompt": "Run growth."},
-				[]Input{{"workspace": "ws1", "name": "scout", "prompt": "Watch the feed.", "event": "mail"}},
+				Input{"workspace": "ws1", "name": "cmo", "prompt": "Run growth.", "description": "Growth plans and campaigns."},
+				[]Input{{"workspace": "ws1", "name": "scout", "prompt": "Watch the feed.", "description": "News in the feed.", "event": "mail"}},
 				func(in Input) (request.HTTPRequest, error) {
 					spec, err := in.agentSpec()
 					if err != nil {

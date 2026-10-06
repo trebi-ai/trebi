@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,14 @@ func TestAgentPutLifecycle(t *testing.T) {
 	wsID := addWorkspace(t, base, wsDir, "agent-crud")
 
 	code, body, _ := doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
+	if code != 400 || errCode(body) != "validation" || errDetails(body)["field"] != "description" {
+		t.Fatalf("create with no description: %d %v want 400 details.field description", code, body)
+	}
+	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", map[string]any{"description": "a\nb"})
+	if code != 400 || errDetails(body)["field"] != "description" {
+		t.Fatalf("two-line description: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", map[string]any{"description": "Growth plans and campaigns."})
 	if code != 201 {
 		t.Fatalf("bare create: %d %v", code, body)
 	}
@@ -37,7 +46,7 @@ func TestAgentPutLifecycle(t *testing.T) {
 
 	// Full replace on the existing agent; empty body must not wipe it.
 	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", map[string]any{
-		"content": "---\nharness: fake\nmemory: true\n---\n\nRun growth.\n",
+		"content": "---\ndescription: Test agent.\nharness: fake\nmemory: true\n---\n\nRun growth.\n",
 	})
 	if code != 200 {
 		t.Fatalf("full replace: %d %v", code, body)
@@ -64,6 +73,22 @@ func TestAgentPutLifecycle(t *testing.T) {
 	row, _ := items[0].(map[string]any)
 	if row["name"] != "cmo" || row["index_name"] != "agents/cmo" || row["memory"] != true {
 		t.Fatalf("list row: %v", row)
+	}
+	if row["description"] != "Test agent." {
+		t.Fatalf("list row description: %v", row["description"])
+	}
+	if team, _ := row["team"].(map[string]any); team["chains"] != true || team["can_ask"] != nil {
+		t.Fatalf("list row team: %v", row["team"])
+	}
+	for query, want := range map[string]int{"test": 1, "TEST ledger": 1, "invoices": 0, "": 1} {
+		code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents?for="+url.QueryEscape(query), nil)
+		if got, _ := body["agents"].([]any); code != 200 || len(got) != want {
+			t.Fatalf("for=%q: %d %d agents want %d", query, code, len(got), want)
+		}
+		code, body, _ = doJSON(t, "GET", base+"/v1/agents?for="+url.QueryEscape(query), nil)
+		if got, _ := body["agents"].([]any); code != 200 || len(got) != want {
+			t.Fatalf("all for=%q: %d %d agents want %d", query, code, len(got), want)
+		}
 	}
 	if _, ok := row["jobs"].([]any); ok {
 		t.Fatalf("list row carries jobs before any owned job exists: %v", row)
@@ -137,7 +162,7 @@ func TestAgentDeleteCoversPurgeAndChildren(t *testing.T) {
 
 	// Purge: recreate, then remove the whole tree.
 	code, _, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", map[string]any{
-		"content": "---\nharness: fake\n---\n\nBack again.\n",
+		"content": "---\ndescription: Test agent.\nharness: fake\n---\n\nBack again.\n",
 	})
 	if code != 201 {
 		t.Fatalf("recreate: %d", code)
@@ -217,7 +242,7 @@ func TestAgentMDTypingCoversFileJail(t *testing.T) {
 	wsID := addWorkspace(t, base, wsDir, "agent-jail")
 
 	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/alpha/files/AGENT.md?workspace="+wsID, map[string]any{
-		"content": "---\n---\n\nSneak.\n",
+		"content": "---\ndescription: Test agent.\n---\n\nSneak.\n",
 	})
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("job-scoped AGENT.md put: %d %v want 409 conflict", code, body)
@@ -236,7 +261,7 @@ func TestAgentMDTypingCoversFileJail(t *testing.T) {
 		t.Fatalf("workspace-scoped plain file: %d %v", code, body)
 	}
 	code, body, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/agents/cmo/AGENT.md", map[string]any{
-		"content": "---\nharness: fake\n---\n\nVia the file plane.\n",
+		"content": "---\ndescription: Test agent.\nharness: fake\n---\n\nVia the file plane.\n",
 	})
 	if code != 200 {
 		t.Fatalf("workspace file plane must accept AGENT.md: %d %v", code, body)
@@ -427,8 +452,8 @@ func TestAgentListRecentRuns(t *testing.T) {
 	s, base, dir := startAPI(t)
 	wsDir := t.TempDir()
 	for path, md := range map[string]string{
-		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):  "---\nharness: fake\n---\n\nRun growth.\n",
-		filepath.Join(wsDir, "agents", "beta", "AGENT.md"): "---\nharness: fake\n---\n\nBeta.\n",
+		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):  "---\ndescription: Test agent.\nharness: fake\n---\n\nRun growth.\n",
+		filepath.Join(wsDir, "agents", "beta", "AGENT.md"): "---\ndescription: Test agent.\nharness: fake\n---\n\nBeta.\n",
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -545,7 +570,7 @@ func TestAgentPayloadEnvSets(t *testing.T) {
 		}
 	}
 
-	put("---\nharness: fake\nenvset:\n  - ship\n  - watch\n---\n\nRun.\n")
+	put("---\ndescription: Test agent.\nharness: fake\nenvset:\n  - ship\n  - watch\n---\n\nRun.\n")
 	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
 	if code != 200 {
 		t.Fatalf("show: %d %v", code, body)
@@ -562,11 +587,36 @@ func TestAgentPayloadEnvSets(t *testing.T) {
 	}
 	check("list", items[0].(map[string]any), []string{"ship", "watch"}, "ship")
 
-	put("---\nharness: fake\nenvset: only\n---\n\nRun.\n")
+	put("---\ndescription: Test agent.\nharness: fake\nenvset: only\n---\n\nRun.\n")
 	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
 	check("scalar", body, []string{"only"}, "only")
 
-	put("---\nharness: fake\n---\n\nRun.\n")
+	put("---\ndescription: Test agent.\nharness: fake\n---\n\nRun.\n")
 	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
 	check("absent", body, nil, "")
+}
+
+func TestWorkspaceChainSettings(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, wsDir, "chain-settings")
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID, nil)
+	chains, _ := body["chains"].(map[string]any)
+	if code != 200 || chains["enabled"] != true || chains["max_hops"] != float64(5) || chains["max_turns"] != float64(20) || chains["pair_per_hour"] != float64(10) {
+		t.Fatalf("default chains: %d %v", code, body["chains"])
+	}
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID, map[string]any{"chains": map[string]any{"max_turns": 40, "enabled": false}})
+	chains, _ = body["chains"].(map[string]any)
+	if code != 200 || chains["enabled"] != false || chains["max_turns"] != float64(40) || chains["max_hops"] != float64(5) {
+		t.Fatalf("patch chains: %d %v", code, body)
+	}
+	data, _ := os.ReadFile(filepath.Join(wsDir, "trebi.yaml"))
+	if !strings.Contains(string(data), "max_turns: 40") || strings.Contains(string(data), "max_hops") {
+		t.Fatalf("trebi.yaml = %s", data)
+	}
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID, map[string]any{"chains": map[string]any{"max_hops": 21}})
+	if code != 400 || errCode(body) != "validation" || errDetails(body)["field"] != "chains" {
+		t.Fatalf("out of range: %d %v", code, body)
+	}
 }

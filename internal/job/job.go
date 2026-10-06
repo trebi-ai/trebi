@@ -100,6 +100,7 @@ type Frontmatter struct {
 	Kit            *KitYAML          `yaml:"kit,omitempty"`
 	Budget         *BudgetYAML       `yaml:"budget,omitempty"`
 	Report         *ReportYAML       `yaml:"report,omitempty"`
+	Team           *TeamYAML         `yaml:"team,omitempty"`
 	// Notify is the alert route; Contact is the owner address list. See
 	// internal/notify.
 	Notify  yaml.Node `yaml:"notify,omitempty"`
@@ -291,6 +292,7 @@ type Job struct {
 	LegacyKitMCP []string
 	Budget       *BudgetYAML
 	Report       *ReportYAML
+	Team         *TeamYAML
 	ParseError   string
 	Hash         string
 	Description  string
@@ -320,6 +322,9 @@ func (j *Job) ProtectedChange(next *Job) []string {
 	}
 	if !reflect.DeepEqual(j.Report, next.Report) {
 		out = append(out, "report")
+	}
+	if !reflect.DeepEqual(j.Team, next.Team) {
+		out = append(out, "team")
 	}
 	if !equalStrings(j.Contact, next.Contact) {
 		out = append(out, "contact")
@@ -777,6 +782,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		LegacyKitMCP:   legacyKitMCP(data),
 		Budget:         fm.Budget,
 		Report:         fm.Report,
+		Team:           fm.Team,
 		Hash:           hash,
 		Description:    fm.Description,
 		Notify:         route,

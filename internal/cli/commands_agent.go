@@ -36,6 +36,7 @@ func agentManageSubcommands() []*cli.Command {
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 				&cli.BoolFlag{Name: "all", Usage: "list agents across every workspace"},
+				&cli.StringFlag{Name: "for", Usage: "only agents whose name, title, or description has one of these words"},
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 			},
 			Action: func(_ context.Context, c *cli.Command) error {
@@ -54,7 +55,7 @@ func agentManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 				&cli.StringFlag{Name: "prompt", Usage: "agent body; the daemon composes the front matter"},
 				&cli.StringFlag{Name: "harness", Usage: "harness that wakes the agent"},
-				&cli.StringFlag{Name: "description", Usage: "agent description"},
+				&cli.StringFlag{Name: "description", Usage: "required: one line that says what to ask this agent for (a --template gives a default)"},
 				&cli.StringFlag{Name: "cron", Usage: "cron trigger, for example \"0 3 * * *\""},
 				&cli.StringFlag{Name: "every", Usage: "interval trigger, for example 15m"},
 				&cli.StringFlag{Name: "on", Usage: "event trigger: the connector name"},
@@ -377,12 +378,12 @@ func runAgentRename(_ context.Context, c *cli.Command) error {
 
 // agentRows collects the agents of every workspace, or of the one the want
 // filter picks. An unreachable workspace does not hide the rest.
-func agentRows(client *APIClient, want string, all bool) ([]map[string]any, error) {
+func agentRows(client *APIClient, want, forWords string, all bool) ([]map[string]any, error) {
 	if all {
 		var all struct {
 			Agents []map[string]any `json:"agents"`
 		}
-		if err := client.GetJSON(request.BuildAgentListAllPath(""), &all); err == nil {
+		if err := client.GetJSON(request.BuildAgentListAllPath("", forWords), &all); err == nil {
 			for _, a := range all.Agents {
 				a["kind"] = "agent"
 				a["workspace"] = mapStr(a, "workspace_id")
@@ -406,7 +407,7 @@ func agentRows(client *APIClient, want string, all bool) ([]map[string]any, erro
 		var body struct {
 			Agents []map[string]any `json:"agents"`
 		}
-		if err := client.GetJSON(request.BuildAgentListPath(id), &body); err != nil {
+		if err := client.GetJSON(request.BuildAgentListPath(id, forWords), &body); err != nil {
 			continue // one unreachable workspace must not hide the rest
 		}
 		for _, a := range body.Agents {
@@ -423,7 +424,7 @@ func agentRows(client *APIClient, want string, all bool) ([]map[string]any, erro
 // `trebi agent list`, "jobs" for `job list --kind agent`.
 func runListAgents(c *cli.Command, client *APIClient, jsonKey string, all bool) error {
 	w := outWriter(c)
-	rows, err := agentRows(client, workspaceFlag(c), all)
+	rows, err := agentRows(client, workspaceFlag(c), c.String("for"), all)
 	if err != nil {
 		return err
 	}
@@ -446,7 +447,7 @@ func runListAgents(c *cli.Command, client *APIClient, jsonKey string, all bool) 
 		enc.SetIndent("", "  ")
 		return enc.Encode(map[string]any{jsonKey: rows})
 	}
-	headers := []string{"Name", "Workspace", "Harness", "Active", "Jobs"}
+	headers := []string{"Name", "Description", "Workspace", "Harness", "Active", "Jobs"}
 	if c.Bool("detailed") {
 		headers = append(headers, "Path")
 	}
@@ -461,6 +462,7 @@ func runListAgents(c *cli.Command, client *APIClient, jsonKey string, all bool) 
 		}
 		r := table.Row{
 			mapStr(a, "name"),
+			dash(truncateDisplay(mapStr(a, "description"), 60)),
 			mapStr(a, "workspace", "workspace_id"),
 			dash(mapStr(a, "harness")),
 			colorStatus(w, mapStr(a, "active")),

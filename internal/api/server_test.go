@@ -711,7 +711,7 @@ func TestJobValidateText(t *testing.T) {
 		t.Fatalf("job-level allowlist: %d %v", code, body)
 	}
 
-	agentMD := "---\nharness: fake\nemail:\n  accept: [admins]\nkit:\n  connectors: [email]\n---\n\nhi\n"
+	agentMD := "---\ndescription: Test agent.\nharness: fake\nemail:\n  accept: [admins]\nkit:\n  connectors: [email]\n---\n\nhi\n"
 	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{"content": agentMD})
 	if code != 200 || body["ok"] != false {
 		t.Fatalf("operator keys in a job must fail: %d %v", code, body)

@@ -151,22 +151,23 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name       *string         `json:"name"`
-		GitEnabled *bool           `json:"git_enabled"`
-		Contact    json.RawMessage `json:"contact"`
-		Notify     json.RawMessage `json:"notify"`
+		Name       *string                `json:"name"`
+		GitEnabled *bool                  `json:"git_enabled"`
+		Contact    json.RawMessage        `json:"contact"`
+		Notify     json.RawMessage        `json:"notify"`
+		Chains     *workspaces.ChainPatch `json:"chains"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is a no-op get
 	id := r.PathValue("id")
 	if body.Name != nil && strings.TrimSpace(*body.Name) == "" {
 		body.Name = nil
 	}
-	p := workspaces.Patch{Name: body.Name, GitEnabled: body.GitEnabled}
+	p := workspaces.Patch{Name: body.Name, GitEnabled: body.GitEnabled, Chains: body.Chains}
 	if err := routePatch(&p, body.Contact, body.Notify); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	if body.Name == nil && body.GitEnabled == nil && body.Contact == nil && body.Notify == nil {
+	if body.Name == nil && body.GitEnabled == nil && body.Contact == nil && body.Notify == nil && body.Chains == nil {
 		ws, err := s.ws.Get(r.Context(), id)
 		if err != nil {
 			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
@@ -178,6 +179,10 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 	ws, err := s.ws.Patch(r.Context(), id, p)
 	if errors.Is(err, workspaces.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+		return
+	}
+	if errors.Is(err, workspaces.ErrChainLimits) {
+		writeErrDetails(w, http.StatusBadRequest, "validation", err.Error(), map[string]any{"field": "chains"})
 		return
 	}
 	if err != nil {

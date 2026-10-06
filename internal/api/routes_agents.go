@@ -203,6 +203,7 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 		}
 		list = append(list, buildAgentPayload(row, owned[row.Name], false))
 	}
+	list = filterAgentsFor(list, r.URL.Query().Get("for"))
 	s.setAgentListMetadata(r.Context(), ws.ID, rows, list, true)
 	writeJSON(w, http.StatusOK, map[string]any{"agents": list})
 }
@@ -240,6 +241,7 @@ func (s *Server) handleAgentsListAll(w http.ResponseWriter, r *http.Request) {
 			}
 			list = append(list, buildAgentPayload(row, owned[row.Name], false))
 		}
+		list = append(list[:base], filterAgentsFor(list[base:], r.URL.Query().Get("for"))...)
 		s.setAgentListMetadata(r.Context(), all[i].ID, rows, list[base:], true)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": list})
@@ -312,7 +314,7 @@ func (s *Server) handleAgentPut(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, "conflict", "agent exists")
 			return
 		}
-		rendered, err := s.templates.Render(agents.RenderOpts{Template: body.Template, AgentID: name, Title: body.Title, Accept: body.EmailAccept, Inputs: body.Inputs})
+		rendered, err := s.templates.Render(agents.RenderOpts{Template: body.Template, AgentID: name, Title: body.Title, Description: body.Description, Accept: body.EmailAccept, Inputs: body.Inputs})
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "validation", err.Error())
 			return
@@ -347,7 +349,18 @@ func (s *Server) handleAgentPut(w http.ResponseWriter, r *http.Request) {
 		// Structured identity fields seed a new agent only. Replacing an
 		// existing agent requires complete content.
 		if !exists {
-			md = seededAgentMarkdown(name, body.Title, body.EmailAccept)
+			md = seededAgentMarkdown(name, body.Title, body.Description, body.EmailAccept)
+		}
+	}
+	if !exists {
+		parsed, _ := job.ParseBytes(rel, []byte(md))
+		desc := ""
+		if parsed != nil {
+			desc = parsed.Description
+		}
+		if err := job.CheckAgentDescription(desc); err != nil {
+			writeErrDetails(w, http.StatusBadRequest, "validation", err.Error(), map[string]any{"field": "description"})
+			return
 		}
 	}
 	// An agent never rewrites its own behavior document. The full-replace
@@ -609,8 +622,9 @@ type agentPayload struct {
 	Hash              string           `json:"hash"`
 	ParseError        string           `json:"parse_error,omitempty"`
 	Prompt            string           `json:"prompt"`
-	Description       string           `json:"description,omitempty"`
+	Description       string           `json:"description"`
 	Title             string           `json:"title,omitempty"`
+	Team              agentTeam        `json:"team"`
 	EmailAccept       []string         `json:"email_accept,omitempty"`
 	Status            string           `json:"status"`
 	LastRun           *runs.RunSummary `json:"last_run,omitempty"`
@@ -649,6 +663,13 @@ type agentPayload struct {
 	EmailAddress string `json:"email_address,omitempty"`
 }
 
+// agentTeam is the team key of AGENT.md. A null can_ask is every agent of
+// the workspace.
+type agentTeam struct {
+	CanAsk []string `json:"can_ask"`
+	Chains bool     `json:"chains"`
+}
+
 type agentBudget struct {
 	MonthlyUSD float64 `json:"monthly_usd"`
 	SpentUSD   float64 `json:"spent_usd"`
@@ -674,7 +695,7 @@ func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agen
 		WorkspaceID: row.WorkspaceID, Path: row.Path,
 		Harness: row.Harness, Active: row.Active, Hash: row.Hash,
 		Triggers: []job.Trigger{}, JobCount: len(jobs), Jobs: jobs,
-		EnvSets: []string{},
+		EnvSets: []string{}, Team: agentTeam{Chains: true},
 	}
 	var j *job.Job
 	if withDocs {
@@ -706,6 +727,10 @@ func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agen
 		p.ParseError = job.JoinParseError(row.ParseError, j.ParseError)
 		p.Prompt = j.Prompt
 		p.Description = j.Description
+		p.Team = agentTeam{Chains: j.Team.InChains()}
+		if j.Team != nil {
+			p.Team.CanAsk = j.Team.CanAsk
+		}
 		p.Title = j.Title
 		if p.Title == "" {
 			p.Title = p.Name
@@ -763,12 +788,30 @@ func (b agentPutRequest) markdown() (string, error) {
 		EmailAccept: b.EmailAccept, Contact: b.Contact, Notify: b.Notify,
 	}
 	spec.On = b.On.spec()
+	// Identity fields alone (title, description, accept) seed a new agent.
 	if spec.Content == "" && spec.Prompt == "" && spec.Harness == "" &&
-		spec.Description == "" && spec.Cron == "" && spec.Every == "" && spec.On == nil &&
-		spec.Title == "" && spec.EmailAccept == nil && spec.Contact == nil && spec.Notify == nil {
+		spec.Cron == "" && spec.Every == "" && spec.On == nil &&
+		spec.Contact == nil && spec.Notify == nil {
 		return "", nil
 	}
 	return spec.Render()
+}
+
+// filterAgentsFor keeps the agents whose name, title, or description holds
+// any word of query, case-insensitive. An empty query keeps all.
+func filterAgentsFor(list []agentPayload, query string) []agentPayload {
+	words := strings.Fields(strings.ToLower(query))
+	if len(words) == 0 {
+		return list
+	}
+	out := list[:0:0]
+	for _, p := range list {
+		hay := strings.ToLower(p.Name + " " + p.Title + " " + p.Description)
+		if slices.ContainsFunc(words, func(w string) bool { return strings.Contains(hay, w) }) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // ownedJobNames groups job names by owning agent index name.
@@ -790,7 +833,7 @@ var agentNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,23}$`)
 // seededAgentMarkdown is the default AGENT.md of a bare create. It names
 // {{agent_dir}} so the agent finds its ledger from the workspace root (C.3).
 // The kit attaches email, so the agent and its jobs can send mail.
-func seededAgentMarkdown(name, title string, accept []string) string {
+func seededAgentMarkdown(name, title, description string, accept []string) string {
 	display := title
 	if display == "" {
 		display = name
@@ -798,6 +841,7 @@ func seededAgentMarkdown(name, title string, accept []string) string {
 	var b strings.Builder
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "title: %q\n", display)
+	fmt.Fprintf(&b, "description: %q\n", strings.TrimSpace(description))
 	b.WriteString("memory: true\n")
 	if len(accept) == 0 {
 		b.WriteString("email:\n")

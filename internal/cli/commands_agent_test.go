@@ -19,6 +19,7 @@ type agentTestServer struct {
 	seen      []request.HTTPRequest
 	jobsHits  int
 	agentsHit map[string]int
+	forQuery  string
 }
 
 func (a *agentTestServer) client() *APIClient {
@@ -63,6 +64,26 @@ func TestAgentListCLI(t *testing.T) {
 	}
 	if strings.Contains(out, "cmo") {
 		t.Fatalf("--workspace two leaked ws1 agents: %q", out)
+	}
+}
+
+// TestAgentListDescription: the table shows the description, and --for goes
+// to the route as the for query.
+func TestAgentListDescription(t *testing.T) {
+	a := newAgentTestServer(t)
+	out, err := runCLI(t, a.client(), "agent", "list", "--for", "growth plans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := strings.Fields(strings.ReplaceAll(strings.Split(out, "\n")[1], "│", " "))
+	if strings.Join(header, " ") != "NAME DESCRIPTION WORKSPACE HARNESS ACTIVE JOBS" {
+		t.Fatalf("header %q", out)
+	}
+	if !strings.Contains(out, "Growth plans and campaigns.") {
+		t.Fatalf("no description: %q", out)
+	}
+	if a.forQuery != "growth plans" {
+		t.Fatalf("for query = %q", a.forQuery)
 	}
 }
 
@@ -200,6 +221,7 @@ func newAgentTestServer(t *testing.T) *agentTestServer {
 		case strings.HasSuffix(r.URL.Path, "/agents"):
 			a.mu.Lock()
 			a.agentsHit[r.URL.Path]++
+			a.forQuery = r.URL.Query().Get("for")
 			a.mu.Unlock()
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"), "/agents")
 			if id == "ws2" {
@@ -209,6 +231,7 @@ func newAgentTestServer(t *testing.T) *agentTestServer {
 			_ = json.NewEncoder(w).Encode(map[string]any{"agents": []any{map[string]any{
 				"name": "cmo", "index_name": "agents/cmo", "workspace_id": "ws1",
 				"harness": "claude", "active": true, "memory": true, "job_count": 2,
+				"description": "Growth plans and campaigns.",
 			}}})
 		case strings.HasSuffix(r.URL.Path, "/wake"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "01ABC", "status": "running", "kind": "agent"})

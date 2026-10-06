@@ -20,7 +20,7 @@ func TestHumanManualRunAllowedOverBudgetWithWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := map[string]string{
-		filepath.Join(agentDir, "AGENT.md"): "---\nharness: fake\nbudget:\n  monthly_usd: 100\n  on_exceed: pause\n---\n\nKeep the repository healthy.\n",
+		filepath.Join(agentDir, "AGENT.md"): "---\ndescription: Test agent.\nharness: fake\nbudget:\n  monthly_usd: 100\n  on_exceed: pause\n---\n\nKeep the repository healthy.\n",
 		filepath.Join(jobDir, "JOB.md"):     "---\nharness: fake\n---\n\nBuild.\n",
 	}
 	for path, content := range files {
