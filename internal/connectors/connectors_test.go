@@ -169,7 +169,7 @@ func TestConnectorsSecretInputs(t *testing.T) {
 		m.Setup = &manifest.Setup{Inputs: []manifest.Input{{Name: "TOKEN", Secret: true, Required: true}}}
 		m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"gh"}}}
 	})
-	e.Inputs = map[string]string{"TOKEN": "t0k"}
+	e.Inputs = map[string]string{"TOKEN": "t0k-secret"}
 	c, err := svc.Create(ctx, e)
 	if err != nil {
 		t.Fatal(err)
@@ -178,13 +178,13 @@ func TestConnectorsSecretInputs(t *testing.T) {
 		t.Fatalf("the record keeps the literal: %+v", c.Inputs)
 	}
 	f := connectors.NewFolder(c.ID)
-	if v, err := f.Secret("TOKEN"); err != nil || v != "t0k" {
+	if v, err := f.Secret("TOKEN"); err != nil || v != "t0k-secret" {
 		t.Fatalf("owned secret %q %v", v, err)
 	}
 	if fi, err := os.Stat(filepath.Join(f.Dir(), "secrets", "TOKEN")); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("secret file %v %v", fi, err)
 	}
-	if b, _ := os.ReadFile(filepath.Join(f.Dir(), "connection.yaml")); strings.Contains(string(b), "t0k") {
+	if b, _ := os.ReadFile(filepath.Join(f.Dir(), "connection.yaml")); strings.Contains(string(b), "t0k-secret") {
 		t.Fatalf("connection.yaml holds the secret: %s", b)
 	}
 	row, _ := svc.Get("gh")
@@ -195,7 +195,7 @@ func TestConnectorsSecretInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env, missing := r.Env(); env["TOKEN"] != "t0k" || len(missing) != 0 {
+	if env, missing := r.Env(); env["TOKEN"] != "t0k-secret" || len(missing) != 0 {
 		t.Fatalf("env %v missing %v", env, missing)
 	}
 	if err := svc.Delete(ctx, "gh"); err != nil {
