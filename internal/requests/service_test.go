@@ -89,7 +89,7 @@ func (f *fakeLauncher) record(c launchCall, err error) (*runs.Run, error) {
 		next = runs.Run{ID: fmt.Sprintf("%s-next%d", c.prevID, len(f.calls)), Status: runs.StatusRunning, Reason: c.reason, PreviousRunID: c.prevID, TurnCount: 1}
 	}
 	if prev != nil {
-		next.Job, next.Workspace, next.Kind, next.SessionID, next.WorkingDir = prev.Job, prev.Workspace, prev.Kind, prev.SessionID, prev.WorkingDir
+		next.JobID, next.JobName, next.Workspace, next.Kind, next.SessionID, next.WorkingDir = prev.JobID, prev.JobName, prev.Workspace, prev.Kind, prev.SessionID, prev.WorkingDir
 		if c.path != "fresh" {
 			next.Reason, next.TurnCount = prev.Reason, prev.TurnCount+1
 		}
@@ -184,11 +184,11 @@ func (h *harness) run(t *testing.T, id string) tools.Actor {
 		t.Fatal(err)
 	}
 	h.rs.put(runs.Run{
-		ID: id, Workspace: "ws1", Job: "mail", Kind: "job", Status: runs.StatusRunning,
+		ID: id, Workspace: "ws1", JobID: "mail", JobName: "mail", Kind: "job", Status: runs.StatusRunning,
 		SessionID: "sess-" + id, Harness: "claude", Runtime: "cli", WorkingDir: wd,
 		ConversationKey: "ck", ConversationID: "cid",
 	})
-	return tools.Actor{RunID: id, Kind: "job", Job: "mail", WorkspaceID: "ws1"}
+	return tools.Actor{RunID: id, Kind: "job", JobID: "mail", Job: "mail", WorkspaceID: "ws1"}
 }
 
 func (h *harness) create(t *testing.T, actor tools.Actor, o CreateOpts) Request {
@@ -262,7 +262,7 @@ func TestCreateCopiesRunFields(t *testing.T) {
 	r := h.get(t, h.create(t, actor, CreateOpts{}).ID)
 	run, _ := h.rs.Get(context.Background(), "RUN1")
 	if r.SessionID != run.SessionID || r.WorkingDir != run.WorkingDir || r.Harness != "claude" || r.Runtime != "cli" ||
-		r.ConversationKey != "ck" || r.ConversationID != "cid" || r.Job != "mail" || r.WorkspaceID != "ws1" {
+		r.ConversationKey != "ck" || r.ConversationID != "cid" || r.JobID != "mail" || r.WorkspaceID != "ws1" {
 		t.Fatalf("row %+v", r)
 	}
 	if r.ExpiresAt == nil || !r.ExpiresAt.Equal(h.clock.now().Add(defaultExpireAfter)) {

@@ -30,7 +30,7 @@ func TestReplayUsesCapturedTrigger(t *testing.T) {
 	wsID := addWorkspace(t, base, wsDir, "replay-ws")
 
 	prev, err := s.Runs().Create(context.Background(), runs.CreateOpts{
-		WorkspaceID: wsID, Job: "greeter", Harness: "fake",
+		WorkspaceID: wsID, JobID: "greeter", JobName: "greeter", Harness: "fake",
 		Reason:        runs.ReasonTrigger,
 		PromptPreview: "STALE-PREVIEW-MUST-NOT-BE-REPLAYED",
 		Trigger:       &runs.TriggerCapture{Connector: "src", Vars: map[string]string{"x": "hello"}},
@@ -163,7 +163,7 @@ func TestAgentRetrySkipReruns(t *testing.T) {
 	wsID := addWorkspace(t, base, wsDir, "agent-retry")
 
 	prev, err := s.Runs().Create(context.Background(), runs.CreateOpts{
-		WorkspaceID: wsID, Job: "agents/cmo", Kind: runs.KindAgent,
+		WorkspaceID: wsID, JobID: "agents/cmo", JobName: "agents/cmo", Kind: runs.KindAgent,
 		Harness: "fake", Reason: runs.ReasonTrigger,
 		PromptPreview: "skipped wake",
 	})
@@ -235,7 +235,7 @@ func TestRunsListCursorPaginationIsStable(t *testing.T) {
 	const total = 7
 	for i := 0; i < total; i++ {
 		if _, err := s.Runs().Create(ctx, runs.CreateOpts{
-			WorkspaceID: "ws", Job: fmt.Sprintf("j%d", i), Harness: "fake",
+			WorkspaceID: "ws", JobID: fmt.Sprintf("j%d", i), JobName: fmt.Sprintf("j%d", i), Harness: "fake",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -302,7 +302,7 @@ func TestRunTurnsRoute(t *testing.T) {
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "fake", PromptPreview: "first"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "fake", PromptPreview: "first"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestRunTurnsRoute(t *testing.T) {
 	if err := svc.Terminate(ctx, run.ID, runs.StatusFailed, runs.EndLaunch, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "fake", PreviousRunID: run.ID}); err != nil {
+	if _, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "fake", PreviousRunID: run.ID}); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()

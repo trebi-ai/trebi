@@ -164,7 +164,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if len(agentRuns) != 1 || agentRuns[0].Job != "agents/research" {
+	if len(agentRuns) != 1 || agentRuns[0].JobName != "agents/research" {
 		t.Fatalf("agent runs = %+v", agentRuns)
 	}
 	run := agentRuns[0]
@@ -172,14 +172,14 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env1.Disposition != "routed" || env1.Agent != "research" || env1.ConversationID == "" {
+	if env1.Disposition != "routed" || env1.AgentName != "research" || env1.ConversationID == "" {
 		t.Fatalf("wake envelope = %+v", env1)
 	}
 	agentConv, err := p.cp.Conversations.Get(ctx, env1.ConversationID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agentConv.Operator != "agents/research" || agentConv.OriginChannel != conversations.ChannelEmail {
+	if agentConv.OperatorName != "research" || agentConv.OriginChannel != conversations.ChannelEmail {
 		t.Fatalf("agent conversation = %+v", agentConv)
 	}
 	if p.fw.ackCount() != 1 {

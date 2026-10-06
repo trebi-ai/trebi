@@ -128,7 +128,7 @@ func TestQueueWorkspaceScope(t *testing.T) {
 	q := dispatch.NewQueue(st)
 	ctx := t.Context()
 	for _, ws := range []string{wsA, wsB, ""} {
-		if err := q.Enqueue(ctx, &dispatch.QueueItem{Connector: "webhook", WorkspaceID: ws, Job: "j1"}); err != nil {
+		if err := q.Enqueue(ctx, &dispatch.QueueItem{Connector: "webhook", WorkspaceID: ws, JobID: "j1", JobName: "j1"}); err != nil {
 			t.Fatal(err)
 		}
 	}

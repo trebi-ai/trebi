@@ -69,7 +69,7 @@ func launchCLIJob(t *testing.T, svc *runs.Service, opts ...func(*runs.LaunchOpts
 	t.Helper()
 	lopts := runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Kind: runs.KindJob, Harness: "claude",
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Kind: runs.KindJob, Harness: "claude",
 			Reason: runs.ReasonManual, WorkingDir: t.TempDir(),
 		},
 		Prompt: "do the thing",
@@ -596,7 +596,7 @@ func TestResumeKeepsConnectors(t *testing.T) {
 	fakeBinaries(t, "claude")
 	ctx := context.Background()
 	prev, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "demo", Harness: "claude", Runtime: "cli",
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "claude", Runtime: "cli",
 		SessionID: "sess-1", Connectors: []string{"gh"},
 	})
 	if err != nil {
@@ -638,7 +638,7 @@ func parkedCLIRun(t *testing.T, svc *runs.Service) (*runs.Run, string) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	prev, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "demo", Kind: runs.KindJob, Harness: "claude", Runtime: "cli",
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Kind: runs.KindJob, Harness: "claude", Runtime: "cli",
 		SessionID: "sess-1", WorkingDir: dir, ConversationKey: "ck",
 	})
 	if err != nil {

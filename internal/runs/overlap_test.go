@@ -18,7 +18,7 @@ import (
 func TestIfRunningSkip(t *testing.T) {
 	svc, ctx := openRuns(t)
 	live, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonManual,
 		TmuxSession: "trebi-live-1",
 	})
 	if err != nil {
@@ -30,7 +30,7 @@ func TestIfRunningSkip(t *testing.T) {
 
 	r2, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
 			PromptPreview: "b",
 		},
 		Prompt: "b", IfRunning: "skip",
@@ -58,14 +58,14 @@ func TestIfRunningSkip(t *testing.T) {
 func TestIfRunningReplace(t *testing.T) {
 	svc, ctx := openRuns(t)
 	live, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "demo", Harness: "fake", TmuxSession: "trebi-live-2",
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", TmuxSession: "trebi-live-2",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	r2, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonManual,
 		},
 		Prompt: "x", IfRunning: "replace",
 		FakeCommand: []string{"sh", "-c", `echo "$TREBI_RUN_COMPLETE"`},
@@ -88,14 +88,14 @@ func TestIfRunningReplace(t *testing.T) {
 func TestIfRunningCoalesce(t *testing.T) {
 	svc, ctx := openRuns(t)
 	live, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "demo", Harness: "fake", TmuxSession: "trebi-live-3",
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", TmuxSession: "trebi-live-3",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	r2, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
 		},
 		Prompt: "coalesce me", Conversation: true, IfRunning: "skip",
 	})
@@ -128,14 +128,14 @@ func TestIfRunningCoalesce(t *testing.T) {
 func TestIfRunningBypass(t *testing.T) {
 	svc, ctx := openRuns(t)
 	_, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "demo", Harness: "fake", TmuxSession: "trebi-live-4",
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", TmuxSession: "trebi-live-4",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	r2, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonManual,
 		},
 		Prompt: "parallel", BypassOverlap: true,
 		FakeCommand: []string{"sh", "-c", `echo "$TREBI_RUN_COMPLETE"`},
@@ -164,12 +164,12 @@ func TestIfRunningBypass(t *testing.T) {
 func TestIfRunningQueueDefault(t *testing.T) {
 	svc, ctx := openRuns(t)
 	if _, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "demo", Harness: "fake", TmuxSession: "trebi-live-q",
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", TmuxSession: "trebi-live-q",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
-		CreateOpts: runs.CreateOpts{WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual},
+		CreateOpts: runs.CreateOpts{WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonManual},
 		Prompt:     "later",
 	})
 	if !errors.Is(err, runs.ErrRunActive) {
@@ -196,7 +196,7 @@ func openRuns(t *testing.T) (*runs.Service, context.Context) {
 func TestIfRunningPerConversation(t *testing.T) {
 	svc, ctx := openRuns(t)
 	if _, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "chat", Harness: "fake", Reason: runs.ReasonManual,
+		WorkspaceID: "ws", JobID: "chat", JobName: "chat", Harness: "fake", Reason: runs.ReasonManual,
 		ConversationKey: "conv-a",
 	}); err != nil {
 		t.Fatal(err)
@@ -204,7 +204,7 @@ func TestIfRunningPerConversation(t *testing.T) {
 	// A different conversation launches a second run.
 	r2, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "chat", Harness: "fake", Reason: runs.ReasonTrigger,
+			WorkspaceID: "ws", JobID: "chat", JobName: "chat", Harness: "fake", Reason: runs.ReasonTrigger,
 			ConversationKey: "conv-b",
 		},
 		Prompt: "b", IfRunning: "skip",
@@ -218,7 +218,7 @@ func TestIfRunningPerConversation(t *testing.T) {
 	}
 	// A live run of conv-b makes the next conv-b item coalesce.
 	live, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "chat", Harness: "fake", Reason: runs.ReasonManual,
+		WorkspaceID: "ws", JobID: "chat", JobName: "chat", Harness: "fake", Reason: runs.ReasonManual,
 		ConversationKey: "conv-b",
 	})
 	if err != nil {
@@ -226,7 +226,7 @@ func TestIfRunningPerConversation(t *testing.T) {
 	}
 	r3, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "chat", Harness: "fake", Reason: runs.ReasonTrigger,
+			WorkspaceID: "ws", JobID: "chat", JobName: "chat", Harness: "fake", Reason: runs.ReasonTrigger,
 			ConversationKey: "conv-b",
 		},
 		Prompt: "again", Conversation: true,
@@ -244,14 +244,14 @@ func TestIfRunningPerConversation(t *testing.T) {
 func TestIfRunningEmptyKeyMatchesOnlyUnkeyed(t *testing.T) {
 	svc, ctx := openRuns(t)
 	if _, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "mixed", Harness: "fake", Reason: runs.ReasonManual,
+		WorkspaceID: "ws", JobID: "mixed", JobName: "mixed", Harness: "fake", Reason: runs.ReasonManual,
 		ConversationKey: "conv-a",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	r2, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "mixed", Harness: "fake", Reason: runs.ReasonTrigger,
+			WorkspaceID: "ws", JobID: "mixed", JobName: "mixed", Harness: "fake", Reason: runs.ReasonTrigger,
 		},
 		Prompt: "unkeyed", IfRunning: "skip",
 		FakeCommand: []string{"sh", "-c", `echo "$TREBI_RUN_COMPLETE"`},
@@ -270,7 +270,7 @@ func TestIfRunningEmptyKeyMatchesOnlyUnkeyed(t *testing.T) {
 func TestCoalesceFindsKeyedRunPastTwentyLive(t *testing.T) {
 	svc, ctx := openRuns(t)
 	chat, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "busy", Harness: "fake", Reason: runs.ReasonManual,
+		WorkspaceID: "ws", JobID: "busy", JobName: "busy", Harness: "fake", Reason: runs.ReasonManual,
 		ConversationKey: "chat-1",
 	})
 	if err != nil {
@@ -278,14 +278,14 @@ func TestCoalesceFindsKeyedRunPastTwentyLive(t *testing.T) {
 	}
 	for i := 0; i < 25; i++ {
 		if _, err := svc.Create(ctx, runs.CreateOpts{
-			WorkspaceID: "ws", Job: "busy", Harness: "fake", Reason: runs.ReasonManual,
+			WorkspaceID: "ws", JobID: "busy", JobName: "busy", Harness: "fake", Reason: runs.ReasonManual,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	got, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "busy", Harness: "fake", Reason: runs.ReasonTrigger,
+			WorkspaceID: "ws", JobID: "busy", JobName: "busy", Harness: "fake", Reason: runs.ReasonTrigger,
 			ConversationKey: "chat-1",
 		},
 		Wake:         &runs.WakeOpts{Message: "second message"},
@@ -322,14 +322,14 @@ func TestActionErrorKeepsLiveRun(t *testing.T) {
 	svc, ctx := openRuns(t)
 	t.Setenv("TREBI_FAKE_HARNESS", "")
 	live, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "acts", Harness: "claude", Reason: runs.ReasonManual,
+		WorkspaceID: "ws", JobID: "acts", JobName: "acts", Harness: "claude", Reason: runs.ReasonManual,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, _, err = svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "acts", Harness: "claude", Reason: runs.ReasonTrigger,
+			WorkspaceID: "ws", JobID: "acts", JobName: "acts", Harness: "claude", Reason: runs.ReasonTrigger,
 		},
 		Prompt: "x", IfRunning: "replace", JobConnectors: []string{"ghost"},
 	})
@@ -376,7 +376,7 @@ func TestContinueConversation(t *testing.T) {
 				}
 			}
 			prev, err := svc.Create(ctx, runs.CreateOpts{
-				WorkspaceID: "ws", Job: "demo", Harness: tc.harness, Reason: runs.ReasonTrigger,
+				WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: tc.harness, Reason: runs.ReasonTrigger,
 				ConversationKey: "thread-1", SessionID: "sess-1", WorkingDir: t.TempDir(),
 			})
 			if err != nil {
@@ -388,7 +388,7 @@ func TestContinueConversation(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 			run, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 				CreateOpts: runs.CreateOpts{
-					WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+					WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
 					ConversationKey: "thread-1", QueueID: "q-2",
 				},
 				Prompt: "reply", Conversation: true, ContinueMS: tc.continueMS,
@@ -441,7 +441,7 @@ func TestContinueConversation(t *testing.T) {
 func TestContinueConversationCoalesces(t *testing.T) {
 	svc, ctx := openRuns(t)
 	live, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "demo", Harness: "fake", ConversationKey: "thread-1",
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", ConversationKey: "thread-1",
 		SessionID: "sess-1", TmuxSession: "trebi-live-c",
 	})
 	if err != nil {
@@ -449,7 +449,7 @@ func TestContinueConversationCoalesces(t *testing.T) {
 	}
 	run, outcome, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
 			ConversationKey: "thread-1",
 		},
 		Prompt: "reply", Conversation: true, ContinueMS: 3600_000,
@@ -499,7 +499,7 @@ func TestContinueFollowUp(t *testing.T) {
 				}
 			}
 			prev, err := svc.Create(ctx, runs.CreateOpts{
-				WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+				WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
 				ConversationKey: "r1/e1", SessionID: "sess-1", WorkingDir: t.TempDir(),
 			})
 			if err != nil {
@@ -516,7 +516,7 @@ func TestContinueFollowUp(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "prompt")
 			run, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 				CreateOpts: runs.CreateOpts{
-					WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+					WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
 					ConversationKey: "r1/e1", QueueID: "q-2",
 				},
 				Prompt: "job prompt", Conversation: true,
@@ -554,7 +554,7 @@ func TestConversationOpen(t *testing.T) {
 	if open("r1/e1", 0) {
 		t.Fatal("no run is an open conversation")
 	}
-	live, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo", Harness: "fake", ConversationKey: "r1/e1", Trigger: &runs.TriggerCapture{Vars: map[string]string{"text": "first"}}})
+	live, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", ConversationKey: "r1/e1", Trigger: &runs.TriggerCapture{Vars: map[string]string{"text": "first"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

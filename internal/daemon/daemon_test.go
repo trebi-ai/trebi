@@ -60,11 +60,11 @@ func TestControlPlane_QueueWorkerDrainsPending(t *testing.T) {
 	item := &dispatch.QueueItem{
 		Connector:   "test-src",
 		WorkspaceID: ws.ID,
-		Job:         "demo",
-		Kind:        runs.KindJob,
-		EventRaw:    `{"n":1}`,
-		Status:      dispatch.QueuePending,
-		Vars:        map[string]string{"x": "1"},
+		JobID:       "demo", JobName: "demo",
+		Kind:     runs.KindJob,
+		EventRaw: `{"n":1}`,
+		Status:   dispatch.QueuePending,
+		Vars:     map[string]string{"x": "1"},
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
@@ -373,7 +373,7 @@ func TestControlPlane_ShadowSkipsAutoWorkers(t *testing.T) {
 
 	// Enqueue a pending row — shadow must not drain it.
 	item := &dispatch.QueueItem{
-		Connector: "x", WorkspaceID: "ws", Job: "j", Status: dispatch.QueuePending,
+		Connector: "x", WorkspaceID: "ws", JobID: "j", JobName: "j", Status: dispatch.QueuePending,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
 		t.Fatal(err)

@@ -428,12 +428,12 @@ func TestBindRoom(t *testing.T) {
 	if err != nil || p2.ConversationID != p1.ConversationID {
 		t.Fatalf("second bind %+v %v", p2, err)
 	}
-	p3, err := svc.BindRoom(ctx, "ws1", "agents/research", room)
+	p3, err := svc.BindRoom(ctx, "ws1", "agt_0000000001", room)
 	if err != nil || p3.ConversationID == p1.ConversationID {
 		t.Fatalf("agent bind %+v %v", p3, err)
 	}
 	conv, err := svc.Get(ctx, p3.ConversationID)
-	if err != nil || conv.Operator != "agents/research" || conv.OriginChannel != "whatsapp" {
+	if err != nil || conv.OperatorID != "agt_0000000001" || conv.OriginChannel != "whatsapp" {
 		t.Fatalf("conversation %+v %v", conv, err)
 	}
 }
@@ -447,7 +447,7 @@ func TestRoomBindings(t *testing.T) {
 	if _, err := svc.BindRoom(ctx, "ws1", "", conversations.Address{Connector: "whatsapp", Instance: "con_wa", Room: "r1"}); err != nil {
 		t.Fatal(err)
 	}
-	p2, err := svc.BindRoom(ctx, "ws1", "agents/triage", conversations.Address{Connector: "whatsapp", Instance: "con_wa", Room: "r2", Thread: "t1"})
+	p2, err := svc.BindRoom(ctx, "ws1", "agt_0000000002", conversations.Address{Connector: "whatsapp", Instance: "con_wa", Room: "r2", Thread: "t1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,10 +458,10 @@ func TestRoomBindings(t *testing.T) {
 	if err != nil || len(got) != 2 {
 		t.Fatalf("bindings %+v %v", got, err)
 	}
-	if got[0].Operator != "assistant" || got[0].Room != "r1" || got[0].Workspace != "ws1" {
+	if got[0].OperatorName != "assistant" || got[0].Room != "r1" || got[0].Workspace != "ws1" {
 		t.Fatalf("first %+v", got[0])
 	}
-	want := conversations.RoomBinding{Workspace: "ws1", Operator: "agents/triage", Room: "r2", Thread: "t1", ConversationID: p2.ConversationID}
+	want := conversations.RoomBinding{Workspace: "ws1", OperatorID: "agt_0000000002", Room: "r2", Thread: "t1", ConversationID: p2.ConversationID}
 	if got[1] != want {
 		t.Fatalf("second %+v", got[1])
 	}

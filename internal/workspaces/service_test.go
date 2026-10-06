@@ -189,11 +189,11 @@ func TestRebuildIndexAgents(t *testing.T) {
 	if agentRow == nil || dutyRow == nil {
 		t.Fatalf("rows=%v want agents/cmo and agents/cmo/duty", rows)
 	}
-	if agentRow.Kind != "agent" || agentRow.Owner != "" {
+	if agentRow.Kind != "agent" || agentRow.OwnerID != "" {
 		t.Errorf("agent row %+v want kind=agent, no owner", agentRow)
 	}
-	if dutyRow.Owner != "agents/cmo" {
-		t.Errorf("duty owner=%q want agents/cmo", dutyRow.Owner)
+	if dutyRow.OwnerID != agentRow.ID || dutyRow.OwnerIndex() != "agents/cmo" {
+		t.Errorf("duty owner=%q (%s) want agents/cmo", dutyRow.OwnerIndex(), dutyRow.OwnerID)
 	}
 
 	// Edit the agent file: agent.updated only, never job.updated.

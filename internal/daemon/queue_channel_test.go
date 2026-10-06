@@ -70,9 +70,9 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := &dispatch.QueueItem{
-		Connector:       chat.ID,
-		WorkspaceID:     ws.ID,
-		Job:             "agents/ops",
+		Connector:   chat.ID,
+		WorkspaceID: ws.ID,
+		JobID:       "agents/ops", JobName: "agents/ops",
 		Kind:            "agent",
 		ConversationKey: "thread-7",
 		EventID:         "evt-1",
@@ -221,7 +221,7 @@ func TestJobFollowUpPrompt(t *testing.T) {
 		}
 	}
 	first, err := cp.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: ws.ID, Job: "deploy", Harness: "fake", ConversationKey: "r1/m1",
+		WorkspaceID: ws.ID, JobID: "deploy", JobName: "deploy", Harness: "fake", ConversationKey: "r1/m1",
 		Trigger: &runs.TriggerCapture{Vars: map[string]string{"text": "the deploy"}},
 	})
 	if err != nil {
@@ -231,7 +231,7 @@ func TestJobFollowUpPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := &dispatch.QueueItem{
-		Connector: chat.ID, WorkspaceID: ws.ID, Job: "deploy", Kind: "job",
+		Connector: chat.ID, WorkspaceID: ws.ID, JobID: "deploy", JobName: "deploy", Kind: "job",
 		ConversationKey: "r1/m1", FollowUp: true, EventID: "evt-3", EventRaw: "{}",
 		Vars:   map[string]string{"text": "thanks", "sender": "bob", "room": "r1", "connection": "chat", "thread": ""},
 		Status: dispatch.QueuePending,

@@ -20,7 +20,7 @@ func TestActorForTokenAndTerminalExpiry(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	const token = "0123456789abcdef0123456789abcdef"
 	run, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws1", Job: "agents/research", Kind: "agent",
+		WorkspaceID: "ws1", JobID: "agents/research", JobName: "agents/research", Kind: "agent",
 		Harness: "claude", ActorToken: token,
 	})
 	if err != nil {

@@ -607,7 +607,8 @@ func rowFromJob(j *job.Job, kind, ownerID string) indexRow {
 // desiredRows keys the discovered jobs and agents by ID. byName resolves
 // the owner agent of a child job that is not in jobs.
 func desiredRows(jobs []*job.Job, byName map[string]string) map[string]indexRow {
-	names := maps.Clone(byName)
+	names := make(map[string]string, len(byName)+len(jobs))
+	maps.Copy(names, byName)
 	for _, j := range jobs {
 		names[j.Name] = j.ID
 	}

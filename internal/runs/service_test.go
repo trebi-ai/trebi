@@ -34,7 +34,7 @@ func TestTerminateLogsRunFinish(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestResumeRefusesSuccessfulRun(t *testing.T) {
 	mk := func() *runs.Run {
 		t.Helper()
 		run, err := svc.Create(ctx, runs.CreateOpts{
-			WorkspaceID: "ws1", Job: "demo", Harness: "fake", SessionID: "sess-1",
+			WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Harness: "fake", SessionID: "sess-1",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -115,7 +115,7 @@ func TestAddEventPublishesRunEvent(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestTimelineCoalescesAssistantDeltas(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestTimelineCoalescesToolCalls(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,8 +285,8 @@ func TestCreateTerminateTimeline(t *testing.T) {
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID:   "ws1",
-		Job:           "demo",
+		WorkspaceID: "ws1",
+		JobID:       "demo", JobName: "demo",
 		Reason:        runs.ReasonManual,
 		Harness:       "claude",
 		PromptPreview: "hello world",
@@ -351,13 +351,13 @@ func TestQueueIDIdempotency(t *testing.T) {
 	ctx := context.Background()
 
 	_, err = svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "j", QueueID: "q1", Harness: "claude",
+		WorkspaceID: "ws", JobID: "j", JobName: "j", QueueID: "q1", Harness: "claude",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "j", QueueID: "q1", Harness: "claude",
+		WorkspaceID: "ws", JobID: "j", JobName: "j", QueueID: "q1", Harness: "claude",
 	})
 	if err == nil {
 		t.Fatal("expected unique queue_id violation")
@@ -376,7 +376,7 @@ func TestTerminateClosesAgentSegmentAndIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	run, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "j", Harness: "claude", Reason: runs.ReasonManual,
+		WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude", Reason: runs.ReasonManual,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -423,7 +423,7 @@ func TestMarkOutcomeOverridesMachineStatus(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +541,7 @@ func TestResumeCap(t *testing.T) {
 
 	// SessionID present so Resume passes the no-session check and hits the cap.
 	prev, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "j", Harness: "claude",
+		WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude",
 		SessionID:      "sess-cap",
 		ResumeAttempts: runs.MaxResumeAttempts,
 	})
@@ -572,7 +572,7 @@ func TestSetSessionStateUnchangedNoBusSpam(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -609,13 +609,13 @@ func TestListHarnessAndModelFilters(t *testing.T) {
 	ctx := context.Background()
 
 	claude, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "a", Harness: "claude", Reason: runs.ReasonManual,
+		WorkspaceID: "ws", JobID: "a", JobName: "a", Harness: "claude", Reason: runs.ReasonManual,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	grok, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", Job: "b", Harness: "grok", Reason: runs.ReasonManual,
+		WorkspaceID: "ws", JobID: "b", JobName: "b", Harness: "grok", Reason: runs.ReasonManual,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -664,7 +664,7 @@ func TestDecideApprovalAtomicWithBus(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +708,7 @@ func TestOpenApprovalThenDecide(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "demo", JobName: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -743,7 +743,7 @@ func TestOpenApprovalThenDecide(t *testing.T) {
 		t.Fatalf("still pending %+v %v", left, err)
 	}
 
-	other, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "demo2"})
+	other, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "demo2", JobName: "demo2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -762,7 +762,7 @@ func TestWaitFor(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	ctx := context.Background()
 
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Reason: runs.ReasonManual})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Reason: runs.ReasonManual})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -817,7 +817,7 @@ func TestStatsRangeAndMTD(t *testing.T) {
 	}
 
 	run, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws1", Job: "demo", Reason: runs.ReasonManual, Harness: "fake",
+		WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Reason: runs.ReasonManual, Harness: "fake",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -892,7 +892,7 @@ func TestTerminateParksWithOpenRequest(t *testing.T) {
 		gate.mu.Lock()
 		gate.ended = nil
 		gate.mu.Unlock()
-		run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+		run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Harness: "claude"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -929,7 +929,7 @@ func TestUnparkCompletesParkedRun(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	svc.SetRequestGate(&gateStub{open: true})
 	ctx := context.Background()
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", Job: "demo", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -953,7 +953,7 @@ func TestUnparkCompletesParkedRun(t *testing.T) {
 func TestReopenTurns(t *testing.T) {
 	t.Parallel()
 	svc, _, ctx := openTurnSvc(t)
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude", Reason: runs.ReasonManual, QueueID: "q1"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude", Reason: runs.ReasonManual, QueueID: "q1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -961,7 +961,7 @@ func TestReopenTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	got, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude", Reason: runs.ReasonResume, QueueID: "q2"})
+	got, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude", Reason: runs.ReasonResume, QueueID: "q2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1000,11 +1000,11 @@ func TestReopenTurns(t *testing.T) {
 func TestReopenLiveRun(t *testing.T) {
 	t.Parallel()
 	svc, _, ctx := openTurnSvc(t)
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonResume}); !errors.Is(err, runs.ErrRunActive) {
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Reason: runs.ReasonResume}); !errors.Is(err, runs.ErrRunActive) {
 		t.Fatalf("err %v, want ErrRunActive", err)
 	}
 	if turns, _ := svc.Turns(ctx, run.ID); len(turns) != 1 {
@@ -1016,7 +1016,7 @@ func TestReopenLiveRun(t *testing.T) {
 func TestReopenRace(t *testing.T) {
 	t.Parallel()
 	svc, _, ctx := openTurnSvc(t)
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1029,7 +1029,7 @@ func TestReopenRace(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonTrigger})
+			_, errs[i] = svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Reason: runs.ReasonTrigger})
 		}()
 	}
 	wg.Wait()
@@ -1055,7 +1055,7 @@ func TestReopenRace(t *testing.T) {
 func TestReopenClearsOutcome(t *testing.T) {
 	t.Parallel()
 	svc, _, ctx := openTurnSvc(t)
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1065,7 +1065,7 @@ func TestReopenClearsOutcome(t *testing.T) {
 	if _, err := svc.Mark(ctx, runs.MarkOpts{ID: run.ID, Status: runs.StatusFailed, Note: "wrong"}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonTrigger})
+	got, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Reason: runs.ReasonTrigger})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1079,14 +1079,14 @@ func TestReopenClearsOutcome(t *testing.T) {
 func TestReopenKeepsTerminalGuard(t *testing.T) {
 	t.Parallel()
 	svc, _, ctx := openTurnSvc(t)
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.TerminateTurn(ctx, run.ID, 1, runs.StatusComplete, runs.EndResult, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonTrigger}); err != nil {
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Reason: runs.ReasonTrigger}); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.TerminateTurn(ctx, run.ID, 1, runs.StatusFailed, runs.EndKill, nil); err != nil {
@@ -1112,14 +1112,14 @@ func TestReopenKeepsTerminalGuard(t *testing.T) {
 func TestTurnQueueIDUnique(t *testing.T) {
 	t.Parallel()
 	svc, _, ctx := openTurnSvc(t)
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude", QueueID: "q1"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude", QueueID: "q1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonTrigger, QueueID: "q1"}); err == nil {
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Reason: runs.ReasonTrigger, QueueID: "q1"}); err == nil {
 		t.Fatal("expected a unique queue id error")
 	}
 	got, _ := svc.Get(ctx, run.ID)
@@ -1133,7 +1133,7 @@ func TestTurnQueueIDUnique(t *testing.T) {
 func TestCostByTurnMonth(t *testing.T) {
 	t.Parallel()
 	svc, st, ctx := openTurnSvc(t)
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "agents/a/build", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "agents/a/build", JobName: "agents/a/build", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1149,7 +1149,7 @@ func TestCostByTurnMonth(t *testing.T) {
 	if _, err := st.DB().Exec(`UPDATE runs SET started_at=? WHERE id=?`, lastMonth, run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "agents/a/build", Reason: runs.ReasonTrigger}); err != nil {
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: "agents/a/build", JobName: "agents/a/build", Reason: runs.ReasonTrigger}); err != nil {
 		t.Fatal(err)
 	}
 	usage = pricing.TokenUsage{Input: 1_000_000, Model: "default"}
@@ -1171,7 +1171,7 @@ func TestCostByTurnMonth(t *testing.T) {
 func TestTurnAfter(t *testing.T) {
 	t.Parallel()
 	svc, _, ctx := openTurnSvc(t)
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "claude"})
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1182,7 +1182,7 @@ func TestTurnAfter(t *testing.T) {
 	if n, err := svc.TurnAfter(ctx, run.ID, runs.ReasonRequest, since); err != nil || n != 0 {
 		t.Fatalf("before reopen n %d err %v", n, err)
 	}
-	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", Job: "j", Reason: runs.ReasonRequest}); err != nil {
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Reason: runs.ReasonRequest}); err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {

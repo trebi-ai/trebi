@@ -2,6 +2,7 @@ package proposals_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -46,9 +47,17 @@ type fakeIndex struct{ ws *workspaces.Workspace }
 
 func (f fakeIndex) Get(_ context.Context, _ string) (*workspaces.Workspace, error) { return f.ws, nil }
 func (fakeIndex) RebuildIndex(context.Context, *workspaces.Workspace) error        { return nil }
+func (fakeIndex) JobByName(_ context.Context, ws, name string) (*workspaces.JobRow, error) {
+	if name != "agents/research" {
+		return nil, sql.ErrNoRows
+	}
+	return &workspaces.JobRow{ID: agentID, WorkspaceID: ws, Name: name, Kind: "agent"}, nil
+}
 
-const baseAgent = "---\ntitle: Research\nemail:\n  accept: []\n---\n\nRead only.\n"
-const nextAgent = "---\ntitle: Research\nemail:\n  accept:\n    - \"ops@example.com\"\n---\n\nRead less.\n"
+const agentID = "agt_0000000001"
+
+const baseAgent = "---\nid: " + agentID + "\ntitle: Research\nemail:\n  accept: []\n---\n\nRead only.\n"
+const nextAgent = "---\nid: " + agentID + "\ntitle: Research\nemail:\n  accept:\n    - \"ops@example.com\"\n---\n\nRead less.\n"
 
 func seedFile(t *testing.T, dir, content string) string {
 	t.Helper()

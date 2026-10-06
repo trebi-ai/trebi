@@ -390,7 +390,7 @@ func launchMemoryScript(t *testing.T, svc *runs.Service, mem *runs.MemoryLaunch,
 	t.Helper()
 	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Kind: runs.KindJob, Harness: "fake",
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Kind: runs.KindJob, Harness: "fake",
 			Reason: runs.ReasonManual, WorkingDir: t.TempDir(),
 		},
 		Prompt:      "run the digest",
@@ -454,7 +454,7 @@ func launchMemoryRun(t *testing.T, svc *runs.Service, mem *runs.MemoryLaunch) (*
 	dir := t.TempDir()
 	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Kind: runs.KindJob, Harness: "fake",
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Kind: runs.KindJob, Harness: "fake",
 			Reason: runs.ReasonManual, WorkingDir: dir,
 		},
 		Prompt:      "run the digest",

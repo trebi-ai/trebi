@@ -325,7 +325,7 @@ func TestAgentConversationRefused(t *testing.T) {
 	env := newEnv(t, assistant.ResolverTiming{})
 	ctx := context.Background()
 	c, err := env.conv.Create(ctx, conversations.CreateOpts{
-		Workspace: env.workspaceID(t), Operator: "agents/nightly",
+		Workspace: env.workspaceID(t), OperatorID: "agt_0000000003",
 		OriginChannel: conversations.ChannelAgent,
 	})
 	if err != nil {

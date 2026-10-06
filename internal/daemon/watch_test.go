@@ -91,7 +91,7 @@ func TestIngestAcrossReopen(t *testing.T) {
 	}
 	wd := t.TempDir()
 	run, err := c.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: ws.ID, Job: "j", Harness: "claude", SessionID: "sess-i", WorkingDir: wd, ConversationID: conv.ID,
+		WorkspaceID: ws.ID, JobID: "j", JobName: "j", Harness: "claude", SessionID: "sess-i", WorkingDir: wd, ConversationID: conv.ID,
 	})
 	if err != nil {
 		t.Fatal(err)

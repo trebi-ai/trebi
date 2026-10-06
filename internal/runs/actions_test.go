@@ -221,7 +221,7 @@ func TestPaneClaudeMCPConfigLeavesJobDir(t *testing.T) {
 // of unknown and terminal runs and keeps those of a live run.
 func TestRemoveStaleRunFiles(t *testing.T) {
 	svc, ctx := paneStack(t)
-	live, err := svc.Create(ctx, CreateOpts{Job: "live"})
+	live, err := svc.Create(ctx, CreateOpts{JobID: "live", JobName: "live"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +425,7 @@ func TestResolveActionsBuildsEmail(t *testing.T) {
 	t.Parallel()
 	s := (&Service{}).WithEmail(fakeEmailSource{"ellis": "ellis@mail.example.com"})
 	opts := LaunchOpts{Kit: &job.KitYAML{Connectors: []string{"email"}}}
-	opts.WorkspaceID, opts.Job, opts.Kind = "ws1", "agents/ellis/digest", KindJob
+	opts.WorkspaceID, opts.JobName, opts.Kind = "ws1", "agents/ellis/digest", KindJob
 	if err := s.resolveActions(t.Context(), &opts); err != nil {
 		t.Fatal(err)
 	}
@@ -454,6 +454,6 @@ func TestResolveActionsBuildsEmail(t *testing.T) {
 func emailEnvOf(t *testing.T, s *Service, kind, name string) map[string]string {
 	t.Helper()
 	opts := LaunchOpts{JobConnectors: []string{"email"}}
-	opts.WorkspaceID, opts.Job, opts.Kind = "ws1", name, kind
+	opts.WorkspaceID, opts.JobName, opts.Kind = "ws1", name, kind
 	return s.emailAction(t.Context(), opts).Env
 }

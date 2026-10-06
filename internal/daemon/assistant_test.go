@@ -62,9 +62,9 @@ func TestTriggerItemPromptsAssistantSession(t *testing.T) {
 
 	q := dispatch.NewQueue(st)
 	item := &dispatch.QueueItem{
-		Connector:       "test-conn",
-		WorkspaceID:     ws.ID,
-		Job:             "assistant",
+		Connector:   "test-conn",
+		WorkspaceID: ws.ID,
+		JobID:       "assistant", JobName: "assistant",
 		Kind:            dispatch.KindAssistant,
 		EventID:         "evt-1",
 		ConversationKey: "k1",
@@ -174,7 +174,7 @@ func TestDrainHoldsAssistantItems(t *testing.T) {
 
 	q := dispatch.NewQueue(st)
 	item := &dispatch.QueueItem{
-		Connector: "test-conn", WorkspaceID: ws.ID, Job: "assistant",
+		Connector: "test-conn", WorkspaceID: ws.ID, JobID: "assistant", JobName: "assistant",
 		Kind: dispatch.KindAssistant, EventID: "evt-drain",
 		Status: dispatch.QueuePending,
 	}

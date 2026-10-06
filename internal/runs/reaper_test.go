@@ -75,7 +75,7 @@ func cliReaperFixture(t *testing.T, opts CreateOpts) (*Service, *Run, *cliRun) {
 // TestReaperCLIIdleTimeout pins the event-clock idle timeout (G.5): a
 // genuinely idle CLI session times out, no pane involved.
 func TestReaperCLIIdleTimeout(t *testing.T) {
-	svc, run, _ := cliReaperFixture(t, CreateOpts{WorkspaceID: "ws", Job: "j", IdleTimeoutMS: 1000})
+	svc, run, _ := cliReaperFixture(t, CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", IdleTimeoutMS: 1000})
 	r := NewReaper(svc)
 	now := time.Now()
 	r.checkOne(context.Background(), run, now, nil, false)                    // opens the idle clock
@@ -93,7 +93,7 @@ func TestReaperCLIIdleTimeout(t *testing.T) {
 // keep-alive window outlives max duration, then closes with keep_alive.
 func TestReaperCLIKeepAliveSuppressesMaxDuration(t *testing.T) {
 	svc, run, cr := cliReaperFixture(t, CreateOpts{
-		WorkspaceID: "ws", Job: "j", MaxDurationMS: 1000, KeepAliveMS: 60_000,
+		WorkspaceID: "ws", JobID: "j", JobName: "j", MaxDurationMS: 1000, KeepAliveMS: 60_000,
 	})
 	r := NewReaper(svc)
 	cr.markKeepAlive(time.Now())
@@ -158,7 +158,7 @@ func TestReaperMaxDuration(t *testing.T) {
 	svc := New(st, nil, nil)
 	ctx := context.Background()
 	run, err := svc.Create(ctx, CreateOpts{
-		WorkspaceID: "ws", Job: "j", Harness: "fake",
+		WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "fake",
 		MaxDurationMS: 1, // 1ms
 	})
 	if err != nil {
@@ -199,7 +199,7 @@ func TestFakeHarnessSentinelViaCreateAndLaunch(t *testing.T) {
 	ctx := context.Background()
 	run, _, err := svc.CreateAndLaunch(ctx, LaunchOpts{
 		CreateOpts: CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake",
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake",
 			PromptPreview: "hi",
 		},
 		Prompt:      "hi",
@@ -346,7 +346,7 @@ func TestIdleWithOpenRequestParks(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	svc := New(st, nil, nil)
 	svc.SetRequestGate(openGate{})
-	run, err := svc.Create(context.Background(), CreateOpts{WorkspaceID: "ws", Job: "j", IdleTimeoutMS: 3_600_000})
+	run, err := svc.Create(context.Background(), CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", IdleTimeoutMS: 3_600_000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestReaperPerTurnLimit(t *testing.T) {
 	defer st.Close()
 	svc := New(st, nil, nil)
 	ctx := context.Background()
-	opts := CreateOpts{WorkspaceID: "ws", Job: "j", Harness: "fake", MaxDurationMS: time.Hour.Milliseconds()}
+	opts := CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "fake", MaxDurationMS: time.Hour.Milliseconds()}
 	run, err := svc.Create(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -408,7 +408,7 @@ func TestReaperPerTurnLimit(t *testing.T) {
 // TestKeepAliveTokens: when the reaper closes a keep-alive turn, the turn
 // keeps the usage of every result it had, not only the last one.
 func TestKeepAliveTokens(t *testing.T) {
-	svc, run, cr := cliReaperFixture(t, CreateOpts{WorkspaceID: "ws", Job: "j", KeepAliveMS: 60_000})
+	svc, run, cr := cliReaperFixture(t, CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", KeepAliveMS: 60_000})
 	cr.turn = run.TurnCount
 	cr.addUsage(&pricing.TokenUsage{Input: 100, Output: 10, Model: "default"})
 	cr.addUsage(&pricing.TokenUsage{Input: 50, Output: 5, Model: "default"})

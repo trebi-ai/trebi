@@ -40,7 +40,7 @@ func TestFreshNewRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	rs := runs.New(st, nil, nil)
-	prev, err := rs.Create(ctx, runs.CreateOpts{WorkspaceID: ws.ID, Job: "x", Kind: runs.KindJob, Harness: "fake", SessionID: "sess-1"})
+	prev, err := rs.Create(ctx, runs.CreateOpts{WorkspaceID: ws.ID, JobID: "x", JobName: "x", Kind: runs.KindJob, Harness: "fake", SessionID: "sess-1"})
 	if err != nil {
 		t.Fatal(err)
 	}

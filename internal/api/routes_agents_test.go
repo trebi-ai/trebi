@@ -444,7 +444,7 @@ func TestAgentListRecentRuns(t *testing.T) {
 	mk := func(agent, status string, end runs.EndReason) string {
 		t.Helper()
 		run, err := s.Runs().Create(t.Context(), runs.CreateOpts{
-			WorkspaceID: wsID, Job: "agents/" + agent, Kind: runs.KindAgent, Harness: "fake",
+			WorkspaceID: wsID, JobID: "agents/" + agent, JobName: "agents/" + agent, Kind: runs.KindAgent, Harness: "fake",
 		})
 		if err != nil {
 			t.Fatal(err)

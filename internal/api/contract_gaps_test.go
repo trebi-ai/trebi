@@ -488,7 +488,7 @@ func TestListRoutesCursorAndLimit(t *testing.T) {
 	}
 	q := dispatch.NewQueue(st)
 	for i := 0; i < 5; i++ {
-		if err := q.Enqueue(ctx, &dispatch.QueueItem{Connector: "src", WorkspaceID: "ws", Job: "j"}); err != nil {
+		if err := q.Enqueue(ctx, &dispatch.QueueItem{Connector: "src", WorkspaceID: "ws", JobID: "j", JobName: "j"}); err != nil {
 			t.Fatal(err)
 		}
 	}

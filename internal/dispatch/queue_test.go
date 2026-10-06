@@ -28,10 +28,10 @@ func TestEnqueueClaimDone(t *testing.T) {
 	item := &dispatch.QueueItem{
 		Connector:   "whatsapp",
 		WorkspaceID: "ws1",
-		Job:         "receipts",
-		OnIndex:     0,
-		EventRaw:    `{"text":"hi"}`,
-		Vars:        map[string]string{"from": "a"},
+		JobID:       "receipts", JobName: "receipts",
+		OnIndex:  0,
+		EventRaw: `{"text":"hi"}`,
+		Vars:     map[string]string{"from": "a"},
 	}
 	if err := q.Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func TestEnqueueClaimDone(t *testing.T) {
 		t.Fatal("id")
 	}
 
-	claimed, err := q.ClaimNext(ctx, "ws1", "receipts", dispatch.KindJob, "")
+	claimed, err := q.ClaimNext(ctx, "receipts", dispatch.KindJob, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestEnqueueClaimDone(t *testing.T) {
 	}
 
 	// second claim empty
-	c2, err := q.ClaimNext(ctx, "ws1", "receipts", dispatch.KindJob, "")
+	c2, err := q.ClaimNext(ctx, "receipts", dispatch.KindJob, "")
 	if err != nil || c2 != nil {
 		t.Fatalf("c2=%v err=%v", c2, err)
 	}
@@ -87,7 +87,7 @@ func TestClaimNextFIFOByULID(t *testing.T) {
 	for i, created := range createds {
 		id := ulid.MustNew(ulid.Timestamp(base.Add(time.Duration(i)*time.Second)), nil).String()
 		ids[i] = id
-		item := &dispatch.QueueItem{ID: id, Connector: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
+		item := &dispatch.QueueItem{ID: id, Connector: "x", WorkspaceID: "ws1", JobID: "j", JobName: "j", EventRaw: "{}"}
 		if err := q.Enqueue(ctx, item); err != nil {
 			t.Fatal(err)
 		}
@@ -98,7 +98,7 @@ func TestClaimNextFIFOByULID(t *testing.T) {
 
 	var got []string
 	for range ids {
-		it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, "")
+		it, err := q.ClaimNext(ctx, "j", dispatch.KindJob, "")
 		if err != nil || it == nil {
 			t.Fatalf("it=%v err=%v", it, err)
 		}
@@ -115,7 +115,7 @@ func TestClaimNextExactlyOnceUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	q := dispatch.NewQueue(st)
 
-	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", JobID: "j", JobName: "j", EventRaw: "{}"}
 	if err := q.Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestClaimNextExactlyOnceUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, "")
+			it, err := q.ClaimNext(ctx, "j", dispatch.KindJob, "")
 			if err != nil {
 				t.Error(err)
 				return
@@ -156,7 +156,7 @@ func TestRequeueAndCancel(t *testing.T) {
 	q := dispatch.NewQueue(st)
 
 	enqueue := func() *dispatch.QueueItem {
-		item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
+		item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", JobID: "j", JobName: "j", EventRaw: "{}"}
 		if err := q.Enqueue(ctx, item); err != nil {
 			t.Fatal(err)
 		}
@@ -205,7 +205,7 @@ func TestRequeueAndCancel(t *testing.T) {
 
 	// Requeue a blocked row: clears block_reason, keeps attempts.
 	b := enqueue()
-	if it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, ""); err != nil || it == nil || it.ID != b.ID {
+	if it, err := q.ClaimNext(ctx, "j", dispatch.KindJob, ""); err != nil || it == nil || it.ID != b.ID {
 		t.Fatalf("it=%v err=%v", it, err)
 	}
 	if n, err := q.MarkAttempt(ctx, b.ID); err != nil || n != 1 {
@@ -249,7 +249,7 @@ func TestWaitIsNotAnAttempt(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()
 	q := dispatch.NewQueue(st)
-	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", JobID: "j", JobName: "j", EventRaw: "{}"}
 	if err := q.Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestWaitIsNotAnAttempt(t *testing.T) {
 		if _, err := st.DB().ExecContext(ctx, `UPDATE event_queue SET next_attempt_at=NULL WHERE id=?`, item.ID); err != nil {
 			t.Fatal(err)
 		}
-		if it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, ""); err != nil || it == nil {
+		if it, err := q.ClaimNext(ctx, "j", dispatch.KindJob, ""); err != nil || it == nil {
 			t.Fatalf("claim %d: it=%v err=%v", i, it, err)
 		}
 		if err := q.Defer(ctx, item.ID, until, dispatch.DeferPolicy); err != nil {
@@ -292,7 +292,7 @@ func TestMarkDeadKeepsMessage(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()
 	q := dispatch.NewQueue(st)
-	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", EventRaw: "{}"}
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", JobID: "j", JobName: "j", EventRaw: "{}"}
 	if err := q.Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestLaneClaimsHead(t *testing.T) {
 	ctx := context.Background()
 	q := dispatch.NewQueue(st)
 	enqueue := func(conv string) *dispatch.QueueItem {
-		it := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", ConversationKey: conv, EventRaw: "{}"}
+		it := &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", JobID: "j", JobName: "j", ConversationKey: conv, EventRaw: "{}"}
 		if err := q.Enqueue(ctx, it); err != nil {
 			t.Fatal(err)
 		}
@@ -328,13 +328,13 @@ func TestLaneClaimsHead(t *testing.T) {
 	}
 	for _, conv := range []string{"chat", ""} {
 		head, _ := enqueue(conv), enqueue(conv)
-		if it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, conv); err != nil || it == nil || it.ID != head.ID {
+		if it, err := q.ClaimNext(ctx, "j", dispatch.KindJob, conv); err != nil || it == nil || it.ID != head.ID {
 			t.Fatalf("conv=%q first claim=%v err=%v", conv, it, err)
 		}
 		if err := q.Defer(ctx, head.ID, time.Now().Add(time.Hour), dispatch.DeferRetry); err != nil {
 			t.Fatal(err)
 		}
-		it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, conv)
+		it, err := q.ClaimNext(ctx, "j", dispatch.KindJob, conv)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -353,7 +353,7 @@ func TestEnqueueLaneCap(t *testing.T) {
 	ctx := context.Background()
 	q := dispatch.NewQueue(st)
 	item := func(conv string) *dispatch.QueueItem {
-		return &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", Job: "j", ConversationKey: conv, EventRaw: "{}"}
+		return &dispatch.QueueItem{Connector: "x", WorkspaceID: "ws1", JobID: "j", JobName: "j", ConversationKey: conv, EventRaw: "{}"}
 	}
 	for i := 0; i < dispatch.LaneCap; i++ {
 		if err := q.Enqueue(ctx, item("")); err != nil {
@@ -386,13 +386,13 @@ func TestLaunchRequestRoundTrip(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()
 	q := dispatch.NewQueue(st)
-	in := &dispatch.QueueItem{Connector: dispatch.ConnectorManual, WorkspaceID: "ws1", Job: "j", Launch: &dispatch.LaunchRequest{
+	in := &dispatch.QueueItem{Connector: dispatch.ConnectorManual, WorkspaceID: "ws1", JobID: "j", JobName: "j", Launch: &dispatch.LaunchRequest{
 		Reason: "manual", Prompt: "hi", Inputs: map[string]string{"a": "1"}, Wake: &dispatch.LaunchWake{Body: "b"},
 	}}
 	if err := q.Enqueue(ctx, in); err != nil {
 		t.Fatal(err)
 	}
-	it, err := q.ClaimNext(ctx, "ws1", "j", dispatch.KindJob, "")
+	it, err := q.ClaimNext(ctx, "j", dispatch.KindJob, "")
 	if err != nil || it == nil || it.Launch == nil {
 		t.Fatalf("claim=%+v err=%v", it, err)
 	}

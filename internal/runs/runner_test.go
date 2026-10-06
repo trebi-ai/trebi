@@ -29,7 +29,7 @@ func TestFailBeforeLaunch(t *testing.T) {
 
 	run, err := svc.FailBeforeLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "claude", Reason: runs.ReasonSchedule,
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "claude", Reason: runs.ReasonSchedule,
 			PromptPreview: "do it",
 		},
 		Prompt: "do it",
@@ -82,10 +82,10 @@ func TestFakeHarnessSentinel(t *testing.T) {
 	run, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID: "ws",
-			Job:         "demo",
-			Harness:     "fake",
-			Reason:      runs.ReasonManual,
-			WorkingDir:  t.TempDir(),
+			JobID:       "demo", JobName: "demo",
+			Harness:    "fake",
+			Reason:     runs.ReasonManual,
+			WorkingDir: t.TempDir(),
 		},
 		Prompt:      "do it",
 		FakeCommand: []string{"sh", "-c", `echo working; echo "$TREBI_RUN_COMPLETE"`},
@@ -116,7 +116,7 @@ func TestFakeHarnessGetsRunToken(t *testing.T) {
 	dir := t.TempDir()
 	if _, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonManual,
 			WorkingDir: dir, ActorToken: "tok-1",
 		},
 		Prompt:      "do it",
@@ -139,7 +139,7 @@ func TestFakeHarnessFailure(t *testing.T) {
 	svc := runs.New(st, nil, nil)
 	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonManual,
 			WorkingDir: t.TempDir(),
 		},
 		FakeCommand: []string{"sh", "-c", "echo no sentinel; exit 1"},
@@ -193,7 +193,7 @@ func TestFakeHarnessWritesRunLog(t *testing.T) {
 	defer st.Close()
 	run, _, err := runs.New(st, nil, nil).CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonManual,
 			WorkingDir: t.TempDir(),
 		},
 		FakeCommand: []string{"sh", "-c", "echo hello-from-the-pane"},
@@ -223,7 +223,7 @@ func TestLaunchPersistsWorkingDir(t *testing.T) {
 	dir := t.TempDir()
 	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual,
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonManual,
 			WorkingDir: dir,
 		},
 		FakeCommand: []string{"sh", "-c", "true"},
@@ -407,7 +407,7 @@ func wakeLaunchOpts(t *testing.T, kind, job string, wake *runs.WakeOpts) runs.La
 	t.Helper()
 	return runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: job, Kind: kind, Harness: "fake",
+			WorkspaceID: "ws", JobID: job, JobName: job, Kind: kind, Harness: "fake",
 			Reason: runs.ReasonManual, WorkingDir: t.TempDir(),
 		},
 		Wake:        wake,
@@ -429,7 +429,7 @@ func parkedChain(t *testing.T, fake string) (*runs.Service, *runs.Run, string) {
 	dir := t.TempDir()
 	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: "ws", Job: "demo", Harness: "fake", Reason: runs.ReasonManual, WorkingDir: dir,
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonManual, WorkingDir: dir,
 		},
 		Prompt:      "ask first",
 		FakeCommand: []string{"sh", "-c", fake},
