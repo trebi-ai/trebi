@@ -78,6 +78,7 @@ func NewApp(opts Options) *cli.Command {
 			mcpCommand(),
 			queueCommand(),
 			rulesCommand(),
+			stateCommand(),
 			emailCommand(),
 			cloudCommand(),
 			hooksCommand(),

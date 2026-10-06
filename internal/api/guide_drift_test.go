@@ -179,6 +179,7 @@ var exactFolds = map[string]string{
 	"harness auth login":  "harness.login_start",
 	"inbox read-all":      "inbox.read_all",
 	"status":              "system.overview",
+	"state":               "state.summary",
 	// The CLI says `memory log add`; the catalog kept the shorter name.
 	"job memory log add":          "job.memory_add",
 	"job memory log delete":       "job.memory_delete",

@@ -154,4 +154,34 @@ Lessons stay for the life of the job. Log entries are capped by `memory.max_logs
 
 Offline repair works with the daemon down: `trebi memory validate <path> --fix` migrates a legacy ledger or seeds the skeleton, and `trebi memory skeleton` prints the empty file.
 
+## Job state
+
+State keeps the records of a job: items already sent, sources, scores. A record is a row with a key, an optional time `at`, and a JSON object value. Rows live in named collections. Each launch gets a short `## State` brief with each collection, its row count, its fields, and the changes of the last run. Declare collections in the frontmatter to add a description, a TTL, and a JSON Schema check:
+
+```yaml
+state:
+  reported:
+    description: Items already sent.
+    ttl: 2y
+    schema:
+      type: object
+      required: [title]
+```
+
+An undeclared collection also works. In a run, the owner is `self` by default. Outside a run, pass `--owner <job id or name>`.
+
+```bash
+trebi state --owner my-job
+trebi state query reported --since 7d --where "v.score == 2" --limit 20
+trebi state has reported doi:10/1 doi:10/2
+trebi state get reported doi:10/1
+trebi state put reported doi:10/1 --value '{"title":"A paper"}' --at today
+trebi state put reported --mode merge --file rows.jsonl
+trebi state prune reported --until 180d --yes
+trebi state delete reported doi:10/1 --yes
+trebi state drop reported --yes
+```
+
+A batch writes all rows or none. A bad batch prints one line for each failed row, for example `line 3: value.topic: ...`. Times take `2026-09-01`, `7d`, `today`, or `last-run`. `delete`, `prune`, and `drop` are destructive: outside a run, ask the user first, then pass `--yes`. A run deletes its own rows with no confirm. Limits: `defaults.state.max_rows` and `defaults.state.max_bytes` for each owner. The state of a deleted job stays 30 days, then the daemon deletes it.
+
 Supporting files next to the job: `trebi guide files`.

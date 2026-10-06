@@ -131,3 +131,14 @@ trebi agent memory clear cmo --workspace reports --force
 ```
 
 `--body` and `--file` are **local only**; remote: pass `body` / `content`. `memory clear` is destructive — ask first. Offline repair: `trebi memory validate <path> --fix`. Job memory (per job, not the agent): `trebi guide jobs-and-scheduling`.
+
+## Agent state
+
+An agent keeps records in `trebi state`, the same as a job. Declare collections with `state:` in `AGENT.md`. Each wake gets a `## State` section. An owned job has its own state, separate from the agent state.
+
+```bash
+trebi state --owner cmo --workspace reports
+trebi state query leads --owner cmo --workspace reports --since 7d
+```
+
+In a wake, the owner is `self` by default. A run cannot read or write the state of another job or agent (`state_scope`). Commands and frontmatter: `trebi guide jobs-and-scheduling`.
