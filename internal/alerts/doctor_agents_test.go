@@ -323,3 +323,23 @@ func TestStateRetiredFinding(t *testing.T) {
 		t.Fatalf("finding %+v", f)
 	}
 }
+
+func TestDuplicateIDFinding(t *testing.T) {
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	for _, reason := range []string{"missing", "duplicate"} {
+		if _, err := st.Append(t.Context(), store.BusEvent{
+			Topic: "job.id_assigned", Entity: "job", EntityID: "jb_" + reason, Action: "updated",
+			Attrs: map[string]string{"workspace": "ws", "name": "copy-" + reason, "id": "jb_" + reason, "reason": reason},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, ok := duplicateIDFinding(t.Context(), st)
+	if !ok || f.Code != "id_duplicate" || !strings.Contains(f.Message, "copy-duplicate") || strings.Contains(f.Message, "copy-missing") {
+		t.Fatalf("finding %+v", f)
+	}
+}

@@ -1174,6 +1174,9 @@ func collectDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFind
 	if f, ok := stateRetiredFinding(context.Background(), st.DB()); ok {
 		findings = append(findings, f)
 	}
+	if f, ok := duplicateIDFinding(context.Background(), st); ok {
+		findings = append(findings, f)
+	}
 	if findings == nil {
 		return []DoctorFinding{}
 	}
@@ -1194,6 +1197,30 @@ func stateRetiredFinding(ctx context.Context, db *sql.DB) (DoctorFinding, bool) 
 	return DoctorFinding{
 		ID: "state-retired", Severity: "info", Code: "state_retired",
 		Message: fmt.Sprintf("%d deleted job(s) or agent(s) still have state; the first purge is on %s", n, purge),
+	}, true
+}
+
+// duplicateIDFinding names the jobs and agents that got a new ID in the
+// bus window because their file had the ID of another one, as a copied
+// folder does.
+func duplicateIDFinding(ctx context.Context, st *store.Store) (DoctorFinding, bool) {
+	evs, err := st.ListBus(ctx, 0, []string{"job.id_assigned"}, 1000)
+	if err != nil {
+		return DoctorFinding{}, false
+	}
+	var names []string
+	for _, ev := range evs {
+		if a := attrMap(ev.Attrs); a["reason"] == "duplicate" {
+			names = append(names, a["name"])
+		}
+	}
+	if len(names) == 0 {
+		return DoctorFinding{}, false
+	}
+	return DoctorFinding{
+		ID: "id-duplicate", Severity: "warn", Code: "id_duplicate",
+		Message: fmt.Sprintf("%d job(s) or agent(s) had the ID of another one and got a new ID: %s. A copied folder does this; its runs and state start empty",
+			len(names), strings.Join(names, ", ")),
 	}, true
 }
 
