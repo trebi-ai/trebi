@@ -10,6 +10,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -177,5 +178,37 @@ func wakeMemoryLaunch(wsPath, rel string) *runs.MemoryLaunch {
 	return &runs.MemoryLaunch{
 		Root: wsPath, Rel: rel,
 		Opt: memory.Options{MaxLogs: 100, RequireUpdate: true, InjectLogs: 20},
+	}
+}
+
+// fakeBriefer returns a fixed State block and keeps the owner it got.
+type fakeBriefer struct{ got state.Owner }
+
+func (f *fakeBriefer) Brief(_ context.Context, o state.Owner) (string, error) {
+	f.got = o
+	return "## State\n| reported | 3 |\n", nil
+}
+
+// TestComposeAgentWakeState proves an agent wake has the State section after
+// Memory, for the agent ID and its declared collections.
+func TestComposeAgentWakeState(t *testing.T) {
+	t.Parallel()
+	svc, wsID, _ := wakeFixture(t, map[string]string{
+		"agents/cmo/AGENT.md": "---\nstate:\n  reported:\n    description: Sent items.\n---\n\nLead.\n",
+	})
+	b := &fakeBriefer{}
+	svc.SetStateBriefer(b)
+	got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{
+		WorkspaceID: wsID, Kind: "agent", Name: "agents/cmo",
+	}, runs.WakeOpts{Message: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWake(t, got, []string{"# State", "| reported | 3 |", "# Current message"}, []string{"## State"})
+	if !strings.Contains(got[:strings.Index(got, "# Current message")], "# State") {
+		t.Fatalf("State is not before the message:\n%s", got)
+	}
+	if !strings.HasPrefix(b.got.ID, "agt_") || b.got.WorkspaceID != wsID || b.got.Collections["reported"].Description != "Sent items." {
+		t.Fatalf("owner = %+v", b.got)
 	}
 }
