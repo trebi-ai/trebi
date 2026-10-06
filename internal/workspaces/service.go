@@ -451,8 +451,11 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 		}
 		return err
 	}
+	// The index rows retire, not go: old runs keep their names, and the
+	// state sweep clears the rows of the owners after the grace.
+	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`DELETE FROM job_index WHERE workspace_id=?`, id); err != nil {
+		if _, err := tx.Exec(`UPDATE job_index SET retired_at=?, updated_at=? WHERE workspace_id=? AND retired_at IS NULL`, now, now, id); err != nil {
 			return err
 		}
 		res, err := tx.Exec(`DELETE FROM workspaces WHERE id=?`, id)

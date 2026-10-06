@@ -89,6 +89,9 @@ func TestEventsJoinOutcomesFromQueue(t *testing.T) {
 	for _, raw := range evs {
 		m, _ := raw.(map[string]any)
 		if m["id"] == eid && m["outcome"] == "coalesced" {
+			if id, _ := m["job_id"].(string); !strings.HasPrefix(id, "jb_") || m["job_name"] != "demo" {
+				t.Fatalf("list row job = %v / %v", m["job_id"], m["job_name"])
+			}
 			found = true
 			break
 		}

@@ -296,7 +296,8 @@ func (e eventRow) listEntries(outs []map[string]any) []map[string]any {
 		}
 		row := e.base()
 		row["workspace"] = o["workspace"]
-		row["job"] = o["job"]
+		row["job_id"] = o["job_id"]
+		row["job_name"] = o["job_name"]
 		row["on_index"] = o["on_index"]
 		row["outcome"] = o["outcome"]
 		if qid, ok := o["queue_id"]; ok {

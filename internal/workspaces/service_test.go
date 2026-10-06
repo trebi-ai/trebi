@@ -372,7 +372,11 @@ func TestRemoveEmitsWorkspaceDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rows) != 0 {
-		t.Fatalf("job_index rows remain: %v", rows)
+		t.Fatalf("live job_index rows remain: %v", rows)
+	}
+	var retired int
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM job_index WHERE workspace_id=? AND retired_at IS NOT NULL`, ws.ID).Scan(&retired); err != nil || retired != 1 {
+		t.Fatalf("retired job_index rows = %d, %v; want 1", retired, err)
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Fatalf("workspace folder still present: %v", err)
