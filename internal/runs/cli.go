@@ -110,7 +110,7 @@ func (cr *cliRun) setTerminal() {
 	cr.mu.Unlock()
 }
 
-// isTerminal reports whether the pump already moved the run to terminal.
+// isTerminal reports whether the pump or a teardown caller owns the terminal row.
 func (cr *cliRun) isTerminal() bool {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
@@ -934,6 +934,9 @@ func (s *Service) terminateCLI(ctx context.Context, runID string, cr *cliRun, st
 
 // afterCLIExit reconciles a process that ended without a result.
 func (s *Service) afterCLIExit(ctx context.Context, runID string, opts LaunchOpts, cr *cliRun, sawResult bool, lastErr *agentwire.Event) {
+	if cr.isTerminal() {
+		return
+	}
 	run, err := s.Get(ctx, runID)
 	if err != nil || run.Status.IsTerminal() || run.TurnCount != cr.turn {
 		return
@@ -989,6 +992,8 @@ func (s *Service) stopCLIRun(runID string, cr *cliRun) {
 	if cr == nil {
 		return
 	}
+	// The caller writes the terminal row, so the pump must not.
+	cr.setTerminal()
 	_ = cr.sess.Interrupt(context.Background())
 	go func() {
 		_ = cr.sess.Close(context.Background())
