@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 42
+const SchemaVersion = 43
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1466,6 +1466,38 @@ CREATE INDEX email_messages_thread ON email_messages(thread_root, created_at);
 DROP INDEX idx_conv_operator;
 ALTER TABLE conversations DROP COLUMN operator;
 CREATE INDEX idx_conv_operator ON conversations(workspace_id, operator_id, last_activity_at);
+`,
+		// v43: trebi state (plan 2026-10-06 Part B).
+		`
+CREATE TABLE state_rows (
+    owner_id    TEXT NOT NULL,
+    collection  TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    at          TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    expires_at  TEXT,
+    run_id      TEXT,
+    UNIQUE (owner_id, collection, key)
+);
+CREATE INDEX state_rows_at      ON state_rows(owner_id, collection, at);
+CREATE INDEX state_rows_updated ON state_rows(owner_id, collection, updated_at);
+CREATE INDEX state_rows_expires ON state_rows(expires_at) WHERE expires_at IS NOT NULL;
+
+CREATE VIRTUAL TABLE state_fts USING fts5(
+    key, body, content='', tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TABLE state_run_stats (
+    owner_id   TEXT NOT NULL,
+    run_id     TEXT NOT NULL,
+    collection TEXT NOT NULL,
+    inserted   INTEGER NOT NULL DEFAULT 0,
+    updated    INTEGER NOT NULL DEFAULT 0,
+    deleted    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner_id, run_id, collection)
+);
 `,
 	}
 }
