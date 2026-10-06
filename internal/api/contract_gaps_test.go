@@ -551,6 +551,37 @@ func TestListRoutesCursorAndLimit(t *testing.T) {
 	}
 }
 
+// TestRulesFireWithoutJob: a fire with no job records the event and queues
+// nothing. A fire for an unknown job is 404, because a queue row needs a
+// job ID.
+func TestRulesFireWithoutJob(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, wsDir, "fire")
+	code, body, _ := doJSON(t, "POST", base+"/v1/rules/fire", map[string]any{
+		"connector": "tick", "workspace": wsID, "match": "true", "event": map[string]any{"n": 1},
+	})
+	eid, _ := body["event_id"].(string)
+	if code != 200 || body["outcome"] != "recorded" || eid == "" {
+		t.Fatalf("fire without job: %d %v", code, body)
+	}
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	defer st.Close()
+	var events, queued int
+	if err := st.DB().QueryRow(`SELECT (SELECT COUNT(*) FROM events WHERE id=?), (SELECT COUNT(*) FROM event_queue)`, eid).Scan(&events, &queued); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 || queued != 0 {
+		t.Fatalf("events=%d queued=%d; want 1 and 0", events, queued)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/rules/fire", map[string]any{
+		"connector": "tick", "workspace": wsID, "job": "no-such-job", "match": "true", "event": map[string]any{"n": 2},
+	})
+	if code != 404 {
+		t.Fatalf("fire for unknown job: %d %v", code, body)
+	}
+}
+
 // TestNoLegacyNameFields: after the ID migration no response names a job,
 // agent, or operator with a bare field. Each one is an _id + _name pair.
 func TestNoLegacyNameFields(t *testing.T) {

@@ -677,12 +677,18 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	if body.Connector == "" {
 		body.Connector = "rules-fire"
 	}
-	row, err := s.findIndexRow(r.Context(), body.Workspace, body.Job, func(row workspaces.JobRow) bool {
-		return row.Name == body.Job
-	}, "job", "agent")
-	if err != nil {
-		writeResolveErr(w, err, "job")
-		return
+	// No job records the event only: it starts no run, and a later
+	// retrigger can route it.
+	var row workspaces.JobRow
+	if body.Job != "" {
+		var err error
+		row, err = s.findIndexRow(r.Context(), body.Workspace, body.Job, func(row workspaces.JobRow) bool {
+			return row.Name == body.Job
+		}, "job", "agent")
+		if err != nil {
+			writeResolveErr(w, err, "job")
+			return
+		}
 	}
 	res := dispatch.EvalMatch(r.Context(), body.Match, body.Extract, body.Event)
 	if res.Error != "" {
@@ -714,6 +720,10 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO events (id, connector, instance, received_at, summary, raw_json, trace_id)
 		VALUES (?,?,?,?,?,?,?)`, eid, typ, instance, now, summary, string(raw), trace); err != nil {
 		s.log.Warn("rules.fire event insert", "event_id", eid, "error", err)
+	}
+	if body.Job == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"outcome": "recorded", "event_id": eid})
+		return
 	}
 
 	item := &dispatch.QueueItem{
