@@ -72,6 +72,7 @@ compose a definition yourself. The response is `{ok, error, markdown}`, where
 `markdown` is the text the daemon would write.
 - `prompt` (string, optional): job body.
 - `content` (string, optional): full job definition text.
+- `kind` (string, optional): `job` (default) or `agent`. Use `agent` to check `AGENT.md` text, which allows the `email`, `kit`, `budget`, and `report` keys.
 - `name` (string, optional): job name used in the parse.
 - `harness` (string, optional): agent tool that runs the job.
 - `model` (string, optional): job model override passed as a launch flag.

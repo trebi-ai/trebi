@@ -1714,6 +1714,7 @@ type JobSpec struct {
 	Extract        string
 	IdempotencyKey string
 	Agent          string // short name; the file lands under agents/<agent>/
+	Kind           string // validate only: job (default) or agent
 	Rooms          []string
 	Allowlist      []string
 	Contains       []string
@@ -1738,7 +1739,7 @@ func (j JobSpec) body() map[string]any {
 		"prompt": j.Prompt, "harness": j.Harness, "model": j.Model, "effort": j.Effort,
 		"description": j.Description,
 		"cron":        j.Cron, "every": j.Every, "idempotency_key": j.IdempotencyKey,
-		"agent": j.Agent,
+		"agent": j.Agent, "kind": j.Kind,
 	} {
 		if v != "" {
 			body[k] = v

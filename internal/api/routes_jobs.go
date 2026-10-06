@@ -338,8 +338,17 @@ func (s *Server) handleJobValidateText(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
+	file := "JOB.md"
+	switch body.Kind {
+	case "", "job":
+	case "agent":
+		file = "AGENT.md"
+	default:
+		writeErr(w, http.StatusBadRequest, "validation", `kind must be "job" or "agent"`)
+		return
+	}
 	name := cmp.Or(body.Name, "job")
-	j, err := job.ParseBytes(filepath.Join(name, "JOB.md"), []byte(md))
+	j, err := job.ParseBytes(filepath.Join(name, file), []byte(md))
 	switch {
 	case err != nil:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "markdown": md})
@@ -598,6 +607,7 @@ type jobCreateRequest struct {
 	Session     job.SessionYAML   `json:"session"`
 	Env         map[string]string `json:"env"`
 	Agent       string            `json:"agent"` // short name; file lands under agents/<agent>/
+	Kind        string            `json:"kind"`  // validate only: job (default) or agent
 }
 
 // jobEventTrigger is the on: field of a structured job body.

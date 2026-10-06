@@ -711,6 +711,19 @@ func TestJobValidateText(t *testing.T) {
 		t.Fatalf("job-level allowlist: %d %v", code, body)
 	}
 
+	agentMD := "---\nharness: fake\nemail:\n  accept: [admins]\nkit:\n  connectors: [email]\n---\n\nhi\n"
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{"content": agentMD})
+	if code != 200 || body["ok"] != false {
+		t.Fatalf("operator keys in a job must fail: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{"content": agentMD, "kind": "agent"})
+	if code != 200 || body["ok"] != true {
+		t.Fatalf("operator keys in an agent must pass: %d %v", code, body)
+	}
+	if code, body, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{"content": agentMD, "kind": "bogus"}); code != 400 {
+		t.Fatalf("bad kind must be 400: %d %v", code, body)
+	}
+
 	code, body, _ = doJSON(t, "GET", base+"/v1/jobs", nil)
 	jobs, _ := body["jobs"].([]any)
 	if code != 200 || len(jobs) != 0 {

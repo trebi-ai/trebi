@@ -992,6 +992,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					if err != nil {
 						return request.HTTPRequest{}, err
 					}
+					if spec.Kind, err = in.str("kind"); err != nil {
+						return request.HTTPRequest{}, err
+					}
 					return spec.BuildValidate(), nil
 				}),
 			"set": act("PUT /v1/jobs/{name}", Input{"name": "nightly-sync", "content": "---\nharness: claude\n---\n\nRun the sync.\n"}, func(in Input) (request.HTTPRequest, error) {
