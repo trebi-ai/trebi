@@ -415,6 +415,26 @@ func TestParseMemoryErrors(t *testing.T) {
 	}
 }
 
+func TestParseState(t *testing.T) {
+	t.Parallel()
+	doc := "---\nstate:\n  reported:\n    description: Items already sent.\n    ttl: 2y\n    schema:\n      type: object\n      required: [title]\n  sources: {}\n---\nbody\n"
+	j, err := job.ParseBytes("/ws/a/JOB.md", []byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(j.State) != 2 || j.State["reported"].TTL != "2y" || j.State["reported"].Description != "Items already sent." {
+		t.Fatalf("State = %+v", j.State)
+	}
+	none, err := job.ParseBytes("/ws/a/JOB.md", []byte("---\ntitle: x\n---\nbody\n"))
+	if err != nil || none.State != nil {
+		t.Fatalf("no state: %+v %v", none.State, err)
+	}
+	bad, err := job.ParseBytes("/ws/a/JOB.md", []byte("---\nstate:\n  Reported: {}\n---\nbody\n"))
+	if err == nil || !strings.Contains(bad.ParseError, `state: collection "Reported"`) {
+		t.Fatalf("bad name: %v %q", err, parseErrOf(bad))
+	}
+}
+
 func TestMemoryConfigResolve(t *testing.T) {
 	t.Parallel()
 	def := config.MemoryDefaults{MaxLogs: 100, RequireUpdate: true, InjectLogs: 20, MaxBytes: 16384}

@@ -251,6 +251,30 @@ type Defaults struct {
 	Workspace string          `yaml:"workspace,omitempty"`
 	Session   SessionDefaults `yaml:"session,omitempty"`
 	Memory    MemoryDefaults  `yaml:"memory,omitempty"`
+	State     StateDefaults   `yaml:"state,omitempty"`
+}
+
+// StateDefaults cap the state store of each job or agent. 0 takes the default.
+type StateDefaults struct {
+	MaxRows  int   `yaml:"max_rows,omitempty"`  // rows for each owner
+	MaxBytes int64 `yaml:"max_bytes,omitempty"` // bytes for each owner
+}
+
+// Built-in state limits for each owner.
+const (
+	DefaultStateMaxRows        = 100000
+	DefaultStateMaxBytes int64 = 50 << 20
+)
+
+// Resolved returns the limits with defaults for 0.
+func (d StateDefaults) Resolved() StateDefaults {
+	if d.MaxRows <= 0 {
+		d.MaxRows = DefaultStateMaxRows
+	}
+	if d.MaxBytes <= 0 {
+		d.MaxBytes = DefaultStateMaxBytes
+	}
+	return d
 }
 
 // MemoryDefaults are the global structured-memory knobs when job frontmatter
@@ -651,6 +675,9 @@ defaults:
   #   require_update: true # a run must rewrite MEMORY.md
   #   inject_logs: 20      # Log entries in the launch prompt
   #   max_bytes: 16384     # memory bytes in the launch prompt; 0 = no cap
+  # state:                 # trebi state limits for each job or agent
+  #   max_rows: 100000
+  #   max_bytes: 52428800  # 50 MiB
 
 # api:
 #   host: 127.0.0.1        # 0.0.0.0 or a LAN/Tailscale IP opens remote access
@@ -911,6 +938,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Defaults.Memory.MaxBytes < 0 {
 		ce.add("defaults.memory.max_bytes", "must be >= 0")
+	}
+	if c.Defaults.State.MaxRows < 0 {
+		ce.add("defaults.state.max_rows", "must be >= 0")
+	}
+	if c.Defaults.State.MaxBytes < 0 {
+		ce.add("defaults.state.max_bytes", "must be >= 0")
 	}
 	ce.checkRequests(c.Requests)
 

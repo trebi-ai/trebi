@@ -26,6 +26,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/secrets"
+	"github.com/trebi-ai/trebi/internal/state"
 	"gopkg.in/yaml.v3"
 )
 
@@ -83,6 +84,7 @@ type Frontmatter struct {
 	Runtime        string            `yaml:"runtime"`
 	Title          string            `yaml:"title"`
 	Memory         any               `yaml:"memory"`
+	State          any               `yaml:"state"`
 	Envset         EnvsetList        `yaml:"envset"`
 	Env            map[string]string `yaml:"env"` // inline env map (new); never auto-written by migration
 	Session        SessionYAML       `yaml:"session"`
@@ -268,6 +270,7 @@ type Job struct {
 	Title          string
 	Memory         bool
 	MemoryOpts     MemoryConfig
+	State          map[string]state.Collection // declared state collections; nil when none
 	Envset         EnvsetList
 	Env            map[string]string
 	Session        SessionYAML
@@ -712,6 +715,11 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		memCfg.Enabled = true
 	}
 
+	collections, err := state.ParseCollections(fm.State)
+	if err != nil {
+		return parseFail(filePath, data, hash, err)
+	}
+
 	triggers, err := normalizeTriggers(fm.Triggers)
 	if err != nil {
 		return parseFail(filePath, data, hash, fmt.Errorf("triggers: %w", err))
@@ -750,6 +758,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Title:          fm.Title,
 		Memory:         memCfg.Enabled,
 		MemoryOpts:     memCfg,
+		State:          collections,
 		Envset:         fm.Envset,
 		Env:            fm.Env,
 		Session:        fm.Session,
@@ -776,24 +785,6 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	}
 	j.setID(fm.ID)
 	return j, nil
-}
-
-func fileHash(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:8])
-}
-
-func parseFail(path string, data []byte, hash string, err error) (*Job, error) {
-	j := &Job{
-		Name:       deriveName(path),
-		FilePath:   path,
-		Dir:        filepath.Dir(path),
-		ParseError: err.Error(),
-		Hash:       hash,
-		Kind:       kindFromPath(path),
-	}
-	j.setID(scanID(data))
-	return j, err
 }
 
 func (j *Job) setID(id string) {
@@ -1230,4 +1221,22 @@ func uniqueEntries(in []string) []string {
 		}
 	}
 	return out
+}
+
+func fileHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:8])
+}
+
+func parseFail(path string, data []byte, hash string, err error) (*Job, error) {
+	j := &Job{
+		Name:       deriveName(path),
+		FilePath:   path,
+		Dir:        filepath.Dir(path),
+		ParseError: err.Error(),
+		Hash:       hash,
+		Kind:       kindFromPath(path),
+	}
+	j.setID(scanID(data))
+	return j, err
 }

@@ -346,6 +346,19 @@ defaults:
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "defaults.memory.max_bytes") {
 		t.Fatalf("validate negative: %v", err)
 	}
+	cfg.Defaults.Memory.MaxBytes = 0
+
+	// State limits: 0 takes the default; a negative value is invalid.
+	if got := (StateDefaults{}).Resolved(); got.MaxRows != DefaultStateMaxRows || got.MaxBytes != DefaultStateMaxBytes {
+		t.Fatalf("state defaults: %+v", got)
+	}
+	if err := cfg.SetPath("defaults.state.max_rows", "-1"); err == nil {
+		t.Fatal("state max_rows -1 accepted")
+	}
+	cfg.Defaults.State.MaxBytes = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "defaults.state.max_bytes") {
+		t.Fatalf("validate negative state: %v", err)
+	}
 
 	// Absent block keeps the seeded defaults.
 	withTempBase(t)

@@ -44,29 +44,6 @@ func ValidID(kind, id string) bool {
 // LooksLikeID reports whether s has the shape of any ID.
 func LooksLikeID(s string) bool { return idPattern.MatchString(s) }
 
-func idPrefix(kind string) string {
-	if kind == "agent" {
-		return IDPrefixAgent
-	}
-	return IDPrefixJob
-}
-
-// scanID reads the top-level id key from the frontmatter as text. It works
-// when the YAML does not parse.
-func scanID(data []byte) string {
-	block, ok := extractFM(data)
-	if !ok {
-		return ""
-	}
-	sc := bufio.NewScanner(bytes.NewReader(block))
-	for sc.Scan() {
-		if v, ok := strings.CutPrefix(sc.Text(), "id:"); ok {
-			return strings.Trim(strings.TrimSpace(v), `"'`)
-		}
-	}
-	return ""
-}
-
 // SetID writes id as the first frontmatter key and removes an old top-level
 // id line. A file with no frontmatter gets a new block. All other bytes stay.
 func SetID(path, id string) error {
@@ -124,4 +101,27 @@ func (j *Job) AssignID(id string) error {
 	}
 	j.ID, j.IDState, j.Hash = id, IDOK, fileHash(out)
 	return nil
+}
+
+func idPrefix(kind string) string {
+	if kind == "agent" {
+		return IDPrefixAgent
+	}
+	return IDPrefixJob
+}
+
+// scanID reads the top-level id key from the frontmatter as text. It works
+// when the YAML does not parse.
+func scanID(data []byte) string {
+	block, ok := extractFM(data)
+	if !ok {
+		return ""
+	}
+	sc := bufio.NewScanner(bytes.NewReader(block))
+	for sc.Scan() {
+		if v, ok := strings.CutPrefix(sc.Text(), "id:"); ok {
+			return strings.Trim(strings.TrimSpace(v), `"'`)
+		}
+	}
+	return ""
 }

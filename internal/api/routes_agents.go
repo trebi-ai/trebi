@@ -837,130 +837,174 @@ func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, rows []w
 	if len(list) == 0 {
 		return
 	}
-	owners := make([]string, 0, len(list))
-	byOwner := make(map[string]int, len(list))
+	r := newAgentRollup(rows, list)
 	for i := range list {
-		owners = append(owners, list[i].ID)
-		byOwner[list[i].ID] = i
 		s.setAgentEmail(ctx, &list[i], wsID)
 	}
-	// ownerOf maps a job or agent ID to the agent ID that owns its lane.
-	ownerOf := make(map[string]string, len(rows))
-	for _, row := range rows {
-		switch {
-		case row.Kind == "agent":
-			ownerOf[row.ID] = row.ID
-		case row.OwnerID != "":
-			ownerOf[row.ID] = row.OwnerID
-		}
-	}
-	if costs, err := s.runs.OwnerCosts(ctx, wsID, owners); err == nil {
-		for owner, i := range byOwner {
-			list[i].CostMTD = costs[owner]
-			if list[i].Budget != nil {
-				list[i].Budget.SpentUSD = costs[owner]
-				switch {
-				case costs[owner] >= list[i].Budget.MonthlyUSD:
-					list[i].Budget.State = "exceeded"
-				case list[i].Budget.MonthlyUSD > 0 && costs[owner] >= list[i].Budget.MonthlyUSD*0.8:
-					list[i].Budget.State = "warn"
-				default:
-					list[i].Budget.State = "ok"
-				}
-			}
-		}
+	if costs, err := s.runs.OwnerCosts(ctx, wsID, r.owners()); err == nil {
+		r.setCosts(costs)
 	}
 	if items, err := s.alerts.List(ctx, alerts.ListOpts{Workspace: wsID, Status: string(alerts.InboxUnread), Limit: 200}); err == nil {
 		for _, item := range items {
-			owner := ownerOf[item.JobID]
-			if i, ok := byOwner[owner]; ok {
-				list[i].OpenItems++
+			if p := r.agent(r.ownerOf[item.JobID]); p != nil {
+				p.OpenItems++
 			}
 		}
 	}
 	if convs, err := s.conv.List(ctx, conversations.ListOpts{Workspace: wsID, Limit: 200}); err == nil {
 		for _, conv := range convs {
-			if i, ok := byOwner[conv.OperatorID]; ok {
-				list[i].OpenConversations++
+			if p := r.agent(conv.OperatorID); p != nil {
+				p.OpenConversations++
 			}
 		}
 	}
 	if schedules, err := s.sched.List(ctx, schedule.ListOpts{Workspace: wsID, Limit: maxListLimit}); err == nil {
 		for _, row := range schedules {
-			i, ok := byOwner[ownerOf[row.JobID]]
-			if !ok || row.NextDueAt == "" {
-				continue
-			}
-			if due, err := time.Parse(time.RFC3339, row.NextDueAt); err == nil && (list[i].NextRunAt == nil || due.Before(*list[i].NextRunAt)) {
-				due := due
-				list[i].NextRunAt = &due
-			}
+			r.setNextRun(row.JobID, row.NextDueAt)
 		}
 	}
 	recent, _ := s.runs.List(ctx, runs.ListOpts{Workspace: wsID, Limit: maxListLimit})
-	live := map[string]bool{}
-	last := map[string]runs.RunSummary{}
-	tail := map[string][]recentRun{} // per owner, newest first, capped
-	runs7 := map[string]int{}
-	ok7 := map[string]int{}
-	window := time.Now().Add(-7 * 24 * time.Hour)
-	for _, run := range recent {
-		owner := ownerOf[run.JobID]
-		if owner == "" {
-			continue
-		}
-		if withRuns {
-			if n := len(tail[owner]); n < recentRunCap {
-				tail[owner] = append(tail[owner], recentRun{
-					ID:        run.ID,
-					Status:    string(run.Status),
-					StartedAt: run.StartedAt.UTC().Format(time.RFC3339Nano),
-				})
-			}
-			if !run.StartedAt.Before(window) {
-				runs7[owner]++
-				if run.Status == runs.StatusComplete {
-					ok7[owner]++
-				}
-			}
-		}
-		if run.Status.IsLive() {
-			live[owner] = true
-		}
-		if _, exists := last[owner]; !exists && !run.Status.IsLive() {
-			last[owner] = runs.RunSummary{
-				ID: run.ID, Status: run.Status, EndReason: run.EndReason,
-				StartedAt: run.StartedAt, DurationMS: run.DurationMS,
-				CostUSD: run.Tokens.CostUSD,
-			}
+	r.setRuns(recent, withRuns, time.Now().Add(-7*24*time.Hour))
+}
+
+// agentRollup maps index rows to the agents of one list page.
+type agentRollup struct {
+	list    []agentPayload
+	byOwner map[string]int    // agent ID → index in list
+	ownerOf map[string]string // job or agent ID → agent ID that owns its lane
+}
+
+// runTally collects the run facts of each owner, newest run first.
+type runTally struct {
+	live  map[string]bool
+	last  map[string]runs.RunSummary
+	tail  map[string][]recentRun
+	runs7 map[string]int
+	ok7   map[string]int
+}
+
+func newAgentRollup(rows []workspaces.JobRow, list []agentPayload) *agentRollup {
+	r := &agentRollup{list: list, byOwner: make(map[string]int, len(list)), ownerOf: make(map[string]string, len(rows))}
+	for i := range list {
+		r.byOwner[list[i].ID] = i
+	}
+	for _, row := range rows {
+		switch {
+		case row.Kind == "agent":
+			r.ownerOf[row.ID] = row.ID
+		case row.OwnerID != "":
+			r.ownerOf[row.ID] = row.OwnerID
 		}
 	}
-	for owner, i := range byOwner {
-		if summary, ok := last[owner]; ok {
-			summary := summary
-			list[i].LastRun = &summary
+	return r
+}
+
+func (r *agentRollup) owners() []string {
+	out := make([]string, 0, len(r.list))
+	for i := range r.list {
+		out = append(out, r.list[i].ID)
+	}
+	return out
+}
+
+// agent returns the list entry of an agent ID, or nil.
+func (r *agentRollup) agent(owner string) *agentPayload {
+	if i, ok := r.byOwner[owner]; ok {
+		return &r.list[i]
+	}
+	return nil
+}
+
+func (r *agentRollup) setCosts(costs map[string]float64) {
+	for owner, i := range r.byOwner {
+		p := &r.list[i]
+		p.CostMTD = costs[owner]
+		if p.Budget == nil {
+			continue
+		}
+		p.Budget.SpentUSD = costs[owner]
+		switch {
+		case costs[owner] >= p.Budget.MonthlyUSD:
+			p.Budget.State = "exceeded"
+		case p.Budget.MonthlyUSD > 0 && costs[owner] >= p.Budget.MonthlyUSD*0.8:
+			p.Budget.State = "warn"
+		default:
+			p.Budget.State = "ok"
+		}
+	}
+}
+
+// setNextRun keeps the earliest due time of the jobs in an agent lane.
+func (r *agentRollup) setNextRun(jobID, nextDueAt string) {
+	p := r.agent(r.ownerOf[jobID])
+	if p == nil || nextDueAt == "" {
+		return
+	}
+	if due, err := time.Parse(time.RFC3339, nextDueAt); err == nil && (p.NextRunAt == nil || due.Before(*p.NextRunAt)) {
+		p.NextRunAt = &due
+	}
+}
+
+// setRuns sets the last run, the sparkline, and the status. recent is newest first.
+func (r *agentRollup) setRuns(recent []*runs.Run, withRuns bool, window time.Time) {
+	t := runTally{live: map[string]bool{}, last: map[string]runs.RunSummary{}, tail: map[string][]recentRun{}, runs7: map[string]int{}, ok7: map[string]int{}}
+	for _, run := range recent {
+		if owner := r.ownerOf[run.JobID]; owner != "" {
+			t.add(owner, run, withRuns, window)
+		}
+	}
+	for owner, i := range r.byOwner {
+		p := &r.list[i]
+		if summary, ok := t.last[owner]; ok {
+			p.LastRun = &summary
 		}
 		if withRuns {
-			rr := tail[owner]
+			rr := t.tail[owner]
 			slices.Reverse(rr)
 			if rr == nil {
 				rr = []recentRun{}
 			}
-			list[i].RecentRuns = rr
-			list[i].Runs7d = runs7[owner]
-			list[i].Ok7d = ok7[owner]
+			p.RecentRuns, p.Runs7d, p.Ok7d = rr, t.runs7[owner], t.ok7[owner]
 		}
 		switch {
-		case list[i].Disabled:
-			list[i].Status = "disabled"
-		case list[i].ParseError != "":
-			list[i].Status = "error"
-		case live[owner]:
-			list[i].Status = "running"
-		case list[i].OpenItems > 0:
-			list[i].Status = "attention"
+		case p.Disabled:
+			p.Status = "disabled"
+		case p.ParseError != "":
+			p.Status = "error"
+		case t.live[owner]:
+			p.Status = "running"
+		case p.OpenItems > 0:
+			p.Status = "attention"
 		default:
-			list[i].Status = "idle"
+			p.Status = "idle"
+		}
+	}
+}
+
+func (t *runTally) add(owner string, run *runs.Run, withRuns bool, window time.Time) {
+	if withRuns {
+		if len(t.tail[owner]) < recentRunCap {
+			t.tail[owner] = append(t.tail[owner], recentRun{
+				ID:        run.ID,
+				Status:    string(run.Status),
+				StartedAt: run.StartedAt.UTC().Format(time.RFC3339Nano),
+			})
+		}
+		if !run.StartedAt.Before(window) {
+			t.runs7[owner]++
+			if run.Status == runs.StatusComplete {
+				t.ok7[owner]++
+			}
+		}
+	}
+	if run.Status.IsLive() {
+		t.live[owner] = true
+	}
+	if _, exists := t.last[owner]; !exists && !run.Status.IsLive() {
+		t.last[owner] = runs.RunSummary{
+			ID: run.ID, Status: run.Status, EndReason: run.EndReason,
+			StartedAt: run.StartedAt, DurationMS: run.DurationMS,
+			CostUSD: run.Tokens.CostUSD,
 		}
 	}
 }

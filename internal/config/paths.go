@@ -424,6 +424,9 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.add("defaults.session.nudge", cfg.Defaults.Session.Nudge, "")
 	l.add("defaults.session.if_running", cfg.Defaults.Session.IfRunning, "")
 	l.add("defaults.memory.max_bytes", strconv.Itoa(cfg.Defaults.Memory.MaxBytes), strconv.Itoa(DefaultMemoryMaxBytes))
+	st := cfg.Defaults.State.Resolved()
+	l.add("defaults.state.max_rows", strconv.Itoa(st.MaxRows), strconv.Itoa(DefaultStateMaxRows))
+	l.add("defaults.state.max_bytes", strconv.FormatInt(st.MaxBytes, 10), strconv.FormatInt(DefaultStateMaxBytes, 10))
 	l.add("api.host", cfg.API.HostOrDefault(), DefaultAPIHost)
 	l.add("api.port", strconv.Itoa(cfg.API.PortOrDefault()), strconv.Itoa(DefaultAPIPort))
 	l.add("api.tls.cert", cfg.API.TLS.Cert, "")
@@ -642,6 +645,20 @@ func (c *Config) setDefaultsKey(path, value string) (handled bool, err error) {
 			return true, fmt.Errorf("%s: want non-negative integer", path)
 		}
 		c.Defaults.Memory.MaxBytes = n
+		return true, nil
+	case "defaults.state.max_rows", "defaults.state.max_bytes":
+		n := int64(0)
+		if v := strings.TrimSpace(value); v != "" {
+			var err error
+			if n, err = strconv.ParseInt(v, 10, 64); err != nil || n < 0 {
+				return true, fmt.Errorf("%s: want non-negative integer", path)
+			}
+		}
+		if path == "defaults.state.max_rows" {
+			c.Defaults.State.MaxRows = int(n)
+		} else {
+			c.Defaults.State.MaxBytes = n
+		}
 		return true, nil
 	}
 	return false, nil
@@ -1151,6 +1168,8 @@ func pathKeyDescriptions() map[string]string {
 		"defaults.session.nudge":        "Idle delay before typing continue (default off; set e.g. 5m)",
 		"defaults.session.if_running":   "Overlap policy: queue|skip|replace",
 		"defaults.memory.max_bytes":     "Cap on MEMORY.md bytes in the launch prompt; 0 = no cap (default 16384)",
+		"defaults.state.max_rows":       "Rows in trebi state for each job or agent (default 100000)",
+		"defaults.state.max_bytes":      "Bytes in trebi state for each job or agent (default 52428800)",
 		"api.host":                      "HTTP bind host (default 127.0.0.1; 0.0.0.0 opens LAN)",
 		"api.port":                      "HTTP bind port (default 7433; 0 = ephemeral, written to api.json)",
 		"api.tls.cert":                  "PEM cert path; required with api.tls.key for non-loopback HTTPS",

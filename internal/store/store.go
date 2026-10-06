@@ -171,37 +171,6 @@ const idRebuildVersion = 42
 // with no ID. The ID migration script fills them.
 var ErrIDMigration = errors.New("the database needs a one-time ID migration. Run: uv run scripts/migrate-ids.py --apply")
 
-// idsFilled reports whether the v42 rebuild can run: each required ID
-// column is filled. A new install has no rows, so it passes.
-func idsFilled(tx *sql.Tx) error {
-	checks := []struct{ table, where string }{
-		{"job_index", "id IS NULL OR (owner <> '' AND owner_id = '')"},
-		{"runs", "job_id IS NULL"},
-		{"event_queue", "job_id IS NULL"},
-		{"event_outcomes", "job_id IS NULL"},
-		{"schedules", "job_id IS NULL"},
-		{"inbox_items", "job_id IS NULL AND COALESCE(job, '') <> ''"},
-		{"requests", "job_id IS NULL"},
-		{"agent_proposals", "agent_id IS NULL"},
-		{"conversations", "operator <> '' AND operator_id = ''"},
-		{"email_messages", "agent_id IS NULL AND agent <> ''"},
-	}
-	var missing []string
-	for _, c := range checks {
-		var n int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM ` + c.table + ` WHERE ` + c.where).Scan(&n); err != nil {
-			return fmt.Errorf("check %s ids: %w", c.table, err)
-		}
-		if n > 0 {
-			missing = append(missing, fmt.Sprintf("%s %d", c.table, n))
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("%w (rows with no ID: %s)", ErrIDMigration, strings.Join(missing, ", "))
-	}
-	return nil
-}
-
 // backup copies the database to <path>.v<version>.bak before a migration.
 func backup(d *sql.DB, version int) error {
 	var path string
@@ -370,4 +339,35 @@ func OwnerRefSQL(idCol, wsCol string) string {
 	agent := `(SELECT o.id FROM job_index o WHERE o.id = ? OR (o.workspace_id = ` + wsCol +
 		` AND o.name = ? AND o.retired_at IS NULL))`
 	return `(` + idCol + ` IN ` + agent + ` OR ` + idCol + ` IN (SELECT ji.id FROM job_index ji WHERE ji.owner_id IN ` + agent + `))`
+}
+
+// idsFilled reports whether the v42 rebuild can run: each required ID
+// column is filled. A new install has no rows, so it passes.
+func idsFilled(tx *sql.Tx) error {
+	checks := []struct{ table, where string }{
+		{"job_index", "id IS NULL OR (owner <> '' AND owner_id = '')"},
+		{"runs", "job_id IS NULL"},
+		{"event_queue", "job_id IS NULL"},
+		{"event_outcomes", "job_id IS NULL"},
+		{"schedules", "job_id IS NULL"},
+		{"inbox_items", "job_id IS NULL AND COALESCE(job, '') <> ''"},
+		{"requests", "job_id IS NULL"},
+		{"agent_proposals", "agent_id IS NULL"},
+		{"conversations", "operator <> '' AND operator_id = ''"},
+		{"email_messages", "agent_id IS NULL AND agent <> ''"},
+	}
+	var missing []string
+	for _, c := range checks {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM ` + c.table + ` WHERE ` + c.where).Scan(&n); err != nil {
+			return fmt.Errorf("check %s ids: %w", c.table, err)
+		}
+		if n > 0 {
+			missing = append(missing, fmt.Sprintf("%s %d", c.table, n))
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w (rows with no ID: %s)", ErrIDMigration, strings.Join(missing, ", "))
+	}
+	return nil
 }
