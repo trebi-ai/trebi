@@ -47,6 +47,7 @@ type Service struct {
 	runs    Runs
 	grant   Grant
 	reports *ReportStore
+	decider Decider
 	opts    Options
 	now     func() time.Time
 	log     *slog.Logger
@@ -85,7 +86,22 @@ type CreateOpts struct {
 	Report    string        `json:"report,omitempty"`
 	Delivery  DeliveryMode  `json:"delivery,omitempty"`
 	ExpiresIn time.Duration `json:"-"`
+	// Source, HopID, and TraceID mark a request that the daemon raises.
+	Source  string `json:"-"`
+	HopID   string `json:"-"`
+	TraceID string `json:"-"`
 }
+
+// SourceChain marks a chain limit request.
+const SourceChain = "chain"
+
+// Decider gets the decision of a request that the daemon raised.
+type Decider interface {
+	RequestDecided(ctx context.Context, r Request) error
+}
+
+// WithDecider sets the receiver of chain request decisions.
+func (s *Service) WithDecider(d Decider) { s.decider = d }
 
 // Create opens a request for the run of actor. Only a run can ask, and only
 // when the cloud plan grants requests.
@@ -93,62 +109,14 @@ func (s *Service) Create(ctx context.Context, actor tools.Actor, o CreateOpts) (
 	if actor.RunID == "" {
 		return Request{}, ErrNotRun
 	}
-	if !s.granted() {
-		return Request{}, ErrPlan
-	}
-	run, err := s.runs.Get(ctx, actor.RunID)
-	if err != nil {
-		return Request{}, fmt.Errorf("run %s: %w", actor.RunID, err)
-	}
-	now := s.now()
-	r := Request{
-		ID: ulid.Make().String(), RunID: run.ID, WorkspaceID: run.Workspace, JobID: run.JobID, JobName: run.JobName,
-		Kind: run.Kind, SessionID: run.SessionID, Harness: run.Harness, Runtime: run.Runtime,
-		WorkingDir: run.WorkingDir, ConversationKey: run.ConversationKey, ConversationID: run.ConversationID,
-		Type: o.Type, Title: strings.TrimSpace(o.Title), Summary: o.Summary, Target: o.Target,
-		Payload: o.Payload, Allow: o.Allow, Delivery: o.Delivery,
-		Status: StatusPending, DeliveryState: DeliveryNone,
-		CreatedAt: now, UpdatedAt: now, Revision: 1,
-	}
-	if err := r.Validate(); err != nil {
-		return Request{}, err
-	}
-	if o.ExpiresIn < 0 {
-		return Request{}, invalid("expires_in", "must not be negative")
-	}
-	exp := o.ExpiresIn
-	if exp == 0 {
-		exp = s.opts.ExpireAfter
-	}
-	at := now.Add(exp)
-	r.ExpiresAt = &at
-	if o.Report != "" {
-		if r.ReportKind, r.ReportSHA256, err = s.reports.Snapshot(ctx, r.ID, r.WorkingDir, o.Report); err != nil {
-			return Request{}, err
-		}
-	}
-	payload, _ := json.Marshal(r.Payload)
-	allow, _ := json.Marshal(r.Allow)
-	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO requests (id, run_id, workspace_id, job_id, kind,
-  session_id, harness, runtime, working_dir, conversation_key, conversation_id, type, title,
-  summary, target, payload_json, allow_json, report_kind, report_sha256, delivery, status,
-  expires_at, delivery_state, source, hop_id, trace_id, created_at, updated_at, revision)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			r.ID, r.RunID, r.WorkspaceID, r.JobID, r.Kind, r.SessionID, r.Harness, r.Runtime,
-			r.WorkingDir, r.ConversationKey, r.ConversationID, string(r.Type), r.Title, r.Summary,
-			r.Target, string(payload), string(allow), r.ReportKind, r.ReportSHA256,
-			string(r.Delivery), string(r.Status), fmtTime(at), string(r.DeliveryState),
-			r.Source, r.HopID, r.TraceID, fmtTime(now), fmtTime(now), r.Revision)
-		return err
-	}, r.event("request.created", "created"))
-	if err != nil {
-		if r.ReportKind != "" {
-			_ = s.reports.Remove(r.ID) // best effort; the row is not there
-		}
-		return Request{}, err
-	}
-	return r, nil
+	o.Source, o.HopID, o.TraceID = "", "", ""
+	return s.create(ctx, actor.RunID, o)
+}
+
+// CreateSystem creates a request that the daemon raises for a run, with no
+// run token. Source and HopID mark its origin.
+func (s *Service) CreateSystem(ctx context.Context, runID string, o CreateOpts) (Request, error) {
+	return s.create(ctx, runID, o)
 }
 
 // event is the thin bus frame of one request change.
@@ -315,6 +283,66 @@ func (s *Service) RunEnded(ctx context.Context, runID string, _ runs.Status) {
 	}
 }
 
+func (s *Service) create(ctx context.Context, runID string, o CreateOpts) (Request, error) {
+	if !s.granted() {
+		return Request{}, ErrPlan
+	}
+	run, err := s.runs.Get(ctx, runID)
+	if err != nil {
+		return Request{}, fmt.Errorf("run %s: %w", runID, err)
+	}
+	now := s.now()
+	r := Request{
+		ID: ulid.Make().String(), RunID: run.ID, WorkspaceID: run.Workspace, JobID: run.JobID, JobName: run.JobName,
+		Kind: run.Kind, SessionID: run.SessionID, Harness: run.Harness, Runtime: run.Runtime,
+		WorkingDir: run.WorkingDir, ConversationKey: run.ConversationKey, ConversationID: run.ConversationID,
+		Type: o.Type, Title: strings.TrimSpace(o.Title), Summary: o.Summary, Target: o.Target,
+		Payload: o.Payload, Allow: o.Allow, Delivery: o.Delivery,
+		Status: StatusPending, DeliveryState: DeliveryNone,
+		Source: o.Source, HopID: o.HopID, TraceID: o.TraceID,
+		CreatedAt: now, UpdatedAt: now, Revision: 1,
+	}
+	if err := r.Validate(); err != nil {
+		return Request{}, err
+	}
+	if o.ExpiresIn < 0 {
+		return Request{}, invalid("expires_in", "must not be negative")
+	}
+	exp := o.ExpiresIn
+	if exp == 0 {
+		exp = s.opts.ExpireAfter
+	}
+	at := now.Add(exp)
+	r.ExpiresAt = &at
+	if o.Report != "" {
+		if r.ReportKind, r.ReportSHA256, err = s.reports.Snapshot(ctx, r.ID, r.WorkingDir, o.Report); err != nil {
+			return Request{}, err
+		}
+	}
+	payload, _ := json.Marshal(r.Payload)
+	allow, _ := json.Marshal(r.Allow)
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO requests (id, run_id, workspace_id, job_id, kind,
+  session_id, harness, runtime, working_dir, conversation_key, conversation_id, type, title,
+  summary, target, payload_json, allow_json, report_kind, report_sha256, delivery, status,
+  expires_at, delivery_state, source, hop_id, trace_id, created_at, updated_at, revision)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			r.ID, r.RunID, r.WorkspaceID, r.JobID, r.Kind, r.SessionID, r.Harness, r.Runtime,
+			r.WorkingDir, r.ConversationKey, r.ConversationID, string(r.Type), r.Title, r.Summary,
+			r.Target, string(payload), string(allow), r.ReportKind, r.ReportSHA256,
+			string(r.Delivery), string(r.Status), fmtTime(at), string(r.DeliveryState),
+			r.Source, r.HopID, r.TraceID, fmtTime(now), fmtTime(now), r.Revision)
+		return err
+	}, r.event("request.created", "created"))
+	if err != nil {
+		if r.ReportKind != "" {
+			_ = s.reports.Remove(r.ID) // best effort; the row is not there
+		}
+		return Request{}, err
+	}
+	return r, nil
+}
+
 func (s *Service) granted() bool {
 	return s.grant != nil && s.grant.Entitlement().Has(entitle.Requests)
 }
@@ -394,6 +422,11 @@ func topicFor(st Status) string {
 func (s *Service) afterClose(ctx context.Context, r Request) {
 	if r.Delivery != DeliveryResume {
 		return
+	}
+	if r.Source == SourceChain && s.decider != nil && (r.Status == StatusAnswered || r.Status == StatusExpired) {
+		if err := s.decider.RequestDecided(ctx, r); err != nil {
+			s.log.Warn("chain request decided", "request_id", r.ID, "err", err)
+		}
 	}
 	if err := s.runs.WakeParked(ctx, r.RunID); err != nil {
 		s.log.Warn("request deliver", "run_id", r.RunID, "err", err)

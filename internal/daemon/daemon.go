@@ -248,7 +248,8 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		reqOpts = requests.Options{ExpireAfter: cfg.Requests.ExpireAfterDuration(), Retain: cfg.Requests.RetainDuration()}
 	}
 	reqSvc := requests.NewService(st, r, cl, requests.NewReportStore(home.RequestsDir()), reqOpts)
-	chainSvc := chains.NewService(st, ws, conv, r, slog.Default().With("source", "chains"))
+	chainSvc := chains.NewService(st, ws, conv, r, reqSvc, slog.Default().With("source", "chains"))
+	reqSvc.WithDecider(chainSvc)
 	parker := runs.NewParker(r, launcher, reqSvc, chainSvc)
 	r.SetParker(parker)
 	c := &ControlPlane{
@@ -298,6 +299,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	c.Router = notify.NewResolver(c.notify, connectorChannels{conn: connector}, em.Configured)
 	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get})
 	c.Alerts.SetDoctor(c.Alerts.CollectDoctorFindings)
+	chainSvc.WithAlerts(c.Alerts)
 	c.Alerts.SetProposalContent(func(ctx context.Context, id string) (string, string, bool) {
 		p, err := c.Proposals.Get(ctx, id)
 		if err != nil {

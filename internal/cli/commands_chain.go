@@ -3,8 +3,10 @@ package cli
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 
@@ -47,6 +49,17 @@ func chainCommand() *cli.Command {
 				Usage:     "show one hop with its full text and both ends",
 				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
 				Action:    runChainHop,
+			},
+			{
+				Name:      "stop",
+				ArgsUsage: "<trace-id>",
+				Usage:     "stop a chain: its live runs end and each waiting agent gets one turn to finish",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "reason", Usage: "why the chain stops"},
+					&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "confirm the stop"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runChainStop,
 			},
 		},
 	}
@@ -212,6 +225,32 @@ func runChainHop(_ context.Context, c *cli.Command) error {
 	if h.Context != "" {
 		fmt.Fprintf(out, "\nContext:\n%s\n", h.Context)
 	}
+	return nil
+}
+
+func runChainStop(_ context.Context, c *cli.Command) error {
+	if c.Args().Len() != 1 {
+		return fmt.Errorf("usage: trebi chain stop <trace-id>")
+	}
+	if os.Getenv("TREBI_RUN_TOKEN") != "" {
+		return errors.New("an agent cannot stop a chain; reply or end the turn instead")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var res chains.StopResult
+	if err := client.DoHTTP(request.BuildChainStop(c.Args().First(), c.String("reason"), c.Bool("yes")), &res); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, res)
+	}
+	out := outWriter(c)
+	fmt.Fprintf(out, "Stopped chain %s.\n", c.Args().First())
+	fmt.Fprintf(out, "Ended runs: %s\n", cmp.Or(strings.Join(res.KilledRuns, ", "), "none"))
+	fmt.Fprintf(out, "Stopped hops: %s\n", cmp.Or(strings.Join(res.CancelledHops, ", "), "none"))
+	fmt.Fprintf(out, "Agents that finish now: %s\n", cmp.Or(strings.Join(res.Unwinding, ", "), "none"))
 	return nil
 }
 

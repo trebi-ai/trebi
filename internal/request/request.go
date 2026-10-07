@@ -760,6 +760,19 @@ func BuildHopGetPath(id string) string {
 	return "/v1/hops/" + url.PathEscape(id)
 }
 
+// BuildChainStop builds POST /v1/chains/{trace_id}/stop.
+func BuildChainStop(traceID, reason string, confirm bool) HTTPRequest {
+	body := map[string]any{}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	return HTTPRequest{
+		Method: "POST",
+		Path:   withQuery("/v1/chains/"+url.PathEscape(traceID)+"/stop", confirmQ(confirm)),
+		Body:   body,
+	}
+}
+
 // BuildAgentEscalate builds POST /v1/workspaces/{id}/agents/{name}/escalate.
 func BuildAgentEscalate(workspaceID, name, to, reason, runID string) HTTPRequest {
 	body := map[string]string{"to": to, "reason": reason}

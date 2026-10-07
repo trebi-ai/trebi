@@ -55,6 +55,9 @@ const (
 	KindRequestUndelivered Kind = "request_delivery_failed"
 	// KindTriggerFlood is a job whose queue is full, so Trebi drops events.
 	KindTriggerFlood Kind = "trigger_flood"
+	// KindChainLimited is a chain that reached its limit with no request to
+	// raise it.
+	KindChainLimited Kind = "chain_limited"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -716,6 +719,9 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindRequestUndelivered: {
 			Kind: KindRequestUndelivered, Severity: SeverityError, InboxKind: InboxFailure,
 		},
+		KindChainLimited: {
+			Kind: KindChainLimited, Severity: SeverityAttention, InboxKind: InboxHealth,
+		},
 	}
 }
 
@@ -843,6 +849,8 @@ func (o RaiseOpts) defaultSubject() string {
 		return "flood/" + o.WorkspaceID + "/" + o.jobRef()
 	case KindRequest, KindRequestUndelivered:
 		return "request/" + o.RequestID
+	case KindChainLimited:
+		return "chain/" + o.TraceID
 	}
 	return o.Kind.String()
 }
@@ -864,6 +872,7 @@ var defaultTitles = map[Kind]string{
 	KindConnectorUpdate:       "Connector update available",
 	KindRequest:               "Request",
 	KindTriggerFlood:          "Too many events",
+	KindChainLimited:          "Agents reached a chain limit",
 }
 
 func (o RaiseOpts) defaultTitle() string {

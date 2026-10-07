@@ -80,6 +80,9 @@ func newConfirmGate() *confirmGate {
 		"DELETE /v1/cloud/link": {-1, func(string, *http.Request) string {
 			return "unlinks this daemon from the cloud; remote clients lose access"
 		}, false},
+		"POST /v1/chains/{trace_id}/stop": {2, func(n string, _ *http.Request) string {
+			return "stops chain " + n + "; its live runs end and each waiting agent gets one turn to finish"
+		}, false},
 		"DELETE /v1/hooks/{id}": {2, func(n string, _ *http.Request) string {
 			return "revokes hook " + n + "; deliveries to its URL stop"
 		}, false},

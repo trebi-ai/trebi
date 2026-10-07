@@ -84,3 +84,19 @@ const stoppedReplyText = "(The chain was stopped by a person. Finish with what y
 
 // limitText is the refusal of a hop at a chain limit with no request.
 const limitText = "The chain reached its limit. Finish with what you have and reply."
+
+// heldMessage is the tool result for an agent whose ask waits for a person.
+func heldMessage(to, hopID string) string {
+	return fmt.Sprintf("The chain reached its limit, so the ask to %s (hop %s) waits for a person. End your turn now. The answer starts your next turn.", to, hopID)
+}
+
+// limitTitle is the title of a chain limit request.
+func limitTitle(reason RefuseReason, l Limits) string {
+	switch reason {
+	case RefuseHops:
+		return fmt.Sprintf("Agents reached the limit of %d hand-overs", l.MaxHops)
+	case RefuseUSD:
+		return fmt.Sprintf("Agents reached the cost limit of $%.2f", l.MaxUSD)
+	}
+	return fmt.Sprintf("Agents reached the limit of %d steps", l.MaxTurns)
+}

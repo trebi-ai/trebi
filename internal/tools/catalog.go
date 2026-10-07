@@ -2232,6 +2232,21 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				return mcpGet(request.BuildChainGetPath(id)), nil
 			}),
 			"hop": idGet("GET /v1/hops/{id}", "id", "hop_01JAC", request.BuildHopGetPath),
+			"stop": func() Action {
+				e := act("POST /v1/chains/{trace_id}/stop", Input{"trace_id": "01JAAA", "reason": "Wrong plan.", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
+					v, err := in.head("trace_id", "reason")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					confirm, err := in.flag("confirm")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					return request.BuildChainStop(v[0], v[1], confirm), nil
+				})
+				e.Destructive = true
+				return e
+			}(),
 		},
 		"request": {
 			"create": actSamples("POST /v1/requests", Input{

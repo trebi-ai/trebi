@@ -108,6 +108,40 @@ func TestChainAskRoutes(t *testing.T) {
 	}
 }
 
+func TestChainStopRoute(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	writeTeamFixture(t, wsDir)
+	wsID := addWorkspace(t, base, wsDir, "chain-stop")
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	tok := "ceo-token-00000000000000000000000"
+	insertAgentCaller(t, st, wsID, "ceo", tok, "running")
+	agents := base + "/v1/workspaces/" + wsID + "/agents/"
+	if code, body := doScoped(t, "POST", agents+"cfo/ask", tok, map[string]any{"text": "Budget?"}); code != http.StatusCreated {
+		t.Fatalf("ask: %d %v", code, body)
+	}
+	stop := base + "/v1/chains/trace/stop"
+	code, body, _ := doJSON(t, "POST", stop, map[string]any{"reason": "Wrong plan."})
+	if code != http.StatusBadRequest || errDetails(body)["confirm_required"] == nil {
+		t.Fatalf("no confirm: %d %v", code, body)
+	}
+	if code, body := doScoped(t, "POST", stop+"?confirm=1", tok, map[string]any{}); code != http.StatusForbidden {
+		t.Fatalf("agent stop: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "POST", stop+"?confirm=1", map[string]any{"reason": "Wrong plan."})
+	if hops, _ := body["cancelled_hops"].([]any); code != 200 || body["stopped"] != true || len(hops) != 1 {
+		t.Fatalf("stop: %d %v", code, body)
+	}
+	code, body = doScoped(t, "POST", agents+"legal/ask", tok, map[string]any{"text": "Again?"})
+	if code != http.StatusConflict || errCode(body) != "chain_stopped" {
+		t.Fatalf("ask after stop: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/chains/trace", nil)
+	if chain, _ := body["chain"].(map[string]any); code != 200 || chain["status"] != "stopped" || chain["stop_reason"] != "Wrong plan." {
+		t.Fatalf("show: %d %v", code, body)
+	}
+}
+
 func TestChainPairRate(t *testing.T) {
 	_, base, dir := startAPI(t)
 	wsDir := t.TempDir()

@@ -2,6 +2,7 @@ package chains
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -9,21 +10,47 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
-type teamStub struct{ agents []workspaces.TeamAgent }
+type teamStub struct {
+	agents []workspaces.TeamAgent
+	limits *Limits
+}
 
 func (t teamStub) TeamAgents(context.Context, string) ([]workspaces.TeamAgent, error) {
 	return t.agents, nil
 }
 
-func (teamStub) ChainLimits(context.Context, string) (Limits, bool, error) {
-	return workspaces.DefaultChainLimits(), true, nil
+func (t teamStub) ChainLimits(context.Context, string) (Limits, bool, error) {
+	return *t.limits, true, nil
+}
+
+// reqStub records system requests; plan false answers ErrPlan.
+type reqStub struct {
+	plan bool
+	got  []requests.CreateOpts
+}
+
+func (r *reqStub) CreateSystem(_ context.Context, runID string, o requests.CreateOpts) (requests.Request, error) {
+	if !r.plan {
+		return requests.Request{}, requests.ErrPlan
+	}
+	r.got = append(r.got, o)
+	return requests.Request{ID: "REQ" + runID, RunID: runID, HopID: o.HopID, Source: o.Source}, nil
+}
+
+type alertStub struct{ got []alerts.RaiseOpts }
+
+func (a *alertStub) Raise(_ context.Context, o alerts.RaiseOpts) (string, error) {
+	a.got = append(a.got, o)
+	return "A1", nil
 }
 
 // convStub queues every hop and answers TurnReply from a map.
@@ -66,6 +93,9 @@ type fixture struct {
 	runs   *runs.Service
 	conv   *convStub
 	resume *resumeStub
+	req    *reqStub
+	alerts *alertStub
+	limits *Limits
 }
 
 // TestReplyResumesCaller pins C.4 and E.2: the target turn ends with text, a
@@ -224,6 +254,126 @@ func TestParkedTargetKeepsAsk(t *testing.T) {
 	}
 }
 
+// heldAsk builds ceo → cfo → legal with max_hops 1, so the ask to legal is
+// held for a person.
+func (f *fixture) heldAsk(t *testing.T) (cfo *runs.Run, held *AskResult) {
+	t.Helper()
+	f.limits.MaxHops = 1
+	ceo := f.start(t, "ceo", nil)
+	a1 := f.ask(t, ceo, "cfo", KindAsk)
+	cfo = f.start(t, "cfo", a1)
+	f.end(t, ceo, runs.StatusComplete)
+	held = f.ask(t, cfo, "legal", KindAsk)
+	return cfo, held
+}
+
+// TestLimitHoldsHop pins F.1: the hop at a limit is held and a chain request
+// goes to the caller run.
+func TestLimitHoldsHop(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	cfo, held := f.heldAsk(t)
+	if !held.Held || held.Hop.Status != HopHeld || held.Next != "end_turn" || held.RequestID != "REQ"+cfo.ID || held.Hop.RefuseReason != RefuseHops {
+		t.Fatalf("held %+v", held)
+	}
+	o := f.req.got[0]
+	if o.Source != requests.SourceChain || o.HopID != held.Hop.ID || o.Title != "Agents reached the limit of 1 hand-overs" ||
+		!strings.Contains(o.Summary, "ceo → cfo → legal") || o.Target != "agents/legal" {
+		t.Fatalf("request %+v", o)
+	}
+	if c, _ := f.svc.chain(context.Background(), held.Hop.TraceID); c.Status != StatusHeld {
+		t.Fatalf("chain %s", c.Status)
+	}
+}
+
+// TestLimitDecisions pins F.2.
+func TestLimitDecisions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, c := range []struct {
+		decision requests.Decision
+		hop      HopStatus
+		chain    string
+		maxHops  int
+	}{
+		{requests.DecisionApprove, HopQueued, StatusOpen, 2},
+		{requests.DecisionReject, HopStopped, StatusStopped, 1},
+		{requests.DecisionRespond, HopStopped, StatusOpen, 1},
+		{requests.DecisionExpired, HopStopped, StatusStopped, 1},
+	} {
+		f := newFixture(t)
+		_, held := f.heldAsk(t)
+		r := requests.Request{HopID: held.Hop.ID, Source: requests.SourceChain, Status: requests.StatusAnswered,
+			Answer: &requests.Answer{Decision: c.decision}}
+		if c.decision == requests.DecisionExpired {
+			r.Status, r.Answer = requests.StatusExpired, nil
+		}
+		if err := f.svc.RequestDecided(ctx, r); err != nil {
+			t.Fatalf("%s: %v", c.decision, err)
+		}
+		h, _ := f.svc.Hop(ctx, held.Hop.ID)
+		ch, _ := f.svc.chain(ctx, held.Hop.TraceID)
+		if h.Status != c.hop || ch.Status != c.chain || ch.Limits.MaxHops != c.maxHops {
+			t.Fatalf("%s: hop %s chain %s max_hops %d", c.decision, h.Status, ch.Status, ch.Limits.MaxHops)
+		}
+	}
+}
+
+// TestLimitNoGrant pins F.3: no request grant refuses the hop and raises
+// chain_limited.
+func TestLimitNoGrant(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.req.plan = false
+	f.limits.MaxHops = 1
+	ceo := f.start(t, "ceo", nil)
+	a1 := f.ask(t, ceo, "cfo", KindAsk)
+	cfo := f.start(t, "cfo", a1)
+	_, err := f.svc.Ask(context.Background(), AskOpts{Workspace: "ws1", To: "legal", Text: "x", Actor: &tools.Actor{Kind: EndAgent, RunID: cfo.ID}})
+	var ce *Error
+	if !errors.As(err, &ce) || ce.Code != CodeLimit || ce.Reason != RefuseHops || ce.HopID == "" {
+		t.Fatalf("err %v", err)
+	}
+	if h, _ := f.svc.Hop(context.Background(), ce.HopID); h.Status != HopRefused {
+		t.Fatalf("hop %s", h.Status)
+	}
+	if len(f.alerts.got) != 1 || f.alerts.got[0].Kind != alerts.KindChainLimited || f.alerts.got[0].TraceID != a1.Hop.TraceID {
+		t.Fatalf("alerts %+v", f.alerts.got)
+	}
+}
+
+// TestStopUnwinds pins C.5: the live target ends, the parked caller gets one
+// stop notice, and a later ask is refused.
+func TestStopUnwinds(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := context.Background()
+	ceo := f.start(t, "ceo", nil)
+	a1 := f.ask(t, ceo, "cfo", KindAsk)
+	cfo := f.start(t, "cfo", a1)
+	a2 := f.ask(t, ceo, "legal", KindHandoff)
+	f.end(t, ceo, runs.StatusComplete)
+	res, err := f.svc.Stop(ctx, a1.Hop.TraceID, "user", "Wrong plan.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.KilledRuns) != 1 || res.KilledRuns[0] != cfo.ID || len(res.CancelledHops) != 1 || res.CancelledHops[0] != a2.Hop.ID ||
+		len(res.Unwinding) != 1 || res.Unwinding[0] != ceo.ID {
+		t.Fatalf("stop %+v", res)
+	}
+	if f.status(t, cfo.ID) == runs.StatusRunning {
+		t.Fatal("target still running")
+	}
+	if len(f.resume.calls) != 1 || !strings.Contains(f.resume.calls[0].Prompt, stoppedReplyText) {
+		t.Fatalf("resumes %+v", f.resume.calls)
+	}
+	_, err = f.svc.Ask(ctx, AskOpts{Workspace: "ws1", To: "legal", Text: "again", Actor: &tools.Actor{Kind: EndAgent, RunID: ceo.ID}})
+	var ce *Error
+	if !errors.As(err, &ce) || ce.Code != CodeStopped {
+		t.Fatalf("ask after stop: %v", err)
+	}
+}
+
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
@@ -232,7 +382,8 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { st.Close() })
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	team := teamStub{}
+	limits := workspaces.DefaultChainLimits()
+	team := teamStub{limits: &limits}
 	for _, n := range []string{"ceo", "cfo", "legal"} {
 		if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at) VALUES (?,?,?,?,?,?)`,
 			"ag-"+n, "ws1", "agents/"+n, "agents/"+n+"/AGENT.md", "agent", now); err != nil {
@@ -240,8 +391,10 @@ func newFixture(t *testing.T) *fixture {
 		}
 		team.agents = append(team.agents, workspaces.TeamAgent{ID: "ag-" + n, Name: n, Description: n})
 	}
-	f := &fixture{runs: runs.New(st, nil, nil), conv: &convStub{replies: map[string]string{}}, resume: &resumeStub{}}
-	f.svc = NewService(st, team, f.conv, f.runs, nil)
+	f := &fixture{runs: runs.New(st, nil, nil), conv: &convStub{replies: map[string]string{}}, resume: &resumeStub{},
+		req: &reqStub{plan: true}, alerts: &alertStub{}, limits: &limits}
+	f.svc = NewService(st, team, f.conv, f.runs, f.req, nil)
+	f.svc.WithAlerts(f.alerts)
 	f.runs.SetParker(runs.NewParker(f.runs, f.resume, f.svc))
 	return f
 }

@@ -270,11 +270,6 @@ func (s *Service) limitHit(ctx context.Context, c *Chain, h *Hop) (RefuseReason,
 	return "", nil
 }
 
-// atLimit refuses a hop at a chain limit (F.3).
-func (s *Service) atLimit(_ context.Context, _ *Chain, _ frame, h *Hop, reason RefuseReason) (*AskResult, error) {
-	return nil, s.refuse(context.Background(), h, &Error{Code: CodeLimit, Reason: reason, Message: limitText})
-}
-
 // send writes the message into the pair conversation and delivers it.
 func (s *Service) send(ctx context.Context, h *Hop, f frame, target string) error {
 	res, err := s.conv.SendHop(ctx, conversations.HopSend{
@@ -318,7 +313,10 @@ func (s *Service) result(ctx context.Context, h *Hop, f frame, target string, re
 	out.Hop.Text, out.Hop.Context = "", ""
 	if f.kind == EndAgent {
 		out.Message = askedMessage(h.Kind, target, h.ID)
-		if h.Kind == KindAsk {
+		if h.Status == HopHeld {
+			out.Message = heldMessage(target, h.ID)
+		}
+		if h.Kind == KindAsk || h.Status == HopHeld {
 			out.Next = "end_turn"
 		}
 	}

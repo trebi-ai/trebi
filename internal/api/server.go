@@ -185,7 +185,9 @@ func New(st *store.Store, opts Options) *Server {
 			CheckOrigin: checkWSOrigin,
 		},
 	}
-	s.chains = chains.NewService(st, ws, s.conv, r, slog.Default().With("source", "chains"))
+	s.chains = chains.NewService(st, ws, s.conv, r, s.requests, slog.Default().With("source", "chains"))
+	s.chains.WithAlerts(s.alerts)
+	s.requests.WithDecider(s.chains)
 	r.SetParker(runs.NewParker(r, l, s.requests, s.chains))
 	s.connectors.WithInstall(connectors.InstallConfig{Catalog: s.catalog})
 	_ = s.connectors.Load() // the service keeps the error; the list route and the daemon report it

@@ -7,12 +7,37 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/chains"
+	"github.com/trebi-ai/trebi/internal/tools"
 )
 
 func (s *Server) routeChains(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/chains", s.handleChainList)
 	mux.HandleFunc("GET /v1/chains/{trace_id}", s.handleChainGet)
 	mux.HandleFunc("GET /v1/hops/{id}", s.handleHopGet)
+	mux.HandleFunc("POST /v1/chains/{trace_id}/stop", s.handleChainStop)
+}
+
+func (s *Server) handleChainStop(w http.ResponseWriter, r *http.Request) {
+	if _, ok := scopeFrom(r.Context()); ok {
+		writeForbidden(w, "an agent cannot stop a chain")
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	by := "user"
+	if a, ok := tools.ActorFrom(r.Context()); ok && a.Kind == chains.EndAssistant {
+		by = "assistant"
+	}
+	res, err := s.chains.Stop(r.Context(), r.PathValue("trace_id"), by, body.Reason)
+	if err != nil {
+		writeChainErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleChainList(w http.ResponseWriter, r *http.Request) {

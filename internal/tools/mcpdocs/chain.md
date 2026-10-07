@@ -4,7 +4,7 @@ Chain operations: read the work that agents ask of each other.
 
 Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error envelope `{"error":{"code","message","details"}}` unchanged, with `isError: true`.
 
-A chain is all the work that one start causes: a person, the assistant, or a run asks an agent, and that agent can ask other agents. One chain has one `trace_id`. Each message between two parties is a hop. A hop has a `kind`: `ask` (the caller waits for a reply), `handoff` (the caller does not wait), or `reply`. The workspace settings `agents.chains` set the limits of a chain: `max_hops` (depth), `max_turns`, and `max_usd`. At a limit, a person must approve more work.
+A chain is all the work that one start causes: a person, the assistant, or a run asks an agent, and that agent can ask other agents. One chain has one `trace_id`. Each message between two parties is a hop. A hop has a `kind`: `ask` (the caller waits for a reply), `handoff` (the caller does not wait), or `reply`. The workspace settings `agents.chains` set the limits of a chain: `max_hops` (depth), `max_turns`, and `max_usd`. At a limit, the daemon holds the hop and asks a person in a request: approve raises the limit, reject stops the chain.
 
 ## Actions
 
@@ -26,6 +26,12 @@ Read one chain. The reply is `{"chain", "hops", "runs"}`. Each run has `agent`, 
 ### hop
 Read one hop with its full `text` and `context`, and both ends (`from`, `to`) with run and turn.
 - `id` (string, required): hop id.
+
+### stop
+Stop a chain. Open hops stop, the live runs of the chain end, and each agent that waits for a reply gets one turn to finish with what it has. A later ask in the chain returns `chain_stopped`. The reply is `{"stopped", "killed_runs", "cancelled_hops", "unwinding"}`. An agent run cannot stop a chain.
+- `trace_id` (string, required): chain trace id.
+- `reason` (string, optional): why the chain stops. The chain keeps it in `stop_reason`.
+- `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required` and a message that names what stops.
 
 ## Related guides
 

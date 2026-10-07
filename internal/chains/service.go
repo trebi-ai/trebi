@@ -61,6 +61,7 @@ type runReader interface {
 	AddEvent(ctx context.Context, runID, kind, source string, detail any)
 	TurnAfter(ctx context.Context, runID string, reason runs.RunReason, since time.Time) (int, error)
 	WakeParked(ctx context.Context, runID string) error
+	Kill(ctx context.Context, runID string) error
 }
 
 // Service owns hops, chain limits, and reply delivery.
@@ -69,18 +70,21 @@ type Service struct {
 	dir  workspaceDir
 	conv sender
 	runs runReader
+	req  requester
 	log  *slog.Logger
 
 	transcripts transcripts
+	alerts      alerter
 	now         func() time.Time
 }
 
 // NewService builds the chains service.
-func NewService(st *store.Store, dir workspaceDir, conv sender, rs runReader, log *slog.Logger) *Service {
+// A nil req refuses every hop at a limit.
+func NewService(st *store.Store, dir workspaceDir, conv sender, rs runReader, req requester, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{st: st, dir: dir, conv: conv, runs: rs, log: log, now: time.Now}
+	return &Service{st: st, dir: dir, conv: conv, runs: rs, req: req, log: log, now: time.Now}
 }
 
 const hopCols = `id, trace_id, workspace_id, kind, status, refuse_reason, depth, path_json,
