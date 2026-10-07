@@ -91,6 +91,9 @@ const (
 	ReasonAsk     RunReason = "ask"
 	ReasonHandoff RunReason = "handoff"
 	ReasonReply   RunReason = "reply"
+	// ReasonMessage continues an ended or parked session with a message of
+	// a person.
+	ReasonMessage RunReason = "message"
 )
 
 // Kind for runs: job | agent. Declared in dispatch, the lowest

@@ -72,18 +72,3 @@ func TestWantsCLIFileRuntime(t *testing.T) {
 	}
 }
 
-// TestCLIOneShotNarrow checks A.7: only plain job runs take the fast path.
-func TestCLIOneShotNarrow(t *testing.T) {
-	if !cliOneShot(LaunchOpts{CreateOpts: CreateOpts{Kind: KindJob}}) {
-		t.Fatal("plain job should be one-shot eligible")
-	}
-	if cliOneShot(LaunchOpts{CreateOpts: CreateOpts{Kind: KindJob}, Memory: &MemoryLaunch{}}) {
-		t.Fatal("memory gate disqualifies one-shot")
-	}
-	if cliOneShot(LaunchOpts{CreateOpts: CreateOpts{Kind: KindJob, IdleTimeoutMS: 1000}}) {
-		t.Fatal("idle timeout disqualifies one-shot")
-	}
-	if cliOneShot(LaunchOpts{CreateOpts: CreateOpts{Kind: KindJob, KeepAliveMS: 1000}}) {
-		t.Fatal("keep-alive disqualifies one-shot")
-	}
-}

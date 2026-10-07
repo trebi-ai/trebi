@@ -778,7 +778,7 @@ func (s *Server) attachEventInput(conn *websocket.Conn, runID string, done chan<
 			continue
 		}
 		if fmt.Sprint(m["type"]) == "message" {
-			if err := s.runs.InjectMessage(context.Background(), runID, fmt.Sprint(m["data"])); err != nil {
+			if _, err := s.runs.SendMessage(context.Background(), runID, fmt.Sprint(m["data"])); err != nil {
 				_ = conn.WriteJSON(map[string]any{"type": "error", "data": err.Error()})
 			}
 		}
@@ -1238,12 +1238,9 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 		// Agent/logic: resume with failure note
 		note := "Retry after failure (end_reason=" + string(prev.EndReason) + "). Continue or fix the issue."
 		if prev.SessionID != "" {
-			run, err := s.launch.Resume(r.Context(), prev.ID, runs.ResumeOpts{Reason: runs.ReasonResume})
+			// The note is the prompt of the resumed turn.
+			run, err := s.launch.Resume(r.Context(), prev.ID, runs.ResumeOpts{Reason: runs.ReasonResume, Prompt: note})
 			if err == nil && run != nil {
-				// Inject failure note if session live. CLI sessions take it on
-				// stdin via Session.Prompt; resume already succeeded, so the
-				// note is best-effort for both runtimes.
-				_ = s.runs.InjectMessage(r.Context(), run.ID, note)
 				writeJSON(w, http.StatusCreated, map[string]any{
 					"action": "resume", "run": run, "note": note,
 				})
@@ -1285,11 +1282,21 @@ func (s *Server) handleRunMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "text required")
 		return
 	}
-	if err := s.runs.InjectMessage(r.Context(), r.PathValue("id"), body.Text); err != nil {
+	res, err := s.runs.SendMessage(r.Context(), r.PathValue("id"), body.Text)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+	case errors.Is(err, runs.ErrRunActive):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, runs.ErrResumeUnsupported), errors.Is(err, runs.ErrNoSession):
+		writeErr(w, http.StatusConflict, "resume_unsupported", err.Error())
+	case errors.Is(err, runs.ErrSentinelInMessage):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
+	case err != nil:
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	default:
+		writeJSON(w, http.StatusOK, res)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleRunMark(w http.ResponseWriter, r *http.Request) {

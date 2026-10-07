@@ -221,10 +221,10 @@ func (o *LaunchOpts) applyResumePlan(plan *tmux.LaunchPlan) {
 		plan.SessionID = o.ResumeSessionID
 	}
 	o.SessionID = plan.SessionID
-	// A request answer, a chain message, and a conversation event keep their
+	// A request answer, a message, a chain message, and a conversation event keep their
 	// own reason.
 	switch o.Reason {
-	case ReasonRequest, ReasonTrigger, ReasonAsk, ReasonHandoff, ReasonReply:
+	case ReasonRequest, ReasonMessage, ReasonTrigger, ReasonAsk, ReasonHandoff, ReasonReply:
 	default:
 		o.Reason = ReasonResume
 	}
@@ -1062,14 +1062,45 @@ func fixMessage(issues []string, runID string) string {
 	return strings.Join(issues, "\n") + "\nFix MEMORY.md, then print the completion line again: `" + CompletionSentinel(runID) + "`"
 }
 
-// InjectMessage types a follow-up into a running run's pane.
-func (s *Service) InjectMessage(ctx context.Context, runID, text string) error {
+// MessageResult tells how SendMessage delivered a message. Delivery is
+// steered, prompted, held, resumed, or pane.
+type MessageResult = DeliverResult
+
+// SendMessage delivers a person's message to the session of runID in its
+// current state: the live turn, the next turn, a resume, or the tmux pane.
+func (s *Service) SendMessage(ctx context.Context, runID, text string) (MessageResult, error) {
 	// The sentinel is how the agent reports it finished. A caller that sends it
 	// ends the run as complete without the work being done. Text is validated
 	// before run state, so the message is rejected for the real reason.
 	if strings.Contains(text, CompletionPrefix) {
-		return fmt.Errorf("%w: %s", ErrSentinelInMessage, runID)
+		return MessageResult{}, fmt.Errorf("%w: %s", ErrSentinelInMessage, runID)
 	}
+	run, err := s.Get(ctx, runID)
+	if err != nil {
+		return MessageResult{}, err
+	}
+	if run.Status == StatusRunning && s.cliRunFor(runID) == nil {
+		if err := run.sendToPane(text); err != nil {
+			return MessageResult{}, err
+		}
+		s.AddEvent(ctx, runID, "user", "trebi", map[string]string{
+			"text": trunc(text, maxPromptEventBytes), "origin": OriginMessage, "delivery": DeliveryPane,
+		})
+		return MessageResult{Delivery: DeliveryPane, RunID: runID, Turn: run.TurnCount}, nil
+	}
+	p := s.parkerOf()
+	if p == nil {
+		if run.Status != StatusRunning {
+			return MessageResult{}, fmt.Errorf("%w: %s", ErrNotRunning, runID)
+		}
+		d, err := s.writeLive(ctx, runID, text, OriginMessage)
+		return MessageResult{Delivery: string(d), RunID: runID, Turn: run.TurnCount}, err
+	}
+	return p.Deliver(ctx, runID, ParkDelivery{Gate: GateMessage, Prompt: text, At: time.Now().UTC()})
+}
+
+// SendLive sends a message only to a running run. It never resumes one.
+func (s *Service) SendLive(ctx context.Context, runID, text string) error {
 	run, err := s.Get(ctx, runID)
 	if err != nil {
 		return err
@@ -1077,21 +1108,8 @@ func (s *Service) InjectMessage(ctx context.Context, runID, text string) error {
 	if run.Status != StatusRunning {
 		return fmt.Errorf("%w: %s", ErrNotRunning, runID)
 	}
-	// Subprocess sessions take the follow-up on stdin, never a pane paste.
-	if cr := s.cliRunFor(runID); cr != nil {
-		if err := cr.sess.Prompt(ctx, agentwire.Prompt{Text: text, Kind: "followup"}); err != nil {
-			return err
-		}
-		cr.tracker.PromptWritten()
-		s.SetSessionState(ctx, runID, SessionRunning, "wire")
-		s.AddEvent(ctx, runID, "message", "api", map[string]string{"bytes": fmt.Sprint(len(text)), "delivery": "prompt"})
-		return nil
-	}
-	if err := run.sendToPane(text); err != nil {
-		return err
-	}
-	s.AddEvent(ctx, runID, "message", "api", map[string]string{"bytes": fmt.Sprint(len(text))})
-	return nil
+	_, err = s.SendMessage(ctx, runID, text)
+	return err
 }
 
 func (r *Run) sendToPane(text string) error {
@@ -1175,9 +1193,10 @@ func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o 
 	if prev.SessionID == "" {
 		return nil, fmt.Errorf("run %s: %w", fromID, ErrNoSession)
 	}
-	// A run that finished its job has nothing to continue: the vendor session
-	// is complete, and resuming it errors out. A fresh run is the right move.
-	if prev.Status == StatusComplete && (prev.EndReason == EndResult || prev.EndReason == EndSentinel) {
+	// A plain resume of a run that finished its job has nothing to continue.
+	// A message or a request answer continues the session with new input.
+	if prev.Status == StatusComplete && (prev.EndReason == EndResult || prev.EndReason == EndSentinel) &&
+		o.Reason != ReasonMessage && o.Reason != ReasonRequest {
 		return nil, fmt.Errorf("run %s finished successfully; replay it for a fresh run", fromID)
 	}
 	if o.Reason == "" {
@@ -1721,9 +1740,8 @@ func (s *Service) overlapCoalesce(ctx context.Context, opts *LaunchOpts, existin
 		text = "(coalesced event)"
 	}
 	if cr := s.cliRunFor(existing.ID); cr != nil {
-		if err := cr.sess.Prompt(ctx, agentwire.Prompt{Text: text, Kind: "coalesce"}); err == nil {
-			cr.tracker.PromptWritten()
-			s.SetSessionState(ctx, existing.ID, SessionRunning, "wire")
+		if _, err := s.promptCLI(ctx, existing.ID, cr, agentwire.Prompt{Text: text, Kind: "coalesce"}, OriginCoalesce); err != nil {
+			s.log.Warn("coalesce prompt", "run", existing.ID, "error", err)
 		}
 	} else if existing.TmuxSession != "" {
 		_ = tmux.Send(existing.TmuxSession, text)

@@ -60,7 +60,7 @@ type runReader interface {
 	TraceUsage(ctx context.Context, traceID string) (turns int, costUSD float64, err error)
 	AddEvent(ctx context.Context, runID, kind, source string, detail any)
 	TurnAfter(ctx context.Context, runID string, reason runs.RunReason, since time.Time) (int, error)
-	WakeParked(ctx context.Context, runID string) error
+	Deliver(ctx context.Context, runID string, extra ...runs.ParkDelivery) (runs.DeliverResult, error)
 	Kill(ctx context.Context, runID string) error
 }
 

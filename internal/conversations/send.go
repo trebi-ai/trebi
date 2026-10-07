@@ -470,7 +470,7 @@ func (s *Service) insertUserMessage(ctx context.Context, conv *Conversation, opt
 func (s *Service) deliver(ctx context.Context, conv *Conversation, text string) (delivery, runID, queueID string, err error) {
 	live := s.liveRun(ctx, conv)
 	if live != nil {
-		ierr := s.runs.InjectMessage(ctx, live.ID, text)
+		_, ierr := s.runs.SendMessage(ctx, live.ID, text)
 		if ierr == nil {
 			return DeliveryInjected, live.ID, "", nil
 		}
@@ -564,7 +564,7 @@ func (s *Service) SendHop(ctx context.Context, o HopSend) (*HopResult, error) {
 	}
 	res := &HopResult{SendResult: SendResult{Message: msg}, ConversationID: convID}
 	if live := s.liveRun(ctx, conv); live != nil && s.sameTrace(ctx, live, o.TraceID) {
-		if err := s.runs.InjectMessage(ctx, live.ID, text); err == nil {
+		if _, err := s.runs.SendMessage(ctx, live.ID, text); err == nil {
 			res.Delivery, res.RunID, res.Turn = DeliveryInjected, live.ID, live.TurnCount
 			return res, nil
 		}

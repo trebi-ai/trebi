@@ -12,12 +12,16 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jedib0t/go-pretty/v6 v6.7.10
+	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/trebi-ai/agent-wire v0.4.1
+	github.com/trebi-ai/agent-wire v0.5.0
 	github.com/urfave/cli/v3 v3.11.0
+	github.com/yuin/goldmark-alert v1.0.1
+	github.com/yuin/goldmark/v2 v2.1.6
+	golang.org/x/net v0.59.0
 	golang.org/x/term v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
@@ -29,11 +33,7 @@ require (
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
-	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/openai/openai-go/v3 v3.66.0 // indirect
-	github.com/yuin/goldmark-alert v1.0.1 // indirect
-	github.com/yuin/goldmark/v2 v2.1.6 // indirect
-	golang.org/x/net v0.59.0 // indirect
 )
 
 require (

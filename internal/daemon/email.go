@@ -91,9 +91,10 @@ func (c *ControlPlane) DecideApproval(ctx context.Context, runID, decision strin
 	return true, nil
 }
 
-// RunMessage injects one operator reply into a live run (plan I.1).
+// RunMessage sends one operator reply to the session of a run (plan I.1).
 func (c *ControlPlane) RunMessage(ctx context.Context, runID, text string) error {
-	return c.Runs.InjectMessage(ctx, runID, text)
+	_, err := c.Runs.SendMessage(ctx, runID, text)
+	return err
 }
 
 // DecideProposal applies one emailed AGENT.md proposal decision (Part A.6).

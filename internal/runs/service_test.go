@@ -1282,14 +1282,15 @@ func (g *readyGate) Stale(context.Context) ([]string, error) { return nil, nil }
 
 func (g *readyGate) PromptHint(runs.LaunchOpts) string { return "" }
 
-type resumeStub struct{ calls []runs.ResumeOpts }
+type resumeStub struct{ calls, fresh []runs.ResumeOpts }
 
 func (r *resumeStub) Resume(_ context.Context, prevID string, o runs.ResumeOpts) (*runs.Run, error) {
 	r.calls = append(r.calls, o)
 	return &runs.Run{ID: prevID, TurnCount: 2}, nil
 }
 
-func (r *resumeStub) Fresh(context.Context, string, runs.ResumeOpts) (*runs.Run, error) {
+func (r *resumeStub) Fresh(_ context.Context, _ string, o runs.ResumeOpts) (*runs.Run, error) {
+	r.fresh = append(r.fresh, o)
 	return nil, errors.New("no fresh")
 }
 

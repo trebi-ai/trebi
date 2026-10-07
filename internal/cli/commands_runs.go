@@ -174,7 +174,7 @@ func runsCommand() *cli.Command {
 			},
 			{
 				Name:      "message",
-				Usage:     "send text to a live run (not the completion sentinel)",
+				Usage:     "send text to a run; an ended run continues its session",
 				ArgsUsage: "<id> <text...>",
 				Action:    runRunsMessage,
 			},
@@ -538,10 +538,15 @@ func runRunsMessage(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(request.BuildRunMessage(id, text), nil); err != nil {
+	var res struct {
+		Delivery string `json:"delivery"`
+		RunID    string `json:"run_id"`
+		Turn     int    `json:"turn"`
+	}
+	if err := client.DoHTTP(request.BuildRunMessage(id, text), &res); err != nil {
 		return err
 	}
-	fmt.Fprintf(outWriter(c), "sent to %s\n", id)
+	fmt.Fprintf(outWriter(c), "%s: run %s, turn %d\n", res.Delivery, res.RunID, res.Turn)
 	return nil
 }
 

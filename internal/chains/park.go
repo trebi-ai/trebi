@@ -149,7 +149,8 @@ func (s *Service) reply(ctx context.Context, ask *Hop, status HopStatus, from En
 	s.runs.AddEvent(ctx, ask.From.RunID, "hop_replied", "chains", map[string]string{
 		"hop_id": r.ID, "reply_of": ask.ID, "from_run_id": from.RunID, "from_agent": from.AgentID,
 	})
-	return s.runs.WakeParked(ctx, ask.From.RunID)
+	_, err := s.runs.Deliver(ctx, ask.From.RunID)
+	return err
 }
 
 // Claim takes the replies to runID that are not delivered yet.

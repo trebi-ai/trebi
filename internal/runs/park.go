@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
+
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -72,48 +74,87 @@ type runGetter interface {
 	Get(ctx context.Context, id string) (*Run, error)
 }
 
-// Parker resumes a parked run once, when no gate waits for an item.
+// liveWriter writes a prompt to the live session of a running run.
+type liveWriter interface {
+	hasLive(runID string) bool
+	writeLive(ctx context.Context, runID, text, origin string) (agentwire.Delivery, error)
+}
+
+// Parker delivers messages and ready items to a run: to its live session,
+// or by a resume when the run parked or ended.
 type Parker struct {
 	runs   runGetter
 	resume Resumer
 	gates  []ParkGate
 	log    *slog.Logger
 
-	// One wake per run at a time. A wake that comes in while one runs (a
+	// One delivery per run at a time. A wake that comes in while one runs (a
 	// launch failure ends the turn again) sets again, and the first repeats.
+	// A delivery with a message waits for its turn.
 	mu    sync.Mutex
+	idle  *sync.Cond
 	busy  map[string]bool
 	again map[string]bool
 }
 
 // NewParker builds the park coordinator.
 func NewParker(rs runGetter, r Resumer, gates ...ParkGate) *Parker {
-	return &Parker{runs: rs, resume: r, gates: gates, log: slog.Default().With("source", "parker"),
+	p := &Parker{runs: rs, resume: r, gates: gates, log: slog.Default().With("source", "parker"),
 		busy: map[string]bool{}, again: map[string]bool{}}
+	p.idle = sync.NewCond(&p.mu)
+	return p
 }
 
-// Wake resumes runID when it is parked, no gate waits, and a gate has items
-// ready.
+// DeliverResult is the outcome of one Deliver. Delivery is empty when there
+// was nothing to deliver.
+type DeliverResult struct {
+	Delivery string `json:"delivery"` // steered|prompted|held|resumed
+	RunID    string `json:"run_id"`
+	Turn     int    `json:"turn"`
+}
+
+// Delivery values that Deliver adds to the agentwire ones.
+const (
+	DeliveryResumed = "resumed"
+	DeliveryPane    = "pane"
+)
+
+// Wake delivers the ready items of runID at turn end and at boot.
 func (p *Parker) Wake(ctx context.Context, runID string) error {
+	_, err := p.Deliver(ctx, runID)
+	return err
+}
+
+// Deliver sends extra (a person's message) and every ready item to runID
+// now. A running run gets them on its live session. A parked or ended run
+// resumes. With no extra, a parked run waits while a gate still waits.
+func (p *Parker) Deliver(ctx context.Context, runID string, extra ...ParkDelivery) (DeliverResult, error) {
 	p.mu.Lock()
-	if p.busy[runID] {
+	if len(extra) == 0 && p.busy[runID] {
 		p.again[runID] = true
 		p.mu.Unlock()
-		return nil
+		return DeliverResult{}, nil
+	}
+	for p.busy[runID] {
+		p.idle.Wait()
 	}
 	p.busy[runID] = true
 	p.mu.Unlock()
+	res, err := p.deliver(ctx, runID, extra)
 	for {
-		err := p.wake(ctx, runID)
 		p.mu.Lock()
 		if p.again[runID] {
 			delete(p.again, runID)
 			p.mu.Unlock()
+			if _, aerr := p.deliver(ctx, runID, nil); aerr != nil {
+				p.log.Warn("park wake", "run_id", runID, "err", aerr)
+			}
 			continue
 		}
 		delete(p.busy, runID)
+		p.idle.Broadcast()
 		p.mu.Unlock()
-		return err
+		return res, err
 	}
 }
 
@@ -139,26 +180,80 @@ func (p *Parker) Recover(ctx context.Context) error {
 	return nil
 }
 
-func (p *Parker) wake(ctx context.Context, runID string) error {
+func (p *Parker) deliver(ctx context.Context, runID string, extra []ParkDelivery) (DeliverResult, error) {
 	run, err := p.runs.Get(ctx, runID)
 	if err != nil {
-		return fmt.Errorf("run %s: %w", runID, err)
+		return DeliverResult{}, fmt.Errorf("run %s: %w", runID, err)
 	}
-	if run.Status != StatusParked {
-		return nil
+	if run.Status == StatusRunning {
+		return p.deliverLive(ctx, run, extra)
 	}
-	for _, g := range p.gates {
-		waiting, _, err := g.Open(ctx, runID)
-		if err != nil {
-			return fmt.Errorf("%s gate: %w", g.Name(), err)
+	if len(extra) == 0 {
+		if run.Status != StatusParked {
+			return DeliverResult{}, nil
 		}
-		if waiting {
-			return nil
+		for _, g := range p.gates {
+			waiting, _, err := g.Open(ctx, runID)
+			if err != nil {
+				return DeliverResult{}, fmt.Errorf("%s gate: %w", g.Name(), err)
+			}
+			if waiting {
+				return DeliverResult{}, nil
+			}
 		}
+	} else if !run.Status.IsTerminal() && run.Status != StatusParked {
+		return DeliverResult{}, fmt.Errorf("run %s is %s: %w", runID, run.Status, ErrRunActive)
 	}
+	claimed, all := p.claim(ctx, runID, func(ParkGate) bool { return true })
+	all = append(all, extra...)
+	if len(all) == 0 {
+		return DeliverResult{}, nil
+	}
+	res := p.launch(ctx, run, all, len(extra) > 0)
+	p.settle(ctx, runID, claimed, res)
+	if res.Err != nil {
+		return DeliverResult{}, fmt.Errorf("resume run %s: %w", runID, res.Err)
+	}
+	return DeliverResult{Delivery: DeliveryResumed, RunID: res.RunID, Turn: res.Turn}, nil
+}
+
+// deliverLive writes extra and the ready request answers to the live session
+// of a running run. Chain replies wait for the turn end, so they keep their
+// turn frame.
+func (p *Parker) deliverLive(ctx context.Context, run *Run, extra []ParkDelivery) (DeliverResult, error) {
+	lw, ok := p.runs.(liveWriter)
+	if !ok || !lw.hasLive(run.ID) {
+		if len(extra) > 0 {
+			return DeliverResult{}, fmt.Errorf("run %s has no live session: %w", run.ID, ErrRunActive)
+		}
+		return DeliverResult{}, nil
+	}
+	claimed, all := p.claim(ctx, run.ID, func(g ParkGate) bool { return g.Name() == GateRequest })
+	all = append(all, extra...)
+	if len(all) == 0 {
+		return DeliverResult{}, nil
+	}
+	prompt, _ := joinDeliveries(all)
+	origin := OriginRequest
+	if len(extra) > 0 {
+		origin = OriginMessage
+	}
+	d, err := lw.writeLive(ctx, run.ID, prompt, origin)
+	p.settle(ctx, run.ID, claimed, ResumeResult{RunID: run.ID, Turn: run.TurnCount, Path: "live", Err: err})
+	if err != nil {
+		return DeliverResult{}, fmt.Errorf("deliver to run %s: %w", run.ID, err)
+	}
+	return DeliverResult{Delivery: string(d), RunID: run.ID, Turn: run.TurnCount}, nil
+}
+
+// claim takes the ready items of the gates that pick selects.
+func (p *Parker) claim(ctx context.Context, runID string, pick func(ParkGate) bool) (map[ParkGate][]ParkDelivery, []ParkDelivery) {
 	claimed := map[ParkGate][]ParkDelivery{}
 	var all []ParkDelivery
 	for _, g := range p.gates {
+		if !pick(g) {
+			continue
+		}
 		d, err := g.Claim(ctx, runID)
 		if err != nil {
 			p.log.Warn("park claim", "gate", g.Name(), "run_id", runID, "err", err)
@@ -169,45 +264,59 @@ func (p *Parker) wake(ctx context.Context, runID string) error {
 			all = append(all, d...)
 		}
 	}
-	if len(all) == 0 {
-		return nil
-	}
-	res := p.launch(ctx, run, all)
+	return claimed, all
+}
+
+func (p *Parker) settle(ctx context.Context, runID string, claimed map[ParkGate][]ParkDelivery, res ResumeResult) {
 	for g, d := range claimed {
 		if err := g.Settle(ctx, runID, d, res); err != nil {
 			p.log.Warn("park settle", "gate", g.Name(), "run_id", runID, "err", err)
 		}
 	}
-	if res.Err != nil {
-		return fmt.Errorf("resume run %s: %w", runID, res.Err)
-	}
-	return nil
 }
 
-// launch resumes the session with all deliveries in one prompt. A harness
-// that cannot resume gets a fresh run with the capsule prompts.
-func (p *Parker) launch(ctx context.Context, run *Run, all []ParkDelivery) ResumeResult {
+// joinDeliveries sorts the deliveries by time and joins their prompts and
+// their capsules.
+func joinDeliveries(all []ParkDelivery) (prompt, capsule string) {
 	slices.SortStableFunc(all, func(a, b ParkDelivery) int { return a.At.Compare(b.At) })
-	o := ResumeOpts{Reason: ReasonRequest}
 	var prompts, capsules []string
 	for _, d := range all {
 		prompts = append(prompts, d.Prompt)
 		capsules = append(capsules, cmp.Or(d.Capsule, d.Prompt))
-		if d.Reason == ReasonReply && o.Reason != ReasonReply {
+	}
+	return strings.Join(prompts, "\n\n"), strings.Join(capsules, "\n\n")
+}
+
+// launch resumes the session with all deliveries in one prompt. A harness
+// that cannot resume gets a fresh run with the capsule prompts, except for a
+// person's message: it never starts a fresh run.
+func (p *Parker) launch(ctx context.Context, run *Run, all []ParkDelivery, message bool) ResumeResult {
+	prompt, capsule := joinDeliveries(all)
+	o := ResumeOpts{Reason: ReasonRequest, Prompt: prompt}
+	if message {
+		o.Reason = ReasonMessage
+	}
+	// A reply keeps its chain frame, also when a message joins it.
+	for _, d := range all {
+		if d.Reason == ReasonReply {
 			o.Reason, o.HopID, o.TraceID, o.Path = ReasonReply, d.HopID, d.TraceID, d.Path
+			break
 		}
 	}
-	o.Prompt = strings.Join(prompts, "\n\n")
 	res := ResumeResult{Path: "resume"}
 	var next *Run
 	err := ErrNoSession
 	if run.SessionID != "" {
 		next, err = p.resume.Resume(ctx, run.ID, o)
 	}
+	if message && (errors.Is(err, ErrResumeUnsupported) || errors.Is(err, ErrNoSession)) {
+		res.Err = err
+		return res
+	}
 	if errors.Is(err, ErrResumeUnsupported) || errors.Is(err, ErrNoSession) {
 		p.log.Info("park fresh run", "run_id", run.ID, "reason", err.Error())
 		res.Path = "fresh"
-		o.Prompt = strings.Join(capsules, "\n\n")
+		o.Prompt = capsule
 		next, err = p.resume.Fresh(ctx, run.ID, o)
 	}
 	res.Err = err
@@ -238,10 +347,11 @@ func (p *Parker) park(ctx context.Context, runID string) EndReason {
 	return end
 }
 
-// Gate names.
+// Gate names. GateMessage names a person's message, which no gate owns.
 const (
 	GateRequest = "request"
 	GateAsk     = "ask"
+	GateMessage = "message"
 )
 
 // SetParker wires the park coordinator. Nil (the default) never parks.
@@ -257,13 +367,26 @@ func (s *Service) parkerOf() *Parker {
 	return s.parker
 }
 
-// WakeParked resumes a parked run when all its items are ready.
-func (s *Service) WakeParked(ctx context.Context, runID string) error {
+// Deliver sends extra and the ready items of runID to its session in its
+// current state. With no parker it does nothing.
+func (s *Service) Deliver(ctx context.Context, runID string, extra ...ParkDelivery) (DeliverResult, error) {
 	p := s.parkerOf()
 	if p == nil {
-		return nil
+		return DeliverResult{}, nil
 	}
-	return p.Wake(ctx, runID)
+	return p.Deliver(ctx, runID, extra...)
+}
+
+// hasLive reports whether runID has a live CLI session.
+func (s *Service) hasLive(runID string) bool { return s.cliRunFor(runID) != nil }
+
+// writeLive writes text to the live CLI session of runID.
+func (s *Service) writeLive(ctx context.Context, runID, text, origin string) (agentwire.Delivery, error) {
+	cr := s.cliRunFor(runID)
+	if cr == nil {
+		return "", fmt.Errorf("run %s: %w", runID, ErrNotRunning)
+	}
+	return s.promptCLI(ctx, runID, cr, agentwire.Prompt{Text: text, Kind: "followup"}, origin)
 }
 
 // promptHints are the gate texts of a fresh job or agent launch. A resumed

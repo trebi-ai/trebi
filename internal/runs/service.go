@@ -175,7 +175,7 @@ var (
 	ErrInvalidDecision = errors.New("decision must be allow or deny")
 	// ErrApprovalRunMismatch reports an approval_id that belongs to another run.
 	ErrApprovalRunMismatch = errors.New("approval belongs to a different run")
-	// ErrNotRunning reports InjectMessage against a run that is not live.
+	// ErrNotRunning reports a live write to a run that is not live.
 	ErrNotRunning = errors.New("run is not running")
 	// ErrSentinelInMessage reports a message carrying the run's own completion
 	// sentinel. Only the agent may report that it finished.
@@ -399,9 +399,10 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Run, error) {
 		return nil, err
 	}
 
-	// The exact prompt the harness receives opens the transcript.
-	if opts.Prompt != "" {
-		s.AddEvent(ctx, id, "user", "launch", map[string]string{"text": opts.Prompt})
+	// The exact prompt the harness receives opens the transcript. A CLI run
+	// records it when the prompt is written.
+	if opts.Prompt != "" && opts.Runtime != "cli" {
+		s.AddEvent(ctx, id, "user", "launch", map[string]string{"text": opts.Prompt, "origin": opts.Reason.origin(false)})
 	}
 	s.SetSessionState(ctx, id, SessionRunning, "launch")
 	return run, nil
@@ -1655,8 +1656,8 @@ func (s *Service) Reopen(ctx context.Context, id string, opts CreateOpts) (*Run,
 	if err != nil {
 		return nil, fmt.Errorf("reopen run %s: %w", id, err)
 	}
-	if opts.Prompt != "" {
-		s.AddEvent(ctx, id, "user", "launch", map[string]string{"text": opts.Prompt})
+	if opts.Prompt != "" && opts.Runtime != "cli" {
+		s.AddEvent(ctx, id, "user", "launch", map[string]string{"text": opts.Prompt, "origin": opts.Reason.origin(true)})
 	}
 	s.SetSessionState(ctx, id, SessionRunning, "launch")
 	s.log.Info("run reopened", "id", id, "turn", n, "reason", string(opts.Reason))

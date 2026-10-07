@@ -63,8 +63,8 @@ func (f *fakeRuns) Unpark(ctx context.Context, id string, end runs.EndReason) er
 	return nil
 }
 
-func (f *fakeRuns) WakeParked(ctx context.Context, id string) error {
-	return f.parker.Wake(ctx, id)
+func (f *fakeRuns) Deliver(ctx context.Context, id string, extra ...runs.ParkDelivery) (runs.DeliverResult, error) {
+	return f.parker.Deliver(ctx, id, extra...)
 }
 
 func (f *fakeRuns) TurnAfter(context.Context, string, runs.RunReason, time.Time) (int, error) {

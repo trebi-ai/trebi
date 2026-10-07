@@ -22,7 +22,7 @@ type Runs interface {
 	Get(ctx context.Context, id string) (*runs.Run, error)
 	Unpark(ctx context.Context, runID string, end runs.EndReason) error
 	TurnAfter(ctx context.Context, runID string, reason runs.RunReason, since time.Time) (int, error)
-	WakeParked(ctx context.Context, runID string) error
+	Deliver(ctx context.Context, runID string, extra ...runs.ParkDelivery) (runs.DeliverResult, error)
 }
 
 // Grant answers the cloud plan grant. A Pro Cloud account grants requests.
@@ -429,7 +429,7 @@ func (s *Service) afterClose(ctx context.Context, r Request) {
 			s.log.Warn("chain request decided", "request_id", r.ID, "err", err)
 		}
 	}
-	if err := s.runs.WakeParked(ctx, r.RunID); err != nil {
+	if _, err := s.runs.Deliver(ctx, r.RunID); err != nil {
 		s.log.Warn("request deliver", "run_id", r.RunID, "err", err)
 	}
 	if r.Status != StatusDismissed {

@@ -23,7 +23,7 @@ func (f *fakeBus) Append(_ context.Context, ev store.BusEvent) (int64, error) {
 
 type fakeRuns struct{ messages []string }
 
-func (f *fakeRuns) InjectMessage(_ context.Context, _ string, text string) error {
+func (f *fakeRuns) SendLive(_ context.Context, _ string, text string) error {
 	f.messages = append(f.messages, text)
 	return nil
 }

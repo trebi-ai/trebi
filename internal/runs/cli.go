@@ -35,9 +35,10 @@ type cliRun struct {
 	tracker   *agentwire.Tracker
 	result    *agentwire.Result
 	memoryFix int
-	oneShot   bool
 	// turn is the run turn this session serves.
 	turn int
+	// held counts prompts that agentwire sends when the vendor turn ends.
+	held int
 
 	mu             sync.Mutex
 	usage          pricing.TokenUsage
@@ -101,6 +102,23 @@ func (cr *cliRun) keepAliveWithin(keepAliveMS int64, now time.Time) bool {
 		return false
 	}
 	return now.Sub(cr.keepAliveSince) < time.Duration(keepAliveMS)*time.Millisecond
+}
+
+// noteHeld counts one prompt that waits for the vendor turn to end.
+func (cr *cliRun) noteHeld() {
+	cr.mu.Lock()
+	cr.held++
+	cr.mu.Unlock()
+}
+
+// takeHeld reports whether held prompts started a new vendor turn at this
+// result, and clears the count.
+func (cr *cliRun) takeHeld() bool {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	n := cr.held
+	cr.held = 0
+	return n > 0
 }
 
 // setTerminal marks the pump's terminal transition.
@@ -291,7 +309,6 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		"harness": tool.Name(), "session_id": opts.SessionID, "mode": "cli", "command": binName,
 	})
 
-	oneShot := cliOneShot(opts) && tool.Name() == tmux.Claude
 	body := opts.Prompt
 	if body == "" {
 		body = opts.PromptPreview
@@ -308,8 +325,6 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		Model:         opts.Model,
 		Effort:        opts.Effort,
 		Permissions:   cliPermissionPolicy(tool.Name(), command),
-		OneShot:       oneShot,
-		OneShotPrompt: body,
 		ExtraArgs:     extra,
 		LogPath:       filepath.Join(home.RunsLogDir(), run.ID+".log"),
 	}
@@ -346,47 +361,74 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		return got, nil
 	}
 	// The library tracks its own sessions in the ledger; no registry Add here.
-	cr := &cliRun{sess: sess, tracker: agentwire.NewTracker(), oneShot: oneShot, turn: run.TurnCount}
-	if oneShot {
-		// The prompt is on argv, so the turn starts at launch.
-		cr.tracker.PromptWritten()
-	}
+	cr := &cliRun{sess: sess, tracker: agentwire.NewTracker(), turn: run.TurnCount}
 	s.registerCLIRun(run.ID, cr)
 	s.setRunPid(ctx, run.ID, sess.PID())
 	s.AddEvent(ctx, run.ID, "proc", "proc", map[string]string{"pid": strconv.Itoa(sess.PID())})
 
 	go s.pumpCLI(run.ID, opts, cr)
 
-	if !oneShot {
-		if err := sess.Prompt(ctx, agentwire.Prompt{Text: body, Kind: kindOrDefault(opts.Kind)}); err != nil {
-			s.appendRunLog(run.ID, "prompt write failed: "+err.Error())
-			_ = s.TerminateTurn(ctx, run.ID, cr.turn, StatusFailed, EndLaunch, nil)
-			s.unregisterCLIRun(run.ID, cr)
-			go sess.Close(context.Background())
-			got, _ := s.Get(ctx, run.ID)
-			return got, nil
-		}
-		cr.tracker.PromptWritten()
-		s.SetSessionState(ctx, run.ID, SessionRunning, "wire")
+	if _, err := s.promptCLI(ctx, run.ID, cr, agentwire.Prompt{Text: body, Kind: kindOrDefault(opts.Kind)}, opts.Reason.origin(resuming)); err != nil {
+		s.appendRunLog(run.ID, "prompt write failed: "+err.Error())
+		_ = s.TerminateTurn(ctx, run.ID, cr.turn, StatusFailed, EndLaunch, nil)
+		s.unregisterCLIRun(run.ID, cr)
+		go sess.Close(context.Background())
+		got, _ := s.Get(ctx, run.ID)
+		return got, nil
 	}
-	s.log.Info("run launched", "id", run.ID, "harness", tool.Name(), "runtime", "cli", "pid", sess.PID(), "one_shot", oneShot)
+	s.log.Info("run launched", "id", run.ID, "harness", tool.Name(), "runtime", "cli", "pid", sess.PID())
 	return s.Get(ctx, run.ID)
 }
 
-// cliOneShot reports the narrow one-shot fast path (A.7): a job run with no
-// memory gate, no idle timeout, no keep-alive, and no follow-up surface.
-func cliOneShot(opts LaunchOpts) bool {
-	if opts.Kind == KindAgent {
-		return false
+// Prompt origins on a user event: what made trebi write the prompt.
+const (
+	OriginLaunch    = "launch"
+	OriginResume    = "resume"
+	OriginMessage   = "message"
+	OriginRequest   = "request"
+	OriginAsk       = "ask"
+	OriginMemoryFix = "memory_fix"
+	OriginCoalesce  = "coalesce"
+)
+
+// origin is the prompt origin of the first prompt of a turn with reason r.
+func (r RunReason) origin(resuming bool) string {
+	switch r {
+	case ReasonRequest:
+		return OriginRequest
+	case ReasonMessage:
+		return OriginMessage
+	case ReasonAsk, ReasonHandoff, ReasonReply:
+		return OriginAsk
 	}
-	if opts.Memory != nil || opts.ResumeSessionID != "" {
-		return false
+	if resuming {
+		return OriginResume
 	}
-	if opts.IdleTimeoutMS > 0 || opts.KeepAliveMS > 0 {
-		return false
-	}
-	return true
+	return OriginLaunch
 }
+
+// promptCLI writes one prompt with agentwire.Send and records it as a user
+// event. The vendors do not echo a prompt, so this event is the only record.
+func (s *Service) promptCLI(ctx context.Context, runID string, cr *cliRun, p agentwire.Prompt, origin string) (agentwire.Delivery, error) {
+	d, err := agentwire.Send(ctx, cr.sess, p)
+	if err != nil {
+		return "", err
+	}
+	switch d {
+	case agentwire.DeliveryHeld:
+		cr.noteHeld()
+	case agentwire.DeliveryPrompted:
+		cr.tracker.PromptWritten()
+		s.SetSessionState(ctx, runID, SessionRunning, "wire")
+	}
+	s.AddEvent(ctx, runID, "user", "trebi", map[string]string{
+		"text": trunc(p.Text, maxPromptEventBytes), "origin": origin, "delivery": string(d),
+	})
+	return d, nil
+}
+
+// maxPromptEventBytes bounds the prompt text on one user event.
+const maxPromptEventBytes = 16000
 
 func kindOrDefault(kind string) string {
 	if kind == "" {
@@ -577,6 +619,11 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 		case agentwire.EventPermission:
 			s.handleCLIPermission(ctx, runID, cr, ev)
 		case agentwire.EventError:
+			if ev.Code == agentwire.CodeHeldPromptDropped {
+				cr.takeHeld()
+				s.AddEvent(ctx, runID, "message.dropped", "wire", map[string]string{"text": trunc(ev.Text, maxPromptEventBytes)})
+				continue
+			}
 			e := ev
 			lastErr = &e
 			detail := map[string]string{"message": trunc(ev.Error, 1000), "class": ev.EndReason}
@@ -697,7 +744,7 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, erro
 		switch ev.Kind {
 		case "user":
 			if d["text"] != "" {
-				turns = append(turns, tmux.Turn{Role: "user", Text: d["text"], At: ev.At})
+				turns = append(turns, tmux.Turn{Role: "user", Text: d["text"], At: ev.At, Origin: d["origin"], Delivery: d["delivery"]})
 			}
 		case "assistant":
 			if d["text"] != "" && d["delta"] != "true" {
@@ -819,6 +866,13 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 	cr.result = res
 	s.setRunSessionID(ctx, runID, cr.turn, res.SessionID)
 	tokens := cr.addUsage(tokenUsage(res, opts))
+	if cr.takeHeld() {
+		// agentwire sent the held messages at this result: the session runs
+		// the next vendor turn.
+		cr.tracker.PromptWritten()
+		cr.result = nil
+		return
+	}
 	if res.IsError {
 		s.failCLIResult(ctx, runID, opts, cr, res, tokens)
 		return
@@ -835,17 +889,15 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 	if mem != nil {
 		issues := s.gateMemory(ctx, run, mem)
 		if len(issues) > 0 {
-			if cr.memoryFix < maxMemoryFixes && !cr.oneShot {
+			if cr.memoryFix < maxMemoryFixes {
 				cr.memoryFix++
 				s.requestMemoryFix(ctx, runID, "wire", cr.memoryFix, issues)
-				if err := cr.sess.Prompt(ctx, agentwire.Prompt{Text: cliFixMessage(issues), Kind: "memory_fix"}); err != nil {
+				if _, err := s.promptCLI(ctx, runID, cr, agentwire.Prompt{Text: cliFixMessage(issues), Kind: "memory_fix"}, OriginMemoryFix); err != nil {
 					s.recordMemoryInvalid(ctx, run, issues, "wire")
 					s.terminateCLI(ctx, runID, cr, StatusFailed, EndLaunch, tokens)
 					return
 				}
-				cr.tracker.PromptWritten()
 				cr.result = nil
-				s.SetSessionState(ctx, runID, SessionRunning, "wire")
 				return
 			}
 			s.recordMemoryInvalid(ctx, run, issues, "wire")
@@ -853,7 +905,7 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 	}
 	// A run that waits for a request answer parks at once: keep-alive would
 	// hold the session for nothing.
-	if run.Session.KeepAliveMS > 0 && !cr.oneShot && !s.mustPark(ctx, runID) {
+	if run.Session.KeepAliveMS > 0 && !s.mustPark(ctx, runID) {
 		cr.markKeepAlive(time.Now())
 		s.AddEvent(ctx, runID, "result", "wire", map[string]string{"keep_alive": "true"})
 		s.SetSessionState(ctx, runID, SessionIdle, "wire")

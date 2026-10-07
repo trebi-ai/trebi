@@ -92,10 +92,8 @@ read the outcome. This starts nothing.
 - `clear` (boolean, optional): drop the override and restore the machine status.
 
 ### message
-Send one message into a live run. The text must not contain the run completion
-sentinel (`TREBI_RUN_COMPLETE...`): only the agent reports that it finished, and
-a sentinel from you ends the run as complete with the work undone. If a run
-stalled, read its log and fix the blocker instead.
+Send one message to a run. A running run gets it in its current turn (`steered`), as a new turn (`prompted`), or after its current turn (`held`). A run that ended or waits on a request continues its session with the message (`resumed`). A request stays open. The reply is `{delivery, run_id, turn}`. A run with no session returns `resume_unsupported`. A run that starts or stops at that moment returns `conflict`.
+The text must not contain the run completion sentinel (`TREBI_RUN_COMPLETE...`): only the agent reports that it finished, and a sentinel from you ends the run as complete with the work undone. If a run stalled, read its log and fix the blocker instead.
 - `id` (string, required): run id.
 - `text` (string, required): message text.
 

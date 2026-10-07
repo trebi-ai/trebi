@@ -74,7 +74,7 @@ type bus interface {
 }
 
 type runMessenger interface {
-	InjectMessage(ctx context.Context, runID, text string) error
+	SendLive(ctx context.Context, runID, text string) error
 }
 
 type Service struct {
@@ -332,7 +332,7 @@ func (s *Service) notifyRun(ctx context.Context, p Proposal, outcome string) {
 	if p.RunID == "" || s.runs == nil {
 		return
 	}
-	_ = s.runs.InjectMessage(ctx, p.RunID, "Your AGENT.md proposal "+p.ID+" "+outcome)
+	_ = s.runs.SendLive(ctx, p.RunID, "Your AGENT.md proposal "+p.ID+" "+outcome) // best effort: an ended run does not need the news
 }
 
 func (s *Service) finishDecision(ctx context.Context, p Proposal) (Proposal, error) {

@@ -123,22 +123,16 @@ func TestCLIJobCompletesWithoutTmux(t *testing.T) {
 	}
 }
 
-// TestCLIOneShotRunningMidTurn pins that a one-shot run reads running, not
-// idle, between init and result: the prompt is on argv, not stdin.
-func TestCLIOneShotRunningMidTurn(t *testing.T) {
+// TestCLIRunningMidTurn pins that a run reads running, not idle, between
+// init and result.
+func TestCLIRunningMidTurn(t *testing.T) {
 	gate := filepath.Join(t.TempDir(), "go")
 	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
-		Script: `echo '{"type":"init","session_id":"s1"}'; echo '{"type":"assistant","text":"working"}'; ` +
+		Script: `read -r line; echo '{"type":"init","session_id":"s1"}'; echo '{"type":"assistant","text":"working"}'; ` +
 			`while [ ! -f ` + gate + ` ]; do sleep 0.02; done; echo '{"type":"result","subtype":"success"}'`,
 	})
 	run := launchCLIJob(t, svc)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if data, _ := os.ReadFile(filepath.Join(home.RunsLogDir(), run.ID+".log")); strings.Contains(string(data), "working") {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitLog(t, run.ID, "working")
 	if got := svc.SessionState(run.ID); got != runs.SessionRunning {
 		t.Fatalf("session state mid-turn = %q, want running", got)
 	}
@@ -146,6 +140,67 @@ func TestCLIOneShotRunningMidTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitTerminal(t, svc, run.ID)
+}
+
+// TestCLIMessageMidTurn pins the two live paths of a message: a harness that
+// steers adds it to the running turn, and one that cannot holds it and sends
+// it as the next turn when the result lands. Each prompt is a user event with
+// its origin and delivery.
+func TestCLIMessageMidTurn(t *testing.T) {
+	cases := []struct {
+		name    string
+		noSteer bool
+		want    string
+		reply   string
+	}{
+		{name: "steer", want: "steered", reply: "steer: Also check totals."},
+		{name: "held", noSteer: true, want: "held", reply: "next: Also check totals."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gate := filepath.Join(t.TempDir(), "go")
+			script := `read -r line; echo '{"type":"init","session_id":"s1"}'; echo '{"type":"assistant","text":"working"}'; `
+			if tc.noSteer {
+				script += `while [ ! -f ` + gate + ` ]; do sleep 0.02; done; echo '{"type":"result","subtype":"success"}'; ` +
+					`read -r next; echo '{"type":"assistant","text":"next: Also check totals."}'; echo '{"type":"result","subtype":"success"}'`
+			} else {
+				script += `read -r next; echo '{"type":"assistant","text":"steer: Also check totals."}'; echo '{"type":"result","subtype":"success"}'`
+			}
+			svc, _, _ := cliFixture(t, agentwire.FakeDriver{Script: script, NoSteer: tc.noSteer})
+			run := launchCLIJob(t, svc)
+			waitLog(t, run.ID, "working")
+			res, err := svc.SendMessage(context.Background(), run.ID, "Also check totals.")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Delivery != tc.want || res.RunID != run.ID {
+				t.Fatalf("result %+v, want delivery %s", res, tc.want)
+			}
+			if err := os.WriteFile(gate, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			done := waitTerminal(t, svc, run.ID)
+			if done.Status != runs.StatusComplete {
+				t.Fatalf("run: status=%s end=%s", done.Status, done.EndReason)
+			}
+			turns, err := svc.CLITurns(context.Background(), run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var origins []string
+			var replied bool
+			for _, turn := range turns {
+				if turn.Role == "user" {
+					origins = append(origins, turn.Origin+"/"+turn.Delivery)
+				}
+				replied = replied || (turn.Role == "assistant" && turn.Text == tc.reply)
+			}
+			want := []string{runs.OriginLaunch + "/prompted", runs.OriginMessage + "/" + tc.want}
+			if !slices.Equal(origins, want) || !replied {
+				t.Fatalf("user turns %v (want %v), replied %v: %+v", origins, want, replied, turns)
+			}
+		})
+	}
 }
 
 // TestCLIFailingResultClassifies pulls a limit result through the whole path.
@@ -861,4 +916,17 @@ func TestHarnessResumeProfiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+// waitLog waits until the run log holds text.
+func waitLog(t *testing.T, runID, text string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, _ := os.ReadFile(filepath.Join(home.RunsLogDir(), runID+".log")); strings.Contains(string(data), text) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("run log never held %q", text)
 }

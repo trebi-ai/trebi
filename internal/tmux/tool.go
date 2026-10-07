@@ -135,12 +135,27 @@ type Tool interface {
 
 // Turn is one §3.6 transcript turn.
 type Turn struct {
-	Role  string     `json:"role"` // user|assistant|tools
+	Role  string     `json:"role"` // user|assistant|tools|request
 	At    time.Time  `json:"at"`
 	Text  string     `json:"text,omitempty"`
 	Tools []ToolCall `json:"tools,omitempty"`
 	// RunTurn is the run turn (harness launch) the entry belongs to.
 	RunTurn int `json:"run_turn,omitempty"`
+	// Origin tells why trebi wrote a user prompt: launch|resume|message|
+	// request|ask|memory_fix|coalesce. Empty for a vendor user turn.
+	Origin string `json:"origin,omitempty"`
+	// Delivery tells how a prompt reached the session: steered|prompted|held.
+	Delivery string `json:"delivery,omitempty"`
+	// Request is set on a request turn.
+	Request *TurnRequest `json:"request,omitempty"`
+}
+
+// TurnRequest is the request of one request turn: its latest state.
+type TurnRequest struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Title  string `json:"title"`
+	Forms  int    `json:"forms"`
 }
 
 // ToolCall is one tool invocation on a turn.
