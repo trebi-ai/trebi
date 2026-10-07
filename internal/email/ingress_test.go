@@ -579,6 +579,45 @@ func TestDeliverAgentGoneAfterRoute(t *testing.T) {
 	}
 }
 
+// TestDeliverMisroutedNeedsAssistantAccept: an allowlisted sender that the
+// assistant does not accept gets an inbox item only, never an assistant ask.
+func TestDeliverMisroutedNeedsAssistantAccept(t *testing.T) {
+	isolateHome(t)
+	st := openEmailStore(t)
+	s := testService(st)
+	configureTest(s, "https://worker.example")
+	addr, err := s.EnsureAddress(t.Context(), "ws_1", "ellis-labs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admins, err := job.ParseAccept([]string{"admins"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := testRouteEnv()
+	env.Assistant = NewAcceptRule(admins)
+	acts := &fakeActions{env: env}
+	s.AttachIngress(NewIngress(s, connectors.New(st, nil, nil), acts, time.Minute, false))
+	for _, msg := range []IngressMessage{
+		{V: 1, ID: "a1", LocalPart: addr.LocalPart, Tag: "billing", To: []string{addr.Full()}, From: "friend@example.com", Dmarc: "pass"},
+		{V: 1, ID: "a2", LocalPart: addr.LocalPart, Tag: "billing", To: []string{addr.Full()}, From: "ops@example.com", Dmarc: "pass"},
+	} {
+		if err := s.Deliver(t.Context(), msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(acts.asks) != 1 || len(acts.inbox) != 2 {
+		t.Fatalf("asks=%q inbox=%q; want one admin ask and two inbox items", acts.asks, acts.inbox)
+	}
+	var conv string
+	if err := st.DB().QueryRow(`SELECT COALESCE(conversation_id,'') FROM email_messages WHERE id='a1'`).Scan(&conv); err != nil {
+		t.Fatal(err)
+	}
+	if conv != "" {
+		t.Errorf("allowlisted misroute linked conversation %q", conv)
+	}
+}
+
 // indexAgent adds the job_index row of one agent, so routed mail resolves
 // its agent_id.
 func indexAgent(t *testing.T, st *store.Store, wsID, name string) {

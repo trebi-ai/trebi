@@ -33,7 +33,7 @@ email:
     - "@acme.com"      # exact domain
 ```
 
-The assistant has the same `email.accept` key in the `assistant:` block of the workspace `trebi.yaml`. If it is absent, the assistant keeps the `admins` plus `allowlist` rule.
+The assistant has the same `email.accept` key in the `assistant:` block of the workspace `trebi.yaml`. If it is absent, the assistant accepts `admins` only. Add `allowlist` to let allowlisted senders write to it.
 
 Mail from Trebi has the house style. `email.style` changes it:
 

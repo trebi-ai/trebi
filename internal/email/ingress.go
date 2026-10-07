@@ -61,6 +61,7 @@ type RouteDecision struct {
 	Agent       string // short agent name; RouteAgent only
 	AgentID     string // job_index ID of Agent; set by deliver
 	Trusted     bool   // sender is an operator or on the workspace allowlist
+	ToAssistant bool   // the assistant accepts the sender; gates a misrouted ask
 	DMARC       string
 	TraceID     string
 	Reason      string
@@ -138,6 +139,7 @@ func (s *Service) Route(msg IngressMessage, wsID string, env RouteEnv) RouteDeci
 		return d
 	}
 	d.Trusted = addrListed(cfg.Admins, msg.From) || addrListed(env.Allowlist, msg.From)
+	d.ToAssistant = env.Assistant.Accepts(msg.From, cfg.Admins, env.Allowlist)
 	if cfg.RequireDMARC && msg.Dmarc != "pass" {
 		d.Class, d.Reason = RouteDropped, ReasonDMARCFail
 		if d.Trusted {
@@ -155,7 +157,7 @@ func (s *Service) Route(msg IngressMessage, wsID string, env RouteEnv) RouteDeci
 	}
 	rule, known := env.Agents[msg.Tag]
 	switch {
-	case msg.Tag == "" && env.Assistant.Accepts(msg.From, cfg.Admins, env.Allowlist):
+	case msg.Tag == "" && d.ToAssistant:
 		d.Class, d.Accepted = RouteAssistant, true
 	case msg.Tag == "":
 		d.Class, d.Reason = RouteDropped, ReasonNotAccepted
@@ -523,11 +525,13 @@ func (g *Ingress) dispatch(ctx context.Context, msg IngressMessage, d RouteDecis
 		}
 		g.svc.LinkInbound(ctx, msg.ID, "", convID, "")
 	case RouteAssistant, RouteMisrouted:
-		convID, err := g.act.Ask(ctx, d, msg, "", inboundText(msg, u, d.misroutedNote(msg.Tag)))
-		if err != nil {
-			g.log.Warn("email.ask", "id", msg.ID, "error", err)
+		var convID, inboxID string
+		var err error
+		if d.ToAssistant {
+			if convID, err = g.act.Ask(ctx, d, msg, "", inboundText(msg, u, d.misroutedNote(msg.Tag))); err != nil {
+				g.log.Warn("email.ask", "id", msg.ID, "error", err)
+			}
 		}
-		inboxID := ""
 		if d.Class == RouteMisrouted {
 			if inboxID, err = g.act.InboxItem(ctx, d, msg); err != nil {
 				g.log.Warn("email.inbox", "id", msg.ID, "error", err)

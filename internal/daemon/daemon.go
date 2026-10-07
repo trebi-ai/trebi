@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/assistant"
+	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/chains"
 	"github.com/trebi-ai/trebi/internal/channels"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
@@ -385,7 +387,7 @@ type freshConfigSource struct{}
 func (freshConfigSource) AssistantDefaults() assistant.Settings {
 	c, err := config.Load()
 	if err != nil || c == nil {
-		return assistant.Settings{Accept: []string{"admins", "allowlist"}}
+		return assistant.Settings{Accept: slices.Clone(wire.DefaultAccept)}
 	}
 	return assistant.SettingsFromConfig(c)
 }

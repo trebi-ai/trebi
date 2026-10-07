@@ -1013,7 +1013,7 @@ func (s *Service) EmailInboxItem(ctx context.Context, d email.RouteDecision, msg
 	} else {
 		subject = "email/misrouted/" + msg.Tag
 		title = "Email misrouted to +" + msg.Tag
-		body = "Mail to +" + msg.Tag + " was not delivered. No agent has this ID, or its email.accept list is empty."
+		body = "Mail from " + msg.From + " to +" + msg.Tag + " was not delivered. No agent has this ID, or its email.accept list does not name the sender."
 		hint = "Create the agent, or add the sender to email.accept."
 	}
 	item, err := s.findActiveBySubject(ctx, subject)

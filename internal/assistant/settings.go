@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -75,7 +76,7 @@ func SettingsFromConfig(cfg *config.Config) Settings {
 		Mode:     a.ModeOrDefault(),
 		Skills:   a.SkillsOrDefault(),
 		Context:  a.Context,
-		Accept:   []string{"admins", "allowlist"},
+		Accept:   slices.Clone(wire.DefaultAccept),
 		Native:   nativeSettingsOf(a.Native),
 	}
 }
