@@ -421,6 +421,7 @@ func (s *Server) doctorFindings() []map[string]any {
 	src = append(src, s.connectorDoctor()...)
 	src = append(src, s.cloudDoctor()...)
 	src = append(src, s.harnessRuntimeDoctor(context.Background())...)
+	src = append(src, s.chains.Doctor(context.Background())...)
 	out := make([]map[string]any, 0, len(src))
 	for _, f := range src {
 		out = append(out, map[string]any{

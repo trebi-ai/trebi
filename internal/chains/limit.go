@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/requests"
@@ -220,6 +221,50 @@ func (s *Service) Stop(ctx context.Context, traceID, by, reason string) (*StopRe
 		}
 	}
 	return out, nil
+}
+
+// rateHits is the number of rate refusals for one pair in 24 h that the
+// doctor reports. It is a sign of a loop in the prompts.
+const rateHits = 3
+
+// Doctor reports agent pairs that hit the ask rate limit rateHits times in
+// the last 24 h (chain_rate_hits).
+func (s *Service) Doctor(ctx context.Context) []alerts.DoctorFinding {
+	since := s.now().Add(-24 * time.Hour).UTC().Format(time.RFC3339Nano)
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT workspace_id, from_agent_id, to_agent_id, COUNT(*) FROM chain_hops
+WHERE status=? AND refuse_reason=? AND created_at>=?
+GROUP BY workspace_id, from_agent_id, to_agent_id HAVING COUNT(*)>=? ORDER BY workspace_id, from_agent_id, to_agent_id`,
+		string(HopRefused), string(RefuseRate), since, rateHits)
+	if err != nil {
+		s.log.Warn("chain doctor", "err", err)
+		return nil
+	}
+	defer rows.Close()
+	type pair struct {
+		ws, from, to string
+		n            int
+	}
+	var pairs []pair
+	var ids []string
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.ws, &p.from, &p.to, &p.n); err != nil {
+			s.log.Warn("chain doctor", "err", err)
+			return nil
+		}
+		pairs = append(pairs, p)
+		ids = append(ids, p.from, p.to)
+	}
+	names := s.agentNames(ctx, ids...)
+	out := make([]alerts.DoctorFinding, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, alerts.DoctorFinding{
+			ID: "chain-rate:" + p.ws + ":" + p.from + ":" + p.to, Severity: "warn", Code: "chain_rate_hits",
+			Message: fmt.Sprintf("agents/%s asked agents/%s too often %d times in 24 h. The two prompts can cause a loop.",
+				nameOr(names, p.from), nameOr(names, p.to), p.n),
+		})
+	}
+	return out
 }
 
 // stopHops sets the open asks and hand-offs of the chain stopped and returns

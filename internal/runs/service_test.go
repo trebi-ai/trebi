@@ -93,12 +93,21 @@ func TestResumeRefusesSuccessfulRun(t *testing.T) {
 	if err := svc.Terminate(ctx, killed.ID, runs.StatusExited, runs.EndKill, nil); err != nil {
 		t.Fatal(err)
 	}
-	next, err := svc.Resume(ctx, killed.ID, runs.LaunchOpts{}, runs.ResumeOpts{})
+	next, err := svc.Resume(ctx, killed.ID, runs.LaunchOpts{}, runs.ResumeOpts{TraceID: "tr1", HopID: "hop_1"})
 	if err != nil {
 		t.Fatalf("resume of an interrupted run: %v", err)
 	}
 	if next.ID != killed.ID || next.TurnCount != 2 || next.ResumeAttempts != 1 {
 		t.Fatalf("reopened: %+v", next)
+	}
+	// The reopen frame carries the chain of the new turn.
+	var trace, attrs string
+	if err := st.DB().QueryRow(`SELECT trace_id, attrs_json FROM event_log WHERE topic='run.updated' AND entity_id=? AND attrs_json LIKE '%"turn":"2"%'`,
+		killed.ID).Scan(&trace, &attrs); err != nil {
+		t.Fatal(err)
+	}
+	if trace != "tr1" || !strings.Contains(attrs, `"hop_id":"hop_1"`) {
+		t.Fatalf("reopen frame trace=%q attrs=%s", trace, attrs)
 	}
 }
 

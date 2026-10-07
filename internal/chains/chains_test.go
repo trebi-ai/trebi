@@ -374,6 +374,30 @@ func TestStopUnwinds(t *testing.T) {
 	}
 }
 
+// TestDoctorRateHits pins chain_rate_hits: three rate refusals of one pair in
+// 24 h give one finding.
+func TestDoctorRateHits(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.limits.PairPerHour = 1
+	ceo := f.start(t, "ceo", nil)
+	f.ask(t, ceo, "cfo", KindAsk)
+	for i := range 3 {
+		if got := f.svc.Doctor(context.Background()); len(got) != 0 {
+			t.Fatalf("finding after %d refusals: %+v", i, got)
+		}
+		_, err := f.svc.Ask(context.Background(), AskOpts{Workspace: "ws1", To: "cfo", Text: "Again?", Actor: &tools.Actor{Kind: EndAgent, RunID: ceo.ID}})
+		var ce *Error
+		if !errors.As(err, &ce) || ce.Reason != RefuseRate {
+			t.Fatalf("ask %d: %v", i, err)
+		}
+	}
+	got := f.svc.Doctor(context.Background())
+	if len(got) != 1 || got[0].Code != "chain_rate_hits" || !strings.Contains(got[0].Message, "agents/ceo asked agents/cfo too often 3 times") {
+		t.Fatalf("findings %+v", got)
+	}
+}
+
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))

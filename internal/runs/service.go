@@ -392,7 +392,7 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Run, error) {
 		Attrs: map[string]string{
 			"job_id": opts.JobID, "job_name": opts.JobName, "workspace": opts.WorkspaceID,
 			"kind": opts.Kind, "conversation_key": opts.ConversationKey,
-			"conversation_id": opts.ConversationID,
+			"conversation_id": opts.ConversationID, "hop_id": opts.HopID,
 		},
 	})
 	if err != nil {
@@ -1644,9 +1644,9 @@ func (s *Service) Reopen(ctx context.Context, id string, opts CreateOpts) (*Run,
 			return err
 		}
 		_, err = store.AppendInTx(tx, store.BusEvent{
-			Topic: "run.updated", Entity: "run", EntityID: id, Action: "updated", Revision: rev,
+			Topic: "run.updated", TraceID: opts.TraceID, Entity: "run", EntityID: id, Action: "updated", Revision: rev,
 			Attrs: map[string]string{
-				"status": string(StatusRunning), "turn": strconv.Itoa(n), "reason": string(opts.Reason),
+				"status": string(StatusRunning), "turn": strconv.Itoa(n), "reason": string(opts.Reason), "hop_id": opts.HopID,
 			},
 		})
 		return err

@@ -33,15 +33,16 @@ func (s *Service) Name() string { return runs.GateAsk }
 func (s *Service) PromptHint(runs.LaunchOpts) string { return "" }
 
 // Open reports asks of runID that wait for a reply (waiting) and replies to
-// runID that are not delivered yet (ready).
+// runID that are not delivered yet (ready). A claimed reply goes to the turn
+// in flight, so it is not ready.
 func (s *Service) Open(ctx context.Context, runID string) (waiting, ready bool, err error) {
 	var asks, replies int
 	err = s.st.DB().QueryRowContext(ctx, `SELECT
   COALESCE(SUM(CASE WHEN kind=? AND from_run_id=? AND status IN (?,?,?) THEN 1 ELSE 0 END),0),
-  COALESCE(SUM(CASE WHEN kind=? AND to_run_id=? AND delivery_state IN (?,?) THEN 1 ELSE 0 END),0)
+  COALESCE(SUM(CASE WHEN kind=? AND to_run_id=? AND delivery_state=? THEN 1 ELSE 0 END),0)
 FROM chain_hops WHERE from_run_id=? OR to_run_id=?`,
 		string(KindAsk), runID, string(HopHeld), string(HopQueued), string(HopRunning),
-		string(KindReply), runID, DeliveryNone, DeliveryClaimed, runID, runID).Scan(&asks, &replies)
+		string(KindReply), runID, DeliveryNone, runID, runID).Scan(&asks, &replies)
 	return asks > 0, replies > 0, err
 }
 

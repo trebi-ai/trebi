@@ -60,6 +60,10 @@ func (s *Service) Bind(ctx context.Context, hopID, runID string, turn int) error
 	s.runs.AddEvent(ctx, runID, "hop_received", "chains", map[string]string{
 		"hop_id": h.ID, "kind": string(h.Kind), "from_agent": h.From.Agent, "from_run_id": h.From.RunID,
 	})
+	// A short turn can end before the launch returns: capture its reply now.
+	if run, err := s.runs.Get(ctx, runID); err == nil && (run.Status != runs.StatusRunning || run.TurnCount > turn) {
+		s.RunEnded(ctx, runID, run.Status)
+	}
 	return nil
 }
 

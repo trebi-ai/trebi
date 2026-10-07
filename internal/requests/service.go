@@ -257,15 +257,16 @@ func (s *Service) PromptHint(runs.LaunchOpts) string {
 }
 
 // Open reports a pending resume request (waiting) and a closed one with an
-// answer that is not delivered yet (ready).
+// answer that is not delivered yet (ready). A claimed answer goes to the turn
+// in flight, so it is not ready.
 func (s *Service) Open(ctx context.Context, runID string) (waiting, ready bool, err error) {
 	var pending, closed int
 	err = s.st.DB().QueryRowContext(ctx, `SELECT
   COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END),0),
-  COALESCE(SUM(CASE WHEN status IN (?,?) AND delivery_state IN (?,?) THEN 1 ELSE 0 END),0)
+  COALESCE(SUM(CASE WHEN status IN (?,?) AND delivery_state=? THEN 1 ELSE 0 END),0)
 FROM requests WHERE run_id=? AND delivery=?`,
 		string(StatusPending), string(StatusAnswered), string(StatusExpired),
-		string(DeliveryNone), string(DeliveryClaimed), runID, string(DeliveryResume)).Scan(&pending, &closed)
+		string(DeliveryNone), runID, string(DeliveryResume)).Scan(&pending, &closed)
 	return pending > 0, closed > 0, err
 }
 
