@@ -889,6 +889,10 @@ func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if turns, err = s.runs.WithRequests(r.Context(), run.ID, turns); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
 	if err := s.runs.LabelTurns(r.Context(), run.ID, turns); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return

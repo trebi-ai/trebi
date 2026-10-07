@@ -17,6 +17,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
@@ -24,6 +25,7 @@ type Runs interface {
 	Get(ctx context.Context, id string) (*runs.Run, error)
 	Unpark(ctx context.Context, runID string, end runs.EndReason) error
 	Deliver(ctx context.Context, runID string, extra ...runs.ParkDelivery) (runs.DeliverResult, error)
+	AddEvent(ctx context.Context, runID, kind, source string, detail any)
 }
 
 // Grant answers the cloud plan grant. A Pro Cloud account grants requests.
@@ -328,7 +330,15 @@ func (s *Service) createOnce(ctx context.Context, run *runs.Run, o CreateOpts) (
 		s.removeReports(r.ID, added)
 		return Request{}, err
 	}
+	s.runEvent(ctx, r)
 	return r, nil
+}
+
+// runEvent records the state of r in the run feed, so the session shows it.
+func (s *Service) runEvent(ctx context.Context, r Request) {
+	s.runs.AddEvent(ctx, r.RunID, runs.EventRequest, "trebi", tmux.TurnRequest{
+		ID: r.ID, Status: string(r.Status), Title: r.Title, Forms: len(r.Forms),
+	})
 }
 
 // openOrNew returns the open request of the run and source with a bumped
@@ -550,6 +560,7 @@ func (s *Service) close(ctx context.Context, r Request, status Status, by *Answe
 	if err != nil {
 		return Request{}, err
 	}
+	s.runEvent(ctx, next)
 	return next, nil
 }
 

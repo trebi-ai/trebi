@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
@@ -23,6 +25,7 @@ type fakeRuns struct {
 	runs   map[string]*runs.Run
 	gate   runs.ParkGate
 	parker *runs.Parker
+	events []runEvent
 }
 
 func (f *fakeRuns) put(r runs.Run) {
@@ -60,6 +63,17 @@ func (f *fakeRuns) Unpark(ctx context.Context, id string, end runs.EndReason) er
 	}
 	r.Status, r.EndReason = runs.StatusComplete, end
 	return nil
+}
+
+func (f *fakeRuns) AddEvent(_ context.Context, runID, kind, _ string, detail any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, runEvent{runID, kind, detail})
+}
+
+type runEvent struct {
+	runID, kind string
+	detail      any
 }
 
 func (f *fakeRuns) Deliver(ctx context.Context, id string, extra ...runs.ParkDelivery) (runs.DeliverResult, error) {
@@ -452,4 +466,30 @@ func approveAll(r Request) AnswerIn {
 		in.Forms = append(in.Forms, FormAnswerIn{Idx: f.Idx, FormAnswer: FormAnswer{Decision: DecisionApprove}})
 	}
 	return in
+}
+
+// TestRequestRunEvents pins the session feed: create, a joined form, and the
+// answer each record the request state on the run.
+func TestRequestRunEvents(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	actor := h.run(t, "RUN1")
+	h.create(t, actor, CreateOpts{})
+	r := h.create(t, actor, CreateOpts{Forms: []FormOpts{confirm("Second")}})
+	if _, err := h.svc.Answer(context.Background(), r.ID, approveAll(r), 0); err != nil {
+		t.Fatal(err)
+	}
+	h.rs.mu.Lock()
+	defer h.rs.mu.Unlock()
+	var got []string
+	for _, ev := range h.rs.events {
+		tr, _ := ev.detail.(tmux.TurnRequest)
+		if ev.runID != "RUN1" || ev.kind != runs.EventRequest || tr.ID != r.ID {
+			t.Fatalf("event %+v", ev)
+		}
+		got = append(got, fmt.Sprintf("%s/%d", tr.Status, tr.Forms))
+	}
+	if want := []string{"pending/1", "pending/2", "answered/2"}; !slices.Equal(got, want) {
+		t.Fatalf("events %v, want %v", got, want)
+	}
 }

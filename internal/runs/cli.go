@@ -380,6 +380,10 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	return s.Get(ctx, run.ID)
 }
 
+// EventRequest is the run event kind that records the state of a request of
+// the run. Its detail is a tmux.TurnRequest.
+const EventRequest = "request"
+
 // Prompt origins on a user event: what made trebi write the prompt.
 const (
 	OriginLaunch    = "launch"
@@ -795,6 +799,53 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, erro
 		turns = []tmux.Turn{}
 	}
 	return turns, nil
+}
+
+// WithRequests merges the request events of the run into turns by time. Each
+// request is one turn at the time of its first event, with its latest state.
+func (s *Service) WithRequests(ctx context.Context, runID string, turns []tmux.Turn) ([]tmux.Turn, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT at, detail_json FROM run_events
+		WHERE run_id=? AND kind=? ORDER BY id`, runID, EventRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var reqs []tmux.Turn
+	byID := map[string]int{}
+	for rows.Next() {
+		var at string
+		var detail sql.NullString
+		if err := rows.Scan(&at, &detail); err != nil {
+			return nil, err
+		}
+		var tr tmux.TurnRequest
+		if !detail.Valid || json.Unmarshal([]byte(detail.String), &tr) != nil || tr.ID == "" {
+			continue
+		}
+		if i, ok := byID[tr.ID]; ok {
+			*reqs[i].Request = tr
+			continue
+		}
+		t, _ := time.Parse(time.RFC3339Nano, at)
+		byID[tr.ID] = len(reqs)
+		reqs = append(reqs, tmux.Turn{Role: EventRequest, At: t, Request: &tr})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(reqs) == 0 {
+		return turns, nil
+	}
+	out := make([]tmux.Turn, 0, len(turns)+len(reqs))
+	i := 0
+	for _, t := range turns {
+		for i < len(reqs) && !t.At.IsZero() && reqs[i].At.Before(t.At) {
+			out = append(out, reqs[i])
+			i++
+		}
+		out = append(out, t)
+	}
+	return append(out, reqs[i:]...), nil
 }
 
 // OpenCodeMessages returns the raw vendor message list for an OpenCode session

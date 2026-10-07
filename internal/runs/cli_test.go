@@ -19,6 +19,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // cliFixture builds a runs service with the fake subprocess driver injected
@@ -929,4 +930,51 @@ func waitLog(t *testing.T, runID, text string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("run log never held %q", text)
+}
+
+// TestWithRequestsMergesOneTurn pins the session feed: a request is one turn
+// at its first event with its latest state, and its answer prompt has origin
+// request.
+func TestWithRequestsMergesOneTurn(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
+		Script: `read -r line; echo '{"type":"init","session_id":"s1"}'; echo '{"type":"assistant","text":"asked"}'; echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	waitTerminal(t, svc, run.ID)
+	svc.AddEvent(ctx, run.ID, runs.EventRequest, "trebi", tmux.TurnRequest{ID: "R1", Status: "pending", Title: "Ship it", Forms: 1})
+	svc.AddEvent(ctx, run.ID, runs.EventRequest, "trebi", tmux.TurnRequest{ID: "R1", Status: "pending", Title: "Ship it", Forms: 2})
+	svc.AddEvent(ctx, run.ID, runs.EventRequest, "trebi", tmux.TurnRequest{ID: "R1", Status: "answered", Title: "Ship it", Forms: 2})
+	next, err := svc.Resume(ctx, run.ID, runs.LaunchOpts{}, runs.ResumeOpts{Prompt: "answers", Reason: runs.ReasonRequest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, svc, next.ID)
+	turns, err := svc.CLITurns(ctx, next.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err = svc.WithRequests(ctx, next.ID, turns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reqs []tmux.TurnRequest
+	var origins []string
+	for _, turn := range turns {
+		switch turn.Role {
+		case runs.EventRequest:
+			reqs = append(reqs, *turn.Request)
+		case "user":
+			origins = append(origins, turn.Origin)
+		}
+	}
+	if len(reqs) != 1 || reqs[0].Status != "answered" || reqs[0].Forms != 2 {
+		t.Fatalf("request turns %+v", reqs)
+	}
+	if !slices.Equal(origins, []string{runs.OriginLaunch, runs.OriginRequest}) {
+		t.Fatalf("origins %v: %+v", origins, turns)
+	}
+	if i := slices.IndexFunc(turns, func(t tmux.Turn) bool { return t.Role == runs.EventRequest }); i == 0 || i == len(turns)-1 {
+		t.Fatalf("request turn at %d is not between the turns: %+v", i, turns)
+	}
 }
