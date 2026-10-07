@@ -1,19 +1,16 @@
-[trebi] The person answered 1 request. This session continues with the answer.
-
-Request R01  "Delete the old branch" (confirm)
-Decision: expired. Nothing is approved. The person did not answer in time.
+[trebi] Request R01 "Delete the old branch" (1 form) closed with no answer.
 Closed by Trebi at 2026-09-28T14:05:00Z.
 
+Form 1 "Delete the old branch" (confirm)
+Decision: expired. Nothing is approved. The person did not answer in time.
 ```json
 {
   "request_id": "R01",
+  "idx": 0,
   "type": "confirm",
   "title": "Delete the old branch",
-  "decision": "expired",
-  "answered_by": "daemon",
-  "answered_via": "daemon",
-  "answered_at": "2026-09-28T14:05:00Z"
+  "decision": "expired"
 }
 ```
 
-Continue the task with this answer.
+Continue the task with these answers.

@@ -30,7 +30,7 @@ type fakeActions struct {
 	resolves          []string // inbox ids one reply decided
 	ambiguous         int      // replies that named both decisions
 	request           requests.Request
-	answers           []requests.Answer // request answers, in answer order
+	answers           []requests.AnswerIn // request answers, in answer order
 }
 
 func (f *fakeActions) RouteEnvFor(_ context.Context, _ string) (RouteEnv, error) {
@@ -72,8 +72,8 @@ func (f *fakeActions) Request(_ context.Context, id string) (requests.Request, e
 	return r, nil
 }
 
-func (f *fakeActions) AnswerRequest(_ context.Context, _ string, a requests.Answer) error {
-	f.answers = append(f.answers, a)
+func (f *fakeActions) AnswerRequest(_ context.Context, _ string, in requests.AnswerIn) error {
+	f.answers = append(f.answers, in)
 	return nil
 }
 

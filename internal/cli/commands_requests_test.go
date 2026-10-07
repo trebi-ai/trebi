@@ -10,37 +10,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
+	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/requests"
 )
-
-func TestRequestExitCode(t *testing.T) {
-	t.Parallel()
-	answered := func(d requests.Decision) requests.Request {
-		return requests.Request{Status: requests.StatusAnswered, Answer: &requests.Answer{Decision: d}}
-	}
-	cases := []struct {
-		r    requests.Request
-		want int
-	}{
-		{answered(requests.DecisionApprove), requestExitApproved},
-		{answered(requests.DecisionEdit), requestExitApproved},
-		{answered(requests.DecisionChoose), requestExitApproved},
-		{answered(requests.DecisionSubmit), requestExitApproved},
-		{answered(requests.DecisionReject), requestExitDeclined},
-		{answered(requests.DecisionRespond), requestExitDeclined},
-		{requests.Request{Status: requests.StatusExpired, Answer: &requests.Answer{Decision: requests.DecisionExpired}}, requestExitClosed},
-		{requests.Request{Status: requests.StatusDismissed}, requestExitClosed},
-		{requests.Request{Status: requests.StatusCancelled}, requestExitClosed},
-		{requests.Request{Status: requests.StatusPending}, requestExitTimeout},
-	}
-	for _, c := range cases {
-		if got := requestExitCode(c.r); got != c.want {
-			t.Errorf("%s/%v: exit %d, want %d", c.r.Status, c.r.Answer, got, c.want)
-		}
-	}
-}
 
 // requestTestServer records each request body and answers GET with the
 // request that the test sets.
@@ -90,7 +63,7 @@ func (s *requestTestServer) body(key string) []byte {
 
 func TestRequestCreateDraftFileKeepsBytes(t *testing.T) {
 	s := newRequestTestServer(t)
-	s.reply = requests.Request{ID: "R1", Status: requests.StatusPending, Delivery: requests.DeliveryResume}
+	s.reply = requests.Request{ID: "R1", Status: requests.StatusPending, Forms: []requests.Form{{Type: requests.TypeReview}}}
 	draft := "Hi Ana,\r\n\n`code` \"q\" <b> \t\nend "
 	path := filepath.Join(t.TempDir(), "reply.md")
 	if err := os.WriteFile(path, []byte(draft), 0o644); err != nil {
@@ -104,13 +77,16 @@ func TestRequestCreateDraftFileKeepsBytes(t *testing.T) {
 		t.Fatalf("output %q", out)
 	}
 	var got struct {
-		Draft struct{ Format, Text string }
+		Forms []struct {
+			Title string
+			Draft struct{ Format, Text string }
+		}
 	}
 	if err := json.Unmarshal(s.body("POST /v1/requests"), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Draft.Text != draft || got.Draft.Format != "markdown" {
-		t.Fatalf("draft %q format %s", got.Draft.Text, got.Draft.Format)
+	if len(got.Forms) != 1 || got.Forms[0].Title != "Send it" || got.Forms[0].Draft.Text != draft || got.Forms[0].Draft.Format != "markdown" {
+		t.Fatalf("forms %+v", got.Forms)
 	}
 }
 
@@ -121,17 +97,48 @@ func TestRequestCreateOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got struct {
-		Options []requests.Option
-		Multi   bool
+		Forms []struct {
+			Options []requests.Option
+			Multi   bool
+		}
 	}
 	if err := json.Unmarshal(s.body("POST /v1/requests"), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Options) != 2 || got.Options[1].Label != "Plan B" || !got.Multi {
+	if len(got.Forms) != 1 || len(got.Forms[0].Options) != 2 || got.Forms[0].Options[1].Label != "Plan B" || !got.Forms[0].Multi {
 		t.Fatalf("body %+v", got)
 	}
 	if _, err := runCLI(t, s.client(), "request", "create", "--type", "choose", "--title", "Pick", "--option", "nolabel"); err == nil {
 		t.Fatal("option without a label passes")
+	}
+}
+
+func TestRequestCreateFormsFile(t *testing.T) {
+	s := newRequestTestServer(t)
+	s.reply = requests.Request{ID: "R1", Status: requests.StatusPending}
+	path := filepath.Join(t.TempDir(), "forms.json")
+	forms := `[{"type":"confirm","title":"Tag it"},{"type":"choose","title":"Pick","options":[{"id":"a","label":"A"}]}]`
+	if err := os.WriteFile(path, []byte(forms), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, s.client(), "request", "create", "--forms-file", path, "--title", "Ship the release"); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Title string
+		Forms []struct{ Type, Title string }
+	}
+	if err := json.Unmarshal(s.body("POST /v1/requests"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Ship the release" || len(got.Forms) != 2 || got.Forms[1].Type != "choose" {
+		t.Fatalf("body %+v", got)
+	}
+	if _, err := runCLI(t, s.client(), "request", "create", "--forms-file", path, "--type", "confirm"); err == nil || !strings.Contains(err.Error(), "--type") {
+		t.Fatalf("form flag with --forms-file: %v", err)
+	}
+	if _, err := runCLI(t, s.client(), "request", "create", "--title", "x"); err == nil {
+		t.Fatal("create with no type passes")
 	}
 }
 
@@ -150,30 +157,6 @@ func TestRequestCreateSendsRunToken(t *testing.T) {
 	}
 }
 
-func TestWaitForRequestCodes(t *testing.T) {
-	s := newRequestTestServer(t)
-	for _, c := range []struct {
-		r    requests.Request
-		want int
-	}{
-		{requests.Request{ID: "R1", Status: requests.StatusAnswered, Answer: &requests.Answer{Decision: requests.DecisionApprove}}, requestExitApproved},
-		{requests.Request{ID: "R1", Status: requests.StatusAnswered, Answer: &requests.Answer{Decision: requests.DecisionReject}}, requestExitDeclined},
-		{requests.Request{ID: "R1", Status: requests.StatusExpired}, requestExitClosed},
-		{requests.Request{ID: "R1", Status: requests.StatusPending}, requestExitTimeout},
-	} {
-		s.mu.Lock()
-		s.reply = c.r
-		s.mu.Unlock()
-		r, err := waitForRequest(s.client(), "R1", 10*time.Millisecond)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := requestExitCode(r); got != c.want {
-			t.Errorf("%s: exit %d, want %d", c.r.Status, got, c.want)
-		}
-	}
-}
-
 func TestRequestAnswerRefusedForRun(t *testing.T) {
 	s := newRequestTestServer(t)
 	t.Setenv("TREBI_RUN_TOKEN", "tok")
@@ -189,16 +172,38 @@ func TestRequestAnswerRefusedForRun(t *testing.T) {
 
 func TestRequestAnswerSendsCLI(t *testing.T) {
 	s := newRequestTestServer(t)
-	s.reply = requests.Request{ID: "R1", Status: requests.StatusAnswered, Answer: &requests.Answer{Decision: requests.DecisionRespond}}
+	s.reply = requests.Request{ID: "R1", Status: requests.StatusPending, Forms: []requests.Form{{Idx: 0, Type: requests.TypeConfirm}}}
 	if _, err := runCLI(t, s.client(), "request", "answer", "R1", "respond", "--message", "why?"); err != nil {
 		t.Fatal(err)
 	}
-	var got map[string]any
+	var got request.RequestAnswerBody
 	if err := json.Unmarshal(s.body("POST /v1/requests/R1/answer"), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["decision"] != "respond" || got["message"] != "why?" || got["via"] != "cli" {
-		t.Fatalf("body %v", got)
+	if got.Via != "cli" || len(got.Forms) != 1 || got.Forms[0].Decision != "respond" || got.Forms[0].Message != "why?" {
+		t.Fatalf("body %+v", got)
+	}
+}
+
+func TestRequestAnswerManyForms(t *testing.T) {
+	s := newRequestTestServer(t)
+	s.reply = requests.Request{ID: "R1", Status: requests.StatusPending, Forms: []requests.Form{{Idx: 0}, {Idx: 1}}}
+	if _, err := runCLI(t, s.client(), "request", "answer", "R1", "approve"); err == nil || !strings.Contains(err.Error(), "--answers-file") {
+		t.Fatalf("err %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "answers.json")
+	if err := os.WriteFile(path, []byte(`[{"idx":0,"decision":"approve"},{"idx":1,"decision":"reject"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, s.client(), "request", "answer", "R1", "--answers-file", path); err != nil {
+		t.Fatal(err)
+	}
+	var got request.RequestAnswerBody
+	if err := json.Unmarshal(s.body("POST /v1/requests/R1/answer"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Forms) != 2 || got.Forms[1].Decision != "reject" || got.Via != "cli" {
+		t.Fatalf("body %+v", got)
 	}
 }
 

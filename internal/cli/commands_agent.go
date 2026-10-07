@@ -16,6 +16,9 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+// askPollStep stays under the 30s client timeout.
+const askPollStep = 25 * time.Second
+
 // agentCommand is the CLI surface of the workspace agents collection. The
 // hidden `trebi agent-hook` command is a harness lifecycle hook; it shares
 // only the word "agent".
@@ -263,7 +266,7 @@ func runAgentAsk(c *cli.Command, kind chains.Kind) error {
 		wait = 0
 	}
 	// One call stays under the client timeout; the rest of the wait polls.
-	body.WaitMS = int(min(wait, requestPollStep).Milliseconds())
+	body.WaitMS = int(min(wait, askPollStep).Milliseconds())
 	req := request.BuildAgentAsk(wsID, args[0], body)
 	if kind == chains.KindHandoff {
 		req = request.BuildAgentHandoff(wsID, args[0], body)
@@ -273,7 +276,7 @@ func runAgentAsk(c *cli.Command, kind chains.Kind) error {
 		return err
 	}
 	if kind == chains.KindAsk && wait > 0 && len(res.Replies) == 0 {
-		res.Replies = waitHopReplies(client, res.Hop, time.Now().Add(wait-requestPollStep))
+		res.Replies = waitHopReplies(client, res.Hop, time.Now().Add(wait-askPollStep))
 	}
 	if c.Bool("json") {
 		return encodeJSON(c, res)

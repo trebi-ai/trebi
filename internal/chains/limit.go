@@ -45,11 +45,13 @@ func (s *Service) atLimit(ctx context.Context, c *Chain, f frame, h *Hop, reason
 	}
 	target := path[len(path)-1]
 	req, err := s.req.CreateSystem(ctx, f.runID, requests.CreateOpts{
-		Type: requests.TypeConfirm, Title: limitTitle(reason, c.Limits),
-		Summary:  fmt.Sprintf("Path: %s\nUsed: %d steps, $%.2f\nWaiting ask to %s: %s", strings.Join(path, " → "), turns, cost, target, h.Preview),
-		Target:   "agents/" + target,
-		Allow:    []requests.Decision{requests.DecisionApprove, requests.DecisionReject, requests.DecisionRespond},
-		Delivery: requests.DeliveryResume, Source: requests.SourceChain, HopID: h.ID, TraceID: h.TraceID,
+		Forms: []requests.FormOpts{{
+			Type: requests.TypeConfirm, Title: limitTitle(reason, c.Limits),
+			Summary: fmt.Sprintf("Path: %s\nUsed: %d steps, $%.2f\nWaiting ask to %s: %s", strings.Join(path, " → "), turns, cost, target, h.Preview),
+			Target:  "agents/" + target,
+			Allow:   []requests.Decision{requests.DecisionApprove, requests.DecisionReject, requests.DecisionRespond},
+		}},
+		Source: requests.SourceChain, HopID: h.ID, TraceID: h.TraceID,
 	})
 	if errors.Is(err, requests.ErrPlan) {
 		if rerr := s.refuse(ctx, h, limitErr); !errors.As(rerr, new(*Error)) {
@@ -116,8 +118,8 @@ func (s *Service) RequestDecided(ctx context.Context, r requests.Request) error 
 		return nil
 	}
 	decision := requests.DecisionExpired
-	if r.Status == requests.StatusAnswered && r.Answer != nil {
-		decision = r.Answer.Decision
+	if r.Status == requests.StatusAnswered && len(r.Forms) > 0 && r.Forms[0].Answer != nil {
+		decision = r.Forms[0].Answer.Decision
 	}
 	switch decision {
 	case requests.DecisionApprove:

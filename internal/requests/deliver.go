@@ -13,32 +13,32 @@ import (
 // staleClaim is the age after which Recover treats a claim as lost.
 const staleClaim = 2 * time.Minute
 
-// Delivery is the set of closed resume requests of one parked run that one
-// resume carries.
+// Delivery is the set of closed requests of one run that one prompt carries.
 type Delivery struct {
 	Run      *runs.Run
 	Requests []Request // creation order
 }
 
-// Claim takes the closed resume requests of runID that are not delivered.
-// The claim lets only one caller launch.
+// Claim takes the closed requests of runID that are not delivered. The claim
+// lets only one caller launch. It records the turn of the run at the claim,
+// so Stale can tell whether a later turn carried the answers.
 func (s *Service) Claim(ctx context.Context, runID string) ([]runs.ParkDelivery, error) {
+	run, err := s.runs.Get(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("run %s: %w", runID, err)
+	}
 	now := s.now()
-	res, err := s.st.DB().ExecContext(ctx, `UPDATE requests SET delivery_state=?, claimed_at=?
-WHERE run_id=? AND delivery=? AND status IN (?,?) AND delivery_state=?
-  AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.run_id=? AND p.delivery=? AND p.status=?)`,
-		string(DeliveryClaimed), fmtTime(now), runID, string(DeliveryResume),
+	res, err := s.st.DB().ExecContext(ctx, `UPDATE requests SET delivery_state=?, claimed_at=?, delivered_turn=?
+WHERE run_id=? AND status IN (?,?) AND delivery_state=?
+  AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.run_id=? AND p.status=?)`,
+		string(DeliveryClaimed), fmtTime(now), run.TurnCount, runID,
 		string(StatusAnswered), string(StatusExpired), string(DeliveryNone),
-		runID, string(DeliveryResume), string(StatusPending))
+		runID, string(StatusPending))
 	if err != nil {
 		return nil, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, nil
-	}
-	run, err := s.runs.Get(ctx, runID)
-	if err != nil {
-		return nil, fmt.Errorf("run %s: %w", runID, err)
 	}
 	claimed, err := s.query(ctx, `WHERE run_id=? AND delivery_state=? ORDER BY created_at, id`,
 		runID, string(DeliveryClaimed))
@@ -66,6 +66,7 @@ func (s *Service) Settle(ctx context.Context, _ string, ds []runs.ParkDelivery, 
 				s.markDelivery(ctx, r, DeliveryFailed, "", "", res.Err.Error())
 				continue
 			}
+			r.DeliveredTurn = res.Turn
 			s.markDelivery(ctx, r, DeliveryDelivered, res.Path, res.RunID, "")
 		}
 	}
@@ -75,6 +76,10 @@ func (s *Service) Settle(ctx context.Context, _ string, ds []runs.ParkDelivery, 
 func (s *Service) markDelivery(ctx context.Context, r Request, st DeliveryState, path, runID, msg string) {
 	now := s.now()
 	r.DeliveryState, r.DeliveryPath, r.DeliveredRunID, r.DeliveryError = st, path, runID, msg
+	var turnArg any
+	if st == DeliveryDelivered && r.DeliveredTurn > 0 {
+		turnArg = r.DeliveredTurn
+	}
 	r.Revision++
 	topic := "request.delivered"
 	if st == DeliveryFailed {
@@ -86,8 +91,8 @@ func (s *Service) markDelivery(ctx context.Context, r Request, st DeliveryState,
 	}
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE requests SET delivery_state=?, delivery_path=?, delivered_run_id=?,
-  delivery_error=?, updated_at=?, revision=revision+1 WHERE id=?`,
-			string(st), path, runArg, msg, fmtTime(now), r.ID)
+  delivery_error=?, delivered_turn=COALESCE(?, delivered_turn), updated_at=?, revision=revision+1 WHERE id=?`,
+			string(st), path, runArg, msg, turnArg, fmtTime(now), r.ID)
 		return err
 	}, r.event(topic, string(st)))
 	if err != nil {
@@ -96,8 +101,8 @@ func (s *Service) markDelivery(ctx context.Context, r Request, st DeliveryState,
 }
 
 // Stale runs at boot. A claim older than two minutes either launched (the
-// run has a request turn after it) or did not (the claim is reset). It
-// returns the runs with closed answers that are not delivered.
+// run has a turn after the turn of the claim) or did not (the claim is
+// reset). It returns the runs with closed answers that are not delivered.
 func (s *Service) Stale(ctx context.Context) ([]string, error) {
 	cutoff := s.now().Add(-staleClaim)
 	claimed, err := s.query(ctx, `WHERE delivery_state=? ORDER BY created_at, id`, string(DeliveryClaimed))
@@ -108,21 +113,22 @@ func (s *Service) Stale(ctx context.Context) ([]string, error) {
 		if r.ClaimedAt == nil || r.ClaimedAt.After(cutoff) {
 			continue
 		}
-		turn, err := s.runs.TurnAfter(ctx, r.RunID, runs.ReasonRequest, *r.ClaimedAt)
+		run, err := s.runs.Get(ctx, r.RunID)
 		if err != nil {
 			return nil, err
 		}
-		if turn > 0 {
+		if run.TurnCount > r.DeliveredTurn {
+			r.DeliveredTurn = r.DeliveredTurn + 1
 			s.markDelivery(ctx, r, DeliveryDelivered, "resume", r.RunID, "")
 			continue
 		}
-		if _, err := s.st.DB().ExecContext(ctx, `UPDATE requests SET delivery_state=?, claimed_at=NULL WHERE id=? AND delivery_state=?`,
+		if _, err := s.st.DB().ExecContext(ctx, `UPDATE requests SET delivery_state=?, claimed_at=NULL, delivered_turn=NULL WHERE id=? AND delivery_state=?`,
 			string(DeliveryNone), r.ID, string(DeliveryClaimed)); err != nil {
 			return nil, err
 		}
 	}
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT DISTINCT run_id FROM requests WHERE delivery=? AND status IN (?,?) AND delivery_state=?`,
-		string(DeliveryResume), string(StatusAnswered), string(StatusExpired), string(DeliveryNone))
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT DISTINCT run_id FROM requests WHERE status IN (?,?) AND delivery_state=?`,
+		string(StatusAnswered), string(StatusExpired), string(DeliveryNone))
 	if err != nil {
 		return nil, err
 	}
@@ -148,8 +154,7 @@ func (s *Service) Sweep(ctx context.Context) error {
 		return err
 	}
 	for _, r := range due {
-		a := &Answer{Decision: DecisionExpired, By: ViaDaemon, Via: ViaDaemon, At: now}
-		closed, err := s.close(ctx, r, StatusExpired, a)
+		closed, err := s.close(ctx, r, StatusExpired, &Answered{By: ViaDaemon, Via: ViaDaemon, At: now}, nil)
 		if errors.Is(err, ErrClosed) || errors.Is(err, ErrConflict) {
 			continue
 		}
@@ -158,7 +163,8 @@ func (s *Service) Sweep(ctx context.Context) error {
 		}
 		s.afterClose(ctx, closed)
 	}
-	old, err := s.query(ctx, `WHERE status<>? AND report_kind<>'' AND updated_at<?`,
+	old, err := s.query(ctx, `WHERE status<>? AND updated_at<?
+  AND EXISTS (SELECT 1 FROM request_forms f WHERE f.request_id = requests.id AND f.report_kind<>'')`,
 		string(StatusPending), fmtTime(now.Add(-s.opts.Retain)))
 	if err != nil {
 		return err
@@ -167,7 +173,7 @@ func (s *Service) Sweep(ctx context.Context) error {
 		if err := s.reports.Remove(r.ID); err != nil {
 			return err
 		}
-		if _, err := s.st.DB().ExecContext(ctx, `UPDATE requests SET report_kind='' WHERE id=?`, r.ID); err != nil {
+		if _, err := s.st.DB().ExecContext(ctx, `UPDATE request_forms SET report_kind='' WHERE request_id=?`, r.ID); err != nil {
 			return err
 		}
 	}

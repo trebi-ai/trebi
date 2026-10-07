@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 44
+const SchemaVersion = 45
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1573,6 +1573,90 @@ ALTER TABLE requests ADD COLUMN hop_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE requests ADD COLUMN trace_id TEXT NOT NULL DEFAULT '';
 
 ALTER TABLE conversation_messages ADD COLUMN hop_id TEXT NOT NULL DEFAULT '';
+`,
+		// v45: requests hold forms (plan 2026-10-07). One request has one or
+		// more forms, each with its own type, payload, report, and answer. At
+		// most one request per run and source is open.
+		`
+CREATE TABLE v45_forms (
+	request_id    TEXT NOT NULL,
+	type          TEXT NOT NULL,
+	title         TEXT NOT NULL,
+	summary       TEXT NOT NULL,
+	target        TEXT NOT NULL,
+	payload_json  TEXT NOT NULL,
+	allow_json    TEXT NOT NULL,
+	report_kind   TEXT NOT NULL,
+	report_sha256 TEXT NOT NULL,
+	answer_json   TEXT
+);
+INSERT INTO v45_forms (request_id, type, title, summary, target, payload_json, allow_json, report_kind, report_sha256, answer_json)
+    SELECT id, type, title, summary, target, payload_json, allow_json, report_kind, report_sha256,
+        CASE WHEN status = 'answered' THEN answer_json END FROM requests;
+
+CREATE TABLE requests_new (
+	id               TEXT PRIMARY KEY,
+	run_id           TEXT NOT NULL,
+	workspace_id     TEXT NOT NULL,
+	job_id           TEXT NOT NULL,
+	kind             TEXT NOT NULL,
+	session_id       TEXT NOT NULL DEFAULT '',
+	harness          TEXT NOT NULL DEFAULT '',
+	runtime          TEXT NOT NULL DEFAULT '',
+	working_dir      TEXT NOT NULL DEFAULT '',
+	conversation_key TEXT NOT NULL DEFAULT '',
+	conversation_id  TEXT NOT NULL DEFAULT '',
+	title            TEXT NOT NULL,
+	summary          TEXT NOT NULL DEFAULT '',
+	turn             INTEGER NOT NULL DEFAULT 0,
+	status           TEXT NOT NULL DEFAULT 'pending',
+	answered_by      TEXT,
+	answered_via     TEXT,
+	answered_at      TEXT,
+	expires_at       TEXT,
+	delivery_state   TEXT NOT NULL DEFAULT 'none',
+	claimed_at       TEXT,
+	delivery_path    TEXT NOT NULL DEFAULT '',
+	delivered_run_id TEXT,
+	delivered_turn   INTEGER,
+	delivery_error   TEXT NOT NULL DEFAULT '',
+	source           TEXT NOT NULL DEFAULT '',
+	hop_id           TEXT NOT NULL DEFAULT '',
+	trace_id         TEXT NOT NULL DEFAULT '',
+	created_at       TEXT NOT NULL,
+	updated_at       TEXT NOT NULL,
+	revision         INTEGER NOT NULL DEFAULT 1
+);
+INSERT INTO requests_new (id, run_id, workspace_id, job_id, kind, session_id, harness, runtime, working_dir, conversation_key, conversation_id, title, summary, status, answered_at, expires_at, delivery_state, claimed_at, delivery_path, delivered_run_id, delivery_error, source, hop_id, trace_id, created_at, updated_at, revision)
+    SELECT id, run_id, workspace_id, job_id, kind, session_id, harness, runtime, working_dir, conversation_key, conversation_id, title, summary, status, answered_at, expires_at, delivery_state, claimed_at, delivery_path, delivered_run_id, delivery_error, source, hop_id, trace_id, created_at, updated_at, revision FROM requests;
+DROP TABLE requests;
+ALTER TABLE requests_new RENAME TO requests;
+CREATE INDEX idx_requests_run ON requests(run_id);
+CREATE INDEX idx_requests_open ON requests(status) WHERE status = 'pending';
+CREATE INDEX idx_requests_undelivered ON requests(delivery_state)
+    WHERE status <> 'pending' AND delivery_state IN ('none','claimed');
+UPDATE requests SET status = 'cancelled' WHERE status = 'pending' AND EXISTS (
+    SELECT 1 FROM requests r2 WHERE r2.run_id = requests.run_id AND r2.source = requests.source
+        AND r2.status = 'pending' AND r2.id > requests.id);
+CREATE UNIQUE INDEX requests_open ON requests(run_id, source) WHERE status = 'pending';
+
+CREATE TABLE request_forms (
+	request_id    TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+	idx           INTEGER NOT NULL,
+	type          TEXT NOT NULL,
+	title         TEXT NOT NULL,
+	summary       TEXT NOT NULL DEFAULT '',
+	target        TEXT NOT NULL DEFAULT '',
+	payload_json  TEXT NOT NULL DEFAULT '{}',
+	allow_json    TEXT NOT NULL,
+	report_kind   TEXT NOT NULL DEFAULT '',
+	report_sha256 TEXT NOT NULL DEFAULT '',
+	answer_json   TEXT,
+	PRIMARY KEY (request_id, idx)
+);
+INSERT INTO request_forms (request_id, idx, type, title, summary, target, payload_json, allow_json, report_kind, report_sha256, answer_json)
+    SELECT request_id, 0, type, title, summary, target, payload_json, allow_json, report_kind, report_sha256, answer_json FROM v45_forms;
+DROP TABLE v45_forms;
 `,
 	}
 }

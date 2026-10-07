@@ -18,6 +18,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/email"
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/requests"
@@ -213,6 +214,9 @@ type Options struct {
 	// ApprovalQuestion returns the pending approval's question for the item
 	// body, or "". Nil leaves the body empty.
 	ApprovalQuestion func(ctx context.Context, runID string) string
+	// PublicURL is the base of the links in alert mail. Empty uses the
+	// listener URL in api.json.
+	PublicURL string
 	// Request returns a request for its inbox body and mail. Nil leaves the
 	// body empty.
 	Request func(ctx context.Context, id string) (requests.Request, error)
@@ -888,7 +892,11 @@ func (o RaiseOpts) defaultTitle() string {
 func (o RaiseOpts) defaultActions(id string) []InboxAction {
 	switch o.Kind {
 	case KindRequest:
-		return []InboxAction{{Kind: ActionReview, Route: "/inbox/" + id, Label: "Open"}}
+		if o.RunID == "" {
+			return []InboxAction{{Kind: ActionReview, Route: "/inbox/" + id, Label: "Open"}}
+		}
+		route := "/run/" + url.PathEscape(o.RunID) + "?tab=session&request=" + url.QueryEscape(o.RequestID)
+		return []InboxAction{{Kind: ActionReview, Route: route, Label: "Open"}}
 	case KindWaiting:
 		if o.RunID == "" {
 			return []InboxAction{}
@@ -953,8 +961,29 @@ func (o RaiseOpts) emailSubject() string {
 	return "[trebi] " + o.Title + ": " + o.Subject
 }
 
-// emailText is the plain-text body of the alert mail.
-func (o RaiseOpts) emailText(id string) string {
+// link is the UI page of the item under base: the first action route
+// that is a UI page, else the inbox item. An empty base gives no link.
+func (o RaiseOpts) link(id, base string) string {
+	if base == "" {
+		return ""
+	}
+	route := "/inbox/" + id
+	for _, a := range o.defaultActions(id) {
+		if a.Route != "" && !strings.HasPrefix(a.Route, "/v1/") {
+			route = a.Route
+			break
+		}
+	}
+	return strings.TrimRight(base, "/") + route
+}
+
+// publicURL is the base of the links in alert mail.
+func (s *Service) publicURL() string {
+	return cmp.Or(s.opts.PublicURL, home.APIJSONURL())
+}
+
+// emailText is the plain-text body of the alert mail. A set link ends it.
+func (o RaiseOpts) emailText(id, link string) string {
 	var b strings.Builder
 	for _, line := range []string{o.Body, o.Hint} {
 		if line != "" {
@@ -973,6 +1002,9 @@ func (o RaiseOpts) emailText(id string) string {
 		fmt.Fprintf(&b, "run: %s\n", o.RunID)
 	}
 	fmt.Fprintf(&b, "inbox: %s\n", id)
+	if link != "" {
+		fmt.Fprintf(&b, "\nOpen in Trebi: %s\n", link)
+	}
 	return b.String()
 }
 

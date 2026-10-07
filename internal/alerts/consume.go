@@ -59,6 +59,7 @@ var consumeTopics = []string{
 	"proposal.created",
 	"proposal.decided",
 	"request.created",
+	"request.updated",
 	"request.answered",
 	"request.expired",
 	"request.dismissed",
@@ -195,11 +196,52 @@ func (s *Service) onRequestCreated(ctx context.Context, ev store.StreamEvent, at
 		opts.EscalateAt = s.opts.Now().Add(s.opts.ApprovalAfter)
 	}
 	if r, ok := s.request(ctx, ev.ID); ok {
-		opts.Body = r.Summary
+		opts.Title, opts.Body = r.Title, requestBody(r)
 	}
 	if _, err := s.Raise(ctx, opts); err != nil {
 		s.log.Warn("raise request", "request", ev.ID, "error", err)
 	}
+}
+
+// onRequestUpdated sets the body of the open item after a form joins the
+// request. The item keeps its escalation time.
+func (s *Service) onRequestUpdated(ctx context.Context, ev store.StreamEvent) {
+	r, ok := s.request(ctx, ev.ID)
+	if !ok {
+		return
+	}
+	item, err := s.findActive(ctx, KindRequest, "request/"+ev.ID)
+	if err != nil || item == nil {
+		return
+	}
+	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE inbox_items SET title=?, body=?, revision=revision+1, updated_at=? WHERE id=?`,
+			sanitizeText(r.Title), sanitizeText(requestBody(r)), nowStr, item.ID)
+		return err
+	}, store.BusEvent{
+		Topic: "inbox.updated", Entity: "inbox", EntityID: item.ID, Action: "updated",
+		Attrs: map[string]string{"status": string(item.Status)},
+	})
+	if err != nil {
+		s.log.Warn("update request item", "request", ev.ID, "error", err)
+	}
+}
+
+// requestBody is the one-line inbox body of a request: the summary, else
+// the summary of its one form, else the form titles.
+func requestBody(r requests.Request) string {
+	switch {
+	case r.Summary != "" || len(r.Forms) == 0:
+		return r.Summary
+	case len(r.Forms) == 1:
+		return r.Forms[0].Summary
+	}
+	titles := make([]string, len(r.Forms))
+	for i, f := range r.Forms {
+		titles[i] = f.Title
+	}
+	return strings.Join(titles, "; ")
 }
 
 // onRequestUndelivered raises a failure item when an answer cannot reach
@@ -230,29 +272,49 @@ func (s *Service) request(ctx context.Context, id string) (requests.Request, boo
 }
 
 // requestMail is the mail text of a request: what to decide, then how to
-// reply.
+// reply. Only a request with one form takes an answer by mail.
 func requestMail(r requests.Request) string {
 	var b strings.Builder
 	b.WriteString(r.Title + "\n\n")
 	if r.Summary != "" {
 		b.WriteString(r.Summary + "\n\n")
 	}
-	switch {
-	case r.Payload.Draft != nil:
-		b.WriteString("Draft:\n\n" + r.Payload.Draft.Text + "\n\n")
-	case len(r.Payload.Options) > 0:
-		b.WriteString("Options:\n")
-		for _, o := range r.Payload.Options {
-			fmt.Fprintf(&b, "- %s: %s\n", o.ID, o.Label)
+	for i, f := range r.Forms {
+		if len(r.Forms) > 1 {
+			fmt.Fprintf(&b, "%d. %s\n\n", i+1, f.Title)
+			if f.Summary != "" {
+				b.WriteString(f.Summary + "\n\n")
+			}
 		}
-		b.WriteString("\nReply with one option on the first line to choose it.\n\n")
-	case len(r.Payload.Schema) > 0:
-		if sc, err := requests.ParseSchema(r.Payload.Schema); err == nil {
+		formMail(&b, f, len(r.Forms) == 1)
+	}
+	if len(r.Forms) == 1 {
+		b.WriteString("Reply with approve or reject on the first line. Any other reply goes to the job as a message. Open the inbox to edit the draft.\n\n")
+	} else {
+		b.WriteString("Open the link to answer.\n\n")
+	}
+	return b.String()
+}
+
+// formMail writes the draft, the options, or the fields of one form.
+func formMail(b *strings.Builder, f requests.Form, reply bool) {
+	switch {
+	case f.Payload.Draft != nil:
+		b.WriteString("Draft:\n\n" + f.Payload.Draft.Text + "\n\n")
+	case len(f.Payload.Options) > 0:
+		b.WriteString("Options:\n")
+		for _, o := range f.Payload.Options {
+			fmt.Fprintf(b, "- %s: %s\n", o.ID, o.Label)
+		}
+		b.WriteString("\n")
+		if reply {
+			b.WriteString("Reply with one option on the first line to choose it.\n\n")
+		}
+	case len(f.Payload.Schema) > 0:
+		if sc, err := requests.ParseSchema(f.Payload.Schema); err == nil {
 			b.WriteString("Fields: " + strings.Join(sc.Names(), ", ") + "\n\n")
 		}
 	}
-	b.WriteString("Reply with approve or reject on the first line. Any other reply goes to the job as a message. Open the inbox to edit the draft.\n\n")
-	return b.String()
 }
 
 // SyncDoctor upserts health inbox items for findings and auto-resolves stale ones.
@@ -319,6 +381,8 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.autoResolve(ctx, KindAgentProposal, "proposal/"+firstNonEmpty(attrs["proposal_id"], ev.ID), attrs["decision"])
 	case "request.created":
 		s.onRequestCreated(ctx, ev, attrs)
+	case "request.updated":
+		s.onRequestUpdated(ctx, ev)
 	case "request.answered", "request.expired", "request.dismissed", "request.cancelled":
 		s.autoResolve(ctx, KindRequest, "request/"+ev.ID, strings.TrimPrefix(ev.Topic, "request."))
 	case "request.delivery_failed":
@@ -788,8 +852,9 @@ func (s *Service) sendStep(ctx context.Context, opts RaiseOpts, id string, st no
 		if !s.emailOn() {
 			return outbox.Row{}, "", fmt.Errorf("email is not configured")
 		}
+		link := opts.link(id, s.publicURL())
 		return s.opts.Email.SendAlert(ctx, email.AlertMail{
-			InboxID: id, Subject: opts.emailSubject(), Text: s.mailText(ctx, opts, id),
+			InboxID: id, Subject: opts.emailSubject(), Text: s.mailText(ctx, opts, id, link), Link: link,
 			To: st.Targets, RouteStep: i, Route: route,
 		})
 	}
@@ -803,8 +868,8 @@ func (s *Service) sendStep(ctx context.Context, opts RaiseOpts, id string, st no
 }
 
 // mailText is the alert mail body. A proposal mail leads with the diff.
-func (s *Service) mailText(ctx context.Context, opts RaiseOpts, id string) string {
-	text := opts.emailText(id)
+func (s *Service) mailText(ctx context.Context, opts RaiseOpts, id, link string) string {
+	text := opts.emailText(id, link)
 	if opts.Kind == KindRequest {
 		if r, ok := s.request(ctx, opts.RequestID); ok {
 			text = requestMail(r) + text

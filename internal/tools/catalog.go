@@ -177,6 +177,21 @@ func (in Input) block(key string) (json.RawMessage, error) {
 	return b, nil
 }
 
+// decode reads the required JSON array key into dst.
+func (in Input) decode(key string, dst any) error {
+	raw, err := in.block(key)
+	if err != nil {
+		return err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return fmt.Errorf("input field %q is required", key)
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		return fmt.Errorf("input field %q: %w", key, err)
+	}
+	return nil
+}
+
 // connectorRef reads connector (required): a slug or a connection id.
 func (in Input) connectorRef() (request.ConnectorRef, error) {
 	ref, err := in.reqStr("connector")
@@ -2250,20 +2265,19 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 		},
 		"request": {
 			"create": actSamples("POST /v1/requests", Input{
-				"type": "review", "title": "Reply to issue #812", "summary": "Draft answer to the crash report.",
-				"target": "GitHub comment on trebi-ai/trebi#812", "draft": map[string]any{"format": "markdown", "text": "Thanks for the report."},
-				"report": "out/triage.html", "expires_in": "24h", "allow": []any{"approve", "edit", "reject"},
+				"title": "Triage issue #812", "summary": "Draft answer to the crash report.", "expires_in": "24h",
+				"forms": []any{map[string]any{
+					"type": "review", "title": "Reply to issue #812", "summary": "The reply to post.",
+					"target": "GitHub comment on trebi-ai/trebi#812", "draft": map[string]any{"format": "markdown", "text": "Thanks for the report."},
+					"report": "out/triage.html", "allow": []any{"approve", "edit", "reject"},
+				}},
 			}, []Input{
-				{"type": "choose", "title": "Which release?", "options": []any{map[string]any{"id": "v1", "label": "v0.14"}}, "multi": true},
-				{"type": "form", "title": "Ship details", "schema": map[string]any{"properties": map[string]any{"tag": map[string]any{"type": "string"}}}, "delivery": "poll"},
+				{"forms": []any{
+					map[string]any{"type": "choose", "title": "Which release?", "options": []any{map[string]any{"id": "v1", "label": "v0.14"}}, "multi": true},
+					map[string]any{"type": "form", "title": "Ship details", "schema": map[string]any{"properties": map[string]any{"tag": map[string]any{"type": "string"}}}},
+				}},
 			}, buildRequestCreate),
-			"get": act("GET /v1/requests/{id}", Input{"id": "01JB8ABC"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("id", "wait")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildRequestGet(v[0], v[1]), nil
-			}),
+			"get": getReq("GET /v1/requests/{id}", "id", "01JB8ABC", request.BuildRequestGet),
 			"list": act("GET /v1/requests", Input{}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("status", "run", "job", "workspace", "cursor")
 				if err != nil {
@@ -2275,26 +2289,37 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildRequestListPath(v[0], v[1], v[2], v[3], v[4], limit)), nil
 			}),
-			"report": bound(getReq("GET /v1/requests/{id}/report", "id", "01JB8ABC", request.BuildRequestReport), false),
-			"answer": act("POST /v1/requests/{id}/answer", Input{"id": "01JB8ABC", "decision": "approve", "note": "Ship it."}, func(in Input) (request.HTTPRequest, error) {
-				if _, err := in.reqStrs("id", "decision"); err != nil {
-					return request.HTTPRequest{}, err
-				}
-				v, err := in.strs("id", "decision", "text", "message", "note", "if_match")
+			"report": bound(act("GET /v1/requests/{id}/forms/{idx}/report", Input{"id": "01JB8ABC", "idx": float64(0)}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				choices, err := in.strList("choices")
+				idx, ok, err := in.num("idx")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				values, err := in.block("values")
+				if !ok {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "idx")
+				}
+				return request.BuildRequestReport(id, idx), nil
+			}), false),
+			"answer": act("POST /v1/requests/{id}/answer", Input{
+				"id": "01JB8ABC", "if_match": "3",
+				"forms": []any{map[string]any{"idx": float64(0), "decision": "approve", "note": "Ship it."}},
+			}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildRequestAnswer(v[0], request.RequestAnswerBody{
-					Decision: v[1], Text: v[2], Message: v[3], Note: v[4], Choices: choices, Values: values,
-				}, v[5]), nil
+				ifMatch, err := in.str("if_match")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				var b request.RequestAnswerBody
+				if err := in.decode("forms", &b.Forms); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildRequestAnswer(id, b, ifMatch), nil
 			}),
 			"dismiss": idDel("POST /v1/requests/{id}/dismiss", "id", "01JB8ABC", request.BuildRequestDismiss),
 		},
@@ -3033,29 +3058,14 @@ func logLinesTransform(in Input, _ int, body []byte) ([]byte, error) {
 // the layer inherits.
 func routeKey(k string) bool { return k == "contact" || k == "notify" }
 
-// buildRequestCreate reads the flat create input of the request tool.
+// buildRequestCreate reads the create input of the request tool.
 func buildRequestCreate(in Input) (request.HTTPRequest, error) {
-	if _, err := in.reqStrs("type", "title"); err != nil {
-		return request.HTTPRequest{}, err
-	}
-	v, err := in.strs("type", "title", "summary", "target", "report", "delivery", "expires_in")
+	v, err := in.strs("title", "summary", "expires_in")
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	b := request.RequestCreateBody{Type: v[0], Title: v[1], Summary: v[2], Target: v[3], Report: v[4], Delivery: v[5], ExpiresIn: v[6]}
-	if b.Multi, err = in.flag("multi"); err != nil {
-		return request.HTTPRequest{}, err
-	}
-	if b.Allow, err = in.strList("allow"); err != nil {
-		return request.HTTPRequest{}, err
-	}
-	if b.Schema, err = in.block("schema"); err != nil {
-		return request.HTTPRequest{}, err
-	}
-	if b.Draft, err = in.block("draft"); err != nil {
-		return request.HTTPRequest{}, err
-	}
-	if b.Options, err = in.block("options"); err != nil {
+	b := request.RequestCreateBody{Title: v[0], Summary: v[1], ExpiresIn: v[2]}
+	if err := in.decode("forms", &b.Forms); err != nil {
 		return request.HTTPRequest{}, err
 	}
 	return request.BuildRequestCreate(b), nil

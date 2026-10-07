@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/urfave/cli/v3"
@@ -16,17 +15,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/requests"
 )
-
-// Exit codes of trebi request create --wait.
-const (
-	requestExitApproved = 0
-	requestExitDeclined = 1
-	requestExitClosed   = 2
-	requestExitTimeout  = 3
-)
-
-// requestPollStep stays under the 30s client timeout.
-const requestPollStep = 25 * time.Second
 
 func requestCommand() *cli.Command {
 	return &cli.Command{
@@ -70,9 +58,9 @@ func requestListCommand() *cli.Command {
 			if c.Bool("json") {
 				return encodeJSON(c, body)
 			}
-			tbl := newTable(outWriter(c), []string{"ID", "Job", "Type", "Status", "Title", "Created"})
+			tbl := newTable(outWriter(c), []string{"ID", "Job", "Forms", "Status", "Title", "Created"})
 			for _, r := range body.Requests {
-				tbl.AppendRow(table.Row{r.ID, r.JobName, r.Type, r.Status, r.Title, r.CreatedAt.Local().Format("2006-01-02 15:04")})
+				tbl.AppendRow(table.Row{r.ID, r.JobName, len(r.Forms), r.Status, r.Title, r.CreatedAt.Local().Format("2006-01-02 15:04")})
 			}
 			renderTable(tbl)
 			return nil
@@ -85,7 +73,7 @@ func requestShowCommand() *cli.Command {
 		Name:      "show",
 		Aliases:   []string{"get"},
 		ArgsUsage: "<id>",
-		Usage:     "show one request and its answer",
+		Usage:     "show one request, its forms, and its answers",
 		Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
 		Action: func(_ context.Context, c *cli.Command) error {
 			if c.Args().Len() != 1 {
@@ -96,7 +84,7 @@ func requestShowCommand() *cli.Command {
 				return err
 			}
 			var r requests.Request
-			if err := client.DoHTTP(request.BuildRequestGet(c.Args().First(), ""), &r); err != nil {
+			if err := client.DoHTTP(request.BuildRequestGet(c.Args().First()), &r); err != nil {
 				return err
 			}
 			if c.Bool("json") {
@@ -137,10 +125,11 @@ func requestDismissCommand() *cli.Command {
 func requestCreateCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "create",
-		Usage: "ask a person (from a job run); end your turn after it",
+		Usage: "ask a person (from a job run); the calls of one turn join one request; end your turn after it",
 		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "type", Usage: "confirm | review | choose | form", Required: true},
-			&cli.StringFlag{Name: "title", Usage: "what the person decides", Required: true},
+			&cli.StringFlag{Name: "forms-file", Usage: "JSON array of forms; --title and --summary then describe the request"},
+			&cli.StringFlag{Name: "type", Usage: "the one form: confirm | review | choose | form"},
+			&cli.StringFlag{Name: "title", Usage: "what the person decides"},
 			&cli.StringFlag{Name: "summary", Usage: "markdown context"},
 			&cli.StringFlag{Name: "target", Usage: "what the action touches"},
 			&cli.StringFlag{Name: "draft", Usage: "review draft text"},
@@ -152,7 +141,6 @@ func requestCreateCommand() *cli.Command {
 			&cli.StringSliceFlag{Name: "allow", Usage: "narrow the allowed decisions (repeat)"},
 			&cli.StringFlag{Name: "report", Usage: ".html or .md report inside the working dir"},
 			&cli.StringFlag{Name: "expires-in", Usage: "for example 24h (default requests.expire_after)"},
-			&cli.DurationFlag{Name: "wait", Usage: "poll mode: block this long and print the answer JSON"},
 			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 		},
 		Action: func(_ context.Context, c *cli.Command) error {
@@ -172,26 +160,12 @@ func requestCreateCommand() *cli.Command {
 			if err := client.DoHTTP(request.BuildRequestCreate(body), &out); err != nil {
 				return err
 			}
-			wait := c.Duration("wait")
-			if wait <= 0 {
-				if c.Bool("json") {
-					return encodeJSON(c, out)
-				}
-				fmt.Fprintln(outWriter(c), out.Request.ID)
-				if out.Message != "" {
-					fmt.Fprintln(outWriter(c), out.Message)
-				}
-				return nil
+			if c.Bool("json") {
+				return encodeJSON(c, out)
 			}
-			r, err := waitForRequest(client, out.Request.ID, wait)
-			if err != nil {
-				return err
-			}
-			if err := encodeJSON(c, r); err != nil {
-				return err
-			}
-			if code := requestExitCode(r); code != requestExitApproved {
-				return cli.Exit("", code)
+			fmt.Fprintf(outWriter(c), "%s (%d forms)\n", out.Request.ID, len(out.Request.Forms))
+			if out.Message != "" {
+				fmt.Fprintln(outWriter(c), out.Message)
 			}
 			return nil
 		},
@@ -199,20 +173,36 @@ func requestCreateCommand() *cli.Command {
 }
 
 func requestCreateBody(c *cli.Command) (request.RequestCreateBody, error) {
-	b := request.RequestCreateBody{
-		Type: c.String("type"), Title: c.String("title"), Summary: c.String("summary"),
-		Target: c.String("target"), Multi: c.Bool("multi"), Allow: c.StringSlice("allow"),
-		Report: c.String("report"), ExpiresIn: c.String("expires-in"),
+	b := request.RequestCreateBody{ExpiresIn: c.String("expires-in")}
+	if f := c.String("forms-file"); f != "" {
+		for _, name := range []string{"type", "target", "draft", "draft-file", "draft-format", "option", "multi", "schema-file", "allow", "report"} {
+			if c.IsSet(name) {
+				return b, fmt.Errorf("--%s describes one form; put it in --forms-file", name)
+			}
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return b, err
+		}
+		if err := json.Unmarshal(data, &b.Forms); err != nil {
+			return b, fmt.Errorf("--forms-file %s: want a JSON array of forms: %w", f, err)
+		}
+		b.Title, b.Summary = c.String("title"), c.String("summary")
+		return b, nil
 	}
-	if c.Duration("wait") > 0 {
-		b.Delivery = string(requests.DeliveryPoll)
+	if c.String("type") == "" || c.String("title") == "" {
+		return b, errors.New("give --type and --title, or --forms-file")
+	}
+	f := request.RequestFormBody{
+		Type: c.String("type"), Title: c.String("title"), Summary: c.String("summary"),
+		Target: c.String("target"), Multi: c.Bool("multi"), Allow: c.StringSlice("allow"), Report: c.String("report"),
 	}
 	draft, err := requestDraft(c)
 	if err != nil {
 		return b, err
 	}
 	if draft != nil {
-		b.Draft = draft
+		f.Draft = draft
 	}
 	var opts []request.RequestOption
 	for _, o := range c.StringSlice("option") {
@@ -223,18 +213,19 @@ func requestCreateBody(c *cli.Command) (request.RequestCreateBody, error) {
 		opts = append(opts, request.RequestOption{ID: id, Label: label})
 	}
 	if len(opts) > 0 {
-		b.Options = opts
+		f.Options = opts
 	}
-	if f := c.String("schema-file"); f != "" {
-		data, err := os.ReadFile(f)
+	if sf := c.String("schema-file"); sf != "" {
+		data, err := os.ReadFile(sf)
 		if err != nil {
 			return b, err
 		}
 		if !json.Valid(data) {
-			return b, fmt.Errorf("--schema-file %s: not valid JSON", f)
+			return b, fmt.Errorf("--schema-file %s: not valid JSON", sf)
 		}
-		b.Schema = data
+		f.Schema = data
 	}
+	b.Forms = []request.RequestFormBody{f}
 	return b, nil
 }
 
@@ -264,45 +255,13 @@ func requestDraft(c *cli.Command) (*request.RequestDraft, error) {
 	return &request.RequestDraft{Format: format, Text: text}, nil
 }
 
-// waitForRequest long-polls until the request closes or wait ends.
-func waitForRequest(client *APIClient, id string, wait time.Duration) (requests.Request, error) {
-	deadline := time.Now().Add(wait)
-	for {
-		step := min(time.Until(deadline), requestPollStep)
-		if step < time.Second {
-			step = time.Second
-		}
-		var r requests.Request
-		if err := client.DoHTTP(request.BuildRequestGet(id, step.String()), &r); err != nil {
-			return r, err
-		}
-		if !r.Open() || !time.Now().Before(deadline) {
-			return r, nil
-		}
-	}
-}
-
-// requestExitCode maps a request to the --wait exit code.
-func requestExitCode(r requests.Request) int {
-	switch {
-	case r.Open():
-		return requestExitTimeout
-	case r.Status != requests.StatusAnswered || r.Answer == nil:
-		return requestExitClosed
-	}
-	switch r.Answer.Decision {
-	case requests.DecisionApprove, requests.DecisionEdit, requests.DecisionChoose, requests.DecisionSubmit:
-		return requestExitApproved
-	}
-	return requestExitDeclined
-}
-
 func requestAnswerCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "answer",
 		ArgsUsage: "<id> approve|reject|edit|respond|choose|submit",
-		Usage:     "answer a request as a person",
+		Usage:     "answer a request as a person; a request with more forms needs --answers-file",
 		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "answers-file", Usage: "JSON array of form answers: [{idx, decision, ...}]"},
 			&cli.StringFlag{Name: "text", Usage: "edit: the changed draft"},
 			&cli.StringFlag{Name: "text-file", Usage: "edit: read the changed draft from this file"},
 			&cli.StringFlag{Name: "message", Usage: "respond: the reply to the job"},
@@ -316,31 +275,11 @@ func requestAnswerCommand() *cli.Command {
 			if os.Getenv("TREBI_RUN_TOKEN") != "" {
 				return errors.New("a job run cannot answer a request; a person does that")
 			}
-			if c.Args().Len() != 2 {
-				return fmt.Errorf("usage: trebi request answer <id> approve|reject|edit|respond|choose|submit")
-			}
-			b := request.RequestAnswerBody{
-				Decision: c.Args().Get(1), Text: c.String("text"), Message: c.String("message"),
-				Choices: c.StringSlice("choice"), Note: c.String("note"), Via: requests.ViaCLI,
-			}
-			if f := c.String("text-file"); f != "" {
-				data, err := os.ReadFile(f)
-				if err != nil {
-					return err
-				}
-				b.Text = string(data)
-			}
-			if f := c.String("values-file"); f != "" {
-				data, err := os.ReadFile(f)
-				if err != nil {
-					return err
-				}
-				if !json.Valid(data) {
-					return fmt.Errorf("--values-file %s: not valid JSON", f)
-				}
-				b.Values = data
-			}
 			client, err := clientFor(c)
+			if err != nil {
+				return err
+			}
+			b, err := requestAnswerBody(c, client)
 			if err != nil {
 				return err
 			}
@@ -351,57 +290,118 @@ func requestAnswerCommand() *cli.Command {
 			if c.Bool("json") {
 				return encodeJSON(c, r)
 			}
-			fmt.Fprintf(outWriter(c), "answered %s: %s\n", r.ID, b.Decision)
+			fmt.Fprintf(outWriter(c), "answered %s: %d forms\n", r.ID, len(b.Forms))
 			return nil
 		},
 	}
 }
 
+// requestAnswerBody reads --answers-file, or builds the answer of a request
+// with one form from the decision and the flags.
+func requestAnswerBody(c *cli.Command, client *APIClient) (request.RequestAnswerBody, error) {
+	b := request.RequestAnswerBody{Via: requests.ViaCLI}
+	if f := c.String("answers-file"); f != "" {
+		if c.Args().Len() != 1 {
+			return b, errors.New("usage: trebi request answer <id> --answers-file <path>")
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return b, err
+		}
+		if err := json.Unmarshal(data, &b.Forms); err != nil {
+			return b, fmt.Errorf("--answers-file %s: want a JSON array of form answers: %w", f, err)
+		}
+		return b, nil
+	}
+	if c.Args().Len() != 2 {
+		return b, errors.New("usage: trebi request answer <id> approve|reject|edit|respond|choose|submit")
+	}
+	var r requests.Request
+	if err := client.DoHTTP(request.BuildRequestGet(c.Args().First()), &r); err != nil {
+		return b, err
+	}
+	if len(r.Forms) != 1 {
+		return b, fmt.Errorf("request %s has %d forms; answer them all with --answers-file", r.ID, len(r.Forms))
+	}
+	a := request.RequestFormAnswer{
+		Idx: r.Forms[0].Idx, Decision: c.Args().Get(1), Text: c.String("text"), Message: c.String("message"),
+		Choices: c.StringSlice("choice"), Note: c.String("note"),
+	}
+	if f := c.String("text-file"); f != "" {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return b, err
+		}
+		a.Text = string(data)
+	}
+	if f := c.String("values-file"); f != "" {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return b, err
+		}
+		if !json.Valid(data) {
+			return b, fmt.Errorf("--values-file %s: not valid JSON", f)
+		}
+		a.Values = data
+	}
+	b.Forms = []request.RequestFormAnswer{a}
+	return b, nil
+}
+
 func printRequest(c *cli.Command, r requests.Request) {
 	w := outWriter(c)
-	fmt.Fprintf(w, "%s  %s (%s)\n", r.ID, r.Title, r.Type)
-	fmt.Fprintf(w, "Job: %s   Run: %s   Status: %s\n", r.JobName, r.RunID, r.Status)
-	if r.Target != "" {
-		fmt.Fprintf(w, "Target: %s\n", r.Target)
-	}
+	fmt.Fprintf(w, "%s  %s (%d forms)\n", r.ID, r.Title, len(r.Forms))
+	fmt.Fprintf(w, "Job: %s   Run: %s   Turn: %d   Status: %s\n", r.JobName, r.RunID, r.Turn, r.Status)
 	if r.ExpiresAt != nil && r.Open() {
 		fmt.Fprintf(w, "Expires: %s\n", r.ExpiresAt.Local().Format("2006-01-02 15:04"))
 	}
 	if r.Summary != "" {
 		fmt.Fprintf(w, "\n%s\n", r.Summary)
 	}
-	if d := r.Payload.Draft; d != nil {
-		fmt.Fprintf(w, "\nDraft (%s):\n%s\n", d.Format, d.Text)
+	for _, f := range r.Forms {
+		printForm(w, r.ID, f)
 	}
-	for _, o := range r.Payload.Options {
-		fmt.Fprintf(w, "  - %s: %s %s\n", o.ID, o.Label, o.Detail)
+	if a := r.Answered; a != nil {
+		fmt.Fprintf(w, "\nClosed by %s via %s at %s\n", a.By, a.Via, a.At.Local().Format("2006-01-02 15:04"))
 	}
-	if len(r.Payload.Schema) > 0 {
-		fmt.Fprintf(w, "\nForm schema: %s\n", r.Payload.Schema)
-	}
-	if r.ReportKind != "" {
-		fmt.Fprintf(w, "Report: %s (GET /v1/requests/%s/report)\n", r.ReportKind, r.ID)
-	}
-	fmt.Fprintf(w, "Allowed: %v\n", r.Allow)
-	if r.Answer != nil {
-		printAnswer(w, *r.Answer)
-	}
-	if r.DeliveryState != requests.DeliveryNone && r.Delivery == requests.DeliveryResume {
+	if r.DeliveryState != requests.DeliveryNone {
 		fmt.Fprintf(w, "Delivery: %s %s %s\n", r.DeliveryState, r.DeliveryPath, r.DeliveredRunID)
 	}
 }
 
-func printAnswer(w io.Writer, a requests.Answer) {
-	fmt.Fprintf(w, "\nAnswer: %s by %s via %s\n", a.Decision, a.By, a.Via)
-	for _, f := range []struct{ k, v string }{{"Text", a.Text}, {"Message", a.Message}, {"Note", a.Note}} {
-		if f.v != "" {
-			fmt.Fprintf(w, "%s: %s\n", f.k, f.v)
+func printForm(w io.Writer, id string, f requests.Form) {
+	fmt.Fprintf(w, "\nForm %d: %s (%s)\n", f.Idx, f.Title, f.Type)
+	if f.Target != "" {
+		fmt.Fprintf(w, "Target: %s\n", f.Target)
+	}
+	if f.Summary != "" {
+		fmt.Fprintf(w, "%s\n", f.Summary)
+	}
+	if d := f.Payload.Draft; d != nil {
+		fmt.Fprintf(w, "Draft (%s):\n%s\n", d.Format, d.Text)
+	}
+	for _, o := range f.Payload.Options {
+		fmt.Fprintf(w, "  - %s: %s %s\n", o.ID, o.Label, o.Detail)
+	}
+	if len(f.Payload.Schema) > 0 {
+		fmt.Fprintf(w, "Form schema: %s\n", f.Payload.Schema)
+	}
+	if f.ReportKind != "" {
+		fmt.Fprintf(w, "Report: %s (GET /v1/requests/%s/forms/%d/report)\n", f.ReportKind, id, f.Idx)
+	}
+	fmt.Fprintf(w, "Allowed: %v\n", f.Allow)
+	if a := f.Answer; a != nil {
+		fmt.Fprintf(w, "Answer: %s\n", a.Decision)
+		for _, kv := range []struct{ k, v string }{{"Text", a.Text}, {"Message", a.Message}, {"Note", a.Note}} {
+			if kv.v != "" {
+				fmt.Fprintf(w, "%s: %s\n", kv.k, kv.v)
+			}
 		}
-	}
-	if len(a.Choices) > 0 {
-		fmt.Fprintf(w, "Choices: %s\n", strings.Join(a.Choices, ", "))
-	}
-	if len(a.Values) > 0 {
-		fmt.Fprintf(w, "Values: %s\n", a.Values)
+		if len(a.Choices) > 0 {
+			fmt.Fprintf(w, "Choices: %s\n", strings.Join(a.Choices, ", "))
+		}
+		if len(a.Values) > 0 {
+			fmt.Fprintf(w, "Values: %s\n", a.Values)
+		}
 	}
 }

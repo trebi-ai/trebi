@@ -1,20 +1,17 @@
-[trebi] The person answered 1 request. This session continues with the answer.
-
-Request R01  "Delete the old branch" (confirm)
-Decision: respond. Nothing is approved. Read the message and continue.
+[trebi] The person answered request R01 "Delete the old branch" (1 form).
 Answered by the assistant through the assistant at 2026-09-28T14:05:00Z.
 
+Form 1 "Delete the old branch" (confirm)
+Decision: respond. Nothing is approved. Read the message and continue.
 ```json
 {
   "request_id": "R01",
+  "idx": 0,
   "type": "confirm",
   "title": "Delete the old branch",
   "decision": "respond",
-  "message": "First check who uses it.\n\nThen ask me again.",
-  "answered_by": "assistant",
-  "answered_via": "assistant",
-  "answered_at": "2026-09-28T14:05:00Z"
+  "message": "First check who uses it.\n\nThen ask me again."
 }
 ```
 
-Continue the task with this answer.
+Continue the task with these answers.

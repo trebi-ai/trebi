@@ -300,6 +300,9 @@ func (c *Config) SetPath(path, value string) error {
 	if handled, err := c.setRequestsKey(path, value); handled {
 		return err
 	}
+	if handled, err := c.setUIKey(path, value); handled {
+		return err
+	}
 
 	// tools.<name>.…
 	parts := strings.Split(path, ".")
@@ -480,6 +483,7 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.addCloud(cfg)
 	l.addConnectors(cfg)
 	l.addRequests(cfg)
+	l.add("ui.public_url", cfg.UI.PublicURL, "")
 }
 
 // addCloud adds the cloud block rows.
@@ -1186,6 +1190,7 @@ func pathKeyDescriptions() map[string]string {
 		"files.max_bytes":               "Workspace file PUT/GET size cap in bytes (default 10485760)",
 		"requests.expire_after":         "A request with no answer expires after this (default 168h)",
 		"requests.retain":               "Keep the report of a closed request this long (default 720h)",
+		"ui.public_url":                 "Base URL of the links in alert mail (default: the daemon listener URL)",
 		"workspaces.root":               "Directory for pathless workspace create (default ~/trebi)",
 		"tools.bridge.inherit":          "Global default: inherit user harness resources",
 		"tools.bridge.only":             "If set, only these resource keys may inherit",

@@ -1,20 +1,17 @@
-[trebi] The person answered 1 request. This session continues with the answer.
-
-Request R01  "Delete the old branch" (confirm)
-Decision: approve. Do the action as proposed.
+[trebi] The person answered request R01 "Delete the old branch" (1 form).
 Answered by the user in the inbox at 2026-09-28T14:05:00Z.
 
+Form 1 "Delete the old branch" (confirm)
+Decision: approve. Do the action as proposed.
 ```json
 {
   "request_id": "R01",
+  "idx": 0,
   "type": "confirm",
   "title": "Delete the old branch",
   "decision": "approve",
-  "note": "Keep the tag.",
-  "answered_by": "user",
-  "answered_via": "ui",
-  "answered_at": "2026-09-28T14:05:00Z"
+  "note": "Keep the tag."
 }
 ```
 
-Continue the task with this answer.
+Continue the task with these answers.

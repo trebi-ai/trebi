@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/files"
@@ -16,7 +17,7 @@ import (
 
 const maxReportBytes = 5 << 20
 
-// ReportStore keeps one snapshot of the report of each request, so a later
+// ReportStore keeps one snapshot of the report of each form, so a later
 // change in the working dir does not change what the person approves.
 type ReportStore struct {
 	dir   string
@@ -27,8 +28,9 @@ func NewReportStore(dir string) *ReportStore {
 	return &ReportStore{dir: dir, files: files.New(maxReportBytes)}
 }
 
-// Snapshot copies rel (inside workingDir) to the folder of request id.
-func (r *ReportStore) Snapshot(ctx context.Context, id, workingDir, rel string) (kind, sha string, err error) {
+// Snapshot copies rel (inside workingDir) to the folder of form idx of
+// request id.
+func (r *ReportStore) Snapshot(ctx context.Context, id string, idx int, workingDir, rel string) (kind, sha string, err error) {
 	kind, err = reportKind(rel)
 	if err != nil {
 		return "", "", err
@@ -47,7 +49,10 @@ func (r *ReportStore) Snapshot(ctx context.Context, id, workingDir, rel string) 
 	case err != nil:
 		return "", "", fmt.Errorf("read report: %w", err)
 	}
-	dir := filepath.Join(r.dir, id)
+	if strings.ContainsAny(id, `/\.`) {
+		return "", "", ErrNotFound
+	}
+	dir := filepath.Join(r.dir, id, strconv.Itoa(idx))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", "", err
 	}
@@ -58,18 +63,27 @@ func (r *ReportStore) Snapshot(ctx context.Context, id, workingDir, rel string) 
 	return kind, hex.EncodeToString(sum[:]), nil
 }
 
-// Open returns the snapshot of request id and its kind.
-func (r *ReportStore) Open(id, kind string) (io.ReadCloser, error) {
+// Open returns the snapshot of form idx of request id.
+func (r *ReportStore) Open(id string, idx int, kind string) (io.ReadCloser, error) {
 	if kind == "" || strings.ContainsAny(id, `/\.`) {
 		return nil, ErrNotFound
 	}
-	f, err := os.Open(filepath.Join(r.dir, id, "report."+kind))
+	f, err := os.Open(filepath.Join(r.dir, id, strconv.Itoa(idx), "report."+kind))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
 	}
 	return f, err
 }
 
+// RemoveForm removes the snapshot of form idx of request id.
+func (r *ReportStore) RemoveForm(id string, idx int) error {
+	if id == "" || strings.ContainsAny(id, `/\.`) {
+		return nil
+	}
+	return os.RemoveAll(filepath.Join(r.dir, id, strconv.Itoa(idx)))
+}
+
+// Remove removes the snapshots of every form of request id.
 func (r *ReportStore) Remove(id string) error {
 	if id == "" || strings.ContainsAny(id, `/\.`) {
 		return nil

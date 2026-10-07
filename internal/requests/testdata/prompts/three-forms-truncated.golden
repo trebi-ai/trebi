@@ -1,0 +1,38 @@
+[trebi] The person answered request R01 "Ship the release" (3 forms).
+Answered by the user in the inbox at 2026-09-28T14:05:00Z.
+The answers are too long for this prompt. Run `trebi request get R01` for the full answers.
+
+Form 1 "Delete the old branch" (confirm)
+Decision: approve. Do the action as proposed.
+```json
+{
+  "request_id": "R01",
+  "idx": 0,
+  "decision": "approve",
+  "truncated": true
+}
+```
+
+Form 2 "Pick a plan" (choose)
+Decision: choose. Continue with the chosen options.
+```json
+{
+  "request_id": "R01",
+  "idx": 1,
+  "decision": "choose",
+  "truncated": true
+}
+```
+
+Form 3 "Send the reply to Ana" (review)
+Decision: edit. The person changed your draft. Use the text in the JSON below exactly. Do not use your original draft.
+```json
+{
+  "request_id": "R01",
+  "idx": 2,
+  "decision": "edit",
+  "truncated": true
+}
+```
+
+Continue the task with these answers.

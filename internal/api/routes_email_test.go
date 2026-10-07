@@ -109,7 +109,7 @@ func (a *emailAPIActions) Request(context.Context, string) (requests.Request, er
 	return requests.Request{}, requests.ErrNotFound
 }
 
-func (a *emailAPIActions) AnswerRequest(context.Context, string, requests.Answer) error { return nil }
+func (a *emailAPIActions) AnswerRequest(context.Context, string, requests.AnswerIn) error { return nil }
 
 func (a *emailAPIActions) RunMessage(context.Context, string, string) error {
 	a.messages++

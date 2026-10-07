@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,7 +23,6 @@ import (
 type Runs interface {
 	Get(ctx context.Context, id string) (*runs.Run, error)
 	Unpark(ctx context.Context, runID string, end runs.EndReason) error
-	TurnAfter(ctx context.Context, runID string, reason runs.RunReason, since time.Time) (int, error)
 	Deliver(ctx context.Context, runID string, extra ...runs.ParkDelivery) (runs.DeliverResult, error)
 }
 
@@ -37,7 +38,6 @@ type Options struct {
 const (
 	defaultExpireAfter = 168 * time.Hour
 	defaultRetain      = 720 * time.Hour
-	maxWait            = 60 * time.Second
 )
 
 var _ runs.ParkGate = (*Service)(nil)
@@ -76,20 +76,35 @@ func (s *Service) WithClock(now func() time.Time) *Service {
 // Reports returns the snapshot store.
 func (s *Service) Reports() *ReportStore { return s.reports }
 
+// CreateOpts opens a request, or adds its forms to the open request of the
+// run. Title, Summary, and ExpiresIn apply only to a new request.
 type CreateOpts struct {
-	Type      Type          `json:"type"`
-	Title     string        `json:"title"`
-	Summary   string        `json:"summary,omitempty"`
-	Target    string        `json:"target,omitempty"`
-	Payload   Payload       `json:"-"`
-	Allow     []Decision    `json:"allow,omitempty"`
-	Report    string        `json:"report,omitempty"`
-	Delivery  DeliveryMode  `json:"delivery,omitempty"`
-	ExpiresIn time.Duration `json:"-"`
+	Title     string
+	Summary   string
+	ExpiresIn time.Duration
+	Forms     []FormOpts
 	// Source, HopID, and TraceID mark a request that the daemon raises.
-	Source  string `json:"-"`
-	HopID   string `json:"-"`
-	TraceID string `json:"-"`
+	Source  string
+	HopID   string
+	TraceID string
+}
+
+// FormOpts is one form of a create call. Report is a file in the working dir.
+type FormOpts struct {
+	Type    Type
+	Title   string
+	Summary string
+	Target  string
+	Payload Payload
+	Allow   []Decision
+	Report  string
+}
+
+// AnswerIn is the answer of a person to every form of one request.
+type AnswerIn struct {
+	Forms []FormAnswerIn
+	By    string
+	Via   string
 }
 
 // SourceChain marks a chain limit request.
@@ -125,19 +140,21 @@ func (r Request) event(topic, action string) store.BusEvent {
 		Topic: topic, Entity: "request", EntityID: r.ID, Action: action, Revision: int64(r.Revision),
 		Attrs: map[string]string{
 			"run_id": r.RunID, "job_id": r.JobID, "job_name": r.JobName, "workspace_id": r.WorkspaceID,
-			"type": string(r.Type), "status": string(r.Status), "title": r.Title,
-			"delivery_state": string(r.DeliveryState),
+			"status": string(r.Status), "title": r.Title, "delivery_state": string(r.DeliveryState),
+			"forms": strconv.Itoa(len(r.Forms)), "turn": strconv.Itoa(r.Turn),
 		},
 	}
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Request, error) {
-	row := s.st.DB().QueryRowContext(ctx, `SELECT `+requestColumns+` FROM requests WHERE id=?`, id)
-	r, err := scanRequest(row)
-	if errors.Is(err, sql.ErrNoRows) {
+	out, err := s.query(ctx, `WHERE id=?`, id)
+	if err != nil {
+		return Request{}, err
+	}
+	if len(out) == 0 {
 		return Request{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	return r, err
+	return out[0], nil
 }
 
 type ListOpts struct {
@@ -181,9 +198,9 @@ func (s *Service) List(ctx context.Context, o ListOpts) ([]Request, string, erro
 	return out, next, nil
 }
 
-// Answer closes a pending request with a person's decision. ifRevision 0
-// skips the revision check. A closed request returns itself with ErrClosed.
-func (s *Service) Answer(ctx context.Context, id string, a Answer, ifRevision int) (Request, error) {
+// Answer closes a pending request with one answer for each form. ifRevision
+// 0 skips the revision check. A closed request returns itself with ErrClosed.
+func (s *Service) Answer(ctx context.Context, id string, in AnswerIn, ifRevision int) (Request, error) {
 	r, err := s.Get(ctx, id)
 	if err != nil {
 		return Request{}, err
@@ -194,11 +211,10 @@ func (s *Service) Answer(ctx context.Context, id string, a Answer, ifRevision in
 	if ifRevision > 0 && ifRevision != r.Revision {
 		return r, ErrConflict
 	}
-	if err := a.ValidateFor(r); err != nil {
+	if err := r.ValidateAnswers(in.Forms); err != nil {
 		return Request{}, err
 	}
-	a.At = s.now()
-	if r, err = s.close(ctx, r, StatusAnswered, &a); err != nil {
+	if r, err = s.close(ctx, r, StatusAnswered, &Answered{By: in.By, Via: in.Via, At: s.now()}, in.Forms); err != nil {
 		return r, err
 	}
 	s.afterClose(ctx, r)
@@ -214,34 +230,12 @@ func (s *Service) Dismiss(ctx context.Context, id, by string) (Request, error) {
 	if !r.Open() {
 		return r, ErrClosed
 	}
-	if r, err = s.close(ctx, r, StatusDismissed, nil); err != nil {
+	if r, err = s.close(ctx, r, StatusDismissed, &Answered{By: by, At: s.now()}, nil); err != nil {
 		return r, err
 	}
 	s.log.Info("request.dismissed", "request_id", r.ID, "by", by)
 	s.afterClose(ctx, r)
 	return r, nil
-}
-
-// Wait returns once the request is not pending, or after d (at most 60s).
-func (s *Service) Wait(ctx context.Context, id string, d time.Duration) (Request, error) {
-	d = min(d, maxWait)
-	deadline := time.NewTimer(d)
-	defer deadline.Stop()
-	tick := time.NewTicker(200 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		r, err := s.Get(ctx, id)
-		if err != nil || !r.Open() {
-			return r, err
-		}
-		select {
-		case <-ctx.Done():
-			return r, nil
-		case <-deadline.C:
-			return r, nil
-		case <-tick.C:
-		}
-	}
 }
 
 // Name is the park gate name.
@@ -256,92 +250,196 @@ func (s *Service) PromptHint(runs.LaunchOpts) string {
 	return launchHint
 }
 
-// Open reports a pending resume request (waiting) and a closed one with an
-// answer that is not delivered yet (ready). A claimed answer goes to the turn
+// Open reports a pending request (waiting) and a closed one with an answer
+// that is not delivered yet (ready). A claimed answer goes to the turn
 // in flight, so it is not ready.
 func (s *Service) Open(ctx context.Context, runID string) (waiting, ready bool, err error) {
 	var pending, closed int
 	err = s.st.DB().QueryRowContext(ctx, `SELECT
   COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END),0),
   COALESCE(SUM(CASE WHEN status IN (?,?) AND delivery_state=? THEN 1 ELSE 0 END),0)
-FROM requests WHERE run_id=? AND delivery=?`,
+FROM requests WHERE run_id=?`,
 		string(StatusPending), string(StatusAnswered), string(StatusExpired),
-		string(DeliveryNone), runID, string(DeliveryResume)).Scan(&pending, &closed)
+		string(DeliveryNone), runID).Scan(&pending, &closed)
 	return pending > 0, closed > 0, err
 }
 
-// RunEnded cancels the poll requests of the run.
-func (s *Service) RunEnded(ctx context.Context, runID string, _ runs.Status) {
-	polls, err := s.query(ctx, `WHERE run_id=? AND delivery=? AND status=?`,
-		runID, string(DeliveryPoll), string(StatusPending))
-	if err != nil {
-		s.log.Warn("request run ended", "run_id", runID, "err", err)
-	}
-	for _, r := range polls {
-		if _, err := s.close(ctx, r, StatusCancelled, nil); err != nil && !errors.Is(err, ErrClosed) {
-			s.log.Warn("cancel poll request", "request_id", r.ID, "err", err)
-		}
-	}
-}
+// RunEnded implements runs.ParkGate. A request does not change when its run
+// ends: the answer resumes the session.
+func (*Service) RunEnded(context.Context, string, runs.Status) {}
 
 func (s *Service) create(ctx context.Context, runID string, o CreateOpts) (Request, error) {
 	if !s.granted() {
 		return Request{}, ErrPlan
 	}
+	if len(o.Forms) == 0 {
+		return Request{}, invalid("forms", "needs at least one form")
+	}
+	if o.ExpiresIn < 0 {
+		return Request{}, invalid("expires_in", "must not be negative")
+	}
 	run, err := s.runs.Get(ctx, runID)
 	if err != nil {
 		return Request{}, fmt.Errorf("run %s: %w", runID, err)
 	}
+	for attempt := 1; ; attempt++ {
+		r, err := s.createOnce(ctx, run, o)
+		if errors.Is(err, errOpenChanged) && attempt < 3 {
+			continue
+		}
+		return r, err
+	}
+}
+
+// errOpenChanged reports that the open request of the run changed between
+// the read and the write.
+var errOpenChanged = errors.New("open request changed")
+
+// createOnce adds the forms of o to the open request of the run and source,
+// or opens a new request with them.
+func (s *Service) createOnce(ctx context.Context, run *runs.Run, o CreateOpts) (Request, error) {
 	now := s.now()
-	r := Request{
-		ID: ulid.Make().String(), RunID: run.ID, WorkspaceID: run.Workspace, JobID: run.JobID, JobName: run.JobName,
-		Kind: run.Kind, SessionID: run.SessionID, Harness: run.Harness, Runtime: run.Runtime,
-		WorkingDir: run.WorkingDir, ConversationKey: run.ConversationKey, ConversationID: run.ConversationID,
-		Type: o.Type, Title: strings.TrimSpace(o.Title), Summary: o.Summary, Target: o.Target,
-		Payload: o.Payload, Allow: o.Allow, Delivery: o.Delivery,
-		Status: StatusPending, DeliveryState: DeliveryNone,
-		Source: o.Source, HopID: o.HopID, TraceID: o.TraceID,
-		CreatedAt: now, UpdatedAt: now, Revision: 1,
+	r, joined, err := s.openOrNew(ctx, run, o, now)
+	if err != nil {
+		return Request{}, err
+	}
+	first := len(r.Forms)
+	for i, fo := range o.Forms {
+		r.Forms = append(r.Forms, Form{
+			Idx: first + i, Type: fo.Type, Title: strings.TrimSpace(fo.Title), Summary: fo.Summary,
+			Target: fo.Target, Payload: fo.Payload, Allow: fo.Allow,
+		})
 	}
 	if err := r.Validate(); err != nil {
 		return Request{}, err
 	}
-	if o.ExpiresIn < 0 {
-		return Request{}, invalid("expires_in", "must not be negative")
+	added := r.Forms[first:]
+	if err := s.snapshotReports(ctx, r, added, o.Forms); err != nil {
+		return Request{}, err
+	}
+	topic, action := "request.created", "created"
+	if joined {
+		topic, action = "request.updated", "updated"
+	}
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		return r.write(ctx, tx, added, joined)
+	}, r.event(topic, action))
+	if err != nil {
+		s.removeReports(r.ID, added)
+		return Request{}, err
+	}
+	return r, nil
+}
+
+// openOrNew returns the open request of the run and source with a bumped
+// revision, or a new request.
+func (s *Service) openOrNew(ctx context.Context, run *runs.Run, o CreateOpts, now time.Time) (Request, bool, error) {
+	open, err := s.query(ctx, `WHERE run_id=? AND source=? AND status=?`, run.ID, o.Source, string(StatusPending))
+	if err != nil {
+		return Request{}, false, err
+	}
+	if len(open) > 0 {
+		r := open[0]
+		r.UpdatedAt = now
+		r.Revision++
+		return r, true, nil
 	}
 	exp := o.ExpiresIn
 	if exp == 0 {
 		exp = s.opts.ExpireAfter
 	}
 	at := now.Add(exp)
-	r.ExpiresAt = &at
-	if o.Report != "" {
-		if r.ReportKind, r.ReportSHA256, err = s.reports.Snapshot(ctx, r.ID, r.WorkingDir, o.Report); err != nil {
-			return Request{}, err
+	r := Request{
+		ID: ulid.Make().String(), RunID: run.ID, WorkspaceID: run.Workspace, JobID: run.JobID, JobName: run.JobName,
+		Kind: run.Kind, SessionID: run.SessionID, Harness: run.Harness, Runtime: run.Runtime,
+		WorkingDir: run.WorkingDir, ConversationKey: run.ConversationKey, ConversationID: run.ConversationID,
+		Title: strings.TrimSpace(o.Title), Summary: o.Summary, Turn: run.TurnCount,
+		Status: StatusPending, DeliveryState: DeliveryNone, ExpiresAt: &at,
+		Source: o.Source, HopID: o.HopID, TraceID: o.TraceID,
+		CreatedAt: now, UpdatedAt: now, Revision: 1,
+	}
+	if r.Title == "" {
+		r.Title = strings.TrimSpace(o.Forms[0].Title)
+	}
+	return r, false, nil
+}
+
+// snapshotReports copies the report of each added form. On error it removes
+// the copies that it made.
+func (s *Service) snapshotReports(ctx context.Context, r Request, added []Form, opts []FormOpts) error {
+	for i, fo := range opts {
+		if fo.Report == "" {
+			continue
+		}
+		var err error
+		if added[i].ReportKind, added[i].ReportSHA256, err = s.reports.Snapshot(ctx, r.ID, added[i].Idx, r.WorkingDir, fo.Report); err != nil {
+			s.removeReports(r.ID, added)
+			return err
 		}
 	}
-	payload, _ := json.Marshal(r.Payload)
-	allow, _ := json.Marshal(r.Allow)
-	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO requests (id, run_id, workspace_id, job_id, kind,
-  session_id, harness, runtime, working_dir, conversation_key, conversation_id, type, title,
-  summary, target, payload_json, allow_json, report_kind, report_sha256, delivery, status,
-  expires_at, delivery_state, source, hop_id, trace_id, created_at, updated_at, revision)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			r.ID, r.RunID, r.WorkspaceID, r.JobID, r.Kind, r.SessionID, r.Harness, r.Runtime,
-			r.WorkingDir, r.ConversationKey, r.ConversationID, string(r.Type), r.Title, r.Summary,
-			r.Target, string(payload), string(allow), r.ReportKind, r.ReportSHA256,
-			string(r.Delivery), string(r.Status), fmtTime(at), string(r.DeliveryState),
-			r.Source, r.HopID, r.TraceID, fmtTime(now), fmtTime(now), r.Revision)
+	return nil
+}
+
+func (s *Service) removeReports(id string, forms []Form) {
+	for _, f := range forms {
+		if f.ReportKind != "" {
+			_ = s.reports.RemoveForm(id, f.Idx) // best effort; the row is not there
+		}
+	}
+}
+
+// write stores r and its added forms. It returns errOpenChanged when the open
+// request of the run changed after the read.
+func (r Request) write(ctx context.Context, tx *sql.Tx, added []Form, joined bool) error {
+	var cur string
+	err := tx.QueryRowContext(ctx, `SELECT id FROM requests WHERE run_id=? AND source=? AND status=?`,
+		r.RunID, r.Source, string(StatusPending)).Scan(&cur)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
-	}, r.event("request.created", "created"))
-	if err != nil {
-		if r.ReportKind != "" {
-			_ = s.reports.Remove(r.ID) // best effort; the row is not there
-		}
-		return Request{}, err
 	}
-	return r, nil
+	if (joined && cur != r.ID) || (!joined && cur != "") {
+		return errOpenChanged
+	}
+	if joined {
+		res, err := tx.ExecContext(ctx, `UPDATE requests SET updated_at=?, revision=? WHERE id=? AND revision=?`,
+			fmtTime(r.UpdatedAt), r.Revision, r.ID, r.Revision-1)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return errOpenChanged
+		}
+	} else if err := r.insert(ctx, tx); err != nil {
+		return err
+	}
+	for _, f := range added {
+		if err := f.insert(ctx, tx, r.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r Request) insert(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO requests (id, run_id, workspace_id, job_id, kind,
+  session_id, harness, runtime, working_dir, conversation_key, conversation_id, title, summary, turn,
+  status, expires_at, delivery_state, source, hop_id, trace_id, created_at, updated_at, revision)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.RunID, r.WorkspaceID, r.JobID, r.Kind, r.SessionID, r.Harness, r.Runtime,
+		r.WorkingDir, r.ConversationKey, r.ConversationID, r.Title, r.Summary, r.Turn,
+		string(r.Status), fmtTime(*r.ExpiresAt), string(r.DeliveryState),
+		r.Source, r.HopID, r.TraceID, fmtTime(r.CreatedAt), fmtTime(r.UpdatedAt), r.Revision)
+	return err
+}
+
+func (f Form) insert(ctx context.Context, tx *sql.Tx, requestID string) error {
+	payload, _ := json.Marshal(f.Payload) // plain value types always encode
+	allow, _ := json.Marshal(f.Allow)
+	_, err := tx.ExecContext(ctx, `INSERT INTO request_forms (request_id, idx, type, title, summary, target,
+  payload_json, allow_json, report_kind, report_sha256) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		requestID, f.Idx, string(f.Type), f.Title, f.Summary, f.Target, string(payload), string(allow),
+		f.ReportKind, f.ReportSHA256)
+	return err
 }
 
 func (s *Service) granted() bool {
@@ -362,29 +460,80 @@ func (s *Service) query(ctx context.Context, tail string, args ...any) ([]Reques
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, s.loadForms(ctx, out)
 }
 
-// close moves a pending request to status with one compare-and-set.
-func (s *Service) close(ctx context.Context, r Request, status Status, a *Answer) (Request, error) {
-	var answerJSON any
-	if a != nil {
-		b, _ := json.Marshal(a)
-		answerJSON = string(b)
+// loadForms fills the forms of rs with one query.
+func (s *Service) loadForms(ctx context.Context, rs []Request) error {
+	if len(rs) == 0 {
+		return nil
 	}
+	at := make(map[string]int, len(rs))
+	args := make([]any, len(rs))
+	for i, r := range rs {
+		at[r.ID] = i
+		args[i] = r.ID
+	}
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT `+formColumns+` FROM request_forms WHERE request_id IN (?`+
+		strings.Repeat(",?", len(rs)-1)+`) ORDER BY request_id, idx`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		id, f, err := scanForm(rows)
+		if err != nil {
+			return err
+		}
+		i := at[id]
+		rs[i].Forms = append(rs[i].Forms, f)
+	}
+	return rows.Err()
+}
+
+// close moves a pending request to status with one compare-and-set. It
+// writes the form answers in the same transaction.
+func (s *Service) close(ctx context.Context, r Request, status Status, by *Answered, answers []FormAnswerIn) (Request, error) {
 	now := s.now()
 	next := r
-	next.Status, next.Answer, next.UpdatedAt, next.Revision = status, a, now, r.Revision+1
+	next.Status, next.Answered, next.UpdatedAt, next.Revision = status, by, now, r.Revision+1
+	next.Forms = slices.Clone(r.Forms)
+	byIdx := map[int]FormAnswer{}
+	for _, a := range answers {
+		byIdx[a.Idx] = a.FormAnswer
+	}
+	for i := range next.Forms {
+		if a, ok := byIdx[next.Forms[i].Idx]; ok {
+			next.Forms[i].Answer = &a
+		}
+	}
+	var byArg, viaArg any
+	if by != nil {
+		byArg, viaArg = by.By, by.Via
+	}
 	action := strings.TrimPrefix(topicFor(status), "request.")
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE requests SET status=?, answer_json=?, answered_at=?,
+		res, err := tx.ExecContext(ctx, `UPDATE requests SET status=?, answered_by=?, answered_via=?, answered_at=?,
   updated_at=?, revision=revision+1 WHERE id=? AND status=? AND revision=?`,
-			string(status), answerJSON, fmtTime(now), fmtTime(now), r.ID, string(StatusPending), r.Revision)
+			string(status), byArg, viaArg, fmtTime(now), fmtTime(now), r.ID, string(StatusPending), r.Revision)
 		if err != nil {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
 			return ErrClosed
+		}
+		for _, f := range next.Forms {
+			if f.Answer == nil {
+				continue
+			}
+			b, _ := json.Marshal(f.Answer) // plain value types always encode
+			if _, err := tx.ExecContext(ctx, `UPDATE request_forms SET answer_json=? WHERE request_id=? AND idx=?`,
+				string(b), r.ID, f.Idx); err != nil {
+				return err
+			}
 		}
 		return nil
 	}, next.event(topicFor(status), action))
@@ -421,9 +570,6 @@ func topicFor(st Status) string {
 // afterClose delivers what the run can get now. A dismiss that leaves the
 // run with nothing to wait for completes the parked run.
 func (s *Service) afterClose(ctx context.Context, r Request) {
-	if r.Delivery != DeliveryResume {
-		return
-	}
 	if r.Source == SourceChain && s.decider != nil && (r.Status == StatusAnswered || r.Status == StatusExpired) {
 		if err := s.decider.RequestDecided(ctx, r); err != nil {
 			s.log.Warn("chain request decided", "request_id", r.ID, "err", err)

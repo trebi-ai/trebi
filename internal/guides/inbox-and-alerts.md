@@ -45,7 +45,7 @@ trebi request answer <request_id> approve
 trebi request dismiss <request_id>
 ```
 
-An email reply to the request mail also answers: `approve` or `reject` on the first line, or one option for a `choose` request. Any other reply goes to the job as a message. See `trebi guide requests`.
+An email reply to the request mail also answers a request with one form: `approve` or `reject` on the first line, or one option for a `choose` form. Any other reply goes to the job as a message. A request with more forms takes no answer by mail. Open the link in the mail to answer it. See `trebi guide requests`.
 
 ## Alerts
 

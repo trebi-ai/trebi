@@ -19,7 +19,7 @@ func (s *Server) routeRequests(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/requests", s.handleRequestCreate)
 	mux.HandleFunc("GET /v1/requests", s.handleRequestsList)
 	mux.HandleFunc("GET /v1/requests/{id}", s.handleRequestGet)
-	mux.HandleFunc("GET /v1/requests/{id}/report", s.handleRequestReport)
+	mux.HandleFunc("GET /v1/requests/{id}/forms/{idx}/report", s.handleRequestReport)
 	mux.HandleFunc("POST /v1/requests/{id}/answer", s.handleRequestAnswer)
 	mux.HandleFunc("POST /v1/requests/{id}/dismiss", s.handleRequestDismiss)
 }
@@ -28,26 +28,37 @@ func (s *Server) routeRequests(mux *http.ServeMux) {
 // the local API (plan E.2).
 const reportCSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data: https:; connect-src 'none'; form-action 'none'; frame-ancestors 'self'"
 
-const (
-	requestNextMessage = "Request saved. End your turn now. Do not wait and do not poll. Trebi continues this session with the person's answer."
-	requestPaneMessage = " Print the completion line now."
-)
+const requestNextMessage = "Request saved. End your turn now. Do not wait and do not poll. Trebi continues this session with the person's answer."
 
-// requestCreateBody is the wire shape of POST /v1/requests: the payload
-// fields are flat, and expires_in is a duration string.
+// requestCreateBody is the wire shape of POST /v1/requests. expires_in is a
+// duration string.
 type requestCreateBody struct {
-	Type      requests.Type         `json:"type"`
-	Title     string                `json:"title"`
-	Summary   string                `json:"summary"`
-	Target    string                `json:"target"`
-	Draft     *requests.Draft       `json:"draft"`
-	Options   []requests.Option     `json:"options"`
-	Multi     bool                  `json:"multi"`
-	Schema    json.RawMessage       `json:"schema"`
-	Allow     []requests.Decision   `json:"allow"`
-	Report    string                `json:"report"`
-	Delivery  requests.DeliveryMode `json:"delivery"`
-	ExpiresIn string                `json:"expires_in"`
+	Title     string            `json:"title"`
+	Summary   string            `json:"summary"`
+	ExpiresIn string            `json:"expires_in"`
+	Forms     []requestFormBody `json:"forms"`
+}
+
+// requestFormBody is one form of a create body: the payload fields are flat.
+type requestFormBody struct {
+	Type    requests.Type       `json:"type"`
+	Title   string              `json:"title"`
+	Summary string              `json:"summary"`
+	Target  string              `json:"target"`
+	Draft   *requests.Draft     `json:"draft"`
+	Options []requests.Option   `json:"options"`
+	Multi   bool                `json:"multi"`
+	Schema  json.RawMessage     `json:"schema"`
+	Allow   []requests.Decision `json:"allow"`
+	Report  string              `json:"report"`
+}
+
+func (b requestFormBody) opts() requests.FormOpts {
+	return requests.FormOpts{
+		Type: b.Type, Title: b.Title, Summary: b.Summary, Target: b.Target,
+		Payload: requests.Payload{Draft: b.Draft, Options: b.Options, Multi: b.Multi, Schema: b.Schema},
+		Allow:   b.Allow, Report: b.Report,
+	}
 }
 
 // requireFeature writes 402 when the cloud plan does not grant f.
@@ -86,24 +97,20 @@ func (s *Server) handleRequestCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		exp = d
 	}
-	req, err := s.requests.Create(r.Context(), actor, requests.CreateOpts{
-		Type: body.Type, Title: body.Title, Summary: body.Summary, Target: body.Target,
-		Payload: requests.Payload{Draft: body.Draft, Options: body.Options, Multi: body.Multi, Schema: body.Schema},
-		Allow:   body.Allow, Report: body.Report, Delivery: body.Delivery, ExpiresIn: exp,
-	})
+	if len(body.Forms) == 0 {
+		writeErrDetails(w, http.StatusBadRequest, "validation", "forms: want at least one form", map[string]string{"field": "forms"})
+		return
+	}
+	o := requests.CreateOpts{Title: body.Title, Summary: body.Summary, ExpiresIn: exp}
+	for _, f := range body.Forms {
+		o.Forms = append(o.Forms, f.opts())
+	}
+	req, err := s.requests.Create(r.Context(), actor, o)
 	if err != nil {
 		writeRequestErr(w, req, err)
 		return
 	}
-	out := map[string]any{"request": req}
-	if req.Delivery == requests.DeliveryResume {
-		msg := requestNextMessage
-		if req.Runtime == "tui" {
-			msg += requestPaneMessage
-		}
-		out["next"], out["message"] = "end_turn", msg
-	}
-	writeJSON(w, http.StatusCreated, out)
+	writeJSON(w, http.StatusCreated, map[string]any{"request": req, "next": "end_turn", "message": requestNextMessage})
 }
 
 // requestScope limits a run token to the requests of its own job.
@@ -169,17 +176,6 @@ func (s *Server) handleRequestGet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if v := r.URL.Query().Get("wait"); v != "" && req.Open() {
-		d, err := time.ParseDuration(v)
-		if err != nil || d < 0 {
-			writeErr(w, http.StatusBadRequest, "validation", "wait must be a duration such as 30s")
-			return
-		}
-		if req, err = s.requests.Wait(r.Context(), req.ID, d); err != nil {
-			writeRequestErr(w, req, err)
-			return
-		}
-	}
 	w.Header().Set("ETag", `"`+strconv.Itoa(req.Revision)+`"`)
 	writeJSON(w, http.StatusOK, req)
 }
@@ -189,15 +185,21 @@ func (s *Server) handleRequestReport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := s.requests.Reports().Open(req.ID, req.ReportKind)
+	idx, err := strconv.Atoi(r.PathValue("idx"))
+	if err != nil || idx < 0 || idx >= len(req.Forms) {
+		writeErr(w, http.StatusNotFound, "not_found", "request has no form "+r.PathValue("idx"))
+		return
+	}
+	kind := req.Forms[idx].ReportKind
+	body, err := s.requests.Reports().Open(req.ID, idx, kind)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "request has no report")
+		writeErr(w, http.StatusNotFound, "not_found", "form has no report")
 		return
 	}
 	defer body.Close()
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
-	if req.ReportKind == "html" {
+	if kind == "html" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Security-Policy", reportCSP)
 	} else {
@@ -224,8 +226,8 @@ func (s *Server) handleRequestAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		requests.Answer
-		Via string `json:"via"`
+		Forms []requests.FormAnswerIn `json:"forms"`
+		Via   string                  `json:"via"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
@@ -240,9 +242,9 @@ func (s *Server) handleRequestAnswer(w http.ResponseWriter, r *http.Request) {
 		}
 		rev = n
 	}
-	a := body.Answer
-	a.By, a.Via = answerer(r, body.Via)
-	req, err := s.requests.Answer(r.Context(), r.PathValue("id"), a, rev)
+	in := requests.AnswerIn{Forms: body.Forms}
+	in.By, in.Via = answerer(r, body.Via)
+	req, err := s.requests.Answer(r.Context(), r.PathValue("id"), in, rev)
 	if err != nil {
 		writeRequestErr(w, req, err)
 		return

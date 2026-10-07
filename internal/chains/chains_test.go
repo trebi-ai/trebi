@@ -277,9 +277,11 @@ func TestLimitHoldsHop(t *testing.T) {
 		t.Fatalf("held %+v", held)
 	}
 	o := f.req.got[0]
-	if o.Source != requests.SourceChain || o.HopID != held.Hop.ID || o.Title != "Agents reached the limit of 1 hand-overs" ||
-		!strings.Contains(o.Summary, "ceo → cfo → legal") || o.Target != "agents/legal" {
+	if o.Source != requests.SourceChain || o.HopID != held.Hop.ID || len(o.Forms) != 1 {
 		t.Fatalf("request %+v", o)
+	}
+	if fo := o.Forms[0]; fo.Title != "Agents reached the limit of 1 hand-overs" || !strings.Contains(fo.Summary, "ceo → cfo → legal") || fo.Target != "agents/legal" {
+		t.Fatalf("form %+v", fo)
 	}
 	if c, _ := f.svc.chain(context.Background(), held.Hop.TraceID); c.Status != StatusHeld {
 		t.Fatalf("chain %s", c.Status)
@@ -304,9 +306,9 @@ func TestLimitDecisions(t *testing.T) {
 		f := newFixture(t)
 		_, held := f.heldAsk(t)
 		r := requests.Request{HopID: held.Hop.ID, Source: requests.SourceChain, Status: requests.StatusAnswered,
-			Answer: &requests.Answer{Decision: c.decision}}
+			Forms: []requests.Form{{Type: requests.TypeConfirm, Answer: &requests.FormAnswer{Decision: c.decision}}}}
 		if c.decision == requests.DecisionExpired {
-			r.Status, r.Answer = requests.StatusExpired, nil
+			r.Status, r.Forms[0].Answer = requests.StatusExpired, nil
 		}
 		if err := f.svc.RequestDecided(ctx, r); err != nil {
 			t.Fatalf("%s: %v", c.decision, err)

@@ -95,7 +95,8 @@ func DocSection(doc, action string) string {
 func DocFields(section string) []DocField {
 	var out []DocField
 	for _, line := range strings.Split(section, "\n") {
-		m := docFieldRE.FindStringSubmatch(strings.TrimSpace(line))
+		// An indented bullet is a field inside an array item, not an input key.
+		m := docFieldRE.FindStringSubmatch(strings.TrimRight(line, " \r"))
 		if m == nil {
 			continue
 		}

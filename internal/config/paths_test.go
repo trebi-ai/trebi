@@ -351,6 +351,8 @@ func sampleSetValue(key string) string {
 		return "5m"
 	case key == "requests.expire_after", key == "requests.retain":
 		return "24h"
+	case key == "ui.public_url":
+		return "https://trebi.example.com"
 	case key == "defaults.workspace":
 		return "ops"
 	case key == "email.worker":

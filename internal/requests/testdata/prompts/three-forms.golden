@@ -1,0 +1,45 @@
+[trebi] The person answered request R01 "Ship the release" (3 forms).
+Answered by the user in the inbox at 2026-09-28T14:05:00Z.
+
+Form 1 "Delete the old branch" (confirm)
+Decision: approve. Do the action as proposed.
+```json
+{
+  "request_id": "R01",
+  "idx": 0,
+  "type": "confirm",
+  "title": "Delete the old branch",
+  "decision": "approve",
+  "note": "Keep the tag."
+}
+```
+
+Form 2 "Pick a plan" (choose)
+Decision: choose. Continue with the chosen options.
+```json
+{
+  "request_id": "R01",
+  "idx": 1,
+  "type": "choose",
+  "title": "Pick a plan",
+  "decision": "choose",
+  "choices": [
+    "b"
+  ]
+}
+```
+
+Form 3 "Send the reply to Ana" (review)
+Decision: edit. The person changed your draft. Use the text in the JSON below exactly. Do not use your original draft.
+```json
+{
+  "request_id": "R01",
+  "idx": 2,
+  "type": "review",
+  "title": "Send the reply to Ana",
+  "decision": "edit",
+  "text": "Hi Ana,\n\nUse `trebi` and \"quotes\" <html> & more. \nLine two.\n"
+}
+```
+
+Continue the task with these answers.

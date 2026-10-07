@@ -1121,14 +1121,14 @@ func TestRequestItemLifecycle(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
 	w := &sendWorker{token: "test-token-0000"}
+	forms := []requests.Form{{Type: requests.TypeReview, Title: "Send the reply", Payload: requests.Payload{Draft: &requests.Draft{Format: "text", Text: "Hi Ana, yes."}}}}
+	summary := "Ana asks for a refund."
 	svc, st := routeSvc(t, alerts.Options{
 		ApprovalAfter: time.Minute,
+		PublicURL:     "https://trebi.example.com",
 		Now:           func() time.Time { return now },
 		Request: func(_ context.Context, id string) (requests.Request, error) {
-			return requests.Request{
-				ID: id, Title: "Send the reply", Summary: "Ana asks for a refund.", DeliveryError: "no session",
-				Payload: requests.Payload{Draft: &requests.Draft{Format: "text", Text: "Hi Ana, yes."}},
-			}, nil
+			return requests.Request{ID: id, Title: "Send the reply", Summary: summary, DeliveryError: "no session", Forms: forms}, nil
 		},
 	}, nil, w, nil)
 	ctx := context.Background()
@@ -1147,7 +1147,8 @@ func TestRequestItemLifecycle(t *testing.T) {
 	if item.RequestID != "R1" || item.Body != "Ana asks for a refund." || item.Subject != "request/R1" {
 		t.Fatalf("item %+v", item)
 	}
-	if len(item.Actions) != 1 || item.Actions[0].Route != "/inbox/"+item.ID {
+	route := "/run/r1?tab=session&request=R1"
+	if len(item.Actions) != 1 || item.Actions[0].Route != route {
 		t.Fatalf("actions %+v", item.Actions)
 	}
 	if item.EscalatesAt == nil || !item.EscalatesAt.Equal(now.Add(time.Minute)) || len(w.sent()) != 0 {
@@ -1161,10 +1162,23 @@ func TestRequestItemLifecycle(t *testing.T) {
 	if len(sends) != 1 {
 		t.Fatalf("sends %d", len(sends))
 	}
-	for _, want := range []string{"Hi Ana, yes.", "Ana asks for a refund.", "Reply with approve or reject on the first line."} {
+	for _, want := range []string{"Hi Ana, yes.", "Ana asks for a refund.", "Reply with approve or reject on the first line.", "Open in Trebi: https://trebi.example.com" + route} {
 		if !strings.Contains(sends[0].Text, want) {
 			t.Errorf("mail lacks %q:\n%s", want, sends[0].Text)
 		}
+	}
+	if !strings.Contains(sends[0].HTML, `href="https://trebi.example.com/run/r1?tab=session&amp;request=R1"`) {
+		t.Errorf("html lacks the button:\n%s", sends[0].HTML)
+	}
+
+	forms = append(forms, requests.Form{Idx: 1, Type: requests.TypeConfirm, Title: "Close the ticket"})
+	summary = ""
+	if _, err := st.Append(ctx, requestEvent("request.updated")); err != nil {
+		t.Fatal(err)
+	}
+	svc.Consume(ctx)
+	if item, _ = svc.Get(ctx, item.ID); item.Body != "Send the reply; Close the ticket" {
+		t.Fatalf("updated item %+v", item)
 	}
 
 	if _, err := st.Append(ctx, requestEvent("request.answered")); err != nil {
@@ -1182,6 +1196,24 @@ func TestRequestItemLifecycle(t *testing.T) {
 	items, _ = svc.List(ctx, alerts.ListOpts{Kind: string(alerts.InboxFailure)})
 	if len(items) != 1 || items[0].Title != "Could not continue mailer" || items[0].RequestID != "R1" {
 		t.Fatalf("failure items %+v", items)
+	}
+}
+
+// TestAlertMailLink: a mail of an item with no UI route links to the
+// inbox item.
+func TestAlertMailLink(t *testing.T) {
+	t.Parallel()
+	w := &sendWorker{token: "test-token-0000"}
+	svc, _ := routeSvc(t, alerts.Options{PublicURL: "https://trebi.example.com/"}, nil, w, nil)
+	ctx := context.Background()
+	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Consume(ctx)
+	sends := w.sent()
+	if len(sends) != 1 || !strings.HasSuffix(sends[0].Text, "Open in Trebi: https://trebi.example.com/inbox/"+id+"\n") {
+		t.Fatalf("sends %+v", sends)
 	}
 }
 

@@ -1,10 +1,11 @@
-[trebi] The earlier session is gone. You asked this in run RUN1. Do the step that follows this answer.
+[trebi] The earlier session is gone. You asked this in run RUN1. Do the step that follows these answers.
 
-You asked this in request R01:
+You asked this in request R01 "Send the reply to Ana":
 
 ```json
 {
   "request_id": "R01",
+  "idx": 0,
   "type": "review",
   "title": "Send the reply to Ana",
   "draft": {
@@ -14,23 +15,20 @@ You asked this in request R01:
 }
 ```
 
-[trebi] The person answered 1 request. This session continues with the answer.
-
-Request R01  "Send the reply to Ana" (review)
-Decision: edit. The person changed your draft. Use the text in the JSON below exactly. Do not use your original draft.
+[trebi] The person answered request R01 "Send the reply to Ana" (1 form).
 Answered by the user in the inbox at 2026-09-28T14:05:00Z.
 
+Form 1 "Send the reply to Ana" (review)
+Decision: edit. The person changed your draft. Use the text in the JSON below exactly. Do not use your original draft.
 ```json
 {
   "request_id": "R01",
+  "idx": 0,
   "type": "review",
   "title": "Send the reply to Ana",
   "decision": "edit",
-  "text": "Hi Ana,\n\nUse `trebi` and \"quotes\" <html> & more. \nLine two.\n",
-  "answered_by": "user",
-  "answered_via": "ui",
-  "answered_at": "2026-09-28T14:05:00Z"
+  "text": "Hi Ana,\n\nUse `trebi` and \"quotes\" <html> & more. \nLine two.\n"
 }
 ```
 
-Continue the task with this answer.
+Continue the task with these answers.

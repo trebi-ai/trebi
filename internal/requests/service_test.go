@@ -21,7 +21,6 @@ import (
 type fakeRuns struct {
 	mu     sync.Mutex
 	runs   map[string]*runs.Run
-	turn   int
 	gate   runs.ParkGate
 	parker *runs.Parker
 }
@@ -65,10 +64,6 @@ func (f *fakeRuns) Unpark(ctx context.Context, id string, end runs.EndReason) er
 
 func (f *fakeRuns) Deliver(ctx context.Context, id string, extra ...runs.ParkDelivery) (runs.DeliverResult, error) {
 	return f.parker.Deliver(ctx, id, extra...)
-}
-
-func (f *fakeRuns) TurnAfter(context.Context, string, runs.RunReason, time.Time) (int, error) {
-	return f.turn, nil
 }
 
 type launchCall struct {
@@ -203,8 +198,8 @@ func (h *harness) run(t *testing.T, id string) tools.Actor {
 
 func (h *harness) create(t *testing.T, actor tools.Actor, o CreateOpts) Request {
 	t.Helper()
-	if o.Type == "" {
-		o.Type, o.Title = TypeConfirm, "Delete the old branch"
+	if len(o.Forms) == 0 {
+		o.Forms = []FormOpts{confirm("Delete the old branch")}
 	}
 	r, err := h.svc.Create(context.Background(), actor, o)
 	if err != nil {
@@ -215,7 +210,7 @@ func (h *harness) create(t *testing.T, actor tools.Actor, o CreateOpts) Request 
 
 func (h *harness) approve(t *testing.T, id string) Request {
 	t.Helper()
-	r, err := h.svc.Answer(context.Background(), id, Answer{Decision: DecisionApprove, By: ByUser, Via: ViaUI}, 0)
+	r, err := h.svc.Answer(context.Background(), id, approveAll(h.get(t, id)), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +239,7 @@ func TestCreateNeedsRunActor(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	for _, a := range []tools.Actor{{}, {Kind: "assistant", Conversation: "c1"}} {
-		if _, err := h.svc.Create(context.Background(), a, CreateOpts{Type: TypeConfirm, Title: "x"}); !errors.Is(err, ErrNotRun) {
+		if _, err := h.svc.Create(context.Background(), a, CreateOpts{Forms: []FormOpts{confirm("x")}}); !errors.Is(err, ErrNotRun) {
 			t.Errorf("actor %+v: err %v", a, err)
 		}
 	}
@@ -255,7 +250,7 @@ func TestCreateNeedsPlan(t *testing.T) {
 	h := newHarness(t)
 	actor := h.run(t, "RUN1")
 	h.grant.ok.Store(false)
-	if _, err := h.svc.Create(context.Background(), actor, CreateOpts{Type: TypeConfirm, Title: "x"}); !errors.Is(err, ErrPlan) {
+	if _, err := h.svc.Create(context.Background(), actor, CreateOpts{Forms: []FormOpts{confirm("x")}}); !errors.Is(err, ErrPlan) {
 		t.Fatalf("err %v", err)
 	}
 	h.grant.ok.Store(true)
@@ -289,19 +284,19 @@ func TestCreateSnapshotsReport(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# v1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := h.create(t, actor, CreateOpts{Type: TypeConfirm, Title: "x", Report: "report.md"})
+	r := h.create(t, actor, CreateOpts{Forms: []FormOpts{{Type: TypeConfirm, Title: "x", Report: "report.md"}}})
 	if err := os.WriteFile(path, []byte("# v2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := h.svc.Reports().Open(r.ID, r.ReportKind)
+	f, err := h.svc.Reports().Open(r.ID, 0, r.Forms[0].ReportKind)
 	if err != nil {
 		t.Fatal(err)
 	}
 	buf := make([]byte, 16)
 	n, _ := f.Read(buf)
 	f.Close()
-	if string(buf[:n]) != "# v1\n" || r.ReportKind != "markdown" || r.ReportSHA256 == "" {
-		t.Fatalf("snapshot %q kind %s", buf[:n], r.ReportKind)
+	if string(buf[:n]) != "# v1\n" || r.Forms[0].ReportKind != "markdown" || r.Forms[0].ReportSHA256 == "" {
+		t.Fatalf("snapshot %q kind %s", buf[:n], r.Forms[0].ReportKind)
 	}
 	big := filepath.Join(run.WorkingDir, "big.html")
 	if err := os.WriteFile(big, []byte(strings.Repeat("x", 6<<20)), 0o644); err != nil {
@@ -309,7 +304,7 @@ func TestCreateSnapshotsReport(t *testing.T) {
 	}
 	for _, rel := range []string{"../escape.md", "big.html", "report.txt", "missing.md"} {
 		var fe *FieldError
-		_, err := h.svc.Create(context.Background(), actor, CreateOpts{Type: TypeConfirm, Title: "x", Report: rel})
+		_, err := h.svc.Create(context.Background(), actor, CreateOpts{Forms: []FormOpts{{Type: TypeConfirm, Title: "x", Report: rel}}})
 		if !errors.As(err, &fe) || fe.Field != "report" {
 			t.Errorf("%s: err %v", rel, err)
 		}
@@ -321,9 +316,13 @@ func TestAnswerOnce(t *testing.T) {
 	h := newHarness(t)
 	r := h.create(t, h.run(t, "RUN1"), CreateOpts{})
 	h.approve(t, r.ID)
-	got, err := h.svc.Answer(context.Background(), r.ID, Answer{Decision: DecisionReject, By: ByUser, Via: ViaUI}, 0)
-	if !errors.Is(err, ErrClosed) || got.Answer == nil || got.Answer.Decision != DecisionApprove {
-		t.Fatalf("second answer: %v %+v", err, got.Answer)
+	reject := AnswerIn{Forms: []FormAnswerIn{{FormAnswer: FormAnswer{Decision: DecisionReject}}}, By: ByUser, Via: ViaUI}
+	got, err := h.svc.Answer(context.Background(), r.ID, reject, 0)
+	if !errors.Is(err, ErrClosed) || got.Forms[0].Answer == nil || got.Forms[0].Answer.Decision != DecisionApprove {
+		t.Fatalf("second answer: %v %+v", err, got.Forms[0].Answer)
+	}
+	if got.Answered == nil || got.Answered.By != ByUser || got.Answered.Via != ViaUI {
+		t.Fatalf("answered %+v", got.Answered)
 	}
 	if _, err := h.svc.Dismiss(context.Background(), r.ID, ByUser); !errors.Is(err, ErrClosed) {
 		t.Fatalf("dismiss closed: %v", err)
@@ -334,10 +333,10 @@ func TestAnswerIfMatch(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	r := h.create(t, h.run(t, "RUN1"), CreateOpts{})
-	if _, err := h.svc.Answer(context.Background(), r.ID, Answer{Decision: DecisionApprove}, r.Revision+1); !errors.Is(err, ErrConflict) {
+	if _, err := h.svc.Answer(context.Background(), r.ID, approveAll(r), r.Revision+1); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale: %v", err)
 	}
-	got, err := h.svc.Answer(context.Background(), r.ID, Answer{Decision: DecisionApprove}, r.Revision)
+	got, err := h.svc.Answer(context.Background(), r.ID, approveAll(r), r.Revision)
 	if err != nil || got.Revision != r.Revision+1 {
 		t.Fatalf("fresh: %v rev %d", err, got.Revision)
 	}
@@ -348,7 +347,7 @@ func TestListFilterAndCursor(t *testing.T) {
 	h := newHarness(t)
 	a, b := h.run(t, "RUN1"), h.run(t, "RUN2")
 	for range 3 {
-		h.create(t, a, CreateOpts{})
+		h.approve(t, h.create(t, a, CreateOpts{}).ID)
 	}
 	h.create(t, b, CreateOpts{})
 	ctx := context.Background()
@@ -360,40 +359,72 @@ func TestListFilterAndCursor(t *testing.T) {
 	if err != nil || len(rest) != 1 || next != "" {
 		t.Fatalf("page 2: %v %d %q", err, len(rest), next)
 	}
-	if all, _, _ := h.svc.List(ctx, ListOpts{Status: StatusPending}); len(all) != 4 {
-		t.Fatalf("pending %d", len(all))
+	if all, _, _ := h.svc.List(ctx, ListOpts{Status: StatusPending}); len(all) != 1 || len(all[0].Forms) != 1 {
+		t.Fatalf("pending %+v", all)
 	}
 }
 
-func TestPollCancelledOnRunEnd(t *testing.T) {
+// TestCreateJoinsOpenRequest pins the batch rule: a create call adds a form
+// to the open request of the run. A chain request is a separate source.
+func TestCreateJoinsOpenRequest(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	r := h.create(t, h.run(t, "RUN1"), CreateOpts{Type: TypeConfirm, Title: "x", Delivery: DeliveryPoll})
-	if h.pending(t, "RUN1") {
-		t.Fatal("a poll request parks the run")
+	actor := h.run(t, "RUN1")
+	first := h.create(t, actor, CreateOpts{Title: "Ship the release", Forms: []FormOpts{confirm("Tag it")}})
+	second := h.create(t, actor, CreateOpts{Title: "ignored", Forms: []FormOpts{confirm("Mail the team"), confirm("Close the issue")}})
+	if second.ID != first.ID || second.Title != "Ship the release" || second.Revision != first.Revision+1 {
+		t.Fatalf("second %+v", second)
 	}
-	h.rs.setStatus("RUN1", runs.StatusComplete)
-	h.svc.RunEnded(context.Background(), "RUN1", runs.StatusComplete)
-	got, err := h.svc.Wait(context.Background(), r.ID, time.Second)
-	if err != nil || got.Status != StatusCancelled || len(h.launch.Calls()) != 0 {
-		t.Fatalf("wait: %v %s calls %d", err, got.Status, len(h.launch.Calls()))
+	got := h.get(t, first.ID)
+	if len(got.Forms) != 3 || got.Forms[2].Idx != 2 || got.Forms[2].Title != "Close the issue" {
+		t.Fatalf("forms %+v", got.Forms)
+	}
+	if h.topics(t, "request.created") != 1 || h.topics(t, "request.updated") != 1 {
+		t.Fatal("want one created and one updated event")
+	}
+	chain, err := h.svc.CreateSystem(context.Background(), "RUN1", CreateOpts{Source: SourceChain, Forms: []FormOpts{confirm("Raise the limit")}})
+	if err != nil || chain.ID == first.ID {
+		t.Fatalf("chain request %v %+v", err, chain)
+	}
+	h.approve(t, first.ID)
+	third := h.create(t, actor, CreateOpts{})
+	if third.ID == first.ID || len(third.Forms) != 1 {
+		t.Fatalf("create after the answer joined a closed request: %+v", third)
 	}
 }
 
-func TestWaitReturnsOnAnswer(t *testing.T) {
+// TestCreateFormLimit refuses the form that passes the limit.
+func TestCreateFormLimit(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	r := h.create(t, h.run(t, "RUN1"), CreateOpts{Type: TypeConfirm, Title: "x", Delivery: DeliveryPoll})
-	if got, _ := h.svc.Wait(context.Background(), r.ID, 300*time.Millisecond); got.Status != StatusPending {
-		t.Fatalf("timeout status %s", got.Status)
+	actor := h.run(t, "RUN1")
+	forms := make([]FormOpts, maxForms)
+	for i := range forms {
+		forms[i] = confirm(fmt.Sprintf("Step %d", i))
 	}
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		_, _ = h.svc.Answer(context.Background(), r.ID, Answer{Decision: DecisionApprove}, 0) // Wait checks the result
-	}()
-	got, err := h.svc.Wait(context.Background(), r.ID, 5*time.Second)
-	if err != nil || got.Status != StatusAnswered {
-		t.Fatalf("wait: %v %s", err, got.Status)
+	r := h.create(t, actor, CreateOpts{Forms: forms})
+	var fe *FieldError
+	if _, err := h.svc.Create(context.Background(), actor, CreateOpts{Forms: []FormOpts{confirm("One more")}}); !errors.As(err, &fe) || fe.Field != "forms" {
+		t.Fatalf("err %v", err)
+	}
+	if got := h.get(t, r.ID); len(got.Forms) != maxForms {
+		t.Fatalf("forms %d", len(got.Forms))
+	}
+}
+
+// TestAnswerAfterFormAdded refuses an answer built on an older revision.
+func TestAnswerAfterFormAdded(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	actor := h.run(t, "RUN1")
+	r := h.create(t, actor, CreateOpts{})
+	h.create(t, actor, CreateOpts{Forms: []FormOpts{confirm("Second")}})
+	if _, err := h.svc.Answer(context.Background(), r.ID, approveAll(r), r.Revision); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale: %v", err)
+	}
+	var fe *FieldError
+	if _, err := h.svc.Answer(context.Background(), r.ID, approveAll(r), 0); !errors.As(err, &fe) || !strings.Contains(err.Error(), "form 1 has no answer") {
+		t.Fatalf("partial: %v", err)
 	}
 }
 
@@ -402,11 +433,23 @@ func TestWaitReturnsOnAnswer(t *testing.T) {
 func TestPromptHintFollowsPlan(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	if hint := h.svc.PromptHint(runs.LaunchOpts{}); !strings.Contains(hint, "trebi request create") || !strings.Contains(hint, "[trebi] The person answered") {
+	if hint := h.svc.PromptHint(runs.LaunchOpts{}); !strings.Contains(hint, "trebi request create") || !strings.Contains(hint, "--forms-file") {
 		t.Fatalf("hint = %q", hint)
 	}
 	h.grant.ok.Store(false)
 	if hint := h.svc.PromptHint(runs.LaunchOpts{}); hint != "" {
 		t.Fatalf("hint without a grant = %q", hint)
 	}
+}
+
+// confirm is one confirm form.
+func confirm(title string) FormOpts { return FormOpts{Type: TypeConfirm, Title: title} }
+
+// approveAll answers each form of r with approve.
+func approveAll(r Request) AnswerIn {
+	in := AnswerIn{By: ByUser, Via: ViaUI}
+	for _, f := range r.Forms {
+		in.Forms = append(in.Forms, FormAnswerIn{Idx: f.Idx, FormAnswer: FormAnswer{Decision: DecisionApprove}})
+	}
+	return in
 }

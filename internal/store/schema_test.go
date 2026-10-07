@@ -294,3 +294,71 @@ func TestMigrationV42IDs(t *testing.T) {
 		t.Fatalf("runs.job_id = %q, %v", jobID, err)
 	}
 }
+
+// TestMigrationV45Forms moves each request into a request with one form. Of
+// two pending requests on one run, only the newest stays open.
+func TestMigrationV45Forms(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "v44.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applyThrough(db, 44); err != nil {
+		t.Fatalf("v44 setup: %v", err)
+	}
+	for _, q := range []string{
+		`INSERT INTO requests (id,run_id,workspace_id,job_id,kind,type,title,payload_json,allow_json,status,answer_json,created_at,updated_at)
+		 VALUES ('A','R','ws','jb','job','confirm','Ship?','{}','["approve","reject"]','answered','{"decision":"approve","note":"ok","by":"user","via":"ui","at":"t"}','t','t')`,
+		`INSERT INTO requests (id,run_id,workspace_id,job_id,kind,type,title,payload_json,allow_json,status,created_at,updated_at)
+		 VALUES ('B','R','ws','jb','job','choose','Which?','{"options":[{"id":"a","label":"A"}]}','["choose"]','pending','t','t')`,
+		`INSERT INTO requests (id,run_id,workspace_id,job_id,kind,type,title,payload_json,allow_json,status,created_at,updated_at)
+		 VALUES ('C','R','ws','jb','job','confirm','Again?','{}','["approve"]','pending','t','t')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	type form struct {
+		typ, title string
+		answer     sql.NullString
+	}
+	got := map[string]form{}
+	rows, err := db.Query(`SELECT request_id, type, title, answer_json FROM request_forms WHERE idx = 0`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var f form
+		if err := rows.Scan(&id, &f.typ, &f.title, &f.answer); err != nil {
+			t.Fatal(err)
+		}
+		got[id] = f
+	}
+	if len(got) != 3 || got["A"].typ != "confirm" || !strings.Contains(got["A"].answer.String, `"approve"`) || got["B"].answer.Valid {
+		t.Fatalf("forms = %+v", got)
+	}
+	status := map[string]string{}
+	srows, err := db.Query(`SELECT id, status FROM requests`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srows.Close()
+	for srows.Next() {
+		var id, st string
+		if err := srows.Scan(&id, &st); err != nil {
+			t.Fatal(err)
+		}
+		status[id] = st
+	}
+	if status["A"] != "answered" || status["B"] != "cancelled" || status["C"] != "pending" {
+		t.Fatalf("status = %v", status)
+	}
+	if _, err := db.Exec(`INSERT INTO requests (id,run_id,workspace_id,job_id,kind,title,created_at,updated_at) VALUES ('D','R','ws','jb','job','x','t','t')`); err == nil {
+		t.Fatal("a second open request on one run was accepted")
+	}
+}

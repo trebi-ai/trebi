@@ -2,6 +2,7 @@ package email
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,16 +68,16 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 	}
 }
 
-func TestRequestAnswer(t *testing.T) {
+func TestFormAnswer(t *testing.T) {
 	t.Parallel()
-	review := requests.Request{Type: requests.TypeReview, Allow: []requests.Decision{requests.DecisionApprove, requests.DecisionEdit, requests.DecisionReject, requests.DecisionRespond}}
-	choose := requests.Request{Type: requests.TypeChoose, Payload: requests.Payload{Options: []requests.Option{{ID: "a", Label: "Plan A"}, {ID: "b", Label: "Plan B"}}}}
-	form := func(schema string) requests.Request {
-		return requests.Request{Type: requests.TypeForm, Payload: requests.Payload{Schema: json.RawMessage(schema)}}
+	review := requests.Form{Type: requests.TypeReview, Allow: []requests.Decision{requests.DecisionApprove, requests.DecisionEdit, requests.DecisionReject, requests.DecisionRespond}}
+	choose := requests.Form{Type: requests.TypeChoose, Payload: requests.Payload{Options: []requests.Option{{ID: "a", Label: "Plan A"}, {ID: "b", Label: "Plan B"}}}}
+	form := func(schema string) requests.Form {
+		return requests.Form{Type: requests.TypeForm, Payload: requests.Payload{Schema: json.RawMessage(schema)}}
 	}
 	cases := []struct {
 		name     string
-		r        requests.Request
+		r        requests.Form
 		text     string
 		decision requests.Decision
 		extra    string
@@ -94,7 +95,7 @@ func TestRequestAnswer(t *testing.T) {
 		{"form required", form(`{"type":"object","properties":{"n":{"type":"string"}},"required":["n"]}`), "yes", requests.DecisionRespond, "yes"},
 	}
 	for _, c := range cases {
-		a := requestAnswer(c.r, c.text)
+		a := formAnswer(c.r, c.text)
 		if a.Decision != c.decision {
 			t.Errorf("%s: decision %s, want %s", c.name, a.Decision, c.decision)
 			continue
@@ -115,14 +116,33 @@ func TestRequestAnswer(t *testing.T) {
 func TestRequestReplyAnswers(t *testing.T) {
 	t.Parallel()
 	s := testService(openEmailStore(t))
-	acts := &fakeActions{env: testRouteEnv(), request: requests.Request{Type: requests.TypeConfirm, Allow: []requests.Decision{requests.DecisionApprove, requests.DecisionReject, requests.DecisionRespond}}}
+	confirm := requests.Form{Type: requests.TypeConfirm, Allow: []requests.Decision{requests.DecisionApprove, requests.DecisionReject, requests.DecisionRespond}}
+	acts := &fakeActions{env: testRouteEnv(), request: requests.Request{Forms: []requests.Form{confirm}}}
 	g := NewIngress(s, connectors.New(s.st, nil, nil), acts, time.Minute, false)
 	msg := IngressMessage{ID: "m1", From: "ops@example.com", Text: "approve"}
 	g.applyItemReply(t.Context(), msg, RouteDecision{}, &replyTarget{inboxID: "in1", alertKind: "request", requestID: "R1", isItem: true})
-	if len(acts.answers) != 1 || acts.answers[0].Decision != requests.DecisionApprove || acts.answers[0].By != "email:ops@example.com" {
+	if len(acts.answers) != 1 || len(acts.answers[0].Forms) != 1 || acts.answers[0].Forms[0].Decision != requests.DecisionApprove || acts.answers[0].By != "email:ops@example.com" {
 		t.Fatalf("answers %+v", acts.answers)
 	}
 	if len(acts.asks) != 0 || len(acts.messages) != 0 {
 		t.Fatalf("asks %v messages %v", acts.asks, acts.messages)
+	}
+}
+
+// TestRequestReplyManyForms refuses a mail answer to a request with more
+// than one form.
+func TestRequestReplyManyForms(t *testing.T) {
+	t.Parallel()
+	s := testService(openEmailStore(t))
+	confirm := requests.Form{Type: requests.TypeConfirm, Allow: []requests.Decision{requests.DecisionApprove, requests.DecisionReject}}
+	acts := &fakeActions{env: testRouteEnv(), request: requests.Request{Forms: []requests.Form{confirm, confirm}}}
+	g := NewIngress(s, connectors.New(s.st, nil, nil), acts, time.Minute, false)
+	msg := IngressMessage{ID: "m1", From: "ops@example.com", Text: "approve"}
+	g.applyItemReply(t.Context(), msg, RouteDecision{}, &replyTarget{inboxID: "in1", alertKind: "request", requestID: "R1", isItem: true})
+	if len(acts.answers) != 0 {
+		t.Fatalf("answers %+v", acts.answers)
+	}
+	if len(acts.asks) != 1 || !strings.Contains(acts.asks[0], "This request has 2 forms. Open the link to answer.") {
+		t.Fatalf("asks %v", acts.asks)
 	}
 }

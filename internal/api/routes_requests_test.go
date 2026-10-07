@@ -192,7 +192,7 @@ func TestRequestRoundTrip(t *testing.T) {
 			s := newRequestStack(t)
 			runID, token := s.launch(t)
 			c.create["title"] = "Decide " + c.decision
-			req := s.create(t, token, c.create)
+			req := s.create(t, token, oneForm(c.create))
 			id, _ := req["id"].(string)
 			s.endTurn(t)
 			s.waitRun(t, runID, "parked")
@@ -201,7 +201,7 @@ func TestRequestRoundTrip(t *testing.T) {
 			}
 
 			c.answer["decision"] = c.decision
-			code, ans, _ := doJSON(t, "POST", s.base+"/v1/requests/"+id+"/answer", c.answer)
+			code, ans, _ := doJSON(t, "POST", s.base+"/v1/requests/"+id+"/answer", answerAll(c.answer, 0))
 			if code != 200 {
 				t.Fatalf("answer %d %v", code, ans)
 			}
@@ -262,10 +262,10 @@ func TestRequestRoundTrip(t *testing.T) {
 func TestRequestRunTokenCannotAnswer(t *testing.T) {
 	s := newRequestStack(t)
 	_, token := s.launch(t)
-	req := s.create(t, token, map[string]any{"type": "confirm", "title": "x", "delivery": "poll"})
+	req := s.create(t, token, oneForm(map[string]any{"type": "confirm", "title": "x"}))
 	id, _ := req["id"].(string)
 	for _, verb := range []string{"answer", "dismiss"} {
-		code, body, _ := doJSONHeader(t, "POST", s.base+"/v1/requests/"+id+"/"+verb, map[string]any{"decision": "approve"}, token)
+		code, body, _ := doJSONHeader(t, "POST", s.base+"/v1/requests/"+id+"/"+verb, answerAll(map[string]any{"decision": "approve"}, 0), token)
 		if code != 403 {
 			t.Fatalf("%s with run token: %d %v", verb, code, body)
 		}
@@ -281,7 +281,7 @@ func TestRequestAssistantCanAnswer(t *testing.T) {
 	s := newRequestStack(t)
 	_, token := s.launch(t)
 	defer s.endTurn(t)
-	req := s.create(t, token, map[string]any{"type": "confirm", "title": "x", "delivery": "poll"})
+	req := s.create(t, token, oneForm(map[string]any{"type": "confirm", "title": "x"}))
 	id, _ := req["id"].(string)
 
 	code, conv, _ := doJSON(t, "POST", s.base+"/v1/conversations", map[string]any{"workspace": s.wsID, "origin_channel": "cli", "harness": "fake"})
@@ -299,11 +299,11 @@ func TestRequestAssistantCanAnswer(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	code, got, _ := doJSONHeader(t, "POST", s.base+"/v1/requests/"+id+"/answer", map[string]any{"decision": "approve"}, asstToken)
+	code, got, _ := doJSONHeader(t, "POST", s.base+"/v1/requests/"+id+"/answer", answerAll(map[string]any{"decision": "approve"}, 0), asstToken)
 	if code != 200 {
 		t.Fatalf("assistant answer %d %v", code, got)
 	}
-	ans, _ := got["answer"].(map[string]any)
+	ans, _ := got["answered"].(map[string]any)
 	if ans["by"] != "assistant" || ans["via"] != "assistant" {
 		t.Fatalf("answer %v", ans)
 	}
@@ -313,24 +313,26 @@ func TestRequestAnswerErrors(t *testing.T) {
 	s := newRequestStack(t)
 	_, token := s.launch(t)
 	defer s.endTurn(t)
-	req := s.create(t, token, map[string]any{"type": "confirm", "title": "x", "delivery": "poll"})
+	req := s.create(t, token, oneForm(map[string]any{"type": "confirm", "title": "x"}))
 	id, _ := req["id"].(string)
 	url := s.base + "/v1/requests/" + id + "/answer"
-	code, body, _ := doJSON(t, "POST", url, map[string]any{"decision": "edit"})
+	code, body, _ := doJSON(t, "POST", url, answerAll(map[string]any{"decision": "edit"}, 0))
 	if code != 400 || errCode(body) != "validation" {
 		t.Fatalf("edit on confirm %d %v", code, body)
 	}
-	code, body, _ = doJSONHeaders(t, "POST", url, map[string]any{"decision": "approve"}, map[string]string{"If-Match": `"9"`})
+	code, body, _ = doJSONHeaders(t, "POST", url, answerAll(map[string]any{"decision": "approve"}, 0), map[string]string{"If-Match": `"9"`})
 	if code != 412 {
 		t.Fatalf("stale if-match %d %v", code, body)
 	}
-	if code, body, _ = doJSON(t, "POST", url, map[string]any{"decision": "approve", "via": "cli"}); code != 200 {
+	approve := answerAll(map[string]any{"decision": "approve"}, 0)
+	approve["via"] = "cli"
+	if code, body, _ = doJSON(t, "POST", url, approve); code != 200 {
 		t.Fatalf("answer %d %v", code, body)
 	}
-	if a, _ := body["answer"].(map[string]any); a["via"] != "cli" || a["by"] != "user" {
-		t.Fatalf("answer by %v", body["answer"])
+	if a, _ := body["answered"].(map[string]any); a["via"] != "cli" || a["by"] != "user" {
+		t.Fatalf("answered %v", body["answered"])
 	}
-	code, body, _ = doJSON(t, "POST", url, map[string]any{"decision": "reject"})
+	code, body, _ = doJSON(t, "POST", url, answerAll(map[string]any{"decision": "reject"}, 0))
 	errBody, _ := body["error"].(map[string]any)
 	details, _ := errBody["details"].(map[string]any)
 	if code != 409 || errCode(body) != "request_closed" || details["request"] == nil {
@@ -341,18 +343,48 @@ func TestRequestAnswerErrors(t *testing.T) {
 	}
 }
 
+// TestRequestBatch: the create calls of one turn join one request, and the
+// answer covers each form.
+func TestRequestBatch(t *testing.T) {
+	s := newRequestStack(t)
+	_, token := s.launch(t)
+	defer s.endTurn(t)
+	first := s.create(t, token, map[string]any{"title": "Ship the release", "forms": []any{map[string]any{"type": "confirm", "title": "Tag it"}}})
+	second := s.create(t, token, oneForm(map[string]any{"type": "confirm", "title": "Mail the team"}))
+	id, _ := first["id"].(string)
+	forms, _ := second["forms"].([]any)
+	if second["id"] != id || second["title"] != "Ship the release" || len(forms) != 2 {
+		t.Fatalf("second create %v", second)
+	}
+	url := s.base + "/v1/requests/" + id + "/answer"
+	stale := fmt.Sprintf(`"%v"`, first["revision"])
+	if code, body, _ := doJSONHeaders(t, "POST", url, answerAll(map[string]any{"decision": "approve"}, 0, 1), map[string]string{"If-Match": stale}); code != 412 {
+		t.Fatalf("answer after a form joined %d %v", code, body)
+	}
+	code, body, _ := doJSON(t, "POST", url, answerAll(map[string]any{"decision": "approve"}, 0))
+	if errBody, _ := body["error"].(map[string]any); code != 400 || !strings.Contains(fmt.Sprint(errBody["message"]), "form 1 has no answer") {
+		t.Fatalf("missing form %d %v", code, body)
+	}
+	if code, body, _ = doJSON(t, "POST", url, answerAll(map[string]any{"decision": "approve"}, 0, 1)); code != 200 || body["status"] != "answered" {
+		t.Fatalf("answer %d %v", code, body)
+	}
+	if code, body, _ = doJSONHeader(t, "POST", s.base+"/v1/requests", map[string]any{"title": "x"}, token); code != 400 || errCode(body) != "validation" {
+		t.Fatalf("create with no forms %d %v", code, body)
+	}
+}
+
 func TestRequestPlan402(t *testing.T) {
 	s := newRequestStack(t, "backup")
 	_, token := s.launch(t)
 	defer s.endTurn(t)
-	code, body, _ := doJSONHeader(t, "POST", s.base+"/v1/requests", map[string]any{"type": "confirm", "title": "x"}, token)
+	code, body, _ := doJSONHeader(t, "POST", s.base+"/v1/requests", oneForm(map[string]any{"type": "confirm", "title": "x"}), token)
 	errBody, _ := body["error"].(map[string]any)
 	details, _ := errBody["details"].(map[string]any)
 	if code != 402 || errCode(body) != "plan_required" || details["feature"] != "requests" {
 		t.Fatalf("402: %d %v", code, body)
 	}
 	// Without a run token, create is 403 before the plan check.
-	if code, _, _ = doJSON(t, "POST", s.base+"/v1/requests", map[string]any{"type": "confirm", "title": "x"}); code != 403 {
+	if code, _, _ = doJSON(t, "POST", s.base+"/v1/requests", oneForm(map[string]any{"type": "confirm", "title": "x"})); code != 403 {
 		t.Fatalf("human create %d", code)
 	}
 }
@@ -367,10 +399,15 @@ func TestRequestReportCSP(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cases := map[string]string{"r.html": "text/html; charset=utf-8", "r.md": "text/markdown; charset=utf-8"}
-	for name, ctype := range cases {
-		req := s.create(t, token, map[string]any{"type": "confirm", "title": "x", "report": name, "delivery": "poll"})
-		resp, err := http.Get(s.base + "/v1/requests/" + req["id"].(string) + "/report")
+	names := []string{"r.html", "r.md"}
+	ctypes := []string{"text/html; charset=utf-8", "text/markdown; charset=utf-8"}
+	req := s.create(t, token, map[string]any{"forms": []any{
+		map[string]any{"type": "confirm", "title": "x", "report": names[0]},
+		map[string]any{"type": "confirm", "title": "y", "report": names[1]},
+	}})
+	for idx, name := range names {
+		ctype := ctypes[idx]
+		resp, err := http.Get(fmt.Sprintf("%s/v1/requests/%s/forms/%d/report", s.base, req["id"], idx))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -387,31 +424,6 @@ func TestRequestReportCSP(t *testing.T) {
 		if csp != want {
 			t.Fatalf("%s CSP %q", name, csp)
 		}
-	}
-}
-
-func TestRequestWaitLongPoll(t *testing.T) {
-	s := newRequestStack(t)
-	_, token := s.launch(t)
-	defer s.endTurn(t)
-	req := s.create(t, token, map[string]any{"type": "confirm", "title": "x", "delivery": "poll"})
-	id, _ := req["id"].(string)
-	start := time.Now()
-	_, got, _ := doJSONHeader(t, "GET", s.base+"/v1/requests/"+id+"?wait=1s", nil, token)
-	if got["status"] != "pending" || time.Since(start) < 900*time.Millisecond {
-		t.Fatalf("timeout: %v after %s", got["status"], time.Since(start))
-	}
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		resp, err := http.Post(s.base+"/v1/requests/"+id+"/answer", "application/json", strings.NewReader(`{"decision":"approve"}`))
-		if err == nil {
-			resp.Body.Close()
-		}
-	}()
-	start = time.Now()
-	_, got, _ = doJSONHeader(t, "GET", s.base+"/v1/requests/"+id+"?wait=10s", nil, token)
-	if got["status"] != "answered" || time.Since(start) > 5*time.Second {
-		t.Fatalf("answered: %v after %s", got["status"], time.Since(start))
 	}
 }
 
@@ -434,7 +446,7 @@ func TestRequestToolPlanMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cs.Close()
-	res, text := mcpCall(t, cs, "request", "create", map[string]any{"type": "confirm", "title": "x"})
+	res, text := mcpCall(t, cs, "request", "create", oneForm(map[string]any{"type": "confirm", "title": "x"}))
 	if !res.IsError || !strings.Contains(text, "plan_required") || !strings.Contains(text, tools.RequestPlanMessage) {
 		t.Fatalf("mcp 402: %s", text)
 	}
@@ -449,4 +461,20 @@ func grantCloud(t *testing.T, st *store.Store, features []string) {
 		VALUES (1, 'dev', 'mbp', 'http://127.0.0.1:1', '', 'pro_cloud', ?, '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z')`, string(raw)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// oneForm is a create body with the one form f.
+func oneForm(f map[string]any) map[string]any { return map[string]any{"forms": []any{f}} }
+
+// answerAll is an answer body with one answer a for each idx.
+func answerAll(a map[string]any, idx ...int) map[string]any {
+	forms := make([]any, len(idx))
+	for i, n := range idx {
+		f := map[string]any{"idx": n}
+		for k, v := range a {
+			f[k] = v
+		}
+		forms[i] = f
+	}
+	return map[string]any{"forms": forms}
 }

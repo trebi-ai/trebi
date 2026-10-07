@@ -66,16 +66,19 @@ func TestDeliverWaitsForAllOpen(t *testing.T) {
 	h := newHarness(t)
 	actor := h.run(t, "RUN1")
 	a := h.create(t, actor, CreateOpts{})
-	b := h.create(t, actor, CreateOpts{Type: TypeConfirm, Title: "Second"})
+	chain, err := h.svc.CreateSystem(context.Background(), "RUN1", CreateOpts{Source: SourceChain, Forms: []FormOpts{confirm("Raise the limit")}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	h.park(t, "RUN1")
 	h.approve(t, a.ID)
 	if n := len(h.launch.Calls()); n != 0 {
 		t.Fatalf("launch with one open: %d", n)
 	}
-	h.approve(t, b.ID)
+	h.approve(t, chain.ID)
 	calls := h.launch.Calls()
-	if len(calls) != 1 || !strings.Contains(calls[0].prompt, "answered 2 requests") ||
-		strings.Index(calls[0].prompt, a.ID) > strings.Index(calls[0].prompt, b.ID) {
+	if len(calls) != 1 || strings.Count(calls[0].prompt, "[trebi] The person answered request") != 2 ||
+		strings.Index(calls[0].prompt, a.ID) > strings.Index(calls[0].prompt, chain.ID) {
 		t.Fatalf("calls %+v", calls)
 	}
 	if h.topics(t, "request.delivered") != 2 {
@@ -141,11 +144,16 @@ func TestRecoverStaleClaim(t *testing.T) {
 		r := h.create(t, h.run(t, "RUN1"), CreateOpts{})
 		h.rs.setStatus("RUN1", runs.StatusParked)
 		// A crash between the claim and the launch leaves the row claimed.
-		if _, err := h.st.DB().Exec(`UPDATE requests SET status='answered', answer_json='{"decision":"approve","by":"user","via":"ui","at":"2026-09-28T10:00:00Z"}',
-  delivery_state='claimed', claimed_at=? WHERE id=?`, fmtTime(h.clock.now()), r.ID); err != nil {
+		if _, err := h.st.DB().Exec(`UPDATE requests SET status='answered', answered_by='user', answered_via='ui',
+  answered_at='2026-09-28T10:00:00Z', delivery_state='claimed', claimed_at=?, delivered_turn=0 WHERE id=?`, fmtTime(h.clock.now()), r.ID); err != nil {
 			t.Fatal(err)
 		}
-		h.rs.turn = turn
+		if _, err := h.st.DB().Exec(`UPDATE request_forms SET answer_json='{"decision":"approve"}' WHERE request_id=?`, r.ID); err != nil {
+			t.Fatal(err)
+		}
+		run, _ := h.rs.Get(context.Background(), "RUN1")
+		run.TurnCount = turn
+		h.rs.put(*run)
 		ctx := context.Background()
 		if err := h.rs.parker.Recover(ctx); err != nil || len(h.launch.Calls()) != 0 {
 			t.Fatalf("fresh claim: %v, calls %d", err, len(h.launch.Calls()))
@@ -173,9 +181,10 @@ func TestDeliverFallbackFresh(t *testing.T) {
 	for _, err := range []error{runs.ErrResumeUnsupported, runs.ErrNoSession} {
 		h := newHarness(t)
 		h.launch.resumeErr = err
-		r := h.create(t, h.run(t, "RUN1"), CreateOpts{Type: TypeReview, Title: "Send it", Payload: Payload{Draft: &Draft{Text: "draft one"}}})
+		r := h.create(t, h.run(t, "RUN1"), CreateOpts{Forms: []FormOpts{{Type: TypeReview, Title: "Send it", Payload: Payload{Draft: &Draft{Text: "draft one"}}}}})
 		h.park(t, "RUN1")
-		if _, err := h.svc.Answer(context.Background(), r.ID, Answer{Decision: DecisionEdit, Text: "draft two", By: ByUser, Via: ViaUI}, 0); err != nil {
+		edit := AnswerIn{Forms: []FormAnswerIn{{FormAnswer: FormAnswer{Decision: DecisionEdit, Text: "draft two"}}}, By: ByUser, Via: ViaUI}
+		if _, err := h.svc.Answer(context.Background(), r.ID, edit, 0); err != nil {
 			t.Fatal(err)
 		}
 		calls := h.launch.Calls()
@@ -234,7 +243,7 @@ func TestDeliverFailed(t *testing.T) {
 func TestExpirySweep(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	r := h.create(t, h.run(t, "RUN1"), CreateOpts{Type: TypeConfirm, Title: "x", ExpiresIn: time.Hour})
+	r := h.create(t, h.run(t, "RUN1"), CreateOpts{Forms: []FormOpts{confirm("x")}, ExpiresIn: time.Hour})
 	h.park(t, "RUN1")
 	ctx := context.Background()
 	if err := h.svc.Sweep(ctx); err != nil || h.get(t, r.ID).Status != StatusPending {
@@ -246,7 +255,7 @@ func TestExpirySweep(t *testing.T) {
 	}
 	got := h.get(t, r.ID)
 	calls := h.launch.Calls()
-	if got.Status != StatusExpired || got.Answer == nil || got.Answer.Decision != DecisionExpired ||
+	if got.Status != StatusExpired || got.Answered == nil || got.Answered.By != ViaDaemon ||
 		len(calls) != 1 || !strings.Contains(calls[0].prompt, "Decision: expired.") {
 		t.Fatalf("row %+v calls %+v", got, calls)
 	}
@@ -260,17 +269,17 @@ func TestSweepRemovesOldReports(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(run.WorkingDir, "r.html"), []byte("<p>x</p>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := h.create(t, actor, CreateOpts{Type: TypeConfirm, Title: "x", Report: "r.html", Delivery: DeliveryPoll})
+	r := h.create(t, actor, CreateOpts{Forms: []FormOpts{{Type: TypeConfirm, Title: "x", Report: "r.html"}}})
 	h.approve(t, r.ID)
 	h.clock.add(defaultRetain + time.Hour)
 	if err := h.svc.Sweep(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.svc.Reports().Open(r.ID, "html"); !errors.Is(err, ErrNotFound) {
+	if _, err := h.svc.Reports().Open(r.ID, 0, "html"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("report kept: %v", err)
 	}
-	if got := h.get(t, r.ID); got.ReportKind != "" {
-		t.Fatalf("report_kind %q", got.ReportKind)
+	if got := h.get(t, r.ID); got.Forms[0].ReportKind != "" {
+		t.Fatalf("report_kind %q", got.Forms[0].ReportKind)
 	}
 }
 
@@ -279,7 +288,10 @@ func TestDismissUnparks(t *testing.T) {
 	h := newHarness(t)
 	actor := h.run(t, "RUN1")
 	a := h.create(t, actor, CreateOpts{})
-	b := h.create(t, actor, CreateOpts{Type: TypeConfirm, Title: "Second"})
+	b, err := h.svc.CreateSystem(context.Background(), "RUN1", CreateOpts{Source: SourceChain, Forms: []FormOpts{confirm("Second")}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	h.park(t, "RUN1")
 	ctx := context.Background()
 	if _, err := h.svc.Dismiss(ctx, a.ID, ByUser); err != nil {
@@ -320,7 +332,7 @@ func TestChainedRequests(t *testing.T) {
 	if r2.prevID != "RUN1" || next == "" {
 		t.Fatalf("first resume %+v", r2)
 	}
-	q2 := h.create(t, tools.Actor{RunID: next, Kind: "job", Job: "mail", WorkspaceID: "ws1"}, CreateOpts{Type: TypeConfirm, Title: "Second step"})
+	q2 := h.create(t, tools.Actor{RunID: next, Kind: "job", Job: "mail", WorkspaceID: "ws1"}, CreateOpts{Forms: []FormOpts{confirm("Second step")}})
 	if q2.SessionID != "sess-RUN1" {
 		t.Fatalf("chained session %q", q2.SessionID)
 	}

@@ -611,21 +611,27 @@ func BuildProposalGet(id string) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/proposals/" + url.PathEscape(id)}
 }
 
-// RequestCreateBody is the body of POST /v1/requests. Payload fields are
-// flat; ExpiresIn is a duration string such as 24h.
+// RequestCreateBody is the body of POST /v1/requests. ExpiresIn is a
+// duration string such as 24h.
 type RequestCreateBody struct {
-	Type      string          `json:"type"`
-	Title     string          `json:"title"`
-	Summary   string          `json:"summary,omitempty"`
-	Target    string          `json:"target,omitempty"`
-	Draft     any             `json:"draft,omitempty"`   // *RequestDraft or raw JSON
-	Options   any             `json:"options,omitempty"` // []RequestOption or raw JSON
-	Multi     bool            `json:"multi,omitempty"`
-	Schema    json.RawMessage `json:"schema,omitempty"`
-	Allow     []string        `json:"allow,omitempty"`
-	Report    string          `json:"report,omitempty"`
-	Delivery  string          `json:"delivery,omitempty"`
-	ExpiresIn string          `json:"expires_in,omitempty"`
+	Title     string            `json:"title,omitempty"`
+	Summary   string            `json:"summary,omitempty"`
+	ExpiresIn string            `json:"expires_in,omitempty"`
+	Forms     []RequestFormBody `json:"forms"`
+}
+
+// RequestFormBody is one form of a create body. Payload fields are flat.
+type RequestFormBody struct {
+	Type    string          `json:"type"`
+	Title   string          `json:"title"`
+	Summary string          `json:"summary,omitempty"`
+	Target  string          `json:"target,omitempty"`
+	Draft   any             `json:"draft,omitempty"`   // *RequestDraft or raw JSON
+	Options any             `json:"options,omitempty"` // []RequestOption or raw JSON
+	Multi   bool            `json:"multi,omitempty"`
+	Schema  json.RawMessage `json:"schema,omitempty"`
+	Allow   []string        `json:"allow,omitempty"`
+	Report  string          `json:"report,omitempty"`
 }
 
 type RequestDraft struct {
@@ -639,15 +645,22 @@ type RequestOption struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// RequestAnswerBody is the body of POST /v1/requests/{id}/answer.
+// RequestAnswerBody is the body of POST /v1/requests/{id}/answer: one
+// answer for each form.
 type RequestAnswerBody struct {
+	Forms []RequestFormAnswer `json:"forms"`
+	Via   string              `json:"via,omitempty"`
+}
+
+// RequestFormAnswer is the answer to the form at Idx.
+type RequestFormAnswer struct {
+	Idx      int             `json:"idx"`
 	Decision string          `json:"decision"`
 	Text     string          `json:"text,omitempty"`
 	Message  string          `json:"message,omitempty"`
 	Choices  []string        `json:"choices,omitempty"`
 	Values   json.RawMessage `json:"values,omitempty"`
 	Note     string          `json:"note,omitempty"`
-	Via      string          `json:"via,omitempty"`
 }
 
 // BuildRequestCreate builds POST /v1/requests. It needs a run token.
@@ -655,9 +668,9 @@ func BuildRequestCreate(b RequestCreateBody) HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/requests", Body: b}
 }
 
-// BuildRequestGet builds GET /v1/requests/{id}; wait long-polls (e.g. 30s).
-func BuildRequestGet(id, wait string) HTTPRequest {
-	return HTTPRequest{Method: "GET", Path: withQuery("/v1/requests/"+url.PathEscape(id), map[string]string{"wait": wait})}
+// BuildRequestGet builds GET /v1/requests/{id}.
+func BuildRequestGet(id string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/requests/" + url.PathEscape(id)}
 }
 
 // BuildRequestListPath builds GET /v1/requests with its filters.
@@ -669,9 +682,9 @@ func BuildRequestListPath(status, run, job, workspace, cursor string, limit int)
 	return withQuery("/v1/requests", q)
 }
 
-// BuildRequestReport builds GET /v1/requests/{id}/report.
-func BuildRequestReport(id string) HTTPRequest {
-	return HTTPRequest{Method: "GET", Path: "/v1/requests/" + url.PathEscape(id) + "/report"}
+// BuildRequestReport builds GET /v1/requests/{id}/forms/{idx}/report.
+func BuildRequestReport(id string, idx int) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/requests/" + url.PathEscape(id) + "/forms/" + strconv.Itoa(idx) + "/report"}
 }
 
 // BuildRequestAnswer builds POST /v1/requests/{id}/answer. ifMatch is the

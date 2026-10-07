@@ -105,7 +105,7 @@ type Actions interface {
 	// Request returns one request for an emailed answer.
 	Request(ctx context.Context, id string) (requests.Request, error)
 	// AnswerRequest applies one emailed request answer.
-	AnswerRequest(ctx context.Context, id string, a requests.Answer) error
+	AnswerRequest(ctx context.Context, id string, in requests.AnswerIn) error
 	// ResolveInbox marks one inbox item resolved.
 	ResolveInbox(ctx context.Context, inboxID string) error
 	// AmbiguousReplyItem records the item for one approval reply that named

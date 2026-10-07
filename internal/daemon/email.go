@@ -109,9 +109,9 @@ func (c *ControlPlane) Request(ctx context.Context, id string) (requests.Request
 }
 
 // AnswerRequest applies one emailed request answer.
-func (c *ControlPlane) AnswerRequest(ctx context.Context, id string, a requests.Answer) error {
-	a.Via = "email"
-	_, err := c.Requests.Answer(ctx, id, a, 0)
+func (c *ControlPlane) AnswerRequest(ctx context.Context, id string, in requests.AnswerIn) error {
+	in.Via = "email"
+	_, err := c.Requests.Answer(ctx, id, in, 0)
 	return err
 }
 

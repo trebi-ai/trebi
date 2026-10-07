@@ -441,12 +441,13 @@ func (s *Service) Send(ctx context.Context, opts SendOpts) (Queued, error) {
 	return Queued{MessageID: msgID, OutboxID: row.ID}, nil
 }
 
-// AlertMail is the email step of an alert route.
+// AlertMail is the email step of an alert route. Link is the UI page of
+// the item.
 type AlertMail struct {
-	InboxID, Subject, Text string
-	To                     []string
-	RouteStep              int
-	Route                  []notify.Step
+	InboxID, Subject, Text, Link string
+	To                           []string
+	RouteStep                    int
+	Route                        []notify.Step
 }
 
 // SendAlert writes the envelope, the inbox link, and the outbox row of one
@@ -482,7 +483,7 @@ func (s *Service) SendAlert(ctx context.Context, a AlertMail) (outbox.Row, strin
 		root, inReplyTo = prev.threadRoot, prev.messageID
 	}
 	step := a.RouteStep
-	parts, err := s.htmlParts(ctx, workspaceID, "", a.Text, Page{Layout: LayoutMinimal, Title: a.Subject})
+	parts, err := s.htmlParts(ctx, workspaceID, "", a.Text, Page{Layout: LayoutMinimal, Title: a.Subject, Link: a.Link})
 	if err != nil {
 		return outbox.Row{}, "", err
 	}

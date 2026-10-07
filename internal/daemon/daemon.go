@@ -412,6 +412,7 @@ func newAlerts(st *store.Store, opts Options, cfg *config.Config, aopts alerts.O
 			aopts.ApprovalDisabled = true
 		}
 		aopts.UsageWarnAt = cfg.Notify.UsageWarnPercent()
+		aopts.PublicURL = cfg.UI.PublicURL
 	}
 	return alerts.New(st, aopts)
 }

@@ -44,13 +44,6 @@ const (
 	StatusCancelled Status = "cancelled"
 )
 
-type DeliveryMode string
-
-const (
-	DeliveryResume DeliveryMode = "resume"
-	DeliveryPoll   DeliveryMode = "poll"
-)
-
 type DeliveryState string
 
 const (
@@ -112,16 +105,42 @@ type Payload struct {
 	Schema  json.RawMessage `json:"schema,omitempty"`
 }
 
-type Answer struct {
+// FormAnswer is the answer of a person to one form.
+type FormAnswer struct {
 	Decision Decision        `json:"decision"`
 	Text     string          `json:"text,omitempty"`
 	Message  string          `json:"message,omitempty"`
 	Choices  []string        `json:"choices,omitempty"`
 	Values   json.RawMessage `json:"values,omitempty"`
 	Note     string          `json:"note,omitempty"`
-	By       string          `json:"by"`
-	Via      string          `json:"via"`
-	At       time.Time       `json:"at"`
+}
+
+// FormAnswerIn is the answer to the form at Idx.
+type FormAnswerIn struct {
+	Idx int `json:"idx"`
+	FormAnswer
+}
+
+// Answered tells who closed a request, through which surface, and when.
+type Answered struct {
+	By  string    `json:"by"`
+	Via string    `json:"via"`
+	At  time.Time `json:"at"`
+}
+
+// Form is one question of a request. Each form has its own type, payload,
+// and answer.
+type Form struct {
+	Idx          int         `json:"idx"`
+	Type         Type        `json:"type"`
+	Title        string      `json:"title"`
+	Summary      string      `json:"summary,omitempty"`
+	Target       string      `json:"target,omitempty"`
+	Payload      Payload     `json:"payload"`
+	Allow        []Decision  `json:"allow"`
+	ReportKind   string      `json:"report_kind,omitempty"`
+	ReportSHA256 string      `json:"report_sha256,omitempty"`
+	Answer       *FormAnswer `json:"answer,omitempty"`
 }
 
 type Request struct {
@@ -137,22 +156,18 @@ type Request struct {
 	WorkingDir      string        `json:"working_dir,omitempty"`
 	ConversationKey string        `json:"conversation_key,omitempty"`
 	ConversationID  string        `json:"conversation_id,omitempty"`
-	Type            Type          `json:"type"`
 	Title           string        `json:"title"`
 	Summary         string        `json:"summary,omitempty"`
-	Target          string        `json:"target,omitempty"`
-	Payload         Payload       `json:"payload"`
-	Allow           []Decision    `json:"allow"`
-	ReportKind      string        `json:"report_kind,omitempty"`
-	ReportSHA256    string        `json:"report_sha256,omitempty"`
-	Delivery        DeliveryMode  `json:"delivery"`
+	Turn            int           `json:"turn"`
+	Forms           []Form        `json:"forms"`
 	Status          Status        `json:"status"`
-	Answer          *Answer       `json:"answer,omitempty"`
+	Answered        *Answered     `json:"answered,omitempty"`
 	ExpiresAt       *time.Time    `json:"expires_at,omitempty"`
 	DeliveryState   DeliveryState `json:"delivery_state"`
 	ClaimedAt       *time.Time    `json:"-"`
 	DeliveryPath    string        `json:"delivery_path,omitempty"`
 	DeliveredRunID  string        `json:"delivered_run_id,omitempty"`
+	DeliveredTurn   int           `json:"delivered_turn,omitempty"`
 	DeliveryError   string        `json:"delivery_error,omitempty"`
 	Source          string        `json:"source,omitempty"` // "" from a run, "chain" for a chain limit
 	HopID           string        `json:"hop_id,omitempty"`
@@ -166,6 +181,7 @@ const (
 	maxTitle   = 200
 	maxText    = 256 << 10
 	maxOptions = 50
+	maxForms   = 10
 )
 
 // decisions lists what each type supports, in display order.
@@ -186,50 +202,100 @@ func (t Type) decisions() []Decision {
 // Open reports whether the request still waits for a person.
 func (r Request) Open() bool { return r.Status == StatusPending }
 
-// Validate checks the type, the payload, and the allowed decisions. It fills
-// Allow with the type default when it is empty.
+// Validate checks the request title and each form. It fills the Allow list
+// of a form with the type default when it is empty.
 func (r *Request) Validate() error {
-	supported := r.Type.decisions()
-	if supported == nil {
-		return invalid("type", "must be confirm, review, choose, or form")
-	}
 	if strings.TrimSpace(r.Title) == "" {
 		return invalid("title", "is required")
 	}
 	if len(r.Title) > maxTitle {
 		return invalid("title", "is longer than %d bytes", maxTitle)
 	}
-	switch r.Delivery {
-	case "":
-		r.Delivery = DeliveryResume
-	case DeliveryResume, DeliveryPoll:
-	default:
-		return invalid("delivery", "must be resume or poll")
+	if len(r.Forms) == 0 {
+		return invalid("forms", "needs at least one form")
 	}
-	if err := r.Payload.validate(r.Type); err != nil {
-		return err
+	if len(r.Forms) > maxForms {
+		return invalid("forms", "has more than %d forms", maxForms)
 	}
-	if len(r.Allow) == 0 {
-		r.Allow = supported
-		return nil
-	}
-	for _, d := range r.Allow {
-		if !slices.Contains(supported, d) {
-			return invalid("allow", "%s is not a decision of a %s request", d, r.Type)
+	for i := range r.Forms {
+		if err := r.Forms[i].Validate(); err != nil {
+			var fe *FieldError
+			if errors.As(err, &fe) {
+				return invalid(fmt.Sprintf("forms[%d].%s", r.Forms[i].Idx, fe.Field), "%s", fe.Reason)
+			}
+			return err
 		}
 	}
 	return nil
 }
 
+// ValidateAnswers checks that in has exactly one valid answer for each form.
+func (r *Request) ValidateAnswers(in []FormAnswerIn) error {
+	byIdx := map[int]FormAnswerIn{}
+	var problems []string
+	for _, a := range in {
+		if _, dup := byIdx[a.Idx]; dup {
+			problems = append(problems, fmt.Sprintf("form %d is answered twice", a.Idx))
+		}
+		byIdx[a.Idx] = a
+	}
+	for _, f := range r.Forms {
+		a, ok := byIdx[f.Idx]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("form %d has no answer", f.Idx))
+			continue
+		}
+		delete(byIdx, f.Idx)
+		if err := a.ValidateFor(f); err != nil {
+			problems = append(problems, fmt.Sprintf("form %d: %v", f.Idx, err))
+		}
+	}
+	for idx := range byIdx {
+		problems = append(problems, fmt.Sprintf("form %d does not exist", idx))
+	}
+	if len(problems) > 0 {
+		slices.Sort(problems)
+		return invalid("forms", "%s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// Validate checks the type, the payload, and the allowed decisions. It fills
+// Allow with the type default when it is empty.
+func (f *Form) Validate() error {
+	supported := f.Type.decisions()
+	if supported == nil {
+		return invalid("type", "must be confirm, review, choose, or form")
+	}
+	if strings.TrimSpace(f.Title) == "" {
+		return invalid("title", "is required")
+	}
+	if len(f.Title) > maxTitle {
+		return invalid("title", "is longer than %d bytes", maxTitle)
+	}
+	if err := f.Payload.validate(f.Type); err != nil {
+		return err
+	}
+	if len(f.Allow) == 0 {
+		f.Allow = supported
+		return nil
+	}
+	for _, d := range f.Allow {
+		if !slices.Contains(supported, d) {
+			return invalid("allow", "%s is not a decision of a %s form", d, f.Type)
+		}
+	}
+	return nil
+}
 func (p Payload) validate(t Type) error {
 	if p.Draft != nil && t != TypeReview {
-		return invalid("draft", "is only for a review request")
+		return invalid("draft", "is only for a review form")
 	}
 	if len(p.Options) > 0 && t != TypeChoose {
-		return invalid("options", "are only for a choose request")
+		return invalid("options", "are only for a choose form")
 	}
 	if len(p.Schema) > 0 && t != TypeForm {
-		return invalid("schema", "is only for a form request")
+		return invalid("schema", "is only for a form of type form")
 	}
 	switch t {
 	case TypeReview:
@@ -246,7 +312,7 @@ func (p Payload) validate(t Type) error {
 // validate checks a review draft and sets the default format.
 func (d *Draft) validate() error {
 	if d == nil {
-		return invalid("draft", "is required for a review request")
+		return invalid("draft", "is required for a review form")
 	}
 	if d.Format == "" {
 		d.Format = "text"
@@ -262,7 +328,7 @@ func (d *Draft) validate() error {
 
 func validateOptions(opts []Option) error {
 	if len(opts) == 0 {
-		return invalid("options", "are required for a choose request")
+		return invalid("options", "are required for a choose form")
 	}
 	if len(opts) > maxOptions {
 		return invalid("options", "has more than %d entries", maxOptions)
@@ -280,14 +346,14 @@ func validateOptions(opts []Option) error {
 	return nil
 }
 
-// ValidateFor checks an answer against the B.2 table of the plan and the
-// allowed decisions of r.
-func (a Answer) ValidateFor(r Request) error {
+// ValidateFor checks an answer against the decision table and the allowed
+// decisions of f.
+func (a FormAnswer) ValidateFor(f Form) error {
 	if a.Decision == DecisionExpired {
 		return invalid("decision", "expired is set by the daemon")
 	}
-	if !slices.Contains(r.Allow, a.Decision) {
-		return invalid("decision", "%s is not allowed for this request", a.Decision)
+	if !slices.Contains(f.Allow, a.Decision) {
+		return invalid("decision", "%s is not allowed for this form", a.Decision)
 	}
 	if err := a.validateText(); err != nil {
 		return err
@@ -297,7 +363,7 @@ func (a Answer) ValidateFor(r Request) error {
 		if a.Text == "" {
 			return invalid("text", "is required for edit")
 		}
-		if r.Payload.Draft != nil && a.Text == r.Payload.Draft.Text {
+		if f.Payload.Draft != nil && a.Text == f.Payload.Draft.Text {
 			return invalid("text", "is equal to the draft; use approve")
 		}
 	case DecisionRespond:
@@ -305,9 +371,9 @@ func (a Answer) ValidateFor(r Request) error {
 			return invalid("message", "is required for respond")
 		}
 	case DecisionChoose:
-		return a.validateChoices(r.Payload)
+		return a.validateChoices(f.Payload)
 	case DecisionSubmit:
-		s, err := ParseSchema(r.Payload.Schema)
+		s, err := ParseSchema(f.Payload.Schema)
 		if err != nil {
 			return err
 		}
@@ -318,7 +384,7 @@ func (a Answer) ValidateFor(r Request) error {
 
 // validateText refuses the completion line and oversize text in the free
 // text fields, so an answer cannot end the resumed turn.
-func (a Answer) validateText() error {
+func (a FormAnswer) validateText() error {
 	for _, f := range []struct{ name, v string }{{"text", a.Text}, {"message", a.Message}, {"note", a.Note}} {
 		if strings.Contains(f.v, runs.CompletionPrefix) {
 			return invalid(f.name, "must not contain %s", runs.CompletionPrefix)
@@ -330,7 +396,7 @@ func (a Answer) validateText() error {
 	return nil
 }
 
-func (a Answer) validateChoices(p Payload) error {
+func (a FormAnswer) validateChoices(p Payload) error {
 	if len(a.Choices) == 0 {
 		return invalid("choices", "needs at least one option id")
 	}

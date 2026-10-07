@@ -12,34 +12,34 @@ import (
 const maxPrompt = 32 << 10
 
 // launchHint tells a job run how to ask a person.
-const launchHint = "Requests: ask the person before an action that needs approval, or for a fact that only a person has. Do not ask for a thing that you can decide alone. Open one request with:\n" +
+const launchHint = "Requests: ask the person before an action that needs approval, or for a fact that only a person has. Do not ask for a thing that you can decide alone. Ask with:\n" +
 	"  trebi request create --type <confirm|review|choose|form> --title \"<what the person decides>\"\n" +
 	"confirm is one action. review is a draft that the person can change (--draft-file <file>). choose is a list (--option <id>=<label>, repeat; --multi for more than one). form is a few fields (--schema-file <file>). " +
 	"Add --summary \"<Markdown context>\", --report <file.html or .md> in the working dir, and --expires-in <duration> as necessary.\n" +
-	"After create, end your turn. Do not wait and do not poll. Trebi continues this session with a prompt that starts with \"[trebi] The person answered\". Its JSON block is the source of truth. " +
+	"Each create call adds one form. To ask more than one thing, call create once for each form, or once with --forms-file <file.json>. The calls of one turn join one request, and the person answers all its forms together. " +
+	"After the last create, end your turn. Do not wait and do not poll. Trebi continues this session with a prompt that starts with \"[trebi]\". Its JSON blocks are the source of truth. " +
 	"Run `trebi guide requests` for the decisions and their meaning."
 
-// answerJSON is the fenced block that the model reads. The field order is
-// part of the prompt contract.
+// answerJSON is the fenced block of one form that the model reads. The
+// field order is part of the prompt contract.
 type answerJSON struct {
-	RequestID   string          `json:"request_id"`
-	Type        Type            `json:"type,omitempty"`
-	Title       string          `json:"title,omitempty"`
-	Decision    Decision        `json:"decision"`
-	Text        string          `json:"text,omitempty"`
-	Message     string          `json:"message,omitempty"`
-	Choices     []string        `json:"choices,omitempty"`
-	Values      json.RawMessage `json:"values,omitempty"`
-	Note        string          `json:"note,omitempty"`
-	AnsweredBy  string          `json:"answered_by,omitempty"`
-	AnsweredVia string          `json:"answered_via,omitempty"`
-	AnsweredAt  string          `json:"answered_at,omitempty"`
-	Truncated   bool            `json:"truncated,omitempty"`
+	RequestID string          `json:"request_id"`
+	Idx       int             `json:"idx"`
+	Type      Type            `json:"type,omitempty"`
+	Title     string          `json:"title,omitempty"`
+	Decision  Decision        `json:"decision"`
+	Text      string          `json:"text,omitempty"`
+	Message   string          `json:"message,omitempty"`
+	Choices   []string        `json:"choices,omitempty"`
+	Values    json.RawMessage `json:"values,omitempty"`
+	Note      string          `json:"note,omitempty"`
+	Truncated bool            `json:"truncated,omitempty"`
 }
 
-// askedJSON is the original request in the fresh-run capsule.
+// askedJSON is one original form in the fresh-run capsule.
 type askedJSON struct {
 	RequestID string          `json:"request_id"`
+	Idx       int             `json:"idx"`
 	Type      Type            `json:"type"`
 	Title     string          `json:"title"`
 	Summary   string          `json:"summary,omitempty"`
@@ -51,7 +51,7 @@ type askedJSON struct {
 }
 
 // Prompt is the first prompt of the resumed session: one section for each
-// answer, in creation order.
+// request, in creation order, and one block for each form.
 func (d Delivery) Prompt() string {
 	p := d.prompt(false)
 	if len(p) > maxPrompt {
@@ -61,16 +61,18 @@ func (d Delivery) Prompt() string {
 }
 
 // CapsulePrompt is the first prompt of a fresh run when the session cannot
-// resume. It restates what the earlier run asked.
+// resume. It restates each form that the earlier run asked.
 func (d Delivery) CapsulePrompt() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[trebi] The earlier session is gone. You asked this in run %s. Do the step that follows this answer.\n\n", d.Run.ID)
+	fmt.Fprintf(&b, "[trebi] The earlier session is gone. You asked this in run %s. Do the step that follows these answers.\n\n", d.Run.ID)
 	for _, r := range d.Requests {
-		fmt.Fprintf(&b, "You asked this in request %s:\n\n", r.ID)
-		writeJSONBlock(&b, askedJSON{
-			RequestID: r.ID, Type: r.Type, Title: r.Title, Summary: r.Summary, Target: r.Target,
-			Draft: r.Payload.Draft, Options: r.Payload.Options, Multi: r.Payload.Multi, Schema: compact(r.Payload.Schema),
-		})
+		fmt.Fprintf(&b, "You asked this in request %s %q:\n\n", r.ID, r.Title)
+		for _, f := range r.Forms {
+			writeJSONBlock(&b, askedJSON{
+				RequestID: r.ID, Idx: f.Idx, Type: f.Type, Title: f.Title, Summary: f.Summary, Target: f.Target,
+				Draft: f.Payload.Draft, Options: f.Payload.Options, Multi: f.Payload.Multi, Schema: compact(f.Payload.Schema),
+			})
+		}
 		b.WriteString("\n")
 	}
 	b.WriteString(d.Prompt())
@@ -79,43 +81,40 @@ func (d Delivery) CapsulePrompt() string {
 
 func (d Delivery) prompt(truncate bool) string {
 	var b strings.Builder
-	n := len(d.Requests)
-	if n == 1 {
-		b.WriteString("[trebi] The person answered 1 request. This session continues with the answer.\n\n")
-	} else {
-		fmt.Fprintf(&b, "[trebi] The person answered %d requests. This session continues with the answers.\n\n", n)
-	}
 	for _, r := range d.Requests {
-		a := Answer{Decision: DecisionExpired}
-		if r.Answer != nil {
-			a = *r.Answer
+		n := fmt.Sprintf("%d forms", len(r.Forms))
+		if len(r.Forms) == 1 {
+			n = "1 form"
 		}
-		fmt.Fprintf(&b, "Request %s  %q (%s)\n", r.ID, r.Title, r.Type)
-		fmt.Fprintf(&b, "Decision: %s. %s\n", a.Decision, instruction(r.Type, a.Decision))
-		b.WriteString(answeredLine(a))
+		if r.Status == StatusExpired {
+			fmt.Fprintf(&b, "[trebi] Request %s %q (%s) closed with no answer.\n", r.ID, r.Title, n)
+		} else {
+			fmt.Fprintf(&b, "[trebi] The person answered request %s %q (%s).\n", r.ID, r.Title, n)
+		}
+		b.WriteString(answeredLine(r.Status, r.Answered))
 		if truncate {
-			fmt.Fprintf(&b, "The answer is too long for this prompt. Run `trebi request get %s` for the full answer.\n", r.ID)
+			fmt.Fprintf(&b, "The answers are too long for this prompt. Run `trebi request get %s` for the full answers.\n", r.ID)
 		}
 		b.WriteString("\n")
-		j := answerJSON{RequestID: r.ID, Decision: a.Decision, Truncated: truncate}
-		if !truncate {
-			j = answerJSON{
-				RequestID: r.ID, Type: r.Type, Title: r.Title, Decision: a.Decision,
-				Text: a.Text, Message: a.Message, Choices: a.Choices, Values: compact(a.Values), Note: a.Note,
-				AnsweredBy: a.By, AnsweredVia: a.Via,
+		for _, f := range r.Forms {
+			a := FormAnswer{Decision: DecisionExpired}
+			if f.Answer != nil && r.Status == StatusAnswered {
+				a = *f.Answer
 			}
-			if !a.At.IsZero() {
-				j.AnsweredAt = a.At.UTC().Format(time.RFC3339)
+			fmt.Fprintf(&b, "Form %d %q (%s)\n", f.Idx+1, f.Title, f.Type)
+			fmt.Fprintf(&b, "Decision: %s. %s\n", a.Decision, instruction(f.Type, a.Decision))
+			j := answerJSON{RequestID: r.ID, Idx: f.Idx, Decision: a.Decision, Truncated: truncate}
+			if !truncate {
+				j = answerJSON{
+					RequestID: r.ID, Idx: f.Idx, Type: f.Type, Title: f.Title, Decision: a.Decision,
+					Text: a.Text, Message: a.Message, Choices: a.Choices, Values: compact(a.Values), Note: a.Note,
+				}
 			}
+			writeJSONBlock(&b, j)
+			b.WriteString("\n")
 		}
-		writeJSONBlock(&b, j)
-		b.WriteString("\n")
 	}
-	if n == 1 {
-		b.WriteString("Continue the task with this answer.\n")
-	} else {
-		b.WriteString("Continue the task with these answers.\n")
-	}
+	b.WriteString("Continue the task with these answers.\n")
 	return b.String()
 }
 
@@ -143,9 +142,12 @@ func instruction(t Type, d Decision) string {
 	return ""
 }
 
-func answeredLine(a Answer) string {
+func answeredLine(st Status, a *Answered) string {
+	if a == nil {
+		a = &Answered{}
+	}
 	at := a.At.UTC().Format(time.RFC3339)
-	if a.Decision == DecisionExpired {
+	if st == StatusExpired {
 		return fmt.Sprintf("Closed by Trebi at %s.\n", at)
 	}
 	who := "the user"

@@ -75,6 +75,7 @@ type Page struct {
 	Brand  string // the sender name in the report header
 	Logo   string // https image URL in the report header; it replaces Brand
 	Footer string // a small line below the body; "" omits it
+	Link   string // an http(s) URL; it adds an "Open in Trebi" button below the body
 	Theme  Theme
 }
 
@@ -785,7 +786,8 @@ const layoutHTML = `<!DOCTYPE html>
 {{if $min}}<div class="tb-card" style="max-width:{{.T.Width}}px;margin:0 auto;padding:0 4px;background:{{.T.Surface}};color:{{.T.Text}};font-family:{{.T.Font}};font-size:16px;line-height:24px">
 {{else}}<div class="tb-card" style="max-width:{{.T.Width}}px;margin:0 auto;padding:28px 32px;background:{{.T.Surface}};color:{{.T.Text}};border:1px solid {{.T.Border}};{{if eq .Page.Layout "report"}}border-top:4px solid {{.T.Accent}};{{end}}border-radius:8px;font-family:{{.T.Font}};font-size:16px;line-height:24px">
 {{end}}{{.Body}}
-</div>
+{{if .Page.Link}}<p style="margin:20px 0 0"><a href="{{.Page.Link}}" style="display:inline-block;padding:10px 18px;border-radius:6px;background:{{.T.Accent}};color:#ffffff;font-weight:600;text-decoration:none">Open in Trebi</a></p>
+{{end}}</div>
 {{if .Page.Footer}}<div style="max-width:{{.T.Width}}px;margin:12px auto 0;font-family:{{.T.Font}};font-size:12px;line-height:18px;color:{{.T.Muted}};text-align:{{if $min}}left;padding:0 4px{{else}}center{{end}}">{{.Page.Footer}}</div>
 {{end}}{{.MsoClose}}
 </div>

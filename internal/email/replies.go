@@ -375,9 +375,16 @@ func (g *Ingress) decideRequestReply(ctx context.Context, msg IngressMessage, d 
 		g.askReply(ctx, msg, d, t)
 		return
 	}
-	a := requestAnswer(r, msg.Text)
-	a.By = "email:" + msg.From
-	if err := g.act.AnswerRequest(ctx, t.requestID, a); err != nil {
+	if len(r.Forms) != 1 {
+		_, _ = g.act.Ask(ctx, d, msg, "", fmt.Sprintf("This request has %d forms. Open the link to answer.", len(r.Forms))) // best effort notice
+		g.svc.LinkInbound(ctx, msg.ID, t.runID, "", t.inboxID)
+		return
+	}
+	in := requests.AnswerIn{
+		Forms: []requests.FormAnswerIn{{Idx: r.Forms[0].Idx, FormAnswer: formAnswer(r.Forms[0], msg.Text)}},
+		By:    "email:" + msg.From,
+	}
+	if err := g.act.AnswerRequest(ctx, t.requestID, in); err != nil {
 		g.log.Warn("email.reply answer", "request", t.requestID, "id", msg.ID, "error", err)
 		if errors.Is(err, requests.ErrClosed) {
 			_, _ = g.act.Ask(ctx, d, msg, "", "This request is already closed. Nothing changed.") // best effort notice
@@ -386,38 +393,38 @@ func (g *Ingress) decideRequestReply(ctx context.Context, msg IngressMessage, d 
 	g.svc.LinkInbound(ctx, msg.ID, t.runID, "", t.inboxID)
 }
 
-// requestAnswer maps one mail reply to an answer. approve and reject words
-// decide; a first line that names one option chooses it; other text is a
-// respond message.
-func requestAnswer(r requests.Request, text string) requests.Answer {
+// formAnswer maps one mail reply to the answer of a one-form request.
+// approve and reject words decide; a first line that names one option
+// chooses it; other text is a respond message.
+func formAnswer(f requests.Form, text string) requests.FormAnswer {
 	body := strings.TrimSpace(unquoted(text))
 	line, _, _ := strings.Cut(body, "\n")
 	line = strings.TrimSpace(line)
-	if r.Type == requests.TypeChoose {
-		for _, o := range r.Payload.Options {
+	if f.Type == requests.TypeChoose {
+		for _, o := range f.Payload.Options {
 			if strings.EqualFold(line, o.ID) || strings.EqualFold(line, o.Label) {
-				return requests.Answer{Decision: requests.DecisionChoose, Choices: []string{o.ID}}
+				return requests.FormAnswer{Decision: requests.DecisionChoose, Choices: []string{o.ID}}
 			}
 		}
 	}
-	respond := requests.Answer{Decision: requests.DecisionRespond, Message: body}
+	respond := requests.FormAnswer{Decision: requests.DecisionRespond, Message: body}
 	decision, ambiguous := parseDecision(text)
 	switch {
 	case ambiguous || decision == "":
 		return respond
 	case decision == "deny":
-		return requests.Answer{Decision: requests.DecisionReject}
-	case slices.Contains(r.Allow, requests.DecisionApprove):
-		return requests.Answer{Decision: requests.DecisionApprove}
-	case r.Type == requests.TypeForm && !requiresFields(r):
-		return requests.Answer{Decision: requests.DecisionSubmit, Values: json.RawMessage(`{}`)}
+		return requests.FormAnswer{Decision: requests.DecisionReject}
+	case slices.Contains(f.Allow, requests.DecisionApprove):
+		return requests.FormAnswer{Decision: requests.DecisionApprove}
+	case f.Type == requests.TypeForm && !requiresFields(f):
+		return requests.FormAnswer{Decision: requests.DecisionSubmit, Values: json.RawMessage(`{}`)}
 	}
 	return respond
 }
 
-// requiresFields reports whether a form request has a required field.
-func requiresFields(r requests.Request) bool {
-	sc, err := requests.ParseSchema(r.Payload.Schema)
+// requiresFields reports whether a form has a required field.
+func requiresFields(f requests.Form) bool {
+	sc, err := requests.ParseSchema(f.Payload.Schema)
 	return err != nil || len(sc.Required) > 0
 }
 

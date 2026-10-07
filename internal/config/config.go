@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,7 @@ type Config struct {
 	Tools      ToolsConfig      `yaml:"tools,omitempty"`
 	Harness    HarnessConfig    `yaml:"harness,omitempty"`
 	Notify     NotifyConfig     `yaml:"notify,omitempty"`
+	UI         UIConfig         `yaml:"ui,omitempty"`
 	Files      FilesConfig      `yaml:"files,omitempty"`
 	Workspaces WorkspacesConfig `yaml:"workspaces,omitempty"`
 	Assistant  AssistantConfig  `yaml:"assistant,omitempty"`
@@ -189,6 +191,22 @@ type NotifyConfig struct {
 	WaitingAfter  string        `yaml:"waiting_after,omitempty"`  // empty → 5m; "0"/"off" disables
 	ApprovalAfter string        `yaml:"approval_after,omitempty"` // empty → 5m; "0" mails at once; "off" never
 	UsageWarnAt   int           `yaml:"usage_warn_at,omitempty"`  // 0 → 80
+}
+
+// UIConfig is where a person opens the Trebi UI.
+type UIConfig struct {
+	// PublicURL is the base of the links in alert mail. Empty uses the
+	// bound listener URL from api.json.
+	PublicURL string `yaml:"public_url,omitempty"`
+}
+
+func (u UIConfig) check(e *ConfigError) {
+	if u.PublicURL == "" {
+		return
+	}
+	if p, err := url.Parse(u.PublicURL); err != nil || (p.Scheme != "http" && p.Scheme != "https") || p.Host == "" {
+		e.add("ui.public_url", "want an http or https URL, for example https://trebi.example.com")
+	}
 }
 
 // DefaultWaitingAfter is used when notify.waiting_after is unset.
@@ -702,6 +720,9 @@ tools:
 #   approval_after: 5m     # tray first, mail after; "0" mails at once; "off" never
 #   usage_warn_at: 80      # percent
 
+# ui:
+#   public_url: https://trebi.example.com   # base of the links in alert mail
+
 # files:
 #   max_bytes: 10485760    # workspace file PUT/GET cap (10 MiB)
 
@@ -946,6 +967,7 @@ func (c *Config) Validate() error {
 		ce.add("defaults.state.max_bytes", "must be >= 0")
 	}
 	ce.checkRequests(c.Requests)
+	c.UI.check(ce)
 
 	// tools.fallback
 	if c.Tools.Fallback != "" && !validFallbackMode(c.Tools.Fallback) {
@@ -1200,4 +1222,17 @@ func removedKeys(data []byte) []string {
 		out = append(out, "email.operators: renamed to email.admins")
 	}
 	return out
+}
+
+// setUIKey handles ui.* keys; handled=false when path is not one.
+func (c *Config) setUIKey(path, value string) (handled bool, err error) {
+	if path != "ui.public_url" {
+		return false, nil
+	}
+	c.UI.PublicURL = strings.TrimRight(strings.TrimSpace(value), "/")
+	ce := &ConfigError{}
+	if c.UI.check(ce); len(ce.Errors) > 0 {
+		return true, fmt.Errorf("ui.public_url: %s", ce.Errors[0].Msg)
+	}
+	return true, nil
 }

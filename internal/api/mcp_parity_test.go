@@ -445,6 +445,9 @@ func probeValue(f tools.DocField, sample tools.Input) any {
 		if f.Name == "attachments" {
 			return []any{map[string]any{"path": "probe"}}
 		}
+		if f.Name == "forms" {
+			return []any{map[string]any{"idx": float64(7), "type": "probe", "title": "probe", "decision": "probe"}}
+		}
 		return []any{"probe"}
 	}
 	if f.Name == "encoding" {
