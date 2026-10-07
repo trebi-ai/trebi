@@ -176,8 +176,3 @@ type ChainRun struct {
 	Depth int    `json:"depth"`
 	Turns []int  `json:"turns"`
 }
-
-// open reports whether a hop still waits for work.
-func (st HopStatus) open() bool {
-	return st == HopHeld || st == HopQueued || st == HopRunning
-}
