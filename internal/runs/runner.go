@@ -293,7 +293,11 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	}
 	s.prepMemory(ctx, &opts)
 	s.applyWakePrompt(ctx, &opts)
-	for _, hint := range append([]string{connectorHint(opts.Actions)}, s.promptHints(opts)...) {
+	var hints []string
+	if opts.ResumeSessionID == "" {
+		hints = append(hints, connectorHint(opts.Actions))
+	}
+	for _, hint := range append(hints, s.promptHints(opts)...) {
 		if hint == "" {
 			continue
 		}
@@ -506,12 +510,20 @@ func (s *Service) applyWakePrompt(ctx context.Context, opts *LaunchOpts) {
 // block for one launch (B22 §3.3, plan 2026-10-06 B5). It runs before wake
 // composition so the composer reads a settled file. A files error skips
 // memory for the launch (logged). Agents get both through the wake composer.
+// A resumed session already holds both; it only hears of an edit made while
+// it was not running.
 func (s *Service) prepMemory(ctx context.Context, opts *LaunchOpts) {
-	data := s.memoryData(ctx, opts.Memory)
+	data, mtime := s.memoryData(ctx, opts.Memory)
 	if data != nil {
 		opts.MemoryHash = memory.Hash(data)
 	}
 	if opts.Kind == KindAgent {
+		return
+	}
+	if opts.ResumeSessionID != "" {
+		if data != nil && s.memoryEditedSince(ctx, opts.ReopenRunID, mtime) {
+			opts.Prompt = strings.TrimSpace(memoryEditedNote + "\n\n" + opts.Prompt)
+		}
 		return
 	}
 	var parts []string
@@ -531,34 +543,52 @@ func (s *Service) prepMemory(ctx context.Context, opts *LaunchOpts) {
 	}
 }
 
-// memoryData seeds or migrates MEMORY.md and returns its bytes. Nil = memory
-// off or not readable.
-func (s *Service) memoryData(ctx context.Context, mem *MemoryLaunch) []byte {
+// memoryEditedNote tells a resumed session that MEMORY.md changed while the
+// session was not running.
+const memoryEditedNote = "[trebi] MEMORY.md changed since your last turn. Read it again before you continue."
+
+// memoryData seeds or migrates MEMORY.md and returns its bytes and mtime.
+// Nil = memory off or not readable.
+func (s *Service) memoryData(ctx context.Context, mem *MemoryLaunch) ([]byte, time.Time) {
 	if mem == nil || s.fs == nil {
-		return nil
+		return nil, time.Time{}
 	}
-	data, _, err := s.fs.Read(ctx, mem.Root, mem.Rel)
+	data, info, err := s.fs.Read(ctx, mem.Root, mem.Rel)
 	switch {
 	case errors.Is(err, files.ErrNotFound):
 		if _, _, werr := s.fs.Write(ctx, mem.Root, mem.Rel, memory.Skeleton(), ""); werr != nil {
 			s.log.Warn("memory seed", "rel", mem.Rel, "err", werr)
-			return nil
+			return nil, time.Time{}
 		}
-		return memory.Skeleton()
+		return memory.Skeleton(), time.Now()
 	case err != nil:
 		s.log.Warn("memory read", "rel", mem.Rel, "err", err)
-		return nil
+		return nil, time.Time{}
 	}
+	mtime := info.MTime
 	if doc, _ := memory.Parse(data); doc.Legacy {
 		fixed := memory.Migrate(data)
 		if _, _, werr := s.fs.Write(ctx, mem.Root, mem.Rel, fixed, ""); werr != nil {
 			s.log.Warn("memory migrate", "rel", mem.Rel, "err", werr)
 		} else {
-			data = fixed
+			data, mtime = fixed, time.Now()
 			s.log.Info("memory.migrated", "rel", mem.Rel)
 		}
 	}
-	return data
+	return data, mtime
+}
+
+// memoryEditedSince reports a MEMORY.md mtime after the end of the last turn
+// of runID. The session wrote its own edits before that turn ended.
+func (s *Service) memoryEditedSince(ctx context.Context, runID string, mtime time.Time) bool {
+	if runID == "" || mtime.IsZero() {
+		return false
+	}
+	prev, err := s.Get(ctx, runID)
+	if err != nil || prev.EndedAt == nil {
+		return false
+	}
+	return mtime.After(*prev.EndedAt)
 }
 
 // stateBrief renders the state block of a job launch. "" when no briefer is

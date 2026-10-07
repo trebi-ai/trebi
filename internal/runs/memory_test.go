@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/memory"
@@ -412,6 +413,69 @@ waitfix
 	issues := runEventIssues(t, svc, run.ID, "memory.fix_requested")
 	if !strings.Contains(issues, "(Context 3 KB, Lessons 0 KB, Log 0 KB); the cap is 1 KB. Trim it in this order") {
 		t.Fatalf("fix issues = %q", issues)
+	}
+}
+
+// TestMemoryResumeSkipsPrefix pins the resume prompt: the session already
+// holds memory and hints, so a resume sends only its own text. An edit to
+// MEMORY.md while the run is parked adds one note.
+func TestMemoryResumeSkipsPrefix(t *testing.T) {
+	t.Parallel()
+	svc, _, root := memoryFixture(t)
+	svc.SetParker(runs.NewParker(svc, nil, &gateStub{open: true, hint: "gate hint"}))
+	mem := memoryLaunch(root)
+	mem.Opt.RequireUpdate = false
+	dir := t.TempDir()
+	fake := []string{"sh", "-c", `printf %s "$TREBI_FAKE_PROMPT" > prompt.txt; echo "$TREBI_RUN_COMPLETE"`}
+	ctx := context.Background()
+	prev, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: "ws", JobID: "demo", JobName: "demo", Kind: runs.KindJob, Harness: "fake",
+			Reason: runs.ReasonManual, WorkingDir: dir,
+		},
+		Prompt: "run the digest", Memory: mem, FakeCommand: fake,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prev.Status != runs.StatusParked {
+		t.Fatalf("first run: %s", prev.Status)
+	}
+	readPrompt := func() string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(dir, "prompt.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if p := readPrompt(); !strings.Contains(p, "## Lessons") || !strings.Contains(p, "gate hint") {
+		t.Fatalf("fresh prompt lacks memory or hint:\n%s", p)
+	}
+
+	base := runs.LaunchOpts{Memory: mem, FakeCommand: fake}
+	next, err := svc.Resume(ctx, prev.ID, base, runs.ResumeOpts{Reason: runs.ReasonRequest, Prompt: "answer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := readPrompt(); p != "answer" {
+		t.Fatalf("resume prompt = %q, want %q", p, "answer")
+	}
+	if next.MemoryHash == "" {
+		t.Fatal("resume dropped memory_hash")
+	}
+
+	p := filepath.Join(root, "demo", "MEMORY.md")
+	later := next.EndedAt.Add(time.Minute)
+	if err := os.Chtimes(p, later, later); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Resume(ctx, next.ID, base, runs.ResumeOpts{Reason: runs.ReasonRequest, Prompt: "answer 2"}); err != nil {
+		t.Fatal(err)
+	}
+	want := "[trebi] MEMORY.md changed since your last turn. Read it again before you continue.\n\nanswer 2"
+	if got := readPrompt(); got != want {
+		t.Fatalf("edited resume prompt = %q, want %q", got, want)
 	}
 }
 
