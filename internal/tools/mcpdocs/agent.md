@@ -105,10 +105,21 @@ Move `agents/<name>` to `agents/<to>` and rewrite stored run, queue, schedule, c
 - `to` (string, required): new agent short name; lowercase letters, digits, and hyphens, up to 24 characters.
 
 ### ask
-Send one assistant message to an agent conversation. It injects into a live run or queues a fresh wake.
+Ask an agent of the same workspace for an answer. The daemon writes the ask into the conversation of the pair and starts or continues a run of the target. The reply is `{"hop", "next", "message", "request_id", "conversation_id"}`: 201 for a new ask, 202 when a person must first approve more chain work, 200 for a repeat of the same `idempotency_key`. From an agent run, `next` is `end_turn`: end your turn now. The reply of the target starts your next turn. Do not poll. An ask can fail with `chain_cycle` (the target waits for you; reply instead), `chain_limit`, `chain_stopped`, `agent_unavailable`, `forbidden` (`team.can_ask`), or `rate_limited`. Each error has `details` with `refuse_reason`, `hop_id`, and `trace_id`.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name. Use `list` with `for` to find the agent.
+- `text` (string, required): the question, up to 8 KiB. Name file paths for longer material.
+- `context` (string, optional): what the target needs to know, up to 8 KiB.
+- `idempotency_key` (string, optional): a repeat with the same key returns the first hop.
+- `wait_ms` (number, optional): for a person or the assistant only: wait up to this time (maximum 120000) for the reply. The reply then has `replies`.
+
+### handoff
+Give work to an agent of the same workspace. The caller does not wait and gets no reply. The target owns the result. The reply is `{"hop", "message", "conversation_id"}`. The errors are the same as for `ask`.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
-- `text` (string, required): message text.
+- `text` (string, required): the work, up to 8 KiB.
+- `context` (string, optional): what the target needs to know, up to 8 KiB.
+- `idempotency_key` (string, optional): a repeat with the same key returns the first hop.
 
 ### escalate
 Escalate an agent problem to the operator inbox or the assistant conversation.

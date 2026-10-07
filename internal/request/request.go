@@ -711,13 +711,53 @@ func BuildAgentRename(workspaceID, from, to string) HTTPRequest {
 	}
 }
 
+// AgentAsk is the body of an ask or a hand-off.
+type AgentAsk struct {
+	Text           string `json:"text"`
+	Context        string `json:"context,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	WaitMS         int    `json:"wait_ms,omitempty"`
+}
+
 // BuildAgentAsk builds POST /v1/workspaces/{id}/agents/{name}/ask.
-func BuildAgentAsk(workspaceID, name, text string) HTTPRequest {
-	return HTTPRequest{
-		Method: "POST",
-		Path:   BuildAgentGetPath(workspaceID, name) + "/ask",
-		Body:   map[string]string{"text": text},
+func BuildAgentAsk(workspaceID, name string, b AgentAsk) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: BuildAgentGetPath(workspaceID, name) + "/ask", Body: b}
+}
+
+// BuildAgentHandoff builds POST /v1/workspaces/{id}/agents/{name}/handoff.
+// A hand-off has no wait.
+func BuildAgentHandoff(workspaceID, name string, b AgentAsk) HTTPRequest {
+	b.WaitMS = 0
+	return HTTPRequest{Method: "POST", Path: BuildAgentGetPath(workspaceID, name) + "/handoff", Body: b}
+}
+
+// ChainFilter is the query of GET /v1/chains.
+type ChainFilter struct {
+	Workspace, Status, Agent, Since, Cursor string
+	Live                                    bool
+	Limit                                   int
+}
+
+// BuildChainListPath builds GET /v1/chains.
+func BuildChainListPath(f ChainFilter) string {
+	q := map[string]string{"workspace": f.Workspace, "status": f.Status, "agent": f.Agent, "since": f.Since, "cursor": f.Cursor}
+	if f.Live {
+		q["live"] = "true"
 	}
+	if f.Limit > 0 {
+		q["limit"] = strconv.Itoa(f.Limit)
+	}
+	return withQuery("/v1/chains", q)
+}
+
+// BuildChainGetPath builds GET /v1/chains/{trace_id}. A run ID also works.
+func BuildChainGetPath(traceOrRunID string) string {
+	return "/v1/chains/" + url.PathEscape(traceOrRunID)
+}
+
+// BuildHopGetPath builds GET /v1/hops/{id}.
+func BuildHopGetPath(id string) string {
+	return "/v1/hops/" + url.PathEscape(id)
 }
 
 // BuildAgentEscalate builds POST /v1/workspaces/{id}/agents/{name}/escalate.

@@ -853,7 +853,7 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 	}
 	// A run that waits for a request answer parks at once: keep-alive would
 	// hold the session for nothing.
-	if run.Session.KeepAliveMS > 0 && !cr.oneShot && !s.hasOpenRequest(ctx, runID) {
+	if run.Session.KeepAliveMS > 0 && !cr.oneShot && !s.mustPark(ctx, runID) {
 		cr.markKeepAlive(time.Now())
 		s.AddEvent(ctx, runID, "result", "wire", map[string]string{"keep_alive": "true"})
 		s.SetSessionState(ctx, runID, SessionIdle, "wire")

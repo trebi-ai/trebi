@@ -84,12 +84,14 @@ type Message struct {
 	ConversationID string `json:"conversation_id"`
 	Role           string `json:"role"`
 	Address
-	Text           string    `json:"text"`
-	RunID          string    `json:"run_id,omitempty"`
-	TurnIndex      *int      `json:"turn_index,omitempty"`
-	IdempotencyKey string    `json:"idempotency_key,omitempty"`
-	Delivery       *Delivery `json:"delivery,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	Text           string `json:"text"`
+	RunID          string `json:"run_id,omitempty"`
+	TurnIndex      *int   `json:"turn_index,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// HopID is the agent chain hop that this message carries.
+	HopID     string    `json:"hop_id,omitempty"`
+	Delivery  *Delivery `json:"delivery,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Delivery marks one assistant turn that also went out by mail (plan
@@ -143,6 +145,7 @@ type SendOpts struct {
 	Text string
 	Address
 	IdempotencyKey string
+	HopID          string
 }
 
 // SendResult is the send-path response. An assistant send reports

@@ -36,6 +36,7 @@ func newScopeGate(mux *http.ServeMux) *scopeGate {
 		"PUT /v1/workspaces/{id}/agents/{name}":           true,
 		"PATCH /v1/workspaces/{id}/agents/{name}":         true,
 		"POST /v1/workspaces/{id}/agents/{name}/ask":      true,
+		"POST /v1/workspaces/{id}/agents/{name}/handoff":  true,
 		"POST /v1/workspaces/{id}/agents/{name}/escalate": true,
 		"POST /v1/workspaces/{id}/agents/{name}/wake":     true,
 		"POST /v1/workspaces/{id}/assistant/messages":     true,

@@ -154,6 +154,9 @@ type Request struct {
 	DeliveryPath    string        `json:"delivery_path,omitempty"`
 	DeliveredRunID  string        `json:"delivered_run_id,omitempty"`
 	DeliveryError   string        `json:"delivery_error,omitempty"`
+	Source          string        `json:"source,omitempty"` // "" from a run, chain_limit from the daemon
+	HopID           string        `json:"hop_id,omitempty"`
+	TraceID         string        `json:"trace_id,omitempty"`
 	CreatedAt       time.Time     `json:"created_at"`
 	UpdatedAt       time.Time     `json:"updated_at"`
 	Revision        int           `json:"revision"`

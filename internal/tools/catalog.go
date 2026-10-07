@@ -5,6 +5,7 @@ package tools
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -559,6 +560,19 @@ func (in Input) agentContentPut() (workspace, name, content, ifMatch string, err
 		return "", "", "", "", fmt.Errorf("input field %q is required", "content")
 	}
 	return id[0], id[1], v[0], v[1], nil
+}
+
+// agentAsk reads the shared body of agent ask and handoff.
+func (in Input) agentAsk() (workspace, name string, b request.AgentAsk, err error) {
+	id, err := in.reqStrs("workspace", "name", "text")
+	if err != nil {
+		return "", "", b, err
+	}
+	v, err := in.strs("context", "idempotency_key")
+	if err != nil {
+		return "", "", b, err
+	}
+	return id[0], id[1], request.AgentAsk{Text: id[2], Context: v[0], IdempotencyKey: v[1]}, nil
 }
 
 // memorySectionBody reads the body of memory_set_context.
@@ -1492,12 +1506,24 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildAgentRename(v[0], v[1], v[2]), nil
 			}),
-			"ask": act("POST /v1/workspaces/{id}/agents/{name}/ask", Input{"workspace": "ws1", "name": "cmo", "text": "What changed today?"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("workspace", "name", "text")
+			"ask": act("POST /v1/workspaces/{id}/agents/{name}/ask", Input{"workspace": "ws1", "name": "cfo", "text": "What is the Q3 budget?"}, func(in Input) (request.HTTPRequest, error) {
+				ws, name, body, err := in.agentAsk()
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildAgentAsk(v[0], v[1], v[2]), nil
+				wait, _, err := in.num("wait_ms")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				body.WaitMS = wait
+				return request.BuildAgentAsk(ws, name, body), nil
+			}),
+			"handoff": act("POST /v1/workspaces/{id}/agents/{name}/handoff", Input{"workspace": "ws1", "name": "legal", "text": "Review the contract in docs/nda.md."}, func(in Input) (request.HTTPRequest, error) {
+				ws, name, body, err := in.agentAsk()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentHandoff(ws, name, body), nil
 			}),
 			"escalate": act("POST /v1/workspaces/{id}/agents/{name}/escalate", Input{"workspace": "ws1", "name": "cmo", "to": "assistant", "reason": "missing credentials"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("workspace", "name", "to", "reason")
@@ -2176,6 +2202,37 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"cancel": idPost("POST /v1/outbox/{id}/cancel", "id", "01ROW", request.BuildOutboxCancel),
 		},
 
+		"chain": {
+			"list": act("GET /v1/chains", Input{}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("workspace", "status", "agent", "since", "cursor")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				live, err := in.flag("live")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				limit, _, err := in.num("limit")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildChainListPath(request.ChainFilter{
+					Workspace: v[0], Status: v[1], Agent: v[2], Since: v[3], Cursor: v[4], Live: live, Limit: limit,
+				})), nil
+			}),
+			"show": actSamples("GET /v1/chains/{trace_id}", Input{"trace_id": "01JAAA"}, []Input{{"run_id": "01JAB"}}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("trace_id", "run_id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				id := cmp.Or(v[0], v[1])
+				if id == "" {
+					return request.HTTPRequest{}, fmt.Errorf("give %q or %q", "trace_id", "run_id")
+				}
+				return mcpGet(request.BuildChainGetPath(id)), nil
+			}),
+			"hop": idGet("GET /v1/hops/{id}", "id", "hop_01JAC", request.BuildHopGetPath),
+		},
 		"request": {
 			"create": actSamples("POST /v1/requests", Input{
 				"type": "review", "title": "Reply to issue #812", "summary": "Draft answer to the crash report.",

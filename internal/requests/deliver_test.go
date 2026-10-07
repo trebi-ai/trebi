@@ -19,12 +19,24 @@ import (
 // open request.
 func (h *harness) park(t *testing.T, runID string) {
 	t.Helper()
-	open, err := h.svc.HasOpen(context.Background(), runID)
-	if err != nil || !open {
-		t.Fatalf("HasOpen %s: %v %v", runID, open, err)
+	if !h.pending(t, runID) {
+		t.Fatalf("no open request on %s", runID)
 	}
 	h.rs.setStatus(runID, runs.StatusParked)
 	h.svc.RunEnded(context.Background(), runID, runs.StatusParked)
+	if err := h.rs.parker.Wake(context.Background(), runID); err != nil {
+		t.Log(err)
+	}
+}
+
+// pending reports a resume request that is open or not delivered.
+func (h *harness) pending(t *testing.T, runID string) bool {
+	t.Helper()
+	waiting, ready, err := h.svc.Open(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return waiting || ready
 }
 
 func TestAnswerWhileRunLive(t *testing.T) {
@@ -44,7 +56,7 @@ func TestAnswerWhileRunLive(t *testing.T) {
 	if got := h.get(t, r.ID); got.DeliveryState != DeliveryDelivered || got.DeliveredRunID == "" || got.DeliveryPath != "resume" {
 		t.Fatalf("row %+v", got)
 	}
-	if open, _ := h.svc.HasOpen(context.Background(), "RUN1"); open {
+	if h.pending(t, "RUN1") {
 		t.Fatal("delivered request still open")
 	}
 }
@@ -80,7 +92,7 @@ func TestDeliverClaimRace(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 20 {
 		wg.Go(func() {
-			if err := h.svc.deliver(context.Background(), "RUN1"); err != nil {
+			if err := h.rs.parker.Wake(context.Background(), "RUN1"); err != nil {
 				t.Error(err)
 			}
 		})
@@ -135,11 +147,11 @@ func TestRecoverStaleClaim(t *testing.T) {
 		}
 		h.rs.turn = turn
 		ctx := context.Background()
-		if err := h.svc.Recover(ctx); err != nil || len(h.launch.Calls()) != 0 {
+		if err := h.rs.parker.Recover(ctx); err != nil || len(h.launch.Calls()) != 0 {
 			t.Fatalf("fresh claim: %v, calls %d", err, len(h.launch.Calls()))
 		}
 		h.clock.add(3 * time.Minute)
-		if err := h.svc.Recover(ctx); err != nil {
+		if err := h.rs.parker.Recover(ctx); err != nil {
 			t.Fatal(err)
 		}
 		got := h.get(t, r.ID)
@@ -208,13 +220,13 @@ func TestDeliverFailed(t *testing.T) {
 		t.Fatalf("row %+v", got)
 	}
 	h.svc.RunEnded(context.Background(), "RUN1", runs.StatusParked)
-	if err := h.svc.Recover(context.Background()); err != nil {
+	if err := h.rs.parker.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(h.launch.Calls()); n != 1 {
 		t.Fatalf("retry: %d launches", n)
 	}
-	if open, _ := h.svc.HasOpen(context.Background(), "RUN1"); open {
+	if h.pending(t, "RUN1") {
 		t.Fatal("failed delivery still open")
 	}
 }

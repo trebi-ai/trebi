@@ -257,6 +257,14 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "agent.parse_failed", Bus: false, Log: true},
 		{Name: "proposal.created", Bus: true, Log: true},
 		{Name: "proposal.decided", Bus: true, Log: true},
+		// agent chains (plan 2026-10-06 agent chains, Part J)
+		{Name: "chain.created", Bus: true, Log: true},
+		{Name: "chain.updated", Bus: true, Log: true},
+		{Name: "chain.limited", Bus: true, Log: true},
+		{Name: "chain.stopped", Bus: true, Log: true},
+		{Name: "chain.hop_refused", Bus: false, Log: true},
+		{Name: "hop.created", Bus: true, Log: true},
+		{Name: "hop.updated", Bus: true, Log: true},
 		// job
 		{Name: "job.created", Bus: true, Log: true},
 		{Name: "job.updated", Bus: true, Log: true},

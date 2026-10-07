@@ -17,6 +17,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/chains"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
@@ -105,6 +106,7 @@ func (s *Server) handleRunsList(w http.ResponseWriter, r *http.Request) {
 		Harness:      q.Get("harness"),
 		Model:        q.Get("model"),
 		Conversation: q.Get("conversation"),
+		Trace:        q.Get("trace"),
 		EndReason:    q.Get("end_reason"),
 		Q:            q.Get("q"),
 		Since:        since,
@@ -469,7 +471,15 @@ func (s *Server) handleRunGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, run)
+	rc, err := s.chains.ForRun(r.Context(), run.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		*runs.Run
+		Chain *chains.RunChain `json:"chain"`
+	}{run, rc})
 }
 
 func (s *Server) handleRunTimeline(w http.ResponseWriter, r *http.Request) {
@@ -491,7 +501,23 @@ func (s *Server) handleRunTurns(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"turns": turns})
+	hops, err := s.chains.TurnHops(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	type chainTurn struct {
+		runs.Turn
+		Hop *chains.HopRef `json:"hop"`
+	}
+	out := make([]chainTurn, len(turns))
+	for i, t := range turns {
+		out[i].Turn = t
+		if h, ok := hops[t.HopID]; ok {
+			out[i].Hop = &h
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"turns": out})
 }
 
 // handleRunsKill kills every run named in ids.

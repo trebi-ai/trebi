@@ -16,6 +16,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/agents"
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/chains"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/job"
@@ -39,6 +40,7 @@ func (s *Server) routeAgents(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/agents/{name}", s.handleAgentDelete)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/rename", s.handleAgentRename)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/ask", s.handleAgentAsk)
+	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/handoff", s.handleAgentHandoff)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/escalate", s.handleAgentEscalate)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/wake", s.handleAgentWake)
 }
@@ -51,70 +53,59 @@ func (s *Server) handleAgentTemplates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"templates": s.templates.List()})
 }
 
+type agentAskRequest struct {
+	Text           string `json:"text"`
+	Context        string `json:"context"`
+	IdempotencyKey string `json:"idempotency_key"`
+	WaitMS         int    `json:"wait_ms"`
+}
+
 func (s *Server) handleAgentAsk(w http.ResponseWriter, r *http.Request) {
+	s.agentHop(w, r, chains.KindAsk)
+}
+
+func (s *Server) handleAgentHandoff(w http.ResponseWriter, r *http.Request) {
+	s.agentHop(w, r, chains.KindHandoff)
+}
+
+// agentHop sends an ask or a hand-off through the chains service.
+func (s *Server) agentHop(w http.ResponseWriter, r *http.Request, kind chains.Kind) {
 	ws, ok := s.workspaceByID(w, r)
 	if !ok {
 		return
 	}
-	var body agentTextRequest
+	var body agentAskRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	if strings.TrimSpace(body.Text) == "" {
-		writeErr(w, http.StatusBadRequest, "validation", "text required")
-		return
+	opts := chains.AskOpts{
+		Workspace: ws.ID, To: r.PathValue("name"), Kind: kind,
+		Text: body.Text, Context: body.Context, IdempotencyKey: body.IdempotencyKey,
 	}
-	row, err := s.findAgentRow(r.Context(), ws.ID, r.PathValue("name"))
+	if a, ok := tools.ActorFrom(r.Context()); ok {
+		opts.Actor = &a
+	}
+	res, err := s.chains.Ask(r.Context(), opts)
 	if err != nil {
-		writeResolveErr(w, err, "agent")
+		writeChainErr(w, err)
 		return
 	}
-	channelType, channelRef, conversationID, err := s.agentAskChannel(r.Context(), ws.ID, row.Name)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
+	code := http.StatusCreated
+	switch {
+	case res.Repeat:
+		code = http.StatusOK
+	case res.Held:
+		code = http.StatusAccepted
 	}
-	if conversationID != "" {
-		sent, err := s.conv.Send(r.Context(), conversationID, conversations.SendOpts{
-			Text: body.Text, Address: conversations.Address{Connector: channelType, Room: channelRef},
-		})
-		if s.convErr(w, err, "conversation error") {
+	if kind == chains.KindAsk && body.WaitMS > 0 && res.Hop.From.Kind != chains.EndAgent && !res.Held {
+		res.Replies, err = s.chains.WaitReplies(r.Context(), res.Hop.ID, time.Duration(body.WaitMS)*time.Millisecond)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusCreated, conversations.AskResult{SendResult: *sent, ConversationID: conversationID})
-		return
 	}
-	result, err := s.conv.Ask(r.Context(), conversations.AskOpts{
-		Workspace: ws.ID, OperatorID: row.ID, Text: body.Text,
-		Address: conversations.Address{Connector: channelType, Room: channelRef},
-	})
-	if s.convErr(w, err, "conversation error") {
-		return
-	}
-	writeJSON(w, http.StatusCreated, result)
-}
-
-// agentAskChannel selects the stable thread for an agent ask. Assistant runs
-// answer in the run's originating conversation; humans and other agents get
-// deterministic channel threads rather than whichever conversation is newest.
-func (s *Server) agentAskChannel(ctx context.Context, wsID, target string) (channelType, channelRef, conversationID string, err error) {
-	targetName := "agents/" + target
-	actor, hasActor := tools.ActorFrom(ctx)
-	if hasActor && actor.Kind == "assistant" && actor.RunID != "" {
-		run, err := s.runs.Get(ctx, actor.RunID)
-		if err != nil {
-			return "", "", "", err
-		}
-		if run.ConversationID != "" {
-			return conversations.ChannelAssistant, run.ConversationID, run.ConversationID, nil
-		}
-	}
-	if hasActor && actor.Kind == "agent" {
-		caller := actor.Job
-		return conversations.ChannelAgent, caller + "\u2192" + targetName, "", nil
-	}
-	return conversations.ChannelAssistant, wsID + "#" + targetName, "", nil
+	writeJSON(w, code, res)
 }
 
 type agentEscalateRequest struct {

@@ -297,6 +297,14 @@ func readTranscriptDelta(path string, cur transcriptCursor) (data []byte, base i
 	return data, 0, 0, false, err
 }
 
+// IngestTurns stores the new turns of one run now. Reply capture calls it at
+// turn end, so it does not wait for the next watch tick.
+func (c *ControlPlane) IngestTurns(ctx context.Context, runID string) {
+	if run, err := c.Runs.Get(ctx, runID); err == nil {
+		c.ingestRun(ctx, run)
+	}
+}
+
 func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 	if run.ConversationID == "" || run.SessionID == "" {
 		return

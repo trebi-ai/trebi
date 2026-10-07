@@ -221,8 +221,11 @@ func (o *LaunchOpts) applyResumePlan(plan *tmux.LaunchPlan) {
 		plan.SessionID = o.ResumeSessionID
 	}
 	o.SessionID = plan.SessionID
-	// A request answer and a conversation event keep their own reason.
-	if o.Reason != ReasonRequest && o.Reason != ReasonTrigger {
+	// A request answer, a chain message, and a conversation event keep their
+	// own reason.
+	switch o.Reason {
+	case ReasonRequest, ReasonTrigger, ReasonAsk, ReasonHandoff, ReasonReply:
+	default:
 		o.Reason = ReasonResume
 	}
 }
@@ -290,7 +293,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	}
 	s.prepMemory(ctx, &opts)
 	s.applyWakePrompt(ctx, &opts)
-	for _, hint := range []string{connectorHint(opts.Actions), s.requestHint(opts)} {
+	for _, hint := range append([]string{connectorHint(opts.Actions)}, s.promptHints(opts)...) {
 		if hint == "" {
 			continue
 		}
@@ -1124,6 +1127,10 @@ type ResumeOpts struct {
 	Prompt string
 	// QueueID is the queue row that the new turn serves.
 	QueueID string
+	// The chain frame of the new turn: a reply continues the caller frame.
+	TraceID string
+	HopID   string
+	Path    []string
 }
 
 // Resume reopens fromID as its next turn: the harness continues the same
@@ -1164,6 +1171,7 @@ func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o 
 	opts.Runtime = prev.Runtime
 	opts.ReopenRunID = fromID
 	opts.QueueID = o.QueueID
+	opts.TraceID, opts.HopID, opts.ChainPath = cmp.Or(o.TraceID, opts.TraceID), o.HopID, o.Path
 	opts.ResumeAttempts = attempts
 	opts.ResumeSessionID = prev.harnessSessionID()
 	opts.SessionID = ""

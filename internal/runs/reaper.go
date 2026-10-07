@@ -359,7 +359,7 @@ func (r *Reaper) markMemDone(runID string) {
 
 // finishComplete ends a completed run; keep_alive lets the session linger first.
 func (r *Reaper) finishComplete(ctx context.Context, run *Run, now time.Time) {
-	if run.Session.KeepAliveMS <= 0 || r.svc.hasOpenRequest(ctx, run.ID) {
+	if run.Session.KeepAliveMS <= 0 || r.svc.mustPark(ctx, run.ID) {
 		r.finish(ctx, run, StatusComplete, EndSentinel)
 		return
 	}
@@ -387,8 +387,8 @@ func (r *Reaper) checkIdle(ctx context.Context, run *Run, screen string, now tim
 	}
 	// An agent that stopped without the sentinel but has an open request
 	// parks at once; it does not wait for the idle timeout.
-	if run.screenIdle(screen) && r.svc.hasOpenRequest(ctx, run.ID) {
-		r.finish(ctx, run, StatusParked, EndRequest)
+	if run.screenIdle(screen) && r.svc.mustPark(ctx, run.ID) {
+		r.finish(ctx, run, StatusParked, r.svc.parkEnd(ctx, run.ID))
 		return true
 	}
 	if run.Session.IdleTimeoutMS <= 0 {
@@ -498,7 +498,7 @@ func (r *Reaper) checkCLI(ctx context.Context, run *Run, now time.Time) (finishe
 	// Keep-alive: a result landed and the session lingers. The clock starts
 	// at the first idle sweep after the result.
 	if run.Session.KeepAliveMS > 0 && snap.LastResult != nil && snap.State == agentwire.StatusIdle {
-		if cr.keepAliveExpired(run.Session.KeepAliveMS, now) || r.svc.hasOpenRequest(ctx, run.ID) {
+		if cr.keepAliveExpired(run.Session.KeepAliveMS, now) || r.svc.mustPark(ctx, run.ID) {
 			r.finish(ctx, run, StatusComplete, EndKeepAlive)
 			return true, false
 		}

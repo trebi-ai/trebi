@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/chains"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
@@ -244,6 +245,10 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		convID, convKey = id, key
 		c.noteChannelUser(ctx, item, id, addr, prompt)
 	}
+	frame, ok := c.chainFrame(ctx, item)
+	if !ok {
+		return
+	}
 	var wake *runs.WakeOpts
 	if kind != runs.KindJob {
 		// Operator lane (Part F.3): the item prompt is the wake message; the
@@ -251,6 +256,9 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		wake = &runs.WakeOpts{
 			Body:    expandVars(j.Prompt, item.Vars),
 			Message: prompt,
+		}
+		if frame != nil {
+			wake.Chain = frame.Wake
 		}
 		if convID != "" && c.Conversations != nil {
 			wake.Recap = c.Conversations.Recap(ctx, convID, wakeRecapN)
@@ -289,13 +297,15 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			JobID:           item.JobID,
 			JobName:         item.JobName,
 			Kind:            item.Kind,
-			Reason:          runsReasonFor(item),
+			Reason:          runsReasonFor(item, frame),
 			Harness:         harness,
 			PromptPreview:   trunc(prompt, 200),
 			QueueID:         item.ID,
 			ConversationKey: convKey,
 			ConversationID:  convID,
 			TraceID:         item.TraceID,
+			HopID:           item.HopID,
+			ChainPath:       frame.path(),
 			Trigger:         trigger,
 			MaxDurationMS:   d.MaxDurationMS,
 			IdleTimeoutMS:   d.IdleTimeoutMS,
@@ -320,7 +330,9 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		Model:        d.Model,
 		Effort:       d.Effort,
 	})
-	if !c.finishLaunch(ctx, item, run, outcome, err) {
+	done := c.finishLaunch(ctx, item, run, outcome, err)
+	c.bindHop(ctx, item, run, err, done)
+	if !done {
 		return
 	}
 	if item.Kind == runs.KindAgent {
@@ -476,11 +488,68 @@ func (c *ControlPlane) dispatchResume(ctx context.Context, item *dispatch.QueueI
 	}
 }
 
-func runsReasonFor(item *dispatch.QueueItem) runs.RunReason {
+func runsReasonFor(item *dispatch.QueueItem, frame *chainFrame) runs.RunReason {
+	if frame != nil {
+		return frame.Reason
+	}
 	if item.Connector == "escalation" {
 		return runs.ReasonEscalation
 	}
 	return runs.ReasonTrigger
+}
+
+// chainFrame is the launch frame of a chain hop.
+type chainFrame struct{ *chains.LaunchFrame }
+
+func (f *chainFrame) path() []string {
+	if f == nil {
+		return nil
+	}
+	return f.Path
+}
+
+// chainFrame reads the frame of a chain row. A row whose hop closed (a
+// stopped chain) is skipped, and ok is false.
+func (c *ControlPlane) chainFrame(ctx context.Context, item *dispatch.QueueItem) (*chainFrame, bool) {
+	if item.HopID == "" || c.Chains == nil {
+		return nil, true
+	}
+	lf, err := c.Chains.LaunchFrame(ctx, item.HopID)
+	if errors.Is(err, chains.ErrHopClosed) {
+		if merr := c.queue.MarkDone(ctx, item.ID, dispatch.ResultSkipped, ""); merr != nil {
+			c.log.Warn("queue mark skipped", "queue_id", item.ID, "error", merr)
+		}
+		return nil, false
+	}
+	if err != nil {
+		c.log.Warn("chain frame", "hop_id", item.HopID, "error", err)
+		return nil, true
+	}
+	return &chainFrame{lf}, true
+}
+
+// bindHop links a chain hop to the run that took it, or fails the hop when
+// the launch will not happen.
+func (c *ControlPlane) bindHop(ctx context.Context, item *dispatch.QueueItem, run *runs.Run, launchErr error, done bool) {
+	if item.HopID == "" || c.Chains == nil {
+		return
+	}
+	if done && run != nil && run.Status != runs.StatusSkipped {
+		if err := c.Chains.Bind(ctx, item.HopID, run.ID, run.TurnCount); err != nil {
+			c.log.Warn("chain bind", "hop_id", item.HopID, "error", err)
+		}
+		return
+	}
+	final := done || errors.Is(launchErr, runs.ErrBudgetExceeded) || errors.Is(launchErr, runs.ErrActionsInvalid) ||
+		errors.Is(launchErr, runs.ErrActionsUnsupported) || item.Attempts >= dispatch.MaxAttempts
+	if final && !errors.Is(launchErr, runs.ErrRunActive) {
+		if launchErr == nil {
+			launchErr = errors.New("launch skipped")
+		}
+		if err := c.Chains.LaunchFailed(ctx, item.HopID, launchErr); err != nil {
+			c.log.Warn("chain launch failed", "hop_id", item.HopID, "error", err)
+		}
+	}
 }
 
 func (c *ControlPlane) failOrRetry(ctx context.Context, item *dispatch.QueueItem, err error, run *runs.Run) {

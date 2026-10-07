@@ -12,7 +12,7 @@ const requestColumns = `id, run_id, workspace_id, job_id,
   working_dir, conversation_key, conversation_id, type, title, summary, target,
   payload_json, allow_json, report_kind, report_sha256, delivery, status,
   answer_json, expires_at, delivery_state, claimed_at, delivery_path,
-  delivered_run_id, delivery_error, created_at, updated_at, revision`
+  delivered_run_id, delivery_error, source, hop_id, trace_id, created_at, updated_at, revision`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -24,7 +24,7 @@ func scanRequest(rs rowScanner) (Request, error) {
 		&r.Harness, &r.Runtime, &r.WorkingDir, &r.ConversationKey, &r.ConversationID,
 		&r.Type, &r.Title, &r.Summary, &r.Target, &payload, &allow, &r.ReportKind,
 		&r.ReportSHA256, &r.Delivery, &r.Status, &answer, &expiresAt, &r.DeliveryState,
-		&claimedAt, &r.DeliveryPath, &deliveredRun, &r.DeliveryError, &createdAt,
+		&claimedAt, &r.DeliveryPath, &deliveredRun, &r.DeliveryError, &r.Source, &r.HopID, &r.TraceID, &createdAt,
 		&updatedAt, &r.Revision); err != nil {
 		return Request{}, err
 	}

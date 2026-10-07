@@ -17,7 +17,7 @@ import (
 )
 
 const msgCols = `id, conversation_id, role, connector, instance, room, thread,
-	text, COALESCE(run_id,''), turn_index, COALESCE(idempotency_key,''), created_at`
+	text, COALESCE(run_id,''), turn_index, COALESCE(idempotency_key,''), hop_id, created_at`
 
 // ListMessages returns messages in ascending ULID order.
 func (s *Service) ListMessages(ctx context.Context, convID string, opts MessageListOpts) ([]Message, error) {
@@ -443,14 +443,14 @@ func (s *Service) insertUserMessage(ctx context.Context, conv *Conversation, opt
 	msg := Message{
 		ID: ulid.Make().String(), ConversationID: conv.ID, Role: RoleUser,
 		Address: opts.Address, Text: text,
-		IdempotencyKey: opts.IdempotencyKey, CreatedAt: now,
+		IdempotencyKey: opts.IdempotencyKey, HopID: opts.HopID, CreatedAt: now,
 	}
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`INSERT INTO conversation_messages
-			(id, conversation_id, role, connector, instance, room, thread, text, idempotency_key, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			(id, conversation_id, role, connector, instance, room, thread, text, idempotency_key, hop_id, created_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 			msg.ID, conv.ID, RoleUser, opts.Connector, opts.Instance, opts.Room, opts.Thread, text,
-			store.NullStr(opts.IdempotencyKey), nowStr); err != nil {
+			store.NullStr(opts.IdempotencyKey), opts.HopID, nowStr); err != nil {
 			return err
 		}
 		if opts.Connector != "" && opts.Room != "" {
@@ -522,6 +522,93 @@ func (s *Service) enqueueWake(ctx context.Context, conv *Conversation, text stri
 		return "", err
 	}
 	return item.ID, nil
+}
+
+// HopSend is one agent chain message: an ask or a hand-off.
+type HopSend struct {
+	Workspace  string
+	OperatorID string // the target agent
+	Address    Address
+	Text       string // the composed message
+	HopID      string
+	TraceID    string
+}
+
+// HopResult is the outcome of SendHop. RunID is set when the message went
+// into a live run of the same chain.
+type HopResult struct {
+	SendResult
+	ConversationID string
+	Turn           int
+}
+
+// SendHop writes a chain message into the pair conversation and delivers it.
+// It injects into the live run of the lane only when the open turn of that
+// run is in the same chain. Else it queues a wake that carries the hop.
+func (s *Service) SendHop(ctx context.Context, o HopSend) (*HopResult, error) {
+	text := strings.TrimSpace(o.Text)
+	if text == "" {
+		return nil, fmt.Errorf("%w: text is required", ErrValidation)
+	}
+	convID, err := s.EnsureForChannel(ctx, o.Workspace, o.OperatorID, o.Address)
+	if err != nil {
+		return nil, err
+	}
+	conv, err := s.Get(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := s.insertUserMessage(ctx, conv, SendOpts{Text: text, Address: o.Address, HopID: o.HopID}, text)
+	if err != nil {
+		return nil, err
+	}
+	res := &HopResult{SendResult: SendResult{Message: msg}, ConversationID: convID}
+	if live := s.liveRun(ctx, conv); live != nil && s.sameTrace(ctx, live, o.TraceID) {
+		if err := s.runs.InjectMessage(ctx, live.ID, text); err == nil {
+			res.Delivery, res.RunID, res.Turn = DeliveryInjected, live.ID, live.TurnCount
+			return res, nil
+		}
+	}
+	if s.queue == nil {
+		return nil, fmt.Errorf("%w: queue not bound", ErrValidation)
+	}
+	item := &dispatch.QueueItem{
+		Connector:       dispatch.ConnectorChain,
+		WorkspaceID:     conv.Workspace,
+		JobID:           conv.OperatorID,
+		JobName:         "agents/" + conv.OperatorName,
+		Kind:            runs.KindAgent,
+		ConversationKey: conv.Key,
+		Prompt:          text,
+		TraceID:         o.TraceID,
+		HopID:           o.HopID,
+		Status:          dispatch.QueuePending,
+	}
+	if err := s.queue.Enqueue(ctx, item); err != nil {
+		return nil, err
+	}
+	res.Delivery, res.QueueID = DeliveryQueued, item.ID
+	return res, nil
+}
+
+// sameTrace reports whether the open turn of run is in the chain traceID.
+func (s *Service) sameTrace(ctx context.Context, run *runs.Run, traceID string) bool {
+	t, err := s.runs.Turn(ctx, run.ID, run.TurnCount)
+	return err == nil && t.TraceID == traceID
+}
+
+// TurnReply returns the newest assistant text of a run in a conversation
+// that came in at or after since. It is "" when the turn wrote no text.
+func (s *Service) TurnReply(ctx context.Context, convID, runID string, since time.Time) (string, error) {
+	var text string
+	err := s.st.DB().QueryRowContext(ctx, `SELECT text FROM conversation_messages
+		WHERE conversation_id=? AND role='assistant' AND run_id=? AND turn_index IS NOT NULL AND created_at>=?
+		ORDER BY turn_index DESC, id DESC LIMIT 1`,
+		convID, runID, since.UTC().Format(time.RFC3339Nano)).Scan(&text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return strings.TrimSpace(text), err
 }
 
 func (s *Service) insertAssistantTurn(ctx context.Context, convID, runID string, turnIndex int, text string) (bool, error) {
@@ -701,7 +788,7 @@ func scanMsg(row convScanner) (Message, error) {
 	var turn sql.NullInt64
 	var created string
 	err := row.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Connector, &m.Instance, &m.Room, &m.Thread,
-		&m.Text, &m.RunID, &turn, &m.IdempotencyKey, &created)
+		&m.Text, &m.RunID, &turn, &m.IdempotencyKey, &m.HopID, &created)
 	if err != nil {
 		return m, err
 	}

@@ -51,7 +51,7 @@ func TestFreshNewRun(t *testing.T) {
 	if err := rs.Terminate(ctx, prev.ID, runs.StatusExited, runs.EndKill, nil); err != nil {
 		t.Fatal(err)
 	}
-	run, err := NewLauncher(wss, rs).Fresh(ctx, prev.ID, "start again", runs.ReasonRequest)
+	run, err := NewLauncher(wss, rs).Fresh(ctx, prev.ID, runs.ResumeOpts{Prompt: "start again", Reason: runs.ReasonRequest})
 	if err != nil {
 		t.Fatal(err)
 	}

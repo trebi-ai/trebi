@@ -3,6 +3,7 @@
 package launch
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -95,21 +96,21 @@ func (l *Launcher) Resume(ctx context.Context, prevID string, o runs.ResumeOpts)
 	return l.runs.Resume(ctx, prevID, base, o)
 }
 
-// Fresh starts a new run of the job of prevID with prompt and no session.
-func (l *Launcher) Fresh(ctx context.Context, prevID, prompt string, reason runs.RunReason) (*runs.Run, error) {
+// Fresh starts a new run of the job of prevID with o.Prompt and no session.
+func (l *Launcher) Fresh(ctx context.Context, prevID string, o runs.ResumeOpts) (*runs.Run, error) {
 	prev, err := l.runs.Get(ctx, prevID)
 	if err != nil {
 		return nil, err
 	}
-	lopts, err := l.FromRun(ctx, prev, reason)
+	lopts, err := l.FromRun(ctx, prev, o.Reason)
 	if err != nil {
 		return nil, err
 	}
 	lopts.PreviousRunID = prev.ID
 	lopts.ResumeAttempts = prev.ResumeAttempts
 	lopts.ConversationID = prev.ConversationID
-	lopts.Prompt = prompt
-	lopts.PromptPreview = prompt
+	lopts.Prompt, lopts.PromptPreview = o.Prompt, o.Prompt
+	lopts.TraceID, lopts.HopID, lopts.ChainPath = cmp.Or(o.TraceID, lopts.TraceID), o.HopID, o.Path
 	lopts.BypassOverlap = true
 	run, _, err := l.runs.CreateAndLaunch(ctx, lopts)
 	return run, err

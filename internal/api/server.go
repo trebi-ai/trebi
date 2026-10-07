@@ -22,6 +22,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/agents"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/assistant"
+	"github.com/trebi-ai/trebi/internal/chains"
 	"github.com/trebi-ai/trebi/internal/channels"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	config "github.com/trebi-ai/trebi/internal/config"
@@ -76,6 +77,7 @@ type Server struct {
 	templates  *agents.Catalog
 	proposals  *proposals.Service
 	requests   *requests.Service
+	chains     *chains.Service
 	launch     *launch.Launcher
 	state      *state.Store
 	// catalog is the registry client; it follows the configured list.
@@ -167,7 +169,7 @@ func New(st *store.Store, opts Options) *Server {
 		proposals:    proposals.NewService(st, fs, ws, st, r),
 		launch:       l,
 		state:        stateStore,
-		requests:     requests.NewService(st, r, l, cl, requests.NewReportStore(home.RequestsDir()), requests.Options{}),
+		requests:     requests.NewService(st, r, cl, requests.NewReportStore(home.RequestsDir()), requests.Options{}),
 		catalog:      registry.NewLive(opts.Registry),
 		cloud:        cl,
 		hooks:        webhooks.New(st, conn, cl),
@@ -183,7 +185,8 @@ func New(st *store.Store, opts Options) *Server {
 			CheckOrigin: checkWSOrigin,
 		},
 	}
-	r.SetRequestGate(s.requests)
+	s.chains = chains.NewService(st, ws, s.conv, r, slog.Default().With("source", "chains"))
+	r.SetParker(runs.NewParker(r, l, s.requests, s.chains))
 	s.connectors.WithInstall(connectors.InstallConfig{Catalog: s.catalog})
 	_ = s.connectors.Load() // the service keeps the error; the list route and the daemon report it
 	s.outbox = outbox.New(st)
@@ -357,6 +360,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 // BindState swaps in the daemon's state store.
 func (s *Server) BindState(st *state.Store) { bind(&s.state, st) }
 
+// BindChains swaps in the daemon's chains service.
+func (s *Server) BindChains(c *chains.Service) { bind(&s.chains, c) }
+
 // stateLimits reads the owner limits from config.
 func stateLimits() state.Limits {
 	limits := state.DefaultLimits()
@@ -435,6 +441,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeWorkspaces(mux)
 	s.routeAssistant(mux)
 	s.routeAgents(mux)
+	s.routeChains(mux)
 	s.routeMemory(mux)
 	s.routeFiles(mux)
 	s.routeJobs(mux)

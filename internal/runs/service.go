@@ -148,7 +148,7 @@ type Service struct {
 	actions    ActionResolver
 	kits       KitSource
 	email      EmailSource
-	gate       RequestGate
+	parker     *Parker
 
 	// Subprocess runtime (Part D). rt is the shared agentwire runtime (its
 	// own session + pid ledger); cliDriver is a test override; cliRuns is the
@@ -267,6 +267,10 @@ type CreateOpts struct {
 	TraceID         string
 	ConversationKey string
 	ConversationID  string
+	// HopID is the chain hop that starts this turn. ChainPath holds the
+	// agent IDs from the chain root to this agent; empty outside a chain.
+	HopID     string
+	ChainPath []string
 	// WorkingDir is the directory the session launched in. Persisted because a
 	// harness that mints its own session id finds its transcript by path.
 	WorkingDir    string
@@ -498,6 +502,8 @@ type ListOpts struct {
 	// Conversation matches conversation_id.
 	Conversation string
 	EndReason    string
+	// Trace matches runs with any turn of the chain trace.
+	Trace string
 	// Q matches the prompt preview, the job, and the run id.
 	Q string
 	// Since and Until bound started_at; both are optional.
@@ -559,6 +565,10 @@ func (o ListOpts) query() (string, []any) {
 	if o.EndReason != "" {
 		q += ` AND end_reason = ?`
 		args = append(args, o.EndReason)
+	}
+	if o.Trace != "" {
+		q += ` AND (trace_id = ? OR id IN (SELECT run_id FROM run_turns WHERE trace_id = ?))`
+		args = append(args, o.Trace, o.Trace)
 	}
 	if o.Since != "" {
 		q += ` AND started_at >= ?`
@@ -933,9 +943,7 @@ func (s *Service) TerminateTurn(ctx context.Context, id string, turn int, status
 	s.mu.Lock()
 	delete(s.sessions, id)
 	s.mu.Unlock()
-	if g := s.requestGate(); g != nil {
-		g.RunEnded(context.WithoutCancel(ctx), id, status)
-	}
+	s.runEnded(context.WithoutCancel(ctx), id, status)
 	return nil
 }
 
@@ -1724,10 +1732,15 @@ func insertTurnRow(tx *sql.Tx, runID string, n int, opts CreateOpts, preview, no
 	if opts.Trigger != nil && opts.Trigger.EventID != "" {
 		trigEventID = &opts.Trigger.EventID
 	}
+	path, depth := "[]", 0
+	if len(opts.ChainPath) > 0 {
+		b, _ := json.Marshal(opts.ChainPath)
+		path, depth = string(b), len(opts.ChainPath)-1
+	}
 	_, err := tx.Exec(`INSERT INTO run_turns (run_id, n, reason, status, queue_id, trigger_event_id,
-		prompt_preview, session_id, started_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+		prompt_preview, session_id, started_at, trace_id, hop_id, depth, path_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		runID, n, string(opts.Reason), string(StatusRunning), store.NullStr(opts.QueueID), trigEventID,
-		preview, store.NullStr(opts.SessionID), nowStr)
+		preview, store.NullStr(opts.SessionID), nowStr, opts.TraceID, opts.HopID, depth, path)
 	if err != nil {
 		return fmt.Errorf("insert turn %d of %s: %w", n, runID, err)
 	}
@@ -2037,43 +2050,85 @@ func trunc(s string, n int) string {
 	return s[:n]
 }
 
+const turnCols = `n, reason, status, COALESCE(end_reason,''),
+		COALESCE(queue_id,''), COALESCE(trigger_event_id,''), COALESCE(prompt_preview,''),
+		COALESCE(session_id,''), started_at, ended_at, COALESCE(duration_ms,0),
+		COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
+		COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
+		trace_id, hop_id, depth, path_json`
+
 // Turns returns the turns of a run, oldest first.
 func (s *Service) Turns(ctx context.Context, runID string) ([]Turn, error) {
 	if _, err := s.Get(ctx, runID); err != nil {
 		return nil, err
 	}
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT n, reason, status, COALESCE(end_reason,''),
-		COALESCE(queue_id,''), COALESCE(trigger_event_id,''), COALESCE(prompt_preview,''),
-		COALESCE(session_id,''), started_at, ended_at, COALESCE(duration_ms,0),
-		COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
-		COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,'')
-		FROM run_turns WHERE run_id = ? ORDER BY n`, runID)
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT `+turnCols+` FROM run_turns WHERE run_id = ? ORDER BY n`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("run turns %s: %w", runID, err)
 	}
 	defer rows.Close()
 	out := []Turn{}
 	for rows.Next() {
-		var t Turn
-		var reason, status, end, started string
-		var ended sql.NullString
-		if err := rows.Scan(&t.N, &reason, &status, &end, &t.QueueID, &t.TriggerEvent, &t.PromptPreview,
-			&t.SessionID, &started, &ended, &t.DurationMS,
-			&t.Tokens.Input, &t.Tokens.Output, &t.Tokens.CacheRead, &t.Tokens.CacheCreation, &t.Tokens.Model); err != nil {
+		t, err := scanTurn(rows)
+		if err != nil {
 			return nil, err
 		}
-		t.Reason, t.Status, t.EndReason = RunReason(reason), Status(status), EndReason(end)
-		t.StartedAt = store.ParseTS(started)
-		if ended.Valid {
-			e := store.ParseTS(ended.String)
-			t.EndedAt = &e
-		} else {
-			t.DurationMS = time.Since(t.StartedAt).Milliseconds()
-		}
-		t.Tokens.ApplyRates()
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// Turn returns turn n of a run. A missing turn is sql.ErrNoRows.
+func (s *Service) Turn(ctx context.Context, runID string, n int) (*Turn, error) {
+	t, err := scanTurn(s.st.DB().QueryRowContext(ctx, `SELECT `+turnCols+` FROM run_turns WHERE run_id = ? AND n = ?`, runID, n))
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func scanTurn(row rowScanner) (Turn, error) {
+	var t Turn
+	var reason, status, end, started, path string
+	var ended sql.NullString
+	if err := row.Scan(&t.N, &reason, &status, &end, &t.QueueID, &t.TriggerEvent, &t.PromptPreview,
+		&t.SessionID, &started, &ended, &t.DurationMS,
+		&t.Tokens.Input, &t.Tokens.Output, &t.Tokens.CacheRead, &t.Tokens.CacheCreation, &t.Tokens.Model,
+		&t.TraceID, &t.HopID, &t.Depth, &path); err != nil {
+		return t, err
+	}
+	t.Reason, t.Status, t.EndReason = RunReason(reason), Status(status), EndReason(end)
+	t.StartedAt = store.ParseTS(started)
+	if ended.Valid {
+		e := store.ParseTS(ended.String)
+		t.EndedAt = &e
+	} else {
+		t.DurationMS = time.Since(t.StartedAt).Milliseconds()
+	}
+	_ = json.Unmarshal([]byte(path), &t.Path) // a bad row reads as no chain
+	t.Tokens.ApplyRates()
+	return t, nil
+}
+
+// TraceUsage counts the turns of one chain trace and prices them.
+func (s *Service) TraceUsage(ctx context.Context, traceID string) (turns int, costUSD float64, err error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT COALESCE(tokens_input,0), COALESCE(tokens_output,0),
+		COALESCE(tokens_cache_read,0), COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,'')
+		FROM run_turns WHERE trace_id = ?`, traceID)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var t pricing.TokenUsage
+		if err := rows.Scan(&t.Input, &t.Output, &t.CacheRead, &t.CacheCreation, &t.Model); err != nil {
+			return 0, 0, err
+		}
+		t.ApplyRates()
+		turns++
+		costUSD += t.CostUSD
+	}
+	return turns, costUSD, rows.Err()
 }
 
 // turnTokens prices the usage of the ending turn. With no usage given, a kill

@@ -106,7 +106,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `runs-and-debugging` | show/turns/timeline/transcript/logs, retry/resume/replay/mark, attach, approvals |
 | `files` | job-scoped vs workspace files, scripts next to jobs, If-Match |
 | `assistant` | settings layers, chat and sessions, conversations, memory |
-| `agents` | folder-scoped agents: identity, rename, email accept, owned jobs, wake, conversations, agent memory, agent state |
+| `agents` | folder-scoped agents: identity, rename, email accept, owned jobs, wake, ask and hand off (`agent ask`, `agent handoff`, `trebi chain`), conversations, agent memory, agent state |
 | `connectors-and-rules` | add connections, login, rooms, senders, bind, overrides, versions and updates, registry search/entry/install, the job `connectors:` key (MCP and CLI actions for a run), rules test/test-batch/fire, event triggers, retrigger, queue |
 | `email-format` | Markdown that Trebi mails as styled HTML: alerts, `kpi`/`status`/`button` report blocks, layouts, `email.style` |
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed, alert routes (`trebi notify route|test`), failed sends in the outbox |
@@ -143,6 +143,7 @@ Every error is `{"error":{"code","message","details"}}` with a stable code:
 - Do not write to `~/.trebi` / `$TREBI_HOME` and do not call `/v1` with `curl`. The daemon is the single writer. If `trebi doctor` is healthy, you are done.
 - Agent runs carry `TREBI_RUN_TOKEN`; keep it in the environment for `trebi` and `trebi mcp serve` calls. It scopes an agent to its folder, owned jobs, and own memory. `email.accept`, `kit`, and `budget` are human-only. If a write returns `forbidden`, ask the human instead of changing owners or protected keys.
 - When a job run needs a person's decision before an action, use `trebi request create` (or the `request` tool) and then end the turn. Do not wait or poll. Do not answer a request from a job run; a person answers it. Read `trebi guide requests` first.
+- To get an answer from another agent, use `agent ask <name> <text>`, then end your turn. The reply starts your next turn. Do not poll. To give work away with no reply, use `agent handoff`. Find the agent with `agent list --for <words>`. If an ask returns `chain_cycle`, the target waits for you: reply instead.
 - To hand a problem up, use `agent escalate` (`to=assistant` or `to=operator`) with the concrete blocker and what you tried. A failed owned job first wakes its owner with `reason=escalation`; the fourth failure in 24 hours goes to the operator inbox.
 - Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
 - `trebi bus --limit N` dumps up to N frames and exits. `connector logs` returns at once; `-f` follows and blocks. `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.

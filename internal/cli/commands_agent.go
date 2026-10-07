@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/chains"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 )
@@ -20,6 +24,8 @@ func agentCommand() *cli.Command {
 		Name:  "agent",
 		Usage: "folder-scoped agents (agents/<name>/AGENT.md); unrelated to the hidden agent-hook command",
 		Commands: append(agentManageSubcommands(),
+			agentAskCommand(chains.KindAsk),
+			agentAskCommand(chains.KindHandoff),
 			agentWakeCommand(),
 			agentMemoryCommand(),
 		),
@@ -213,6 +219,113 @@ func runAgentCreate(_ context.Context, c *cli.Command) error {
 		spec.Content = read
 	}
 	return client.DoHTTP(spec.Build(), nil)
+}
+
+// agentAskCommand is `trebi agent ask` or `trebi agent handoff`.
+func agentAskCommand(kind chains.Kind) *cli.Command {
+	cmd := &cli.Command{
+		Name:      string(kind),
+		ArgsUsage: "<name> <text>",
+		Usage:     "ask an agent of the workspace; inside a run, end your turn after it",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+			&cli.StringFlag{Name: "context", Usage: "what the agent needs to know"},
+			&cli.StringFlag{Name: "idempotency-key", Usage: "a repeat with the same key returns the first hop"},
+			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+		},
+		Action: func(_ context.Context, c *cli.Command) error { return runAgentAsk(c, kind) },
+	}
+	if kind == chains.KindHandoff {
+		cmd.Usage = "give work to an agent of the workspace; you get no reply"
+	} else {
+		cmd.Flags = append(cmd.Flags, &cli.DurationFlag{Name: "wait", Usage: "outside a run: wait up to this time for the reply (max 2m)"})
+	}
+	return cmd
+}
+
+func runAgentAsk(c *cli.Command, kind chains.Kind) error {
+	args := c.Args().Slice()
+	if len(args) < 2 {
+		return fmt.Errorf("usage: trebi agent %s <name> <text>", kind)
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	body := request.AgentAsk{Text: strings.Join(args[1:], " "), Context: c.String("context"), IdempotencyKey: c.String("idempotency-key")}
+	inRun := os.Getenv("TREBI_RUN_TOKEN") != ""
+	wait := min(c.Duration("wait"), chains.MaxWait)
+	if inRun {
+		wait = 0
+	}
+	// One call stays under the client timeout; the rest of the wait polls.
+	body.WaitMS = int(min(wait, requestPollStep).Milliseconds())
+	req := request.BuildAgentAsk(wsID, args[0], body)
+	if kind == chains.KindHandoff {
+		req = request.BuildAgentHandoff(wsID, args[0], body)
+	}
+	var res chains.AskResult
+	if err := client.DoHTTP(req, &res); err != nil {
+		return err
+	}
+	if kind == chains.KindAsk && wait > 0 && len(res.Replies) == 0 {
+		res.Replies = waitHopReplies(client, res.Hop, time.Now().Add(wait-requestPollStep))
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, res)
+	}
+	printAskResult(outWriter(c), kind, args[0], res, inRun)
+	return nil
+}
+
+func printAskResult(out io.Writer, kind chains.Kind, to string, res chains.AskResult, inRun bool) {
+	verb := "Asked"
+	if kind == chains.KindHandoff {
+		verb = "Handed off to"
+	}
+	fmt.Fprintf(out, "%s %s: hop %s (%s)\n", verb, to, res.Hop.ID, res.Hop.Status)
+	if res.RequestID != "" {
+		fmt.Fprintf(out, "A person must approve more chain work: request %s\n", res.RequestID)
+	}
+	if inRun && kind == chains.KindAsk {
+		fmt.Fprintln(out, "End your turn now. The reply starts your next turn.")
+	}
+	for _, r := range res.Replies {
+		fmt.Fprintf(out, "\nReply from %s (hop %s):\n%s\n", r.From.Agent, r.ID, r.Text)
+	}
+}
+
+// waitHopReplies polls the chain of an ask for its replies until deadline.
+func waitHopReplies(client *APIClient, ask chains.Hop, deadline time.Time) []chains.Hop {
+	for time.Now().Before(deadline) {
+		var body struct {
+			Hops []chains.Hop `json:"hops"`
+		}
+		if err := client.GetJSON(request.BuildChainGetPath(ask.TraceID), &body); err != nil {
+			return nil
+		}
+		var out []chains.Hop
+		for _, h := range body.Hops {
+			if h.ReplyOf != ask.ID {
+				continue
+			}
+			var full struct {
+				Hop chains.Hop `json:"hop"`
+			}
+			if client.GetJSON(request.BuildHopGetPath(h.ID), &full) == nil {
+				out = append(out, full.Hop)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+		time.Sleep(time.Second)
+	}
+	return nil
 }
 
 func runAgentShow(_ context.Context, c *cli.Command) error {

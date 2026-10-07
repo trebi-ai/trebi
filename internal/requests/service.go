@@ -22,11 +22,7 @@ type Runs interface {
 	Get(ctx context.Context, id string) (*runs.Run, error)
 	Unpark(ctx context.Context, runID string, end runs.EndReason) error
 	TurnAfter(ctx context.Context, runID string, reason runs.RunReason, since time.Time) (int, error)
-}
-
-type Launcher interface {
-	Resume(ctx context.Context, prevID string, o runs.ResumeOpts) (*runs.Run, error)
-	Fresh(ctx context.Context, prevID, prompt string, reason runs.RunReason) (*runs.Run, error)
+	WakeParked(ctx context.Context, runID string) error
 }
 
 // Grant answers the cloud plan grant. A Pro Cloud account grants requests.
@@ -44,12 +40,11 @@ const (
 	maxWait            = 60 * time.Second
 )
 
-var _ runs.RequestGate = (*Service)(nil)
+var _ runs.ParkGate = (*Service)(nil)
 
 type Service struct {
 	st      *store.Store
 	runs    Runs
-	launch  Launcher
 	grant   Grant
 	reports *ReportStore
 	opts    Options
@@ -57,7 +52,7 @@ type Service struct {
 	log     *slog.Logger
 }
 
-func NewService(st *store.Store, rs Runs, l Launcher, g Grant, reports *ReportStore, o Options) *Service {
+func NewService(st *store.Store, rs Runs, g Grant, reports *ReportStore, o Options) *Service {
 	if o.ExpireAfter <= 0 {
 		o.ExpireAfter = defaultExpireAfter
 	}
@@ -65,7 +60,7 @@ func NewService(st *store.Store, rs Runs, l Launcher, g Grant, reports *ReportSt
 		o.Retain = defaultRetain
 	}
 	return &Service{
-		st: st, runs: rs, launch: l, grant: g, reports: reports, opts: o,
+		st: st, runs: rs, grant: g, reports: reports, opts: o,
 		now: func() time.Time { return time.Now().UTC() },
 		log: slog.Default().With("source", "requests"),
 	}
@@ -138,13 +133,13 @@ func (s *Service) Create(ctx context.Context, actor tools.Actor, o CreateOpts) (
 		_, err := tx.ExecContext(ctx, `INSERT INTO requests (id, run_id, workspace_id, job_id, kind,
   session_id, harness, runtime, working_dir, conversation_key, conversation_id, type, title,
   summary, target, payload_json, allow_json, report_kind, report_sha256, delivery, status,
-  expires_at, delivery_state, created_at, updated_at, revision)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  expires_at, delivery_state, source, hop_id, trace_id, created_at, updated_at, revision)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			r.ID, r.RunID, r.WorkspaceID, r.JobID, r.Kind, r.SessionID, r.Harness, r.Runtime,
 			r.WorkingDir, r.ConversationKey, r.ConversationID, string(r.Type), r.Title, r.Summary,
 			r.Target, string(payload), string(allow), r.ReportKind, r.ReportSHA256,
 			string(r.Delivery), string(r.Status), fmtTime(at), string(r.DeliveryState),
-			fmtTime(now), fmtTime(now), r.Revision)
+			r.Source, r.HopID, r.TraceID, fmtTime(now), fmtTime(now), r.Revision)
 		return err
 	}, r.event("request.created", "created"))
 	if err != nil {
@@ -281,28 +276,32 @@ func (s *Service) Wait(ctx context.Context, id string, d time.Duration) (Request
 	}
 }
 
+// Name is the park gate name.
+func (s *Service) Name() string { return runs.GateRequest }
+
 // PromptHint is the launch prompt text that tells a run how to ask. It is
 // empty when the cloud plan does not grant requests.
-func (s *Service) PromptHint() string {
+func (s *Service) PromptHint(runs.LaunchOpts) string {
 	if !s.granted() {
 		return ""
 	}
 	return launchHint
 }
 
-// HasOpen reports whether the session of runID must wait: a resume request
-// is pending, or closed with an answer that is not delivered yet.
-func (s *Service) HasOpen(ctx context.Context, runID string) (bool, error) {
-	var n int
-	err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE run_id=? AND delivery=?
-  AND (status=? OR (status IN (?,?) AND delivery_state IN (?,?)))`,
-		runID, string(DeliveryResume), string(StatusPending), string(StatusAnswered), string(StatusExpired),
-		string(DeliveryNone), string(DeliveryClaimed)).Scan(&n)
-	return n > 0, err
+// Open reports a pending resume request (waiting) and a closed one with an
+// answer that is not delivered yet (ready).
+func (s *Service) Open(ctx context.Context, runID string) (waiting, ready bool, err error) {
+	var pending, closed int
+	err = s.st.DB().QueryRowContext(ctx, `SELECT
+  COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END),0),
+  COALESCE(SUM(CASE WHEN status IN (?,?) AND delivery_state IN (?,?) THEN 1 ELSE 0 END),0)
+FROM requests WHERE run_id=? AND delivery=?`,
+		string(StatusPending), string(StatusAnswered), string(StatusExpired),
+		string(DeliveryNone), string(DeliveryClaimed), runID, string(DeliveryResume)).Scan(&pending, &closed)
+	return pending > 0, closed > 0, err
 }
 
-// RunEnded cancels the poll requests of the run and delivers the answers
-// that waited for the session to end.
+// RunEnded cancels the poll requests of the run.
 func (s *Service) RunEnded(ctx context.Context, runID string, _ runs.Status) {
 	polls, err := s.query(ctx, `WHERE run_id=? AND delivery=? AND status=?`,
 		runID, string(DeliveryPoll), string(StatusPending))
@@ -313,9 +312,6 @@ func (s *Service) RunEnded(ctx context.Context, runID string, _ runs.Status) {
 		if _, err := s.close(ctx, r, StatusCancelled, nil); err != nil && !errors.Is(err, ErrClosed) {
 			s.log.Warn("cancel poll request", "request_id", r.ID, "err", err)
 		}
-	}
-	if err := s.deliver(ctx, runID); err != nil {
-		s.log.Warn("request deliver", "run_id", runID, "err", err)
 	}
 }
 
@@ -399,14 +395,10 @@ func (s *Service) afterClose(ctx context.Context, r Request) {
 	if r.Delivery != DeliveryResume {
 		return
 	}
-	if err := s.deliver(ctx, r.RunID); err != nil {
+	if err := s.runs.WakeParked(ctx, r.RunID); err != nil {
 		s.log.Warn("request deliver", "run_id", r.RunID, "err", err)
 	}
 	if r.Status != StatusDismissed {
-		return
-	}
-	open, err := s.HasOpen(ctx, r.RunID)
-	if err != nil || open {
 		return
 	}
 	if err := s.runs.Unpark(ctx, r.RunID, runs.EndRequestDismissed); err != nil && !errors.Is(err, runs.ErrNotParked) {

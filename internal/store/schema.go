@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 43
+const SchemaVersion = 44
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1498,6 +1498,81 @@ CREATE TABLE state_run_stats (
     deleted    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner_id, run_id, collection)
 );
+`,
+		// v44: agent chains (plan 2026-10-06 agent chains, Part B).
+		`
+CREATE TABLE chains (
+    trace_id             TEXT PRIMARY KEY,
+    workspace_id         TEXT NOT NULL,
+    root_kind            TEXT NOT NULL,
+    root_run_id          TEXT NOT NULL DEFAULT '',
+    root_conversation_id TEXT NOT NULL DEFAULT '',
+    root_agent_id        TEXT NOT NULL DEFAULT '',
+    status               TEXT NOT NULL,
+    max_hops             INTEGER NOT NULL,
+    max_turns            INTEGER NOT NULL,
+    max_usd              REAL NOT NULL DEFAULT 0,
+    stopped_by           TEXT NOT NULL DEFAULT '',
+    stop_reason          TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    revision             INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX chains_ws ON chains(workspace_id, updated_at DESC);
+
+CREATE TABLE chain_hops (
+    id                   TEXT PRIMARY KEY,
+    trace_id             TEXT NOT NULL,
+    workspace_id         TEXT NOT NULL,
+    kind                 TEXT NOT NULL,
+    status               TEXT NOT NULL,
+    refuse_reason        TEXT NOT NULL DEFAULT '',
+    depth                INTEGER NOT NULL,
+    path_json            TEXT NOT NULL,
+    from_kind            TEXT NOT NULL,
+    from_agent_id        TEXT NOT NULL DEFAULT '',
+    from_run_id          TEXT NOT NULL DEFAULT '',
+    from_turn            INTEGER NOT NULL DEFAULT 0,
+    from_conversation_id TEXT NOT NULL DEFAULT '',
+    to_agent_id          TEXT NOT NULL DEFAULT '',
+    to_run_id            TEXT NOT NULL DEFAULT '',
+    to_turn              INTEGER NOT NULL DEFAULT 0,
+    to_conversation_id   TEXT NOT NULL DEFAULT '',
+    reply_of             TEXT NOT NULL DEFAULT '',
+    conversation_id      TEXT NOT NULL DEFAULT '',
+    message_id           TEXT NOT NULL DEFAULT '',
+    queue_id             TEXT NOT NULL DEFAULT '',
+    request_id           TEXT NOT NULL DEFAULT '',
+    delivery_state       TEXT NOT NULL DEFAULT 'none',
+    claimed_at           TEXT,
+    idempotency_key      TEXT NOT NULL DEFAULT '',
+    preview              TEXT NOT NULL DEFAULT '',
+    text                 TEXT NOT NULL,
+    context              TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    revision             INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX chain_hops_trace ON chain_hops(trace_id, created_at);
+CREATE INDEX chain_hops_from ON chain_hops(from_run_id, from_turn);
+CREATE INDEX chain_hops_to ON chain_hops(to_run_id, to_turn);
+CREATE INDEX chain_hops_pair ON chain_hops(from_agent_id, to_agent_id, created_at);
+CREATE UNIQUE INDEX chain_hops_idem ON chain_hops(idempotency_key) WHERE idempotency_key <> '';
+CREATE INDEX chain_hops_open ON chain_hops(status) WHERE status IN ('held','queued','running');
+
+ALTER TABLE run_turns ADD COLUMN trace_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE run_turns ADD COLUMN hop_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE run_turns ADD COLUMN depth INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_turns ADD COLUMN path_json TEXT NOT NULL DEFAULT '[]';
+CREATE INDEX run_turns_trace ON run_turns(trace_id);
+
+ALTER TABLE event_queue ADD COLUMN hop_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE requests ADD COLUMN source TEXT NOT NULL DEFAULT '';
+ALTER TABLE requests ADD COLUMN hop_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE requests ADD COLUMN trace_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE conversation_messages ADD COLUMN hop_id TEXT NOT NULL DEFAULT '';
 `,
 	}
 }

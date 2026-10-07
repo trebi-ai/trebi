@@ -20,16 +20,9 @@ type Delivery struct {
 	Requests []Request // creation order
 }
 
-// deliver resumes the session of runID once every resume request of the run
-// is closed. The claim lets only one caller launch.
-func (s *Service) deliver(ctx context.Context, runID string) error {
-	run, err := s.runs.Get(ctx, runID)
-	if err != nil {
-		return fmt.Errorf("run %s: %w", runID, err)
-	}
-	if !run.Status.IsTerminal() {
-		return nil
-	}
+// Claim takes the closed resume requests of runID that are not delivered.
+// The claim lets only one caller launch.
+func (s *Service) Claim(ctx context.Context, runID string) ([]runs.ParkDelivery, error) {
 	now := s.now()
 	res, err := s.st.DB().ExecContext(ctx, `UPDATE requests SET delivery_state=?, claimed_at=?
 WHERE run_id=? AND delivery=? AND status IN (?,?) AND delivery_state=?
@@ -38,43 +31,43 @@ WHERE run_id=? AND delivery=? AND status IN (?,?) AND delivery_state=?
 		string(StatusAnswered), string(StatusExpired), string(DeliveryNone),
 		runID, string(DeliveryResume), string(StatusPending))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return nil
+		return nil, nil
 	}
-	return s.launchClaimed(ctx, run)
-}
-
-// launchClaimed resumes run with its claimed requests and records the result
-// on each row.
-func (s *Service) launchClaimed(ctx context.Context, run *runs.Run) error {
+	run, err := s.runs.Get(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("run %s: %w", runID, err)
+	}
 	claimed, err := s.query(ctx, `WHERE run_id=? AND delivery_state=? ORDER BY created_at, id`,
-		run.ID, string(DeliveryClaimed))
+		runID, string(DeliveryClaimed))
 	if err != nil || len(claimed) == 0 {
-		return err
+		return nil, err
 	}
 	d := Delivery{Run: run, Requests: claimed}
-	path := "resume"
-	var next *runs.Run
-	err = runs.ErrNoSession
-	if run.SessionID != "" {
-		next, err = s.launch.Resume(ctx, run.ID, runs.ResumeOpts{Reason: runs.ReasonRequest, Prompt: d.Prompt()})
-	}
-	if errors.Is(err, runs.ErrResumeUnsupported) || errors.Is(err, runs.ErrNoSession) {
-		s.log.Info("request fresh run", "run_id", run.ID, "reason", err.Error())
-		path = "fresh"
-		next, err = s.launch.Fresh(ctx, run.ID, d.CapsulePrompt(), runs.ReasonRequest)
-	}
+	pd := runs.ParkDelivery{Gate: runs.GateRequest, Prompt: d.Prompt(), Capsule: d.CapsulePrompt(),
+		At: claimed[0].CreatedAt, Reason: runs.ReasonRequest}
 	for _, r := range claimed {
-		if err != nil {
-			s.markDelivery(ctx, r, DeliveryFailed, "", "", err.Error())
-			continue
-		}
-		s.markDelivery(ctx, r, DeliveryDelivered, path, next.ID, "")
+		pd.IDs = append(pd.IDs, r.ID)
 	}
-	if err != nil {
-		return fmt.Errorf("deliver run %s: %w", run.ID, err)
+	return []runs.ParkDelivery{pd}, nil
+}
+
+// Settle records the resume result on each claimed request.
+func (s *Service) Settle(ctx context.Context, _ string, ds []runs.ParkDelivery, res runs.ResumeResult) error {
+	for _, d := range ds {
+		for _, id := range d.IDs {
+			r, err := s.Get(ctx, id)
+			if err != nil {
+				return err
+			}
+			if res.Err != nil {
+				s.markDelivery(ctx, r, DeliveryFailed, "", "", res.Err.Error())
+				continue
+			}
+			s.markDelivery(ctx, r, DeliveryDelivered, res.Path, res.RunID, "")
+		}
 	}
 	return nil
 }
@@ -102,14 +95,14 @@ func (s *Service) markDelivery(ctx context.Context, r Request, st DeliveryState,
 	}
 }
 
-// Recover runs at boot. A claim older than two minutes either launched (the
-// run has a request turn after it) or did not (the claim is reset). Then every
-// closed answer that is not delivered goes out.
-func (s *Service) Recover(ctx context.Context) error {
+// Stale runs at boot. A claim older than two minutes either launched (the
+// run has a request turn after it) or did not (the claim is reset). It
+// returns the runs with closed answers that are not delivered.
+func (s *Service) Stale(ctx context.Context) ([]string, error) {
 	cutoff := s.now().Add(-staleClaim)
 	claimed, err := s.query(ctx, `WHERE delivery_state=? ORDER BY created_at, id`, string(DeliveryClaimed))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, r := range claimed {
 		if r.ClaimedAt == nil || r.ClaimedAt.After(cutoff) {
@@ -117,7 +110,7 @@ func (s *Service) Recover(ctx context.Context) error {
 		}
 		turn, err := s.runs.TurnAfter(ctx, r.RunID, runs.ReasonRequest, *r.ClaimedAt)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if turn > 0 {
 			s.markDelivery(ctx, r, DeliveryDelivered, "resume", r.RunID, "")
@@ -125,30 +118,24 @@ func (s *Service) Recover(ctx context.Context) error {
 		}
 		if _, err := s.st.DB().ExecContext(ctx, `UPDATE requests SET delivery_state=?, claimed_at=NULL WHERE id=? AND delivery_state=?`,
 			string(DeliveryNone), r.ID, string(DeliveryClaimed)); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT DISTINCT run_id FROM requests WHERE delivery=? AND status IN (?,?) AND delivery_state=?`,
 		string(DeliveryResume), string(StatusAnswered), string(StatusExpired), string(DeliveryNone))
 	if err != nil {
-		return err
+		return nil, err
 	}
+	defer rows.Close()
 	var runIDs []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
+			return nil, err
 		}
 		runIDs = append(runIDs, id)
 	}
-	rows.Close()
-	for _, id := range runIDs {
-		if err := s.deliver(ctx, id); err != nil {
-			s.log.Warn("request recover", "run_id", id, "err", err)
-		}
-	}
-	return rows.Err()
+	return runIDs, rows.Err()
 }
 
 // Sweep expires pending requests past expires_at and removes old report

@@ -328,9 +328,13 @@ func TestPaneCaptureHeader(t *testing.T) {
 // openGate reports an open request for every run.
 type openGate struct{}
 
-func (openGate) HasOpen(context.Context, string) (bool, error) { return true, nil }
-func (openGate) RunEnded(context.Context, string, Status)      {}
-func (openGate) PromptHint() string                            { return "" }
+func (openGate) Name() string                                                       { return GateRequest }
+func (openGate) Open(context.Context, string) (bool, bool, error)                   { return true, false, nil }
+func (openGate) RunEnded(context.Context, string, Status)                           {}
+func (openGate) Claim(context.Context, string) ([]ParkDelivery, error)              { return nil, nil }
+func (openGate) Settle(context.Context, string, []ParkDelivery, ResumeResult) error { return nil }
+func (openGate) Stale(context.Context) ([]string, error)                            { return nil, nil }
+func (openGate) PromptHint(LaunchOpts) string                                       { return "" }
 
 // TestIdleWithOpenRequestParks pins the pane rule: an idle pane with an open
 // request parks at once, without the idle timeout.
@@ -345,7 +349,7 @@ func TestIdleWithOpenRequestParks(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	svc := New(st, nil, nil)
-	svc.SetRequestGate(openGate{})
+	svc.SetParker(NewParker(svc, nil, openGate{}))
 	run, err := svc.Create(context.Background(), CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", IdleTimeoutMS: 3_600_000})
 	if err != nil {
 		t.Fatal(err)

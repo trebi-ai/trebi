@@ -389,7 +389,7 @@ func TestRequestHintOnJobLaunch(t *testing.T) {
 			}
 			defer st.Close()
 			svc := runs.New(st, nil, nil)
-			svc.SetRequestGate(&gateStub{hint: "REQUESTS"})
+			svc.SetParker(runs.NewParker(svc, nil, &gateStub{hint: "REQUESTS"}))
 			lopts := wakeLaunchOpts(t, tc.kind, "demo", nil)
 			lopts.Prompt = "do it"
 			run, _, err := svc.CreateAndLaunch(context.Background(), lopts)
@@ -425,7 +425,7 @@ func parkedChain(t *testing.T, fake string) (*runs.Service, *runs.Run, string) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	svc := runs.New(st, nil, nil)
-	svc.SetRequestGate(&gateStub{open: true})
+	svc.SetParker(runs.NewParker(svc, nil, &gateStub{open: true}))
 	dir := t.TempDir()
 	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{

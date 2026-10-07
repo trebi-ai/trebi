@@ -847,7 +847,7 @@ func TestStatsRangeAndMTD(t *testing.T) {
 	}
 }
 
-// gateStub is a RequestGate with a fixed answer that records RunEnded.
+// gateStub is a request ParkGate with a fixed answer that records RunEnded.
 type gateStub struct {
 	open  bool
 	hint  string
@@ -855,9 +855,19 @@ type gateStub struct {
 	ended []runs.Status
 }
 
-func (g *gateStub) HasOpen(context.Context, string) (bool, error) { return g.open, nil }
+func (g *gateStub) Name() string { return runs.GateRequest }
 
-func (g *gateStub) PromptHint() string { return g.hint }
+func (g *gateStub) Open(context.Context, string) (bool, bool, error) { return g.open, false, nil }
+
+func (g *gateStub) Claim(context.Context, string) ([]runs.ParkDelivery, error) { return nil, nil }
+
+func (g *gateStub) Settle(context.Context, string, []runs.ParkDelivery, runs.ResumeResult) error {
+	return nil
+}
+
+func (g *gateStub) Stale(context.Context) ([]string, error) { return nil, nil }
+
+func (g *gateStub) PromptHint(runs.LaunchOpts) string { return g.hint }
 
 func (g *gateStub) RunEnded(_ context.Context, _ string, st runs.Status) {
 	g.mu.Lock()
@@ -876,7 +886,7 @@ func TestTerminateParksWithOpenRequest(t *testing.T) {
 	defer st.Close()
 	svc := runs.New(st, nil, nil)
 	gate := &gateStub{open: true}
-	svc.SetRequestGate(gate)
+	svc.SetParker(runs.NewParker(svc, nil, gate))
 	ctx := context.Background()
 
 	for _, tc := range []struct {
@@ -927,7 +937,8 @@ func TestUnparkCompletesParkedRun(t *testing.T) {
 	}
 	defer st.Close()
 	svc := runs.New(st, nil, nil)
-	svc.SetRequestGate(&gateStub{open: true})
+	gate := &gateStub{open: true}
+	svc.SetParker(runs.NewParker(svc, nil, gate))
 	ctx := context.Background()
 	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Harness: "claude"})
 	if err != nil {
@@ -936,6 +947,14 @@ func TestUnparkCompletesParkedRun(t *testing.T) {
 	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
 		t.Fatal(err)
 	}
+	// A gate with an open item keeps the run parked.
+	if err := svc.Unpark(ctx, run.ID, runs.EndRequestDismissed); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.Get(ctx, run.ID); got.Status != runs.StatusParked {
+		t.Fatalf("unpark with open item: %s", got.Status)
+	}
+	gate.open = false
 	if err := svc.Unpark(ctx, run.ID, runs.EndRequestDismissed); err != nil {
 		t.Fatal(err)
 	}
@@ -1221,4 +1240,92 @@ func openTurnSvc(t *testing.T) (*runs.Service, *store.Store, context.Context) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return runs.New(st, nil, nil), st, context.Background()
+}
+
+// readyGate has one delivery ready per Claim, then nothing.
+type readyGate struct {
+	name    string
+	waiting bool
+	d       []runs.ParkDelivery
+	settled []runs.ResumeResult
+}
+
+func (g *readyGate) Name() string { return g.name }
+
+func (g *readyGate) Open(context.Context, string) (bool, bool, error) {
+	return g.waiting, len(g.d) > 0, nil
+}
+
+func (g *readyGate) RunEnded(context.Context, string, runs.Status) {}
+
+func (g *readyGate) Claim(context.Context, string) ([]runs.ParkDelivery, error) {
+	d := g.d
+	g.d = nil
+	return d, nil
+}
+
+func (g *readyGate) Settle(_ context.Context, _ string, _ []runs.ParkDelivery, res runs.ResumeResult) error {
+	g.settled = append(g.settled, res)
+	return nil
+}
+
+func (g *readyGate) Stale(context.Context) ([]string, error) { return nil, nil }
+
+func (g *readyGate) PromptHint(runs.LaunchOpts) string { return "" }
+
+type resumeStub struct{ calls []runs.ResumeOpts }
+
+func (r *resumeStub) Resume(_ context.Context, prevID string, o runs.ResumeOpts) (*runs.Run, error) {
+	r.calls = append(r.calls, o)
+	return &runs.Run{ID: prevID, TurnCount: 2}, nil
+}
+
+func (r *resumeStub) Fresh(context.Context, string, runs.ResumeOpts) (*runs.Run, error) {
+	return nil, errors.New("no fresh")
+}
+
+// TestParkerResumesOnce pins E.2: a run that waits for a request answer and
+// an agent reply resumes once, after both, with both parts in time order.
+func TestParkerResumesOnce(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	t0 := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	req := &readyGate{name: runs.GateRequest, d: []runs.ParkDelivery{{Gate: runs.GateRequest, Prompt: "answer", At: t0.Add(time.Minute), Reason: runs.ReasonRequest}}}
+	ask := &readyGate{name: runs.GateAsk, waiting: true, d: []runs.ParkDelivery{{Gate: runs.GateAsk, Prompt: "reply", At: t0, Reason: runs.ReasonReply, HopID: "hop_1", TraceID: "T1", Path: []string{"a"}}}}
+	rs := &resumeStub{}
+	p := runs.NewParker(svc, rs, req, ask)
+	svc.SetParker(p)
+	ctx := context.Background()
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Harness: "claude", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.Get(ctx, run.ID); got.Status != runs.StatusParked || got.EndReason != runs.EndRequest || len(rs.calls) != 0 {
+		t.Fatalf("park: %s/%s calls %d", got.Status, got.EndReason, len(rs.calls))
+	}
+	ask.waiting = false
+	if err := p.Wake(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Wake(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(rs.calls) != 1 {
+		t.Fatalf("resumes %d", len(rs.calls))
+	}
+	o := rs.calls[0]
+	if o.Prompt != "reply\n\nanswer" || o.Reason != runs.ReasonReply || o.HopID != "hop_1" || o.TraceID != "T1" {
+		t.Fatalf("resume %+v", o)
+	}
+	if len(req.settled) != 1 || len(ask.settled) != 1 || req.settled[0].RunID != run.ID {
+		t.Fatalf("settled %v %v", req.settled, ask.settled)
+	}
 }

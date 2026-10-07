@@ -105,6 +105,19 @@ trebi runs list --workspace reports --kind agent --job agents/cmo --json
 trebi runs list --workspace reports --job agents/cmo/weekly-digest --json
 ```
 
+## Ask and hand off
+
+```bash
+trebi agent list --workspace reports --for "budget"
+trebi agent ask cfo "What is the Q3 budget?" --workspace reports --context "The board meets Friday." --wait 60s
+trebi agent handoff legal "Review docs/nda.md." --workspace reports
+trebi chain list --workspace reports --live
+trebi chain show <trace-id or run-id>
+trebi chain hop <hop-id>
+```
+
+An ask starts or continues a run of the target. The last message of that turn is the reply. A hand-off gives the work away; the caller gets no reply. All the work that one start causes is one chain. The workspace settings `agents.chains` set its limits: depth (`max_hops`), turns (`max_turns`), and cost (`max_usd`). Inside a run, end your turn after `agent ask`. The reply starts your next turn. `--wait` works only outside a run. An ask fails with `chain_cycle` when the target already waits for the caller: reply instead.
+
 ## Disable and delete
 
 ```bash

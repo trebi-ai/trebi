@@ -16,6 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/assistant"
+	"github.com/trebi-ai/trebi/internal/chains"
 	"github.com/trebi-ai/trebi/internal/channels"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/config"
@@ -107,6 +108,8 @@ type ControlPlane struct {
 	Webhooks  *webhooks.Service
 	Launcher  *launch.Launcher
 	Requests  *requests.Service
+	Chains    *chains.Service
+	Parker    *runs.Parker
 	State     *state.Store
 	Opts      Options
 
@@ -244,8 +247,10 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	if cfg != nil {
 		reqOpts = requests.Options{ExpireAfter: cfg.Requests.ExpireAfterDuration(), Retain: cfg.Requests.RetainDuration()}
 	}
-	reqSvc := requests.NewService(st, r, launcher, cl, requests.NewReportStore(home.RequestsDir()), reqOpts)
-	r.SetRequestGate(reqSvc)
+	reqSvc := requests.NewService(st, r, cl, requests.NewReportStore(home.RequestsDir()), reqOpts)
+	chainSvc := chains.NewService(st, ws, conv, r, slog.Default().With("source", "chains"))
+	parker := runs.NewParker(r, launcher, reqSvc, chainSvc)
+	r.SetParker(parker)
 	c := &ControlPlane{
 		Store:         st,
 		Runs:          r,
@@ -267,12 +272,15 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Webhooks:      hk,
 		Launcher:      launcher,
 		Requests:      reqSvc,
+		Chains:        chainSvc,
+		Parker:        parker,
 		State:         stateStore,
 		Opts:          opts,
 		log:           slog.Default().With("source", "daemon"),
 		queue:         q,
 	}
 	ch.WithLiveTurns(c)
+	chainSvc.WithTranscripts(c)
 	cl.WithOnChange(c.reselectEmail)
 	approvalQuestion := func(ctx context.Context, runID string) string {
 		a, err := r.PendingApproval(ctx, runID)
@@ -457,9 +465,9 @@ func (c *ControlPlane) Start(parent context.Context) {
 			defer c.wg.Done()
 			c.scheduleTicker(ctx)
 		}()
-		// Answers that came in while the daemon was down go out now.
-		if err := c.Requests.Recover(ctx); err != nil {
-			c.log.Warn("requests recover", "err", err)
+		// Answers and replies that came in while the daemon was down go out now.
+		if err := c.Parker.Recover(ctx); err != nil {
+			c.log.Warn("park recover", "err", err)
 		}
 		c.wg.Add(1)
 		go func() {

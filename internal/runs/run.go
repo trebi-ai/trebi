@@ -67,6 +67,8 @@ const (
 	EndUpdate        EndReason = "update"
 	// EndRequest parks a run that waits for the answer to a request.
 	EndRequest EndReason = "request"
+	// EndAsk parks a run that waits for the reply of another agent.
+	EndAsk EndReason = "ask"
 	// EndRequestDismissed completes a parked run whose request was dismissed.
 	EndRequestDismissed EndReason = "request_dismissed"
 )
@@ -84,6 +86,11 @@ const (
 	ReasonReport     RunReason = "report"
 	// ReasonRequest continues a parked session with the answer to a request.
 	ReasonRequest RunReason = "request"
+	// ReasonAsk and ReasonHandoff start a turn with a message of another
+	// agent. ReasonReply continues a parked caller with the reply.
+	ReasonAsk     RunReason = "ask"
+	ReasonHandoff RunReason = "handoff"
+	ReasonReply   RunReason = "reply"
 )
 
 // Kind for runs: job | agent. Declared in dispatch, the lowest
@@ -138,7 +145,7 @@ func ValidEndReason(r string) bool {
 	switch EndReason(r) {
 	case EndSentinel, EndResult, EndKeepAlive, EndKeepAliveIdle, EndIdleTimeout, EndMaxDuration,
 		EndAuth, EndLimit, EndKill, EndReplace, EndSkip, EndLaunch, EndFailed, EndSessionGone, EndUpdate,
-		EndRequest, EndRequestDismissed:
+		EndRequest, EndAsk, EndRequestDismissed:
 		return true
 	}
 	return false
@@ -168,6 +175,12 @@ type Turn struct {
 	EndedAt       *time.Time         `json:"ended_at,omitempty"`
 	DurationMS    int64              `json:"duration_ms"`
 	Tokens        pricing.TokenUsage `json:"tokens"`
+	// TraceID is the chain of this turn; HopID is the hop that started it.
+	// Path holds the agent IDs from the chain root to this agent.
+	TraceID string   `json:"trace_id"`
+	HopID   string   `json:"hop_id,omitempty"`
+	Depth   int      `json:"depth"`
+	Path    []string `json:"path,omitempty"`
 }
 
 // Outcome is a human verdict over a terminal run's machine status. The

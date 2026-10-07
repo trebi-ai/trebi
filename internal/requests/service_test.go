@@ -19,9 +19,11 @@ import (
 )
 
 type fakeRuns struct {
-	mu   sync.Mutex
-	runs map[string]*runs.Run
-	turn int
+	mu     sync.Mutex
+	runs   map[string]*runs.Run
+	turn   int
+	gate   runs.ParkGate
+	parker *runs.Parker
 }
 
 func (f *fakeRuns) put(r runs.Run) {
@@ -47,7 +49,10 @@ func (f *fakeRuns) Get(_ context.Context, id string) (*runs.Run, error) {
 	return &c, nil
 }
 
-func (f *fakeRuns) Unpark(_ context.Context, id string, end runs.EndReason) error {
+func (f *fakeRuns) Unpark(ctx context.Context, id string, end runs.EndReason) error {
+	if waiting, ready, _ := f.gate.Open(ctx, id); waiting || ready {
+		return nil
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r := f.runs[id]
@@ -56,6 +61,10 @@ func (f *fakeRuns) Unpark(_ context.Context, id string, end runs.EndReason) erro
 	}
 	r.Status, r.EndReason = runs.StatusComplete, end
 	return nil
+}
+
+func (f *fakeRuns) WakeParked(ctx context.Context, id string) error {
+	return f.parker.Wake(ctx, id)
 }
 
 func (f *fakeRuns) TurnAfter(context.Context, string, runs.RunReason, time.Time) (int, error) {
@@ -102,8 +111,8 @@ func (f *fakeLauncher) Resume(_ context.Context, prevID string, o runs.ResumeOpt
 	return f.record(launchCall{path: "resume", prevID: prevID, prompt: o.Prompt, reason: o.Reason}, f.resumeErr)
 }
 
-func (f *fakeLauncher) Fresh(_ context.Context, prevID, prompt string, reason runs.RunReason) (*runs.Run, error) {
-	return f.record(launchCall{path: "fresh", prevID: prevID, prompt: prompt, reason: reason}, f.freshErr)
+func (f *fakeLauncher) Fresh(_ context.Context, prevID string, o runs.ResumeOpts) (*runs.Run, error) {
+	return f.record(launchCall{path: "fresh", prevID: prevID, prompt: o.Prompt, reason: o.Reason}, f.freshErr)
 }
 
 func (f *fakeLauncher) Calls() []launchCall {
@@ -173,7 +182,8 @@ func (h *harness) open(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	h.st = st
-	h.svc = NewService(st, h.rs, h.launch, h.grant, NewReportStore(filepath.Join(h.dir, "requests")), Options{}).WithClock(h.clock.now)
+	h.svc = NewService(st, h.rs, h.grant, NewReportStore(filepath.Join(h.dir, "requests")), Options{}).WithClock(h.clock.now)
+	h.rs.gate, h.rs.parker = h.svc, runs.NewParker(h.rs, h.launch, h.svc)
 }
 
 // run adds a live run with a session and a working dir.
@@ -359,7 +369,7 @@ func TestPollCancelledOnRunEnd(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	r := h.create(t, h.run(t, "RUN1"), CreateOpts{Type: TypeConfirm, Title: "x", Delivery: DeliveryPoll})
-	if open, _ := h.svc.HasOpen(context.Background(), "RUN1"); open {
+	if h.pending(t, "RUN1") {
 		t.Fatal("a poll request parks the run")
 	}
 	h.rs.setStatus("RUN1", runs.StatusComplete)
@@ -392,11 +402,11 @@ func TestWaitReturnsOnAnswer(t *testing.T) {
 func TestPromptHintFollowsPlan(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	if hint := h.svc.PromptHint(); !strings.Contains(hint, "trebi request create") || !strings.Contains(hint, "[trebi] The person answered") {
+	if hint := h.svc.PromptHint(runs.LaunchOpts{}); !strings.Contains(hint, "trebi request create") || !strings.Contains(hint, "[trebi] The person answered") {
 		t.Fatalf("hint = %q", hint)
 	}
 	h.grant.ok.Store(false)
-	if hint := h.svc.PromptHint(); hint != "" {
+	if hint := h.svc.PromptHint(runs.LaunchOpts{}); hint != "" {
 		t.Fatalf("hint without a grant = %q", hint)
 	}
 }
