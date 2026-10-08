@@ -1057,9 +1057,32 @@ func countSentinels(screen, runID string) int {
 	return n
 }
 
+// memoryFixAsk starts the last line of every memory fix prompt.
+const memoryFixAsk = "Fix MEMORY.md, then "
+
 // fixMessage is the text injected into the pane when the memory gate fails.
 func fixMessage(issues []string, runID string) string {
-	return strings.Join(issues, "\n") + "\nFix MEMORY.md, then print the completion line again: `" + CompletionSentinel(runID) + "`"
+	return strings.Join(issues, "\n") + "\n" + memoryFixAsk + "print the completion line again: `" + CompletionSentinel(runID) + "`"
+}
+
+// IsMemoryFix tells if a session prompt is a memory fix that the daemon wrote.
+func IsMemoryFix(text string) bool {
+	return strings.Contains(text, "\n"+memoryFixAsk)
+}
+
+// StripCompletion removes the completion lines from assistant text.
+func StripCompletion(text string) string {
+	if !strings.Contains(text, CompletionPrefix) {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	kept := lines[:0]
+	for _, l := range lines {
+		if !strings.HasPrefix(strings.TrimSpace(l), CompletionPrefix) {
+			kept = append(kept, l)
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 // MessageResult tells how SendMessage delivered a message. Delivery is

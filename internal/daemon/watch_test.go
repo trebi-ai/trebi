@@ -68,7 +68,17 @@ func TestReadTranscriptDeltaResumeFromOffset(t *testing.T) {
 // TestIngestAcrossReopen: a reopened run appends to the same session file.
 // After a restart the cursor starts at 0, and the dedupe on the run id still
 // stores each assistant message once.
-func TestIngestAcrossReopen(t *testing.T) {
+// ingestFixture is a control plane with one claude run on a conversation.
+type ingestFixture struct {
+	c    *ControlPlane
+	st   *store.Store
+	run  *runs.Run
+	conv string
+	path string
+}
+
+func newIngestFixture(t *testing.T, sessionID string) ingestFixture {
+	t.Helper()
 	dir := t.TempDir()
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
@@ -91,40 +101,26 @@ func TestIngestAcrossReopen(t *testing.T) {
 	}
 	wd := t.TempDir()
 	run, err := c.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: ws.ID, JobID: "jb_j", JobName: "j", Harness: "claude", SessionID: "sess-i", WorkingDir: wd, ConversationID: conv.ID,
+		WorkspaceID: ws.ID, JobID: "jb_j", JobName: "j", Harness: "claude", SessionID: sessionID, WorkingDir: wd, ConversationID: conv.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	tool, _ := tmux.ByName("claude")
-	path, err := tool.TranscriptPath(home.HarnessDir("claude"), wd, "sess-i")
+	path, err := tool.TranscriptPath(home.HarnessDir("claude"), wd, sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture, err := os.ReadFile(filepath.Join("..", "tmux", "testdata", "transcripts", "claude", "resumed.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.SplitAfter(string(fixture), "\n")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(lines[0]+lines[1]), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	c.ingestRun(ctx, run)
+	return ingestFixture{c: c, st: st, run: run, conv: conv.ID, path: path}
+}
 
-	// Turn 2 appends to the file; a restart drops the in-memory cursor.
-	if err := os.WriteFile(path, fixture, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	c.turnMu.Lock()
-	c.turnCursor = nil
-	c.turnMu.Unlock()
-	c.ingestRun(ctx, run)
-	c.ingestRun(ctx, run)
-
-	rows, err := st.DB().Query(`SELECT text FROM conversation_messages WHERE conversation_id=? AND role='assistant' ORDER BY turn_index`, conv.ID)
+// assistantTexts returns the stored assistant rows in turn order.
+func (f ingestFixture) assistantTexts(t *testing.T) []string {
+	t.Helper()
+	rows, err := f.st.DB().Query(`SELECT text FROM conversation_messages WHERE conversation_id=? AND role='assistant' ORDER BY turn_index`, f.conv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +133,65 @@ func TestIngestAcrossReopen(t *testing.T) {
 		}
 		got = append(got, text)
 	}
-	if strings.Join(got, ",") != "OK,apple" {
+	return got
+}
+
+func TestIngestAcrossReopen(t *testing.T) {
+	f := newIngestFixture(t, "sess-i")
+	ctx := context.Background()
+	fixture, err := os.ReadFile(filepath.Join("..", "tmux", "testdata", "transcripts", "claude", "resumed.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(string(fixture), "\n")
+	if err := os.WriteFile(f.path, []byte(lines[0]+lines[1]), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.c.ingestRun(ctx, f.run)
+
+	// Turn 2 appends to the file; a restart drops the in-memory cursor.
+	if err := os.WriteFile(f.path, fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.c.turnMu.Lock()
+	f.c.turnCursor = nil
+	f.c.turnMu.Unlock()
+	f.c.ingestRun(ctx, f.run)
+	f.c.ingestRun(ctx, f.run)
+
+	if got := f.assistantTexts(t); strings.Join(got, ",") != "OK,apple" {
 		t.Fatalf("assistant messages %v", got)
+	}
+}
+
+// A channel reply must not carry the completion line or the answer to a
+// memory fix (run 01M4DJFC18WKPTAYSBSEHNDSWG).
+func TestIngestDropsMemoryFixAndCompletion(t *testing.T) {
+	f := newIngestFixture(t, "sess-m")
+	ctx := context.Background()
+	line := func(typ, at, content string) string {
+		return `{"type":"` + typ + `","timestamp":"2026-10-08T10:` + at + `Z","message":{"role":"` + typ + `","content":` + content + "}}\n"
+	}
+	head := line("user", "55:48.000", `"Which jobs are active?"`) +
+		line("assistant", "56:11.000", `[{"type":"text","text":"Ten jobs are active.\n\nTREBI_RUN_COMPLETE"}]`) +
+		line("user", "56:12.000", `"MEMORY.md: unchanged this run. Add a Log entry for this run.\nFix MEMORY.md, then finish the run."`)
+	tail := line("assistant", "56:20.000", `[{"type":"tool_use","name":"Edit","input":{}}]`) +
+		line("user", "56:21.000", `[{"type":"tool_result","content":"ok"}]`) +
+		line("assistant", "56:55.000", `[{"type":"text","text":"I updated MEMORY.md.\n\nTREBI_RUN_COMPLETE"}]`) +
+		line("user", "57:30.000", `"And which are off?"`) +
+		line("assistant", "57:40.000", `[{"type":"text","text":"One job is off."}]`)
+
+	// The fix answer arrives on a later tick than the fix prompt.
+	if err := os.WriteFile(f.path, []byte(head), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.c.ingestRun(ctx, f.run)
+	if err := os.WriteFile(f.path, []byte(head+tail), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.c.ingestRun(ctx, f.run)
+
+	if got := f.assistantTexts(t); strings.Join(got, "|") != "Ten jobs are active.|One job is off." {
+		t.Fatalf("assistant messages %q", got)
 	}
 }

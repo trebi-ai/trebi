@@ -582,7 +582,7 @@ func (s *Service) setRunSessionID(ctx context.Context, runID string, turn int, s
 // cliFixMessage is the memory fix on the subprocess path: no completion
 // sentinel (the wire owns completion, A.5).
 func cliFixMessage(issues []string) string {
-	return strings.Join(issues, "\n") + "\nFix MEMORY.md, then finish the run."
+	return strings.Join(issues, "\n") + "\n" + memoryFixAsk + "finish the run."
 }
 
 // pumpCLI drains the session event stream: it owns session state, the run

@@ -267,6 +267,7 @@ type transcriptCursor struct {
 	size      int64
 	mtime     int64
 	turnCount int
+	memoryFix bool // the last user turn is a memory fix
 }
 
 func readTranscriptDelta(path string, cur transcriptCursor) (data []byte, base int64, from int, skip bool, err error) {
@@ -329,9 +330,22 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 	if err != nil {
 		return
 	}
+	// The answer to a memory fix is housekeeping, not part of the reply. An
+	// empty text keeps its turn index and is not stored.
+	fix := from > 0 && cur.memoryFix
 	incoming := make([]conversations.IncomingTurn, len(turns))
 	for i, t := range turns {
-		incoming[i] = conversations.IncomingTurn{Role: t.Role, Text: t.Text, At: t.At}
+		text := t.Text
+		switch t.Role {
+		case conversations.RoleUser:
+			fix = runs.IsMemoryFix(text)
+		case conversations.RoleAssistant:
+			if fix {
+				text = ""
+			}
+			text = runs.StripCompletion(text)
+		}
+		incoming[i] = conversations.IncomingTurn{Role: t.Role, Text: text, At: t.At}
 	}
 	if _, err := c.Conversations.IngestAssistantTurnsAt(ctx, run.ID, run.ConversationID, from, incoming); err != nil {
 		c.log.Warn("turn ingest", "run_id", run.ID, "error", err)
@@ -351,6 +365,7 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 		size:      st.Size(),
 		mtime:     st.ModTime().UnixNano(),
 		turnCount: from + len(turns),
+		memoryFix: fix,
 	}
 	c.turnMu.Unlock()
 }
