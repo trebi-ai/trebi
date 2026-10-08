@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 45
+const SchemaVersion = 46
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -12,7 +12,7 @@ const SchemaVersion = 45
 //
 // Not in this change (internal bookkeeping, file index, or not yet a sync source):
 //
-//	harness_state, skill_index, job_index,
+//	harness_state, harness_usage, skill_index, job_index,
 //	event_queue, schedules, conversations
 //
 // AUTOINCREMENT (run_segments.id, run_events.id, event_log.seq) is a known
@@ -1657,6 +1657,25 @@ CREATE TABLE request_forms (
 INSERT INTO request_forms (request_id, idx, type, title, summary, target, payload_json, allow_json, report_kind, report_sha256, answer_json)
     SELECT request_id, 0, type, title, summary, target, payload_json, allow_json, report_kind, report_sha256, answer_json FROM v45_forms;
 DROP TABLE v45_forms;
+`,
+		// v46: harness plan limits (plan 2026-10-08 F3). One row per window.
+		// The old columns never had a writer, so no values move.
+		`
+ALTER TABLE harness_state DROP COLUMN limit_resets_at;
+ALTER TABLE harness_state DROP COLUMN usage_percent;
+
+CREATE TABLE harness_usage (
+	harness      TEXT NOT NULL,
+	window_key   TEXT NOT NULL,
+	scope        TEXT NOT NULL DEFAULT '',
+	minutes      INTEGER NOT NULL DEFAULT 0,
+	used_percent REAL NOT NULL,
+	resets_at    TEXT,
+	plan         TEXT NOT NULL DEFAULT '',
+	source       TEXT NOT NULL,
+	observed_at  TEXT NOT NULL,
+	PRIMARY KEY (harness, window_key, scope, minutes)
+);
 `,
 	}
 }

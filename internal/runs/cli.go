@@ -315,18 +315,18 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	}
 	bin, extra := cliExtraArgs(tool.Name(), plan.Command)
 	req := agentwire.StartRequest{
-		Harness:       agentwire.Harness(tool.Name()),
-		Binary:        bin,
-		WorkingDir:    opts.WorkingDir,
-		Env:           mergeCLIEnv(tool.Name(), actionEnv(opts.Actions), opts.Env, plan.Env, run.ID, opts.CreateOpts.ActorToken, tool.Name()),
-		MCPServers:    mcpServers(opts.Actions),
-		Skills:        actionSkills(opts.Actions),
-		SessionID:     opts.SessionID,
-		Model:         opts.Model,
-		Effort:        opts.Effort,
-		Permissions:   cliPermissionPolicy(tool.Name(), command),
-		ExtraArgs:     extra,
-		LogPath:       filepath.Join(home.RunsLogDir(), run.ID+".log"),
+		Harness:     agentwire.Harness(tool.Name()),
+		Binary:      bin,
+		WorkingDir:  opts.WorkingDir,
+		Env:         mergeCLIEnv(tool.Name(), actionEnv(opts.Actions), opts.Env, plan.Env, run.ID, opts.CreateOpts.ActorToken, tool.Name()),
+		MCPServers:  mcpServers(opts.Actions),
+		Skills:      actionSkills(opts.Actions),
+		SessionID:   opts.SessionID,
+		Model:       opts.Model,
+		Effort:      opts.Effort,
+		Permissions: cliPermissionPolicy(tool.Name(), command),
+		ExtraArgs:   extra,
+		LogPath:     filepath.Join(home.RunsLogDir(), run.ID+".log"),
 	}
 	// Home is deliberately unset: the tmux policy already renders the harness
 	// home into plan.Env (CLAUDE_CONFIG_DIR, OPENCODE_CONFIG, PI_*, the cursor
@@ -620,6 +620,12 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 			}
 		case agentwire.EventTool:
 			s.addCLIToolEvent(ctx, runID, ev)
+		case agentwire.EventLimits:
+			if ev.Limits != nil {
+				if err := s.usage.Record(ctx, opts.Harness, *ev.Limits, harness.UsageSourceRun, time.Time{}); err != nil {
+					s.log.Warn("record harness usage", "run", runID, "error", err)
+				}
+			}
 		case agentwire.EventPermission:
 			s.handleCLIPermission(ctx, runID, cr, ev)
 		case agentwire.EventError:
@@ -1176,6 +1182,11 @@ func (s *Service) onApprovalDecided(ctx context.Context, runID, key, decision st
 	}
 	snap := cr.tracker.PermissionDecided(id)
 	s.applyCLIState(ctx, runID, cr, snap)
+}
+
+// Limits reads the plan limits of a harness account without a run.
+func (s *Service) Limits(ctx context.Context, h agentwire.Harness, q agentwire.ModelQuery) (agentwire.Limits, error) {
+	return s.agentwireRuntime().Limits(ctx, h, q)
 }
 
 // AgentwireRuntime exposes the shared subprocess runtime for callers that

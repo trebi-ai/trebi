@@ -1953,6 +1953,16 @@ func BuildHarnessesListPath() string {
 	return "/v1/harnesses"
 }
 
+// BuildHarnessUsage builds GET /v1/harnesses/usage.
+func BuildHarnessUsage() HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/harnesses/usage"}
+}
+
+// BuildHarnessUsageRefresh builds POST /v1/harnesses/usage/refresh.
+func BuildHarnessUsageRefresh() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/harnesses/usage/refresh"}
+}
+
 // BuildHarnessLoginCancel builds DELETE /v1/harnesses/{name}/login.
 func BuildHarnessLoginCancel(name string) HTTPRequest {
 	return HTTPRequest{

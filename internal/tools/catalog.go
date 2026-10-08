@@ -1712,6 +1712,12 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				return request.BuildHarnessAuthGet(v[0], live), nil
 			}),
 			"models": getReq("GET /v1/harnesses/{name}/models", "name", "claude", request.BuildHarnessModels),
+			"usage": act("GET /v1/harnesses/usage", Input{}, func(Input) (request.HTTPRequest, error) {
+				return request.BuildHarnessUsage(), nil
+			}),
+			"usage_refresh": act("POST /v1/harnesses/usage/refresh", Input{}, func(Input) (request.HTTPRequest, error) {
+				return request.BuildHarnessUsageRefresh(), nil
+			}),
 			"login_start": act("POST /v1/harnesses/{name}/login", Input{"name": "claude", "mode": "uri"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "mode")
 				if err != nil {

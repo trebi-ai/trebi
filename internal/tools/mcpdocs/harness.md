@@ -37,6 +37,12 @@ Read the authentication state of one harness.
 List the models of a harness. `source` is `cli` when the harness CLI has a list command (cursor, grok, opencode, pi). `source` is `static` for claude, codex, and copilot: trebi ships their list, and a configured default that is not in it comes first. `source` is `none` with an empty list when the harness has no list, is not installed, or answered nothing; keep the configured model free-text then. `default` is the model a run uses with no pin.
 - `name` (string, required): harness name.
 
+### usage
+Read the plan limits of each harness account. No input fields. The reply is `{"harnesses":[{"harness","plan","windows":[…]}]}`. Each window has `key` (`five_hour`, `daily`, `weekly`, `monthly`, or `custom`), `scope`, `minutes`, `used_percent` (0 to 100), `resets_at`, `source` (`run`, `probe`, or `session_file`), and `observed_at`. A window past its reset time shows 0 and no `resets_at`. Today only Codex reports limits.
+
+### usage_refresh
+Read the Codex limits now, then reply as `usage`. No input fields. A second call within one minute returns 429. A failed read still returns the stored values, with `refresh_error`.
+
 ### login_start
 Start one login flow. The response carries a URI or a token prompt.
 - `name` (string, required): harness name.

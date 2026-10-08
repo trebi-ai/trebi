@@ -72,6 +72,7 @@ type Server struct {
 	outbox     *outbox.Service
 	router     *notify.Resolver
 	harness    *harness.Service
+	usage      *harness.UsagePoller
 	sched      *schedule.Service
 	email      *email.Service
 	cloud      *cloudlink.Service
@@ -187,6 +188,7 @@ func New(st *store.Store, opts Options) *Server {
 			CheckOrigin: checkWSOrigin,
 		},
 	}
+	s.usage = harness.NewUsagePoller(harness.NewUsageStore(st), r, s.harness, harness.UsagePollEvery)
 	s.chains = chains.NewService(st, ws, s.conv, r, s.requests, slog.Default().With("source", "chains"))
 	s.chains.WithAlerts(s.alerts)
 	s.requests.WithDecider(s.chains)
@@ -360,6 +362,10 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	bind(&s.launch, launcher)
 	bind(&s.requests, reqSvc)
 }
+
+// BindUsage swaps in the daemon's plan limits poller, so a refresh and the
+// poll loop share one rate limit.
+func (s *Server) BindUsage(p *harness.UsagePoller) { bind(&s.usage, p) }
 
 // BindState swaps in the daemon's state store.
 func (s *Server) BindState(st *state.Store) { bind(&s.state, st) }

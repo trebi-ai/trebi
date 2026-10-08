@@ -17,6 +17,8 @@ import (
 
 func (s *Server) routeHarness(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/harnesses", s.handleHarnesses)
+	mux.HandleFunc("GET /v1/harnesses/usage", s.handleHarnessUsage)
+	mux.HandleFunc("POST /v1/harnesses/usage/refresh", s.handleHarnessUsageRefresh)
 	mux.HandleFunc("PATCH /v1/harnesses/{name}", s.handleHarnessPatch)
 	mux.HandleFunc("POST /v1/harnesses/{name}/ensure", s.handleHarnessEnsure)
 	mux.HandleFunc("GET /v1/harnesses/{name}/auth", s.handleHarnessAuthGet)
@@ -26,6 +28,36 @@ func (s *Server) routeHarness(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/harnesses/{name}/login", s.handleHarnessLoginDelete)
 	mux.HandleFunc("GET /v1/harnesses/{name}/login/attach", s.handleHarnessLoginAttach)
 	mux.HandleFunc("POST /v1/harnesses/{name}/logout", s.handleHarnessLogout)
+}
+
+func (s *Server) handleHarnessUsage(w http.ResponseWriter, r *http.Request) {
+	s.writeHarnessUsage(w, r, "")
+}
+
+// handleHarnessUsageRefresh reads the Codex limits now. A failed read still
+// returns the stored values, with refresh_error.
+func (s *Server) handleHarnessUsageRefresh(w http.ResponseWriter, r *http.Request) {
+	refreshErr := ""
+	if err := s.usage.Refresh(r.Context()); errors.Is(err, harness.ErrRefreshTooSoon) {
+		writeErr(w, http.StatusTooManyRequests, "rate_limited", "Limits were read less than a minute ago")
+		return
+	} else if err != nil {
+		refreshErr = err.Error()
+	}
+	s.writeHarnessUsage(w, r, refreshErr)
+}
+
+func (s *Server) writeHarnessUsage(w http.ResponseWriter, r *http.Request, refreshErr string) {
+	list, err := s.usage.Store().List(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	out := map[string]any{"harnesses": list}
+	if refreshErr != "" {
+		out["refresh_error"] = refreshErr
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleHarnesses(w http.ResponseWriter, r *http.Request) {

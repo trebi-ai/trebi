@@ -352,6 +352,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "harness.pinned", Bus: false, Log: true},
 		{Name: "harness.limit_exceeded", Bus: true, Log: true},
 		{Name: "harness.limit_cleared", Bus: true, Log: true},
+		{Name: "harness.usage_updated", Bus: true, Log: true},
 		{Name: "auth.probe.failed", Bus: true, Log: true},
 		{Name: "auth.login_started", Bus: false, Log: true},
 		{Name: "auth.login_completed", Bus: false, Log: true},

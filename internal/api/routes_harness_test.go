@@ -1,12 +1,17 @@
 package api_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 func TestHarnessAuthGetMode(t *testing.T) {
@@ -155,5 +160,43 @@ func TestHarnessEnsureInstallError(t *testing.T) {
 	}
 	if body["error"] == nil || body["error"] == "" {
 		t.Fatalf("want error got %v", body)
+	}
+}
+
+type fakeLimitsReader struct{ l agentwire.Limits }
+
+func (f fakeLimitsReader) Limits(context.Context, agentwire.Harness, agentwire.ModelQuery) (agentwire.Limits, error) {
+	return f.l, nil
+}
+
+func TestHarnessUsageRoutes(t *testing.T) {
+	var st *store.Store
+	srv, base := startTestServerSeeded(t, api.Options{}, func(s *store.Store) { st = s })
+	reader := fakeLimitsReader{l: agentwire.Limits{Plan: "plus", Windows: []agentwire.LimitWindow{
+		{Key: agentwire.WindowWeekly, Minutes: 10080, UsedPercent: 42, ResetsAt: time.Now().Add(time.Hour)},
+	}}}
+	srv.BindUsage(harness.NewUsagePoller(harness.NewUsageStore(st), reader, nil, time.Hour).WithSessionDirs(t.TempDir()))
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/harnesses/usage", nil)
+	if list, _ := body["harnesses"].([]any); code != 200 || list == nil || len(list) != 0 {
+		t.Fatalf("empty: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/harnesses/usage/refresh", nil)
+	if code != 200 {
+		t.Fatalf("refresh: %d %v", code, body)
+	}
+	list, _ := body["harnesses"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("refresh body %v", body)
+	}
+	h, _ := list[0].(map[string]any)
+	wins, _ := h["windows"].([]any)
+	w0, _ := wins[0].(map[string]any)
+	if h["harness"] != "codex" || h["plan"] != "plus" || w0["key"] != "weekly" || w0["used_percent"] != 42.0 || w0["source"] != "probe" {
+		t.Fatalf("usage %v", h)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/harnesses/usage/refresh", nil)
+	if code != 429 {
+		t.Fatalf("second refresh: %d %v", code, body)
 	}
 }

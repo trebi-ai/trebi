@@ -17,6 +17,7 @@ import (
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -156,6 +157,9 @@ type Service struct {
 	rt        *agentwire.Runtime
 	cliDriver agentwire.Driver
 	cliRuns   map[string]*cliRun
+
+	// usage stores the plan limit windows that run frames report.
+	usage *harness.UsageStore
 }
 
 type sessionSnap struct {
@@ -197,6 +201,7 @@ func New(st *store.Store, composer WakeComposer, fs *files.Service) *Service {
 		cliRuns:   make(map[string]*cliRun),
 		life:      context.Background(),
 		composer:  composer,
+		usage:     harness.NewUsageStore(st),
 	}
 }
 

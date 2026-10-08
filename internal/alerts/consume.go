@@ -679,9 +679,13 @@ func (s *Service) attachApproval(ctx context.Context, item *InboxItem, question 
 }
 
 func (s *Service) checkUsage(ctx context.Context) {
+	// The highest 5-hour or weekly window of each harness. A window past
+	// its reset time does not count.
+	now := time.Now().UTC().Format(time.RFC3339)
 	rows, err := s.st.DB().QueryContext(ctx, `
-		SELECT name, usage_percent FROM harness_state
-		WHERE usage_percent IS NOT NULL`)
+		SELECT harness, MAX(used_percent) FROM harness_usage
+		WHERE window_key IN ('five_hour','weekly') AND (resets_at IS NULL OR resets_at > ?)
+		GROUP BY harness`, now)
 	if err != nil {
 		return
 	}

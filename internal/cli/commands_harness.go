@@ -29,6 +29,15 @@ func harnessCommand() *cli.Command {
 				Action: runHarnessList,
 			},
 			{
+				Name:  "usage",
+				Usage: "show the plan limits of each harness account",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "refresh", Usage: "read the Codex limits now"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runHarnessUsage,
+			},
+			{
 				Name:      "ensure",
 				Usage:     "ensure harness home + lifecycle install",
 				ArgsUsage: "<name>",
@@ -156,6 +165,61 @@ func runHarnessList(_ context.Context, c *cli.Command) error {
 	if c.Bool("check") && bad {
 		return fmt.Errorf("one or more harnesses missing")
 	}
+	return nil
+}
+
+func runHarnessUsage(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	req := request.BuildHarnessUsage()
+	if c.Bool("refresh") {
+		req = request.BuildHarnessUsageRefresh()
+	}
+	var body struct {
+		Harnesses []struct {
+			Harness string `json:"harness"`
+			Plan    string `json:"plan"`
+			Windows []struct {
+				Key         string  `json:"key"`
+				Scope       string  `json:"scope"`
+				UsedPercent float64 `json:"used_percent"`
+				ResetsAt    string  `json:"resets_at"`
+				ObservedAt  string  `json:"observed_at"`
+			} `json:"windows"`
+		} `json:"harnesses"`
+		RefreshError string `json:"refresh_error,omitempty"`
+	}
+	if err := client.DoHTTP(req, &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	if body.RefreshError != "" {
+		fmt.Fprintf(w, "refresh failed: %s\n", body.RefreshError)
+	}
+	tbl := newTable(w, []string{"Harness", "Window", "Used", "Resets in", "As of"})
+	for _, h := range body.Harnesses {
+		for _, win := range h.Windows {
+			name := win.Key
+			if win.Scope != "" {
+				name += " (" + win.Scope + ")"
+			}
+			resets := "-"
+			if t, err := time.Parse(time.RFC3339, win.ResetsAt); err == nil {
+				resets = time.Until(t).Round(time.Minute).String()
+			}
+			asOf := win.ObservedAt
+			if t, err := time.Parse(time.RFC3339, win.ObservedAt); err == nil {
+				asOf = t.Local().Format("Jan 2 15:04")
+			}
+			tbl.AppendRow(table.Row{h.Harness, name, fmt.Sprintf("%.0f%%", win.UsedPercent), resets, asOf})
+		}
+	}
+	renderTable(tbl)
 	return nil
 }
 

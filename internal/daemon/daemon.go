@@ -102,8 +102,10 @@ type ControlPlane struct {
 	Channels      *channels.Service
 	Outbox        *outbox.Service
 	// Router resolves alert and test routes.
-	Router    *notify.Resolver
-	Harness   *harness.Service
+	Router  *notify.Resolver
+	Harness *harness.Service
+	// Usage reads the Codex plan limits while Codex is logged in.
+	Usage     *harness.UsagePoller
 	Email     *email.Service
 	Proposals *proposals.Service
 	Cloud     *cloudlink.Service
@@ -282,6 +284,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		log:           slog.Default().With("source", "daemon"),
 		queue:         q,
 	}
+	c.Usage = harness.NewUsagePoller(harness.NewUsageStore(st), r, c.Harness, harness.UsagePollEvery)
 	ch.WithLiveTurns(c)
 	chainSvc.WithTranscripts(c)
 	cl.WithOnChange(c.reselectEmail)
@@ -547,6 +550,11 @@ func (c *ControlPlane) Start(parent context.Context) {
 		go func() {
 			defer c.wg.Done()
 			c.authProbe(ctx)
+		}()
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.Usage.Run(ctx)
 		}()
 	}
 }
