@@ -53,6 +53,15 @@ func jobCommand() *cli.Command {
 				Action:    runJobUnpause,
 			},
 			&cli.Command{
+				Name:      "rename",
+				Usage:     "rename the last part of a job name; the folder moves and the ID stays",
+				ArgsUsage: "<name> <to>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				},
+				Action: runJobRename,
+			},
+			&cli.Command{
 				Name:      "validate",
 				Usage:     "validate job frontmatter",
 				ArgsUsage: "<name>",
@@ -395,6 +404,18 @@ func runJobUnpause(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	return client.DoHTTP(request.BuildJobPause(c.Args().Get(0), workspaceFor(c), c.String("if-match"), false), nil)
+}
+
+func runJobRename(_ context.Context, c *cli.Command) error {
+	args := c.Args().Slice()
+	if len(args) != 2 {
+		return fmt.Errorf("usage: trebi job rename <name> <to>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(request.BuildJobRename(workspaceFlag(c), args[0], args[1]), nil)
 }
 
 func runJobValidate(_ context.Context, c *cli.Command) error {

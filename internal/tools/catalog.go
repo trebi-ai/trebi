@@ -1090,6 +1090,17 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			}),
 			"pause":   act("POST /v1/jobs/{name}/pause", Input{"name": "nightly-sync"}, jobPauseAction(true)),
 			"unpause": act("POST /v1/jobs/{name}/unpause", Input{"name": "nightly-sync"}, jobPauseAction(false)),
+			"rename": act("POST /v1/jobs/{name}/rename", Input{"workspace": "ws1", "name": "agents/cmo/weekly", "to": "weekly-digest"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("name", "to")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				ws, err := in.str("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildJobRename(ws, v[0], v[1]), nil
+			}),
 			"validate": act("POST /v1/jobs/{name}/validate", Input{"name": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace")
 				if err != nil {
@@ -1519,7 +1530,11 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildAgentRename(v[0], v[1], v[2]), nil
+				dryRun, err := in.flag("dry_run")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentRename(v[0], v[1], v[2], dryRun), nil
 			}),
 			"ask": act("POST /v1/workspaces/{id}/agents/{name}/ask", Input{"workspace": "ws1", "name": "cfo", "text": "What is the Q3 budget?"}, func(in Input) (request.HTTPRequest, error) {
 				ws, name, body, err := in.agentAsk()

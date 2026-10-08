@@ -580,21 +580,78 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "conflict", "agent has a live run")
 		return
 	}
-	if err := s.ws.RenameAgent(r.Context(), ws.ID, fromShort, body.To); err != nil {
-		switch {
-		case errors.Is(err, workspaces.ErrAgentExists):
-			writeErr(w, http.StatusConflict, "conflict", "agent exists")
-		case errors.Is(err, workspaces.ErrAgentLiveRun):
-			writeErr(w, http.StatusConflict, "conflict", "agent has a live run")
-		default:
-			writeResolveErr(w, err, "agent")
-		}
+	askers, err := s.agentAskers(r.Context(), ws.ID, fromShort)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"renamed": true, "from": fromShort, "to": body.To,
-		"from_index": row.Name, "to_index": request.AgentIndexName(body.To),
-	})
+	email := ""
+	if s.email != nil {
+		email, _ = s.email.AgentAddress(r.Context(), ws.ID, body.To) // a channel error never fails the rename
+	}
+	reply := agentRenamed{
+		Renamed: true, From: fromShort, To: body.To,
+		FromIndex: row.Name, ToIndex: request.AgentIndexName(body.To),
+		Askers: askers, EmailAddress: email,
+	}
+	if r.URL.Query().Get("dry_run") == "1" {
+		if fromShort == body.To {
+			writeErr(w, http.StatusConflict, "conflict", "An agent with this name exists")
+			return
+		}
+		if _, err := s.findAgentRow(r.Context(), ws.ID, body.To); err == nil {
+			writeErr(w, http.StatusConflict, "conflict", "An agent with this name exists")
+			return
+		}
+		reply.Renamed = false
+		reply.DryRun = true
+		writeJSON(w, http.StatusOK, reply)
+		return
+	}
+	moved, err := s.ws.RenameAgent(r.Context(), ws.ID, fromShort, body.To)
+	if err != nil {
+		if errors.Is(err, workspaces.ErrExists) {
+			writeErr(w, http.StatusConflict, "conflict", "An agent with this name exists")
+			return
+		}
+		writeRenameErr(w, err, "agent")
+		return
+	}
+	s.recomputeMoved(r.Context(), ws.ID, moved)
+	writeJSON(w, http.StatusOK, reply)
+}
+
+// agentRenamed is the reply of an agent rename. Askers are the agents whose
+// team.can_ask lists the old name; the rename does not rewrite them.
+type agentRenamed struct {
+	Renamed      bool     `json:"renamed"`
+	DryRun       bool     `json:"dry_run,omitempty"`
+	From         string   `json:"from"`
+	To           string   `json:"to"`
+	FromIndex    string   `json:"from_index"`
+	ToIndex      string   `json:"to_index"`
+	Askers       []string `json:"askers"`
+	EmailAddress string   `json:"email_address"`
+}
+
+// agentAskers returns the short names of the agents whose team.can_ask
+// lists name.
+func (s *Server) agentAskers(ctx context.Context, wsID, name string) ([]string, error) {
+	rows, err := s.ws.ListJobs(ctx, wsID)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for _, row := range rows {
+		if row.Kind != "agent" {
+			continue
+		}
+		j, _ := job.ParseFile(row.Path)
+		if j != nil && j.Team != nil && slices.Contains(j.Team.CanAsk, name) {
+			out = append(out, strings.TrimPrefix(row.Name, "agents/"))
+		}
+	}
+	return out, nil
 }
 
 // agentPayload is the agent wire shape: the job show fields plus memory,

@@ -716,10 +716,21 @@ func BuildAgentGetPath(workspaceID, name string) string {
 }
 
 // BuildAgentRename builds POST /v1/workspaces/{id}/agents/{name}/rename.
-func BuildAgentRename(workspaceID, from, to string) HTTPRequest {
+// A dry run returns the reply without the move.
+func BuildAgentRename(workspaceID, from, to string, dryRun bool) HTTPRequest {
+	path := BuildAgentGetPath(workspaceID, from) + "/rename"
+	if dryRun {
+		path += "?dry_run=1"
+	}
+	return HTTPRequest{Method: "POST", Path: path, Body: map[string]string{"to": to}}
+}
+
+// BuildJobRename builds POST /v1/jobs/{name}/rename. to is the new last
+// segment of the name.
+func BuildJobRename(workspace, name, to string) HTTPRequest {
 	return HTTPRequest{
 		Method: "POST",
-		Path:   BuildAgentGetPath(workspaceID, from) + "/rename",
+		Path:   withQuery("/v1/jobs/"+url.PathEscape(name)+"/rename", workspaceQ(workspace)),
 		Body:   map[string]string{"to": to},
 	}
 }

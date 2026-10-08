@@ -133,6 +133,7 @@ func agentManageSubcommands() []*cli.Command {
 			Usage:     "rename an agent folder and rewrite stored references",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				&cli.BoolFlag{Name: "dry-run", Usage: "show the new email address and the agents that ask this one; do not move"},
 			},
 			Action: runAgentRename,
 		},
@@ -489,7 +490,7 @@ func runAgentRename(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildAgentRename(wsID, args[0], args[1]), nil)
+	return client.DoHTTP(request.BuildAgentRename(wsID, args[0], args[1], c.Bool("dry-run")), nil)
 }
 
 // agentRows collects the agents of every workspace, or of the one the want

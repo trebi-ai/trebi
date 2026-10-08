@@ -620,3 +620,39 @@ func TestWorkspaceChainSettings(t *testing.T) {
 		t.Fatalf("out of range: %d %v", code, body)
 	}
 }
+
+// TestAgentRenameDryRunAndAskers: a dry run moves nothing and names the
+// agents whose team.can_ask lists the old name.
+func TestAgentRenameDryRunAndAskers(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	for name, md := range map[string]string{
+		"cmo": "---\ndescription: CMO.\n---\n\nMarket.\n",
+		"cfo": "---\ndescription: CFO.\nteam:\n  can_ask: [cmo]\n---\n\nCount.\n",
+	} {
+		dir := filepath.Join(wsDir, "agents", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wsID := addWorkspace(t, base, wsDir, "rename-agents")
+	path := base + "/v1/workspaces/" + wsID + "/agents/cmo/rename"
+
+	code, body, _ := doJSON(t, "POST", path+"?dry_run=1", map[string]any{"to": "growth"})
+	if code != 200 || body["dry_run"] != true || body["renamed"] != false || fmt.Sprint(body["askers"]) != "[cfo]" {
+		t.Fatalf("dry run: %d %v", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cmo", "AGENT.md")); err != nil {
+		t.Fatalf("dry run moved the folder: %v", err)
+	}
+	if code, body, _ := doJSON(t, "POST", path+"?dry_run=1", map[string]any{"to": "cfo"}); code != 409 {
+		t.Fatalf("dry run conflict: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "POST", path, map[string]any{"to": "growth"})
+	if code != 200 || body["renamed"] != true || body["to_index"] != "agents/growth" {
+		t.Fatalf("rename: %d %v", code, body)
+	}
+}

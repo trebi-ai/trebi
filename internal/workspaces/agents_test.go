@@ -21,7 +21,7 @@ func TestRenameAgentKeepsReferencesAndEmitsOnce(t *testing.T) {
 	svc, wsID, root, agentID, jobID := renameFixture(ctx, t, st)
 	seq := mustSeq(t, st)
 
-	if err := svc.RenameAgent(ctx, wsID, "old", "new"); err != nil {
+	if _, err := svc.RenameAgent(ctx, wsID, "old", "new"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "agents/new/AGENT.md")); err != nil {
@@ -86,17 +86,17 @@ func TestRenameAgentConflictsAndRollsBackTransaction(t *testing.T) {
 	if _, err := st.DB().ExecContext(ctx, `INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`, "live", wsID, agentID, "agent", "running", "trace", time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.RenameAgent(ctx, wsID, "old", "new"); !errors.Is(err, workspaces.ErrAgentLiveRun) {
+	if _, err := svc.RenameAgent(ctx, wsID, "old", "new"); !errors.Is(err, workspaces.ErrLiveRun) {
 		t.Fatalf("live err=%v", err)
 	}
 
 	if _, err := st.DB().ExecContext(ctx, `DELETE FROM runs WHERE id='live'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.RenameAgent(ctx, wsID, "old", "new"); err != nil {
+	if _, err := svc.RenameAgent(ctx, wsID, "old", "new"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.RenameAgent(ctx, wsID, "new", "new"); err == nil {
+	if _, err := svc.RenameAgent(ctx, wsID, "new", "new"); err == nil {
 		t.Fatal("same rename unexpectedly succeeded")
 	}
 
@@ -106,7 +106,7 @@ func TestRenameAgentConflictsAndRollsBackTransaction(t *testing.T) {
 	if _, err := st2.DB().ExecContext(ctx, `CREATE TRIGGER force_rename_failure BEFORE UPDATE ON job_index WHEN new.name LIKE 'agents/new%' BEGIN SELECT RAISE(ABORT, 'forced'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc2.RenameAgent(ctx, ws2, "old", "new"); err == nil {
+	if _, err := svc2.RenameAgent(ctx, ws2, "old", "new"); err == nil {
 		t.Fatal("forced transaction failure did not surface")
 	}
 	if _, err := os.Stat(filepath.Join(root2, "agents/old/AGENT.md")); err != nil {

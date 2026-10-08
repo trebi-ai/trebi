@@ -268,6 +268,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		// job
 		{Name: "job.created", Bus: true, Log: true},
 		{Name: "job.updated", Bus: true, Log: true},
+		{Name: "job.renamed", Bus: true, Log: true},
 		{Name: "job.deleted", Bus: true, Log: true},
 		{Name: "job.parse_failed", Bus: false, Log: true},
 		{Name: "job.id_assigned", Bus: true, Log: true},

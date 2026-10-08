@@ -151,6 +151,12 @@ Restore automatic scheduling of one job.
 - `workspace` (string, optional): workspace id.
 - `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
 
+### rename
+Change the last part of a job name. The job folder moves with `JOB.md`, `MEMORY.md`, and the other files. The job keeps its ID, its owner, its schedules, and its earlier runs; resume of an earlier run uses the new folder. Only the last segment changes: `agents/cmo/weekly` with `to: "digest"` becomes `agents/cmo/digest`. A live run returns `conflict`; so does an existing target. A job at the workspace root returns `validation`. The reply is `{"id", "from", "to"}` with the full old and new names.
+- `name` (string, required): job name.
+- `to` (string, required): new last segment; lowercase letters, digits, and hyphens, up to 64 characters.
+- `workspace` (string, optional): workspace id.
+
 ### validate
 Check one job definition without running it.
 - `name` (string, required): job name.

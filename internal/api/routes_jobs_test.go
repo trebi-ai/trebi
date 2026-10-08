@@ -428,3 +428,43 @@ func fireWorkspace(t *testing.T, base string) string {
 	writeJobFile(t, wsDir, "j")
 	return addWorkspace(t, base, wsDir, "ws")
 }
+
+// TestJobRenameRoute: the flat route takes a loose name, the subtree takes an
+// owned name, and each refusal has its own status.
+func TestJobRenameRoute(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "report")
+	writeJobFile(t, wsDir, "other")
+	writeJobFile(t, wsDir, "agents/keeper/build")
+	if err := os.WriteFile(filepath.Join(wsDir, "agents", "keeper", "AGENT.md"), []byte("---\ndescription: Keeper.\n---\n\nKeep.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wsID := addWorkspace(t, base, wsDir, "rename-jobs")
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/report/rename?workspace="+wsID, map[string]any{"to": "weekly"})
+	if code != http.StatusOK || body["from"] != "report" || body["to"] != "weekly" || body["id"] == "" {
+		t.Fatalf("loose rename: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/agents/keeper/build/rename?workspace="+wsID, map[string]any{"to": "ship"})
+	if code != http.StatusOK || body["to"] != "agents/keeper/ship" {
+		t.Fatalf("owned rename: %d %v", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "keeper", "ship", "JOB.md")); err != nil {
+		t.Fatalf("owned folder: %v", err)
+	}
+	cases := []struct {
+		path, to string
+		want     int
+	}{
+		{"weekly", "Bad Name", http.StatusBadRequest},
+		{"weekly", "other", http.StatusConflict},
+		{"missing", "x", http.StatusNotFound},
+	}
+	for _, c := range cases {
+		code, body, _ := doJSON(t, "POST", base+"/v1/jobs/"+c.path+"/rename?workspace="+wsID, map[string]any{"to": c.to})
+		if code != c.want {
+			t.Fatalf("%s -> %s: %d %v, want %d", c.path, c.to, code, body, c.want)
+		}
+	}
+}

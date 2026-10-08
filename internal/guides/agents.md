@@ -53,7 +53,7 @@ Put `email.style` in the `assistant:` block of `trebi.yaml` to set the style of 
 trebi agent rename cmo growth --workspace reports
 ```
 
-Rename moves the whole folder and rewrites runs, queued events, schedules, and email history in one transaction. It refuses an existing target or a live run.
+Rename moves the whole folder and rewrites runs, queued events, schedules, and email history in one transaction. Earlier runs resume in the new folder. It refuses an existing target or a live run. The agent email address changes with the name. Add `--dry-run` to see the new address and the agents whose `team.can_ask` lists the old name; the rename does not change those agents.
 
 ## Templates, kits, budget, and reports
 

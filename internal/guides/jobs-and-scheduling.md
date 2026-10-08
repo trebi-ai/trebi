@@ -125,6 +125,14 @@ trebi job schedule my-job "@every 15m"
 
 `job schedule` is **local only**; remote: `job patch` the triggers / `job pause`. Event triggers: `trebi guide connectors-and-rules`.
 
+## Rename
+
+```bash
+trebi --workspace reports job rename agents/cmo/weekly digest
+```
+
+Rename changes the last part of the name only (`agents/cmo/weekly` becomes `agents/cmo/digest`). The folder moves with its files. The job keeps its ID, schedules, and earlier runs. It refuses an existing target, a live run, and a job at the workspace root.
+
 ## Delete
 
 Ask the user first. `--purge` removes the job folder; plain delete leaves supporting files (`files_remaining` may be set).

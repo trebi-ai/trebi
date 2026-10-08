@@ -31,6 +31,7 @@ func (s *Server) routeJobs(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/jobs/{name}/run", s.handleJobRun)
 	mux.HandleFunc("POST /v1/jobs/{name}/pause", s.handleJobPause)
 	mux.HandleFunc("POST /v1/jobs/{name}/unpause", s.handleJobUnpause)
+	mux.HandleFunc("POST /v1/jobs/{name}/rename", s.handleJobRename)
 	mux.HandleFunc("POST /v1/jobs/validate", s.handleJobValidateText)
 	mux.HandleFunc("POST /v1/jobs/{name}/validate", s.handleJobValidate)
 	mux.HandleFunc("GET /v1/schedules", s.handleSchedules)
@@ -307,6 +308,76 @@ func (s *Server) setJobDisabled(w http.ResponseWriter, r *http.Request, disabled
 	}
 	_ = s.ws.RebuildIndex(r.Context(), ws)
 	writeJSON(w, http.StatusOK, map[string]any{"name": row.Name, "disabled": disabled})
+}
+
+type jobRenameRequest struct {
+	To string `json:"to"`
+}
+
+// handleJobRename changes the last segment of a job name. The folder moves;
+// the ID, owner, schedules, and earlier runs stay.
+func (s *Server) handleJobRename(w http.ResponseWriter, r *http.Request) {
+	row, ok := s.resolveJob(w, r, r.PathValue("name"))
+	if !ok {
+		return
+	}
+	if !s.requireAgentJobScope(w, r, row) {
+		return
+	}
+	var body jobRenameRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	live, err := s.runs.HasLiveJobs(r.Context(), row.WorkspaceID, row.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if live {
+		writeErr(w, http.StatusConflict, "conflict", "Stop the running run first")
+		return
+	}
+	res, moved, err := s.ws.RenameJob(r.Context(), row.WorkspaceID, row.Name, body.To)
+	if err != nil {
+		writeRenameErr(w, err, "job")
+		return
+	}
+	s.recomputeMoved(r.Context(), row.WorkspaceID, moved)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// writeRenameErr maps the rename errors of a job or agent to HTTP.
+func writeRenameErr(w http.ResponseWriter, err error, noun string) {
+	switch {
+	case errors.Is(err, workspaces.ErrInvalidName):
+		writeErr(w, http.StatusBadRequest, "validation", "A job name uses lowercase letters, digits, and hyphens")
+	case errors.Is(err, workspaces.ErrRootJob):
+		writeErr(w, http.StatusBadRequest, "validation", "A job at the workspace root has the workspace name. Rename the workspace.")
+	case errors.Is(err, workspaces.ErrNotJob):
+		writeErr(w, http.StatusBadRequest, "validation", "This is an agent. Use the agent rename.")
+	case errors.Is(err, workspaces.ErrExists):
+		writeErr(w, http.StatusConflict, "conflict", "A "+noun+" with this name exists")
+	case errors.Is(err, workspaces.ErrLiveRun):
+		writeErr(w, http.StatusConflict, "conflict", "Stop the running run first")
+	case errors.Is(err, workspaces.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", noun+" not found")
+	default:
+		writeResolveErr(w, err, noun)
+	}
+}
+
+// recomputeMoved refreshes the schedules of moved jobs. The rows are keyed by
+// job ID, so an unchanged trigger keeps its next due time.
+func (s *Server) recomputeMoved(ctx context.Context, wsID string, moved []*job.Job) {
+	for _, j := range moved {
+		if j == nil || j.ParseError != "" {
+			continue
+		}
+		if err := s.sched.RecomputeFromJob(ctx, wsID, j, time.Time{}); err != nil {
+			s.log.Warn("schedule recompute after rename failed", "workspace", wsID, "job", j.Name, "error", err)
+		}
+	}
 }
 
 func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
@@ -966,6 +1037,8 @@ func (s *Server) handleJobsSubtree(w http.ResponseWriter, r *http.Request) {
 		s.handleJobDelete(w, r)
 	case "POST /run", "POST /pause", "POST /unpause", "POST /validate":
 		s.handleJobRunForTail(w, r, tail)
+	case "POST /rename":
+		s.handleJobRename(w, r)
 	case "GET /memory":
 		s.handleMemoryGet(w, r, memoryJob)
 	case "PUT /memory":
