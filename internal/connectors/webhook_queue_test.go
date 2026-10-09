@@ -44,12 +44,11 @@ func TestWebhookQueueDeliversInOrderOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The event of a delivery commits before its row is deleted.
 	waitUntil(t, 10*time.Second, func() bool {
-		return count(`SELECT COUNT(*) FROM events WHERE instance = ? AND source_id IN ('d1', 'd2')`, c.ID) == 2
-	}, "the deliveries made no events")
-	if n := count(`SELECT COUNT(*) FROM webhook_deliveries`); n != 0 {
-		t.Fatalf("rows left = %d", n)
-	}
+		return count(`SELECT COUNT(*) FROM events WHERE instance = ? AND source_id IN ('d1', 'd2')`, c.ID) == 2 &&
+			count(`SELECT COUNT(*) FROM webhook_deliveries`) == 0
+	}, "the deliveries made no events, or rows stayed")
 	if n := count(`SELECT COUNT(*) FROM events WHERE instance = ? AND source_id = 'd1' AND id < (SELECT id FROM events WHERE source_id = 'd2')`, c.ID); n != 1 {
 		t.Fatal("d2 came before d1")
 	}
