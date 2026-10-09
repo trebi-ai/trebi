@@ -1,6 +1,7 @@
 //go:build darwin && cgo
 
 #import <Cocoa/Cocoa.h>
+#import <UserNotifications/UserNotifications.h>
 #include "menubar_darwin.h"
 #include "_cgo_export.h"
 
@@ -16,8 +17,48 @@ static uintptr_t handle;
 }
 @end
 
+// TrayDelegate gets the reopen event, trebi:// links, and notification clicks.
+@interface TrayDelegate : NSObject <NSApplicationDelegate, UNUserNotificationCenterDelegate>
+@end
+
+@implementation TrayDelegate
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible {
+	trayReopen(handle);
+	return NO;
+}
+
+- (void)openURL:(NSAppleEventDescriptor *)event withReplyEvent:(NSAppleEventDescriptor *)reply {
+	NSString *url = [[event paramDescriptorForKeyword:keyDirectObject] stringValue];
+	if (url.length) {
+		trayOpenLink(handle, (char *)url.UTF8String);
+	}
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+	willPresentNotification:(UNNotification *)notification
+	  withCompletionHandler:(void (^)(UNNotificationPresentationOptions))done {
+	done(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+	didReceiveNotificationResponse:(UNNotificationResponse *)response
+		 withCompletionHandler:(void (^)(void))done {
+	NSString *route = response.notification.request.content.userInfo[@"route"];
+	if ([response.actionIdentifier isEqualToString:UNNotificationDefaultActionIdentifier] && route.length) {
+		trayNotificationClicked(handle, (char *)route.UTF8String);
+	}
+	done();
+}
+@end
+
 static NSStatusItem *statusItem;
 static TrayTarget *target;
+static TrayDelegate *delegate;
+
+// UNUserNotificationCenter throws outside a bundle, so a bare binary posts none.
+static BOOL canNotify(void) {
+	return NSBundle.mainBundle.bundleIdentifier.length > 0;
+}
 
 void trayRun(uintptr_t h) {
 	handle = h;
@@ -25,6 +66,19 @@ void trayRun(uintptr_t h) {
 		[NSApplication sharedApplication];
 		[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 		target = [TrayTarget new];
+		delegate = [TrayDelegate new];
+		NSApp.delegate = delegate;
+		[[NSAppleEventManager sharedAppleEventManager] setEventHandler:delegate
+			andSelector:@selector(openURL:withReplyEvent:)
+			forEventClass:kInternetEventClass
+			andEventID:kAEGetURL];
+		if (canNotify()) {
+			UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+			center.delegate = delegate;
+			[center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge)
+				completionHandler:^(BOOL granted, NSError *error){
+				}];
+		}
 		statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
 		statusItem.menu = [NSMenu new];
 		statusItem.menu.autoenablesItems = NO;
@@ -113,4 +167,29 @@ void trayTerminate(void) {
 	dispatch_async(dispatch_get_main_queue(), ^{
 		[NSApp terminate:nil];
 	});
+}
+
+void trayNotify(const char *id, const char *title, const char *body, const char *route) {
+	if (!canNotify()) {
+		return;
+	}
+	UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+	content.title = [NSString stringWithUTF8String:title];
+	content.body = [NSString stringWithUTF8String:body];
+	content.sound = UNNotificationSound.defaultSound;
+	content.userInfo = @{@"route" : [NSString stringWithUTF8String:route]};
+	UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:[NSString stringWithUTF8String:id]
+		content:content
+		trigger:nil];
+	[UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:nil];
+}
+
+void trayWithdraw(const char *id) {
+	if (!canNotify()) {
+		return;
+	}
+	NSArray *ids = @[ [NSString stringWithUTF8String:id] ];
+	UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+	[center removeDeliveredNotificationsWithIdentifiers:ids];
+	[center removePendingNotificationRequestsWithIdentifiers:ids];
 }

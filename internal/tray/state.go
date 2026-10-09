@@ -19,19 +19,22 @@ type Controller interface {
 // Tray is the menu-bar app. It starts the service, restarts it when it stops
 // on its own, and leaves it down when the user stops it.
 type Tray struct {
-	ctl Controller
-	log *slog.Logger
-	ctx context.Context // process lifetime; set by Run
+	ctl   Controller
+	shell Shell
+	log   *slog.Logger
+	ctx   context.Context // process lifetime; set by Run
 
 	mu        sync.Mutex
 	snap      Snapshot
 	items     []Item
 	lastStart time.Time
+	feedBase  string
+	feedStop  context.CancelFunc
 }
 
-// New builds a tray over ctl.
-func New(ctl Controller) *Tray {
-	return &Tray{ctl: ctl, log: slog.Default().With("source", "tray")}
+// New builds a tray over ctl. shell opens the app window.
+func New(ctl Controller, shell Shell) *Tray {
+	return &Tray{ctl: ctl, shell: shell, log: slog.Default().With("source", "tray")}
 }
 
 // Status is the service state that the tray shows.
@@ -54,6 +57,7 @@ type Snapshot struct {
 	Draining       bool
 	RunningCount   int
 	WaitingCount   int
+	HasShell       bool
 }
 
 // Action is what a menu item does when clicked. ActionNone is a text row.
@@ -61,7 +65,8 @@ type Action int
 
 const (
 	ActionNone Action = iota
-	ActionOpen
+	ActionOpenApp
+	ActionOpenBrowser
 	ActionStart
 	ActionRestart
 	ActionStop
@@ -84,11 +89,21 @@ func (s Snapshot) Menu() []Item {
 	if s.Status == StatusRunning {
 		items = append(items, Item{Text: s.activity()})
 	}
+	// Without the shell, "Open Trebi" opens the browser.
 	open := Item{Text: "Open Trebi"}
+	browser := Item{Text: "Open Trebi in Browser"}
 	if s.Status == StatusRunning {
-		open.Action = ActionOpen
+		open.Action = ActionOpenBrowser
+		browser.Action = ActionOpenBrowser
+		if s.HasShell {
+			open.Action = ActionOpenApp
+		}
 	}
-	items = append(items, Item{Separator: true}, open, Item{Separator: true})
+	items = append(items, Item{Separator: true}, open)
+	if s.HasShell {
+		items = append(items, browser)
+	}
+	items = append(items, Item{Separator: true})
 	if s.Status == StatusStopped {
 		items = append(items, Item{Text: "Start Service", Action: ActionStart})
 	} else {

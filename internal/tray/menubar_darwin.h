@@ -5,3 +5,5 @@ void traySetIcon(const void *png, int len, const char *title);
 void traySetMenu(const char *json);
 int trayAlert(const char *message, const char *info, const char *ok, const char *cancel);
 void trayTerminate(void);
+void trayNotify(const char *id, const char *title, const char *body, const char *route);
+void trayWithdraw(const char *id);

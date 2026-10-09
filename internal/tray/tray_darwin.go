@@ -4,7 +4,7 @@ package tray
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework Cocoa
+#cgo LDFLAGS: -framework Cocoa -framework UserNotifications
 #include <stdint.h>
 #include <stdlib.h>
 #include "menubar_darwin.h"
@@ -16,9 +16,9 @@ import (
 	_ "embed"
 	"encoding/json"
 	"net/http"
-	"os"
 	"os/exec"
 	"runtime/cgo"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -71,6 +71,35 @@ func trayClicked(h C.uintptr_t, id C.int) {
 	go t.do(action)
 }
 
+// The user opened Trebi.app again while the tray runs.
+//
+//export trayReopen
+func trayReopen(h C.uintptr_t) {
+	t := cgo.Handle(h).Value().(*Tray)
+	go t.openApp("/")
+}
+
+//export trayOpenLink
+func trayOpenLink(h C.uintptr_t, link *C.char) {
+	t := cgo.Handle(h).Value().(*Tray)
+	route, err := RouteFromLink(C.GoString(link))
+	if err != nil {
+		t.log.Warn("tray: deep link rejected", "err", err)
+		return
+	}
+	go t.openApp(route)
+}
+
+//export trayNotificationClicked
+func trayNotificationClicked(h C.uintptr_t, route *C.char) {
+	t := cgo.Handle(h).Value().(*Tray)
+	r := C.GoString(route)
+	if !strings.HasPrefix(r, "/") {
+		r = "/"
+	}
+	go t.openApp(r)
+}
+
 func (t *Tray) supervise() {
 	t.start()
 	t.refresh(true)
@@ -118,6 +147,10 @@ func (t *Tray) refresh(force bool) {
 		if snap.Status != StatusRunning && sinceStart < startGrace {
 			snap.Status = StatusStarting
 		}
+	}
+	snap.HasShell = t.shell.Available()
+	if snap.Status == StatusRunning {
+		t.follow(snap.URL)
 	}
 
 	t.mu.Lock()
@@ -169,8 +202,10 @@ func (t *Tray) do(action Action) {
 	snap := t.snap
 	t.mu.Unlock()
 	switch action {
-	case ActionOpen:
-		t.open(snap.URL)
+	case ActionOpenApp:
+		t.openApp("/")
+	case ActionOpenBrowser:
+		t.open(snap.URL + "/")
 	case ActionStart:
 		t.start()
 	case ActionRestart:
@@ -217,6 +252,56 @@ func (t *Tray) open(target string) {
 	}
 }
 
+// openApp opens the shell at path, or the browser when no shell exists.
+func (t *Tray) openApp(path string) {
+	t.mu.Lock()
+	base := t.snap.URL
+	t.mu.Unlock()
+	if base == "" {
+		base = DaemonURL()
+	}
+	if !t.shell.Available() {
+		t.open(base + path)
+		return
+	}
+	if err := t.shell.Open(base, path); err != nil {
+		t.log.Warn("tray: open shell failed", "err", err)
+		t.open(base + path)
+	}
+}
+
+// follow starts the notification feed for base, and stops the feed of an
+// earlier base. The feed stops with the tray.
+func (t *Tray) follow(base string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if base == t.feedBase {
+		return
+	}
+	if t.feedStop != nil {
+		t.feedStop()
+	}
+	ctx, cancel := context.WithCancel(t.ctx)
+	t.feedBase, t.feedStop = base, cancel
+	go NewFeed(base, notify, withdraw).Run(ctx)
+}
+
+func notify(n Notice) {
+	cs := []*C.char{C.CString(n.ID), C.CString(n.Title), C.CString(n.Body), C.CString(n.Route)}
+	defer func() {
+		for _, c := range cs {
+			C.free(unsafe.Pointer(c))
+		}
+	}()
+	C.trayNotify(cs[0], cs[1], cs[2], cs[3])
+}
+
+func withdraw(id string) {
+	c := C.CString(id)
+	defer C.free(unsafe.Pointer(c))
+	C.trayWithdraw(c)
+}
+
 func alert(message, info, ok, cancel string) bool {
 	cs := []*C.char{C.CString(message), C.CString(info), C.CString(ok), C.CString(cancel)}
 	defer func() {
@@ -229,18 +314,9 @@ func alert(message, info, ok, cancel string) bool {
 
 func fetchHealth() Snapshot {
 	not := Snapshot{Status: StatusNotResponding}
-	data, err := os.ReadFile(home.APIJSONPath())
-	if err != nil {
-		return not
-	}
-	var doc struct {
-		URL string `json:"url"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil || doc.URL == "" {
-		return not
-	}
+	base := DaemonURL()
 	client := &http.Client{Timeout: 1500 * time.Millisecond}
-	resp, err := client.Get(doc.URL + "/v1/system/health")
+	resp, err := client.Get(base + "/v1/system/health")
 	if err != nil {
 		return not
 	}
@@ -263,7 +339,7 @@ func fetchHealth() Snapshot {
 	}
 	return Snapshot{
 		Status:         StatusRunning,
-		URL:            doc.URL,
+		URL:            base,
 		Version:        body.Version,
 		EditionVersion: body.EditionVersion,
 		UIVersion:      body.UIVersion,

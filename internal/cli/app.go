@@ -17,6 +17,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/platform"
+	"github.com/trebi-ai/trebi/internal/tray"
 	"github.com/urfave/cli/v3"
 )
 
@@ -413,7 +414,8 @@ func readFileOrStdin(path string) (string, error) {
 }
 
 // runRoot runs when no command is given. Opened as Trebi.app, it installs
-// the service when needed and starts it with the tray. Otherwise it shows help.
+// the service when needed and starts it with the tray. It opens the window
+// after a new install, and when the tray already runs. Otherwise it shows help.
 func runRoot(ctx context.Context, c *cli.Command) error {
 	if c.NArg() > 0 {
 		return fmt.Errorf("unknown command %q; run: trebi --help", c.Args().First())
@@ -423,10 +425,22 @@ func runRoot(ctx context.Context, c *cli.Command) error {
 		return cli.ShowAppHelp(c)
 	}
 	svc := appStateFor(c).platform
-	if !svc.Installed() {
+	fresh := !svc.Installed()
+	running := svc.TrayRunning()
+	if fresh {
 		if err := svc.Install(platform.InstallOpts{Bin: exe}); err != nil {
 			return err
 		}
 	}
-	return svc.Start()
+	if err := svc.Start(); err != nil {
+		return err
+	}
+	if !fresh && !running {
+		return nil
+	}
+	shell := tray.NewShell(exe)
+	if !shell.Available() {
+		return nil
+	}
+	return shell.Open(tray.DaemonURL(), "/")
 }

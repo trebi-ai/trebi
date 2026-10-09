@@ -344,6 +344,15 @@ func (s *Service) DaemonState() (loaded, running bool) {
 	return true, strings.Contains(string(out), `"PID" =`)
 }
 
+// TrayRunning reports whether the tray process runs.
+func (s *Service) TrayRunning() bool {
+	if s.plistDir != "" {
+		return false
+	}
+	out, err := exec.Command("launchctl", "list", TrayLabel).Output()
+	return err == nil && strings.Contains(string(out), `"PID" =`)
+}
+
 // Status reports launchd label state, one line per installed agent.
 func (s *Service) Status() (string, error) {
 	if runtime.GOOS != "darwin" {

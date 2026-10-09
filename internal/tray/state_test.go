@@ -21,14 +21,29 @@ func TestSnapshotMenu(t *testing.T) {
 				"Trebi is running", "2 runs active · 1 waiting for you", "", "Open Trebi", "",
 				"Restart Service", "Stop Service", "", "Open Log", "Show Trebi Folder", "", "About Trebi", "Quit Trebi",
 			},
-			actions: map[string]Action{"Open Trebi": ActionOpen, "Restart Service": ActionRestart, "Stop Service": ActionStop, "Quit Trebi": ActionQuit},
+			actions: map[string]Action{"Open Trebi": ActionOpenBrowser, "Restart Service": ActionRestart, "Stop Service": ActionStop, "Quit Trebi": ActionQuit},
 			title:   "1",
 		},
 		{
 			name:    "running idle and draining",
 			snap:    Snapshot{Status: StatusRunning, Draining: true},
 			texts:   []string{"Trebi is running · new runs paused", "No runs active", "", "Open Trebi", "", "Restart Service", "Stop Service", "", "Open Log", "Show Trebi Folder", "", "About Trebi", "Quit Trebi"},
-			actions: map[string]Action{"Open Trebi": ActionOpen},
+			actions: map[string]Action{"Open Trebi": ActionOpenBrowser},
+		},
+		{
+			name: "running with shell",
+			snap: Snapshot{Status: StatusRunning, HasShell: true},
+			texts: []string{
+				"Trebi is running", "No runs active", "", "Open Trebi", "Open Trebi in Browser", "",
+				"Restart Service", "Stop Service", "", "Open Log", "Show Trebi Folder", "", "About Trebi", "Quit Trebi",
+			},
+			actions: map[string]Action{"Open Trebi": ActionOpenApp, "Open Trebi in Browser": ActionOpenBrowser},
+		},
+		{
+			name:    "stopped with shell",
+			snap:    Snapshot{Status: StatusStopped, HasShell: true},
+			texts:   []string{"Trebi is stopped", "", "Open Trebi", "Open Trebi in Browser", "", "Start Service", "", "Open Log", "Show Trebi Folder", "", "About Trebi", "Quit Trebi"},
+			actions: map[string]Action{"Open Trebi": ActionNone, "Open Trebi in Browser": ActionNone},
 		},
 		{
 			name:    "stopped",

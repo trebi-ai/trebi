@@ -247,7 +247,11 @@ func serviceDaemonSubcommands() []*cli.Command {
 				if !tray.Available {
 					return fmt.Errorf("the tray needs macOS and a cgo build")
 				}
-				return tray.New(appStateFor(c).platform).Run(ctx)
+				exe, err := os.Executable()
+				if err != nil {
+					return err
+				}
+				return tray.New(appStateFor(c).platform, tray.NewShell(exe)).Run(ctx)
 			},
 		},
 		{
