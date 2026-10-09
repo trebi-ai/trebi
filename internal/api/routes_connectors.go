@@ -463,8 +463,10 @@ func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
 		writeErrDetails(w, http.StatusBadRequest, "validation", err.Error(), details)
 	case errors.Is(err, connectors.ErrInvalid):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-	case errors.Is(err, connectors.ErrNotFound):
+	case errors.Is(err, connectors.ErrNotFound), errors.Is(err, connectors.ErrSubscriptionNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, connectors.ErrNoSubscriptions):
+		writeErr(w, http.StatusBadRequest, "unsupported", err.Error())
 	case errors.Is(err, connectors.ErrExists),
 		errors.Is(err, connectors.ErrLoadFailed),
 		errors.Is(err, connectors.ErrSlugRewrite):

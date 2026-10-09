@@ -59,7 +59,20 @@ The cloud forwards one MCP HTTP POST from a remote client (Claude, ChatGPT) as o
 
 ## Webhook ingress
 
-`webhook-ingress.v1.json` holds `v`, `id`, `method`, `path`, `content_type`, `headers`, `body`, and `received_at`. `headers` is an allowlist so the daemon can verify a sender signature. The cloud does not parse `body` into a job.
+`webhook-ingress.v1.json` holds `v`, `id`, `hook_id`, `method`, `path`, `query`, `content_type`, `headers`, `body`, `received_at`, and `handshake`. `id` is the payload id; the daemon uses it to remove a repeated delivery. `hook_id` is the id of the hook that got the request. `query` is the raw query string without `?`. The cloud does not parse `body` into a job.
+
+`headers` is an allowlist so the daemon can verify a sender signature. The cloud forwards a fixed base list plus the names that the hook declared at mint time.
+
+`POST /v1/hooks` takes `hook-mint-request.v1.json`: `label`, plus the optional `headers` and `handshake`. It answers `hook-mint-response.v1.json`: `id`, `token`, and `url`. A header name matches `^[a-z0-9-]{1,64}$`; there are at most 16. The cloud refuses `authorization`, `cookie`, `set-cookie`, `proxy-authorization`, and each name that starts with `cf-` or `x-forwarded-`.
+
+The `handshake` rules are `query_echo:<param>`, `json_echo:<field>`, `header_echo:<header>`, and `ok:GET` or `ok:HEAD`. There are at most 4. The cloud tries them in order, and the first match answers:
+
+- `query_echo:<param>`: the query has `<param>`. Answer 200 `text/plain` with the value.
+- `json_echo:<field>`: the body is a JSON object with a string `<field>` and no other key except `type` and `token`. Answer 200 `application/json` `{"<field>": value}`.
+- `header_echo:<header>`: the request has `<header>`. Answer 200 with the same header and value, and no body.
+- `ok:GET`, `ok:HEAD`: the method matches and no echo rule matched. Answer 200 with no body.
+
+The cloud forwards an echo match with `handshake: true`. It does not forward an `ok` match. A request that matches no rule is a normal delivery: its method must be `POST`, `PUT`, or `PATCH`, else the cloud answers 405. The cloud answers a normal delivery with 204 and buffers it. `hook-handshake.v1.json` holds the cases that the cloud and the daemon both run.
 
 ## Versioning
 

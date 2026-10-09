@@ -76,6 +76,46 @@ func TestProtocolSandbox(t *testing.T) {
 	}
 }
 
+// TestProtocolSubscriptions proves the subscriptions and webhooks steps on
+// an api and a manual sandbox, and a fail on a sandbox that accepts a
+// changed body.
+func TestProtocolSubscriptions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		target string
+		faults []string
+		hooks  string
+	}{
+		{"api", "r1", nil, conformance.StatusPass},
+		{"manual", fakeadapter.ManualTarget, nil, conformance.StatusPass},
+		{"forged", "r1", []string{fakeadapter.FaultAcceptForged}, conformance.StatusFail},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sb := reference()
+			sb.Faults = tc.faults
+			sb.Result.Features = []string{"rooms.list", manifest.FeatureSubscriptions, manifest.FeatureWebhooks}
+			sb.Options = map[string][]protocol.FieldOption{fakeadapter.FieldTarget: {{Value: tc.target}}}
+			target := sandboxTarget(t, sb)
+			target.Manifest.Channel.Features = []string{"rooms.list"}
+			target.Manifest.Events.Subscriptions = &manifest.Subscriptions{
+				Action:  "Watch a target",
+				Modes:   []string{manifest.ModeAPI, manifest.ModeManual},
+				Fields:  []manifest.SubscriptionField{{Name: fakeadapter.FieldTarget, Label: "Target", Dynamic: true, Room: true}},
+				Webhook: &manifest.Webhook{Headers: []string{fakeadapter.SignatureHeader}},
+			}
+			rows := statuses(conformance.NewRunner(nil).Run(context.Background(), target, []string{conformance.SuiteProtocol}), conformance.SuiteProtocol)
+			if r := rows["subscriptions"]; r.Status != conformance.StatusPass {
+				t.Fatalf("subscriptions = %+v", r)
+			}
+			if r := rows["webhooks"]; r.Status != tc.hooks {
+				t.Fatalf("webhooks = %+v", r)
+			}
+		})
+	}
+}
+
 func TestInputsMissing(t *testing.T) {
 	t.Parallel()
 	sb := reference()

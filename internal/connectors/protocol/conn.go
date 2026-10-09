@@ -102,14 +102,15 @@ const (
 	rpcServerError    = -32000
 )
 
-// MaxLine is the largest line on the wire (1 MiB).
-const MaxLine = 1 << 20
+// MaxLine is the largest line on the wire (4 MiB). A 1 MiB webhook body
+// in a JSON string can need more than 1 MiB.
+const MaxLine = 4 << 20
 
 var (
 	// ErrClosed is a call on a Conn whose reader ended.
 	ErrClosed = errors.New("connector session closed")
 	// ErrLineTooLong is a line over MaxLine.
-	ErrLineTooLong = errors.New("connector line over 1 MiB")
+	ErrLineTooLong = errors.New("connector line over 4 MiB")
 	// ErrNotJSONRPC is a stdout line that is not a JSON-RPC 2.0 message.
 	ErrNotJSONRPC = errors.New("stdout line is not JSON-RPC 2.0")
 )

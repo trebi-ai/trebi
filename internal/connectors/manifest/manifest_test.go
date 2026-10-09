@@ -3,7 +3,10 @@ package manifest_test
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -78,6 +81,79 @@ func TestValidateRules(t *testing.T) {
 		{"input name", func(m *manifest.Manifest) {
 			m.Setup.Inputs = []manifest.Input{{Name: "A-B"}}
 		}, []string{"setup.inputs[0].name"}},
+		{"subscriptions valid", func(m *manifest.Manifest) { m.Events.Subscriptions = watch() }, nil},
+		{"subscriptions on lines", func(m *manifest.Manifest) {
+			m.Events.Protocol, m.Channel, m.Setup = "lines", nil, nil
+			m.Events.Subscriptions = watch()
+		}, []string{"events.subscriptions"}},
+		{"subscriptions no action", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Action = ""
+		}, []string{"events.subscriptions.action"}},
+		{"subscriptions long action", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Action = "Watch every repository of every organization you own"
+		}, []string{"events.subscriptions.action"}},
+		{"subscriptions no modes", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Modes = nil
+		}, []string{"events.subscriptions.modes"}},
+		{"subscriptions duplicate mode", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Modes = []string{"poll", "poll"}
+		}, []string{"events.subscriptions.modes"}},
+		{"subscriptions api needs webhook", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Webhook = nil
+		}, []string{"events.subscriptions.webhook"}},
+		{"subscriptions poll needs no webhook", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Modes, m.Events.Subscriptions.Webhook = []string{"poll", "stream"}, nil
+		}, nil},
+		{"subscriptions bad field name", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Fields[0].Name = "Team"
+		}, []string{"events.subscriptions.fields[0].name"}},
+		{"subscriptions duplicate field", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Fields[1].Name = "team"
+		}, []string{"events.subscriptions.fields[1].name"}},
+		{"subscriptions no label", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Fields[0].Label = ""
+		}, []string{"events.subscriptions.fields[0].label"}},
+		{"subscriptions choices and dynamic", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Fields[1].Dynamic = true
+		}, []string{"events.subscriptions.fields[1].dynamic"}},
+		{"subscriptions bad default", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Fields[1].Default = "Project"
+		}, []string{"events.subscriptions.fields[1].default"}},
+		{"subscriptions two rooms", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Fields[1].Room, m.Events.Subscriptions.Fields[1].Multiple = true, false
+		}, []string{"events.subscriptions.fields"}},
+		{"subscriptions multiple room", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Fields[0].Multiple = true
+		}, []string{"events.subscriptions.fields[0].multiple"}},
+		{"subscriptions denied header", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Webhook.Headers = []string{"x-ok", "authorization", "cf-ray", "x-forwarded-for"}
+		}, []string{"events.subscriptions.webhook.headers[1]", "events.subscriptions.webhook.headers[2]", "events.subscriptions.webhook.headers[3]"}},
+		{"subscriptions bad header", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Webhook.Headers = []string{"X-Upper"}
+		}, []string{"events.subscriptions.webhook.headers[0]"}},
+		{"subscriptions bad rule", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Webhook.Handshake = []string{"ok:POST"}
+		}, []string{"events.subscriptions.webhook.handshake[0]"}},
+		{"subscriptions too many rules", func(m *manifest.Manifest) {
+			m.Events.Subscriptions = watch()
+			m.Events.Subscriptions.Webhook.Handshake = []string{"ok:GET", "ok:HEAD", "json_echo:a", "json_echo:b", "json_echo:c"}
+		}, []string{"events.subscriptions.webhook.handshake"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -239,5 +315,137 @@ func TestEventSchemas(t *testing.T) {
 	m.Events.Types[0].Schema = "missing.json"
 	if _, err := m.EventSchemas(dir); err == nil {
 		t.Fatal("a missing schema file must fail")
+	}
+}
+
+// watch is a valid subscriptions block with a room field and a multiple
+// choice field.
+func watch() *manifest.Subscriptions {
+	return &manifest.Subscriptions{
+		Action: "Watch a team",
+		Modes:  []string{manifest.ModeAPI, manifest.ModePoll},
+		Fields: []manifest.SubscriptionField{
+			{Name: "team", Label: "Team", Dynamic: true, Room: true},
+			{Name: "resources", Label: "Changes to", Choices: []string{"Issue", "Comment"}, Multiple: true, Default: "Issue"},
+		},
+		Webhook: &manifest.Webhook{Headers: []string{"linear-signature"}, Handshake: []string{"json_echo:challenge"}},
+	}
+}
+
+func TestSubscriptionsCheck(t *testing.T) {
+	t.Parallel()
+	s := *watch()
+	s.Fields[0].Required = true
+	types := []manifest.EventType{{Type: "issue"}, {Type: "comment"}}
+	cases := []struct {
+		name   string
+		values map[string][]string
+		types  []string
+		fields []string
+	}{
+		{"valid", map[string][]string{"team": {"ENG"}, "resources": {"Issue", "Comment"}}, []string{"issue"}, nil},
+		{"required", map[string][]string{"resources": {"Issue"}}, nil, []string{"values.team"}},
+		{"unknown field", map[string][]string{"team": {"ENG"}, "label": {"x"}}, nil, []string{"values.label"}},
+		{"one value", map[string][]string{"team": {"ENG", "OPS"}}, nil, []string{"values.team"}},
+		{"bad choice", map[string][]string{"team": {"ENG"}, "resources": {"Cycle"}}, nil, []string{"values.resources"}},
+		{"long value", map[string][]string{"team": {string(make([]byte, manifest.MaxValueBytes+1))}}, nil, []string{"values.team"}},
+		{"unknown type", map[string][]string{"team": {"ENG"}}, []string{"push"}, []string{"types"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var got []string
+			for _, e := range s.Check(tc.values, tc.types, types) {
+				got = append(got, e.Field)
+			}
+			if !slices.Equal(got, tc.fields) {
+				t.Fatalf("fields %v, want %v", got, tc.fields)
+			}
+		})
+	}
+	if got := s.WithDefaults(map[string][]string{"team": {"ENG"}}); !slices.Equal(got["resources"], []string{"Issue"}) {
+		t.Fatalf("defaults %v", got)
+	}
+}
+
+func TestFeaturesWithSubscriptions(t *testing.T) {
+	t.Parallel()
+	m := load(t, "testdata/whatsapp/trebi-connector.yaml")
+	m.Events.Subscriptions = watch()
+	got := m.Features()
+	if !slices.Contains(got, manifest.FeatureSubscriptions) || got[len(got)-1] != manifest.FeatureWebhooks {
+		t.Fatalf("features %v", got)
+	}
+	m.Events.Subscriptions.Webhook = nil
+	if slices.Contains(m.Features(), manifest.FeatureWebhooks) {
+		t.Fatal("webhooks without a webhook block")
+	}
+}
+
+// TestWebhookAnswer runs the shared handshake cases. The cloud runs the
+// same file.
+func TestWebhookAnswer(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "cloudlink", "testdata", "contract", "hook-handshake.v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name    string            `json:"name"`
+		Rules   []string          `json:"rules"`
+		Method  string            `json:"method"`
+		Query   string            `json:"query"`
+		Headers map[string]string `json:"headers"`
+		Body    string            `json:"body"`
+		Answer  *struct {
+			Status      int               `json:"status"`
+			Headers     map[string]string `json:"headers"`
+			ContentType string            `json:"content_type"`
+			Body        string            `json:"body"`
+		} `json:"answer"`
+		Forward bool `json:"forward"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) < 8 {
+		t.Fatalf("only %d cases", len(cases))
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			t.Parallel()
+			q, err := url.ParseQuery(tc.Query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := http.Header{}
+			for k, v := range tc.Headers {
+				h.Set(k, v)
+			}
+			got := manifest.Webhook{Handshake: tc.Rules}.Answer(manifest.HandshakeRequest{Method: tc.Method, Query: q, Headers: h, Body: []byte(tc.Body)})
+			if tc.Answer == nil {
+				if got != nil {
+					t.Fatalf("answer %+v, want a normal delivery", got)
+				}
+				if !tc.Forward {
+					t.Fatal("a normal delivery is always forwarded")
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("no answer")
+			}
+			if got.Status != tc.Answer.Status || got.ContentType != tc.Answer.ContentType || got.Body != tc.Answer.Body || got.Forward != tc.Forward {
+				t.Fatalf("answer %+v, want %+v forward %v", got, tc.Answer, tc.Forward)
+			}
+			if len(got.Headers) != len(tc.Answer.Headers) {
+				t.Fatalf("headers %v, want %v", got.Headers, tc.Answer.Headers)
+			}
+			for k, v := range tc.Answer.Headers {
+				if got.Headers[k] != v {
+					t.Fatalf("header %s = %q, want %q", k, got.Headers[k], v)
+				}
+			}
+		})
 	}
 }

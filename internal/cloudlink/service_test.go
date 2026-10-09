@@ -132,7 +132,7 @@ func TestCallsRequireLink(t *testing.T) {
 	if _, err := svc.MintAddress(ctx, "ws-1", "acme"); !errors.Is(err, ErrNotLinked) {
 		t.Errorf("MintAddress error = %v, want ErrNotLinked", err)
 	}
-	if _, err := svc.MintHook(ctx, "deploy"); !errors.Is(err, ErrNotLinked) {
+	if _, err := svc.MintHook(ctx, MintHookRequest{Label: "deploy"}); !errors.Is(err, ErrNotLinked) {
 		t.Errorf("MintHook error = %v, want ErrNotLinked", err)
 	}
 	if err := svc.DeleteHook(ctx, "hook-1"); !errors.Is(err, ErrNotLinked) {

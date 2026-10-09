@@ -430,12 +430,12 @@ func (s *Service) DeleteAddress(ctx context.Context, id string) error {
 
 // MintHook mints one hosted webhook. The row belongs to the webhooks
 // package; this is the signed call only.
-func (s *Service) MintHook(ctx context.Context, label string) (Hook, error) {
+func (s *Service) MintHook(ctx context.Context, req MintHookRequest) (Hook, error) {
 	c, err := s.client()
 	if err != nil {
 		return Hook{}, err
 	}
-	return c.MintHook(ctx, label)
+	return c.MintHook(ctx, req)
 }
 
 // DeleteHook revokes one hosted webhook (signed call only).

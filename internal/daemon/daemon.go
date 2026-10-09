@@ -245,6 +245,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	cl := cloudlink.New(st).WithMail(em)
 	hk := webhooks.New(st, connector, cl)
 	cl.WithWebhooks(hk)
+	connector.WithHooks(hk)
 	proposalSvc := proposals.NewService(st, fs, ws, st, r)
 	launcher := launch.NewLauncher(ws, r)
 	reqOpts := requests.Options{}
@@ -492,6 +493,11 @@ func (c *ControlPlane) Start(parent context.Context) {
 		go func() {
 			defer c.wg.Done()
 			c.connectorUpdates(ctx)
+		}()
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.cloudHooks(ctx)
 		}()
 	}
 

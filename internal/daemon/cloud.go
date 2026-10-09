@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"context"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/config"
@@ -110,4 +111,40 @@ func (c *ControlPlane) reselectEmail(ctx context.Context) {
 	c.configureCloud(cfg)
 	c.configureEmail(cfg)
 	c.syncEmailAddresses(ctx)
+}
+
+// cloudHookTopics change which connections can get a hosted hook.
+//
+//nolint:gochecknoglobals // static table
+var cloudHookTopics = []string{"cloud.linked", "cloud.entitlement", "cloud.unlinked"}
+
+// cloudHooks follows the link events on the bus. A change reconciles the
+// connection hooks; an unlink first drops the rows. It ends with ctx.
+func (c *ControlPlane) cloudHooks(ctx context.Context) {
+	after, err := c.Store.LatestSeq(ctx)
+	if err != nil {
+		c.log.Warn("cloud hooks", "err", err)
+	}
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		events, err := c.Store.ListBus(ctx, after, cloudHookTopics, 50)
+		if err != nil || len(events) == 0 {
+			continue
+		}
+		after = events[len(events)-1].Seq
+		for _, ev := range events {
+			if ev.Topic == "cloud.unlinked" {
+				if err := c.Webhooks.ReleaseAll(ctx); err != nil {
+					c.log.Warn("cloud hooks", "err", err)
+				}
+			}
+		}
+		c.Connectors.HooksChanged(ctx)
+	}
 }

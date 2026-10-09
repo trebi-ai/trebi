@@ -16,6 +16,7 @@ import (
 	"rsc.io/qr"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/conformance"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
@@ -27,7 +28,7 @@ import (
 // connectorSessionCommands are the live side of a connector: login, rooms,
 // and the workspace layer.
 func connectorSessionCommands() []*cli.Command {
-	return []*cli.Command{
+	cmds := []*cli.Command{
 		{
 			Name:      "login",
 			Usage:     "log in to a connector account and follow the steps",
@@ -115,6 +116,70 @@ func connectorSessionCommands() []*cli.Command {
 			Action: runConnectorBind,
 		},
 		connectorOverrideCommand(),
+	}
+	return append(cmds, connectorWatchCommands()...)
+}
+
+// connectorWatchCommands manage the subscriptions of a connection.
+func connectorWatchCommands() []*cli.Command {
+	set := func() cli.Flag {
+		return &cli.StringSliceFlag{Name: "set", Usage: "field value as name=value; repeat it for a field with more than one value"}
+	}
+	events := func() cli.Flag {
+		return &cli.StringSliceFlag{Name: "events", Usage: "event types to keep, comma separated (default: all)"}
+	}
+	return []*cli.Command{
+		{
+			Name:      "watching",
+			Usage:     "list the things that a connector watches and their state",
+			ArgsUsage: "<connector>",
+			Flags: []cli.Flag{
+				&cli.BoolFlag{Name: "sync", Usage: "ask the connector for a new state first"},
+				&cli.BoolFlag{Name: "reveal", Usage: "show secret values in the steps"},
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
+			Action: runConnectorWatching,
+		},
+		{
+			Name:      "watch",
+			Usage:     "watch a new thing, such as a repository or a project",
+			ArgsUsage: "<connector>",
+			Flags:     []cli.Flag{set(), events(), &cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+			Action:    runConnectorWatch,
+		},
+		{
+			Name:      "watch-options",
+			Usage:     "list the values that a watch field accepts",
+			ArgsUsage: "<connector> <field>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "query", Usage: "match on the value or its label"},
+				set(),
+				&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (next_cursor of the previous page)"},
+				&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Usage: "max rows"},
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
+			Action: runConnectorWatchOptions,
+		},
+		{
+			Name:      "watch-set",
+			Usage:     "change the fields or the events of one watch",
+			ArgsUsage: "<connector> <id>",
+			Flags:     []cli.Flag{set(), events(), &cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+			Action:    runConnectorWatchSet,
+		},
+		{
+			Name:      "unwatch",
+			Usage:     "stop one watch",
+			ArgsUsage: "<connector> <id>",
+			Action:    runConnectorUnwatch,
+		},
+		{
+			Name:      "watch-finish",
+			Usage:     "send the values that a watch asks for to finish its setup",
+			ArgsUsage: "<connector> <id>",
+			Flags:     []cli.Flag{set(), &cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+			Action:    runConnectorWatchFinish,
+		},
 	}
 }
 
@@ -699,5 +764,212 @@ func runConnectorOverrideDelete(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "connector %s has no layer in workspace %s\n", name, c.String("workspace"))
+	return nil
+}
+
+// watchValues reads repeated --set name=value flags. A name given twice
+// becomes a list.
+func watchValues(c *cli.Command) (map[string]any, error) {
+	if !c.IsSet("set") {
+		return nil, nil
+	}
+	out := map[string]any{}
+	for _, kv := range c.StringSlice("set") {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("--set %q: use name=value", kv)
+		}
+		switch cur := out[k].(type) {
+		case nil:
+			out[k] = v
+		case string:
+			out[k] = []string{cur, v}
+		case []string:
+			out[k] = append(cur, v)
+		}
+	}
+	return out, nil
+}
+
+// watchEvents reads --events. An empty value clears the list.
+func watchEvents(c *cli.Command) []string {
+	if !c.IsSet("events") {
+		return nil
+	}
+	out := []string{}
+	for _, v := range c.StringSlice("events") {
+		for _, t := range strings.Split(v, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
+func runConnectorWatching(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var view connectors.SubscriptionView
+	if c.Bool("sync") {
+		err = client.DoHTTP(request.BuildConnectorSubscriptionsSync(ref), &view)
+	} else {
+		err = client.GetJSON(request.BuildConnectorSubscriptionsPath(ref), &view)
+	}
+	if err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, view)
+	}
+	w := outWriter(c)
+	switch view.Webhook.State {
+	case connectors.WebhookReady:
+		fmt.Fprintln(w, "Live updates: on")
+	case connectors.WebhookUnavailable:
+		fmt.Fprintln(w, "Live updates: off, link Trebi Cloud")
+	}
+	tbl := newTable(w, []string{"ID", "Title", "Events", "Mode", "State", "Expires"})
+	for _, r := range view.Subscriptions {
+		tbl.AppendRow(table.Row{r.ID, dash(r.Title), dashOr(strings.Join(r.Types, ","), "all"), dash(r.Mode), dash(r.State), dash(r.ExpiresAt)})
+	}
+	renderTable(tbl)
+	for _, r := range view.Subscriptions {
+		if r.Action != nil {
+			printWatchAction(w, ref.Ref, r.ID, r.Action, c.Bool("reveal"))
+		}
+	}
+	return nil
+}
+
+// printWatchAction prints the steps of one watch that needs a person.
+func printWatchAction(w io.Writer, ref, id string, a *protocol.Action, reveal bool) {
+	fmt.Fprintf(w, "\n%s: %s\n", id, a.Text)
+	if a.URL != "" {
+		fmt.Fprintf(w, "  open: %s\n", a.URL)
+	}
+	for _, v := range a.Show {
+		val := v.Value
+		if v.Secret && !reveal {
+			val = "******** (--reveal shows it)"
+		}
+		fmt.Fprintf(w, "  %s: %s\n", v.Label, val)
+	}
+	if len(a.Ask) > 0 {
+		args := make([]string, 0, len(a.Ask))
+		for _, f := range a.Ask {
+			args = append(args, "--set "+f.Name+"=...")
+		}
+		fmt.Fprintf(w, "  then: trebi connector watch-finish %s %s %s\n", ref, id, strings.Join(args, " "))
+	}
+}
+
+func runConnectorWatch(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
+	}
+	values, err := watchValues(c)
+	if err != nil {
+		return err
+	}
+	return doWatchRequest(c, request.BuildConnectorSubscribe(ref, values, watchEvents(c)), "watch added")
+}
+
+func runConnectorWatchSet(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	id := c.Args().Get(1)
+	if err != nil || id == "" {
+		return fmt.Errorf("usage: trebi connector watch-set <connector> <id> [--set name=value] [--events a,b]")
+	}
+	values, err := watchValues(c)
+	if err != nil {
+		return err
+	}
+	return doWatchRequest(c, request.BuildConnectorSubscriptionSet(ref, id, values, watchEvents(c)), "watch "+id+" changed")
+}
+
+func runConnectorUnwatch(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	id := c.Args().Get(1)
+	if err != nil || id == "" {
+		return fmt.Errorf("usage: trebi connector unwatch <connector> <id>")
+	}
+	return doWatchRequest(c, request.BuildConnectorUnsubscribe(ref, id), "watch "+id+" stopped")
+}
+
+func runConnectorWatchFinish(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	id := c.Args().Get(1)
+	if err != nil || id == "" {
+		return fmt.Errorf("usage: trebi connector watch-finish <connector> <id> --set name=value")
+	}
+	values, err := watchValues(c)
+	if err != nil {
+		return err
+	}
+	fields := map[string]string{}
+	for k, v := range values {
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("--set %s: give one value", k)
+		}
+		fields[k] = s
+	}
+	return doWatchRequest(c, request.BuildConnectorSubscriptionSubmit(ref, id, fields), "watch "+id+" sent")
+}
+
+// doWatchRequest sends one watch change and prints the result.
+func doWatchRequest(c *cli.Command, req request.HTTPRequest, done string) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(req, &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	fmt.Fprintln(outWriter(c), done)
+	return nil
+}
+
+func runConnectorWatchOptions(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	field := c.Args().Get(1)
+	if err != nil || field == "" {
+		return fmt.Errorf("usage: trebi connector watch-options <connector> <field> [--query Q] [--set name=value]")
+	}
+	values, err := watchValues(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildConnectorSubscriptionOptions(ref, field, c.String("query"), values, c.String("cursor"), c.Int("limit")), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	options, _ := body["options"].([]any)
+	tbl := newTable(outWriter(c), []string{"Value", "Label", "Description"})
+	for _, raw := range options {
+		m, _ := raw.(map[string]any)
+		tbl.AppendRow(table.Row{mapStr(m, "value"), dash(mapStr(m, "label")), dash(mapStr(m, "description"))})
+	}
+	renderTable(tbl)
+	printNextCursor(c, body)
 	return nil
 }

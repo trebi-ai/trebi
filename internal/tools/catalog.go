@@ -198,6 +198,29 @@ func (in Input) connectorRef() (request.ConnectorRef, error) {
 	return request.ConnectorRef{Ref: ref}, err
 }
 
+// subscriptionBody reads connector, values, and types. An explicit types
+// list, also an empty one, is kept; an absent one is nil.
+func (in Input) subscriptionBody() (request.ConnectorRef, map[string]any, []string, error) {
+	c, err := in.connectorRef()
+	if err != nil {
+		return c, nil, nil, err
+	}
+	values, err := in.obj("values")
+	if err != nil {
+		return c, nil, nil, err
+	}
+	var types []string
+	if _, ok := in["types"]; ok {
+		if types, err = in.strList("types"); err != nil {
+			return c, nil, nil, err
+		}
+		if types == nil {
+			types = []string{}
+		}
+	}
+	return c, values, types, nil
+}
+
 // strMap reads one string-to-string object field: nil when the field is absent.
 func (in Input) strMap(key string) (map[string]string, error) {
 	m, err := in.obj(key)
@@ -2070,6 +2093,81 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				return mcpGet(request.BuildConnectorDependentsPath(c)), nil
+			}),
+			"subscriptions": act("GET /v1/connectors/{ref}/subscriptions", Input{"connector": "github"}, func(in Input) (request.HTTPRequest, error) {
+				c, err := in.connectorRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildConnectorSubscriptionsPath(c)), nil
+			}),
+			"subscription_options": act("POST /v1/connectors/{ref}/subscriptions/options", Input{
+				"connector": "github", "field": "repository", "q": "trebi",
+			}, func(in Input) (request.HTTPRequest, error) {
+				c, err := in.connectorRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				v, err := in.head("field", "q", "cursor")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				values, err := in.obj("values")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				limit, _, err := in.num("limit")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildConnectorSubscriptionOptions(c, v[0], v[1], values, v[2], limit), nil
+			}),
+			"subscribe": act("POST /v1/connectors/{ref}/subscriptions", Input{
+				"connector": "github", "values": map[string]any{"repository": "trebi-ai/trebi"}, "types": []any{"pull_request"},
+			}, func(in Input) (request.HTTPRequest, error) {
+				c, values, types, err := in.subscriptionBody()
+				return request.BuildConnectorSubscribe(c, values, types), err
+			}),
+			"subscription_set": act("PATCH /v1/connectors/{ref}/subscriptions/{id}", Input{
+				"connector": "github", "id": "sub_01j9zq3k4m5n6p7r8s9t0v1w2x", "types": []any{"issue"},
+			}, func(in Input) (request.HTTPRequest, error) {
+				c, values, types, err := in.subscriptionBody()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				id, err := in.reqStr("id")
+				return request.BuildConnectorSubscriptionSet(c, id, values, types), err
+			}),
+			"unsubscribe": act("DELETE /v1/connectors/{ref}/subscriptions/{id}", Input{
+				"connector": "github", "id": "sub_01j9zq3k4m5n6p7r8s9t0v1w2x",
+			}, func(in Input) (request.HTTPRequest, error) {
+				c, err := in.connectorRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				id, err := in.reqStr("id")
+				return request.BuildConnectorUnsubscribe(c, id), err
+			}),
+			"subscription_submit": act("POST /v1/connectors/{ref}/subscriptions/{id}/submit", Input{
+				"connector": "notion", "id": "sub_01j9zq3k4m5n6p7r8s9t0v1w2x", "fields": map[string]any{"signing_secret": "whsec_1"},
+			}, func(in Input) (request.HTTPRequest, error) {
+				c, err := in.connectorRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				fields, err := in.strMap("fields")
+				if err == nil && fields == nil {
+					err = fmt.Errorf("input field %q is required", "fields")
+				}
+				return request.BuildConnectorSubscriptionSubmit(c, id, fields), err
+			}),
+			"subscriptions_sync": act("POST /v1/connectors/{ref}/subscriptions/sync", Input{"connector": "github"}, func(in Input) (request.HTTPRequest, error) {
+				c, err := in.connectorRef()
+				return request.BuildConnectorSubscriptionsSync(c), err
 			}),
 			"threads": act("GET /v1/connectors/{ref}/rooms/{room}/threads", Input{"connector": "whatsapp", "room": "123@g.us"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()

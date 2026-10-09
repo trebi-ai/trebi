@@ -2219,6 +2219,75 @@ func BuildConnectorDependentsPath(c ConnectorRef) string {
 	return c.path("/dependents", nil)
 }
 
+// BuildConnectorSubscriptionsPath builds GET /v1/connectors/{ref}/subscriptions.
+func BuildConnectorSubscriptionsPath(c ConnectorRef) string {
+	return c.path("/subscriptions", nil)
+}
+
+// BuildConnectorSubscriptionPath builds /v1/connectors/{ref}/subscriptions/{id}.
+func BuildConnectorSubscriptionPath(c ConnectorRef, id string) string {
+	return c.path("/subscriptions/"+url.PathEscape(id), nil)
+}
+
+// subscriptionBody holds the present values and types. An empty, non-nil
+// types list clears the types.
+func subscriptionBody(values map[string]any, types []string) map[string]any {
+	body := map[string]any{}
+	if values != nil {
+		body["values"] = values
+	}
+	if types != nil {
+		body["types"] = types
+	}
+	return body
+}
+
+// BuildConnectorSubscribe builds POST /v1/connectors/{ref}/subscriptions.
+func BuildConnectorSubscribe(c ConnectorRef, values map[string]any, types []string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: BuildConnectorSubscriptionsPath(c), Body: subscriptionBody(values, types)}
+}
+
+// BuildConnectorSubscriptionSet builds PATCH /v1/connectors/{ref}/subscriptions/{id}.
+func BuildConnectorSubscriptionSet(c ConnectorRef, id string, values map[string]any, types []string) HTTPRequest {
+	return HTTPRequest{Method: "PATCH", Path: BuildConnectorSubscriptionPath(c, id), Body: subscriptionBody(values, types)}
+}
+
+// BuildConnectorUnsubscribe builds DELETE /v1/connectors/{ref}/subscriptions/{id}.
+func BuildConnectorUnsubscribe(c ConnectorRef, id string) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: BuildConnectorSubscriptionPath(c, id)}
+}
+
+// BuildConnectorSubscriptionSubmit builds POST /v1/connectors/{ref}/subscriptions/{id}/submit.
+func BuildConnectorSubscriptionSubmit(c ConnectorRef, id string, fields map[string]string) HTTPRequest {
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	return HTTPRequest{Method: "POST", Path: BuildConnectorSubscriptionPath(c, id) + "/submit", Body: map[string]any{"fields": fields}}
+}
+
+// BuildConnectorSubscriptionsSync builds POST /v1/connectors/{ref}/subscriptions/sync.
+func BuildConnectorSubscriptionsSync(c ConnectorRef) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: c.path("/subscriptions/sync", nil), Body: map[string]any{}}
+}
+
+// BuildConnectorSubscriptionOptions builds POST /v1/connectors/{ref}/subscriptions/options.
+func BuildConnectorSubscriptionOptions(c ConnectorRef, field, q string, values map[string]any, cursor string, limit int) HTTPRequest {
+	body := map[string]any{"field": field}
+	if q != "" {
+		body["q"] = q
+	}
+	if values != nil {
+		body["values"] = values
+	}
+	if cursor != "" {
+		body["cursor"] = cursor
+	}
+	if limit > 0 {
+		body["limit"] = limit
+	}
+	return HTTPRequest{Method: "POST", Path: c.path("/subscriptions/options", nil), Body: body}
+}
+
 // BuildConnectorThreadsPath builds GET /v1/connectors/{ref}/rooms/{room}/threads.
 func BuildConnectorThreadsPath(c ConnectorRef, room, cursor string, limit int) string {
 	kv := map[string]string{"cursor": cursor}

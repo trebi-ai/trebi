@@ -5,7 +5,8 @@
 // depends on it:
 //
 //	{
-//	  "hook_id":      "<ingress id of this delivery>",
+//	  "hook_id":      "<id of the hook that got the request>",
+//	  "workspace_id": "<workspace of the hook>",
 //	  "label":        "<first path segment of the posted path>",
 //	  "method":       "POST",
 //	  "path":         "/deploy",
@@ -24,7 +25,11 @@ package webhooks
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -32,6 +37,9 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/connectors/protocol"
+	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -48,9 +56,10 @@ type Hook struct {
 // HostedHooks is the signed cloud side of a hook object. cloudlink.Service
 // implements it structurally (checked below).
 type HostedHooks interface {
-	MintHook(ctx context.Context, label string) (cloudlink.Hook, error)
+	MintHook(ctx context.Context, req cloudlink.MintHookRequest) (cloudlink.Hook, error)
 	DeleteHook(ctx context.Context, id string) error
 	Status() cloudlink.Status
+	Entitlement() entitle.State
 }
 
 // Service is the webhook object family plus the ingress sink.
@@ -62,11 +71,28 @@ type Service struct {
 
 	mu    sync.Mutex
 	drops int64
+
+	ensureMu   sync.Mutex
+	ensureWant map[string]manifest.Webhook // the newest wanted set; nil when none waits
+	ensuring   bool                        // a worker goroutine runs
+	mintFailed map[string]bool             // connection id → the last mint failed
+	hooks      map[string]connHook         // cache of connection_hooks by connection id
+}
+
+// connHook is one row of connection_hooks.
+type connHook struct {
+	hookID string
+	url    string
+	secret string
+	spec   string
 }
 
 const bodyCap = 1 << 20 // the cloud caps the body at the same size
 
-var _ HostedHooks = (*cloudlink.Service)(nil)
+var (
+	_ HostedHooks             = (*cloudlink.Service)(nil)
+	_ connectors.HookProvider = (*Service)(nil)
+)
 
 // New creates the webhook service. conn is the existing dispatch door
 // (connectors.InjectEvent); hosted is the signed mint/revoke side.
@@ -82,7 +108,7 @@ func New(st *store.Store, conn *connectors.Service, hosted HostedHooks) *Service
 // Create mints the hosted hook, records the row, and publishes
 // hook.created.
 func (s *Service) Create(ctx context.Context, workspaceID, label string) (Hook, error) {
-	minted, err := s.hosted.MintHook(ctx, label)
+	minted, err := s.hosted.MintHook(ctx, cloudlink.MintHookRequest{Label: label})
 	if err != nil {
 		return Hook{}, err
 	}
@@ -151,6 +177,9 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 // connectors.InjectEvent owns its own events insert: a crash between the
 // two loses one frame instead of firing twice.
 func (s *Service) Deliver(ctx context.Context, f cloudlink.WebhookIngress) error {
+	if conn := s.connectionOf(f.HookID); conn != "" {
+		return s.deliverConnection(ctx, conn, f)
+	}
 	claimed, err := s.claim(ctx, f.ID)
 	if err != nil {
 		return fmt.Errorf("webhook %s: %w", f.ID, err)
@@ -164,7 +193,8 @@ func (s *Service) Deliver(ctx context.Context, f cloudlink.WebhookIngress) error
 		return nil // acked, never retried
 	}
 	payload := map[string]any{
-		"hook_id":      f.ID, // the ingress id of this delivery
+		"hook_id":      f.HookID,
+		"workspace_id": s.workspaceOf(ctx, f.HookID),
 		"label":        hookLabel(f.Path),
 		"method":       f.Method,
 		"path":         f.Path,
@@ -180,7 +210,7 @@ func (s *Service) Deliver(ctx context.Context, f cloudlink.WebhookIngress) error
 	// is a notification stream, not a log of untrusted payloads.
 	if _, err := s.st.Append(ctx, store.BusEvent{
 		Topic: "hook.received", Entity: "hook", EntityID: f.ID, Action: "received",
-		Attrs: map[string]string{"hook_id": f.ID, "path": f.Path},
+		Attrs: map[string]string{"hook_id": f.HookID, "path": f.Path},
 	}); err != nil {
 		s.log.Warn("bus append", "topic", "hook.received", "err", err)
 	}
@@ -251,4 +281,253 @@ func hookLabel(path string) string {
 		}
 	}
 	return p
+}
+
+// workspaceOf returns the workspace of a native hook row, or "".
+func (s *Service) workspaceOf(ctx context.Context, hookID string) string {
+	if hookID == "" {
+		return ""
+	}
+	var ws string
+	if err := s.st.DB().QueryRowContext(ctx, `SELECT workspace_id FROM cloud_hooks WHERE id = ?`, hookID).Scan(&ws); err != nil {
+		return ""
+	}
+	return ws
+}
+
+// deliverConnection queues one request for the adapter of a connection. The
+// queue removes a repeated id, and the frame is acked after the insert.
+func (s *Service) deliverConnection(ctx context.Context, conn string, f cloudlink.WebhookIngress) error {
+	if len(f.Body) > bodyCap {
+		s.drop()
+		s.log.Warn("hook.dropped", "hook_id", f.HookID, "connection", conn, "reason", "body over cap")
+		return nil
+	}
+	req := protocol.WebhookRequest{
+		ID: f.ID, Method: f.Method, Path: f.Path, Query: f.Query, ContentType: f.ContentType,
+		Headers: f.Headers, Body: f.Body, ReceivedAt: f.ReceivedAt, Handshake: f.Handshake,
+	}
+	if req.Headers == nil {
+		req.Headers = map[string]string{}
+	}
+	if err := s.conn.EnqueueWebhook(ctx, conn, req); err != nil {
+		return err
+	}
+	handshake := "false"
+	if f.Handshake {
+		handshake = "true"
+	}
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "hook.received", Entity: "hook", EntityID: f.ID, Action: "received",
+		Attrs: map[string]string{"hook_id": f.HookID, "path": f.Path, "connection": conn, "handshake": handshake},
+	}); err != nil {
+		s.log.Warn("bus append", "topic", "hook.received", "err", err)
+	}
+	return nil
+}
+
+// loadHooks fills the cache of connection_hooks once. The caller holds
+// s.mu.
+func (s *Service) loadHooks() {
+	if s.hooks != nil {
+		return
+	}
+	s.hooks = map[string]connHook{}
+	rows, err := s.st.DB().Query(`SELECT connection_id, hook_id, url, secret, spec FROM connection_hooks`)
+	if err != nil {
+		s.log.Warn("connection hooks", "err", err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id string
+		var h connHook
+		if rows.Scan(&id, &h.hookID, &h.url, &h.secret, &h.spec) == nil {
+			s.hooks[id] = h
+		}
+	}
+}
+
+// connectionOf returns the connection that owns a hook id, or "".
+func (s *Service) connectionOf(hookID string) string {
+	if hookID == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadHooks()
+	for id, h := range s.hooks {
+		if h.hookID == hookID {
+			return id
+		}
+	}
+	return ""
+}
+
+// Hook returns the hosted hook of a connection, or nil.
+func (s *Service) Hook(id string) *protocol.Webhook {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadHooks()
+	h, ok := s.hooks[id]
+	if !ok {
+		return nil
+	}
+	return &protocol.Webhook{URL: h.url, Secret: h.secret}
+}
+
+// HookState tells why a connection has no hook.
+func (s *Service) HookState(id string) connectors.WebhookState {
+	if s.Hook(id) != nil {
+		return connectors.WebhookState{State: connectors.WebhookReady}
+	}
+	if reason := s.unavailable(); reason != "" {
+		return connectors.WebhookState{State: connectors.WebhookUnavailable, Reason: reason}
+	}
+	s.ensureMu.Lock()
+	failed := s.mintFailed[id]
+	s.ensureMu.Unlock()
+	if failed {
+		return connectors.WebhookState{State: connectors.WebhookUnavailable, Reason: connectors.WebhookMintFailed}
+	}
+	return connectors.WebhookState{State: connectors.WebhookUnavailable}
+}
+
+// unavailable returns why no hook can be minted, or "".
+func (s *Service) unavailable() string {
+	ent := s.hosted.Entitlement()
+	switch {
+	case !ent.Linked:
+		return connectors.WebhookNotLinked
+	case !ent.Has(entitle.HostedIngress):
+		return connectors.WebhookNoPlan
+	}
+	return ""
+}
+
+// EnsureHooks makes connection_hooks match want in one background
+// goroutine. A newer call replaces an older one that waits.
+func (s *Service) EnsureHooks(ctx context.Context, want map[string]manifest.Webhook) {
+	s.ensureMu.Lock()
+	defer s.ensureMu.Unlock()
+	s.ensureWant = want
+	if s.ensuring {
+		return
+	}
+	s.ensuring = true
+	go s.ensureLoop(ctx) // ends when no newer call waits
+}
+
+func (s *Service) ensureLoop(ctx context.Context) {
+	for {
+		s.ensureMu.Lock()
+		want := s.ensureWant
+		s.ensureWant = nil
+		if want == nil {
+			s.ensuring = false
+			s.ensureMu.Unlock()
+			return
+		}
+		s.ensureMu.Unlock()
+		if s.ensure(ctx, want) {
+			s.conn.HooksChanged(ctx)
+		}
+	}
+}
+
+// ensure mints, re-mints, and revokes rows. It reports whether a row
+// changed.
+func (s *Service) ensure(ctx context.Context, want map[string]manifest.Webhook) bool {
+	s.mu.Lock()
+	s.loadHooks()
+	have := make(map[string]connHook, len(s.hooks))
+	for id, h := range s.hooks {
+		have[id] = h
+	}
+	s.mu.Unlock()
+	changed := false
+	for id, h := range have {
+		if _, ok := want[id]; !ok {
+			changed = true
+			s.revoke(ctx, h.hookID)
+			s.deleteRow(ctx, id)
+		}
+	}
+	if s.unavailable() != "" {
+		return changed
+	}
+	for id, spec := range want {
+		b, _ := json.Marshal(spec) //nolint:errcheck // a struct of strings always encodes
+		h, ok := have[id]
+		if ok && h.spec == string(b) {
+			continue
+		}
+		if s.mint(ctx, id, spec, string(b)) {
+			changed = true
+			if ok {
+				s.revoke(ctx, h.hookID)
+			}
+		}
+	}
+	return changed
+}
+
+// mint asks the cloud for one hook and writes its row.
+func (s *Service) mint(ctx context.Context, id string, spec manifest.Webhook, specJSON string) bool {
+	minted, err := s.hosted.MintHook(ctx, cloudlink.MintHookRequest{Label: id, Headers: spec.Headers, Handshake: spec.Handshake})
+	s.ensureMu.Lock()
+	if s.mintFailed == nil {
+		s.mintFailed = map[string]bool{}
+	}
+	s.mintFailed[id] = err != nil
+	s.ensureMu.Unlock()
+	if err != nil {
+		s.log.Warn("connection hook mint", "connection", id, "err", err)
+		return false
+	}
+	secret := make([]byte, 32)
+	_, _ = rand.Read(secret) //nolint:errcheck // crypto/rand never fails on supported platforms
+	h := connHook{hookID: minted.ID, url: minted.URL, secret: base64.RawURLEncoding.EncodeToString(secret), spec: specJSON}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO connection_hooks (connection_id, hook_id, url, secret, spec, created_at)
+		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(connection_id) DO UPDATE SET
+		hook_id = excluded.hook_id, url = excluded.url, secret = excluded.secret, spec = excluded.spec, created_at = excluded.created_at`,
+		id, h.hookID, h.url, h.secret, h.spec, now); err != nil {
+		s.log.Warn("connection hook save", "connection", id, "err", err)
+		s.revoke(ctx, minted.ID)
+		return false
+	}
+	s.mu.Lock()
+	s.hooks[id] = h
+	s.mu.Unlock()
+	return true
+}
+
+// revoke deletes one hook in the cloud. A failure leaves an orphan hook
+// that routes to no connection.
+func (s *Service) revoke(ctx context.Context, hookID string) {
+	if err := s.hosted.DeleteHook(ctx, hookID); err != nil && !errors.Is(err, cloudlink.ErrNotLinked) {
+		s.log.Warn("connection hook revoke", "hook_id", hookID, "err", err)
+	}
+}
+
+func (s *Service) deleteRow(ctx context.Context, id string) {
+	if _, err := s.st.DB().ExecContext(ctx, `DELETE FROM connection_hooks WHERE connection_id = ?`, id); err != nil {
+		s.log.Warn("connection hook delete", "connection", id, "err", err)
+	}
+	s.mu.Lock()
+	delete(s.hooks, id)
+	s.mu.Unlock()
+}
+
+// ReleaseAll deletes every connection hook row without a cloud call. The
+// link is gone, so the cloud dropped the hooks.
+func (s *Service) ReleaseAll(ctx context.Context) error {
+	if _, err := s.st.DB().ExecContext(ctx, `DELETE FROM connection_hooks`); err != nil {
+		return fmt.Errorf("release connection hooks: %w", err)
+	}
+	s.mu.Lock()
+	s.hooks = map[string]connHook{}
+	s.mu.Unlock()
+	return nil
 }

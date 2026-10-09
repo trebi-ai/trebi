@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 46
+const SchemaVersion = 47
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1676,6 +1676,29 @@ CREATE TABLE harness_usage (
 	observed_at  TEXT NOT NULL,
 	PRIMARY KEY (harness, window_key, scope, minutes)
 );
+`,
+		// v47: hosted hooks of connections and their delivery queue (plan
+		// 2026-10-08 connector webhooks A5).
+		`
+CREATE TABLE connection_hooks (
+	connection_id TEXT PRIMARY KEY,
+	hook_id       TEXT NOT NULL UNIQUE,
+	url           TEXT NOT NULL,
+	secret        TEXT NOT NULL,
+	spec          TEXT NOT NULL,
+	created_at    TEXT NOT NULL
+);
+
+CREATE TABLE webhook_deliveries (
+	id              TEXT PRIMARY KEY,
+	connection_id   TEXT NOT NULL,
+	request_json    TEXT NOT NULL,
+	attempts        INTEGER NOT NULL DEFAULT 0,
+	next_attempt_at TEXT NOT NULL,
+	last_error      TEXT NOT NULL DEFAULT '',
+	created_at      TEXT NOT NULL
+);
+CREATE INDEX webhook_deliveries_due ON webhook_deliveries(connection_id, next_attempt_at);
 `,
 	}
 }

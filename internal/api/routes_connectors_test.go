@@ -533,3 +533,58 @@ func TestConnectorThreadsGuard(t *testing.T) {
 		t.Fatalf("room bind %d %v", code, body)
 	}
 }
+
+// TestConnectorSubscriptionRoutes proves the record routes of the watch
+// list, 404 for an unknown id, and 400 unsupported without a form.
+func TestConnectorSubscriptionRoutes(t *testing.T) {
+	do := startConnectorAPI(t)
+	events := map[string]any{"command": "sleep 30", "protocol": "trebi-connector/1", "types": []map[string]any{{"type": "push"}, {"type": "issue"}}}
+	watch := maps.Clone(events)
+	watch["subscriptions"] = map[string]any{
+		"action": "Watch a repository", "modes": []string{"api", "poll"}, "webhook": map[string]any{},
+		"fields": []map[string]any{{"name": "repo", "label": "Repository", "required": true, "room": true}},
+	}
+	for name, ev := range map[string]any{"gh": watch, "flat": events} {
+		if code, body := do("POST", "/v1/connectors", inlineEntry(name, map[string]any{"events": ev})); code != 201 {
+			t.Fatalf("create %s %d %v", name, code, body)
+		}
+	}
+	code, body := do("GET", "/v1/connectors/flat/subscriptions", nil)
+	if e, _ := body["error"].(map[string]any); code != 400 || e["code"] != "unsupported" {
+		t.Fatalf("flat %d %v", code, body)
+	}
+	code, body = do("POST", "/v1/connectors/gh/subscriptions", map[string]any{"values": map[string]any{}})
+	if code != 400 {
+		t.Fatalf("missing field %d %v", code, body)
+	}
+	code, body = do("POST", "/v1/connectors/gh/subscriptions", map[string]any{"values": map[string]any{"repo": "a/b"}, "types": []string{"push"}})
+	subs, _ := body["subscriptions"].([]any)
+	if code != 201 || len(subs) != 1 || body["action"] != "Watch a repository" {
+		t.Fatalf("subscribe %d %v", code, body)
+	}
+	row, _ := subs[0].(map[string]any)
+	id, _ := row["id"].(string)
+	if row["state"] != "pending" || !strings.HasPrefix(id, "sub_") {
+		t.Fatalf("row %v", row)
+	}
+	if code, body = do("PATCH", "/v1/connectors/gh/subscriptions/"+id, map[string]any{"types": []string{}}); code != 200 {
+		t.Fatalf("patch %d %v", code, body)
+	}
+	if list, _ := getConnector(t, do, "gh")["subscriptions"].([]any); len(list) != 1 {
+		t.Fatalf("record %v", list)
+	}
+	if code, body = do("PATCH", "/v1/connectors/gh/subscriptions/sub_nope", map[string]any{}); code != 404 {
+		t.Fatalf("unknown %d %v", code, body)
+	}
+	if code, body = do("DELETE", "/v1/connectors/gh/subscriptions/"+id, nil); code != 200 {
+		t.Fatalf("delete %d %v", code, body)
+	}
+	if list, _ := getConnector(t, do, "gh")["subscriptions"].([]any); len(list) != 0 {
+		t.Fatalf("record after delete %v", list)
+	}
+	for _, path := range []string{"/v1/connectors/gh/subscriptions/sync", "/v1/connectors/gh/subscriptions/options"} {
+		if code, body = do("POST", path, map[string]any{"field": "repo"}); code < 400 || code >= 500 {
+			t.Fatalf("%s %d %v", path, code, body)
+		}
+	}
+}

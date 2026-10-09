@@ -93,7 +93,7 @@ func TestClientWirePaths(t *testing.T) {
 	if err := c.DeleteAddress(ctx, "addr-1"); err != nil {
 		t.Fatalf("DeleteAddress: %v", err)
 	}
-	hook, err := c.MintHook(ctx, "deploy")
+	hook, err := c.MintHook(ctx, MintHookRequest{Label: "deploy"})
 	if err != nil || hook.ID != "hook-1" || hook.Token != "tok" || hook.URL == "" {
 		t.Fatalf("MintHook = (%+v, %v)", hook, err)
 	}

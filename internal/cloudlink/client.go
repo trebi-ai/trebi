@@ -131,9 +131,17 @@ func (c *Client) DeleteAddress(ctx context.Context, id string) error {
 	return c.call(ctx, http.MethodDelete, path, nil, nil, true)
 }
 
+// MintHookRequest names a hook. Headers are the extra request headers the
+// cloud forwards; Handshake holds the rules the cloud answers itself.
+type MintHookRequest struct {
+	Label     string   `json:"label"`
+	Headers   []string `json:"headers,omitempty"`
+	Handshake []string `json:"handshake,omitempty"`
+}
+
 // MintHook mints one hosted webhook and returns its receiver URL once.
-func (c *Client) MintHook(ctx context.Context, label string) (Hook, error) {
-	body, err := json.Marshal(map[string]string{"label": label})
+func (c *Client) MintHook(ctx context.Context, req MintHookRequest) (Hook, error) {
+	body, err := json.Marshal(req)
 	if err != nil {
 		return Hook{}, err
 	}

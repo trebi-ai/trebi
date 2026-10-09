@@ -72,6 +72,23 @@ const (
 	MethodThreadsCreate   = "threads/create"
 	MethodTyping          = "typing"
 	MethodReactionsAdd    = "reactions/add"
+
+	MethodSubscriptionsOptions = "subscriptions/options"
+	MethodSubscriptionsSync    = "subscriptions/sync"
+	MethodSubscriptionsSubmit  = "subscriptions/submit"
+	MethodWebhookReceive       = "webhook/receive"
+	// NoteSubscriptionsChanged asks the daemon for a new sync. It has no
+	// params.
+	NoteSubscriptionsChanged = "subscriptions/changed"
+)
+
+// Subscription states.
+const (
+	SubscriptionPending        = "pending"
+	SubscriptionActive         = "active"
+	SubscriptionPolling        = "polling"
+	SubscriptionActionRequired = "action_required"
+	SubscriptionError          = "error"
 )
 
 // Adapter states of the status notification (Part D.4).
@@ -116,6 +133,8 @@ const (
 	DefaultTimeout = 10 * time.Second
 	SendTimeout    = 30 * time.Second
 	ReplayTimeout  = 60 * time.Second
+	SyncTimeout    = 60 * time.Second
+	SubmitTimeout  = 30 * time.Second
 )
 
 // Empty is the params or result of a message with no fields.
@@ -140,6 +159,15 @@ type InitializeParams struct {
 	Daemon      DaemonInfo   `json:"daemon"`
 	Instance    InstanceInfo `json:"instance"`
 	LastEventID string       `json:"cursor,omitempty"`
+	// Webhook is the hosted hook of the connection, or nil.
+	Webhook *Webhook `json:"webhook,omitempty"`
+}
+
+// Webhook is the hosted URL of a connection. Secret is a suggestion for a
+// platform that accepts one.
+type Webhook struct {
+	URL    string `json:"url"`
+	Secret string `json:"secret"`
 }
 
 // AdapterInfo names the adapter build.
@@ -428,6 +456,103 @@ type ReactionParams struct {
 	Emoji     string `json:"emoji"`
 }
 
+// OptionsParams asks for the options of one dynamic field. Values is the
+// current form, because one field can depend on another.
+type OptionsParams struct {
+	Field  string              `json:"field"`
+	Query  string              `json:"q,omitempty"`
+	Values map[string][]string `json:"values,omitempty"`
+	Page   string              `json:"cursor,omitempty"`
+	Limit  int                 `json:"limit"`
+}
+
+// FieldOption is one choice of a dynamic field.
+type FieldOption struct {
+	Value       string `json:"value"`
+	Label       string `json:"label,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// OptionPage is a page of options.
+type OptionPage struct {
+	Options []FieldOption `json:"options"`
+	Next    string        `json:"next,omitempty"`
+}
+
+// Subscription is one thing that the user watches, on the wire.
+type Subscription struct {
+	ID     string              `json:"id"`
+	Values map[string][]string `json:"values"`
+	Types  []string            `json:"types,omitempty"`
+}
+
+// SyncParams is the full list that the platform must match.
+type SyncParams struct {
+	Subscriptions []Subscription `json:"subscriptions"`
+}
+
+// SubscriptionState is how the adapter serves one subscription.
+type SubscriptionState struct {
+	ID        string  `json:"id"`
+	Title     string  `json:"title,omitempty"`
+	Room      *Room   `json:"room,omitempty"`
+	Mode      string  `json:"mode"`
+	State     string  `json:"state"`
+	Message   string  `json:"message,omitempty"`
+	ExpiresAt string  `json:"expires_at,omitempty"`
+	Action    *Action `json:"action,omitempty"`
+}
+
+// Action is what a person must do to finish a subscription.
+type Action struct {
+	Text string      `json:"text"`
+	URL  string      `json:"url,omitempty"`
+	Show []ShowValue `json:"show,omitempty"`
+	Ask  []AskField  `json:"ask,omitempty"`
+}
+
+// ShowValue is one value that the person copies.
+type ShowValue struct {
+	Label  string `json:"label"`
+	Value  string `json:"value"`
+	Secret bool   `json:"secret,omitempty"`
+}
+
+// AskField is one field that the person fills.
+type AskField struct {
+	Name     string `json:"name"`
+	Label    string `json:"label"`
+	Help     string `json:"help,omitempty"`
+	Secret   bool   `json:"secret,omitempty"`
+	Required bool   `json:"required,omitempty"`
+}
+
+// SyncResult has one state for each subscription of the params, in order.
+type SyncResult struct {
+	Subscriptions []SubscriptionState `json:"subscriptions"`
+}
+
+// SubmitParams carries the answers of a person for one subscription.
+type SubmitParams struct {
+	ID     string            `json:"id"`
+	Fields map[string]string `json:"fields"`
+}
+
+// WebhookRequest is one request to the hosted hook of the connection.
+// Headers keys are lowercase. Handshake marks a request that the cloud
+// already answered.
+type WebhookRequest struct {
+	ID          string            `json:"id"`
+	Method      string            `json:"method"`
+	Path        string            `json:"path"`
+	Query       string            `json:"query,omitempty"`
+	ContentType string            `json:"content_type,omitempty"`
+	Headers     map[string]string `json:"headers"`
+	Body        string            `json:"body"`
+	ReceivedAt  string            `json:"received_at"`
+	Handshake   bool              `json:"handshake,omitempty"`
+}
+
 // Timeout returns the request timeout of a method. Zero means none.
 func Timeout(method string) time.Duration {
 	switch method {
@@ -435,14 +560,17 @@ func Timeout(method string) time.Duration {
 		return SendTimeout
 	case MethodEventsReplay:
 		return ReplayTimeout
+	case MethodSubscriptionsSync:
+		return SyncTimeout
+	case MethodSubscriptionsSubmit:
+		return SubmitTimeout
 	case MethodAuthBegin:
 		return 0
 	}
 	return DefaultTimeout
 }
 
-// FeatureOf returns the channel feature a method needs, or "" for a core
-// method.
+// FeatureOf returns the feature a method needs, or "" for a core method.
 func FeatureOf(method string) string {
 	switch method {
 	case MethodMessagesEdit:
@@ -465,6 +593,10 @@ func FeatureOf(method string) string {
 		return "seen"
 	case MethodReactionsAdd:
 		return "reactions"
+	case MethodSubscriptionsOptions, MethodSubscriptionsSync, MethodSubscriptionsSubmit:
+		return "subscriptions"
+	case MethodWebhookReceive:
+		return "webhooks"
 	}
 	return ""
 }

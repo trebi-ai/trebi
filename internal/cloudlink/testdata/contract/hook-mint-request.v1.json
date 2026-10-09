@@ -1,0 +1,5 @@
+{
+  "label": "con_01j9x7k2m4q8r3t5v6w7y8z9ab",
+  "headers": ["linear-signature", "linear-delivery", "linear-event"],
+  "handshake": ["json_echo:challenge"]
+}

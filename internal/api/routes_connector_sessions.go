@@ -36,6 +36,13 @@ func (s *Server) routeConnectorSessions(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/connectors/{ref}/rooms/{room}/bind", s.handleConnectorBind)
 	mux.HandleFunc("GET /v1/connectors/{ref}/senders", s.handleConnectorSenders)
 	mux.HandleFunc("GET /v1/connectors/{ref}/dependents", s.handleConnectorDependents)
+	mux.HandleFunc("GET /v1/connectors/{ref}/subscriptions", s.handleConnectorSubscriptions)
+	mux.HandleFunc("POST /v1/connectors/{ref}/subscriptions", s.handleConnectorSubscribe)
+	mux.HandleFunc("PATCH /v1/connectors/{ref}/subscriptions/{id}", s.handleConnectorSubscriptionPatch)
+	mux.HandleFunc("DELETE /v1/connectors/{ref}/subscriptions/{id}", s.handleConnectorUnsubscribe)
+	mux.HandleFunc("POST /v1/connectors/{ref}/subscriptions/{id}/submit", s.handleConnectorSubscriptionSubmit)
+	mux.HandleFunc("POST /v1/connectors/{ref}/subscriptions/sync", s.handleConnectorSubscriptionsSync)
+	mux.HandleFunc("POST /v1/connectors/{ref}/subscriptions/options", s.handleConnectorSubscriptionOptions)
 	mux.HandleFunc("GET /v1/workspaces/{id}/connectors/{ref}", s.handleConnectorOverrideGet)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/connectors/{ref}", s.handleConnectorOverridePut)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/connectors/{ref}", s.handleConnectorOverrideDelete)
@@ -398,6 +405,96 @@ func (s *Server) handleConnectorSenders(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": inst, "senders": senders})
+}
+
+// writeSubscriptionView writes a view or the error of a subscription call.
+func (s *Server) writeSubscriptionView(w http.ResponseWriter, status int, v connectors.SubscriptionView, err error) {
+	if err != nil {
+		s.writeAnyConnectorErr(w, err)
+		return
+	}
+	writeJSON(w, status, v)
+}
+
+// handleConnectorSubscriptions lists the subscriptions of a connection with
+// the last states of its adapter.
+func (s *Server) handleConnectorSubscriptions(w http.ResponseWriter, r *http.Request) {
+	v, err := s.connectors.Subscriptions(r.Context(), r.PathValue("ref"))
+	s.writeSubscriptionView(w, http.StatusOK, v, err)
+}
+
+func (s *Server) handleConnectorSubscribe(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Values map[string]connectors.Value `json:"values"`
+		Types  []string                    `json:"types"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	v, err := s.connectors.Subscribe(r.Context(), r.PathValue("ref"), connectors.Subscription{Values: body.Values, Types: body.Types})
+	s.writeSubscriptionView(w, http.StatusCreated, v, err)
+}
+
+func (s *Server) handleConnectorSubscriptionPatch(w http.ResponseWriter, r *http.Request) {
+	var body connectors.SubscriptionPatch
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	v, err := s.connectors.UpdateSubscription(r.Context(), r.PathValue("ref"), r.PathValue("id"), body)
+	s.writeSubscriptionView(w, http.StatusOK, v, err)
+}
+
+func (s *Server) handleConnectorUnsubscribe(w http.ResponseWriter, r *http.Request) {
+	v, err := s.connectors.Unsubscribe(r.Context(), r.PathValue("ref"), r.PathValue("id"))
+	s.writeSubscriptionView(w, http.StatusOK, v, err)
+}
+
+func (s *Server) handleConnectorSubscriptionSubmit(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Fields map[string]string `json:"fields"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	v, err := s.connectors.SubmitSubscription(r.Context(), r.PathValue("ref"), r.PathValue("id"), body.Fields)
+	s.writeSubscriptionView(w, http.StatusOK, v, err)
+}
+
+func (s *Server) handleConnectorSubscriptionsSync(w http.ResponseWriter, r *http.Request) {
+	v, err := s.connectors.SyncSubscriptions(r.Context(), r.PathValue("ref"))
+	s.writeSubscriptionView(w, http.StatusOK, v, err)
+}
+
+// handleConnectorSubscriptionOptions lists the options of a dynamic field.
+// It is a POST, because the options can depend on the other values.
+func (s *Server) handleConnectorSubscriptionOptions(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Field  string                      `json:"field"`
+		Q      string                      `json:"q"`
+		Values map[string]connectors.Value `json:"values"`
+		Cursor string                      `json:"cursor"`
+		Limit  int                         `json:"limit"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	values := make(map[string][]string, len(body.Values))
+	for k, v := range body.Values {
+		values[k] = v
+	}
+	ref := r.PathValue("ref")
+	page, err := s.connectors.SubscriptionOptions(r.Context(), ref, protocol.OptionsParams{
+		Field: body.Field, Query: body.Q, Values: values, Page: body.Cursor, Limit: body.Limit,
+	})
+	if err != nil {
+		s.writeAnyConnectorErr(w, err)
+		return
+	}
+	out := map[string]any{"id": s.connectors.IDOf(ref), "options": page.Options}
+	if page.Next != "" {
+		out["next_cursor"] = page.Next
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleConnectorOverrideGet(w http.ResponseWriter, r *http.Request) {

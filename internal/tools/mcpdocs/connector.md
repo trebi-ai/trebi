@@ -199,6 +199,47 @@ List the recent senders of a connection, from its stored events, the most recent
 List what uses a connection: each event trigger on it and each room binding. The reply is `{id, slug, triggers, bindings}`. Each trigger has `kind` (job, agent, or assistant), `workspace`, `name`, `on_index`, `disabled`, `active`, `rooms` (empty means any room), and `senders` (the size of the allowlist). Disabled triggers and inactive jobs are in the list; they do not fire. Each binding has `workspace`, `operator` (assistant or agents/<name>), `room`, `thread`, and `conversation_id`.
 - `connector` (string, required): connection slug or id, or `email`.
 
+### subscriptions
+List what a connection watches. The reply is `{id, action, webhook, subscriptions, synced_at}`. `action` is the verb of the connector, for example "Watch a repository". `webhook.state` is `ready`, `unavailable` (with `reason` `not_linked`, `no_plan`, or `mint_failed`), or `not_needed`. Each subscription has `id`, `values`, `types`, `title`, `room`, `mode` (`api`, `manual`, `stream`, or `poll`), `state` (`pending`, `active`, `polling`, `action_required`, or `error`), `message`, `expires_at`, and `action`. An `action_required` subscription carries `action` with `text`, `url`, `show` (values the person copies), and `ask` (fields to send with `subscription_submit`). A connection without `events.subscriptions` answers 400 `unsupported`.
+- `connector` (string, required): connection slug or id.
+
+### subscription_options
+List the options of one dynamic field of the subscription form. The reply is `{id, options, next_cursor}`. Each option has `value`, `label`, and `description`. The options of one field can depend on the other values, so send the values that the user already chose.
+- `connector` (string, required): connection slug or id.
+- `field` (string, required): a field name with `dynamic: true` in the manifest `events.subscriptions.fields`.
+- `q` (string, optional): search text.
+- `values` (object, optional): the current form values, field name to a string or a list of strings.
+- `cursor` (string, optional): opaque cursor from a prior page (`next_cursor`).
+- `limit` (number, optional): page size.
+
+### subscribe
+Watch one more thing on a connection. Read the form first: `connector show` returns the manifest, and `events.subscriptions.fields` lists the fields. For a field with `dynamic: true`, call `subscription_options` and use a `value` from it. A field with `choices` takes one of the choices. A field with `multiple: true` takes a list. Leave out a field to use its default. The reply is the view of `subscriptions`; the new row is `pending` until the connector answers. Two subscriptions with the same values and types are refused.
+- `connector` (string, required): connection slug or id.
+- `values` (object, optional): field name to a string or a list of strings.
+- `types` (array, optional): event types from the manifest; empty means every type.
+
+### subscription_set
+Change the values or the event types of one subscription. A field that is absent stays the same. An empty `types` list means every type.
+- `connector` (string, required): connection slug or id.
+- `id` (string, required): subscription id from `subscriptions`.
+- `values` (object, optional): replaces all values.
+- `types` (array, optional): replaces the types.
+
+### unsubscribe
+Stop watching one thing. The connector removes the hook on the other system. The reply is the view of `subscriptions`.
+- `connector` (string, required): connection slug or id.
+- `id` (string, required): subscription id from `subscriptions`.
+
+### subscription_submit
+Finish the setup of one `action_required` subscription with the values that a person gives. Tell the user the `action.text` and the `action.show` values first, then send the `action.ask` fields. The reply is the view of `subscriptions`.
+- `connector` (string, required): connection slug or id.
+- `id` (string, required): subscription id from `subscriptions`.
+- `fields` (object, required): the `ask` field names to string values.
+
+### subscriptions_sync
+Ask the connector to check each subscription now. Use it after the user changes something on the other system. The reply is the view of `subscriptions`.
+- `connector` (string, required): connection slug or id.
+
 ### threads
 List the threads of one room. The reply is `{id, threads, next_cursor}`. Each thread has `id`, `title`, `last_activity_at`, and `participants`. A connector that cannot list threads returns the threads that the daemon saw. A connection without the `threads` feature answers 400 `unsupported`.
 - `connector` (string, required): connection slug or id.

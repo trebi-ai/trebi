@@ -122,6 +122,17 @@ func fixtureTypes() map[string]func() any {
 		"typing.request":           func() any { return &TypingParams{} },
 		"reactions.add.request":    func() any { return &ReactionParams{} },
 		"empty.result":             func() any { return &Empty{} },
+
+		"initialize.request.webhook":    func() any { return &InitializeParams{} },
+		"subscriptions.options.request": func() any { return &OptionsParams{} },
+		"subscriptions.options.result":  func() any { return &OptionPage{} },
+		"subscriptions.sync.request":    func() any { return &SyncParams{} },
+		"subscriptions.sync.result":     func() any { return &SyncResult{} },
+		"subscriptions.submit.request":  func() any { return &SubmitParams{} },
+		"subscriptions.submit.result":   func() any { return &SubscriptionState{} },
+		"webhook.receive.request":       func() any { return &WebhookRequest{} },
+		"webhook.receive.handshake":     func() any { return &WebhookRequest{} },
+		"subscriptions.changed":         func() any { return &Empty{} },
 	}
 }
 

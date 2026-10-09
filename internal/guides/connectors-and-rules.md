@@ -104,6 +104,22 @@ trebi connector bind whatsapp <room> --workspace reports --operator assistant
 
 `connector login` prints each step (a code, a QR code, or a link) and waits for the user. Ask the user before you log out. `connector senders` lists the recent senders from the stored events; put an `identity` in the `allowlist` of an event trigger, and a room `id` in its `rooms`. `connector dependents` lists the triggers on the connector (disabled and inactive ones too) and the rooms that are bound to the assistant or an agent. `connector threads` answers 400 `unsupported` when the connector has no `threads` feature. `connector bind` sends the messages of a room to the assistant or to `agents/<name>` of a workspace; `--thread` binds one thread only. A notify route step names the connection slug and a room id: `trebi config set notify.route '[{"via":"whatsapp","to":"<room>"},{"via":"email"}]'`.
 
+## Watch things
+
+A connector with `events.subscriptions` in its manifest can watch things on its platform, such as a repository, a team, or a list. `connector show <slug> --json` gives the form: `events.subscriptions.fields`.
+
+```bash
+trebi connector watch-options github repo --query trebi --json
+trebi connector watch github --set repo=trebi-ai/trebi --events pull_request,issues
+trebi connector watch linear --set team=ENG --set resources=Issue --set resources=Comment
+trebi connector watching github --json
+trebi connector watch-set github <id> --events pull_request
+trebi connector watch-finish notion <id> --set signing_secret=<value>
+trebi connector unwatch github <id>
+```
+
+A field with `dynamic: true` takes a `value` from `watch-options`. Repeat `--set` for a field with `multiple: true`. Leave `--events` out to keep every event type. `watching` gives one row for each watch with its `mode` and `state`: `active` is live, `polling` checks every few minutes, `action_required` needs a person, and `error` has a `message`. For `action_required`, tell the user the action text and the values to copy, then run `watch-finish` with the values that the user gives. Live updates need a linked Trebi Cloud account; without it, a connector that can poll still polls. `watching --sync` asks the connector for a new state now.
+
 ## Conversations
 
 A job trigger with `replies: continue` keeps each conversation of a connector in one run session. The daemon finds the conversation root of each `trebi-connector/1` event: the thread, else the message that the event quotes or answers, else the whole DM. Per platform:

@@ -1,12 +1,15 @@
 {
   "v": 1,
   "id": "01J8Y7ZQ5W8K3N6P9R2T4V6X8Y",
+  "hook_id": "01J9A2B3C4D5E6F7G8H9J0K1M2",
   "method": "POST",
   "path": "/stripe",
+  "query": "source=test",
   "content_type": "application/json",
   "headers": {
     "stripe-signature": "t=1726900000,v1=abc"
   },
   "body": "{\"id\":\"evt_test\"}",
-  "received_at": "2026-09-21T12:00:00Z"
+  "received_at": "2026-09-21T12:00:00Z",
+  "handshake": false
 }

@@ -9,10 +9,14 @@ package fakeadapter
 import (
 	"bufio"
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -51,6 +55,14 @@ type Sandbox struct {
 	Required []string `json:"required,omitempty"`
 	// Faults break the adapter folder contract on purpose.
 	Faults []string `json:"faults,omitempty"`
+	// Options are the options of each dynamic subscription field.
+	Options map[string][]protocol.FieldOption `json:"options,omitempty"`
+	// States override the state that sync answers for a subscription id.
+	States map[string]protocol.SubscriptionState `json:"states,omitempty"`
+	// Synced is the last sync list, and Received holds each webhook
+	// request. An in-process test reads them.
+	Synced   []protocol.Subscription   `json:"-"`
+	Received []protocol.WebhookRequest `json:"-"`
 
 	w        io.Writer
 	wmu      sync.Mutex
@@ -59,7 +71,19 @@ type Sandbox struct {
 	stateDir string
 	log      []protocol.Event // the events of this process, for replay and history
 	echo     *protocol.Event  // the self event of the last send, emitted after the reply
+	webhook  *protocol.Webhook
+	posts    []string        // targets to deliver to the hook after the reply
+	answered map[string]bool // subscription ids that got their delivery
+	answers  map[string]map[string]string
 }
+
+// Subscription values of the sandbox. Target is the room field; the target
+// ManualTarget asks a person to finish the setup.
+const (
+	FieldTarget     = "target"
+	ManualTarget    = "sandbox/manual"
+	SignatureHeader = "x-sandbox-signature"
+)
 
 // Faults of the adapter folder contract.
 const (
@@ -68,6 +92,8 @@ const (
 	FaultExitEmpty     = "exit_empty"      // exits on an empty state folder
 	FaultStdoutNoise   = "stdout_noise"    // prints a line that is not JSON-RPC on stdout
 	FaultRejectReplyTo = "reject_reply_to" // fails a send with reply_to
+	FaultAcceptForged  = "accept_forged"   // takes a webhook with a bad signature
+	FaultBusyWebhook   = "busy_webhook"    // answers each webhook with transient
 )
 
 // Files of a Reference sandbox in TREBI_STATE_DIR.
@@ -275,12 +301,29 @@ func (s *Sandbox) afterReply(method string, result any, perr *protocol.Error) {
 	if method == protocol.MethodAuthBegin && perr == nil {
 		s.finishQR(result.(protocol.AuthBeginResult))
 	}
+	for _, target := range s.posts {
+		s.deliver(target)
+	}
+	s.posts = nil
 }
 
 func (s *Sandbox) handle(m protocol.Message) (any, *protocol.Error) {
 	switch m.Method {
 	case protocol.MethodInitialize:
+		var p protocol.InitializeParams
+		_ = json.Unmarshal(m.Params, &p) //nolint:errcheck // a bad params starts with no hook
+		s.webhook = p.Webhook
 		return s.Result, nil
+	case protocol.MethodSubscriptionsOptions:
+		var p protocol.OptionsParams
+		_ = json.Unmarshal(m.Params, &p) //nolint:errcheck // a bad params lists no field
+		return protocol.OptionPage{Options: append([]protocol.FieldOption{}, s.Options[p.Field]...)}, nil
+	case protocol.MethodSubscriptionsSync:
+		return s.sync(m.Params)
+	case protocol.MethodSubscriptionsSubmit:
+		return s.submit(m.Params)
+	case protocol.MethodWebhookReceive:
+		return s.receive(m.Params)
 	case protocol.MethodPing, protocol.MethodShutdown, protocol.MethodTyping, protocol.MethodMessagesSeen,
 		protocol.MethodReactionsAdd, protocol.MethodMessagesEdit, protocol.MethodAuthCancel:
 		return protocol.Empty{}, nil
@@ -623,4 +666,149 @@ func (s *Sandbox) roomCall(m protocol.Message) (any, *protocol.Error) {
 		return protocol.ThreadResult{Thread: protocol.Thread{ID: "t-" + p.Room, Title: p.Title}}, nil
 	}
 	return nil, protocol.NewError(protocol.CodeUnsupported, m.Method)
+}
+
+// sync answers one state for each subscription. With a hook, a target
+// becomes active and the fake platform posts one delivery for each new one;
+// ManualTarget waits for a person. Without a hook, the sandbox polls.
+func (s *Sandbox) sync(raw json.RawMessage) (any, *protocol.Error) {
+	var p protocol.SyncParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, protocol.NewError(protocol.CodeInvalid, err.Error())
+	}
+	if s.answered == nil {
+		s.answered = map[string]bool{}
+	}
+	s.Synced = p.Subscriptions
+	out := protocol.SyncResult{Subscriptions: []protocol.SubscriptionState{}}
+	for _, sub := range p.Subscriptions {
+		out.Subscriptions = append(out.Subscriptions, s.stateOf(sub))
+	}
+	return out, nil
+}
+
+func (s *Sandbox) stateOf(sub protocol.Subscription) protocol.SubscriptionState {
+	if st, ok := s.States[sub.ID]; ok {
+		st.ID = sub.ID
+		return st
+	}
+	target := ""
+	if v := sub.Values[FieldTarget]; len(v) > 0 {
+		target = v[0]
+	}
+	st := protocol.SubscriptionState{ID: sub.ID, Title: cmpOr(target, "Everything")}
+	if target != "" {
+		st.Room = &protocol.Room{ID: target}
+	}
+	switch {
+	case s.webhook == nil:
+		st.Mode, st.State = "poll", protocol.SubscriptionPolling
+	case target == ManualTarget && s.answers[sub.ID] == nil:
+		st.Mode, st.State = "manual", protocol.SubscriptionActionRequired
+		st.Action = &protocol.Action{
+			Text: "Paste the URL into the sandbox, then type the code that it shows.",
+			Show: []protocol.ShowValue{{Label: "URL", Value: s.webhook.URL}},
+			Ask:  []protocol.AskField{{Name: "code", Label: "Code", Secret: true, Required: true}},
+		}
+	default:
+		st.Mode, st.State = "api", protocol.SubscriptionActive
+		if target == ManualTarget {
+			st.Mode = "manual"
+		}
+		if !s.answered[sub.ID] {
+			s.answered[sub.ID] = true
+			s.posts = append(s.posts, target)
+		}
+	}
+	return st
+}
+
+// submit stores the answers of a person and finishes the subscription.
+func (s *Sandbox) submit(raw json.RawMessage) (any, *protocol.Error) {
+	var p protocol.SubmitParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, protocol.NewError(protocol.CodeInvalid, err.Error())
+	}
+	i := slices.IndexFunc(s.Synced, func(sub protocol.Subscription) bool { return sub.ID == p.ID })
+	if i < 0 {
+		return nil, protocol.NewError(protocol.CodeInvalid, "unknown subscription "+p.ID)
+	}
+	if p.Fields["code"] == "" {
+		return nil, protocol.NewError(protocol.CodeInvalid, "code is required")
+	}
+	if s.answers == nil {
+		s.answers = map[string]map[string]string{}
+	}
+	s.answers[p.ID] = p.Fields
+	return s.stateOf(s.Synced[i]), nil
+}
+
+// receive checks the signature and turns one delivery into one event. A
+// handshake makes no event.
+func (s *Sandbox) receive(raw json.RawMessage) (any, *protocol.Error) {
+	var req protocol.WebhookRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, protocol.NewError(protocol.CodeInvalid, err.Error())
+	}
+	s.Received = append(s.Received, req)
+	if s.has(FaultBusyWebhook) {
+		return nil, protocol.NewError(protocol.CodeTransient, "the platform is busy")
+	}
+	if req.Handshake {
+		return protocol.Empty{}, nil
+	}
+	if s.webhook == nil || (req.Headers[SignatureHeader] != Sign(s.webhook.Secret, req.Body) && !s.has(FaultAcceptForged)) {
+		return nil, protocol.NewError(protocol.CodeInvalid, "bad signature")
+	}
+	var body struct {
+		Target string `json:"target"`
+		Text   string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(req.Body), &body); err != nil {
+		return nil, protocol.NewError(protocol.CodeInvalid, err.Error())
+	}
+	typ := "message"
+	if len(s.Result.Events) > 0 {
+		typ = s.Result.Events[0].Type
+	}
+	e := protocol.Event{ID: req.ID, Type: typ, TS: cmpOr(req.ReceivedAt, time.Now().UTC().Format(time.RFC3339Nano)), Text: body.Text, Sender: &protocol.Sender{ID: "sandbox-platform"}}
+	if body.Target != "" {
+		e.Room = &protocol.Room{ID: body.Target}
+	}
+	s.notify(protocol.MethodEvent, e)
+	return protocol.Empty{}, nil
+}
+
+// deliver posts one signed delivery to the hook, as the platform does after
+// a subscription is created. A failed post is not an error of the adapter.
+func (s *Sandbox) deliver(target string) {
+	if s.webhook == nil {
+		return
+	}
+	b, _ := json.Marshal(map[string]string{"target": target, "text": "hello"})
+	req, err := http.NewRequest(http.MethodPost, s.webhook.URL, bytes.NewReader(b))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(SignatureHeader, Sign(s.webhook.Secret, string(b)))
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return
+	}
+	_ = resp.Body.Close() //nolint:errcheck // the status is not checked
+}
+
+// Sign is the sandbox signature of a body: sha256=<hex HMAC>.
+func Sign(secret, body string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(body))
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func cmpOr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

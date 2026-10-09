@@ -125,7 +125,10 @@ func (s *Service) onNotify(p *proc, method string, params json.RawMessage) {
 		s.flow(p.id, d.FlowID, true).finish(d)
 		if d.OK {
 			s.emitConnector("connector.auth.completed", p.id, nil)
+			p.kick(p.syncNow) // a login can change the mode
 		}
+	case protocol.NoteSubscriptionsChanged:
+		p.kick(p.syncChanged)
 	default:
 		s.log.Debug("connector notification", "connector", p.id, "method", method)
 	}

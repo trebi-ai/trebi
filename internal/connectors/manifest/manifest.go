@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -128,6 +130,8 @@ type Events struct {
 	TS       string      `yaml:"ts,omitempty" json:"ts,omitempty"`
 	Identity string      `yaml:"identity,omitempty" json:"identity,omitempty"`
 	Catchup  *Catchup    `yaml:"catchup,omitempty" json:"catchup,omitempty"`
+
+	Subscriptions *Subscriptions `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
 }
 
 // EventType is one event the connector emits. Schema is a JSON Schema file
@@ -144,6 +148,50 @@ type Catchup struct {
 	Command   string   `yaml:"command" json:"command"`
 	MaxEvents int      `yaml:"max_events,omitempty" json:"max_events,omitempty"`
 	Timeout   Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+// Subscriptions declares what a user can watch in the system.
+type Subscriptions struct {
+	Action  string              `yaml:"action" json:"action"`
+	Modes   []string            `yaml:"modes" json:"modes"`
+	Fields  []SubscriptionField `yaml:"fields,omitempty" json:"fields,omitempty"`
+	Webhook *Webhook            `yaml:"webhook,omitempty" json:"webhook,omitempty"`
+}
+
+// SubscriptionField is one field of the watch form.
+type SubscriptionField struct {
+	Name     string   `yaml:"name" json:"name"`
+	Label    string   `yaml:"label" json:"label"`
+	Help     string   `yaml:"help,omitempty" json:"help,omitempty"`
+	Choices  []string `yaml:"choices,omitempty" json:"choices,omitempty"`
+	Dynamic  bool     `yaml:"dynamic,omitempty" json:"dynamic,omitempty"`
+	Multiple bool     `yaml:"multiple,omitempty" json:"multiple,omitempty"`
+	Required bool     `yaml:"required,omitempty" json:"required,omitempty"`
+	Default  string   `yaml:"default,omitempty" json:"default,omitempty"`
+	Room     bool     `yaml:"room,omitempty" json:"room,omitempty"`
+}
+
+// Webhook is what the cloud keeps for the hosted hook of a connection.
+type Webhook struct {
+	Headers   []string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	Handshake []string `yaml:"handshake,omitempty" json:"handshake,omitempty"`
+}
+
+// HandshakeRequest is one inbound request, as the cloud sees it.
+type HandshakeRequest struct {
+	Method  string
+	Query   url.Values
+	Headers http.Header
+	Body    []byte
+}
+
+// HandshakeAnswer is the reply of the cloud to a handshake.
+type HandshakeAnswer struct {
+	Status      int
+	Headers     map[string]string
+	ContentType string
+	Body        string
+	Forward     bool
 }
 
 // Channel is the "the system can hold a conversation" capability. Features
@@ -199,6 +247,11 @@ const (
 	ModeReply = "reply"
 	ModePush  = "push"
 
+	ModeAPI    = "api"
+	ModeManual = "manual"
+	ModeStream = "stream"
+	ModePoll   = "poll"
+
 	// EventMessage is the event type that makes a channel conversational.
 	EventMessage = "message"
 
@@ -223,6 +276,19 @@ const (
 	FeatureAttachmentsIn  = "attachments.in"
 	FeatureAttachmentsOut = "attachments.out"
 	FeatureReplies        = "replies"
+
+	FeatureSubscriptions = "subscriptions"
+	FeatureWebhooks      = "webhooks"
+)
+
+// Limits of the watch form and the hosted hook.
+const (
+	maxSubscriptionFields = 8
+	maxActionLen          = 40
+	maxWebhookHeaders     = 16
+	maxHandshakeRules     = 4
+	// MaxValueBytes bounds one free text value of a subscription.
+	MaxValueBytes = 500
 )
 
 var (
@@ -235,6 +301,9 @@ var (
 	nameRE     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 	envKeyRE   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	templateRE = regexp.MustCompile(`\{([a-z]+)\}`)
+	fieldRE    = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	headerRE   = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+	ruleRE     = regexp.MustCompile(`^(query_echo:[A-Za-z0-9_.]{1,64}|json_echo:[A-Za-z0-9_]{1,64}|header_echo:[a-z0-9-]{1,64}|ok:(GET|HEAD))$`)
 )
 
 // Reserved names belong to a native channel or to the harness bridge.
@@ -496,12 +565,28 @@ func (m Manifest) EventSchemas(dir string) (map[string]*jsonschema.Resolved, err
 	return out, nil
 }
 
-// Features returns the promised channel features.
+// Features returns the promised features: the channel features, then
+// subscriptions and webhooks.
 func (m Manifest) Features() []string {
-	if m.Channel == nil {
+	var out []string
+	if m.Channel != nil {
+		out = slices.Clone(m.Channel.Features)
+	}
+	if m.Events != nil && m.Events.Subscriptions != nil {
+		out = append(out, FeatureSubscriptions)
+		if m.Events.Subscriptions.Webhook != nil {
+			out = append(out, FeatureWebhooks)
+		}
+	}
+	return out
+}
+
+// SubscriptionSpec returns the events.subscriptions block, or nil.
+func (m Manifest) SubscriptionSpec() *Subscriptions {
+	if m.Events == nil {
 		return nil
 	}
-	return slices.Clone(m.Channel.Features)
+	return m.Events.Subscriptions
 }
 
 // WithDefaults fills the declared defaults. Call it after Validate.
@@ -762,6 +847,12 @@ func (v *validator) events(m Manifest) {
 			v.add(fmt.Sprintf("events.types[%d].schema", i), "must be a path in the entry folder")
 		}
 	}
+	if e.Subscriptions != nil {
+		if m.Protocol() != ProtocolConnector {
+			v.add("events.subscriptions", "needs events.protocol: "+ProtocolConnector)
+		}
+		v.subscriptions(e.Subscriptions)
+	}
 	switch m.Protocol() {
 	case ProtocolConnector:
 		for _, f := range []struct {
@@ -780,6 +871,242 @@ func (v *validator) events(m Manifest) {
 	default:
 		v.add("events.protocol", "must be lines or "+ProtocolConnector)
 	}
+}
+
+// subscriptions checks the cross-field rules of the watch form. The JSON
+// Schema holds the patterns and the sizes.
+func (v *validator) subscriptions(s *Subscriptions) {
+	const base = "events.subscriptions"
+	if strings.TrimSpace(s.Action) == "" {
+		v.add(base+".action", "required")
+	} else if len(s.Action) > maxActionLen {
+		v.add(base+".action", fmt.Sprintf("must be at most %d characters", maxActionLen))
+	}
+	if len(s.Modes) == 0 {
+		v.add(base+".modes", "needs at least one mode")
+	}
+	seenMode := map[string]bool{}
+	for _, mode := range s.Modes {
+		if !slices.Contains(SubscriptionModes(), mode) {
+			v.add(base+".modes", "unknown mode "+strconv.Quote(mode))
+		}
+		if seenMode[mode] {
+			v.add(base+".modes", "duplicate "+mode)
+		}
+		seenMode[mode] = true
+	}
+	if (seenMode[ModeAPI] || seenMode[ModeManual]) && s.Webhook == nil {
+		v.add(base+".webhook", "required with mode api or manual")
+	}
+	v.subscriptionFields(base, s.Fields)
+	if s.Webhook != nil {
+		v.webhook(base+".webhook", *s.Webhook)
+	}
+}
+
+// subscriptionFields checks the fields of the watch form.
+func (v *validator) subscriptionFields(base string, fields []SubscriptionField) {
+	if len(fields) > maxSubscriptionFields {
+		v.add(base+".fields", fmt.Sprintf("must have at most %d items", maxSubscriptionFields))
+	}
+	seen := map[string]bool{}
+	rooms := 0
+	for i, f := range fields {
+		field := fmt.Sprintf("%s.fields[%d]", base, i)
+		if !fieldRE.MatchString(f.Name) {
+			v.add(field+".name", "must match "+fieldRE.String())
+		}
+		if seen[f.Name] {
+			v.add(field+".name", "duplicate "+f.Name)
+		}
+		seen[f.Name] = true
+		if strings.TrimSpace(f.Label) == "" {
+			v.add(field+".label", "required")
+		}
+		if len(f.Choices) > 0 && f.Dynamic {
+			v.add(field+".dynamic", "cannot be combined with choices")
+		}
+		if len(f.Choices) > 0 && f.Default != "" && !slices.Contains(f.Choices, f.Default) {
+			v.add(field+".default", "must be one of choices")
+		}
+		if f.Room {
+			rooms++
+			if f.Multiple {
+				v.add(field+".multiple", "a room field takes one value")
+			}
+		}
+	}
+	if rooms > 1 {
+		v.add(base+".fields", "at most one field has room: true")
+	}
+}
+
+// webhook checks the headers and the handshake rules of the hook.
+func (v *validator) webhook(base string, w Webhook) {
+	if len(w.Headers) > maxWebhookHeaders {
+		v.add(base+".headers", fmt.Sprintf("must have at most %d items", maxWebhookHeaders))
+	}
+	for i, h := range w.Headers {
+		if msg := headerProblem(h); msg != "" {
+			v.add(fmt.Sprintf("%s.headers[%d]", base, i), msg)
+		}
+	}
+	if len(w.Handshake) > maxHandshakeRules {
+		v.add(base+".handshake", fmt.Sprintf("must have at most %d rules", maxHandshakeRules))
+	}
+	for i, r := range w.Handshake {
+		if !ruleRE.MatchString(r) {
+			v.add(fmt.Sprintf("%s.handshake[%d]", base, i), "unknown rule "+strconv.Quote(r))
+		}
+	}
+}
+
+// headerProblem returns why the cloud refuses to forward a header, or "".
+func headerProblem(h string) string {
+	if !headerRE.MatchString(h) {
+		return "must match " + headerRE.String()
+	}
+	switch h {
+	case "authorization", "cookie", "set-cookie", "proxy-authorization":
+		return "is not forwarded"
+	}
+	if strings.HasPrefix(h, "cf-") || strings.HasPrefix(h, "x-forwarded-") {
+		return "is not forwarded"
+	}
+	return ""
+}
+
+// SubscriptionModes lists the subscription modes.
+func SubscriptionModes() []string { return []string{ModeAPI, ModeManual, ModeStream, ModePoll} }
+
+// Field returns the field with the name, or false.
+func (s Subscriptions) Field(name string) (SubscriptionField, bool) {
+	for _, f := range s.Fields {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return SubscriptionField{}, false
+}
+
+// RoomField returns the room field, or false.
+func (s Subscriptions) RoomField() (SubscriptionField, bool) {
+	for _, f := range s.Fields {
+		if f.Room {
+			return f, true
+		}
+	}
+	return SubscriptionField{}, false
+}
+
+// Check returns the problems of the values and the event types of one
+// subscription. The fields are values.<name> and types.
+func (s Subscriptions) Check(values map[string][]string, types []string, eventTypes []EventType) []FieldError {
+	var errs []FieldError
+	add := func(field, msg string) { errs = append(errs, FieldError{Field: field, Message: msg}) }
+	for name, vals := range values {
+		f, ok := s.Field(name)
+		if !ok {
+			add("values."+name, "unknown field")
+			continue
+		}
+		if !f.Multiple && len(vals) > 1 {
+			add("values."+name, "takes one value")
+		}
+		for _, val := range vals {
+			switch {
+			case len(f.Choices) > 0 && !slices.Contains(f.Choices, val):
+				add("values."+name, fmt.Sprintf("%q is not one of %s", val, strings.Join(f.Choices, ", ")))
+			case len(val) > MaxValueBytes:
+				add("values."+name, fmt.Sprintf("must be at most %d bytes", MaxValueBytes))
+			}
+		}
+	}
+	for _, f := range s.Fields {
+		if f.Required && len(values[f.Name]) == 0 {
+			add("values."+f.Name, "required")
+		}
+	}
+	for _, t := range types {
+		if !slices.ContainsFunc(eventTypes, func(et EventType) bool { return et.Type == t }) {
+			add("types", "unknown event type "+strconv.Quote(t))
+		}
+	}
+	return errs
+}
+
+// WithDefaults returns values with the default of each empty field that has
+// one. The adapter then sees the full form.
+func (s Subscriptions) WithDefaults(values map[string][]string) map[string][]string {
+	out := make(map[string][]string, len(values))
+	for k, v := range values {
+		out[k] = slices.Clone(v)
+	}
+	for _, f := range s.Fields {
+		if len(out[f.Name]) == 0 && f.Default != "" {
+			out[f.Name] = []string{f.Default}
+		}
+	}
+	return out
+}
+
+// Answer applies the handshake rules. The echo rules go in the listed order
+// and the first match answers; the ok rules apply only when no echo rule
+// matched. A request that no rule answers is a normal delivery and gets nil,
+// unless its method cannot carry one: then the answer is 405.
+func (w Webhook) Answer(r HandshakeRequest) *HandshakeAnswer {
+	for _, rule := range w.Handshake {
+		kind, arg, _ := strings.Cut(rule, ":")
+		switch kind {
+		case "query_echo":
+			if r.Query.Has(arg) {
+				return &HandshakeAnswer{Status: http.StatusOK, ContentType: "text/plain", Body: r.Query.Get(arg), Forward: true}
+			}
+		case "json_echo":
+			if val, ok := jsonEcho(r.Body, arg); ok {
+				body, _ := json.Marshal(map[string]string{arg: val}) //nolint:errchkjson // a string map always encodes
+				return &HandshakeAnswer{Status: http.StatusOK, ContentType: "application/json", Body: string(body), Forward: true}
+			}
+		case "header_echo":
+			if vals := r.Headers.Values(arg); len(vals) > 0 {
+				return &HandshakeAnswer{Status: http.StatusOK, Headers: map[string]string{arg: vals[0]}, Forward: true}
+			}
+		}
+	}
+	method := strings.ToUpper(r.Method)
+	for _, rule := range w.Handshake {
+		if rule == "ok:"+method {
+			return &HandshakeAnswer{Status: http.StatusOK}
+		}
+	}
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		return nil
+	}
+	return &HandshakeAnswer{Status: http.StatusMethodNotAllowed}
+}
+
+// jsonEcho reads field from a body that is a JSON object with only field,
+// type, and token. An event with more keys is not a handshake.
+func jsonEcho(body []byte, field string) (string, bool) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(body, &obj) != nil {
+		return "", false
+	}
+	raw, ok := obj[field]
+	if !ok {
+		return "", false
+	}
+	for k := range obj {
+		if k != field && k != "type" && k != "token" {
+			return "", false
+		}
+	}
+	var val string
+	if json.Unmarshal(raw, &val) != nil {
+		return "", false
+	}
+	return val, true
 }
 
 // lines checks the fields of a lines connector.

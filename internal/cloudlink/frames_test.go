@@ -1,6 +1,7 @@
 package cloudlink
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -70,9 +71,20 @@ func TestContractFixtures(t *testing.T) {
 	}
 
 	var hook WebhookIngress
-	mustDecode(t, dir, "webhook-ingress.v1.json", &hook)
-	if hook.V != ContractV || hook.Method != "POST" || hook.Path != "/stripe" || hook.Headers["stripe-signature"] == "" || hook.Body == "" {
+	mustDecodeStrict(t, dir, "webhook-ingress.v1.json", &hook)
+	if hook.V != ContractV || hook.HookID == "" || hook.Method != "POST" || hook.Path != "/stripe" || hook.Query != "source=test" || hook.Handshake || hook.Headers["stripe-signature"] == "" || hook.Body == "" {
 		t.Errorf("webhook = %+v", hook)
+	}
+
+	var mint MintHookRequest
+	mustDecodeStrict(t, dir, "hook-mint-request.v1.json", &mint)
+	if mint.Label == "" || len(mint.Headers) != 3 || len(mint.Handshake) != 1 {
+		t.Errorf("hook mint request = %+v", mint)
+	}
+	var minted Hook
+	mustDecodeStrict(t, dir, "hook-mint-response.v1.json", &minted)
+	if minted.ID == "" || minted.Token == "" || minted.URL == "" {
+		t.Errorf("hook mint response = %+v", minted)
 	}
 
 	var mreq McpRequest
@@ -92,7 +104,7 @@ func TestContractFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, needle := range []string{"X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "ingress-message.v1.json", "mcp-request.v1.json", "mcp-response.v1.json"} {
+	for _, needle := range []string{"X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "hook-handshake.v1.json", "hook-mint-request.v1.json", "ingress-message.v1.json", "mcp-request.v1.json", "mcp-response.v1.json"} {
 		if !strings.Contains(text, needle) {
 			t.Errorf("CONTRACT.md missing %s", needle)
 		}
@@ -196,6 +208,19 @@ func mustDecode(t *testing.T, dir, name string, dest any) {
 		t.Fatal(err)
 	}
 	if err := json.Unmarshal(raw, dest); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+}
+
+func mustDecodeStrict(t *testing.T, dir, name string, dest any) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dest); err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
 }

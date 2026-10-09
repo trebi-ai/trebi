@@ -6,11 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -19,16 +22,22 @@ import (
 // fakeHosted records the signed mint/revoke side.
 type fakeHosted struct {
 	deleted   []string
+	minted    []cloudlink.MintHookRequest
 	connected bool
+	ent       entitle.State
 }
 
 func (f *fakeHosted) Status() cloudlink.Status { return cloudlink.Status{Connected: f.connected} }
 
-func (f *fakeHosted) MintHook(_ context.Context, label string) (cloudlink.Hook, error) {
+func (f *fakeHosted) Entitlement() entitle.State { return f.ent }
+
+func (f *fakeHosted) MintHook(_ context.Context, req cloudlink.MintHookRequest) (cloudlink.Hook, error) {
+	f.minted = append(f.minted, req)
+	n := strconv.Itoa(len(f.minted))
 	return cloudlink.Hook{
-		ID:    "01J8YHOOK000000000000000001",
-		Token: "tok-1",
-		URL:   "https://in.example.com/hook/tok-1",
+		ID:    "01J8YHOOK00000000000000000" + n,
+		Token: "tok-" + n,
+		URL:   "https://in.example.com/hook/tok-" + n,
 	}, nil
 }
 
@@ -44,6 +53,10 @@ func TestDeliverWritesDocumentedEventPayload(t *testing.T) {
 	st, conn := jobStack(t)
 	svc := New(st, conn, &fakeHosted{})
 	ctx := context.Background()
+	if _, err := st.DB().Exec(`INSERT INTO cloud_hooks (id, workspace_id, label, url, created_at)
+		VALUES ('01J8YHOOK000000000000000009', 'ws-1', 'deploy', 'u', '2026-09-22T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := svc.Deliver(ctx, testFrame("01J8YINGRESS000000000000001")); err != nil {
 		t.Fatal(err)
@@ -58,7 +71,8 @@ func TestDeliverWritesDocumentedEventPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]any{
-		"hook_id":      "01J8YINGRESS000000000000001",
+		"hook_id":      "01J8YHOOK000000000000000009",
+		"workspace_id": "ws-1",
 		"label":        "deploy",
 		"method":       "POST",
 		"path":         "/deploy",
@@ -256,6 +270,7 @@ func testFrame(id string) cloudlink.WebhookIngress {
 	return cloudlink.WebhookIngress{
 		V:           cloudlink.ContractV,
 		ID:          id,
+		HookID:      "01J8YHOOK000000000000000009",
 		Method:      "POST",
 		Path:        "/deploy",
 		ContentType: "application/json",
@@ -341,5 +356,92 @@ func TestConnectorRowCountsAndStatus(t *testing.T) {
 	hosted.connected = true
 	if got := events(svc.ConnectorRow())["status"]; got != "listening" {
 		t.Fatalf("status with a link = %v", got)
+	}
+}
+
+// TestEnsureHooksMintsAndRevokes proves the connection hook rows: a mint for
+// a new connection, a new mint on a spec change, and a revoke when the
+// connection no longer wants a hook.
+func TestEnsureHooksMintsAndRevokes(t *testing.T) {
+	st, conn := openStack(t)
+	hosted := &fakeHosted{}
+	svc := New(st, conn, hosted)
+	ctx := context.Background()
+	const id = "con_01j9x7k2m4q8r3t5v6w7y8z9ab"
+	spec := manifest.Webhook{Headers: []string{"x-github-event"}}
+
+	if svc.ensure(ctx, map[string]manifest.Webhook{id: spec}) || len(hosted.minted) != 0 {
+		t.Fatal("minted without a cloud link")
+	}
+	if got := svc.HookState(id); got.Reason != connectors.WebhookNotLinked {
+		t.Fatalf("state without a link = %+v", got)
+	}
+	hosted.ent = entitle.State{Linked: true}
+	if got := svc.HookState(id); got.Reason != connectors.WebhookNoPlan {
+		t.Fatalf("state without the plan = %+v", got)
+	}
+	hosted.ent.Features = []entitle.Feature{entitle.HostedIngress}
+
+	if !svc.ensure(ctx, map[string]manifest.Webhook{id: spec}) {
+		t.Fatal("first ensure changed nothing")
+	}
+	if len(hosted.minted) != 1 || hosted.minted[0].Label != id || hosted.minted[0].Headers[0] != "x-github-event" {
+		t.Fatalf("minted = %+v", hosted.minted)
+	}
+	h := svc.Hook(id)
+	if h == nil || h.URL != "https://in.example.com/hook/tok-1" || len(h.Secret) < 40 {
+		t.Fatalf("hook = %+v", h)
+	}
+	if svc.ensure(ctx, map[string]manifest.Webhook{id: spec}) {
+		t.Fatal("the same spec minted again")
+	}
+
+	spec.Handshake = []string{"json_echo:challenge"}
+	if !svc.ensure(ctx, map[string]manifest.Webhook{id: spec}) || len(hosted.minted) != 2 {
+		t.Fatalf("a spec change did not mint again: %+v", hosted.minted)
+	}
+	if len(hosted.deleted) != 1 || hosted.deleted[0] != "01J8YHOOK000000000000000001" {
+		t.Fatalf("revoked = %v", hosted.deleted)
+	}
+
+	if !svc.ensure(ctx, map[string]manifest.Webhook{}) || svc.Hook(id) != nil {
+		t.Fatal("an unwanted hook stayed")
+	}
+	if len(hosted.deleted) != 2 {
+		t.Fatalf("revoked = %v", hosted.deleted)
+	}
+}
+
+// TestDeliverRoutesByHookID proves a frame for a connection hook goes to
+// the delivery queue of that connection, not to the native connector.
+func TestDeliverRoutesByHookID(t *testing.T) {
+	st, conn := openStack(t)
+	hosted := &fakeHosted{ent: entitle.State{Linked: true, Features: []entitle.Feature{entitle.HostedIngress}}}
+	svc := New(st, conn, hosted)
+	ctx := context.Background()
+	const id = "con_01j9x7k2m4q8r3t5v6w7y8z9ab"
+	svc.ensure(ctx, map[string]manifest.Webhook{id: {}})
+
+	f := testFrame("01J8YINGRESS000000000000003")
+	f.HookID = "01J8YHOOK000000000000000001"
+	f.Handshake = true
+	for range 2 {
+		if err := svc.Deliver(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var conns, events int
+	var req string
+	if err := st.DB().QueryRow(`SELECT COUNT(*), MAX(connection_id), MAX(request_json) FROM webhook_deliveries`).Scan(&conns, new(string), &req); err != nil {
+		t.Fatal(err)
+	}
+	if conns != 1 || !strings.Contains(req, `"handshake":true`) {
+		t.Fatalf("deliveries = %d, request %s", conns, req)
+	}
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 0 {
+		t.Fatalf("events = %d, want 0", events)
 	}
 }

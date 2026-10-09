@@ -50,6 +50,10 @@ const (
 	KindConnectorAuthRequired Kind = "connector_auth_required"
 	// KindConnectorUpdate is a catalog version that waits for the user.
 	KindConnectorUpdate Kind = "connector_update_available"
+	// KindConnectorSubscriptionFailed is a watch that the connector cannot keep.
+	KindConnectorSubscriptionFailed Kind = "connector_subscription_failed"
+	// KindConnectorSubscriptionAction is a watch that needs a person to finish its setup.
+	KindConnectorSubscriptionAction Kind = "connector_subscription_action"
 	// KindRequest is a job request that waits for a person.
 	KindRequest Kind = "request"
 	// KindRequestUndelivered is an answer that could not reach the job.
@@ -717,6 +721,12 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindConnectorUpdate: {
 			Kind: KindConnectorUpdate, Severity: SeverityAttention, InboxKind: InboxHealth,
 		},
+		KindConnectorSubscriptionFailed: {
+			Kind: KindConnectorSubscriptionFailed, Severity: SeverityAttention, InboxKind: InboxHealth,
+		},
+		KindConnectorSubscriptionAction: {
+			Kind: KindConnectorSubscriptionAction, Severity: SeverityAttention, InboxKind: InboxHealth,
+		},
 		KindRequest: {
 			Kind: KindRequest, Severity: SeverityAttention, InboxKind: InboxRequest,
 		},
@@ -828,7 +838,8 @@ func (o RaiseOpts) defaultSubject() string {
 		return "harness/" + o.Harness
 	case KindLimitExceeded, KindUsageWarning:
 		return "harness/" + firstNonEmpty(o.Harness, o.Connector)
-	case KindConnectorUnhealthy, KindConnectorAuthRequired, KindConnectorUpdate:
+	case KindConnectorUnhealthy, KindConnectorAuthRequired, KindConnectorUpdate,
+		KindConnectorSubscriptionFailed, KindConnectorSubscriptionAction:
 		return "connector/" + o.Connector
 	case KindRunFailed:
 		return "job/" + o.WorkspaceID + "/" + o.jobRef()
@@ -861,22 +872,24 @@ func (o RaiseOpts) defaultSubject() string {
 
 //nolint:gochecknoglobals // static table
 var defaultTitles = map[Kind]string{
-	KindWaiting:               "Agent waiting",
-	KindAuthMissing:           "Auth missing",
-	KindLimitExceeded:         "Harness limit exceeded",
-	KindUsageWarning:          "Harness usage warning",
-	KindConnectorUnhealthy:    "Connector unhealthy",
-	KindRunFailed:             "Run failed",
-	KindMemoryInvalid:         "Memory invalid",
-	KindResumeExhausted:       "Resume exhausted",
-	KindMachineDown:           "Machine down",
-	KindSendFailed:            "Send failed",
-	KindActionsInvalid:        "Connector actions invalid",
-	KindConnectorAuthRequired: "Connector needs a login",
-	KindConnectorUpdate:       "Connector update available",
-	KindRequest:               "Request",
-	KindTriggerFlood:          "Too many events",
-	KindChainLimited:          "Agents reached a chain limit",
+	KindWaiting:                     "Agent waiting",
+	KindAuthMissing:                 "Auth missing",
+	KindLimitExceeded:               "Harness limit exceeded",
+	KindUsageWarning:                "Harness usage warning",
+	KindConnectorUnhealthy:          "Connector unhealthy",
+	KindRunFailed:                   "Run failed",
+	KindMemoryInvalid:               "Memory invalid",
+	KindResumeExhausted:             "Resume exhausted",
+	KindMachineDown:                 "Machine down",
+	KindSendFailed:                  "Send failed",
+	KindActionsInvalid:              "Connector actions invalid",
+	KindConnectorAuthRequired:       "Connector needs a login",
+	KindConnectorUpdate:             "Connector update available",
+	KindConnectorSubscriptionFailed: "A watch failed",
+	KindConnectorSubscriptionAction: "A watch needs your help",
+	KindRequest:                     "Request",
+	KindTriggerFlood:                "Too many events",
+	KindChainLimited:                "Agents reached a chain limit",
 }
 
 func (o RaiseOpts) defaultTitle() string {
@@ -907,6 +920,9 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 	case KindConnectorAuthRequired:
 		route := "/connectors/" + url.PathEscape(o.Connector) + "?tab=login"
 		return []InboxAction{{Kind: ActionLogIn, Route: route, Label: "Log in"}}
+	case KindConnectorSubscriptionFailed, KindConnectorSubscriptionAction:
+		route := "/connectors/" + url.PathEscape(o.Connector) + "?tab=events"
+		return []InboxAction{{Kind: ActionReview, Route: route, Label: "Open"}}
 	case KindConnectorUpdate:
 		return []InboxAction{{Kind: ActionUpdate, Route: "/v1/connectors/" + url.PathEscape(o.Connector) + "/update", Label: "Update"}}
 	case KindAuthMissing:

@@ -15,6 +15,7 @@ import (
 
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -45,7 +46,8 @@ type Resolved struct {
 	From     string
 	Manifest manifest.Manifest
 	Inputs   map[string]string
-	Dir      string // the package or manifest folder; "" for inline
+	Dir      string            // the package or manifest folder; "" for inline
+	Webhook  *protocol.Webhook // the hosted hook; nil when the connection has none
 }
 
 // BinDir is the folder of the installed binary, or "".
@@ -199,10 +201,11 @@ func (r Resolved) MCPServer() (*agentwire.MCPServer, []string, error) {
 func (r Resolved) fingerprint() string {
 	env, _ := r.Env()
 	b, _ := json.Marshal(struct {
-		M   manifest.Manifest
-		Env map[string]string
-		Dir string
-	}{r.Manifest, env, r.Dir})
+		M    manifest.Manifest
+		Env  map[string]string
+		Dir  string
+		Hook *protocol.Webhook
+	}{r.Manifest, env, r.Dir, r.Webhook})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:8])
 }
@@ -345,6 +348,9 @@ func (s *Service) Instances() []Resolved {
 		r, err := resolveConnection(c, "", nil)
 		if err != nil || r.Manifest.Events == nil {
 			continue
+		}
+		if spec := r.Manifest.SubscriptionSpec(); s.hooks != nil && spec != nil && spec.Webhook != nil && len(c.Subscriptions) > 0 {
+			r.Webhook = s.hooks.Hook(r.ID)
 		}
 		out = append(out, r)
 	}

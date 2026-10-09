@@ -94,6 +94,14 @@ type proc struct {
 	conn *protocol.Conn             // nil until initialize answers
 	init *protocol.InitializeResult // the initialize result of the live session
 	auth protocol.Status            // the last status notification
+
+	rejected    int64                                 // webhook deliveries the adapter refused
+	dropped     int64                                 // webhook deliveries past webhookMaxAge
+	subs        map[string]protocol.SubscriptionState // the last sync, by subscription id
+	syncedAt    time.Time
+	syncMu      sync.Mutex    // one sync at a time
+	syncNow     chan struct{} // asks the sync loop for a sync
+	syncChanged chan struct{} // subscriptions/changed; throttled
 }
 
 type procSnapshot struct {
@@ -102,6 +110,8 @@ type procSnapshot struct {
 	events      int64
 	duplicates  int64
 	parseErrors int64
+	rejected    int64
+	dropped     int64
 	lastErr     string
 	pid         int
 	startedAt   time.Time
@@ -269,6 +279,7 @@ func (p *proc) snapshot() procSnapshot {
 	snap := procSnapshot{
 		status: p.status, restarts: p.restarts, events: p.events,
 		duplicates: p.duplicates, parseErrors: p.parseErrors,
+		rejected: p.rejected, dropped: p.dropped,
 		lastErr: p.lastErr, startedAt: p.startedAt, lastEventAt: p.lastEventAt,
 		protocol: p.res.Manifest.Protocol() == manifest.ProtocolConnector,
 		init:     p.init, auth: p.auth,
@@ -290,6 +301,7 @@ func (snap procSnapshot) fill(row map[string]any) {
 	row["last_err"] = snap.lastErr
 	row["counters"] = map[string]any{
 		"events": snap.events, "duplicates": snap.duplicates, "parse_errors": snap.parseErrors,
+		"rejected": snap.rejected, "dropped": snap.dropped,
 	}
 	if snap.pid != 0 {
 		row["pid"] = snap.pid
@@ -391,9 +403,9 @@ func (s *Service) StartAll(ctx context.Context) {
 	s.runCtx = ctx
 	s.started = true
 	s.mu.Unlock()
-	for _, r := range s.Instances() {
-		s.startInstance(r)
-	}
+	s.wg.Add(1)
+	go s.runWebhookQueue(ctx)
+	s.reconcile(ctx)
 }
 
 // Start launches the supervisor of one connection. Backup and restore call
@@ -422,7 +434,10 @@ func (s *Service) Start(_ context.Context, ref string) error {
 func (s *Service) startInstance(r Resolved) {
 	s.mu.Lock()
 	runCtx := s.runCtx
-	p := &proc{id: r.ID, res: r, fp: r.fingerprint(), status: statusStarting, done: make(chan struct{})}
+	p := &proc{
+		id: r.ID, res: r, fp: r.fingerprint(), status: statusStarting, done: make(chan struct{}),
+		syncNow: make(chan struct{}, 1), syncChanged: make(chan struct{}, 1),
+	}
 	if old, ok := s.procs[r.ID]; ok {
 		if old.alive() {
 			s.mu.Unlock()
@@ -535,13 +550,18 @@ func (s *Service) reconcile(ctx context.Context) {
 			s.startInstance(r)
 		}
 	}
-	if !started {
-		return
-	}
-	for id, r := range want {
-		if _, ok := procs[id]; !ok {
-			s.startInstance(r)
+	if started {
+		for id, r := range want {
+			if _, ok := procs[id]; !ok {
+				s.startInstance(r)
+			}
 		}
+	}
+	if s.hooks != nil {
+		s.mu.Lock()
+		conns := maps.Clone(s.conns)
+		s.mu.Unlock()
+		s.hooks.EnsureHooks(context.WithoutCancel(ctx), hookWants(slices.Collect(maps.Values(want)), conns))
 	}
 }
 
@@ -793,6 +813,7 @@ func (s *Service) session(ctx context.Context, p *proc, conn *protocol.Conn) err
 		Daemon:      protocol.DaemonInfo{Version: s.version},
 		Instance:    protocol.InstanceInfo{Key: r.ID, Name: r.Type},
 		LastEventID: pos.LastEventID,
+		Webhook:     r.Webhook,
 	}, &init)
 	cancel()
 	if err != nil {
@@ -811,6 +832,15 @@ func (s *Service) session(ctx context.Context, p *proc, conn *protocol.Conn) err
 		return err
 	}
 	p.setStatus(statusListening)
+	s.wakeWebhooks()
+	if slices.Contains(init.Features, manifest.FeatureSubscriptions) {
+		p.kick(p.syncNow)
+		s.wg.Add(1)
+		go func() { // ends with the session
+			defer s.wg.Done()
+			s.runSyncLoop(ctx, p, conn)
+		}()
+	}
 	ping := time.NewTicker(s.pingEvery)
 	defer ping.Stop()
 	authTick := time.NewTicker(s.authEvery)

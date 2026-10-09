@@ -1,0 +1,102 @@
+[
+  {
+    "name": "graph validationToken",
+    "rules": ["query_echo:validationToken"],
+    "method": "POST",
+    "query": "validationToken=Validation%3A+Testing+client+application",
+    "headers": {"content-type": "text/plain"},
+    "body": "",
+    "answer": {"status": 200, "headers": {}, "content_type": "text/plain", "body": "Validation: Testing client application"},
+    "forward": true
+  },
+  {
+    "name": "graph change notification",
+    "rules": ["query_echo:validationToken"],
+    "method": "POST",
+    "query": "",
+    "headers": {"content-type": "application/json"},
+    "body": "{\"value\":[{\"subscriptionId\":\"sub-1\",\"clientState\":\"s3cret\",\"changeType\":\"created\"}]}",
+    "answer": null,
+    "forward": true
+  },
+  {
+    "name": "slack url_verification",
+    "rules": ["json_echo:challenge"],
+    "method": "POST",
+    "query": "",
+    "headers": {"content-type": "application/json"},
+    "body": "{\"token\":\"Jhj5dZrVaK7ZwHHjRyZWjbDl\",\"challenge\":\"3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P\",\"type\":\"url_verification\"}",
+    "answer": {"status": 200, "headers": {}, "content_type": "application/json", "body": "{\"challenge\":\"3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P\"}"},
+    "forward": true
+  },
+  {
+    "name": "monday challenge",
+    "rules": ["json_echo:challenge"],
+    "method": "POST",
+    "query": "",
+    "headers": {"content-type": "application/json"},
+    "body": "{\"challenge\":\"3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P\"}",
+    "answer": {"status": 200, "headers": {}, "content_type": "application/json", "body": "{\"challenge\":\"3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P\"}"},
+    "forward": true
+  },
+  {
+    "name": "event with a challenge key is not a handshake",
+    "rules": ["json_echo:challenge"],
+    "method": "POST",
+    "query": "",
+    "headers": {"content-type": "application/json"},
+    "body": "{\"challenge\":\"a quiz\",\"event\":{\"type\":\"item_created\"}}",
+    "answer": null,
+    "forward": true
+  },
+  {
+    "name": "asana x-hook-secret",
+    "rules": ["header_echo:x-hook-secret"],
+    "method": "POST",
+    "query": "",
+    "headers": {"content-type": "application/json", "x-hook-secret": "b537207f20cbfa02357cf448134da559e8bd39d61597dcd5631b8012eae53e81"},
+    "body": "",
+    "answer": {"status": 200, "headers": {"x-hook-secret": "b537207f20cbfa02357cf448134da559e8bd39d61597dcd5631b8012eae53e81"}, "content_type": "", "body": ""},
+    "forward": true
+  },
+  {
+    "name": "trello head",
+    "rules": ["ok:HEAD"],
+    "method": "HEAD",
+    "query": "",
+    "headers": {},
+    "body": "",
+    "answer": {"status": 200, "headers": {}, "content_type": "", "body": ""},
+    "forward": false
+  },
+  {
+    "name": "meta get hub.challenge",
+    "rules": ["query_echo:hub.challenge", "ok:GET"],
+    "method": "GET",
+    "query": "hub.mode=subscribe&hub.challenge=1158201444&hub.verify_token=meatyhamhock",
+    "headers": {},
+    "body": "",
+    "answer": {"status": 200, "headers": {}, "content_type": "text/plain", "body": "1158201444"},
+    "forward": true
+  },
+  {
+    "name": "get with no ok rule",
+    "rules": ["json_echo:challenge"],
+    "method": "GET",
+    "query": "",
+    "headers": {},
+    "body": "",
+    "answer": {"status": 405, "headers": {}, "content_type": "", "body": ""},
+    "forward": false
+  },
+  {
+    "name": "github delivery with no rules",
+    "rules": [],
+    "method": "POST",
+    "query": "",
+    "headers": {"content-type": "application/json", "x-github-event": "ping"},
+    "body": "{\"zen\":\"Keep it logically awesome.\"}",
+    "answer": null,
+    "forward": true
+  }
+]

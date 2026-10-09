@@ -79,15 +79,19 @@ type Entitlement struct {
 }
 
 // WebhookIngress is the raw hook the daemon verifies. The cloud does not parse Body into a job.
+// Handshake is true when the cloud answered the request from a handshake rule.
 type WebhookIngress struct {
 	V           int               `json:"v"`
 	ID          string            `json:"id"`
+	HookID      string            `json:"hook_id,omitempty"`
 	Method      string            `json:"method"`
 	Path        string            `json:"path"`
+	Query       string            `json:"query,omitempty"`
 	ContentType string            `json:"content_type"`
 	Headers     map[string]string `json:"headers"`
 	Body        string            `json:"body"`
 	ReceivedAt  string            `json:"received_at"`
+	Handshake   bool              `json:"handshake,omitempty"`
 }
 
 // McpRequest is one MCP HTTP POST that the cloud forwards. The cloud does

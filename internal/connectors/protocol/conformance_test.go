@@ -72,8 +72,11 @@ func TestConformanceSandboxReference(t *testing.T) {
 	res := runChecker(t, sb, c)
 	for check, r := range res {
 		want := protocol.CheckPass
-		if check == "unsupported" || check == "attachments in" {
+		switch check {
+		case "unsupported", "attachments in":
 			want = protocol.CheckSkip // every feature declared; no state folder in process
+		case "subscriptions", "webhooks":
+			want = protocol.CheckSkip // the conformance package proves them
 		}
 		if r.Status != want {
 			t.Errorf("%s = %+v, want %s", check, r, want)

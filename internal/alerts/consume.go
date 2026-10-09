@@ -50,6 +50,7 @@ var consumeTopics = []string{
 	"connector.recovered",
 	"connector.auth.required",
 	"connector.status",
+	"connector.subscriptions.synced",
 	"auth.probe.failed",
 	"harness.updated",
 	"harness.limit_exceeded",
@@ -362,6 +363,8 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		if attrs["state"] == "connected" {
 			s.autoResolve(ctx, KindConnectorAuthRequired, "connector/"+firstNonEmpty(attrs["instance"], ev.ID), "auto")
 		}
+	case "connector.subscriptions.synced":
+		s.onSubscriptionsSynced(ctx, ev, attrs)
 	case "auth.probe.failed":
 		s.onAuthMissing(ctx, ev, attrs)
 	case "harness.updated":
@@ -568,6 +571,26 @@ func (s *Service) onConnectorAuthRequired(ctx context.Context, ev store.StreamEv
 	})
 	if err != nil {
 		s.log.Warn("raise connector_auth_required", "connector", instance, "error", err)
+	}
+}
+
+// onSubscriptionsSynced raises or resolves each watch kind from its count.
+func (s *Service) onSubscriptionsSynced(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	for _, k := range []struct {
+		kind  Kind
+		count string
+		body  string
+	}{
+		{KindConnectorSubscriptionFailed, attrs["errors"], attrs["error"]},
+		{KindConnectorSubscriptionAction, attrs["action_required"], attrs["action"]},
+	} {
+		if k.count == "" || k.count == "0" {
+			s.autoResolve(ctx, k.kind, "connector/"+ev.ID, "auto")
+			continue
+		}
+		if _, err := s.Raise(ctx, RaiseOpts{Kind: k.kind, Connector: ev.ID, TraceID: ev.TraceID, Body: k.body}); err != nil {
+			s.log.Warn("raise "+string(k.kind), "connector", ev.ID, "error", err)
+		}
 	}
 }
 

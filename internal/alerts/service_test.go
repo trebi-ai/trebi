@@ -1232,3 +1232,38 @@ func TestRequestItemApprovalDisabled(t *testing.T) {
 		t.Fatalf("items %+v, sends %d", items, len(w.sent()))
 	}
 }
+
+// TestConnectorSubscriptionAlerts proves one item for each watch kind, and
+// that a clean sync resolves both.
+func TestConnectorSubscriptionAlerts(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	synced := func(attrs map[string]string) {
+		t.Helper()
+		if _, err := st.Append(ctx, store.BusEvent{Topic: "connector.subscriptions.synced", Entity: "connector", EntityID: "con_1", Action: "subscriptions.synced", Attrs: attrs}); err != nil {
+			t.Fatal(err)
+		}
+		frames, err := st.ListBusWith(ctx, store.ListBusOpts{Topics: []string{"connector.subscriptions.synced"}, Limit: 100})
+		if err != nil || len(frames) == 0 {
+			t.Fatalf("frames %v %v", frames, err)
+		}
+		svc.HandleEvent(ctx, frames[len(frames)-1])
+	}
+	bad := map[string]string{"active": "0", "errors": "1", "error": "no access", "action_required": "1", "action": "Paste the code"}
+	synced(bad)
+	synced(bad)
+	items, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)})
+	if len(items) != 2 {
+		t.Fatalf("items %+v", items)
+	}
+	for _, it := range items {
+		if it.Subject != "connector/con_1" || len(it.Actions) != 1 || it.Actions[0].Route != "/connectors/con_1?tab=events" {
+			t.Fatalf("item %+v", it)
+		}
+	}
+	synced(map[string]string{"active": "2", "errors": "0", "action_required": "0"})
+	if open, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)}); len(open) != 0 {
+		t.Fatalf("open after clean sync: %+v", open)
+	}
+}

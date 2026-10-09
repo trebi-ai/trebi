@@ -6,12 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/connectors/protocol"
+	"gopkg.in/yaml.v3"
 )
 
 // ErrInvalid marks a connection or manifest that failed validation. The API
@@ -60,6 +63,99 @@ type Connection struct {
 	Inputs   map[string]string  `yaml:"inputs,omitempty" json:"inputs,omitempty"`
 	Patch    map[string]any     `yaml:"patch,omitempty" json:"patch,omitempty"`
 	Manifest *manifest.Manifest `yaml:"manifest,omitempty" json:"manifest,omitempty"`
+	// Subscriptions are the things the user watches. The adapter makes the
+	// platform match this list.
+	Subscriptions []Subscription `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
+}
+
+// Subscription is one thing that the user watches.
+type Subscription struct {
+	ID     string           `yaml:"id" json:"id"`
+	Values map[string]Value `yaml:"values,omitempty" json:"values,omitempty"`
+	Types  []string         `yaml:"types,omitempty" json:"types,omitempty"`
+}
+
+// Value is one string or a list. It reads both forms and writes one string
+// when it holds one item.
+type Value []string
+
+// UnmarshalYAML reads a scalar or a sequence.
+func (v *Value) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		*v = Value{n.Value}
+		return nil
+	}
+	var list []string
+	if err := n.Decode(&list); err != nil {
+		return err
+	}
+	*v = list
+	return nil
+}
+
+// MarshalYAML writes one item as a scalar.
+func (v Value) MarshalYAML() (any, error) {
+	if len(v) == 1 {
+		return v[0], nil
+	}
+	return []string(v), nil
+}
+
+// UnmarshalJSON reads a string or a list of strings.
+func (v *Value) UnmarshalJSON(b []byte) error {
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*v = Value{one}
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(b, &list); err != nil {
+		return fmt.Errorf("must be a string or a list of strings")
+	}
+	*v = list
+	return nil
+}
+
+// MarshalJSON writes one item as a string.
+func (v Value) MarshalJSON() ([]byte, error) {
+	if len(v) == 1 {
+		return json.Marshal(v[0])
+	}
+	return json.Marshal([]string(v))
+}
+
+// subIDRE is sub_ plus a lowercase ULID.
+var subIDRE = regexp.MustCompile(`^sub_[0-9a-hjkmnp-tv-z]{26}$`)
+
+// NewSubscriptionID returns a new sub_ id.
+func NewSubscriptionID() string {
+	return "sub_" + strings.ToLower(ulid.Make().String())
+}
+
+// values returns the values as plain lists.
+func (sub Subscription) values() map[string][]string {
+	out := make(map[string][]string, len(sub.Values))
+	for k, v := range sub.Values {
+		out[k] = []string(v)
+	}
+	return out
+}
+
+// Wire returns the protocol form with the field defaults filled in.
+func (sub Subscription) Wire(spec *manifest.Subscriptions) protocol.Subscription {
+	values := sub.values()
+	if spec != nil {
+		values = spec.WithDefaults(values)
+	}
+	return protocol.Subscription{ID: sub.ID, Values: values, Types: slices.Clone(sub.Types)}
+}
+
+// key identifies the watched thing: the sorted values and types.
+func (sub Subscription) key() string {
+	types := slices.Clone(sub.Types)
+	slices.Sort(types)
+	b, _ := json.Marshal([]any{sub.values(), types}) //nolint:errcheck // maps of strings always encode
+	return string(b)
 }
 
 var (
@@ -141,10 +237,61 @@ func (c Connection) Validate() error {
 	if utf8.RuneCountInString(c.Title) > maxTitle || strings.ContainsFunc(c.Title, unicode.IsControl) {
 		add("title", fmt.Sprintf("must be at most %d characters on one line", maxTitle))
 	}
+	c.validateSubscriptions(add)
 	if len(errs) == 0 {
 		return nil
 	}
 	return &ValidationError{Name: c.ref(), Fields: errs}
+}
+
+// validateSubscriptions checks the ids and the value sizes. The manifest
+// rules are in commit.
+func (c Connection) validateSubscriptions(add func(field, msg string)) {
+	seen := map[string]bool{}
+	for i, sub := range c.Subscriptions {
+		at := fmt.Sprintf("subscriptions[%d]", i)
+		if !subIDRE.MatchString(sub.ID) {
+			add(at+".id", "must match "+subIDRE.String())
+		} else if seen[sub.ID] {
+			add(at+".id", "is a duplicate")
+		}
+		seen[sub.ID] = true
+		for name, v := range sub.Values {
+			for _, one := range v {
+				if len(one) > manifest.MaxValueBytes {
+					add(at+".values."+name, fmt.Sprintf("must be at most %d bytes", manifest.MaxValueBytes))
+					break
+				}
+			}
+		}
+	}
+}
+
+// checkSubscriptions applies the form rules of the manifest to the list.
+func (c Connection) checkSubscriptions(m manifest.Manifest) error {
+	if len(c.Subscriptions) == 0 {
+		return nil
+	}
+	spec := m.SubscriptionSpec()
+	if spec == nil {
+		return &ValidationError{Name: c.ref(), Fields: []FieldError{{Field: "subscriptions", Message: "the connector has no subscriptions"}}}
+	}
+	var errs []FieldError
+	seen := map[string]int{}
+	for i, sub := range c.Subscriptions {
+		at := fmt.Sprintf("subscriptions[%d].", i)
+		for _, fe := range spec.Check(sub.values(), sub.Types, m.Events.Types) {
+			errs = append(errs, FieldError{Field: at + fe.Field, Message: fe.Message})
+		}
+		if j, ok := seen[sub.key()]; ok {
+			errs = append(errs, FieldError{Field: at + "values", Message: fmt.Sprintf("watches the same thing as subscriptions[%d]", j)})
+		}
+		seen[sub.key()] = i
+	}
+	if len(errs) > 0 {
+		return &ValidationError{Name: c.ref(), Fields: errs}
+	}
+	return nil
 }
 
 // validateSource checks from, version, manifest, and digest.

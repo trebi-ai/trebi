@@ -111,6 +111,10 @@ type Service struct {
 	trigByConn map[string][]cachedTrig
 
 	convs conversationProbe // nil: no conversation is open
+
+	hooks        HookProvider  // nil: no connection gets a hosted hook
+	webhookWake  chan struct{} // wakes the webhook queue
+	webhookEvery time.Duration
 }
 
 // conversationProbe reports whether a job conversation is open (plan A.9).
@@ -183,6 +187,8 @@ type ConnectionPatch struct {
 	Inputs   *map[string]string `json:"inputs"`
 	Patch    json.RawMessage    `json:"patch"`
 	Manifest json.RawMessage    `json:"manifest"`
+	// Subscriptions replaces the list. JSON null clears it.
+	Subscriptions json.RawMessage `json:"subscriptions"`
 }
 
 // New creates a connectors service.
@@ -204,6 +210,9 @@ func New(st *store.Store, ws *workspaces.Service, sk *skills.Service) *Service {
 		sleep:     sleepCtx,
 		pingEvery: 30 * time.Second,
 		authEvery: 5 * time.Minute,
+
+		webhookWake:  make(chan struct{}, 1),
+		webhookEvery: webhookTick,
 	}
 }
 
@@ -422,6 +431,7 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 		}
 		return err
 	}
+	s.unsyncBeforeDelete(ctx, c.ID)
 	s.mu.Lock()
 	delete(s.conns, c.ID)
 	delete(s.slugs, c.Slug)
@@ -429,6 +439,7 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 	delete(s.updates, c.ID)
 	s.mu.Unlock()
 	s.reconcile(ctx)
+	s.dropWebhooks(ctx, c.ID)
 	if err := NewFolder(c.ID).Remove(); err != nil {
 		return fmt.Errorf("remove connection folder: %w", err)
 	}
@@ -865,6 +876,19 @@ func (p ConnectionPatch) apply(c *Connection) error {
 			c.Manifest = &m
 		}
 	}
+	if len(p.Subscriptions) > 0 {
+		c.Subscriptions = nil
+		if !isNull(p.Subscriptions) {
+			if err := json.Unmarshal(p.Subscriptions, &c.Subscriptions); err != nil {
+				return bad("subscriptions", err)
+			}
+		}
+		for i := range c.Subscriptions {
+			if c.Subscriptions[i].ID == "" {
+				c.Subscriptions[i].ID = NewSubscriptionID()
+			}
+		}
+	}
 	return nil
 }
 
@@ -882,6 +906,9 @@ func (s *Service) commit(ctx context.Context, c Connection, old *Connection, kee
 	}
 	r, err := resolveConnection(c, "", nil)
 	if err != nil {
+		return err
+	}
+	if err := c.checkSubscriptions(r.Manifest); err != nil {
 		return err
 	}
 	f := NewFolder(c.ID)
@@ -912,6 +939,11 @@ func (s *Service) commit(ctx context.Context, c Connection, old *Connection, kee
 		s.syncSkill(ctx, r)
 	}
 	s.reconcile(ctx)
+	if old != nil && !slices.EqualFunc(old.Subscriptions, c.Subscriptions, func(a, b Subscription) bool {
+		return a.ID == b.ID && a.key() == b.key()
+	}) {
+		s.syncSubscriptionsAsync(c.ID)
+	}
 	return nil
 }
 
@@ -1002,6 +1034,10 @@ func (s *Service) connectionRow(c Connection, workspaceID string, lastEvents map
 		"capabilities": []string{},
 		"update":       nil,
 		"folder":       NewFolder(c.ID).Dir(),
+	}
+	row["subscriptions"] = []Subscription{}
+	if len(c.Subscriptions) > 0 {
+		row["subscriptions"] = c.Subscriptions
 	}
 	if c.Version != "" {
 		row["version"] = c.Version

@@ -76,6 +76,12 @@ type Checker struct {
 	// Dirs are the state and cache folders of an owned adapter. An
 	// attachments.in path must be inside one of them. Empty skips the check.
 	Dirs []string
+	// Watch is the manifest events.subscriptions. Nil skips the
+	// subscriptions check.
+	Watch *WatchSpec
+	// Hooks plays the cloud for an owned adapter. Nil skips the webhooks
+	// check.
+	Hooks HookSink
 
 	mu       sync.Mutex
 	events   []Event
@@ -85,6 +91,31 @@ type Checker struct {
 	done     map[string]AuthDoneParams
 	sent     sentMessage
 }
+
+// WatchSpec is the part of events.subscriptions that the checker uses.
+type WatchSpec struct {
+	Modes  []string
+	Fields []WatchField
+}
+
+// WatchField is one field of the watch form.
+type WatchField struct {
+	Name     string
+	Dynamic  bool
+	Multiple bool
+	Required bool
+	Default  string
+	Choices  []string
+}
+
+// HookSink is a local hook that records what the platform posts.
+type HookSink interface {
+	Hook() Webhook
+	Deliveries() []WebhookRequest
+}
+
+// checkSubscription is the id of the subscription the checker syncs.
+const checkSubscription = "sub_conformance"
 
 // sentMessage is the send of the "send once" check.
 type sentMessage struct{ id, key string }
@@ -196,6 +227,13 @@ func (c *Checker) Run(ctx context.Context, conn Caller) []CheckResult {
 	r.add("events from send", err, skip)
 	skip, err = c.replay(ctx, conn, init.Features)
 	r.add("replay cursor", err, skip)
+	skip, synced, err := c.subscribe(ctx, conn, init.Features)
+	hookSkip, hookErr := c.webhooks(ctx, conn, init.Features, synced)
+	if synced {
+		err = errors.Join(err, c.unsubscribe(ctx, conn))
+	}
+	r.add("subscriptions", err, skip)
+	r.add("webhooks", hookErr, hookSkip)
 	r.add("error codes", c.errorCodes(ctx, conn, init.Features), "")
 	skip, err = c.attachmentsIn()
 	r.add("attachments in", err, skip)
@@ -221,12 +259,17 @@ func (c *Checker) Initialize(ctx context.Context, conn Caller) (InitializeResult
 		if _, ok := conn.(*Conn); !ok {
 			return init, errors.New("an owned adapter needs a *Conn")
 		}
-		ictx, cancel := context.WithTimeout(ctx, checkInitWait)
-		err := conn.Call(ictx, MethodInitialize, InitializeParams{
+		params := InitializeParams{
 			Protocol: Version,
 			Daemon:   DaemonInfo{Version: "conformance"},
 			Instance: InstanceInfo{Key: "conformance", Name: "conformance"},
-		}, &init)
+		}
+		if c.Hooks != nil {
+			h := c.Hooks.Hook()
+			params.Webhook = &h
+		}
+		ictx, cancel := context.WithTimeout(ctx, checkInitWait)
+		err := conn.Call(ictx, MethodInitialize, params, &init)
 		cancel()
 		if err != nil {
 			return init, fmt.Errorf("initialize: %w", err)
@@ -900,4 +943,171 @@ func (c *Checker) roomsOpen(ctx context.Context, conn Caller) (string, error) {
 		return "", errors.New("rooms/open: the room has no id")
 	}
 	return "", nil
+}
+
+// subscribe checks the options of each dynamic field and syncs one
+// subscription. A live instance runs the options only, because a sync
+// replaces the watch list of a real account. synced tells that the
+// adapter holds the subscription.
+func (c *Checker) subscribe(ctx context.Context, conn Caller, features []string) (skip string, synced bool, err error) {
+	if !slices.Contains(features, "subscriptions") {
+		return "no subscriptions feature", false, nil
+	}
+	if c.Watch == nil {
+		return "the manifest has no events.subscriptions", false, nil
+	}
+	values, err := c.watchValues(ctx, conn)
+	if err != nil {
+		return "", false, err
+	}
+	if c.Init != nil {
+		return "", false, nil
+	}
+	st, err := c.syncOne(ctx, conn, Subscription{ID: checkSubscription, Values: values})
+	if err != nil {
+		return "", false, err
+	}
+	if st.State == SubscriptionActionRequired && st.Action != nil && len(st.Action.Ask) > 0 {
+		fields := map[string]string{}
+		for _, a := range st.Action.Ask {
+			fields[a.Name] = "sandbox"
+		}
+		if err := conn.Call(ctx, MethodSubscriptionsSubmit, SubmitParams{ID: checkSubscription, Fields: fields}, &st); err != nil {
+			return "", true, fmt.Errorf("subscriptions/submit: %w", err)
+		}
+		if st.State == SubscriptionError {
+			return "", true, fmt.Errorf("subscriptions/submit: state error: %s", st.Message)
+		}
+	}
+	return "", true, nil
+}
+
+// watchValues fills the form: the first option of each dynamic field, the
+// defaults, and the first choice of a required field.
+func (c *Checker) watchValues(ctx context.Context, conn Caller) (map[string][]string, error) {
+	values := map[string][]string{}
+	for _, f := range c.Watch.Fields {
+		switch {
+		case f.Dynamic:
+			var page OptionPage
+			if err := conn.Call(ctx, MethodSubscriptionsOptions, OptionsParams{Field: f.Name, Values: values, Limit: 10}, &page); err != nil {
+				return nil, fmt.Errorf("subscriptions/options %s: %w", f.Name, err)
+			}
+			if len(page.Options) == 0 {
+				return nil, fmt.Errorf("subscriptions/options %s returns no option", f.Name)
+			}
+			values[f.Name] = []string{page.Options[0].Value}
+		case f.Default != "":
+			values[f.Name] = []string{f.Default}
+		case f.Required && len(f.Choices) > 0:
+			values[f.Name] = []string{f.Choices[0]}
+		}
+	}
+	return values, nil
+}
+
+// syncOne syncs one subscription and checks its state.
+func (c *Checker) syncOne(ctx context.Context, conn Caller, sub Subscription) (SubscriptionState, error) {
+	var res SyncResult
+	if err := conn.Call(ctx, MethodSubscriptionsSync, SyncParams{Subscriptions: []Subscription{sub}}, &res); err != nil {
+		return SubscriptionState{}, fmt.Errorf("subscriptions/sync: %w", err)
+	}
+	if len(res.Subscriptions) != 1 || res.Subscriptions[0].ID != sub.ID {
+		return SubscriptionState{}, fmt.Errorf("subscriptions/sync returns %d states, want one for %s", len(res.Subscriptions), sub.ID)
+	}
+	st := res.Subscriptions[0]
+	var errs []string
+	if len(c.Watch.Modes) > 0 && !slices.Contains(c.Watch.Modes, st.Mode) {
+		errs = append(errs, fmt.Sprintf("mode %q is not in the manifest modes", st.Mode))
+	}
+	switch st.State {
+	case SubscriptionError:
+		errs = append(errs, "state error: "+st.Message)
+	case SubscriptionActionRequired:
+		if st.Action == nil || st.Action.Text == "" {
+			errs = append(errs, "state action_required has no action.text")
+		}
+	case SubscriptionPending, SubscriptionActive, SubscriptionPolling:
+	default:
+		errs = append(errs, fmt.Sprintf("unknown state %q", st.State))
+	}
+	if len(errs) > 0 {
+		return st, errors.New("subscriptions/sync: " + strings.Join(errs, "; "))
+	}
+	return st, nil
+}
+
+// unsubscribe syncs an empty list and expects an empty result.
+func (c *Checker) unsubscribe(ctx context.Context, conn Caller) error {
+	var res SyncResult
+	if err := conn.Call(ctx, MethodSubscriptionsSync, SyncParams{Subscriptions: []Subscription{}}, &res); err != nil {
+		return fmt.Errorf("subscriptions/sync with no subscription: %w", err)
+	}
+	if len(res.Subscriptions) != 0 {
+		return fmt.Errorf("subscriptions/sync with no subscription returns %d states", len(res.Subscriptions))
+	}
+	return nil
+}
+
+// webhooks waits for the platform to post to the hook, sends each request
+// with webhook/receive, and expects an event. A changed body must give
+// invalid.
+func (c *Checker) webhooks(ctx context.Context, conn Caller, features []string, synced bool) (string, error) {
+	switch {
+	case !slices.Contains(features, "webhooks"):
+		return "no webhooks feature", nil
+	case c.Hooks == nil:
+		return "live instance", nil
+	case !synced:
+		return "no subscription to deliver for", nil
+	}
+	var reqs []WebhookRequest
+	var last *WebhookRequest
+	if !c.wait(ctx, checkEchoWait, func() bool {
+		reqs = c.Hooks.Deliveries()
+		for i := range reqs {
+			if !reqs[i].Handshake {
+				last = &reqs[i]
+			}
+		}
+		return last != nil
+	}) {
+		return "", fmt.Errorf("the platform posts no delivery in %s", checkEchoWait)
+	}
+	c.mu.Lock()
+	before := len(c.events)
+	c.mu.Unlock()
+	for _, req := range reqs {
+		if err := conn.Call(ctx, MethodWebhookReceive, req, nil); err != nil {
+			return "", fmt.Errorf("webhook/receive %s: %w", req.ID, err)
+		}
+	}
+	if !c.wait(ctx, checkEchoWait, func() bool { return len(c.events) > before }) {
+		return "", fmt.Errorf("webhook/receive gives no event in %s", checkEchoWait)
+	}
+	forged := *last
+	forged.ID += "-changed"
+	forged.Body = changeOneByte(forged.Body)
+	err := conn.Call(ctx, MethodWebhookReceive, forged, nil)
+	if !errors.Is(err, &Error{Code: CodeInvalid}) {
+		return "", fmt.Errorf("webhook/receive of a changed body returns %v, want invalid", err)
+	}
+	return "", nil
+}
+
+// changeOneByte changes the last letter or digit of body, so a JSON body
+// stays valid and only the signature can tell.
+func changeOneByte(body string) string {
+	b := []byte(body)
+	for i := len(b) - 1; i >= 0; i-- {
+		c := b[i]
+		if ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9') {
+			b[i] = 'x'
+			if c == 'x' {
+				b[i] = 'y'
+			}
+			return string(b)
+		}
+	}
+	return body + " "
 }

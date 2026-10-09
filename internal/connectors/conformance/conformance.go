@@ -297,6 +297,14 @@ func (r *run) checker() *protocol.Checker {
 			c.EventTypes = append(c.EventTypes, t.Type)
 		}
 	}
+	if spec := m.SubscriptionSpec(); spec != nil {
+		c.Watch = &protocol.WatchSpec{Modes: spec.Modes}
+		for _, f := range spec.Fields {
+			c.Watch.Fields = append(c.Watch.Fields, protocol.WatchField{
+				Name: f.Name, Dynamic: f.Dynamic, Multiple: f.Multiple, Required: f.Required, Default: f.Default, Choices: f.Choices,
+			})
+		}
+	}
 	if r.t.Dir != "" {
 		c.Schemas, _ = m.EventSchemas(r.t.Dir) //nolint:errcheck // the manifest suite reports a bad schema
 	}

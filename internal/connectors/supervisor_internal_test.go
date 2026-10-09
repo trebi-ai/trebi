@@ -139,7 +139,7 @@ func TestStopEndsPipelineSupervisor(t *testing.T) {
 func TestLineTooLongKillsGroup(t *testing.T) {
 	_, svc := newInternalService(t)
 	ctx := context.Background()
-	command := `head -c 2000000 /dev/zero | tr '\0' a; echo; sleep 30`
+	command := `head -c 5000000 /dev/zero | tr '\0' a; echo; sleep 30`
 	d := linesEntry("long", manifest.Events{Command: command, Format: "line", Restart: manifest.RestartNever})
 	if _, err := svc.Create(ctx, d); err != nil {
 		t.Fatal(err)
