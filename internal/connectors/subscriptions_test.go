@@ -212,7 +212,7 @@ func TestSubscriptionsWebhook(t *testing.T) {
 		id := "dlv-" + strconv.Itoa(n)
 		nmu.Unlock()
 		req := protocol.WebhookRequest{ID: id, Method: r.Method, Path: r.URL.Path, Headers: headers, Body: string(body), ReceivedAt: time.Now().UTC().Format(time.RFC3339)}
-		if err := svc.EnqueueWebhook(r.Context(), c.ID, req); err != nil {
+		if err := svc.EnqueueWebhook(r.Context(), c.ID, req); err != nil && r.Context().Err() == nil { // a poster that stops cancels its delivery
 			t.Error(err)
 		}
 		w.WriteHeader(http.StatusNoContent)
