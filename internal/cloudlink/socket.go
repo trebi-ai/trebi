@@ -40,7 +40,8 @@ type socket struct {
 	unknown      int64
 	drops        int64
 
-	mcpSlots chan struct{} // bounds concurrent MCP requests
+	mcpSlots chan struct{}       // bounds concurrent MCP requests
+	sids     map[string]struct{} // phone sessions open on this connection
 }
 
 // run redials until the context is cancelled or the dial is rejected as
@@ -84,10 +85,14 @@ func (sk *socket) session(ctx context.Context) (helloOK, unauthorized bool) {
 	}
 	sk.setConn(conn)
 	defer sk.clearConn(conn)
+	defer sk.closeSids() // phones reconnect on the next socket
 
 	hello := Hello{V: ContractV, Type: "hello"}
 	if sk.svc.remoteMCP() {
-		hello.Caps = []string{CapMCP}
+		hello.Caps = append(hello.Caps, CapMCP)
+	}
+	if sk.svc.mobile() {
+		hello.Caps = append(hello.Caps, CapMobile)
 	}
 	if err := sk.writeFrame(hello); err != nil {
 		return false, false
@@ -135,8 +140,18 @@ func (sk *socket) handleFrame(ctx, sessCtx context.Context, raw []byte) bool {
 		if err := sk.writeFrame(Ack{V: ContractV, Type: "ack", ID: f.ID}); err != nil {
 			sk.svc.log.Warn("cloudlink.ack", "id", f.ID, "err", err)
 		}
+	case RelayOpen:
+		sk.openRelay(sessCtx, f)
 	case RelayFrame:
 		sk.handleRelay(ctx, f)
+	case RelayClose:
+		if sk.dropSid(f.SID) {
+			sk.svc.relay.CloseRelay(f.SID, f.Reason)
+		}
+	case ClientRevoked:
+		if sk.svc.relay != nil {
+			sk.svc.relay.ClientRevoked(ctx, f.ClientID)
+		}
 	case McpRequest:
 		go sk.handleMcp(sessCtx, f) // stop: the sink returns or the timeout ends
 	default:
@@ -188,9 +203,25 @@ func (sk *socket) handleIngress(ctx context.Context, f Ingress) error {
 	}
 }
 
+// openRelay starts one phone session. The session ends with sessCtx, so a
+// lost socket ends its phones too. With phone access off it is refused.
+func (sk *socket) openRelay(sessCtx context.Context, f RelayOpen) {
+	if !sk.svc.mobile() || f.SID == "" {
+		sk.bumpDrops()
+		if err := sk.writeFrame(RelayClose{V: ContractV, Type: "relay_close", SID: f.SID, Reason: "refused"}); err != nil {
+			sk.svc.log.Debug("cloudlink.relay", "err", err)
+		}
+		return
+	}
+	sk.mu.Lock()
+	sk.sids[f.SID] = struct{}{}
+	sk.mu.Unlock()
+	sk.svc.relay.OpenRelay(sessCtx, f.SID, f.ClientID)
+}
+
 // handleRelay hands the frame's opaque bytes to the relay sink. They are
-// decoded from base64 and never interpreted beyond that; with no sink set
-// the frame is counted and dropped.
+// decoded from base64 and never interpreted beyond that. A frame for an
+// unknown sid is counted and dropped.
 func (sk *socket) handleRelay(ctx context.Context, f RelayFrame) {
 	raw, err := base64.StdEncoding.DecodeString(f.Bytes)
 	if err != nil {
@@ -198,12 +229,32 @@ func (sk *socket) handleRelay(ctx context.Context, f RelayFrame) {
 		sk.svc.log.Debug("cloudlink.relay", "err", err)
 		return
 	}
-	if sk.svc.relay == nil {
+	sk.mu.Lock()
+	_, open := sk.sids[f.SID]
+	sk.mu.Unlock()
+	if !open {
 		sk.bumpDrops()
 		return
 	}
-	if err := sk.svc.relay.DeliverRelay(ctx, raw); err != nil {
-		sk.svc.log.Warn("cloudlink.relay", "err", err)
+	sk.svc.relay.DeliverRelay(ctx, f.SID, raw)
+}
+
+func (sk *socket) dropSid(sid string) bool {
+	sk.mu.Lock()
+	defer sk.mu.Unlock()
+	_, ok := sk.sids[sid]
+	delete(sk.sids, sid)
+	return ok
+}
+
+// closeSids ends every phone session of the lost connection.
+func (sk *socket) closeSids() {
+	sk.mu.Lock()
+	sids := sk.sids
+	sk.sids = map[string]struct{}{}
+	sk.mu.Unlock()
+	for sid := range sids {
+		sk.svc.relay.CloseRelay(sid, "socket_lost")
 	}
 }
 
@@ -408,6 +459,18 @@ func decodeFrame(raw []byte) (frame any, typ string, err error) {
 		frame = f
 	case "relay_frame":
 		var f RelayFrame
+		err = json.Unmarshal(raw, &f)
+		frame = f
+	case "relay_open":
+		var f RelayOpen
+		err = json.Unmarshal(raw, &f)
+		frame = f
+	case "relay_close":
+		var f RelayClose
+		err = json.Unmarshal(raw, &f)
+		frame = f
+	case "client_revoked":
+		var f ClientRevoked
 		err = json.Unmarshal(raw, &f)
 		frame = f
 	case "mcp_request":

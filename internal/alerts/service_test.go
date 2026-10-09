@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
@@ -1266,5 +1267,42 @@ func TestConnectorSubscriptionAlerts(t *testing.T) {
 	synced(map[string]string{"active": "2", "errors": "0", "action_required": "0"})
 	if open, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)}); len(open) != 0 {
 		t.Fatalf("open after clean sync: %+v", open)
+	}
+}
+
+type pushSpy struct {
+	mu   sync.Mutex
+	sent []cloudlink.Alert
+}
+
+func (p *pushSpy) SendAlert(_ context.Context, a cloudlink.Alert) error {
+	p.mu.Lock()
+	p.sent = append(p.sent, a)
+	p.mu.Unlock()
+	return nil
+}
+
+// TestRaisePushesApproval sends one push frame for an approval item, with the
+// inbox item id, and none for a health item (plan 2026-10-09 B12).
+func TestRaisePushesApproval(t *testing.T) {
+	t.Parallel()
+	spy := &pushSpy{}
+	svc, _ := testSvc(t, alerts.Options{Push: spy})
+	ctx := context.Background()
+	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, Subject: "run/1", Title: "Agent waiting", RunID: "run1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindAuthMissing, Subject: "harness/claude", Title: "Log in"}); err != nil {
+		t.Fatal(err)
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.sent) != 1 {
+		t.Fatalf("pushes: %+v", spy.sent)
+	}
+	a := spy.sent[0]
+	if a.MessageID != id || a.Kind != "approval" || a.Summary != "Agent waiting" || a.Cursor == "" {
+		t.Fatalf("push frame: %+v", a)
 	}
 }

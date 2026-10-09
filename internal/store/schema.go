@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 47
+const SchemaVersion = 48
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1699,6 +1699,20 @@ CREATE TABLE webhook_deliveries (
 	created_at      TEXT NOT NULL
 );
 CREATE INDEX webhook_deliveries_due ON webhook_deliveries(connection_id, next_attempt_at);
+`,
+		// v48: paired phones on the relay (plan 2026-10-09 B3). The psk is a
+		// secret file, never a column.
+		`
+CREATE TABLE mobile_clients (
+	id              TEXT PRIMARY KEY,
+	cloud_client_id TEXT NOT NULL UNIQUE,
+	name            TEXT NOT NULL,
+	platform        TEXT NOT NULL,
+	public_key      BLOB NOT NULL UNIQUE,
+	scope           TEXT NOT NULL,
+	created_at      TEXT NOT NULL,
+	last_seen_at    TEXT
+);
 `,
 	}
 }

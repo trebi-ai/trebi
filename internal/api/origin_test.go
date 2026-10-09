@@ -21,6 +21,7 @@ func TestCheckWSOrigin(t *testing.T) {
 		{name: "same origin tailscale", origin: "http://100.64.1.2:7433", host: "100.64.1.2:7433", want: true},
 		{name: "cross site", origin: "http://evil.example.com", host: "192.168.8.150:7433", want: false},
 		{name: "scheme mismatch still same host", origin: "https://192.168.8.150:7433", host: "192.168.8.150:7433", want: true},
+		{name: "phone proxy", origin: "http://127.0.0.1:43123", host: "127.0.0.1:43123", want: true},
 		{name: "malformed", origin: "://bad", host: "127.0.0.1:7433", want: false},
 	}
 	for _, tc := range cases {

@@ -405,6 +405,12 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "cloud.connected", Bus: true, Log: true},
 		{Name: "cloud.disconnected", Bus: true, Log: true},
 		{Name: "cloud.push_failed", Bus: false, Log: true},
+		// mobile (plan 2026-10-09)
+		{Name: "mobile.paired", Bus: true, Log: true},
+		{Name: "mobile.updated", Bus: true, Log: true},
+		{Name: "mobile.removed", Bus: true, Log: true},
+		{Name: "mobile.connected", Bus: true, Log: true},
+		{Name: "mobile.disconnected", Bus: true, Log: true},
 		{Name: "cloud.entitlement", Bus: true, Log: true},
 		// hosted webhooks
 		{Name: "hook.created", Bus: true, Log: true},

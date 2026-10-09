@@ -11,12 +11,14 @@ import (
 	"log/slog"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/notify"
@@ -239,6 +241,14 @@ type Options struct {
 	Doctor func() []DoctorFinding
 	// Actions checks connector actions in the doctor. Nil skips the check.
 	Actions ActionsChecker
+	// Push sends approval and request alerts to the paired phones through
+	// the cloud. Nil sends no push.
+	Push Pusher
+}
+
+// Pusher writes one alert frame to the cloud. cloudlink.Service implements it.
+type Pusher interface {
+	SendAlert(ctx context.Context, a cloudlink.Alert) error
 }
 
 // DoctorFinding is one system doctor row that may land in the inbox.
@@ -554,13 +564,29 @@ func (s *Service) findActive(ctx context.Context, kind Kind, subject string) (*I
 	return item, err
 }
 
+// push sends a phone push for an approval or a request item. The summary
+// is the item title only: no job input, no output, and no secret.
+func (s *Service) push(ctx context.Context, spec KindSpec, opts RaiseOpts, id string, seq int64) {
+	if s.opts.Push == nil || s.skipNotify() || opts.TrayOnly {
+		return
+	}
+	kind := string(spec.InboxKind)
+	if spec.InboxKind != InboxApproval && spec.InboxKind != InboxRequest {
+		return
+	}
+	a := cloudlink.Alert{Cursor: strconv.FormatInt(seq, 10), Kind: kind, Summary: opts.Title, MessageID: id}
+	if err := s.opts.Push.SendAlert(ctx, a); err != nil {
+		s.log.Debug("alert push", "id", id, "error", err) // offline: the inbox and the route still hold it
+	}
+}
+
 func (s *Service) insertItem(ctx context.Context, spec KindSpec, opts RaiseOpts) (string, error) {
 	id := ulid.Make().String()
 	now := s.opts.Now().UTC()
 	nowStr := now.Format(time.RFC3339Nano)
 	actions := opts.defaultActions(id)
 	actJSON, _ := json.Marshal(actions)
-	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+	seq, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO inbox_items (
 			id, kind, status, subject, title, body, hint, run_id, workspace_id, job_id,
 			alert_kind, connector, actions, trace_id, request_id, revision, created_at, updated_at
@@ -588,6 +614,7 @@ func (s *Service) insertItem(ctx context.Context, spec KindSpec, opts RaiseOpts)
 		s.log.Warn("bus append", "topic", "inbox.created", "error", err)
 	}
 	s.markRaised(opts)
+	s.push(ctx, spec, opts, id, seq)
 	// An escalation-marked item skips the immediate notify chain: it sits in
 	// the tray and the sweep mails it at EscalateAt (plan M5).
 	if !opts.EscalateAt.IsZero() {

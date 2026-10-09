@@ -1,0 +1,55 @@
+{
+  "max_record": 16384,
+  "note": "cases continue the i2r cipher of handshake.v1.json after its transport list, in order",
+  "cases": [
+    {
+      "type": 0,
+      "data_hex": "000000010000000100000000",
+      "ciphertext_hex": "9802d9d84af96a25ddbf460fd225337cf0d3dc27ee82eb43642a84cb13"
+    },
+    {
+      "type": 1,
+      "data_hex": "7b2274797065223a226572726f72222c22636f6465223a227265766f6b6564227d",
+      "ciphertext_hex": "6507b2e213f76dcedb1039d960d4ad9f0b28226b97ecfdbd2c6d243487b62674cf055a8b7c75db3f2b6f514fb5477ebe8c5b"
+    }
+  ],
+  "split": [
+    {
+      "input_len": 1,
+      "record_lens": [
+        2
+      ]
+    },
+    {
+      "input_len": 16383,
+      "record_lens": [
+        16384
+      ]
+    },
+    {
+      "input_len": 16384,
+      "record_lens": [
+        16384,
+        2
+      ]
+    },
+    {
+      "input_len": 40000,
+      "record_lens": [
+        16384,
+        16384,
+        7235
+      ]
+    }
+  ],
+  "bad": [
+    {
+      "name": "empty",
+      "plaintext_hex": ""
+    },
+    {
+      "name": "unknown type",
+      "plaintext_hex": "02"
+    }
+  ]
+}

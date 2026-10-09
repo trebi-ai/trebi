@@ -3,10 +3,12 @@ package cloudlink
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"sync"
 	"time"
 
@@ -21,6 +23,7 @@ type Settings struct {
 	APIURL    string // from config cloud.api_url
 	Enabled   bool   // config cloud.enabled; a linked device with Enabled false stays offline
 	RemoteMCP bool   // config cloud.remote_mcp
+	Mobile    bool   // config cloud.mobile
 }
 
 // MailSink is the email channel. email.Service implements it.
@@ -33,9 +36,14 @@ type WebhookSink interface {
 	Deliver(ctx context.Context, f WebhookIngress) error
 }
 
-// RelaySink receives opaque relay bytes, undecoded beyond base64.
+// RelaySink owns the phone sessions. relay.Hub implements it. The bytes
+// are opaque here: the socket decodes only the base64.
 type RelaySink interface {
-	DeliverRelay(ctx context.Context, raw []byte) error
+	OpenRelay(ctx context.Context, sid, clientID string)
+	DeliverRelay(ctx context.Context, sid string, raw []byte)
+	CloseRelay(sid, reason string)
+	ClientRevoked(ctx context.Context, clientID string)
+	Count() int
 }
 
 // McpSink serves one MCP request that the cloud forwards. api.Server implements it.
@@ -45,17 +53,19 @@ type McpSink interface {
 
 // Status is the cloud-link fact sheet the API serves verbatim.
 type Status struct {
-	Linked       bool     `json:"linked"`
-	Status       string   `json:"status"` // not_linked | linked | connected | degraded | unauthorized
-	AccountEmail string   `json:"account_email"`
-	DeviceName   string   `json:"device_name"`
-	Plan         string   `json:"plan"`
-	Features     []string `json:"features"`
-	Connected    bool     `json:"connected"`
-	RefreshedAt  string   `json:"refreshed_at"` // RFC3339, "" when never refreshed
-	RemoteMCP    bool     `json:"remote_mcp"`   // config cloud.remote_mcp
-	McpURL       string   `json:"mcp_url"`      // from hello_ok, "" before the first connect
-	DownSince    string   `json:"down_since"`   // RFC3339 start of the current outage; set only when degraded
+	Linked         bool     `json:"linked"`
+	Status         string   `json:"status"` // not_linked | linked | connected | degraded | unauthorized
+	AccountEmail   string   `json:"account_email"`
+	DeviceName     string   `json:"device_name"`
+	Plan           string   `json:"plan"`
+	Features       []string `json:"features"`
+	Connected      bool     `json:"connected"`
+	RefreshedAt    string   `json:"refreshed_at"`    // RFC3339, "" when never refreshed
+	RemoteMCP      bool     `json:"remote_mcp"`      // config cloud.remote_mcp
+	McpURL         string   `json:"mcp_url"`         // from hello_ok, "" before the first connect
+	DownSince      string   `json:"down_since"`      // RFC3339 start of the current outage; set only when degraded
+	Mobile         bool     `json:"mobile"`          // config cloud.mobile
+	MobileSessions int      `json:"mobile_sessions"` // open phone sessions
 }
 
 // Service is the long-lived cloud-link worker: the cached link row, the
@@ -117,10 +127,10 @@ func New(st *store.Store) *Service {
 }
 
 // Configure applies the resolved config block. Safe before Start.
-// A RemoteMCP change drops the socket, so the redial sends new caps.
+// A RemoteMCP or Mobile change drops the socket, so the redial sends new caps.
 func (s *Service) Configure(cfg Settings) {
 	s.mu.Lock()
-	changed := s.cfg.RemoteMCP != cfg.RemoteMCP
+	changed := s.cfg.RemoteMCP != cfg.RemoteMCP || s.cfg.Mobile != cfg.Mobile
 	s.cfg = cfg
 	sk := s.sock
 	s.mu.Unlock()
@@ -136,6 +146,100 @@ func (s *Service) SetRemoteMCP(on bool) {
 	s.mu.Unlock()
 	cfg.RemoteMCP = on
 	s.Configure(cfg)
+}
+
+// SetMobile changes only the Mobile setting.
+func (s *Service) SetMobile(on bool) {
+	s.mu.Lock()
+	cfg := s.cfg
+	s.mu.Unlock()
+	cfg.Mobile = on
+	s.Configure(cfg)
+}
+
+// MobileOn reports whether config cloud.mobile is on.
+func (s *Service) MobileOn() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.Mobile
+}
+
+// SendRelay writes one relay_frame. It fails when the socket is down.
+func (s *Service) SendRelay(sid string, raw []byte) error {
+	return s.writeFrame(RelayFrame{V: ContractV, Type: "relay_frame", SID: sid, Bytes: base64.StdEncoding.EncodeToString(raw)})
+}
+
+// CloseRelay tells the cloud to close one phone socket.
+func (s *Service) CloseRelay(sid, reason string) error {
+	s.mu.Lock()
+	sk := s.sock
+	s.mu.Unlock()
+	if sk != nil {
+		sk.dropSid(sid)
+	}
+	return s.writeFrame(RelayClose{V: ContractV, Type: "relay_close", SID: sid, Reason: reason})
+}
+
+// SendAlert writes one alert frame. The cloud sends a push to the phones of the account.
+func (s *Service) SendAlert(_ context.Context, a Alert) error {
+	a.V, a.Type = ContractV, "alert"
+	return s.writeFrame(a)
+}
+
+// DeviceID is the cloud id of this machine, or "" when not linked.
+func (s *Service) DeviceID() string {
+	s.ensure()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.link == nil {
+		return ""
+	}
+	return s.link.deviceID
+}
+
+// DeviceName is the machine name of the link, or "" when not linked.
+func (s *Service) DeviceName() string {
+	s.ensure()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.link == nil {
+		return ""
+	}
+	return s.link.deviceName
+}
+
+// APIHost is host[:port] of the cloud api, for the pairing link.
+func (s *Service) APIHost() string {
+	s.ensure()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	base := s.cfg.APIURL
+	if base == "" && s.link != nil {
+		base = s.link.apiURL
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// MintClaim mints a one-time pairing claim for a phone.
+func (s *Service) MintClaim(ctx context.Context, uses int, ttl time.Duration) (Claim, error) {
+	c, err := s.client()
+	if err != nil {
+		return Claim{}, err
+	}
+	return c.MintClaim(ctx, uses, ttl)
+}
+
+// RevokeClient removes a phone from the account.
+func (s *Service) RevokeClient(ctx context.Context, cloudClientID string) error {
+	c, err := s.client()
+	if err != nil {
+		return err
+	}
+	return c.RevokeClient(ctx, cloudClientID)
 }
 
 // WithMCP wires the remote MCP sink.
@@ -178,9 +282,11 @@ func (s *Service) WithWebhooks(w WebhookSink) *Service {
 	return s
 }
 
-// WithRelay wires the opaque relay sink.
+// WithRelay wires the phone session hub.
 func (s *Service) WithRelay(r RelaySink) *Service {
+	s.mu.Lock()
 	s.relay = r
+	s.mu.Unlock()
 	return s
 }
 
@@ -247,7 +353,7 @@ func (s *Service) Status() Status {
 	defer s.mu.Unlock()
 	row := s.link
 	if row == nil {
-		return Status{Status: statusNotLinked, Features: []string{}, RemoteMCP: s.cfg.RemoteMCP}
+		return Status{Status: statusNotLinked, Features: []string{}, RemoteMCP: s.cfg.RemoteMCP, Mobile: s.cfg.Mobile}
 	}
 	st := Status{
 		Linked:       true,
@@ -258,6 +364,10 @@ func (s *Service) Status() Status {
 		RefreshedAt:  row.refreshedAt,
 		RemoteMCP:    s.cfg.RemoteMCP,
 		McpURL:       s.mcpURL,
+		Mobile:       s.cfg.Mobile,
+	}
+	if s.relay != nil {
+		st.MobileSessions = s.relay.Count()
 	}
 	if st.Features == nil {
 		st.Features = []string{}
@@ -638,7 +748,7 @@ func (s *Service) launchLocked(id Identity) {
 	if s.sock != nil || s.link == nil || !s.cfg.Enabled {
 		return
 	}
-	sk := &socket{svc: s, base: s.apiBaseLocked(), id: id, downSince: time.Now(), mcpSlots: make(chan struct{}, mcpSlotCount)}
+	sk := &socket{svc: s, base: s.apiBaseLocked(), id: id, downSince: time.Now(), mcpSlots: make(chan struct{}, mcpSlotCount), sids: map[string]struct{}{}}
 	s.sock = sk
 	s.done = make(chan struct{})
 	// Stop condition: s.life is cancelled by Stop (directly or via Start).
@@ -654,4 +764,21 @@ func (s *Service) apiBaseLocked() string {
 		return s.cfg.APIURL
 	}
 	return s.link.apiURL
+}
+
+// mobile reports whether the socket may carry phone sessions.
+func (s *Service) mobile() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.Mobile && s.relay != nil
+}
+
+func (s *Service) writeFrame(v any) error {
+	s.mu.Lock()
+	sk := s.sock
+	s.mu.Unlock()
+	if sk == nil {
+		return errors.New("cloudlink: socket is not connected")
+	}
+	return sk.writeFrame(v)
 }

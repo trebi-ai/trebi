@@ -1,0 +1,239 @@
+{
+  "cases": [
+    {
+      "name": "staging",
+      "link": "https://pair.trebi.ai/#v=1&a=staging-api.trebi.ai&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=Studio+Mac",
+      "release": {
+        "ok": true,
+        "api": "https://staging-api.trebi.ai",
+        "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
+        "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+        "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "claim": "trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ",
+        "offer_id": "01JA2B3C4D5E6F7G8H9J0K1OFR",
+        "machine": "Studio Mac"
+      },
+      "debug": {
+        "ok": true,
+        "api": "https://staging-api.trebi.ai",
+        "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
+        "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+        "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "claim": "trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ",
+        "offer_id": "01JA2B3C4D5E6F7G8H9J0K1OFR",
+        "machine": "Studio Mac"
+      }
+    },
+    {
+      "name": "production",
+      "link": "https://pair.trebi.ai/#v=1&a=api.trebi.ai&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=Fritz%27s+Mac",
+      "release": {
+        "ok": true,
+        "api": "https://api.trebi.ai",
+        "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
+        "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+        "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "claim": "trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ",
+        "offer_id": "01JA2B3C4D5E6F7G8H9J0K1OFR",
+        "machine": "Fritz's Mac"
+      },
+      "debug": {
+        "ok": true,
+        "api": "https://api.trebi.ai",
+        "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
+        "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+        "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "claim": "trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ",
+        "offer_id": "01JA2B3C4D5E6F7G8H9J0K1OFR",
+        "machine": "Fritz's Mac"
+      }
+    },
+    {
+      "name": "local stack",
+      "link": "https://pair.trebi.ai/#v=1&a=127.0.0.1%3A8787&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=Dev",
+      "release": {
+        "ok": false,
+        "error": "host_not_allowed"
+      },
+      "debug": {
+        "ok": true,
+        "api": "http://127.0.0.1:8787",
+        "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
+        "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+        "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "claim": "trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ",
+        "offer_id": "01JA2B3C4D5E6F7G8H9J0K1OFR",
+        "machine": "Dev"
+      }
+    },
+    {
+      "name": "android emulator host",
+      "link": "https://pair.trebi.ai/#v=1&a=10.0.2.2%3A8787&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=Dev",
+      "release": {
+        "ok": false,
+        "error": "host_not_allowed"
+      },
+      "debug": {
+        "ok": true,
+        "api": "http://10.0.2.2:8787",
+        "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
+        "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+        "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "claim": "trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ",
+        "offer_id": "01JA2B3C4D5E6F7G8H9J0K1OFR",
+        "machine": "Dev"
+      }
+    },
+    {
+      "name": "localhost",
+      "link": "https://pair.trebi.ai/#v=1&a=localhost%3A8787&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=Dev",
+      "release": {
+        "ok": false,
+        "error": "host_not_allowed"
+      },
+      "debug": {
+        "ok": true,
+        "api": "http://localhost:8787",
+        "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
+        "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+        "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "claim": "trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ",
+        "offer_id": "01JA2B3C4D5E6F7G8H9J0K1OFR",
+        "machine": "Dev"
+      }
+    },
+    {
+      "name": "plus in the machine name",
+      "link": "https://pair.trebi.ai/#v=1&a=staging-api.trebi.ai&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=A%2BB",
+      "release": {
+        "ok": true,
+        "api": "https://staging-api.trebi.ai",
+        "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
+        "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+        "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "claim": "trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ",
+        "offer_id": "01JA2B3C4D5E6F7G8H9J0K1OFR",
+        "machine": "A+B"
+      },
+      "debug": {
+        "ok": true,
+        "api": "https://staging-api.trebi.ai",
+        "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
+        "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+        "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "claim": "trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ",
+        "offer_id": "01JA2B3C4D5E6F7G8H9J0K1OFR",
+        "machine": "A+B"
+      }
+    },
+    {
+      "name": "other host",
+      "link": "https://pair.trebi.ai/#v=1&a=evil.example.com&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=Studio+Mac",
+      "release": {
+        "ok": false,
+        "error": "host_not_allowed"
+      },
+      "debug": {
+        "ok": false,
+        "error": "host_not_allowed"
+      }
+    },
+    {
+      "name": "look-alike host",
+      "link": "https://pair.trebi.ai/#v=1&a=trebi.ai.evil.com&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=Studio+Mac",
+      "release": {
+        "ok": false,
+        "error": "host_not_allowed"
+      },
+      "debug": {
+        "ok": false,
+        "error": "host_not_allowed"
+      }
+    },
+    {
+      "name": "port on a release host",
+      "link": "https://pair.trebi.ai/#v=1&a=api.trebi.ai%3A8443&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=Studio+Mac",
+      "release": {
+        "ok": false,
+        "error": "host_not_allowed"
+      },
+      "debug": {
+        "ok": false,
+        "error": "host_not_allowed"
+      }
+    },
+    {
+      "name": "version 2",
+      "link": "https://pair.trebi.ai/#v=2&a=staging-api.trebi.ai&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=Studio+Mac",
+      "release": {
+        "ok": false,
+        "error": "version"
+      },
+      "debug": {
+        "ok": false,
+        "error": "version"
+      }
+    },
+    {
+      "name": "no fragment",
+      "link": "https://pair.trebi.ai/",
+      "release": {
+        "ok": false,
+        "error": "not_pair_link"
+      },
+      "debug": {
+        "ok": false,
+        "error": "not_pair_link"
+      }
+    },
+    {
+      "name": "other page",
+      "link": "https://example.com/#v=1&a=staging-api.trebi.ai&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=Studio+Mac",
+      "release": {
+        "ok": false,
+        "error": "not_pair_link"
+      },
+      "debug": {
+        "ok": false,
+        "error": "not_pair_link"
+      }
+    },
+    {
+      "name": "plain http",
+      "link": "http://pair.trebi.ai/#v=1&a=staging-api.trebi.ai&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ&o=01JA2B3C4D5E6F7G8H9J0K1OFR&n=Studio+Mac",
+      "release": {
+        "ok": false,
+        "error": "not_pair_link"
+      },
+      "debug": {
+        "ok": false,
+        "error": "not_pair_link"
+      }
+    },
+    {
+      "name": "missing psk",
+      "link": "https://pair.trebi.ai/#v=1&a=staging-api.trebi.ai&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ&c=x&o=y&n=z",
+      "release": {
+        "ok": false,
+        "error": "missing_field"
+      },
+      "debug": {
+        "ok": false,
+        "error": "missing_field"
+      }
+    },
+    {
+      "name": "short key",
+      "link": "https://pair.trebi.ai/#v=1&a=staging-api.trebi.ai&d=01JA2B3C4D5E6F7G8H9J0K1DEV&k=AAAA&p=gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8&c=x&o=y&n=z",
+      "release": {
+        "ok": false,
+        "error": "bad_key"
+      },
+      "debug": {
+        "ok": false,
+        "error": "bad_key"
+      }
+    }
+  ],
+  "note": "the fragment is application/x-www-form-urlencoded; k and p are base64url without padding, 32 bytes; a is host[:port]; a release build allows only trebi.ai and its subdomains with no port, over https; a debug build also allows 127.0.0.1, localhost, and 10.0.2.2 with any port, over http"
+}

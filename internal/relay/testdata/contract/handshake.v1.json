@@ -1,0 +1,38 @@
+{
+  "protocol": "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s",
+  "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
+  "prologue_hex": "74726562692d72656c61792f310030314a413242334334443545364637473848394a304b31444556",
+  "initiator_static_private_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "initiator_static_public_hex": "8f40c5adb68f25624ae5b214ea767a6ec94d829d3d7b5e1ad1ba6f3e2138285f",
+  "initiator_ephemeral_private_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "responder_static_private_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "responder_static_public_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+  "responder_ephemeral_private_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+  "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+  "message1_payload": "{\"v\":1,\"client_id\":\"01JA2B3C4D5E6F7G8H9J0K1CLT\",\"offer\":\"01JA2B3C4D5E6F7G8H9J0K1OFR\",\"name\":\"Studio iPad\",\"platform\":\"ios\",\"app_version\":\"1.0.0\"}",
+  "message1_hex": "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51af0225eb421886af8f54fb31289d49dcd82b0f6f3279d40d7cff913fece0c64ad97002aa0244652d093302f9a308b0157438538b1215df7aaec9885a4c68454b0354d1c2ba88db3c767ca91fe631b0987788c668f10af4012fbbff7bb1c19343a83c18e1a7b864c4465a67514b3f2ac57d05758bd7b5766fc7e3536f3143d8697420e3eefbca688abb358a096f56110c8fc145321776fea6d3b30bf66a66291dd7aecdfa102315d675e3fc9be41d62b33192ee6c2069e6f709cd103a43c671d0d6cff8cc1267795e57d707a8ff9eca447d7",
+  "message2_payload": "{\"v\":1,\"machine\":\"Studio Mac\",\"daemon_version\":\"0.40.0\",\"scope\":\"full\",\"client_psk\":\"oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=\"}",
+  "message2_hex": "675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52f452b7928367b6cbafd07c5d85dc78187a5008dc1f8109f1f75ff0414d29b27df6f50eb434b7d46a8bc9a4fb4008d388a7019c9652027d55b18582f4db245b43b7734d088d26f8c75ecad9f030b0188498f3adea550c0e5ba88eae243095d92c7317d63123a5249fbcab9318a431bb683b7f7d4bf0b7be479ca597b4654cfefa0c2bddd2ce02fbe40c71d8dd709103f47ea8105",
+  "transport": [
+    {
+      "dir": "i2r",
+      "plaintext_hex": "017b2274797065223a227265616479227d",
+      "ciphertext_hex": "4a7160036deb864ed4522574fec3f49ac0d9774b096f2212841bd1e1e00b49fa87"
+    },
+    {
+      "dir": "r2i",
+      "plaintext_hex": "017b2274797065223a227265616479227d",
+      "ciphertext_hex": "07a31df8663396fee78dc9192bc15a81f74d6551af2f0927b6a924a54c72ad26a3"
+    },
+    {
+      "dir": "i2r",
+      "plaintext_hex": "00474554202f20485454502f312e310d0a",
+      "ciphertext_hex": "bf77c60de191b6a7e7455f820af18a59324c6bd7043e07de191f299b52f4c5927e"
+    },
+    {
+      "dir": "r2i",
+      "plaintext_hex": "00485454502f312e3120323030204f4b0d0a",
+      "ciphertext_hex": "0f83f297462266efafbe1db4e0eae57851470c7c37c65aee25c6d58e6b388013342a"
+    }
+  ]
+}

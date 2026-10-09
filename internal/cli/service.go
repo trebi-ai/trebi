@@ -223,7 +223,7 @@ func serviceDaemonSubcommands() []*cli.Command {
 		{
 			Name:  "daemon",
 			Usage: "run trebid (HTTP API + workers)",
-			Flags: []cli.Flag{
+			Flags: append([]cli.Flag{
 				&cli.StringFlag{Name: "listen", Usage: "HTTP listen address (overrides api.host:api.port)"},
 				&cli.BoolFlag{Name: "shadow", Usage: "shadow mode: drain + no connectors/schedules"},
 				&cli.IntFlag{
@@ -237,7 +237,7 @@ func serviceDaemonSubcommands() []*cli.Command {
 					Value:   "info",
 					Usage:   "debug|info|warn|error",
 				},
-			},
+			}, phoneFlags()...),
 			Action: runDaemonProcess,
 		},
 		{
@@ -659,6 +659,14 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	srv.BindRouter(cp.Router)
 	srv.BindAssistant(cp)
 	srv.Skills().WithUserHome(harness.UserHome())
+	pc, err := phoneCloud(c)
+	if err != nil {
+		return err
+	}
+	if err := cp.StartPhones(srv.Root(), pc); err != nil {
+		appStateFor(c).log.Warn("phones", "error", err)
+	}
+	srv.BindMobile(cp.Mobile)
 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()

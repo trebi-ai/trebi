@@ -1,0 +1,22 @@
+{
+  "enroll_request": {
+    "claim": "trcl_3q2-7wXk9mP4sN8vB1cD6fG0hJ5kL2zQ",
+    "name": "Studio iPad",
+    "platform": "ios"
+  },
+  "enroll_response": {
+    "client_id": "01JA2B3C4D5E6F7G8H9J0K1CLT",
+    "token": "trc_c2VjcmV0LXBob25lLXRva2VuLWZvci10ZXN0cy0xMjM0NTY"
+  },
+  "push_token_request": {
+    "provider": "apns",
+    "environment": "sandbox",
+    "token": "9f2c4e1a7b3d5f6e8a0c2b4d6f8e0a1c3b5d7f9e1a3c5b7d9f1e3a5c7b9d1f3e"
+  },
+  "error_response": {
+    "error": {
+      "code": "remote_access_required",
+      "message": "Remote access is not active for this Trebi account."
+    }
+  }
+}

@@ -17,7 +17,7 @@ func TestContractFixtures(t *testing.T) {
 
 	var hello Hello
 	mustDecode(t, dir, "hello.v1.json", &hello)
-	if hello.V != ContractV || hello.Type != "hello" || len(hello.Caps) != 1 || hello.Caps[0] != CapMCP {
+	if hello.V != ContractV || hello.Type != "hello" || len(hello.Caps) != 2 || hello.Caps[0] != CapMCP || hello.Caps[1] != CapMobile {
 		t.Errorf("hello = %+v", hello)
 	}
 
@@ -41,8 +41,46 @@ func TestContractFixtures(t *testing.T) {
 
 	var relay RelayFrame
 	mustDecode(t, dir, "relay-frame.v1.json", &relay)
-	if relay.V != ContractV || relay.Type != "relay_frame" || relay.Bytes == "" {
+	if relay.V != ContractV || relay.Type != "relay_frame" || relay.SID == "" || relay.Bytes == "" {
 		t.Errorf("relay = %+v", relay)
+	}
+
+	var open RelayOpen
+	mustDecodeStrict(t, dir, "relay-open.v1.json", &open)
+	if open.V != ContractV || open.Type != "relay_open" || open.SID != relay.SID || open.ClientID == "" {
+		t.Errorf("relay_open = %+v", open)
+	}
+	var closed RelayClose
+	mustDecodeStrict(t, dir, "relay-close.v1.json", &closed)
+	if closed.Type != "relay_close" || closed.SID != relay.SID || closed.Reason != "client_gone" {
+		t.Errorf("relay_close = %+v", closed)
+	}
+	var revoked ClientRevoked
+	mustDecodeStrict(t, dir, "client-revoked.v1.json", &revoked)
+	if revoked.Type != "client_revoked" || revoked.ClientID != open.ClientID {
+		t.Errorf("client_revoked = %+v", revoked)
+	}
+	var reqAlert Alert
+	mustDecodeStrict(t, dir, "alert-request.v1.json", &reqAlert)
+	if reqAlert.Kind != "request" || reqAlert.MessageID == "" {
+		t.Errorf("alert request = %+v", reqAlert)
+	}
+	var claimReq ClaimMintRequest
+	mustDecodeStrict(t, dir, "claim-mint-request.v1.json", &claimReq)
+	if claimReq.Uses != 1 || claimReq.TTLSeconds != 600 {
+		t.Errorf("claim mint request = %+v", claimReq)
+	}
+	var claim Claim
+	mustDecodeStrict(t, dir, "claim-mint-response.v1.json", &claim)
+	if claim.Claim == "" || claim.ExpiresAt == "" {
+		t.Errorf("claim = %+v", claim)
+	}
+	var phone map[string]json.RawMessage
+	mustDecode(t, dir, "phone-api.v1.json", &phone)
+	for _, k := range []string{"enroll_request", "enroll_response", "push_token_request", "error_response"} {
+		if len(phone[k]) == 0 {
+			t.Errorf("phone-api.v1.json missing %s", k)
+		}
 	}
 
 	var ok HelloOK
@@ -104,7 +142,7 @@ func TestContractFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, needle := range []string{"X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "hook-handshake.v1.json", "hook-mint-request.v1.json", "ingress-message.v1.json", "mcp-request.v1.json", "mcp-response.v1.json"} {
+	for _, needle := range []string{"X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "hook-handshake.v1.json", "hook-mint-request.v1.json", "ingress-message.v1.json", "mcp-request.v1.json", "mcp-response.v1.json", "relay-open.v1.json", "relay-close.v1.json", "client-revoked.v1.json", "claim-mint-request.v1.json", "phone-api.v1.json", "4409", "4410"} {
 		if !strings.Contains(text, needle) {
 			t.Errorf("CONTRACT.md missing %s", needle)
 		}
@@ -152,6 +190,14 @@ func TestDecodeFrameRoundTrip(t *testing.T) {
 	mustDecode(t, dir, "mcp-request.v1.json", &mreq)
 	var mres McpResponse
 	mustDecode(t, dir, "mcp-response.v1.json", &mres)
+	var open RelayOpen
+	mustDecode(t, dir, "relay-open.v1.json", &open)
+	var closed RelayClose
+	mustDecode(t, dir, "relay-close.v1.json", &closed)
+	var revoked ClientRevoked
+	mustDecode(t, dir, "client-revoked.v1.json", &revoked)
+	var reqAlert Alert
+	mustDecode(t, dir, "alert-request.v1.json", &reqAlert)
 
 	for _, tc := range []struct {
 		name string
@@ -163,6 +209,10 @@ func TestDecodeFrameRoundTrip(t *testing.T) {
 		{"alert", "alert", alert},
 		{"ack", "ack", ack},
 		{"relay_frame", "relay_frame", relay},
+		{"relay_open", "relay_open", open},
+		{"relay_close", "relay_close", closed},
+		{"client_revoked", "client_revoked", revoked},
+		{"alert/request", "alert", reqAlert},
 		{"hello_ok", "hello_ok", ok},
 		{"entitlement", "entitlement", ent},
 		{"mcp_request", "mcp_request", mreq},

@@ -83,6 +83,9 @@ func newConfirmGate() *confirmGate {
 		"POST /v1/chains/{trace_id}/stop": {2, func(n string, _ *http.Request) string {
 			return "stops chain " + n + "; its live runs end and each waiting agent gets one turn to finish"
 		}, false},
+		"DELETE /v1/mobile/clients/{id}": {3, func(n string, _ *http.Request) string {
+			return "removes phone " + n + "; it loses access to this machine and must pair again"
+		}, false},
 		"DELETE /v1/hooks/{id}": {2, func(n string, _ *http.Request) string {
 			return "revokes hook " + n + "; deliveries to its URL stop"
 		}, false},

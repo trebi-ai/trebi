@@ -25,6 +25,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/ui"
 )
 
 const (
@@ -554,6 +555,27 @@ func (s *Server) cloudDoctor() []alerts.DoctorFinding {
 				Message: "Remote access for Claude and ChatGPT is on, but your plan does not include it. Upgrade to Pro Cloud.",
 			})
 		}
+	}
+	return append(out, s.mobileDoctor(cfg, ent)...)
+}
+
+// mobileDoctor warns when paired phones cannot work (plan 2026-10-09 B10).
+func (s *Server) mobileDoctor(cfg *config.Config, ent entitle.State) []alerts.DoctorFinding {
+	if !cfg.Cloud.MobileOn() || !ent.Linked {
+		return nil
+	}
+	var out []alerts.DoctorFinding
+	if !ent.Has(entitle.RemoteAccess) {
+		out = append(out, alerts.DoctorFinding{
+			ID: "cloud-mobile-plan", Severity: "info", Code: "mobile_plan",
+			Message: "Phones and tablets are on, but your plan does not include remote access. Upgrade to Pro Cloud.",
+		})
+	}
+	if _, ok := ui.FS(); !ok && s.ext.UI == nil {
+		out = append(out, alerts.DoctorFinding{
+			ID: "cloud-mobile-no-ui", Severity: "warn", Code: "mobile_no_ui",
+			Message: "This build has no embedded UI, so a paired phone gets no page. Install a release build.",
+		})
 	}
 	return out
 }

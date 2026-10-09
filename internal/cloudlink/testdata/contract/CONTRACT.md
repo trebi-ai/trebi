@@ -27,10 +27,11 @@ The signed payload is `timestamp` + LF + `nonce` + LF + `METHOD` + LF + `pathnam
 | `heartbeat` | `heartbeat.v1.json` | `v`, `type` |
 | `alert` | `alert.v1.json` | `v`, `type`, `cursor`, `kind`, `summary`, `message_id` |
 | `ack` | `ack.v1.json` | `v`, `type`, `id` |
-| `relay_frame` | `relay-frame.v1.json` | `v`, `type`, `bytes` |
+| `relay_frame` | `relay-frame.v1.json` | `v`, `type`, `sid`, `bytes` |
+| `relay_close` | `relay-close.v1.json` | `v`, `type`, `sid`, `reason` |
 | `mcp_response` | `mcp-response.v1.json` | `v`, `type`, `id`, `status`, `headers`, `body` |
 
-`hello.caps` is optional. An absent or empty list means no remote MCP. `alert.summary` is notification text, not a run log. The daemon mints and stores `message_id` before it sends the frame. `ack.id` is the ingress id. `relay_frame.bytes` is opaque. The cloud does not decode it.
+`hello.caps` is optional. An absent or empty list means no remote MCP and no phone access. The cap `mcp` turns on remote MCP. The cap `mobile` turns on phone access. `alert.summary` is notification text, not a run log. `alert.kind` is `approval` or `request` (`alert-request.v1.json`). The cloud sends a push for both kinds. `message_id` is the inbox item id. The daemon stores the item before it sends the frame. The push opens `/inbox/<message_id>` in the app. `ack.id` is the ingress id. See "Relay" for `relay_frame` and `relay_close`.
 
 ## Socket frames, cloud to daemon
 
@@ -38,13 +39,64 @@ The signed payload is `timestamp` + LF + `nonce` + LF + `METHOD` + LF + `pathnam
 |---|---|---|
 | `hello_ok` | `hello-ok.v1.json` | `v`, `type`, `plan`, `features`, `heartbeat_interval`, `mcp_url` |
 | `ingress` | `ingress.v1.json` | `v`, `type`, `id`, `kind`, `payload` |
-| `relay_frame` | `relay-frame.v1.json` | `v`, `type`, `bytes` |
+| `relay_open` | `relay-open.v1.json` | `v`, `type`, `sid`, `client_id` |
+| `relay_frame` | `relay-frame.v1.json` | `v`, `type`, `sid`, `bytes` |
+| `relay_close` | `relay-close.v1.json` | `v`, `type`, `sid`, `reason` |
+| `client_revoked` | `client-revoked.v1.json` | `v`, `type`, `client_id` |
 | `entitlement` | `entitlement.v1.json` | `v`, `type`, `plan`, `features` |
 | `mcp_request` | `mcp-request.v1.json` | `v`, `type`, `id`, `client`, `scope`, `headers`, `body` |
 
 `hello_ok.features` is a cache hint. The worker checks the plan again before every granted action. Kind `email` carries `ingress-message.v1.json`. Kind `webhook` carries `webhook-ingress.v1.json`. An approval reply is an `ingress` frame of kind `email`. There is no decision frame.
 
 An unknown `type` is ignored and counted. The cloud does not execute a job.
+
+## Relay
+
+The relay carries the traffic between a paired phone and the daemon. The phone and the daemon encrypt it end to end with `trebi-relay/1` (the daemon repository, `internal/relay/testdata/contract/CONTRACT.md`). The cloud sees only ciphertext. It routes frames by `sid` and never decodes, logs, or stores `bytes`.
+
+- `sid` is a routing id that the cloud mints for each phone socket (26 chars, ULID). It is not a secret.
+- `client_id` is the cloud id of the phone. The daemon matches it with the `client_id` in the encrypted handshake.
+- The cloud sends `relay_open` when a phone socket opens, and `relay_close` with reason `client_gone` when it closes.
+- `relay_frame.bytes` is the standard base64 of one Noise message, at most 65,536 chars. The cloud forwards a phone message to the daemon as `relay_frame{sid}` and a daemon `relay_frame{sid}` to that phone socket only. A frame with an unknown `sid` is dropped and counted.
+- The daemon sends `relay_close` to end one phone socket. The reasons are `refused` (the handshake failed), `limit`, `revoked`, and `daemon_off`. The cloud closes the phone socket with `4409` for `refused` and `1000` for all other reasons.
+- `client_revoked` tells the daemon that a phone was removed in the cloud. The daemon deletes that phone.
+- The cloud sends `relay_open` only when the last `hello` had the cap `mobile`.
+
+### Phone socket
+
+The phone opens `GET /v1/relay` with `Authorization: Bearer trc_…`. Each WebSocket text message is the standard base64 of one Noise message. Binary messages are dropped.
+
+| Upgrade error | Code | Cause |
+|---|---|---|
+| `401` | `bad_token` | No token, or the token is not known |
+| `403` | `remote_access_required` | The plan has no `remote_access` |
+| `410` | `client_revoked` | The phone was removed |
+| `503` | `mobile_off` | The daemon socket has no cap `mobile` |
+| `429` | `too_many_sessions` | More than 8 phone sockets for one machine |
+
+| Close code | Meaning |
+|---|---|
+| `4404` | `daemon_offline`: no daemon socket, or it closed |
+| `4409` | `refused`: the daemon refused the handshake |
+| `4410` | `revoked`: the phone was removed |
+| `4403` | `plan_changed`: the plan lost `remote_access` |
+
+### Phone API
+
+`phone-api.v1.json` holds the HTTP shapes between the phone and the cloud.
+
+| Method | Route | Auth | Body | Reply |
+|---|---|---|---|---|
+| `POST` | `/v1/clients/claims` | device signature | `claim-mint-request.v1.json` | `claim-mint-response.v1.json` |
+| `POST` | `/v1/clients` | claim in the body | `enroll_request` | `201 enroll_response` |
+| `DELETE` | `/v1/clients/{id}` | device signature or session | | `204` |
+| `PUT` | `/v1/clients/me/push-token` | phone token | `push_token_request` | `204` |
+| `DELETE` | `/v1/clients/me` | phone token | | `204` |
+
+- A claim is good for `uses` enrollments (1 to 10) and for `ttl_seconds` (60 to 2,592,000). The cloud stores only its SHA-256.
+- A phone token is `trc_` plus 32 random bytes in base64url. The cloud stores only its SHA-256.
+- `platform` is `ios` or `android`. `provider` is `apns` or `fcm`. `environment` is `sandbox` or `production`.
+- An error is `error_response`. The codes are `bad_claim`, `bad_token`, `rate_limited`, `remote_access_required`, `client_revoked`, and `validation`.
 
 ## Remote MCP
 

@@ -16,8 +16,13 @@ type Hello struct {
 	Caps []string `json:"caps,omitempty"`
 }
 
-// CapMCP tells the cloud that remote MCP is on for this machine.
-const CapMCP = "mcp"
+// Hello caps.
+const (
+	// CapMCP tells the cloud that remote MCP is on for this machine.
+	CapMCP = "mcp"
+	// CapMobile tells the cloud that phone access is on for this machine.
+	CapMobile = "mobile"
+)
 
 // Heartbeat re-arms the device alarm.
 type Heartbeat struct {
@@ -43,11 +48,47 @@ type Ack struct {
 	ID   string `json:"id"`
 }
 
-// RelayFrame carries opaque bytes. The cloud does not decode them.
+// RelayFrame carries opaque bytes of one phone session. The cloud does not decode them.
 type RelayFrame struct {
 	V     int    `json:"v"`
 	Type  string `json:"type"`
+	SID   string `json:"sid"`
 	Bytes string `json:"bytes"`
+}
+
+// RelayOpen tells the daemon that a phone socket opened a session.
+type RelayOpen struct {
+	V        int    `json:"v"`
+	Type     string `json:"type"`
+	SID      string `json:"sid"`
+	ClientID string `json:"client_id"`
+}
+
+// RelayClose ends one phone session. Either side sends it.
+type RelayClose struct {
+	V      int    `json:"v"`
+	Type   string `json:"type"`
+	SID    string `json:"sid"`
+	Reason string `json:"reason"`
+}
+
+// ClientRevoked tells the daemon that the account removed a phone.
+type ClientRevoked struct {
+	V        int    `json:"v"`
+	Type     string `json:"type"`
+	ClientID string `json:"client_id"`
+}
+
+// ClaimMintRequest asks the cloud for a one-time pairing claim.
+type ClaimMintRequest struct {
+	Uses       int `json:"uses"`
+	TTLSeconds int `json:"ttl_seconds"`
+}
+
+// Claim is the minted pairing claim.
+type Claim struct {
+	Claim     string `json:"claim"`
+	ExpiresAt string `json:"expires_at"`
 }
 
 // HelloOK is the fact sheet the daemon caches. Features are a hint, not a grant.

@@ -171,6 +171,24 @@ func (c *Client) DeleteHook(ctx context.Context, id string) error {
 	return c.call(ctx, http.MethodDelete, path, nil, nil, true)
 }
 
+// MintClaim mints a one-time pairing claim (POST /v1/clients/claims).
+func (c *Client) MintClaim(ctx context.Context, uses int, ttl time.Duration) (Claim, error) {
+	body, err := json.Marshal(ClaimMintRequest{Uses: uses, TTLSeconds: int(ttl / time.Second)})
+	if err != nil {
+		return Claim{}, err
+	}
+	var out Claim
+	if err := c.call(ctx, http.MethodPost, "/v1/clients/claims", body, &out, true); err != nil {
+		return Claim{}, err
+	}
+	return out, nil
+}
+
+// RevokeClient removes a phone from the account (DELETE /v1/clients/{id}).
+func (c *Client) RevokeClient(ctx context.Context, cloudClientID string) error {
+	return c.call(ctx, http.MethodDelete, "/v1/clients/"+url.PathEscape(cloudClientID), nil, nil, true)
+}
+
 // Send posts one message and returns the accepted Message-ID.
 func (c *Client) Send(ctx context.Context, req email.SendRequest) (email.SendResult, error) {
 	body, err := json.Marshal(req)

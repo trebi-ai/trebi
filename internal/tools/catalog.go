@@ -2443,6 +2443,59 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"dismiss": idDel("POST /v1/requests/{id}/dismiss", "id", "01JB8ABC", request.BuildRequestDismiss),
 		},
 
+		"mobile": {
+			"pair": act("POST /v1/mobile/pairings", Input{"name": "Studio iPad", "ttl": "10m", "uses": float64(1)}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("name", "ttl")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				uses, _, err := in.num("uses")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildMobilePair(request.MobilePair{Name: v[0], TTL: v[1], Uses: uses}), nil
+			}),
+			"cancel_pairing": act("DELETE /v1/mobile/pairings/{id}", Input{"id": "01JB8ABC"}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildMobilePairCancel(id), nil
+			}),
+			"list": act("GET /v1/mobile/clients", Input{}, func(Input) (request.HTTPRequest, error) {
+				return mcpGet(request.BuildMobileClientsPath()), nil
+			}),
+			"update": act("PATCH /v1/mobile/clients/{id}", Input{"id": "01JB8ABC", "name": "Studio iPad", "scope": "read"}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				var name, scope *string
+				for key, dst := range map[string]**string{"name": &name, "scope": &scope} {
+					if _, ok := in[key]; !ok {
+						continue
+					}
+					v, err := in.str(key)
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					*dst = &v
+				}
+				return request.BuildMobileUpdate(id, name, scope), nil
+			}),
+			"remove": del("DELETE /v1/mobile/clients/{id}", Input{"id": "01JB8ABC", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				confirm, err := in.flag("confirm")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildMobileRemove(id, confirm), nil
+			}),
+		},
+
 		"notify": {
 			"route": act("GET /v1/notify/route", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("workspace", "agent", "job")

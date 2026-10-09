@@ -32,10 +32,12 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/launch"
+	"github.com/trebi-ai/trebi/internal/mobile"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/registry"
+	"github.com/trebi-ai/trebi/internal/relay"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -109,6 +111,8 @@ type ControlPlane struct {
 	Email     *email.Service
 	Proposals *proposals.Service
 	Cloud     *cloudlink.Service
+	Mobile    *mobile.Service // nil until StartPhones
+	Relay     *relay.Hub      // nil until StartPhones
 	Webhooks  *webhooks.Service
 	Launcher  *launch.Launcher
 	Requests  *requests.Service
@@ -303,7 +307,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	em.WithWorkspacePicker(c.picker)
 	em.WithStyles(c.Workspaces)
 	c.Router = notify.NewResolver(c.notify, connectorChannels{conn: connector}, em.Configured)
-	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get})
+	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Push: cl, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get})
 	c.Alerts.SetDoctor(c.Alerts.CollectDoctorFindings)
 	chainSvc.WithAlerts(c.Alerts)
 	c.Alerts.SetProposalContent(func(ctx context.Context, id string) (string, string, bool) {
@@ -572,6 +576,9 @@ const connectorStopWait = 10 * time.Second
 func (c *ControlPlane) Stop() {
 	if c.cancel != nil {
 		c.cancel()
+	}
+	if c.Relay != nil {
+		c.Relay.CloseAll(relay.CodeDaemonStopping)
 	}
 	c.Cloud.Stop()
 	c.Reaper.Stop()

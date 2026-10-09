@@ -1563,6 +1563,54 @@ func BuildHookDelete(id string, confirm bool) HTTPRequest {
 		Path: withQuery("/v1/hooks/"+url.PathEscape(id), confirmQ(confirm))}
 }
 
+// MobilePair holds the optional pairing values. Zero means the default.
+type MobilePair struct {
+	Name string
+	TTL  string // Go duration, for example 10m
+	Uses int
+}
+
+// BuildMobilePair builds POST /v1/mobile/pairings.
+func BuildMobilePair(p MobilePair) HTTPRequest {
+	body := map[string]any{}
+	if p.Name != "" {
+		body["name"] = p.Name
+	}
+	if p.TTL != "" {
+		body["ttl"] = p.TTL
+	}
+	if p.Uses != 0 {
+		body["uses"] = p.Uses
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/mobile/pairings", Body: body}
+}
+
+// BuildMobilePairCancel builds DELETE /v1/mobile/pairings/{id}.
+func BuildMobilePairCancel(id string) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: "/v1/mobile/pairings/" + url.PathEscape(id)}
+}
+
+// BuildMobileClientsPath builds GET /v1/mobile/clients.
+func BuildMobileClientsPath() string { return "/v1/mobile/clients" }
+
+// BuildMobileUpdate builds PATCH /v1/mobile/clients/{id}. A nil field stays.
+func BuildMobileUpdate(id string, name, scope *string) HTTPRequest {
+	body := map[string]any{}
+	if name != nil {
+		body["name"] = *name
+	}
+	if scope != nil {
+		body["scope"] = *scope
+	}
+	return HTTPRequest{Method: "PATCH", Path: "/v1/mobile/clients/" + url.PathEscape(id), Body: body}
+}
+
+// BuildMobileRemove builds DELETE /v1/mobile/clients/{id}.
+func BuildMobileRemove(id string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE",
+		Path: withQuery("/v1/mobile/clients/"+url.PathEscape(id), confirmQ(confirm))}
+}
+
 // BuildQueueRequeue builds POST /v1/queue/{id}/requeue.
 func BuildQueueRequeue(id string) HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/queue/" + url.PathEscape(id) + "/requeue"}

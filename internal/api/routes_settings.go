@@ -387,6 +387,7 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 	s.appendBus(r.Context(), store.BusEvent{Topic: "config.updated", Action: "updated"})
 	if s.cloud != nil {
 		s.cloud.SetRemoteMCP(cfg.Cloud.RemoteMCPOn())
+		s.cloud.SetMobile(cfg.Cloud.MobileOn())
 	}
 	s.kickDoctor()
 	m, _ := loadConfigMap()

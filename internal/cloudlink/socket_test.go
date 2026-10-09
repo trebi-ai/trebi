@@ -468,3 +468,159 @@ func busCount(t *testing.T, st *store.Store, topic string) int {
 	}
 	return n
 }
+
+// relaySink records hub calls by sid.
+type relaySink struct {
+	mu      sync.Mutex
+	opened  map[string]string
+	frames  map[string][]string
+	closed  map[string]string
+	revoked []string
+}
+
+func (r *relaySink) OpenRelay(_ context.Context, sid, clientID string) {
+	r.mu.Lock()
+	r.opened[sid] = clientID
+	r.mu.Unlock()
+}
+
+func (r *relaySink) DeliverRelay(_ context.Context, sid string, raw []byte) {
+	r.mu.Lock()
+	r.frames[sid] = append(r.frames[sid], string(raw))
+	r.mu.Unlock()
+}
+
+func (r *relaySink) CloseRelay(sid, reason string) {
+	r.mu.Lock()
+	r.closed[sid] = reason
+	r.mu.Unlock()
+}
+
+func (r *relaySink) ClientRevoked(_ context.Context, clientID string) {
+	r.mu.Lock()
+	r.revoked = append(r.revoked, clientID)
+	r.mu.Unlock()
+}
+
+func (r *relaySink) Count() int { return 0 }
+
+func (r *relaySink) snapshot(fn func(r *relaySink) bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return fn(r)
+}
+
+// TestSocketRelayRouting: frames reach the session of their own sid,
+// SendRelay writes relay_frame{sid}, and a lost socket closes every sid.
+func TestSocketRelayRouting(t *testing.T) {
+	testHome(t)
+	st := openStore(t)
+	sink := newRelaySink()
+	sent := make(chan map[string]any, 4)
+
+	fc := newFakeCloud(t, func(fc *fakeCloud, conn *websocket.Conn, session int) {
+		if session >= 2 {
+			fc.drain(conn, time.Minute)
+			return
+		}
+		fc.recv(conn) // hello
+		fc.send(conn, HelloOK{V: ContractV, Type: "hello_ok", Plan: "pro_cloud", Features: []string{"remote_access"}, HeartbeatInterval: 60})
+		fc.send(conn, RelayOpen{V: ContractV, Type: "relay_open", SID: "sa", ClientID: "ca"})
+		fc.send(conn, RelayOpen{V: ContractV, Type: "relay_open", SID: "sb", ClientID: "cb"})
+		fc.send(conn, RelayFrame{V: ContractV, Type: "relay_frame", SID: "sa", Bytes: "YQ=="})
+		fc.send(conn, RelayFrame{V: ContractV, Type: "relay_frame", SID: "sb", Bytes: "Yg=="})
+		fc.send(conn, RelayFrame{V: ContractV, Type: "relay_frame", SID: "zz", Bytes: "eg=="})
+		fc.send(conn, RelayFrame{V: ContractV, Type: "relay_frame", SID: "sa", Bytes: "!bad"})
+		fc.send(conn, RelayClose{V: ContractV, Type: "relay_close", SID: "sb", Reason: "client_gone"})
+		fc.send(conn, ClientRevoked{V: ContractV, Type: "client_revoked", ClientID: "cb"})
+		for {
+			f, ok := fc.recv(conn)
+			if !ok {
+				return
+			}
+			if f["type"] == "relay_frame" {
+				sent <- f
+				return // drop the socket
+			}
+		}
+	})
+
+	svc := New(st).WithRelay(sink)
+	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: true, Mobile: true})
+	defer svc.Stop()
+	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "relay close of sb", func() bool {
+		return sink.snapshot(func(r *relaySink) bool { return r.closed["sb"] == "client_gone" && len(r.revoked) == 1 })
+	})
+	if err := svc.SendRelay("sa", []byte("reply")); err != nil {
+		t.Fatal(err)
+	}
+	f := <-sent
+	if f["sid"] != "sa" || f["bytes"] != "cmVwbHk=" {
+		t.Fatalf("relay_frame out = %v", f)
+	}
+	waitFor(t, "socket_lost close of sa", func() bool {
+		return sink.snapshot(func(r *relaySink) bool { return r.closed["sa"] == "socket_lost" })
+	})
+	sink.snapshot(func(r *relaySink) bool {
+		if r.opened["sa"] != "ca" || r.opened["sb"] != "cb" {
+			t.Errorf("opened = %v", r.opened)
+		}
+		if strings.Join(r.frames["sa"], ",") != "a" || strings.Join(r.frames["sb"], ",") != "b" || len(r.frames["zz"]) != 0 {
+			t.Errorf("frames = %v", r.frames)
+		}
+		if r.revoked[0] != "cb" {
+			t.Errorf("revoked = %v", r.revoked)
+		}
+		return true
+	})
+}
+
+// TestSocketHelloCapsMobile: caps holds mobile only with cloud.mobile on and
+// a hub; a toggle redials with the new caps. With mobile off, relay_open is refused.
+func TestSocketHelloCapsMobile(t *testing.T) {
+	testHome(t)
+	st := openStore(t)
+	hellos := make(chan []any, 4)
+	refused := make(chan string, 1)
+	fc := newFakeCloud(t, func(fc *fakeCloud, conn *websocket.Conn, session int) {
+		f, ok := fc.recv(conn)
+		if !ok {
+			return
+		}
+		caps, _ := f["caps"].([]any)
+		hellos <- caps
+		if session == 2 {
+			fc.send(conn, RelayOpen{V: ContractV, Type: "relay_open", SID: "s1", ClientID: "c1"})
+			if f, ok := fc.recv(conn); ok && f["type"] == "relay_close" {
+				refused <- f["reason"].(string)
+			}
+		}
+		fc.drain(conn, time.Minute)
+	})
+	svc := New(st).WithRelay(newRelaySink())
+	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: true, Mobile: true})
+	defer svc.Stop()
+	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
+		t.Fatal(err)
+	}
+	if caps := <-hellos; len(caps) != 1 || caps[0] != CapMobile {
+		t.Fatalf("caps = %v, want [mobile]", caps)
+	}
+	svc.SetMobile(false)
+	if caps := <-hellos; len(caps) != 0 {
+		t.Fatalf("caps after off = %v, want none", caps)
+	}
+	if got := <-refused; got != "refused" {
+		t.Fatalf("relay_open with mobile off: reason %q", got)
+	}
+	if svc.Status().Mobile {
+		t.Fatal("status mobile = true after off")
+	}
+}
+
+func newRelaySink() *relaySink {
+	return &relaySink{opened: map[string]string{}, frames: map[string][]string{}, closed: map[string]string{}}
+}

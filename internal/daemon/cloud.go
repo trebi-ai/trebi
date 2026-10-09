@@ -85,6 +85,7 @@ func (c *ControlPlane) configureCloud(cfg *config.Config) {
 		APIURL:    cfg.Cloud.APIURLOrDefault(),
 		Enabled:   cfg.Cloud.Active(),
 		RemoteMCP: cfg.Cloud.RemoteMCPOn(),
+		Mobile:    cfg.Cloud.MobileOn(),
 	})
 }
 

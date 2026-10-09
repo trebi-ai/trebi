@@ -44,7 +44,11 @@ func DBPath() string         { return filepath.Join(Base(), "trebi.db") }
 func ConfigPath() string     { return filepath.Join(Base(), "config.yaml") }
 func APIJSONPath() string    { return filepath.Join(Base(), "api.json") }
 func DaemonLockPath() string { return filepath.Join(Base(), "daemon.lock") }
-func ContextPath() string    { return filepath.Join(Base(), "context") }
+
+// RelayLoopbackPath holds the phone tokens of the relaytest loopback.
+func RelayLoopbackPath() string { return filepath.Join(Base(), "relay-loopback.json") }
+
+func ContextPath() string { return filepath.Join(Base(), "context") }
 func LinkedWorkspacesPath() string {
 	return filepath.Join(Base(), "linked-workspaces.yaml")
 }

@@ -1,6 +1,6 @@
 ---
 name: trebi
-description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, agents, skills, secrets, connectors, connections, and event rules; find why a trigger did not fire; send email with HTML and attachments; drain the inbox or alerts; tail the event bus; link the daemon to a Trebi cloud account; mint hosted webhooks for job triggers; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi agent", "wake an agent", "trebi inbox", "trebi outbox", "trebi notify", "alert route", "trebi config schema", "validate a config change", "trebi bus", "trebi connector", "add a connection", "connector login", "why did my job not fire", "rules test", "run turns", "trebi email send", "trebi status", "trebi doctor", "wake the assistant", "trebi assistant say", "trebi assistant chat", "trebi conversation", "trebi cloud link", "trebi hooks", "hosted webhook".
+description: Operate trebi, an LLM task runner (daemon + CLI), fully from the shell. Use when the user wants to create, run, schedule, or debug trebi jobs; put supporting files next to a job; inspect or attach to runs; manage workspaces, agents, skills, secrets, connectors, connections, and event rules; find why a trigger did not fire; send email with HTML and attachments; drain the inbox or alerts; tail the event bus; link the daemon to a Trebi cloud account; mint hosted webhooks for job triggers; or control the trebid daemon. Triggers: "trebi job", "run a trebi job", "schedule a job", "trebi job file", "put a script next to a job", "trebi file", "trebi runs", "attach to a run", "trebi daemon", "trebi workspace", "trebi agent", "wake an agent", "trebi inbox", "trebi outbox", "trebi notify", "alert route", "trebi config schema", "validate a config change", "trebi bus", "trebi connector", "add a connection", "connector login", "why did my job not fire", "rules test", "run turns", "trebi email send", "trebi status", "trebi doctor", "wake the assistant", "trebi assistant say", "trebi assistant chat", "trebi conversation", "trebi cloud link", "trebi hooks", "hosted webhook", "trebi mobile", "pair a phone".
 ---
 
 # Trebi
@@ -83,6 +83,20 @@ trebi hooks list
 ```
 
 `hooks create` prints the public URL once. Handle it like a webhook secret: anyone holding it can post an event. A job fires on a delivery with `on: [{event: webhook, match: …}]`; the event carries `path`, `headers`, `body` as a string, and the delivery facts. Delete a hook with `trebi hooks delete <id>`.
+
+### Phones and tablets
+
+The Trebi app on a phone or a tablet uses this machine through Trebi Cloud. It needs a linked machine, the Pro Cloud plan, and `cloud.mobile` on (the default). `trebi mobile pair` shows a QR code and a link, then waits until the phone pairs. The link holds a secret: do not share it. A phone with the `read` scope can only look.
+
+```bash
+trebi mobile pair --name "Work phone" --ttl 30m
+trebi mobile ls --json
+trebi mobile scope <id> read
+trebi mobile rename <id> "iPad"
+trebi mobile rm <id> --force
+```
+
+`mobile rm` removes the phone here and in the cloud; the phone must pair again. `mobile cancel <pairing-id>` closes an open link. A phone cannot shut down the daemon, change the cloud link, or pair another phone.
 
 Vendor runs (`claude`, `codex`, `opencode`, `opencode2`, `pi`, `copilot`, `cursor`) spawn the installed CLI as a subprocess and speak its structured protocol by default — no tmux pane, no prompt pasting. `runtime: tui` in `JOB.md` / `AGENT.md` opts that run back into a pane; `trebi config set harness.runtime tui` is the incident-only global kill switch. A CLI run that fails closed leaves a doctor hint; relaunch or resume with `runtime: tui` — there is no silent fallback. `trebi runs attach` on a CLI run prints the event stream; `trebi runs watch <id|job>` prints it without input and exits with the run result; `trebi runs logs -f` always works.
 

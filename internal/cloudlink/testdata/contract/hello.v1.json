@@ -2,6 +2,7 @@
   "v": 1,
   "type": "hello",
   "caps": [
-    "mcp"
+    "mcp",
+    "mobile"
   ]
 }

@@ -240,6 +240,9 @@ type Actor struct {
 // ActorRemote is the Kind of a remote MCP client that the cloud forwards.
 const ActorRemote = "remote"
 
+// ActorMobile is the Kind of a paired phone on the relay.
+const ActorMobile = "mobile"
+
 // WithActor stores the native-loop identity on ctx.
 func WithActor(ctx context.Context, a Actor) context.Context {
 	return context.WithValue(ctx, actorKey{}, a)

@@ -36,6 +36,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/launch"
+	"github.com/trebi-ai/trebi/internal/mobile"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
@@ -76,6 +77,9 @@ type Server struct {
 	sched      *schedule.Service
 	email      *email.Service
 	cloud      *cloudlink.Service
+	mobile     *mobile.Service
+	rootOnce   sync.Once
+	root       http.Handler
 	hooks      *webhooks.Service
 	templates  *agents.Catalog
 	proposals  *proposals.Service
@@ -367,6 +371,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 // poll loop share one rate limit.
 func (s *Server) BindUsage(p *harness.UsagePoller) { bind(&s.usage, p) }
 
+// BindMobile swaps in the daemon's phone service.
+func (s *Server) BindMobile(m *mobile.Service) { bind(&s.mobile, m) }
+
 // BindState swaps in the daemon's state store.
 func (s *Server) BindState(st *state.Store) { bind(&s.state, st) }
 
@@ -469,6 +476,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeOutbox(mux)
 	s.routeNotify(mux)
 	s.routeHooks(mux)
+	s.routeMobile(mux)
 	s.routeState(mux)
 	s.routeMCP(mux)
 	// Dispatch from catalog tools re-enters here, audit-wrapped and
@@ -483,6 +491,13 @@ func (s *Server) Handler() http.Handler {
 		return ui.Handler(fsys, s.apiWrapped)
 	}
 	return s.apiWrapped
+}
+
+// Root is the one handler of the loopback listener. The relay hub serves
+// each phone stream with it too. It is built once.
+func (s *Server) Root() http.Handler {
+	s.rootOnce.Do(func() { s.root = s.Handler() })
+	return s.root
 }
 
 // ListenAndServe binds addr (e.g. 127.0.0.1:0) and serves HTTP.
@@ -501,7 +516,7 @@ func (s *Server) serve(addr, certFile, keyFile string) (actual string, err error
 		return "", err
 	}
 	s.listener = ln
-	s.httpServer = &http.Server{Handler: s.Handler()}
+	s.httpServer = &http.Server{Handler: s.Root()}
 	s.scheme = "http"
 	if certFile != "" {
 		s.scheme = "https"

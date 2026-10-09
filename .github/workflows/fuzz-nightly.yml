@@ -1,0 +1,27 @@
+name: fuzz-nightly
+
+# The relay parsers get random input from a phone through the cloud (plan 2026-10-09 T2.10).
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 15
+    strategy:
+      max-parallel: 1
+      matrix:
+        target: [FuzzRecords, FuzzHandshakeMessage1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: go test -fuzz
+        run: go test ./internal/relay -run='^$' -fuzz='^${{ matrix.target }}$' -fuzztime=60s
