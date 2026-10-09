@@ -989,17 +989,8 @@ func (e turnEnd) write(tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	// Close open task + agent segments.
 	for _, layer := range []string{"run", "session"} {
-		var segStart string
-		_ = tx.QueryRow(`SELECT started_at FROM run_segments WHERE run_id=? AND layer=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1`,
-			e.id, layer).Scan(&segStart)
-		var durMS int64
-		if t0, err := time.Parse(time.RFC3339Nano, segStart); err == nil {
-			durMS = e.now.Sub(t0).Milliseconds()
-		}
-		if _, err := tx.Exec(`UPDATE run_segments SET ended_at=?, duration_ms=?, reason=?
-			WHERE run_id=? AND layer=? AND ended_at IS NULL`, nowStr, durMS, string(e.end), e.id, layer); err != nil {
+		if err := closeOpenSegments(tx, e.id, layer, e.now, string(e.end)); err != nil {
 			return err
 		}
 	}
@@ -1007,6 +998,45 @@ func (e turnEnd) write(tx *sql.Tx) error {
 	_, err = tx.Exec(`INSERT INTO run_segments (run_id, layer, state, started_at, ended_at, duration_ms, reason, source)
 		VALUES (?, 'run', ?, ?, ?, 0, ?, 'reaper')`, e.id, string(e.status), nowStr, nowStr, string(e.end))
 	return err
+}
+
+// closeOpenSegments ends every open segment of one layer at the time at. Each
+// row gets its own duration; the duration is computed in Go, because SQLite
+// julianday mishandles RFC3339Nano. An empty reason keeps the stored reason.
+func closeOpenSegments(tx *sql.Tx, runID, layer string, at time.Time, reason string) error {
+	rows, err := tx.Query(`SELECT id, started_at FROM run_segments WHERE run_id=? AND layer=? AND ended_at IS NULL`, runID, layer)
+	if err != nil {
+		return err
+	}
+	type open struct {
+		id    int64
+		start string
+	}
+	var segs []open
+	for rows.Next() {
+		var o open
+		if err := rows.Scan(&o.id, &o.start); err != nil {
+			rows.Close()
+			return err
+		}
+		segs = append(segs, o)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	atStr := at.Format(time.RFC3339Nano)
+	for _, o := range segs {
+		var durMS int64
+		if t0, err := time.Parse(time.RFC3339Nano, o.start); err == nil {
+			durMS = max(0, at.Sub(t0).Milliseconds())
+		}
+		if _, err := tx.Exec(`UPDATE run_segments SET ended_at=?, duration_ms=?, reason=COALESCE(NULLIF(?,''), reason) WHERE id=?`,
+			atStr, durMS, reason, o.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // MarkOpts is the human outcome write of POST /v1/runs/{id}/mark. Clear drops
@@ -1330,19 +1360,10 @@ func (s *Service) SetSessionState(ctx context.Context, runID string, state Sessi
 		source = "session"
 	}
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		if had {
-			// Duration computed in Go — SQLite julianday mishandles RFC3339Nano.
-			var segStart string
-			_ = tx.QueryRow(`SELECT started_at FROM run_segments WHERE run_id=? AND layer='session' AND ended_at IS NULL ORDER BY id DESC LIMIT 1`,
-				runID).Scan(&segStart)
-			var durMS int64
-			if t0, perr := time.Parse(time.RFC3339Nano, segStart); perr == nil {
-				durMS = since.Sub(t0).Milliseconds()
-			}
-			if _, err := tx.Exec(`UPDATE run_segments SET ended_at=?, duration_ms=?
-				WHERE run_id=? AND layer='session' AND ended_at IS NULL`, nowStr, durMS, runID); err != nil {
-				return err
-			}
+		// Close by row, not by the in-memory snapshot: a finish or a restart drops
+		// the snapshot while a session row stays open.
+		if err := closeOpenSegments(tx, runID, "session", since, ""); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(`INSERT INTO run_segments (run_id, layer, state, started_at, reason, source)
 			VALUES (?, 'session', ?, ?, ?, 'session')`, runID, string(state), nowStr, source); err != nil {

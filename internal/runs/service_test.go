@@ -1024,6 +1024,60 @@ func TestReopenTurns(t *testing.T) {
 	}
 }
 
+// TestReopenClosesStaleIdleSegment: an idle session row that outlives the
+// in-memory snapshot (a restart) closes when the next turn starts, with its own
+// duration, not the duration of the next turn.
+func TestReopenClosesStaleIdleSegment(t *testing.T) {
+	t.Parallel()
+	svc, st, ctx := openTurnSvc(t)
+	opts := runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude", Reason: runs.ReasonManual}
+	run, err := svc.Create(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	svc.SetSessionState(ctx, run.ID, runs.SessionIdle, "test")
+	time.Sleep(30 * time.Millisecond)
+	restarted := runs.New(st, nil, nil)
+	opts.Reason = runs.ReasonResume
+	if _, err := restarted.Reopen(ctx, run.ID, opts); err != nil {
+		t.Fatal(err)
+	}
+	restarted.SetSessionState(ctx, run.ID, runs.SessionRunning, "test")
+	time.Sleep(5 * time.Millisecond)
+	if err := restarted.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	tl, err := restarted.Timeline(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var idle, running *runs.TimelineSegment
+	for i := range tl.Segments {
+		seg := &tl.Segments[i]
+		if seg.Layer != "session" || seg.End == nil {
+			continue
+		}
+		switch seg.State {
+		case "idle":
+			idle = seg
+		case "running":
+			running = seg
+		}
+	}
+	if idle == nil || running == nil {
+		t.Fatalf("segments %+v", tl.Segments)
+	}
+	if idle.End.After(running.Start) {
+		t.Fatalf("idle ends %s after running starts %s", idle.End, running.Start)
+	}
+	if want := idle.End.Sub(idle.Start).Milliseconds(); idle.DurationMS == nil || *idle.DurationMS != want || want < 25 {
+		t.Fatalf("idle duration %v, want %d", idle.DurationMS, want)
+	}
+}
+
 // TestReopenLiveRun: a running run cannot reopen.
 func TestReopenLiveRun(t *testing.T) {
 	t.Parallel()
