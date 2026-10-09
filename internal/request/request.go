@@ -2853,15 +2853,15 @@ func fileListQ(prefix, afterPath, workspace string, limit int, recursive bool) m
 
 // OutboxQuery is the filter of GET /v1/outbox. Empty fields stay out.
 type OutboxQuery struct {
-	Kind, Status, Purpose, Workspace, Conversation, Inbox, Cursor string
-	Limit                                                         int
+	Kind, Status, Purpose, Workspace, Conversation, Inbox, Run, Cursor string
+	Limit                                                              int
 }
 
 // BuildOutboxListPath builds GET /v1/outbox with the filter of q.
 func BuildOutboxListPath(q OutboxQuery) string {
 	kv := map[string]string{
 		"kind": q.Kind, "status": q.Status, "purpose": q.Purpose, "workspace": q.Workspace,
-		"conversation": q.Conversation, "inbox": q.Inbox, "cursor": q.Cursor,
+		"conversation": q.Conversation, "inbox": q.Inbox, "run": q.Run, "cursor": q.Cursor,
 	}
 	if q.Limit > 0 {
 		kv["limit"] = strconv.Itoa(q.Limit)

@@ -40,6 +40,9 @@ func (s *Server) handleOutboxList(w http.ResponseWriter, r *http.Request) {
 		ConversationID: q.Get("conversation"), InboxID: q.Get("inbox"),
 		Cursor: cursor, Limit: parseLimit(r),
 	}
+	if run := q.Get("run"); run != "" {
+		f.RunIDs = []string{run}
+	}
 	if a, ok := tools.ActorFrom(r.Context()); ok && a.Kind == "assistant" && a.WorkspaceID != "" {
 		f.WorkspaceID = a.WorkspaceID
 	}

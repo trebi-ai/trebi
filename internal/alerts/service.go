@@ -778,7 +778,7 @@ func scanInbox(row scanner, includeBody bool) (*InboxItem, error) {
 	}
 	it.Actions = unmarshalActions(acts)
 	if it.Delivery == DeliveryFailed {
-		it.Actions = append(it.Actions, InboxAction{Kind: ActionViewOutbox, Route: "/outbox?inbox=" + it.ID, Label: "View outbox"})
+		it.Actions = append(it.Actions, InboxAction{Kind: ActionViewOutbox, Route: "/history/outbox?inbox=" + it.ID, Label: "View outbox"})
 	}
 	it.CreatedAt = parseTime(created)
 	it.UpdatedAt = parseTime(updated)

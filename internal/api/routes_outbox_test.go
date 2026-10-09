@@ -39,8 +39,8 @@ func TestOutboxRoutes(t *testing.T) {
 	for _, q := range []string{
 		`INSERT INTO outbox (id, kind, purpose, workspace_id, instance, room, body, status, attempts, error_message, created_at)
 		 VALUES ('01ROWA','channel','reply','` + wsID + `','telegram','chat1','hello','failed',5,'boom','` + now + `')`,
-		`INSERT INTO outbox (id, kind, purpose, workspace_id, recipients, subject, body, status, next_attempt_at, created_at)
-		 VALUES ('01ROWB','email','alert','` + wsID + `','ops@example.com','[trebi] x','text','pending','2999-01-01T00:00:00.000Z','` + now + `')`,
+		`INSERT INTO outbox (id, kind, purpose, workspace_id, recipients, subject, body, status, next_attempt_at, run_id, created_at)
+		 VALUES ('01ROWB','email','alert','` + wsID + `','ops@example.com','[trebi] x','text','pending','2999-01-01T00:00:00.000Z','01RUN','` + now + `')`,
 	} {
 		if _, err := st.DB().Exec(q); err != nil {
 			t.Fatal(err)
@@ -54,6 +54,10 @@ func TestOutboxRoutes(t *testing.T) {
 	}
 	if row, _ := rows[0].(map[string]any); row["id"] != "01ROWA" || row["error"] != "boom" || row["body"] != "hello" {
 		t.Fatalf("row %v", row)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/outbox?run=01RUN", nil)
+	if rows, _ := body["outbox"].([]any); code != 200 || len(rows) != 1 {
+		t.Fatalf("list run=01RUN %d %v", code, body)
 	}
 	if code, body, _ = doJSON(t, "GET", base+"/v1/outbox?limit=1", nil); code != 200 || body["next_cursor"] != "01ROWB" {
 		t.Fatalf("page %d %v", code, body)

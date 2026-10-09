@@ -746,7 +746,8 @@ func TestRouteAllFail(t *testing.T) {
 	if item.Delivery != alerts.DeliveryFailed {
 		t.Fatalf("delivery %q", item.Delivery)
 	}
-	if n := len(item.Actions); n == 0 || item.Actions[n-1].Kind != alerts.ActionViewOutbox {
+	n := len(item.Actions)
+	if n == 0 || item.Actions[n-1].Kind != alerts.ActionViewOutbox || item.Actions[n-1].Route != "/history/outbox?inbox="+id {
 		t.Fatalf("actions %+v", item.Actions)
 	}
 	items, _ := svc.List(ctx, alerts.ListOpts{})
