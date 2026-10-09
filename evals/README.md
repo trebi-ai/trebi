@@ -1,7 +1,7 @@
 # trebi evals
 
 Live LLM-driven CLI eval suite. No mocks. Each trial gets its own `TREBI_HOME`,
-a headless `trebi service daemon --listen 127.0.0.1:0 --no-tray`, and a client
+a headless `trebi service daemon --listen 127.0.0.1:0`, and a client
 harness (`claude -p` or `codex exec`).
 
 Default server-side harness is `codex` (probes `ok` on macOS today).

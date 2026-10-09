@@ -3,7 +3,7 @@ set -euo pipefail
 . "${EVAL_SEEDS}/ops.sh"
 REMOTE_HOME="$EVAL_WORKDIR/remote-home"
 mkdir -p "$REMOTE_HOME"
-TREBI_HOME="$REMOTE_HOME" "$TREBI_BIN" service daemon --listen 127.0.0.1:0 --no-tray >"$EVAL_WORKDIR/remote.log" 2>&1 &
+TREBI_HOME="$REMOTE_HOME" "$TREBI_BIN" service daemon --listen 127.0.0.1:0 >"$EVAL_WORKDIR/remote.log" 2>&1 &
 echo $! > "$EVAL_WORKDIR/remote.pid"
 for _ in $(seq 1 50); do
   if [[ -f "$REMOTE_HOME/api.json" ]]; then
