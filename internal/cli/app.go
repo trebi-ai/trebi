@@ -48,6 +48,7 @@ func NewApp(opts Options) *cli.Command {
 			c.Root().Metadata[appStateKey] = newAppState(c.String("workspace"), opts.Ext)
 			return ctx, nil
 		},
+		Action: runRoot,
 		Commands: []*cli.Command{
 			serviceCommand(),
 			statusCommand(),
@@ -409,4 +410,23 @@ func readFileOrStdin(path string) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// runRoot runs when no command is given. Opened as Trebi.app, it installs
+// the service when needed and starts it with the tray. Otherwise it shows help.
+func runRoot(ctx context.Context, c *cli.Command) error {
+	if c.NArg() > 0 {
+		return fmt.Errorf("unknown command %q; run: trebi --help", c.Args().First())
+	}
+	exe, err := os.Executable()
+	if err != nil || platform.AppBundle(exe) == "" {
+		return cli.ShowAppHelp(c)
+	}
+	svc := appStateFor(c).platform
+	if !svc.Installed() {
+		if err := svc.Install(platform.InstallOpts{Bin: exe}); err != nil {
+			return err
+		}
+	}
+	return svc.Start()
 }

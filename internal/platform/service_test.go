@@ -3,6 +3,7 @@ package platform
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -12,9 +13,10 @@ import (
 
 func TestRenderPlist_AbsoluteProgramArguments(t *testing.T) {
 	t.Parallel()
-	// Default install: tray + OnFailure KeepAlive (no --no-tray).
-	def := DaemonAgent(false)
+	// Under the tray, launchd neither starts nor restarts the daemon.
+	def := DaemonAgent(true)
 	def.LogPath = "/tmp/trebid.log"
+	def.BundleID = "ai.trebi.app"
 	bin := "/Users/me/Applications/Trebi.app/Contents/MacOS/trebi"
 	got := def.Render(bin, "/usr/bin:/bin", "/Users/me")
 
@@ -24,10 +26,10 @@ func TestRenderPlist_AbsoluteProgramArguments(t *testing.T) {
 	mustContain(t, got, "<string>daemon</string>")
 	mustContain(t, got, "<string>/Users/me</string>")
 	mustContain(t, got, "<string>/tmp/trebid.log</string>")
-	mustContain(t, got, "<key>SuccessfulExit</key>")
-	mustContain(t, got, "<key>RunAtLoad</key>\n    <true/>")
-	if strings.Contains(got, "--no-tray") {
-		t.Fatalf("tray install must not pass --no-tray:\n%s", got)
+	mustContain(t, got, "<key>RunAtLoad</key>\n    <false/>")
+	mustContain(t, got, "<key>AssociatedBundleIdentifiers</key>\n    <array>\n        <string>ai.trebi.app</string>")
+	if strings.Contains(got, "KeepAlive") {
+		t.Fatalf("daemon under the tray must have no KeepAlive:\n%s", got)
 	}
 	if strings.Contains(got, "--listen") {
 		t.Fatalf("install must not hardcode --listen; bind comes from api.host/api.port:\n%s", got)
@@ -40,10 +42,34 @@ func TestRenderPlist_AbsoluteProgramArguments(t *testing.T) {
 		t.Fatalf("absolute bin must precede service args\n%s", got)
 	}
 
-	headless := DaemonAgent(true)
+	headless := DaemonAgent(false)
 	gotH := headless.Render(bin, "/usr/bin:/bin", "/Users/me")
-	mustContain(t, gotH, "<string>--no-tray</string>")
+	mustContain(t, gotH, "<key>RunAtLoad</key>\n    <true/>")
 	mustContain(t, gotH, "<key>KeepAlive</key>\n    <true/>")
+	if strings.Contains(gotH, "AssociatedBundleIdentifiers") {
+		t.Fatalf("no bundle id, no association:\n%s", gotH)
+	}
+
+	tray := TrayAgent()
+	gotT := tray.Render(bin, "", "/Users/me")
+	mustContain(t, gotT, "<string>ai.trebi.tray</string>")
+	mustContain(t, gotT, "<string>tray</string>")
+	mustContain(t, gotT, "<key>RunAtLoad</key>\n    <true/>")
+	mustContain(t, gotT, "<key>SuccessfulExit</key>\n        <false/>")
+	mustContain(t, gotT, "<key>LimitLoadToSessionType</key>\n    <string>Aqua</string>")
+}
+
+func TestAppBundle(t *testing.T) {
+	t.Parallel()
+	for bin, want := range map[string]string{
+		"/Applications/Trebi.app/Contents/MacOS/trebi":                  "/Applications/Trebi.app",
+		"/opt/homebrew/Cellar/trebi/1.0/Trebi.app/Contents/MacOS/trebi": "/opt/homebrew/Cellar/trebi/1.0/Trebi.app",
+		"/usr/local/bin/trebi":                                          "",
+	} {
+		if got := AppBundle(bin); got != want {
+			t.Errorf("AppBundle(%q) = %q, want %q", bin, got, want)
+		}
+	}
 }
 
 func TestRenderPlist_XMLEscapeAndKeepAliveOnFailure(t *testing.T) {
@@ -74,7 +100,8 @@ func TestRenderPlist_DefaultPathAndHome(t *testing.T) {
 
 func TestProgramArguments_TrebiVsTrebid(t *testing.T) {
 	t.Parallel()
-	def := DaemonAgent(true)
+	def := DaemonAgent(false)
+	def.Args = append(def.Args, "--shadow")
 	trebi := ProgramArguments("/opt/trebi/trebi", def)
 	if len(trebi) < 3 || trebi[0] != "/opt/trebi/trebi" || trebi[1] != "service" || trebi[2] != "daemon" {
 		t.Fatalf("trebi args: %v", trebi)
@@ -88,7 +115,7 @@ func TestProgramArguments_TrebiVsTrebid(t *testing.T) {
 			t.Fatalf("trebid must not get service/daemon subcommands: %v", trebid)
 		}
 	}
-	if !contains(trebid, "--no-tray") {
+	if !contains(trebid, "--shadow") {
 		t.Fatalf("trebid should keep daemon flags: %v", trebid)
 	}
 	// Windows-style basename
@@ -179,44 +206,45 @@ func TestResolveDaemonBinary_OverrideBeatsEnv(t *testing.T) {
 func TestDaemonAgent_Defaults(t *testing.T) {
 	home.SetBase(t.TempDir())
 	t.Cleanup(func() { home.SetBase("") })
-	tray := DaemonAgent(false)
-	if tray.Label != DaemonLabel {
-		t.Fatalf("label: %s", tray.Label)
+	managed := DaemonAgent(true)
+	if managed.Label != DaemonLabel || managed.FileName != DaemonPlistName {
+		t.Fatalf("label/file: %s %s", managed.Label, managed.FileName)
 	}
-	if tray.FileName != DaemonPlistName {
-		t.Fatalf("file: %s", tray.FileName)
+	if managed.RunAtLoad || !managed.NoRestart {
+		t.Fatalf("under the tray: want no RunAtLoad and no restart: %+v", managed)
 	}
-	if tray.KeepAlive {
-		t.Fatal("tray agent: want KeepAlive OnFailure (false)")
+	headless := DaemonAgent(false)
+	if !headless.RunAtLoad || !headless.KeepAlive {
+		t.Fatalf("headless: want RunAtLoad and KeepAlive always: %+v", headless)
 	}
-	if contains(tray.Args, "--no-tray") {
-		t.Fatalf("tray args must omit --no-tray: %v", tray.Args)
-	}
-	headless := DaemonAgent(true)
-	if !headless.KeepAlive {
-		t.Fatal("headless: want KeepAlive always")
-	}
-	if !contains(headless.Args, "--no-tray") || !contains(headless.Args, "service") {
+	if !reflect.DeepEqual(headless.Args, []string{"service", "daemon"}) {
 		t.Fatalf("headless args: %v", headless.Args)
 	}
 	if !strings.HasSuffix(headless.LogPath, filepath.Join("logs", "trebid.log")) {
 		t.Fatalf("log path: %s", headless.LogPath)
 	}
+	if got := TrayAgent().LogPath; !strings.HasSuffix(got, filepath.Join("logs", "tray.log")) {
+		t.Fatalf("tray log path: %s", got)
+	}
 }
 
 func TestFormatStatus(t *testing.T) {
 	t.Parallel()
-	running := FormatStatus("123\t0\tai.trebi.daemon\nother", true)
-	if !strings.HasPrefix(running, DaemonLabel+": Running") {
-		t.Fatalf("running: %s", running)
+	list := "123\t0\tai.trebi.daemon\n-\t0\tai.trebi.tray\nother"
+	tests := []struct {
+		label     string
+		installed bool
+		want      string
+	}{
+		{DaemonLabel, true, DaemonLabel + ": Running (pid 123)"},
+		{TrayLabel, true, TrayLabel + ": Not running (loaded, last exit 0)"},
+		{"ai.trebi.other", true, "ai.trebi.other: Not running (plist installed)"},
+		{"ai.trebi.other", false, "ai.trebi.other: Not installed"},
 	}
-	installed := FormatStatus("no match here", true)
-	if installed != DaemonLabel+": Not running (plist installed)" {
-		t.Fatalf("installed: %s", installed)
-	}
-	missing := FormatStatus("", false)
-	if missing != DaemonLabel+": Not installed" {
-		t.Fatalf("missing: %s", missing)
+	for _, tt := range tests {
+		if got := FormatStatus(list, tt.label, tt.installed); got != tt.want {
+			t.Errorf("FormatStatus(%s) = %q, want %q", tt.label, got, tt.want)
+		}
 	}
 }
 
@@ -240,6 +268,9 @@ func TestInstallWritesAbsoluteProgramPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(agents, DaemonPlistName)
+	if _, err := os.Stat(filepath.Join(agents, TrayPlistName)); err != nil {
+		t.Fatalf("default install writes the tray agent: %v", err)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -252,9 +283,8 @@ func TestInstallWritesAbsoluteProgramPath(t *testing.T) {
 	mustContain(t, body, "<string>"+abs+"</string>")
 	mustContain(t, body, "<string>service</string>")
 	mustContain(t, body, "<string>daemon</string>")
-	// Default install includes tray (no --no-tray).
-	if strings.Contains(body, "--no-tray") {
-		t.Fatal("default install should enable tray")
+	if strings.Contains(body, "KeepAlive") {
+		t.Fatal("default install: the tray restarts the daemon, not launchd")
 	}
 	mustContain(t, body, home.DaemonLogPath())
 
@@ -262,8 +292,10 @@ func TestInstallWritesAbsoluteProgramPath(t *testing.T) {
 	if err := svc.Uninstall(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("plist should be removed, err=%v", err)
+	for _, name := range []string{DaemonPlistName, TrayPlistName} {
+		if _, err := os.Stat(filepath.Join(agents, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s should be removed, err=%v", name, err)
+		}
 	}
 }
 

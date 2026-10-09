@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -109,7 +108,7 @@ func serviceLifecycleSubcommands() []*cli.Command {
 			Flags: []cli.Flag{
 				&cli.BoolFlag{
 					Name:  "no-tray",
-					Usage: "Headless daemon (no menu-bar tray; KeepAlive always)",
+					Usage: "Install the daemon only: launchd starts it at login and keeps it alive (no menu-bar tray)",
 				},
 				&cli.StringFlag{
 					Name:  "bin",
@@ -223,11 +222,10 @@ func serviceDaemonSubcommands() []*cli.Command {
 	return []*cli.Command{
 		{
 			Name:  "daemon",
-			Usage: "run trebid (HTTP API + workers; menu-bar tray on macOS unless --no-tray)",
+			Usage: "run trebid (HTTP API + workers)",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "listen", Usage: "HTTP listen address (overrides api.host:api.port)"},
 				&cli.BoolFlag{Name: "shadow", Usage: "shadow mode: drain + no connectors/schedules"},
-				&cli.BoolFlag{Name: "no-tray", Usage: "disable menu-bar tray (headless)"},
 				&cli.IntFlag{
 					Name:    "parent-pid",
 					Sources: cli.EnvVars("TREBI_PARENT_PID"),
@@ -237,10 +235,20 @@ func serviceDaemonSubcommands() []*cli.Command {
 					Name:    "log-level",
 					Sources: cli.EnvVars("TREBI_LOG_LEVEL"),
 					Value:   "info",
-					Usage:   "debug|info|warn|error (debug shows tray health polls)",
+					Usage:   "debug|info|warn|error",
 				},
 			},
 			Action: runDaemonProcess,
+		},
+		{
+			Name:  "tray",
+			Usage: "run the menu-bar tray (macOS): it starts the daemon and keeps it running",
+			Action: func(ctx context.Context, c *cli.Command) error {
+				if !tray.Available {
+					return fmt.Errorf("the tray needs macOS and a cgo build")
+				}
+				return tray.New(appStateFor(c).platform).Run(ctx)
+			},
 		},
 		{
 			Name:  "drain",
@@ -565,44 +573,19 @@ func lineHasLevel(line, want string) bool {
 	return false
 }
 
-// runDaemonProcess starts the HTTP control plane and, on macOS, the menu-bar tray.
-// Tray icon means the service process is alive. Quit from the tray exits 0 and
-// stops the whole process (daemon + tray).
+// runDaemonProcess runs the daemon. Under launchd it also starts the tray,
+// so that the tray shows whenever the service runs.
 func runDaemonProcess(ctx context.Context, c *cli.Command) error {
-	if err := appStateFor(c).errIfRemoteSticky(); err != nil {
+	st := appStateFor(c)
+	if err := st.errIfRemoteSticky(); err != nil {
 		return err
 	}
-	noTray := c.Bool("no-tray") || runtime.GOOS != "darwin" || !tray.Available
-	if noTray {
-		if !c.Bool("no-tray") && runtime.GOOS == "darwin" && !tray.Available {
-			appStateFor(c).log.Warn("tray unavailable (need cgo on darwin); running headless")
+	if os.Getenv("XPC_SERVICE_NAME") == platform.DaemonLabel {
+		if err := st.platform.StartTray(); err != nil {
+			st.log.Warn("tray start failed", "err", err)
 		}
-		return runDaemon(ctx, c)
 	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		err := runDaemon(ctx, c)
-		errCh <- err
-		cancel() // daemon died → tear down tray
-	}()
-
-	// Menuet owns the main thread.
-	trayErr := tray.Run(ctx, cancel)
-	cancel()
-
-	// Give the daemon a moment to shut down after tray quit / cancel.
-	select {
-	case err := <-errCh:
-		if err != nil && ctx.Err() == nil {
-			return err
-		}
-	case <-time.After(5 * time.Second):
-	}
-	return trayErr
+	return runDaemon(ctx, c)
 }
 
 // setLogLevel installs the default slog handler at the requested level.
@@ -696,8 +679,8 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 		return err
 	}
 	appStateFor(c).appendBusEvent(st, "system.started")
-	fmt.Fprintf(os.Stderr, "trebid listening on %s://%s (home=%s shadow=%v tray=%v)\n",
-		bind.Scheme, addr, home.Base(), shadow, !c.Bool("no-tray") && tray.Available && runtime.GOOS == "darwin")
+	fmt.Fprintf(os.Stderr, "trebid listening on %s://%s (home=%s shadow=%v)\n",
+		bind.Scheme, addr, home.Base(), shadow)
 	fmt.Fprintf(os.Stderr, "api.json → %s\n", home.APIJSONPath())
 
 	_ = os.WriteFile(filepath.Join(home.Base(), "trebid.pid"), []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)

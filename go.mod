@@ -5,7 +5,6 @@ go 1.26.1
 require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/adrg/frontmatter v0.2.0
-	github.com/caseymrm/menuet v1.0.3
 	github.com/dop251/goja v0.0.0-20260806115107-493f22071ef6
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/jsonschema-go v0.4.3
@@ -39,7 +38,6 @@ require (
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
-	github.com/caseymrm/askm v1.0.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect

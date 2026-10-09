@@ -1,69 +1,163 @@
 package tray
 
 import (
+	"context"
 	"log/slog"
 	"strconv"
 	"sync"
+	"time"
 )
 
-// Snapshot is what the tray menu renders.
-type Snapshot struct {
-	Healthy      bool
-	Version      string
-	Draining     bool
-	RunningCount int
-	Message      string // short status line
-	WaitingCount int    // agent waiting for human (if known)
+// Controller starts and stops the service. The tray owns no launchd logic.
+type Controller interface {
+	StartDaemon() error
+	RestartDaemon() error
+	Stop() error
+	DaemonState() (loaded, running bool)
 }
 
-// State is concurrent tray view.
-type State struct {
-	mu  sync.Mutex
-	cur Snapshot
+// Tray is the menu-bar app. It starts the service, restarts it when it stops
+// on its own, and leaves it down when the user stops it.
+type Tray struct {
+	ctl Controller
 	log *slog.Logger
+	ctx context.Context // process lifetime; set by Run
+
+	mu        sync.Mutex
+	snap      Snapshot
+	items     []Item
+	lastStart time.Time
 }
 
-// NewState builds a tray state with its own logger.
-func NewState() *State {
-	return &State{log: slog.Default().With("source", "tray")}
+// New builds a tray over ctl.
+func New(ctl Controller) *Tray {
+	return &Tray{ctl: ctl, log: slog.Default().With("source", "tray")}
 }
 
-func (s *State) Set(snap Snapshot) {
-	s.mu.Lock()
-	s.cur = snap
-	s.mu.Unlock()
+// Status is the service state that the tray shows.
+type Status int
+
+const (
+	StatusStopped Status = iota
+	StatusStarting
+	StatusRunning
+	StatusNotResponding
+)
+
+// Snapshot is what the tray renders.
+type Snapshot struct {
+	Status         Status
+	URL            string
+	Version        string
+	EditionVersion string
+	UIVersion      string
+	Draining       bool
+	RunningCount   int
+	WaitingCount   int
 }
 
-func (s *State) Get() Snapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.cur
+// Action is what a menu item does when clicked. ActionNone is a text row.
+type Action int
+
+const (
+	ActionNone Action = iota
+	ActionOpen
+	ActionStart
+	ActionRestart
+	ActionStop
+	ActionOpenLog
+	ActionShowFolder
+	ActionAbout
+	ActionQuit
+)
+
+// Item is one menu row.
+type Item struct {
+	Text      string
+	Action    Action
+	Separator bool
 }
 
-// MenuLines returns pure text rows for tests (no menuet).
-func (s Snapshot) MenuLines() []string {
-	status := "offline"
-	if s.Healthy {
-		status = "running"
+// Menu returns the menu rows for the snapshot.
+func (s Snapshot) Menu() []Item {
+	items := []Item{{Text: s.headline()}}
+	if s.Status == StatusRunning {
+		items = append(items, Item{Text: s.activity()})
+	}
+	open := Item{Text: "Open Trebi"}
+	if s.Status == StatusRunning {
+		open.Action = ActionOpen
+	}
+	items = append(items, Item{Separator: true}, open, Item{Separator: true})
+	if s.Status == StatusStopped {
+		items = append(items, Item{Text: "Start Service", Action: ActionStart})
+	} else {
+		items = append(items,
+			Item{Text: "Restart Service", Action: ActionRestart},
+			Item{Text: "Stop Service", Action: ActionStop})
+	}
+	return append(items,
+		Item{Separator: true},
+		Item{Text: "Open Log", Action: ActionOpenLog},
+		Item{Text: "Show Trebi Folder", Action: ActionShowFolder},
+		Item{Separator: true},
+		Item{Text: "About Trebi", Action: ActionAbout},
+		Item{Text: "Quit Trebi", Action: ActionQuit})
+}
+
+// Title is the text next to the icon: the count of items that wait for the user.
+func (s Snapshot) Title() string {
+	if s.Status == StatusRunning && s.WaitingCount > 0 {
+		return strconv.Itoa(s.WaitingCount)
+	}
+	return ""
+}
+
+func (s Snapshot) headline() string {
+	switch s.Status {
+	case StatusRunning:
 		if s.Draining {
-			status = "draining"
+			return "Trebi is running · new runs paused"
 		}
+		return "Trebi is running"
+	case StatusStarting:
+		return "Trebi is starting…"
+	case StatusNotResponding:
+		return "Trebi is not responding"
+	default:
+		return "Trebi is stopped"
 	}
-	head := "trebi · " + status
-	if s.Version != "" {
-		head += " · " + s.Version
+}
+
+func (s Snapshot) activity() string {
+	line := "No runs active"
+	switch s.RunningCount {
+	case 0:
+	case 1:
+		line = "1 run active"
+	default:
+		line = strconv.Itoa(s.RunningCount) + " runs active"
 	}
-	lines := []string{head}
-	if s.Message != "" {
-		lines = append(lines, s.Message)
+	if s.WaitingCount > 0 {
+		line += " · " + strconv.Itoa(s.WaitingCount) + " waiting for you"
 	}
-	if s.Healthy {
-		running := "Runs: " + strconv.Itoa(s.RunningCount)
-		if s.WaitingCount > 0 {
-			running += " · waiting: " + strconv.Itoa(s.WaitingCount)
-		}
-		lines = append(lines, running)
+	return line
+}
+
+func (s Snapshot) about() string {
+	text := "Version " + orUnknown(s.Version)
+	if s.EditionVersion != "" {
+		text += "\nEdition " + s.EditionVersion
 	}
-	lines = append(lines, "Quit Trebi service")
-	return lines
+	if s.UIVersion != "" {
+		text += "\nUI " + s.UIVersion
+	}
+	return text
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
 }

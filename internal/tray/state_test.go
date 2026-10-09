@@ -1,41 +1,80 @@
 package tray
 
 import (
-	"strings"
+	"reflect"
 	"testing"
 )
 
-func TestBuildMenuLines_Healthy(t *testing.T) {
+func TestSnapshotMenu(t *testing.T) {
 	t.Parallel()
-	lines := Snapshot{
-		Healthy:      true,
-		Version:      "0.1.0",
-		RunningCount: 2,
-		WaitingCount: 1,
-	}.MenuLines()
-	if !strings.Contains(lines[0], "running") || !strings.Contains(lines[0], "0.1.0") {
-		t.Fatalf("head: %q", lines[0])
+	tests := []struct {
+		name    string
+		snap    Snapshot
+		texts   []string
+		actions map[string]Action
+		title   string
+	}{
+		{
+			name: "running",
+			snap: Snapshot{Status: StatusRunning, RunningCount: 2, WaitingCount: 1},
+			texts: []string{
+				"Trebi is running", "2 runs active · 1 waiting for you", "", "Open Trebi", "",
+				"Restart Service", "Stop Service", "", "Open Log", "Show Trebi Folder", "", "About Trebi", "Quit Trebi",
+			},
+			actions: map[string]Action{"Open Trebi": ActionOpen, "Restart Service": ActionRestart, "Stop Service": ActionStop, "Quit Trebi": ActionQuit},
+			title:   "1",
+		},
+		{
+			name:    "running idle and draining",
+			snap:    Snapshot{Status: StatusRunning, Draining: true},
+			texts:   []string{"Trebi is running · new runs paused", "No runs active", "", "Open Trebi", "", "Restart Service", "Stop Service", "", "Open Log", "Show Trebi Folder", "", "About Trebi", "Quit Trebi"},
+			actions: map[string]Action{"Open Trebi": ActionOpen},
+		},
+		{
+			name:    "stopped",
+			snap:    Snapshot{Status: StatusStopped, WaitingCount: 3},
+			texts:   []string{"Trebi is stopped", "", "Open Trebi", "", "Start Service", "", "Open Log", "Show Trebi Folder", "", "About Trebi", "Quit Trebi"},
+			actions: map[string]Action{"Open Trebi": ActionNone, "Start Service": ActionStart, "Trebi is stopped": ActionNone},
+		},
+		{
+			name:    "not responding",
+			snap:    Snapshot{Status: StatusNotResponding},
+			texts:   []string{"Trebi is not responding", "", "Open Trebi", "", "Restart Service", "Stop Service", "", "Open Log", "Show Trebi Folder", "", "About Trebi", "Quit Trebi"},
+			actions: map[string]Action{"Open Trebi": ActionNone, "Restart Service": ActionRestart},
+		},
 	}
-	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "waiting: 1") {
-		t.Fatalf("want waiting count: %q", joined)
-	}
-	if lines[len(lines)-1] != "Quit Trebi service" {
-		t.Fatalf("last: %q", lines[len(lines)-1])
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			items := tt.snap.Menu()
+			texts := make([]string, len(items))
+			byText := map[string]Action{}
+			for i, it := range items {
+				texts[i] = it.Text
+				byText[it.Text] = it.Action
+			}
+			if !reflect.DeepEqual(texts, tt.texts) {
+				t.Fatalf("menu:\n got %q\nwant %q", texts, tt.texts)
+			}
+			for text, want := range tt.actions {
+				if got := byText[text]; got != want {
+					t.Errorf("%q: action %d, want %d", text, got, want)
+				}
+			}
+			if got := tt.snap.Title(); got != tt.title {
+				t.Errorf("title %q, want %q", got, tt.title)
+			}
+		})
 	}
 }
 
-func TestBuildMenuLines_DrainingAndOffline(t *testing.T) {
+func TestSnapshotAbout(t *testing.T) {
 	t.Parallel()
-	d := Snapshot{Healthy: true, Draining: true}.MenuLines()
-	if !strings.Contains(d[0], "draining") {
-		t.Fatalf("draining: %q", d[0])
+	got := Snapshot{Version: "0.2.80", EditionVersion: "4d1c96e", UIVersion: "0.1.25"}.about()
+	if want := "Version 0.2.80\nEdition 4d1c96e\nUI 0.1.25"; got != want {
+		t.Fatalf("about %q, want %q", got, want)
 	}
-	o := Snapshot{Healthy: false, Message: "api.json missing"}.MenuLines()
-	if !strings.Contains(o[0], "offline") {
-		t.Fatalf("offline: %q", o[0])
-	}
-	if !strings.Contains(strings.Join(o, "\n"), "api.json missing") {
-		t.Fatalf("message: %v", o)
+	if got := (Snapshot{}).about(); got != "Version unknown" {
+		t.Fatalf("empty about %q", got)
 	}
 }

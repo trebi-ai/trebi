@@ -238,7 +238,7 @@ func (e *trialEnv) startDaemon(ctx context.Context, harness, wsRoot string) erro
 		return err
 	}
 	cmd := exec.Command(e.bin, "service", "daemon",
-		"--listen", "127.0.0.1:0", "--no-tray",
+		"--listen", "127.0.0.1:0",
 		"--parent-pid", strconv.Itoa(os.Getpid()))
 	cmd.Env = append(e.environ(), "TREBI_PARENT_FD=3")
 	cmd.Dir = e.workdir

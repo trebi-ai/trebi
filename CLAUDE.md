@@ -24,7 +24,7 @@ internal/store/      # SQLite open, migrations, event bus, event-name registry
 internal/<domain>/   # one service per object family (runs, workspaces, alerts, …)
 internal/cloudlink/  # published hosted-link wire fixtures; the daemon client is a separate plan
 internal/tmux/       # harness policy + TUI runtime: one file per harness tool
-internal/tray/       # macOS menu bar (build-tagged)
+internal/tray/       # macOS menu bar: starts and controls the daemon (cgo, build-tagged)
 evals/               # tasks/, seeds/, oracles/, rubrics/, baseline.json
 scripts/ testdata/   # build helpers, fixtures, eval.py
 ```
