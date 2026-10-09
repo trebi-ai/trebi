@@ -55,6 +55,7 @@ type Status struct {
 	RefreshedAt  string   `json:"refreshed_at"` // RFC3339, "" when never refreshed
 	RemoteMCP    bool     `json:"remote_mcp"`   // config cloud.remote_mcp
 	McpURL       string   `json:"mcp_url"`      // from hello_ok, "" before the first connect
+	DownSince    string   `json:"down_since"`   // RFC3339 start of the current outage; set only when degraded
 }
 
 // Service is the long-lived cloud-link worker: the cached link row, the
@@ -271,6 +272,9 @@ func (s *Service) Status() Status {
 		st.Status = statusConnected
 	default:
 		st.Status = statusDegraded
+		if t := s.sock.downSinceAt(); !t.IsZero() {
+			st.DownSince = t.UTC().Format(time.RFC3339)
+		}
 	}
 	return st
 }
@@ -634,7 +638,7 @@ func (s *Service) launchLocked(id Identity) {
 	if s.sock != nil || s.link == nil || !s.cfg.Enabled {
 		return
 	}
-	sk := &socket{svc: s, base: s.apiBaseLocked(), id: id, mcpSlots: make(chan struct{}, mcpSlotCount)}
+	sk := &socket{svc: s, base: s.apiBaseLocked(), id: id, downSince: time.Now(), mcpSlots: make(chan struct{}, mcpSlotCount)}
 	s.sock = sk
 	s.done = make(chan struct{})
 	// Stop condition: s.life is cancelled by Stop (directly or via Start).

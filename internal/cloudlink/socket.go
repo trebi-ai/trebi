@@ -35,6 +35,7 @@ type socket struct {
 	mu           sync.Mutex
 	conn         *websocket.Conn
 	connected    bool
+	downSince    time.Time // zero while connected
 	unauthorized bool
 	unknown      int64
 	drops        int64
@@ -307,6 +308,7 @@ func (sk *socket) markUp(ctx context.Context) {
 	sk.mu.Lock()
 	was := sk.connected
 	sk.connected = true
+	sk.downSince = time.Time{}
 	sk.mu.Unlock()
 	if !was {
 		sk.svc.publish(ctx, "connected")
@@ -318,6 +320,9 @@ func (sk *socket) markDown(ctx context.Context) {
 	sk.mu.Lock()
 	was := sk.connected
 	sk.connected = false
+	if was {
+		sk.downSince = time.Now()
+	}
 	sk.mu.Unlock()
 	if was {
 		sk.svc.publish(ctx, "disconnected")
@@ -334,6 +339,12 @@ func (sk *socket) isConnected() bool {
 	sk.mu.Lock()
 	defer sk.mu.Unlock()
 	return sk.connected
+}
+
+func (sk *socket) downSinceAt() time.Time {
+	sk.mu.Lock()
+	defer sk.mu.Unlock()
+	return sk.downSince
 }
 
 func (sk *socket) isUnauthorized() bool {

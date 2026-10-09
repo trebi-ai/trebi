@@ -357,6 +357,8 @@ func runCloudStatus(_ context.Context, c *cli.Command) error {
 	}
 	if connected {
 		socket = "up"
+	} else if since := mapStr(body, "down_since"); since != "" {
+		socket = "down since " + since
 	}
 	fmt.Fprintf(w, "Link:      %s\n", linkState)
 	fmt.Fprintf(w, "Status:    %s\n", dash(mapStr(body, "status")))

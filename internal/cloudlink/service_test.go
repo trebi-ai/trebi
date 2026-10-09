@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/email"
 )
@@ -104,15 +105,20 @@ func TestStatusMapping(t *testing.T) {
 		t.Fatalf("enabled, not started = %+v", got)
 	}
 	// Running but not connected is degraded.
-	sk := &socket{svc: svc}
+	sk := &socket{svc: svc, downSince: time.Now()}
 	svc.sock = sk
-	if got := svc.Status(); got.Status != statusDegraded || got.Connected {
+	if got := svc.Status(); got.Status != statusDegraded || got.Connected || got.DownSince == "" {
 		t.Fatalf("running, disconnected = %+v", got)
 	}
-	sk.connected = true
-	if got := svc.Status(); got.Status != statusConnected || !got.Connected {
+	sk.markUp(ctx)
+	if got := svc.Status(); got.Status != statusConnected || !got.Connected || got.DownSince != "" {
 		t.Fatalf("connected = %+v", got)
 	}
+	sk.markDown(ctx)
+	if got := svc.Status(); got.Status != statusDegraded || got.DownSince == "" {
+		t.Fatalf("lost = %+v", got)
+	}
+	sk.connected = true
 	sk.connected = false
 	sk.unauthorized = true
 	if got := svc.Status(); got.Status != statusUnauthorized {
