@@ -8,37 +8,50 @@
 Default is dry-run: prints the plan and never writes. Pass --apply to execute.
 
   uv run scripts/migrate-jobi-to-trebi.py status
-  uv run scripts/migrate-jobi-to-trebi.py migrate --shadow
-  uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --diff
-  uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --job receipts --target-workspace ellis
+  uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --agent ellis --target-workspace ocral \
+      --connector-map whatsapp-cli-messages=whatsapp-ellis --connector-map ellis-inbox=email
+  uv run scripts/migrate-jobi-to-trebi.py migrate --shadow --agent ellis --target-workspace ocral \
+      --connector-map whatsapp-cli-messages=whatsapp-ellis --connector-map ellis-inbox=email
+  uv run scripts/migrate-jobi-to-trebi.py rewrite-jobs --job receipts --target-workspace ocral
   uv run scripts/migrate-jobi-to-trebi.py convert-memory path/to/MEMORY.md
-  uv run scripts/migrate-jobi-to-trebi.py migrate --shadow --job receipts --target-workspace ellis
-  uv run scripts/migrate-jobi-to-trebi.py migrate --shadow --agent scout --target-workspace ellis
+
+Order for an incremental move: rewrite-jobs --apply first (it writes the
+files and their static ids), then migrate --apply (it reads those ids to key
+the run, queue, and schedule rows). Both refuse to write while trebid runs.
 
 --job limits file rewrite and DB copy to one job. --agent limits both to one
 agent and its jobs (requires --target-workspace); jobs land at
 agents/<name>/<job>. --target-workspace is the trebi destination (id, name, or
 path). Incremental --job/--agent --apply copies into the target and leaves
-~/.jobi files untouched. Full rewrite-jobs --apply without --job still rewrites
-in place (cutover). rewrite-jobs converts jobi MEMORY.md (extra ## headings)
-to trebi v1; convert-memory does only that.
+~/.jobi files untouched; --disable-source also sets disabled: true in each
+copied jobi job, so the job does not run in both daemons. A job or agent that
+already exists in the target is skipped, files and rows. Full rewrite-jobs
+--apply without --job still rewrites in place (cutover).
 
-Schema v38 (store.SchemaVersion): runs gained inputs_json/memory_hash/outcome*/
-runtime_pid/attach_kind/actor_token_hash, and event_queue/events use connector,
-not integration. Each imported run gets one run_turns row (v38). This script
-writes the columns that have a jobi source; the rest keep their defaults and
-trebi's readers treat them as unset.
+rewrite-jobs ends with a list of the jobs to rewrite by hand: a jobi feature
+that trebi does another way (inbox-cli mail, jobi extract vars, a pause to ask
+the user, jobi CLI calls). Each such job lands with disabled: true. Enable it
+after the rewrite.
+
+Schema v45 (store.SchemaVersion): runs, event_queue, and schedules are keyed by
+the static job id (jb_…, or agt_… for an agent wake), not by the job name. Each
+imported run gets one run_turns row (v38). Rows that exist are kept.
+
+Memory is v2: Context, Lessons, Log. Extra jobi ## sections become ### in
+Context. Record lists (Seen, Shipped, Filed, …) go to a deprecated ## State
+section; the first run moves them to `trebi state` (state_deprecated).
 
 --connector-map OLD=NEW (repeatable) replaces a jobi source with an existing
 trebi connection, for example whatsapp-cli-messages=whatsapp-ellis or
 ellis-inbox=email. OLD is not imported. Its triggers move to NEW with
 disabled: true and no match/extract, because the jobi expressions read the old
-event shape. Rewrite them with rooms/allowlist/from/contains, then enable.
+event shape. A chat test (event.d.chat === "<jid>") becomes rooms: [<jid>].
 
-Each jobi source becomes one `from: inline` connection in ~/.trebi/connectors/<id>/connection.yaml
-(events protocol lines, so match expressions keep the jobi event shape). The
-script merges: an existing entry is never replaced. --job/--agent add only the
-connectors that the selected jobs name. A new entry takes the jobi cursor.
+Each other jobi source becomes one `from: inline` connection in
+~/.trebi/connectors/<id>/connection.yaml (events protocol lines, so match
+expressions keep the jobi event shape). The script merges: an existing entry is
+never replaced. --job/--agent add only the connectors that the selected jobs
+name. A new entry takes the jobi cursor.
 
 A jobi workspace with AGENT.md at its root is one agent. --agent <name> maps
 it onto agents/<name>/. --agent --apply also copies that agent's run fail
@@ -88,6 +101,8 @@ KNOWN_HARNESSES = (
     "fake",
 )
 SENTINEL_OLD = "JOBI_TASK_COMPLETE"
+# A jobi WhatsApp match tests the chat JID: event.d.chat === "<jid>".
+CHAT_TEST_RE = re.compile(r"""event\.d\.chat\s*===?\s*["']([^"']+)["']""")
 SENTINEL_NEW = "TREBI_RUN_COMPLETE"
 TABLE_MAP = {
     "tasks": "runs",
@@ -105,9 +120,9 @@ CONNECTOR_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RESERVED_CONNECTORS = {"email", "webhook", "trebi"}
 # store.SchemaVersion at the time this script was last synced. A trebi.db older
 # than this is a pre-migration database: bump it with `trebi service migrate-db`
-# before applying DB phases. v26 dropped dispatch_policy and connector_metrics;
-# v33 moved the cursor to <connection>/cursor.json; v38 added run_turns.
-EXPECTED_SCHEMA = 39
+# before applying DB phases. v33 moved the cursor to <connection>/cursor.json;
+# v38 added run_turns; v42 keys runs, event_queue, and schedules by job_id.
+EXPECTED_SCHEMA = 45
 # --connector-map OLD=NEW: a jobi source that an existing trebi connection
 # replaces. The source is not imported and its triggers move to NEW.
 CONNECTOR_MAP: dict[str, str] = {}
@@ -303,8 +318,8 @@ def rewrite_frontmatter_inplace(
         data["assistant_context"] = data.pop("agent_context")
 
     # Ownership is the folder since schema v12 (plan A.3): these pointer keys
-    # are dead and trebi's parser ignores them.
-    for dead in ("oversight", "parent_agent", "jobs"):
+    # are dead and trebi's parser ignores them. A job's name is its folder.
+    for dead in ("oversight", "parent_agent", "jobs", "name"):
         if dead in data:
             report.append(f"dropped dead key {dead}: ownership is the folder")
             del data[dead]
@@ -352,11 +367,15 @@ def rewrite_frontmatter_inplace(
                     if k in on:
                         entry[k] = on[k]
                 if mapped:
+                    rooms = CHAT_TEST_RE.findall(str(on.get("match") or ""))
                     dropped = [k for k in ("match", "extract") if entry.pop(k, None) is not None]
+                    if rooms:
+                        entry["rooms"] = list(dict.fromkeys(rooms))
                     entry["disabled"] = True
                     report.append(
-                        f"trigger {src} → {mapped}: disabled, dropped {'/'.join(dropped) or 'nothing'}; "
-                        "rewrite with rooms/allowlist/from/contains, then enable"
+                        f"trigger {src} → {mapped}: disabled, dropped {'/'.join(dropped) or 'nothing'}"
+                        + (f", rooms {entry['rooms']}" if rooms else "")
+                        + "; check rooms/allowlist/from/contains, then enable"
                     )
                 # Removed trigger keys are a parse error in trebi.
                 for k in ("debounce", "rate_limit"):
@@ -364,7 +383,9 @@ def rewrite_frontmatter_inplace(
                         report.append(f"dropped trigger {k} {on[k]!r}: use limit: N/<duration> (default 15/10m)")
                 for k in ("acknowledge", "typing", "typing_interval", "typing_max"):
                     if k in on:
-                        report.append(f"dropped trigger {k}: trebi has no such trigger key")
+                        report.append(
+                            f"dropped trigger {k}: a trebi channel sends seen and typing itself"
+                        )
                 fp = on.get("followup_prompt")
                 if fp:
                     if not data.get("followup_prompt"):
@@ -391,6 +412,25 @@ def rewrite_frontmatter_inplace(
     for k in ("schedule", "on", "when", "command"):
         if k in data:
             del data[k]
+
+
+def mint_job_id(kind: str, src: Path) -> str:
+    """A static id in the job.NewID shape. It derives from the jobi source
+    path, so the dry-run and the apply give the same id."""
+    prefix = "agt_" if kind == "agent" else "jb_"
+    return prefix + hashlib.sha256(str(src.resolve()).encode()).hexdigest()[:10]
+
+
+def set_job_id(data: Any, kind: str, src: Path, report: list[str]) -> None:
+    """Put id first in the frontmatter (job.WithID) when it has none."""
+    if not isinstance(data, dict) or data.get("id"):
+        return
+    new_id = mint_job_id(kind, src)
+    if hasattr(data, "insert"):
+        data.insert(0, "id", new_id)
+    else:
+        data["id"] = new_id
+    report.append(f"minted static id {new_id}")
 
 
 def rewrite_frontmatter_map(data: dict[str, Any], report: list[str]) -> dict[str, Any]:
@@ -420,47 +460,207 @@ def rewrite_job_text(
     rewrite_sentinel: bool = True,
     rewrite_memory_headings: bool = True,
     src_dir: Path | None = None,
+    src_path: Path | None = None,
+    kind: str | None = None,
+    findings: list[tuple[str, str]] | None = None,
 ) -> tuple[str, bool]:
+    """The trebi text of one jobi JOB.md or AGENT.md. With src_path and kind,
+    a missing id is minted. With findings, the job is audited for manual
+    work; a job with a rewrite finding lands with disabled: true."""
     fm_raw, _full, body = split_frontmatter(text)
+    body_notes: list[str] = []
 
     def touch_body(b: str) -> str:
         if rewrite_sentinel and SENTINEL_OLD in b:
             b = b.replace(SENTINEL_OLD, SENTINEL_NEW)
         if rewrite_memory_headings:
             b, notes = rewrite_memory_headings_in_job_body(b)
+            body_notes.extend(notes)
             report.extend(notes)
         return b
 
-    if fm_raw is None:
+    if fm_raw is None and not (kind and src_path):
         new_body = touch_body(body)
         return (new_body, True) if new_body != text else (text, False)
 
-    data = yaml.load(fm_raw) if fm_raw.strip() else {}
-    if not isinstance(data, dict):
-        data = {}
+    loaded = yaml.load(fm_raw) if fm_raw and fm_raw.strip() else None
+    data = loaded if isinstance(loaded, dict) else yaml.load("{}")
+    from copy import deepcopy
+
+    old_data = deepcopy(data)
     rewrite_frontmatter_inplace(data, report, src_dir=src_dir)
-    new_text = dump_frontmatter(data, touch_body(body))
+    new_body = touch_body(body)
+    if kind and src_path:
+        set_job_id(data, kind, src_path, report)
+    if findings is not None:
+        found = audit_job(old_data, data, body, src_dir, bool(body_notes))
+        findings.extend(found)
+        if kind == "job" and not data.get("disabled") and any(sev == REWRITE for sev, _ in found):
+            data["disabled"] = True
+            report.append("landed disabled: rewrite by hand, then enable")
+    new_text = dump_frontmatter(data, new_body)
     return new_text, new_text != text
 
 
-# ── jobi MEMORY.md → trebi v1 ──────────────────────────────────────────────
+# ── manual rewrite audit ───────────────────────────────────────────────────
+#
+# jobi features that trebi does another way. A rewrite finding means the job
+# misbehaves as written: it lands disabled. A check finding works, but a
+# person should look at it after the move.
+
+REWRITE = "rewrite"
+CHECK = "check"
+BODY_AUDIT: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        REWRITE,
+        re.compile(r"inbox-cli\b[^\n]*\bemail\s+send"),
+        "sends mail with inbox-cli: write only the recipients, subject, and body; "
+        "the run sends with `trebi email send` from the agent address (kit email)",
+    ),
+    (
+        REWRITE,
+        re.compile(r"inbox-cli\b[^\n]*\bemail\s+(list|get|reply|search|read)"),
+        "reads a jobi mailbox with inbox-cli: trebi sends inbound mail to the agent run "
+        "(email.accept), not to this job",
+    ),
+    (
+        REWRITE,
+        re.compile(r"\bjobi\s+(run|list|history|status|logs|task|show)\b"),
+        "names the jobi CLI: use the trebi CLI (for example `trebi job run`)",
+    ),
+    (REWRITE, re.compile(r"~/\.jobi\b|/\.jobi/"), "reads a ~/.jobi path"),
+    (
+        REWRITE,
+        re.compile(r"(?i)\bpause\b[^\n]{0,60}\bask\b[^\n]{0,20}\b(user|fritz|emma)\b"),
+        "pauses to ask a person: open a request (`trebi request create`), then end the turn; "
+        "trebi continues the session with the answer",
+    ),
+    (
+        CHECK,
+        re.compile(r"\bwhatsapp-cli\s+(send|--json\s+media|media)\b"),
+        "runs whatsapp-cli: the run gets it from the whatsapp connection in the kit "
+        "(for example the agent kit); make sure the kit names it",
+    ),
+)
+JOBI_ENV_RE = re.compile(r"\bJOBI_(?!TASK_COMPLETE)[A-Z_]+")
+EXTRACT_KEY_RE = re.compile(r"[{,]\s*([A-Za-z_][A-Za-z0-9_]*)\s*:")
+VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+# Vars that a trebi-connector/1 event or the job folder gives the prompt.
+TREBI_PROMPT_VARS = {
+    "text", "sender", "sender_id", "room", "room_name", "thread", "message_id",
+    "reply_to", "connection", "conversation_key", "job_dir", "workspace_dir", "agent_dir",
+}
+# Set by main from <trebi>/config.yaml and envsets.yaml.
+MEMORY_LIMITS = {"max_bytes": 16384, "inject_logs": 20}
+TREBI_ENVSETS: set[str] | None = None
+
+
+def audit_job(
+    old: dict[str, Any],
+    new: dict[str, Any],
+    body: str,
+    src_dir: Path | None,
+    memory_lists: bool,
+) -> list[tuple[str, str]]:
+    """The manual work that one jobi job needs in trebi."""
+    out: list[tuple[str, str]] = []
+    if old.get("type"):
+        out.append((REWRITE, f"not a job (type: {old['type']}): move its text to the memory "
+                    "of the job that uses it, or delete it"))
+    for sev, pattern, msg in BODY_AUDIT:
+        if pattern.search(body):
+            out.append((sev, msg))
+    envs = sorted(set(JOBI_ENV_RE.findall(body)))
+    if envs:
+        out.append((REWRITE, f"reads jobi env vars {', '.join(envs)}"))
+
+    # A mapped trigger drops the jobi extract, so its vars are gone.
+    lost: set[str] = set()
+    followups: list[str] = []
+    for on in old.get("on") or []:
+        if not isinstance(on, dict):
+            continue
+        if on.get("followup_prompt"):
+            followups.append(str(on["followup_prompt"]))
+        if str(on.get("source") or on.get("event") or "") in CONNECTOR_MAP:
+            lost |= set(EXTRACT_KEY_RE.findall(str(on.get("extract") or "")))
+    lost -= TREBI_PROMPT_VARS
+    if lost:
+        prompt = body + "\n".join(followups) + str(new.get("followup_prompt") or "")
+        used = sorted({v for v in VAR_RE.findall(prompt) if v in lost})
+        if used:
+            out.append((REWRITE, "prompt uses jobi extract vars "
+                        + ", ".join("{{" + v + "}}" for v in used)
+                        + ": use {{text}}, {{sender}}, {{room}}, {{message_id}}, {{reply_to}}"))
+    for t in new.get("triggers") or []:
+        if isinstance(t, dict) and t.get("event") in CONNECTOR_MAP.values() and t.get("disabled"):
+            out.append((CHECK, f"trigger on {t['event']} lands disabled: check rooms "
+                        f"{list(t.get('rooms') or [])} and from/contains, then enable it"))
+            if any(on.get("acknowledge") or on.get("typing") for on in old.get("on") or []
+                   if isinstance(on, dict)):
+                out.append((CHECK, "the jobi trigger sent read receipts and typing; "
+                            "a trebi channel does this itself, remove the steps from the prompt"))
+            break
+    if new.get("followup_prompt") and lost:
+        out.append((CHECK, "followup_prompt came from a jobi trigger; a channel follow-up "
+                    "with replies: continue gives the message itself"))
+
+    envsets = new.get("envset")
+    names = envsets if isinstance(envsets, list) else [envsets] if envsets else []
+    if TREBI_ENVSETS is not None:
+        missing = [n for n in names if str(n) not in TREBI_ENVSETS]
+        if missing:
+            out.append((CHECK, f"envset {', '.join(map(str, missing))} is not in "
+                        "the trebi envsets.yaml: the launch fails"))
+    if memory_lists:
+        out.append((CHECK, "the prompt keeps record lists in MEMORY.md: "
+                    "keep records in `trebi state` (memory v2 has no State)"))
+    if src_dir is not None and new.get("memory"):
+        out.extend(audit_memory(src_dir / "MEMORY.md"))
+    return out
+
+
+def audit_memory(path: Path) -> list[tuple[str, str]]:
+    if not path.is_file():
+        return []
+    converted, _, _ = convert_jobi_memory(path.read_text(encoding="utf-8", errors="replace"))
+    _, sections = split_memory_h2(converted)
+    size = 0
+    out: list[tuple[str, str]] = []
+    for title, body in sections:
+        if title == "Log":
+            entries = [ln for ln in body.split("\n") if VALID_MEMORY_ENTRY.match(ln)]
+            size += sum(len(e) + 1 for e in entries[-MEMORY_LIMITS["inject_logs"]:])
+        else:
+            size += len(body)
+        if title == "State":
+            out.append((CHECK, f"memory keeps a deprecated State ({len(body)} bytes): "
+                        "the first run moves it to `trebi state`"))
+    cap = MEMORY_LIMITS["max_bytes"]
+    if cap and size > cap:
+        out.append((CHECK, f"memory prompt is about {size} bytes, over max_bytes {cap}: "
+                    "the first run must trim it (too_large)"))
+    return out
+
+
+# ── jobi MEMORY.md → trebi v2 ──────────────────────────────────────────────
 #
 # Trebi's built-in memory.Migrate only handles B22 ledgers (no H2 headings).
 # jobi files used extra ## sections (Shipped, Seen, Sources, …) which Parse
-# treats as unknown_section — they stay invalid until rewritten. Extra H2s
-# become ### under Context/State so rotation/dedup lists survive the Log cap.
+# treats as unknown_section. v2 has Context, Lessons, Log (internal/memory).
+# Extra H2s become ### in Context. Record lists go to a ## State section, which
+# Parse keeps as deprecated: the first run moves them to `trebi state`.
 # Prose is copied as-is (addresses like jobi@ocral.org stay).
 
 
 MEMORY_MARKER = (
-    '<!-- trebi memory v1. Keep these four sections in this order. '
+    '<!-- trebi memory v2. Keep these three sections in this order. '
     'Do not add other "## " headings. -->'
 )
 MEMORY_SECTION_COMMENTS = {
     "Context": "<!-- Durable facts about this job: what it does, where things are, how they work. Free form. Rewrite when facts change. -->",
-    "State": "<!-- Current situation, open issues, next steps. Free form. Rewrite each run. -->",
     "Lessons": "<!-- One bullet per lesson: `- [YYYY-MM-DD HH:MM] text`. Never prune by age. -->",
-    "Log": "<!-- One bullet per event, observation, or stat: `- [YYYY-MM-DD HH:MM] text`. Prune the oldest entries when over the cap. -->",
+    "Log": "<!-- One bullet per event, observation, or stat: `- [YYYY-MM-DD HH:MM] text`. End each run with a `Next:` entry for the next run. Prune the oldest entries when over the cap. -->",
 }
 CANONICAL_H2 = {
     "context": "Context",
@@ -469,11 +669,22 @@ CANONICAL_H2 = {
     "lessons learned": "Lessons",
     "log": "Log",
 }
-# Extra jobi H2s that are durable facts → Context as H3. Everything else extra
-# becomes State as H3 (operational lists: Shipped, Seen, Sources, Reported).
-CONTEXT_H2_PREFIXES = (
-    "confirmed dead ends",
-    "annual",
+# Extra jobi H2s that are record lists → the deprecated State section, so the
+# first run moves them to `trebi state`. Every other extra H2 → Context as H3.
+STATE_H2_PREFIXES = (
+    "seen",
+    "shipped",
+    "sent",
+    "filed",
+    "reported",
+    "proposed",
+    "candidates",
+    "active listings",
+    "recent levels",
+    "recent readings",
+    "runs",
+    "run log",
+    "state",
 )
 # JOB.md runbook headings / `## Foo` mentions that document memory lists.
 # Demote so the next run writes ### under State instead of a new unknown ##.
@@ -565,7 +776,7 @@ def rewrite_memory_headings_in_job_body(body: str) -> tuple[str, list[str]]:
 
 def memory_skeleton() -> str:
     parts = [MEMORY_MARKER, "# Memory", ""]
-    for name in ("Context", "State", "Lessons", "Log"):
+    for name in ("Context", "Lessons", "Log"):
         parts.append(f"## {name}\n{MEMORY_SECTION_COMMENTS[name]}\n")
     return "\n".join(parts)
 
@@ -579,7 +790,7 @@ def _drop_h1(preamble: str) -> str:
     for ln in preamble.split("\n"):
         if ln.startswith("# "):
             continue
-        if ln.startswith("<!-- trebi memory v1"):
+        if ln.startswith("<!-- trebi memory v"):
             continue
         lines.append(ln)
     return _trim_body("\n".join(lines))
@@ -629,10 +840,10 @@ def _as_h3(title: str, body: str) -> str:
 
 
 def _classify_extra_h2(title: str) -> str:
-    for prefix in CONTEXT_H2_PREFIXES:
+    for prefix in STATE_H2_PREFIXES:
         if _matches_h2_prefix(title, prefix):
-            return "Context"
-    return "State"
+            return "State"
+    return "Context"
 
 
 def _fallback_date(text: str) -> str:
@@ -708,12 +919,14 @@ def _entries_already_ok(body: str) -> bool:
     return True
 
 
-def _has_v1_marker(text: str) -> bool:
+def _has_v2_marker(text: str) -> bool:
     first = text.split("\n", 1)[0] if text else ""
-    return first.startswith("<!-- trebi memory v1")
+    return first.startswith("<!-- trebi memory v2")
 
 
-def render_memory_v1(context: str, state: str, lessons: str, log: str) -> str:
+def render_memory_v2(context: str, state: str, lessons: str, log: str) -> str:
+    """The v2 file. A non-empty state prints as the deprecated ## State
+    section between Context and Lessons, where memory.Parse keeps it."""
     parts = [MEMORY_MARKER, "# Memory", ""]
     for name, body in (
         ("Context", context),
@@ -725,6 +938,10 @@ def render_memory_v1(context: str, state: str, lessons: str, log: str) -> str:
         if name in ("Context", "State"):
             # memory.Parse rejects a "# " line inside a section, code fences too.
             body = re.sub(r"^# ", "### ", body, flags=re.MULTILINE)
+        if name == "State":
+            if body:
+                parts.append(f"## State\n{body}\n")
+            continue
         if body:
             parts.append(f"## {name}\n{body}\n")
         else:
@@ -767,19 +984,19 @@ def convert_b22_ledger(raw: str) -> str:
         for cont in block[2:]:
             if cont.strip():
                 log_lines.append("  " + cont.strip())
-    return render_memory_v1(ctx, "", "", "\n".join(log_lines))
+    return render_memory_v2(ctx, "", "", "\n".join(log_lines))
 
 
 def convert_jobi_memory(text: str) -> tuple[str, list[str], bool]:
-    """Return (v1 text, notes, changed). Idempotent on a valid v1 file."""
+    """Return (v2 text, notes, changed). Idempotent on a valid v2 file."""
     raw = text.replace("\r\n", "\n").replace("\r", "\n")
     if not raw.strip():
-        return memory_skeleton(), ["empty file → v1 skeleton"], True
+        return memory_skeleton(), ["empty file → v2 skeleton"], True
 
     preamble, sections = split_memory_h2(raw)
     if not sections:
         out = convert_b22_ledger(raw)
-        return out, ["B22 ledger → v1 (preamble → Context, dated lines → Log)"], out != raw
+        return out, ["B22 ledger → v2 (preamble → Context, dated lines → Log)"], out != raw
 
     extra = [t for t, _ in sections if _canonical_h2(t) is None]
     canon_order = [_canonical_h2(t) for t, _ in sections]
@@ -789,17 +1006,15 @@ def convert_jobi_memory(text: str) -> tuple[str, list[str], bool]:
     )
     log_ok = all(_entries_already_ok(b) for t, b in sections if _canonical_h2(t) == "Log")
     stray_preamble = _stray_preamble(preamble)
-    already_v1 = (
+    already_v2 = (
         not extra
-        and _has_v1_marker(raw)
-        and present == {"Context", "State", "Lessons", "Log"}
-        and [c for c in canon_order if c]
-        == ["Context", "State", "Lessons", "Log"]
+        and _has_v2_marker(raw)
+        and [c for c in canon_order if c] == ["Context", "Lessons", "Log"]
         and lessons_ok
         and log_ok
         and not stray_preamble
     )
-    if already_v1:
+    if already_v2:
         out = raw if raw.endswith("\n") else raw + "\n"
         return out, [], out != raw
 
@@ -842,15 +1057,19 @@ def convert_jobi_memory(text: str) -> tuple[str, list[str], bool]:
         shown = ", ".join(f"## {t}" for t in demoted[:8])
         more = f" (+{len(demoted) - 8} more)" if len(demoted) > 8 else ""
         notes.append(f"demoted extra {shown}{more} → ### under Context/State")
-    missing = [n for n in ("Context", "State", "Lessons", "Log") if n not in present]
+    missing = [n for n in ("Context", "Lessons", "Log") if n not in present]
     if missing and not extra:
         notes.append("added missing " + ", ".join(f"## {n}" for n in missing))
-    if not _has_v1_marker(raw):
-        notes.append("inserted v1 marker")
+    if state_parts:
+        notes.append(
+            "kept a deprecated ## State: the first run moves it to `trebi state` (state_deprecated)"
+        )
+    if not _has_v2_marker(raw):
+        notes.append("inserted v2 marker")
     if not notes:
-        notes.append("jobi MEMORY.md → v1")
+        notes.append("jobi MEMORY.md → v2")
 
-    out = render_memory_v1(
+    out = render_memory_v2(
         _join_parts(context_parts),
         _join_parts(state_parts),
         lessons,
@@ -1546,6 +1765,11 @@ def is_junk_task(d: dict[str, Any]) -> bool:
     return not d.get("started_at") and not d.get("workspace_path")
 
 
+def is_live_task(d: dict[str, Any]) -> bool:
+    """A run that jobi still runs. trebi would see it as its own open run."""
+    return not d.get("ended_at") and d.get("status") in ("running", "queued", "waiting", "launching")
+
+
 def project_task_derivations(
     conn: sqlite3.Connection, job_filter: str | None = None, agent_scope: str | None = None
 ) -> dict[str, int]:
@@ -1672,6 +1896,57 @@ def agent_layout_issues(workspaces: list[Path]) -> list[str]:
     return out
 
 
+def plan_job_ids(jconn: sqlite3.Connection, trebi_dir: Path, plan: MigrationPlan) -> PhasePlan:
+    """Runs per job: new rows, rows that exist (kept), and rows with no job."""
+    ph = PhasePlan("db-job-ids", "key rows by job_id (v42); keep rows that exist")
+    job_ids = JobIds(plan.target, plan.jobi_dir, plan.agent)
+    have: set[str] = set()
+    tconn = open_trebi_ro(trebi_dir)
+    if tconn:
+        try:
+            have = {r[0] for r in tconn.execute("SELECT id FROM runs")}
+        except sqlite3.Error:
+            pass
+        tconn.close()
+    per: dict[str, list[int]] = {}
+    cols = [r[1] for r in jconn.execute("PRAGMA table_info(tasks)")]
+    for row in jconn.execute("SELECT * FROM tasks"):
+        d = dict(zip(cols, row))
+        if plan.job and not _task_matches_job(d, plan.job):
+            continue
+        if plan.agent_scope and not _row_matches_agent(d, plan.agent_scope):
+            continue
+        if is_junk_task(d):
+            continue
+        if is_live_task(d):
+            plan.warnings.append(f"run {d['id']} ({d.get('job_name')}) still runs in jobi; skipped")
+            continue
+        name = run_job_name(d, plan.agent)
+        c = per.setdefault(name, [0, 0])
+        if not job_ids.resolve(name):
+            continue
+        c[1 if d["id"] in have else 0] += 1
+    ph.notes.append("job | id | new runs | runs that exist")
+    for name in sorted(per):
+        new, kept = per[name]
+        jid = job_ids.ids.get(name)
+        if not jid:
+            continue
+        tag = " (id from rewrite-jobs)" if name in job_ids.planned else ""
+        ph.notes.append(f"{name} | {jid}{tag} | {new} | {kept}")
+    for name, c in sorted(job_ids.unmapped.items()):
+        ph.notes.append(f"{name} | none | skipped {c} | -")
+        plan.warnings.append(f"{c} run(s) of {name} are skipped: the target has no job with that name")
+    ph.counts["new_runs"] = sum(v[0] for v in per.values())
+    ph.counts["existing_runs_kept"] = sum(v[1] for v in per.values())
+    ph.counts["skipped_no_job"] = sum(job_ids.unmapped.values())
+    if job_ids.planned:
+        plan.warnings.append(
+            "run rewrite-jobs --apply before migrate --apply: it writes the ids that these rows use"
+        )
+    return ph
+
+
 def plan_migrate(
     jobi_dir: Path,
     trebi_dir: Path,
@@ -1723,10 +1998,11 @@ def plan_migrate(
             "shadow mode: DB rows point at <trebi>/shadow-workspaces/<name>; "
             "copy jobs there with `rewrite-jobs --mirror` then cut over (--final)"
         )
-        plan.warnings.append(
-            "shadow registers empty shadow workspaces; job files stay in place until "
-            "rewrite-jobs --mirror or a --final cutover"
-        )
+        if not target:
+            plan.warnings.append(
+                "shadow registers empty shadow workspaces; job files stay in place until "
+                "rewrite-jobs --mirror or a --final cutover"
+            )
     if target:
         pf.notes.append(f"rows remap to workspace {target.id} ({target.name})")
     plan.phases.append(pf)
@@ -1786,6 +2062,8 @@ def plan_migrate(
                     ph.notes.append("workspace_path → workspace_id; command detected → harness name")
                     ph.notes.append("seconds → _ms (×1000); reason NULL if no launch fact (M13)")
                     try:
+                        if agent_scope:
+                            raise sqlite3.Error("status by agent: see db-job-ids")
                         q = "SELECT status, COUNT(*) FROM tasks"
                         params: tuple[Any, ...] = ()
                         if job:
@@ -1803,6 +2081,8 @@ def plan_migrate(
                 if job:
                     ph.notes.append("filtered by --job")
                 plan.phases.append(ph)
+            if target:
+                plan.phases.append(plan_job_ids(conn, trebi_dir, plan))
         finally:
             conn.close()
 
@@ -1965,6 +2245,74 @@ def derive_conversation_key(trigger_vars_json: str | None) -> str | None:
     return None
 
 
+FRONTMATTER_ID_RE = re.compile(r"^id:\s*['\"]?((?:jb|agt)_[0-9a-f]{10})", re.M)
+
+
+class JobIds:
+    """Maps a trebi job name (agents/<a>/<job>) to its static id (v42 keys).
+
+    The target files win. A jobi file that rewrite-jobs has not copied yet
+    gets the id that rewrite-jobs will mint, so the dry-run matches the apply.
+    """
+
+    def __init__(self, target: TargetWorkspace | None, jobi_dir: Path, agent: str | None):
+        self.ids: dict[str, str] = {}
+        self.planned: set[str] = set()
+        self.unmapped: dict[str, int] = {}
+        if not target:
+            return
+        for ws in workspace_paths_from_jobi(jobi_dir):
+            if not ws.is_dir():
+                continue
+            for path in find_job_files(ws):
+                if path.name not in ("JOB.md", "AGENT.md"):
+                    continue
+                if agent and not agent_spec_matches(path, agent, ws):
+                    continue
+                if path.name == "JOB.md" and (path.parent / "AGENT.md").exists():
+                    continue
+                dest = dest_for_job(path, ws, target, True, agent)
+                name = self._name(target.path, dest)
+                if name and name not in self.ids:
+                    kind = "agent" if path.name == "AGENT.md" else "job"
+                    self.ids[name] = self._read(path) or mint_job_id(kind, path)
+                    self.planned.add(name)
+        for path in find_job_files(target.path):
+            if path.name not in ("JOB.md", "AGENT.md"):
+                continue
+            name = self._name(target.path, path)
+            got = self._read(path)
+            if name and got:
+                self.ids[name] = got
+                self.planned.discard(name)
+
+    @staticmethod
+    def _name(root: Path, path: Path) -> str:
+        try:
+            return path.parent.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            return ""
+
+    @staticmethod
+    def _read(path: Path) -> str:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if not text.startswith("---"):
+            return ""
+        end = text.find("\n---", 3)
+        m = FRONTMATTER_ID_RE.search(text[: end if end > 0 else len(text)])
+        return m.group(1) if m else ""
+
+    def resolve(self, name: str) -> str:
+        got = self.ids.get(name, "")
+        if not got:
+            self.unmapped[name] = self.unmapped.get(name, 0) + 1
+        return got
+
+
+def map_connector(name: Any) -> Any:
+    return CONNECTOR_MAP.get(str(name), name) if name else name
+
+
 def apply_tasks(
     jconn: sqlite3.Connection,
     tconn: sqlite3.Connection,
@@ -1974,17 +2322,22 @@ def apply_tasks(
     target_id: str | None = None,
     agent: str | None = None,
     agent_scope: str | None = None,
-) -> tuple[int, set[str]]:
+    job_ids: JobIds,
+) -> tuple[int, int, set[str]]:
+    """Insert new runs. A run id that exists stays as it is (kept)."""
     cols = [r[1] for r in jconn.execute("PRAGMA table_info(tasks)")]
     ids: set[str] = set()
-    n = 0
+    n = kept = 0
     for row in jconn.execute("SELECT * FROM tasks"):
         d = dict(zip(cols, row))
         if job_filter and not _task_matches_job(d, job_filter):
             continue
         if agent_scope and not _row_matches_agent(d, agent_scope):
             continue
-        if is_junk_task(d):
+        if is_junk_task(d) or is_live_task(d):
+            continue
+        job_id = job_ids.resolve(run_job_name(d, agent))
+        if not job_id:
             continue
         path_for_ws = d.get("job_file") or d.get("workspace_path") or ""
         wid = workspace_id_for(path_for_ws, wmap, target_id)
@@ -2024,9 +2377,9 @@ def apply_tasks(
                 queue_id = qrow[0]
         except sqlite3.Error:
             pass
-        tconn.execute(
-            """INSERT OR REPLACE INTO runs (
-              id, workspace_id, job, kind, reason, status, end_reason, prompt_preview, session_id, runtime, harness,
+        cur = tconn.execute(
+            """INSERT OR IGNORE INTO runs (
+              id, workspace_id, job_id, kind, reason, status, end_reason, prompt_preview, session_id, runtime, harness,
               tmux_session, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_model,
               started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
               trigger_connector, trigger_capture_json, trigger_vars_json, conversation_key, queue_id,
@@ -2035,7 +2388,7 @@ def apply_tasks(
             (
                 d["id"],
                 wid,
-                run_job_name(d, agent),
+                job_id,
                 kind,
                 reason,
                 d.get("status") or "exited",
@@ -2056,7 +2409,7 @@ def apply_tasks(
                 idle_ms,
                 ms("keep_alive_seconds"),
                 nudge_ms,
-                d.get("trigger_source"),
+                map_connector(d.get("trigger_source")),
                 d.get("trigger_capture_json"),
                 d.get("trigger_vars_json"),
                 conv_key,
@@ -2066,6 +2419,9 @@ def apply_tasks(
                 d.get("working_dir"),
             ),
         )
+        if cur.rowcount == 0:
+            kept += 1
+            continue
         # v38: each launch is a turn. A jobi task is one run with one turn,
         # backfilled like the v38 migration does it.
         tconn.execute(
@@ -2091,7 +2447,7 @@ def apply_tasks(
         )
         ids.add(d["id"])
         n += 1
-    return n, ids
+    return n, kept, ids
 
 
 def apply_timeline(
@@ -2156,6 +2512,7 @@ def apply_queue(
     target_id: str | None = None,
     agent: str | None = None,
     agent_scope: str | None = None,
+    job_ids: JobIds,
 ) -> int:
     try:
         cols = [r[1] for r in jconn.execute("PRAGMA table_info(event_queue)")]
@@ -2191,24 +2548,27 @@ def apply_queue(
                 continue
         if agent_scope and not _row_matches_agent(d, agent_scope):
             continue
-        wid = workspace_id_for(d.get("workspace_path") or "", wmap, target_id)
         kind = queue_kind(d, task_kind)
+        job_id = job_ids.resolve(run_job_name({**d, "kind": kind}, agent))
+        if not job_id:
+            continue
+        wid = workspace_id_for(d.get("workspace_path") or "", wmap, target_id)
         event_id = None
         raw = d.get("event_raw")
         if raw is not None:
             event_id = event_by_raw.get((str(d.get("source") or ""), str(raw)))
-        tconn.execute(
-            """INSERT OR REPLACE INTO event_queue (
-              id, connector, workspace_id, job, kind, on_index, conversation_key, event_id,
+        cur = tconn.execute(
+            """INSERT OR IGNORE INTO event_queue (
+              id, connector, workspace_id, job_id, kind, on_index, conversation_key, event_id,
               event_raw, capture_json, vars_json, prompt, status, block_reason, result,
               attempts, next_attempt_at, claimed_at, run_id, error_message, trace_id,
               created_at, updated_at, done_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 d["id"],
-                d.get("source"),
+                map_connector(d.get("source")),
                 wid,
-                run_job_name(d, agent),
+                job_id,
                 kind,
                 d.get("on_index") or 0,
                 d.get("conversation_key") or "",
@@ -2231,7 +2591,7 @@ def apply_queue(
                 d.get("done_at"),
             ),
         )
-        n += 1
+        n += cur.rowcount
     return n
 
 
@@ -2283,6 +2643,7 @@ def apply_schedules(
     target_id: str | None = None,
     agent: str | None = None,
     agent_scope: str | None = None,
+    job_ids: JobIds,
 ) -> int:
     try:
         rows = list(jconn.execute("SELECT key, anchor_time, interval FROM schedule_anchors"))
@@ -2342,13 +2703,17 @@ def apply_schedules(
         job = canon
         if agent and not job.startswith(f"agents/{agent}/") and job != f"agents/{agent}":
             job = f"agents/{agent}/{job}"
-        tconn.execute(
-            """INSERT OR REPLACE INTO schedules (
-              workspace_id, job, idx, spec, timezone, catch_up, next_due_at, last_fired_at, anchor, updated_at
+        job_id = job_ids.resolve(job)
+        if not job_id:
+            continue
+        # The daemon owns a row that exists; keep its anchor.
+        cur = tconn.execute(
+            """INSERT OR IGNORE INTO schedules (
+              workspace_id, job_id, idx, spec, timezone, catch_up, next_due_at, last_fired_at, anchor, updated_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (wid, job, idx, schedule_spec(interval), "UTC", 0, None, anchor_time, anchor_time, now),
+            (wid, job_id, idx, schedule_spec(interval), "UTC", 0, None, anchor_time, anchor_time, now),
         )
-        n += 1
+        n += cur.rowcount
     return n
 
 
@@ -2474,9 +2839,18 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
     if jconn is None:
         print("no jobi.db — skip db phases")
         return 0
+    job_ids = JobIds(plan.target, jobi, plan.agent)
+    if job_ids.planned:
+        print(
+            "ERROR: these jobs are not in the target yet; run rewrite-jobs --apply first: "
+            + ", ".join(sorted(job_ids.planned)),
+            file=sys.stderr,
+        )
+        jconn.close()
+        return 2
     tconn = sqlite3.connect(tdb)
     try:
-        n, ids = apply_tasks(
+        n, kept, ids = apply_tasks(
             jconn,
             tconn,
             plan.workspace_map,
@@ -2484,9 +2858,10 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
             target_id=target_id,
             agent=plan.agent,
             agent_scope=plan.agent_scope,
+            job_ids=job_ids,
         )
-        print(f"inserted runs: {n}")
-        apply_timeline(jconn, tconn, ids if (job_filter or plan.agent_scope) else None)
+        print(f"inserted runs: {n} (kept {kept} that exist)")
+        apply_timeline(jconn, tconn, ids)
         print("timeline segments+events copied")
         if job_filter or plan.agent_scope:
             notes, sessions = copy_scoped_run_files(jobi, trebi, jconn, ids)
@@ -2499,6 +2874,7 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
             target_id=target_id,
             agent=plan.agent,
             agent_scope=plan.agent_scope,
+            job_ids=job_ids,
         )
         print(f"queue rows: {n}")
         n = apply_schedules(
@@ -2509,8 +2885,11 @@ def apply_migrate(jobi: Path, trebi: Path, mode: str, plan: MigrationPlan) -> in
             target_id=target_id,
             agent=plan.agent,
             agent_scope=plan.agent_scope,
+            job_ids=job_ids,
         )
         print(f"schedule seeds: {n}")
+        for name, c in sorted(job_ids.unmapped.items()):
+            print(f"skipped {c} row(s) of {name}: no job with that name in the target")
         now = now_iso()
         if plan.target:
             # An upsert, not REPLACE: a replace resets handle (the email name,
@@ -2610,7 +2989,7 @@ def job_support_files(job_dir: Path) -> list[Path]:
 
     A job in trebi is its folder (internal/job/discover.go names the job from
     the directory), so MEMORY.md, scripts/ and templates/ belong to it.
-    MEMORY.md is converted jobi → v1 (headings + entry stamps only); other
+    MEMORY.md is converted jobi → v2 (headings + entry stamps only); other
     support files stay byte-for-byte so addresses like jobi@ocral.org are
     not substituted.
     """
@@ -2737,7 +3116,7 @@ def plan_support_file(
     convert_memory: bool,
     label: str,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Plan one support-file copy, converting MEMORY.md to v1 when asked."""
+    """Plan one support-file copy, converting MEMORY.md to v2 when asked."""
     lines: list[str] = []
     try:
         rel: Path | str = src.relative_to(ws)
@@ -2805,6 +3184,8 @@ def merged_operator_text(
         rewrite_sentinel=rewrite_sentinel,
         rewrite_memory_headings=rewrite_memory_headings,
         src_dir=agent_path.parent,
+        src_path=agent_path,
+        kind="agent",
     )
     soul = agent_path.parent / "SOUL.md"
     soul_body = ""
@@ -2876,6 +3257,12 @@ def plan_rewrite(
             dest = dest_for_job(path, ws, target, incremental, agent)
             if path.name == "AGENT.md":
                 op_dest = operator_dest(target, dest, agent)
+                if incremental and op_dest != path and op_dest.exists():
+                    lines.append(
+                        f"  = {path.relative_to(ws)} exists in the target, skipped "
+                        f"with its MEMORY.md ({op_dest})"
+                    )
+                    continue
                 merged, merge_report = merged_operator_text(
                     path,
                     rewrite_sentinel=rewrite_sentinel,
@@ -2921,11 +3308,21 @@ def plan_rewrite(
                 # here; the rewrite path cannot invent an operator.
                 lines.append(f"  ! SOUL.md without AGENT.md, left in place ({path})")
                 continue
+            if incremental and dest != path and dest.exists():
+                lines.append(
+                    f"  = {path.relative_to(ws)} exists in the target, skipped "
+                    f"with its folder ({dest.parent})"
+                )
+                continue
+            findings: list[tuple[str, str]] = []
             new_text, changed = rewrite_job_text(
                 text, report,
                 rewrite_sentinel=rewrite_sentinel,
                 rewrite_memory_headings=rewrite_memory_headings,
                 src_dir=path.parent,
+                src_path=path,
+                kind="job",
+                findings=findings,
             )
             action = "rewrite" if changed else "unchanged"
             if incremental and target:
@@ -2945,6 +3342,8 @@ def plan_rewrite(
                     "changed": changed,
                     "source_ws": str(ws),
                     "new_text": new_text if changed else None,
+                    "findings": findings,
+                    "source_live": source_job_live(text),
                 }
             )
             # A job is its folder: carry MEMORY.md, scripts/, templates/ too.
@@ -2967,11 +3366,79 @@ def plan_rewrite(
             lines.append(f"  {mark} {rel} ({action})")
             for r in report:
                 lines.append(f"    ! {r}")
+            for sev, msg in findings:
+                lines.append(f"    {sev.upper()}: {msg}")
         if job and matched == 0:
             lines.append(f"workspace {ws}: no files matched --job {job}")
         elif not agent and not job:
             pass
     return lines, details
+
+
+def source_job_live(text: str) -> bool:
+    """True when jobi still runs this job by itself: enabled, with a schedule
+    or an event subscription."""
+    fm, _, _ = split_frontmatter(text)
+    data = load_fm_map(fm or "")
+    if data.get("disabled") is True:
+        return False
+    return bool(data.get("schedule") or data.get("on") or data.get("triggers"))
+
+
+def disable_source_job(path: Path) -> bool:
+    """Set disabled: true in a jobi JOB.md. Only the frontmatter lines
+    change, so its comments and key order stay."""
+    text = path.read_text(encoding="utf-8")
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return False
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            break
+        if re.match(r"^disabled:\s*", lines[i]):
+            lines[i] = "disabled: true"
+            path.write_text("\n".join(lines), encoding="utf-8")
+            return True
+    else:
+        return False
+    lines.insert(i, "disabled: true")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return True
+
+
+def print_manual_list(details: list[dict[str, Any]]) -> None:
+    """The jobs to rewrite by hand, then the jobs to check, then the jobs
+    that jobi still runs."""
+    rewrite: list[tuple[str, list[str]]] = []
+    check: list[tuple[str, list[str]]] = []
+    live: list[str] = []
+    for d in details:
+        found = d.get("findings")
+        if found is None:
+            continue
+        name = d["dest"]
+        msgs_r = [m for sev, m in found if sev == REWRITE]
+        msgs_c = [m for sev, m in found if sev == CHECK]
+        if msgs_r:
+            rewrite.append((name, msgs_r + [f"(check) {m}" for m in msgs_c]))
+        elif msgs_c:
+            check.append((name, msgs_c))
+        if d.get("source_live"):
+            live.append(d["path"])
+    print("\n## Rewrite by hand (these land with disabled: true)")
+    for name, msgs in rewrite or [("(none)", [])]:
+        print(f"- {name}")
+        for m in msgs:
+            print(f"    - {m}")
+    print("\n## Check after the move (these land as they are in jobi)")
+    for name, msgs in check or [("(none)", [])]:
+        print(f"- {name}")
+        for m in msgs:
+            print(f"    - {m}")
+    if live:
+        print("\n## Still enabled in jobi (pass --disable-source, or both daemons run them)")
+        for p in live:
+            print(f"- {p}")
 
 
 def backup_file(backup_root: Path, original: Path) -> None:
@@ -3034,6 +3501,7 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
         print(line)
     changed = sum(1 for d in details if d.get("changed"))
     print(f"\n{len(details)} files considered, {changed} would change")
+    print_manual_list(details)
     if not details and job:
         print(f"ERROR: no job matched --job {job}", file=sys.stderr)
         return 2
@@ -3046,13 +3514,7 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             if path.name not in ("JOB.md", "TREBI.md"):
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            report: list[str] = []
-            new_text, _ = rewrite_job_text(
-                text, report,
-                rewrite_sentinel=not args.no_sentinels,
-                rewrite_memory_headings=convert_memory,
-                src_dir=path.parent,
-            )
+            new_text = d.get("new_text") or text
             print(f"\n--- {path}")
             if d.get("dest") and d["dest"] != d["path"]:
                 print(f"+++ {d['dest']}")
@@ -3073,7 +3535,7 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             text = path.read_text(encoding="utf-8", errors="replace")
             new_text, notes, _ = convert_jobi_memory(text)
             print(f"\n--- {path}")
-            print(f"+++ {d.get('dest') or path} (memory v1)")
+            print(f"+++ {d.get('dest') or path} (memory v2)")
             for n in notes:
                 print(f"    ! {n}")
             preview = new_text[:2000]
@@ -3104,6 +3566,9 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             restored += 1
         print(f"restored {restored} files")
         return 0
+    if args.disable_source and not incremental:
+        print("ERROR: --disable-source needs --target-workspace", file=sys.stderr)
+        return 2
     if not args.apply:
         print("\nNo files written (dry-run).")
         if incremental and not target:
@@ -3176,21 +3641,16 @@ def cmd_rewrite_jobs(args: argparse.Namespace) -> int:
             continue
         if path.name not in ("JOB.md", "TREBI.md"):
             continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        report: list[str] = []
-        new_text, changed = rewrite_job_text(
-            text, report,
-            rewrite_sentinel=not args.no_sentinels,
-            rewrite_memory_headings=convert_memory,
-            src_dir=path.parent,
-        )
-        if not changed and dest == path:
+        new_text = d.get("new_text")
+        if new_text is None and (dest == path or dest.exists()):
             continue
-        if not incremental:
+        if not incremental or args.disable_source:
             backup_file(backup, path)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(new_text if changed else text)
+        dest.write_text(new_text if new_text is not None else path.read_text(encoding="utf-8"))
         print(f"{'copied' if incremental else 'rewrote'} {dest}")
+        if args.disable_source and d.get("source_live") and disable_source_job(path):
+            print(f"disabled {path}")
 
     if not incremental:
         for ws in workspaces:
@@ -3314,12 +3774,17 @@ def cmd_verify(args: argparse.Namespace) -> int:
         # workspace remaps all filtered rows to itself, so the plain count is
         # the right comparison there.
         if agent:
+            # v42 keys runs by job_id; job_index names it (after the daemon indexes).
             runs = tconn.execute(
-                "SELECT COUNT(*) FROM runs WHERE job=? OR job LIKE ?",
+                "SELECT COUNT(*) FROM runs r JOIN job_index j ON j.id = r.job_id "
+                "WHERE j.name = ? OR j.name LIKE ?",
                 (f"agents/{agent}", f"agents/{agent}/%"),
             ).fetchone()[0]
         elif job:
-            runs = tconn.execute("SELECT COUNT(*) FROM runs WHERE job=?", (job,)).fetchone()[0]
+            runs = tconn.execute(
+                "SELECT COUNT(*) FROM runs r JOIN job_index j ON j.id = r.job_id WHERE j.name = ?",
+                (job,),
+            ).fetchone()[0]
         else:
             runs = tconn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
         if jconn:
@@ -3606,6 +4071,25 @@ def cmd_convert_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_trebi_limits(trebi_dir: Path) -> None:
+    """The memory limits and envset names of the target trebi, for the audit."""
+    global TREBI_ENVSETS
+    try:
+        cfg = yaml.load((trebi_dir / "config.yaml").read_text()) or {}
+        mem = ((cfg.get("defaults") or {}).get("memory") or {}) if isinstance(cfg, dict) else {}
+        for k in ("max_bytes", "inject_logs"):
+            if isinstance(mem.get(k), int):
+                MEMORY_LIMITS[k] = mem[k]
+    except (OSError, ValueError):
+        pass
+    try:
+        envsets = yaml.load((trebi_dir / "envsets.yaml").read_text()) or {}
+        if isinstance(envsets, dict):
+            TREBI_ENVSETS = {str(k) for k in envsets}
+    except (OSError, ValueError):
+        pass
+
+
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--jobi-dir", default=str(default_jobi_dir()))
     parser.add_argument("--trebi-dir", default=str(default_trebi_dir()))
@@ -3661,14 +4145,19 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument(
         "--no-memory",
         action="store_true",
-        help="copy MEMORY.md byte-for-byte; do not convert jobi → v1 or demote extra ## in JOB.md",
+        help="copy MEMORY.md byte-for-byte; do not convert jobi → v2 or demote extra ## in JOB.md",
     )
     r.add_argument("--workspace", help="source jobi workspace path")
+    r.add_argument(
+        "--disable-source",
+        action="store_true",
+        help="with --apply: set disabled: true in each copied jobi job that jobi still runs",
+    )
     r.set_defaults(func=cmd_rewrite_jobs)
 
     cm = sub.add_parser(
         "convert-memory",
-        help="convert jobi MEMORY.md files to trebi v1 (dry-run default)",
+        help="convert jobi MEMORY.md files to trebi v2 (dry-run default)",
     )
     cm.add_argument("paths", nargs="+", help="MEMORY.md files or directories to walk")
     cm.add_argument("--apply", action="store_true", help="write converted files")
@@ -3691,6 +4180,7 @@ def main(argv: list[str] | None = None) -> int:
         if not sep or not old.strip() or not new.strip():
             p.error(f"--connector-map wants OLD=NEW, got {item!r}")
         CONNECTOR_MAP[old.strip()] = new.strip()
+    load_trebi_limits(Path(getattr(args, "trebi_dir", None) or default_trebi_dir()))
     return args.func(args)
 
 

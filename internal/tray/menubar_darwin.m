@@ -33,13 +33,29 @@ void trayRun(uintptr_t h) {
 	}
 }
 
+// The favicon colors (oklch 0.526 0.199 268, dark 0.67 0.174 270.6).
+static NSColor *brandColor(void) {
+	NSAppearanceName name = [NSAppearance.currentDrawingAppearance
+		bestMatchFromAppearancesWithNames:@[ NSAppearanceNameAqua, NSAppearanceNameDarkAqua ]];
+	if ([name isEqualToString:NSAppearanceNameDarkAqua]) {
+		return [NSColor colorWithSRGBRed:0.431 green:0.545 blue:1.0 alpha:1];
+	}
+	return [NSColor colorWithSRGBRed:0.231 green:0.357 blue:0.86 alpha:1];
+}
+
+// png is a shape mask. The handler paints it at draw time, so the color
+// follows the menu bar appearance.
 void traySetIcon(const void *png, int len, const char *title) {
 	NSData *data = [NSData dataWithBytes:png length:len];
 	NSString *text = [NSString stringWithUTF8String:title];
 	dispatch_async(dispatch_get_main_queue(), ^{
-		NSImage *image = [[NSImage alloc] initWithData:data];
-		image.size = NSMakeSize(18, 18);
-		image.template = YES;
+		NSImage *mask = [[NSImage alloc] initWithData:data];
+		NSImage *image = [NSImage imageWithSize:NSMakeSize(18, 18) flipped:NO drawingHandler:^BOOL(NSRect rect) {
+			[mask drawInRect:rect];
+			[brandColor() set];
+			NSRectFillUsingOperation(rect, NSCompositingOperationSourceIn);
+			return YES;
+		}];
 		statusItem.button.image = image;
 		statusItem.button.imagePosition = text.length ? NSImageLeft : NSImageOnly;
 		statusItem.button.title = text;

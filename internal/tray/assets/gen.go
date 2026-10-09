@@ -1,6 +1,7 @@
 //go:build ignore
 
-// gen.go renders the tray icons: the favicon hexagon as template PNGs.
+// gen.go renders the tray icons: the favicon hexagon as shape masks. The
+// tray paints them in the favicon color.
 // Run: go run ./internal/tray/assets/gen.go
 // Outputs running.png (filled) and stopped.png (outline), 36x36 for 18pt @2x.
 package main
