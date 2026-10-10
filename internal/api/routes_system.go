@@ -314,7 +314,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush() // send headers before the first event
+	// WebKit holds a fetch until the first body byte, so a quiet bus would
+	// look offline until the keepalive.
+	fmt.Fprint(w, ": ok\n\n")
+	flusher.Flush()
 
 	cursor, topics := s.streamOpts(w, r, flusher)
 	follow := r.URL.Query().Get("follow") != "0"
