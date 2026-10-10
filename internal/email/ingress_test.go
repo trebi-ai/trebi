@@ -291,6 +291,7 @@ func TestRouteDispositions(t *testing.T) {
 	}{
 		{RouteAgent, "routed"}, {RouteAssistant, "routed"},
 		{RouteMisrouted, "misrouted"}, {RouteDropped, "dropped"},
+		{RouteParticipant, "routed"}, {RouteHeld, "held"},
 	} {
 		if got := (RouteDecision{Class: tc.class}).Disposition(); got != tc.want {
 			t.Errorf("%s disposition = %q, want %q", tc.class, got, tc.want)

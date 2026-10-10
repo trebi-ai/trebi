@@ -6,7 +6,7 @@ description: Tool/action/input shape, docs actions, CLI-to-MCP translation, work
 
 # MCP entry point
 
-Trebi's control plane is also an MCP server at `/mcp` (Streamable HTTP, no auth). Sixteen tools (`run`, `job`, `workspace`, `assistant`, `agent`, `file`, `harness`, `connector`, `event`, `queue`, `inbox`, `conversation`, `skill`, `secret`, `config`, `system`). Each tool takes `{"action": "<name>", "input": {…}}`. Action `docs` returns the input field reference for that tool. Errors return the HTTP error envelope unchanged.
+Trebi's control plane is also an MCP server at `/mcp` (Streamable HTTP, no auth). Twenty-five tools, one per object family (`run`, `job`, `workspace`, `artifact`, `decision`, `email`, `inbox`, and more; `tools/list` gives all). Each tool takes `{"action": "<name>", "input": {…}}`. Action `docs` returns the input field reference for that tool. Errors return the HTTP error envelope unchanged.
 
 Connect with the URL from `~/.trebi/api.json` (`{"url"}`). The daemon serves its whole API without a credential; the bind address is the only gate.
 

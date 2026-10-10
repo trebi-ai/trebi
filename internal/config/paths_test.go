@@ -353,8 +353,12 @@ func sampleSetValue(key string) string {
 		return `[{"via":"email","to":"contact"}]`
 	case key == "notify.approval_after":
 		return "5m"
-	case key == "requests.expire_after", key == "requests.retain":
+	case key == "requests.expire_after", key == "requests.retain", key == "decisions.timeout", key == "artifacts.keep_snapshots":
 		return "24h"
+	case key == "decisions.decider":
+		return "native"
+	case key == "decisions.samples", key == "artifacts.keep_versions", key == "artifacts.max_bytes":
+		return "3"
 	case key == "ui.public_url":
 		return "https://trebi.example.com"
 	case key == "defaults.workspace":
@@ -443,5 +447,28 @@ func sampleSetValue(key string) string {
 		return "sk-test"
 	default:
 		return "x"
+	}
+}
+
+func TestSetPath_DecisionKinds(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	for k, v := range map[string]string{
+		"decisions.kinds.email.reply_risk.decider":    "off",
+		"decisions.kinds.email.reply_risk.samples":    "3",
+		"decisions.kinds.email.reply_risk.hold_below": "0.7",
+	} {
+		if err := cfg.SetPath(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := cfg.Decisions.Kinds["email.reply_risk"]; got != (DecisionKind{Decider: "off", Samples: 3, HoldBelow: 0.7}) {
+		t.Fatalf("kind %+v", got)
+	}
+	if err := cfg.SetPath("decisions.kinds.email.reply_risk.hold_below", "2"); err == nil {
+		t.Fatal("hold_below above 1 must fail")
+	}
+	if err := cfg.SetPath("decisions.kinds.email.reply_risk.color", "red"); err == nil {
+		t.Fatal("an unknown field must fail")
 	}
 }

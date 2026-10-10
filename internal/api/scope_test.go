@@ -207,6 +207,10 @@ func TestScopeGateFailsClosed(t *testing.T) {
 		"/v1/workspaces/" + wsID:                     map[string]any{"name": "renamed"},
 		"/v1/artifacts/art_x/versions/1/decide":      map[string]any{"decision": "approve"},
 		"/v1/artifacts/art_x/schedule":               map[string]any{"schedule": "@every 1h"},
+		"/v1/email/messages/01ABC/release":           map[string]any{"scope": "sender"},
+		"/v1/email/messages/01ABC/ignore":            map[string]any{},
+		"/v1/decisions/dec_1/feedback":               map[string]any{"value": "agree"},
+		"/v1/decisions/test":                         map[string]any{"kind": "email.reply_risk", "text": "hi"},
 	}
 	for path := range deny {
 		code, body := doScoped(t, "POST", base+path, live, deny[path])

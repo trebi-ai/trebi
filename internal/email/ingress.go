@@ -39,6 +39,11 @@ const (
 	RouteAssistant RouteClass = "assistant"
 	RouteMisrouted RouteClass = "misrouted"
 	RouteDropped   RouteClass = "dropped"
+	// RouteParticipant is a sender in a thread that an agent started.
+	RouteParticipant RouteClass = "participant"
+	// RouteHeld is a reply that waits for the user: a new sender in a thread
+	// of an agent, or a reply that the safety check held.
+	RouteHeld RouteClass = "held"
 )
 
 // Drop reasons. One spelling across the log and the inbox item.
@@ -52,6 +57,10 @@ const (
 	ReasonNotAddressed  = "not_addressed"
 	ReasonMultipleFrom  = "multiple_from"
 	ReasonDuplicate     = "duplicate"
+	// Held reasons.
+	ReasonNewSenderInThread = "new_sender_in_thread"
+	ReasonDecisionHold      = "decision_hold"
+	ReasonDecisionError     = "decision_error"
 )
 
 // RouteDecision is the verdict for one inbound message.
@@ -66,6 +75,8 @@ type RouteDecision struct {
 	TraceID     string
 	Reason      string
 	Accepted    bool
+	DecisionID  string   // the safety check of a participant reply
+	HoldReasons []string // the labels of the check answers that hold the mail
 }
 
 // Disposition is the email_messages spelling of the verdict (plan G).
@@ -75,6 +86,8 @@ func (d RouteDecision) Disposition() string {
 		return "misrouted"
 	case RouteDropped:
 		return "dropped"
+	case RouteHeld:
+		return DispositionHeld
 	default:
 		return "routed"
 	}
@@ -183,16 +196,16 @@ func (s *Service) RecordInbound(ctx context.Context, msg IngressMessage, d Route
 	if err != nil {
 		att = []byte("[]")
 	}
-	text, html := s.keptContent(msg.Text, msg.HTML)
+	text, html := s.keptContent(msg.Text, msg.HTML, d.Class == RouteHeld) // a release needs the text
 	res, err := s.st.DB().ExecContext(ctx, `INSERT INTO email_messages (
 		id, direction, workspace_id, agent_id, message_id, in_reply_to, thread_root,
 		sender, subject, dmarc, disposition, attachments, trace_id, created_at, revision,
-		body_text, body_html
-	) VALUES (?, 'in', ?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)
+		body_text, body_html, decision_id
+	) VALUES (?, 'in', ?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)
 		ON CONFLICT(id) DO NOTHING`,
 		msg.ID, d.WorkspaceID, store.NullStr(d.AgentID), msg.MessageID, msg.InReplyTo, ThreadRoot(msg),
 		msg.From, msg.Subject, msg.Dmarc, d.Disposition(), string(att), d.TraceID,
-		time.Now().UTC().Format(time.RFC3339), text, html)
+		time.Now().UTC().Format(time.RFC3339), text, html, d.DecisionID)
 	if err != nil {
 		return false, fmt.Errorf("record inbound %s: %w", msg.ID, err)
 	}
@@ -474,6 +487,9 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 			return err
 		}
 	}
+	if err := g.participant(ctx, &msg, &d); err != nil {
+		return err
+	}
 	if d.Class != RouteDropped && g.svc.seenInbound(ctx, msg, d) {
 		d.Class, d.Reason = RouteDropped, ReasonDuplicate
 	}
@@ -488,7 +504,7 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 	if !fresh {
 		return nil // re-pull after a crash between record and ack
 	}
-	if d.WorkspaceID != "" && d.Reason != ReasonDMARCFail && d.Reason != ReasonDMARCSpoof {
+	if d.WorkspaceID != "" && d.Class != RouteDropped && d.Class != RouteHeld {
 		people := append(append([]string{msg.From}, msg.To...), msg.Cc...)
 		g.svc.touchThread(ctx, room, ThreadRoot(msg), msg.Subject, people)
 	}
@@ -498,9 +514,20 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 	if !g.dispatchReply(ctx, msg, d) {
 		g.dispatch(ctx, msg, d, u)
 	}
+	if d.Class == RouteHeld {
+		g.svc.emitHeld(ctx, msg.ID, d)
+		return nil
+	}
 	if d.Class == RouteDropped {
 		return nil // drops never fire triggers or stream
 	}
+	g.inject(ctx, msg, room)
+	g.svc.emitReceived(ctx, msg.ID)
+	return nil
+}
+
+// inject gives a routed mail to the connector event stream.
+func (g *Ingress) inject(ctx context.Context, msg IngressMessage, room string) {
 	if _, err := g.conn.InjectNative(ctx, cursorName, msg, connectors.NativeMeta{
 		SourceID: msg.ID,
 		Identity: strings.ToLower(strings.TrimSpace(msg.From)),
@@ -509,8 +536,6 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 	}); err != nil {
 		g.log.Warn("email.inject", "id", msg.ID, "error", err)
 	}
-	g.svc.emitReceived(ctx, msg.ID)
-	return nil
 }
 
 // dispatch performs the side effects of one verdict: wake, ask, or the
@@ -518,7 +543,7 @@ func (g *Ingress) deliver(ctx context.Context, msg IngressMessage) error {
 // the poll, because the envelope row is already durable.
 func (g *Ingress) dispatch(ctx context.Context, msg IngressMessage, d RouteDecision, u *runs.UntrustedMessage) {
 	switch d.Class {
-	case RouteAgent:
+	case RouteAgent, RouteParticipant:
 		convID, err := g.act.Ask(ctx, d, msg, d.Agent, inboundText(msg, u, ""))
 		if err != nil {
 			g.log.Warn("email.ask", "agent", d.Agent, "id", msg.ID, "error", err)
@@ -538,6 +563,13 @@ func (g *Ingress) dispatch(ctx context.Context, msg IngressMessage, d RouteDecis
 			}
 		}
 		g.svc.LinkInbound(ctx, msg.ID, "", convID, inboxID)
+	case RouteHeld:
+		inboxID, err := g.act.InboxItem(ctx, d, msg)
+		if err != nil {
+			g.log.Warn("email.inbox", "id", msg.ID, "error", err)
+			return
+		}
+		g.svc.LinkInbound(ctx, msg.ID, "", "", inboxID)
 	case RouteDropped:
 		if !d.Spoof() {
 			return

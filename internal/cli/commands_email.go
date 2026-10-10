@@ -80,6 +80,30 @@ func emailCommand() *cli.Command {
 				Action:    runEmailAttachment,
 			},
 			{
+				Name:   "held",
+				Usage:  "list the replies that wait for your approval",
+				Flags:  []cli.Flag{&cli.StringFlag{Name: "workspace", Usage: "filter by workspace id or name"}, &cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action: runEmailHeld,
+			},
+			{
+				Name:      "release",
+				Usage:     "let the agent read a held reply",
+				ArgsUsage: "<id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "scope", Value: "once", Usage: "once, thread (also trust the sender in this thread), sender, or domain (also accept all mail from it)"},
+					&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "confirm a release that the safety check marked as a risk"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runEmailRelease,
+			},
+			{
+				Name:      "ignore",
+				Usage:     "drop a held reply",
+				ArgsUsage: "<id>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action:    runEmailIgnore,
+			},
+			{
 				Name:   "poll",
 				Usage:  "pull the Worker spool now, outside the tick",
 				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
@@ -353,5 +377,60 @@ func runEmailPoll(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	fmt.Fprintf(outWriter(c), "pulled %s\n", mapStr(body, "pulled"))
+	return nil
+}
+
+func runEmailHeld(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := client.GetJSON(request.BuildEmailHeldPath(c.String("workspace")), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	tbl := newTable(outWriter(c), []string{"ID", "Agent", "From", "Subject", "Decision", "Created"})
+	for _, m := range body.Items {
+		tbl.AppendRow(table.Row{mapStr(m, "id"), mapStr(m, "agent_name"), mapStr(m, "sender"), mapStr(m, "subject"),
+			dash(mapStr(m, "decision_id")), mapStr(m, "created_at")})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runEmailRelease(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi email release <id> [--scope once|thread|sender|domain]")
+	}
+	return emailHeldAction(c, request.BuildEmailRelease(id, c.String("scope"), c.Bool("yes")), "released")
+}
+
+func runEmailIgnore(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi email ignore <id>")
+	}
+	return emailHeldAction(c, request.BuildEmailIgnore(id), "ignored")
+}
+
+func emailHeldAction(c *cli.Command, req request.HTTPRequest, verb string) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(req, &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	fmt.Fprintf(outWriter(c), "%s: %s\n", verb, mapStr(body, "id"))
 	return nil
 }

@@ -47,6 +47,22 @@ trebi request dismiss <request_id>
 
 An email reply to the request mail also answers a request with one form: `approve` or `reject` on the first line, or one option for a `choose` form. Any other reply goes to the job as a message. A request with more forms takes no answer by mail. Open the link in the mail to answer it. See `trebi guide requests`.
 
+## Held mail (email replies)
+
+An agent that sends mail can get a reply. The reply reaches the agent when the sender is already on the thread and the safety check passes. A reply from a new sender, a reply that the check holds, and a reply whose check did not finish wait in the inbox as an `email_held` item. The agent does not read a held reply.
+
+```bash
+trebi email held --json
+trebi decisions show <decision_id>
+trebi email release <id> --scope once      # this mail only
+trebi email release <id> --scope thread    # also trust the sender in this thread
+trebi email release <id> --scope sender    # also add the address to email.accept of the agent
+trebi email release <id> --scope domain    # also add @domain to email.accept
+trebi email ignore <id>
+```
+
+Only the user releases or ignores held mail. When the check found a risk, the release needs `--yes`: tell the user the reasons first. A release records `disagree` on the decision, and an ignore records `agree`. `trebi decisions stats` shows how often the check agrees with the user.
+
 ## Alerts
 
 ```bash

@@ -180,6 +180,12 @@ var exactFolds = map[string]string{
 	"inbox read-all":      "inbox.read_all",
 	"status":              "system.overview",
 	"state":               "state.summary",
+	"decisions ls":        "decision.list",
+	"decisions show":      "decision.get",
+	"decisions kinds":     "decision.kinds",
+	"decisions stats":     "decision.stats",
+	"decisions test":      "decision.test",
+	"decisions feedback":  "decision.feedback",
 	// The CLI says `memory log add`; the catalog kept the shorter name.
 	"job memory log add":          "job.memory_add",
 	"job memory log delete":       "job.memory_delete",

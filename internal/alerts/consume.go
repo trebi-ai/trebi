@@ -1060,6 +1060,11 @@ func (s *Service) upsertDoctor(ctx context.Context, f DoctorFinding) {
 // revision. The kind registry stays closed: kind is health, alert_kind
 // is "email".
 func (s *Service) EmailInboxItem(ctx context.Context, d email.RouteDecision, msg email.IngressMessage) (string, error) {
+	if d.Class == email.RouteHeld {
+		title, body := d.HeldItem(msg)
+		return s.Raise(ctx, RaiseOpts{Kind: KindEmailHeld, Subject: "email/held/" + msg.ID, Title: sanitizeText(title),
+			Body: sanitizeText(body), WorkspaceID: d.WorkspaceID, JobID: d.AgentID, TraceID: d.TraceID})
+	}
 	var subject, title, body, hint string
 	if d.Spoof() {
 		subject = "email/spoof/" + msg.From

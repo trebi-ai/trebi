@@ -195,6 +195,7 @@ func mcpTestMux() *http.ServeMux {
 	s := &Server{}
 	s.routeAgents(mux)
 	s.routeArtifacts(mux)
+	s.routeDecisions(mux)
 	s.routeConnectorOperations(mux)
 	s.routeAssistant(mux)
 	s.routeConversations(mux)

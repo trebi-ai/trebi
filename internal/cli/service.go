@@ -653,6 +653,7 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Skills, cp.Conversations, cp.Harness, cp.Email, cp.Cloud, cp.Webhooks, cp.Launcher, cp.Requests)
 	srv.BindChains(cp.Chains)
 	srv.BindArtifacts(cp.Artifacts)
+	srv.BindDecisions(cp.Decisions)
 	srv.BindCatalog(cp.Catalog)
 	srv.BindState(cp.State)
 	srv.BindUsage(cp.Usage)

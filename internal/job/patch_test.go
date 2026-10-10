@@ -139,3 +139,36 @@ func TestMergePatchFrontmatterConnectors(t *testing.T) {
 		t.Fatalf("clear: %s", data)
 	}
 }
+
+func TestMergePatchFrontmatterEmailAccept(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, src, want string }{
+		{"block list", "---\nemail:\n  accept:\n    - admins\n    - \"@acme.com\"\n  style:\n    accent: \"#123456\"\ntitle: T\n---\n",
+			"email:\n  accept: [\"admins\", \"a@b.com\"]\n  style:\n    accent: \"#123456\"\ntitle: T\n"},
+		{"flow list", "---\nemail:\n  accept: [admins]\n---\n", "email:\n  accept: [\"admins\", \"a@b.com\"]\n"},
+		{"no email", "---\ntitle: T\n---\n", "title: T\nemail:\n  accept: [\"admins\", \"a@b.com\"]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "AGENT.md")
+			if err := os.WriteFile(path, []byte(tc.src), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := job.MergePatchFrontmatter(path, map[string]any{"email_accept": []string{"admins", "a@b.com"}}); err != nil {
+				t.Fatal(err)
+			}
+			data, _ := os.ReadFile(path)
+			if got := strings.SplitN(string(data), "---\n", 3)[1]; got != tc.want {
+				t.Fatalf("got\n%s\nwant\n%s", got, tc.want)
+			}
+		})
+	}
+	path := filepath.Join(t.TempDir(), "AGENT.md")
+	_ = os.WriteFile(path, []byte("---\nemail: {accept: [admins]}\n---\n"), 0o644)
+	if err := job.MergePatchFrontmatter(path, map[string]any{"email_accept": []any{"x@y.com"}}); err == nil {
+		t.Fatal("a one-line email map changed")
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"email_accept": []any{"not an address"}}); err == nil {
+		t.Fatal("a bad entry passed")
+	}
+}

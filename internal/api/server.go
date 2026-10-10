@@ -31,6 +31,8 @@ import (
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/decisions"
+	"github.com/trebi-ai/trebi/internal/decisions/policies"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/files"
@@ -88,6 +90,7 @@ type Server struct {
 	requests   *requests.Service
 	chains     *chains.Service
 	artifacts  *artifacts.Service
+	decisions  *decisions.Service
 	launch     *launch.Launcher
 	state      *state.Store
 	// catalog is the registry client; it follows the configured list.
@@ -200,10 +203,20 @@ func New(st *store.Store, opts Options) *Server {
 	s.chains = chains.NewService(st, ws, s.conv, r, s.requests, slog.Default().With("source", "chains"))
 	s.chains.WithAlerts(s.alerts)
 	s.requests.WithDecider(s.chains)
-	s.artifacts = artifacts.NewService(st, artifacts.NewBlobs(home.ArtifactBlobsDir(), artifacts.DefaultMaxBytes), r, ws, artifacts.Config{}).
+	artConf, _ := config.Load()
+	artCfg := artifacts.ConfigFrom(artConf)
+	artBlobs := artifacts.NewBlobs(home.ArtifactBlobsDir(), artCfg.MaxBytes)
+	s.artifacts = artifacts.NewService(st, artBlobs, r, ws, artCfg).
 		WithContinuer(artContinuer{s}).WithSources(connectors.NewOperations(s.connectors, r, opAsker{s})).
 		WithSchedule(s.sched).WithAlerts(s.alerts)
 	s.email.WithArtifacts(s.artifacts)
+	s.decisions = decisions.NewService(st, artBlobs, func() config.DecisionsConfig {
+		if c, err := config.Load(); err == nil && c != nil {
+			return c.Decisions
+		}
+		return config.DecisionsConfig{}
+	})
+	s.decisions.Register(policies.EmailReply())
 	r.SetParker(runs.NewParker(r, l, s.requests, s.chains, artifacts.NewRunGate(s.artifacts, r, s.alerts)))
 	s.connectors.WithInstall(connectors.InstallConfig{Catalog: s.catalog})
 	_ = s.connectors.Load() // the service keeps the error; the list route and the daemon report it
@@ -499,6 +512,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeMobile(mux)
 	s.routeState(mux)
 	s.routeArtifacts(mux)
+	s.routeDecisions(mux)
 	s.routeConnectorOperations(mux)
 	s.routeMCP(mux)
 	// Dispatch from catalog tools re-enters here, audit-wrapped and

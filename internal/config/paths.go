@@ -319,6 +319,9 @@ func (c *Config) SetPath(path, value string) error {
 	if handled, err := c.setRequestsKey(path, value); handled {
 		return err
 	}
+	if handled, err := c.setDecisionsKey(path, value); handled {
+		return err
+	}
 	if handled, err := c.setUIKey(path, value); handled {
 		return err
 	}
@@ -502,6 +505,7 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.addCloud(cfg)
 	l.addConnectors(cfg)
 	l.addRequests(cfg)
+	l.addDecisions(cfg)
 	l.add("ui.public_url", cfg.UI.PublicURL, "")
 }
 
@@ -1267,6 +1271,13 @@ func pathKeyDescriptions() map[string]string {
 		"files.max_bytes":               "Workspace file PUT/GET size cap in bytes (default 10485760)",
 		"requests.expire_after":         "A request with no answer expires after this (default 168h)",
 		"requests.retain":               "Keep the report of a closed request this long (default 720h)",
+		"decisions.decider":             "Model for the safety checks: auto (native when set, else the default harness), harness, native, or off",
+		"decisions.timeout":             "Time limit of one safety check (default 20s)",
+		"decisions.model":               "Native model for the safety checks; empty = the native default",
+		"decisions.samples":             "Calls for each check; above 1 the answers are a vote (default 1)",
+		"artifacts.max_bytes":           "Size cap of one artifact version in bytes (default 26214400)",
+		"artifacts.keep_versions":       "Versions to keep for each artifact (default 30)",
+		"artifacts.keep_snapshots":      "Keep a snapshot of a live artifact this long (default 2160h)",
 		"ui.public_url":                 "Base URL of the links in alert mail (default: the daemon listener URL)",
 		"workspaces.root":               "Directory for pathless workspace create (default ~/trebi)",
 		"tools.bridge.inherit":          "Global default: inherit user harness resources",

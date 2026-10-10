@@ -294,6 +294,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "artifact.updated", Bus: true, Log: true},
 		{Name: "artifact.deleted", Bus: true, Log: true},
 		{Name: "artifact.refreshed", Bus: true, Log: true},
+		{Name: "decision.made", Bus: true, Log: true},
 		// run
 		{Name: "request.created", Bus: true, Log: true},
 		{Name: "request.updated", Bus: true, Log: true},
@@ -400,6 +401,8 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		// email
 		{Name: "email.sent", Bus: true, Log: true},
 		{Name: "email.received", Bus: true, Log: true},
+		{Name: "email.held", Bus: true, Log: true},
+		{Name: "email.updated", Bus: true, Log: true},
 		// bus
 		{Name: "bus.pruned", Bus: false, Log: true},
 		{Name: "bus.slow_consumer", Bus: false, Log: true},

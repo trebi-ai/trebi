@@ -18,6 +18,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/job"
@@ -69,6 +70,15 @@ const (
 	DefaultKeepSnapshots = 90 * 24 * time.Hour
 	orphanAge            = time.Hour
 )
+
+// ConfigFrom reads the artifacts block of cfg. A nil cfg gives the defaults.
+func ConfigFrom(cfg *config.Config) Config {
+	if cfg == nil {
+		return Config{}.withDefaults()
+	}
+	a := cfg.Artifacts
+	return Config{MaxBytes: a.MaxBytes, KeepVersions: a.KeepVersions, KeepSnapshots: a.KeepSnapshotsDuration()}.withDefaults()
+}
 
 func (c Config) withDefaults() Config {
 	if c.MaxBytes <= 0 {

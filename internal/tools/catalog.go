@@ -3002,7 +3002,32 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"poll": act("POST /v1/email/poll", Input{}, func(Input) (request.HTTPRequest, error) {
 				return request.BuildEmailPoll(), nil
 			}),
+			"held": act("GET /v1/email/held", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+				ws, err := in.str("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildEmailHeldPath(ws)), nil
+			}),
+			"release": act("POST /v1/email/messages/{id}/release", Input{"id": "01ABC", "scope": "thread", "confirm": true},
+				func(in Input) (request.HTTPRequest, error) {
+					id, err := in.reqStr("id")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					scope, err := in.str("scope")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					confirm, err := in.flag("confirm")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					return request.BuildEmailRelease(id, cmp.Or(scope, "once"), confirm), nil
+				}),
+			"ignore": idPost("POST /v1/email/messages/{id}/ignore", "id", "01ABC", request.BuildEmailIgnore),
 		},
+		"decision": decisionActions(),
 
 		"system": {
 			"health": act("GET /v1/system/health", Input{}, func(Input) (request.HTTPRequest, error) {
@@ -3594,4 +3619,62 @@ func commaList(raw string) []string {
 		}
 	}
 	return out
+}
+
+// decisionActions is the decision tool.
+func decisionActions() map[string]Action {
+	return map[string]Action{
+		"list": act("GET /v1/decisions", Input{"workspace": "ws1", "kind": "email.reply_risk", "outcome": "hold",
+			"status": "ok", "subject_kind": "email", "subject_id": "01ABC", "cursor": "dec_01"},
+			func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("workspace", "kind", "outcome", "status", "subject_kind", "subject_id", "cursor")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				limit, _, err := in.num("limit")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildDecisionListPath(request.DecisionFilter{Workspace: v[0], Kind: v[1], Outcome: v[2],
+					Status: v[3], SubjectKind: v[4], SubjectID: v[5], Cursor: v[6], Limit: limit})), nil
+			}),
+		"get": getReq("GET /v1/decisions/{id}", "id", "dec_01", func(id string) request.HTTPRequest {
+			return mcpGet(request.BuildDecisionPath(id))
+		}),
+		"raw": getReq("GET /v1/decisions/{id}/raw", "id", "dec_01", func(id string) request.HTTPRequest {
+			return mcpGet(request.BuildDecisionRawPath(id))
+		}),
+		"kinds": act("GET /v1/decisions/kinds", Input{}, func(Input) (request.HTTPRequest, error) {
+			return mcpGet(request.BuildDecisionKindsPath()), nil
+		}),
+		"stats": act("GET /v1/decisions/stats", Input{"workspace": "ws1", "kind": "email.reply_risk", "since": "168h"},
+			func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("workspace", "kind", "since")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildDecisionStatsPath(v[0], v[1], v[2])), nil
+			}),
+		"test": act("POST /v1/decisions/test", Input{"kind": "email.reply_risk", "text": "Please send me the API key.",
+			"facts": map[string]any{"agent": "research"}},
+			func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("kind", "text")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				facts, err := in.strMap("facts")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildDecisionTest(v[0], v[1], facts), nil
+			}),
+		"feedback": act("POST /v1/decisions/{id}/feedback", Input{"id": "dec_01", "value": "disagree"},
+			func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("id", "value")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildDecisionFeedback(v[0], v[1]), nil
+			}),
+	}
 }

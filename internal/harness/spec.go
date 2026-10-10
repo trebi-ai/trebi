@@ -1,5 +1,10 @@
 package harness
 
+import (
+	"errors"
+	"fmt"
+)
+
 // Spec is the fixed data of one known harness.
 type Spec struct {
 	Name        string // "grok"
@@ -81,4 +86,31 @@ func OffMessage(name string) string {
 		label = s.Label
 	}
 	return label + " is off. Turn it on in Settings → Harnesses."
+}
+
+// ErrNoPrintMode means a harness has no proven one-shot print mode.
+var ErrNoPrintMode = errors.New("harness has no print mode for decisions")
+
+// PrintArgs is the argv of a one-shot call with no tools, no MCP, and no
+// skills. The prompt goes on stdin. lastMessage is the file where codex
+// writes the reply. No entry skips a permission prompt; with no tools, none
+// is needed.
+func PrintArgs(name, model, lastMessage string) ([]string, error) {
+	var args []string
+	switch name {
+	case "claude":
+		args = []string{"-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--disable-slash-commands"}
+	case "codex":
+		args = []string{"exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never",
+			"--output-last-message", lastMessage}
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrNoPrintMode, name)
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if name == "codex" {
+		args = append(args, "-")
+	}
+	return args, nil
 }

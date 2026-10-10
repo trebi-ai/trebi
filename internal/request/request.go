@@ -1004,6 +1004,22 @@ func BuildEmailAttachmentPath(id, aid string) string {
 	return "/v1/email/messages/" + url.PathEscape(id) + "/attachments/" + url.PathEscape(aid)
 }
 
+// BuildEmailHeldPath builds GET /v1/email/held.
+func BuildEmailHeldPath(workspace string) string {
+	return withQuery("/v1/email/held", map[string]string{"workspace": workspace})
+}
+
+// BuildEmailRelease builds POST /v1/email/messages/{id}/release.
+func BuildEmailRelease(id, scope string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: withQuery("/v1/email/messages/"+url.PathEscape(id)+"/release", confirmQ(confirm)),
+		Body: map[string]any{"scope": scope}}
+}
+
+// BuildEmailIgnore builds POST /v1/email/messages/{id}/ignore.
+func BuildEmailIgnore(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/email/messages/" + url.PathEscape(id) + "/ignore"}
+}
+
 // BuildEmailPoll builds POST /v1/email/poll (one pull outside the tick).
 func BuildEmailPoll() HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/email/poll"}
@@ -3316,4 +3332,48 @@ func (t RuleTest) body() map[string]any {
 		}
 	}
 	return body
+}
+
+// DecisionFilter is the query of GET /v1/decisions.
+type DecisionFilter struct {
+	Workspace, Kind, Outcome, Status, SubjectKind, SubjectID, Cursor string
+	Limit                                                            int
+}
+
+// BuildDecisionListPath builds GET /v1/decisions.
+func BuildDecisionListPath(f DecisionFilter) string {
+	q := map[string]string{"workspace": f.Workspace, "kind": f.Kind, "outcome": f.Outcome, "status": f.Status,
+		"subject_kind": f.SubjectKind, "subject_id": f.SubjectID, "cursor": f.Cursor}
+	if f.Limit > 0 {
+		q["limit"] = strconv.Itoa(f.Limit)
+	}
+	return withQuery("/v1/decisions", q)
+}
+
+// BuildDecisionPath builds GET /v1/decisions/{id}.
+func BuildDecisionPath(id string) string { return "/v1/decisions/" + url.PathEscape(id) }
+
+// BuildDecisionRawPath builds GET /v1/decisions/{id}/raw.
+func BuildDecisionRawPath(id string) string { return BuildDecisionPath(id) + "/raw" }
+
+// BuildDecisionKindsPath builds GET /v1/decisions/kinds.
+func BuildDecisionKindsPath() string { return "/v1/decisions/kinds" }
+
+// BuildDecisionStatsPath builds GET /v1/decisions/stats.
+func BuildDecisionStatsPath(workspace, kind, since string) string {
+	return withQuery("/v1/decisions/stats", map[string]string{"workspace": workspace, "kind": kind, "since": since})
+}
+
+// BuildDecisionFeedback builds POST /v1/decisions/{id}/feedback.
+func BuildDecisionFeedback(id, value string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: BuildDecisionPath(id) + "/feedback", Body: map[string]any{"value": value}}
+}
+
+// BuildDecisionTest builds POST /v1/decisions/test.
+func BuildDecisionTest(kind, text string, facts map[string]string) HTTPRequest {
+	body := map[string]any{"kind": kind, "text": text}
+	if len(facts) > 0 {
+		body["facts"] = facts
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/decisions/test", Body: body}
 }

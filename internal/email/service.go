@@ -41,14 +41,15 @@ type WorkspaceRef struct {
 // Service owns addresses, the Worker settings, and the envelope log.
 // Long-running work (the poll loop) belongs to the daemon, not here.
 type Service struct {
-	st     *store.Store
-	convs  *conversations.Service
-	ob     *outbox.Service
-	picker WorkspacePicker
-	styles StyleSource
-	render *Renderer
-	arts   ArtifactReader
-	log    *slog.Logger
+	st      *store.Store
+	convs   *conversations.Service
+	ob      *outbox.Service
+	picker  WorkspacePicker
+	styles  StyleSource
+	render  *Renderer
+	arts    ArtifactReader
+	checker ReplyChecker
+	log     *slog.Logger
 
 	mu          sync.RWMutex
 	settings    *Settings
@@ -822,6 +823,8 @@ type Message struct {
 	Attempts      int    `json:"attempts,omitempty"`
 	NextAttemptAt string `json:"next_attempt_at,omitempty"`
 	Error         string `json:"error,omitempty"`
+	// DecisionID is the safety check of a participant reply.
+	DecisionID string `json:"decision_id,omitempty"`
 	// Content is nil when the daemon does not keep the text.
 	Content *Content `json:"content,omitempty"`
 }
@@ -869,7 +872,7 @@ COALESCE(em.in_reply_to,''), COALESCE(em.thread_root,''), COALESCE(em.sender,'')
 COALESCE(em.subject,''), COALESCE(em.dmarc,''), COALESCE(em.disposition,''), COALESCE(em.inbox_id,''),
 COALESCE(em.run_id,''), COALESCE(em.conversation_id,''), COALESCE(em.attachments,'[]'),
 COALESCE(em.trace_id,''), em.created_at, em.revision, COALESCE(em.outbox_id,''), COALESCE(o.status,''),
-COALESCE(o.attempts,0), COALESCE(o.next_attempt_at,''), COALESCE(o.error_message,'')`
+COALESCE(o.attempts,0), COALESCE(o.next_attempt_at,''), COALESCE(o.error_message,''), em.decision_id`
 
 // messageFrom joins each envelope to its outbox row.
 const messageFrom = ` FROM email_messages em LEFT JOIN outbox o ON o.id = em.outbox_id`
@@ -946,7 +949,7 @@ func scanMessage(scan func(dest ...any) error) (Message, error) {
 		&m.InReplyTo, &m.ThreadRoot, &m.Sender, &m.Recipients, &m.Subject,
 		&m.DMARC, &m.Disposition, &m.InboxID, &m.RunID, &m.ConversationID,
 		&att, &m.TraceID, &m.CreatedAt, &m.Revision, &m.OutboxID, &m.Status, &m.Attempts,
-		&m.NextAttemptAt, &m.Error); err != nil {
+		&m.NextAttemptAt, &m.Error, &m.DecisionID); err != nil {
 		return Message{}, err
 	}
 	m.Attachments = []Attachment{}
@@ -1263,7 +1266,7 @@ func (s *Service) enqueue(ctx context.Context, e envelope, r outbox.Row) (outbox
 		// Parts is always json.Marshal output; a failed parse keeps the text only.
 		_ = json.Unmarshal(r.Parts, &parts)
 	}
-	text, html := s.keptContent(r.Body, parts.HTML)
+	text, html := s.keptContent(r.Body, parts.HTML, false)
 	var turn, artVersion any
 	if e.coveredTurn != nil {
 		turn = *e.coveredTurn
@@ -1340,9 +1343,9 @@ func (s *Service) htmlParts(ctx context.Context, workspaceID, agent, text string
 
 // keptContent returns the body columns of a new row: NULL when the
 // daemon does not keep content.
-func (s *Service) keptContent(text, html string) (any, any) {
+func (s *Service) keptContent(text, html string, held bool) (any, any) {
 	cfg, err := s.Settings()
-	if err != nil || cfg.ContentRetention <= 0 {
+	if !held && (err != nil || cfg.ContentRetention <= 0) {
 		return nil, nil
 	}
 	return text, store.NullStr(html)

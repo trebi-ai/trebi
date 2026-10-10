@@ -205,6 +205,8 @@ func schemaSections() []SchemaSection {
 		{ID: "cloud", Title: "Cloud", Description: "Hosted account link"},
 		{ID: "connectors", Title: "Connectors", Description: "MCP registries for the connector catalog"},
 		{ID: "requests", Title: "Requests", Description: "How long a job waits for a person's answer"},
+		{ID: "decisions", Title: "Safety checks", Description: "The model that checks email replies for risk"},
+		{ID: "artifacts", Title: "Artifacts", Description: "Size and history limits of artifacts"},
 		{ID: "ui", Title: "Web address", Description: "The address of the Trebi UI in alert mail links"},
 	}
 }
@@ -213,6 +215,16 @@ func schemaSections() []SchemaSection {
 func schemaMeta(key string) keyMeta {
 	if m, ok := schemaMetas()[key]; ok {
 		return m
+	}
+	if rest, ok := strings.CutPrefix(key, "decisions.kinds."); ok {
+		switch rest[strings.LastIndex(rest, ".")+1:] {
+		case "decider":
+			return keyMeta{typ: TypeString, enum: deciderValues}
+		case "samples":
+			return keyMeta{typ: TypeInt}
+		case "hold_below":
+			return keyMeta{typ: TypeString} // a number from 0 to 1
+		}
 	}
 	parts := strings.Split(key, ".")
 	if len(parts) >= 3 && parts[0] == "tools" && parts[1] != "bridge" {
@@ -269,6 +281,13 @@ func schemaMetas() map[string]keyMeta {
 		"files.max_bytes":                      restart(keyMeta{typ: TypeInt}),
 		"requests.expire_after":                dur,
 		"requests.retain":                      dur,
+		"decisions.decider":                    {typ: TypeString, enum: deciderValues},
+		"decisions.timeout":                    dur,
+		"decisions.model":                      {typ: TypeString},
+		"decisions.samples":                    {typ: TypeInt},
+		"artifacts.max_bytes":                  restart(keyMeta{typ: TypeInt}),
+		"artifacts.keep_versions":              restart(keyMeta{typ: TypeInt}),
+		"artifacts.keep_snapshots":             restart(dur),
 		"ui.public_url":                        restart(keyMeta{typ: TypeString}),
 		"assistant.effort":                     {typ: TypeString, enum: []string{"low", "medium", "high"}},
 		"assistant.mode":                       {typ: TypeString, enum: []string{"ask", "auto_edit", "auto"}},

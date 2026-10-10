@@ -72,6 +72,8 @@ const (
 	// KindArtifactSources is a live artifact version whose new data sources
 	// wait for the user.
 	KindArtifactSources Kind = "artifact_sources"
+	// KindEmailHeld is a reply to an agent thread that waits for the user.
+	KindEmailHeld Kind = "email_held"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -116,6 +118,12 @@ const (
 	ActionViewOutbox  = "view_outbox"
 	ActionLogIn       = "log_in"
 	ActionUpdate      = "update"
+	// Held mail actions; the route is POST with the scope in the query.
+	ActionEmailReleaseOnce   = "email_release_once"
+	ActionEmailReleaseThread = "email_release_thread"
+	ActionEmailReleaseSender = "email_release_sender"
+	ActionEmailReleaseDomain = "email_release_domain"
+	ActionEmailIgnore        = "email_ignore"
 )
 
 // Delivery states of an inbox item. Empty means no delivery ran.
@@ -779,6 +787,9 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindArtifactSources: {
 			Kind: KindArtifactSources, Severity: SeverityAttention, InboxKind: InboxApproval,
 		},
+		KindEmailHeld: {
+			Kind: KindEmailHeld, Severity: SeverityAttention, InboxKind: InboxApproval,
+		},
 	}
 }
 
@@ -940,6 +951,7 @@ var defaultTitles = map[Kind]string{
 	KindHarnessUpdateFailed:         "Harness update failed",
 	KindArtifactMissing:             "Artifact not saved",
 	KindArtifactSources:             "Allow data sources",
+	KindEmailHeld:                   "Reply waits for you",
 }
 
 func (o RaiseOpts) defaultTitle() string {
@@ -975,6 +987,8 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 	case KindArtifactSources:
 		id, n, _ := strings.Cut(strings.TrimPrefix(o.Subject, "artifact/"), "/")
 		return []InboxAction{{Kind: ActionReview, Route: "/artifacts/" + url.PathEscape(id) + "?v=" + n, Label: "Review"}}
+	case KindEmailHeld:
+		return emailHeldActions(strings.TrimPrefix(o.Subject, "email/held/"))
 	case KindConnectorAuthRequired:
 		route := "/connectors/" + url.PathEscape(o.Connector) + "?tab=login"
 		return []InboxAction{{Kind: ActionLogIn, Route: route, Label: "Log in"}}
@@ -998,6 +1012,17 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 		return []InboxAction{{Kind: ActionReview, Route: "/inbox?proposal=" + strings.TrimPrefix(o.Subject, "proposal/"), Label: "Review"}}
 	}
 	return []InboxAction{}
+}
+
+func emailHeldActions(msgID string) []InboxAction {
+	base := "/v1/email/messages/" + url.PathEscape(msgID)
+	return []InboxAction{
+		{Kind: ActionEmailReleaseOnce, Route: base + "/release?scope=once", Label: "Let the agent read it"},
+		{Kind: ActionEmailReleaseThread, Route: base + "/release?scope=thread", Label: "Allow in this thread"},
+		{Kind: ActionEmailReleaseSender, Route: base + "/release?scope=sender", Label: "Always allow this sender"},
+		{Kind: ActionEmailReleaseDomain, Route: base + "/release?scope=domain", Label: "Always allow this domain"},
+		{Kind: ActionEmailIgnore, Route: base + "/ignore", Label: "Ignore"},
+	}
 }
 
 // notifyEnv is the extra env of a connector alert send.

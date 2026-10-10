@@ -64,6 +64,7 @@ func NewApp(opts Options) *cli.Command {
 			agentCommand(),
 			chainCommand(),
 			artifactCommand(),
+			decisionsCommand(),
 			proposalsCommand(),
 			requestCommand(),
 			connectorCommand(),

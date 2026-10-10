@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -98,12 +99,15 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 	if err := applyRoutePatch(path, patch); err != nil {
 		return err
 	}
+	if err := applyEmailAcceptPatch(path, patch); err != nil {
+		return err
+	}
 	return applySessionPatch(path, patch)
 }
 
 // checkPatchKeys rejects a key the writer does not honor.
 func checkPatchKeys(patch map[string]any) error {
-	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true}
+	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true, "email_accept": true}
 	for k := range patchHarnessFields {
 		known[k] = true
 	}
@@ -124,7 +128,7 @@ func checkPatchKeys(patch map[string]any) error {
 	}
 	sort.Strings(unknown)
 	valid := append([]string{"disabled", "harness", "model", "effort"}, patchScalars...)
-	valid = append(valid, "contact", "notify", "session")
+	valid = append(valid, "contact", "notify", "email_accept", "session")
 	return fmt.Errorf("unknown patch field(s) %s; valid fields are %s",
 		strings.Join(unknown, ", "), strings.Join(valid, ", "))
 }
@@ -225,6 +229,91 @@ func applyRoutePatch(path string, patch map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// applyEmailAcceptPatch replaces the accept list under the email: node of an
+// operator document. Other email keys stay.
+func applyEmailAcceptPatch(path string, patch map[string]any) error {
+	v, ok := patch["email_accept"]
+	if !ok {
+		return nil
+	}
+	raw, _ := v.([]any)
+	if s, isStrs := v.([]string); isStrs {
+		raw = make([]any, len(s))
+		for i, e := range s {
+			raw[i] = e
+		}
+	}
+	if v != nil && raw == nil {
+		return fmt.Errorf("email_accept must be a list of strings")
+	}
+	items := make([]string, 0, len(raw))
+	lines := make([]string, 0, len(raw))
+	for _, e := range raw {
+		str, isStr := e.(string)
+		if !isStr {
+			return fmt.Errorf("email_accept must be a list of strings")
+		}
+		lines = append(lines, str)
+		items = append(items, strconv.Quote(str))
+	}
+	if _, err := ParseAccept(lines); err != nil {
+		return fmt.Errorf("email_accept: %w", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	fmStart, fmEnd, err := locateFrontmatter(data)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	var fm []string
+	if body := strings.TrimRight(string(data[fmStart:fmEnd]), "\n"); body != "" {
+		fm = strings.Split(body, "\n")
+	}
+	fm, ok = setEmailAccept(fm, "  accept: ["+strings.Join(items, ", ")+"]")
+	if !ok {
+		return fmt.Errorf("%s: email is a one-line map; write it as a block to change accept", path)
+	}
+	out := make([]byte, 0, len(data)+64)
+	out = append(out, data[:fmStart]...)
+	out = append(out, strings.Join(fm, "\n")+"\n"...)
+	out = append(out, data[fmEnd:]...)
+	return WriteAtomic(path, out)
+}
+
+// setEmailAccept replaces the accept child of the email: block, with its
+// list lines, or adds it. A one-line email: map is not changed.
+func setEmailAccept(fm []string, entry string) ([]string, bool) {
+	parent := slices.IndexFunc(fm, func(l string) bool { return l == "email:" || strings.HasPrefix(l, "email: ") })
+	if parent < 0 {
+		return append(fm, "email:", entry), true
+	}
+	if strings.TrimSpace(strings.TrimPrefix(fm[parent], "email:")) != "" {
+		return fm, false
+	}
+	end := childEnd(fm, parent+1, 0)
+	for i := parent + 1; i < end; i++ {
+		trim := strings.TrimLeft(fm[i], " \t")
+		if trim == "accept:" || strings.HasPrefix(trim, "accept: ") {
+			return slices.Replace(fm, i, childEnd(fm[:end], i+1, len(fm[i])-len(trim)), entry), true
+		}
+	}
+	return slices.Insert(fm, parent+1, entry), true
+}
+
+// childEnd returns the index after the lines from i on that are blank, list
+// items, or indented deeper than indent.
+func childEnd(fm []string, i, indent int) int {
+	for ; i < len(fm); i++ {
+		trim := strings.TrimLeft(fm[i], " \t")
+		if trim != "" && len(fm[i])-len(trim) <= indent && !strings.HasPrefix(trim, "-") {
+			break
+		}
+	}
+	return i
 }
 
 // routeFieldText validates a contact or notify value and renders it.

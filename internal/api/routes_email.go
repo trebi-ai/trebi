@@ -11,11 +11,14 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/oklog/ulid/v2"
 
 	"github.com/trebi-ai/trebi/internal/artifacts"
+	"github.com/trebi-ai/trebi/internal/decisions"
+	"github.com/trebi-ai/trebi/internal/decisions/policies"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/job"
@@ -32,6 +35,9 @@ func (s *Server) routeEmail(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/email/messages", s.handleEmailMessages)
 	mux.HandleFunc("GET /v1/email/messages/{id}", s.handleEmailMessage)
 	mux.HandleFunc("GET /v1/email/messages/{id}/attachments/{aid}", s.handleEmailAttachment)
+	mux.HandleFunc("GET /v1/email/held", s.handleEmailHeld)
+	mux.HandleFunc("POST /v1/email/messages/{id}/release", s.handleEmailRelease)
+	mux.HandleFunc("POST /v1/email/messages/{id}/ignore", s.handleEmailIgnore)
 	mux.HandleFunc("POST /v1/email/poll", s.handleEmailPoll)
 	mux.HandleFunc("GET /v1/workspaces/{id}/email", s.handleWorkspaceEmail)
 	mux.HandleFunc("POST /v1/workspaces/{id}/email/rotate", s.handleWorkspaceEmailRotate)
@@ -507,6 +513,8 @@ func emailAddressPayload(a email.Address, masked bool) map[string]any {
 // writeEmailErr maps the service sentinels to stable codes.
 func writeEmailErr(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, email.ErrNotHeld):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, email.ErrNotConfigured), errors.Is(err, email.ErrRecipient), errors.Is(err, email.ErrContent):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 	case errors.Is(err, sql.ErrNoRows):
@@ -525,4 +533,141 @@ func (s *Server) ensureWorkspaceEmail(ctx context.Context, wsID, handle string) 
 	if _, err := s.email.EnsureAddress(ctx, wsID, handle); err != nil {
 		s.log.Warn("email.mint_on_add", "workspace_id", wsID, "err", err.Error())
 	}
+}
+
+func (s *Server) handleEmailHeld(w http.ResponseWriter, r *http.Request) {
+	ws, ok := s.artifactWorkspace(w, r, r.URL.Query().Get("workspace"))
+	if !ok {
+		return
+	}
+	list, err := s.email.Held(r.Context(), ws)
+	if err != nil {
+		writeEmailErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": list})
+}
+
+// heldMessage loads a held mail for a release or an ignore.
+func (s *Server) heldMessage(w http.ResponseWriter, r *http.Request) (email.Message, bool) {
+	m, err := s.email.HeldMessage(r.Context(), r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "not_found", "message not found")
+		return m, false
+	}
+	if err != nil {
+		writeEmailErr(w, err)
+		return m, false
+	}
+	return m, true
+}
+
+// heldDecision returns the decision that held m, or false when no
+// decision held it.
+func (s *Server) heldDecision(ctx context.Context, m email.Message) (decisions.Decision, bool) {
+	if m.DecisionID == "" {
+		return decisions.Decision{}, false
+	}
+	d, err := s.decisions.Get(ctx, m.DecisionID)
+	if err != nil || d.Status != decisions.StatusOK || d.Outcome != policies.EmailHold {
+		return decisions.Decision{}, false
+	}
+	return d, true
+}
+
+func (s *Server) handleEmailRelease(w http.ResponseWriter, r *http.Request) {
+	if personOnly(w, r, "only a person can release held mail") {
+		return
+	}
+	var body struct {
+		Scope string `json:"scope"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	scope := cmp.Or(r.URL.Query().Get("scope"), body.Scope, email.ReleaseOnce)
+	m, ok := s.heldMessage(w, r)
+	if !ok {
+		return
+	}
+	entry, err := email.AcceptEntry(scope, m.Sender)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	d, risky := s.heldDecision(r.Context(), m)
+	if risky && !confirmed(r) {
+		writeErrDetails(w, http.StatusBadRequest, "validation", fmt.Sprintf(
+			"The safety check found a risk in this mail: %s. Let %s read it? Repeat it with confirm=1 once the user agrees",
+			strings.Join(d.Reasons, ", "), m.AgentName), map[string]any{"confirm_required": true})
+		return
+	}
+	if entry != "" {
+		if err := s.addEmailAccept(r.Context(), m.WorkspaceID, m.AgentName, entry); err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+	}
+	out, err := s.email.Release(r.Context(), m.ID, scope)
+	if err != nil {
+		writeEmailErr(w, err)
+		return
+	}
+	s.closeHeld(r.Context(), m, risky, decisions.FeedbackDisagree, "released")
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleEmailIgnore(w http.ResponseWriter, r *http.Request) {
+	if personOnly(w, r, "only a person can ignore held mail") {
+		return
+	}
+	m, ok := s.heldMessage(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.email.Ignore(r.Context(), m.ID)
+	if err != nil {
+		writeEmailErr(w, err)
+		return
+	}
+	_, risky := s.heldDecision(r.Context(), m)
+	s.closeHeld(r.Context(), m, risky, decisions.FeedbackAgree, "ignored")
+	writeJSON(w, http.StatusOK, out)
+}
+
+// closeHeld resolves the inbox item of a held mail. When a decision held
+// the mail, the choice of the user is feedback on that decision.
+func (s *Server) closeHeld(ctx context.Context, m email.Message, decided bool, feedback, how string) {
+	if err := s.alerts.ResolveSubject(ctx, "email/held/"+m.ID, how); err != nil {
+		s.log.Warn("email.held.resolve", "id", m.ID, "err", err.Error())
+	}
+	if decided {
+		if _, err := s.decisions.Feedback(ctx, m.DecisionID, feedback, how); err != nil {
+			s.log.Warn("email.held.feedback", "id", m.ID, "err", err.Error())
+		}
+	}
+}
+
+// addEmailAccept adds entry to email.accept of the agent.
+func (s *Server) addEmailAccept(ctx context.Context, wsID, agent, entry string) error {
+	ws, err := s.ws.Get(ctx, wsID)
+	if err != nil {
+		return err
+	}
+	row, err := s.findAgentRow(ctx, wsID, agent)
+	if err != nil {
+		return err
+	}
+	j, err := job.ParseFile(row.Path)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(j.EmailAccept, entry) {
+		return nil
+	}
+	accept := append(slices.Clone(j.EmailAccept), entry)
+	if err := job.MergePatchFrontmatter(row.Path, map[string]any{"email_accept": accept}); err != nil {
+		return fmt.Errorf("agent %s email.accept: %w", agent, err)
+	}
+	return s.ws.RebuildIndex(ctx, ws)
 }

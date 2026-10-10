@@ -26,6 +26,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/decisions"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/files"
@@ -121,6 +122,7 @@ type ControlPlane struct {
 	Requests  *requests.Service
 	Chains    *chains.Service
 	Artifacts *artifacts.Service
+	Decisions *decisions.Service
 	Parker    *runs.Parker
 	State     *state.Store
 	Opts      Options
@@ -264,7 +266,9 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	chainSvc := chains.NewService(st, ws, conv, r, reqSvc, slog.Default().With("source", "chains"))
 	reqSvc.WithDecider(chainSvc)
 	sched := schedule.New(st)
-	artSvc := artifacts.NewService(st, artifacts.NewBlobs(home.ArtifactBlobsDir(), artifacts.DefaultMaxBytes), r, ws, artifacts.Config{}).
+	artCfg := artifacts.ConfigFrom(cfg)
+	artBlobs := artifacts.NewBlobs(home.ArtifactBlobsDir(), artCfg.MaxBytes)
+	artSvc := artifacts.NewService(st, artBlobs, r, ws, artCfg).
 		WithSources(connectors.NewOperations(connector, r, nil)).WithSchedule(sched)
 	artGate := artifacts.NewRunGate(artSvc, r, nil)
 	em.WithArtifacts(artSvc)
@@ -334,6 +338,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	connector.OnFlood(c.raiseFlood)
 	ws.SetBudgetAlerter(c)
 	c.buildAssistant(cfg, ws, conv, maxBytes)
+	c.buildDecisions(artBlobs)
 	c.configureCloud(cfg)
 	c.configureEmail(cfg)
 	return c
@@ -824,6 +829,11 @@ func (c *ControlPlane) busPrune(ctx context.Context) {
 				c.log.Warn("artifact prune", "error", err)
 			} else if st.Versions+st.Blobs > 0 {
 				c.log.Info("artifacts pruned", "versions", st.Versions, "blobs", st.Blobs)
+			}
+			if n, err := c.Decisions.Prune(ctx, time.Now().UTC()); err != nil {
+				c.log.Warn("decision prune", "error", err)
+			} else if n > 0 {
+				c.log.Info("decisions pruned", "rows", n)
 			}
 			if _, err := c.Store.PruneIdempotent(ctx, 24*time.Hour); err != nil {
 				c.log.Warn("idempotency prune", "error", err)

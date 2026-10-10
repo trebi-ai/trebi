@@ -643,3 +643,9 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// Process is the binary and the isolation env of a one-shot call of name,
+// the same that a run of name uses.
+func Process(name string) (bin string, env map[string]string) {
+	return modelBinary(name), modelIsolationEnv(name)
+}

@@ -1,6 +1,6 @@
 # email
 
-Email channel operations: status, test message, workspace addresses, the envelope log, and the inbound poll.
+Email channel operations: status, test message, workspace addresses, the envelope log, held replies, and the inbound poll.
 
 Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error envelope `{"error":{"code","message"}}` unchanged, with `isError: true`.
 
@@ -57,6 +57,20 @@ Fetch one attachment's bytes through the Worker. The fetch is explicit and logge
 
 ### poll
 Pull the Worker spool now, outside the poll tick. The reply carries `pulled`, the count of envelopes this pull routed. Use it after you expect mail and do not want to wait for the tick.
+
+### held
+List the replies that wait for the approval of the user, newest first. A reply waits when its sender is new in a thread of an agent, or when the safety check found a risk or did not finish. The agent does not read a held reply. The reply carries `items`; each item is an envelope with `decision_id` when a check ran. Read the check with the `decision` tool.
+- `workspace` (string, optional): workspace id or name. Absent lists all workspaces.
+
+### release
+Give a held reply to its agent. Only a person can release a reply. When you call it for the user, the call fails with 403; ask the user to choose in the Inbox. When the safety check found a risk, the call returns `validation` with `details.confirm_required` and the reasons. Tell the user the reasons, and repeat the call with `confirm` only when the user agrees.
+- `id` (string, required): message id from `held`.
+- `scope` (string, optional): `once` (the default) gives only this mail. `thread` also trusts the sender in this thread. `sender` also adds the address to `email.accept` of the agent. `domain` also adds `@<domain>` to `email.accept`.
+- `confirm` (boolean, optional): the user agrees to release a reply that the check marked as a risk.
+
+### ignore
+Drop a held reply. The agent never reads it. Only a person can ignore a reply.
+- `id` (string, required): message id from `held`.
 
 ## Related guides
 

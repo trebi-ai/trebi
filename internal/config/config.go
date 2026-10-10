@@ -36,6 +36,8 @@ type Config struct {
 	Cloud      CloudConfig      `yaml:"cloud,omitempty"`
 	Connectors ConnectorsConfig `yaml:"connectors,omitempty"`
 	Requests   RequestsConfig   `yaml:"requests,omitempty"`
+	Decisions  DecisionsConfig  `yaml:"decisions,omitempty"`
+	Artifacts  ArtifactsConfig  `yaml:"artifacts,omitempty"`
 }
 
 // HarnessConfig is the vendor run-runtime policy (plan 2026-09-16 Part J).
@@ -784,6 +786,19 @@ tools:
 #   expire_after: 168h     # a request with no answer expires after this
 #   retain: 720h           # keep the report of a closed request this long
 
+# decisions:               # the safety check on a reply from a new sender
+#   decider: auto          # auto | harness | native | off
+#   timeout: 20s
+#   model: ""              # empty = the native default
+#   samples: 1
+#   kinds:
+#     email.reply_risk: {decider: "", samples: 0, hold_below: 0}
+
+# artifacts:
+#   max_bytes: 26214400    # 25 MiB for each version
+#   keep_versions: 30
+#   keep_snapshots: 2160h
+
 # workspaces:
 #   root: ~/trebi          # pathless workspace add --create --name lands here
 
@@ -1021,6 +1036,7 @@ func (c *Config) Validate() error {
 		ce.add("defaults.state.max_bytes", "must be >= 0")
 	}
 	ce.checkRequests(c.Requests)
+	ce.checkDecisions(c.Decisions, c.Artifacts)
 	c.UI.check(ce)
 
 	// tools.fallback

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -821,4 +822,75 @@ func startEmailAPI(t *testing.T) *emailAPIServer {
 func writeEmailJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// TestEmailHeldRoutes holds two replies from a new sender in a thread of
+// research, then releases one by sender and ignores the other.
+func TestEmailHeldRoutes(t *testing.T) {
+	e := startEmailAPI(t)
+	wsID := newEmailWorkspace(t, e, "ellis")
+	if code, body, _ := doJSON(t, "PUT", e.base+"/v1/workspaces/"+wsID+"/agents/research", map[string]any{"description": "Market research."}); code/100 != 2 {
+		t.Fatalf("agent: %d %v", code, body)
+	}
+	agentID := indexedJobID(t, e.st, wsID, "agents/research")
+	addr, err := e.svc.EnsureAddress(t.Context(), wsID, "ellis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const thread = "<out1@mail.example.com>"
+	if _, err := e.st.DB().Exec(`INSERT INTO email_messages (id, direction, workspace_id, agent_id, message_id, thread_root,
+		recipients, subject, disposition, created_at, revision) VALUES ('out1','out',?,?,?,?,'client@acme.com','Quote','sent','2026-10-01T00:00:00Z',1)`,
+		wsID, agentID, thread, thread); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"r1", "r2"} {
+		if err := e.svc.Deliver(t.Context(), email.IngressMessage{V: 1, ID: id, LocalPart: addr.LocalPart, Tag: "research",
+			To: []string{addr.Full()}, From: "newbie@acme.com", Dmarc: "pass", Subject: "Re: Quote", MessageID: "<" + id + "@acme.com>",
+			InReplyTo: thread, References: []string{thread}, Text: "Thanks."}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, m := e.do(t, http.MethodGet, "/v1/email/held?workspace=ellis", nil)
+	if code != 200 || len(m["items"].([]any)) != 2 {
+		t.Fatalf("held: %d %v", code, m)
+	}
+	// A decision that held r1 needs a confirm before the release.
+	if _, err := e.st.DB().Exec(`INSERT INTO decisions (id, workspace_id, kind, kind_version, subject_kind, subject_id, decider, method,
+		status, outcome, questions_json, answers_json, took_ms, created_at) VALUES ('dec_1', ?, 'email.reply_risk', 1, 'email', 'r1',
+		'fake', 'verbal', 'ok', 'hold', '[]', '{"answers":[],"reasons":["Asks for a secret"]}', 5, '2026-10-01T00:00:00Z')`, wsID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.DB().Exec(`UPDATE email_messages SET decision_id='dec_1' WHERE id='r1'`); err != nil {
+		t.Fatal(err)
+	}
+	code, m = e.do(t, http.MethodPost, "/v1/email/messages/r1/release", map[string]any{"scope": "sender"})
+	if code != 400 || !strings.Contains(fmt.Sprint(m), "Asks for a secret") || !strings.Contains(fmt.Sprint(m), "confirm_required") {
+		t.Fatalf("release without confirm: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodPost, "/v1/email/messages/r1/release?scope=all&confirm=1", nil); code != 400 {
+		t.Fatalf("bad scope: %d %v", code, m)
+	}
+	code, m = e.do(t, http.MethodPost, "/v1/email/messages/r1/release?confirm=1", map[string]any{"scope": "sender"})
+	if code != 200 || m["disposition"] != "routed" || e.acts.asks != 1 {
+		t.Fatalf("release: %d %v asks %d", code, m, e.acts.asks)
+	}
+	row, err := e.api.Workspaces().JobByName(t.Context(), wsID, "agents/research")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j, err := job.ParseFile(row.Path); err != nil || !slices.Contains(j.EmailAccept, "newbie@acme.com") {
+		t.Fatalf("email.accept: %v %v", j, err)
+	}
+	if code, m = e.do(t, http.MethodGet, "/v1/decisions/dec_1", nil); code != 200 || m["feedback"] != "disagree" {
+		t.Fatalf("feedback: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodPost, "/v1/email/messages/r1/release", nil); code != 409 {
+		t.Fatalf("second release: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodPost, "/v1/email/messages/r2/ignore", nil); code != 200 || m["disposition"] != "dropped" {
+		t.Fatalf("ignore: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodPost, "/v1/email/messages/nope/ignore", nil); code != 404 {
+		t.Fatalf("unknown: %d %v", code, m)
+	}
 }
