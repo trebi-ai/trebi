@@ -599,7 +599,7 @@ func (s *Server) handleEmailRelease(w http.ResponseWriter, r *http.Request) {
 	if risky && !confirmed(r) {
 		writeErrDetails(w, http.StatusBadRequest, "validation", fmt.Sprintf(
 			"The safety check found a risk in this mail: %s. Let %s read it? Repeat it with confirm=1 once the user agrees",
-			strings.Join(d.Reasons, ", "), m.AgentName), map[string]any{"confirm_required": true})
+			strings.Join(d.Reasons, ", "), m.AgentName), map[string]any{"confirm_required": true, "reasons": d.Reasons, "agent": m.AgentName})
 		return
 	}
 	if entry != "" {

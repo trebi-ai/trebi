@@ -867,6 +867,9 @@ func TestEmailHeldRoutes(t *testing.T) {
 	if code != 400 || !strings.Contains(fmt.Sprint(m), "Asks for a secret") || !strings.Contains(fmt.Sprint(m), "confirm_required") {
 		t.Fatalf("release without confirm: %d %v", code, m)
 	}
+	if det, _ := m["error"].(map[string]any)["details"].(map[string]any); det["agent"] != "research" || fmt.Sprint(det["reasons"]) != "[Asks for a secret]" {
+		t.Fatalf("confirm details: %v", m)
+	}
 	if code, m = e.do(t, http.MethodPost, "/v1/email/messages/r1/release?scope=all&confirm=1", nil); code != 400 {
 		t.Fatalf("bad scope: %d %v", code, m)
 	}
