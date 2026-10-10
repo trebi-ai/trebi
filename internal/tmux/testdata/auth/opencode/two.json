@@ -1,0 +1,4 @@
+{
+  "anthropic": {"type": "api", "key": "test-key"},
+  "openrouter": {"type": "api", "key": "test-key"}
+}

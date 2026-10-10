@@ -1,0 +1,9 @@
+{
+  "OPENAI_API_KEY": null,
+  "tokens": {
+    "id_token": "eyJhbGciOiJub25lIn0.eyJlbWFpbCI6ICJkZXZAZXhhbXBsZS50ZXN0IiwgImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6IHsiY2hhdGdwdF9wbGFuX3R5cGUiOiAicGx1cyJ9fQ.sig",
+    "access_token": "test-access",
+    "refresh_token": "test-refresh"
+  },
+  "last_refresh": "2099-01-01T00:00:00Z"
+}

@@ -976,6 +976,15 @@ func TestCreateRunQueuesBehindLiveRun(t *testing.T) {
 	}
 }
 
+// enableHarnesses turns on the harnesses that the tests launch. A fresh
+// config has every harness off.
+func enableHarnesses(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("tools:\n  claude: {enabled: true}\n  codex: {enabled: true}\n  grok: {enabled: true}\n  opencode: {enabled: true}\n  cursor: {enabled: true}\n  pi: {enabled: true}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // startTestServerSeeded runs seed on the store before the server reads it.
 func startTestServerSeeded(t *testing.T, opts api.Options, seed func(*store.Store)) (*api.Server, string) {
 	t.Helper()
@@ -984,6 +993,7 @@ func startTestServerSeeded(t *testing.T, opts api.Options, seed func(*store.Stor
 	t.Setenv("TREBI_HOME", dir)
 	t.Setenv("TREBI_FAKE_HARNESS", "1")
 	t.Cleanup(func() { home.SetBase("") })
+	enableHarnesses(t, dir)
 
 	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
 	if err != nil {

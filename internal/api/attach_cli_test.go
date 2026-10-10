@@ -155,6 +155,7 @@ func TestAgentHookAdvisoryOnCLI(t *testing.T) {
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
 	t.Cleanup(func() { home.SetBase("") })
+	enableHarnesses(t, dir)
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)

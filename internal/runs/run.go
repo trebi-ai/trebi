@@ -65,6 +65,7 @@ const (
 	EndFailed        EndReason = "failed"
 	EndSessionGone   EndReason = "session_gone"
 	EndUpdate        EndReason = "update"
+	EndHarnessOff    EndReason = "harness_off"
 	// EndRequest parks a run that waits for the answer to a request.
 	EndRequest EndReason = "request"
 	// EndAsk parks a run that waits for the reply of another agent.
@@ -148,7 +149,7 @@ func ValidEndReason(r string) bool {
 	switch EndReason(r) {
 	case EndSentinel, EndResult, EndKeepAlive, EndKeepAliveIdle, EndIdleTimeout, EndMaxDuration,
 		EndAuth, EndLimit, EndKill, EndReplace, EndSkip, EndLaunch, EndFailed, EndSessionGone, EndUpdate,
-		EndRequest, EndAsk, EndRequestDismissed:
+		EndRequest, EndAsk, EndRequestDismissed, EndHarnessOff:
 		return true
 	}
 	return false
@@ -277,6 +278,7 @@ type Run struct {
 	TurnCount       int                `json:"turn_count"`
 	TurnStartedAt   *time.Time         `json:"turn_started_at,omitempty"`
 	Harness         string             `json:"harness"`
+	HarnessVersion  string             `json:"harness_version,omitempty"`
 	Runtime         string             `json:"runtime"`
 	Model           string             `json:"model,omitempty"`
 	SessionID       string             `json:"session_id,omitempty"`

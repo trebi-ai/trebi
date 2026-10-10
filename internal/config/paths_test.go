@@ -343,6 +343,10 @@ func sampleSetValue(key string) string {
 		return "Terminal"
 	case key == "tools.fallback":
 		return "path"
+	case strings.HasPrefix(key, "tools.") && (strings.HasSuffix(key, ".enabled") || strings.Contains(key, ".compat.claude.")):
+		return "true"
+	case strings.HasPrefix(key, "tools.") && strings.HasSuffix(key, ".updates"):
+		return "keep"
 	case key == "harness.runtime":
 		return "cli"
 	case key == "notify.route":

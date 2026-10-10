@@ -74,6 +74,7 @@ type Server struct {
 	router     *notify.Resolver
 	harness    *harness.Service
 	usage      *harness.UsagePoller
+	versions   *harness.VersionManager
 	sched      *schedule.Service
 	email      *email.Service
 	cloud      *cloudlink.Service
@@ -193,6 +194,7 @@ func New(st *store.Store, opts Options) *Server {
 		},
 	}
 	s.usage = harness.NewUsagePoller(harness.NewUsageStore(st), r, s.harness, harness.UsagePollEvery)
+	s.versions = harness.NewVersionManager(st, tmux.VersionSources{}, r, s.harness)
 	s.chains = chains.NewService(st, ws, s.conv, r, s.requests, slog.Default().With("source", "chains"))
 	s.chains.WithAlerts(s.alerts)
 	s.requests.WithDecider(s.chains)
@@ -370,6 +372,10 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 // BindUsage swaps in the daemon's plan limits poller, so a refresh and the
 // poll loop share one rate limit.
 func (s *Server) BindUsage(p *harness.UsagePoller) { bind(&s.usage, p) }
+
+// BindVersions swaps in the daemon's harness version manager, so a route and
+// the check loop share one update gate.
+func (s *Server) BindVersions(m *harness.VersionManager) { bind(&s.versions, m) }
 
 // BindMobile swaps in the daemon's phone service.
 func (s *Server) BindMobile(m *mobile.Service) { bind(&s.mobile, m) }

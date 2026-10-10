@@ -2044,13 +2044,58 @@ func BuildHarnessModels(name string) HTTPRequest {
 	}
 }
 
-// BuildHarnessPatch builds PATCH /v1/harnesses/{name}.
-func BuildHarnessPatch(name, authMode string) HTTPRequest {
+// BuildHarnessUpdate builds POST /v1/harnesses/{name}/update.
+func BuildHarnessUpdate(name string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/harnesses/" + url.PathEscape(name) + "/update"}
+}
+
+// BuildHarnessVersionsCheck builds POST /v1/harnesses/{name}/versions/check.
+func BuildHarnessVersionsCheck(name string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/harnesses/" + url.PathEscape(name) + "/versions/check"}
+}
+
+// BuildHarnessPatch builds PATCH /v1/harnesses/{name}. body holds any of
+// enabled, auth_mode, model, effort, updates, version, and compat.
+func BuildHarnessPatch(name string, body map[string]any) HTTPRequest {
 	return HTTPRequest{
 		Method: "PATCH",
 		Path:   "/v1/harnesses/" + url.PathEscape(name),
-		Body:   map[string]any{"auth_mode": authMode},
+		Body:   body,
 	}
+}
+
+func harnessFilePath(name, key string) string {
+	return "/v1/harnesses/" + url.PathEscape(name) + "/files/" + url.PathEscape(key)
+}
+
+// BuildHarnessFiles builds GET /v1/harnesses/{name}/files.
+func BuildHarnessFiles(name string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/harnesses/" + url.PathEscape(name) + "/files"}
+}
+
+// BuildHarnessFileRead builds GET /v1/harnesses/{name}/files/{key}. side is
+// user, trebi, or empty (the side that a run uses).
+func BuildHarnessFileRead(name, key, side string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: withQuery(harnessFilePath(name, key), map[string]string{"side": side})}
+}
+
+// BuildHarnessFileOwn builds POST /v1/harnesses/{name}/files/{key}/own.
+func BuildHarnessFileOwn(name, key, start string) HTTPRequest {
+	body := map[string]any{}
+	if start != "" {
+		body["start"] = start
+	}
+	return HTTPRequest{Method: "POST", Path: harnessFilePath(name, key) + "/own", Body: body}
+}
+
+// BuildHarnessFileWrite builds PUT /v1/harnesses/{name}/files/{key}.
+func BuildHarnessFileWrite(name, key, content, ifMatch string) HTTPRequest {
+	return HTTPRequest{Method: "PUT", Path: harnessFilePath(name, key), Body: map[string]any{"content": content}, IfMatch: ifMatch}
+}
+
+// BuildHarnessFileReset builds DELETE /v1/harnesses/{name}/files/{key}/own.
+func BuildHarnessFileReset(name, key string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: withQuery(harnessFilePath(name, key)+"/own", confirmQ(confirm))}
 }
 
 // BuildHarnessLogout builds POST /v1/harnesses/{name}/logout.
@@ -2067,10 +2112,14 @@ func BuildHarnessLogout(name, mode string, confirm bool) HTTPRequest {
 }
 
 // BuildHarnessLoginStart builds POST /v1/harnesses/{name}/login (interactive).
-func BuildHarnessLoginStart(name, mode string) HTTPRequest {
+// provider is for OpenCode only.
+func BuildHarnessLoginStart(name, mode, provider string) HTTPRequest {
 	body := map[string]any{}
 	if mode != "" {
 		body["mode"] = mode
+	}
+	if provider != "" {
+		body["provider"] = provider
 	}
 	return HTTPRequest{
 		Method: "POST",
@@ -2079,13 +2128,23 @@ func BuildHarnessLoginStart(name, mode string) HTTPRequest {
 	}
 }
 
-// BuildHarnessLoginToken builds POST /v1/harnesses/{name}/login with an API key.
-func BuildHarnessLoginToken(name, token string) HTTPRequest {
+// BuildHarnessLoginToken builds POST /v1/harnesses/{name}/login with an API
+// key. provider is for OpenCode only.
+func BuildHarnessLoginToken(name, token, provider string) HTTPRequest {
+	body := map[string]any{"token": token}
+	if provider != "" {
+		body["provider"] = provider
+	}
 	return HTTPRequest{
 		Method: "POST",
 		Path:   "/v1/harnesses/" + url.PathEscape(name) + "/login",
-		Body:   map[string]any{"token": token},
+		Body:   body,
 	}
+}
+
+// BuildHarnessProviders builds GET /v1/harnesses/{name}/providers.
+func BuildHarnessProviders(name string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/harnesses/" + url.PathEscape(name) + "/providers"}
 }
 
 // BuildHarnessLoginCode builds POST /v1/harnesses/{name}/login with a paste-back code.

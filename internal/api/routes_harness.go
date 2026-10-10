@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,11 +24,18 @@ func (s *Server) routeHarness(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/harnesses/{name}/ensure", s.handleHarnessEnsure)
 	mux.HandleFunc("GET /v1/harnesses/{name}/auth", s.handleHarnessAuthGet)
 	mux.HandleFunc("GET /v1/harnesses/{name}/models", s.handleHarnessModels)
+	mux.HandleFunc("GET /v1/harnesses/{name}/providers", s.handleHarnessProviders)
 	mux.HandleFunc("POST /v1/harnesses/{name}/login", s.handleHarnessLoginPost)
 	mux.HandleFunc("GET /v1/harnesses/{name}/login", s.handleHarnessLoginGet)
 	mux.HandleFunc("DELETE /v1/harnesses/{name}/login", s.handleHarnessLoginDelete)
 	mux.HandleFunc("GET /v1/harnesses/{name}/login/attach", s.handleHarnessLoginAttach)
 	mux.HandleFunc("POST /v1/harnesses/{name}/logout", s.handleHarnessLogout)
+	s.routeHarnessVersions(mux)
+	mux.HandleFunc("GET /v1/harnesses/{name}/files", s.handleHarnessFiles)
+	mux.HandleFunc("GET /v1/harnesses/{name}/files/{key}", s.handleHarnessFileRead)
+	mux.HandleFunc("PUT /v1/harnesses/{name}/files/{key}", s.handleHarnessFileWrite)
+	mux.HandleFunc("POST /v1/harnesses/{name}/files/{key}/own", s.handleHarnessFileOwn)
+	mux.HandleFunc("DELETE /v1/harnesses/{name}/files/{key}/own", s.handleHarnessFileReset)
 }
 
 func (s *Server) handleHarnessUsage(w http.ResponseWriter, r *http.Request) {
@@ -61,35 +69,87 @@ func (s *Server) writeHarnessUsage(w http.ResponseWriter, r *http.Request, refre
 }
 
 func (s *Server) handleHarnesses(w http.ResponseWriter, r *http.Request) {
+	cfg, _ := config.Load()
 	states, _ := s.harness.States(r.Context())
-	list := harness.List()
+	list := harness.List(cfg, tmux.HarnessLocator{})
 	rows := make([]map[string]any, 0, len(list))
 	for _, info := range list {
-		row := map[string]any{
-			"name":     info.Name,
-			"home":     info.Home,
-			"bin_path": info.BinPath,
-			"present":  info.Present,
-		}
-		row["auth_mode"] = authMode(info.Name)
-		caps := s.harness.Caps(info.Name)
-		row["login_modes"] = caps.LoginModes
-		row["keychain_bound"] = caps.KeychainBound
-		if st, ok := states[info.Name]; ok {
-			row["auth_ok"] = st.AuthOK.Valid && st.AuthOK.Int64 == 1
-			row["auth_status"] = st.Status
-			row["auth_detail"] = st.Detail
-			row["auth_probed_at"] = emptyNil(st.ProbedAt)
-			row["auth_expires_at"] = emptyNil(st.ExpiresAt)
-		} else {
-			row["auth_ok"] = nil
-			row["auth_status"] = nil
-			row["auth_probed_at"] = nil
-			row["auth_expires_at"] = nil
-		}
-		rows = append(rows, row)
+		rows = append(rows, s.harnessRow(r.Context(), cfg, info, states))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"harnesses": rows})
+}
+
+// harnessRow is one row of GET /v1/harnesses. PATCH returns the same shape.
+func (s *Server) harnessRow(ctx context.Context, cfg *config.Config, info harness.Info, states map[string]harness.State) map[string]any {
+	row := map[string]any{
+		"name":           info.Name,
+		"label":          info.Label,
+		"vendor":         info.Vendor,
+		"home":           info.Home,
+		"bin_path":       info.BinPath,
+		"enabled":        info.Enabled,
+		"installed":      info.Installed,
+		"terminal_login": info.TerminalLogin,
+		"installable":    info.Installable,
+		"hidden":         info.Hidden,
+		"auth_mode":      authMode(info.Name),
+	}
+	caps := s.harness.Caps(info.Name)
+	row["login_modes"] = caps.LoginModes
+	row["keychain_bound"] = caps.KeychainBound
+	if st, ok := states[info.Name]; ok {
+		row["auth_ok"] = st.AuthOK.Valid && st.AuthOK.Int64 == 1
+		row["auth_status"] = st.Status
+		row["auth_detail"] = st.Detail
+		row["auth_account"] = st.Account
+		row["auth_probed_at"] = emptyNil(st.ProbedAt)
+		row["auth_expires_at"] = emptyNil(st.ExpiresAt)
+	} else {
+		row["auth_ok"] = nil
+		row["auth_status"] = nil
+		row["auth_probed_at"] = nil
+		row["auth_expires_at"] = nil
+	}
+	model, effort := "", ""
+	if cfg != nil {
+		if p := cfg.Tools.Pin(info.Name); p != nil {
+			model, effort = p.Model, p.Effort
+		}
+	}
+	row["model"] = model
+	row["effort"] = effort
+	row["effort_levels"] = config.HarnessEffortLevels(info.Name)
+	row["own_files"] = harness.OwnCount(info.Name, cfg)
+	s.versionRow(ctx, cfg, info.Name, row)
+	return row
+}
+
+// harnessRowFor builds the row of one harness after a change.
+func (s *Server) harnessRowFor(ctx context.Context, name string) map[string]any {
+	cfg, _ := config.Load()
+	states, _ := s.harness.States(ctx)
+	for _, info := range harness.List(cfg, tmux.HarnessLocator{}) {
+		if info.Name == name {
+			return s.harnessRow(ctx, cfg, info, states)
+		}
+	}
+	return nil
+}
+
+// harnessOffError is the job validation text for a harness that is off. An
+// empty name is the default harness.
+func harnessOffError(name string) string {
+	cfg, err := config.Load()
+	if err != nil {
+		return ""
+	}
+	if name == "" {
+		name = cfg.Defaults.Command
+	}
+	if !harness.Known(name) || cfg.HarnessEnabled(name) {
+		return ""
+	}
+	return harness.OffMessage(name)
 }
 
 func (s *Server) handleHarnessEnsure(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +189,21 @@ func (s *Server) handleHarnessModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tmux.ListModels(r.Context(), name))
 }
 
+// handleHarnessProviders lists the OpenCode model providers and which of them
+// have a login.
+func (s *Server) handleHarnessProviders(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !harness.Known(name) {
+		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
+		return
+	}
+	if name != tmux.OpenCode && name != tmux.OpenCode2 {
+		writeErr(w, http.StatusUnprocessableEntity, "precondition_failed", "only OpenCode has providers")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providers": tmux.OpenCodeProviders(name)})
+}
+
 func (s *Server) handleHarnessAuthGet(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !harness.Known(name) {
@@ -161,24 +236,30 @@ func (s *Server) handleHarnessPatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
 		return
 	}
-	var body struct {
-		AuthMode string `json:"auth_mode"`
-	}
+	var body harness.Patch
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	if !config.IsFirstClass(name) {
-		writeErr(w, http.StatusUnprocessableEntity, "precondition_failed",
-			"auth_mode is not persisted for "+name+"; only first-class tools store a pin in config.yaml")
+	if err := s.harness.Apply(r.Context(), name, body); err != nil {
+		switch {
+		case errors.Is(err, harness.ErrDefaultOff):
+			writeErr(w, http.StatusUnprocessableEntity, "precondition_failed", "Choose another default harness first.")
+		case errors.Is(err, harness.ErrNoConfigField):
+			writeErr(w, http.StatusUnprocessableEntity, "precondition_failed", name+" has no settings in config.yaml")
+		default:
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		}
 		return
 	}
-	st, err := s.harness.SetMode(r.Context(), name, body.AuthMode)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	if body.AuthMode != nil {
+		s.invalidateDetect(name)
+	}
+	if err := s.applyVersionPatch(r.Context(), name, body); err != nil {
+		writeVersionErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, authWire(st, s.harness.Caps(name)))
+	writeJSON(w, http.StatusOK, s.harnessRowFor(r.Context(), name))
 }
 
 func (s *Server) handleHarnessLogout(w http.ResponseWriter, r *http.Request) {
@@ -215,15 +296,16 @@ func (s *Server) handleHarnessLoginPost(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		Token string `json:"token"`
-		Code  string `json:"code"`
-		Mode  string `json:"mode"`
+		Token    string `json:"token"`
+		Provider string `json:"provider"`
+		Code     string `json:"code"`
+		Mode     string `json:"mode"`
 	}
 	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body)
 
 	switch {
 	case body.Token != "":
-		st, err := s.harness.LoginToken(r.Context(), name, body.Token)
+		st, err := s.harness.LoginToken(r.Context(), name, harness.TokenLogin{Token: body.Token, Provider: body.Provider})
 		if err != nil && st.Status == "" {
 			writeErr(w, http.StatusBadRequest, "validation", err.Error())
 			return
@@ -242,7 +324,7 @@ func (s *Server) handleHarnessLoginPost(w http.ResponseWriter, r *http.Request) 
 		}
 		writeJSON(w, http.StatusOK, sess)
 	default:
-		sess, err := s.harness.StartLogin(r.Context(), name, body.Mode)
+		sess, err := s.harness.StartLogin(r.Context(), name, body.Mode, body.Provider)
 		if err != nil {
 			if caps, ok := harness.IsLocalOnly(err); ok {
 				writeErrDetails(w, http.StatusUnprocessableEntity, "precondition_failed", err.Error(),

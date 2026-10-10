@@ -242,8 +242,8 @@ func TestPrepareLaunch_CodexNotifyQuoted(t *testing.T) {
 	t.Cleanup(func() { home.SetBase("") })
 
 	plan := (codexTool{}).PrepareLaunch("codex")
-	if strings.Contains(plan.Command, "-c") {
-		t.Fatalf("no shim: command still has -c: %q", plan.Command)
+	if plan.Command != "codex -c check_for_update_on_startup=false" {
+		t.Fatalf("no shim: command %q want only the update switch", plan.Command)
 	}
 	if plan.Env["CODEX_HOME"] != "" {
 		t.Fatalf("CODEX_HOME=%q want empty (no cold harness home)", plan.Env["CODEX_HOME"])
@@ -393,7 +393,7 @@ func TestPrepareResume(t *testing.T) {
 		{Claude, "claude --session-id oldid --dangerously-skip-permissions", "new-sid", []string{"--resume", "new-sid"}},
 		{Grok, "grok --session-id oldid", "gsid", []string{"--resume", "gsid"}},
 		{OpenCode, "opencode --auto", "osid", []string{"--session", "osid"}},
-		{Codex, "codex -C /work", "csid", []string{"codex resume -C /work csid"}},
+		{Codex, "codex -C /work", "csid", []string{"codex resume -C /work -c check_for_update_on_startup=false csid"}},
 		{Copilot, "copilot", "psid", []string{"--resume", "psid"}},
 		{Gemini, "gemini", "msid", []string{"--resume", "msid"}},
 		{Pi, "pi --session-id oldid", "psid-pi", []string{"--session", "psid-pi"}},

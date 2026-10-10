@@ -267,6 +267,9 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		coalesceText = wake.Message
 	}
 	harness := j.ResolvedHarness()
+	if c.waitHarnessUpdate(ctx, item, harness) {
+		return
+	}
 	if reason := c.blockedFor(ctx, kind, harness); reason != "" {
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
 		return
@@ -386,6 +389,9 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 		return
 	}
 	harness := cmp.Or(lr.Harness, j.ResolvedHarness())
+	if c.waitHarnessUpdate(ctx, item, harness) {
+		return
+	}
 	if reason := c.blockedFor(ctx, item.Kind, harness); reason != "" {
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
 		return
@@ -729,6 +735,18 @@ func (c *ControlPlane) Busy(ctx context.Context, convID string) bool {
 		}
 	}
 	return false
+}
+
+// waitHarnessUpdate defers item while Trebi updates its harness (at most
+// harness.UpdateGateMax).
+func (c *ControlPlane) waitHarnessUpdate(ctx context.Context, item *dispatch.QueueItem, harness string) bool {
+	if !c.Versions.Updating(harness) {
+		return false
+	}
+	if err := c.queue.Defer(ctx, item.ID, c.now().Add(10*time.Second), dispatch.DeferHarnessUpdate); err != nil {
+		c.log.Warn("queue defer for harness update", "queue_id", item.ID, "error", err)
+	}
+	return true
 }
 
 // blockedFor is the queue auth gate.

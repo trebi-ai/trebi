@@ -220,6 +220,10 @@ func schemaMeta(key string) keyMeta {
 		switch {
 		case rest == "auth":
 			return keyMeta{typ: TypeString, enum: []string{"shared", "separate"}}
+		case rest == "enabled":
+			return keyMeta{typ: TypeBool}
+		case rest == "updates":
+			return keyMeta{typ: TypeString, enum: []string{"auto", "keep"}}
 		case rest == "runtime":
 			return keyMeta{typ: TypeString, enum: []string{"cli", "tui"}}
 		case rest == "effort":
@@ -227,7 +231,9 @@ func schemaMeta(key string) keyMeta {
 		case rest == "bridge.inherit":
 			return keyMeta{typ: TypeBool}
 		case strings.HasPrefix(rest, "bridge.resources."):
-			return keyMeta{typ: TypeString, enum: []string{"inherit", "off"}}
+			return keyMeta{typ: TypeString, enum: []string{"inherit", "off", "own"}}
+		case strings.HasPrefix(rest, "compat.claude."):
+			return keyMeta{typ: TypeBool}
 		}
 	}
 	return keyMeta{typ: TypeString}

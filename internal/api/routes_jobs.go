@@ -393,6 +393,11 @@ func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
 	} else if j != nil {
 		msg = j.ParseError
 	}
+	if valid {
+		if off := harnessOffError(j.Harness); off != "" {
+			valid, msg = false, off
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": valid, "error": msg})
 }
 
@@ -425,6 +430,8 @@ func (s *Server) handleJobValidateText(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "markdown": md})
 	case j != nil && j.ParseError != "":
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": j.ParseError, "markdown": md})
+	case j != nil && harnessOffError(j.Harness) != "":
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": harnessOffError(j.Harness), "markdown": md})
 	default:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "error": "", "markdown": md})
 	}

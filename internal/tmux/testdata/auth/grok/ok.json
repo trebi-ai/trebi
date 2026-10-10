@@ -1,0 +1,8 @@
+{
+  "https://auth.x.ai::grok-cli": {
+    "email": "dev@example.test",
+    "access_token": "test-access",
+    "refresh_token": "test-refresh",
+    "expires_at": "2099-01-01T00:00:00Z"
+  }
+}

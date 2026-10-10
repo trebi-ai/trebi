@@ -455,7 +455,15 @@ const runCols = `SELECT id, workspace_id, job_id, ` + jobNameSQL + `, kind, COAL
 	COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
 	trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
 	COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
-	outcome, COALESCE(outcome_note,''), outcome_at, turn_count, turn_started_at, active_ms`
+	outcome, COALESCE(outcome_note,''), outcome_at, turn_count, turn_started_at, active_ms,
+	COALESCE(harness_version,'')`
+
+// HarnessActive reports whether a running run uses the harness name.
+func (s *Service) HarnessActive(ctx context.Context, name string) bool {
+	var n int
+	err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE harness=? AND status=?`, name, string(StatusRunning)).Scan(&n)
+	return err != nil || n > 0
+}
 
 func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 	row := s.st.DB().QueryRowContext(ctx, `
@@ -1597,6 +1605,11 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 	if err != nil {
 		return err
 	}
+	// The version manager keeps harness_state.version current.
+	if _, err := tx.Exec(`UPDATE runs SET harness_version=(SELECT version FROM harness_state WHERE name=?) WHERE id=?`,
+		opts.Harness, run.ID); err != nil {
+		return err
+	}
 	if err := insertTurnRow(tx, run.ID, 1, opts, run.PromptPreview, nowStr); err != nil {
 		return err
 	}
@@ -1981,7 +1994,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev, runtimePID, turnCount, activeMS int64
 	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, workingDir, previousRunID string
 	var turnStarted sql.NullString
-	var prompt, ws, kind, status, memoryHash, attachKind string
+	var prompt, ws, kind, status, memoryHash, attachKind, harnessVersion string
 	var outcomeStatus, outcomeNote, outcomeAt sql.NullString
 	err := row.Scan(
 		&r.ID, &ws, &r.JobID, &r.JobName, &kind, &reason, &status, &endReason,
@@ -1991,6 +2004,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		&previousRunID, &resumeAtt, &qid, &trace, &rev,
 		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
 		&memoryHash, &runtimePID, &attachKind, &outcomeStatus, &outcomeNote, &outcomeAt, &turnCount, &turnStarted, &activeMS,
+		&harnessVersion,
 	)
 	if err != nil {
 		return nil, err
@@ -2006,6 +2020,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r.PromptPreview = prompt
 	r.SessionID = sess
 	r.Harness = harness
+	r.HarnessVersion = harnessVersion
 	r.Runtime = runtime
 	r.PreviousRunID = previousRunID
 	r.TurnCount = int(turnCount)

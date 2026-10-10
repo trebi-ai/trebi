@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/home"
@@ -89,7 +90,7 @@ func TestParseModels(t *testing.T) {
 			t.Fatalf("%s: got %v want %v", tc.name, got, tc.want)
 		}
 		for i := range got {
-			if got[i] != tc.want[i] {
+			if !reflect.DeepEqual(got[i], tc.want[i]) {
 				t.Errorf("%s[%d]: got %+v want %+v", tc.name, i, got[i], tc.want[i])
 			}
 		}
@@ -241,5 +242,24 @@ func TestListModelsStatic(t *testing.T) {
 	list[0].ID = "changed"
 	if staticModels(Claude)[0].ID != "sonnet" {
 		t.Fatal("staticModels shares the package list")
+	}
+}
+
+func TestParseOpencodeVerbose(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("testdata", "models", "opencode_verbose.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parseOpencodeModels(string(raw))
+	want := []ModelInfo{
+		{ID: "opencode/big-pickle", Label: "Big Pickle", Group: opencodeAccount([]string{"opencode"}), Free: true},
+		{ID: "openai/gpt-5.5", Label: "GPT-5.5", Group: opencodeAccount([]string{"openai"}), Variants: []string{"low", "medium", "high"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v\nwant %+v", got, want)
+	}
+	if want[1].Group != "OpenAI" {
+		t.Fatalf("group label %q", want[1].Group)
 	}
 }

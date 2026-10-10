@@ -62,6 +62,9 @@ func newConfirmGate() *confirmGate {
 		"DELETE /v1/workspaces/{id}/agents/{name}/memory": {4, func(n string, _ *http.Request) string {
 			return "erases the memory of agent " + n
 		}, false},
+		"DELETE /v1/harnesses/{name}/files/{key}/own": {4, func(k string, r *http.Request) string {
+			return "replaces Trebi's copy of " + pathSegment(r.URL.Path, 2) + " file " + k + " with your file; the copy goes to a backup for 30 days"
+		}, false},
 		"DELETE /v1/secrets/{name}": {2, func(n string, _ *http.Request) string {
 			return "deletes secret " + n + "; jobs that read it will fail"
 		}, false},

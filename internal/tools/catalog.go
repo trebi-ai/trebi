@@ -1715,14 +1715,20 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"list": act("GET /v1/harnesses", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildHarnessesListPath()), nil
 			}),
-			"patch": act("PATCH /v1/harnesses/{name}", Input{"name": "claude", "auth_mode": "auto"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "auth_mode")
+			"patch": act("PATCH /v1/harnesses/{name}", Input{"name": "claude", "enabled": true, "auth_mode": "shared", "model": "opus", "effort": "high", "updates": "auto", "version": "2.1.4", "compat": map[string]any{"claude": map[string]any{"hooks": false}}}, func(in Input) (request.HTTPRequest, error) {
+				name, err := in.reqStr("name")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildHarnessPatch(v[0], v[1]), nil
+				body := in.pick("enabled", "auth_mode", "model", "effort", "updates", "version", "compat")
+				if len(body) == 0 {
+					return request.HTTPRequest{}, fmt.Errorf("set at least one of enabled, auth_mode, model, effort, updates, version, compat")
+				}
+				return request.BuildHarnessPatch(name, body), nil
 			}),
-			"ensure": idPost("POST /v1/harnesses/{name}/ensure", "name", "claude", request.BuildHarnessEnsure),
+			"ensure":         idPost("POST /v1/harnesses/{name}/ensure", "name", "claude", request.BuildHarnessEnsure),
+			"update":         idPost("POST /v1/harnesses/{name}/update", "name", "claude", request.BuildHarnessUpdate),
+			"check_versions": idPost("POST /v1/harnesses/{name}/versions/check", "name", "claude", request.BuildHarnessVersionsCheck),
 			"auth": act("GET /v1/harnesses/{name}/auth", Input{"name": "claude"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name")
 				if err != nil {
@@ -1741,22 +1747,68 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"usage_refresh": act("POST /v1/harnesses/usage/refresh", Input{}, func(Input) (request.HTTPRequest, error) {
 				return request.BuildHarnessUsageRefresh(), nil
 			}),
-			"login_start": act("POST /v1/harnesses/{name}/login", Input{"name": "claude", "mode": "uri"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "mode")
+			"login_start": act("POST /v1/harnesses/{name}/login", Input{"name": "claude", "mode": "shared"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "mode", "provider")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildHarnessLoginStart(v[0], v[1]), nil
+				return request.BuildHarnessLoginStart(v[0], v[1], v[2]), nil
 			}),
-			"login_token": act("POST /v1/harnesses/{name}/login", Input{"name": "claude", "token": "sk-..."}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "token")
+			"login_token": act("POST /v1/harnesses/{name}/login", Input{"name": "opencode", "token": "sk-...", "provider": "anthropic"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "token", "provider")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				if v[1] == "" {
 					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "token")
 				}
-				return request.BuildHarnessLoginToken(v[0], v[1]), nil
+				return request.BuildHarnessLoginToken(v[0], v[1], v[2]), nil
+			}),
+			"providers": getReq("GET /v1/harnesses/{name}/providers", "name", "opencode", request.BuildHarnessProviders),
+			"files":     getReq("GET /v1/harnesses/{name}/files", "name", "claude", request.BuildHarnessFiles),
+			"file_read": act("GET /v1/harnesses/{name}/files/{key}", Input{"name": "claude", "key": "settings_prefs", "side": "trebi"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "key", "side")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if v[1] == "" {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "key")
+				}
+				return request.BuildHarnessFileRead(v[0], v[1], v[2]), nil
+			}),
+			"file_own": act("POST /v1/harnesses/{name}/files/{key}/own", Input{"name": "claude", "key": "settings_prefs", "start": "user"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "key", "start")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if v[1] == "" {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "key")
+				}
+				return request.BuildHarnessFileOwn(v[0], v[1], v[2]), nil
+			}),
+			"file_write": act("PUT /v1/harnesses/{name}/files/{key}", Input{"name": "claude", "key": "settings_prefs", "content": "{}\n", "etag": "abc"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "key", "content", "etag")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if v[1] == "" {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "key")
+				}
+				return request.BuildHarnessFileWrite(v[0], v[1], v[2], v[3]), nil
+			}),
+			"file_reset": del("DELETE /v1/harnesses/{name}/files/{key}/own", Input{"name": "claude", "key": "settings_prefs", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "key")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if v[1] == "" {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "key")
+				}
+				confirm, err := in.flag("confirm")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildHarnessFileReset(v[0], v[1], confirm), nil
 			}),
 			"login_code": act("POST /v1/harnesses/{name}/login", Input{"name": "claude", "code": "1234"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "code")

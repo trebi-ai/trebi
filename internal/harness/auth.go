@@ -51,6 +51,7 @@ type AuthStatus struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	Hint      string     `json:"hint,omitempty"`
 	Detail    string     `json:"detail,omitempty"`
+	Account   string     `json:"account,omitempty"` // email or provider list, for display only
 	ProbedAt  time.Time  `json:"probed_at,omitempty"`
 }
 
@@ -59,14 +60,16 @@ func (s AuthStatus) OK() bool { return s.Status == AuthOK }
 
 // AuthCaps is the per-driver declaration of the auth matrix.
 type AuthCaps struct {
-	LoginModes    []string `json:"login_modes"`
-	TokenEnvKeys  []string `json:"token_env_keys,omitempty"`
-	LocalCmd      string   `json:"local_cmd,omitempty"`
-	CredFile      string   `json:"cred_file,omitempty"`
-	ExpiryReader  bool     `json:"expiry_reader,omitempty"`
-	RelayFragile  bool     `json:"relay_fragile,omitempty"`
-	AttachOnly    bool     `json:"attach_only,omitempty"`
-	KeychainBound bool     `json:"keychain_bound,omitempty"`
+	LoginModes   []string `json:"login_modes"`
+	TokenEnvKeys []string `json:"token_env_keys,omitempty"`
+	LocalCmd     string   `json:"local_cmd,omitempty"`
+	CredFile     string   `json:"cred_file,omitempty"`
+	// SharedCredFile is the user's own credential file that shared mode links.
+	SharedCredFile string `json:"shared_cred_file,omitempty"`
+	ExpiryReader   bool   `json:"expiry_reader,omitempty"`
+	RelayFragile   bool   `json:"relay_fragile,omitempty"`
+	AttachOnly     bool   `json:"attach_only,omitempty"`
+	KeychainBound  bool   `json:"keychain_bound,omitempty"`
 }
 
 // HasLoginMode reports whether mode is in LoginModes.
@@ -87,12 +90,15 @@ type State struct {
 	Detail    string
 	ProbedAt  string
 	ExpiresAt string
+	Account   string
 	UpdatedAt string
 }
 
-// StampResult is the outcome of Stamp.
+// StampResult is the outcome of Stamp. Flipped gates the queue; Changed
+// drives harness.updated.
 type StampResult struct {
 	Flipped bool
+	Changed bool
 	PrevOK  bool
 	HadRow  bool
 	OK      bool
@@ -103,10 +109,10 @@ type Driver interface {
 	ProbeAuth(ctx context.Context, name string) AuthStatus
 	AuthCaps(name string) AuthCaps
 	ApplyAuthMode(name, mode string) error
-	LoginCommand(name, mode string) (command string, env []string, err error)
+	LoginCommand(name, mode, provider string) (command string, env []string, err error)
 	ExtractLogin(name, screen string) LoginExtract
 	ExecLogout(ctx context.Context, name string) error
-	LoginAPIKey(ctx context.Context, name, token string) error
+	LoginAPIKey(ctx context.Context, name string, in TokenLogin) error
 	NewNamedSession(session, cwd string) error
 	ReadScreen(session string) (string, error)
 	Send(session, text string) error
@@ -122,11 +128,32 @@ type LoginExtract struct {
 	AwaitCode bool
 	Token     string // captured setup-token (sk-ant-oat01-…)
 	NoExtract bool   // driver has no scraper (attach-only)
+	Error     string // a vendor refusal that ends the login
+	Hint      string // the next action for Error
+}
+
+// Provider is one OpenCode model provider that Trebi can log in to.
+type Provider struct {
+	ID       string   `json:"id"`    // "anthropic"
+	Label    string   `json:"label"` // "Anthropic"
+	Group    string   `json:"group"` // "opencode" or "other"
+	Note     string   `json:"note,omitempty"`
+	LoggedIn bool     `json:"logged_in"`
+	Methods  []string `json:"methods"` // "browser", "key"
+	KeyURL   string   `json:"key_url,omitempty"`
+}
+
+// TokenLogin is the body of an API key login.
+type TokenLogin struct {
+	Token    string `json:"token"`
+	Provider string `json:"provider,omitempty"` // OpenCode only
 }
 
 // Options for New.
 type Options struct {
 	LoginMaxAge time.Duration
+	// Roots moves the user home and the harness folders (tests).
+	Roots Roots
 }
 
 // Service owns harness auth stamps, probes, logout/mode, and login sessions.
@@ -208,9 +235,9 @@ func (s *Service) GetState(ctx context.Context, name string) (State, error) {
 	st.Name = name
 	err := s.st.DB().QueryRowContext(ctx, `
 		SELECT auth_ok, COALESCE(auth_status,''), COALESCE(auth_detail,''),
-			COALESCE(auth_probed_at,''), COALESCE(auth_expires_at,''), updated_at
+			COALESCE(auth_probed_at,''), COALESCE(auth_expires_at,''), COALESCE(auth_account,''), updated_at
 		FROM harness_state WHERE name=?`, name).
-		Scan(&st.AuthOK, &st.Status, &st.Detail, &st.ProbedAt, &st.ExpiresAt, &st.UpdatedAt)
+		Scan(&st.AuthOK, &st.Status, &st.Detail, &st.ProbedAt, &st.ExpiresAt, &st.Account, &st.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return st, nil
 	}
@@ -221,7 +248,7 @@ func (s *Service) GetState(ctx context.Context, name string) (State, error) {
 func (s *Service) States(ctx context.Context) (map[string]State, error) {
 	rows, err := s.st.DB().QueryContext(ctx, `
 		SELECT name, auth_ok, COALESCE(auth_status,''), COALESCE(auth_detail,''),
-			COALESCE(auth_probed_at,''), COALESCE(auth_expires_at,''), updated_at
+			COALESCE(auth_probed_at,''), COALESCE(auth_expires_at,''), COALESCE(auth_account,''), updated_at
 		FROM harness_state`)
 	if err != nil {
 		return nil, err
@@ -230,7 +257,7 @@ func (s *Service) States(ctx context.Context) (map[string]State, error) {
 	out := map[string]State{}
 	for rows.Next() {
 		var st State
-		if err := rows.Scan(&st.Name, &st.AuthOK, &st.Status, &st.Detail, &st.ProbedAt, &st.ExpiresAt, &st.UpdatedAt); err != nil {
+		if err := rows.Scan(&st.Name, &st.AuthOK, &st.Status, &st.Detail, &st.ProbedAt, &st.ExpiresAt, &st.Account, &st.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out[st.Name] = st
@@ -238,7 +265,8 @@ func (s *Service) States(ctx context.Context) (map[string]State, error) {
 	return out, rows.Err()
 }
 
-// Stamp writes harness_state auth columns and emits harness.updated on a flip.
+// Stamp writes harness_state auth columns. It emits harness.updated when the
+// status, the detail, the expiry, or the account changes.
 func (s *Service) Stamp(ctx context.Context, status AuthStatus, source string) (StampResult, error) {
 	var res StampResult
 	if status.Tool == "" {
@@ -255,12 +283,23 @@ func (s *Service) Stamp(ctx context.Context, status AuthStatus, source string) (
 	if res.OK {
 		flag = 1
 	}
+	var expires any
+	expiresStr := ""
+	if status.ExpiresAt != nil && !status.ExpiresAt.IsZero() {
+		expiresStr = status.ExpiresAt.UTC().Format(time.RFC3339Nano)
+		expires = expiresStr
+	}
 
 	var prev sql.NullInt64
-	err := s.st.DB().QueryRowContext(ctx, `SELECT auth_ok FROM harness_state WHERE name=?`, status.Tool).Scan(&prev)
+	var prevStatus, prevDetail, prevExpires, prevAccount string
+	err := s.st.DB().QueryRowContext(ctx, `
+		SELECT auth_ok, COALESCE(auth_status,''), COALESCE(auth_detail,''),
+			COALESCE(auth_expires_at,''), COALESCE(auth_account,'')
+		FROM harness_state WHERE name=?`, status.Tool).
+		Scan(&prev, &prevStatus, &prevDetail, &prevExpires, &prevAccount)
 	switch {
 	case err == nil:
-		res.HadRow = true
+		res.HadRow = prev.Valid
 		res.PrevOK = prev.Valid && prev.Int64 == 1
 	case err == sql.ErrNoRows:
 		// first stamp
@@ -268,34 +307,35 @@ func (s *Service) Stamp(ctx context.Context, status AuthStatus, source string) (
 		return res, err
 	}
 	res.Flipped = !res.HadRow || res.PrevOK != res.OK
+	res.Changed = res.Flipped || prevStatus != status.Status || prevDetail != status.Detail ||
+		prevExpires != expiresStr || prevAccount != status.Account
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	probed := status.ProbedAt.UTC().Format(time.RFC3339Nano)
-	var expires any
-	if status.ExpiresAt != nil && !status.ExpiresAt.IsZero() {
-		expires = status.ExpiresAt.UTC().Format(time.RFC3339Nano)
-	}
 	_, err = s.st.DB().ExecContext(ctx, `INSERT INTO harness_state
-		(name, auth_ok, auth_status, auth_detail, auth_probed_at, auth_expires_at, updated_at)
-		VALUES (?,?,?,?,?,?,?)
+		(name, auth_ok, auth_status, auth_detail, auth_probed_at, auth_expires_at, auth_account, updated_at)
+		VALUES (?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 			auth_ok=excluded.auth_ok,
 			auth_status=excluded.auth_status,
 			auth_detail=excluded.auth_detail,
 			auth_probed_at=excluded.auth_probed_at,
 			auth_expires_at=excluded.auth_expires_at,
+			auth_account=excluded.auth_account,
 			updated_at=excluded.updated_at`,
-		status.Tool, flag, status.Status, status.Detail, probed, expires, now)
+		status.Tool, flag, status.Status, status.Detail, probed, expires, store.NullStr(status.Account), now)
 	if err != nil {
 		return res, err
 	}
-	if !res.Flipped {
+	if !res.Changed {
 		return res, nil
 	}
 	attrs := map[string]string{
 		"harness":     status.Tool,
 		"auth_ok":     fmt.Sprintf("%t", res.OK),
 		"auth_status": status.Status,
+		"auth_detail": status.Detail,
+		"account":     status.Account,
 		"source":      source,
 		"mode":        status.Mode,
 	}
@@ -353,28 +393,37 @@ var errSharedLogout = fmt.Errorf("shared logout affects interactive CLI — re-r
 // ErrSharedLogout reports the confirm-required error (API maps to 400 validation).
 func ErrSharedLogout() error { return errSharedLogout }
 
-// LoginToken stores an API key via the secrets env, forces separate, probes.
-func (s *Service) LoginToken(ctx context.Context, name, token string) (AuthStatus, error) {
+// LoginToken stores an API key, forces separate mode (except for an OpenCode
+// provider key, which goes in the active auth.json), and probes.
+func (s *Service) LoginToken(ctx context.Context, name string, in TokenLogin) (AuthStatus, error) {
 	if !Known(name) {
 		return AuthStatus{}, fmt.Errorf("unknown harness %q", name)
 	}
-	token = trimSpace(token)
-	if token == "" {
+	in.Token = trimSpace(in.Token)
+	if in.Token == "" {
 		return AuthStatus{}, fmt.Errorf("empty token")
 	}
-	if err := s.persistMode(name, AuthModeSeparate); err != nil {
-		return AuthStatus{}, err
+	if in.Provider == "" {
+		if err := s.persistMode(name, AuthModeSeparate); err != nil {
+			return AuthStatus{}, err
+		}
 	}
 	if s.driver != nil {
-		if err := s.driver.LoginAPIKey(ctx, name, token); err != nil {
+		if err := s.driver.LoginAPIKey(ctx, name, in); err != nil {
+			if in.Provider != "" {
+				return AuthStatus{}, err
+			}
 			// Fall through to writing the env file ourselves.
 			s.log.Debug("vendor api-key login", "harness", name, "error", err)
-			if err := writeTokenEnv(name, token); err != nil {
+			if err := writeTokenEnv(name, in.Token); err != nil {
 				return AuthStatus{}, err
 			}
 		}
-	} else if err := writeTokenEnv(name, token); err != nil {
+	} else if err := writeTokenEnv(name, in.Token); err != nil {
 		return AuthStatus{}, err
+	}
+	if err := ClearLoginEnded(name); err != nil {
+		s.log.Warn("clear login-ended marker", "harness", name, "error", err)
 	}
 	st, err := s.Probe(ctx, name, SourceLogin)
 	if err != nil {

@@ -35,14 +35,14 @@ func (p *probeStub) AuthCaps(string) harness.AuthCaps { return p.caps }
 func (p *probeStub) ApplyAuthMode(string, string) error {
 	return nil
 }
-func (p *probeStub) LoginCommand(string, string) (string, []string, error) {
+func (p *probeStub) LoginCommand(string, string, string) (string, []string, error) {
 	return "", nil, nil
 }
 func (p *probeStub) ExtractLogin(string, string) harness.LoginExtract {
 	return harness.LoginExtract{NoExtract: true}
 }
 func (p *probeStub) ExecLogout(context.Context, string) error { return nil }
-func (p *probeStub) LoginAPIKey(context.Context, string, string) error {
+func (p *probeStub) LoginAPIKey(context.Context, string, harness.TokenLogin) error {
 	return nil
 }
 func (p *probeStub) NewNamedSession(string, string) error { return nil }

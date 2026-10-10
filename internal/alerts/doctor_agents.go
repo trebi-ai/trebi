@@ -45,6 +45,8 @@ func CollectAgentDoctorFindings(st *store.Store, actions ActionsChecker) []Docto
 	out := make([]DoctorFinding, 0)
 	out = append(out, agentKitFindings(st, actions)...)
 	out = append(out, agentWriteFindings(context.Background(), st.DB())...)
+	out = append(out, harnessOffFindings(context.Background(), st.DB())...)
+	out = append(out, harnessVersionFindings(context.Background(), st.DB())...)
 	if len(out) == 0 {
 		return []DoctorFinding{}
 	}
@@ -315,6 +317,65 @@ func connectorFindings(ctx context.Context, actions ActionsChecker, wsID, short,
 				ID:       id + "-" + bin[0],
 				Severity: "info", Code: "connector_command_missing",
 				Message: fmt.Sprintf("connector %s names command %s, which is not on PATH", name, bin[0]),
+			})
+		}
+	}
+	return out
+}
+
+// harnessOffFindings reports each active job or agent on a harness that is off.
+func harnessOffFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx, `SELECT workspace_id, name, COALESCE(harness,'') FROM job_index WHERE retired_at IS NULL AND active=1 ORDER BY workspace_id, name`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []DoctorFinding
+	for rows.Next() {
+		var ws, name, h string
+		if rows.Scan(&ws, &name, &h) != nil {
+			continue
+		}
+		if h == "" {
+			h = cfg.Defaults.Command
+		}
+		if !harness.Known(h) || cfg.HarnessEnabled(h) {
+			continue
+		}
+		out = append(out, DoctorFinding{
+			ID: "harness-off-" + ws + "-" + name, Severity: "warn", Code: "harness_off",
+			Message: fmt.Sprintf("%s/%s: %s", ws, name, harness.OffMessage(h)),
+		})
+	}
+	return out
+}
+
+// harnessVersionFindings reports a failed last update and a kept version
+// older than harness.KeptMaxAge, for each harness that is on.
+func harnessVersionFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	var out []DoctorFinding
+	for _, name := range harness.Names() {
+		if !config.IsFirstClass(name) || !cfg.HarnessEnabled(name) {
+			continue
+		}
+		if v, err := harness.ReadVersionState(ctx, db, name); err == nil && v.LastUpdate != nil && !v.LastUpdate.OK {
+			out = append(out, DoctorFinding{
+				ID: "harness-update-failed-" + name, Severity: "warn", Code: "harness_update_failed",
+				Message: fmt.Sprintf("%s: the update from %s to %s failed: %s", name, v.LastUpdate.From, v.LastUpdate.To, v.LastUpdate.Error),
+			})
+		}
+		if ver, since, ok := harness.KeptSince(name); ok && time.Since(since) > harness.KeptMaxAge {
+			out = append(out, DoctorFinding{
+				ID: "harness-kept-old-" + name, Severity: "info", Code: "harness_kept_old",
+				Message: fmt.Sprintf("%s: Trebi keeps version %s since %s. Update it in Settings → Harnesses.", name, ver, since.Format("2006-01-02")),
 			})
 		}
 	}

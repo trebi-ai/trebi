@@ -65,6 +65,8 @@ const (
 	// KindChainLimited is a chain that reached its limit with no request to
 	// raise it.
 	KindChainLimited Kind = "chain_limited"
+	// KindHarnessUpdateFailed is a harness update that failed its check.
+	KindHarnessUpdateFailed Kind = "harness_update_failed"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -760,6 +762,9 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindRequestUndelivered: {
 			Kind: KindRequestUndelivered, Severity: SeverityError, InboxKind: InboxFailure,
 		},
+		KindHarnessUpdateFailed: {
+			Kind: KindHarnessUpdateFailed, Severity: SeverityAttention, InboxKind: InboxHealth,
+		},
 		KindChainLimited: {
 			Kind: KindChainLimited, Severity: SeverityAttention, InboxKind: InboxHealth,
 		},
@@ -863,6 +868,8 @@ func (o RaiseOpts) defaultSubject() string {
 		return "run/" + o.RunID
 	case KindAuthMissing:
 		return "harness/" + o.Harness
+	case KindHarnessUpdateFailed:
+		return "harness-update/" + o.Harness
 	case KindLimitExceeded, KindUsageWarning:
 		return "harness/" + firstNonEmpty(o.Harness, o.Connector)
 	case KindConnectorUnhealthy, KindConnectorAuthRequired, KindConnectorUpdate,
@@ -917,6 +924,7 @@ var defaultTitles = map[Kind]string{
 	KindRequest:                     "Request",
 	KindTriggerFlood:                "Too many events",
 	KindChainLimited:                "Agents reached a chain limit",
+	KindHarnessUpdateFailed:         "Harness update failed",
 }
 
 func (o RaiseOpts) defaultTitle() string {
@@ -952,6 +960,8 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 		return []InboxAction{{Kind: ActionReview, Route: route, Label: "Open"}}
 	case KindConnectorUpdate:
 		return []InboxAction{{Kind: ActionUpdate, Route: "/v1/connectors/" + url.PathEscape(o.Connector) + "/update", Label: "Update"}}
+	case KindHarnessUpdateFailed:
+		return []InboxAction{{Kind: ActionUpdate, Route: "/v1/harnesses/" + url.PathEscape(o.Harness) + "/update", Label: "Try again"}}
 	case KindAuthMissing:
 		name := firstNonEmpty(o.Harness, o.Connector)
 		if name == "" {

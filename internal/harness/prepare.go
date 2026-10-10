@@ -165,30 +165,50 @@ func WriteSchemaStamp(harnessDir string) error {
 
 // Info is a harness status row.
 type Info struct {
-	Name    string `json:"name"`
-	Home    string `json:"home"`
-	BinPath string `json:"bin_path,omitempty"`
-	Present bool   `json:"present"`
+	Name          string `json:"name"`
+	Label         string `json:"label"`
+	Vendor        string `json:"vendor"`
+	Home          string `json:"home"`
+	BinPath       string `json:"bin_path,omitempty"`
+	Enabled       bool   `json:"enabled"`
+	Installed     bool   `json:"installed"`      // binary in the bin store or on PATH
+	TerminalLogin bool   `json:"terminal_login"` // a vendor login in the user home
+	Installable   bool   `json:"installable"`
+	Hidden        bool   `json:"hidden,omitempty"`
+}
+
+// Locator finds a harness binary and a terminal login. tmux implements it.
+type Locator interface {
+	Locate(name string) (binPath string)
+	TerminalLogin(name string) bool
 }
 
 // Names returns the supported harness names.
 func Names() []string {
-	// "fake" is the eval stand-in (cmd/fake); it ships so login and logout
-	// have a harness to exercise without a vendor account.
-	return []string{"claude", "grok", "codex", "opencode", "opencode2", "gemini", "cursor", "copilot", "pi", "fake"}
+	specs := Specs()
+	out := make([]string, len(specs))
+	for i, s := range specs {
+		out[i] = s.Name
+	}
+	return out
 }
 
-// List returns harness status under TREBI_HOME.
-func List() []Info {
-	var out []Info
-	for _, n := range Names() {
-		h := config.HarnessDir(n)
-		_, err := os.Stat(h)
-		bin := filepath.Join(config.BinDir(), n, "current")
-		_, berr := os.Stat(bin)
-		info := Info{Name: n, Home: h, Present: err == nil}
-		if berr == nil {
-			info.BinPath = bin
+// List returns one row for each known harness.
+func List(cfg *config.Config, loc Locator) []Info {
+	specs := Specs()
+	out := make([]Info, 0, len(specs))
+	for _, s := range specs {
+		info := Info{
+			Name: s.Name, Label: s.Label, Vendor: s.Vendor,
+			Home:        config.HarnessDir(s.Name),
+			Enabled:     cfg.HarnessEnabled(s.Name),
+			Installable: s.Installable,
+			Hidden:      s.Hidden,
+		}
+		if loc != nil {
+			info.BinPath = loc.Locate(s.Name)
+			info.Installed = info.BinPath != ""
+			info.TerminalLogin = loc.TerminalLogin(s.Name)
 		}
 		out = append(out, info)
 	}
@@ -205,4 +225,42 @@ func Known(name string) bool {
 		}
 	}
 	return false
+}
+
+const loginEndedMarker = ".trebi-login-ended"
+
+// MarkLoginEnded writes <harness home>/.trebi-login-ended. The shared auth
+// bridge skips a harness with the marker, so a dead terminal login is not
+// linked again. A successful login removes it.
+func MarkLoginEnded(name string) error {
+	if !Known(name) {
+		return fmt.Errorf("unknown harness %q", name)
+	}
+	return WriteFileIfChanged(filepath.Join(config.HarnessDir(name), loginEndedMarker), []byte("1\n"), 0o644)
+}
+
+// ClearLoginEnded removes the marker of MarkLoginEnded.
+func ClearLoginEnded(name string) error {
+	if !Known(name) {
+		return nil
+	}
+	err := os.Remove(filepath.Join(config.HarnessDir(name), loginEndedMarker))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// LoginEnded reports whether MarkLoginEnded is in effect for name. A user
+// file that changed after the marker (a new login in the terminal) ends it.
+func LoginEnded(name, userFile string) bool {
+	m, err := os.Stat(filepath.Join(config.HarnessDir(name), loginEndedMarker))
+	if err != nil {
+		return false
+	}
+	if u, err := os.Stat(userFile); err == nil && u.ModTime().After(m.ModTime()) {
+		_ = ClearLoginEnded(name)
+		return false
+	}
+	return true
 }

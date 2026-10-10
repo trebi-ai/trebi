@@ -18,16 +18,69 @@ func harnessCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "harness",
 		Usage: "harness tools",
-		Commands: []*cli.Command{
+		Commands: append([]*cli.Command{
 			{
 				Name:  "list",
 				Usage: "list harnesses",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
-					&cli.BoolFlag{Name: "check", Usage: "note missing homes (exit 1 if any absent)"},
 				},
 				Action: runHarnessList,
 			},
+			{
+				Name:      "enable",
+				Usage:     "turn on a harness",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "mode", Usage: "shared|separate"},
+				},
+				Action: func(_ context.Context, c *cli.Command) error {
+					body := map[string]any{"enabled": true}
+					if m := c.String("mode"); m != "" {
+						body["auth_mode"] = m
+					}
+					return runHarnessPatch(c, body)
+				},
+			},
+			{
+				Name:      "disable",
+				Usage:     "turn off a harness",
+				ArgsUsage: "<name>",
+				Action: func(_ context.Context, c *cli.Command) error {
+					return runHarnessPatch(c, map[string]any{"enabled": false})
+				},
+			},
+			{
+				Name:      "set",
+				Usage:     "set the default model or effort of a harness (\"\" clears)",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "model", Usage: "default model"},
+					&cli.StringFlag{Name: "effort", Usage: "default effort level"},
+				},
+				Action: func(_ context.Context, c *cli.Command) error {
+					body := map[string]any{}
+					for _, k := range []string{"model", "effort"} {
+						if c.IsSet(k) {
+							body[k] = c.String(k)
+						}
+					}
+					if len(body) == 0 {
+						return fmt.Errorf("set --model or --effort")
+					}
+					return runHarnessPatch(c, body)
+				},
+			},
+			{
+				Name:      "providers",
+				Usage:     "list the OpenCode model providers",
+				ArgsUsage: "[name]",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runHarnessProviders,
+			},
+			harnessFilesCommand(),
 			{
 				Name:  "usage",
 				Usage: "show the plan limits of each harness account",
@@ -80,6 +133,7 @@ func harnessCommand() *cli.Command {
 							&cli.BoolFlag{Name: "token-stdin", Usage: "read API key from stdin"},
 							&cli.BoolFlag{Name: "attach", Usage: "attach the login TUI over WebSocket"},
 							&cli.StringFlag{Name: "mode", Usage: "shared|separate (PATCH first)"},
+							&cli.StringFlag{Name: "provider", Usage: "OpenCode provider id (see: trebi harness providers opencode)"},
 						},
 						Action: runHarnessAuthLogin,
 					},
@@ -113,7 +167,7 @@ func harnessCommand() *cli.Command {
 					},
 				},
 			},
-		},
+		}, harnessVersionCommands()...),
 	}
 }
 
@@ -132,39 +186,79 @@ func runHarnessList(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
-	headers := []string{"Name", "Present", "Home", "Bin", "Mode", "Status"}
-	if c.Bool("check") {
-		headers = append(headers, "Note")
-	}
-	tbl := newTable(w, headers)
-	bad := false
+	tbl := newTable(w, []string{"Name", "On", "Installed", "Mode", "Status", "Account", "Bin"})
 	for _, h := range body.Harnesses {
-		present := mapStr(h, "present", "Present")
-		if present == "" {
-			present = "-"
+		if truthy(h["hidden"]) && !truthy(h["enabled"]) {
+			continue
 		}
-		row := table.Row{
-			mapStr(h, "name", "Name"),
-			colorStatus(w, present),
-			dash(mapStr(h, "home", "Home")),
-			dash(mapStr(h, "bin_path", "BinPath", "bin")),
+		on := "off"
+		if truthy(h["enabled"]) {
+			on = "on"
+		}
+		tbl.AppendRow(table.Row{
+			mapStr(h, "name"),
+			on,
+			mapStr(h, "installed"),
 			dash(mapStr(h, "auth_mode")),
 			dash(mapStr(h, "auth_status")),
-		}
-		if c.Bool("check") {
-			note := ""
-			if present == "false" || present == "0" || present == "-" {
-				note = "missing"
-				bad = true
-			}
-			row = append(row, dash(note))
-		}
-		tbl.AppendRow(row)
+			dash(mapStr(h, "auth_account")),
+			dash(mapStr(h, "bin_path")),
+		})
 	}
 	renderTable(tbl)
-	if c.Bool("check") && bad {
-		return fmt.Errorf("one or more harnesses missing")
+	return nil
+}
+
+func runHarnessPatch(c *cli.Command, body map[string]any) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
 	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := client.DoHTTP(request.BuildHarnessPatch(name, body), &out); err != nil {
+		return err
+	}
+	on := "off"
+	if truthy(out["enabled"]) {
+		on = "on"
+	}
+	fmt.Fprintf(outWriter(c), "%s %s mode=%v status=%v\n", name, on, out["auth_mode"], out["auth_status"])
+	return nil
+}
+
+func runHarnessProviders(_ context.Context, c *cli.Command) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		name = "opencode"
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		Providers []map[string]any `json:"providers"`
+	}
+	if err := client.DoHTTP(request.BuildHarnessProviders(name), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	tbl := newTable(outWriter(c), []string{"ID", "Provider", "Logged in", "Methods", "Key URL"})
+	for _, p := range body.Providers {
+		methods := []string{}
+		if list, ok := p["methods"].([]any); ok {
+			for _, m := range list {
+				methods = append(methods, fmt.Sprint(m))
+			}
+		}
+		tbl.AppendRow(table.Row{mapStr(p, "id"), mapStr(p, "label"), mapStr(p, "logged_in"), strings.Join(methods, ", "), dash(mapStr(p, "key_url"))})
+	}
+	renderTable(tbl)
 	return nil
 }
 
@@ -306,7 +400,7 @@ func runHarnessAuthMode(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var out map[string]any
-	if err := client.DoHTTP(request.BuildHarnessPatch(name, mode), &out); err != nil {
+	if err := client.DoHTTP(request.BuildHarnessPatch(name, map[string]any{"auth_mode": mode}), &out); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "%s mode=%v status=%v\n", name, out["auth_mode"], out["auth_status"])
@@ -345,20 +439,20 @@ func runHarnessAuthLogin(_ context.Context, c *cli.Command) error {
 			return fmt.Errorf("empty token on stdin")
 		}
 		var out map[string]any
-		if err := client.DoHTTP(request.BuildHarnessLoginToken(name, token), &out); err != nil {
+		if err := client.DoHTTP(request.BuildHarnessLoginToken(name, token, c.String("provider")), &out); err != nil {
 			return err
 		}
 		fmt.Fprintf(outWriter(c), "%s status=%v\n", name, out["auth_status"])
 		return nil
 	}
 	if c.Bool("attach") {
-		if err := client.DoHTTP(request.BuildHarnessLoginStart(name, mode), nil); err != nil {
+		if err := client.DoHTTP(request.BuildHarnessLoginStart(name, mode, c.String("provider")), nil); err != nil {
 			return renderLocalOnly(c, err)
 		}
 		return attachLoginWS(c, client, name)
 	}
 	var sess map[string]any
-	if err := client.DoHTTP(request.BuildHarnessLoginStart(name, mode), &sess); err != nil {
+	if err := client.DoHTTP(request.BuildHarnessLoginStart(name, mode, c.String("provider")), &sess); err != nil {
 		return renderLocalOnly(c, err)
 	}
 	return driveLogin(c, client, name, sess)
@@ -487,6 +581,144 @@ func agentHookCommand() *cli.Command {
 			// Claude requires JSON on stdout
 			fmt.Print("{}")
 			return nil
+		},
+	}
+}
+
+// harnessFilesCommand manages the vendor config files: yours or Trebi's own.
+func harnessFilesCommand() *cli.Command {
+	nameKey := func(c *cli.Command) (string, string, error) {
+		name, key := c.Args().Get(0), c.Args().Get(1)
+		if name == "" || key == "" {
+			return "", "", fmt.Errorf("name and key required")
+		}
+		return name, key, nil
+	}
+	return &cli.Command{
+		Name:  "files",
+		Usage: "show and edit the vendor config files that runs use",
+		Commands: []*cli.Command{
+			{
+				Name:      "list",
+				Usage:     "list the config files of a harness",
+				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action: func(_ context.Context, c *cli.Command) error {
+					name := c.Args().Get(0)
+					if name == "" {
+						return fmt.Errorf("name required")
+					}
+					client, err := clientFor(c)
+					if err != nil {
+						return err
+					}
+					var body struct {
+						Files []map[string]any `json:"files"`
+					}
+					if err := client.DoHTTP(request.BuildHarnessFiles(name), &body); err != nil {
+						return err
+					}
+					if c.Bool("json") {
+						return encodeJSON(c, body)
+					}
+					tbl := newTable(outWriter(c), []string{"Key", "File", "Mode", "Changed", "Path"})
+					for _, f := range body.Files {
+						path := mapStr(f, "user_path")
+						if mapStr(f, "mode") == "own" {
+							path = mapStr(f, "trebi_path")
+						}
+						changed := ""
+						if truthy(f["user_changed_since_own"]) {
+							changed = "your file changed"
+						}
+						tbl.AppendRow(table.Row{mapStr(f, "key"), mapStr(f, "label"), mapStr(f, "mode"), dash(changed), path})
+					}
+					renderTable(tbl)
+					return nil
+				},
+			},
+			{
+				Name:      "show",
+				Usage:     "print one config file",
+				ArgsUsage: "<name> <key>",
+				Flags:     []cli.Flag{&cli.StringFlag{Name: "side", Usage: "user|trebi (default: the file that runs use)"}},
+				Action: func(_ context.Context, c *cli.Command) error {
+					name, key, err := nameKey(c)
+					if err != nil {
+						return err
+					}
+					client, err := clientFor(c)
+					if err != nil {
+						return err
+					}
+					var body struct {
+						Content string `json:"content"`
+					}
+					if err := client.DoHTTP(request.BuildHarnessFileRead(name, key, c.String("side")), &body); err != nil {
+						return err
+					}
+					_, err = fmt.Fprint(outWriter(c), body.Content)
+					return err
+				},
+			},
+			{
+				Name:      "own",
+				Usage:     "make Trebi's own copy, so that runs use it",
+				ArgsUsage: "<name> <key>",
+				Flags:     []cli.Flag{&cli.StringFlag{Name: "start", Usage: "user|empty|backup", Value: "user"}},
+				Action: func(_ context.Context, c *cli.Command) error {
+					name, key, err := nameKey(c)
+					if err != nil {
+						return err
+					}
+					client, err := clientFor(c)
+					if err != nil {
+						return err
+					}
+					return client.DoHTTP(request.BuildHarnessFileOwn(name, key, c.String("start")), nil)
+				},
+			},
+			{
+				Name:      "write",
+				Usage:     "replace Trebi's copy from a file or stdin",
+				ArgsUsage: "<name> <key>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "file", Usage: "read the content from this file (default: stdin)"},
+					&cli.StringFlag{Name: "etag", Usage: "refuse the write when the file changed"},
+				},
+				Action: func(_ context.Context, c *cli.Command) error {
+					name, key, err := nameKey(c)
+					if err != nil {
+						return err
+					}
+					content, err := readFileOrStdin(c.String("file"))
+					if err != nil {
+						return err
+					}
+					client, err := clientFor(c)
+					if err != nil {
+						return err
+					}
+					return client.DoHTTP(request.BuildHarnessFileWrite(name, key, content, c.String("etag")), nil)
+				},
+			},
+			{
+				Name:      "reset",
+				Usage:     "go back to your file; Trebi keeps its copy as a backup for 30 days",
+				ArgsUsage: "<name> <key>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "confirm the reset"}},
+				Action: func(_ context.Context, c *cli.Command) error {
+					name, key, err := nameKey(c)
+					if err != nil {
+						return err
+					}
+					client, err := clientFor(c)
+					if err != nil {
+						return err
+					}
+					return client.DoHTTP(request.BuildHarnessFileReset(name, key, c.Bool("yes")), nil)
+				},
+			},
 		},
 	}
 }

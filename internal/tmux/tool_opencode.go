@@ -11,6 +11,7 @@ import (
 	"time"
 
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 )
 
@@ -159,7 +160,11 @@ func (t opencodeTool) Lifecycle() LifecycleAdapter {
 
 func (t opencodeTool) launchEnv() map[string]string {
 	t.tool = t.name
-	_, dir := t.prepare()
+	cfg, dir := t.prepare()
+	// XDG_DATA_HOME moves auth.json under the harness home; applyAuthMode
+	// links it to the user file in shared mode.
+	data := opencodeDataHome(t.name)
+	_ = EnsureSharedAuth(t.name, currentAuthMode(t.name))
 	if t.name == OpenCode2 {
 		// V2 reads the operator's own config directories. The 1.x variables are
 		// not honored in the builds tested on 2026-09-22: `debug config` lists
@@ -167,20 +172,33 @@ func (t opencodeTool) launchEnv() map[string]string {
 		// directory never loads. So the trebi home stays out of a V2 launch and
 		// the bridge assets written under it do not reach V2 — the operator's
 		// own skills and config do. Re-check when the V2 config surface settles.
-		return nil
+		return map[string]string{"XDG_DATA_HOME": data, "OPENCODE_DISABLE_AUTOUPDATE": "1"}
 	}
 	cfgPath := filepath.Join(dir, "opencode.json")
-	return map[string]string{
+	if config.ResourceOwn(t.name, "config", cfg) {
+		// Trebi's copy of the user config; the run plugin still loads from
+		// OPENCODE_CONFIG_DIR.
+		cfgPath = filepath.Join(dir, harness.OpenCodeOwnConfig)
+	}
+	env := map[string]string{
 		// OPENCODE_CONFIG_DIR adds the trebi home as a config directory, so
 		// OpenCode scans the skills and plugins the bridge injects there and
 		// reads opencode.json from it. It adds to the user's config: the real
-		// XDG config dir stays in the list. It does not move auth — auth.json
-		// lives under XDG data (Global.Path.data), which trebi leaves alone.
+		// XDG config dir stays in the list.
 		"OPENCODE_CONFIG_DIR": dir,
+		"XDG_DATA_HOME":       data,
 		// Kept for OpenCode builds without OPENCODE_CONFIG_DIR: the same file
 		// then merges as an explicit config.
-		"OPENCODE_CONFIG": cfgPath,
+		"OPENCODE_CONFIG":             cfgPath,
+		"OPENCODE_DISABLE_AUTOUPDATE": "1",
 	}
+	if !cfg.ClaudeCompat(t.name, "agents") {
+		env["OPENCODE_DISABLE_CLAUDE_CODE_PROMPT"] = "1"
+	}
+	if !cfg.ClaudeCompat(t.name, "skills") {
+		env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "1"
+	}
+	return env
 }
 
 //go:embed lifecycle/opencode-trebi.js
@@ -236,11 +254,16 @@ func (opencodeLifecycle) materialize(dir string) error {
 	}
 	// JSON with file URL (space-safe paths encoded lightly).
 	fileURL := "file://" + filepath.ToSlash(abs)
+	instructions := ""
+	if memory := filepath.Join(dir, "AGENTS.md"); fileExists(memory) {
+		// Trebi's own instructions file (D10 "own" mode).
+		instructions = fmt.Sprintf(",\n  \"instructions\": [%q]", memory)
+	}
 	ocJSON := fmt.Sprintf(`{
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [%q]
+  "plugin": [%q]%s
 }
-`, fileURL)
+`, fileURL, instructions)
 	if err := harness.WriteFileIfChanged(filepath.Join(dir, "opencode.json"), []byte(ocJSON), 0644); err != nil {
 		return err
 	}

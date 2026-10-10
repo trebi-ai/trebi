@@ -447,11 +447,11 @@ func TestBuildHarnessEnsureAndAuth(t *testing.T) {
 	if live.Path != "/v1/harnesses/claude/auth?live=1" {
 		t.Fatalf("%+v", live)
 	}
-	p := BuildHarnessLoginStart("claude", "")
+	p := BuildHarnessLoginStart("claude", "", "")
 	if p.Method != "POST" || p.Path != "/v1/harnesses/claude/login" {
 		t.Fatalf("%+v", p)
 	}
-	tok := BuildHarnessLoginToken("claude", "sk")
+	tok := BuildHarnessLoginToken("claude", "sk", "")
 	if tok.Body.(map[string]any)["token"] != "sk" {
 		t.Fatalf("%+v", tok)
 	}
@@ -463,7 +463,7 @@ func TestBuildHarnessEnsureAndAuth(t *testing.T) {
 	if lo.Method != "POST" || lo.Path != "/v1/harnesses/claude/logout" {
 		t.Fatalf("%+v", lo)
 	}
-	md := BuildHarnessPatch("claude", "separate")
+	md := BuildHarnessPatch("claude", map[string]any{"auth_mode": "separate"})
 	if md.Method != "PATCH" {
 		t.Fatalf("%+v", md)
 	}

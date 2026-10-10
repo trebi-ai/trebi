@@ -121,11 +121,13 @@ const (
 	DeferPolicy    DeferReason = "policy"
 	DeferTurn      DeferReason = "turn_active"
 	DeferRunActive DeferReason = "run_active"
-	DeferRetry     DeferReason = "retry"
+	// DeferHarnessUpdate waits while Trebi updates the harness.
+	DeferHarnessUpdate DeferReason = "harness_update"
+	DeferRetry         DeferReason = "retry"
 )
 
 // waitReasons is the SQL list of defer reasons that are waits, not errors.
-const waitReasons = `('policy','turn_active','run_active')`
+const waitReasons = `('policy','turn_active','run_active','harness_update')`
 
 const (
 	BlockAuthMissing   BlockReason = "auth_missing"

@@ -93,7 +93,14 @@ func (c *ControlPlane) authProbe(ctx context.Context) {
 			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
 				continue
 			}
-			if name := credFileHarness(ev.Name); name != "" {
+			for _, name := range configFileHarnesses(ev.Name) {
+				// Keeps user_changed_since_own and an open file dialog current.
+				if err := c.Harness.PublishUpdated(ctx, name, map[string]string{"files": "true"}); err != nil {
+					c.log.Warn("config-file watch", "harness", name, "error", err)
+				}
+			}
+			for _, name := range c.credFileHarnesses(ev.Name) {
+				c.Harness.CredChanged(name)
 				if _, err := c.Harness.Probe(ctx, name, harness.SourceProbe); err != nil {
 					c.log.Warn("cred-watch probe", "harness", name, "error", err)
 				}
@@ -134,52 +141,90 @@ func (c *ControlPlane) syncCredWatch(w *fsnotify.Watcher) {
 	seen := map[string]struct{}{}
 	for _, n := range harness.Names() {
 		caps := c.Harness.Caps(n)
-		if caps.CredFile == "" {
-			continue
+		for _, f := range []string{caps.CredFile, caps.SharedCredFile} {
+			if f == "" {
+				continue
+			}
+			dir := filepath.Dir(f)
+			if fi, err := os.Stat(f); err == nil && fi.IsDir() {
+				dir = f // credential location is a directory (copilot)
+			}
+			// Never watch the user home: kqueue opens every entry, which trips
+			// macOS TCC prompts for Desktop/Documents/Downloads.
+			if userHome != "" && filepath.Clean(dir) == filepath.Clean(userHome) {
+				continue
+			}
+			if _, ok := seen[dir]; ok {
+				continue
+			}
+			seen[dir] = struct{}{}
+			// Do not make a vendor folder in the user home.
+			if f == caps.SharedCredFile {
+				if _, err := os.Stat(dir); err != nil {
+					continue
+				}
+			} else if err := os.MkdirAll(dir, 0o755); err != nil {
+				continue
+			}
+			_ = w.Add(dir)
 		}
-		dir := filepath.Dir(caps.CredFile)
-		if fi, err := os.Stat(caps.CredFile); err == nil && fi.IsDir() {
-			dir = caps.CredFile // credential location is a directory (copilot)
+	}
+	// The user config files (D10). Only folders that exist, never the home.
+	for _, spec := range harness.Specs() {
+		for _, f := range spec.Files {
+			dir := filepath.Dir(filepath.Join(userHome, f.UserRel))
+			if userHome == "" || filepath.Clean(dir) == filepath.Clean(userHome) {
+				continue
+			}
+			if _, ok := seen[dir]; ok {
+				continue
+			}
+			if _, err := os.Stat(dir); err != nil {
+				continue
+			}
+			seen[dir] = struct{}{}
+			_ = w.Add(dir)
 		}
-		// Never watch the user home: kqueue opens every entry, which trips
-		// macOS TCC prompts for Desktop/Documents/Downloads.
-		if userHome != "" && filepath.Clean(dir) == filepath.Clean(userHome) {
-			continue
-		}
-		if _, ok := seen[dir]; ok {
-			continue
-		}
-		seen[dir] = struct{}{}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			continue
-		}
-		_ = w.Add(dir)
 	}
 }
 
-func credFileHarness(path string) string {
-	if filepath.Base(filepath.Dir(path)) == ".copilot" {
-		return "copilot"
+// configFileHarnesses returns the harnesses that have path as a user config
+// file.
+func configFileHarnesses(path string) []string {
+	userHome, _ := os.UserHomeDir()
+	if userHome == "" {
+		return nil
 	}
-	switch filepath.Base(path) {
-	case ".credentials.json":
-		return "claude"
-	case "oauth_creds.json":
-		return "gemini"
-	case "auth.json":
-		// disambiguate by parent
-		switch filepath.Base(filepath.Dir(path)) {
-		case "codex":
-			return "codex"
-		case "grok":
-			return "grok"
-		case "pi", "agent":
-			return "pi"
-		case "opencode":
-			return "opencode"
-		case "opencode2":
-			return "opencode2"
+	path = filepath.Clean(path)
+	var out []string
+	for _, spec := range harness.Specs() {
+		for _, f := range spec.Files {
+			if filepath.Join(userHome, f.UserRel) == path {
+				out = append(out, spec.Name)
+				break
+			}
 		}
 	}
-	return ""
+	return out
+}
+
+// credFileHarnesses returns the harnesses whose credential file is path. A
+// shared user file can serve two harnesses (opencode, opencode2).
+func (c *ControlPlane) credFileHarnesses(path string) []string {
+	path = filepath.Clean(path)
+	var out []string
+	for _, n := range harness.Names() {
+		caps := c.Harness.Caps(n)
+		for _, f := range []string{caps.CredFile, caps.SharedCredFile} {
+			if f == "" {
+				continue
+			}
+			f = filepath.Clean(f)
+			if f == path || filepath.Dir(path) == f {
+				out = append(out, n)
+				break
+			}
+		}
+	}
+	return out
 }

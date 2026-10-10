@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -247,7 +248,9 @@ func (t grokTool) launchEnv() map[string]string {
 		mode = harness.AuthModeFromConfig(cfg, Grok)
 	}
 	_ = EnsureSharedAuth(Grok, mode)
-	return map[string]string{"GROK_HOME": dir}
+	env := map[string]string{"GROK_HOME": dir}
+	maps.Copy(env, autoUpdateOff(Grok))
+	return env
 }
 
 //go:embed lifecycle/grok-trebi.json

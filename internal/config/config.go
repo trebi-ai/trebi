@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -389,8 +390,12 @@ func (m *ResourceModeMap) UnmarshalYAML(value *yaml.Node) error {
 
 // ToolPin is one harness binary pin + auth mode + optional bridge override.
 type ToolPin struct {
-	Version string `yaml:"version,omitempty"` // exact x.y.z after ensure target
-	Channel string `yaml:"channel,omitempty"` // last channel target (stable/latest)
+	// Enabled turns the harness on. Nil is off: the user turns on each harness.
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// Updates is "auto" (empty) or "keep". Keep runs the copy in the bin store.
+	Updates string `yaml:"updates,omitempty"`
+	// Version is the kept version (keep mode).
+	Version string `yaml:"version,omitempty"`
 	// Auth: "shared" (default, bridge user login) or "separate" (trebi-only creds).
 	Auth string `yaml:"auth,omitempty"`
 	// Path overrides the store binary (skip download; still version-check if possible).
@@ -409,6 +414,38 @@ type ToolPin struct {
 	Runtime string `yaml:"runtime,omitempty"`
 	// Bridge overrides global tools.bridge for this tool.
 	Bridge *BridgeConfig `yaml:"bridge,omitempty"`
+	// Compat holds the Claude file switches of Grok and OpenCode.
+	Compat *HarnessCompat `yaml:"compat,omitempty"`
+}
+
+// HarnessCompat turns the Claude files that a harness also reads on or off.
+// Keys: agents, skills, rules, mcps, hooks (CompatKeys).
+type HarnessCompat struct {
+	Claude map[string]bool `yaml:"claude,omitempty"`
+}
+
+// CompatKeys lists the Claude compat switches of a harness, or nil.
+func CompatKeys(tool string) []string {
+	switch tool {
+	case "grok":
+		return []string{"agents", "skills", "rules", "mcps", "hooks"}
+	case "opencode", "opencode2":
+		return []string{"agents", "skills"}
+	}
+	return nil
+}
+
+// ClaudeCompat reports whether tool reads the Claude files of key. All keys
+// are on by default except hooks.
+func (c *Config) ClaudeCompat(tool, key string) bool {
+	if c != nil {
+		if p := c.Tools.Pin(tool); p != nil && p.Compat != nil {
+			if v, ok := p.Compat.Claude[key]; ok {
+				return v
+			}
+		}
+	}
+	return key != "hooks"
 }
 
 // HarnessEffortLevels returns the effort levels tool accepts on a launch flag,
@@ -475,6 +512,19 @@ func FirstClassTools() []string {
 	return []string{"claude", "grok", "codex", "opencode", "opencode2", "copilot", "cursor", "pi"}
 }
 
+// HarnessEnabled reports whether the harness is on. A harness without a
+// tools.<name> field (gemini, fake) is always on: it is hidden in the UI.
+func (c *Config) HarnessEnabled(name string) bool {
+	if !IsFirstClass(name) {
+		return true
+	}
+	if c == nil {
+		return false
+	}
+	p := c.Tools.Pin(name)
+	return p != nil && p.Enabled != nil && *p.Enabled
+}
+
 // IsFirstClass reports whether name has a dedicated tools.<name> field in config.yaml.
 func IsFirstClass(name string) bool {
 	for _, t := range FirstClassTools() {
@@ -495,15 +545,16 @@ func KnownBridgeResources() map[string][]string {
 		},
 		"grok": {
 			"skills", "claude_skills_compat", "config_prefs", "marketplace", "plugins",
+			"user_memory",
 		},
 		"codex": {
-			"config_prefs", "skills", "prompts", "mcp",
+			"config_prefs", "skills", "prompts", "mcp", "user_memory",
 		},
 		"opencode": {
-			"plugins", "config", "skills",
+			"plugins", "config", "skills", "user_memory",
 		},
 		"opencode2": {
-			"plugins", "config", "skills",
+			"plugins", "config", "skills", "user_memory",
 		},
 		"copilot": {
 			"settings", "skills",
@@ -709,6 +760,9 @@ terminal: Terminal         # macOS: Terminal | iTerm | Ghostty
 
 tools:
   fallback: path           # path (use PATH) | require (fail when unpinned)
+  # claude:
+  #   enabled: true        # turn on a harness; each one is off until you turn it on
+  #   updates: auto        # auto | keep (Trebi runs keep the copy in ~/.trebi/bin)
   # bridge:                # per-harness resource inheritance
   #   never: []
 
@@ -1037,11 +1091,13 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// NormalizeBridgeMode maps aliases to inherit|false. Invalid returns empty and false.
+// NormalizeBridgeMode maps aliases to inherit|false|own. Invalid returns empty and false.
 func NormalizeBridgeMode(raw string) (mode string, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "true", "inherit", "link":
 		return "inherit", true
+	case "own":
+		return "own", true
 	case "false", "off", "none":
 		return "false", true
 	default:
@@ -1089,9 +1145,29 @@ func (e *ConfigError) checkBridge(prefix string, b *BridgeConfig, tool string) {
 			continue
 		}
 		if !validBridgeModeValue(mode) {
-			e.add(field, fmt.Sprintf("%q not in [true, false, inherit, link, off, none]", mode))
+			e.add(field, fmt.Sprintf("%q not in [true, false, inherit, link, off, none, own]", mode))
+		} else if m, _ := NormalizeBridgeMode(mode); m == "own" && !Ownable(tool, k) {
+			e.add(field, "own is only for a config file of a harness")
 		}
 	}
+}
+
+// OwnableResources lists the config files of each harness that can be in
+// "own" mode: Trebi keeps its own copy and the bridge leaves it alone.
+func OwnableResources() map[string][]string {
+	oc := []string{"config", "user_memory"}
+	return map[string][]string{
+		"claude":    {"settings_prefs", "user_memory", "settings_local", "mcp"},
+		"codex":     {"config_prefs", "user_memory"},
+		"grok":      {"config_prefs", "user_memory"},
+		"opencode":  oc,
+		"opencode2": oc,
+	}
+}
+
+// Ownable reports whether key of tool can be in "own" mode.
+func Ownable(tool, key string) bool {
+	return slices.Contains(OwnableResources()[tool], key)
 }
 
 func knownResource(tool, key string) bool {

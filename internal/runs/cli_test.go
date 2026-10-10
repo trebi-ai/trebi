@@ -31,6 +31,9 @@ func cliFixture(t *testing.T, drv agentwire.Driver) (*runs.Service, *store.Store
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
 	t.Cleanup(func() { home.SetBase("") })
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("tools:\n  claude: {enabled: true}\n  codex: {enabled: true}\n  grok: {enabled: true}\n  opencode: {enabled: true}\n  cursor: {enabled: true}\n  pi: {enabled: true}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	bin := t.TempDir()
 	fake := filepath.Join(bin, "claude")

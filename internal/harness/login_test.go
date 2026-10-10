@@ -37,7 +37,7 @@ func (f *fakeDriver) AuthCaps(name string) AuthCaps {
 	return AuthCaps{LoginModes: []string{LoginRelay, LoginToken}}
 }
 func (f *fakeDriver) ApplyAuthMode(string, string) error { return nil }
-func (f *fakeDriver) LoginCommand(string, string) (string, []string, error) {
+func (f *fakeDriver) LoginCommand(string, string, string) (string, []string, error) {
 	return "fake-login", nil, nil
 }
 func (f *fakeDriver) ExtractLogin(_, screen string) LoginExtract {
@@ -61,7 +61,7 @@ func extractFrom(screen string) LoginExtract {
 	return ex
 }
 func (f *fakeDriver) ExecLogout(context.Context, string) error { return nil }
-func (f *fakeDriver) LoginAPIKey(context.Context, string, string) error {
+func (f *fakeDriver) LoginAPIKey(context.Context, string, TokenLogin) error {
 	return nil
 }
 func (f *fakeDriver) NewNamedSession(session, cwd string) error {
@@ -103,7 +103,7 @@ func TestLoginSessionMachine(t *testing.T) {
 	t.Cleanup(svc.StopLoginWatchers)
 	ctx := context.Background()
 
-	sess, err := svc.StartLogin(ctx, "claude", "")
+	sess, err := svc.StartLogin(ctx, "claude", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestLoginSessionMachine(t *testing.T) {
 		t.Fatalf("%+v", sess)
 	}
 	// second start is idempotent
-	sess2, err := svc.StartLogin(ctx, "claude", "")
+	sess2, err := svc.StartLogin(ctx, "claude", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,20 +164,20 @@ func TestLoginCancelAndTimeout(t *testing.T) {
 	svc := New(st, drv, Options{LoginMaxAge: 200 * time.Millisecond})
 	t.Cleanup(svc.StopLoginWatchers)
 	ctx := context.Background()
-	if _, err := svc.StartLogin(ctx, "claude", ""); err != nil {
+	if _, err := svc.StartLogin(ctx, "claude", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	svc.CancelLogin("claude")
 	got := svc.GetLogin("claude")
-	if got.Phase != PhaseFailed {
-		t.Fatalf("cancel: %+v", got)
+	if got.Active || got.Phase != "" {
+		t.Fatalf("cancel must delete the session: %+v", got)
 	}
 
 	st2 := openStore(t)
 	drv2 := &fakeDriver{probe: AuthStatus{Tool: "claude", Status: AuthMissing}, has: true}
 	svc2 := New(st2, drv2, Options{LoginMaxAge: 150 * time.Millisecond})
 	t.Cleanup(svc2.StopLoginWatchers)
-	if _, err := svc2.StartLogin(ctx, "claude", ""); err != nil {
+	if _, err := svc2.StartLogin(ctx, "claude", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -200,7 +200,7 @@ func TestLoginLocalOnly(t *testing.T) {
 		"cursor": {LoginModes: []string{LoginToken}, LocalCmd: "cursor-agent login"},
 	}}
 	svc := New(st, drv, Options{})
-	_, err := svc.StartLogin(context.Background(), "cursor", "")
+	_, err := svc.StartLogin(context.Background(), "cursor", "", "")
 	if _, ok := IsLocalOnly(err); !ok {
 		t.Fatalf("want local_only, got %v", err)
 	}
@@ -247,7 +247,7 @@ func TestLoginCapturesSetupToken(t *testing.T) {
 	}
 	svc := New(st, drv, Options{LoginMaxAge: 5 * time.Second})
 	t.Cleanup(svc.StopLoginWatchers)
-	if _, err := svc.StartLogin(ctx, "claude", ""); err != nil {
+	if _, err := svc.StartLogin(ctx, "claude", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	drv.mu.Lock()
@@ -307,5 +307,108 @@ func TestSubmitCodeNoSession(t *testing.T) {
 	_, err := svc.SubmitCode(context.Background(), "claude", "ABCD")
 	if err != ErrNoLogin() && err.Error() != ErrNoLogin().Error() {
 		t.Fatalf("%v", err)
+	}
+}
+
+func waitPhase(t *testing.T, svc *Service, name, phase string) LoginSession {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var got LoginSession
+	for time.Now().Before(deadline) {
+		got = svc.GetLogin(name)
+		if got.Phase == phase {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("want phase %s, got %+v", phase, got)
+	return got
+}
+
+func TestLoginCredChangedFinishes(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	var mu sync.Mutex
+	probes := 0
+	drv := &fakeDriver{probeFn: func(name string) AuthStatus {
+		mu.Lock()
+		probes++
+		mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		return AuthStatus{Tool: name, Status: AuthOK}
+	}}
+	svc := New(st, drv, Options{LoginMaxAge: 5 * time.Second})
+	t.Cleanup(svc.StopLoginWatchers)
+	if _, err := svc.StartLogin(context.Background(), "grok", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// The vendor CLI writes the file; the shell stays open.
+	svc.CredChanged("grok")
+	svc.CredChanged("grok")
+	waitPhase(t, svc, "grok", PhaseDone)
+	svc.CredChanged("grok")
+	svc.StopLoginWatchers()
+	mu.Lock()
+	defer mu.Unlock()
+	if probes != 1 {
+		t.Fatalf("want one probe, got %d", probes)
+	}
+	if n := countTopic(t, st, "harness.login.updated"); n < 2 {
+		t.Fatalf("want login events on the bus, got %d", n)
+	}
+}
+
+// A logout also changes the files. A failed probe keeps the session.
+func TestLoginCredChangedKeepsOnFail(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	drv := &fakeDriver{probe: AuthStatus{Tool: "grok", Status: AuthMissing}}
+	svc := New(st, drv, Options{LoginMaxAge: 5 * time.Second})
+	t.Cleanup(svc.StopLoginWatchers)
+	if _, err := svc.StartLogin(context.Background(), "grok", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	svc.CredChanged("grok")
+	time.Sleep(100 * time.Millisecond)
+	if got := svc.GetLogin("grok"); !got.Active || got.Phase == PhaseFailed {
+		t.Fatalf("session ended: %+v", got)
+	}
+	// The watcher still reads the screen.
+	drv.mu.Lock()
+	drv.screen = "Enter code: ABCD-1234"
+	drv.mu.Unlock()
+	waitPhase(t, svc, "grok", PhaseAwaitingCode)
+	drv.mu.Lock()
+	drv.probe = AuthStatus{Tool: "grok", Status: AuthOK}
+	drv.mu.Unlock()
+	svc.CredChanged("grok")
+	waitPhase(t, svc, "grok", PhaseDone)
+}
+
+func TestLoginCLIExitFinishes(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	drv := &fakeDriver{probe: AuthStatus{Tool: "codex", Status: AuthOK}}
+	svc := New(st, drv, Options{LoginMaxAge: 5 * time.Second})
+	t.Cleanup(svc.StopLoginWatchers)
+	if _, err := svc.StartLogin(context.Background(), "codex", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	drv.mu.Lock()
+	drv.has = false
+	drv.mu.Unlock()
+	waitPhase(t, svc, "codex", PhaseDone)
+	// A done session still answers for doneRetain.
+	time.Sleep(1500 * time.Millisecond)
+	if got := svc.GetLogin("codex"); got.Phase != PhaseDone {
+		t.Fatalf("done session must stay, got %+v", got)
+	}
+	// A new start replaces the ended session.
+	sess, err := svc.StartLogin(context.Background(), "codex", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Phase != PhaseStarting {
+		t.Fatalf("restart %+v", sess)
 	}
 }

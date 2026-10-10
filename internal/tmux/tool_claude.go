@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,8 +185,7 @@ func (t claudeTool) launchEnv() map[string]string {
 	_ = EnsureSharedAuth(Claude, mode)
 	_ = seedClaudeOnboarding(dir)
 	env := claudeIsolationEnvMap(dir, mode)
-	env["DISABLE_AUTOUPDATER"] = "1"
-	env["DISABLE_UPDATES"] = "1"
+	maps.Copy(env, autoUpdateOff(Claude))
 	return env
 }
 

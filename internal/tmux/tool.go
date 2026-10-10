@@ -436,7 +436,7 @@ func (h harnessHome) bridgeAuth(userRel, mode string) error {
 	}
 	src := filepath.Join(userHome, userRel)
 	dst := filepath.Join(config.HarnessDir(h.tool), filepath.Base(userRel))
-	return harness.SymlinkAuth(src, dst, mode)
+	return harness.SymlinkAuth(src, dst, sharedUnlessEnded(h.tool, mode, src))
 }
 
 func (h harnessHome) materialize(dir string) {

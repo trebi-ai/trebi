@@ -8,6 +8,7 @@ import (
 	"time"
 
 	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // Login phases for the interactive session state machine.
@@ -19,6 +20,9 @@ const (
 	PhaseDone            = "done"
 	PhaseFailed          = "failed"
 )
+
+// doneRetain is how long GET /login still answers for an ended session.
+const doneRetain = 60 * time.Second
 
 // LoginSession is the wire shape of GET /login.
 type LoginSession struct {
@@ -45,6 +49,8 @@ type loginSession struct {
 	localCmd  string
 	hint      string
 	startedAt time.Time
+	endedAt   time.Time
+	finishing bool // verifyAndFinish runs once per session
 	cancel    context.CancelFunc
 }
 
@@ -52,7 +58,7 @@ type loginSession struct {
 func LoginSessionName(name string) string { return "trebi-login-" + name }
 
 // StartLogin begins (or returns) the interactive login session.
-func (s *Service) StartLogin(ctx context.Context, name, mode string) (LoginSession, error) {
+func (s *Service) StartLogin(ctx context.Context, name, mode, provider string) (LoginSession, error) {
 	if !Known(name) {
 		return LoginSession{}, fmt.Errorf("unknown harness %q", name)
 	}
@@ -75,14 +81,14 @@ func (s *Service) StartLogin(ctx context.Context, name, mode string) (LoginSessi
 	}
 
 	s.mu.Lock()
-	if cur, ok := s.logins[name]; ok && cur.phase != PhaseDone && cur.phase != PhaseFailed {
+	if cur, ok := s.logins[name]; ok && !cur.ended() {
 		out := cur.wire()
 		s.mu.Unlock()
 		return out, nil
 	}
 	s.mu.Unlock()
 
-	cmd, env, err := s.driver.LoginCommand(name, mode)
+	cmd, env, err := s.driver.LoginCommand(name, mode, provider)
 	if err != nil {
 		return LoginSession{}, err
 	}
@@ -113,7 +119,8 @@ func (s *Service) StartLogin(ctx context.Context, name, mode string) (LoginSessi
 	s.mu.Lock()
 	s.logins[name] = ls
 	s.mu.Unlock()
-	s.log.Info("auth.login_started", "harness", name, "session", sess)
+	s.log.Info("harness.login.updated", "harness", name, "phase", PhaseStarting, "session", sess)
+	s.publishLogin(ctx, ls)
 
 	s.loginWG.Add(1)
 	go func() {
@@ -164,7 +171,7 @@ func (s *Service) SubmitCode(ctx context.Context, name, code string) (LoginSessi
 	s.mu.Lock()
 	ls, ok := s.logins[name]
 	s.mu.Unlock()
-	if !ok || ls.phase == PhaseDone || ls.phase == PhaseFailed {
+	if !ok || ls.ended() {
 		return LoginSession{}, errNoLogin
 	}
 	if err := s.driver.Send(ls.tmux, code); err != nil {
@@ -175,6 +182,7 @@ func (s *Service) SubmitCode(ctx context.Context, name, code string) (LoginSessi
 	ls.phase = PhaseVerifying
 	out := ls.wire()
 	s.mu.Unlock()
+	s.publishLogin(ctx, ls)
 	return out, nil
 }
 
@@ -184,9 +192,30 @@ var errNoLogin = fmt.Errorf("no active login session")
 // ErrNoLogin returns the sentinel.
 func ErrNoLogin() error { return errNoLogin }
 
-// CancelLogin kills the login session.
+// CancelLogin kills the login session and forgets it.
 func (s *Service) CancelLogin(name string) {
-	s.finishLogin(name, PhaseFailed, "cancelled")
+	s.finishLogin(name, PhaseFailed, "cancelled", "")
+	s.mu.Lock()
+	delete(s.logins, name)
+	s.mu.Unlock()
+}
+
+// CredChanged is called by the credential watcher. When a login for name is
+// active and the probe passes, it finishes the login. A failed probe keeps the
+// session: a logout also changes the files.
+func (s *Service) CredChanged(name string) {
+	s.mu.Lock()
+	ls, ok := s.logins[name]
+	if !ok || ls.ended() || ls.finishing {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	s.loginWG.Add(1)
+	go func() {
+		defer s.loginWG.Done()
+		s.verifyAndFinish(name, false)
+	}()
 }
 
 // StopLoginWatchers waits for in-flight login goroutines (daemon shutdown).
@@ -210,10 +239,10 @@ func (s *Service) watchLogin(ctx context.Context, name string) {
 		case <-ctx.Done():
 			s.mu.Lock()
 			ls, ok := s.logins[name]
-			done := ok && (ls.phase == PhaseDone || ls.phase == PhaseFailed)
+			done := ok && (ls.ended() || ls.finishing)
 			s.mu.Unlock()
 			if !done {
-				s.finishLogin(name, PhaseFailed, "timeout")
+				s.finishLogin(name, PhaseFailed, "The login took too long. Start it again.", "")
 			}
 			return
 		case <-tick.C:
@@ -239,20 +268,27 @@ func extractWindow(maxAge time.Duration) time.Duration {
 func (s *Service) tickLogin(name string, extractDeadline time.Time) bool {
 	s.mu.Lock()
 	ls, ok := s.logins[name]
-	s.mu.Unlock()
-	if !ok || ls.phase == PhaseDone || ls.phase == PhaseFailed {
+	if !ok || ls.ended() {
+		s.mu.Unlock()
 		return true
 	}
+	// A probe runs; it may keep the session.
+	if ls.finishing {
+		s.mu.Unlock()
+		return false
+	}
+	s.mu.Unlock()
 	screen, err := s.driver.ReadScreen(ls.tmux)
 	if err != nil {
 		if !s.driver.HasSession(ls.tmux) {
-			s.verifyAndFinish(name)
+			s.verifyAndFinish(name, true)
 			return true
 		}
 		return false
 	}
 	ex := s.driver.ExtractLogin(name, screen)
 	s.mu.Lock()
+	before := ls.progress()
 	ls.tail = tail(screen, 80)
 	if ex.URL != "" && ls.url == "" {
 		ls.url = ex.URL
@@ -271,12 +307,20 @@ func (s *Service) tickLogin(name string, extractDeadline time.Time) bool {
 		// LoginToken (explicit API key) is the path that forces separate.
 		_ = StoreOAuthToken(name, "CLAUDE_CODE_OAUTH_TOKEN", ex.Token)
 	}
+	changed := ls.progress() != before
 	phase := ls.phase
 	caps := s.driver.AuthCaps(name)
 	s.mu.Unlock()
+	if changed {
+		s.publishLogin(context.Background(), ls)
+	}
 
+	if ex.Error != "" {
+		s.finishLogin(name, PhaseFailed, ex.Error, ex.Hint)
+		return true
+	}
 	if !s.driver.HasSession(ls.tmux) {
-		s.verifyAndFinish(name)
+		s.verifyAndFinish(name, true)
 		return true
 	}
 	if caps.RelayFragile && !ex.NoExtract && ls.url == "" && time.Now().After(extractDeadline) &&
@@ -287,32 +331,53 @@ func (s *Service) tickLogin(name string, extractDeadline time.Time) bool {
 	return false
 }
 
-func (s *Service) verifyAndFinish(name string) {
+// verifyAndFinish probes and ends the session as done. On a failed probe it
+// ends the session as failed only when final is true.
+func (s *Service) verifyAndFinish(name string, final bool) {
+	s.mu.Lock()
+	ls, ok := s.logins[name]
+	if !ok || ls.ended() || ls.finishing {
+		s.mu.Unlock()
+		return
+	}
+	ls.finishing = true
+	s.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	st, err := s.Probe(ctx, name, SourceLogin)
 	if err != nil || st.Status != AuthOK {
-		msg := "probe failed"
+		if !final {
+			s.mu.Lock()
+			ls.finishing = false
+			s.mu.Unlock()
+			return
+		}
+		msg := "The login did not finish."
 		if err != nil {
 			msg = err.Error()
-		} else {
-			msg = "auth status is " + st.Status
+		} else if st.Detail != "" {
+			msg = st.Detail
 		}
-		s.finishLogin(name, PhaseFailed, msg)
+		s.finishLogin(name, PhaseFailed, msg, "")
 		return
 	}
-	s.log.Info("auth.login_completed", "harness", name)
-	s.finishLogin(name, PhaseDone, "")
+	if err := ClearLoginEnded(name); err != nil {
+		s.log.Warn("clear login-ended marker", "harness", name, "error", err)
+	}
+	s.finishLogin(name, PhaseDone, "", "")
 }
 
 func (s *Service) failLocal(name string, caps AuthCaps) {
 	d := LocalOnlyDetails(name, caps)
 	s.mu.Lock()
-	if ls, ok := s.logins[name]; ok {
+	ls, ok := s.logins[name]
+	if ok {
 		ls.phase = PhaseFailed
 		ls.err = name + " login needs a browser on the daemon machine"
 		ls.localCmd, _ = d["local_cmd"].(string)
 		ls.hint, _ = d["hint"].(string)
+		ls.endedAt = time.Now().UTC()
 		if ls.cancel != nil {
 			ls.cancel()
 		}
@@ -321,14 +386,22 @@ func (s *Service) failLocal(name string, caps AuthCaps) {
 	if s.driver != nil {
 		_ = s.driver.KillSession(LoginSessionName(name))
 	}
+	if ok {
+		s.publishLogin(context.Background(), ls)
+		s.expireLogin(name, ls)
+	}
 }
 
-func (s *Service) finishLogin(name, phase, errMsg string) {
+func (s *Service) finishLogin(name, phase, errMsg, hint string) {
 	s.mu.Lock()
 	ls, ok := s.logins[name]
 	if ok {
 		ls.phase = phase
 		ls.err = errMsg
+		if hint != "" {
+			ls.hint = hint
+		}
+		ls.endedAt = time.Now().UTC()
 		if ls.cancel != nil {
 			ls.cancel()
 		}
@@ -337,20 +410,56 @@ func (s *Service) finishLogin(name, phase, errMsg string) {
 	if s.driver != nil {
 		_ = s.driver.KillSession(LoginSessionName(name))
 	}
-	if phase == PhaseDone {
-		// drop the session after a short moment so GET can still observe done
-		time.AfterFunc(2*time.Second, func() {
-			s.mu.Lock()
-			if cur, ok := s.logins[name]; ok && cur.phase == PhaseDone {
-				delete(s.logins, name)
-			}
-			s.mu.Unlock()
-		})
+	if !ok {
+		return
+	}
+	s.log.Info("harness.login.updated", "harness", name, "phase", phase, "error", errMsg)
+	s.publishLogin(context.Background(), ls)
+	s.expireLogin(name, ls)
+}
+
+// expireLogin drops an ended session after doneRetain, unless a new login
+// replaced it.
+func (s *Service) expireLogin(name string, ls *loginSession) {
+	time.AfterFunc(doneRetain, func() {
+		s.mu.Lock()
+		if cur, ok := s.logins[name]; ok && cur == ls {
+			delete(s.logins, name)
+		}
+		s.mu.Unlock()
+	})
+}
+
+// publishLogin puts the login progress on the bus. screen_tail stays in
+// GET /login, because it is too large for the bus.
+func (s *Service) publishLogin(ctx context.Context, ls *loginSession) {
+	s.mu.Lock()
+	attrs := map[string]string{
+		"harness":   ls.name,
+		"phase":     ls.phase,
+		"url":       ls.url,
+		"user_code": ls.userCode,
+		"error":     ls.err,
+		"hint":      ls.hint,
+	}
+	s.mu.Unlock()
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "harness.login.updated", Entity: "harness", EntityID: ls.name, Action: "updated",
+		Attrs: attrs,
+	}); err != nil {
+		s.log.Warn("harness.login.updated", "harness", ls.name, "error", err)
 	}
 }
 
+func (ls *loginSession) ended() bool { return ls.phase == PhaseDone || ls.phase == PhaseFailed }
+
+// progress is the part of a session that the bus carries.
+func (ls *loginSession) progress() string {
+	return ls.phase + "\x00" + ls.url + "\x00" + ls.userCode
+}
+
 func (ls *loginSession) wire() LoginSession {
-	active := ls.phase != PhaseDone && ls.phase != PhaseFailed
+	active := !ls.ended()
 	return LoginSession{
 		Active:     active,
 		Phase:      ls.phase,

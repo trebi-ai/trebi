@@ -20,7 +20,7 @@ trebi agent list --workspace reports --json
 trebi agent show cmo --workspace reports --json
 ```
 
-`create` is an upsert: PUT on a new name creates the agent. Give `--prompt` and a trigger flag, and the daemon composes the front matter. Give `--file` for full control (**local only**; remote: pass `content`). With neither, the daemon seeds a default document and a memory ledger. Set `harness` only to a harness that `trebi harness list` reports with `auth_ok: true`.
+`create` is an upsert: PUT on a new name creates the agent. Give `--prompt` and a trigger flag, and the daemon composes the front matter. Give `--file` for full control (**local only**; remote: pass `content`). With neither, the daemon seeds a default document and a memory ledger. Set `harness` only to a harness that `trebi harness list` reports with `enabled: true` and `auth_ok: true`.
 
 Inbound agent mail is closed unless `AGENT.md` explicitly accepts it:
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -634,11 +635,25 @@ func (s *Service) onAuthMissing(ctx context.Context, ev store.StreamEvent, attrs
 }
 
 func (s *Service) onHarnessUpdated(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
-	if attrs["auth_ok"] != "true" && attrs["auth_ok"] != "1" {
-		return
-	}
 	name := firstNonEmpty(attrs["harness"], ev.ID)
 	if name == "" {
+		return
+	}
+	switch attrs["update_ok"] {
+	case "false":
+		_, err := s.Raise(ctx, RaiseOpts{
+			Kind: KindHarnessUpdateFailed, Harness: name, TraceID: ev.TraceID,
+			Title: fmt.Sprintf("The update of %s to %s failed", name, attrs["update_to"]),
+			Body:  attrs["update_error"],
+			Hint:  "Trebi uses " + attrs["update_from"] + " again. Try again in Settings → Harnesses.",
+		})
+		if err != nil {
+			s.log.Warn("raise harness_update_failed", "error", err)
+		}
+	case "true":
+		s.autoResolve(ctx, KindHarnessUpdateFailed, "harness-update/"+name, "auto")
+	}
+	if attrs["auth_ok"] != "true" && attrs["auth_ok"] != "1" {
 		return
 	}
 	s.autoResolve(ctx, KindAuthMissing, "harness/"+name, "auto")
@@ -1268,8 +1283,12 @@ func collectDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFind
 			Message: "config.yaml missing; defaults apply (fix rewrites it)",
 		})
 	}
-	for _, h := range harness.List() {
-		if h.Present {
+	cfg, _ := config.Load()
+	for _, h := range harness.List(cfg, nil) {
+		if !h.Enabled || h.Hidden {
+			continue
+		}
+		if _, err := os.Stat(h.Home); err == nil {
 			continue
 		}
 		findings = append(findings, DoctorFinding{

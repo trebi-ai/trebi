@@ -31,9 +31,13 @@ const (
 
 // ModelInfo is one model a harness CLI reports.
 type ModelInfo struct {
-	ID      string `json:"id"`
-	Label   string `json:"label,omitempty"`
-	Default bool   `json:"default,omitempty"`
+	ID       string   `json:"id"`
+	Label    string   `json:"label,omitempty"`
+	Default  bool     `json:"default,omitempty"`
+	Group    string   `json:"group,omitempty"`    // OpenCode: provider label, "OpenCode Zen"
+	Hint     string   `json:"hint,omitempty"`     // "Best for hard work"
+	Free     bool     `json:"free,omitempty"`     // OpenCode: no cost
+	Variants []string `json:"variants,omitempty"` // OpenCode: from `opencode models --verbose`
 }
 
 // ModelList is the catalog a harness CLI reports.
@@ -44,6 +48,11 @@ type ModelList struct {
 	// when no --model flag is passed. Empty when no source names one.
 	Default string `json:"default,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// Efforts are the effort levels of the harness: null for a free variant
+	// name (OpenCode), empty when the harness has no effort.
+	Efforts []string `json:"efforts"`
+	// EffortDefault is the effort a run uses with no pin, when known.
+	EffortDefault string `json:"effort_default,omitempty"`
 }
 
 // modelListTimeout bounds one vendor CLI call.
@@ -54,7 +63,9 @@ const modelListTimeout = 6 * time.Second
 // use staticModels.
 func modelListArgs(name string) ([]string, bool) {
 	switch name {
-	case Grok, OpenCode, OpenCode2, Cursor:
+	case OpenCode, OpenCode2:
+		return []string{"models", "--verbose"}, true
+	case Grok, Cursor:
 		return []string{"models"}, true
 	case Pi:
 		return []string{"--list-models"}, true
@@ -68,6 +79,25 @@ func modelListArgs(name string) ([]string, bool) {
 //
 // Read-only: the vendor binary is never asked to write its config.
 func ListModels(ctx context.Context, name string) ModelList {
+	list := listModels(ctx, name)
+	list.Efforts = config.HarnessEffortLevels(name)
+	list.EffortDefault = effortDefault(name)
+	return list
+}
+
+// effortDefault is the effort that the vendor uses with no flag, when Trebi
+// can read it.
+func effortDefault(name string) string {
+	if name == Codex {
+		if v := tomlStringField(filepath.Join(config.HarnessDir(Codex), "config.toml"), "", "model_reasoning_effort"); v != "" {
+			return v
+		}
+		return "medium"
+	}
+	return ""
+}
+
+func listModels(ctx context.Context, name string) ModelList {
 	args, ok := modelListArgs(name)
 	if !ok {
 		list := staticModels(name)
@@ -467,9 +497,47 @@ func parseCursorModels(out string) []ModelInfo {
 	return dedupeModels(models)
 }
 
-// parseOpencodeModels reads `opencode models`: one provider/model per line.
+// opencodeModelHeadRe finds the "provider/model" line before each JSON block
+// of `opencode models --verbose`.
+var opencodeModelHeadRe = regexp.MustCompile(`(?m)^([A-Za-z0-9][A-Za-z0-9._@:+-]*/\S+)[ \t]*\r?\n\{`)
+
+// parseOpencodeModels reads `opencode models --verbose`: a "provider/model"
+// line, then the model as JSON. A plain `opencode models` list (one id per
+// line) also parses.
 func parseOpencodeModels(out string) []ModelInfo {
 	out = stripANSI(out)
+	heads := opencodeModelHeadRe.FindAllStringSubmatchIndex(out, -1)
+	if len(heads) == 0 {
+		return parseOpencodeIDs(out)
+	}
+	var models []ModelInfo
+	for _, h := range heads {
+		id := out[h[2]:h[3]]
+		if !modelIDRe.MatchString(id) {
+			continue
+		}
+		m := ModelInfo{ID: id}
+		var raw struct {
+			Name       string `json:"name"`
+			ProviderID string `json:"providerID"`
+			Cost       *struct {
+				Input  float64 `json:"input"`
+				Output float64 `json:"output"`
+			} `json:"cost"`
+			Variants json.RawMessage `json:"variants"`
+		}
+		if json.NewDecoder(strings.NewReader(out[h[1]-1:])).Decode(&raw) == nil {
+			m.Label = raw.Name
+			m.Group = opencodeAccount([]string{raw.ProviderID})
+			m.Free = raw.Cost != nil && raw.Cost.Input == 0 && raw.Cost.Output == 0
+			m.Variants = objectKeys(raw.Variants)
+		}
+		models = append(models, m)
+	}
+	return dedupeModels(models)
+}
+
+func parseOpencodeIDs(out string) []ModelInfo {
 	var models []ModelInfo
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -482,6 +550,28 @@ func parseOpencodeModels(out string) []ModelInfo {
 		models = append(models, ModelInfo{ID: line})
 	}
 	return dedupeModels(models)
+}
+
+// objectKeys returns the keys of a JSON object in file order.
+func objectKeys(raw json.RawMessage) []string {
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return nil
+	}
+	var keys []string
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return keys
+		}
+		k, _ := t.(string)
+		var skip json.RawMessage
+		if dec.Decode(&skip) != nil {
+			return keys
+		}
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // parsePiModels reads the `pi --list-models` table:

@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -40,17 +41,26 @@ func (DefaultDriver) ApplyAuthMode(name, mode string) error {
 	return applyAuthMode(name, mode)
 }
 
-func (DefaultDriver) LoginCommand(name, mode string) (string, []string, error) {
+// LoginCommand ends with "; exit", so the login session ends when the vendor
+// CLI ends.
+func (DefaultDriver) LoginCommand(name, mode, provider string) (string, []string, error) {
 	bin := lookPathTool(name)
 	if bin == "" {
 		return "", nil, fmt.Errorf("%s binary not found", name)
 	}
 	args, env := vendorLoginArgsFor(name, mode, runtime.GOOS)
+	if name == OpenCode || name == OpenCode2 {
+		extra, err := opencodeLoginArgs(provider)
+		if err != nil {
+			return "", nil, err
+		}
+		args = append(args, extra...)
+	}
 	cmd := bin
 	if len(args) > 0 {
-		cmd = bin + " " + strings.Join(args, " ")
+		cmd += " " + strings.Join(args, " ")
 	}
-	return cmd, env, nil
+	return cmd + "; exit", env, nil
 }
 
 func (DefaultDriver) ExtractLogin(name, screen string) harness.LoginExtract {
@@ -78,15 +88,20 @@ func (DefaultDriver) ExecLogout(ctx context.Context, name string) error {
 	return nil
 }
 
-func (DefaultDriver) LoginAPIKey(ctx context.Context, name, token string) error {
-	if name == Codex {
-		return loginCodexAPIKey(ctx, token)
+func (DefaultDriver) LoginAPIKey(ctx context.Context, name string, in harness.TokenLogin) error {
+	switch {
+	case name == OpenCode || name == OpenCode2:
+		return writeOpenCodeKey(name, in.Provider, in.Token)
+	case in.Provider != "":
+		return fmt.Errorf("%s has no providers", name)
+	case name == Codex:
+		return loginCodexAPIKey(ctx, in.Token)
 	}
 	key := harness.TokenEnvKey(name)
 	if key == "" {
 		return fmt.Errorf("no token env key for %s", name)
 	}
-	return harness.WriteSecretEnv(name, map[string]string{key: token})
+	return harness.WriteSecretEnv(name, map[string]string{key: in.Token})
 }
 
 func (DefaultDriver) NewNamedSession(session, cwd string) error {
@@ -122,17 +137,28 @@ func applyAuthMode(name, mode string) error {
 		return (harnessHome{tool: Codex}).bridgeAuth(filepath.Join(".codex", "auth.json"), mode)
 	case Pi:
 		return (harnessHome{tool: Pi}).bridgeAuth(filepath.Join(".pi", "agent", "auth.json"), mode)
+	case OpenCode, OpenCode2:
+		src := opencodeUserAuth()
+		return harness.SymlinkAuth(src, opencodeAuthPath(name), sharedUnlessEnded(name, mode, src))
 	default:
 		return nil
 	}
+}
+
+// sharedUnlessEnded keeps a dead shared login from being linked again: with
+// the login-ended marker, shared mode bridges like separate mode.
+func sharedUnlessEnded(name, mode, userFile string) string {
+	if mode != harness.AuthModeSeparate && harness.LoginEnded(name, userFile) {
+		return harness.AuthModeSeparate
+	}
+	return mode
 }
 
 func vendorLoginArgsFor(tool, mode, goos string) (args []string, env []string) {
 	switch tool {
 	case Fake:
 		// tmux does not inherit the daemon env, so name the home explicitly.
-		// The shell is replaced, so the session ends when the login ends.
-		return []string{"login; exit"}, []string{"TREBI_HOME=" + config.BaseDir()}
+		return []string{"login"}, []string{"TREBI_HOME=" + config.BaseDir()}
 	case Claude:
 		dir := config.HarnessDir(Claude)
 		if mode == harness.AuthModeSeparate {
@@ -151,6 +177,7 @@ func vendorLoginArgsFor(tool, mode, goos string) (args []string, env []string) {
 	case OpenCode, OpenCode2:
 		// V2 keeps credentials in the same XDG data store as 1.x.
 		args = []string{"auth", "login"}
+		env = []string{"XDG_DATA_HOME=" + opencodeDataHome(tool)}
 	case Gemini:
 		args = []string{}
 		env = []string{"NO_BROWSER=1"}
@@ -357,12 +384,13 @@ func unknownFile(st harness.AuthStatus, detail string) harness.AuthStatus {
 
 func (claudeTool) AuthCapabilities() harness.AuthCaps {
 	return harness.AuthCaps{
-		LoginModes:    []string{harness.LoginRelay, harness.LoginToken},
-		TokenEnvKeys:  []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"},
-		LocalCmd:      "claude auth login",
-		CredFile:      filepath.Join(config.HarnessDir(Claude), ".credentials.json"),
-		ExpiryReader:  true,
-		KeychainBound: runtime.GOOS == "darwin",
+		LoginModes:     []string{harness.LoginRelay, harness.LoginToken},
+		TokenEnvKeys:   []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"},
+		LocalCmd:       "claude auth login",
+		CredFile:       filepath.Join(config.HarnessDir(Claude), ".credentials.json"),
+		SharedCredFile: filepath.Join(harness.UserHome(), ".claude", ".credentials.json"),
+		ExpiryReader:   true,
+		KeychainBound:  runtime.GOOS == "darwin",
 	}
 }
 
@@ -398,13 +426,14 @@ func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 		out, err := runVendor(ctx, bin, []string{"auth", "status"},
 			envPairs(claudeIsolationEnvMap(config.HarnessDir(Claude), st.Mode)))
 		var payload struct {
-			LoggedIn bool   `json:"loggedIn"`
-			Email    string `json:"email"`
+			LoggedIn         bool   `json:"loggedIn"`
+			Email            string `json:"email"`
+			SubscriptionType string `json:"subscriptionType"`
 		}
 		if json.Unmarshal([]byte(out), &payload) == nil && (err == nil || strings.Contains(out, "loggedIn")) {
 			if payload.LoggedIn {
 				st.Status = harness.AuthOK
-				st.Detail = payload.Email
+				st.Account = accountLine(payload.Email, payload.SubscriptionType)
 				return st
 			}
 			l2LoggedOut = true
@@ -459,11 +488,12 @@ func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 
 func (codexTool) AuthCapabilities() harness.AuthCaps {
 	return harness.AuthCaps{
-		LoginModes:   []string{harness.LoginRelay, harness.LoginToken},
-		TokenEnvKeys: []string{"OPENAI_API_KEY"},
-		LocalCmd:     "codex login --device-auth",
-		CredFile:     filepath.Join(config.HarnessDir(Codex), "auth.json"),
-		ExpiryReader: true,
+		LoginModes:     []string{harness.LoginRelay, harness.LoginToken},
+		TokenEnvKeys:   []string{"OPENAI_API_KEY"},
+		LocalCmd:       "codex login --device-auth",
+		CredFile:       filepath.Join(config.HarnessDir(Codex), "auth.json"),
+		SharedCredFile: filepath.Join(harness.UserHome(), ".codex", "auth.json"),
+		ExpiryReader:   true,
 	}
 }
 
@@ -482,43 +512,99 @@ func (codexTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	} else if t := parseExpiryMS(authPath, "last_refresh"); t != nil {
 		st.ExpiresAt = t
 	}
+	st.Account = codexAccount(authPath)
 	if st, ok := l1Token(st, "OPENAI_API_KEY"); ok {
 		return st
 	}
 	bin := lookPathTool(Codex)
 	if bin != "" {
-		env := []string{}
-		if st.Mode == harness.AuthModeSeparate {
-			env = []string{"CODEX_HOME=" + config.HarnessDir(Codex)}
-		}
-		out, err := runVendor(ctx, bin, []string{"login", "status"}, env)
-		if err == nil && strings.Contains(strings.ToLower(out), "logged in") {
+		out, err := runVendor(ctx, bin, []string{"login", "status"},
+			[]string{"CODEX_HOME=" + config.HarnessDir(Codex)})
+		low := strings.ToLower(out)
+		if err == nil && strings.Contains(low, "logged in") && !strings.Contains(low, "not logged in") {
 			st.Status = harness.AuthOK
 			return st
+		}
+		if fileExists(authPath) && strings.Contains(low, "not logged in") {
+			return loginEnded(st)
 		}
 	}
 	if st.ExpiresAt != nil && st.ExpiresAt.Before(time.Now()) {
 		return expiredOrMissing(st, st.ExpiresAt)
 	}
-	if fileExists(authPath) {
-		// Codex L2 is optional; a real auth.json is treated as ok when L2 is
-		// unavailable. File present + L2 logged-out already returned.
-		if bin == "" {
-			return unknownFile(st, "auth.json present; login status unconfirmed")
-		}
+	if fileExists(authPath) && bin == "" {
+		return unknownFile(st, "auth.json present; login status unconfirmed")
 	}
 	st.Status = harness.AuthMissing
 	st.Hint = loginHint(Codex) + "  (enable Device Code Authorization in ChatGPT settings once)"
 	return st
 }
 
+// loginEnded is the probe result for a login that the vendor rejected. In
+// shared mode it also stops the bridge from linking the dead login again.
+func loginEnded(st harness.AuthStatus) harness.AuthStatus {
+	st.Status = harness.AuthExpired
+	st.Detail = "The login ended. Log in again."
+	st.Hint = loginHint(st.Tool)
+	if st.Mode != harness.AuthModeSeparate {
+		_ = harness.MarkLoginEnded(st.Tool)
+		_ = applyAuthMode(st.Tool, st.Mode)
+	}
+	return st
+}
+
+// accountLine joins an email and a plan name for display: "a@b.c (Max)".
+func accountLine(email, plan string) string {
+	plan = strings.TrimSpace(plan)
+	if plan == "" || email == "" {
+		return email
+	}
+	return email + " (" + strings.ToUpper(plan[:1]) + plan[1:] + ")"
+}
+
+// codexAccount reads the email and plan claims of tokens.id_token. It does
+// not check the signature: the value is for display only.
+func codexAccount(authPath string) string {
+	b, err := os.ReadFile(authPath)
+	if err != nil {
+		return ""
+	}
+	var f struct {
+		Tokens struct {
+			IDToken string `json:"id_token"`
+		} `json:"tokens"`
+	}
+	if json.Unmarshal(b, &f) != nil {
+		return ""
+	}
+	parts := strings.Split(f.Tokens.IDToken, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Email string `json:"email"`
+		Auth  struct {
+			Plan string `json:"chatgpt_plan_type"`
+		} `json:"https://api.openai.com/auth"`
+	}
+	if json.Unmarshal(raw, &claims) != nil {
+		return ""
+	}
+	return accountLine(claims.Email, claims.Auth.Plan)
+}
+
 func (grokTool) AuthCapabilities() harness.AuthCaps {
 	return harness.AuthCaps{
-		LoginModes:   []string{harness.LoginRelay, harness.LoginToken},
-		TokenEnvKeys: []string{"XAI_API_KEY"},
-		LocalCmd:     "grok login --device-auth",
-		CredFile:     filepath.Join(config.HarnessDir(Grok), "auth.json"),
-		ExpiryReader: true,
+		LoginModes:     []string{harness.LoginRelay, harness.LoginToken},
+		TokenEnvKeys:   []string{"XAI_API_KEY"},
+		LocalCmd:       "grok login --device-auth",
+		CredFile:       filepath.Join(config.HarnessDir(Grok), "auth.json"),
+		SharedCredFile: filepath.Join(harness.UserHome(), ".grok", "auth.json"),
+		ExpiryReader:   true,
 	}
 }
 
@@ -529,49 +615,74 @@ func (grokTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 		return st
 	}
 	authPath := filepath.Join(config.HarnessDir(Grok), "auth.json")
-	if !fileExists(authPath) {
-		authPath = filepath.Join(harness.UserHome(), ".grok", "auth.json")
-	}
-	if t := parseExpiryMS(authPath, "expires_at"); t != nil {
-		st.ExpiresAt = t
-	}
-	if st.ExpiresAt != nil && st.ExpiresAt.Before(time.Now()) {
-		return expiredOrMissing(st, st.ExpiresAt)
-	}
-	if fileExists(authPath) {
-		st.Status = harness.AuthOK
-		st.Detail = authPath
+	acct, ok := firstGrokAccount(authPath)
+	if !ok {
+		st.Status = harness.AuthMissing
+		st.Hint = loginHint(Grok)
 		return st
 	}
-	st.Status = harness.AuthMissing
-	st.Hint = loginHint(Grok)
+	st.Account = acct.Email
+	if t := store.ParseTS(acct.ExpiresAt); !t.IsZero() {
+		st.ExpiresAt = &t
+	}
+	// grok refreshes an expired access token by itself when it has a refresh token.
+	if st.ExpiresAt != nil && st.ExpiresAt.Before(time.Now()) && acct.RefreshToken == "" {
+		return expiredOrMissing(st, st.ExpiresAt)
+	}
+	if bin := lookPathTool(Grok); bin != "" {
+		out, err := runVendor(ctx, bin, []string{"models"}, []string{"GROK_HOME=" + config.HarnessDir(Grok)})
+		low := strings.ToLower(out)
+		switch {
+		case strings.Contains(low, "not authenticated"):
+			return loginEnded(st)
+		case err == nil && strings.Contains(low, "logged in"):
+			// After a refresh the file has a new expiry.
+			if a, ok := firstGrokAccount(authPath); ok {
+				if t := store.ParseTS(a.ExpiresAt); !t.IsZero() {
+					st.ExpiresAt = &t
+				}
+			}
+			st.Status = harness.AuthOK
+			return st
+		}
+	}
+	st.Status = harness.AuthOK
+	st.Detail = "login file present; live check unavailable"
 	return st
 }
 
 func (t opencodeTool) AuthCapabilities() harness.AuthCaps {
 	return harness.AuthCaps{
-		LoginModes: []string{harness.LoginRelay, harness.LoginToken},
-		LocalCmd:   t.name + " auth login",
-		CredFile:   filepath.Join(harness.UserHome(), ".local", "share", "opencode", "auth.json"),
+		LoginModes:     []string{harness.LoginRelay, harness.LoginToken},
+		LocalCmd:       t.name + " auth login",
+		CredFile:       opencodeAuthPath(t.name),
+		SharedCredFile: opencodeUserAuth(),
 	}
 }
 
-// ProbeAuth: 1.x and 2.x share the credential store under XDG data, and both
-// answer `auth list` from it.
+// ProbeAuth reads the providers in the active auth.json, then asks `auth
+// list` (L2) with the same data folder.
 func (t opencodeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(t.name)
 	_ = EnsureSharedAuth(t.name, st.Mode)
-	authPath := filepath.Join(harness.UserHome(), ".local", "share", "opencode", "auth.json")
-	bin := lookPathTool(t.name)
-	if bin != "" {
-		out, err := runVendor(ctx, bin, []string{"auth", "list"}, nil)
-		if err == nil && len(strings.TrimSpace(out)) > 0 &&
-			!strings.Contains(strings.ToLower(out), "no credentials") {
-			st.Status = harness.AuthOK
-			return st
+	ids := opencodeProviderIDs(opencodeAuthPath(t.name))
+	st.Account = opencodeAccount(ids)
+	if bin := lookPathTool(t.name); bin != "" {
+		out, err := runVendor(ctx, bin, []string{"auth", "list"},
+			[]string{"XDG_DATA_HOME=" + opencodeDataHome(t.name)})
+		if err == nil {
+			if n, ok := opencodeCredentialCount(out); ok {
+				if n > 0 {
+					st.Status = harness.AuthOK
+					return st
+				}
+				st.Status = harness.AuthMissing
+				st.Hint = loginHint(t.name)
+				return st
+			}
 		}
 	}
-	if fileExists(authPath) {
+	if len(ids) > 0 {
 		return unknownFile(st, "auth.json present; auth list unconfirmed")
 	}
 	st.Status = harness.AuthMissing
@@ -738,6 +849,10 @@ var (
 	deviceCodeRe = regexp.MustCompile(`\b([A-Z0-9]{4}-[A-Z0-9]{4,6})\b`)
 	pasteRe      = regexp.MustCompile(`(?i)(paste|enter).{0,40}(code|token|authorization)`)
 	oatRe        = regexp.MustCompile(`sk-ant-oat01-[A-Za-z0-9_-]+`)
+	// Codex 0.162 texts. The device code request fails with a 4xx status when
+	// the ChatGPT account has device code login off.
+	codexDeviceOffRe = regexp.MustCompile(`(?i)device code (login|authorization) is (not enabled|disabled|off)|device code request failed with status 40[0-9]`)
+	codexLoginErrRe  = regexp.MustCompile(`(?i)Error logging in with device code:\s*(.+)`)
 )
 
 func extractLogin(name, screen string) harness.LoginExtract {
@@ -758,6 +873,15 @@ func extractLogin(name, screen string) harness.LoginExtract {
 	if name == Claude {
 		if m := oatRe.FindString(screen); m != "" {
 			ex.Token = m
+		}
+	}
+	if name == Codex {
+		switch {
+		case codexDeviceOffRe.MatchString(screen):
+			ex.Error = "Device code login is off for your ChatGPT account."
+			ex.Hint = "In ChatGPT, open Settings → Security and turn on device code login."
+		case codexLoginErrRe.MatchString(screen):
+			ex.Error = strings.TrimSpace(codexLoginErrRe.FindStringSubmatch(screen)[1])
 		}
 	}
 	return ex

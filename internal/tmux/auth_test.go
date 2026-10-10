@@ -162,7 +162,7 @@ func TestProbeClaudeL2(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 	st := claudeTool{}.ProbeAuth(context.Background())
-	if st.Status != harness.AuthOK || st.Detail != "a@b.c" {
+	if st.Status != harness.AuthOK || st.Account != "a@b.c" {
 		t.Fatalf("%+v", st)
 	}
 }

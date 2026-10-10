@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	config "github.com/trebi-ai/trebi/internal/config"
@@ -76,6 +77,35 @@ func (d ResourceDef) apply(tool string, inherit bool, userHome, harnessDir strin
 	return nil
 }
 
+// applyOwn keeps the run wiring of Trebi next to an own file: the Trebi MCP
+// entry of Claude and the Trebi keys of the Grok config.
+func (d ResourceDef) applyOwn(tool, harnessDir string) error {
+	switch {
+	case d.Kind == KindMCPClaude:
+		return ensureClaudeTrebiMCP(harnessDir)
+	case d.Kind == KindConfigTOMLPrefs && tool == "grok":
+		return applyConfigTOMLPrefs(false, "", filepath.Join(harnessDir, d.HarnessRel), tool)
+	}
+	return nil
+}
+
+// applyGrokCompat writes the [compat.claude] switches of config.yaml into the
+// Trebi Grok config.
+func applyGrokCompat(path string, cfg *config.Config) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	out := string(b)
+	for _, k := range config.CompatKeys("grok") {
+		out = setTOMLKey(out, "compat.claude", k, strconv.FormatBool(cfg.ClaudeCompat("grok", k)))
+	}
+	return WriteFileIfChanged(path, []byte(out), 0644)
+}
+
 // BridgeStatusRow is desired policy vs disk for one resource.
 type BridgeStatusRow struct {
 	Tool     string `json:"tool"`
@@ -143,6 +173,11 @@ func BridgeStatusRoots(tool string, cfg *config.Config, roots Roots) []BridgeSta
 		}
 		harnessDir := filepath.Join(roots.HarnessBase, t)
 		for _, def := range Catalog(t) {
+			if config.ResourceOwn(t, def.Key, cfg) {
+				src, dst := def.paths(roots.UserHome, harnessDir)
+				rows = append(rows, BridgeStatusRow{Tool: t, Resource: def.Key, Policy: "own", Status: "own", Source: src, Dest: dst})
+				continue
+			}
 			inherit := ResolveInherit(t, def.Key, cfg)
 			pol := "off"
 			if inherit {
@@ -215,6 +250,13 @@ func ensureBridges(tool string, cfg *config.Config, roots Roots, opts EnsureOpts
 
 	var errs []error
 	for _, def := range defs {
+		if config.ResourceOwn(tool, def.Key, cfg) {
+			// Trebi's own copy: never link or copy over it.
+			if err := def.applyOwn(tool, harnessDir); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", def.Key, err))
+			}
+			continue
+		}
 		inherit := ResolveInherit(tool, def.Key, cfg)
 		if err := def.apply(tool, inherit, roots.UserHome, harnessDir, opts.Force); err != nil {
 			// No owning struct; stamp source inline (documented Phase 4.3 exception).
@@ -224,6 +266,12 @@ func ensureBridges(tool string, cfg *config.Config, roots Roots, opts EnsureOpts
 				hint = "; re-run with --force to replace harness path"
 			}
 			errs = append(errs, fmt.Errorf("%s: %w%s", def.Key, err, hint))
+		}
+	}
+
+	if tool == "grok" {
+		if err := applyGrokCompat(filepath.Join(harnessDir, "config.toml"), cfg); err != nil {
+			errs = append(errs, fmt.Errorf("compat: %w", err))
 		}
 	}
 
@@ -552,6 +600,8 @@ func ensureGrokConfigTOML(out string) string {
 		out += "\n[compat.claude]\nhooks = false\n"
 	}
 	out = upsertTOMLKey(out, "harness", "disable_codebase_upload", "true")
+	// Trebi updates Grok; a run never updates it.
+	out = upsertTOMLKey(out, "cli", "auto_update", "false")
 	return ensureGrokTrebiMCP(out)
 }
 
@@ -651,6 +701,40 @@ func upsertTOMLKey(out, section, key, value string) string {
 		rest++
 	}
 	return out[:rest] + line + "\n" + out[rest:]
+}
+
+// setTOMLKey sets key in [section], replacing an existing value.
+func setTOMLKey(out, section, key, value string) string {
+	header := "[" + section + "]"
+	line := key + " = " + value
+	idx := indexTOMLHeader(out, header)
+	if idx < 0 {
+		if out != "" && !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		return out + "\n" + header + "\n" + line + "\n"
+	}
+	start := idx + len(header)
+	if start < len(out) && out[start] == '\n' {
+		start++
+	}
+	for pos := start; pos < len(out); {
+		end := strings.IndexByte(out[pos:], '\n')
+		if end < 0 {
+			end = len(out)
+		} else {
+			end += pos
+		}
+		trim := strings.TrimSpace(out[pos:end])
+		if strings.HasPrefix(trim, "[") {
+			break
+		}
+		if k, _, ok := strings.Cut(trim, "="); ok && strings.TrimSpace(k) == key {
+			return out[:pos] + line + out[end:]
+		}
+		pos = end + 1
+	}
+	return out[:start] + line + "\n" + out[start:]
 }
 
 func indexTOMLHeader(out, header string) int {
@@ -803,6 +887,7 @@ func grokCatalog() []ResourceDef {
 		{Key: "config_prefs", Kind: KindConfigTOMLPrefs, UserRel: ".grok/config.toml", HarnessRel: "config.toml"},
 		{Key: "marketplace", Kind: KindNoop},
 		{Key: "plugins", Kind: KindSymlinkDir, UserRel: ".grok/installed-plugins", HarnessRel: "installed-plugins"},
+		{Key: "user_memory", Kind: KindSymlinkFile, UserRel: ".grok/AGENTS.md", HarnessRel: "AGENTS.md"},
 	}
 }
 
@@ -812,6 +897,7 @@ func codexCatalog() []ResourceDef {
 		{Key: "skills", Kind: KindSymlinkDir, UserRel: ".codex/skills", HarnessRel: "skills"},
 		{Key: "prompts", Kind: KindSymlinkDir, UserRel: ".codex/prompts", HarnessRel: "prompts"},
 		{Key: "mcp", Kind: KindSymlinkFile, UserRel: ".codex/mcp.json", HarnessRel: "mcp.json"},
+		{Key: "user_memory", Kind: KindSymlinkFile, UserRel: ".codex/AGENTS.md", HarnessRel: "AGENTS.md"},
 	}
 }
 
@@ -820,6 +906,7 @@ func opencodeCatalog() []ResourceDef {
 		{Key: "plugins", Kind: KindOpenCodePlugins, UserRel: ".config/opencode/plugins", HarnessRel: "plugins"},
 		{Key: "config", Kind: KindNoop}, // never full replace
 		{Key: "skills", Kind: KindSymlinkDir, UserRel: ".config/opencode/skills", HarnessRel: "skills"},
+		{Key: "user_memory", Kind: KindNoop}, // OpenCode reads the user file itself
 	}
 }
 

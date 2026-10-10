@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -91,10 +92,12 @@ func PathKeyDescription(key string) string {
 		switch rest {
 		case "auth":
 			return fmt.Sprintf("%s auth mode: shared (user login) or separate", tool)
+		case "enabled":
+			return fmt.Sprintf("Turn on %s (off until you turn it on)", tool)
+		case "updates":
+			return fmt.Sprintf("%s updates: auto (Trebi updates it) or keep (Trebi runs a kept copy)", tool)
 		case "version":
-			return fmt.Sprintf("Pinned %s version (x.y.z after ensure)", tool)
-		case "channel":
-			return fmt.Sprintf("Last ensure channel for %s (latest|stable|…)", tool)
+			return fmt.Sprintf("Kept %s version (keep mode)", tool)
 		case "path":
 			return fmt.Sprintf("Override binary path for %s (skip store download)", tool)
 		case "runtime":
@@ -115,6 +118,9 @@ func PathKeyDescription(key string) string {
 		}
 		if strings.HasPrefix(rest, "env.") {
 			return fmt.Sprintf("Env for the %s process: %s", tool, strings.TrimPrefix(rest, "env."))
+		}
+		if k, ok := strings.CutPrefix(rest, "compat.claude."); ok {
+			return fmt.Sprintf("%s also reads the Claude %s", tool, k)
 		}
 		if strings.HasPrefix(rest, "bridge.resources.") {
 			rkey := strings.TrimPrefix(rest, "bridge.resources.")
@@ -144,6 +150,19 @@ func ResourceDefaultInherit(tool, key string) bool {
 		}
 	}
 	return false
+}
+
+// ResourceOwn reports whether Trebi keeps its own copy of the resource.
+func ResourceOwn(tool, key string, cfg *Config) bool {
+	if cfg == nil {
+		return false
+	}
+	pin := cfg.Tools.Pin(tool)
+	if pin == nil || pin.Bridge == nil {
+		return false
+	}
+	m, _ := NormalizeBridgeMode(pin.Bridge.Resources[key])
+	return m == "own"
 }
 
 // ResolveResourceInherit applies tools.bridge / tools.<t>.bridge policy for a resource key.
@@ -564,17 +583,21 @@ func (l *pathEntryList) addGlobalBridge(cfg *Config) {
 func (l *pathEntryList) addTool(cfg *Config, tool string) {
 	prefix := "tools." + tool
 	p := cfg.Tools.Pin(tool)
-	auth := "shared"
-	ver, ch, path := "", "", ""
+	auth, updates := "shared", "auto"
+	ver, path := "", ""
 	if p != nil {
 		if p.Auth != "" {
 			auth = p.Auth
 		}
-		ver, ch, path = p.Version, p.Channel, p.Path
+		if p.Updates != "" {
+			updates = p.Updates
+		}
+		ver, path = p.Version, p.Path
 	}
+	l.add(prefix+".enabled", strconv.FormatBool(cfg.HarnessEnabled(tool)), "false")
 	l.add(prefix+".auth", auth, "shared")
+	l.add(prefix+".updates", updates, "auto")
 	l.add(prefix+".version", ver, "")
-	l.add(prefix+".channel", ch, "")
 	l.add(prefix+".path", path, "")
 	rt := ""
 	if p != nil {
@@ -598,6 +621,11 @@ func (l *pathEntryList) addTool(cfg *Config, tool string) {
 		}
 	}
 
+	for _, k := range CompatKeys(tool) {
+		def := strconv.FormatBool(k != "hooks")
+		l.add(prefix+".compat.claude."+k, strconv.FormatBool(cfg.ClaudeCompat(tool, k)), def)
+	}
+
 	tInherit := ""
 	if p != nil && p.Bridge != nil && p.Bridge.Inherit != nil {
 		tInherit = strconv.FormatBool(*p.Bridge.Inherit)
@@ -607,7 +635,10 @@ func (l *pathEntryList) addTool(cfg *Config, tool string) {
 	for _, key := range KnownBridgeResources()[tool] {
 		rpath := prefix + ".bridge.resources." + key
 		eff := "off"
-		if ResolveResourceInherit(tool, key, cfg) {
+		switch {
+		case ResourceOwn(tool, key, cfg):
+			eff = "own"
+		case ResolveResourceInherit(tool, key, cfg):
 			eff = "inherit"
 		}
 		def := "off"
@@ -1034,10 +1065,19 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 			return fmt.Errorf("tools.%s.auth: %q not in [shared, separate]", tool, value)
 		}
 		pin.Auth = value
+	case "enabled":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("tools.%s.enabled: want true or false", tool)
+		}
+		pin.Enabled = &b
+	case "updates":
+		if value != "" && value != "auto" && value != "keep" {
+			return fmt.Errorf("tools.%s.updates: %q not in [auto, keep]", tool, value)
+		}
+		pin.Updates = value
 	case "version":
 		pin.Version = value
-	case "channel":
-		pin.Channel = value
 	case "path":
 		pin.Path = value
 	case "runtime":
@@ -1064,6 +1104,13 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 		if strings.HasPrefix(rest, "env.") {
 			return pin.setEnv(strings.TrimPrefix(rest, "env."), value)
 		}
+		if k, ok := strings.CutPrefix(rest, "compat.claude."); ok {
+			if err := pin.setCompat(tool, k, value); err != nil {
+				return err
+			}
+			c.Tools.SetPin(tool, pin)
+			return nil
+		}
 		if !strings.HasPrefix(rest, "bridge.resources.") {
 			return fmt.Errorf("unknown key tools.%s.%s", tool, rest)
 		}
@@ -1084,6 +1131,25 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// setCompat sets one Claude compat switch.
+func (p *ToolPin) setCompat(tool, key, value string) error {
+	if !slices.Contains(CompatKeys(tool), key) {
+		return fmt.Errorf("unknown key tools.%s.compat.claude.%s", tool, key)
+	}
+	b, err := strconv.ParseBool(value)
+	if err != nil {
+		return fmt.Errorf("tools.%s.compat.claude.%s: want true or false", tool, key)
+	}
+	if p.Compat == nil {
+		p.Compat = &HarnessCompat{}
+	}
+	if p.Compat.Claude == nil {
+		p.Compat.Claude = map[string]bool{}
+	}
+	p.Compat.Claude[key] = b
+	return nil
 }
 
 // setEnv sets or clears one harness-process environment variable.
@@ -1157,12 +1223,12 @@ func (p *ToolPin) setBridgeResource(tool, key, value string) error {
 	}
 	norm, ok := NormalizeBridgeMode(value)
 	if !ok {
-		return fmt.Errorf("mode %q not in [true, false, inherit, link, off, none]", value)
+		return fmt.Errorf("mode %q not in [true, false, inherit, link, off, none, own]", value)
 	}
-	store := "inherit"
-	if norm == "false" {
-		store = "false"
+	if norm == "own" && !Ownable(tool, key) {
+		return fmt.Errorf("tools.%s.bridge.resources.%s: own is only for a config file of a harness", tool, key)
 	}
+	store := norm
 	if p.Bridge == nil {
 		p.Bridge = &BridgeConfig{}
 	}

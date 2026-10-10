@@ -30,7 +30,8 @@ func (t codexTool) PrepareLaunch(command string) LaunchPlan {
 	// Quote the TOML array so bash does not strip the quotes and Codex 0.149+
 	// does not deserialize notify as a string.
 	notifyBin := filepath.Join(config.LibexecDir(), "trebi-codex-notify")
-	cmd := command
+	// Trebi updates Codex; a run never updates it.
+	cmd := AppendFlags(command, []string{"-c", "check_for_update_on_startup=false"})
 	if _, err := os.Stat(notifyBin); err == nil {
 		cmd = AppendFlags(cmd, []string{
 			"-c", fmt.Sprintf(`'notify=["%s"]'`, notifyBin),
@@ -83,6 +84,9 @@ func (codexTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
 	// Codex resumes with a subcommand: "codex resume [flags] <id>".
 	bin, flags, _ := strings.Cut(strings.TrimSpace(command), " ")
 	resume := strings.TrimSpace(bin + " resume " + flags)
+	if !strings.Contains(flags, "check_for_update_on_startup") {
+		resume = AppendFlags(resume, []string{"-c", "check_for_update_on_startup=false"})
+	}
 	return LaunchPlan{Command: AppendFlags(resume, []string{sessionID}), SessionID: sessionID}, nil
 }
 

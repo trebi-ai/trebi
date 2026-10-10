@@ -63,17 +63,21 @@ A harness is the agent tool that runs the session (claude, codex, …).
 
 ```bash
 trebi harness list --json
-trebi harness list --check
+trebi harness enable <name> [--mode shared|separate]
+trebi harness disable <name>
+trebi harness set <name> --model <model> --effort <level>
+trebi harness providers opencode
 trebi harness ensure <name>
 trebi harness auth status <name> --json
 trebi harness auth status <name> --live --json
 ```
 
-`--check` exits 1 when a home is missing.
+Each harness is off until you turn it on. A job on a harness that is off does not run, and `job validate` says so. You cannot turn off the default harness for new jobs.
 
 ```bash
 trebi harness auth login <name>
 trebi harness auth login <name> --token-stdin
+trebi harness auth login opencode --token-stdin --provider anthropic
 trebi harness auth login <name> --attach
 trebi harness auth logout <name> --yes
 trebi harness auth mode <name> shared

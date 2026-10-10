@@ -405,6 +405,9 @@ func (s *Service) launch(ctx context.Context, opts LaunchOpts) (*Run, error) {
 	if command == "" {
 		command = opts.Harness
 	}
+	if name := tmux.Detect(cmp.Or(command, "claude")).Name(); !harnessOn(name) {
+		return s.FailBeforeLaunch(ctx, opts, EndHarnessOff, map[string]string{"message": harness.OffMessage(name)})
+	}
 	// If binary not on PATH and no pin, fall back to fake when
 	// TREBI_ALLOW_FAKE_FALLBACK=1, else fail fast.
 	if command != "" && commandUnavailable(command) {
@@ -892,6 +895,15 @@ func (s *Service) FailBeforeLaunch(ctx context.Context, opts LaunchOpts, end End
 	}
 	_ = s.TerminateTurn(ctx, run.ID, run.TurnCount, StatusFailed, end, nil)
 	return s.Get(ctx, run.ID)
+}
+
+// harnessOn reports whether the user turned on the harness in config.
+func harnessOn(name string) bool {
+	cfg, err := config.Load()
+	if err != nil {
+		return true // a broken config fails the launch elsewhere with its own text
+	}
+	return cfg.HarnessEnabled(name)
 }
 
 // failFast records a failed run so the API does not hang on WaitReady.

@@ -200,3 +200,69 @@ func TestHarnessUsageRoutes(t *testing.T) {
 		t.Fatalf("second refresh: %d %v", code, body)
 	}
 }
+
+func TestHarnessPatchSettings(t *testing.T) {
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "PATCH", base+"/v1/harnesses/codex", map[string]any{
+		"enabled": true, "model": "gpt-5.5", "effort": "high",
+	})
+	if code != 200 || body["model"] != "gpt-5.5" || body["effort"] != "high" || body["enabled"] != true {
+		t.Fatalf("round trip: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/harnesses/codex", map[string]any{"effort": "huge"})
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("bad effort: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/harnesses/fake", map[string]any{"model": "x"})
+	if code != 422 || errCode(body) != "precondition_failed" {
+		t.Fatalf("model on a harness with no model setting: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/harnesses/codex", map[string]any{"enabled": false})
+	if code != 200 || body["enabled"] != false {
+		t.Fatalf("turn off: %d %v", code, body)
+	}
+}
+
+func TestHarnessFilesRoutes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_, base := startTestServer(t)
+	files := base + "/v1/harnesses/claude/files"
+	code, body, _ := doJSON(t, "GET", files, nil)
+	list, _ := body["files"].([]any)
+	if code != 200 || len(list) != 4 {
+		t.Fatalf("list: %d %v", code, body)
+	}
+	if code, body, _ = doJSON(t, "PUT", files+"/settings_prefs", map[string]any{"content": "{}"}); code != 409 {
+		t.Fatalf("write in yours mode: %d %v", code, body)
+	}
+	if code, body, _ = doJSON(t, "POST", files+"/settings_prefs/own", map[string]any{"start": "empty"}); code != 200 {
+		t.Fatalf("own: %d %v", code, body)
+	}
+	code, body, hdr := doJSON(t, "GET", files+"/settings_prefs", nil)
+	etag, _ := body["etag"].(string)
+	if code != 200 || etag == "" || hdr.Get("ETag") == "" {
+		t.Fatalf("read: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "PUT", files+"/settings_prefs", map[string]any{"content": "{\n  \"a\": ,\n}"})
+	details, _ := body["error"].(map[string]any)["details"].(map[string]any)
+	if code != 422 || details["line"] != float64(2) {
+		t.Fatalf("parse error: %d %v", code, body)
+	}
+	code, body, _ = doJSONHeaders(t, "PUT", files+"/settings_prefs", map[string]any{"content": "{}\n"}, map[string]string{"If-Match": `"stale"`})
+	if code != 412 {
+		t.Fatalf("stale: %d %v", code, body)
+	}
+	code, body, _ = doJSONHeaders(t, "PUT", files+"/settings_prefs", map[string]any{"content": "{\"model\": \"opus\"}\n"}, map[string]string{"If-Match": `"` + etag + `"`})
+	if code != 200 {
+		t.Fatalf("write: %d %v", code, body)
+	}
+	if code, body, _ = doJSON(t, "DELETE", files+"/settings_prefs/own", nil); code != 400 {
+		t.Fatalf("reset needs confirm: %d %v", code, body)
+	}
+	if code, body, _ = doJSON(t, "DELETE", files+"/settings_prefs/own?confirm=1", nil); code != 200 {
+		t.Fatalf("reset: %d %v", code, body)
+	}
+	if code, _, _ = doJSON(t, "GET", files+"/nope", nil); code != 404 {
+		t.Fatalf("unknown key: %d", code)
+	}
+}

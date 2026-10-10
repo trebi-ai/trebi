@@ -57,7 +57,12 @@ func SkillsDir() string  { return filepath.Join(Base(), "skills") }
 func HarnessDir(name string) string {
 	return filepath.Join(Base(), "harness", name)
 }
-func BinDir() string     { return filepath.Join(Base(), "bin") }
+func BinDir() string { return filepath.Join(Base(), "bin") }
+
+// HarnessBackupDir holds the reset copies of the config files of a harness.
+func HarnessBackupDir(name string) string {
+	return filepath.Join(Base(), "backups", "harness", name)
+}
 func LibexecDir() string { return filepath.Join(Base(), "libexec") }
 func LogsDir() string    { return filepath.Join(Base(), "logs") }
 func RunsLogDir() string { return filepath.Join(Base(), "logs", "runs") }

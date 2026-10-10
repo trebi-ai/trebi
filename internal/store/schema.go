@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 48
+const SchemaVersion = 49
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1712,6 +1712,24 @@ CREATE TABLE mobile_clients (
 	scope           TEXT NOT NULL,
 	created_at      TEXT NOT NULL,
 	last_seen_at    TEXT
+);
+`,
+		// v49: harness setup redesign (plan 2026-10-10). The account of a
+		// login, the version state of each harness, the program version of a
+		// run, and the "Trebi's own" config files.
+		`
+ALTER TABLE harness_state ADD COLUMN auth_account TEXT;
+ALTER TABLE harness_state ADD COLUMN version TEXT;
+ALTER TABLE harness_state ADD COLUMN latest_version TEXT;
+ALTER TABLE harness_state ADD COLUMN checked_at TEXT;
+ALTER TABLE harness_state ADD COLUMN last_update TEXT;
+ALTER TABLE runs ADD COLUMN harness_version TEXT;
+
+CREATE TABLE harness_files (
+	harness        TEXT NOT NULL,
+	file_key       TEXT NOT NULL,
+	own_created_at TEXT NOT NULL,
+	PRIMARY KEY (harness, file_key)
 );
 `,
 	}
