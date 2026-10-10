@@ -893,6 +893,55 @@ func (c *chanSender) sent() []outbox.Row {
 	return append([]outbox.Row(nil), c.rows...)
 }
 
+func TestUsageWarningOncePerCrossing(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	setUsage := func(pct float64) {
+		t.Helper()
+		if _, err := st.DB().ExecContext(ctx, `INSERT INTO harness_usage
+			(harness, window_key, used_percent, source, observed_at) VALUES ('claude', 'weekly', ?, 'test', '')
+			ON CONFLICT (harness, window_key, scope, minutes) DO UPDATE SET used_percent=excluded.used_percent`, pct); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items := func(status alerts.InboxStatus) []alerts.InboxItem {
+		t.Helper()
+		got, err := svc.List(ctx, alerts.ListOpts{Status: string(status), Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	setUsage(85)
+	for range 5 {
+		svc.Tick(ctx)
+	}
+	open := items(alerts.InboxUnread)
+	if len(open) != 1 || open[0].Title != "Harness usage warning" {
+		t.Fatalf("want one plain warning, got %+v", open)
+	}
+
+	// A manual resolve while usage stays high does not raise again.
+	if err := svc.SetStatus(ctx, open[0].ID, alerts.InboxResolved, "manual"); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(ctx)
+	if got := items(alerts.InboxUnread); len(got) != 0 {
+		t.Fatalf("re-raised while still high: %+v", got)
+	}
+
+	// A drop below the threshold re-arms the warning.
+	setUsage(10)
+	svc.Tick(ctx)
+	setUsage(90)
+	svc.Tick(ctx)
+	if got := items(alerts.InboxUnread); len(got) != 1 {
+		t.Fatalf("want a new warning after re-arm, got %+v", got)
+	}
+}
+
 func delivered(t *testing.T, st *store.Store) []store.StreamEvent {
 	t.Helper()
 	events, err := st.ListBus(context.Background(), 0, []string{"alert.delivered"}, 50)

@@ -26,6 +26,7 @@ import (
 
 const (
 	busCursorFlag    = "alerts.bus_seq"
+	usageWarnedFlag  = "alerts.usage_warned."
 	deliverQueueSize = 16
 	maxAlertText     = 512
 )
@@ -703,11 +704,11 @@ func (s *Service) attachApproval(ctx context.Context, item *InboxItem, question 
 
 func (s *Service) checkUsage(ctx context.Context) {
 	// The highest 5-hour or weekly window of each harness. A window past
-	// its reset time does not count.
+	// its reset time counts as 0, so it re-arms the warning.
 	now := time.Now().UTC().Format(time.RFC3339)
 	rows, err := s.st.DB().QueryContext(ctx, `
-		SELECT harness, MAX(used_percent) FROM harness_usage
-		WHERE window_key IN ('five_hour','weekly') AND (resets_at IS NULL OR resets_at > ?)
+		SELECT harness, MAX(CASE WHEN resets_at IS NULL OR resets_at > ? THEN used_percent ELSE 0 END)
+		FROM harness_usage WHERE window_key IN ('five_hour','weekly')
 		GROUP BY harness`, now)
 	if err != nil {
 		return
@@ -720,8 +721,22 @@ func (s *Service) checkUsage(ctx context.Context) {
 			continue
 		}
 		subj := "harness/" + name
+		_, warned, _ := s.st.GetFlag(usageWarnedFlag + name)
 		if pct < float64(s.opts.UsageWarnAt) {
 			s.autoResolve(ctx, KindUsageWarning, subj, "auto")
+			if warned {
+				if err := s.st.DeleteFlag(usageWarnedFlag + name); err != nil {
+					s.log.Warn("usage_warning flag", "harness", name, "error", err)
+				}
+			}
+			continue
+		}
+		// One warning per crossing; usage must drop below the threshold to re-arm.
+		if warned {
+			continue
+		}
+		if err := s.st.SetFlag(usageWarnedFlag+name, "1"); err != nil {
+			s.log.Warn("usage_warning flag", "harness", name, "error", err)
 			continue
 		}
 		_, err := s.Raise(ctx, RaiseOpts{
