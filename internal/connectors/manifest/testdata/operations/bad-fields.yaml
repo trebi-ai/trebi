@@ -1,0 +1,23 @@
+schema: trebi-connector/1
+name: bad-fields
+title: Bad
+description: Many field problems.
+version: 1.0.0
+actions:
+  operations:
+    - name: Search
+      label: ""
+      default: maybe
+      command: [tool, "{input.missing}", "{input.limit}", "{input.tags}"]
+      stdin: yaml
+      output: xml
+      timeout: 5m
+      input:
+        type: object
+        properties:
+          limit: {type: integer}
+          tags: {type: array, items: {type: integer}}
+        required: [limit, nope]
+      expand: {field: limit, each: ["{key}={other}"]}
+    - {name: search, label: Again, command: ["{input.x}"]}
+    - {name: search, label: Twice, command: [tool]}

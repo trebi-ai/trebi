@@ -52,6 +52,11 @@ func newScopeGate(mux *http.ServeMux) *scopeGate {
 		"POST /v1/conversations/{id}/messages":            true,
 		"POST /v1/email/send":                             true,
 		"POST /v1/agent-hook/{event}":                     true,
+		// The artifact and operation handlers limit a run to its workspace.
+		"POST /v1/artifacts":                             true,
+		"PATCH /v1/artifacts/{id}":                       true,
+		"POST /v1/artifacts/{id}/versions/{n}/send":      true,
+		"POST /v1/connectors/{ref}/operations/{op}/call": true,
 		// The state handler limits a run to its own owner.
 		"POST /v1/state/{owner}/{collection}/query":  true,
 		"POST /v1/state/{owner}/{collection}/get":    true,

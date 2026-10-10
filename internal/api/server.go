@@ -22,6 +22,7 @@ import (
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/agents"
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/artifacts"
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/chains"
@@ -86,6 +87,7 @@ type Server struct {
 	proposals  *proposals.Service
 	requests   *requests.Service
 	chains     *chains.Service
+	artifacts  *artifacts.Service
 	launch     *launch.Launcher
 	state      *state.Store
 	// catalog is the registry client; it follows the configured list.
@@ -198,7 +200,10 @@ func New(st *store.Store, opts Options) *Server {
 	s.chains = chains.NewService(st, ws, s.conv, r, s.requests, slog.Default().With("source", "chains"))
 	s.chains.WithAlerts(s.alerts)
 	s.requests.WithDecider(s.chains)
-	r.SetParker(runs.NewParker(r, l, s.requests, s.chains))
+	s.artifacts = artifacts.NewService(st, artifacts.NewBlobs(home.ArtifactBlobsDir(), artifacts.DefaultMaxBytes), r, ws, artifacts.Config{}).
+		WithContinuer(artContinuer{s})
+	s.email.WithArtifacts(s.artifacts)
+	r.SetParker(runs.NewParker(r, l, s.requests, s.chains, artifacts.NewRunGate(s.artifacts, r, s.alerts)))
 	s.connectors.WithInstall(connectors.InstallConfig{Catalog: s.catalog})
 	_ = s.connectors.Load() // the service keeps the error; the list route and the daemon report it
 	s.outbox = outbox.New(st)
@@ -386,6 +391,14 @@ func (s *Server) BindState(st *state.Store) { bind(&s.state, st) }
 // BindChains swaps in the daemon's chains service.
 func (s *Server) BindChains(c *chains.Service) { bind(&s.chains, c) }
 
+// BindArtifacts swaps in the daemon's artifacts service and wires Ask to
+// this server.
+func (s *Server) BindArtifacts(a *artifacts.Service) {
+	if a != nil {
+		s.artifacts = a.WithContinuer(artContinuer{s})
+	}
+}
+
 // stateLimits reads the owner limits from config.
 func stateLimits() state.Limits {
 	limits := state.DefaultLimits()
@@ -484,6 +497,8 @@ func (s *Server) Handler() http.Handler {
 	s.routeHooks(mux)
 	s.routeMobile(mux)
 	s.routeState(mux)
+	s.routeArtifacts(mux)
+	s.routeConnectorOperations(mux)
 	s.routeMCP(mux)
 	// Dispatch from catalog tools re-enters here, audit-wrapped and
 	// noTraversal-wrapped. MCP and native dispatch share that path.

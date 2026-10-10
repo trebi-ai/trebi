@@ -76,7 +76,7 @@ func connectorCommand() *cli.Command {
 				Action:    runConnectorRemove,
 			},
 			connectorQueueAlias(),
-		}, slices.Concat(connectorCatalogCommands(), connectorVersionCommands(), connectorProcessCommands(), connectorSessionCommands())...),
+		}, slices.Concat(connectorCatalogCommands(), connectorVersionCommands(), connectorProcessCommands(), connectorSessionCommands(), connectorOperationCommands())...),
 	}
 }
 

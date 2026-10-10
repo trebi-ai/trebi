@@ -362,3 +362,45 @@ func TestMigrationV45Forms(t *testing.T) {
 		t.Fatal("a second open request on one run was accepted")
 	}
 }
+
+// TestMigrationV50Artifacts adds the artifact tables and the new email and
+// schedule columns. An old email row reads the defaults.
+func TestMigrationV50Artifacts(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "v49.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applyThrough(db, 49); err != nil {
+		t.Fatalf("v49 setup: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO email_messages (id, direction, disposition, created_at) VALUES ('m1', 'out', 'sent', 't')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var artifactID, snapshotID, decisionID string
+	var version sql.NullInt64
+	if err := db.QueryRow(`SELECT artifact_id, artifact_version, snapshot_id, decision_id FROM email_messages WHERE id='m1'`).
+		Scan(&artifactID, &version, &snapshotID, &decisionID); err != nil {
+		t.Fatal(err)
+	}
+	if artifactID != "" || version.Valid || snapshotID != "" || decisionID != "" {
+		t.Fatalf("defaults %q %v %q %q", artifactID, version, snapshotID, decisionID)
+	}
+	for _, q := range []string{
+		`INSERT INTO artifacts (id, workspace_id, owner_kind, name, title, kind, latest_version, created_at, updated_at) VALUES ('a1', 'w', 'job', 'r', 'R', 'html', 1, 't', 't')`,
+		`INSERT INTO artifact_versions (artifact_id, n, sha256, size_bytes, mime, file_name, origin_kind, created_at) VALUES ('a1', 1, 'x', 1, 'text/html', 'r.html', 'run', 't')`,
+		`INSERT INTO artifact_snapshots (id, artifact_id, version_n, reason, created_at) VALUES ('s1', 'a1', 1, 'refresh', 't')`,
+		`INSERT INTO decisions (id, workspace_id, kind, kind_version, subject_kind, subject_id, decider, method, status, outcome, questions_json, took_ms, created_at) VALUES ('d1', 'w', 'k', 1, 'email', 'm1', 'fake', 'rule', 'ok', 'deliver', '[]', 1, 't')`,
+		`SELECT artifact_id FROM schedules`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO artifacts (id, workspace_id, owner_kind, name, title, kind, latest_version, created_at, updated_at) VALUES ('a2', 'w', 'job', 'r', 'R', 'html', 1, 't', 't')`); err == nil {
+		t.Fatal("a second artifact with the same key was accepted")
+	}
+}

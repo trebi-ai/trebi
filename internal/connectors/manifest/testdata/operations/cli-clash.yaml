@@ -1,0 +1,9 @@
+schema: trebi-connector/1
+name: bad-clash
+title: Bad
+description: An operation binary that is also a run command.
+version: 1.0.0
+actions:
+  cli: {commands: [mailbox]}
+  operations:
+    - {name: search, label: Search mail, readonly: true, command: [mailbox, op, search]}

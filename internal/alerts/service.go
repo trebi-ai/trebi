@@ -67,6 +67,8 @@ const (
 	KindChainLimited Kind = "chain_limited"
 	// KindHarnessUpdateFailed is a harness update that failed its check.
 	KindHarnessUpdateFailed Kind = "harness_update_failed"
+	// KindArtifactMissing is a JOB.md artifact that a run did not save.
+	KindArtifactMissing Kind = "artifact_missing"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -768,6 +770,9 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindChainLimited: {
 			Kind: KindChainLimited, Severity: SeverityAttention, InboxKind: InboxHealth,
 		},
+		KindArtifactMissing: {
+			Kind: KindArtifactMissing, Severity: SeverityError, InboxKind: InboxFailure,
+		},
 	}
 }
 
@@ -900,6 +905,8 @@ func (o RaiseOpts) defaultSubject() string {
 		return "request/" + o.RequestID
 	case KindChainLimited:
 		return "chain/" + o.TraceID
+	case KindArtifactMissing:
+		return "artifact/" + o.RunID
 	}
 	return o.Kind.String()
 }
@@ -925,6 +932,7 @@ var defaultTitles = map[Kind]string{
 	KindTriggerFlood:                "Too many events",
 	KindChainLimited:                "Agents reached a chain limit",
 	KindHarnessUpdateFailed:         "Harness update failed",
+	KindArtifactMissing:             "Artifact not saved",
 }
 
 func (o RaiseOpts) defaultTitle() string {
@@ -952,6 +960,11 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 		return []InboxAction{{Kind: ActionOpenSession, Route: "/v1/runs/" + o.RunID + "/attach", Label: "Open session"}}
 	case KindRunFailed:
 		return runFailedActions(o.RunID)
+	case KindArtifactMissing:
+		if o.RunID == "" {
+			return []InboxAction{}
+		}
+		return []InboxAction{{Kind: ActionViewRun, Route: "/v1/runs/" + o.RunID, Label: "View run"}}
 	case KindConnectorAuthRequired:
 		route := "/connectors/" + url.PathEscape(o.Connector) + "?tab=login"
 		return []InboxAction{{Kind: ActionLogIn, Route: route, Label: "Log in"}}

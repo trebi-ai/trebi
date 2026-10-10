@@ -1,0 +1,12 @@
+schema: trebi-connector/1
+name: bad-inline
+title: Bad
+description: A placeholder inside other text.
+version: 1.0.0
+actions:
+  operations:
+    - name: query
+      label: Run a query
+      readonly: true
+      command: [psql, "--command={input.sql}"]
+      input: {type: object, properties: {sql: {type: string}}, required: [sql]}

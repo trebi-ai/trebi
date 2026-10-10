@@ -47,6 +47,9 @@ func newConfirmGate() *confirmGate {
 			}
 			return "deletes the JOB.md of " + name + "; other files in the job folder and run rows stay"
 		}, false},
+		"DELETE /v1/artifacts/{id}": {2, func(n string, _ *http.Request) string {
+			return "deletes artifact " + n + " and every version of it"
+		}, false},
 		"DELETE /v1/jobs/{name}/memory": {2, func(n string, _ *http.Request) string {
 			return "erases the memory file of job " + n
 		}, false},

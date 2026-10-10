@@ -71,6 +71,12 @@ func RunsDir() string    { return filepath.Join(Base(), "runs") }
 // RequestsDir holds the report snapshots of requests, one folder per id.
 func RequestsDir() string { return filepath.Join(Base(), "requests") }
 
+// ArtifactsDir holds the artifact store.
+func ArtifactsDir() string { return filepath.Join(Base(), "artifacts") }
+
+// ArtifactBlobsDir holds the artifact bytes, named by their sha256.
+func ArtifactBlobsDir() string { return filepath.Join(ArtifactsDir(), "blobs", "sha256") }
+
 // ConnectionsDir holds one folder per connection, named by its id.
 func ConnectionsDir() string { return filepath.Join(Base(), "connectors") }
 

@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 49
+const SchemaVersion = 50
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1731,6 +1731,105 @@ CREATE TABLE harness_files (
 	own_created_at TEXT NOT NULL,
 	PRIMARY KEY (harness, file_key)
 );
+`,
+		// v50: artifacts, operations, held mail (plan 2026-10-10-artifacts).
+		`
+CREATE TABLE artifacts (
+	id             TEXT PRIMARY KEY,
+	workspace_id   TEXT NOT NULL,
+	owner_kind     TEXT NOT NULL,
+	owner_id       TEXT NOT NULL DEFAULT '',
+	name           TEXT NOT NULL,
+	title          TEXT NOT NULL,
+	kind           TEXT NOT NULL,
+	live           INTEGER NOT NULL DEFAULT 0,
+	latest_version INTEGER NOT NULL,
+	live_version   INTEGER,
+	keep_versions  INTEGER,
+	schedule       TEXT NOT NULL DEFAULT '',
+	deliver_json   TEXT NOT NULL DEFAULT '',
+	revision       INTEGER NOT NULL DEFAULT 1,
+	created_at     TEXT NOT NULL,
+	updated_at     TEXT NOT NULL,
+	UNIQUE (workspace_id, owner_kind, owner_id, name)
+);
+
+CREATE TABLE artifact_versions (
+	artifact_id     TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+	n               INTEGER NOT NULL,
+	sha256          TEXT NOT NULL,
+	size_bytes      INTEGER NOT NULL,
+	mime            TEXT NOT NULL,
+	file_name       TEXT NOT NULL,
+	note            TEXT NOT NULL DEFAULT '',
+	origin_kind     TEXT NOT NULL,
+	run_id          TEXT NOT NULL DEFAULT '',
+	conversation_id TEXT NOT NULL DEFAULT '',
+	author          TEXT NOT NULL DEFAULT '',
+	base_n          INTEGER,
+	sources_json    TEXT NOT NULL DEFAULT '',
+	params_json     TEXT NOT NULL DEFAULT '',
+	approval        TEXT NOT NULL DEFAULT 'none',
+	decided_by      TEXT NOT NULL DEFAULT '',
+	decided_at      TEXT NOT NULL DEFAULT '',
+	pinned          INTEGER NOT NULL DEFAULT 0,
+	created_at      TEXT NOT NULL,
+	PRIMARY KEY (artifact_id, n)
+);
+CREATE INDEX artifact_versions_run ON artifact_versions(run_id) WHERE run_id <> '';
+CREATE INDEX artifact_versions_conv ON artifact_versions(conversation_id) WHERE conversation_id <> '';
+CREATE INDEX artifact_versions_sha ON artifact_versions(sha256);
+
+CREATE TABLE artifact_snapshots (
+	id           TEXT PRIMARY KEY,
+	artifact_id  TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+	version_n    INTEGER NOT NULL,
+	data_sha256  TEXT NOT NULL DEFAULT '',
+	inputs_json  TEXT NOT NULL DEFAULT '',
+	reason       TEXT NOT NULL,
+	actor        TEXT NOT NULL DEFAULT '',
+	errors_json  TEXT NOT NULL DEFAULT '',
+	took_ms      INTEGER NOT NULL DEFAULT 0,
+	pinned       INTEGER NOT NULL DEFAULT 0,
+	created_at   TEXT NOT NULL
+);
+CREATE INDEX artifact_snapshots_art ON artifact_snapshots(artifact_id, created_at);
+
+ALTER TABLE email_messages ADD COLUMN artifact_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE email_messages ADD COLUMN artifact_version INTEGER;
+ALTER TABLE email_messages ADD COLUMN snapshot_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE email_messages ADD COLUMN decision_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX email_messages_artifact ON email_messages(artifact_id) WHERE artifact_id <> '';
+
+CREATE TABLE decisions (
+	id              TEXT PRIMARY KEY,
+	workspace_id    TEXT NOT NULL,
+	kind            TEXT NOT NULL,
+	kind_version    INTEGER NOT NULL,
+	subject_kind    TEXT NOT NULL,
+	subject_id      TEXT NOT NULL,
+	trace_id        TEXT NOT NULL DEFAULT '',
+	decider         TEXT NOT NULL,
+	method          TEXT NOT NULL,
+	status          TEXT NOT NULL,
+	outcome         TEXT NOT NULL,
+	confidence      REAL,
+	questions_json  TEXT NOT NULL,
+	answers_json    TEXT NOT NULL DEFAULT '',
+	raw_sha256      TEXT NOT NULL DEFAULT '',
+	error           TEXT NOT NULL DEFAULT '',
+	attempts        INTEGER NOT NULL DEFAULT 1,
+	took_ms         INTEGER NOT NULL,
+	cost_usd        REAL NOT NULL DEFAULT 0,
+	feedback        TEXT NOT NULL DEFAULT '',
+	feedback_source TEXT NOT NULL DEFAULT '',
+	feedback_at     TEXT NOT NULL DEFAULT '',
+	created_at      TEXT NOT NULL
+);
+CREATE INDEX decisions_kind ON decisions(workspace_id, kind, created_at);
+CREATE INDEX decisions_subject ON decisions(subject_kind, subject_id);
+
+ALTER TABLE schedules ADD COLUMN artifact_id TEXT NOT NULL DEFAULT '';
 `,
 	}
 }

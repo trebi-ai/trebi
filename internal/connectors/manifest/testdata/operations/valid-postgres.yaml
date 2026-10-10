@@ -1,0 +1,22 @@
+schema: trebi-connector/1
+name: postgres
+title: PostgreSQL
+description: Read a PostgreSQL database.
+version: 1.0.0
+install: {bin: psql}
+actions:
+  operations:
+    - name: query
+      label: Run a query
+      readonly: true
+      command: [psql, --csv, --no-psqlrc, -X, -v, ON_ERROR_STOP=1, -c, "{input.sql}"]
+      stdin: none
+      output: csv
+      input:
+        type: object
+        properties:
+          sql: {type: string, maxLength: 20000}
+          params: {type: object}
+        required: [sql]
+      expand: {field: params, each: ["-v", "{key}={value}"]}
+      env: {PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=30000"}

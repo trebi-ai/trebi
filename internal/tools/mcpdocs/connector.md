@@ -255,6 +255,24 @@ Bind one room, or one thread of a room, to the assistant or to an agent of a wor
 - `operator` (string, optional): `assistant` (the default) or `agents/<name>`.
 - `thread` (string, optional): thread id from `threads`; empty binds the whole room. A connection without the `threads` feature answers 400 `unsupported` to a thread.
 
+### operations
+List the operations of a connection. An operation is a named command of the connector, for example `query` on a warehouse or `send` on a mailbox. Trebi runs it with the secrets of the connection; the agent never gets them. Each item has `name`, `label`, `description`, `readonly`, `input` (a JSON Schema of the input object), `output` (`json`, `csv`, or `text`), `state`, and `default_state`. `state` is `on` (runs at once), `ask` (an agent needs the approval of the user for each call), or `off`.
+- `connector` (string, required): connection slug or id.
+- `workspace` (string, optional): resolve the connection with the layer of this workspace.
+
+### call
+Run one operation. The reply is `{format, output, rows, text, took_ms}`: `output` for JSON, `rows{columns, values}` for CSV, and `text` for text. A run can call only the connections of its job or agent. An operation in state `ask` called by an agent opens a request for the user and fails with `approval_required` and `details.request_id`; call again with the same input after the user approves. A state `off` fails with `operation_off`. A program that fails returns `operation_failed` with `details.exit_code` and `details.stderr`.
+- `connector` (string, required): connection slug or id.
+- `operation` (string, required): operation name from `operations`.
+- `workspace` (string, optional): workspace id or name. A run uses its own workspace.
+- `input` (object, optional): the input fields of the operation.
+
+### set_operation
+Set the state of one operation. Only the user can do this; an agent gets `forbidden`. The reply is the list of `operations`.
+- `connector` (string, required): connection slug or id.
+- `operation` (string, required): operation name.
+- `state` (string, required): `on`, `ask`, or `off`.
+
 ## Related guides
 
 `connectors-and-rules`

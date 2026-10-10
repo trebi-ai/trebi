@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 
 	"github.com/trebi-ai/trebi/internal/runs"
 )
@@ -36,6 +39,15 @@ func (s *Service) ResolveActions(_ context.Context, workspaceID string, names []
 			return nil, fmt.Errorf("connector %q has no actions block", name)
 		}
 		act := runs.ConnectorAction{ID: r.ID, Slug: r.Slug, Title: r.Title, BinDir: r.BinDir()}
+		if a.MCP == nil && a.CLI == nil && len(a.Operations) > 0 {
+			// The daemon runs the operations; the run gets no binary and no secret (D13).
+			act.BinDir, act.Hint = "", operationsHint(r)
+			if dir := r.SkillDir(); dir != "" {
+				act.Skill, act.SkillDir = r.Type, dir
+			}
+			out = append(out, act)
+			continue
+		}
 		if a.MCP != nil {
 			srv, missing, err := r.MCPServer()
 			if err != nil {
@@ -63,6 +75,20 @@ func (s *Service) ResolveActions(_ context.Context, workspaceID string, names []
 		out = append(out, act)
 	}
 	return out, nil
+}
+
+// operationsHint tells the agent how to call the operations of r.
+func operationsHint(r Resolved) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Connection %s (%s): run its operations with `trebi connector call %s <operation> --input key=value`.", r.Slug, r.Title, r.Slug)
+	for _, op := range r.Manifest.Operations() {
+		fmt.Fprintf(&b, "\n- %s: %s", op.Name, op.Label)
+		if op.Input != nil && len(op.Input.Properties) > 0 {
+			keys := slices.Sorted(maps.Keys(op.Input.Properties))
+			fmt.Fprintf(&b, " (input: %s)", strings.Join(keys, ", "))
+		}
+	}
+	return b.String()
 }
 
 func (s *Service) logMissingSecrets(connector string, missing []string) {

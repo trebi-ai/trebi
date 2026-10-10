@@ -76,7 +76,7 @@ type DocField struct {
 	Required bool
 }
 
-var docFieldRE = regexp.MustCompile(`^- ` + "`" + `([a-z_]+)` + "`" + ` \(([\w ]+?), (required|optional)([^)]*)\)`) //nolint:gochecknoglobals // compiled pattern
+var docFieldRE = regexp.MustCompile(`^- ` + "`" + `([a-z0-9_]+)` + "`" + ` \(([\w ]+?), (required|optional)([^)]*)\)`) //nolint:gochecknoglobals // compiled pattern
 
 // DocSection returns the body of one "### <action>" section.
 func DocSection(doc, action string) string {

@@ -1,0 +1,43 @@
+schema: trebi-connector/1
+name: gmail
+title: Gmail
+description: Read your mail and save drafts.
+version: 1.0.0
+install: {catalog: true, bin: mailbox}
+actions:
+  operations:
+    - name: search
+      label: Search mail
+      description: Find messages by text, sender, or date.
+      readonly: true
+      default: on
+      command: [mailbox, op, search]
+      stdin: json
+      output: json
+      input:
+        type: object
+        properties:
+          query: {type: string, maxLength: 500}
+          limit: {type: integer, minimum: 1, maximum: 100}
+        required: [query]
+      timeout: 30s
+    - name: draft
+      label: Save a draft
+      readonly: false
+      default: on
+      command: [mailbox, op, draft]
+      input:
+        type: object
+        properties:
+          to: {type: array, items: {type: string}}
+          subject: {type: string}
+          text: {type: string}
+    - name: send
+      label: Send mail
+      readonly: false
+      command: [mailbox, op, send]
+      input:
+        type: object
+        properties:
+          mime_base64: {type: string}
+        required: [mime_base64]

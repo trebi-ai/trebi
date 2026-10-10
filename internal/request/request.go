@@ -1020,6 +1020,14 @@ type EmailSendSpec struct {
 	HTML        string
 	InReplyTo   string
 	Attachments []EmailFile
+	Artifact    *EmailArtifact
+}
+
+// EmailArtifact names the artifact version that a mail carries. Ref is an
+// id, a name, or name@n.
+type EmailArtifact struct {
+	Ref     string `json:"ref"`
+	Version int    `json:"version,omitempty"`
 }
 
 // EmailFile is one file to send. Path names a workspace file that the
@@ -1033,7 +1041,13 @@ type EmailFile struct {
 
 // Build renders the spec as POST /v1/email/send.
 func (e EmailSendSpec) Build() HTTPRequest {
-	body := map[string]any{"workspace": e.Workspace, "to": e.To, "subject": e.Subject}
+	body := map[string]any{"workspace": e.Workspace, "to": e.To}
+	if e.Subject != "" {
+		body["subject"] = e.Subject
+	}
+	if e.Artifact != nil {
+		body["artifact"] = e.Artifact
+	}
 	if e.Text != "" {
 		body["text"] = e.Text
 	}
@@ -2697,6 +2711,184 @@ func listQuery(path, cursor string, limit int) string {
 		kv["limit"] = strconv.Itoa(limit)
 	}
 	return withQuery(path, kv)
+}
+
+// ArtifactFilter is the query of GET /v1/artifacts. Owner is assistant,
+// job:<name>, or agent:<name>.
+type ArtifactFilter struct {
+	Workspace, Owner, Kind, Query, Cursor string
+	Live                                  *bool
+	Limit                                 int
+}
+
+// BuildArtifactListPath builds GET /v1/artifacts.
+func BuildArtifactListPath(f ArtifactFilter) string {
+	q := map[string]string{"workspace": f.Workspace, "owner": f.Owner, "kind": f.Kind, "q": f.Query, "cursor": f.Cursor}
+	if f.Live != nil {
+		q["live"] = strconv.FormatBool(*f.Live)
+	}
+	if f.Limit > 0 {
+		q["limit"] = strconv.Itoa(f.Limit)
+	}
+	return withQuery("/v1/artifacts", q)
+}
+
+// SplitArtifactRef splits name@n into the name and the version. The version
+// is "latest" when ref has none.
+func SplitArtifactRef(ref string) (name, version string) {
+	if at := strings.LastIndex(ref, "@"); at > 0 {
+		return ref[:at], ref[at+1:]
+	}
+	return ref, "latest"
+}
+
+// ArtifactRef names one artifact: an id, or a name in Workspace.
+type ArtifactRef struct {
+	Ref       string
+	Workspace string
+}
+
+// GetPath builds GET /v1/artifacts/{id}.
+func (a ArtifactRef) GetPath() string { return a.path("", nil) }
+
+// VersionsPath builds GET /v1/artifacts/{id}/versions.
+func (a ArtifactRef) VersionsPath() string { return a.path("/versions", nil) }
+
+// VersionPath builds GET /v1/artifacts/{id}/versions/{n}; n is a number or latest.
+func (a ArtifactRef) VersionPath(n string) string { return a.path("/versions/"+url.PathEscape(n), nil) }
+
+// ContentPath builds GET /v1/artifacts/{id}/versions/{n}/content.
+func (a ArtifactRef) ContentPath(n string, download bool) string {
+	q := map[string]string{}
+	if download {
+		q["download"] = "1"
+	}
+	return a.path("/versions/"+url.PathEscape(n)+"/content", q)
+}
+
+// DeliveriesPath builds GET /v1/artifacts/{id}/deliveries.
+func (a ArtifactRef) DeliveriesPath() string { return a.path("/deliveries", nil) }
+
+// Patch builds PATCH /v1/artifacts/{id}. ifRevision 0 sends no If-Match.
+func (a ArtifactRef) Patch(title *string, keepVersions *int, ifRevision int) HTTPRequest {
+	body := map[string]any{}
+	if title != nil {
+		body["title"] = *title
+	}
+	if keepVersions != nil {
+		body["keep_versions"] = *keepVersions
+	}
+	req := HTTPRequest{Method: "PATCH", Path: a.path("", nil), Body: body}
+	if ifRevision > 0 {
+		req.IfMatch = strconv.Itoa(ifRevision)
+	}
+	return req
+}
+
+// Delete builds DELETE /v1/artifacts/{id}.
+func (a ArtifactRef) Delete(confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: a.path("", confirmQ(confirm))}
+}
+
+// Pin builds POST or DELETE /v1/artifacts/{id}/versions/{n}/pin.
+func (a ArtifactRef) Pin(n string, on bool) HTTPRequest {
+	method := "POST"
+	if !on {
+		method = "DELETE"
+	}
+	return HTTPRequest{Method: method, Path: a.path("/versions/"+url.PathEscape(n)+"/pin", nil)}
+}
+
+// Send builds POST /v1/artifacts/{id}/versions/{n}/send. mode is send or draft.
+func (a ArtifactRef) Send(n, mode string) HTTPRequest {
+	body := map[string]any{}
+	if mode != "" {
+		body["mode"] = mode
+	}
+	return HTTPRequest{Method: "POST", Path: a.path("/versions/"+url.PathEscape(n)+"/send", nil), Body: body}
+}
+
+// Ask builds POST /v1/artifacts/{id}/ask.
+func (a ArtifactRef) Ask(text, selection string, version int) HTTPRequest {
+	body := map[string]any{"text": text}
+	if selection != "" {
+		body["selection"] = selection
+	}
+	if version > 0 {
+		body["version"] = version
+	}
+	return HTTPRequest{Method: "POST", Path: a.path("/ask", nil), Body: body}
+}
+
+func (a ArtifactRef) path(tail string, q map[string]string) string {
+	if q == nil {
+		q = map[string]string{}
+	}
+	q["workspace"] = a.Workspace
+	return withQuery("/v1/artifacts/"+url.PathEscape(a.Ref)+tail, q)
+}
+
+// ArtifactPutSpec is the body of POST /v1/artifacts. Give Content,
+// ContentBase64, or FromPath (a path in the working dir of a run).
+type ArtifactPutSpec struct {
+	Workspace     string
+	Name          string
+	ArtifactID    string
+	Title         string
+	Kind          string
+	FileName      string
+	Content       string
+	ContentBase64 string
+	FromPath      string
+	Note          string
+	Owner         string
+	Base          *int
+}
+
+// Build renders the spec as POST /v1/artifacts.
+func (p ArtifactPutSpec) Build() HTTPRequest {
+	body := map[string]any{}
+	for k, v := range map[string]string{
+		"workspace": p.Workspace, "name": p.Name, "artifact_id": p.ArtifactID, "title": p.Title, "kind": p.Kind,
+		"file_name": p.FileName, "content": p.Content, "content_base64": p.ContentBase64, "from_path": p.FromPath,
+		"note": p.Note, "owner": p.Owner,
+	} {
+		if v != "" {
+			body[k] = v
+		}
+	}
+	if p.Base != nil {
+		body["base"] = *p.Base
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/artifacts", Body: body}
+}
+
+// BuildRunArtifactsPath builds GET /v1/runs/{id}/artifacts.
+func BuildRunArtifactsPath(runID string) string {
+	return "/v1/runs/" + url.PathEscape(runID) + "/artifacts"
+}
+
+// BuildOperationsListPath builds GET /v1/connectors/{ref}/operations.
+func BuildOperationsListPath(ref, workspace string) string {
+	return withQuery("/v1/connectors/"+url.PathEscape(ref)+"/operations", map[string]string{"workspace": workspace})
+}
+
+// BuildOperationCall builds POST /v1/connectors/{ref}/operations/{op}/call.
+func BuildOperationCall(ref, op, workspace string, input map[string]any) HTTPRequest {
+	body := map[string]any{"input": input}
+	if input == nil {
+		body["input"] = map[string]any{}
+	}
+	if workspace != "" {
+		body["workspace"] = workspace
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors/" + url.PathEscape(ref) + "/operations/" + url.PathEscape(op) + "/call", Body: body}
+}
+
+// BuildOperationState builds PUT /v1/connectors/{ref}/operations/{op}.
+func BuildOperationState(ref, op, state string) HTTPRequest {
+	return HTTPRequest{Method: "PUT", Path: "/v1/connectors/" + url.PathEscape(ref) + "/operations/" + url.PathEscape(op),
+		Body: map[string]any{"state": state}}
 }
 
 func withQuery(path string, kv map[string]string) string {

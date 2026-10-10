@@ -14,8 +14,8 @@ func TestParseAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 13 {
-		t.Fatalf("got %d guides, want 13", len(all))
+	if len(all) != 14 {
+		t.Fatalf("got %d guides, want 14", len(all))
 	}
 	seen := map[string]bool{}
 	for _, g := range all {
@@ -41,7 +41,7 @@ func TestParseAll(t *testing.T) {
 func TestListSortedNoBodies(t *testing.T) {
 	t.Parallel()
 	list := List()
-	if len(list) != 13 {
+	if len(list) != 14 {
 		t.Fatalf("List len %d", len(list))
 	}
 	for i, g := range list {

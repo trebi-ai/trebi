@@ -19,10 +19,11 @@ Send one explicit message from the workspace address, or from the agent subaddre
 - `workspace` (string, required): workspace id or name.
 - `agent` (string, optional): agent name. The mail leaves from the agent subaddress.
 - `to` (array, required): recipient addresses, each a string.
-- `subject` (string, required): subject line.
+- `subject` (string, optional): subject line. Required without `artifact`.
 - `text` (string, optional): message body as Markdown. Trebi renders it as the HTML part in the workspace style (`email.style`). Give `text` or `html`, not both.
 - `html` (string, optional): your own HTML body. Trebi makes the plain-text part from it. Use inline styles; do not link scripts or stylesheets. Write Markdown in `text` unless you need a layout that Markdown cannot give.
 - `in_reply_to` (string, optional): message id this mail answers, so it lands on the thread.
+- `artifact` (string, optional): an artifact id, name, or `name@n` to send. Trebi makes the mail from that version: an email draft becomes the body, a report becomes the body with a link to the full version in Trebi, and another kind becomes an attachment. The default subject is the title of the artifact. The mail records the version that it sent.
 - `attachments` (array, optional): at most 10 files. Each item is an object with one of two forms. `{"path": "reports/q3.csv"}` attaches a file of the workspace; `name` is optional and sets the file name the recipient sees. `{"name": "q3.csv", "content": "<base64>"}` attaches the given bytes. `type` (string, optional) sets the media type; without it the type comes from the file name. The text, the HTML, and all files together must stay at or below 5 MiB.
 
 ### workspace_address

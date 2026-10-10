@@ -16,6 +16,7 @@ import (
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/ext"
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/artifacts"
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/chains"
@@ -119,6 +120,7 @@ type ControlPlane struct {
 	Launcher  *launch.Launcher
 	Requests  *requests.Service
 	Chains    *chains.Service
+	Artifacts *artifacts.Service
 	Parker    *runs.Parker
 	State     *state.Store
 	Opts      Options
@@ -261,7 +263,10 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	reqSvc := requests.NewService(st, r, cl, requests.NewReportStore(home.RequestsDir()), reqOpts)
 	chainSvc := chains.NewService(st, ws, conv, r, reqSvc, slog.Default().With("source", "chains"))
 	reqSvc.WithDecider(chainSvc)
-	parker := runs.NewParker(r, launcher, reqSvc, chainSvc)
+	artSvc := artifacts.NewService(st, artifacts.NewBlobs(home.ArtifactBlobsDir(), artifacts.DefaultMaxBytes), r, ws, artifacts.Config{})
+	artGate := artifacts.NewRunGate(artSvc, r, nil)
+	em.WithArtifacts(artSvc)
+	parker := runs.NewParker(r, launcher, reqSvc, chainSvc, artGate)
 	r.SetParker(parker)
 	c := &ControlPlane{
 		Store:         st,
@@ -285,6 +290,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Launcher:      launcher,
 		Requests:      reqSvc,
 		Chains:        chainSvc,
+		Artifacts:     artSvc,
 		Parker:        parker,
 		State:         stateStore,
 		Opts:          opts,
@@ -313,6 +319,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Push: cl, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get})
 	c.Alerts.SetDoctor(c.Alerts.CollectDoctorFindings)
 	chainSvc.WithAlerts(c.Alerts)
+	artGate.WithAlerts(c.Alerts)
 	c.Alerts.SetProposalContent(func(ctx context.Context, id string) (string, string, bool) {
 		p, err := c.Proposals.Get(ctx, id)
 		if err != nil {
@@ -809,6 +816,11 @@ func (c *ControlPlane) busPrune(ctx context.Context) {
 				c.log.Warn("bus prune", "error", err)
 			} else if n > 0 {
 				c.log.Info("bus.pruned", "rows", n)
+			}
+			if st, err := c.Artifacts.Prune(ctx, time.Now().UTC()); err != nil {
+				c.log.Warn("artifact prune", "error", err)
+			} else if st.Versions+st.Blobs > 0 {
+				c.log.Info("artifacts pruned", "versions", st.Versions, "blobs", st.Blobs)
 			}
 			if _, err := c.Store.PruneIdempotent(ctx, 24*time.Hour); err != nil {
 				c.log.Warn("idempotency prune", "error", err)

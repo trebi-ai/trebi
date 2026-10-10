@@ -2253,6 +2253,51 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildConnectorBind(c, ws, v[0], v[1], v[2]), nil
 			}),
+			"operations": act("GET /v1/connectors/{ref}/operations", Input{"connector": "warehouse"}, func(in Input) (request.HTTPRequest, error) {
+				c, err := in.connectorRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				ws, err := in.str("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildOperationsListPath(c.Ref, ws)), nil
+			}),
+			"call": act("POST /v1/connectors/{ref}/operations/{op}/call",
+				Input{"connector": "warehouse", "operation": "query", "input": map[string]any{"sql": "select 1"}},
+				func(in Input) (request.HTTPRequest, error) {
+					c, err := in.connectorRef()
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					op, err := in.reqStr("operation")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					ws, err := in.str("workspace")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					input, err := in.obj("input")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					return request.BuildOperationCall(c.Ref, op, ws, input), nil
+				}),
+			"set_operation": act("PUT /v1/connectors/{ref}/operations/{op}",
+				Input{"connector": "warehouse", "operation": "query", "state": "ask"},
+				func(in Input) (request.HTTPRequest, error) {
+					c, err := in.connectorRef()
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					v, err := in.reqStrs("operation", "state")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					return request.BuildOperationState(c.Ref, v[0], v[1]), nil
+				}),
 		},
 
 		"event": {
@@ -2388,6 +2433,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"cancel": idPost("POST /v1/outbox/{id}/cancel", "id", "01ROW", request.BuildOutboxCancel),
 		},
 
+		"artifact": artifactActions(),
 		"chain": {
 			"list": act("GET /v1/chains", Input{}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("workspace", "status", "agent", "since", "cursor")
@@ -2843,18 +2889,25 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			// Plan I.3: recipients must be admins or on the workspace
 			// allowlist; the API answers 400 for anyone else. Give text
 			// (Markdown) or html, not both: Trebi makes the other part.
-			"send": act("POST /v1/email/send",
+			"send": actSamples("POST /v1/email/send",
 				Input{"workspace": "ws1", "agent": "research", "to": []any{"ops@example.com"},
 					"subject": "digest ready", "text": "The digest is **ready**.",
 					"in_reply_to": "<out-1@x>", "attachments": []any{map[string]any{"path": "reports/digest.csv"}}},
+				[]Input{{"workspace": "ws1", "to": []any{"ops@example.com"}, "artifact": "weekly-report@3"}},
 				func(in Input) (request.HTTPRequest, error) {
-					v, err := in.reqStrs("workspace", "subject")
+					ws, err := in.reqStr("workspace")
 					if err != nil {
 						return request.HTTPRequest{}, err
 					}
-					opt, err := in.strs("agent", "in_reply_to", "html", "text")
+					opt, err := in.strs("agent", "in_reply_to", "html", "text", "subject", "artifact")
 					if err != nil {
 						return request.HTTPRequest{}, err
+					}
+					var art *request.EmailArtifact
+					if opt[5] != "" {
+						art = &request.EmailArtifact{Ref: opt[5]}
+					} else if opt[4] == "" {
+						return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "subject")
 					}
 					to, err := in.strList("to")
 					if err != nil {
@@ -2868,8 +2921,8 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 						return request.HTTPRequest{}, err
 					}
 					return request.EmailSendSpec{
-						Workspace: v[0], Agent: opt[0], To: to, Subject: v[1], Text: opt[3],
-						HTML: opt[2], InReplyTo: opt[1], Attachments: files,
+						Workspace: ws, Agent: opt[0], To: to, Subject: opt[4], Text: opt[3],
+						HTML: opt[2], InReplyTo: opt[1], Attachments: files, Artifact: art,
 					}.Build(), nil
 				}),
 			"workspace_address": act("GET /v1/workspaces/{id}/email", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
@@ -3078,6 +3131,157 @@ var assistantSetFields = []string{ //nolint:gochecknoglobals // static field lis
 
 // stateActions is the state tool (plan 2026-10-06 B6). In a run, owner
 // defaults to self.
+// artifactRef reads artifact (required: an id, a name, or name@n) and
+// workspace. The version is the one of version, else of name@n, else latest.
+func (in Input) artifactRef() (request.ArtifactRef, string, error) {
+	ref, err := in.reqStr("artifact")
+	if err != nil {
+		return request.ArtifactRef{}, "", err
+	}
+	ws, err := in.str("workspace")
+	if err != nil {
+		return request.ArtifactRef{}, "", err
+	}
+	name, n := request.SplitArtifactRef(ref)
+	if v, ok, err := in.num("version"); err != nil {
+		return request.ArtifactRef{}, "", err
+	} else if ok {
+		n = strconv.Itoa(v)
+	}
+	return request.ArtifactRef{Ref: name, Workspace: ws}, n, nil
+}
+
+func artifactActions() map[string]Action { //nolint:funlen // static action table
+	ref := func(route string, sample Input, build func(request.ArtifactRef, string, Input) (request.HTTPRequest, error)) Action {
+		return act(route, sample, func(in Input) (request.HTTPRequest, error) {
+			a, n, err := in.artifactRef()
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return build(a, n, in)
+		})
+	}
+	one := Input{"artifact": "weekly-report", "workspace": "ws1"}
+	withV := Input{"artifact": "weekly-report", "workspace": "ws1", "version": 2.0}
+	return map[string]Action{
+		"list": act("GET /v1/artifacts", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+			v, err := in.strs("workspace", "owner", "kind", "q", "cursor")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			live, err := in.optBool("live")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			limit, _, err := in.num("limit")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return mcpGet(request.BuildArtifactListPath(request.ArtifactFilter{
+				Workspace: v[0], Owner: v[1], Kind: v[2], Query: v[3], Cursor: v[4], Live: live, Limit: limit,
+			})), nil
+		}),
+		"get": ref("GET /v1/artifacts/{id}", one, func(a request.ArtifactRef, _ string, _ Input) (request.HTTPRequest, error) {
+			return mcpGet(a.GetPath()), nil
+		}),
+		"versions": ref("GET /v1/artifacts/{id}/versions", one, func(a request.ArtifactRef, _ string, _ Input) (request.HTTPRequest, error) {
+			return mcpGet(a.VersionsPath()), nil
+		}),
+		"version": ref("GET /v1/artifacts/{id}/versions/{n}", withV, func(a request.ArtifactRef, n string, _ Input) (request.HTTPRequest, error) {
+			return mcpGet(a.VersionPath(n)), nil
+		}),
+		"content": bound(ref("GET /v1/artifacts/{id}/versions/{n}/content", withV, func(a request.ArtifactRef, n string, _ Input) (request.HTTPRequest, error) {
+			return mcpGet(a.ContentPath(n, false)), nil
+		}), false),
+		"put": act("POST /v1/artifacts", Input{"workspace": "ws1", "name": "weekly-report", "content": "# Week 41\n"}, func(in Input) (request.HTTPRequest, error) {
+			v, err := in.strs("workspace", "name", "artifact_id", "title", "kind", "file_name", "content", "content_base64", "from_path", "note", "owner")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			if v[1] == "" && v[2] == "" {
+				return request.HTTPRequest{}, fmt.Errorf("give %q or %q", "name", "artifact_id")
+			}
+			spec := request.ArtifactPutSpec{Workspace: v[0], Name: v[1], ArtifactID: v[2], Title: v[3], Kind: v[4],
+				FileName: v[5], Content: v[6], ContentBase64: v[7], FromPath: v[8], Note: v[9], Owner: v[10]}
+			if b, ok, err := in.num("base"); err != nil {
+				return request.HTTPRequest{}, err
+			} else if ok {
+				spec.Base = &b
+			}
+			return spec.Build(), nil
+		}),
+		"update": ref("PATCH /v1/artifacts/{id}", Input{"artifact": "weekly-report", "workspace": "ws1", "title": "Weekly report"},
+			func(a request.ArtifactRef, _ string, in Input) (request.HTTPRequest, error) {
+				title, err := in.optStr("title")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				var keep *int
+				if k, ok, err := in.num("keep_versions"); err != nil {
+					return request.HTTPRequest{}, err
+				} else if ok {
+					keep = &k
+				}
+				rev, _, err := in.num("revision")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return a.Patch(title, keep, rev), nil
+			}),
+		"delete": func() Action {
+			e := ref("DELETE /v1/artifacts/{id}", Input{"artifact": "weekly-report", "workspace": "ws1", "confirm": true},
+				func(a request.ArtifactRef, _ string, in Input) (request.HTTPRequest, error) {
+					confirm, err := in.flag("confirm")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					return a.Delete(confirm), nil
+				})
+			e.Destructive = true
+			return e
+		}(),
+		"pin": func() Action {
+			e := ref("POST /v1/artifacts/{id}/versions/{n}/pin", withV, func(a request.ArtifactRef, n string, in Input) (request.HTTPRequest, error) {
+				off, err := in.flag("off")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return a.Pin(n, !off), nil
+			})
+			e.Routes = append(e.Routes, "DELETE /v1/artifacts/{id}/versions/{n}/pin")
+			e.Samples = []Input{{"artifact": "weekly-report", "workspace": "ws1", "version": 2.0, "off": true}}
+			return e
+		}(),
+		"send": ref("POST /v1/artifacts/{id}/versions/{n}/send", withV, func(a request.ArtifactRef, n string, in Input) (request.HTTPRequest, error) {
+			mode, err := in.str("mode")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return a.Send(n, mode), nil
+		}),
+		"deliveries": ref("GET /v1/artifacts/{id}/deliveries", one, func(a request.ArtifactRef, _ string, _ Input) (request.HTTPRequest, error) {
+			return mcpGet(a.DeliveriesPath()), nil
+		}),
+		"ask": ref("POST /v1/artifacts/{id}/ask", Input{"artifact": "weekly-report", "workspace": "ws1", "text": "Why did costs go up?"},
+			func(a request.ArtifactRef, _ string, in Input) (request.HTTPRequest, error) {
+				text, err := in.reqStr("text")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				sel, err := in.str("selection")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				v, _, err := in.num("version")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return a.Ask(text, sel, v), nil
+			}),
+		"run_artifacts": idGet("GET /v1/runs/{id}/artifacts", "run_id", "01JRUN", request.BuildRunArtifactsPath),
+	}
+}
+
 func stateActions() map[string]Action { //nolint:funlen // static action table
 	keyed := func(verb string, build func(owner, ws, coll string, keys []string) request.HTTPRequest) Action {
 		return act("POST /v1/state/{owner}/{collection}/"+verb, Input{"collection": "reported", "keys": []any{"doi:10/1"}},

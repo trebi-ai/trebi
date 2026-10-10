@@ -101,6 +101,7 @@ type Frontmatter struct {
 	Budget         *BudgetYAML       `yaml:"budget,omitempty"`
 	Report         *ReportYAML       `yaml:"report,omitempty"`
 	Team           *TeamYAML         `yaml:"team,omitempty"`
+	Artifacts      []ArtifactYAML    `yaml:"artifacts,omitempty"`
 	// Notify is the alert route; Contact is the owner address list. See
 	// internal/notify.
 	Notify  yaml.Node `yaml:"notify,omitempty"`
@@ -293,6 +294,7 @@ type Job struct {
 	Budget       *BudgetYAML
 	Report       *ReportYAML
 	Team         *TeamYAML
+	Artifacts    []ArtifactYAML
 	ParseError   string
 	Hash         string
 	Description  string
@@ -751,6 +753,10 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	if err != nil {
 		return parseFail(filePath, data, hash, err)
 	}
+	artifacts, err := parseArtifacts(fm.Artifacts)
+	if err != nil {
+		return parseFail(filePath, data, hash, fmt.Errorf("artifacts: %w", err))
+	}
 	j := &Job{
 		Name:           name,
 		FilePath:       filePath,
@@ -783,6 +789,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Budget:         fm.Budget,
 		Report:         fm.Report,
 		Team:           fm.Team,
+		Artifacts:      artifacts,
 		Hash:           hash,
 		Description:    fm.Description,
 		Notify:         route,

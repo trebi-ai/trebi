@@ -194,6 +194,8 @@ func mcpTestMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	s := &Server{}
 	s.routeAgents(mux)
+	s.routeArtifacts(mux)
+	s.routeConnectorOperations(mux)
 	s.routeAssistant(mux)
 	s.routeConversations(mux)
 	s.routeEvents(mux)
@@ -251,6 +253,10 @@ var knownFields = []tools.DocField{ //nolint:gochecknoglobals // static probe li
 	{Name: "context", Type: "string"}, {Name: "trace_id", Type: "string"}, {Name: "live", Type: "boolean"},
 	{Name: "since", Type: "string"},
 	{Name: "types", Type: "array"}, {Name: "field", Type: "string"}, {Name: "fields", Type: "object"},
+	{Name: "artifact", Type: "string"}, {Name: "version", Type: "number"}, {Name: "mode", Type: "string"},
+	{Name: "selection", Type: "string"}, {Name: "keep_versions", Type: "number"}, {Name: "base", Type: "number"},
+	{Name: "from_path", Type: "string"}, {Name: "content_base64", Type: "string"}, {Name: "off", Type: "boolean"},
+	{Name: "operation", Type: "string"}, {Name: "input", Type: "object"},
 }
 
 // probeValue returns a value that differs from what the sample carries, so a

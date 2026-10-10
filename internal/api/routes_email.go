@@ -64,23 +64,42 @@ const emailSendBodyCap = 8 << 20
 // handleEmailSend is the explicit send (plan I.3): one message from the
 // workspace address, or the agent subaddress when agent is set. Recipients
 // outside the operator list and the workspace allowlist are a 400.
+// emailArtifact resolves the artifact of a send in the workspace of the
+// caller.
+func (s *Server) emailArtifact(r *http.Request, ws string, in request.EmailArtifact) (*email.ArtifactRef, error) {
+	owner, err := s.artifacts.OriginFor(r.Context(), artifactActor(r), "", "")
+	if err != nil {
+		return nil, err
+	}
+	a, n, err := s.artifacts.Resolve(r.Context(), ws, owner, in.Ref)
+	if err != nil {
+		return nil, err
+	}
+	n = cmp.Or(in.Version, n, a.LatestVersion)
+	if _, err := s.artifacts.Version(r.Context(), a.ID, n); err != nil {
+		return nil, err
+	}
+	return &email.ArtifactRef{ID: a.ID, Version: n, URL: artifactURL(a.ID, n)}, nil
+}
+
 func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Workspace   string              `json:"workspace"`
-		Agent       string              `json:"agent"`
-		To          []string            `json:"to"`
-		Subject     string              `json:"subject"`
-		Text        string              `json:"text"`
-		HTML        string              `json:"html"`
-		InReplyTo   string              `json:"in_reply_to"`
-		Attachments []request.EmailFile `json:"attachments"`
+		Workspace   string                 `json:"workspace"`
+		Agent       string                 `json:"agent"`
+		To          []string               `json:"to"`
+		Subject     string                 `json:"subject"`
+		Text        string                 `json:"text"`
+		HTML        string                 `json:"html"`
+		InReplyTo   string                 `json:"in_reply_to"`
+		Attachments []request.EmailFile    `json:"attachments"`
+		Artifact    *request.EmailArtifact `json:"artifact"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, emailSendBodyCap)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
 	if strings.TrimSpace(body.Workspace) == "" || len(body.To) == 0 ||
-		strings.TrimSpace(body.Subject) == "" {
+		(strings.TrimSpace(body.Subject) == "" && body.Artifact == nil) {
 		writeErr(w, http.StatusBadRequest, "validation",
 			"workspace, to, and subject are required")
 		return
@@ -148,6 +167,14 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: ws.ID, Agent: body.Agent, To: body.To,
 		Subject: body.Subject, Text: body.Text, HTML: body.HTML, Attachments: files,
 		InReplyTo: body.InReplyTo, Recipients: recipientRule,
+	}
+	if body.Artifact != nil {
+		ref, err := s.emailArtifact(r, ws.ID, *body.Artifact)
+		if err != nil {
+			writeArtifactErr(w, err)
+			return
+		}
+		opts.Artifact = ref
 	}
 	if actor, ok := tools.ActorFrom(r.Context()); ok {
 		opts.RunID = actor.RunID

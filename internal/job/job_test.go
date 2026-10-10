@@ -670,3 +670,33 @@ func TestSessionContinue(t *testing.T) {
 		}
 	}
 }
+
+func TestParseArtifacts(t *testing.T) {
+	t.Parallel()
+	ok := "---\nharness: claude\nartifacts:\n  - path: out/Weekly Report.html\n  - {path: data.csv, name: sales, title: Sales}\n---\nbody\n"
+	j, err := job.ParseBytes("/ws/x/JOB.md", []byte(ok))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []job.ArtifactYAML{
+		{Path: "out/Weekly Report.html", Name: "weekly-report", Title: "weekly-report"},
+		{Path: "data.csv", Name: "sales", Title: "Sales"},
+	}
+	if len(j.Artifacts) != 2 || j.Artifacts[0] != want[0] || j.Artifacts[1] != want[1] {
+		t.Fatalf("artifacts %+v", j.Artifacts)
+	}
+	bad := []struct{ entries, want string }{
+		{"  - {path: ../x.html}", `artifacts: entry 1: path "../x.html" must be inside the working dir`},
+		{"  - {path: /etc/x.html}", `artifacts: entry 1: path "/etc/x.html" must be inside the working dir`},
+		{"  - {name: x}", "artifacts: entry 1: path is required"},
+		{"  - {path: a.html, name: Bad_Name}", `artifacts: entry 1: name "Bad_Name" must match ^[a-z0-9][a-z0-9-]{0,62}$`},
+		{"  - {path: a.html}\n  - {path: b/a.md}", `artifacts: entry 2: duplicate name "a"`},
+	}
+	for _, tc := range bad {
+		raw := "---\nharness: claude\nartifacts:\n" + tc.entries + "\n---\nbody\n"
+		_, err := job.ParseBytes("/ws/x/JOB.md", []byte(raw))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: got %v, want %q", tc.entries, err, tc.want)
+		}
+	}
+}

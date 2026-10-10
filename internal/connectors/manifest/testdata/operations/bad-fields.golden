@@ -1,0 +1,15 @@
+actions.operations: validating /$defs/operation: validating /$defs/operation/properties/name: pattern: "Search" does not match regular expression "^[a-z][a-z0-9_]{0,31}$"
+actions.operations[0].command[1]: unknown input field "missing"
+actions.operations[0].command[3]: a placeholder needs a text, number, or boolean field
+actions.operations[0].default: must be on, ask, or off
+actions.operations[0].expand.each: unknown placeholder {other}
+actions.operations[0].expand.field: needs an input field of type object
+actions.operations[0].input.properties.tags.items.type: must be string
+actions.operations[0].input.required: unknown field "nope"
+actions.operations[0].label: required
+actions.operations[0].name: must match ^[a-z][a-z0-9_]{0,31}$
+actions.operations[0].output: must be json, csv, or text
+actions.operations[0].stdin: must be json or none
+actions.operations[0].timeout: must be at most 120s
+actions.operations[1].command: the program must not be a placeholder
+actions.operations[2].name: duplicate search

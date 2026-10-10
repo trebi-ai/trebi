@@ -1271,7 +1271,7 @@ func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o 
 	if len(opts.JobConnectors) == 0 {
 		// Resolve the names again: the run gets the current definitions
 		// and fresh secrets.
-		opts.JobConnectors = s.runConnectors(ctx, fromID)
+		opts.JobConnectors = s.RunConnectors(ctx, fromID)
 	}
 	run, _, err := s.CreateAndLaunch(ctx, opts)
 	if err != nil {
@@ -1283,9 +1283,9 @@ func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o 
 	return run, nil
 }
 
-// runConnectors reads the connection ids a run launched with. A resume
+// RunConnectors reads the connection ids a run launched with. A resume
 // resolves the ids, so a slug change does not break it.
-func (s *Service) runConnectors(ctx context.Context, runID string) []string {
+func (s *Service) RunConnectors(ctx context.Context, runID string) []string {
 	var raw sql.NullString
 	if err := s.st.DB().QueryRowContext(ctx, `SELECT connectors_json FROM runs WHERE id = ?`, runID).Scan(&raw); err != nil || !raw.Valid {
 		return nil

@@ -1,0 +1,1 @@
+actions.operations[0].command: an operation binary must not also be a run command

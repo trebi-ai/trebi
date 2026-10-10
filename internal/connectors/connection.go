@@ -66,6 +66,8 @@ type Connection struct {
 	// Subscriptions are the things the user watches. The adapter makes the
 	// platform match this list.
 	Subscriptions []Subscription `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
+	// Operations overrides the manifest state of an operation (D14).
+	Operations map[string]manifest.OpState `yaml:"operations,omitempty" json:"operations,omitempty"`
 }
 
 // Subscription is one thing that the user watches.
@@ -238,6 +240,11 @@ func (c Connection) Validate() error {
 		add("title", fmt.Sprintf("must be at most %d characters on one line", maxTitle))
 	}
 	c.validateSubscriptions(add)
+	for name, st := range c.Operations {
+		if !st.Valid() {
+			add("operations", fmt.Sprintf("%s must be on, ask, or off", name))
+		}
+	}
 	if len(errs) == 0 {
 		return nil
 	}

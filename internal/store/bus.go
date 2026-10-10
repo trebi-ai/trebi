@@ -289,6 +289,11 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "file.created", Bus: true, Log: true},
 		{Name: "file.updated", Bus: true, Log: true},
 		{Name: "file.deleted", Bus: true, Log: true},
+		// artifact (plan 2026-10-10-artifacts)
+		{Name: "artifact.created", Bus: true, Log: true},
+		{Name: "artifact.updated", Bus: true, Log: true},
+		{Name: "artifact.deleted", Bus: true, Log: true},
+		{Name: "artifact.refreshed", Bus: true, Log: true},
 		// run
 		{Name: "request.created", Bus: true, Log: true},
 		{Name: "request.updated", Bus: true, Log: true},

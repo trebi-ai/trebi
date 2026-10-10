@@ -47,6 +47,7 @@ type Service struct {
 	picker WorkspacePicker
 	styles StyleSource
 	render *Renderer
+	arts   ArtifactReader
 	log    *slog.Logger
 
 	mu          sync.RWMutex
@@ -334,6 +335,11 @@ type SendOpts struct {
 	FromName       string
 	Recipients     *AcceptRule
 	Purpose        string
+	// Artifact renders a saved version into the mail (D8). Text is then an
+	// optional lead paragraph.
+	Artifact *ArtifactRef
+	// ByUser is a send that the user clicked; it skips the recipient check (D9).
+	ByUser bool
 }
 
 // sendParts is the outbox Parts value of an email row.
@@ -385,10 +391,16 @@ func (s *Service) Send(ctx context.Context, opts SendOpts) (Queued, error) {
 	if err != nil {
 		return Queued{}, err
 	}
-	if err := s.checkRecipients(ctx, cfg, opts); err != nil {
-		return Queued{}, err
+	if !opts.ByUser {
+		if err := s.checkRecipients(ctx, cfg, opts); err != nil {
+			return Queued{}, err
+		}
 	}
 	switch {
+	case opts.Artifact != nil:
+		if err := s.artifactParts(ctx, cfg, &opts); err != nil {
+			return Queued{}, err
+		}
 	case strings.TrimSpace(opts.Text) != "" && strings.TrimSpace(opts.HTML) != "":
 		return Queued{}, fmt.Errorf("%w: send text or html, not both", ErrContent)
 	case strings.TrimSpace(opts.HTML) != "":
@@ -430,7 +442,7 @@ func (s *Service) Send(ctx context.Context, opts SendOpts) (Queued, error) {
 	row, err := s.enqueue(ctx, envelope{
 		workspaceID: opts.WorkspaceID, agent: opts.Agent, messageID: msgID,
 		inReplyTo: opts.InReplyTo, threadRoot: root, recipients: opts.To, subject: opts.Subject,
-		conversationID: opts.ConversationID, runID: opts.RunID, purpose: opts.Purpose,
+		conversationID: opts.ConversationID, runID: opts.RunID, purpose: opts.Purpose, artifact: opts.Artifact,
 	}, outbox.Row{
 		Purpose: purpose, Body: opts.Text, Parts: parts,
 		Env: fromEnv(from, cmp.Or(opts.FromName, cfg.FromName)),
@@ -504,6 +516,7 @@ type envelope struct {
 	recipients                                           []string
 	subject, conversationID, runID, inboxID, purpose     string
 	coveredTurn                                          *int
+	artifact                                             *ArtifactRef
 }
 
 // Keys of the From header fields on an email outbox row.
@@ -1251,21 +1264,25 @@ func (s *Service) enqueue(ctx context.Context, e envelope, r outbox.Row) (outbox
 		_ = json.Unmarshal(r.Parts, &parts)
 	}
 	text, html := s.keptContent(r.Body, parts.HTML)
-	var turn any
+	var turn, artVersion any
 	if e.coveredTurn != nil {
 		turn = *e.coveredTurn
+	}
+	var art ArtifactRef
+	if e.artifact != nil {
+		art, artVersion = *e.artifact, e.artifact.Version
 	}
 	row, err := s.ob.EnqueueTx(ctx, func(tx *sql.Tx, r outbox.Row) error {
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO email_messages
   (id, direction, workspace_id, agent_id, message_id, in_reply_to, thread_root, recipients,
    subject, disposition, conversation_id, run_id, inbox_id, purpose, covered_turn, outbox_id, created_at,
-   body_text, body_html)
-VALUES (?,?,?,`+agentIDSQL+`,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+   body_text, body_html, artifact_id, artifact_version, snapshot_id)
+VALUES (?,?,?,`+agentIDSQL+`,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			r.EmailRowID, "out", e.workspaceID, e.workspaceID, e.agent, e.messageID, e.inReplyTo, e.threadRoot,
 			r.Recipients, e.subject, dispositionQueued, store.NullStr(e.conversationID),
 			store.NullStr(e.runID), store.NullStr(e.inboxID), e.purpose, turn, r.ID,
-			time.Now().UTC().Format(time.RFC3339), text, html); err != nil {
+			time.Now().UTC().Format(time.RFC3339), text, html, art.ID, artVersion, art.SnapshotID); err != nil {
 			return fmt.Errorf("email envelope: %w", err)
 		}
 		if e.inboxID != "" {

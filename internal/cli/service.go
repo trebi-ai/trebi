@@ -652,6 +652,7 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	// Share control-plane services so API and workers see the same state.
 	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Skills, cp.Conversations, cp.Harness, cp.Email, cp.Cloud, cp.Webhooks, cp.Launcher, cp.Requests)
 	srv.BindChains(cp.Chains)
+	srv.BindArtifacts(cp.Artifacts)
 	srv.BindCatalog(cp.Catalog)
 	srv.BindState(cp.State)
 	srv.BindUsage(cp.Usage)

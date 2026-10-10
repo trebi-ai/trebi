@@ -26,6 +26,15 @@ harness:
 `config.yaml` (set with the `config` tool). They are passed as launch flags for
 that one session, never written to the vendor's own config file.
 
+`artifacts` lists files of the working folder that Trebi saves as artifact versions at the end of a complete run. A run that saved the name itself with the `artifact` tool keeps its own version. A missing file sets the outcome note and opens an inbox item; the run status does not change.
+
+```yaml
+artifacts:
+  - path: report.html          # relative to the working folder, required
+    name: weekly-sales         # default: the file name without the extension
+    title: Weekly sales report # default: the name
+```
+
 ## Actions
 
 ### list

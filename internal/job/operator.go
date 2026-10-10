@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/mail"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -92,6 +93,14 @@ func (t *TeamYAML) InChains() bool {
 // Allows reports whether the agent may ask the agent with this short name.
 func (t *TeamYAML) Allows(name string) bool {
 	return t == nil || t.CanAsk == nil || slices.Contains(t.CanAsk, name)
+}
+
+// ArtifactYAML is one file that the run saves as an artifact version when
+// it completes.
+type ArtifactYAML struct {
+	Path  string `yaml:"path" json:"path"`
+	Name  string `yaml:"name,omitempty" json:"name,omitempty"`
+	Title string `yaml:"title,omitempty" json:"title,omitempty"`
 }
 
 // ReportYAML configures the optional recurring portfolio report.
@@ -242,4 +251,66 @@ func legacyKitMCP(data []byte) []string {
 		}
 	}
 	return names
+}
+
+var artifactNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+// ValidArtifactName reports whether name is an artifact slug.
+func ValidArtifactName(name string) bool { return artifactNameRE.MatchString(name) }
+
+// ArtifactSlug turns a file stem or a title into an artifact name.
+func ArtifactSlug(s string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			dash = false
+			continue
+		}
+		if !dash && b.Len() > 0 {
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 63 {
+		out = strings.TrimRight(out[:63], "-")
+	}
+	return out
+}
+
+// parseArtifacts checks the artifacts entries and fills the default name and
+// title.
+func parseArtifacts(in []ArtifactYAML) ([]ArtifactYAML, error) {
+	out := make([]ArtifactYAML, 0, len(in))
+	seen := map[string]bool{}
+	for i, a := range in {
+		p := strings.TrimSpace(a.Path)
+		clean := path.Clean(strings.ReplaceAll(p, "\\", "/"))
+		switch {
+		case p == "":
+			return nil, fmt.Errorf("entry %d: path is required", i+1)
+		case path.IsAbs(clean) || strings.HasPrefix(p, "~") || clean == ".." || strings.HasPrefix(clean, "../"):
+			return nil, fmt.Errorf("entry %d: path %q must be inside the working dir", i+1, p)
+		}
+		if a.Name == "" {
+			a.Name = ArtifactSlug(strings.TrimSuffix(path.Base(clean), path.Ext(clean)))
+		}
+		if !ValidArtifactName(a.Name) {
+			return nil, fmt.Errorf("entry %d: name %q must match %s", i+1, a.Name, artifactNameRE)
+		}
+		if seen[a.Name] {
+			return nil, fmt.Errorf("entry %d: duplicate name %q", i+1, a.Name)
+		}
+		seen[a.Name] = true
+		if a.Title == "" {
+			a.Title = a.Name
+		}
+		out = append(out, ArtifactYAML{Path: clean, Name: a.Name, Title: a.Title})
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }

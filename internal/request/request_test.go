@@ -1373,3 +1373,43 @@ func TestBuildState(t *testing.T) {
 		}
 	}
 }
+
+func TestArtifactBuilders(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct{ ref, name, n string }{
+		{"weekly", "weekly", "latest"}, {"weekly@3", "weekly", "3"}, {"art_01x", "art_01x", "latest"},
+	} {
+		if name, n := SplitArtifactRef(c.ref); name != c.name || n != c.n {
+			t.Errorf("%s: %s %s", c.ref, name, n)
+		}
+	}
+	a := ArtifactRef{Ref: "weekly", Workspace: "ws1"}
+	base := 2
+	live := true
+	for _, c := range []struct {
+		name string
+		req  HTTPRequest
+		want string
+	}{
+		{"list", HTTPRequest{Method: "GET", Path: BuildArtifactListPath(ArtifactFilter{Workspace: "ws1", Live: &live, Limit: 5})}, "GET /v1/artifacts?limit=5&live=true&workspace=ws1"},
+		{"content", HTTPRequest{Method: "GET", Path: a.ContentPath("3", true)}, "GET /v1/artifacts/weekly/versions/3/content?download=1&workspace=ws1"},
+		{"pin off", a.Pin("3", false), "DELETE /v1/artifacts/weekly/versions/3/pin?workspace=ws1"},
+		{"delete", a.Delete(true), "DELETE /v1/artifacts/weekly?confirm=1&workspace=ws1"},
+		{"send", a.Send("latest", "draft"), `POST /v1/artifacts/weekly/versions/latest/send?workspace=ws1 {"mode":"draft"}`},
+		{"put", ArtifactPutSpec{Workspace: "ws1", Name: "weekly", Content: "x", Base: &base}.Build(), `POST /v1/artifacts {"base":2,"content":"x","name":"weekly","workspace":"ws1"}`},
+		{"call", BuildOperationCall("pg", "query", "", map[string]any{"sql": "select 1"}), `POST /v1/connectors/pg/operations/query/call {"input":{"sql":"select 1"}}`},
+		{"state", BuildOperationState("pg", "query", "ask"), `PUT /v1/connectors/pg/operations/query {"state":"ask"}`},
+	} {
+		got := c.req.Method + " " + c.req.Path
+		if c.req.Body != nil {
+			b, _ := json.Marshal(c.req.Body)
+			got += " " + string(b)
+		}
+		if got != c.want {
+			t.Errorf("%s: %s", c.name, got)
+		}
+	}
+	if r := a.Patch(nil, nil, 4); r.IfMatch != "4" || r.Method != "PATCH" {
+		t.Errorf("patch: %+v", r)
+	}
+}

@@ -40,7 +40,8 @@ func emailCommand() *cli.Command {
 					&cli.StringFlag{Name: "workspace", Required: true, Sources: cli.EnvVars("TREBI_WORKSPACE"), Usage: "workspace id or name"},
 					&cli.StringFlag{Name: "agent", Sources: cli.EnvVars("TREBI_AGENT"), Usage: "send from the agent subaddress"},
 					&cli.StringSliceFlag{Name: "to", Required: true, Usage: "recipient address (repeatable)"},
-					&cli.StringFlag{Name: "subject", Required: true, Usage: "subject line"},
+					&cli.StringFlag{Name: "subject", Usage: "subject line; the default with --artifact is its title"},
+					&cli.StringFlag{Name: "artifact", Usage: "send an artifact: id, name, or name@n; Trebi makes the body from that version"},
 					&cli.StringFlag{Name: "text", Usage: "message body as Markdown; Trebi renders the HTML part"},
 					&cli.StringFlag{Name: "html", Usage: "your own HTML body; Trebi makes the text part from it"},
 					&cli.StringFlag{Name: "html-file", Usage: "read the HTML body from a local file"},
@@ -174,8 +175,15 @@ func runEmailSend(_ context.Context, c *cli.Command) error {
 			given++
 		}
 	}
-	if given != 1 {
-		return errors.New("give one of --text, --html, or --html-file")
+	if ref := c.String("artifact"); ref != "" {
+		spec.Artifact = &request.EmailArtifact{Ref: ref}
+		if given > 0 {
+			return errors.New("give --artifact or a body, not both")
+		}
+	} else if given != 1 {
+		return errors.New("give one of --text, --html, --html-file, or --artifact")
+	} else if spec.Subject == "" {
+		return errors.New("--subject is required")
 	}
 	if f := c.String("html-file"); f != "" {
 		raw, err := os.ReadFile(f)

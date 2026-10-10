@@ -26,6 +26,7 @@ func TestMigrateFreshSchema(t *testing.T) {
 		"event_queue", "events", "event_outcomes", "schedules",
 		"inbox_items", "approvals",
 		"skill_index", "harness_state", "job_index", "conversations", "system_flags",
+		"artifacts", "artifact_versions", "artifact_snapshots", "decisions",
 	}
 	for _, tbl := range tables {
 		var name string

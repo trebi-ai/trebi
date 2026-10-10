@@ -95,8 +95,9 @@ type Skill struct {
 
 // Actions is the "an agent can act on the system" capability.
 type Actions struct {
-	CLI *CLIAction `yaml:"cli,omitempty" json:"cli,omitempty"`
-	MCP *MCPAction `yaml:"mcp,omitempty" json:"mcp,omitempty"`
+	CLI        *CLIAction  `yaml:"cli,omitempty" json:"cli,omitempty"`
+	MCP        *MCPAction  `yaml:"mcp,omitempty" json:"mcp,omitempty"`
+	Operations []Operation `yaml:"operations,omitempty" json:"operations,omitempty"`
 }
 
 // CLIAction gives a run local commands; the skill teaches them.
@@ -784,8 +785,8 @@ func (v *validator) actions(m Manifest) {
 	if a == nil {
 		return
 	}
-	if a.MCP == nil && a.CLI == nil {
-		v.add("actions", "at least one of mcp, cli is required")
+	if a.MCP == nil && a.CLI == nil && len(a.Operations) == 0 {
+		v.add("actions", "at least one of mcp, cli, operations is required")
 	}
 	if c := a.CLI; c != nil && len(c.Commands) == 0 {
 		v.add("actions.cli.commands", "needs at least one entry")
@@ -793,6 +794,7 @@ func (v *validator) actions(m Manifest) {
 	if a.MCP != nil {
 		v.mcp(*a.MCP)
 	}
+	v.operations(a)
 }
 
 func (v *validator) mcp(mc MCPAction) {
