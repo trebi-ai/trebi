@@ -38,7 +38,11 @@ func TestOperationFixtures(t *testing.T) {
 			}
 			var lines []string
 			for _, fe := range ve.Fields {
-				lines = append(lines, fe.Field+": "+fe.Message)
+				msg := fe.Message
+				if strings.HasPrefix(msg, "validating ") {
+					msg = "schema violation" // the schema library reports one violation, not always the same
+				}
+				lines = append(lines, fe.Field+": "+msg)
 			}
 			slices.Sort(lines)
 			got := strings.Join(lines, "\n") + "\n"

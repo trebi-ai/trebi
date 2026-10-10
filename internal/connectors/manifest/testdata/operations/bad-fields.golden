@@ -1,4 +1,4 @@
-actions.operations: validating /$defs/operation: validating /$defs/operation/properties/name: pattern: "Search" does not match regular expression "^[a-z][a-z0-9_]{0,31}$"
+actions.operations: schema violation
 actions.operations[0].command[1]: unknown input field "missing"
 actions.operations[0].command[3]: a placeholder needs a text, number, or boolean field
 actions.operations[0].default: must be on, ask, or off
