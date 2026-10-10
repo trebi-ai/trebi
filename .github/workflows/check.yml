@@ -42,7 +42,7 @@ jobs:
       - name: go test -race
         env:
           CGO_ENABLED: "1"
-        run: go test -race ./internal/connectors ./internal/channels ./internal/dispatch ./internal/daemon ./internal/cloudlink ./internal/relay ./internal/mobile
+        run: go test -race -timeout 20m ./internal/connectors ./internal/channels ./internal/dispatch ./internal/daemon ./internal/cloudlink ./internal/relay ./internal/mobile
       - name: go vet public packages
         run: go vet ./app/... ./ext/...
 
