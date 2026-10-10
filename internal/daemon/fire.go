@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/artifacts"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
@@ -51,6 +54,10 @@ func (c *ControlPlane) scheduleTicker(ctx context.Context) {
 // kind instead of being orphan-deleted. Auth/limit gates create a failed run so
 // the attempt is visible; a false when: gate still skips without a run.
 func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
+	if r.ArtifactID != "" {
+		c.fireArtifact(ctx, r)
+		return
+	}
 	j, path := c.findJob(ctx, r.WorkspaceID, r.JobID)
 	if j == nil {
 		c.log.Info("schedule orphan deleted", "workspace", r.WorkspaceID, "job", r.JobName, "idx", r.Idx)
@@ -292,4 +299,66 @@ func (c *ControlPlane) evalWhenGate(ctx context.Context, j *job.Job, r schedule.
 		break
 	}
 	return prompt, false
+}
+
+// fireArtifact refreshes a live artifact with no LLM and sends the snapshot
+// when the schedule names a delivery (D18). A deleted artifact drops its row.
+func (c *ControlPlane) fireArtifact(ctx context.Context, r schedule.Row) {
+	defer c.markFired(ctx, r)
+	a, err := c.Artifacts.Get(ctx, r.ArtifactID)
+	if errors.Is(err, artifacts.ErrNotFound) {
+		if err := c.Schedule.DeleteArtifact(ctx, r.ArtifactID); err != nil {
+			c.log.Warn("schedule orphan delete", "artifact_id", r.ArtifactID, "error", err)
+		}
+		return
+	}
+	if err != nil {
+		c.log.Warn("artifact schedule", "artifact_id", r.ArtifactID, "error", err)
+		return
+	}
+	snap, err := c.Artifacts.Refresh(ctx, artifacts.RefreshOpts{ID: a.ID, Reason: artifacts.ReasonSchedule, Actor: "schedule"})
+	if err != nil {
+		c.log.Warn("artifact refresh", "artifact_id", a.ID, "error", err)
+		return
+	}
+	if a.Deliver == nil || a.Deliver.Email == nil || c.Email == nil {
+		return
+	}
+	ws, err := c.Workspaces.Get(ctx, a.Workspace)
+	if err != nil {
+		c.log.Warn("artifact delivery", "artifact_id", a.ID, "error", err)
+		return
+	}
+	if _, err := c.Email.EnsureAddress(ctx, ws.ID, ws.Handle); err != nil {
+		c.log.Warn("artifact delivery", "artifact_id", a.ID, "error", err)
+		return
+	}
+	opts := email.SendOpts{
+		WorkspaceID: ws.ID, To: a.Deliver.Email.To, Subject: a.Deliver.Email.Subject, ByUser: true, // the user set the recipients
+		Artifact: &email.ArtifactRef{ID: a.ID, Version: snap.VersionN, SnapshotID: snap.ID,
+			URL: artifacts.PageURL(a.ID, snap.VersionN, snap.ID)},
+		Agent: c.artifactAgent(ctx, a),
+	}
+	if _, err := c.Email.Send(ctx, opts); err != nil {
+		c.log.Warn("artifact delivery", "artifact_id", a.ID, "error", err)
+	}
+}
+
+// artifactAgent is the agent that owns a, or "" for a job or the assistant.
+func (c *ControlPlane) artifactAgent(ctx context.Context, a artifacts.Artifact) string {
+	if a.OwnerKind == artifacts.OwnerAssistant || a.OwnerID == "" {
+		return ""
+	}
+	row, err := c.Workspaces.JobByID(ctx, a.OwnerID)
+	if err != nil {
+		return ""
+	}
+	if owner := job.OwnerOf(row.Name); owner != "" {
+		return strings.TrimPrefix(owner, "agents/")
+	}
+	name, _ := strings.CutPrefix(row.Name, "agents/")
+	if name == row.Name {
+		return ""
+	}
+	return name
 }

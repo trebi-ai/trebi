@@ -2,9 +2,11 @@
 package schedule
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -134,13 +136,13 @@ func reportUnchanged(rows map[int]Row, spec string) bool {
 	return ok && old.Spec == spec
 }
 
-const scheduleCols = `workspace_id, job_id, COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = schedules.job_id), ''), idx, spec, timezone, catch_up, next_due_at, last_fired_at`
+const scheduleCols = `workspace_id, job_id, COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = schedules.job_id), ''), idx, spec, timezone, catch_up, next_due_at, last_fired_at, artifact_id`
 
 func scanSchedule(rows *sql.Rows) (Row, error) {
 	var r Row
 	var next, last sql.NullString
 	var catch int
-	if err := rows.Scan(&r.WorkspaceID, &r.JobID, &r.JobName, &r.Idx, &r.Spec, &r.Timezone, &catch, &next, &last); err != nil {
+	if err := rows.Scan(&r.WorkspaceID, &r.JobID, &r.JobName, &r.Idx, &r.Spec, &r.Timezone, &catch, &next, &last, &r.ArtifactID); err != nil {
 		return Row{}, err
 	}
 	r.CatchUp = catch == 1
@@ -299,6 +301,7 @@ type Row struct {
 	CatchUp     bool
 	NextDueAt   string
 	LastFiredAt string
+	ArtifactID  string // a live artifact refresh; JobID is the artifact id
 }
 
 // MarkFired updates last_fired_at and next_due_at after a fire.
@@ -392,4 +395,46 @@ func (s *Service) upsertReport(ctx context.Context, workspaceID, jobID, spec str
 			return err
 		}
 	})
+}
+
+// ParseSpec checks a schedule: "@every <duration>" or a 5-field cron.
+func ParseSpec(spec string) error {
+	if d, ok := strings.CutPrefix(spec, "@every "); ok {
+		v, err := time.ParseDuration(d)
+		if err != nil || v < time.Minute {
+			return fmt.Errorf("%q: every needs a duration of 1m or more, such as 24h", d)
+		}
+		return nil
+	}
+	if _, err := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow).Parse(spec); err != nil {
+		return fmt.Errorf("%q: %w", spec, err)
+	}
+	return nil
+}
+
+// SetArtifact writes the one schedule row of a live artifact. The row uses
+// the artifact id as its job id.
+func (s *Service) SetArtifact(ctx context.Context, workspaceID, artifactID, spec, tz string) error {
+	if err := ParseSpec(spec); err != nil {
+		return err
+	}
+	tz = cmp.Or(tz, "UTC")
+	now := time.Now().UTC()
+	var nextStr *string
+	if next := nextDue(spec, now, tz); !next.IsZero() {
+		v := next.Format(time.RFC3339)
+		nextStr = &v
+	}
+	_, err := s.st.DB().ExecContext(ctx, `INSERT INTO schedules (workspace_id, job_id, idx, spec, timezone, catch_up, next_due_at,
+  updated_at, artifact_id) VALUES (?,?,0,?,?,0,?,?,?)
+  ON CONFLICT (workspace_id, job_id, idx) DO UPDATE SET spec=excluded.spec, timezone=excluded.timezone,
+  next_due_at=excluded.next_due_at, updated_at=excluded.updated_at`,
+		workspaceID, artifactID, spec, tz, nextStr, now.Format(time.RFC3339), artifactID)
+	return err
+}
+
+// DeleteArtifact removes the schedule row of a live artifact.
+func (s *Service) DeleteArtifact(ctx context.Context, artifactID string) error {
+	_, err := s.st.DB().ExecContext(ctx, `DELETE FROM schedules WHERE artifact_id=?`, artifactID)
+	return err
 }

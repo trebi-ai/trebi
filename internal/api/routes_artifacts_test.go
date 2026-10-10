@@ -114,6 +114,27 @@ func TestArtifactRoutes(t *testing.T) {
 		t.Fatalf("send report: %d %v", code, m)
 	}
 
+	// The live routes refuse an artifact with no sources.
+	if code, m = e.do(t, http.MethodPost, "/v1/artifacts/"+id+"/refresh", map[string]any{}); code != 422 {
+		t.Fatalf("refresh not live: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodPost, "/v1/artifacts/"+id+"/versions/1/decide", map[string]any{"decision": "approve"}); code != 422 {
+		t.Fatalf("decide not live: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodPost, "/v1/artifacts/"+id+"/versions/1/decide", map[string]any{"decision": "maybe"}); code != 400 {
+		t.Fatalf("decide bad value: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodPut, "/v1/artifacts/"+id+"/schedule", map[string]any{"schedule": "@every 1h"}); code != 422 {
+		t.Fatalf("schedule not live: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodGet, "/v1/artifacts/"+id+"/snapshots", nil); code != 200 || len(m["items"].([]any)) != 0 {
+		t.Fatalf("snapshots: %d %v", code, m)
+	}
+	live := map[string]any{"sources": []map[string]any{{"name": "orders", "connection": "nope", "operation": "query"}}}
+	if code, m = put(map[string]any{"name": "live-report", "content": "{{ table .orders }}", "file_name": "r.md", "owner": "assistant", "live": live}); code != 422 {
+		t.Fatalf("live with no connection: %d %v", code, m)
+	}
+
 	// Delete needs confirm.
 	if code, m = e.do(t, http.MethodDelete, "/v1/artifacts/"+id, nil); code != 400 || errDetails(m)["confirm_required"] != true {
 		t.Fatalf("delete no confirm: %d %v", code, m)

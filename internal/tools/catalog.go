@@ -3190,8 +3190,13 @@ func artifactActions() map[string]Action {
 		"version": ref("GET /v1/artifacts/{id}/versions/{n}", withV, func(a request.ArtifactRef, n string, _ Input) (request.HTTPRequest, error) {
 			return mcpGet(a.VersionPath(n)), nil
 		}),
-		"content": bound(ref("GET /v1/artifacts/{id}/versions/{n}/content", withV, func(a request.ArtifactRef, n string, _ Input) (request.HTTPRequest, error) {
-			return mcpGet(a.ContentPath(n, false)), nil
+		"content": bound(ref("GET /v1/artifacts/{id}/versions/{n}/content", withV, func(a request.ArtifactRef, n string, in Input) (request.HTTPRequest, error) {
+			sid, err := in.str("snapshot")
+			raw, rawErr := in.flag("raw")
+			if err := errors.Join(err, rawErr); err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return mcpGet(a.ContentPath(n, request.ContentOpts{Snapshot: sid, Raw: raw})), nil
 		}), false),
 		"deliveries": ref("GET /v1/artifacts/{id}/deliveries", one, func(a request.ArtifactRef, _ string, _ Input) (request.HTTPRequest, error) {
 			return mcpGet(a.DeliveriesPath()), nil
@@ -3215,7 +3220,72 @@ func artifactActions() map[string]Action {
 		"run_artifacts": idGet("GET /v1/runs/{id}/artifacts", "run_id", "01JRUN", request.BuildRunArtifactsPath),
 	}
 	maps.Copy(out, artifactWriteActions())
+	maps.Copy(out, artifactLiveActions())
 	return out
+}
+
+// artifactLiveActions read and refresh the data of a live artifact.
+func artifactLiveActions() map[string]Action { //nolint:funlen // static action table
+	ref := artifactAction
+	one := Input{"artifact": "weekly-sales", "workspace": "ws1"}
+	snap := Input{"artifact": "weekly-sales", "workspace": "ws1", "snapshot": "snp_01j"}
+	snapshot := func(data bool) func(request.ArtifactRef, string, Input) (request.HTTPRequest, error) {
+		return func(a request.ArtifactRef, _ string, in Input) (request.HTTPRequest, error) {
+			sid, err := in.reqStr("snapshot")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return mcpGet(a.SnapshotPath(sid, data)), nil
+		}
+	}
+	return map[string]Action{
+		"refresh": ref("POST /v1/artifacts/{id}/refresh", Input{"artifact": "weekly-sales", "workspace": "ws1", "inputs": map[string]any{"period": "30d"}},
+			func(a request.ArtifactRef, _ string, in Input) (request.HTTPRequest, error) {
+				inputs, err := in.strMap("inputs")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return a.Refresh(inputs), nil
+			}),
+		"snapshots": ref("GET /v1/artifacts/{id}/snapshots", one, func(a request.ArtifactRef, _ string, in Input) (request.HTTPRequest, error) {
+			limit, _, err := in.num("limit")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return mcpGet(a.SnapshotsPath(limit)), nil
+		}),
+		"snapshot":      ref("GET /v1/artifacts/{id}/snapshots/{sid}", snap, snapshot(false)),
+		"snapshot_data": bound(ref("GET /v1/artifacts/{id}/snapshots/{sid}/data", snap, snapshot(true)), false),
+		"decide": ref("POST /v1/artifacts/{id}/versions/{n}/decide", Input{"artifact": "weekly-sales", "workspace": "ws1", "version": 3.0, "decision": "approve"},
+			func(a request.ArtifactRef, n string, in Input) (request.HTTPRequest, error) {
+				d, err := in.reqStr("decision") // the API checks approve or deny
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return a.Decide(n, d), nil
+			}),
+		"schedule": func() Action {
+			e := ref("PUT /v1/artifacts/{id}/schedule", Input{"artifact": "weekly-sales", "workspace": "ws1", "schedule": "0 9 * * 1", "email_to": []any{"ops@example.com"}},
+				func(a request.ArtifactRef, _ string, in Input) (request.HTTPRequest, error) {
+					v, err := in.strs("schedule", "timezone", "subject")
+					to, toErr := in.strList("email_to")
+					off, offErr := in.flag("off")
+					if err := errors.Join(err, toErr, offErr); err != nil {
+						return request.HTTPRequest{}, err
+					}
+					if v[0] == "" && !off {
+						return request.HTTPRequest{}, fmt.Errorf("give %q, or %q to remove the schedule", "schedule", "off")
+					}
+					if off {
+						v[0] = ""
+					}
+					return a.Schedule(request.ArtifactSchedule{Schedule: v[0], Timezone: v[1], Subject: v[2], EmailTo: to}), nil
+				})
+			e.Routes = append(e.Routes, "DELETE /v1/artifacts/{id}/schedule")
+			e.Samples = []Input{{"artifact": "weekly-sales", "workspace": "ws1", "off": true}}
+			return e
+		}(),
+	}
 }
 
 func artifactWriteActions() map[string]Action { //nolint:funlen // static action table
@@ -3236,6 +3306,11 @@ func artifactWriteActions() map[string]Action { //nolint:funlen // static action
 				return request.HTTPRequest{}, err
 			} else if ok {
 				spec.Base = &b
+			}
+			if live, err := in.obj("live"); err != nil {
+				return request.HTTPRequest{}, err
+			} else if live != nil {
+				spec.Live = live
 			}
 			return spec.Build(), nil
 		}),

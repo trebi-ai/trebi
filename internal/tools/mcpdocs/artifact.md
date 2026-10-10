@@ -10,6 +10,8 @@ The `kind` sets how Trebi shows and sends the artifact: `markdown`, `email`, `ht
 
 An `email` artifact is a draft. Its content starts with a header block (`kind: email`, `from`, `to`, `cc`, `subject`, `in_reply_to`) between two `---` lines, then the body in Markdown. `from` is `trebi` (the email channel of the workspace) or the slug of a mailbox connection.
 
+A live artifact is a Markdown or HTML template plus data sources. A source is a read-only operation of a connection, with fixed input. A refresh runs the sources with no AI model and stores the result as a snapshot. A Markdown template uses Go template syntax on the data, for example `{{ table .sales }}`; an HTML template reads `window.trebi.data`. When a version adds or changes a source, the user must allow it first. Until then, a refresh uses the last allowed version.
+
 Inside a run, the artifact belongs to the job or agent of the run. Only the run that made an artifact, or a later run of the same owner, can save a new version. A save that does not start from the latest version fails with `stale` (409); `details.latest` gives the latest number. Read that version, merge, and save again with `base` set to it.
 
 ## Actions
@@ -45,6 +47,8 @@ Read the content of one version. Text comes back as is. Use it before you save a
 - `artifact` (string, required): artifact id, name, or `name@n`.
 - `workspace` (string, optional): workspace id or name. Required with a name.
 - `version` (number, optional): version number. The default is the version in `name@n`, else the latest.
+- `snapshot` (string, optional): for a live artifact, the snapshot whose data fills the template. The default is the newest snapshot.
+- `raw` (boolean, optional): for a live artifact, read the template with no data.
 - `max_bytes` (number, optional): cap the body at this size; default 64 KB. A cut body returns `{"content": "…", "truncated": true}`.
 
 ### put
@@ -61,6 +65,7 @@ Save a new version. Give `name` for a new or existing artifact, or `artifact_id`
 - `note` (string, optional): what changed in this version.
 - `base` (number, optional): the version that this save starts from. A stale base fails with `stale`.
 - `owner` (string, optional): `assistant`, `job:<name>`, or `agent:<name>`, for a new artifact outside a run.
+- `live` (object, optional): makes the content a live template (kind `markdown` or `html`). The object is `{"params": [...], "sources": [...]}`. Each source is `{"name", "connection", "operation", "input"}`; `name` is lowercase letters, digits, and `_`. Each parameter is `{"name", "label", "type", "options", "values", "default"}`; `type` is `enum`, `date`, or `number`, and `values` maps an enum option to the value that the source gets. Put a parameter into a source input only as a whole value, such as `"{param.period}"`. A new version with no `live` keeps the sources of the latest version. The reply `version.approval` is `approved` or `pending`.
 
 ### update
 Change the title or the version limit of one artifact. The reply is the artifact.
@@ -89,6 +94,48 @@ Send an email draft. A draft with `from: trebi` goes through the email channel o
 - `workspace` (string, optional): workspace id or name. Required with a name.
 - `version` (number, optional): version number. The default is the version in `name@n`, else the latest.
 - `mode` (string, optional): `send` (the default) or `draft`, which saves the mail to the drafts of the mailbox.
+
+### refresh
+Run the sources of a live artifact and store a new snapshot. The reply is the snapshot: `id`, `version`, `inputs`, `errors` (per source), and `took_ms`. A source that fails keeps its error text; the data of the other sources stays. With no allowed version, the call fails with `pending_approval` (409). An agent can refresh one artifact once a minute; a sooner call fails with `rate_limited` (429) and `details.retry_after_ms`.
+- `artifact` (string, required): artifact id or name.
+- `workspace` (string, optional): workspace id or name. Required with a name.
+- `inputs` (object, optional): parameter name to value, for example `{"period": "30d"}`. A parameter that you do not give uses its default.
+
+### snapshots
+List the snapshots of a live artifact, newest first.
+- `artifact` (string, required): artifact id or name.
+- `workspace` (string, optional): workspace id or name. Required with a name.
+- `limit` (number, optional): page size; default 50.
+
+### snapshot
+Read the record of one snapshot.
+- `artifact` (string, required): artifact id or name.
+- `workspace` (string, optional): workspace id or name. Required with a name.
+- `snapshot` (string, required): snapshot id.
+
+### snapshot_data
+Read the data of one snapshot: `{"snapshot_id", "sources": {"<name>": {"rows": {"columns", "values"}, "json", "text", "error"}}}`.
+- `artifact` (string, required): artifact id or name.
+- `workspace` (string, optional): workspace id or name. Required with a name.
+- `snapshot` (string, required): snapshot id.
+- `max_bytes` (number, optional): cap the body at this size; default 64 KB.
+
+### decide
+Allow or deny the data sources of a pending version. An allowed version becomes the live version. Only the user can decide; an agent gets `forbidden`.
+- `artifact` (string, required): artifact id, name, or `name@n`.
+- `workspace` (string, optional): workspace id or name. Required with a name.
+- `version` (number, optional): version number. The default is the version in `name@n`, else the latest.
+- `decision` (string, required): `approve` or `deny`.
+
+### schedule
+Refresh a live artifact on a schedule, and send each snapshot by email. With `off`, remove the schedule. Only the user can set a schedule; an agent gets `forbidden`.
+- `artifact` (string, required): artifact id or name.
+- `workspace` (string, optional): workspace id or name. Required with a name.
+- `schedule` (string, optional): `@every 24h`, or a cron line such as `0 9 * * 1`. Required unless `off`.
+- `timezone` (string, optional): the time zone of a cron line, for example `Europe/Berlin`. The default is UTC.
+- `email_to` (array, optional): send each snapshot to these addresses.
+- `subject` (string, optional): the subject of the mail. The default is the title.
+- `off` (boolean, optional): remove the schedule.
 
 ### deliveries
 List the mails that sent a version of this artifact.

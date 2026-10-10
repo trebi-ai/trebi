@@ -19,9 +19,10 @@ type Marker interface {
 	Mark(ctx context.Context, opts runs.MarkOpts) (*runs.Run, error)
 }
 
-// Alerter raises an inbox item.
+// Alerter raises and resolves inbox items.
 type Alerter interface {
 	Raise(ctx context.Context, opts alerts.RaiseOpts) (string, error)
+	ResolveSubject(ctx context.Context, subject, how string) error
 }
 
 // RunGate saves the JOB.md artifacts: entries of a run when it completes. It

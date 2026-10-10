@@ -2757,13 +2757,87 @@ func (a ArtifactRef) VersionsPath() string { return a.path("/versions", nil) }
 // VersionPath builds GET /v1/artifacts/{id}/versions/{n}; n is a number or latest.
 func (a ArtifactRef) VersionPath(n string) string { return a.path("/versions/"+url.PathEscape(n), nil) }
 
+// ContentOpts are the query of the content route. A live version binds
+// Snapshot (default the newest); Raw gives the template.
+type ContentOpts struct {
+	Download bool
+	Raw      bool
+	Snapshot string
+}
+
 // ContentPath builds GET /v1/artifacts/{id}/versions/{n}/content.
-func (a ArtifactRef) ContentPath(n string, download bool) string {
-	q := map[string]string{}
-	if download {
+func (a ArtifactRef) ContentPath(n string, o ContentOpts) string {
+	q := map[string]string{"snapshot": o.Snapshot}
+	if o.Download {
 		q["download"] = "1"
 	}
+	if o.Raw {
+		q["raw"] = "1"
+	}
 	return a.path("/versions/"+url.PathEscape(n)+"/content", q)
+}
+
+// Decide builds POST /v1/artifacts/{id}/versions/{n}/decide. decision is
+// approve or deny.
+func (a ArtifactRef) Decide(n, decision string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: a.path("/versions/"+url.PathEscape(n)+"/decide", nil),
+		Body: map[string]any{"decision": decision}}
+}
+
+// Refresh builds POST /v1/artifacts/{id}/refresh.
+func (a ArtifactRef) Refresh(inputs map[string]string) HTTPRequest {
+	body := map[string]any{}
+	if len(inputs) > 0 {
+		body["inputs"] = inputs
+	}
+	return HTTPRequest{Method: "POST", Path: a.path("/refresh", nil), Body: body}
+}
+
+// SnapshotsPath builds GET /v1/artifacts/{id}/snapshots.
+func (a ArtifactRef) SnapshotsPath(limit int) string {
+	q := map[string]string{}
+	if limit > 0 {
+		q["limit"] = strconv.Itoa(limit)
+	}
+	return a.path("/snapshots", q)
+}
+
+// SnapshotPath builds GET /v1/artifacts/{id}/snapshots/{sid}, or its /data
+// route.
+func (a ArtifactRef) SnapshotPath(sid string, data bool) string {
+	tail := "/snapshots/" + url.PathEscape(sid)
+	if data {
+		tail += "/data"
+	}
+	return a.path(tail, nil)
+}
+
+// ArtifactSchedule is the body of PUT /v1/artifacts/{id}/schedule.
+type ArtifactSchedule struct {
+	Schedule string
+	Timezone string
+	EmailTo  []string
+	Subject  string
+}
+
+// Schedule builds PUT /v1/artifacts/{id}/schedule, or DELETE for an empty
+// Schedule.
+func (a ArtifactRef) Schedule(s ArtifactSchedule) HTTPRequest {
+	if s.Schedule == "" {
+		return HTTPRequest{Method: "DELETE", Path: a.path("/schedule", nil)}
+	}
+	body := map[string]any{"schedule": s.Schedule}
+	if s.Timezone != "" {
+		body["timezone"] = s.Timezone
+	}
+	if len(s.EmailTo) > 0 {
+		email := map[string]any{"to": s.EmailTo}
+		if s.Subject != "" {
+			email["subject"] = s.Subject
+		}
+		body["deliver"] = map[string]any{"email": email}
+	}
+	return HTTPRequest{Method: "PUT", Path: a.path("/schedule", nil), Body: body}
 }
 
 // DeliveriesPath builds GET /v1/artifacts/{id}/deliveries.
@@ -2843,6 +2917,7 @@ type ArtifactPutSpec struct {
 	Note          string
 	Owner         string
 	Base          *int
+	Live          any // {params, sources} of a live template
 }
 
 // Build renders the spec as POST /v1/artifacts.
@@ -2859,6 +2934,9 @@ func (p ArtifactPutSpec) Build() HTTPRequest {
 	}
 	if p.Base != nil {
 		body["base"] = *p.Base
+	}
+	if p.Live != nil {
+		body["live"] = p.Live
 	}
 	return HTTPRequest{Method: "POST", Path: "/v1/artifacts", Body: body}
 }

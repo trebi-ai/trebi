@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -93,15 +94,19 @@ type Jobs interface {
 }
 
 type Service struct {
-	st    *store.Store
-	blobs *Blobs
-	files *files.Service
-	runs  Runs
-	jobs  Jobs
-	cont  Continuer
-	cfg   Config
-	now   func() time.Time
-	log   *slog.Logger
+	st     *store.Store
+	blobs  *Blobs
+	files  *files.Service
+	runs   Runs
+	jobs   Jobs
+	cont   Continuer
+	src    Sources
+	sched  Scheduler
+	alerts Alerter
+	limit  refreshLimiter
+	cfg    Config
+	now    func() time.Time
+	log    *slog.Logger
 }
 
 func NewService(st *store.Store, blobs *Blobs, rs Runs, jobs Jobs, cfg Config) *Service {
@@ -150,6 +155,8 @@ type Artifact struct {
 	LatestVersion int       `json:"latest_version"`
 	LiveVersion   *int      `json:"live_version,omitempty"`
 	KeepVersions  *int      `json:"keep_versions,omitempty"`
+	Schedule      string    `json:"schedule,omitempty"`
+	Deliver       *Deliver  `json:"deliver,omitempty"`
 	Revision      int64     `json:"revision"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -160,22 +167,25 @@ type Artifact struct {
 
 // Version is one saved version. It never changes, except pinned.
 type Version struct {
-	ArtifactID     string    `json:"artifact_id"`
-	N              int       `json:"n"`
-	SHA256         string    `json:"sha256"`
-	SizeBytes      int64     `json:"size_bytes"`
-	MIME           string    `json:"mime"`
-	FileName       string    `json:"file_name"`
-	Note           string    `json:"note,omitempty"`
-	OriginKind     string    `json:"origin_kind"`
-	RunID          string    `json:"run_id,omitempty"`
-	ConversationID string    `json:"conversation_id,omitempty"`
-	Author         string    `json:"author,omitempty"`
-	BaseN          *int      `json:"base_n,omitempty"`
-	Approval       string    `json:"approval"`
-	Pinned         bool      `json:"pinned"`
-	Delivered      bool      `json:"delivered"`
-	CreatedAt      time.Time `json:"created_at"`
+	ArtifactID     string     `json:"artifact_id"`
+	N              int        `json:"n"`
+	SHA256         string     `json:"sha256"`
+	SizeBytes      int64      `json:"size_bytes"`
+	MIME           string     `json:"mime"`
+	FileName       string     `json:"file_name"`
+	Note           string     `json:"note,omitempty"`
+	OriginKind     string     `json:"origin_kind"`
+	RunID          string     `json:"run_id,omitempty"`
+	ConversationID string     `json:"conversation_id,omitempty"`
+	Author         string     `json:"author,omitempty"`
+	BaseN          *int       `json:"base_n,omitempty"`
+	Live           *Live      `json:"live,omitempty"`
+	Approval       string     `json:"approval"`
+	DecidedBy      string     `json:"decided_by,omitempty"`
+	DecidedAt      *time.Time `json:"decided_at,omitempty"`
+	Pinned         bool       `json:"pinned"`
+	Delivered      bool       `json:"delivered"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 // VersionRef is one version that a run saved.
@@ -211,6 +221,7 @@ type PutOpts struct {
 	Note       string
 	Base       *int
 	Origin     Origin
+	Live       *Live // optional: the sources of a live template
 }
 
 // OriginFor builds the origin of a caller. A nil actor is the user; the
@@ -246,6 +257,11 @@ func (s *Service) Put(ctx context.Context, o PutOpts) (Version, error) {
 	}
 	if o.Content == nil {
 		return Version{}, invalid("content", "is required")
+	}
+	if o.Live != nil {
+		if err := s.checkSources(ctx, o.Workspace, o.Live); err != nil {
+			return Version{}, err
+		}
 	}
 	data, err := io.ReadAll(io.LimitReader(o.Content, s.cfg.MaxBytes+1))
 	if err != nil {
@@ -300,17 +316,20 @@ func (s *Service) PutFromFile(ctx context.Context, o PutOpts, workingDir, rel st
 }
 
 const artifactSelect = `SELECT id, workspace_id, owner_kind, owner_id, name, title, kind, live, latest_version, live_version,
-  keep_versions, revision, created_at, updated_at FROM artifacts`
+  keep_versions, schedule, deliver_json, revision, created_at, updated_at FROM artifacts`
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scanArtifact(row scanner) (Artifact, error) {
 	var a Artifact
-	var kind, created, updated string
+	var kind, deliver, created, updated string
 	var liveV, keep sql.NullInt64
 	if err := row.Scan(&a.ID, &a.Workspace, &a.OwnerKind, &a.OwnerID, &a.Name, &a.Title, &kind, &a.Live, &a.LatestVersion,
-		&liveV, &keep, &a.Revision, &created, &updated); err != nil {
+		&liveV, &keep, &a.Schedule, &deliver, &a.Revision, &created, &updated); err != nil {
 		return Artifact{}, err
+	}
+	if deliver != "" {
+		_ = json.Unmarshal([]byte(deliver), &a.Deliver) // the service writes this JSON
 	}
 	a.Kind = Kind(kind)
 	a.LiveVersion, a.KeepVersions = intPtr(liveV), intPtr(keep)
@@ -450,19 +469,25 @@ func decodeCursor(c string) (at, id string, err error) {
 }
 
 const versionSelect = `SELECT v.artifact_id, v.n, v.sha256, v.size_bytes, v.mime, v.file_name, v.note, v.origin_kind, v.run_id,
-  v.conversation_id, v.author, v.base_n, v.approval, v.pinned, v.created_at,
+  v.conversation_id, v.author, v.base_n, v.sources_json, v.params_json, v.approval, v.decided_by, v.decided_at, v.pinned, v.created_at,
   EXISTS (SELECT 1 FROM email_messages e WHERE e.artifact_id = v.artifact_id AND e.artifact_version = v.n)
   FROM artifact_versions v`
 
 func scanVersion(row scanner) (Version, error) {
 	var v Version
 	var base sql.NullInt64
-	var created string
+	var sources, params, decided, created string
 	if err := row.Scan(&v.ArtifactID, &v.N, &v.SHA256, &v.SizeBytes, &v.MIME, &v.FileName, &v.Note, &v.OriginKind, &v.RunID,
-		&v.ConversationID, &v.Author, &base, &v.Approval, &v.Pinned, &created, &v.Delivered); err != nil {
+		&v.ConversationID, &v.Author, &base, &sources, &params, &v.Approval, &v.DecidedBy, &decided, &v.Pinned, &created,
+		&v.Delivered); err != nil {
 		return Version{}, err
 	}
 	v.BaseN = intPtr(base)
+	v.Live = decodeLive(sources, params)
+	if decided != "" {
+		t := parseTime(decided)
+		v.DecidedAt = &t
+	}
 	v.CreatedAt = parseTime(created)
 	return v, nil
 }
@@ -544,6 +569,9 @@ func (s *Service) Body(ctx context.Context, ref email.ArtifactRef) (email.Artifa
 		d, _ := ParseDraft(data)
 		b.Content = []byte(d.Body)
 	}
+	if v.Live != nil {
+		return s.liveBody(ctx, b, a, ref.SnapshotID)
+	}
 	return b, nil
 }
 
@@ -618,6 +646,11 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	a, err := s.Get(ctx, id)
 	if err != nil {
 		return err
+	}
+	if s.sched != nil && a.Schedule != "" {
+		if err := s.sched.DeleteArtifact(ctx, id); err != nil {
+			return err
+		}
 	}
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `DELETE FROM artifacts WHERE id=?`, id)
@@ -747,43 +780,42 @@ func (s *Service) insert(ctx context.Context, o PutOpts, kind Kind, mimeType, sh
 	s.st.LockBus()
 	defer s.st.UnlockBus()
 	var v Version
+	var a *Artifact
+	var prevLive *Live
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		cur, err := s.current(ctx, tx, o)
 		if err != nil {
 			return err
 		}
-		a := cur
+		spec, err := liveSpec(ctx, tx, cur, o.Live, kind)
+		if err != nil {
+			return err
+		}
 		action := "updated"
 		if cur == nil {
 			action = "created"
 			a = &Artifact{
 				ID: idPrefix + strings.ToLower(ulid.Make().String()), Workspace: o.Workspace,
 				OwnerKind: o.Origin.OwnerKind, OwnerID: o.Origin.OwnerID, Name: o.Name,
-				Title: cmp.Or(o.Title, o.Name), Kind: kind, Revision: 1,
+				Title: cmp.Or(o.Title, o.Name), Kind: kind, Revision: 1, LatestVersion: 1,
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts (id, workspace_id, owner_kind, owner_id, name, title, kind,
-  latest_version, revision, created_at, updated_at) VALUES (?,?,?,?,?,?,?,1,1,?,?)`,
-				a.ID, a.Workspace, a.OwnerKind, a.OwnerID, a.Name, a.Title, string(kind), ts, ts); err != nil {
-				return err
-			}
-			a.LatestVersion = 1
 		} else {
 			if err := s.checkStale(ctx, tx, cur, o); err != nil {
 				return err
 			}
-			prev := cur.LatestVersion
+			a = cur
 			a.LatestVersion++
 			a.Revision++
 			a.Title = cmp.Or(o.Title, a.Title)
 			a.Kind = kind
-			res, err := tx.ExecContext(ctx, `UPDATE artifacts SET latest_version=?, title=?, kind=?, revision=?, updated_at=?
-  WHERE id=? AND latest_version=?`, a.LatestVersion, a.Title, string(kind), a.Revision, ts, a.ID, prev)
-			if err != nil {
-				return err
-			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				return &StaleError{Latest: a.LatestVersion}
-			}
+		}
+		approval, prev, err := approve(ctx, tx, a, spec, o.Origin)
+		if err != nil {
+			return err
+		}
+		prevLive = prev
+		if err := writeArtifactRow(ctx, tx, a, cur == nil, ts); err != nil {
+			return err
 		}
 		fileName := filepath.Base(o.FileName)
 		if o.FileName == "" {
@@ -792,12 +824,14 @@ func (s *Service) insert(ctx context.Context, o PutOpts, kind Kind, mimeType, sh
 		v = Version{
 			ArtifactID: a.ID, N: a.LatestVersion, SHA256: sha, SizeBytes: size, MIME: mimeType, FileName: fileName,
 			Note: o.Note, OriginKind: o.Origin.Kind, RunID: o.Origin.RunID, ConversationID: o.Origin.ConversationID,
-			Author: o.Origin.Author, BaseN: o.Base, Approval: "none", CreatedAt: now,
+			Author: o.Origin.Author, BaseN: o.Base, Live: spec, Approval: approval, CreatedAt: now,
 		}
+		sources, params := encodeLive(spec)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO artifact_versions (artifact_id, n, sha256, size_bytes, mime, file_name, note,
-  origin_kind, run_id, conversation_id, author, base_n, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  origin_kind, run_id, conversation_id, author, base_n, sources_json, params_json, approval, created_at)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			v.ArtifactID, v.N, v.SHA256, v.SizeBytes, v.MIME, v.FileName, v.Note, v.OriginKind, v.RunID,
-			v.ConversationID, v.Author, nullInt(v.BaseN), ts); err != nil {
+			v.ConversationID, v.Author, nullInt(v.BaseN), sources, params, approval, ts); err != nil {
 			return err
 		}
 		ev := s.event("artifact."+action, action, a, v.N)
@@ -810,7 +844,31 @@ func (s *Service) insert(ctx context.Context, o PutOpts, kind Kind, mimeType, sh
 		return Version{}, err
 	}
 	s.st.NotifyBus()
+	if v.Approval == ApprovalPending {
+		s.askApproval(ctx, a, v.N, prevLive, v.Live)
+	}
 	return v, nil
+}
+
+// writeArtifactRow inserts a new artifact or moves an artifact to its next
+// version. A concurrent save of the same version fails as stale.
+func writeArtifactRow(ctx context.Context, tx *sql.Tx, a *Artifact, create bool, ts string) error {
+	if create {
+		_, err := tx.ExecContext(ctx, `INSERT INTO artifacts (id, workspace_id, owner_kind, owner_id, name, title, kind,
+  live, latest_version, live_version, revision, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,1,?,?)`,
+			a.ID, a.Workspace, a.OwnerKind, a.OwnerID, a.Name, a.Title, string(a.Kind), a.Live, nullInt(a.LiveVersion), ts, ts)
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE artifacts SET latest_version=?, title=?, kind=?, live=?, live_version=?, revision=?,
+  updated_at=? WHERE id=? AND latest_version=?`, a.LatestVersion, a.Title, string(a.Kind), a.Live, nullInt(a.LiveVersion),
+		a.Revision, ts, a.ID, a.LatestVersion-1)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return &StaleError{Latest: a.LatestVersion}
+	}
+	return nil
 }
 
 // current finds the artifact that o adds a version to, or nil.

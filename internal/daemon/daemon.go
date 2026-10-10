@@ -263,7 +263,9 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	reqSvc := requests.NewService(st, r, cl, requests.NewReportStore(home.RequestsDir()), reqOpts)
 	chainSvc := chains.NewService(st, ws, conv, r, reqSvc, slog.Default().With("source", "chains"))
 	reqSvc.WithDecider(chainSvc)
-	artSvc := artifacts.NewService(st, artifacts.NewBlobs(home.ArtifactBlobsDir(), artifacts.DefaultMaxBytes), r, ws, artifacts.Config{})
+	sched := schedule.New(st)
+	artSvc := artifacts.NewService(st, artifacts.NewBlobs(home.ArtifactBlobsDir(), artifacts.DefaultMaxBytes), r, ws, artifacts.Config{}).
+		WithSources(connectors.NewOperations(connector, r, nil)).WithSchedule(sched)
 	artGate := artifacts.NewRunGate(artSvc, r, nil)
 	em.WithArtifacts(artSvc)
 	parker := runs.NewParker(r, launcher, reqSvc, chainSvc, artGate)
@@ -275,7 +277,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Files:         fs,
 		Proposals:     proposalSvc,
 		Skills:        sk,
-		Schedule:      schedule.New(st),
+		Schedule:      sched,
 		Connectors:    connector,
 		Catalog:       catalog,
 		Policy:        pol,
@@ -320,6 +322,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	c.Alerts.SetDoctor(c.Alerts.CollectDoctorFindings)
 	chainSvc.WithAlerts(c.Alerts)
 	artGate.WithAlerts(c.Alerts)
+	artSvc.WithAlerts(c.Alerts)
 	c.Alerts.SetProposalContent(func(ctx context.Context, id string) (string, string, bool) {
 		p, err := c.Proposals.Get(ctx, id)
 		if err != nil {

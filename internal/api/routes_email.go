@@ -15,6 +15,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/trebi-ai/trebi/internal/artifacts"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/job"
@@ -79,7 +80,19 @@ func (s *Server) emailArtifact(r *http.Request, ws string, in request.EmailArtif
 	if _, err := s.artifacts.Version(r.Context(), a.ID, n); err != nil {
 		return nil, err
 	}
-	return &email.ArtifactRef{ID: a.ID, Version: n, URL: artifactURL(a.ID, n)}, nil
+	if !a.Live {
+		return &email.ArtifactRef{ID: a.ID, Version: n, URL: artifacts.PageURL(a.ID, n, "")}, nil
+	}
+	// A live artifact sends its newest snapshot; with none, it refreshes once.
+	sn, err := s.artifacts.LatestSnapshot(r.Context(), a.ID)
+	if errors.Is(err, artifacts.ErrNotFound) {
+		sn, err = s.artifacts.Refresh(r.Context(), artifacts.RefreshOpts{ID: a.ID, Reason: artifacts.ReasonSend,
+			Actor: artifacts.OriginUser})
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &email.ArtifactRef{ID: a.ID, Version: sn.VersionN, SnapshotID: sn.ID, URL: artifacts.PageURL(a.ID, sn.VersionN, sn.ID)}, nil
 }
 
 func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {

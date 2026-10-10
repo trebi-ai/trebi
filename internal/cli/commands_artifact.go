@@ -14,6 +14,7 @@ import (
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/urfave/cli/v3"
+	"gopkg.in/yaml.v3"
 
 	"github.com/trebi-ai/trebi/internal/artifacts"
 	"github.com/trebi-ai/trebi/internal/request"
@@ -55,8 +56,10 @@ func artifactCommand() *cli.Command { //nolint:funlen // static command table
 				Name:      "get",
 				ArgsUsage: "<artifact>[@n]",
 				Usage:     "print the content of a version (the latest by default)",
-				Flags:     []cli.Flag{ws(), &cli.StringFlag{Name: "out", Aliases: []string{"o"}, Usage: "write the content to this file"}},
-				Action:    runArtifactGet,
+				Flags: []cli.Flag{ws(), &cli.StringFlag{Name: "out", Aliases: []string{"o"}, Usage: "write the content to this file"},
+					&cli.StringFlag{Name: "snapshot", Usage: "for a live artifact, the snapshot whose data fills the template"},
+					&cli.BoolFlag{Name: "raw", Usage: "for a live artifact, print the template with no data"}},
+				Action: runArtifactGet,
 			},
 			{
 				Name:      "put",
@@ -64,7 +67,8 @@ func artifactCommand() *cli.Command { //nolint:funlen // static command table
 				Usage:     "save a new version from a file or stdin",
 				Flags: []cli.Flag{
 					ws(),
-					&cli.StringFlag{Name: "from", Aliases: []string{"f"}, Usage: "file to save; - or no flag reads stdin"},
+					&cli.StringFlag{Name: "from", Aliases: []string{"f", "template"}, Usage: "file to save; - or no flag reads stdin"},
+					&cli.StringFlag{Name: "sources", Usage: "YAML file with the params and sources of a live template"},
 					&cli.StringFlag{Name: "title", Usage: "the title that the user sees"},
 					&cli.StringFlag{Name: "kind", Usage: "the kind; the default comes from the file name"},
 					&cli.StringFlag{Name: "note", Usage: "what changed in this version"},
@@ -95,6 +99,48 @@ func artifactCommand() *cli.Command { //nolint:funlen // static command table
 				Usage:     "send an email draft from its from: line",
 				Flags:     []cli.Flag{ws(), &cli.BoolFlag{Name: "draft", Usage: "save it to the drafts of the mailbox; do not send"}, jsonFlag()},
 				Action:    runArtifactSend,
+			},
+			{
+				Name:      "refresh",
+				ArgsUsage: "<artifact>",
+				Usage:     "run the sources of a live artifact and store a snapshot",
+				Flags:     []cli.Flag{ws(), &cli.StringSliceFlag{Name: "input", Usage: "parameter value as name=value; repeat it"}, jsonFlag()},
+				Action:    runArtifactRefresh,
+			},
+			{
+				Name:      "snapshots",
+				ArgsUsage: "<artifact> [snapshot]",
+				Usage:     "list the snapshots of a live artifact, or show one",
+				Flags: []cli.Flag{ws(), &cli.IntFlag{Name: "limit", Usage: "page size"},
+					&cli.BoolFlag{Name: "data", Usage: "print the data of the snapshot"}, jsonFlag()},
+				Action: runArtifactSnapshots,
+			},
+			{
+				Name:      "approve",
+				ArgsUsage: "<artifact>[@n]",
+				Usage:     "allow the data sources of a pending version",
+				Flags:     []cli.Flag{ws()},
+				Action:    runArtifactDecide("approve"),
+			},
+			{
+				Name:      "deny",
+				ArgsUsage: "<artifact>[@n]",
+				Usage:     "deny the data sources of a pending version",
+				Flags:     []cli.Flag{ws()},
+				Action:    runArtifactDecide("deny"),
+			},
+			{
+				Name:      "schedule",
+				ArgsUsage: "<artifact>",
+				Usage:     "refresh a live artifact on a schedule and send it by email",
+				Flags: []cli.Flag{ws(),
+					&cli.StringFlag{Name: "every", Usage: "interval, for example 24h"},
+					&cli.StringFlag{Name: "cron", Usage: "5-field cron line, for example '0 9 * * 1'"},
+					&cli.StringFlag{Name: "timezone", Usage: "time zone of the cron line"},
+					&cli.StringSliceFlag{Name: "email", Usage: "send each snapshot to this address; repeat it"},
+					&cli.StringFlag{Name: "subject", Usage: "subject of the mail; the default is the title"},
+					&cli.BoolFlag{Name: "off", Usage: "remove the schedule"}, jsonFlag()},
+				Action: runArtifactSchedule,
 			},
 			{
 				Name:      "deliveries",
@@ -218,7 +264,7 @@ func runArtifactGet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	raw, err := client.GetRaw(a.ContentPath(n, false))
+	raw, err := client.GetRaw(a.ContentPath(n, request.ContentOpts{Snapshot: c.String("snapshot"), Raw: c.Bool("raw")}))
 	if err != nil {
 		return err
 	}
@@ -240,27 +286,19 @@ func runArtifactPut(_ context.Context, c *cli.Command) error {
 		b := c.Int("base")
 		spec.Base = &b
 	}
-	from := c.String("from")
-	switch {
-	case from != "" && from != "-" && os.Getenv("TREBI_RUN_TOKEN") != "":
-		// The daemon reads the file from the working folder of the run.
-		abs, err := filepath.Abs(from)
+	if err := putContent(&spec, c.String("from")); err != nil {
+		return err
+	}
+	if src := c.String("sources"); src != "" {
+		raw, err := os.ReadFile(src)
 		if err != nil {
 			return err
 		}
-		spec.FromPath = abs
-	default:
-		if from == "-" {
-			from = ""
+		var live artifacts.Live
+		if err := yaml.Unmarshal(raw, &live); err != nil {
+			return fmt.Errorf("read %s: %w", src, err)
 		}
-		raw, err := readBytesOrStdin(from)
-		if err != nil {
-			return err
-		}
-		spec.ContentBase64 = base64.StdEncoding.EncodeToString(raw)
-		if from != "" {
-			spec.FileName = filepath.Base(from)
-		}
+		spec.Live = live
 	}
 	client, err := clientFor(c)
 	if err != nil {
@@ -281,6 +319,34 @@ func runArtifactPut(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, res)
 	}
 	fmt.Fprintf(outWriter(c), "saved %s@%d (%s)\n", res.Artifact.Name, res.Version.N, res.Artifact.ID)
+	if res.Version.Approval == artifacts.ApprovalPending {
+		fmt.Fprintf(outWriter(c), "the sources need approval: trebi artifact approve %s@%d\n", res.Artifact.Name, res.Version.N)
+	}
+	return nil
+}
+
+// putContent sets the content of spec from a file or stdin. Inside a run,
+// the daemon reads the file from the working folder of the run.
+func putContent(spec *request.ArtifactPutSpec, from string) error {
+	if from != "" && from != "-" && os.Getenv("TREBI_RUN_TOKEN") != "" {
+		abs, err := filepath.Abs(from)
+		if err != nil {
+			return err
+		}
+		spec.FromPath = abs
+		return nil
+	}
+	if from == "-" {
+		from = ""
+	}
+	raw, err := readBytesOrStdin(from)
+	if err != nil {
+		return err
+	}
+	spec.ContentBase64 = base64.StdEncoding.EncodeToString(raw)
+	if from != "" {
+		spec.FileName = filepath.Base(from)
+	}
 	return nil
 }
 
@@ -434,5 +500,126 @@ func runArtifactRemove(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "deleted %s\n", a.Ref)
+	return nil
+}
+
+func runArtifactRefresh(_ context.Context, c *cli.Command) error {
+	a, _, err := artifactArg(c, "refresh <artifact>")
+	if err != nil {
+		return err
+	}
+	inputs := map[string]string{}
+	for _, kv := range c.StringSlice("input") {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return fmt.Errorf("--input %q: use name=value", kv)
+		}
+		inputs[k] = v
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var snap artifacts.Snapshot
+	if err := client.DoHTTP(a.Refresh(inputs), &snap); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, snap)
+	}
+	fmt.Fprintf(outWriter(c), "snapshot %s of %s@%d (%d ms)\n", snap.ID, a.Ref, snap.VersionN, snap.TookMS)
+	for name, msg := range snap.Errors {
+		fmt.Fprintf(outWriter(c), "  %s: %s\n", name, msg)
+	}
+	return nil
+}
+
+func runArtifactSnapshots(_ context.Context, c *cli.Command) error {
+	a, _, err := artifactArg(c, "snapshots <artifact> [snapshot]")
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if sid := c.Args().Get(1); sid != "" {
+		var body map[string]any
+		if err := client.GetJSON(a.SnapshotPath(sid, c.Bool("data")), &body); err != nil {
+			return err
+		}
+		return encodeJSON(c, body)
+	}
+	var body struct {
+		Items []artifacts.Snapshot `json:"items"`
+	}
+	if err := client.GetJSON(a.SnapshotsPath(c.Int("limit")), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	tbl := newTable(outWriter(c), []string{"ID", "Version", "Reason", "Errors", "Took", "Created"})
+	for _, s := range body.Items {
+		tbl.AppendRow(table.Row{s.ID, s.VersionN, s.Reason, len(s.Errors), fmt.Sprintf("%dms", s.TookMS),
+			s.CreatedAt.Local().Format("2006-01-02 15:04")})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runArtifactDecide(decision string) cli.ActionFunc {
+	return func(_ context.Context, c *cli.Command) error {
+		a, n, err := artifactArg(c, decision+" <artifact>[@n]")
+		if err != nil {
+			return err
+		}
+		client, err := clientFor(c)
+		if err != nil {
+			return err
+		}
+		if err := client.DoHTTP(a.Decide(cmp.Or(n, "latest"), decision), nil); err != nil {
+			return err
+		}
+		verb := "allowed"
+		if decision == "deny" {
+			verb = "denied"
+		}
+		fmt.Fprintf(outWriter(c), "%s the sources of %s@%s\n", verb, a.Ref, cmp.Or(n, "latest"))
+		return nil
+	}
+}
+
+func runArtifactSchedule(_ context.Context, c *cli.Command) error {
+	a, _, err := artifactArg(c, "schedule <artifact> --every <d> | --cron <line> | --off")
+	if err != nil {
+		return err
+	}
+	s := request.ArtifactSchedule{Timezone: c.String("timezone"), EmailTo: c.StringSlice("email"), Subject: c.String("subject")}
+	switch {
+	case c.Bool("off"):
+	case c.String("every") != "" && c.String("cron") == "":
+		s.Schedule = "@every " + c.String("every")
+	case c.String("cron") != "" && c.String("every") == "":
+		s.Schedule = c.String("cron")
+	default:
+		return errors.New("usage: trebi artifact schedule <artifact> --every <d> | --cron <line> | --off")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var art artifacts.Artifact
+	if err := client.DoHTTP(a.Schedule(s), &art); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, art)
+	}
+	if art.Schedule == "" {
+		fmt.Fprintf(outWriter(c), "removed the schedule of %s\n", a.Ref)
+		return nil
+	}
+	fmt.Fprintf(outWriter(c), "%s refreshes on %s\n", a.Ref, art.Schedule)
 	return nil
 }

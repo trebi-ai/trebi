@@ -69,6 +69,9 @@ const (
 	KindHarnessUpdateFailed Kind = "harness_update_failed"
 	// KindArtifactMissing is a JOB.md artifact that a run did not save.
 	KindArtifactMissing Kind = "artifact_missing"
+	// KindArtifactSources is a live artifact version whose new data sources
+	// wait for the user.
+	KindArtifactSources Kind = "artifact_sources"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -773,6 +776,9 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindArtifactMissing: {
 			Kind: KindArtifactMissing, Severity: SeverityError, InboxKind: InboxFailure,
 		},
+		KindArtifactSources: {
+			Kind: KindArtifactSources, Severity: SeverityAttention, InboxKind: InboxApproval,
+		},
 	}
 }
 
@@ -933,6 +939,7 @@ var defaultTitles = map[Kind]string{
 	KindChainLimited:                "Agents reached a chain limit",
 	KindHarnessUpdateFailed:         "Harness update failed",
 	KindArtifactMissing:             "Artifact not saved",
+	KindArtifactSources:             "Allow data sources",
 }
 
 func (o RaiseOpts) defaultTitle() string {
@@ -965,6 +972,9 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 			return []InboxAction{}
 		}
 		return []InboxAction{{Kind: ActionViewRun, Route: "/v1/runs/" + o.RunID, Label: "View run"}}
+	case KindArtifactSources:
+		id, n, _ := strings.Cut(strings.TrimPrefix(o.Subject, "artifact/"), "/")
+		return []InboxAction{{Kind: ActionReview, Route: "/artifacts/" + url.PathEscape(id) + "?v=" + n, Label: "Review"}}
 	case KindConnectorAuthRequired:
 		route := "/connectors/" + url.PathEscape(o.Connector) + "?tab=login"
 		return []InboxAction{{Kind: ActionLogIn, Route: route, Label: "Log in"}}

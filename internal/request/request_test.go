@@ -1392,7 +1392,7 @@ func TestArtifactBuilders(t *testing.T) {
 		want string
 	}{
 		{"list", HTTPRequest{Method: "GET", Path: BuildArtifactListPath(ArtifactFilter{Workspace: "ws1", Live: &live, Limit: 5})}, "GET /v1/artifacts?limit=5&live=true&workspace=ws1"},
-		{"content", HTTPRequest{Method: "GET", Path: a.ContentPath("3", true)}, "GET /v1/artifacts/weekly/versions/3/content?download=1&workspace=ws1"},
+		{"content", HTTPRequest{Method: "GET", Path: a.ContentPath("3", ContentOpts{Download: true})}, "GET /v1/artifacts/weekly/versions/3/content?download=1&workspace=ws1"},
 		{"pin off", a.Pin("3", false), "DELETE /v1/artifacts/weekly/versions/3/pin?workspace=ws1"},
 		{"delete", a.Delete(true), "DELETE /v1/artifacts/weekly?confirm=1&workspace=ws1"},
 		{"send", a.Send("latest", "draft"), `POST /v1/artifacts/weekly/versions/latest/send?workspace=ws1 {"mode":"draft"}`},

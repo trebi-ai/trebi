@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -17,17 +16,15 @@ import (
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/artifacts"
-	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/email"
-	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
-func (s *Server) routeArtifacts(mux *http.ServeMux) {
+func (s *Server) routeArtifacts(mux *http.ServeMux) { //nolint:dupl // a route table, not logic
 	mux.HandleFunc("GET /v1/artifacts", s.handleArtifactList)
 	mux.HandleFunc("POST /v1/artifacts", s.handleArtifactPut)
 	mux.HandleFunc("GET /v1/artifacts/{id}", s.handleArtifactGet)
@@ -41,6 +38,13 @@ func (s *Server) routeArtifacts(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/artifacts/{id}/versions/{n}/send", s.handleArtifactSend)
 	mux.HandleFunc("GET /v1/artifacts/{id}/deliveries", s.handleArtifactDeliveries)
 	mux.HandleFunc("POST /v1/artifacts/{id}/ask", s.handleArtifactAsk)
+	mux.HandleFunc("POST /v1/artifacts/{id}/versions/{n}/decide", s.handleArtifactDecide)
+	mux.HandleFunc("POST /v1/artifacts/{id}/refresh", s.handleArtifactRefresh)
+	mux.HandleFunc("GET /v1/artifacts/{id}/snapshots", s.handleArtifactSnapshots)
+	mux.HandleFunc("GET /v1/artifacts/{id}/snapshots/{sid}", s.handleArtifactSnapshot)
+	mux.HandleFunc("GET /v1/artifacts/{id}/snapshots/{sid}/data", s.handleArtifactSnapshotData)
+	mux.HandleFunc("PUT /v1/artifacts/{id}/schedule", s.handleArtifactSchedule)
+	mux.HandleFunc("DELETE /v1/artifacts/{id}/schedule", s.handleArtifactSchedule)
 	mux.HandleFunc("GET /v1/runs/{id}/artifacts", s.handleRunArtifacts)
 }
 
@@ -59,9 +63,16 @@ func writeArtifactErr(w http.ResponseWriter, err error) {
 	var stale *artifacts.StaleError
 	var inv *artifacts.InvalidError
 	var in inputError
+	var rate *artifacts.RateLimitError
 	switch {
 	case errors.As(err, &in):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	case errors.As(err, &rate):
+		w.Header().Set("Retry-After", strconv.Itoa(int(rate.RetryAfter.Seconds())+1))
+		writeErrDetails(w, http.StatusTooManyRequests, "rate_limited", err.Error(),
+			map[string]any{"retry_after_ms": rate.RetryAfter.Milliseconds()})
+	case errors.Is(err, artifacts.ErrPendingApproval):
+		writeErr(w, http.StatusConflict, "pending_approval", err.Error())
 	case errors.As(err, &stale):
 		writeErrDetails(w, http.StatusConflict, "stale", err.Error(), map[string]any{"latest": stale.Latest})
 	case errors.As(err, &inv):
@@ -210,18 +221,19 @@ func (s *Server) handleArtifactList(w http.ResponseWriter, r *http.Request) {
 }
 
 type artifactPutBody struct {
-	Workspace     string `json:"workspace"`
-	Name          string `json:"name"`
-	ArtifactID    string `json:"artifact_id"`
-	Title         string `json:"title"`
-	Kind          string `json:"kind"`
-	FileName      string `json:"file_name"`
-	Content       string `json:"content"`
-	ContentBase64 string `json:"content_base64"`
-	FromPath      string `json:"from_path"`
-	Note          string `json:"note"`
-	Base          *int   `json:"base"`
-	Owner         string `json:"owner"`
+	Workspace     string          `json:"workspace"`
+	Name          string          `json:"name"`
+	ArtifactID    string          `json:"artifact_id"`
+	Title         string          `json:"title"`
+	Kind          string          `json:"kind"`
+	FileName      string          `json:"file_name"`
+	Content       string          `json:"content"`
+	ContentBase64 string          `json:"content_base64"`
+	FromPath      string          `json:"from_path"`
+	Note          string          `json:"note"`
+	Base          *int            `json:"base"`
+	Owner         string          `json:"owner"`
+	Live          *artifacts.Live `json:"live"`
 }
 
 func (s *Server) handleArtifactPut(w http.ResponseWriter, r *http.Request) {
@@ -272,7 +284,8 @@ func (s *Server) artifactPutOpts(r *http.Request, ws string, actor *tools.Actor,
 		return artifacts.PutOpts{}, err
 	}
 	o := artifacts.PutOpts{Workspace: ws, ArtifactID: body.ArtifactID, Name: body.Name, Title: body.Title,
-		Kind: artifacts.Kind(body.Kind), FileName: body.FileName, Note: body.Note, Base: body.Base, Origin: origin}
+		Kind: artifacts.Kind(body.Kind), FileName: body.FileName, Note: body.Note, Base: body.Base, Origin: origin,
+		Live: body.Live}
 	if o.ArtifactID == "" && body.Owner == "" && person {
 		// A person who saves by name saves to the artifact of that name.
 		a, _, err := s.artifacts.Resolve(r.Context(), ws, artifacts.Origin{}, body.Name)
@@ -404,6 +417,11 @@ func (s *Server) handleArtifactContent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	q := r.URL.Query()
+	if a.Live && q.Get("raw") != "1" {
+		s.artifactBound(w, r, a.ID, n, q.Get("snapshot"))
+		return
+	}
 	rc, v, err := s.artifacts.Open(r.Context(), a.ID, n)
 	if err != nil {
 		writeArtifactErr(w, err)
@@ -412,15 +430,7 @@ func (s *Server) handleArtifactContent(w http.ResponseWriter, r *http.Request) {
 	defer rc.Close()
 	h := w.Header()
 	etag := `"` + v.SHA256 + `"`
-	h.Set("ETag", etag)
-	h.Set("Content-Security-Policy", artifactCSP)
-	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Cache-Control", "private, max-age=0, must-revalidate")
-	if r.URL.Query().Get("download") == "1" {
-		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": v.FileName}))
-	}
-	if r.Header.Get("If-None-Match") == etag {
-		w.WriteHeader(http.StatusNotModified)
+	if artifactHeaders(w, r, etag, v.FileName) {
 		return
 	}
 	h.Set("Content-Type", v.MIME)
@@ -428,6 +438,47 @@ func (s *Server) handleArtifactContent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
 		_, _ = io.Copy(w, rc) // the client went away
+	}
+}
+
+// artifactHeaders sets the D19 headers. It answers 304 and returns true
+// when the client has etag.
+func artifactHeaders(w http.ResponseWriter, r *http.Request, etag, fileName string) bool {
+	h := w.Header()
+	h.Set("ETag", etag)
+	h.Set("Content-Security-Policy", artifactCSP)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cache-Control", "private, max-age=0, must-revalidate")
+	if r.URL.Query().Get("download") == "1" {
+		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": fileName}))
+	}
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	return false
+}
+
+// artifactBound writes a live version with the data of a snapshot bound.
+func (s *Server) artifactBound(w http.ResponseWriter, r *http.Request, id string, n int, snapshot string) {
+	data, v, sn, err := s.artifacts.Bound(r.Context(), id, n, snapshot)
+	if err != nil {
+		writeArtifactErr(w, err)
+		return
+	}
+	etag := `"` + v.SHA256
+	if sn != nil {
+		etag += "." + sn.ID
+		w.Header().Set("X-Trebi-Snapshot", sn.ID)
+	}
+	if artifactHeaders(w, r, etag+`"`, v.FileName) {
+		return
+	}
+	w.Header().Set("Content-Type", v.MIME)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(data) // the client went away
 	}
 }
 
@@ -509,17 +560,6 @@ func (s *Server) handleRunArtifacts(w http.ResponseWriter, r *http.Request) {
 }
 
 // artifactURL is the UI page of a version, for the link in a mail.
-func artifactURL(id string, n int) string {
-	base := home.APIJSONURL()
-	if cfg, err := config.Load(); err == nil && cfg != nil && cfg.UI.PublicURL != "" {
-		base = cfg.UI.PublicURL
-	}
-	if base == "" {
-		return ""
-	}
-	return fmt.Sprintf("%s/artifacts/%s?v=%d", strings.TrimRight(base, "/"), id, n)
-}
-
 // handleArtifactSend sends an email draft (C3): through the native channel
 // for from: trebi, else through the send or draft operation of the
 // mailbox connection.
@@ -563,7 +603,7 @@ func (s *Server) handleArtifactSend(w http.ResponseWriter, r *http.Request) {
 	}
 	actor := artifactActor(r)
 	byUser := actor == nil || actor.Kind == tools.ActorMobile
-	ref := &email.ArtifactRef{ID: a.ID, Version: v.N, URL: artifactURL(a.ID, v.N)}
+	ref := &email.ArtifactRef{ID: a.ID, Version: v.N, URL: artifacts.PageURL(a.ID, v.N, "")}
 	if d.From == artifacts.FromTrebi {
 		s.sendDraftNative(w, r, a, d, ref, byUser)
 		return
@@ -671,4 +711,141 @@ func (c artContinuer) AskAssistant(ctx context.Context, workspaceID, text string
 		return "", err
 	}
 	return out.ConversationID, nil
+}
+
+// personOnly refuses every agent caller: a run, a job, and the assistant.
+// A paired phone is a person.
+func personOnly(w http.ResponseWriter, r *http.Request, msg string) bool {
+	if a := artifactActor(r); a != nil && a.Kind != tools.ActorMobile {
+		writeForbidden(w, msg)
+		return true
+	}
+	return false
+}
+
+func (s *Server) handleArtifactDecide(w http.ResponseWriter, r *http.Request) {
+	if personOnly(w, r, "only a person can allow the data sources of a version") {
+		return
+	}
+	a, ok := s.artifactFor(w, r)
+	if !ok {
+		return
+	}
+	n, ok := versionFor(w, r, a)
+	if !ok {
+		return
+	}
+	var body struct {
+		Decision string `json:"decision"` // approve | deny
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Decision != "approve" && body.Decision != "deny") {
+		writeErr(w, http.StatusBadRequest, "validation", "decision must be approve or deny")
+		return
+	}
+	out, err := s.artifacts.Decide(r.Context(), a.ID, n, body.Decision == "approve", artifacts.OriginUser)
+	if err != nil {
+		writeArtifactErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleArtifactRefresh(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.artifactFor(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Inputs map[string]string `json:"inputs"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	o := artifacts.RefreshOpts{ID: a.ID, Inputs: body.Inputs, Reason: artifacts.ReasonRefresh, Actor: artifacts.OriginUser}
+	if act := artifactActor(r); act != nil {
+		o.Agent, o.Actor = true, cmp.Or(act.Job, act.Kind)
+	}
+	snap, err := s.artifacts.Refresh(r.Context(), o)
+	if err != nil {
+		writeArtifactErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *Server) handleArtifactSnapshots(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.artifactFor(w, r)
+	if !ok {
+		return
+	}
+	list, err := s.artifacts.Snapshots(r.Context(), a.ID, parseLimit(r))
+	if err != nil {
+		writeArtifactErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": list})
+}
+
+func (s *Server) handleArtifactSnapshot(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.artifactFor(w, r)
+	if !ok {
+		return
+	}
+	sn, err := s.artifacts.Snapshot(r.Context(), a.ID, r.PathValue("sid"))
+	if err != nil {
+		writeArtifactErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sn)
+}
+
+func (s *Server) handleArtifactSnapshotData(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.artifactFor(w, r)
+	if !ok {
+		return
+	}
+	sn, err := s.artifacts.Snapshot(r.Context(), a.ID, r.PathValue("sid"))
+	if err != nil {
+		writeArtifactErr(w, err)
+		return
+	}
+	data, err := s.artifacts.SnapshotData(r.Context(), sn)
+	if err != nil {
+		writeArtifactErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"snapshot_id": sn.ID, "sources": data})
+}
+
+// handleArtifactSchedule sets (PUT) or removes (DELETE) the scheduled
+// refresh. Only a person sets it, because the delivery skips the recipient
+// check.
+func (s *Server) handleArtifactSchedule(w http.ResponseWriter, r *http.Request) {
+	if personOnly(w, r, "only a person can schedule an artifact") {
+		return
+	}
+	a, ok := s.artifactFor(w, r)
+	if !ok {
+		return
+	}
+	var o artifacts.ScheduleOpts
+	if r.Method == http.MethodPut {
+		var body struct {
+			Schedule string             `json:"schedule"`
+			Timezone string             `json:"timezone"`
+			Deliver  *artifacts.Deliver `json:"deliver"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Schedule) == "" {
+			writeErr(w, http.StatusBadRequest, "validation", "schedule is required, such as \"@every 24h\" or \"0 9 * * 1\"")
+			return
+		}
+		o = artifacts.ScheduleOpts{Spec: strings.TrimSpace(body.Schedule), Timezone: body.Timezone, Deliver: body.Deliver}
+	}
+	out, err := s.artifacts.SetSchedule(r.Context(), a.ID, o)
+	if err != nil {
+		writeArtifactErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }

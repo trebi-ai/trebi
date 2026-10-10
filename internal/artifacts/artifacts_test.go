@@ -273,7 +273,15 @@ func (f *fakeMark) Mark(_ context.Context, o runs.MarkOpts) (*runs.Run, error) {
 	return &runs.Run{}, nil
 }
 
-type fakeAlerts struct{ got []alerts.RaiseOpts }
+type fakeAlerts struct {
+	got      []alerts.RaiseOpts
+	resolved []string
+}
+
+func (f *fakeAlerts) ResolveSubject(_ context.Context, subject, _ string) error {
+	f.resolved = append(f.resolved, subject)
+	return nil
+}
 
 func (f *fakeAlerts) Raise(_ context.Context, o alerts.RaiseOpts) (string, error) {
 	f.got = append(f.got, o)

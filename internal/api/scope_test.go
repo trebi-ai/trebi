@@ -205,6 +205,8 @@ func TestScopeGateFailsClosed(t *testing.T) {
 		"/v1/queue/cancel":                           map[string]any{"ids": []string{"01ABC"}},
 		"/v1/workspaces/" + wsID + "/assistant/wake": map[string]any{},
 		"/v1/workspaces/" + wsID:                     map[string]any{"name": "renamed"},
+		"/v1/artifacts/art_x/versions/1/decide":      map[string]any{"decision": "approve"},
+		"/v1/artifacts/art_x/schedule":               map[string]any{"schedule": "@every 1h"},
 	}
 	for path := range deny {
 		code, body := doScoped(t, "POST", base+path, live, deny[path])
@@ -214,6 +216,9 @@ func TestScopeGateFailsClosed(t *testing.T) {
 		}
 		if path == "/v1/harnesses/claude" {
 			code, body = doScoped(t, "PATCH", base+path, live, deny[path])
+		}
+		if path == "/v1/artifacts/art_x/schedule" {
+			code, body = doScoped(t, "PUT", base+path, live, deny[path])
 		}
 		if code != http.StatusForbidden || errCode(body) != "forbidden" {
 			t.Fatalf("%s: %d %v", path, code, body)

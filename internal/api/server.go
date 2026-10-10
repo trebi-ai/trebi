@@ -201,7 +201,8 @@ func New(st *store.Store, opts Options) *Server {
 	s.chains.WithAlerts(s.alerts)
 	s.requests.WithDecider(s.chains)
 	s.artifacts = artifacts.NewService(st, artifacts.NewBlobs(home.ArtifactBlobsDir(), artifacts.DefaultMaxBytes), r, ws, artifacts.Config{}).
-		WithContinuer(artContinuer{s})
+		WithContinuer(artContinuer{s}).WithSources(connectors.NewOperations(s.connectors, r, opAsker{s})).
+		WithSchedule(s.sched).WithAlerts(s.alerts)
 	s.email.WithArtifacts(s.artifacts)
 	r.SetParker(runs.NewParker(r, l, s.requests, s.chains, artifacts.NewRunGate(s.artifacts, r, s.alerts)))
 	s.connectors.WithInstall(connectors.InstallConfig{Catalog: s.catalog})

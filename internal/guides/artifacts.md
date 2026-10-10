@@ -98,6 +98,58 @@ The text goes to the conversation, the run, or the assistant that made the versi
 
 Trebi keeps the newest 30 versions of each artifact. It never deletes a pinned version, the live version, or a version that a mail sent. `trebi artifact pin <name>@<n>` keeps a version; `--off` removes the pin. Only the user can pin.
 
+## Live artifacts
+
+A live artifact is a Markdown or HTML template plus data sources. A source is a read-only operation of a connection with fixed input. A refresh runs the sources with no AI model and stores the result as a snapshot. The user opens the artifact and sees the newest data.
+
+Write the sources in a YAML file:
+
+```yaml
+params:
+  - name: period
+    label: Period
+    type: enum              # enum | date | number
+    options: [7d, 30d]
+    values: {7d: "7", 30d: "30"}
+    default: 7d
+sources:
+  - name: sales             # lowercase letters, digits, and _
+    connection: warehouse
+    operation: query
+    input:
+      sql: select day, total from daily_sales order by day
+      days: "{param.period}" # a parameter fills a whole value only
+```
+
+Then save the template with the sources:
+
+```bash
+trebi artifact put sales-dashboard --from dashboard.md --sources sources.yaml
+trebi artifact refresh sales-dashboard --input period=30d
+trebi artifact get sales-dashboard            # the template with the newest data
+trebi artifact get sales-dashboard --raw      # the template only
+trebi artifact snapshots sales-dashboard      # the snapshots, newest first
+```
+
+- A Markdown template uses Go template syntax. `.sales.rows` is the list of records, `.sales.columns` the column names, `.sales.error` the error text, and `.params.period` the value of a parameter.
+- The functions are `table`, `kpi`, `num`, `money`, `pct`, `delta`, `date`, `first`, `last`, and `sum`. For example: `{{ table .sales 20 }}` and `{{ kpi "Revenue" (money (sum .sales.rows "total")) "" }}`.
+- An HTML template reads `window.trebi.data` and `window.trebi.inputs`. The page has no network access.
+- A new version with no `--sources` keeps the sources of the latest version.
+
+When a run adds or changes a source, the user must allow it first. The save prints a line about it, and the user gets an inbox item. Until the user allows it, a refresh uses the last allowed version. The user decides with `trebi artifact approve <name>@<n>` or `trebi artifact deny <name>@<n>`.
+
+An agent can refresh one artifact once a minute. A sooner refresh fails with `rate_limited`.
+
+The user can refresh an artifact on a schedule and send each snapshot by email:
+
+```bash
+trebi artifact schedule sales-dashboard --cron "0 9 * * 1" --timezone Europe/Berlin --email ops@example.com
+trebi artifact schedule sales-dashboard --every 24h
+trebi artifact schedule sales-dashboard --off
+```
+
+Only the user can approve, deny, or schedule.
+
 ## Connection operations
 
 An operation is a named command of a connection, for example `query` on a warehouse. Trebi runs it with the secrets of the connection, so a run never sees them:
