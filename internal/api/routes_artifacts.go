@@ -484,7 +484,7 @@ func (s *Server) artifactBound(w http.ResponseWriter, r *http.Request, id string
 
 func (s *Server) handleArtifactPin(w http.ResponseWriter, r *http.Request) {
 	if a := artifactActor(r); a != nil && a.RunID != "" {
-		writeForbidden(w, "only a person can pin a version")
+		writeForbidden(w, "a run cannot pin a version")
 		return
 	}
 	a, ok := s.artifactFor(w, r)
@@ -763,7 +763,7 @@ func (s *Server) handleArtifactRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	o := artifacts.RefreshOpts{ID: a.ID, Inputs: body.Inputs, Reason: artifacts.ReasonRefresh, Actor: artifacts.OriginUser}
-	if act := artifactActor(r); act != nil {
+	if act := artifactActor(r); act != nil && act.Kind != tools.ActorMobile {
 		o.Agent, o.Actor = true, cmp.Or(act.Job, act.Kind)
 	}
 	snap, err := s.artifacts.Refresh(r.Context(), o)

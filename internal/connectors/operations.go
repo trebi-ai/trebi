@@ -293,7 +293,7 @@ func (o *Operations) run(ctx context.Context, r Resolved, op manifest.Operation,
 		return CallResult{}, err
 	}
 	res.TookMS = took
-	o.log.InfoContext(ctx, "operation.called", "conn_id", r.ID, "operation", op.Name, "took_ms", took)
+	o.log.InfoContext(ctx, "connector.operation_called", "conn_id", r.ID, "operation", op.Name, "took_ms", took)
 	return res, nil
 }
 
