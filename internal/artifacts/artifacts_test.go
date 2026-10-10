@@ -17,30 +17,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
-func openStore(t *testing.T) *store.Store {
-	t.Helper()
-	st, err := store.OpenPath(filepath.Join(t.TempDir(), "trebi.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	return st
-}
-
-func newTestService(t *testing.T, rs Runs, jobs Jobs) *Service {
-	t.Helper()
-	return NewService(openStore(t), NewBlobs(t.TempDir(), 1<<20), rs, jobs, Config{MaxBytes: 1 << 20, KeepVersions: 3})
-}
-
-func blobCount(t *testing.T, b *Blobs) int {
-	t.Helper()
-	n := 0
-	if err := b.Walk(func(string, int64, time.Time) error { n++; return nil }); err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
-
 func TestBlobs(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -139,13 +115,6 @@ func TestParseDraft(t *testing.T) {
 	}
 }
 
-func put(t *testing.T, s *Service, o Origin, base *int, body string) (Version, error) {
-	t.Helper()
-	return s.Put(context.Background(), PutOpts{
-		Workspace: "ws1", Name: "weekly", FileName: "weekly.md", Content: strings.NewReader(body), Origin: o, Base: base,
-	})
-}
-
 func TestPutStale(t *testing.T) {
 	t.Parallel()
 	s := newTestService(t, nil, nil)
@@ -214,15 +183,6 @@ func TestPutConcurrent(t *testing.T) {
 	if err != nil || len(vs) != 8 || vs[0].N != 8 || vs[7].N != 1 {
 		t.Fatalf("versions %d %v", len(vs), err)
 	}
-}
-
-func mustID(t *testing.T, s *Service) string {
-	t.Helper()
-	list, _, err := s.List(context.Background(), ListFilter{Workspace: "ws1"})
-	if err != nil || len(list) != 1 {
-		t.Fatalf("list %v %v", list, err)
-	}
-	return list[0].ID
 }
 
 func TestPutFromFile(t *testing.T) {
@@ -409,4 +369,44 @@ func TestAsk(t *testing.T) {
 	if _, err := s.Ask(ctx, AskOpts{ID: id}); err == nil {
 		t.Fatal("empty text must fail")
 	}
+}
+
+func openStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+func newTestService(t *testing.T, rs Runs, jobs Jobs) *Service {
+	t.Helper()
+	return NewService(openStore(t), NewBlobs(t.TempDir(), 1<<20), rs, jobs, Config{MaxBytes: 1 << 20, KeepVersions: 3})
+}
+
+func blobCount(t *testing.T, b *Blobs) int {
+	t.Helper()
+	n := 0
+	if err := b.Walk(func(string, int64, time.Time) error { n++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func put(t *testing.T, s *Service, o Origin, base *int, body string) (Version, error) {
+	t.Helper()
+	return s.Put(context.Background(), PutOpts{
+		Workspace: "ws1", Name: "weekly", FileName: "weekly.md", Content: strings.NewReader(body), Origin: o, Base: base,
+	})
+}
+
+func mustID(t *testing.T, s *Service) string {
+	t.Helper()
+	list, _, err := s.List(context.Background(), ListFilter{Workspace: "ws1"})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list %v %v", list, err)
+	}
+	return list[0].ID
 }

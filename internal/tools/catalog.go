@@ -8,7 +8,9 @@ import (
 	"cmp"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -3129,8 +3131,6 @@ var assistantSetFields = []string{ //nolint:gochecknoglobals // static field lis
 	"name", "harness", "model", "effort", "envset", "mode", "skills", "context", "disabled",
 }
 
-// stateActions is the state tool (plan 2026-10-06 B6). In a run, owner
-// defaults to self.
 // artifactRef reads artifact (required: an id, a name, or name@n) and
 // workspace. The version is the one of version, else of name@n, else latest.
 func (in Input) artifactRef() (request.ArtifactRef, string, error) {
@@ -3151,30 +3151,30 @@ func (in Input) artifactRef() (request.ArtifactRef, string, error) {
 	return request.ArtifactRef{Ref: name, Workspace: ws}, n, nil
 }
 
-func artifactActions() map[string]Action { //nolint:funlen // static action table
-	ref := func(route string, sample Input, build func(request.ArtifactRef, string, Input) (request.HTTPRequest, error)) Action {
-		return act(route, sample, func(in Input) (request.HTTPRequest, error) {
-			a, n, err := in.artifactRef()
-			if err != nil {
-				return request.HTTPRequest{}, err
-			}
-			return build(a, n, in)
-		})
-	}
+// artifactAction is an action on one artifact. build gets the version of
+// the input, or "latest".
+func artifactAction(route string, sample Input, build func(request.ArtifactRef, string, Input) (request.HTTPRequest, error)) Action {
+	return act(route, sample, func(in Input) (request.HTTPRequest, error) {
+		a, n, err := in.artifactRef()
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return build(a, n, in)
+	})
+}
+
+// artifactActions is the artifact tool; artifactWriteActions adds the
+// actions that save, change, send, or delete an artifact.
+func artifactActions() map[string]Action {
+	ref := artifactAction
 	one := Input{"artifact": "weekly-report", "workspace": "ws1"}
 	withV := Input{"artifact": "weekly-report", "workspace": "ws1", "version": 2.0}
-	return map[string]Action{
+	out := map[string]Action{
 		"list": act("GET /v1/artifacts", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 			v, err := in.strs("workspace", "owner", "kind", "q", "cursor")
-			if err != nil {
-				return request.HTTPRequest{}, err
-			}
-			live, err := in.optBool("live")
-			if err != nil {
-				return request.HTTPRequest{}, err
-			}
-			limit, _, err := in.num("limit")
-			if err != nil {
+			live, liveErr := in.optBool("live")
+			limit, _, limitErr := in.num("limit")
+			if err := errors.Join(err, liveErr, limitErr); err != nil {
 				return request.HTTPRequest{}, err
 			}
 			return mcpGet(request.BuildArtifactListPath(request.ArtifactFilter{
@@ -3193,6 +3193,35 @@ func artifactActions() map[string]Action { //nolint:funlen // static action tabl
 		"content": bound(ref("GET /v1/artifacts/{id}/versions/{n}/content", withV, func(a request.ArtifactRef, n string, _ Input) (request.HTTPRequest, error) {
 			return mcpGet(a.ContentPath(n, false)), nil
 		}), false),
+		"deliveries": ref("GET /v1/artifacts/{id}/deliveries", one, func(a request.ArtifactRef, _ string, _ Input) (request.HTTPRequest, error) {
+			return mcpGet(a.DeliveriesPath()), nil
+		}),
+		"ask": ref("POST /v1/artifacts/{id}/ask", Input{"artifact": "weekly-report", "workspace": "ws1", "text": "Why did costs go up?"},
+			func(a request.ArtifactRef, _ string, in Input) (request.HTTPRequest, error) {
+				text, err := in.reqStr("text")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				sel, err := in.str("selection")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				v, _, err := in.num("version")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return a.Ask(text, sel, v), nil
+			}),
+		"run_artifacts": idGet("GET /v1/runs/{id}/artifacts", "run_id", "01JRUN", request.BuildRunArtifactsPath),
+	}
+	maps.Copy(out, artifactWriteActions())
+	return out
+}
+
+func artifactWriteActions() map[string]Action { //nolint:funlen // static action table
+	ref := artifactAction
+	withV := Input{"artifact": "weekly-report", "workspace": "ws1", "version": 2.0}
+	return map[string]Action{
 		"put": act("POST /v1/artifacts", Input{"workspace": "ws1", "name": "weekly-report", "content": "# Week 41\n"}, func(in Input) (request.HTTPRequest, error) {
 			v, err := in.strs("workspace", "name", "artifact_id", "title", "kind", "file_name", "content", "content_base64", "from_path", "note", "owner")
 			if err != nil {
@@ -3259,29 +3288,11 @@ func artifactActions() map[string]Action { //nolint:funlen // static action tabl
 			}
 			return a.Send(n, mode), nil
 		}),
-		"deliveries": ref("GET /v1/artifacts/{id}/deliveries", one, func(a request.ArtifactRef, _ string, _ Input) (request.HTTPRequest, error) {
-			return mcpGet(a.DeliveriesPath()), nil
-		}),
-		"ask": ref("POST /v1/artifacts/{id}/ask", Input{"artifact": "weekly-report", "workspace": "ws1", "text": "Why did costs go up?"},
-			func(a request.ArtifactRef, _ string, in Input) (request.HTTPRequest, error) {
-				text, err := in.reqStr("text")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				sel, err := in.str("selection")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				v, _, err := in.num("version")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return a.Ask(text, sel, v), nil
-			}),
-		"run_artifacts": idGet("GET /v1/runs/{id}/artifacts", "run_id", "01JRUN", request.BuildRunArtifactsPath),
 	}
 }
 
+// stateActions is the state tool (plan 2026-10-06 B6). In a run, owner
+// defaults to self.
 func stateActions() map[string]Action { //nolint:funlen // static action table
 	keyed := func(verb string, build func(owner, ws, coll string, keys []string) request.HTTPRequest) Action {
 		return act("POST /v1/state/{owner}/{collection}/"+verb, Input{"collection": "reported", "keys": []any{"doi:10/1"}},

@@ -50,10 +50,18 @@ const artifactBodyCap = artifacts.DefaultMaxBytes*4/3 + 1<<20
 // artifactCSP sandboxes every content response (D19).
 const artifactCSP = "sandbox allow-scripts; default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:"
 
+// inputError is a bad request that the handler finds after the decode.
+type inputError string
+
+func (e inputError) Error() string { return string(e) }
+
 func writeArtifactErr(w http.ResponseWriter, err error) {
 	var stale *artifacts.StaleError
 	var inv *artifacts.InvalidError
+	var in inputError
 	switch {
+	case errors.As(err, &in):
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 	case errors.As(err, &stale):
 		writeErrDetails(w, http.StatusConflict, "stale", err.Error(), map[string]any{"latest": stale.Latest})
 	case errors.As(err, &inv):
@@ -231,30 +239,48 @@ func (s *Server) handleArtifactPut(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "workspace is required")
 		return
 	}
-	var ownerKind, ownerID string
-	if actor == nil || actor.RunID == "" {
-		var err error
-		if ownerKind, ownerID, err = s.parseOwner(r, ws, body.Owner); err != nil {
-			writeErr(w, http.StatusBadRequest, "validation", err.Error())
-			return
-		}
-	}
-	origin, err := s.artifacts.OriginFor(r.Context(), actor, ownerKind, ownerID)
+	o, err := s.artifactPutOpts(r, ws, actor, body)
 	if err != nil {
 		writeArtifactErr(w, err)
 		return
 	}
+	v, err := s.artifactSave(r, actor, o, body)
+	if err != nil {
+		writeArtifactErr(w, err)
+		return
+	}
+	a, err := s.artifacts.Get(r.Context(), v.ArtifactID)
+	if err != nil {
+		writeArtifactErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"artifact": a, "version": v})
+}
+
+// artifactPutOpts finds the origin and the target artifact of a save.
+func (s *Server) artifactPutOpts(r *http.Request, ws string, actor *tools.Actor, body artifactPutBody) (artifacts.PutOpts, error) {
+	person := actor == nil || actor.RunID == ""
+	var ownerKind, ownerID string
+	if person {
+		var err error
+		if ownerKind, ownerID, err = s.parseOwner(r, ws, body.Owner); err != nil {
+			return artifacts.PutOpts{}, inputError(err.Error())
+		}
+	}
+	origin, err := s.artifacts.OriginFor(r.Context(), actor, ownerKind, ownerID)
+	if err != nil {
+		return artifacts.PutOpts{}, err
+	}
 	o := artifacts.PutOpts{Workspace: ws, ArtifactID: body.ArtifactID, Name: body.Name, Title: body.Title,
 		Kind: artifacts.Kind(body.Kind), FileName: body.FileName, Note: body.Note, Base: body.Base, Origin: origin}
-	if o.ArtifactID == "" && body.Owner == "" && (actor == nil || actor.RunID == "") {
+	if o.ArtifactID == "" && body.Owner == "" && person {
 		// A person who saves by name saves to the artifact of that name.
 		a, _, err := s.artifacts.Resolve(r.Context(), ws, artifacts.Origin{}, body.Name)
 		switch {
 		case err == nil:
 			o.ArtifactID = a.ID
 		case !errors.Is(err, artifacts.ErrNotFound):
-			writeArtifactErr(w, err)
-			return
+			return o, err
 		}
 	}
 	if o.ArtifactID != "" {
@@ -263,47 +289,33 @@ func (s *Server) handleArtifactPut(w http.ResponseWriter, r *http.Request) {
 			err = artifacts.ErrNotFound
 		}
 		if err != nil {
-			writeArtifactErr(w, err)
-			return
+			return o, err
 		}
 	}
-	var v artifacts.Version
-	switch {
-	case body.FromPath != "":
+	return o, nil
+}
+
+// artifactSave saves a file of the run folder, or the content of the body.
+func (s *Server) artifactSave(r *http.Request, actor *tools.Actor, o artifacts.PutOpts, body artifactPutBody) (artifacts.Version, error) {
+	if body.FromPath != "" {
 		if actor == nil || actor.RunID == "" {
-			writeErr(w, http.StatusBadRequest, "validation", "from_path is accepted only from a run; send content")
-			return
+			return artifacts.Version{}, inputError("from_path is accepted only from a run; send content")
 		}
 		run, err := s.runs.Get(r.Context(), actor.RunID)
 		if err != nil {
-			writeArtifactErr(w, err)
-			return
+			return artifacts.Version{}, err
 		}
-		v, err = s.artifacts.PutFromFile(r.Context(), o, run.WorkingDir, body.FromPath)
-		if err != nil {
-			writeArtifactErr(w, err)
-			return
-		}
-	default:
-		data := []byte(body.Content)
-		if body.ContentBase64 != "" {
-			if data, err = base64.StdEncoding.DecodeString(body.ContentBase64); err != nil {
-				writeErr(w, http.StatusBadRequest, "validation", "content_base64 is not valid base64")
-				return
-			}
-		}
-		o.Content = bytes.NewReader(data)
-		if v, err = s.artifacts.Put(r.Context(), o); err != nil {
-			writeArtifactErr(w, err)
-			return
+		return s.artifacts.PutFromFile(r.Context(), o, run.WorkingDir, body.FromPath)
+	}
+	data := []byte(body.Content)
+	if body.ContentBase64 != "" {
+		var err error
+		if data, err = base64.StdEncoding.DecodeString(body.ContentBase64); err != nil {
+			return artifacts.Version{}, inputError("content_base64 is not valid base64")
 		}
 	}
-	a, err := s.artifacts.Get(r.Context(), v.ArtifactID)
-	if err != nil {
-		writeArtifactErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"artifact": a, "version": v})
+	o.Content = bytes.NewReader(data)
+	return s.artifacts.Put(r.Context(), o)
 }
 
 func (s *Server) handleArtifactGet(w http.ResponseWriter, r *http.Request) {
@@ -556,18 +568,23 @@ func (s *Server) handleArtifactSend(w http.ResponseWriter, r *http.Request) {
 		s.sendDraftNative(w, r, a, d, ref, byUser)
 		return
 	}
+	s.sendDraftConnection(w, r, a, d, ref, byUser, body.Mode)
+}
+
+// sendDraftConnection sends or saves a draft through the mailbox connection of d.From.
+func (s *Server) sendDraftConnection(w http.ResponseWriter, r *http.Request, a artifacts.Artifact, d artifacts.Draft, ref *email.ArtifactRef, byUser bool, mode string) {
 	mimeBytes, msgID, err := s.email.BuildMIME(email.Draft{To: d.To, Cc: d.Cc, Subject: d.Subject, InReplyTo: d.InReplyTo, Text: d.Body})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	c := connectors.CallOpts{Workspace: a.Workspace, Connection: d.From, Operation: body.Mode,
+	c := connectors.CallOpts{Workspace: a.Workspace, Connection: d.From, Operation: mode,
 		Input: map[string]any{"mime_base64": base64.StdEncoding.EncodeToString(mimeBytes)}, Agent: !byUser}
-	if actor != nil {
+	if actor := artifactActor(r); actor != nil {
 		c.RunID = actor.RunID
 	}
 	res, err := s.operations().Call(r.Context(), c)
-	if errors.Is(err, connectors.ErrOperationOff) && body.Mode == "send" {
+	if errors.Is(err, connectors.ErrOperationOff) && mode == "send" {
 		writeErr(w, http.StatusConflict, "operation_off",
 			"Sending from this account is off. Turn it on in the connection settings, or save it to your drafts.")
 		return
@@ -576,8 +593,8 @@ func (s *Server) handleArtifactSend(w http.ResponseWriter, r *http.Request) {
 		writeOperationErr(w, s, err)
 		return
 	}
-	out := map[string]any{"via": "connection", "connection": d.From, "mode": body.Mode, "result": res}
-	if body.Mode == "send" {
+	out := map[string]any{"via": "connection", "connection": d.From, "mode": mode, "result": res}
+	if mode == "send" {
 		var sent struct {
 			MessageID string `json:"message_id"`
 		}

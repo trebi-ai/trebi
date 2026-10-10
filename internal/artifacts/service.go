@@ -229,25 +229,7 @@ func (s *Service) OriginFor(ctx context.Context, a *tools.Actor, ownerKind, owne
 		return Origin{Kind: OriginConversation, ConversationID: a.Conversation, Author: OwnerAssistant,
 			OwnerKind: OwnerAssistant}, nil
 	}
-	o := Origin{Kind: OriginRun, RunID: a.RunID, Author: a.Job, OwnerKind: OwnerJob, OwnerID: a.JobID}
-	if s.runs != nil {
-		if run, err := s.runs.Get(ctx, a.RunID); err == nil && run.ConversationID != "" && a.Kind == OwnerAssistant {
-			o.Kind, o.ConversationID = OriginConversation, run.ConversationID
-		}
-	}
-	switch a.Kind {
-	case OwnerAgent:
-		o.OwnerKind = OwnerAgent
-	case OwnerAssistant:
-		o.OwnerKind, o.OwnerID, o.Author = OwnerAssistant, "", OwnerAssistant
-	default:
-		if s.jobs != nil && a.JobID != "" {
-			if row, err := s.jobs.JobByID(ctx, a.JobID); err == nil && row.OwnerID != "" {
-				o.OwnerKind, o.OwnerID = OwnerAgent, row.OwnerID
-			}
-		}
-	}
-	return o, nil
+	return s.runOrigin(ctx, a), nil
 }
 
 // Put saves the next version. It writes the blob first; a failed
@@ -284,129 +266,6 @@ func (s *Service) Put(ctx context.Context, o PutOpts) (Version, error) {
 		return Version{}, err
 	}
 	return s.insert(ctx, o, kind, mimeType, sha, size)
-}
-
-func (s *Service) insert(ctx context.Context, o PutOpts, kind Kind, mimeType, sha string, size int64) (Version, error) {
-	now := s.now()
-	ts := fmtTime(now)
-	s.st.LockBus()
-	defer s.st.UnlockBus()
-	var v Version
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		cur, err := s.current(ctx, tx, o)
-		if err != nil {
-			return err
-		}
-		a := cur
-		action := "updated"
-		if cur == nil {
-			action = "created"
-			a = &Artifact{
-				ID: idPrefix + strings.ToLower(ulid.Make().String()), Workspace: o.Workspace,
-				OwnerKind: o.Origin.OwnerKind, OwnerID: o.Origin.OwnerID, Name: o.Name,
-				Title: cmp.Or(o.Title, o.Name), Kind: kind, Revision: 1,
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts (id, workspace_id, owner_kind, owner_id, name, title, kind,
-  latest_version, revision, created_at, updated_at) VALUES (?,?,?,?,?,?,?,1,1,?,?)`,
-				a.ID, a.Workspace, a.OwnerKind, a.OwnerID, a.Name, a.Title, string(kind), ts, ts); err != nil {
-				return err
-			}
-			a.LatestVersion = 1
-		} else {
-			if err := s.checkStale(ctx, tx, cur, o); err != nil {
-				return err
-			}
-			prev := cur.LatestVersion
-			a.LatestVersion++
-			a.Revision++
-			a.Title = cmp.Or(o.Title, a.Title)
-			a.Kind = kind
-			res, err := tx.ExecContext(ctx, `UPDATE artifacts SET latest_version=?, title=?, kind=?, revision=?, updated_at=?
-  WHERE id=? AND latest_version=?`, a.LatestVersion, a.Title, string(kind), a.Revision, ts, a.ID, prev)
-			if err != nil {
-				return err
-			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				return &StaleError{Latest: a.LatestVersion}
-			}
-		}
-		fileName := filepath.Base(o.FileName)
-		if o.FileName == "" {
-			fileName = a.Name + kind.Ext()
-		}
-		v = Version{
-			ArtifactID: a.ID, N: a.LatestVersion, SHA256: sha, SizeBytes: size, MIME: mimeType, FileName: fileName,
-			Note: o.Note, OriginKind: o.Origin.Kind, RunID: o.Origin.RunID, ConversationID: o.Origin.ConversationID,
-			Author: o.Origin.Author, BaseN: o.Base, Approval: "none", CreatedAt: now,
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO artifact_versions (artifact_id, n, sha256, size_bytes, mime, file_name, note,
-  origin_kind, run_id, conversation_id, author, base_n, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			v.ArtifactID, v.N, v.SHA256, v.SizeBytes, v.MIME, v.FileName, v.Note, v.OriginKind, v.RunID,
-			v.ConversationID, v.Author, nullInt(v.BaseN), ts); err != nil {
-			return err
-		}
-		ev := s.event("artifact."+action, action, a, v.N)
-		attrs, _ := ev.Attrs.(map[string]any)
-		attrs["run_id"], attrs["conversation_id"] = v.RunID, v.ConversationID
-		_, err = store.AppendInTx(tx, ev)
-		return err
-	})
-	if err != nil {
-		return Version{}, err
-	}
-	s.st.NotifyBus()
-	return v, nil
-}
-
-// current finds the artifact that o adds a version to, or nil.
-func (s *Service) current(ctx context.Context, tx *sql.Tx, o PutOpts) (*Artifact, error) {
-	var row *sql.Row
-	if o.ArtifactID != "" {
-		row = tx.QueryRowContext(ctx, artifactSelect+` WHERE id=? AND workspace_id=?`, o.ArtifactID, o.Workspace)
-	} else {
-		row = tx.QueryRowContext(ctx, artifactSelect+` WHERE workspace_id=? AND owner_kind=? AND owner_id=? AND name=?`,
-			o.Workspace, o.Origin.OwnerKind, o.Origin.OwnerID, o.Name)
-	}
-	a, err := scanArtifact(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		if o.ArtifactID != "" {
-			return nil, ErrNotFound
-		}
-		return nil, nil
-	}
-	return &a, err
-}
-
-// checkStale applies D4.
-func (s *Service) checkStale(ctx context.Context, tx *sql.Tx, a *Artifact, o PutOpts) error {
-	if o.Base != nil {
-		if *o.Base != a.LatestVersion {
-			return &StaleError{Latest: a.LatestVersion}
-		}
-		return nil
-	}
-	var kind, runID, convID string
-	if err := tx.QueryRowContext(ctx, `SELECT origin_kind, run_id, conversation_id FROM artifact_versions WHERE artifact_id=? AND n=?`,
-		a.ID, a.LatestVersion).Scan(&kind, &runID, &convID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil // the newest version was pruned
-		}
-		return err
-	}
-	if !o.Origin.same(kind, runID, convID) {
-		return &StaleError{Latest: a.LatestVersion}
-	}
-	return nil
-}
-
-func (s *Service) event(topic, action string, a *Artifact, n int) store.BusEvent {
-	return store.BusEvent{
-		Topic: topic, Entity: "artifact", EntityID: a.ID, Action: action, Revision: a.Revision,
-		Attrs: map[string]any{
-			"workspace": a.Workspace, "artifact_id": a.ID, "name": a.Name, "version": n, "kind": string(a.Kind),
-			"live": a.Live,
-		},
-	}
 }
 
 // PutFromFile saves rel inside workingDir. The files jail rejects a path
@@ -526,22 +385,6 @@ func (s *Service) Resolve(ctx context.Context, ws string, owner Origin, ref stri
 	return Artifact{}, 0, fmt.Errorf("%w: %d artifacts are named %s; use the id", ErrAmbiguous, len(ids), ref)
 }
 
-func (s *Service) ids(ctx context.Context, out *[]string, q string, args ...any) error {
-	rows, err := s.st.DB().QueryContext(ctx, q, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return err
-		}
-		*out = append(*out, id)
-	}
-	return rows.Err()
-}
-
 // ListFilter filters List. Cursor is the next_cursor of the last page.
 type ListFilter struct {
 	Workspace string
@@ -563,41 +406,11 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Artifact, string, e
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	q := artifactSelect + ` WHERE 1=1`
-	var args []any
-	add := func(cond string, v any) {
-		q += " AND " + cond
-		args = append(args, v)
+	where, args, err := f.where()
+	if err != nil {
+		return nil, "", err
 	}
-	if f.Workspace != "" {
-		add("workspace_id=?", f.Workspace)
-	}
-	if f.OwnerKind != "" {
-		add("owner_kind=?", f.OwnerKind)
-		if f.OwnerKind != OwnerAssistant && f.OwnerID != "" {
-			add("owner_id=?", f.OwnerID)
-		}
-	}
-	if f.Kind != "" {
-		add("kind=?", string(f.Kind))
-	}
-	if f.Live != nil {
-		add("live=?", *f.Live)
-	}
-	if f.Query != "" {
-		like := "%" + strings.ToLower(f.Query) + "%"
-		q += " AND (LOWER(name) LIKE ? OR LOWER(title) LIKE ?)"
-		args = append(args, like, like)
-	}
-	if f.Cursor != "" {
-		at, id, err := decodeCursor(f.Cursor)
-		if err != nil {
-			return nil, "", err
-		}
-		q += " AND (updated_at < ? OR (updated_at = ? AND id < ?))"
-		args = append(args, at, at, id)
-	}
-	q += " ORDER BY updated_at DESC, id DESC LIMIT ?"
+	q := artifactSelect + where + " ORDER BY updated_at DESC, id DESC LIMIT ?"
 	args = append(args, limit+1)
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
@@ -926,4 +739,205 @@ func intPtr(n sql.NullInt64) *int {
 	}
 	v := int(n.Int64)
 	return &v
+}
+
+func (s *Service) insert(ctx context.Context, o PutOpts, kind Kind, mimeType, sha string, size int64) (Version, error) {
+	now := s.now()
+	ts := fmtTime(now)
+	s.st.LockBus()
+	defer s.st.UnlockBus()
+	var v Version
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		cur, err := s.current(ctx, tx, o)
+		if err != nil {
+			return err
+		}
+		a := cur
+		action := "updated"
+		if cur == nil {
+			action = "created"
+			a = &Artifact{
+				ID: idPrefix + strings.ToLower(ulid.Make().String()), Workspace: o.Workspace,
+				OwnerKind: o.Origin.OwnerKind, OwnerID: o.Origin.OwnerID, Name: o.Name,
+				Title: cmp.Or(o.Title, o.Name), Kind: kind, Revision: 1,
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts (id, workspace_id, owner_kind, owner_id, name, title, kind,
+  latest_version, revision, created_at, updated_at) VALUES (?,?,?,?,?,?,?,1,1,?,?)`,
+				a.ID, a.Workspace, a.OwnerKind, a.OwnerID, a.Name, a.Title, string(kind), ts, ts); err != nil {
+				return err
+			}
+			a.LatestVersion = 1
+		} else {
+			if err := s.checkStale(ctx, tx, cur, o); err != nil {
+				return err
+			}
+			prev := cur.LatestVersion
+			a.LatestVersion++
+			a.Revision++
+			a.Title = cmp.Or(o.Title, a.Title)
+			a.Kind = kind
+			res, err := tx.ExecContext(ctx, `UPDATE artifacts SET latest_version=?, title=?, kind=?, revision=?, updated_at=?
+  WHERE id=? AND latest_version=?`, a.LatestVersion, a.Title, string(kind), a.Revision, ts, a.ID, prev)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return &StaleError{Latest: a.LatestVersion}
+			}
+		}
+		fileName := filepath.Base(o.FileName)
+		if o.FileName == "" {
+			fileName = a.Name + kind.Ext()
+		}
+		v = Version{
+			ArtifactID: a.ID, N: a.LatestVersion, SHA256: sha, SizeBytes: size, MIME: mimeType, FileName: fileName,
+			Note: o.Note, OriginKind: o.Origin.Kind, RunID: o.Origin.RunID, ConversationID: o.Origin.ConversationID,
+			Author: o.Origin.Author, BaseN: o.Base, Approval: "none", CreatedAt: now,
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO artifact_versions (artifact_id, n, sha256, size_bytes, mime, file_name, note,
+  origin_kind, run_id, conversation_id, author, base_n, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			v.ArtifactID, v.N, v.SHA256, v.SizeBytes, v.MIME, v.FileName, v.Note, v.OriginKind, v.RunID,
+			v.ConversationID, v.Author, nullInt(v.BaseN), ts); err != nil {
+			return err
+		}
+		ev := s.event("artifact."+action, action, a, v.N)
+		attrs, _ := ev.Attrs.(map[string]any)
+		attrs["run_id"], attrs["conversation_id"] = v.RunID, v.ConversationID
+		_, err = store.AppendInTx(tx, ev)
+		return err
+	})
+	if err != nil {
+		return Version{}, err
+	}
+	s.st.NotifyBus()
+	return v, nil
+}
+
+// current finds the artifact that o adds a version to, or nil.
+func (s *Service) current(ctx context.Context, tx *sql.Tx, o PutOpts) (*Artifact, error) {
+	var row *sql.Row
+	if o.ArtifactID != "" {
+		row = tx.QueryRowContext(ctx, artifactSelect+` WHERE id=? AND workspace_id=?`, o.ArtifactID, o.Workspace)
+	} else {
+		row = tx.QueryRowContext(ctx, artifactSelect+` WHERE workspace_id=? AND owner_kind=? AND owner_id=? AND name=?`,
+			o.Workspace, o.Origin.OwnerKind, o.Origin.OwnerID, o.Name)
+	}
+	a, err := scanArtifact(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		if o.ArtifactID != "" {
+			return nil, ErrNotFound
+		}
+		return nil, nil
+	}
+	return &a, err
+}
+
+// checkStale applies D4.
+func (s *Service) checkStale(ctx context.Context, tx *sql.Tx, a *Artifact, o PutOpts) error {
+	if o.Base != nil {
+		if *o.Base != a.LatestVersion {
+			return &StaleError{Latest: a.LatestVersion}
+		}
+		return nil
+	}
+	var kind, runID, convID string
+	if err := tx.QueryRowContext(ctx, `SELECT origin_kind, run_id, conversation_id FROM artifact_versions WHERE artifact_id=? AND n=?`,
+		a.ID, a.LatestVersion).Scan(&kind, &runID, &convID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil // the newest version was pruned
+		}
+		return err
+	}
+	if !o.Origin.same(kind, runID, convID) {
+		return &StaleError{Latest: a.LatestVersion}
+	}
+	return nil
+}
+
+func (s *Service) event(topic, action string, a *Artifact, n int) store.BusEvent {
+	return store.BusEvent{
+		Topic: topic, Entity: "artifact", EntityID: a.ID, Action: action, Revision: a.Revision,
+		Attrs: map[string]any{
+			"workspace": a.Workspace, "artifact_id": a.ID, "name": a.Name, "version": n, "kind": string(a.Kind),
+			"live": a.Live,
+		},
+	}
+}
+
+func (s *Service) ids(ctx context.Context, out *[]string, q string, args ...any) error {
+	rows, err := s.st.DB().QueryContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		*out = append(*out, id)
+	}
+	return rows.Err()
+}
+
+// runOrigin is the origin of a run. The run of an agent job belongs to the agent.
+func (s *Service) runOrigin(ctx context.Context, a *tools.Actor) Origin {
+	o := Origin{Kind: OriginRun, RunID: a.RunID, Author: a.Job, OwnerKind: OwnerJob, OwnerID: a.JobID}
+	if s.runs != nil {
+		if run, err := s.runs.Get(ctx, a.RunID); err == nil && run.ConversationID != "" && a.Kind == OwnerAssistant {
+			o.Kind, o.ConversationID = OriginConversation, run.ConversationID
+		}
+	}
+	switch a.Kind {
+	case OwnerAgent:
+		o.OwnerKind = OwnerAgent
+	case OwnerAssistant:
+		o.OwnerKind, o.OwnerID, o.Author = OwnerAssistant, "", OwnerAssistant
+	default:
+		if s.jobs != nil && a.JobID != "" {
+			if row, err := s.jobs.JobByID(ctx, a.JobID); err == nil && row.OwnerID != "" {
+				o.OwnerKind, o.OwnerID = OwnerAgent, row.OwnerID
+			}
+		}
+	}
+	return o
+}
+
+// where is the SQL filter of f.
+func (f ListFilter) where() (string, []any, error) {
+	q := ` WHERE 1=1`
+	var args []any
+	add := func(cond string, v any) {
+		q += " AND " + cond
+		args = append(args, v)
+	}
+	if f.Workspace != "" {
+		add("workspace_id=?", f.Workspace)
+	}
+	if f.OwnerKind != "" {
+		add("owner_kind=?", f.OwnerKind)
+		if f.OwnerKind != OwnerAssistant && f.OwnerID != "" {
+			add("owner_id=?", f.OwnerID)
+		}
+	}
+	if f.Kind != "" {
+		add("kind=?", string(f.Kind))
+	}
+	if f.Live != nil {
+		add("live=?", *f.Live)
+	}
+	if f.Query != "" {
+		like := "%" + strings.ToLower(f.Query) + "%"
+		q += " AND (LOWER(name) LIKE ? OR LOWER(title) LIKE ?)"
+		args = append(args, like, like)
+	}
+	if f.Cursor != "" {
+		at, id, err := decodeCursor(f.Cursor)
+		if err != nil {
+			return "", nil, err
+		}
+		q += " AND (updated_at < ? OR (updated_at = ? AND id < ?))"
+		args = append(args, at, at, id)
+	}
+	return q, args, nil
 }

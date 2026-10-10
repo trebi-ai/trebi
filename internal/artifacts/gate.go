@@ -73,12 +73,8 @@ func (g *RunGate) RunEnded(ctx context.Context, runID string, st runs.Status) {
 	if err != nil || run.JobID == "" {
 		return
 	}
-	row, err := g.svc.jobs.JobByID(ctx, run.JobID)
-	if err != nil {
-		return
-	}
-	j, err := job.ParseFile(row.Path)
-	if err != nil || j == nil || len(j.Artifacts) == 0 {
+	entries := g.entries(ctx, run.JobID)
+	if len(entries) == 0 {
 		return
 	}
 	saved, err := g.savedNames(ctx, runID)
@@ -91,7 +87,7 @@ func (g *RunGate) RunEnded(ctx context.Context, runID string, st runs.Status) {
 		return
 	}
 	var notes []string
-	for _, e := range j.Artifacts {
+	for _, e := range entries {
 		if saved[e.Name] {
 			continue
 		}
@@ -101,21 +97,37 @@ func (g *RunGate) RunEnded(ctx context.Context, runID string, st runs.Status) {
 			notes = append(notes, gateNote(e, err))
 		}
 	}
-	if len(notes) == 0 {
-		return
+	if len(notes) > 0 {
+		g.report(ctx, run, strings.Join(notes, " "))
 	}
-	note := strings.Join(notes, " ")
+}
+
+// entries reads the artifacts: key of the JOB.md of a job.
+func (g *RunGate) entries(ctx context.Context, jobID string) []job.ArtifactYAML {
+	row, err := g.svc.jobs.JobByID(ctx, jobID)
+	if err != nil {
+		return nil
+	}
+	j, err := job.ParseFile(row.Path)
+	if err != nil || j == nil {
+		return nil
+	}
+	return j.Artifacts
+}
+
+// report sets the outcome note of the run and raises an inbox item.
+func (g *RunGate) report(ctx context.Context, run *runs.Run, note string) {
 	if g.mark != nil {
-		if _, err := g.mark.Mark(ctx, runs.MarkOpts{ID: runID, Status: runs.StatusComplete, Note: note}); err != nil {
-			g.log.Warn("artifact note", "run_id", runID, "err", err)
+		if _, err := g.mark.Mark(ctx, runs.MarkOpts{ID: run.ID, Status: runs.StatusComplete, Note: note}); err != nil {
+			g.log.Warn("artifact note", "run_id", run.ID, "err", err)
 		}
 	}
 	if g.alerts != nil {
 		if _, err := g.alerts.Raise(ctx, alerts.RaiseOpts{
-			Kind: alerts.KindArtifactMissing, Title: "Artifact not saved", Body: note, RunID: runID,
+			Kind: alerts.KindArtifactMissing, Title: "Artifact not saved", Body: note, RunID: run.ID,
 			WorkspaceID: run.Workspace, JobID: run.JobID,
 		}); err != nil {
-			g.log.Warn("artifact alert", "run_id", runID, "err", err)
+			g.log.Warn("artifact alert", "run_id", run.ID, "err", err)
 		}
 	}
 }

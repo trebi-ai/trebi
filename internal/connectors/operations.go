@@ -286,28 +286,44 @@ func (o *Operations) run(ctx context.Context, r Resolved, op manifest.Operation,
 		return CallResult{}, fmt.Errorf("%w: more than %d bytes", ErrOperationTooLong, maxOpOutput)
 	}
 	if err != nil {
-		text := strings.TrimSpace(stderr.String())
-		for _, line := range strings.Split(text, "\n") {
-			appendConnectorLog(r.ID, "stderr", op.Name+": "+line)
-		}
-		if ctx.Err() != nil {
-			text = fmt.Sprintf("timed out after %s", op.EffectiveTimeout())
-		}
-		if len(text) > maxOpStderr {
-			text = text[:maxOpStderr]
-		}
-		code := -1
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			code = ee.ExitCode()
-		}
-		if text == "" {
-			text = err.Error()
-		}
-		return CallResult{}, &CallError{Operation: op.Name, ExitCode: code, Stderr: text}
+		return CallResult{}, callError(ctx, r.ID, op, err, stderr.String())
 	}
-	res := CallResult{Format: op.OutputFormat(), TookMS: took}
-	out := stdout.buf.Bytes()
+	res, err := decodeOutput(op, stdout.buf.Bytes())
+	if err != nil {
+		return CallResult{}, err
+	}
+	res.TookMS = took
+	o.log.InfoContext(ctx, "operation.called", "conn_id", r.ID, "operation", op.Name, "took_ms", took)
+	return res, nil
+}
+
+// callError turns a failed operation process into a CallError and logs its
+// stderr to the connection log.
+func callError(ctx context.Context, connID string, op manifest.Operation, err error, stderr string) error {
+	text := strings.TrimSpace(stderr)
+	for _, line := range strings.Split(text, "\n") {
+		appendConnectorLog(connID, "stderr", op.Name+": "+line)
+	}
+	if ctx.Err() != nil {
+		text = fmt.Sprintf("timed out after %s", op.EffectiveTimeout())
+	}
+	if len(text) > maxOpStderr {
+		text = text[:maxOpStderr]
+	}
+	code := -1
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		code = ee.ExitCode()
+	}
+	if text == "" {
+		text = err.Error()
+	}
+	return &CallError{Operation: op.Name, ExitCode: code, Stderr: text}
+}
+
+// decodeOutput parses stdout in the output format of op.
+func decodeOutput(op manifest.Operation, out []byte) (CallResult, error) {
+	res := CallResult{Format: op.OutputFormat()}
 	switch res.Format {
 	case manifest.OutputCSV:
 		cr := csv.NewReader(bytes.NewReader(out))
@@ -331,7 +347,6 @@ func (o *Operations) run(ctx context.Context, r Resolved, op manifest.Operation,
 	default:
 		res.Text = string(out)
 	}
-	o.log.InfoContext(ctx, "operation.called", "conn_id", r.ID, "operation", op.Name, "took_ms", took)
 	return res, nil
 }
 

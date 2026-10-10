@@ -71,8 +71,19 @@ func (e *InvalidError) Error() string {
 	return "invalid artifact: " + strings.Join(parts, "; ")
 }
 
-func invalid(field, format string, args ...any) *InvalidError {
-	return &InvalidError{Fields: []FieldError{{Field: field, Message: fmt.Sprintf(format, args...)}}}
+type kindMIME struct {
+	kind Kind
+	mime string
+}
+
+//nolint:gochecknoglobals // static extension table, never mutated
+var extKinds = map[string]kindMIME{
+	".md": {KindMarkdown, mdMIME}, ".markdown": {KindMarkdown, mdMIME}, ".mdx": {KindMarkdown, mdMIME},
+	".html": {KindHTML, "text/html; charset=utf-8"}, ".htm": {KindHTML, "text/html; charset=utf-8"},
+	".csv": {KindTable, "text/csv; charset=utf-8"}, ".tsv": {KindTable, "text/tab-separated-values; charset=utf-8"},
+	".json": {KindJSON, "application/json"}, ".svg": {KindSVG, "image/svg+xml"}, ".pdf": {KindPDF, "application/pdf"},
+	".png": {KindImage, "image/png"}, ".jpg": {KindImage, "image/jpeg"}, ".jpeg": {KindImage, "image/jpeg"},
+	".gif": {KindImage, "image/gif"}, ".webp": {KindImage, "image/webp"},
 }
 
 //nolint:gochecknoglobals // static extension table, never mutated
@@ -82,30 +93,17 @@ var codeExt = map[string]bool{
 	".css": true, ".go": true, ".jsonc": true,
 }
 
+const mdMIME = "text/markdown; charset=utf-8"
+
 // DetectKind finds the kind and MIME type from the file name and the first
 // bytes of the content.
 func DetectKind(fileName string, head []byte) (Kind, string) {
 	ext := strings.ToLower(filepath.Ext(fileName))
-	switch ext {
-	case ".md", ".markdown", ".mdx":
-		if isEmailDraft(head) {
-			return KindEmail, "text/markdown; charset=utf-8"
+	if km, ok := extKinds[ext]; ok {
+		if km.kind == KindMarkdown && isEmailDraft(head) {
+			return KindEmail, mdMIME
 		}
-		return KindMarkdown, "text/markdown; charset=utf-8"
-	case ".html", ".htm":
-		return KindHTML, "text/html; charset=utf-8"
-	case ".csv":
-		return KindTable, "text/csv; charset=utf-8"
-	case ".tsv":
-		return KindTable, "text/tab-separated-values; charset=utf-8"
-	case ".json":
-		return KindJSON, "application/json"
-	case ".svg":
-		return KindSVG, "image/svg+xml"
-	case ".pdf":
-		return KindPDF, "application/pdf"
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
-		return KindImage, mime.TypeByExtension(ext)
+		return km.kind, km.mime
 	}
 	if codeExt[ext] {
 		return KindCode, "text/plain; charset=utf-8"
@@ -117,9 +115,9 @@ func DetectKind(fileName string, head []byte) (Kind, string) {
 	// Text with no extension is Markdown, the default of a report.
 	if ext == "" && strings.HasPrefix(sniff, "text/plain") {
 		if isEmailDraft(head) {
-			return KindEmail, "text/markdown; charset=utf-8"
+			return KindEmail, mdMIME
 		}
-		return KindMarkdown, "text/markdown; charset=utf-8"
+		return KindMarkdown, mdMIME
 	}
 	if t := mime.TypeByExtension(ext); t != "" {
 		return KindFile, t
@@ -244,32 +242,6 @@ var (
 	messageIDRE = regexp.MustCompile(`^<[^<>@\s]+@[^<>@\s]+>$`)
 )
 
-// splitHeader returns the YAML header block and the body of a draft.
-func splitHeader(content []byte) (header []byte, body string, ok bool) {
-	s := strings.ReplaceAll(string(content), "\r\n", "\n")
-	if !strings.HasPrefix(s, "---\n") {
-		return nil, s, false
-	}
-	end := strings.Index(s[4:], "\n---")
-	if end < 0 {
-		return nil, s, false
-	}
-	rest := s[4+end+4:]
-	rest = strings.TrimPrefix(rest, "\n")
-	return []byte(s[4 : 4+end]), rest, true
-}
-
-func isEmailDraft(head []byte) bool {
-	header, _, ok := splitHeader(head)
-	if !ok {
-		return false
-	}
-	var h struct {
-		Kind string `yaml:"kind"`
-	}
-	return yaml.Unmarshal(header, &h) == nil && h.Kind == string(KindEmail)
-}
-
 // ParseDraft parses and checks an email draft. Each error names its field.
 func ParseDraft(content []byte) (Draft, []FieldError) {
 	header, body, ok := splitHeader(content)
@@ -304,6 +276,36 @@ func ParseDraft(content []byte) (Draft, []FieldError) {
 		errs = append(errs, FieldError{Field: "in_reply_to", Message: "must be a Message-ID such as <id@host>"})
 	}
 	return d, errs
+}
+
+func invalid(field, format string, args ...any) *InvalidError {
+	return &InvalidError{Fields: []FieldError{{Field: field, Message: fmt.Sprintf(format, args...)}}}
+}
+
+// splitHeader returns the YAML header block and the body of a draft.
+func splitHeader(content []byte) (header []byte, body string, ok bool) {
+	s := strings.ReplaceAll(string(content), "\r\n", "\n")
+	if !strings.HasPrefix(s, "---\n") {
+		return nil, s, false
+	}
+	end := strings.Index(s[4:], "\n---")
+	if end < 0 {
+		return nil, s, false
+	}
+	rest := s[4+end+4:]
+	rest = strings.TrimPrefix(rest, "\n")
+	return []byte(s[4 : 4+end]), rest, true
+}
+
+func isEmailDraft(head []byte) bool {
+	header, _, ok := splitHeader(head)
+	if !ok {
+		return false
+	}
+	var h struct {
+		Kind string `yaml:"kind"`
+	}
+	return yaml.Unmarshal(header, &h) == nil && h.Kind == string(KindEmail)
 }
 
 func checkAddrs(field string, list []string) []FieldError {

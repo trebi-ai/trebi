@@ -258,35 +258,9 @@ func (m Manifest) OperationBinaries() []string {
 func (f InputField) normalize(v any) (any, string) {
 	switch f.Type {
 	case "string":
-		s, ok := v.(string)
-		if !ok {
-			return nil, "must be a string"
-		}
-		if len(f.Enum) > 0 && !slices.Contains(f.Enum, s) {
-			return nil, fmt.Sprintf("%q is not one of %s", s, strings.Join(f.Enum, ", "))
-		}
-		if f.MaxLength > 0 && len(s) > f.MaxLength {
-			return nil, fmt.Sprintf("must be at most %d characters", f.MaxLength)
-		}
-		return s, ""
+		return f.normalizeString(v)
 	case "integer", "number":
-		n, ok := number(v)
-		if !ok {
-			return nil, "must be a number"
-		}
-		if f.Type == "integer" && n != math.Trunc(n) {
-			return nil, "must be an integer"
-		}
-		if f.Minimum != nil && n < *f.Minimum {
-			return nil, fmt.Sprintf("must be at least %v", *f.Minimum)
-		}
-		if f.Maximum != nil && n > *f.Maximum {
-			return nil, fmt.Sprintf("must be at most %v", *f.Maximum)
-		}
-		if f.Type == "integer" {
-			return int64(n), ""
-		}
-		return n, ""
+		return f.normalizeNumber(v)
 	case "boolean":
 		switch t := v.(type) {
 		case bool:
@@ -298,56 +272,100 @@ func (f InputField) normalize(v any) (any, string) {
 		}
 		return nil, "must be true or false"
 	case "array":
-		arr, ok := v.([]any)
-		if !ok {
-			if ss, ok2 := v.([]string); ok2 {
-				for _, s := range ss {
-					arr = append(arr, s)
-				}
-			} else {
-				return nil, "must be a list"
-			}
-		}
-		out := make([]any, 0, len(arr))
-		item := InputField{Type: "string"}
-		if f.Items != nil {
-			item = *f.Items
-		}
-		for i, x := range arr {
-			val, msg := item.normalize(x)
-			if msg != "" {
-				return nil, fmt.Sprintf("item %d %s", i, msg)
-			}
-			out = append(out, val)
-		}
-		return out, ""
+		return f.normalizeArray(v)
 	case "object":
-		mp, ok := v.(map[string]any)
-		if !ok {
-			if ms, ok2 := v.(map[string]string); ok2 {
-				mp = map[string]any{}
-				for k, s := range ms {
-					mp[k] = s
-				}
-			} else {
-				return nil, "must be an object"
-			}
-		}
-		out := map[string]any{}
-		for k, x := range mp {
-			if !expandKeyRE.MatchString(k) {
-				return nil, fmt.Sprintf("key %q must match %s", k, expandKeyRE)
-			}
-			switch x.(type) {
-			case string, bool, float64, int, int64, json.Number:
-			default:
-				return nil, fmt.Sprintf("key %q must have a text, number, or boolean value", k)
-			}
-			out[k] = x
-		}
-		return out, ""
+		return normalizeObject(v)
 	}
 	return nil, "unknown type " + strconv.Quote(f.Type)
+}
+
+func (f InputField) normalizeString(v any) (any, string) {
+	s, ok := v.(string)
+	if !ok {
+		return nil, "must be a string"
+	}
+	if len(f.Enum) > 0 && !slices.Contains(f.Enum, s) {
+		return nil, fmt.Sprintf("%q is not one of %s", s, strings.Join(f.Enum, ", "))
+	}
+	if f.MaxLength > 0 && len(s) > f.MaxLength {
+		return nil, fmt.Sprintf("must be at most %d characters", f.MaxLength)
+	}
+	return s, ""
+}
+
+func (f InputField) normalizeNumber(v any) (any, string) {
+	n, ok := number(v)
+	if !ok {
+		return nil, "must be a number"
+	}
+	if f.Type == "integer" && n != math.Trunc(n) {
+		return nil, "must be an integer"
+	}
+	if f.Minimum != nil && n < *f.Minimum {
+		return nil, fmt.Sprintf("must be at least %v", *f.Minimum)
+	}
+	if f.Maximum != nil && n > *f.Maximum {
+		return nil, fmt.Sprintf("must be at most %v", *f.Maximum)
+	}
+	if f.Type == "integer" {
+		return int64(n), ""
+	}
+	return n, ""
+}
+
+func (f InputField) normalizeArray(v any) (any, string) {
+	arr, ok := v.([]any)
+	if !ok {
+		ss, ok := v.([]string)
+		if !ok {
+			return nil, "must be a list"
+		}
+		for _, s := range ss {
+			arr = append(arr, s)
+		}
+	}
+	out := make([]any, 0, len(arr))
+	item := InputField{Type: "string"}
+	if f.Items != nil {
+		item = *f.Items
+	}
+	for i, x := range arr {
+		val, msg := item.normalize(x)
+		if msg != "" {
+			return nil, fmt.Sprintf("item %d %s", i, msg)
+		}
+		out = append(out, val)
+	}
+	return out, ""
+}
+
+// normalizeObject accepts a flat map of scalar values with key names that
+// expand can put in argv.
+func normalizeObject(v any) (any, string) {
+	mp, ok := v.(map[string]any)
+	if !ok {
+		ms, ok := v.(map[string]string)
+		if !ok {
+			return nil, "must be an object"
+		}
+		mp = map[string]any{}
+		for k, s := range ms {
+			mp[k] = s
+		}
+	}
+	out := map[string]any{}
+	for k, x := range mp {
+		if !expandKeyRE.MatchString(k) {
+			return nil, fmt.Sprintf("key %q must match %s", k, expandKeyRE)
+		}
+		switch x.(type) {
+		case string, bool, float64, int, int64, json.Number:
+		default:
+			return nil, fmt.Sprintf("key %q must have a text, number, or boolean value", k)
+		}
+		out[k] = x
+	}
+	return out, ""
 }
 
 func number(v any) (float64, bool) {
@@ -397,51 +415,53 @@ func (v *validator) operations(a *Actions) {
 	}
 	for i, op := range a.Operations {
 		base := fmt.Sprintf("actions.operations[%d]", i)
-		if !opNameRE.MatchString(op.Name) {
-			v.add(base+".name", "must match "+opNameRE.String())
-		}
 		if seen[op.Name] {
 			v.add(base+".name", "duplicate "+op.Name)
 		}
 		seen[op.Name] = true
-		if strings.TrimSpace(op.Label) == "" {
-			v.add(base+".label", "required")
-		}
-		if op.Default != "" && !op.Default.Valid() {
-			v.add(base+".default", "must be on, ask, or off")
-		}
-		switch op.Stdin {
-		case "", StdinJSON, StdinNone:
-		default:
-			v.add(base+".stdin", "must be json or none")
-		}
-		switch op.Output {
-		case "", OutputJSON, OutputCSV, OutputText:
-		default:
-			v.add(base+".output", "must be json, csv, or text")
-		}
-		if op.Timeout < 0 || op.Timeout.Std() > MaxOpTimeout {
-			v.add(base+".timeout", "must be at most 120s")
-		}
-		for k := range op.Env {
-			if !envKeyRE.MatchString(k) {
-				v.add(base+".env", fmt.Sprintf("key %q must match %s", k, envKeyRE))
-			}
-		}
-		v.operationInput(base, op)
-		v.operationCommand(base, op)
+		v.operation(base, op)
 		if len(op.Command) > 0 && slices.Contains(cliBins, filepath.Base(op.Command[0])) {
 			v.add(base+".command", "an operation binary must not also be a run command")
 		}
 	}
 }
 
+func (v *validator) operation(base string, op Operation) {
+	if !opNameRE.MatchString(op.Name) {
+		v.add(base+".name", "must match "+opNameRE.String())
+	}
+	if strings.TrimSpace(op.Label) == "" {
+		v.add(base+".label", "required")
+	}
+	if op.Default != "" && !op.Default.Valid() {
+		v.add(base+".default", "must be on, ask, or off")
+	}
+	switch op.Stdin {
+	case "", StdinJSON, StdinNone:
+	default:
+		v.add(base+".stdin", "must be json or none")
+	}
+	switch op.Output {
+	case "", OutputJSON, OutputCSV, OutputText:
+	default:
+		v.add(base+".output", "must be json, csv, or text")
+	}
+	if op.Timeout < 0 || op.Timeout.Std() > MaxOpTimeout {
+		v.add(base+".timeout", "must be at most 120s")
+	}
+	for k := range op.Env {
+		if !envKeyRE.MatchString(k) {
+			v.add(base+".env", fmt.Sprintf("key %q must match %s", k, envKeyRE))
+		}
+	}
+	v.operationInput(base, op)
+	v.operationExpand(base, op)
+	v.operationCommand(base, op)
+}
+
 func (v *validator) operationInput(base string, op Operation) {
 	in := op.Input
 	if in == nil {
-		if op.Expand != nil {
-			v.add(base+".expand.field", "needs an input field of type object")
-		}
 		return
 	}
 	if in.Type != "object" {
@@ -470,18 +490,28 @@ func (v *validator) operationInput(base string, op Operation) {
 			v.add(base+".input.required", "unknown field "+strconv.Quote(r))
 		}
 	}
-	if e := op.Expand; e != nil {
-		if f, ok := in.Properties[e.Field]; !ok || f.Type != "object" {
-			v.add(base+".expand.field", "needs an input field of type object")
-		}
-		if len(e.Each) == 0 {
-			v.add(base+".expand.each", "needs at least one entry")
-		}
-		for _, el := range e.Each {
-			for _, tok := range braceRE.FindAllString(el, -1) {
-				if tok != "{key}" && tok != "{value}" {
-					v.add(base+".expand.each", "unknown placeholder "+tok)
-				}
+}
+
+func (v *validator) operationExpand(base string, op Operation) {
+	e := op.Expand
+	if e == nil {
+		return
+	}
+	var f InputField
+	var ok bool
+	if op.Input != nil {
+		f, ok = op.Input.Properties[e.Field]
+	}
+	if !ok || f.Type != "object" {
+		v.add(base+".expand.field", "needs an input field of type object")
+	}
+	if len(e.Each) == 0 {
+		v.add(base+".expand.each", "needs at least one entry")
+	}
+	for _, el := range e.Each {
+		for _, tok := range braceRE.FindAllString(el, -1) {
+			if tok != "{key}" && tok != "{value}" {
+				v.add(base+".expand.each", "unknown placeholder "+tok)
 			}
 		}
 	}
