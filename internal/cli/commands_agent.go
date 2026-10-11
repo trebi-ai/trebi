@@ -519,7 +519,16 @@ func runAgentFolderRename(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildAgentFolderRename(wsID, args[0], args[1], args[2]), nil)
+	var out struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+		Jobs int    `json:"jobs"`
+	}
+	if err := client.DoHTTP(request.BuildAgentFolderRename(wsID, args[0], args[1], args[2]), &out); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "renamed folder %s -> %s (%d jobs)\n", out.From, out.To, out.Jobs)
+	return nil
 }
 
 // agentRows collects the agents of every workspace, or of the one the want

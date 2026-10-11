@@ -71,6 +71,7 @@ func jobCommand() *cli.Command {
 					&cli.BoolFlag{Name: "no-agent", Usage: "take the job away from its agent"},
 					&cli.StringFlag{Name: "folder", Usage: "folder under the agent; \"\" removes it; omit to keep it"},
 					&cli.BoolFlag{Name: "dry-run", Usage: "show what changes for the job; do not move"},
+					&cli.BoolFlag{Name: "json", Usage: "print the reply as JSON"},
 				},
 				Action: runJobMove,
 			},
@@ -459,7 +460,37 @@ func runJobMove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return client.DoHTTP(request.BuildJobMove(workspaceFlag(c), c.Args().First(), m), nil)
+	var out struct {
+		From    string   `json:"from"`
+		To      string   `json:"to"`
+		Folder  string   `json:"folder"`
+		Moved   bool     `json:"moved"`
+		Changes []string `json:"changes"`
+	}
+	var raw json.RawMessage
+	if err := client.DoHTTP(request.BuildJobMove(workspaceFlag(c), c.Args().First(), m), &raw); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, raw)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return err
+	}
+	w := outWriter(c)
+	verb := "moved"
+	if m.DryRun {
+		verb = "would move"
+	}
+	fmt.Fprintf(w, "%s %s -> %s", verb, out.From, out.To)
+	if out.Folder != "" {
+		fmt.Fprintf(w, " (folder %s)", out.Folder)
+	}
+	fmt.Fprintln(w)
+	for _, ch := range out.Changes {
+		fmt.Fprintf(w, "  - %s\n", ch)
+	}
+	return nil
 }
 
 func runJobValidate(_ context.Context, c *cli.Command) error {
