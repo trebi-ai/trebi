@@ -1,0 +1,16 @@
+[
+  {
+    "role": "tool",
+    "name": "mcp__trebi__assistant",
+    "content": "{\"action\": \"memory_add\", \"input\": {\"text\": \"Deploys are frozen until Monday.\"}}"
+  },
+  {
+    "role": "tool",
+    "name": "mcp__trebi__assistant",
+    "content": "{\"action\": \"memory_show\", \"input\": {}}"
+  },
+  {
+    "role": "assistant",
+    "content": "Added."
+  }
+]

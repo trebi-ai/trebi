@@ -16,6 +16,8 @@ checks:
   - name: no job created
     cmd: trebi job list --json
     jq: '[.jobs[]? | select(.name != "report")] | length == 0'
+  - name: memory added on the assistant tool, not system
+    commands_jq: 'any(test("assistant memory[ _]add")) and all(test("system memory") | not)'
 judge:
   model: claude-sonnet-5
   dimensions:

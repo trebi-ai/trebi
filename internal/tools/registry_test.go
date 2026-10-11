@@ -41,6 +41,13 @@ func TestRegistryUnknownToolAndAction(t *testing.T) {
 	if res.Status != 400 || d.n != 0 {
 		t.Fatalf("unknown action: status=%d n=%d", res.Status, d.n)
 	}
+	if strings.Contains(string(res.Body), " is on ") {
+		t.Fatalf("no owner expected: body=%s", res.Body)
+	}
+	res = r.Call(context.Background(), "system", "memory_add", nil)
+	if res.Status != 400 || !strings.Contains(string(res.Body), "memory_add is on agent, assistant, job") {
+		t.Fatalf("owner hint: status=%d body=%s", res.Status, res.Body)
+	}
 }
 
 func TestRegistryDocsOnEveryTool(t *testing.T) {

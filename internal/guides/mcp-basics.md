@@ -51,7 +51,7 @@ CLI area names that differ from the tool name:
 | `cloud status` / `link` / `unlink` / `addresses` | `system.cloud_status` / `cloud_link` / `cloud_unlink` / `cloud_addresses` |
 | `hooks create` / `list` / `delete` | `system.hook_create` / `hook_list` / `hook_delete` |
 | `harness auth status` / `login` / `logout` / `mode` / `cancel` | `harness.auth` / `login_start` / `logout` / `patch` / `login_cancel` |
-| `job/agent/assistant memory log add` / `log delete` | same tool: `memory_add` / `memory_delete` |
+| `job/agent/assistant memory log add` / `log delete` | same tool: `memory_add` / `memory_delete` (on `assistant`, `job`, or `agent`; `system` has no memory actions) |
 
 These CLI commands have no MCP action; they are **local only**: `job status`,
 `job tail`, `job schedule`, `conversation switch`, the offline

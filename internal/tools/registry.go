@@ -124,7 +124,11 @@ func (r *Registry) Call(ctx context.Context, tool, action string, in Input) Resu
 	}
 	entry, ok := r.catalog[tool][action]
 	if action == "" || !ok || r.denied(tool, action) {
-		return fail("validation", fmt.Sprintf("unknown action %q for tool %q; action %q lists the valid ones", action, tool, "docs"))
+		msg := fmt.Sprintf("unknown action %q for tool %q; action %q lists the valid ones", action, tool, "docs")
+		if owners := r.owners(action); len(owners) > 0 {
+			msg += fmt.Sprintf("; %s is on %s", action, strings.Join(owners, ", "))
+		}
+		return fail("validation", msg)
 	}
 	if r.native && nativeConfigDenied(tool, action, in) {
 		return fail("validation", "assistant.* config is not writable by the native assistant")
@@ -179,6 +183,18 @@ func (r *Registry) Docs(tool string) (string, error) {
 
 func (r *Registry) denied(tool, action string) bool {
 	return r.native && nativeDenied[tool][action]
+}
+
+// owners lists the tools that have action, for the unknown-action hint.
+func (r *Registry) owners(action string) []string {
+	var out []string
+	for tool, actions := range r.catalog {
+		if _, ok := actions[action]; ok && !r.denied(tool, action) {
+			out = append(out, tool)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 var nativeDenied = map[string]map[string]bool{ //nolint:gochecknoglobals // static deny-list
