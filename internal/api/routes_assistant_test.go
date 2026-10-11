@@ -398,6 +398,10 @@ func TestAssistantTokenScopeOnWorkspaceRoutes(t *testing.T) {
 		t.Fatalf("create %d %v", code, conv)
 	}
 	id, _ := conv["id"].(string)
+	// A create with no mode keeps the effective setting for the first prompt.
+	if rec, err := s.AssistantStore().Get(context.Background(), id); err != nil || rec.Mode != "" {
+		t.Fatalf("pinned mode %q err %v, want empty", rec.Mode, err)
+	}
 
 	// Mint a session token the way the manager does and store its hash.
 	token, hash, err := assistant.MintSessionToken()

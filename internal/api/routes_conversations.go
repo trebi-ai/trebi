@@ -136,14 +136,11 @@ func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request
 	}
 	// The picked harness and mode sit on the session row, so the manager
 	// reads them at the first prompt (plan F.2: the process starts then).
+	// An empty mode keeps the effective setting.
 	if operator == "" && (body.Harness != "" || body.Mode != "") {
-		mode := body.Mode
-		if mode == "" {
-			mode = assistant.ModeAutoEdit
-		}
 		rec := assistant.Record{
 			ConversationID: c.ID, WorkspaceID: c.Workspace,
-			Harness: body.Harness, Mode: mode, Status: assistant.StatusClosed,
+			Harness: body.Harness, Mode: body.Mode, Status: assistant.StatusClosed,
 		}
 		if err := s.asstStore.Create(r.Context(), rec); err != nil && !errors.Is(err, assistant.ErrNoSession) {
 			s.log.Warn("assistant session pin", "conversation", c.ID, "error", err)
