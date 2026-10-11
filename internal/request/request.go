@@ -735,6 +735,33 @@ func BuildJobRename(workspace, name, to string) HTTPRequest {
 	}
 }
 
+// JobMove is the body of a job move. Agent "" is no agent; Folder "" is
+// no folder. A nil field keeps the current value.
+type JobMove struct {
+	Agent  *string `json:"agent,omitempty"`
+	Folder *string `json:"folder,omitempty"`
+	DryRun bool    `json:"dry_run,omitempty"`
+}
+
+// BuildJobMove builds POST /v1/jobs/{name}/move.
+func BuildJobMove(workspace, name string, m JobMove) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   withQuery("/v1/jobs/"+url.PathEscape(name)+"/move", workspaceQ(workspace)),
+		Body:   m,
+	}
+}
+
+// BuildAgentFolderRename builds POST /v1/workspaces/{id}/agents/{name}/folders/rename.
+// to "" takes the jobs out of the folder.
+func BuildAgentFolderRename(workspaceID, agent, from, to string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   BuildAgentGetPath(workspaceID, agent) + "/folders/rename",
+		Body:   map[string]string{"from": from, "to": to},
+	}
+}
+
 // AgentAsk is the body of an ask or a hand-off.
 type AgentAsk struct {
 	Text           string `json:"text"`

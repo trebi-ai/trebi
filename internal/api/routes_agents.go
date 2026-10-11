@@ -39,6 +39,7 @@ func (s *Server) routeAgents(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /v1/workspaces/{id}/agents/{name}", s.handleAgentPatch)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/agents/{name}", s.handleAgentDelete)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/rename", s.handleAgentRename)
+	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/folders/rename", s.handleAgentFolderRename)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/ask", s.handleAgentAsk)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/handoff", s.handleAgentHandoff)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/escalate", s.handleAgentEscalate)
@@ -619,6 +620,49 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recomputeMoved(r.Context(), ws.ID, moved)
 	writeJSON(w, http.StatusOK, reply)
+}
+
+type folderRenameRequest struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// handleAgentFolderRename changes the folder of each job of the agent in
+// one folder. To "" takes those jobs out of the folder.
+func (s *Server) handleAgentFolderRename(w http.ResponseWriter, r *http.Request) {
+	ws, ok := s.workspaceByID(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	if scope, scoped := scopeFrom(r.Context()); scoped && (scope.workspaceID != ws.ID || scope.agent != "agents/"+name) {
+		writeForbidden(w, "agent may change only jobs owned by "+scope.agent)
+		return
+	}
+	var body folderRenameRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if _, err := job.NormalizeFolder(body.To); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if strings.TrimSpace(body.From) == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "from is required")
+		return
+	}
+	res, err := s.ws.RenameFolder(r.Context(), ws.ID, name, body.From, body.To)
+	switch {
+	case errors.Is(err, workspaces.ErrNoAgent):
+		writeErr(w, http.StatusNotFound, "not_found", "agent not found")
+	case errors.Is(err, workspaces.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", "no job of "+name+" is in folder "+body.From)
+	case err != nil:
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	default:
+		writeJSON(w, http.StatusOK, res)
+	}
 }
 
 // agentRenamed is the reply of an agent rename. Askers are the agents whose

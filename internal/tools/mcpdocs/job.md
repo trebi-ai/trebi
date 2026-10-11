@@ -76,6 +76,14 @@ structured fields cover the job.
 - `agent` (string, optional): agent short name. The job lands in `agents/<agent>/` and the name becomes the full relative path.
 - `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder. Use `content` with a `folder:` key instead when you give `content`.
 
+### move
+Give a job another owner agent, another folder, or both. Use this action to move a job; never move a job folder on disk by hand, because the index does not follow it. With a new agent, the job folder moves to `agents/<agent>/<last segment>`. The job keeps its ID, its schedules, its state, its memory, and its earlier runs. With the same agent, only the folder changes. The job runs with the settings, the connectors, and the email address of its new agent, so call it first with `dry_run: true` and show `changes` to the user. A live run returns `conflict`; so does an existing target. An unknown agent returns `not_found`. A job at the workspace root returns `validation`. The reply is `{"id", "from", "to", "from_agent", "to_agent", "folder", "moved", "changes"}`; `changes` lists, in plain words, what the new agent changes for the job.
+- `name` (string, required): job name.
+- `agent` (string, optional): new owner agent short name. `""` takes the job away from its agent. Omit it to keep the owner.
+- `folder` (string, optional): folder under the agent, one level. `""` removes it. Omit it to keep the folder when the agent stays; a job that changes agent has no folder unless you give one.
+- `dry_run` (boolean, optional): return the reply with `"moved": false` and change nothing.
+- `workspace` (string, optional): workspace id.
+
 ### validate_text
 Check a job definition without writing a job. Call it before `create` when you
 compose a definition yourself. The response is `{ok, error, markdown}`, where

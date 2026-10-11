@@ -1413,3 +1413,32 @@ func TestArtifactBuilders(t *testing.T) {
 		t.Errorf("patch: %+v", r)
 	}
 }
+
+func TestBuildJobMove(t *testing.T) {
+	t.Parallel()
+	none, folder := "", "SEO"
+	cases := []struct {
+		m    JobMove
+		want string
+	}{
+		{JobMove{Folder: &folder}, `{"folder":"SEO"}`},
+		{JobMove{Agent: &none}, `{"agent":""}`},
+		{JobMove{Agent: &folder, Folder: &none, DryRun: true}, `{"agent":"SEO","folder":"","dry_run":true}`},
+	}
+	for _, c := range cases {
+		req := BuildJobMove("ws1", "agents/cmo/x", c.m)
+		if req.Method != "POST" || req.Path != "/v1/jobs/agents%2Fcmo%2Fx/move?workspace=ws1" {
+			t.Fatalf("method/path: %+v", req)
+		}
+		if b, _ := json.Marshal(req.Body); string(b) != c.want {
+			t.Fatalf("body=%s want %s", b, c.want)
+		}
+	}
+	req := BuildAgentFolderRename("ws1", "cmo", "Customers", "")
+	if req.Path != "/v1/workspaces/ws1/agents/cmo/folders/rename" {
+		t.Fatalf("path=%s", req.Path)
+	}
+	if b, _ := json.Marshal(req.Body); string(b) != `{"from":"Customers","to":""}` {
+		t.Fatalf("body=%s", b)
+	}
+}

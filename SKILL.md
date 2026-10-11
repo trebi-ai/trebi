@@ -119,7 +119,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | Topic | Covers |
 |---|---|
 | `getting-started` | fresh install → workspace → first job → first run |
-| `jobs-and-scheduling` | JOB.md shape, cron/every/event triggers, pause, validate, job memory, job state (`trebi state`, `state:` frontmatter) |
+| `jobs-and-scheduling` | JOB.md shape, cron/every/event triggers, pause, validate, rename, move to another agent or folder (`job move`, `agent folder rename`), job memory, job state (`trebi state`, `state:` frontmatter) |
 | `runs-and-debugging` | show/turns/timeline/transcript/logs, retry/resume/replay/mark, attach, approvals |
 | `files` | job-scoped vs workspace files, scripts next to jobs, If-Match |
 | `assistant` | settings layers, chat and sessions, conversations, memory |

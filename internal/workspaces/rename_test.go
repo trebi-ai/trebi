@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -138,5 +140,210 @@ func TestRenameAgentRewritesWorkingDir(t *testing.T) {
 	var n int
 	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM schedules WHERE job_id=?`, jobID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("schedules=%d err=%v", n, err)
+	}
+}
+
+// TestMoveJobToOtherAgent: a move to another agent keeps the ID, schedule,
+// state, memory, and runs, and sets the new folder in the file.
+func TestMoveJobToOtherAgent(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	svc, wsID, root, _, jobID := renameFixture(ctx, t, st)
+	writeFile(t, filepath.Join(root, "agents/old/AGENT.md"), "---\ndescription: Old.\nkit:\n  connectors: [email, discord]\n---\n\nRun brief daily.\n")
+	writeFile(t, filepath.Join(root, "agents/cs/AGENT.md"), "---\ndescription: CS.\nkit:\n  connectors: [discord, slack]\n---\n\nCS.\n")
+	writeFile(t, filepath.Join(root, "agents/old/brief/JOB.md"), "---\nharness: claude\nfolder: Old\n---\n\nDo the task.\n")
+	writeFile(t, filepath.Join(root, "agents/old/brief/MEMORY.md"), "# Memory\n")
+	ws, err := svc.Get(ctx, wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := svc.JobByName(ctx, wsID, "agents/cs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := st.DB().ExecContext(ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`UPDATE runs SET working_dir=? WHERE id='run-owned'`, filepath.Join(root, "agents/old/brief"))
+	exec(`UPDATE schedules SET next_due_at='2030-01-01T00:00:00Z' WHERE job_id=?`, jobID)
+	agent, folder := "cs", "Health"
+
+	dry, _, err := svc.MoveJob(ctx, wsID, "agents/old/brief", workspaces.JobMove{Agent: &agent, Folder: &folder, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.Moved || dry.To != "agents/cs/brief" || dry.FromAgent != "old" || dry.ToAgent != "cs" {
+		t.Fatalf("dry=%+v", dry)
+	}
+	notes := strings.Join(dry.Changes, "\n")
+	for _, want := range []string{"runs as cs", "loses these connectors: email", "gets these connectors: slack", "instructions of old name this job"} {
+		if !strings.Contains(notes, want) {
+			t.Fatalf("changes %q lack %q", notes, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "agents/old/brief/JOB.md")); err != nil {
+		t.Fatalf("dry run moved the job: %v", err)
+	}
+
+	seq := mustSeq(t, st)
+	res, moved, err := svc.MoveJob(ctx, wsID, "agents/old/brief", workspaces.JobMove{Agent: &agent, Folder: &folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Moved || res.ID != jobID || len(moved) != 1 || moved[0].Folder != "Health" {
+		t.Fatalf("res=%+v moved=%+v", res, moved)
+	}
+	row, err := svc.JobByID(ctx, jobID)
+	if err != nil || row.Name != "agents/cs/brief" || row.OwnerID != cs.ID || row.Folder != "Health" {
+		t.Fatalf("row=%+v err=%v", row, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "agents/cs/brief/MEMORY.md")); err != nil {
+		t.Fatalf("memory: %v", err)
+	}
+	checks := []struct{ q, want string }{
+		{`SELECT working_dir FROM runs WHERE id='run-owned'`, filepath.Join(root, "agents/cs/brief")},
+		{`SELECT next_due_at FROM schedules WHERE job_id='` + jobID + `'`, "2030-01-01T00:00:00Z"},
+	}
+	for _, c := range checks {
+		var got string
+		if err := st.DB().QueryRowContext(ctx, c.q).Scan(&got); err != nil || got != c.want {
+			t.Fatalf("%s = %q (%v), want %q", c.q, got, err, c.want)
+		}
+	}
+	events, err := st.ListBus(ctx, seq, []string{"job"}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range events {
+		found = found || e.Topic == "job.moved"
+	}
+	if !found {
+		t.Fatalf("events=%+v", events)
+	}
+
+	// Back to no agent: the folder goes, the job lands at the workspace top.
+	none := ""
+	res, _, err = svc.MoveJob(ctx, wsID, jobID, workspaces.JobMove{Agent: &none})
+	if err != nil || res.To != "brief" || res.Folder != "" {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	row, err = svc.JobByID(ctx, jobID)
+	if err != nil || row.OwnerID != "" || row.Folder != "" || row.ParseError != "" {
+		t.Fatalf("row=%+v err=%v", row, err)
+	}
+}
+
+// TestMoveJobFolderOnly: the same agent keeps the path; only the folder changes.
+func TestMoveJobFolderOnly(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	svc, wsID, root, _, jobID := renameFixture(ctx, t, st)
+	folder := "SEO"
+	res, moved, err := svc.MoveJob(ctx, wsID, "agents/old/brief", workspaces.JobMove{Folder: &folder})
+	if err != nil || !res.Moved || res.To != "agents/old/brief" || len(res.Changes) != 0 || moved != nil {
+		t.Fatalf("res=%+v moved=%v err=%v", res, moved, err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "agents/old/brief/JOB.md"))
+	if err != nil || !strings.Contains(string(data), "folder: SEO") {
+		t.Fatalf("file=%q err=%v", data, err)
+	}
+	ws, _ := svc.Get(ctx, wsID)
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := svc.JobByID(ctx, jobID); err != nil || row.Folder != "SEO" {
+		t.Fatalf("row=%+v err=%v", row, err)
+	}
+}
+
+func TestMoveJobRefusals(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "JOB.md"), jobMD)
+	writeFile(t, filepath.Join(root, "reports/weekly/JOB.md"), jobMD)
+	writeFile(t, filepath.Join(root, "agents/a/AGENT.md"), "---\ndescription: A.\n---\n\nA.\n")
+	writeFile(t, filepath.Join(root, "agents/a/weekly/JOB.md"), jobMD)
+	svc := workspaces.New(st)
+	ws, err := svc.Add(ctx, root, "moves")
+	if err != nil {
+		t.Fatal(err)
+	}
+	str := func(s string) *string { return &s }
+	cases := []struct {
+		name string
+		m    workspaces.JobMove
+		want error
+	}{
+		{"reports/weekly", workspaces.JobMove{Agent: str("nope")}, workspaces.ErrNoAgent},
+		{"reports/weekly", workspaces.JobMove{Folder: str("SEO")}, job.ErrFolderNoOwner},
+		{"reports/weekly", workspaces.JobMove{Agent: str("a")}, workspaces.ErrExists},
+		{"agents/a/weekly", workspaces.JobMove{Folder: str("a/b")}, nil},
+		{filepath.Base(root), workspaces.JobMove{Agent: str("a")}, workspaces.ErrRootJob},
+		{"agents/a", workspaces.JobMove{Agent: str("")}, workspaces.ErrNotJob},
+		{"reports/nope", workspaces.JobMove{Agent: str("a")}, workspaces.ErrNotFound},
+	}
+	for _, c := range cases {
+		_, _, err := svc.MoveJob(ctx, ws.ID, c.name, c.m)
+		if c.want == nil {
+			if err == nil {
+				t.Fatalf("%s: want an error", c.name)
+			}
+			continue
+		}
+		if !errors.Is(err, c.want) {
+			t.Fatalf("%s: err=%v want %v", c.name, err, c.want)
+		}
+	}
+	// A folder-only change of a job with no agent never moves it.
+	if res, _, err := svc.MoveJob(ctx, ws.ID, "reports/weekly", workspaces.JobMove{Folder: str("")}); err != nil || res.Moved || res.To != "reports/weekly" {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
+
+func TestRenameFolder(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "agents/a/AGENT.md"), "---\ndescription: A.\n---\n\nA.\n")
+	writeFile(t, filepath.Join(root, "agents/a/one/JOB.md"), "---\nharness: claude\nfolder: Customers\n---\n\nOne.\n")
+	writeFile(t, filepath.Join(root, "agents/a/two/JOB.md"), "---\nharness: claude\nfolder: Customers\n---\n\nTwo.\n")
+	writeFile(t, filepath.Join(root, "agents/a/three/JOB.md"), "---\nharness: claude\nfolder: SEO\n---\n\nThree.\n")
+	svc := workspaces.New(st)
+	ws, err := svc.Add(ctx, root, "folders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RenameFolder(ctx, ws.ID, "a", "Customers", "a/b"); err == nil {
+		t.Fatal("nested folder: want an error")
+	}
+	if _, err := svc.RenameFolder(ctx, ws.ID, "nope", "Customers", "Health"); !errors.Is(err, workspaces.ErrNoAgent) {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := svc.RenameFolder(ctx, ws.ID, "a", "Missing", "Health"); !errors.Is(err, workspaces.ErrNotFound) {
+		t.Fatalf("err=%v", err)
+	}
+	res, err := svc.RenameFolder(ctx, ws.ID, "a", "Customers", "Health")
+	if err != nil || res.Jobs != 2 {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	want := map[string]string{"agents/a/one": "Health", "agents/a/two": "Health", "agents/a/three": "SEO"}
+	for name, folder := range want {
+		if row, err := svc.JobByName(ctx, ws.ID, name); err != nil || row.Folder != folder {
+			t.Fatalf("%s: row=%+v err=%v", name, row, err)
+		}
+	}
+	if res, err := svc.RenameFolder(ctx, ws.ID, "a", "Health", ""); err != nil || res.Jobs != 2 {
+		t.Fatalf("remove: res=%+v err=%v", res, err)
+	}
+	if row, err := svc.JobByName(ctx, ws.ID, "agents/a/one"); err != nil || row.Folder != "" {
+		t.Fatalf("row=%+v err=%v", row, err)
 	}
 }

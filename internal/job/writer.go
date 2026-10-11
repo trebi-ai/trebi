@@ -153,7 +153,7 @@ func folderPatch(path string, patch map[string]any) (text string, set bool, err 
 	if v != nil && !isStr {
 		return "", false, errors.New("folder: must be a string")
 	}
-	folder, err := normalizeFolder(s)
+	folder, err := NormalizeFolder(s)
 	if err != nil {
 		return "", false, fmt.Errorf("folder: %w", err)
 	}
@@ -749,7 +749,7 @@ type EventSpec struct {
 
 // Render composes JOB.md text. It returns Content unchanged when set.
 func (s Spec) Render() (string, error) {
-	folder, err := normalizeFolder(s.Folder)
+	folder, err := NormalizeFolder(s.Folder)
 	if err != nil {
 		return "", fmt.Errorf("folder: %w", err)
 	}

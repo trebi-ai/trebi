@@ -469,6 +469,78 @@ func TestJobRenameRoute(t *testing.T) {
 	}
 }
 
+// TestJobMoveRoute covers a move to another agent, a folder-only move, the
+// folder rename, and the error map.
+func TestJobMoveRoute(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeJobFile(t, wsDir, "agents/cmo/renewals")
+	writeJobFile(t, wsDir, "agents/cmo/digest")
+	for _, a := range []string{"cmo", "cs"} {
+		if err := os.MkdirAll(filepath.Join(wsDir, "agents", a), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wsDir, "agents", a, "AGENT.md"), []byte("---\ndescription: Agent.\n---\n\nWork.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wsID := addWorkspace(t, base, wsDir, "move-jobs")
+	move := func(name string, body map[string]any) (int, map[string]any) {
+		t.Helper()
+		code, out, _ := doJSON(t, "POST", base+"/v1/jobs/"+name+"/move?workspace="+wsID, body)
+		return code, out
+	}
+
+	code, body := move("agents/cmo/renewals", map[string]any{"agent": "cs", "folder": "Health", "dry_run": true})
+	if code != http.StatusOK || body["moved"] != false || body["to"] != "agents/cs/renewals" || body["changes"] == nil {
+		t.Fatalf("dry run: %d %v", code, body)
+	}
+	code, body = move("agents/cmo/renewals", map[string]any{"agent": "cs", "folder": "Health"})
+	if code != http.StatusOK || body["moved"] != true || body["folder"] != "Health" {
+		t.Fatalf("move: %d %v", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cs", "renewals", "JOB.md")); err != nil {
+		t.Fatalf("moved folder: %v", err)
+	}
+	code, body = move("agents/cmo/digest", map[string]any{"folder": "Content"})
+	if code != http.StatusOK || body["to"] != "agents/cmo/digest" {
+		t.Fatalf("folder only: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID, nil)
+	jobs, _ := body["jobs"].([]any)
+	folders := map[string]any{}
+	for _, j := range jobs {
+		row, _ := j.(map[string]any)
+		folders[row["name"].(string)] = row["folder"]
+	}
+	if code != http.StatusOK || folders["agents/cmo/digest"] != "Content" || folders["agents/cs/renewals"] != "Health" {
+		t.Fatalf("list: %d %v", code, folders)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/cmo/folders/rename", map[string]any{"from": "Content", "to": "Posts"})
+	if code != http.StatusOK || body["jobs"] != float64(1) {
+		t.Fatalf("folder rename: %d %v", code, body)
+	}
+	cases := []struct {
+		name string
+		body map[string]any
+		want int
+	}{
+		{"agents/cmo/digest", map[string]any{"agent": "nope"}, http.StatusNotFound},
+		{"agents/cmo/digest", map[string]any{"folder": "a/b"}, http.StatusBadRequest},
+		{"agents/cmo/digest", map[string]any{"agent": "", "folder": "X"}, http.StatusBadRequest},
+		{"missing", map[string]any{"agent": "cs"}, http.StatusNotFound},
+	}
+	for _, c := range cases {
+		if code, body := move(c.name, c.body); code != c.want {
+			t.Fatalf("%s %v: %d %v, want %d", c.name, c.body, code, body, c.want)
+		}
+	}
+	if code, body, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/cmo/folders/rename", map[string]any{"from": "Missing", "to": "X"}); code != http.StatusNotFound {
+		t.Fatalf("missing folder: %d %v", code, body)
+	}
+}
+
 // TestJobFolder covers the folder key on list, get, patch, create, and validate.
 func TestJobFolder(t *testing.T) {
 	_, base, _ := startAPI(t)

@@ -28,6 +28,7 @@ func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
 	debounce.Stop()
 	defer debounce.Stop()
 	pending := map[string]struct{}{}
+	pendingDirs := map[string]struct{}{}
 	watched := map[string]struct{}{}
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -61,6 +62,8 @@ func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
 			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
 				continue
 			}
+			// A moved or removed folder names no definition file, so it
+			// rebuilds its whole workspace.
 			if ev.Op&fsnotify.Create != 0 {
 				if st, err := os.Stat(ev.Name); err == nil && st.IsDir() {
 					if _, seen := watched[ev.Name]; !seen && w != nil {
@@ -68,8 +71,16 @@ func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
 							watched[ev.Name] = struct{}{}
 						}
 					}
+					pendingDirs[ev.Name] = struct{}{}
+					debounce.Reset(fsnotifyDebounce)
 					continue
 				}
+			}
+			if _, isDir := watched[ev.Name]; isDir && ev.Op&(fsnotify.Rename|fsnotify.Remove) != 0 {
+				delete(watched, ev.Name)
+				pendingDirs[ev.Name] = struct{}{}
+				debounce.Reset(fsnotifyDebounce)
+				continue
 			}
 			// Only files discovery indexes or reads for composition (C8).
 			if !indexRelevantFile(ev.Name) {
@@ -78,10 +89,12 @@ func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
 			pending[ev.Name] = struct{}{}
 			debounce.Reset(fsnotifyDebounce)
 		case <-debounce.C:
+			c.rebuildDirs(ctx, pendingDirs)
 			for path := range pending {
 				c.rebuildPath(ctx, path)
 			}
 			clear(pending)
+			clear(pendingDirs)
 		case err, ok := <-werrs:
 			if !ok {
 				continue
@@ -150,6 +163,23 @@ func (c *ControlPlane) rebuildAll(ctx context.Context) {
 	list, _ := c.Workspaces.List(ctx)
 	for i := range list {
 		c.recomputeFromIndex(ctx, &list[i])
+	}
+}
+
+// rebuildDirs rebuilds each workspace that holds one of dirs, once.
+func (c *ControlPlane) rebuildDirs(ctx context.Context, dirs map[string]struct{}) {
+	if len(dirs) == 0 {
+		return
+	}
+	list, _ := c.Workspaces.List(ctx)
+	for i := range list {
+		ws := &list[i]
+		for dir := range dirs {
+			if strings.HasPrefix(dir, ws.Path+string(filepath.Separator)) {
+				c.recomputeFromIndex(ctx, ws)
+				break
+			}
+		}
 	}
 }
 

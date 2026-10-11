@@ -755,7 +755,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	if _, err := fm.Session.ContinueMS(); err != nil {
 		return parseFail(filePath, data, hash, fmt.Errorf("session: %w", err))
 	}
-	folder, err := normalizeFolder(fm.Folder)
+	folder, err := NormalizeFolder(fm.Folder)
 	if err != nil {
 		return parseFail(filePath, data, hash, fmt.Errorf("folder: %w", err))
 	}
@@ -1264,8 +1264,8 @@ func fileHash(data []byte) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// normalizeFolder trims a folder label and checks the one-level rule.
-func normalizeFolder(v string) (string, error) {
+// NormalizeFolder trims a folder label and checks the one-level rule.
+func NormalizeFolder(v string) (string, error) {
 	v = strings.TrimSpace(v)
 	switch {
 	case v == "":

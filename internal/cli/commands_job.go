@@ -62,6 +62,19 @@ func jobCommand() *cli.Command {
 				Action: runJobRename,
 			},
 			&cli.Command{
+				Name:      "move",
+				Usage:     "give a job another agent or folder; the ID, schedules, state, memory, and runs stay",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+					&cli.StringFlag{Name: "agent", Usage: "new owner agent; omit to keep the owner"},
+					&cli.BoolFlag{Name: "no-agent", Usage: "take the job away from its agent"},
+					&cli.StringFlag{Name: "folder", Usage: "folder under the agent; \"\" removes it; omit to keep it"},
+					&cli.BoolFlag{Name: "dry-run", Usage: "show what changes for the job; do not move"},
+				},
+				Action: runJobMove,
+			},
+			&cli.Command{
 				Name:      "validate",
 				Usage:     "validate job frontmatter",
 				ArgsUsage: "<name>",
@@ -418,6 +431,35 @@ func runJobRename(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	return client.DoHTTP(request.BuildJobRename(workspaceFlag(c), args[0], args[1]), nil)
+}
+
+func runJobMove(_ context.Context, c *cli.Command) error {
+	if c.Args().Len() != 1 {
+		return fmt.Errorf("usage: trebi job move <name> [--agent <name> | --no-agent] [--folder <folder>]")
+	}
+	m := request.JobMove{DryRun: c.Bool("dry-run")}
+	switch {
+	case c.IsSet("agent") && c.Bool("no-agent"):
+		return fmt.Errorf("use --agent or --no-agent, not both")
+	case c.Bool("no-agent"):
+		none := ""
+		m.Agent = &none
+	case c.IsSet("agent"):
+		agent := c.String("agent")
+		m.Agent = &agent
+	}
+	if c.IsSet("folder") {
+		folder := c.String("folder")
+		m.Folder = &folder
+	}
+	if m.Agent == nil && m.Folder == nil {
+		return fmt.Errorf("set --agent, --no-agent, or --folder")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(request.BuildJobMove(workspaceFlag(c), c.Args().First(), m), nil)
 }
 
 func runJobValidate(_ context.Context, c *cli.Command) error {

@@ -137,6 +137,19 @@ func agentManageSubcommands() []*cli.Command {
 			},
 			Action: runAgentRename,
 		},
+		{
+			Name:  "folder",
+			Usage: "manage the job folders of an agent",
+			Commands: []*cli.Command{{
+				Name:      "rename",
+				ArgsUsage: "<agent> <from> <to>",
+				Usage:     "move every job of the agent from one folder to another; an empty <to> removes the folder",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				},
+				Action: runAgentFolderRename,
+			}},
+		},
 	}
 }
 
@@ -491,6 +504,22 @@ func runAgentRename(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	return client.DoHTTP(request.BuildAgentRename(wsID, args[0], args[1], c.Bool("dry-run")), nil)
+}
+
+func runAgentFolderRename(_ context.Context, c *cli.Command) error {
+	args := c.Args().Slice()
+	if len(args) != 3 {
+		return fmt.Errorf("usage: trebi agent folder rename <agent> <from> <to>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	return client.DoHTTP(request.BuildAgentFolderRename(wsID, args[0], args[1], args[2]), nil)
 }
 
 // agentRows collects the agents of every workspace, or of the one the want

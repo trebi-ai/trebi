@@ -195,3 +195,63 @@ func TestIngestDropsMemoryFixAndCompletion(t *testing.T) {
 		t.Fatalf("assistant messages %q", got)
 	}
 }
+
+// TestWatchFollowsMovedJobFolder: a job folder moved by hand names no
+// definition file in its events, so the watcher rebuilds the workspace.
+func TestWatchFollowsMovedJobFolder(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	wsPath := filepath.Join(dir, "ws")
+	files := map[string]string{
+		"agents/a/AGENT.md": "---\ndescription: A.\n---\n\nA.\n",
+		"agents/b/AGENT.md": "---\ndescription: B.\n---\n\nB.\n",
+		"agents/a/x/JOB.md": "---\nharness: claude\n---\n\nX.\n",
+	}
+	for rel, body := range files {
+		p := filepath.Join(wsPath, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cp := New(st, Options{Shadow: true})
+	ctx := context.Background()
+	ws, err := cp.Workspaces.Add(ctx, wsPath, "watch-move")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/a/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+
+	// Give the watcher time to arm, then move once. The poll rebuild is
+	// 30s, so a pass inside 5s comes from the watcher.
+	time.Sleep(300 * time.Millisecond)
+	if err := os.Rename(filepath.Join(wsPath, "agents/a/x"), filepath.Join(wsPath, "agents/b/x")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if row, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/b/x"); err == nil {
+			if row.ID != before.ID {
+				t.Fatalf("id %s, want %s", row.ID, before.ID)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("index did not follow the moved folder")
+}

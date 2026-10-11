@@ -140,6 +140,18 @@ trebi --workspace reports job rename agents/cmo/weekly digest
 
 Rename changes the last part of the name only (`agents/cmo/weekly` becomes `agents/cmo/digest`). The folder moves with its files. The job keeps its ID, schedules, and earlier runs. It refuses an existing target, a live run, and a job at the workspace root.
 
+## Move
+
+```bash
+trebi --workspace reports job move agents/cmo/renewals --agent cs --folder Health --dry-run
+trebi --workspace reports job move agents/cmo/renewals --agent cs --folder Health
+trebi --workspace reports job move agents/cmo/digest --folder Content
+trebi --workspace reports job move agents/cmo/digest --no-agent
+trebi --workspace reports agent folder rename cmo Customers Health
+```
+
+Move gives a job another agent, another folder, or both. Always use `job move`; never move a job folder on disk by hand. With a new agent, the folder moves to `agents/<agent>/<last part>`. The job keeps its ID, schedules, state, memory, and earlier runs. The job then runs with the settings, connectors, and email address of the new agent. Run `--dry-run` first and show the `changes` list to the user. `agent folder rename` moves every job of an agent from one folder to another; an empty target removes the folder.
+
 ## Delete
 
 Ask the user first. `--purge` removes the job folder; plain delete leaves supporting files (`files_remaining` may be set).

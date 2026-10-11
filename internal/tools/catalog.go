@@ -89,6 +89,18 @@ func (in Input) head(req string, opts ...string) ([]string, error) {
 }
 
 // optStr reads one string field with presence: nil when absent or empty.
+// setStr reads a string field that may be set to "". An absent field is nil.
+func (in Input) setStr(key string) (*string, error) {
+	if _, ok := in[key]; !ok {
+		return nil, nil
+	}
+	s, err := in.str(key)
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
 func (in Input) optStr(key string) (*string, error) {
 	s, err := in.str(key)
 	if err != nil || s == "" {
@@ -1127,6 +1139,30 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildJobRename(ws, v[0], v[1]), nil
 			}),
+			"move": act("POST /v1/jobs/{name}/move", Input{"workspace": "ws1", "name": "agents/cmo/renewals", "agent": "cs", "folder": "Health", "dry_run": true}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				ws, err := in.str("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				var m request.JobMove
+				if m.Agent, err = in.setStr("agent"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if m.Folder, err = in.setStr("folder"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if m.DryRun, err = in.flag("dry_run"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if m.Agent == nil && m.Folder == nil {
+					return request.HTTPRequest{}, fmt.Errorf("input field %q or %q is required", "agent", "folder")
+				}
+				return request.BuildJobMove(ws, v[0], m), nil
+			}),
 			"validate": act("POST /v1/jobs/{name}/validate", Input{"name": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace")
 				if err != nil {
@@ -1561,6 +1597,17 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildAgentRename(v[0], v[1], v[2], dryRun), nil
+			}),
+			"folder_rename": act("POST /v1/workspaces/{id}/agents/{name}/folders/rename", Input{"workspace": "ws1", "name": "cmo", "from": "Customers", "to": "Health"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("workspace", "name", "from")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				to, err := in.str("to")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentFolderRename(v[0], v[1], v[2], to), nil
 			}),
 			"ask": act("POST /v1/workspaces/{id}/agents/{name}/ask", Input{"workspace": "ws1", "name": "cfo", "text": "What is the Q3 budget?"}, func(in Input) (request.HTTPRequest, error) {
 				ws, name, body, err := in.agentAsk()

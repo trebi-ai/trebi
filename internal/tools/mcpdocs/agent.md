@@ -105,6 +105,13 @@ Move `agents/<name>` to `agents/<to>` and rewrite stored run, queue, schedule, c
 - `to` (string, required): new agent short name; lowercase letters, digits, and hyphens, up to 24 characters.
 - `dry_run` (boolean, optional): return the reply with `"dry_run": true` and `"renamed": false`, and do not move. Use it to show the user the new address and the askers first.
 
+### folder_rename
+Move every job of an agent from one folder to another folder. `to: ""` takes the jobs out of the folder. To move one job, use `job.move`. A folder with no job of the agent returns `not_found`. The reply is `{"agent", "from", "to", "jobs"}`; `jobs` is the number of jobs that changed.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name.
+- `from` (string, required): current folder.
+- `to` (string, optional): new folder, one level. `""` or absent removes the folder.
+
 ### ask
 Ask an agent of the same workspace for an answer. The daemon writes the ask into the conversation of the pair and starts or continues a run of the target. The reply is `{"hop", "next", "message", "request_id", "conversation_id"}`: 201 for a new ask, 202 when a person must first approve more chain work, 200 for a repeat of the same `idempotency_key`. From an agent run, `next` is `end_turn`: end your turn now. The reply of the target starts your next turn. Do not poll. An ask can fail with `chain_cycle` (the target waits for you; reply instead), `chain_limit`, `chain_stopped`, `agent_unavailable`, `forbidden` (`team.can_ask`), or `rate_limited`. Each error has `details` with `refuse_reason`, `hop_id`, and `trace_id`.
 - `workspace` (string, required): workspace id.
