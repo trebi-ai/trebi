@@ -610,8 +610,8 @@ func (s *Service) Resolve(ctx context.Context, idOrName string) (*Workspace, err
 
 // indexRow is one desired or existing live job_index row for the diff.
 type indexRow struct {
-	id, name, path, kind, harness, hash, parseError, ownerID string
-	active                                                   bool
+	id, name, path, kind, harness, hash, parseError, ownerID, folder string
+	active                                                           bool
 }
 
 // RebuildIndex rescans job files into job_index (diff-aware, B5).
@@ -758,7 +758,7 @@ func (s *Service) ResolveJob(ctx context.Context, workspaceID, ref string) (*Job
 }
 
 const jobRowSelect = `SELECT j.id, j.workspace_id, j.name, j.path, j.kind, j.active, COALESCE(j.harness,''), COALESCE(j.hash,''),
-	COALESCE(j.parse_error,''), j.owner_id, COALESCE(o.name,''), COALESCE(j.retired_at,'')
+	COALESCE(j.parse_error,''), j.owner_id, COALESCE(o.name,''), COALESCE(j.retired_at,''), j.folder
 	FROM job_index j LEFT JOIN job_index o ON o.id = j.owner_id AND j.owner_id <> ''`
 
 func (s *Service) resolveAddPath(opts AddOpts) (string, error) {
@@ -823,7 +823,7 @@ func (s *Service) rejectNested(ctx context.Context, abs string) error {
 
 // existingIndexRows loads the live job_index rows of a workspace by ID.
 func (s *Service) existingIndexRows(ctx context.Context, wsID string) (map[string]indexRow, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT id, name, path, kind, active, COALESCE(harness,''), COALESCE(hash,''), COALESCE(parse_error,''), owner_id
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT id, name, path, kind, active, COALESCE(harness,''), COALESCE(hash,''), COALESCE(parse_error,''), owner_id, folder
 		FROM job_index WHERE workspace_id=? AND retired_at IS NULL`, wsID)
 	if err != nil {
 		return nil, err
@@ -833,7 +833,7 @@ func (s *Service) existingIndexRows(ctx context.Context, wsID string) (map[strin
 	for rows.Next() {
 		var r indexRow
 		var active int
-		if err := rows.Scan(&r.id, &r.name, &r.path, &r.kind, &active, &r.harness, &r.hash, &r.parseError, &r.ownerID); err != nil {
+		if err := rows.Scan(&r.id, &r.name, &r.path, &r.kind, &active, &r.harness, &r.hash, &r.parseError, &r.ownerID, &r.folder); err != nil {
 			return nil, err
 		}
 		r.active = active == 1
@@ -875,13 +875,13 @@ func writeIndexDiffTx(ctx context.Context, tx *sql.Tx, wsID string, existing, de
 		if want.active {
 			active = 1
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO job_index (id, workspace_id, name, path, kind, active, harness, hash, parse_error, owner_id, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO job_index (id, workspace_id, name, path, kind, active, harness, hash, parse_error, owner_id, folder, updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(id) DO UPDATE SET
 				workspace_id=excluded.workspace_id, name=excluded.name, path=excluded.path, kind=excluded.kind,
 				active=excluded.active, harness=excluded.harness, hash=excluded.hash, parse_error=excluded.parse_error,
-				owner_id=excluded.owner_id, updated_at=excluded.updated_at, retired_at=NULL`,
-			id, wsID, want.name, want.path, want.kind, active, want.harness, want.hash, store.NullStr(want.parseError), want.ownerID, now); err != nil {
+				owner_id=excluded.owner_id, folder=excluded.folder, updated_at=excluded.updated_at, retired_at=NULL`,
+			id, wsID, want.name, want.path, want.kind, active, want.harness, want.hash, store.NullStr(want.parseError), want.ownerID, want.folder, now); err != nil {
 			return err
 		}
 	}
@@ -959,6 +959,8 @@ type JobRow struct {
 	OwnerID   string `json:"owner_id,omitempty"`
 	OwnerName string `json:"owner_name,omitempty"`
 	RetiredAt string `json:"retired_at,omitempty"`
+	// Folder groups a job under its owner agent.
+	Folder string `json:"folder,omitempty"`
 }
 
 // OwnerIndex returns the index name of the owner agent (agents/<name>), or "".
@@ -1399,7 +1401,7 @@ func (s *Service) jobCounts(ctx context.Context) (map[string]int, error) {
 func rowFromJob(j *job.Job, kind, ownerID string) indexRow {
 	return indexRow{
 		id: j.ID, name: j.Name, path: j.FilePath, kind: kind, harness: j.Harness,
-		hash: j.Hash, parseError: j.ParseError, active: !j.Disabled, ownerID: ownerID,
+		hash: j.Hash, parseError: j.ParseError, active: !j.Disabled, ownerID: ownerID, folder: j.Folder,
 	}
 }
 
@@ -1448,7 +1450,7 @@ func (s *Service) queryJobRows(ctx context.Context, q string, args ...any) ([]Jo
 		var active int
 		var ownerName string
 		if err := rows.Scan(&r.ID, &r.WorkspaceID, &r.Name, &r.Path, &r.Kind, &active, &r.Harness, &r.Hash, &r.ParseError,
-			&r.OwnerID, &ownerName, &r.RetiredAt); err != nil {
+			&r.OwnerID, &ownerName, &r.RetiredAt, &r.Folder); err != nil {
 			return nil, err
 		}
 		r.Active = active == 1

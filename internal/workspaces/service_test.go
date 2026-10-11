@@ -742,3 +742,50 @@ func indexedID(ctx context.Context, t *testing.T, svc *workspaces.Service, wsID,
 	}
 	return row.ID
 }
+
+func TestRebuildIndexFolder(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\nharness: claude\n---\n\nLead.\n")
+	jobPath := filepath.Join(root, "agents", "cmo", "a", "JOB.md")
+	writeFile(t, jobPath, "---\nharness: claude\nfolder: SEO\n---\n\nA.\n")
+	ws, err := svc.Add(ctx, root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := svc.JobByName(ctx, ws.ID, "agents/cmo/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Folder != "SEO" {
+		t.Fatalf("folder=%q want SEO", row.Folder)
+	}
+
+	seq := mustSeq(t, st)
+	writeFile(t, jobPath, "---\nid: "+row.ID+"\nharness: claude\nfolder: Growth\n---\n\nA.\n")
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	if topics := busTopics(t, st, seq); len(topics) != 1 || topics[0] != "job.updated:"+row.ID {
+		t.Fatalf("topics=%v want [job.updated:%s]", topics, row.ID)
+	}
+	row, err = svc.JobByName(ctx, ws.ID, "agents/cmo/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Folder != "Growth" {
+		t.Fatalf("folder=%q want Growth", row.Folder)
+	}
+
+	seq = mustSeq(t, st)
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustSeq(t, st); got != seq {
+		t.Fatalf("bus grew on no-op rebuild: %v", busTopics(t, st, seq))
+	}
+}

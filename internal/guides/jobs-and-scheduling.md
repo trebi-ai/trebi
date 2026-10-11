@@ -48,6 +48,7 @@ artifacts:
     name: weekly-sales
     title: Weekly sales report
 description: What this job does.
+folder: Reports
 ---
 
 The prompt body. This is what the harness receives.
@@ -68,6 +69,7 @@ The prompt body. This is what the harness receives.
 - A follow-up resumes the session of the newest run with the text "New message in this conversation from {{sender}}:" and the message, then one line that names the connection, room, and thread for the history command of the connector. When the session cannot resume (session file gone, failed run, other harness), a fresh session gets the job prompt with the vars of the first run, the last 20 stored messages, that line, and the message.
 - Known effects of `replies: continue`: the harness deletes old session files, so a late reply gets a fresh session that sees only the messages, not the earlier tool output. A resumed session keeps the job prompt of its first run; a prompt edit reaches only a fresh session. In a DM each message after the first is a follow-up, so `contains` and `match` do not apply again in that DM.
 - `artifacts[]` names files of the working folder. At the end of a complete run, Trebi saves each one as a new version of an artifact, unless the run saved that name itself. `path` is required and stays inside the working folder. `name` defaults to the file name without the extension, and `title` to the name. A missing file sets the outcome note of the run and opens an inbox item (`trebi guide artifacts`).
+- `folder` groups a job under its owner agent in the UI. Only a job in `agents/<agent>/` can have a folder; on another job it is a parse error. Use one name of at most 64 characters, with no `/`. The match is case-sensitive, and an empty value is no folder.
 - Only `harness` (name, or a `{name, model, effort}` map), `triggers`, `envset` (a name or a list of names, applied in order), `env` (inline map), and `session.idle_timeout` are canonical frontmatter; keep other fields minimal.
 
 ## Create, inspect, validate

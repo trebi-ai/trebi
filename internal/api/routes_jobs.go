@@ -86,7 +86,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		item := map[string]any{
 			"id": row.ID, "workspace_id": row.WorkspaceID, "name": row.Name, "path": row.Path,
 			"kind": row.Kind, "active": row.Active, "harness": row.Harness,
-			"owner_id": row.OwnerID, "owner_name": row.OwnerName,
+			"owner_id": row.OwnerID, "owner_name": row.OwnerName, "folder": row.Folder,
 			"hash": row.Hash, "parse_error": row.ParseError, "status": status,
 			"last_run_at": "", "last_status": "", "next_due_at": "", "mtd_usd": 0.0,
 			"triggers": []string{},
@@ -192,14 +192,18 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	j := doc.Job
+	parseErr := j.ParseError
+	if err := j.CheckFolderOwner(row.OwnerID); err != nil && parseErr == "" {
+		parseErr = err.Error()
+	}
 	// Index name, not ParseFile's folder basename. Runs, list, and pause
 	// all key off row.Name (agents/watchtower/job, not job).
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": row.ID, "name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
-		"owner_id": row.OwnerID, "owner_name": row.OwnerName,
+		"owner_id": row.OwnerID, "owner_name": row.OwnerName, "folder": j.Folder,
 		"harness": j.Harness, "model": j.Model, "effort": j.Effort,
 		"active": !j.Disabled, "hash": doc.Hash,
-		"parse_error": j.ParseError, "prompt": j.Prompt,
+		"parse_error": parseErr, "prompt": j.Prompt,
 		"input_keys": job.DiscoverInputKeys(j.Prompt),
 		// Transitional (plan H.3): env_sets is the list form; env_set carries
 		// the first name for one release so the pinned UI keeps working.
@@ -424,7 +428,13 @@ func (s *Server) handleJobValidateText(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := cmp.Or(body.Name, "job")
+	if body.Agent != "" {
+		name = request.AgentIndexName(body.Agent) + "/" + name
+	}
 	j, err := job.ParseBytes(filepath.Join(name, file), []byte(md))
+	if err == nil && j != nil && j.ParseError == "" && body.Kind != "agent" {
+		err = j.CheckFolderOwner(job.OwnerOf(name))
+	}
 	switch {
 	case err != nil:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "markdown": md})
@@ -679,6 +689,7 @@ type jobCreateRequest struct {
 	Model       string            `json:"model"`
 	Effort      string            `json:"effort"`
 	Description string            `json:"description"`
+	Folder      string            `json:"folder"`
 	Cron        string            `json:"cron"`
 	Every       string            `json:"every"`
 	On          *jobEventTrigger  `json:"on"`
@@ -717,7 +728,7 @@ func (b jobCreateRequest) markdown() (string, error) {
 	spec := job.Spec{
 		Content: cmp.Or(b.Markdown, b.Content), Prompt: b.Prompt, Harness: b.Harness,
 		Model: b.Model, Effort: b.Effort,
-		Description: b.Description, Cron: b.Cron, Every: b.Every,
+		Description: b.Description, Folder: b.Folder, Cron: b.Cron, Every: b.Every,
 		Session: b.Session, Env: b.Env,
 	}
 	spec.On = b.On.spec()
@@ -787,6 +798,12 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		wireName = agentRow.Name + "/" + body.Name
 		rel = filepath.ToSlash(filepath.Join(agentRow.Name, body.Name, "JOB.md"))
+	}
+	if parsed, perr := job.ParseBytes(rel, []byte(md)); perr == nil && parsed != nil {
+		if err := parsed.CheckFolderOwner(job.OwnerOf(wireName)); err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
 	}
 	if _, err := s.files.Stat(r.Context(), ws.Path, rel); err == nil {
 		writeErr(w, http.StatusConflict, "conflict", "job exists")
@@ -874,6 +891,10 @@ func (s *Server) handleJobPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	ws, rel, ok := s.jobFileLoc(w, r, row)
 	if !ok {
+		return
+	}
+	if f, _ := body["folder"].(string); strings.TrimSpace(f) != "" && row.OwnerID == "" {
+		writeErr(w, http.StatusBadRequest, "validation", job.ErrFolderNoOwner.Error())
 		return
 	}
 	hash, ok := s.patchIndexedMarkdown(w, r, ws, row.Path, rel, body)

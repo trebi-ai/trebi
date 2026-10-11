@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -508,7 +509,7 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 	if err != nil {
 		return request.JobSpec{}, err
 	}
-	t, err := in.strs("cron", "every", "event", "match", "extract", "idempotency_key", "agent")
+	t, err := in.strs("cron", "every", "event", "match", "extract", "idempotency_key", "agent", "folder")
 	if err != nil {
 		return request.JobSpec{}, err
 	}
@@ -520,7 +521,7 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 		Name: v[0], Workspace: v[1], Content: v[2], Prompt: v[3], Harness: v[4], Description: v[5],
 		Model: m[0], Effort: m[1],
 		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4], IdempotencyKey: t[5],
-		Agent: t[6], Rooms: commaList(scope[0]), Allowlist: commaList(scope[1]),
+		Agent: t[6], Folder: t[7], Rooms: commaList(scope[0]), Allowlist: commaList(scope[1]),
 		Contains: commaList(scope[2]), From: scope[3], Replies: scope[4],
 	}, nil
 }
@@ -3142,12 +3143,12 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 // envset takes one name or a list of names (plan H.3). connectors is a list.
 // contact and notify take null to remove the key (inherit).
 var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
-	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "envset", "connectors", "followup_prompt", "session", "contact", "notify",
+	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "envset", "connectors", "followup_prompt", "folder", "session", "contact", "notify",
 }
 
 // agentPatchFields add kit, which only an agent self-patch accepts: the
-// daemon renders it into a proposal.
-var agentPatchFields = append(append([]string{}, jobPatchFields...), "kit") //nolint:gochecknoglobals // static field list, never mutated
+// daemon renders it into a proposal. folder applies only to a job.
+var agentPatchFields = append(slices.DeleteFunc(slices.Clone(jobPatchFields), func(f string) bool { return f == "folder" }), "kit") //nolint:gochecknoglobals // static field list, never mutated
 
 // assistantSetFields are the flat fields assistant.set accepts. They mirror
 // the assistant.Override keys; email and triggers stay YAML-only in

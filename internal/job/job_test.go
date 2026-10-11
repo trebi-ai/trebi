@@ -700,3 +700,38 @@ func TestParseArtifacts(t *testing.T) {
 		}
 	}
 }
+
+func TestParseFolder(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, path, fm, want, err string
+	}{
+		{name: "none", path: "/ws/agents/cmo/a/JOB.md", fm: "", want: ""},
+		{name: "plain", path: "/ws/agents/cmo/a/JOB.md", fm: "folder: SEO\n", want: "SEO"},
+		{name: "trim", path: "/ws/agents/cmo/a/JOB.md", fm: "folder: \"  Competitor watch  \"\n", want: "Competitor watch"},
+		{name: "empty", path: "/ws/agents/cmo/a/JOB.md", fm: "folder: \"\"\n", want: ""},
+		{name: "slash", path: "/ws/agents/cmo/a/JOB.md", fm: "folder: a/b\n", err: "nested folders are not supported"},
+		{name: "backslash", path: "/ws/agents/cmo/a/JOB.md", fm: "folder: 'a\\b'\n", err: "nested folders are not supported"},
+		{name: "long", path: "/ws/agents/cmo/a/JOB.md", fm: "folder: " + strings.Repeat("x", 65) + "\n", err: "at most 64 characters"},
+		{name: "control", path: "/ws/agents/cmo/a/JOB.md", fm: "folder: \"a\\tb\"\n", err: "remove control characters"},
+		{name: "agent", path: "/ws/agents/cmo/AGENT.md", fm: "folder: SEO\n", err: "applies only to a job"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			j, err := job.ParseBytes(tc.path, []byte("---\nharness: claude\n"+tc.fm+"---\nBody\n"))
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("err=%v want %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if j.Folder != tc.want {
+				t.Fatalf("folder=%q want %q", j.Folder, tc.want)
+			}
+		})
+	}
+}

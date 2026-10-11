@@ -75,7 +75,7 @@ var patchSessionFields = map[string]string{ //nolint:gochecknoglobals // static 
 
 // MergePatchFrontmatter applies a JSON-merge-patch of known scalar frontmatter fields.
 // Supports: disabled, harness, title, envset, connectors, description,
-// working_dir, followup_prompt, and session.* scalars; envset also accepts a
+// working_dir, followup_prompt, folder, and session.* scalars; envset also accepts a
 // list of names (plan H.3), and connectors is always a list. A nested "session" map is flattened
 // to session.idle_timeout etc. via line rewrite. An unknown key is an error:
 // a silent success would tell the caller a change landed when it did not.
@@ -85,6 +85,10 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 	}
 	flattenSessionPatch(patch)
 	if err := checkPatchKeys(patch); err != nil {
+		return err
+	}
+	folder, folderSet, err := folderPatch(path, patch)
+	if err != nil {
 		return err
 	}
 	if err := applyDisabledPatch(path, patch); err != nil {
@@ -102,12 +106,17 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 	if err := applyEmailAcceptPatch(path, patch); err != nil {
 		return err
 	}
+	if folderSet {
+		if err := setTopLevelField(path, "folder", folder); err != nil {
+			return err
+		}
+	}
 	return applySessionPatch(path, patch)
 }
 
 // checkPatchKeys rejects a key the writer does not honor.
 func checkPatchKeys(patch map[string]any) error {
-	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true, "email_accept": true}
+	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true, "email_accept": true, "folder": true}
 	for k := range patchHarnessFields {
 		known[k] = true
 	}
@@ -128,9 +137,37 @@ func checkPatchKeys(patch map[string]any) error {
 	}
 	sort.Strings(unknown)
 	valid := append([]string{"disabled", "harness", "model", "effort"}, patchScalars...)
-	valid = append(valid, "contact", "notify", "email_accept", "session")
+	valid = append(valid, "contact", "notify", "email_accept", "folder", "session")
 	return fmt.Errorf("unknown patch field(s) %s; valid fields are %s",
 		strings.Join(unknown, ", "), strings.Join(valid, ", "))
+}
+
+// folderPatch checks the folder value before any write and returns it as
+// YAML text. An empty or null value removes the key.
+func folderPatch(path string, patch map[string]any) (text string, set bool, err error) {
+	v, ok := patch["folder"]
+	if !ok {
+		return "", false, nil
+	}
+	s, isStr := v.(string)
+	if v != nil && !isStr {
+		return "", false, errors.New("folder: must be a string")
+	}
+	folder, err := normalizeFolder(s)
+	if err != nil {
+		return "", false, fmt.Errorf("folder: %w", err)
+	}
+	if folder == "" {
+		return "", true, nil
+	}
+	if isAgentFile(path) {
+		return "", false, errors.New("folder: applies only to a job")
+	}
+	out, err := yaml.Marshal(folder)
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(string(out)), true, nil
 }
 
 // flattenSessionPatch lifts a nested session map into dotted session.* keys.
@@ -685,6 +722,7 @@ type Spec struct {
 	Model       string
 	Effort      string
 	Description string
+	Folder      string
 	EmailAccept []string
 	Cron        string
 	Every       string
@@ -711,7 +749,14 @@ type EventSpec struct {
 
 // Render composes JOB.md text. It returns Content unchanged when set.
 func (s Spec) Render() (string, error) {
+	folder, err := normalizeFolder(s.Folder)
+	if err != nil {
+		return "", fmt.Errorf("folder: %w", err)
+	}
 	if strings.TrimSpace(s.Content) != "" {
+		if folder != "" {
+			return "", errors.New("folder: set the folder key in the content")
+		}
 		if s.ID == "" || LooksLikeID(scanID([]byte(s.Content))) {
 			return s.Content, nil
 		}
@@ -726,6 +771,7 @@ func (s Spec) Render() (string, error) {
 		Title:       s.Title,
 		Harness:     HarnessSpec{Name: s.Harness, Model: s.Model, Effort: s.Effort},
 		Description: s.Description,
+		Folder:      folder,
 		Email:       emailSpec(s.EmailAccept),
 		Session:     s.Session,
 		Env:         s.Env,

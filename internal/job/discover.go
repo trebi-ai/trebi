@@ -175,6 +175,9 @@ func (dv *discovery) job(path string) *Job {
 	if parseErr != nil && j.ParseError == "" {
 		j.ParseError = parseErr.Error()
 	}
+	if err := j.CheckFolderOwner(j.Owner); err != nil && j.ParseError == "" {
+		j.ParseError = err.Error()
+	}
 	j.Prompt = SubstituteJobVars(j.Prompt, j.Dir, dv.workspacePath)
 	j.FollowupPrompt = SubstituteJobVars(j.FollowupPrompt, j.Dir, dv.workspacePath)
 	return j

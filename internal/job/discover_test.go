@@ -532,3 +532,30 @@ func TestAgentDescriptionRequired(t *testing.T) {
 		t.Fatalf("job without description: %q", disc.Jobs[0].ParseError)
 	}
 }
+
+func TestDiscoverFolderOwner(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\nharness: claude\n---\n\nLead.\n")
+	writeFile(t, filepath.Join(root, "agents", "cmo", "a", "JOB.md"), "---\nharness: claude\nfolder: SEO\n---\n\nA.\n")
+	writeJob(t, filepath.Join(root, "agents", "cmo", "b"))
+	writeFile(t, filepath.Join(root, "reports", "daily", "JOB.md"), "---\nharness: claude\nfolder: SEO\n---\n\nD.\n")
+
+	disc, err := job.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*job.Job{}
+	for _, j := range disc.Jobs {
+		byName[j.Name] = j
+	}
+	if a := byName["agents/cmo/a"]; a == nil || a.Folder != "SEO" || a.ParseError != "" {
+		t.Fatalf("a=%+v", a)
+	}
+	if b := byName["agents/cmo/b"]; b == nil || b.Folder != "" {
+		t.Fatalf("b=%+v", b)
+	}
+	if d := byName["reports/daily"]; d == nil || d.ParseError != job.ErrFolderNoOwner.Error() {
+		t.Fatalf("reports/daily=%+v", d)
+	}
+}

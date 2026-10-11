@@ -118,6 +118,7 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "on", Usage: "event trigger: the connector name"},
 				&cli.StringFlag{Name: "match", Usage: "event match expression, with --on"},
 				&cli.StringFlag{Name: "agent", Usage: "owning agent short name; lands the job under agents/<name>/"},
+				&cli.StringFlag{Name: "folder", Usage: "folder of the job under its agent, with --agent"},
 				&cli.BoolFlag{Name: "validate", Usage: "check the definition; write nothing"},
 			},
 			Action: runJobCreate,
@@ -307,6 +308,7 @@ func runJobCreate(_ context.Context, c *cli.Command) error {
 		Harness: c.String("harness"), Description: c.String("description"),
 		Cron: c.String("cron"), Every: c.String("every"),
 		Event: c.String("on"), Match: c.String("match"), Agent: c.String("agent"),
+		Folder: c.String("folder"),
 	}
 	switch {
 	case c.String("file") != "" || stdinPiped():

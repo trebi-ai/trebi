@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -106,6 +107,32 @@ func TestConnectorActionsUseConnectionRefs(t *testing.T) {
 	}
 	if _, err := cat["create"].Build(Input{}); err == nil {
 		t.Fatal("create without a connection must fail")
+	}
+}
+
+// TestJobFolderFields proves job.create, job.validate_text, and job.patch
+// send folder, and agent.patch does not take it.
+func TestJobFolderFields(t *testing.T) {
+	t.Parallel()
+	cat := NewCatalog()
+	for _, action := range []string{"create", "validate_text"} {
+		req, err := cat["job"][action].Build(Input{"name": "a", "workspace": "w", "prompt": "Go.", "agent": "cmo", "folder": "SEO"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := json.Marshal(req.Body); !strings.Contains(string(b), `"folder":"SEO"`) {
+			t.Fatalf("%s body %s", action, b)
+		}
+	}
+	req, err := cat["job"]["patch"].Build(Input{"name": "a", "folder": ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := json.Marshal(req.Body); string(b) != `{"folder":""}` {
+		t.Fatalf("patch body %s", b)
+	}
+	if slices.Contains(agentPatchFields, "folder") {
+		t.Fatal("agent.patch must not take folder")
 	}
 }
 

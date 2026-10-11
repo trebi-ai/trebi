@@ -468,3 +468,79 @@ func TestJobRenameRoute(t *testing.T) {
 		}
 	}
 }
+
+// TestJobFolder covers the folder key on list, get, patch, create, and validate.
+func TestJobFolder(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, wsDir, "folders")
+	duty := base + "/v1/jobs/agents%2Fcmo%2Fduty?workspace=" + wsID
+
+	folders := func() map[string]any {
+		t.Helper()
+		code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID, nil)
+		if code != 200 {
+			t.Fatalf("list %d %v", code, body)
+		}
+		out := map[string]any{}
+		jobs, _ := body["jobs"].([]any)
+		for _, j := range jobs {
+			row, _ := j.(map[string]any)
+			out[row["name"].(string)] = row["folder"]
+		}
+		return out
+	}
+
+	if code, body, _ := doJSON(t, "PATCH", duty, map[string]any{"folder": "SEO"}); code != 200 {
+		t.Fatalf("patch %d %v", code, body)
+	}
+	if got := folders(); got["agents/cmo/duty"] != "SEO" || got["alpha"] != "" {
+		t.Fatalf("folders=%v", got)
+	}
+	if code, body, _ := doJSON(t, "GET", duty, nil); code != 200 || body["folder"] != "SEO" {
+		t.Fatalf("get %d %v", code, body)
+	}
+	if code, body, _ := doJSON(t, "PATCH", duty, map[string]any{"folder": "a/b"}); code != 400 || errCode(body) != "validation" {
+		t.Fatalf("patch a/b %d %v", code, body)
+	}
+	if code, body, _ := doJSON(t, "PATCH", base+"/v1/jobs/alpha?workspace="+wsID, map[string]any{"folder": "SEO"}); code != 400 || errCode(body) != "validation" {
+		t.Fatalf("patch loose %d %v", code, body)
+	}
+	if code, body, _ := doJSON(t, "PATCH", duty, map[string]any{"folder": ""}); code != 200 {
+		t.Fatalf("patch empty %d %v", code, body)
+	}
+	if got := folders(); got["agents/cmo/duty"] != "" {
+		t.Fatalf("folders after clear=%v", got)
+	}
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
+		"workspace": wsID, "name": "audit", "agent": "cmo", "prompt": "Audit.", "folder": "Growth",
+	})
+	if code != 201 {
+		t.Fatalf("create %d %v", code, body)
+	}
+	if got := folders(); got["agents/cmo/audit"] != "Growth" {
+		t.Fatalf("folders after create=%v", got)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs", map[string]any{
+		"workspace": wsID, "name": "loose", "prompt": "Go.", "folder": "Growth",
+	})
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("create loose %d %v", code, body)
+	}
+
+	for _, tc := range []struct {
+		body map[string]any
+		ok   bool
+	}{
+		{map[string]any{"name": "reports/daily", "prompt": "Go.", "harness": "fake", "folder": "SEO"}, false},
+		{map[string]any{"name": "agents/cmo/daily", "prompt": "Go.", "harness": "fake", "folder": "SEO"}, true},
+		{map[string]any{"name": "daily", "agent": "cmo", "prompt": "Go.", "harness": "fake", "folder": "SEO"}, true},
+	} {
+		code, body, _ := doJSON(t, "POST", base+"/v1/jobs/validate", tc.body)
+		if code != 200 || body["ok"] != tc.ok {
+			t.Fatalf("validate %v: %d %v", tc.body, code, body)
+		}
+	}
+}

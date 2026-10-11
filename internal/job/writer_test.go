@@ -138,6 +138,23 @@ func TestSpecRenderOmitsUnsetFields(t *testing.T) {
 	}
 }
 
+func TestSpecRenderFolder(t *testing.T) {
+	t.Parallel()
+	md, err := job.Spec{Prompt: "Go.", Description: "Watch.", Folder: " SEO "}.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "description: Watch.\nfolder: SEO\n"; !strings.Contains(md, want) {
+		t.Fatalf("got:\n%s", md)
+	}
+	if _, err := (job.Spec{Prompt: "Go.", Folder: "a/b"}).Render(); err == nil {
+		t.Fatal("folder a/b accepted")
+	}
+	if _, err := (job.Spec{Content: "---\nharness: claude\n---\n\nhi\n", Folder: "SEO"}).Render(); err == nil {
+		t.Fatal("folder with content accepted")
+	}
+}
+
 func TestSpecRenderNestedHarness(t *testing.T) {
 	t.Parallel()
 	md, err := job.Spec{Prompt: "Run.", Harness: "claude", Model: "opus", Effort: "xhigh"}.Render()

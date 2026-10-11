@@ -74,6 +74,7 @@ structured fields cover the job.
 - `replies` (string, optional): `continue` or `off`, with `event`. `continue` sends each later message of the same conversation to the run that the first message started, also when that run ended.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first job.
 - `agent` (string, optional): agent short name. The job lands in `agents/<agent>/` and the name becomes the full relative path.
+- `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder. Use `content` with a `folder:` key instead when you give `content`.
 
 ### validate_text
 Check a job definition without writing a job. Call it before `create` when you
@@ -97,6 +98,8 @@ compose a definition yourself. The response is `{ok, error, markdown}`, where
 - `contains` (string, optional): comma list of words or phrases, with `event`.
 - `from` (string, optional): `people`, `bots`, or `anyone`, with `event`.
 - `replies` (string, optional): `continue` or `off`, with `event`.
+- `agent` (string, optional): agent short name; the parse uses `agents/<agent>/<name>`.
+- `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder.
 - `workspace` (string, optional): workspace id.
 - `idempotency_key` (string, optional): accepted and ignored; validation writes nothing.
 
@@ -121,6 +124,7 @@ field returns `validation`; it is never a silent success.
 - `envset` (string or list, optional): environment set name, or a list of names applied in order.
 - `connectors` (list, optional): connector names that carry an `actions` block. A list that is not empty replaces the kit list; `[]` clears it. `kit` is not a patch field; the owner agent holds the kit.
 - `followup_prompt` (string, optional): prompt sent after the run.
+- `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder. An empty value removes it.
 - `session` (object, optional): session fields `max_duration`, `idle_timeout`, `keep_alive`, `nudge`, `resumable`, `if_running` (`queue` (default), `skip`, or `replace`), `continue` (a duration such as `12h` or `7d`: an event with the same conversation key continues the session of the last run when that run ended inside this window; empty is off).
 - `workspace` (string, optional): workspace id.
 - `if_match` (string, optional): current revision; a stale value returns 412.

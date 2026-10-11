@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 50
+const SchemaVersion = 51
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1831,5 +1831,7 @@ CREATE INDEX decisions_subject ON decisions(subject_kind, subject_id);
 
 ALTER TABLE schedules ADD COLUMN artifact_id TEXT NOT NULL DEFAULT '';
 `,
+		// v51: the folder label of an agent job. The next index rebuild fills it.
+		`ALTER TABLE job_index ADD COLUMN folder TEXT NOT NULL DEFAULT '';`,
 	}
 }

@@ -1863,6 +1863,7 @@ type JobSpec struct {
 	Model          string
 	Effort         string
 	Description    string
+	Folder         string // group label under the owner agent
 	Cron           string
 	Every          string
 	Event          string
@@ -1893,8 +1894,8 @@ func (j JobSpec) body() map[string]any {
 	body := map[string]any{"name": j.Name, "workspace": j.Workspace, "content": j.Content}
 	for k, v := range map[string]string{
 		"prompt": j.Prompt, "harness": j.Harness, "model": j.Model, "effort": j.Effort,
-		"description": j.Description,
-		"cron":        j.Cron, "every": j.Every, "idempotency_key": j.IdempotencyKey,
+		"description": j.Description, "folder": j.Folder,
+		"cron": j.Cron, "every": j.Every, "idempotency_key": j.IdempotencyKey,
 		"agent": j.Agent, "kind": j.Kind,
 	} {
 		if v != "" {

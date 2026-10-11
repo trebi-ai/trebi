@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/adrg/frontmatter"
 	"github.com/trebi-ai/trebi/internal/config"
@@ -93,6 +95,7 @@ type Frontmatter struct {
 	FollowupPrompt string            `yaml:"followup_prompt,omitempty"`
 	Name           string            `yaml:"name,omitempty"` // verified then ignored for JOB.md identity
 	Description    string            `yaml:"description,omitempty"`
+	Folder         string            `yaml:"folder,omitempty"`
 	Inputs         any               `yaml:"inputs,omitempty"`
 	Skills         any               `yaml:"skills,omitempty"`
 	Connectors     any               `yaml:"connectors,omitempty"`
@@ -154,6 +157,17 @@ func ValidateIfRunning(v string) error {
 		return nil
 	}
 	return fmt.Errorf("if_running %q: must be queue, skip, or replace", v)
+}
+
+// ErrFolderNoOwner is the error of a folder on a job with no owner agent.
+var ErrFolderNoOwner = errors.New("folder: only a job of an agent can have a folder")
+
+// CheckFolderOwner returns ErrFolderNoOwner when a job with no owner agent has a folder.
+func (j *Job) CheckFolderOwner(owner string) error {
+	if j.Folder != "" && owner == "" {
+		return ErrFolderNoOwner
+	}
+	return nil
 }
 
 // KnobsMS is the one resolver from session strings to launch knobs (B16).
@@ -284,6 +298,7 @@ type Job struct {
 	Prompt         string
 	Kind           string // job | assistant | agent
 	Owner          string // owning agent index name (agents/<name>) for jobs under an agent folder
+	Folder         string // group label under the owner agent; one level, no slash
 	EmailAccept    []string
 	EmailStyle     *StyleYAML
 	AcceptSet      bool
@@ -740,6 +755,13 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	if _, err := fm.Session.ContinueMS(); err != nil {
 		return parseFail(filePath, data, hash, fmt.Errorf("session: %w", err))
 	}
+	folder, err := normalizeFolder(fm.Folder)
+	if err != nil {
+		return parseFail(filePath, data, hash, fmt.Errorf("folder: %w", err))
+	}
+	if folder != "" && isAgentFile(filePath) {
+		return parseFail(filePath, data, hash, errors.New("folder: applies only to a job"))
+	}
 
 	// A name: mismatch with the path-derived name is soft (migration reports
 	// it); parse keeps the path-derived name for jobs.
@@ -792,6 +814,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Artifacts:      artifacts,
 		Hash:           hash,
 		Description:    fm.Description,
+		Folder:         folder,
 		Notify:         route,
 		NotifySet:      route != nil,
 		Contact:        contact,
@@ -1239,6 +1262,22 @@ func uniqueEntries(in []string) []string {
 func fileHash(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:8])
+}
+
+// normalizeFolder trims a folder label and checks the one-level rule.
+func normalizeFolder(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	switch {
+	case v == "":
+		return "", nil
+	case strings.ContainsAny(v, `/\`):
+		return "", fmt.Errorf("folder %q: use one folder name; nested folders are not supported", v)
+	case utf8.RuneCountInString(v) > 64:
+		return "", fmt.Errorf("folder %q: use at most 64 characters", v)
+	case strings.IndexFunc(v, unicode.IsControl) >= 0:
+		return "", fmt.Errorf("folder %q: remove control characters", v)
+	}
+	return v, nil
 }
 
 func parseFail(path string, data []byte, hash string, err error) (*Job, error) {

@@ -172,3 +172,62 @@ func TestMergePatchFrontmatterEmailAccept(t *testing.T) {
 		t.Fatal("a bad entry passed")
 	}
 }
+
+func TestMergePatchFolder(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "JOB.md")
+	if err := os.WriteFile(path, []byte("---\nharness: claude\n---\n\nBody.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	folder := func() string {
+		t.Helper()
+		j, err := job.ParseFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j.Folder
+	}
+	steps := []struct {
+		value any
+		want  string
+	}{
+		{"SEO", "SEO"},
+		{"Growth: Q4", "Growth: Q4"},
+		{"", ""},
+	}
+	for _, s := range steps {
+		if err := job.MergePatchFrontmatter(path, map[string]any{"folder": s.value}); err != nil {
+			t.Fatalf("patch %v: %v", s.value, err)
+		}
+		if got := folder(); got != s.want {
+			t.Fatalf("after %v: folder=%q want %q", s.value, got, s.want)
+		}
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "folder") {
+		t.Fatalf("empty folder left the key:\n%s", data)
+	}
+	before := data
+	if err := job.MergePatchFrontmatter(path, map[string]any{"folder": "a/b", "title": "X"}); err == nil {
+		t.Fatal("folder a/b accepted")
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Fatalf("a bad folder changed the file:\n%s", after)
+	}
+}
+
+func TestMergePatchFolderOnAgent(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "agents", "cmo", "AGENT.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("---\nharness: claude\n---\n\nLead.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := job.MergePatchFrontmatter(path, map[string]any{"folder": "SEO"})
+	if err == nil || !strings.Contains(err.Error(), "applies only to a job") {
+		t.Fatalf("err=%v", err)
+	}
+}

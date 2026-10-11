@@ -404,3 +404,28 @@ func TestMigrationV50Artifacts(t *testing.T) {
 		t.Fatal("a second artifact with the same key was accepted")
 	}
 }
+
+// TestMigrationV51JobFolder adds job_index.folder; an old row reads "".
+func TestMigrationV51JobFolder(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "v50.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applyThrough(db, 50); err != nil {
+		t.Fatalf("v50 setup: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, active, owner_id, updated_at) VALUES ('jb_1', 'w', 'a', '/a', 'job', 1, '', 't')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var folder string
+	if err := db.QueryRow(`SELECT folder FROM job_index WHERE id='jb_1'`).Scan(&folder); err != nil {
+		t.Fatal(err)
+	}
+	if folder != "" {
+		t.Fatalf("folder=%q want empty", folder)
+	}
+}
