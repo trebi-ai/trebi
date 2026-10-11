@@ -1739,11 +1739,21 @@ func BuildConnectorsListPath(limit int, capability, provenance, workspace string
 	return withQuery("/v1/connectors", kv)
 }
 
-// BuildInboxListPath builds GET /v1/inbox query from list flags.
-func BuildInboxListPath(status, kind, cursor string, limit int) string {
-	kv := map[string]string{"status": status, "kind": kind, "cursor": cursor}
-	if limit > 0 {
-		kv["limit"] = strconv.Itoa(limit)
+// InboxQuery is the filter of GET /v1/inbox. Empty fields stay out.
+type InboxQuery struct {
+	View, Kind, Workspace, Query, Cursor string
+	Unread                               bool
+	Limit                                int
+}
+
+// BuildInboxListPath builds GET /v1/inbox with the filter of q.
+func BuildInboxListPath(q InboxQuery) string {
+	kv := map[string]string{"view": q.View, "kind": q.Kind, "workspace": q.Workspace, "q": q.Query, "cursor": q.Cursor}
+	if q.Unread {
+		kv["unread"] = "1"
+	}
+	if q.Limit > 0 {
+		kv["limit"] = strconv.Itoa(q.Limit)
 	}
 	return withQuery("/v1/inbox", kv)
 }
@@ -1753,25 +1763,17 @@ func BuildInboxGet(id string) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/inbox/" + url.PathEscape(id)}
 }
 
-// BuildInboxRead builds POST /v1/inbox/{id}/read.
-func BuildInboxRead(id string) HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: "/v1/inbox/" + url.PathEscape(id) + "/read"}
+// InboxApply is the body of POST /v1/inbox/apply. Set IDs or Filter.
+type InboxApply struct {
+	Op      string         `json:"op"`
+	IDs     []string       `json:"ids,omitempty"`
+	Filter  map[string]any `json:"filter,omitempty"`
+	Confirm bool           `json:"confirm,omitempty"`
 }
 
-// BuildInboxResolve builds POST /v1/inbox/{id}/resolve.
-func BuildInboxResolve(id string) HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: "/v1/inbox/" + url.PathEscape(id) + "/resolve"}
-}
-
-// BuildInboxReadAll builds POST /v1/inbox/read-all.
-func BuildInboxReadAll() HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: "/v1/inbox/read-all"}
-}
-
-// BuildInboxResolveAll builds POST /v1/inbox/resolve-all. An empty kind covers
-// every kind.
-func BuildInboxResolveAll(kind string) HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: withQuery("/v1/inbox/resolve-all", map[string]string{"kind": kind})}
+// BuildInboxApply builds POST /v1/inbox/apply.
+func BuildInboxApply(b InboxApply) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/inbox/apply", Body: b}
 }
 
 // BuildAlertsPath builds GET /v1/alerts?since=.

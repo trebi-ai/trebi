@@ -38,10 +38,10 @@ func (c *ControlPlane) OpenPermissionTimeout(ctx context.Context, workspaceID, c
 	})
 	_, err := c.Store.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO inbox_items (
-			id, kind, status, subject, title, body, hint, workspace_id, alert_kind,
+			id, kind, subject, title, body, hint, workspace_id, alert_kind,
 			actions, revision, created_at, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
-			id, string(alerts.InboxApproval), string(alerts.InboxUnread), subject, title, body, hint,
+		) VALUES (?,?,?,?,?,?,?,?,?,1,?,?)`,
+			id, string(alerts.InboxApproval), subject, title, body, hint,
 			workspaceID, "assistant_permission_timeout", acts, now, now)
 		return err
 	}, store.BusEvent{

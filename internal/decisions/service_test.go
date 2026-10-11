@@ -15,6 +15,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/decisions"
 	"github.com/trebi-ai/trebi/internal/decisions/decisionstest"
 	"github.com/trebi-ai/trebi/internal/decisions/policies"
+	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -112,7 +113,11 @@ func TestDecideFailuresAreSafe(t *testing.T) {
 
 func TestDecideRepairs(t *testing.T) {
 	t.Parallel()
-	fake := decisionstest.New(decisionstest.Values("asks_data", "maybe"), safeStep())
+	bad := decisionstest.Values("asks_data", "maybe")
+	bad.Tokens = pricing.TokenUsage{Input: 100, Output: 10, CacheRead: 1000, CacheCreation: 50}
+	good := safeStep()
+	good.Tokens = pricing.TokenUsage{Input: 120, Output: 20, CacheRead: 1000}
+	fake := decisionstest.New(bad, good)
 	s, _ := newService(t, config.DecisionsConfig{Decider: "fake"}, fake)
 	d, err := s.Decide(context.Background(), "ws1", policies.EmailReplyKind, decisions.Subject{ID: "m1"}, decisions.State{Text: "Hi"})
 	if err != nil || d.Status != decisions.StatusOK || d.Attempts != 2 {
@@ -120,6 +125,15 @@ func TestDecideRepairs(t *testing.T) {
 	}
 	if !strings.Contains(fake.Requests[1].Repair, "asks_data") {
 		t.Fatalf("repair %q", fake.Requests[1].Repair)
+	}
+	// Both calls count: the reply that failed the check also used tokens.
+	want := pricing.TokenTotals{Input: 220, Output: 30, CacheRead: 2000, CacheCreation: 50, Billed: 300, Cached: 2000}
+	if d.Tokens != want {
+		t.Fatalf("tokens %+v, want %+v", d.Tokens, want)
+	}
+	got, err := s.Get(context.Background(), d.ID)
+	if err != nil || got.Tokens != want {
+		t.Fatalf("stored tokens %+v, %v", got.Tokens, err)
 	}
 }
 
@@ -241,7 +255,8 @@ func TestHarnessDecider(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	reply := `{"answers":[{"id":"asks_data","value":"false","confidence":0.8,"reason":"no"}]}`
-	env := `{"type":"result","result":` + quote(reply) + `,"total_cost_usd":0.002}`
+	env := `{"type":"result","result":` + quote(reply) + `,"total_cost_usd":0.002,"usage":{"input_tokens":12,` +
+		`"cache_creation_input_tokens":300,"cache_read_input_tokens":4000,"output_tokens":45}}`
 	tests := []struct {
 		name, script string
 		wantErr      bool
@@ -264,6 +279,9 @@ func TestHarnessDecider(t *testing.T) {
 		}
 		if !tc.wantErr && (len(res.Answers) != 1 || res.CostUSD != 0.002 || res.Answers[0].Value != "false") {
 			t.Fatalf("%s: %+v", tc.name, res)
+		}
+		if want := (pricing.TokenUsage{Input: 12, Output: 45, CacheRead: 4000, CacheCreation: 300}); !tc.wantErr && res.Tokens != want {
+			t.Fatalf("%s: tokens %+v, want %+v", tc.name, res.Tokens, want)
 		}
 	}
 	if _, err := decisions.NewHarness("gemini", "/bin/true", "", nil).Decide(context.Background(), decisions.Request{}); err == nil {

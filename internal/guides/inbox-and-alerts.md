@@ -11,16 +11,18 @@ The inbox is a queue you drain. Alerts are a read-only feed of every firing.
 ## Inbox
 
 ```bash
-trebi inbox list --status unread --json
-trebi inbox list --kind approval --json
+trebi inbox ls --unread --json
+trebi inbox ls --kind approval --json
+trebi inbox ls --done --json
 trebi inbox show <id> --json
-trebi inbox read <id>
-trebi inbox read-all
-trebi inbox resolve-all --kind approval
-trebi inbox resolve <id>
+trebi inbox read <id>...
+trebi inbox unread <id>...
+trebi inbox archive <id>...
+trebi inbox archive --all --kind health
+trebi inbox unarchive <id>...
 ```
 
-Kinds: `approval` | `request` | `failure` | `health` | `watchdog`. `resolve` manually dismisses one item; `resolve-all` clears every open item, or one kind with `--kind`.
+Kinds: `approval` | `request` | `failure` | `health` | `watchdog` | `escalation`. An item is open (in the inbox) or Done. Read state is separate from Done state. `archive` moves items to Done; `unarchive` moves them back. `--all` acts on every open item, or one kind with `--kind`. Trebi closes an item when its cause goes away (`done_by: system`). An archive of an open approval or request needs `--yes`: the run still waits after the archive. `needs_action` marks an open approval, an open request, and an open blocker or critical alert. Trebi deletes a Done item after `inbox.done_retention` (default 720h).
 
 ## Approvals (runs)
 
@@ -36,10 +38,10 @@ A pending row carries the question the agent asked. See `trebi guide runs-and-de
 
 ## Requests (jobs)
 
-A request inbox item points at a request that a job run opened. `request_id` on the item names it. Answer the request, not the item: the item resolves when the request closes.
+A request inbox item points at a request that a job run opened. `request_id` on the item names it. Answer the request, not the item: Trebi closes the item when the request closes.
 
 ```bash
-trebi inbox list --kind request --json
+trebi inbox ls --kind request --json
 trebi request show <request_id>
 trebi request answer <request_id> approve
 trebi request dismiss <request_id>
@@ -106,7 +108,7 @@ trebi outbox cancel <id>
 
 ```bash
 trebi doctor --json
-trebi inbox list --status unread --json
+trebi inbox ls --unread --json
 trebi runs approvals --json
 trebi runs list --status failed --limit 20 --json
 ```

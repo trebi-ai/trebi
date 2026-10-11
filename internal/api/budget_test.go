@@ -10,9 +10,11 @@ import (
 	"time"
 )
 
-func TestHumanManualRunAllowedOverBudgetWithWarning(t *testing.T) {
-	s, base, dir := startAPI(t)
-	_ = s
+// seedSpentAgent adds an agent with a $100 budget and one turn of 40M
+// default-priced input tokens and 5M cache reads ($121.50) this month.
+func seedSpentAgent(t *testing.T) (base, wsID string) {
+	t.Helper()
+	_, base, dir := startAPI(t)
 	wsDir := t.TempDir()
 	agentDir := filepath.Join(wsDir, "agents", "keeper")
 	jobDir := filepath.Join(agentDir, "build")
@@ -28,28 +30,24 @@ func TestHumanManualRunAllowedOverBudgetWithWarning(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// AddWorkspace triggers the same API-side index rebuild as production.
-	// Write TREBI first? not needed here.
-	wsID := addWorkspace(t, base, wsDir, "budget-ws")
-	code, jobsBody, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID, nil)
-	if code != http.StatusOK {
-		t.Fatalf("jobs: %d %v", code, jobsBody)
-	}
-	t.Logf("jobs=%v", jobsBody)
-
-	// 40m default-priced input tokens costs $120 month-to-date.
+	wsID = addWorkspace(t, base, wsDir, "budget-ws")
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := st.DB().Exec(`INSERT INTO runs
-		(id,workspace_id,job_id,kind,status,trace_id,tokens_input,tokens_model,started_at,updated_at)
-		VALUES ('spent',?,?,'job','complete','trace',40000000,'default',?,?)`,
-		wsID, indexedJobID(t, st, wsID, "agents/keeper/build"), time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		(id,workspace_id,job_id,kind,status,trace_id,tokens_input,tokens_cache_read,tokens_model,started_at,updated_at)
+		VALUES ('spent',?,?,'job','complete','trace',40000000,5000000,'default',?,?)`,
+		wsID, indexedJobID(t, st, wsID, "agents/keeper/build"), now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO run_turns (run_id,n,reason,status,started_at,tokens_input,tokens_model)
-		VALUES ('spent',1,'manual','complete',?,40000000,'default')`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO run_turns (run_id,n,reason,status,started_at,tokens_input,tokens_cache_read,tokens_model)
+		VALUES ('spent',1,'manual','complete',?,40000000,5000000,'default')`, now); err != nil {
 		t.Fatal(err)
 	}
+	return base, wsID
+}
 
+func TestHumanManualRunAllowedOverBudgetWithWarning(t *testing.T) {
+	base, wsID := seedSpentAgent(t)
 	code, body, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{
 		"workspace": wsID, "job": "agents/keeper/build", "kind": "job",
 		"reason": "manual", "harness": "fake",
@@ -62,6 +60,55 @@ func TestHumanManualRunAllowedOverBudgetWithWarning(t *testing.T) {
 	}
 	if _, ok := body["run"].(map[string]any); !ok {
 		t.Fatalf("run missing from envelope: %v", body)
+	}
+}
+
+// TestSpendShowsTokens checks that the agent, job, and stats reads give
+// month-to-date tokens, and that the budget stays in USD.
+func TestSpendShowsTokens(t *testing.T) {
+	base, wsID := seedSpentAgent(t)
+	wantTokens := map[string]float64{"input": 40e6, "output": 0, "cache_read": 5e6, "cache_creation": 0, "billed": 40e6, "cached": 5e6}
+	checkTokens := func(what string, v any) {
+		t.Helper()
+		m, _ := v.(map[string]any)
+		for k, want := range wantTokens {
+			if m[k] != want {
+				t.Fatalf("%s.%s = %v, want %v (%v)", what, k, m[k], want, m)
+			}
+		}
+	}
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/agents?workspace="+wsID, nil)
+	agents, _ := body["agents"].([]any)
+	if code != http.StatusOK || len(agents) != 1 {
+		t.Fatalf("agents: %d %v", code, body)
+	}
+	agent, _ := agents[0].(map[string]any)
+	if _, ok := agent["cost_mtd_usd"]; ok {
+		t.Fatalf("agent still carries cost_mtd_usd: %v", agent)
+	}
+	checkTokens("tokens_mtd", agent["tokens_mtd"])
+	budget, _ := agent["budget"].(map[string]any)
+	if spent, _ := budget["spent_usd"].(float64); spent < 121.49 || spent > 121.51 || budget["state"] != "exceeded" {
+		t.Fatalf("budget must stay in USD: %v", budget)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID+"&q=build", nil)
+	jobs, _ := body["jobs"].([]any)
+	if code != http.StatusOK || len(jobs) != 1 {
+		t.Fatalf("jobs: %d %v", code, body)
+	}
+	row, _ := jobs[0].(map[string]any)
+	if _, ok := row["mtd_usd"]; ok {
+		t.Fatalf("job row still carries mtd_usd: %v", row)
+	}
+	checkTokens("mtd_tokens", row["mtd_tokens"])
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/stats/runs?workspace="+wsID+"&range=mtd", nil)
+	mtd, _ := body["mtd"].(map[string]any)
+	if code != http.StatusOK || mtd["tokens_input"] != 40e6 || mtd["tokens_cache_read"] != 5e6 ||
+		mtd["tokens_billed"] != 40e6 || mtd["tokens_cached"] != 5e6 || mtd["cost_usd"] == 0.0 {
+		t.Fatalf("stats mtd: %d %v", code, body)
 	}
 }
 

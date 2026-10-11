@@ -44,7 +44,9 @@ type busEvent struct {
 	Topic string `json:"topic"`
 	ID    string `json:"id"`
 	Attrs struct {
-		Status string `json:"status"`
+		Status string   `json:"status"` // inbox.created
+		Op     string   `json:"op"`     // inbox.updated
+		IDs    []string `json:"ids"`
 	} `json:"attrs"`
 }
 
@@ -96,8 +98,8 @@ func (f *Feed) follow(ctx context.Context) error {
 	return sc.Err()
 }
 
-// handle is one bus event in, at most one notify or withdraw out. An update
-// with no id (read all) withdraws every posted notice.
+// handle is one bus event in, at most one notify or some withdraws out. A
+// read, archive, or prune withdraws the notices of its ids.
 func (f *Feed) handle(ctx context.Context, ev busEvent) {
 	switch ev.Topic {
 	case "inbox.created":
@@ -112,19 +114,16 @@ func (f *Feed) handle(ctx context.Context, ev busEvent) {
 		f.seen[n.ID] = true
 		f.post(n)
 	case "inbox.updated":
-		if ev.Attrs.Status == "unread" {
+		switch ev.Attrs.Op {
+		case "read", "archive", "prune":
+		default:
 			return
 		}
-		if ev.ID == "" {
-			for id := range f.seen {
+		for _, id := range ev.Attrs.IDs {
+			if f.seen[id] {
+				delete(f.seen, id)
 				f.pull(id)
 			}
-			clear(f.seen)
-			return
-		}
-		if f.seen[ev.ID] {
-			delete(f.seen, ev.ID)
-			f.pull(ev.ID)
 		}
 	}
 }

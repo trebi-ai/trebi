@@ -71,3 +71,17 @@ func TestTableApplyOverrides(t *testing.T) {
 		t.Fatalf("after replace CostUSD = %v, want 3.0", u.CostUSD)
 	}
 }
+
+func TestTokenTotalsAdd(t *testing.T) {
+	t.Parallel()
+	var tot TokenTotals
+	tot.Add(TokenUsage{Input: 10, Output: 20, CacheRead: 30, CacheCreation: 40})
+	tot.Add(TokenUsage{Input: 1, Output: 2, CacheRead: 3, CacheCreation: 4})
+	want := TokenTotals{Input: 11, Output: 22, CacheRead: 33, CacheCreation: 44, Billed: 11 + 22 + 44, Cached: 33}
+	if tot != want {
+		t.Fatalf("totals = %+v, want %+v", tot, want)
+	}
+	if tot.Input+tot.Output+tot.CacheRead+tot.CacheCreation != tot.Billed+tot.Cached {
+		t.Fatalf("split %+v does not sum to billed plus cached", tot)
+	}
+}

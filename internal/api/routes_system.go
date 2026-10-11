@@ -260,22 +260,20 @@ func (s *Server) workspaceCount(ctx context.Context) int {
 	return len(list)
 }
 
-// inboxCounts returns the unread total and the unread approvals inside it.
+// inboxCounts returns the open unread total and the open unread approvals inside it.
 func (s *Server) inboxCounts(ctx context.Context) map[string]int {
 	out := map[string]int{"unread": 0, "approvals": 0}
 	if s.alerts == nil {
 		return out
 	}
-	items, err := s.alerts.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread), Limit: maxListLimit})
+	c, err := s.alerts.Counts(ctx, "")
 	if err != nil {
 		return out
 	}
-	out["unread"] = len(items)
-	for _, it := range items {
-		if it.Kind == alerts.InboxApproval {
-			out["approvals"]++
-		}
+	for _, n := range c.Unread {
+		out["unread"] += n
 	}
+	out["approvals"] = c.Unread[alerts.InboxApproval]
 	return out
 }
 
@@ -388,35 +386,46 @@ func (s *Server) streamOpts(w http.ResponseWriter, r *http.Request, flusher http
 	return cursor, topics
 }
 
+// handleDoctorFix runs the automatic fix of one finding, found by its exact
+// id. A finding with no fix answers 409 and its inbox item stays open.
 func (s *Server) handleDoctorFix(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("finding_id")
-	switch {
-	case id == "config-missing":
-		// Same documented template the daemon seeds on first start.
+	var finding alerts.DoctorFinding
+	for _, f := range s.alerts.DoctorFindings() {
+		if f.ID == id {
+			finding = f
+			break
+		}
+	}
+	var action string
+	switch finding.Fix {
+	case alerts.FixWriteConfig:
 		if _, err := config.Seed(); err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"fixed": id, "action": "wrote_default_config"})
-	case strings.HasPrefix(id, "harness-"):
-		name := strings.TrimPrefix(id, "harness-")
-		if !harness.Known(name) {
-			writeErr(w, http.StatusBadRequest, "validation", "unknown harness")
+		action = "wrote_default_config"
+	case alerts.FixHarnessHome:
+		if !harness.Known(finding.Harness) {
+			writeErr(w, http.StatusConflict, "conflict", "This finding has no automatic fix")
 			return
 		}
-		_ = os.MkdirAll(home.HarnessDir(name), 0o755)
-		writeJSON(w, http.StatusOK, map[string]any{"fixed": id, "action": "ensured_harness_home"})
-	case id == "db-missing":
-		writeJSON(w, http.StatusOK, map[string]any{"fixed": id, "action": "run_migrate_db", "hint": "trebi service migrate-db"})
+		if err := os.MkdirAll(home.HarnessDir(finding.Harness), 0o755); err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		action = "ensured_harness_home"
 	default:
-		writeJSON(w, http.StatusOK, map[string]any{"fixed": false, "id": id, "note": "no automatic fix"})
+		writeErr(w, http.StatusConflict, "conflict", "This finding has no automatic fix")
+		return
 	}
-	s.log.Info("doctor.fix_applied", "id", id)
+	s.log.Info("doctor.fix_applied", "id", id, "fix", finding.Fix)
 	_ = s.alerts.ResolveSubject(r.Context(), "doctor/"+id, "auto")
+	writeJSON(w, http.StatusOK, map[string]any{"fixed": id, "action": action})
 }
 
 func (s *Server) doctorFindings() []map[string]any {
-	src := s.alerts.CollectDoctorFindings()
+	src := s.alerts.DoctorFindings()
 	src = append(src, s.assistantDoctor()...)
 	src = append(src, s.apiBindDoctor()...)
 	src = append(src, s.agentLayoutDoctor()...)
@@ -428,9 +437,11 @@ func (s *Server) doctorFindings() []map[string]any {
 	src = append(src, s.chains.Doctor(context.Background())...)
 	out := make([]map[string]any, 0, len(src))
 	for _, f := range src {
-		out = append(out, map[string]any{
-			"id": f.ID, "severity": f.Severity, "code": f.Code, "message": f.Message,
-		})
+		m := map[string]any{"id": f.ID, "severity": f.Severity, "code": f.Code, "message": f.Message}
+		if f.Fix != "" {
+			m["fix"] = f.Fix
+		}
+		out = append(out, m)
 	}
 	return out
 }

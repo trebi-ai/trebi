@@ -157,6 +157,9 @@ func printDecision(c *cli.Command, d map[string]any) {
 	}
 	fmt.Fprintf(w, "Outcome:  %s (status %s)\n", mapStr(d, "outcome"), mapStr(d, "status"))
 	fmt.Fprintf(w, "Decider:  %s, %s attempt(s), %sms\n", mapStr(d, "decider"), mapStr(d, "attempts"), mapStr(d, "took_ms"))
+	if tok, _ := d["tokens"].(map[string]any); mapStr(tok, "billed") != "0" && mapStr(tok, "billed") != "" {
+		fmt.Fprintf(w, "Tokens:   %s billed, %s cached\n", mapStr(tok, "billed"), mapStr(tok, "cached"))
+	}
 	if e := mapStr(d, "error"); e != "" {
 		fmt.Fprintf(w, "Error:    %s\n", e)
 	}

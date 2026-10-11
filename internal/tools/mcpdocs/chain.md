@@ -9,7 +9,7 @@ A chain is all the work that one start causes: a person, the assistant, or a run
 ## Actions
 
 ### list
-List chains, newest first. The reply is `{"chains": [...], "next_cursor"}`. Each chain has `status` (`open`, `held`, or `stopped`), `live`, `limits`, and `usage` (`depth`, `turns`, `cost_usd`, `runs`).
+List chains, newest first. The reply is `{"chains": [...], "next_cursor"}`. Each chain has `status` (`open`, `held`, or `stopped`), `live`, `limits`, and `usage` (`depth`, `turns`, `cost_usd`, `tokens`, `runs`). `tokens` has `input`, `output`, `cache_read`, `cache_creation`, `billed`, and `cached`.
 - `workspace` (string, optional): workspace id or name.
 - `status` (string, optional): `open`, `held`, or `stopped`.
 - `agent` (string, optional): only chains where this agent asks or is asked.

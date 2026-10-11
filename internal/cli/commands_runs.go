@@ -571,11 +571,16 @@ func runRunsStats(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	type totals struct {
-		Runs         int     `json:"runs"`
-		OK           int     `json:"ok"`
-		Failed       int     `json:"failed"`
-		CostUSD      float64 `json:"cost_usd"`
-		TokensBilled int64   `json:"tokens_billed"`
+		Runs                int     `json:"runs"`
+		OK                  int     `json:"ok"`
+		Failed              int     `json:"failed"`
+		CostUSD             float64 `json:"cost_usd"`
+		TokensBilled        int64   `json:"tokens_billed"`
+		TokensCached        int64   `json:"tokens_cached"`
+		TokensInput         int64   `json:"tokens_input"`
+		TokensOutput        int64   `json:"tokens_output"`
+		TokensCacheRead     int64   `json:"tokens_cache_read"`
+		TokensCacheCreation int64   `json:"tokens_cache_creation"`
 	}
 	var body struct {
 		Range   string `json:"range"`
@@ -600,6 +605,11 @@ func runRunsStats(_ context.Context, c *cli.Command) error {
 	tbl.AppendRow(table.Row{"failed", body.Totals.Failed, body.MTD.Failed})
 	tbl.AppendRow(table.Row{"cost_usd", fmt.Sprintf("%.4f", body.Totals.CostUSD), fmt.Sprintf("%.4f", body.MTD.CostUSD)})
 	tbl.AppendRow(table.Row{"tokens_billed", body.Totals.TokensBilled, body.MTD.TokensBilled})
+	tbl.AppendRow(table.Row{"tokens_cached", body.Totals.TokensCached, body.MTD.TokensCached})
+	tbl.AppendRow(table.Row{"tokens_input", body.Totals.TokensInput, body.MTD.TokensInput})
+	tbl.AppendRow(table.Row{"tokens_output", body.Totals.TokensOutput, body.MTD.TokensOutput})
+	tbl.AppendRow(table.Row{"tokens_cache_read", body.Totals.TokensCacheRead, body.MTD.TokensCacheRead})
+	tbl.AppendRow(table.Row{"tokens_cache_creation", body.Totals.TokensCacheCreation, body.MTD.TokensCacheCreation})
 	tbl.AppendRow(table.Row{"running", body.Running, ""})
 	renderTable(tbl)
 	return nil

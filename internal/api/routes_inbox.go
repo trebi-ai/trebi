@@ -1,7 +1,9 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,10 +15,7 @@ import (
 func (s *Server) routeInbox(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/inbox", s.handleInbox)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.handleInboxGet)
-	mux.HandleFunc("POST /v1/inbox/{id}/read", s.handleInboxRead)
-	mux.HandleFunc("POST /v1/inbox/read-all", s.handleInboxReadAll)
-	mux.HandleFunc("POST /v1/inbox/{id}/resolve", s.handleInboxResolve)
-	mux.HandleFunc("POST /v1/inbox/resolve-all", s.handleInboxResolveAll)
+	mux.HandleFunc("POST /v1/inbox/apply", s.handleInboxApply)
 	mux.HandleFunc("GET /v1/alerts", s.handleAlerts)
 }
 
@@ -26,24 +25,21 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	limit := parseLimit(r)
-	items, err := s.alerts.List(r.Context(), alerts.ListOpts{
-		Status: q.Get("status"), Kind: q.Get("kind"), Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
-		Limit: limit, Cursor: cursor,
-	})
+	f := alerts.InboxFilter{
+		View: alerts.InboxView(q.Get("view")), Kind: alerts.InboxKind(q.Get("kind")),
+		Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
+		Unread:    q.Get("unread") == "1" || q.Get("unread") == "true", Query: q.Get("q"),
+	}
+	if err := f.Check(); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	page, err := s.alerts.List(r.Context(), alerts.ListOpts{InboxFilter: f, Limit: parseLimit(r), Cursor: cursor})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	resp := map[string]any{"items": items}
-	eff := limit
-	if eff <= 0 {
-		eff = 50
-	}
-	if len(items) == eff {
-		resp["next_cursor"] = items[len(items)-1].ID
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) handleInboxGet(w http.ResponseWriter, r *http.Request) {
@@ -59,45 +55,51 @@ func (s *Server) handleInboxGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
-func (s *Server) handleInboxRead(w http.ResponseWriter, r *http.Request) {
-	s.setInboxStatus(w, r, r.PathValue("id"), alerts.InboxRead, "manual")
+// inboxApplyBody is the body of POST /v1/inbox/apply.
+type inboxApplyBody struct {
+	Op      alerts.InboxOp      `json:"op"`
+	IDs     []string            `json:"ids"`
+	Filter  *alerts.InboxFilter `json:"filter"`
+	Confirm bool                `json:"confirm"`
 }
 
-func (s *Server) handleInboxReadAll(w http.ResponseWriter, r *http.Request) {
-	n, err := s.alerts.ReadAll(r.Context(), s.workspaceID(r.Context(), r.URL.Query().Get("workspace")))
-	if err != nil {
+// handleInboxApply changes the read or Done state of ids or of a filter. An
+// archive that would hide an open approval or request needs confirm.
+func (s *Server) handleInboxApply(w http.ResponseWriter, r *http.Request) {
+	var body inboxApplyBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "malformed body: "+err.Error())
+		return
+	}
+	if body.Filter != nil {
+		body.Filter.Workspace = s.workspaceID(r.Context(), body.Filter.Workspace)
+	}
+	res, err := s.alerts.Apply(r.Context(), body.Op, alerts.InboxSelector{
+		IDs: body.IDs, Filter: body.Filter, Confirm: body.Confirm || confirmed(r),
+	})
+	switch {
+	case errors.Is(err, alerts.ErrInvalid):
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	case errors.Is(err, alerts.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	case err != nil:
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"read": n})
-}
-
-func (s *Server) handleInboxResolve(w http.ResponseWriter, r *http.Request) {
-	s.setInboxStatus(w, r, r.PathValue("id"), alerts.InboxResolved, "manual")
-}
-
-// handleInboxResolveAll resolves every open item. ?kind= narrows it to one
-// kind; ?workspace= narrows it to one workspace plus global rows.
-func (s *Server) handleInboxResolveAll(w http.ResponseWriter, r *http.Request) {
-	n, err := s.alerts.ResolveAll(r.Context(), r.URL.Query().Get("kind"), s.workspaceID(r.Context(), r.URL.Query().Get("workspace")))
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	if len(res.Pending) > 0 {
+		n := len(res.Pending)
+		msg := fmt.Sprintf("%d items still wait for your answer. Archive them anyway?", n)
+		if n == 1 {
+			msg = "1 item still waits for your answer. Archive it anyway?"
+		}
+		writeErrDetails(w, http.StatusBadRequest, "validation", msg, map[string]any{
+			"confirm_required": true, "count": n, "pending": res.Pending,
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"resolved": n})
-}
-
-func (s *Server) setInboxStatus(w http.ResponseWriter, r *http.Request, id string, status alerts.InboxStatus, how string) {
-	err := s.alerts.SetStatus(r.Context(), id, status, how)
-	if errors.Is(err, alerts.ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "not_found", "inbox item not found")
-		return
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": status})
+	writeJSON(w, http.StatusOK, map[string]any{"updated": res.Updated})
 }
 
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {

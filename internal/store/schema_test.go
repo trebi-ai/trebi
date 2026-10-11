@@ -429,3 +429,134 @@ func TestMigrationV51JobFolder(t *testing.T) {
 		t.Fatalf("folder=%q want empty", folder)
 	}
 }
+
+// TestMigrationV52InboxState splits status into read_at, done_at, and
+// done_by, and drops status and resolved_at.
+func TestMigrationV52InboxState(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "v51.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applyThrough(db, 51); err != nil {
+		t.Fatalf("v51 setup: %v", err)
+	}
+	const ins = `INSERT INTO inbox_items (id, kind, status, created_at, updated_at, resolved_at) VALUES (?, 'health', ?, 'c', ?, ?)`
+	for _, r := range [][]any{
+		{"u", "unread", "t1", nil},
+		{"r", "read", "t2", nil},
+		{"d", "resolved", "t3", "t4"},
+		{"d2", "resolved", "t5", nil},
+	} {
+		if _, err := db.Exec(ins, r...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	want := map[string][3]string{
+		"u":  {"", "", ""},
+		"r":  {"t2", "", ""},
+		"d":  {"t3", "t4", "system"},
+		"d2": {"t5", "t5", "system"},
+	}
+	for id, w := range want {
+		var readAt, doneAt, doneBy sql.NullString
+		if err := db.QueryRow(`SELECT read_at, done_at, done_by FROM inbox_items WHERE id=?`, id).Scan(&readAt, &doneAt, &doneBy); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if got := [3]string{readAt.String, doneAt.String, doneBy.String}; got != w {
+			t.Fatalf("%s: got %q want %q", id, got, w)
+		}
+	}
+	for _, col := range []string{"status", "resolved_at"} {
+		if _, err := db.Exec(`SELECT ` + col + ` FROM inbox_items`); err == nil {
+			t.Fatalf("column %s still exists", col)
+		}
+	}
+}
+
+// TestMigrationV53ConnectionStats backfills the lifetime count of each
+// connection with the same numbers as COUNT(*) on events.
+func TestMigrationV53ConnectionStats(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "v52.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applyThrough(db, 52); err != nil {
+		t.Fatalf("v52 setup: %v", err)
+	}
+	for _, q := range []string{
+		`INSERT INTO events (id, connector, instance, received_at, summary, raw_json, trace_id) VALUES ('e1', 'x', 'c1', '2026-10-01T00:00:00Z', '', '{}', 't')`,
+		`INSERT INTO events (id, connector, instance, received_at, summary, raw_json, trace_id) VALUES ('e2', 'x', 'c1', '2026-10-03T00:00:00Z', '', '{}', 't')`,
+		`INSERT INTO events (id, connector, instance, received_at, summary, raw_json, trace_id) VALUES ('e3', 'x', 'c1', '2026-10-02T00:00:00Z', '', '{}', 't')`,
+		`INSERT INTO events (id, connector, instance, received_at, summary, raw_json, trace_id) VALUES ('e4', 'y', 'c2', '2026-10-05T00:00:00Z', '', '{}', 't')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	want := map[string]int64{}
+	rows, err := db.Query(`SELECT instance, COUNT(*) FROM events GROUP BY instance`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		var n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			t.Fatal(err)
+		}
+		want[id] = n
+	}
+	_ = rows.Close() // read-only query
+	for id, n := range want {
+		var total int64
+		var first, last string
+		if err := db.QueryRow(`SELECT events_total, first_event_at, last_event_at FROM connection_stats WHERE instance=?`, id).
+			Scan(&total, &first, &last); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if total != n {
+			t.Fatalf("%s total=%d want %d", id, total, n)
+		}
+		if id == "c1" && (first != "2026-10-01T00:00:00Z" || last != "2026-10-03T00:00:00Z") {
+			t.Fatalf("c1 first=%q last=%q", first, last)
+		}
+	}
+}
+
+// TestMigrationV54DecisionTokens adds the token columns to decisions with 0
+// for an old row.
+func TestMigrationV54DecisionTokens(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "v53.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applyThrough(db, 53); err != nil {
+		t.Fatalf("v53 setup: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO decisions (id, workspace_id, kind, kind_version, subject_kind, subject_id, decider,
+		method, status, outcome, questions_json, took_ms, cost_usd, created_at)
+		VALUES ('d1', 'w', 'k', 1, 'email', 's', 'harness:claude', 'verbal', 'ok', 'deliver', '[]', 5, 0.01, 't')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var in, out, cr, cc int64
+	var cost float64
+	if err := db.QueryRow(`SELECT tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, cost_usd
+		FROM decisions WHERE id='d1'`).Scan(&in, &out, &cr, &cc, &cost); err != nil {
+		t.Fatal(err)
+	}
+	if in != 0 || out != 0 || cr != 0 || cc != 0 || cost != 0.01 {
+		t.Fatalf("tokens %d/%d/%d/%d cost %v", in, out, cr, cc, cost)
+	}
+}

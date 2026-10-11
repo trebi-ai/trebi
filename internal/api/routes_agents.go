@@ -21,6 +21,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/notify"
+	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
@@ -701,35 +702,35 @@ func (s *Server) agentAskers(ctx context.Context, wsID, name string) ([]string, 
 // agentPayload is the agent wire shape: the job show fields plus memory,
 // disabled, and the owned job list (Part H).
 type agentPayload struct {
-	ID                string           `json:"id"`
-	Name              string           `json:"name"`
-	IndexName         string           `json:"index_name"`
-	WorkspaceID       string           `json:"workspace_id"`
-	Path              string           `json:"path"`
-	Harness           string           `json:"harness"`
-	Model             string           `json:"model,omitempty"`
-	Effort            string           `json:"effort,omitempty"`
-	Active            bool             `json:"active"`
-	Disabled          bool             `json:"disabled"`
-	Hash              string           `json:"hash"`
-	ParseError        string           `json:"parse_error,omitempty"`
-	Prompt            string           `json:"prompt"`
-	Description       string           `json:"description"`
-	Title             string           `json:"title,omitempty"`
-	Team              agentTeam        `json:"team"`
-	EmailAccept       []string         `json:"email_accept,omitempty"`
-	Status            string           `json:"status"`
-	LastRun           *runs.RunSummary `json:"last_run,omitempty"`
-	NextRunAt         *time.Time       `json:"next_run_at,omitempty"`
-	CostMTD           float64          `json:"cost_mtd_usd"`
-	OpenItems         int              `json:"open_items"`
-	OpenConversations int              `json:"open_conversations"`
-	Budget            *agentBudget     `json:"budget,omitempty"`
-	Kit               *job.KitYAML     `json:"kit,omitempty"`
-	Report            *job.ReportYAML  `json:"report,omitempty"`
-	Memory            bool             `json:"memory"`
-	Triggers          []job.Trigger    `json:"triggers"`
-	Session           job.SessionYAML  `json:"session"`
+	ID                string              `json:"id"`
+	Name              string              `json:"name"`
+	IndexName         string              `json:"index_name"`
+	WorkspaceID       string              `json:"workspace_id"`
+	Path              string              `json:"path"`
+	Harness           string              `json:"harness"`
+	Model             string              `json:"model,omitempty"`
+	Effort            string              `json:"effort,omitempty"`
+	Active            bool                `json:"active"`
+	Disabled          bool                `json:"disabled"`
+	Hash              string              `json:"hash"`
+	ParseError        string              `json:"parse_error,omitempty"`
+	Prompt            string              `json:"prompt"`
+	Description       string              `json:"description"`
+	Title             string              `json:"title,omitempty"`
+	Team              agentTeam           `json:"team"`
+	EmailAccept       []string            `json:"email_accept,omitempty"`
+	Status            string              `json:"status"`
+	LastRun           *runs.RunSummary    `json:"last_run,omitempty"`
+	NextRunAt         *time.Time          `json:"next_run_at,omitempty"`
+	TokensMTD         pricing.TokenTotals `json:"tokens_mtd"`
+	OpenItems         int                 `json:"open_items"`
+	OpenConversations int                 `json:"open_conversations"`
+	Budget            *agentBudget        `json:"budget,omitempty"`
+	Kit               *job.KitYAML        `json:"kit,omitempty"`
+	Report            *job.ReportYAML     `json:"report,omitempty"`
+	Memory            bool                `json:"memory"`
+	Triggers          []job.Trigger       `json:"triggers"`
+	Session           job.SessionYAML     `json:"session"`
 	// EnvSets is the frontmatter envset list, in file order. EnvSet below
 	// is its first value, kept for one release so the pinned UI keeps
 	// working; drop it once the UI reads env_sets (plan 2026-09-24 H.3).
@@ -831,7 +832,7 @@ func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agen
 		p.Kit = j.Kit
 		p.Report = j.Report
 		if j.Budget != nil {
-			spent := p.CostMTD
+			var spent float64 // setSpend fills the month to date
 			state := "ok"
 			if spent >= j.Budget.MonthlyUSD {
 				state = "exceeded"
@@ -977,11 +978,11 @@ func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, rows []w
 	for i := range list {
 		s.setAgentEmail(ctx, &list[i], wsID)
 	}
-	if costs, err := s.runs.OwnerCosts(ctx, wsID, r.owners()); err == nil {
-		r.setCosts(costs)
+	if spend, err := s.runs.OwnerSpend(ctx, wsID, r.owners()); err == nil {
+		r.setSpend(spend)
 	}
-	if items, err := s.alerts.List(ctx, alerts.ListOpts{Workspace: wsID, Status: string(alerts.InboxUnread), Limit: 200}); err == nil {
-		for _, item := range items {
+	if page, err := s.alerts.List(ctx, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Workspace: wsID, Unread: true}, Limit: 200}); err == nil {
+		for _, item := range page.Items {
 			if p := r.agent(r.ownerOf[item.JobID]); p != nil {
 				p.OpenItems++
 			}
@@ -1051,18 +1052,20 @@ func (r *agentRollup) agent(owner string) *agentPayload {
 	return nil
 }
 
-func (r *agentRollup) setCosts(costs map[string]float64) {
+// setSpend shows month-to-date tokens; the budget stays in USD.
+func (r *agentRollup) setSpend(spend map[string]runs.Spend) {
 	for owner, i := range r.byOwner {
 		p := &r.list[i]
-		p.CostMTD = costs[owner]
+		sp := spend[owner]
+		p.TokensMTD = sp.Tokens
 		if p.Budget == nil {
 			continue
 		}
-		p.Budget.SpentUSD = costs[owner]
+		p.Budget.SpentUSD = sp.CostUSD
 		switch {
-		case costs[owner] >= p.Budget.MonthlyUSD:
+		case sp.CostUSD >= p.Budget.MonthlyUSD:
 			p.Budget.State = "exceeded"
-		case p.Budget.MonthlyUSD > 0 && costs[owner] >= p.Budget.MonthlyUSD*0.8:
+		case p.Budget.MonthlyUSD > 0 && sp.CostUSD >= p.Budget.MonthlyUSD*0.8:
 			p.Budget.State = "warn"
 		default:
 			p.Budget.State = "ok"
@@ -1140,7 +1143,7 @@ func (t *runTally) add(owner string, run *runs.Run, withRuns bool, window time.T
 		t.last[owner] = runs.RunSummary{
 			ID: run.ID, Status: run.Status, EndReason: run.EndReason,
 			StartedAt: run.StartedAt, DurationMS: run.DurationMS,
-			CostUSD: run.Tokens.CostUSD,
+			CostUSD: run.Tokens.CostUSD, Tokens: run.Tokens,
 		}
 	}
 }

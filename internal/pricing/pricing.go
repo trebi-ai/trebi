@@ -64,6 +64,26 @@ func (t *TokenUsage) ApplyRates() {
 	t.CostUSD = costUSD(t, builtinLookup(t.Model))
 }
 
+// TokenTotals sums the token counters of many turns. It has no model and no cost.
+type TokenTotals struct {
+	Input         int64 `json:"input"`
+	Output        int64 `json:"output"`
+	CacheRead     int64 `json:"cache_read"`
+	CacheCreation int64 `json:"cache_creation"`
+	Billed        int64 `json:"billed"`
+	Cached        int64 `json:"cached"`
+}
+
+// Add folds the counters of u into the totals.
+func (t *TokenTotals) Add(u TokenUsage) {
+	t.Input += u.Input
+	t.Output += u.Output
+	t.CacheRead += u.CacheRead
+	t.CacheCreation += u.CacheCreation
+	t.Billed += u.Input + u.Output + u.CacheCreation
+	t.Cached += u.CacheRead
+}
+
 func costUSD(t *TokenUsage, r Rates) float64 {
 	return (float64(t.Input)*r.Input +
 		float64(t.Output)*r.Output +

@@ -859,7 +859,7 @@ func TestConnectorsCountersPerOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = svc.Stop("count") })
-	want := map[string]any{"events": int64(2), "duplicates": int64(1), "parse_errors": int64(1), "rejected": int64(0), "dropped": int64(0)}
+	want := map[string]any{"events": int64(2), "events_total": int64(2), "duplicates": int64(1), "parse_errors": int64(1), "rejected": int64(0), "dropped": int64(0)}
 	var got map[string]any
 	waitUntil(t, 5*time.Second, func() bool {
 		row, _ := svc.Get("count")

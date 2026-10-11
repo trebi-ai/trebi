@@ -20,8 +20,10 @@ List decisions, newest first. The reply carries `items` and, when more rows exis
 - `limit` (number, optional): page size, at most 200.
 
 ### get
-Read one decision: the questions, the answers, the reasons, the decider, the time, and the feedback.
+Read one decision: the questions, the answers, the reasons, the decider, the time, the token use, and the feedback.
 - `id` (string, required): decision id.
+
+Each decision carries `tokens` with `input`, `output`, `cache_read`, `cache_creation`, `billed`, and `cached`. The counts include every call of the check, also a repair call. A decider that reports no usage gives 0. Show the user the token use, not the money.
 
 ### raw
 Read the raw output of the decider for one decision. Use it only to find why a check failed.

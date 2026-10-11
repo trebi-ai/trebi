@@ -321,6 +321,9 @@ func (c *Config) SetPath(path, value string) error {
 	if handled, err := c.setRequestsKey(path, value); handled {
 		return err
 	}
+	if handled, err := c.setInboxKey(path, value); handled {
+		return err
+	}
 	if handled, err := c.setDecisionsKey(path, value); handled {
 		return err
 	}
@@ -507,6 +510,7 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.addCloud(cfg)
 	l.addConnectors(cfg)
 	l.addRequests(cfg)
+	l.addInbox(cfg)
 	l.addDecisions(cfg)
 	l.add("ui.public_url", cfg.UI.PublicURL, "")
 }
@@ -1282,6 +1286,7 @@ func pathKeyDescriptions() map[string]string {
 		"files.max_bytes":               "Workspace file PUT/GET size cap in bytes (default 10485760)",
 		"requests.expire_after":         "A request with no answer expires after this (default 168h)",
 		"requests.retain":               "Keep the report of a closed request this long (default 720h)",
+		"inbox.done_retention":          "Delete a Done inbox item this long after it closes (default 720h)",
 		"decisions.decider":             "Model for the safety checks: auto (native when set, else the default harness), harness, native, or off",
 		"decisions.timeout":             "Time limit of one safety check (default 20s)",
 		"decisions.model":               "Native model for the safety checks; empty = the native default",

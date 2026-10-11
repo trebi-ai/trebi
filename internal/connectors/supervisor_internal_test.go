@@ -391,6 +391,72 @@ func TestPollTicksIngestEachBatch(t *testing.T) {
 	}
 }
 
+// TestEventsTotalSurvivesRestart proves the lifetime count survives a
+// supervisor restart and a new Service, duplicates do not count, and a
+// delete drops the stats row.
+func TestEventsTotalSurvivesRestart(t *testing.T) {
+	st, svc := newInternalService(t)
+	ctx := context.Background()
+	d := linesEntry("life", manifest.Events{
+		Command: `printf '{"id":"a"}\n{"id":"b"}\n{"id":"a"}\n'; sleep 30`, Format: "json", ID: "id",
+	})
+	if _, err := svc.Create(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	counters := func(s *Service) map[string]any {
+		row, err := s.Get("life")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return row["counters"].(map[string]any)
+	}
+	if err := svc.Start(ctx, "life"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return counters(svc)["duplicates"] == int64(1) }, "the duplicate did not arrive")
+	if c := counters(svc); c["events"] != int64(2) || c["events_total"] != int64(2) {
+		t.Fatalf("first run counters %v", c)
+	}
+	row, _ := svc.Get("life")
+	if row["first_event_at"] == "" {
+		t.Fatal("first_event_at is empty")
+	}
+
+	// The second run sends the same ids: all are duplicates.
+	if err := svc.Stop("life"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(ctx, "life"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return counters(svc)["duplicates"] == int64(3) }, "the second run did not ingest")
+	if c := counters(svc); c["events"] != int64(0) || c["events_total"] != int64(2) {
+		t.Fatalf("after restart counters %v", c)
+	}
+	if err := svc.Stop("life"); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := New(st, workspaces.New(st), nil)
+	if err := fresh.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if c := counters(fresh); c["events_total"] != int64(2) {
+		t.Fatalf("new service counters %v", c)
+	}
+
+	if err := svc.Delete(ctx, "life"); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM connection_stats`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d stats rows after delete", n)
+	}
+}
+
 func TestParseEventTime(t *testing.T) {
 	t.Parallel()
 	cases := map[string]time.Time{

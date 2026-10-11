@@ -3,6 +3,8 @@ package decisions
 import (
 	"context"
 	"strconv"
+
+	"github.com/trebi-ai/trebi/internal/pricing"
 )
 
 // Outcome is what a policy decides, for example deliver or hold.
@@ -73,4 +75,5 @@ type Result struct {
 	Method  Method
 	Raw     []byte // kept as a blob for debugging
 	CostUSD float64
+	Tokens  pricing.TokenUsage // zero when the decider reports no usage
 }

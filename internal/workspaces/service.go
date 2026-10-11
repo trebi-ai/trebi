@@ -1324,7 +1324,7 @@ func (s *Service) agentRollup(ctx context.Context, wsID string) string {
 
 	itemRows, err := s.st.DB().QueryContext(ctx, `SELECT CASE WHEN j.kind='agent' THEN j.id ELSE j.owner_id END lane, COUNT(*)
 		FROM inbox_items i JOIN job_index j ON j.id=i.job_id
-		WHERE i.workspace_id=? AND i.status<>'resolved' GROUP BY 1`, wsID)
+		WHERE i.workspace_id=? AND i.done_at IS NULL GROUP BY 1`, wsID)
 	if err == nil {
 		for itemRows.Next() {
 			var owner string

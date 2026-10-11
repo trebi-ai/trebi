@@ -120,7 +120,7 @@ FROM runs WHERE workspace_id=? AND started_at>=? AND `+store.OwnerRefSQL("runs.j
 		return "", err
 	}
 	if err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM inbox_items WHERE workspace_id=? AND `+
-		store.JobRefSQL("inbox_items.job_id", "inbox_items.workspace_id")+` AND status!='resolved'`,
+		store.JobRefSQL("inbox_items.job_id", "inbox_items.workspace_id")+` AND done_at IS NULL`,
 		workspaceID, owner, owner).Scan(&openItems); err != nil {
 		return "", err
 	}

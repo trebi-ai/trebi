@@ -2429,7 +2429,11 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 
 		"inbox": {
 			"list": act("GET /v1/inbox", Input{}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("status", "kind", "cursor")
+				v, err := in.strs("view", "kind", "workspace", "query", "cursor")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				unread, err := in.flag("unread")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -2437,19 +2441,37 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildInboxListPath(v[0], v[1], v[2], limit)), nil
+				return mcpGet(request.BuildInboxListPath(request.InboxQuery{
+					View: v[0], Kind: v[1], Workspace: v[2], Query: v[3], Cursor: v[4], Unread: unread, Limit: limit,
+				})), nil
 			}),
-			"show":     getReq("GET /v1/inbox/{id}", "id", "01ABC", request.BuildInboxGet),
-			"read":     idPost("POST /v1/inbox/{id}/read", "id", "01ABC", request.BuildInboxRead),
-			"read_all": act("POST /v1/inbox/read-all", Input{}, func(Input) (request.HTTPRequest, error) { return request.BuildInboxReadAll(), nil }),
-			"resolve":  idPost("POST /v1/inbox/{id}/resolve", "id", "01ABC", request.BuildInboxResolve),
-			"resolve_all": act("POST /v1/inbox/resolve-all", Input{"kind": "approval"}, func(in Input) (request.HTTPRequest, error) {
-				kind, err := in.str("kind")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildInboxResolveAll(kind), nil
-			}),
+			"show": getReq("GET /v1/inbox/{id}", "id", "01ABC", request.BuildInboxGet),
+			"apply": actSamples("POST /v1/inbox/apply", Input{"op": "read", "ids": []any{"01ABC"}},
+				[]Input{{"op": "archive", "filter": map[string]any{"kind": "failure", "query": "disk"}, "confirm": true}},
+				func(in Input) (request.HTTPRequest, error) {
+					op, err := in.reqStr("op")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					ids, err := in.strList("ids")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					filter, err := in.obj("filter")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					// The tool says "query"; the wire says "q".
+					if q, ok := filter["query"]; ok {
+						filter["q"] = q
+						delete(filter, "query")
+					}
+					confirm, err := in.flag("confirm")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					return request.BuildInboxApply(request.InboxApply{Op: op, IDs: ids, Filter: filter, Confirm: confirm}), nil
+				}),
 			"alerts": act("GET /v1/alerts", Input{}, func(in Input) (request.HTTPRequest, error) {
 				since, err := in.str("since")
 				if err != nil {

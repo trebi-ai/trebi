@@ -9,6 +9,7 @@ import (
 	"github.com/trebi-ai/agent-wire/native"
 
 	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/pricing"
 )
 
 const nativeMaxTokens = 600
@@ -59,6 +60,7 @@ func (n *Native) Decide(ctx context.Context, r Request) (Result, error) {
 	req := native.Request{System: p.System, MaxOutputTokens: nativeMaxTokens,
 		Messages: []native.Message{{Role: native.RoleUser, Parts: []native.Part{{Text: &native.TextPart{Text: p.User}}}}}}
 	var text strings.Builder
+	var usage native.Usage
 	finished := false
 	for part, err := range m.Stream(ctx, req) {
 		if err != nil {
@@ -69,15 +71,20 @@ func (n *Native) Decide(ctx context.Context, r Request) (Result, error) {
 			text.WriteString(part.Delta)
 		case native.StreamFinish:
 			finished = true
+			if part.Finish != nil {
+				usage = part.Finish.Usage
+			}
 		}
 	}
-	raw := []byte(text.String())
+	res := Result{Raw: []byte(text.String()), Tokens: pricing.TokenUsage{Input: usage.Input, Output: usage.Output,
+		CacheRead: usage.CacheRead, CacheCreation: usage.CacheWrite}}
 	if !finished {
-		return Result{Raw: raw}, errors.New("native: the model stream ended with no finish part")
+		return res, errors.New("native: the model stream ended with no finish part")
 	}
-	answers, err := ParseAnswers(raw)
+	answers, err := ParseAnswers(res.Raw)
 	if err != nil {
-		return Result{Raw: raw}, checkErr{err}
+		return res, checkErr{err}
 	}
-	return Result{Answers: answers, Method: MethodVerbal, Raw: raw}, nil
+	res.Answers, res.Method = answers, MethodVerbal
+	return res, nil
 }

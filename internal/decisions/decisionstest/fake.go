@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/decisions"
+	"github.com/trebi-ai/trebi/internal/pricing"
 )
 
 // Step is one scripted reply.
@@ -14,6 +15,7 @@ type Step struct {
 	Answers []decisions.Answer
 	Err     error
 	Delay   time.Duration
+	Tokens  pricing.TokenUsage
 }
 
 // Fake replies with its steps in sequence and repeats the last step.
@@ -51,7 +53,7 @@ func (f *Fake) Decide(ctx context.Context, r decisions.Request) (decisions.Resul
 			return decisions.Result{}, ctx.Err()
 		}
 	}
-	return decisions.Result{Answers: s.Answers, Method: decisions.MethodVerbal, Raw: []byte("fake")}, s.Err
+	return decisions.Result{Answers: s.Answers, Method: decisions.MethodVerbal, Raw: []byte("fake"), Tokens: s.Tokens}, s.Err
 }
 
 // Calls is the number of Decide calls.

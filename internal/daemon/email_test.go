@@ -235,8 +235,8 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.Status != alerts.InboxResolved {
-		t.Fatalf("inbox status = %q, want resolved", item.Status)
+	if !item.Done || item.DoneBy != alerts.DoneBySystem {
+		t.Fatalf("inbox item done=%v by %q, want done by system", item.Done, item.DoneBy)
 	}
 	env2, err := p.cp.Email.GetMessage(ctx, u2)
 	if err != nil {

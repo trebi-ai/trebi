@@ -36,6 +36,7 @@ type Config struct {
 	Cloud      CloudConfig      `yaml:"cloud,omitempty"`
 	Connectors ConnectorsConfig `yaml:"connectors,omitempty"`
 	Requests   RequestsConfig   `yaml:"requests,omitempty"`
+	Inbox      InboxConfig      `yaml:"inbox,omitempty"`
 	Decisions  DecisionsConfig  `yaml:"decisions,omitempty"`
 	Artifacts  ArtifactsConfig  `yaml:"artifacts,omitempty"`
 }
@@ -786,6 +787,9 @@ tools:
 #   expire_after: 168h     # a request with no answer expires after this
 #   retain: 720h           # keep the report of a closed request this long
 
+# inbox:
+#   done_retention: 720h   # delete a Done item this long after it closes
+
 # decisions:               # the safety check on a reply from a new sender
 #   decider: auto          # auto | harness | native | off
 #   timeout: 20s
@@ -1037,6 +1041,7 @@ func (c *Config) Validate() error {
 		ce.add("defaults.state.max_bytes", "must be >= 0")
 	}
 	ce.checkRequests(c.Requests)
+	ce.checkInbox(c.Inbox)
 	ce.checkDecisions(c.Decisions, c.Artifacts)
 	c.UI.check(ce)
 

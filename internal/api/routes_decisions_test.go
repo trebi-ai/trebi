@@ -10,8 +10,9 @@ func TestDecisionRoutes(t *testing.T) {
 	wsID := newEmailWorkspace(t, e, "ellis")
 	for _, id := range []string{"dec_01", "dec_02", "dec_03"} {
 		if _, err := e.st.DB().Exec(`INSERT INTO decisions (id, workspace_id, kind, kind_version, subject_kind, subject_id, decider,
-			method, status, outcome, questions_json, answers_json, took_ms, created_at) VALUES (?, ?, 'email.reply_risk', 1, 'email', ?,
-			'fake', 'verbal', 'ok', 'deliver', '[]', '{"answers":[],"reasons":[]}', 5, '2099-01-01T00:00:00Z')`, id, wsID, "m"+id); err != nil {
+			method, status, outcome, questions_json, answers_json, took_ms, cost_usd, tokens_input, tokens_output, tokens_cache_read,
+			tokens_cache_creation, created_at) VALUES (?, ?, 'email.reply_risk', 1, 'email', ?, 'fake', 'verbal', 'ok', 'deliver',
+			'[]', '{"answers":[],"reasons":[]}', 5, 0.01, 10, 20, 300, 40, '2099-01-01T00:00:00Z')`, id, wsID, "m"+id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -42,6 +43,12 @@ func TestDecisionRoutes(t *testing.T) {
 	}
 	if code, m = e.do(t, http.MethodGet, "/v1/decisions/dec_01/raw", nil); code != 200 || m["raw"] != "" {
 		t.Fatalf("raw: %d %v", code, m)
+	}
+	code, m = e.do(t, http.MethodGet, "/v1/decisions/dec_01", nil)
+	tok, _ := m["tokens"].(map[string]any)
+	if code != 200 || m["cost_usd"] != 0.01 || tok["input"] != 10.0 || tok["output"] != 20.0 || tok["cache_read"] != 300.0 ||
+		tok["cache_creation"] != 40.0 || tok["billed"] != 70.0 || tok["cached"] != 300.0 {
+		t.Fatalf("get tokens: %d %v", code, m)
 	}
 	if code, _ = e.do(t, http.MethodGet, "/v1/decisions/dec_99", nil); code != 404 {
 		t.Fatalf("unknown: %d", code)

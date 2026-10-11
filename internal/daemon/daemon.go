@@ -442,6 +442,7 @@ func newAlerts(st *store.Store, opts Options, cfg *config.Config, aopts alerts.O
 		}
 		aopts.UsageWarnAt = cfg.Notify.UsageWarnPercent()
 		aopts.PublicURL = cfg.UI.PublicURL
+		aopts.DoneRetention = cfg.Inbox.DoneRetentionDuration()
 	}
 	return alerts.New(st, aopts)
 }

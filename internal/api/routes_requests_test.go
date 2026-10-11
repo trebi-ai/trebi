@@ -150,9 +150,13 @@ func (s *requestStack) create(t *testing.T, token string, body map[string]any) m
 func (s *requestStack) inboxItem(t *testing.T, id string) alerts.InboxItem {
 	t.Helper()
 	s.srv.Alerts().Consume(t.Context())
-	items, err := s.srv.Alerts().List(t.Context(), alerts.ListOpts{Kind: string(alerts.InboxRequest)})
-	if err != nil {
-		t.Fatal(err)
+	var items []alerts.InboxItem
+	for _, view := range []alerts.InboxView{alerts.ViewInbox, alerts.ViewDone} {
+		page, err := s.srv.Alerts().List(t.Context(), alerts.ListOpts{InboxFilter: alerts.InboxFilter{View: view, Kind: alerts.InboxRequest}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, page.Items...)
 	}
 	for _, it := range items {
 		if it.RequestID == id {
@@ -196,7 +200,7 @@ func TestRequestRoundTrip(t *testing.T) {
 			id, _ := req["id"].(string)
 			s.endTurn(t)
 			s.waitRun(t, runID, "parked")
-			if it := s.inboxItem(t, id); it.Status != alerts.InboxUnread || it.Title != "Decide "+c.decision {
+			if it := s.inboxItem(t, id); it.Read || it.Done || it.Title != "Decide "+c.decision {
 				t.Fatalf("inbox item %+v", it)
 			}
 
@@ -231,7 +235,7 @@ func TestRequestRoundTrip(t *testing.T) {
 			if t2, _ := list[1].(map[string]any); t2["reason"] != "request" || t2["n"] != float64(2) {
 				t.Fatalf("turn 2 %v", t2)
 			}
-			if it := s.inboxItem(t, id); it.Status != alerts.InboxResolved {
+			if it := s.inboxItem(t, id); !it.Done || it.DoneBy != alerts.DoneBySystem {
 				t.Fatalf("inbox item after answer %+v", it)
 			}
 

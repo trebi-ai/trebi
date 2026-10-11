@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/notify"
@@ -88,15 +88,6 @@ const (
 	InboxRequest    InboxKind = "request"
 )
 
-// InboxStatus is the durable read/resolved state.
-type InboxStatus string
-
-const (
-	InboxUnread   InboxStatus = "unread"
-	InboxRead     InboxStatus = "read"
-	InboxResolved InboxStatus = "resolved"
-)
-
 // Severity is the §7 paging severity.
 type Severity string
 
@@ -151,35 +142,6 @@ type InboxAction struct {
 	Label string `json:"label"`
 }
 
-// InboxItem is the §3.12 wire struct.
-type InboxItem struct {
-	ID             string        `json:"id"`
-	Kind           InboxKind     `json:"kind"`
-	Status         InboxStatus   `json:"status"`
-	Subject        string        `json:"subject,omitempty"`
-	Title          string        `json:"title"`
-	Body           string        `json:"body,omitempty"`
-	Hint           string        `json:"hint,omitempty"`
-	Workspace      string        `json:"workspace,omitempty"`
-	JobID          string        `json:"job_id,omitempty"`
-	JobName        string        `json:"job_name,omitempty"`
-	RunID          string        `json:"run_id,omitempty"`
-	Connector      string        `json:"connector,omitempty"`
-	AlertKind      string        `json:"alert_kind,omitempty"`
-	EmailMessageID string        `json:"email_message_id,omitempty"`
-	ProposalID     string        `json:"proposal_id,omitempty"`
-	RequestID      string        `json:"request_id,omitempty"`
-	EscalatesAt    *time.Time    `json:"escalates_at,omitempty"`
-	Actions        []InboxAction `json:"actions"`
-	CreatedAt      time.Time     `json:"created_at"`
-	ResolvedAt     *time.Time    `json:"resolved_at,omitempty"`
-	TraceID        string        `json:"trace_id"`
-	Delivery       string        `json:"delivery,omitempty"`
-	Deliveries     []Delivery    `json:"deliveries,omitempty"`
-	Revision       int64         `json:"revision"`
-	UpdatedAt      time.Time     `json:"updated_at,omitempty"`
-}
-
 // KindSpec is one row of the §7 registry.
 type KindSpec struct {
 	Kind       Kind
@@ -214,15 +176,6 @@ type RaiseOpts struct {
 	TrayOnly bool
 }
 
-// ListOpts filters inbox lists.
-type ListOpts struct {
-	Workspace string
-	Status    string
-	Kind      string
-	Limit     int
-	Cursor    string
-}
-
 // Options configures the consumer and notifier.
 type Options struct {
 	TickInterval    time.Duration
@@ -254,6 +207,8 @@ type Options struct {
 	Drain  bool // same notify suppression as Shadow
 	Now    func() time.Time
 	Doctor func() []DoctorFinding
+	// DoneRetention is how long a Done item stays. Zero uses the default.
+	DoneRetention time.Duration
 	// Actions checks connector actions in the doctor. Nil skips the check.
 	Actions ActionsChecker
 	// Push sends approval and request alerts to the paired phones through
@@ -272,6 +227,25 @@ type DoctorFinding struct {
 	Severity string `json:"severity"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
+	// Fix names the automatic fix. Empty means no automatic fix.
+	Fix string `json:"fix,omitempty"`
+	// Harness is the harness the finding names, if any.
+	Harness string `json:"harness,omitempty"`
+}
+
+// Automatic doctor fixes.
+const (
+	FixWriteConfig = "write_config"
+	FixHarnessHome = "harness_home"
+)
+
+// DoctorFindings returns the findings that land in the inbox: the injected
+// provider when set, else the live store snapshot.
+func (s *Service) DoctorFindings() []DoctorFinding {
+	if s.opts.Doctor != nil {
+		return s.opts.Doctor()
+	}
+	return s.CollectDoctorFindings()
 }
 
 // Service consumes domain events and creates inbox items.
@@ -284,6 +258,7 @@ type Service struct {
 	lastRaised map[string]time.Time
 	digest     map[string]int
 	waiting    map[string]waitingEp
+	lastPrune  time.Time
 
 	deliverCh     chan deliverJob
 	running       atomic.Bool
@@ -322,13 +297,6 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-const inboxCols = `id, kind, status, COALESCE(subject,''), COALESCE(title,''), COALESCE(body,''),
-	COALESCE(hint,''), COALESCE(run_id,''), COALESCE(workspace_id,''), COALESCE(job_id,''),
-	COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = inbox_items.job_id), ''),
-	COALESCE(alert_kind,''), COALESCE(connector,''), COALESCE(actions,''), COALESCE(trace_id,''),
-	COALESCE(email_message_id,''), escalates_at, revision, created_at, updated_at, resolved_at,
-	COALESCE(delivery,''), COALESCE(request_id,'')`
-
 // New creates an alerts service. opts may be zero.
 func New(st *store.Store, opts Options) *Service {
 	if opts.Now == nil {
@@ -336,6 +304,9 @@ func New(st *store.Store, opts Options) *Service {
 	}
 	if opts.UsageWarnAt <= 0 {
 		opts.UsageWarnAt = 80
+	}
+	if opts.DoneRetention <= 0 {
+		opts.DoneRetention = config.DefaultInboxDoneRetention
 	}
 	return &Service{
 		st:         st,
@@ -385,124 +356,6 @@ func (s *Service) Raise(ctx context.Context, opts RaiseOpts) (string, error) {
 	return s.insertItem(ctx, spec, opts)
 }
 
-// List returns inbox items newest-first. Body is omitted (list stays thin).
-func (s *Service) List(ctx context.Context, opts ListOpts) ([]InboxItem, error) {
-	if opts.Limit <= 0 {
-		opts.Limit = 50
-	}
-	if opts.Limit > 200 {
-		opts.Limit = 200
-	}
-	q := `SELECT ` + inboxCols + ` FROM inbox_items WHERE 1=1`
-	var args []any
-	if opts.Status != "" {
-		q += ` AND status=?`
-		args = append(args, opts.Status)
-	}
-	if opts.Workspace != "" {
-		q += ` AND (workspace_id = ? OR workspace_id = '' OR workspace_id IS NULL)`
-		args = append(args, opts.Workspace)
-	}
-	if opts.Kind != "" {
-		q += ` AND kind=?`
-		args = append(args, opts.Kind)
-	}
-	if opts.Cursor != "" {
-		q += ` AND id < ?`
-		args = append(args, opts.Cursor)
-	}
-	q += ` ORDER BY id DESC LIMIT ?`
-	args = append(args, opts.Limit)
-	rows, err := s.st.DB().QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []InboxItem{}
-	for rows.Next() {
-		item, err := scanInbox(rows, false)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *item)
-	}
-	return out, rows.Err()
-}
-
-// Get returns one inbox item including body.
-func (s *Service) Get(ctx context.Context, id string) (*InboxItem, error) {
-	row := s.st.DB().QueryRowContext(ctx, `SELECT `+inboxCols+` FROM inbox_items WHERE id=?`, id)
-	item, err := scanInbox(row, true)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil || s.opts.Outbox == nil {
-		return item, err
-	}
-	rows, _, err := s.opts.Outbox.List(ctx, outbox.Filter{InboxID: id, Limit: 100})
-	if err != nil {
-		return nil, fmt.Errorf("inbox %s deliveries: %w", id, err)
-	}
-	for _, r := range rows {
-		if r.RouteStep == nil {
-			continue
-		}
-		item.Deliveries = append(item.Deliveries, Delivery{
-			Step: *r.RouteStep, Via: cmp.Or(r.Instance, notify.ViaEmail), Target: cmp.Or(r.Room, r.Recipients),
-			Status: string(r.Status), Error: r.ErrorMessage, SentAt: r.SentAt,
-		})
-	}
-	slices.SortFunc(item.Deliveries, func(a, b Delivery) int { return cmp.Compare(a.Step, b.Step) })
-	return item, nil
-}
-
-// SetStatus updates one item. how is auto|manual when status is resolved.
-func (s *Service) SetStatus(ctx context.Context, id string, status InboxStatus, how string) error {
-	if _, err := s.Get(ctx, id); err != nil {
-		return err
-	}
-	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		var res sql.Result
-		var err error
-		if status == InboxResolved {
-			res, err = tx.Exec(`UPDATE inbox_items SET status=?, updated_at=?, resolved_at=?, revision=revision+1 WHERE id=?`,
-				string(status), nowStr, nowStr, id)
-		} else {
-			res, err = tx.Exec(`UPDATE inbox_items SET status=?, updated_at=?, revision=revision+1 WHERE id=?`,
-				string(status), nowStr, id)
-		}
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return ErrNotFound
-		}
-		return nil
-	}, store.BusEvent{
-		Topic: "inbox.updated", Entity: "inbox", EntityID: id, Action: "updated",
-		Attrs: map[string]string{"status": string(status)},
-	})
-	if err != nil {
-		return err
-	}
-	if status == InboxResolved {
-		s.log.Info("inbox.resolved", "id", id, "how", how)
-	}
-	return nil
-}
-
-// ReadAll marks every unread item read. A set workspace scopes the update to
-// that workspace plus global rows; empty covers everything.
-func (s *Service) ReadAll(ctx context.Context, workspace string) (int64, error) {
-	return s.setAll(ctx, "unread", InboxRead, "", workspace)
-}
-
-// ResolveAll resolves every open item. An empty kind covers every kind.
-func (s *Service) ResolveAll(ctx context.Context, kind, workspace string) (int64, error) {
-	return s.setAll(ctx, "", InboxResolved, kind, workspace)
-}
-
 // ListAlerts returns alert.* bus rows, newest first, optionally since.
 // A set workspace keeps rows tagged with it plus untagged (global) rows.
 func (s *Service) ListAlerts(ctx context.Context, since time.Time, limit int, workspace string) ([]store.StreamEvent, error) {
@@ -518,14 +371,15 @@ func (s *Service) ListAlerts(ctx context.Context, since time.Time, limit int, wo
 	})
 }
 
-// ResolveSubject auto-resolves the active item for subject, if any.
+// ResolveSubject closes the open item for subject, if any.
 func (s *Service) ResolveSubject(ctx context.Context, subject, how string) error {
 	item, err := s.findActiveBySubject(ctx, subject)
 	if err != nil || item == nil {
 		return err
 	}
-	return s.SetStatus(ctx, item.ID, InboxResolved, how)
+	return s.Close(ctx, item.ID, how)
 }
+
 func (s *Service) cooldownKey(opts RaiseOpts) string {
 	return string(opts.Kind) + "|" + opts.Subject
 }
@@ -570,7 +424,7 @@ func (s *Service) suppress(ctx context.Context, opts RaiseOpts, reason string) e
 func (s *Service) findActive(ctx context.Context, kind Kind, subject string) (*InboxItem, error) {
 	row := s.st.DB().QueryRowContext(ctx, `
 		SELECT `+inboxCols+`
-		FROM inbox_items WHERE alert_kind=? AND subject=? AND status != 'resolved'
+		FROM inbox_items WHERE alert_kind=? AND subject=? AND done_at IS NULL
 		ORDER BY created_at DESC LIMIT 1`, string(kind), subject)
 	item, err := scanInbox(row, false)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -603,10 +457,10 @@ func (s *Service) insertItem(ctx context.Context, spec KindSpec, opts RaiseOpts)
 	actJSON, _ := json.Marshal(actions)
 	seq, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO inbox_items (
-			id, kind, status, subject, title, body, hint, run_id, workspace_id, job_id,
+			id, kind, subject, title, body, hint, run_id, workspace_id, job_id,
 			alert_kind, connector, actions, trace_id, request_id, revision, created_at, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
-			id, string(spec.InboxKind), string(InboxUnread), opts.Subject, opts.Title, opts.Body, opts.Hint,
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+			id, string(spec.InboxKind), opts.Subject, opts.Title, opts.Body, opts.Hint,
 			store.NullStr(opts.RunID), store.NullStr(opts.WorkspaceID), store.NullStr(opts.JobID),
 			string(opts.Kind), store.NullStr(opts.Connector), string(actJSON), store.NullStr(opts.TraceID),
 			store.NullStr(opts.RequestID), nowStr, nowStr)
@@ -663,10 +517,7 @@ func (s *Service) updateActive(ctx context.Context, item *InboxItem, opts RaiseO
 			revision=revision+1, updated_at=? WHERE id=?`,
 			title, opts.Body, opts.Hint, string(actJSON), nowStr, item.ID)
 		return err
-	}, store.BusEvent{
-		Topic: "inbox.updated", Entity: "inbox", EntityID: item.ID, Action: "updated",
-		Attrs: map[string]string{"status": string(item.Status)},
-	})
+	}, inboxUpdated(OpUpdate, []string{item.ID}, ""))
 	return err
 }
 
@@ -675,7 +526,7 @@ func (s *Service) autoResolve(ctx context.Context, kind Kind, subject, how strin
 	if err != nil || item == nil {
 		return
 	}
-	if err := s.SetStatus(ctx, item.ID, InboxResolved, how); err != nil {
+	if err := s.Close(ctx, item.ID, how); err != nil {
 		s.log.Warn("auto-resolve", "kind", kind, "subject", subject, "error", err)
 	}
 }
@@ -810,43 +661,6 @@ func runFailedActions(runID string) []InboxAction {
 	}
 }
 
-func scanInbox(row scanner, includeBody bool) (*InboxItem, error) {
-	var it InboxItem
-	var sub, title, body, hint, runID, ws, jobID, jobName, ak, connector, acts, trace, emailMsgID string
-	var esc, resolved sql.NullString
-	var created, updated string
-	err := row.Scan(&it.ID, &it.Kind, &it.Status, &sub, &title, &body, &hint, &runID, &ws, &jobID, &jobName,
-		&ak, &connector, &acts, &trace, &emailMsgID, &esc, &it.Revision, &created, &updated, &resolved, &it.Delivery, &it.RequestID)
-	if err != nil {
-		return nil, err
-	}
-	it.Subject, it.Title, it.Hint = sub, title, hint
-	it.RunID, it.Workspace, it.JobID, it.JobName = runID, ws, jobID, jobName
-	it.AlertKind, it.Connector, it.TraceID = ak, connector, trace
-	it.EmailMessageID = emailMsgID
-	if strings.HasPrefix(sub, "proposal/") {
-		it.ProposalID = strings.TrimPrefix(sub, "proposal/")
-	}
-	if includeBody {
-		it.Body = body
-	}
-	it.Actions = unmarshalActions(acts)
-	if it.Delivery == DeliveryFailed {
-		it.Actions = append(it.Actions, InboxAction{Kind: ActionViewOutbox, Route: "/history/outbox?inbox=" + it.ID, Label: "View outbox"})
-	}
-	it.CreatedAt = parseTime(created)
-	it.UpdatedAt = parseTime(updated)
-	if resolved.Valid {
-		t := parseTime(resolved.String)
-		it.ResolvedAt = &t
-	}
-	if esc.Valid {
-		t := parseTime(esc.String)
-		it.EscalatesAt = &t
-	}
-	return &it, nil
-}
-
 func unmarshalActions(raw string) []InboxAction {
 	out := []InboxAction{}
 	if raw == "" {
@@ -931,7 +745,7 @@ func (o RaiseOpts) defaultSubject() string {
 //nolint:gochecknoglobals // static table
 var defaultTitles = map[Kind]string{
 	KindWaiting:                     "Agent waiting",
-	KindAuthMissing:                 "Auth missing",
+	KindAuthMissing:                 "Log in needed",
 	KindLimitExceeded:               "Harness limit exceeded",
 	KindUsageWarning:                "Harness usage warning",
 	KindConnectorUnhealthy:          "Connector unhealthy",
@@ -1004,7 +818,7 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 		if name == "" {
 			return []InboxAction{}
 		}
-		return []InboxAction{{Kind: ActionReAuth, Route: "/v1/harnesses/" + name + "/login", Label: "Re-auth"}}
+		return []InboxAction{{Kind: ActionReAuth, Route: "/v1/harnesses/" + name + "/login", Label: "Log in"}}
 	case KindAgentProposal:
 		if o.Subject == "" {
 			return []InboxAction{}
@@ -1107,47 +921,4 @@ func (o RaiseOpts) emailText(id, link string) string {
 		fmt.Fprintf(&b, "\nOpen in Trebi: %s\n", link)
 	}
 	return b.String()
-}
-
-// setAll moves every item of one status, and optionally one kind, to status.
-// An empty from covers unread and read alike. A set workspace scopes the
-// update to that workspace plus global rows; empty covers everything.
-func (s *Service) setAll(ctx context.Context, from string, to InboxStatus, kind, workspace string) (int64, error) {
-	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
-	q := `UPDATE inbox_items SET status=?, updated_at=?, revision=revision+1 WHERE status<>?`
-	args := []any{string(to), nowStr, string(to)}
-	if from != "" {
-		q += ` AND status=?`
-		args = append(args, from)
-	}
-	if kind != "" {
-		q += ` AND kind=?`
-		args = append(args, kind)
-	}
-	if workspace != "" {
-		q += ` AND (workspace_id = ? OR workspace_id = '' OR workspace_id IS NULL)`
-		args = append(args, workspace)
-	}
-	var n int64
-	s.st.LockBus()
-	defer s.st.UnlockBus()
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.Exec(q, args...)
-		if err != nil {
-			return err
-		}
-		n, _ = res.RowsAffected()
-		if n == 0 {
-			return nil
-		}
-		attrs := map[string]string{"status": string(to), "count": fmt.Sprint(n)}
-		if kind != "" {
-			attrs["kind"] = kind
-		}
-		_, err = store.AppendInTx(tx, store.BusEvent{
-			Topic: "inbox.updated", Entity: "inbox", Action: "updated", Attrs: attrs,
-		})
-		return err
-	})
-	return n, err
 }

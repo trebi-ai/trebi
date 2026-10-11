@@ -14,6 +14,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
@@ -89,7 +90,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 			"kind": row.Kind, "active": row.Active, "harness": row.Harness,
 			"owner_id": row.OwnerID, "owner_name": row.OwnerName, "folder": row.Folder,
 			"hash": row.Hash, "parse_error": row.ParseError, "status": status,
-			"last_run_at": "", "last_status": "", "next_due_at": "", "mtd_usd": 0.0,
+			"last_run_at": "", "last_status": "", "next_due_at": "", "mtd_tokens": pricing.TokenTotals{},
 			"triggers": []string{},
 		}
 		enrich(key, row.Path, item)
@@ -136,7 +137,7 @@ func (f jobFilter) keep(row workspaces.JobRow) bool {
 }
 
 // jobEnrichment returns a function that fills the per-job A6.5 columns:
-// last run, next due time, month-to-date cost, and trigger kinds. It reads the
+// last run, next due time, month-to-date tokens, and trigger kinds. It reads the
 // three tables once, not once per row.
 func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path string, item map[string]any) {
 	last, _, _ := s.runs.StatusByJob(ctx)
@@ -149,7 +150,7 @@ func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path 
 			}
 		}
 	}
-	mtd := map[string]float64{}
+	mtd := map[string]pricing.TokenTotals{}
 	recent, _ := s.runs.List(ctx, runs.ListOpts{Workspace: wsID, Limit: maxListLimit})
 	lastAt := map[string]string{}
 	monthStart := time.Now().UTC().Format("2006-01")
@@ -159,7 +160,9 @@ func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path 
 			lastAt[k] = run.StartedAt.UTC().Format(time.RFC3339)
 		}
 		if run.StartedAt.UTC().Format("2006-01") == monthStart {
-			mtd[k] += run.Tokens.CostUSD
+			t := mtd[k]
+			t.Add(run.Tokens)
+			mtd[k] = t
 		}
 	}
 	return func(key, path string, item map[string]any) {
@@ -168,7 +171,7 @@ func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path 
 			item["last_status"] = string(st)
 		}
 		item["next_due_at"] = due[key]
-		item["mtd_usd"] = mtd[key]
+		item["mtd_tokens"] = mtd[key]
 		if j, err := job.ParseFile(path); err == nil && j != nil {
 			kinds := make([]string, 0, len(j.Triggers))
 			for _, t := range j.Triggers {

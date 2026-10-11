@@ -157,12 +157,13 @@ func ValidEndReason(r string) bool {
 
 // RunSummary embeds in job rows and Home cards.
 type RunSummary struct {
-	ID         string    `json:"id"`
-	Status     Status    `json:"status"`
-	EndReason  EndReason `json:"end_reason,omitempty"`
-	StartedAt  time.Time `json:"started_at"`
-	DurationMS int64     `json:"duration_ms"`
-	CostUSD    float64   `json:"cost_usd"`
+	ID         string             `json:"id"`
+	Status     Status             `json:"status"`
+	EndReason  EndReason          `json:"end_reason,omitempty"`
+	StartedAt  time.Time          `json:"started_at"`
+	DurationMS int64              `json:"duration_ms"`
+	CostUSD    float64            `json:"cost_usd"`
+	Tokens     pricing.TokenUsage `json:"tokens"`
 }
 
 // Turn is one launch of the harness inside a run.
@@ -221,10 +222,11 @@ func OutcomeStatus(word string) Status {
 
 // CostSummary — per-job cost display (D6 tier 1).
 type CostSummary struct {
-	MTDUSD    float64 `json:"mtd_usd"`
-	Runs30d   int     `json:"runs_30d"`
-	AvgRunMS  int64   `json:"avg_run_ms"`
-	AvgRunUSD float64 `json:"avg_run_usd"`
+	MTDUSD    float64             `json:"mtd_usd"`
+	MTDTokens pricing.TokenTotals `json:"mtd_tokens"`
+	Runs30d   int                 `json:"runs_30d"`
+	AvgRunMS  int64               `json:"avg_run_ms"`
+	AvgRunUSD float64             `json:"avg_run_usd"`
 }
 
 // SessionSpec — effective per-run session knobs (wire + frontmatter).

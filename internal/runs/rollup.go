@@ -7,12 +7,27 @@ import (
 	"github.com/trebi-ai/trebi/internal/pricing"
 )
 
-// OwnerCosts returns priced month-to-date cost per agent ID, including the
+// Spend is the turn count, the priced cost, and the token totals of a set of turns.
+type Spend struct {
+	Turns   int
+	CostUSD float64
+	Tokens  pricing.TokenTotals
+}
+
+// add prices one turn and folds it in.
+func (s *Spend) add(u pricing.TokenUsage) {
+	u.ApplyRates()
+	s.Turns++
+	s.CostUSD += u.CostUSD
+	s.Tokens.Add(u)
+}
+
+// OwnerSpend returns the month-to-date spend per agent ID, including the
 // jobs that the agent owns. It reads and prices all runs for the workspace
 // in one query, so agent list pages do not issue one query per agent. A turn
 // counts in the month it started.
-func (s *Service) OwnerCosts(ctx context.Context, workspaceID string, agentIDs []string) (map[string]float64, error) {
-	out := make(map[string]float64, len(agentIDs))
+func (s *Service) OwnerSpend(ctx context.Context, workspaceID string, agentIDs []string) (map[string]Spend, error) {
+	out := make(map[string]Spend, len(agentIDs))
 	want := map[string]bool{}
 	for _, id := range agentIDs {
 		want[id] = true
@@ -39,9 +54,9 @@ FROM run_turns t JOIN runs r ON r.id = t.run_id LEFT JOIN job_index ji ON ji.id 
 		if !want[owner] {
 			continue
 		}
-		u := pricing.TokenUsage{Input: in, Output: output, CacheRead: cacheRead, CacheCreation: cacheCreate, Model: model}
-		u.ApplyRates()
-		out[owner] += u.CostUSD
+		sp := out[owner]
+		sp.add(pricing.TokenUsage{Input: in, Output: output, CacheRead: cacheRead, CacheCreation: cacheCreate, Model: model})
+		out[owner] = sp
 	}
 	return out, rows.Err()
 }

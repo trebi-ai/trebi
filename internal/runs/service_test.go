@@ -856,6 +856,139 @@ func TestStatsRangeAndMTD(t *testing.T) {
 	}
 }
 
+// TestStatsTokenSplit checks the token counters per range. The split sums
+// to tokens_billed plus tokens_cached, and the day rows sum to the totals.
+func TestStatsTokenSplit(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	type seed struct {
+		age   time.Duration
+		usage pricing.TokenUsage
+	}
+	seeds := []seed{
+		{0, pricing.TokenUsage{Input: 100, Output: 50, CacheRead: 1000, CacheCreation: 10, Model: "claude"}},
+		{10 * 24 * time.Hour, pricing.TokenUsage{Input: 7, Output: 3, CacheRead: 20, CacheCreation: 5, Model: "claude"}},
+		{40 * 24 * time.Hour, pricing.TokenUsage{Input: 1, Output: 1, CacheRead: 1, CacheCreation: 1, Model: "claude"}},
+	}
+	for _, sd := range seeds {
+		run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Reason: runs.ReasonManual, Harness: "fake"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		u := sd.usage
+		if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndSentinel, &u); err != nil {
+			t.Fatal(err)
+		}
+		at := now.Add(-sd.age).Format(time.RFC3339)
+		if _, err := st.DB().Exec(`UPDATE runs SET started_at=? WHERE id=?`, at, run.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.DB().Exec(`UPDATE run_turns SET started_at=? WHERE run_id=?`, at, run.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sum := func(in func(time.Duration) bool) runs.StatsTotals {
+		var out runs.StatsTotals
+		for _, sd := range seeds {
+			if !in(sd.age) {
+				continue
+			}
+			u := sd.usage
+			out.Runs++
+			out.TokensInput += u.Input
+			out.TokensOutput += u.Output
+			out.TokensCacheRead += u.CacheRead
+			out.TokensCacheCreation += u.CacheCreation
+			out.TokensBilled += u.Input + u.Output + u.CacheCreation
+			out.TokensCached += u.CacheRead
+		}
+		return out
+	}
+	within := func(d time.Duration) func(time.Duration) bool {
+		return func(age time.Duration) bool { return age < d }
+	}
+	tests := []struct {
+		rng  string
+		want runs.StatsTotals
+	}{
+		{"24h", sum(within(24 * time.Hour))},
+		{"7d", sum(within(7 * 24 * time.Hour))},
+		{"30d", sum(within(30 * 24 * time.Hour))},
+		{"mtd", sum(func(age time.Duration) bool { return !now.Add(-age).Before(monthStart) })},
+	}
+	tokens := func(x runs.StatsTotals) [7]int64 {
+		return [7]int64{int64(x.Runs), x.TokensInput, x.TokensOutput, x.TokensCacheRead, x.TokensCacheCreation, x.TokensBilled, x.TokensCached}
+	}
+	for _, tc := range tests {
+		t.Run(tc.rng, func(t *testing.T) {
+			rep, err := svc.Stats(ctx, runs.StatsOpts{Range: tc.rng})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tokens(rep.Totals) != tokens(tc.want) {
+				t.Fatalf("totals %+v, want %+v", rep.Totals, tc.want)
+			}
+			if tokens(rep.MTD) != tokens(tests[3].want) {
+				t.Fatalf("mtd %+v, want %+v", rep.MTD, tests[3].want)
+			}
+			got := rep.Totals
+			if got.TokensInput+got.TokensOutput+got.TokensCacheRead+got.TokensCacheCreation != got.TokensBilled+got.TokensCached {
+				t.Fatalf("split does not sum to billed plus cached: %+v", got)
+			}
+			var days runs.StatsTotals
+			for _, d := range rep.Days {
+				days.Runs += d.Runs
+				days.TokensInput += d.TokensInput
+				days.TokensOutput += d.TokensOutput
+				days.TokensCacheRead += d.TokensCacheRead
+				days.TokensCacheCreation += d.TokensCacheCreation
+				days.TokensBilled += d.TokensBilled
+				days.TokensCached += d.TokensCached
+			}
+			if tokens(days) != tokens(rep.Totals) {
+				t.Fatalf("day rows %+v, want %+v", days, rep.Totals)
+			}
+		})
+	}
+}
+
+// TestTraceUsageSumsTokens checks that a chain trace sums the turn count,
+// the cost, and the token split of its turns.
+func TestTraceUsageSumsTokens(t *testing.T) {
+	t.Parallel()
+	svc, _, ctx := openTurnSvc(t)
+	var want pricing.TokenTotals
+	for _, u := range []pricing.TokenUsage{
+		{Input: 100, Output: 50, CacheRead: 1000, CacheCreation: 10, Model: "claude"},
+		{Input: 7, Output: 3, CacheRead: 20, CacheCreation: 5, Model: "claude"},
+	} {
+		run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "fake", TraceID: "T1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndSentinel, &u); err != nil {
+			t.Fatal(err)
+		}
+		want.Add(u)
+	}
+	got, err := svc.TraceUsage(ctx, "T1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Turns != 2 || got.Tokens != want || got.CostUSD <= 0 {
+		t.Fatalf("trace usage %+v, want 2 turns and %+v", got, want)
+	}
+}
+
 // gateStub is a request ParkGate with a fixed answer that records RunEnded.
 type gateStub struct {
 	open  bool
@@ -1243,12 +1376,12 @@ func TestCostByTurnMonth(t *testing.T) {
 	}
 	want := pricing.TokenUsage{Input: 1_000_000, Model: "default"}
 	want.ApplyRates()
-	costs, err := svc.OwnerCosts(ctx, "ws", []string{agentID})
+	spend, err := svc.OwnerSpend(ctx, "ws", []string{agentID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want.CostUSD <= 0 || costs[agentID] != want.CostUSD {
-		t.Fatalf("cost %v, want %v (turn 2 only)", costs[agentID], want.CostUSD)
+	if got := spend[agentID]; want.CostUSD <= 0 || got.CostUSD != want.CostUSD || got.Tokens.Input != 1_000_000 || got.Tokens.Billed != 1_000_000 {
+		t.Fatalf("spend %+v, want cost %v and 1M input tokens (turn 2 only)", got, want.CostUSD)
 	}
 }
 

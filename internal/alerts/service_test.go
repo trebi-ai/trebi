@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -38,7 +39,7 @@ func TestRaiseInbox(t *testing.T) {
 	if id == "" {
 		t.Fatal("empty id")
 	}
-	items, err := svc.List(ctx, alerts.ListOpts{Limit: 10})
+	items, err := listAll(ctx, svc, alerts.ListOpts{Limit: 10})
 	if err != nil || len(items) != 1 {
 		t.Fatalf("%v %v", items, err)
 	}
@@ -121,7 +122,7 @@ func TestDedupeAndCooldown(t *testing.T) {
 	if id2 != id1 {
 		t.Fatalf("dedupe want %s got %s", id1, id2)
 	}
-	items, _ := svc.List(ctx, alerts.ListOpts{})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{})
 	if len(items) != 1 {
 		t.Fatalf("items %d", len(items))
 	}
@@ -156,8 +157,8 @@ func TestAuthMissingAutoResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != alerts.InboxResolved {
-		t.Fatalf("status %s", got.Status)
+	if got.DoneBy != alerts.DoneBySystem {
+		t.Fatalf("status %s", got.DoneBy)
 	}
 }
 
@@ -182,8 +183,8 @@ func TestAutoResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != alerts.InboxResolved {
-		t.Fatalf("status %s", got.Status)
+	if got.DoneBy != alerts.DoneBySystem {
+		t.Fatalf("status %s", got.DoneBy)
 	}
 }
 
@@ -198,7 +199,7 @@ func TestConsumeRunFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Consume(ctx)
-	items, err := svc.List(ctx, alerts.ListOpts{})
+	items, err := listAll(ctx, svc, alerts.ListOpts{})
 	if err != nil || len(items) != 1 {
 		t.Fatalf("%v %v", items, err)
 	}
@@ -213,7 +214,7 @@ func TestConsumeRunFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Consume(ctx)
-	items, _ = svc.List(ctx, alerts.ListOpts{})
+	items, _ = listAll(ctx, svc, alerts.ListOpts{})
 	if len(items) != 1 {
 		t.Fatalf("kill should not raise, items=%d", len(items))
 	}
@@ -232,7 +233,7 @@ func TestConsumeRunMarkedCompleteResolves(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Consume(ctx)
-	items, err := svc.List(ctx, alerts.ListOpts{})
+	items, err := listAll(ctx, svc, alerts.ListOpts{})
 	if err != nil || len(items) != 1 {
 		t.Fatalf("items=%v err=%v", items, err)
 	}
@@ -248,8 +249,8 @@ func TestConsumeRunMarkedCompleteResolves(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != alerts.InboxResolved {
-		t.Fatalf("status %s want resolved", got.Status)
+	if got.DoneBy != alerts.DoneBySystem {
+		t.Fatalf("status %s want resolved", got.DoneBy)
 	}
 }
 
@@ -269,7 +270,7 @@ func TestWaitingDwell(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Tick(ctx)
-	items, _ := svc.List(ctx, alerts.ListOpts{})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{})
 	if len(items) != 1 {
 		t.Fatalf("want waiting item, got %d", len(items))
 	}
@@ -297,7 +298,7 @@ func TestWaitingApprovalEscalation(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Tick(ctx)
-	items, _ := svc.List(ctx, alerts.ListOpts{})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{})
 	if len(items) != 1 {
 		t.Fatalf("want waiting item, got %d", len(items))
 	}
@@ -351,13 +352,13 @@ func TestApprovalCreatedNotesWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Tick(ctx)
-	if items, _ := svc.List(ctx, alerts.ListOpts{}); len(items) != 0 {
+	if items, _ := listAll(ctx, svc, alerts.ListOpts{}); len(items) != 0 {
 		t.Fatalf("raised before dwell: %v", items)
 	}
 
 	now = now.Add(6 * time.Minute)
 	svc.Tick(ctx)
-	items, _ := svc.List(ctx, alerts.ListOpts{})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{})
 	if len(items) != 1 {
 		t.Fatalf("want waiting item, got %d", len(items))
 	}
@@ -390,7 +391,7 @@ func TestApprovalCreatedAttachesRaisedItem(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Tick(ctx)
-	items, _ := svc.List(ctx, alerts.ListOpts{})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{})
 	if len(items) != 1 {
 		t.Fatalf("want waiting item, got %d", len(items))
 	}
@@ -436,69 +437,8 @@ func TestApprovalDecidedResolvesWaiting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != alerts.InboxResolved {
-		t.Fatalf("status = %q", got.Status)
-	}
-}
-
-func TestSetStatusAndReadAll(t *testing.T) {
-	t.Parallel()
-	svc, _ := testSvc(t, alerts.Options{})
-	ctx := context.Background()
-	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindAuthMissing, Harness: "claude", Title: "Auth missing"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.SetStatus(ctx, id, alerts.InboxRead, "manual"); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := svc.Get(ctx, id)
-	if got.Status != alerts.InboxRead || got.Revision < 2 {
-		t.Fatalf("%+v", got)
-	}
-	id2, _ := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindLimitExceeded, Harness: "grok", Title: "limit"})
-	n, err := svc.ReadAll(ctx, "")
-	if err != nil || n < 1 {
-		t.Fatalf("read-all %d %v", n, err)
-	}
-	got2, _ := svc.Get(ctx, id2)
-	if got2.Status != alerts.InboxRead {
-		t.Fatalf("status %s", got2.Status)
-	}
-	if err := svc.SetStatus(ctx, id, alerts.InboxResolved, "manual"); err != nil {
-		t.Fatal(err)
-	}
-	got, _ = svc.Get(ctx, id)
-	if got.ResolvedAt == nil {
-		t.Fatal("resolved_at")
-	}
-}
-
-func TestResolveAllByKind(t *testing.T) {
-	t.Parallel()
-	svc, _ := testSvc(t, alerts.Options{})
-	ctx := context.Background()
-	health, _ := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindAuthMissing, Harness: "claude", Title: "Auth missing"})
-	down, _ := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindMachineDown, Title: "machine down"})
-
-	n, err := svc.ResolveAll(ctx, string(alerts.InboxHealth), "")
-	if err != nil || n != 1 {
-		t.Fatalf("kind resolve %d %v", n, err)
-	}
-	got, _ := svc.Get(ctx, health)
-	if got.Status != alerts.InboxResolved {
-		t.Fatalf("health status %s", got.Status)
-	}
-	other, _ := svc.Get(ctx, down)
-	if other.Status == alerts.InboxResolved {
-		t.Fatal("other kind must stay open")
-	}
-
-	if n, err = svc.ResolveAll(ctx, "", ""); err != nil || n != 1 {
-		t.Fatalf("resolve rest %d %v", n, err)
-	}
-	if n, err = svc.ResolveAll(ctx, "", ""); err != nil || n != 0 {
-		t.Fatalf("second call must be a no-op: %d %v", n, err)
+	if got.DoneBy != alerts.DoneBySystem {
+		t.Fatalf("status = %q", got.DoneBy)
 	}
 }
 
@@ -516,7 +456,7 @@ func TestRunLoop(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		items, _ := svc.List(ctx, alerts.ListOpts{})
+		items, _ := listAll(ctx, svc, alerts.ListOpts{})
 		if len(items) >= 1 {
 			cancel()
 			return
@@ -539,12 +479,12 @@ func TestListCursor(t *testing.T) {
 		}
 	}
 	page, err := svc.List(ctx, alerts.ListOpts{Limit: 2})
-	if err != nil || len(page) != 2 {
-		t.Fatalf("%v %v", page, err)
+	if err != nil || len(page.Items) != 2 || page.NextCursor != page.Items[1].ID {
+		t.Fatalf("%+v %v", page, err)
 	}
-	rest, err := svc.List(ctx, alerts.ListOpts{Limit: 2, Cursor: page[1].ID})
-	if err != nil || len(rest) != 1 {
-		t.Fatalf("rest %v %v", rest, err)
+	rest, err := svc.List(ctx, alerts.ListOpts{Limit: 2, Cursor: page.NextCursor})
+	if err != nil || len(rest.Items) != 1 || rest.NextCursor != "" {
+		t.Fatalf("rest %+v %v", rest, err)
 	}
 }
 
@@ -553,9 +493,9 @@ func TestDoctorSync(t *testing.T) {
 	svc, _ := testSvc(t, alerts.Options{})
 	ctx := context.Background()
 	svc.SyncDoctor(ctx, []alerts.DoctorFinding{
-		{ID: "config-missing", Severity: "warn", Code: "config_missing", Message: "no config"},
+		{ID: "config-missing", Severity: "warn", Code: "config_missing", Message: "no config", Fix: alerts.FixWriteConfig},
 	})
-	items, _ := svc.List(ctx, alerts.ListOpts{Kind: string(alerts.InboxHealth)})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Kind: alerts.InboxHealth}})
 	if len(items) != 1 || items[0].Subject != "doctor/config-missing" {
 		t.Fatalf("%+v", items)
 	}
@@ -564,8 +504,8 @@ func TestDoctorSync(t *testing.T) {
 	}
 	svc.SyncDoctor(ctx, nil)
 	got, _ := svc.Get(ctx, items[0].ID)
-	if got.Status != alerts.InboxResolved {
-		t.Fatalf("stale doctor %s", got.Status)
+	if got.DoneBy != alerts.DoneBySystem {
+		t.Fatalf("stale doctor %s", got.DoneBy)
 	}
 }
 
@@ -583,7 +523,7 @@ func TestAlertTextSanitized(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Consume(ctx)
-	items, err := svc.List(ctx, alerts.ListOpts{})
+	items, err := listAll(ctx, svc, alerts.ListOpts{})
 	if err != nil || len(items) != 1 {
 		t.Fatalf("items %v %v", items, err)
 	}
@@ -751,7 +691,7 @@ func TestRouteAllFail(t *testing.T) {
 	if n == 0 || item.Actions[n-1].Kind != alerts.ActionViewOutbox || item.Actions[n-1].Route != "/history/outbox?inbox="+id {
 		t.Fatalf("actions %+v", item.Actions)
 	}
-	items, _ := svc.List(ctx, alerts.ListOpts{})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{})
 	if len(items) != 1 {
 		t.Fatalf("items %d, want 1", len(items))
 	}
@@ -905,30 +845,30 @@ func TestUsageWarningOncePerCrossing(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	items := func(status alerts.InboxStatus) []alerts.InboxItem {
+	unread := func() []alerts.InboxItem {
 		t.Helper()
-		got, err := svc.List(ctx, alerts.ListOpts{Status: string(status), Limit: 10})
+		got, err := svc.List(ctx, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Unread: true}, Limit: 10})
 		if err != nil {
 			t.Fatal(err)
 		}
-		return got
+		return got.Items
 	}
 
 	setUsage(85)
 	for range 5 {
 		svc.Tick(ctx)
 	}
-	open := items(alerts.InboxUnread)
+	open := unread()
 	if len(open) != 1 || open[0].Title != "Harness usage warning" {
 		t.Fatalf("want one plain warning, got %+v", open)
 	}
 
-	// A manual resolve while usage stays high does not raise again.
-	if err := svc.SetStatus(ctx, open[0].ID, alerts.InboxResolved, "manual"); err != nil {
+	// A user archive while usage stays high does not raise again.
+	if _, err := svc.Apply(ctx, alerts.OpArchive, alerts.InboxSelector{IDs: []string{open[0].ID}}); err != nil {
 		t.Fatal(err)
 	}
 	svc.Tick(ctx)
-	if got := items(alerts.InboxUnread); len(got) != 0 {
+	if got := unread(); len(got) != 0 {
 		t.Fatalf("re-raised while still high: %+v", got)
 	}
 
@@ -937,7 +877,7 @@ func TestUsageWarningOncePerCrossing(t *testing.T) {
 	svc.Tick(ctx)
 	setUsage(90)
 	svc.Tick(ctx)
-	if got := items(alerts.InboxUnread); len(got) != 1 {
+	if got := unread(); len(got) != 1 {
 		t.Fatalf("want a new warning after re-arm, got %+v", got)
 	}
 }
@@ -955,7 +895,7 @@ func waitInbox(t *testing.T, svc *alerts.Service, n int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		items, _ := svc.List(context.Background(), alerts.ListOpts{})
+		items, _ := listAll(context.Background(), svc, alerts.ListOpts{})
 		if len(items) >= n {
 			return
 		}
@@ -1109,7 +1049,7 @@ func TestConnectorAuthRequired(t *testing.T) {
 	}
 	handle(store.BusEvent{Topic: "connector.auth.required", Entity: "connector", EntityID: id, Action: "updated",
 		Attrs: map[string]string{"instance": id, "reason": "logged_out"}})
-	items, _ := svc.List(ctx, alerts.ListOpts{})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{})
 	if len(items) != 1 || items[0].Subject != "connector/"+id || items[0].AlertKind != string(alerts.KindConnectorAuthRequired) {
 		t.Fatalf("items %+v", items)
 	}
@@ -1118,7 +1058,7 @@ func TestConnectorAuthRequired(t *testing.T) {
 	}
 	handle(store.BusEvent{Topic: "connector.status", Entity: "connector", EntityID: id, Action: "updated",
 		Attrs: map[string]string{"instance": id, "state": "connected"}})
-	if open, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)}); len(open) != 0 {
+	if open, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Unread: true}}); len(open) != 0 {
 		t.Fatalf("open after connected: %+v", open)
 	}
 }
@@ -1142,7 +1082,7 @@ func TestConnectorUpdateAvailable(t *testing.T) {
 	}
 	handle(store.BusEvent{Topic: "connector.update.available", Entity: "connector", EntityID: "whatsapp", Action: "update.available",
 		Attrs: map[string]string{"version": "0.7.0", "current": "0.6.0"}})
-	items, _ := svc.List(ctx, alerts.ListOpts{})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{})
 	if len(items) != 1 || items[0].Subject != "connector/whatsapp" || items[0].AlertKind != string(alerts.KindConnectorUpdate) {
 		t.Fatalf("items %+v", items)
 	}
@@ -1151,12 +1091,12 @@ func TestConnectorUpdateAvailable(t *testing.T) {
 	}
 	handle(store.BusEvent{Topic: "connector.updated.version", Entity: "connector", EntityID: "whatsapp", Action: "updated.version",
 		Attrs: map[string]string{"from": "0.6.0", "to": "0.7.0", "workspace": "ws1"}})
-	if open, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)}); len(open) != 1 {
+	if open, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Unread: true}}); len(open) != 1 {
 		t.Fatalf("a workspace update must not resolve: %+v", open)
 	}
 	handle(store.BusEvent{Topic: "connector.updated.version", Entity: "connector", EntityID: "whatsapp", Action: "updated.version",
 		Attrs: map[string]string{"from": "0.6.0", "to": "0.7.0"}})
-	if open, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)}); len(open) != 0 {
+	if open, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Unread: true}}); len(open) != 0 {
 		t.Fatalf("open after update: %+v", open)
 	}
 }
@@ -1187,7 +1127,7 @@ func TestRequestItemLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Tick(ctx)
-	items, _ := svc.List(ctx, alerts.ListOpts{Kind: string(alerts.InboxRequest)})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Kind: alerts.InboxRequest}})
 	if len(items) != 1 {
 		t.Fatalf("want one request item, got %d", len(items))
 	}
@@ -1236,15 +1176,15 @@ func TestRequestItemLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Consume(ctx)
-	if item, _ = svc.Get(ctx, item.ID); item.Status != alerts.InboxResolved {
-		t.Fatalf("status %s", item.Status)
+	if item, _ = svc.Get(ctx, item.ID); item.DoneBy != alerts.DoneBySystem {
+		t.Fatalf("status %s", item.DoneBy)
 	}
 
 	if _, err := st.Append(ctx, requestEvent("request.delivery_failed")); err != nil {
 		t.Fatal(err)
 	}
 	svc.Consume(ctx)
-	items, _ = svc.List(ctx, alerts.ListOpts{Kind: string(alerts.InboxFailure)})
+	items, _ = listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Kind: alerts.InboxFailure}})
 	if len(items) != 1 || items[0].Title != "Could not continue mailer" || items[0].RequestID != "R1" {
 		t.Fatalf("failure items %+v", items)
 	}
@@ -1278,7 +1218,7 @@ func TestRequestItemApprovalDisabled(t *testing.T) {
 	}
 	svc.Tick(ctx)
 	settle(ctx, svc)
-	items, _ := svc.List(ctx, alerts.ListOpts{Kind: string(alerts.InboxRequest)})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Kind: alerts.InboxRequest}})
 	if len(items) != 1 || items[0].EscalatesAt != nil || len(w.sent()) != 0 {
 		t.Fatalf("items %+v, sends %d", items, len(w.sent()))
 	}
@@ -1304,7 +1244,7 @@ func TestConnectorSubscriptionAlerts(t *testing.T) {
 	bad := map[string]string{"active": "0", "errors": "1", "error": "no access", "action_required": "1", "action": "Paste the code"}
 	synced(bad)
 	synced(bad)
-	items, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)})
+	items, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Unread: true}})
 	if len(items) != 2 {
 		t.Fatalf("items %+v", items)
 	}
@@ -1314,7 +1254,7 @@ func TestConnectorSubscriptionAlerts(t *testing.T) {
 		}
 	}
 	synced(map[string]string{"active": "2", "errors": "0", "action_required": "0"})
-	if open, _ := svc.List(ctx, alerts.ListOpts{Status: string(alerts.InboxUnread)}); len(open) != 0 {
+	if open, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Unread: true}}); len(open) != 0 {
 		t.Fatalf("open after clean sync: %+v", open)
 	}
 }
@@ -1354,4 +1294,26 @@ func TestRaisePushesApproval(t *testing.T) {
 	if a.MessageID != id || a.Kind != "approval" || a.Summary != "Agent waiting" || a.Cursor == "" {
 		t.Fatalf("push frame: %+v", a)
 	}
+}
+
+// listAll lists open and Done items, newest first. A set View or Unread
+// lists that one view only.
+func listAll(ctx context.Context, svc *alerts.Service, opts alerts.ListOpts) ([]alerts.InboxItem, error) {
+	page, err := svc.List(ctx, opts)
+	if err != nil || opts.View != "" || opts.Unread {
+		return page.Items, err
+	}
+	opts.View = alerts.ViewDone
+	done, err := svc.List(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	items := append(page.Items, done.Items...)
+	sort.SliceStable(items, func(i, j int) bool {
+		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		}
+		return items[i].ID > items[j].ID
+	})
+	return items, nil
 }

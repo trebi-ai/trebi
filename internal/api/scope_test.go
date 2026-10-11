@@ -197,7 +197,7 @@ func TestScopeGateFailsClosed(t *testing.T) {
 	insertAgentCaller(t, st, wsID, "cmo", live, "running")
 
 	deny := map[string]any{
-		"/v1/inbox/01ABC/resolve":                    map[string]any{},
+		"/v1/inbox/apply":                            map[string]any{"op": "archive", "ids": []string{"01ABC"}},
 		"/v1/harnesses/claude":                       map[string]any{"model": "opus"},
 		"/v1/config":                                 map[string]any{},
 		"/v1/connectors":                             map[string]any{"name": "mail", "type": "imap"},

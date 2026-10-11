@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/proposals"
@@ -115,9 +114,9 @@ func (c *ControlPlane) AnswerRequest(ctx context.Context, id string, in requests
 	return err
 }
 
-// ResolveInbox marks the item one reply decided as resolved (plan I.1).
+// ResolveInbox closes the item one reply decided (plan I.1).
 func (c *ControlPlane) ResolveInbox(ctx context.Context, inboxID string) error {
-	return c.Alerts.SetStatus(ctx, inboxID, alerts.InboxResolved, "email")
+	return c.Alerts.Close(ctx, inboxID, "email")
 }
 
 // AmbiguousReplyItem records the item for one approval reply that named

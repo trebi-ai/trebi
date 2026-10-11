@@ -197,10 +197,10 @@ func (s *Service) resolveReply(ctx context.Context, msg IngressMessage) (*replyT
 
 // itemByMessageID finds the inbox item one outbound message id answered.
 func (s *Service) itemByMessageID(ctx context.Context, messageID string) (*replyTarget, error) {
-	var id, runID, kind, status, subject string
+	var id, runID, kind, doneBy, subject string
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT id, COALESCE(run_id,''), COALESCE(alert_kind,''), status, COALESCE(subject,'') FROM inbox_items WHERE email_message_id=?`,
-		messageID).Scan(&id, &runID, &kind, &status, &subject)
+		`SELECT id, COALESCE(run_id,''), COALESCE(alert_kind,''), COALESCE(done_by,''), COALESCE(subject,'') FROM inbox_items WHERE email_message_id=?`,
+		messageID).Scan(&id, &runID, &kind, &doneBy, &subject)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -209,7 +209,7 @@ func (s *Service) itemByMessageID(ctx context.Context, messageID string) (*reply
 	}
 	return &replyTarget{inboxID: id, runID: runID, alertKind: kind,
 		proposalID: proposalIDFromSubject(subject), requestID: requestIDFromSubject(subject),
-		resolved: status == "resolved", isItem: true}, nil
+		resolved: doneBy == "system", isItem: true}, nil
 }
 
 // proposalIDFromSubject extracts the derived proposal link from an alert subject.
@@ -249,14 +249,14 @@ func (s *Service) rowByMessageID(ctx context.Context, messageID string) (*replyT
 		return nil, nil
 	}
 	if inboxID != "" {
-		var runID, alertKind, status, subject string
+		var runID, alertKind, doneBy, subject string
 		err := s.st.DB().QueryRowContext(ctx,
-			`SELECT COALESCE(run_id,''), COALESCE(alert_kind,''), status, COALESCE(subject,'') FROM inbox_items WHERE id=?`,
-			inboxID).Scan(&runID, &alertKind, &status, &subject)
+			`SELECT COALESCE(run_id,''), COALESCE(alert_kind,''), COALESCE(done_by,''), COALESCE(subject,'') FROM inbox_items WHERE id=?`,
+			inboxID).Scan(&runID, &alertKind, &doneBy, &subject)
 		if err == nil {
 			return &replyTarget{inboxID: inboxID, runID: runID, alertKind: alertKind,
 				proposalID: proposalIDFromSubject(subject), requestID: requestIDFromSubject(subject),
-				resolved: status == "resolved", isItem: true}, nil
+				resolved: doneBy == "system", isItem: true}, nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return nil, err

@@ -22,6 +22,18 @@ import (
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
+// CountEvent adds one new events row to the lifetime stats of its
+// connection. Call it in the transaction that inserts the row.
+func CountEvent(ctx context.Context, tx *sql.Tx, instance, at string) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO connection_stats (instance, events_total, first_event_at, last_event_at)
+		VALUES (?,1,?,?)
+		ON CONFLICT (instance) DO UPDATE SET events_total=connection_stats.events_total+1, last_event_at=excluded.last_event_at`,
+		instance, at, at); err != nil {
+		return fmt.Errorf("count event of %s: %w", instance, err)
+	}
+	return nil
+}
+
 // InjectEvent handles a synthetic event (`connector test`) through the same
 // ingest path of the connection. A protocol connector takes a typed event.
 // It refuses a reserved name. A source id that is already stored returns
@@ -404,6 +416,9 @@ func (s *Service) recordEvent(ctx context.Context, rec eventRecord, opts recordO
 		inserted = n == 1
 		if !inserted {
 			return nil
+		}
+		if err := CountEvent(ctx, tx, rec.instance, rec.receivedAt); err != nil {
+			return err
 		}
 		_, err = store.AppendInTx(tx, store.BusEvent{
 			Topic: "event.created", Entity: "event", EntityID: rec.id, Action: "created",

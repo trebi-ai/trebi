@@ -118,12 +118,13 @@ func (s *Service) deliverLoop(ctx context.Context) {
 }
 
 // Tick consumes new bus events, mails due escalations, raises dwelt waiting
-// items, and syncs doctor.
+// items, syncs doctor, and prunes old Done items.
 func (s *Service) Tick(ctx context.Context) {
 	s.Consume(ctx)
 	s.sweepEscalations(ctx)
 	s.raiseDweltWaiting(ctx)
 	s.checkUsage(ctx)
+	s.prune(ctx)
 	if s.opts.Doctor != nil {
 		s.SyncDoctor(ctx, s.opts.Doctor())
 	}
@@ -222,10 +223,7 @@ func (s *Service) onRequestUpdated(ctx context.Context, ev store.StreamEvent) {
 		_, err := tx.Exec(`UPDATE inbox_items SET title=?, body=?, revision=revision+1, updated_at=? WHERE id=?`,
 			sanitizeText(r.Title), sanitizeText(requestBody(r)), nowStr, item.ID)
 		return err
-	}, store.BusEvent{
-		Topic: "inbox.updated", Entity: "inbox", EntityID: item.ID, Action: "updated",
-		Attrs: map[string]string{"status": string(item.Status)},
-	})
+	}, inboxUpdated(OpUpdate, []string{item.ID}, ""))
 	if err != nil {
 		s.log.Warn("update request item", "request", ev.ID, "error", err)
 	}
@@ -622,16 +620,54 @@ func (s *Service) onSendFailed(ctx context.Context, ev store.StreamEvent, attrs 
 }
 
 func (s *Service) onAuthMissing(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
-	if attrs["source"] == "logout" {
+	if attrs["source"] == harness.SourceLogout {
 		return
 	}
+	name := firstNonEmpty(attrs["harness"], ev.ID)
+	label := name
+	if spec, ok := harness.SpecFor(name); ok {
+		label = spec.Label
+	}
 	_, err := s.Raise(ctx, RaiseOpts{
-		Kind: KindAuthMissing, Harness: firstNonEmpty(attrs["harness"], ev.ID),
-		RunID: attrs["run_id"], TraceID: ev.TraceID, Title: "Auth missing",
+		Kind: KindAuthMissing, Harness: name, RunID: attrs["run_id"], TraceID: ev.TraceID,
+		Title: label + " needs you to log in",
+		Body:  authMissingBody(label, attrs["status"], s.jobsOnHarness(ctx, name)),
 	})
 	if err != nil {
 		s.log.Warn("raise auth_missing", "error", err)
 	}
+}
+
+// authMissingBody is the plain reason of a failed login check and the
+// number of jobs that wait for the login.
+func authMissingBody(label, status string, jobs int) string {
+	reason := "Trebi cannot find a login for " + label + "."
+	if status == harness.AuthExpired {
+		reason = "The login for " + label + " expired."
+	}
+	switch jobs {
+	case 0:
+		return reason
+	case 1:
+		return reason + " 1 job uses " + label + " and waits for the login."
+	}
+	return fmt.Sprintf("%s %d jobs use %s and wait for the login.", reason, jobs, label)
+}
+
+// jobsOnHarness counts the active jobs that run on name, set in the job or
+// through the default harness.
+func (s *Service) jobsOnHarness(ctx context.Context, name string) int {
+	def := ""
+	if cfg, err := config.Load(); err == nil {
+		def = cfg.Defaults.Command
+	}
+	var n int
+	if err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM job_index
+		WHERE active=1 AND retired_at IS NULL AND (harness=? OR (COALESCE(harness,'')='' AND ?=?))`,
+		name, def, name).Scan(&n); err != nil {
+		return 0
+	}
+	return n
 }
 
 func (s *Service) onHarnessUpdated(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
@@ -710,7 +746,7 @@ func (s *Service) attachApproval(ctx context.Context, item *InboxItem, question 
 	}, store.BusEvent{
 		Topic: "inbox.updated", Entity: "inbox", EntityID: item.ID, Action: "updated",
 		TraceID: item.TraceID, Revision: item.Revision + 1,
-		Attrs: map[string]string{"kind": string(item.Kind), "status": string(item.Status)},
+		Attrs: InboxUpdate{Op: OpUpdate, IDs: []string{item.ID}, Count: 1},
 	})
 	if err != nil {
 		s.log.Warn("approval attach", "id", item.ID, "error", err)
@@ -817,7 +853,7 @@ func (s *Service) sweepEscalations(ctx context.Context) {
 	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
 	rows, err := s.st.DB().QueryContext(ctx, `
 		SELECT `+inboxCols+` FROM inbox_items
-		WHERE status != 'resolved' AND escalates_at IS NOT NULL AND escalates_at <= ?`, nowStr)
+		WHERE done_at IS NULL AND escalates_at IS NOT NULL AND escalates_at <= ?`, nowStr)
 	if err != nil {
 		s.log.Warn("escalation sweep", "error", err)
 		return
@@ -950,7 +986,7 @@ func (s *Service) onAlertFailed(ctx context.Context, attrs map[string]string) {
 	opts := raiseOptsFromItem(*item)
 	via := cmp.Or(row.Instance, notify.ViaEmail)
 	s.appendDelivered(ctx, opts, item.ID, via, *row.RouteStep, "failed", "", row.ErrorMessage)
-	if item.Status == InboxResolved {
+	if item.Done {
 		return
 	}
 	s.queueDeliver(ctx, deliverJob{opts: opts, id: item.ID, route: row.Route, from: *row.RouteStep + 1})
@@ -993,10 +1029,7 @@ func (s *Service) setDelivery(ctx context.Context, id, state string) {
 		_, err := tx.Exec(`UPDATE inbox_items SET delivery=?, revision=revision+1, updated_at=? WHERE id=?`,
 			state, nowStr, id)
 		return err
-	}, store.BusEvent{
-		Topic: "inbox.updated", Entity: "inbox", EntityID: id, Action: "updated",
-		Attrs: map[string]string{"delivery": state},
-	}); err != nil {
+	}, inboxUpdated(OpUpdate, []string{id}, "")); err != nil {
 		s.log.Warn("inbox delivery", "id", id, "error", err)
 	}
 }
@@ -1027,10 +1060,15 @@ func (s *Service) upsertDoctor(ctx context.Context, f DoctorFinding) {
 		s.log.Warn("doctor lookup", "id", f.ID, "error", err)
 		return
 	}
-	actJSON, _ := json.Marshal([]InboxAction{{
-		Kind: ActionFix, Route: "/v1/system/doctor/" + f.ID + "/fix", Label: "Fix",
-	}})
+	actions := []InboxAction{}
+	if f.Fix != "" {
+		actions = append(actions, InboxAction{Kind: ActionFix, Route: "/v1/system/doctor/" + f.ID + "/fix", Label: "Fix"})
+	}
+	actJSON, _ := json.Marshal(actions)
 	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
+	if item == nil && s.userArchived(ctx, subject) {
+		return // the finding stays; the user closed its item
+	}
 	if item != nil {
 		_, _ = s.st.DB().ExecContext(ctx, `UPDATE inbox_items SET title=?, body=?, actions=?,
 			revision=revision+1, updated_at=? WHERE id=?`,
@@ -1040,9 +1078,9 @@ func (s *Service) upsertDoctor(ctx context.Context, f DoctorFinding) {
 	id := ulid.Make().String()
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO inbox_items (
-			id, kind, status, subject, title, body, actions, alert_kind, revision, created_at, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,1,?,?)`,
-			id, string(InboxHealth), string(InboxUnread), subject, f.Message, f.Message,
+			id, kind, subject, title, body, actions, alert_kind, revision, created_at, updated_at
+		) VALUES (?,?,?,?,?,?,?,1,?,?)`,
+			id, string(InboxHealth), subject, f.Message, f.Message,
 			string(actJSON), "doctor", nowStr, nowStr)
 		return err
 	}, store.BusEvent{
@@ -1094,10 +1132,10 @@ func (s *Service) EmailInboxItem(ctx context.Context, d email.RouteDecision, msg
 	id := ulid.Make().String()
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO inbox_items (
-			id, kind, status, subject, title, body, hint, workspace_id, alert_kind,
+			id, kind, subject, title, body, hint, workspace_id, alert_kind,
 			trace_id, email_message_id, revision, created_at, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
-			id, string(InboxHealth), string(InboxUnread), subject, title, body, hint,
+		) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+			id, string(InboxHealth), subject, title, body, hint,
 			store.NullStr(d.WorkspaceID), "email", store.NullStr(d.TraceID), msg.ID, nowStr, nowStr)
 		return err
 	}, store.BusEvent{
@@ -1137,10 +1175,10 @@ func (s *Service) AmbiguousReplyItem(ctx context.Context, runID string, d email.
 	id := ulid.Make().String()
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO inbox_items (
-			id, kind, status, subject, title, body, hint, run_id, workspace_id, alert_kind,
+			id, kind, subject, title, body, hint, run_id, workspace_id, alert_kind,
 			trace_id, email_message_id, revision, created_at, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
-			id, string(InboxHealth), string(InboxUnread), subject, title, body, hint,
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+			id, string(InboxHealth), subject, title, body, hint,
 			store.NullStr(runID), store.NullStr(d.WorkspaceID), "email",
 			store.NullStr(d.TraceID), msg.ID, nowStr, nowStr)
 		return err
@@ -1158,7 +1196,7 @@ func (s *Service) AmbiguousReplyItem(ctx context.Context, runID string, d email.
 func (s *Service) findActiveBySubject(ctx context.Context, subject string) (*InboxItem, error) {
 	row := s.st.DB().QueryRowContext(ctx, `
 		SELECT `+inboxCols+`
-		FROM inbox_items WHERE subject=? AND status != 'resolved'
+		FROM inbox_items WHERE subject=? AND done_at IS NULL
 		ORDER BY created_at DESC LIMIT 1`, subject)
 	item, err := scanInbox(row, false)
 	if err == sql.ErrNoRows {
@@ -1167,28 +1205,52 @@ func (s *Service) findActiveBySubject(ctx context.Context, subject string) (*Inb
 	return item, err
 }
 
+// resolveStaleDoctor closes the open items of findings that went away. A
+// user-archived item of such a finding becomes a system close, so the
+// finding shows again when it comes back.
 func (s *Service) resolveStaleDoctor(ctx context.Context, want map[string]struct{}) {
 	rows, err := s.st.DB().QueryContext(ctx, `
-		SELECT `+inboxCols+` FROM inbox_items
-		WHERE subject LIKE 'doctor/%' AND status != 'resolved'`)
+		SELECT id, subject, done_at IS NULL FROM inbox_items
+		WHERE subject LIKE 'doctor/%' AND (done_at IS NULL OR done_by = ?)`, DoneByUser)
 	if err != nil {
 		return
 	}
-	defer rows.Close()
-	var stale []string
+	var open, archived []string
 	for rows.Next() {
-		item, err := scanInbox(rows, false)
-		if err != nil {
+		var id, subject string
+		var isOpen bool
+		if rows.Scan(&id, &subject, &isOpen) != nil {
+			_ = rows.Close() // a bad row stops this round; the next tick retries
 			return
 		}
-		id := strings.TrimPrefix(item.Subject, "doctor/")
-		if _, ok := want[id]; !ok {
-			stale = append(stale, item.ID)
+		if _, ok := want[strings.TrimPrefix(subject, "doctor/")]; ok {
+			continue
+		}
+		if isOpen {
+			open = append(open, id)
+		} else {
+			archived = append(archived, id)
 		}
 	}
-	for _, id := range stale {
-		_ = s.SetStatus(ctx, id, InboxResolved, "auto")
+	_ = rows.Close() // read-only query
+	for _, id := range open {
+		if err := s.Close(ctx, id, "auto"); err != nil {
+			s.log.Warn("doctor resolve", "id", id, "error", err)
+		}
 	}
+	for _, id := range archived {
+		if _, err := s.st.DB().ExecContext(ctx, `UPDATE inbox_items SET done_by=? WHERE id=?`, DoneBySystem, id); err != nil {
+			s.log.Warn("doctor resolve", "id", id, "error", err)
+		}
+	}
+}
+
+// userArchived reports whether the newest item of subject is closed by the user.
+func (s *Service) userArchived(ctx context.Context, subject string) bool {
+	var by string
+	err := s.st.DB().QueryRowContext(ctx, `SELECT COALESCE(done_by,'') FROM inbox_items WHERE subject=?
+		ORDER BY created_at DESC LIMIT 1`, subject).Scan(&by)
+	return err == nil && by == DoneByUser
 }
 
 // CollectDoctorFindings is the system doctor snapshot from the live store.
@@ -1277,7 +1339,7 @@ func collectDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFind
 	if _, err := os.Stat(st.Path()); err != nil {
 		findings = append(findings, DoctorFinding{
 			ID: "db-missing", Severity: "error", Code: "db_missing",
-			Message: "trebi.db missing — run trebi service migrate-db",
+			Message: "The Trebi database file is missing. Restart Trebi to make it again.",
 		})
 	}
 	// The daemon seeds config.yaml at startup, so an absent file means it was
@@ -1285,7 +1347,7 @@ func collectDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFind
 	if _, err := os.Stat(home.ConfigPath()); err != nil {
 		findings = append(findings, DoctorFinding{
 			ID: "config-missing", Severity: "info", Code: "config_missing",
-			Message: "config.yaml missing; defaults apply (fix rewrites it)",
+			Message: "config.yaml missing; defaults apply (fix rewrites it)", Fix: FixWriteConfig,
 		})
 	}
 	cfg, _ := config.Load()
@@ -1299,6 +1361,7 @@ func collectDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFind
 		findings = append(findings, DoctorFinding{
 			ID: "harness-" + h.Name, Severity: "info", Code: "harness_home_missing",
 			Message: fmt.Sprintf("harness home for %s not created yet (will appear on first launch)", h.Name),
+			Fix:     FixHarnessHome, Harness: h.Name,
 		})
 	}
 	findings = append(findings, CollectAgentDoctorFindings(st, actions)...)

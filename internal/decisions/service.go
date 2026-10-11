@@ -20,6 +20,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -62,30 +63,31 @@ type Availability interface {
 
 // Decision is one stored decision.
 type Decision struct {
-	ID             string     `json:"id"`
-	Workspace      string     `json:"workspace"`
-	Kind           string     `json:"kind"`
-	KindVersion    int        `json:"kind_version"`
-	SubjectKind    string     `json:"subject_kind"`
-	SubjectID      string     `json:"subject_id"`
-	TraceID        string     `json:"trace_id,omitempty"`
-	Decider        string     `json:"decider"`
-	Method         Method     `json:"method"`
-	Status         string     `json:"status"`
-	Outcome        Outcome    `json:"outcome"`
-	Confidence     *float64   `json:"confidence,omitempty"`
-	Questions      []Question `json:"questions"`
-	Answers        []Answer   `json:"answers"`
-	Reasons        []string   `json:"reasons"`
-	RawSHA256      string     `json:"raw_sha256,omitempty"`
-	Error          string     `json:"error,omitempty"`
-	Attempts       int        `json:"attempts"`
-	TookMS         int64      `json:"took_ms"`
-	CostUSD        float64    `json:"cost_usd"`
-	Feedback       string     `json:"feedback,omitempty"`
-	FeedbackSource string     `json:"feedback_source,omitempty"`
-	FeedbackAt     *time.Time `json:"feedback_at,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
+	ID             string              `json:"id"`
+	Workspace      string              `json:"workspace"`
+	Kind           string              `json:"kind"`
+	KindVersion    int                 `json:"kind_version"`
+	SubjectKind    string              `json:"subject_kind"`
+	SubjectID      string              `json:"subject_id"`
+	TraceID        string              `json:"trace_id,omitempty"`
+	Decider        string              `json:"decider"`
+	Method         Method              `json:"method"`
+	Status         string              `json:"status"`
+	Outcome        Outcome             `json:"outcome"`
+	Confidence     *float64            `json:"confidence,omitempty"`
+	Questions      []Question          `json:"questions"`
+	Answers        []Answer            `json:"answers"`
+	Reasons        []string            `json:"reasons"`
+	RawSHA256      string              `json:"raw_sha256,omitempty"`
+	Error          string              `json:"error,omitempty"`
+	Attempts       int                 `json:"attempts"`
+	TookMS         int64               `json:"took_ms"`
+	CostUSD        float64             `json:"cost_usd"`
+	Tokens         pricing.TokenTotals `json:"tokens"`
+	Feedback       string              `json:"feedback,omitempty"`
+	FeedbackSource string              `json:"feedback_source,omitempty"`
+	FeedbackAt     *time.Time          `json:"feedback_at,omitempty"`
+	CreatedAt      time.Time           `json:"created_at"`
 }
 
 // Held reports whether the outcome is the safe outcome of its policy.
@@ -273,8 +275,8 @@ type storedAnswers struct {
 }
 
 const decisionCols = `id, workspace_id, kind, kind_version, subject_kind, subject_id, trace_id, decider, method, status,
-  outcome, confidence, questions_json, answers_json, raw_sha256, error, attempts, took_ms, cost_usd, feedback, feedback_source,
-  feedback_at, created_at`
+  outcome, confidence, questions_json, answers_json, raw_sha256, error, attempts, took_ms, cost_usd, tokens_input, tokens_output,
+  tokens_cache_read, tokens_cache_creation, feedback, feedback_source, feedback_at, created_at`
 
 func scanDecision(sc interface{ Scan(...any) error }) (Decision, error) {
 	var d Decision
@@ -282,11 +284,13 @@ func scanDecision(sc interface{ Scan(...any) error }) (Decision, error) {
 	var conf sql.NullFloat64
 	err := sc.Scan(&d.ID, &d.Workspace, &d.Kind, &d.KindVersion, &d.SubjectKind, &d.SubjectID, &d.TraceID, &d.Decider,
 		&method, &d.Status, &outcome, &conf, &qs, &as, &d.RawSHA256, &d.Error, &d.Attempts, &d.TookMS, &d.CostUSD,
-		&d.Feedback, &d.FeedbackSource, &fbAt, &created)
+		&d.Tokens.Input, &d.Tokens.Output, &d.Tokens.CacheRead, &d.Tokens.CacheCreation, &d.Feedback, &d.FeedbackSource, &fbAt, &created)
 	if err != nil {
 		return d, err
 	}
 	d.Method, d.Outcome = Method(method), Outcome(outcome)
+	d.Tokens.Billed = d.Tokens.Input + d.Tokens.Output + d.Tokens.CacheCreation
+	d.Tokens.Cached = d.Tokens.CacheRead
 	if conf.Valid {
 		d.Confidence = &conf.Float64
 	}
@@ -533,8 +537,7 @@ func (s *Service) run(ctx context.Context, r Request) (Decision, []byte, error) 
 			}
 		} else {
 			r.Questions = p.Questions
-			model, raw, d.Method, d.Attempts, d.CostUSD, d.Status, d.Error = s.callDecider(ctx, dec, r,
-				cmp.Or(kc.Samples, cfg.Samples, 1), cfg.TimeoutDuration())
+			model, raw = s.callDecider(ctx, &d, dec, r, cmp.Or(kc.Samples, cfg.Samples, 1), cfg.TimeoutDuration())
 		}
 	} else {
 		d.Decider, d.Method = "rules", MethodRule
@@ -583,14 +586,15 @@ func (s *Service) pick(setting string) (Decider, string) {
 }
 
 // callDecider calls dec samples times in parallel and repairs an invalid
-// reply once.
-func (s *Service) callDecider(ctx context.Context, dec Decider, r Request, samples int, timeout time.Duration) (
-	answers []Answer, raw []byte, method Method, attempts int, cost float64, status, errText string) {
+// reply once. It sets the method, attempts, spend, status, and error of d.
+func (s *Service) callDecider(ctx context.Context, d *Decision, dec Decider, r Request, samples int, timeout time.Duration) (
+	answers []Answer, raw []byte) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	results := make([]Result, samples)
 	errs := make([]error, samples)
 	calls := make([]int, samples)
+	first := make([]Result, samples) // the first reply of a repaired sample; it costs too
 	var wg sync.WaitGroup
 	for i := range samples {
 		wg.Add(1)
@@ -600,6 +604,7 @@ func (s *Service) callDecider(ctx context.Context, dec Decider, r Request, sampl
 			calls[i] = 1
 			var c checkErr
 			if errors.As(errs[i], &c) && ctx.Err() == nil {
+				first[i] = results[i]
 				rr := r
 				rr.Repair = c.Error()
 				results[i], errs[i] = decideChecked(ctx, dec, rr)
@@ -609,12 +614,14 @@ func (s *Service) callDecider(ctx context.Context, dec Decider, r Request, sampl
 	}
 	wg.Wait()
 	for _, c := range calls {
-		attempts += c
+		d.Attempts += c
 	}
 	var good []Result
 	var last error
 	for i, res := range results {
-		cost += res.CostUSD
+		d.CostUSD += first[i].CostUSD + res.CostUSD
+		d.Tokens.Add(first[i].Tokens)
+		d.Tokens.Add(res.Tokens)
 		raw = append(raw, res.Raw...)
 		if errs[i] != nil {
 			last = errs[i]
@@ -624,15 +631,20 @@ func (s *Service) callDecider(ctx context.Context, dec Decider, r Request, sampl
 	}
 	switch {
 	case len(good) == 0 && ctx.Err() != nil:
-		return nil, raw, "", attempts, cost, StatusTimeout, "the decider took longer than " + timeout.String()
+		d.Status, d.Error = StatusTimeout, "the decider took longer than "+timeout.String()
+		return nil, raw
 	case len(good) == 0 && isCheckErr(last):
-		return nil, raw, "", attempts, cost, StatusInvalid, last.Error()
+		d.Status, d.Error = StatusInvalid, last.Error()
+		return nil, raw
 	case len(good) == 0:
-		return nil, raw, "", attempts, cost, StatusError, last.Error()
+		d.Status, d.Error = StatusError, last.Error()
+		return nil, raw
 	case len(good) == 1:
-		return good[0].Answers, raw, cmp.Or(good[0].Method, MethodVerbal), attempts, cost, StatusOK, ""
+		d.Method = cmp.Or(good[0].Method, MethodVerbal)
+		return good[0].Answers, raw
 	}
-	return vote(r.Questions, good), raw, MethodVote, attempts, cost, StatusOK, ""
+	d.Method = MethodVote
+	return vote(r.Questions, good), raw
 }
 
 func (s *Service) insert(ctx context.Context, d Decision) error {
@@ -644,10 +656,12 @@ func (s *Service) insert(ctx context.Context, d Decision) error {
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO decisions (id, workspace_id, kind, kind_version, subject_kind, subject_id,
   trace_id, decider, method, status, outcome, confidence, questions_json, answers_json, raw_sha256, error, attempts, took_ms,
-  cost_usd, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  cost_usd, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, created_at)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			d.ID, d.Workspace, d.Kind, d.KindVersion, d.SubjectKind, d.SubjectID, d.TraceID, d.Decider, string(d.Method),
 			d.Status, string(d.Outcome), d.Confidence, string(qs), string(as), d.RawSHA256, d.Error, max(d.Attempts, 1),
-			d.TookMS, d.CostUSD, d.CreatedAt.Format(time.RFC3339Nano))
+			d.TookMS, d.CostUSD, d.Tokens.Input, d.Tokens.Output, d.Tokens.CacheRead, d.Tokens.CacheCreation,
+			d.CreatedAt.Format(time.RFC3339Nano))
 		return err
 	}, ev)
 	if err != nil {

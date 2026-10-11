@@ -12,7 +12,7 @@ prompt: |
 checks:
   - name: inbox left unread
     starts_green: true
-    cmd: trebi inbox list --status unread --json
+    cmd: trebi inbox ls --unread --json
     jq: '(.items // []) | length >= 1'
   - name: home untouched
     starts_green: true

@@ -111,10 +111,11 @@ starts to wait, and the decision closes the same row.
 - `limit` (number, optional): page size.
 
 ### stats
-Read run counts and cost. The response is `{range, totals, mtd, days}`, with
-`totals` and `mtd` holding `runs`, `ok`, `failed`, `cost_usd`, and
-`tokens_billed`. `days` is one row per day of the range, oldest first. Use it
-to answer "how much did we spend".
+Read run counts, cost, and tokens. The response is `{range, totals, mtd,
+days}`, with `totals` and `mtd` holding `runs`, `ok`, `failed`, `cost_usd`,
+`tokens_billed`, `tokens_cached`, `tokens_input`, `tokens_output`,
+`tokens_cache_read`, and `tokens_cache_creation`. `days` is one row per day of
+the range, oldest first. Use it to answer "how much did we spend".
 - `range` (string, optional): `24h`, `7d`, `30d`, or `mtd`; default `30d`.
 - `workspace` (string, optional): filter by workspace id.
 - `job` (string, optional): filter by job name.

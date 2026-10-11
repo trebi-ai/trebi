@@ -100,23 +100,6 @@ func scopeArr(t *testing.T, m map[string]any, key string) []map[string]any {
 	return out
 }
 
-// scopePOST issues an empty-body POST and returns the decoded JSON object.
-func scopePOST(t *testing.T, base, path string) map[string]any {
-	t.Helper()
-	resp, err := http.Post(base+path, "application/json", bytes.NewReader(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	var m map[string]any
-	_ = json.Unmarshal(raw, &m)
-	if resp.StatusCode != 200 {
-		t.Fatalf("POST %s: %d %s", path, resp.StatusCode, raw)
-	}
-	return m
-}
-
 // scopeStr reads a string field that may be absent (omitempty).
 func scopeStr(m map[string]any, key string) string {
 	s, _ := m[key].(string)
@@ -227,22 +210,33 @@ func TestInboxWorkspaceScope(t *testing.T) {
 		t.Fatalf("unscoped items %d, want 3", len(all))
 	}
 
-	// read-all scoped to beta covers the beta item plus the global row only.
-	if n := scopePOST(t, base, "/v1/inbox/read-all?workspace=beta")["read"].(float64); n != 2 {
-		t.Fatalf("scoped read-all %v, want 2", n)
+	// A read filter scoped to beta covers the beta item plus the global row only.
+	apply := func(op string, filter map[string]any) []any {
+		t.Helper()
+		code, body, _ := doJSON(t, "POST", base+"/v1/inbox/apply", map[string]any{"op": op, "filter": filter})
+		updated, ok := body["updated"].([]any)
+		if code != 200 || !ok {
+			t.Fatalf("apply %s: %d %v", op, code, body)
+		}
+		return updated
+	}
+	if n := len(apply("read", map[string]any{"workspace": "beta"})); n != 2 {
+		t.Fatalf("scoped read %v, want 2", n)
 	}
 	// The alpha item stays unread; the global row is now read for everyone.
-	if unread := scopeArr(t, scopeGet(t, base, "/v1/inbox?workspace=alpha&status=unread"), "items"); len(unread) != 1 || unread[0]["title"] != "alpha" {
-		t.Fatalf("alpha unread after beta read-all %v, want only the alpha item", unread)
+	if unread := scopeArr(t, scopeGet(t, base, "/v1/inbox?workspace=alpha&unread=1"), "items"); len(unread) != 1 || unread[0]["title"] != "alpha" {
+		t.Fatalf("alpha unread after beta read %v, want only the alpha item", unread)
 	}
 
-	// resolve-all scoped to alpha resolves alpha plus global; beta stays
-	// unread-untouched (still read from the earlier read-all, never resolved).
-	if n := scopePOST(t, base, "/v1/inbox/resolve-all?workspace=alpha")["resolved"].(float64); n != 2 {
-		t.Fatalf("scoped resolve-all %v, want 2", n)
+	// An archive scoped to alpha closes alpha plus global; beta stays open.
+	if n := len(apply("archive", map[string]any{"workspace": "alpha"})); n != 2 {
+		t.Fatalf("scoped archive %v, want 2", n)
 	}
-	if read := scopeArr(t, scopeGet(t, base, "/v1/inbox?workspace=beta&status=read"), "items"); len(read) != 1 || read[0]["title"] != "beta" {
-		t.Fatalf("beta items after alpha resolve-all %v, want the untouched read beta item", read)
+	if open := scopeArr(t, scopeGet(t, base, "/v1/inbox?workspace=beta"), "items"); len(open) != 1 || open[0]["title"] != "beta" || open[0]["read"] != true {
+		t.Fatalf("beta items after alpha archive %v, want the read beta item", open)
+	}
+	if done := scopeArr(t, scopeGet(t, base, "/v1/inbox?view=done"), "items"); len(done) != 2 {
+		t.Fatalf("done items %v, want 2", done)
 	}
 }
 

@@ -31,6 +31,14 @@ func TestFeedHandle(t *testing.T) {
 		e.Attrs.Status = status
 		return e
 	}
+	upd := func(op string, ids ...string) busEvent {
+		e := busEvent{Topic: "inbox.updated"}
+		if len(ids) == 1 {
+			e.ID = ids[0]
+		}
+		e.Attrs.Op, e.Attrs.IDs = op, ids
+		return e
+	}
 	tests := []struct {
 		name   string
 		events []busEvent
@@ -52,20 +60,26 @@ func TestFeedHandle(t *testing.T) {
 			events: []busEvent{ev("inbox.created", "i1", "read")},
 		},
 		{
-			name:   "read withdraws a posted notice",
-			events: []busEvent{ev("inbox.created", "i1", "unread"), ev("inbox.updated", "i1", "unread"), ev("inbox.updated", "i1", "resolved")},
+			name:   "archive withdraws a posted notice",
+			events: []busEvent{ev("inbox.created", "i1", "unread"), upd("update", "i1"), upd("unread", "i1"), upd("archive", "i1")},
 			posted: []Notice{{ID: "i1", Title: "Run needs input", Body: "Answer it", Route: "/run/r1?tab=session&request=q1"}},
 			pulled: []string{"i1"},
 		},
 		{
 			name:   "update of an item not posted does nothing",
-			events: []busEvent{ev("inbox.updated", "i9", "read")},
+			events: []busEvent{upd("read", "i9")},
 		},
 		{
-			name:   "read all withdraws every notice",
-			events: []busEvent{ev("inbox.created", "i2", "unread"), ev("inbox.updated", "", "read")},
+			name:   "bulk read withdraws every named notice",
+			events: []busEvent{ev("inbox.created", "i2", "unread"), upd("read", "i2", "i7")},
 			posted: []Notice{{ID: "i2", Title: "Job failed", Body: "exit 1", Route: "/inbox/i2"}},
 			pulled: []string{"i2"},
+		},
+		{
+			name:   "prune withdraws a posted notice",
+			events: []busEvent{ev("inbox.created", "i1", "unread"), upd("prune", "i1", "i3")},
+			posted: []Notice{{ID: "i1", Title: "Run needs input", Body: "Answer it", Route: "/run/r1?tab=session&request=q1"}},
+			pulled: []string{"i1"},
 		},
 		{
 			name:   "missing item posts nothing",

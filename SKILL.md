@@ -32,7 +32,7 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | trigger | a rule on a job: `cron`, `every`, or `event` from a connector. An event trigger filters with `rooms`, `allowlist`, `from` (people, bots, anyone), `contains` (words in the message), and optional `match`; `replies: continue` sends later messages of a conversation to the same run |
 | skill | a stored `SKILL.md` the harness can load |
 | request | a batch of forms that a job run asks a person to answer (confirm, review, choose, form). The create calls of one turn join one request. The run ends its turn as `parked` and continues with the answers |
-| inbox | the queue you drain: approvals, requests, failures, health, watchdog |
+| inbox | the queue you drain: approvals, requests, failures, health, watchdog, escalations. Read, unread, archive to Done |
 | alerts | the per-firing alert feed; a log, not a queue |
 | outbox | every outgoing message (channel reply, email, alert mail) with its status, attempts, and last error |
 | notify route | the ordered steps an alert tries (email, then connector channels); set per job, agent, workspace, or globally. `trebi notify route` shows it, `trebi notify test` sends a test |
@@ -66,7 +66,7 @@ Start from the symptom. Each line is a read first, then the fix. Read the matchi
 | Symptom | Read | Then |
 |---|---|---|
 | a run failed or hangs | `runs show <id> --json`, `runs turns <id> --json`, `runs timeline <id> --json`, `runs logs <id>`, `service logs --level error --lines 100 --grep <id>` | `runs retry <id>` (it picks resume, park, or rerun). Do not kill a live run to re-prompt |
-| a job did not start on schedule | `job status <job> --json`, `queue --json`, `inbox list --json` | a launch can wait behind a live run (`if_running: queue`). `job unpause` if paused |
+| a job did not start on schedule | `job status <job> --json`, `queue --json`, `inbox ls --json` | a launch can wait behind a live run (`if_running: queue`). `job unpause` if paused |
 | a job did not start on an event | `event list --connector <slug> --since 1h --json`, then `rules test --event-id <id> --job <job> --json` with the trigger keys | `stage` names the check that stopped it: `room`, `sender`, `from`, `contains`, `extract`, or `match`. `connector senders` gives allowlist values. The trigger `limit` (default `15/10m`) holds extra events in order; at 10 waiting, new events drop and an inbox item opens. `event retrigger <id>` after the fix |
 | a connector is down or silent | `connector show <slug> --json`, `connector logs <slug>`, `connector dependents <slug>` | `connector restart`, `connector login` (ask the user to follow the steps), `connector check-updates` |
 | a watched thing gives no events | `connector watching <slug> --json`, `doctor --json` | `action_required`: tell the user the steps, then `connector watch-finish <slug> <id> --set name=value`. `error`: fix the cause, then `connector watching <slug> --sync`. Live updates need a linked Trebi Cloud account |

@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 51
+const SchemaVersion = 54
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1833,5 +1833,57 @@ ALTER TABLE schedules ADD COLUMN artifact_id TEXT NOT NULL DEFAULT '';
 `,
 		// v51: the folder label of an agent job. The next index rebuild fills it.
 		`ALTER TABLE job_index ADD COLUMN folder TEXT NOT NULL DEFAULT '';`,
+		// v52: inbox read and done state replace status. A Done item is
+		// closed; done_by is system (the source closed) or user (archive).
+		`CREATE TABLE inbox_items_new (
+	id               TEXT PRIMARY KEY,
+	kind             TEXT NOT NULL,
+	subject          TEXT,
+	title            TEXT,
+	body             TEXT,
+	hint             TEXT,
+	run_id           TEXT,
+	workspace_id     TEXT,
+	job_id           TEXT,
+	alert_kind       TEXT,
+	created_at       TEXT NOT NULL,
+	updated_at       TEXT NOT NULL,
+	read_at          TEXT,
+	done_at          TEXT,
+	done_by          TEXT,
+	connector        TEXT,
+	actions          TEXT,
+	trace_id         TEXT,
+	escalates_at     TEXT,
+	revision         INTEGER NOT NULL DEFAULT 0,
+	email_message_id TEXT NOT NULL DEFAULT '',
+	delivery         TEXT,
+	request_id       TEXT
+);
+INSERT INTO inbox_items_new (id, kind, subject, title, body, hint, run_id, workspace_id, job_id, alert_kind, created_at, updated_at, read_at, done_at, done_by, connector, actions, trace_id, escalates_at, revision, email_message_id, delivery, request_id)
+    SELECT id, kind, subject, title, body, hint, run_id, workspace_id, job_id, alert_kind, created_at, updated_at,
+        CASE WHEN status IN ('read', 'resolved') THEN updated_at END,
+        CASE WHEN status = 'resolved' THEN COALESCE(resolved_at, updated_at) END,
+        CASE WHEN status = 'resolved' THEN 'system' END,
+        connector, actions, trace_id, escalates_at, revision, email_message_id, delivery, request_id FROM inbox_items;
+DROP TABLE inbox_items;
+ALTER TABLE inbox_items_new RENAME TO inbox_items;
+CREATE INDEX idx_inbox_done ON inbox_items(done_at, created_at DESC);
+CREATE INDEX idx_inbox_kind_subject ON inbox_items(alert_kind, subject, done_at);`,
+		// v53: lifetime event count per connection, kept on ingest; the
+		// events table has no prune, so a backfill gives the full count.
+		`CREATE TABLE connection_stats (
+	instance       TEXT PRIMARY KEY,
+	events_total   INTEGER NOT NULL,
+	first_event_at TEXT,
+	last_event_at  TEXT
+);
+INSERT INTO connection_stats (instance, events_total, first_event_at, last_event_at)
+SELECT instance, COUNT(*), MIN(received_at), MAX(received_at) FROM events WHERE instance <> '' GROUP BY instance;`,
+		// v54: token counts of a decision, summed over its decider calls.
+		`ALTER TABLE decisions ADD COLUMN tokens_input INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE decisions ADD COLUMN tokens_output INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE decisions ADD COLUMN tokens_cache_read INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE decisions ADD COLUMN tokens_cache_creation INTEGER NOT NULL DEFAULT 0;`,
 	}
 }

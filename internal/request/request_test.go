@@ -543,29 +543,25 @@ func TestBuildContractGapRequests(t *testing.T) {
 
 func TestBuildInboxAndAlerts(t *testing.T) {
 	t.Parallel()
-	path := BuildInboxListPath("unread", "failure", "01ABC", 20)
+	path := BuildInboxListPath(InboxQuery{View: "done", Kind: "failure", Workspace: "ws1", Query: "disk full", Unread: true, Cursor: "01ABC", Limit: 20})
 	if !strings.Contains(path, "/v1/inbox?") {
 		t.Fatalf("path %s", path)
 	}
-	for _, want := range []string{"status=unread", "kind=failure", "cursor=01ABC", "limit=20"} {
+	for _, want := range []string{"view=done", "kind=failure", "workspace=ws1", "q=disk+full", "unread=1", "cursor=01ABC", "limit=20"} {
 		if !strings.Contains(path, want) {
 			t.Fatalf("missing %q in %s", want, path)
 		}
+	}
+	if got := BuildInboxListPath(InboxQuery{}); got != "/v1/inbox" {
+		t.Fatalf("empty query %s", got)
 	}
 	got := BuildInboxGet("01XYZ")
 	if got.Method != "GET" || got.Path != "/v1/inbox/01XYZ" {
 		t.Fatalf("%+v", got)
 	}
-	got = BuildInboxRead("01XYZ")
-	if got.Method != "POST" || got.Path != "/v1/inbox/01XYZ/read" {
-		t.Fatalf("%+v", got)
-	}
-	got = BuildInboxResolve("01XYZ")
-	if got.Method != "POST" || got.Path != "/v1/inbox/01XYZ/resolve" {
-		t.Fatalf("%+v", got)
-	}
-	got = BuildInboxReadAll()
-	if got.Method != "POST" || got.Path != "/v1/inbox/read-all" {
+	got = BuildInboxApply(InboxApply{Op: "archive", IDs: []string{"01XYZ"}, Confirm: true})
+	b, _ := got.Body.(InboxApply)
+	if got.Method != "POST" || got.Path != "/v1/inbox/apply" || b.Op != "archive" || !b.Confirm || len(b.IDs) != 1 {
 		t.Fatalf("%+v", got)
 	}
 	ap := BuildAlertsPath("2026-08-28T00:00:00Z", 5)

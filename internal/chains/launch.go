@@ -30,7 +30,7 @@ func (s *Service) LaunchFrame(ctx context.Context, hopID string) (*LaunchFrame, 
 	if err != nil {
 		return nil, err
 	}
-	turns, _, err := s.runs.TraceUsage(ctx, h.TraceID)
+	used, err := s.runs.TraceUsage(ctx, h.TraceID)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +38,7 @@ func (s *Service) LaunchFrame(ctx context.Context, hopID string) (*LaunchFrame, 
 	if h.Kind == KindHandoff {
 		lf.Reason = runs.ReasonHandoff
 	}
-	lf.Wake = &runs.WakeChain{Depth: h.Depth, MaxHops: c.Limits.MaxHops, Turns: turns, MaxTurns: c.Limits.MaxTurns}
+	lf.Wake = &runs.WakeChain{Depth: h.Depth, MaxHops: c.Limits.MaxHops, Turns: used.Turns, MaxTurns: c.Limits.MaxTurns}
 	if h.Kind == KindAsk && len(h.pathIDs) > 1 {
 		lf.Wake.Waiting = s.AgentNames(ctx, h.pathIDs[:len(h.pathIDs)-1])
 	}

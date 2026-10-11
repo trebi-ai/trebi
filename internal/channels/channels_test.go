@@ -589,7 +589,7 @@ func (f *fixture) openItems(subject string) int {
 	f.t.Helper()
 	var n int
 	if err := f.st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items
-		WHERE alert_kind='send_failed' AND subject=? AND status!='resolved'`, subject).Scan(&n); err != nil {
+		WHERE alert_kind='send_failed' AND subject=? AND done_at IS NULL`, subject).Scan(&n); err != nil {
 		f.t.Fatal(err)
 	}
 	return n

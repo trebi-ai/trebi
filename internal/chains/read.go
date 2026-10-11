@@ -40,11 +40,11 @@ func (s *Service) chain(ctx context.Context, traceID string) (*Chain, error) {
 
 // fill sets the usage, the live flag, and the root agent name.
 func (s *Service) fill(ctx context.Context, c *Chain) error {
-	turns, cost, err := s.runs.TraceUsage(ctx, c.TraceID)
+	used, err := s.runs.TraceUsage(ctx, c.TraceID)
 	if err != nil {
 		return err
 	}
-	c.Usage.Turns, c.Usage.CostUSD = turns, cost
+	c.Usage.Turns, c.Usage.CostUSD, c.Usage.Tokens = used.Turns, used.CostUSD, used.Tokens
 	var live int
 	err = s.st.DB().QueryRowContext(ctx, `SELECT
 		COALESCE((SELECT MAX(depth) FROM chain_hops WHERE trace_id=? AND status NOT IN ('refused')), 0),
@@ -327,7 +327,7 @@ func (s *Service) Runs(ctx context.Context, traceID string) ([]ChainRun, error) 
 		}
 		cr := byRun[id]
 		cr.RunSummary = runs.RunSummary{ID: run.ID, Status: run.Status, EndReason: run.EndReason,
-			StartedAt: run.StartedAt, DurationMS: run.DurationMS, CostUSD: run.Tokens.CostUSD}
+			StartedAt: run.StartedAt, DurationMS: run.DurationMS, CostUSD: run.Tokens.CostUSD, Tokens: run.Tokens}
 		cr.Agent = strings.TrimPrefix(run.JobName, "agents/")
 		out = append(out, *cr)
 	}

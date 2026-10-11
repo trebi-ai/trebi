@@ -655,8 +655,8 @@ func TestListFilters(t *testing.T) {
 	if row["last_run_at"] == "" || row["last_status"] != "complete" {
 		t.Fatalf("job row enrichment: %v", row)
 	}
-	if _, ok := row["mtd_usd"]; !ok {
-		t.Fatalf("job row must carry mtd_usd: %v", row)
+	if _, ok := row["mtd_tokens"].(map[string]any); !ok {
+		t.Fatalf("job row must carry mtd_tokens: %v", row)
 	}
 
 	if code, body, _ := doJSON(t, "GET", base+"/v1/jobs?active=maybe", nil); code != 400 {
@@ -883,9 +883,9 @@ func TestBulkVerbs(t *testing.T) {
 		t.Fatalf("both ids must fail on their own: %v", body)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/inbox/resolve-all", nil)
-	if code != 200 || body["resolved"] == nil {
-		t.Fatalf("resolve-all: %d %v", code, body)
+	code, body, _ = doJSON(t, "POST", base+"/v1/inbox/apply", map[string]any{"op": "archive", "filter": map[string]any{}})
+	if updated, ok := body["updated"].([]any); code != 200 || !ok || len(updated) != 0 {
+		t.Fatalf("archive all: %d %v", code, body)
 	}
 }
 

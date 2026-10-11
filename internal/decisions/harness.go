@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/pricing"
 )
 
 // Harness asks a harness CLI in print mode, with no tools, in a temp dir.
@@ -55,30 +56,40 @@ func (h *Harness) Decide(ctx context.Context, r Request) (Result, error) {
 		}
 		return Result{Raw: stdout.Bytes()}, fmt.Errorf("%s: %w: %s", h.name, err, strings.TrimSpace(stderr.String()))
 	}
-	reply, cost := stdout.Bytes(), 0.0
+	// codex exec prints no token counts in this mode, so its usage stays 0.
+	res := Result{Raw: stdout.Bytes()}
 	if h.name == "codex" {
 		if b, err := os.ReadFile(last); err == nil {
-			reply = b
+			res.Raw = b
 		}
 	} else {
-		reply, cost = claudeEnvelope(reply)
+		res = claudeEnvelope(res.Raw)
 	}
-	answers, err := ParseAnswers(reply)
+	answers, err := ParseAnswers(res.Raw)
 	if err != nil {
-		return Result{Raw: reply, CostUSD: cost}, checkErr{err}
+		return res, checkErr{err}
 	}
-	return Result{Answers: answers, Method: MethodVerbal, Raw: reply, CostUSD: cost}, nil
+	res.Answers, res.Method = answers, MethodVerbal
+	return res, nil
 }
 
-// claudeEnvelope reads the reply text and cost from `claude -p
+// claudeEnvelope reads the reply text, cost, and token usage from `claude -p
 // --output-format json`. Another body passes through.
-func claudeEnvelope(raw []byte) ([]byte, float64) {
+func claudeEnvelope(raw []byte) Result {
 	var env struct {
 		Result string  `json:"result"`
 		Cost   float64 `json:"total_cost_usd"`
+		Usage  struct {
+			Input         int64 `json:"input_tokens"`
+			Output        int64 `json:"output_tokens"`
+			CacheRead     int64 `json:"cache_read_input_tokens"`
+			CacheCreation int64 `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(raw), &env); err != nil || env.Result == "" {
-		return raw, 0
+		return Result{Raw: raw}
 	}
-	return []byte(env.Result), env.Cost
+	u := env.Usage
+	return Result{Raw: []byte(env.Result), CostUSD: env.Cost,
+		Tokens: pricing.TokenUsage{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheCreation: u.CacheCreation}}
 }

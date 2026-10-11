@@ -440,6 +440,7 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 	s.mu.Unlock()
 	s.reconcile(ctx)
 	s.dropWebhooks(ctx, c.ID)
+	s.dropStats(ctx, c.ID)
 	if err := NewFolder(c.ID).Remove(); err != nil {
 		return fmt.Errorf("remove connection folder: %w", err)
 	}
@@ -520,11 +521,11 @@ func (s *Service) SetOverride(ctx context.Context, workspaceID, ref string, ov *
 // List returns the connection rows, with live status, unioned with inherited
 // MCP servers. With a workspace, each row applies the workspace layer.
 func (s *Service) List(workspaceID string) []map[string]any {
-	lastEvents := s.lastEvents()
+	stats := s.eventStats()
 	var out []map[string]any
 	fpIndex := map[string]int{}
 	for _, c := range s.snapshot() {
-		row := s.connectionRow(c, workspaceID, lastEvents)
+		row := s.connectionRow(c, workspaceID, stats)
 		if fp, ok := row["mcp_fingerprint"].(string); ok && fp != "" {
 			fpIndex[fp] = len(out)
 		}
@@ -968,6 +969,7 @@ func (s *Service) removeBroken(ctx context.Context, id string) error {
 	s.mu.Lock()
 	delete(s.loadErr, id)
 	s.mu.Unlock()
+	s.dropStats(ctx, id)
 	if _, err := s.st.Append(ctx, store.BusEvent{
 		Topic: "connector.deleted", Entity: "connector", EntityID: id, Action: "deleted",
 	}); err != nil {
@@ -992,29 +994,46 @@ func (s *Service) deleteContributedSkills(ctx context.Context, typ string) {
 	}
 }
 
-// lastEvents reads the last event time of each connection in one query.
-func (s *Service) lastEvents() map[string]string {
-	out := map[string]string{}
+// eventStats is the lifetime event count of one connection.
+type eventStats struct {
+	total       int64
+	first, last string
+}
+
+// eventStats reads the lifetime stats of each connection in one query.
+func (s *Service) eventStats() map[string]eventStats {
+	out := map[string]eventStats{}
 	if s.st == nil {
 		return out
 	}
-	rows, err := s.st.DB().Query(`SELECT instance, MAX(received_at) FROM events GROUP BY instance`)
+	rows, err := s.st.DB().Query(`SELECT instance, events_total, COALESCE(first_event_at,''), COALESCE(last_event_at,'') FROM connection_stats`)
 	if err != nil {
 		return out
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, at string
-		if rows.Scan(&id, &at) == nil {
-			out[id] = at
+		var id string
+		var st eventStats
+		if rows.Scan(&id, &st.total, &st.first, &st.last) == nil {
+			out[id] = st
 		}
 	}
 	return out
 }
 
+// dropStats removes the lifetime stats of a deleted connection.
+func (s *Service) dropStats(ctx context.Context, id string) {
+	if s.st == nil {
+		return
+	}
+	if _, err := s.st.DB().ExecContext(ctx, `DELETE FROM connection_stats WHERE instance=?`, id); err != nil {
+		s.log.Warn("drop connection stats", "connector", id, "error", err)
+	}
+}
+
 // connectionRow builds the wire row of one connection. The live fields of
 // its process are at the top of the row.
-func (s *Service) connectionRow(c Connection, workspaceID string, lastEvents map[string]string) map[string]any {
+func (s *Service) connectionRow(c Connection, workspaceID string, stats map[string]eventStats) map[string]any {
 	inputs := MaskInputs(c.Inputs)
 	for _, name := range NewFolder(c.ID).Secrets() {
 		if _, ok := inputs[name]; !ok {
@@ -1087,7 +1106,7 @@ func (s *Service) connectionRow(c Connection, workspaceID string, lastEvents map
 			row["mcp_fingerprint"] = harness.MCPFingerprint(transport, srv.Command, srv.Args, srv.URL)
 		}
 	}
-	s.fillLive(row, c.ID, m, lastEvents)
+	s.fillLive(row, c.ID, m, stats[c.ID])
 	return row
 }
 
@@ -1363,7 +1382,7 @@ func (c *Connection) takeSecrets(m manifest.Manifest) map[string]string {
 
 // fillLive adds the events, channel, and auth fields of a connection row:
 // the live session when the process runs, else the manifest.
-func (s *Service) fillLive(row map[string]any, id string, m manifest.Manifest, lastEvents map[string]string) {
+func (s *Service) fillLive(row map[string]any, id string, m manifest.Manifest, stats eventStats) {
 	p := s.procByName(id)
 	if m.Events != nil {
 		row["events"] = eventsRow(*m.Events)
@@ -1372,11 +1391,14 @@ func (s *Service) fillLive(row map[string]any, id string, m manifest.Manifest, l
 		row["restarts"] = 0
 		row["last_err"] = ""
 		row["last_event_id"] = pos.LastEventID
-		row["last_event_at"] = lastEvents[id]
+		row["last_event_at"] = stats.last
+		row["first_event_at"] = stats.first
 		row["counters"] = map[string]any{"events": int64(0), "duplicates": int64(0), "parse_errors": int64(0)}
 		if p != nil {
 			p.snapshot().fill(row)
 		}
+		// events counts since process start; events_total survives restarts.
+		row["counters"].(map[string]any)["events_total"] = stats.total
 	}
 	if m.Channel != nil {
 		row["channel"] = map[string]any{

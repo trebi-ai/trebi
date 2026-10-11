@@ -1728,13 +1728,19 @@ type Stats struct {
 	Days   []StatsDay  `json:"days"`
 }
 
-// StatsTotals counts runs and money over one period.
+// StatsTotals counts runs, money, and tokens over one period. The four
+// counters sum to tokens_billed plus tokens_cached.
 type StatsTotals struct {
-	Runs         int     `json:"runs"`
-	OK           int     `json:"ok"`
-	Failed       int     `json:"failed"`
-	CostUSD      float64 `json:"cost_usd"`
-	TokensBilled int64   `json:"tokens_billed"`
+	Runs                int     `json:"runs"`
+	OK                  int     `json:"ok"`
+	Failed              int     `json:"failed"`
+	CostUSD             float64 `json:"cost_usd"`
+	TokensBilled        int64   `json:"tokens_billed"`
+	TokensCached        int64   `json:"tokens_cached"`
+	TokensInput         int64   `json:"tokens_input"`
+	TokensOutput        int64   `json:"tokens_output"`
+	TokensCacheRead     int64   `json:"tokens_cache_read"`
+	TokensCacheCreation int64   `json:"tokens_cache_creation"`
 }
 
 // StatsDay is one calendar day of the range, oldest first.
@@ -1821,9 +1827,12 @@ func (s *Service) CostSummary(ctx context.Context, workspaceID, owner string) (C
 	if err != nil {
 		return CostSummary{}, err
 	}
+	m := stats.MTD
 	return CostSummary{
-		MTDUSD: stats.MTD.CostUSD, Runs30d: stats.Totals.Runs,
+		MTDUSD: m.CostUSD, Runs30d: stats.Totals.Runs,
 		AvgRunUSD: stats.Totals.CostUSD / float64(max(stats.Totals.Runs, 1)),
+		MTDTokens: pricing.TokenTotals{Input: m.TokensInput, Output: m.TokensOutput, CacheRead: m.TokensCacheRead,
+			CacheCreation: m.TokensCacheCreation, Billed: m.TokensBilled, Cached: m.TokensCached},
 	}, nil
 }
 
@@ -1849,20 +1858,26 @@ func (t *StatsTotals) add(row statsRow) {
 	}
 	t.CostUSD += row.usage.CostUSD
 	t.TokensBilled += row.usage.Billed
+	t.TokensCached += row.usage.Cached
+	t.TokensInput += row.usage.Input
+	t.TokensOutput += row.usage.Output
+	t.TokensCacheRead += row.usage.CacheRead
+	t.TokensCacheCreation += row.usage.CacheCreation
 }
 
 // dailyStats buckets rows by UTC day, oldest first, with empty days present.
 func dailyStats(rows []statsRow, from, now time.Time) []StatsDay {
 	const day = "2006-01-02"
-	byDate := map[string]*StatsTotals{}
+	// Index, not pointer: append moves the backing array.
+	byDate := map[string]int{}
 	var days []StatsDay
 	for d := from.UTC().Truncate(24 * time.Hour); !d.After(now); d = d.AddDate(0, 0, 1) {
+		byDate[d.Format(day)] = len(days)
 		days = append(days, StatsDay{Date: d.Format(day)})
-		byDate[d.Format(day)] = &days[len(days)-1].StatsTotals
 	}
 	for _, row := range rows {
-		if t := byDate[row.at.UTC().Format(day)]; t != nil {
-			t.add(row)
+		if i, ok := byDate[row.at.UTC().Format(day)]; ok {
+			days[i].add(row)
 		}
 	}
 	return days
@@ -2152,25 +2167,24 @@ func scanTurn(row rowScanner) (Turn, error) {
 	return t, nil
 }
 
-// TraceUsage counts the turns of one chain trace and prices them.
-func (s *Service) TraceUsage(ctx context.Context, traceID string) (turns int, costUSD float64, err error) {
+// TraceUsage counts, prices, and sums the turns of one chain trace.
+func (s *Service) TraceUsage(ctx context.Context, traceID string) (Spend, error) {
+	var out Spend
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT COALESCE(tokens_input,0), COALESCE(tokens_output,0),
 		COALESCE(tokens_cache_read,0), COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,'')
 		FROM run_turns WHERE trace_id = ?`, traceID)
 	if err != nil {
-		return 0, 0, err
+		return out, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var t pricing.TokenUsage
 		if err := rows.Scan(&t.Input, &t.Output, &t.CacheRead, &t.CacheCreation, &t.Model); err != nil {
-			return 0, 0, err
+			return out, err
 		}
-		t.ApplyRates()
-		turns++
-		costUSD += t.CostUSD
+		out.add(t)
 	}
-	return turns, costUSD, rows.Err()
+	return out, rows.Err()
 }
 
 // turnTokens prices the usage of the ending turn. With no usage given, a kill

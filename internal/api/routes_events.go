@@ -717,8 +717,13 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	if c, err := s.connectors.Lookup(body.Connector); err == nil {
 		typ, instance = c.Type, c.ID
 	}
-	if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO events (id, connector, instance, received_at, summary, raw_json, trace_id)
-		VALUES (?,?,?,?,?,?,?)`, eid, typ, instance, now, summary, string(raw), trace); err != nil {
+	if err := s.st.WithTx(r.Context(), func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(r.Context(), `INSERT INTO events (id, connector, instance, received_at, summary, raw_json, trace_id)
+			VALUES (?,?,?,?,?,?,?)`, eid, typ, instance, now, summary, string(raw), trace); err != nil {
+			return err
+		}
+		return connectors.CountEvent(r.Context(), tx, instance, now)
+	}); err != nil {
 		s.log.Warn("rules.fire event insert", "event_id", eid, "error", err)
 	}
 	if body.Job == "" {

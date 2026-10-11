@@ -3,6 +3,6 @@
 ```bash
 trebi status --json
 trebi runs list --status running --json
-trebi inbox list --status unread --json
+trebi inbox ls --unread --json
 trebi runs approvals --state pending --json
 ```

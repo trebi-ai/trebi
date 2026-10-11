@@ -34,7 +34,8 @@ func (s *Service) atLimit(ctx context.Context, c *Chain, f frame, h *Hop, reason
 	if f.runID == "" || s.req == nil {
 		return nil, s.refuse(ctx, h, limitErr)
 	}
-	turns, cost, err := s.runs.TraceUsage(ctx, c.TraceID)
+	used, err := s.runs.TraceUsage(ctx, c.TraceID)
+	turns, cost := used.Turns, used.CostUSD
 	if err != nil {
 		return nil, err
 	}

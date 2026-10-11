@@ -5,6 +5,7 @@ package chains
 import (
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -74,10 +75,11 @@ type Limits = workspaces.ChainLimits
 
 // Usage is what a chain used so far.
 type Usage struct {
-	Depth   int     `json:"depth"`
-	Turns   int     `json:"turns"`
-	CostUSD float64 `json:"cost_usd"`
-	Runs    int     `json:"runs"`
+	Depth   int                 `json:"depth"`
+	Turns   int                 `json:"turns"`
+	CostUSD float64             `json:"cost_usd"`
+	Tokens  pricing.TokenTotals `json:"tokens"`
+	Runs    int                 `json:"runs"`
 }
 
 // Chain is all work that one start causes. One chain has one trace ID.

@@ -39,7 +39,8 @@ artifacts:
 
 ### list
 List jobs. Each row carries `last_run_at`, `last_status`, `next_due_at`,
-`mtd_usd`, and `triggers` beside the definition fields.
+`mtd_tokens` (`input`, `output`, `cache_read`, `cache_creation`, `billed`,
+`cached`), and `triggers` beside the definition fields.
 - `workspace` (string, optional): filter by workspace id.
 - `q` (string, optional): substring match on the job name.
 - `harness` (string, optional): filter by harness name.

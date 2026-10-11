@@ -248,7 +248,8 @@ func (s *Service) refuse(ctx context.Context, h *Hop, e *Error) error {
 
 // limitHit returns the limit that the new hop passes, or "".
 func (s *Service) limitHit(ctx context.Context, c *Chain, h *Hop) (RefuseReason, error) {
-	turns, cost, err := s.runs.TraceUsage(ctx, c.TraceID)
+	used, err := s.runs.TraceUsage(ctx, c.TraceID)
+	turns, cost := used.Turns, used.CostUSD
 	if err != nil {
 		return "", err
 	}
