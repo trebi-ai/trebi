@@ -16,7 +16,7 @@ import (
 func TestHooksLifecycle(t *testing.T) {
 	s, base, _ := startAPI(t)
 	f := newFakeCloud(t)
-	s.Cloud().Configure(cloudlink.Settings{APIURL: f.srv.URL, Enabled: false})
+	s.Cloud().Configure(cloudlink.Settings{APIURLs: []string{f.srv.URL}, Enabled: false})
 	if _, err := s.Cloud().Link(t.Context(), "abc", "mbp"); err != nil {
 		t.Fatal(err)
 	}

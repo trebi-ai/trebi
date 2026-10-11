@@ -18,7 +18,7 @@ func TestLinkAndUnlink(t *testing.T) {
 
 	changes := &changeLog{}
 	svc := New(st)
-	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: false})
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: false})
 	svc.WithOnChange(changes.fn(svc))
 	ctx := context.Background()
 
@@ -87,7 +87,7 @@ func TestStatusMapping(t *testing.T) {
 	fc := newFakeCloud(t, nil)
 
 	svc := New(st)
-	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: false})
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: false})
 	ctx := context.Background()
 
 	if got := svc.Status(); got.Linked || got.Status != statusNotLinked {
@@ -100,7 +100,7 @@ func TestStatusMapping(t *testing.T) {
 		t.Fatalf("linked, disabled = %+v", got)
 	}
 	// Enabled but not started keeps the device merely linked.
-	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: true})
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: true})
 	if got := svc.Status(); got.Status != statusLinked {
 		t.Fatalf("enabled, not started = %+v", got)
 	}
@@ -132,7 +132,7 @@ func TestCallsRequireLink(t *testing.T) {
 	testHome(t)
 	st := openStore(t)
 	svc := New(st)
-	svc.Configure(Settings{APIURL: "https://api.example.com", Enabled: false})
+	svc.Configure(Settings{APIURLs: []string{"https://api.example.com"}, Enabled: false})
 	ctx := context.Background()
 
 	if _, err := svc.MintAddress(ctx, "ws-1", "acme"); !errors.Is(err, ErrNotLinked) {

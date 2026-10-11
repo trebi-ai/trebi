@@ -147,15 +147,16 @@ type pairLinkCase struct {
 }
 
 type pairLinkWant struct {
-	OK        bool   `json:"ok"`
-	Error     string `json:"error,omitempty"`
-	API       string `json:"api,omitempty"`
-	DeviceID  string `json:"device_id,omitempty"`
-	DaemonKey string `json:"daemon_key_hex,omitempty"`
-	PSK       string `json:"psk_hex,omitempty"`
-	Claim     string `json:"claim,omitempty"`
-	OfferID   string `json:"offer_id,omitempty"`
-	Machine   string `json:"machine,omitempty"`
+	OK        bool            `json:"ok"`
+	Error     string          `json:"error,omitempty"`
+	API       string          `json:"api,omitempty"`
+	Fallback  json.RawMessage `json:"api_fallback,omitempty"` // release only; null when the host has no backup
+	DeviceID  string          `json:"device_id,omitempty"`
+	DaemonKey string          `json:"daemon_key_hex,omitempty"`
+	PSK       string          `json:"psk_hex,omitempty"`
+	Claim     string          `json:"claim,omitempty"`
+	OfferID   string          `json:"offer_id,omitempty"`
+	Machine   string          `json:"machine,omitempty"`
 }
 
 // TestPairLinkFixture checks that the Go link builder makes the valid
@@ -174,6 +175,9 @@ func TestPairLinkFixture(t *testing.T) {
 	}
 	built := 0
 	for _, c := range doc.Cases {
+		if c.Release.OK && len(c.Release.Fallback) == 0 {
+			t.Fatalf("%s: a valid release case needs api_fallback", c.Name)
+		}
 		w := c.Debug
 		if !w.OK || c.Name == "plus in the machine name" {
 			continue

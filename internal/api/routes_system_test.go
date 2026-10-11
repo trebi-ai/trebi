@@ -215,7 +215,7 @@ func TestCloudStatusUnlinkedAnswers(t *testing.T) {
 func TestCloudLinkAddressesUnlink(t *testing.T) {
 	s, base, _ := startAPI(t)
 	f := newFakeCloud(t)
-	s.Cloud().Configure(cloudlink.Settings{APIURL: f.srv.URL, Enabled: false})
+	s.Cloud().Configure(cloudlink.Settings{APIURLs: []string{f.srv.URL}, Enabled: false})
 
 	code, body, _ := doJSON(t, "POST", base+"/v1/cloud/link",
 		map[string]string{"enrollment_token": "ABCD-EFGH-0123", "name": "mbp"})
@@ -285,7 +285,7 @@ func TestCloudLinkAddressesUnlink(t *testing.T) {
 func TestCloudLinkNeedsToken(t *testing.T) {
 	s, base, _ := startAPI(t)
 	f := newFakeCloud(t)
-	s.Cloud().Configure(cloudlink.Settings{APIURL: f.srv.URL, Enabled: false})
+	s.Cloud().Configure(cloudlink.Settings{APIURLs: []string{f.srv.URL}, Enabled: false})
 	for _, code := range []string{"", "----"} {
 		status, body, _ := doJSON(t, "POST", base+"/v1/cloud/link",
 			map[string]string{"enrollment_token": code})
@@ -345,4 +345,43 @@ func newFakeCloud(t *testing.T) *fakeCloud {
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// TestCloudFallbackDoctor pins the fallback finding: it appears only after
+// a connection error moved the link to the backup address.
+func TestCloudFallbackDoctor(t *testing.T) {
+	s, base, _ := startAPI(t)
+	f := newFakeCloud(t)
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close() // a closed port: the dial is refused
+	s.Cloud().Configure(cloudlink.Settings{APIURLs: []string{deadURL, f.srv.URL}, Enabled: false})
+
+	hasFinding := func() bool {
+		_, body, _ := doJSON(t, "GET", base+"/v1/system/doctor", nil)
+		rows, _ := body["findings"].([]any)
+		for _, r := range rows {
+			if m, _ := r.(map[string]any); m["code"] == "cloud_fallback_active" {
+				return true
+			}
+		}
+		return false
+	}
+	if hasFinding() {
+		t.Fatal("fallback finding before any failover")
+	}
+	code, body, _ := doJSON(t, "POST", base+"/v1/cloud/link",
+		map[string]string{"enrollment_token": "ABCD-EFGH-0123", "name": "mbp"})
+	if code != http.StatusOK {
+		t.Fatalf("link through the fallback: %d %v", code, body)
+	}
+	if body["fallback"] != true || body["endpoint"] != strings.TrimPrefix(f.srv.URL, "http://") {
+		t.Fatalf("status after failover: %v", body)
+	}
+	if !hasFinding() {
+		t.Fatal("no fallback finding while on the backup address")
+	}
+	if got := s.Cloud().APIHost(); got != strings.TrimPrefix(deadURL, "http://") {
+		t.Fatalf("APIHost = %q; the pairing link must name the primary host", got)
+	}
 }

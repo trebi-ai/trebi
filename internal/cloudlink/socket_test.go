@@ -258,7 +258,7 @@ func TestSocketDeliversAcksAndReconnects(t *testing.T) {
 	})
 
 	svc := New(st)
-	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: true})
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: true})
 	svc.WithMail(mail).WithWebhooks(hooks).WithOnChange(changes.fn(svc))
 	defer svc.Stop()
 
@@ -364,7 +364,7 @@ func TestSocketAckSkippedOnSinkError(t *testing.T) {
 	})
 
 	svc := New(st)
-	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: true})
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: true})
 	svc.WithMail(mail)
 	defer svc.Stop()
 	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
@@ -390,7 +390,7 @@ func TestSocketUnauthorizedStopsRedial(t *testing.T) {
 	fc.reject = http.StatusUnauthorized
 
 	svc := New(st)
-	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: true})
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: true})
 	defer svc.Stop()
 	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
 		t.Fatal(err)
@@ -546,7 +546,7 @@ func TestSocketRelayRouting(t *testing.T) {
 	})
 
 	svc := New(st).WithRelay(sink)
-	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: true, Mobile: true})
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: true, Mobile: true})
 	defer svc.Stop()
 	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
 		t.Fatal(err)
@@ -601,7 +601,7 @@ func TestSocketHelloCapsMobile(t *testing.T) {
 		fc.drain(conn, time.Minute)
 	})
 	svc := New(st).WithRelay(newRelaySink())
-	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: true, Mobile: true})
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: true, Mobile: true})
 	defer svc.Stop()
 	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
 		t.Fatal(err)
@@ -623,4 +623,54 @@ func TestSocketHelloCapsMobile(t *testing.T) {
 
 func newRelaySink() *relaySink {
 	return &relaySink{opened: map[string]string{}, frames: map[string][]string{}, closed: map[string]string{}}
+}
+
+// TestSocketFailsOverOnDialError: a refused dial on the primary address
+// dials the backup address at once, and the bus records the move.
+func TestSocketFailsOverOnDialError(t *testing.T) {
+	testHome(t)
+	st := openStore(t)
+	fc := newFakeCloud(t, func(fc *fakeCloud, conn *websocket.Conn, _ int) {
+		fc.recv(conn)
+		fc.send(conn, HelloOK{V: ContractV, Type: "hello_ok", Plan: "pro_cloud", HeartbeatInterval: 60})
+		fc.drain(conn, time.Minute)
+	})
+	svc := New(st)
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: false})
+	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
+		t.Fatal(err)
+	}
+	svc.Configure(Settings{APIURLs: []string{deadURL(t), fc.srv.URL}, Enabled: true})
+	svc.Start(context.Background())
+	defer svc.Stop()
+
+	waitFor(t, "connected through the backup", func() bool { return svc.Status().Connected })
+	got := svc.Status()
+	if !got.Fallback || got.Endpoint != strings.TrimPrefix(fc.srv.URL, "http://") {
+		t.Fatalf("status = %+v", got)
+	}
+	if n := busCount(t, st, "cloud.endpoint_switched"); n != 1 {
+		t.Fatalf("cloud.endpoint_switched events = %d, want 1", n)
+	}
+}
+
+// TestSocketUnauthorizedKeepsAddress: a 401 on the primary address marks
+// the link unauthorized and never tries the backup address.
+func TestSocketUnauthorizedKeepsAddress(t *testing.T) {
+	testHome(t)
+	st := openStore(t)
+	fc := newFakeCloud(t, nil)
+	fc.reject = http.StatusUnauthorized
+	backup := newFakeCloud(t, nil)
+
+	svc := New(st)
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL, backup.srv.URL}, Enabled: true})
+	defer svc.Stop()
+	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "unauthorized status", func() bool { return svc.Status().Status == statusUnauthorized })
+	if backup.sessionCount() != 0 || svc.Status().Fallback {
+		t.Fatalf("backup dialed after a 401: sessions %d", backup.sessionCount())
+	}
 }

@@ -82,7 +82,7 @@ func (c *ControlPlane) configureCloud(cfg *config.Config) {
 		return
 	}
 	c.Cloud.Configure(cloudlink.Settings{
-		APIURL:    cfg.Cloud.APIURLOrDefault(),
+		APIURLs:   cfg.Cloud.APIURLs(),
 		Enabled:   cfg.Cloud.Active(),
 		RemoteMCP: cfg.Cloud.RemoteMCPOn(),
 		Mobile:    cfg.Cloud.MobileOn(),

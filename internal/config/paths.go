@@ -519,6 +519,7 @@ func (l *pathEntryList) addCore(cfg *Config) {
 func (l *pathEntryList) addCloud(cfg *Config) {
 	c := cfg.Cloud
 	l.add("cloud.api_url", c.APIURLOrDefault(), DefaultCloudAPIURL)
+	l.add("cloud.fallback_urls", joinCSV(c.FallbackURLsOrDefault()), DefaultCloudFallbackURL)
 	l.add("cloud.enabled", strconv.FormatBool(c.Active()), "true")
 	l.add("cloud.remote_mcp", strconv.FormatBool(c.RemoteMCPOn()), "true")
 	l.add("cloud.mobile", strconv.FormatBool(c.MobileOn()), "true")
@@ -896,6 +897,16 @@ func (c *Config) setCloudKey(path, value string) (handled bool, err error) {
 	switch path {
 	case "cloud.api_url":
 		c.Cloud.APIURL = clearOrValue(value)
+	case "cloud.fallback_urls":
+		if value == "" || value == "-" {
+			c.Cloud.FallbackURLs = nil
+			return true, nil
+		}
+		urls, err := parseStringSlice(value, true) // "[]" → empty: no fallback
+		if err != nil {
+			return true, fmt.Errorf("cloud.fallback_urls: %w", err)
+		}
+		c.Cloud.FallbackURLs = &urls
 	case "cloud.enabled":
 		if value == "" || value == "-" {
 			c.Cloud.Enabled = nil
@@ -1320,6 +1331,7 @@ func pathKeyDescriptions() map[string]string {
 		"email.from_name":               "Display name on outbound mail (default Trebi)",
 		"email.content_days":            "Days to keep email message text (default 45; 0 = do not keep)",
 		"cloud.api_url":                 "Hosted account endpoint (default https://staging-api.trebi.ai)",
+		"cloud.fallback_urls":           "Second addresses for Trebi Cloud, used when this network blocks the main address. [] turns this off (default https://trebi-cloud-api-staging.ocral.workers.dev)",
 		"cloud.enabled":                 "Dial the hosted workers; false keeps a linked device offline (default true)",
 		"cloud.remote_mcp":              "Allow Claude, ChatGPT, and other remote MCP clients to use this machine through Trebi Cloud (default true)",
 		"cloud.mobile":                  "Allow paired phones and tablets to use this machine through Trebi Cloud (default true)",

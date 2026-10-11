@@ -6,6 +6,7 @@
       "release": {
         "ok": true,
         "api": "https://staging-api.trebi.ai",
+        "api_fallback": "https://trebi-cloud-api-staging.ocral.workers.dev",
         "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
         "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
         "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
@@ -30,6 +31,7 @@
       "release": {
         "ok": true,
         "api": "https://api.trebi.ai",
+        "api_fallback": "https://trebi-cloud-api.ocral.workers.dev",
         "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
         "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
         "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
@@ -108,6 +110,7 @@
       "release": {
         "ok": true,
         "api": "https://staging-api.trebi.ai",
+        "api_fallback": "https://trebi-cloud-api-staging.ocral.workers.dev",
         "device_id": "01JA2B3C4D5E6F7G8H9J0K1DEV",
         "daemon_key_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
         "psk_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
@@ -235,5 +238,5 @@
       }
     }
   ],
-  "note": "the fragment is application/x-www-form-urlencoded; k and p are base64url without padding, 32 bytes; a is host[:port]; a release build allows only trebi.ai and its subdomains with no port, over https; a debug build also allows 127.0.0.1, localhost, and 10.0.2.2 with any port, over http"
+  "note": "the fragment is application/x-www-form-urlencoded; k and p are base64url without padding, 32 bytes; a is host[:port]; a release build allows only trebi.ai and its subdomains with no port, over https; a debug build also allows 127.0.0.1, localhost, and 10.0.2.2 with any port, over http; api_fallback is the backup address from the fixed map in the app, or null when the host has no entry"
 }

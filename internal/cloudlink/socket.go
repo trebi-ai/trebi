@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -21,16 +22,15 @@ const (
 	backoffStart      = time.Second
 	backoffMax        = 60 * time.Second
 	defaultHeartbeat  = 60 * time.Second
-	dialTimeout       = 30 * time.Second
+	dialTimeout       = 30 * time.Second // the full websocket handshake
 )
 
 // socket is one live connection to the cloud: signed dial, frame
 // dispatch, heartbeats, and bounded reconnect. It holds no state beyond
 // the current session; the Service owns the link row and the sinks.
 type socket struct {
-	svc  *Service
-	base string
-	id   Identity
+	svc *Service
+	id  Identity
 
 	mu           sync.Mutex
 	conn         *websocket.Conn
@@ -73,7 +73,7 @@ func (sk *socket) run(ctx context.Context) {
 // reports whether hello_ok was reached and whether the dial said the
 // device is revoked.
 func (sk *socket) session(ctx context.Context) (helloOK, unauthorized bool) {
-	conn, resp, err := sk.dial(ctx)
+	conn, resp, err := sk.dialAny(ctx)
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
 			sk.setUnauthorized()
@@ -279,10 +279,33 @@ func (sk *socket) heartbeatLoop(ctx context.Context, seconds int) {
 	}
 }
 
-// dial opens the signed socket at GET /v1/socket. The upgrade request
-// carries the four signed headers.
-func (sk *socket) dial(ctx context.Context) (*websocket.Conn, *http.Response, error) {
-	u, err := url.Parse(sk.base)
+// dialAny dials the active address. When the connection does not open, it
+// dials the next address at once, without the backoff. An HTTP answer, a
+// 401 too, never moves the address.
+func (sk *socket) dialAny(ctx context.Context) (*websocket.Conn, *http.Response, error) {
+	ep := sk.svc.endpoints()
+	if ep == nil {
+		return nil, nil, errors.New("cloudlink dial: cloud api url is not configured")
+	}
+	base := ep.Current()
+	for tries := 1; ; tries++ {
+		conn, resp, err := sk.dial(ctx, base)
+		if err == nil || resp != nil || tries >= ep.Len() || ctx.Err() != nil || !connectFailed(err) {
+			return conn, resp, err
+		}
+		sk.svc.log.Warn("cloudlink.dial", "err", err)
+		next, ok := ep.Failed(base)
+		if !ok || next == base {
+			return conn, resp, err
+		}
+		base = next
+	}
+}
+
+// dial opens the signed socket at GET /v1/socket on base. The upgrade
+// request carries the four signed headers.
+func (sk *socket) dial(ctx context.Context, base string) (*websocket.Conn, *http.Response, error) {
+	u, err := url.Parse(base)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cloudlink dial: %w", err)
 	}
@@ -304,7 +327,10 @@ func (sk *socket) dial(ctx context.Context) (*websocket.Conn, *http.Response, er
 	for name, values := range req.Header {
 		header[name] = values
 	}
-	dialer := websocket.Dialer{HandshakeTimeout: dialTimeout}
+	dialer := websocket.Dialer{
+		HandshakeTimeout: dialTimeout,
+		NetDialContext:   (&net.Dialer{Timeout: connectTimeout}).DialContext,
+	}
 	conn, resp, err := dialer.DialContext(ctx, u.String(), header)
 	if err != nil {
 		return nil, resp, fmt.Errorf("cloudlink dial: %w", err)

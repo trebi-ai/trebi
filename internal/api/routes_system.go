@@ -555,6 +555,12 @@ func (s *Server) cloudDoctor() []alerts.DoctorFinding {
 			Message: "email.worker and a hosted cloud link are both set; the Worker transport wins. Remove one.",
 		})
 	}
+	if ent.Linked && s.cloud.Status().Fallback {
+		out = append(out, alerts.DoctorFinding{
+			ID: "cloud-fallback-active", Severity: "info", Code: "cloud_fallback_active",
+			Message: "This network blocks the main Trebi Cloud address. Trebi uses the backup address.",
+		})
+	}
 	// Only an explicit opt-in warns; the default is on for every machine.
 	if cfg.Cloud.RemoteMCP != nil && *cfg.Cloud.RemoteMCP {
 		switch {

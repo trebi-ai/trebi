@@ -312,6 +312,7 @@ func schemaMetas() map[string]keyMeta {
 		"email.require_dmarc":                  restart(keyMeta{typ: TypeBool}),
 		"email.from_name":                      restart(keyMeta{typ: TypeString}),
 		"cloud.api_url":                        restart(keyMeta{typ: TypeString}),
+		"cloud.fallback_urls":                  {typ: TypeList},
 		"cloud.enabled":                        restart(keyMeta{typ: TypeBool}),
 		"cloud.remote_mcp":                     {typ: TypeBool},
 		"cloud.mobile":                         {typ: TypeBool},

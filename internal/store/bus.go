@@ -414,6 +414,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "cloud.connected", Bus: true, Log: true},
 		{Name: "cloud.disconnected", Bus: true, Log: true},
 		{Name: "cloud.push_failed", Bus: false, Log: true},
+		{Name: "cloud.endpoint_switched", Bus: true, Log: true},
 		// mobile (plan 2026-10-09)
 		{Name: "mobile.paired", Bus: true, Log: true},
 		{Name: "mobile.updated", Bus: true, Log: true},

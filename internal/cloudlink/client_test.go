@@ -75,7 +75,7 @@ func TestClientWirePaths(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	id := Identity{deviceID: "dev-1", key: ed25519.NewKeyFromSeed(knownSeed)}
-	c := NewClient(srv.URL, id)
+	c := NewClient(newEndpoints([]string{srv.URL}), id)
 	ctx := context.Background()
 
 	deviceID, err := c.Register(ctx, "ABCD-EFGH", "mac-mini")
@@ -185,7 +185,7 @@ func TestClientErrorEnvelope(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	id := Identity{deviceID: "dev-1", key: ed25519.NewKeyFromSeed(knownSeed)}
-	c := NewClient(srv.URL, id)
+	c := NewClient(newEndpoints([]string{srv.URL}), id)
 	ctx := context.Background()
 
 	err := c.call(ctx, http.MethodGet, "/v1/limited", nil, nil, true)

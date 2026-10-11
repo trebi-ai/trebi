@@ -19,6 +19,12 @@ Signed calls send four headers:
 
 The signed payload is `timestamp` + LF + `nonce` + LF + `METHOD` + LF + `pathname`. `METHOD` is uppercase. `pathname` has no query and no host. The worker rejects a timestamp outside five minutes, a reused nonce, and a signature that does not verify. A failed check is 401 with an empty body. `hello` carries no second signature. The upgrade request carries the signature.
 
+## Addresses
+
+The worker serves the same routes on each of its addresses: the main host (`staging-api.trebi.ai`, later `api.trebi.ai`) and its `workers.dev` address (`trebi-cloud-api-staging.ocral.workers.dev`, later `trebi-cloud-api.ocral.workers.dev`). Only the MCP host has its own routes. The signed payload has no host, so the worker accepts the same signed request on each address. `workers_dev` must stay on in `wrangler.jsonc`.
+
+A network can block the Cloudflare IPs of `trebi.ai` and leave the `workers.dev` address open. The daemon reads its addresses from `cloud.api_url` and `cloud.fallback_urls`. It moves to the next address only when the connection does not open: a dial error, a DNS error, or a TLS handshake error. The connect timeout is 8 seconds. An HTTP answer of any status never moves the address. A timeout after the request was sent never moves the address, because `POST /v1/send` is not idempotent. The daemon signs each try again with a new nonce. It keeps the backup address and sends `GET /health` to the main address each 10 minutes. When the main address answers, the daemon moves back. The socket moves back at its next dial. The pairing link always names the main host. `internal/relay/testdata/contract/CONTRACT.md`, "Backup address", has the phone side.
+
 ## Socket frames, daemon to cloud
 
 | Type | Fixture | Fields |

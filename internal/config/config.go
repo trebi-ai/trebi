@@ -837,6 +837,7 @@ tools:
 
 # cloud:                     # hosted account link (plan 2026-09-22)
 #   api_url: ""              # hosted endpoint (default https://staging-api.trebi.ai)
+#   fallback_urls: []        # used when this network blocks api_url (default: the workers.dev address)
 #   enabled: true            # false keeps a linked device offline
 
 # connectors:

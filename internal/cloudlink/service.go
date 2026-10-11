@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -20,10 +20,10 @@ import (
 // Settings is the resolved cloud block handed to the service at wiring
 // time. The config package owns parsing; this is what the service acts on.
 type Settings struct {
-	APIURL    string // from config cloud.api_url
-	Enabled   bool   // config cloud.enabled; a linked device with Enabled false stays offline
-	RemoteMCP bool   // config cloud.remote_mcp
-	Mobile    bool   // config cloud.mobile
+	APIURLs   []string // config cloud.api_url, then cloud.fallback_urls
+	Enabled   bool     // config cloud.enabled; a linked device with Enabled false stays offline
+	RemoteMCP bool     // config cloud.remote_mcp
+	Mobile    bool     // config cloud.mobile
 }
 
 // MailSink is the email channel. email.Service implements it.
@@ -66,6 +66,8 @@ type Status struct {
 	DownSince      string   `json:"down_since"`      // RFC3339 start of the current outage; set only when degraded
 	Mobile         bool     `json:"mobile"`          // config cloud.mobile
 	MobileSessions int      `json:"mobile_sessions"` // open phone sessions
+	Endpoint       string   `json:"endpoint"`        // host of the active cloud address
+	Fallback       bool     `json:"fallback"`        // true while this network blocks the main address
 }
 
 // Service is the long-lived cloud-link worker: the cached link row, the
@@ -86,6 +88,7 @@ type Service struct {
 	mu     sync.Mutex
 	link   *linkRow
 	loaded bool
+	ep     *endpoints // shared by the client and the socket; see endpointsLocked
 	sock   *socket
 	life   context.Context
 	cancel context.CancelFunc
@@ -213,15 +216,11 @@ func (s *Service) APIHost() string {
 	s.ensure()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	base := s.cfg.APIURL
-	if base == "" && s.link != nil {
-		base = s.link.apiURL
-	}
-	u, err := url.Parse(base)
-	if err != nil {
+	ep := s.endpointsLocked()
+	if ep == nil {
 		return ""
 	}
-	return u.Host
+	return hostOf(ep.Primary()) // the phone maps it to its fallback itself
 }
 
 // MintClaim mints a one-time pairing claim for a phone.
@@ -369,6 +368,9 @@ func (s *Service) Status() Status {
 	if s.relay != nil {
 		st.MobileSessions = s.relay.Count()
 	}
+	if ep := s.endpointsLocked(); ep != nil {
+		st.Endpoint, st.Fallback = hostOf(ep.Current()), ep.OnFallback()
+	}
 	if st.Features == nil {
 		st.Features = []string{}
 	}
@@ -415,9 +417,9 @@ func (s *Service) Link(ctx context.Context, enrollToken, name string) (Status, e
 		s.mu.Unlock()
 		return Status{}, ErrAlreadyLinked
 	}
-	base := s.cfg.APIURL
+	ep := s.endpointsLocked()
 	s.mu.Unlock()
-	if base == "" {
+	if ep == nil {
 		return Status{}, errors.New("cloud api url is not configured")
 	}
 
@@ -425,7 +427,7 @@ func (s *Service) Link(ctx context.Context, enrollToken, name string) (Status, e
 	if err != nil {
 		return Status{}, err
 	}
-	deviceID, err := NewClient(base, id).Register(ctx, enrollToken, name)
+	deviceID, err := NewClient(ep, id).Register(ctx, enrollToken, name)
 	if err != nil {
 		_ = DeleteIdentity() // no half-link: drop the key minted above
 		return Status{}, err
@@ -435,7 +437,7 @@ func (s *Service) Link(ctx context.Context, enrollToken, name string) (Status, e
 	row := &linkRow{
 		deviceID:    deviceID,
 		deviceName:  name,
-		apiURL:      base,
+		apiURL:      ep.Primary(),
 		features:    []string{},
 		linkedAt:    now,
 		refreshedAt: now,
@@ -592,18 +594,68 @@ func (s *Service) client() (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewClient(s.apiBase(row), id), nil
+	return NewClient(s.endpoints(), id), nil
 }
 
-// apiBase is the configured API URL, falling back to the URL saved at link
-// time so an existing row keeps working before config loads.
-func (s *Service) apiBase(row *linkRow) string {
+func (s *Service) endpoints() *endpoints {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cfg.APIURL != "" {
-		return s.cfg.APIURL
+	return s.endpointsLocked()
+}
+
+// endpointsLocked returns the shared address list: the configured URLs, or
+// the URL saved at link time before config loads. It keeps the instance
+// while the list stays the same, so a failover survives a config reload.
+// It returns nil when no URL is known. Callers hold s.mu.
+func (s *Service) endpointsLocked() *endpoints {
+	urls := s.cfg.APIURLs
+	if len(urls) == 0 && s.link != nil {
+		urls = []string{s.link.apiURL}
 	}
-	return row.apiURL
+	if len(urls) == 0 {
+		return nil
+	}
+	if s.ep == nil || !slices.Equal(s.ep.urls, urls) {
+		s.ep = newEndpoints(urls)
+		s.ep.onSwitch = s.endpointSwitched
+	}
+	return s.ep
+}
+
+// endpointSwitched logs and publishes one address change. The bus frame
+// carries hosts only, so the UI and the assistant can show the change.
+func (s *Service) endpointSwitched(from, to string) {
+	s.log.Warn("cloud.endpoint_switched", "from", hostOf(from), "to", hostOf(to))
+	s.mu.Lock()
+	entityID := "cloud"
+	if s.link != nil {
+		entityID = s.link.deviceID
+	}
+	s.mu.Unlock()
+	if _, err := s.st.Append(context.Background(), store.BusEvent{
+		Topic: "cloud.endpoint_switched", Entity: "cloud", EntityID: entityID, Action: "endpoint_switched",
+		Attrs: map[string]string{"from": hostOf(from), "to": hostOf(to)},
+	}); err != nil {
+		s.log.Warn("bus append", "topic", "cloud.endpoint_switched", "err", err)
+	}
+}
+
+// probeLoop moves back to the primary address when it answers again.
+// Stop condition: ctx is the loop's process-lifetime context, which Stop
+// cancels.
+func (s *Service) probeLoop(ctx context.Context) {
+	t := time.NewTicker(probeEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if ep := s.endpoints(); ep != nil {
+				ep.ProbePrimary(ctx)
+			}
+		}
+	}
 }
 
 // applyEntitlement writes plan and features to the cloud_link row,
@@ -738,6 +790,7 @@ func (s *Service) readLink() *linkRow {
 func (s *Service) ensureRunLocked() {
 	if s.life == nil {
 		s.life, s.cancel = context.WithCancel(context.Background())
+		go s.probeLoop(s.life) // stop: Stop cancels s.life
 	}
 }
 
@@ -748,7 +801,7 @@ func (s *Service) launchLocked(id Identity) {
 	if s.sock != nil || s.link == nil || !s.cfg.Enabled {
 		return
 	}
-	sk := &socket{svc: s, base: s.apiBaseLocked(), id: id, downSince: time.Now(), mcpSlots: make(chan struct{}, mcpSlotCount), sids: map[string]struct{}{}}
+	sk := &socket{svc: s, id: id, downSince: time.Now(), mcpSlots: make(chan struct{}, mcpSlotCount), sids: map[string]struct{}{}}
 	s.sock = sk
 	s.done = make(chan struct{})
 	// Stop condition: s.life is cancelled by Stop (directly or via Start).
@@ -756,14 +809,6 @@ func (s *Service) launchLocked(id Identity) {
 		defer close(s.done)
 		sk.run(s.life)
 	}()
-}
-
-// apiBaseLocked resolves the API URL. Callers hold s.mu.
-func (s *Service) apiBaseLocked() string {
-	if s.cfg.APIURL != "" {
-		return s.cfg.APIURL
-	}
-	return s.link.apiURL
 }
 
 // mobile reports whether the socket may carry phone sessions.

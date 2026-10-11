@@ -367,6 +367,12 @@ func runCloudStatus(_ context.Context, c *cli.Command) error {
 	fmt.Fprintf(w, "Plan:      %s\n", dash(mapStr(body, "plan")))
 	fmt.Fprintf(w, "Features:  %s\n", featureList(body))
 	fmt.Fprintf(w, "Socket:    %s\n", socket)
+	if endpoint := mapStr(body, "endpoint"); endpoint != "" {
+		if fallback, _ := body["fallback"].(bool); fallback {
+			endpoint += " (backup)"
+		}
+		fmt.Fprintf(w, "Address:   %s\n", endpoint)
+	}
 	fmt.Fprintf(w, "Refreshed: %s\n", dash(mapStr(body, "refreshed_at")))
 	return nil
 }

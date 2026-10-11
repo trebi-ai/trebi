@@ -17,6 +17,17 @@ https://pair.trebi.ai/#v=1&a=<api host>&d=<device id>&k=<daemon key>&p=<psk>&c=<
 - `o` is the offer id. `n` is the machine name for the screen.
 - The error codes are `not_pair_link`, `version`, `missing_field`, `bad_key`, and `host_not_allowed`.
 
+### Backup address
+
+A network can block the Cloudflare IPs of `trebi.ai` and leave the `workers.dev` address of the same Worker open. The link always names the main host. The app has a fixed map from the main host to the backup host. The map is the only source of backup hosts: the app never takes a `workers.dev` host from a link, because any person can deploy a `workers.dev` Worker.
+
+| Main host | Backup host |
+|---|---|
+| `staging-api.trebi.ai` | `trebi-cloud-api-staging.ocral.workers.dev` |
+| `api.trebi.ai` | `trebi-cloud-api.ocral.workers.dev` |
+
+Each valid `release` case in `pair-link.v1.json` has `api_fallback`: the backup address, or `null` when the host has no entry. The app tries the main address first. It tries the backup address only when the connection does not open: a dial error, a DNS error, a TLS handshake error, or a connect timeout of 8 seconds. An HTTP answer never moves the app to the backup address. The signature and the Noise handshake have no host, so the same credentials work on both addresses. `internal/cloudlink/testdata/contract/CONTRACT.md`, "Addresses", has the daemon side.
+
 ## Handshake
 
 The pattern is `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`. The phone is the initiator. The prologue is `trebi-relay/1`, one NUL byte, and the device id in ASCII.

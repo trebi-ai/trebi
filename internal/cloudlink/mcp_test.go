@@ -70,7 +70,7 @@ func TestSocketHelloCapsAndToggle(t *testing.T) {
 		fc.drain(conn, time.Minute)
 	})
 	svc := New(st).WithMCP(&mcpSink{})
-	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: true, RemoteMCP: true})
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: true, RemoteMCP: true})
 	defer svc.Stop()
 	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
 		t.Fatal(err)
@@ -136,7 +136,7 @@ func TestSocketMcpRoundTrip(t *testing.T) {
 		}
 	})
 	svc := New(st).WithMCP(sink)
-	svc.Configure(Settings{APIURL: fc.srv.URL, Enabled: true, RemoteMCP: true})
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: true, RemoteMCP: true})
 	defer svc.Stop()
 	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
 		t.Fatal(err)

@@ -62,18 +62,14 @@ type Hook struct {
 // Client speaks the signed cloud API (testdata/contract/CONTRACT.md).
 // Every route except Register carries the four device signature headers.
 type Client struct {
-	base string
+	ep   *endpoints
 	id   Identity
 	http *http.Client
 }
 
-// NewClient builds a Client against one cloud API URL.
-func NewClient(baseURL string, id Identity) *Client {
-	return &Client{
-		base: baseURL,
-		id:   id,
-		http: &http.Client{Timeout: 30 * time.Second},
-	}
+// NewClient builds a Client against the cloud API addresses in ep.
+func NewClient(ep *endpoints, id Identity) *Client {
+	return &Client{ep: ep, id: id, http: newHTTPClient()}
 }
 
 // Register exchanges an enroll code for a device id. It is the only
@@ -210,13 +206,9 @@ func (c *Client) Attachment(ctx context.Context, key string) ([]byte, string, er
 		return nil, "", fmt.Errorf("cloud api attachment: malformed key %q", key)
 	}
 	path := "/v1/attachments/" + url.PathEscape(messageID) + "/" + url.PathEscape(attachmentID)
-	req, err := c.request(ctx, http.MethodGet, path, nil, true)
+	resp, err := c.do(ctx, http.MethodGet, path, nil, true)
 	if err != nil {
 		return nil, "", err
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, "", fmt.Errorf("cloud api %s: %w", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -229,12 +221,36 @@ func (c *Client) Attachment(ctx context.Context, key string) ([]byte, string, er
 	return raw, resp.Header.Get("Content-Type"), nil
 }
 
-func (c *Client) request(ctx context.Context, method, path string, body []byte, signed bool) (*http.Request, error) {
+// do sends one request. When the connection to the active address does
+// not open, it sends the request again to the next address, with a new
+// signature and nonce. Any other error is returned as is.
+func (c *Client) do(ctx context.Context, method, path string, body []byte, signed bool) (*http.Response, error) {
+	base := c.ep.Current()
+	for tries := 1; ; tries++ {
+		req, err := c.request(ctx, base, method, path, body, signed)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := c.http.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+		if tries < c.ep.Len() && ctx.Err() == nil && connectFailed(err) {
+			if next, ok := c.ep.Failed(base); ok && next != base {
+				base = next
+				continue
+			}
+		}
+		return nil, fmt.Errorf("cloud api %s: %w", path, err)
+	}
+}
+
+func (c *Client) request(ctx context.Context, base, method, path string, body []byte, signed bool) (*http.Request, error) {
 	var rdr io.Reader
 	if body != nil {
 		rdr = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, base+path, rdr)
 	if err != nil {
 		return nil, err
 	}
@@ -250,13 +266,9 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 
 // call performs one JSON round trip and maps the error envelope.
 func (c *Client) call(ctx context.Context, method, path string, body []byte, out any, signed bool) error {
-	req, err := c.request(ctx, method, path, body, signed)
+	resp, err := c.do(ctx, method, path, body, signed)
 	if err != nil {
 		return err
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("cloud api %s: %w", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusTooManyRequests {
