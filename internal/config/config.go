@@ -811,6 +811,7 @@ tools:
 #   skills: [trebi]          # skill names under ~/.trebi/skills
 #   idle_close: 15m          # close an idle session process after this
 #   permission_timeout: 10m  # deny a headless permission after this
+#   start_timeout: 30s       # fail a turn that shows no output after this
 #   max_live: 4              # live agent processes across all workspaces
 #   native:                  # the in-process loop (no installed CLI)
 #     api_format: openai     # openai | anthropic

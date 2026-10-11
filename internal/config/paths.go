@@ -58,6 +58,8 @@ func PathKeyDescription(key string) string {
 			return "Close an idle session process after this (for example 15m)"
 		case "assistant.permission_timeout":
 			return "Deny a headless permission after this (for example 10m)"
+		case "assistant.start_timeout":
+			return "Fail a turn that shows no output after this (for example 30s)"
 		case "assistant.max_live":
 			return "Live agent processes across all workspaces"
 		case "assistant.native.model":
@@ -544,6 +546,7 @@ func (l *pathEntryList) addAssistant(cfg *Config) {
 	l.add("assistant.mode", a.ModeOrDefault(), DefaultAssistantMode)
 	l.add("assistant.idle_close", a.IdleCloseDuration().String(), DefaultAssistantIdleClose.String())
 	l.add("assistant.permission_timeout", a.PermissionTimeoutDuration().String(), DefaultAssistantPermissionTimeout.String())
+	l.add("assistant.start_timeout", a.StartTimeoutDuration().String(), DefaultAssistantStartTimeout.String())
 	l.add("assistant.max_live", strconv.Itoa(a.MaxLiveOrDefault()), strconv.Itoa(DefaultAssistantMaxLive))
 	n := a.Native
 	l.add("assistant.native.model", n.Model, "")
@@ -986,6 +989,14 @@ func (c *Config) setAssistantKey(path, value string) (handled bool, err error) {
 			}
 		}
 		c.Assistant.PermissionTimeout = v
+	case "assistant.start_timeout":
+		v := strings.TrimSpace(value)
+		if v != "" {
+			if _, err := time.ParseDuration(v); err != nil {
+				return true, fmt.Errorf("assistant.start_timeout: want a duration, for example 30s")
+			}
+		}
+		c.Assistant.StartTimeout = v
 	case "assistant.max_live":
 		v := strings.TrimSpace(value)
 		if v == "" {

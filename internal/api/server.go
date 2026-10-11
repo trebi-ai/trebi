@@ -254,6 +254,7 @@ func (s *Server) buildAssistantStack(filesMaxBytes int64) {
 		timing = assistant.ResolverTiming{
 			IdleClose:         cfg.Assistant.IdleCloseDuration(),
 			PermissionTimeout: cfg.Assistant.PermissionTimeoutDuration(),
+			StartTimeout:      cfg.Assistant.StartTimeoutDuration(),
 			MaxLive:           cfg.Assistant.MaxLiveOrDefault(),
 		}
 	}

@@ -353,6 +353,7 @@ func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service
 		timing = assistant.ResolverTiming{
 			IdleClose:         cfg.Assistant.IdleCloseDuration(),
 			PermissionTimeout: cfg.Assistant.PermissionTimeoutDuration(),
+			StartTimeout:      cfg.Assistant.StartTimeoutDuration(),
 			MaxLive:           cfg.Assistant.MaxLiveOrDefault(),
 		}
 	}

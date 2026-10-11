@@ -293,6 +293,7 @@ func schemaMetas() map[string]keyMeta {
 		"assistant.mode":                       {typ: TypeString, enum: []string{"ask", "auto_edit", "auto"}},
 		"assistant.idle_close":                 dur,
 		"assistant.permission_timeout":         dur,
+		"assistant.start_timeout":              dur,
 		"assistant.max_live":                   restart(keyMeta{typ: TypeInt}),
 		"assistant.native.api_format":          {typ: TypeString, enum: []string{"openai", "anthropic"}},
 		"assistant.api_key":                    {typ: TypeString, secret: true},

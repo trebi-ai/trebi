@@ -36,7 +36,8 @@ type session struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	idleTimer *time.Timer
+	idleTimer  *time.Timer
+	startTimer *time.Timer // armed from a new turn until its first event
 
 	mu           sync.Mutex
 	allow        []string            // session-scoped allowed tools
@@ -115,6 +116,13 @@ func (m *Manager) startSession(ctx context.Context, conv *conversations.Conversa
 	} else {
 		req.Env["TREBI_RUN_TOKEN"] = token
 		req.MCPServers = m.trebiMCP(token, harness)
+		if harness == string(agentwire.Claude) {
+			// With the claude.ai connectors and --mcp-config, the Claude CLI
+			// can leave the first prompt unread until a second one arrives.
+			if _, ok := req.Env["ENABLE_CLAUDEAI_MCP_SERVERS"]; !ok {
+				req.Env["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"
+			}
+		}
 		if vendorID != "" {
 			req.SessionID = vendorID
 		}
@@ -225,6 +233,9 @@ func (s *session) pump() {
 			}
 		}
 
+		if startsTurn(evt.Type) {
+			s.disarmStart()
+		}
 		s.deliver(evt)
 		if evt.Type == agentwire.EventResult || evt.Type == agentwire.EventExit {
 			s.endTurn()
@@ -647,6 +658,59 @@ func (s *session) resetIdleTimer() {
 	})
 }
 
+// armStart fails the turn when the harness shows no event before the start
+// timeout.
+func (s *session) armStart() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.startTimer != nil {
+		s.startTimer.Stop()
+	}
+	var t *time.Timer
+	t = time.AfterFunc(s.m.startTimeout(), func() { s.startTimedOut(t) })
+	s.startTimer = t
+}
+
+func (s *session) disarmStart() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.startTimer != nil {
+		s.startTimer.Stop()
+		s.startTimer = nil
+	}
+}
+
+// startTimedOut records the failed start and ends the process. The next
+// prompt starts or resumes a new one.
+func (s *session) startTimedOut(t *time.Timer) {
+	s.mu.Lock()
+	if s.startTimer != t {
+		s.mu.Unlock()
+		return
+	}
+	s.startTimer = nil
+	s.mu.Unlock()
+
+	const msg = "The assistant did not start. Try again."
+	s.m.log.Warn("assistant.start_timeout", "conversation_id", s.convID, "harness", s.harness)
+	e := Event{
+		Type:  "error",
+		Turn:  s.currentTurn(),
+		At:    time.Now().UTC(),
+		Error: &Error{Class: "start", Code: "start_timeout", Message: msg},
+	}
+	if seq, err := s.m.store.AppendEvent(s.ctx, s.convID, e); err == nil {
+		e.Seq = seq
+	}
+	s.m.broadcast(s.convID, e)
+	ctx := context.Background()
+	_ = s.m.closeWith(ctx, s.convID, "start_timeout") // the row update below records the outcome
+	_, _ = s.m.store.Update(ctx, s.convID, func(r *Record) {
+		r.Status = StatusError
+		r.Error = msg
+	})
+}
+
 // stopIdleTimer disarms the idle close timer.
 func (s *session) stopIdleTimer() {
 	s.mu.Lock()
@@ -660,6 +724,7 @@ func (s *session) stopIdleTimer() {
 // close ends the agent process and cancels the session context.
 func (s *session) close(ctx context.Context) {
 	s.stopIdleTimer()
+	s.disarmStart()
 	s.mu.Lock()
 	asks := s.permissions
 	s.permissions = map[string]*permAsk{}
@@ -674,6 +739,17 @@ func (s *session) close(ctx context.Context) {
 	}
 	s.cancel()
 	<-s.done
+}
+
+// startsTurn reports whether an event shows that the harness works on the
+// turn. Limits, usage, and status (also stray CLI diagnostics) can arrive
+// while the prompt is still unread.
+func startsTurn(t agentwire.EventType) bool {
+	switch t {
+	case agentwire.EventLimits, agentwire.EventUsage, agentwire.EventStatus, agentwire.EventUser:
+		return false
+	}
+	return true
 }
 
 func boolStr(b bool) string {

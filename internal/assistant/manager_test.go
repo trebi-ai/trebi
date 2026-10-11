@@ -741,6 +741,56 @@ func TestHeldPromptDroppedIsVisible(t *testing.T) {
 	})
 }
 
+func TestStartTimeoutFailsSilentTurn(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{StartTimeout: 100 * time.Millisecond})
+	sess := newScriptSession(true)
+	env.runtime.SetDriver(agentwire.Fake, scriptDriver{sess: sess})
+	ctx := context.Background()
+	convID := env.conversation(t)
+
+	if _, err := env.mgr.Prompt(ctx, convID, promptInput("hello")); err != nil {
+		t.Fatal(err)
+	}
+	// Limits can arrive while the prompt is unread; they do not count.
+	sess.emit(agentwire.Event{Type: agentwire.EventLimits})
+	waitFor(t, 2*time.Second, "failed start", func() bool {
+		rec, err := env.mgr.Session(ctx, convID)
+		return err == nil && rec.Status == assistant.StatusError && !env.mgr.Live(convID)
+	})
+	rec, _ := env.mgr.Session(ctx, convID)
+	if rec.Error != "The assistant did not start. Try again." {
+		t.Fatalf("error=%q", rec.Error)
+	}
+	events, _ := env.mgr.Events(ctx, convID, 0, 200)
+	var found bool
+	for _, e := range events {
+		if e.Type == "error" && e.Error != nil && e.Error.Code == "start_timeout" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no start_timeout error event")
+	}
+}
+
+func TestStartTimeoutDisarmsOnFirstEvent(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{StartTimeout: 100 * time.Millisecond})
+	sess := newScriptSession(true)
+	env.runtime.SetDriver(agentwire.Fake, scriptDriver{sess: sess})
+	ctx := context.Background()
+	convID := env.conversation(t)
+
+	if _, err := env.mgr.Prompt(ctx, convID, promptInput("hello")); err != nil {
+		t.Fatal(err)
+	}
+	sess.emit(agentwire.Event{Type: agentwire.EventInit, SessionID: "script-1"})
+	time.Sleep(300 * time.Millisecond)
+	rec, _ := env.mgr.Session(ctx, convID)
+	if !env.mgr.Live(convID) || rec.Status != assistant.StatusRunning {
+		t.Fatalf("live=%v status=%s", env.mgr.Live(convID), rec.Status)
+	}
+}
+
 func newScriptSession(steer bool) *scriptSession {
 	return &scriptSession{events: make(chan agentwire.Event, 64), steer: steer}
 }

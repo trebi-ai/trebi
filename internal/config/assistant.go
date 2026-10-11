@@ -23,6 +23,7 @@ const (
 	DefaultAssistantMode              = "auto_edit"
 	DefaultAssistantIdleClose         = 15 * time.Minute
 	DefaultAssistantPermissionTimeout = 10 * time.Minute
+	DefaultAssistantStartTimeout      = 30 * time.Second
 	DefaultAssistantMaxLive           = 4
 
 	KeySourceNone      = "none"
@@ -67,6 +68,7 @@ type AssistantConfig struct {
 	Context           string       `yaml:"context,omitempty"`            // default context prompt
 	IdleClose         string       `yaml:"idle_close,omitempty"`         // duration; default 15m
 	PermissionTimeout string       `yaml:"permission_timeout,omitempty"` // duration; default 10m
+	StartTimeout      string       `yaml:"start_timeout,omitempty"`      // duration; default 30s
 	MaxLive           int          `yaml:"max_live,omitempty"`           // live agent processes; default 4
 	APIKeyPresent     bool         `yaml:"api_key_present,omitempty"`
 	Native            NativeConfig `yaml:"native,omitempty"`
@@ -193,6 +195,15 @@ func (a AssistantConfig) PermissionTimeoutDuration() time.Duration {
 	return DefaultAssistantPermissionTimeout
 }
 
+// StartTimeoutDuration is how long a new turn waits for its first event
+// before the daemon fails it.
+func (a AssistantConfig) StartTimeoutDuration() time.Duration {
+	if d, err := time.ParseDuration(strings.TrimSpace(a.StartTimeout)); err == nil && d > 0 {
+		return d
+	}
+	return DefaultAssistantStartTimeout
+}
+
 // MaxLiveOrDefault is the live-process cap across workspaces.
 func (a AssistantConfig) MaxLiveOrDefault() int {
 	if a.MaxLive > 0 {
@@ -271,6 +282,9 @@ func (e *ConfigError) checkAssistant(a AssistantConfig) {
 	}
 	if _, err := time.ParseDuration(strings.TrimSpace(a.PermissionTimeout)); a.PermissionTimeout != "" && err != nil {
 		e.add("assistant.permission_timeout", "want a duration, for example 10m")
+	}
+	if _, err := time.ParseDuration(strings.TrimSpace(a.StartTimeout)); a.StartTimeout != "" && err != nil {
+		e.add("assistant.start_timeout", "want a duration, for example 30s")
 	}
 	if a.MaxLive < 0 {
 		e.add("assistant.max_live", "must be >= 0")

@@ -437,6 +437,8 @@ func sampleSetValue(key string) string {
 		return "15m"
 	case key == "assistant.permission_timeout":
 		return "10m"
+	case key == "assistant.start_timeout":
+		return "20s"
 	case key == "assistant.max_live", key == "assistant.native.max_tokens":
 		return "8192"
 	case key == "assistant.native.context_tokens", key == "assistant.native.limits.daily_tokens", key == "assistant.native.limits.max_turns":

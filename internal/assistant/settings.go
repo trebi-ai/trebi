@@ -104,6 +104,7 @@ const (
 	DefaultIdleClose         = 15 * time.Minute
 	DefaultPermissionTimeout = 10 * time.Minute
 	DefaultMaxLive           = 4
+	DefaultStartTimeout      = 30 * time.Second
 )
 
 // ResolverTiming carries the process timers the manager reads.
@@ -111,6 +112,8 @@ type ResolverTiming struct {
 	IdleClose         time.Duration
 	PermissionTimeout time.Duration
 	MaxLive           int
+	// StartTimeout fails a new turn that shows no event.
+	StartTimeout time.Duration
 }
 
 // Resolver merges the global defaults and the workspace override.
@@ -135,6 +138,9 @@ func NewResolver(cfg ConfigSource, ws OverrideStore, rt Detector, nativeFn func(
 	}
 	if timing.MaxLive <= 0 {
 		timing.MaxLive = DefaultMaxLive
+	}
+	if timing.StartTimeout <= 0 {
+		timing.StartTimeout = DefaultStartTimeout
 	}
 	if nativeFn == nil {
 		nativeFn = func() config.NativeConfig { return config.NativeConfig{} }

@@ -207,6 +207,9 @@ func (m *Manager) prompt(ctx context.Context, convID string, in wire.PromptInput
 
 	// Reset the idle timer (plan D.4 step 7).
 	s.resetIdleTimer()
+	if delivery == agentwire.DeliveryPrompted {
+		s.armStart()
+	}
 	_, _ = m.store.Update(ctx, convID, func(r *Record) { r.Prompts++ })
 	rec, _ = m.store.Get(ctx, convID)
 	return wire.PromptResult{Message: convMsg(msg), Status: rec.Status, Delivery: string(delivery)}, nil
@@ -611,6 +614,13 @@ func (m *Manager) permissionTimeout() time.Duration {
 		return m.settings.Timing().PermissionTimeout
 	}
 	return DefaultPermissionTimeout
+}
+
+func (m *Manager) startTimeout() time.Duration {
+	if m.settings != nil {
+		return m.settings.Timing().StartTimeout
+	}
+	return DefaultStartTimeout
 }
 
 func (m *Manager) now() time.Time {
