@@ -575,3 +575,205 @@ func TestEmptyHarnessPinInheritsResolved(t *testing.T) {
 		t.Fatalf("session harness = %q, want the resolved fake", rec.Harness)
 	}
 }
+
+// scriptDriver hands out one scriptSession that the test drives: the test
+// emits the events, and Send reports a delivery like agent-wire does.
+type scriptDriver struct{ sess *scriptSession }
+
+func (scriptDriver) Name() string { return string(agentwire.Fake) }
+
+func (d scriptDriver) Start(context.Context, agentwire.StartRequest) (agentwire.Session, error) {
+	return d.sess, nil
+}
+
+func (d scriptDriver) Resume(context.Context, agentwire.StartRequest) (agentwire.Session, error) {
+	return d.sess, nil
+}
+
+type scriptSession struct {
+	events chan agentwire.Event
+	once   sync.Once
+	steer  bool // false: a prompt during a turn is held
+
+	mu      sync.Mutex
+	turn    int
+	active  bool
+	prompts []agentwire.Prompt
+	steered []agentwire.Prompt
+	held    []agentwire.Prompt
+}
+
+func (*scriptSession) Provider() string { return string(agentwire.Fake) }
+func (*scriptSession) ID() string       { return "script-1" }
+func (*scriptSession) PID() int         { return 0 }
+
+func (s *scriptSession) Prompt(_ context.Context, p agentwire.Prompt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.turn++
+	s.active = true
+	s.prompts = append(s.prompts, p)
+	return nil
+}
+
+func (s *scriptSession) Send(ctx context.Context, p agentwire.Prompt) (agentwire.Delivery, error) {
+	s.mu.Lock()
+	switch {
+	case s.active && s.steer:
+		s.steered = append(s.steered, p)
+		s.mu.Unlock()
+		return agentwire.DeliverySteered, nil
+	case s.active:
+		s.held = append(s.held, p)
+		s.mu.Unlock()
+		return agentwire.DeliveryHeld, nil
+	}
+	s.mu.Unlock()
+	return agentwire.DeliveryPrompted, s.Prompt(ctx, p)
+}
+
+func (*scriptSession) Interrupt(context.Context) error                                    { return nil }
+func (*scriptSession) AnswerPermission(context.Context, string, agentwire.Decision) error { return nil }
+func (*scriptSession) InterruptTurn(context.Context) error                                { return nil }
+func (*scriptSession) Done() <-chan struct{}                                              { return make(chan struct{}) }
+func (*scriptSession) Err() error                                                         { return nil }
+func (s *scriptSession) Close(context.Context) error {
+	s.once.Do(func() { close(s.events) })
+	return nil
+}
+func (s *scriptSession) Events() <-chan agentwire.Event { return s.events }
+
+func TestSendDuringTurn(t *testing.T) {
+	cases := []struct {
+		name      string
+		steer     bool
+		want      agentwire.Delivery
+		wantTurn  int // turn of the second user event
+		prompts   int // records after the second send
+		sentTurns int // Prompt calls on the harness after the turn ends
+	}{
+		{name: "steered", steer: true, want: agentwire.DeliverySteered, wantTurn: 1, prompts: 1, sentTurns: 1},
+		{name: "held", steer: false, want: agentwire.DeliveryHeld, wantTurn: 2, prompts: 2, sentTurns: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newEnv(t, assistant.ResolverTiming{})
+			sess := newScriptSession(tc.steer)
+			env.runtime.SetDriver(agentwire.Fake, scriptDriver{sess: sess})
+			ctx := context.Background()
+			convID := env.conversation(t)
+
+			first, err := env.mgr.Prompt(ctx, convID, promptInput("start a long task"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first.Delivery != string(agentwire.DeliveryPrompted) {
+				t.Fatalf("first delivery=%q", first.Delivery)
+			}
+			sess.emit(agentwire.Event{Type: agentwire.EventInit, SessionID: "script-1"})
+			waitFor(t, 2*time.Second, "turn 1 recorded", func() bool {
+				rec, err := env.mgr.Session(ctx, convID)
+				return err == nil && rec.Turn == 1
+			})
+
+			second, err := env.mgr.Prompt(ctx, convID, promptInput("also check the logs"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if second.Delivery != string(tc.want) || second.Status != assistant.StatusRunning {
+				t.Fatalf("second=%+v", second)
+			}
+			rec, _ := env.mgr.Session(ctx, convID)
+			if rec.Prompts != tc.prompts || rec.Turn != 1 {
+				t.Fatalf("prompts=%d turn=%d", rec.Prompts, rec.Turn)
+			}
+			users := countUserEvents(t, env, convID)
+			if len(users) != 2 {
+				t.Fatalf("user events=%d", len(users))
+			}
+			if users[0].Delivery != string(agentwire.DeliveryPrompted) || users[0].Turn != 1 {
+				t.Fatalf("first user event=%+v", users[0])
+			}
+			if users[1].Delivery != string(tc.want) || users[1].Turn != tc.wantTurn {
+				t.Fatalf("second user event=%+v", users[1])
+			}
+
+			sess.endTurn()
+			if tc.want == agentwire.DeliveryHeld {
+				sess.emit(agentwire.Event{Type: agentwire.EventAssistant, Text: "Checked the logs"})
+				waitFor(t, 2*time.Second, "held turn running", func() bool {
+					rec, err := env.mgr.Session(ctx, convID)
+					return err == nil && rec.Turn == 2 && rec.Status == assistant.StatusRunning
+				})
+				sess.endTurn()
+			}
+			waitFor(t, 2*time.Second, "idle", func() bool {
+				rec, err := env.mgr.Session(ctx, convID)
+				return err == nil && rec.Status == assistant.StatusIdle
+			})
+			if n, _ := sess.counts(); n != tc.sentTurns {
+				t.Fatalf("harness turns=%d, want %d", n, tc.sentTurns)
+			}
+		})
+	}
+}
+
+func TestHeldPromptDroppedIsVisible(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	sess := newScriptSession(false)
+	env.runtime.SetDriver(agentwire.Fake, scriptDriver{sess: sess})
+	ctx := context.Background()
+	convID := env.conversation(t)
+
+	if _, err := env.mgr.Prompt(ctx, convID, promptInput("start")); err != nil {
+		t.Fatal(err)
+	}
+	sess.emit(agentwire.Event{Type: agentwire.EventError, Code: agentwire.CodeHeldPromptDropped,
+		Error: "agentwire: the session ended before a held prompt was sent", Text: "later"})
+	waitFor(t, 2*time.Second, "error event", func() bool {
+		events, _ := env.mgr.Events(ctx, convID, 0, 200)
+		for _, e := range events {
+			if e.Type == "error" && e.Error != nil && e.Error.Code == agentwire.CodeHeldPromptDropped {
+				return strings.Contains(e.Error.Message, "queued message")
+			}
+		}
+		return false
+	})
+}
+
+func newScriptSession(steer bool) *scriptSession {
+	return &scriptSession{events: make(chan agentwire.Event, 64), steer: steer}
+}
+
+// emit sends one event in the current turn.
+func (s *scriptSession) emit(e agentwire.Event) {
+	s.mu.Lock()
+	if e.Turn == 0 {
+		e.Turn = s.turn
+	}
+	s.mu.Unlock()
+	s.events <- e
+}
+
+// endTurn emits the result of the current turn. Held prompts then start the
+// next turn, as agent-wire does.
+func (s *scriptSession) endTurn() {
+	s.mu.Lock()
+	turn := s.turn
+	s.active = false
+	held := s.held
+	s.held = nil
+	if len(held) > 0 {
+		s.turn++
+		s.active = true
+		s.prompts = append(s.prompts, held...)
+	}
+	s.mu.Unlock()
+	s.events <- agentwire.Event{Type: agentwire.EventResult, Turn: turn}
+}
+
+func (s *scriptSession) counts() (prompts, steered int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.prompts), len(s.steered)
+}

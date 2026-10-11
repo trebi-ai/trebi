@@ -148,9 +148,9 @@ type SendOpts struct {
 	HopID          string
 }
 
-// SendResult is the send-path response. An assistant send reports
-// delivery "prompted" and the session status; an agent send keeps run and
-// queue ids.
+// SendResult is the send-path response. An assistant send reports the
+// delivery (prompted, steered, or held) and the session status; an agent
+// send keeps run and queue ids.
 type SendResult struct {
 	Message  Message `json:"message"`
 	Delivery string  `json:"delivery"`

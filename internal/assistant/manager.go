@@ -175,6 +175,11 @@ func (m *Manager) prompt(ctx context.Context, convID string, in wire.PromptInput
 	m.mu.Lock()
 	s := m.live[convID]
 	m.mu.Unlock()
+	// A prompt while a turn runs joins that turn or waits for its end. Its
+	// user event follows the send, so the delivery is known.
+	if s != nil && (rec.Status == StatusRunning || rec.Status == StatusWaiting) {
+		return m.sendDuringTurn(ctx, s, msg, in)
+	}
 	if s == nil {
 		s, err = m.openSession(ctx, conv, eff, in, rec)
 		if err != nil {
@@ -190,22 +195,10 @@ func (m *Manager) prompt(ctx context.Context, convID string, in wire.PromptInput
 	}
 	_, _ = m.store.Update(ctx, convID, func(r *Record) { r.Status = StatusRunning })
 
-	text := in.Text
-	s.mu.Lock()
-	if s.pendingRecap != "" {
-		text = s.pendingRecap + text
-		s.pendingRecap = ""
-	}
-	// Record the prompt before the send: an early harness echo must pass the
-	// drop filter in the pump, and the user event must precede every event of
-	// this turn (plan 2026-09-26 A).
-	s.lastPrompt = in.Text
-	s.lastChannel = in.Connector
-	s.headless = in.Headless
-	s.mu.Unlock()
-	s.appendUserEvent(rec.Prompts+1, in)
+	text := s.takePrompt(in)
+	s.appendUserEvent(rec.Prompts+1, in, agentwire.DeliveryPrompted)
 
-	perr := s.sess.Prompt(ctx, agentwire.Prompt{Text: text, Kind: "assistant"})
+	delivery, perr := agentwire.Send(ctx, s.sess, agentwire.Prompt{Text: text, Kind: "assistant"})
 	if perr != nil {
 		s.appendSendError(fmt.Sprintf("could not send the prompt: %v", perr))
 		_, _ = m.store.Update(ctx, convID, func(r *Record) { r.Status = previous })
@@ -216,7 +209,7 @@ func (m *Manager) prompt(ctx context.Context, convID string, in wire.PromptInput
 	s.resetIdleTimer()
 	_, _ = m.store.Update(ctx, convID, func(r *Record) { r.Prompts++ })
 	rec, _ = m.store.Get(ctx, convID)
-	return wire.PromptResult{Message: convMsg(msg), Status: rec.Status}, nil
+	return wire.PromptResult{Message: convMsg(msg), Status: rec.Status, Delivery: string(delivery)}, nil
 }
 
 // openSession starts a session for the conversation, evicting an idle one
@@ -316,7 +309,7 @@ func (m *Manager) Ask(ctx context.Context, convID string, in wire.PromptInput, w
 	if err != nil {
 		return wire.AskResult{}, err
 	}
-	out := wire.AskResult{Message: res.Message, Status: res.Status}
+	out := wire.AskResult{Message: res.Message, Status: res.Status, Delivery: res.Delivery}
 	if wait <= 0 {
 		return out, nil
 	}
@@ -775,4 +768,34 @@ func (m *Manager) Preview(ctx context.Context, workspaceID string) (string, erro
 	}
 	mem, _ := m.memory.Render(ctx, workspaceID)
 	return compose(eff.Settings, ws, mem), nil
+}
+
+// sendDuringTurn delivers a prompt while a turn runs. A steered prompt joins
+// the current turn. A held prompt starts the next turn when this one ends.
+// Neither changes the status.
+func (m *Manager) sendDuringTurn(ctx context.Context, s *session, msg conversations.Message, in wire.PromptInput) (wire.PromptResult, error) {
+	text := s.takePrompt(in)
+	delivery, err := agentwire.Send(ctx, s.sess, agentwire.Prompt{Text: text, Kind: "assistant"})
+	if err != nil {
+		s.appendSendError(fmt.Sprintf("could not send the prompt: %v", err))
+		return wire.PromptResult{}, fmt.Errorf("could not send the prompt: %w", err)
+	}
+	rec, _ := m.store.Get(ctx, s.convID)
+	turn := rec.Turn
+	switch delivery {
+	case agentwire.DeliverySteered:
+	case agentwire.DeliveryHeld:
+		// Held prompts join into one followup turn.
+		turn = rec.Turn + 1
+		if !s.markHeld() {
+			_, _ = m.store.Update(ctx, s.convID, func(r *Record) { r.Prompts++ })
+		}
+	default:
+		turn = rec.Prompts + 1
+		_, _ = m.store.Update(ctx, s.convID, func(r *Record) { r.Prompts++ })
+	}
+	s.appendUserEvent(turn, in, delivery)
+	s.resetIdleTimer()
+	rec, _ = m.store.Get(ctx, s.convID)
+	return wire.PromptResult{Message: convMsg(msg), Status: rec.Status, Delivery: string(delivery)}, nil
 }

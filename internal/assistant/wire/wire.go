@@ -49,12 +49,14 @@ type PromptResult struct {
 	Message   Message `json:"message"`
 	Duplicate bool    `json:"duplicate"`
 	Status    string  `json:"status"`
+	Delivery  string  `json:"delivery,omitempty"` // prompted|steered|held
 }
 
 // AskResult is the outcome of one Ask: the stored user row plus the
 // assistant replies that arrived inside the wait window.
 type AskResult struct {
-	Message Message   `json:"message"`
-	Replies []Message `json:"replies"`
-	Status  string    `json:"status"`
+	Message  Message   `json:"message"`
+	Replies  []Message `json:"replies"`
+	Status   string    `json:"status"`
+	Delivery string    `json:"delivery,omitempty"`
 }

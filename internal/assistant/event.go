@@ -19,7 +19,8 @@ type Event struct {
 	Delta    bool        `json:"delta,omitempty"`
 	Prompt   string      `json:"prompt,omitempty"`
 	Context  []string    `json:"context,omitempty"`
-	Channel  string      `json:"channel,omitempty"` // channel_type of a user event
+	Channel  string      `json:"channel,omitempty"`  // channel_type of a user event
+	Delivery string      `json:"delivery,omitempty"` // user event: prompted|steered|held
 	Tool     *Tool       `json:"tool,omitempty"`
 	Perm     *Permission `json:"permission,omitempty"`
 	Answer   *Answer     `json:"answer,omitempty"`

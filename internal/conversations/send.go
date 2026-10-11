@@ -83,7 +83,7 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 			return nil, err
 		}
 		return &AskResult{
-			SendResult:     SendResult{Message: convFromWire(res.Message), Delivery: "prompted", Status: res.Status},
+			SendResult:     SendResult{Message: convFromWire(res.Message), Delivery: res.Delivery, Status: res.Status},
 			ConversationID: convID,
 			Replies:        convFromWireAll(res.Replies),
 		}, nil
@@ -205,7 +205,7 @@ func (s *Service) Send(ctx context.Context, convID string, opts SendOpts) (*Send
 			return &SendResult{Message: convFromWire(res.Message)}, nil
 		}
 		s.maybeAutoTitle(ctx, convID)
-		return &SendResult{Message: convFromWire(res.Message), Delivery: "prompted", Status: res.Status}, nil
+		return &SendResult{Message: convFromWire(res.Message), Delivery: res.Delivery, Status: res.Status}, nil
 	}
 	msg, err := s.insertUserMessage(ctx, conv, opts, text)
 	if err != nil {

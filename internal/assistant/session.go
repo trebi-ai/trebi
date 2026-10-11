@@ -48,6 +48,8 @@ type session struct {
 	lastChannel  string // channel_type of that prompt
 	headless     bool
 	pendingRecap string
+	wireTurn     int  // newest turn number the agent process reported
+	held         bool // a held prompt waits for the next turn
 }
 
 // permAsk is one pending permission request.
@@ -195,9 +197,15 @@ func (s *session) pump() {
 		}
 		if evt.Turn > 0 {
 			turn := evt.Turn
+			// A held prompt starts the next turn after a result, with no call
+			// to Prompt, so the status flips back here.
+			resumed := s.nextWireTurn(turn) && evt.Type != agentwire.EventResult && evt.Type != agentwire.EventError
 			_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) {
 				if turn > r.Turn {
 					r.Turn = turn
+				}
+				if resumed {
+					r.Status = StatusRunning
 				}
 			})
 		}
@@ -291,6 +299,9 @@ func (s *session) deliver(evt agentwire.Event) {
 			s.setStatus(StatusClosed)
 		}
 	case string(agentwire.EventError):
+		if e.Error != nil && e.Error.Code == agentwire.CodeHeldPromptDropped {
+			e.Error.Message = "The assistant stopped before it read your queued message. Send it again."
+		}
 		if e.Error != nil && e.Error.Message != "" {
 			_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) { r.Error = e.Error.Message })
 		}
@@ -533,6 +544,46 @@ func (s *session) observe(e Event) {
 	_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) { r.LastMessage = truncateRunes(text, 140) })
 }
 
+// nextWireTurn records turn and reports whether it starts the turn of a held
+// prompt.
+func (s *session) nextWireTurn(turn int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if turn <= s.wireTurn {
+		return false
+	}
+	s.wireTurn = turn
+	held := s.held
+	s.held = false
+	return held
+}
+
+// markHeld marks a held prompt and reports whether one already waited.
+func (s *session) markHeld() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	was := s.held
+	s.held = true
+	return was
+}
+
+// takePrompt records in as the last prompt and returns the text to send,
+// with a pending recap in front. Call it before the send: an early harness
+// echo must pass the drop filter in the pump (plan 2026-09-26 A).
+func (s *session) takePrompt(in wire.PromptInput) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	text := in.Text
+	if s.pendingRecap != "" {
+		text = s.pendingRecap + text
+		s.pendingRecap = ""
+	}
+	s.lastPrompt = in.Text
+	s.lastChannel = in.Connector
+	s.headless = in.Headless
+	return text
+}
+
 func (s *session) isLastPrompt(text string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -548,18 +599,19 @@ func (s *session) appendSystemEvent(text string) {
 	_ = s.m.conv.AppendSystem(s.ctx, s.convID, text)
 }
 
-// appendUserEvent records the prompt as a `user` event before the harness
-// sees it (plan 2026-09-26 A). The drawer builds its transcript from events,
+// appendUserEvent records the prompt as a `user` event. A new turn records
+// it before the harness sees it (plan 2026-09-26 A). The drawer builds its transcript from events,
 // so the prompt reaches it only through this event.
-func (s *session) appendUserEvent(turn int, in wire.PromptInput) {
+func (s *session) appendUserEvent(turn int, in wire.PromptInput, d agentwire.Delivery) {
 	e := Event{
-		Type:    "user",
-		Turn:    turn,
-		At:      time.Now().UTC(),
-		Text:    displayOf(in),
-		Prompt:  in.Text,
-		Context: in.Context,
-		Channel: in.Connector,
+		Type:     "user",
+		Turn:     turn,
+		At:       time.Now().UTC(),
+		Text:     displayOf(in),
+		Prompt:   in.Text,
+		Context:  in.Context,
+		Channel:  in.Connector,
+		Delivery: string(d),
 	}
 	if seq, err := s.m.store.AppendEvent(s.ctx, s.convID, e); err == nil {
 		e.Seq = seq
