@@ -3,6 +3,7 @@ package connectors
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -81,8 +82,8 @@ func (s *Service) Doctor(ctx context.Context) []Finding {
 			!slices.Contains(spec.Modes, manifest.ModeStream) && !slices.Contains(spec.Modes, manifest.ModePoll) {
 			add(id, "warn", "connector_webhook_unavailable", "%s needs Trebi Cloud for live events", cmp.Or(c.Title, m.Title))
 		}
-		if v := s.availableUpdate(id); v != "" {
-			add(id, "info", "connector_update_available", "connector %q: version %s is available (installed %s)", name, v, r.Version)
+		if u := s.availableUpdate(id); u.Version != "" {
+			add(id, "info", "connector_update_available", "connector %q: version %s is available (installed %s)", name, u.Version, r.Version)
 		}
 		if p := s.procByName(id); p != nil {
 			if have := p.snapshot().features(); have != nil {
@@ -94,7 +95,32 @@ func (s *Service) Doctor(ctx context.Context) []Finding {
 			}
 		}
 	}
+	out = append(out, s.packageFindings()...)
 	return append(out, s.clashFindings()...)
+}
+
+// packageFindings reports a package that does not match its pin and a link
+// that the last update check could not reach.
+func (s *Service) packageFindings() []Finding {
+	s.mu.Lock()
+	pkg, src := maps.Clone(s.pkgErr), maps.Clone(s.srcErr)
+	s.mu.Unlock()
+	var out []Finding
+	for _, id := range slices.Sorted(maps.Keys(pkg)) {
+		if errors.Is(pkg[id], ErrDigestMismatch) {
+			out = append(out, Finding{id, "error", "connector_digest_mismatch",
+				fmt.Sprintf("connector %q: the program files do not match the pinned version, so Trebi does not start it: %v", s.SlugOf(id), pkg[id])})
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(src)) {
+		c, err := s.Lookup(id)
+		if err != nil || c.Source == nil {
+			continue
+		}
+		out = append(out, Finding{id, "warn", "connector_source_unreachable",
+			fmt.Sprintf("connector %q: Trebi cannot open %s to look for updates. Check that the repository exists and that the GitHub login on this computer can read it.", c.Slug, c.Source.URL())})
+	}
+	return out
 }
 
 // installedVersion runs install.version_command and returns its first line.

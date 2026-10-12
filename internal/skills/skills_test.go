@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/home"
@@ -206,5 +207,54 @@ func TestSkills_InheritedPointerFollows(t *testing.T) {
 	}
 	if len(got.Origins) != 2 {
 		t.Fatalf("origins %+v", got.Origins)
+	}
+}
+
+// TestSyncConnectorSkillRoot proves a skill at the connector root copies only
+// SKILL.md and the skill folders, and a skill sub-folder copies whole.
+func TestSyncConnectorSkillRoot(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	_ = home.EnsureDirs()
+	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := skills.New(st)
+	src := t.TempDir()
+	for name, body := range map[string]string{
+		"SKILL.md": "---\nname: vitally\ndescription: x\n---\n# Vitally\n", "main.go": "package main\n",
+		"go.mod": "module x\n", "trebi-connector.yaml": "name: vitally\n",
+		"references/api.md": "# API\n", "scripts/run.sh": "#!/bin/sh\n", "internal/x.go": "package x\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(src, name)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		root bool
+		want []string
+	}{
+		{true, []string{"SKILL.md", "references", "scripts"}},
+		{false, []string{"SKILL.md", "go.mod", "internal", "main.go", "references", "scripts", "trebi-connector.yaml"}},
+	} {
+		if _, err := svc.SyncConnectorSkill(context.Background(), "vitally", src, "vitally", tc.root); err != nil {
+			t.Fatal(err)
+		}
+		ents, err := os.ReadDir(filepath.Join(home.SkillsDir(), "vitally"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, e := range ents {
+			got = append(got, e.Name())
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Fatalf("root=%v: copied %v, want %v", tc.root, got, tc.want)
+		}
 	}
 }

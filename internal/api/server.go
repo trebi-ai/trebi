@@ -218,7 +218,7 @@ func New(st *store.Store, opts Options) *Server {
 	})
 	s.decisions.Register(policies.EmailReply())
 	r.SetParker(runs.NewParker(r, l, s.requests, s.chains, artifacts.NewRunGate(s.artifacts, r, s.alerts)))
-	s.connectors.WithInstall(connectors.InstallConfig{Catalog: s.catalog})
+	s.connectors.WithInstall(connectors.InstallConfig{Catalog: s.catalog, GitHubAPI: os.Getenv(connectors.EnvGitHubAPI), GitHubLogin: connectors.NewGHLogin()})
 	_ = s.connectors.Load() // the service keeps the error; the list route and the daemon report it
 	s.outbox = outbox.New(st)
 	s.email.WithOutbox(s.outbox)

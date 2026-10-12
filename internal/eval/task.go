@@ -2,13 +2,16 @@ package eval
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/connectors/ghfake"
 	"gopkg.in/yaml.v3"
 )
 
@@ -98,6 +101,9 @@ type Task struct {
 	Judge         JudgeSpec `yaml:"judge"`
 	Oracle        string    `yaml:"oracle"`
 	Surfaces      []string  `yaml:"surfaces"`
+	// GitHub lists the repositories that a fake GitHub serves to the trial
+	// daemon for connector links.
+	GitHub []GitHubFixture `yaml:"github"`
 
 	path     string
 	evalsDir string
@@ -190,6 +196,11 @@ func (t *Task) Validate() error {
 	if len(t.Checks) == 0 {
 		return fmt.Errorf("at least one check required")
 	}
+	for i, f := range t.GitHub {
+		if f.Repo == "" || f.Ref == "" || f.Dir == "" {
+			return fmt.Errorf("github[%d]: repo, ref, and dir required", i)
+		}
+	}
 	for i, c := range t.Checks {
 		if err := c.validate(); err != nil {
 			return fmt.Errorf("checks[%d] %s: %w", i, c.Name, err)
@@ -201,6 +212,15 @@ func (t *Task) Validate() error {
 		}
 	}
 	return nil
+}
+
+// GitHubFixture is one folder of the evals dir, served as repo@ref with its
+// files under Path.
+type GitHubFixture struct {
+	Repo string `yaml:"repo"`
+	Ref  string `yaml:"ref"`
+	Dir  string `yaml:"dir"`
+	Path string `yaml:"path"`
 }
 
 // SeedPath is the absolute seed script path, or empty.
@@ -223,6 +243,38 @@ func (t *Task) OraclePath() string {
 		return t.Oracle
 	}
 	return filepath.Join(t.evalsDir, t.Oracle)
+}
+
+// startGitHub serves the GitHub fixtures of the task. The caller closes the
+// server.
+func (t *Task) startGitHub() (*ghfake.Server, error) {
+	gh := ghfake.New()
+	for _, f := range t.GitHub {
+		files := map[string]ghfake.File{}
+		root := filepath.Join(t.evalsDir, f.Dir)
+		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel(root, p)
+			files[path.Join(f.Path, filepath.ToSlash(rel))] = ghfake.File{Body: string(b), Exec: info.Mode()&0o111 != 0}
+			return nil
+		})
+		if err != nil {
+			gh.Close()
+			return nil, fmt.Errorf("github fixture %s: %w", f.Dir, err)
+		}
+		gh.Push(f.Repo, f.Ref, files)
+	}
+	return gh, nil
 }
 
 func (t *Task) applyDefaults() {

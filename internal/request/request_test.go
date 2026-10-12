@@ -342,6 +342,14 @@ func TestBuildConnectorInstall(t *testing.T) {
 	if !strings.Contains(s, `"remote":1`) || strings.Contains(s, `"package"`) || strings.Contains(s, `"inputs"`) {
 		t.Fatalf("remote body: %s", s)
 	}
+	b, _ = json.Marshal(ConnectorInstall{Source: &ConnectorSource{URL: "flarco/cli-tools/vitally-cli", CheckID: "chk_1"}, Force: true, Package: -1, Remote: -1}.Build().Body)
+	if s = string(b); s != `{"force":true,"source":{"url":"flarco/cli-tools/vitally-cli","check_id":"chk_1"}}` {
+		t.Fatalf("source body: %s", s)
+	}
+	chk := BuildConnectorSourceCheck("flarco/cli-tools")
+	if chk.Method != "POST" || chk.Path != "/v1/connectors/sources/check" || chk.Body.(map[string]any)["url"] != "flarco/cli-tools" {
+		t.Fatalf("check: %+v", chk)
+	}
 }
 
 func TestBuildConnectorSessions(t *testing.T) {

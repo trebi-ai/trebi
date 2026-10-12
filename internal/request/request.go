@@ -2502,16 +2502,31 @@ func BuildConnectorCatalogEntryPath(registry, name, version string) string {
 
 // ConnectorInstall is the POST /v1/connectors/install body. Package and
 // Remote are indices into the entry; -1 omits one. Track applies to a Trebi
-// catalog entry only. Slug and Title name the new connection.
+// catalog entry only. Slug and Title name the new connection. Source
+// installs from a GitHub link in place of a registry entry.
 type ConnectorInstall struct {
 	Registry, Name, Version, Track, Slug, Title string
 	Package, Remote                             int
 	Inputs                                      map[string]string
+	Source                                      *ConnectorSource
+	Force                                       bool
+}
+
+// ConnectorSource is the link of an install. CheckID reuses a check of it.
+type ConnectorSource struct {
+	URL     string `json:"url"`
+	CheckID string `json:"check_id,omitempty"`
 }
 
 // Build returns the install request.
 func (i ConnectorInstall) Build() HTTPRequest {
 	body := map[string]any{"registry": i.Registry, "name": i.Name}
+	if i.Source != nil {
+		body = map[string]any{"source": i.Source}
+	}
+	if i.Force {
+		body["force"] = true
+	}
 	if i.Version != "" {
 		body["version"] = i.Version
 	}
@@ -2534,6 +2549,11 @@ func (i ConnectorInstall) Build() HTTPRequest {
 		body["inputs"] = i.Inputs
 	}
 	return HTTPRequest{Method: "POST", Path: "/v1/connectors/install", Body: body}
+}
+
+// BuildConnectorSourceCheck builds POST /v1/connectors/sources/check.
+func BuildConnectorSourceCheck(link string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors/sources/check", Body: map[string]any{"url": link}}
 }
 
 // BuildConnectorVersions builds GET /v1/connectors/{ref}/versions.

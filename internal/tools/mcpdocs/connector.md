@@ -39,13 +39,23 @@ Read one server entry and the inputs that `install` accepts. `package_inputs[i]`
 - `registry` (string, optional): registry name.
 - `version` (string, optional): server version; empty asks for the latest.
 
+### check_link
+Check a GitHub link to a connector folder before an install. The daemon downloads the folder at one commit into a staging folder and checks it. It installs nothing and starts no program. The link is `https://github.com/<owner>/<repo>[/tree/<ref>/<path>]`, `github.com/...`, or `<owner>/<repo>[/<path>][@<ref>]`. A private repository works when the GitHub login of this computer can read it.
+The reply is `{id, source: {repo, path, ref, commit}, url, entry, files, found, results, runs, can_install, expires_at}`. `entry` is `{name, title, description, version, capabilities, inputs}`, or null when no manifest loads. `files` lists the top-level names of the folder. `found` lists the sub-folders with a manifest when the folder has none. Each row of `results` is `{group, check, status, message, field}`; `status` is `pass`, `warn`, `fail`, or `skip`. `runs` is `{program, commands, operations, method}`: what the connector runs on this computer. Pass `id` as `source.check_id` to `install` within one hour to use the same download.
+A bad link returns `validation`. A missing or private repository, ref, or folder returns `not_found`. A folder over the limits returns `too_large`. A GitHub limit returns `rate_limited` with `details.retry_after` in seconds. GitHub down returns `upstream`.
+To make a folder a connector, read the guide `connectors-and-rules`, section "Make a folder a connector". Change the files in the repository, then check the link again until `can_install` is true.
+- `url` (string, required): the GitHub link.
+
 ### install
-Install one catalog entry as a new connection. The reply is the connection row.
+Install one catalog entry, or one GitHub link, as a new connection. The reply is the connection row.
 A Trebi catalog entry (`registry: trebi`) installs its signed snapshot: the manifest and the skill, then the program of its `install` block (a GitHub release with a checksum, Homebrew, or `go install`). The connection follows `track`; the default is `patch`. `package` and `remote` return `validation` for a Trebi entry.
 An MCP registry entry becomes an inline connection with an `actions.mcp` block. `track` returns `validation` for it. **This runs third-party code on this machine** (through npx, uvx, docker, or the entry `runtimeHint`) when a run uses the connector. A package must use the `stdio` transport. A remote URL must be `https` and must not name a loopback, link-local, or private address.
 `inputs` fills the inputs that `catalog_entry` lists: env variables, headers, arguments, and `{name}` template variables. A value `secret:NAME` is kept as a reference to the secret store. A value for a secret input goes to the folder of the connection. A key that no input uses returns `validation`. A required input with no value returns `validation` and names the missing inputs.
+A `source` installs from a GitHub link in place of `name`. **Trebi did not review this code, and it runs on this machine**; ask the user before you install a link. The daemon checks the folder (as `check_link`), builds or downloads the program of its `install` block, runs the conformance suites in a sandbox, and then creates the connection with `from: github`. The connection stays on its commit: `version` and `track` return `validation`. `source` together with `name`, `registry`, `track`, `package`, or `remote` returns `validation`. A failed check or a failed suite returns `validation` with `details.reason` (`check_failed` or `conformance_failed`) and `details.results`. `force` installs when a conformance suite fails; use it only when the user asks. The bus topic `connector.install.step` shows the progress.
 A slug that another connection uses returns `conflict`. A failed install removes what it wrote. To add a second account of the same type, install again with a new `slug`.
-- `name` (string, required): server name, for example `whatsapp`.
+- `name` (string, optional): server name, for example `whatsapp`. Give `name` or `source`.
+- `source` (object, optional): `{url, check_id}`: the GitHub link, and the `id` of a `check_link` reply.
+- `force` (boolean, optional): link only: install when a conformance suite fails.
 - `registry` (string, optional): registry name.
 - `version` (string, optional): server version; empty uses the latest.
 - `track` (string, optional): Trebi entries only: `exact`, `patch`, `minor`, or `latest`.
@@ -60,11 +70,11 @@ List the catalog versions of the type of one connection, newest first. Each row 
 - `connector` (string, required): connection slug or id.
 
 ### check_updates
-Check the Trebi catalog for new versions now. The daemon also checks once a day. A connection on the `patch` track moves to the new version at once. On `minor` or `latest`, the connection row gets `update: {version}` and the Inbox gets an item; use `update` to apply it. `exact` never changes. The reply is `{results: [{id, slug, from, to, applied, error}]}`.
+Check the Trebi catalog for new versions now. The daemon also checks once a day. A connection on the `patch` track moves to the new version at once. On `minor` or `latest`, the connection row gets `update: {version}` and the Inbox gets an item; use `update` to apply it. `exact` never changes. A `github` connection that follows a branch compares the branch head with its commit; a new commit sets `update: {version, commit}`. A link pinned to a commit never changes. The reply is `{results: [{id, slug, from, to, applied, error}]}`.
 - `connector` (string, optional): connection slug or id; empty checks every connection.
 
 ### update
-Move one connection to a catalog version. The daemon installs the version next to the current one, switches the connection, restarts its process, and removes versions that nothing uses. The reply is the connection row.
+Move one connection to a catalog version, or a `github` connection to the newest commit of its branch. The daemon installs the version next to the current one, switches the connection, restarts its process, and removes versions that nothing uses. The reply is the connection row.
 - `connector` (string, required): connection slug or id.
 - `version` (string, optional): catalog version; empty takes the newest version on the track that is not yanked.
 

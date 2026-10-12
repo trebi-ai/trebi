@@ -51,6 +51,7 @@ type Manifest struct {
 type Install struct {
 	Catalog        bool           `yaml:"catalog,omitempty" json:"catalog,omitempty"` // the archive that the catalog index lists for this version
 	GitHubRelease  *GitHubRelease `yaml:"github_release,omitempty" json:"github_release,omitempty"`
+	Build          *Build         `yaml:"build,omitempty" json:"build,omitempty"`
 	Brew           string         `yaml:"brew,omitempty" json:"brew,omitempty"`
 	Go             string         `yaml:"go,omitempty" json:"go,omitempty"`
 	Bin            string         `yaml:"bin,omitempty" json:"bin,omitempty"`
@@ -65,6 +66,27 @@ type GitHubRelease struct {
 	Tag       string `yaml:"tag" json:"tag"`
 	Asset     string `yaml:"asset" json:"asset"`
 	Checksums string `yaml:"checksums,omitempty" json:"checksums,omitempty"`
+}
+
+// Build makes the program from the source in the entry folder.
+type Build struct {
+	Go string `yaml:"go" json:"go"` // package dir relative to the entry folder, "." for the root
+}
+
+// ModuleDir returns the folder that holds go.mod for build.go: the package
+// folder or a parent folder inside the entry folder.
+func (b Build) ModuleDir(entry string) (string, error) {
+	root := filepath.Clean(entry)
+	dir := filepath.Join(root, filepath.FromSlash(b.Go))
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		if dir == root {
+			return "", fmt.Errorf("install.build: no go.mod in %s or a parent folder inside the connector folder", b.Go)
+		}
+		dir = filepath.Dir(dir)
+	}
 }
 
 // Setup is the install form and the login steps.
@@ -729,10 +751,13 @@ func (v *validator) install(m Manifest) {
 		check("install.github_release.asset", gh.Asset)
 	}
 	check("install.go", in.Go)
+	if b := in.Build; b != nil && !relativePath(b.Go) {
+		v.add("install.build.go", "must be a path in the entry folder")
+	}
 	if in.Packslip != nil {
 		v.add("install.packslip", "is reserved")
 	}
-	if (in.Catalog || in.GitHubRelease != nil || in.Brew != "" || in.Go != "") && in.Bin == "" {
+	if (in.Catalog || in.GitHubRelease != nil || in.Build != nil || in.Brew != "" || in.Go != "") && in.Bin == "" {
 		v.add("install.bin", "required with an install method")
 	}
 }

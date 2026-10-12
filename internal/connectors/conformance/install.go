@@ -35,7 +35,7 @@ func (installSuite) run(ctx context.Context, r *run) []Result {
 		return []Result{{Suite: SuiteInstall, Check: "method", Status: StatusWarn,
 			Message: "a Trebi entry with no install block: the user must put the program on the PATH"}}
 	}
-	out := []Result{installMethod(m)}
+	out := []Result{InstallMethod(m)}
 	if in.Bin == "" {
 		out = append(out, Result{Suite: SuiteInstall, Check: "bin", Status: StatusSkip, Message: "no install.bin"})
 	} else if r.lookPath(in.Bin) == "" {
@@ -49,8 +49,8 @@ func (installSuite) run(ctx context.Context, r *run) []Result {
 	return append(out, row(SuiteInstall, "version", r.version(ctx)))
 }
 
-// installMethod checks that one declared method can work on this platform.
-func installMethod(m manifest.Manifest) Result {
+// InstallMethod checks that one declared method can work on this platform.
+func InstallMethod(m manifest.Manifest) Result {
 	in := m.Install
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	onPlatform := len(m.Platforms) == 0 || slices.Contains(m.Platforms, platform)
@@ -63,6 +63,7 @@ func installMethod(m manifest.Manifest) Result {
 	}{
 		{"catalog", in.Catalog, onPlatform, "no program for " + platform},
 		{"github_release", in.GitHubRelease != nil, onPlatform, "no program for " + platform},
+		{"build", in.Build != nil, have("go"), "go is not installed"},
 		{"brew", in.Brew != "", have("brew"), "brew is not installed"},
 		{"go", in.Go != "", have("go"), "go is not installed"},
 	}

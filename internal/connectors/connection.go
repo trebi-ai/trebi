@@ -32,6 +32,7 @@ type ValidationError = manifest.ValidationError
 const (
 	FromCatalog = "catalog"
 	FromInline  = "inline"
+	FromGitHub  = "github"
 	fromFile    = "file:"
 )
 
@@ -59,6 +60,7 @@ type Connection struct {
 	From     string             `yaml:"from" json:"from"`
 	Version  string             `yaml:"version,omitempty" json:"version,omitempty"`
 	Digest   string             `yaml:"digest,omitempty" json:"digest,omitempty"`
+	Source   *GitHubSource      `yaml:"source,omitempty" json:"source,omitempty"`
 	Track    manifest.Track     `yaml:"track,omitempty" json:"track,omitempty"`
 	Inputs   map[string]string  `yaml:"inputs,omitempty" json:"inputs,omitempty"`
 	Patch    map[string]any     `yaml:"patch,omitempty" json:"patch,omitempty"`
@@ -301,16 +303,15 @@ func (c Connection) checkSubscriptions(m manifest.Manifest) error {
 	return nil
 }
 
-// validateSource checks from, version, manifest, and digest.
+// validateSource checks from, version, manifest, source, and digest.
 func (c Connection) validateSource(add func(field, msg string)) {
 	switch {
 	case c.From == FromCatalog:
 		if c.Version == "" {
 			add("version", "required for from: catalog")
 		}
-		if c.Manifest != nil {
-			add("manifest", "only for from: inline")
-		}
+	case c.From == FromGitHub:
+		c.validateGitHub(add)
 	case c.From == FromInline:
 		if c.Manifest == nil {
 			add("manifest", "required for from: inline")
@@ -319,19 +320,46 @@ func (c Connection) validateSource(add func(field, msg string)) {
 		if c.FilePath() == "" {
 			add("from", "file: needs a path")
 		}
-		if c.Manifest != nil {
-			add("manifest", "only for from: inline")
-		}
 	default:
-		add("from", "must be catalog, inline, or file:<path>")
+		add("from", "must be catalog, github, inline, or file:<path>")
 	}
-	if c.Digest != "" && c.From != FromCatalog {
-		add("digest", "only for from: catalog")
+	if c.Manifest != nil && c.From != FromInline {
+		add("manifest", "only for from: inline")
+	}
+	if c.Source != nil && c.From != FromGitHub {
+		add("source", "only for from: github")
+	}
+	if c.Digest != "" && c.From != FromCatalog && c.From != FromGitHub {
+		add("digest", "only for from: catalog or github")
 	}
 	if c.Version != "" {
 		if _, err := manifest.ParseVersion(c.Version); err != nil {
 			add("version", err.Error())
 		}
+	}
+}
+
+// validateGitHub checks the pin of a link connection: the commit, the
+// version, and the digest. A link has no track (decision 4).
+func (c Connection) validateGitHub(add func(field, msg string)) {
+	switch {
+	case c.Source == nil:
+		add("source", "required for from: github")
+	case !ghCommitRE.MatchString(c.Source.Commit):
+		add("source.commit", "must be 40 hex characters")
+	default:
+		if err := c.Source.Validate(); err != nil {
+			add("source", err.Error())
+		}
+	}
+	if c.Version == "" {
+		add("version", "required for from: github")
+	}
+	if c.Digest == "" {
+		add("digest", "required for from: github")
+	}
+	if c.Track != "" {
+		add("track", "not for from: github; a link stays on its commit")
 	}
 }
 
@@ -363,6 +391,15 @@ func (c Connection) clone() Connection {
 		return c
 	}
 	return out
+}
+
+// packageVersion is the folder name of the package: the version, plus the
+// commit for a link, so that a link package never shares a catalog folder.
+func (c Connection) packageVersion() string {
+	if c.From == FromGitHub && c.Source != nil {
+		return linkPackage(c.Version, c.Source.Commit)
+	}
+	return c.Version
 }
 
 // track returns the track with the default.

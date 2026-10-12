@@ -28,7 +28,7 @@ func TestPublicPackages(t *testing.T) {
 		}
 		name := ent.Name()
 		switch name {
-		case "internal", "cmd", "scripts", "evals", "testdata":
+		case "internal", "cmd", "scripts", "evals", "testdata", "out", "build":
 			continue
 		}
 		if strings.HasPrefix(name, ".") {

@@ -166,6 +166,38 @@ func TestCLIOnlyManifest(t *testing.T) {
 	}
 }
 
+// TestBuildRows checks the build method row and the go.mod row of a folder
+// with install.build.
+func TestBuildRows(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	m := manifest.Manifest{
+		Schema: manifest.SchemaID, Name: "b", Title: "B", Description: "d", Version: "0.1.0",
+		Install: &manifest.Install{Build: &manifest.Build{Go: "."}, Bin: "b"},
+		Actions: &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"b"}}},
+	}
+	rows := func() map[string]conformance.Result {
+		got := map[string]conformance.Result{}
+		for _, r := range conformance.NewRunner(nil).Run(context.Background(), conformance.Target{Manifest: m, Dir: dir}, []string{conformance.SuiteManifest, conformance.SuiteInstall}) {
+			got[r.Suite+"/"+r.Check] = r
+		}
+		return got
+	}
+	if r := rows()["manifest/build module"]; r.Status != conformance.StatusFail {
+		t.Fatalf("no go.mod: %+v", r)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := rows()
+	if r := got["manifest/build module"]; r.Status != conformance.StatusPass {
+		t.Fatalf("go.mod: %+v", r)
+	}
+	if r := got["install/method"]; r.Status != conformance.StatusPass {
+		t.Fatalf("method: %+v", r)
+	}
+}
+
 func TestUnknownSuite(t *testing.T) {
 	t.Parallel()
 	res := conformance.NewRunner(nil).Run(context.Background(), conformance.Target{Manifest: manifest.Manifest{}}, []string{"nope", "actions"})

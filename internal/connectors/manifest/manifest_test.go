@@ -70,6 +70,13 @@ func TestValidateRules(t *testing.T) {
 			m.Install.GitHubRelease = &manifest.GitHubRelease{Repo: "a/b", Tag: "v{version}", Asset: "x_{goos}.tgz"}
 		}, []string{"install.github_release.asset"}},
 		{"install needs bin", func(m *manifest.Manifest) { m.Install.Bin = "" }, []string{"install.bin"}},
+		{"build valid", func(m *manifest.Manifest) { m.Install.Build = &manifest.Build{Go: "./cmd/x"} }, nil},
+		{"build root", func(m *manifest.Manifest) { m.Install.Build = &manifest.Build{Go: "."} }, nil},
+		{"build escapes", func(m *manifest.Manifest) { m.Install.Build = &manifest.Build{Go: "../x"} }, []string{"install.build.go"}},
+		{"build empty", func(m *manifest.Manifest) { m.Install.Build = &manifest.Build{} }, []string{"install.build.go"}},
+		{"build needs bin", func(m *manifest.Manifest) {
+			m.Install.Catalog, m.Install.Bin, m.Install.Build = false, "", &manifest.Build{Go: "."}
+		}, []string{"install.bin"}},
 		{"mcp two forms", func(m *manifest.Manifest) {
 			m.Actions.MCP = &manifest.MCPAction{Command: "x", URL: "https://x"}
 		}, []string{"actions.mcp"}},
@@ -180,6 +187,37 @@ func TestValidateRules(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBuildDecode(t *testing.T) {
+	t.Parallel()
+	m, err := manifest.Parse([]byte("install:\n  build: {go: ./cmd/x}\n  bin: x\n"))
+	if err != nil || m.Install.Build == nil || m.Install.Build.Go != "./cmd/x" {
+		t.Fatalf("build %+v, %v", m.Install, err)
+	}
+	if _, err := manifest.Parse([]byte("install:\n  build: {go: ., npm: x}\n")); err == nil {
+		t.Fatal("want an unknown-key error for build.npm")
+	}
+}
+
+func TestBuildModuleDir(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (manifest.Build{Go: "cmd/x"}).ModuleDir(root); err == nil {
+		t.Fatal("want a missing go.mod error")
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, pkg := range []string{".", "cmd/x", "./cmd/x"} {
+		got, err := (manifest.Build{Go: pkg}).ModuleDir(root)
+		if err != nil || got != filepath.Clean(root) {
+			t.Fatalf("%s: %q, %v", pkg, got, err)
+		}
 	}
 }
 

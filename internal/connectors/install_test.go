@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/ghfake"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -45,6 +46,358 @@ func (f fakeCatalog) Binary(_ context.Context, _, version, platform string) ([]b
 		return nil, registry.ErrNotFound
 	}
 	return f.binary(version, platform)
+}
+
+func TestInstallUpdateGC(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	ctx := context.Background()
+	st, svc := installStack(t, "demo", nil)
+
+	c, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Version: "1.0.0", Track: "patch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.Resolve(c.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(home.PackageDir("demo", "1.0.0"), "bin", "demo-cli")
+	if c.Slug != "demo" || r.Version != "1.0.0" || r.BinDir() != filepath.Dir(bin) || r.SkillDir() == "" {
+		t.Fatalf("resolved = %+v", r)
+	}
+	if out, err := exec.Command(bin).Output(); err != nil || strings.TrimSpace(string(out)) != "demo-cli 1.0.0" {
+		t.Fatalf("bin = %q %v", out, err)
+	}
+	var rows int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM connector_installs WHERE type = 'demo' AND version = '1.0.0' AND digest LIKE 'sha256:%'`).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("install rows = %d %v", rows, err)
+	}
+	if topicCount(t, st, "connector.installed") != 1 {
+		t.Fatal("connector.installed not emitted")
+	}
+	if _, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Slug: "demo"}); !errors.Is(err, connectors.ErrExists) {
+		t.Fatalf("install with a used slug = %v", err)
+	}
+
+	// A second account of the type shares the package. Its delete keeps the
+	// package that the first connection still uses.
+	second, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Version: "1.0.0", Track: "exact", Title: "Work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Slug != "demo-2" || second.ID == c.ID || second.Title != "Work" {
+		t.Fatalf("second = %+v", second)
+	}
+	if err := svc.Delete(ctx, "demo-2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Fatalf("delete removed a used package: %v", err)
+	}
+
+	vers, err := svc.Versions(ctx, "demo")
+	if err != nil || len(vers) != 5 || vers[0].Version != "2.0.0-beta.1" || !vers[4].Current || !vers[4].Installed {
+		t.Fatalf("versions = %+v %v", vers, err)
+	}
+
+	// The patch track applies 1.0.1 and removes 1.0.0.
+	res, err := svc.CheckUpdates(ctx, "")
+	if err != nil || len(res) != 1 || !res[0].Applied || res[0].To != "1.0.1" {
+		t.Fatalf("check = %+v %v", res, err)
+	}
+	if e, _ := svc.Lookup("demo"); e.Version != "1.0.1" {
+		t.Fatalf("connection version = %s", e.Version)
+	}
+	if _, err := os.Stat(home.PackageDir("demo", "1.0.0")); !os.IsNotExist(err) {
+		t.Fatalf("old version stays: %v", err)
+	}
+
+	// The minor track records 1.1.0 and does not apply it.
+	track := "minor"
+	if _, err := svc.Patch(ctx, "demo", connectors.ConnectionPatch{Track: &track}); err != nil {
+		t.Fatal(err)
+	}
+	res, err = svc.CheckUpdates(ctx, "demo")
+	if err != nil || len(res) != 1 || res[0].Applied || res[0].To != "1.1.0" {
+		t.Fatalf("minor check = %+v %v", res, err)
+	}
+	row, _ := svc.Get("demo")
+	if u, _ := row["update"].(connectors.Pending); u.Version != "1.1.0" {
+		t.Fatalf("update = %v", row["update"])
+	}
+	if topicCount(t, st, "connector.update.available") != 1 {
+		t.Fatal("connector.update.available not emitted")
+	}
+	found := false
+	for _, f := range svc.Doctor(ctx) {
+		found = found || f.Code == "connector_update_available"
+	}
+	if !found {
+		t.Fatal("no connector_update_available finding")
+	}
+
+	// Update with no version takes the newest version that is not yanked
+	// and not a pre-release.
+	if err := svc.Update(ctx, "demo", ""); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := svc.Lookup("demo"); e.Version != "1.1.0" {
+		t.Fatalf("updated version = %s", e.Version)
+	}
+	row, _ = svc.Get("demo")
+	if row["update"] != nil {
+		t.Fatalf("update after update = %v", row["update"])
+	}
+	if topicCount(t, st, "connector.updated.version") != 2 {
+		t.Fatal("connector.updated.version not emitted")
+	}
+	if left, err := svc.GC(ctx, true); err != nil || len(left) != 0 {
+		t.Fatalf("gc = %v %v", left, err)
+	}
+}
+
+func TestInstallChecksumRollback(t *testing.T) {
+	ctx := context.Background()
+	_, svc := installStack(t, "demo", map[string]bool{"1.1.0": true})
+	if _, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo"}); err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("install = %v", err)
+	}
+	if _, err := svc.Lookup("demo"); err == nil {
+		t.Fatal("a failed install must not create the connection")
+	}
+	if entries, _ := os.ReadDir(home.ConnectionsDir()); len(entries) != 0 {
+		t.Fatalf("connection left behind: %v", entries)
+	}
+	entries, _ := os.ReadDir(filepath.Join(home.PackagesDir(), "demo"))
+	if len(entries) != 0 {
+		t.Fatalf("left behind: %v", entries)
+	}
+	if _, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Version: "9.9.9"}); !errors.Is(err, connectors.ErrNotFound) {
+		t.Fatalf("missing version = %v", err)
+	}
+}
+
+func TestInstallSnapshotNameMismatch(t *testing.T) {
+	_, svc := installStack(t, "other", nil)
+	if _, err := svc.Install(context.Background(), connectors.InstallRequest{Name: "demo", Version: "1.0.0"}); err == nil || !strings.Contains(err.Error(), "holds other@1.0.0") {
+		t.Fatalf("install = %v", err)
+	}
+}
+
+func TestInstallFromCatalog(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	ctx := context.Background()
+	_, _, svc := openStack(t)
+	var asked string
+	svc.WithInstall(connectors.InstallConfig{Catalog: fakeCatalog{
+		versions: []registry.IndexVersion{{Version: "1.0.0"}},
+		files: func(v string) map[string]string {
+			files := demoFiles("demo")(v)
+			m := files["trebi-connector.yaml"]
+			start, end := strings.Index(m, "install:"), strings.Index(m, "  bin:")
+			files["trebi-connector.yaml"] = m[:start] + "install:\n  catalog: true\n" + m[end:]
+			return files
+		},
+		binary: func(v, platform string) ([]byte, error) {
+			asked = platform
+			return tarGz(map[string]string{"demo-cli": "#!/bin/sh\necho demo-cli " + v + "\n"})
+		},
+	}})
+	c, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.Resolve(c.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked != runtime.GOOS+"/"+runtime.GOARCH {
+		t.Fatalf("platform = %q", asked)
+	}
+	out, err := exec.Command(filepath.Join(r.BinDir(), "demo-cli")).Output()
+	if err != nil || strings.TrimSpace(string(out)) != "demo-cli 1.0.0" {
+		t.Fatalf("bin = %q %v", out, err)
+	}
+}
+
+func TestInstallFromLink(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go")
+	}
+	ctx := context.Background()
+	st, svc, gh := linkStack(t)
+	sha := gh.Push("acme/tools", "main", sourceFiles(t, "buildable", "vitally/"))
+	link := "https://github.com/acme/tools/tree/main/vitally"
+
+	c := installLink(t, svc, link, "")
+	if n := tarballCount(gh); n != 1 {
+		t.Fatalf("a reused check fetched again: %d downloads", n)
+	}
+	pkg := home.PackageDir("vitally", "0.1.0+g"+sha[:12])
+	digest, err := os.ReadFile(filepath.Join(pkg, ".digest"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.From != connectors.FromGitHub || c.Source == nil || c.Source.Commit != sha || c.Source.Path != "vitally" ||
+		c.Version != "0.1.0" || c.Digest != strings.TrimSpace(string(digest)) || c.Track != "" {
+		t.Fatalf("connection = %+v", c)
+	}
+	if out, err := exec.Command(filepath.Join(pkg, "bin", "vitally"), "--version").Output(); err != nil || !strings.Contains(string(out), "0.1.0") {
+		t.Fatalf("program = %q %v", out, err)
+	}
+	var attrs string
+	if err := st.DB().QueryRow(`SELECT attrs_json FROM event_log WHERE topic = 'connector.installed'`).Scan(&attrs); err != nil ||
+		!strings.Contains(attrs, `"source":"github"`) || !strings.Contains(attrs, `"repo":"acme/tools"`) || !strings.Contains(attrs, sha) {
+		t.Fatalf("installed attrs = %s %v", attrs, err)
+	}
+	if topicCount(t, st, "connector.install.step") < 7 {
+		t.Fatal("too few connector.install.step events")
+	}
+	row, err := svc.Get("vitally")
+	if err != nil || row["publisher"] != connectors.PublisherUnverified {
+		t.Fatalf("row = %v %v", row["publisher"], err)
+	}
+	if src, _ := row["source"].(map[string]any); src["commit"] != sha || src["url"] != "https://github.com/acme/tools/tree/"+sha+"/vitally" {
+		t.Fatalf("row source = %v", row["source"])
+	}
+
+	// A check id that does not exist checks again.
+	if _, err := svc.Install(ctx, connectors.InstallRequest{Source: &connectors.SourceInstall{URL: link, CheckID: "chk_gone"}, Slug: "vitally-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := tarballCount(gh); n != 2 {
+		t.Fatalf("an unknown check did not fetch again: %d downloads", n)
+	}
+	if err := svc.Delete(ctx, "vitally-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A link to the commit is pinned on purpose: no update check.
+	pinned := installLink(t, svc, "acme/tools/vitally@"+sha, "vitally-pinned")
+	if pinned.Source.Ref != sha {
+		t.Fatalf("pinned ref = %q", pinned.Source.Ref)
+	}
+
+	// Restore: the missing package comes back from the pinned commit.
+	if err := os.RemoveAll(pkg); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.EnsurePackage(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(pkg, "bin", "vitally")); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	// A commit whose tree changed fails the digest.
+	changed := sourceFiles(t, "buildable", "vitally/")
+	changed["vitally/README.md"] = ghfake.File{Body: "changed\n"}
+	gh.Rewrite(sha, changed)
+	if err := os.RemoveAll(pkg); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.EnsurePackage(ctx, c); !errors.Is(err, connectors.ErrDigestMismatch) {
+		t.Fatalf("changed tree = %v", err)
+	}
+	gh.Rewrite(sha, sourceFiles(t, "buildable", "vitally/"))
+	if err := svc.EnsurePackage(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+
+	// A new commit on the branch is recorded, never applied. No catalog is
+	// configured, and that blocks nothing.
+	next := sourceFiles(t, "buildable", "vitally/")
+	next["vitally/trebi-connector.yaml"] = ghfake.File{Body: strings.Replace(next["vitally/trebi-connector.yaml"].Body, "version: 0.1.0", "version: 0.2.0", 1)}
+	next["vitally/main.go"] = ghfake.File{Body: strings.Replace(next["vitally/main.go"].Body, "vitally 0.1.0", "vitally 0.2.0", 1)}
+	head := gh.Push("acme/tools", "main", next)
+	res, err := svc.CheckUpdates(ctx, "")
+	if err != nil || len(res) != 1 || res[0].Slug != "vitally" || res[0].To != "0.2.0" || res[0].Commit != head || res[0].Applied {
+		t.Fatalf("check = %+v %v", res, err)
+	}
+	if e, _ := svc.Lookup("vitally"); e.Source.Commit != sha {
+		t.Fatal("an update applied on its own")
+	}
+	row, _ = svc.Get("vitally")
+	if u, _ := row["update"].(connectors.Pending); u.Version != "0.2.0" || u.Commit != head {
+		t.Fatalf("update = %v", row["update"])
+	}
+	if topicCount(t, st, "connector.update.available") != 1 {
+		t.Fatal("connector.update.available not emitted")
+	}
+
+	// Update moves the connection; GC removes nothing that the pinned
+	// connection still uses.
+	if err := svc.Update(ctx, "vitally", ""); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := svc.Lookup("vitally")
+	if e.Source.Commit != head || e.Version != "0.2.0" {
+		t.Fatalf("updated = %+v", e)
+	}
+	if _, err := os.Stat(home.PackageDir("vitally", "0.2.0+g"+head[:12])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pkg); err != nil {
+		t.Fatalf("GC removed the package of the pinned connection: %v", err)
+	}
+	if err := svc.Delete(ctx, "vitally-pinned"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pkg); !os.IsNotExist(err) {
+		t.Fatalf("old package stays: %v", err)
+	}
+}
+
+func TestInstallFromLinkConformance(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go")
+	}
+	ctx := context.Background()
+	_, svc, gh := linkStack(t)
+	files := sourceFiles(t, "buildable", "")
+	files["trebi-connector.yaml"] = ghfake.File{Body: strings.Replace(files["trebi-connector.yaml"].Body, "vitally --version", "vitally --nope", 1)}
+	sha := gh.Push("acme/vitally", "main", files)
+	req := connectors.InstallRequest{Source: &connectors.SourceInstall{URL: "acme/vitally"}}
+
+	_, err := svc.Install(ctx, req)
+	var ce *connectors.InstallCheckError
+	if !errors.As(err, &ce) || ce.Reason != connectors.ReasonConformanceFailed {
+		t.Fatalf("install = %v", err)
+	}
+	if ents, _ := os.ReadDir(filepath.Join(home.PackagesDir(), "vitally")); len(ents) != 0 {
+		t.Fatalf("left behind: %v", ents)
+	}
+	if _, err := svc.Lookup("vitally"); err == nil {
+		t.Fatal("a failed install created the connection")
+	}
+	req.Force = true
+	c, err := svc.Install(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Source.Commit != sha || c.Source.Ref != "" {
+		t.Fatalf("forced = %+v", c.Source)
+	}
+
+	bad := []connectors.InstallRequest{
+		{Name: "vitally", Source: req.Source},
+		{Source: req.Source, Track: "minor"},
+		{Name: "vitally", Force: true},
+	}
+	for _, r := range bad {
+		var ve *connectors.ValidationError
+		if _, err := svc.Install(ctx, r); !errors.As(err, &ve) {
+			t.Fatalf("install %+v = %v", r, err)
+		}
+	}
+	files["trebi-connector.yaml"] = ghfake.File{Body: "name: x\n"}
+	gh.Push("acme/broken", "main", files)
+	if _, err := svc.Install(ctx, connectors.InstallRequest{Source: &connectors.SourceInstall{URL: "acme/broken"}}); !errors.As(err, &ce) || ce.Reason != connectors.ReasonCheckFailed {
+		t.Fatalf("broken = %v", err)
+	}
 }
 
 func tarGz(files map[string]string) ([]byte, error) {
@@ -153,178 +506,31 @@ func topicCount(t *testing.T, st *store.Store, topic string) int {
 	return n
 }
 
-func TestInstallUpdateGC(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh")
-	}
+// installLink checks the buildable fixture at vitally/ on main and installs
+// it with the check id.
+func installLink(t *testing.T, svc *connectors.Service, link, slug string) connectors.Connection {
+	t.Helper()
 	ctx := context.Background()
-	st, svc := installStack(t, "demo", nil)
-
-	c, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Version: "1.0.0", Track: "patch"})
+	chk, err := svc.CheckSource(ctx, link)
+	if err != nil || !chk.CanInstall {
+		t.Fatalf("check = %+v %v", chk, err)
+	}
+	c, err := svc.Install(ctx, connectors.InstallRequest{Source: &connectors.SourceInstall{URL: link, CheckID: chk.ID}, Slug: slug})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := svc.Resolve(c.ID, "")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(home.ConnectorStagingDir(chk.ID)); !os.IsNotExist(err) {
+		t.Fatalf("staging folder stays: %v", err)
 	}
-	bin := filepath.Join(home.PackageDir("demo", "1.0.0"), "bin", "demo-cli")
-	if c.Slug != "demo" || r.Version != "1.0.0" || r.BinDir() != filepath.Dir(bin) || r.SkillDir() == "" {
-		t.Fatalf("resolved = %+v", r)
-	}
-	if out, err := exec.Command(bin).Output(); err != nil || strings.TrimSpace(string(out)) != "demo-cli 1.0.0" {
-		t.Fatalf("bin = %q %v", out, err)
-	}
-	var rows int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM connector_installs WHERE type = 'demo' AND version = '1.0.0' AND digest LIKE 'sha256:%'`).Scan(&rows); err != nil || rows != 1 {
-		t.Fatalf("install rows = %d %v", rows, err)
-	}
-	if topicCount(t, st, "connector.installed") != 1 {
-		t.Fatal("connector.installed not emitted")
-	}
-	if _, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Slug: "demo"}); !errors.Is(err, connectors.ErrExists) {
-		t.Fatalf("install with a used slug = %v", err)
-	}
-
-	// A second account of the type shares the package. Its delete keeps the
-	// package that the first connection still uses.
-	second, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Version: "1.0.0", Track: "exact", Title: "Work"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.Slug != "demo-2" || second.ID == c.ID || second.Title != "Work" {
-		t.Fatalf("second = %+v", second)
-	}
-	if err := svc.Delete(ctx, "demo-2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(bin); err != nil {
-		t.Fatalf("delete removed a used package: %v", err)
-	}
-
-	vers, err := svc.Versions(ctx, "demo")
-	if err != nil || len(vers) != 5 || vers[0].Version != "2.0.0-beta.1" || !vers[4].Current || !vers[4].Installed {
-		t.Fatalf("versions = %+v %v", vers, err)
-	}
-
-	// The patch track applies 1.0.1 and removes 1.0.0.
-	res, err := svc.CheckUpdates(ctx, "")
-	if err != nil || len(res) != 1 || !res[0].Applied || res[0].To != "1.0.1" {
-		t.Fatalf("check = %+v %v", res, err)
-	}
-	if e, _ := svc.Lookup("demo"); e.Version != "1.0.1" {
-		t.Fatalf("connection version = %s", e.Version)
-	}
-	if _, err := os.Stat(home.PackageDir("demo", "1.0.0")); !os.IsNotExist(err) {
-		t.Fatalf("old version stays: %v", err)
-	}
-
-	// The minor track records 1.1.0 and does not apply it.
-	track := "minor"
-	if _, err := svc.Patch(ctx, "demo", connectors.ConnectionPatch{Track: &track}); err != nil {
-		t.Fatal(err)
-	}
-	res, err = svc.CheckUpdates(ctx, "demo")
-	if err != nil || len(res) != 1 || res[0].Applied || res[0].To != "1.1.0" {
-		t.Fatalf("minor check = %+v %v", res, err)
-	}
-	row, _ := svc.Get("demo")
-	if u, _ := row["update"].(map[string]any); u["version"] != "1.1.0" {
-		t.Fatalf("update = %v", row["update"])
-	}
-	if topicCount(t, st, "connector.update.available") != 1 {
-		t.Fatal("connector.update.available not emitted")
-	}
-	found := false
-	for _, f := range svc.Doctor(ctx) {
-		found = found || f.Code == "connector_update_available"
-	}
-	if !found {
-		t.Fatal("no connector_update_available finding")
-	}
-
-	// Update with no version takes the newest version that is not yanked
-	// and not a pre-release.
-	if err := svc.Update(ctx, "demo", ""); err != nil {
-		t.Fatal(err)
-	}
-	if e, _ := svc.Lookup("demo"); e.Version != "1.1.0" {
-		t.Fatalf("updated version = %s", e.Version)
-	}
-	row, _ = svc.Get("demo")
-	if row["update"] != nil {
-		t.Fatalf("update after update = %v", row["update"])
-	}
-	if topicCount(t, st, "connector.updated.version") != 2 {
-		t.Fatal("connector.updated.version not emitted")
-	}
-	if left, err := svc.GC(ctx, true); err != nil || len(left) != 0 {
-		t.Fatalf("gc = %v %v", left, err)
-	}
+	return c
 }
 
-func TestInstallChecksumRollback(t *testing.T) {
-	ctx := context.Background()
-	_, svc := installStack(t, "demo", map[string]bool{"1.1.0": true})
-	if _, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo"}); err == nil || !strings.Contains(err.Error(), "checksum") {
-		t.Fatalf("install = %v", err)
+func tarballCount(gh *ghfake.Server) int {
+	n := 0
+	for _, r := range gh.Requests() {
+		if strings.Contains(r.Path, "/tarball/") {
+			n++
+		}
 	}
-	if _, err := svc.Lookup("demo"); err == nil {
-		t.Fatal("a failed install must not create the connection")
-	}
-	if entries, _ := os.ReadDir(home.ConnectionsDir()); len(entries) != 0 {
-		t.Fatalf("connection left behind: %v", entries)
-	}
-	entries, _ := os.ReadDir(filepath.Join(home.PackagesDir(), "demo"))
-	if len(entries) != 0 {
-		t.Fatalf("left behind: %v", entries)
-	}
-	if _, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Version: "9.9.9"}); !errors.Is(err, connectors.ErrNotFound) {
-		t.Fatalf("missing version = %v", err)
-	}
-}
-
-func TestInstallSnapshotNameMismatch(t *testing.T) {
-	_, svc := installStack(t, "other", nil)
-	if _, err := svc.Install(context.Background(), connectors.InstallRequest{Name: "demo", Version: "1.0.0"}); err == nil || !strings.Contains(err.Error(), "holds other@1.0.0") {
-		t.Fatalf("install = %v", err)
-	}
-}
-
-func TestInstallFromCatalog(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh")
-	}
-	ctx := context.Background()
-	_, _, svc := openStack(t)
-	var asked string
-	svc.WithInstall(connectors.InstallConfig{Catalog: fakeCatalog{
-		versions: []registry.IndexVersion{{Version: "1.0.0"}},
-		files: func(v string) map[string]string {
-			files := demoFiles("demo")(v)
-			m := files["trebi-connector.yaml"]
-			start, end := strings.Index(m, "install:"), strings.Index(m, "  bin:")
-			files["trebi-connector.yaml"] = m[:start] + "install:\n  catalog: true\n" + m[end:]
-			return files
-		},
-		binary: func(v, platform string) ([]byte, error) {
-			asked = platform
-			return tarGz(map[string]string{"demo-cli": "#!/bin/sh\necho demo-cli " + v + "\n"})
-		},
-	}})
-	c, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, err := svc.Resolve(c.ID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if asked != runtime.GOOS+"/"+runtime.GOARCH {
-		t.Fatalf("platform = %q", asked)
-	}
-	out, err := exec.Command(filepath.Join(r.BinDir(), "demo-cli")).Output()
-	if err != nil || strings.TrimSpace(string(out)) != "demo-cli 1.0.0" {
-		t.Fatalf("bin = %q %v", out, err)
-	}
+	return n
 }

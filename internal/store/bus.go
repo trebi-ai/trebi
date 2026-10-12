@@ -355,6 +355,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "connector.webhook.rejected", Bus: false, Log: true},
 		{Name: "connector.webhook.dropped", Bus: false, Log: true},
 		{Name: "connector.installed", Bus: true, Log: true},
+		{Name: "connector.install.step", Bus: true, Log: true},
 		{Name: "connector.update.available", Bus: true, Log: true},
 		{Name: "connector.updated.version", Bus: true, Log: true},
 		// harness/auth

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"maps"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -14,7 +16,11 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/api"
+	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/ghfake"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -587,4 +593,98 @@ func TestConnectorSubscriptionRoutes(t *testing.T) {
 			t.Fatalf("%s %d %v", path, code, body)
 		}
 	}
+}
+
+// TestConnectorLinkRoutes covers the link check and the install from a link,
+// with each error code of the link routes.
+func TestConnectorLinkRoutes(t *testing.T) {
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("no go")
+	}
+	gh := ghfake.New()
+	t.Setenv(connectors.EnvGitHubAPI, gh.API.URL)
+	t.Setenv("PATH", filepath.Dir(gobin)+":/usr/bin:/bin") // no gh: a 404 must not send a real login
+	sha := gh.Push("acme/tools", "main", linkFixture(t, "buildable", "vitally/"))
+	gh.Push("acme/tools", "empty", linkFixture(t, "nomanifest", "vitally/"))
+	base := startCatalogAPIWith(t, func(fixture string) registry.Config {
+		return registry.Config{Registries: []config.Registry{{Name: "official", URL: fixture}}}
+	})
+	link := "https://github.com/acme/tools/tree/main/vitally"
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/connectors/sources/check", map[string]any{"url": link})
+	src, _ := body["source"].(map[string]any)
+	if code != 200 || body["can_install"] != true || src["commit"] != sha || body["id"] == "" {
+		t.Fatalf("check %d %v", code, body)
+	}
+	checkID := body["id"]
+	cases := []struct {
+		name, path string
+		body       map[string]any
+		code       int
+		errCode    string
+	}{
+		{"bad link", "sources/check", map[string]any{"url": "https://gitlab.com/a/b"}, 400, "validation"},
+		{"no url", "sources/check", map[string]any{}, 400, "validation"},
+		{"missing repo", "sources/check", map[string]any{"url": "acme/nope"}, 404, "not_found"},
+		{"source with name", "install", map[string]any{"source": map[string]any{"url": link}, "name": "vitally"}, 400, "validation"},
+		{"source with track", "install", map[string]any{"source": map[string]any{"url": link}, "track": "minor"}, 400, "validation"},
+		{"failed check", "install", map[string]any{"source": map[string]any{"url": "https://github.com/acme/tools/tree/empty/vitally"}}, 422, "validation"},
+	}
+	for _, tc := range cases {
+		code, body, _ := doJSON(t, "POST", base+"/v1/connectors/"+tc.path, tc.body)
+		e, _ := body["error"].(map[string]any)
+		if code != tc.code || e["code"] != tc.errCode {
+			t.Fatalf("%s: %d %v", tc.name, code, body)
+		}
+		if tc.code == 422 {
+			if d, _ := e["details"].(map[string]any); d["reason"] != connectors.ReasonCheckFailed || d["results"] == nil {
+				t.Fatalf("%s: details %v", tc.name, e["details"])
+			}
+		}
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{
+		"source": map[string]any{"url": link, "check_id": checkID}, "slug": "vitally-work",
+	})
+	if code != 201 || body["from"] != "github" || body["slug"] != "vitally-work" || body["publisher"] != connectors.PublisherUnverified {
+		t.Fatalf("install %d %v", code, body)
+	}
+	if src, _ := body["source"].(map[string]any); src["commit"] != sha {
+		t.Fatalf("row source %v", body["source"])
+	}
+
+	gh.RateLimit(true)
+	code, body, _ = doJSON(t, "POST", base+"/v1/connectors/sources/check", map[string]any{"url": link})
+	e, _ := body["error"].(map[string]any)
+	if d, _ := e["details"].(map[string]any); code != 429 || e["code"] != "rate_limited" || d["retry_after"].(float64) <= 0 {
+		t.Fatalf("rate limit %d %v", code, body)
+	}
+	gh.RateLimit(false)
+	gh.Close()
+	code, body, _ = doJSON(t, "POST", base+"/v1/connectors/sources/check", map[string]any{"url": link})
+	if e, _ := body["error"].(map[string]any); code != 502 || e["code"] != "upstream" {
+		t.Fatalf("down %d %v", code, body)
+	}
+}
+
+// linkFixture reads one folder of the connector link fixtures into a fake
+// tree under prefix.
+func linkFixture(t *testing.T, name, prefix string) map[string]ghfake.File {
+	t.Helper()
+	root := filepath.Join("..", "connectors", "testdata", "sources", name)
+	out := map[string]ghfake.File{}
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		rel, _ := filepath.Rel(root, p)
+		out[prefix+filepath.ToSlash(rel)] = ghfake.File{Body: string(b)}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

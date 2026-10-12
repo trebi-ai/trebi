@@ -1,0 +1,16 @@
+schema: trebi-connector/1
+name: other
+title: Vitally
+description: Read and update accounts in Vitally.
+version: 0.1.0
+install:
+  build: {go: .}
+  bin: vitally
+  version_command: vitally --version
+setup:
+  inputs:
+    - {name: VITALLY_TOKEN, label: API token, secret: true, required: true}
+skill:
+  path: .
+actions:
+  cli: {commands: [vitally]}

@@ -398,6 +398,7 @@ func (s *Service) StartAll(ctx context.Context) {
 	if err := s.Load(); err != nil {
 		s.log.Warn("connections", "error", err) // start what loaded
 	}
+	s.SweepStaging()
 	s.EnsurePackages(ctx)
 	s.mu.Lock()
 	s.runCtx = ctx

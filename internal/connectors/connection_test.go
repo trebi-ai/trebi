@@ -2,11 +2,14 @@ package connectors_test
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,5 +52,50 @@ func TestPatchMakesSubscriptionIDs(t *testing.T) {
 	}
 	if id := connectors.NewSubscriptionID(); !strings.HasPrefix(id, "sub_") || len(id) != 30 {
 		t.Fatalf("id = %q", id)
+	}
+}
+
+// TestValidateGitHubSource proves the record rules of a link connection.
+func TestValidateGitHubSource(t *testing.T) {
+	t.Parallel()
+	sha := strings.Repeat("3f", 20)
+	src := &connectors.GitHubSource{Repo: "flarco/cli-tools", Path: "vitally-cli", Ref: "main", Commit: sha}
+	base := connectors.Connection{ID: connectors.NewConnectionID(), Type: "vitally", Slug: "vitally", From: connectors.FromGitHub,
+		Source: src, Version: "0.1.0", Digest: "sha256:9c1e"}
+	cases := []struct {
+		name  string
+		edit  func(c *connectors.Connection)
+		field string // "" is valid
+	}{
+		{"valid", func(*connectors.Connection) {}, ""},
+		{"no source", func(c *connectors.Connection) { c.Source = nil }, "source"},
+		{"short commit", func(c *connectors.Connection) { c.Source = &connectors.GitHubSource{Repo: src.Repo, Commit: "3f2a"} }, "source.commit"},
+		{"bad repo", func(c *connectors.Connection) { c.Source = &connectors.GitHubSource{Repo: "nope", Commit: sha} }, "source"},
+		{"no version", func(c *connectors.Connection) { c.Version = "" }, "version"},
+		{"no digest", func(c *connectors.Connection) { c.Digest = "" }, "digest"},
+		{"track", func(c *connectors.Connection) { c.Track = "minor" }, "track"},
+		{"manifest", func(c *connectors.Connection) { c.Manifest = &manifest.Manifest{} }, "manifest"},
+		{"source on catalog", func(c *connectors.Connection) { c.From = connectors.FromCatalog }, "source"},
+		{"digest on inline", func(c *connectors.Connection) {
+			c.From, c.Source, c.Manifest = connectors.FromInline, nil, &manifest.Manifest{}
+		}, "digest"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := base
+			tc.edit(&c)
+			err := c.Validate()
+			if tc.field == "" {
+				if err != nil {
+					t.Fatalf("valid record: %v", err)
+				}
+				return
+			}
+			var ve *connectors.ValidationError
+			if !errors.As(err, &ve) || !slices.ContainsFunc(ve.Fields, func(f connectors.FieldError) bool { return f.Field == tc.field }) {
+				t.Fatalf("want a %s error, got %v", tc.field, err)
+			}
+		})
 	}
 }

@@ -241,7 +241,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	sk := skills.New(st)
 	catalog := registry.NewLive(nil)
 	connector := connectors.New(st, ws, sk).WithUserHome(harness.UserHome()).WithVersion(opts.Version).WithConversations(r).
-		WithInstall(connectors.InstallConfig{Catalog: catalog})
+		WithInstall(connectors.InstallConfig{Catalog: catalog, GitHubAPI: os.Getenv(connectors.EnvGitHubAPI), GitHubLogin: connectors.NewGHLogin()})
 	r.WithActions(connector)
 	ob := outbox.New(st)
 	em := email.New(st).WithConversations(conv).WithOutbox(ob)

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -131,6 +132,8 @@ type trialEnv struct {
 	cmd     *exec.Cmd
 	parentW *os.File
 	hashes  map[string]string
+	// daemonEnv is added to the environment of the daemon only.
+	daemonEnv []string
 }
 
 func newTrialEnv(home, workdir, artDir, bin string) *trialEnv {
@@ -240,7 +243,7 @@ func (e *trialEnv) startDaemon(ctx context.Context, harness, wsRoot string) erro
 	cmd := exec.Command(e.bin, "service", "daemon",
 		"--listen", "127.0.0.1:0",
 		"--parent-pid", strconv.Itoa(os.Getpid()))
-	cmd.Env = append(e.environ(), "TREBI_PARENT_FD=3")
+	cmd.Env = append(append(e.environ(), e.daemonEnv...), "TREBI_PARENT_FD=3")
 	cmd.Dir = e.workdir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -737,6 +740,9 @@ func clientSkillFingerprint(cfgHome string) string {
 func hashTree(root string) (map[string]string, error) {
 	out := map[string]string{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // a harness removed its temp folder during the walk
+		}
 		if err != nil {
 			return err
 		}

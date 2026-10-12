@@ -152,6 +152,69 @@ trebi connector install acme/weather --remote 0
 
 The install adds an inline connection: the manifest has one MCP action, and each input of the server becomes an input of the connection. `--input NAME=VALUE` fills an input: an env variable, a header, an argument, or a `{name}` URL or header variable. `connector entry` (MCP `connector.catalog_entry`) lists the packages, the remotes, and the inputs of each; a `*` marks a required input. `search` prints `more: --cursor X` on stderr when a next page exists. `--input VAR=secret:NAME` keeps the reference and writes no secret. A plain value for a secret input goes to the folder of the connection. `connector delete` deletes the folder and its secrets. `--package` and `--remote` select one entry of the server; give one, not both (default: the first package, else the first remote that speaks `streamable-http` or `sse`). An install runs third-party code on this machine, so ask the user before you install.
 
+## Add a connector from a GitHub link
+
+A folder in a GitHub repository can be a connector when it holds a `trebi-connector.yaml`. Trebi did not review this code, and it runs on this computer. Ask the user before you install a link.
+
+These link forms work:
+
+- `https://github.com/<owner>/<repo>`: the root of the default branch.
+- `https://github.com/<owner>/<repo>/tree/<ref>/<path>`: one folder at a branch, a tag, or a commit. `github.com/...` with no scheme also works.
+- `<owner>/<repo>[/<path>][@<ref>]`: the short form. A registry name (for example `ai.example/server`) is not a link, because a GitHub owner has no dot.
+
+```bash
+trebi connector check-link https://github.com/flarco/cli-tools/tree/main/vitally-cli
+trebi connector check-link flarco/cli-tools/vitally-cli --json
+trebi connector add flarco/cli-tools/vitally-cli --check-only
+trebi connector add flarco/cli-tools/vitally-cli --slug vitally --input VITALLY_API_KEY=secret:vitally_key
+trebi connector add flarco/cli-tools/vitally-cli@3f2a9c1e0b7d4a6f8e5c2b1a0d9f8e7c6b5a4d3c --yes
+```
+
+`check-link` downloads the folder at one commit and checks it. It installs nothing and starts no program. It prints the connector name, the version, the commit, and one row for each check. The exit code is 1 when the link cannot install. The groups of the rows are:
+
+- `manifest`: the folder has a `trebi-connector.yaml`. When it has none, `found` lists the sub-folders that have one.
+- `valid`: the manifest decodes and passes the rules. Each unknown key or bad field gets its own row with its `field`.
+- `program`: the install method applies. A link needs `install.build`, `install.github_release`, or no program. A catalog-only method (for example `brew`) fails.
+- `inputs`: each required setting has a label.
+- `skill` and `events`: the skill files and the events block of the folder.
+
+A row is `pass`, `warn`, `fail`, or `skip`. Any `fail` blocks the install. `connector add <link>` runs the same check, prints the report, and asks "Trebi did not review this connector. It runs on this computer. Install? [y/N]". `--yes` skips the question. Then the daemon builds or downloads the program, runs the conformance suites in a sandbox, and creates the connection with `from: github`. A failed suite blocks the install; `--force` installs anyway (advanced; only when the user asks). The bus topic `connector.install.step` shows the progress.
+
+A private repository works when the GitHub login of this computer (`gh auth login`) can read it. When the login cannot read it, the check returns `not_found`. Trebi keeps the token in memory only; it never writes it to disk.
+
+A link with a 40-character commit is pinned: it never changes. A link with a branch (or no ref, which is the default branch) follows the branch. The daily update check compares the branch head with the commit of the connection. A new commit shows as `update: {version, commit}` on the row and as an Inbox item. `connector update <slug>` installs the new commit after the same check and the same suites. `connector versions` does not apply to a link. Each commit gets its own package folder `<version>+g<commit12>`, and `connector gc` removes the ones that nothing uses. When the files of a commit change on GitHub, Trebi refuses the new download, and `trebi doctor` reports `connector_digest_mismatch`.
+
+## Make a folder a connector
+
+Add a `trebi-connector.yaml` to the folder of the tool. This example makes a Go CLI tool a connector. The program builds from the folder with `go build`, and the skill is the `SKILL.md` in the same folder:
+
+```yaml
+schema: trebi-connector/1
+name: vitally
+title: Vitally
+description: Accounts, users, notes, and tasks of one Vitally workspace.
+version: 0.1.0
+publisher: community
+install:
+  build: {go: .}
+  bin: vitally-cli
+  version_command: vitally-cli --version
+setup:
+  inputs:
+    - {name: VITALLY_API_KEY, label: API key, secret: true, required: true}
+skill: {path: .}
+actions:
+  cli: {commands: [vitally-cli]}
+```
+
+- `install.build.go` is the package to build, relative to the folder. The folder (or a parent in the download) needs a `go.mod`. The user needs Go on this computer.
+- `install.bin` is the program name. `version_command` must print the manifest `version`.
+- Each `setup.inputs` entry is one setting that the user fills. Give a `label`, and set `secret: true` for a key or a token.
+- `skill.path` is the folder of the `SKILL.md`; `.` is the connector folder.
+- `actions.cli.commands` lists the commands that a run can call.
+
+Commit and push the change, then run `trebi connector check-link <link>` until it passes.
+
 ## Versions
 
 A Trebi catalog entry installs its signed snapshot (the manifest and the skill) and its program. It follows an update track: `exact` (never changes), `patch` (the default; moves to a new patch version at once), `minor`, or `latest`. On `minor` and `latest`, a new version shows as `update` on the row and as an Inbox item; apply it with `connector update`. The daemon checks once a day.

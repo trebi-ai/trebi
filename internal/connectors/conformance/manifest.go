@@ -37,7 +37,12 @@ func (manifestSuite) run(_ context.Context, r *run) []Result {
 		_, err := m.EventSchemas(r.t.Dir)
 		out = append(out, row(SuiteManifest, "event schemas", err))
 	}
-	return append(out, skillRow(m, r.t.Dir), compatRow(m))
+	out = append(out, skillRow(m, r.t.Dir), compatRow(m))
+	if m.Install != nil && m.Install.Build != nil {
+		_, err := m.Install.Build.ModuleDir(r.t.Dir)
+		out = append(out, row(SuiteManifest, "build module", err))
+	}
+	return out
 }
 
 // skillRow checks that SKILL.md exists. A connector with actions needs it.

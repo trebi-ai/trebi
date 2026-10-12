@@ -268,7 +268,7 @@ func resolveConnection(c Connection, workspaceID string, ov *workspaces.Connecto
 		Version: m.Version, Track: c.track(), From: c.From,
 		Manifest: m, Inputs: maps.Clone(c.Inputs), Dir: dir,
 	}
-	if c.From == FromCatalog {
+	if c.From == FromCatalog || c.From == FromGitHub {
 		r.Version = c.Version
 	}
 	return r, nil
@@ -285,14 +285,18 @@ func loadBase(c Connection) (manifest.Manifest, string, error) {
 		m := c.Manifest.Clone()
 		m.Name = c.Type
 		return m, "", nil
-	case FromCatalog:
-		dir := home.PackageDir(c.Type, c.Version)
+	case FromCatalog, FromGitHub:
+		dir := home.PackageDir(c.Type, c.packageVersion())
 		m, err := readManifest(dir)
 		if errors.Is(err, os.ErrNotExist) {
-			return manifest.Manifest{}, "", fmt.Errorf("%w: %s %s", ErrNotInstalled, c.Type, c.Version)
+			return manifest.Manifest{}, "", fmt.Errorf("%w: %s %s", ErrNotInstalled, c.Type, c.packageVersion())
 		}
 		if err != nil {
-			return manifest.Manifest{}, "", withLayer(err, c.Slug, LayerCatalog)
+			layer := LayerCatalog
+			if c.From == FromGitHub {
+				layer = LayerGlobal
+			}
+			return manifest.Manifest{}, "", withLayer(err, c.Slug, layer)
 		}
 		return m, dir, nil
 	default:

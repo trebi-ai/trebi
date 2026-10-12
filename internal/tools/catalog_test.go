@@ -108,6 +108,27 @@ func TestConnectorActionsUseConnectionRefs(t *testing.T) {
 	if _, err := cat["create"].Build(Input{}); err == nil {
 		t.Fatal("create without a connection must fail")
 	}
+	link := "https://github.com/flarco/cli-tools/tree/main/vitally-cli"
+	req, err = cat["check_link"].Build(Input{"url": link})
+	if err != nil || req.Method != "POST" || req.Path != "/v1/connectors/sources/check" {
+		t.Fatalf("check_link: %+v %v", req, err)
+	}
+	if _, err := cat["check_link"].Build(Input{}); err == nil {
+		t.Fatal("check_link without url must fail")
+	}
+	req, err = cat["install"].Build(Input{"source": map[string]any{"url": link, "check_id": "chk_1"}, "force": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = json.Marshal(req.Body)
+	if string(b) != `{"force":true,"source":{"url":"`+link+`","check_id":"chk_1"}}` {
+		t.Fatalf("install from a link body %s", b)
+	}
+	for _, in := range []Input{{}, {"name": "whatsapp", "source": map[string]any{"url": link}}} {
+		if _, err := cat["install"].Build(in); err == nil {
+			t.Fatalf("install %v must need one of name or source", in)
+		}
+	}
 }
 
 // TestJobFolderFields proves job.create, job.validate_text, and job.patch

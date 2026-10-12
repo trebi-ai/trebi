@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/urfave/cli/v3"
 	"gopkg.in/yaml.v3"
@@ -107,11 +109,21 @@ func connectorCatalogCommands() []*cli.Command {
 			Action: runConnectorEntry,
 		},
 		{
+			Name:      "check-link",
+			Usage:     "check a GitHub link to a connector folder; installs nothing (exit 1 when it cannot install)",
+			ArgsUsage: "<link>",
+			Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+			Action:    runConnectorCheckLink,
+		},
+		{
 			Name:      "add",
 			Aliases:   []string{"install"},
-			Usage:     "add a connection of a catalog type or a registry server; run it again for another account",
-			ArgsUsage: "<type>",
+			Usage:     "add a connection of a catalog type, a registry server, or a GitHub link; run it again for another account",
+			ArgsUsage: "<type|link>",
 			Flags: []cli.Flag{
+				&cli.BoolFlag{Name: "check-only", Usage: "link: check the folder and install nothing"},
+				&cli.BoolFlag{Name: "force", Usage: "link: install when a conformance suite fails"},
+				&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "link: do not ask before the install"},
 				&cli.StringFlag{Name: "registry", Usage: "registry name"},
 				&cli.StringFlag{Name: "version", Usage: "server version (default: latest)"},
 				&cli.StringFlag{Name: "track", Usage: "update track of a Trebi catalog connector: exact|patch|minor|latest"},
@@ -538,7 +550,7 @@ func entryInputs(specs []any) string {
 func runConnectorInstall(_ context.Context, c *cli.Command) error {
 	name := c.Args().Get(0)
 	if name == "" {
-		return fmt.Errorf("usage: trebi connector add <type> [--slug S] [--title T] [flags]")
+		return fmt.Errorf("usage: trebi connector add <type|link> [--slug S] [--title T] [flags]")
 	}
 	inputs, err := parseKeyValues(c.StringSlice("input"))
 	if err != nil {
@@ -547,6 +559,12 @@ func runConnectorInstall(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
+	}
+	if isGitHubLink(name, c.String("registry")) {
+		return connectorAddLink(c, client, name, inputs)
+	}
+	if c.Bool("check-only") || c.Bool("force") {
+		return fmt.Errorf("--check-only and --force apply to a GitHub link only")
 	}
 	req := request.ConnectorInstall{
 		Registry: c.String("registry"), Name: name, Version: c.String("version"), Track: c.String("track"),
@@ -562,6 +580,122 @@ func runConnectorInstall(_ context.Context, c *cli.Command) error {
 	}
 	fmt.Fprintf(outWriter(c), "connection %s added (%s)\n", dash(mapStr(body, "slug")), dash(mapStr(body, "id")))
 	return nil
+}
+
+// isGitHubLink reports whether the argument of add is a GitHub link. A
+// registry name such as ai.example/server has a dot in its owner, which a
+// GitHub owner cannot have.
+func isGitHubLink(arg, registry string) bool {
+	if registry != "" || !strings.Contains(arg, "/") {
+		return false
+	}
+	_, _, err := connectors.ParseGitHubLink(arg)
+	return err == nil
+}
+
+func runConnectorCheckLink(_ context.Context, c *cli.Command) error {
+	link := c.Args().Get(0)
+	if link == "" {
+		return fmt.Errorf("usage: trebi connector check-link <link> [--json]")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var check connectors.SourceCheck
+	if err := client.DoHTTP(request.BuildConnectorSourceCheck(link), &check); err != nil {
+		return err
+	}
+	return reportSourceCheck(c, check)
+}
+
+// reportSourceCheck writes a link check and exits 1 when the link cannot
+// install.
+func reportSourceCheck(c *cli.Command, check connectors.SourceCheck) error {
+	if c.Bool("json") {
+		if err := encodeJSON(c, check); err != nil {
+			return err
+		}
+	} else {
+		printSourceCheck(outWriter(c), check)
+	}
+	if !check.CanInstall {
+		return cli.Exit("", 1)
+	}
+	return nil
+}
+
+// connectorAddLink checks a link, asks the user to trust it, and installs
+// it with the staging folder of the check.
+func connectorAddLink(c *cli.Command, client *APIClient, link string, inputs map[string]string) error {
+	if c.String("version") != "" || c.String("track") != "" || c.Int("package") >= 0 || c.Int("remote") >= 0 {
+		return fmt.Errorf("a link installs the version of its commit; do not give --version, --track, --package, or --remote")
+	}
+	var check connectors.SourceCheck
+	if err := client.DoHTTP(request.BuildConnectorSourceCheck(link), &check); err != nil {
+		return err
+	}
+	if c.Bool("check-only") || !check.CanInstall {
+		return reportSourceCheck(c, check)
+	}
+	out := outWriter(c)
+	if !c.Bool("json") {
+		printSourceCheck(out, check)
+	}
+	if !c.Bool("yes") && !trustLink(c) {
+		return fmt.Errorf("not installed")
+	}
+	req := request.ConnectorInstall{
+		Source: &request.ConnectorSource{URL: link, CheckID: check.ID}, Force: c.Bool("force"),
+		Slug: c.String("slug"), Title: c.String("title"), Package: -1, Remote: -1, Inputs: inputs,
+	}.Build()
+	var body map[string]any
+	if err := client.DoHTTP(req, &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	fmt.Fprintf(out, "connection %s added (%s)\n", dash(mapStr(body, "slug")), dash(mapStr(body, "id")))
+	return nil
+}
+
+// trustLink asks once before a program from a link runs on this computer.
+func trustLink(c *cli.Command) bool {
+	var in io.Reader = os.Stdin
+	if c.Root().Reader != nil {
+		in = c.Root().Reader
+	}
+	var ew io.Writer = os.Stderr
+	if c.Root().ErrWriter != nil {
+		ew = c.Root().ErrWriter
+	}
+	fmt.Fprint(ew, "Trebi did not review this connector. It runs on this computer. Install? [y/N] ")
+	line, _ := bufio.NewReader(in).ReadString('\n') // EOF reads as no
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes"
+}
+
+// printSourceCheck writes the report of a link check.
+func printSourceCheck(w io.Writer, check connectors.SourceCheck) {
+	name, version := "-", "-"
+	if check.Entry != nil {
+		name, version = check.Entry.Name, check.Entry.Version
+	}
+	fmt.Fprintf(w, "connector: %s\nversion:   %s\ncommit:    %s\nsource:    %s\n", name, version, dash(check.Source.Commit), check.URL)
+	if len(check.Found) > 0 {
+		fmt.Fprintf(w, "connectors in sub-folders: %s\n", strings.Join(check.Found, ", "))
+	}
+	tbl := newTable(w, []string{"Group", "Status", "Message"})
+	for _, r := range check.Results {
+		tbl.AppendRow(table.Row{r.Group, r.Status, r.Message})
+	}
+	renderTable(tbl)
+	verdict := "can install: yes"
+	if !check.CanInstall {
+		verdict = "can install: no"
+	}
+	fmt.Fprintln(w, verdict)
 }
 
 func runConnectorVersions(_ context.Context, c *cli.Command) error {

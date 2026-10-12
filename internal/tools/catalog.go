@@ -1930,7 +1930,11 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildConnectorCatalogEntryPath(v[1], v[0], v[2])), nil
 			}),
-			"install": act("POST /v1/connectors/install", Input{
+			"check_link": act("POST /v1/connectors/sources/check", Input{"url": "https://github.com/flarco/cli-tools/tree/main/vitally-cli"}, func(in Input) (request.HTTPRequest, error) {
+				link, err := in.reqStr("url")
+				return request.BuildConnectorSourceCheck(link), err
+			}),
+			"install": actSamples("POST /v1/connectors/install", Input{
 				"registry": "official",
 				"name":     "ai.adtest/adtest-mcp",
 				"version":  "1.1.0",
@@ -1939,8 +1943,26 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				"title":    "Ad test",
 				"package":  float64(0),
 				"inputs":   map[string]any{"ADTEST_API_KEY": "secret:adtest_key"},
-			}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "registry", "version", "slug", "track", "title")
+			}, []Input{{
+				"source": map[string]any{"url": "https://github.com/flarco/cli-tools/tree/main/vitally-cli", "check_id": "chk_01k6abcdefghjkmnpqrstvwxyz"},
+				"force":  true,
+				"slug":   "vitally",
+			}}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("name", "registry", "version", "slug", "track", "title")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				var src *request.ConnectorSource
+				if in["source"] != nil {
+					src = &request.ConnectorSource{}
+					if err := in.decode("source", src); err != nil {
+						return request.HTTPRequest{}, err
+					}
+				}
+				if (v[0] == "") == (src == nil) {
+					return request.HTTPRequest{}, fmt.Errorf("give name or source: one of the two")
+				}
+				force, err := in.flag("force")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -1965,6 +1987,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				return request.ConnectorInstall{
 					Registry: v[1], Name: v[0], Version: v[2], Slug: v[3], Track: v[4], Title: v[5],
 					Package: pkg, Remote: remote, Inputs: inputs,
+					Source: src, Force: force,
 				}.Build(), nil
 			}),
 			"versions": act("GET /v1/connectors/{ref}/versions", Input{"connector": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {

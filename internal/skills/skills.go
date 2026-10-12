@@ -314,8 +314,9 @@ func (s *Service) AddConnectorSkill(ctx context.Context, name, skillMD, connecto
 // SyncConnectorSkill copies the skill folder of a resolved connector into
 // the managed skills as ProvenanceConnector (Part C.6). A skill of the same
 // name that another owner holds is ErrExists. A copy that the same connector
-// owns is replaced.
-func (s *Service) SyncConnectorSkill(ctx context.Context, name, srcDir, connector string) (*Skill, error) {
+// owns is replaced. With root, srcDir is the connector folder itself, so only
+// SKILL.md and the skill folders are copied, not the source tree.
+func (s *Service) SyncConnectorSkill(ctx context.Context, name, srcDir, connector string, root bool) (*Skill, error) {
 	if err := CheckName(name); err != nil {
 		return nil, err
 	}
@@ -335,7 +336,7 @@ func (s *Service) SyncConnectorSkill(ctx context.Context, name, srcDir, connecto
 	exists := err == nil
 	tmp := dir + ".sync"
 	_ = os.RemoveAll(tmp) // a leftover of a failed sync
-	if err := os.CopyFS(tmp, os.DirFS(srcDir)); err != nil {
+	if err := copySkill(tmp, srcDir, root); err != nil {
 		_ = os.RemoveAll(tmp) // best effort
 		return nil, err
 	}
@@ -862,4 +863,34 @@ func copyTree(src, dst string) error {
 		}
 		return os.WriteFile(filepath.Join(dst, rel), data, 0o644)
 	})
+}
+
+// skillFolders are the folders of a skill next to SKILL.md.
+var skillFolders = []string{"references", "scripts", "assets"} //nolint:gochecknoglobals // fixed list, never mutated
+
+// copySkill copies a skill folder to dst. With root, it copies only SKILL.md
+// and the skillFolders that exist.
+func copySkill(dst, src string, root bool) error {
+	if !root {
+		return os.CopyFS(dst, os.DirFS(src))
+	}
+	if err := os.MkdirAll(dst, 0o700); err != nil {
+		return err
+	}
+	body, err := os.ReadFile(filepath.Join(src, "SKILL.md"))
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), body, 0o600); err != nil {
+		return err
+	}
+	for _, sub := range skillFolders {
+		if fi, err := os.Stat(filepath.Join(src, sub)); err != nil || !fi.IsDir() {
+			continue
+		}
+		if err := os.CopyFS(filepath.Join(dst, sub), os.DirFS(filepath.Join(src, sub))); err != nil {
+			return err
+		}
+	}
+	return nil
 }

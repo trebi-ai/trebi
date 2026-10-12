@@ -24,6 +24,7 @@ func (s *Server) routeConnectors(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/connectors/catalog", s.handleConnectorsCatalog)
 	mux.HandleFunc("GET /v1/connectors/catalog/entry", s.handleConnectorCatalogEntry)
 	mux.HandleFunc("POST /v1/connectors/install", s.handleConnectorInstall)
+	mux.HandleFunc("POST /v1/connectors/sources/check", s.handleConnectorSourceCheck)
 	mux.HandleFunc("POST /v1/connectors/check-updates", s.handleConnectorCheckUpdates)
 	mux.HandleFunc("POST /v1/connectors/gc", s.handleConnectorGC)
 	mux.HandleFunc("GET /v1/connectors/{ref}", s.handleConnectorGet)
@@ -569,20 +570,37 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		Registry string            `json:"registry"`
-		Name     string            `json:"name"`
-		Version  string            `json:"version"`
-		Track    string            `json:"track"`
-		Slug     string            `json:"slug"`
-		Title    string            `json:"title"`
-		Package  *int              `json:"package"`
-		Remote   *int              `json:"remote"`
-		Inputs   map[string]string `json:"inputs"`
+		Registry string                    `json:"registry"`
+		Name     string                    `json:"name"`
+		Version  string                    `json:"version"`
+		Track    string                    `json:"track"`
+		Slug     string                    `json:"slug"`
+		Title    string                    `json:"title"`
+		Package  *int                      `json:"package"`
+		Remote   *int                      `json:"remote"`
+		Inputs   map[string]string         `json:"inputs"`
+		Source   *connectors.SourceInstall `json:"source"`
+		Force    bool                      `json:"force"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if body.Source != nil || body.Force {
+		if body.Name != "" || body.Registry != "" || body.Track != "" || body.Package != nil || body.Remote != nil {
+			writeErr(w, http.StatusBadRequest, "validation", "source does not go with name, registry, track, package, or remote")
+			return
+		}
+		req := connectors.InstallRequest{Source: body.Source, Force: body.Force, Version: body.Version,
+			Inputs: body.Inputs, Slug: body.Slug, Title: body.Title}
+		c, err := s.connectors.Install(r.Context(), req)
+		if err != nil {
+			s.writeInstallErr(w, err)
+			return
+		}
+		s.writeConnectorRow(w, http.StatusCreated, c.ID)
 		return
 	}
 	if strings.TrimSpace(body.Name) == "" {
@@ -639,6 +657,59 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 	s.writeConnectorRow(w, http.StatusCreated, created.ID)
 }
 
+// handleConnectorSourceCheck fetches and checks the folder of a GitHub link.
+// It installs nothing.
+func (s *Server) handleConnectorSourceCheck(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
+	var body struct {
+		URL string `json:"url"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if strings.TrimSpace(body.URL) == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "url required")
+		return
+	}
+	check, err := s.connectors.CheckSource(r.Context(), body.URL)
+	if err != nil {
+		s.writeInstallErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, check)
+}
+
+// writeSourceErr maps a link error. It reports false for any other error.
+func writeSourceErr(w http.ResponseWriter, err error) bool {
+	var ce *connectors.InstallCheckError
+	var se *connectors.SourceError
+	switch {
+	case errors.As(err, &ce):
+		writeErrDetails(w, http.StatusUnprocessableEntity, "validation", err.Error(),
+			map[string]any{"reason": ce.Reason, "results": ce.Results})
+	case errors.Is(err, connectors.ErrSourceNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, connectors.ErrSourceTooLarge):
+		writeErr(w, http.StatusRequestEntityTooLarge, "too_large", err.Error())
+	case errors.Is(err, connectors.ErrSourceRateLimited):
+		retry := 0
+		if errors.As(err, &se) {
+			retry = int(se.RetryAfter.Seconds())
+		}
+		writeErrDetails(w, http.StatusTooManyRequests, "rate_limited", err.Error(), map[string]any{"retry_after": retry})
+	case errors.Is(err, connectors.ErrSourceUnavailable):
+		writeErr(w, http.StatusBadGateway, "upstream", err.Error())
+	default:
+		return false
+	}
+	return true
+}
+
 // writeConnectorRow writes the row of one connection after a write.
 func (s *Server) writeConnectorRow(w http.ResponseWriter, status int, id string) {
 	row, err := s.connectors.Get(id)
@@ -652,6 +723,7 @@ func (s *Server) writeConnectorRow(w http.ResponseWriter, status int, id string)
 // registry error; anything else is a connector error or upstream.
 func (s *Server) writeInstallErr(w http.ResponseWriter, err error) {
 	switch {
+	case writeSourceErr(w, err):
 	case s.writeConnectorErr(w, err):
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, registry.ErrUnknownRegistry),
 		errors.Is(err, registry.ErrInvalidEntry), errors.Is(err, registry.ErrBadSignature):

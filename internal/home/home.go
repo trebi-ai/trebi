@@ -90,6 +90,12 @@ func PackagesDir() string { return filepath.Join(Base(), "packages", "connectors
 // PackageDir is the unpacked snapshot of one connector type at one version.
 func PackageDir(typ, version string) string { return filepath.Join(PackagesDir(), typ, version) }
 
+// ConnectorStagingRoot holds the folders that a link check fetched.
+func ConnectorStagingRoot() string { return filepath.Join(PackagesDir(), ".staging") }
+
+// ConnectorStagingDir is the folder of one link check.
+func ConnectorStagingDir(id string) string { return filepath.Join(ConnectorStagingRoot(), id) }
+
 func DaemonLogPath() string { return filepath.Join(Base(), "logs", "trebid.log") }
 
 // EnsureDirs creates the standard directory tree.

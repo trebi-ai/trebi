@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/trebi-ai/trebi/internal/connectors"
 )
 
 const preflightTimeout = 90 * time.Second
@@ -279,6 +281,16 @@ func (r *Runner) runOne(ctx context.Context, t *Task, clientName string, idx int
 	}()
 	dctx, cancel := context.WithTimeout(ctx, time.Duration(t.TimeoutS)*time.Second+judgeBudget(len(t.Judge.Dimensions))+time.Minute)
 	defer cancel()
+	if len(t.GitHub) > 0 {
+		gh, err := t.startGitHub()
+		if err != nil {
+			tr.Outcome = OutcomeInfraFailure
+			tr.Error = err.Error()
+			return tr
+		}
+		defer gh.Close()
+		env.daemonEnv = append(env.daemonEnv, connectors.EnvGitHubAPI+"="+gh.API.URL)
+	}
 	if err := env.startDaemon(dctx, t.ServerHarness, env.workdir); err != nil {
 		tr.Outcome = OutcomeInfraFailure
 		tr.Error = err.Error()

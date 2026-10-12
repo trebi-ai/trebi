@@ -1,0 +1,10 @@
+schema: trebi-connector/1
+name: vitally
+title: Vitally
+description: Read and update accounts in Vitally.
+version: 0.1.0
+install:
+  catalog: true
+  bin: vitally
+events:
+  command: vitally watch

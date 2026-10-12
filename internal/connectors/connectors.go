@@ -97,8 +97,12 @@ type Service struct {
 	catalog   Catalog
 	relHTTP   *http.Client
 	githubURL string
-	updates   map[string]string    // connection id → newer catalog version on its track
+	gh        *GitHubClient
+	updates   map[string]Pending   // connection id → newer version on its track or branch
 	inspected map[string]inspected // resolved fingerprint → MCP inspection
+	checks    map[string]staged    // link check id → staging folder
+	pkgErr    map[string]error     // connection id → last package restore error
+	srcErr    map[string]error     // connection id → last link update check error
 
 	// now, sleep, and the session intervals are injectable for tests.
 	now       func() time.Time
@@ -203,8 +207,11 @@ func New(st *store.Store, ws *workspaces.Service, sk *skills.Service) *Service {
 		loadErr:   map[string]error{},
 		overrides: map[string]map[string]workspaces.ConnectorOverride{},
 		flows:     map[string]*Flow{},
-		updates:   map[string]string{},
+		updates:   map[string]Pending{},
 		inspected: map[string]inspected{},
+		checks:    map[string]staged{},
+		pkgErr:    map[string]error{},
+		srcErr:    map[string]error{},
 		runCtx:    context.Background(),
 		now:       time.Now,
 		sleep:     sleepCtx,
@@ -955,7 +962,7 @@ func (s *Service) syncSkill(ctx context.Context, r Resolved) {
 	if s.sk == nil || dir == "" {
 		return
 	}
-	if _, err := s.sk.SyncConnectorSkill(ctx, r.Type, dir, r.Type); err != nil {
+	if _, err := s.sk.SyncConnectorSkill(ctx, r.Type, dir, r.Type, filepath.Clean(dir) == filepath.Clean(r.Dir)); err != nil {
 		s.log.Warn("connector skill", "connector", r.Slug, "error", err)
 	}
 }
@@ -1067,8 +1074,11 @@ func (s *Service) connectionRow(c Connection, workspaceID string, stats map[stri
 	if err := s.loadErrOf(c.ID); err != nil {
 		row["load_error"] = err.Error()
 	}
-	if v := s.availableUpdate(c.ID); v != "" {
-		row["update"] = map[string]any{"version": v}
+	if u := s.availableUpdate(c.ID); u.Version != "" {
+		row["update"] = u
+	}
+	if c.Source != nil {
+		row["source"] = map[string]any{"repo": c.Source.Repo, "path": c.Source.Path, "ref": c.Source.Ref, "commit": c.Source.Commit, "url": c.Source.URL()}
 	}
 	ws := workspaceID
 	if s.disabledIn(workspaceID, c.Slug) {
@@ -1093,6 +1103,9 @@ func (s *Service) connectionRow(c Connection, workspaceID string, stats map[stri
 	row["version"] = r.Version
 	row["track"] = string(r.Track)
 	row["publisher"] = m.Publisher
+	if c.From == FromGitHub {
+		row["publisher"] = PublisherUnverified // Trebi did not review a link
+	}
 	row["warning"] = m.Warning
 	row["manifest"] = m
 	row["capabilities"] = m.Capabilities()

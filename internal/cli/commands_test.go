@@ -472,6 +472,67 @@ func TestConnectorAddSendsSlugAndTitle(t *testing.T) {
 	}
 }
 
+// TestConnectorLinkCommands proves check-link prints the report and exits 1
+// when the link cannot install, add <link> asks before the install, and
+// --check-only installs nothing.
+func TestConnectorLinkCommands(t *testing.T) {
+	var got []string
+	canInstall := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = append(got, r.URL.Path+" "+string(b))
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/connectors/install" {
+			_, _ = w.Write([]byte(`{"id":"con_01k6abcdefghjkmnpqrstvwxyz","slug":"vitally"}`))
+			return
+		}
+		fmt.Fprintf(w, `{"id":"chk_1","url":"https://github.com/acme/tools/tree/main/vitally",
+			"source":{"repo":"acme/tools","path":"vitally","ref":"main","commit":"3f2a"},
+			"entry":{"name":"vitally","version":"0.1.0"},"can_install":%t,
+			"results":[{"group":"manifest","check":"schema","status":"pass","message":"The settings file is valid."}]}`, canInstall)
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+	link := "acme/tools/vitally"
+
+	out, err := runCLI(t, client, "connector", "check-link", link)
+	if err != nil || !strings.Contains(out, "vitally") || !strings.Contains(out, "3f2a") || !strings.Contains(out, "The settings file is valid.") {
+		t.Fatalf("check-link %v: %s", err, out)
+	}
+	out, err = runCLIWithInput(t, client, "n\n", "connector", "add", link)
+	if err == nil || !strings.Contains(out, "Trebi did not review this connector. It runs on this computer. Install? [y/N]") {
+		t.Fatalf("no at the prompt %v: %s", err, out)
+	}
+	got = nil
+	if _, err := runCLI(t, client, "connector", "add", link, "--check-only"); err != nil || len(got) != 1 {
+		t.Fatalf("check-only %v: %q", err, got)
+	}
+	got = nil
+	out, err = runCLIWithInput(t, client, "y\n", "connector", "add", link, "--force", "--slug", "vitally")
+	if err != nil || len(got) != 2 || !strings.Contains(out, "connection vitally added") {
+		t.Fatalf("yes at the prompt %v: %s", err, out)
+	}
+	if want := `{"force":true,"slug":"vitally","source":{"url":"acme/tools/vitally","check_id":"chk_1"}}`; got[1] != "/v1/connectors/install "+want {
+		t.Fatalf("install body %q", got[1])
+	}
+	if _, err := runCLI(t, client, "connector", "add", "whatsapp", "--force"); err == nil {
+		t.Fatal("--force on a catalog type must fail")
+	}
+
+	canInstall = false
+	code := captureExit(t)
+	_, _ = runCLI(t, client, "connector", "check-link", link, "--json")
+	if *code != 1 {
+		t.Fatalf("check-link exit %d, want 1", *code)
+	}
+	got = nil
+	*code = 0
+	_, _ = runCLI(t, client, "connector", "add", link, "--yes")
+	if *code != 1 || len(got) != 1 {
+		t.Fatalf("add of a failed check: exit %d, requests %q", *code, got)
+	}
+}
+
 // TestConnectorSetSlug proves set --slug sends the new slug and names it.
 func TestConnectorSetSlug(t *testing.T) {
 	var body string

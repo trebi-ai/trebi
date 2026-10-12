@@ -29,8 +29,13 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
-// ErrNoCatalog is an install or update with no Trebi catalog configured.
-var ErrNoCatalog = errors.New("no connector catalog is configured")
+var (
+	// ErrNoCatalog is an install or update with no Trebi catalog configured.
+	ErrNoCatalog = errors.New("no connector catalog is configured")
+	// ErrDigestMismatch is a package whose content is not the one that the
+	// connection record pins.
+	ErrDigestMismatch = errors.New("connector package digest mismatch")
+)
 
 // maxRelease caps one release asset download.
 const maxRelease = 256 << 20
@@ -50,6 +55,9 @@ type InstallConfig struct {
 	Catalog   Catalog
 	HTTP      *http.Client // release downloads; nil is a 10 min client
 	GitHubURL string       // "" is https://github.com
+
+	GitHubAPI   string      // links; "" is https://api.github.com
+	GitHubLogin GitHubLogin // nil: links use no login
 }
 
 // WithInstall sets the catalog and the release host.
@@ -63,24 +71,43 @@ func (s *Service) WithInstall(c InstallConfig) *Service {
 	if s.githubURL == "" {
 		s.githubURL = "https://github.com"
 	}
+	login := c.GitHubLogin
+	if c.GitHubAPI != "" && c.GitHubAPI != defaultGitHubAPI {
+		login = nil // a fixture server never gets the real login
+	}
+	s.gh = NewGitHubClient(c.HTTP, c.GitHubAPI, login)
 	return s
 }
 
-// InstallRequest adds one connection of a catalog type. Name is the type.
-// An empty slug is the default slug of the type.
+// InstallRequest adds one connection of a catalog type or of a GitHub link.
+// Name is the catalog type; Source is the link. An empty slug is the default
+// slug of the type.
 type InstallRequest struct {
-	Name    string            `json:"name"`
+	Name    string            `json:"name,omitempty"`
+	Source  *SourceInstall    `json:"source,omitempty"`
 	Version string            `json:"version,omitempty"`
 	Track   string            `json:"track,omitempty"`
 	Inputs  map[string]string `json:"inputs,omitempty"`
 	Slug    string            `json:"slug,omitempty"`
 	Title   string            `json:"title,omitempty"`
+	Force   bool              `json:"force,omitempty"` // install when a conformance suite fails; advanced only
+}
+
+// SourceInstall is the link of an install. CheckID reuses the staging
+// folder of a check.
+type SourceInstall struct {
+	URL     string `json:"url"`
+	CheckID string `json:"check_id,omitempty"`
 }
 
 // Install reads one catalog version, installs its program into the package
 // folder, creates the connection, and starts it (Part E.7). A failure
-// removes the package folder that it made.
+// removes the package folder that it made. A request with Source installs
+// from a link.
 func (s *Service) Install(ctx context.Context, req InstallRequest) (Connection, error) {
+	if req.Source != nil || req.Force {
+		return s.installLink(ctx, req)
+	}
 	if s.catalog == nil {
 		return Connection{}, ErrNoCatalog
 	}
@@ -117,10 +144,13 @@ func (s *Service) Install(ctx context.Context, req InstallRequest) (Connection, 
 	return c, nil
 }
 
-// EnsurePackage installs the missing package of a catalog connection by its
-// version and checks it against the digest in the record. A restore needs
+// EnsurePackage installs the missing package of a catalog or link
+// connection and checks it against the digest in the record. A restore needs
 // no user step.
 func (s *Service) EnsurePackage(ctx context.Context, c Connection) error {
+	if c.From == FromGitHub {
+		return s.ensureLinkPackage(ctx, c)
+	}
 	if c.From != FromCatalog {
 		return nil
 	}
@@ -137,25 +167,33 @@ func (s *Service) EnsurePackage(ctx context.Context, c Connection) error {
 			if created {
 				s.removeVersion(ctx, c.Type, c.Version)
 			}
-			return fmt.Errorf("connector %q: the catalog package %s %s has digest %s, not %s", c.Slug, c.Type, c.Version, digest, c.Digest)
+			return fmt.Errorf("%w: connector %q: the catalog package %s %s has digest %s, not %s", ErrDigestMismatch, c.Slug, c.Type, c.Version, digest, c.Digest)
 		}
 		return nil
 	}
 	if c.Digest != "" && have != c.Digest {
-		return fmt.Errorf("connector %q: the package %s %s has digest %s, not %s", c.Slug, c.Type, c.Version, have, c.Digest)
+		return fmt.Errorf("%w: connector %q: the package %s %s has digest %s, not %s", ErrDigestMismatch, c.Slug, c.Type, c.Version, have, c.Digest)
 	}
 	return nil
 }
 
-// EnsurePackages runs EnsurePackage for each catalog connection whose
-// package folder is missing. A failure is logged; the row shows the resolve
-// error.
+// EnsurePackages runs EnsurePackage for each catalog or link connection
+// whose package folder is missing. A failure is logged and kept for doctor;
+// the row shows the resolve error.
 func (s *Service) EnsurePackages(ctx context.Context) {
 	for _, c := range s.snapshot() {
-		if c.From != FromCatalog || packageDigest(c.Type, c.Version) != "" {
+		if (c.From != FromCatalog && c.From != FromGitHub) || packageDigest(c.Type, c.packageVersion()) != "" {
 			continue
 		}
-		if err := s.EnsurePackage(ctx, c); err != nil {
+		err := s.EnsurePackage(ctx, c)
+		s.mu.Lock()
+		if err != nil {
+			s.pkgErr[c.ID] = err
+		} else {
+			delete(s.pkgErr, c.ID)
+		}
+		s.mu.Unlock()
+		if err != nil {
 			s.log.Warn("connector package", "connector", c.ID, "error", err)
 		}
 	}
@@ -234,36 +272,48 @@ func (s *Service) installVersion(ctx context.Context, name, version string) (boo
 	if err != nil {
 		return false, "", err
 	}
-	binPath, err := s.installBinary(ctx, m, filepath.Join(tmp, "bin"))
+	binPath, err := s.installBinary(ctx, m, tmp, false)
 	if err != nil {
 		return false, "", fmt.Errorf("install %s@%s: %w", name, version, err)
 	}
 	sum := sha256.Sum256(snap)
 	digest := "sha256:" + hex.EncodeToString(sum[:])
-	if err := os.WriteFile(filepath.Join(tmp, digestFile), []byte(digest+"\n"), 0o600); err != nil {
+	if err := s.placePackage(ctx, name, version, tmp, digest, binPath); err != nil {
 		return false, "", err
+	}
+	return true, digest, nil
+}
+
+// placePackage writes the digest into the complete temp folder tmp, renames
+// it to the package folder of name at version, and records the install.
+func (s *Service) placePackage(ctx context.Context, name, version, tmp, digest, binPath string) error {
+	dir := home.PackageDir(name, version)
+	if err := os.WriteFile(filepath.Join(tmp, digestFile), []byte(digest+"\n"), 0o600); err != nil {
+		return err
 	}
 	if err := os.RemoveAll(dir); err != nil {
-		return false, "", err
+		return err
 	}
 	if err := os.Rename(tmp, dir); err != nil {
-		return false, "", err
+		return err
 	}
 	if binPath != "" && strings.HasPrefix(binPath, tmp) {
 		binPath = filepath.Join(dir, strings.TrimPrefix(binPath, tmp))
 	}
 	s.recordInstall(ctx, name, version, digest, binPath)
-	return true, digest, nil
+	return nil
 }
 
-// installBinary runs the first install method that works and checks
-// version_command. It returns the path of the program, or "" when the
-// manifest installs none.
-func (s *Service) installBinary(ctx context.Context, m manifest.Manifest, bin string) (string, error) {
+// installBinary runs the first install method that works in the package
+// folder dir and checks version_command. source reports whether dir holds
+// the source of the program (a link), so build can run. It returns the path
+// of the program, or "" when the manifest installs none.
+func (s *Service) installBinary(ctx context.Context, m manifest.Manifest, dir string, source bool) (string, error) {
 	in := m.Install
 	if in == nil || in.Bin == "" {
 		return "", nil
 	}
+	bin := filepath.Join(dir, "bin")
 	var errs []error
 	methods := []struct {
 		name string
@@ -272,6 +322,12 @@ func (s *Service) installBinary(ctx context.Context, m manifest.Manifest, bin st
 	}{
 		{"catalog", in.Catalog, func() error { return s.installCatalog(ctx, m, bin) }},
 		{"github_release", in.GitHubRelease != nil, func() error { return s.installRelease(ctx, m, bin) }},
+		{"build", in.Build != nil, func() error {
+			if !source {
+				return errors.New("the catalog snapshot has no source")
+			}
+			return buildGo(ctx, *in.Build, dir, filepath.Join(bin, in.Bin))
+		}},
 		{"brew", in.Brew != "", func() error { return runInstall(ctx, nil, "brew", "install", in.Brew) }},
 		{"go", in.Go != "", func() error {
 			return runInstall(ctx, []string{"GOBIN=" + bin}, "go", "install", expandInstall(in.Go, m.Version))
@@ -330,14 +386,50 @@ func runInstall(ctx context.Context, env []string, name string, args ...string) 
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = append(os.Environ(), env...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, lastLine(out))
+		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, lastLines(out, 1))
 	}
 	return nil
 }
 
-func lastLine(b []byte) string {
+// buildTimeout bounds one install.build run. GOTOOLCHAIN=auto can download
+// a Go toolchain on the first build.
+const buildTimeout = 10 * time.Minute
+
+// buildGo runs go build for install.build in the module folder of entry and
+// writes the program to out.
+func buildGo(ctx context.Context, b manifest.Build, entry, out string) error {
+	if _, err := exec.LookPath("go"); err != nil {
+		return errors.New("go is not installed")
+	}
+	mod, err := b.ModuleDir(entry)
+	if err != nil {
+		return err
+	}
+	pkg, err := filepath.Rel(mod, filepath.Join(entry, filepath.FromSlash(b.Go)))
+	if err != nil {
+		return err
+	}
+	bctx, cancel := context.WithTimeout(ctx, buildTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(bctx, "go", "build", "-trimpath", "-o", out, "./"+filepath.ToSlash(pkg))
+	cmd.Dir = mod
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=auto", "GOWORK=off") // a go.work above the home must not take the build
+	if output, err := cmd.CombinedOutput(); err != nil {
+		if bctx.Err() != nil {
+			return fmt.Errorf("go build: no exit in %s", buildTimeout)
+		}
+		return fmt.Errorf("go build: %w:\n%s", err, lastLines(output, 20))
+	}
+	return nil
+}
+
+// lastLines returns the last n lines of b.
+func lastLines(b []byte, n int) string {
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-	return lines[len(lines)-1]
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // installCatalog writes the program from the catalog archive of this
@@ -471,55 +563,6 @@ func extractProgram(asset string, data []byte, bin string) ([]byte, error) {
 	return nil, fmt.Errorf("%s has no file %q", asset, bin)
 }
 
-// untarGz unpacks a snapshot into dir. It keeps only folders and regular
-// files, and refuses a path that leaves dir.
-func untarGz(data []byte, dir string) error {
-	zr, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	tr := tar.NewReader(zr)
-	var total int64
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		name := path.Clean(hdr.Name)
-		if name == "." {
-			continue
-		}
-		if path.IsAbs(name) || name == ".." || strings.HasPrefix(name, "../") {
-			return fmt.Errorf("unsafe path %q", hdr.Name)
-		}
-		target := filepath.Join(dir, filepath.FromSlash(name))
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o700); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			total += hdr.Size
-			if total > maxRelease {
-				return errors.New("snapshot is too large")
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-				return err
-			}
-			b, err := io.ReadAll(io.LimitReader(tr, hdr.Size))
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(target, b, 0o600); err != nil {
-				return err
-			}
-		}
-	}
-}
-
 // recordInstall writes the derived connector_installs row.
 func (s *Service) recordInstall(ctx context.Context, typ, version, digest, binPath string) {
 	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO connector_installs (type, version, digest, bin_path, installed_at)
@@ -577,12 +620,15 @@ type VersionRow struct {
 // Versions lists the catalog versions of the type of a connection, newest
 // first, with the installed flag and the connections that use each one.
 func (s *Service) Versions(ctx context.Context, ref string) ([]VersionRow, error) {
-	if s.catalog == nil {
-		return nil, ErrNoCatalog
-	}
 	c, err := s.Lookup(ref)
 	if err != nil {
 		return nil, err
+	}
+	if c.From == FromGitHub {
+		return nil, &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "from", Message: "only a catalog connector has versions"}}}
+	}
+	if s.catalog == nil {
+		return nil, ErrNoCatalog
 	}
 	vers, err := s.catalog.Versions(ctx, c.Type)
 	if err != nil {
@@ -614,32 +660,38 @@ type UpdateResult struct {
 	Slug    string `json:"slug"`
 	From    string `json:"from"`
 	To      string `json:"to"`
+	Commit  string `json:"commit,omitempty"` // the new commit of a link connection
 	Applied bool   `json:"applied"`
 	Error   string `json:"error,omitempty"`
 }
 
 // CheckUpdates finds the newest catalog version on the track of each catalog
 // connection. The patch track applies it at once. The minor and latest
-// tracks record it and emit connector.update.available. An empty ref checks
-// every connection.
+// tracks record it and emit connector.update.available. A link connection
+// records a new commit of its branch and never applies it. An empty ref
+// checks every connection.
 func (s *Service) CheckUpdates(ctx context.Context, ref string) ([]UpdateResult, error) {
-	if s.catalog == nil {
-		return nil, ErrNoCatalog
-	}
 	conns := s.snapshot()
 	if ref != "" {
 		c, err := s.Lookup(ref)
 		if err != nil {
 			return nil, err
 		}
+		if c.From == FromCatalog && s.catalog == nil {
+			return nil, ErrNoCatalog
+		}
 		conns = []Connection{c}
 	}
 	out := []UpdateResult{}
 	for _, c := range conns {
-		if c.From != FromCatalog || c.track() == manifest.TrackExact {
-			continue
+		var res *UpdateResult
+		var err error
+		switch {
+		case c.From == FromGitHub:
+			res, err = s.checkLink(ctx, c)
+		case c.From == FromCatalog && s.catalog != nil && c.track() != manifest.TrackExact:
+			res, err = s.checkCatalog(ctx, c)
 		}
-		next, err := s.pickVersion(ctx, c.Type, "", c.Version, c.track())
 		if err != nil {
 			if ref != "" {
 				return nil, err
@@ -647,43 +699,66 @@ func (s *Service) CheckUpdates(ctx context.Context, ref string) ([]UpdateResult,
 			s.log.Warn("connector update check", "connector", c.ID, "error", err)
 			continue
 		}
-		if next == "" {
-			s.setUpdate(c.ID, "")
-			continue
+		if res != nil {
+			out = append(out, *res)
 		}
-		res := UpdateResult{ID: c.ID, Slug: c.Slug, From: c.Version, To: next}
-		if c.track() == manifest.TrackPatch {
-			if err := s.Update(ctx, c.ID, next); err != nil {
-				res.Error = err.Error()
-			} else {
-				res.Applied = true
-			}
-		} else if s.setUpdate(c.ID, next) {
-			s.appendBus(ctx, "connector.update.available", c.ID, map[string]string{"version": next, "current": c.Version, "slug": c.Slug})
-		}
-		out = append(out, res)
 	}
 	return out, nil
 }
 
-// setUpdate records the available version of a connection. It reports
-// whether the value changed.
-func (s *Service) setUpdate(id, version string) bool {
+// checkCatalog finds the newest catalog version on the track of c. The
+// patch track applies it.
+func (s *Service) checkCatalog(ctx context.Context, c Connection) (*UpdateResult, error) {
+	next, err := s.pickVersion(ctx, c.Type, "", c.Version, c.track())
+	if err != nil {
+		return nil, err
+	}
+	if next == "" {
+		s.setUpdate(c.ID, Pending{})
+		return nil, nil //nolint:nilnil // no update is not an error
+	}
+	res := UpdateResult{ID: c.ID, Slug: c.Slug, From: c.Version, To: next}
+	if c.track() == manifest.TrackPatch {
+		if err := s.Update(ctx, c.ID, next); err != nil {
+			res.Error = err.Error()
+		} else {
+			res.Applied = true
+		}
+	} else if s.setUpdate(c.ID, Pending{Version: next}) {
+		s.appendBus(ctx, "connector.update.available", c.ID, map[string]string{"version": next, "current": c.Version, "slug": c.Slug})
+	}
+	return &res, nil
+}
+
+// Pending is the update that a check found for a connection. Commit is set
+// for a link connection.
+type Pending struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit,omitempty"`
+}
+
+// PublisherUnverified is the publisher of a link connector, whatever its
+// manifest says.
+const PublisherUnverified = "unverified"
+
+// setUpdate records the available update of a connection; the zero value
+// clears it. It reports whether the value changed.
+func (s *Service) setUpdate(id string, u Pending) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.updates[id] == version {
+	if s.updates[id] == u {
 		return false
 	}
-	if version == "" {
+	if u == (Pending{}) {
 		delete(s.updates, id)
 	} else {
-		s.updates[id] = version
+		s.updates[id] = u
 	}
 	return true
 }
 
-// availableUpdate returns the recorded update of a connection, or "".
-func (s *Service) availableUpdate(id string) string {
+// availableUpdate returns the recorded update of a connection.
+func (s *Service) availableUpdate(id string) Pending {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.updates[id]
@@ -693,15 +768,18 @@ func (s *Service) availableUpdate(id string) string {
 // of the connection to it, and restarts the process. An empty version is
 // the newest version that is not yanked.
 func (s *Service) Update(ctx context.Context, ref, version string) error {
-	if s.catalog == nil {
-		return ErrNoCatalog
-	}
 	if err := s.GuardReserved(ref); err != nil {
 		return err
 	}
 	c, err := s.Lookup(ref)
 	if err != nil {
 		return err
+	}
+	if c.From == FromGitHub {
+		return s.updateLink(ctx, c)
+	}
+	if s.catalog == nil {
+		return ErrNoCatalog
 	}
 	if c.From != FromCatalog {
 		return &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "from", Message: "only a catalog connector has versions"}}}
@@ -715,13 +793,13 @@ func (s *Service) Update(ctx context.Context, ref, version string) error {
 		return err
 	}
 	from := c.Version
-	if err := s.setVersion(ctx, c.ID, version, digest); err != nil {
+	if err := s.setVersion(ctx, c.ID, version, digest, nil); err != nil {
 		if created {
 			s.removeVersion(ctx, c.Type, version)
 		}
 		return err
 	}
-	s.setUpdate(c.ID, "")
+	s.setUpdate(c.ID, Pending{})
 	s.appendBus(ctx, "connector.updated.version", c.ID, map[string]string{"from": from, "to": version, "slug": c.Slug})
 	if _, err := s.GC(ctx, false); err != nil {
 		s.log.Warn("connector gc", "error", err)
@@ -729,8 +807,9 @@ func (s *Service) Update(ctx context.Context, ref, version string) error {
 	return nil
 }
 
-// setVersion writes a new version and digest to a connection record.
-func (s *Service) setVersion(ctx context.Context, id, version, digest string) error {
+// setVersion writes a new version and digest to a connection record. A
+// non-nil src also moves the link to a new commit.
+func (s *Service) setVersion(ctx context.Context, id, version, digest string, src *GitHubSource) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if err := s.checkLoaded(id); err != nil {
@@ -742,16 +821,22 @@ func (s *Service) setVersion(ctx context.Context, id, version, digest string) er
 	}
 	c := old.clone()
 	c.Version, c.Digest = version, digest
+	if src != nil {
+		c.Source = src
+	}
 	return s.commit(ctx, c, &old, nil)
 }
 
 // GC removes each package folder that no connection uses. With dryRun it
 // only lists them as type@version.
 func (s *Service) GC(ctx context.Context, dryRun bool) ([]string, error) {
+	if !dryRun {
+		s.SweepStaging()
+	}
 	used := map[string]bool{}
 	for _, c := range s.snapshot() {
-		if c.From == FromCatalog {
-			used[c.Type+"@"+c.Version] = true
+		if c.From == FromCatalog || c.From == FromGitHub {
+			used[c.Type+"@"+c.packageVersion()] = true
 		}
 	}
 	removed := []string{}
@@ -785,7 +870,7 @@ func (s *Service) appendBus(ctx context.Context, topic, id string, attrs map[str
 // unpackSnapshot unpacks a catalog snapshot into dir and checks that its
 // manifest is the one of name at version.
 func unpackSnapshot(snap []byte, dir, name, version string) (manifest.Manifest, error) {
-	if err := untarGz(snap, dir); err != nil {
+	if _, err := untarGz(bytes.NewReader(snap), dir, "", untarLimits{size: maxRelease}); err != nil {
 		return manifest.Manifest{}, fmt.Errorf("unpack %s@%s: %w", name, version, err)
 	}
 	m, err := readManifest(dir)
