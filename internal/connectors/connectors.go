@@ -97,12 +97,16 @@ type Service struct {
 	catalog   Catalog
 	relHTTP   *http.Client
 	githubURL string
-	gh        *GitHubClient
-	updates   map[string]Pending   // connection id → newer version on its track or branch
-	inspected map[string]inspected // resolved fingerprint → MCP inspection
-	checks    map[string]staged    // link check id → staging folder
-	pkgErr    map[string]error     // connection id → last package restore error
-	srcErr    map[string]error     // connection id → last link update check error
+	// releaseAPI lets a release that the plain link does not give come
+	// through the GitHub API. A fixture release host with no fixture API
+	// never reaches the real API.
+	releaseAPI bool
+	gh         *GitHubClient
+	updates    map[string]Pending   // connection id → newer version on its track or branch
+	inspected  map[string]inspected // resolved fingerprint → MCP inspection
+	checks     map[string]staged    // link check id → staging folder
+	pkgErr     map[string]error     // connection id → last package restore error
+	srcErr     map[string]error     // connection id → last link update check error
 
 	// now, sleep, and the session intervals are injectable for tests.
 	now       func() time.Time

@@ -38,6 +38,7 @@ type Server struct {
 	repoOf   map[string]string          // sha → repo
 	token    string                     // "": no repo is private
 	private  map[string]bool
+	releases map[string]map[string][]byte // repo@tag → asset name → body
 	limited  bool
 	level    int
 	requests []Request
@@ -53,7 +54,7 @@ type Request struct {
 // New starts the two servers. Close stops them.
 func New() *Server {
 	s := &Server{refs: map[string]string{}, trees: map[string]map[string]File{}, repoOf: map[string]string{},
-		private: map[string]bool{}, level: gzip.DefaultCompression}
+		private: map[string]bool{}, releases: map[string]map[string][]byte{}, level: gzip.DefaultCompression}
 	s.Codeload = httptest.NewServer(http.HandlerFunc(s.codeload))
 	s.API = httptest.NewServer(http.HandlerFunc(s.api))
 	return s
@@ -90,6 +91,14 @@ func (s *Server) Rewrite(sha string, files map[string]File) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.trees[sha] = maps.Clone(files)
+}
+
+// Release stores the assets of the release at tag. Asset ids are their
+// order in the sorted names, from 1.
+func (s *Server) Release(repo, tag string, assets map[string][]byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.releases[repo+"@"+tag] = maps.Clone(assets)
 }
 
 // Private makes repo answer 404 unless the request has the token.
@@ -182,6 +191,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"sha": sha}) //nolint:errchkjson // test server
 	case "tarball":
 		http.Redirect(w, r, s.Codeload.URL+"/"+repo+"/legacy.tar.gz/"+rest, http.StatusFound)
+	case "releases":
+		s.release(w, r, repo, rest)
 	case "contents":
 		s.mu.Lock()
 		f, ok := s.trees[r.URL.Query().Get("ref")][rest]
@@ -196,8 +207,42 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// release serves releases/tags/<tag> and releases/assets/<id>. An asset
+// redirects to the codeload host, as GitHub redirects to its asset host.
+func (s *Server) release(w http.ResponseWriter, r *http.Request, repo, rest string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if tag, ok := strings.CutPrefix(rest, "tags/"); ok {
+		assets, ok := s.releases[repo+"@"+tag]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		type asset struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		}
+		var out []asset
+		for i, name := range slices.Sorted(maps.Keys(assets)) {
+			out = append(out, asset{ID: i + 1, Name: name})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": tag, "assets": out}) //nolint:errchkjson // test server
+		return
+	}
+	id, ok := strings.CutPrefix(rest, "assets/")
+	if !ok || r.Header.Get("Accept") != "application/octet-stream" {
+		http.NotFound(w, r)
+		return
+	}
+	http.Redirect(w, r, s.Codeload.URL+"/release-assets/"+repo+"/"+id, http.StatusFound)
+}
+
 func (s *Server) codeload(w http.ResponseWriter, r *http.Request) {
 	s.note(r)
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/release-assets/"); ok {
+		s.releaseAsset(w, r, rest)
+		return
+	}
 	segs := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	if len(segs) != 4 {
 		http.NotFound(w, r)
@@ -219,6 +264,31 @@ func (s *Server) codeload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = w.Write(data)
+}
+
+// releaseAsset serves owner/repo/<id> by its position in the sorted names
+// of any release of the repo.
+func (s *Server) releaseAsset(w http.ResponseWriter, r *http.Request, rest string) {
+	segs := strings.Split(rest, "/")
+	if len(segs) != 3 {
+		http.NotFound(w, r)
+		return
+	}
+	repo, id := segs[0]+"/"+segs[1], segs[2]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, assets := range s.releases {
+		if !strings.HasPrefix(key, repo+"@") {
+			continue
+		}
+		for i, name := range slices.Sorted(maps.Keys(assets)) {
+			if fmt.Sprint(i+1) == id {
+				_, _ = w.Write(assets[name])
+				return
+			}
+		}
+	}
+	http.NotFound(w, r)
 }
 
 // Tarball builds a tar.gz with each file under top/, as GitHub does.

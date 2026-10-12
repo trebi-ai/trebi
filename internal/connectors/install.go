@@ -35,6 +35,8 @@ var (
 	// ErrDigestMismatch is a package whose content is not the one that the
 	// connection record pins.
 	ErrDigestMismatch = errors.New("connector package digest mismatch")
+
+	errNoRelease = errors.New("not found")
 )
 
 // maxRelease caps one release asset download.
@@ -76,6 +78,7 @@ func (s *Service) WithInstall(c InstallConfig) *Service {
 		login = nil // a fixture server never gets the real login
 	}
 	s.gh = NewGitHubClient(c.HTTP, c.GitHubAPI, login)
+	s.releaseAPI = c.GitHubURL == "" || c.GitHubAPI != ""
 	return s
 }
 
@@ -443,32 +446,38 @@ func (s *Service) installCatalog(ctx context.Context, m manifest.Manifest, bin s
 	if err != nil {
 		return err
 	}
-	prog, err := extractProgram(m.Install.Bin+".tar.gz", data, m.Install.Bin)
+	files, err := extractProgram(m.Install.Bin+".tar.gz", data, m.Install.Bin)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(bin, 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(bin, m.Install.Bin), prog, 0o755) //nolint:gosec // the program must run
+	return files.write(bin)
 }
 
 // installRelease downloads the release asset of this platform, checks it
-// against the checksums file, and writes the program into bin.
+// against the checksums file, and writes the program into bin. A release
+// that the plain link does not give, as in a private repository, comes
+// through the API with the GitHub login.
 func (s *Service) installRelease(ctx context.Context, m manifest.Manifest, bin string) error {
 	gh := m.Install.GitHubRelease
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	if len(m.Platforms) > 0 && !slices.Contains(m.Platforms, platform) {
 		return fmt.Errorf("no release for %s", platform)
 	}
-	base := s.githubURL + "/" + gh.Repo + "/releases/download/" + expandInstall(gh.Tag, m.Version) + "/"
+	tag := expandInstall(gh.Tag, m.Version)
+	fetch := func(name string) ([]byte, error) {
+		data, err := s.download(ctx, s.githubURL+"/"+gh.Repo+"/releases/download/"+tag+"/"+name)
+		if errors.Is(err, errNoRelease) && s.releaseAPI {
+			return s.gh.ReleaseAsset(ctx, gh.Repo, tag, name)
+		}
+		return data, err
+	}
 	asset := expandInstall(gh.Asset, m.Version)
-	data, err := s.download(ctx, base+asset)
+	data, err := fetch(asset)
 	if err != nil {
 		return err
 	}
 	if gh.Checksums != "" {
-		sums, err := s.download(ctx, base+expandInstall(gh.Checksums, m.Version))
+		sums, err := fetch(expandInstall(gh.Checksums, m.Version))
 		if err != nil {
 			return fmt.Errorf("checksums: %w", err)
 		}
@@ -481,14 +490,11 @@ func (s *Service) installRelease(ctx context.Context, m manifest.Manifest, bin s
 			return fmt.Errorf("%s does not match its checksum", asset)
 		}
 	}
-	prog, err := extractProgram(asset, data, m.Install.Bin)
+	files, err := extractProgram(asset, data, m.Install.Bin)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(bin, 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(bin, m.Install.Bin), prog, 0o755) //nolint:gosec // the program must run
+	return files.write(bin)
 }
 
 // download runs one GET against the release host.
@@ -502,10 +508,13 @@ func (s *Service) download(ctx context.Context, url string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return io.ReadAll(io.LimitReader(resp.Body, maxRelease))
+	case http.StatusNotFound:
+		return nil, fmt.Errorf("GET %s: %w", url, errNoRelease)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxRelease))
+	return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
 }
 
 // parseSums reads "<hex>  <name>" lines.
@@ -520,47 +529,132 @@ func parseSums(data []byte) map[string]string {
 	return out
 }
 
-// extractProgram returns the file named bin from a tar.gz or zip asset, or
-// the asset itself when it is not an archive.
-func extractProgram(asset string, data []byte, bin string) ([]byte, error) {
+// programFile is one file of the program folder of an asset.
+type programFile struct {
+	name string
+	data []byte
+	exec bool
+}
+
+// programFiles are the files that go into the bin folder.
+type programFiles []programFile
+
+func (p programFiles) write(bin string) error {
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		return err
+	}
+	for _, f := range p {
+		mode := os.FileMode(0o644)
+		if f.exec {
+			mode = 0o755
+		}
+		if err := os.WriteFile(filepath.Join(bin, f.name), f.data, mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// extractProgram returns the files of the folder that holds bin in a tar.gz
+// or zip asset, so a program keeps the helper files next to it. An asset
+// that is not an archive is the program itself.
+func extractProgram(asset string, data []byte, bin string) (programFiles, error) {
+	a := archiveFiles{asset: asset, bin: bin}
+	var err error
 	switch {
 	case strings.HasSuffix(asset, ".tar.gz"), strings.HasSuffix(asset, ".tgz"):
-		zr, err := gzip.NewReader(bytes.NewReader(data))
-		if err != nil {
-			return nil, err
-		}
-		tr := tar.NewReader(zr)
-		for {
-			hdr, err := tr.Next()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return nil, err
-			}
-			if hdr.Typeflag == tar.TypeReg && path.Base(hdr.Name) == bin {
-				return io.ReadAll(io.LimitReader(tr, maxRelease))
-			}
-		}
+		err = a.readTar(data)
 	case strings.HasSuffix(asset, ".zip"):
-		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-		if err != nil {
-			return nil, err
+		err = a.readZip(data)
+	default:
+		return programFiles{{name: bin, data: data, exec: true}}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	i := slices.IndexFunc(a.all, func(e archiveFile) bool { return e.name == bin })
+	if i < 0 {
+		return nil, fmt.Errorf("%s has no file %q", asset, bin)
+	}
+	var out programFiles
+	for _, e := range a.all {
+		if e.dir == a.all[i].dir && !strings.HasPrefix(e.name, "._") {
+			out = append(out, e.programFile)
 		}
-		for _, f := range zr.File {
-			if f.FileInfo().Mode().IsRegular() && path.Base(f.Name) == bin {
-				rc, err := f.Open()
-				if err != nil {
-					return nil, err
-				}
-				defer rc.Close()
-				return io.ReadAll(io.LimitReader(rc, maxRelease))
+	}
+	return out, nil
+}
+
+// archiveFile is one regular file of an archive and its folder.
+type archiveFile struct {
+	dir string
+	programFile
+}
+
+// archiveFiles reads the regular files of one asset within maxRelease and
+// maxEntries.
+type archiveFiles struct {
+	asset string
+	bin   string
+	all   []archiveFile
+	size  int64
+}
+
+func (a *archiveFiles) add(name string, mode os.FileMode, r io.Reader) error {
+	b, err := io.ReadAll(io.LimitReader(r, maxRelease-a.size+1))
+	if err != nil {
+		return err
+	}
+	if a.size += int64(len(b)); a.size > maxRelease || len(a.all) >= maxEntries {
+		return fmt.Errorf("%s is too large", a.asset)
+	}
+	dir, base := path.Split(name)
+	a.all = append(a.all, archiveFile{dir, programFile{name: base, data: b, exec: mode&0o111 != 0 || base == a.bin}})
+	return nil
+}
+
+func (a *archiveFiles) readTar(data []byte) error {
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	tr := tar.NewReader(zr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if hdr.Typeflag == tar.TypeReg {
+			if err := a.add(hdr.Name, hdr.FileInfo().Mode(), tr); err != nil {
+				return err
 			}
 		}
-	default:
-		return data, nil
 	}
-	return nil, fmt.Errorf("%s has no file %q", asset, bin)
+}
+
+func (a *archiveFiles) readZip(data []byte) error {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return err
+	}
+	for _, f := range zr.File {
+		if !f.FileInfo().Mode().IsRegular() {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		err = a.add(f.Name, f.FileInfo().Mode(), rc)
+		rc.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // recordInstall writes the derived connector_installs row.

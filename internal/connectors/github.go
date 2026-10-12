@@ -252,6 +252,38 @@ func (g *GitHubClient) Fetch(ctx context.Context, src GitHubSource, dir string) 
 	return treeDigest(dir)
 }
 
+// ReleaseAsset downloads one asset of the release at tag through the API, so
+// a private repository works with the login. The asset host gets no token.
+func (g *GitHubClient) ReleaseAsset(ctx context.Context, repo, tag, name string) ([]byte, error) {
+	resp, err := g.get(ctx, "/repos/"+repo+"/releases/tags/"+escapeRef(tag), "application/vnd.github+json")
+	if err != nil {
+		return nil, err
+	}
+	var rel struct {
+		Assets []struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+		} `json:"assets"`
+	}
+	err = json.NewDecoder(io.LimitReader(resp.Body, maxManifest)).Decode(&rel)
+	resp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("%w: release %s: %v", ErrSourceUnavailable, tag, err)
+	}
+	for _, a := range rel.Assets {
+		if a.Name != name {
+			continue
+		}
+		resp, err := g.get(ctx, fmt.Sprintf("/repos/%s/releases/assets/%d", repo, a.ID), "application/octet-stream")
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(&capReader{r: resp.Body, max: maxRelease})
+	}
+	return nil, fmt.Errorf("release %s has no file %s", tag, name)
+}
+
 // commit reads the sha of a ref; "" is the default branch.
 func (g *GitHubClient) commit(ctx context.Context, repo, ref string) (string, error) {
 	if ref == "" {

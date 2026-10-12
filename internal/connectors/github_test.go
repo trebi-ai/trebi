@@ -240,6 +240,33 @@ func TestGitHubToken(t *testing.T) {
 }
 
 // swapLogin gives the next token after Forget.
+func TestGitHubReleaseAsset(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	gh := ghfake.New()
+	defer gh.Close()
+	gh.Push("o/priv", "main", map[string]ghfake.File{"a.txt": {Body: "a"}})
+	gh.Release("o/priv", "v1.0.0", map[string][]byte{"app.tar.gz": []byte("app"), "SHA256SUMS": []byte("sums")})
+	gh.Private("o/priv", "tok")
+
+	if _, err := NewGitHubClient(nil, gh.API.URL, nil).ReleaseAsset(ctx, "o/priv", "v1.0.0", "app.tar.gz"); !errors.Is(err, ErrSourceNotFound) {
+		t.Fatalf("anon: %v", err)
+	}
+	c := NewGitHubClient(nil, gh.API.URL, newFakeLogin("tok"))
+	for name, want := range map[string]string{"app.tar.gz": "app", "SHA256SUMS": "sums"} {
+		got, err := c.ReleaseAsset(ctx, "o/priv", "v1.0.0", name)
+		if err != nil || string(got) != want {
+			t.Fatalf("%s = %q %v", name, got, err)
+		}
+	}
+	if _, err := c.ReleaseAsset(ctx, "o/priv", "v1.0.0", "other"); err == nil || !strings.Contains(err.Error(), "no file other") {
+		t.Fatalf("missing asset: %v", err)
+	}
+	if _, err := c.ReleaseAsset(ctx, "o/priv", "v9", "app.tar.gz"); !errors.Is(err, ErrSourceNotFound) {
+		t.Fatalf("missing release: %v", err)
+	}
+}
+
 type swapLogin struct {
 	*fakeLogin
 	next string

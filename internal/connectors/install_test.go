@@ -224,6 +224,54 @@ func TestInstallFromCatalog(t *testing.T) {
 	}
 }
 
+// TestInstallReleaseThroughAPI reads a release that the plain link does not
+// give through the API, and keeps the files next to the program.
+func TestInstallReleaseThroughAPI(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	ctx := context.Background()
+	gh := ghfake.New()
+	defer gh.Close()
+	asset := fmt.Sprintf("demo-cli_1.0.0_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	data, err := ghfake.Tarball("demo-cli_1.0.0", map[string]ghfake.File{
+		"demo-cli":    {Body: "#!/bin/sh\necho demo-cli 1.0.0\n", Exec: true},
+		"demo-helper": {Body: "#!/bin/sh\n", Exec: true},
+		"NOTICE":      {Body: "notice"},
+		"docs/README": {Body: "other folder"},
+	}, gzip.DefaultCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	gh.Release("acme/demo", "v1.0.0", map[string][]byte{asset: data, "SHA256SUMS": []byte(hex.EncodeToString(sum[:]) + "  " + asset + "\n")})
+	missing := httptest.NewServer(http.NotFoundHandler())
+	defer missing.Close()
+	_, _, svc := openStack(t)
+	svc.WithInstall(connectors.InstallConfig{
+		Catalog:   fakeCatalog{versions: []registry.IndexVersion{{Version: "1.0.0"}}, files: demoFiles("demo")},
+		GitHubURL: missing.URL,
+		GitHubAPI: gh.API.URL,
+	})
+	c, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.Resolve(c.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, exec := range map[string]bool{"demo-cli": true, "demo-helper": true, "NOTICE": false} {
+		fi, err := os.Stat(filepath.Join(r.BinDir(), name))
+		if err != nil || (fi.Mode()&0o111 != 0) != exec {
+			t.Fatalf("%s: %v %v", name, fi, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(r.BinDir(), "README")); !os.IsNotExist(err) {
+		t.Fatalf("a file of another folder is in bin: %v", err)
+	}
+}
+
 func TestInstallFromLink(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("no go")
