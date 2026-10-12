@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -52,6 +54,10 @@ func (l *Launcher) FromRun(ctx context.Context, prev *runs.Run, reason runs.RunR
 		wsPath = ws.Path
 	}
 	prompt := job.ExpandPrompt(j.Prompt, j.Dir, wsPath, extra)
+	if prev.Trigger != nil && prev.Trigger.Batch != nil && !strings.Contains(j.Prompt, "{{events}}") {
+		// A rerun of a batch run gets the same events and events file.
+		prompt = strings.TrimSpace(prompt + "\n\n" + dispatch.BatchBlock(prev.Trigger.Vars))
+	}
 	lopts := runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID: prev.Workspace, JobID: prev.JobID, JobName: prev.JobName, Kind: prev.Kind,

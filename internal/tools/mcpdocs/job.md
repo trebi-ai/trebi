@@ -73,6 +73,7 @@ structured fields cover the job.
 - `contains` (string, optional): comma list of words or phrases, with `event`; the message text must hold one of them. Case does not matter.
 - `from` (string, optional): `people`, `bots`, or `anyone` (default), with `event`; which senders the trigger takes.
 - `replies` (string, optional): `continue` or `off`, with `event`. `continue` sends each later message of the same conversation to the run that the first message started, also when that run ended.
+- `batch` (string, optional): a duration from `1m` to `24h`, or `off`, with `event`. The trigger collects its events and starts one run per interval with all of them. Not with `replies: continue`.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first job.
 - `agent` (string, optional): agent short name. The job lands in `agents/<agent>/` and the name becomes the full relative path.
 - `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder. Use `content` with a `folder:` key instead when you give `content`.
@@ -88,7 +89,8 @@ Give a job another owner agent, another folder, or both. Use this action to move
 ### validate_text
 Check a job definition without writing a job. Call it before `create` when you
 compose a definition yourself. The response is `{ok, error, markdown}`, where
-`markdown` is the text the daemon would write.
+`markdown` is the text the daemon would write. `warnings` lists problems that
+do not stop the job, such as `{{text}}` in the prompt of a batch trigger.
 - `prompt` (string, optional): job body.
 - `content` (string, optional): full job definition text.
 - `kind` (string, optional): `job` (default) or `agent`. Use `agent` to check `AGENT.md` text, which allows the `email`, `kit`, `budget`, and `report` keys.
@@ -107,6 +109,7 @@ compose a definition yourself. The response is `{ok, error, markdown}`, where
 - `contains` (string, optional): comma list of words or phrases, with `event`.
 - `from` (string, optional): `people`, `bots`, or `anyone`, with `event`.
 - `replies` (string, optional): `continue` or `off`, with `event`.
+- `batch` (string, optional): a duration from `1m` to `24h`, or `off`, with `event`.
 - `agent` (string, optional): agent short name; the parse uses `agents/<agent>/<name>`.
 - `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder.
 - `workspace` (string, optional): workspace id.

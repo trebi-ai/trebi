@@ -131,6 +131,7 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "every", Usage: "interval trigger, for example 15m"},
 				&cli.StringFlag{Name: "on", Usage: "event trigger: the connector name"},
 				&cli.StringFlag{Name: "match", Usage: "event match expression, with --on"},
+				&cli.StringFlag{Name: "batch", Usage: "with --on, run once per window with all new events, for example 10m"},
 				&cli.StringFlag{Name: "agent", Usage: "owning agent short name; lands the job under agents/<name>/"},
 				&cli.StringFlag{Name: "folder", Usage: "folder of the job under its agent, with --agent"},
 				&cli.BoolFlag{Name: "validate", Usage: "check the definition; write nothing"},
@@ -321,7 +322,7 @@ func runJobCreate(_ context.Context, c *cli.Command) error {
 		Name: name, Workspace: workspaceFlag(c), Prompt: c.String("prompt"),
 		Harness: c.String("harness"), Description: c.String("description"),
 		Cron: c.String("cron"), Every: c.String("every"),
-		Event: c.String("on"), Match: c.String("match"), Agent: c.String("agent"),
+		Event: c.String("on"), Match: c.String("match"), Batch: c.String("batch"), Agent: c.String("agent"),
 		Folder: c.String("folder"),
 	}
 	switch {
@@ -507,6 +508,10 @@ func runJobValidate(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	fmt.Fprintf(outWriter(c), "ok=%v error=%v\n", body["ok"], body["error"])
+	warnings, _ := body["warnings"].([]any)
+	for _, w := range warnings {
+		fmt.Fprintf(outWriter(c), "warning: %v\n", w)
+	}
 	return nil
 }
 

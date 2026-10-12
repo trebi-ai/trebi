@@ -471,7 +471,13 @@ func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
 			valid, msg = false, off
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": valid, "error": msg})
+	out := map[string]any{"ok": valid, "error": msg}
+	if valid {
+		if warn := j.Warnings(); len(warn) > 0 {
+			out["warnings"] = warn
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleJobValidateText checks job text, or a structured spec, without writing
@@ -512,7 +518,11 @@ func (s *Server) handleJobValidateText(w http.ResponseWriter, r *http.Request) {
 	case j != nil && harnessOffError(j.Harness) != "":
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": harnessOffError(j.Harness), "markdown": md})
 	default:
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "error": "", "markdown": md})
+		out := map[string]any{"ok": true, "error": "", "markdown": md}
+		if warn := j.Warnings(); len(warn) > 0 {
+			out["warnings"] = warn
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 
@@ -778,6 +788,7 @@ type jobEventTrigger struct {
 	Contains  []string `json:"contains"`
 	From      string   `json:"from"`
 	Replies   string   `json:"replies"`
+	Batch     string   `json:"batch"`
 }
 
 // spec maps the body trigger to the writer form; nil stays nil.
@@ -787,7 +798,7 @@ func (t *jobEventTrigger) spec() *job.EventSpec {
 	}
 	return &job.EventSpec{
 		Event: t.Event, Match: t.Match, Extract: t.Extract, Rooms: t.Rooms, Allowlist: t.Allowlist,
-		Contains: t.Contains, From: t.From, Replies: t.Replies,
+		Contains: t.Contains, From: t.From, Replies: t.Replies, Batch: t.Batch,
 	}
 }
 

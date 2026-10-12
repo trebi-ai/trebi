@@ -258,6 +258,15 @@ type TriggerCapture struct {
 	Connector string            `json:"connector,omitempty"`
 	Vars      map[string]string `json:"vars,omitempty"`
 	Event     json.RawMessage   `json:"event,omitempty"`
+	Batch     *BatchCapture     `json:"batch,omitempty"`
+}
+
+// BatchCapture is the trigger of a batch run: the events of one batch row.
+// QueueID is the row, so a rerun can read the events again.
+type BatchCapture struct {
+	Count    int      `json:"count"`
+	EventIDs []string `json:"event_ids"`
+	QueueID  string   `json:"queue_id,omitempty"`
 }
 
 // Run — one execution (wire shape §3.4).

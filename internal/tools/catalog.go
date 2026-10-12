@@ -525,7 +525,7 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 	if err != nil {
 		return request.JobSpec{}, err
 	}
-	scope, err := in.strs("rooms", "allowlist", "contains", "from", "replies")
+	scope, err := in.strs("rooms", "allowlist", "contains", "from", "replies", "batch")
 	if err != nil {
 		return request.JobSpec{}, err
 	}
@@ -534,7 +534,7 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 		Model: m[0], Effort: m[1],
 		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4], IdempotencyKey: t[5],
 		Agent: t[6], Folder: t[7], Rooms: commaList(scope[0]), Allowlist: commaList(scope[1]),
-		Contains: commaList(scope[2]), From: scope[3], Replies: scope[4],
+		Contains: commaList(scope[2]), From: scope[3], Replies: scope[4], Batch: scope[5],
 	}, nil
 }
 
@@ -556,13 +556,13 @@ func (in Input) ruleTest() (request.RuleTest, error) {
 	if err != nil {
 		return request.RuleTest{}, err
 	}
-	g, err := in.strs("from", "replies", "workspace", "job")
+	g, err := in.strs("from", "replies", "workspace", "job", "batch")
 	if err != nil {
 		return request.RuleTest{}, err
 	}
 	return request.RuleTest{
 		Match: v[0], Extract: v[1], Rooms: rooms, Allowlist: allow, Contains: contains,
-		From: g[0], Replies: g[1], Workspace: g[2], Job: g[3],
+		From: g[0], Replies: g[1], Workspace: g[2], Job: g[3], Batch: g[4],
 	}, nil
 }
 

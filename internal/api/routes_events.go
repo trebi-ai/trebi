@@ -491,10 +491,19 @@ type ruleGate struct {
 	From      string   `json:"from"`
 	Contains  []string `json:"contains"`
 	Replies   string   `json:"replies"`
+	// Batch is the batch window of the trigger. A match waits for the next
+	// tick of the window.
+	Batch string `json:"batch"`
 	// Workspace and Job name the job of the trigger. With replies: continue,
 	// an event of an open conversation of that job is a follow-up.
 	Workspace string `json:"workspace"`
 	Job       string `json:"job"`
+}
+
+// check rejects a batch value that a trigger cannot hold.
+func (g ruleGate) check() error {
+	_, err := job.ParseBatch(g.Batch)
+	return err
 }
 
 func (g ruleGate) gate() connectors.Gate {
@@ -513,11 +522,15 @@ func (g ruleGate) result(ev connectors.GateEvent, res connectors.GateResult) map
 	if vars == nil {
 		vars = map[string]string{}
 	}
-	return map[string]any{
+	out := map[string]any{
 		"matched": res.Matched, "stage": res.Stage, "vars": vars,
 		"extracted": res.Extracted, "error": res.Error, "follow_up": res.FollowUp,
 		"conversation_key": ev.ConversationKey(g.Replies == job.RepliesContinue, res.Vars),
 	}
+	if g.Batch != "" && g.Batch != job.BatchOff {
+		out["batch"] = g.Batch
+	}
+	return out
 }
 
 // ruleJob loads the job of a rules test body. Nil means every event is the
@@ -573,6 +586,10 @@ func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "set event_id or event, not both")
 		return
 	}
+	if err := body.check(); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
 	j, jobRow, err := s.ruleJob(r.Context(), body.ruleGate)
 	if err != nil {
 		writeResolveErr(w, err, "job")
@@ -619,6 +636,10 @@ func (s *Server) handleRulesTestBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	case len(body.EventIDs) > maxRulesTestBatch:
 		writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("event_ids: at most %d events", maxRulesTestBatch))
+		return
+	}
+	if err := body.check(); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
 	j, jobRow, err := s.ruleJob(r.Context(), body.ruleGate)

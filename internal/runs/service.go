@@ -328,9 +328,14 @@ func (o *CreateOpts) applyDefaults() {
 }
 
 // triggerJSON flattens the trigger capture into insert columns.
-func (o *CreateOpts) triggerJSON() (eventID, connector, capture, vars *string) {
+func (o *CreateOpts) triggerJSON() (eventID, connector, capture, vars, batch *string) {
 	if o.Trigger == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
+	}
+	if o.Trigger.Batch != nil {
+		b, _ := json.Marshal(o.Trigger.Batch)
+		s := string(b)
+		batch = &s
 	}
 	if o.Trigger.EventID != "" {
 		eventID = &o.Trigger.EventID
@@ -347,7 +352,7 @@ func (o *CreateOpts) triggerJSON() (eventID, connector, capture, vars *string) {
 		s := string(b)
 		vars = &s
 	}
-	return eventID, connector, capture, vars
+	return eventID, connector, capture, vars, batch
 }
 
 // Create inserts a running row + launch timeline + bus event.
@@ -456,7 +461,7 @@ const runCols = `SELECT id, workspace_id, job_id, ` + jobNameSQL + `, kind, COAL
 	trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
 	COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
 	outcome, COALESCE(outcome_note,''), outcome_at, turn_count, turn_started_at, active_ms,
-	COALESCE(harness_version,'')`
+	COALESCE(harness_version,''), trigger_batch_json`
 
 // HarnessActive reports whether a running run uses the harness name.
 func (s *Service) HarnessActive(ctx context.Context, name string) bool {
@@ -1573,7 +1578,7 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		s := string(b)
 		inputsJSON = &s
 	}
-	trigEventID, trigInteg, capJSON, varsJSON := opts.triggerJSON()
+	trigEventID, trigInteg, capJSON, varsJSON, batchJSON := opts.triggerJSON()
 	var queueID *string
 	if opts.QueueID != "" {
 		queueID = &opts.QueueID
@@ -1587,15 +1592,15 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 
 	_, err := tx.Exec(`INSERT INTO runs (
 		id, workspace_id, job_id, kind, reason, status, prompt_preview, inputs_json,
-		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json,
+		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, trigger_batch_json,
 		conversation_key, conversation_id, working_dir, session_id, runtime, harness, tmux_session,
 		attach_kind, runtime_pid, actor_token_hash,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		previous_run_id, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at,
 		connectors_json, turn_count, turn_started_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.JobID, opts.Kind, string(opts.Reason), string(StatusRunning),
-		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON,
+		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON, batchJSON,
 		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.TmuxSession),
 		store.NullStr(attachKindFor(opts)), nil, opts.ActorTokenHash,
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
@@ -2005,7 +2010,7 @@ func (s *Service) scanApproval(row *sql.Row) (*Approval, error) {
 func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r := &Run{}
 	var reason, endReason, started, ended sql.NullString
-	var trigEvent, trigInteg, capJSON, varsJSON, inputsJSON sql.NullString
+	var trigEvent, trigInteg, capJSON, varsJSON, batchJSON, inputsJSON sql.NullString
 	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev, runtimePID, turnCount, activeMS int64
 	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, workingDir, previousRunID string
 	var turnStarted sql.NullString
@@ -2019,7 +2024,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		&previousRunID, &resumeAtt, &qid, &trace, &rev,
 		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
 		&memoryHash, &runtimePID, &attachKind, &outcomeStatus, &outcomeNote, &outcomeAt, &turnCount, &turnStarted, &activeMS,
-		&harnessVersion,
+		&harnessVersion, &batchJSON,
 	)
 	if err != nil {
 		return nil, err
@@ -2086,6 +2091,10 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		}
 		if varsJSON.Valid {
 			_ = json.Unmarshal([]byte(varsJSON.String), &r.Trigger.Vars)
+		}
+		if batchJSON.Valid {
+			r.Trigger.Batch = &BatchCapture{}
+			_ = json.Unmarshal([]byte(batchJSON.String), r.Trigger.Batch) // a bad row reads as an empty batch
 		}
 	}
 	if r.Status.IsLive() {

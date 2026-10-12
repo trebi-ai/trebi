@@ -527,12 +527,7 @@ func TestQueuePolicyMatchesTriggerBySlug(t *testing.T) {
 func TestTriggerFloodDrops(t *testing.T) {
 	md := "---\nharness: fake\ntriggers:\n  - event: feed\n    match: \"true\"\n---\n\nGo.\n"
 	cp, st, wsID, ctx := openQueuePlane(t, "floodjob", md)
-	if _, err := cp.Connectors.Create(ctx, connectors.Connection{Type: "feed", Slug: "feed", From: connectors.FromInline, Manifest: &manifest.Manifest{
-		Schema: manifest.SchemaID, Name: "feed", Title: "Feed", Description: "Test feed", Version: "1.0.0",
-		Events: &manifest.Events{Command: "sleep 60", Format: manifest.FormatJSON},
-	}}); err != nil {
-		t.Fatal(err)
-	}
+	addFeed(t, cp)
 	for i := 0; i < 100; i++ {
 		if _, err := cp.Connectors.InjectEvent(ctx, "feed", map[string]any{"n": i}); err != nil {
 			t.Fatal(err)
@@ -669,4 +664,154 @@ func indexID(t *testing.T, st *store.Store, wsID, name string) string {
 		t.Fatal(err)
 	}
 	return id
+}
+
+// TestBatchTrigger proves a batch trigger collects its events into one row
+// that launches one run at the next tick, with the events block and file.
+func TestBatchTrigger(t *testing.T) {
+	cases := []struct {
+		name, prompt string
+		wantPrefix   string
+	}{
+		{"default block", "Summarize.", "Summarize.\n\nNew events (3):\n- "},
+		{"events var", "Count {{event_count}}:\n{{events}}", "Count 3:\n- "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := newTestClock()
+			md := "---\nharness: fake\ntriggers:\n  - event: feed\n    batch: 10m\n---\n\n" + tc.prompt + "\n"
+			cp, st, wsID, ctx := openQueuePlaneAt(t, "digest", md, clock.Now)
+			addFeed(t, cp)
+			jobID := indexID(t, st, wsID, "digest")
+			var eventIDs []string
+			for i := range 3 {
+				id, err := cp.Connectors.InjectEvent(ctx, "feed", map[string]any{"n": i})
+				if err != nil {
+					t.Fatal(err)
+				}
+				eventIDs = append(eventIDs, id)
+			}
+			var queueID, next string
+			if err := st.DB().QueryRow(`SELECT id, next_attempt_at FROM event_queue WHERE job_id=?`, jobID).Scan(&queueID, &next); err != nil {
+				t.Fatal(err)
+			}
+			if want := clock.Now().UTC().Truncate(time.Second).Add(10 * time.Minute).Format(time.RFC3339); next != want {
+				t.Fatalf("next_attempt_at=%s want %s", next, want)
+			}
+			if n := queueCount(t, st, `job_id='`+jobID+`'`); n != 1 {
+				t.Fatalf("queue rows=%d want 1", n)
+			}
+			var queued int
+			_ = st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE outcome=? AND queue_id=?`, string(dispatch.OutcomeQueued), queueID).Scan(&queued)
+			if queued != 3 {
+				t.Fatalf("queued outcomes on the row=%d want 3", queued)
+			}
+
+			runCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			cp.Start(runCtx)
+			defer cp.Stop()
+			time.Sleep(150 * time.Millisecond)
+			if n := queueCount(t, st, `job_id='`+jobID+`' AND status='pending'`); n != 1 {
+				t.Fatal("the row launched before its tick")
+			}
+			clock.Advance(10 * time.Minute)
+			waitQueue(t, st, queueID, func(status, _, _ string) bool { return status == "done" })
+
+			var runID string
+			if err := st.DB().QueryRow(`SELECT run_id FROM event_queue WHERE id=? AND result='launched'`, queueID).Scan(&runID); err != nil {
+				t.Fatalf("row not launched: %v", err)
+			}
+			run, err := cp.Runs.Get(ctx, runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(run.PromptPreview, tc.wantPrefix) {
+				t.Fatalf("prompt=%q want prefix %q", run.PromptPreview, tc.wantPrefix)
+			}
+			if run.ConversationKey != "" {
+				t.Fatalf("conversation_key=%q; a batch run has none", run.ConversationKey)
+			}
+			b := run.Trigger.Batch
+			if b == nil || b.Count != 3 || b.QueueID != queueID || strings.Join(b.EventIDs, ",") != strings.Join(eventIDs, ",") {
+				t.Fatalf("trigger batch=%+v want 3 events %v", b, eventIDs)
+			}
+			file := filepath.Join(home.RunDir(runID), "events.json")
+			if run.Trigger.Vars["events_file"] != file {
+				t.Fatalf("events_file=%q want %q", run.Trigger.Vars["events_file"], file)
+			}
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var events []dispatch.BatchEvent
+			if err := json.Unmarshal(data, &events); err != nil || len(events) != 3 || events[0].EventID != eventIDs[0] {
+				t.Fatalf("events.json=%s err=%v", data, err)
+			}
+		})
+	}
+}
+
+// TestBatchJoinsWaitingRow proves an event joins a due row that waits for a
+// live run of its job, so the run that follows gets every event.
+func TestBatchJoinsWaitingRow(t *testing.T) {
+	clock := newTestClock()
+	md := "---\nharness: fake\ntriggers:\n  - event: feed\n    batch: 1m\n---\n\nGo.\n"
+	cp, st, wsID, ctx := openQueuePlaneAt(t, "waits", md, clock.Now)
+	addFeed(t, cp)
+	jobID := indexID(t, st, wsID, "waits")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at)
+		VALUES ('live-1',?,?,'job','running','trace-live',?,?)`, wsID, jobID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cp.Connectors.InjectEvent(ctx, "feed", map[string]any{"n": 1}); err != nil {
+		t.Fatal(err)
+	}
+	var queueID string
+	if err := st.DB().QueryRow(`SELECT id FROM event_queue WHERE job_id=?`, jobID).Scan(&queueID); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+	clock.Advance(time.Minute)
+	waitQueue(t, st, queueID, func(_, e, _ string) bool { return e == string(dispatch.DeferRunActive) })
+	if _, err := cp.Connectors.InjectEvent(ctx, "feed", map[string]any{"n": 2}); err != nil {
+		t.Fatal(err)
+	}
+	if n := queueCount(t, st, `job_id='`+jobID+`'`); n != 1 {
+		t.Fatalf("queue rows=%d; the event must join the waiting row", n)
+	}
+	if _, err := st.DB().Exec(`UPDATE runs SET status='done', end_reason='complete' WHERE id='live-1'`); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for queueCount(t, st, `id='`+queueID+`' AND result='launched'`) == 0 && time.Now().Before(deadline) {
+		clock.Advance(3 * time.Second)
+		time.Sleep(50 * time.Millisecond)
+	}
+	var runID string
+	if err := st.DB().QueryRow(`SELECT run_id FROM event_queue WHERE id=? AND result='launched'`, queueID).Scan(&runID); err != nil {
+		t.Fatalf("row not launched: %v", err)
+	}
+	run, err := cp.Runs.Get(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Trigger.Batch == nil || run.Trigger.Batch.Count != 2 {
+		t.Fatalf("trigger batch=%+v want 2 events", run.Trigger.Batch)
+	}
+}
+
+// addFeed adds the inline connection "feed" that emits JSON lines.
+func addFeed(t *testing.T, cp *daemon.ControlPlane) {
+	t.Helper()
+	if _, err := cp.Connectors.Create(context.Background(), connectors.Connection{Type: "feed", Slug: "feed", From: connectors.FromInline, Manifest: &manifest.Manifest{
+		Schema: manifest.SchemaID, Name: "feed", Title: "Feed", Description: "Test feed", Version: "1.0.0",
+		Events: &manifest.Events{Command: "sleep 60", Format: manifest.FormatJSON},
+	}}); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -42,6 +42,8 @@ triggers:
     from: bots
     contains: failure
     replies: continue
+  - event: whatsapp
+    batch: 15m
 skills: [my-skill]
 artifacts:
   - path: report.html
@@ -59,7 +61,7 @@ The prompt body. This is what the harness receives.
 - An event trigger checks the event in this order: `rooms` (room IDs of the connector; empty takes every room), `allowlist` (sender IDs; empty takes every sender), `from`, `contains`, `extract`, then `match`. A sender miss records `blocked`. Every other miss records `no_match`.
 - `from` is `people`, `bots`, or `anyone` (default). It reads `sender.bot` of the event. A connector that does not send it makes every sender a person.
 - `contains` is one string or a list. The trigger takes the event when the message text contains any entry. Case does not matter. Prefer `contains` and `from` to a `match` expression.
-- `contains`, `from`, and `replies` apply only to an `event` entry. On a `cron` or `every` entry each one is a parse error.
+- `contains`, `from`, `replies`, and `batch` apply only to an `event` entry. On a `cron` or `every` entry each one is a parse error.
 - Each `trebi-connector/1` event gives the prompt built-in vars: `{{text}}`, `{{sender}}`, `{{sender_id}}`, `{{room}}`, `{{room_name}}`, `{{thread}}`, `{{message_id}}`, `{{reply_to}}`, and `{{connection}}`. An `extract` var with the same name wins.
 - `when` is an inline shell gate: the job runs only when `match` over `out` is true.
 - `limit` sets how often an event trigger starts a run: `N/<duration>`, or `off`. The default is `15/10m`. Events above the limit wait in order. When 10 events wait, Trebi drops new events and opens one inbox item.
@@ -68,9 +70,27 @@ The prompt body. This is what the harness receives.
 - `replies: continue` (job triggers only; an agent rejects it, because an agent keeps its own channel conversation) sends each later message of a conversation to the run that the first message started. The conversation is the thread, the reply chain, or the whole DM (`trebi guide connectors-and-rules`). A later message is a follow-up: it skips `from`, `contains`, and `match`, but `rooms`, `allowlist`, and `extract` still apply. A bot message in an open conversation does not run. The conversation stays open with no time limit. Set `session.continue` to add a limit; after it, the next message must pass the full trigger again as a new start.
 - A follow-up resumes the session of the newest run with the text "New message in this conversation from {{sender}}:" and the message, then one line that names the connection, room, and thread for the history command of the connector. When the session cannot resume (session file gone, failed run, other harness), a fresh session gets the job prompt with the vars of the first run, the last 20 stored messages, that line, and the message.
 - Known effects of `replies: continue`: the harness deletes old session files, so a late reply gets a fresh session that sees only the messages, not the earlier tool output. A resumed session keeps the job prompt of its first run; a prompt edit reaches only a fresh session. In a DM each message after the first is a follow-up, so `contains` and `match` do not apply again in that DM.
+- `batch` (for example `15m`; from `1m` to `24h`; `off` or empty is no batch) collects the events of the trigger and starts one run per interval with all of them. See "Batch events" below.
 - `artifacts[]` names files of the working folder. At the end of a complete run, Trebi saves each one as a new version of an artifact, unless the run saved that name itself. `path` is required and stays inside the working folder. `name` defaults to the file name without the extension, and `title` to the name. A missing file sets the outcome note of the run and opens an inbox item (`trebi guide artifacts`).
 - `folder` groups a job under its owner agent in the UI. Only a job in `agents/<agent>/` can have a folder; on another job it is a parse error. Use one name of at most 64 characters, with no `/`. The match is case-sensitive, and an empty value is no folder.
 - Only `harness` (name, or a `{name, model, effort}` map), `triggers`, `envset` (a name or a list of names, applied in order), `env` (inline map), and `session.idle_timeout` are canonical frontmatter; keep other fields minimal.
+
+## Batch events
+
+`batch: <duration>` on an event trigger collects the events that match and starts one run per interval with all of them. Use it when the user asks for "at most once every 15 minutes with all new messages". `--batch 15m` on `trebi job create` writes it.
+
+- The interval is from `1m` to `24h`. Ticks fall at the daemon start time plus a whole number of intervals. A tick with no events starts no run.
+- The prompt gets `{{events}}` (one line per event, at most 50, then "… and N more in <file>"), `{{event_count}}`, and `{{events_file}}` (a JSON file with every event of the batch, at `~/.trebi/runs/<run-id>/events.json`). `{{connection}}` is set when all events come from one connection.
+- A prompt with no `{{events}}` gets this block at its end: `New events (<n>):`, the event lines, and `All events: <file>`. An agent gets the same block as its wake message.
+- Single-event vars such as `{{text}}` or `{{sender}}` are empty in a batch run. `trebi job validate` warns about them.
+- One batch holds at most 500 events. The event that fills it starts the run at once. `limit` and `session.if_running` apply to each batch run, and new events still join a batch that waits.
+- `batch` cannot be used with `replies: continue`. The assistant rejects `batch` on its own triggers.
+- Each event keeps its own outcome. `trebi queue ls` shows the event count of each batch, and `trebi runs show` shows `trigger.batch` with the event ids.
+
+```bash
+trebi job create digest --prompt "Summarize the new messages." --on whatsapp --batch 15m --workspace reports
+trebi rules test --event-id <event-id> --batch 15m --json
+```
 
 ## Create, inspect, validate
 

@@ -7,14 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/trebi-ai/trebi/internal/chains"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -223,11 +227,20 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		c.dispatchResume(ctx, item)
 		return
 	}
+	var batch *batchRun
+	if dispatch.IsBatchLane(item.ConversationKey) {
+		if batch = c.loadBatch(ctx, item); batch == nil {
+			return
+		}
+	}
 	prompt := queuePrompt(item, j)
 	if kind != runs.KindJob {
 		// The body of an operator is not its message. A channel event
 		// carries the message as the text var.
 		prompt = cmp.Or(strings.TrimSpace(item.Prompt), strings.TrimSpace(item.Vars["text"]))
+	}
+	if batch != nil {
+		prompt = batch.prompt(j.Prompt, kind)
 	}
 	var followUp *runs.FollowUp
 	if item.FollowUp && kind == runs.KindJob {
@@ -237,7 +250,10 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	coalesceText := prompt
 	convID := c.conversationID(ctx, item.WorkspaceID, item.ConversationKey)
 	convKey := item.ConversationKey
-	if id, key, addr := c.channelConversation(ctx, item); id != "" {
+	if batch != nil {
+		// A batch run has no conversation; the lane key only orders it.
+		convID, convKey = "", ""
+	} else if id, key, addr := c.channelConversation(ctx, item); id != "" {
 		// An agent item from a connector channel binds its conversation
 		// through the channel pointer, not the lane key (plan G.2). The
 		// inbound text becomes the channel-typed user turn, so the reply
@@ -256,6 +272,9 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		wake = &runs.WakeOpts{
 			Body:    expandVars(j.Prompt, item.Vars),
 			Message: prompt,
+		}
+		if batch != nil {
+			wake.Body = fillTemplate(j.Prompt, batch.vars)
 		}
 		if frame != nil {
 			wake.Chain = frame.Wake
@@ -294,8 +313,14 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			EventID: item.EventID, Connector: item.Connector, Vars: item.Vars,
 		}
 	}
+	var runID string
+	var files map[string][]byte
+	if batch != nil {
+		trigger, runID, files = batch.trigger(item), batch.runID, batch.files()
+	}
 	run, outcome, err := c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
+			ID:              runID,
 			WorkspaceID:     item.WorkspaceID,
 			JobID:           item.JobID,
 			JobName:         item.JobName,
@@ -325,13 +350,14 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		Kit:          kit,
 		JobSkills:    j.Skills, JobConnectors: j.Connectors,
 		// A message of a conversation goes into its live run (plan A.6).
-		Conversation: item.ConversationKey != "",
+		Conversation: convKey != "",
 		ContinueMS:   continueMS,
 		FollowUp:     followUp,
 		IfRunning:    d.IfRunning,
 		Env:          d.Env,
 		Model:        d.Model,
 		Effort:       d.Effort,
+		Files:        files,
 	})
 	done := c.finishLaunch(ctx, item, run, outcome, err)
 	c.bindHop(ctx, item, run, err, done)
@@ -851,6 +877,66 @@ func (c *ControlPlane) recap(ctx context.Context, item *dispatch.QueueItem) stri
 	}
 	return "Messages in this conversation so far:" + b.String()
 }
+
+// batchRun is the launch input of a batch row: its events and the run id
+// that the path of their events.json names.
+type batchRun struct {
+	runID string
+	batch dispatch.Batch
+	vars  map[string]string
+	data  []byte
+}
+
+// loadBatch reads the events of a batch row. A row with no events is done
+// with nothing to launch. A read error retries the row later. Both give nil.
+func (c *ControlPlane) loadBatch(ctx context.Context, item *dispatch.QueueItem) *batchRun {
+	events, err := c.queue.BatchEvents(ctx, item.ID)
+	if err == nil && len(events) == 0 {
+		if merr := c.queue.MarkDone(ctx, item.ID, dispatch.ResultSkipped, ""); merr != nil {
+			c.log.Warn("queue mark skipped", "queue_id", item.ID, "error", merr)
+		}
+		return nil
+	}
+	b := &batchRun{runID: ulid.Make().String()}
+	if err == nil {
+		b.batch = dispatch.Batch{Events: events, File: filepath.Join(home.RunDir(b.runID), batchFile)}
+		b.data, err = b.batch.JSON()
+	}
+	if err != nil {
+		c.log.Warn("batch events", "queue_id", item.ID, "error", err)
+		if derr := c.queue.Defer(ctx, item.ID, c.now().Add(15*time.Second), dispatch.DeferRetry); derr != nil {
+			c.log.Warn("queue defer", "queue_id", item.ID, "error", derr)
+		}
+		return nil
+	}
+	b.vars = b.batch.Vars()
+	return b
+}
+
+// batchFile is the name of the events file of a batch run.
+const batchFile = "events.json"
+
+// prompt is the prompt of a job batch run: the job prompt with the batch
+// vars, and the events block at the end when the prompt has no {{events}}.
+// An operator gets the events block as its wake message.
+func (b *batchRun) prompt(tmpl, kind string) string {
+	if kind != runs.KindJob {
+		return dispatch.BatchBlock(b.vars)
+	}
+	p := strings.TrimSpace(fillTemplate(tmpl, b.vars))
+	if strings.Contains(tmpl, "{{events}}") {
+		return p
+	}
+	return strings.TrimSpace(p + "\n\n" + dispatch.BatchBlock(b.vars))
+}
+
+func (b *batchRun) trigger(item *dispatch.QueueItem) *runs.TriggerCapture {
+	return &runs.TriggerCapture{Connector: item.Connector, Vars: b.vars, Batch: &runs.BatchCapture{
+		Count: len(b.batch.Events), EventIDs: b.batch.EventIDs(), QueueID: item.ID,
+	}}
+}
+
+func (b *batchRun) files() map[string][]byte { return map[string][]byte{batchFile: b.data} }
 
 // fillTemplate replaces each {{var}} of a fixed template in one pass, so a
 // value that holds {{x}} stays as it is.

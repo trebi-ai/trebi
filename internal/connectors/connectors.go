@@ -116,6 +116,8 @@ type Service struct {
 
 	convs conversationProbe // nil: no conversation is open
 
+	batchClock dispatch.BatchClock // tick times of batch triggers
+
 	hooks        HookProvider  // nil: no connection gets a hosted hook
 	webhookWake  chan struct{} // wakes the webhook queue
 	webhookEvery time.Duration
@@ -239,6 +241,20 @@ func (s *Service) WithVersion(v string) *Service {
 // reply continues its run (replies: continue).
 func (s *Service) WithConversations(p conversationProbe) *Service {
 	s.convs = p
+	return s
+}
+
+// WithQueue sets the queue that matched events go to. The daemon passes its
+// own, so the queue and the pipeline share one clock.
+func (s *Service) WithQueue(q *dispatch.Queue) *Service {
+	s.queue = q
+	return s
+}
+
+// WithBatchClock sets the tick times of batch triggers. The daemon passes
+// its start time.
+func (s *Service) WithBatchClock(c dispatch.BatchClock) *Service {
+	s.batchClock = c
 	return s
 }
 

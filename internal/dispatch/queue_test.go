@@ -2,8 +2,10 @@ package dispatch_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -409,4 +411,203 @@ func openTestStore(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { st.Close() })
 	return st
+}
+
+func TestBatchNextTick(t *testing.T) {
+	t.Parallel()
+	at := func(hm string) time.Time {
+		v, err := time.Parse("15:04", hm)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return time.Date(2026, 10, 12, v.Hour(), v.Minute(), 0, 0, time.UTC)
+	}
+	clock := dispatch.NewBatchClock(at("12:00"))
+	for _, tc := range []struct{ t, want string }{
+		{"12:03", "12:10"},
+		{"12:10", "12:20"},
+		{"11:55", "12:00"},
+		{"12:00", "12:10"},
+		{"13:59", "14:00"},
+	} {
+		if got := clock.NextTick(at(tc.t), 10*time.Minute); !got.Equal(at(tc.want)) {
+			t.Errorf("NextTick(%s) = %s, want %s", tc.t, got.Format("15:04"), tc.want)
+		}
+	}
+}
+
+func (b *batchQueue) join(t *testing.T, onIndex int, eventID string) string {
+	t.Helper()
+	id, err := b.q.JoinBatch(context.Background(), &dispatch.QueueItem{
+		Connector: "slack", WorkspaceID: "ws1", JobID: "j", JobName: "j", OnIndex: onIndex,
+		ConversationKey: dispatch.BatchLaneKey(onIndex), EventID: eventID, Vars: map[string]string{"text": eventID},
+	}, 10*time.Minute, b.clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// TestJoinBatch proves the batch row: joins in one window share a row that
+// is due at the tick, a claimed row takes no more events, two triggers keep
+// two rows, and List carries the count.
+func TestJoinBatch(t *testing.T) {
+	t.Parallel()
+	b := newBatchQueue(t)
+	ctx := context.Background()
+	b.now = b.now.Add(3 * time.Minute)
+	first := b.join(t, 0, "e1")
+	b.now = b.now.Add(time.Minute)
+	if b.join(t, 0, "e2") != first || b.join(t, 0, "e3") != first {
+		t.Fatal("joins in one window must share one row")
+	}
+	if other := b.join(t, 1, "e4"); other == first {
+		t.Fatal("a second batch trigger must have its own row")
+	}
+	list, err := b.q.List(ctx, dispatch.ListOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row dispatch.QueueItem
+	for _, it := range list {
+		if it.ID == first {
+			row = it
+		}
+	}
+	want := time.Date(2026, 10, 12, 12, 10, 0, 0, time.UTC)
+	if row.BatchCount != 3 || row.NextAttemptAt == nil || !row.NextAttemptAt.Equal(want) || row.EventID != "" {
+		t.Fatalf("row = %+v, want count 3 due %s", row, want)
+	}
+	events, err := b.q.BatchEvents(ctx, first)
+	if err != nil || len(events) != 3 || events[0].EventID != "e1" || events[2].Vars["text"] != "e3" {
+		t.Fatalf("events = %+v %v", events, err)
+	}
+	if it, err := b.q.ClaimNext(ctx, "j", dispatch.KindJob, dispatch.BatchLaneKey(0)); err != nil || it != nil {
+		t.Fatalf("claim before the tick = %+v %v", it, err)
+	}
+	b.now = want
+	it, err := b.q.ClaimNext(ctx, "j", dispatch.KindJob, dispatch.BatchLaneKey(0))
+	if err != nil || it == nil || it.ID != first {
+		t.Fatalf("claim at the tick = %+v %v", it, err)
+	}
+	b.now = b.now.Add(time.Second)
+	next := b.join(t, 0, "e5")
+	if next == first {
+		t.Fatal("a join after the claim must open a new row")
+	}
+	if events, _ := b.q.BatchEvents(ctx, first); len(events) != 3 {
+		t.Fatalf("claimed row events = %d, want 3", len(events))
+	}
+}
+
+// TestJoinBatchMax proves that the join that fills a row makes it due now,
+// and that the next join opens a new row.
+func TestJoinBatchMax(t *testing.T) {
+	t.Parallel()
+	b := newBatchQueue(t)
+	ctx := context.Background()
+	b.now = b.now.Add(time.Minute)
+	var first string
+	for i := range dispatch.BatchMax {
+		id := b.join(t, 0, "e"+strconv.Itoa(i))
+		if first == "" {
+			first = id
+		}
+		if id != first {
+			t.Fatalf("join %d opened a new row", i)
+		}
+	}
+	it, err := b.q.ClaimNext(ctx, "j", dispatch.KindJob, dispatch.BatchLaneKey(0))
+	if err != nil || it == nil || it.ID != first {
+		t.Fatalf("a full row must be due now: %+v %v", it, err)
+	}
+	if b.join(t, 0, "over") == first {
+		t.Fatal("the join after a full row must open a new row")
+	}
+}
+
+// TestJoinBatchLaneCap proves that the lane cap counts batch rows, not
+// events.
+func TestJoinBatchLaneCap(t *testing.T) {
+	t.Parallel()
+	b := newBatchQueue(t)
+	ctx := context.Background()
+	lane := dispatch.BatchLaneKey(0)
+	err := b.st.WithTx(ctx, func(tx *sql.Tx) error {
+		for i := range dispatch.LaneCap {
+			id := ulid.Make().String()
+			if _, err := tx.Exec(`INSERT INTO event_queue (id, connector, workspace_id, job_id, kind, conversation_key, status, created_at, updated_at)
+				VALUES (?, 'slack', 'ws1', 'j', 'job', ?, 'pending', ?, ?)`, id, lane, b.now.Format(time.RFC3339Nano), b.now.Format(time.RFC3339Nano)); err != nil {
+				return err
+			}
+			for n := range dispatch.BatchMax {
+				if _, err := tx.Exec(`INSERT INTO event_queue_batch (queue_id, event_id, added_at) VALUES (?,?,?)`,
+					id, strconv.Itoa(i)+"-"+strconv.Itoa(n), b.now.Format(time.RFC3339Nano)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = b.q.JoinBatch(ctx, &dispatch.QueueItem{
+		Connector: "slack", WorkspaceID: "ws1", JobID: "j", JobName: "j", ConversationKey: lane, EventID: "late",
+	}, 10*time.Minute, b.clock)
+	if !errors.Is(err, dispatch.ErrLaneFull) {
+		t.Fatalf("err = %v, want ErrLaneFull", err)
+	}
+}
+
+func TestBatchRender(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 10, 12, 12, 3, 0, 0, time.Local).UTC().Format(time.RFC3339Nano)
+	events := []dispatch.BatchEvent{
+		{EventID: "e1", ReceivedAt: at, Sender: "Ana", RoomName: "general", Text: "hello\nthere", Vars: map[string]string{"connection": "slack-work"}},
+		{EventID: "e2", ReceivedAt: at, Summary: `{"kind":"build"}`, Vars: map[string]string{"connection": "slack-work"}},
+		{EventID: "e3", ReceivedAt: at, Sender: "Bo", Room: "C1", Text: strings.Repeat("x", 400), Vars: map[string]string{"connection": "slack-work"}},
+	}
+	b := dispatch.Batch{Events: events, File: "/runs/r1/events.json"}
+	lines := strings.Split(b.Lines(), "\n")
+	if len(lines) != 3 || lines[0] != "- 12:03 Ana in general: hello there" || lines[1] != `- 12:03 {"kind":"build"}` ||
+		lines[2] != "- 12:03 Bo in C1: "+strings.Repeat("x", 300)+"…" {
+		t.Fatalf("lines = %q", lines)
+	}
+	vars := b.Vars()
+	if vars["event_count"] != "3" || vars["events_file"] != b.File || vars["connection"] != "slack-work" {
+		t.Fatalf("vars = %v", vars)
+	}
+	if !strings.HasPrefix(b.Block(), "New events (3):\n- 12:03 Ana") || !strings.HasSuffix(b.Block(), "\nAll events: /runs/r1/events.json") {
+		t.Fatalf("block = %q", b.Block())
+	}
+	many := dispatch.Batch{File: "/f"}
+	for i := range 60 {
+		many.Events = append(many.Events, dispatch.BatchEvent{EventID: strconv.Itoa(i), Text: "t"})
+	}
+	lines = strings.Split(many.Lines(), "\n")
+	if len(lines) != 51 || lines[50] != "… and 10 more in /f" {
+		t.Fatalf("60 events: %d lines, last %q", len(lines), lines[len(lines)-1])
+	}
+	data, err := b.JSON()
+	if err != nil || !strings.Contains(string(data), `"event_id": "e1"`) {
+		t.Fatalf("json = %s %v", data, err)
+	}
+}
+
+// batchQueue is a queue on a fake clock and a batch clock that starts at
+// the same time.
+type batchQueue struct {
+	st    *store.Store
+	q     *dispatch.Queue
+	now   time.Time
+	clock dispatch.BatchClock
+}
+
+func newBatchQueue(t *testing.T) *batchQueue {
+	t.Helper()
+	b := &batchQueue{st: openTestStore(t), now: time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)}
+	b.q = dispatch.NewQueueWithClock(b.st, func() time.Time { return b.now })
+	b.clock = dispatch.NewBatchClock(b.now)
+	return b
 }

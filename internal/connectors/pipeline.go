@@ -598,6 +598,10 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 	if ck := res.Vars["conversation_key"]; ck != "" {
 		key = ck
 	}
+	if tr.Batched() {
+		s.joinBatch(ctx, ev, row, j, tr, vars)
+		return
+	}
 	item := &dispatch.QueueItem{
 		Connector:       ev.instance,
 		WorkspaceID:     row.WorkspaceID,
@@ -627,6 +631,38 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 		return
 	}
 	s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeQueued), item.ID, ev.receivedAt)
+}
+
+// joinBatch adds a matched event to the batch row of its trigger. The row
+// takes the trace id of its first event; each event keeps its own trace on
+// its outcome row.
+func (s *Service) joinBatch(ctx context.Context, ev eventRecord, row workspaces.JobRow, j *job.Job, tr job.Trigger, vars map[string]string) {
+	item := &dispatch.QueueItem{
+		Connector:       ev.instance,
+		WorkspaceID:     row.WorkspaceID,
+		JobID:           row.ID,
+		JobName:         j.Name,
+		Kind:            row.Kind,
+		OnIndex:         tr.Index,
+		ConversationKey: dispatch.BatchLaneKey(tr.Index),
+		EventID:         ev.id,
+		Vars:            vars,
+		TraceID:         ev.trace,
+	}
+	queueID, err := s.queue.JoinBatch(ctx, item, tr.BatchWindow(), s.batchClock)
+	if errors.Is(err, dispatch.ErrLaneFull) {
+		s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeDropped), "", ev.receivedAt)
+		if s.onFlood != nil {
+			s.onFlood(ctx, row.WorkspaceID, j.Name, ev.instance)
+		}
+		return
+	}
+	if err != nil {
+		s.log.Warn("batch join", "job", j.Name, "error", err)
+		s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeError), "", ev.receivedAt)
+		return
+	}
+	s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeQueued), queueID, ev.receivedAt)
 }
 
 // conversationOpen reports whether r continues an open conversation of a

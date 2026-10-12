@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -64,6 +65,8 @@ type QueueItem struct {
 	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
 	ErrorMessage  string     `json:"error_message,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
+	// BatchCount is the event count of a batch row (batch: <duration>).
+	BatchCount int `json:"batch_count,omitempty"`
 	// Launch is set on a manual or scheduled launch that waits for a live run.
 	Launch *LaunchRequest `json:"-"`
 }
@@ -212,26 +215,24 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 
 	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		if item.Status == QueuePending && item.ResumeOf == "" {
-			var n int
-			if err := tx.QueryRow(`SELECT COUNT(*) FROM event_queue
-				WHERE status='pending' AND resume_of IS NULL
-				AND job_id=? AND kind=? AND conversation_key=?`,
-				item.JobID, item.Kind, item.ConversationKey).Scan(&n); err != nil {
+			if err := laneHasRoom(tx, item); err != nil {
 				return err
 			}
-			if n >= LaneCap {
-				return ErrLaneFull
-			}
+		}
+		var next *string
+		if item.NextAttemptAt != nil {
+			v := item.NextAttemptAt.UTC().Format(time.RFC3339)
+			next = &v
 		}
 		_, err := tx.Exec(`INSERT INTO event_queue (
 			id, connector, workspace_id, job_id, kind, on_index, conversation_key,
 			event_id, event_raw, vars_json, prompt, status, block_reason, resume_of,
-			trace_id, launch_json, follow_up, created_at, updated_at, hop_id
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			trace_id, launch_json, follow_up, created_at, updated_at, hop_id, next_attempt_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			item.ID, item.Connector, item.WorkspaceID, item.JobID, item.Kind, item.OnIndex,
 			item.ConversationKey, eventID, store.NullStr(item.EventRaw), varsJSON, item.Prompt,
 			string(item.Status), store.NullStr(string(item.BlockReason)), store.NullStr(item.ResumeOf),
-			item.TraceID, launchJSON, item.FollowUp, now, now, item.HopID)
+			item.TraceID, launchJSON, item.FollowUp, now, now, item.HopID, next)
 		return err
 	}, store.BusEvent{
 		Topic:    "queue.updated",
@@ -242,6 +243,134 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 		Attrs:    map[string]string{"status": string(item.Status)},
 	})
 	return err
+}
+
+// laneHasRoom returns ErrLaneFull when the lane of item holds LaneCap
+// pending rows that are not resumes.
+func laneHasRoom(tx *sql.Tx, item *QueueItem) error {
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM event_queue
+		WHERE status='pending' AND resume_of IS NULL
+		AND job_id=? AND kind=? AND conversation_key=?`,
+		item.JobID, item.Kind, item.ConversationKey).Scan(&n); err != nil {
+		return err
+	}
+	if n >= LaneCap {
+		return ErrLaneFull
+	}
+	return nil
+}
+
+// JoinBatch adds one event to the pending batch row of its trigger. With no
+// pending row, it opens one that comes due at the next tick of clock; the
+// lane cap applies to that insert. The join that fills the row to BatchMax
+// makes it due now. A row that a worker claimed is not changed: the event
+// opens a new row. item carries the row fields, item.EventID and item.Vars
+// the event. It returns the id of the batch row.
+func (q *Queue) JoinBatch(ctx context.Context, item *QueueItem, window time.Duration, clock BatchClock) (string, error) {
+	if item.Kind == "" {
+		item.Kind = KindJob
+	}
+	at := q.now().UTC()
+	now := at.Format(time.RFC3339Nano)
+	var varsJSON *string
+	if item.Vars != nil {
+		b, _ := json.Marshal(item.Vars)
+		v := string(b)
+		varsJSON = &v
+	}
+	var queueID, action string
+	var count int
+	q.st.LockBus()
+	defer q.st.UnlockBus()
+	err := q.st.WithTx(ctx, func(tx *sql.Tx) error {
+		err := tx.QueryRow(`SELECT id FROM event_queue
+			WHERE status='pending' AND resume_of IS NULL AND workspace_id=? AND job_id=? AND kind=? AND conversation_key=?
+			AND (SELECT COUNT(*) FROM event_queue_batch b WHERE b.queue_id = event_queue.id) < ?
+			ORDER BY id DESC LIMIT 1`,
+			item.WorkspaceID, item.JobID, item.Kind, item.ConversationKey, BatchMax).Scan(&queueID)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			if err := laneHasRoom(tx, item); err != nil {
+				return err
+			}
+			queueID, action = ulid.Make().String(), "created"
+			if item.TraceID == "" {
+				item.TraceID = ulid.Make().String()
+			}
+			if _, err := tx.Exec(`INSERT INTO event_queue (
+				id, connector, workspace_id, job_id, kind, on_index, conversation_key,
+				prompt, status, trace_id, follow_up, created_at, updated_at, hop_id, next_attempt_at
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				queueID, item.Connector, item.WorkspaceID, item.JobID, item.Kind, item.OnIndex,
+				item.ConversationKey, item.Prompt, string(QueuePending), item.TraceID, false, now, now, item.HopID,
+				clock.NextTick(at, window).UTC().Format(time.RFC3339)); err != nil {
+				return err
+			}
+		case err != nil:
+			return err
+		default:
+			action = "updated"
+		}
+		if _, err := tx.Exec(`INSERT INTO event_queue_batch (queue_id, event_id, vars_json, added_at) VALUES (?,?,?,?)
+			ON CONFLICT (queue_id, event_id) DO NOTHING`, queueID, item.EventID, varsJSON, now); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM event_queue_batch WHERE queue_id=?`, queueID).Scan(&count); err != nil {
+			return err
+		}
+		if count >= BatchMax {
+			if _, err := tx.Exec(`UPDATE event_queue SET next_attempt_at=?, updated_at=? WHERE id=? AND status='pending'`,
+				at.Format(time.RFC3339), now, queueID); err != nil {
+				return err
+			}
+		} else if _, err := tx.Exec(`UPDATE event_queue SET updated_at=? WHERE id=?`, now, queueID); err != nil {
+			return err
+		}
+		_, err = store.AppendInTx(tx, store.BusEvent{
+			Topic: "queue.updated", TraceID: item.TraceID, Entity: "queue", EntityID: queueID, Action: action,
+			Attrs: map[string]string{"status": string(QueuePending), "batch_count": strconv.Itoa(count)},
+		})
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	q.st.NotifyBus()
+	item.ID = queueID
+	return queueID, nil
+}
+
+// BatchEvents returns the events of a batch row in join order, with the
+// fields of their stored events rows. An event row that is gone keeps only
+// its id and vars.
+func (q *Queue) BatchEvents(ctx context.Context, queueID string) ([]BatchEvent, error) {
+	rows, err := q.st.DB().QueryContext(ctx, `SELECT b.event_id, COALESCE(b.vars_json,''), b.added_at,
+		COALESCE(e.connector,''), COALESCE(e.received_at,''), COALESCE(e.sender,''), COALESCE(e.room,''),
+		COALESCE(e.thread,''), COALESCE(e.text,''), COALESCE(e.summary,''), COALESCE(e.raw_json,'')
+		FROM event_queue_batch b LEFT JOIN events e ON e.id = b.event_id
+		WHERE b.queue_id=? ORDER BY b.added_at, b.event_id`, queueID)
+	if err != nil {
+		return nil, fmt.Errorf("batch events of %s: %w", queueID, err)
+	}
+	defer rows.Close()
+	var out []BatchEvent
+	for rows.Next() {
+		var ev BatchEvent
+		var vars, added, raw string
+		if err := rows.Scan(&ev.EventID, &vars, &added, &ev.Connector, &ev.ReceivedAt, &ev.Sender, &ev.Room,
+			&ev.Thread, &ev.Text, &ev.Summary, &raw); err != nil {
+			return nil, err
+		}
+		if vars != "" {
+			_ = json.Unmarshal([]byte(vars), &ev.Vars) // a bad row reads as no vars
+		}
+		ev.RoomName = ev.Vars["room_name"]
+		ev.AddedAt, _ = time.Parse(time.RFC3339Nano, added) // a bad time reads as zero
+		ev.setRaw(raw)
+		out = append(out, ev)
+	}
+	return out, rows.Err()
 }
 
 // ClaimNext claims one pending row for a lane (FIFO). Concurrent-safe via RowsAffected.
@@ -534,7 +663,8 @@ func (q *Queue) List(ctx context.Context, opts ListOpts) ([]QueueItem, error) {
 	query := `SELECT id, connector, workspace_id, job_id, ` + store.JobNameSQL("event_queue.job_id") + `, kind, on_index, conversation_key,
 		COALESCE(event_id,''), COALESCE(event_raw,''), status, COALESCE(block_reason,''),
 		COALESCE(prompt,''), COALESCE(trace_id,''), COALESCE(run_id,''), attempts,
-		COALESCE(next_attempt_at,''), COALESCE(error_message,''), follow_up, created_at, hop_id
+		COALESCE(next_attempt_at,''), COALESCE(error_message,''), follow_up, created_at, hop_id,
+		(SELECT COUNT(*) FROM event_queue_batch b WHERE b.queue_id = event_queue.id)
 		FROM event_queue WHERE 1=1`
 	var args []any
 	if opts.Status != "" {
@@ -562,7 +692,7 @@ func (q *Queue) List(ctx context.Context, opts ListOpts) ([]QueueItem, error) {
 		var stStr, br, next, created string
 		if err := rows.Scan(&it.ID, &it.Connector, &it.WorkspaceID, &it.JobID, &it.JobName, &it.Kind, &it.OnIndex,
 			&it.ConversationKey, &it.EventID, &it.EventRaw, &stStr, &br, &it.Prompt, &it.TraceID, &it.RunID,
-			&it.Attempts, &next, &it.ErrorMessage, &it.FollowUp, &created, &it.HopID); err != nil {
+			&it.Attempts, &next, &it.ErrorMessage, &it.FollowUp, &created, &it.HopID, &it.BatchCount); err != nil {
 			return nil, err
 		}
 		if next != "" {

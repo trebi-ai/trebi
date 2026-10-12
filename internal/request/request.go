@@ -1263,7 +1263,7 @@ func BuildSkillFileDelete(name, rel, ifMatch string) HTTPRequest {
 
 // RuleTest is the trigger side of a rules test: the code and the scope.
 // Replies is "continue" or "off". With Job, an event of an open conversation
-// of that job is a follow-up.
+// of that job is a follow-up. Batch is the batch window, such as 10m.
 type RuleTest struct {
 	Match     string
 	Extract   string
@@ -1272,6 +1272,7 @@ type RuleTest struct {
 	Contains  []string
 	From      string
 	Replies   string
+	Batch     string
 	Workspace string
 	Job       string
 }
@@ -1906,6 +1907,7 @@ type JobSpec struct {
 	Contains       []string
 	From           string
 	Replies        string
+	Batch          string
 }
 
 // Build renders the spec as POST /v1/jobs.
@@ -1932,7 +1934,7 @@ func (j JobSpec) body() map[string]any {
 		}
 	}
 	if j.Event != "" {
-		body["on"] = RuleTest{Match: j.Match, Extract: j.Extract, Rooms: j.Rooms, Allowlist: j.Allowlist, Contains: j.Contains, From: j.From, Replies: j.Replies}.on(j.Event)
+		body["on"] = RuleTest{Match: j.Match, Extract: j.Extract, Rooms: j.Rooms, Allowlist: j.Allowlist, Contains: j.Contains, From: j.From, Replies: j.Replies, Batch: j.Batch}.on(j.Event)
 	}
 	return body
 }
@@ -3376,7 +3378,7 @@ func (t RuleTest) body() map[string]any {
 	if len(t.Contains) > 0 {
 		body["contains"] = t.Contains
 	}
-	for k, v := range map[string]string{"from": t.From, "replies": t.Replies, "workspace": t.Workspace, "job": t.Job} {
+	for k, v := range map[string]string{"from": t.From, "replies": t.Replies, "batch": t.Batch, "workspace": t.Workspace, "job": t.Job} {
 		if v != "" {
 			body[k] = v
 		}

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -296,7 +297,7 @@ func queueCommand() *cli.Command {
 			}
 			w := outWriter(c)
 			// QueueItem has no json tags → PascalCase keys from the API.
-			tbl := newTable(w, []string{"ID", "Status", "Connector", "Job", "Conversation", "Block", "Run", "Created"})
+			tbl := newTable(w, []string{"ID", "Status", "Connector", "Job", "Events", "Conversation", "Block", "Run", "Created"})
 			for _, it := range body.Items {
 				status := mapStr(it, "Status", "status")
 				tbl.AppendRow(table.Row{
@@ -304,6 +305,7 @@ func queueCommand() *cli.Command {
 					colorStatus(w, status),
 					dash(mapStr(it, "Connector", "connector")),
 					dash(mapStr(it, "Job", "job")),
+					cmp.Or(mapStr(it, "batch_count"), "1"),
 					dash(mapStr(it, "ConversationKey", "conversation_key")),
 					dash(mapStr(it, "BlockReason", "block_reason")),
 					dash(mapStr(it, "RunID", "run_id")),

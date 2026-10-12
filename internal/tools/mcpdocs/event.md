@@ -39,6 +39,7 @@ Evaluate one event trigger against one event. No rule is recorded. The checks ru
 - `from` (string, optional): `people`, `bots`, or `anyone` (default).
 - `replies` (string, optional): `continue` or `off`; `continue` gives the conversation key of a job that continues.
 - `job` (string, optional): the job of the trigger. With `replies: continue`, an event of an open conversation of this job is a follow-up.
+- `batch` (string, optional): a duration from `1m` to `24h`, or `off`. A match then waits for the next tick; the reply carries `batch`.
 - `workspace` (string, optional): workspace of `job`.
 - `event_id` (string, optional): a stored event id; the event payload, room, and sender come from the event log.
 - `event` (any, optional): a draft event payload. A `trebi-connector/1` event gives its `room.id` and `sender.id`.
@@ -53,6 +54,7 @@ Evaluate one event trigger against up to 50 stored events, in order. The reply i
 - `contains` (array, optional): words or phrases; the message text must hold one of them.
 - `from` (string, optional): `people`, `bots`, or `anyone`.
 - `replies` (string, optional): `continue` or `off`.
+- `batch` (string, optional): a duration from `1m` to `24h`, or `off`.
 - `job` (string, optional): the job of the trigger, for follow-ups.
 - `workspace` (string, optional): workspace of `job`.
 - `event_ids` (array, required): stored event ids, at most 50.

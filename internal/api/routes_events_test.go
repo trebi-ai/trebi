@@ -52,6 +52,12 @@ func TestRulesTestStages(t *testing.T) {
 	if code != 200 || out["conversation_key"] != "r9/m9" || out["follow_up"] != false || vars["text"] != "deploy now" {
 		t.Fatalf("conversation key: %d %v", code, out)
 	}
+	if code, out, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"batch": "15m", "event": draft("deploy now", false)}); code != 200 || out["batch"] != "15m" {
+		t.Fatalf("batch: %d %v", code, out)
+	}
+	if code, out, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"batch": "30s", "event": draft("deploy now", false)}); code != 400 || errCode(out) != "validation" {
+		t.Fatalf("short batch: %d %v", code, out)
+	}
 	if code, out, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"event_id": "nope", "match": "true"}); code != 404 {
 		t.Fatalf("missing event: %d %v", code, out)
 	}

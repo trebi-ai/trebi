@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -613,6 +614,31 @@ func TestJobFolder(t *testing.T) {
 		code, body, _ := doJSON(t, "POST", base+"/v1/jobs/validate", tc.body)
 		if code != 200 || body["ok"] != tc.ok {
 			t.Fatalf("validate %v: %d %v", tc.body, code, body)
+		}
+	}
+}
+
+func TestJobValidateBatch(t *testing.T) {
+	_, base, _ := startAPI(t)
+	for _, tc := range []struct {
+		name   string
+		on     map[string]any
+		prompt string
+		ok     bool
+		warn   string
+	}{
+		{"batch", map[string]any{"event": "chat", "batch": "15m"}, "Sum up {{events}}.", true, ""},
+		{"single var", map[string]any{"event": "chat", "batch": "15m"}, "Answer {{text}}.", true, "{{text}} is empty in a batch run"},
+		{"too short", map[string]any{"event": "chat", "batch": "30s"}, "Go.", false, ""},
+		{"with replies", map[string]any{"event": "chat", "batch": "15m", "replies": "continue"}, "Go.", false, ""},
+	} {
+		code, body, _ := doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{"name": "digest", "harness": "fake", "prompt": tc.prompt, "on": tc.on})
+		warn, _ := body["warnings"].([]any)
+		if code != 200 || body["ok"] != tc.ok || (tc.warn != "" && (len(warn) != 1 || !strings.Contains(fmt.Sprint(warn[0]), tc.warn))) {
+			t.Fatalf("%s: %d %v", tc.name, code, body)
+		}
+		if tc.ok && !strings.Contains(fmt.Sprint(body["markdown"]), "batch: 15m") {
+			t.Fatalf("%s: markdown %v", tc.name, body["markdown"])
 		}
 	}
 }

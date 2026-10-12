@@ -204,6 +204,7 @@ type TriggerYAML struct {
 	Contains  textList  `yaml:"contains,omitempty"` // event only; any entry, case-insensitive
 	From      string    `yaml:"from,omitempty"`     // people | bots | anyone; event only
 	Replies   string    `yaml:"replies,omitempty"`  // continue | off; job event only
+	Batch     string    `yaml:"batch,omitempty"`    // <duration> | off; event only
 	Disabled  bool      `yaml:"disabled,omitempty"` // keeps family index (B21)
 
 	// Removed keys. A set value is a parse error that names the fix.
@@ -599,11 +600,15 @@ type Trigger struct {
 	// empty for DefaultLimit. EffectiveLimit is the resolved value.
 	Limit          string
 	EffectiveLimit string
-	When           *WhenYAML
-	Timezone       string
-	Index          int // per-family index (B21): schedule family shares cron+every; event separate
-	Disabled       bool
-	Raw            TriggerYAML
+	// Batch is the file value of an event trigger: a duration, off, or
+	// empty. BatchMS is the resolved window; 0 is no batch.
+	Batch    string
+	BatchMS  int64
+	When     *WhenYAML
+	Timezone string
+	Index    int // per-family index (B21): schedule family shares cron+every; event separate
+	Disabled bool
+	Raw      TriggerYAML
 }
 
 // UnmarshalYAML reads one trigger in the canonical YAML form, as in the
@@ -620,6 +625,9 @@ func (t *Trigger) UnmarshalYAML(n *yaml.Node) error {
 	if out[0].Continues() {
 		return errRepliesNotJob
 	}
+	if out[0].BatchMS > 0 {
+		return errBatchNotOperator
+	}
 	*t = out[0]
 	return nil
 }
@@ -634,7 +642,7 @@ func (t Trigger) MarshalYAML() (any, error) {
 		Cron: t.Cron, Every: t.Every, Event: t.Event, Match: t.Match, Extract: t.Extract,
 		Limit: t.Limit, When: t.When, Timezone: t.Timezone,
 		Allowlist: t.Allowlist, Rooms: t.Rooms, Contains: t.Contains, From: t.From, Replies: t.Replies,
-		Disabled: t.Disabled,
+		Batch: t.Batch, Disabled: t.Disabled,
 	}
 	return raw, nil
 }
@@ -658,6 +666,72 @@ const (
 )
 
 var errRepliesNotJob = errors.New(`"replies" applies only to a job trigger; an agent keeps its channel conversation`)
+
+var errBatchNotOperator = errors.New(`"batch" applies only to a job or agent trigger`)
+
+// Limits of the batch key of an event trigger.
+const (
+	BatchMin = time.Minute
+	BatchMax = 24 * time.Hour
+	BatchOff = "off"
+)
+
+// Batched reports whether the trigger collects its events into one run per
+// window (batch: <duration>).
+func (t Trigger) Batched() bool { return t.Event != "" && t.BatchMS > 0 }
+
+// BatchWindow is the batch window of the trigger; 0 is no batch.
+func (t Trigger) BatchWindow() time.Duration { return time.Duration(t.BatchMS) * time.Millisecond }
+
+// batchVars are the prompt vars of a batch run.
+var batchVars = map[string]bool{"events": true, "event_count": true, "events_file": true, "connection": true} //nolint:gochecknoglobals // static set
+
+// singleEventVars are the vars of one event; a batch run leaves them empty.
+var singleEventVars = map[string]bool{ //nolint:gochecknoglobals // static set
+	"text": true, "sender": true, "sender_id": true, "room": true, "room_name": true,
+	"thread": true, "message_id": true, "reply_to": true,
+}
+
+// Warnings lists the problems of a valid job that do not stop a run: a
+// batch trigger with a prompt that uses the vars of one event.
+func (j *Job) Warnings() []string {
+	extract := false
+	batched := false
+	for _, tr := range j.Triggers {
+		if tr.Batched() {
+			batched = true
+			extract = extract || tr.Extract != ""
+		}
+	}
+	if !batched {
+		return nil
+	}
+	var out []string
+	for _, k := range DiscoverInputKeys(j.Prompt) {
+		if singleEventVars[k] || (extract && !batchVars[k]) {
+			out = append(out, fmt.Sprintf("{{%s}} is empty in a batch run; use {{events}} or {{events_file}}", k))
+		}
+	}
+	return out
+}
+
+// ParseBatch resolves a batch value to milliseconds: empty or off is 0.
+func ParseBatch(v string) (int64, error) {
+	v = strings.TrimSpace(v)
+	if v == "" || v == BatchOff {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v)
+	switch {
+	case err != nil:
+		return 0, fmt.Errorf(`batch %q: not a duration; use a value such as 10m, or "off"`, v)
+	case d < BatchMin:
+		return 0, fmt.Errorf(`batch %q: must be at least 1m`, v)
+	case d > BatchMax:
+		return 0, fmt.Errorf(`batch %q: must be at most 24h`, v)
+	}
+	return d.Milliseconds(), nil
+}
 
 // RateLimit returns the rate of an event trigger, or nil when the limit is
 // off or the trigger is not an event trigger.
@@ -946,6 +1020,8 @@ func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 				return nil, fmt.Errorf(`"from" applies only to an event trigger`)
 			case t.Replies != "":
 				return nil, fmt.Errorf(`"replies" applies only to an event trigger`)
+			case t.Batch != "":
+				return nil, fmt.Errorf(`"batch" applies only to an event trigger`)
 			}
 		}
 		switch t.From {
@@ -962,7 +1038,7 @@ func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 			Raw: t, When: t.When, Match: t.Match, Extract: t.Extract,
 			Allowlist: uniqueEntries(t.Allowlist), Rooms: uniqueEntries(t.Rooms),
 			Contains: uniqueEntries(t.Contains), From: t.From, Replies: t.Replies,
-			Limit: t.Limit, Timezone: t.Timezone, Disabled: t.Disabled,
+			Limit: t.Limit, Batch: t.Batch, Timezone: t.Timezone, Disabled: t.Disabled,
 		}
 		if t.Event != "" {
 			rate, err := parseLimit(t.Limit)
@@ -970,6 +1046,12 @@ func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 				return nil, err
 			}
 			tr.EffectiveLimit = rate.String()
+			if tr.BatchMS, err = ParseBatch(t.Batch); err != nil {
+				return nil, err
+			}
+			if tr.BatchMS > 0 && t.Replies == RepliesContinue {
+				return nil, errors.New(`"batch" cannot be used with "replies: continue"; a batch has no single conversation`)
+			}
 		}
 		switch {
 		case t.Cron != "":

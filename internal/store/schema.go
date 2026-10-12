@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 54
+const SchemaVersion = 55
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1885,5 +1885,16 @@ SELECT instance, COUNT(*), MIN(received_at), MAX(received_at) FROM events WHERE 
 ALTER TABLE decisions ADD COLUMN tokens_output INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE decisions ADD COLUMN tokens_cache_read INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE decisions ADD COLUMN tokens_cache_creation INTEGER NOT NULL DEFAULT 0;`,
+		// v55: the events of a batch queue row (batch: <duration>), and the
+		// batch capture of a run.
+		`CREATE TABLE event_queue_batch (
+	queue_id  TEXT NOT NULL,
+	event_id  TEXT NOT NULL,
+	vars_json TEXT,
+	added_at  TEXT NOT NULL,
+	PRIMARY KEY (queue_id, event_id)
+);
+CREATE INDEX event_queue_batch_queue ON event_queue_batch (queue_id, added_at);
+ALTER TABLE runs ADD COLUMN trigger_batch_json TEXT;`,
 	}
 }

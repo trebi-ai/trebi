@@ -68,6 +68,10 @@ func LogsDir() string    { return filepath.Join(Base(), "logs") }
 func RunsLogDir() string { return filepath.Join(Base(), "logs", "runs") }
 func RunsDir() string    { return filepath.Join(Base(), "runs") }
 
+// RunDir holds the input files of one run, such as the events.json of a
+// batch run.
+func RunDir(id string) string { return filepath.Join(RunsDir(), id) }
+
 // RequestsDir holds the report snapshots of requests, one folder per id.
 func RequestsDir() string { return filepath.Join(Base(), "requests") }
 

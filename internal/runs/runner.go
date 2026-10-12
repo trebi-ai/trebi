@@ -143,6 +143,9 @@ type LaunchOpts struct {
 	// FollowUp continues the newest run of the conversation with no time
 	// limit when ContinueMS is 0 (plan A.11). It replaces Prompt.
 	FollowUp *FollowUp
+	// Files are written to home.RunDir(ID) just before the launch, by file
+	// name. A skipped or coalesced launch writes none. They need ID.
+	Files map[string][]byte
 }
 
 // FollowUp is a message that continues a conversation (plan A.11).
@@ -192,6 +195,26 @@ func (o *LaunchOpts) QueueItem(connector string) *dispatch.QueueItem {
 		Status:          dispatch.QueuePending,
 		Launch:          lr,
 	}
+}
+
+// writeFiles writes the run input files of a launch.
+func (o *LaunchOpts) writeFiles() error {
+	if len(o.Files) == 0 {
+		return nil
+	}
+	if o.ID == "" {
+		return errors.New("run files need a run id")
+	}
+	dir := home.RunDir(o.ID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	for name, data := range o.Files {
+		if err := os.WriteFile(filepath.Join(dir, filepath.Base(name)), data, 0o600); err != nil {
+			return fmt.Errorf("run file %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // wantsFake reports the fake-harness path (contract e2e without real LLM binary).
@@ -311,6 +334,9 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 		opts.PromptPreview = opts.Prompt
 	}
 	opts.CreateOpts.Prompt = opts.Prompt
+	if err := opts.writeFiles(); err != nil {
+		return nil, "", err
+	}
 
 	run, err := s.launch(ctx, opts)
 	if err == nil && run != nil && fallback != nil {
