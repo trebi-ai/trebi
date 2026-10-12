@@ -20,7 +20,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/outbox"
-	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
@@ -38,6 +37,7 @@ func (s *Server) routeArtifacts(mux *http.ServeMux) { //nolint:dupl // a route t
 	mux.HandleFunc("POST /v1/artifacts/{id}/versions/{n}/send", s.handleArtifactSend)
 	mux.HandleFunc("GET /v1/artifacts/{id}/deliveries", s.handleArtifactDeliveries)
 	mux.HandleFunc("POST /v1/artifacts/{id}/ask", s.handleArtifactAsk)
+	mux.HandleFunc("POST /v1/artifacts/{id}/chat", s.handleArtifactChat)
 	mux.HandleFunc("POST /v1/artifacts/{id}/versions/{n}/decide", s.handleArtifactDecide)
 	mux.HandleFunc("POST /v1/artifacts/{id}/refresh", s.handleArtifactRefresh)
 	mux.HandleFunc("GET /v1/artifacts/{id}/snapshots", s.handleArtifactSnapshots)
@@ -199,8 +199,8 @@ func (s *Server) handleArtifactList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	f := artifacts.ListFilter{Workspace: ws, Kind: artifacts.Kind(q.Get("kind")), Query: q.Get("q"),
-		Cursor: q.Get("cursor"), Limit: parseLimit(r)}
+	f := artifacts.ListFilter{Workspace: ws, Conversation: q.Get("conversation"), Kind: artifacts.Kind(q.Get("kind")),
+		Query: q.Get("q"), Cursor: q.Get("cursor"), Limit: parseLimit(r)}
 	if v := q.Get("live"); v != "" {
 		live := v == "1" || v == "true"
 		f.Live = &live
@@ -541,6 +541,29 @@ func (s *Server) handleArtifactAsk(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, res)
 }
 
+func (s *Server) handleArtifactChat(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyRunToken(w, r) {
+		return
+	}
+	a, ok := s.artifactFor(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Version int `json:"version"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	res, err := s.artifacts.Chat(r.Context(), a.ID, body.Version)
+	if err != nil {
+		writeArtifactErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (s *Server) handleRunArtifacts(w http.ResponseWriter, r *http.Request) {
 	run, err := s.runs.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -689,28 +712,32 @@ func (s *Server) sendDraftNative(w http.ResponseWriter, r *http.Request, a artif
 		"status": row.Status, "sent": row.Status == outbox.StatusSent})
 }
 
-// artContinuer sends the request of an artifact Ask to its origin.
+// artContinuer reaches the conversations of the artifact chat. It moves
+// no channel pointer, except the UI pointer of a sent message.
 type artContinuer struct{ s *Server }
 
-func (c artContinuer) SendToConversation(ctx context.Context, convID, text string) error {
-	_, err := c.s.conv.Send(ctx, convID, conversations.SendOpts{Text: text})
+func (c artContinuer) ConversationExists(ctx context.Context, convID string) bool {
+	_, err := c.s.conv.Get(ctx, convID)
+	return err == nil
+}
+
+func (c artContinuer) NewConversation(ctx context.Context, workspace, operatorID, title string) (string, error) {
+	conv, err := c.s.conv.Create(ctx, conversations.CreateOpts{Workspace: workspace, OperatorID: operatorID, Title: title,
+		OriginChannel: conversations.ChannelUI})
+	if err != nil {
+		return "", err
+	}
+	return conv.ID, nil
+}
+
+func (c artContinuer) AppendSystem(ctx context.Context, convID, text string) error {
+	return c.s.conv.AppendSystem(ctx, convID, text)
+}
+
+func (c artContinuer) SendToConversation(ctx context.Context, workspace, convID, text string) error {
+	_, err := c.s.conv.Send(ctx, convID, conversations.SendOpts{Text: text,
+		Address: conversations.Address{Connector: conversations.ChannelUI, Room: workspace}})
 	return err
-}
-
-func (c artContinuer) ResumeRun(ctx context.Context, runID, prompt string) (string, error) {
-	run, err := c.s.launch.Resume(ctx, runID, runs.ResumeOpts{Reason: runs.ReasonMessage, Prompt: prompt})
-	if err != nil {
-		return "", err
-	}
-	return run.ID, nil
-}
-
-func (c artContinuer) AskAssistant(ctx context.Context, workspaceID, text string) (string, error) {
-	out, err := c.s.conv.Ask(ctx, conversations.AskOpts{Workspace: workspaceID, Text: text})
-	if err != nil {
-		return "", err
-	}
-	return out.ConversationID, nil
 }
 
 // personOnly refuses every agent caller: a run, a job, and the assistant.

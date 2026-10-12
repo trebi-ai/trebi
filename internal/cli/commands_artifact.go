@@ -40,6 +40,7 @@ func artifactCommand() *cli.Command { //nolint:funlen // static command table
 					&cli.StringFlag{Name: "q", Usage: "text to find in the name or the title"},
 					&cli.BoolFlag{Name: "live", Usage: "only live artifacts"},
 					&cli.StringFlag{Name: "run", Usage: "only the versions that this run saved"},
+					&cli.StringFlag{Name: "conversation", Usage: "only the artifacts of this conversation"},
 					&cli.IntFlag{Name: "limit", Usage: "page size"},
 					jsonFlag(),
 				},
@@ -152,9 +153,16 @@ func artifactCommand() *cli.Command { //nolint:funlen // static command table
 			{
 				Name:      "ask",
 				ArgsUsage: "<artifact>[@n] <text>",
-				Usage:     "ask the maker of an artifact for a change",
+				Usage:     "ask the owner of an artifact for a change, in the chat of the artifact",
 				Flags:     []cli.Flag{ws(), &cli.StringFlag{Name: "selection", Usage: "the part of the content that the request is about"}, jsonFlag()},
 				Action:    runArtifactAsk,
+			},
+			{
+				Name:      "chat",
+				ArgsUsage: "<artifact>[@n]",
+				Usage:     "open the chat with the owner of an artifact",
+				Flags:     []cli.Flag{ws(), jsonFlag()},
+				Action:    runArtifactChat,
 			},
 			{
 				Name:      "rm",
@@ -190,7 +198,7 @@ func runArtifactList(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	f := request.ArtifactFilter{Workspace: c.String("workspace"), Owner: c.String("owner"), Kind: c.String("kind"),
-		Query: c.String("q"), Limit: c.Int("limit")}
+		Query: c.String("q"), Conversation: c.String("conversation"), Limit: c.Int("limit")}
 	if c.IsSet("live") {
 		live := c.Bool("live")
 		f.Live = &live
@@ -483,7 +491,35 @@ func runArtifactAsk(_ context.Context, c *cli.Command) error {
 	if c.Bool("json") {
 		return encodeJSON(c, res)
 	}
-	fmt.Fprintf(outWriter(c), "asked through the %s %s\n", mapStr(res, "via"), cmp.Or(mapStr(res, "conversation_id"), mapStr(res, "run_id")))
+	fmt.Fprintf(outWriter(c), "asked in conversation %s\n", mapStr(res, "conversation_id"))
+	return nil
+}
+
+func runArtifactChat(_ context.Context, c *cli.Command) error {
+	if os.Getenv("TREBI_RUN_TOKEN") != "" {
+		return errors.New("a run cannot open the chat of an artifact")
+	}
+	a, n, err := artifactArg(c, "chat <artifact>[@n]")
+	if err != nil {
+		return err
+	}
+	v, _ := strconv.Atoi(n) // latest gives 0, the default
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var res artifacts.ChatResult
+	if err := client.DoHTTP(a.Chat(v), &res); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, res)
+	}
+	state := "existing"
+	if res.Created {
+		state = "new"
+	}
+	fmt.Fprintf(outWriter(c), "%s (%s)\n", res.ConversationID, state)
 	return nil
 }
 

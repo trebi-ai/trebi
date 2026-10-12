@@ -566,6 +566,24 @@ FROM email_messages WHERE direction='out'`).Scan(&convID, &disposition, &runID, 
 	if len(p.fw.sent()) != 1 {
 		t.Fatalf("assistant reply sent %d times; want 1", len(p.fw.sent()))
 	}
+	// A UI message moves the reply to the UI: the next turn sends no mail.
+	if _, _, err := p.cp.Conversations.AppendUser(ctx, convID, conversations.UserTurn{Text: "Shorter, please.",
+		Address: conversations.Address{Connector: conversations.ChannelUI, Room: p.wsID}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.cp.Conversations.AppendAssistant(ctx, convID, int(covered.Int64)+1, "Done."); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.cp.Email.ReplyOnThread(ctx, email.ReplyOpts{ConversationID: convID}); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := p.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox WHERE conversation_id=?`, convID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.fw.sent()) != 1 || rows != 1 {
+		t.Fatalf("a UI message sent mail: sent=%d outbox=%d", len(p.fw.sent()), rows)
+	}
 }
 
 // TestOutboxRetriesAssistantReply: a failed assistant reply stays one

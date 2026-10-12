@@ -3289,14 +3289,14 @@ func artifactActions() map[string]Action {
 	withV := Input{"artifact": "weekly-report", "workspace": "ws1", "version": 2.0}
 	out := map[string]Action{
 		"list": act("GET /v1/artifacts", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
-			v, err := in.strs("workspace", "owner", "kind", "q", "cursor")
+			v, err := in.strs("workspace", "owner", "kind", "q", "cursor", "conversation")
 			live, liveErr := in.optBool("live")
 			limit, _, limitErr := in.num("limit")
 			if err := errors.Join(err, liveErr, limitErr); err != nil {
 				return request.HTTPRequest{}, err
 			}
 			return mcpGet(request.BuildArtifactListPath(request.ArtifactFilter{
-				Workspace: v[0], Owner: v[1], Kind: v[2], Query: v[3], Cursor: v[4], Live: live, Limit: limit,
+				Workspace: v[0], Owner: v[1], Kind: v[2], Query: v[3], Cursor: v[4], Conversation: v[5], Live: live, Limit: limit,
 			})), nil
 		}),
 		"get": ref("GET /v1/artifacts/{id}", one, func(a request.ArtifactRef, _ string, _ Input) (request.HTTPRequest, error) {
@@ -3335,6 +3335,13 @@ func artifactActions() map[string]Action {
 				}
 				return a.Ask(text, sel, v), nil
 			}),
+		"chat": ref("POST /v1/artifacts/{id}/chat", one, func(a request.ArtifactRef, _ string, in Input) (request.HTTPRequest, error) {
+			v, _, err := in.num("version")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return a.Chat(v), nil
+		}),
 		"run_artifacts": idGet("GET /v1/runs/{id}/artifacts", "run_id", "01JRUN", request.BuildRunArtifactsPath),
 	}
 	maps.Copy(out, artifactWriteActions())

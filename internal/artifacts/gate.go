@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
@@ -175,14 +177,16 @@ func gateNote(e job.ArtifactYAML, err error) string {
 	return fmt.Sprintf("Artifact %s was not saved: %v.", e.Path, err)
 }
 
-// Continuer sends a request about an artifact to the agent that wrote it.
+// Continuer reaches the conversations of the artifact chat.
 type Continuer interface {
-	SendToConversation(ctx context.Context, convID, text string) error
-	ResumeRun(ctx context.Context, runID, prompt string) (newRunID string, err error)
-	AskAssistant(ctx context.Context, workspaceID, text string) (convID string, err error)
+	ConversationExists(ctx context.Context, convID string) bool
+	NewConversation(ctx context.Context, workspace, operatorID, title string) (string, error)
+	AppendSystem(ctx context.Context, convID, text string) error
+	// SendToConversation sends text as a UI message of workspace (C4).
+	SendToConversation(ctx context.Context, workspace, convID, text string) error
 }
 
-// WithContinuer wires Ask.
+// WithContinuer wires Chat and Ask.
 func (s *Service) WithContinuer(c Continuer) *Service {
 	s.cont = c
 	return s
@@ -196,18 +200,22 @@ type AskOpts struct {
 	Selection string
 }
 
-// AskResult names where the request went.
+// AskResult names the chat that got the request.
 type AskResult struct {
-	Via            string `json:"via"` // conversation | run | assistant
-	ConversationID string `json:"conversation_id,omitempty"`
-	RunID          string `json:"run_id,omitempty"`
+	Via            string `json:"via"` // conversation
+	ConversationID string `json:"conversation_id"`
+}
+
+// ChatResult is the chat of an artifact. Created is true for a new
+// conversation.
+type ChatResult struct {
+	ConversationID string `json:"conversation_id"`
+	Created        bool   `json:"created"`
 }
 
 const maxSelection = 2000
 
-// Ask continues the origin of the version with the request of the user
-// (B9). A user version goes to the newest agent version, else to the
-// workspace assistant.
+// Ask sends the request of the user to the chat of the artifact (C3).
 func (s *Service) Ask(ctx context.Context, o AskOpts) (AskResult, error) {
 	text := strings.TrimSpace(o.Text)
 	if text == "" {
@@ -220,42 +228,136 @@ func (s *Service) Ask(ctx context.Context, o AskOpts) (AskResult, error) {
 	if err != nil {
 		return AskResult{}, err
 	}
-	n := o.Version
-	if n == 0 {
-		n = a.LatestVersion
-	}
-	v, err := s.Version(ctx, a.ID, n)
+	n := cmp.Or(o.Version, a.LatestVersion)
+	chat, err := s.chat(ctx, &a, n)
 	if err != nil {
 		return AskResult{}, err
 	}
-	prompt := askPrompt(a.Name, n, o.Selection, text)
-	if v.OriginKind == OriginUser {
-		v, err = s.lastAgentVersion(ctx, a.ID)
-		if err != nil {
-			return AskResult{}, err
-		}
-	}
-	switch {
-	case v.ConversationID != "":
-		return AskResult{Via: OriginConversation, ConversationID: v.ConversationID},
-			s.cont.SendToConversation(ctx, v.ConversationID, prompt)
-	case v.RunID != "":
-		id, err := s.cont.ResumeRun(ctx, v.RunID, prompt)
-		return AskResult{Via: OriginRun, RunID: id}, err
-	}
-	conv, err := s.cont.AskAssistant(ctx, a.Workspace, prompt)
-	return AskResult{Via: OwnerAssistant, ConversationID: conv}, err
+	res := AskResult{Via: OriginConversation, ConversationID: chat.ConversationID}
+	return res, s.cont.SendToConversation(ctx, a.Workspace, chat.ConversationID, askPrompt(a.Name, n, o.Selection, text))
 }
 
-// lastAgentVersion is the newest version that a run or a conversation
-// saved. It is empty when the user saved every version.
-func (s *Service) lastAgentVersion(ctx context.Context, id string) (Version, error) {
-	v, err := scanVersion(s.st.DB().QueryRowContext(ctx, versionSelect+` WHERE v.artifact_id=? AND v.origin_kind<>? ORDER BY v.n DESC LIMIT 1`,
-		id, OriginUser))
-	if errors.Is(err, sql.ErrNoRows) {
-		return Version{}, nil
+// Chat returns the one chat of an artifact (C1, C2). version 0 is the
+// newest version.
+func (s *Service) Chat(ctx context.Context, id string, version int) (ChatResult, error) {
+	if s.cont == nil {
+		return ChatResult{}, errors.New("chat is not wired")
 	}
-	return v, err
+	a, err := s.Get(ctx, id)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	return s.chat(ctx, &a, cmp.Or(version, a.LatestVersion))
+}
+
+func (s *Service) chat(ctx context.Context, a *Artifact, n int) (ChatResult, error) {
+	if _, err := s.Version(ctx, a.ID, n); err != nil {
+		return ChatResult{}, err
+	}
+	if a.ConversationID != "" && s.cont.ConversationExists(ctx, a.ConversationID) {
+		return ChatResult{ConversationID: a.ConversationID}, s.chatContext(ctx, a, a.ConversationID, n)
+	}
+	res, err := s.findChat(ctx, a)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	if res.ConversationID == "" {
+		operator := ""
+		if a.OwnerKind == OwnerAgent {
+			operator = a.OwnerID
+		}
+		if res.ConversationID, err = s.cont.NewConversation(ctx, a.Workspace, operator, "About "+a.Title); err != nil {
+			return ChatResult{}, err
+		}
+		res.Created = true
+	}
+	stored, err := s.storeChat(ctx, a, res.ConversationID)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	if stored != res.ConversationID {
+		return ChatResult{ConversationID: stored}, nil // a concurrent call stored its chat first
+	}
+	a.ConversationID, a.chatVersion = stored, 0
+	return res, s.chatContext(ctx, a, stored, n)
+}
+
+// findChat finds the conversation of the owner from the versions (C2 steps
+// 2 and 3). It is empty when no version came from a live conversation.
+func (s *Service) findChat(ctx context.Context, a *Artifact) (ChatResult, error) {
+	var convs []string
+	if err := s.ids(ctx, &convs, `SELECT conversation_id FROM artifact_versions
+  WHERE artifact_id=? AND origin_kind<>? AND conversation_id<>'' ORDER BY n DESC`, a.ID, OriginUser); err != nil {
+		return ChatResult{}, err
+	}
+	for _, c := range convs {
+		if s.cont.ConversationExists(ctx, c) {
+			return ChatResult{ConversationID: c}, nil
+		}
+	}
+	if s.runs == nil {
+		return ChatResult{}, nil
+	}
+	var runIDs []string
+	if err := s.ids(ctx, &runIDs, `SELECT run_id FROM artifact_versions
+  WHERE artifact_id=? AND origin_kind<>? AND run_id<>'' ORDER BY n DESC`, a.ID, OriginUser); err != nil {
+		return ChatResult{}, err
+	}
+	for _, id := range runIDs {
+		run, err := s.runs.Get(ctx, id)
+		if err == nil && run.ConversationID != "" && s.cont.ConversationExists(ctx, run.ConversationID) {
+			return ChatResult{ConversationID: run.ConversationID}, nil
+		}
+	}
+	return ChatResult{}, nil
+}
+
+// storeChat sets the chat of a when the stored chat is still the one that a
+// holds. It returns the chat that the row holds after the write.
+func (s *Service) storeChat(ctx context.Context, a *Artifact, convID string) (string, error) {
+	next := *a
+	next.Revision++
+	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE artifacts SET conversation_id=?, chat_version=0, revision=revision+1
+  WHERE id=? AND conversation_id=?`, convID, a.ID, a.ConversationID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return errChatTaken
+		}
+		return nil
+	}, s.chatEvent(&next, convID))
+	if errors.Is(err, errChatTaken) {
+		cur, gerr := s.Get(ctx, a.ID)
+		return cur.ConversationID, gerr
+	}
+	return convID, err
+}
+
+var errChatTaken = errors.New("artifact chat is taken")
+
+// chatContext tells the chat which version is current (C5). It writes the
+// line once per version.
+func (s *Service) chatContext(ctx context.Context, a *Artifact, convID string, n int) error {
+	if n <= a.chatVersion {
+		return nil
+	}
+	line := fmt.Sprintf("This chat is about artifact %s (%s), version %d. Read it with `trebi artifact get %s@%d`. "+
+		"Save a change with `trebi artifact put %s --from <file> --base %d`.", a.Title, a.Name, n, a.Name, n, a.Name, n)
+	if err := s.cont.AppendSystem(ctx, convID, line); err != nil {
+		return err
+	}
+	_, err := s.st.DB().ExecContext(ctx, `UPDATE artifacts SET chat_version=? WHERE id=? AND chat_version<?`, n, a.ID, n)
+	a.chatVersion = n
+	return err
+}
+
+func (s *Service) chatEvent(a *Artifact, convID string) store.BusEvent {
+	ev := s.event("artifact.updated", "updated", a, a.LatestVersion)
+	attrs, _ := ev.Attrs.(map[string]any)
+	attrs["conversation_id"] = convID
+	return ev
 }
 
 func askPrompt(name string, n int, selection, text string) string {

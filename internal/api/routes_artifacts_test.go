@@ -86,6 +86,35 @@ func TestArtifactRoutes(t *testing.T) {
 		t.Fatalf("patch: %d %v", code, m)
 	}
 
+	// The chat of an agent artifact is a new conversation with the agent.
+	code, m = e.do(t, http.MethodPost, "/v1/artifacts/"+id+"/chat", nil)
+	convID, _ := m["conversation_id"].(string)
+	if code != 200 || convID == "" || m["created"] != true {
+		t.Fatalf("chat: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodGet, "/v1/conversations/"+convID, nil); code != 200 || m["title"] != "About Weekly report" ||
+		!strings.HasPrefix(m["operator_id"].(string), "agt_") {
+		t.Fatalf("chat conversation: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodPost, "/v1/artifacts/"+id+"/chat", map[string]any{"version": 1}); code != 200 || m["conversation_id"] != convID || m["created"] != false {
+		t.Fatalf("chat again: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodPost, "/v1/artifacts/"+id+"/ask", map[string]any{"text": "Shorter"}); code != 202 ||
+		m["via"] != "conversation" || m["conversation_id"] != convID || m["run_id"] != nil {
+		t.Fatalf("ask: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodGet, "/v1/artifacts"+q+"&conversation="+convID, nil); code != 200 || len(m["items"].([]any)) != 1 {
+		t.Fatalf("list by conversation: %d %v", code, m)
+	}
+	if code, m = e.do(t, http.MethodGet, "/v1/artifacts"+q+"&conversation=nope", nil); code != 200 || len(m["items"].([]any)) != 0 {
+		t.Fatalf("list by other conversation: %d %v", code, m)
+	}
+	token := "chat-token-000000000000000000000000"
+	insertAgentCaller(t, e.st, wsID, "research", token, "running")
+	if code, m = doScoped(t, http.MethodPost, e.base+"/v1/artifacts/"+id+"/chat", token, map[string]any{}); code != 403 {
+		t.Fatalf("chat from a run: %d %v", code, m)
+	}
+
 	// A report rides a mail with the title as the default subject.
 	code, m = e.do(t, http.MethodPost, "/v1/email/send", map[string]any{
 		"workspace": wsID, "to": []string{"ops@example.com"}, "artifact": map[string]any{"ref": "weekly-report"},

@@ -3,6 +3,7 @@ package artifacts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -326,57 +328,265 @@ func TestRunGate(t *testing.T) {
 	}
 }
 
-type fakeCont struct{ conv, run, asst []string }
+type mapRuns map[string]runs.Run
 
-func (f *fakeCont) SendToConversation(_ context.Context, id, text string) error {
-	f.conv = append(f.conv, id+"|"+text)
+func (m mapRuns) Get(_ context.Context, id string) (*runs.Run, error) {
+	r, ok := m[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return &r, nil
+}
+
+type fakeCont struct {
+	live   map[string]bool
+	made   []string // workspace|operator|title
+	system []string // conv|text
+	sent   []string // workspace|conv|text
+}
+
+func (f *fakeCont) ConversationExists(_ context.Context, id string) bool { return f.live[id] }
+
+func (f *fakeCont) NewConversation(_ context.Context, ws, operator, title string) (string, error) {
+	f.made = append(f.made, ws+"|"+operator+"|"+title)
+	id := fmt.Sprintf("conv-new-%d", len(f.made))
+	f.live[id] = true
+	return id, nil
+}
+
+func (f *fakeCont) AppendSystem(_ context.Context, id, text string) error {
+	f.system = append(f.system, id+"|"+text)
 	return nil
 }
 
-func (f *fakeCont) ResumeRun(_ context.Context, id, prompt string) (string, error) {
-	f.run = append(f.run, id+"|"+prompt)
-	return "run-next", nil
+func (f *fakeCont) SendToConversation(_ context.Context, ws, id, text string) error {
+	f.sent = append(f.sent, ws+"|"+id+"|"+text)
+	return nil
 }
 
-func (f *fakeCont) AskAssistant(_ context.Context, ws, text string) (string, error) {
-	f.asst = append(f.asst, ws+"|"+text)
-	return "conv-new", nil
+func TestRunOrigin(t *testing.T) {
+	t.Parallel()
+	rs := mapRuns{
+		"ra": {ID: "ra", ConversationID: "c1"},
+		"rb": {ID: "rb", ConversationID: "c2"},
+		"rc": {ID: "rc"},
+		"rd": {ID: "rd"},
+	}
+	cases := []struct {
+		name                       string
+		actor                      tools.Actor
+		kind, conv, owner, ownerID string
+	}{
+		{"assistant in a conversation", tools.Actor{Kind: OwnerAssistant, RunID: "ra"}, OriginConversation, "c1", OwnerAssistant, ""},
+		{"agent in a conversation", tools.Actor{Kind: OwnerAgent, RunID: "rb", JobID: "agt_e"}, OriginConversation, "c2", OwnerAgent, "agt_e"},
+		{"agent with no conversation", tools.Actor{Kind: OwnerAgent, RunID: "rc", JobID: "agt_e"}, OriginRun, "", OwnerAgent, "agt_e"},
+		{"plain job", tools.Actor{Kind: "job", RunID: "rd", JobID: "job1"}, OriginRun, "", OwnerJob, "job1"},
+	}
+	s := newTestService(t, rs, nil)
+	for _, c := range cases {
+		o, err := s.OriginFor(context.Background(), &c.actor, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.Kind != c.kind || o.RunID != c.actor.RunID || o.ConversationID != c.conv || o.OwnerKind != c.owner || o.OwnerID != c.ownerID {
+			t.Errorf("%s: %+v", c.name, o)
+		}
+	}
+}
+
+func TestConversationRunsShareStale(t *testing.T) {
+	t.Parallel()
+	rs := mapRuns{
+		"ra": {ID: "ra", ConversationID: "c1"},
+		"rb": {ID: "rb", ConversationID: "c1"},
+		"rx": {ID: "rx"},
+	}
+	s := newTestService(t, rs, nil)
+	ctx := context.Background()
+	origin := func(run string) Origin {
+		o, err := s.OriginFor(ctx, &tools.Actor{Kind: OwnerAgent, RunID: run, JobID: "agt_e"}, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	if _, err := put(t, s, origin("ra"), nil, "one"); err != nil {
+		t.Fatal(err)
+	}
+	v, err := put(t, s, origin("rb"), nil, "two")
+	if err != nil || v.N != 2 || v.RunID != "rb" || v.ConversationID != "c1" {
+		t.Fatalf("same conversation %+v %v", v, err)
+	}
+	var se *StaleError
+	if _, err := put(t, s, origin("rx"), nil, "three"); !errors.As(err, &se) {
+		t.Fatalf("run outside the conversation: %v", err)
+	}
+}
+
+func TestChat(t *testing.T) {
+	t.Parallel()
+	user := Origin{Kind: OriginUser, OwnerKind: OwnerAssistant}
+	cases := []struct {
+		name     string
+		live     []string
+		runs     mapRuns
+		stored   string // artifacts.conversation_id
+		origins  []Origin
+		want     string
+		created  bool
+		operator string
+	}{
+		{name: "stored chat", live: []string{"c1"}, stored: "c1",
+			origins: []Origin{{Kind: OriginConversation, ConversationID: "c0", OwnerKind: OwnerAssistant}}, want: "c1"},
+		{name: "conversation version under a user version", live: []string{"c2"},
+			origins: []Origin{{Kind: OriginConversation, ConversationID: "c2", OwnerKind: OwnerAssistant}, user}, want: "c2"},
+		{name: "run of a conversation", live: []string{"c3"}, runs: mapRuns{"r3": {ID: "r3", ConversationID: "c3"}},
+			origins: []Origin{{Kind: OriginRun, RunID: "r3", OwnerKind: OwnerAgent, OwnerID: "agt_e"}}, want: "c3"},
+		{name: "agent owner", runs: mapRuns{"r4": {ID: "r4"}},
+			origins: []Origin{{Kind: OriginRun, RunID: "r4", OwnerKind: OwnerAgent, OwnerID: "agt_e"}},
+			want:    "conv-new-1", created: true, operator: "agt_e"},
+		{name: "plain job", origins: []Origin{{Kind: OriginRun, RunID: "r5", OwnerKind: OwnerJob, OwnerID: "job1"}},
+			want: "conv-new-1", created: true},
+		{name: "deleted chat", stored: "gone", origins: []Origin{user}, want: "conv-new-1", created: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newTestService(t, c.runs, nil)
+			if c.runs == nil {
+				s.runs = mapRuns{}
+			}
+			f := newFakeCont(c.live...)
+			s.WithContinuer(f)
+			ctx := context.Background()
+			for i, o := range c.origins {
+				var base *int
+				if i > 0 {
+					base = &i
+				}
+				if _, err := put(t, s, o, base, fmt.Sprint("v", i)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			id := mustID(t, s)
+			if c.stored != "" {
+				if _, err := s.st.DB().Exec(`UPDATE artifacts SET conversation_id=? WHERE id=?`, c.stored, id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			res, err := s.Chat(ctx, id, 0)
+			if err != nil || res.ConversationID != c.want || res.Created != c.created {
+				t.Fatalf("chat %+v %v", res, err)
+			}
+			if c.created && f.made[0] != "ws1|"+c.operator+"|About weekly" {
+				t.Fatalf("made %v", f.made)
+			}
+			again, err := s.Chat(ctx, id, 0)
+			if err != nil || again.ConversationID != c.want || again.Created || len(f.made) > 1 {
+				t.Fatalf("second chat %+v %v %v", again, err, f.made)
+			}
+			if a, _ := s.Get(ctx, id); a.ConversationID != c.want {
+				t.Fatalf("stored %q", a.ConversationID)
+			}
+			if len(f.system) != 1 || !strings.HasPrefix(f.system[0], c.want+"|This chat is about artifact weekly (weekly), version ") {
+				t.Fatalf("system %v", f.system)
+			}
+		})
+	}
+}
+
+func TestChatContextPerVersion(t *testing.T) {
+	t.Parallel()
+	s := newTestService(t, mapRuns{}, nil)
+	f := newFakeCont()
+	s.WithContinuer(f)
+	ctx := context.Background()
+	user := Origin{Kind: OriginUser, OwnerKind: OwnerAssistant}
+	if _, err := put(t, s, user, nil, "one"); err != nil {
+		t.Fatal(err)
+	}
+	id := mustID(t, s)
+	for range 2 {
+		if _, err := s.Chat(ctx, id, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	one := 1
+	if _, err := put(t, s, user, &one, "two"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Chat(ctx, id, 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.system) != 1 {
+		t.Fatalf("an older version adds no line: %v", f.system)
+	}
+	if _, err := s.Chat(ctx, id, 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.system) != 2 || !strings.Contains(f.system[1], "version 2. Read it with `trebi artifact get weekly@2`") {
+		t.Fatalf("system %v", f.system)
+	}
+	if _, err := s.Chat(ctx, id, 9); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing version: %v", err)
+	}
 }
 
 func TestAsk(t *testing.T) {
 	t.Parallel()
-	s := newTestService(t, nil, nil)
-	c := &fakeCont{}
-	s.WithContinuer(c)
+	s := newTestService(t, mapRuns{}, nil)
+	f := newFakeCont("c1")
+	s.WithContinuer(f)
 	ctx := context.Background()
-	user := Origin{Kind: OriginUser, OwnerKind: OwnerAssistant}
-	if _, err := put(t, s, user, nil, "mine"); err != nil {
+	if _, err := put(t, s, Origin{Kind: OriginConversation, ConversationID: "c1", OwnerKind: OwnerAssistant}, nil, "mine"); err != nil {
 		t.Fatal(err)
 	}
 	id := mustID(t, s)
 	res, err := s.Ask(ctx, AskOpts{ID: id, Text: "Shorter", Selection: strings.Repeat("a", 3000)})
-	if err != nil || res.Via != OwnerAssistant || len(c.asst) != 1 {
-		t.Fatalf("assistant %+v %v", res, err)
+	if err != nil || res.Via != OriginConversation || res.ConversationID != "c1" || len(f.sent) != 1 {
+		t.Fatalf("ask %+v %v", res, err)
 	}
-	if !strings.Contains(c.asst[0], "artifact weekly, version 1") || strings.Count(c.asst[0], "a") > 2100 {
-		t.Fatalf("prompt %.200s", c.asst[0])
-	}
-	one := 1
-	run := Origin{Kind: OriginRun, RunID: "r9", OwnerKind: OwnerAssistant}
-	if _, err := put(t, s, run, &one, "agent"); err != nil {
-		t.Fatal(err)
-	}
-	two := 2
-	if _, err := put(t, s, user, &two, "edit"); err != nil {
-		t.Fatal(err)
-	}
-	res, err = s.Ask(ctx, AskOpts{ID: id, Text: "Fix it"})
-	if err != nil || res.Via != OriginRun || res.RunID != "run-next" || !strings.HasPrefix(c.run[0], "r9|") {
-		t.Fatalf("run %+v %v %v", res, err, c.run)
+	if !strings.HasPrefix(f.sent[0], "ws1|c1|The user asks about artifact weekly, version 1.") || strings.Count(f.sent[0], "a") > 2100 {
+		t.Fatalf("prompt %.200s", f.sent[0])
 	}
 	if _, err := s.Ask(ctx, AskOpts{ID: id}); err == nil {
 		t.Fatal("empty text must fail")
 	}
+}
+
+func TestListByConversation(t *testing.T) {
+	t.Parallel()
+	s := newTestService(t, mapRuns{}, nil)
+	s.WithContinuer(newFakeCont())
+	ctx := context.Background()
+	if _, err := put(t, s, Origin{Kind: OriginConversation, ConversationID: "c1", OwnerKind: OwnerAssistant}, nil, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(ctx, PutOpts{Workspace: "ws1", Name: "other", FileName: "o.md", Content: strings.NewReader("x"),
+		Origin: Origin{Kind: OriginUser, OwnerKind: OwnerAssistant}}); err != nil {
+		t.Fatal(err)
+	}
+	list, _, err := s.List(ctx, ListFilter{Workspace: "ws1", Conversation: "c1"})
+	if err != nil || len(list) != 1 || list[0].Name != "weekly" {
+		t.Fatalf("by version %v %v", list, err)
+	}
+	other, _, _ := s.List(ctx, ListFilter{Workspace: "ws1", Query: "other"})
+	res, err := s.Chat(ctx, other[0].ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, _, err = s.List(ctx, ListFilter{Workspace: "ws1", Conversation: res.ConversationID})
+	if err != nil || len(list) != 1 || list[0].Name != "other" {
+		t.Fatalf("by chat %v %v", list, err)
+	}
+}
+
+func newFakeCont(live ...string) *fakeCont {
+	f := &fakeCont{live: map[string]bool{}}
+	for _, id := range live {
+		f.live[id] = true
+	}
+	return f
 }
 
 func openStore(t *testing.T) *store.Store {

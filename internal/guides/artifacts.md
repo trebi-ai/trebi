@@ -84,15 +84,23 @@ trebi email send --workspace ws1 --to ops@example.com --artifact weekly-report
 
 Trebi makes the mail from the version: a Markdown report becomes the body with a link "Open the full report", a short HTML report becomes the body, a long one gets a summary and the full file as an attachment, and another kind becomes an attachment. The default subject is the title. `trebi artifact deliveries <name>` lists the mails that sent the artifact. Trebi never deletes a version that a mail sent.
 
-## Ask for a change
+## Talk about an artifact
 
-The user can ask the maker of an artifact for a change from the UI or with:
+Each artifact has one chat with its owner. The user opens it from the artifact page with "Chat with <owner>", or with:
 
 ```bash
+trebi artifact chat weekly-report        # prints the conversation id, "new" or "existing"
 trebi artifact ask weekly-report "Add the totals per region"
 ```
 
-The text goes to the conversation, the run, or the assistant that made the version. A run cannot ask.
+The chat goes to the conversation that saved the newest version. When there is none, Trebi makes a conversation with the agent that owns the artifact, or with the workspace assistant for a job or assistant artifact. The first chat or ask stores the chat on the artifact (`conversation_id`), and later calls reuse it. `ask` sends the text to the same chat as a message of the user, so the reply stays in the chat and does not go out by email. `trebi artifact ls --conversation <id>` lists the artifacts of a chat. A run cannot chat or ask.
+
+The owner reads the version and saves a change from the chat:
+
+```bash
+trebi artifact get weekly-report@3
+trebi artifact put weekly-report --from report.md --base 3
+```
 
 ## Versions and pins
 

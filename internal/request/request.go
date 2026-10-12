@@ -2784,14 +2784,15 @@ func listQuery(path, cursor string, limit int) string {
 // ArtifactFilter is the query of GET /v1/artifacts. Owner is assistant,
 // job:<name>, or agent:<name>.
 type ArtifactFilter struct {
-	Workspace, Owner, Kind, Query, Cursor string
-	Live                                  *bool
-	Limit                                 int
+	Workspace, Owner, Kind, Query, Cursor, Conversation string
+	Live                                                *bool
+	Limit                                               int
 }
 
 // BuildArtifactListPath builds GET /v1/artifacts.
 func BuildArtifactListPath(f ArtifactFilter) string {
-	q := map[string]string{"workspace": f.Workspace, "owner": f.Owner, "kind": f.Kind, "q": f.Query, "cursor": f.Cursor}
+	q := map[string]string{"workspace": f.Workspace, "owner": f.Owner, "kind": f.Kind, "q": f.Query, "cursor": f.Cursor,
+		"conversation": f.Conversation}
 	if f.Live != nil {
 		q["live"] = strconv.FormatBool(*f.Live)
 	}
@@ -2960,6 +2961,15 @@ func (a ArtifactRef) Ask(text, selection string, version int) HTTPRequest {
 		body["version"] = version
 	}
 	return HTTPRequest{Method: "POST", Path: a.path("/ask", nil), Body: body}
+}
+
+// Chat builds POST /v1/artifacts/{id}/chat.
+func (a ArtifactRef) Chat(version int) HTTPRequest {
+	body := map[string]any{}
+	if version > 0 {
+		body["version"] = version
+	}
+	return HTTPRequest{Method: "POST", Path: a.path("/chat", nil), Body: body}
 }
 
 func (a ArtifactRef) path(tail string, q map[string]string) string {

@@ -17,8 +17,9 @@ Inside a run, the artifact belongs to the job or agent of the run. Only the run 
 ## Actions
 
 ### list
-List the artifacts of a workspace, newest first. The reply is `{"items": [...], "next_cursor"}`. Each item has `id`, `name`, `title`, `kind`, `owner_kind`, `owner_id`, `live`, `latest_version`, `revision`, and `latest`.
+List the artifacts of a workspace, newest first. The reply is `{"items": [...], "next_cursor"}`. Each item has `id`, `name`, `title`, `kind`, `owner_kind`, `owner_id`, `live`, `latest_version`, `conversation_id` (the chat of the artifact, when it has one), `revision`, and `latest`.
 - `workspace` (string, optional): workspace id or name.
+- `conversation` (string, optional): only the artifacts whose chat is this conversation, or that have a version that this conversation saved.
 - `owner` (string, optional): `assistant`, `job:<name>`, or `agent:<name>`.
 - `kind` (string, optional): one kind.
 - `live` (boolean, optional): only live artifacts, or with false, only the others.
@@ -143,12 +144,18 @@ List the mails that sent a version of this artifact.
 - `workspace` (string, optional): workspace id or name. Required with a name.
 
 ### ask
-Ask the maker of an artifact for a change. The text goes to the conversation, the run, or the assistant that made the version. A run cannot ask.
+Ask the owner of an artifact for a change. The text goes to the chat of the artifact as a message of the user, the same chat that `chat` opens. The reply stays in that chat. The reply is `{"via": "conversation", "conversation_id"}`. A run cannot ask.
 - `artifact` (string, required): artifact id or name.
 - `workspace` (string, optional): workspace id or name. Required with a name.
 - `text` (string, required): the request.
 - `selection` (string, optional): the part of the content that the request is about.
 - `version` (number, optional): the version that the request is about. The default is the latest.
+
+### chat
+Open the one chat of an artifact. The chat goes to the owner: the conversation that saved the newest version, else a new conversation with the agent that owns the artifact, else a new conversation with the workspace assistant. The first call stores the chat on the artifact; later calls give the same chat. A new chat starts with one line that names the artifact and its version. The reply is `{"conversation_id", "created"}`. A run cannot open a chat.
+- `artifact` (string, required): artifact id or name.
+- `workspace` (string, optional): workspace id or name. Required with a name.
+- `version` (number, optional): the version that the chat is about. The default is the latest.
 
 ### run_artifacts
 List the versions that one run saved.

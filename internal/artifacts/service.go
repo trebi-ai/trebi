@@ -154,25 +154,28 @@ func (o Origin) same(kind, runID, convID string) bool {
 
 // Artifact is one artifact with its newest version.
 type Artifact struct {
-	ID            string    `json:"id"`
-	Workspace     string    `json:"workspace"`
-	OwnerKind     string    `json:"owner_kind"`
-	OwnerID       string    `json:"owner_id"`
-	Name          string    `json:"name"`
-	Title         string    `json:"title"`
-	Kind          Kind      `json:"kind"`
-	Live          bool      `json:"live"`
-	LatestVersion int       `json:"latest_version"`
-	LiveVersion   *int      `json:"live_version,omitempty"`
-	KeepVersions  *int      `json:"keep_versions,omitempty"`
-	Schedule      string    `json:"schedule,omitempty"`
-	Deliver       *Deliver  `json:"deliver,omitempty"`
-	Revision      int64     `json:"revision"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	Latest        *Version  `json:"latest,omitempty"`
-	VersionCount  int       `json:"version_count"`
-	DeliveryCount int       `json:"delivery_count"`
+	ID            string   `json:"id"`
+	Workspace     string   `json:"workspace"`
+	OwnerKind     string   `json:"owner_kind"`
+	OwnerID       string   `json:"owner_id"`
+	Name          string   `json:"name"`
+	Title         string   `json:"title"`
+	Kind          Kind     `json:"kind"`
+	Live          bool     `json:"live"`
+	LatestVersion int      `json:"latest_version"`
+	LiveVersion   *int     `json:"live_version,omitempty"`
+	KeepVersions  *int     `json:"keep_versions,omitempty"`
+	Schedule      string   `json:"schedule,omitempty"`
+	Deliver       *Deliver `json:"deliver,omitempty"`
+	// ConversationID is the one chat of the artifact (C1).
+	ConversationID string    `json:"conversation_id,omitempty"`
+	Revision       int64     `json:"revision"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Latest         *Version  `json:"latest,omitempty"`
+	VersionCount   int       `json:"version_count"`
+	DeliveryCount  int       `json:"delivery_count"`
+	chatVersion    int
 }
 
 // Version is one saved version. It never changes, except pinned.
@@ -326,7 +329,7 @@ func (s *Service) PutFromFile(ctx context.Context, o PutOpts, workingDir, rel st
 }
 
 const artifactSelect = `SELECT id, workspace_id, owner_kind, owner_id, name, title, kind, live, latest_version, live_version,
-  keep_versions, schedule, deliver_json, revision, created_at, updated_at FROM artifacts`
+  keep_versions, schedule, deliver_json, conversation_id, chat_version, revision, created_at, updated_at FROM artifacts`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -335,7 +338,7 @@ func scanArtifact(row scanner) (Artifact, error) {
 	var kind, deliver, created, updated string
 	var liveV, keep sql.NullInt64
 	if err := row.Scan(&a.ID, &a.Workspace, &a.OwnerKind, &a.OwnerID, &a.Name, &a.Title, &kind, &a.Live, &a.LatestVersion,
-		&liveV, &keep, &a.Schedule, &deliver, &a.Revision, &created, &updated); err != nil {
+		&liveV, &keep, &a.Schedule, &deliver, &a.ConversationID, &a.chatVersion, &a.Revision, &created, &updated); err != nil {
 		return Artifact{}, err
 	}
 	if deliver != "" {
@@ -415,15 +418,18 @@ func (s *Service) Resolve(ctx context.Context, ws string, owner Origin, ref stri
 }
 
 // ListFilter filters List. Cursor is the next_cursor of the last page.
+// Conversation matches the chat of an artifact and the versions that a
+// conversation saved.
 type ListFilter struct {
-	Workspace string
-	OwnerKind string
-	OwnerID   string
-	Kind      Kind
-	Live      *bool
-	Query     string
-	Cursor    string
-	Limit     int
+	Workspace    string
+	Conversation string
+	OwnerKind    string
+	OwnerID      string
+	Kind         Kind
+	Live         *bool
+	Query        string
+	Cursor       string
+	Limit        int
 }
 
 // ErrBadCursor is a list cursor that List did not make.
@@ -948,11 +954,12 @@ func (s *Service) ids(ctx context.Context, out *[]string, q string, args ...any)
 	return rows.Err()
 }
 
-// runOrigin is the origin of a run. The run of an agent job belongs to the agent.
+// runOrigin is the origin of a run. The run of an agent job belongs to the
+// agent. A run inside a conversation saves with a conversation origin (C6).
 func (s *Service) runOrigin(ctx context.Context, a *tools.Actor) Origin {
 	o := Origin{Kind: OriginRun, RunID: a.RunID, Author: a.Job, OwnerKind: OwnerJob, OwnerID: a.JobID}
 	if s.runs != nil {
-		if run, err := s.runs.Get(ctx, a.RunID); err == nil && run.ConversationID != "" && a.Kind == OwnerAssistant {
+		if run, err := s.runs.Get(ctx, a.RunID); err == nil && run.ConversationID != "" {
 			o.Kind, o.ConversationID = OriginConversation, run.ConversationID
 		}
 	}
@@ -987,6 +994,10 @@ func (f ListFilter) where() (string, []any, error) {
 		if f.OwnerKind != OwnerAssistant && f.OwnerID != "" {
 			add("owner_id=?", f.OwnerID)
 		}
+	}
+	if f.Conversation != "" {
+		q += " AND (conversation_id=? OR EXISTS (SELECT 1 FROM artifact_versions v WHERE v.artifact_id = artifacts.id AND v.conversation_id=?))"
+		args = append(args, f.Conversation, f.Conversation)
 	}
 	if f.Kind != "" {
 		add("kind=?", string(f.Kind))
