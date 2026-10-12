@@ -2,6 +2,7 @@ package email
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -144,5 +145,26 @@ func TestRequestReplyManyForms(t *testing.T) {
 	}
 	if len(acts.asks) != 1 || !strings.Contains(acts.asks[0], "This request has 2 forms. Open the link to answer.") {
 		t.Fatalf("asks %v", acts.asks)
+	}
+}
+
+// TestConversationReplyGoesToOperator sends a reply on an agent thread to
+// that agent; a refused reply raises an inbox item.
+func TestConversationReplyGoesToOperator(t *testing.T) {
+	t.Parallel()
+	s := testService(openEmailStore(t))
+	acts := &fakeActions{env: testRouteEnv()}
+	g := NewIngress(s, connectors.New(s.st, nil, nil), acts, time.Minute, false)
+	msg := IngressMessage{ID: "m1", From: "ops@example.com", Text: "Make it shorter."}
+	g.applyReply(t.Context(), msg, RouteDecision{}, &replyTarget{conversationID: "c1", operator: "ellis"})
+	if len(acts.askOperators) != 1 || acts.askOperators[0] != "ellis" {
+		t.Fatalf("ask operators %q", acts.askOperators)
+	}
+
+	acts = &fakeActions{env: testRouteEnv(), askErr: errors.New("refused")}
+	g = NewIngress(s, connectors.New(s.st, nil, nil), acts, time.Minute, false)
+	g.applyReply(t.Context(), msg, RouteDecision{}, &replyTarget{conversationID: "c1", operator: "ellis"})
+	if len(acts.inbox) != 1 || acts.inbox[0] != ReasonUndelivered {
+		t.Fatalf("inbox %q", acts.inbox)
 	}
 }

@@ -475,14 +475,23 @@ func (g *Ingress) runReply(ctx context.Context, msg IngressMessage, runID, inbox
 	g.svc.LinkInbound(ctx, msg.ID, runID, "", inboxID)
 }
 
-// askReply replays one reply as an assistant message (plan J: a reply on
-// a resolved item never repeats the action).
+// askReply replays one reply into the conversation of its operator (plan
+// J: a reply on a resolved item never repeats the action). A refused reply
+// raises an inbox item, so it never disappears.
 func (g *Ingress) askReply(ctx context.Context, msg IngressMessage, d RouteDecision, t *replyTarget) {
-	convID, err := g.act.Ask(ctx, d, msg, "", inboundText(msg, untrustedFor(msg), ""))
-	if err != nil {
-		g.log.Warn("email.reply ask", "id", msg.ID, "error", err)
+	convID, err := g.act.Ask(ctx, d, msg, t.operator, inboundText(msg, untrustedFor(msg), ""))
+	if err == nil {
+		g.svc.LinkInbound(ctx, msg.ID, "", convID, t.inboxID)
+		return
 	}
-	g.svc.LinkInbound(ctx, msg.ID, "", convID, t.inboxID)
+	g.log.Warn("email.reply ask", "id", msg.ID, "operator", t.operator, "error", err)
+	d.Reason = ReasonUndelivered
+	inboxID, ierr := g.act.InboxItem(ctx, d, msg)
+	if ierr != nil {
+		g.log.Warn("email.reply undelivered item", "id", msg.ID, "error", ierr)
+		inboxID = t.inboxID
+	}
+	g.svc.LinkInbound(ctx, msg.ID, "", "", inboxID)
 }
 
 // ambiguousItem records the low-severity item for one approval reply

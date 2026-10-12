@@ -1104,13 +1104,20 @@ func (s *Service) EmailInboxItem(ctx context.Context, d email.RouteDecision, msg
 			Body: sanitizeText(body), WorkspaceID: d.WorkspaceID, JobID: d.AgentID, TraceID: d.TraceID})
 	}
 	var subject, title, body, hint string
-	if d.Spoof() {
+	switch {
+	case d.Reason == email.ReasonUndelivered:
+		subject = "email/undelivered/" + msg.ID
+		title = "Email reply not delivered"
+		body = "Mail from " + msg.From + " with subject \"" + sanitizeText(msg.Subject) +
+			"\" is a reply to a Trebi conversation, but Trebi could not add it to the conversation."
+		hint = "Send the text again in the conversation."
+	case d.Spoof():
 		subject = "email/spoof/" + msg.From
 		title = "Unverified mail claims a trusted address"
 		body = "Mail from " + msg.From + " with subject \"" + sanitizeText(msg.Subject) +
 			"\" failed the DMARC check. The message was dropped."
 		hint = "The sender's mail server does not sign for this address. Check the DMARC setup of the sender."
-	} else {
+	default:
 		subject = "email/misrouted/" + msg.Tag
 		title = "Email misrouted to +" + msg.Tag
 		body = "Mail from " + msg.From + " to +" + msg.Tag + " was not delivered. No agent has this ID, or its email.accept list does not name the sender."

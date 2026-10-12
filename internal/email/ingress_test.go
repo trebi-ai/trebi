@@ -23,6 +23,8 @@ type fakeActions struct {
 	env               RouteEnv
 	wakes             []string // agent names, in wake order
 	asks              []string // assistant texts, in ask order
+	askOperators      []string // agent names of the asks; empty is the assistant
+	askErr            error
 	inbox             []string // drop or misroute reasons, in item order
 	decisions         []string // approval decisions, in decide order
 	proposalDecisions []string // proposal decisions, in decide order
@@ -38,7 +40,11 @@ func (f *fakeActions) RouteEnvFor(_ context.Context, _ string) (RouteEnv, error)
 }
 
 func (f *fakeActions) Ask(_ context.Context, _ RouteDecision, _ IngressMessage, operator, text string) (string, error) {
+	if f.askErr != nil {
+		return "", f.askErr
+	}
 	f.asks = append(f.asks, text)
+	f.askOperators = append(f.askOperators, operator)
 	return "conv-" + strconv.Itoa(len(f.asks)), nil
 }
 

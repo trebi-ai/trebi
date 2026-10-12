@@ -61,6 +61,8 @@ const (
 	ReasonNewSenderInThread = "new_sender_in_thread"
 	ReasonDecisionHold      = "decision_hold"
 	ReasonDecisionError     = "decision_error"
+	// ReasonUndelivered marks a trusted reply that its conversation refused.
+	ReasonUndelivered = "undelivered"
 )
 
 // RouteDecision is the verdict for one inbound message.
