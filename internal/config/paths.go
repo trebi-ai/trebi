@@ -523,6 +523,9 @@ func (l *pathEntryList) addCloud(cfg *Config) {
 	l.add("cloud.enabled", strconv.FormatBool(c.Active()), "true")
 	l.add("cloud.remote_mcp", strconv.FormatBool(c.RemoteMCPOn()), "true")
 	l.add("cloud.mobile", strconv.FormatBool(c.MobileOn()), "true")
+	d := cfg.Mobile.Direct
+	l.add("mobile.direct.enabled", strconv.FormatBool(d.On()), "true")
+	l.add("mobile.direct.port", strconv.Itoa(d.PortOrDefault()), strconv.Itoa(DefaultDirectPort))
 }
 
 // addEmail adds the email block rows.
@@ -937,6 +940,26 @@ func (c *Config) setCloudKey(path, value string) (handled bool, err error) {
 			return true, fmt.Errorf("cloud.mobile: %w", err)
 		}
 		c.Cloud.Mobile = &b
+	case "mobile.direct.enabled":
+		if value == "" || value == "-" {
+			c.Mobile.Direct.Enabled = nil
+			return true, nil
+		}
+		b, err := parseBoolish(value)
+		if err != nil {
+			return true, fmt.Errorf("mobile.direct.enabled: %w", err)
+		}
+		c.Mobile.Direct.Enabled = &b
+	case "mobile.direct.port":
+		if value == "" || value == "-" {
+			c.Mobile.Direct.Port = nil
+			return true, nil
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > 65535 {
+			return true, fmt.Errorf("mobile.direct.port: want a TCP port (1 to 65535)")
+		}
+		c.Mobile.Direct.Port = &n
 	default:
 		return false, nil
 	}
@@ -1335,6 +1358,8 @@ func pathKeyDescriptions() map[string]string {
 		"cloud.enabled":                 "Dial the hosted workers; false keeps a linked device offline (default true)",
 		"cloud.remote_mcp":              "Allow Claude, ChatGPT, and other remote MCP clients to use this machine through Trebi Cloud (default true)",
 		"cloud.mobile":                  "Allow paired phones and tablets to use this machine through Trebi Cloud (default true)",
+		"mobile.direct.enabled":         "Let paired phones and tablets on the same network connect to this machine directly, which is faster. Trebi Cloud stays the fallback (default true; needs a restart)",
+		"mobile.direct.port":            "Port for phones and tablets on the same network (default 7434; needs a restart)",
 		"connectors.registries":         `MCP registries the connector catalog reads: name=url pairs, or JSON [{"name","url","kind"}] with kind mcp-registry, smithery, or docker`,
 	}
 }

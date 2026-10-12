@@ -124,6 +124,7 @@ type Cloud interface {
 type Sessions interface {
 	CloseClient(clientID, code string)
 	Connected(clientID string) bool
+	DirectError() error
 }
 
 // Service owns the mobile_clients table and the offers.
@@ -504,6 +505,15 @@ func (s *Service) hub() Sessions {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sessions
+}
+
+// DirectError is the last bind error of the direct listener for phones on
+// the same network, or nil.
+func (s *Service) DirectError() error {
+	if h := s.hub(); h != nil {
+		return h.DirectError()
+	}
+	return nil
 }
 
 func (s *Service) withLive(c Client) Client {

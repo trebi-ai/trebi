@@ -34,6 +34,7 @@ type Config struct {
 	Assistant  AssistantConfig  `yaml:"assistant,omitempty"`
 	Email      EmailConfig      `yaml:"email,omitempty"`
 	Cloud      CloudConfig      `yaml:"cloud,omitempty"`
+	Mobile     MobileConfig     `yaml:"mobile,omitempty"`
 	Connectors ConnectorsConfig `yaml:"connectors,omitempty"`
 	Requests   RequestsConfig   `yaml:"requests,omitempty"`
 	Inbox      InboxConfig      `yaml:"inbox,omitempty"`
@@ -1091,6 +1092,7 @@ func (c *Config) Validate() error {
 	ce.checkAssistant(c.Assistant)
 	ce.checkEmail(*c)
 	ce.checkCloud(*c)
+	ce.checkMobile(c.Mobile)
 	ce.checkConnectors(*c)
 
 	if len(ce.Errors) == 0 {

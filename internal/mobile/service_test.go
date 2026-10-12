@@ -63,6 +63,8 @@ func (f *fakeSessions) CloseClient(id, code string) {
 
 func (f *fakeSessions) Connected(string) bool { return true }
 
+func (f *fakeSessions) DirectError() error { return nil }
+
 func TestPairOfferLifecycle(t *testing.T) {
 	svc, cloud, st := newTestService(t)
 	ctx := context.Background()

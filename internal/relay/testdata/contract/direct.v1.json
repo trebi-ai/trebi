@@ -1,0 +1,65 @@
+{
+  "note": "TCP; each Noise message has a 2-byte big-endian length before it; the bytes after the handshake are the records of records.v1.json",
+  "max_message": 65535,
+  "framing": [
+    {
+      "message_hex": "01",
+      "framed_hex": "000101"
+    },
+    {
+      "message_hex": "616263",
+      "framed_hex": "0003616263"
+    },
+    {
+      "message_hex": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+      "framed_hex": "012cabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+    }
+  ],
+  "split_reads": {
+    "note": "two framed messages read in chunks of these sizes; the reader keeps partial bytes",
+    "stream_hex": "000568656c6c6f012cabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+    "chunks": [
+      1,
+      3,
+      2,
+      100,
+      500
+    ],
+    "messages_hex": [
+      "68656c6c6f",
+      "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+    ]
+  },
+  "control": {
+    "note": "a direct control record from the daemon; it continues the r2i cipher of handshake.v1.json after its transport list",
+    "plaintext_hex": "017b2274797065223a22646972656374222c2276223a312c226164647273223a5b223139322e3136382e312e31303a37343334222c223130302e3130312e3130322e3130333a37343334222c225b666437613a313135633a613165303a3a315d3a37343334225d7d",
+    "ciphertext_hex": "cf986cdcf05a4d67d8d1619476422538148fe1bd027e891d2d2b72c730b16398fcd5b591d4d5ce0ff8c247cebe2d32bcd600a0f5eecac456cb8c4e7040db531b99878284ebeabcd83e594dc1d8e17d16066704d3abbbb7b30565ddfb8282a0c68201c5d34af6bbd7a4b1a4dd273fc19eeff27c8b1910c60d",
+    "framed_hex": "0078cf986cdcf05a4d67d8d1619476422538148fe1bd027e891d2d2b72c730b16398fcd5b591d4d5ce0ff8c247cebe2d32bcd600a0f5eecac456cb8c4e7040db531b99878284ebeabcd83e594dc1d8e17d16066704d3abbbb7b30565ddfb8282a0c68201c5d34af6bbd7a4b1a4dd273fc19eeff27c8b1910c60d"
+  },
+  "bad": [
+    {
+      "name": "length 0",
+      "stream_hex": "0000",
+      "side": "read"
+    },
+    {
+      "name": "short read in the length",
+      "stream_hex": "00",
+      "side": "read"
+    },
+    {
+      "name": "short read in the message",
+      "stream_hex": "0005aabbcc",
+      "side": "read"
+    },
+    {
+      "name": "empty message",
+      "side": "write"
+    },
+    {
+      "name": "length > 65535",
+      "message_len": 65536,
+      "side": "write"
+    }
+  ]
+}

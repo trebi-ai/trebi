@@ -371,8 +371,10 @@ func sampleSetValue(key string) string {
 		return "https://staging-api.trebi.ai"
 	case key == "cloud.fallback_urls":
 		return "https://trebi-cloud-api-staging.ocral.workers.dev"
-	case key == "cloud.enabled", key == "cloud.remote_mcp", key == "cloud.mobile":
+	case key == "cloud.enabled", key == "cloud.remote_mcp", key == "cloud.mobile", key == "mobile.direct.enabled":
 		return "true"
+	case key == "mobile.direct.port":
+		return "7435"
 	case key == "email.token":
 		return "secret:trebi_mail"
 	case key == "email.domain":

@@ -597,6 +597,14 @@ func (s *Server) mobileDoctor(cfg *config.Config, ent entitle.State) []alerts.Do
 			Message: "This build has no embedded UI, so a paired phone gets no page. Install a release build.",
 		})
 	}
+	if s.mobile != nil && cfg.Mobile.Direct.On() {
+		if err := s.mobile.DirectError(); err != nil {
+			out = append(out, alerts.DoctorFinding{
+				ID: "mobile-direct-port", Severity: "warn", Code: "mobile_direct_bind",
+				Message: fmt.Sprintf("Phones and tablets on the same network cannot connect directly, because port %d is not available. Phones still connect through Trebi Cloud. Change the port in Settings, then restart Trebi.", cfg.Mobile.Direct.PortOrDefault()),
+			})
+		}
+	}
 	return out
 }
 

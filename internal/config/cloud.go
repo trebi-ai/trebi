@@ -68,6 +68,38 @@ func (c CloudConfig) APIURLs() []string {
 	return append([]string{c.APIURLOrDefault()}, c.FallbackURLsOrDefault()...)
 }
 
+// DefaultDirectPort is the default mobile.direct.port.
+const DefaultDirectPort = 7434
+
+// MobileConfig is the phone block. cloud.mobile stays the on/off switch
+// for phone access; this block holds the direct path on the same network.
+type MobileConfig struct {
+	Direct MobileDirect `yaml:"direct,omitempty"`
+}
+
+// MobileDirect is the direct listener for phones on the same network.
+type MobileDirect struct {
+	Enabled *bool `yaml:"enabled,omitempty"` // nil → true
+	Port    *int  `yaml:"port,omitempty"`    // nil → DefaultDirectPort
+}
+
+// On reports whether the daemon opens the direct listener.
+func (d MobileDirect) On() bool { return d.Enabled == nil || *d.Enabled }
+
+// PortOrDefault returns the configured port or the default.
+func (d MobileDirect) PortOrDefault() int {
+	if d.Port == nil {
+		return DefaultDirectPort
+	}
+	return *d.Port
+}
+
+func (e *ConfigError) checkMobile(m MobileConfig) {
+	if p := m.Direct.PortOrDefault(); p < 1 || p > 65535 {
+		e.add("mobile.direct.port", fmt.Sprintf("%d is not a TCP port (1 to 65535)", p))
+	}
+}
+
 // checkCloud validates the cloud block. A Worker URL and a granted cloud
 // link at once is a runtime conflict that doctor reports, not a config
 // error: the link state lives in the store (plan 2026-09-22 Part D).

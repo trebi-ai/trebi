@@ -86,7 +86,7 @@ func TestConfigSchemaDraftYAML(t *testing.T) {
 	if r := byKey["assistant.api_key"]; r == nil || r["secret"] != true {
 		t.Fatalf("assistant.api_key = %v", r)
 	}
-	if secs, _ := body["sections"].([]any); len(secs) != 17 {
+	if secs, _ := body["sections"].([]any); len(secs) != 18 {
 		t.Fatalf("sections = %v", body["sections"])
 	}
 

@@ -83,6 +83,23 @@ type Control struct {
 	Code string `json:"code,omitempty"`
 }
 
+// DirectRecord is the "direct" control record. The daemon sends it on a
+// relay session to name its direct addresses. An empty list means no
+// direct path.
+type DirectRecord struct {
+	Type  string   `json:"type"`
+	V     int      `json:"v"`
+	Addrs []string `json:"addrs"`
+}
+
+// NewDirectRecord builds the record. A nil list becomes [].
+func NewDirectRecord(addrs []string) DirectRecord {
+	if addrs == nil {
+		addrs = []string{}
+	}
+	return DirectRecord{Type: "direct", V: ProtocolV, Addrs: addrs}
+}
+
 // HandshakeConfig builds the Noise state for one side. A nil Ephemeral
 // makes a random key; the contract vectors pin it.
 func HandshakeConfig(initiator bool, deviceID string, static noise.DHKey, peer []byte, psk []byte, ephemeral *noise.DHKey) noise.Config {
@@ -125,8 +142,8 @@ func OpenRecord(cs *noise.CipherState, msg []byte) (byte, []byte, error) {
 	return pt[0], pt[1:], nil
 }
 
-// SealControl encrypts one control record.
-func SealControl(cs *noise.CipherState, c Control) ([]byte, error) {
+// SealControl encrypts one control record: a Control or a DirectRecord.
+func SealControl(cs *noise.CipherState, c any) ([]byte, error) {
 	raw, err := json.Marshal(c)
 	if err != nil {
 		return nil, err

@@ -74,8 +74,10 @@ type Hub struct {
 	// ephemeral pins the responder ephemeral key (contract vectors only).
 	ephemeral *noise.DHKey
 
-	mu       sync.Mutex
-	sessions map[string]*session
+	mu        sync.Mutex
+	sessions  map[string]*session
+	direct    *Direct // nil until ServeDirect binds
+	directErr error   // the last bind error of ServeDirect
 }
 
 // NewHub builds the hub. root is the handler of the loopback listener.
@@ -93,19 +95,15 @@ func (h *Hub) PublicKey() []byte { return h.key.Public }
 // OpenRelay starts a session for one phone socket. The session ends when
 // ctx ends (the cloud socket dropped), on CloseRelay, or on a fault.
 func (h *Hub) OpenRelay(ctx context.Context, sid, cloudClientID string) {
-	h.mu.Lock()
-	if _, ok := h.sessions[sid]; ok {
-		h.mu.Unlock()
+	s := h.newSession(sid, cloudWire{h: h, sid: sid})
+	s.cloudClientID = cloudClientID
+	switch h.add(s) {
+	case addExists:
 		return
-	}
-	if len(h.sessions) >= MaxSessions {
-		h.mu.Unlock()
+	case addFull:
 		h.refuse(sid, ReasonLimit)
 		return
 	}
-	s := &session{hub: h, sid: sid, cloudClientID: cloudClientID, in: make(chan []byte, queueFrames), done: make(chan struct{})}
-	h.sessions[sid] = s
-	h.mu.Unlock()
 	go s.run(ctx) // stop: s.done closes, or ctx ends
 }
 
@@ -145,7 +143,7 @@ func (h *Hub) CloseRelay(sid, _ string) {
 // ClientRevoked ends the sessions of a phone that the cloud removed, then
 // removes the phone here.
 func (h *Hub) ClientRevoked(ctx context.Context, cloudClientID string) {
-	for _, s := range h.matching(func(s *session) bool { return s.cloudClientID == cloudClientID }) {
+	for _, s := range h.matching(func(s *session) bool { return s.cloudID() == cloudClientID }) {
 		s.end(ReasonRevoked, CodeRevoked)
 	}
 	h.book.Revoked(ctx, cloudClientID)
@@ -181,6 +179,32 @@ func (h *Hub) Connected(clientID string) bool {
 	return len(h.matching(func(s *session) bool { return s.clientID() == clientID })) > 0
 }
 
+func (h *Hub) newSession(sid string, w wire) *session {
+	return &session{hub: h, sid: sid, wire: w, hsTimeout: handshakeTimeout, in: make(chan []byte, queueFrames), done: make(chan struct{})}
+}
+
+type addResult int
+
+const (
+	addOK addResult = iota
+	addExists
+	addFull
+)
+
+// add registers a session under the total limit.
+func (h *Hub) add(s *session) addResult {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.sessions[s.sid]; ok {
+		return addExists
+	}
+	if len(h.sessions) >= MaxSessions {
+		return addFull
+	}
+	h.sessions[s.sid] = s
+	return addOK
+}
+
 func (h *Hub) matching(keep func(*session) bool) []*session {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -207,24 +231,58 @@ func (h *Hub) drop(s *session) {
 	h.mu.Unlock()
 }
 
+// wire carries the Noise messages of one session: the cloud relay, or a
+// direct TCP connection.
+type wire interface {
+	Send(msg []byte) error
+	// Close ends the transport. reason, when set, is the relay_close reason.
+	Close(reason string)
+}
+
+// cloudWire sends through the cloud socket by sid.
+type cloudWire struct {
+	h   *Hub
+	sid string
+}
+
+func (w cloudWire) Send(msg []byte) error { return w.h.cloud.SendRelay(w.sid, msg) }
+
+func (w cloudWire) Close(reason string) {
+	if reason != "" {
+		w.h.refuse(w.sid, reason)
+	}
+}
+
 // session is one phone socket: handshake, then yamux and HTTP.
 type session struct {
-	hub           *Hub
-	sid           string
-	cloudClientID string
-	in            chan []byte
-	queued        atomic.Int64 // bytes in in
-	done          chan struct{}
+	hub       *Hub
+	sid       string
+	wire      wire
+	direct    bool   // a direct TCP session (no cloud client id until the handshake)
+	remote    string // remote address of a direct session
+	hsTimeout time.Duration
+	// afterHandshake, when set, runs once when the handshake ends.
+	afterHandshake func()
+	in             chan []byte
+	queued         atomic.Int64 // bytes in in
+	done           chan struct{}
 
-	mu       sync.Mutex
-	client   mobile.Client
-	ready    bool
-	sendCS   *noise.CipherState
-	ended    bool
-	mux      *yamux.Session
-	endedBy  string // reason sent to the cloud, "" when the cloud closed it
-	endCode  string
-	stopOnce sync.Once
+	mu            sync.Mutex
+	cloudClientID string
+	client        mobile.Client
+	ready         bool
+	sendCS        *noise.CipherState
+	ended         bool
+	mux           *yamux.Session
+	endedBy       string // reason sent to the cloud, "" when the cloud closed it
+	endCode       string
+	stopOnce      sync.Once
+}
+
+func (s *session) cloudID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cloudClientID
 }
 
 func (s *session) clientID() string {
@@ -255,9 +313,7 @@ func (s *session) end(reason, code string) {
 			// and mux.Close waits for both.
 			go func() { _ = mux.Close() }() // stop: Close returns
 		}
-		if reason != "" {
-			s.hub.refuse(s.sid, reason)
-		}
+		s.wire.Close(reason)
 	})
 }
 
@@ -273,7 +329,7 @@ func (s *session) seal(fn func(*noise.CipherState) ([]byte, error)) error {
 	if err != nil {
 		return err
 	}
-	return s.hub.cloud.SendRelay(s.sid, msg)
+	return s.wire.Send(msg)
 }
 
 // next waits for one inbound frame during the handshake.
@@ -297,11 +353,14 @@ func (s *session) run(ctx context.Context) {
 	stop := context.AfterFunc(ctx, func() { s.end("", "") })
 	defer stop()
 
-	timer := time.NewTimer(handshakeTimeout)
+	timer := time.NewTimer(s.hsTimeout)
 	defer timer.Stop()
 	recv, err := s.handshake(ctx, timer.C)
+	if s.afterHandshake != nil {
+		s.afterHandshake()
+	}
 	if err != nil {
-		h.log.Info("relay.refused", "sid", s.sid, "err", err)
+		h.log.Info("relay.refused", "sid", s.sid, "direct", s.direct, "remote", s.remote, "err", err)
 		s.end(ReasonRefused, "")
 		return
 	}
@@ -313,7 +372,15 @@ func (s *session) run(ctx context.Context) {
 	h.book.Seen(c.ID, time.Now().UTC())
 	h.pub.Connected(ctx, c.ID, true)
 	defer h.pub.Connected(context.WithoutCancel(ctx), c.ID, false)
-	h.log.Info("relay.session", "sid", s.sid, "client_id", c.ID)
+	if s.direct {
+		h.log.Info("mobile.direct.session", "state", "open", "sid", s.sid, "client_id", c.ID, "client", c.Name, "remote", s.remote)
+		defer h.log.Info("mobile.direct.session", "state", "close", "sid", s.sid, "client_id", c.ID, "client", c.Name, "remote", s.remote)
+	} else {
+		h.log.Info("relay.session", "sid", s.sid, "client_id", c.ID)
+		if d := h.directServer(); d != nil {
+			d.announce(s)
+		}
+	}
 
 	conn := &recordConn{
 		recv: recv, in: s.in, queued: &s.queued, done: s.done,
@@ -397,7 +464,7 @@ func (s *session) handshake(ctx context.Context, timer <-chan time.Time) (*noise
 	if err != nil {
 		return nil, err
 	}
-	if err := h.cloud.SendRelay(s.sid, msg2); err != nil {
+	if err := s.wire.Send(msg2); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -436,14 +503,15 @@ func (s *session) readHello(hs *noise.HandshakeState, msg1 []byte) (Hello, error
 	if err := json.Unmarshal(raw, &hello); err != nil || hello.V != ProtocolV {
 		return Hello{}, fmt.Errorf("%w: bad hello", errRefused)
 	}
-	if hello.ClientID == "" || hello.ClientID != s.cloudClientID {
+	if hello.ClientID == "" || (!s.direct && hello.ClientID != s.cloudID()) {
 		return Hello{}, fmt.Errorf("%w: client id does not match", errRefused)
 	}
 	return hello, nil
 }
 
 // choosePSK picks the psk of a known phone, or the offer psk plus a new
-// client psk for a pairing.
+// client psk for a pairing. A direct session takes only a known phone: it
+// has no cloud client id to check, so the stored key and psk are the proof.
 func (s *session) choosePSK(pub []byte, hello Hello) (client mobile.Client, known bool, psk, clientPSK []byte, err error) {
 	h := s.hub
 	if client, known = h.book.Lookup(pub); known {
@@ -453,7 +521,15 @@ func (s *session) choosePSK(pub []byte, hello Hello) (client mobile.Client, know
 		if len(h.matching(func(o *session) bool { return o.clientID() == client.ID })) >= MaxSessionsPerClient {
 			return client, true, nil, nil, fmt.Errorf("%w: session limit", errRefused)
 		}
+		if s.direct {
+			s.mu.Lock()
+			s.cloudClientID = client.CloudClientID
+			s.mu.Unlock()
+		}
 		return client, true, client.PSK, nil, nil
+	}
+	if s.direct {
+		return client, false, nil, nil, fmt.Errorf("%w: unknown key on the direct path", errRefused)
 	}
 	offer, ok := h.book.OfferPSK(hello.Offer)
 	if hello.Offer == "" || !ok {

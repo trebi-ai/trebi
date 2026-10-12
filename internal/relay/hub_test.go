@@ -79,6 +79,11 @@ func (b *fakeBook) Seen(string, time.Time) {
 func (b *fakeBook) Revoked(_ context.Context, cloudClientID string) {
 	b.mu.Lock()
 	b.revoked = append(b.revoked, cloudClientID)
+	for k, c := range b.clients {
+		if c.CloudClientID == cloudClientID {
+			delete(b.clients, k)
+		}
+	}
 	b.mu.Unlock()
 }
 

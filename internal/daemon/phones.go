@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/cloudlink"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/mobile"
 	"github.com/trebi-ai/trebi/internal/relay"
@@ -36,7 +38,77 @@ func (c *ControlPlane) StartPhones(root http.Handler, pc PhoneCloud) error {
 	c.Relay = relay.NewHub(key, c.Mobile, pc, pc, c.Mobile, root, c.Opts.Version)
 	c.Mobile.WithSessions(c.Relay)
 	pc.BindHub(c.Relay)
+	c.phones = pc
 	return nil
+}
+
+// directHost pins the direct listener; the relaytest loopback uses
+// 127.0.0.1, which a release build never announces.
+type directHost interface {
+	DirectOptions(port int) relay.DirectOptions
+}
+
+// directWorker opens the direct listener for phones on the same network
+// while the gate is open and mobile.direct.enabled is on, and closes it
+// when either turns off. The port opens on all interfaces only for a
+// machine that serves phones. Stop condition: ctx ends.
+func (c *ControlPlane) directWorker(ctx context.Context) {
+	every := cmp.Or(c.Opts.DirectInterval, 5*time.Second)
+	retry := cmp.Or(c.Opts.DirectRetry, time.Minute)
+	t := time.NewTicker(every)
+	defer t.Stop()
+	var (
+		cancel  context.CancelFunc
+		done    chan struct{}
+		retryAt time.Time
+	)
+	stop := func() {
+		if done != nil {
+			cancel()
+			<-done
+			done = nil
+		}
+	}
+	defer stop()
+	for {
+		opts, on := c.directOptions()
+		switch {
+		case on && done == nil && !time.Now().Before(retryAt):
+			sub, cn := context.WithCancel(ctx)
+			cancel, done = cn, make(chan struct{})
+			go func(d chan struct{}) { // stop: sub ends
+				defer close(d)
+				_ = c.Relay.ServeDirect(sub, opts) // logs mobile.direct.bind_failed; doctor reads DirectError
+			}(done)
+		case !on:
+			stop()
+		}
+		var ended <-chan struct{}
+		if done != nil {
+			ended = done
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ended:
+			cancel()
+			done, retryAt = nil, time.Now().Add(retry)
+		case <-t.C:
+		}
+	}
+}
+
+// directOptions reads mobile.direct and the gate.
+func (c *ControlPlane) directOptions() (relay.DirectOptions, bool) {
+	cfg, err := config.Load()
+	if err != nil || !cfg.Mobile.Direct.On() || !c.phones.MobileAllowed() {
+		return relay.DirectOptions{}, false
+	}
+	port := cfg.Mobile.Direct.PortOrDefault()
+	if dh, ok := c.phones.(directHost); ok {
+		return dh.DirectOptions(port), true
+	}
+	return relay.DirectOptions{Port: port}, true
 }
 
 // cloudPhones adapts the cloud link to PhoneCloud.

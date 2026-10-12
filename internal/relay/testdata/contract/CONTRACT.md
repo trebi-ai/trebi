@@ -1,6 +1,6 @@
 # trebi-relay/1
 
-This document is the published contract between a paired phone (the Trebi app, `trebi-ui/mobile/relay`) and `trebid` (`internal/relay`). The cloud carries these bytes as opaque `relay_frame.bytes` (see `internal/cloudlink/testdata/contract/CONTRACT.md`, "Relay"). The fixtures in this directory define the exact bytes. `vectors_test.go` writes `handshake.v1.json`, `records.v1.json`, and `yamux.v1.json` with `-update` and checks them on every run. The Rust tests check the same files. A change is a coordinated release: change this repository first, then re-vendor into `trebi-ui/mobile/relay/contract/` byte-identical.
+This document is the published contract between a paired phone (the Trebi app, `trebi-ui/mobile/relay`) and `trebid` (`internal/relay`). The cloud carries these bytes as opaque `relay_frame.bytes` (see `internal/cloudlink/testdata/contract/CONTRACT.md`, "Relay"). The fixtures in this directory define the exact bytes. `vectors_test.go` writes `handshake.v1.json`, `records.v1.json`, `direct.v1.json`, and `yamux.v1.json` with `-update` and checks them on every run. The Rust tests check the same files. A change is a coordinated release: change this repository first, then re-vendor into `trebi-ui/mobile/relay/contract/` byte-identical.
 
 ## Pairing link
 
@@ -50,7 +50,7 @@ Each Noise transport message holds one record. The plaintext of a record is at m
 | `0x00` | mux bytes |
 | `0x01` | control JSON |
 
-Control messages: `{"type":"ready"}` (once per side, first), and `{"type":"error","code":"revoked|scope_changed|daemon_stopping"}`. An error record ends the session. A side ignores a control type that it does not know. A record of another type, an empty record, or a decrypt failure ends the session. Noise nonces make a replayed or reordered message fail.
+Control messages: `{"type":"ready"}` (once per side, first), `{"type":"error","code":"revoked|scope_changed|daemon_stopping"}`, and `{"type":"direct","v":1,"addrs":[…]}` (see "Direct transport"). An error record ends the session. A side ignores a control type that it does not know. A record of another type, an empty record, or a decrypt failure ends the session. Noise nonces make a replayed or reordered message fail.
 
 `records.v1.json` has one record of each type with its ciphertext (they continue the initiator cipher of `handshake.v1.json`), and the record sizes for a split of 1, 16,383, 16,384, and 40,000 mux bytes. The base64 of a full message is about 21,900 chars.
 
@@ -67,3 +67,22 @@ Each stream carries HTTP/1.1, as the webview sends it. The `Host` header is `127
 - A session ends when the phone socket closes. A new socket makes a new handshake. There is no rekey in v1.
 - At most 8 sessions per phone and 32 in total.
 - A phone with the scope `read` can use only `GET`, `HEAD`, and `OPTIONS`.
+
+## Direct transport
+
+A phone on the same network as the machine can skip the cloud. The direct path runs the same session as the relay: the same pattern, the same prologue (`trebi-relay/1`, NUL, device id), the same records, the same yamux settings, and the same HTTP streams. Only the transport changes.
+
+- The transport is plain TCP. Noise gives confidentiality and identity, so there is no TLS.
+- Each Noise message has a 2-byte big-endian length before it. The length is 1 to 65,535. A length of 0 or a close inside a frame ends the session. A sender never frames an empty message or a message longer than 65,535 bytes.
+- The phone is the initiator. The daemon listens on `mobile.direct.port` (default 7434) on all interfaces. The `/v1` listener stays on `127.0.0.1`.
+- The daemon accepts only a phone that is already paired. The Noise initiator static key must be a stored phone key, `hello.client_id` must be the cloud id of that phone, and the stored psk of that phone must decrypt. The daemon never uses an offer psk on the direct path, so a pairing is never possible there. An unknown key, a removed phone, or a closed gate gets no message 2: the daemon closes the connection.
+- The gate is the same as for the relay: phone access on and the plan has `remote_access`. When the gate closes, the daemon ends the direct sessions.
+- The daemon side has a handshake limit of 5 seconds and at most 4 handshakes in flight from one remote IP. Direct sessions count toward the limits in "Sessions".
+
+### Direct control record
+
+After its `ready` record on a relay session, the daemon sends `{"type":"direct","v":1,"addrs":["192.168.1.10:7434","[fd7a:115c:a1e0::1]:7434"]}`. It sends it again when its addresses change. Each entry is `host:port`, and an IPv6 host is in brackets. The list has at most 8 entries. An empty list means that there is no direct path now. The daemon announces only the addresses that a phone on the same network can reach: RFC 1918, `100.64.0.0/10` (Tailscale and other VPNs), and IPv6 ULA. It never announces loopback or link-local addresses. The daemon sends no record when it has no direct listener. A phone that does not know the record ignores it, as for any control type.
+
+The phone tries all addresses at the same time. It keeps the first that completes the handshake and the `ready` exchange, and it closes the others. Suggested limits on the phone: 300 ms to connect, 2 s for the handshake. The phone keeps the relay session open as the fallback. When the direct session fails, the phone uses the relay and tries direct again after the next `direct` record or a backoff.
+
+`direct.v1.json` has framing cases (message to framed bytes), one stream of two framed messages read in small chunks, one `direct` control record sealed with the r2i cipher of `handshake.v1.json` (after its transport list), and bad cases for the reader and the writer.

@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -106,8 +108,16 @@ func (l *Loopback) BindHub(h *Hub) {
 }
 
 func (l *Loopback) MobileAllowed() bool { return true }
-func (l *Loopback) DeviceID() string    { return loopDeviceID }
-func (l *Loopback) DeviceName() string  { return "relaytest" }
+
+// DirectOptions serves and announces the direct path on 127.0.0.1 only.
+func (l *Loopback) DirectOptions(port int) DirectOptions {
+	return DirectOptions{
+		Listen: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		Addrs:  func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil },
+	}
+}
+func (l *Loopback) DeviceID() string   { return loopDeviceID }
+func (l *Loopback) DeviceName() string { return "relaytest" }
 
 func (l *Loopback) PairTarget() mobile.Target {
 	return mobile.Target{APIHost: l.addr, DeviceID: loopDeviceID, Machine: "relaytest", Linked: true, RemoteAccess: true, MobileOn: true}

@@ -102,13 +102,13 @@ func (g *remoteGate) mobile(w http.ResponseWriter, r *http.Request, a tools.Acto
 	next.ServeHTTP(w, r)
 }
 
-// touchesRemoteSwitch reports whether a config patch names cloud.remote_mcp
-// or cloud.mobile. It fails closed on a body it cannot read.
+// touchesRemoteSwitch reports whether a config patch names cloud.remote_mcp,
+// cloud.mobile, or mobile.direct. It fails closed on a body it cannot read.
 func touchesRemoteSwitch(r *http.Request) bool {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		return true
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	return bytes.Contains(body, []byte("remote_mcp")) || bytes.Contains(body, []byte("cloud.mobile")) || bytes.Contains(body, []byte(`"mobile"`))
+	return bytes.Contains(body, []byte("remote_mcp")) || bytes.Contains(body, []byte("cloud.mobile")) || bytes.Contains(body, []byte("mobile.direct")) || bytes.Contains(body, []byte(`"mobile"`))
 }

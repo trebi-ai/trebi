@@ -78,6 +78,10 @@ type Options struct {
 	LoginMaxAge time.Duration
 	// StateSweepInterval is the state TTL and retired-owner sweep (default 1h).
 	StateSweepInterval time.Duration
+	// DirectInterval is how often the direct phone listener follows the
+	// gate (default 5s). A bind failure waits DirectRetry (default 1m).
+	DirectInterval time.Duration
+	DirectRetry    time.Duration
 	// UpdateCheckInterval is the connector update check (default 24h). The
 	// first check runs after 10m, or after the interval when it is shorter.
 	UpdateCheckInterval time.Duration
@@ -117,6 +121,7 @@ type ControlPlane struct {
 	Cloud     *cloudlink.Service
 	Mobile    *mobile.Service // nil until StartPhones
 	Relay     *relay.Hub      // nil until StartPhones
+	phones    PhoneCloud      // nil until StartPhones
 	Webhooks  *webhooks.Service
 	Launcher  *launch.Launcher
 	Requests  *requests.Service
@@ -476,6 +481,13 @@ func (c *ControlPlane) Start(parent context.Context) {
 	// The cloud socket pushes hosted mail and webhooks. It dials out; the
 	// machine opens no port (plan 2026-09-22 Part N).
 	c.Cloud.Start(ctx)
+	if c.Relay != nil {
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.directWorker(ctx)
+		}()
+	}
 
 	c.wg.Add(1)
 	go func() {

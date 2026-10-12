@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -113,9 +115,10 @@ func (t *tap) Write(p []byte) (int, error) {
 // TestContractVectors pins the bytes of trebi-relay/1. The Rust client
 // checks the same files (trebi-ui/mobile/relay/tests/vectors.rs).
 func TestContractVectors(t *testing.T) {
-	hv, iSend, rRecv := buildHandshake(t)
+	hv, c := buildHandshake(t)
 	writeOrCheck(t, "handshake.v1.json", hv)
-	writeOrCheck(t, "records.v1.json", buildRecords(t, iSend, rRecv))
+	writeOrCheck(t, "records.v1.json", buildRecords(t, c.iSend, c.rRecv))
+	writeOrCheck(t, "direct.v1.json", buildDirect(t, c.rSend, c.iRecv))
 
 	// yamux framing depends on scheduling; check its shape, write it once.
 	yv := buildYamux(t)
@@ -216,8 +219,14 @@ func fixedKey(start byte) noise.DHKey {
 	return noise.DHKey{Private: priv, Public: pub}
 }
 
+// vectorCiphers are the four transport ciphers after the transport list
+// of handshake.v1.json.
+type vectorCiphers struct {
+	iSend, iRecv, rSend, rRecv *noise.CipherState
+}
+
 // buildHandshake makes the vector from the fixed keys with the Go code.
-func buildHandshake(t *testing.T) (handshakeVector, *noise.CipherState, *noise.CipherState) {
+func buildHandshake(t *testing.T) (handshakeVector, vectorCiphers) {
 	t.Helper()
 	deviceID := "01JA2B3C4D5E6F7G8H9J0K1DEV"
 	is, ie, rs, re := fixedKey(0x00), fixedKey(0x40), fixedKey(0x20), fixedKey(0x60)
@@ -288,7 +297,7 @@ func buildHandshake(t *testing.T) (handshakeVector, *noise.CipherState, *noise.C
 		}
 		v.Transport = append(v.Transport, transportVector{Dir: st.dir, Plaintext: hex.EncodeToString(st.pt), Ciphertext: hex.EncodeToString(ct)})
 	}
-	return v, iSend, rRecv
+	return v, vectorCiphers{iSend: iSend, iRecv: iRecv, rSend: rSend, rRecv: rRecv}
 }
 
 func buildRecords(t *testing.T, iSend, rRecv *noise.CipherState) recordsVector {
@@ -322,6 +331,134 @@ func buildRecords(t *testing.T, iSend, rRecv *noise.CipherState) recordsVector {
 		v.Split = append(v.Split, sv)
 	}
 	v.Bad = []badRecordHex{{"empty", ""}, {"unknown type", "02"}}
+	return v
+}
+
+type directVector struct {
+	Note       string           `json:"note"`
+	MaxMessage int              `json:"max_message"`
+	Framing    []directFrame    `json:"framing"`
+	SplitReads directSplit      `json:"split_reads"`
+	Control    directControl    `json:"control"`
+	Bad        []directBadFrame `json:"bad"`
+}
+
+type directFrame struct {
+	Message string `json:"message_hex"`
+	Framed  string `json:"framed_hex"`
+}
+
+type directSplit struct {
+	Note     string   `json:"note"`
+	Stream   string   `json:"stream_hex"`
+	Chunks   []int    `json:"chunks"`
+	Messages []string `json:"messages_hex"`
+}
+
+type directControl struct {
+	Note       string `json:"note"`
+	Plaintext  string `json:"plaintext_hex"`
+	Ciphertext string `json:"ciphertext_hex"`
+	Framed     string `json:"framed_hex"`
+}
+
+type directBadFrame struct {
+	Name       string `json:"name"`
+	Stream     string `json:"stream_hex,omitempty"`
+	MessageLen int    `json:"message_len,omitempty"`
+	Side       string `json:"side"` // read or write
+}
+
+// chunkReader returns the stream in the given read sizes.
+type chunkReader struct {
+	b      []byte
+	chunks []int
+}
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if len(r.b) == 0 {
+		return 0, io.EOF
+	}
+	n := len(r.b)
+	if len(r.chunks) > 0 {
+		n, r.chunks = min(r.chunks[0], n), r.chunks[1:]
+	}
+	n = copy(p, r.b[:n])
+	r.b = r.b[n:]
+	return n, nil
+}
+
+func buildDirect(t *testing.T, rSend, iRecv *noise.CipherState) directVector {
+	t.Helper()
+	frame := func(msg []byte) []byte {
+		var b bytes.Buffer
+		if err := WriteFrame(&b, msg); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	v := directVector{
+		Note:       "TCP; each Noise message has a 2-byte big-endian length before it; the bytes after the handshake are the records of records.v1.json",
+		MaxMessage: MaxDirectMessage,
+	}
+	big := bytes.Repeat([]byte{0xab}, 300)
+	for _, m := range [][]byte{{0x01}, []byte("abc"), big} {
+		v.Framing = append(v.Framing, directFrame{Message: hex.EncodeToString(m), Framed: hex.EncodeToString(frame(m))})
+	}
+
+	msgs := [][]byte{[]byte("hello"), big}
+	var stream []byte
+	for _, m := range msgs {
+		stream = append(stream, frame(m)...)
+	}
+	chunks := []int{1, 3, 2, 100, 500}
+	r := &chunkReader{b: stream, chunks: slices.Clone(chunks)}
+	v.SplitReads = directSplit{Note: "two framed messages read in chunks of these sizes; the reader keeps partial bytes", Stream: hex.EncodeToString(stream), Chunks: chunks}
+	for range msgs {
+		m, err := ReadFrame(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v.SplitReads.Messages = append(v.SplitReads.Messages, hex.EncodeToString(m))
+	}
+	if _, err := ReadFrame(r); !errors.Is(err, io.EOF) {
+		t.Fatalf("after the stream = %v, want EOF", err)
+	}
+
+	raw, err := json.Marshal(NewDirectRecord([]string{"192.168.1.10:7434", "100.101.102.103:7434", "[fd7a:115c:a1e0::1]:7434"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct, err := SealControl(rSend, NewDirectRecord([]string{"192.168.1.10:7434", "100.101.102.103:7434", "[fd7a:115c:a1e0::1]:7434"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	typ, data, err := OpenRecord(iRecv, ct)
+	if err != nil || typ != recordControl || !bytes.Equal(data, raw) {
+		t.Fatalf("direct record: %v", err)
+	}
+	v.Control = directControl{
+		Note:      "a direct control record from the daemon; it continues the r2i cipher of handshake.v1.json after its transport list",
+		Plaintext: hex.EncodeToString(append([]byte{recordControl}, raw...)), Ciphertext: hex.EncodeToString(ct), Framed: hex.EncodeToString(frame(ct)),
+	}
+
+	v.Bad = []directBadFrame{
+		{Name: "length 0", Stream: "0000", Side: "read"},
+		{Name: "short read in the length", Stream: "00", Side: "read"},
+		{Name: "short read in the message", Stream: "0005aabbcc", Side: "read"},
+		{Name: "empty message", MessageLen: 0, Side: "write"},
+		{Name: "length > 65535", MessageLen: MaxDirectMessage + 1, Side: "write"},
+	}
+	for _, b := range v.Bad {
+		if b.Side == "read" {
+			s, _ := hex.DecodeString(b.Stream)
+			if _, err := ReadFrame(bytes.NewReader(s)); !errors.Is(err, errFrame) {
+				t.Fatalf("%s: err = %v", b.Name, err)
+			}
+		} else if err := WriteFrame(io.Discard, make([]byte, b.MessageLen)); !errors.Is(err, errFrame) {
+			t.Fatalf("%s: err = %v", b.Name, err)
+		}
+	}
 	return v
 }
 

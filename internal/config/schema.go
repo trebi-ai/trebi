@@ -203,6 +203,7 @@ func schemaSections() []SchemaSection {
 		{ID: "assistant", Title: "Assistant", Description: "Workspace assistant settings"},
 		{ID: "email", Title: "Email", Description: "Mail channel through the trebi-mail Worker"},
 		{ID: "cloud", Title: "Cloud", Description: "Hosted account link"},
+		{ID: "mobile", Title: "Phones and tablets", Description: "Connection from phones and tablets on the same network"},
 		{ID: "connectors", Title: "Connectors", Description: "MCP registries for the connector catalog"},
 		{ID: "requests", Title: "Requests", Description: "How long a job waits for a person's answer"},
 		{ID: "inbox", Title: "Inbox", Description: "How long Done items stay in the inbox"},
@@ -316,6 +317,8 @@ func schemaMetas() map[string]keyMeta {
 		"cloud.enabled":                        restart(keyMeta{typ: TypeBool}),
 		"cloud.remote_mcp":                     {typ: TypeBool},
 		"cloud.mobile":                         {typ: TypeBool},
+		"mobile.direct.enabled":                restart(keyMeta{typ: TypeBool}),
+		"mobile.direct.port":                   restart(keyMeta{typ: TypeInt}),
 		"connectors.registries":                {typ: TypeJSON},
 	}
 }
