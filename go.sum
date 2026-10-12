@@ -112,6 +112,8 @@ github.com/trebi-ai/agent-wire v0.5.0 h1:NfWvzXw9Fddlm2M44pS609qENBLxFUb9+vWfQ/e
 github.com/trebi-ai/agent-wire v0.5.0/go.mod h1:K0WMWYNBepCzwbhnVZf6p5PNpkmnH0q4t1mM3FRcYJc=
 github.com/trebi-ai/agent-wire v0.6.0 h1:qblvwAUsksfwa4HALCBxkcOPf17l+qsMb1QOI4LA0nA=
 github.com/trebi-ai/agent-wire v0.6.0/go.mod h1:K0WMWYNBepCzwbhnVZf6p5PNpkmnH0q4t1mM3FRcYJc=
+github.com/trebi-ai/agent-wire v0.6.1 h1:JnjXKFxPCWwjUy2pyWTJwNM+/KX7o5/qZHKGaJqrZRU=
+github.com/trebi-ai/agent-wire v0.6.1/go.mod h1:K0WMWYNBepCzwbhnVZf6p5PNpkmnH0q4t1mM3FRcYJc=
 github.com/trebi-ai/agent-wire/native v0.2.3 h1:AiNU3DEYuDssOK6M3gWsKlL4BX0b7zIP5OF1yATbsHs=
 github.com/trebi-ai/agent-wire/native v0.2.3/go.mod h1:y/bVAP4vPps5Yulh+1pH96H3JtpeuyJuSrVK8TPoMRY=
 github.com/trebi-ai/agent-wire/native/provider/anthropic v0.2.2 h1:5iVJp+9a4ZDJK66hArae3vml1kh1agiS+c64F7ok+fU=

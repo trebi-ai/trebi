@@ -19,7 +19,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/trebi-ai/agent-wire v0.6.0
+	github.com/trebi-ai/agent-wire v0.6.1
 	github.com/urfave/cli/v3 v3.11.0
 	github.com/yuin/goldmark-alert v1.0.1
 	github.com/yuin/goldmark/v2 v2.1.6
