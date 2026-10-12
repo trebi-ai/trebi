@@ -41,6 +41,7 @@ var opencodeBrowserMethod = map[string]string{ //nolint:gochecknoglobals // fixe
 var (
 	providerIDRe  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 	credentialsRe = regexp.MustCompile(`(\d+)\s+credentials?`)
+	storedRowRe   = regexp.MustCompile(`(?m)\S\s{2,}stored\s*$`)
 	ansiEscapeRe  = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 )
 
@@ -167,11 +168,14 @@ func opencodeAccount(ids []string) string {
 	return strings.Join(labels, ", ")
 }
 
-// opencodeCredentialCount reads "N credentials" from `auth list`.
+// opencodeCredentialCount reads "N credentials" (1.x) or counts the "stored"
+// table rows (2.x) from `auth list`.
 func opencodeCredentialCount(out string) (int, bool) {
-	m := credentialsRe.FindStringSubmatch(ansiEscapeRe.ReplaceAllString(out, ""))
+	out = ansiEscapeRe.ReplaceAllString(out, "")
+	m := credentialsRe.FindStringSubmatch(out)
 	if m == nil {
-		return 0, false
+		n := len(storedRowRe.FindAllString(out, -1))
+		return n, n > 0
 	}
 	n, err := strconv.Atoi(m[1])
 	return n, err == nil

@@ -132,6 +132,8 @@ func TestProbeOpenCode(t *testing.T) {
 		name, fixture, script, want string
 	}{
 		{"ok", "opencode/two.json", `echo "2 credentials"`, harness.AuthOK},
+		{"ok table", "opencode/two.json", `printf 'Anthropic         default      stored\nOpenRouter        OpenRouter   stored\n'`, harness.AuthOK},
+		{"old service", "opencode/two.json", `echo "Background service uses an incompatible health protocol."`, harness.AuthUnknown},
 		{"empty store", "", `echo "0 credentials"`, harness.AuthMissing},
 		{"no live check", "opencode/two.json", "", harness.AuthUnknown},
 	}

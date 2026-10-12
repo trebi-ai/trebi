@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/home"
 )
@@ -451,13 +452,26 @@ func (s *Service) kickstart(label string, kill bool) error {
 	return nil
 }
 
-// bootout unloads the agent. A label that is not loaded is already stopped.
+// bootoutWait is the longest wait for launchd to remove a label. It is more
+// than the default ExitTimeOut (20s), after which launchd kills the job.
+const bootoutWait = 30 * time.Second
+
+// bootout unloads the agent and waits until launchd removes the label. A
+// label that is not loaded is already stopped. launchctl can return while the
+// job still exits, and a bootstrap in that window fails.
 func (s *Service) bootout(label string) {
 	// An injected directory is used for isolated operations; never bootout the live label.
 	if s.plistDir != "" {
 		return
 	}
-	_ = exec.Command("launchctl", "bootout", guiDomain()+"/"+label).Run()
+	target := guiDomain() + "/" + label
+	_ = exec.Command("launchctl", "bootout", target).Run()
+	for deadline := time.Now().Add(bootoutWait); time.Now().Before(deadline); {
+		if exec.Command("launchctl", "print", target).Run() != nil {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 func guiDomain() string { return fmt.Sprintf("gui/%d", os.Getuid()) }
