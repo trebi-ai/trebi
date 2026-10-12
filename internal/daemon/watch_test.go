@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -237,13 +238,29 @@ func TestWatchFollowsMovedJobFolder(t *testing.T) {
 	cp.Start(runCtx)
 	defer cp.Stop()
 
-	// Give the watcher time to arm, then move once. The poll rebuild is
-	// 30s, so a pass inside 5s comes from the watcher.
-	time.Sleep(300 * time.Millisecond)
+	// The poll rebuild is 30s, so a change seen inside 10s comes from the
+	// watcher. Edit the job until the index sees it, so the watcher is armed.
+	job := filepath.Join(wsPath, "agents/a/x/JOB.md")
+	armed := false
+	for i := 0; i < 20 && !armed; i++ {
+		if err := os.WriteFile(job, fmt.Appendf(nil, "---\nharness: claude\n---\n\nX %d.\n", i), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for range 10 {
+			if row, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/a/x"); err == nil && row.Hash != before.Hash {
+				armed = true
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if !armed {
+		t.Fatal("watcher did not arm")
+	}
 	if err := os.Rename(filepath.Join(wsPath, "agents/a/x"), filepath.Join(wsPath, "agents/b/x")); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if row, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/b/x"); err == nil {
 			if row.ID != before.ID {
