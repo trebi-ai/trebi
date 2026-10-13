@@ -1,6 +1,8 @@
 package job
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -76,6 +78,53 @@ func TestLaunchDefaultsWithKit(t *testing.T) {
 	}
 	if env := j.LaunchDefaults().Env; env == nil || env["REGION"] != "us" || env["JOB_ONLY"] != "yes" {
 		t.Fatal("plain defaults changed")
+	}
+}
+
+func TestResolvedWorkingDirOwner(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip(err)
+	}
+	const jobPath = "/ws/agents/acme/task/JOB.md"
+	const agentPath = "/ws/agents/acme/AGENT.md"
+	cases := []struct {
+		name, jobDir, agentDir, want, source string
+	}{
+		{"job set", "/srv/job", "/srv/agent", "/srv/job", WorkingDirFromJob},
+		{"job unset, agent set", "", "/srv/agent", "/srv/agent", WorkingDirFromAgent},
+		{"both unset", "", "", "/ws/agents/acme/task", WorkingDirFromDefault},
+		{"agent relative", "", "../../clients/acme", "/ws/clients/acme", WorkingDirFromAgent},
+		{"agent tilde", "", "~/BTD/acme", filepath.Join(home, "BTD/acme"), WorkingDirFromAgent},
+		{"job relative", "data", "/srv/agent", "/ws/agents/acme/task/data", WorkingDirFromJob},
+		{"job tilde", "~/work", "", filepath.Join(home, "work"), WorkingDirFromJob},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			agentDoc, jobDoc := "---\n", "---\n"
+			if tc.agentDir != "" {
+				agentDoc += "working_dir: " + tc.agentDir + "\n"
+			}
+			if tc.jobDir != "" {
+				jobDoc += "working_dir: " + tc.jobDir + "\n"
+			}
+			agent, err := ParseBytes(agentPath, []byte(agentDoc+"---\n\nLead.\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			j, err := ParseBytes(jobPath, []byte(jobDoc+"---\n\nRun.\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			kit := agent.OwnerKit()
+			if got, src := j.ResolvedWorkingDir(kit); got != tc.want || src != tc.source {
+				t.Fatalf("ResolvedWorkingDir = %q, %q; want %q, %q", got, src, tc.want, tc.source)
+			}
+			if got := j.LaunchDefaultsWithKit(kit).WorkingDir; got != tc.want {
+				t.Fatalf("LaunchDefaultsWithKit.WorkingDir = %q; want %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -571,7 +571,7 @@ func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request,
 		if prompt == "" {
 			prompt = j.Prompt
 		}
-		verdicts, fire, vars = scheduleVerdicts(ctx, j)
+		verdicts, fire, vars = scheduleVerdicts(ctx, j, s.ws.OwnerKit(ctx, workspace, jobName))
 	}
 	// Apply builtin path vars, when: extract, and caller inputs for preview.
 	extra := map[string]string{}
@@ -600,13 +600,10 @@ func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request,
 }
 
 // scheduleVerdicts evaluates the when: gate of each cron/every trigger.
-func scheduleVerdicts(ctx context.Context, j *job.Job) (verdicts []map[string]any, fire bool, vars map[string]string) {
+func scheduleVerdicts(ctx context.Context, j *job.Job, kit *job.KitYAML) (verdicts []map[string]any, fire bool, vars map[string]string) {
 	verdicts = []map[string]any{}
 	fire = true
-	cwd := j.WorkingDir
-	if cwd == "" {
-		cwd = j.Dir
-	}
+	cwd, _ := j.ResolvedWorkingDir(kit)
 	for _, tr := range j.Triggers {
 		if tr.Family != "cron" && tr.Family != "every" {
 			continue

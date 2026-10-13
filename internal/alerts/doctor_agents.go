@@ -101,6 +101,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 			team.add(wsID, short, parsed.Team)
 		}
 		findings = append(findings, kitRefFindings(wsID, short, parsed, skillNames, envsets)...)
+		findings = append(findings, workingDirFindings(wsID, short, kind, parsed)...)
 		if actions != nil {
 			spec := *parsed
 			spec.Name = name
@@ -254,6 +255,24 @@ func kitRefFindings(wsID, short string, parsed *job.Job, skillNames, envsets map
 		})
 	}
 	return out
+}
+
+// workingDirFindings reports a working_dir that is not a folder on this
+// computer. Only the value in the file is checked; owned jobs that inherit it
+// share the finding of their agent.
+func workingDirFindings(wsID, short, kind string, parsed *job.Job) []DoctorFinding {
+	if parsed.WorkingDir == "" {
+		return nil
+	}
+	dir, _ := parsed.ResolvedWorkingDir(nil)
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return nil
+	}
+	return []DoctorFinding{{
+		ID:       "working-dir-" + wsID + "-" + short,
+		Severity: "warn", Code: "working_dir_missing",
+		Message: fmt.Sprintf("%s %s has working_dir %s, which is not a folder", kind, short, dir),
+	}}
 }
 
 // connectorFindings checks one connector name of a launch against the

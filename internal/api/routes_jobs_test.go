@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/trebi-ai/trebi/internal/request"
 )
 
 func TestJobsListByWorkspaceName(t *testing.T) {
@@ -419,6 +421,32 @@ func TestJobKitSourceJobOverride(t *testing.T) {
 	src, _ := jobs[0].(map[string]any)["kit_source"].(map[string]any)
 	if src["skills"] != "job" || src["connectors"] != "job" || src["envset"] != "agent" {
 		t.Fatalf("kit_source = %v", src)
+	}
+}
+
+// TestJobGetWorkingDir: job get gives the resolved working folder and its
+// source for an owned job and a loose job.
+func TestJobGetWorkingDir(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	agentMD := "---\ndescription: Test agent.\nharness: fake\nworking_dir: clients/acme\n---\n\nRun growth.\n"
+	if err := os.WriteFile(filepath.Join(wsDir, "agents", "cmo", "AGENT.md"), []byte(agentMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wsID := addWorkspace(t, base, wsDir, "working-dir")
+	agentDir := filepath.Join(wsDir, "agents", "cmo", "clients", "acme")
+	for _, tc := range []struct{ name, dir, source string }{
+		{"agents/cmo/duty", agentDir, "agent"},
+		{"alpha", filepath.Join(wsDir, "alpha"), "default"},
+	} {
+		code, body, _ := doJSON(t, "GET", base+request.BuildJobGetPath(tc.name, wsID), nil)
+		if code != 200 {
+			t.Fatalf("get %s: %d %v", tc.name, code, body)
+		}
+		if body["working_dir"] != tc.dir || body["working_dir_source"] != tc.source {
+			t.Fatalf("%s: working_dir = %v, source = %v", tc.name, body["working_dir"], body["working_dir_source"])
+		}
 	}
 }
 

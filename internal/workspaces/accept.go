@@ -56,7 +56,8 @@ func (s *Service) AcceptRules(ctx context.Context, workspaceID string) (agents m
 }
 
 // OwnerKit returns the owning agent's reusable kit for a job or operator
-// definition. A missing agent or parse failure returns nil.
+// definition, with the agent working_dir. A missing agent or parse failure
+// returns nil.
 func (s *Service) OwnerKit(ctx context.Context, workspaceID, name string) *job.KitYAML {
 	rows, err := s.ListJobs(ctx, workspaceID)
 	if err != nil {
@@ -75,7 +76,7 @@ func (s *Service) OwnerKit(ctx context.Context, workspaceID, name string) *job.K
 	for _, row := range rows {
 		if row.Kind == "agent" && row.Name == owner {
 			if parsed, err := job.ParseFile(row.Path); err == nil && parsed != nil {
-				return parsed.Kit
+				return parsed.OwnerKit()
 			}
 		}
 	}

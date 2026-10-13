@@ -56,6 +56,7 @@ folder: Reports
 The prompt body. This is what the harness receives.
 ```
 
+- `working_dir` is the folder where runs start. `~` expands, and a relative path starts at the `JOB.md` folder. With no `working_dir`, a job that an agent owns uses the `working_dir` of its agent, else the `JOB.md` folder (`trebi guide agents`).
 - `triggers[]` is the trebi form. Do not use a top-level `schedule:`.
 - `match` and `extract` are JavaScript, evaluated over the event as `e`. Both are optional. An event trigger with neither takes every event that passes the other checks.
 - An event trigger checks the event in this order: `rooms` (room IDs of the connector; empty takes every room), `allowlist` (sender IDs; empty takes every sender), `from`, `contains`, `extract`, then `match`. A sender miss records `blocked`. Every other miss records `no_match`.

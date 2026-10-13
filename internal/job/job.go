@@ -419,19 +419,60 @@ type LaunchDefaults struct {
 	ContinueMS    int64
 }
 
-// ResolvedWorkingDir is working_dir, else the JOB.md directory.
-// Agents default to the workspace root (C.3): <ws>/agents/<name> → <ws>.
-func (j *Job) ResolvedWorkingDir() string {
+// Sources of a resolved working folder.
+const (
+	WorkingDirFromJob     = "job"
+	WorkingDirFromAgent   = "agent"
+	WorkingDirFromDefault = "default"
+)
+
+// ResolvedWorkingDir is the run folder and its source: working_dir, else the
+// owner agent working_dir in kit, else the JOB.md directory. Agents default
+// to the workspace root (C.3): <ws>/agents/<name> → <ws>.
+func (j *Job) ResolvedWorkingDir(kit *KitYAML) (dir, source string) {
 	if j == nil {
-		return ""
+		return "", ""
 	}
 	if j.WorkingDir != "" {
-		return j.WorkingDir
+		return j.ExpandPath(j.WorkingDir), WorkingDirFromJob
+	}
+	if kit != nil && kit.WorkingDir != "" {
+		return kit.WorkingDir, WorkingDirFromAgent
 	}
 	if j.Kind == "agent" {
-		return filepath.Dir(filepath.Dir(j.Dir))
+		return filepath.Dir(filepath.Dir(j.Dir)), WorkingDirFromDefault
 	}
-	return j.Dir
+	return j.Dir, WorkingDirFromDefault
+}
+
+// ExpandPath expands a leading ~ and resolves a relative path from the
+// folder of the definition file.
+func (j *Job) ExpandPath(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if h, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(h, p[1:])
+		}
+	}
+	if filepath.IsAbs(p) || j.Dir == "" {
+		return p
+	}
+	return filepath.Join(j.Dir, p)
+}
+
+// OwnerKit is the kit that owned jobs inherit: the kit block plus the
+// expanded working_dir of this agent. It is nil when the agent sets neither.
+func (j *Job) OwnerKit() *KitYAML {
+	if j == nil || (j.Kit == nil && j.WorkingDir == "") {
+		return nil
+	}
+	var kit KitYAML
+	if j.Kit != nil {
+		kit = *j.Kit
+	}
+	if j.WorkingDir != "" {
+		kit.WorkingDir = j.ExpandPath(j.WorkingDir)
+	}
+	return &kit
 }
 
 // ResolvedHarness is the job harness, else "claude".
@@ -531,10 +572,11 @@ func (j *Job) LaunchEnv() map[string]string {
 
 // LaunchDefaults returns the four-line launch seam (cwd / if_running / env / knobs).
 func (j *Job) LaunchDefaults() LaunchDefaults {
+	wd, _ := j.ResolvedWorkingDir(nil)
 	maxMS, idleMS, keepMS, nudgeMS := j.Session.KnobsMS()
 	continueMS, _ := j.Session.ContinueMS() // Parse rejects a bad value
 	return LaunchDefaults{
-		WorkingDir:    j.ResolvedWorkingDir(),
+		WorkingDir:    wd,
 		IfRunning:     j.Session.IfRunning,
 		Env:           j.LaunchEnv(),
 		Model:         j.ResolvedModel(),
@@ -550,7 +592,8 @@ func (j *Job) LaunchDefaults() LaunchDefaults {
 // LaunchDefaultsWithKit returns launch defaults with the owning agent's kit
 // merged under this job's own keys. A job envset list replaces the agent
 // envset list as a whole; individual job env values win after both env
-// value maps have been applied.
+// value maps have been applied. The agent working_dir applies when the job
+// sets none.
 func (j *Job) LaunchDefaultsWithKit(kit *KitYAML) LaunchDefaults {
 	if j == nil || kit == nil {
 		return j.LaunchDefaults()
@@ -573,7 +616,9 @@ func (j *Job) LaunchDefaultsWithKit(kit *KitYAML) LaunchDefaults {
 			}
 		}
 	}
-	return merged.LaunchDefaults()
+	d := merged.LaunchDefaults()
+	d.WorkingDir, _ = j.ResolvedWorkingDir(kit)
+	return d
 }
 
 // Trigger is a normalized trigger entry with family index.

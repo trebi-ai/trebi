@@ -88,6 +88,14 @@ trebi job create weekly-digest --workspace reports --prompt "Write the digest." 
 
 A job created with `--agent` lands in `agents/<name>/`. The full job name is the folder path, for example `agents/cmo/weekly-digest`. The job belongs to the agent: a wake of the agent covers it, and `agent delete --purge` removes it. Read and edit it with the `job` commands under that full name.
 
+`working_dir` sets the folder where runs start. Put it in `AGENT.md` to set it for the agent and for each job it owns:
+
+```yaml
+working_dir: ~/clients/acme   # ~ expands; a relative path starts at the AGENT.md folder
+```
+
+An owned job uses its own `working_dir` first, then the `working_dir` of its agent, then its `JOB.md` folder. An agent with no `working_dir` runs in the workspace root. `trebi job show <name> --json` gives the folder in `working_dir` and its source in `working_dir_source` (`job`, `agent`, or `default`). A resumed run keeps the folder of the run it resumes. `trebi doctor` reports a `working_dir` that is not a folder (`working_dir_missing`).
+
 ## Wake
 
 ```bash

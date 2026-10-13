@@ -274,7 +274,7 @@ func (c *ControlPlane) markFired(ctx context.Context, r schedule.Row) {
 // evalWhenGate runs the when: gate of the matching cron/every trigger.
 func (c *ControlPlane) evalWhenGate(ctx context.Context, j *job.Job, r schedule.Row, path string) (string, bool) {
 	prompt := j.Prompt
-	cwd := j.ResolvedWorkingDir()
+	cwd, _ := j.ResolvedWorkingDir(c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.JobName))
 	if cwd == "" {
 		cwd = dirOf(path)
 	}

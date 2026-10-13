@@ -180,6 +180,34 @@ func TestKitMCPRemovedFinding(t *testing.T) {
 	t.Fatal("no kit_mcp_removed finding")
 }
 
+// TestWorkingDirMissingFinding: a working_dir that is not a folder gives one
+// finding for a job and for an agent; a folder that exists gives none.
+func TestWorkingDirMissingFinding(t *testing.T) {
+	st := kitStore(t, nil, "")
+	dir := t.TempDir()
+	writeJob(t, st, dir, "agents/acme", "agent", "", "---\nworking_dir: ./clients/gone\n---\n\nLead.\n")
+	writeJob(t, st, dir, "agents/acme/sync", "job", "agents/acme", "---\nworking_dir: /no/such/folder\n---\n\nRun.\n")
+	writeJob(t, st, dir, "ok", "job", "", "---\nworking_dir: "+dir+"\n---\n\nRun.\n")
+	got := map[string]string{}
+	for _, f := range agentKitFindings(st, launchView(t, st)) {
+		if f.Code == "working_dir_missing" {
+			got[f.ID] = f.Message
+		}
+	}
+	want := map[string]string{
+		"working-dir-ws-acme":      "agent acme has working_dir " + filepath.Join(dir, "agents", "acme", "clients", "gone") + ", which is not a folder",
+		"working-dir-ws-acme/sync": "job acme/sync has working_dir /no/such/folder, which is not a folder",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("findings = %+v", got)
+	}
+	for id, msg := range want {
+		if got[id] != msg {
+			t.Fatalf("finding %s = %q; want %q", id, got[id], msg)
+		}
+	}
+}
+
 // TestChannelOperatorConflictFinding: an agent and the workspace assistant
 // that both trigger on one channel connector give one finding; a connector
 // without a channel gives none.
