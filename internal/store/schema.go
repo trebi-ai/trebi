@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 56
+const SchemaVersion = 57
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1900,5 +1900,13 @@ ALTER TABLE runs ADD COLUMN trigger_batch_json TEXT;`,
 		// line names.
 		`ALTER TABLE artifacts ADD COLUMN conversation_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE artifacts ADD COLUMN chat_version INTEGER NOT NULL DEFAULT 0;`,
+		// v57: the connector packages that a program outside Trebi keeps
+		// (perception); GC does not remove them.
+		`CREATE TABLE connector_package_holds (
+	holder  TEXT NOT NULL,
+	type    TEXT NOT NULL,
+	version TEXT NOT NULL,
+	PRIMARY KEY (holder, type, version)
+);`,
 	}
 }

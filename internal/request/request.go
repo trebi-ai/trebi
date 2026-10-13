@@ -2606,6 +2606,33 @@ func BuildConnectorGC(dryRun bool) HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/connectors/gc", Body: map[string]any{"dry_run": dryRun}}
 }
 
+// ConnectorPackageSource is the source of a package install: URL (and
+// CheckID) for a link, or Catalog (and Version) for a catalog type.
+type ConnectorPackageSource struct {
+	URL     string `json:"url,omitempty"`
+	CheckID string `json:"check_id,omitempty"`
+	Catalog string `json:"catalog,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
+// BuildConnectorPackageInstall builds POST /v1/connectors/packages.
+func BuildConnectorPackageInstall(src ConnectorPackageSource) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/connectors/packages", Body: map[string]any{"source": src}}
+}
+
+// BuildConnectorPackages builds GET /v1/connectors/packages.
+func BuildConnectorPackages() HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/connectors/packages"}
+}
+
+// BuildConnectorPackagesKeep builds PUT /v1/connectors/packages/keep.
+func BuildConnectorPackagesKeep(holder string, packages []string) HTTPRequest {
+	if packages == nil {
+		packages = []string{}
+	}
+	return HTTPRequest{Method: "PUT", Path: "/v1/connectors/packages/keep", Body: map[string]any{"holder": holder, "packages": packages}}
+}
+
 // BuildConfigGet builds GET /v1/config.
 func BuildConfigGet() HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/config"}

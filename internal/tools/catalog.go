@@ -2033,6 +2033,28 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				dry, err := in.flag("dry_run")
 				return request.BuildConnectorGC(dry), err
 			}),
+			"package_install": actSamples("POST /v1/connectors/packages", Input{
+				"source": map[string]any{"catalog": "whatsapp", "version": "1.2.0"},
+			}, []Input{{
+				"source": map[string]any{"url": "https://github.com/flarco/cli-tools/tree/main/vitally-cli", "check_id": "chk_01k6abcdefghjkmnpqrstvwxyz"},
+			}}, func(in Input) (request.HTTPRequest, error) {
+				var src request.ConnectorPackageSource
+				if err := in.decode("source", &src); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildConnectorPackageInstall(src), nil
+			}),
+			"package_list": act("GET /v1/connectors/packages", Input{}, func(Input) (request.HTTPRequest, error) {
+				return request.BuildConnectorPackages(), nil
+			}),
+			"package_keep": act("PUT /v1/connectors/packages/keep", Input{"holder": "perception", "packages": []any{"whatsapp@1.2.0"}}, func(in Input) (request.HTTPRequest, error) {
+				holder, err := in.reqStr("holder")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				pkgs, err := in.strList("packages")
+				return request.BuildConnectorPackagesKeep(holder, pkgs), err
+			}),
 			"create": act("POST /v1/connectors", Input{"connection": map[string]any{
 				"type": "whatsapp", "slug": "whatsapp-work", "title": "Work WhatsApp", "from": "catalog", "version": "1.2.0", "track": "minor",
 			}}, func(in Input) (request.HTTPRequest, error) {

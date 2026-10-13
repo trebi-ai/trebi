@@ -231,7 +231,16 @@ trebi connector gc --dry-run
 
 `connector conformance <slug>` checks a running protocol connector against its manifest; `--room` adds a real test send, and `--suite` limits the suites. `connector conformance --command CMD --manifest FILE` checks an adapter program on this machine with no daemon.
 
-`update` installs the version next to the current one, switches the connection, restarts its process, and removes versions that nothing uses. `capabilities` starts an MCP server to list its tools, prompts, and resources, and keeps the result for 10 minutes. `gc` removes installed versions that no connection uses.
+`update` installs the version next to the current one, switches the connection, restarts its process, and removes versions that nothing uses. `capabilities` starts an MCP server to list its tools, prompts, and resources, and keeps the result for 10 minutes. `gc` removes installed versions that no connection uses and no holder keeps.
+
+A program outside Trebi, such as perception, can run a connector itself. Trebi then installs only the package: no connection and no process. The program keeps its packages with `package keep`, so `gc` does not remove them. A package version is the folder name: the catalog version, or `<version>+g<commit12>` for a link.
+
+```bash
+trebi connector package install whatsapp --version 1.2.0
+trebi connector package install https://github.com/acme/tools/tree/main/kvm   # asks first, as add does
+trebi connector package list
+trebi connector package keep perception whatsapp@1.2.0 kvm@0.1.0+g0123456789ab
+```
 
 The commands of the installed connectors are also in `~/.trebi/bin/connectors/`, one link each, and the links follow each update. Jobs and connectors do not need it. To call a connector program from a shell, add the folder to `PATH` once, for example `export PATH="$HOME/.trebi/bin/connectors:$PATH"` in `~/.zshrc`. Doctor reports `connector_command_clash` when two connectors have one command name.
 

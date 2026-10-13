@@ -27,6 +27,9 @@ func (s *Server) routeConnectors(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/connectors/sources/check", s.handleConnectorSourceCheck)
 	mux.HandleFunc("POST /v1/connectors/check-updates", s.handleConnectorCheckUpdates)
 	mux.HandleFunc("POST /v1/connectors/gc", s.handleConnectorGC)
+	mux.HandleFunc("GET /v1/connectors/packages", s.handleConnectorPackages)
+	mux.HandleFunc("POST /v1/connectors/packages", s.handleConnectorPackageInstall)
+	mux.HandleFunc("PUT /v1/connectors/packages/keep", s.handleConnectorPackagesKeep)
 	mux.HandleFunc("GET /v1/connectors/{ref}", s.handleConnectorGet)
 	mux.HandleFunc("PATCH /v1/connectors/{ref}", s.handleConnectorPatch)
 	mux.HandleFunc("DELETE /v1/connectors/{ref}", s.handleConnectorDelete)
@@ -813,6 +816,67 @@ func (s *Server) handleConnectorGC(w http.ResponseWriter, r *http.Request) {
 		removed = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed, "dry_run": body.DryRun})
+}
+
+// handleConnectorPackages lists the installed packages.
+func (s *Server) handleConnectorPackages(w http.ResponseWriter, r *http.Request) {
+	pkgs, err := s.connectors.Packages(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"packages": pkgs})
+}
+
+// handleConnectorPackageInstall installs one package with no connection.
+func (s *Server) handleConnectorPackageInstall(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
+	var body struct {
+		Source *connectors.PackageSource `json:"source"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if body.Source == nil {
+		writeErr(w, http.StatusBadRequest, "validation", "source required")
+		return
+	}
+	pkg, err := s.connectors.InstallPackage(r.Context(), *body.Source)
+	if err != nil {
+		s.writeInstallErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, pkg)
+}
+
+// handleConnectorPackagesKeep replaces the packages that one holder keeps.
+func (s *Server) handleConnectorPackagesKeep(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
+	var body struct {
+		Holder   string   `json:"holder"`
+		Packages []string `json:"packages"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	kept, err := s.connectors.KeepPackages(r.Context(), body.Holder, body.Packages)
+	if err != nil {
+		if !s.writeConnectorErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"holder": body.Holder, "packages": kept})
 }
 
 // catalogEntryRow is the search/list view of one registry entry.

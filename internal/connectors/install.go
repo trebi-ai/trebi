@@ -921,13 +921,20 @@ func (s *Service) setVersion(ctx context.Context, id, version, digest string, sr
 	return s.commit(ctx, c, &old, nil)
 }
 
-// GC removes each package folder that no connection uses. With dryRun it
-// only lists them as type@version.
+// GC removes each package folder that no connection uses and no holder
+// keeps. With dryRun it only lists them as type@version.
 func (s *Service) GC(ctx context.Context, dryRun bool) ([]string, error) {
 	if !dryRun {
 		s.SweepStaging()
 	}
+	holds, err := s.holds(ctx)
+	if err != nil {
+		return nil, err
+	}
 	used := map[string]bool{}
+	for ref := range holds {
+		used[ref] = true
+	}
 	for _, c := range s.snapshot() {
 		if c.From == FromCatalog || c.From == FromGitHub {
 			used[c.Type+"@"+c.packageVersion()] = true

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -687,4 +688,121 @@ func linkFixture(t *testing.T, name, prefix string) map[string]ghfake.File {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// TestConnectorPackageRoutes installs packages from the catalog and from a
+// link with no connection, lists them, and checks that gc keeps a held
+// package and removes an unheld one.
+func TestConnectorPackageRoutes(t *testing.T) {
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("no go")
+	}
+	gh := ghfake.New()
+	t.Cleanup(gh.Close)
+	t.Setenv(connectors.EnvGitHubAPI, gh.API.URL)
+	t.Setenv("PATH", filepath.Dir(gobin)+":/usr/bin:/bin") // no gh: a 404 must not send a real login
+	sha := gh.Push("acme/tools", "main", linkFixture(t, "buildable", "vitally/"))
+	catURL, pub := trebiCatalogFixture(t)
+	base := startCatalogAPIWith(t, func(fixture string) registry.Config {
+		return registry.Config{
+			Registries:  []config.Registry{{Name: "trebi", URL: catURL, Kind: config.RegistryTrebi}, {Name: "official", URL: fixture}},
+			CatalogKeys: []ed25519.PublicKey{pub},
+		}
+	})
+	link := "https://github.com/acme/tools/tree/main/vitally"
+
+	bad := []map[string]any{
+		{},
+		{"source": map[string]any{}},
+		{"source": map[string]any{"url": link, "catalog": "demo"}},
+		{"source": map[string]any{"catalog": "demo", "check_id": "chk_x"}},
+		{"source": map[string]any{"url": link, "version": "1.0.0"}},
+		{"source": map[string]any{"catalog": "demo"}, "slug": "x"},
+	}
+	for _, b := range bad {
+		if code, body, _ := doJSON(t, "POST", base+"/v1/connectors/packages", b); code != 400 || errCode(body) != "validation" {
+			t.Fatalf("bad install %v: %d %v", b, code, body)
+		}
+	}
+
+	code, old, _ := doJSON(t, "POST", base+"/v1/connectors/packages", map[string]any{"source": map[string]any{"catalog": "demo", "version": "1.0.0"}})
+	if code != 201 || old["type"] != "demo" || old["version"] != "1.0.0" || !strings.HasPrefix(old["digest"].(string), "sha256:") {
+		t.Fatalf("catalog install %d %v", code, old)
+	}
+	if _, err := os.Stat(old["dir"].(string)); err != nil {
+		t.Fatalf("package dir: %v", err)
+	}
+	code, newest, _ := doJSON(t, "POST", base+"/v1/connectors/packages", map[string]any{"source": map[string]any{"catalog": "demo"}})
+	if code != 201 || newest["version"] != "1.1.0" {
+		t.Fatalf("latest install %d %v", code, newest)
+	}
+	code, lp, _ := doJSON(t, "POST", base+"/v1/connectors/packages", map[string]any{"source": map[string]any{"url": link}})
+	if code != 201 || lp["type"] != "vitally" || lp["version"] != "0.1.0+g"+sha[:12] || lp["bin"] == "" {
+		t.Fatalf("link install %d %v", code, lp)
+	}
+	if _, err := os.Stat(lp["bin"].(string)); err != nil {
+		t.Fatalf("link program: %v", err)
+	}
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/connectors", nil)
+	for _, row := range body["connectors"].([]any) {
+		if r := row.(map[string]any); r["type"] == "demo" || r["type"] == "vitally" {
+			t.Fatalf("a package install created a connection: %v", r)
+		}
+	}
+	if code != 200 {
+		t.Fatalf("list connectors %d", code)
+	}
+
+	for _, b := range []map[string]any{
+		{"holder": "Bad Name", "packages": []string{}},
+		{"holder": "perception", "packages": []string{"demo"}},
+		{"holder": "perception", "packages": []string{"demo@1.0.0"}, "extra": true},
+	} {
+		if code, body, _ := doJSON(t, "PUT", base+"/v1/connectors/packages/keep", b); code != 400 || errCode(body) != "validation" {
+			t.Fatalf("bad keep %v: %d %v", b, code, body)
+		}
+	}
+	lref := "vitally@" + lp["version"].(string)
+	code, body, _ = doJSON(t, "PUT", base+"/v1/connectors/packages/keep", map[string]any{"holder": "perception", "packages": []string{"demo@1.0.0", lref, "demo@1.0.0"}})
+	if kept, _ := body["packages"].([]any); code != 200 || len(kept) != 2 {
+		t.Fatalf("keep %d %v", code, body)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/connectors/packages", nil)
+	pkgs, _ := body["packages"].([]any)
+	if code != 200 || len(pkgs) != 3 {
+		t.Fatalf("list %d %v", code, body)
+	}
+	holders := map[string]any{}
+	for _, p := range pkgs {
+		row := p.(map[string]any)
+		holders[row["type"].(string)+"@"+row["version"].(string)] = row["holders"]
+	}
+	if h, _ := holders["demo@1.0.0"].([]any); len(h) != 1 || h[0] != "perception" {
+		t.Fatalf("holders %v", holders)
+	}
+	if h, _ := holders["demo@1.1.0"].([]any); len(h) != 0 {
+		t.Fatalf("holders %v", holders)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/connectors/gc", map[string]any{})
+	if removed, _ := body["removed"].([]any); code != 200 || len(removed) != 1 || removed[0] != "demo@1.1.0" {
+		t.Fatalf("gc %d %v", code, body)
+	}
+	if _, err := os.Stat(old["dir"].(string)); err != nil {
+		t.Fatalf("gc removed a held package: %v", err)
+	}
+	if _, err := os.Stat(newest["dir"].(string)); !os.IsNotExist(err) {
+		t.Fatalf("gc kept an unheld package: %v", err)
+	}
+
+	if code, body, _ := doJSON(t, "PUT", base+"/v1/connectors/packages/keep", map[string]any{"holder": "perception", "packages": []string{}}); code != 200 {
+		t.Fatalf("release %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/connectors/gc", map[string]any{"dry_run": true})
+	if removed, _ := body["removed"].([]any); code != 200 || len(removed) != 2 {
+		t.Fatalf("gc after release %d %v", code, body)
+	}
 }

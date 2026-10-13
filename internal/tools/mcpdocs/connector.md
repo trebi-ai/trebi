@@ -90,8 +90,20 @@ Check a running protocol connector against the promises of its manifest (Part H 
 - `suites` (array, optional): the suites to run; empty runs all of them.
 
 ### gc
-Remove installed catalog versions that no connection uses. The reply is `{removed, dry_run}`.
+Remove installed packages that no connection uses and no holder keeps (see `package_keep`). The reply is `{removed, dry_run}`.
 - `dry_run` (boolean, optional): list the versions only.
+
+### package_install
+Install one connector package and create no connection. Trebi starts no connection process. A program outside Trebi, such as perception, uses it to run the connector itself. The reply is the package row (as in `package_list`). A link gets the same check and conformance suites as `install` with `source`; **Trebi did not review the code of a link, and it runs on this machine**, so ask the user first. A failed check or suite returns `validation` with `details.reason` and `details.results`. A catalog type with no catalog configured returns `precondition_failed`. Run `package_keep` after the install, or `gc` can remove the package.
+- `source` (object, required): `{url, check_id}` for a GitHub link, or `{catalog, version}` for a catalog type. Give `url` or `catalog`, not both. An empty `version` takes the newest version that is not yanked.
+
+### package_list
+List the installed connector packages. The reply is `{packages: [{type, version, dir, bin, digest, installed_at, connections, holders}]}`. `version` is the name of the package folder: the catalog version, or `<version>+g<commit>` for a link. `dir` is the package folder and `bin` is the path of its program, or empty when it installs none. `connections` lists the slugs of the connections that use the package. `holders` lists the programs outside Trebi that keep it.
+
+### package_keep
+Replace the list of packages that one holder keeps. `gc` does not remove a package that a connection uses or that a holder keeps. The reply is `{holder, packages}`.
+- `holder` (string, required): the name of the program, for example `perception`. It matches `^[a-z0-9][a-z0-9-]{0,39}$`.
+- `packages` (array, optional): the packages as `type@version`, with `version` as in `package_list`. An empty list releases every package of the holder.
 
 ### create
 Create one connection. A catalog connection must pass the signature check and the manifest validation. An inline or file manifest must pass the same validation. The reply is the connection row with its new `id`.

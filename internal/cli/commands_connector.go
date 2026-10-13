@@ -185,6 +185,36 @@ func connectorVersionCommands() []*cli.Command {
 			Flags:  []cli.Flag{&cli.BoolFlag{Name: "dry-run", Usage: "list the versions only"}, jsonFlag()},
 			Action: runConnectorGC,
 		},
+		{
+			Name:  "package",
+			Usage: "install and list connector packages with no connection (for programs such as perception)",
+			Commands: []*cli.Command{
+				{
+					Name:      "install",
+					Usage:     "install a package of a catalog type or a GitHub link; creates no connection",
+					ArgsUsage: "<type|link>",
+					Flags: []cli.Flag{
+						&cli.StringFlag{Name: "version", Usage: "catalog version (default: the newest)"},
+						&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "link: do not ask before the install"},
+						jsonFlag(),
+					},
+					Action: runConnectorPackageInstall,
+				},
+				{
+					Name:   "list",
+					Usage:  "list the installed packages, the connections that use them, and their holders",
+					Flags:  []cli.Flag{jsonFlag()},
+					Action: runConnectorPackageList,
+				},
+				{
+					Name:      "keep",
+					Usage:     "replace the packages that one holder keeps; gc does not remove them",
+					ArgsUsage: "<holder> [type@version...]",
+					Flags:     []cli.Flag{jsonFlag()},
+					Action:    runConnectorPackageKeep,
+				},
+			},
+		},
 	}
 }
 
@@ -850,6 +880,89 @@ func dashOr(s, alt string) string {
 		return alt
 	}
 	return s
+}
+
+func runConnectorPackageInstall(_ context.Context, c *cli.Command) error {
+	arg := c.Args().Get(0)
+	if arg == "" {
+		return fmt.Errorf("usage: trebi connector package install <type|link> [--version V]")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	src := request.ConnectorPackageSource{Catalog: arg, Version: c.String("version")}
+	if isGitHubLink(arg, "") {
+		if src.Version != "" {
+			return fmt.Errorf("a link installs the version of its commit; do not give --version")
+		}
+		var check connectors.SourceCheck
+		if err := client.DoHTTP(request.BuildConnectorSourceCheck(arg), &check); err != nil {
+			return err
+		}
+		if !check.CanInstall {
+			return reportSourceCheck(c, check)
+		}
+		if !c.Bool("json") {
+			printSourceCheck(outWriter(c), check)
+		}
+		if !c.Bool("yes") && !trustLink(c) {
+			return fmt.Errorf("not installed")
+		}
+		src = request.ConnectorPackageSource{URL: arg, CheckID: check.ID}
+	}
+	var pkg connectors.Package
+	if err := client.DoHTTP(request.BuildConnectorPackageInstall(src), &pkg); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, pkg)
+	}
+	fmt.Fprintf(outWriter(c), "package %s installed in %s\n", pkg.Ref(), pkg.Dir)
+	return nil
+}
+
+func runConnectorPackageList(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		Packages []connectors.Package `json:"packages"`
+	}
+	if err := client.DoHTTP(request.BuildConnectorPackages(), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	tbl := newTable(outWriter(c), []string{"Type", "Version", "Connections", "Holders", "Program"})
+	for _, p := range body.Packages {
+		tbl.AppendRow(table.Row{p.Type, p.Version, dash(strings.Join(p.Connections, ", ")), dash(strings.Join(p.Holders, ", ")), dash(p.Bin)})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runConnectorPackageKeep(_ context.Context, c *cli.Command) error {
+	holder := c.Args().Get(0)
+	if holder == "" {
+		return fmt.Errorf("usage: trebi connector package keep <holder> [type@version...]")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildConnectorPackagesKeep(holder, c.Args().Slice()[1:]), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	kept, _ := body["packages"].([]any)
+	fmt.Fprintf(outWriter(c), "%s keeps %d packages\n", holder, len(kept))
+	return nil
 }
 
 func runConnectorGC(_ context.Context, c *cli.Command) error {
