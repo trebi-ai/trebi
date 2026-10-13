@@ -310,8 +310,12 @@ The payload is `hook_id`, `label`, `method`, `path`, `content_type`, `headers`, 
 
 ```bash
 trebi event list --limit 50 --json
+trebi event list --after <event-id> --connector <slug> --json
+trebi event list --after <event-id> --follow --json
 trebi event retrigger <id>
 ```
+
+`event list` shows the newest events first, and `--cursor` pages back. `--after <event-id>` reads forward: it gives the events after that id, oldest first, one row per event in the `event show` shape, and `next_after` names the id for the next read. Event ids are ULIDs, so id order is time order. `--follow` keeps the read open and prints each new event as one JSON line; it blocks, so do not use it from an agent session. To continue after a stop, give the last printed id as `--after`; you get no gap and no duplicate. Without `--after`, `--follow` starts at the oldest event. `--connector`, `--workspace`, `--since`, and `--search` filter both forms. The API form is `GET /v1/events?after=<id>` and `GET /v1/events?after=<id>&follow=1` (NDJSON; a line with no `id` is a keepalive).
 
 `event retrigger` matches a stored event against the current triggers again. It writes no new event row and works for every connector, `email` and `webhook` included.
 

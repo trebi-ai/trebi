@@ -165,6 +165,7 @@ Every error is `{"error":{"code","message","details"}}` with a stable code:
 - To get an answer from another agent, use `agent ask <name> <text>`, then end your turn. The reply starts your next turn. Do not poll. To give work away with no reply, use `agent handoff`. Find the agent with `agent list --for <words>`. If an ask returns `chain_cycle`, the target waits for you: reply instead.
 - To hand a problem up, use `agent escalate` (`to=assistant` or `to=operator`) with the concrete blocker and what you tried. A failed owned job first wakes its owner with `reason=escalation`; the fourth failure in 24 hours goes to the operator inbox.
 - Never `trebi service daemon`, never `kill` trebid. `service start` / `stop` / `shutdown` only.
+- `trebi event list --after <id> --json` reads trigger events forward, oldest first; call it again with `next_after`. `--follow` blocks; do not use it from an agent session.
 - `trebi bus --limit N` dumps up to N frames and exits. `connector logs` returns at once; `-f` follows and blocks. `service logs` uses `--lines`/`-n`, not `--limit`; drop `-f` unless you intend to block.
 - `-w` / `--workspace` accepts name or id and can go before the verb or after the job name.
 - Do not `runs attach` from an agent session. To wait for a run, use `runs wait <id> --timeout 9m` (exit 3 means still running; call it again) or `runs watch <id|job> --timeout 9m`. Do not write a poll loop over `runs show`. For the assistant, poll `conversation messages`. Do not `runs kill` a live session to re-prompt.

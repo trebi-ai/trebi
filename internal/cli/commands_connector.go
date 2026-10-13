@@ -5,12 +5,15 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"os"
+	"os/signal"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/connectors"
@@ -1367,9 +1370,12 @@ func eventsCommand() *cli.Command {
 				Name:  "list",
 				Usage: "list durable events",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (event id)"},
+					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (event id); pages back from the newest event"},
+					&cli.StringFlag{Name: "after", Usage: "event id; list the events after it, oldest first"},
+					&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "keep reading and print new events as they arrive (from --after, else from the oldest event)"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
 					&cli.StringFlag{Name: "connector", Usage: "filter: a connection slug or id, or a connector type"},
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "filter: events with a trigger outcome in this workspace"},
 					&cli.StringFlag{Name: "since", Usage: "RFC3339 time or a duration such as 24h"},
 					&cli.StringFlag{Name: "search", Usage: "text match on summary or payload"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
@@ -1393,26 +1399,32 @@ func eventsCommand() *cli.Command {
 	}
 }
 
-func runEventsList(_ context.Context, c *cli.Command) error {
+func runEventsList(ctx context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
-	path := request.BuildEventsListPath(c.String("cursor"), c.Int("limit"),
-		c.String("connector"), c.String("since"), c.String("search"))
-	var body struct {
-		Events     []map[string]any `json:"events"`
-		NextCursor string           `json:"next_cursor"`
+	q := request.EventsQuery{
+		Cursor: c.String("cursor"), After: c.String("after"), Follow: c.Bool("follow"),
+		Connector: c.String("connector"), Since: c.String("since"), Q: c.String("search"), Limit: c.Int("limit"),
 	}
-	if err := client.GetJSON(path, &body); err != nil {
+	if ws := strings.TrimSpace(c.String("workspace")); ws != "" {
+		q.Workspace = resolveWorkspaceHint(c, ws)
+	}
+	if q.Follow {
+		return followEventsList(ctx, c, client, q.Path())
+	}
+	var body map[string]any
+	if err := client.GetJSON(q.Path(), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
 		return encodeJSON(c, body)
 	}
-	w := outWriter(c)
-	tbl := newTable(w, []string{"ID", "Connector", "Summary", "Received"})
-	for _, e := range body.Events {
+	tbl := newTable(outWriter(c), []string{"ID", "Connector", "Summary", "Received"})
+	events, _ := body["events"].([]any)
+	for _, raw := range events {
+		e, _ := raw.(map[string]any)
 		tbl.AppendRow(table.Row{
 			mapStr(e, "id"), mapStr(e, "connector"),
 			dash(mapStr(e, "summary")), mapStr(e, "received_at"),
@@ -1420,6 +1432,34 @@ func runEventsList(_ context.Context, c *cli.Command) error {
 	}
 	renderTable(tbl)
 	return nil
+}
+
+// followEventsList prints each event of an NDJSON follow stream until the
+// stream ends or the user stops it. A line with no id is a keepalive.
+func followEventsList(ctx context.Context, c *cli.Command, client *APIClient, path string) error {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	w := outWriter(c)
+	err := client.StreamLines(ctx, path, func(line []byte) error {
+		var e map[string]any
+		if err := json.Unmarshal(line, &e); err != nil {
+			return fmt.Errorf("decode event: %w", err)
+		}
+		if mapStr(e, "id") == "" {
+			return nil
+		}
+		if c.Bool("json") {
+			_, err := fmt.Fprintf(w, "%s\n", line)
+			return err
+		}
+		_, err := fmt.Fprintf(w, "%s  %s  %s  %s\n", mapStr(e, "id"), mapStr(e, "connector"),
+			mapStr(e, "received_at"), dash(mapStr(e, "summary")))
+		return err
+	})
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 func runEventsShow(_ context.Context, c *cli.Command) error {

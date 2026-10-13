@@ -168,93 +168,143 @@ func (s *Server) queueInfoByID(ctx context.Context, ids []string) map[string]map
 	return out
 }
 
-func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	cursor, ok := parseULIDCursor(w, r, "event")
-	if !ok {
-		return
-	}
-	limit := parseLimit(r)
-	since, err := parseTimeFilter(r.URL.Query().Get("since"))
+// eventFilter is the shared filter set of GET /v1/events. A connection slug
+// or id sets instance; any other connector value sets connType.
+type eventFilter struct {
+	instance, connType, since, workspace, outcome, catchUp, text string
+}
+
+func (s *Server) parseEventFilter(r *http.Request) (eventFilter, error) {
+	q := r.URL.Query()
+	since, err := parseTimeFilter(q.Get("since"))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", "since: "+err.Error())
-		return
+		return eventFilter{}, fmt.Errorf("since: %w", err)
 	}
-	workspace := s.workspaceID(r.Context(), r.URL.Query().Get("workspace"))
-	outcome := r.URL.Query().Get("outcome")
-	catchUp := r.URL.Query().Get("catch_up")
-	if catchUp != "" && catchUp != "0" && catchUp != "1" {
-		writeErr(w, http.StatusBadRequest, "validation", "catch_up must be 0 or 1")
-		return
+	f := eventFilter{
+		since:     since,
+		workspace: s.workspaceID(r.Context(), q.Get("workspace")),
+		outcome:   q.Get("outcome"),
+		catchUp:   q.Get("catch_up"),
+		text:      strings.TrimSpace(q.Get("q")),
 	}
+	if f.catchUp != "" && f.catchUp != "0" && f.catchUp != "1" {
+		return eventFilter{}, errors.New("catch_up must be 0 or 1")
+	}
+	if connector := q.Get("connector"); connector != "" {
+		if id := s.connectors.IDOf(connector); id != "" {
+			f.instance = id
+		} else {
+			f.connType = connector
+		}
+	}
+	return f, nil
+}
+
+// where returns the SQL conditions of the filter, each with a leading AND.
+func (f eventFilter) where() (string, []any) {
+	var b strings.Builder
+	var args []any
+	add := func(cond string, vals ...any) {
+		b.WriteString(" AND " + cond)
+		args = append(args, vals...)
+	}
+	if f.instance != "" {
+		add("instance = ?", f.instance)
+	}
+	if f.connType != "" {
+		add("connector = ?", f.connType)
+	}
+	if f.since != "" {
+		add("received_at >= ?", f.since)
+	}
+	if f.catchUp != "" {
+		n, _ := strconv.Atoi(f.catchUp) // parse checked it: 0 or 1
+		add("catch_up = ?", n)
+	}
+	// Workspace/outcome ride event_outcomes: an event with no outcome row is
+	// global and shows only when no workspace is set (A.3.2).
+	if f.workspace != "" || f.outcome != "" {
+		var conds []string
+		var vals []any
+		if f.workspace != "" {
+			conds = append(conds, "o.workspace_id = ?")
+			vals = append(vals, f.workspace)
+		}
+		if f.outcome != "" {
+			conds = append(conds, "o.outcome = ?")
+			vals = append(vals, f.outcome)
+		}
+		add(`EXISTS (SELECT 1 FROM event_outcomes o WHERE o.event_id = events.id AND `+strings.Join(conds, " AND ")+`)`, vals...)
+	}
+	if f.text != "" {
+		like := "%" + strings.ToLower(f.text) + "%"
+		add(`(LOWER(COALESCE(summary,'')) LIKE ? OR LOWER(COALESCE(raw_json,'')) LIKE ?)`, like, like)
+	}
+	return b.String(), args
+}
+
+// queryEvents reads one page of filtered events. Forward pages read id > from
+// in ascending order; backward pages read id < from, newest first.
+func (s *Server) queryEvents(ctx context.Context, f eventFilter, from string, forward bool, limit int) ([]eventRow, error) {
 	q := `SELECT id, connector, received_at, COALESCE(summary,''), COALESCE(trace_id,''), COALESCE(raw_json,''),
 		instance, COALESCE(event_type,''), COALESCE(source_id,''), COALESCE(identity,''),
 		COALESCE(room,''), COALESCE(thread,''), COALESCE(sender,''), catch_up
 		FROM events WHERE 1=1`
-	args := []any{}
-	if cursor != "" {
-		q += ` AND id < ?`
-		args = append(args, cursor)
+	var args []any
+	cmp, order := "<", "DESC"
+	if forward {
+		cmp, order = ">", "ASC"
 	}
-	// A slug or id filters one connection; any other value filters a type.
-	if connector := r.URL.Query().Get("connector"); connector != "" {
-		if id := s.connectors.IDOf(connector); id != "" {
-			q += ` AND instance = ?`
-			args = append(args, id)
-		} else {
-			q += ` AND connector = ?`
-			args = append(args, connector)
-		}
+	if from != "" {
+		q += ` AND id ` + cmp + ` ?`
+		args = append(args, from)
 	}
-	if since != "" {
-		q += ` AND received_at >= ?`
-		args = append(args, since)
-	}
-	if catchUp != "" {
-		q += ` AND catch_up = ?`
-		n, _ := strconv.Atoi(catchUp) // checked above: 0 or 1
-		args = append(args, n)
-	}
-	// Workspace/outcome ride event_outcomes: an event with no outcome row is
-	// global and shows only when no workspace is set (A.3.2).
-	if workspace != "" || outcome != "" {
-		var conds []string
-		if workspace != "" {
-			conds = append(conds, "o.workspace_id = ?")
-			args = append(args, workspace)
-		}
-		if outcome != "" {
-			conds = append(conds, "o.outcome = ?")
-			args = append(args, outcome)
-		}
-		q += ` AND EXISTS (SELECT 1 FROM event_outcomes o WHERE o.event_id = events.id AND ` + strings.Join(conds, " AND ") + `)`
-	}
-	if text := strings.TrimSpace(r.URL.Query().Get("q")); text != "" {
-		like := "%" + strings.ToLower(text) + "%"
-		q += ` AND (LOWER(COALESCE(summary,'')) LIKE ? OR LOWER(COALESCE(raw_json,'')) LIKE ?)`
-		args = append(args, like, like)
-	}
-	q += ` ORDER BY id DESC LIMIT ?`
-	args = append(args, limit)
-	rows, err := s.st.DB().QueryContext(r.Context(), q, args...)
+	cond, condArgs := f.where()
+	q += cond + ` ORDER BY id ` + order + ` LIMIT ?`
+	args = append(append(args, condArgs...), limit)
+	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
+		return nil, err
 	}
 	defer rows.Close()
 	var evs []eventRow
-	var ids []string
 	for rows.Next() {
 		var e eventRow
 		if rows.Scan(&e.id, &e.connector, &e.at, &e.sum, &e.trace, &e.raw,
 			&e.instance, &e.eventType, &e.sourceID, &e.identity, &e.room, &e.thread, &e.sender, &e.catchUp) == nil {
 			e.slug = s.connectors.SlugOf(e.instance)
 			evs = append(evs, e)
-			ids = append(ids, e.id)
 		}
 	}
-	// Enrich queue results with result column for done rows
-	outcomesByEvent := s.enrichEventOutcomes(r.Context(), workspace, outcome, ids)
-	// Patch done outcomes with actual result from queue
+	return evs, rows.Err()
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	f, err := s.parseEventFilter(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	q := r.URL.Query()
+	if q.Has("after") || q.Get("follow") == "1" {
+		s.handleEventsAfter(w, r, f)
+		return
+	}
+	cursor, ok := parseULIDCursor(w, r, "event")
+	if !ok {
+		return
+	}
+	limit := parseLimit(r)
+	evs, err := s.queryEvents(r.Context(), f, cursor, false, limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	ids := make([]string, 0, len(evs))
+	for _, e := range evs {
+		ids = append(ids, e.id)
+	}
+	outcomesByEvent := s.enrichEventOutcomes(r.Context(), f.workspace, f.outcome, ids)
 	s.patchDoneResults(r.Context(), outcomesByEvent)
 
 	// List: one entry per outcome (event × job), collapse all-no_match to single
@@ -267,6 +317,118 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		resp["next_cursor"] = evs[len(evs)-1].id
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleEventsAfter reads events forward from ?after= in id order. Event ids
+// are ULIDs, so id order is time order. Each row has the GET /v1/events/{id}
+// shape. With follow=1 the response is an NDJSON stream that stays open.
+func (s *Server) handleEventsAfter(w http.ResponseWriter, r *http.Request, f eventFilter) {
+	q := r.URL.Query()
+	after := q.Get("after")
+	if q.Has("cursor") {
+		writeErr(w, http.StatusBadRequest, "validation", "use after or cursor, not both")
+		return
+	}
+	if after != "" {
+		if _, err := ulid.Parse(after); err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", "malformed after: not an event id")
+			return
+		}
+	}
+	limit := parseLimit(r)
+	if q.Get("follow") == "1" {
+		s.followEvents(w, r, f, after, limit)
+		return
+	}
+	rows, next, err := s.eventsAfter(r.Context(), f, after, limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": rows, "next_after": next})
+}
+
+// eventsAfter returns up to limit events with id > after, oldest first, and
+// the id to read after next. With no rows, the next id is after.
+func (s *Server) eventsAfter(ctx context.Context, f eventFilter, after string, limit int) ([]map[string]any, string, error) {
+	evs, err := s.queryEvents(ctx, f, after, true, limit)
+	if err != nil {
+		return nil, after, err
+	}
+	ids := make([]string, 0, len(evs))
+	for _, e := range evs {
+		ids = append(ids, e.id)
+	}
+	outs := s.enrichEventOutcomes(ctx, f.workspace, f.outcome, ids)
+	s.patchDoneResults(ctx, outs)
+	rows := make([]map[string]any, 0, len(evs))
+	for _, e := range evs {
+		rows = append(rows, e.detail(outs[e.id]))
+		after = e.id
+	}
+	return rows, after, nil
+}
+
+// eventKeepalive is the NDJSON line that a follow stream writes while idle.
+// It has no id, so a reader can tell it from an event row.
+const eventKeepalive = "{\"keepalive\":true}\n"
+
+// followEvents writes events with id > after as NDJSON lines until the client
+// disconnects or the server stops. A bus append wakes it; the poll tick also
+// catches rows written with no bus frame.
+func (s *Server) followEvents(w http.ResponseWriter, r *http.Request, f eventFilter, after string, limit int) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, "internal", "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	// WebKit holds a fetch until the first body byte.
+	fmt.Fprint(w, eventKeepalive)
+	flusher.Flush()
+
+	enc := json.NewEncoder(w)
+	lastWrite := time.Now()
+	lag := time.NewTicker(streamPollInterval)
+	defer lag.Stop()
+	for {
+		wake := s.st.BusWake()
+		rows, next, err := s.eventsAfter(r.Context(), f, after, limit)
+		if err != nil {
+			if r.Context().Err() == nil {
+				s.log.Warn("events.follow", "error", err)
+			}
+			return
+		}
+		for _, row := range rows {
+			if err := enc.Encode(row); err != nil {
+				return
+			}
+		}
+		after = next
+		switch {
+		case len(rows) > 0:
+			flusher.Flush()
+			lastWrite = time.Now()
+			if len(rows) == limit {
+				continue
+			}
+		case time.Since(lastWrite) >= streamKeepalive:
+			fmt.Fprint(w, eventKeepalive)
+			flusher.Flush()
+			lastWrite = time.Now()
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-s.done:
+			return
+		case <-wake:
+		case <-lag.C:
+		}
+	}
 }
 
 // listEntries expands one event into list rows: one row per interesting
@@ -456,7 +618,12 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 	e.slug = s.connectors.SlugOf(e.instance)
 	outcomesBy := s.enrichEventOutcomes(r.Context(), "", "", []string{id})
 	s.patchDoneResults(r.Context(), outcomesBy)
-	outs := outcomesBy[id]
+	writeJSON(w, http.StatusOK, e.detail(outcomesBy[id]))
+}
+
+// detail is the GET /v1/events/{id} shape: the base fields, the raw payload,
+// and every outcome.
+func (e eventRow) detail(outs []map[string]any) map[string]any {
 	if outs == nil {
 		outs = []map[string]any{}
 	}
@@ -467,7 +634,7 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 		out["raw"] = nil
 	}
 	out["outcomes"] = outs
-	writeJSON(w, http.StatusOK, out)
+	return out
 }
 
 func (s *Server) handleEventRetrigger(w http.ResponseWriter, r *http.Request) {

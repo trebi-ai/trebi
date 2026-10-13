@@ -1316,11 +1316,30 @@ func BuildRulesFire(connector, workspace, job, match, extract string, event any,
 	}
 }
 
-// BuildEventsListPath builds GET /v1/events?cursor=&limit=&connector=&since=&q=.
-func BuildEventsListPath(cursor string, limit int, connector, since, q string) string {
-	return withQuery("/v1/events", mergeQ(
-		map[string]string{"cursor": cursor, "connector": connector, "since": since, "q": q},
-		limitQ(limit)))
+// EventsQuery is the filter set of GET /v1/events. Cursor pages back from
+// the newest event. After reads forward in id order; Follow keeps the
+// response open as an NDJSON stream of new events.
+type EventsQuery struct {
+	Cursor    string
+	After     string
+	Follow    bool
+	Connector string
+	Workspace string
+	Since     string
+	Q         string
+	Limit     int
+}
+
+// Path renders the query as GET /v1/events.
+func (e EventsQuery) Path() string {
+	kv := map[string]string{
+		"cursor": e.Cursor, "after": e.After, "connector": e.Connector,
+		"workspace": e.Workspace, "since": e.Since, "q": e.Q,
+	}
+	if e.Follow {
+		kv["follow"] = "1"
+	}
+	return withQuery("/v1/events", mergeQ(kv, limitQ(e.Limit)))
 }
 
 // BuildEventGet builds GET /v1/events/{id}.

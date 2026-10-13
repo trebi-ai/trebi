@@ -1245,3 +1245,37 @@ func TestConnectorEntryAndSearchCursor(t *testing.T) {
 		t.Fatalf("search output:\n%s", out)
 	}
 }
+
+func TestEventListAfterFollow(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		if r.URL.Query().Get("follow") == "1" {
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			_, _ = w.Write([]byte("{\"keepalive\":true}\n{\"id\":\"01B\",\"connector\":\"feed\"}\n{\"id\":\"01C\",\"connector\":\"feed\"}\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"events":[{"id":"01B"}],"next_after":"01B"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "event", "list", "--after", "01A", "--follow", "--connector", "feed", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery != "after=01A&connector=feed&follow=1&limit=50" {
+		t.Fatalf("query %q", gotQuery)
+	}
+	if out != "{\"id\":\"01B\",\"connector\":\"feed\"}\n{\"id\":\"01C\",\"connector\":\"feed\"}\n" {
+		t.Fatalf("follow output %q", out)
+	}
+	out, err = runCLI(t, client, "event", "list", "--after", "01A", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"next_after": "01B"`) {
+		t.Fatalf("after output %q", out)
+	}
+}

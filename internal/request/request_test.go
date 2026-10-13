@@ -539,9 +539,13 @@ func TestBuildContractGapRequests(t *testing.T) {
 	if req.Method != "DELETE" || !strings.Contains(req.Path, "/memory/log/e1") {
 		t.Fatalf("asst del %+v", req)
 	}
-	path := BuildEventsListPath("01C", 10, "", "", "")
+	path := EventsQuery{Cursor: "01C", Limit: 10}.Path()
 	if !strings.Contains(path, "cursor=01C") || !strings.Contains(path, "limit=10") {
 		t.Fatalf("events list %s", path)
+	}
+	path = EventsQuery{After: "01A", Follow: true, Workspace: "w1"}.Path()
+	if path != "/v1/events?after=01A&follow=1&workspace=w1" {
+		t.Fatalf("events after %s", path)
 	}
 	path = BuildQueueListPath("pending", "01Q", 5)
 	if !strings.Contains(path, "status=pending") || !strings.Contains(path, "cursor=01Q") {

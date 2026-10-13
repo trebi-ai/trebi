@@ -14,7 +14,10 @@ List events, newest first. Each row carries `id`, `connector`, `instance`,
 from the connector, used for dedup), `identity` (the sender identity, checked
 by a trigger `allowlist`), `room` and `thread` (a reply goes there), `sender`,
 and `catch_up` (true when a catch-up replay stored the event).
+With `after`, the list reads forward: events with an id after it, oldest first, one row per event in the `show` shape. The reply carries `next_after`; give it as `after` on the next call to read new events with no gap and no duplicate. To start at the oldest event, give `after` as `00000000000000000000000000`.
+- `after` (string, optional): event id; return the events after it, oldest first. Do not give it with `cursor`.
 - `connector` (string, optional): filter by connector name.
+- `workspace` (string, optional): only events with a trigger outcome in this workspace.
 - `since` (string, optional): RFC3339 time, or a duration such as `24h` meaning "that long ago".
 - `q` (string, optional): text match on the summary or the payload.
 - `cursor` (string, optional): pagination cursor from a prior page.

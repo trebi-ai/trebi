@@ -52,6 +52,17 @@ trebi bus --entity run --id <id> --action updated --limit 20 --json
 
 Trigger events (durable): `trebi guide connectors-and-rules`.
 
+## Event feed
+
+The bus frame `event.created` carries only the connector and the connection, and the bus resets when a cursor is older than its retention. To read every trigger event in order, read the event log instead:
+
+```bash
+trebi event list --after <event-id> --json
+trebi event list --after <event-id> --follow --json
+```
+
+`--after` gives the events after that id, oldest first, with the payload of `event show`. `--follow` prints each new event as one JSON line and blocks — **local only**; remote: `event.list` with `after`, then call it again with `next_after`. Keep the last id you read; give it as `--after` to continue with no gap and no duplicate.
+
 ## Service logs
 
 ```bash

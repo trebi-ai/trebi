@@ -1,12 +1,21 @@
 package api_test
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 func TestRulesTestStages(t *testing.T) {
@@ -274,4 +283,145 @@ func TestRulesTestFollowUp(t *testing.T) {
 	if code, out, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"event_id": "e2", "replies": "continue", "job": "nope"}); code != 404 {
 		t.Fatalf("unknown job: %d %v", code, out)
 	}
+}
+
+func TestEventsAfter(t *testing.T) {
+	st, base, wsA, _ := scopeFixture(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	old := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339Nano)
+	e1 := seedEvent(t, st, "feed", "one", now, 0)
+	e2 := seedEvent(t, st, "other", "two", old, 0)
+	e3 := seedEvent(t, st, "feed", "three", now, 1)
+	e4 := seedEvent(t, st, "other", "four", now, 0)
+	e5 := seedEvent(t, st, "feed", "five", now, 0)
+	if _, err := st.DB().Exec(`INSERT INTO event_outcomes (event_id, workspace_id, job_id, on_index, outcome, created_at)
+		VALUES (?,?,?,?,?,?)`, e3, wsA, "j1", 0, "queued", now); err != nil {
+		t.Fatal(err)
+	}
+	zero := "00000000000000000000000000"
+	for _, tc := range []struct {
+		name, query string
+		want        []string
+	}{
+		{"ascending, cursor row excluded", "after=" + e1, []string{e2, e3, e4, e5}},
+		{"from the oldest", "after=" + zero, []string{e1, e2, e3, e4, e5}},
+		{"connector", "after=" + e1 + "&connector=feed", []string{e3, e5}},
+		{"workspace", "after=" + zero + "&workspace=alpha", []string{e3}},
+		{"since", "after=" + zero + "&since=1h", []string{e1, e3, e4, e5}},
+		{"catch_up", "after=" + zero + "&catch_up=1", []string{e3}},
+		{"q", "after=" + zero + "&q=FOUR", []string{e4}},
+		{"page", "after=" + e1 + "&limit=2", []string{e2, e3}},
+		{"end", "after=" + e5, nil},
+	} {
+		got := scopeGet(t, base, "/v1/events?"+tc.query)
+		if ids := eventIDs(t, got); !slices.Equal(ids, tc.want) {
+			t.Errorf("%s: ids %v, want %v", tc.name, ids, tc.want)
+		}
+	}
+	page := scopeGet(t, base, "/v1/events?after="+e1+"&limit=2")
+	if page["next_after"] != e3 {
+		t.Fatalf("next_after %v, want %s", page["next_after"], e3)
+	}
+	if end := scopeGet(t, base, "/v1/events?after="+e5); end["next_after"] != e5 {
+		t.Fatalf("empty page next_after %v, want %s", end["next_after"], e5)
+	}
+	// A row has the GET /v1/events/{id} shape.
+	row := scopeArr(t, scopeGet(t, base, "/v1/events?after="+e2+"&limit=1"), "events")[0]
+	detail := scopeGet(t, base, "/v1/events/"+e3)
+	if !reflect.DeepEqual(row, detail) {
+		t.Fatalf("after row %v\n differs from detail %v", row, detail)
+	}
+	for _, q := range []string{"after=nope", "after=" + e1 + "&cursor=" + e2} {
+		if code, out, _ := doJSON(t, "GET", base+"/v1/events?"+q, nil); code != 400 || errCode(out) != "validation" {
+			t.Errorf("%s: %d %v", q, code, out)
+		}
+	}
+}
+
+func TestEventsFollow(t *testing.T) {
+	st, base, _, _ := scopeFixture(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	start := seedEvent(t, st, "feed", "before", now, 0)
+
+	follow := func(after string) (<-chan string, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(t.Context())
+		req, _ := http.NewRequestWithContext(ctx, "GET", base+"/v1/events?follow=1&after="+after, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "application/x-ndjson" {
+			t.Fatalf("follow: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+		ids := make(chan string, 16)
+		go func() {
+			defer resp.Body.Close()
+			defer close(ids)
+			sc := bufio.NewScanner(resp.Body)
+			for sc.Scan() {
+				var row map[string]any
+				if json.Unmarshal(sc.Bytes(), &row) != nil {
+					return
+				}
+				if id, _ := row["id"].(string); id != "" {
+					ids <- id
+				}
+			}
+		}()
+		return ids, cancel
+	}
+	next := func(ids <-chan string) string {
+		t.Helper()
+		select {
+		case id := <-ids:
+			return id
+		case <-time.After(5 * time.Second):
+			t.Fatal("no event line")
+			return ""
+		}
+	}
+
+	ids, cancel := follow(start)
+	var want []string
+	for _, s := range []string{"a", "b", "c"} {
+		want = append(want, seedEvent(t, st, "feed", s, now, 0))
+	}
+	var got []string
+	for range want {
+		got = append(got, next(ids))
+	}
+	cancel()
+	if !slices.Equal(got, want) {
+		t.Fatalf("follow ids %v, want %v", got, want)
+	}
+
+	// A reconnect from the last id sees only rows written after it.
+	ids, cancel = follow(got[len(got)-1])
+	defer cancel()
+	fresh := seedEvent(t, st, "feed", "d", now, 0)
+	if id := next(ids); id != fresh {
+		t.Fatalf("reconnect first id %s, want %s (no duplicates)", id, fresh)
+	}
+}
+
+// seedEvent writes one events row and wakes the bus, as the pipeline does.
+func seedEvent(t *testing.T, st *store.Store, connector, summary, at string, catchUp int) string {
+	t.Helper()
+	id := ulid.Make().String()
+	if _, err := st.DB().Exec(`INSERT INTO events (id, connector, instance, received_at, summary, raw_json, trace_id, catch_up)
+		VALUES (?,?,?,?,?,?,?,?)`, id, connector, connector, at, summary, `{"s":"`+summary+`"}`, "t", catchUp); err != nil {
+		t.Fatal(err)
+	}
+	st.NotifyBus()
+	return id
+}
+
+// eventIDs returns the ids of the rows under "events".
+func eventIDs(t *testing.T, m map[string]any) []string {
+	t.Helper()
+	var ids []string
+	for _, row := range scopeArr(t, m, "events") {
+		ids = append(ids, row["id"].(string))
+	}
+	return ids
 }

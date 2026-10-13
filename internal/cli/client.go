@@ -526,6 +526,40 @@ func (c *APIClient) StreamEvents(ctx context.Context, path string, fn func(store
 	return io.EOF
 }
 
+// StreamLines follows an NDJSON GET and calls fn with each non-empty line.
+// It stops when the stream ends, ctx ends, or fn returns an error.
+func (c *APIClient) StreamLines(ctx context.Context, path string, fn func([]byte) error) error {
+	req, err := c.newRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return err
+	}
+	httpClient := c.httpClient
+	if httpClient == nil {
+		httpClient = &http.Client{}
+	}
+	streamClient := *httpClient
+	streamClient.Timeout = 0
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("GET %s: %s: %s", path, resp.Status, raw)
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 256*1024), streamScannerMax)
+	for scanner.Scan() {
+		if line := scanner.Bytes(); len(line) > 0 {
+			if err := fn(line); err != nil {
+				return err
+			}
+		}
+	}
+	return scanner.Err()
+}
+
 // newRequest builds a request to path with the run token headers.
 func (c *APIClient) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)

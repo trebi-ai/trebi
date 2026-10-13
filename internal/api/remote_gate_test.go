@@ -14,7 +14,7 @@ func TestRemoteGate(t *testing.T) {
 	ok := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }
 	for _, p := range []string{
 		"POST /v1/system/shutdown", "POST /v1/cloud/link", "DELETE /v1/cloud/link",
-		"PATCH /v1/config", "POST /v1/jobs", "GET /v1/jobs",
+		"PATCH /v1/config", "POST /v1/jobs", "GET /v1/jobs", "GET /v1/events",
 	} {
 		mux.HandleFunc(p, ok)
 	}
@@ -33,6 +33,7 @@ func TestRemoteGate(t *testing.T) {
 	}{
 		{"local write", nil, "POST", "/v1/system/shutdown", "", 204, ""},
 		{"read only get", remote("mcp:read"), "GET", "/v1/jobs", "", 204, ""},
+		{"read only events after", remote("mcp:read"), "GET", "/v1/events?after=01A", "", 204, ""},
 		{"read only post", remote("mcp:read"), "POST", "/v1/jobs", "{}", 403, "remote_read_only"},
 		{"write post", remote("mcp:read", "mcp:write"), "POST", "/v1/jobs", "{}", 204, ""},
 		{"shutdown", remote("mcp:read", "mcp:write"), "POST", "/v1/system/shutdown", "", 403, "remote_denied"},
@@ -60,7 +61,7 @@ func TestRemoteGateMobile(t *testing.T) {
 	ok := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }
 	for _, p := range []string{
 		"POST /v1/system/shutdown", "POST /v1/cloud/link", "DELETE /v1/cloud/link", "PUT /v1/system/license",
-		"POST /v1/mobile/pairings", "PATCH /v1/config", "POST /v1/jobs", "GET /v1/jobs",
+		"POST /v1/mobile/pairings", "PATCH /v1/config", "POST /v1/jobs", "GET /v1/jobs", "GET /v1/events",
 		"POST /v1/state/{owner}/{collection}/query",
 	} {
 		mux.HandleFunc(p, ok)
@@ -82,6 +83,7 @@ func TestRemoteGateMobile(t *testing.T) {
 		{"full get", phone("full"), "GET", "/v1/jobs", "", 204, ""},
 		{"full post", phone("full"), "POST", "/v1/jobs", "{}", 204, ""},
 		{"read get", phone("read"), "GET", "/v1/jobs", "", 204, ""},
+		{"read events follow", phone("read"), "GET", "/v1/events?after=01A&follow=1", "", 204, ""},
 		{"read post", phone("read"), "POST", "/v1/jobs", "{}", 403, "remote_read_only"},
 		{"read state query", phone("read"), "POST", "/v1/state/a/b/query", "{}", 403, "remote_read_only"},
 		{"shutdown", phone("full"), "POST", "/v1/system/shutdown", "", 403, "remote_denied"},

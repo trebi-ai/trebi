@@ -2397,19 +2397,18 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 
 		"event": {
 			"list": act("GET /v1/events", Input{}, func(in Input) (request.HTTPRequest, error) {
-				cursor, err := in.str("cursor")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
 				limit, _, err := in.num("limit")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				v, err := in.strs("connector", "since", "q")
+				v, err := in.strs("cursor", "after", "connector", "workspace", "since", "q")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildEventsListPath(cursor, limit, v[0], v[1], v[2])), nil
+				// follow=1 blocks forever; only the paged read is exposed.
+				return mcpGet(request.EventsQuery{
+					Cursor: v[0], After: v[1], Connector: v[2], Workspace: v[3], Since: v[4], Q: v[5], Limit: limit,
+				}.Path()), nil
 			}),
 			"show":      getReq("GET /v1/events/{id}", "id", "01ABC", request.BuildEventGet),
 			"retrigger": idPost("POST /v1/events/{id}/retrigger", "id", "01ABC", request.BuildEventsRetrigger),
