@@ -59,6 +59,10 @@ func HarnessDir(name string) string {
 }
 func BinDir() string { return filepath.Join(Base(), "bin") }
 
+// ConnectorCommandsDir holds one link for each command of an installed
+// connector. A user adds it to the PATH of the shell once.
+func ConnectorCommandsDir() string { return filepath.Join(BinDir(), "connectors") }
+
 // HarnessBackupDir holds the reset copies of the config files of a harness.
 func HarnessBackupDir(name string) string {
 	return filepath.Join(Base(), "backups", "harness", name)

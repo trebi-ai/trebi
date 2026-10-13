@@ -564,6 +564,7 @@ func (s *Service) reconcile(ctx context.Context) {
 		s.mu.Unlock()
 		s.hooks.EnsureHooks(context.WithoutCancel(ctx), hookWants(slices.Collect(maps.Values(want)), conns))
 	}
+	s.syncCommandLinks(ctx)
 }
 
 // supervise owns one instance's process lifetime: the run loop with the

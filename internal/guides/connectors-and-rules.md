@@ -233,6 +233,8 @@ trebi connector gc --dry-run
 
 `update` installs the version next to the current one, switches the connection, restarts its process, and removes versions that nothing uses. `capabilities` starts an MCP server to list its tools, prompts, and resources, and keeps the result for 10 minutes. `gc` removes installed versions that no connection uses.
 
+The commands of the installed connectors are also in `~/.trebi/bin/connectors/`, one link each, and the links follow each update. Jobs and connectors do not need it. To call a connector program from a shell, add the folder to `PATH` once, for example `export PATH="$HOME/.trebi/bin/connectors:$PATH"` in `~/.zshrc`. Doctor reports `connector_command_clash` when two connectors have one command name.
+
 ## Cursors
 
 Cursors track how far a connector has consumed.

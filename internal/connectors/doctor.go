@@ -96,6 +96,7 @@ func (s *Service) Doctor(ctx context.Context) []Finding {
 		}
 	}
 	out = append(out, s.packageFindings()...)
+	out = append(out, s.linkFindings()...)
 	return append(out, s.clashFindings()...)
 }
 
