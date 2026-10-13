@@ -2,6 +2,7 @@ package connectors
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -517,4 +519,64 @@ func linesEntry(name string, ev manifest.Events) Connection {
 	return Connection{Type: name, Slug: name, From: FromInline, Manifest: &manifest.Manifest{
 		Schema: manifest.SchemaID, Name: name, Title: name, Description: "Test connector.", Version: "1.0.0", Events: &ev,
 	}}
+}
+
+// TestLocalURL pins the hosts that a connector link may point to.
+func TestLocalURL(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"http://127.0.0.1:7480/", true},
+		{"http://localhost:8080/feeds", true},
+		{"https://LOCALHOST/", true},
+		{"http://100.64.0.1/", true},
+		{"http://100.127.255.254:9000/x", true},
+		{"https://perception.tail1234.ts.net/", true},
+		{"http://100.128.0.1/", false},
+		{"http://127.0.0.2/", false},
+		{"http://192.168.1.10/", false},
+		{"https://example.com/", false},
+		{"https://ts.net/", false},
+		{"https://evil.ts.net.example.com/", false},
+		{"ftp://127.0.0.1/", false},
+		{"javascript:alert(1)", false},
+		{"http://user:pw@127.0.0.1/", false},
+		{"", false},
+		{"://bad", false},
+	}
+	for _, c := range cases {
+		if got := localURL(c.url); got != c.want {
+			t.Errorf("localURL(%q) = %v, want %v", c.url, got, c.want)
+		}
+	}
+}
+
+// TestStatusLinks proves that a status keeps the last links when it has none,
+// that an empty list clears them, and that a foreign link is dropped.
+func TestStatusLinks(t *testing.T) {
+	t.Parallel()
+	s := &Service{log: slog.New(slog.DiscardHandler)}
+	p := &proc{}
+	ui := protocol.Link{Label: "Open", URL: "http://127.0.0.1:7480/"}
+	links := s.localLinks("c1", []protocol.Link{ui, {Label: "Web", URL: "https://example.com/"}, {URL: "http://localhost/"}})
+	if !slices.Equal(links, []protocol.Link{ui}) {
+		t.Fatalf("kept %v", links)
+	}
+	if _, moved := p.setAuth(protocol.Status{State: protocol.StateConnected, Links: links}); !moved {
+		t.Fatal("first links did not report a change")
+	}
+	if _, moved := p.setAuth(protocol.Status{State: protocol.StateConnected}); moved {
+		t.Fatal("a status with no links changed the links")
+	}
+	if got := p.authStatus().Links; !slices.Equal(got, []protocol.Link{ui}) {
+		t.Fatalf("links after a status with none: %v", got)
+	}
+	if _, moved := p.setAuth(protocol.Status{State: protocol.StateConnected, Links: s.localLinks("c1", []protocol.Link{})}); !moved {
+		t.Fatal("an empty list did not report a change")
+	}
+	if got := p.authStatus().Links; len(got) != 0 {
+		t.Fatalf("links after an empty list: %v", got)
+	}
 }

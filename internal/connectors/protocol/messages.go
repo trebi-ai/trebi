@@ -264,6 +264,15 @@ type Status struct {
 	Reason  string   `json:"reason,omitempty"`
 	Message string   `json:"message,omitempty"`
 	Account *Account `json:"account,omitempty"`
+	// Links are pages of the adapter that the connector panel shows. A
+	// status with no links keeps the last links; an empty list clears them.
+	Links []Link `json:"links,omitempty"`
+}
+
+// Link is one page that the adapter serves, for example its own UI.
+type Link struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
 }
 
 // AuthStatusResult answers auth/status.

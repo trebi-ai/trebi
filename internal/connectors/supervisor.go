@@ -225,15 +225,21 @@ func (p *proc) session() (*protocol.Conn, *protocol.InitializeResult) {
 
 // setAuth stores a status and reports whether the state changed. A status
 // with no account keeps the known account.
-func (p *proc) setAuth(st protocol.Status) bool {
+// setAuth stores a status. It reports a change of the state and a change of
+// the links. A status with no links keeps the last links.
+func (p *proc) setAuth(st protocol.Status) (changed, linksChanged bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if st.Account == nil && p.auth.Account != nil && st.State == protocol.StateConnected {
 		st.Account = p.auth.Account
 	}
-	changed := p.auth.State != st.State || p.auth.Reason != st.Reason
+	if st.Links == nil {
+		st.Links = p.auth.Links
+	}
+	changed = p.auth.State != st.State || p.auth.Reason != st.Reason
+	linksChanged = !slices.Equal(p.auth.Links, st.Links)
 	p.auth = st
-	return changed
+	return changed, linksChanged
 }
 
 func (p *proc) authStatus() protocol.Status {

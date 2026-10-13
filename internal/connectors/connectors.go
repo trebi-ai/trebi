@@ -1443,9 +1443,11 @@ func (s *Service) fillLive(row map[string]any, id string, m manifest.Manifest, s
 	if p != nil {
 		snap := p.snapshot()
 		row["auth"] = snap.authRow()
+		row["links"] = orEmptySlice(snap.auth.Links)
 		row["features"] = orEmptySlice(snap.features())
 		row["limits"] = snap.limits(m)
 	} else {
+		row["links"] = []any{}
 		row["features"] = orEmptySlice(m.Features())
 		if m.Channel != nil {
 			row["limits"] = m.Channel.Limits

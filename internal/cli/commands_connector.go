@@ -469,6 +469,12 @@ func runConnectorShow(_ context.Context, c *cli.Command) error {
 			fmt.Fprintf(w, "%s: %s\n", k, v)
 		}
 	}
+	links, _ := body["links"].([]any)
+	for _, raw := range links {
+		if l, ok := raw.(map[string]any); ok {
+			fmt.Fprintf(w, "link %s: %s\n", mapStr(l, "label"), mapStr(l, "url"))
+		}
+	}
 	return nil
 }
 

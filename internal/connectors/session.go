@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
+	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -135,15 +138,57 @@ func (s *Service) onNotify(p *proc, method string, params json.RawMessage) {
 }
 
 // applyStatus stores an adapter status and emits connector.status on a
-// change. auth_required also emits connector.auth.required.
+// change. auth_required also emits connector.auth.required. A change of the
+// links emits connector.updated.
 func (s *Service) applyStatus(p *proc, st protocol.Status) {
-	if !p.setAuth(st) {
+	if st.Links != nil {
+		st.Links = s.localLinks(p.id, st.Links)
+	}
+	changed, linksChanged := p.setAuth(st)
+	if linksChanged {
+		s.emitConnector("connector.updated", p.id, nil)
+	}
+	if !changed {
 		return
 	}
 	s.emitStatus(p, st.State, st.Reason)
 	if st.State == protocol.StateAuthRequired {
 		s.emitConnector("connector.auth.required", p.id, map[string]string{"reason": st.Reason})
 	}
+}
+
+// maxLinks bounds the links of one status.
+const maxLinks = 8
+
+// localLinks keeps the links that point to this computer or to the tailnet.
+// It drops the others with a log line. The result is never nil, so an empty
+// list clears the stored links.
+func (s *Service) localLinks(id string, links []protocol.Link) []protocol.Link {
+	kept := []protocol.Link{}
+	for _, l := range links {
+		if l.Label == "" || !localURL(l.URL) || len(kept) == maxLinks {
+			s.log.Warn("connector.link_dropped", "connector", id, "label", l.Label, "url", l.URL)
+			continue
+		}
+		kept = append(kept, l)
+	}
+	return kept
+}
+
+// localURL reports whether raw is an http or https URL on 127.0.0.1,
+// localhost, a Tailscale address (100.64.0.0/10), or a *.ts.net name.
+func localURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".ts.net") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	tailnet := netip.PrefixFrom(netip.AddrFrom4([4]byte{100, 64, 0, 0}), 10)
+	return err == nil && (ip == netip.AddrFrom4([4]byte{127, 0, 0, 1}) || tailnet.Contains(ip))
 }
 
 // Flow is one login flow. Steps go to subscribers only: never to the bus
