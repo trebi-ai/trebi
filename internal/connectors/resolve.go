@@ -132,6 +132,20 @@ func (r Resolved) MissingInputs() []manifest.Input {
 	return out
 }
 
+// binCommand returns the full path of a bare command in the bin folder, so
+// that a caller that looks up the command in its own PATH finds it. Another
+// command stays as it is.
+func (r Resolved) binCommand(cmd string) string {
+	dir := r.BinDir()
+	if dir == "" || cmd == "" || strings.Contains(cmd, "/") {
+		return cmd
+	}
+	if p := filepath.Join(dir, cmd); lookPath(p, "") != "" {
+		return p
+	}
+	return cmd
+}
+
 // PathEnv prepends the bin folder to path.
 func (r Resolved) PathEnv(path string) string {
 	if bin := r.BinDir(); bin != "" {
@@ -170,7 +184,7 @@ func (r Resolved) MCPServer() (*agentwire.MCPServer, []string, error) {
 		}
 		return out
 	}
-	srv := &agentwire.MCPServer{Name: r.Slug, Command: m.Command, URL: expand(m.URL)}
+	srv := &agentwire.MCPServer{Name: r.Slug, Command: r.binCommand(m.Command), URL: expand(m.URL)}
 	if m.Command != "" {
 		env := maps.Clone(vals)
 		exp, miss := secrets.ExpandRefs(expandMap(m.Env))
