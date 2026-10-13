@@ -61,6 +61,24 @@ func TestValidateRules(t *testing.T) {
 		{"channel on lines", func(m *manifest.Manifest) { m.Events.Protocol = "lines"; m.Setup = nil }, []string{"channel"}},
 		{"login on lines", func(m *manifest.Manifest) { m.Events.Protocol = "lines"; m.Channel = nil }, []string{"setup.login"}},
 		{"lines field on protocol", func(m *manifest.Manifest) { m.Events.ID = "d.id" }, []string{"events.id"}},
+		{"message path on protocol", func(m *manifest.Manifest) { m.Events.Room = "chat.id" }, []string{"events.room"}},
+		{"message paths on lines", func(m *manifest.Manifest) {
+			m.Events.Protocol, m.Channel, m.Setup, m.Events.Format = "lines", nil, nil, manifest.FormatJSON
+			m.Events.Room, m.Events.RoomName, m.Events.Thread, m.Events.Sender = "channel.id", "channel.name", "thread_id", "user.id"
+			m.Events.SenderName, m.Events.Type, m.Events.Text = "user.name", "kind", "items.0.text"
+		}, nil},
+		{"message path needs json", func(m *manifest.Manifest) {
+			m.Events.Protocol, m.Channel, m.Setup, m.Events.Format = "lines", nil, nil, manifest.FormatLine
+			m.Events.Text = "text"
+		}, []string{"events.text"}},
+		{"message path no format", func(m *manifest.Manifest) {
+			m.Events.Protocol, m.Channel, m.Setup = "lines", nil, nil
+			m.Events.SenderName = "user.name"
+		}, []string{"events.sender_name"}},
+		{"bad message path", func(m *manifest.Manifest) {
+			m.Events.Protocol, m.Channel, m.Setup, m.Events.Format = "lines", nil, nil, manifest.FormatJSON
+			m.Events.Thread = "a..b"
+		}, []string{"events.thread"}},
 		{"unknown feature", func(m *manifest.Manifest) { m.Channel.Features = append(m.Channel.Features, "fly") }, []string{"channel.features"}},
 		{"replies feature", func(m *manifest.Manifest) { m.Channel.Features = append(m.Channel.Features, manifest.FeatureReplies) }, nil},
 		{"unknown login", func(m *manifest.Manifest) { m.Setup.Login = []string{"sms"} }, []string{"setup.login"}},

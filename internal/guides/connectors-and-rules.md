@@ -67,6 +67,24 @@ A manifest needs `schema`, `name`, `title`, `description`, `version`, and at lea
 
 The events block has two protocols. `lines` (the default) reads one event per output line: `format` is `json` or `line`, `poll` runs the command again on an interval (at least `10s`), and `catchup.command` reads the events after `$TREBI_LAST_EVENT_ID` at start. Catch-up needs `format: json` and `id`, and it cannot be combined with `poll`. `trebi-connector/1` runs an adapter that speaks the connector protocol: it sends typed events, and it can log in to an account and hold a channel. A `channel` block needs `events.protocol: trebi-connector/1`.
 
+A `lines` connector with `format: json` can map the message fields of each line. Each key is a dotted path into the JSON line; a numeric segment selects an array item:
+
+```yaml
+events:
+  command: my-tool listen --json
+  format: json
+  id: id
+  room: channel.id
+  room_name: channel.name
+  thread: thread_id
+  sender: user.id
+  sender_name: user.name
+  type: kind
+  text: text
+```
+
+The mapped fields work as the fields of a `trebi-connector/1` event: trigger `rooms` compares `room`, `contains` tests `text`, and the run gets the built-in vars (`text`, `sender`, `sender_id`, `room`, `room_name`, `thread`, `message_id`, `connection`). The `identity` path wins for the allowlist; without it, the `sender` value is the identity. The `sender` var is the `sender_name` value, else the `sender` value. A `thread` value starts a conversation, so `replies: continue` follows the thread; without a thread, each event starts its own conversation. A path that is not in the line leaves its field empty, and without `text` the event text is the whole line. When the manifest declares `types`, Trebi drops a line whose `type` value is not in the list and writes a `connector.parse_error` log line. Each key needs `format: json`.
+
 A trigger `allowlist` checks only the value at the events `identity` path. A connector with no identity fails every allowlist. The `email` connector compares the sender address without case. Every other connector compares the value exactly.
 
 A trigger `from` (`people`, `bots`, or `anyone`, the default) reads `sender.bot` of a `trebi-connector/1` event. A `lines` connector and an adapter that does not send `sender.bot` make every sender a person. A trigger `contains` tests the event `text`: what a person sees, with the readable parts of embeds and other rich content, one per line.

@@ -50,6 +50,7 @@ var (
 	ErrDuplicate = errors.New("event source id already recorded")
 	// ErrEventNotFound is a redispatch of a missing events row.
 	ErrEventNotFound = errors.New("event not found")
+	errUnknownType   = errors.New("type is not in events.types")
 )
 
 // AmbiguousError is a connector name that matches more than one row.
@@ -177,7 +178,7 @@ type eventRecord struct {
 	text       string
 	replyTo    string
 	root       string // the conversation root (plan A.7)
-	protocol   bool   // a trebi-connector/1 event; it gets the built-in vars
+	builtins   bool   // a trebi-connector/1 event or a mapped lines event; it gets the built-in vars
 	bot        bool
 	self       bool
 	roomName   string
@@ -1212,6 +1213,9 @@ func eventsRow(e manifest.Events) map[string]any {
 		row["id"] = e.ID
 		row["ts"] = e.TS
 		row["identity"] = e.Identity
+		row["room"], row["room_name"], row["thread"] = e.Room, e.RoomName, e.Thread
+		row["sender"], row["sender_name"] = e.Sender, e.SenderName
+		row["type"], row["text"] = e.Type, e.Text
 		if e.Poll > 0 {
 			row["poll_ms"] = e.Poll.Std().Milliseconds()
 		}

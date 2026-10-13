@@ -62,8 +62,10 @@ func (s *Service) InjectEvent(ctx context.Context, ref string, event any) (strin
 		rec = protocolRecord(c.Type, c.ID, ev, false)
 		rec.root = s.root(ctx, c.ID, ev)
 	} else if err == nil && r.Manifest.Events != nil {
-		fillLinesMeta(&rec, r.Manifest.Events)
 		rec.text = string(raw)
+		if err := fillLinesMeta(&rec, r.Manifest); err != nil {
+			return "", &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "event", Message: err.Error()}}}
+		}
 	}
 	inserted, err := s.recordEvent(ctx, rec, recordOpts{})
 	if err != nil {
@@ -104,7 +106,8 @@ func (s *Service) Redispatch(ctx context.Context, eventID string) error {
 }
 
 // loadRecord reads one stored event. A stored trebi-connector/1 event gets
-// its typed fields back from raw_json. A missing id is ErrEventNotFound.
+// its typed fields back from raw_json, and a mapped lines event from the
+// current manifest. A missing id is ErrEventNotFound.
 func (s *Service) loadRecord(ctx context.Context, eventID string) (eventRecord, error) {
 	rec := eventRecord{id: eventID}
 	var sourceID, identity, room, thread, sender, eventType, text, replyTo, root sql.NullString
@@ -128,9 +131,15 @@ func (s *Service) loadRecord(ctx context.Context, eventID string) (eventRecord, 
 	rec.text, rec.replyTo, rec.root = text.String, replyTo.String, root.String
 	rec.catchUp = catchUp != 0
 	rec.payload = decodeStored(rec.raw)
+	if manifest.Reserved(rec.connector) {
+		return rec, nil
+	}
 	var ev protocol.Event
-	if !manifest.Reserved(rec.connector) && decodeStrict([]byte(rec.raw), &ev) == nil && ev.ID != "" && ev.Type != "" {
+	if decodeStrict([]byte(rec.raw), &ev) == nil && ev.ID != "" && ev.Type != "" {
 		rec.fillProtocol(ev)
+	} else if r, err := s.Resolve(rec.instance, ""); err == nil && r.Manifest.Protocol() == manifest.ProtocolLines && r.Manifest.Events.MapsMessage() {
+		// The room name and the built-in vars have no column.
+		_ = fillLinesMeta(&rec, r.Manifest) // a stored event keeps a type that the manifest dropped since
 	}
 	return rec, nil
 }
@@ -167,11 +176,33 @@ func (s *Service) InjectNative(ctx context.Context, name string, payload any, me
 	return rec.id, nil
 }
 
-// fillLinesMeta reads the declared id and identity paths of a lines
-// connector from a decoded payload.
-func fillLinesMeta(rec *eventRecord, ev *manifest.Events) {
-	rec.sourceID, _ = lookupPath(rec.payload, ev.ID)
-	rec.identity, _ = lookupPath(rec.payload, ev.Identity)
+// fillLinesMeta reads the declared paths of a lines connector from a
+// decoded payload. It fills the same fields as a trebi-connector/1 event: the
+// identity is the identity path, else the sender id; the sender is the
+// sender name, else the sender id. A missing path leaves its field empty, and
+// a missing text path keeps the text of the record. A type that events.types
+// does not declare is errUnknownType.
+func fillLinesMeta(rec *eventRecord, m manifest.Manifest) error {
+	ev := m.Events
+	get := func(path string) string {
+		v, _ := lookupPath(rec.payload, path)
+		return v
+	}
+	senderID := get(ev.Sender)
+	rec.sourceID = get(ev.ID)
+	rec.identity = cmp.Or(get(ev.Identity), senderID)
+	rec.room, rec.roomName, rec.thread = get(ev.Room), get(ev.RoomName), get(ev.Thread)
+	rec.sender = cmp.Or(get(ev.SenderName), senderID)
+	rec.eventType = get(ev.Type)
+	if text, ok := lookupPath(rec.payload, ev.Text); ok {
+		rec.text = text
+	}
+	rec.builtins = ev.MapsMessage()
+	rec.root = cmp.Or(rec.thread, rec.sourceID)
+	if rec.eventType != "" && !m.AcceptsType(rec.eventType) {
+		return fmt.Errorf("%w: %q", errUnknownType, rec.eventType)
+	}
+	return nil
 }
 
 // ingest decodes one lines output line, records it, and dispatches a new
@@ -189,8 +220,14 @@ func (s *Service) ingest(ctx context.Context, p *proc, line string, catchUp bool
 	rec := newRecord(p.res.Type, p.id, string(raw), payload)
 	rec.catchUp = catchUp
 	rec.text = line
-	fillLinesMeta(&rec, ev)
-	s.store(ctx, p, rec, true)
+	if err := fillLinesMeta(&rec, p.res.Manifest); err != nil {
+		p.addParseError()
+		s.log.Warn("connector.parse_error", "connector", p.id, "reason", "unknown_type", "type", rec.eventType)
+		return
+	}
+	if s.store(ctx, p, rec, true) && rec.room != "" {
+		s.touchThread(ctx, p.id, rec.room, rec.thread, "", "")
+	}
 }
 
 // protocolRecord maps a typed event to its record. The sender id is the
@@ -206,7 +243,7 @@ func protocolRecord(connector, instance string, ev protocol.Event, catchUp bool)
 
 // fillProtocol sets the typed fields of a trebi-connector/1 event.
 func (r *eventRecord) fillProtocol(ev protocol.Event) {
-	r.protocol = true
+	r.builtins = true
 	r.sourceID, r.eventType, r.ts = ev.ID, ev.Type, ev.TS
 	r.text, r.replyTo = ev.Text, ev.ReplyTo
 	if ev.Room != nil {
@@ -222,10 +259,10 @@ func (r *eventRecord) fillProtocol(ev protocol.Event) {
 	}
 }
 
-// vars is the built-in var set of a protocol event (plan A.12). Other
-// events have none.
+// vars is the built-in var set of a protocol event or a mapped lines event
+// (plan A.12). Other events have none.
 func (r eventRecord) vars() map[string]string {
-	if !r.protocol {
+	if !r.builtins {
 		return nil
 	}
 	return map[string]string{
@@ -296,7 +333,11 @@ func (s *Service) ingestProtocol(ctx context.Context, p *proc, ev protocol.Event
 	rec.root = s.root(ctx, p.id, ev)
 	self := ev.Sender != nil && ev.Sender.Self
 	if s.store(ctx, p, rec, !self) && ev.Room != nil {
-		s.touchThread(ctx, p.id, ev)
+		thread, title := "", ""
+		if ev.Thread != nil {
+			thread, title = ev.Thread.ID, ev.Thread.Title
+		}
+		s.touchThread(ctx, p.id, ev.Room.ID, thread, title, ev.TS)
 	}
 }
 
@@ -311,8 +352,7 @@ func (p *proc) knowsType(t string) bool {
 		}
 		return false
 	}
-	m := p.res.Manifest
-	return len(m.Events.Types) == 0 || m.HasEventType(t)
+	return p.res.Manifest.AcceptsType(t)
 }
 
 // store records an ingested event, moves the connector cursor, counts it,
@@ -336,13 +376,8 @@ func (s *Service) store(ctx context.Context, p *proc, rec eventRecord, dispatch 
 }
 
 // touchThread upserts the channel_threads row of an event, so the rooms
-// view reads threads without a call to the adapter.
-func (s *Service) touchThread(ctx context.Context, instance string, ev protocol.Event) {
-	thread, title := "", ""
-	if ev.Thread != nil {
-		thread, title = ev.Thread.ID, ev.Thread.Title
-	}
-	at := ev.TS
+// view reads threads without a call to the adapter. An empty at is now.
+func (s *Service) touchThread(ctx context.Context, instance, room, thread, title, at string) {
 	if at == "" {
 		at = time.Now().UTC().Format(time.RFC3339Nano)
 	}
@@ -350,7 +385,7 @@ func (s *Service) touchThread(ctx context.Context, instance string, ev protocol.
 		VALUES (?,?,?,?,?)
 		ON CONFLICT (instance, room, thread) DO UPDATE SET last_activity_at=excluded.last_activity_at,
 			title=CASE WHEN excluded.title <> '' THEN excluded.title ELSE channel_threads.title END`,
-		instance, ev.Room.ID, thread, title, at); err != nil {
+		instance, room, thread, title, at); err != nil {
 		s.log.Warn("channel thread upsert", "connector", instance, "error", err)
 	}
 }

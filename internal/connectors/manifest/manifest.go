@@ -141,20 +141,48 @@ type MCPAction struct {
 }
 
 // Events is the "the system can start work" capability. The lines fields
-// (format to catchup) exist only with protocol lines.
+// (format to catchup) exist only with protocol lines. Room to Text are
+// dotted paths into a JSON line that fill the message fields of the event.
 type Events struct {
-	Protocol string      `yaml:"protocol,omitempty" json:"protocol,omitempty"`
-	Command  string      `yaml:"command" json:"command"`
-	Restart  string      `yaml:"restart,omitempty" json:"restart,omitempty"`
-	Types    []EventType `yaml:"types,omitempty" json:"types,omitempty"`
-	Format   string      `yaml:"format,omitempty" json:"format,omitempty"`
-	Poll     Duration    `yaml:"poll,omitempty" json:"poll,omitempty"`
-	ID       string      `yaml:"id,omitempty" json:"id,omitempty"`
-	TS       string      `yaml:"ts,omitempty" json:"ts,omitempty"`
-	Identity string      `yaml:"identity,omitempty" json:"identity,omitempty"`
-	Catchup  *Catchup    `yaml:"catchup,omitempty" json:"catchup,omitempty"`
+	Protocol   string      `yaml:"protocol,omitempty" json:"protocol,omitempty"`
+	Command    string      `yaml:"command" json:"command"`
+	Restart    string      `yaml:"restart,omitempty" json:"restart,omitempty"`
+	Types      []EventType `yaml:"types,omitempty" json:"types,omitempty"`
+	Format     string      `yaml:"format,omitempty" json:"format,omitempty"`
+	Poll       Duration    `yaml:"poll,omitempty" json:"poll,omitempty"`
+	ID         string      `yaml:"id,omitempty" json:"id,omitempty"`
+	TS         string      `yaml:"ts,omitempty" json:"ts,omitempty"`
+	Identity   string      `yaml:"identity,omitempty" json:"identity,omitempty"`
+	Room       string      `yaml:"room,omitempty" json:"room,omitempty"`
+	RoomName   string      `yaml:"room_name,omitempty" json:"room_name,omitempty"`
+	Thread     string      `yaml:"thread,omitempty" json:"thread,omitempty"`
+	Sender     string      `yaml:"sender,omitempty" json:"sender,omitempty"`
+	SenderName string      `yaml:"sender_name,omitempty" json:"sender_name,omitempty"`
+	Type       string      `yaml:"type,omitempty" json:"type,omitempty"`
+	Text       string      `yaml:"text,omitempty" json:"text,omitempty"`
+	Catchup    *Catchup    `yaml:"catchup,omitempty" json:"catchup,omitempty"`
 
 	Subscriptions *Subscriptions `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
+}
+
+// FieldPath is one dotted path key of a lines events block.
+type FieldPath struct{ Field, Path string }
+
+// Paths lists the dotted path keys of a lines events block.
+func (e Events) Paths() []FieldPath {
+	return []FieldPath{
+		{"events.id", e.ID}, {"events.ts", e.TS}, {"events.identity", e.Identity},
+		{"events.room", e.Room}, {"events.room_name", e.RoomName}, {"events.thread", e.Thread},
+		{"events.sender", e.Sender}, {"events.sender_name", e.SenderName},
+		{"events.type", e.Type}, {"events.text", e.Text},
+	}
+}
+
+// MapsMessage reports whether a lines events block maps a message field
+// (room to text). Such an event gets the built-in vars.
+func (e Events) MapsMessage() bool {
+	return e.Room != "" || e.RoomName != "" || e.Thread != "" || e.Sender != "" ||
+		e.SenderName != "" || e.Type != "" || e.Text != ""
 }
 
 // EventType is one event the connector emits. Schema is a JSON Schema file
@@ -528,6 +556,12 @@ func (m Manifest) HasEventType(t string) bool {
 	return false
 }
 
+// AcceptsType reports whether the events block takes type t. A block with no
+// types takes every type.
+func (m Manifest) AcceptsType(t string) bool {
+	return m.Events != nil && (len(m.Events.Types) == 0 || m.HasEventType(t))
+}
+
 // Protocol returns the events protocol, or "" with no events block.
 func (m Manifest) Protocol() string {
 	if m.Events == nil {
@@ -882,17 +916,7 @@ func (v *validator) events(m Manifest) {
 	}
 	switch m.Protocol() {
 	case ProtocolConnector:
-		for _, f := range []struct {
-			field string
-			set   bool
-		}{
-			{"events.format", e.Format != ""}, {"events.poll", e.Poll != 0}, {"events.id", e.ID != ""},
-			{"events.ts", e.TS != ""}, {"events.identity", e.Identity != ""}, {"events.catchup", e.Catchup != nil},
-		} {
-			if f.set {
-				v.add(f.field, "only with protocol: lines")
-			}
-		}
+		v.linesOnly(*e)
 	case ProtocolLines:
 		v.lines(*e)
 	default:
@@ -1136,6 +1160,25 @@ func jsonEcho(body []byte, field string) (string, bool) {
 	return val, true
 }
 
+// linesOnly rejects the lines fields on a trebi-connector/1 events block.
+func (v *validator) linesOnly(e Events) {
+	for _, f := range []struct {
+		field string
+		set   bool
+	}{
+		{"events.format", e.Format != ""}, {"events.poll", e.Poll != 0}, {"events.catchup", e.Catchup != nil},
+	} {
+		if f.set {
+			v.add(f.field, "only with protocol: lines")
+		}
+	}
+	for _, f := range e.Paths() {
+		if f.Path != "" {
+			v.add(f.Field, "only with protocol: lines")
+		}
+	}
+}
+
 // lines checks the fields of a lines connector.
 func (v *validator) lines(e Events) {
 	switch e.Format {
@@ -1149,11 +1192,11 @@ func (v *validator) lines(e Events) {
 	if e.Poll > 0 && e.Catchup != nil {
 		v.add("events.catchup", "cannot be combined with poll")
 	}
-	paths := []struct{ field, path string }{{"events.id", e.ID}, {"events.ts", e.TS}, {"events.identity", e.Identity}}
+	paths := e.Paths()
 	if e.Format != FormatJSON {
 		for _, f := range paths {
-			if f.path != "" {
-				v.add(f.field, "needs format: json")
+			if f.Path != "" {
+				v.add(f.Field, "needs format: json")
 			}
 		}
 		if e.Catchup != nil {
@@ -1161,8 +1204,8 @@ func (v *validator) lines(e Events) {
 		}
 	}
 	for _, f := range paths {
-		if f.path != "" && !ValidPath(f.path) {
-			v.add(f.field, "must be a dotted path")
+		if f.Path != "" && !ValidPath(f.Path) {
+			v.add(f.Field, "must be a dotted path")
 		}
 	}
 	if e.Catchup != nil {
