@@ -67,7 +67,7 @@ func (s *Service) InjectEvent(ctx context.Context, ref string, event any) (strin
 			return "", &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "event", Message: err.Error()}}}
 		}
 	}
-	inserted, err := s.recordEvent(ctx, rec, recordOpts{})
+	inserted, err := s.recordEvent(ctx, &rec, recordOpts{})
 	if err != nil {
 		return "", err
 	}
@@ -166,7 +166,7 @@ func (s *Service) InjectNative(ctx context.Context, name string, payload any, me
 	rec.room, rec.thread = meta.Room, meta.Thread
 	rec.sender, rec.eventType = meta.Sender, meta.Type
 	rec.text, rec.root = meta.Text, cmp.Or(meta.Thread, meta.SourceID)
-	inserted, err := s.recordEvent(ctx, rec, recordOpts{})
+	inserted, err := s.recordEvent(ctx, &rec, recordOpts{})
 	if err != nil {
 		return "", err
 	}
@@ -358,7 +358,7 @@ func (p *proc) knowsType(t string) bool {
 // store records an ingested event, moves the connector cursor, counts it,
 // and dispatches it when asked. It reports whether the row is new.
 func (s *Service) store(ctx context.Context, p *proc, rec eventRecord, dispatch bool) bool {
-	inserted, err := s.recordEvent(ctx, rec, recordOpts{advancePosition: true})
+	inserted, err := s.recordEvent(ctx, &rec, recordOpts{advancePosition: true})
 	if err != nil {
 		p.addParseError()
 		s.log.Warn("connector.parse_error", "connector", p.id, "error", err.Error())
@@ -426,14 +426,17 @@ type recordOpts struct {
 // recordEvent stores one durable events row. When the row is new, carries a
 // source id, and opts.advancePosition is set, the connector cursor moves
 // after the commit. A crash between the two replays at most one event, and
-// the unique source id drops it.
-func (s *Service) recordEvent(ctx context.Context, rec eventRecord, opts recordOpts) (inserted bool, err error) {
+// the unique source id drops it. The id and receive time are minted under
+// the bus lock, so ids commit in order and an `after` reader skips none.
+func (s *Service) recordEvent(ctx context.Context, rec *eventRecord, opts recordOpts) (inserted bool, err error) {
 	name := rec.connector
 	summary := rec.raw
 	if len(summary) > 200 {
 		summary = summary[:200]
 	}
 	s.st.LockBus()
+	rec.id = ulid.Make().String()
+	rec.receivedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.Exec(`INSERT INTO events
 			(id, connector, instance, received_at, summary, raw_json, trace_id, source_id, identity,

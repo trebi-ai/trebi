@@ -893,9 +893,7 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Durable event row (same pipeline as connector handleLine)
-	eid := ulid.Make().String()
 	trace := ulid.Make().String()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
 	summary := string(raw)
 	if len(summary) > 200 {
 		summary = summary[:200]
@@ -905,14 +903,22 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	if c, err := s.connectors.Lookup(body.Connector); err == nil {
 		typ, instance = c.Type, c.ID
 	}
-	if err := s.st.WithTx(r.Context(), func(tx *sql.Tx) error {
+	// Mint the id under the bus lock, so ids commit in order for `after` readers.
+	s.st.LockBus()
+	eid := ulid.Make().String()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	err = s.st.WithTx(r.Context(), func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(r.Context(), `INSERT INTO events (id, connector, instance, received_at, summary, raw_json, trace_id)
 			VALUES (?,?,?,?,?,?,?)`, eid, typ, instance, now, summary, string(raw), trace); err != nil {
 			return err
 		}
 		return connectors.CountEvent(r.Context(), tx, instance, now)
-	}); err != nil {
+	})
+	s.st.UnlockBus()
+	if err != nil {
 		s.log.Warn("rules.fire event insert", "event_id", eid, "error", err)
+	} else {
+		s.st.NotifyBus()
 	}
 	if body.Job == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"outcome": "recorded", "event_id": eid})
