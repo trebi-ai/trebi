@@ -1,7 +1,9 @@
 package connectors_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,6 +62,50 @@ func TestGateStages(t *testing.T) {
 	res = connectors.Gate{Extract: "({who: event.text})", Match: "false"}.Eval(ctx, connectors.GateInput{FollowUp: true}, payload)
 	if !res.Matched || !res.FollowUp || res.Vars["who"] != "deploy" {
 		t.Fatalf("follow-up extract: %+v", res)
+	}
+}
+
+// TestGateJSCases runs the shared extract and match cases. perception
+// vendors testdata/js_cases.json byte-identical and runs the same cases.
+func TestGateJSCases(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("testdata", "js_cases.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Cases []struct {
+			Name      string          `json:"name"`
+			Event     any             `json:"event"`
+			Extract   string          `json:"extract"`
+			Match     string          `json:"match"`
+			Matched   bool            `json:"matched"`
+			Stage     string          `json:"stage"`
+			Error     bool            `json:"error"`
+			Extracted json.RawMessage `json:"extracted"`
+		} `json:"cases"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&file); err != nil || len(file.Cases) == 0 {
+		t.Fatalf("cases: %d, %v", len(file.Cases), err)
+	}
+	for _, c := range file.Cases {
+		res := connectors.Gate{Extract: c.Extract, Match: c.Match}.Eval(t.Context(), connectors.GateInput{}, c.Event)
+		if res.Matched != c.Matched || res.Stage != c.Stage || (res.Error != "") != c.Error {
+			t.Errorf("%s: got %+v", c.Name, res)
+		}
+		if c.Extracted == nil {
+			continue
+		}
+		var want any
+		if err := json.Unmarshal(c.Extracted, &want); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := json.Marshal(res.Extracted)
+		if w, _ := json.Marshal(want); !bytes.Equal(got, w) {
+			t.Errorf("%s: extracted %s, want %s", c.Name, got, w)
+		}
 	}
 }
 

@@ -1,0 +1,32 @@
+{
+  "about": "Shared extract and match cases of an event trigger. Owner: trebi internal/connectors (TestGateJSCases). perception vendors this file byte-identical as internal/expr/testdata/trebi_cases.json. A case gives event, extract, and match; it wants matched, stage (empty, extract, or match), error, and extracted when the key is set (null is no extract output).",
+  "cases": [
+    {"name": "open", "event": {"text": "deploy"}, "match": "true", "matched": true},
+    {"name": "no match takes all", "event": {"text": "deploy"}, "matched": true},
+    {"name": "match false", "event": {"text": "deploy"}, "match": "event.text === 'x'", "stage": "match"},
+    {"name": "match error", "event": {"text": "deploy"}, "match": "nope(", "stage": "match", "error": true},
+    {"name": "match runtime error", "event": {"text": "deploy"}, "match": "event.a.b", "stage": "match", "error": true},
+    {"name": "match undefined", "event": {"text": "deploy"}, "match": "event.nope", "stage": "match"},
+    {"name": "match null", "event": {"text": "deploy"}, "match": "null", "stage": "match"},
+    {"name": "match string false", "event": {"text": "deploy"}, "match": "'false'", "stage": "match"},
+    {"name": "match string zero", "event": {"text": "deploy"}, "match": "'0'", "stage": "match"},
+    {"name": "match empty string", "event": {"text": "deploy"}, "match": "''", "stage": "match"},
+    {"name": "match string", "event": {"text": "deploy"}, "match": "event.text", "matched": true},
+    {"name": "match zero", "event": {"n": 0}, "match": "event.n", "stage": "match"},
+    {"name": "match number", "event": {"n": 1}, "match": "event.n + 1", "matched": true},
+    {"name": "match object", "event": {"text": "deploy"}, "match": "({})", "matched": true},
+    {"name": "json number is an integer", "event": {"n": 3}, "match": "Number.isInteger(event.n) && event.n === 3", "matched": true},
+    {"name": "json number is a float", "event": {"n": 1.5}, "match": "event.n === 1.5", "matched": true},
+    {"name": "protocol event", "event": {"id": "m1", "type": "message", "ts": "2026-10-01T10:00:00Z", "room": {"id": "r1", "name": "general"}, "sender": {"id": "u1", "name": "Ana", "bot": false}, "text": "hi"}, "match": "event.type === 'message' && event.room.id === 'r1' && !event.sender.bot", "matched": true},
+    {"name": "extract error", "event": {"text": "deploy"}, "extract": "nope(", "match": "true", "stage": "extract", "error": true},
+    {"name": "extract runtime error", "event": {"text": "deploy"}, "extract": "event.a.b", "match": "true", "stage": "extract", "error": true},
+    {"name": "extract then match", "event": {"text": "deploy"}, "extract": "({who: event.text})", "match": "event.who === 'deploy'", "matched": true, "extracted": {"who": "deploy"}},
+    {"name": "extract then match false", "event": {"text": "deploy"}, "extract": "({who: event.text})", "match": "event.text === 'deploy'", "stage": "match", "extracted": {"who": "deploy"}},
+    {"name": "extract with no match", "event": {"text": "deploy"}, "extract": "({n: 1, s: 'a'})", "matched": true, "extracted": {"n": 1, "s": "a"}},
+    {"name": "extract null keeps the event", "event": {"text": "deploy"}, "extract": "null", "match": "event.text === 'deploy'", "matched": true, "extracted": null},
+    {"name": "extract undefined keeps the event", "event": {"text": "deploy"}, "extract": "event.missing", "match": "event.text === 'deploy'", "matched": true, "extracted": null},
+    {"name": "json helper", "event": {"text": "{\"a\": 2}"}, "extract": "json(event.text)", "match": "event.a === 2", "matched": true, "extracted": {"a": 2}},
+    {"name": "json helper bad input", "event": {"text": "x"}, "match": "json(event.text) === null", "matched": true},
+    {"name": "extract a list", "event": {"items": [1, 2]}, "extract": "event.items.map(function (i) { return i * 2 })", "matched": true, "extracted": [2, 4]}
+  ]
+}
