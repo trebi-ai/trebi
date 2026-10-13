@@ -531,6 +531,15 @@ func (m Manifest) Capabilities() []string {
 	return out
 }
 
+// NeedsAccount reports whether a connection holds an account of its own: a
+// secret input or a login step.
+func (m Manifest) NeedsAccount() bool {
+	if m.Setup == nil {
+		return false
+	}
+	return len(m.Setup.Login) > 0 || slices.ContainsFunc(m.Setup.Inputs, func(in Input) bool { return in.Secret })
+}
+
 // Modes lists what the channel does: a channel with a message event type
 // holds conversations and pushes; any other channel only pushes.
 func (m Manifest) Modes() []string {

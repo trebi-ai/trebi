@@ -350,8 +350,8 @@ func (s *Server) handleConnectorBind(w http.ResponseWriter, r *http.Request) {
 			s.writeAnyConnectorErr(w, err)
 			return
 		}
-		if s.connectors.ConnectionFor(c.ID, ws) == "" {
-			s.writeAnyConnectorErr(w, fmt.Errorf("%w: %q in %s", connectors.ErrDisabled, c.Slug, ws))
+		if err := s.connectors.HiddenIn(c.ID, ws); err != nil {
+			s.writeAnyConnectorErr(w, err)
 			return
 		}
 		if !s.connectors.IsChannel(c.ID) {

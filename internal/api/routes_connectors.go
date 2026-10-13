@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,6 +150,11 @@ func (s *Server) handleConnectorsCreate(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, "validation", "type required")
 		return
 	}
+	var err error
+	if c.Scope, err = s.scopeIDs(r.Context(), c.Scope); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
 	created, err := s.connectors.Create(r.Context(), c)
 	if err != nil {
 		if !s.writeConnectorErr(w, err) {
@@ -197,6 +203,17 @@ func (s *Server) handleConnectorPatch(w http.ResponseWriter, r *http.Request) {
 	if err := dec.Decode(&p); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
+	}
+	if len(p.Scope) > 0 {
+		sc, err := p.ScopeValue()
+		if err == nil {
+			sc, err = s.scopeIDs(r.Context(), sc)
+		}
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", "scope: "+err.Error())
+			return
+		}
+		p.Scope, _ = json.Marshal(sc) //nolint:errcheck // a string list always encodes
 	}
 	id := s.connectors.IDOf(r.PathValue("ref"))
 	if id == "" {
@@ -456,6 +473,28 @@ func (s *Server) handleConnectorCursorPut(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"id": inst, "slug": s.connectors.SlugOf(inst), "last_event_id": body.LastEventID})
 }
 
+// scopeIDs maps the workspace names of a scope to ids. global stays. An
+// unknown workspace is an error.
+func (s *Server) scopeIDs(ctx context.Context, sc connectors.Scope) (connectors.Scope, error) {
+	if len(sc) == 0 {
+		return nil, nil
+	}
+	out := make(connectors.Scope, 0, len(sc))
+	for _, v := range sc {
+		v = strings.TrimSpace(v)
+		if v == connectors.ScopeGlobal {
+			out = append(out, v)
+			continue
+		}
+		ws, err := s.ws.Resolve(ctx, v)
+		if err != nil {
+			return nil, fmt.Errorf("workspace %q not found", v)
+		}
+		out = append(out, ws.ID)
+	}
+	return out, nil
+}
+
 func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
 	var amb *connectors.AmbiguousError
 	var ve *connectors.ValidationError
@@ -480,7 +519,8 @@ func (s *Server) writeConnectorErr(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, connectors.ErrInherited):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, connectors.ErrReserved),
-		errors.Is(err, connectors.ErrDisabled):
+		errors.Is(err, connectors.ErrDisabled),
+		errors.Is(err, connectors.ErrNotInScope):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, connectors.ErrNoCatalog):
 		writeErr(w, http.StatusConflict, "precondition_failed", err.Error())
@@ -584,10 +624,26 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		Inputs   map[string]string         `json:"inputs"`
 		Source   *connectors.SourceInstall `json:"source"`
 		Force    bool                      `json:"force"`
+		// Scope names the workspaces that see the connection; Workspace is
+		// the workspace of the caller, the default scope of an account.
+		Scope     connectors.Scope `json:"scope"`
+		Workspace string           `json:"workspace"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	scope, err := s.scopeIDs(r.Context(), body.Scope)
+	if err == nil && body.Workspace != "" {
+		var ids connectors.Scope
+		ids, err = s.scopeIDs(r.Context(), connectors.Scope{body.Workspace})
+		if err == nil {
+			body.Workspace = ids[0]
+		}
+	}
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
@@ -597,7 +653,7 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		req := connectors.InstallRequest{Source: body.Source, Force: body.Force, Version: body.Version,
-			Inputs: body.Inputs, Slug: body.Slug, Title: body.Title}
+			Inputs: body.Inputs, Slug: body.Slug, Title: body.Title, Scope: scope, Workspace: body.Workspace}
 		c, err := s.connectors.Install(r.Context(), req)
 		if err != nil {
 			s.writeInstallErr(w, err)
@@ -626,7 +682,7 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		}
 		req := connectors.InstallRequest{
 			Name: body.Name, Version: entry.Server.Version, Track: body.Track, Inputs: body.Inputs,
-			Slug: body.Slug, Title: body.Title,
+			Slug: body.Slug, Title: body.Title, Scope: scope, Workspace: body.Workspace,
 		}
 		c, err := s.connectors.Install(r.Context(), req)
 		if err != nil {
@@ -649,8 +705,8 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		s.writeRegistryErr(w, err)
 		return
 	}
-	c := connectors.Connection{Type: m.Name, Slug: body.Slug, Title: body.Title, From: connectors.FromInline, Manifest: &m, Inputs: inputs}
-	created, err := s.connectors.Create(r.Context(), c)
+	c := connectors.Connection{Type: m.Name, Slug: body.Slug, Title: body.Title, From: connectors.FromInline, Manifest: &m, Inputs: inputs, Scope: scope}
+	created, err := s.connectors.Create(r.Context(), c.WithDefaultScope(body.Workspace))
 	if err != nil {
 		if !s.writeConnectorErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())

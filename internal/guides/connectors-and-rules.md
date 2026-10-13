@@ -93,6 +93,21 @@ A job or agent receives connector actions through `connectors:` (or the agent `k
 
 `connector logs` (and `--follow`) blocks — **local only**; remote: poll `connector.logs`. `connector delete` is destructive — ask first.
 
+## Scope
+
+A connection has a `scope`: the workspaces that see it. `global` (the default when the field is missing) means every workspace. A list of workspaces means only those workspaces. The connection keeps one process and one login; the scope changes only who sees it. A workspace outside the scope cannot use the connection: a job or agent that names it in `connectors:` fails to launch, an `event:` trigger does not fire, a notify step on it is skipped with a warning, an operation call and a live source are refused, and a room bind answers `conflict`. A list row of a workspace has `in_scope` and `scope` (`["global"]` or workspace ids). A caller with no workspace sees every connection.
+
+`connector add` of a connector with an account (a secret input or a login) sets the scope to the current workspace. Any other connector stays global. `--scope` on `add` and `apply` sets the scope: `global`, or workspace names separated by commas. The daemon stores workspace ids; the CLI and the API accept names or ids.
+
+```bash
+trebi connector scope whatsapp-work               # show
+trebi connector scope whatsapp-work ocral,btd     # only these workspaces
+trebi connector scope whatsapp-work global        # every workspace
+trebi connector add whatsapp --slug wa-team --scope ocral
+```
+
+Doctor reports `connector_out_of_scope` for a kit connector, a job connector, an `event:` trigger, or a notify step that names a connection outside its scope. It reports `trigger_connector_unknown` and `trigger_connector_disabled` for an `event:` trigger on a connector that does not exist or that the workspace turned off.
+
 ## Workspace overrides
 
 A workspace can turn a connection off for its own jobs, or patch its `actions` and `skill` blocks. The workspace layer holds only `patch` and `disabled`. It does not start a second process. A workspace that needs a different account uses a second connection.
@@ -322,7 +337,7 @@ triggers:
     match: event.ref === "refs/heads/main"
 ```
 
-The payload is `hook_id`, `label`, `method`, `path`, `content_type`, `headers`, `body`, and `received_at`. `body` stays a string: call `json(event.body)` for a value. Delivery is at-least-once; a duplicate delivery id never fires twice.
+The payload is `hook_id`, `workspace_id`, `label`, `method`, `path`, `content_type`, `headers`, `body`, and `received_at`. A hook fires only the triggers of its own workspace. `body` stays a string: call `json(event.body)` for a value. Delivery is at-least-once; a duplicate delivery id never fires twice.
 
 ## Durable trigger events
 

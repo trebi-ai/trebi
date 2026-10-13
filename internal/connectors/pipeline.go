@@ -490,7 +490,8 @@ func boolInt(b bool) int {
 // dispatchEvent matches one event against the triggers of all active jobs
 // and the assistant. A trigger names the current slug of the connection, so
 // history survives a slug change. A workspace that turned the connection off
-// gets no fire.
+// or that is outside its scope gets no fire. A hosted webhook fires only the
+// triggers of the workspace of its hook.
 func (s *Service) dispatchEvent(ctx context.Context, ev eventRecord) {
 	if s.ws == nil {
 		return
@@ -500,8 +501,12 @@ func (s *Service) dispatchEvent(ctx context.Context, ev eventRecord) {
 		return
 	}
 	ev.slug = slug
+	var hookWS string
+	if ev.instance == NativeWebhook {
+		hookWS, _ = lookupPath(ev.payload, "workspace_id")
+	}
 	for _, t := range s.triggersFor(ctx, slug) {
-		if s.disabledIn(t.row.WorkspaceID, slug) {
+		if !s.visibleIn(t.row.WorkspaceID, slug) || (hookWS != "" && t.row.WorkspaceID != hookWS) {
 			continue
 		}
 		s.dispatchTrigger(ctx, ev, t.row, t.j, t.tr)

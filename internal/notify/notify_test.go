@@ -37,12 +37,23 @@ func (f fakeLayers) Global() ([]notify.Step, bool, []string) {
 	return f.global.route, f.global.set, f.global.contact
 }
 
-// fakeChannels maps a connector name to "chat", "down", or "" (no channel).
+// fakeChannels maps a connector name to "chat", "down", "scope", or "" (no
+// channel).
 type fakeChannels map[string]string
 
-func (f fakeChannels) HasChannel(name, _ string) (bool, bool, bool) {
+func (f fakeChannels) ChannelProblem(name, _ string) string {
 	st, ok := f[name]
-	return ok, st != "", st == "down"
+	switch {
+	case !ok:
+		return notify.ProblemNoConn
+	case st == "":
+		return notify.ProblemNoChan
+	case st == "down":
+		return notify.ProblemDown
+	case st == "scope":
+		return notify.ProblemScope
+	}
+	return ""
 }
 
 func TestResolve(t *testing.T) {
@@ -87,12 +98,13 @@ func TestResolve(t *testing.T) {
 		},
 		{
 			name:   "problems",
-			layers: fakeLayers{global: layer{route: []notify.Step{{Via: "slack", To: "#ops"}, {Via: "discord", To: "c1"}, {Via: "telegram", To: "t1"}, {Via: "email", To: "admins"}}, set: true}},
+			layers: fakeLayers{global: layer{route: []notify.Step{{Via: "slack", To: "#ops"}, {Via: "discord", To: "c1"}, {Via: "telegram", To: "t1"}, {Via: "signal", To: "s1"}, {Via: "email", To: "admins"}}, set: true}},
 			sc:     notify.Scope{}, emailOn: off, source: notify.LayerGlobal,
 			steps: []notify.ResolvedStep{
 				{Step: notify.Step{Via: "slack", To: "#ops"}, Targets: []string{"#ops"}, Problem: notify.ProblemNoConn},
 				{Step: notify.Step{Via: "discord", To: "c1"}, Targets: []string{"c1"}, Problem: notify.ProblemNoChan},
 				{Step: notify.Step{Via: "telegram", To: "t1"}, Targets: []string{"t1"}, Problem: notify.ProblemDown},
+				{Step: notify.Step{Via: "signal", To: "s1"}, Targets: []string{"s1"}, Problem: notify.ProblemScope},
 				{Step: notify.Step{Via: "email", To: "admins"}, Targets: []string{}, Problem: notify.ProblemEmail},
 			},
 			contact: []string{}, csource: notify.LayerGlobal,
@@ -107,7 +119,7 @@ func TestResolve(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			r := notify.NewResolver(tc.layers, fakeChannels{"whatsapp": "chat", "discord": "", "telegram": "down"}, tc.emailOn)
+			r := notify.NewResolver(tc.layers, fakeChannels{"whatsapp": "chat", "discord": "", "telegram": "down", "signal": "scope"}, tc.emailOn)
 			got := r.Resolve(context.Background(), tc.sc)
 			if got.Source != tc.source || got.ContactSource != tc.csource {
 				t.Errorf("source %s/%s, want %s/%s", got.Source, got.ContactSource, tc.source, tc.csource)

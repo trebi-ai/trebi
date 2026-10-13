@@ -8,23 +8,25 @@ A connector type is a package from the catalog, for example `whatsapp`. A connec
 
 Each connection has one folder that holds its record (`from`, `version`, `track`, `inputs`, and an optional merge `patch` on the manifest), its own secrets, its event cursor, and the state of its adapter. One connection runs one process. A workspace layer can turn a connection off in one workspace, or patch its `actions` and `skill` for that workspace. It does not start a second process. A workspace that needs a different account uses a second connection.
 
+The `scope` of a connection lists the workspaces that see it. `["global"]` means every workspace; it is the default when the record has no scope. A connection with an account (a secret input or a login) that `install` adds gets the scope of the `workspace` of the call. A workspace outside the scope cannot use the connection: its runs, operations, live sources, and channel binds return `conflict`, its triggers do not fire, and its notify steps are skipped with `not_in_scope`. One process and one login serve every workspace in the scope. Rows show `scope` as workspace ids; writes take workspace names or ids.
+
 Each action that takes `connector` accepts the slug or the id. A slug can change, so keep the id when you store a reference outside Trebi.
 
 ## Actions
 
 ### list
 List connectors. Includes the managed connections, the native rows, and read-only **inherited** MCP servers from user harness config. Inherited rows carry `provenance: inherited`, `managed: false`, `origins[]` (tool, path, key), and `injected` (whether a trebi session of that harness loads them).
-A managed row carries `id`, `type`, `slug`, `title`, `from`, `version`, `track`, `description`, `publisher`, `capabilities` (`actions`, `events`, `channel`), `inputs`, `features`, and `folder`. A connection with an `events` block also carries `status`, `pid`, `restarts`, `last_err`, `last_event_id`, `first_event_at`, `last_event_at`, and `counters{events,events_total,duplicates,parse_errors}`. `events` counts since the process started; `events_total` counts over the life of the connection. `status` is `stopped`, `starting`, `listening`, `polling`, `backoff`, or `crashed`. A running protocol connector also carries `auth{state,reason,message,account}`. A row that does not resolve carries `resolve_error`. A connection folder that does not load carries `load_error`; fix its `connection.yaml` by hand.
+A managed row carries `id`, `type`, `slug`, `title`, `from`, `version`, `track`, `description`, `publisher`, `capabilities` (`actions`, `events`, `channel`), `inputs`, `features`, `scope` (`["global"]` or workspace ids), and `folder`. With `workspace`, a row also carries `in_scope` (false when the scope does not include that workspace) and `disabled` (true when the workspace turned it off). A connection with an `events` block also carries `status`, `pid`, `restarts`, `last_err`, `last_event_id`, `first_event_at`, `last_event_at`, and `counters{events,events_total,duplicates,parse_errors}`. `events` counts since the process started; `events_total` counts over the life of the connection. `status` is `stopped`, `starting`, `listening`, `polling`, `backoff`, or `crashed`. A running protocol connector also carries `auth{state,reason,message,account}`. A row that does not resolve carries `resolve_error`. A connection folder that does not load carries `load_error`; fix its `connection.yaml` by hand.
 A row shows each literal input value as `***`. A value that holds a `secret:NAME` reference stays visible. A write that sends `***` back keeps the stored value.
 - `limit` (number, optional): page size.
 - `capability` (string, optional): keep rows with `actions`, `events`, or `channel`.
 - `provenance` (string, optional): keep rows with `native`, `managed`, or `inherited`.
-- `workspace` (string, optional): resolve each row with the layer of this workspace.
+- `workspace` (string, optional): resolve each row with the layer of this workspace, and set `in_scope`.
 
 ### show
-Read one connection.
+Read one connection, its `scope` included.
 - `connector` (string, required): connection slug or id.
-- `workspace` (string, optional): resolve the row with the layer of this workspace.
+- `workspace` (string, optional): resolve the row with the layer of this workspace, and set `in_scope`.
 
 ### search
 Search the configured registries for installable connectors. With no `registry` the action reads every configured registry in order and merges the pages. The default order is `trebi` (the signed Trebi catalog), `official` (the MCP registry), then `docker`, so a Trebi entry shows first. The reply carries `entries`, `registries` (the configured list as `[{name, url, kind}]`) and, when more exist, `next_cursor`. Each entry has `registry`, `name`, `version`, and `trust`: `official`, `verified`, or `community`. A Trebi catalog entry also has `publisher`, `capabilities`, `versions`, and `icon_url`. An MCP entry has `packages` and `remotes`. `kind` is `trebi`, `mcp-registry`, `smithery`, or `docker`. A registry that fails does not fail the search: the reply lists it in `registry_errors: [{registry, error}]` and the other registries still answer. A registry that fails after a good search in the last 10 minutes returns that page again and shows in `stale_registries`. The search fails only when every registry fails.
@@ -64,6 +66,8 @@ A slug that another connection uses returns `conflict`. A failed install removes
 - `package` (number, optional): package index to install.
 - `remote` (number, optional): remote index to install. Give `package` or `remote`, not both (`validation`). With neither, the install uses the first package, else the first remote.
 - `inputs` (object, optional): input values as `{NAME: value}`.
+- `scope` (array, optional): the workspaces that see the connection, as names or ids, or `["global"]`. Empty uses the default: `workspace` for a connector with an account, else global.
+- `workspace` (string, optional): the workspace of the caller; the default scope of a connector with an account.
 
 ### versions
 List the catalog versions of the type of one connection, newest first. Each row has `version`, `published_at`, `yanked`, `installed`, `current` (this connection uses it), and `connections` (the slugs of the connections of the type that use it).
@@ -107,7 +111,7 @@ Replace the list of packages that one holder keeps. `gc` does not remove a packa
 
 ### create
 Create one connection. A catalog connection must pass the signature check and the manifest validation. An inline or file manifest must pass the same validation. The reply is the connection row with its new `id`.
-- `connection` (object, required): the connection, for example `{"type": "whatsapp", "slug": "whatsapp-work", "title": "Work phone", "from": "catalog", "track": "minor"}`. Keys: `type` (required; the connector type); `slug` (empty uses the default slug of the type); `title`; `from`: `catalog` (the Trebi catalog), `inline` (the `manifest` key holds the manifest), or `file:<path>` (a manifest file on the daemon host); `version` (a catalog version); `track`: `exact`, `patch`, `minor`, or `latest`; `inputs` (the setup values as `{NAME: value}`; a value `secret:NAME` refers to a secret); `patch` (a JSON merge patch on the manifest); `manifest` (the inline manifest). The slug matches `^[a-z0-9][a-z0-9-]{0,39}$`, and must not start with `con_`. `email`, `webhook`, and `trebi` are reserved.
+- `connection` (object, required): the connection, for example `{"type": "whatsapp", "slug": "whatsapp-work", "title": "Work phone", "from": "catalog", "track": "minor"}`. Keys: `type` (required; the connector type); `slug` (empty uses the default slug of the type); `title`; `from`: `catalog` (the Trebi catalog), `inline` (the `manifest` key holds the manifest), or `file:<path>` (a manifest file on the daemon host); `version` (a catalog version); `track`: `exact`, `patch`, `minor`, or `latest`; `inputs` (the setup values as `{NAME: value}`; a value `secret:NAME` refers to a secret); `patch` (a JSON merge patch on the manifest); `manifest` (the inline manifest); `scope` (`"global"` or a list of workspace names or ids; empty is global). The slug matches `^[a-z0-9][a-z0-9-]{0,39}$`, and must not start with `con_`. `email`, `webhook`, and `trebi` are reserved.
 
 Mutations (`create`, `set`, `delete`, `connect`, `disconnect`, `restart`, `test`, `cursor_set`, `install`, `update`, `login`, `logout`, `bind`, and the `override_*` writes) on an inherited row return `conflict`.
 
@@ -122,6 +126,7 @@ A new `slug` also rewrites each reference to the old slug: the workspace layers 
 - `inputs` (object, optional): setup values as `{NAME: value}`; replaces the stored map. To keep a stored value, send it back as `***`, as `show` returns it.
 - `patch` (object, optional): JSON merge patch on the manifest, or `null` to remove it.
 - `manifest` (object, optional): the inline manifest of an `inline` connection, or `null` to remove it.
+- `scope` (array, optional): the workspaces that see the connection, as names or ids, or `["global"]` for every workspace. An unknown workspace returns `validation`. Only visibility changes; the process and the login stay.
 
 ### delete
 Remove one connection, stop its process, and delete its folder. Destructive.

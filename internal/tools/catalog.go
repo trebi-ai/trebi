@@ -213,6 +213,15 @@ func (in Input) connectorRef() (request.ConnectorRef, error) {
 	return request.ConnectorRef{Ref: ref}, err
 }
 
+// scope reads the scope of a connection: "global", or a list of workspace
+// names or ids. nil when absent.
+func (in Input) scope() ([]string, error) {
+	if v, ok := in["scope"].(string); ok {
+		return []string{v}, nil
+	}
+	return in.strList("scope")
+}
+
 // subscriptionBody reads connector, values, and types. An explicit types
 // list, also an empty one, is kept; an absent one is nil.
 func (in Input) subscriptionBody() (request.ConnectorRef, map[string]any, []string, error) {
@@ -1935,14 +1944,16 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				return request.BuildConnectorSourceCheck(link), err
 			}),
 			"install": actSamples("POST /v1/connectors/install", Input{
-				"registry": "official",
-				"name":     "ai.adtest/adtest-mcp",
-				"version":  "1.1.0",
-				"track":    "minor",
-				"slug":     "adtest",
-				"title":    "Ad test",
-				"package":  float64(0),
-				"inputs":   map[string]any{"ADTEST_API_KEY": "secret:adtest_key"},
+				"registry":  "official",
+				"name":      "ai.adtest/adtest-mcp",
+				"version":   "1.1.0",
+				"track":     "minor",
+				"slug":      "adtest",
+				"title":     "Ad test",
+				"package":   float64(0),
+				"inputs":    map[string]any{"ADTEST_API_KEY": "secret:adtest_key"},
+				"scope":     []any{"ops"},
+				"workspace": "ops",
 			}, []Input{{
 				"source": map[string]any{"url": "https://github.com/flarco/cli-tools/tree/main/vitally-cli", "check_id": "chk_01k6abcdefghjkmnpqrstvwxyz"},
 				"force":  true,
@@ -1984,10 +1995,18 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
+				scope, err := in.scope()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				ws, err := in.str("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
 				return request.ConnectorInstall{
 					Registry: v[1], Name: v[0], Version: v[2], Slug: v[3], Track: v[4], Title: v[5],
 					Package: pkg, Remote: remote, Inputs: inputs,
-					Source: src, Force: force,
+					Source: src, Force: force, Scope: scope, Workspace: ws,
 				}.Build(), nil
 			}),
 			"versions": act("GET /v1/connectors/{ref}/versions", Input{"connector": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
@@ -2067,7 +2086,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildConnectorCreate(conn), nil
 			}),
-			"set": act("PATCH /v1/connectors/{ref}", Input{"connector": "whatsapp", "slug": "whatsapp-work", "title": "Work WhatsApp", "track": "minor"}, func(in Input) (request.HTTPRequest, error) {
+			"set": act("PATCH /v1/connectors/{ref}", Input{"connector": "whatsapp", "slug": "whatsapp-work", "title": "Work WhatsApp", "track": "minor", "scope": []any{"ops"}}, func(in Input) (request.HTTPRequest, error) {
 				ref, err := in.reqStr("connector")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -2092,6 +2111,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				if p.Manifest, err = in.block("manifest"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if p.Scope, err = in.scope(); err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return p.Build(), nil

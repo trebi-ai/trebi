@@ -460,8 +460,8 @@ func (s *Service) installLink(ctx context.Context, req InstallRequest) (Connecti
 	src := st.check.Source
 	c, err := s.Create(ctx, Connection{
 		Type: m.Name, Slug: req.Slug, Title: req.Title, From: FromGitHub, Source: &src,
-		Version: m.Version, Digest: st.digest, Inputs: req.Inputs,
-	})
+		Version: m.Version, Digest: st.digest, Inputs: req.Inputs, Scope: req.Scope,
+	}.WithDefaultScope(req.Workspace))
 	if err != nil {
 		if created {
 			s.removeVersion(ctx, m.Name, linkPackage(m.Version, src.Commit))

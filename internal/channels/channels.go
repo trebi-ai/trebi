@@ -137,7 +137,7 @@ func (s *Service) Deliver(ctx context.Context, r outbox.Row) error {
 	// A notify row names the slug of its via: step; a reply row holds the id.
 	instance := s.conn.ConnectionFor(r.Instance, r.WorkspaceID)
 	if instance == "" {
-		return outbox.Permanent{Err: fmt.Errorf("connector %q is not found or is turned off in workspace %s", r.Instance, r.WorkspaceID)}
+		return outbox.Permanent{Err: fmt.Errorf("connector %q is not found, is turned off, or is outside its scope in workspace %s", r.Instance, r.WorkspaceID)}
 	}
 	limits := s.conn.Limits(instance)
 	format := "text"

@@ -43,6 +43,7 @@ const (
 	ProblemNoConn = "unknown_connector"
 	ProblemNoChan = "no_channel"
 	ProblemDown   = "channel_down"
+	ProblemScope  = "not_in_scope"
 )
 
 var viaRe = regexp.MustCompile(`^(email|[a-z0-9][a-z0-9-]{0,39})$`)
@@ -92,11 +93,12 @@ type Layers interface {
 	Global() (route []Step, set bool, admins []string)
 }
 
-// Channels tells whether a connector exists, whether it is a channel, and
-// whether the instance that serves the workspace is down: logged out or
-// unresponsive.
+// Channels returns the problem of a via connector in a workspace:
+// ProblemNoConn, ProblemNoChan, ProblemScope (its scope does not include the
+// workspace), ProblemDown (turned off, logged out, or unresponsive), or ""
+// when it can send.
 type Channels interface {
-	HasChannel(name, workspaceID string) (known, channel, down bool)
+	ChannelProblem(name, workspaceID string) string
 }
 
 // Resolver applies the inheritance rules to a scope.
@@ -203,17 +205,9 @@ func (r *Resolver) expand(s Step, workspaceID string, contact, admins []string) 
 		return rs
 	}
 	rs.Targets = append(rs.Targets, s.To)
-	known, channel, down := false, false, false
+	rs.Problem = ProblemNoConn
 	if r.channels != nil {
-		known, channel, down = r.channels.HasChannel(s.Via, workspaceID)
-	}
-	switch {
-	case !known:
-		rs.Problem = ProblemNoConn
-	case !channel:
-		rs.Problem = ProblemNoChan
-	case down:
-		rs.Problem = ProblemDown
+		rs.Problem = r.channels.ChannelProblem(s.Via, workspaceID)
 	}
 	return rs
 }

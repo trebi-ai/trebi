@@ -264,6 +264,22 @@ func (c *APIClient) WorkspaceIDFor(hint string) string {
 	return ""
 }
 
+// WorkspaceNames maps each workspace id to its name. It is empty when the
+// list does not load.
+func (c *APIClient) WorkspaceNames() map[string]string {
+	out := map[string]string{}
+	var body struct {
+		Workspaces []map[string]any `json:"workspaces"`
+	}
+	if c == nil || c.GetJSON(request.BuildWorkspacesListPath(0), &body) != nil {
+		return out
+	}
+	for _, ws := range body.Workspaces {
+		out[mapStr(ws, "id")] = mapStr(ws, "name")
+	}
+	return out
+}
+
 // WaitTmuxSession polls the run until tmux_session is set or the run leaves starting/running.
 func (c *APIClient) WaitTmuxSession(runID string, maxWait time.Duration) string {
 	deadline := time.Now().Add(maxWait)

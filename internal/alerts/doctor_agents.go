@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/workspaces"
 	"gopkg.in/yaml.v3"
 )
 
@@ -57,7 +59,8 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	ctx := context.Background()
 	var findings []DoctorFinding
 	// The connectors doctor reports each folder that does not load.
-	defs, _ := connectors.LoadManifests()
+	overrides, _ := workspaces.New(st).AllConnectorOverrides(ctx) // best effort; no layers reads as none
+	defs, _ := connectors.LoadOffline(overrides)
 	db := st.DB()
 	rows, err := db.Query(`SELECT workspace_id, name, path, kind FROM job_index WHERE retired_at IS NULL`)
 	if err != nil {
@@ -100,6 +103,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 			ops.add(wsID, name, parsed.Triggers, defs, false)
 			team.add(wsID, short, parsed.Team)
 		}
+		findings = append(findings, triggerConnectorFindings(wsID, short, parsed.Triggers, defs, false)...)
 		findings = append(findings, kitRefFindings(wsID, short, parsed, skillNames, envsets)...)
 		findings = append(findings, workingDirFindings(wsID, short, kind, parsed)...)
 		if actions != nil {
@@ -109,9 +113,36 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		}
 	}
 	_ = rows.Err()
-	ops.addAssistants(db, defs)
+	findings = append(findings, ops.addAssistants(db, defs)...)
 	findings = append(findings, team.findings()...)
 	return append(findings, ops.findings()...)
+}
+
+// triggerConnectorFindings reports each enabled event trigger whose
+// connector the workspace cannot use: unknown, turned off, or outside the
+// scope of the connection. Such a trigger never fires. An assistant trigger
+// with no family is an event trigger.
+func triggerConnectorFindings(wsID, short string, triggers []job.Trigger, defs connectors.Offline, assistant bool) []DoctorFinding {
+	var out []DoctorFinding
+	for _, tr := range triggers {
+		event := tr.Family == "event" || (assistant && tr.Family == "")
+		if tr.Disabled || !event || tr.Event == "" {
+			continue
+		}
+		id := "trigger-connector-" + wsID + "-" + short + "-" + tr.Event
+		switch err := defs.HiddenIn(tr.Event, wsID); {
+		case errors.Is(err, connectors.ErrNotFound):
+			out = append(out, DoctorFinding{ID: id, Severity: "warn", Code: "trigger_connector_unknown",
+				Message: fmt.Sprintf("%s has an event trigger on connector %s, which does not exist; the trigger never fires", short, tr.Event)})
+		case errors.Is(err, connectors.ErrDisabled):
+			out = append(out, DoctorFinding{ID: id, Severity: "warn", Code: "trigger_connector_disabled",
+				Message: fmt.Sprintf("%s has an event trigger on connector %s, which is turned off in this workspace; the trigger never fires", short, tr.Event)})
+		case errors.Is(err, connectors.ErrNotInScope):
+			out = append(out, DoctorFinding{ID: id, Severity: "warn", Code: "connector_out_of_scope",
+				Message: fmt.Sprintf("%s has an event trigger on connector %s, whose scope does not include this workspace; the trigger never fires", short, tr.Event)})
+		}
+	}
+	return out
 }
 
 // teamRefs maps workspace -> agent short name -> its team.can_ask list.
@@ -157,10 +188,11 @@ type channelOperators map[string]map[string]map[string]bool
 
 // add records the operator of each enabled event trigger on a channel
 // connector. An assistant trigger with no family is an event trigger.
-func (c channelOperators) add(wsID, operator string, triggers []job.Trigger, defs map[string]manifest.Manifest, assistant bool) {
+func (c channelOperators) add(wsID, operator string, triggers []job.Trigger, defs connectors.Offline, assistant bool) {
 	for _, tr := range triggers {
 		event := tr.Family == "event" || (assistant && tr.Family == "")
-		if tr.Disabled || !event || !slices.Contains(defs[tr.Event].Modes(), manifest.ModeReply) {
+		m, _ := defs.Manifest(tr.Event)
+		if tr.Disabled || !event || !slices.Contains(m.Modes(), manifest.ModeReply) {
 			continue
 		}
 		if c[wsID] == nil {
@@ -173,13 +205,15 @@ func (c channelOperators) add(wsID, operator string, triggers []job.Trigger, def
 	}
 }
 
-// addAssistants records the event triggers of each workspace assistant.
-func (c channelOperators) addAssistants(db *sql.DB, defs map[string]manifest.Manifest) {
+// addAssistants records the event triggers of each workspace assistant and
+// returns the findings of their connectors.
+func (c channelOperators) addAssistants(db *sql.DB, defs connectors.Offline) []DoctorFinding {
 	rows, err := db.Query(`SELECT id, path FROM workspaces WHERE orphaned=0`)
 	if err != nil {
-		return
+		return nil
 	}
 	defer rows.Close()
+	var out []DoctorFinding
 	for rows.Next() {
 		var wsID, path string
 		if err := rows.Scan(&wsID, &path); err != nil {
@@ -196,7 +230,9 @@ func (c channelOperators) addAssistants(db *sql.DB, defs map[string]manifest.Man
 			continue
 		}
 		c.add(wsID, "assistant", y.Assistant.Triggers, defs, true)
+		out = append(out, triggerConnectorFindings(wsID, "assistant", y.Assistant.Triggers, defs, true)...)
 	}
+	return out
 }
 
 // findings returns one channel_operator_conflict finding per workspace
@@ -278,7 +314,7 @@ func workingDirFindings(wsID, short, kind string, parsed *job.Job) []DoctorFindi
 // connectorFindings checks one connector name of a launch against the
 // managed definitions, the inherited servers, and the support table.
 // launchFindings checks each connector the launch gives the job.
-func launchFindings(ctx context.Context, actions ActionsChecker, wsID, short string, spec job.Job, defs map[string]manifest.Manifest, inherited map[string]bool) []DoctorFinding {
+func launchFindings(ctx context.Context, actions ActionsChecker, wsID, short string, spec job.Job, defs connectors.Offline, inherited map[string]bool) []DoctorFinding {
 	names, harnessName, runtime, err := actions.EffectiveActions(ctx, wsID, spec)
 	if err != nil {
 		return nil
@@ -293,9 +329,21 @@ func launchFindings(ctx context.Context, actions ActionsChecker, wsID, short str
 	return out
 }
 
-func connectorFindings(ctx context.Context, actions ActionsChecker, wsID, short, name, harnessName, runtime string, defs map[string]manifest.Manifest, inherited map[string]bool) []DoctorFinding {
+func connectorFindings(ctx context.Context, actions ActionsChecker, wsID, short, name, harnessName, runtime string, defs connectors.Offline, inherited map[string]bool) []DoctorFinding {
 	id := "connector-" + wsID + "-" + short + "-" + name
-	d, ok := defs[name]
+	switch err := defs.HiddenIn(name, wsID); {
+	case errors.Is(err, connectors.ErrDisabled):
+		return []DoctorFinding{{
+			ID: id, Severity: "warn", Code: "kit_connector_disabled",
+			Message: fmt.Sprintf("%s references connector %s, which is turned off in this workspace; its runs fail", short, name),
+		}}
+	case errors.Is(err, connectors.ErrNotInScope):
+		return []DoctorFinding{{
+			ID: id, Severity: "warn", Code: "connector_out_of_scope",
+			Message: fmt.Sprintf("%s references connector %s, whose scope does not include this workspace; its runs fail", short, name),
+		}}
+	}
+	d, ok := defs.Manifest(name)
 	if !ok {
 		if inherited[name] {
 			return []DoctorFinding{{

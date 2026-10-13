@@ -26,6 +26,8 @@ var (
 	ErrNotInstalled = errors.New("connector version is not installed")
 	// ErrDisabled is a connector that the workspace turned off.
 	ErrDisabled = errors.New("connector is disabled in this workspace")
+	// ErrNotInScope is a connector whose scope does not list the workspace.
+	ErrNotInScope = errors.New("connector scope does not include this workspace")
 )
 
 // Layer names of a resolve error.
@@ -227,7 +229,8 @@ func (r Resolved) fingerprint() string {
 // Resolve applies the catalog, connection, and workspace layers of one
 // connection. ref is a slug or an id. An empty workspaceID resolves the
 // connection alone. The workspace layer can only turn the connection off or
-// patch its actions and skill.
+// patch its actions and skill. A workspace outside the scope gets
+// ErrNotInScope.
 func (s *Service) Resolve(ref, workspaceID string) (Resolved, error) {
 	c, err := s.Lookup(ref)
 	if err != nil {
@@ -245,8 +248,8 @@ func (s *Service) Resolve(ref, workspaceID string) (Resolved, error) {
 }
 
 func resolveConnection(c Connection, workspaceID string, ov *workspaces.ConnectorOverride) (Resolved, error) {
-	if ov != nil && ov.Disabled {
-		return Resolved{}, fmt.Errorf("%w: %q in %s", ErrDisabled, c.Slug, workspaceID)
+	if err := c.hiddenIn(workspaceID, ov != nil && ov.Disabled); err != nil {
+		return Resolved{}, err
 	}
 	base, dir, err := loadBase(c)
 	if err != nil {
@@ -375,14 +378,35 @@ func (s *Service) Instances() []Resolved {
 	return out
 }
 
-// disabledIn reports whether a workspace turned a connection off.
-func (s *Service) disabledIn(workspaceID, slug string) bool {
+// hiddenIn is the one visibility check of a connection in a workspace: nil
+// when the workspace can use it, ErrDisabled when the workspace turned it
+// off, and ErrNotInScope when its scope does not list the workspace. An
+// empty workspace (a global caller) and a native name are always visible
+// unless turned off.
+func (s *Service) hiddenIn(workspaceID, slug string) error {
 	if workspaceID == "" {
-		return false
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.overrides[workspaceID][slug].Disabled
+	c := s.conns[s.slugs[slug]]
+	c.Slug = slug
+	return c.hiddenIn(workspaceID, s.overrides[workspaceID][slug].Disabled)
+}
+
+// visibleIn reports whether the workspace can use the connection.
+func (s *Service) visibleIn(workspaceID, slug string) bool {
+	return s.hiddenIn(workspaceID, slug) == nil
+}
+
+// HiddenIn returns why the workspace cannot use the slug or id ref:
+// ErrDisabled or ErrNotInScope. It is nil for a visible or unknown ref.
+func (s *Service) HiddenIn(ref, workspaceID string) error {
+	slug := s.SlugOf(s.IDOf(ref))
+	if slug == "" {
+		return nil
+	}
+	return s.hiddenIn(workspaceID, slug)
 }
 
 // loadOverrides reads the workspace layers of every live workspace.

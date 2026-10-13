@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/trebi-ai/trebi/internal/config"
@@ -78,15 +79,20 @@ func (l *notifyLayers) setGlobal(cfg *config.Config) {
 // connectorChannels tells the resolver which connectors can send.
 type connectorChannels struct{ conn *connectors.Service }
 
-func (c connectorChannels) HasChannel(name, workspaceID string) (known, channel, down bool) {
+func (c connectorChannels) ChannelProblem(name, workspaceID string) string {
 	if _, err := c.conn.Lookup(name); err != nil {
-		return false, false, false
+		return notify.ProblemNoConn
 	}
 	if !c.conn.IsChannel(name) {
-		return true, false, false
+		return notify.ProblemNoChan
 	}
-	id := c.conn.ConnectionFor(name, workspaceID)
-	return true, true, id == "" || c.conn.Down(id)
+	if errors.Is(c.conn.HiddenIn(name, workspaceID), connectors.ErrNotInScope) {
+		return notify.ProblemScope
+	}
+	if id := c.conn.ConnectionFor(name, workspaceID); id == "" || c.conn.Down(id) {
+		return notify.ProblemDown
+	}
+	return ""
 }
 
 // workspacePicker picks the system sender workspace for email.

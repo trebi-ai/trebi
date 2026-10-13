@@ -94,6 +94,11 @@ type InstallRequest struct {
 	Slug    string            `json:"slug,omitempty"`
 	Title   string            `json:"title,omitempty"`
 	Force   bool              `json:"force,omitempty"` // install when a conformance suite fails; advanced only
+	// Scope is the workspace ids that see the new connection. Empty uses
+	// the default: Workspace for a connector that needs an account, else
+	// global.
+	Scope     Scope  `json:"scope,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // SourceInstall is the link of an install. CheckID reuses the staging
@@ -135,8 +140,8 @@ func (s *Service) Install(ctx context.Context, req InstallRequest) (Connection, 
 	}
 	c, err := s.Create(ctx, Connection{
 		Type: req.Name, Slug: req.Slug, Title: req.Title, From: FromCatalog,
-		Version: version, Digest: digest, Track: manifest.Track(req.Track), Inputs: req.Inputs,
-	})
+		Version: version, Digest: digest, Track: manifest.Track(req.Track), Inputs: req.Inputs, Scope: req.Scope,
+	}.WithDefaultScope(req.Workspace))
 	if err != nil {
 		if created {
 			s.removeVersion(ctx, req.Name, version)

@@ -69,9 +69,17 @@ func connectorCommand() *cli.Command {
 				Usage:     "create or update one connection from a YAML or JSON file",
 				ArgsUsage: "--file <path>",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "connection file: {type, slug, title, from, version, track, inputs, patch, manifest}"},
+					&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "connection file: {type, slug, title, from, version, track, inputs, patch, manifest, scope}"},
+					scopeFlag(),
 				},
 				Action: runConnectorApply,
+			},
+			{
+				Name:      "scope",
+				Usage:     "show or set the workspaces that see a connection (global, or a list of workspace names)",
+				ArgsUsage: "<connector> [global|<workspace>,<workspace>...]",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action:    runConnectorScope,
 			},
 			{
 				Name:      "delete",
@@ -136,6 +144,7 @@ func connectorCatalogCommands() []*cli.Command {
 				&cli.IntFlag{Name: "package", Value: -1, Usage: "package index to install"},
 				&cli.IntFlag{Name: "remote", Value: -1, Usage: "remote index to install"},
 				&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "NAME=VALUE for an env, header, argument, or variable input (repeatable); secret:NAME keeps a reference"},
+				scopeFlag(),
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 			},
 			Action: runConnectorInstall,
@@ -464,6 +473,9 @@ func runConnectorShow(_ context.Context, c *cli.Command) error {
 	tbl.AppendRow(connectorTableRow(w, body))
 	renderTable(tbl)
 	fmt.Fprintf(w, "id: %s\n", mapStr(body, "id"))
+	if sc := stringList(body["scope"]); len(sc) > 0 {
+		fmt.Fprintf(w, "scope: %s\n", scopeText(sc, client.WorkspaceNames()))
+	}
 	if f := mapStr(body, "folder"); f != "" {
 		fmt.Fprintf(w, "folder: %s\n", f)
 	}
@@ -611,6 +623,7 @@ func runConnectorInstall(_ context.Context, c *cli.Command) error {
 		Registry: c.String("registry"), Name: name, Version: c.String("version"), Track: c.String("track"),
 		Slug: c.String("slug"), Title: c.String("title"),
 		Package: c.Int("package"), Remote: c.Int("remote"), Inputs: inputs,
+		Scope: parseScope(c.String("scope")), Workspace: workspaceFor(c),
 	}.Build()
 	var body map[string]any
 	if err := client.DoHTTP(req, &body); err != nil {
@@ -689,6 +702,7 @@ func connectorAddLink(c *cli.Command, client *APIClient, link string, inputs map
 	req := request.ConnectorInstall{
 		Source: &request.ConnectorSource{URL: link, CheckID: check.ID}, Force: c.Bool("force"),
 		Slug: c.String("slug"), Title: c.String("title"), Package: -1, Remote: -1, Inputs: inputs,
+		Scope: parseScope(c.String("scope")), Workspace: workspaceFor(c),
 	}.Build()
 	var body map[string]any
 	if err := client.DoHTTP(req, &body); err != nil {
@@ -1174,6 +1188,9 @@ func runConnectorApply(_ context.Context, c *cli.Command) error {
 	if slug == "" {
 		return fmt.Errorf("%s: add a top-level slug", path)
 	}
+	if c.IsSet("scope") {
+		conn["scope"] = parseScope(c.String("scope"))
+	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
@@ -1207,6 +1224,14 @@ func runConnectorApply(_ context.Context, c *cli.Command) error {
 				return err
 			}
 		}
+	}
+	switch sc := conn["scope"].(type) {
+	case string:
+		p.Scope = parseScope(sc)
+	case []any:
+		p.Scope = stringList(sc)
+	case []string:
+		p.Scope = sc
 	}
 	if err := client.DoHTTP(p.Build(), nil); err != nil {
 		return err
@@ -1489,4 +1514,60 @@ func runEventsRetrigger(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	return client.DoHTTP(request.BuildEventsRetrigger(id), nil)
+}
+
+func scopeFlag() cli.Flag {
+	return &cli.StringFlag{Name: "scope", Usage: "workspaces that see the connection: global, or workspace names separated by commas (default for an account: the current workspace)"}
+}
+
+// parseScope reads global or a comma list of workspace names. Empty is nil.
+func parseScope(v string) []string {
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// scopeText renders a scope with workspace names: global, or the names.
+func scopeText(scope []string, names map[string]string) string {
+	if len(scope) == 0 || (len(scope) == 1 && scope[0] == connectors.ScopeGlobal) {
+		return connectors.ScopeGlobal
+	}
+	out := make([]string, len(scope))
+	for i, id := range scope {
+		out[i] = cmp.Or(names[id], id)
+	}
+	return strings.Join(out, ", ")
+}
+
+func runConnectorScope(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var row map[string]any
+	if value := c.Args().Get(1); value != "" {
+		scope := parseScope(value)
+		if len(scope) == 0 {
+			return fmt.Errorf("scope: give global or workspace names")
+		}
+		if err := client.DoHTTP(request.ConnectorPatch{Ref: ref.Ref, Scope: scope}.Build(), &row); err != nil {
+			return err
+		}
+	} else if err := client.GetJSON(request.BuildConnectorGetPath(ref.Ref, ""), &row); err != nil {
+		return err
+	}
+	scope := stringList(row["scope"])
+	if c.Bool("json") {
+		return encodeJSON(c, map[string]any{"id": row["id"], "slug": row["slug"], "scope": scope})
+	}
+	fmt.Fprintf(outWriter(c), "%s: %s\n", mapStr(row, "slug", "id"), scopeText(scope, client.WorkspaceNames()))
+	return nil
 }

@@ -1316,8 +1316,12 @@ func (s *Service) notifyFindings(ctx context.Context) []DoctorFinding {
 			if st.Problem == "" {
 				continue
 			}
+			code := "notify_route_invalid"
+			if st.Problem == notify.ProblemScope {
+				code = "connector_out_of_scope"
+			}
 			out = append(out, DoctorFinding{
-				ID: "notify-route-" + strings.ReplaceAll(key, "/", "-"), Severity: "warn", Code: "notify_route_invalid",
+				ID: "notify-route-" + strings.ReplaceAll(key, "/", "-"), Severity: "warn", Code: code,
 				Message: fmt.Sprintf("notify route of %s: step %d (%s) is skipped: %s", key, i, st.Via, st.Problem),
 			})
 			break

@@ -2268,6 +2268,7 @@ type ConnectorPatch struct {
 	Slug, Title, Version, Track *string
 	Inputs                      map[string]string // nil leaves the stored inputs
 	Patch, Manifest             json.RawMessage
+	Scope                       []string // nil leaves the scope; ["global"] or workspace names or ids
 }
 
 // Build renders the patch as PATCH /v1/connectors/{ref}.
@@ -2293,6 +2294,9 @@ func (i ConnectorPatch) Build() HTTPRequest {
 	}
 	if i.Manifest != nil {
 		body["manifest"] = i.Manifest
+	}
+	if i.Scope != nil {
+		body["scope"] = i.Scope
 	}
 	return HTTPRequest{
 		Method: "PATCH",
@@ -2531,6 +2535,8 @@ type ConnectorInstall struct {
 	Inputs                                      map[string]string
 	Source                                      *ConnectorSource
 	Force                                       bool
+	Scope                                       []string // empty: the default scope
+	Workspace                                   string   // the workspace of the caller; the default scope of an account
 }
 
 // ConnectorSource is the link of an install. CheckID reuses a check of it.
@@ -2568,6 +2574,12 @@ func (i ConnectorInstall) Build() HTTPRequest {
 	}
 	if len(i.Inputs) > 0 {
 		body["inputs"] = i.Inputs
+	}
+	if len(i.Scope) > 0 {
+		body["scope"] = i.Scope
+	}
+	if i.Workspace != "" {
+		body["workspace"] = i.Workspace
 	}
 	return HTTPRequest{Method: "POST", Path: "/v1/connectors/install", Body: body}
 }

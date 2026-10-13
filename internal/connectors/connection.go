@@ -70,6 +70,92 @@ type Connection struct {
 	Subscriptions []Subscription `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
 	// Operations overrides the manifest state of an operation (D14).
 	Operations map[string]manifest.OpState `yaml:"operations,omitempty" json:"operations,omitempty"`
+	// Scope lists the workspace ids that see the connection. Empty is global.
+	Scope Scope `yaml:"scope,omitempty" json:"scope,omitempty"`
+}
+
+// ScopeGlobal is the scope value that every workspace sees.
+const ScopeGlobal = "global"
+
+// Scope is the list of workspace ids that see a connection, or [global].
+// The file form of a global scope is the scalar global. Only visibility
+// changes: one process and one login serve every workspace in the scope.
+type Scope []string
+
+// wsIDRE is the form of a workspace id.
+var wsIDRE = regexp.MustCompile(`^ws_[A-Za-z0-9_-]+$`)
+
+// IsGlobal reports whether every workspace sees the connection.
+func (sc Scope) IsGlobal() bool {
+	return len(sc) == 0 || (len(sc) == 1 && sc[0] == ScopeGlobal)
+}
+
+// Includes reports whether the workspace sees the connection. An empty
+// workspace (a global caller) sees every connection.
+func (sc Scope) Includes(workspaceID string) bool {
+	return workspaceID == "" || sc.IsGlobal() || slices.Contains(sc, workspaceID)
+}
+
+// Wire is the row form: [global], or the workspace ids.
+func (sc Scope) Wire() []string {
+	if sc.IsGlobal() {
+		return []string{ScopeGlobal}
+	}
+	return slices.Clone(sc)
+}
+
+// UnmarshalYAML reads the scalar global or a list.
+func (sc *Scope) UnmarshalYAML(n *yaml.Node) error {
+	var v Value
+	if err := v.UnmarshalYAML(n); err != nil {
+		return err
+	}
+	*sc = Scope(v)
+	return nil
+}
+
+// MarshalYAML writes a global scope as the scalar global.
+func (sc Scope) MarshalYAML() (any, error) {
+	if sc.IsGlobal() {
+		return ScopeGlobal, nil
+	}
+	return []string(sc), nil
+}
+
+// UnmarshalJSON reads "global" or a list of strings.
+func (sc *Scope) UnmarshalJSON(b []byte) error {
+	var v Value
+	if err := v.UnmarshalJSON(b); err != nil {
+		return err
+	}
+	*sc = Scope(v)
+	return nil
+}
+
+// normal returns nil for a global scope, else the list.
+func (sc Scope) normal() Scope {
+	if sc.IsGlobal() {
+		return nil
+	}
+	return sc
+}
+
+// check returns the problems of the list.
+func (sc Scope) check() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range sc {
+		switch {
+		case v == ScopeGlobal && len(sc) > 1:
+			out = append(out, "global must be the only value")
+		case v != ScopeGlobal && !wsIDRE.MatchString(v):
+			out = append(out, fmt.Sprintf("%q must be global or a workspace id (ws_...)", v))
+		case seen[v]:
+			out = append(out, fmt.Sprintf("%q is a duplicate", v))
+		}
+		seen[v] = true
+	}
+	return out
 }
 
 // Subscription is one thing that the user watches.
@@ -242,6 +328,9 @@ func (c Connection) Validate() error {
 		add("title", fmt.Sprintf("must be at most %d characters on one line", maxTitle))
 	}
 	c.validateSubscriptions(add)
+	for _, msg := range c.Scope.check() {
+		add("scope", msg)
+	}
 	for name, st := range c.Operations {
 		if !st.Valid() {
 			add("operations", fmt.Sprintf("%s must be on, ask, or off", name))
@@ -378,6 +467,33 @@ func MaskInputs(in map[string]string) map[string]string {
 		out[k] = maskValue
 	}
 	return out
+}
+
+// WithDefaultScope gives a new connection with no scope the scope of the
+// workspace of the caller when the connector needs an account: a secret
+// input or a login. Any other connection stays global.
+func (c Connection) WithDefaultScope(workspaceID string) Connection {
+	if len(c.Scope) > 0 || workspaceID == "" {
+		return c
+	}
+	if m, _, err := loadBase(c); err == nil && m.NeedsAccount() {
+		c.Scope = Scope{workspaceID}
+	}
+	return c
+}
+
+// hiddenIn returns ErrDisabled or ErrNotInScope when the workspace cannot use
+// c. An empty workspace (a global caller) sees every connection.
+func (c Connection) hiddenIn(workspaceID string, disabled bool) error {
+	switch {
+	case workspaceID == "":
+		return nil
+	case disabled:
+		return fmt.Errorf("%w: %q in %s", ErrDisabled, c.Slug, workspaceID)
+	case !c.Scope.Includes(workspaceID):
+		return fmt.Errorf("%w: %q in %s", ErrNotInScope, c.Slug, workspaceID)
+	}
+	return nil
 }
 
 // clone returns a deep copy through the JSON form.

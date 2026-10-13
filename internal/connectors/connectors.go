@@ -200,6 +200,9 @@ type ConnectionPatch struct {
 	Manifest json.RawMessage    `json:"manifest"`
 	// Subscriptions replaces the list. JSON null clears it.
 	Subscriptions json.RawMessage `json:"subscriptions"`
+	// Scope replaces the workspace ids that see the connection. "global"
+	// or JSON null makes it global.
+	Scope json.RawMessage `json:"scope"`
 }
 
 // New creates a connectors service.
@@ -359,10 +362,11 @@ func (s *Service) IDOf(ref string) string {
 }
 
 // ConnectionFor returns the id of a slug or id ref, or "" when no
-// connection has it or the workspace turned it off.
+// connection has it, the workspace turned it off, or its scope does not
+// list the workspace.
 func (s *Service) ConnectionFor(ref, workspaceID string) string {
 	id := s.IDOf(ref)
-	if id == "" || s.disabledIn(workspaceID, s.SlugOf(id)) {
+	if id == "" || !s.visibleIn(workspaceID, s.SlugOf(id)) {
 		return ""
 	}
 	return id
@@ -739,18 +743,45 @@ func (s *Service) LogPath(ref string) (string, error) {
 	return NewFolder(c.ID).LogPath(), nil
 }
 
-// LoadManifests resolves every connection without a Service, keyed by slug.
-// The doctor uses it. A connection that does not resolve is left out; each
-// folder that does not load is in the error map.
-func LoadManifests() (map[string]manifest.Manifest, map[string]error) {
+// Offline is the view of the connections without a Service. The doctor uses
+// it. It knows the resolved manifest, the scope, and the workspace layers.
+type Offline struct {
+	conns     map[string]Connection        // by slug
+	manifests map[string]manifest.Manifest // by slug; only the connections that resolve
+	overrides map[string]map[string]workspaces.ConnectorOverride
+}
+
+// LoadOffline reads every connection folder. overrides are the workspace
+// layers (workspace → slug). Each folder that does not load is in the error
+// map.
+func LoadOffline(overrides map[string]map[string]workspaces.ConnectorOverride) (Offline, map[string]error) {
 	conns, errs := readConnections()
-	out := map[string]manifest.Manifest{}
+	o := Offline{conns: map[string]Connection{}, manifests: map[string]manifest.Manifest{}, overrides: overrides}
 	for _, c := range conns {
+		o.conns[c.Slug] = c
 		if r, err := resolveConnection(c, "", nil); err == nil {
-			out[c.Slug] = r.Manifest
+			o.manifests[c.Slug] = r.Manifest
 		}
 	}
-	return out, errs
+	return o, errs
+}
+
+// Manifest returns the resolved manifest of a slug. ok is false for an
+// unknown slug and for a connection that does not resolve.
+func (o Offline) Manifest(slug string) (manifest.Manifest, bool) {
+	m, ok := o.manifests[slug]
+	return m, ok
+}
+
+// HiddenIn returns why the workspace cannot use the slug: ErrNotFound,
+// ErrDisabled, or ErrNotInScope. A native name is never ErrNotFound.
+func (o Offline) HiddenIn(slug, workspaceID string) error {
+	c, ok := o.conns[slug]
+	if !ok && !manifest.Reserved(slug) {
+		return fmt.Errorf("connector %q not found: %w", slug, ErrNotFound)
+	}
+	c.Slug = slug
+	return c.hiddenIn(workspaceID, o.overrides[workspaceID][slug].Disabled)
 }
 
 // sleepCtx waits for d or until ctx is done; it reports whether ctx ended.
@@ -918,7 +949,30 @@ func (p ConnectionPatch) apply(c *Connection) error {
 			}
 		}
 	}
+	if len(p.Scope) > 0 {
+		sc, err := p.ScopeValue()
+		if err != nil {
+			return bad("scope", err)
+		}
+		c.Scope = sc.normal()
+	}
 	return nil
+}
+
+// ScopeValue decodes the scope field. Null is global. An empty list is an
+// error: use global for all workspaces.
+func (p ConnectionPatch) ScopeValue() (Scope, error) {
+	if isNull(p.Scope) {
+		return nil, nil
+	}
+	var sc Scope
+	if err := json.Unmarshal(p.Scope, &sc); err != nil {
+		return nil, err
+	}
+	if len(sc) == 0 {
+		return nil, errors.New("list at least one workspace, or use global")
+	}
+	return sc, nil
 }
 
 func isNull(raw json.RawMessage) bool {
@@ -1101,13 +1155,18 @@ func (s *Service) connectionRow(c Connection, workspaceID string, stats map[stri
 	if c.Source != nil {
 		row["source"] = map[string]any{"repo": c.Source.Repo, "path": c.Source.Path, "ref": c.Source.Ref, "commit": c.Source.Commit, "url": c.Source.URL()}
 	}
+	row["scope"] = c.Scope.Wire()
 	ws := workspaceID
-	if s.disabledIn(workspaceID, c.Slug) {
+	switch err := s.hiddenIn(workspaceID, c.Slug); {
+	case errors.Is(err, ErrDisabled):
 		row["disabled"] = true
+		ws = ""
+	case errors.Is(err, ErrNotInScope):
 		ws = ""
 	}
 	if workspaceID != "" {
 		row["workspace"] = workspaceID
+		row["in_scope"] = c.Scope.Includes(workspaceID)
 	}
 	r, err := s.Resolve(c.ID, ws)
 	if err != nil {

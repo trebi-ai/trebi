@@ -409,3 +409,24 @@ func TestAgentTeamUnknownFinding(t *testing.T) {
 		t.Fatalf("team findings = %+v", found)
 	}
 }
+
+// TestConnectorScopeFindings proves the doctor reports a kit connector and
+// an event trigger outside the scope, and an event trigger on an unknown
+// connector.
+func TestConnectorScopeFindings(t *testing.T) {
+	st := kitStore(t, []string{inlineYAML("chat", "actions:\n  cli:\n    commands: [sh]\n") + "scope: [ws_other]\n"}, "chat")
+	writeJob(t, st, t.TempDir(), "watch", "job", "", "---\ntriggers:\n  - event: chat\n  - event: nosuch\n---\n\nRun.\n")
+	byID := map[string]DoctorFinding{}
+	for _, f := range agentKitFindings(st, launchView(t, st)) {
+		byID[f.ID+"|"+f.Code] = f
+	}
+	for _, want := range []string{
+		"connector-ws-research-chat|connector_out_of_scope",
+		"trigger-connector-ws-watch-chat|connector_out_of_scope",
+		"trigger-connector-ws-watch-nosuch|trigger_connector_unknown",
+	} {
+		if _, ok := byID[want]; !ok {
+			t.Fatalf("missing %s in %+v", want, byID)
+		}
+	}
+}

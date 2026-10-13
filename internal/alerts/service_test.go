@@ -807,8 +807,11 @@ type chanSender struct {
 	rows  []outbox.Row
 }
 
-func (c *chanSender) HasChannel(name, _ string) (bool, bool, bool) {
-	return name == "whatsapp", name == "whatsapp", false
+func (c *chanSender) ChannelProblem(name, _ string) string {
+	if name != "whatsapp" {
+		return notify.ProblemNoConn
+	}
+	return ""
 }
 
 func (c *chanSender) Deliver(ctx context.Context, r outbox.Row) error {
