@@ -272,3 +272,13 @@ func TestWatchFollowsMovedJobFolder(t *testing.T) {
 	}
 	t.Fatal("index did not follow the moved folder")
 }
+
+// TestWatchSkipsRunPausedByRestart: a run that a restart parked sends no
+// partial reply. The resume after boot ends the exchange. The plane has no
+// services, so any work past the check panics.
+func TestWatchSkipsRunPausedByRestart(t *testing.T) {
+	c := &ControlPlane{}
+	c.replyIfExchangeEnded(context.Background(), &runs.Run{
+		ID: "r1", ConversationID: "c1", Status: runs.StatusParked, EndReason: runs.EndRestart,
+	})
+}

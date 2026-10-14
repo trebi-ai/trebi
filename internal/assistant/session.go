@@ -52,6 +52,7 @@ type session struct {
 	pendingRecap string
 	wireTurn     int  // newest turn number the agent process reported
 	held         bool // a held prompt waits for the next turn
+	pausing      bool // a daemon stop pauses the turn: no status, no turn end
 }
 
 // permAsk is one pending permission request.
@@ -302,6 +303,9 @@ func (s *session) deliver(evt agentwire.Event) {
 			s.setStatus(StatusIdle)
 		}
 	case string(agentwire.EventExit):
+		if s.isPausing() {
+			return // the pause writes its own note
+		}
 		if err := s.sess.Err(); err != nil {
 			_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) {
 				r.Status = StatusError
@@ -314,7 +318,7 @@ func (s *session) deliver(evt agentwire.Event) {
 		if e.Error != nil && e.Error.Code == agentwire.CodeHeldPromptDropped {
 			e.Error.Message = "The assistant stopped before it read your queued message. Send it again."
 		}
-		if e.Error != nil && e.Error.Message != "" {
+		if e.Error != nil && e.Error.Message != "" && !s.isPausing() {
 			_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) { r.Error = e.Error.Message })
 		}
 	case string(agentwire.EventUser):
@@ -353,18 +357,27 @@ func (s *session) persistAssistant(text string, turn int) {
 	}
 }
 
+// flushDelta stores the open delta buffer.
+func (s *session) flushDelta() {
+	s.mu.Lock()
+	if !s.deltaOpen {
+		s.mu.Unlock()
+		return
+	}
+	text := s.delta.String()
+	turn := s.deltaTurn
+	s.delta.Reset()
+	s.deltaOpen = false
+	s.mu.Unlock()
+	s.persistAssistant(text, turn)
+}
+
 // endTurn closes the delta buffer and fires the turn-end hooks (plan D.9).
 func (s *session) endTurn() {
-	s.mu.Lock()
-	if s.deltaOpen {
-		text := s.delta.String()
-		turn := s.deltaTurn
-		s.delta.Reset()
-		s.deltaOpen = false
-		s.mu.Unlock()
-		s.persistAssistant(text, turn)
-	} else {
-		s.mu.Unlock()
+	s.flushDelta()
+	// The resume after boot finishes the turn and sends its reply.
+	if s.isPausing() {
+		return
 	}
 
 	s.resetIdleTimer()
@@ -536,6 +549,9 @@ func matchToolName(pattern, tool string) bool {
 // setStatus writes the status row and emits conversation.updated through the
 // store.
 func (s *session) setStatus(status string) {
+	if s.isPausing() {
+		return
+	}
 	_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) { r.Status = status })
 }
 
@@ -545,6 +561,29 @@ func (s *session) currentTurn() int {
 		return 0
 	}
 	return rec.Turn
+}
+
+func (s *session) isPausing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pausing
+}
+
+// pause stops the turn for a daemon stop. It interrupts the turn, closes the
+// process, and keeps the vendor session for the resume after boot.
+func (s *session) pause(ctx context.Context) {
+	s.mu.Lock()
+	s.pausing = true
+	s.mu.Unlock()
+	ictx, cancel := context.WithTimeout(ctx, pauseInterruptWait)
+	if err := s.sess.Interrupt(ictx); err != nil {
+		s.m.log.Debug("assistant pause interrupt", "conversation_id", s.convID, "err", err)
+	}
+	cancel()
+	s.flushDelta()
+	cctx, cancel := context.WithTimeout(ctx, pauseCloseWait)
+	defer cancel()
+	s.close(cctx)
 }
 
 // observe keeps the list fields of the session row current.

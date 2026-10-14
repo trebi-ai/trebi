@@ -19,6 +19,7 @@ import (
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/api"
+	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/email"
@@ -114,6 +115,7 @@ type mailPlane struct {
 	wsID  string
 	local string
 	full  string
+	url   string // the mail Worker fake
 }
 
 // poll swaps the batch and runs one poll to completion.
@@ -499,7 +501,7 @@ done`)
 	t.Cleanup(func() { cancel(); cp.Stop() })
 
 	return &mailPlane{
-		cp: cp, fw: fw, st: st,
+		cp: cp, fw: fw, st: st, url: wsSrv.URL,
 		wsID: added.ID, local: addr.LocalPart, full: addr.Full(),
 	}
 }
@@ -584,6 +586,82 @@ FROM email_messages WHERE direction='out'`).Scan(&convID, &disposition, &runID, 
 	if len(p.fw.sent()) != 1 || rows != 1 {
 		t.Fatalf("a UI message sent mail: sent=%d outbox=%d", len(p.fw.sent()), rows)
 	}
+}
+
+// TestAssistantMailTurnContinuesAfterRestart: a stop in the middle of a mail
+// turn pauses it and sends no mail. The next start continues the turn and
+// mails one reply on the thread.
+func TestAssistantMailTurnContinuesAfterRestart(t *testing.T) {
+	p := startMailPlane(t)
+	t.Setenv(agentwire.FakeScriptEnv, restartScript)
+	ctx := t.Context()
+	p.poll(t, []email.IngressMessage{{
+		V: 1, Seq: 1, ID: "01ARZ3NDEKTSV4RRFFQ69G5FC1", LocalPart: p.local, To: []string{p.local + "@in.example.com"},
+		From: "ops@example.com", Dmarc: "pass", MessageID: "<long@x>",
+		Subject: "report", Text: "Write the report.",
+	}})
+	var convID string
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) && convID == "" {
+		_ = p.st.DB().QueryRowContext(ctx, `SELECT conversation_id FROM conversation_messages
+			WHERE role='assistant' AND text='working'`).Scan(&convID)
+		time.Sleep(20 * time.Millisecond)
+	}
+	if convID == "" {
+		t.Fatal("the turn did not start")
+	}
+	p.cp.Stop()
+	rec, err := p.cp.Assistant().Session(ctx, convID)
+	if err != nil || rec.Status != assistant.StatusPaused {
+		t.Fatalf("after stop: %+v %v", rec, err)
+	}
+	if n := len(p.fw.sent()); n != 0 {
+		t.Fatalf("a paused turn sent %d mails", n)
+	}
+
+	p.restart(t)
+	deadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) && len(p.fw.sent()) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	sent := p.fw.sent()
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "finished") || sent[0].To[0] != "ops@example.com" {
+		t.Fatalf("replies = %+v", sent)
+	}
+	var users int
+	if err := p.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_messages
+		WHERE conversation_id=? AND role='user'`, convID).Scan(&users); err != nil || users != 1 {
+		t.Fatalf("user rows = %d %v", users, err)
+	}
+}
+
+// restartScript works on a prompt until a stop, and finishes on the restart
+// prompt.
+const restartScript = `while IFS= read -r line; do
+echo '{"type":"init","session_id":"s1"}'
+case "$line" in
+*"Trebi restarted"*) echo '{"type":"assistant","text":"finished"}'; echo '{"type":"result","subtype":"success","text":"done"}';;
+*) echo '{"type":"assistant","text":"working"}';;
+esac
+done`
+
+// restart starts a second control plane on the same store, as a daemon
+// restart does. Its watcher runs fast.
+func (p *mailPlane) restart(t *testing.T) *daemon.ControlPlane {
+	t.Helper()
+	cp := daemon.New(p.st, daemon.Options{
+		ScheduleInterval: time.Minute, QueueInterval: 50 * time.Millisecond, AlertsInterval: time.Minute,
+		TurnWatchInterval: 100 * time.Millisecond, EmailInterval: time.Minute,
+	})
+	cp.Email.Configure(&email.Settings{
+		Worker: p.url, Token: "test-token-0000", Domain: "mail.example.com",
+		Admins: []string{"ops@example.com"}, PollInterval: time.Minute,
+		RequireDMARC: true, FromName: "Trebi",
+	}, email.NewClient(p.url, "test-token-0000"))
+	runCtx, cancel := context.WithCancel(t.Context())
+	cp.Start(runCtx)
+	t.Cleanup(func() { cancel(); cp.Stop() })
+	return cp
 }
 
 // TestOutboxRetriesAssistantReply: a failed assistant reply stays one

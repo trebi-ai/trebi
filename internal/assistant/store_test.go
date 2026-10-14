@@ -72,12 +72,29 @@ func TestStoreRecordAndEventsRoundTrip(t *testing.T) {
 	if err != nil || today != 13 {
 		t.Fatalf("tokens today %d %v", today, err)
 	}
-	closed, err := ast.CloseStale(ctx)
-	if err != nil || closed != 1 {
-		t.Fatalf("close stale %d %v", closed, err)
+	// A crash leaves c2 (no vendor session) and c3 (a vendor session) in a turn.
+	if _, err := s.DB().Exec(`INSERT INTO conversations (id, workspace_id, key, title, created_at, updated_at)
+		VALUES ('c3', 'ws1', 'k3', '', '2026-09-25T00:00:00Z', '2026-09-25T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := ast.Create(ctx, assistant.Record{
+		ConversationID: "c3", WorkspaceID: "ws1", Harness: "claude", Mode: "auto_edit",
+		Status: assistant.StatusWaiting, VendorID: "v3", ActorTokenHash: "h3",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	paused, closed, err := ast.PauseStale(ctx)
+	if err != nil || paused != 1 || closed != 1 {
+		t.Fatalf("pause stale %d/%d %v", paused, closed, err)
 	}
 	if rec, _ := ast.Get(ctx, "c2"); rec.Status != assistant.StatusClosed {
 		t.Fatalf("stale status %s", rec.Status)
+	}
+	if rec, _ := ast.Get(ctx, "c3"); rec.Status != assistant.StatusPaused || rec.ActorTokenHash != "" {
+		t.Fatalf("paused row %+v", rec)
+	}
+	if list, err := ast.Paused(ctx); err != nil || len(list) != 1 || list[0].ConversationID != "c3" {
+		t.Fatalf("paused list %+v %v", list, err)
 	}
 	if err := ast.DeleteSession(ctx, "c1"); err != nil {
 		t.Fatal(err)

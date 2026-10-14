@@ -16,6 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/files"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -36,6 +37,7 @@ type conversationLog interface {
 	AppendSystem(ctx context.Context, convID, text string) error
 	Recap(ctx context.Context, id string, n int) string
 	LastAssistantRow(ctx context.Context, convID string, turn int) (conversations.Message, error)
+	LastUserMessage(ctx context.Context, convID string) (*conversations.Message, error)
 	MessagesAfter(ctx context.Context, convID, afterID string, limit int) ([]conversations.Message, error)
 	Delete(ctx context.Context, convID string) error
 }
@@ -197,6 +199,10 @@ func (m *Manager) prompt(ctx context.Context, convID string, in wire.PromptInput
 	_, _ = m.store.Update(ctx, convID, func(r *Record) { r.Status = StatusRunning })
 
 	text := s.takePrompt(in)
+	if rec.Status == StatusPaused {
+		// A restart stopped the last turn; the agent must know.
+		text = runs.RestartPrompt + "\n\n" + text
+	}
 	s.appendUserEvent(rec.Prompts+1, in, agentwire.DeliveryPrompted)
 
 	delivery, perr := s.send(ctx, text, in.Attachments)
@@ -481,15 +487,16 @@ func (m *Manager) Sessions(ctx context.Context, workspaceID string) ([]Record, e
 }
 
 // TurnActive reports whether a turn is in flight on the conversation: the
-// recorded status is starting, running, or waiting on a permission. A closed
-// or idle record, or no record, is not active.
+// recorded status is starting, running, waiting on a permission, or paused
+// until the resume after boot. A closed or idle record, or no record, is not
+// active.
 func (m *Manager) TurnActive(ctx context.Context, convID string) bool {
 	rec, err := m.store.Get(ctx, convID)
 	if err != nil {
 		return false
 	}
 	switch rec.Status {
-	case StatusStarting, StatusRunning, StatusWaiting:
+	case StatusStarting, StatusRunning, StatusWaiting, StatusPaused:
 		return true
 	default:
 		return false
@@ -520,7 +527,8 @@ func (m *Manager) fireTurnEnd(te TurnEnd) {
 	}
 }
 
-// Shutdown closes every session. The daemon calls it on the way down.
+// Shutdown ends every process. A session in a turn pauses: the resume after
+// boot continues the turn. Other sessions close.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	sessions := make([]*session, 0, len(m.live))
@@ -529,12 +537,42 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	}
 	m.live = map[string]*session{}
 	m.mu.Unlock()
+	var wg sync.WaitGroup
 	for _, s := range sessions {
-		_, _ = m.store.Update(ctx, s.convID, func(r *Record) { r.Status = StatusClosed })
-		s.close(ctx)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.stopSession(ctx, s)
+		}()
 	}
+	wg.Wait()
 	m.cancel()
 	return nil
+}
+
+// ResumePaused continues each turn that a daemon stop paused. The daemon
+// calls it once after boot. It stores no user row: the reply covers the
+// prompt that started the turn, on the same channel.
+func (m *Manager) ResumePaused(ctx context.Context) {
+	recs, err := m.store.Paused(ctx)
+	if err != nil {
+		m.log.Warn("assistant resume paused", "err", err)
+		return
+	}
+	for _, rec := range recs {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := m.resumePaused(ctx, rec); err != nil {
+			m.log.Warn("assistant resume paused", "conversation_id", rec.ConversationID, "err", err)
+			_, _ = m.store.Update(ctx, rec.ConversationID, func(r *Record) {
+				if r.Status == StatusPaused {
+					r.Status = StatusError
+					r.Error = "The assistant could not continue after the restart. Send your message again."
+				}
+			})
+		}
+	}
 }
 
 // PendingPermissions lists the open permission ids of one conversation.
@@ -810,4 +848,119 @@ func (m *Manager) sendDuringTurn(ctx context.Context, s *session, msg conversati
 	s.resetIdleTimer()
 	rec, _ = m.store.Get(ctx, s.convID)
 	return wire.PromptResult{Message: convMsg(msg), Status: rec.Status, Delivery: string(delivery)}, nil
+}
+
+func (m *Manager) stopSession(ctx context.Context, s *session) {
+	rec, err := m.store.Get(ctx, s.convID)
+	s.mu.Lock()
+	vendor := s.vendorID
+	s.mu.Unlock()
+	if err != nil || vendor == "" || !inTurn(rec.Status) {
+		_, _ = m.store.Update(ctx, s.convID, func(r *Record) { r.Status = StatusClosed })
+		s.close(ctx)
+		return
+	}
+	s.pause(ctx)
+	_, _ = m.store.Update(ctx, s.convID, func(r *Record) {
+		r.Status = StatusPaused
+		r.ActorTokenHash = ""
+	})
+	e := Event{Type: "system", Turn: rec.Turn, At: m.now().UTC(), Text: pausedNote}
+	if seq, err := m.store.AppendEvent(ctx, s.convID, e); err == nil {
+		e.Seq = seq
+	}
+	m.broadcast(s.convID, e)
+	m.logClosed(s.convID, "restart")
+}
+
+// unreadPrompt returns the last prompt when the agent showed no work on it
+// before the stop, so the resume sends it again.
+func (m *Manager) unreadPrompt(ctx context.Context, convID string) string {
+	last, ok, err := m.store.LastPromptEvent(ctx, convID)
+	if err != nil || !ok {
+		return ""
+	}
+	after, err := m.store.Events(ctx, convID, last.Seq, 500)
+	if err != nil {
+		return ""
+	}
+	for _, e := range after {
+		switch e.Type {
+		case "assistant", "tool", "permission":
+			return ""
+		}
+	}
+	if last.Prompt != "" {
+		return last.Prompt
+	}
+	return last.Text
+}
+
+const pausedNote = "Trebi restarted in the middle of this turn. The assistant continues it when Trebi starts again."
+
+// Time limits of one paused turn at shutdown. They stay under the launchd
+// ExitTimeOut (20 s).
+const (
+	pauseInterruptWait = 3 * time.Second
+	pauseCloseWait     = 5 * time.Second
+)
+
+func inTurn(status string) bool {
+	return status == StatusStarting || status == StatusRunning || status == StatusWaiting
+}
+
+func (m *Manager) resumePaused(ctx context.Context, rec Record) error {
+	if m.Live(rec.ConversationID) {
+		return nil
+	}
+	conv, err := m.conv.Get(ctx, rec.ConversationID)
+	if err != nil {
+		return err
+	}
+	eff, err := m.settings.Effective(ctx, conv.Workspace)
+	if err != nil {
+		return err
+	}
+	if eff.Disabled {
+		_, _ = m.store.Update(ctx, rec.ConversationID, func(r *Record) { r.Status = StatusClosed })
+		return nil
+	}
+	user, err := m.conv.LastUserMessage(ctx, rec.ConversationID)
+	if err != nil {
+		return err
+	}
+	in := wire.PromptInput{Text: runs.RestartPrompt}
+	if user != nil {
+		in.Connector, in.Instance, in.Room, in.Thread = user.Connector, user.Instance, user.Room, user.Thread
+		// The original flag is not stored; only the drawer and the
+		// command line have a person who answers permissions.
+		in.Headless = user.Connector != conversations.ChannelUI && user.Connector != conversations.ChannelCLI
+	}
+	if p := m.unreadPrompt(ctx, rec.ConversationID); p != "" {
+		in.Text = p
+	}
+
+	// A prompt in the meantime can resume the session first.
+	cur, err := m.store.Get(ctx, rec.ConversationID)
+	if err != nil || cur.Status != StatusPaused || m.Live(rec.ConversationID) {
+		return err
+	}
+	s, err := m.openSession(ctx, conv, eff, in, cur)
+	if err != nil {
+		return err
+	}
+	_, _ = m.store.Update(ctx, rec.ConversationID, func(r *Record) { r.Status = StatusRunning })
+	text := s.takePrompt(in)
+	delivery, err := s.send(ctx, text, nil)
+	if err != nil {
+		s.appendSendError(fmt.Sprintf("could not continue after the restart: %v", err))
+		_ = m.closeWith(ctx, rec.ConversationID, "error")
+		return err
+	}
+	s.resetIdleTimer()
+	if delivery == agentwire.DeliveryPrompted {
+		s.armStart()
+	}
+	m.log.Info("assistant resumed after restart", "conversation_id", rec.ConversationID)
+	return nil
 }

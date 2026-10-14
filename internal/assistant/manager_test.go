@@ -15,6 +15,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/uploads"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -877,4 +878,235 @@ func TestPromptAttachments(t *testing.T) {
 	if len(msgs) == 0 || len(msgs[0].Attachments) != 1 {
 		t.Fatalf("messages = %+v", msgs)
 	}
+}
+
+// seqDriver hands out one script session per start or resume, in order.
+type seqDriver struct {
+	mu   sync.Mutex
+	next []*scriptSession
+}
+
+func (*seqDriver) Name() string { return string(agentwire.Fake) }
+
+func (d *seqDriver) Start(context.Context, agentwire.StartRequest) (agentwire.Session, error) {
+	return d.pop()
+}
+
+func (d *seqDriver) Resume(context.Context, agentwire.StartRequest) (agentwire.Session, error) {
+	return d.pop()
+}
+
+func (d *seqDriver) pop() (agentwire.Session, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	s := d.next[0]
+	d.next = d.next[1:]
+	return s, nil
+}
+
+// reboot builds a second manager over the same store, as a daemon start does.
+func (e *testEnv) reboot(t *testing.T) *assistant.Manager {
+	t.Helper()
+	mgr := assistant.NewManager(e.rt, assistant.NewStore(e.st), e.conv, e.resolver, e.ws,
+		fakeMemory{}, e.inbox, assistant.Options{MCPURL: "http://127.0.0.1:1/mcp", TrebiExe: "/bin/echo"})
+	t.Cleanup(func() { _ = mgr.Shutdown(context.Background()) })
+	return mgr
+}
+
+type turnEnds struct {
+	mu   sync.Mutex
+	list []assistant.TurnEnd
+}
+
+func (r *turnEnds) hook(_ context.Context, te assistant.TurnEnd) {
+	r.mu.Lock()
+	r.list = append(r.list, te)
+	r.mu.Unlock()
+}
+
+func (r *turnEnds) all() []assistant.TurnEnd {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]assistant.TurnEnd(nil), r.list...)
+}
+
+func TestShutdownPausesTurnAndBootContinuesIt(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	before, after := newScriptSession(false), newScriptSession(false)
+	env.runtime.SetDriver(agentwire.Fake, &seqDriver{next: []*scriptSession{before, after}})
+	ctx := context.Background()
+	convID := env.conversation(t)
+
+	var ends1 turnEnds
+	env.mgr.OnTurnEnd(ends1.hook)
+	startTurn(t, env, env.mgr, before, convID, "summarize the sales")
+	before.emit(agentwire.Event{Type: agentwire.EventAssistant, Delta: true, Text: "Reading the sheet"})
+	waitFor(t, 2*time.Second, "delta", func() bool {
+		evs, _ := env.mgr.Events(ctx, convID, 0, 100)
+		return len(evs) > 0
+	})
+	time.Sleep(20 * time.Millisecond)
+
+	if err := env.mgr.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := env.mgr.Session(ctx, convID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != assistant.StatusPaused || rec.ActorTokenHash != "" || rec.Error != "" || rec.VendorID != "script-1" {
+		t.Fatalf("after shutdown: %+v", rec)
+	}
+	if n := len(ends1.all()); n != 0 {
+		t.Fatalf("turn ends at shutdown = %d, want 0", n)
+	}
+	if !env.mgr.TurnActive(ctx, convID) {
+		t.Fatal("a paused turn must count as active")
+	}
+	evs, _ := env.mgr.Events(ctx, convID, 0, 100)
+	var note, partial bool
+	for _, e := range evs {
+		note = note || (e.Type == "system" && strings.Contains(e.Text, "restarted"))
+		partial = partial || (e.Type == "assistant" && e.Text == "Reading the sheet")
+		if e.Type == "exit" {
+			t.Fatalf("a pause stores no exit event: %+v", e)
+		}
+	}
+	if !note || !partial {
+		t.Fatalf("note=%v partial=%v events=%+v", note, partial, evs)
+	}
+
+	mgr := env.reboot(t)
+	var ends turnEnds
+	mgr.OnTurnEnd(ends.hook)
+	mgr.ResumePaused(ctx)
+	waitFor(t, 2*time.Second, "resumed prompt", func() bool { n, _ := after.counts(); return n == 1 })
+	after.mu.Lock()
+	sent := after.prompts[0].Text
+	after.mu.Unlock()
+	if sent != runs.RestartPrompt {
+		t.Fatalf("resume prompt = %q", sent)
+	}
+	after.emit(agentwire.Event{Type: agentwire.EventAssistant, Text: "Sales grew 4%."})
+	after.endTurn()
+	waitFor(t, 2*time.Second, "turn end", func() bool { return len(ends.all()) == 1 })
+	te := ends.all()[0]
+	if te.Channel != "telegram" || te.Reply.Text != "Sales grew 4%." {
+		t.Fatalf("turn end = %+v", te)
+	}
+
+	rec, _ = mgr.Session(ctx, convID)
+	if rec.Status != assistant.StatusIdle || rec.Prompts != 1 {
+		t.Fatalf("after resume: status=%s prompts=%d", rec.Status, rec.Prompts)
+	}
+	if n := len(countUserEvents(t, env, convID)); n != 1 {
+		t.Fatalf("user events = %d, want 1", n)
+	}
+	msgs, err := env.conv.ListMessages(ctx, convID, listOpts50())
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := 0
+	for _, m := range msgs {
+		if m.Role == conversations.RoleUser {
+			users++
+		}
+	}
+	if users != 1 {
+		t.Fatalf("user rows = %d, want 1", users)
+	}
+}
+
+func TestResumeSendsUnreadPromptAgain(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	before, after := newScriptSession(false), newScriptSession(false)
+	env.runtime.SetDriver(agentwire.Fake, &seqDriver{next: []*scriptSession{before, after}})
+	ctx := context.Background()
+	convID := env.conversation(t)
+
+	startTurn(t, env, env.mgr, before, convID, "count the rows")
+	// The interrupt echo of a harness is not a prompt that Trebi sent.
+	before.emit(agentwire.Event{Type: agentwire.EventUser, Text: "[Request interrupted by user]"})
+	waitFor(t, 2*time.Second, "echo stored", func() bool { return len(countUserEvents(t, env, convID)) == 2 })
+	if err := env.mgr.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mgr := env.reboot(t)
+	mgr.ResumePaused(ctx)
+	waitFor(t, 2*time.Second, "resumed prompt", func() bool { n, _ := after.counts(); return n == 1 })
+	after.mu.Lock()
+	sent := after.prompts[0].Text
+	after.mu.Unlock()
+	if sent != "count the rows" {
+		t.Fatalf("resume prompt = %q", sent)
+	}
+}
+
+func TestPromptOnPausedTurnTellsTheAgent(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	before, after := newScriptSession(false), newScriptSession(false)
+	env.runtime.SetDriver(agentwire.Fake, &seqDriver{next: []*scriptSession{before, after}})
+	ctx := context.Background()
+	convID := env.conversation(t)
+
+	startTurn(t, env, env.mgr, before, convID, "count the rows")
+	if err := env.mgr.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mgr := env.reboot(t)
+	if _, err := mgr.Prompt(ctx, convID, channelPrompt("and the columns")); err != nil {
+		t.Fatal(err)
+	}
+	after.mu.Lock()
+	sent := after.prompts[0].Text
+	after.mu.Unlock()
+	if sent != runs.RestartPrompt+"\n\nand the columns" {
+		t.Fatalf("prompt = %q", sent)
+	}
+	// The prompt resumed the session, so the boot resume does nothing.
+	mgr.ResumePaused(ctx)
+	if n, _ := after.counts(); n != 1 {
+		t.Fatalf("harness prompts = %d, want 1", n)
+	}
+}
+
+func TestShutdownClosesIdleSession(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	sess := newScriptSession(false)
+	env.runtime.SetDriver(agentwire.Fake, &seqDriver{next: []*scriptSession{sess}})
+	ctx := context.Background()
+	convID := env.conversation(t)
+
+	startTurn(t, env, env.mgr, sess, convID, "hi")
+	sess.endTurn()
+	waitFor(t, 2*time.Second, "idle", func() bool {
+		rec, err := env.mgr.Session(ctx, convID)
+		return err == nil && rec.Status == assistant.StatusIdle
+	})
+	if err := env.mgr.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := env.mgr.Session(ctx, convID)
+	if rec.Status != assistant.StatusClosed {
+		t.Fatalf("status = %s, want closed", rec.Status)
+	}
+}
+
+func channelPrompt(text string) assistant.PromptInput {
+	return assistant.PromptInput{Text: text, Connector: "telegram", Room: "chat-1", Headless: true}
+}
+
+// startTurn sends one channel prompt and waits until the turn runs.
+// startTurn sends one channel prompt and waits until the turn runs.
+func startTurn(t *testing.T, env *testEnv, mgr *assistant.Manager, sess *scriptSession, convID, text string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := mgr.Prompt(ctx, convID, channelPrompt(text)); err != nil {
+		t.Fatal(err)
+	}
+	sess.emit(agentwire.Event{Type: agentwire.EventInit, SessionID: "script-1"})
+	waitFor(t, 2*time.Second, "turn 1 running", func() bool {
+		rec, err := mgr.Session(ctx, convID)
+		return err == nil && rec.Turn == 1 && rec.Status == assistant.StatusRunning && rec.VendorID == "script-1"
+	})
 }

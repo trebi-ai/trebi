@@ -1211,7 +1211,8 @@ func (s *Service) CLIActiveCount() int {
 
 // RestartPrompt is the prompt of the turn that continues a run after a daemon
 // restart stopped it.
-const RestartPrompt = "Trebi restarted and stopped your last turn. Continue the task from where you stopped. " +
+const RestartPrompt = "Trebi restarted and stopped your last turn. The interrupt and any rejected or cancelled tool call " +
+	"came from that restart, not from the user. Continue the task from where you stopped. " +
 	"A tool call that was in progress may or may not have completed: check its result before you run it again."
 
 // Time limits of one run at shutdown. The whole pause must stay well under

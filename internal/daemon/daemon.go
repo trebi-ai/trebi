@@ -470,15 +470,15 @@ func (c *ControlPlane) Start(parent context.Context) {
 	}
 	c.syncEmailAddresses(ctx)
 
-	// No assistant process survives a restart; rows left running or
-	// waiting are closed (plan C.2).
+	// No assistant process survives a restart. A row left in a turn is
+	// paused when it can resume, else closed.
 	if err := c.asstRT.Reconcile(); err != nil {
 		c.log.Warn("reconcile assistant processes", "error", err)
 	}
-	if n, err := c.asstStore.CloseStale(ctx); err != nil {
-		c.log.Warn("assistant close stale", "error", err)
-	} else if n > 0 {
-		c.log.Info("assistant close stale", "count", n)
+	if paused, closed, err := c.asstStore.PauseStale(ctx); err != nil {
+		c.log.Warn("assistant pause stale", "error", err)
+	} else if paused+closed > 0 {
+		c.log.Info("assistant pause stale", "paused", paused, "closed", closed)
 	}
 
 	// The cloud socket pushes hosted mail and webhooks. It dials out; the
@@ -521,6 +521,11 @@ func (c *ControlPlane) Start(parent context.Context) {
 			if err := c.Parker.Recover(ctx); err != nil {
 				c.log.Warn("park recover", "err", err)
 			}
+		}()
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.asst.ResumePaused(ctx)
 		}()
 		c.wg.Add(1)
 		go func() {
@@ -629,15 +634,27 @@ func (c *ControlPlane) Stop() {
 	}
 	c.Cloud.Stop()
 	c.Reaper.Stop()
+	// Runs and assistant turns pause at the same time, so that the stop
+	// stays under the launchd ExitTimeOut.
+	var stops sync.WaitGroup
 	if c.Runs != nil {
-		// The reaper stopped first, so it cannot end a run during the pause.
-		c.Runs.PauseCLIRuns(context.Background())
-		c.Runs.CloseCLIRuns(context.Background())
+		stops.Add(1)
+		go func() {
+			defer stops.Done()
+			// The reaper stopped first, so it cannot end a run during the pause.
+			c.Runs.PauseCLIRuns(context.Background())
+			c.Runs.CloseCLIRuns(context.Background())
+		}()
 	}
 	if c.asst != nil {
-		_ = c.asst.Shutdown(context.Background()) // always nil
-		_ = c.asstRT.Close(context.Background())  // always nil
+		stops.Add(1)
+		go func() {
+			defer stops.Done()
+			_ = c.asst.Shutdown(context.Background()) // always nil
+			_ = c.asstRT.Close(context.Background())  // always nil
+		}()
 	}
+	stops.Wait()
 	if c.Harness != nil {
 		c.Harness.StopLoginWatchers()
 	}

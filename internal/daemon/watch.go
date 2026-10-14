@@ -259,7 +259,8 @@ func (c *ControlPlane) turnWatchTick(ctx context.Context) {
 // (plan I.2): the session left running, or the run itself ended. It runs
 // after ingestRun stored new turns, so one reply covers them all.
 func (c *ControlPlane) replyIfExchangeEnded(ctx context.Context, run *runs.Run) {
-	if run.ConversationID == "" {
+	// A restart paused the run: the resume after boot ends the exchange.
+	if run.ConversationID == "" || (run.Status == runs.StatusParked && run.EndReason == runs.EndRestart) {
 		return
 	}
 	state := c.Runs.SessionState(run.ID)

@@ -20,6 +20,9 @@ const (
 	StatusIdle     = "idle"
 	StatusClosed   = "closed"
 	StatusError    = "error"
+	// StatusPaused is a turn that a daemon restart stopped. It has no
+	// process; the manager resumes it after boot.
+	StatusPaused = "paused"
 )
 
 // ErrNoSession reports a conversation with no assistant session row.
@@ -168,19 +171,51 @@ func (s *Store) List(ctx context.Context, workspaceID string) ([]Record, error) 
 	return out, rows.Err()
 }
 
-// CloseStale marks every live row closed. The daemon calls it at start,
-// because no process survives a restart.
-func (s *Store) CloseStale(ctx context.Context) (int, error) {
-	res, err := s.st.DB().ExecContext(ctx,
-		`UPDATE assistant_sessions SET status = ?, updated_at = ?
-		 WHERE status IN (?,?,?)`,
-		StatusClosed, time.Now().UTC().Format(time.RFC3339Nano),
-		StatusStarting, StatusRunning, StatusWaiting)
+// PauseStale runs at boot, because no process survives a restart. A row
+// that a crash left in a turn becomes paused when it has a vendor session to
+// resume, else closed. It returns the paused and the closed counts.
+func (s *Store) PauseStale(ctx context.Context) (paused, closed int, err error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE assistant_sessions SET status = ?, actor_token_hash = '', updated_at = ?
+			 WHERE status IN (?,?,?) AND vendor_id != ''`,
+			StatusPaused, now, StatusStarting, StatusRunning, StatusWaiting)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		paused = int(n)
+		res, err = tx.ExecContext(ctx,
+			`UPDATE assistant_sessions SET status = ?, updated_at = ? WHERE status IN (?,?,?)`,
+			StatusClosed, now, StatusStarting, StatusRunning, StatusWaiting)
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		closed = int(n)
+		return nil
+	})
+	return paused, closed, err
+}
+
+// Paused returns the paused rows of all workspaces, oldest activity first.
+func (s *Store) Paused(ctx context.Context) ([]Record, error) {
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT `+sessionCols+` FROM assistant_sessions WHERE status = ? ORDER BY updated_at`, StatusPaused)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
+	defer rows.Close()
+	var out []Record
+	for rows.Next() {
+		r, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // AppendEvent stores one event and returns its sequence number.
@@ -239,6 +274,34 @@ func (s *Store) Events(ctx context.Context, convID string, afterSeq int64, limit
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// LastPromptEvent returns the newest user event that Trebi sent to the agent,
+// or false when it has none. A harness echo has no delivery.
+func (s *Store) LastPromptEvent(ctx context.Context, convID string) (Event, bool, error) {
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT seq, body FROM conversation_events
+		 WHERE conversation_id = ? AND type = 'user' ORDER BY seq DESC LIMIT 50`, convID)
+	if err != nil {
+		return Event{}, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seq int64
+		var body string
+		if err := rows.Scan(&seq, &body); err != nil {
+			return Event{}, false, err
+		}
+		var e Event
+		if err := json.Unmarshal([]byte(body), &e); err != nil {
+			return Event{}, false, fmt.Errorf("event %d: %w", seq, err)
+		}
+		if e.Delivery != "" {
+			e.Seq = seq
+			return e, true, nil
+		}
+	}
+	return Event{}, false, rows.Err()
 }
 
 // ByTokenHash resolves a session actor token hash to its row. A closed or
