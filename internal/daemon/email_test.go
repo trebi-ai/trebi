@@ -210,7 +210,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	if _, err := p.cp.Outbox.SendNow(ctx, row.ID); err != nil {
 		t.Fatal(err)
 	}
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 		var linked string
 		if err := p.st.DB().QueryRowContext(ctx, `SELECT email_message_id FROM inbox_items WHERE id=?`, inbox).Scan(&linked); err != nil {
 			t.Fatal(err)

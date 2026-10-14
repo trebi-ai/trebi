@@ -610,7 +610,13 @@ func TestControlPlane_RestartResumesRun(t *testing.T) {
 	cp2.Runs.SetCLIDriver(drv)
 	cp2.Start(ctx)
 	defer cp2.Stop()
-	done, err := cp2.Runs.WaitFor(ctx, run.ID, 10*time.Second)
+	// Parked is terminal, and Recover runs in the background, so poll.
+	var done *runs.Run
+	waitFor(t, func() bool {
+		done, err = cp2.Runs.Get(ctx, run.ID)
+		return err == nil && done.Status != runs.StatusParked
+	})
+	done, err = cp2.Runs.WaitFor(ctx, run.ID, 10*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
