@@ -30,6 +30,7 @@ type Config struct {
 	Notify     NotifyConfig     `yaml:"notify,omitempty"`
 	UI         UIConfig         `yaml:"ui,omitempty"`
 	Files      FilesConfig      `yaml:"files,omitempty"`
+	Uploads    UploadsConfig    `yaml:"uploads,omitempty"`
 	Workspaces WorkspacesConfig `yaml:"workspaces,omitempty"`
 	Assistant  AssistantConfig  `yaml:"assistant,omitempty"`
 	Email      EmailConfig      `yaml:"email,omitempty"`
@@ -187,6 +188,12 @@ func (f FilesConfig) MaxBytesOrDefault() int64 {
 		return DefaultFilesMaxBytes
 	}
 	return f.MaxBytes
+}
+
+// UploadsConfig is the size limit of one image that a person adds to a
+// message. 0 is the default, 10 MiB.
+type UploadsConfig struct {
+	MaxBytes int64 `yaml:"max_bytes,omitempty"`
 }
 
 // NotifyConfig is the global alert layer. Route is the global notify route
@@ -1032,6 +1039,9 @@ func (c *Config) Validate() error {
 
 	if c.Files.MaxBytes < 0 {
 		ce.add("files.max_bytes", "must be >= 0")
+	}
+	if c.Uploads.MaxBytes < 0 {
+		ce.add("uploads.max_bytes", "must be >= 0")
 	}
 	if c.Defaults.Memory.MaxBytes < 0 {
 		ce.add("defaults.memory.max_bytes", "must be >= 0")

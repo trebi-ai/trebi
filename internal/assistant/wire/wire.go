@@ -3,7 +3,11 @@
 // leaf: neither parent may import the other through it.
 package wire
 
-import "time"
+import (
+	"time"
+
+	"github.com/trebi-ai/trebi/internal/uploads"
+)
 
 // Message is one conversation message row, reduced to the fields the prompt
 // path and its callers use.
@@ -18,6 +22,7 @@ type Message struct {
 	Text           string    `json:"text"`
 	TurnIndex      *int      `json:"turn_index,omitempty"`
 	IdempotencyKey string    `json:"idempotency_key,omitempty"`
+	Attachments    []string  `json:"attachments,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -42,6 +47,8 @@ type PromptInput struct {
 	// Headless marks a prompt with no viewer: email, trigger, escalation.
 	// The manager denies a pending permission after the permission timeout.
 	Headless bool
+	// Attachments are the images of the turn.
+	Attachments uploads.Attachments
 }
 
 // PromptResult is the outcome of one Prompt.

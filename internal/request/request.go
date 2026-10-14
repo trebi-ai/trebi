@@ -137,13 +137,42 @@ func BuildRunMark(id, status, note string, clear bool) HTTPRequest {
 	}
 }
 
-// BuildRunMessage builds POST /v1/runs/{id}/message.
-func BuildRunMessage(id, text string) HTTPRequest {
+// BuildRunMessage builds POST /v1/runs/{id}/message. Each attachment is an
+// upload id or a workspace file path.
+func BuildRunMessage(id, text string, attachments ...string) HTTPRequest {
+	body := map[string]any{"text": text}
+	if len(attachments) > 0 {
+		body["attachments"] = attachments
+	}
 	return HTTPRequest{
 		Method: "POST",
 		Path:   "/v1/runs/" + url.PathEscape(id) + "/message",
-		Body:   map[string]any{"text": text},
+		Body:   body,
 	}
+}
+
+// BuildUploadPut builds POST /v1/workspaces/{id}/uploads with the image bytes.
+func BuildUploadPut(workspaceID string, content []byte) HTTPRequest {
+	return HTTPRequest{
+		Method:      "POST",
+		Path:        "/v1/workspaces/" + url.PathEscape(workspaceID) + "/uploads",
+		Raw:         content,
+		ContentType: "application/octet-stream",
+	}
+}
+
+// BuildUploadFromPath builds POST /v1/workspaces/{id}/uploads?path=, which
+// stores one workspace file as an upload.
+func BuildUploadFromPath(workspaceID, path string) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/uploads", map[string]string{"path": path}),
+	}
+}
+
+// BuildUploadGetPath builds GET /v1/workspaces/{id}/uploads/{uid}.
+func BuildUploadGetPath(workspaceID, uploadID string) string {
+	return "/v1/workspaces/" + url.PathEscape(workspaceID) + "/uploads/" + url.PathEscape(uploadID)
 }
 
 // BuildRunTranscript builds GET /v1/runs/{id}/transcript.
@@ -1810,12 +1839,16 @@ type AskSpec struct {
 	Connector      string // defaults to cli server-side
 	Room           string // defaults to the workspace id server-side
 	IdempotencyKey string
-	WaitMS         int // long-poll for the assistant reply
+	WaitMS         int      // long-poll for the assistant reply
+	Attachments    []string // upload ids or workspace file paths
 }
 
 // Build renders the ask as POST /v1/workspaces/{id}/assistant/messages.
 func (a AskSpec) Build() HTTPRequest {
 	body := map[string]any{"text": a.Text}
+	if len(a.Attachments) > 0 {
+		body["attachments"] = a.Attachments
+	}
 	for k, v := range map[string]string{
 		"connector":       a.Connector,
 		"room":            a.Room,

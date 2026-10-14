@@ -283,6 +283,23 @@ func (in Input) strList(key string) ([]string, error) {
 	return out, nil
 }
 
+// messageBody reads the text and attachments of one message. A message
+// needs text, images, or both.
+func (in Input) messageBody() (string, []string, error) {
+	text, err := in.str("text")
+	if err != nil {
+		return "", nil, err
+	}
+	atts, err := in.strList("attachments")
+	if err != nil {
+		return "", nil, err
+	}
+	if text == "" && len(atts) == 0 {
+		return "", nil, fmt.Errorf("input field %q is required", "text")
+	}
+	return text, atts, nil
+}
+
 // pick collects the named fields that are present, keeping their JSON types.
 // An empty result means the caller gave none of them.
 func (in Input) pick(keys ...string) map[string]any {
@@ -979,12 +996,16 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildRunMark(id, status, note, clear), nil
 			}),
-			"message": act("POST /v1/runs/{id}/message", Input{"id": "01ABC", "text": "ship it"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("id", "text")
+			"message": actSamples("POST /v1/runs/{id}/message", Input{"id": "01ABC", "text": "ship it"}, []Input{{"id": "01ABC", "attachments": []any{"upl_01ABC"}}}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildRunMessage(v[0], v[1]), nil
+				text, atts, err := in.messageBody()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildRunMessage(id, text, atts...), nil
 			}),
 			"approve": act("POST /v1/runs/{id}/approve", Input{"id": "01ABC", "decision": "allow"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("id", "decision")
@@ -1414,8 +1435,12 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildAssistantPreviewPath(ws)), nil
 			}),
-			"say": act("POST /v1/workspaces/{id}/assistant/messages", Input{"workspace": "ws1", "text": "status?"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("workspace", "text")
+			"say": actSamples("POST /v1/workspaces/{id}/assistant/messages", Input{"workspace": "ws1", "text": "status?"}, []Input{{"workspace": "ws1", "text": "what is this?", "attachments": []any{"shots/a.png"}}}, func(in Input) (request.HTTPRequest, error) {
+				ws, err := in.reqStr("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				text, atts, err := in.messageBody()
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -1428,8 +1453,8 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				return request.AskSpec{
-					Workspace: v[0], Text: v[1], Connector: rest[0], Room: rest[1],
-					IdempotencyKey: rest[2], WaitMS: wait,
+					Workspace: ws, Text: text, Connector: rest[0], Room: rest[1],
+					IdempotencyKey: rest[2], WaitMS: wait, Attachments: atts,
 				}.Build(), nil
 			}),
 			"memory_show": act("GET /v1/workspaces/{id}/assistant/memory", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
@@ -1744,6 +1769,41 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 		},
 
 		"file": {
+			"upload": actSamples("POST /v1/workspaces/{id}/uploads", Input{"workspace": "ws1", "path": "shots/a.png"}, []Input{{"workspace": "ws1", "content_base64": "iVBORw0KGgo="}}, func(in Input) (request.HTTPRequest, error) {
+				ws, err := in.reqStr("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				v, err := in.strs("path", "content_base64")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				switch {
+				case v[0] != "" && v[1] != "":
+					return request.HTTPRequest{}, fmt.Errorf("give %q or %q, not both", "path", "content_base64")
+				case v[0] != "":
+					return request.BuildUploadFromPath(ws, v[0]), nil
+				case v[1] != "":
+					raw, err := base64.StdEncoding.DecodeString(v[1])
+					if err != nil {
+						return request.HTTPRequest{}, fmt.Errorf("input field %q is not valid base64: %w", "content_base64", err)
+					}
+					return request.BuildUploadPut(ws, raw), nil
+				default:
+					return request.HTTPRequest{}, fmt.Errorf("give %q or %q", "path", "content_base64")
+				}
+			}),
+			"upload_get": func() Action {
+				e := act("GET /v1/workspaces/{id}/uploads/{uid}", Input{"workspace": "ws1", "id": "upl_01ABC"}, func(in Input) (request.HTTPRequest, error) {
+					v, err := in.reqStrs("workspace", "id")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					return mcpGet(request.BuildUploadGetPath(v[0], v[1])), nil
+				})
+				e.Transform = fileGetTransform
+				return bound(e, false)
+			}(),
 			"list": fileEntry(Input{"owner": "workspace", "workspace": "ws1", "prefix": "reports/"}, Input.buildFileList, "GET /v1/workspaces/{id}/files", "GET /v1/jobs/{name}/files", "GET /v1/skills/{name}/files"),
 			"get": func() Action {
 				e := fileEntry(

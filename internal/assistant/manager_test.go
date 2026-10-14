@@ -10,12 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/trebi-ai/agent-wire"
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/uploads"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -826,4 +827,54 @@ func (s *scriptSession) counts() (prompts, steered int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.prompts), len(s.steered)
+}
+
+// TestPromptAttachments: an image reaches the harness on a new turn and on a
+// steer, and the message row and the user event carry its id.
+func TestPromptAttachments(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	sess := newScriptSession(true)
+	env.runtime.SetDriver(agentwire.Fake, scriptDriver{sess: sess})
+	ctx := context.Background()
+	convID := env.conversation(t)
+	img := uploads.Attachments{{ID: "upl_1", MIME: "image/png", Path: "/h/upl_1.png"}}
+
+	in := promptInput("")
+	in.Attachments = img
+	res, err := env.mgr.Prompt(ctx, convID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Message.Attachments) != 1 || res.Message.Attachments[0] != "upl_1" {
+		t.Fatalf("message = %+v", res.Message)
+	}
+	sess.emit(agentwire.Event{Type: agentwire.EventInit, SessionID: "script-1"})
+	in = promptInput("and this one")
+	in.Attachments = img
+	if _, err := env.mgr.Prompt(ctx, convID, in); err != nil {
+		t.Fatal(err)
+	}
+	sess.mu.Lock()
+	sent := append(append([]agentwire.Prompt{}, sess.prompts...), sess.steered...)
+	sess.mu.Unlock()
+	if len(sent) != 2 {
+		t.Fatalf("sent = %+v", sent)
+	}
+	for _, p := range sent {
+		if len(p.Attachments) != 1 || p.Attachments[0].Path != "/h/upl_1.png" || strings.Contains(p.Text, "[Image:") {
+			t.Fatalf("prompt = %+v", p)
+		}
+	}
+	for _, u := range countUserEvents(t, env, convID) {
+		if len(u.Attachments) != 1 || u.Attachments[0] != "upl_1" {
+			t.Fatalf("user event = %+v", u)
+		}
+	}
+	msgs, err := env.conv.ListMessages(ctx, convID, listOpts50())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) == 0 || len(msgs[0].Attachments) != 1 {
+		t.Fatalf("messages = %+v", msgs)
+	}
 }

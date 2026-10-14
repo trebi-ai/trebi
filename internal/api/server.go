@@ -53,6 +53,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/ui"
+	"github.com/trebi-ai/trebi/internal/uploads"
 	"github.com/trebi-ai/trebi/internal/webhooks"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -69,6 +70,7 @@ type Server struct {
 	runs       *runs.Service
 	ws         *workspaces.Service
 	files      *files.Service
+	uploads    *uploads.Store
 	alerts     *alerts.Service
 	skills     *skills.Service
 	connectors *connectors.Service
@@ -171,6 +173,7 @@ func New(st *store.Store, opts Options) *Server {
 		runs:         r,
 		ws:           ws,
 		files:        fs,
+		uploads:      uploads.NewStore(st, home.UploadsDir(), uploadsMaxBytes()),
 		alerts:       alerts.New(st, alerts.Options{Actions: r}),
 		skills:       sk,
 		connectors:   conn,
@@ -414,6 +417,14 @@ func (s *Server) BindArtifacts(a *artifacts.Service) {
 	}
 }
 
+// uploadsMaxBytes reads uploads.max_bytes from config. 0 is the default.
+func uploadsMaxBytes() int64 {
+	if c, err := config.Load(); err == nil && c != nil {
+		return c.Uploads.MaxBytes
+	}
+	return 0
+}
+
 // stateLimits reads the owner limits from config.
 func stateLimits() state.Limits {
 	limits := state.DefaultLimits()
@@ -495,6 +506,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeChains(mux)
 	s.routeMemory(mux)
 	s.routeFiles(mux)
+	s.routeUploads(mux)
 	s.routeJobs(mux)
 	s.routeRuns(mux)
 	s.routeProposals(mux)

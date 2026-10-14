@@ -500,6 +500,11 @@ func (l *pathEntryList) addCore(cfg *Config) {
 		mb = DefaultFilesMaxBytes
 	}
 	l.add("files.max_bytes", strconv.FormatInt(mb, 10), strconv.FormatInt(DefaultFilesMaxBytes, 10))
+	ub := cfg.Uploads.MaxBytes
+	if ub <= 0 {
+		ub = DefaultFilesMaxBytes
+	}
+	l.add("uploads.max_bytes", strconv.FormatInt(ub, 10), strconv.FormatInt(DefaultFilesMaxBytes, 10))
 	rootShow := strings.TrimSpace(cfg.Workspaces.Root)
 	if rootShow == "" {
 		rootShow = DefaultWorkspacesRoot
@@ -837,15 +842,22 @@ func (c *Config) setHarnessKey(path, value string) (handled bool, err error) {
 }
 
 // setFilesKey handles files.* keys; handled=false when path is not one.
+// It also handles uploads.max_bytes, the same kind of limit.
 func (c *Config) setFilesKey(path, value string) (handled bool, err error) {
-	if path != "files.max_bytes" {
+	var dst *int64
+	switch path {
+	case "files.max_bytes":
+		dst = &c.Files.MaxBytes
+	case "uploads.max_bytes":
+		dst = &c.Uploads.MaxBytes
+	default:
 		return false, nil
 	}
 	n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 	if err != nil || n < 0 {
-		return true, fmt.Errorf("files.max_bytes: want non-negative integer")
+		return true, fmt.Errorf("%s: want non-negative integer", path)
 	}
-	c.Files.MaxBytes = n
+	*dst = n
 	return true, nil
 }
 
@@ -1318,6 +1330,7 @@ func pathKeyDescriptions() map[string]string {
 		"defaults.workspace":            "System sender workspace (id or name) for alerts with no workspace",
 		"notify.usage_warn_at":          "Harness usage percent that pages a warning (default 80)",
 		"files.max_bytes":               "Workspace file PUT/GET size cap in bytes (default 10485760)",
+		"uploads.max_bytes":             "Size limit of one image added to a message, in bytes (default 10485760)",
 		"requests.expire_after":         "A request with no answer expires after this (default 168h)",
 		"requests.retain":               "Keep the report of a closed request this long (default 720h)",
 		"inbox.done_retention":          "Delete a Done inbox item this long after it closes (default 720h)",

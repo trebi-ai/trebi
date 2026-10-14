@@ -32,6 +32,7 @@ trebi assistant preview --workspace reports
 ```bash
 trebi --workspace reports assistant say "what is blocked?"
 trebi --workspace reports assistant say "what is blocked?" --wait 60000 --json
+trebi --workspace reports assistant say "what is in this chart?" --attach chart.png
 trebi assistant chat
 ```
 

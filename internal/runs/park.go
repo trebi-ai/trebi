@@ -15,6 +15,7 @@ import (
 	agentwire "github.com/trebi-ai/agent-wire"
 
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/uploads"
 )
 
 var (
@@ -53,6 +54,8 @@ type ParkDelivery struct {
 	HopID   string
 	TraceID string
 	Path    []string
+	// Attachments are the images of a person's message.
+	Attachments uploads.Attachments
 }
 
 // ResumeResult is the outcome of one resume.
@@ -77,7 +80,7 @@ type runGetter interface {
 // liveWriter writes a prompt to the live session of a running run.
 type liveWriter interface {
 	hasLive(runID string) bool
-	writeLive(ctx context.Context, runID, text, origin string) (agentwire.Delivery, error)
+	writeLive(ctx context.Context, runID, text string, atts uploads.Attachments, origin string) (agentwire.Delivery, error)
 }
 
 // Parker delivers messages and ready items to a run: to its live session,
@@ -238,7 +241,7 @@ func (p *Parker) deliverLive(ctx context.Context, run *Run, extra []ParkDelivery
 	if len(extra) > 0 {
 		origin = OriginMessage
 	}
-	d, err := lw.writeLive(ctx, run.ID, prompt, origin)
+	d, err := lw.writeLive(ctx, run.ID, prompt, deliveryAttachments(all), origin)
 	p.settle(ctx, run.ID, claimed, ResumeResult{RunID: run.ID, Turn: run.TurnCount, Path: "live", Err: err})
 	if err != nil {
 		return DeliverResult{}, fmt.Errorf("deliver to run %s: %w", run.ID, err)
@@ -287,12 +290,21 @@ func joinDeliveries(all []ParkDelivery) (prompt, capsule string) {
 	return strings.Join(prompts, "\n\n"), strings.Join(capsules, "\n\n")
 }
 
+// deliveryAttachments collects the images of all deliveries.
+func deliveryAttachments(all []ParkDelivery) uploads.Attachments {
+	var out uploads.Attachments
+	for _, d := range all {
+		out = append(out, d.Attachments...)
+	}
+	return out
+}
+
 // launch resumes the session with all deliveries in one prompt. A harness
 // that cannot resume gets a fresh run with the capsule prompts, except for a
 // person's message: it never starts a fresh run.
 func (p *Parker) launch(ctx context.Context, run *Run, all []ParkDelivery, message bool) ResumeResult {
 	prompt, capsule := joinDeliveries(all)
-	o := ResumeOpts{Reason: ReasonRequest, Prompt: prompt}
+	o := ResumeOpts{Reason: ReasonRequest, Prompt: prompt, Attachments: deliveryAttachments(all)}
 	if message {
 		o.Reason = ReasonMessage
 	}
@@ -380,13 +392,13 @@ func (s *Service) Deliver(ctx context.Context, runID string, extra ...ParkDelive
 // hasLive reports whether runID has a live CLI session.
 func (s *Service) hasLive(runID string) bool { return s.cliRunFor(runID) != nil }
 
-// writeLive writes text to the live CLI session of runID.
-func (s *Service) writeLive(ctx context.Context, runID, text, origin string) (agentwire.Delivery, error) {
+// writeLive writes text and images to the live CLI session of runID.
+func (s *Service) writeLive(ctx context.Context, runID, text string, atts uploads.Attachments, origin string) (agentwire.Delivery, error) {
 	cr := s.cliRunFor(runID)
 	if cr == nil {
 		return "", fmt.Errorf("run %s: %w", runID, ErrNotRunning)
 	}
-	return s.promptCLI(ctx, runID, cr, agentwire.Prompt{Text: text, Kind: "followup"}, origin)
+	return s.promptCLI(ctx, runID, cr, agentwire.Prompt{Text: text, Kind: "followup"}, atts, origin)
 }
 
 // promptHints are the gate texts of a fresh job or agent launch. A resumed

@@ -85,6 +85,10 @@ func ArtifactsDir() string { return filepath.Join(Base(), "artifacts") }
 // ArtifactBlobsDir holds the artifact bytes, named by their sha256.
 func ArtifactBlobsDir() string { return filepath.Join(ArtifactsDir(), "blobs", "sha256") }
 
+// UploadsDir holds the images that a person adds to a message, one folder
+// per workspace.
+func UploadsDir() string { return filepath.Join(Base(), "uploads") }
+
 // ConnectionsDir holds one folder per connection, named by its id.
 func ConnectionsDir() string { return filepath.Join(Base(), "connectors") }
 

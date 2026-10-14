@@ -20,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/tmux"
+	"github.com/trebi-ai/trebi/internal/uploads"
 )
 
 // apiVersion mirrors internal/api.Version (the -ldflags target); runs cannot
@@ -33,6 +34,7 @@ const cliLaunchGrace = 5 * time.Second
 // cliRun is the per-run subprocess runtime state owned by the event pump.
 type cliRun struct {
 	sess      agentwire.Session
+	harness   string
 	tracker   *agentwire.Tracker
 	result    *agentwire.Result
 	memoryFix int
@@ -371,14 +373,14 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		return got, nil
 	}
 	// The library tracks its own sessions in the ledger; no registry Add here.
-	cr := &cliRun{sess: sess, tracker: agentwire.NewTracker(), turn: run.TurnCount}
+	cr := &cliRun{sess: sess, harness: tool.Name(), tracker: agentwire.NewTracker(), turn: run.TurnCount}
 	s.registerCLIRun(run.ID, cr)
 	s.setRunPid(ctx, run.ID, sess.PID())
 	s.AddEvent(ctx, run.ID, "proc", "proc", map[string]string{"pid": strconv.Itoa(sess.PID())})
 
 	go s.pumpCLI(run.ID, opts, cr)
 
-	if _, err := s.promptCLI(ctx, run.ID, cr, agentwire.Prompt{Text: body, Kind: kindOrDefault(opts.Kind)}, opts.Reason.origin(resuming)); err != nil {
+	if _, err := s.promptCLI(ctx, run.ID, cr, agentwire.Prompt{Text: body, Kind: kindOrDefault(opts.Kind)}, opts.Attachments, opts.Reason.origin(resuming)); err != nil {
 		s.appendRunLog(run.ID, "prompt write failed: "+err.Error())
 		_ = s.TerminateTurn(ctx, run.ID, cr.turn, StatusFailed, EndLaunch, nil)
 		s.unregisterCLIRun(run.ID, cr)
@@ -423,8 +425,19 @@ func (r RunReason) origin(resuming bool) string {
 
 // promptCLI writes one prompt with agentwire.Send and records it as a user
 // event. The vendors do not echo a prompt, so this event is the only record.
-func (s *Service) promptCLI(ctx context.Context, runID string, cr *cliRun, p agentwire.Prompt, origin string) (agentwire.Delivery, error) {
+// A harness without images gets the image paths in the text.
+func (s *Service) promptCLI(ctx context.Context, runID string, cr *cliRun, p agentwire.Prompt, atts uploads.Attachments, origin string) (agentwire.Delivery, error) {
+	text := p.Text
+	if len(atts) > 0 && takesImages(cr.harness) {
+		p.Attachments = atts.Wire()
+	} else {
+		p.Text = atts.Inline(text)
+	}
 	d, err := agentwire.Send(ctx, cr.sess, p)
+	if errors.Is(err, agentwire.ErrUnsupported) && len(p.Attachments) > 0 {
+		p.Attachments, p.Text = nil, atts.Inline(text)
+		d, err = agentwire.Send(ctx, cr.sess, p)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -435,11 +448,18 @@ func (s *Service) promptCLI(ctx context.Context, runID string, cr *cliRun, p age
 		cr.tracker.PromptWritten()
 		s.SetSessionState(ctx, runID, SessionRunning, "wire")
 	}
-	s.AddEvent(ctx, runID, "user", "trebi", map[string]string{
-		"text": trunc(p.Text, maxMessageEventBytes), "origin": origin, "delivery": string(d),
-	})
+	detail := map[string]string{"text": trunc(text, maxMessageEventBytes), "origin": origin, "delivery": string(d)}
+	if len(atts) > 0 {
+		detail["attachments"] = strings.Join(atts.IDs(), ",")
+	}
+	s.AddEvent(ctx, runID, "user", "trebi", detail)
 	return d, nil
 }
+
+// takesImages reports whether a harness takes image attachments on the
+// wire. Pi holds a steer with images and drops it later, so it gets the
+// text form from the start.
+func takesImages(harness string) bool { return harness != tmux.Pi }
 
 // maxMessageEventBytes bounds the text of one user or assistant event. The
 // transcript reads the text back from the event, so a run report must fit.
@@ -785,8 +805,12 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, erro
 		}
 		switch ev.Kind {
 		case "user":
-			if d["text"] != "" {
-				turns = append(turns, tmux.Turn{Role: "user", Text: d["text"], At: ev.At, Origin: d["origin"], Delivery: d["delivery"]})
+			if d["text"] != "" || d["attachments"] != "" {
+				turn := tmux.Turn{Role: "user", Text: d["text"], At: ev.At, Origin: d["origin"], Delivery: d["delivery"]}
+				if ids := d["attachments"]; ids != "" {
+					turn.Attachments = strings.Split(ids, ",")
+				}
+				turns = append(turns, turn)
 			}
 		case "assistant":
 			if d["text"] != "" && d["delta"] != "true" {
@@ -981,7 +1005,7 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 			if cr.memoryFix < maxMemoryFixes {
 				cr.memoryFix++
 				s.requestMemoryFix(ctx, runID, "wire", cr.memoryFix, issues)
-				if _, err := s.promptCLI(ctx, runID, cr, agentwire.Prompt{Text: cliFixMessage(issues), Kind: "memory_fix"}, OriginMemoryFix); err != nil {
+				if _, err := s.promptCLI(ctx, runID, cr, agentwire.Prompt{Text: cliFixMessage(issues), Kind: "memory_fix"}, nil, OriginMemoryFix); err != nil {
 					s.recordMemoryInvalid(ctx, run, issues, "wire")
 					s.terminateCLI(ctx, runID, cr, StatusFailed, EndLaunch, tokens)
 					return

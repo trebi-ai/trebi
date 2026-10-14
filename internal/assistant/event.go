@@ -11,24 +11,25 @@ import (
 // shape. Stored events hold the full body; live deltas carry Seq = 0 and are
 // subscriber-only.
 type Event struct {
-	Seq      int64       `json:"seq,omitempty"` // 0 on a live-only delta
-	Type     string      `json:"type"`          // init|user|assistant|tool|permission|answer|usage|result|error|status|exit|system
-	Turn     int         `json:"turn,omitempty"`
-	At       time.Time   `json:"at"`
-	Text     string      `json:"text,omitempty"`
-	Delta    bool        `json:"delta,omitempty"`
-	Prompt   string      `json:"prompt,omitempty"`
-	Context  []string    `json:"context,omitempty"`
-	Channel  string      `json:"channel,omitempty"`  // channel_type of a user event
-	Delivery string      `json:"delivery,omitempty"` // user event: prompted|steered|held
-	Tool     *Tool       `json:"tool,omitempty"`
-	Perm     *Permission `json:"permission,omitempty"`
-	Answer   *Answer     `json:"answer,omitempty"`
-	Usage    *Usage      `json:"usage,omitempty"`
-	Result   *Result     `json:"result,omitempty"`
-	Error    *Error      `json:"error,omitempty"`
-	Status   string      `json:"status,omitempty"`
-	ExitCode *int        `json:"exit_code,omitempty"`
+	Seq         int64       `json:"seq,omitempty"` // 0 on a live-only delta
+	Type        string      `json:"type"`          // init|user|assistant|tool|permission|answer|usage|result|error|status|exit|system
+	Turn        int         `json:"turn,omitempty"`
+	At          time.Time   `json:"at"`
+	Text        string      `json:"text,omitempty"`
+	Delta       bool        `json:"delta,omitempty"`
+	Prompt      string      `json:"prompt,omitempty"`
+	Context     []string    `json:"context,omitempty"`
+	Attachments []string    `json:"attachments,omitempty"` // upload ids of a user event
+	Channel     string      `json:"channel,omitempty"`     // channel_type of a user event
+	Delivery    string      `json:"delivery,omitempty"`    // user event: prompted|steered|held
+	Tool        *Tool       `json:"tool,omitempty"`
+	Perm        *Permission `json:"permission,omitempty"`
+	Answer      *Answer     `json:"answer,omitempty"`
+	Usage       *Usage      `json:"usage,omitempty"`
+	Result      *Result     `json:"result,omitempty"`
+	Error       *Error      `json:"error,omitempty"`
+	Status      string      `json:"status,omitempty"`
+	ExitCode    *int        `json:"exit_code,omitempty"`
 }
 
 // Tool is one tool invocation.

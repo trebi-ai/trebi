@@ -51,6 +51,7 @@ func assistantCommand() *cli.Command {
 				Flags: []cli.Flag{
 					assistantWorkspaceFlag(),
 					&cli.IntFlag{Name: "wait", Usage: "wait milliseconds for the reply (max 120000)"},
+					&cli.StringSliceFlag{Name: "attach", Usage: "image file to send with the message (repeatable)"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runAssistantSay,
@@ -277,8 +278,9 @@ func assistantSetWorkspace(client *APIClient, wsID string, changes map[string]an
 
 func runAssistantSay(_ context.Context, c *cli.Command) error {
 	text := strings.TrimSpace(strings.Join(c.Args().Slice(), " "))
-	if text == "" {
-		return fmt.Errorf("usage: trebi assistant say <message>")
+	attach := c.StringSlice("attach")
+	if text == "" && len(attach) == 0 {
+		return fmt.Errorf("usage: trebi assistant say <message> [--attach <image>]")
 	}
 	client, err := clientFor(c)
 	if err != nil {
@@ -288,8 +290,12 @@ func runAssistantSay(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	ids, err := client.UploadImages(wsID, attach)
+	if err != nil {
+		return err
+	}
 	var out map[string]any
-	spec := request.AskSpec{Workspace: wsID, Text: text, WaitMS: c.Int("wait")}
+	spec := request.AskSpec{Workspace: wsID, Text: text, WaitMS: c.Int("wait"), Attachments: ids}
 	if err := client.DoHTTP(spec.Build(), &out); err != nil {
 		return err
 	}

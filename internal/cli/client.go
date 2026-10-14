@@ -376,6 +376,26 @@ func (c *APIClient) CLIConversation(wsID string) string {
 	return mapStr(ptr, "conversation_id")
 }
 
+// UploadImages stores local image files in workspace wsID and returns their
+// upload ids, in order.
+func (c *APIClient) UploadImages(wsID string, paths []string) ([]string, error) {
+	ids := make([]string, 0, len(paths))
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		var u struct {
+			ID string `json:"id"`
+		}
+		if err := c.DoHTTP(request.BuildUploadPut(wsID, b), &u); err != nil {
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+		ids = append(ids, u.ID)
+	}
+	return ids, nil
+}
+
 // DoctorFix applies one doctor finding by id.
 func (c *APIClient) DoctorFix(id string) (string, map[string]any) {
 	var out map[string]any

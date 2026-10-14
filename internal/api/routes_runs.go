@@ -26,6 +26,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
+	"github.com/trebi-ai/trebi/internal/uploads"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -1277,13 +1278,30 @@ func (s *Server) handleRunMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Text string `json:"text"`
+		Text        string   `json:"text"`
+		Attachments []string `json:"attachments"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Text == "" {
-		writeErr(w, http.StatusBadRequest, "validation", "text required")
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Text == "" && len(body.Attachments) == 0) {
+		writeErr(w, http.StatusBadRequest, "validation", "text or attachments required")
 		return
 	}
-	res, err := s.runs.SendMessage(r.Context(), r.PathValue("id"), body.Text)
+	var atts uploads.Attachments
+	if len(body.Attachments) > 0 {
+		run, err := s.runs.Get(r.Context(), r.PathValue("id"))
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, http.StatusNotFound, "not_found", "run not found")
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		var ok bool
+		if atts, ok = s.attachUploads(r.Context(), w, run.Workspace, body.Attachments); !ok {
+			return
+		}
+	}
+	res, err := s.runs.SendMessage(r.Context(), r.PathValue("id"), body.Text, atts...)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")

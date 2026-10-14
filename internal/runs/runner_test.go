@@ -12,6 +12,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/uploads"
 )
 
 func TestFailBeforeLaunch(t *testing.T) {
@@ -238,6 +239,29 @@ func TestSendMessageStates(t *testing.T) {
 				t.Fatalf("a waiting request was settled: %+v", gate.settled)
 			}
 		})
+	}
+}
+
+// TestMessageResumeCarriesAttachments: a message with an image resumes a
+// parked run, and the resume carries the image.
+func TestMessageResumeCarriesAttachments(t *testing.T) {
+	t.Parallel()
+	svc, _, ctx := openTurnSvc(t)
+	rs := &resumeStub{}
+	svc.SetParker(runs.NewParker(svc, rs, &readyGate{name: runs.GateRequest, waiting: true}))
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Harness: "claude", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	img := uploads.Attachment{ID: "upl_1", MIME: "image/png", Path: "/h/upl_1.png"}
+	if _, err := svc.SendMessage(ctx, run.ID, "What is in this image?", img); err != nil {
+		t.Fatal(err)
+	}
+	if len(rs.calls) != 1 || len(rs.calls[0].Attachments) != 1 || rs.calls[0].Attachments[0] != img {
+		t.Fatalf("resumes %+v", rs.calls)
 	}
 }
 

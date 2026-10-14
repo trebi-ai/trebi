@@ -127,15 +127,21 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Text string `json:"text"`
 		conversations.Address
-		IdempotencyKey string `json:"idempotency_key"`
+		IdempotencyKey string   `json:"idempotency_key"`
+		Attachments    []string `json:"attachments"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
+	atts, ok := s.attachUploads(r.Context(), w, s.workspaceID(r.Context(), r.PathValue("id")), body.Attachments)
+	if !ok {
+		return
+	}
 	out, err := s.conv.Ask(r.Context(), conversations.AskOpts{
 		Workspace:      r.PathValue("id"),
 		Text:           body.Text,
+		Attachments:    atts,
 		Address:        body.Address,
 		IdempotencyKey: body.IdempotencyKey,
 		Wait:           parseWait(r),

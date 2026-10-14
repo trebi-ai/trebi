@@ -201,6 +201,7 @@ func mcpTestMux() *http.ServeMux {
 	s.routeConversations(mux)
 	s.routeEvents(mux)
 	s.routeFiles(mux)
+	s.routeUploads(mux)
 	s.routeEmail(mux)
 	s.routeHooks(mux)
 	s.routeHarness(mux)
@@ -454,6 +455,12 @@ func probeValue(f tools.DocField, sample tools.Input) any {
 		return map[string]any{"probe": "1"}
 	case "array":
 		if f.Name == "attachments" {
+			// Message attachments are upload ids; email attachments are file objects.
+			if arr, ok := sample[f.Name].([]any); ok && len(arr) > 0 {
+				if _, isStr := arr[0].(string); isStr {
+					return []any{"probe"}
+				}
+			}
 			return []any{map[string]any{"path": "probe"}}
 		}
 		if f.Name == "forms" {
@@ -463,6 +470,9 @@ func probeValue(f tools.DocField, sample tools.Input) any {
 	}
 	if f.Name == "encoding" {
 		return "base64"
+	}
+	if f.Name == "content_base64" {
+		return "cHJvYmU="
 	}
 	if f.Name == "owner" {
 		if sample[f.Name] == "job" {

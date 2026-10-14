@@ -33,6 +33,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
+	"github.com/trebi-ai/trebi/internal/uploads"
 )
 
 const (
@@ -91,6 +92,9 @@ type LaunchOpts struct {
 	CreateOpts
 	// Prompt full body (not just preview).
 	Prompt string
+	// Attachments are the images of the first prompt. A pane run gets their
+	// paths in the prompt text.
+	Attachments uploads.Attachments
 	// CoalesceText is the text a coalesce delivers to the live run. An
 	// operator launch has no Prompt yet at that point.
 	CoalesceText string
@@ -425,6 +429,7 @@ func (s *Service) launch(ctx context.Context, opts LaunchOpts) (*Run, error) {
 		opts.ID = opts.ReopenRunID
 	}
 	if opts.wantsFake() {
+		opts.Prompt, opts.Attachments = opts.Attachments.Inline(opts.Prompt), nil
 		return s.launchFake(ctx, opts)
 	}
 	command := opts.Command
@@ -448,6 +453,7 @@ func (s *Service) launch(ctx context.Context, opts LaunchOpts) (*Run, error) {
 	if s.wantsCLI(tmux.Detect(command), opts) {
 		return s.launchCLI(ctx, opts)
 	}
+	opts.Prompt, opts.Attachments = opts.Attachments.Inline(opts.Prompt), nil
 	return s.launchTmux(ctx, opts)
 }
 
@@ -1127,9 +1133,10 @@ func StripCompletion(text string) string {
 // steered, prompted, held, resumed, or pane.
 type MessageResult = DeliverResult
 
-// SendMessage delivers a person's message to the session of runID in its
-// current state: the live turn, the next turn, a resume, or the tmux pane.
-func (s *Service) SendMessage(ctx context.Context, runID, text string) (MessageResult, error) {
+// SendMessage delivers a person's message and its images to the session of
+// runID in its current state: the live turn, the next turn, a resume, or the
+// tmux pane. The pane gets the image paths in the text.
+func (s *Service) SendMessage(ctx context.Context, runID, text string, atts ...uploads.Attachment) (MessageResult, error) {
 	// The sentinel is how the agent reports it finished. A caller that sends it
 	// ends the run as complete without the work being done. Text is validated
 	// before run state, so the message is rejected for the real reason.
@@ -1140,13 +1147,16 @@ func (s *Service) SendMessage(ctx context.Context, runID, text string) (MessageR
 	if err != nil {
 		return MessageResult{}, err
 	}
+	images := uploads.Attachments(atts)
 	if run.Status == StatusRunning && s.cliRunFor(runID) == nil {
-		if err := run.sendToPane(text); err != nil {
+		if err := run.sendToPane(images.Inline(text)); err != nil {
 			return MessageResult{}, err
 		}
-		s.AddEvent(ctx, runID, "user", "trebi", map[string]string{
-			"text": trunc(text, maxMessageEventBytes), "origin": OriginMessage, "delivery": DeliveryPane,
-		})
+		detail := map[string]string{"text": trunc(text, maxMessageEventBytes), "origin": OriginMessage, "delivery": DeliveryPane}
+		if len(images) > 0 {
+			detail["attachments"] = strings.Join(images.IDs(), ",")
+		}
+		s.AddEvent(ctx, runID, "user", "trebi", detail)
 		return MessageResult{Delivery: DeliveryPane, RunID: runID, Turn: run.TurnCount}, nil
 	}
 	p := s.parkerOf()
@@ -1154,10 +1164,10 @@ func (s *Service) SendMessage(ctx context.Context, runID, text string) (MessageR
 		if run.Status != StatusRunning {
 			return MessageResult{}, fmt.Errorf("%w: %s", ErrNotRunning, runID)
 		}
-		d, err := s.writeLive(ctx, runID, text, OriginMessage)
+		d, err := s.writeLive(ctx, runID, text, images, OriginMessage)
 		return MessageResult{Delivery: string(d), RunID: runID, Turn: run.TurnCount}, err
 	}
-	return p.Deliver(ctx, runID, ParkDelivery{Gate: GateMessage, Prompt: text, At: time.Now().UTC()})
+	return p.Deliver(ctx, runID, ParkDelivery{Gate: GateMessage, Prompt: text, Attachments: images, At: time.Now().UTC()})
 }
 
 // SendLive sends a message only to a running run. It never resumes one.
@@ -1232,8 +1242,9 @@ const MaxResumeAttempts = 5
 
 // ResumeOpts selects why a session continues and with which prompt.
 type ResumeOpts struct {
-	Reason RunReason
-	Prompt string
+	Reason      RunReason
+	Prompt      string
+	Attachments uploads.Attachments
 	// QueueID is the queue row that the new turn serves.
 	QueueID string
 	// The chain frame of the new turn: a reply continues the caller frame.
@@ -1289,6 +1300,7 @@ func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o 
 	opts.ConversationKey, opts.ConversationID = prev.ConversationKey, prev.ConversationID
 	opts.Prompt = o.Prompt
 	opts.PromptPreview = o.Prompt
+	opts.Attachments = o.Attachments
 	opts.BypassOverlap = true
 	opts.Wake = nil
 	if opts.MaxDurationMS == 0 && opts.IdleTimeoutMS == 0 && opts.KeepAliveMS == 0 {
@@ -1801,7 +1813,7 @@ func (s *Service) overlapCoalesce(ctx context.Context, opts *LaunchOpts, existin
 		text = "(coalesced event)"
 	}
 	if cr := s.cliRunFor(existing.ID); cr != nil {
-		if _, err := s.promptCLI(ctx, existing.ID, cr, agentwire.Prompt{Text: text, Kind: "coalesce"}, OriginCoalesce); err != nil {
+		if _, err := s.promptCLI(ctx, existing.ID, cr, agentwire.Prompt{Text: text, Kind: "coalesce"}, nil, OriginCoalesce); err != nil {
 			s.log.Warn("coalesce prompt", "run", existing.ID, "error", err)
 		}
 	} else if existing.TmuxSession != "" {

@@ -163,6 +163,7 @@ func (m *Manager) prompt(ctx context.Context, convID string, in wire.PromptInput
 			Connector: in.Connector, Instance: in.Instance, Room: in.Room, Thread: in.Thread,
 		},
 		IdempotencyKey: in.IdempotencyKey,
+		Attachments:    in.Attachments,
 	}
 	msg, dup, aerr := m.conv.AppendUser(ctx, convID, ut)
 	if aerr != nil {
@@ -198,7 +199,7 @@ func (m *Manager) prompt(ctx context.Context, convID string, in wire.PromptInput
 	text := s.takePrompt(in)
 	s.appendUserEvent(rec.Prompts+1, in, agentwire.DeliveryPrompted)
 
-	delivery, perr := agentwire.Send(ctx, s.sess, agentwire.Prompt{Text: text, Kind: "assistant"})
+	delivery, perr := s.send(ctx, text, in.Attachments)
 	if perr != nil {
 		s.appendSendError(fmt.Sprintf("could not send the prompt: %v", perr))
 		_, _ = m.store.Update(ctx, convID, func(r *Record) { r.Status = previous })
@@ -719,6 +720,7 @@ func convMsg(c conversations.Message) wire.Message {
 		ID: c.ID, ConversationID: c.ConversationID, Role: c.Role,
 		Connector: c.Connector, Instance: c.Instance, Room: c.Room, Thread: c.Thread, Text: c.Text,
 		TurnIndex: c.TurnIndex, IdempotencyKey: c.IdempotencyKey, CreatedAt: c.CreatedAt,
+		Attachments: c.Attachments,
 	}
 }
 
@@ -785,7 +787,7 @@ func (m *Manager) Preview(ctx context.Context, workspaceID string) (string, erro
 // Neither changes the status.
 func (m *Manager) sendDuringTurn(ctx context.Context, s *session, msg conversations.Message, in wire.PromptInput) (wire.PromptResult, error) {
 	text := s.takePrompt(in)
-	delivery, err := agentwire.Send(ctx, s.sess, agentwire.Prompt{Text: text, Kind: "assistant"})
+	delivery, err := s.send(ctx, text, in.Attachments)
 	if err != nil {
 		s.appendSendError(fmt.Sprintf("could not send the prompt: %v", err))
 		return wire.PromptResult{}, fmt.Errorf("could not send the prompt: %w", err)

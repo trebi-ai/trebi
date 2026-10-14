@@ -15,6 +15,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/uploads"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -89,9 +90,11 @@ type Message struct {
 	TurnIndex      *int   `json:"turn_index,omitempty"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// HopID is the agent chain hop that this message carries.
-	HopID     string    `json:"hop_id,omitempty"`
-	Delivery  *Delivery `json:"delivery,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	HopID string `json:"hop_id,omitempty"`
+	// Attachments are the upload ids of the images of a user message.
+	Attachments []string  `json:"attachments,omitempty"`
+	Delivery    *Delivery `json:"delivery,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // Delivery marks one assistant turn that also went out by mail (plan
@@ -146,6 +149,7 @@ type SendOpts struct {
 	Address
 	IdempotencyKey string
 	HopID          string
+	Attachments    uploads.Attachments
 }
 
 // SendResult is the send-path response. An assistant send reports the
@@ -169,6 +173,7 @@ type AskOpts struct {
 	IdempotencyKey string
 	Headless       bool          // email, trigger, escalation: timeout denies permissions
 	Wait           time.Duration // 0 returns as soon as the message is queued
+	Attachments    uploads.Attachments
 }
 
 // AskResult carries the send outcome plus the assistant replies that arrived
@@ -185,6 +190,7 @@ type UserTurn struct {
 	Text string
 	Address
 	IdempotencyKey string
+	Attachments    uploads.Attachments
 }
 
 // IncomingTurn is one parsed transcript turn for the watcher to persist.

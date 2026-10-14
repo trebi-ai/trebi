@@ -49,6 +49,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
+	"github.com/trebi-ai/trebi/internal/uploads"
 	"github.com/trebi-ai/trebi/internal/webhooks"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -850,6 +851,11 @@ func (c *ControlPlane) busPrune(ctx context.Context) {
 				c.log.Warn("decision prune", "error", err)
 			} else if n > 0 {
 				c.log.Info("decisions pruned", "rows", n)
+			}
+			if n, err := uploads.NewStore(c.Store, home.UploadsDir(), 0).Prune(ctx, time.Now().UTC()); err != nil {
+				c.log.Warn("upload prune", "error", err)
+			} else if n > 0 {
+				c.log.Info("uploads pruned", "rows", n)
 			}
 			if _, err := c.Store.PruneIdempotent(ctx, 24*time.Hour); err != nil {
 				c.log.Warn("idempotency prune", "error", err)

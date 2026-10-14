@@ -14,10 +14,11 @@ import (
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/uploads"
 )
 
 const msgCols = `id, conversation_id, role, connector, instance, room, thread,
-	text, COALESCE(run_id,''), turn_index, COALESCE(idempotency_key,''), hop_id, created_at`
+	text, COALESCE(run_id,''), turn_index, COALESCE(idempotency_key,''), hop_id, created_at, attachments`
 
 // ListMessages returns messages in ascending ULID order.
 func (s *Service) ListMessages(ctx context.Context, convID string, opts MessageListOpts) ([]Message, error) {
@@ -77,7 +78,7 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 		}
 		res, err := s.assistant.Ask(ctx, convID, wire.PromptInput{
 			Text: opts.Text, Connector: opts.Connector, Instance: opts.Instance, Room: opts.Room, Thread: opts.Thread,
-			IdempotencyKey: opts.IdempotencyKey, Headless: opts.Headless,
+			IdempotencyKey: opts.IdempotencyKey, Headless: opts.Headless, Attachments: opts.Attachments,
 		}, opts.Wait)
 		if err != nil {
 			return nil, err
@@ -93,7 +94,7 @@ func (s *Service) Ask(ctx context.Context, opts AskOpts) (*AskResult, error) {
 		return nil, err
 	}
 	sent, err := s.Send(ctx, convID, SendOpts{
-		Text: opts.Text, Address: opts.Address, IdempotencyKey: opts.IdempotencyKey,
+		Text: opts.Text, Address: opts.Address, IdempotencyKey: opts.IdempotencyKey, Attachments: opts.Attachments,
 	})
 	if err != nil {
 		return nil, err
@@ -175,7 +176,7 @@ func (s *Service) lastMessageID(ctx context.Context, convID string) (string, err
 // Send inserts a user message and injects or enqueues a wake.
 func (s *Service) Send(ctx context.Context, convID string, opts SendOpts) (*SendResult, error) {
 	text := strings.TrimSpace(opts.Text)
-	if text == "" {
+	if text == "" && len(opts.Attachments) == 0 {
 		return nil, fmt.Errorf("%w: text is required", ErrValidation)
 	}
 	conv, err := s.Get(ctx, convID)
@@ -196,7 +197,7 @@ func (s *Service) Send(ctx context.Context, convID string, opts SendOpts) (*Send
 		}
 		res, err := s.assistant.Prompt(ctx, convID, wire.PromptInput{
 			Text: opts.Text, Connector: opts.Connector, Instance: opts.Instance, Room: opts.Room, Thread: opts.Thread,
-			IdempotencyKey: opts.IdempotencyKey,
+			IdempotencyKey: opts.IdempotencyKey, Attachments: opts.Attachments,
 		})
 		if err != nil {
 			return nil, err
@@ -217,7 +218,7 @@ func (s *Service) Send(ctx context.Context, convID string, opts SendOpts) (*Send
 		}
 		return nil, err
 	}
-	delivery, runID, queueID, err := s.deliver(ctx, conv, text)
+	delivery, runID, queueID, err := s.deliver(ctx, conv, text, opts.Attachments)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +240,7 @@ func (s *Service) AppendUser(ctx context.Context, convID string, in UserTurn) (M
 		}
 	}
 	msg, err := s.insertUserMessage(ctx, conv, SendOpts{
-		Text: in.Text, Address: in.Address, IdempotencyKey: in.IdempotencyKey,
+		Text: in.Text, Address: in.Address, IdempotencyKey: in.IdempotencyKey, Attachments: in.Attachments,
 	}, in.Text)
 	if err != nil {
 		if uniqueViolation(err) && in.IdempotencyKey != "" {
@@ -356,7 +357,7 @@ func convFromWire(m wire.Message) Message {
 	return Message{
 		ID: m.ID, ConversationID: m.ConversationID, Role: m.Role,
 		Address: Address{Connector: m.Connector, Instance: m.Instance, Room: m.Room, Thread: m.Thread}, Text: m.Text,
-		TurnIndex: m.TurnIndex, IdempotencyKey: m.IdempotencyKey, CreatedAt: m.CreatedAt,
+		TurnIndex: m.TurnIndex, IdempotencyKey: m.IdempotencyKey, Attachments: m.Attachments, CreatedAt: m.CreatedAt,
 	}
 }
 
@@ -445,12 +446,15 @@ func (s *Service) insertUserMessage(ctx context.Context, conv *Conversation, opt
 		Address: opts.Address, Text: text,
 		IdempotencyKey: opts.IdempotencyKey, HopID: opts.HopID, CreatedAt: now,
 	}
+	if len(opts.Attachments) > 0 {
+		msg.Attachments = opts.Attachments.IDs()
+	}
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`INSERT INTO conversation_messages
-			(id, conversation_id, role, connector, instance, room, thread, text, idempotency_key, hop_id, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			(id, conversation_id, role, connector, instance, room, thread, text, idempotency_key, hop_id, created_at, attachments)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 			msg.ID, conv.ID, RoleUser, opts.Connector, opts.Instance, opts.Room, opts.Thread, text,
-			store.NullStr(opts.IdempotencyKey), opts.HopID, nowStr); err != nil {
+			store.NullStr(opts.IdempotencyKey), opts.HopID, nowStr, strings.Join(msg.Attachments, ",")); err != nil {
 			return err
 		}
 		if opts.Connector != "" && opts.Room != "" {
@@ -467,10 +471,10 @@ func (s *Service) insertUserMessage(ctx context.Context, conv *Conversation, opt
 	return msg, err
 }
 
-func (s *Service) deliver(ctx context.Context, conv *Conversation, text string) (delivery, runID, queueID string, err error) {
+func (s *Service) deliver(ctx context.Context, conv *Conversation, text string, atts uploads.Attachments) (delivery, runID, queueID string, err error) {
 	live := s.liveRun(ctx, conv)
 	if live != nil {
-		_, ierr := s.runs.SendMessage(ctx, live.ID, text)
+		_, ierr := s.runs.SendMessage(ctx, live.ID, text, atts...)
 		if ierr == nil {
 			return DeliveryInjected, live.ID, "", nil
 		}
@@ -482,7 +486,8 @@ func (s *Service) deliver(ctx context.Context, conv *Conversation, text string) 
 	if s.queue == nil || s.ws == nil {
 		return DeliveryQueued, "", "", nil
 	}
-	qid, err := s.enqueueWake(ctx, conv, text)
+	// A new run reads the images from their paths.
+	qid, err := s.enqueueWake(ctx, conv, atts.Inline(text))
 	if err != nil {
 		return "", "", "", err
 	}
@@ -786,11 +791,14 @@ func (s *Service) LastAssistantTurn(ctx context.Context, conversationID, runID s
 func scanMsg(row convScanner) (Message, error) {
 	var m Message
 	var turn sql.NullInt64
-	var created string
+	var created, atts string
 	err := row.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Connector, &m.Instance, &m.Room, &m.Thread,
-		&m.Text, &m.RunID, &turn, &m.IdempotencyKey, &m.HopID, &created)
+		&m.Text, &m.RunID, &turn, &m.IdempotencyKey, &m.HopID, &created, &atts)
 	if err != nil {
 		return m, err
+	}
+	if atts != "" {
+		m.Attachments = strings.Split(atts, ",")
 	}
 	if turn.Valid {
 		i := int(turn.Int64)

@@ -146,6 +146,8 @@ type Turn struct {
 	Origin string `json:"origin,omitempty"`
 	// Delivery tells how a prompt reached the session: steered|prompted|held.
 	Delivery string `json:"delivery,omitempty"`
+	// Attachments are the upload ids of the images of a user prompt.
+	Attachments []string `json:"attachments,omitempty"`
 	// Request is set on a request turn.
 	Request *TurnRequest `json:"request,omitempty"`
 }

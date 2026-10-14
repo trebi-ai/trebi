@@ -11,6 +11,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/uploads"
 )
 
 // nativePrefix names the vendor id of a native session: the resume target is
@@ -615,19 +616,34 @@ func (s *session) appendSystemEvent(text string) {
 // so the prompt reaches it only through this event.
 func (s *session) appendUserEvent(turn int, in wire.PromptInput, d agentwire.Delivery) {
 	e := Event{
-		Type:     "user",
-		Turn:     turn,
-		At:       time.Now().UTC(),
-		Text:     displayOf(in),
-		Prompt:   in.Text,
-		Context:  in.Context,
-		Channel:  in.Connector,
-		Delivery: string(d),
+		Type:        "user",
+		Turn:        turn,
+		At:          time.Now().UTC(),
+		Text:        displayOf(in),
+		Prompt:      in.Text,
+		Context:     in.Context,
+		Attachments: in.Attachments.IDs(),
+		Channel:     in.Connector,
+		Delivery:    string(d),
 	}
 	if seq, err := s.m.store.AppendEvent(s.ctx, s.convID, e); err == nil {
 		e.Seq = seq
 	}
 	s.m.broadcast(s.convID, e)
+}
+
+// send delivers one prompt. Pi and a harness that refuses images get the
+// image paths in the text.
+func (s *session) send(ctx context.Context, text string, atts uploads.Attachments) (agentwire.Delivery, error) {
+	p := agentwire.Prompt{Text: atts.Inline(text), Kind: "assistant"}
+	if len(atts) == 0 || s.harness == string(agentwire.Pi) {
+		return agentwire.Send(ctx, s.sess, p)
+	}
+	d, err := agentwire.Send(ctx, s.sess, agentwire.Prompt{Text: text, Kind: "assistant", Attachments: atts.Wire()})
+	if errors.Is(err, agentwire.ErrUnsupported) {
+		return agentwire.Send(ctx, s.sess, p)
+	}
+	return d, err
 }
 
 // appendSendError records a daemon-side send failure as an `error` event. The

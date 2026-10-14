@@ -34,7 +34,8 @@ Return the composed instructions of a new assistant session: role, workspace, th
 ### say
 Send one message to the workspace assistant. The daemon resolves or creates the channel conversation and prompts the session, so no pointer call is needed first.
 - `workspace` (string, required): workspace id.
-- `text` (string, required): message text.
+- `text` (string, required unless `attachments` is set): message text.
+- `attachments` (array, optional): images for the assistant. Each item is an upload id from `file` `upload`, or the path of an image file in the workspace. A path outside the workspace returns `validation`.
 - `connector` (string, optional): connector name; defaults to `cli`.
 - `room` (string, optional): room on the connector; defaults to the workspace id.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first message.

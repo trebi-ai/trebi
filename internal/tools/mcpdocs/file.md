@@ -55,6 +55,18 @@ Delete one file. Destructive.
 - `if_match` (string, optional): current revision; a stale value returns 412.
 - `confirm` (boolean, required for a workspace file): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
+### upload
+Store one image so that a message can carry it. Give `path` or `content_base64`, not both. An upload is one PNG, JPEG, GIF, or WebP image; the daemon checks the type from the bytes. The reply is `{id, workspace_id, mime, size, sha256, created_at}`. Give the `id` in the `attachments` of `run` `message` or `assistant` `say`. A file that is not an image returns `unsupported_media_type`. A file above `uploads.max_bytes` (default 10 MB) returns `too_large`. An upload that no message uses goes away after 30 days.
+- `workspace` (string, required): workspace id.
+- `path` (string, optional): path of an image file in the workspace. A path outside the workspace returns `validation`.
+- `content_base64` (string, optional): the image bytes, base64 encoded.
+
+### upload_get
+Read one stored image. The reply is `{"content": "…", "encoding": "base64"}`.
+- `workspace` (string, required): workspace id.
+- `id` (string, required): upload id.
+- `max_bytes` (number, optional): cap the body at this size; default 64 KB.
+
 ## Related guides
 
 `files`

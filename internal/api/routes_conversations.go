@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/outbox"
+	"github.com/trebi-ai/trebi/internal/uploads"
 )
 
 func (s *Server) routeConversations(mux *http.ServeMux) {
@@ -242,14 +243,26 @@ func (s *Server) handleConversationSend(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		Text string `json:"text"`
 		conversations.Address
-		IdempotencyKey string `json:"idempotency_key"`
+		IdempotencyKey string   `json:"idempotency_key"`
+		Attachments    []string `json:"attachments"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
+	var atts uploads.Attachments
+	if len(body.Attachments) > 0 {
+		conv, err := s.conv.Get(r.Context(), r.PathValue("id"))
+		if s.convErr(w, err, "conversation not found") {
+			return
+		}
+		var ok bool
+		if atts, ok = s.attachUploads(r.Context(), w, conv.Workspace, body.Attachments); !ok {
+			return
+		}
+	}
 	out, err := s.conv.Send(r.Context(), r.PathValue("id"), conversations.SendOpts{
-		Text: body.Text, Address: body.Address, IdempotencyKey: body.IdempotencyKey,
+		Text: body.Text, Address: body.Address, IdempotencyKey: body.IdempotencyKey, Attachments: atts,
 	})
 	if s.convErr(w, err, "conversation not found") {
 		return

@@ -31,6 +31,7 @@ func newScopeGate(mux *http.ServeMux) *scopeGate {
 		"POST /v1/jobs/{name}/validate":                   true,
 		"PUT /v1/workspaces/{id}/files/{path...}":         true,
 		"DELETE /v1/workspaces/{id}/files/{path...}":      true,
+		"POST /v1/workspaces/{id}/uploads":                true,
 		"PUT /v1/jobs/{name}/files/{path...}":             true,
 		"DELETE /v1/jobs/{name}/files/{path...}":          true,
 		"PUT /v1/workspaces/{id}/agents/{name}":           true,

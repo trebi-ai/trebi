@@ -60,7 +60,10 @@ A run's runtime is `cli` by default: the harness binary runs as a subprocess and
 
 ```bash
 trebi runs message <id> "answer to the prompt"
+trebi runs message <id> "what is wrong here?" --attach shot.png   # send an image; repeat --attach for more
 ```
+
+`--attach` uploads a PNG, JPEG, GIF, or WebP file to the run workspace and sends its id with the message. An image with no text is allowed. Pi and tmux pane runs get the image as a file path line.
 
 ## Recover
 

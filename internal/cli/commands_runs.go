@@ -176,7 +176,10 @@ func runsCommand() *cli.Command {
 				Name:      "message",
 				Usage:     "send text to a run; an ended run continues its session",
 				ArgsUsage: "<id> <text...>",
-				Action:    runRunsMessage,
+				Flags: []cli.Flag{
+					&cli.StringSliceFlag{Name: "attach", Usage: "image file to send with the message (repeatable)"},
+				},
+				Action: runRunsMessage,
 			},
 			{
 				Name:  "stats",
@@ -522,28 +525,39 @@ func runRunsMessage(_ context.Context, c *cli.Command) error {
 		return fmt.Errorf("usage: trebi runs message <id> <text...>")
 	}
 	argText := strings.Join(c.Args().Tail(), " ")
-	stdinText := ""
-	if strings.TrimSpace(argText) == "" {
+	attach := c.StringSlice("attach")
+	text := strings.TrimSpace(argText)
+	if text == "" && len(attach) == 0 {
 		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return err
 		}
-		stdinText = string(b)
-	}
-	text, err := resolveRunMessageText(argText, stdinText)
-	if err != nil {
-		return err
+		if text, err = resolveRunMessageText(argText, string(b)); err != nil {
+			return err
+		}
 	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
+	}
+	var ids []string
+	if len(attach) > 0 {
+		var run struct {
+			Workspace string `json:"workspace"`
+		}
+		if err := client.GetJSON(request.BuildRunGetPath(id, 0), &run); err != nil {
+			return err
+		}
+		if ids, err = client.UploadImages(run.Workspace, attach); err != nil {
+			return err
+		}
 	}
 	var res struct {
 		Delivery string `json:"delivery"`
 		RunID    string `json:"run_id"`
 		Turn     int    `json:"turn"`
 	}
-	if err := client.DoHTTP(request.BuildRunMessage(id, text), &res); err != nil {
+	if err := client.DoHTTP(request.BuildRunMessage(id, text, ids...), &res); err != nil {
 		return err
 	}
 	fmt.Fprintf(outWriter(c), "%s: run %s, turn %d\n", res.Delivery, res.RunID, res.Turn)

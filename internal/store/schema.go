@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 57
+const SchemaVersion = 58
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1908,5 +1908,19 @@ ALTER TABLE artifacts ADD COLUMN chat_version INTEGER NOT NULL DEFAULT 0;`,
 	version TEXT NOT NULL,
 	PRIMARY KEY (holder, type, version)
 );`,
+		// v58: the images that a person adds to a message. The bytes live
+		// under home.UploadsDir; attached_at marks an upload a message used.
+		// conversation_messages.attachments holds the upload ids, comma joined.
+		`CREATE TABLE uploads (
+	id           TEXT PRIMARY KEY,
+	workspace_id TEXT NOT NULL,
+	mime         TEXT NOT NULL,
+	size         INTEGER NOT NULL,
+	sha256       TEXT NOT NULL,
+	created_at   TEXT NOT NULL,
+	attached_at  TEXT
+);
+CREATE INDEX uploads_created ON uploads (created_at);
+ALTER TABLE conversation_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '';`,
 	}
 }
