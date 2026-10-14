@@ -64,9 +64,9 @@ func TestLiveResume(t *testing.T) {
 
 // liveResumeModels is the cheapest model of each harness.
 var liveResumeModels = map[string]string{ //nolint:gochecknoglobals // test table
-	tmux.Claude: "haiku",
-	tmux.Codex:  "gpt-5-mini",
-	tmux.Gemini: "gemini-2.5-flash",
+	tmux.Claude:   "haiku",
+	tmux.OpenCode: "anthropic/claude-haiku-4-5",
+	tmux.Gemini:   "gemini-2.5-flash",
 }
 
 func liveResume(t *testing.T, name, runtime string) {
@@ -93,6 +93,9 @@ func liveResume(t *testing.T, name, runtime string) {
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
 	t.Cleanup(func() { home.SetBase("") })
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("tools:\n  "+name+":\n    enabled: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	st, err := store.OpenPath(filepath.Join(dir, "r.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -105,10 +108,10 @@ func liveResume(t *testing.T, name, runtime string) {
 	launch := func(prompt string) *runs.Run {
 		run, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
 			CreateOpts: runs.CreateOpts{
-				WorkspaceID: "ws", Job: "live", Kind: runs.KindJob, Harness: name, Runtime: runtime,
-				Reason: runs.ReasonTrigger, ConversationKey: "live-" + name, WorkingDir: work,
+				WorkspaceID: "ws", JobName: "live", Kind: runs.KindJob, Harness: name, Runtime: runtime,
+				Reason: runs.ReasonTrigger, ConversationKey: "live-" + name, WorkingDir: work, Model: model,
 			},
-			Prompt: prompt, Model: model, Conversation: true, ContinueMS: int64(time.Hour / time.Millisecond),
+			Prompt: prompt, Conversation: true, ContinueMS: int64(time.Hour / time.Millisecond),
 		})
 		if err != nil {
 			t.Fatal(err)

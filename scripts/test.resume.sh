@@ -8,20 +8,25 @@
 #   scripts/test.resume.sh                  # every installed harness, CLI runtime
 #   scripts/test.resume.sh claude codex     # some harnesses
 #   scripts/test.resume.sh --tui codex      # the tmux runtime
+#   scripts/test.resume.sh --restart claude # stop the daemon mid-turn (SIGTERM, SIGKILL), then restart it
 #
-# Results go to $TREBI_LIVE_OUT (default build/live-resume.txt), one line per harness and runtime.
+# Results go to $TREBI_LIVE_OUT (default build/live-resume.txt or build/live-restart.txt), one line per case.
+# TREBI_LIVE_SIGNALS (default term,kill) limits the --restart signals.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
 runtime=cli
+test=TestLiveResume
+out=live-resume.txt
 named=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tui)         runtime=tui; shift ;;
+    --restart)     test=TestLiveRestart; out=live-restart.txt; shift ;;
     --skip-noauth) export TREBI_LIVE_SKIP_NOAUTH=1; shift ;;
-    -h|--help)     sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,14p' "$0"; exit 0 ;;
     -*)            echo "error: unknown flag $1" >&2; exit 2 ;;
     *)             named+=("$1"); shift ;;
   esac
@@ -32,10 +37,10 @@ if [[ ${#named[@]} -gt 0 ]]; then
   TREBI_LIVE_HARNESSES="$(IFS=,; echo "${named[*]}")"
   export TREBI_LIVE_HARNESSES
 fi
-export TREBI_LIVE_OUT="${TREBI_LIVE_OUT:-$repo/build/live-resume.txt}"
+export TREBI_LIVE_OUT="${TREBI_LIVE_OUT:-$repo/build/$out}"
 mkdir -p "$(dirname "$TREBI_LIVE_OUT")"
 
-args=(go test -tags live -count=1 -timeout 40m -v -run '^TestLiveResume$' ./internal/runs)
+args=(go test -tags live -count=1 -timeout 40m -v -run "^$test\$" ./internal/runs)
 echo "+ ${args[*]}"
 status=0
 "${args[@]}" || status=$?

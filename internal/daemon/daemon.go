@@ -513,10 +513,15 @@ func (c *ControlPlane) Start(parent context.Context) {
 			defer c.wg.Done()
 			c.scheduleTicker(ctx)
 		}()
-		// Answers and replies that came in while the daemon was down go out now.
-		if err := c.Parker.Recover(ctx); err != nil {
-			c.log.Warn("park recover", "err", err)
-		}
+		// Answers, replies, and restart resumes go out now. A resume can take
+		// a while to start, so it must not hold the boot.
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			if err := c.Parker.Recover(ctx); err != nil {
+				c.log.Warn("park recover", "err", err)
+			}
+		}()
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
