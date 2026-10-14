@@ -470,6 +470,30 @@ echo '{"type":"result","subtype":"success"}'`,
 	}
 }
 
+// TestCLITurnsKeepsLongText pins that a long reply reaches the transcript
+// whole. A 2000-byte cap cut run reports in the middle.
+func TestCLITurnsKeepsLongText(t *testing.T) {
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
+		Script: `read -r line
+text=$(awk 'BEGIN { for (i = 0; i < 1000; i++) printf "line %04d. ", i; printf "END" }')
+echo "{\"type\":\"assistant\",\"text\":\"$text\"}"
+echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	waitTerminal(t, svc, run.ID)
+
+	turns, err := svc.CLITurns(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range turns {
+		if turn.Role == "assistant" && strings.HasSuffix(turn.Text, "END") && len(turn.Text) > 10000 {
+			return
+		}
+	}
+	t.Fatalf("long reply cut: %+v", turns)
+}
+
 // TestCLITurnsMatchesToolResultByID covers the claude wire shape: the
 // tool_result frame carries only the id. The opened call keeps its name and
 // input, the completion stamps the turn, and a call that never closes keeps

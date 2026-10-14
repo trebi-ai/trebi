@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 	agentwire "github.com/trebi-ai/agent-wire"
@@ -2116,9 +2117,13 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	return r, nil
 }
 
+// trunc cuts s to at most n bytes without splitting a rune.
 func trunc(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }

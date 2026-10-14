@@ -1145,7 +1145,7 @@ func (s *Service) SendMessage(ctx context.Context, runID, text string) (MessageR
 			return MessageResult{}, err
 		}
 		s.AddEvent(ctx, runID, "user", "trebi", map[string]string{
-			"text": trunc(text, maxPromptEventBytes), "origin": OriginMessage, "delivery": DeliveryPane,
+			"text": trunc(text, maxMessageEventBytes), "origin": OriginMessage, "delivery": DeliveryPane,
 		})
 		return MessageResult{Delivery: DeliveryPane, RunID: runID, Turn: run.TurnCount}, nil
 	}

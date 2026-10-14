@@ -436,13 +436,14 @@ func (s *Service) promptCLI(ctx context.Context, runID string, cr *cliRun, p age
 		s.SetSessionState(ctx, runID, SessionRunning, "wire")
 	}
 	s.AddEvent(ctx, runID, "user", "trebi", map[string]string{
-		"text": trunc(p.Text, maxPromptEventBytes), "origin": origin, "delivery": string(d),
+		"text": trunc(p.Text, maxMessageEventBytes), "origin": origin, "delivery": string(d),
 	})
 	return d, nil
 }
 
-// maxPromptEventBytes bounds the prompt text on one user event.
-const maxPromptEventBytes = 16000
+// maxMessageEventBytes bounds the text of one user or assistant event. The
+// transcript reads the text back from the event, so a run report must fit.
+const maxMessageEventBytes = 64 << 10
 
 func kindOrDefault(kind string) string {
 	if kind == "" {
@@ -634,10 +635,10 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 			s.AddEvent(ctx, runID, "session.init", "wire", map[string]string{"session_id": ev.SessionID, "model": ev.Text})
 		case agentwire.EventAssistant:
 			s.AddEvent(ctx, runID, "assistant", "wire", map[string]string{
-				"text": trunc(ev.Text, 2000), "delta": strconv.FormatBool(ev.Delta),
+				"text": trunc(ev.Text, maxMessageEventBytes), "delta": strconv.FormatBool(ev.Delta),
 			})
 		case agentwire.EventUser:
-			s.AddEvent(ctx, runID, "user", "wire", map[string]string{"text": trunc(ev.Text, 2000)})
+			s.AddEvent(ctx, runID, "user", "wire", map[string]string{"text": trunc(ev.Text, maxMessageEventBytes)})
 		case agentwire.EventUsage:
 			if ev.Usage != nil {
 				s.AddEvent(ctx, runID, "usage", "wire", map[string]string{
@@ -662,7 +663,7 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 		case agentwire.EventError:
 			if ev.Code == agentwire.CodeHeldPromptDropped {
 				cr.takeHeld()
-				s.AddEvent(ctx, runID, "message.dropped", "wire", map[string]string{"text": trunc(ev.Text, maxPromptEventBytes)})
+				s.AddEvent(ctx, runID, "message.dropped", "wire", map[string]string{"text": trunc(ev.Text, maxMessageEventBytes)})
 				continue
 			}
 			e := ev
